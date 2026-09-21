@@ -49,16 +49,28 @@ func (i Isolation) String() string {
 
 // Capabilities is what a driver can actually do.
 //
-// 🔴 A CAPABILITY NOBODY BRANCHES ON IS NOT A GUARD, IT IS A FIELD. This type
-// is only worth its weight because [CheckSpec] and [Grant] refuse on it, and
-// because those two are the ONLY places the refusal is spelled — a predicate
-// open-coded per driver is a predicate that is wrong in all but one of them, in
-// the same direction, and nobody hears the disagreement.
+// 🔴 A CAPABILITY NOBODY BRANCHES ON IS NOT A GUARD, IT IS A FIELD. Every bool
+// here is refused on somewhere, and each one's refusal is spelled in exactly
+// one place: Files, Secrets, Persistence and ResourceLimits in [CheckSpec];
+// Scale in [CheckSpec] and [CheckScale], which are one rule reached by two
+// entry points; Policy in [Grant]; Exec in [Exec]. A predicate open-coded per
+// driver instead is a predicate that is wrong in all but one of them, in the
+// same direction, and nobody hears the disagreement.
 //
-// Every field is false-by-default and false means "cannot", so a driver that
+// ⚠ Isolation IS THE EXCEPTION, AND IT HAS NO BRANCH AT ALL. Both drivers
+// WRITE it; nothing in this repository READS it. It is kept because
+// [IsolationNone] is a safety statement — an agent running as the muster
+// process's own user, with its credentials — that a future CheckSpec should be
+// able to refuse on, and that branch does not exist yet. Until it does,
+// Isolation is a field and not a guard, and this comment says so rather than
+// supplying it a purpose. Do not read the sentence above as covering it.
+//
+// Every bool is false-by-default and false means "cannot", so a driver that
 // forgets to declare something is treated as unable to do it. That is the safe
 // direction: the failure is a refusal a developer sees immediately, not a
-// silent downgrade a user discovers later.
+// silent downgrade a user discovers later. Isolation is safe in the same
+// direction for a different reason — its zero value is IsolationNone, the LEAST
+// isolated level, so forgetting to declare it understates isolation.
 type Capabilities struct {
 	// Isolation is how well instances are separated. See the constants.
 	Isolation Isolation
