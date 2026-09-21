@@ -117,10 +117,53 @@ mechanism looks over-built and each part of it is there for a measured failure.
   realistic sensitive strings — they are its negative controls — so it is exempt
   by name and printed as a named skip. A real secret pasted into that file is
   invisible to the gate. Review changes to it by hand.
-- **No provisioner, no agent runtime.** The interesting design questions — a
-  pluggable provisioner with a capability declaration, and whether an agent that
-  is not a specific vendor's container can be driven at all — are not answered
-  here.
+- **No agent runtime.** The provisioner can create an instance; nothing here
+  talks to it. Sending a message, streaming its tokens, servicing its tool calls
+  — and therefore the question of whether an agent that is not one specific
+  vendor's container can be driven at all — are not answered here. That absence
+  is deliberate: putting the conversation on the provisioner interface is what
+  made the original un-implementable by anything else.
+- **The provisioner has two drivers and neither has run against a real
+  cluster from this tree.** The Kubernetes driver's tests use a fake clientset,
+  which structurally cannot see scheduling, image pulls, volume attachment,
+  admission, or the exec stream. A green suite there means the manifests are
+  what the code says they are, not that a pod came up.
+- **The Kubernetes driver restricts no egress.** `Capabilities.FQDNEgress` is
+  false and no NetworkPolicy is rendered. Restricting an agent's egress by DNS
+  name is the control that addresses exfiltration by a prompt-injected model,
+  and muster does not implement it.
+
+## The provisioner
+
+`internal/provision` is the seam between "an agent should exist, configured like
+this" and whatever runs it. It imports nothing outside the standard library, so
+wiring the no-op driver costs none of a cluster client's dependency tree.
+
+Four rules define it, each pinned by a test rather than by prose. They are
+stated in full in the package doc; in short:
+
+1. **A driver that cannot see its backend returns an error, never an empty
+   set.** A caller reads a `List` error as "keep the stored status" and an empty
+   `List` as "nothing is running".
+2. **`Destroy` returns `nil` only if the instance was removed or was already
+   absent.** A bare `return nil` satisfies the compiler and means nothing.
+3. **`Create` is idempotent; a divergent spec is an error**, not a silent
+   overwrite.
+4. **`Capabilities` is useless unless callers branch on it.** `CheckSpec` and
+   `Grant` are those branches, and they are the only places the refusals are
+   spelled. A policy a driver cannot interpret is REFUSED — an interface
+   reporting "granted" for a policy nobody applied is worse than no policy
+   feature, because it reads as coverage.
+
+`internal/provision/provisiontest` is the contract suite every driver must pass.
+It requires a working driver, a **blind** one and a **restricted** one, and it
+does not skip: without the blind driver the first rule is unfalsifiable, and
+without the restricted one the capability refusals are never watched to fire.
+
+| driver | what it is for |
+|---|---|
+| `provision.Noop` | records instead of provisioning; develop everything above the seam without a backend |
+| `provision/k8s` | renders its own minimal manifests — Namespace, ServiceAccount, Secret, ConfigMap, PVC, Deployment, Service — and installs no chart |
 
 ## Licence
 

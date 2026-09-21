@@ -54,6 +54,16 @@ type Harness struct {
 	// driver that really refuses, rather than against a hand-built mock that
 	// agrees with the test.
 	Restricted func(t *testing.T) provision.Provisioner
+
+	// GrantablePolicy is a policy the driver from New CAN apply. REQUIRED when
+	// that driver declares Capabilities.Policy, and unused otherwise.
+	//
+	// ⚠ IT EXISTS BECAUSE A POLICY'S RULES ARE DRIVER-SPECIFIC BY DESIGN. A
+	// single payload written into this suite would be uninterpretable to every
+	// driver but one, so the grant-succeeds direction would be untestable and
+	// the case would silently collapse to refusal-only — which passes for a
+	// driver that refuses everything.
+	GrantablePolicy provision.Policy
 }
 
 // MinimalSpec is a spec every driver must accept whatever its capabilities:
@@ -531,6 +541,15 @@ func testRestrictedRefuses(t *testing.T, h Harness) {
 	}
 }
 
+// testPolicyRefusedOrApplied is the security case, and it asserts the universal
+// half for EVERY driver before branching on capability.
+//
+// 🔴 THE UNIVERSAL HALF: a policy whose rules the driver cannot interpret must
+// be REFUSED. It does not matter whether the refusal comes from the type
+// assertion, from the capability flag, or from the driver's own parser — what
+// matters is that "granted" is never recorded for a policy nobody applied. A
+// UI reading "granted" for an unapplied policy is a defect that reads as
+// coverage, so nobody looks at it again.
 func testPolicyRefusedOrApplied(t *testing.T, h Harness) {
 	p := h.New(t)
 	ctx := context.Background()
@@ -538,31 +557,44 @@ func testPolicyRefusedOrApplied(t *testing.T, h Harness) {
 	if err := p.Create(ctx, spec); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	pol := provision.Policy{Name: "probe-profile", Rules: []byte(`{"probe":["read"]}`)}
 
-	err := provision.Grant(ctx, p, spec.Ref, pol)
-	if p.Capabilities().Policy {
-		if err != nil {
-			t.Fatalf("driver claims Policy and Grant failed: %v", err)
-		}
-		if err := provision.Revoke(ctx, p, spec.Ref, pol.Name); err != nil {
-			t.Fatalf("Revoke after a successful Grant: %v", err)
-		}
-		// Revoking twice is the "already absent" case again.
-		if err := provision.Revoke(ctx, p, spec.Ref, pol.Name); err != nil {
-			t.Fatalf("second Revoke must be a no-op: %v", err)
+	// Deliberately not any driver's shape: an object with a key no driver in
+	// this repository declares.
+	alien := provision.Policy{
+		Name:  "contract-probe-alien",
+		Rules: []byte(`{"musterContractProbeUnknownShape":{"verbs":["everything"]}}`),
+	}
+	if err := provision.Grant(ctx, p, spec.Ref, alien); !errors.Is(err, provision.ErrUnsupported) {
+		t.Fatalf("a policy this driver cannot interpret must be refused with ErrUnsupported, got %v. "+
+			"Applying the parts it understands and ignoring the rest records access that was never given.", err)
+	}
+
+	if !p.Capabilities().Policy {
+		if err := provision.Revoke(ctx, p, spec.Ref, alien.Name); err != nil {
+			t.Fatalf("Revoke against a driver that cannot grant must be a no-op, not an error: %v", err)
 		}
 		return
 	}
-	// 🔴 THE SECURITY CASE. A driver that cannot apply a policy must REFUSE.
-	// Reporting success for a policy nobody applied is a defect that reads as
-	// coverage, so nobody looks at it again.
-	if !errors.Is(err, provision.ErrUnsupported) {
-		t.Fatalf("driver does not claim Policy, and Grant returned %v — want ErrUnsupported. "+
-			"An interface showing 'granted' for a policy nobody applied is worse than no policy feature.", err)
+
+	// The other direction. Without it, a driver that refuses EVERYTHING passes.
+	if h.GrantablePolicy.Name == "" {
+		t.Fatalf("%s declares Capabilities.Policy but the harness supplies no GrantablePolicy, so this "+
+			"case can only observe refusals — which is exactly what a driver that refuses everything does", h.Name)
+	}
+	pol := h.GrantablePolicy
+	if err := provision.Grant(ctx, p, spec.Ref, pol); err != nil {
+		t.Fatalf("driver claims Policy and refused its own GrantablePolicy: %v", err)
+	}
+	// Idempotent: granting twice is one grant.
+	if err := provision.Grant(ctx, p, spec.Ref, pol); err != nil {
+		t.Fatalf("a second Grant of the same policy must succeed: %v", err)
 	}
 	if err := provision.Revoke(ctx, p, spec.Ref, pol.Name); err != nil {
-		t.Fatalf("Revoke against a driver that cannot grant must be a no-op, not an error: %v", err)
+		t.Fatalf("Revoke after a successful Grant: %v", err)
+	}
+	// Revoking twice is the "already absent" case again.
+	if err := provision.Revoke(ctx, p, spec.Ref, pol.Name); err != nil {
+		t.Fatalf("second Revoke must be a no-op: %v", err)
 	}
 }
 
