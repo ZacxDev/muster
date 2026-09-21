@@ -247,17 +247,8 @@ RULES: list[tuple[str, str, str]] = [
         # A hostname on a private/lab TLD, or a bare `*.local`/`*.lan` name.
         # These are reachable names on somebody's network and say where things
         # live.
-        #
-        # ⚠ `cluster.local` IS EXEMPT, AND THE EXEMPTION IS NARROW ON PURPOSE.
-        # It is Kubernetes' DEFAULT cluster DNS domain — identical on every
-        # cluster on earth, spelled by every in-cluster service address, and it
-        # names nobody's infrastructure. Refusing it would red every service
-        # address in the tree, and a gate that fires for nothing is a gate
-        # somebody turns off. The lookahead matches only the literal
-        # `cluster.local`; `mycluster.local` and `cluster.lan` are still
-        # refused, which the narrowness and negative controls both pin.
-        r"\b(?!cluster\.local\b)[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal|home|homelab)\b"
-        r"|\b(?!cluster\.local\b)[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal)\.[A-Za-z]{2,}\b",
+        r"\b[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal|home|homelab)\b"
+        r"|\b[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal)\.[A-Za-z]{2,}\b",
         "a private or lab hostname — it names real infrastructure. Use "
         "`example.com` / `muster.example` in documentation",
     ),
@@ -460,11 +451,6 @@ NEGATIVE_CONTROLS = [
      'MUSTER_API_URL = "https://muster.workshed.lan/api/tasks"'),
     ("private-hostname",
      "    // the gateway resolves agent-7.devpod.internal on the cluster network"),
-    # The exemption for `cluster.local` must not have widened into `*.local`.
-    ("private-hostname",
-     '    GATEWAY = "printer.workshed.local"'),
-    ("private-hostname",
-     '    GATEWAY = "mycluster.local:8421"'),
     ("registry-ref",
      'image: registry.workshed.lan/library/muster:0.4.2'),
     ("registry-ref",
@@ -501,10 +487,6 @@ POSITIVE_CONTROL = "trusted = '172.16.4.9'  # a real private address"
 ALLOWED_CONTROLS = [
     ('    "10.244.0.0/16",  # a pod CIDR: every pod in the cluster',
      "the standard Kubernetes pod-CIDR example"),
-    ('const DefaultEndpointTemplate = "{{.Name}}.{{.Group}}.svc.cluster.local"',
-     "Kubernetes' DEFAULT cluster DNS domain. It is the same string on every "
-     "cluster and names nobody's infrastructure; refusing it would red every "
-     "in-cluster service address the provisioner renders"),
     ("MUSTER_API_URL=https://muster.example.com/api/tasks",
      "a documentation hostname"),
     ('image: ghcr.io/zacxdev/muster:sha-0123456789abcdef',

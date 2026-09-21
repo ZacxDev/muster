@@ -77,7 +77,14 @@ const DefaultWorkspacePath = "/data/workspace"
 // It is a DEFAULT, not a constant in the code path: Config.EndpointTemplate
 // replaces it wholesale and Spec.Endpoint overrides it per instance. The string
 // it replaces in the original project was reachable from nowhere.
-const DefaultEndpointTemplate = "{{.Name}}.{{.Group}}.svc.cluster.local"
+//
+// ⚠ IT STOPS AT `.svc` DELIBERATELY. A pod's own resolv.conf search path
+// supplies the cluster's DNS domain, whatever that cluster was configured with,
+// so `name.namespace.svc` resolves in-cluster everywhere. Spelling the default
+// domain in full would resolve only on a cluster that kept the default, and
+// neither form resolves from outside the cluster at all — so the short one
+// loses nothing and survives a cluster whose clusterDomain was changed.
+const DefaultEndpointTemplate = "{{.Name}}.{{.Group}}.svc"
 
 func instanceLabels(name string) map[string]string {
 	return map[string]string{

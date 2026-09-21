@@ -884,7 +884,7 @@ func TestEndpointTemplateIsConfigurable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Endpoint: %v", err)
 	}
-	if ep2.Host != "reachable.muster-reachable.svc.cluster.local" {
+	if ep2.Host != "reachable.muster-reachable.svc" {
 		t.Fatalf("default endpoint host is %q", ep2.Host)
 	}
 	if ep2.Host == ep.Host {
