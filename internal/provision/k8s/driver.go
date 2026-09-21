@@ -44,9 +44,16 @@ type Config struct {
 	RESTConfig *rest.Config
 
 	// NamespacePerInstance gives each instance its own namespace, named
-	// NamespacePrefix+Name. This is what makes Destroy a namespace deletion
-	// rather than an object enumeration, and it is what raises
-	// Capabilities.Isolation to IsolationNamespace.
+	// NamespacePrefix+Name. It raises Capabilities.Isolation to
+	// IsolationNamespace, and it adds a namespace deletion to the end of
+	// Destroy.
+	//
+	// ⚠ IT DOES NOT REPLACE THE OBJECT-BY-OBJECT TEARDOWN, and this comment
+	// used to say it did ("what makes Destroy a namespace deletion rather than
+	// an object enumeration"). Destroy enumerates and removes every object it
+	// created under BOTH layouts; the namespace delete is an extra step here.
+	// Reading it the old way is what left namespaced RBAC behind in a shared
+	// namespace, where no namespace is ever deleted.
 	NamespacePerInstance bool
 
 	// NamespacePrefix prefixes per-instance namespaces. Empty means "muster-".
@@ -186,6 +193,114 @@ func notFound(name string) error {
 	return fmt.Errorf("%w: %q", provision.ErrNotFound, name)
 }
 
+// notManagedError is the refusal every by-name path returns for an object this
+// driver did not create.
+//
+// 🔴 IT REPORTS ITSELF AS ErrNotFound, AND STAYS DISTINGUISHABLE. The object
+// exists, but it is not a muster instance, so "muster has no instance by that
+// name" is what a caller branching on the sentinel must act on — reporting it
+// as an instance is how a status read describes a stranger's Deployment as an
+// agent. The concrete type survives errors.As for the one path where the
+// difference matters: Update creates what is ABSENT, and must not create over
+// what is FOREIGN.
+type notManagedError struct {
+	kind, name, ns string
+}
+
+func (e *notManagedError) Error() string {
+	return fmt.Sprintf("%s: %s %q in namespace %q is not managed by muster (it does not carry %s=%s), "+
+		"so muster has no instance by that name",
+		provision.ErrNotFound, e.kind, e.name, e.ns, labelManagedBy, managedBy)
+}
+
+func (e *notManagedError) Is(target error) bool { return target == provision.ErrNotFound }
+
+func notManaged(kind, name, ns string) error {
+	return &notManagedError{kind: kind, name: name, ns: ns}
+}
+
+// labelsOf adapts a typed client Get to the labels-and-error pair the ownership
+// helpers read. The error is checked FIRST, so a typed nil object is never
+// dereferenced.
+func labelsOf(o metav1.Object, err error) (map[string]string, error) {
+	if err != nil {
+		return nil, err
+	}
+	return o.GetLabels(), nil
+}
+
+// getOwnedDeployment reads an instance's Deployment and refuses one this driver
+// did not create.
+//
+// 🔴 EVERY BY-NAME READ GOES THROUGH HERE — Get, Scale, Endpoint and the log
+// paths — because the ownership check is one rule and a copy of it at each call
+// site is the same bug waiting to be fixed four times. List needs no equivalent:
+// it filters server-side with managedSelector().
+func (d *Driver) getOwnedDeployment(ctx context.Context, ns, name string) (*appsv1.Deployment, error) {
+	dep, err := d.cfg.Client.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil, notFound(name)
+	}
+	if err != nil {
+		return nil, blind("get deployment "+name, err)
+	}
+	if !owned(dep.Labels) {
+		return nil, notManaged("deployment", name, ns)
+	}
+	return dep, nil
+}
+
+// upsertOwned creates, and on AlreadyExists updates — but only after reading
+// the existing object's labels and confirming this driver created it.
+//
+// 🔴 THE READ IS WHAT SEPARATES AN UPDATE FROM A HIJACK. `Create` then `Update`
+// on AlreadyExists is a name-keyed write: in a shared namespace the object that
+// already holds the name can be anything, and overwriting somebody else's
+// Service with a selector pointing at muster's pods is a silent takeover of
+// their traffic. It costs one extra GET, and only on the collision path.
+func (d *Driver) upsertOwned(what, name, ns string, get func() (map[string]string, error), create, update func() error) error {
+	err := create()
+	if !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	labels, gerr := get()
+	if gerr != nil {
+		return gerr
+	}
+	if !owned(labels) {
+		return notManaged(what, name, ns)
+	}
+	return update()
+}
+
+// deleteIfOwned deletes an object only when this driver created it. A missing
+// object is success — absent is the state the caller asked for. A FOREIGN
+// object is left alone and logged: it belongs to somebody else, and destroying
+// an instance must not touch it.
+//
+// ⚠ WHAT IT DOES NOT CLAIM: atomicity. The labels are read immediately before
+// the delete, but nothing stops the object being replaced between the two
+// calls. Closing that needs a delete precondition on the object's UID, which
+// the fake clientset these tests run against does not enforce — so it would be
+// code no test in this repository could exercise.
+func (d *Driver) deleteIfOwned(what, name string, get func() (map[string]string, error), del func() error) error {
+	labels, err := get()
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !owned(labels) {
+		d.log.Printf("k8s: leaving %s %q alone: it is not managed by muster", what, name)
+		return nil
+	}
+	if err := del(); err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	return nil
+}
+
 // checkSpec is the capability branch plus the one requirement that is specific
 // to this backend.
 func (d *Driver) checkSpec(spec provision.Spec) error {
@@ -212,6 +327,16 @@ func (d *Driver) Create(ctx context.Context, spec provision.Spec) error {
 	existing, err := d.cfg.Client.AppsV1().Deployments(ns).Get(ctx, spec.Ref.Name, metav1.GetOptions{})
 	switch {
 	case err == nil:
+		// 🔴 A WORKLOAD THIS DRIVER DID NOT CREATE IS NOT AN INSTANCE TO
+		// RECONCILE. It is refused here rather than read for a fingerprint,
+		// because the fingerprint of a foreign object is absent and "absent"
+		// would otherwise be reported as divergence — the right refusal for the
+		// wrong reason, and a message nobody can act on.
+		if !owned(existing.Labels) {
+			return fmt.Errorf("%w: %q already exists in namespace %s and is not managed by muster; "+
+				"muster will neither adopt nor overwrite it",
+				provision.ErrDivergentSpec, spec.Ref.Name, ns)
+		}
 		// 🔴 IDEMPOTENCE IS DECIDED BY THE RECORDED FINGERPRINT, NOT BY A DIFF
 		// OF THE OBJECTS. The live Deployment has been through defaulting and
 		// possibly through another controller, so comparing it field by field
@@ -232,11 +357,29 @@ func (d *Driver) Create(ctx context.Context, spec provision.Spec) error {
 }
 
 // Update implements provision.Provisioner.
+//
+// ⚠ IT CREATES WHEN ABSENT, BUT IT DOES NOT ADOPT. A Deployment already holding
+// this name that muster did not create is refused before anything is written:
+// "make it look like this" is not a licence to take over somebody else's
+// workload, and apply's first write would otherwise land before the Deployment
+// upsert refused.
 func (d *Driver) Update(ctx context.Context, spec provision.Spec) error {
 	if err := d.checkSpec(spec); err != nil {
 		return err
 	}
-	return d.apply(ctx, spec, d.namespaceFor(spec.Ref.Name))
+	ns := d.namespaceFor(spec.Ref.Name)
+	if _, err := d.getOwnedDeployment(ctx, ns, spec.Ref.Name); err != nil {
+		var foreign *notManagedError
+		switch {
+		case errors.As(err, &foreign):
+			return err
+		case errors.Is(err, provision.ErrNotFound):
+			// Absent. Update creates it, which is the documented behaviour.
+		default:
+			return err
+		}
+	}
+	return d.apply(ctx, spec, ns)
 }
 
 // apply renders and upserts every object for spec.
@@ -245,55 +388,95 @@ func (d *Driver) Update(ctx context.Context, spec provision.Spec) error {
 // ServiceAccount, the ConfigMap, the Secret and the PVC; creating it first
 // produces a pod that fails to start for a reason attributed to the wrong
 // object.
+// 🔴 IT ALSO REMOVES WHAT THE SPEC NO LONGER ASKS FOR. A render function
+// returning nil means "this instance has no such object any more", and until
+// this swept them, that left the object in the cluster: a Secret still holding
+// a credential the spec had dropped, a Service still selecting live pods, a
+// ConfigMap still mounting a file that was deleted. Removing a credential from
+// a spec has to remove it from the cluster, or the revocation is a comment.
+//
+// ⚠ THE PVC IS THE ONE EXCEPTION, AND IT IS NOT SWEPT. A workspace claim holds
+// the instance's data; deleting it because a spec edit turned Persist off would
+// destroy that data on a reconcile. It is left for an operator to remove
+// deliberately.
 func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) error {
+	c := d.cfg.Client
+	name := spec.Ref.Name
+
 	if d.cfg.NamespacePerInstance {
-		nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
-			Name:   ns,
-			Labels: instanceLabels(spec.Ref.Name),
-		}}
-		if _, err := d.cfg.Client.CoreV1().Namespaces().Create(ctx, nsObj, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-			return blind("create namespace "+ns, err)
+		if err := d.ensureNamespace(ctx, name, ns); err != nil {
+			return err
 		}
 	}
 
 	sa := d.renderServiceAccount(spec, ns)
-	if err := upsert(ctx,
+	if err := d.upsertOwned("serviceaccount", sa.Name, ns,
+		func() (map[string]string, error) {
+			return labelsOf(c.CoreV1().ServiceAccounts(ns).Get(ctx, sa.Name, metav1.GetOptions{}))
+		},
 		func() error {
-			_, e := d.cfg.Client.CoreV1().ServiceAccounts(ns).Create(ctx, sa, metav1.CreateOptions{})
+			_, e := c.CoreV1().ServiceAccounts(ns).Create(ctx, sa, metav1.CreateOptions{})
 			return e
 		},
 		func() error {
-			_, e := d.cfg.Client.CoreV1().ServiceAccounts(ns).Update(ctx, sa, metav1.UpdateOptions{})
+			_, e := c.CoreV1().ServiceAccounts(ns).Update(ctx, sa, metav1.UpdateOptions{})
 			return e
 		}); err != nil {
 		return blind("apply serviceaccount "+sa.Name, err)
 	}
 
+	cmName := configMapName(name)
+	cmLabels := func() (map[string]string, error) {
+		return labelsOf(c.CoreV1().ConfigMaps(ns).Get(ctx, cmName, metav1.GetOptions{}))
+	}
 	if cm := d.renderConfigMap(spec, ns); cm != nil {
-		if err := upsert(ctx,
+		if err := d.upsertOwned("configmap", cm.Name, ns, cmLabels,
 			func() error {
-				_, e := d.cfg.Client.CoreV1().ConfigMaps(ns).Create(ctx, cm, metav1.CreateOptions{})
+				_, e := c.CoreV1().ConfigMaps(ns).Create(ctx, cm, metav1.CreateOptions{})
 				return e
 			},
 			func() error {
-				_, e := d.cfg.Client.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{})
+				_, e := c.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{})
 				return e
 			}); err != nil {
 			return blind("apply configmap "+cm.Name, err)
 		}
+	} else if err := d.deleteIfOwned("configmap", cmName, cmLabels, func() error {
+		return c.CoreV1().ConfigMaps(ns).Delete(ctx, cmName, metav1.DeleteOptions{})
+	}); err != nil {
+		return fmt.Errorf("delete stale configmap %s: %w", cmName, err)
 	}
 
-	if sec := d.renderSecret(spec, ns); sec != nil {
-		if err := upsert(ctx,
-			func() error {
-				_, e := d.cfg.Client.CoreV1().Secrets(ns).Create(ctx, sec, metav1.CreateOptions{})
-				return e
-			},
-			func() error {
-				_, e := d.cfg.Client.CoreV1().Secrets(ns).Update(ctx, sec, metav1.UpdateOptions{})
-				return e
-			}); err != nil {
-			return blind("apply secret "+sec.Name, err)
+	for _, s := range []struct {
+		what   string
+		name   string
+		render func(provision.Spec, string) *corev1.Secret
+	}{
+		{"secret", envSecretName(name), d.renderEnvSecret},
+		{"secret", fileSecretName(name), d.renderFileSecret},
+	} {
+		secName := s.name
+		labels := func() (map[string]string, error) {
+			return labelsOf(c.CoreV1().Secrets(ns).Get(ctx, secName, metav1.GetOptions{}))
+		}
+		if sec := s.render(spec, ns); sec != nil {
+			if err := d.upsertOwned(s.what, sec.Name, ns, labels,
+				func() error {
+					_, e := c.CoreV1().Secrets(ns).Create(ctx, sec, metav1.CreateOptions{})
+					return e
+				},
+				func() error {
+					_, e := c.CoreV1().Secrets(ns).Update(ctx, sec, metav1.UpdateOptions{})
+					return e
+				}); err != nil {
+				return blind("apply secret "+sec.Name, err)
+			}
+			continue
+		}
+		if err := d.deleteIfOwned(s.what, secName, labels, func() error {
+			return c.CoreV1().Secrets(ns).Delete(ctx, secName, metav1.DeleteOptions{})
+		}); err != nil {
+			return fmt.Errorf("delete stale secret %s: %w", secName, err)
 		}
 	}
 
@@ -304,29 +487,52 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 	if pvc != nil {
 		// ⚠ CREATE-ONLY. Almost every field of a bound PVC is immutable, so an
 		// Update here fails on a claim that is working perfectly. An existing
-		// claim is the state we want.
-		if _, err := d.cfg.Client.CoreV1().PersistentVolumeClaims(ns).Create(ctx, pvc, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-			return blind("create pvc "+pvc.Name, err)
+		// claim is the state we want — PROVIDED it is ours. A claim somebody
+		// else made under this name would otherwise be mounted into the
+		// instance's pod, which hands its contents to the agent.
+		_, cerr := c.CoreV1().PersistentVolumeClaims(ns).Create(ctx, pvc, metav1.CreateOptions{})
+		switch {
+		case cerr == nil:
+		case apierrors.IsAlreadyExists(cerr):
+			labels, gerr := labelsOf(c.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvc.Name, metav1.GetOptions{}))
+			if gerr != nil {
+				return blind("get pvc "+pvc.Name, gerr)
+			}
+			if !owned(labels) {
+				return notManaged("persistentvolumeclaim", pvc.Name, ns)
+			}
+		default:
+			return blind("create pvc "+pvc.Name, cerr)
 		}
 	}
 
+	svcLabels := func() (map[string]string, error) {
+		return labelsOf(c.CoreV1().Services(ns).Get(ctx, name, metav1.GetOptions{}))
+	}
 	if svc := d.renderService(spec, ns); svc != nil {
-		if err := upsertService(ctx, d.cfg.Client, ns, svc); err != nil {
+		if err := d.upsertService(ctx, ns, svc); err != nil {
 			return blind("apply service "+svc.Name, err)
 		}
+	} else if err := d.deleteIfOwned("service", name, svcLabels, func() error {
+		return c.CoreV1().Services(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	}); err != nil {
+		return fmt.Errorf("delete stale service %s: %w", name, err)
 	}
 
 	dep, err := d.renderDeployment(spec, ns)
 	if err != nil {
 		return err
 	}
-	if err := upsert(ctx,
+	if err := d.upsertOwned("deployment", dep.Name, ns,
+		func() (map[string]string, error) {
+			return labelsOf(c.AppsV1().Deployments(ns).Get(ctx, dep.Name, metav1.GetOptions{}))
+		},
 		func() error {
-			_, e := d.cfg.Client.AppsV1().Deployments(ns).Create(ctx, dep, metav1.CreateOptions{})
+			_, e := c.AppsV1().Deployments(ns).Create(ctx, dep, metav1.CreateOptions{})
 			return e
 		},
 		func() error {
-			_, e := d.cfg.Client.AppsV1().Deployments(ns).Update(ctx, dep, metav1.UpdateOptions{})
+			_, e := c.AppsV1().Deployments(ns).Update(ctx, dep, metav1.UpdateOptions{})
 			return e
 		}); err != nil {
 		return blind("apply deployment "+dep.Name, err)
@@ -334,19 +540,48 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 	return nil
 }
 
-// upsert creates, and on AlreadyExists updates.
-func upsert(_ context.Context, create, update func() error) error {
-	err := create()
-	if apierrors.IsAlreadyExists(err) {
-		return update()
+// ensureNamespace creates the instance's namespace, and REFUSES one this driver
+// did not create.
+//
+// 🔴 AN IGNORED AlreadyExists IS AN ADOPTION, AND Destroy DELETES THIS
+// NAMESPACE WHOLE. Continuing past a namespace somebody else made therefore
+// schedules the deletion of everything in it — the objects, the workloads and
+// the secrets of whoever owned it. The label read below is what makes
+// create-or-continue a decision rather than an assumption.
+//
+// The refusal is not one of the provision sentinels: none of them names
+// "somebody else's object", and ErrInvalidSpec would blame the spec for the
+// state of the cluster.
+func (d *Driver) ensureNamespace(ctx context.Context, instance, ns string) error {
+	nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:   ns,
+		Labels: instanceLabels(instance),
+	}}
+	_, err := d.cfg.Client.CoreV1().Namespaces().Create(ctx, nsObj, metav1.CreateOptions{})
+	switch {
+	case err == nil:
+		return nil
+	case !apierrors.IsAlreadyExists(err):
+		return blind("create namespace "+ns, err)
 	}
-	return err
+	cur, gerr := d.cfg.Client.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+	if gerr != nil {
+		return blind("get namespace "+ns, gerr)
+	}
+	if !owned(cur.Labels) {
+		return fmt.Errorf("namespace %q already exists and is not managed by muster (labels %v); "+
+			"refusing to adopt it, because Destroy deletes this namespace and everything in it",
+			ns, cur.Labels)
+	}
+	return nil
 }
 
 // upsertService is separate because a Service's ClusterIP is assigned by the
 // API server and is immutable: a blind Update with an empty ClusterIP is
-// rejected. The existing value has to be carried over.
-func upsertService(ctx context.Context, c kubernetes.Interface, ns string, svc *corev1.Service) error {
+// rejected. The existing value has to be carried over — and the object it is
+// carried over FROM has to be ours, for the reason upsertOwned states.
+func (d *Driver) upsertService(ctx context.Context, ns string, svc *corev1.Service) error {
+	c := d.cfg.Client
 	_, err := c.CoreV1().Services(ns).Create(ctx, svc, metav1.CreateOptions{})
 	if !apierrors.IsAlreadyExists(err) {
 		return err
@@ -354,6 +589,9 @@ func upsertService(ctx context.Context, c kubernetes.Interface, ns string, svc *
 	cur, err := c.CoreV1().Services(ns).Get(ctx, svc.Name, metav1.GetOptions{})
 	if err != nil {
 		return err
+	}
+	if !owned(cur.Labels) {
+		return notManaged("service", svc.Name, ns)
 	}
 	next := svc.DeepCopy()
 	next.ResourceVersion = cur.ResourceVersion
@@ -369,12 +607,9 @@ func (d *Driver) Scale(ctx context.Context, ref provision.Ref, replicas int) err
 		return err
 	}
 	ns := d.namespaceFor(ref.Name)
-	dep, err := d.cfg.Client.AppsV1().Deployments(ns).Get(ctx, ref.Name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return notFound(ref.Name)
-	}
+	dep, err := d.getOwnedDeployment(ctx, ns, ref.Name)
 	if err != nil {
-		return blind("get deployment "+ref.Name, err)
+		return err
 	}
 	n := int32(replicas)
 	dep.Spec.Replicas = &n
@@ -391,12 +626,21 @@ func (d *Driver) Scale(ctx context.Context, ref provision.Ref, replicas int) err
 // means "I issued some requests". The contract says nil means removed or
 // already absent, and this is what makes that a measurement.
 //
+// 🔴 EVERY DELETE IS OWNERSHIP-CHECKED, AND THE DEPLOYMENT IS CHECKED FIRST.
+// The objects are named after the instance, and a name is not an identity: in a
+// shared namespace a Service, a ConfigMap or a ServiceAccount already holding
+// the instance's name belongs to whoever made it. Deleting by name alone
+// destroys a stranger's objects and reports success. A foreign DEPLOYMENT stops
+// the teardown entirely rather than being skipped, because proceeding would
+// tidy up around a workload muster does not own.
+//
 // ⚠ WHAT IT DOES NOT CLAIM: that everything has finished TERMINATING. A
 // namespace deletion is asynchronous and pods linger. nil means the API has
 // accepted removal and the Deployment is gone from the API's view.
 func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 	ns := d.namespaceFor(ref.Name)
 	c := d.cfg.Client
+	name := ref.Name
 
 	// Every object is attempted regardless of what came before. A failure to
 	// delete one must not leave the pod running — the security-relevant order
@@ -413,28 +657,86 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 		}
 	}
 
-	fail("deployment", c.AppsV1().Deployments(ns).Delete(ctx, ref.Name, metav1.DeleteOptions{}))
-	fail("service", c.CoreV1().Services(ns).Delete(ctx, ref.Name, metav1.DeleteOptions{}))
-	fail("configmap", c.CoreV1().ConfigMaps(ns).Delete(ctx, ref.Name+"-files", metav1.DeleteOptions{}))
-	fail("secret", c.CoreV1().Secrets(ns).Delete(ctx, ref.Name+"-env", metav1.DeleteOptions{}))
-	fail("pvc", c.CoreV1().PersistentVolumeClaims(ns).Delete(ctx, ref.Name+"-workspace", metav1.DeleteOptions{}))
-	fail("serviceaccount", c.CoreV1().ServiceAccounts(ns).Delete(ctx, ref.Name, metav1.DeleteOptions{}))
+	switch dep, err := d.getOwnedDeployment(ctx, ns, name); {
+	case err == nil:
+		fail("deployment", c.AppsV1().Deployments(ns).Delete(ctx, dep.Name, metav1.DeleteOptions{}))
+	case errors.As(err, new(*notManagedError)):
+		return fmt.Errorf("refusing to destroy %q: %w", name, err)
+	case errors.Is(err, provision.ErrNotFound):
+		// Already gone. The rest of the teardown still runs: an earlier
+		// Destroy may have failed partway.
+	default:
+		return err
+	}
 
-	// 🔴 CLUSTER-SCOPED POLICY OBJECTS OUTLIVE THE NAMESPACE, AND THAT IS A
-	// SECURITY BUG WAITING FOR A NAMESAKE. A ClusterRole and its binding
-	// survive the namespace, the Deployment and the database row, with nothing
-	// left pointing at them; the next instance to take this name gets the same
-	// namespace and the same ServiceAccount — the dangling binding's exact
+	for _, o := range []struct {
+		what string
+		name string
+		get  func() (map[string]string, error)
+		del  func() error
+	}{
+		{"service", name,
+			func() (map[string]string, error) {
+				return labelsOf(c.CoreV1().Services(ns).Get(ctx, name, metav1.GetOptions{}))
+			},
+			func() error { return c.CoreV1().Services(ns).Delete(ctx, name, metav1.DeleteOptions{}) }},
+		{"configmap", configMapName(name),
+			func() (map[string]string, error) {
+				return labelsOf(c.CoreV1().ConfigMaps(ns).Get(ctx, configMapName(name), metav1.GetOptions{}))
+			},
+			func() error {
+				return c.CoreV1().ConfigMaps(ns).Delete(ctx, configMapName(name), metav1.DeleteOptions{})
+			}},
+		{"secret", envSecretName(name),
+			func() (map[string]string, error) {
+				return labelsOf(c.CoreV1().Secrets(ns).Get(ctx, envSecretName(name), metav1.GetOptions{}))
+			},
+			func() error {
+				return c.CoreV1().Secrets(ns).Delete(ctx, envSecretName(name), metav1.DeleteOptions{})
+			}},
+		{"secret", fileSecretName(name),
+			func() (map[string]string, error) {
+				return labelsOf(c.CoreV1().Secrets(ns).Get(ctx, fileSecretName(name), metav1.GetOptions{}))
+			},
+			func() error {
+				return c.CoreV1().Secrets(ns).Delete(ctx, fileSecretName(name), metav1.DeleteOptions{})
+			}},
+		{"pvc", pvcName(name),
+			func() (map[string]string, error) {
+				return labelsOf(c.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvcName(name), metav1.GetOptions{}))
+			},
+			func() error {
+				return c.CoreV1().PersistentVolumeClaims(ns).Delete(ctx, pvcName(name), metav1.DeleteOptions{})
+			}},
+		{"serviceaccount", name,
+			func() (map[string]string, error) {
+				return labelsOf(c.CoreV1().ServiceAccounts(ns).Get(ctx, name, metav1.GetOptions{}))
+			},
+			func() error { return c.CoreV1().ServiceAccounts(ns).Delete(ctx, name, metav1.DeleteOptions{}) }},
+	} {
+		fail(o.what+" "+o.name, d.deleteIfOwned(o.what, o.name, o.get, o.del))
+	}
+
+	// 🔴 POLICY OBJECTS OUTLIVE WHAT POINTS AT THEM, AND THAT IS A SECURITY BUG
+	// WAITING FOR A NAMESAKE. A ClusterRole and its binding survive the
+	// namespace, the Deployment and the database row, with nothing left
+	// pointing at them; the namespaced Role and RoleBinding survive too
+	// wherever the namespace is not deleted. The next instance to take this
+	// name gets the same ServiceAccount — the dangling binding's exact
 	// subject — and silently inherits access nobody granted it.
-	if err := d.revokeAllClusterPolicies(ctx, ref); err != nil {
-		d.log.Printf("k8s: destroy %s: revoke cluster policies: %v", ref.Name, err)
+	if err := d.revokeAllPolicies(ctx, ref, ns); err != nil {
+		d.log.Printf("k8s: destroy %s: revoke policies: %v", ref.Name, err)
 		if firstErr == nil {
 			firstErr = err
 		}
 	}
 
 	if d.cfg.NamespacePerInstance {
-		fail("namespace", c.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{}))
+		fail("namespace", d.deleteIfOwned("namespace", ns,
+			func() (map[string]string, error) {
+				return labelsOf(c.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}))
+			},
+			func() error { return c.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{}) }))
 	}
 
 	if firstErr != nil {
@@ -495,14 +797,17 @@ func (d *Driver) listNamespace() string {
 }
 
 // Get implements provision.Provisioner.
+//
+// 🔴 IT REFUSES A WORKLOAD THIS DRIVER DID NOT CREATE, rather than describing
+// it as an instance. A Deployment is fetched BY NAME, so without the ownership
+// check inside getOwnedDeployment any workload sharing an instance's name — a
+// chart release, somebody else's app — comes back as a muster Instance, with a
+// phase, a pod name and a restart count that belong to a stranger.
 func (d *Driver) Get(ctx context.Context, ref provision.Ref) (provision.Instance, error) {
 	ns := d.namespaceFor(ref.Name)
-	dep, err := d.cfg.Client.AppsV1().Deployments(ns).Get(ctx, ref.Name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return provision.Instance{}, notFound(ref.Name)
-	}
+	dep, err := d.getOwnedDeployment(ctx, ns, ref.Name)
 	if err != nil {
-		return provision.Instance{}, blind("get deployment "+ref.Name, err)
+		return provision.Instance{}, err
 	}
 	pods, err := d.cfg.Client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: instanceSelector(ref.Name)})
 	if err != nil {
@@ -609,12 +914,9 @@ func phaseOf(p *corev1.Pod) provision.Phase {
 // override recorded at create time.
 func (d *Driver) Endpoint(ctx context.Context, ref provision.Ref) (provision.Endpoint, error) {
 	ns := d.namespaceFor(ref.Name)
-	dep, err := d.cfg.Client.AppsV1().Deployments(ns).Get(ctx, ref.Name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return provision.Endpoint{}, notFound(ref.Name)
-	}
+	dep, err := d.getOwnedDeployment(ctx, ns, ref.Name)
 	if err != nil {
-		return provision.Endpoint{}, blind("get deployment "+ref.Name, err)
+		return provision.Endpoint{}, err
 	}
 
 	var override *provision.Endpoint
@@ -644,13 +946,13 @@ func (d *Driver) Endpoint(ctx context.Context, ref provision.Ref) (provision.End
 }
 
 // podFor resolves the pod to read logs from.
+//
+// ⚠ IT GOES THROUGH THE OWNERSHIP CHECK TOO. Reading the logs is reading the
+// workload's output, and a foreign workload's output is not muster's to serve.
 func (d *Driver) podFor(ctx context.Context, ref provision.Ref) (string, string, error) {
 	ns := d.namespaceFor(ref.Name)
-	if _, err := d.cfg.Client.AppsV1().Deployments(ns).Get(ctx, ref.Name, metav1.GetOptions{}); err != nil {
-		if apierrors.IsNotFound(err) {
-			return "", "", notFound(ref.Name)
-		}
-		return "", "", blind("get deployment "+ref.Name, err)
+	if _, err := d.getOwnedDeployment(ctx, ns, ref.Name); err != nil {
+		return "", "", err
 	}
 	pods, err := d.cfg.Client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: instanceSelector(ref.Name)})
 	if err != nil {

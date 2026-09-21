@@ -19,7 +19,10 @@
 //
 //   - a Namespace, when the driver owns one per instance;
 //   - a ServiceAccount, which is the identity a policy grant attaches to;
-//   - a Secret for confidential environment and confidential files;
+//   - a Secret for confidential environment, and a SEPARATE one for
+//     confidential files — separate because the first is consumed with
+//     `envFrom`, which exports every key of it as an environment variable, so a
+//     file sharing that object would be in the process environment;
 //   - a ConfigMap for the rest of the files;
 //   - a PersistentVolumeClaim, only when a persistent workspace was asked for;
 //   - a Deployment with exactly ONE container, plus an init container when the

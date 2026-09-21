@@ -2,8 +2,13 @@ package k8s_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"path"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -330,12 +335,30 @@ func testRendersTheMinimalObjectSet(t *testing.T, m nsMode) {
 	if len(cm.BinaryData) != 1 {
 		t.Errorf("configmap holds %d keys, want 1 (the non-secret file only)", len(cm.BinaryData))
 	}
-	sec, err := cs.CoreV1().Secrets(ns).Get(ctx, "rich-env", metav1.GetOptions{})
+	// 🔴 TWO SECRETS, NOT ONE, AND THIS ASSERTION IS THE SEPARATION. It used to
+	// read `len(sec.Data) == 2 // one env var, one secret file` — which PINNED
+	// the defect: the env Secret is consumed with envFrom, so a secret file
+	// sharing it is exported into the process environment.
+	envSec, err := cs.CoreV1().Secrets(ns).Get(ctx, "rich-env", metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("secret: %v", err)
+		t.Fatalf("env secret: %v", err)
 	}
-	if len(sec.Data) != 2 {
-		t.Errorf("secret holds %d keys, want 2 (one env var, one secret file)", len(sec.Data))
+	if len(envSec.Data) != 1 {
+		t.Errorf("the envFrom'd secret holds %d keys (%v), want exactly the 1 declared env var", len(envSec.Data), keysOf(envSec.Data))
+	}
+	if _, leaked := envSec.Data[fileKeyFor("/root/.config/creds")]; leaked {
+		t.Error("a secret FILE's key is in the secret that is envFrom'd; its content becomes an " +
+			"environment variable, readable from /proc/self/environ and inherited by every child")
+	}
+	fileSec, err := cs.CoreV1().Secrets(ns).Get(ctx, "rich-secret-files", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("secret-file secret: %v", err)
+	}
+	if len(fileSec.Data) != 1 {
+		t.Errorf("the mounted secret holds %d keys (%v), want exactly the 1 secret file", len(fileSec.Data), keysOf(fileSec.Data))
+	}
+	if string(fileSec.Data[fileKeyFor("/root/.config/creds")]) != "credential-content-8421" {
+		t.Errorf("the secret file's content is not in the mounted secret: %v", keysOf(fileSec.Data))
 	}
 	pvc, err := cs.CoreV1().PersistentVolumeClaims(ns).Get(ctx, "rich-workspace", metav1.GetOptions{})
 	if err != nil {
@@ -531,6 +554,30 @@ func testFileKeysDoNotDependOnOrdering(t *testing.T, m nsMode) {
 	}
 }
 
+// fileKeyFor recomputes the ConfigMap/Secret key a file's PATH maps to,
+// independently of the driver's own helper.
+//
+// ⚠ A SECOND IMPLEMENTATION ON PURPOSE. An expectation read out of the function
+// under test proves only that the code calls itself. This one covers the simple
+// case the fixtures use — a basename made of key-safe characters, short enough
+// not to be truncated — and would be wrong for anything else, which is why the
+// fixtures stay simple.
+func fileKeyFor(p string) string {
+	sum := sha256.Sum256([]byte(p))
+	return hex.EncodeToString(sum[:6]) + "-" + path.Base(p)
+}
+
+// keysOf is for failure messages: a count alone does not say WHICH key is in
+// the wrong object.
+func keysOf(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sortStrings(out)
+	return out
+}
+
 func sortStrings(s []string) {
 	for i := 1; i < len(s); i++ {
 		for j := i; j > 0 && s[j] < s[j-1]; j-- {
@@ -714,6 +761,157 @@ func testSecretValuesNeverAppearInThePodSpec(t *testing.T, m nsMode) {
 	}
 }
 
+// envVarName is Kubernetes' own env-var name format (`envVarNameFmt` in
+// apimachinery): letters, digits, `-`, `.` and `_`, and it MUST NOT START WITH
+// A DIGIT. A key of an envFrom'd Secret that matches this becomes an
+// environment variable; one that does not is skipped with an
+// InvalidEnvironmentVariableNames warning.
+var envVarName = regexp.MustCompile(`^[-._a-zA-Z][-._a-zA-Z0-9]*$`)
+
+// TestSecretFilesAreNotExportedIntoTheEnvironment.
+//
+// 🔴 THE DEFECT THIS PINS: confidential environment and confidential FILES
+// shared one Secret, and that Secret is consumed with `envFrom` — which exports
+// EVERY key of it as an environment variable. A file declared Secret and
+// mounted 0600 was therefore also in /proc/self/environ and inherited by every
+// child process. The fixture's path is chosen so its key STARTS WITH A LETTER,
+// which is the half of the key space Kubernetes accepts as an env var name: for
+// the other half the same defect only produced a warning, which is how it could
+// look like noise rather than a leak.
+func TestSecretFilesAreNotExportedIntoTheEnvironment(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) { testSecretFilesAreNotExportedIntoTheEnvironment(t, m) })
+}
+
+func testSecretFilesAreNotExportedIntoTheEnvironment(t *testing.T, m nsMode) {
+	const (
+		secretPath = "/etc/muster/token"
+		fileBody   = "file-content-30517"
+		envName    = "MUSTER_CALLBACK_TOKEN"
+		envValue   = "env-value-24413"
+	)
+	key := fileKeyFor(secretPath)
+	if !envVarName.MatchString(key) {
+		t.Fatalf("control: the fixture's file key %q is NOT a valid env var name, so this case could "+
+			"not observe the export it exists to forbid; choose a path whose digest starts with a letter", key)
+	}
+
+	cases := []struct {
+		name           string
+		secrets        []provision.EnvVar
+		files          []provision.File
+		wantEnvSecret  bool
+		wantFileSecret bool
+	}{
+		{
+			name:           "confidential env and confidential files together",
+			secrets:        []provision.EnvVar{{Name: envName, Value: envValue}},
+			files:          []provision.File{{Path: secretPath, Content: []byte(fileBody), Secret: true}},
+			wantEnvSecret:  true,
+			wantFileSecret: true,
+		},
+		{
+			// 🔴 THE CASE THE OLD `len(spec.Secrets) > 0` GUARD GOT RIGHT, kept
+			// because the fix must not regress it: a spec with only secret
+			// FILES gets no envFrom at all.
+			name:           "confidential files only",
+			files:          []provision.File{{Path: secretPath, Content: []byte(fileBody), Secret: true}},
+			wantFileSecret: true,
+		},
+		{
+			name:          "confidential env only",
+			secrets:       []provision.EnvVar{{Name: envName, Value: envValue}},
+			wantEnvSecret: true,
+		},
+	}
+
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, cs := newDriver(t, m, nil)
+			name := fmt.Sprintf("split-%d", i)
+			spec := provisiontest.MinimalSpec(name)
+			spec.Secrets = c.secrets
+			spec.Files = c.files
+			if err := d.Create(ctx, spec); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			ns := m.ns(name)
+
+			envSec, envErr := cs.CoreV1().Secrets(ns).Get(ctx, name+"-env", metav1.GetOptions{})
+			if c.wantEnvSecret {
+				if envErr != nil {
+					t.Fatalf("env secret: %v", envErr)
+				}
+				for k := range envSec.Data {
+					if k == key {
+						t.Errorf("the secret FILE's key %q is in the envFrom'd secret; its content becomes "+
+							"an environment variable", k)
+					}
+					if !envVarName.MatchString(k) {
+						t.Errorf("key %q of the envFrom'd secret is not a valid env var name; nothing that "+
+							"is not environment belongs in this object", k)
+					}
+				}
+				if string(envSec.Data[envName]) != envValue {
+					t.Errorf("the env secret does not hold the declared value; keys %v", keysOf(envSec.Data))
+				}
+			} else if envErr == nil {
+				t.Errorf("an env secret was created for a spec declaring no confidential environment: keys %v",
+					keysOf(envSec.Data))
+			}
+
+			fileSec, fileErr := cs.CoreV1().Secrets(ns).Get(ctx, name+"-secret-files", metav1.GetOptions{})
+			if c.wantFileSecret {
+				if fileErr != nil {
+					t.Fatalf("secret-file secret: %v", fileErr)
+				}
+				if string(fileSec.Data[key]) != fileBody {
+					t.Errorf("the secret file's content is not in the mounted secret; keys %v", keysOf(fileSec.Data))
+				}
+				if _, wrong := fileSec.Data[envName]; wrong {
+					t.Error("a confidential ENV VAR is in the mounted file secret")
+				}
+			} else if fileErr == nil {
+				t.Errorf("a secret-file secret was created for a spec declaring no confidential files: keys %v",
+					keysOf(fileSec.Data))
+			}
+
+			dep, err := cs.AppsV1().Deployments(ns).Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("deployment: %v", err)
+			}
+			container := dep.Spec.Template.Spec.Containers[0]
+			var envFromNames []string
+			for _, ef := range container.EnvFrom {
+				if ef.SecretRef != nil {
+					envFromNames = append(envFromNames, ef.SecretRef.Name)
+				}
+			}
+			switch {
+			case c.wantEnvSecret:
+				if len(envFromNames) != 1 || envFromNames[0] != name+"-env" {
+					t.Errorf("envFrom is %v, want exactly the env secret", envFromNames)
+				}
+			default:
+				if len(envFromNames) != 0 {
+					t.Errorf("envFrom is %v for a spec with no confidential environment; every key of a "+
+						"referenced secret becomes an environment variable", envFromNames)
+				}
+			}
+
+			// The mounted volume must name the FILE secret, not the env one.
+			for _, v := range dep.Spec.Template.Spec.Volumes {
+				if v.Secret == nil {
+					continue
+				}
+				if v.Secret.SecretName == name+"-env" {
+					t.Errorf("volume %q mounts the envFrom'd secret; the two objects exist to be different", v.Name)
+				}
+			}
+		})
+	}
+}
+
 // TestUpdateReplacesTheSpecAndCreateIsThenIdempotent — the reconcile loop's
 // actual sequence.
 func TestUpdateReplacesTheSpecAndCreateIsThenIdempotent(t *testing.T) {
@@ -804,7 +1002,7 @@ func testDestroyRemovesClusterScopedPolicyObjects(t *testing.T, m nsMode) {
 	if err := provision.Grant(ctx, d, spec.Ref, grantablePolicy); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
-	name := "muster-recycled-contract-read-nodes"
+	name := k8s.PolicyObjectName("recycled", grantablePolicy.Name)
 	if _, err := cs.RbacV1().ClusterRoles().Get(ctx, name, metav1.GetOptions{}); err != nil {
 		t.Fatalf("control: the clusterrole must exist before the destroy: %v", err)
 	}
@@ -838,7 +1036,7 @@ func testGrantAppliesRBAC(t *testing.T, m nsMode) {
 	if err := provision.Grant(ctx, d, spec.Ref, grantablePolicy); err != nil {
 		t.Fatalf("Grant: %v", err)
 	}
-	name := "muster-privileged-contract-read-nodes"
+	name := k8s.PolicyObjectName("privileged", grantablePolicy.Name)
 	cr, err := cs.RbacV1().ClusterRoles().Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("clusterrole: %v", err)
@@ -950,7 +1148,7 @@ func testGrantRefusesWhatItCannotApply(t *testing.T, m nsMode) {
 			t.Fatalf("the refusal must name the reason, got %q", err)
 		}
 		// And nothing may have been applied.
-		if _, gerr := cs().RbacV1().ClusterRoles().Get(ctx, "muster-refuser-half-alien", metav1.GetOptions{}); gerr == nil {
+		if _, gerr := cs().RbacV1().ClusterRoles().Get(ctx, k8s.PolicyObjectName("refuser", "half-alien"), metav1.GetOptions{}); gerr == nil {
 			t.Fatal("the refused policy created a ClusterRole anyway")
 		}
 	})

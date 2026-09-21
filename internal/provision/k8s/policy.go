@@ -3,6 +3,8 @@ package k8s
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 
@@ -30,20 +32,44 @@ const (
 	policyManaged = "muster.dev/policy-managed"
 )
 
-// policyObjectName is the deterministic name of the RBAC objects for one
+// PolicyObjectName is the deterministic name of the RBAC objects for one
 // (instance, policy) pair. Deterministic so Revoke can find them without a
 // lookup table, and so a second Grant is an update rather than a duplicate.
-func policyObjectName(instance, policy string) string {
-	return "muster-" + instance + "-" + policy
+//
+// 🔴 THE DIGEST IS WHAT MAKES THE PAIR RECOVERABLE FROM THE NAME, AND IT IS NOT
+// DECORATION. Joining the two components with a `-` is AMBIGUOUS, because `-`
+// occurs inside both: (`agent-a`, `ops`) and (`agent`, `a-ops`) produced the
+// same string. Two instances then shared one ClusterRole — the second Grant
+// rewrote its rules, while the ClusterRoleBinding, which is create-only, kept
+// the FIRST instance's ServiceAccount as its subject. The first instance
+// silently gained the second's access, the second got nothing, and Grant
+// returned nil for both. The digest is over the pair with a NUL between, which
+// no name component can contain, so distinct pairs cannot produce one name.
+//
+// The readable prefix is kept because an operator reading `kubectl get
+// clusterrole` needs to know whose it is; the digest is what the code relies
+// on.
+func PolicyObjectName(instance, policy string) string {
+	sum := sha256.Sum256([]byte(instance + "\x00" + policy))
+	return "muster-" + instance + "-" + policy + "-" + hex.EncodeToString(sum[:8])
 }
 
+// policyLabels mark an RBAC object as this driver's, and as belonging to one
+// (instance, policy) pair.
+//
+// ⚠ THEY INCLUDE managedLabels, so owned() is the SAME predicate here as for
+// every other object this driver creates. The policy-specific keys are what
+// revokeAllPolicies enumerates on; the shared pair is what says muster made it.
 func policyLabels(instance, policy string) map[string]string {
-	return map[string]string{
-		labelManagedBy: managedBy,
-		policyManaged:  "true",
-		labelSubject:   instance,
-		labelPolicy:    policy,
+	out := map[string]string{
+		policyManaged: "true",
+		labelSubject:  instance,
+		labelPolicy:   policy,
 	}
+	for k, v := range managedLabels {
+		out[k] = v
+	}
+	return out
 }
 
 // Grant implements provision.PolicyGranter.
@@ -96,7 +122,7 @@ func (d *Driver) Grant(ctx context.Context, ref provision.Ref, pol provision.Pol
 		return blind("get serviceaccount "+ref.Name, err)
 	}
 
-	name := policyObjectName(ref.Name, pol.Name)
+	name := PolicyObjectName(ref.Name, pol.Name)
 	labels := policyLabels(ref.Name, pol.Name)
 	subject := rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Name: ref.Name, Namespace: ns}
 
@@ -105,7 +131,10 @@ func (d *Driver) Grant(ctx context.Context, ref provision.Ref, pol provision.Pol
 			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
 			Rules:      rules.ClusterRules,
 		}
-		if err := upsert(ctx,
+		if err := d.upsertOwned("clusterrole", name, "",
+			func() (map[string]string, error) {
+				return labelsOf(d.cfg.Client.RbacV1().ClusterRoles().Get(ctx, name, metav1.GetOptions{}))
+			},
 			func() error {
 				_, e := d.cfg.Client.RbacV1().ClusterRoles().Create(ctx, cr, metav1.CreateOptions{})
 				return e
@@ -135,7 +164,10 @@ func (d *Driver) Grant(ctx context.Context, ref provision.Ref, pol provision.Pol
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: labels},
 			Rules:      rules.NamespaceRules,
 		}
-		if err := upsert(ctx,
+		if err := d.upsertOwned("role", name, ns,
+			func() (map[string]string, error) {
+				return labelsOf(d.cfg.Client.RbacV1().Roles(ns).Get(ctx, name, metav1.GetOptions{}))
+			},
 			func() error {
 				_, e := d.cfg.Client.RbacV1().Roles(ns).Create(ctx, r, metav1.CreateOptions{})
 				return e
@@ -179,7 +211,7 @@ func decodeRules(raw json.RawMessage) (Rules, error) {
 // missing one is success, because absent is the state the caller asked for.
 func (d *Driver) Revoke(ctx context.Context, ref provision.Ref, policyName string) error {
 	ns := d.namespaceFor(ref.Name)
-	name := policyObjectName(ref.Name, policyName)
+	name := PolicyObjectName(ref.Name, policyName)
 	c := d.cfg.Client
 
 	var firstErr error
@@ -198,8 +230,8 @@ func (d *Driver) Revoke(ctx context.Context, ref provision.Ref, policyName strin
 	return firstErr
 }
 
-// revokeAllClusterPolicies removes every cluster-scoped policy object this
-// driver created for ref, whatever it was called.
+// revokeAllPolicies removes every policy object this driver created for ref,
+// whatever it was called — cluster-scoped AND namespaced.
 //
 // 🔴 IT ENUMERATES BY LABEL RATHER THAN BY A LIST OF GRANTED NAMES, AND THAT IS
 // DELIBERATE. The obvious implementation asks the caller which policies were
@@ -207,30 +239,64 @@ func (d *Driver) Revoke(ctx context.Context, ref provision.Ref, policyName strin
 // usually already gone (a cascading delete), so the list comes back EMPTY and
 // the teardown removes nothing while reporting success. The cluster is the
 // authority on what exists in the cluster.
-func (d *Driver) revokeAllClusterPolicies(ctx context.Context, ref provision.Ref) error {
+//
+// 🔴 THE NAMESPACED HALF IS NOT REDUNDANT WITH THE NAMESPACE DELETION. It was
+// once, under the assumption that Destroy always deletes a namespace — which is
+// true only when the driver owns one per instance. In a SHARED namespace
+// nothing deletes the Role and the RoleBinding, so they survive the instance
+// with a subject naming a ServiceAccount that Create will recreate verbatim for
+// the next instance to take the name: it inherits access nobody granted it.
+func (d *Driver) revokeAllPolicies(ctx context.Context, ref provision.Ref, ns string) error {
 	sel := policyManaged + "=true," + labelSubject + "=" + ref.Name
 	c := d.cfg.Client
+	opts := metav1.ListOptions{LabelSelector: sel}
 
-	bindings, err := c.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{LabelSelector: sel})
+	var firstErr error
+	note := func(err error) {
+		if err != nil && !apierrors.IsNotFound(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+
+	bindings, err := c.RbacV1().ClusterRoleBindings().List(ctx, opts)
 	if err != nil {
 		return blind("list clusterrolebindings for "+ref.Name, err)
 	}
-	var firstErr error
 	for i := range bindings.Items {
 		n := bindings.Items[i].Name
-		if err := c.RbacV1().ClusterRoleBindings().Delete(ctx, n, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) && firstErr == nil {
-			firstErr = fmt.Errorf("delete clusterrolebinding %s: %w", n, err)
-		}
+		note(wrapDelete("clusterrolebinding", n, c.RbacV1().ClusterRoleBindings().Delete(ctx, n, metav1.DeleteOptions{})))
 	}
-	roles, err := c.RbacV1().ClusterRoles().List(ctx, metav1.ListOptions{LabelSelector: sel})
+	roles, err := c.RbacV1().ClusterRoles().List(ctx, opts)
 	if err != nil {
 		return blind("list clusterroles for "+ref.Name, err)
 	}
 	for i := range roles.Items {
 		n := roles.Items[i].Name
-		if err := c.RbacV1().ClusterRoles().Delete(ctx, n, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) && firstErr == nil {
-			firstErr = fmt.Errorf("delete clusterrole %s: %w", n, err)
-		}
+		note(wrapDelete("clusterrole", n, c.RbacV1().ClusterRoles().Delete(ctx, n, metav1.DeleteOptions{})))
+	}
+
+	nsBindings, err := c.RbacV1().RoleBindings(ns).List(ctx, opts)
+	if err != nil {
+		return blind("list rolebindings for "+ref.Name, err)
+	}
+	for i := range nsBindings.Items {
+		n := nsBindings.Items[i].Name
+		note(wrapDelete("rolebinding", n, c.RbacV1().RoleBindings(ns).Delete(ctx, n, metav1.DeleteOptions{})))
+	}
+	nsRoles, err := c.RbacV1().Roles(ns).List(ctx, opts)
+	if err != nil {
+		return blind("list roles for "+ref.Name, err)
+	}
+	for i := range nsRoles.Items {
+		n := nsRoles.Items[i].Name
+		note(wrapDelete("role", n, c.RbacV1().Roles(ns).Delete(ctx, n, metav1.DeleteOptions{})))
 	}
 	return firstErr
+}
+
+func wrapDelete(what, name string, err error) error {
+	if err == nil || apierrors.IsNotFound(err) {
+		return nil
+	}
+	return fmt.Errorf("delete %s %s: %w", what, name, err)
 }

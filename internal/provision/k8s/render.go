@@ -21,9 +21,18 @@ import (
 
 // The label and annotation keys this driver writes.
 //
-// 🔴 `managed-by` IS THE SELECTOR List USES, AND IT IS WHAT KEEPS THIS DRIVER
-// FROM REPORTING — OR DESTROYING — WORKLOADS IT DID NOT CREATE. Every object
-// rendered here carries it; nothing is enumerated without it.
+// 🔴 `managed-by` PLUS `name` IS THE PAIR THAT SEPARATES THIS DRIVER'S OBJECTS
+// FROM EVERYTHING ELSE IN A NAMESPACE, AND IT IS READ IN TWO DIFFERENT WAYS.
+// managedSelector() is the server-side selector every enumeration passes;
+// owned() is the client-side predicate every BY-NAME path checks before it
+// reads, writes or deletes an object. Both are derived from managedLabels
+// below, so the set of objects List reports and the set Destroy may touch
+// cannot drift apart.
+//
+// ⚠ A NAME IS NOT AN IDENTITY. In a shared namespace anything can already hold
+// the name an instance asks for, and acting on it by name alone is how a
+// teardown deletes a stranger's Service and a status read reports somebody
+// else's Deployment as a muster instance.
 const (
 	labelName      = "app.kubernetes.io/name"
 	labelInstance  = "app.kubernetes.io/instance"
@@ -86,17 +95,51 @@ const DefaultWorkspacePath = "/data/workspace"
 // loses nothing and survives a cluster whose clusterDomain was changed.
 const DefaultEndpointTemplate = "{{.Name}}.{{.Group}}.svc"
 
+// managedLabels are the labels every object this driver creates carries, and
+// the single place the ownership rule is stated. managedSelector and owned are
+// both derived from it: a selector that asked for one set while the predicate
+// admitted another is a disagreement nothing would report.
+var managedLabels = map[string]string{
+	labelManagedBy: managedBy,
+	labelName:      nameValue,
+}
+
 func instanceLabels(name string) map[string]string {
-	return map[string]string{
-		labelName:      nameValue,
-		labelInstance:  name,
-		labelManagedBy: managedBy,
+	out := map[string]string{labelInstance: name}
+	for k, v := range managedLabels {
+		out[k] = v
 	}
+	return out
 }
 
 // managedSelector is the label selector every enumeration uses.
 func managedSelector() string {
-	return labelManagedBy + "=" + managedBy + "," + labelName + "=" + nameValue
+	keys := make([]string, 0, len(managedLabels))
+	for k := range managedLabels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+managedLabels[k])
+	}
+	return strings.Join(parts, ",")
+}
+
+// owned reports whether an object's labels mark it as one this driver created.
+//
+// 🔴 IT IS THE CLIENT-SIDE HALF OF managedSelector, AND IT IS WHAT EVERY
+// BY-NAME PATH CHECKS. A List filters server-side; a Get, an Update or a Delete
+// of a named object does not, so without this check the driver would report —
+// and destroy — workloads it did not create, which is precisely what the labels
+// exist to prevent.
+func owned(labels map[string]string) bool {
+	for k, v := range managedLabels {
+		if labels[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 func instanceSelector(name string) string {
@@ -148,6 +191,20 @@ func fileKey(p string) string {
 	return hex.EncodeToString(sum[:6]) + "-" + name
 }
 
+// The names of the per-instance objects this driver renders.
+//
+// ⚠ THEY ARE FUNCTIONS, IN ONE PLACE, BECAUSE THREE DIFFERENT CODE PATHS HAVE
+// TO AGREE ON THEM: the render, the stale-object sweep in apply, and Destroy.
+// An object named one way at creation and another at teardown outlives the
+// instance, and nothing reports that — it is simply still there.
+func configMapName(instance string) string { return instance + "-files" }
+
+func envSecretName(instance string) string { return instance + "-env" }
+
+func fileSecretName(instance string) string { return instance + "-secret-files" }
+
+func pvcName(instance string) string { return instance + "-workspace" }
+
 // sortedFiles returns the spec's files split into non-secret and secret,
 // each sorted by path so every render is byte-stable.
 func sortedFiles(files []provision.File) (plain, secret []provision.File) {
@@ -192,7 +249,7 @@ func (d *Driver) renderConfigMap(spec provision.Spec, ns string) *corev1.ConfigM
 	}
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      spec.Ref.Name + "-files",
+			Name:      configMapName(spec.Ref.Name),
 			Namespace: ns,
 			Labels:    mergeLabels(instanceLabels(spec.Ref.Name), spec.Labels),
 		},
@@ -202,22 +259,54 @@ func (d *Driver) renderConfigMap(spec provision.Spec, ns string) *corev1.ConfigM
 	}
 }
 
-// renderSecret holds confidential environment AND confidential files.
-func (d *Driver) renderSecret(spec provision.Spec, ns string) *corev1.Secret {
-	_, secretFiles := sortedFiles(spec.Files)
-	if len(spec.Secrets) == 0 && len(secretFiles) == 0 {
+// renderEnvSecret holds the instance's confidential ENVIRONMENT, and nothing
+// else. Returns nil when the spec declares none.
+//
+// 🔴 CONFIDENTIAL FILES ARE IN A DIFFERENT OBJECT, AND THE SPLIT IS THE WHOLE
+// POINT OF THESE TWO FUNCTIONS BEING TWO. This Secret is consumed with
+// `envFrom`, which turns EVERY key of it into an environment variable. A secret
+// FILE sharing the object would therefore be exported into the process
+// environment — readable from /proc/self/environ and inherited by every child —
+// while the mounted copy's 0600 mode says nothing about that. Key names that
+// are not valid environment variable names are skipped by the kubelet with an
+// InvalidEnvironmentVariableNames warning instead, so the same defect reads as
+// pod noise for some paths and as a leak for others.
+func (d *Driver) renderEnvSecret(spec provision.Spec, ns string) *corev1.Secret {
+	if len(spec.Secrets) == 0 {
 		return nil
 	}
 	data := map[string][]byte{}
 	for _, e := range spec.Secrets {
 		data[e.Name] = []byte(e.Value)
 	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      envSecretName(spec.Ref.Name),
+			Namespace: ns,
+			Labels:    mergeLabels(instanceLabels(spec.Ref.Name), spec.Labels),
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: data,
+	}
+}
+
+// renderFileSecret holds the instance's confidential FILES, and nothing else.
+// Returns nil when the spec declares none.
+//
+// It is MOUNTED, never envFrom'd — see renderEnvSecret for why the two must not
+// be one object.
+func (d *Driver) renderFileSecret(spec provision.Spec, ns string) *corev1.Secret {
+	_, secretFiles := sortedFiles(spec.Files)
+	if len(secretFiles) == 0 {
+		return nil
+	}
+	data := map[string][]byte{}
 	for _, f := range secretFiles {
 		data[fileKey(f.Path)] = f.Content
 	}
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      spec.Ref.Name + "-env",
+			Name:      fileSecretName(spec.Ref.Name),
 			Namespace: ns,
 			Labels:    mergeLabels(instanceLabels(spec.Ref.Name), spec.Labels),
 		},
@@ -240,7 +329,7 @@ func (d *Driver) renderPVC(spec provision.Spec, ns string) (*corev1.PersistentVo
 	}
 	pvc := &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      spec.Ref.Name + "-workspace",
+			Name:      pvcName(spec.Ref.Name),
 			Namespace: ns,
 			Labels:    mergeLabels(instanceLabels(spec.Ref.Name), spec.Labels),
 		},
@@ -364,10 +453,17 @@ func (d *Driver) renderDeployment(spec provision.Spec, ns string) (*appsv1.Deplo
 		Resources:    resources,
 		VolumeMounts: mounts,
 	}
-	if secret := d.renderSecret(spec, ns); secret != nil && len(spec.Secrets) > 0 {
+	if secret := d.renderEnvSecret(spec, ns); secret != nil {
 		// envFrom, not one EnvVar per secret key: the values must not appear in
 		// the pod spec, which is readable by anything that can read the
 		// Deployment.
+		//
+		// 🔴 IT IS THE ENV SECRET, AND ONLY THE ENV SECRET. envFrom exports
+		// every key of the referenced object as an environment variable, so
+		// naming the object that holds secret FILE content here would put those
+		// files in the process environment. A spec with confidential files and
+		// no confidential environment therefore gets NO envFrom at all, which
+		// is what renderEnvSecret returning nil expresses.
 		container.EnvFrom = append(container.EnvFrom, corev1.EnvFromSource{
 			SecretRef: &corev1.SecretEnvSource{
 				LocalObjectReference: corev1.LocalObjectReference{Name: secret.Name},
@@ -504,7 +600,7 @@ func (d *Driver) renderVolumes(spec provision.Spec) ([]corev1.Volume, []corev1.V
 			Name: filesVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: spec.Ref.Name + "-files"},
+					LocalObjectReference: corev1.LocalObjectReference{Name: configMapName(spec.Ref.Name)},
 					Items:                items,
 				},
 			},
@@ -525,7 +621,7 @@ func (d *Driver) renderVolumes(spec provision.Spec) ([]corev1.Volume, []corev1.V
 			Name: secretFilesVolumeName,
 			VolumeSource: corev1.VolumeSource{
 				Secret: &corev1.SecretVolumeSource{
-					SecretName: spec.Ref.Name + "-env",
+					SecretName: fileSecretName(spec.Ref.Name),
 					Items:      items,
 				},
 			},
@@ -536,7 +632,7 @@ func (d *Driver) renderVolumes(spec provision.Spec) ([]corev1.Volume, []corev1.V
 	if spec.Workspace.Persist {
 		ws.VolumeSource = corev1.VolumeSource{
 			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				ClaimName: spec.Ref.Name + "-workspace",
+				ClaimName: pvcName(spec.Ref.Name),
 			},
 		}
 	} else {
