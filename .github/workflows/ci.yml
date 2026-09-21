@@ -1,0 +1,237 @@
+name: ci
+
+# 🔴 EVERY JOB HERE IS RUNNABLE LOCALLY, AND THAT IS A DESIGN CONSTRAINT, NOT A
+# COINCIDENCE. A gate that only exists on a runner is a gate contributors
+# discover by having it go red on a pull request. The local spelling of each job
+# is in the comment above it and in `make help`.
+#
+# 🔴 THE PROJECT THIS WAS EXTRACTED FROM RAN ITS GATES ON A SELF-HOSTED PIPELINE
+# BECAUSE ACTIONS WAS BILLING-BLOCKED FOR THE WHOLE MONOREPO. Its Actions
+# workflow still exists there and is inert (`workflow_dispatch`-only), which is
+# why the NON-NIX steps below — `setup-go`, `setup-node`, `playwright install
+# --with-deps chromium` — are lifted from it rather than re-derived: they are the
+# recipe that was known to work on a hosted runner. This repository has its own
+# free tier, so `push` and `pull_request` are real triggers here.
+
+on: [push, pull_request]
+
+# A push and a PR on the same branch would otherwise run everything twice.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Local: make build && make vet
+  #
+  # ⚠ THERE IS NO CSS / NODE STAGE, AND ITS ABSENCE IS DELIBERATE RATHER THAN
+  # FORGOTTEN. The project muster was extracted from `go:embed`s a Tailwind
+  # stylesheet that is GITIGNORED, so `go build` fails on a fresh clone there and
+  # CI has to run `npm run build:css` first. muster has no web assets at all yet,
+  # so it has no such stage — and when it grows one, the embedded artefact must
+  # either be committed or be produced by a build step here, because
+  # "clone-and-build works" is a promise on line one of the README.
+  build:
+    name: build + vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          # 🔴 `go-version-file`, NEVER A LITERAL. A hardcoded version here is a
+          # second statement of the toolchain, and the failure when it drifts
+          # from `go.mod` is a compile error that points at the code.
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - run: go build ./...
+      - run: go vet ./...
+
+  # Local: make test-db && make test
+  test:
+    name: test (postgres)
+    runs-on: ubuntu-latest
+
+    # 🔴 A `services:` CONTAINER, NOT A `docker run` FROM INSIDE THE SUITE. It
+    # gives the external-DSN path for free on a hosted runner: no Docker-daemon
+    # question, no nix, and the same shape works on a pipeline whose pods have no
+    # Docker socket.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: muster
+          POSTGRES_PASSWORD: muster
+          # 🔴 THE DATABASE IS NAMED, AND LEAVING IT AT THE `postgres` DEFAULT IS
+          # THE TRAP. internal/dbtest uses the database in the DSN as a
+          # `CREATE DATABASE … TEMPLATE` source while connecting to the `postgres`
+          # maintenance database to issue it — so if they are the same database,
+          # every other test binary's admin session is sitting on the one yours is
+          # copying and Postgres refuses with SQLSTATE 55006. A single package
+          # passes either way, so this only breaks under `go test ./...`.
+          POSTGRES_DB: muster_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U muster -d muster_test"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 30
+
+    env:
+      MUSTER_TEST_DATABASE_URL: postgres://muster:muster@127.0.0.1:5432/muster_test?sslmode=disable
+      # 🔴 THIS IS THE LOAD-BEARING LINE OF THE WHOLE JOB. Without it, a runner
+      # whose Postgres never came up would make every Postgres-backed test SKIP
+      # and this job would report GREEN — a verdict about a suite that executed
+      # none of the store logic, indistinguishable in the output from one that
+      # executed all of it. A skip is invisible in a verdict. With it, an
+      # unavailable database is a hard failure that names the variable.
+      MUSTER_TEST_REQUIRE_DB: "1"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # Migrate the TEMPLATE once. Skipping this does not break anything — each
+      # package would bootstrap its own copy — but it is the difference between
+      # one schema build and one per package.
+      - name: migrate the template database
+        run: go run ./cmd/muster-migrate
+        env:
+          DATABASE_URL: ${{ env.MUSTER_TEST_DATABASE_URL }}
+
+      - name: go test
+        run: go test -race -cover ./...
+
+      # 🔴 A COUNT, NOT AN EXIT CODE. `go test` exits 0 with skipped tests, so
+      # the exit status above cannot tell "everything ran" from "everything
+      # skipped". MUSTER_TEST_REQUIRE_DB should make a skip impossible — this
+      # step is the independent read that says whether it did, and it reports the
+      # PAIR (how many ran, how many skipped) rather than a reassuring silence.
+      #
+      # ⚠ IT RE-RUNS `go test` WITH THE SAME FLAGS AS THE STEP ABOVE, ON PURPOSE.
+      # Identical flags mean Go's test cache answers, so this costs a few
+      # hundred milliseconds rather than a second full run — and the cached
+      # events carry the same pass/skip actions.
+      #
+      # ⚠ `set -o pipefail` IS DELIBERATELY *NOT* SET. The pipeline's status is
+      # verdict.py's, which is what this step is asserting; the run's own exit
+      # code is already gated by the step above. With pipefail, a single failing
+      # test would kill this step before the skip accounting printed — hiding it
+      # exactly when it matters most.
+      - name: assert nothing skipped
+        run: go test -race -cover -json ./... | python3 tests/verdict.py
+
+  # Local: make leakscan
+  #
+  # ⚠ THE EXTRACTION PLAN PROPOSED FOUR JOBS AND THIS IS A FIFTH. It is its own
+  # job rather than a step inside `build` because a security gate buried in
+  # another job's log does not appear in the checks list, and a check nobody can
+  # see is one nobody notices going missing.
+  leakscan:
+    name: leak gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # leakscan enumerates through `git ls-files`, so it needs a real
+          # checkout rather than a shallow export of one commit's tree.
+          fetch-depth: 1
+
+      # 🔴 THE SELF-TEST RUNS FIRST, AS ITS OWN STEP, SO ITS VERDICT IS VISIBLE
+      # SEPARATELY. A scanner that cannot go red reports zero findings exactly
+      # the way a clean tree does. (`leakscan.py` also runs the controls
+      # internally on every invocation and exits 2 if one misbehaves — this step
+      # is the belt to that braces, and it is the one a human reads.)
+      - name: self-test — the gate must be able to REFUSE
+        run: python3 tests/leakscan.py --self-test
+
+      - name: scan
+        run: python3 tests/leakscan.py
+
+  # ---------------------------------------------------------------------------
+  # 🔴 THE TWO JOBS BELOW ARE HONEST STUBS. THEY HAVE NOTHING TO RUN, AND THEY
+  # SAY SO IN THEIR OWN OUTPUT RATHER THAN PASSING QUIETLY.
+  #
+  # muster has no HTTP surface, no UI and therefore no browser tests yet. A job
+  # that passes by having nothing to do is the most dangerous kind of green:
+  # it appears in the checks list beside the real ones, with the same tick, and
+  # reads as coverage of exactly the layer that has none.
+  #
+  # So each one prints a banner naming what it does NOT cover, and each one
+  # GUARDS ITS OWN OBSOLESCENCE: the moment specs appear on disk, the stub FAILS
+  # and tells you to implement the job. Without that, the first e2e spec anyone
+  # writes would be collected by nothing and the tick would stay green.
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: e2e (stub — nothing to run yet)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: report that this job covers NOTHING
+        run: |
+          echo "==================================================================="
+          echo " e2e: NOT IMPLEMENTED. This job ran ZERO browser tests."
+          echo
+          echo " This tick is NOT evidence of anything. muster has no HTTP surface"
+          echo " and no UI yet, so there is nothing to drive. When there is, this"
+          echo " job needs:"
+          echo "   - services: postgres:16-alpine (see the 'test' job)"
+          echo "   - npx playwright install --with-deps chromium"
+          echo "   - MUSTER_E2E_REQUIRE_FULL=1, because the suite will default to"
+          echo "     SKIPPING when it cannot reach a database, and a skip is"
+          echo "     invisible in a verdict"
+          echo "   - a verdict step asserting passed+flaky >= a floor and"
+          echo "     skipped <= a cap, with BOTH numbers re-derived from a"
+          echo "     measured run and the measurement written beside them. A floor"
+          echo "     set too low is indistinguishable from no floor."
+          echo "==================================================================="
+
+      # 🔴 THE STUB'S EXPIRY, ENFORCED RATHER THAN REMEMBERED.
+      - name: fail if e2e specs exist but this job is still a stub
+        run: |
+          if [ -d e2e ] && find e2e -name '*.spec.*' -print -quit | grep -q .; then
+            echo "FAIL: e2e/ contains spec files, but this job is still a stub and"
+            echo "      runs none of them. A green tick here would be a lie about"
+            echo "      the exact tests somebody just wrote."
+            exit 1
+          fi
+          echo "confirmed: no e2e specs on disk, so there is genuinely nothing to run"
+
+  e2e-unit:
+    name: e2e-unit (stub — nothing to run yet)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: report that this job covers NOTHING
+        run: |
+          echo "==================================================================="
+          echo " e2e-unit: NOT IMPLEMENTED. This job ran ZERO tests."
+          echo
+          echo " The pure-node half of an e2e harness — the helpers, fixtures and"
+          echo " verdict arithmetic — is worth testing without a browser, because"
+          echo " a harness is code and its bugs are invisible from inside the"
+          echo " suite it runs."
+          echo
+          echo " Carry one warning from the project muster came out of, verbatim:"
+          echo " a *.test.mjs file under Playwright's testDir that THROWS AT"
+          echo " IMPORT empties the ENTIRE collection — measured as 'Total: 0"
+          echo " tests in 0 files'. That is why harness unit tests use a"
+          echo " '.unit.mjs' suffix and run under 'node --test', outside"
+          echo " Playwright's testDir, rather than beside the specs."
+          echo "==================================================================="
+
+      - name: fail if harness unit tests exist but this job is still a stub
+        run: |
+          if find . -name '*.unit.mjs' -not -path './node_modules/*' -print -quit | grep -q .; then
+            echo "FAIL: *.unit.mjs files exist, but this job is still a stub and"
+            echo "      runs none of them."
+            exit 1
+          fi
+          echo "confirmed: no *.unit.mjs files on disk, so there is genuinely nothing to run"

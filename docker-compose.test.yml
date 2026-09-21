@@ -1,0 +1,48 @@
+# The Postgres the Go suite expects. `make test-db` drives this file and prints
+# the two exports; `docker compose -f docker-compose.test.yml up -d` is the same
+# thing by hand.
+#
+# 🔴 THE DATABASE IS NAMED, AND THAT IS THE WHOLE REASON THIS FILE EXISTS RATHER
+# THAN A LINE IN A README. `internal/dbtest` uses the database in the DSN as a
+# `CREATE DATABASE … TEMPLATE` source, and connects to the `postgres`
+# maintenance database to issue that statement. Leave POSTGRES_DB unset and the
+# server's default database IS `postgres`, so the template and the maintenance
+# database are the same one — every other test binary's admin session is then
+# sitting on the database yours is trying to copy, and Postgres refuses with
+#
+#     source database "postgres" is being accessed by other users (SQLSTATE 55006)
+#
+# A SINGLE package passes either way, because Postgres does not count the asking
+# backend. It only breaks under `go test ./...`, which is the way anyone
+# actually runs it. The recipe this replaced lived as a comment, and four copies
+# of it had already drifted into a variant with POSTGRES_DB missing.
+#
+# ⚠ THIS IS A THROWAWAY. No volume, no persistence, credentials in plain sight
+# on a loopback port. It is not a template for a deployment and must never be
+# copied into one.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: muster-test-postgres
+    environment:
+      POSTGRES_USER: muster
+      POSTGRES_PASSWORD: muster
+      # 🔴 NAMED. See above. Do not remove this line.
+      POSTGRES_DB: muster_test
+    ports:
+      # 55432 rather than 5432 so it cannot collide with a Postgres you already
+      # run, and so a DSN that names it cannot accidentally be a real one.
+      - "127.0.0.1:55432:5432"
+    # `tmpfs` rather than a volume: the data is worthless the moment the run
+    # ends, and a named volume is a thing someone has to remember to delete.
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      # `-d muster_test`, not the default: pg_isready against the maintenance
+      # database answers "ready" slightly before the initdb script has created
+      # the named one, so the migrate step could still race it.
+      test: ["CMD-SHELL", "pg_isready -U muster -d muster_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 30

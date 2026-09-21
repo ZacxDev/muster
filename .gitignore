@@ -1,0 +1,20 @@
+# 🔴 NOTHING THAT `go build` OR `go test` NEEDS MAY BE IGNORED. The project
+# muster was extracted from gitignored an asset its own source `go:embed`ed, so
+# `go build` failed on a fresh clone — the first promise its README made. If a
+# build input belongs in this file, the build needs a step that produces it.
+
+# Local binaries, if anyone builds one by hand.
+/muster
+/muster-migrate
+
+# nix
+result
+result-*
+
+# Python byte cache from the gates in tests/.
+__pycache__/
+*.pyc
+
+# Editor / OS droppings.
+*.swp
+.DS_Store
