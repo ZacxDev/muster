@@ -54,11 +54,15 @@ func policyLabels(instance, policy string) map[string]string {
 // COVERAGE. Every refusal below returns provision.ErrUnsupported with a reason
 // a user interface can show and a machine endpoint can return as a 409.
 //
-// ⚠ NAMED LIMIT OF THIS DRIVER: it applies Rules ONLY. A policy carrying Env or
-// Files is refused, because applying them means rolling the instance's pod and
-// this driver does not do that from the grant path. That limit is enforced
-// here rather than documented and forgotten — refusing is the behaviour the
-// contract demands of anything a driver cannot do.
+// ⚠ NAMED LIMIT OF THIS DRIVER: it applies Rules ONLY, because applying a
+// grant's env or files means rolling the instance's pod and this driver does
+// not do that from the grant path. There is nothing to refuse here any more —
+// provision.Policy no longer HAS those fields, so the limit is expressed by the
+// type rather than by a check. It previously WAS a check, and that was a
+// defect: this driver reports Capabilities.Files true, so provision.Grant's
+// file guard passed and this one refused the same policy a layer lower. Two
+// refusals for one rule, disagreeing about which layer owns it. When policy
+// files return, the refusal goes in provision.Grant, once.
 func (d *Driver) Grant(ctx context.Context, ref provision.Ref, pol provision.Policy) error {
 	if d.cfg.PolicyDisabled {
 		return fmt.Errorf("%w: this driver is configured with PolicyDisabled, so policy %q was NOT granted",
@@ -66,12 +70,6 @@ func (d *Driver) Grant(ctx context.Context, ref provision.Ref, pol provision.Pol
 	}
 	if pol.Name == "" {
 		return fmt.Errorf("%w: a policy must be named; Revoke finds its objects by name", provision.ErrInvalidSpec)
-	}
-	if len(pol.Env) > 0 || len(pol.Files) > 0 {
-		return fmt.Errorf("%w: the kubernetes driver applies authorisation rules only, and policy %q carries "+
-			"%d env var(s) and %d file(s); applying those means rolling the pod, which this driver does not do "+
-			"from the grant path",
-			provision.ErrUnsupported, pol.Name, len(pol.Env), len(pol.Files))
 	}
 	if !pol.HasRules() {
 		return fmt.Errorf("%w: policy %q carries no rules this driver can apply; granting it would record "+

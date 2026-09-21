@@ -771,15 +771,6 @@ func TestGrantRefusesWhatItCannotApply(t *testing.T) {
 		mustSay string
 	}{
 		{
-			name: "env or files",
-			pol: provision.Policy{
-				Name:  "with-env",
-				Rules: grantablePolicy.Rules,
-				Env:   []provision.EnvVar{{Name: "K", Value: "v"}},
-			},
-			mustSay: "env var(s)",
-		},
-		{
 			name:    "no rules",
 			pol:     provision.Policy{Name: "empty", Rules: []byte(`{}`)},
 			mustSay: "carries no rules",

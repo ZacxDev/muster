@@ -425,23 +425,16 @@ func newFakeGranter(caps provision.Capabilities) *fakeGranter {
 //
 //	delete the PolicyGranter type assertion -> "driver is not a granter" RED
 //	delete the !caps.Policy branch          -> "granter without the capability" RED
-//	delete the !caps.Files branch           -> "policy files, driver cannot place files" RED
-//	delete the secret-file loop             -> "policy secret file, no store" RED
-//	replace Grant's body with `return nil`  -> ALL FOUR RED
+//	replace Grant's body with `return nil`  -> BOTH RED
+//
+// It had two more rows, for guards on Policy.Files against Capabilities.Files
+// and Capabilities.Secrets. Those fields and those guards are gone; a deleted
+// guard has no mutants, and keeping the rows would describe coverage of code
+// that does not exist.
 func TestGrantRefusalBranches(t *testing.T) {
 	ctx := context.Background()
 	ref := provision.Ref{Name: "subject"}
 	plain := provision.Policy{Name: "read-only", Rules: []byte(`{"verbs":["get"]}`)}
-	withFile := provision.Policy{
-		Name:  "with-config",
-		Rules: []byte(`{"verbs":["get"]}`),
-		Files: []provision.File{{Path: "/etc/muster/policy.conf", Content: []byte("x")}},
-	}
-	withSecretFile := provision.Policy{
-		Name:  "with-credential",
-		Rules: []byte(`{"verbs":["get"]}`),
-		Files: []provision.File{{Path: "/etc/muster/policy.cred", Content: []byte("x"), Secret: true}},
-	}
 
 	t.Run("driver is not a granter", func(t *testing.T) {
 		p := provision.MustNewNoop(provision.NoopCapabilities(provision.Capabilities{Policy: true, Files: true, Secrets: true}))
@@ -465,39 +458,14 @@ func TestGrantRefusalBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("policy files, driver cannot place files", func(t *testing.T) {
-		g := newFakeGranter(provision.Capabilities{Policy: true, Secrets: true}) // Files false
-		// Control: the same driver accepts a policy with no files, so the
-		// refusal below is about the files and not about the driver.
-		if err := provision.Grant(ctx, g, ref, plain); err != nil {
-			t.Fatalf("control: a file-less policy must be granted, got %v", err)
-		}
-		err := provision.Grant(ctx, g, ref, withFile)
-		if !errors.Is(err, provision.ErrUnsupported) {
-			t.Fatalf("want ErrUnsupported, got %v", err)
-		}
-		if len(g.granted) != 1 {
-			t.Fatalf("expected exactly the control grant to have gone through, got %v", g.granted)
-		}
-	})
-
-	t.Run("policy secret file, no store", func(t *testing.T) {
-		g := newFakeGranter(provision.Capabilities{Policy: true, Files: true}) // Secrets false
-		if err := provision.Grant(ctx, g, ref, withFile); err != nil {
-			t.Fatalf("control: a non-secret file must be granted, got %v", err)
-		}
-		err := provision.Grant(ctx, g, ref, withSecretFile)
-		if !errors.Is(err, provision.ErrUnsupported) {
-			t.Fatalf("want ErrUnsupported, got %v", err)
-		}
-	})
-
+	// 🔴 THE OTHER DIRECTION, AND IT IS NOT OPTIONAL. Without it a Grant that
+	// refused EVERYTHING would pass both cases above.
 	t.Run("a capable driver grants", func(t *testing.T) {
 		g := newFakeGranter(provision.Capabilities{Policy: true, Files: true, Secrets: true})
-		if err := provision.Grant(ctx, g, ref, withSecretFile); err != nil {
-			t.Fatalf("a fully capable granter must grant, got %v", err)
+		if err := provision.Grant(ctx, g, ref, plain); err != nil {
+			t.Fatalf("a capable granter must grant, got %v", err)
 		}
-		if len(g.granted) != 1 || g.granted[0] != "subject/with-credential" {
+		if len(g.granted) != 1 || g.granted[0] != "subject/read-only" {
 			t.Fatalf("grant record is %v", g.granted)
 		}
 	})

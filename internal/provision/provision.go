@@ -141,16 +141,17 @@ type Execer interface {
 // provider-agnostic and belongs to muster. The RULES are not, which is why
 // Rules is opaque bytes interpreted only by a driver that declares
 // Capabilities.Policy.
+//
+// ⚠ A POLICY CARRIES RULES ONLY. It once also carried Env and Files — the
+// credential file or cluster config a grant places in the instance. Applying
+// either means rolling the instance's pod, which no driver here does from the
+// grant path, so every driver refused them and the fields could only ever be
+// set to be rejected. They come back with the driver that can roll a pod;
+// muster is not declaring that policy files are out of scope forever.
 type Policy struct {
 	// Name identifies the policy, and identifies the objects a driver created
 	// for it so Revoke can find them again.
 	Name string
-	// Env is environment the grant adds to the instance.
-	Env []EnvVar
-	// Files is content the grant places in the instance — a credential file, a
-	// cluster config. This is what replaces a driver-specific "which secret
-	// holds the kubeconfig" field: it works on every driver that has Files.
-	Files []File
 	// Rules is the driver-interpreted authorisation payload. Opaque here.
 	//
 	// 🔴 A DRIVER THAT CANNOT INTERPRET A NON-EMPTY Rules MUST REFUSE THE
@@ -185,12 +186,20 @@ type PolicyGranter interface {
 // through here, and every refusal it returns carries a reason a user interface
 // can display verbatim and a machine endpoint can return as a 409.
 //
-// The three refusals:
+// The two refusals:
 //
 //   - the driver does not implement PolicyGranter at all;
 //   - it implements it but reports Capabilities.Policy false, which is how a
-//     driver says "configured without the access needed to apply policy";
-//   - it can apply policy but not place Files, while the policy carries some.
+//     driver says "configured without the access needed to apply policy".
+//
+// ⚠ THERE WERE FOUR. Two more guarded Policy.Files against Capabilities.Files
+// and Capabilities.Secrets, and they went with those fields. They were worse
+// than redundant: the kubernetes driver reports Files true, so the guard here
+// PASSED and its own Grant then refused the identical policy — a second,
+// contradictory refusal open-coded in a driver, which is exactly what the
+// chokepoint above the function exists to prevent. Whatever replaces them when
+// policy files return must be spelled HERE, once, and must agree with what the
+// drivers actually do.
 func Grant(ctx context.Context, p Provisioner, ref Ref, pol Policy) error {
 	caps := p.Capabilities()
 	granter, ok := p.(PolicyGranter)
@@ -201,18 +210,6 @@ func Grant(ctx context.Context, p Provisioner, ref Ref, pol Policy) error {
 	if !caps.Policy {
 		return fmt.Errorf("%w: driver %q reports no policy capability, so policy %q was NOT granted",
 			ErrUnsupported, p.Driver(), pol.Name)
-	}
-	if len(pol.Files) > 0 && !caps.Files {
-		return fmt.Errorf("%w: driver %q cannot place files, and policy %q carries %d; granting the rest would report access the instance does not have",
-			ErrUnsupported, p.Driver(), pol.Name, len(pol.Files))
-	}
-	if !caps.Secrets {
-		for _, f := range pol.Files {
-			if f.Secret {
-				return fmt.Errorf("%w: driver %q has no confidential store, and policy %q carries secret file %q",
-					ErrUnsupported, p.Driver(), pol.Name, f.Path)
-			}
-		}
 	}
 	return granter.Grant(ctx, ref, pol)
 }
