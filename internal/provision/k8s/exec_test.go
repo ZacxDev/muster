@@ -23,9 +23,13 @@ import (
 // provision.Exec refuses when it is off, and that the method returns a named
 // error instead of dereferencing a nil config.
 func TestExecIsGatedOnTheRESTConfig(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) { testExecIsGatedOnTheRESTConfig(t, m) })
+}
+
+func testExecIsGatedOnTheRESTConfig(t *testing.T, m nsMode) {
 	ctx := context.Background()
 
-	without, _ := newDriver(t, nil)
+	without, _ := newDriver(t, m, nil)
 	if without.Capabilities().Exec {
 		t.Fatal("no RESTConfig must mean Capabilities.Exec false")
 	}
@@ -44,7 +48,7 @@ func TestExecIsGatedOnTheRESTConfig(t *testing.T) {
 		t.Fatalf("the refusal must name the missing configuration, got %q", err)
 	}
 
-	with, _ := newDriver(t, func(c *k8s.Config) {
+	with, _ := newDriver(t, m, func(c *k8s.Config) {
 		c.RESTConfig = &rest.Config{Host: "https://cluster.example.test"}
 	})
 	if !with.Capabilities().Exec {

@@ -24,16 +24,72 @@ import (
 
 func strptr(s string) *string { return &s }
 
-// newDriver builds the driver over a fake clientset, with the settings the
-// contract suite's "New" hook uses.
-func newDriver(t *testing.T, mutate func(*k8s.Config)) (*k8s.Driver, *fake.Clientset) {
+// sharedNamespace is the namespace the shared-namespace mode puts every
+// instance in. It is NOT prefixed with "muster-", so a test that accidentally
+// derives a namespace the per-instance way cannot pass by coincidence.
+const sharedNamespace = "agents"
+
+// nsMode is one of the two namespace layouts Config expresses, as a value the
+// tests iterate over.
+//
+// 🔴 THE HARNESS IS PARAMETERISED OVER BOTH MODES BECAUSE A SUITE THAT PINS A
+// CONFIGURATION DIMENSION IS STRUCTURALLY BLIND TO THAT DIMENSION'S BUGS. This
+// harness used to hardcode NamespacePerInstance: true, so every case ran under
+// the layout where Destroy is a namespace deletion. Under the OTHER layout the
+// namespace is never deleted, so anything the driver leaves behind survives —
+// and nothing in this package could observe that. The cases that pin ownership
+// and teardown below are only REACHABLE in shared-namespace mode.
+type nsMode struct {
+	// name is the subtest name.
+	name string
+	// config applies the layout to a driver configuration.
+	config func(*k8s.Config)
+	// ns is the namespace an instance of the given name lands in.
+	ns func(instance string) string
+	// perInstance is true for the layout that owns a namespace per instance.
+	// A case branches on this only where the two layouts genuinely differ —
+	// namespace creation and deletion — never to skip an assertion.
+	perInstance bool
+}
+
+var nsModes = []nsMode{
+	{
+		name:        "namespace-per-instance",
+		config:      func(c *k8s.Config) { c.NamespacePerInstance = true },
+		ns:          func(instance string) string { return "muster-" + instance },
+		perInstance: true,
+	},
+	{
+		name: "shared-namespace",
+		config: func(c *k8s.Config) {
+			c.NamespacePerInstance = false
+			c.Namespace = sharedNamespace
+		},
+		ns: func(string) string { return sharedNamespace },
+	},
+}
+
+// eachMode runs fn once per namespace layout.
+func eachMode(t *testing.T, fn func(*testing.T, nsMode)) {
+	t.Helper()
+	for _, m := range nsModes {
+		t.Run(m.name, func(t *testing.T) { fn(t, m) })
+	}
+}
+
+// newDriver builds the driver over a fake clientset in the given layout, with
+// the settings the contract suite's "New" hook uses.
+//
+// ⚠ THERE IS DELIBERATELY NO MODE-LESS CONSTRUCTOR. Every call site names the
+// layout it is testing, so a new case cannot silently inherit one.
+func newDriver(t *testing.T, m nsMode, mutate func(*k8s.Config)) (*k8s.Driver, *fake.Clientset) {
 	t.Helper()
 	cs := fake.NewClientset()
 	cfg := k8s.Config{
 		Client:                cs,
-		NamespacePerInstance:  true,
 		WorkspaceStorageClass: strptr(""),
 	}
+	m.config(&cfg)
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -79,27 +135,29 @@ func mustJSON(v any) json.RawMessage {
 // scheduling, image pulls, volume attachment, admission and the exec stream are
 // all outside a fake's reach.
 func TestKubernetesSatisfiesTheContract(t *testing.T) {
-	provisiontest.RunContract(t, provisiontest.Harness{
-		Name: "kubernetes",
-		New: func(t *testing.T) provision.Provisioner {
-			d, _ := newDriver(t, nil)
-			return d
-		},
-		Blind: func(t *testing.T) provision.Provisioner {
-			d, _ := newDriver(t, func(c *k8s.Config) { c.Client = brokenClient() })
-			return d
-		},
-		Restricted: func(t *testing.T) provision.Provisioner {
-			// The driver's genuinely minimal configuration: no storage class it
-			// may use, no RBAC permission, no exec transport. Persistence is
-			// the capability it then refuses.
-			d, _ := newDriver(t, func(c *k8s.Config) {
-				c.WorkspaceStorageClass = nil
-				c.PolicyDisabled = true
-			})
-			return d
-		},
-		GrantablePolicy: grantablePolicy,
+	eachMode(t, func(t *testing.T, m nsMode) {
+		provisiontest.RunContract(t, provisiontest.Harness{
+			Name: "kubernetes-" + m.name,
+			New: func(t *testing.T) provision.Provisioner {
+				d, _ := newDriver(t, m, nil)
+				return d
+			},
+			Blind: func(t *testing.T) provision.Provisioner {
+				d, _ := newDriver(t, m, func(c *k8s.Config) { c.Client = brokenClient() })
+				return d
+			},
+			Restricted: func(t *testing.T) provision.Provisioner {
+				// The driver's genuinely minimal configuration: no storage class it
+				// may use, no RBAC permission, no exec transport. Persistence is
+				// the capability it then refuses.
+				d, _ := newDriver(t, m, func(c *k8s.Config) {
+					c.WorkspaceStorageClass = nil
+					c.PolicyDisabled = true
+				})
+				return d
+			},
+			GrantablePolicy: grantablePolicy,
+		})
 	})
 }
 
@@ -121,7 +179,8 @@ func brokenClient() kubernetes.Interface {
 // worth their awkwardness: each one CHANGES a declared capability, and the
 // capability is what CheckSpec and provision.Grant branch on.
 func TestCapabilitiesFollowConfiguration(t *testing.T) {
-	full, _ := newDriver(t, func(c *k8s.Config) {
+	perInstance := nsModes[0]
+	full, _ := newDriver(t, perInstance, func(c *k8s.Config) {
 		c.RESTConfig = &rest.Config{Host: "https://cluster.example.test"}
 	})
 	caps := full.Capabilities()
@@ -141,16 +200,16 @@ func TestCapabilitiesFollowConfiguration(t *testing.T) {
 	// 🔴 nil AND "" ARE DIFFERENT ANSWERS. This is the whole reason the field
 	// is a pointer, and the only place in the package where the distinction is
 	// observable.
-	none, _ := newDriver(t, func(c *k8s.Config) { c.WorkspaceStorageClass = nil })
+	none, _ := newDriver(t, perInstance, func(c *k8s.Config) { c.WorkspaceStorageClass = nil })
 	if none.Capabilities().Persistence {
 		t.Error("a nil storage class means no persistence; it must not be read as the default class")
 	}
-	defaultSC, _ := newDriver(t, func(c *k8s.Config) { c.WorkspaceStorageClass = strptr("") })
+	defaultSC, _ := newDriver(t, perInstance, func(c *k8s.Config) { c.WorkspaceStorageClass = strptr("") })
 	if !defaultSC.Capabilities().Persistence {
 		t.Error("an EMPTY storage class means the cluster default, which IS persistence")
 	}
 
-	noPolicy, _ := newDriver(t, func(c *k8s.Config) { c.PolicyDisabled = true })
+	noPolicy, _ := newDriver(t, perInstance, func(c *k8s.Config) { c.PolicyDisabled = true })
 	if noPolicy.Capabilities().Policy {
 		t.Error("PolicyDisabled must turn Policy off")
 	}
@@ -159,10 +218,7 @@ func TestCapabilitiesFollowConfiguration(t *testing.T) {
 		t.Errorf("PolicyDisabled must make Grant refuse, got %v", err)
 	}
 
-	shared, _ := newDriver(t, func(c *k8s.Config) {
-		c.NamespacePerInstance = false
-		c.Namespace = "agents"
-	})
+	shared, _ := newDriver(t, nsModes[1], nil)
 	if shared.Capabilities().Isolation != provision.IsolationContainer {
 		t.Error("a shared namespace is container isolation, not namespace isolation")
 	}
@@ -185,16 +241,18 @@ func TestNewValidatesConfiguration(t *testing.T) {
 // Runtime is a union so a process driver is expressible; this driver is the
 // half that needs an image.
 func TestRefusesACommandOnlyRuntime(t *testing.T) {
-	d, _ := newDriver(t, nil)
-	spec := provisiontest.MinimalSpec("commandonly")
-	spec.Runtime = provision.Runtime{Command: []string{"/usr/bin/agent"}}
-	err := d.Create(context.Background(), spec)
-	if !errors.Is(err, provision.ErrUnsupported) {
-		t.Fatalf("want ErrUnsupported, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "Runtime.Image") {
-		t.Fatalf("the refusal must name the field, got %q", err)
-	}
+	eachMode(t, func(t *testing.T, m nsMode) {
+		d, _ := newDriver(t, m, nil)
+		spec := provisiontest.MinimalSpec("commandonly")
+		spec.Runtime = provision.Runtime{Command: []string{"/usr/bin/agent"}}
+		err := d.Create(context.Background(), spec)
+		if !errors.Is(err, provision.ErrUnsupported) {
+			t.Fatalf("want ErrUnsupported, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "Runtime.Image") {
+			t.Fatalf("the refusal must name the field, got %q", err)
+		}
+	})
 }
 
 // --------------------------------------------------------------------------
@@ -225,16 +283,42 @@ func richSpec(name string) provision.Spec {
 }
 
 func TestRendersTheMinimalObjectSet(t *testing.T) {
-	d, cs := newDriver(t, nil)
+	eachMode(t, func(t *testing.T, m nsMode) { testRendersTheMinimalObjectSet(t, m) })
+}
+
+func testRendersTheMinimalObjectSet(t *testing.T, m nsMode) {
+	d, cs := newDriver(t, m, nil)
 	ctx := context.Background()
 	spec := richSpec("rich")
 	if err := d.Create(ctx, spec); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	ns := "muster-rich"
+	ns := m.ns("rich")
 
-	if _, err := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}); err != nil {
-		t.Fatalf("namespace: %v", err)
+	nsObj, err := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+	switch {
+	case m.perInstance:
+		if err != nil {
+			t.Fatalf("namespace: %v", err)
+		}
+		if nsObj.Labels["app.kubernetes.io/managed-by"] != "muster" {
+			t.Errorf("the namespace this driver created carries labels %v; without managed-by nothing "+
+				"can tell it apart from a namespace muster must not delete", nsObj.Labels)
+		}
+	default:
+		// 🔴 THE SHARED-NAMESPACE HALF. The driver must create NO namespace at
+		// all here: the namespace is the operator's, and Destroy must never be
+		// in a position to delete it.
+		if err == nil {
+			t.Errorf("a shared-namespace driver created namespace %q; it does not own that namespace", ns)
+		}
+		list, lerr := cs.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
+		if lerr != nil {
+			t.Fatalf("list namespaces: %v", lerr)
+		}
+		if len(list.Items) != 0 {
+			t.Errorf("a shared-namespace driver created %d namespaces, want 0: %+v", len(list.Items), list.Items)
+		}
 	}
 	if _, err := cs.CoreV1().ServiceAccounts(ns).Get(ctx, "rich", metav1.GetOptions{}); err != nil {
 		t.Fatalf("serviceaccount: %v", err)
@@ -323,7 +407,11 @@ func TestRendersTheMinimalObjectSet(t *testing.T) {
 // shell coupling: each file is a subPath mount at its exact absolute path, with
 // its own mode.
 func TestFilesArePlacedNativelyAtTheirPaths(t *testing.T) {
-	d, cs := newDriver(t, nil)
+	eachMode(t, func(t *testing.T, m nsMode) { testFilesArePlacedNativelyAtTheirPaths(t, m) })
+}
+
+func testFilesArePlacedNativelyAtTheirPaths(t *testing.T, m nsMode) {
+	d, cs := newDriver(t, m, nil)
 	ctx := context.Background()
 	spec := provisiontest.MinimalSpec("files")
 	spec.Files = []provision.File{
@@ -334,7 +422,7 @@ func TestFilesArePlacedNativelyAtTheirPaths(t *testing.T) {
 	if err := d.Create(ctx, spec); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	dep, err := cs.AppsV1().Deployments("muster-files").Get(ctx, "files", metav1.GetOptions{})
+	dep, err := cs.AppsV1().Deployments(m.ns("files")).Get(ctx, "files", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get deployment: %v", err)
 	}
@@ -400,6 +488,10 @@ func TestFilesArePlacedNativelyAtTheirPaths(t *testing.T) {
 // would make reordering Spec.Files rewrite every key and roll the pod for no
 // reason.
 func TestFileKeysDoNotDependOnOrdering(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) { testFileKeysDoNotDependOnOrdering(t, m) })
+}
+
+func testFileKeysDoNotDependOnOrdering(t *testing.T, m nsMode) {
 	ctx := context.Background()
 	a := provisiontest.MinimalSpec("ordered")
 	a.Files = []provision.File{
@@ -410,11 +502,11 @@ func TestFileKeysDoNotDependOnOrdering(t *testing.T) {
 	b.Files = []provision.File{a.Files[1], a.Files[0]}
 
 	keysOf := func(spec provision.Spec) []string {
-		d, cs := newDriver(t, nil)
+		d, cs := newDriver(t, m, nil)
 		if err := d.Create(ctx, spec); err != nil {
 			t.Fatalf("Create: %v", err)
 		}
-		cm, err := cs.CoreV1().ConfigMaps("muster-ordered").Get(ctx, "ordered-files", metav1.GetOptions{})
+		cm, err := cs.CoreV1().ConfigMaps(m.ns("ordered")).Get(ctx, "ordered-files", metav1.GetOptions{})
 		if err != nil {
 			t.Fatalf("get configmap: %v", err)
 		}
@@ -454,13 +546,17 @@ func sortStrings(s []string) {
 // RUNNING and READY, with a bumped restart count, whose last termination was an
 // out-of-memory kill. Every other field says the instance is healthy.
 func TestRestartReasonSurvivesTheRestartThatHidesIt(t *testing.T) {
-	d, cs := newDriver(t, nil)
+	eachMode(t, func(t *testing.T, m nsMode) { testRestartReasonSurvivesTheRestartThatHidesIt(t, m) })
+}
+
+func testRestartReasonSurvivesTheRestartThatHidesIt(t *testing.T, m nsMode) {
+	d, cs := newDriver(t, m, nil)
 	ctx := context.Background()
 	spec := provisiontest.MinimalSpec("oomer")
 	if err := d.Create(ctx, spec); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	ns := "muster-oomer"
+	ns := m.ns("oomer")
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "oomer-7d4c8",
@@ -519,7 +615,11 @@ func TestRestartReasonSurvivesTheRestartThatHidesIt(t *testing.T) {
 // TestCorrelationIDRoundTripsWhenSet is the other half: an id that WAS supplied
 // comes back.
 func TestCorrelationIDRoundTripsWhenSet(t *testing.T) {
-	d, _ := newDriver(t, nil)
+	eachMode(t, func(t *testing.T, m nsMode) { testCorrelationIDRoundTripsWhenSet(t, m) })
+}
+
+func testCorrelationIDRoundTripsWhenSet(t *testing.T, m nsMode) {
+	d, _ := newDriver(t, m, nil)
 	ctx := context.Background()
 	spec := provisiontest.MinimalSpec("correlated")
 	spec.Ref.ID = 4217
@@ -538,15 +638,19 @@ func TestCorrelationIDRoundTripsWhenSet(t *testing.T) {
 // TestDeploymentStrategyDependsOnTheWorkspace pins a choice whose failure mode
 // reads as a cluster problem rather than a strategy one.
 func TestDeploymentStrategyDependsOnTheWorkspace(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) { testDeploymentStrategyDependsOnTheWorkspace(t, m) })
+}
+
+func testDeploymentStrategyDependsOnTheWorkspace(t *testing.T, m nsMode) {
 	ctx := context.Background()
 
-	d, cs := newDriver(t, nil)
+	d, cs := newDriver(t, m, nil)
 	persistent := provisiontest.MinimalSpec("stateful")
 	persistent.Workspace = provision.Workspace{Path: "/data", Size: "5Gi", Persist: true}
 	if err := d.Create(ctx, persistent); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	dep, err := cs.AppsV1().Deployments("muster-stateful").Get(ctx, "stateful", metav1.GetOptions{})
+	dep, err := cs.AppsV1().Deployments(m.ns("stateful")).Get(ctx, "stateful", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -559,7 +663,7 @@ func TestDeploymentStrategyDependsOnTheWorkspace(t *testing.T) {
 	if err := d.Create(ctx, stateless); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	dep, err = cs.AppsV1().Deployments("muster-stateless").Get(ctx, "stateless", metav1.GetOptions{})
+	dep, err = cs.AppsV1().Deployments(m.ns("stateless")).Get(ctx, "stateless", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -574,14 +678,18 @@ func TestDeploymentStrategyDependsOnTheWorkspace(t *testing.T) {
 // TestSecretValuesNeverAppearInThePodSpec. A Deployment is readable by anything
 // that can read the namespace; a Secret is not.
 func TestSecretValuesNeverAppearInThePodSpec(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) { testSecretValuesNeverAppearInThePodSpec(t, m) })
+}
+
+func testSecretValuesNeverAppearInThePodSpec(t *testing.T, m nsMode) {
 	const secretValue = "token-value-19731"
-	d, cs := newDriver(t, nil)
+	d, cs := newDriver(t, m, nil)
 	ctx := context.Background()
 	spec := richSpec("confidential")
 	if err := d.Create(ctx, spec); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	dep, err := cs.AppsV1().Deployments("muster-confidential").Get(ctx, "confidential", metav1.GetOptions{})
+	dep, err := cs.AppsV1().Deployments(m.ns("confidential")).Get(ctx, "confidential", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -597,7 +705,7 @@ func TestSecretValuesNeverAppearInThePodSpec(t *testing.T) {
 	}
 	// Positive control: the value IS somewhere, so the absence above is
 	// placement and not omission.
-	sec, err := cs.CoreV1().Secrets("muster-confidential").Get(ctx, "confidential-env", metav1.GetOptions{})
+	sec, err := cs.CoreV1().Secrets(m.ns("confidential")).Get(ctx, "confidential-env", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get secret: %v", err)
 	}
@@ -609,20 +717,24 @@ func TestSecretValuesNeverAppearInThePodSpec(t *testing.T) {
 // TestUpdateReplacesTheSpecAndCreateIsThenIdempotent — the reconcile loop's
 // actual sequence.
 func TestUpdateReplacesTheSpecAndCreateIsThenIdempotent(t *testing.T) {
-	d, cs := newDriver(t, nil)
+	eachMode(t, func(t *testing.T, m nsMode) { testUpdateReplacesTheSpecAndCreateIsThenIdempotent(t, m) })
+}
+
+func testUpdateReplacesTheSpecAndCreateIsThenIdempotent(t *testing.T, m nsMode) {
+	d, cs := newDriver(t, m, nil)
 	ctx := context.Background()
 	spec := provisiontest.MinimalSpec("rolling")
 	if err := d.Create(ctx, spec); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	before, _ := cs.AppsV1().Deployments("muster-rolling").Get(ctx, "rolling", metav1.GetOptions{})
+	before, _ := cs.AppsV1().Deployments(m.ns("rolling")).Get(ctx, "rolling", metav1.GetOptions{})
 
 	changed := spec
 	changed.Runtime.Image = "ghcr.io/muster-example/rolled:3"
 	if err := d.Update(ctx, changed); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	after, err := cs.AppsV1().Deployments("muster-rolling").Get(ctx, "rolling", metav1.GetOptions{})
+	after, err := cs.AppsV1().Deployments(m.ns("rolling")).Get(ctx, "rolling", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -642,7 +754,11 @@ func TestUpdateReplacesTheSpecAndCreateIsThenIdempotent(t *testing.T) {
 // what a finalizer, a webhook or a permission quirk can do — and Destroy must
 // NOT report success.
 func TestDestroyVerifiesRatherThanAssumes(t *testing.T) {
-	d, cs := newDriver(t, nil)
+	eachMode(t, func(t *testing.T, m nsMode) { testDestroyVerifiesRatherThanAssumes(t, m) })
+}
+
+func testDestroyVerifiesRatherThanAssumes(t *testing.T, m nsMode) {
+	d, cs := newDriver(t, m, nil)
 	ctx := context.Background()
 	spec := provisiontest.MinimalSpec("stubborn")
 	if err := d.Create(ctx, spec); err != nil {
@@ -650,7 +766,7 @@ func TestDestroyVerifiesRatherThanAssumes(t *testing.T) {
 	}
 	// Control: without the reactor, Destroy succeeds. Without this the case
 	// could pass because Destroy always fails.
-	d2, _ := newDriver(t, nil)
+	d2, _ := newDriver(t, m, nil)
 	if err := d2.Create(ctx, spec); err != nil {
 		t.Fatalf("control Create: %v", err)
 	}
@@ -675,7 +791,11 @@ func TestDestroyVerifiesRatherThanAssumes(t *testing.T) {
 // Deployment and any database row, and the next instance to take this name gets
 // the same ServiceAccount — the dangling binding's exact subject.
 func TestDestroyRemovesClusterScopedPolicyObjects(t *testing.T) {
-	d, cs := newDriver(t, nil)
+	eachMode(t, func(t *testing.T, m nsMode) { testDestroyRemovesClusterScopedPolicyObjects(t, m) })
+}
+
+func testDestroyRemovesClusterScopedPolicyObjects(t *testing.T, m nsMode) {
+	d, cs := newDriver(t, m, nil)
 	ctx := context.Background()
 	spec := provisiontest.MinimalSpec("recycled")
 	if err := d.Create(ctx, spec); err != nil {
@@ -705,7 +825,11 @@ func TestDestroyRemovesClusterScopedPolicyObjects(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestGrantAppliesRBAC(t *testing.T) {
-	d, cs := newDriver(t, nil)
+	eachMode(t, func(t *testing.T, m nsMode) { testGrantAppliesRBAC(t, m) })
+}
+
+func testGrantAppliesRBAC(t *testing.T, m nsMode) {
+	d, cs := newDriver(t, m, nil)
 	ctx := context.Background()
 	spec := provisiontest.MinimalSpec("privileged")
 	if err := d.Create(ctx, spec); err != nil {
@@ -726,17 +850,17 @@ func TestGrantAppliesRBAC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clusterrolebinding: %v", err)
 	}
-	if len(crb.Subjects) != 1 || crb.Subjects[0].Name != "privileged" || crb.Subjects[0].Namespace != "muster-privileged" {
+	if len(crb.Subjects) != 1 || crb.Subjects[0].Name != "privileged" || crb.Subjects[0].Namespace != m.ns("privileged") {
 		t.Errorf("binding subject is %+v; it must be the instance's own ServiceAccount", crb.Subjects)
 	}
-	role, err := cs.RbacV1().Roles("muster-privileged").Get(ctx, name, metav1.GetOptions{})
+	role, err := cs.RbacV1().Roles(m.ns("privileged")).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("role: %v", err)
 	}
 	if role.Rules[0].Resources[0] != "configmaps" {
 		t.Errorf("role rules are %+v", role.Rules)
 	}
-	if _, err := cs.RbacV1().RoleBindings("muster-privileged").Get(ctx, name, metav1.GetOptions{}); err != nil {
+	if _, err := cs.RbacV1().RoleBindings(m.ns("privileged")).Get(ctx, name, metav1.GetOptions{}); err != nil {
 		t.Fatalf("rolebinding: %v", err)
 	}
 }
@@ -752,8 +876,12 @@ func TestGrantAppliesRBAC(t *testing.T) {
 //	delete the empty-rules refusal      -> "parses but is empty" RED
 //	delete the ServiceAccount existence -> "no such instance" RED
 func TestGrantRefusesWhatItCannotApply(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) { testGrantRefusesWhatItCannotApply(t, m) })
+}
+
+func testGrantRefusesWhatItCannotApply(t *testing.T, m nsMode) {
 	ctx := context.Background()
-	d, client := newDriver(t, nil)
+	d, client := newDriver(t, m, nil)
 	cs := func() *fake.Clientset { return client }
 	spec := provisiontest.MinimalSpec("refuser")
 	if err := d.Create(ctx, spec); err != nil {
@@ -837,10 +965,12 @@ func TestGrantRefusesWhatItCannotApply(t *testing.T) {
 }
 
 func TestRevokeOfAnUngrantedPolicyIsNil(t *testing.T) {
-	d, _ := newDriver(t, nil)
-	if err := d.Revoke(context.Background(), provision.Ref{Name: "nobody"}, "never-granted"); err != nil {
-		t.Fatalf("Revoke of an absent grant must be nil, got %v", err)
-	}
+	eachMode(t, func(t *testing.T, m nsMode) {
+		d, _ := newDriver(t, m, nil)
+		if err := d.Revoke(context.Background(), provision.Ref{Name: "nobody"}, "never-granted"); err != nil {
+			t.Fatalf("Revoke of an absent grant must be nil, got %v", err)
+		}
+	})
 }
 
 // --------------------------------------------------------------------------
@@ -848,8 +978,12 @@ func TestRevokeOfAnUngrantedPolicyIsNil(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestEndpointTemplateIsConfigurable(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) { testEndpointTemplateIsConfigurable(t, m) })
+}
+
+func testEndpointTemplateIsConfigurable(t *testing.T, m nsMode) {
 	ctx := context.Background()
-	d, _ := newDriver(t, func(c *k8s.Config) {
+	d, _ := newDriver(t, m, func(c *k8s.Config) {
 		c.EndpointTemplate = "{{.Name}}.agents.example.test"
 		c.EndpointScheme = "https"
 	})
@@ -867,7 +1001,7 @@ func TestEndpointTemplateIsConfigurable(t *testing.T) {
 
 	// The default, for comparison — and to prove the case above is measuring a
 	// change rather than a coincidence.
-	dflt, _ := newDriver(t, nil)
+	dflt, _ := newDriver(t, m, nil)
 	if err := dflt.Create(ctx, spec); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -875,7 +1009,7 @@ func TestEndpointTemplateIsConfigurable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Endpoint: %v", err)
 	}
-	if ep2.Host != "reachable.muster-reachable.svc" {
+	if ep2.Host != "reachable."+m.ns("reachable")+".svc" {
 		t.Fatalf("default endpoint host is %q", ep2.Host)
 	}
 	if ep2.Host == ep.Host {
@@ -884,18 +1018,20 @@ func TestEndpointTemplateIsConfigurable(t *testing.T) {
 }
 
 func TestEndpointOfAPortlessInstance(t *testing.T) {
-	d, _ := newDriver(t, nil)
-	ctx := context.Background()
-	spec := provisiontest.MinimalSpec("portless")
-	spec.Ports = nil
-	if err := d.Create(ctx, spec); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	_, err := d.Endpoint(ctx, spec.Ref)
-	if !errors.Is(err, provision.ErrNoEndpoint) {
-		t.Fatalf("an instance with no ports must be ErrNoEndpoint — distinct from ErrNotFound (it exists) "+
-			"and from ErrBlind (we can see it); got %v", err)
-	}
+	eachMode(t, func(t *testing.T, m nsMode) {
+		d, _ := newDriver(t, m, nil)
+		ctx := context.Background()
+		spec := provisiontest.MinimalSpec("portless")
+		spec.Ports = nil
+		if err := d.Create(ctx, spec); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		_, err := d.Endpoint(ctx, spec.Ref)
+		if !errors.Is(err, provision.ErrNoEndpoint) {
+			t.Fatalf("an instance with no ports must be ErrNoEndpoint — distinct from ErrNotFound (it exists) "+
+				"and from ErrBlind (we can see it); got %v", err)
+		}
+	})
 }
 
 // --------------------------------------------------------------------------
@@ -903,17 +1039,19 @@ func TestEndpointOfAPortlessInstance(t *testing.T) {
 // --------------------------------------------------------------------------
 
 func TestTailLogsOfAnInstanceWithNoPodYet(t *testing.T) {
-	d, _ := newDriver(t, nil)
-	ctx := context.Background()
-	spec := provisiontest.MinimalSpec("nopod")
-	if err := d.Create(ctx, spec); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	out, err := d.TailLogs(ctx, spec.Ref, 10)
-	if err != nil {
-		t.Fatalf("an instance with no pod yet is not a failure: %v", err)
-	}
-	if out != "" {
-		t.Fatalf("want empty output, got %q", out)
-	}
+	eachMode(t, func(t *testing.T, m nsMode) {
+		d, _ := newDriver(t, m, nil)
+		ctx := context.Background()
+		spec := provisiontest.MinimalSpec("nopod")
+		if err := d.Create(ctx, spec); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		out, err := d.TailLogs(ctx, spec.Ref, 10)
+		if err != nil {
+			t.Fatalf("an instance with no pod yet is not a failure: %v", err)
+		}
+		if out != "" {
+			t.Fatalf("want empty output, got %q", out)
+		}
+	})
 }
