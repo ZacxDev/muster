@@ -274,7 +274,7 @@ func TestRendersTheMinimalObjectSet(t *testing.T) {
 	}
 	pod := dep.Spec.Template.Spec
 	if len(pod.Containers) != 1 {
-		t.Errorf("deployment has %d containers, want exactly 1 — Capabilities.Sidecars is false", len(pod.Containers))
+		t.Errorf("deployment has %d containers, want exactly 1 — this driver runs no sidecars", len(pod.Containers))
 	}
 	if len(pod.InitContainers) != 1 {
 		t.Fatalf("deployment has %d init containers, want 1 (Spec.Init is non-empty)", len(pod.InitContainers))

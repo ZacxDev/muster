@@ -128,10 +128,11 @@ mechanism looks over-built and each part of it is there for a measured failure.
   which structurally cannot see scheduling, image pulls, volume attachment,
   admission, or the exec stream. A green suite there means the manifests are
   what the code says they are, not that a pod came up.
-- **The Kubernetes driver restricts no egress.** `Capabilities.FQDNEgress` is
-  false and no NetworkPolicy is rendered. Restricting an agent's egress by DNS
-  name is the control that addresses exfiltration by a prompt-injected model,
-  and muster does not implement it.
+- **The Kubernetes driver restricts no egress.** No NetworkPolicy is rendered,
+  and there is no capability flag to read that off — it is stated here and in
+  the driver's own doc comment. Restricting an agent's egress by DNS name is the
+  control that addresses exfiltration by a prompt-injected model, and muster
+  does not implement it. `Capabilities.Policy` being true does not cover it.
 
 ## The provisioner
 

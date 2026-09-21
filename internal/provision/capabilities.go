@@ -81,22 +81,8 @@ type Capabilities struct {
 	// here must produce a REFUSAL rather than a no-op.
 	Policy bool
 
-	// FQDNEgress: the driver can restrict outbound traffic by DNS NAME, not
-	// merely by address range.
-	//
-	// 🔴 THE DISTINCTION IS THE ENTIRE THREAT MODEL, NOT A REFINEMENT. The
-	// reason to restrict an agent's egress is exfiltration by a prompt-injected
-	// model, and an address-range allowlist does not constrain that: anything
-	// reachable is reachable. A driver with Policy true and FQDNEgress false has
-	// authorisation but no exfiltration control, and the difference has to be
-	// visible to whoever decides what a given agent is allowed to read.
-	FQDNEgress bool
-
 	// Persistence: storage that outlives the instance's process.
 	Persistence bool
-
-	// Sidecars: more than one process per instance.
-	Sidecars bool
 
 	// ResourceLimits: enforceable cpu/memory ceilings.
 	ResourceLimits bool

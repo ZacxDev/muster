@@ -128,16 +128,21 @@ func (d *Driver) Driver() string { return "kubernetes" }
 
 // Capabilities implements provision.Provisioner.
 //
-// 🔴 TWO OF THESE ARE FALSE FOR REASONS THAT MATTER MORE THAN THE FEATURE:
+// 🔴 TWO LOSSES THIS DRIVER HAS ARE NOT ON THIS TYPE, AND HAVE TO BE READ HERE:
 //
-//   - FQDNEgress. This driver renders no NetworkPolicy at all. Restricting an
-//     agent's egress by DNS NAME is the control that addresses exfiltration by
-//     a prompt-injected model; an address-range policy is not that control.
-//     Declaring false is how a caller learns the mitigation is absent instead
-//     of assuming it from the presence of Policy.
-//   - Sidecars. One container plus an init container. The chart this replaces
-//     could run three log tailers, and they were structurally invisible to that
-//     project's own log reads anyway.
+//   - IT RESTRICTS NO EGRESS. It renders no NetworkPolicy at all. Restricting
+//     an agent's egress by DNS NAME is the control that addresses exfiltration
+//     by a prompt-injected model; an address-range policy is not that control,
+//     and neither is the RBAC that Policy true announces. Do not read Policy as
+//     covering it.
+//   - IT RUNS NO SIDECARS. One container plus an init container. The chart this
+//     replaces could run three log tailers, and they were structurally
+//     invisible to that project's own log reads anyway.
+//
+// Both were once Capabilities fields. They were deleted because nothing
+// branched on them and no Spec field could ever ask for either, so they
+// announced a loss to a caller that had no decision to make — which is a
+// statement for humans, and it belongs in prose like this.
 func (d *Driver) Capabilities() provision.Capabilities {
 	isolation := provision.IsolationContainer
 	if d.cfg.NamespacePerInstance {
@@ -148,9 +153,7 @@ func (d *Driver) Capabilities() provision.Capabilities {
 		Secrets:        true,
 		Files:          true,
 		Policy:         !d.cfg.PolicyDisabled,
-		FQDNEgress:     false,
 		Persistence:    d.cfg.WorkspaceStorageClass != nil,
-		Sidecars:       false,
 		ResourceLimits: true,
 		Scale:          true,
 		Exec:           d.cfg.RESTConfig != nil,

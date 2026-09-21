@@ -38,15 +38,15 @@
 //     explicit Init step. The chart this replaces cloned it about 250 lines
 //     BEFORE init commands ran, which is the whole reason that project's git
 //     credential handling had to work in two different environments at once.
-//   - 🔴 IT DOES NOT RESTRICT EGRESS. Capabilities.FQDNEgress is false and
-//     there is no NetworkPolicy. Restricting an agent's egress by DNS name is
-//     the control that addresses exfiltration by a prompt-injected model, and
-//     this driver does not implement it. Saying so is the point: a driver that
-//     declared the capability and rendered an address-range policy would report
-//     a mitigation nobody has.
-//   - It does not run sidecars. Capabilities.Sidecars is false; one container,
-//     plus an init container. The chart it replaces could run three log
-//     tailers, which were structurally invisible to that project anyway — its
-//     log reads never named a container, so they always read the first one.
+//   - 🔴 IT DOES NOT RESTRICT EGRESS. There is no NetworkPolicy. Restricting
+//     an agent's egress by DNS name is the control that addresses exfiltration
+//     by a prompt-injected model, and this driver does not implement it. Saying
+//     so is the point, and there is no capability bool to read it off: a driver
+//     that rendered an address-range policy and called it egress control would
+//     report a mitigation nobody has.
+//   - It does not run sidecars. One container, plus an init container. The
+//     chart it replaces could run three log tailers, which were structurally
+//     invisible to that project anyway — its log reads never named a container,
+//     so they always read the first one.
 //   - It does not manage ingress, TLS, autoscaling or pod disruption budgets.
 package k8s

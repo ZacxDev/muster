@@ -152,9 +152,6 @@ func TestNoopCapabilitiesAreDeclaredHonestly(t *testing.T) {
 	if caps.Isolation != provision.IsolationNone {
 		t.Errorf("the noop driver isolates nothing; Isolation is %v, want %v", caps.Isolation, provision.IsolationNone)
 	}
-	if caps.FQDNEgress {
-		t.Error("the noop driver must not claim FQDNEgress")
-	}
 }
 
 // TestNoopDoesNotImplementPolicyGranter is the compile-time half of the
