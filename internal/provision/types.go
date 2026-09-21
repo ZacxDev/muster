@@ -467,11 +467,20 @@ func (s Spec) PortNumber(name string) int {
 	return 0
 }
 
-// sortedEnvNames is a stable rendering of an env list's names, used by the
-// divergence check and by driver-side annotations. Sorting is what makes two
-// specs that differ only in the ORDER of their environment compare equal —
-// which they should, because nothing downstream depends on that order.
-func sortedEnvNames(env []EnvVar) []string {
+// sortedEnvPairs is a stable rendering of an env list as `name=value` pairs.
+//
+// 🔴 IT CONTAINS THE VALUES, SO ITS ONLY LEGITIMATE CONSUMER IS SOMETHING THAT
+// HASHES IT. Fingerprint is that consumer, and today it is the only one. This
+// function was called sortedEnvNames and its comment offered "driver-side
+// annotations" as a second consumer — a name that hid what it returns, next to
+// a sentence sanctioning the one use that would publish it: an annotation is
+// readable by anything that can read the object, and it is called on
+// Spec.Secrets. Nothing leaked, because no driver ever took that invitation.
+//
+// Sorting is what makes two specs that differ only in the ORDER of their
+// environment compare equal — which they should, because nothing downstream
+// depends on that order.
+func sortedEnvPairs(env []EnvVar) []string {
 	out := make([]string, 0, len(env))
 	for _, e := range env {
 		out = append(out, e.Name+"="+e.Value)

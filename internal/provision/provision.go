@@ -269,8 +269,8 @@ func Fingerprint(s Spec) string {
 	w("command", strings.Join(s.Runtime.Command, "\x1f"))
 	w("args", strings.Join(s.Runtime.Args, "\x1f"))
 	w("workdir", s.Runtime.WorkingDir)
-	w("env", strings.Join(sortedEnvNames(s.Env), "\x1f"))
-	w("secrets", strings.Join(sortedEnvNames(s.Secrets), "\x1f"))
+	w("env", strings.Join(sortedEnvPairs(s.Env), "\x1f"))
+	w("secrets", strings.Join(sortedEnvPairs(s.Secrets), "\x1f"))
 
 	files := make([]string, 0, len(s.Files))
 	for _, f := range s.Files {
