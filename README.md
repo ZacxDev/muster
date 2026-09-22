@@ -140,8 +140,12 @@ mechanism looks over-built and each part of it is there for a measured failure.
 this" and whatever runs it. It imports nothing outside the standard library, so
 wiring the no-op driver costs none of a cluster client's dependency tree.
 
-Four rules define it, each pinned by a test rather than by prose. They are
-stated in full in the package doc; in short:
+Four rules define it. Each rule's main clause is pinned by a test in
+`provisiontest.RunContract` rather than by prose — with **one named exception**:
+rule 2's `ErrNotManaged` clause, which needs a shared backend to be expressible
+at all and is therefore pinned in the Kubernetes driver's own ownership tests
+instead. `RunContract` has 21 cases and none of them mentions `ErrNotManaged`.
+The rules are stated in full in the package doc; in short:
 
 1. **A driver that cannot see its backend returns an error, never an empty
    set.** A caller reads a `List` error as "keep the stored status" and an empty
@@ -152,18 +156,22 @@ stated in full in the package doc; in short:
    `ErrNotManaged`, which deliberately does **not** satisfy
    `errors.Is(err, ErrNotFound)` — otherwise `if err != nil && !errors.Is(err,
    ErrNotFound)`, the idiom this rule invites, discards the refusal in silence.
+   That refusal also means **nothing was removed**: a driver decides ownership
+   before it deletes, so "removed the instance, then reported a permanent
+   failure" — a state no retry loop can leave — cannot happen.
 3. **`Create` is idempotent; a divergent spec is an error**, not a silent
-   overwrite.
-4. **`Capabilities` is useless unless callers branch on it.** The refusals are
-   spelled in four places — `CheckSpec` (files, secrets, persistence, resource
-   limits, scale), `CheckScale` (scale again, because it is one rule reached by
-   two entry points), `Grant` (policy) and `Exec` (exec). `capabilities.go`'s
-   doc comment is the authority on which capability is refused where; this list
-   is a copy, and copies go stale — this one said "`CheckSpec` and `Grant` …
-   are the only places", omitting `Exec`, which `provision.Exec` genuinely
-   branches on. A policy a driver cannot interpret is REFUSED — an interface
-   reporting "granted" for a policy nobody applied is worse than no policy
-   feature, because it reads as coverage.
+   overwrite. Note the one asymmetry: `Create`'s refusal over a foreign
+   co-named object keeps `ErrDivergentSpec` and does **not** report
+   `ErrNotManaged`.
+4. **`Capabilities` is useless unless callers branch on it.** Each capability's
+   refusal is spelled in exactly one place, and **`capabilities.go`'s doc
+   comment is the authority on which one** — deliberately not copied here.
+   There used to be a copy, it said "`CheckSpec` and `Grant` … are the only
+   places", and it was wrong about `CheckScale` and `Exec`; a partial
+   enumeration of the guards reads exactly like a complete one. A policy a
+   driver cannot interpret is REFUSED — an interface reporting "granted" for a
+   policy nobody applied is worse than no policy feature, because it reads as
+   coverage.
 
 `internal/provision/provisiontest` is the contract suite every driver must pass.
 It requires a working driver, a **blind** one and a **restricted** one, and it

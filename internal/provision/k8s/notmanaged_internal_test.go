@@ -11,13 +11,23 @@ package k8s
 import (
 	"context"
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/ZacxDev/muster/internal/provision"
 )
@@ -60,18 +70,89 @@ func internalForeignMeta(name string) metav1.ObjectMeta {
 	}}
 }
 
-// TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels is the LEDGER of the six
-// object kinds apply and Destroy can refuse on.
+// internalForeignClusterMeta is the same fixture for a cluster-scoped object,
+// which has no namespace of its own.
+func internalForeignClusterMeta(name string) metav1.ObjectMeta {
+	return metav1.ObjectMeta{Name: name, Labels: map[string]string{
+		"app.kubernetes.io/name":       "grafana",
+		"app.kubernetes.io/managed-by": "Helm",
+	}}
+}
+
+// The two policy shapes the RBAC ledger rows need: one that renders only
+// cluster-scoped objects, one that renders only namespaced ones. A policy
+// carrying both would reach the cluster half first, so the namespaced sites
+// would be unreachable behind it.
+var (
+	internalClusterPolicy = provision.Policy{
+		Name: "read-nodes",
+		Rules: internalRules(`{"clusterRules":[{"apiGroups":[""],"resources":["nodes"],` +
+			`"verbs":["get","list"]}]}`),
+	}
+	internalNamespacePolicy = provision.Policy{
+		Name: "read-configmaps",
+		Rules: internalRules(`{"namespaceRules":[{"apiGroups":[""],"resources":["configmaps"],` +
+			`"verbs":["get"]}]}`),
+	}
+)
+
+func internalRules(s string) []byte { return []byte(s) }
+
+// internalForeignClusterRole is a ClusterRole somebody else made, under the
+// deterministic name muster derives for (instance, policy). Its rule is
+// deliberately NOT the rule muster would write, so an overwrite is visible.
+func internalForeignClusterRole(instance, policy string) *rbacv1.ClusterRole {
+	return &rbacv1.ClusterRole{
+		ObjectMeta: internalForeignClusterMeta(PolicyObjectName(instance, policy)),
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"*"},
+		}},
+	}
+}
+
+// internalGrantAfterCreate creates the instance — so its ServiceAccount is
+// genuinely muster's and Grant's identity check passes — and then grants.
+func internalGrantAfterCreate(d *Driver, name string, pol provision.Policy) error {
+	ctx := context.Background()
+	if err := d.Create(ctx, internalSpec(name)); err != nil {
+		return fmt.Errorf("premise: Create must succeed before the grant: %w", err)
+	}
+	return d.Grant(ctx, provision.Ref{Name: name}, pol)
+}
+
+// TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels is the LEDGER of every
+// object kind apply, Grant and Destroy can refuse on.
 //
 // 🔴 IT IS A SEAM GUARD, NOT A PER-SITE ONE. Each site was individually
 // reviewed and each refusal was individually correct where it was CONSTRUCTED;
 // what was broken was the wrapping between the construction and the caller.
-// Five of the six sites wrapped the refusal in blind(), which formats with %v,
-// so at 138d269 errors.As(err, **notManagedError) was FALSE on all five and
+// Five of apply's six sites wrapped the refusal in blind(), which formats with
+// %v, so at 138d269 errors.As(err, **notManagedError) was FALSE on all five and
 // notManagedError's own doc comment — "the concrete type survives errors.As" —
-// was a false statement about five of its six producers. A table asserting all
-// six together is what makes a sixth site added later visible: it either
-// appears here or the ledger is short.
+// was a false statement about five of its six producers. A table asserting them
+// all together is what makes a site added later visible: it either appears here
+// or the ledger is short.
+//
+// 🔴 THE LEDGER WAS SHORT, AND THAT IS WHY IT NOW COVERS THE RBAC PATH. Fixing
+// apply's five sites left policy.go's Grant out of the consolidation entirely:
+// at f373092 its ClusterRole and Role upserts still went through blind(), so a
+// permanent ownership refusal in the SECURITY-CRITICAL path arrived as
+// ErrBlind — measured with a foreign co-named ClusterRole in the way,
+// errors.Is(err, ErrBlind) true and errors.Is(err, ErrNotManaged) false. Two
+// more sites (the bindings) had no ownership check at all. The rows below are
+// the answer to "which write sites exist", and
+// TestTheWriteHelperLedgerIsComplete is the answer to "are there sites this
+// table has never heard of".
+//
+// ⚠ ONE REFUSAL IS DELIBERATELY ABSENT FROM THIS TABLE: ensureNamespace's. It
+// is a plain fmt.Errorf wrapping provision.ErrNotManaged rather than a
+// *notManagedError, because its message carries a reason the type's fixed
+// format cannot express — see the type's own doc comment, which states that
+// narrowing. A table about the TYPE cannot hold it. Its SENTINELS are pinned
+// externally, by ownership_test.go's TestCreateDoesNotAdoptANamespaceItDidNot-
+// Create, which runs the same assertRefusal every other caller-visible refusal
+// goes through. This paragraph exists because the sentence "pins every write
+// site" would otherwise be wider than what this table does.
 func TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels(t *testing.T) {
 	ctx := context.Background()
 
@@ -153,13 +234,46 @@ func TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels(t *testing.T) {
 			act: func(d *Driver) error { return d.Create(ctx, internalSpec("sv")) },
 		},
 		{
-			site: "apply/deployment (via Update)",
+			// ⚠ THIS ROW REACHES UPDATE'S PRE-FLIGHT, NOT apply'S DEPLOYMENT
+			// UPSERT, and it used to be labelled "apply/deployment (via
+			// Update)" — a name for a site it never touches. Measured: mutating
+			// the label getter apply passes to upsertOwned for the Deployment
+			// (`return managedLabels, nil`) compiles and leaves the whole suite
+			// green, INCLUDING this subtest, because Update refuses at its own
+			// pre-flight read before apply runs at all. The next row is the one
+			// that reaches the upsert.
+			site: "Update/pre-flight deployment",
 			kind: "deployment",
 			seed: func(cs *fake.Clientset) {
 				cs.AppsV1().Deployments(internalNS).Create(ctx, //nolint:errcheck
 					newForeignDeployment("dp"), metav1.CreateOptions{})
 			},
 			act: func(d *Driver) error { return d.Update(ctx, internalSpec("dp")) },
+		},
+		{
+			// 🔴 THE ROW THAT REACHES apply'S OWN DEPLOYMENT UPSERT. It needs a
+			// foreign Deployment that is NOT there when Update pre-flights and
+			// IS there when apply writes the Deployment last — which is exactly
+			// the TOCTOU window that upsert's ownership check exists for, and
+			// the only way to execute it. The reactor injects the stranger's
+			// Deployment while apply is writing its FIRST object, so the
+			// pre-flight saw nothing and the upsert collides.
+			site: "apply/deployment (TOCTOU)",
+			kind: "deployment",
+			seed: func(cs *fake.Clientset) {
+				injected := false
+				cs.PrependReactor("create", "serviceaccounts",
+					func(k8stesting.Action) (bool, runtime.Object, error) {
+						if !injected {
+							injected = true
+							// handled=false below, so the tracker still
+							// performs the ServiceAccount create itself.
+							_ = cs.Tracker().Add(newForeignDeployment("tc"))
+						}
+						return false, nil, nil
+					})
+			},
+			act: func(d *Driver) error { return d.Update(ctx, internalSpec("tc")) },
 		},
 		{
 			site: "Destroy/deployment",
@@ -169,6 +283,74 @@ func TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels(t *testing.T) {
 					newForeignDeployment("dz"), metav1.CreateOptions{})
 			},
 			act: func(d *Driver) error { return d.Destroy(ctx, provision.Ref{Name: "dz"}) },
+		},
+		// 🔴 THE RBAC HALF OF THE LEDGER. These four sites are in the path that
+		// GRANTS ACCESS, and at f373092 two of them reported a permanent
+		// ownership refusal as ErrBlind while the other two had no ownership
+		// check at all.
+		{
+			site: "Grant/serviceaccount",
+			kind: "serviceaccount",
+			seed: func(cs *fake.Clientset) {
+				cs.CoreV1().ServiceAccounts(internalNS).Create(ctx, //nolint:errcheck
+					&corev1.ServiceAccount{ObjectMeta: internalForeignMeta("gsa")}, metav1.CreateOptions{})
+			},
+			// No Create first: the instance's ServiceAccount is a stranger's, so
+			// Grant must refuse to bind a policy to somebody else's identity
+			// rather than treating the name's existence as the instance's.
+			act: func(d *Driver) error {
+				return d.Grant(ctx, provision.Ref{Name: "gsa"}, internalClusterPolicy)
+			},
+		},
+		{
+			site: "Grant/clusterrole",
+			kind: "clusterrole",
+			seed: func(cs *fake.Clientset) {
+				cs.RbacV1().ClusterRoles().Create(ctx, //nolint:errcheck
+					internalForeignClusterRole("gcr", internalClusterPolicy.Name), metav1.CreateOptions{})
+			},
+			act: func(d *Driver) error {
+				return internalGrantAfterCreate(d, "gcr", internalClusterPolicy)
+			},
+		},
+		{
+			site: "Grant/clusterrolebinding",
+			kind: "clusterrolebinding",
+			seed: func(cs *fake.Clientset) {
+				cs.RbacV1().ClusterRoleBindings().Create(ctx, //nolint:errcheck
+					&rbacv1.ClusterRoleBinding{ObjectMeta: internalForeignClusterMeta(
+						PolicyObjectName("gcb", internalClusterPolicy.Name))},
+					metav1.CreateOptions{})
+			},
+			act: func(d *Driver) error {
+				return internalGrantAfterCreate(d, "gcb", internalClusterPolicy)
+			},
+		},
+		{
+			site: "Grant/role",
+			kind: "role",
+			seed: func(cs *fake.Clientset) {
+				cs.RbacV1().Roles(internalNS).Create(ctx, //nolint:errcheck
+					&rbacv1.Role{ObjectMeta: internalForeignMeta(
+						PolicyObjectName("grl", internalNamespacePolicy.Name))},
+					metav1.CreateOptions{})
+			},
+			act: func(d *Driver) error {
+				return internalGrantAfterCreate(d, "grl", internalNamespacePolicy)
+			},
+		},
+		{
+			site: "Grant/rolebinding",
+			kind: "rolebinding",
+			seed: func(cs *fake.Clientset) {
+				cs.RbacV1().RoleBindings(internalNS).Create(ctx, //nolint:errcheck
+					&rbacv1.RoleBinding{ObjectMeta: internalForeignMeta(
+						PolicyObjectName("grb", internalNamespacePolicy.Name))},
+					metav1.CreateOptions{})
+			},
+			act: func(d *Driver) error {
+				return internalGrantAfterCreate(d, "grb", internalNamespacePolicy)
+			},
 		},
 	}
 
@@ -275,6 +457,269 @@ func TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels(t *testing.T) {
 			t.Errorf("Get's refusal must not report ErrBlind, got %v", err)
 		}
 	})
+}
+
+// TestApplyFailedKeysOnTheSentinelNotTheType pins applyFailed's predicate
+// directly, because no behavioural case in this package can reach the
+// difference: every refusal that currently arrives at applyFailed happens to BE
+// a *notManagedError, so errors.As and errors.Is agree on all of them.
+//
+// 🔴 THE DIFFERENCE IS NOT HYPOTHETICAL. ensureNamespace returns its ownership
+// refusal as a plain fmt.Errorf wrapping provision.ErrNotManaged (its message
+// carries a reason the concrete type's fixed format cannot express, and
+// ownership_test.go asserts that text). Under an errors.As predicate, any future
+// write path that routed such a refusal through applyFailed would have it
+// re-wrapped as ErrBlind — the f373092 defect in a new shape, and the shape
+// nothing would catch. This case is the guard for the WIDER predicate, and it is
+// reachable by construction rather than by luck.
+func TestApplyFailedKeysOnTheSentinelNotTheType(t *testing.T) {
+	// A refusal in the shape ensureNamespace produces: the sentinel, no type.
+	sentinelOnly := fmt.Errorf("%w: namespace %q already exists and is not managed by muster",
+		provision.ErrNotManaged, "muster-x")
+	if errors.As(sentinelOnly, new(*notManagedError)) {
+		t.Fatal("premise: this fixture must NOT carry the concrete type, or the case cannot tell the " +
+			"two predicates apart")
+	}
+	got := applyFailed("apply namespace muster-x", sentinelOnly)
+	if !errors.Is(got, provision.ErrNotManaged) {
+		t.Errorf("applyFailed dropped the ownership sentinel: %v", got)
+	}
+	if errors.Is(got, provision.ErrBlind) {
+		t.Errorf("applyFailed re-wrapped a PERMANENT ownership refusal as ErrBlind because the refusal "+
+			"was not the concrete type. A caller retries ErrBlind forever: %v", got)
+	}
+
+	// 🔴 THE OTHER DIRECTION, or the assertion above would pass for a function
+	// that never wraps anything: a genuine transport failure MUST become
+	// ErrBlind.
+	// 192.0.2.0/24 is RFC 5737 TEST-NET-1: a documentation range, so this
+	// fixture cannot read as anybody's real network topology.
+	transport := errors.New("dial tcp 192.0.2.10:443: connect: connection refused")
+	blinded := applyFailed("apply serviceaccount x", transport)
+	if !errors.Is(blinded, provision.ErrBlind) {
+		t.Errorf("applyFailed must report an unreachable API as ErrBlind, got %v", blinded)
+	}
+	if errors.Is(blinded, provision.ErrNotManaged) {
+		t.Errorf("a transport error must not claim to be an ownership refusal: %v", blinded)
+	}
+	// And the concrete type still passes through, which is the case every
+	// behavioural row above exercises.
+	typed := applyFailed("apply deployment x", notManagedAction("deployment", "x", internalNS, nil))
+	if !errors.Is(typed, provision.ErrNotManaged) || errors.Is(typed, provision.ErrBlind) {
+		t.Errorf("applyFailed mishandled a typed refusal: %v", typed)
+	}
+	if !errors.As(typed, new(*notManagedError)) {
+		t.Errorf("applyFailed broke the concrete type's errors.As chain: %v", typed)
+	}
+}
+
+// TestTheWriteHelperLedgerIsComplete is the STRUCTURAL half of the ledger
+// above: a census of every call site of the ownership helpers, by enclosing
+// function, asserted against a declared table.
+//
+// 🔴 IT EXISTS BECAUSE THE BEHAVIOURAL LEDGER CANNOT SEE A SITE NOBODY WROTE A
+// ROW FOR. That is not hypothetical: policy.go's Grant had two upserts wrapped
+// in blind() and two bindings with no ownership check at all, and it stayed that
+// way through two review rounds because every test asked "is this site right?"
+// and none asked "which sites are there?". apply's own comment said as much
+// ("nothing stops a SIXTH site calling blind() directly") and was already
+// describing a site that existed.
+//
+// 🔴 IT FAILS WHEN THE SET GROWS *OR* SHRINKS, and that is the point rather than
+// brittleness. A new number here is not a chore: it is the moment to decide
+// which helper the new site belongs to. The decision procedure is in the failure
+// message.
+//
+// ⚠ WHAT IT DOES NOT CHECK: that a site is CORRECT. A census cannot tell a
+// blind() wrapping a raw client-go error from one wrapping an ownership refusal;
+// only the behavioural rows above can. The two halves are complementary and
+// neither is sufficient — the counts were what nothing pinned, and the prose
+// claims about them ("five upserts", "six kinds", "all six write sites") were
+// therefore unfalsifiable.
+func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
+	// The census, hand-derived by reading driver.go and policy.go. Each row is
+	// helper -> enclosing function -> number of call sites.
+	want := map[string]map[string]int{
+		// blind() must only ever wrap a RAW client-go error. Every entry here
+		// is a read or a write that cannot collide with a stranger's object:
+		// there is nothing for an ownership check to refuse. applyFailed's own
+		// tail call is the one exception and is how a non-refusal reaches
+		// blind() from a collision path.
+		"blind": {
+			"applyFailed":         1,
+			"getOwnedDeployment":  1,
+			"Create":              1,
+			"ensureNamespace":     2,
+			"checkNamespaceOwned": 1,
+			"Scale":               1,
+			"Destroy":             1,
+			"List":                2,
+			"Get":                 1,
+			"podFor":              1,
+			"TailLogs":            1,
+			"StreamLogs":          1,
+			"Grant":               1,
+			"revokeAllPolicies":   4,
+		},
+		// Every write that CAN collide returns through applyFailed, which is
+		// what keeps a permanent refusal out of ErrBlind. Six object kinds in
+		// apply (ServiceAccount, ConfigMap, Secret, claim, Service, Deployment
+		// — the Secret site serves both Secrets, through the loop) and four in
+		// Grant (ClusterRole, ClusterRoleBinding, Role, RoleBinding).
+		"applyFailed": {"apply": 6, "Grant": 4},
+		// The create-then-update-if-ours predicate.
+		"upsertOwned": {"apply": 4, "Grant": 2},
+		// The create-only-if-ours predicate: a bound claim and two bindings,
+		// all three immutable in the fields that matter.
+		"createOwned": {"apply": 1, "Grant": 2},
+		// Every by-name DELETE. A satellite is a logged skip, so these are the
+		// sites where a stranger's co-named object is left alone rather than
+		// destroyed.
+		"deleteIfOwned": {"apply": 3, "Destroy": 1, "Revoke": 4},
+		// The predicate itself. Every by-name path that reads, writes or
+		// deletes reaches exactly one of these.
+		"owned": {
+			"getOwnedDeployment":  1,
+			"upsertOwned":         1,
+			"createOwned":         1,
+			"deleteIfOwned":       1,
+			"Create":              1,
+			"ensureNamespace":     1,
+			"checkNamespaceOwned": 1,
+			// ⚠ upsertService open-codes the upsert because a Service's
+			// ClusterIP has to be carried over. It is the one deliberate
+			// exception to "the predicate lives in a helper", and it is why
+			// this row exists rather than being folded into upsertOwned.
+			"upsertService": 1,
+			"Grant":         1,
+		},
+	}
+
+	got := censusOfHelperCalls(t, keysOfCensus(want))
+
+	// 🔴 THE POSITIVE CONTROL, READ OUT LOUD. A census wired to nothing reports
+	// zero for every helper, which is indistinguishable from a package that
+	// calls none of them. Report the pair before comparing.
+	total := 0
+	for _, byFunc := range got {
+		for _, n := range byFunc {
+			total += n
+		}
+	}
+	t.Logf("census found %d call sites across %d helpers", total, len(got))
+	if total == 0 {
+		t.Fatal("the census found NO call sites at all, so every assertion below would pass " +
+			"vacuously: the parser is looking at the wrong files")
+	}
+
+	for _, helper := range keysOfCensus(want) {
+		wantFuncs, gotFuncs := want[helper], got[helper]
+		for _, fn := range union(keysOfCounts(wantFuncs), keysOfCounts(gotFuncs)) {
+			if wantFuncs[fn] == gotFuncs[fn] {
+				continue
+			}
+			t.Errorf("%s() is called %d time(s) in %s; the ledger says %d.\n"+
+				"  This is a SEAM guard: the count moved, so a call site was added, removed or moved.\n"+
+				"  Decide, then update the table:\n"+
+				"    - a NEW write that can collide with a stranger's co-named object goes through\n"+
+				"      upsertOwned/createOwned/deleteIfOwned and returns through applyFailed, and it\n"+
+				"      needs a behavioural row in TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels;\n"+
+				"    - a blind() may only wrap a RAW client-go error. If the error it wraps can be an\n"+
+				"      ownership refusal, this is the f373092 defect again: a permanent refusal\n"+
+				"      arriving as a transient ErrBlind.",
+				helper, gotFuncs[fn], fn, wantFuncs[fn])
+		}
+	}
+}
+
+// censusOfHelperCalls counts calls to each named helper in this package's
+// NON-TEST sources, attributed to the function they appear in.
+func censusOfHelperCalls(t *testing.T, helpers []string) map[string]map[string]int {
+	t.Helper()
+	wanted := map[string]bool{}
+	for _, h := range helpers {
+		wanted[h] = true
+	}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package directory: %v", err)
+	}
+	out := map[string]map[string]int{}
+	files := 0
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || filepath.Ext(name) != ".go" || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		files++
+		f, perr := parser.ParseFile(token.NewFileSet(), name, nil, 0)
+		if perr != nil {
+			t.Fatalf("parse %s: %v", name, perr)
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			ast.Inspect(fn, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				var callee string
+				switch fun := call.Fun.(type) {
+				case *ast.Ident:
+					callee = fun.Name
+				case *ast.SelectorExpr:
+					callee = fun.Sel.Name
+				}
+				if !wanted[callee] {
+					return true
+				}
+				if out[callee] == nil {
+					out[callee] = map[string]int{}
+				}
+				out[callee][fn.Name.Name]++
+				return true
+			})
+		}
+	}
+	if files == 0 {
+		t.Fatal("the census parsed NO source files, so its counts are all zero for a reason that has " +
+			"nothing to do with the code")
+	}
+	t.Logf("census parsed %d non-test source file(s)", files)
+	return out
+}
+
+func keysOfCensus(m map[string]map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func keysOfCounts(m map[string]int) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func union(a, b []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, s := range append(append([]string{}, a...), b...) {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // TestLabelComplaintNamesTheKeyThatIsActuallyWrong.

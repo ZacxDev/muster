@@ -115,11 +115,24 @@ func (d *Driver) Grant(ctx context.Context, ref provision.Ref, pol provision.Pol
 	ns := d.namespaceFor(ref.Name)
 	// The instance must exist: granting access to a ServiceAccount that is not
 	// there creates a binding whose subject a FUTURE namesake would inherit.
-	if _, err := d.cfg.Client.CoreV1().ServiceAccounts(ns).Get(ctx, ref.Name, metav1.GetOptions{}); err != nil {
+	//
+	// 🔴 AND IT MUST BE MUSTER'S. A name is not an identity here either: this
+	// read was existence-only, so a ServiceAccount somebody else owns under the
+	// instance's name satisfied it and the binding below then attached the
+	// policy's rules to THEIR identity — muster escalating a stranger's
+	// workload, and reporting the grant applied. The refusal is
+	// ErrNotManaged-flavoured rather than ErrNotFound: Grant is an ACTION, and
+	// "there is no such instance" is not what happened.
+	sa, err := d.cfg.Client.CoreV1().ServiceAccounts(ns).Get(ctx, ref.Name, metav1.GetOptions{})
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return notFound(ref.Name)
 		}
 		return blind("get serviceaccount "+ref.Name, err)
+	}
+	if !owned(sa.Labels) {
+		return fmt.Errorf("refusing to grant policy %q to %q: %w", pol.Name, ref.Name,
+			notManagedAction("serviceaccount", ref.Name, ns, sa.Labels))
 	}
 
 	name := PolicyObjectName(ref.Name, pol.Name)
@@ -143,7 +156,7 @@ func (d *Driver) Grant(ctx context.Context, ref provision.Ref, pol provision.Pol
 				_, e := d.cfg.Client.RbacV1().ClusterRoles().Update(ctx, cr, metav1.UpdateOptions{})
 				return e
 			}); err != nil {
-			return blind("apply clusterrole "+name, err)
+			return applyFailed("apply clusterrole "+name, err)
 		}
 		crb := &rbacv1.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
@@ -152,10 +165,24 @@ func (d *Driver) Grant(ctx context.Context, ref provision.Ref, pol provision.Pol
 		}
 		// ⚠ CREATE-ONLY, AND NOT A SHORTCUT. RoleRef is immutable on a binding,
 		// so an Update that changes it is rejected; and because both the name
-		// and the subject are deterministic, an existing binding is already the
-		// one we want.
-		if _, err := d.cfg.Client.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-			return blind("create clusterrolebinding "+name, err)
+		// and the subject are deterministic, an existing binding OF OURS is
+		// already the one we want.
+		//
+		// 🔴 "OF OURS" IS THE PART THAT WAS MISSING. An AlreadyExists was
+		// treated as success outright, so a stranger's co-named
+		// ClusterRoleBinding — pointing at whatever ClusterRole and whatever
+		// subjects they chose — made Grant return nil with the policy NOT
+		// applied to this instance. createOwned is the same create-only
+		// predicate apply's workspace claim uses.
+		if err := d.createOwned("clusterrolebinding", name, "",
+			func() (map[string]string, error) {
+				return labelsOf(d.cfg.Client.RbacV1().ClusterRoleBindings().Get(ctx, name, metav1.GetOptions{}))
+			},
+			func() error {
+				_, e := d.cfg.Client.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{})
+				return e
+			}); err != nil {
+			return applyFailed("apply clusterrolebinding "+name, err)
 		}
 	}
 
@@ -176,15 +203,24 @@ func (d *Driver) Grant(ctx context.Context, ref provision.Ref, pol provision.Pol
 				_, e := d.cfg.Client.RbacV1().Roles(ns).Update(ctx, r, metav1.UpdateOptions{})
 				return e
 			}); err != nil {
-			return blind("apply role "+name, err)
+			return applyFailed("apply role "+name, err)
 		}
 		rb := &rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: labels},
 			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: name},
 			Subjects:   []rbacv1.Subject{subject},
 		}
-		if _, err := d.cfg.Client.RbacV1().RoleBindings(ns).Create(ctx, rb, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-			return blind("create rolebinding "+name, err)
+		// Create-only for the same reason as the ClusterRoleBinding above, and
+		// ownership-checked for the same reason.
+		if err := d.createOwned("rolebinding", name, ns,
+			func() (map[string]string, error) {
+				return labelsOf(d.cfg.Client.RbacV1().RoleBindings(ns).Get(ctx, name, metav1.GetOptions{}))
+			},
+			func() error {
+				_, e := d.cfg.Client.RbacV1().RoleBindings(ns).Create(ctx, rb, metav1.CreateOptions{})
+				return e
+			}); err != nil {
+			return applyFailed("apply rolebinding "+name, err)
 		}
 	}
 	return nil
@@ -209,6 +245,24 @@ func decodeRules(raw json.RawMessage) (Rules, error) {
 
 // Revoke implements provision.PolicyGranter. Every object is attempted; a
 // missing one is success, because absent is the state the caller asked for.
+//
+// 🔴 EVERY DELETE IS OWNERSHIP-CHECKED, AND IT WAS NOT. This method resolved
+// four objects by their DERIVED NAME and deleted them unconditionally, treating
+// IsNotFound as success. Measured: with a stranger's co-named ClusterRole in the
+// way it deleted that ClusterRole AND its cluster-wide ClusterRoleBinding and
+// returned nil — the PR's own central invariant ("deleting by name alone
+// destroys a stranger's objects and reports success"), live at CLUSTER SCOPE, in
+// the one method a caller uses to withdraw a privilege. The discriminator was
+// by-name versus by-label: revokeAllPolicies, which enumerates the same objects
+// by LABEL, left the same stranger's object alone.
+//
+// ⚠ A FOREIGN OBJECT IS A LOGGED SKIP, NOT A REFUSAL, AND THAT IS THE SAME
+// ANSWER revokeAllPolicies GIVES. These are satellites, not identity anchors
+// (see deleteIfOwned): a label selector simply does not match a stranger's
+// object, so a loud Revoke here would disagree with the teardown path about the
+// same object. It is also coherent with Grant, which now REFUSES to write a
+// policy object a stranger holds — so muster cannot have granted through one,
+// and "the grant is absent" is the state the caller asked for.
 func (d *Driver) Revoke(ctx context.Context, ref provision.Ref, policyName string) error {
 	ns := d.namespaceFor(ref.Name)
 	name := PolicyObjectName(ref.Name, policyName)
@@ -223,10 +277,26 @@ func (d *Driver) Revoke(ctx context.Context, ref provision.Ref, policyName strin
 			firstErr = fmt.Errorf("delete %s %s: %w", what, name, err)
 		}
 	}
-	del("clusterrolebinding", c.RbacV1().ClusterRoleBindings().Delete(ctx, name, metav1.DeleteOptions{}))
-	del("clusterrole", c.RbacV1().ClusterRoles().Delete(ctx, name, metav1.DeleteOptions{}))
-	del("rolebinding", c.RbacV1().RoleBindings(ns).Delete(ctx, name, metav1.DeleteOptions{}))
-	del("role", c.RbacV1().Roles(ns).Delete(ctx, name, metav1.DeleteOptions{}))
+	del("clusterrolebinding", d.deleteIfOwned("clusterrolebinding", name,
+		func() (map[string]string, error) {
+			return labelsOf(c.RbacV1().ClusterRoleBindings().Get(ctx, name, metav1.GetOptions{}))
+		},
+		func() error { return c.RbacV1().ClusterRoleBindings().Delete(ctx, name, metav1.DeleteOptions{}) }))
+	del("clusterrole", d.deleteIfOwned("clusterrole", name,
+		func() (map[string]string, error) {
+			return labelsOf(c.RbacV1().ClusterRoles().Get(ctx, name, metav1.GetOptions{}))
+		},
+		func() error { return c.RbacV1().ClusterRoles().Delete(ctx, name, metav1.DeleteOptions{}) }))
+	del("rolebinding", d.deleteIfOwned("rolebinding", name,
+		func() (map[string]string, error) {
+			return labelsOf(c.RbacV1().RoleBindings(ns).Get(ctx, name, metav1.GetOptions{}))
+		},
+		func() error { return c.RbacV1().RoleBindings(ns).Delete(ctx, name, metav1.DeleteOptions{}) }))
+	del("role", d.deleteIfOwned("role", name,
+		func() (map[string]string, error) {
+			return labelsOf(c.RbacV1().Roles(ns).Get(ctx, name, metav1.GetOptions{}))
+		},
+		func() error { return c.RbacV1().Roles(ns).Delete(ctx, name, metav1.DeleteOptions{}) }))
 	return firstErr
 }
 
@@ -246,8 +316,15 @@ func (d *Driver) Revoke(ctx context.Context, ref provision.Ref, policyName strin
 // nothing deletes the Role and the RoleBinding, so they survive the instance
 // with a subject naming a ServiceAccount that Create will recreate verbatim for
 // the next instance to take the name: it inherits access nobody granted it.
+// 🔴 THE SELECTOR INCLUDES managedSelector(), so the set this enumerates is
+// exactly the set owned() admits. It used to ask only for the two POLICY keys,
+// which anybody can put on an object: a foreign object carrying
+// muster.dev/policy-managed=true would have been enumerated and deleted here,
+// while every by-name path in this driver refuses it. The server-side selector
+// and the client-side predicate are one rule, and this is its server-side
+// spelling — see managedLabels.
 func (d *Driver) revokeAllPolicies(ctx context.Context, ref provision.Ref, ns string) error {
-	sel := policyManaged + "=true," + labelSubject + "=" + ref.Name
+	sel := managedSelector() + "," + policyManaged + "=true," + labelSubject + "=" + ref.Name
 	c := d.cfg.Client
 	opts := metav1.ListOptions{LabelSelector: sel}
 

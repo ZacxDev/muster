@@ -40,7 +40,11 @@ var (
 	// constructor, which formats with %v, so a caller saw only "backend
 	// unreachable": a refusal that will never resolve on its own presented as a
 	// transient fault, so a caller that retries never converges and a caller
-	// that alerts pages for an outage that is not happening.
+	// that alerts pages for an outage that is not happening. TWO MORE were
+	// found a round later, in that driver's Grant — the path that hands out
+	// cluster RBAC — because the fix consolidated apply's sites and nobody
+	// asked which OTHER paths wrote objects. A predicate corrected at some of
+	// its sites is wrong at the rest of them, in the same direction.
 	//
 	// 🔴 A BY-NAME READ ALSO REPORTS ErrNotFound; A WRITE OR A TEARDOWN DOES
 	// NOT. Those are different questions with different right answers, and the
@@ -51,12 +55,23 @@ var (
 	//     "muster has no instance by that name" — ErrNotFound AND this.
 	//     Reporting it as an instance is how a status read describes somebody
 	//     else's Deployment as an agent.
-	//   - Create, Update and Destroy were asked to ACT on X. "There is no such
+	//   - Update, Destroy and Grant were asked to ACT on X. "There is no such
 	//     instance" is not what happened — something else holds the name and
 	//     muster refused — so these report this sentinel ALONE. Reporting
 	//     ErrNotFound there is worse than imprecise: `if err != nil &&
 	//     !errors.Is(err, ErrNotFound)` is the idiom Destroy's own contract
 	//     invites, and it SILENTLY DISCARDS the refusal.
+	//
+	// 🔴 Create IS AN EXCEPTION AND THIS DOC USED TO NAME IT AS A PRODUCER.
+	// Measured: Create over a foreign co-named Deployment gives
+	// errors.Is(err, ErrDivergentSpec) true and errors.Is(err, ErrNotManaged)
+	// FALSE. That is the DECISION, not a defect — "refused, nothing written" is
+	// the branch Create's caller already has, and a single error claiming to be
+	// both a divergence and an ownership refusal makes the caller's switch
+	// order decide which one it is. The refusal's PROSE still names the label
+	// that is wrong, because relabelling is the only escape. The kubernetes
+	// driver's ownership tests now assert the absence of this sentinel there,
+	// which nothing did while this paragraph was wrong.
 	//
 	// It is not pinned by provisiontest.RunContract: a driver has to have a
 	// SHARED backend for a foreign co-named object to be expressible at all,
@@ -94,8 +109,12 @@ type Provisioner interface {
 	// which set of capability losses applies to what they are looking at.
 	Driver() string
 
-	// Capabilities declares what this driver can do. Callers MUST branch on it;
-	// CheckSpec and Grant are those branches.
+	// Capabilities declares what this driver can do. Callers MUST branch on
+	// it, and the branches live in this package — Capabilities' own doc
+	// comment is the single authority on which capability is refused where.
+	// This line used to enumerate them as "CheckSpec and Grant", which omitted
+	// CheckScale and Exec; the enumeration exists once, there, because a stale
+	// copy of it reads exactly like a complete one.
 	Capabilities() Capabilities
 
 	// Create brings the instance into existence.
@@ -134,6 +153,21 @@ type Provisioner interface {
 	// ErrNotFound)` is the idiom this contract invites and it would discard the
 	// refusal. Which objects count as the instance's identity is the driver's
 	// call; the kubernetes driver's Destroy doc states its answer.
+	//
+	// 🔴 AN OWNERSHIP REFUSAL FROM Destroy MEANS NOTHING WAS REMOVED, AND IT IS
+	// TERMINAL. A driver must check every object it treats as the instance's
+	// identity BEFORE it deletes anything, so the two outcomes are the only two
+	// there are: the instance is gone (nil), or the backend is exactly as it
+	// was (ErrNotManaged). A driver that removed the instance and THEN reported
+	// a permanent refusal leaves a caller unable to tell which happened — and
+	// "retry Destroy until it returns nil" never terminates, because the
+	// refusal is about state only an operator can change. The kubernetes driver
+	// had that defect where an instance's own objects were muster's and its
+	// per-instance NAMESPACE was a stranger's: three consecutive Destroys
+	// returned the same ErrNotManaged with the instance already torn down. It
+	// now refuses first and removes nothing, so the pod keeps running until the
+	// namespace is relabelled or removed. Callers branch on the SENTINEL: retry
+	// [ErrBlind], surface [ErrNotManaged] to a human, treat nil as done.
 	Destroy(ctx context.Context, ref Ref) error
 
 	// List returns every instance this driver manages.

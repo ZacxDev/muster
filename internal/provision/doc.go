@@ -32,9 +32,19 @@
 //
 // # The four contract rules
 //
-// These are behavioural promises, not documentation. Each is pinned by a test
-// in provisiontest.RunContract, which every driver in this repository must
-// pass.
+// These are behavioural promises, not documentation. Each rule's MAIN clause is
+// pinned by a test in provisiontest.RunContract, which every driver in this
+// repository must pass.
+//
+// 🔴 ONE CLAUSE IS DELIBERATELY NOT CONTRACT-PINNED, AND THIS SENTENCE USED TO
+// CLAIM OTHERWISE. Rule 2's [ErrNotManaged] carve-out cannot be expressed in
+// RunContract: a foreign co-named object requires a SHARED backend, and Noop's
+// backend is its own map, so the case would be unfalsifiable for half the
+// drivers here — see [ErrNotManaged], which states that decision. It is pinned
+// in the kubernetes driver's own ownership tests instead. RunContract has 21
+// cases and none of them mentions ErrNotManaged; a reader who trusted the old
+// wording would have believed a driver's compliance with that clause was
+// checked by the suite it passes.
 //
 //  1. 🔴 A DRIVER THAT CANNOT SEE ITS BACKEND RETURNS AN ERROR, NEVER AN EMPTY
 //     SET. [Provisioner.List] and [Provisioner.Get] must fail loudly when the
@@ -51,8 +61,11 @@
 //     [Provisioner.Get] must return [ErrNotFound]. A FOREIGN object holding
 //     the instance's name is neither case: it is [ErrNotManaged], and that
 //     error must not also satisfy errors.Is(err, [ErrNotFound]) or the
-//     `!errors.Is(err, ErrNotFound)` idiom this rule invites discards it. See
-//     [Provisioner.Destroy] and [ErrNotManaged].
+//     `!errors.Is(err, ErrNotFound)` idiom this rule invites discards it. That
+//     refusal must also mean NOTHING WAS REMOVED — a driver decides ownership
+//     before it deletes, so a caller can read the sentinel as "the backend is
+//     as it was" rather than guessing. See [Provisioner.Destroy] and
+//     [ErrNotManaged].
 //
 //  3. 🔴 [Provisioner.Create] IS IDEMPOTENT, AND A DIVERGENT SPEC IS AN ERROR.
 //     Creating the same instance twice with the same spec succeeds twice.
@@ -61,9 +74,12 @@
 //     [Provisioner.Update] and can say so.
 //
 //  4. 🔴 [Capabilities] IS USELESS UNLESS CALLERS BRANCH ON IT. A field that
-//     exists is not a guard. [CheckSpec] is that branch, it lives in exactly
-//     one place, and every driver's Create/Update calls it before touching a
-//     backend. The security case is [Grant]: a policy a driver cannot
+//     exists is not a guard. Each capability's refusal lives in exactly one
+//     place, and [Capabilities]'s own doc comment is the AUTHORITY on which
+//     capability is refused where — this rule deliberately does not repeat the
+//     list, because the copy of it that used to be here named [CheckSpec] and
+//     [Grant] only, and a partial enumeration of the guards reads as a
+//     complete one. The security case is [Grant]: a policy a driver cannot
 //     interpret must be REFUSED, because an interface reporting "granted" for
 //     a policy nobody applied is worse than having no policy feature at all.
 //

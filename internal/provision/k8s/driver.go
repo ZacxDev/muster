@@ -46,8 +46,9 @@ type Config struct {
 
 	// NamespacePerInstance gives each instance its own namespace, named
 	// NamespacePrefix+Name. It raises Capabilities.Isolation to
-	// IsolationNamespace, and it adds a namespace deletion to the end of
-	// Destroy.
+	// IsolationNamespace, and it adds two steps to Destroy: an ownership
+	// PRE-FLIGHT over the namespace before anything is deleted (see
+	// checkNamespaceOwned), and the namespace deletion at the end.
 	//
 	// ⚠ IT DOES NOT REPLACE THE OBJECT-BY-OBJECT TEARDOWN, and this comment
 	// used to say it did ("what makes Destroy a namespace deletion rather than
@@ -200,7 +201,8 @@ func blind(op string, err error) error {
 	return fmt.Errorf("%w: %s: %v", provision.ErrBlind, op, err)
 }
 
-// applyFailed attributes a failure from one of apply's object upserts.
+// applyFailed attributes a failure from an object upsert on a WRITE path —
+// apply's six kinds AND Grant's RBAC objects.
 //
 // 🔴 AN OWNERSHIP REFUSAL IS NOT UNREACHABILITY, AND THIS IS THE ONE PLACE THE
 // WRITE PATH DISTINGUISHES THEM. All five upserts in apply() used to wrap their
@@ -213,15 +215,25 @@ func blind(op string, err error) error {
 // on it pages for an outage that is not happening, and the refusal's own type
 // and sentinel were gone.
 //
-// ⚠ IT IS ONE FUNCTION RATHER THAN FIVE CORRECTED CALL SITES, AND THAT IS A
-// SMALLER GUARANTEE THAN IT LOOKS. Routing every existing upsert through here
-// means the five sites cannot drift apart — but NOTHING STOPS A SIXTH SITE
-// CALLING blind() DIRECTLY and reintroducing the defect. There is no structural
-// check for that: notmanaged_internal_test.go's ledger asserts the kinds that
-// exist today, so a NEW kind wired straight to blind() would simply not appear
-// in it. If you add an object to apply, add its row to that ledger by hand.
+// 🔴 THE HEDGE THIS COMMENT USED TO CARRY — "nothing stops a SIXTH site calling
+// blind() directly" — WAS ALREADY TRUE WHEN IT WAS WRITTEN, of the two upserts
+// in policy.go's Grant. Consolidating apply's five sites here left the
+// security-critical RBAC path out of the consolidation entirely, and a predicate
+// applied at some of its sites is wrong at the rest of them in the same
+// direction. Measured at f373092 with a foreign co-named ClusterRole in the way:
+// errors.Is(err, ErrBlind) true, errors.Is(err, ErrNotManaged) false. Every
+// write in this driver that can collide with a stranger's object now returns
+// through this function; policy.go has no blind() call on a collision path left.
+//
+// 🔴 IT KEYS ON THE SENTINEL, NOT ON THE CONCRETE TYPE, AND THAT IS THE WIDER
+// PREDICATE. errors.As(err, **notManagedError) would misroute any refusal that
+// reports provision.ErrNotManaged through a plain fmt.Errorf — ensureNamespace's
+// does, for the reason stated there — straight back into blind(), which is the
+// exact defect above wearing a different shape. What matters to a caller is the
+// sentinel it branches on, so that is what decides here. No client-go error
+// reports ErrNotManaged, so this cannot swallow a genuine transport failure.
 func applyFailed(op string, err error) error {
-	if errors.As(err, new(*notManagedError)) {
+	if errors.Is(err, provision.ErrNotManaged) {
 		return fmt.Errorf("%s: %w", op, err)
 	}
 	return blind(op, err)
@@ -249,9 +261,24 @@ func notFound(name string) error {
 //     Destroy's contract invites, so an ErrNotFound-flavoured refusal there is
 //     SILENTLY DISCARDED — which is the opposite of being loud.
 //
-// The concrete type survives errors.As all the way to the caller on every
-// path, which is what Update's pre-flight branch reads and what
-// notmanaged_internal_test.go pins for all six write sites.
+// 🔴 THE CONCRETE TYPE SURVIVES errors.As ON EVERY PATH THAT CONSTRUCTS IT, AND
+// THAT IS NARROWER THAN "ON EVERY PATH" — which is what this comment used to
+// say. One refusal about a foreign object is NOT this type: ensureNamespace
+// returns a plain fmt.Errorf wrapping provision.ErrNotManaged, because its
+// message has to carry a reason this type's fixed format cannot express ("Destroy
+// deletes this namespace and everything in it"); ownership_test.go asserts the
+// "refusing to adopt" half of that sentence. So errors.Is(err,
+// provision.ErrNotManaged) holds there and errors.As(err, **notManagedError)
+// does NOT.
+//
+// Nothing load-bearing depends on the difference: notManagedError is unexported,
+// so no caller outside this package can errors.As for it at all, and the two
+// in-package readers are Update's pre-flight branch and Destroy's — both of
+// which read a refusal that getOwnedDeployment constructed. applyFailed keys on
+// the SENTINEL for exactly this reason; see its comment.
+//
+// notmanaged_internal_test.go's ledger pins the type's survival at every site
+// that constructs it, and names the one that does not.
 type notManagedError struct {
 	kind, name, ns string
 	// labels is what the object ACTUALLY carries, so the message can name the
@@ -394,17 +421,58 @@ func (d *Driver) upsertOwned(what, name, ns string, get func() (map[string]strin
 	return update()
 }
 
+// createOwned creates an object that must not be UPDATED once it exists, and
+// refuses one this driver did not create.
+//
+// 🔴 IT IS THE CREATE-ONLY HALF OF upsertOwned, AND IT EXISTS BECAUSE THE SAME
+// EIGHT LINES WERE OPEN-CODED AT THREE SITES — apply's workspace claim and both
+// of Grant's role bindings — of which TWO WERE WRONG IN THE SAME DIRECTION: the
+// bindings treated AlreadyExists as success outright, so a Grant whose
+// ClusterRoleBinding was a stranger's co-named object reported the policy
+// applied while the subject and the RoleRef were somebody else's choice. That is
+// the "reports granted for a policy nobody applied" shape provision.Grant's own
+// doc calls worse than having no policy feature.
+//
+// An AlreadyExists over an object that IS ours is success, not an update: the
+// callers' objects are immutable in the fields that matter (a PVC's binding, a
+// binding's RoleRef) and their names are deterministic, so an existing one of
+// ours is already the object we want.
+func (d *Driver) createOwned(what, name, ns string, get func() (map[string]string, error), create func() error) error {
+	err := create()
+	if !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	labels, gerr := get()
+	if gerr != nil {
+		return gerr
+	}
+	if !owned(labels) {
+		return notManagedAction(what, name, ns, labels)
+	}
+	return nil
+}
+
 // deleteIfOwned deletes an object only when this driver created it. A missing
 // object is success — absent is the state the caller asked for. A FOREIGN
 // object is left alone and logged: it belongs to somebody else, and destroying
 // an instance must not touch it.
 //
 // ⚠ EVERY CALLER OF THIS IS A SATELLITE OBJECT — a ConfigMap, a Secret, a
-// Service — and the quiet skip is right for those and WRONG for the instance's
-// identity anchors. The Deployment and the per-instance Namespace do not come
-// through here: a foreign one of those means the name is not muster's to
-// operate on at all, and both refuse loudly. See destroyNamespace, which used
-// to call this and is where that difference is argued.
+// Service, a claim, a ServiceAccount, and the RBAC objects Revoke removes — and
+// the quiet skip is right for those and WRONG for the instance's identity
+// anchors. The Deployment and the per-instance Namespace do not come through
+// here: a foreign one of those means the name is not muster's to operate on at
+// all, and both refuse loudly. See checkNamespaceOwned, which is where that
+// difference is argued (destroyNamespace used to call this, and used to be where
+// the argument lived).
+//
+// ⚠ IT IS ALSO WHAT MAKES Revoke AGREE WITH revokeAllPolicies. That function
+// enumerates policy objects by LABEL, so a stranger's co-named ClusterRole is
+// invisible to it and survives a teardown; Revoke resolves the same objects by
+// NAME, and before it came through here it deleted them unconditionally — a
+// stranger's ClusterRole and its cluster-wide binding, returning nil. Two
+// answers to one question, and the destructive one was in the method a caller
+// uses to withdraw a privilege.
 //
 // ⚠ WHAT IT DOES NOT CLAIM: atomicity. The labels are read immediately before
 // the delete, but nothing stops the object being replaced between the two
@@ -630,23 +698,21 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 		// claim is the state we want — PROVIDED it is ours. A claim somebody
 		// else made under this name would otherwise be mounted into the
 		// instance's pod, which hands its contents to the agent.
-		_, cerr := c.CoreV1().PersistentVolumeClaims(ns).Create(ctx, pvc, metav1.CreateOptions{})
-		switch {
-		case cerr == nil:
-		case apierrors.IsAlreadyExists(cerr):
-			labels, gerr := labelsOf(c.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvc.Name, metav1.GetOptions{}))
-			if gerr != nil {
-				return blind("get pvc "+pvc.Name, gerr)
-			}
-			if !owned(labels) {
-				// 🔴 NOT notFound. A Create returning the sentinel that means
-				// "this instance does not exist" is indistinguishable from the
-				// caller's own precondition in a Get -> ErrNotFound -> Create
-				// loop, which would retry the refused Create forever.
-				return notManagedAction("persistentvolumeclaim", pvc.Name, ns, labels)
-			}
-		default:
-			return blind("create pvc "+pvc.Name, cerr)
+		//
+		// 🔴 THE REFUSAL IS NOT notFound. A Create returning the sentinel that
+		// means "this instance does not exist" is indistinguishable from the
+		// caller's own precondition in a Get -> ErrNotFound -> Create loop,
+		// which would retry the refused Create forever. createOwned returns
+		// ErrNotManaged alone; applyFailed keeps it out of ErrBlind.
+		if err := d.createOwned("persistentvolumeclaim", pvc.Name, ns,
+			func() (map[string]string, error) {
+				return labelsOf(c.CoreV1().PersistentVolumeClaims(ns).Get(ctx, pvc.Name, metav1.GetOptions{}))
+			},
+			func() error {
+				_, e := c.CoreV1().PersistentVolumeClaims(ns).Create(ctx, pvc, metav1.CreateOptions{})
+				return e
+			}); err != nil {
+			return applyFailed("apply persistentvolumeclaim "+pvc.Name, err)
 		}
 	}
 
@@ -724,34 +790,59 @@ func (d *Driver) ensureNamespace(ctx context.Context, instance, ns string) error
 	return nil
 }
 
-// destroyNamespace removes the instance's own namespace, and REFUSES a
-// namespace this driver did not create.
+// checkNamespaceOwned is Destroy's PRE-FLIGHT over the per-instance namespace:
+// it reads the namespace and refuses one this driver did not create, WITHOUT
+// deleting anything.
 //
-// 🔴 IT IS LOUD, AND IT USED TO BE SILENT. It went through deleteIfOwned, whose
-// foreign case logs and returns nil, so Destroy over a namespace somebody else
-// owns returned nil — "removed or already absent" — while Destroy over a
-// foreign DEPLOYMENT in the very same function returned an error. Two answers
-// to one question, with nothing reconciling them. It is an error now, because
-// the namespace is where Create's own refusal lives: ensureNamespace will not
-// create an instance in a namespace it does not own, so a nil here claimed a
-// clean teardown of a name that could never have been provisioned — which is
-// exactly the silent-success shape the ownership work exists to remove.
+// 🔴 IT RUNS BEFORE THE FIRST DELETE, AND THAT ORDER IS THE FIX FOR A MEASURED
+// INCOHERENCE. The check used to live at the END of Destroy, so a foreign
+// namespace holding an instance whose own objects WERE muster's produced this:
+// the Deployment, the ServiceAccount, every satellite and every policy object
+// were removed, and then Destroy returned provision.ErrNotManaged — measured on
+// three consecutive calls, with Get reporting ErrNotFound in between. A caller
+// looking at that cannot tell a refusal that changed nothing from one that tore
+// the instance down, and "Destroy until nil" never terminates. Checked first,
+// the two states are the only two there are: muster owns the namespace and
+// destroys everything (nil), or it does not and destroys NOTHING (a stable
+// ErrNotManaged, with Get still reporting the instance).
+//
+// ⚠ THE COST IS THAT AN AGENT MUSTER CREATED KEEPS RUNNING. If somebody
+// relabels the namespace out from under an instance, Destroy will not stop its
+// pod until the label is put back or the namespace is removed by hand. That is
+// the same answer this driver already gives for a foreign co-named DEPLOYMENT —
+// the other identity anchor — and it is the price of the alternative being the
+// non-convergent teardown above. It is NOT a claim that leaving the pod running
+// is harmless.
 //
 // ⚠ WHY THE CO-NAMED SATELLITES ARE STILL SKIPPED QUIETLY. A foreign
 // ConfigMap, Secret, Service, claim or ServiceAccount under the instance's name
-// stays a logged skip. The distinction is which objects are the instance's
-// IDENTITY ANCHORS: a foreign Deployment or a foreign per-instance Namespace
-// means no instance can exist under this name under ANY spec — Create refuses
-// both unconditionally — whereas a foreign satellite blocks only a spec that
-// RENDERS that object, and Destroy has no spec to consult. Destroy therefore
-// cannot tell a satellite that would have been refused from one that would
-// never have been touched, and leaving it alone is right either way.
+// stays a logged skip (deleteIfOwned). The distinction is which objects are the
+// instance's IDENTITY ANCHORS: a foreign Deployment or a foreign per-instance
+// Namespace means no instance can exist under this name under ANY spec — Create
+// refuses both unconditionally — whereas a foreign satellite blocks only a spec
+// that RENDERS that object, and Destroy has no spec to consult. Destroy cannot
+// tell a satellite that would have been refused from one that would never have
+// been touched, so it does not act on it.
+//
+// 🔴 WHAT THE SKIP DOES **NOT** MEAN: that the foreign satellite survives. Under
+// NamespacePerInstance — the only layout in which this function runs — Destroy
+// goes on to delete the namespace WHOLE, and ensureNamespace's own comment says
+// namespace deletion "schedules the deletion of everything in it". So in this
+// layout the quiet skip saves the object from being deleted BY NAME and not from
+// being deleted at all. This paragraph previously claimed "leaving it alone is
+// right either way", which is false here. ⚠ NOT MEASURED: the fake clientset
+// these tests run against implements no namespace garbage collection, so the
+// suite is structurally blind to the consequence and cannot tell the two
+// readings apart; the statement above is Kubernetes semantics plus this file's
+// own comment, NOT an observation from this repository. The place the skip is
+// unambiguously right is the SHARED-namespace layout, where nothing deletes a
+// namespace and this function never runs.
 //
 // ⚠ SO THIS IS NOT "LOUD WHEREVER CREATE REFUSES", which is the tidier sentence
 // and is false: Create DOES refuse a foreign co-named ConfigMap when the spec
-// carries files, and Destroy skips that same object in silence. The split is
-// between anchors and satellites, not between loud and quiet Creates.
-func (d *Driver) destroyNamespace(ctx context.Context, ns string) error {
+// carries files, and Destroy skips that same object. The split is between
+// anchors and satellites, not between loud and quiet Creates.
+func (d *Driver) checkNamespaceOwned(ctx context.Context, ns string) error {
 	cur, err := d.cfg.Client.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
@@ -763,6 +854,24 @@ func (d *Driver) destroyNamespace(ctx context.Context, ns string) error {
 		// The namespace is cluster-scoped, so it has no namespace of its own to
 		// name: the empty string is what suppresses the "in namespace" clause.
 		return notManagedAction("namespace", ns, "", cur.Labels)
+	}
+	return nil
+}
+
+// destroyNamespace deletes the instance's own namespace, re-reading its
+// ownership immediately before the delete.
+//
+// ⚠ THE RE-READ IS NOT REDUNDANT WITH Destroy'S PRE-FLIGHT. The pre-flight is
+// about ORDER — refuse before anything is removed — and the whole teardown runs
+// between the two reads. Without a second check, a namespace that appeared or
+// was replaced during the teardown would be deleted on the strength of a read
+// taken before it existed. It is the same predicate, called twice, not a second
+// copy of it. (It still claims no atomicity: closing that needs a delete
+// precondition on the object's UID, which the fake clientset cannot enforce —
+// see deleteIfOwned.)
+func (d *Driver) destroyNamespace(ctx context.Context, ns string) error {
+	if err := d.checkNamespaceOwned(ctx, ns); err != nil {
+		return err
 	}
 	if err := d.cfg.Client.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{}); err != nil &&
 		!apierrors.IsNotFound(err) {
@@ -833,8 +942,18 @@ func (d *Driver) Scale(ctx context.Context, ref provision.Ref, replicas int) err
 // ErrNotFound, so `if err != nil && !errors.Is(err, provision.ErrNotFound)` —
 // the idiom this contract invites — cannot discard it. The refusal for the
 // DEPLOYMENT and the refusal for the per-instance NAMESPACE now agree; they did
-// not, and destroyNamespace says what changed and why the co-named satellites
+// not, and checkNamespaceOwned says what changed and why the co-named satellites
 // are a different case.
+//
+// 🔴 BOTH IDENTITY ANCHORS ARE CHECKED BEFORE ANYTHING IS DELETED, so a refusal
+// and a teardown are never the same call. Either muster owns the name and
+// removes everything under it, or it refuses and removes NOTHING; there is no
+// third outcome where the instance is gone AND the call reports a permanent
+// failure. That third outcome is what a late namespace check produced, it was
+// measured over three consecutive Destroys, and a caller could not converge out
+// of it. The ErrNotManaged branch is terminal by design: it is a refusal about
+// the cluster's state, and retrying it will return the same answer until an
+// operator relabels or removes the object in the way.
 //
 // ⚠ WHAT IT DOES NOT CLAIM: that everything has finished TERMINATING. A
 // namespace deletion is asynchronous and pods linger. nil means the API has
@@ -856,6 +975,15 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 		d.log.Printf("k8s: destroy %s: delete %s: %v", ref.Name, what, err)
 		if firstErr == nil {
 			firstErr = fmt.Errorf("delete %s: %w", what, err)
+		}
+	}
+
+	// 🔴 THE NAMESPACE ANCHOR, PRE-FLIGHT. See checkNamespaceOwned: deciding
+	// this at the END of the teardown is what made a refusal and a completed
+	// removal indistinguishable.
+	if d.cfg.NamespacePerInstance {
+		if err := d.checkNamespaceOwned(ctx, ns); err != nil {
+			return fmt.Errorf("refusing to destroy %q: %w", name, err)
 		}
 	}
 

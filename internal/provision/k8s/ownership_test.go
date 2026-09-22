@@ -3,6 +3,7 @@ package k8s_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -741,6 +742,19 @@ func TestCreateAndUpdateRefuseToAdoptAForeignWorkload(t *testing.T) {
 			if errors.Is(err, provision.ErrBlind) || errors.Is(err, provision.ErrNotFound) {
 				t.Errorf("Create's divergence refusal must be neither ErrBlind nor ErrNotFound, got %v", err)
 			}
+			// 🔴 AND THE SENTENCE ABOVE IS NOW ASSERTED RATHER THAN STATED. It
+			// said "the one ownership refusal that does not report ErrNotManaged"
+			// and nothing checked it, so a change that added the sentinel here —
+			// making Create's refusal claim to be both a divergence and an
+			// ownership refusal, which is what provision.go's ErrNotManaged doc
+			// wrongly described — would have survived a green suite. The
+			// asymmetry is a documented decision; this is what pins it.
+			if errors.Is(err, provision.ErrNotManaged) {
+				t.Errorf("Create's refusal over a foreign workload must report ErrDivergentSpec ALONE. "+
+					"Reporting ErrNotManaged as well makes one error claim to be two different "+
+					"answers, and provision.ErrNotManaged's doc names Create as an exception for "+
+					"exactly this reason. Got %v", err)
+			}
 			// The message must name the label that is wrong, because relabelling
 			// is the only documented escape from an ownership refusal.
 			if !strings.Contains(err.Error(), "app.kubernetes.io/managed-by") {
@@ -1104,6 +1118,520 @@ func TestPolicyObjectNamesCannotCollideAcrossInstances(t *testing.T) {
 			t.Error("control: Revoke did not remove the policy it was asked to remove")
 		}
 	})
+}
+
+// --------------------------------------------------------------------------
+// The RBAC path: a name is not an identity there either
+// --------------------------------------------------------------------------
+
+// foreignClusterRole is a ClusterRole somebody else made under the name muster
+// derives for (instance, policy). Its rule is deliberately NOT one muster would
+// write, so an overwrite is visible in the object rather than only in an error.
+func foreignClusterRole(name string) *rbacv1.ClusterRole {
+	return &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: foreignLabels()},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"*"},
+		}},
+	}
+}
+
+// TestGrantRefusesToWriteOverForeignRBAC.
+//
+// 🔴 THE MEASURED DEFECT, AND IT IS THE PR'S OWN CENTRAL ONE IN THE PATH THAT
+// GRANTS ACCESS. At f373092 Grant's ClusterRole and Role upserts wrapped their
+// refusal in blind(), which formats with %v: with a foreign co-named ClusterRole
+// in the way, errors.Is(err, provision.ErrBlind) was TRUE and
+// errors.Is(err, provision.ErrNotManaged) FALSE — a permanent refusal in the
+// RBAC path presented as a transient outage, so a caller retries forever and an
+// alert pages for a cluster that is fine. The prose in the error read correctly
+// the whole time, which is why five reviews did not see it.
+//
+// 🔴 THE BINDINGS ARE A DIFFERENT DEFECT IN THE SAME SITES: they treated
+// AlreadyExists as success outright, so a stranger's co-named ClusterRoleBinding
+// — its own RoleRef, its own subjects — made Grant return nil with this
+// instance's policy NOT applied. "Granted" for a policy nobody applied is the
+// exact shape provision.Grant's doc calls worse than having no policy feature.
+func TestGrantRefusesToWriteOverForeignRBAC(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) {
+		ctx := context.Background()
+
+		clusterPolicy := provision.Policy{Name: "read-nodes", Rules: mustJSON(k8s.Rules{
+			ClusterRules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""}, Resources: []string{"nodes"}, Verbs: []string{"get"},
+			}},
+		})}
+		nsPolicy := provision.Policy{Name: "read-configmaps", Rules: mustJSON(k8s.Rules{
+			NamespaceRules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"get"},
+			}},
+		})}
+
+		// ⚠ EACH KIND GETS ITS OWN FIXTURE AND ITS OWN INSTANCE. Grant writes
+		// the ClusterRole before its binding and the cluster half before the
+		// namespaced half, so a combined fixture can only ever reach the first
+		// check — the mistake this file's apply cases already document.
+		t.Run("clusterrole", func(t *testing.T) {
+			d, cs := newDriver(t, m, nil)
+			name := k8s.PolicyObjectName("cr-victim", clusterPolicy.Name)
+			if _, err := cs.RbacV1().ClusterRoles().Create(ctx, foreignClusterRole(name),
+				metav1.CreateOptions{}); err != nil {
+				t.Fatalf("seed clusterrole: %v", err)
+			}
+			if err := d.Create(ctx, provisiontest.MinimalSpec("cr-victim")); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			err := provision.Grant(ctx, d, provision.Ref{Name: "cr-victim"}, clusterPolicy)
+			assertRefusal(t, "Grant over a foreign ClusterRole", err, false)
+
+			// 🔴 THE STATE, NOT ONLY THE SENTINEL. Rewriting a stranger's
+			// ClusterRole is an authorisation change in their cluster.
+			cr, gerr := cs.RbacV1().ClusterRoles().Get(ctx, name, metav1.GetOptions{})
+			if gerr != nil {
+				t.Fatalf("the foreign ClusterRole was removed: %v", gerr)
+			}
+			if len(cr.Rules) != 1 || cr.Rules[0].Resources[0] != "secrets" {
+				t.Errorf("the foreign ClusterRole's rules were rewritten to %+v", cr.Rules)
+			}
+			if cr.Labels["app.kubernetes.io/managed-by"] != "Helm" {
+				t.Errorf("the foreign ClusterRole was relabelled: %v", cr.Labels)
+			}
+			// And no binding was created pointing at it.
+			if _, gerr := cs.RbacV1().ClusterRoleBindings().Get(ctx, name, metav1.GetOptions{}); gerr == nil {
+				t.Error("the refused Grant created a ClusterRoleBinding pointing at somebody else's ClusterRole")
+			}
+		})
+
+		t.Run("clusterrolebinding", func(t *testing.T) {
+			d, cs := newDriver(t, m, nil)
+			name := k8s.PolicyObjectName("crb-victim", clusterPolicy.Name)
+			// Only the BINDING is a stranger's: muster's own ClusterRole is
+			// created normally, so this case reaches the create-only site.
+			if _, err := cs.RbacV1().ClusterRoleBindings().Create(ctx, &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Labels: foreignLabels()},
+				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "their-role"},
+				Subjects: []rbacv1.Subject{{
+					Kind: rbacv1.ServiceAccountKind, Name: "their-sa", Namespace: "their-ns",
+				}},
+			}, metav1.CreateOptions{}); err != nil {
+				t.Fatalf("seed clusterrolebinding: %v", err)
+			}
+			if err := d.Create(ctx, provisiontest.MinimalSpec("crb-victim")); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			err := provision.Grant(ctx, d, provision.Ref{Name: "crb-victim"}, clusterPolicy)
+			if err == nil {
+				t.Fatal("Grant reported a policy applied while a stranger's co-named ClusterRoleBinding " +
+					"held the name: the instance got NO access and the caller was told it did")
+			}
+			assertRefusal(t, "Grant over a foreign ClusterRoleBinding", err, false)
+
+			crb, gerr := cs.RbacV1().ClusterRoleBindings().Get(ctx, name, metav1.GetOptions{})
+			if gerr != nil {
+				t.Fatalf("the foreign ClusterRoleBinding was removed: %v", gerr)
+			}
+			if crb.RoleRef.Name != "their-role" || len(crb.Subjects) != 1 ||
+				crb.Subjects[0].Name != "their-sa" {
+				t.Errorf("the foreign binding was rewritten: roleRef %+v subjects %+v",
+					crb.RoleRef, crb.Subjects)
+			}
+		})
+
+		t.Run("role", func(t *testing.T) {
+			d, cs := newDriver(t, m, nil)
+			ns := m.ns("r-victim")
+			name := k8s.PolicyObjectName("r-victim", nsPolicy.Name)
+			if _, err := cs.RbacV1().Roles(ns).Create(ctx, &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: foreignLabels()},
+				Rules: []rbacv1.PolicyRule{{
+					APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"*"},
+				}},
+			}, metav1.CreateOptions{}); err != nil {
+				t.Fatalf("seed role: %v", err)
+			}
+			if err := d.Create(ctx, provisiontest.MinimalSpec("r-victim")); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			err := provision.Grant(ctx, d, provision.Ref{Name: "r-victim"}, nsPolicy)
+			assertRefusal(t, "Grant over a foreign Role", err, false)
+
+			role, gerr := cs.RbacV1().Roles(ns).Get(ctx, name, metav1.GetOptions{})
+			if gerr != nil {
+				t.Fatalf("the foreign Role was removed: %v", gerr)
+			}
+			if role.Rules[0].Resources[0] != "secrets" {
+				t.Errorf("the foreign Role's rules were rewritten to %+v", role.Rules)
+			}
+		})
+
+		t.Run("rolebinding", func(t *testing.T) {
+			d, cs := newDriver(t, m, nil)
+			ns := m.ns("rb-victim")
+			name := k8s.PolicyObjectName("rb-victim", nsPolicy.Name)
+			if _, err := cs.RbacV1().RoleBindings(ns).Create(ctx, &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: foreignLabels()},
+				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: "their-role"},
+				Subjects: []rbacv1.Subject{{
+					Kind: rbacv1.ServiceAccountKind, Name: "their-sa", Namespace: ns,
+				}},
+			}, metav1.CreateOptions{}); err != nil {
+				t.Fatalf("seed rolebinding: %v", err)
+			}
+			if err := d.Create(ctx, provisiontest.MinimalSpec("rb-victim")); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			err := provision.Grant(ctx, d, provision.Ref{Name: "rb-victim"}, nsPolicy)
+			if err == nil {
+				t.Fatal("Grant reported a policy applied while a stranger's co-named RoleBinding held " +
+					"the name")
+			}
+			assertRefusal(t, "Grant over a foreign RoleBinding", err, false)
+
+			rb, gerr := cs.RbacV1().RoleBindings(ns).Get(ctx, name, metav1.GetOptions{})
+			if gerr != nil {
+				t.Fatalf("the foreign RoleBinding was removed: %v", gerr)
+			}
+			if rb.RoleRef.Name != "their-role" || rb.Subjects[0].Name != "their-sa" {
+				t.Errorf("the foreign binding was rewritten: roleRef %+v subjects %+v",
+					rb.RoleRef, rb.Subjects)
+			}
+		})
+
+		// 🔴 THE IDENTITY ITSELF. This read was existence-only: a ServiceAccount
+		// somebody else owns under the instance's name satisfied "the instance
+		// must exist", and the binding then attached the policy's rules to THEIR
+		// identity. muster escalating a stranger's workload, reported as a
+		// successful grant.
+		t.Run("serviceaccount", func(t *testing.T) {
+			d, cs := newDriver(t, m, nil)
+			ns := m.ns("sa-victim")
+			if _, err := cs.CoreV1().ServiceAccounts(ns).Create(ctx, &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "sa-victim", Namespace: ns, Labels: foreignLabels()},
+			}, metav1.CreateOptions{}); err != nil {
+				t.Fatalf("seed serviceaccount: %v", err)
+			}
+
+			err := provision.Grant(ctx, d, provision.Ref{Name: "sa-victim"}, clusterPolicy)
+			if err == nil {
+				t.Fatal("Grant bound a policy to a ServiceAccount muster did not create")
+			}
+			assertRefusal(t, "Grant against a foreign ServiceAccount", err, false)
+
+			name := k8s.PolicyObjectName("sa-victim", clusterPolicy.Name)
+			if _, gerr := cs.RbacV1().ClusterRoles().Get(ctx, name, metav1.GetOptions{}); gerr == nil {
+				t.Error("the refused Grant created a ClusterRole anyway")
+			}
+			if _, gerr := cs.RbacV1().ClusterRoleBindings().Get(ctx, name, metav1.GetOptions{}); gerr == nil {
+				t.Error("the refused Grant bound a stranger's ServiceAccount to a ClusterRole")
+			}
+		})
+
+		// 🔴 THE CONTROL FOR THE WHOLE GROUP. Every refusal above must be about
+		// OWNERSHIP and not about Grant being broken: muster's own instance
+		// takes both policies, twice (Grant is idempotent).
+		t.Run("control: muster's own instance is granted", func(t *testing.T) {
+			d, cs := newDriver(t, m, nil)
+			if err := d.Create(ctx, provisiontest.MinimalSpec("clean")); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			for _, pol := range []provision.Policy{clusterPolicy, nsPolicy} {
+				for i := 0; i < 2; i++ {
+					if err := provision.Grant(ctx, d, provision.Ref{Name: "clean"}, pol); err != nil {
+						t.Fatalf("control: Grant %q pass %d: %v", pol.Name, i+1, err)
+					}
+				}
+			}
+			crName := k8s.PolicyObjectName("clean", clusterPolicy.Name)
+			cr, err := cs.RbacV1().ClusterRoles().Get(ctx, crName, metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("control: muster's own ClusterRole: %v", err)
+			}
+			if cr.Rules[0].Resources[0] != "nodes" {
+				t.Errorf("control: muster's ClusterRole carries %+v", cr.Rules)
+			}
+			if _, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, crName, metav1.GetOptions{}); err != nil {
+				t.Fatalf("control: muster's own ClusterRoleBinding: %v", err)
+			}
+		})
+	})
+}
+
+// TestRevokeLeavesForeignRBACAlone.
+//
+// 🔴 THE MEASURED DEFECT: Revoke resolved four objects by their DERIVED NAME and
+// deleted them unconditionally, treating IsNotFound as success. With a
+// stranger's co-named ClusterRole in the way it deleted that ClusterRole AND its
+// cluster-wide ClusterRoleBinding and returned nil — by-name deletion destroying
+// a stranger's objects and reporting success, at CLUSTER scope, in the one
+// method a caller uses to withdraw a privilege.
+//
+// ⚠ THE DISCRIMINATOR WAS BY-NAME VERSUS BY-LABEL, not a broken fake:
+// Destroy's revokeAllPolicies enumerates the same objects with a label selector
+// and left the same object alone. Both controls are below.
+func TestRevokeLeavesForeignRBACAlone(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) {
+		ctx := context.Background()
+		d, cs := newDriver(t, m, nil)
+		ns := m.ns("squatted")
+		const policyName = "read-nodes"
+		name := k8s.PolicyObjectName("squatted", policyName)
+
+		// A whole foreign grant-shaped set under the derived names.
+		if _, err := cs.RbacV1().ClusterRoles().Create(ctx, foreignClusterRole(name),
+			metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed clusterrole: %v", err)
+		}
+		if _, err := cs.RbacV1().ClusterRoleBindings().Create(ctx, &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: foreignLabels()},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: name},
+			Subjects: []rbacv1.Subject{{
+				Kind: rbacv1.ServiceAccountKind, Name: "their-sa", Namespace: "their-ns",
+			}},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed clusterrolebinding: %v", err)
+		}
+		if _, err := cs.RbacV1().Roles(ns).Create(ctx, &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: foreignLabels()},
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"*"},
+			}},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed role: %v", err)
+		}
+		if _, err := cs.RbacV1().RoleBindings(ns).Create(ctx, &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: foreignLabels()},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "Role", Name: name},
+			Subjects: []rbacv1.Subject{{
+				Kind: rbacv1.ServiceAccountKind, Name: "their-sa", Namespace: ns,
+			}},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed rolebinding: %v", err)
+		}
+
+		// ⚠ nil, NOT A REFUSAL, AND THAT IS A DECISION. These are satellites,
+		// so a foreign one is a logged skip — the same answer the label-based
+		// teardown gives, and coherent with Grant now REFUSING to write one, so
+		// muster cannot have granted through it. What must never happen is the
+		// delete.
+		if err := provision.Revoke(ctx, d, provision.Ref{Name: "squatted"}, policyName); err != nil {
+			t.Fatalf("Revoke over foreign co-named RBAC: want nil (the grant is absent, which is the "+
+				"state the caller asked for), got %v", err)
+		}
+
+		cr, err := cs.RbacV1().ClusterRoles().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Revoke DELETED a stranger's ClusterRole by name: %v", err)
+		}
+		if cr.Rules[0].Resources[0] != "secrets" {
+			t.Errorf("the foreign ClusterRole was modified: %+v", cr.Rules)
+		}
+		crb, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("Revoke DELETED a stranger's cluster-wide ClusterRoleBinding by name: %v", err)
+		}
+		if crb.Subjects[0].Name != "their-sa" {
+			t.Errorf("the foreign ClusterRoleBinding was modified: %+v", crb.Subjects)
+		}
+		if _, err := cs.RbacV1().Roles(ns).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Errorf("Revoke deleted a stranger's Role by name: %v", err)
+		}
+		if _, err := cs.RbacV1().RoleBindings(ns).Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Errorf("Revoke deleted a stranger's RoleBinding by name: %v", err)
+		}
+
+		// 🔴 CONTROL 1: Revoke DOES remove muster's own grant, so the case above
+		// is not passing because Revoke deletes nothing at all.
+		if err := d.Create(ctx, provisiontest.MinimalSpec("ours")); err != nil {
+			t.Fatalf("control Create: %v", err)
+		}
+		if err := provision.Grant(ctx, d, provision.Ref{Name: "ours"}, grantablePolicy); err != nil {
+			t.Fatalf("control Grant: %v", err)
+		}
+		ourName := k8s.PolicyObjectName("ours", grantablePolicy.Name)
+		if _, err := cs.RbacV1().ClusterRoles().Get(ctx, ourName, metav1.GetOptions{}); err != nil {
+			t.Fatalf("control premise: muster's ClusterRole must exist: %v", err)
+		}
+		if err := provision.Revoke(ctx, d, provision.Ref{Name: "ours"}, grantablePolicy.Name); err != nil {
+			t.Fatalf("control Revoke: %v", err)
+		}
+		for _, check := range []struct {
+			what string
+			get  func() error
+		}{
+			{"clusterrole", func() error {
+				_, e := cs.RbacV1().ClusterRoles().Get(ctx, ourName, metav1.GetOptions{})
+				return e
+			}},
+			{"clusterrolebinding", func() error {
+				_, e := cs.RbacV1().ClusterRoleBindings().Get(ctx, ourName, metav1.GetOptions{})
+				return e
+			}},
+			{"role", func() error {
+				_, e := cs.RbacV1().Roles(m.ns("ours")).Get(ctx, ourName, metav1.GetOptions{})
+				return e
+			}},
+			{"rolebinding", func() error {
+				_, e := cs.RbacV1().RoleBindings(m.ns("ours")).Get(ctx, ourName, metav1.GetOptions{})
+				return e
+			}},
+		} {
+			if err := check.get(); err == nil {
+				t.Errorf("control: muster's own %s survived its Revoke, so this case cannot tell a "+
+					"skip from a Revoke that deletes nothing", check.what)
+			}
+		}
+
+		// 🔴 CONTROL 2: the label-based teardown agrees. Destroy over the
+		// squatted name leaves the same foreign objects alone — which is what
+		// made "by-name versus by-label" the discriminator rather than "the
+		// fake clientset cannot delete RBAC".
+		_ = d.Destroy(ctx, provision.Ref{Name: "squatted"})
+		if _, err := cs.RbacV1().ClusterRoles().Get(ctx, name, metav1.GetOptions{}); err != nil {
+			t.Errorf("control: the label-based teardown removed a stranger's ClusterRole: %v", err)
+		}
+	})
+}
+
+// TestRevokeAllPoliciesEnumeratesOnlyMusterLabelledObjects.
+//
+// The teardown's selector asked for the two POLICY labels alone, which anybody
+// can put on an object — so an object carrying muster.dev/policy-managed=true
+// and the instance's subject label, but NOT muster's own pair, was enumerated
+// and deleted by a path that never consults owned(). The selector now includes
+// managedSelector(), so the set it enumerates is the set owned() admits.
+func TestRevokeAllPoliciesEnumeratesOnlyMusterLabelledObjects(t *testing.T) {
+	eachMode(t, func(t *testing.T, m nsMode) {
+		ctx := context.Background()
+		d, cs := newDriver(t, m, nil)
+
+		// Somebody else's ClusterRole wearing muster's POLICY labels but not its
+		// ownership pair. The name is their own, so only the selector can reach
+		// it.
+		const squatter = "their-policy-object"
+		if _, err := cs.RbacV1().ClusterRoles().Create(ctx, &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{Name: squatter, Labels: map[string]string{
+				"muster.dev/policy-managed": "true",
+				"muster.dev/policy-subject": "labelled",
+				"app.kubernetes.io/name":    "grafana",
+			}},
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""}, Resources: []string{"secrets"}, Verbs: []string{"*"},
+			}},
+		}, metav1.CreateOptions{}); err != nil {
+			t.Fatalf("seed clusterrole: %v", err)
+		}
+
+		spec := provisiontest.MinimalSpec("labelled")
+		if err := d.Create(ctx, spec); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		if err := provision.Grant(ctx, d, spec.Ref, grantablePolicy); err != nil {
+			t.Fatalf("Grant: %v", err)
+		}
+		if err := d.Destroy(ctx, spec.Ref); err != nil {
+			t.Fatalf("Destroy: %v", err)
+		}
+
+		if _, err := cs.RbacV1().ClusterRoles().Get(ctx, squatter, metav1.GetOptions{}); err != nil {
+			t.Errorf("the teardown deleted an object that merely CARRIES muster's policy labels: %v", err)
+		}
+		// 🔴 CONTROL: muster's own policy object, which the same selector has to
+		// keep finding.
+		ourName := k8s.PolicyObjectName("labelled", grantablePolicy.Name)
+		if _, err := cs.RbacV1().ClusterRoles().Get(ctx, ourName, metav1.GetOptions{}); err == nil {
+			t.Error("control: the teardown did not remove muster's OWN policy object, so this case " +
+				"would pass for a selector that matches nothing")
+		}
+	})
+}
+
+// TestDestroyRefusesAForeignNamespaceBeforeRemovingAnything.
+//
+// 🔴 THE MEASURED INCOHERENCE: the namespace ownership check used to run at the
+// END of Destroy, so with the namespace foreign and the instance's own objects
+// muster's, Destroy #1, #2 and #3 all returned provision.ErrNotManaged AFTER
+// removing the Deployment, the ServiceAccount and every satellite — with Get
+// reporting ErrNotFound in between. A caller cannot tell that refusal from one
+// that changed nothing, and "Destroy until nil" never terminates.
+//
+// Checked first, there are only two outcomes: muster owns the name and removes
+// everything (nil), or it refuses and removes NOTHING. This case pins the second
+// one, INCLUDING that the state is unchanged and that a second call says the
+// same thing.
+func TestDestroyRefusesAForeignNamespaceBeforeRemovingAnything(t *testing.T) {
+	perInstance := nsModes[0]
+	ctx := context.Background()
+	d, cs := newDriver(t, perInstance, nil)
+	const ns = "muster-relabelled"
+
+	spec := provisiontest.MinimalSpec("relabelled")
+	if err := d.Create(ctx, spec); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// The instance is muster's; the namespace is relabelled out from under it,
+	// which is the only way this state is reachable (ensureNamespace refuses to
+	// create an instance in a namespace it does not own).
+	nsObj, err := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("premise: muster's own namespace must exist: %v", err)
+	}
+	nsObj.Labels = foreignLabels()
+	if _, err := cs.CoreV1().Namespaces().Update(ctx, nsObj, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("relabel namespace: %v", err)
+	}
+
+	for pass := 1; pass <= 2; pass++ {
+		err := d.Destroy(ctx, spec.Ref)
+		assertRefusal(t, fmt.Sprintf("Destroy pass %d over a foreign namespace", pass), err, false)
+
+		// 🔴 NOTHING WAS REMOVED. This is the half that distinguishes the fix
+		// from the defect: the refusal and the teardown are never the same call.
+		if _, gerr := cs.AppsV1().Deployments(ns).Get(ctx, "relabelled", metav1.GetOptions{}); gerr != nil {
+			t.Fatalf("pass %d: Destroy removed the Deployment and THEN reported a permanent refusal, "+
+				"which is the state a caller cannot converge out of: %v", pass, gerr)
+		}
+		if _, gerr := cs.CoreV1().ServiceAccounts(ns).Get(ctx, "relabelled", metav1.GetOptions{}); gerr != nil {
+			t.Errorf("pass %d: the refused Destroy removed the ServiceAccount: %v", pass, gerr)
+		}
+		if _, gerr := cs.CoreV1().Services(ns).Get(ctx, "relabelled", metav1.GetOptions{}); gerr != nil {
+			t.Errorf("pass %d: the refused Destroy removed the Service: %v", pass, gerr)
+		}
+		// And the instance is still THERE as far as every read is concerned, so
+		// the refusal is consistent with what Get says.
+		if _, gerr := d.Get(ctx, spec.Ref); gerr != nil {
+			t.Errorf("pass %d: Destroy refused but Get no longer reports the instance (%v) — the two "+
+				"disagree about whether it exists", pass, gerr)
+		}
+	}
+
+	// 🔴 THE CONTROL. Put the labels back and the same Destroy completes, so the
+	// refusal above is about the namespace's ownership and not about Destroy
+	// being broken under this layout.
+	nsObj, err = cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("control: get namespace: %v", err)
+	}
+	nsObj.Labels = map[string]string{
+		"app.kubernetes.io/managed-by": "muster",
+		"app.kubernetes.io/name":       "muster-agent",
+		"app.kubernetes.io/instance":   "relabelled",
+	}
+	if _, err := cs.CoreV1().Namespaces().Update(ctx, nsObj, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("control: relabel namespace back: %v", err)
+	}
+	if err := d.Destroy(ctx, spec.Ref); err != nil {
+		t.Fatalf("control: Destroy of muster's own instance in muster's own namespace: %v", err)
+	}
+	if _, err := cs.AppsV1().Deployments(ns).Get(ctx, "relabelled", metav1.GetOptions{}); err == nil {
+		t.Error("control: the Deployment survived a Destroy that returned nil")
+	}
+	if _, err := cs.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}); err == nil {
+		t.Error("control: the namespace survived a Destroy that returned nil")
+	}
 }
 
 // TestUpdateRemovesObjectsTheSpecNoLongerAsksFor.
