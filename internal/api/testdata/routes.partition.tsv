@@ -1,0 +1,318 @@
+# muster route partition manifest — WHICH SIDE EACH UPSTREAM ROUTE LANDS ON.
+#
+# ===========================================================================
+# 🔴 THIS FILE IS A MIGRATION-TIME ARTIFACT AND IS MEANT TO BE DELETED.
+#
+# DELETE-BY CONDITION, stated so this cannot become an object nobody can close:
+#
+#   Delete this file — and `TestRoutePartitionManifestIsATotalPartition` in
+#   routes_golden_test.go with it, in the SAME pull request — when the code
+#   carve is finished and reconciled. The mechanical check that closes it:
+#
+#     1. both projects' `routes.golden` have been regenerated against their
+#        carved trees, and
+#     2. every `muster` row below appears in muster's golden and not in the
+#        other project's; every `router` row appears in the other project's
+#        golden and not in muster's; every `shared` row appears in BOTH; and
+#     3. any row deliberately dropped instead of moved is named in that pull
+#        request's description, with the reason.
+#
+#   WHO CHECKS IT: the reviewer of that pull request, reading the two golden
+#   diffs against this file. It is a diff, not a judgement call — if the three
+#   conditions above hold, this file has no remaining reader and goes.
+#
+#   In the same pull request, flip `routePhase` in routes_golden_test.go from
+#   `carving` to `carved`, which is what arms the route floor.
+#
+#   UNTIL THEN: this is the ONLY machine-readable record of which side a route
+#   was meant to land on. The plan document it was derived from does not
+#   enumerate its own partition — it states bucket totals and nothing else,
+#   which is precisely why this file exists.
+# ===========================================================================
+#
+# FORMAT: three TAB-separated fields per row, sorted by route (byte order).
+#
+#     destination <TAB> upstream-registrar <TAB> route
+#
+#   destination is one of:
+#     muster   — moves here
+#     router   — stays with the permission router, i.e. the project muster is
+#                being extracted from. (Spelled `router` rather than by name:
+#                this repository's leak gate refuses the upstream project's
+#                real name, deliberately, and that gate is not to be edited.)
+#     shared   — the UI shell / infra surface BOTH projects need. Shared rows
+#                are DUPLICATED, not moved: they end up in both goldens.
+#
+#   upstream-registrar is the file and registration function that owns the
+#   route upstream. It is derived, not typed: every row was produced by parsing
+#   the upstream package's non-test sources for literal patterns handed to
+#   Handle/HandleFunc, then joined to the upstream golden. All 162 golden
+#   routes resolved to exactly one registrar; none was left unmatched.
+#
+# PROVENANCE OF THE LEFT-HAND SIDE
+#
+#   Upstream golden at commit a3dfea065, read 2026-09: 162 routes
+#   (`grep -v '^#' routes.golden | grep -c '[^[:space:]]'` — the same filter
+#   the upstream test's own parser applies: comment and blank lines dropped).
+#
+#   🔴 THE PLAN DOCUMENT SAYS 174, AND 174 IS STALE BY EXACTLY TWELVE ROUTES.
+#   The commit above retired an entire authorisation tier and deleted its
+#   twelve `/operator` patterns; 174 is the count at its PARENT commit. Both
+#   numbers were re-derived here rather than copied:
+#       parent of a3dfea065 : 174 routes, 12 of them `/operator`
+#       a3dfea065           : 162 routes,  0 of them `/operator`
+#
+# THE PLAN'S ARITHMETIC, RESOLVED
+#
+#   The plan states "90 -> muster, 82 -> the other side, plus the 2 chief
+#   terminal routes, plus 14 shared". 90 + 82 + 2 = 174 = its own total, which
+#   leaves the 14 unaccounted for UNLESS they are already inside one of the two
+#   numbers. They are: the plan's own floor paragraph says muster lands at
+#   "~90 (~104 with duplicated shell routes)", and 90 + 14 = 104. So the 14 sit
+#   inside the 82, and the only self-consistent reading is:
+#
+#       90  muster-owned          (shell routes NOT counted)
+#       82  staying side          (INCLUDING the 14 shared)
+#        2  chief terminal routes (a third bucket, in neither)
+#      ---
+#      174  total, each route counted exactly once
+#
+#   This file uses the other, non-overlapping convention — shared is its own
+#   bucket — so its three counts also sum to the total, and muster's projected
+#   registration count is muster + shared, not muster alone.
+#
+# THIS FILE'S OWN COUNTS (re-derived, not copied from the plan)
+#
+# counts: muster=82 router=66 shared=14 total=162
+#
+#   muster + router + shared = 82 + 66 + 14 = 162
+#   muster's projected post-carve registration count = 82 + 14 = 96
+#
+#   🔴 THIS PARTITION DISAGREES WITH THE PLAN'S, AND THE DISAGREEMENT CANNOT BE
+#   RECONCILED FROM THE PLAN. Normalised onto the plan's 174-route base by
+#   adding back the twelve `/operator` routes (the retired tier was agent and
+#   board machinery, so they belong on muster's side), this file gives
+#   muster 82+12=94 where the plan gives 90, and a staying side of
+#   66+14=80 where the plan gives 82+2=84 — a four-route gap each way. It
+#   cannot be attributed, because the plan never enumerates which routes it put
+#   where, only totals. The rows below are derived from the live route table
+#   and the plan's stated cut line; where they differ from the plan's totals,
+#   the rows win, and the totals are the thing that was never checked.
+#
+# THE CUT LINE THIS PARTITION APPLIES (from the plan's decision table)
+#
+#   moves : tasks, dispatch/agents, chief, runbooks, privilege
+#   stays : permission routing, push, sse, autoapprove, suggest, attention,
+#           tmux, termwrite, layout, transcript, recap, archive
+#
+#   Mechanically: every route whose upstream registrar is one of
+#   registerNotesRoutes, registerAgentRoutes, registerPrivilegeRoutes,
+#   registerRunbookRoutes, registerAgentSelfServiceRoutes or
+#   registerGitHubRoutes is `muster`; plus the three chief routes and the three
+#   tab-shell pages (/tasks, /agents, /repos) the moving tabs serve. The 14
+#   shell/infra routes are `shared`. Everything else is `router`.
+#
+# ⚠ ONE DERIVED CLAIM IN THE PLAN DID NOT SURVIVE. It says "four of eight tabs
+# move". The route table has eight tab shells — requests, tasks, attention,
+# repos, agents, suggestions, tmux, layout — and the cut line moves THREE of
+# them (tasks, repos, agents). No fourth tab is on the moving side. Either the
+# plan counted something that is not a tab, or the number is wrong. Nothing
+# below depends on it, but do not build on it.
+
+muster	agents.go:registerAgentRoutes	DELETE /agents/{id}
+muster	privilege.go:registerPrivilegeRoutes	DELETE /agents/{id}/grants/{profileId}
+router	layout.go:registerLayoutRoutes	DELETE /api/layout/panels/{id}
+router	layout.go:registerLayoutRoutes	DELETE /api/layout/views/{id}
+router	server.go:registerRoutes	DELETE /api/response/{id}
+muster	server.go:registerNotesRoutes	DELETE /api/tasks/{id}
+muster	server.go:registerNotesRoutes	DELETE /api/tasks/{id}/comments/{cid}
+muster	privilege.go:registerPrivilegeRoutes	DELETE /privileges/{id}
+muster	runbooks.go:registerRunbookRoutes	DELETE /runbooks/{id}
+muster	server.go:registerNotesRoutes	DELETE /tasks/{id}
+muster	server.go:registerNotesRoutes	DELETE /tasks/{id}/comments/{cid}
+muster	server.go:registerNotesRoutes	DELETE /tasks/{id}/tags/{tag}
+#
+# NOTE (GET /agent/muster): RENAMED IN THE MOVE. Upstream spells this with the upstream CLI's binary
+# name, which this repository's leak gate refuses to spell and which muster's
+# own CLI replaces anyway. The muster-side spelling is the one the step-17
+# diff compares; the upstream-side row will not match textually.
+muster	server.go:registerAgentSelfServiceRoutes	GET /agent/muster
+muster	server.go:registerAgentSelfServiceRoutes	GET /agent/task
+muster	server.go:registerRoutes	GET /agents
+muster	agents.go:registerAgentRoutes	GET /agents/{name}
+muster	agents.go:registerAgentRoutes	GET /agents/{name}/logs/stream
+muster	agents.go:registerAgentRoutes	GET /agents/{name}/ws
+muster	agents.go:registerAgentRoutes	GET /api/agents
+muster	agents.go:registerAgentRoutes	GET /api/agents/{name}/messages
+router	attention.go:registerAttentionRoutes	GET /api/attention
+router	layout.go:registerLayoutRoutes	GET /api/layout/views
+router	layout.go:registerLayoutRoutes	GET /api/layout/views/{name}/panels
+muster	agents.go:registerAgentRoutes	GET /api/openrouter/models
+#
+# NOTE (GET /api/projects): The task-create directory picker. Its upstream store reads the permission
+# router's own table, which the source plan measured EMPTY in production —
+# so this route moves, but its data source does not come with it. Expect to
+# either drop the picker or repoint it at a muster-local source.
+muster	server.go:registerNotesRoutes	GET /api/projects
+router	server.go:registerRoutes	GET /api/push/vapid-public-key
+router	server.go:registerRoutes	GET /api/requests
+router	server.go:registerRoutes	GET /api/response/{id}
+muster	server.go:registerNotesRoutes	GET /api/sessions/{id}/tasks
+muster	server.go:registerNotesRoutes	GET /api/tags
+muster	server.go:registerNotesRoutes	GET /api/tasks
+muster	server.go:registerNotesRoutes	GET /api/tasks/{id}
+router	termwrite.go:registerTermWriteRoutes	GET /api/term/send-keys
+router	tmux.go:registerTmuxRoutes	GET /api/tmux/snapshot
+router	transcripts.go:registerTranscriptRoutes	GET /api/transcripts/digest
+router	transcripts.go:registerTranscriptRoutes	GET /api/transcripts/stream/cursors
+router	transcripts.go:registerTranscriptRoutes	GET /api/transcripts/{sessionId}
+router	transcripts.go:registerTranscriptRoutes	GET /api/transcripts/{sessionId}/events
+shared	server.go:registerRoutes	GET /apple-touch-icon-precomposed.png
+shared	server.go:registerRoutes	GET /apple-touch-icon.png
+router	attention.go:registerAttentionRoutes	GET /attention
+shared	server.go:registerRoutes	GET /events
+shared	server.go:registerRoutes	GET /favicon.ico
+muster	github.go:registerGitHubRoutes	GET /github/callback
+muster	github.go:registerGitHubRoutes	GET /github/connect
+#
+# NOTE (GET /health): SHARED means DUPLICATED, NOT MOVED: both projects register their own copy.
+# All 14 shared rows are therefore expected to appear in BOTH goldens after
+# the carve.
+shared	server.go:registerRoutes	GET /health
+router	layout_ui.go:registerLayoutUIRoutes	GET /layout
+shared	login.go:registerLoginRoutes	GET /login
+shared	server.go:registerRoutes	GET /manifest.webmanifest
+shared	server.go:registerRoutes	GET /metrics
+shared	server.go:registerRoutes	GET /readyz
+#
+# NOTE (GET /repos): LEAST CERTAIN BLOCK (5 rows: this, GET /ui/repos, GET /github/connect,
+# GET /github/callback, POST /github/disconnect). Assigned to muster because
+# the repo list exists to pick a repo when DISPATCHING an agent — the agent
+# registrar already owns GET /ui/agents/repos. The source plan never
+# enumerates its own partition, so this assignment is derived here, not
+# inherited. If the Repos tab turns out to serve anything on the staying
+# side, these five move back and the counts below shift by 5.
+muster	server.go:registerRoutes	GET /repos
+router	server.go:registerRoutes	GET /requests
+router	session_ui.go:registerSessionViewRoutes	GET /session/{claudeSessionId}
+router	session_ui.go:registerSessionViewRoutes	GET /session/{claudeSessionId}/earlier
+shared	server.go:registerRoutes	GET /static/
+router	server.go:registerRoutes	GET /suggestions
+router	suggest.go:registerSuggestRoutes	GET /suggestions/{sessionID}
+shared	server.go:registerRoutes	GET /sw.js
+muster	server.go:registerRoutes	GET /tasks
+muster	server.go:registerNotesRoutes	GET /tasks/{id}
+muster	server.go:registerNotesRoutes	GET /tasks/{id}/attachments/{aid}
+router	server.go:registerRoutes	GET /tmux
+router	newsession.go:registerLaunchRoutes	GET /tmux/launch
+muster	agents.go:registerAgentRoutes	GET /ui/agents
+muster	agents.go:registerAgentRoutes	GET /ui/agents/new
+muster	agents.go:registerAgentRoutes	GET /ui/agents/notes
+muster	agents.go:registerAgentRoutes	GET /ui/agents/profiles
+muster	agents.go:registerAgentRoutes	GET /ui/agents/repos
+muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/card
+muster	privilege.go:registerPrivilegeRoutes	GET /ui/agents/{id}/grants
+muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/recent
+muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/rename
+muster	agents.go:registerAgentRoutes	GET /ui/agents/{id}/status
+muster	agents.go:registerAgentRoutes	GET /ui/agents/{name}/chat-log
+muster	agents.go:registerAgentRoutes	GET /ui/agents/{name}/task
+router	attention.go:registerAttentionRoutes	GET /ui/attention
+router	server.go:registerRoutes	GET /ui/auto-approve-banner
+muster	server.go:registerRoutes	GET /ui/chief/panel
+muster	server.go:registerRoutes	GET /ui/chief/threads/search
+router	layout_ui.go:registerLayoutUIRoutes	GET /ui/layout
+muster	agents.go:registerAgentRoutes	GET /ui/notifications
+muster	privilege.go:registerPrivilegeRoutes	GET /ui/privilege-requests
+muster	privilege.go:registerPrivilegeRoutes	GET /ui/privileges
+muster	github.go:registerGitHubRoutes	GET /ui/repos
+router	server.go:registerRoutes	GET /ui/requests
+router	server.go:registerRoutes	GET /ui/requests/quick
+muster	runbooks.go:registerRunbookRoutes	GET /ui/runbooks
+router	session_ui.go:registerSessionViewRoutes	GET /ui/session/{claudeSessionId}
+router	session_ui.go:registerSessionViewRoutes	GET /ui/session/{claudeSessionId}/raw
+router	suggest.go:registerSuggestRoutes	GET /ui/suggestions
+muster	server.go:registerNotesRoutes	GET /ui/tags
+muster	server.go:registerNotesRoutes	GET /ui/tasks
+muster	server.go:registerNotesRoutes	GET /ui/tasks/new
+muster	server.go:registerNotesRoutes	GET /ui/tasks/{id}/card
+muster	server.go:registerNotesRoutes	GET /ui/tasks/{id}/edit
+router	server.go:registerRoutes	GET /ui/tmux
+router	newsession.go:registerLaunchRoutes	GET /ui/tmux/launch
+router	newsession.go:registerLaunchRoutes	GET /ui/tmux/launch/{writeID}/link
+shared	server.go:registerRoutes	GET /{$}
+muster	server.go:registerAgentSelfServiceRoutes	PATCH /agent/task/status
+router	layout.go:registerLayoutRoutes	PATCH /api/layout/panels/{id}/state
+muster	server.go:registerNotesRoutes	PATCH /api/tasks/{id}
+muster	server.go:registerNotesRoutes	PATCH /api/tasks/{id}/status
+muster	server.go:registerNotesRoutes	PATCH /tasks/{id}/status
+muster	server.go:registerAgentSelfServiceRoutes	POST /agent/privilege/request
+muster	server.go:registerAgentSelfServiceRoutes	POST /agent/task/comment
+muster	agents.go:registerAgentRoutes	POST /agents
+muster	agents.go:registerAgentRoutes	POST /agents/sessions/{sid}/read
+muster	privilege.go:registerPrivilegeRoutes	POST /agents/{id}/grants
+muster	agents.go:registerAgentRoutes	POST /agents/{id}/model
+muster	agents.go:registerAgentRoutes	POST /agents/{id}/name
+muster	agents.go:registerAgentRoutes	POST /agents/{id}/sessions
+muster	agents.go:registerAgentRoutes	POST /agents/{id}/start
+muster	agents.go:registerAgentRoutes	POST /agents/{id}/stop
+muster	agents.go:registerAgentRoutes	POST /api/agents/{name}/messages
+router	attention.go:registerAttentionRoutes	POST /api/attention
+router	attention.go:registerAttentionRoutes	POST /api/attention/{id}/resolve
+router	server.go:registerRoutes	POST /api/auto-approve
+router	server.go:registerRoutes	POST /api/auto-approve-all
+router	layout.go:registerLayoutRoutes	POST /api/layout/views
+router	layout.go:registerLayoutRoutes	POST /api/layout/views/{name}/panels
+router	server.go:registerRoutes	POST /api/notify
+router	server.go:registerRoutes	POST /api/push/subscribe
+router	server.go:registerRoutes	POST /api/push/unsubscribe
+router	server.go:registerRoutes	POST /api/send
+router	suggest.go:registerSuggestRoutes	POST /api/suggest
+muster	server.go:registerNotesRoutes	POST /api/tasks
+muster	server.go:registerNotesRoutes	POST /api/tasks/{id}/comments
+#
+# NOTE (POST /api/term/chief/new-session): 🔴 THE SOURCE PLAN CONTRADICTS ITSELF ON THESE TWO ROWS. Its seam table says
+# the chief-specific terminal routes are DELETED (muster drives the generic
+# /api/term/* pair with an asserted actor instead); its CLI section and its
+# route-partition paragraph both say they STAY. Recorded as `router` because
+# NEITHER reading moves them here — but whoever runs step 17 must settle
+# delete-vs-stay rather than inherit this row as agreement.
+router	termwrite.go:registerTermWriteRoutes	POST /api/term/chief/new-session
+#
+# NOTE (POST /api/term/chief/send-keys): See the note on POST /api/term/chief/new-session — same unresolved pair.
+router	termwrite.go:registerTermWriteRoutes	POST /api/term/chief/send-keys
+router	termwrite.go:registerTermWriteRoutes	POST /api/term/new-session
+router	termwrite.go:registerTermWriteRoutes	POST /api/term/send-keys
+router	termwrite.go:registerTermWriteRoutes	POST /api/term/send-keys/claim
+router	termwrite.go:registerTermWriteRoutes	POST /api/term/send-keys/{id}/result
+router	tmux.go:registerTmuxRoutes	POST /api/tmux/snapshot
+router	transcripts.go:registerTranscriptRoutes	POST /api/transcripts
+router	transcripts.go:registerTranscriptRoutes	POST /api/transcripts/stream
+#
+# NOTE (POST /chief/provision): The one handler that moves out of a file that otherwise stays: the chief
+# agent moves to muster, while the chief terminal-write door stays with the
+# permission router.
+muster	server.go:registerRoutes	POST /chief/provision
+muster	github.go:registerGitHubRoutes	POST /github/disconnect
+shared	login.go:registerLoginRoutes	POST /login
+shared	login.go:registerLoginRoutes	POST /logout
+muster	privilege.go:registerPrivilegeRoutes	POST /privileges
+muster	runbooks.go:registerRunbookRoutes	POST /runbooks
+muster	runbooks.go:registerRunbookRoutes	POST /runbooks/{id}/dispatch
+muster	server.go:registerNotesRoutes	POST /tasks
+muster	server.go:registerNotesRoutes	POST /tasks/merge
+muster	server.go:registerNotesRoutes	POST /tasks/{id}/comments
+muster	server.go:registerNotesRoutes	POST /tasks/{id}/edit
+muster	server.go:registerNotesRoutes	POST /tasks/{id}/tags
+router	attention.go:registerAttentionRoutes	POST /ui/attention/{id}/resolve
+router	server.go:registerRoutes	POST /ui/decision/{id}
+router	server.go:registerRoutes	POST /ui/dismiss/{id}
+router	layout_ui.go:registerLayoutUIRoutes	POST /ui/layout/views/{viewId}/panels/{id}/state/{state}
+muster	privilege.go:registerPrivilegeRoutes	POST /ui/privilege-requests/{id}/approve
+muster	privilege.go:registerPrivilegeRoutes	POST /ui/privilege-requests/{id}/deny
+router	suggest.go:registerSuggestRoutes	POST /ui/projects/auto-suggest
+router	suggest.go:registerSuggestRoutes	POST /ui/suggestions/{id}/dismiss
+router	suggest.go:registerSuggestRoutes	POST /ui/suggestions/{sessionID}/generate
+router	newsession.go:registerLaunchRoutes	POST /ui/term/launch
+router	termwrite.go:registerTermWriteRoutes	POST /ui/term/new-session
+router	termwrite.go:registerTermWriteRoutes	POST /ui/term/send-keys
