@@ -48,7 +48,11 @@
 //     WAS ALREADY ABSENT. A bare `return nil` satisfies the compiler and means
 //     nothing; it is the "declared but inert" shape, and it reads as coverage.
 //     A driver must be able to say afterwards that the thing is gone —
-//     [Provisioner.Get] must return [ErrNotFound].
+//     [Provisioner.Get] must return [ErrNotFound]. A FOREIGN object holding
+//     the instance's name is neither case: it is [ErrNotManaged], and that
+//     error must not also satisfy errors.Is(err, [ErrNotFound]) or the
+//     `!errors.Is(err, ErrNotFound)` idiom this rule invites discards it. See
+//     [Provisioner.Destroy] and [ErrNotManaged].
 //
 //  3. 🔴 [Provisioner.Create] IS IDEMPOTENT, AND A DIVERGENT SPEC IS AN ERROR.
 //     Creating the same instance twice with the same spec succeeds twice.

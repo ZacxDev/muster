@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -185,8 +186,45 @@ func (d *Driver) namespaceFor(name string) string {
 // List CANNOT ACCIDENTALLY RETURN AN EMPTY SLICE. A NotFound is explicitly NOT
 // blindness and is handled at its own call site — collapsing the two is the
 // mistake that turns "the cluster is unreachable" into "nothing is running".
+//
+// ⚠ THE %v IS DELIBERATE AND IS NOT A BUG TO FIX. This function's whole job is
+// to assert ONE cause, so a %w that dragged the wrapped error's own sentinels
+// into the result would let the same error claim to be two different things at
+// once — an ownership refusal reporting BOTH ErrBlind and ErrNotFound is
+// strictly worse than reporting only the wrong one, because the ErrBlind branch
+// still fires and now nothing looks suspicious. What must not reach here is an
+// error that is not unreachability; see applyFailed, which is the one place on
+// the write path that decides. The cost of %v is that a caller cannot inspect
+// the client-go error underneath; no caller in this repository does.
 func blind(op string, err error) error {
 	return fmt.Errorf("%w: %s: %v", provision.ErrBlind, op, err)
+}
+
+// applyFailed attributes a failure from one of apply's object upserts.
+//
+// 🔴 AN OWNERSHIP REFUSAL IS NOT UNREACHABILITY, AND THIS IS THE ONE PLACE THE
+// WRITE PATH DISTINGUISHES THEM. All five upserts in apply() used to wrap their
+// error in blind() directly, so a PERMANENT refusal to write over somebody
+// else's ServiceAccount, ConfigMap, Secret, Service or Deployment arrived at the
+// caller as provision.ErrBlind — a TRANSIENT "backend unreachable". Measured at
+// 138d269 under both namespace layouts: errors.Is(err, ErrBlind) true,
+// errors.Is(err, ErrNotFound) false, errors.As(err, **notManagedError) false.
+// A caller that retries on ErrBlind therefore never converges, one that alerts
+// on it pages for an outage that is not happening, and the refusal's own type
+// and sentinel were gone.
+//
+// ⚠ IT IS ONE FUNCTION RATHER THAN FIVE CORRECTED CALL SITES, AND THAT IS A
+// SMALLER GUARANTEE THAN IT LOOKS. Routing every existing upsert through here
+// means the five sites cannot drift apart — but NOTHING STOPS A SIXTH SITE
+// CALLING blind() DIRECTLY and reintroducing the defect. There is no structural
+// check for that: notmanaged_internal_test.go's ledger asserts the kinds that
+// exist today, so a NEW kind wired straight to blind() would simply not appear
+// in it. If you add an object to apply, add its row to that ledger by hand.
+func applyFailed(op string, err error) error {
+	if errors.As(err, new(*notManagedError)) {
+		return fmt.Errorf("%s: %w", op, err)
+	}
+	return blind(op, err)
 }
 
 func notFound(name string) error {
@@ -196,27 +234,110 @@ func notFound(name string) error {
 // notManagedError is the refusal every by-name path returns for an object this
 // driver did not create.
 //
-// 🔴 IT REPORTS ITSELF AS ErrNotFound, AND STAYS DISTINGUISHABLE. The object
-// exists, but it is not a muster instance, so "muster has no instance by that
-// name" is what a caller branching on the sentinel must act on — reporting it
-// as an instance is how a status read describes a stranger's Deployment as an
-// agent. The concrete type survives errors.As for the one path where the
-// difference matters: Update creates what is ABSENT, and must not create over
-// what is FOREIGN.
+// 🔴 IT ALWAYS REPORTS provision.ErrNotManaged. It reports ErrNotFound ONLY
+// when a by-name READ produced it, and the asymmetry is the whole reason this
+// type carries a flag instead of being one shape:
+//
+//   - A READ (Get, Scale, Endpoint, the log paths) asked "what is instance X".
+//     A stranger's co-named object is not instance X, so "muster has no
+//     instance by that name" is the right answer and ErrNotFound is the right
+//     sentinel — reporting it as an instance is how a status read describes a
+//     stranger's Deployment as an agent.
+//   - An ACTION (an upsert inside apply, or Destroy) asked muster to WRITE or
+//     REMOVE X. "There is no such instance" is not what happened. Worse,
+//     `if err != nil && !errors.Is(err, provision.ErrNotFound)` is the idiom
+//     Destroy's contract invites, so an ErrNotFound-flavoured refusal there is
+//     SILENTLY DISCARDED — which is the opposite of being loud.
+//
+// The concrete type survives errors.As all the way to the caller on every
+// path, which is what Update's pre-flight branch reads and what
+// notmanaged_internal_test.go pins for all six write sites.
 type notManagedError struct {
 	kind, name, ns string
+	// labels is what the object ACTUALLY carries, so the message can name the
+	// specific key that is missing or mismatched. See labelComplaint.
+	labels map[string]string
+	// fromRead is true when a by-name read produced this, which is the only
+	// case that also answers to provision.ErrNotFound.
+	fromRead bool
 }
 
 func (e *notManagedError) Error() string {
-	return fmt.Sprintf("%s: %s %q in namespace %q is not managed by muster (it does not carry %s=%s), "+
-		"so muster has no instance by that name",
-		provision.ErrNotFound, e.kind, e.name, e.ns, labelManagedBy, managedBy)
+	sentinel, tail := provision.ErrNotManaged, "so muster will neither write to it nor remove it"
+	if e.fromRead {
+		sentinel, tail = provision.ErrNotFound, "so muster has no instance by that name"
+	}
+	where := ""
+	if e.ns != "" {
+		where = fmt.Sprintf(" in namespace %q", e.ns)
+	}
+	return fmt.Sprintf("%s: %s %q%s is not managed by muster (%s), %s",
+		sentinel, e.kind, e.name, where, labelComplaint(e.labels), tail)
 }
 
-func (e *notManagedError) Is(target error) bool { return target == provision.ErrNotFound }
+func (e *notManagedError) Is(target error) bool {
+	return target == provision.ErrNotManaged || (e.fromRead && target == provision.ErrNotFound)
+}
 
-func notManaged(kind, name, ns string) error {
-	return &notManagedError{kind: kind, name: name, ns: ns}
+// forAction re-flavours a refusal a READ helper produced, for a caller that was
+// asking to act rather than to look. Destroy needs it: it finds the foreign
+// Deployment through getOwnedDeployment, whose refusal is read-flavoured.
+func (e *notManagedError) forAction() *notManagedError {
+	out := *e
+	out.fromRead = false
+	return &out
+}
+
+// notManagedRead is the refusal a by-name READ returns. It answers to
+// provision.ErrNotFound as well as provision.ErrNotManaged.
+func notManagedRead(kind, name, ns string, labels map[string]string) error {
+	return &notManagedError{kind: kind, name: name, ns: ns, labels: labels, fromRead: true}
+}
+
+// notManagedAction is the refusal a WRITE or a TEARDOWN returns. It does NOT
+// answer to provision.ErrNotFound — see the type's comment for why that would
+// make it swallowable.
+func notManagedAction(kind, name, ns string, labels map[string]string) error {
+	return &notManagedError{kind: kind, name: name, ns: ns, labels: labels}
+}
+
+// labelComplaint names what is genuinely wrong with an object's labels, key by
+// key, against every key of managedLabels.
+//
+// 🔴 IT REPORTS BOTH KEYS BECAUSE owned() REQUIRES BOTH, AND THE MESSAGE IS THE
+// ENTIRE INTERFACE. The refusal used to print `app.kubernetes.io/managed-by=
+// muster` and nothing else, so an object labelled managed-by=muster with
+// app.kubernetes.io/name set to something else was refused with "it does not
+// carry app.kubernetes.io/managed-by=muster" — a false statement about the
+// object in front of the operator, whose only named remedy was already
+// satisfied. Relabelling is the one documented escape from these refusals, so
+// following that message looped.
+func labelComplaint(labels map[string]string) string {
+	keys := make([]string, 0, len(managedLabels))
+	for k := range managedLabels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		want := managedLabels[k]
+		got, ok := labels[k]
+		switch {
+		case !ok:
+			parts = append(parts, fmt.Sprintf("it does not carry %s, which must be %q", k, want))
+		case got != want:
+			parts = append(parts, fmt.Sprintf("its %s is %q, not %q", k, got, want))
+		}
+	}
+	if len(parts) == 0 {
+		// Unreachable while owned() is the only predicate that produces this
+		// error, because both read the same managedLabels: owned() returning
+		// false means at least one key above mismatched. It is here as a
+		// disagreement detector between the two derivations, not as a guard —
+		// if it ever prints, owned() and this function have drifted apart.
+		return "yet no key of managedLabels is missing or mismatched, so owned() and this message disagree"
+	}
+	return strings.Join(parts, "; ")
 }
 
 // labelsOf adapts a typed client Get to the labels-and-error pair the ownership
@@ -245,7 +366,7 @@ func (d *Driver) getOwnedDeployment(ctx context.Context, ns, name string) (*apps
 		return nil, blind("get deployment "+name, err)
 	}
 	if !owned(dep.Labels) {
-		return nil, notManaged("deployment", name, ns)
+		return nil, notManagedRead("deployment", name, ns, dep.Labels)
 	}
 	return dep, nil
 }
@@ -268,7 +389,7 @@ func (d *Driver) upsertOwned(what, name, ns string, get func() (map[string]strin
 		return gerr
 	}
 	if !owned(labels) {
-		return notManaged(what, name, ns)
+		return notManagedAction(what, name, ns, labels)
 	}
 	return update()
 }
@@ -277,6 +398,13 @@ func (d *Driver) upsertOwned(what, name, ns string, get func() (map[string]strin
 // object is success — absent is the state the caller asked for. A FOREIGN
 // object is left alone and logged: it belongs to somebody else, and destroying
 // an instance must not touch it.
+//
+// ⚠ EVERY CALLER OF THIS IS A SATELLITE OBJECT — a ConfigMap, a Secret, a
+// Service — and the quiet skip is right for those and WRONG for the instance's
+// identity anchors. The Deployment and the per-instance Namespace do not come
+// through here: a foreign one of those means the name is not muster's to
+// operate on at all, and both refuse loudly. See destroyNamespace, which used
+// to call this and is where that difference is argued.
 //
 // ⚠ WHAT IT DOES NOT CLAIM: atomicity. The labels are read immediately before
 // the delete, but nothing stops the object being replaced between the two
@@ -333,9 +461,13 @@ func (d *Driver) Create(ctx context.Context, spec provision.Spec) error {
 		// would otherwise be reported as divergence — the right refusal for the
 		// wrong reason, and a message nobody can act on.
 		if !owned(existing.Labels) {
-			return fmt.Errorf("%w: %q already exists in namespace %s and is not managed by muster; "+
-				"muster will neither adopt nor overwrite it",
-				provision.ErrDivergentSpec, spec.Ref.Name, ns)
+			// The label detail is here for the reason labelComplaint exists:
+			// relabelling is the only documented escape from an ownership
+			// refusal, so a refusal that declines to name which key is wrong
+			// sends an operator to fix something it did not identify.
+			return fmt.Errorf("%w: %q already exists in namespace %s and is not managed by muster "+
+				"(%s); muster will neither adopt nor overwrite it",
+				provision.ErrDivergentSpec, spec.Ref.Name, ns, labelComplaint(existing.Labels))
 		}
 		// 🔴 IDEMPOTENCE IS DECIDED BY THE RECORDED FINGERPRINT, NOT BY A DIFF
 		// OF THE OBJECTS. The live Deployment has been through defaulting and
@@ -372,7 +504,15 @@ func (d *Driver) Update(ctx context.Context, spec provision.Spec) error {
 		var foreign *notManagedError
 		switch {
 		case errors.As(err, &foreign):
-			return err
+			// 🔴 forAction, FOR THE REASON Destroy DOES IT. This refusal arrived
+			// through the shared by-name READ, so as received it answers to
+			// ErrNotFound — and ErrNotFound from Update is incoherent on its
+			// face, because Update's documented answer to an ABSENT instance is
+			// to create it. A caller branching that way would retry the refused
+			// Update forever. Leaving it read-flavoured would also have left
+			// Update disagreeing with its own apply(), which refuses a foreign
+			// ServiceAccount with ErrNotManaged alone.
+			return foreign.forAction()
 		case errors.Is(err, provision.ErrNotFound):
 			// Absent. Update creates it, which is the documented behaviour.
 		default:
@@ -422,7 +562,7 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 			_, e := c.CoreV1().ServiceAccounts(ns).Update(ctx, sa, metav1.UpdateOptions{})
 			return e
 		}); err != nil {
-		return blind("apply serviceaccount "+sa.Name, err)
+		return applyFailed("apply serviceaccount "+sa.Name, err)
 	}
 
 	cmName := configMapName(name)
@@ -439,7 +579,7 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 				_, e := c.CoreV1().ConfigMaps(ns).Update(ctx, cm, metav1.UpdateOptions{})
 				return e
 			}); err != nil {
-			return blind("apply configmap "+cm.Name, err)
+			return applyFailed("apply configmap "+cm.Name, err)
 		}
 	} else if err := d.deleteIfOwned("configmap", cmName, cmLabels, func() error {
 		return c.CoreV1().ConfigMaps(ns).Delete(ctx, cmName, metav1.DeleteOptions{})
@@ -469,7 +609,7 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 					_, e := c.CoreV1().Secrets(ns).Update(ctx, sec, metav1.UpdateOptions{})
 					return e
 				}); err != nil {
-				return blind("apply secret "+sec.Name, err)
+				return applyFailed("apply secret "+sec.Name, err)
 			}
 			continue
 		}
@@ -499,7 +639,11 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 				return blind("get pvc "+pvc.Name, gerr)
 			}
 			if !owned(labels) {
-				return notManaged("persistentvolumeclaim", pvc.Name, ns)
+				// 🔴 NOT notFound. A Create returning the sentinel that means
+				// "this instance does not exist" is indistinguishable from the
+				// caller's own precondition in a Get -> ErrNotFound -> Create
+				// loop, which would retry the refused Create forever.
+				return notManagedAction("persistentvolumeclaim", pvc.Name, ns, labels)
 			}
 		default:
 			return blind("create pvc "+pvc.Name, cerr)
@@ -511,7 +655,7 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 	}
 	if svc := d.renderService(spec, ns); svc != nil {
 		if err := d.upsertService(ctx, ns, svc); err != nil {
-			return blind("apply service "+svc.Name, err)
+			return applyFailed("apply service "+svc.Name, err)
 		}
 	} else if err := d.deleteIfOwned("service", name, svcLabels, func() error {
 		return c.CoreV1().Services(ns).Delete(ctx, name, metav1.DeleteOptions{})
@@ -535,7 +679,7 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 			_, e := c.AppsV1().Deployments(ns).Update(ctx, dep, metav1.UpdateOptions{})
 			return e
 		}); err != nil {
-		return blind("apply deployment "+dep.Name, err)
+		return applyFailed("apply deployment "+dep.Name, err)
 	}
 	return nil
 }
@@ -549,9 +693,13 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 // the secrets of whoever owned it. The label read below is what makes
 // create-or-continue a decision rather than an assumption.
 //
-// The refusal is not one of the provision sentinels: none of them names
-// "somebody else's object", and ErrInvalidSpec would blame the spec for the
-// state of the cluster.
+// 🔴 IT IS provision.ErrNotManaged, AND IT AGREES WITH Destroy'S NAMESPACE
+// STEP. This comment used to read "the refusal is not one of the provision
+// sentinels: none of them names 'somebody else's object'" — true when written,
+// and no longer: ErrNotManaged names exactly that, and it is what every other
+// foreign-object refusal in this driver reports. ErrInvalidSpec, the
+// alternative that comment rejected, would still be wrong for the reason it
+// gave — it would blame the spec for the state of the cluster.
 func (d *Driver) ensureNamespace(ctx context.Context, instance, ns string) error {
 	nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
 		Name:   ns,
@@ -569,9 +717,56 @@ func (d *Driver) ensureNamespace(ctx context.Context, instance, ns string) error
 		return blind("get namespace "+ns, gerr)
 	}
 	if !owned(cur.Labels) {
-		return fmt.Errorf("namespace %q already exists and is not managed by muster (labels %v); "+
+		return fmt.Errorf("%w: namespace %q already exists and is not managed by muster (%s); "+
 			"refusing to adopt it, because Destroy deletes this namespace and everything in it",
-			ns, cur.Labels)
+			provision.ErrNotManaged, ns, labelComplaint(cur.Labels))
+	}
+	return nil
+}
+
+// destroyNamespace removes the instance's own namespace, and REFUSES a
+// namespace this driver did not create.
+//
+// 🔴 IT IS LOUD, AND IT USED TO BE SILENT. It went through deleteIfOwned, whose
+// foreign case logs and returns nil, so Destroy over a namespace somebody else
+// owns returned nil — "removed or already absent" — while Destroy over a
+// foreign DEPLOYMENT in the very same function returned an error. Two answers
+// to one question, with nothing reconciling them. It is an error now, because
+// the namespace is where Create's own refusal lives: ensureNamespace will not
+// create an instance in a namespace it does not own, so a nil here claimed a
+// clean teardown of a name that could never have been provisioned — which is
+// exactly the silent-success shape the ownership work exists to remove.
+//
+// ⚠ WHY THE CO-NAMED SATELLITES ARE STILL SKIPPED QUIETLY. A foreign
+// ConfigMap, Secret, Service, claim or ServiceAccount under the instance's name
+// stays a logged skip. The distinction is which objects are the instance's
+// IDENTITY ANCHORS: a foreign Deployment or a foreign per-instance Namespace
+// means no instance can exist under this name under ANY spec — Create refuses
+// both unconditionally — whereas a foreign satellite blocks only a spec that
+// RENDERS that object, and Destroy has no spec to consult. Destroy therefore
+// cannot tell a satellite that would have been refused from one that would
+// never have been touched, and leaving it alone is right either way.
+//
+// ⚠ SO THIS IS NOT "LOUD WHEREVER CREATE REFUSES", which is the tidier sentence
+// and is false: Create DOES refuse a foreign co-named ConfigMap when the spec
+// carries files, and Destroy skips that same object in silence. The split is
+// between anchors and satellites, not between loud and quiet Creates.
+func (d *Driver) destroyNamespace(ctx context.Context, ns string) error {
+	cur, err := d.cfg.Client.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return blind("get namespace "+ns, err)
+	}
+	if !owned(cur.Labels) {
+		// The namespace is cluster-scoped, so it has no namespace of its own to
+		// name: the empty string is what suppresses the "in namespace" clause.
+		return notManagedAction("namespace", ns, "", cur.Labels)
+	}
+	if err := d.cfg.Client.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{}); err != nil &&
+		!apierrors.IsNotFound(err) {
+		return err
 	}
 	return nil
 }
@@ -591,7 +786,7 @@ func (d *Driver) upsertService(ctx context.Context, ns string, svc *corev1.Servi
 		return err
 	}
 	if !owned(cur.Labels) {
-		return notManaged("service", svc.Name, ns)
+		return notManagedAction("service", svc.Name, ns, cur.Labels)
 	}
 	next := svc.DeepCopy()
 	next.ResourceVersion = cur.ResourceVersion
@@ -634,6 +829,13 @@ func (d *Driver) Scale(ctx context.Context, ref provision.Ref, replicas int) err
 // the teardown entirely rather than being skipped, because proceeding would
 // tidy up around a workload muster does not own.
 //
+// 🔴 A FOREIGN OBJECT'S REFUSAL IS provision.ErrNotManaged AND DELIBERATELY NOT
+// ErrNotFound, so `if err != nil && !errors.Is(err, provision.ErrNotFound)` —
+// the idiom this contract invites — cannot discard it. The refusal for the
+// DEPLOYMENT and the refusal for the per-instance NAMESPACE now agree; they did
+// not, and destroyNamespace says what changed and why the co-named satellites
+// are a different case.
+//
 // ⚠ WHAT IT DOES NOT CLAIM: that everything has finished TERMINATING. A
 // namespace deletion is asynchronous and pods linger. nil means the API has
 // accepted removal and the Deployment is gone from the API's view.
@@ -657,11 +859,18 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 		}
 	}
 
+	var foreignDep *notManagedError
 	switch dep, err := d.getOwnedDeployment(ctx, ns, name); {
 	case err == nil:
 		fail("deployment", c.AppsV1().Deployments(ns).Delete(ctx, dep.Name, metav1.DeleteOptions{}))
-	case errors.As(err, new(*notManagedError)):
-		return fmt.Errorf("refusing to destroy %q: %w", name, err)
+	case errors.As(err, &foreignDep):
+		// 🔴 forAction, NOT THE REFUSAL AS RECEIVED. getOwnedDeployment is the
+		// shared BY-NAME READ, so its refusal answers to ErrNotFound — correct
+		// for Get, fatal here: `if err != nil && !errors.Is(err,
+		// provision.ErrNotFound)` is the idiom Destroy's own contract invites,
+		// and it discarded this refusal in silence, which is the opposite of
+		// being loud. Re-flavoured, it answers to ErrNotManaged alone.
+		return fmt.Errorf("refusing to destroy %q: %w", name, foreignDep.forAction())
 	case errors.Is(err, provision.ErrNotFound):
 		// Already gone. The rest of the teardown still runs: an earlier
 		// Destroy may have failed partway.
@@ -732,11 +941,7 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 	}
 
 	if d.cfg.NamespacePerInstance {
-		fail("namespace", d.deleteIfOwned("namespace", ns,
-			func() (map[string]string, error) {
-				return labelsOf(c.CoreV1().Namespaces().Get(ctx, ns, metav1.GetOptions{}))
-			},
-			func() error { return c.CoreV1().Namespaces().Delete(ctx, ns, metav1.DeleteOptions{}) }))
+		fail("namespace", d.destroyNamespace(ctx, ns))
 	}
 
 	if firstErr != nil {

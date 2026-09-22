@@ -147,12 +147,21 @@ stated in full in the package doc; in short:
    set.** A caller reads a `List` error as "keep the stored status" and an empty
    `List` as "nothing is running".
 2. **`Destroy` returns `nil` only if the instance was removed or was already
-   absent.** A bare `return nil` satisfies the compiler and means nothing.
+   absent.** A bare `return nil` satisfies the compiler and means nothing. A
+   FOREIGN object holding the instance's name is neither case: it is
+   `ErrNotManaged`, which deliberately does **not** satisfy
+   `errors.Is(err, ErrNotFound)` — otherwise `if err != nil && !errors.Is(err,
+   ErrNotFound)`, the idiom this rule invites, discards the refusal in silence.
 3. **`Create` is idempotent; a divergent spec is an error**, not a silent
    overwrite.
-4. **`Capabilities` is useless unless callers branch on it.** `CheckSpec` and
-   `Grant` are those branches, and they are the only places the refusals are
-   spelled. A policy a driver cannot interpret is REFUSED — an interface
+4. **`Capabilities` is useless unless callers branch on it.** The refusals are
+   spelled in four places — `CheckSpec` (files, secrets, persistence, resource
+   limits, scale), `CheckScale` (scale again, because it is one rule reached by
+   two entry points), `Grant` (policy) and `Exec` (exec). `capabilities.go`'s
+   doc comment is the authority on which capability is refused where; this list
+   is a copy, and copies go stale — this one said "`CheckSpec` and `Grant` …
+   are the only places", omitting `Exec`, which `provision.Exec` genuinely
+   branches on. A policy a driver cannot interpret is REFUSED — an interface
    reporting "granted" for a policy nobody applied is worse than no policy
    feature, because it reads as coverage.
 
@@ -164,7 +173,7 @@ without the restricted one the capability refusals are never watched to fire.
 | driver | what it is for |
 |---|---|
 | `provision.Noop` | records instead of provisioning; develop everything above the seam without a backend |
-| `provision/k8s` | renders its own minimal manifests — Namespace, ServiceAccount, Secret, ConfigMap, PVC, Deployment, Service — and installs no chart |
+| `provision/k8s` | renders its own minimal manifests — Namespace, ServiceAccount, **two** Secrets (confidential env, and separately confidential files), ConfigMap, PVC, Deployment, Service — and installs no chart |
 
 ## Licence
 

@@ -31,10 +31,16 @@ import (
 
 // Harness is what a driver supplies to be tested.
 //
-// All four fields are REQUIRED. In particular Blind and Restricted are not
-// optional conveniences: they are the only way to exercise the two rules that
-// matter most, and a driver that cannot produce them has not thought about
-// either failure.
+// Name, New, Blind and Restricted are REQUIRED; GrantablePolicy is required
+// only when the driver from New declares Capabilities.Policy, and its own
+// comment says so. This said "all four fields are REQUIRED" while the struct
+// had five, which read as a stricter contract than RunContract enforces — a
+// driver author supplying a policy payload their driver cannot use would have
+// been following the doc.
+//
+// In particular Blind and Restricted are not optional conveniences: they are
+// the only way to exercise the two rules that matter most, and a driver that
+// cannot produce them has not thought about either failure.
 type Harness struct {
 	// Name identifies the driver in subtest names.
 	Name string

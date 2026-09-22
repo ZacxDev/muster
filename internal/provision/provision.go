@@ -32,6 +32,39 @@ var (
 	// that emptied itself.
 	ErrBlind = errors.New("provision: backend unreachable")
 
+	// ErrNotManaged — the backend was REACHED, and it has an object under the
+	// name this instance asks for that the driver did not create.
+	//
+	// 🔴 IT IS A PERMANENT DECISION AND IT IS NOT ErrBlind. Five call sites in
+	// the kubernetes driver's apply() wrapped this refusal in the ErrBlind
+	// constructor, which formats with %v, so a caller saw only "backend
+	// unreachable": a refusal that will never resolve on its own presented as a
+	// transient fault, so a caller that retries never converges and a caller
+	// that alerts pages for an outage that is not happening.
+	//
+	// 🔴 A BY-NAME READ ALSO REPORTS ErrNotFound; A WRITE OR A TEARDOWN DOES
+	// NOT. Those are different questions with different right answers, and the
+	// asymmetry is deliberate:
+	//
+	//   - Get, Scale, Endpoint and the log paths were asked "what is instance
+	//     X". A stranger's co-named object is not instance X, so the answer is
+	//     "muster has no instance by that name" — ErrNotFound AND this.
+	//     Reporting it as an instance is how a status read describes somebody
+	//     else's Deployment as an agent.
+	//   - Create, Update and Destroy were asked to ACT on X. "There is no such
+	//     instance" is not what happened — something else holds the name and
+	//     muster refused — so these report this sentinel ALONE. Reporting
+	//     ErrNotFound there is worse than imprecise: `if err != nil &&
+	//     !errors.Is(err, ErrNotFound)` is the idiom Destroy's own contract
+	//     invites, and it SILENTLY DISCARDS the refusal.
+	//
+	// It is not pinned by provisiontest.RunContract: a driver has to have a
+	// SHARED backend for a foreign co-named object to be expressible at all,
+	// and Noop's backend is its own map, so a contract case would be
+	// unfalsifiable for half the drivers in this repository. It is pinned in
+	// the kubernetes driver's own ownership tests instead.
+	ErrNotManaged = errors.New("provision: an object under this name is not managed by this driver")
+
 	// ErrDivergentSpec — Create was called for an instance that already exists
 	// with a materially different spec. The caller that meant to change it has
 	// Update.
@@ -90,6 +123,17 @@ type Provisioner interface {
 	// Anything else — a partial teardown, an unreachable backend, an object
 	// that survived the delete — is an error. A `return nil` that means "I did
 	// not try" is the defect this sentence exists to forbid.
+	//
+	// 🔴 A FOREIGN OBJECT UNDER THE INSTANCE'S NAME IS NOT "ALREADY ABSENT",
+	// AND IT IS NOT nil. On a shared backend a name is not an identity:
+	// something the driver did not create can already hold the name, and a
+	// teardown that proceeded by name alone would delete a stranger's objects
+	// and report success. A driver on such a backend MUST return
+	// [ErrNotManaged] — and must NOT make that error satisfy
+	// errors.Is(err, ErrNotFound), because `if err != nil && !errors.Is(err,
+	// ErrNotFound)` is the idiom this contract invites and it would discard the
+	// refusal. Which objects count as the instance's identity is the driver's
+	// call; the kubernetes driver's Destroy doc states its answer.
 	Destroy(ctx context.Context, ref Ref) error
 
 	// List returns every instance this driver manages.
