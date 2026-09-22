@@ -217,34 +217,100 @@ func TestDestroyLeavesCoNamedObjectsOfOtherKindsAlone(t *testing.T) {
 func TestApplyRefusesToWriteOverACoNamedObjectOfAnotherKind(t *testing.T) {
 	eachMode(t, func(t *testing.T, m nsMode) {
 		ctx := context.Background()
-		d, cs := newDriver(t, m, nil)
-		ns := m.ns("collide")
 
-		if _, err := cs.CoreV1().ServiceAccounts(ns).Create(ctx, &corev1.ServiceAccount{
-			ObjectMeta: metav1.ObjectMeta{Name: "collide", Namespace: ns, Labels: foreignLabels()},
-		}, metav1.CreateOptions{}); err != nil {
-			t.Fatalf("seed serviceaccount: %v", err)
-		}
+		// ⚠ THE SERVICEACCOUNT IS THE FIRST OBJECT apply WRITES, so a fixture
+		// where it collides can never reach the checks on the objects after it.
+		// Each kind below therefore gets its OWN fixture, colliding on that
+		// kind alone. A mutation run is what showed this: with one combined
+		// fixture, disabling the Service check killed nothing.
+		t.Run("serviceaccount", func(t *testing.T) {
+			d, cs := newDriver(t, m, nil)
+			ns := m.ns("collide")
+			if _, err := cs.CoreV1().ServiceAccounts(ns).Create(ctx, &corev1.ServiceAccount{
+				ObjectMeta: metav1.ObjectMeta{Name: "collide", Namespace: ns, Labels: foreignLabels()},
+			}, metav1.CreateOptions{}); err != nil {
+				t.Fatalf("seed serviceaccount: %v", err)
+			}
 
-		err := d.Create(ctx, provisiontest.MinimalSpec("collide"))
-		if err == nil {
-			t.Fatal("Create overwrote a ServiceAccount muster did not create")
-		}
-		if !strings.Contains(err.Error(), "not managed by muster") {
-			t.Errorf("the refusal must say why, got %q", err)
-		}
-		sa, gerr := cs.CoreV1().ServiceAccounts(ns).Get(ctx, "collide", metav1.GetOptions{})
-		if gerr != nil {
-			t.Fatalf("get serviceaccount: %v", gerr)
-		}
-		if sa.Labels["app.kubernetes.io/managed-by"] != "Helm" {
-			t.Errorf("the foreign ServiceAccount was overwritten; labels are now %v", sa.Labels)
-		}
-		// A ServiceAccount is an identity: taking it over is taking over
-		// whatever it can do. The Deployment must not exist either.
-		if _, err := cs.AppsV1().Deployments(ns).Get(ctx, "collide", metav1.GetOptions{}); err == nil {
-			t.Error("the refused Create still produced a Deployment")
-		}
+			err := d.Create(ctx, provisiontest.MinimalSpec("collide"))
+			if err == nil {
+				t.Fatal("Create overwrote a ServiceAccount muster did not create")
+			}
+			if !strings.Contains(err.Error(), "not managed by muster") {
+				t.Errorf("the refusal must say why, got %q", err)
+			}
+			sa, gerr := cs.CoreV1().ServiceAccounts(ns).Get(ctx, "collide", metav1.GetOptions{})
+			if gerr != nil {
+				t.Fatalf("get serviceaccount: %v", gerr)
+			}
+			if sa.Labels["app.kubernetes.io/managed-by"] != "Helm" {
+				t.Errorf("the foreign ServiceAccount was overwritten; labels are now %v", sa.Labels)
+			}
+			// A ServiceAccount is an identity: taking it over is taking over
+			// whatever it can do. The Deployment must not exist either.
+			if _, err := cs.AppsV1().Deployments(ns).Get(ctx, "collide", metav1.GetOptions{}); err == nil {
+				t.Error("the refused Create still produced a Deployment")
+			}
+		})
+
+		// The Service has its own upsert, because a Service's ClusterIP is
+		// assigned by the API server and has to be carried over — so it has its
+		// own copy of the ownership check, and its own way to be wrong.
+		t.Run("service", func(t *testing.T) {
+			d, cs := newDriver(t, m, nil)
+			ns := m.ns("porty")
+			if _, err := cs.CoreV1().Services(ns).Create(ctx, &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{Name: "porty", Namespace: ns, Labels: foreignLabels()},
+				Spec: corev1.ServiceSpec{
+					ClusterIP: "203.0.113.9",
+					Selector:  map[string]string{"app": "porty"},
+					Ports:     []corev1.ServicePort{{Name: "web", Port: 80}},
+				},
+			}, metav1.CreateOptions{}); err != nil {
+				t.Fatalf("seed service: %v", err)
+			}
+
+			err := d.Create(ctx, provisiontest.MinimalSpec("porty"))
+			if err == nil {
+				t.Fatal("Create overwrote a Service muster did not create")
+			}
+			if !strings.Contains(err.Error(), "not managed by muster") {
+				t.Errorf("the refusal must say why, got %q", err)
+			}
+			svc, gerr := cs.CoreV1().Services(ns).Get(ctx, "porty", metav1.GetOptions{})
+			if gerr != nil {
+				t.Fatalf("get service: %v", gerr)
+			}
+			if svc.Labels["app.kubernetes.io/managed-by"] != "Helm" {
+				t.Errorf("the foreign Service was overwritten; labels are now %v", svc.Labels)
+			}
+			// 🔴 THE CONSEQUENCE, NOT JUST THE LABELS: rewriting this object's
+			// selector and ports silently redirects somebody else's traffic to
+			// muster's pods.
+			if svc.Spec.Selector["app"] != "porty" || len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].Port != 80 {
+				t.Errorf("the foreign Service's spec was rewritten: selector=%v ports=%+v",
+					svc.Spec.Selector, svc.Spec.Ports)
+			}
+
+			// Control: muster's OWN Service is updated in place, ClusterIP and
+			// all, so the refusal is about ownership rather than about the
+			// Service already existing.
+			clean := provisiontest.MinimalSpec("clean")
+			if err := d.Create(ctx, clean); err != nil {
+				t.Fatalf("control Create: %v", err)
+			}
+			clean.Ports = []provision.Port{{Name: provision.DefaultPortName, Port: 8421}, {Name: "metrics", Port: 9102}}
+			if err := d.Update(ctx, clean); err != nil {
+				t.Fatalf("control: updating muster's own Service must succeed, got %v", err)
+			}
+			ours, gerr := cs.CoreV1().Services(m.ns("clean")).Get(ctx, "clean", metav1.GetOptions{})
+			if gerr != nil {
+				t.Fatalf("control get service: %v", gerr)
+			}
+			if len(ours.Spec.Ports) != 2 {
+				t.Errorf("control: muster's own Service was not updated: %+v", ours.Spec.Ports)
+			}
+		})
 	})
 }
 
