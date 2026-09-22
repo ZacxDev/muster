@@ -955,6 +955,15 @@ func (d *Driver) Scale(ctx context.Context, ref provision.Ref, replicas int) err
 // the cluster's state, and retrying it will return the same answer until an
 // operator relabels or removes the object in the way.
 //
+// ⚠ ONE CASE ESCAPES THAT GUARANTEE, AND IT IS NAMED RATHER THAN PAPERED OVER:
+// if the namespace is REPLACED between the pre-flight and the delete, the
+// re-read in destroyNamespace refuses after the objects are gone — the state
+// genuinely changed under us, so the report is accurate, but a caller sees the
+// removed-then-refused shape again. Closing it needs a delete precondition on
+// the object's UID, which the fake clientset cannot enforce (see deleteIfOwned),
+// so it would be code no test here could exercise. It is a race window, not the
+// ordinary path the measurement above found.
+//
 // ⚠ WHAT IT DOES NOT CLAIM: that everything has finished TERMINATING. A
 // namespace deletion is asynchronous and pods linger. nil means the API has
 // accepted removal and the Deployment is gone from the API's view.
