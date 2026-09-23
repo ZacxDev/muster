@@ -66,6 +66,9 @@ const modulePath = "github.com/ZacxDev/muster"
 // created this file with no consumers at all.
 var pgBackedPackages = []string{
 	"internal/db",
+	"internal/notes",
+	"internal/privilege",
+	"internal/runbooks",
 }
 
 // envVarReaders is the ledger of files that may name either environment

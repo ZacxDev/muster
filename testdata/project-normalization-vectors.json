@@ -1,0 +1,241 @@
+{
+  "_readme": [
+    "SHARED GOLDEN VECTORS for the `project:<slug>` normalizer.",
+    "",
+    "The rule has to be spelled once per LANGUAGE that decides it, because a",
+    "browser has to decide before the wire and the server has to decide again on",
+    "arrival. In THIS module only the Go side exists so far:",
+    "  1. Go      internal/notes/tags.go   NormalizeTag + ValidateTags   (AUTHORITY)",
+    "",
+    "This file is the ONE place the rule's observable behaviour is written down,",
+    "and it lives at the module root rather than beside the Go package precisely",
+    "so a second-language implementation is driven from THESE bytes rather than",
+    "from a copy. Today its only consumer is:",
+    "  - internal/notes/project_vectors_test.go   (1)",
+    "The four divergence rows below were MEASURED against a second-language",
+    "implementation that disagreed; they are kept because the disagreements they",
+    "record are properties of the LANGUAGES, not of that particular codebase.",
+    "",
+    "FIELDS",
+    "  input       what a user TYPES into the project field (the bare slug).",
+    "  normalized  what the SERVER's NormalizeTag(\"project:\" + input) produces.",
+    "              Present for every vector, including rejected ones - the chip",
+    "              editor normalizes but does not validate, so it is pinned here",
+    "              too.",
+    "  accepted    whether the server's ValidateTags accepts `normalized`.",
+    "              accepted=false means the server answers 400 NAMING the tag; the",
+    "              browser must therefore NOT send it (projectTag -> \"\") and must",
+    "              say so in the UI instead of dropping it silently.",
+    "  why         the rule under test.",
+    "",
+    "The Go driver prepends \"project:\" to `input` because the server normalizes a",
+    "whole tag, while the browser normalizes just the slug. Concatenating first is",
+    "exactly what a client does on the wire before it sends the tag."
+  ],
+  "vectors": [
+    {
+      "input": "orbit",
+      "normalized": "project:orbit",
+      "accepted": true,
+      "why": "the ordinary case"
+    },
+    {
+      "input": "Foo Bar",
+      "normalized": "project:foo-bar",
+      "accepted": true,
+      "why": "lowercase + whitespace run collapses to '-'"
+    },
+    {
+      "input": "foo-bar",
+      "normalized": "project:foo-bar",
+      "accepted": true,
+      "why": "already canonical - convergence with 'Foo Bar'"
+    },
+    {
+      "input": "FOO   BAR",
+      "normalized": "project:foo-bar",
+      "accepted": true,
+      "why": "a RUN of spaces collapses to ONE '-'"
+    },
+    {
+      "input": "  foo  ",
+      "normalized": "project:foo",
+      "accepted": true,
+      "why": "leading/trailing whitespace trims"
+    },
+    {
+      "input": "\t a \n b \r",
+      "normalized": "project:a-b",
+      "accepted": true,
+      "why": "ASCII control whitespace is whitespace on both sides"
+    },
+    {
+      "input": "-foo-",
+      "normalized": "project:foo",
+      "accepted": true,
+      "why": "project-only rule: leading/trailing '-' are STRIPPED"
+    },
+    {
+      "input": "--foo--bar--",
+      "normalized": "project:foo--bar",
+      "accepted": true,
+      "why": "only the ENDS are stripped; an internal run is preserved"
+    },
+    {
+      "input": "9lives",
+      "normalized": "project:9lives",
+      "accepted": true,
+      "why": "a slug may start with a digit"
+    },
+    {
+      "input": "a.b_c-d",
+      "normalized": "project:a.b_c-d",
+      "accepted": true,
+      "why": "the full slug charset [a-z0-9._-]"
+    },
+    {
+      "input": "",
+      "normalized": "project:",
+      "accepted": false,
+      "why": "empty value - the server rejects `project:` rather than storing a meaningless tag"
+    },
+    {
+      "input": "   ",
+      "normalized": "project:",
+      "accepted": false,
+      "why": "whitespace-only collapses to an empty value"
+    },
+    {
+      "input": "---",
+      "normalized": "project:",
+      "accepted": false,
+      "why": "all-dashes strips to empty, then fails loudly"
+    },
+    {
+      "input": "a/b",
+      "normalized": "project:a/b",
+      "accepted": false,
+      "why": "'/' is legal in a descriptive tag but NOT in a project slug"
+    },
+    {
+      "input": "_foo",
+      "normalized": "project:_foo",
+      "accepted": false,
+      "why": "a slug must START with a letter or digit"
+    },
+    {
+      "input": ".foo",
+      "normalized": "project:.foo",
+      "accepted": false,
+      "why": "a slug must START with a letter or digit"
+    },
+    {
+      "input": "Foo:Bar",
+      "normalized": "project:foo:bar",
+      "accepted": false,
+      "why": "a tag carries AT MOST ONE ':'"
+    },
+    {
+      "input": "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffff",
+      "normalized": "project:aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffff",
+      "accepted": true,
+      "why": "56-rune slug + 'project:' = exactly the 64-rune tag cap - the boundary"
+    },
+    {
+      "input": "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffg",
+      "normalized": "project:aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffg",
+      "accepted": false,
+      "why": "57 runes - one past the cap"
+    },
+    {
+      "input": "café",
+      "normalized": "project:café",
+      "accepted": false,
+      "why": "DIVERGENCE ROW: a Latin-1 accent is outside the slug charset. The server 400s NAMING the tag; the browser must not send it AND must not drop it in silence."
+    },
+    {
+      "input": "CAFÉ",
+      "normalized": "project:café",
+      "accepted": false,
+      "why": "DIVERGENCE ROW: same, via lowercasing"
+    },
+    {
+      "input": "İ",
+      "normalized": "project:i",
+      "accepted": true,
+      "why": "DIVERGENCE ROW: U+0130 LATIN CAPITAL I WITH DOT ABOVE. Go's strings.ToLower is a SIMPLE 1:1 mapping and yields 'i'; JS toLowerCase is FULL and yields 'i'+U+0307, which the browser then rejected while the server accepted."
+    },
+    {
+      "input": "İstanbul",
+      "normalized": "project:istanbul",
+      "accepted": true,
+      "why": "DIVERGENCE ROW: the same mapping in a realistic word"
+    },
+    {
+      "input": "a\u0085b",
+      "normalized": "project:a-b",
+      "accepted": true,
+      "why": "DIVERGENCE ROW: U+0085 NEL is Unicode White_Space, so Go's strings.Fields splits on it - but JS's \\s does NOT match it, so the browser rejected what the server accepts."
+    },
+    {
+      "input": "a\ufeffb",
+      "normalized": "project:a\ufeffb",
+      "accepted": false,
+      "why": "DIVERGENCE ROW: U+FEFF (BOM/ZWNBSP) is NOT Unicode White_Space, so Go keeps it and 400s - but JS's \\s DOES match it, so the browser accepted what the server rejects. The strictly dangerous direction."
+    },
+    {
+      "input": "a\u00a0b",
+      "normalized": "project:a-b",
+      "accepted": true,
+      "why": "U+00A0 NBSP is whitespace on BOTH sides - the control vector for the two rows above"
+    },
+    {
+      "input": "a\u3000b",
+      "normalized": "project:a-b",
+      "accepted": true,
+      "why": "U+3000 IDEOGRAPHIC SPACE is whitespace on both sides"
+    },
+    {
+      "input": "a\u2028b",
+      "normalized": "project:a-b",
+      "accepted": true,
+      "why": "U+2028 LINE SEPARATOR is whitespace on both sides"
+    },
+    {
+      "input": "a\u205fb",
+      "normalized": "project:a-b",
+      "accepted": true,
+      "why": "U+205F MEDIUM MATHEMATICAL SPACE is whitespace on both sides"
+    },
+    {
+      "input": "K",
+      "normalized": "project:k",
+      "accepted": true,
+      "why": "U+212A KELVIN SIGN lowercases to ASCII 'k' on both sides"
+    },
+    {
+      "input": "ß",
+      "normalized": "project:ß",
+      "accepted": false,
+      "why": "sharp s has no lowercase mapping on either side and is outside the charset"
+    },
+    {
+      "input": "日本語",
+      "normalized": "project:日本語",
+      "accepted": false,
+      "why": "CJK is outside the slug charset - rejected LOUDLY, never dropped in silence"
+    },
+    {
+      "input": "Алфа",
+      "normalized": "project:алфа",
+      "accepted": false,
+      "why": "Cyrillic is outside the slug charset"
+    },
+    {
+      "input": "project:foo",
+      "normalized": "project:project:foo",
+      "accepted": false,
+      "why": "typing the namespace by hand does not double it up silently - two ':' is a loud reject"
+    }
+  ]
+}
