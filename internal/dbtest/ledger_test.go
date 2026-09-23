@@ -70,6 +70,15 @@ var pgBackedPackages = []string{
 	"internal/notes",
 	"internal/privilege",
 	"internal/runbooks",
+	// Added by the UI carve, and the decision behind it is worth one line
+	// because a RENDERING package taking a real database looks wrong at a
+	// glance. It takes exactly one: the reaper writes a task's idle flag
+	// WITHOUT moving updated_at, and the card's stale-swap guard drops an
+	// incoming render whose revision is older than the one on screen. Whether
+	// those two agree is a property of the SQL — a fake would only restate
+	// what the fake's author believed — so that one test opens a database and
+	// the rest of the package renders strings.
+	"internal/ui",
 }
 
 // envVarReaders is the ledger of files that may name either environment

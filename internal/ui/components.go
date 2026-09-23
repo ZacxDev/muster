@@ -17,12 +17,35 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
-
 )
 
 // hx is a thin helper for htmx (and other non-standard) attributes, which the
 // html package does not provide first-class constructors for.
 func hx(name, value string) g.Node { return g.Attr(name, value) }
+
+// wordmark is the product name, split across two text nodes so the first
+// syllable can be coloured.
+//
+// 🔴 IT IS ONE FUNCTION BECAUSE THE SPLIT IS A RENAME HAZARD, AND THE HAZARD IS
+// MEASURED RATHER THAN IMAGINED. Upstream spelled this inline at both call
+// sites — the header and the sidebar — and because the name is never written
+// whole in the source, every grep for the upstream product name walked straight
+// past both. The extraction's scrub therefore left the old brand rendering in
+// muster's header and sidebar, with nothing erroring; the page simply said the
+// wrong name.
+//
+// Two copies also meant a HALF rename was possible, and that is the shape that
+// survives a naive guard: a test asking "does the document contain the right
+// name somewhere" passes while one of the two sites still shows the old one.
+// With a single function there is no half to rename, and
+// TestTheWordmarkSpellsMuster can assert the WHOLE reassembled string against
+// this one node instead of hunting for a substring in a document.
+func wordmark() g.Node {
+	return g.Group{
+		Span(Class("text-emerald-400"), g.Text("mu")),
+		g.Text("ster"),
+	}
+}
 
 // Page renders muster's full document shell. dark is the default theme: <html>
 // carries the `dark` class, and light is reachable only by removing it.
@@ -613,17 +636,7 @@ func header() g.Node {
 			A(Href("/"),
 				g.Attr("aria-label", "muster home"),
 				Class("text-lg font-semibold tracking-tight transition-opacity hover:opacity-80"),
-				// 🔴 THE WORDMARK IS SPLIT ACROSS TWO NODES SO THE FIRST SYLLABLE CAN
-				// BE COLOURED, AND THAT SPLIT IS A REAL HAZARD DURING A RENAME. The
-				// upstream brand was spelled as two adjacent text nodes, so every
-				// grep for the whole upstream product name walked straight past it and
-				// the extraction's own scrub left the old wordmark rendering in
-				// muster's header. Nothing errors; the page just says the wrong name.
-				// TestTheWordmarkSpellsMuster reassembles the concatenation and
-				// asserts on the WHOLE string, which is the only shape that can see
-				// this.
-				Span(Class("text-emerald-400"), g.Text("mu")),
-				g.Text("ster"),
+				wordmark(),
 			),
 			Span(Class("flex-1")),
 			// "Enable notifications" affordance. Hidden by default; the PWA client
@@ -762,7 +775,6 @@ func jsonString(s string) string {
 	return string(b)
 }
 
-
 // sidebar renders the slide-out left navigation: a dimmed backdrop and the
 // panel itself with three tabs. Both start in the closed state (translated off
 // to the left / backdrop transparent + pointer-events-none); sidebarScript
@@ -815,12 +827,7 @@ func sidebar(activeTab, currentTab string, hasPanels bool) g.Node {
 			// Sidebar header: brand + close.
 			Div(
 				Class("flex items-center gap-3 border-b border-white/5 px-4 py-3"),
-				// Same two-node split as the header wordmark — see the comment there
-				// for why a rename cannot find this by grepping the product name.
-				Span(Class("text-lg font-semibold tracking-tight"),
-					Span(Class("text-emerald-400"), g.Text("mu")),
-					g.Text("ster"),
-				),
+				Span(Class("text-lg font-semibold tracking-tight"), wordmark()),
 				Span(Class("flex-1")),
 				Button(
 					ID("sidebar-close"),

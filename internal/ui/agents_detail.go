@@ -16,7 +16,15 @@ import (
 // ChatLine is one persisted chat message rendered in the detail transcript. For
 // a structured assistant turn (0.7.64) a line is one PART: Kind 'text' renders a
 // bubble; 'tool_call'/'tool_result' render the same collapsed tool chip the live
-// stream shows (Content = args / output). Legacy rows are Kind '' / 'text'.
+// stream shows (Content = args / output). Legacy rows carry an EMPTY Kind, or
+// "text".
+//
+// ⚠ THE EMPTY CASE IS SPELLED OUT IN WORDS ON PURPOSE. It used to name the
+// empty string with a pair of adjacent ASCII single quotes, and gofmt's
+// doc-comment reformatting rewrites that pair into a closing curly DOUBLE
+// quote — so the line silently stopped naming the empty string at all. Nothing
+// errors and nothing fails; the comment just quietly means something else, and
+// the only tell is a character that looks almost identical to what was typed.
 type ChatLine struct {
 	Role     string // "user" | "assistant"
 	Content  string
@@ -938,8 +946,8 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 			// On success re-fetch #chat-log so the banner reflects complete (and the
 			// button disappears). task:changed is caught by #chat-log's from:body trigger.
 			// On success, leave the agent chat and go back to the Tasks view (the task is
-		// done — the user shouldn't be left staring at the agent). Full nav to /tasks.
-		hx("hx-on::after-request", "if(event.detail.successful){window.location.href='/tasks'}"),
+			// done — the user shouldn't be left staring at the agent). Full nav to /tasks.
+			hx("hx-on::after-request", "if(event.detail.successful){window.location.href='/tasks'}"),
 			Class("contents"),
 			Input(Type("hidden"), Name("status"), Value(notes.StatusComplete)),
 			Button(

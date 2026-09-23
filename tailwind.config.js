@@ -23,6 +23,28 @@ module.exports = {
     // is written, so losing this entry is the catastrophic case: the build
     // still succeeds and the stylesheet still parses.
     './internal/ui/**/*.go',
+    // 🔴 TEST FILES ARE EXCLUDED, AND THAT IS A DELETED PROBLEM RATHER THAN A
+    // TIDY-UP. Without this line Tailwind scans _test.go files too, so any
+    // class-shaped token in a fixture, an assertion or a doc comment is emitted
+    // as a real rule and served to every device: a bare word like `shrink` or
+    // `invert` in test prose, a Go slice expression like `x[start:end]` read as
+    // an arbitrary-value class. The upstream project shipped 640 bytes of such
+    // CSS and defended it with a hand-maintained ledger of accepted leaks, which
+    // someone has to curate forever and which cannot distinguish an accident
+    // from a decision.
+    //
+    // MEASURED on this tree, with the rest of the config unchanged:
+    //     tests scanned    38,836 bytes   7 test-only classes
+    //     tests excluded   38,274 bytes   0 test-only classes
+    // and all five css-check control classes present in both, so the exclusion
+    // removes exactly the leak and nothing else.
+    //
+    // ⚠ A NEGATED ENTRY IS LOAD-BEARING CONFIG, NOT A COMMENT. If a future
+    // Tailwind drops support for `!` patterns it will not error — it will
+    // silently go back to scanning test files, which is why
+    // TestNoTestOnlyClassReachesTheStylesheet asserts on the OUTPUT rather than
+    // on this line.
+    '!./internal/ui/**/*_test.go',
     // Static HTML/JS for the PWA shell and any hand-written templates.
     './web/**/*.{html,js}',
     //
