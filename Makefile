@@ -37,7 +37,14 @@ TAILWIND ?= npx --yes tailwindcss@3
 # That is the instrument failing, reported as a finding about the code.
 # Each of these is written in a different moved view, so the set spans the glob
 # rather than sampling one file.
-CSS_REQUIRED_CLASSES := bg-emerald-500 text-indigo-300 bg-rose-500 bg-sky-500 text-amber-200
+#
+# 🔴 THE SIXTH CLASS COVERS A DIFFERENT CONTENT ENTRY, NOT A SIXTH VIEW.
+# `bg-emerald-600` is written ONLY in internal/api/login.go — the sign-in page,
+# the one document this app emits from outside internal/ui — so it is the
+# positive control for that entry. Without it, deleting `./internal/api/login.go`
+# from tailwind.config.js would ship a login page with an unstyled submit button
+# and every check here would stay green.
+CSS_REQUIRED_CLASSES := bg-emerald-500 text-indigo-300 bg-rose-500 bg-sky-500 text-amber-200 bg-emerald-600
 
 help:
 	@echo "muster:"

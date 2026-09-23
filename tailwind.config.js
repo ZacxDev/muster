@@ -47,9 +47,45 @@ module.exports = {
     '!./internal/ui/**/*_test.go',
     // Static HTML/JS for the PWA shell and any hand-written templates.
     './web/**/*.{html,js}',
+    // 🔴 VENDORED THIRD-PARTY BUNDLES ARE EXCLUDED, AND THIS IS THE SAME
+    // DELETED PROBLEM AS THE TEST-FILE LINE ABOVE, IN A NEW PLACE. The entry
+    // above was written when web/ held only first-party files. The API carve
+    // vendored five minified libraries into web/static/vendor/, and Tailwind
+    // read every class-shaped token in them as a class to emit: htmx.min.js
+    // contains its own `htmx-swapping` state class, and the Faro bundle
+    // contains the word `isolate`. Both became real rules served to every
+    // device, from source nobody in this repository wrote.
     //
-    // ⚠ SEAM — A SECOND DOCUMENT SOURCE IS OWED BY THE API CARVE, AND IT WILL
-    // FAIL SILENTLY IF NOBODY ADDS IT HERE.
+    // MEASURED, with the rest of the config unchanged:
+    //     vendor scanned    38,392 bytes   2 library-only classes
+    //     vendor excluded   38,274 bytes   0 library-only classes
+    // and all six css-check control classes present in both, so the exclusion
+    // removes exactly the leak and nothing else.
+    //
+    // ⚠ THE FAILURE WAS FOUND BY css-check, NOT BY READING. The stylesheet was
+    // still valid, still smaller than anything anyone would notice, and the
+    // page still rendered. It surfaced only because that target compares the
+    // build byte-for-byte against the committed copy.
+    '!./web/static/vendor/**',
+    // 🔴 THE ONE DOCUMENT-EMITTING FILE OUTSIDE internal/ui. The seam recorded
+    // below is CLOSED by this line: internal/api/login.go renders the sign-in
+    // page, which must display while the rest of the app is refusing and
+    // therefore does not go through the component package.
+    //
+    // ⚠ THE FILE, NOT ITS PACKAGE, FOR THE REASON THE SEAM GAVE: an api package
+    // is full of JSON, SQL and log strings, and a package-wide glob would also
+    // scan _test.go files, where fixture data reads as arbitrary-value classes.
+    // `bg-emerald-600` is in the css-check control set precisely so this entry
+    // has a positive control rather than merely having been typed — it is
+    // written in this file and nowhere else in the tree.
+    './internal/api/login.go',
+    //
+    // ✅ SEAM CLOSED BY THE API CARVE — kept, rather than deleted, because it
+    // states WHY the entry above is a file and not a glob. Re-read it before
+    // widening that line.
+    //
+    // ⚠ ORIGINAL SEAM — A SECOND DOCUMENT SOURCE IS OWED BY THE API CARVE, AND
+    // IT WILL FAIL SILENTLY IF NOBODY ADDS IT HERE.
     //
     //   WHAT: upstream emits one HTML document from OUTSIDE internal/ui — a
     //     hand-written login page that must render while the rest of the app is

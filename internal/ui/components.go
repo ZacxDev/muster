@@ -136,6 +136,27 @@ var tabKeys = func() []string {
 	return out
 }()
 
+// TabKeys returns the ordered tab keys, for a caller that must register one
+// route per tab.
+//
+// 🔴 IT RETURNS A COPY. tabKeys is package state that every nav render reads;
+// handing a caller the backing array would let an append in another package
+// reorder or truncate the navigation. The cost is one small allocation per
+// call, and the only caller calls it once at registration.
+//
+// 🔴 THIS EXISTS SO THE ROUTE TABLE IS DERIVED FROM THE NAV RATHER THAN TYPED
+// BESIDE IT. Upstream those were two hand-written lists and its own comment
+// records what that cost: a "sixth tab registry" no structural test could see,
+// where a tab in the nav and absent from the routes still rendered — from the
+// fallback branch, with the wrong heading, silently. A linked tab whose route
+// does not exist is a 404 in the navigation; deriving one from the other makes
+// that unrepresentable.
+func TabKeys() []string {
+	out := make([]string, len(tabKeys))
+	copy(out, tabKeys)
+	return out
+}
+
 // normalizeTab clamps an arbitrary tab string to a known tab (default tasks).
 func normalizeTab(t string) string {
 	for _, k := range tabKeys {
