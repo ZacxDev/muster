@@ -26,6 +26,25 @@ var (
 	}
 )
 
+// ChiefName is the one RESERVED agent name: the standing agent the operator
+// talks to, as opposed to a worker dispatched against a task.
+//
+// 🔴 IT IS A CONSTANT BECAUSE THE INSTRUCTIONS BRANCH ON IT, AND A NAME THE
+// GENERATOR PRODUCED WOULD SILENTLY FAIL THAT BRANCH. Ordinary agent names come
+// from the adjective-noun pool above, so nothing a human can type reaches this
+// value — POST /chief/provision is the only producer. Upstream, a release that
+// reserved this name before anything could create one shipped an agent whose
+// whole instruction set was unreachable: it was handed the WORKER instructions,
+// dutifully asked for its assigned task, was told it had none, and reported to
+// the operator that there was nothing to do. It was not malfunctioning; it was
+// executing the only instructions it had.
+//
+// ⚠ IT IS NOT IN adjectives/nouns AND MUST NOT BE. The collision loop in
+// BuildUniqueAgentName guards against an accidental duplicate of an EXISTING
+// agent, not against the pool minting a reserved word — so a reserved name that
+// the pool could also produce would be a coin flip, not a guard.
+const ChiefName = "chief"
+
 func pick(list []string) string {
 	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(list))))
 	if err != nil {
