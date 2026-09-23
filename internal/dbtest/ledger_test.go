@@ -65,6 +65,7 @@ const modulePath = "github.com/ZacxDev/muster"
 // found at least one call" would have been a vacuous failure on the commit that
 // created this file with no consumers at all.
 var pgBackedPackages = []string{
+	"internal/agents",
 	"internal/db",
 	"internal/notes",
 	"internal/privilege",
