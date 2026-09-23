@@ -1,0 +1,1596 @@
+package ui
+
+import (
+	"io"
+	"strconv"
+	"strings"
+	"time"
+
+	g "maragu.dev/gomponents"
+	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/notes"
+)
+
+// ChatLine is one persisted chat message rendered in the detail transcript. For
+// a structured assistant turn (0.7.64) a line is one PART: Kind 'text' renders a
+// bubble; 'tool_call'/'tool_result' render the same collapsed tool chip the live
+// stream shows (Content = args / output). Legacy rows are Kind '' / 'text'.
+type ChatLine struct {
+	Role     string // "user" | "assistant"
+	Content  string
+	Kind     string // "" | "text" | "tool_call" | "tool_result"
+	ToolID   string
+	ToolName string
+	ToolOK   bool
+}
+
+// ChatSurface names WHERE a chat pane is being rendered.
+//
+// 🔴 IT EXISTS BECAUSE agentChatPane IS RE-MOUNTED IN A TRANSFORMED ANCESTOR AND
+// ONE OF ITS CHILDREN IS `position: fixed`. sessionDrawer is `fixed inset-y-0
+// right-0`, which resolves against the nearest ancestor that establishes a
+// containing block — and ChiefPanel carries `translate-x-full` +
+// `transition-transform`, so a transform on it makes the PANEL that ancestor.
+// Inside the panel the drawer therefore sits at the panel's own right edge, and
+// when the panel is shut it is translated off-screen and `inert` along with it:
+// unreachable, with nothing on screen saying so. The panel gets a sub-view of its
+// own column instead (chiefThreadList), which is what this field selects.
+//
+// ⚠ THE ZERO VALUE IS THE PAGE, DELIBERATELY. AgentDetailPage and OperatorPage
+// construct this view in several places and none of them may change behaviour;
+// a surface that had to be set explicitly would silently re-route one of them.
+type ChatSurface string
+
+const (
+	// ChatSurfacePage is a standalone document — AgentDetailPage or OperatorPage.
+	ChatSurfacePage ChatSurface = ""
+	// ChatSurfaceChiefPanel is the chief slide-out inside the home shell.
+	ChatSurfaceChiefPanel ChatSurface = "chief-panel"
+)
+
+// AgentDetailView is the data the agent detail page renders.
+type AgentDetailView struct {
+	ID          int64
+	Name        string
+	DisplayName string
+	Status      string
+	Repo        string
+	Model       string // OpenRouter slug; "" = cluster default
+	Messages    []ChatLine
+	// Sessions are the agent's chat sessions for the switcher (most-recently-active
+	// first); ActiveSessionID is the one whose transcript Messages holds.
+	Sessions        []SessionView
+	ActiveSessionID int64
+	// Surface is where this pane is being rendered. See ChatSurface.
+	Surface ChatSurface
+
+	// Source task (Task 6): when this agent was dispatched from a Task, NoteID is
+	// its task id and TaskStatus its current lifecycle status. Both are populated
+	// best-effort by the handler; NoteID == nil (or a non-terminal status) means
+	// no completion banner is rendered.
+	NoteID     *int64
+	TaskStatus string
+}
+
+// SessionView is one chat session in the switcher.
+type SessionView struct {
+	ID int64
+	// Title is the session's name, derived by the store from its first user message.
+	//
+	// 🔴 AN EMPTY TITLE RENDERS DIFFERENTLY ON THE TWO SURFACES THAT DRAW THESE ROWS,
+	// AND THAT IS DELIBERATE RATHER THAN DRIFT: sessionDrawer (the agent-detail and
+	// operator pages) renders "New chat"; chiefThreadRows (the chief slide-out)
+	// renders "New thread". Each matches the noun its own surface uses everywhere else
+	// — the page's control is "New chat", the panel's is "New thread" and its list is
+	// headed "Threads" — so making them agree would leave one of the two surfaces
+	// naming a thing its own buttons do not. This comment is the only written answer
+	// to "what does an untitled session show", so it names both; the pair is pinned
+	// two-way by ui.TestAnUntitledSessionsPlaceholderIsPerSurfaceAndLedgered.
+	//
+	// 🔴 THAT GUARD DERIVES THE RENDERER SET FROM THE PACKAGE'S OWN AST rather than
+	// enumerating the two it knows about — but its reach is ONE SYNTACTIC SHAPE, and
+	// this comment is where that limit has to be stated because this is where the
+	// promise is made. What it matches is exactly the shape both renderers are written
+	// in: `title := x.Title`, then `if title == "" { title = "<word>" }`, inside a
+	// FuncDecl of package `ui`. MEASURED to pass it, i.e. NOT caught: a fallback keyed
+	// on the field directly (`if s.Title == "" { return "…" }`), one assigning a named
+	// constant instead of a literal, and one testing `len(title) == 0`. So a third
+	// renderer copying either of these two keeps the sentence honest; a third renderer
+	// written differently does not, and nothing here would say so.
+	//
+	// ⚠ THE EARLIER CLAIM WAS WIDER THAN THE CODE, TWICE OVER. Before round 2 this
+	// comment credited the guard with catching a third renderer while the test
+	// hard-coded two surfaces and two literals; round 2 derived the set but the comment
+	// then said the derivation "is what makes the promise true rather than merely
+	// intended", which the measurement above does not support. Widening the scan to
+	// every possible fallback shape is a parser nobody should own — the limit is worth
+	// naming, not closing.
+	Title      string
+	Active     bool
+	LastActive time.Time // session's last-active time (UpdatedAt), rendered relative
+	// Snippet is a short excerpt around a SEARCH match in this thread's message
+	// bodies. Empty on the plain list, and empty for a result matched by TITLE
+	// alone — the title is already on screen, so repeating it as a snippet would
+	// claim a body match that does not exist.
+	Snippet string
+}
+
+// AgentDetailPage renders the full agent detail document: live logs (SSE) and a
+// chat box (WebSocket) to inject messages.
+func AgentDetailPage(v AgentDetailView) g.Node {
+	return Doctype(
+		HTML(Class("dark"), Lang("en"),
+			Head(
+				Meta(Charset("utf-8")),
+				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
+				Meta(Name("color-scheme"), Content("dark light")),
+				Meta(Name("theme-color"), Content("#0b0f17")),
+				TitleEl(g.Text(displayOr(v.DisplayName, v.Name)+" · muster")),
+				Link(Rel("stylesheet"), Href("/static/app.css")),
+				Script(Src("/static/vendor/htmx.min.js"), Defer()),
+				Script(Src("/static/vendor/sse.js"), Defer()),
+				faroHead(),
+			),
+			Body(
+				// h-dvh (a DEFINITE height, not min-h-dvh) + overflow-hidden makes the
+				// page a fixed-height app shell so #chat-log is the ACTUAL scroll
+				// container (via the flex-1 + min-h-0 chain). With min-h-dvh the body
+				// had no definite height, so the flex children grew with content and the
+				// WINDOW scrolled instead — making logEl.scrollTop a no-op (autoscroll
+				// silently did nothing). The input bar is position:fixed (out of flow).
+				Class("flex h-dvh flex-col overflow-hidden bg-slate-950 text-slate-100 antialiased"),
+				// SPA navigation: boost the sidebar tabs + any internal links into AJAX
+				// body-swaps. The chat WebSocket is made boost-safe (torn down on the
+				// outgoing full-body swap, re-connected via htmx:load on arrival) in
+				// agentChatScript so navigating here via boost still connects.
+				hx("hx-boost", "true"),
+				// The shell's slide-out sidebar (position:fixed overlay; it doesn't
+				// affect document flow). Its hamburger lives in agentDetailHeader and
+				// its tabs are boosted <a>s that navigate to the shell, so the detail
+				// page gets the same chrome as the home shell.
+				//
+				// currentTab = "agents": /agents/<name> is a child of the Agents
+				// section AND appScript's tabFromPath('/agents/x') resolves to
+				// 'agents', so the server's first paint and the client's show()
+				// agree on which link is current. Marking the section index for a
+				// detail view is standard practice.
+				sidebar("agents", "agents", false),
+				// Content column: offset right of the persistent desktop sidebar (lg+),
+				// mirroring Page's content column. The header + main + fixed input bar
+				// all carry lg:pl-72 so nothing sits under the sidebar.
+				agentDetailHeader(v),
+				// The detail page IS the chat: a single full-height chat pane between the
+				// header and the fixed input bar (flex-1 + min-h-0 so it fills + scrolls).
+				Main(
+					// pb-3 (not pb-28): the input bar is now an IN-FLOW flex child at the
+					// bottom of the chat pane, so #chat-log fills right down to it — no
+					// reserved-space gap between the transcript and the input (the old
+					// fixed input + pb-28 left ~43px of dead space above it).
+					Class("mx-auto flex w-full max-w-xl flex-1 flex-col gap-4 px-4 pb-3 pt-4 min-h-0 lg:pl-72"),
+					agentChatPane(v),
+				),
+				// Empty mount for the task-detail modal (populated by the header title's
+				// hx-get /ui/agents/{name}/task). position:fixed inside overflow-hidden
+				// body is fine — fixed escapes overflow clipping (no ancestor transform).
+				Div(ID("task-modal")),
+				agentChatScript(v.Name),
+				// appScript wires the sidebar open/close + the SPA tab router AND the
+				// model combobox (its combobox copy supports the hidden-mode autosave
+				// used by the header model form). It is now the SINGLE combobox
+				// implementation — the old standalone comboboxScript was deleted,
+				// retiring the two-copies-of-the-combobox-JS debt.
+				appScript(),
+			),
+		),
+	)
+}
+
+func agentDetailHeader(v AgentDetailView) g.Node {
+	return Header(
+		// lg:pl-72 clears the persistent desktop sidebar (mirrors Page's content
+		// column); on mobile the sidebar is a slide-out overlay so no offset.
+		Class("sticky top-0 z-20 border-b border-white/5 bg-slate-950/80 backdrop-blur lg:pl-72"),
+		Div(
+			Class("mx-auto flex w-full max-w-xl flex-col gap-1.5 px-4 py-2"),
+			Div(
+				Class("flex items-center gap-3"),
+				// Hamburger: opens the shared slide-out sidebar (appScript's initPage
+				// binds #sidebar-open). Replaces the old back-arrow — the sidebar's
+				// boosted tabs are how you leave this page now. Same markup/classes as
+				// the shell header()'s hamburger.
+				sidebarOpenButton(),
+				// Compact title: the DisplayName carries the whole "#<n> · <title>", so a
+				// smaller weight/size keeps the header tight without truncating it. The
+				// title is rendered as INLINE markdown (the task title often carries
+				// **bold**/`code`), escape-first so it can't inject markup. When the agent
+				// is task-linked, the title is a button that opens the full task detail in
+				// a modal (hx-loads /ui/agents/{name}/task into #task-modal).
+				agentTitle(v),
+				newChatButton(v.ID),
+				chatHistoryButton(sessionDrawerID),
+			),
+			agentModelControl(v),
+		),
+	)
+}
+
+// agentTitle renders the header title. For a task-linked agent it is a clickable
+// button opening the task-detail modal; otherwise a plain H1. Both render the
+// title as inline markdown.
+func agentTitle(v AgentDetailView) g.Node {
+	title := mdInlineNode(displayOr(v.DisplayName, v.Name))
+	if v.NoteID == nil {
+		return H1(Class("mr-auto break-all text-sm font-medium"), title)
+	}
+	return H1(Class("mr-auto min-w-0 break-all"),
+		Button(
+			Type("button"),
+			g.Attr("aria-label", "View task details"),
+			g.Attr("title", "View task details"),
+			Class("group flex w-full items-center gap-1 text-left text-sm font-medium text-slate-100 transition hover:text-white"),
+			hx("hx-get", "/ui/agents/"+v.Name+"/task"),
+			hx("hx-target", "#task-modal"),
+			hx("hx-swap", "innerHTML"),
+			Span(Class("min-w-0 break-all"), title),
+			// A subtle chevron hints the title is tappable.
+			g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 text-slate-400 transition group-hover:text-slate-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`),
+		),
+	)
+}
+
+// TaskModalView is the data the task-detail modal renders (opened from the chat
+// header title). It is a read-only view of the agent's linked task.
+type TaskModalView struct {
+	ID       int64
+	Status   string
+	Body     string // markdown
+	Repo     string
+	Model    string
+	Comments []TaskModalComment
+}
+
+// TaskModalComment is one comment in the task-detail modal, oldest-first.
+type TaskModalComment struct {
+	Author string
+	Body   string // markdown; always empty when Retracted
+	When   string // preformatted timestamp label
+	// Retracted renders the tombstone instead of Body. This page carries no
+	// retraction CONTROL (retracting is done from the task card) and that
+	// asymmetry is deliberate — but it must never render a retracted comment's
+	// BODY, so the flag is carried here rather than assumed away.
+	Retracted bool
+}
+
+// RenderTaskModal renders the task-detail modal fragment (overlay + panel) that
+// the header title's hx-get swaps into #task-modal.
+func RenderTaskModal(w io.Writer, v TaskModalView) error { return taskModal(v).Render(w) }
+
+// taskModal is the overlay + panel: a scrollable markdown-rendered task body with
+// status, repo/model meta, and the comment thread. The backdrop and an × button
+// close it by clearing #task-modal (CSP allows hx-on). Slides up from the bottom
+// on mobile (items-end) and centers on larger screens.
+func taskModal(v TaskModalView) g.Node {
+	const close = "document.getElementById('task-modal').innerHTML='';"
+	meta := []g.Node{}
+	if v.Repo != "" {
+		meta = append(meta, taskMetaChip("repo", v.Repo))
+	}
+	if v.Model != "" {
+		meta = append(meta, taskMetaChip("model", modelName(v.Model)))
+	}
+	comments := make([]g.Node, 0, len(v.Comments))
+	for _, c := range v.Comments {
+		comments = append(comments, Div(
+			Class("rounded-xl bg-slate-950/50 p-3 ring-1 ring-inset ring-white/5"),
+			g.If(c.Retracted, g.Attr("data-comment-retracted", "")),
+			Div(Class("mb-1 flex items-center gap-2 text-[11px] text-slate-400"),
+				Span(Class("font-medium text-slate-400"), g.Text(displayOr(c.Author, "comment"))),
+				g.If(c.When != "", Span(g.Text("· "+c.When))),
+			),
+			// Same tombstone as the task card (commentTombstone, internal/ui/notes.go)
+			// — one placeholder, not a second spelling that could drift.
+			g.If(c.Retracted, commentTombstone()),
+			g.If(!c.Retracted, Div(Class("text-sm text-slate-200 [overflow-wrap:anywhere]"), renderMarkdown(c.Body))),
+		))
+	}
+	return Div(
+		ID("task-modal-overlay"),
+		Class("fixed inset-0 z-50 flex items-end justify-center sm:items-center"),
+		g.Attr("role", "dialog"), g.Attr("aria-modal", "true"),
+		// Backdrop: click to close.
+		Div(Class("absolute inset-0 bg-black/60 backdrop-blur-sm"), hx("hx-on:click", close)),
+		Div(
+			Class("relative z-10 flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-slate-900 shadow-2xl ring-1 ring-white/10 sm:rounded-2xl"),
+			Div(
+				Class("flex items-center gap-2 border-b border-white/5 px-4 py-3"),
+				H2(Class("text-sm font-semibold text-slate-100"), g.Text("Task #"+strconv.FormatInt(v.ID, 10))),
+				taskStatusBadge(v.Status),
+				Span(Class("flex-1")),
+				Button(
+					Type("button"),
+					g.Attr("aria-label", "Close"),
+					Class("press inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/5 hover:text-slate-100"),
+					hx("hx-on:click", close),
+					g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>`),
+				),
+			),
+			Div(
+				Class("flex-1 overflow-auto px-4 py-3"),
+				g.If(len(meta) > 0, Div(Class("mb-3 flex flex-wrap gap-1.5"), g.Group(meta))),
+				Div(Class("text-sm text-slate-200 [overflow-wrap:anywhere]"), renderMarkdown(v.Body)),
+				g.If(len(comments) > 0, Div(
+					Class("mt-4 flex flex-col gap-2 border-t border-white/5 pt-3"),
+					Span(Class("text-[11px] font-medium uppercase tracking-wide text-slate-400"), g.Text("Comments")),
+					g.Group(comments),
+				)),
+			),
+		),
+	)
+}
+
+func taskMetaChip(label, val string) g.Node {
+	return Span(
+		Class("inline-flex max-w-full items-center gap-1 truncate rounded-full bg-slate-800/80 px-2.5 py-1 text-[11px] text-slate-400 ring-1 ring-inset ring-white/5"),
+		Span(Class("text-slate-400"), g.Text(label)),
+		g.Text(val),
+	)
+}
+
+// taskStatusBadge renders a small status pill for the modal header.
+func taskStatusBadge(status string) g.Node {
+	tone := "bg-slate-700/60 text-slate-300"
+	switch status {
+	case string(notes.StatusComplete):
+		tone = "bg-emerald-500/20 text-emerald-300"
+	case string(notes.StatusReadyForReview):
+		tone = "bg-amber-500/20 text-amber-300"
+	case string(notes.StatusInProgress):
+		tone = "bg-indigo-500/20 text-indigo-300"
+	}
+	label := status
+	if label == "" {
+		label = "open"
+	}
+	return Span(Class("inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium "+tone), g.Text(label))
+}
+
+// sessionDrawerID is the checkbox-hack toggle for the PAGE surfaces' drawer.
+//
+// 🔴 THE PANEL USES A DIFFERENT ID (chiefThreadsToggleID) RATHER THAN SHARING
+// THIS ONE. Only one of the two ever renders per document today, so sharing would
+// work — and would make the first accidental overlap a duplicate-id bug that
+// silently gives one <label for> two targets. Two ids cost nothing and make
+// TestTheShellPlusAnOpenChiefPanelHasNoDuplicateIDs a real guard rather than a
+// coincidence.
+const sessionDrawerID = "session-drawer"
+
+// agentSessionsPath is the ONE place the session-creation route is spelled.
+//
+// 🔴 ONE ROUTE, TWO CALLERS, AND THE SECOND ONE IS THE WHOLE POINT. The panel's
+// new-thread control must reuse POST /agents/{id}/sessions — its empty-session
+// reuse is behaviour the operator wants and a second creation path would have to
+// re-derive it. Spelled here so a change to the route cannot move one caller and
+// leave the other pointing at a 404.
+func agentSessionsPath(agentID int64) string {
+	return "/agents/" + strconv.FormatInt(agentID, 10) + "/sessions"
+}
+
+// chatHistoryButton is the header control that opens the session drawer. It is a
+// <label for=...> driving the pure-CSS checkbox-hack toggle (sessionDrawer on the
+// page surfaces, chiefThreadList in the panel) — the TOGGLE needs no JS and is
+// boost-safe. ≥44px tap target.
+//
+// ⚠ forID IS A PARAMETER RATHER THAN THE CONSTANT IT USED TO BE, so the panel
+// reuses this control instead of growing a second launcher with its own styling,
+// its own tap target and its own a11y contract to keep in step.
+//
+// 🔴 role="button" + tabindex="0" is a WIDGET CONTRACT, and a <label> has no
+// native keyboard activation, so those attributes alone would claim a contract
+// this element does not honour (focusable, but Enter/Space do nothing). The
+// contract is honoured by appScript's delegated `label[role="button"]` keydown
+// handler, which maps Enter/Space to a click. Keep the three together: if the
+// handler is ever removed, drop role/tabindex here too rather than leaving a
+// focusable dead control. (The drawer stays keyboard-operable regardless via the
+// #session-drawer checkbox itself, which is the JS-free path.)
+func chatHistoryButton(forID string) g.Node {
+	return Label(
+		g.Attr("for", forID),
+		g.Attr("aria-label", "Chat history"),
+		g.Attr("role", "button"),
+		g.Attr("tabindex", "0"),
+		Class("press inline-flex h-11 w-11 min-h-[44px] cursor-pointer items-center justify-center rounded-lg text-slate-300 transition hover:bg-white/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"),
+		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>`),
+	)
+}
+
+// newChatButton is the header control that creates a new chat session. It is a
+// tiny form POSTing to /agents/{id}/sessions; the handler returns HX-Redirect to
+// the new (or reused-empty) session, which htmx follows. The form uses
+// class="contents" so it doesn't introduce a box into the header's flex row —
+// the ≥44px Button is the visible/tappable control. Styled to match
+// chatHistoryButton. Shared by the agent-detail and operator headers.
+func newChatButton(agentID int64) g.Node {
+	return Form(
+		hx("hx-post", agentSessionsPath(agentID)),
+		hx("hx-swap", "none"),
+		Class("contents"),
+		Button(
+			Type("submit"),
+			g.Attr("aria-label", "New chat session"),
+			g.Attr("title", "New chat"),
+			Class("press inline-flex h-11 w-11 min-h-[44px] cursor-pointer items-center justify-center rounded-lg text-slate-300 transition hover:bg-white/5"),
+			g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`),
+		),
+	)
+}
+
+// liveStatusIcon is the header status indicator: a bare colored dot (no text
+// label) that self-refreshes. It renders statusIcon(status) for an instant first
+// paint, then polls GET /ui/agents/{id}/status on load + every 10s and swaps the
+// fresh icon into itself — so the header reflects the agent's live pod state
+// without a label. htmx only (boost-safe). Shared by the agent-detail and
+// operator headers.
+func liveStatusIcon(agentID int64, status string) g.Node {
+	return Span(
+		ID("agent-status"),
+		hx("hx-get", "/ui/agents/"+strconv.FormatInt(agentID, 10)+"/status"),
+		hx("hx-trigger", "load, every 10s"),
+		hx("hx-target", "this"),
+		hx("hx-swap", "innerHTML"),
+		statusIcon(status),
+	)
+}
+
+// agentModelControl renders the agent's model directly AS the searchable model
+// combobox (no separate badge chip, no "change" expander): the combobox shows the
+// current model as its trimmed display value and hx-posts the chosen model to
+// POST /agents/{id}/model with form field `model` (empty = cluster default). A
+// repo chip sits alongside when the agent is repo-backed. A successful post
+// returns 200 + HX-Trigger: agents:changed; the list/detail refresh via the
+// existing agents:changed/SSE wiring. Changing the model restarts the agent, so a
+// clear hint says so and a brief "restarting…" state is shown after the request.
+func agentModelControl(v AgentDetailView) g.Node {
+	ids := strconv.FormatInt(v.ID, 10)
+	return Div(
+		// Single compact row: the model selector flexes to fill and the repo chip
+		// sits alongside it (shrink-0, truncates) — keeps the header tight instead
+		// of spending a second row on the repo.
+		Class("flex items-center gap-2 pl-11 text-xs"),
+		Form(
+			hx("hx-post", "/agents/"+ids+"/model"),
+			// Autosave: picking a model dispatches `change` on the hidden #model
+			// input (cbPick); scope the trigger to that input so typing+blur in the
+			// filter box never submits. Server returns 200 + HX-Trigger:
+			// agents:changed (no body to swap; the trigger drives refreshes).
+			hx("hx-trigger", "change from:[data-combobox-hidden]"),
+			hx("hx-swap", "none"),
+			hx("hx-disabled-elt", "find [data-combobox-input]"),
+			hx("hx-on::after-request", "if(event.detail.successful){var s=this.querySelector('[data-model-saving]');if(s)s.classList.remove('hidden');try{window.cgTrack('model.switch',{agent:this.getAttribute('data-agent')||'',model:(this.querySelector('[data-combobox-hidden]')||{}).value||''});}catch(e){}}"),
+			g.Attr("data-agent", v.Name),
+			Class("min-w-0 flex-1"),
+			// The searchable select IS the model display; the "restarts the agent"
+			// warning lives inside its dropdown. No Save button — selecting a model
+			// autosaves (and restarts the agent).
+			// Agent-view display shows just the model NAME (last '/'-segment) — e.g.
+			// "deepseek-v4-pro" — while the hidden input still submits the FULL slug
+			// so model switching is unaffected. Empty model ("") → the default label.
+			modelFieldWithDisplay(v.Model, "Selecting a model restarts the agent", modelName(v.Model)),
+			Span(g.Attr("data-model-saving", ""), Class("mt-1 hidden text-[11px] text-amber-300/90"), g.Text("↳ restarting…")),
+		),
+		// Surface the agent's repo alongside the model, value only (no "repo" label —
+		// the slug speaks for itself). Operator has no repo → omitted. shrink-0 so
+		// the model selector yields width first; truncates if the slug is long.
+		g.If(v.Repo != "", Span(
+			Class("inline-flex max-w-[45%] shrink-0 items-center truncate rounded-full bg-slate-800/80 px-2.5 py-1 text-[11px] text-slate-400 ring-1 ring-inset ring-white/5"),
+			g.Text(v.Repo),
+		)),
+	)
+}
+
+// ChatSurfaceQueryParam is the query-string name the chat-log partial reads its
+// surface from. Exported because internal/api parses it and a second spelling
+// there would silently answer with the page surface for ever.
+const ChatSurfaceQueryParam = "surface"
+
+// chatLogSurfaceQuery renders the surface as a query fragment, or nothing for the
+// page surface — so every existing chat-log URL is byte-identical to what it was.
+func chatLogSurfaceQuery(s ChatSurface) string {
+	if s == ChatSurfacePage {
+		return ""
+	}
+	return "&" + ChatSurfaceQueryParam + "=" + string(s)
+}
+
+func agentChatPane(v AgentDetailView) g.Node {
+	return Section(
+		// hx-ext="sse" + sse-connect establishes the /events EventSource on the
+		// detail page (the home shell connects on its own wrapper; the standalone
+		// chat doc had none), so the sse:chat.reply trigger below actually fires.
+		// Events dispatched here bubble to <body>, where the #chat-log listener
+		// (from:body) catches them.
+		hx("hx-ext", "sse"),
+		hx("sse-connect", "/events"),
+		Class("flex flex-1 flex-col gap-2 min-h-0"),
+		// 🔴 THE DRAWER IS OMITTED ON THE PANEL SURFACE AND THAT IS NOT A TIDY-UP.
+		// sessionDrawer is `fixed inset-y-0 right-0`, and ChiefPanel's
+		// `translate-x-full` makes the panel the containing block for every fixed
+		// descendant — so inside the panel the drawer renders at the PANEL's right
+		// edge and, when the panel is shut, is translated off-screen and inert with
+		// it. The panel renders chiefThreadList instead: an absolutely-positioned
+		// sub-view of the panel's OWN column, which needs no viewport-relative
+		// positioning at all. See ChatSurface.
+		g.If(v.Surface != ChatSurfaceChiefPanel, sessionDrawer(v)),
+		Div(
+			ID("chat-log"),
+			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-slate-900/40 p-3 ring-1 ring-inset ring-white/5 min-h-0"),
+			// Live-refresh the transcript from the canonical server state when a chat
+			// reply is persisted (chat.reply). This is what makes a KICKOFF turn — which
+			// streams server-side, NOT over this page's WS — appear live without a
+			// reload. chat.reply fires only AFTER a turn completes+persists, so swapping
+			// to the server transcript is safe; agentChatScript additionally cancels
+			// this refresh (htmx:beforeRequest) while a WS turn is mid-stream so it can
+			// never clobber an in-flight streamed turn.
+			// task:changed is dispatched on <body> by the completion banner's
+			// Mark-complete button so the log (and its banner) re-fetch and reflect
+			// the task's new status live; sse:chat.reply covers the agent-finished
+			// reveal (a just-finished task surfaces its banner without a reload).
+			// 🔴 THE SURFACE TRAVELS WITH THE REFETCH URL. This partial re-renders
+			// #chat-log's children, and one of those children is the chief intro —
+			// which must be absent the moment the thread HAS content. A refetch that
+			// dropped the surface would render the intro on a surface that never shows
+			// it (harmless) or, worse, keep rendering it in the panel after the first
+			// message because the server no longer knew where it was answering.
+			hx("hx-get", "/ui/agents/"+v.Name+"/chat-log?session="+strconv.FormatInt(v.ActiveSessionID, 10)+chatLogSurfaceQuery(v.Surface)),
+			hx("hx-trigger", "sse:chat.reply from:body, task:changed from:body"),
+			hx("hx-target", "this"),
+			hx("hx-swap", "innerHTML"),
+			chatLogInner(v),
+		),
+		Form(
+			ID("chat-form"),
+			// 🔴 hx-boost="false" IS LOAD-BEARING AND IT IS A FIXED DEFECT, NOT A
+			// PRECAUTION. This form carries no action, no method and no hx verb: its
+			// submit is intercepted by agentChatScript and sent over the WebSocket. But
+			// both hosting documents set hx-boost="true" on <body>, and htmx BOOSTS any
+			// descendant form that has no verb of its own — inheritance, so nothing here
+			// had to opt in. A boosted form with no action submits a GET of the CURRENT
+			// URL, and the app's own `e.preventDefault()` does NOT stop it: htmx's submit
+			// listener issues the request regardless of defaultPrevented.
+			//
+			// 🔴 AND THE RESPONSE LANDS WHEREVER THE NEAREST hx-target SAYS. On the
+			// agent-detail and operator PAGES no ancestor declares one, so a boosted send
+			// re-swapped the whole body with the same page — invisible, and the reason
+			// this survived for as long as it did. Inside the chief slide-out,
+			// #chief-panel-body declares hx-target="this" + hx-swap="innerHTML", and htmx
+			// resolves an INHERITED "this" to the element that declared it — so pressing
+			// Send fetched /tmux and swapped the ENTIRE PAGE into the panel body,
+			// destroying #chat-form and #chat-input outright. The operator's message was
+			// on the WebSocket, and the box they typed it in was gone.
+			//
+			// MEASURED in Chromium via a probe on the real click path, pinned to a
+			// COMMIT rather than a day because that is the reproducible form:
+			// htmx:configRequest on #chat-form with path=<the page url>, then
+			// beforeSwap/afterSwap targeting #chief-panel-body, then no #chat-input in the
+			// document — 4 of 4 runs at 6a7904957 and 2 of 2 at dcc080998, i.e. it predates
+			// the commit CI first caught it on. The nearest hx-target ancestor was read
+			// back as `chief-panel-body`, which is the half a reader would not guess.
+			//
+			// ⚠ IT IS ON THE FORM RATHER THAN ON THE PANEL BODY BECAUSE THE FORM IS WHAT
+			// IS TRUE EVERYWHERE. One attribute fixes both surfaces and says the actual
+			// invariant: this form is not an htmx request source. A blanket
+			// hx-boost="false" on the panel body would also stop boosting <a> links inside
+			// the panel, which is a different decision — note that any such link is still
+			// exposed to the same inherited-target hazard, and would swap its destination
+			// page into the panel.
+			g.Attr("hx-boost", "false"),
+			// The chat WS target agent, read by agentChatScript so its boost-safe
+			// init derives the agent from the LIVE form (never a stale closure from
+			// a previously-visited page).
+			g.Attr("data-agent", v.Name),
+			// The active chat session id — appended to the WS URL so the socket talks
+			// to the active session's gateway context. Switching sessions re-renders
+			// the page (boosted nav) with a new data-session, so the boost-safe WS
+			// re-inits onto the new session.
+			g.Attr("data-session", strconv.FormatInt(v.ActiveSessionID, 10)),
+			// In-flow flex-none input bar at the BOTTOM of the chat pane (was fixed
+			// bottom-0 + a pb-28 spacer, which left a dead gap). Now #chat-log (flex-1)
+			// fills down to it with no gap; h-dvh + the dynamic viewport handle the
+			// mobile keyboard (the shell shrinks, keeping the input visible). It sits
+			// inside Main (already max-w-xl + lg:pl-72), so no width/offset classes here.
+			Class("flex-none border-t border-white/5 pt-3"),
+			Div(
+				Class("flex w-full items-end gap-2"),
+				Textarea(
+					ID("chat-input"),
+					Rows("1"),
+					Placeholder("Message the agent…"),
+					Class("max-h-32 min-h-[2.75rem] w-full resize-none rounded-xl border-0 bg-slate-900 px-3 py-2.5 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+				),
+				Button(
+					Type("submit"),
+					ID("chat-send"),
+					Class("press inline-flex h-11 shrink-0 items-center justify-center rounded-xl bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-60"),
+					g.Text("Send"),
+				),
+			),
+		),
+	)
+}
+
+// sessionDrawer renders the previous-sessions UI as a slide-out RIGHT-side
+// drawer, toggled by the header's chatHistoryButton (a <label for="session-drawer">).
+// It uses the pure-CSS checkbox-hack, so opening/closing needs no JS at all and
+// is boost-safe. (Both hosting documents — AgentDetailPage and OperatorPage — do
+// in fact include appScript; the Enter/Space activation of the label-buttons
+// below rides on it. But the CSS toggle and the checkbox's own keyboard
+// operability do not, so the drawer degrades correctly without it.)
+//
+//   - a visually-hidden peer checkbox #session-drawer (class="peer sr-only") —
+//     which is ALSO the drawer's JS-free keyboard control: sr-only is clip/1px,
+//     not display:none, so it stays natively focusable and Space toggles it,
+//   - the backdrop and the panel are PEER-SIBLINGS after the checkbox, so
+//     peer-checked:* selectors drive them,
+//   - the panel slides in via translate-x-full → peer-checked:translate-x-0,
+//   - the backdrop is hidden → peer-checked:block and is itself a <label> for the
+//     same checkbox, so tapping it closes the drawer.
+//
+// The panel lists the agent's sessions (most-recently-active first). Each session
+// is a BOOSTED SPA link to <base>?session=<id>, so picking one body-swaps the
+// page with that session's transcript and the WS reconnects fresh via
+// agentChatScript's boost-safe init. The active session is highlighted. Shared by
+// the agent-detail and operator panes.
+//
+// ⚠ IT USED TO CARRY AN OPERATOR SPECIAL CASE, sending the reserved operator's
+// sessions to /operator rather than /agents/{name}. Task #633 deleted that page,
+// so every agent's drawer links into the agent-detail route.
+func sessionDrawer(v AgentDetailView) g.Node {
+	base := "/agents/" + v.Name
+
+	links := make([]g.Node, 0, len(v.Sessions))
+	for _, sess := range v.Sessions {
+		title := sess.Title
+		if title == "" {
+			title = "New chat"
+		}
+		cls := "press flex min-h-[44px] items-center rounded-xl px-3 py-2 text-sm transition ring-1 ring-inset "
+		if sess.Active {
+			cls += "bg-emerald-500/15 text-emerald-100 ring-emerald-500/50"
+		} else {
+			cls += "bg-slate-900 text-slate-300 ring-white/10 hover:bg-slate-800"
+		}
+		links = append(links, A(
+			Href(base+"?session="+strconv.FormatInt(sess.ID, 10)),
+			// Boosted SPA nav: picking a session body-swaps the page (transcript +
+			// fresh data-session); agentChatScript's boost-safe init reconnects the WS
+			// to the picked session. The link is NOT inside #agents-list, so boosting
+			// is a safe top-level body swap.
+			Class(cls+" gap-2"),
+			Span(Class("mr-auto truncate"), g.Text(title)),
+			g.If(!sess.LastActive.IsZero(),
+				Span(Class("shrink-0 text-xs text-slate-400"), g.Text(relTimeString(sess.LastActive)+" ago")),
+			),
+		))
+	}
+
+	return Div(
+		// The checkbox + backdrop + panel live under this common parent so the
+		// peer-checked:* utilities on the siblings select off the checkbox.
+		//
+		// 🔴 The checkbox is NOT aria-hidden and NOT tabindex="-1", and that is
+		// load-bearing. sr-only is clip/1px, not display:none, so the checkbox is
+		// natively focusable; hiding it from the a11y tree while leaving it
+		// focusable is precisely what axe's aria-hidden-focus forbids. An earlier
+		// revision closed that rule by ALSO stripping it from the tab order — and
+		// that made the whole drawer mouse/touch-only, because a <label for> has
+		// NO native keyboard activation and nothing implemented Enter/Space for
+		// the labels. Do NOT re-add either attribute.
+		//
+		// The accessible form of the checkbox hack is the opposite: leave it in
+		// the tab order and give it a real name (aria-label is permitted on an
+		// <input>, unlike on a bare <label>). A keyboard user then Tabs to "Chat
+		// history" and presses Space to open AND close the drawer, with no JS at
+		// all. Focus is made VISIBLE by the #session-drawer:focus-visible rule in
+		// web/css/input.css — an outline on a 1px-clipped element would not be.
+		Input(Type("checkbox"), ID(sessionDrawerID), Class("peer sr-only"),
+			g.Attr("aria-label", "Chat history")),
+		// Backdrop: hidden until checked; itself a label that unchecks on tap.
+		// NO aria-label: a bare <label> has no widget role, so aria-label is
+		// PROHIBITED on it (axe aria-prohibited-attr) and is simply dropped by the
+		// a11y tree — the name has to come from the label's own content, hence the
+		// visually-hidden span.
+		Label(
+			g.Attr("for", sessionDrawerID),
+			Class("fixed inset-0 z-30 hidden bg-black/60 peer-checked:block"),
+			Span(Class("sr-only"), g.Text("Close chat history")),
+		),
+		// Panel: off-screen right, slides in when checked.
+		Div(
+			g.Attr("role", "dialog"),
+			g.Attr("aria-label", "Chat history"),
+			Class("fixed inset-y-0 right-0 z-40 flex w-80 max-w-[85vw] translate-x-full flex-col bg-slate-900 shadow-2xl shadow-black/50 ring-1 ring-white/10 transition-transform duration-300 ease-out peer-checked:translate-x-0"),
+			Div(
+				Class("flex items-center gap-2 border-b border-white/5 px-4 py-3"),
+				H2(Class("mr-auto text-sm font-semibold text-slate-200"), g.Text("Chat history")),
+				// Same rule as the backdrop label above: aria-label is prohibited on
+				// a role-less <label>, so the accessible name is visually-hidden
+				// content instead.
+				//
+				// role="button" + tabindex="0" IS claimed here — and honoured, by
+				// appScript's delegated label[role="button"] Enter/Space handler
+				// (see chatHistoryButton). Without it an open drawer could only be
+				// closed with a pointer: the backdrop below is deliberately left
+				// pointer-only (a full-screen tab stop is worse than none), so this
+				// is the in-drawer keyboard close. Space on the #session-drawer
+				// checkbox remains the JS-free fallback.
+				Label(
+					g.Attr("for", sessionDrawerID),
+					g.Attr("role", "button"),
+					g.Attr("tabindex", "0"),
+					Class("press inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/5 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"),
+					g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
+					Span(Class("sr-only"), g.Text("Close chat history")),
+				),
+			),
+			Div(
+				Class("flex flex-1 flex-col gap-2 overflow-y-auto p-4"),
+				// New chat is the header's ＋ button now (newChatButton); the drawer
+				// just lists existing sessions.
+				g.Group(links),
+			),
+		),
+	)
+}
+
+// chatLogInner renders the INNER content of #chat-log: the persisted transcript
+// bubbles, the provisioning indicator (while the agent is still coming up), and
+// the hidden working indicator. It is shared by the full-page render
+// (agentChatPane) and the GET /ui/agents/{name}/chat-log partial that the
+// sse:chat.reply refresh swaps in — so a live refresh reproduces the exact same
+// children (and re-includes #chat-working so the WS client re-finds it).
+// isSentinelReply reports whether an assistant text is a gateway "no textual
+// reply" marker (or empty/whitespace) that should NOT render as a chat bubble.
+// The agent gateway emits a sentinel (observed "NO_REPL", i.e. a
+// truncated-looking "NO_REPLY") when a turn completes via tool calls with no
+// closing narration — showing it as a bubble is pure noise.
+func isSentinelReply(s string) bool {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return true
+	}
+	switch strings.ToUpper(t) {
+	case "NO_REPLY", "NO_REPL", "NO REPLY", "(NO REPLY)":
+		return true
+	}
+	return false
+}
+
+func chatLogInner(v AgentDetailView) g.Node {
+	msgs := make([]g.Node, 0, len(v.Messages)+2)
+	for i := 0; i < len(v.Messages); i++ {
+		m := v.Messages[i]
+		switch m.Kind {
+		case "tool_call":
+			// Pair with the immediately-following tool_result (same ToolID) so the
+			// call + result render as ONE collapsed chip, like the live stream.
+			var result *ChatLine
+			if i+1 < len(v.Messages) && v.Messages[i+1].Kind == "tool_result" && v.Messages[i+1].ToolID == m.ToolID {
+				r := v.Messages[i+1]
+				result = &r
+				i++
+			}
+			msgs = append(msgs, chatToolChip(m, result))
+		case "tool_result":
+			// Defensive: an unpaired result still renders as its own chip.
+			r := m
+			msgs = append(msgs, chatToolChip(ChatLine{Kind: "tool_call", ToolID: m.ToolID, ToolName: m.ToolName}, &r))
+		default:
+			// Skip an assistant "no reply" sentinel (or an empty bubble): the agent
+			// gateway emits a marker (e.g. NO_REPLY) when the turn finished via tool
+			// calls with no closing narration — rendering it as a bubble is just noise.
+			if m.Role == "assistant" && isSentinelReply(m.Content) {
+				continue
+			}
+			msgs = append(msgs, chatBubble(m.Role, m.Content))
+		}
+	}
+	return g.Group{
+		// 🔴 THE CHIEF INTRO IS INSIDE #chat-log AND NOT IN chiefPanelBody, AND THAT
+		// PLACEMENT IS WHAT MAKES IT DISAPPEAR. The panel body is fetched on OPEN
+		// only; #chat-log re-fetches this very partial on every `sse:chat.reply`. An
+		// intro rendered one level up would therefore sit above a growing conversation
+		// for the whole session — precisely the "no long conversation carries it"
+		// property it exists to have. Here the first persisted turn removes it, from
+		// the server's own count, with no client-side hiding rule to keep in step.
+		//
+		// ⚠ THE CONDITION COUNTS ROWS, NOT RENDERED BUBBLES, AND THE GAP IS UNREACHABLE
+		// TODAY RATHER THAN CLOSED. The loop above DROPS an assistant sentinel
+		// (isSentinelReply: NO_REPLY/NO_REPL/empty), so a thread holding rows that are
+		// nothing but sentinels would render zero bubbles AND no intro: a blank panel with
+		// no affordance at all. It cannot happen as the code stands — all four writers of
+		// a transcript persist a `user` message before any assistant one, so a thread with
+		// any rows has at least one user row, and user content is never dropped here.
+		// The four, BY SYMBOL rather than by line number — this citation used to name
+		// line numbers, and they went stale TWICE inside this one branch: once at the very
+		// commit that wrote them, and again at the commit that recorded that fact while
+		// quoting the replacements. A footnote arguing against line numbers is the last
+		// place to carry any, so there are none:
+		//
+		//   agents.Provisioner.kickoffWhenReady    (internal/agents/provision.go)
+		//   api.Server.handleAPIAgentSendMessage   (internal/api/machine_agents.go)
+		//   api.Server.handleAgentWS               (internal/api/agents.go)
+		//
+		// ⚠ THERE WERE FOUR UNTIL muster task #653 phase two, and THREE IS A
+		// RE-DERIVED COUNT, not the old list minus its deletions. Two writers went with
+		// internal/api/operator.go — `api.Server.handleOpAgentMessage` and
+		// `api.Server.dispatchOperatorTool` (its agent_message arm). The third name here
+		// is in the set because re-running the grep found it, NOT because it replaced
+		// them; the old list had simply missed it. The argument is unchanged: every one
+		// of the three persists a `user` message before any assistant one.
+		//
+		// ⚠ NOTHING MACHINE-CHECKS THAT SET. `git grep -n AddChatMessage` over those two
+		// packages is how it was derived and is how to re-derive it; a fourth writer will
+		// not announce itself here.
+		//
+		// 🔴 DO NOT BUILD FOR IT — BUT A WRITER THAT PERSISTS AN ASSISTANT TURN FIRST
+		// BREAKS THE ARGUMENT, NOT MERELY THE COUNT. If you add one, the fix is to
+		// condition on what this function will actually RENDER rather than on
+		// len(v.Messages), and to say so here: the failure is silent and reads as a
+		// broken panel rather than as a bug in the new writer.
+		g.If(v.Surface == ChatSurfaceChiefPanel && len(v.Messages) == 0, chiefIntro()),
+		g.Group(msgs),
+		// Completion banner (Task 6): rendered inside #chat-log so the existing
+		// sse:chat.reply / task:changed re-fetch of this partial re-evaluates the
+		// task status server-side — a just-finished task reveals its banner live.
+		agentTaskBanner(v),
+		// Provisioning indicator: shown on first paint (and after a refresh) while the
+		// agent is still provisioning/pending, so a chat opened DURING provisioning
+		// isn't an empty void. It self-clears: once the kickoff persists its first
+		// message the chat.reply refresh re-renders this partial with status=running,
+		// so this node is simply absent (and agentChatScript also hides it on the
+		// first streamed delta as a belt-and-suspenders).
+		chatProvisioningIndicator(v.Status),
+		// Working indicator: an animated "working…" row shown between send and the
+		// first server message, hidden again on done/error. The script toggles its
+		// `hidden` class and keeps it as the last child of #chat-log so it sits at
+		// the bottom of the transcript. aria-live so assistive tech announces it.
+		Div(
+			ID("chat-working"),
+			Class("hidden max-w-[85%] items-center gap-2 self-start rounded-2xl bg-slate-800 px-3 py-2 text-sm text-slate-400"),
+			g.Attr("role", "status"),
+			g.Attr("aria-live", "polite"),
+			Span(Class("animate-pulse"), g.Text("working")),
+			Span(
+				g.Attr("aria-hidden", "true"),
+				Class("inline-flex gap-1"),
+				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500 [animation-delay:-0.3s]")),
+				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500 [animation-delay:-0.15s]")),
+				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500")),
+			),
+		),
+	}
+}
+
+// chatProvisioningIndicator renders an animated "Provisioning agent…" row while
+// the agent is still coming up (status pending|provisioning), or nothing once it's
+// running. It reuses the animate-bounce dots pattern from #chat-working. The
+// #chat-provisioning id lets agentChatScript hide it the instant a real streamed
+// message arrives.
+func chatProvisioningIndicator(status string) g.Node {
+	if status != agents.StatusProvisioning && status != agents.StatusPending {
+		return g.Text("")
+	}
+	return Div(
+		ID("chat-provisioning"),
+		Class("flex max-w-[85%] items-center gap-2 self-start rounded-2xl bg-slate-800 px-3 py-2 text-sm text-slate-400"),
+		g.Attr("role", "status"),
+		g.Attr("aria-live", "polite"),
+		Span(Class("animate-pulse"), g.Text("Provisioning agent…")),
+		Span(
+			g.Attr("aria-hidden", "true"),
+			Class("inline-flex gap-1"),
+			Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500 [animation-delay:-0.3s]")),
+			Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500 [animation-delay:-0.15s]")),
+			Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500")),
+		),
+	)
+}
+
+// agentTaskBanner renders the completion banner for a TASK-LINKED agent whose
+// work is done — so the user isn't left staring at a still-"running" pod with no
+// next step. It appears only when NoteID is set AND the task's status is
+// ready_for_review or complete; otherwise nothing (open/in_progress agents, or a
+// task-less chat, render no banner). It carries a [Mark complete] action (PATCH
+// /tasks/<id>/status status=complete — hidden once already complete) and a
+// feedback box (POST /tasks/<id>/comments). Both use hx-swap="none" (the note-card
+// response is irrelevant here); Mark-complete dispatches `task:changed` on <body>
+// so #chat-log re-fetches and the banner re-renders as complete.
+//
+// NoteID is nil-guarded up front (g.If evaluates eagerly, so the deref must never
+// run for a task-less agent).
+func agentTaskBanner(v AgentDetailView) g.Node {
+	if v.NoteID == nil {
+		return g.Text("")
+	}
+	complete := v.TaskStatus == notes.StatusComplete
+	ready := v.TaskStatus == notes.StatusReadyForReview
+	if !complete && !ready {
+		return g.Text("")
+	}
+	id := strconv.FormatInt(*v.NoteID, 10)
+
+	headline := "✅ Agent finished — ready for review"
+	tone := "border-emerald-500/30 bg-emerald-500/10"
+	if complete {
+		headline = "✅ Task complete"
+		tone = "border-emerald-500/40 bg-emerald-500/15"
+	}
+
+	children := []g.Node{
+		Div(Class("text-sm font-medium text-emerald-100"), g.Text(headline)),
+	}
+	// Mark-complete: hidden once the task is already complete.
+	if !complete {
+		children = append(children, Form(
+			hx("hx-patch", "/tasks/"+id+"/status"),
+			hx("hx-swap", "none"),
+			// On success re-fetch #chat-log so the banner reflects complete (and the
+			// button disappears). task:changed is caught by #chat-log's from:body trigger.
+			// On success, leave the agent chat and go back to the Tasks view (the task is
+		// done — the user shouldn't be left staring at the agent). Full nav to /tasks.
+		hx("hx-on::after-request", "if(event.detail.successful){window.location.href='/tasks'}"),
+			Class("contents"),
+			Input(Type("hidden"), Name("status"), Value(notes.StatusComplete)),
+			Button(
+				Type("submit"),
+				Class("press inline-flex items-center justify-center rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-400 active:scale-[0.98]"),
+				g.Text("Mark complete"),
+			),
+		))
+	}
+	// Feedback box: a small textarea + Send. On success clear it and reveal a
+	// subtle "added" confirmation (no banner refresh — a comment doesn't change
+	// the task status).
+	children = append(children, Form(
+		hx("hx-post", "/tasks/"+id+"/comments"),
+		hx("hx-swap", "none"),
+		// On success clear the box, re-hide Send (empty again), and flash "added".
+		hx("hx-on::after-request", "if(event.detail.successful){this.reset();var s=this.querySelector('[data-feedback-send]');if(s)s.classList.add('hidden');var a=this.querySelector('[data-feedback-added]');if(a)a.classList.remove('hidden');}"),
+		Class("flex flex-col gap-1.5"),
+		Textarea(
+			Name("body"),
+			Rows("2"),
+			Placeholder("Give feedback…"),
+			// Send only appears once there's non-whitespace input — an empty feedback
+			// box shows no submit affordance. CSP allows hx-on (unsafe-eval).
+			hx("hx-on:input", "var s=this.form.querySelector('[data-feedback-send]');if(s)s.classList.toggle('hidden', this.value.trim()==='');"),
+			Class("w-full resize-none rounded-lg border-0 bg-slate-950 px-3 py-2 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+		),
+		Div(
+			Class("flex items-center gap-2"),
+			Button(
+				Type("submit"),
+				g.Attr("data-feedback-send", ""),
+				// Hidden until the textarea has content (revealed by the input handler).
+				Class("press hidden items-center justify-center rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 ring-1 ring-inset ring-white/10 transition hover:bg-slate-700"),
+				g.Text("Send"),
+			),
+			Span(g.Attr("data-feedback-added", ""), Class("hidden text-xs text-emerald-300"), g.Text("Feedback added")),
+		),
+	))
+
+	return Div(
+		ID("task-banner"),
+		Class("flex flex-col gap-2 rounded-xl border p-3 "+tone),
+		g.Group(children),
+	)
+}
+
+func chatBubble(role, content string) g.Node {
+	mine := role == "user"
+	tone := "bg-slate-800 text-slate-200 self-start"
+	if mine {
+		tone = "bg-emerald-500/15 text-emerald-100 self-end ring-1 ring-inset ring-emerald-500/30"
+	}
+	return Div(
+		// data-md: rendered as markdown client-side (mdConvert in agentChatScript);
+		// g.Text keeps the raw text as a safe textContent fallback before JS runs.
+		g.Attr("data-md", ""),
+		Class("max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm "+tone),
+		g.Text(content),
+	)
+}
+
+// chatToolChip renders a persisted tool call (+ its result) as the SAME collapsed
+// chip the live stream shows: 🔧 name + a ✓/✗ status, expanding to the args and
+// result. call carries the args (Content), result (may be nil) the output + ok.
+func chatToolChip(call ChatLine, result *ChatLine) g.Node {
+	name := call.ToolName
+	if name == "" && result != nil {
+		name = result.ToolName
+	}
+	if name == "" {
+		name = "tool"
+	}
+	status, statusClass := "…", "ml-auto text-slate-400"
+	if result != nil {
+		if result.ToolOK {
+			status, statusClass = "✓", "ml-auto font-semibold text-emerald-400"
+		} else {
+			status, statusClass = "✗", "ml-auto font-semibold text-rose-400"
+		}
+	}
+	body := []g.Node{}
+	if strings.TrimSpace(call.Content) != "" {
+		body = append(body, toolPre("args", call.Content))
+	}
+	if result != nil && strings.TrimSpace(result.Content) != "" {
+		body = append(body, toolPre("result", result.Content))
+	}
+	return Details(
+		Class("max-w-[92%] self-start rounded-xl bg-slate-950/50 text-xs ring-1 ring-inset ring-white/5"),
+		Summary(
+			Class("flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-slate-300 hover:text-slate-100"),
+			Span(g.Text("🔧")),
+			Span(Class("font-mono text-indigo-300"), g.Text(name)),
+			Span(Class(statusClass), g.Text(status)),
+		),
+		Div(Class("flex flex-col gap-1 px-3 pb-2 pt-0"), g.Group(body)),
+	)
+}
+
+// toolPre is one labeled, scrollable code block inside a persisted tool chip
+// (matching the live stream's pre()). Long output is truncated in the DOM.
+func toolPre(label, txt string) g.Node {
+	return Div(
+		Div(Class("text-[10px] uppercase tracking-wide text-slate-600"), g.Text(label)),
+		Pre(Class("max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-950/80 p-2 text-[11px] leading-relaxed text-slate-400"), g.Text(truncate(txt, 4000))),
+	)
+}
+
+// agentChatScript opens a WebSocket to the chat proxy and renders the assistant
+// turn. It handles the full server→client message contract: delta (assistant
+// text), thinking (collapsed reasoning), tool_call/tool_result (collapsible tool
+// chips correlated by id), error, and done. Each turn after a send is wrapped in
+// its own container so thinking / tool chips / text group visually and interleave
+// in arrival order. A "working…" indicator shows from send until done/error.
+// Auto-scroll and WS auto-reconnect are preserved.
+func agentChatScript(name string) g.Node {
+	return Script(g.Raw(`
+(function () {
+  var AGENT = '` + name + `';
+
+  // --- Minimal, XSS-safe markdown renderer (escape-first, dependency-free) ---
+  // HTML is escaped BEFORE any markdown transform, so raw HTML / <script> /
+  // onerror in agent or user text can never execute. Covers the common chat
+  // cases: fenced + inline code, bold/italic, headings, ordered/unordered lists,
+  // http(s) links, paragraphs/line breaks. Used for both the streamed messages
+  // and the server-rendered transcript bubbles ([data-md], converted in start()).
+  function mdEsc(s) {
+    // Strip the private-use sentinel (\uE000) used by mdInline's tokenizer so a
+    // crafted message can't collide with / spoof a placeholder token.
+    return String(s == null ? '' : s)
+      .replace(/\uE000/g, '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function mdInline(s) { // s is ALREADY escaped
+    // Tokenize FIRST: pull inline code spans (and markdown links) OUT of the
+    // string into placeholder tokens before any other inline transform runs, so
+    // md chars / bare URLs INSIDE code — and a URL already inside a [text](url)
+    // link — are never re-processed (bold/italic/autolink run only on the rest).
+    // Tokens are restored verbatim at the end. \uE000 is a private-use sentinel
+    // that mdEsc strips from the raw input, so it can't appear in user text.
+    var toks = [];
+    function stash(html) { toks.push(html); return '\uE000' + (toks.length - 1) + '\uE000'; }
+    // Inline ` + "`" + `code` + "`" + ` → token (verbatim; no further markdown/autolink).
+    s = s.replace(/` + "`" + `([^` + "`" + `]+)` + "`" + `/g, function (_, c) {
+      return stash('<code class="rounded bg-slate-950/60 px-1 py-0.5 font-mono text-[0.85em]">' + c + '</code>');
+    });
+    // [text](url) markdown links → token, so the bare-URL autolinker below can't
+    // double-link the href.
+    // Both groups exclude the \uE000 sentinel for the same reason the autolink below does: a
+    // code span inside a link (label OR url) has already been stashed, so without
+    // the exclusion its PLACEHOLDER is captured — the code span is restored first
+    // (lower index) and the raw sentinel ends up inside the emitted href, or the
+    // code text vanishes from the label. Excluding it leaves such input literal,
+    // which is what it was before the tokenizer existed. Same fix as the Go
+    // renderer's mdLink (internal/ui/markdown.go).
+    s = s.replace(/\[([^\]\uE000]+)\]\((https?:\/\/[^\s)\uE000]+)\)/g, function (_, t, u) {
+      return stash('<a href="' + u + '" target="_blank" rel="noopener noreferrer" class="text-emerald-300 underline">' + t + '</a>');
+    });
+    // Autolink bare http(s) URLs. Trailing punctuation (. , ) ] ! ? : ; ") stays
+    // OUT of the href. Code + markdown-link URLs are already tokenized out above;
+    // the \uE000 sentinel is excluded from the URL so a URL directly abutting a
+    // token can't swallow the placeholder into the href.
+    s = s.replace(/https?:\/\/[^\s<\uE000]+/g, function (m) {
+      var trail = '';
+      var mm = m.match(/[.,)\]!?:;"']+$/);
+      if (mm) { trail = mm[0]; m = m.slice(0, m.length - trail.length); }
+      return '<a href="' + m + '" target="_blank" rel="noopener noreferrer" class="text-emerald-300 underline">' + m + '</a>' + trail;
+    });
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+    s = s.replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
+    // Restore tokens verbatim (their content was already escaped before stashing).
+    s = s.replace(/\uE000(\d+)\uE000/g, function (_, i) { return toks[+i]; });
+    return s;
+  }
+  // mdTableCells splits one pipe-table row into trimmed cells, dropping the
+  // optional leading/trailing pipe (so both "| a | b |" and "a | b" work).
+  function mdTableCells(line) {
+    var s = line.trim();
+    if (s.charAt(0) === '|') s = s.slice(1);
+    if (s.charAt(s.length - 1) === '|') s = s.slice(0, -1);
+    return s.split('|').map(function (c) { return c.trim(); });
+  }
+  // mdIsTableSep matches a GFM separator row: every cell is dashes with optional
+  // surrounding colons (e.g. "| --- | :--: |" or "---|:--").
+  function mdIsTableSep(line) {
+    if (line.indexOf('|') < 0) return false;
+    return mdTableCells(line).every(function (c) { return /^:?-+:?$/.test(c); });
+  }
+  function mdRender(src) {
+    var lines = mdEsc(src).split('\n'), out = [], i = 0;
+    while (i < lines.length) {
+      var line = lines[i];
+      if (/^` + "```" + `/.test(line)) { // fenced code block
+        var code = []; i++;
+        while (i < lines.length && !/^` + "```" + `\s*$/.test(lines[i])) { code.push(lines[i]); i++; }
+        i++;
+        out.push('<pre class="overflow-auto rounded-lg bg-slate-950/60 p-2 my-1 font-mono text-[0.85em] leading-relaxed"><code>' + code.join('\n') + '</code></pre>');
+        continue;
+      }
+      var h = line.match(/^(#{1,6})\s+(.*)$/);
+      if (h) { out.push('<div class="mt-1 font-semibold text-slate-100 ' + (h[1].length <= 2 ? 'text-base' : 'text-sm') + '">' + mdInline(h[2]) + '</div>'); i++; continue; }
+      if (/^\s*[-*]\s+/.test(line)) {
+        var ul = [];
+        while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) { ul.push('<li>' + mdInline(lines[i].replace(/^\s*[-*]\s+/, '')) + '</li>'); i++; }
+        out.push('<ul class="my-1 list-disc space-y-0.5 pl-5">' + ul.join('') + '</ul>'); continue;
+      }
+      if (/^\s*\d+\.\s+/.test(line)) {
+        var ol = [];
+        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { ol.push('<li>' + mdInline(lines[i].replace(/^\s*\d+\.\s+/, '')) + '</li>'); i++; }
+        out.push('<ol class="my-1 list-decimal space-y-0.5 pl-5">' + ol.join('') + '</ol>'); continue;
+      }
+      // Pipe table: a header row containing '|' immediately followed by a
+      // separator row (dashes + optional colons). Checked before the '|' line is
+      // treated as a paragraph. Cells run through the inline-md pass (escape-first,
+      // so still XSS-safe). Wrapped in overflow-x-auto so it scrolls on mobile.
+      if (line.indexOf('|') >= 0 && i + 1 < lines.length && mdIsTableSep(lines[i + 1])) {
+        var headCells = mdTableCells(line);
+        i += 2; // consume header + separator
+        var head = '<thead><tr>' + headCells.map(function (c) {
+          return '<th class="border border-white/10 px-2 py-1 text-left">' + mdInline(c) + '</th>';
+        }).join('') + '</tr></thead>';
+        var rows = [];
+        while (i < lines.length && lines[i].indexOf('|') >= 0 && !/^\s*$/.test(lines[i])) {
+          var cells = mdTableCells(lines[i]);
+          rows.push('<tr>' + cells.map(function (c) {
+            return '<td class="border border-white/10 px-2 py-1">' + mdInline(c) + '</td>';
+          }).join('') + '</tr>');
+          i++;
+        }
+        out.push('<div class="overflow-x-auto my-1"><table class="my-1 w-full border-collapse text-xs">' + head + '<tbody>' + rows.join('') + '</tbody></table></div>');
+        continue;
+      }
+      if (/^\s*$/.test(line)) { i++; continue; }
+      var para = [];
+      while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^` + "```" + `/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i]) && !(lines[i].indexOf('|') >= 0 && i + 1 < lines.length && mdIsTableSep(lines[i + 1]))) { para.push(lines[i]); i++; }
+      out.push('<p class="my-1">' + mdInline(para.join('<br>')) + '</p>');
+    }
+    return out.join('');
+  }
+  // Convert any server-rendered transcript bubbles ([data-md]) once.
+  function mdConvert(root) {
+    (root || document).querySelectorAll('[data-md]:not([data-md-done])').forEach(function (el) {
+      el.innerHTML = mdRender(el.textContent);
+      el.setAttribute('data-md-done', '');
+    });
+  }
+
+  // Boost-safe init: this page's body may be swapped in via hx-boost (no
+  // DOMContentLoaded), and the prior page's WebSocket must be torn down so it
+  // doesn't leak / keep reconnecting to a page that's gone. We run start() on
+  // BOTH DOMContentLoaded and htmx:load, and dispose any previous connection
+  // first. A single global htmx:beforeSwap listener (guarded) disposes on
+  // navigate-away. window.__cgChat holds the live session.
+  function disposeChat() {
+    var c = window.__cgChat;
+    if (!c) return;
+    c.disposed = true;            // stop the reconnect loop
+    try { if (c.ws) { c.ws.onclose = null; c.ws.close(); } } catch (e) {}
+    // Tear down the kickoff-stream EventSource too, so a boosted navigate-away
+    // doesn't leak it (mirrors the WS teardown).
+    try { if (c.es) { c.es.close(); } } catch (e) {}
+    window.__cgChat = null;
+  }
+
+  function start() {
+  var form = document.getElementById('chat-form');
+  var input = document.getElementById('chat-input');
+  var sendBtn = document.getElementById('chat-send');
+  var logEl = document.getElementById('chat-log');
+  // Re-resolve #chat-working on each use: the sse:chat.reply refresh swaps
+  // #chat-log's innerHTML, replacing this node — a captured reference would go
+  // stale (detached), breaking show/hide + insertBefore.
+  function workingEl() { return document.getElementById('chat-working'); }
+  // Hide the "Provisioning agent…" indicator the moment a real streamed message
+  // starts (belt-and-suspenders; the chat.reply refresh also drops it once the
+  // agent is running).
+  function hideProvisioning() {
+    var p = document.getElementById('chat-provisioning');
+    if (p) p.classList.add('hidden');
+  }
+  if (!form || !input || !logEl) return;
+  // Render any server-rendered transcript bubbles as markdown (idempotent).
+  mdConvert(logEl);
+  // Already wired for this exact form (e.g. DOMContentLoaded + htmx:load both
+  // fired for the same body): don't double-bind.
+  if (form.hasAttribute('data-cg-chat')) return;
+  // A different page's chat is live — tear it down before wiring this one.
+  disposeChat();
+  form.setAttribute('data-cg-chat', '1');
+
+  // Derive the target agent from the LIVE form (boost-safe), falling back to the
+  // server-rendered name. This is what lets a single global htmx:load->start
+  // hook stay correct across boosted navigations between different agents.
+  var agent = form.getAttribute('data-agent') || AGENT;
+  // The active chat session id (from the LIVE form) selects which gateway context
+  // the socket talks to. Switching sessions is a boosted nav that re-renders the
+  // form with a fresh data-session, so this stays correct across navigations.
+  var sessionId = form.getAttribute('data-session') || '';
+
+  // streaming: true while a user-initiated WS turn is actively streaming. The
+  // global htmx:beforeRequest hook reads it to CANCEL a sse:chat.reply #chat-log
+  // refresh mid-stream (so it can't clobber the in-flight streamed turn); the
+  // trailing chat.reply fired after 'done' then refreshes to canonical state.
+  var session = { ws: null, es: null, disposed: false, streaming: false };
+  window.__cgChat = session;
+
+  function scheme() { return location.protocol === 'https:' ? 'wss:' : 'ws:'; }
+  var ws = null;
+  // Per-turn render state. turn = the container div for the active assistant turn;
+  // text = the current text bubble (created lazily on first delta after any
+  // chip/thinking); think = the thinking <details>'s body; tools = id->chip map.
+  var turn = null, text = null, think = null, tools = {};
+
+  // Sticky autoscroll: follow new content ONLY while the user is pinned near the
+  // bottom. If they scroll up (to read back) session.stick goes false and new
+  // messages stop yanking the view; scrolling back to the bottom re-engages it. A
+  // programmatic scroll-to-bottom lands AT the bottom, so stick stays true.
+  session.stick = true;
+  function nearBottom() { return logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 48; }
+  logEl.addEventListener('scroll', function () { session.stick = nearBottom(); }, { passive: true });
+  function scroll() { if (session.stick) logEl.scrollTop = logEl.scrollHeight; }
+  // forceScroll jumps to the bottom and re-engages stick — used when the user's
+  // OWN message is (re)rendered (kickoff after provisioning, or a sent message):
+  // their turn should always bring the latest into view regardless of prior scroll.
+  function forceScroll() { session.stick = true; logEl.scrollTop = logEl.scrollHeight; }
+  // Keep the working indicator pinned to the bottom of the log while visible.
+  function showWorking() {
+    var working = workingEl();
+    if (!working) return;
+    logEl.appendChild(working); // move to end
+    working.classList.remove('hidden');
+    working.classList.add('flex');
+    // Force to the bottom (not sticky): the working indicator appears right after
+    // the user's own turn starts, so it must always be brought into view — the
+    // point is to SEE that the agent is working.
+    forceScroll();
+  }
+  function hideWorking() {
+    var working = workingEl();
+    if (!working) return;
+    working.classList.add('hidden');
+    working.classList.remove('flex');
+  }
+
+  // A standalone bubble (user messages, and assistant text when there's no turn
+  // container — defensive).
+  function bubble(role) {
+    var d = document.createElement('div');
+    var mine = role === 'user';
+    d.className = 'max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm ' +
+      (mine ? 'bg-emerald-500/15 text-emerald-100 self-end ring-1 ring-inset ring-emerald-500/30'
+            : 'bg-slate-800 text-slate-200 self-start');
+    var w = workingEl();
+    logEl.insertBefore(d, (w && w.parentNode === logEl) ? w : null);
+    scroll();
+    return d;
+  }
+
+  // Start a fresh assistant turn container. Chips/thinking/text are appended to it
+  // in arrival order so they group and interleave naturally.
+  function newTurn() {
+    var t = document.createElement('div');
+    t.className = 'flex max-w-[92%] flex-col gap-1.5 self-start';
+    var w = workingEl();
+    logEl.insertBefore(t, (w && w.parentNode === logEl) ? w : null);
+    return t;
+  }
+  function ensureTurn() { if (!turn) { turn = newTurn(); hideProvisioning(); } return turn; }
+
+  // The assistant text bubble inside the current turn (created on first delta).
+  function ensureText() {
+    if (!text) {
+      ensureTurn();
+      text = document.createElement('div');
+      text.className = 'break-words rounded-2xl bg-slate-800 px-3 py-2 text-sm text-slate-200';
+      turn.appendChild(text);
+    }
+    return text;
+  }
+
+  // The collapsed "💭 thinking" details, created only when thinking arrives.
+  function ensureThink() {
+    if (!think) {
+      ensureTurn();
+      var d = document.createElement('details');
+      d.className = 'rounded-xl bg-slate-950/40 text-xs ring-1 ring-inset ring-white/5';
+      var s = document.createElement('summary');
+      s.className = 'cursor-pointer select-none px-3 py-2 font-medium text-slate-400 hover:text-slate-200';
+      s.textContent = '💭 thinking';
+      var body = document.createElement('div');
+      body.className = 'whitespace-pre-wrap break-words px-3 pb-2 pt-0 leading-relaxed text-slate-400';
+      d.appendChild(s); d.appendChild(body);
+      turn.appendChild(d);
+      think = body;
+    }
+    return think;
+  }
+
+  // Truncate long tool output in the DOM (full text still expandable as the
+  // <pre> scrolls); keeps the transcript compact on mobile.
+  function clip(s) {
+    s = String(s == null ? '' : s);
+    return s.length > 4000 ? s.slice(0, 4000) + '\n…(truncated)' : s;
+  }
+
+  // Render (or fetch) the collapsible tool chip for a tool_call id.
+  function toolChip(id, nm) {
+    if (tools[id]) return tools[id];
+    ensureTurn();
+    var d = document.createElement('details');
+    d.className = 'rounded-xl bg-slate-950/50 text-xs ring-1 ring-inset ring-white/5';
+    var s = document.createElement('summary');
+    s.className = 'flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-slate-300 hover:text-slate-100';
+    var icon = document.createElement('span'); icon.textContent = '🔧';
+    var nameEl = document.createElement('span'); nameEl.className = 'font-mono text-indigo-300'; nameEl.textContent = nm || 'tool';
+    var stat = document.createElement('span'); stat.className = 'ml-auto text-slate-400'; stat.textContent = '…';
+    s.appendChild(icon); s.appendChild(nameEl); s.appendChild(stat);
+    var body = document.createElement('div'); body.className = 'flex flex-col gap-1 px-3 pb-2 pt-0';
+    d.appendChild(s); d.appendChild(body);
+    turn.appendChild(d);
+    var chip = { details: d, status: stat, body: body, args: null, result: null };
+    tools[id] = chip;
+    return chip;
+  }
+  function pre(label, txt) {
+    var wrap = document.createElement('div');
+    var lab = document.createElement('div'); lab.className = 'text-[10px] uppercase tracking-wide text-slate-600'; lab.textContent = label;
+    var p = document.createElement('pre'); p.className = 'max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-950/80 p-2 text-[11px] leading-relaxed text-slate-400';
+    p.textContent = txt;
+    wrap.appendChild(lab); wrap.appendChild(p);
+    return wrap;
+  }
+
+  function resetTurn() { turn = null; text = null; think = null; tools = {}; }
+
+  // Shared stream renderer for BOTH the user-turn WebSocket and the server-side
+  // KICKOFF stream (SSE agent.stream): both translate their wire messages into this
+  // same {type, content/id/name/args/ok/output} shape so a delta/thinking/tool_call/
+  // tool_result/user/error/done render IDENTICALLY. This is the single renderer —
+  // the SSE path maps agent.stream fields to this shape (see connectStream) rather
+  // than duplicating the DOM logic.
+  function renderStreamMsg(msg) {
+    switch (msg.type) {
+      case 'user': {
+        // His kickoff message, streamed first so the chat shows the prompt before
+        // the model runs (mdRender is escape-first, so it's XSS-safe). Force the
+        // view to the bottom: once provisioning ends and his message renders, it
+        // should be in view (req: scroll to bottom after my message renders).
+        var ub = bubble('user'); ub.innerHTML = mdRender(msg.content || '');
+        forceScroll();
+        break;
+      }
+      case 'delta': {
+        var dt = ensureText(); dt._raw = (dt._raw || '') + (msg.content || ''); dt.innerHTML = mdRender(dt._raw);
+        scroll();
+        break;
+      }
+      case 'thinking':
+        ensureThink().textContent += msg.content || '';
+        // Close the current text bubble so any text AFTER this thinking starts a
+        // fresh bubble appended below it — keeps parts in arrival (timestamp) order.
+        text = null;
+        scroll();
+        break;
+      case 'tool_call': {
+        var c = toolChip(msg.id, msg.name);
+        if (!c.args && msg.args) { c.args = pre('args', clip(msg.args)); c.body.appendChild(c.args); }
+        // Interleave: text streamed AFTER this tool call must render in a NEW bubble
+        // below the chip, not merged into the pre-tool text bubble (which made tool
+        // calls look out of order vs the narration).
+        text = null;
+        scroll();
+        break;
+      }
+      case 'tool_result': {
+        var r = toolChip(msg.id, msg.name); // defensive: create if missing
+        r.status.textContent = msg.ok ? '✓' : '✗';
+        r.status.className = 'ml-auto font-semibold ' + (msg.ok ? 'text-emerald-400' : 'text-rose-400');
+        if (r.result) r.result.remove();
+        r.result = pre('result', clip(msg.output));
+        r.body.appendChild(r.result);
+        text = null;
+        scroll();
+        break;
+      }
+      case 'error':
+        var et = ensureText(); et._raw = (et._raw ? et._raw + '\n' : '') + '[error] ' + (msg.content || ''); et.innerHTML = mdRender(et._raw);
+        hideWorking();
+        resetTurn();
+        session.streaming = false;
+        sendBtn.disabled = false;
+        scroll();
+        break;
+      case 'done':
+        hideWorking();
+        resetTurn();
+        session.streaming = false;
+        sendBtn.disabled = false;
+        // Mark this session read: a reply we just watched shouldn't linger as
+        // "unread" in the notification FAB. Best-effort; ignore errors.
+        if (sessionId) {
+          try {
+            fetch('/agents/sessions/' + sessionId + '/read', { method: 'POST', credentials: 'include' }).catch(function () {});
+          } catch (e) {}
+        }
+        break;
+    }
+  }
+
+  // Re-fetch #chat-log to reconcile the streamed (kickoff) bubbles with the
+  // canonical server transcript once the turn persists: this replaces the ephemeral
+  // thinking/tool chips with the persisted user+assistant bubbles and reveals the
+  // completion banner. Deterministic (driven off OUR ordered EventSource, after the
+  // 'done' clears the streaming guard) so the guard can't cancel it. The existing
+  // htmx sse:chat.reply refresh is redundant-but-harmless (idempotent GET).
+  function reconcileChatLog() {
+    if (!window.htmx) return;
+    var el = document.getElementById('chat-log');
+    var url = el && el.getAttribute('hx-get');
+    if (!url) return;
+    try { window.htmx.ajax('GET', url, { target: '#chat-log', swap: 'innerHTML' }); } catch (e) {}
+  }
+
+  // Live-render the server-side KICKOFF stream over the shared /events SSE. The
+  // kickoff runs server-side (NOT over this page's user-turn WS), so without this
+  // the chat jumps from "provisioning" straight to the persisted reply. A raw
+  // EventSource (filtered to THIS agent) keeps agent.stream events strictly ordered
+  // on one connection — his message → thinking → text → done — so the terminal
+  // 'done' reliably clears the streaming guard before we reconcile. Best-effort: any
+  // failure to open it must never break the chat.
+  function connectStream() {
+    if (session.disposed || !window.EventSource) return;
+    var es;
+    try { es = new EventSource('/events'); } catch (e) { return; }
+    session.es = es;
+    es.addEventListener('agent.stream', function (ev) {
+      var d;
+      try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (!d || d.agent !== agent) return; // only THIS page's agent
+      // First stream event: mark streaming (so the htmx sse:chat.reply refresh is
+      // cancelled mid-stream and can't clobber the live bubbles), drop the
+      // provisioning indicator, and show the animated "working…" row — the kickoff
+      // often runs for a while (thinking / tool loop) BEFORE any text delta arrives,
+      // and without this that gap showed nothing. It's cleared on 'done' (hideWorking
+      // in renderStreamMsg) and stays pinned to the bottom as text streams above it.
+      if (!session.streaming) { session.streaming = true; hideProvisioning(); showWorking(); }
+      switch (d.kind) {
+        case 'user': renderStreamMsg({ type: 'user', content: d.text }); break;
+        case 'text': renderStreamMsg({ type: 'delta', content: d.text }); break;
+        case 'thinking': renderStreamMsg({ type: 'thinking', content: d.text }); break;
+        case 'tool_call': renderStreamMsg({ type: 'tool_call', id: d.toolId, name: d.toolName, args: d.toolArgs }); break;
+        case 'tool_result': renderStreamMsg({ type: 'tool_result', id: d.toolId, name: d.toolName, ok: d.toolOk, output: d.toolOutput }); break;
+        case 'done':
+          renderStreamMsg({ type: 'done' }); // clears session.streaming
+          reconcileChatLog();
+          break;
+      }
+    });
+    // A dropped SSE connection is non-fatal (the trailing chat.reply refresh still
+    // reconciles); let the browser auto-reconnect. No manual retry loop needed.
+  }
+
+  function connect() {
+    if (session.disposed) return;
+    var url = scheme() + '//' + location.host + '/agents/' + agent + '/ws';
+    if (sessionId) url += '?session=' + encodeURIComponent(sessionId);
+    ws = new WebSocket(url);
+    session.ws = ws;
+    ws.onmessage = function (ev) {
+      var msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      renderStreamMsg(msg);
+    };
+    ws.onclose = function () { if (!session.disposed) setTimeout(connect, 2000); };
+  }
+  connect();
+  // Open scrolled to the latest message: the transcript is converted + laid out
+  // by now, so forceScroll() reads the full scrollHeight and pins the log to bottom.
+  forceScroll();
+  // Live-render the server-side kickoff stream (agent.stream over /events) with the
+  // same renderer as the WS turn. Opened after the initial scroll so it never races
+  // the open-at-bottom behaviour.
+  connectStream();
+
+  function send() {
+    var t = input.value.trim();
+    if (!t || !ws || ws.readyState !== 1) return;
+    var ub = bubble('user'); ub.innerHTML = mdRender(t);
+    forceScroll(); // his own send always brings the latest into view
+    ws.send(JSON.stringify({ type: 'message', text: t }));
+    try { window.cgTrack('chat.sent', { agent: (form.getAttribute('data-agent') || '') }); } catch (e) {}
+    input.value = '';
+    sendBtn.disabled = true;
+    session.streaming = true;
+    resetTurn();
+    showWorking();
+  }
+  form.addEventListener('submit', function (e) { e.preventDefault(); send(); });
+  input.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  } // end start
+
+  // Global, document-lifetime hooks (the <body> survives hx-boost swaps, so
+  // these must bind exactly once — guarded). start() reads its target agent from
+  // the live #chat-form[data-agent], so a single htmx:load hook stays correct
+  // across boosted navigations between different agents; disposeChat() is
+  // page-agnostic (operates on window.__cgChat).
+  if (!window.__cgChatGlobals) {
+    window.__cgChatGlobals = true;
+    // Tear the outgoing socket down when an hx-boost navigation swaps the whole
+    // <body> away (target === body). Partial swaps within the page (grants pane,
+    // model form, SSE log appends) target sub-elements and must NOT kill the chat.
+    document.body.addEventListener('htmx:beforeSwap', function (e) {
+      if (e.detail && e.detail.target === document.body) disposeChat();
+    });
+    // (Re)connect the chat after a boosted body-swap / history restore brings a
+    // chat page in. Idempotent via the form's data-cg-chat marker.
+    document.body.addEventListener('htmx:load', start);
+    // Guard the sse:chat.reply #chat-log refresh: never let it fire WHILE a WS turn
+    // is mid-stream (it would replace the in-flight streamed bubbles). chat.reply
+    // fires again after 'done' (streaming=false), which refreshes canonically.
+    document.body.addEventListener('htmx:beforeRequest', function (e) {
+      var elt = e.detail && e.detail.elt;
+      if (elt && elt.id === 'chat-log' && window.__cgChat && window.__cgChat.streaming) {
+        e.preventDefault();
+      }
+    });
+    // After a #chat-log refresh swap: convert the fresh transcript bubbles to
+    // markdown and pin to the bottom (the WS client only runs mdConvert/scroll on
+    // its own events, so a server-driven refresh needs this).
+    document.body.addEventListener('htmx:afterSwap', function (e) {
+      var t = e.detail && e.detail.target;
+      if (t && t.id === 'chat-log') {
+        mdConvert(t);
+        // Respect sticky scroll: only pin to bottom if the user hasn't scrolled up
+        // (stick !== false). Default to pinning when there's no live chat session.
+        if (!window.__cgChat || window.__cgChat.stick !== false) t.scrollTop = t.scrollHeight;
+      }
+    });
+  }
+
+  // Arrival on a non-boosted (real) load: this <script> re-executes as part of
+  // the page body, so just start once the DOM is ready.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
+`))
+}

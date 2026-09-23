@@ -1,0 +1,225 @@
+/*
+ * muster Tailwind entrypoint (Phase 0 scaffolding).
+ *
+ * Built into web/static/app.css via `npm run build:css` (Phase 1). Dark mode
+ * is the default — the document root carries the `dark` class, so prefer
+ * `dark:`-prefixed utilities for the primary look and treat the un-prefixed
+ * (light) styles as the opt-in alternative.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Card enter/leave micro-interactions for the htmx-driven list.
+ *
+ * - .card-enter        : new cards slide up + fade in (with a brief highlight
+ *                        ring pulse so an arriving request draws the eye).
+ * - .htmx-swapping     : htmx adds this to an element being swapped out; we
+ *                        fade + collapse it so a decided card animates away.
+ * - .card-removed      : the empty placeholder the decision response swaps in;
+ *                        it collapses to zero height.
+ * - .press             : buttons depress slightly on :active for tactile feel.
+ *
+ * Respect prefers-reduced-motion: collapse all of this to no animation.
+ */
+@layer components {
+  .card-enter {
+    animation: card-in 280ms cubic-bezier(0.16, 1, 0.3, 1) both,
+      card-highlight 1400ms ease-out 120ms both;
+  }
+
+  .htmx-swapping {
+    animation: card-out 300ms ease-in forwards;
+    pointer-events: none;
+    overflow: hidden;
+  }
+
+  .card-removed {
+    height: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    overflow: hidden;
+  }
+
+  .press {
+    transition: transform 80ms ease;
+    touch-action: manipulation;
+  }
+  .press:active {
+    transform: scale(0.97);
+  }
+
+  /*
+   * Task-card navigation overlay, suppressed during merge selection.
+   *
+   * A board card's scannable text is a real <a class="card-link"> to
+   * /tasks/<id> whose ::after is stretched across the whole <article>, so the
+   * entire card is one navigation target (keyboard focus, middle-click,
+   * ⌘-click and "open in new tab" all work for free — none of which a
+   * delegated JS click handler would give, and no handler in internal/ui calls
+   * stopPropagation, so such a handler would ALSO fire on every inner button
+   * and select).
+   *
+   * 🔴 THERE IS NOW EXACTLY SUCH A HANDLER, AND THIS COMMENT DID NOT SAY SO.
+   * The metadata row is raised above this overlay (`.card-meta relative z-10`,
+   * notes.go) so the chips' `title` tooltips resolve, which takes the chips out
+   * of the anchor's hit area, and cardMetaNavScript (internal/ui/components.go)
+   * routes a chip click back to `a.card-link`. Its first version called
+   * `link.click()` and lost every property this paragraph promises "for free":
+   * measured, middle-click on a chip did nothing and ⌘-click navigated the
+   * CURRENT tab, while both worked 20px away on the card body. It now forwards
+   * the real event's modifiers and button and also binds `auxclick`. So the
+   * sentence above is true of the CSS and false of the page unless that handler
+   * keeps paying for it — if you touch either, the seam is asserted structurally
+   * in internal/ui/task_detail_seam_test.go and behaviourally in
+   * e2e/tests/tasks.spec.ts.
+   *
+   * While merge-selection mode is on, taskMergeScript puts `selecting` on
+   * <html> and this rule drops the overlay's pointer-events, so a card click
+   * does NOTHING instead of navigating away mid-merge. The anchor itself stays
+   * focusable and its own text stays clickable — only the stretched region is
+   * neutralised, which is the region a stray merge-time click lands in.
+   *
+   * 🔴 It does NOT hand the click to the checkbox, and this comment used to say
+   * it did ("so a card click ticks its checkbox"). There is nothing underneath
+   * to receive it: the checkbox (taskSelectControl) sits inside the action row,
+   * which is `relative z-10` and therefore already ABOVE this overlay, and no
+   * handler ticks a box from a card-body click. Doing nothing is the intended
+   * and sufficient behaviour — a merge is destructive, so it must not be one
+   * stray tap away from navigating off the board.
+   *
+   * This lives in CSS rather than in the click handler on purpose: that
+   * delegated listener only preventDefault()s [data-select-toggle] and
+   * [data-merge-keep], so it never observes the anchor at all.
+   */
+  .selecting .card-link::after {
+    pointer-events: none;
+  }
+
+  /*
+   * Session-drawer toggle: the visually-hidden checkbox that drives the
+   * pure-CSS drawer (internal/ui/agents_detail.go sessionDrawer).
+   *
+   * It is deliberately NOT aria-hidden and NOT tabindex="-1" — it is the
+   * drawer's only JS-free keyboard control (Space toggles it). But `sr-only`
+   * clips it to a 1px box, so an outline on it would be invisible and a
+   * keyboard user would be focusing something they cannot see. On
+   * :focus-visible we therefore UNDO sr-only (the standard skip-link pattern)
+   * and park a real, outlined 44px checkbox in the top-right corner — beside
+   * the header's chat-history button, which is what it toggles.
+   *
+   * :focus-visible (not :focus) so a pointer click on a <label for> — which
+   * focuses the checkbox — does not flash the box at mouse users.
+   *
+   * This lives here rather than as `focus-visible:` utilities because undoing
+   * sr-only means overriding position/clip/size together, and whether that wins
+   * depends on Tailwind's emitted utility ORDER, which nothing here can assert.
+   */
+  #session-drawer:focus-visible {
+    position: fixed;
+    top: 0.75rem;
+    right: 0.75rem;
+    z-index: 60;
+    width: 2.75rem;
+    height: 2.75rem;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+    clip: auto;
+    clip-path: none;
+    white-space: normal;
+    border-radius: 0.5rem;
+    outline: 2px solid #38bdf8; /* sky-400 — matches the label-button ring */
+    outline-offset: 2px;
+  }
+
+  /*
+   * Slide-out sidebar. The panel and backdrop default to the closed state
+   * (panel translated off to the left, backdrop transparent + non-interactive).
+   * #sidebar-root[data-open="true"] reveals both. Transitions live on the
+   * elements themselves (Tailwind utilities) so prefers-reduced-motion below
+   * collapses them.
+   */
+  #sidebar-root .sidebar-panel {
+    transform: translateX(-100%);
+  }
+  #sidebar-root .sidebar-backdrop {
+    opacity: 0;
+    pointer-events: none;
+  }
+  #sidebar-root[data-open='true'] .sidebar-panel {
+    transform: translateX(0);
+  }
+  #sidebar-root[data-open='true'] .sidebar-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /*
+   * Desktop (lg+): the sidebar is a persistent left rail — always in view
+   * regardless of the open/closed toggle — and the dimming backdrop never
+   * shows. The content column is offset with lg:pl-72 in the markup, and the
+   * hamburger is lg:hidden.
+   */
+  @media (min-width: 1024px) {
+    #sidebar-root .sidebar-panel {
+      transform: translateX(0);
+    }
+    #sidebar-root .sidebar-backdrop {
+      display: none;
+    }
+  }
+}
+
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes card-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    max-height: 60rem;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.985);
+    max-height: 0;
+  }
+}
+
+@keyframes card-highlight {
+  0% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+  25% {
+    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.5);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card-enter,
+  .htmx-swapping {
+    animation: none;
+  }
+  .press {
+    transition: none;
+  }
+  .sidebar-panel,
+  .sidebar-backdrop {
+    transition: none !important;
+  }
+}
