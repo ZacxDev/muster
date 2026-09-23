@@ -174,6 +174,31 @@ func tabHeading(tab string) string {
 	return "muster"
 }
 
+// ⚠ SEAM — THIS DOCUMENT REFERENCES SIX FILES UNDER /static/ THAT muster DOES
+// NOT YET CARRY, AND EVERY ONE OF THEM FAILS SILENTLY.
+//
+//	WHAT: the head below loads /static/vendor/htmx.min.js,
+//	  /static/vendor/idiomorph-ext.min.js, /static/vendor/sse.js, the two Faro
+//	  scripts (conditionally) and /static/icons/icon-192.png. web/static/ holds
+//	  exactly one file today — app.css, built by `make css` — so the other five
+//	  are 404s, and /static/ is not even registered as a route yet.
+//	WHY IT IS NOT VISIBLE HERE: a missing <script src> does not error the page.
+//	  It renders, styled, and then does nothing: no htmx means every panel stays
+//	  a skeleton because no hx-get ever fires, no idiomorph means every
+//	  `morph:` swap silently degrades to a destructive one, no sse.js means the
+//	  page is write-only. Nothing in this package can observe that — these
+//	  renderers emit markup, and the markup is correct.
+//	WHY THEY ARE NOT CARRIED IN THIS CHUNK: they are third-party binaries whose
+//	  home is web/static/vendor/, served by a /static/ route this chunk
+//	  deliberately does not register, and embedded by a web package that would
+//	  make `go build ./...` depend on their presence.
+//	CLOSING CONDITION: the API carve lands the web package, vendors these five
+//	  files, registers `GET /static/`, and a test asserts that every
+//	  `/static/...` path this package emits resolves to a file the embed
+//	  actually contains — derived by scanning the sources, not by listing the
+//	  paths a second time.
+//	WHO CHECKS IT: the reviewer of the API-carve pull request, against that
+//	  derived test.
 func Page(activeTab string) g.Node {
 	activeTab = normalizeTab(activeTab)
 	return Doctype(
