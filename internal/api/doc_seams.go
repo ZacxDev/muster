@@ -94,12 +94,26 @@ package api
 // 4. 🔴 THE MOVED HANDLERS ARRIVED WITHOUT THEIR SUITES, AND THE NUMBER IS
 //    STATED RATHER THAN LEFT TO BE DISCOVERED.
 //
-//	WHAT: this package's statement coverage is **5.4%** (measured with
-//	  `go test -race -cover ./...` against a live database). Every test in it
-//	  was written FOR the seams, the ports and the guards this carve created —
+//	WHAT: this package's statement coverage is low, and every test in it was
+//	  written FOR the seams, the ports and the guards this carve created —
 //	  registration, session liveness, the gate, the directory picker, the
-//	  static assets, the actor rule. The ~10k lines of handler bodies that
-//	  MOVED here carry essentially none of their own.
+//	  static assets, the actor rule, the thread-search refusal, the
+//	  status-writer ledger. The ~10k lines of handler bodies that MOVED here
+//	  carry essentially none of their own.
+//
+//	🔴 THE NUMBER IS A DATED READING, NOT A STANDING FACT, AND THIS PARAGRAPH
+//	  SAYS SO BECAUSE THE PREVIOUS ONE DID NOT. It read "this package's
+//	  statement coverage is **5.4%**" with nothing deriving it, and by the time
+//	  anyone looked it was **7.4%** — moved by two test files added in the same
+//	  change that noticed. A hardcoded measurement with no producer does not
+//	  stay true; it stays WRITTEN. Re-measure rather than trusting this:
+//
+//	    MUSTER_TEST_REQUIRE_DB=1 go test -race -cover ./internal/api/
+//
+//	  Reading: **7.4% of statements, 2026-09-23**, against a live database.
+//	  Nothing checks that figure and nothing should — a coverage floor is a
+//	  number people raise to whatever passes. What matters is the SHAPE below,
+//	  which does not move with the percentage.
 //	WHY: upstream those handlers are covered by 122 test files, and they are
 //	  not portable as they stand. Measured rather than assumed: 13 of the 122
 //	  reference no symbol muster dropped — and all 13 build on a shared fixture
@@ -113,7 +127,7 @@ package api
 //	  would leave a fixture layer that supports some files and not others,
 //	  which is worse than none — the next person cannot tell which failures are
 //	  the port and which are real.
-//	🔴 WHAT THE 5.4% DOES AND DOES NOT MEAN. It does NOT mean the handlers are
+//	🔴 WHAT A LOW FIGURE DOES AND DOES NOT MEAN. It does NOT mean the handlers are
 //	  untested code paths that never ran: they ran in production upstream for
 //	  months. It DOES mean that this repository cannot currently detect a
 //	  regression in any of them, and that every guard in this package is a
