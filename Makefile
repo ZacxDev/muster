@@ -2,6 +2,14 @@
 #
 # Every target here is something CI also runs, spelled the same way. A gate that
 # exists only in CI is a gate contributors discover by having it go red.
+#
+# ⚠ THAT SENTENCE WAS FALSE FOR `css-check` AND IS TRUE AGAIN. Nothing in CI ran
+# it, so a stale or thin web/static/app.css could merge with a full green tick —
+# and `go:embed` makes that file a BUILD INPUT, so what merges is what ships. The
+# `css` job in .github/workflows/ci.yml runs it now, and so does the Dockerfile's
+# first stage. The exception that remains, and is deliberate: `test-liveenv`,
+# which needs a real coding-agent session in the process environment and cannot
+# run on a runner at all.
 
 SHELL := /usr/bin/env bash
 
@@ -13,7 +21,7 @@ COMPOSE_FILE := docker-compose.test.yml
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:55432/muster_test?sslmode=disable
 
-.PHONY: build vet test test-db test-db-down leakscan css css-check check help
+.PHONY: build vet run image test test-db test-db-down leakscan css css-check check help
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -25,9 +33,16 @@ TAILWIND ?= npx --yes tailwindcss@3
 # Every class below is written in exactly one place in the tree and is reachable
 # ONLY through `./internal/ui/**/*.go`. Measured with that glob deliberately
 # pointed at a non-existent directory: Tailwind exits 0, emits a VALID 5,594-byte
-# stylesheet instead of the real 38,274-byte one, and every class here drops to
-# zero occurrences. That is the whole hazard — there is no error, no warning in
-# the exit code, and nothing on a developer's machine looks wrong.
+# stylesheet instead of the real one, and every class here drops to zero
+# occurrences. That is the whole hazard — there is no error, no warning in the
+# exit code, and nothing on a developer's machine looks wrong.
+#
+# ⚠ THE FULL SIZE IS DELIBERATELY NOT RESTATED HERE ANY MORE. This comment said
+# "38,274-byte" and the real file was 38,657 by the time anyone measured — a
+# hardcoded figure with nothing deriving it does not stay true, it stays
+# written. css-check PRINTS the byte count on every run, which is a producer;
+# the 5,594 stays because it is a property of the FAILURE mode (an all-globs-miss
+# build), not of this tree, and it is the number that makes the point.
 #
 # ⚠ PLAIN ALPHANUMERIC CLASSES ONLY, AND THAT IS A HARNESS FIX RATHER THAN A
 # TASTE. A responsive or opacity-modified class (`lg:pl-72`, `bg-rose-500/95`)
@@ -48,7 +63,9 @@ CSS_REQUIRED_CLASSES := bg-emerald-500 text-indigo-300 bg-rose-500 bg-sky-500 te
 
 help:
 	@echo "muster:"
-	@echo "  make build        go build ./..."
+	@echo "  make build        go build ./... (muster-server, muster, muster-migrate)"
+	@echo "  make run          the server, against \$$DATABASE_URL (see README)"
+	@echo "  make image        the container image, css-check included"
 	@echo "  make vet          go vet ./..."
 	@echo "  make test-db      start the throwaway Postgres, migrate it, print the exports"
 	@echo "  make test         the Go suite, with the database REQUIRED (not skipped)"
@@ -63,6 +80,20 @@ build:
 
 vet:
 	go vet ./...
+
+# Run the server. Every MUSTER_* name is spelled once, in
+# cmd/muster-server/config.go; DATABASE_URL is required and the binary says so.
+run:
+	go run ./cmd/muster-server
+
+# 🔴 THE IMAGE BUILD RUNS css-check IN ITS FIRST STAGE, so this target is also
+# the cheapest end-to-end proof that the stylesheet the container would serve is
+# the one the views produce. VERSION reaches api.BuildVersion, which /health and
+# /readyz report and which the agent-side CLI is stamped with from the same tree.
+IMAGE ?= muster-server
+VERSION ?= dev
+image:
+	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(VERSION) .
 
 # 🔴 `MUSTER_TEST_REQUIRE_DB=1` IS THE POINT OF THIS TARGET, NOT DECORATION.
 # Bare `go test ./...` with no database SKIPS every Postgres-backed test and

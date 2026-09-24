@@ -80,6 +80,24 @@ var pgBackedPackages = []string{
 	// runtime's reported package identity is easiest to get wrong, and getting
 	// it wrong makes several main packages share ONE database silently.
 	"cmd/muster",
+	// Added by the SERVER carve, and it is the SECOND `package main` here — see
+	// the identity note above, which is the reason two main packages can share
+	// this ledger without silently sharing one database.
+	//
+	// 🔴 IT TAKES A DATABASE FOR ONE REASON AND THE REASON IS A REFUSAL. The
+	// readiness door refuses to serve a notes store that has no session-liveness
+	// probe — because that combination renders "no transcript recorded" over
+	// transcripts that may be alive, silently, on every surface — and a notes
+	// store only EXISTS when a pool does. So the defect is unreachable without a
+	// real database: a DSN-less server has a nil Notes store, no defect, and
+	// reports ready. Testing the refusal against a fake would be testing that
+	// the fake refuses.
+	//
+	// ⚠ THE REST of cmd/muster-server's suite needs no database on purpose. The
+	// "it serves" guard binds a real port and drives /health, which is
+	// deliberately a database-free probe — so the one test that must never skip
+	// does not depend on infrastructure that can be absent.
+	"cmd/muster-server",
 	"internal/agents",
 	"internal/db",
 	"internal/notes",

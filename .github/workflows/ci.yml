@@ -23,13 +23,13 @@ concurrency:
 jobs:
   # Local: make build && make vet
   #
-  # ⚠ THERE IS NO CSS / NODE STAGE, AND ITS ABSENCE IS DELIBERATE RATHER THAN
-  # FORGOTTEN. The project muster was extracted from `go:embed`s a Tailwind
-  # stylesheet that is GITIGNORED, so `go build` fails on a fresh clone there and
-  # CI has to run `npm run build:css` first. muster has no web assets at all yet,
-  # so it has no such stage — and when it grows one, the embedded artefact must
-  # either be committed or be produced by a build step here, because
-  # "clone-and-build works" is a promise on line one of the README.
+  # ⚠ THIS JOB NEEDS NO CSS STEP, AND THE REASON CHANGED. It used to read "muster
+  # has no web assets at all yet"; it has them now — and `go build` still works on
+  # a fresh clone because `web/static/app.css` is COMMITTED rather than gitignored,
+  # which is the opposite choice from the project muster was extracted from (where
+  # the file is ignored, so `go build` fails on a fresh clone until CI runs
+  # `npm run build:css`). Committing it moves the failure from "missing" to
+  # "stale", which is what the `css` job below exists to catch.
   build:
     name: build + vet
     runs-on: ubuntu-latest
@@ -153,12 +153,52 @@ jobs:
       - name: scan
         run: python3 tests/leakscan.py
 
+  # Local: make css-check
+  #
+  # 🔴 THIS JOB CLOSES A GAP THE Makefile's OWN HEADER CLAIMED WAS SHUT. That file
+  # opens with "every target here is something CI also runs, spelled the same
+  # way", and `css-check` was not run anywhere until this job existed — so a
+  # stale or thin `web/static/app.css` could merge with a full green tick. It
+  # matters because `go:embed` makes that file a BUILD INPUT: what merges is what
+  # ships.
+  #
+  # 🔴 TAILWIND CANNOT FAIL THE WAY THIS NEEDS IT TO, WHICH IS THE WHOLE POINT. A
+  # content glob that matches nothing is not an error and not a non-zero exit — it
+  # emits a smaller, perfectly valid stylesheet and exits 0. Measured on this tree:
+  # 5,594 valid bytes instead of ~38,000. `make css-check` asserts the OUTPUT
+  # (control classes present, committed copy byte-identical via `cmp`), which is
+  # the only thing that can see that.
+  css:
+    name: stylesheet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Pinned by package.json rather than fetched by `npx --yes tailwindcss@3`,
+      # so the version CI checks is the version the image builds with.
+      - run: npm ci || npm install --no-audit --no-fund
+
+      - name: css-check
+        run: make css-check TAILWIND=./node_modules/.bin/tailwindcss
+
   # ---------------------------------------------------------------------------
   # 🔴 THE TWO JOBS BELOW ARE HONEST STUBS. THEY HAVE NOTHING TO RUN, AND THEY
   # SAY SO IN THEIR OWN OUTPUT RATHER THAN PASSING QUIETLY.
   #
-  # muster has no HTTP surface, no UI and therefore no browser tests yet. A job
-  # that passes by having nothing to do is the most dangerous kind of green:
+  # 🔴 THE REASON THESE ARE STILL STUBS HAS CHANGED, AND THE OLD REASON IS NOW
+  # FALSE. They used to say "muster has no HTTP surface, no UI and therefore no
+  # browser tests yet". It has both: cmd/muster-server binds a port and serves 99
+  # routes, and internal/ui renders every one of the views. What it does not have
+  # is a SPEC — nobody has written a browser test — so these jobs still run zero
+  # of them, and the expiry guard below is now the only thing standing between
+  # the first spec somebody writes and a green tick that never collected it.
+  #
+  # A job that passes by having nothing to do is the most dangerous kind of green:
   # it appears in the checks list beside the real ones, with the same tick, and
   # reads as coverage of exactly the layer that has none.
   #
@@ -178,9 +218,14 @@ jobs:
           echo "==================================================================="
           echo " e2e: NOT IMPLEMENTED. This job ran ZERO browser tests."
           echo
-          echo " This tick is NOT evidence of anything. muster has no HTTP surface"
-          echo " and no UI yet, so there is nothing to drive. When there is, this"
-          echo " job needs:"
+          echo " This tick is NOT evidence of anything — and it is now a WEAKER"
+          echo " position than it was. muster HAS an HTTP surface (cmd/muster-server"
+          echo " binds a port and serves 99 routes) and it HAS a UI. There is"
+          echo " something to drive; nobody has written a spec to drive it with."
+          echo " The step after this one is the only thing stopping the first spec"
+          echo " landing against a green tick that never collected it."
+          echo
+          echo " To implement this job:"
           echo "   - services: postgres:16-alpine (see the 'test' job)"
           echo "   - npx playwright install --with-deps chromium"
           echo "   - MUSTER_E2E_REQUIRE_FULL=1, because the suite will default to"

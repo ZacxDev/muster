@@ -12,6 +12,14 @@ import (
 // Overridden per-Server in tests; there is no env knob, because the only thing
 // that may legitimately vary this is the image layout, and that is set in the
 // same repo as this constant.
+//
+// ⚠ THAT SENTENCE WAS AN ASPIRATION WHEN IT WAS WRITTEN AND IS A FACT NOW. There
+// was no Dockerfile in this repository at all for the whole of the carve, so
+// "the image layout is set in the same repo" named a file that did not exist and
+// a path nothing produced. `/Dockerfile`'s final stage now copies the CLI here,
+// built from this same source tree and the same VERSION as the server — which is
+// what makes the served binary and the serving server the same build by
+// construction rather than by keeping two pins in step.
 const defaultAgentCLIPath = "/agent-cli/muster"
 
 // handleAgentCLIDownload serves GET /agent/muster: the statically-linked
