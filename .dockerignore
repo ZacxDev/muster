@@ -1,0 +1,64 @@
+# What `docker build` must NOT send to the daemon, and therefore must not be
+# able to land in a build-stage layer.
+#
+# 🔴 THIS IS A HYGIENE AND BUILD-TIME FILE, NOT A LEAK FIX FOR THE SHIPPED
+# IMAGE, AND THE DISTINCTION IS WORTH STATING SO NOBODY RELAXES EITHER HALF.
+# Stage 3 is `distroless/static` and copies exactly three binaries out of the
+# build stage, so nothing matched below has ever reached a published layer.
+# What `COPY . .` in stage 2 DOES cost is real anyway: the whole of `.git`
+# (every object, every branch, every commit message) and whatever a developer
+# happens to have sitting in their tree — a kubeconfig, a `.env`, a local
+# `node_modules/` — are uploaded as build context and written into an
+# intermediate layer that lives in the local builder cache and in any registry
+# a `--target build` or a cache-export push ever sends it to.
+#
+# ⚠ SO THE RULE IS THE .gitignore RULE, INVERTED AND WITH ONE EXTRA CLAUSE:
+# nothing `go build` or `make css-check` needs may appear here. .gitignore's own
+# first line says nothing a build needs may be ignored; this file is read by a
+# different tool with the same failure mode and a worse symptom — a missing
+# build input here fails INSIDE the image build, where the error names a Go
+# package rather than the line that excluded it.
+#
+# 🔴 web/static/app.css IS DELIBERATELY ABSENT FROM THIS FILE. It is committed,
+# it is `go:embed`ed, and stage 1 rebuilds and `cmp`s it. Excluding it would
+# break stage 1's comparison against the committed copy — which is the check
+# that stops a stale stylesheet shipping.
+
+# Version control. The largest single item in the context and the one with no
+# use whatever inside the build: nothing in the Dockerfile reads git history,
+# and VERSION is passed as a build arg precisely so it does not have to.
+.git
+.gitignore
+.github
+
+# Front-end tooling. Stage 1 runs its own `npm install` against a pinned
+# package.json; a host node_modules/ would be uploaded for nothing and could
+# shadow it with a different platform's binaries.
+node_modules
+
+# Local build outputs. The image builds its own from source; copying a host
+# binary in would produce an image whose contents do not match its VERSION.
+/muster
+/muster-migrate
+result
+result-*
+
+# Credentials and local environment. None of these are tracked, which is
+# exactly why they are worth naming: a file git never sees is a file the
+# build context picks up silently.
+.env
+.env.*
+*.kubeconfig
+kubeconfig
+*-kubeconfig
+*.pem
+*.key
+.secrets
+
+# Python byte cache from the gates in tests/.
+__pycache__
+*.pyc
+
+# Editor / OS droppings.
+*.swp
+.DS_Store

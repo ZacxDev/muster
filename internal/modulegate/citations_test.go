@@ -33,6 +33,32 @@ import (
 // That is a limit of any mechanical check on prose; the mitigation is that a
 // name has to be written by somebody, and the ledger below makes every
 // unresolved one visible to review rather than invisible to everyone.
+//
+// 🔴 KNOWN LIMIT, MEASURED RATHER THAN SUPPOSED: THIS GATE SEES ONLY
+// `Test[A-Z]…` NAMES, AND A CITATION SPELLED ANY OTHER WAY WALKS STRAIGHT PAST
+// IT. testIdent (below) requires a capital after `Test`, which is what keeps
+// `Tests` and `Testing` out — and also what makes every lower-case guard name
+// invisible. The worked example, found by the round-1 audit of the very arc
+// that built this gate: cmd/muster-server/config.go carried "envNamesAreDocumented
+// asserts these constants against the documentation", and an enumerating grep
+// over the module returned exactly ONE occurrence of that identifier — the
+// sentence itself. A fabricated citation, written in the same arc as the gate
+// that exists to prevent fabricated citations, merging green.
+//
+// ⚠ THE REMEDY IS A CONVENTION, NOT A WIDER REGEX, AND THAT IS A DELIBERATE
+// CHOICE RATHER THAN AN OVERSIGHT. Widening this to "any identifier cited in a
+// comment" would have to resolve every symbol any comment in the module names —
+// stdlib types, other packages' functions, camelCase English — and the
+// false-positive rate would make it a permanently-red gate, which this project's
+// own notes call worse than no gate because it trains everyone to click through.
+// So: CITE A GUARD BY ITS `Test*` NAME, which is the spelling this gate can
+// check. config.go now cites TestEveryServerEnvNameIsSpelledOnceAndRead, which
+// exists and is resolved below.
+//
+// 🔴 THIS PARAGRAPH IS A RECORDED GAP, NOT COVERAGE. Nothing mechanical enforces
+// the convention it states. Read it as "here is what this gate cannot see", and
+// do not quote the gate's clean verdict as evidence about a citation whose name
+// does not start with `Test`.
 // ---------------------------------------------------------------------------
 
 // unportedCitations is every `Test*` name cited in a non-test source of this

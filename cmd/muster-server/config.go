@@ -26,7 +26,20 @@ const defaultPort = 8105
 // there was no binary to read them. A second spelling in a wiring call is how
 // that state comes back one variable at a time: the comment says one name, the
 // code reads another, and the operator sets the one the comment names.
-// envNamesAreDocumented asserts these constants against the documentation.
+//
+// 🔴 THE CITATION THAT USED TO CLOSE THIS PARAGRAPH NAMED A GUARD THAT WAS
+// NEVER WRITTEN. It read "envNamesAreDocumented asserts these constants against
+// the documentation"; enumerated over the module, that identifier had exactly
+// one occurrence — the sentence itself. It slipped
+// TestEveryCitedTestExistsOrIsLedgered because that gate resolves `Test[A-Z]…`
+// names only, and a lower-case one is invisible to it. Cite a guard by its
+// `Test*` name, which is the spelling the gate can check; see the KNOWN LIMIT
+// banner in internal/modulegate/citations_test.go.
+//
+// What actually holds this paragraph up is
+// TestEveryServerEnvNameIsSpelledOnceAndRead (config_env_names_test.go): every
+// environment-variable literal in this binary's sources is one of the constants
+// below, and every constant below is read somewhere outside this block.
 const (
 	envPort     = "MUSTER_PORT"
 	envDatabase = "DATABASE_URL"

@@ -150,8 +150,16 @@ const minUIPasswordLen = 12
 // must mean "refuse", never "serve to anyone", because "anyone" here is anyone
 // who can reach a plain-HTTP LAN NodePort, and what they reach is the operator's
 // session transcripts, tool inputs (file paths, bash command lines, edit
-// bodies), the approve/deny queue, and — through requireArmedTerminalUI — a
-// free-form send-keys box.
+// bodies), and the approve/deny queue.
+//
+// ⚠ THIS PARAGRAPH USED TO END "and — through requireArmedTerminalUI — a
+// free-form send-keys box", AND THE CLAUSE WAS INHERITED RATHER THAN TRUE. No
+// such wrapper and no terminal-write surface exists in this module: the terminal
+// routes stayed with the permission router in the carve. The reasoning is
+// unaffected — the transcripts and the approve/deny queue are on their own
+// enough to make an open LAN port unacceptable — but the example was evidence
+// for a hazard that is not on this side of the split, and evidence for the wrong
+// service is what makes a reader stop checking.
 //
 // ⚠ THE COST, STATED PLAINLY: a deploy whose secret fails to mount serves NO web
 // UI at all, rather than an open one. That is the intended trade. main() logs
@@ -209,13 +217,21 @@ func (s *Server) hasValidSession(r *http.Request) bool {
 // free-form send-keys box: a NodePort bypasses the ingress entirely, so the
 // Authelia edge is not on this path at all and never was.
 //
-// ⚠ IT IS NOT THE ONLY WRAPPER THAT NEEDED THIS, and assuming it was is the
-// mistake this comment exists to prevent. The routes that actually execute
-// commands — POST /ui/term/send-keys, /ui/term/new-session, /ui/term/launch —
-// are wrapped in requireArmedTerminalUI and DO NOT PASS THROUGH HERE. Gating
-// only this function leaves them answering 200 to an anonymous caller. Both
-// wrappers carry the check; TestEveryBrowserSurfaceRequiresAHumanSession pins
-// that as a relationship over the route table rather than as two spot checks.
+// 🔴 THIS PARAGRAPH DESCRIBED A SECOND WRAPPER AND THREE ROUTES THAT DO NOT
+// EXIST HERE, AND THE CORRECTION MATTERS MORE THAN THE DELETION. It read: "the
+// routes that actually execute commands — POST /ui/term/send-keys,
+// /ui/term/new-session, /ui/term/launch — are wrapped in requireArmedTerminalUI
+// and DO NOT PASS THROUGH HERE." Enumerated over this module: no
+// requireArmedTerminalUI is declared anywhere (its only occurrences were this
+// comment and the one above it), and no /ui/term/* route is registered — the
+// terminal surface stayed with the permission router in the carve. The lesson
+// the paragraph carried is real and is why the sentence is REPLACED rather than
+// cut: gating requireSession is not the same as gating every browser surface,
+// and a route registered outside it answers 200 to an anonymous caller. What
+// pins that is TestEveryBrowserSurfaceRequiresAHumanSession, as a relationship
+// over the route table rather than as spot checks — and that name is itself
+// unported here, ledgered in internal/modulegate/citations_test.go under this
+// file. Read the ledger before treating this citation as coverage.
 //
 // The refusal is shaped for the caller: a document navigation gets a 303 to the
 // login page (so the operator lands somewhere useful), and anything else gets a
