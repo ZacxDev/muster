@@ -582,9 +582,16 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // analysis was done the server's chief credential and the `agents` row named
 // `chief` held the same value, and that pod was Running. Cutting
 // this branch removes six capabilities from a pod that is running right now, while
-// chiefFleetSkillPart1 (internal/agents/skill.go) still tells that pod it has them —
-// and that prompt exists because "an agent that does not know this retries a refused
-// route and reports an outage, which is exactly what happened".
+// the agent's own instruction text still tells that pod it has them — and that
+// text exists because "an agent that does not know this retries a refused route
+// and reports an outage, which is exactly what happened".
+//
+// ⚠ THAT INSTRUCTION TEXT IS NOT IN THIS REPOSITORY, AND THIS COMMENT USED TO
+// CITE IT BY FILENAME AS THOUGH IT WERE. It lives upstream, alongside the pod's
+// helm values; muster carries neither. See the closing condition recorded in
+// internal/provision — the seam that would hold muster's own version of it has
+// no producer yet, which is precisely why the deletion cannot be sequenced from
+// inside this repository alone.
 //
 // 🔴 AND THE STATED RE-GRANT PATH ARGUES AGAINST THE NEW DOOR'S OWN DESIGN. "Issue
 // chief MUSTER_SERVICE_TOKEN" is the substitute §4.4 offers, but
@@ -594,11 +601,15 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // same collapse one step down: requireAttentionOwnership scopes on the ASSERTED
 // name, so a holder could resolve another actor's entries. So the three branches
 // stay until Phase 4 moves them together, and WHAT HAS TO MOVE TOGETHER IS NAMED:
-// chief's prompt (chiefFleetSkillPart1's route list), its helm values
-// (internal/agents/values.go, which renders the pod's credential set), and
-// cmd/muster's chiefCapabilities — the machine-readable statement of what the
-// pod can reach. Deleting this branch without those three is how the documented
-// incident gets recreated on purpose.
+// the agent's prompt (its route list), the rendering that supplies the pod's
+// credential set, and the machine-readable statement of what the pod can reach.
+//
+// ⚠ ALL THREE ARE UPSTREAM, NOT HERE, AND NAMING THEM AS LOCAL SYMBOLS WAS A
+// STALE CLAIM THIS COMMENT CARRIED THROUGH THE EXTRACTION. muster has no prompt
+// text, no helm values and no capability manifest — `grep` finds none of the
+// three. Deleting this branch without them is how the documented incident gets
+// recreated on purpose, and the point of saying so HERE is that a reader of this
+// file cannot discharge the condition from this repository.
 //
 // 🔴 THE ORDER IS CHEAP-FIRST, AND THE CHIEF NARROWING IS DELIBERATELY LAST. The two
 // constant-time comparisons cost no I/O and are tried before the DB lookup, so an
