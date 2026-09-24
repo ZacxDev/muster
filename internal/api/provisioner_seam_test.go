@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -60,11 +61,35 @@ import (
 
 // provisionerRouteLedger is every route registered behind requireProvisioner.
 //
-// 🔴 THE TEST FAILS WHEN THIS SET GROWS *OR* SHRINKS. Shrinking is a route
-// losing its refusal and going back to lying; growing is a route being wrapped
-// without anyone recording why. A plain "every wrapped route refuses" check
-// would be satisfied by wrapping ZERO routes, which is the state this file was
-// written to end.
+// 🔴 THE TEST FAILS WHEN THIS SET GROWS *OR* SHRINKS, AND THAT SENTENCE WAS
+// FALSE FOR A WHOLE REVISION — THIS COMMENT IS WHAT MADE IT UNCHECKABLE.
+// Nothing derived the wrapped-route set from the source, so "shrinks" meant
+// only "somebody edited this literal": a route could lose its wrapper and its
+// ledger line together — two lines, the exact shape of a developer clearing a
+// red subtest — and every test in the module stayed green. Measured: unwrap
+// `POST /agents` at agents.go and delete its entry here, and the full suite
+// passes with the shipped nil-provisioner deployment back to answering 200 over
+// a row stuck in `provisioning` for ever. The only signal was the verdict count
+// falling by two, and nothing read that.
+//
+// 🔴 SO THE SET IS DERIVED NOW, BY TestEveryProvisionerRouteIsDerivedNotDeclared
+// BELOW, AND THIS LITERAL IS THE CLAIM BEING CHECKED — NOT THE SOURCE OF TRUTH.
+// That guard asserts two different things, and the two-line mutant above is
+// only caught by the SECOND:
+//
+//	DERIVED == DECLARED — the routes whose registration expression calls
+//	  requireProvisioner are exactly the ones below. This catches a one-sided
+//	  edit: an unwrap that leaves the ledger alone, or a delist that leaves the
+//	  wrapper alone.
+//	AND REACHABILITY DECIDES WHICH ROUTES BELONG — every registered route whose
+//	  handler can reach s.ext.Provisioner unguarded through this package's call
+//	  graph MUST be wrapped, and every wrapped one must be able to. The ledger
+//	  plays no part in this half, which is why a matching two-line edit cannot
+//	  satisfy it: `POST /agents` still resolves to handleAgentCreate, which
+//	  still reaches Dispatch through createAndDispatchAgent.
+//
+// A plain "every wrapped route refuses" check would be satisfied by wrapping
+// ZERO routes, which is the state this file was written to end.
 var provisionerRouteLedger = []string{
 	"DELETE /agents/{id}",
 	"GET /agents/{name}/logs/stream",
@@ -397,6 +422,283 @@ func funcIdent(fn *ast.FuncDecl) string {
 		return t.Name + "." + fn.Name.Name
 	}
 	return fn.Name.Name
+}
+
+// routeRegistration is one `mux.HandleFunc(pattern, handler)` site in this
+// package's non-test sources.
+type routeRegistration struct {
+	route    string // the literal pattern, e.g. "POST /agents"
+	handler  string // the innermost function the wrappers close over
+	wrapped  bool   // the registration expression calls s.requireProvisioner
+	computed bool   // the pattern is not a string literal
+	file     string
+	line     int
+}
+
+// TestEveryProvisionerRouteIsDerivedNotDeclared is the half that makes
+// provisionerRouteLedger's "GROWS *or* SHRINKS" sentence true.
+//
+// 🔴 IT EXISTS BECAUSE THAT SENTENCE WAS MEASURED FALSE. The ledger was
+// hand-written and nothing derived the wrapped set, so shrinking it was a
+// two-line edit — unwrap the route, delete its line — and the whole module
+// stayed green while the shipped deployment went back to answering 200 and
+// doing nothing. The route ledger sat four lines from a caller ledger that IS
+// derived from the source; this closes the asymmetry.
+//
+// 🔴 THE REACHABILITY HALF IS THE ONE THAT KILLS THE TWO-LINE EDIT, AND IT IS
+// WORTH SAYING WHY A derived==declared CHECK ALONE DOES NOT. Unwrap a route and
+// delist it and the derived set still equals the declared one — both simply
+// shrank by the same entry. What does not change is that the route's handler
+// can still reach s.ext.Provisioner with no nil check, and that is the property
+// the wrapper exists for. So the wrapper requirement is decided by the CALL
+// GRAPH, with the ledger out of the loop entirely.
+//
+// ⚠ THE REACHABILITY IS FUNCTION-GRANULAR AND INHERITS provisionerCallerLedger's
+// KNOWN LIMIT, deliberately: a function that compares s.ext.Provisioner against
+// nil ANYWHERE in its body is treated as guarded and stops propagation. That
+// under-approximates — a function that checks on one path and calls on another
+// hides everything below it — and it is the same approximation the caller
+// ledger declares, so the two halves cannot disagree about what "guarded" means.
+// Closing it needs dominance analysis; read a clean verdict here as "no
+// registered route reaches the provisioner through an unguarded chain", never
+// as "every call site is dominated by a check".
+func TestEveryProvisionerRouteIsDerivedNotDeclared(t *testing.T) {
+	regs, reaches, scanned := scanRouteRegistrations(t)
+
+	// 🔴 POSITIVE CONTROLS, REPORTED AS NUMBERS. A walk that parsed nothing
+	// derives an empty set, and an empty set compared against an empty ledger is
+	// a green computed from silence. Each of these is a producer: the number has
+	// to be able to move.
+	if scanned < 10 {
+		t.Fatalf("positive control FAILED: only %d non-test file(s) parsed in this "+
+			"package, which declares far more. The walk is not measuring.", scanned)
+	}
+	if len(regs) < 50 {
+		t.Fatalf("positive control FAILED: only %d route registration(s) were found, and "+
+			"testdata/routes.golden records well over a hundred. The HandleFunc "+
+			"detection has stopped matching, so every verdict below is over an empty "+
+			"or truncated set.", len(regs))
+	}
+	reachable := 0
+	for _, r := range regs {
+		if r.handler != "" && reaches(r.handler) {
+			reachable++
+		}
+	}
+	if reachable == 0 {
+		t.Fatalf("positive control FAILED: not ONE of the %d registered route(s) was "+
+			"found to reach s.ext.Provisioner, and nine of them call it. The call-graph "+
+			"walk is inert, so the \"reaches but is not wrapped\" verdict below is a "+
+			"silence rather than a result.", len(regs))
+	}
+
+	// --- half 1: DERIVED == DECLARED ---------------------------------------
+	var derived []string
+	for _, r := range regs {
+		if r.wrapped && !r.computed {
+			derived = append(derived, r.route)
+		}
+	}
+	sort.Strings(derived)
+	want := append([]string(nil), provisionerRouteLedger...)
+	sort.Strings(want)
+	if strings.Join(derived, "\n") != strings.Join(want, "\n") {
+		t.Errorf("the set of routes REGISTERED behind requireProvisioner is not the set "+
+			"provisionerRouteLedger declares.\n  derived from source: %v\n  ledger:          "+
+			"    %v\n"+
+			"\n  SHRANK? A route lost its wrapper. On the deployment cmd/muster-server "+
+			"ships it is back to answering 200 and doing nothing — a card rendered over a "+
+			"row that never changes. Restore the wrapper; do not delete the ledger line to "+
+			"match.\n  GREW? A route was wrapped without being recorded. Add it here so "+
+			"the behavioural test above actually drives it — a wrapped route missing from "+
+			"this list is never requested by any test in this file.",
+			derived, want)
+	}
+
+	// --- half 2: REACHABILITY DECIDES, NOT THE LEDGER -----------------------
+	for _, r := range regs {
+		if r.handler == "" {
+			continue // a function literal or a value this walk cannot name
+		}
+		can := reaches(r.handler)
+		switch {
+		case can && !r.wrapped:
+			name := r.route
+			if r.computed {
+				name = "<computed pattern>"
+			}
+			t.Errorf("%s (%s:%d) is registered WITHOUT requireProvisioner, and its handler "+
+				"%s reaches s.ext.Provisioner with no nil check.\n"+
+				"    cmd/muster-server leaves Provisioner nil on purpose (doc_seams.go "+
+				"entry 1), so on the deployment this tree ships that route either answers "+
+				"200 and does nothing or panics in a goroutine. Wrap it — "+
+				"s.requireSession(s.requireProvisioner(h)), auth OUTSIDE — and add it to "+
+				"provisionerRouteLedger.\n"+
+				"    Deleting the ledger entry does NOT satisfy this check: the ledger is "+
+				"not consulted here, the call graph is.",
+				name, r.file, r.line, r.handler)
+		case !can && r.wrapped:
+			t.Errorf("%s (%s:%d) is wrapped in requireProvisioner, but its handler %s was "+
+				"NOT found to reach s.ext.Provisioner through this package's call graph.\n"+
+				"    Either the wrapper is now unnecessary — in which case remove it AND "+
+				"its provisionerRouteLedger line, having first confirmed nothing below it "+
+				"calls the provisioner — or the call-graph walk has stopped resolving a "+
+				"call it used to resolve, which would make the \"reaches but is not "+
+				"wrapped\" half above silently blind. All nine wrapped routes reached when "+
+				"this was written; a new failure here is far more likely to be the second.",
+				r.route, r.file, r.line, r.handler)
+		}
+	}
+	t.Logf("%d file(s) parsed; %d route registration(s), %d wrapped, %d reaching the provisioner",
+		scanned, len(regs), len(derived), reachable)
+}
+
+// scanRouteRegistrations parses this package's non-test sources and returns
+// every HandleFunc registration, plus a predicate answering whether a named
+// function can reach s.ext.Provisioner unguarded through the package call graph.
+func scanRouteRegistrations(t *testing.T) (regs []routeRegistration, reaches func(string) bool, scanned int) {
+	t.Helper()
+	fset := token.NewFileSet()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	callees := map[string][]string{}
+	direct := map[string]bool{}
+	guarded := map[string]bool{}
+
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		scanned++
+		file, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", f, err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			fn, ok := n.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				return true
+			}
+			name := funcIdent(fn)
+			calls, nilChecked := inspectProvisionerUse(fn.Body)
+			if calls && nilChecked {
+				guarded[name] = true
+			}
+			if calls && !nilChecked {
+				direct[name] = true
+			}
+			ast.Inspect(fn.Body, func(m ast.Node) bool {
+				c, ok := m.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				switch fu := c.Fun.(type) {
+				case *ast.SelectorExpr:
+					// 🔴 Fun POSITION ONLY. `s.requireSession(s.handleAgentCreate)`
+					// PASSES handleAgentCreate as a value; counting that as a call
+					// would make registerAll reach every handler in the package and
+					// the reachability verdict would be "everything", which is the
+					// same as nothing.
+					if id, ok := fu.X.(*ast.Ident); ok && id.Name == "s" {
+						callees[name] = append(callees[name], "(*Server)."+fu.Sel.Name)
+					}
+					if fu.Sel.Name == "HandleFunc" && len(c.Args) == 2 {
+						pos := fset.Position(c.Pos())
+						r := routeRegistration{
+							handler: innermostRouteHandler(c.Args[1]),
+							file:    f,
+							line:    pos.Line,
+						}
+						if lit, ok := c.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+							if s, err := strconv.Unquote(lit.Value); err == nil {
+								r.route = s
+							} else {
+								r.computed = true
+							}
+						} else {
+							// e.g. `"GET /"+tab` in the tab-route loop. Its pattern
+							// cannot be compared against the ledger, but it is still
+							// held to the reachability rule — a wrapped route must
+							// not be able to hide behind a computed pattern.
+							r.computed = true
+						}
+						ast.Inspect(c.Args[1], func(k ast.Node) bool {
+							cc, ok := k.(*ast.CallExpr)
+							if !ok {
+								return true
+							}
+							if se, ok := cc.Fun.(*ast.SelectorExpr); ok && se.Sel.Name == "requireProvisioner" {
+								r.wrapped = true
+							}
+							return true
+						})
+						regs = append(regs, r)
+					}
+				case *ast.Ident:
+					callees[name] = append(callees[name], fu.Name)
+				}
+				return true
+			})
+			return true
+		})
+	}
+
+	// Memoised DFS. 0 = in progress or proven unreachable, 1 = reaches; an
+	// in-progress node reads as unreachable, which terminates recursion on a
+	// cycle without claiming a path this walk has not established.
+	memo := map[string]int{}
+	var walk func(string) bool
+	walk = func(n string) bool {
+		if v, ok := memo[n]; ok {
+			return v == 1
+		}
+		memo[n] = 0
+		if guarded[n] {
+			return false // the declared function-granular limit; see the caller
+		}
+		if direct[n] {
+			memo[n] = 1
+			return true
+		}
+		for _, c := range callees[n] {
+			if walk(c) {
+				memo[n] = 1
+				return true
+			}
+		}
+		return false
+	}
+	return regs, walk, scanned
+}
+
+// innermostRouteHandler names the function a registration expression ultimately
+// serves: it descends through each wrapper's first argument until it reaches
+// something that is not a call.
+//
+// ⚠ IT RETURNS "" RATHER THAN GUESSING. A function literal or a handler built
+// some other way has no name this package's call graph can resolve, and naming
+// the wrong one would put a reachability verdict on a function nobody registered.
+func innermostRouteHandler(e ast.Expr) string {
+	for {
+		switch v := e.(type) {
+		case *ast.CallExpr:
+			if len(v.Args) == 0 {
+				return ""
+			}
+			e = v.Args[0]
+		case *ast.SelectorExpr:
+			if id, ok := v.X.(*ast.Ident); ok && id.Name == "s" {
+				return "(*Server)." + v.Sel.Name
+			}
+			return ""
+		case *ast.Ident:
+			return v.Name
+		default:
+			return ""
+		}
+	}
 }
 
 // TestNoBackgroundGoroutineInThisPackageIsWrittenBare pins the F1 class.
