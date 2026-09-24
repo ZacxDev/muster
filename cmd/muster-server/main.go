@@ -462,11 +462,18 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// blamed the URL. It sends the reader to re-check the one variable that was
 	// right, which is worse than saying nothing.
 	case a.cfg.RouterURL != "":
+		// ⚠ THE SUBJECT OF THE SECOND CLAUSE IS router.New, NOT THE ENVIRONMENT
+		// VARIABLE. It read "MUSTER_ROUTER_URL builds nothing without them",
+		// which names the variable as the builder — and this line's entire job is
+		// to stop the reader blaming the variable that is already set correctly.
+		// router.New is the function whose predicate the doc comment on
+		// missingRouterCredential quotes, so it is the name a reader can go and
+		// check.
 		l.Printf("permission router: PARTIALLY CONFIGURED, THEREFORE NOT CONFIGURED — %s is "+
-			"set (%s) but %s. A router client needs all three; %s builds nothing without "+
-			"them, so this server behaves exactly as if no router were configured and will "+
-			"NOT report ready while a notes store is wired",
-			envRouterURL, a.cfg.RouterURL, missingRouterCredential(a.cfg), envRouterURL)
+			"set (%s) but %s. A router client needs all three; router.New builds nothing "+
+			"without them, so this server behaves exactly as if no router were configured "+
+			"and will NOT report ready while a notes store is wired",
+			envRouterURL, a.cfg.RouterURL, missingRouterCredential(a.cfg))
 	default:
 		l.Printf("permission router: NONE, UNDECLARED — %s is unset and %s is not 1. This "+
 			"server will NOT report ready while a notes store is wired, on purpose: see "+
