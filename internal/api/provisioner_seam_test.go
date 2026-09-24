@@ -443,6 +443,28 @@ type routeRegistration struct {
 	line     int
 }
 
+// unnameableRouteAllowlist is the EXHAUSTIVE set of routes whose handler
+// expression resolves to no named function, and which are therefore outside the
+// reachability verdict below. The value is the reason, and it is required: an
+// entry with no reason is not an exemption, it is a skip with a comment.
+//
+// 🔴 IT REPLACED A BARE `continue`, WHICH IS WHY IT EXISTS. The reachability
+// half used to skip every unnameable handler silently, so the sentence "every
+// registered route whose handler can reach s.ext.Provisioner unguarded MUST be
+// wrapped" was quietly false for however many routes the walk could not name —
+// and a THIRD such route would have joined them without a word. Now the two
+// below are named and anything else fails.
+//
+// ⚠ THE BAR FOR ADDING ONE IS THAT THE HANDLER PROVABLY HOLDS NO REFERENCE TO
+// s. Both of these are built by a zero-argument constructor over package-level
+// state, so neither can reach s.ext.Provisioner at all — they are not
+// "unchecked", they are outside the seam. A handler that closes over s does not
+// belong here; give it a name on *Server instead.
+var unnameableRouteAllowlist = map[string]string{
+	"GET /metrics": "promhttp.Handler() — built by the Prometheus client over the default registry; takes no Server",
+	"GET /static/": "staticHandler() — a zero-argument constructor over the embedded web FS; takes no Server",
+}
+
 // TestEveryProvisionerRouteIsDerivedNotDeclared is the half that makes
 // provisionerRouteLedger's "GROWS *or* SHRINKS" sentence true.
 //
@@ -470,8 +492,16 @@ type routeRegistration struct {
 // Closing it needs dominance analysis; read a clean verdict here as "no
 // registered route reaches the provisioner through an unguarded chain", never
 // as "every call site is dominated by a check".
+//
+// ⚠ AND READ IT OVER THE ROUTES THE VERDICT ACTUALLY COVERS, WHICH IS NOT ALL OF
+// THEM. Two routes are exempt by name in unnameableRouteAllowlist because their
+// handler expression resolves to no function this walk can follow. That
+// exemption used to be a silent `continue` over every unnameable handler and the
+// count was unread; it is an enumerated list and a printed number now, so the
+// set can no longer grow without failing — but the two on it are still outside
+// this verdict, not inside it and clean.
 func TestEveryProvisionerRouteIsDerivedNotDeclared(t *testing.T) {
-	regs, reaches, scanned := scanRouteRegistrations(t)
+	regs, reaches, declared, scanned := scanRouteRegistrations(t)
 
 	// 🔴 POSITIVE CONTROLS, REPORTED AS NUMBERS. A walk that parsed nothing
 	// derives an empty set, and an empty set compared against an empty ledger is
@@ -547,9 +577,58 @@ func TestEveryProvisionerRouteIsDerivedNotDeclared(t *testing.T) {
 	}
 
 	// --- half 2: REACHABILITY DECIDES, NOT THE LEDGER -----------------------
+	//
+	// 🔴 A ROUTE THIS WALK CANNOT RESOLVE IS A FAILURE, NOT A SKIP. Both
+	// counters below are producers and are printed at the end of this test:
+	// `emptyHandler` is every route whose handler expression resolves to no name
+	// at all — exempt ONLY if unnameableRouteAllowlist names it, an error
+	// otherwise — and `unresolvedHandler` is every route whose candidate name
+	// corroborated against no FuncDecl this walk parsed. Either number moving is
+	// a route that left the reachability verdict's coverage, which is precisely
+	// how that verdict quietly narrows.
+	emptyHandler, unresolvedHandler := 0, 0
 	for _, r := range regs {
 		if r.handler == "" {
-			continue // a function literal or a value this walk cannot name
+			emptyHandler++
+			if r.computed || unnameableRouteAllowlist[r.route] == "" {
+				name := r.route
+				if r.computed {
+					name = "<computed pattern>"
+				}
+				t.Errorf("%s (%s:%d) is registered with a handler expression this walk "+
+					"cannot resolve to a named function, and it is not on "+
+					"unnameableRouteAllowlist.\n"+
+					"    It is therefore EXCLUDED from the reachability verdict below — "+
+					"if its handler reaches s.ext.Provisioner unguarded, nothing here "+
+					"says so, and on the deployment cmd/muster-server ships (Provisioner "+
+					"nil by design) that route answers 200 and does nothing.\n"+
+					"    Register it as a named method on *Server so the call graph can "+
+					"see it, or — only if it provably holds no reference to s — add it to "+
+					"unnameableRouteAllowlist with the reason.",
+					name, r.file, r.line)
+			}
+			continue
+		}
+		if !declared[r.handler] {
+			unresolvedHandler++
+			name := r.route
+			if r.computed {
+				name = "<computed pattern>"
+			}
+			t.Errorf("%s (%s:%d) names handler %q, which is not a function declared in "+
+				"this package.\n"+
+				"    innermostRouteHandler produces a CANDIDATE name out of an expression "+
+				"with no type information behind it, so this is what a LOCAL VARIABLE "+
+				"looks like: `h := s.requireSession(s.handleX); mux.HandleFunc(p, h)`. "+
+				"Left unchecked, %q is in no call graph, reaches() answers false, and the "+
+				"route is scored SAFE whether or not its handler touches the "+
+				"provisioner — which is the exact two-line edit this test exists to "+
+				"kill.\n"+
+				"    Register the handler expression inline — "+
+				"s.requireSession(s.requireProvisioner(s.handleX)) — rather than through "+
+				"a local.",
+				name, r.file, r.line, r.handler, r.handler)
+			continue
 		}
 		can := reaches(r.handler)
 		switch {
@@ -580,15 +659,26 @@ func TestEveryProvisionerRouteIsDerivedNotDeclared(t *testing.T) {
 				r.route, r.file, r.line, r.handler)
 		}
 	}
-	t.Logf("%d file(s) parsed; %d route registration(s), %d wrapped, %d reaching the provisioner",
-		scanned, len(regs), len(derived), reachable)
+	t.Logf("%d file(s) parsed; %d function(s) declared; %d route registration(s), "+
+		"%d wrapped, %d reaching the provisioner; %d with an unnameable handler "+
+		"(%d allowlisted), %d unresolved",
+		scanned, len(declared), len(regs), len(derived), reachable,
+		emptyHandler, len(unnameableRouteAllowlist), unresolvedHandler)
 }
 
 // scanRouteRegistrations parses this package's non-test sources and returns
-// every route registration (Handle and HandleFunc alike), plus a predicate
-// answering whether a named
-// function can reach s.ext.Provisioner unguarded through the package call graph.
-func scanRouteRegistrations(t *testing.T) (regs []routeRegistration, reaches func(string) bool, scanned int) {
+// every route registration (Handle and HandleFunc alike), a predicate answering
+// whether a named function can reach s.ext.Provisioner unguarded through the
+// package call graph, and `declared` — every function name this walk actually
+// parsed a FuncDecl for.
+//
+// 🔴 `declared` IS NOT BOOKKEEPING; IT IS WHAT TURNS A HANDLER NAME FROM A GUESS
+// INTO A FACT. innermostRouteHandler produces a CANDIDATE name out of an
+// expression, with no type information behind it — a local variable and a
+// method value are the same shape to it. A candidate that names nothing this
+// walk declared is an unresolved handler, and the caller MUST fail on it rather
+// than hand it to `reaches`, which would answer false and score the route safe.
+func scanRouteRegistrations(t *testing.T) (regs []routeRegistration, reaches func(string) bool, declared map[string]bool, scanned int) {
 	t.Helper()
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
@@ -598,6 +688,7 @@ func scanRouteRegistrations(t *testing.T) (regs []routeRegistration, reaches fun
 	callees := map[string][]string{}
 	direct := map[string]bool{}
 	guarded := map[string]bool{}
+	declared = map[string]bool{}
 
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
@@ -610,10 +701,17 @@ func scanRouteRegistrations(t *testing.T) (regs []routeRegistration, reaches fun
 		}
 		ast.Inspect(file, func(n ast.Node) bool {
 			fn, ok := n.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
+			if !ok {
 				return true
 			}
 			name := funcIdent(fn)
+			// Recorded BEFORE the body check: a bodiless declaration is still a
+			// function a route may legitimately name, and leaving it out of
+			// `declared` would turn a valid registration into a spurious failure.
+			declared[name] = true
+			if fn.Body == nil {
+				return true
+			}
 			calls, nilChecked := inspectProvisionerUse(fn.Body)
 			if calls && nilChecked {
 				guarded[name] = true
@@ -702,16 +800,35 @@ func scanRouteRegistrations(t *testing.T) (regs []routeRegistration, reaches fun
 		}
 		return false
 	}
-	return regs, walk, scanned
+	return regs, walk, declared, scanned
 }
 
-// innermostRouteHandler names the function a registration expression ultimately
-// serves: it descends through each wrapper's first argument until it reaches
-// something that is not a call.
+// innermostRouteHandler produces a CANDIDATE name for the function a
+// registration expression ultimately serves: it descends through each wrapper's
+// first argument until it reaches something that is not a call.
 //
-// ⚠ IT RETURNS "" RATHER THAN GUESSING. A function literal or a handler built
-// some other way has no name this package's call graph can resolve, and naming
-// the wrong one would put a reachability verdict on a function nobody registered.
+// 🔴 A CANDIDATE, NOT A VERDICT — THE CALLER MUST CORROBORATE IT AGAINST
+// `declared`, AND THIS COMMENT USED TO CLAIM MORE THAN THE CODE DID. It said
+// only that the function "returns "" rather than guessing", which is true of the
+// function-literal case and was FALSE of the identifier case one line below:
+// `create := s.requireSession(s.handleAgentCreate); mux.HandleFunc("POST
+// /agents", create)` yielded "create", a LOCAL VARIABLE. That name is in no call
+// graph, so reaches() answered false and the route was scored safe — measured
+// green across the whole module while the shipped nil-provisioner deployment
+// answered 200 over a row stuck in `provisioning` for ever. There is no type
+// information here, so a local variable, a struct field and a method value are
+// all the same shape; the only honest thing this function can do is hand back a
+// name to be checked.
+//
+// ⚠ IT STILL RETURNS "" FOR SHAPES THAT HAVE NO NAME AT ALL — a function
+// literal, or a handler built by a zero-argument constructor. "" is not a pass:
+// the caller holds those to unnameableRouteAllowlist.
+//
+// ⚠ RESIDUAL LIMIT, STATED BECAUSE THE CORROBORATION DOES NOT CLOSE IT: a local
+// variable whose name happens to COLLIDE with a function declared in this
+// package would corroborate, and the verdict would then be about that function
+// rather than about the route. Closing it needs scope resolution. The mutant
+// above is caught; a deliberately-shadowing one is not.
 func innermostRouteHandler(e ast.Expr) string {
 	for {
 		switch v := e.(type) {
@@ -726,6 +843,10 @@ func innermostRouteHandler(e ast.Expr) string {
 			}
 			return ""
 		case *ast.Ident:
+			// A bare identifier. It may name a package-level handler
+			// (handleNoContent) or a local variable holding an http.HandlerFunc —
+			// this walk cannot tell the two apart. Returned as a candidate; the
+			// caller's `declared` check is what decides, and rejects the second.
 			return v.Name
 		default:
 			return ""
