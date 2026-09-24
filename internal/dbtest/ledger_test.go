@@ -65,6 +65,21 @@ const modulePath = "github.com/ZacxDev/muster"
 // found at least one call" would have been a vacuous failure on the commit that
 // created this file with no consumers at all.
 var pgBackedPackages = []string{
+	// Added by the CLI carve, and it is the ONE `package main` in the list, so
+	// it is worth saying what it takes a database FOR. The CLI and the server
+	// are each tested in isolation everywhere else, and "verified in isolation"
+	// is exactly where this seam's defect lives: the server reads three
+	// provenance headers, the client sends three, and nothing but a run through
+	// both proves the two spellings agree. cmd/muster/seam_test.go drives the
+	// real command tree at the real api.Handler over a real database and watches
+	// one task's session thread move 0 -> 1. A fake on either side would only
+	// restate what that fake's author believed the other side does.
+	//
+	// ⚠ ITS PRESENCE HERE IS ALSO WHAT MAKES cmd/muster's OWN dbtest.Identity()
+	// GUARD MEANINGFUL: a `package main` test binary is the case where the
+	// runtime's reported package identity is easiest to get wrong, and getting
+	// it wrong makes several main packages share ONE database silently.
+	"cmd/muster",
 	"internal/agents",
 	"internal/db",
 	"internal/notes",

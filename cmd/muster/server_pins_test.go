@@ -1,0 +1,86 @@
+package main
+
+import (
+	"testing"
+
+	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/taskstatus"
+)
+
+// ---------------------------------------------------------------------------
+// THE CLIENT<->SERVER PINS.
+//
+// 🔴 EVERY IMPORT IN THIS FILE IS TEST-ONLY, AND THAT IS THE WHOLE ARRANGEMENT.
+// The shipped binary deliberately does not link internal/api or internal/agents
+// — a machine client that pulled the server and its store in would be a build
+// edge inviting the next reach for a symbol, and this project's central claim is
+// that the two halves are separable. So each value the client copies is pinned
+// here instead, from a file the compiler keeps honest but the linker never sees.
+//
+// ⚠ EACH PIN IS BIDIRECTIONAL. A one-directional pin — "the client's value is in
+// the server's set" — is the shape that let an upstream status vocabulary drift:
+// a value added server-side left the check green while the client refused it.
+// Equality in both directions is what makes a copy safe; anything less means the
+// copy should be an import instead.
+// ---------------------------------------------------------------------------
+
+// taskstatusAll re-exports the shared vocabulary for the tests in this package
+// that need it, so only THIS file carries the import.
+func taskstatusAll() []string { return taskstatus.All() }
+
+func TestTheCLIBuildVersionDefaultMatchesTheServers(t *testing.T) {
+	if buildVersion != api.BuildVersion {
+		t.Fatalf("🔴 the CLI's default buildVersion is %q and the server's api.BuildVersion is %q.\n"+
+			"warnSkew compares this client's literal against what /health reports, so a divergence "+
+			"makes the version note fire on EVERY command on EVERY host forever — which trains a "+
+			"reader to ignore the one signal that catches a genuinely stale client. Both are set by "+
+			"-ldflags at release; their DEFAULTS must agree.", buildVersion, api.BuildVersion)
+	}
+}
+
+func TestTheUnarmedMarkerMatchesTheServer(t *testing.T) {
+	if hookUnarmedField != api.HookUnarmedField {
+		t.Fatalf("🔴 the client reads %q out of a 503 body and the server writes %q.\n"+
+			"That marker is the ONLY discriminator between 'this surface is unarmed' (exit 9, arm "+
+			"the server) and 'the backend is sick' (exit 1, retry). A mismatch silently reports "+
+			"every arming refusal as an outage.", hookUnarmedField, api.HookUnarmedField)
+	}
+}
+
+func TestTheAgentMessageLimitsMatchTheServers(t *testing.T) {
+	if agentMessagesDefaultLimit != api.AgentMessagesDefaultLimit {
+		t.Errorf("🔴 `agent messages --limit` defaults to %d and the server defaults to %d; --help "+
+			"states a number the server will not apply", agentMessagesDefaultLimit, api.AgentMessagesDefaultLimit)
+	}
+	if agentMessagesMaxLimit != api.AgentMessagesMaxLimit {
+		t.Errorf("🔴 `agent messages --help` advertises a ceiling of %d and the server clamps at %d",
+			agentMessagesMaxLimit, api.AgentMessagesMaxLimit)
+	}
+}
+
+func TestTheChiefDefaultNameMatchesTheServers(t *testing.T) {
+	if chiefDefaultName != agents.ChiefName {
+		t.Fatalf("🔴 `chief ask` defaults to agent %q and the server reserves %q.\n"+
+			"The default would resolve to nothing (exit 4) on every deployment, listing the whole "+
+			"roster at a caller who asked for the standing agent by not asking at all.",
+			chiefDefaultName, agents.ChiefName)
+	}
+}
+
+// ⚠ THERE IS DELIBERATELY NO STRUCTURAL PIN FOR THE PROVENANCE HEADER NAMES,
+// AND THE REASON IS WORTH STATING RATHER THAN LEAVING AS AN ABSENCE.
+//
+// The three X-Muster-* names the client sends are read by unexported functions
+// in internal/api (taskSource, taskSessionHost), so nothing in this package can
+// drive the server's real reader. The available substitutes are both worse than
+// nothing: comparing two constants proves only that someone typed the same
+// string twice, and scanning internal/api's SOURCE for the literals rebuilds
+// exactly the CLI-to-server-source coupling this extraction removed.
+//
+// What pins the relationship instead is BEHAVIOURAL and lives in seam_test.go:
+// the real command tree, against the real api.Handler, over a real database,
+// watching one task's session thread move 0 -> 1. That test is Postgres-gated
+// and SKIPS without one — but `make test` exports MUSTER_TEST_REQUIRE_DB=1,
+// which turns that skip into a failure, so the project's own gate cannot produce
+// a green that never exercised the seam.
