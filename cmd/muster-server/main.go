@@ -36,6 +36,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -400,6 +401,26 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"gates on a session cookie this server signs", envUIPassword)
 	}
 
+	// 🔴 THE COOKIE FLAG IS A SEPARATE LINE FROM THE TIER ABOVE, BECAUSE IT IS A
+	// SEPARATE FAILURE. "Human web tier: CONFIGURED" is about whether login
+	// works; this is about whether the cookie login hands out is safe to carry
+	// over the wire. It defaults FALSE — deliberately, because the common path
+	// here is a plain-HTTP LAN port where a Secure cookie is never sent and login
+	// would appear to succeed and then not stick — so a TLS deployment that never
+	// sets it ships a session cookie with no Secure attribute, and nothing on
+	// this banner said so. That is exactly the "silent healthy state and silent
+	// refusing state are byte-identical" case this function's own header is about.
+	if a.cfg.SecureCookies {
+		l.Printf("session cookie: SECURE — %s is set, so the cookie is sent over HTTPS only. "+
+			"A plain-HTTP LAN port will NOT be able to log in against this process",
+			envSecureCookies)
+	} else {
+		l.Printf("session cookie: NOT Secure — %s is unset, which is the DEFAULT and is "+
+			"correct for a plain-HTTP LAN port. ⚠ If this deployment is reached over TLS, "+
+			"set it: without it the session cookie travels with no Secure attribute and any "+
+			"plain-HTTP request to the same host carries it", envSecureCookies)
+	}
+
 	if a.cfg.HookToken != "" {
 		l.Printf("machine hook tier: ENFORCED — %s is set and required on the hook endpoints", envHookToken)
 	} else {
@@ -419,14 +440,33 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 
 	switch {
 	case port.Configured():
-		l.Printf("permission router: CONFIGURED at %s as actor %q — session liveness, event "+
+		// ⚠ IT NAMES THE VARIABLE AS WELL AS ITS VALUE, AND THE VARIABLE IS THE
+		// PART THAT WAS MISSING. This branch printed the URL alone, so an operator
+		// grepping the banner for MUSTER_ROUTER_URL found it in the failure
+		// directions and NOT in the working one — the search that answers "did
+		// this process see my variable at all" returned nothing precisely when
+		// the answer was yes. Found by the both-directions ledger, not by review.
+		l.Printf("permission router: CONFIGURED — %s=%s, actor %q — session liveness, event "+
 			"publish, notifications, the directory picker and the approval gate are live",
-			a.cfg.RouterURL, a.cfg.RouterActor)
+			envRouterURL, a.cfg.RouterURL, a.cfg.RouterActor)
 	case a.cfg.Standalone:
 		l.Printf("permission router: NONE, DECLARED (%s=1) — session transcript links will all "+
 			"read \"no transcript recorded\", which is TRUE here because nothing records "+
 			"transcripts. Notifications, the directory picker and agent checkpoints degrade "+
 			"and say so where a human can see it", envStandalone)
+	// 🔴 THE PARTIAL CASE IS ITS OWN LINE, BECAUSE THE TWO-BRANCH VERSION NAMED
+	// THE WRONG VARIABLE. router.New returns nil when base, token OR actor is
+	// empty, so `port.Configured()` is false for all three — and the default
+	// branch reported "MUSTER_ROUTER_URL is unset" at an operator who had set it
+	// and forgotten the token. Measured live: URL set, token absent, banner
+	// blamed the URL. It sends the reader to re-check the one variable that was
+	// right, which is worse than saying nothing.
+	case a.cfg.RouterURL != "":
+		l.Printf("permission router: PARTIALLY CONFIGURED, THEREFORE NOT CONFIGURED — %s is "+
+			"set (%s) but %s. A router client needs all three; %s builds nothing without "+
+			"them, so this server behaves exactly as if no router were configured and will "+
+			"NOT report ready while a notes store is wired",
+			envRouterURL, a.cfg.RouterURL, missingRouterCredential(a.cfg), envRouterURL)
 	default:
 		l.Printf("permission router: NONE, UNDECLARED — %s is unset and %s is not 1. This "+
 			"server will NOT report ready while a notes store is wired, on purpose: see "+
@@ -442,10 +482,58 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	}
 
 	// 🔴 THE SEAM, ANNOUNCED ON EVERY BOOT. See doc_seams.go.
+	//
+	// 🔴 THIS LINE USED TO SAY THE ROUTES "REFUSE", AND THAT WAS MEASURED FALSE
+	// FOR NINE OF THEM. They answered 200 and did nothing: a dispatch rendered a
+	// card over a row that sat `provisioning` for ever, a delete removed the card
+	// and left the row, and the log stream sent `: connected` and closed, which
+	// reads as "no logs". The refusal is real now and has a NAME — the sentence
+	// cites api.requireProvisioner so the claim can be checked against a symbol
+	// rather than believed. Do not soften this back into an unqualified
+	// "refuses"; that word is what stopped anyone looking.
 	l.Print("agent provisioning: UNWIRED — this module has no api.Provisioner implementation, " +
 		"so every agent-control route (dispatch, start, stop, destroy, logs, chat) is " +
-		"registered and refuses. Privilege grants are RECORDED but not applied to any " +
-		"cluster. Neither is a misconfiguration; see cmd/muster-server/doc_seams.go")
+		"registered and answers 503 at request time through api.requireProvisioner, " +
+		"after its own auth check and with provisionerUnwired:true in the body. " +
+		"Privilege grants are RECORDED but not applied to any cluster. Neither is a " +
+		"misconfiguration; see cmd/muster-server/doc_seams.go")
+}
+
+// missingRouterCredential names the router variable(s) that are empty when the
+// URL is set but router.New still built nothing.
+//
+// 🔴 IT NAMES WHAT IS ACTUALLY EMPTY RATHER THAN THE FIRST PLAUSIBLE CAUSE.
+// router.New's predicate is `base == "" || token == "" || actor == ""`, and the
+// banner that this replaces collapsed all three into one sentence blaming the
+// URL. The whole value of the line is that the reader goes and sets the right
+// variable, so the predicate here has to be the SAME one router.New applies —
+// which is why it reads the fields rather than re-deriving a reason.
+//
+// ⚠ THE ACTOR ARM IS REACHABLE ONLY FROM A CONFIG THAT DID NOT COME FROM
+// loadConfig, WHICH DEFAULTS IT TO defaultRouterActor. buildApp takes a config
+// value, so a caller constructing one directly (every wiring test does) can
+// still present an empty actor — and a banner that could not say so would be
+// silent about the one case that reaches it.
+func missingRouterCredential(c config) string {
+	var missing []string
+	if c.RouterToken == "" {
+		missing = append(missing, envRouterToken)
+	}
+	if c.RouterActor == "" {
+		missing = append(missing, envRouterActor)
+	}
+	switch len(missing) {
+	case 0:
+		// Not reachable through the branch that calls this — it is guarded by a
+		// non-empty URL and a non-Configured port — but a silent "" here would
+		// read as a complete sentence with the reason missing.
+		return "the router client was not built even though every variable is set, " +
+			"which should be impossible and is worth reporting"
+	case 1:
+		return missing[0] + " is unset"
+	default:
+		return strings.Join(missing, " and ") + " are unset"
+	}
 }
 
 // githubAuthPosture names which of the two ways into a GitHub account is armed.

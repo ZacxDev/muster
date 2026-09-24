@@ -394,7 +394,7 @@ func (s *Server) registerAll(mux Mux) {
 	// open. TestChiefThreadSearchIsOperatorOnly asserts the refusals.
 	mux.HandleFunc("GET /ui/chief/threads/search", s.requireSession(s.handleChiefThreadSearch))
 	// chief is the reserved-name agent; nothing else can create one.
-	mux.HandleFunc("POST /chief/provision", s.requireSession(s.handleChiefProvision))
+	mux.HandleFunc("POST /chief/provision", s.requireSession(s.requireProvisioner(s.handleChiefProvision)))
 
 	s.registerNotesRoutes(mux)
 	s.registerGitHubRoutes(mux)
@@ -763,8 +763,20 @@ func (s *Server) goNotify(n RouterNotification, onDelivered func(int)) {
 	if s.router == nil {
 		return
 	}
+	// 🔴 THE Add IS ON THE CALLER'S GOROUTINE AND THE Done IS fn's FIRST DEFER,
+	// AND safeGo DOES NOT DISTURB EITHER. safeGo's recover is registered OUTSIDE
+	// fn, so on a panic fn's own defers unwind first — Done runs, then the
+	// recover logs. A shutdown therefore cannot be left waiting on a fan-out that
+	// panicked, which is the one property this pairing has to keep.
+	//
+	// ⚠ IT WAS BARE, AND s.router BEING NIL-CHECKED ABOVE IS NOT WHAT MADE THAT
+	// SAFE — NOTHING DID. The nil check covers the field; the panic this recovers
+	// is whatever happens INSIDE an HTTP call to another service, which is the
+	// case safeGo's own doc names ("gateway responses"). A nil-map write or a
+	// bad decode in that client would have taken the whole single-replica process
+	// down from a best-effort notification.
 	s.pushInFlight.Add(1)
-	go func() {
+	safeGo(s.logger, "router notify tag="+n.Tag, func() {
 		defer s.pushInFlight.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
@@ -775,7 +787,7 @@ func (s *Server) goNotify(n RouterNotification, onDelivered func(int)) {
 		if onDelivered != nil {
 			onDelivered(-1)
 		}
-	}()
+	})
 }
 
 // mirrorToRouter forwards one event to the router's SSE bus, if configured.
@@ -783,15 +795,16 @@ func (s *Server) mirrorToRouter(name, data string) {
 	if s.router == nil {
 		return
 	}
+	// Same pairing, same reasoning, as goNotify above.
 	s.pushInFlight.Add(1)
-	go func() {
+	safeGo(s.logger, "router publish "+name, func() {
 		defer s.pushInFlight.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
 		if err := s.router.PublishEvent(ctx, name, data); err != nil {
 			s.logger.Printf("router: publish %s: %v", name, err)
 		}
-	}()
+	})
 }
 
 // BroadcastAgentChanged fires an SSE agent.changed nudge for the named agent so

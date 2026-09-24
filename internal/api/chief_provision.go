@@ -42,11 +42,28 @@ import (
 func (s *Server) handleChiefProvision(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if a, err := s.ext.Agents.GetByName(ctx, agents.ChiefName); err == nil {
-		go func() {
+		// 🔴 safeGo, NOT `go func`, AND THE DIFFERENCE WAS A DEAD CONTAINER. This
+		// was the one background goroutine in internal/api written bare while the
+		// other seven used safeGo, and a panic in a goroutine with no recover
+		// terminates the PROCESS — recoverMiddleware covers the request goroutine
+		// only, and by the time this runs the 200 has already been written.
+		// Reproduced against the image this tree builds: two POSTs to this route,
+		// the second taking THIS branch because the first created the agent, and
+		// the container went to `exited (2)` with /health connection-refused. It
+		// needed no privilege and no unusual input — click once, nothing appears,
+		// click again.
+		//
+		// ⚠ requireProvisioner NOW STOPS THE nil CASE REACHING HERE, AND THIS STILL
+		// DOES NOT GO BACK TO BARE. The wrapper answers for one nil field; this
+		// recovers whatever a REAL provisioner does on the far side of a helm call
+		// to a cluster, which is the case safeGo's own doc names ("any goroutine
+		// that touches external data"). The two guards fail for different reasons,
+		// so neither substitutes for the other.
+		safeGo(s.logger, "chief start", func() {
 			if err := s.ext.Provisioner.Start(a.ID); err != nil {
 				s.logger.Printf("chief: start: %v", err)
 			}
-		}()
+		})
 		s.writeJSON(w, http.StatusOK, map[string]any{"name": a.Name, "id": a.ID, "created": false})
 		return
 	}

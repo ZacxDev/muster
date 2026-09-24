@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/github"
@@ -139,6 +140,76 @@ func (e Extensions) defects() []string {
 			"or leave Notes unset.")
 	}
 	return out
+}
+
+// ProvisionerUnwiredField is the JSON key requireProvisioner sets to `true` on
+// its 503 body.
+//
+// 🔴 IT IS THE FIELD, NOT THE SENTENCE, THAT A CLIENT BRANCHES ON — the same
+// shape HookUnarmedField gives the machine tier, and for a sharper reason. Every
+// OTHER 503 a caller meets on these routes is a transient outage worth retrying;
+// this one is a permanent property of the BUILD, and a client that cannot tell
+// them apart retries for ever against a server whose answer can never change.
+// A discriminator made of prose is one a reword silently breaks.
+const ProvisionerUnwiredField = "provisionerUnwired"
+
+// requireProvisioner refuses a route that cannot do its work without
+// Extensions.Provisioner, rather than letting the handler reach a nil interface.
+//
+// 🔴 THIS EXISTS BECAUSE "REGISTERED AND REFUSES" WAS NOT TRUE, AND THE BOOT
+// BANNER SAID IT ON EVERY START. Measured against the image this tree builds,
+// with Provisioner nil (the only state cmd/muster-server can be in today):
+// POST /agents answered 200 and rendered a card while the row sat
+// `provisioning` for ever; POST /agents/{id}/start answered 200 with 3,590
+// bytes of card HTML; POST /agents/{id}/stop answered 200; DELETE /agents/{id}
+// answered 200 and htmx removed the card while the row was still there on the
+// next read; and GET /agents/{name}/logs/stream answered 200 with `: connected`
+// and then EOF, which a reader sees as "this agent has no logs".
+// muster_panics_total{source="goroutine"} stood at 4. Every one of those is a
+// surface stating a falsehood with nothing logged where a user is looking.
+//
+// 🔴 IT IS THE SAME OBSERVABLE doc_seams.go ENTRY 1 ARGUES AGAINST. That entry
+// refuses to wire a FAKE provisioner because a fake "would make the Agents tab
+// LOOK operational: dispatch would report success, no pod would exist, and the
+// agent would sit in `provisioning` for ever." Wiring nil produced exactly that,
+// byte for byte. The nil was never the honest option on its own — this wrapper
+// is what makes it one.
+//
+// 🔴 WHY A WRAPPER AND NOT A defects() ENTRY, STATED SO THE NEXT READER DOES NOT
+// RE-OPEN IT. Adding `Provisioner == nil && Agents != nil` to defects() would
+// fail /readyz, which is fail-closed and simpler — and would make this module
+// UNDEPLOYABLE until the provisioner adapter lands, taking the task board, notes,
+// repos, projects and runbooks down with a seam that is open on purpose. The
+// refusal belongs at the routes that cannot work, not at the whole process. With
+// this wrapper a nil Provisioner moves from the "lies silently" side of
+// defects()'s own line to the "degrades visibly" side, which is precisely why it
+// is NOT listed there.
+//
+// ⚠ IT IS THE INNER WRAPPER, WITH AUTH OUTSIDE IT, AND THE ORDER IS LOAD-BEARING.
+// Registered as requireSession(requireProvisioner(h)) the session check runs
+// first, so an anonymous caller is refused before this reply can tell them which
+// dependencies this deployment has wired. The reverse order turns every one of
+// these routes into an unauthenticated probe of the server's build.
+//
+// ⚠ IT DOES NOT MOVE THE ROUTE GOLDEN, WHICH IS WHY THE ROUTES STAY REGISTERED.
+// The golden records patterns only (see routes_golden_test.go's KNOWN LIMIT
+// banner), and a wrapper changes the handler, not the pattern. doc_seams.go
+// entry 1 says the golden moving for this nil would itself be a defect; it does
+// not move.
+func (s *Server) requireProvisioner(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.ext.Provisioner == nil {
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error": "this build has no agent provisioner wired, so it cannot " +
+					"provision, start, stop, destroy, stream logs from or chat with an " +
+					"agent. This is a declared seam, not an outage and not your " +
+					"credential: see cmd/muster-server/doc_seams.go entry 1.",
+				ProvisionerUnwiredField: true,
+			})
+			return
+		}
+		next(w, r)
+	}
 }
 
 // PrivilegeApplier applies a granted privilege profile's Kubernetes RBAC to an

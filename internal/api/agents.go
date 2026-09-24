@@ -136,7 +136,7 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	// ⚠ REGISTERED AFTER THE PROVISIONER GATE, unlike its GET twin: the write
 	// reaches Provisioner.Chat, so on a provisioner-less deployment there is nothing
 	// for it to talk to.
-	mux.HandleFunc("POST /api/agents/{name}/messages", s.requireArmedHookToken(s.handleAPIAgentSendMessage))
+	mux.HandleFunc("POST /api/agents/{name}/messages", s.requireArmedHookToken(s.requireProvisioner(s.handleAPIAgentSendMessage)))
 	mux.HandleFunc("GET /ui/agents/new", s.requireSession(s.handleAgentNewModal))
 	mux.HandleFunc("GET /ui/agents/repos", s.requireSession(s.handleAgentRepoOptions))
 	mux.HandleFunc("GET /ui/agents/notes", s.requireSession(s.handleAgentNoteOptions))
@@ -146,21 +146,21 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("GET /ui/agents/{id}/rename", s.requireSession(s.handleAgentRenameForm))
 	mux.HandleFunc("GET /ui/agents/{id}/card", s.requireSession(s.handleAgentCard))
 	mux.HandleFunc("GET /api/openrouter/models", s.requireSession(s.handleOpenRouterModels))
-	mux.HandleFunc("POST /agents", s.requireSession(s.handleAgentCreate))
-	mux.HandleFunc("POST /agents/{id}/start", s.requireSession(s.handleAgentStart))
-	mux.HandleFunc("POST /agents/{id}/stop", s.requireSession(s.handleAgentStop))
+	mux.HandleFunc("POST /agents", s.requireSession(s.requireProvisioner(s.handleAgentCreate)))
+	mux.HandleFunc("POST /agents/{id}/start", s.requireSession(s.requireProvisioner(s.handleAgentStart)))
+	mux.HandleFunc("POST /agents/{id}/stop", s.requireSession(s.requireProvisioner(s.handleAgentStop)))
 	mux.HandleFunc("POST /agents/{id}/name", s.requireSession(s.handleAgentName))
 	mux.HandleFunc("POST /agents/{id}/model", s.requireSession(s.handleAgentModel))
 	mux.HandleFunc("POST /agents/{id}/sessions", s.requireSession(s.handleAgentSessionCreate))
-	mux.HandleFunc("DELETE /agents/{id}", s.requireSession(s.handleAgentDelete))
+	mux.HandleFunc("DELETE /agents/{id}", s.requireSession(s.requireProvisioner(s.handleAgentDelete)))
 	mux.HandleFunc("GET /agents/{name}", s.requireSession(s.handleAgentDetail))
 	// Live transcript partial: the detail page's #chat-log re-fetches this on the
 	// sse:chat.reply event so a SERVER-SIDE (kickoff) turn — which never streams over
 	// this page's WS — appears without a reload.
 	mux.HandleFunc("GET /ui/agents/{name}/chat-log", s.requireSession(s.handleAgentChatLog))
 	mux.HandleFunc("GET /ui/agents/{name}/task", s.requireSession(s.handleAgentTaskModal))
-	mux.HandleFunc("GET /agents/{name}/logs/stream", s.requireSession(s.handleAgentLogsStream))
-	mux.HandleFunc("GET /agents/{name}/ws", s.requireSession(s.handleAgentWS))
+	mux.HandleFunc("GET /agents/{name}/logs/stream", s.requireSession(s.requireProvisioner(s.handleAgentLogsStream)))
+	mux.HandleFunc("GET /agents/{name}/ws", s.requireSession(s.requireProvisioner(s.handleAgentWS)))
 }
 
 // handleAgentsContent serves the /ui/agents partial: cards (status reconciled

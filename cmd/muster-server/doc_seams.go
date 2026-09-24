@@ -41,11 +41,36 @@ package main
 //	WHAT IT COSTS MEANWHILE, PRECISELY: every agent-control route is REGISTERED
 //	  — registration in internal/api is unconditional by design, which is what
 //	  makes the route golden a claim about production — and each one refuses at
-//	  request time. The Agents tab is read-only: existing rows render, nothing
-//	  can be provisioned, started, stopped or destroyed, no logs stream and no
-//	  chat turn runs. The boot banner says so on every start, unconditionally.
+//	  request time with 503 + provisionerUnwired:true, through the
+//	  api.requireProvisioner wrapper it is registered behind. The Agents tab is
+//	  read-only: existing rows render, nothing can be provisioned, started,
+//	  stopped or destroyed, no logs stream and no chat turn runs. The boot banner
+//	  says so on every start, unconditionally.
 //	  🔴 THE ROUTE GOLDEN DOES NOT MOVE FOR THIS. If it ever does, the nil has
 //	  started changing the route set, which is a defect in its own right.
+//	  requireProvisioner is a WRAPPER for exactly that reason — the golden records
+//	  patterns, not handlers, so the honest refusal costs no route drift.
+//
+//	🔴 THE SENTENCE ABOVE WAS FALSE WHEN IT WAS FIRST WRITTEN, AND THAT IS
+//	  RECORDED HERE RATHER THAN QUIETLY CORRECTED. "Each one refuses at request
+//	  time" was a claim about a wrapper that did not exist. Measured against the
+//	  image this tree builds, with Provisioner nil, NINE routes answered 200 and
+//	  did nothing — POST /agents, POST /agents/{id}/start, POST /agents/{id}/stop,
+//	  DELETE /agents/{id}, GET /agents/{name}/logs/stream, GET /agents/{name}/ws,
+//	  POST /chief/provision, POST /runbooks/{id}/dispatch and
+//	  POST /api/agents/{name}/messages. A dispatch rendered a card over a row that
+//	  stayed `provisioning`; a delete removed the card and left the row; the log
+//	  stream wrote `: connected` and closed, which a reader takes for "no logs".
+//	  🔴 THAT IS THE IDENTICAL OBSERVABLE THIS ENTRY REJECTS A FAKE FOR, six
+//	  paragraphs up. Wiring nil and wiring a fake were the same lie; only the
+//	  wrapper made the nil the honest option this entry always claimed it was.
+//	  POST /chief/provision was worse than a lie: its goroutine was bare, so the
+//	  nil deref killed the process rather than being recovered.
+//	⚠ THE WRAPPER'S LEDGER IS THE THING TO UPDATE, NOT THIS PROSE. The routes
+//	  above are pinned by TestEveryProvisionerRouteRefusesWhenItIsUnwired in
+//	  internal/api/provisioner_seam_test.go, which fails when the set GROWS or
+//	  SHRINKS. A tenth route reaching Provisioner without the wrapper reddens
+//	  there, which is the mechanical half this paragraph cannot be.
 //	CLOSING CONDITION: a pull request adding an adapter from provision.Driver to
 //	  api.Provisioner — in its own package, consumer-side interfaces unchanged —
 //	  wired here behind the configuration that names a driver, with
