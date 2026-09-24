@@ -1,8 +1,6 @@
-// Package api will hold muster's HTTP surface.
-//
-// Today it holds exactly one thing: the single place a route may be
-// registered. That is not a placeholder for want of anything better to write —
-// it is the premise the route-drift gate in routes_golden_test.go rests on. The
+// This file holds the single place a route may be registered. That is not
+// bookkeeping — it is the premise the route-drift gate in
+// routes_golden_test.go rests on. The
 // gate hands a recorder to RegisterRoutes and diffs what comes back against a
 // checked-in golden file. That recording is a claim about production only for
 // as long as RegisterRoutes is the ONLY registration site in the module; the
@@ -33,24 +31,26 @@ var _ Mux = (*http.ServeMux)(nil)
 
 // RegisterRoutes registers every muster HTTP route on mux.
 //
-// 🔴 IT IS EMPTY, NOT ABSENT, AND THE DIFFERENCE IS THE POINT. muster has no
-// HTTP server yet; the routes arrive when the code carve does. An empty
-// chokepoint that already exists means the first route anyone adds has an
-// obvious and enforced place to go — and means the gate, the golden and the
-// partition manifest are all in place and exercised BEFORE the traffic they
-// describe, rather than being written afterwards against a surface that is
-// already wrong.
+// 🔴 IT TAKES NO SERVER, AND THAT IS WHAT MAKES THE ROUTE GOLDEN A CLAIM ABOUT
+// PRODUCTION RATHER THAN ABOUT A FIXTURE.
 //
-// WHEN YOU ADD THE FIRST ROUTE, three things move together:
+// The body registers against a ZERO-VALUE Server. That is only sound because
+// registration in this package is unconditional — no `if dep == nil { return }`
+// anywhere in the call tree, see the package doc in server.go — so a bare
+// server and a fully-wired one register the identical set. Handler() calls the
+// same registerAll against the real server.
 //
-//   - register it here (or in a helper this function calls — the requirement
-//     is that the registration is reachable from this one call, not that it is
-//     literally in this body);
-//   - flip `routePhase` in routes_golden_test.go from `pre-traffic` to
-//     `carving`, which turns the drift gate on;
-//   - regenerate testdata/routes.golden and read the diff.
+// The alternative, which upstream has, is a registrar that branches on which
+// dependencies are present. Then "which routes exist" is a function of the
+// fixture the recorder was handed, and a fixture missing one field produces a
+// golden that is short by a whole block while reading as complete. That is not
+// hypothetical: it cost that project seven routes, with two separate guards
+// green over the hole.
 //
-// Skip the second and the gate's own pre-traffic control will fail and tell
-// you so. That is deliberate: a route landing while the gate still believes
-// there are none is the one failure mode this whole file exists to make loud.
-func RegisterRoutes(mux Mux) {}
+// TestRegistrationIsIndependentOfDependencies is the mechanical check. It is a
+// RELATIONSHIP guard — it records from a bare server AND from one with every
+// dependency supplied and demands set equality — not a count, because a count
+// passes whether or not the two agree.
+func RegisterRoutes(mux Mux) {
+	(&Server{}).registerAll(mux)
+}

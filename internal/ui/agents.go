@@ -1,0 +1,1227 @@
+package ui
+
+import (
+	"io"
+	"strconv"
+	"strings"
+	"time"
+
+	g "maragu.dev/gomponents"
+	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/agents"
+)
+
+// AgentCardView is the per-agent data the card grid renders.
+type AgentCardView struct {
+	ID          int64
+	Name        string
+	DisplayName string
+	Repo        string
+	Status      string // pending|provisioning|running|stopped|error
+	KickedOff   bool
+	Recent      []string
+	// LazyRecent makes the card lazy-load its recent-log preview from
+	// /ui/agents/{id}/recent (htmx) instead of receiving Recent inline — so the
+	// agents-list path makes no per-agent k8s call. Set for running agents.
+	LazyRecent bool
+	// Model is the agent's configured model slug ("" = cluster default). Surfaced
+	// as a small read-only line on the card so it's visible at a glance.
+	Model string
+	// NoteID is the source task this agent was dispatched from (nil = none). When
+	// set, the card shows a "Task #<id>" badge linking to the Tasks tab.
+	NoteID *int64
+	// CreatedAt / UpdatedAt back the card's relative "age" + "last activity" times
+	// (rendered via the live <time data-ts> widget). Zero times render nothing.
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// NoteOption is a selectable existing note for the dispatch modal.
+type NoteOption struct {
+	ID    int64
+	Label string
+}
+
+// ComboOption is one option in a custom type-to-filter combobox. Value is the
+// submitted value (carried by the hidden input); Label is the visible text the
+// user filters against. For repos Value == Label; for notes they differ (Value
+// is the note id, Label is the directory / body preview).
+type ComboOption struct {
+	Value string
+	Label string
+}
+
+// AgentsPanel is the static shell for the Agents tab. The tab is OPERATOR-FIRST:
+// the operator (the privileged orchestrator you chat with) leads, with quick
+// chips under it that seed an operator conversation. The running-agents list
+// sits below. The raw forms (dispatch FAB aside, plus the privilege-profiles and
+// runbooks registries) live behind an "▸ Advanced" collapsible so they stay
+// available for power use without dominating mobile.
+//
+// Only the inner card list (#agents-list) and the operator slot poll/lazy-load;
+// the FAB and dispatch modal live in the shell (Page) so the 4s status refresh
+// never rebuilds them. The card list uses morph swaps so live updates patch in
+// place (no scroll jump, no teardown of hover/expanded state).
+func AgentsPanel(active bool) g.Node {
+	return Div(
+		ID(panelID("agents")),
+		g.Attr("role", "tabpanel"),
+		// destructiveSwap=true — AND THE PANEL'S OWN hx-target IS NOT WHY. This
+		// element is never its own target (the inner #privilege-requests and
+		// #agents-list morph themselves). What destroys nodes inside it is wired
+		// INSIDE its body, one level down, and it was measured rather than argued:
+		//
+		//	agents.go cardStatusIcon    hx-target=this  innerHTML             load, every 10s
+		//	agents.go agentRecentSlot   hx-target=this  innerHTML             agents:changed
+		//	agents.go agentRenameButton #agent-<id>     outerHTML             click
+		//	agents.go agentDeleteConfirm #agent-<id>    outerHTML swap:200ms  click
+		//
+		// The first is a TIMER, one instance per agent card, so this panel discards
+		// nodes inside itself every 10 seconds with nobody touching it. See panelClass.
+		Class(panelClass(active, true)),
+		// ⚠ THE OPERATOR FAB THAT USED TO SIT ON THIS TAB IS GONE (task #633): there
+		// is no operator chat page to open. The tab leads with time-sensitive
+		// privilege requests, then the running-agents list.
+		// Pending privilege requests (Phase 3.1): agents asking for elevated
+		// access. Lazy-loads its partial; refreshes on the SSE privilege event and
+		// a slow poll. Renders nothing when there are none. Kept above the fold
+		// because an approval is time-sensitive.
+		Div(
+			ID("privilege-requests"),
+			Class("mb-3 empty:mb-0"),
+			hx("hx-get", "/ui/privilege-requests"),
+			hx("hx-trigger", "load, sse:privilege.created from:body, every 15s"),
+			hx("hx-target", "#privilege-requests"),
+			hx("hx-swap", "morph:innerHTML"),
+		),
+		// The running-agents list sits directly below the operator.
+		Div(
+			Class("mb-2 flex items-center gap-2"),
+			H2(Class("text-xs font-medium uppercase tracking-wide text-slate-400"), g.Text("Agents")),
+		),
+		Div(
+			ID("agents-list"),
+			Class("grid grid-cols-1 gap-3 lg:grid-cols-2"),
+			hx("hx-get", "/ui/agents"),
+			// Event-driven only — NO timer. A 4s poll used to morph each card's lazy
+			// recent-log slot back to its skeleton (stranding it) and churned the list
+			// constantly; status now stays live via each card's own status-icon poll
+			// (cardStatusIcon), and the list re-renders on actual lifecycle changes.
+			hx("hx-trigger", "load, agents:changed from:body"),
+			hx("hx-target", "#agents-list"),
+			hx("hx-swap", "morph:innerHTML"),
+		),
+		// ADVANCED: the raw forms (privilege profiles + runbooks registries). These
+		// remain fully available for desktop/power use, but the operator chat is
+		// the intended primary path on mobile, so they're collapsed by default. The
+		// dispatch modal stays reachable via the body-level FAB (Page).
+		agentsAdvanced(),
+		// FAB + modal are rendered at the body level by Page (shellFAB +
+		// agentModalShell) so fixed positioning is reliable and they survive the
+		// 4s list refresh.
+	)
+}
+
+// agentsAdvanced wraps the raw privilege-profiles + runbooks registries in a
+// collapsed <details>. The inner partials still lazy-load on `load` (htmx SSE/
+// hx-get fire inside a closed <details>), so opening it shows current data.
+func agentsAdvanced() g.Node {
+	return Details(
+		ID("agents-advanced"),
+		Class("group/adv mt-5 rounded-2xl border border-white/5 bg-slate-900/40 ring-1 ring-white/5"),
+		Summary(
+			Class("flex cursor-pointer select-none items-center gap-2 px-4 py-3 text-sm font-medium text-slate-300 transition hover:text-slate-100"),
+			Span(Class("transition-transform group-open/adv:rotate-90"), g.Text("▸")),
+			g.Text("Advanced"),
+			Span(Class("flex-1")),
+			Span(Class("text-xs font-normal text-slate-400"), g.Text("dispatch · profiles · runbooks")),
+		),
+		Div(
+			Class("flex flex-col gap-3 px-4 pb-4"),
+			P(Class("text-xs leading-relaxed text-slate-400"), g.Text("Power tools. The everyday path is to ask the operator above. Use the + button to dispatch an agent directly, or define reusable access profiles and runbooks here.")),
+			// Privilege profiles registry (Phase 3.2): define reusable access bundles.
+			Div(
+				ID("privilege-profiles"),
+				hx("hx-get", "/ui/privileges"),
+				hx("hx-trigger", "load"),
+				hx("hx-target", "#privilege-profiles"),
+				hx("hx-swap", "morph:innerHTML"),
+			),
+			// Runbooks registry (Phase 4.1): reusable, parameterized dispatch
+			// templates. Lazy-loads its partial; one-click "Run" dispatches an agent.
+			Div(
+				ID("runbooks"),
+				hx("hx-get", "/ui/runbooks"),
+				hx("hx-trigger", "load"),
+				hx("hx-target", "#runbooks"),
+				hx("hx-swap", "morph:innerHTML"),
+			),
+		),
+	)
+}
+
+// AgentsCards is the /ui/agents partial: just the cards (or the empty state),
+// morphed into #agents-list.
+func AgentsCards(list []AgentCardView) g.Node {
+	if len(list) == 0 {
+		return Div(
+			// span both grid columns so the empty state stays centered.
+			Class("col-span-full mt-16 flex flex-col items-center justify-center gap-2 text-center"),
+			Div(Class("text-4xl"), g.Text("🧩")),
+			P(Class("text-lg font-medium text-slate-300"), g.Text("No agents yet")),
+			P(Class("text-sm text-slate-400"), g.Text("Tap + to dispatch an agent for a repo.")),
+		)
+	}
+	return g.Group(g.Map(list, agentCard))
+}
+
+// RenderAgentCard writes a single agent card (the #agent-{id} <article>). Used
+// to re-render one card after an inline rename (save) or to restore it on
+// cancel, swapped as outerHTML of #agent-{id}.
+func RenderAgentCard(w io.Writer, a AgentCardView) error {
+	return agentCard(a).Render(w)
+}
+
+// RenderAgentRename writes the /ui/agents/{id}/rename partial: a tiny inline
+// rename form that REPLACES the card (outerHTML swap of #agent-{id}). It is a
+// full <article> with the same id so the card morph/refresh keeps targeting it.
+// Save hx-posts to /agents/{id}/name; cancel re-fetches the card. htmx only
+// (boost-safe). The input is prefilled with the current DisplayName (or the
+// slug Name when unset).
+func RenderAgentRename(w io.Writer, a AgentCardView) error {
+	return agentRenameForm(a).Render(w)
+}
+
+// agentRenameForm is the inline-edit card: a name input + Save/Cancel, posting
+// to POST /agents/{id}/name. The slug Name is immutable; only DisplayName edits.
+func agentRenameForm(a AgentCardView) g.Node {
+	ids := strconv.FormatInt(a.ID, 10)
+	return Article(
+		ID("agent-"+ids),
+		Class("group overflow-hidden rounded-2xl border border-emerald-500/20 bg-slate-900/70 shadow-lg shadow-black/20 ring-1 ring-emerald-500/10"),
+		Form(
+			Class("flex flex-col gap-3 p-4"),
+			hx("hx-post", "/agents/"+ids+"/name"),
+			hx("hx-target", "#agent-"+ids),
+			hx("hx-swap", "outerHTML"),
+			Label(
+				Class("flex flex-col gap-1 text-xs font-medium text-slate-400"),
+				Span(g.Text("Rename agent")),
+				Input(
+					Type("text"),
+					Name("name"),
+					Value(displayOr(a.DisplayName, a.Name)),
+					g.Attr("aria-label", "Agent display name"),
+					g.Attr("autocomplete", "off"),
+					g.Attr("autofocus", ""),
+					Placeholder(a.Name),
+					Class("w-full rounded-lg border-0 bg-slate-950 px-3 py-2 text-base text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+				),
+			),
+			Span(Class("break-all text-[11px] text-slate-400"), g.Text("slug: "+a.Name+" (fixed)")),
+			Div(
+				Class("flex items-center gap-2"),
+				Button(
+					Type("submit"),
+					Class("press inline-flex min-h-[44px] items-center justify-center rounded-xl bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-60"),
+					hx("hx-disabled-elt", "this"),
+					g.Text("Save"),
+				),
+				Button(
+					Type("button"),
+					Class("press inline-flex min-h-[44px] items-center justify-center rounded-xl px-4 text-sm font-medium text-slate-300 ring-1 ring-inset ring-white/10 transition hover:bg-white/5"),
+					// Cancel: re-fetch this card (boost-safe; no JS).
+					hx("hx-get", "/ui/agents/"+ids+"/card"),
+					hx("hx-target", "#agent-"+ids),
+					hx("hx-swap", "outerHTML"),
+					g.Text("Cancel"),
+				),
+			),
+		),
+	)
+}
+
+// agentCard is the per-agent card. The card BODY is a real boosted <a> that
+// opens the detail page on click/tap (status icon + name + repo chip + recent
+// preview). The interactive controls — the inline rename pencil and the ⋯
+// context menu (Start/Stop/Delete) — sit OUTSIDE that anchor in a top-right
+// control cluster, so tapping them never triggers card navigation. All
+// interactivity is boost-safe: a native <details> menu (no JS) and htmx.
+func agentCard(a AgentCardView) g.Node {
+	ids := strconv.FormatInt(a.ID, 10)
+	return Article(
+		ID("agent-"+ids),
+		Class("group relative overflow-hidden rounded-2xl border border-white/5 bg-slate-900/70 shadow-lg shadow-black/20 ring-1 ring-white/5"),
+		// The control cluster (rename + ⋯ menu) is positioned over the card's
+		// top-right corner, OUTSIDE the nav anchor, so its clicks don't navigate.
+		Div(
+			Class("absolute right-3 top-3 z-10 flex items-center gap-1"),
+			agentRenameButton(ids),
+			agentMenu(a),
+		),
+		// The card body is the navigation surface: a REAL-load link to the detail
+		// page (hx-boost="false"). The card sits inside #agents-list, which carries
+		// hx-get/hx-target="#agents-list"/hx-swap; htmx attrs are INHERITED by
+		// descendants, so a boosted click here would swap the standalone detail
+		// document into #agents-list (the wrong target) — the URL changes but the
+		// detail UI never renders. Disabling boost makes it a plain navigation that
+		// ignores the inherited target and loads the detail page reliably. It
+		// reserves right padding so it never sits under the controls.
+		A(
+			Href("/agents/"+a.Name),
+			hx("hx-boost", "false"),
+			Class("flex flex-col gap-3 p-4 pr-20"),
+			Div(
+				Class("flex flex-wrap items-center gap-2"),
+				cardStatusIcon(a),
+				Span(
+					Class("mr-auto break-all text-base font-semibold leading-tight text-slate-50 group-hover:text-emerald-300"),
+					g.Text(displayOr(a.DisplayName, a.Name)),
+				),
+				g.If(a.Repo != "", chip("repo", a.Repo)),
+			),
+			agentRecentSlot(a),
+		),
+		// Card footer (OUTSIDE the nav anchor so its task-badge link doesn't nest
+		// inside the card's <a> and its clicks don't trigger card navigation): the
+		// agent's age + last-activity relative times and, when dispatched from a
+		// task, a "Task #<id>" badge linking to the Tasks tab.
+		agentCardFooter(a),
+	)
+}
+
+// agentCardFooter renders the card's bottom meta row: age (CreatedAt) + last
+// activity (UpdatedAt) as live <time data-ts> widgets, plus a source-task badge
+// when the agent was dispatched from a task. Renders nothing when there's no
+// timestamp and no source task (keeps test/minimal views clean).
+func agentCardFooter(a AgentCardView) g.Node {
+	if a.CreatedAt.IsZero() && a.UpdatedAt.IsZero() && a.NoteID == nil {
+		return g.Text("")
+	}
+	// Nil-guard the badge (g.If evaluates its node arg eagerly, so build it first).
+	var taskBadge g.Node = g.Text("")
+	if a.NoteID != nil {
+		taskBadge = taskSourceBadge(*a.NoteID)
+	}
+	return Div(
+		Class("flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/5 px-4 py-2 text-xs text-slate-400"),
+		g.If(!a.CreatedAt.IsZero(), Span(
+			Class("inline-flex items-center gap-1"),
+			Span(Class("text-slate-600"), g.Text("age")),
+			cardTime(a.CreatedAt),
+		)),
+		g.If(!a.UpdatedAt.IsZero(), Span(
+			Class("inline-flex items-center gap-1"),
+			Span(Class("text-slate-600"), g.Text("active")),
+			cardTime(a.UpdatedAt),
+			Span(Class("text-slate-600"), g.Text("ago")),
+		)),
+		Span(Class("flex-1")),
+		taskBadge,
+	)
+}
+
+// taskSourceBadge is the "Task #<id>" chip linking a dispatched agent back to the
+// Tasks tab. It sets hx-boost="false" (like the card nav anchor) so the click is
+// a plain navigation to /tasks rather than a boosted body-swap into #agents-list
+// (the inherited htmx target). It lives in the card footer, OUTSIDE the card's
+// nav <a>, so it is not an invalid nested anchor.
+func taskSourceBadge(noteID int64) g.Node {
+	return A(
+		Href("/tasks"),
+		hx("hx-boost", "false"),
+		g.Attr("aria-label", "Source task #"+strconv.FormatInt(noteID, 10)),
+		Class("press inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 font-mono text-[11px] font-medium text-slate-400 ring-1 ring-inset ring-white/5 transition hover:bg-emerald-500/10 hover:text-emerald-200"),
+		g.Text("Task #"+strconv.FormatInt(noteID, 10)),
+	)
+}
+
+// agentRenameButton is the small pencil that swaps in the inline rename form
+// (GET /ui/agents/{id}/rename) targeting the card's name row. htmx only
+// (boost-safe). It targets the whole card so the swapped-in form replaces the
+// card body with the edit affordance and a save/cancel.
+func agentRenameButton(ids string) g.Node {
+	return Button(
+		Type("button"),
+		g.Attr("aria-label", "Rename agent"),
+		Class("press inline-flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 transition hover:bg-white/5 hover:text-slate-200"),
+		hx("hx-get", "/ui/agents/"+ids+"/rename"),
+		hx("hx-target", "#agent-"+ids),
+		hx("hx-swap", "outerHTML"),
+		g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 3.5l3 3L7 16l-4 1 1-4z"/></svg>`),
+	)
+}
+
+// agentMenu is the ⋯ context menu: a native <details> dropdown (boost-safe, no
+// JS) holding Start/Stop and Delete. Start/Stop occupy one slot (the agent's
+// current lifecycle action); Delete uses a two-step in-menu confirm (no native
+// confirm()).
+func agentMenu(a AgentCardView) g.Node {
+	ids := strconv.FormatInt(a.ID, 10)
+	var lifecycle g.Node
+	switch a.Status {
+	case "running", "provisioning":
+		lifecycle = agentMenuItem("Stop", "/agents/"+ids+"/stop", "text-slate-200")
+	default: // stopped/pending/error
+		lifecycle = agentMenuItem("Start", "/agents/"+ids+"/start", "text-emerald-300")
+	}
+	return Details(
+		Class("group/menu relative"),
+		Summary(
+			g.Attr("aria-label", "Agent actions"),
+			Class("press flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-xl text-slate-400 transition hover:bg-white/5 hover:text-slate-100 [&::-webkit-details-marker]:hidden"),
+			g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="4" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="16" cy="10" r="1.6"/></svg>`),
+		),
+		Div(
+			Class("absolute right-0 z-20 mt-1 flex w-44 flex-col gap-1 rounded-xl border border-white/10 bg-slate-900 p-1.5 shadow-2xl ring-1 ring-black/20"),
+			lifecycle,
+			Div(Class("my-0.5 border-t border-white/5")),
+			agentDeleteConfirm(ids),
+		),
+	)
+}
+
+// agentMenuItem is a lifecycle action (Start/Stop) inside the ⋯ menu. It posts
+// to its endpoint and morphs the agents list, then closes the menu.
+func agentMenuItem(label, postURL, tone string) g.Node {
+	return Button(
+		Type("button"),
+		Class("press flex min-h-[44px] w-full items-center rounded-lg px-3 text-sm font-medium transition hover:bg-white/5 disabled:opacity-60 "+tone),
+		hx("hx-post", postURL),
+		hx("hx-target", "#agents-list"),
+		hx("hx-swap", "morph:innerHTML"),
+		hx("hx-disabled-elt", "this"),
+		g.Text(label),
+	)
+}
+
+// agentDeleteConfirm is a boost-safe, native-confirm-free two-step delete inside
+// the ⋯ menu: a "Delete" affordance whose nested <details> reveals an explicit
+// "Confirm delete" that hx-deletes the card. No JS, no hx-confirm popup.
+func agentDeleteConfirm(ids string) g.Node {
+	return Details(
+		Class("group/del"),
+		Summary(
+			Class("press flex min-h-[44px] cursor-pointer list-none items-center rounded-lg px-3 text-sm font-medium text-slate-400 transition hover:bg-white/5 hover:text-rose-300 [&::-webkit-details-marker]:hidden"),
+			g.Text("Delete"),
+		),
+		Button(
+			Type("button"),
+			Class("press mt-1 flex min-h-[44px] w-full items-center justify-center rounded-lg bg-rose-500/15 px-3 text-sm font-semibold text-rose-300 ring-1 ring-inset ring-rose-500/30 transition hover:bg-rose-500/25"),
+			hx("hx-delete", "/agents/"+ids),
+			hx("hx-target", "#agent-"+ids),
+			hx("hx-swap", "outerHTML swap:200ms"),
+			g.Text("Confirm delete"),
+		),
+	)
+}
+
+// statusDot is the labelled status pill (dot + text). Used by the operator-lead
+// card and the agent-detail header where space allows the word.
+func statusDot(status string) g.Node {
+	color, label := statusStyle(status)
+	pulse := status == "provisioning"
+	return Span(
+		Class("inline-flex items-center gap-1.5 rounded-full bg-slate-800/80 px-2.5 py-1 text-xs font-medium text-slate-300 ring-1 ring-inset ring-white/5"),
+		Span(Class("relative flex h-2 w-2"),
+			g.If(pulse, Span(Class("absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 "+color))),
+			Span(Class("relative inline-flex h-2 w-2 rounded-full "+color)),
+		),
+		g.Text(label),
+	)
+}
+
+// statusIcon is the COMPACT status indicator for the agent card: just the small
+// colored dot (no text label box), with the status word carried as a title /
+// aria-label tooltip. Same color mapping as statusDot (running=emerald,
+// provisioning=amber pulse, error=rose, stopped=slate, pending).
+func statusIcon(status string) g.Node {
+	color, label := statusStyle(status)
+	pulse := status == "provisioning"
+	return Span(
+		g.Attr("title", label),
+		g.Attr("aria-label", "Status: "+label),
+		g.Attr("role", "img"),
+		Class("relative flex h-2.5 w-2.5 shrink-0"),
+		g.If(pulse, Span(Class("absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 "+color))),
+		Span(Class("relative inline-flex h-2.5 w-2.5 rounded-full "+color)),
+	)
+}
+
+// RenderStatusIcon writes the compact status icon (the colored dot, no label) for
+// a status. It is the exported render entry for the live-status poll endpoint
+// (GET /ui/agents/{id}/status), reusing statusIcon so the polled icon matches the
+// first-paint icon in the agent-detail / operator header exactly.
+func RenderStatusIcon(w io.Writer, status string) error { return statusIcon(status).Render(w) }
+
+// cardStatusIcon wraps the compact status icon in a self-polling span so each
+// agent card keeps its status live (every 10s) on its own — without the list
+// re-rendering on a timer. No shared id (hx-target=this) so it's safe once per
+// card; the icon swaps in from GET /ui/agents/{id}/status.
+func cardStatusIcon(a AgentCardView) g.Node {
+	return Span(
+		hx("hx-get", "/ui/agents/"+strconv.FormatInt(a.ID, 10)+"/status"),
+		hx("hx-trigger", "load, every 10s"),
+		hx("hx-target", "this"),
+		hx("hx-swap", "innerHTML"),
+		statusIcon(a.Status),
+	)
+}
+
+func statusStyle(status string) (color, label string) {
+	switch status {
+	case "running":
+		return "bg-emerald-400", "running"
+	case "provisioning":
+		return "bg-amber-400", "provisioning"
+	case "error":
+		return "bg-rose-500", "error"
+	case "stopped":
+		return "bg-slate-500", "stopped"
+	default:
+		return "bg-slate-600", "pending"
+	}
+}
+
+func agentRecent(lines []string) g.Node {
+	return Pre(
+		Class("max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-950/80 p-3 text-[12px] leading-relaxed text-slate-400 ring-1 ring-inset ring-white/5"),
+		Code(g.Text(strings.Join(lines, "\n"))),
+	)
+}
+
+// agentRecentSlot is the per-card recent-log preview. For a running agent it
+// lazy-loads /ui/agents/{id}/recent (htmx) into an animated skeleton ONCE on
+// swap-in — so the agents-list path itself makes no per-agent k8s call and the
+// preview does not poll (the list container's own refresh keeps status live).
+// Non-running agents render nothing (an empty placeholder), matching the
+// previous behaviour. Any inline Recent (e.g. a test/server-rendered preview)
+// still renders directly.
+func agentRecentSlot(a AgentCardView) g.Node {
+	ids := strconv.FormatInt(a.ID, 10)
+	if len(a.Recent) > 0 {
+		return agentRecent(a.Recent)
+	}
+	if !a.LazyRecent {
+		return g.Text("")
+	}
+	return Div(
+		ID("agent-recent-"+ids),
+		hx("hx-get", "/ui/agents/"+ids+"/recent"),
+		// Loads on first render, and re-fetches only when the list actually changes
+		// (agents:changed) — NOT on a timer. The list no longer polls every 4s
+		// (which used to morph this slot back to its skeleton and strand it), so in
+		// steady state this fires once; on a lifecycle change it refreshes once.
+		hx("hx-trigger", "load, agents:changed from:body"),
+		hx("hx-target", "this"),
+		hx("hx-swap", "innerHTML"),
+		recentSkeleton(),
+	)
+}
+
+// recentSkeleton is the animated placeholder shown until an agent's recent-log
+// preview loads.
+func recentSkeleton() g.Node {
+	return Pre(
+		Class("max-h-28 overflow-hidden rounded-xl bg-slate-950/80 p-3 ring-1 ring-inset ring-white/5"),
+		Div(Class("mb-1.5 h-3 w-3/4 animate-pulse rounded bg-slate-700/60")),
+		Div(Class("mb-1.5 h-3 w-1/2 animate-pulse rounded bg-slate-700/60")),
+		Div(Class("h-3 w-2/3 animate-pulse rounded bg-slate-700/60")),
+	)
+}
+
+// RenderAgentRecent writes the /ui/agents/{id}/recent partial: the recent-log
+// <pre> (or nothing when there are no lines). Swapped into the card's recent slot.
+func RenderAgentRecent(w io.Writer, lines []string) error {
+	if len(lines) == 0 {
+		return g.Text("").Render(w)
+	}
+	return agentRecent(lines).Render(w)
+}
+
+// agentModalShell is the static (always-present, hidden) dispatch modal. Its
+// body is loaded on demand by the FAB so it stays out of the 4s poll cycle.
+func agentModalShell() g.Node {
+	return Div(
+		ID("agent-modal"),
+		Class("hidden fixed inset-0 z-40 flex items-end justify-center sm:items-center"),
+		Div(
+			Class("absolute inset-0 bg-black/60"),
+			// Ambiguous dismiss → the SAME dirty guard the task sheet uses, so a
+			// typed ad-hoc prompt is not destroyed by a stray tap.
+			hx("hx-on:click", "if(window.cgModalDismiss){window.cgModalDismiss('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}"),
+		),
+		Div(
+			ID("agent-modal-body"),
+			// Same height cap as #task-modal-body: an uncapped `items-end` sheet
+			// pushes its own header (and the ✕) off the top of a phone viewport and
+			// leaves no tappable backdrop, so the dialog becomes a dead end.
+			// pb uses the safe-area inset for the same reason <main> and the FABs do:
+			// this sheet sits flush against the viewport bottom, so a flat p-5 put its
+			// last control (Dispatch) under the iOS home indicator.
+			Class("relative z-10 max-h-[85dvh] w-full max-w-lg overflow-y-auto overscroll-contain rounded-t-2xl bg-slate-900 p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] shadow-2xl ring-1 ring-white/10 sm:rounded-2xl sm:pb-5"),
+			// body injected via /ui/agents/new
+		),
+		modalDiscardBar("agent-modal"),
+	)
+}
+
+// DispatchModalBody is the /ui/agents/new partial (FAB path): the full dispatch
+// form. It renders INSTANTLY — the repo + task option lists lazy-load (with
+// animated skeletons) and the model field searches OpenRouter on type, so the
+// form never blocks on a slow upstream. Morphed into #agent-modal-body when the
+// FAB is tapped. The Task-card Dispatch button uses the task-scoped variant
+// (DispatchModalTaskBody) instead; this FAB form is unchanged.
+func DispatchModalBody() g.Node {
+	return g.Group{
+		Div(
+			Class("mb-4 flex items-center gap-3"),
+			H2(Class("text-base font-semibold text-slate-100"), g.Text("Dispatch agent")),
+			Span(Class("flex-1")),
+			dispatchCloseButton(),
+		),
+		Form(
+			hx("hx-post", "/agents"),
+			hx("hx-target", "#agents-list"),
+			hx("hx-swap", "morph:innerHTML"),
+			// Close the modal after a successful dispatch — but ONLY for THIS form's
+			// own request. htmx:afterRequest bubbles, so the lazy repo/task combobox
+			// loads (hx-get on child <ul>s) would otherwise fire this handler and slam
+			// the modal shut ~immediately after it opens (event.target is the child,
+			// not the form). Guarding on event.target===this scopes it to the submit.
+			hx("hx-on::after-request", dispatchCloseOnOwnSubmit),
+			Class("flex flex-col gap-3"),
+			// The "what to dispatch" (an existing task or an ad-hoc description) is the
+			// primary decision, so it stays visible. Model/Repository/Privileges are
+			// tucked under a collapsed "Advanced" disclosure — they default to the
+			// cluster's MUSTER_AGENT_MODEL + last-used repo (localStorage recents)
+			// so a one-tap dispatch is sane without ever opening Advanced.
+			labelledField("Existing task", lazyCombobox("note", "Existing task", "Search tasks… (optional)", "note_id", "/ui/agents/notes", "")),
+			labelledField("Or ad-hoc task", Textarea(
+				Name("note_text"),
+				Rows("3"),
+				Placeholder("Task for the agent (used if no task selected)…"),
+				Class("w-full resize-y rounded-lg border-0 bg-slate-950 px-3 py-2 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+			)),
+			advancedDisclosure(
+				labelledField("Model", modelField()),
+				labelledField("Repository", lazyCombobox("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos")),
+				labelledField("Grant privileges", lazyProfilePicker()),
+			),
+			Div(
+				Class("mt-1 grid grid-cols-2 gap-2"),
+				Button(
+					Type("submit"),
+					Name("action"), Value("dispatch"),
+					Class("press inline-flex items-center justify-center rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-60"),
+					// 🔴 No hx-disabled-elt="this" here. htmx reads hx-disabled-elt from
+					// the element that ISSUES the request, and this POST is issued by the
+					// FORM's submit event — so the attribute that used to sit on both
+					// submit buttons could provably never fire (same finding as the task
+					// edit form, notes.go). It was removed rather than left in place
+					// reading as a working double-submit guard.
+					//
+					// 🔴 The justification that used to follow — "moving it to the <form>
+					// is not a drop-in because hx-disabled-elt is inherited, so the lazy
+					// children's hx-get on `load` would disable both buttons, and a
+					// form-level guard needs hx-disinherit" — is RETRACTED. The attribute
+					// IS inherited, but its VALUE is resolved against the issuing element
+					// (htmx 2.0.4, findAttributeTargets): "this" resolves to the closest
+					// ancestor-or-self CARRYING the attribute (the form, which has no
+					// disabled state), and "find X" is scoped to the issuer, so a lazy
+					// <ul>/<div> containing no submit button matches nothing. Neither
+					// reaches these buttons. No hx-disinherit is required.
+					//
+					// What is actually true of the code below: the form has NO in-flight
+					// double-submit guard at all. The task edit form's working idiom is
+					// hx-disabled-elt="find button[type='submit']" ON THE FORM (notes.go).
+					// That is the change to make here; it is simply not made yet, and it
+					// is untested against this form's three lazy children (the task and
+					// repo comboboxes and the profile picker each fire hx-get on `load`;
+					// the model field is seeded, not lazy).
+					g.Text("Dispatch"),
+				),
+				Button(
+					Type("submit"),
+					Name("action"), Value("save"),
+					Class("press inline-flex items-center justify-center rounded-xl px-4 py-3 text-sm font-semibold text-slate-200 ring-1 ring-inset ring-white/10 transition hover:bg-white/5 active:scale-[0.98] disabled:opacity-60"),
+					// See the Dispatch button above: hx-disabled-elt="this" on a submit
+					// button is inert.
+					g.Text("Save for later"),
+				),
+			),
+		),
+	}
+}
+
+// dispatchCloseOnOwnSubmit closes the dispatch modal after THIS form's own
+// successful submit (guarded by event.target===this so bubbled child combobox
+// loads don't slam it shut) and fires the dispatch analytics event. Shared by
+// the FAB and task-scoped dispatch forms.
+const dispatchCloseOnOwnSubmit = "if(event.target===this && event.detail.successful){if(window.cgModalClose){window.cgModalClose('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}try{window.cgTrack('agent.dispatch',{});}catch(e){}}"
+
+// dispatchCloseButton is the modal's top-right close (×).
+func dispatchCloseButton() g.Node {
+	return Button(
+		Type("button"),
+		g.Attr("aria-label", "Close"),
+		Class("press inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/5 hover:text-slate-100"),
+		hx("hx-on:click", "if(window.cgModalClose){window.cgModalClose('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}"),
+		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
+	)
+}
+
+// TaskDispatchView is the resolved dispatch config for a Task-scoped dispatch
+// confirm (the from-card path). Every field is pre-resolved server-side so the
+// modal is a pre-filled confirm: Model/Repo/RepoBranch are the effective values
+// (empty = cluster default / none / repo default), SelectedIDs are the task's
+// pre-checked privilege profiles, and Profiles is the full grantable set (for the
+// editable picker + name lookup on the static row).
+type TaskDispatchView struct {
+	NoteID      int64
+	Label       string          // the task's first line / directory (header subtitle)
+	Model       string          // resolved OpenRouter slug ("" = cluster default)
+	Repo        string          // resolved repo full name ("" = none / not inferred)
+	RepoBranch  string          // resolved branch ("" = repo default, resolved server-side)
+	SelectedIDs []int64         // pre-checked privilege-profile ids
+	Profiles    []ProfileOption // all grantable profiles (editable picker + name lookup)
+
+	// FromDetailPage switches the form's SWAP TARGET, and it is the difference
+	// between Dispatch working and Dispatch being inert.
+	//
+	// 🔴 htmx resolves hx-target BEFORE it issues the request; when the selector
+	// matches nothing it raises htmx:targetError and sends NOTHING. Nothing in
+	// internal/ui listens for that event, so on a document without the target
+	// there is no request, no error, no toast — the modal does not even close.
+	// This form's default target, #agents-list, exists ONLY inside AgentsPanel,
+	// i.e. only on the shell; on /tasks/{id} the Dispatch button opened a modal
+	// whose submit did nothing at all.
+	//
+	// On the detail page the form therefore targets the task's own card, and
+	// POST /agents answers with that card (see internal/api's handleAgentCreate):
+	// the dispatch's real, visible effect there is the task flipping to
+	// in-progress with its new agent's status chip.
+	FromDetailPage bool
+}
+
+// dispatchTarget is the (selector, swap) pair the task-scoped dispatch form
+// posts into. ONE function, so the two documents cannot drift apart, and so the
+// answer is derivable in a test rather than spelled twice.
+func (v TaskDispatchView) dispatchTarget() (selector, swap string) {
+	if v.FromDetailPage {
+		return "#task-" + strconv.FormatInt(v.NoteID, 10), "morph:outerHTML"
+	}
+	return "#agents-list", "morph:innerHTML"
+}
+
+// DispatchModalTaskBody is the /ui/agents/new?note=<id> partial: a TASK-SCOPED
+// dispatch confirm. The task is known, so instead of the full form's "Existing
+// task" combobox + ad-hoc textarea, it shows three fixed rows — Model, Repository,
+// Privileges — each with the task's resolved value as static text plus an inline
+// "Edit" that reveals the corresponding editable control (pre-seeded to the
+// current value). The editable controls carry the same field names the dispatch
+// POST reads (model / repo / grant_profile), and — being present-but-hidden — they
+// submit the resolved values even when never opened, so this is a one-tap confirm.
+// Overrides are THIS-DISPATCH-ONLY (never persisted back to the task). The task is
+// submitted via a hidden note_id; repo_branch rides along as a hidden field.
+func DispatchModalTaskBody(v TaskDispatchView) g.Node {
+	ids := strconv.FormatInt(v.NoteID, 10)
+	target, swap := v.dispatchTarget()
+
+	// Static row displays.
+	modelStatic := shortModelLabel(v.Model)
+	if modelStatic == "" {
+		modelStatic = defaultModelShortLabel()
+	}
+	repoStatic := v.Repo
+	if repoStatic == "" {
+		repoStatic = "none"
+	}
+	privStatic := selectedProfileNames(v.Profiles, v.SelectedIDs)
+	if privStatic == "" {
+		privStatic = "none"
+	}
+
+	return g.Group{
+		Div(
+			Class("mb-4 flex items-start gap-3"),
+			Div(
+				Class("min-w-0"),
+				H2(Class("text-base font-semibold text-slate-100"), g.Text("Dispatch · Task #"+ids)),
+				g.If(v.Label != "", P(Class("mt-0.5 truncate text-xs text-slate-400"), g.Text(v.Label))),
+			),
+			Span(Class("flex-1")),
+			dispatchCloseButton(),
+		),
+		Form(
+			hx("hx-post", "/agents"),
+			// See TaskDispatchView.FromDetailPage: #agents-list exists only on the
+			// shell, and an unresolvable hx-target makes htmx drop the request
+			// silently rather than fail loudly.
+			hx("hx-target", target),
+			hx("hx-swap", swap),
+			hx("hx-on::after-request", dispatchCloseOnOwnSubmit),
+			Class("flex flex-col gap-3"),
+			// The task is known — submit it by id (no combobox, no ad-hoc textarea).
+			Input(Type("hidden"), Name("note_id"), Value(ids)),
+			// Resolved branch rides along (no visible row; the FAB form has no branch
+			// field either — it resolves server-side when empty).
+			Input(Type("hidden"), Name("repo_branch"), Value(v.RepoBranch)),
+			dispatchConfirmRow("Model", modelStatic, modelFieldFor(v.Model, "")),
+			dispatchConfirmRow("Repository", repoStatic,
+				lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", v.Repo, v.Repo)),
+			dispatchConfirmRow("Privileges", privStatic, profileGrantChecklistChecked(v.Profiles, v.SelectedIDs)),
+			// Mobile-first action stack: a small secondary Cancel sits ABOVE the
+			// full-width primary Dispatch, so the thumb lands on Dispatch and Cancel
+			// is a deliberate, smaller reach.
+			Div(
+				Class("mt-1 flex flex-col gap-2"),
+				Button(
+					Type("button"),
+					Class("press self-end inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium text-slate-400 ring-1 ring-inset ring-white/10 transition hover:bg-white/5 active:scale-[0.98]"),
+					hx("hx-on:click", "if(window.cgModalClose){window.cgModalClose('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}"),
+					g.Text("Cancel"),
+				),
+				Button(
+					Type("submit"),
+					Name("action"), Value("dispatch"),
+					Class("press w-full inline-flex items-center justify-center rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-60"),
+					hx("hx-disabled-elt", "this"),
+					g.Text("Dispatch"),
+				),
+			),
+		),
+	}
+}
+
+// dispatchConfirmRow is one row of the task-scoped confirm: a label, the resolved
+// value as static text, and an inline "Edit" that reveals the (pre-seeded)
+// editable control. The editable control is present-but-hidden so it submits the
+// resolved value even when never opened; Edit only unhides it for an override.
+// The toggle is a CSP-safe hx-on:click (the app's CSP allows hx-on via
+// unsafe-eval) that hides the static value + Edit and shows the control — the same
+// data-attribute reveal pattern the delete control uses.
+func dispatchConfirmRow(label, static string, editable g.Node) g.Node {
+	const toggle = "var r=this.closest('[data-dispatch-row]');" +
+		"r.querySelector('[data-dispatch-static]').classList.add('hidden');" +
+		"r.querySelector('[data-dispatch-editable]').classList.remove('hidden');" +
+		"this.classList.add('hidden');"
+	return Div(
+		g.Attr("data-dispatch-row", ""),
+		Class("flex flex-col gap-1.5"),
+		Div(
+			Class("flex items-center gap-2"),
+			Label(Class("text-xs font-medium text-slate-400"), g.Text(label)),
+			Span(Class("flex-1")),
+			Button(
+				Type("button"),
+				g.Attr("data-dispatch-edit", ""),
+				g.Attr("aria-label", "Edit "+label),
+				Class("press rounded-lg px-2 py-0.5 text-xs font-medium text-emerald-300 transition hover:bg-emerald-500/10 hover:text-emerald-200"),
+				hx("hx-on:click", toggle),
+				g.Text("Edit"),
+			),
+		),
+		Div(
+			g.Attr("data-dispatch-static", ""),
+			Class("truncate text-sm text-slate-200"),
+			g.Text(static),
+		),
+		Div(
+			g.Attr("data-dispatch-editable", ""),
+			Class("hidden"),
+			editable,
+		),
+	)
+}
+
+// selectedProfileNames renders the comma-joined display names of the selected
+// profile ids (for the static Privileges row); "" when none are selected.
+func selectedProfileNames(profiles []ProfileOption, ids []int64) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	byID := make(map[int64]string, len(profiles))
+	for _, p := range profiles {
+		byID[p.ID] = p.Name
+	}
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if n := byID[id]; n != "" {
+			names = append(names, n)
+		} else {
+			names = append(names, strconv.FormatInt(id, 10))
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// comboOption renders one combobox <li> (data-value + data-label).
+func comboOption(o ComboOption) g.Node {
+	return Li(
+		g.Attr("role", "option"),
+		g.Attr("data-combobox-option", ""),
+		g.Attr("data-value", o.Value),
+		g.Attr("data-label", o.Label),
+		Class("cursor-pointer truncate px-3 py-2 text-sm text-slate-200 hover:bg-emerald-500/15 hover:text-emerald-100 data-[active=true]:bg-emerald-500/15 data-[active=true]:text-emerald-100"),
+		g.Text(o.Label),
+	)
+}
+
+// seededComboOption is a combobox <li> marked as a SEEDED quick-pick
+// (data-combobox-seed): in a remote combobox these are preserved at the top of
+// the list across remote searches (the combobox JS filters them by query and
+// dedupes them against remote results) instead of being wiped on each fetch.
+func seededComboOption(o ComboOption) g.Node {
+	return Li(
+		g.Attr("role", "option"),
+		g.Attr("data-combobox-option", ""),
+		g.Attr("data-combobox-seed", ""),
+		g.Attr("data-value", o.Value),
+		g.Attr("data-label", o.Label),
+		Class("cursor-pointer truncate px-3 py-2 text-sm text-slate-200 hover:bg-emerald-500/15 hover:text-emerald-100 data-[active=true]:bg-emerald-500/15 data-[active=true]:text-emerald-100"),
+		g.Text(o.Label),
+	)
+}
+
+// RenderRepoOptions / RenderNoteOptions write the lazy-loaded combobox option
+// lists (swapped in over the skeleton).
+func RenderRepoOptions(w io.Writer, repos []RepoView) error {
+	return comboOptionList(repoOptions(repos)).Render(w)
+}
+
+func RenderNoteOptions(w io.Writer, notes []NoteOption) error {
+	return comboOptionList(noteOptions(notes)).Render(w)
+}
+
+func comboOptionList(opts []ComboOption) g.Node {
+	if len(opts) == 0 {
+		return Li(Class("px-3 py-2 text-sm text-slate-400"), g.Text("none"))
+	}
+	return g.Group(g.Map(opts, comboOption))
+}
+
+func repoOptions(repos []RepoView) []ComboOption {
+	opts := make([]ComboOption, 0, len(repos))
+	for _, r := range repos {
+		opts = append(opts, ComboOption{Value: r.FullName, Label: r.FullName})
+	}
+	return opts
+}
+
+func noteOptions(notes []NoteOption) []ComboOption {
+	opts := make([]ComboOption, 0, len(notes))
+	for _, n := range notes {
+		opts = append(opts, ComboOption{Value: strconv.FormatInt(n.ID, 10), Label: n.Label})
+	}
+	return opts
+}
+
+// comboboxSkeleton is the subtly-animated placeholder shown in a lazy combobox
+// list (and inside the dropdown) until the real options load.
+func comboboxSkeleton() g.Node {
+	bar := func(w string) g.Node {
+		return Li(Class("px-3 py-2"), Div(Class("h-3 "+w+" animate-pulse rounded bg-slate-700/60")))
+	}
+	return g.Group{bar("w-3/4"), bar("w-1/2"), bar("w-2/3")}
+}
+
+// CuratedModel is one option in the curated model dropdown.
+type CuratedModel struct {
+	Value string // submitted model slug; empty means "use the server default"
+	Label string // visible option text
+}
+
+// curatedModels are the known-good models offered in the dispatch modal's common
+// path. The first (empty value) is the default: posting an empty model lets the
+// server's MUSTER_AGENT_MODEL win. The rest are named, vetted slugs. Power users
+// can still reach ANY OpenRouter slug via the "search OpenRouter…" expander.
+func curatedModels() []CuratedModel {
+	out := []CuratedModel{
+		{Value: "", Label: "default (" + defaultModelShortLabel() + ")"},
+		{Value: "openrouter/anthropic/claude-haiku-4.5", Label: shortModelLabel("openrouter/anthropic/claude-haiku-4.5")},
+		{Value: "openrouter/anthropic/claude-sonnet-4.6", Label: shortModelLabel("openrouter/anthropic/claude-sonnet-4.6")},
+	}
+	// Fold in the other known-good slugs the agents package already references
+	// (deduped against the default), so this list tracks the dispatch suggestions.
+	seen := map[string]bool{}
+	for _, m := range out {
+		seen[m.Value] = true
+	}
+	def := agents.DefaultModelOption()
+	for _, m := range agents.ModelOptions {
+		if m.Value == def || seen[m.Value] {
+			continue
+		}
+		seen[m.Value] = true
+		out = append(out, CuratedModel{Value: m.Value, Label: shortModelLabel(m.Value)})
+	}
+	return out
+}
+
+// defaultModelShortLabel is the short label for the server-default option.
+func defaultModelShortLabel() string {
+	if def := agents.DefaultModelOption(); def != "" {
+		return shortModelLabel(def)
+	}
+	return "server default"
+}
+
+// shortModelLabel trims the leading "openrouter/" provider prefix from a slug for
+// display, keeping the rest of the path intact
+// (e.g. "openrouter/anthropic/claude-haiku-4.5" → "anthropic/claude-haiku-4.5").
+// Slugs without the prefix (and non-model values like repo names) pass through.
+func shortModelLabel(slug string) string {
+	return strings.TrimPrefix(slug, "openrouter/")
+}
+
+// modelName is the AGENT-VIEW model display: just the model's own name — the
+// last '/'-segment of an OpenRouter slug — e.g. "openrouter/deepseek/deepseek-v4-pro"
+// → "deepseek-v4-pro". Empty in → empty out. Unlike shortModelLabel (which only
+// strips the "openrouter/" provider prefix, keeping the vendor path) this drops
+// everything before the final segment. Used ONLY for the agent-detail model
+// control's visible label; the hidden input still submits the full slug.
+func modelName(slug string) string {
+	slug = strings.TrimSpace(slug)
+	if slug == "" {
+		return ""
+	}
+	if i := strings.LastIndex(slug, "/"); i >= 0 {
+		return slug[i+1:]
+	}
+	return slug
+}
+
+// agentModelLabel is the short display label for an agent's configured model:
+// the slug with its leading "openrouter/" prefix trimmed, or "default" when unset
+// (cluster default wins).
+func agentModelLabel(slug string) string {
+	if strings.TrimSpace(slug) == "" {
+		return "default"
+	}
+	return shortModelLabel(slug)
+}
+
+// modelField is the LLM model selector: ONE consolidated searchable combobox
+// (the 0.8.0 component). It shows the curated quick-picks as initial options,
+// filters them as you type, AND searches any OpenRouter slug live (proxied via
+// /api/openrouter/models). The visible input IS the submitted `model` field
+// (id="model-input"); an empty value means "use the cluster default".
+func modelField() g.Node { return modelFieldFor("", "") }
+
+// modelFieldWithDisplay is modelFieldFor with an explicit visible-label override.
+// When display is non-empty it is shown in the visible input verbatim (the hidden
+// input still submits the FULL `selected` slug); when empty the default display
+// (shortModelLabel / cluster-default label) is used. The agent-detail control
+// passes modelName(selected) so the visible label is just the model name while
+// switching still posts the full slug.
+func modelFieldWithDisplay(selected, note, display string) g.Node {
+	return modelFieldForDisplay(selected, note, display)
+}
+
+// modelFieldFor renders the consolidated searchable model combobox, pre-seeded
+// with `selected` (an OpenRouter slug; "" = the cluster default). Used by both
+// the dispatch modal (selected="") and the agent-detail change control
+// (selected=agent.Model) so the control reflects the agent's current model.
+//
+// It reuses the existing custom combobox component (data-combobox +
+// data-combobox-input + data-combobox-list + data-combobox-remote) in
+// hidden-value mode (data-combobox-hidden). The list is pre-seeded with the
+// curated quick-picks as inline <li data-combobox-option> entries so they show
+// without a remote round-trip; typing filters those AND fetches matching
+// OpenRouter slugs from the proxy. A hidden input named `model` carries the
+// submitted FULL slug; the visible input (id="model-input") shows the trimmed
+// display label only. On pick, the combobox JS writes the option's data-value
+// (full slug) into the hidden field and its data-label (trimmed) into the visible
+// input. The hidden field is pre-filled with `selected` (the current slug) so an
+// unchanged submit re-posts it; empty when nothing is selected (server default
+// wins).
+func modelFieldFor(selected, note string) g.Node {
+	return modelFieldForDisplay(selected, note, "")
+}
+
+// modelFieldForDisplay is modelFieldFor with an optional visible-label override
+// (displayOverride). Empty override → the default display (shortModelLabel of the
+// selected slug, or the cluster-default label when unset). The hidden `model`
+// input always carries the FULL `selected` slug regardless of the visible label.
+func modelFieldForDisplay(selected, note, displayOverride string) g.Node {
+	listID := "combobox-list-model"
+	curated := curatedModels()
+
+	// Seed the list with the curated quick-picks. The first entry (empty value)
+	// is the cluster default; render it with the ◉ marker and a clear label so an
+	// empty submit obviously means "default". The combobox is in hidden-value mode
+	// (data-combobox-hidden), so each option's data-value is the FULL slug written
+	// into the hidden `model` field on pick, while its data-label is the trimmed
+	// display shown in the visible input. The empty default writes an empty value.
+	seeded := make([]g.Node, 0, len(curated))
+	for i, m := range curated {
+		label := m.Label
+		if i == 0 {
+			label = "◉ " + label
+		}
+		seeded = append(seeded, seededComboOption(ComboOption{Value: m.Value, Label: label}))
+	}
+
+	// The visible input shows the CURRENT model rather than a bare placeholder:
+	// the trimmed slug, or — when nothing is set — the effective cluster-default
+	// model's short label (just the name, no "default (…)" wrapper). The hidden
+	// field still carries the real submit value ("" = default), so display is
+	// purely cosmetic; the dropdown's ◉ option is where "reset to default" lives.
+	// An explicit override (agent-view name-only label) wins; otherwise the
+	// default display: the trimmed slug, or the cluster-default label when unset.
+	display := displayOverride
+	if display == "" {
+		display = shortModelLabel(selected)
+		if display == "" {
+			display = defaultModelShortLabel()
+		}
+	}
+
+	// A passive (non-option) sticky note pinned to the top of the dropdown — used
+	// for the agent-detail "selecting a model restarts the agent" warning. Empty
+	// in the dispatch modal (creating a new agent restarts nothing). It carries no
+	// data-combobox-option, so the filter/keyboard nav ignores it.
+	var noteNode g.Node = g.Text("")
+	if note != "" {
+		noteNode = Li(
+			g.Attr("aria-hidden", "true"),
+			Class("sticky top-0 z-10 border-b border-white/5 bg-slate-900 px-3 py-1.5 text-[11px] text-amber-300/90"),
+			g.Text("↳ "+note),
+		)
+	}
+
+	return Div(
+		g.Attr("data-combobox", ""),
+		g.Attr("data-combobox-remote", "/api/openrouter/models"),
+		Class("relative"),
+		// Hidden field carries the SUBMITTED full slug ("" = cluster default). The
+		// visible input below only drives display/search and does not submit.
+		Input(Type("hidden"), Name("model"), g.Attr("data-combobox-hidden", ""), Value(selected)),
+		Input(
+			Type("text"),
+			ID("model-input"),
+			g.Attr("data-combobox-input", ""),
+			g.Attr("role", "combobox"),
+			g.Attr("aria-expanded", "false"),
+			g.Attr("aria-controls", listID),
+			g.Attr("aria-label", "Model — pick a quick-pick or type to filter/search"),
+			g.Attr("autocomplete", "off"),
+			// Pre-filled with the TRIMMED display of the current slug so the user sees
+			// a clean label; the hidden field holds the full slug that submits. Empty
+			// when nothing is selected → the cluster default wins unless changed.
+			Value(display),
+			Placeholder("Model — quick-picks, or type to filter/search…"),
+			Class("w-full rounded-lg border-0 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+		),
+		Ul(
+			ID(listID),
+			g.Attr("data-combobox-list", ""),
+			g.Attr("role", "listbox"),
+			// Pre-seeded curated quick-picks; typing filters these and also fetches
+			// matching OpenRouter slugs from the remote proxy.
+			Class("hidden absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-lg bg-slate-900 py-1 shadow-2xl ring-1 ring-white/10"),
+			noteNode,
+			g.Group(seeded),
+		),
+	)
+}
+
+// lazyCombobox is a type-to-filter combobox whose option list lazy-loads from
+// optionsURL (hx-trigger load) into an animated skeleton — so the modal renders
+// instantly and never blocks on the GitHub API / DB. A hidden input (hiddenName)
+// carries the submitted value (full name for repos, note id for tasks). When
+// recentsKey is non-empty, recently-picked values float to the top (localStorage,
+// wired in appScript). Behaviour is delegated in appScript via data-combobox*.
+func lazyCombobox(fieldName, label, placeholder, hiddenName, optionsURL, recentsKey string) g.Node {
+	return lazyComboboxPreselect(fieldName, label, placeholder, hiddenName, optionsURL, recentsKey, "", "")
+}
+
+// lazyComboboxPreselect is lazyCombobox with an optional pre-selected value. When
+// presetValue is non-empty the hidden input is pre-filled with presetValue and the
+// visible input shows presetLabel — these are SIBLINGS of the lazy <ul>, so they
+// survive the options swap and an unchanged submit re-posts the selection. A
+// SEEDED quick-pick option (data-combobox-seed) for the same value is also rendered
+// at the top of the list so the pick is visible immediately on open (the lazy
+// hx-get later swaps the <ul> with the real task list, which includes this task as
+// a normal option). When presetValue is empty it renders EXACTLY like the plain
+// lazyCombobox (the FAB path stays byte-for-byte unchanged).
+func lazyComboboxPreselect(fieldName, label, placeholder, hiddenName, optionsURL, recentsKey, presetValue, presetLabel string) g.Node {
+	listID := "combobox-list-" + fieldName
+	wrapAttrs := []g.Node{g.Attr("data-combobox", ""), Class("relative")}
+	if recentsKey != "" {
+		wrapAttrs = append(wrapAttrs, g.Attr("data-combobox-recents", recentsKey))
+	}
+
+	hiddenAttrs := []g.Node{Type("hidden"), Name(hiddenName), g.Attr("data-combobox-hidden", "")}
+	inputAttrs := []g.Node{
+		Type("text"),
+		g.Attr("data-combobox-input", ""),
+		g.Attr("role", "combobox"),
+		g.Attr("aria-expanded", "false"),
+		g.Attr("aria-controls", listID),
+		g.Attr("aria-label", label),
+		g.Attr("autocomplete", "off"),
+		Placeholder(placeholder),
+		Class("w-full rounded-lg border-0 bg-slate-950 px-3 py-2 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+	}
+	// The seeded preselect option lives at the TOP of the list (before the
+	// skeleton). The lazy load (hx-get) swaps the list's innerHTML, but
+	// RenderNoteOptions renders only non-seed options and the combobox JS dedupes
+	// against seeds — so the seed survives and the hidden value stays valid.
+	var seed g.Node = g.Text("")
+	if presetValue != "" {
+		hiddenAttrs = append(hiddenAttrs, Value(presetValue))
+		inputAttrs = append(inputAttrs, Value(presetLabel))
+		seed = seededComboOption(ComboOption{Value: presetValue, Label: presetLabel})
+	}
+
+	wrapAttrs = append(wrapAttrs,
+		Input(hiddenAttrs...),
+		Input(inputAttrs...),
+		Ul(
+			ID(listID),
+			g.Attr("data-combobox-list", ""),
+			g.Attr("role", "listbox"),
+			// Lazy-load the options when the modal opens (load fires on swap-in);
+			// the skeleton shows until they arrive.
+			hx("hx-get", optionsURL),
+			hx("hx-trigger", "load"),
+			// Target THIS <ul> explicitly. htmx hx-target is inherited by
+			// descendants, and this combobox lives inside the dispatch form whose
+			// hx-target is "#agents-list" — without this, the options would load into
+			// #agents-list (turning the agents panel into a repo/task list) and the
+			// skeleton here would never resolve.
+			hx("hx-target", "this"),
+			hx("hx-swap", "innerHTML"),
+			Class("hidden absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-lg bg-slate-900 py-1 shadow-2xl ring-1 ring-white/10"),
+			seed,
+			comboboxSkeleton(),
+		),
+	)
+	return Div(wrapAttrs...)
+}
+
+// lazyProfilePicker is the dispatch-modal privilege-grant field: a checkbox list
+// of grantable profiles lazy-loaded from /ui/agents/profiles (skeleton until it
+// arrives), each <input name="grant_profile" value=id>. Like the repo/task lazy
+// fields it targets ITSELF (explicit hx-target) so it does NOT inherit the
+// dispatch form's hx-target="#agents-list".
+func lazyProfilePicker() g.Node {
+	return Div(
+		hx("hx-get", "/ui/agents/profiles"),
+		hx("hx-trigger", "load"),
+		hx("hx-target", "this"),
+		hx("hx-swap", "innerHTML"),
+		Class("max-h-40 overflow-auto rounded-lg bg-slate-950 p-1 ring-1 ring-inset ring-white/10"),
+		comboboxSkeleton(),
+	)
+}
+
+func displayOr(a, b string) string {
+	if strings.TrimSpace(a) == "" {
+		return b
+	}
+	return a
+}

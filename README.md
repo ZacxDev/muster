@@ -8,12 +8,24 @@ read and write, **dispatch** that provisions an agent against a task, and a
 **chief** that reports on the fleet. It is a service with an HTTP API and its own
 Postgres database.
 
-🔴 **muster is a foundation, not a working system yet.** This repository
-currently holds its schema, its test harness, its build and its gates —
-deliberately, and in that order, because those are the things that are painful to
-retrofit. There is **no server, no HTTP API, no CLI and no UI in this tree
-today.** Everything below describes what you can run right now; nothing below
-describes a feature you can use.
+🔴 **muster serves, and it does not yet provision.** This paragraph used to read
+"there is no server, no HTTP API, no CLI and no UI in this tree today", and that
+was true when it was written and false for the whole of the change that carved
+the domain layer in — during which `internal/api` registered 99 routes,
+`internal/ui` rendered every view, and **neither linked into any binary**. `go
+list -deps ./cmd/...` resolved four packages of this module and `internal/api`
+was in none of them: sixteen packages compiled, were tested, and no process
+could execute a line of them. Two gates now make that impossible to repeat —
+`TestTheHTTPLayerLinksIntoABinary` pins the link graph and
+`TestTheServerListensAndServesHealth` binds a real port and drives a real
+request. Neither is sufficient alone; see `internal/modulegate`.
+
+What you get today: the task board, the agent surfaces, the runbooks, the
+privileges, the machine API, a session-authenticated web UI, and a CLI. What you
+do **not** get: agent provisioning. Nothing in this module implements
+`api.Provisioner`, so every agent-control route is registered and refuses, and
+the server says so on every boot. The four seams that state is made of — what,
+why, what closes each, and who checks — are in `cmd/muster-server/doc_seams.go`.
 
 ## Quickstart
 
@@ -22,11 +34,37 @@ flake.
 
 ```sh
 git clone https://github.com/ZacxDev/muster && cd muster
-go build ./...          # works on a fresh clone — no asset pipeline, no codegen
+go build ./...          # works on a fresh clone: three binaries, no codegen
 make test-db            # starts a throwaway Postgres, migrates it, prints 2 exports
 make test               # the Go suite, with the database REQUIRED
 make leakscan           # the leak gate; its self-test runs first
+make css-check          # the stylesheet matches the views, and is not stale
 ```
+
+There **is** an asset pipeline — a Tailwind build — but its output
+(`web/static/app.css`) is **committed**, because a later `go:embed` makes it a
+build input and `.gitignore`'s first line says nothing `go build` needs may be
+ignored. `make css-check` is what stops a committed stylesheet going stale, and
+it is the check the container image runs too. It matters more than it looks:
+Tailwind does **not** error on a content glob that matches nothing — it emits a
+smaller, perfectly valid file and exits 0.
+
+To run the server against that Postgres:
+
+```sh
+export DATABASE_URL="$MUSTER_TEST_DATABASE_URL"
+export MUSTER_UI_PASSWORD='something at least as long as the refusal demands'
+export MUSTER_STANDALONE=1     # "this deployment has no permission router"
+go run ./cmd/muster-server     # then http://127.0.0.1:8105
+```
+
+🔴 `MUSTER_STANDALONE=1` is not a convenience flag. Without a permission router
+the server has no way to ask whether a session transcript exists, so every
+transcript link would render "no transcript recorded" — which is TRUE with no
+router and a confident falsehood if you merely *forgot* to configure one. Those
+two situations are the same observable, so the server refuses to report ready
+until you say which you are in. `/readyz` answers 503 and names the field; every
+`MUSTER_*` name is spelled once, in `cmd/muster-server/config.go`.
 
 `make test-db` prints two exports. **Set both.** The second one is the point:
 
@@ -104,9 +142,20 @@ mechanism looks over-built and each part of it is there for a measured failure.
 
 ## Limits, stated plainly
 
-- **There is no server.** No HTTP handlers, no routes, no UI, no CLI. `go build
-  ./...` produces exactly one binary, `muster-migrate`, and it is a CI and
-  development fixture rather than a deploy tool.
+- **There is no agent provisioning.** `go build ./...` produces **three**
+  binaries — `muster-server` (the service), `muster` (the machine/agent CLI) and
+  `muster-migrate` (the schema step) — and the `Dockerfile` ships all three.
+  What the server cannot do is create an agent: nothing here implements
+  `api.Provisioner`, so dispatch, start, stop, destroy, logs and chat are
+  registered routes that refuse. This line previously read "there is no server …
+  produces exactly one binary"; both halves were falsified by the carve, and a
+  reader who saw a non-empty `RegisterRoutes` and concluded otherwise was reading
+  correctly and concluding wrongly.
+- **The singleton background loops are ungated, so deploy one replica.**
+  `internal/db` carries no lease, so the daily prune and the idle-task reap run
+  unguarded. Both are idempotent, so a second replica costs duplicated work
+  rather than duplicated effect — but it is not free. See
+  `cmd/muster-server/doc_seams.go` entry 4.
 - **The `e2e` and `e2e-unit` CI jobs are stubs.** They run nothing and say so in
   their own output. They fail the moment a spec file appears, so the first real
   e2e test cannot land against a green tick that never collected it.

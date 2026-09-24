@@ -7,12 +7,120 @@
 # banner in routes_golden_test.go before treating a clean diff here as evidence
 # that a route's authorisation tier has not changed. It is not.
 #
-# 🔴 THIS FILE IS DELIBERATELY EMPTY OF ROUTES, AND THAT IS AN ASSERTED STATE,
-# NOT AN OVERSIGHT. muster has no HTTP server yet; RegisterRoutes registers
-# nothing. `routePhase` in routes_golden_test.go is `pre-traffic`, and in that
-# phase the gate's positive control does not merely tolerate an empty set — it
-# parses the module's own sources and FAILS if any literal route pattern exists
-# anywhere. So an empty golden here is checked against the code rather than
-# being the reason the check passes.
+# 🔴 THIS HEADER USED TO SAY THE FILE WAS DELIBERATELY EMPTY BECAUSE "muster has
+# no HTTP server yet". THAT BECAME FALSE WHEN THE HTTP LAYER LANDED, and the
+# stale sentence is worth REPLACING rather than deleting: a reader who believed
+# it would read a diff that ADDS routes as a diff that should not exist, which is
+# the reverse of what this gate is for.
 #
-# The route lines go below this header, one per line, when Phase 2 lands them.
+# The server is here. RegisterRoutes calls (&Server{}).registerAll(mux), and the
+# lines below are what it registers. The gate's positive control is the ordinary
+# one now: the recorded set must equal this file, and the set is recorded from a
+# ZERO-VALUE Server — which is what TestRegistrationIsIndependentOfDependencies
+# exists to keep honest, so this file can never become a record of the EMPTY
+# configuration while production registers more.
+#
+# ⚠ A CLI ALSO READS THIS FILE. cmd/muster's TestEveryWiredRouteIsServedByThisProject
+# runs every verb, observes the routes that reach the wire, and demands each be
+# listed here — the check that keeps its single base URL sufficient. So a route
+# DELETED from this file is not only a server change; it can make a client verb
+# unreachable, and that test is where it surfaces.
+DELETE /agents/{id}
+DELETE /agents/{id}/grants/{profileId}
+DELETE /api/tasks/{id}
+DELETE /api/tasks/{id}/comments/{cid}
+DELETE /privileges/{id}
+DELETE /runbooks/{id}
+DELETE /tasks/{id}
+DELETE /tasks/{id}/comments/{cid}
+DELETE /tasks/{id}/tags/{tag}
+GET /agent/muster
+GET /agent/task
+GET /agents
+GET /agents/{name}
+GET /agents/{name}/logs/stream
+GET /agents/{name}/ws
+GET /api/agents
+GET /api/agents/{name}/messages
+GET /api/directories
+GET /api/openrouter/models
+GET /api/projects
+GET /api/sessions/{id}/tasks
+GET /api/tags
+GET /api/tasks
+GET /api/tasks/{id}
+GET /apple-touch-icon-precomposed.png
+GET /apple-touch-icon.png
+GET /events
+GET /favicon.ico
+GET /github/callback
+GET /github/connect
+GET /health
+GET /login
+GET /manifest.webmanifest
+GET /metrics
+GET /privileges
+GET /readyz
+GET /repos
+GET /runbooks
+GET /static/
+GET /sw.js
+GET /tasks
+GET /tasks/{id}
+GET /tasks/{id}/attachments/{aid}
+GET /ui/agents
+GET /ui/agents/new
+GET /ui/agents/notes
+GET /ui/agents/profiles
+GET /ui/agents/repos
+GET /ui/agents/{id}/card
+GET /ui/agents/{id}/grants
+GET /ui/agents/{id}/recent
+GET /ui/agents/{id}/rename
+GET /ui/agents/{id}/status
+GET /ui/agents/{name}/chat-log
+GET /ui/agents/{name}/task
+GET /ui/chief/panel
+GET /ui/chief/threads/search
+GET /ui/notifications
+GET /ui/privilege-requests
+GET /ui/privileges
+GET /ui/repos
+GET /ui/runbooks
+GET /ui/tags
+GET /ui/tasks
+GET /ui/tasks/new
+GET /ui/tasks/{id}/card
+GET /ui/tasks/{id}/edit
+GET /{$}
+PATCH /agent/task/status
+PATCH /api/tasks/{id}
+PATCH /api/tasks/{id}/status
+PATCH /tasks/{id}/status
+POST /agent/privilege/request
+POST /agent/task/comment
+POST /agents
+POST /agents/sessions/{sid}/read
+POST /agents/{id}/grants
+POST /agents/{id}/model
+POST /agents/{id}/name
+POST /agents/{id}/sessions
+POST /agents/{id}/start
+POST /agents/{id}/stop
+POST /api/agents/{name}/messages
+POST /api/tasks
+POST /api/tasks/{id}/comments
+POST /chief/provision
+POST /github/disconnect
+POST /login
+POST /logout
+POST /privileges
+POST /runbooks
+POST /runbooks/{id}/dispatch
+POST /tasks
+POST /tasks/merge
+POST /tasks/{id}/comments
+POST /tasks/{id}/edit
+POST /tasks/{id}/tags
+POST /ui/privilege-requests/{id}/approve
+POST /ui/privilege-requests/{id}/deny

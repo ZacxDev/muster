@@ -11,6 +11,12 @@
 result
 result-*
 
+# Front-end tooling, fetched on demand by `make css` (npx). NOT the stylesheet
+# it produces — see the header above: web/static/app.css is COMMITTED, because a
+# later `go:embed` makes it a build input and `make css-check` is what keeps the
+# committed copy honest.
+node_modules/
+
 # Python byte cache from the gates in tests/.
 __pycache__/
 *.pyc
