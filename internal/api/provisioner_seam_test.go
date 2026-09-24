@@ -424,8 +424,16 @@ func funcIdent(fn *ast.FuncDecl) string {
 	return fn.Name.Name
 }
 
-// routeRegistration is one `mux.HandleFunc(pattern, handler)` site in this
-// package's non-test sources.
+// routeRegistration is one route-registration site in this package's non-test
+// sources: `mux.HandleFunc(pattern, handler)` or `mux.Handle(pattern, handler)`.
+//
+// 🔴 BOTH, BECAUSE THE Mux INTERFACE HAS BOTH. Matching only HandleFunc would
+// make this walk narrower than the sentence it is written under — a route
+// registered as `mux.Handle("POST /x", http.HandlerFunc(s.handleX))` would be
+// invisible to the derived set AND to the reachability check, which is worse
+// than being caught by neither on purpose. Nothing in this package registers a
+// provisioner route that way today; the point is that doing so later cannot be
+// silent.
 type routeRegistration struct {
 	route    string // the literal pattern, e.g. "POST /agents"
 	handler  string // the innermost function the wrappers close over
@@ -479,6 +487,29 @@ func TestEveryProvisionerRouteIsDerivedNotDeclared(t *testing.T) {
 			"detection has stopped matching, so every verdict below is over an empty "+
 			"or truncated set.", len(regs))
 	}
+	// 🔴 POSITIVE CONTROL FOR THE `Handle` ARM SPECIFICALLY. The walk matches
+	// Handle AND HandleFunc because the Mux interface has both, and the count
+	// above cannot tell whether the Handle arm is matching — 95 with it broken
+	// and 93 are both comfortably over the floor. These two are the package's
+	// only mux.Handle registrations, so their absence means a route registered
+	// that way has become invisible to BOTH checks below.
+	for _, want := range []string{"GET /metrics", "GET /static/"} {
+		found := false
+		for _, r := range regs {
+			if r.route == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("positive control FAILED: %q is registered with mux.Handle in this "+
+				"package and the walk did not find it. The Handle arm has stopped "+
+				"matching, so a provisioner route registered as "+
+				"mux.Handle(pattern, http.HandlerFunc(h)) would be invisible to the "+
+				"derived set AND to the reachability check.", want)
+		}
+	}
+
 	reachable := 0
 	for _, r := range regs {
 		if r.handler != "" && reaches(r.handler) {
@@ -554,7 +585,8 @@ func TestEveryProvisionerRouteIsDerivedNotDeclared(t *testing.T) {
 }
 
 // scanRouteRegistrations parses this package's non-test sources and returns
-// every HandleFunc registration, plus a predicate answering whether a named
+// every route registration (Handle and HandleFunc alike), plus a predicate
+// answering whether a named
 // function can reach s.ext.Provisioner unguarded through the package call graph.
 func scanRouteRegistrations(t *testing.T) (regs []routeRegistration, reaches func(string) bool, scanned int) {
 	t.Helper()
@@ -604,7 +636,7 @@ func scanRouteRegistrations(t *testing.T) (regs []routeRegistration, reaches fun
 					if id, ok := fu.X.(*ast.Ident); ok && id.Name == "s" {
 						callees[name] = append(callees[name], "(*Server)."+fu.Sel.Name)
 					}
-					if fu.Sel.Name == "HandleFunc" && len(c.Args) == 2 {
+					if (fu.Sel.Name == "HandleFunc" || fu.Sel.Name == "Handle") && len(c.Args) == 2 {
 						pos := fset.Position(c.Pos())
 						r := routeRegistration{
 							handler: innermostRouteHandler(c.Args[1]),
