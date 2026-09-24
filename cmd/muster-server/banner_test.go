@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/router"
@@ -32,11 +34,25 @@ import (
 // the wrong variable sends them to re-check the one that was already right.
 // ---------------------------------------------------------------------------
 
-// renderBanner runs logBanner against cfg and returns what it printed.
+// renderBanner runs logBanner against cfg with NO database pool.
 func renderBanner(t *testing.T, cfg config, ext api.Extensions) string {
 	t.Helper()
+	return renderBannerWithPool(t, cfg, ext, nil)
+}
+
+// renderBannerWithPool runs logBanner and returns what it printed.
+//
+// 🔴 THE POOL IS A SEPARATE PARAMETER BECAUSE THE PERSISTENCE LINE BRANCHES ON
+// IT, NOT ON cfg.Database — AND A FIXTURE THAT SET ONLY THE CONFIG LEFT THAT
+// AXIS PINNED. Both renders took the "persistence: NONE" arm, so the
+// both-directions check was comparing one branch against itself and would have
+// passed however that line was written. Found by the differ-check below, which
+// is the whole argument for it. A zero-value *pgxpool.Pool is enough: logBanner
+// reads `a.pool != nil` and calls no method on it.
+func renderBannerWithPool(t *testing.T, cfg config, ext api.Extensions, pool *pgxpool.Pool) string {
+	t.Helper()
 	var buf bytes.Buffer
-	a := &app{cfg: cfg, logger: log.New(&buf, "", 0)}
+	a := &app{cfg: cfg, logger: log.New(&buf, "", 0), pool: pool}
 	port := router.NewPort(router.Config{
 		BaseURL: cfg.RouterURL, Token: cfg.RouterToken, Actor: cfg.RouterActor,
 	})
@@ -191,8 +207,8 @@ func TestTheBannerAnnouncesEveryLedgeredVariableInBothDirections(t *testing.T) {
 	}
 	off := config{}
 
-	onOut := renderBanner(t, on, api.Extensions{GitHub: bannerStubGitHubStore{}})
-	offOut := renderBanner(t, off, api.Extensions{})
+	onOut := renderBannerWithPool(t, on, api.Extensions{GitHub: bannerStubGitHubStore{}}, &pgxpool.Pool{})
+	offOut := renderBannerWithPool(t, off, api.Extensions{}, nil)
 
 	// 🔴 POSITIVE CONTROL: THE TWO RENDERS MUST DIFFER. If the fixture failed to
 	// flip anything — a field renamed, a zero value that is also the "on" value —
@@ -206,10 +222,13 @@ func TestTheBannerAnnouncesEveryLedgeredVariableInBothDirections(t *testing.T) {
 
 	for _, name := range bannerLedger {
 		t.Run(name, func(t *testing.T) {
-			if !strings.Contains(onOut, name) {
+			onLine := lineNaming(onOut, name)
+			offLine := lineNaming(offOut, name)
+
+			if onLine == "" {
 				t.Errorf("%s is not named in the banner when it IS set.\nbanner:\n%s", name, onOut)
 			}
-			if !strings.Contains(offOut, name) {
+			if offLine == "" {
 				t.Errorf("%s is not named in the banner when it is NOT set.\n"+
 					"    logBanner's header promises every line is printed in both "+
 					"directions, because a silent healthy state and a silent refusing "+
@@ -217,8 +236,37 @@ func TestTheBannerAnnouncesEveryLedgeredVariableInBothDirections(t *testing.T) {
 					"OFF line is the only one an operator will ever see.\nbanner:\n%s",
 					name, name, offOut)
 			}
+
+			// 🔴 THE TWO LINES MUST ALSO DIFFER, AND THIS HALF WAS ADDED BECAUSE
+			// THE MUTATION SWEEP WALKED THE FIRST ONE. A mutant that forced the
+			// secure-cookie branch never to be taken (`if a.cfg.SecureCookies &&
+			// false`) SURVIVED: the else arm still printed the variable's name, so
+			// "named in both directions" held while the banner reported the wrong
+			// state in one of them. Naming a variable is not reporting it — the
+			// whole point is that an operator can read the STATE off the log, and
+			// two identical lines carry no state at all.
+			if onLine != "" && offLine != "" && onLine == offLine {
+				t.Errorf("%s produces the SAME banner line whether it is set or not:\n"+
+					"    %s\n"+
+					"    The name is there, so a contains-check passes, but the line "+
+					"reports no state: an operator reading the log cannot tell which "+
+					"way this deployment is configured, which is the exact "+
+					"indistinguishability logBanner's header exists to remove. The "+
+					"branch is either dead or it prints the same sentence on both "+
+					"arms.", name, onLine)
+			}
 		})
 	}
+}
+
+// lineNaming returns the first banner line containing name, or "".
+func lineNaming(banner, name string) string {
+	for _, line := range strings.Split(banner, "\n") {
+		if strings.Contains(line, name) {
+			return line
+		}
+	}
+	return ""
 }
 
 // TestTheProvisioningSeamLineDoesNotClaimAnUnnamedRefusal pins the corrected

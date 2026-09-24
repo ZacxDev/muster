@@ -91,6 +91,23 @@ var provisionerRouteLedger = []string{
 // optional dependency that is safe unguarded, and doc_seams.go entry 3 is about
 // exactly that. handleAgentModel and the privilege grant path use it and are not
 // on this list.
+//
+// 🔴 KNOWN LIMIT, FOUND BY A MUTANT THAT SURVIVED THIS GUARD RATHER THAN BY
+// REVIEW: THE DETECTION IS FUNCTION-GRANULAR, NOT CALL-SITE-GRANULAR. A function
+// counts as guarded if it compares s.ext.Provisioner against nil ANYWHERE in its
+// body — so a function that nil-checks on one path and calls unguarded on
+// another is classified guarded and never reaches this ledger. The sweep mutant
+// that proved it bolted a call onto instanceIndex, which already had a nil
+// check, and the guard stayed green. Closing it properly needs dominance
+// analysis (does the check dominate the call?), which is a real piece of work
+// and out of scope here.
+//
+// ⚠ WHAT THAT DOES AND DOES NOT COST. The case it cannot see is a MODIFIED
+// already-guarded function; the case this ledger exists for — a NEW handler
+// reaching the provisioner, which is how a tenth lying route would arrive — is
+// caught, and the sweep confirms it with a mutant that adds exactly such a
+// function. Read a clean verdict here as "no new unguarded caller", never as
+// "every call site is dominated by a check".
 var provisionerCallerLedger = []string{
 	"(*Server).chatTurn",                  // ChatWithTools + Chat; reached from handleAgentWS
 	"(*Server).createAndDispatchAgent",    // Dispatch; reached from handleAgentCreate, handleChiefProvision, dispatchRunbook
