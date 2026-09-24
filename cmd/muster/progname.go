@@ -32,7 +32,7 @@ const defaultProgName = "muster"
 // write a private deployment's CLI name into a repository that is being
 // prepared for publication — which the leak gate refuses, correctly. Honouring
 // whatever argv[0] says costs nothing and covers every alias, including ones
-// this file will never know about. TestTheBinaryAnswersToAnAliasedName drives
+// this file will never know about. TestTheBinaryAnswersToAnAliasedSymlink drives
 // a REAL symlink under a name this code does not contain.
 //
 // It is deliberately NOT a behaviour switch: an aliased invocation runs the

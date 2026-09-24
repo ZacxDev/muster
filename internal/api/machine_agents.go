@@ -231,7 +231,7 @@ func (s *Server) handleAPIAgentList(w http.ResponseWriter, r *http.Request) {
 // muster states both numbers in its `--help` and applies the default itself, and
 // this binary deliberately does not link the server package — so the relationship is
 // pinned by a test that imports both (cmd/muster's
-// TestTheCLIAgentMessageLimitsMatchTheServers) rather than by a build edge. A help
+// TestTheAgentMessageLimitsMatchTheServers) rather than by a build edge. A help
 // text quoting a bound the server no longer applies is the thing that rots.
 const (
 	AgentMessagesDefaultLimit = 50

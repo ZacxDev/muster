@@ -353,7 +353,7 @@ func (c AuthConfig) HookArmingRefusal() string {
 // string a consumer matches must be the string the code writes, stated once. The
 // consumer is cmd/muster (unarmedHookSurface), and the two are pinned together
 // by internal/api's TestTheAgentSteeringWriteRefusesAnUnarmedServer (the server
-// writes it) and muster's TestTheUnarmedHookMarkerMatchesTheServer (the client
+// writes it) and muster's TestTheUnarmedMarkerMatchesTheServer (the client
 // reads the same spelling) — a second spelling is a spelling that rots.
 const HookUnarmedField = "unarmed"
 
