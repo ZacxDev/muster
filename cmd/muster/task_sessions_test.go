@@ -2,7 +2,6 @@ package main
 
 import (
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -77,36 +76,6 @@ func TestSessionIDEnvVarNamesAreLiteral(t *testing.T) {
 				t.Fatalf("sessionIDFrom(%v) = %q, want %q", tc.env, got, tc.want)
 			}
 		})
-	}
-}
-
-// TestSessionIDIsReadableFromThisProcessEnvironment is the LIVE control: when
-// the test itself is run by a coding-agent session, the production reader must
-// find a session id in the REAL process environment.
-//
-// 🔴 IT USES os.Getenv, NOT A FAKE. Every other test in this file supplies its
-// own map, so all of them together still cannot tell you the name is right —
-// that is precisely how the wrong name shipped. This one asks the actual
-// environment.
-//
-// It SKIPS outside such a session, where there is genuinely nothing to assert.
-// A skip is honest; asserting against an environment that cannot have the
-// variable would be a test that fails for the wrong reason.
-func TestSessionIDIsReadableFromThisProcessEnvironment(t *testing.T) {
-	if os.Getenv("CLAUDECODE") == "" {
-		t.Skip("not running inside a coding-agent session; the live env control needs a real session")
-	}
-	got := sessionIDFrom(os.Getenv)
-	if got == "" {
-		var present []string
-		for _, n := range sessionIDEnvNames {
-			if os.Getenv(n) != "" {
-				present = append(present, n)
-			}
-		}
-		t.Fatalf("sessionIDFrom found NO session id in a real session environment (names tried: %v, non-empty: %v).\n"+
-			"This is the control that catches a renamed variable — the exact defect that shipped the task-thread feature inert.",
-			sessionIDEnvNames, present)
 	}
 }
 

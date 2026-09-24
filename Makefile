@@ -99,6 +99,12 @@ test-db:
 	@echo "The second one turns a missing database from a SKIP into a FAILURE."
 	@echo "Without it a suite that ran nothing still reports green."
 
+test-liveenv: ## run the live-environment controls (needs a real coding-agent session)
+	@# These are behind `//go:build liveenv` because they read the session id from
+	@# the REAL process environment. They are NOT in `make test` on purpose: as
+	@# t.Skip they silently no-op'd on CI and the run still looked green.
+	go test -tags liveenv -run 'REALProcessEnvironment|SessionIDIsReadableFromThisProcess' -v ./cmd/muster/
+
 test-db-down:
 	$(COMPOSE) -f $(COMPOSE_FILE) down -v
 
