@@ -291,9 +291,13 @@ func (s *Server) handleDirectorySearch(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(dirs)
 }
 
-// handleNoteCreate handles POST /notes (multipart/form-data): create a note and
+// handleNoteCreate handles POST /tasks (multipart/form-data): create a note and
 // store any attachments, then re-render the notes panel (which resets the modal
 // to closed).
+//
+// An attachment over maxAttachmentBytes refuses the WHOLE request with a 413 and
+// writes nothing — see the guard below for why that is the only shape that
+// reaches the user.
 func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := r.ParseMultipartForm(maxAttachmentBytes); err != nil {
@@ -308,6 +312,42 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 		// list (a 200) so any in-flight htmx swap is harmless.
 		s.renderNotesPanel(w, r)
 		return
+	}
+
+	// 🔴 AN OVERSIZE ATTACHMENT FAILS THE REQUEST. IT IS NOT SKIPPED.
+	//
+	// What this replaced: the storage loop below used to `continue` past any file
+	// over the cap after logging a line nobody reads, and the handler still fell
+	// through to renderNotesPanel's 200. That is silent data loss, not a degraded
+	// save — htmx swaps a 200, the form's `hx-on::after-request` sees
+	// `event.detail.successful` and closes the modal, and resyncScript's toast
+	// listener is bound to `htmx:responseError`, which a 200 is not. The task
+	// saved, the modal closed, and the attachment was gone with NOTHING on
+	// screen.
+	//
+	// 🔴 IT RUNS BEFORE Notes.Create, AND THAT ORDER IS THE POINT. Rejecting
+	// after the write would leave the task stored while the browser is told the
+	// request failed, so the obvious retry silently duplicates the task. Checking
+	// first makes the request atomic: nothing is written, htmx does not swap, the
+	// modal stays open with the user's text intact, and the plain-text body below
+	// is exactly what resyncScript's htmx:responseError listener renders as a
+	// toast (it falls back to a generic message only for a body starting with
+	// '<', so this must stay plain text).
+	//
+	// This is the ONLY size predicate for an attachment. The storage loop below
+	// deliberately does not repeat it — a second copy is a second thing to get
+	// wrong, and it is what made the first one silent.
+	if r.MultipartForm != nil {
+		for _, fh := range r.MultipartForm.File["attachments"] {
+			if fh.Size > maxAttachmentBytes {
+				s.logger.Printf("notes: attachment %q too large (%d bytes > %d), rejecting create", fh.Filename, fh.Size, maxAttachmentBytes)
+				http.Error(w, fmt.Sprintf(
+					"attachment %q is %.1f MiB, over the %d MiB limit for a single file. Nothing was saved — remove it and save again.",
+					fh.Filename, float64(fh.Size)/(1<<20), maxAttachmentBytes>>20,
+				), http.StatusRequestEntityTooLarge)
+				return
+			}
+		}
 	}
 
 	// Optional dispatch config from the create form (mirrors handleAgentCreate's
@@ -338,10 +378,10 @@ func (s *Server) handleNoteCreate(w http.ResponseWriter, r *http.Request) {
 			if fh.Size == 0 {
 				continue
 			}
-			if fh.Size > maxAttachmentBytes {
-				s.logger.Printf("notes: attachment %q too large (%d bytes), skipping", fh.Filename, fh.Size)
-				continue
-			}
+			// No size check here: the pre-create guard above already refused the
+			// whole request for anything over maxAttachmentBytes, so every fh that
+			// reaches this loop is within the cap. The LimitReader below is the
+			// backstop against a fh.Size that disagrees with the actual stream.
 			f, err := fh.Open()
 			if err != nil {
 				s.logger.Printf("notes: open attachment %q: %v", fh.Filename, err)
