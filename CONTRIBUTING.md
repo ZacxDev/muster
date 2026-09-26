@@ -88,10 +88,20 @@ references.
 
 🔴 **Its `--self-test` runs before the scan, and on every invocation.** A scanner
 wired to nothing reports zero findings exactly the way a clean tree does. The
-self-test proves three things: that a realistic sensitive string is refused, that
-the matcher can produce a non-zero count at all, and that legitimate content is
-*not* refused. If any control misbehaves the gate exits **2** — which is "could
-not vouch", not a pass.
+self-test proves four things: that a realistic sensitive string is refused, that
+the matcher can produce a non-zero count at all, that legitimate content is *not*
+refused, and that the files the gate EXEMPTS from the scan — its own fixtures —
+spell no sensitive value that is not either objectively safe or declared with a
+reason. If any control misbehaves the gate exits **2** — which is "could not
+vouch", not a pass.
+
+🔴 **Editing `tests/leakscan.py` is the one place a real value can hide, and one
+did.** A negative control there carried a real cluster's LAN address into public
+history. If the self-audit refuses a fixture you added, the fix is a value that
+is nobody's — a reserved documentation address (RFC 5737) wherever the rule under
+test allows one, a pre-2010 date, an invented hostname — not a row in
+`EXEMPT_FIXTURE_VALUES`. Add a row only when the rule being controlled cannot
+fire on anything else, and write down how you know the value is not real.
 
 Two conventions it enforces that are easy to trip over:
 
