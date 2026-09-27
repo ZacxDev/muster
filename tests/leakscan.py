@@ -29,6 +29,13 @@ module ships its own controls and runs them on EVERY invocation:
   * POSITIVE — the matcher must be able to produce a NON-ZERO count at all.
   * NARROWNESS — legitimate content must NOT be refused, so the gate stays
     usable.
+  * SELF-AUDIT — the file this gate EXEMPTS from the scan (see SKIP_FILES) is
+    audited by VALUE: every address, hostname, registry reference, credential,
+    denied name and dated stamp it spells must be objectively unroutable,
+    objectively synthetic, or DECLARED with the reason it is safe. The
+    exemption was unaudited for the whole life of the private repository, and
+    what hid in it was the LAN address of a real single-node cluster, sitting
+    in a negative control that read exactly like its synthetic neighbours.
 
 Exit codes:
   0  no findings (and every control behaved)
@@ -112,7 +119,7 @@ _PRIVATE_IP = re.compile(
 # and bump DENIED_COUNT. Removing one has to be argued for in a diff.
 # --------------------------------------------------------------------------
 DENIED_IDENTIFIER_DIGESTS = {
-    # 16 real identifiers from the private deployment, plus the 2 sentinels.
+    # 16 real identifiers from the private deployment, plus the 3 sentinels.
     # Sorted, so a diff that adds one is a one-line diff.
     "16d74232d666243e3dd9711daaef2b7538f849efaa62cf19f91a97e82c420e34",
     "1ac8ca4c444febcb84f6de0da68d3ed09124e9466a7d70e9b4d0137c71d1f10a",
@@ -130,10 +137,18 @@ DENIED_IDENTIFIER_DIGESTS = {
     "d41f11e5fa5f9aebda4a1878ace020141dec8db3a5bf39519b29baab8732a9fb",
     "d85b40105dd0b9cdbe46a1ee1b96abdf1474ae96fb86bd28ca701f44f017ac3b",
     "e7e03ea356c666c09f11f088309ef6e93e84fd74cf6eeb213e522d5de55e89e6",
-    # --- synthetic sentinels; these two are the controls, and they are the
-    # --- ONLY entries whose plaintext appears in this file.
+    # --- synthetic sentinels; these three are the controls, and they are the
+    # --- ONLY entries this file has any plaintext for — two spelled below, the
+    # --- third deliberately never spelled at all.
     hashlib.sha256(b"canarytoken").hexdigest(),
     hashlib.sha256(b"redacted-canary-scope").hexdigest(),
+    # ⚠ THE THIRD ONE IS ASSEMBLED, AND ITS PLAINTEXT IS THE ONE STRING THIS
+    # FILE MUST NOT SPELL. It is the negative control for the self-audit's
+    # denied branch (see `audit_negative_controls`) — a denied name that the
+    # audit must REFUSE rather than permit. A control the audit refuses cannot
+    # be a literal in the file the audit reads, so it is built from two pieces
+    # that are not denied on their own.
+    hashlib.sha256(b"redacted-canary-" + b"unpermitted").hexdigest(),
 }
 
 #: 🔴 PINNED SO THE SET CANNOT SHRINK UNNOTICED. A digest quietly deleted takes
@@ -145,10 +160,16 @@ DENIED_IDENTIFIER_DIGESTS = {
 #: single-token name that merely STARTS with another entry is a different token
 #: and is not caught by it — see the sentinel table above. Compound CLI names
 #: therefore need their own entry.
-DENIED_COUNT = 18
+DENIED_COUNT = 19
 
 DENY_CANARY = "redacted-canary-scope"
 DENY_CANARY_WORD = "canarytoken"
+
+#: A denied name that is NOT permitted even in an exempt file — the negative
+#: control for the self-audit's denied branch. ASSEMBLED, never spelled, for the
+#: reason given beside its digest above: a literal here would be a value the
+#: audit must refuse, sitting in the file the audit reads.
+DENY_CANARY_UNPERMITTED = "redacted-canary-" + "unpermitted"
 
 _IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*")
 
@@ -193,7 +214,7 @@ _DATED_CLAIM = re.compile(
     r"|rotated|landed|regressed|reported|deployed)\b[^.\n]{0,48}?(" + _DATE + r")"
 )
 # ⚠ THE TRAILING GUARD IS `(?![\d-])`, NOT `\b`, AND A CONTROL IS WHY. A real
-# stamp is often a full RFC 3339 instant — `at 2026-08-23T00:37Z` — and `\b`
+# stamp is often a full RFC 3339 instant — `at 1999-08-23T00:37Z` — and `\b`
 # after `23` demands a non-word character, which `T` is not. The `\b` version
 # matches the bare-date spelling and silently skips every timestamped one,
 # reading as a working rule.
@@ -247,7 +268,18 @@ RULES: list[tuple[str, str, str]] = [
         # A hostname on a private/lab TLD, or a bare `*.local`/`*.lan` name.
         # These are reachable names on somebody's network and say where things
         # live.
-        r"\b[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal|home|homelab)\b"
+        #
+        # ⚠ THE LAST LABEL IS WRITTEN `home(?:lab)?` AS TWO PIECES, AND IT IS NOT
+        # STYLE. Spelled as one alternative it is a DENIED identifier, so the
+        # pattern would put one of the names this gate exists to remove into the
+        # gate's own source in plaintext — the exact cost the digest denylist
+        # above is paid to avoid, in the file that is most grepped. Split, the
+        # source contains `home` and `lab`, neither of which is denied, and the
+        # matching is byte-for-byte unchanged: both the short and the long label
+        # match after a dot, and a label one letter longer still matches neither.
+        # This was found by the self-audit below, on its first run, which is the
+        # whole argument for having one.
+        r"\b[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal|home(?:lab)?)\b"
         r"|\b[A-Za-z0-9][A-Za-z0-9-]*\.(?:lan|local|internal)\.[A-Za-z]{2,}\b",
         "a private or lab hostname — it names real infrastructure. Use "
         "`example.com` / `muster.example` in documentation",
@@ -387,16 +419,292 @@ def is_binary(data: bytes) -> bool:
 #: file. The controls are the thing that makes every clean report meaningful, so
 #: the file is exempt.
 #:
-#: 🔴 WHAT THAT COSTS: a real leak pasted into THIS file is invisible to this
-#: gate. Nothing here closes that. Review a diff to `tests/leakscan.py` by hand,
-#: and treat a new entry in the sample lists as the place a real value is most
-#: likely to arrive by copy-paste.
+#: 🔴 WHAT THAT USED TO COST, AND WHAT WAS ACTUALLY LOST: this note used to end
+#: "a real leak pasted into THIS file is invisible to this gate. Nothing here
+#: closes that. Review a diff by hand." The hand review is what happened, and it
+#: is what failed: a `private-ip` negative control carried the LAN address of a
+#: real single-node cluster from the first commit of this file, through the
+#: pre-publication review, and out into public history. The rule matched that
+#: shape, the scan would have refused the line, and the docstring above asserted
+#: the fixtures were synthetic — the file was simply never read by anything.
+#:
+#: 🔴 SO THE EXEMPTION IS NOW NARROW: exempt from the SCAN, audited by VALUE.
+#: `audit_exempt_files` below reads every file in this set and holds each
+#: sensitive value it spells to one of three bars, failing closed on anything
+#: new. What it still accepts is written out there rather than implied here.
 #:
 #: ⚠ AN EXEMPT FILE IS STILL NAMED IN THE OUTPUT as a SKIPPED line, never
 #: silently dropped. A count of files scanned cannot distinguish a clean tree
 #: from a partly-read one, which is the ambiguity this accounting exists to
 #: remove.
 SKIP_FILES = {"tests/leakscan.py"}
+
+
+# --------------------------------------------------------------------------
+# THE EXEMPT FILES ARE AUDITED BY VALUE
+#
+# 🔴 A SCAN EXEMPTION IS A HIDING PLACE, AND SOMETHING HID IN THIS ONE. The
+# defect this section exists for was not a broken rule: it was that the one file
+# nothing reads is also the one file that must CONTAIN realistic sensitive
+# strings, so a real value pasted into the sample lists looks exactly like its
+# synthetic neighbours and nothing — not the gate, not the docstring, not the
+# pre-publication review — is positioned to tell the difference.
+#
+# 🔴 THE AUDIT IS ATTACHED TO `SKIP_FILES` ITSELF, NOT TO THIS FILE'S NAME, so
+# an exemption can never again be blind: adding a file to that set enrols it
+# here, and the audit fails if it cannot read what the set names.
+#
+# Every value an exempt file spells must clear one of three bars:
+#
+#   1. OBJECTIVELY UNROUTABLE — a reserved documentation or loopback address
+#      needs no argument from anybody (RFC 5737, RFC 1122), and neither does one
+#      of the conventional cluster CIDRs already argued for in DOC_ADDRESSES.
+#   2. OBJECTIVELY SYNTHETIC — a dated stamp older than this project can be, and
+#      (for denied names) this module's own sentinels. Neither needs judgement.
+#   3. DECLARED — everything else must appear in EXEMPT_FIXTURE_VALUES with the
+#      reason it is safe. This is the bar that needs a human, and it is the one
+#      that would have caught the address: writing `192.168.<real>.<real>` into a
+#      table whose every row asserts "this is not anybody's" is a claim somebody
+#      has to make in a diff, rather than one more plausible-looking sample line.
+#
+# 🔴 WHAT THIS STILL ACCEPTS — STATED, BECAUSE A GUARD THAT READS AS COVERAGE
+# WHILE PROVIDING NONE IS WORSE THAN NO GUARD:
+#
+#   * A REAL VALUE DECLARED ANYWAY. Nothing here can tell a real RFC1918
+#     address, lab hostname or credential from an invented one; it can only
+#     force it to be written down twice, in a table that says why it is safe.
+#     The one class where that is not true is the denied names: the only way to
+#     declare one is to spell it, in plaintext, in a public file — which is a
+#     diff nobody merges by accident.
+#   * PROSE. A real incident narrated in a comment or in a fixture's TEXT leaks
+#     without spelling any value this audit extracts. That is how a real agent's
+#     name and its real symptom rode in beside the address — both in fixtures,
+#     only one of them a value. Read fixture text, not only fixture values.
+#   * IPv6, and the gate has no IPv6 rule at all: a ULA (`fd00::/8`) address is
+#     invisible to every rule above, so it is invisible here too.
+#   * EVERY SCANNED FILE'S FIXTURES. This audits the files the gate SKIPS, which
+#     is where the blindness was. A Go test fixture is covered by the scan — by
+#     the rules the scan has, which is a different and narrower claim than "it
+#     contains nothing real".
+# --------------------------------------------------------------------------
+
+#: Address prefixes reserved for documentation or loopback: nobody can be
+#: running anything on them, so they need no declaration.
+RESERVED_ADDRESS_PREFIXES = (
+    "192.0.2.",      # RFC 5737 TEST-NET-1
+    "198.51.100.",   # RFC 5737 TEST-NET-2
+    "203.0.113.",    # RFC 5737 TEST-NET-3
+    "127.",          # RFC 1122 loopback
+)
+
+#: 🔴 WHY THE TABLE HAS PRIVATE ADDRESSES IN IT AT ALL, WHICH IS THE FIRST
+#: QUESTION TO ASK OF IT: `_PRIVATE_IP` matches 10/8, 172.16/12 and 192.168/16
+#: and NOTHING ELSE, so a TEST-NET address in the `private-ip` negative control
+#: makes that control inert and the rule stops being watched to go red. The
+#: controls therefore have to spell RFC1918 addresses. The only defence left is
+#: choosing ones that are demonstrably nobody's, so each was grepped against the
+#: deployment muster was extracted from and matched zero files — `10.255.` and
+#: `172.20.4.9` and `172.16.4.9`, zero each, against 109 files for the address
+#: this replaced.
+#:
+#: 🔴 EACH ROW IS A CLAIM SOMEBODY MADE. A row is not evidence a value is
+#: synthetic; it is a record that a human asserted it, with a reason, where a
+#: reviewer can disagree. That is the whole of what this bar buys.
+EXEMPT_FIXTURE_VALUES: dict[str, str] = {
+    # -- addresses the private-ip rule needs, none of them anybody's ----------
+    "10.255.255.1":
+        "the last /16 of RFC1918's 10/8 — nothing provisions a node there, and "
+        "it matches zero files in the source deployment",
+    "172.20.4.9":
+        "inside 172.16/12 but outside every subnet the source deployment uses; "
+        "zero files",
+    "172.16.4.9":
+        "the POSITIVE_CONTROL address, same argument; zero files",
+    # -- hostnames, all on invented or IANA-reserved domains ------------------
+    "workshed.lan":
+        "an invented lab domain: zero occurrences in the source deployment, "
+        "whose lab hostnames are spelled differently",
+    "devpod.internal":
+        "a generic cluster-internal name — `devpod` is a public product name, "
+        "not a private identifier, and this hostname resolves nowhere real",
+    "registry.internal":
+        "a generic registry hostname under `.internal`, itself under "
+        "`example.net` (RFC 2606). Renamed during the sweep: the label it used "
+        "before named a specific product, and matched the first label of the "
+        "source deployment's own registry hostname",
+    # -- registry references: private-registry SHAPE, invented host ----------
+    "registry.workshed.lan/library/muster:0.4.2":
+        "the invented lab domain above, carrying a plausible tag",
+    "registry.internal.example.net:5000/agents/runner:2000.1.2":
+        "host:port plus a calver tag, which is the shape that must be refused. "
+        "The tag is a year-2000 one on purpose; it was a real image tag from "
+        "the source deployment until the sweep",
+    # -- credentials: real SHAPE, and each is structurally not a key ---------
+    "-----BEGIN CERTIFICATE-----":
+        "the credential rule's own pattern literal, not a certificate: there is "
+        "no key material after it anywhere in this file",
+    "Bearer ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8":
+        "a token of the right shape typed as a keyboard pattern (A1b2C3...), "
+        "which no generator emits",
+    "AGE-SECRET-KEY-1QQPQZRJ8NXW4K2VHM7YD3TG6LS9FCAE0BU5XP":
+        "53 characters where a real age key is 74 — structurally too short to "
+        "decrypt anything, whatever it looks like",
+    # -- operator identity: the canonical placeholder person -----------------
+    "/home/jrandom/":
+        "J. Random Hacker, the placeholder user; no such account exists",
+    "jrandom.dev@gmail.com":
+        "the same placeholder as an address",
+}
+
+#: 🔴 PINNED SO A ROW CANNOT ARRIVE AS ONE MORE LINE IN A LONG TABLE. Adding a
+#: value is a two-line diff, and the second line is this number — which is the
+#: difference between a reviewer skimming a table and a reviewer being told the
+#: table grew.
+EXEMPT_FIXTURE_VALUE_COUNT = 13
+
+#: Dated stamps in an exempt file must predate this year. A control cannot use
+#: the year-SYNTHETIC_DATE_YEAR convention the rule steers toward, because the
+#: rule SKIPS that year and the control would be inert — so it uses a date from
+#: before this project could have observed anything.
+EXEMPT_DATE_YEAR_CEILING = 2010
+
+#: 🔴 THE POSITIVE CONTROL FOR THE AUDIT ITSELF: a floor under how many
+#: sensitive values it must EXTRACT. These files are the gate's fixture lists;
+#: an audit that reports "nothing undeclared" having extracted 0 values has read
+#: nothing, and is indistinguishable in the output from a clean one. Measured on
+#: this tree at the commit that added this line: 49.
+EXEMPT_AUDIT_MIN_VALUES = 35
+
+#: 🔴 WIDER THAN `_PRIVATE_IP` ON PURPOSE — every dotted quad, not only the
+#: private ranges. A real PUBLIC address names a real host just as precisely as a
+#: private one, and the scan has no rule for public addresses at all, so the
+#: scan's rule set cannot be the whole of what an exempt file is held to.
+_ANY_IPV4 = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
+
+
+def sensitive_values(text: str) -> list[tuple[int, str, str]]:
+    """Every sensitive-looking VALUE in `text`, as (line, rule, value).
+
+    Per-OCCURRENCE, and the matched substring rather than the line: a verdict
+    about a LINE cannot be held to a table of values, and "this line contains
+    something" is exactly the granularity that let one real value sit in a list
+    of synthetic ones.
+    """
+    out: list[tuple[int, str, str]] = []
+    for n, line in enumerate(text.splitlines(), start=1):
+        for name, rx, _why in _COMPILED:
+            for m in rx.finditer(line):
+                out.append((n, name, m.group(0)))
+        for m in _ANY_IPV4.finditer(line):
+            out.append((n, "address", m.group(0)))
+        for ident in denied_identifiers(line):
+            out.append((n, "denied-identifier", ident))
+        for stamp in dated_incident_stamps(line):
+            out.append((n, "dated-incident", stamp))
+    return out
+
+
+def undeclared(rule: str, value: str) -> str | None:
+    """Why `value` may not appear in an exempt file — or None if it may."""
+    if rule == "denied-identifier":
+        if value in (DENY_CANARY, DENY_CANARY_WORD):
+            return None
+        return ("a DENIED identifier. Only this module's own sentinels may "
+                "appear in an exempt file, and there is no declaration that "
+                "would make a real one acceptable — writing it down would BE "
+                "the leak the digest denylist exists to prevent")
+    if rule == "dated-incident":
+        if int(value[:4]) < EXEMPT_DATE_YEAR_CEILING:
+            return None
+        return (f"a dated stamp from {value[:4]}. A control needs a date the "
+                f"rule will not skip, so it cannot use the year-"
+                f"{SYNTHETIC_DATE_YEAR} convention — use a pre-"
+                f"{EXEMPT_DATE_YEAR_CEILING} one, which cannot pin an "
+                f"observation to a day on any real deployment")
+    if rule == "address" and (value.startswith(RESERVED_ADDRESS_PREFIXES)
+                              or value in DOC_ADDRESSES):
+        return None
+    if value in EXEMPT_FIXTURE_VALUES:
+        return None
+    return ("not declared in EXEMPT_FIXTURE_VALUES. A file exempt from the scan "
+            "may only spell a sensitive value the table names, with the reason "
+            "it is safe written beside it")
+
+
+def audit_exempt_files() -> bool:
+    """Audit every file the gate exempts from the scan. True = clean.
+
+    🔴 UNREADABLE IS NOT CLEAN, HERE TOO. An exemption naming a file nothing can
+    open audits nothing, and would report exactly what a clean file reports.
+    """
+    ok = True
+    extracted = 0
+    for rel in sorted(SKIP_FILES):
+        try:
+            text = (ROOT / rel).read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"  FAIL  cannot read the exempt file {rel}: {e} — an "
+                  f"exemption that names an unreadable file audits nothing")
+            ok = False
+            continue
+        values = sensitive_values(text)
+        extracted += len(values)
+        bad = [(n, r, v, why) for n, r, v in values
+               if (why := undeclared(r, v)) is not None]
+        for n, r, v, why in bad:
+            print(f"  FAIL  {rel}:{n}: [{r}] {v!r}")
+            print(f"        -> {why}")
+        if bad:
+            ok = False
+        else:
+            print(f"  PASS  {rel}: {len(values)} sensitive value(s), every one "
+                  f"accounted for")
+
+    if len(EXEMPT_FIXTURE_VALUES) != EXEMPT_FIXTURE_VALUE_COUNT:
+        print(f"  FAIL  EXEMPT_FIXTURE_VALUES holds "
+              f"{len(EXEMPT_FIXTURE_VALUES)}, EXEMPT_FIXTURE_VALUE_COUNT says "
+              f"{EXEMPT_FIXTURE_VALUE_COUNT}. A row added without the count is "
+              f"a declaration nobody was told about.")
+        ok = False
+
+    if extracted < EXEMPT_AUDIT_MIN_VALUES:
+        print(f"  FAIL  extracted {extracted} value(s) from "
+              f"{len(SKIP_FILES)} exempt file(s), fewer than "
+              f"{EXEMPT_AUDIT_MIN_VALUES}. These files ARE the gate's fixture "
+              f"lists; a count this low means the extractor stopped seeing "
+              f"whole classes, and 0 means it read nothing.")
+        ok = False
+    else:
+        print(f"  PASS  {extracted} value(s) extracted — the audit is reading "
+              f"something (floor {EXEMPT_AUDIT_MIN_VALUES})")
+    return ok
+
+
+def audit_negative_controls() -> list[tuple[str, str, str]]:
+    """(label, expected rule, sample) — each must be REFUSED by the audit.
+
+    🔴 EVERY SAMPLE IS ASSEMBLED AT RUNTIME, NEVER SPELLED, AND THAT IS FORCED
+    RATHER THAN CUTE. A control for a value-audit cannot be a literal in the
+    file the audit reads: the audit would refuse its own control, and the only
+    ways out would be exempting the control — a hole the size of the thing being
+    tested — or deleting it. So each value is built from pieces that are not
+    sensitive on their own, and the assembly is the thing to read.
+
+    🔴 THE EXPECTED RULE IS ASSERTED, NOT JUST "SOMETHING FIRED". A sample
+    refused by a different branch is a control that passes while the branch it
+    was written for is inert.
+    """
+    modern = str(EXEMPT_DATE_YEAR_CEILING + 16)
+    return [
+        ("an undeclared private address", "address",
+         "NODE = '192.168." + "7.7'  # a shape the private-ip rule matches"),
+        ("an undeclared lab hostname", "private-hostname",
+         "API = 'https://muster.backup" + ".lan/api/tasks'"),
+        ("a denied identifier that is not a sentinel", "denied-identifier",
+         f'    cluster = "{DENY_CANARY_UNPERMITTED}-ci-jx5fq"'),
+        ("a dated stamp inside an exempt file", "dated-incident",
+         f"# MEASURED {modern}-08-23: the reconciler dropped kickoffs"),
+    ]
 
 
 def partition_tracked_files() -> tuple[list[Path], list[Skipped]]:
@@ -454,11 +762,11 @@ NEGATIVE_CONTROLS = [
     ("registry-ref",
      'image: registry.workshed.lan/library/muster:0.4.2'),
     ("registry-ref",
-     '  IMAGE = "harbor.internal.example.net:5000/agents/runner:2026.5.7"'),
+     '  IMAGE = "registry.internal.example.net:5000/agents/runner:2000.1.2"'),
     ("private-ip",
-     "NODE = '192.168.50.250'  # the k3s node"),
+     "NODE = '10.255.255.1'  # the k3s node"),
     ("private-ip",
-     "    endpoint: 172.20.4.9:30302"),
+     "    endpoint: 172.20.4.9:30080"),
     ("credential",
      'Authorization: Bearer ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'),
     ("credential",
@@ -471,12 +779,21 @@ NEGATIVE_CONTROLS = [
      f'    cluster = "{DENY_CANARY_WORD}-ci-jx5fq"'),
     ("denied-identifier",
      f'    SCOPE_ENV = "{DENY_CANARY.upper().replace("-", "_")}_TMPFS"'),
+    # ⚠ THESE THREE DATES ARE DELIBERATELY PRE-2010, AND THAT IS THE ONLY
+    # SPELLING AVAILABLE. A control for the dated-incident rule cannot use the
+    # year-2000 convention the rule steers toward, because the rule SKIPS that
+    # year — the control would be inert. A date older than this project can
+    # possibly be keeps the rule watched while being unable to pin an
+    # observation to any real day on any real deployment, and the self-audit
+    # below enforces exactly that. The narration is invented too: a fixture
+    # carrying a real agent's name and a real symptom leaks without spelling
+    # any value an audit can extract, and one here did.
     ("dated-incident",
-     "# MEASURED 2026-09-01: the reconciler dropped 3 of 14 kickoffs under load"),
+     "# MEASURED 1999-09-01: the reconciler dropped 3 of 14 kickoffs under load"),
     ("dated-incident",
-     "    the migration landed and the gate went green on 2026-08-20"),
+     "    the migration landed and the gate went green on 1999-08-20"),
     ("dated-incident",
-     "# 2026-08-29: chief has never run on its configured model"),
+     "# 1999-08-29: the nightly sweeper has never run on its configured queue"),
 ]
 
 POSITIVE_CONTROL = "trusted = '172.16.4.9'  # a real private address"
@@ -589,6 +906,29 @@ def self_test() -> int:
             for f in found:
                 print(f"        matched [{f.rule}]")
             ok = False
+
+    # 🔴 THE AUDIT'S OWN CONTROLS RUN BEFORE THE AUDIT, for the reason the whole
+    # module exists: an audit that cannot refuse reports "everything accounted
+    # for" exactly the way a clean file does.
+    print("== SELF-AUDIT CONTROL: the value audit must REFUSE, per branch ==")
+    for label, expected, sample in audit_negative_controls():
+        refused = {r for n, r, v in sensitive_values(sample)
+                   if undeclared(r, v) is not None}
+        if expected in refused:
+            print(f"  PASS  {expected:20} refused: {label}")
+        else:
+            print(f"  FAIL  {expected:20} NOT refused — that branch of the "
+                  f"audit is inert")
+            print(f"        sample: {sample[:70]}")
+            print(f"        refused instead: {sorted(refused) or 'nothing'}")
+            ok = False
+
+    # The narrowness half of the same claim: the real exempt files, whose values
+    # are all declared, must produce NO refusal. A guard that fires on its own
+    # repository is a guard someone deletes.
+    print("== SELF-AUDIT: the files the gate EXEMPTS, audited by VALUE ==")
+    if not audit_exempt_files():
+        ok = False
 
     return 0 if ok else 2
 

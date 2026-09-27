@@ -162,10 +162,20 @@ mechanism looks over-built and each part of it is there for a measured failure.
 - **`nix build` runs the pure-Go tests only.** The sandbox has no database, so
   every Postgres-backed test skips there. A green `nix flake check` is not a
   green suite; the CI `test` job is.
-- **The leak gate does not scan itself.** `tests/leakscan.py` has to contain
-  realistic sensitive strings — they are its negative controls — so it is exempt
-  by name and printed as a named skip. A real secret pasted into that file is
-  invisible to the gate. Review changes to it by hand.
+- **The leak gate does not scan itself — it AUDITS itself, which is narrower.**
+  `tests/leakscan.py` has to contain realistic sensitive strings (they are its
+  negative controls), so it is exempt from the scan and printed as a named skip.
+  That exemption was unaudited and something hid in it: a `private-ip` control
+  carried the LAN address of a real single-node cluster from this file's first
+  commit out into public history, past a hand review, because it looked exactly
+  like its synthetic neighbours. Every file in `SKIP_FILES` is now audited by
+  VALUE — every address, hostname, registry reference, credential, denied name
+  and dated stamp it spells must be objectively unroutable, objectively
+  synthetic, or declared in `EXEMPT_FIXTURE_VALUES` with the reason it is safe,
+  and anything new fails closed. What that still accepts is written out in the
+  module beside the table: a real value somebody declares anyway, prose (a real
+  incident narrated in a fixture spells no value an audit can extract — one did),
+  IPv6 in any form, and the fixtures of every file the gate actually scans.
 - **No agent runtime.** The provisioner can create an instance; nothing here
   talks to it. Sending a message, streaming its tokens, servicing its tool calls
   — and therefore the question of whether an agent that is not one specific
