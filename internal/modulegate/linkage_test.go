@@ -59,6 +59,17 @@ var notLinkedLedger = map[string]string{
 
 	"internal/modulegate": "this package. Test files only; it has no importable symbol.",
 
+	"internal/agentspec": "the agent-row -> provision.Spec builder, plan step 22a. " +
+		"It has no consumer because the thing that would call it is the adapter " +
+		"from provision.Provisioner to api.Provisioner, which is plan step 22b — " +
+		"nothing in this module implements api.Provisioner yet, so there is no " +
+		"lifecycle method to build a spec FOR. It is landed ahead of that " +
+		"deliberately: it is the only one of the three 22x pieces that touches " +
+		"neither the requireProvisioner wrapper nor the chat path, so it is " +
+		"reviewable on its own. 🔴 THIS ENTRY DISAPPEARING IS THE SIGNAL THAT 22b " +
+		"LANDED, exactly as internal/provision/k8s's entry is the signal for the " +
+		"seam as a whole. Do not wire a fake consumer to clear it.",
+
 	"internal/provision/k8s": "the Kubernetes provisioner DRIVER. It has no consumer " +
 		"because nothing in this module implements api.Provisioner — the adapter " +
 		"from provision.Driver to that interface is the chunk internal/agents/provision.go " +
