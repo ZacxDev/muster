@@ -356,17 +356,45 @@ func (a *Adapter) Destroy(agentID int64) error {
 		// has ALREADY answered an empty 200, so htmx removed the card before this
 		// line ran. With no row write the card simply REAPPEARS on the next render
 		// with no explanation anywhere a user looks — and the row we correctly kept
-		// is the only evidence the instance is still out there. Recording `error`
-		// plus the cause is what turns "the card came back" into a red card naming
-		// an ownership refusal or an unreachable backend.
+		// is the only evidence the instance is still out there.
+		//
+		// 🔴 WHAT THE RECORDED STATUS ACTUALLY BUYS, MEASURED — AND AN EARLIER
+		// REVISION OF THIS SENTENCE OVERSTATED IT IN THE SAME WAY THIS FILE RETRACTS
+		// 300 LINES ABOVE. It claimed this "turns 'the card came back' into a red
+		// card NAMING an ownership refusal or an unreachable backend". The red card
+		// is real: internal/ui renders `error` as a red pill, and
+		// agents.ComputeStatus returns StatusError FIRST, so a stored error is not
+		// refined away by a live read. The NAMING half is false — Agent.ErrorMessage
+		// has ZERO consumers in internal/ui (no view struct carries an error field)
+		// and reaches exactly one surface, the hook-token-gated GET /api/agents in
+		// internal/api/machine_agents.go. So: the operator sees a red card instead of
+		// a card that silently reappears, and reads WHY only with a token. That is
+		// still worth having, and it is less than the sentence claimed.
 		return a.fail(ag, "destroy instance (the stored row was KEPT because the "+
 			"instance was not removed)", err)
 	}
-	if err := a.store.Delete(ctx, ag.ID); err != nil {
+	// 🔴 THE DELETE IS BOOKKEEPING, NOT THE OPERATION, AND IT WAS ON THE WRONG
+	// BUDGET FOR ONE ROUND. bookkeepingCtx's own doc predicted this site in as many
+	// words — "a rule asking every caller to remember which context to hand a status
+	// write is a rule that gets obeyed at four sites and missed at the fifth" — and
+	// this was the fifth. driver.Destroy is the slow call here, so if it consumes the
+	// operation budget and THEN succeeds, the instance is gone and the row survives
+	// with its pre-delete status; the returned error is only logged, after an empty
+	// 200 htmx has already used to remove the card. The card comes back pointing at
+	// nothing. Caught by a mutant that handed this call a cancelled context and
+	// SURVIVED the whole suite.
+	if err := a.deleteRow(ag); err != nil {
 		return fmt.Errorf("agentprovision: destroy agent %d (%s): instance removed but the row "+
 			"was not deleted: %w", ag.ID, ag.Name, err)
 	}
 	return nil
+}
+
+// deleteRow removes the stored agent on the bookkeeping budget. See bookkeepingCtx.
+func (a *Adapter) deleteRow(ag agents.Agent) error {
+	ctx, cancel := a.bookkeepingCtx()
+	defer cancel()
+	return a.store.Delete(ctx, ag.ID)
 }
 
 // Instances returns every instance the driver manages, for status
@@ -590,10 +618,13 @@ func (a *Adapter) opCtx() (context.Context, context.CancelFunc) {
 // timeout is a line in this pod's stdout — which is the observable this package's
 // header says it exists to remove, reproduced one layer down.
 //
-// ⚠ IT IS Background-DERIVED, SO IT ALSO SURVIVES SHUTDOWN CANCELLATION, and that
-// is the right direction for this one write: a SIGTERM mid-operation is exactly when
-// the row most needs to stop claiming something that is no longer true. The
-// operation itself is a different question and is NOT solved here — see opCtx.
+// ⚠ THIS DRAWS NO CONTRAST WITH opCtx, AND AN EARLIER REVISION IMPLIED ONE. It said
+// this budget "ALSO survives shutdown cancellation … the operation itself is NOT
+// solved here", which reads as though opCtx did not. It does: opCtx is
+// context.Background()-derived too, so NEITHER is cancelled at shutdown. What this
+// budget actually provides is a FRESH deadline rather than a shared one. Shutdown
+// cancellation of an in-flight lifecycle operation is genuinely unsolved — for both —
+// and naming it here as a property of one of them obscured that.
 //
 // ⚠ THE HELPERS DERIVE IT THEMSELVES RATHER THAN TAKING IT, so no call site can
 // pass the wrong one. That is the structural form of the fix; a rule asking every

@@ -49,6 +49,25 @@ func (s *recordingStore) record(format string, args ...any) {
 // mutant that handed the status write an ALREADY-EXPIRED context — the exact defect
 // the bookkeeping budget exists to remove — SURVIVED the whole suite. A store fake
 // stands in for a database, and a database call on a dead context fails.
+//
+// 🔴 IT IS NOW WIRED INTO *EVERY* METHOD, WHICH IT WAS NOT WHEN THIS BANNER FIRST
+// CLAIMED IT. Three of eight honoured their context while this paragraph said "every
+// method here" — a description wider than its body, in the one file whose stated
+// purpose is making context defects visible. The gap was not theoretical: a mutant
+// handing store.Delete a cancelled context SURVIVED, and that call really was on the
+// wrong budget (see Destroy). The fix was to widen the BODY to the sentence, never to
+// narrow the sentence to the body.
+//
+// ⚠ WIRED IS NOT EXERCISED, AND THE DIFFERENCE IS MEASURED RATHER THAN ASSUMED. Every
+// method refuses a dead context, so a wrong-budget call at any site CAN be seen — but
+// only THREE sites are actually driven on one by a test today: UpdateStatus and
+// SetKickoffError (TestATimedOutOperationStillRECORDSItsFailure) and Delete
+// (TestATimedOutDestroyStillDELETESTheRow). A mutant making SetHooksToken ignore its
+// context SURVIVES, because every test reaches the mint while the operation budget is
+// still alive. That is a coverage statement, not a defect: SetHooksToken is on the
+// OPERATION budget on purpose — minting is part of doing the work, not a record of it,
+// so a dead context there should fail the operation and be recorded by fail(). Do not
+// read the wiring as proof the other five are covered.
 func (s *recordingStore) refuse(ctx context.Context, what string) error {
 	if err := ctx.Err(); err != nil {
 		s.record("%s REFUSED(%v)", what, err)
@@ -57,7 +76,10 @@ func (s *recordingStore) refuse(ctx context.Context, what string) error {
 	return nil
 }
 
-func (s *recordingStore) Get(_ context.Context, id int64) (agents.Agent, error) {
+func (s *recordingStore) Get(ctx context.Context, id int64) (agents.Agent, error) {
+	if err := s.refuse(ctx, fmt.Sprintf("Get(%d)", id)); err != nil {
+		return agents.Agent{}, err
+	}
 	s.record("Get(%d)", id)
 	if s.getErr != nil {
 		return agents.Agent{}, s.getErr
@@ -73,7 +95,10 @@ func (s *recordingStore) UpdateStatus(ctx context.Context, id int64, status, las
 	return s.updateErr
 }
 
-func (s *recordingStore) SetHooksToken(_ context.Context, id int64, token string) error {
+func (s *recordingStore) SetHooksToken(ctx context.Context, id int64, token string) error {
+	if err := s.refuse(ctx, fmt.Sprintf("SetHooksToken(%d)", id)); err != nil {
+		return err
+	}
 	// The token's VALUE is deliberately not recorded — it is a secret, and a test
 	// transcript is a log. Its LENGTH is, because that is the property worth
 	// pinning (32 random bytes as 64 hex characters).
@@ -82,7 +107,10 @@ func (s *recordingStore) SetHooksToken(_ context.Context, id int64, token string
 	return nil
 }
 
-func (s *recordingStore) SetKickedOff(_ context.Context, id int64, v bool) error {
+func (s *recordingStore) SetKickedOff(ctx context.Context, id int64, v bool) error {
+	if err := s.refuse(ctx, fmt.Sprintf("SetKickedOff(%d)", id)); err != nil {
+		return err
+	}
 	s.record("SetKickedOff(%d,%t)", id, v)
 	return nil
 }
@@ -95,7 +123,10 @@ func (s *recordingStore) SetKickoffError(ctx context.Context, id int64, msg stri
 	return s.kickoffErrErr
 }
 
-func (s *recordingStore) RecordKickoffDelivery(_ context.Context, id int64, pod string, restarts int32) error {
+func (s *recordingStore) RecordKickoffDelivery(ctx context.Context, id int64, pod string, restarts int32) error {
+	if err := s.refuse(ctx, fmt.Sprintf("RecordKickoffDelivery(%d)", id)); err != nil {
+		return err
+	}
 	s.record("RecordKickoffDelivery(%d,%s,%d)", id, pod, restarts)
 	return nil
 }
@@ -108,7 +139,10 @@ func (s *recordingStore) ClearKickoffDelivery(ctx context.Context, id int64) err
 	return nil
 }
 
-func (s *recordingStore) Delete(_ context.Context, id int64) error {
+func (s *recordingStore) Delete(ctx context.Context, id int64) error {
+	if err := s.refuse(ctx, fmt.Sprintf("Delete(%d)", id)); err != nil {
+		return err
+	}
 	s.record("Delete(%d)", id)
 	return s.deleteErr
 }
@@ -165,6 +199,10 @@ type flakyDriver struct {
 	createErr  error
 	// burnBudget makes Create block until the operation's context expires.
 	burnBudget bool
+	// burnBudgetOnDestroy does the same for Destroy and then SUCCEEDS, which is the
+	// shape that matters: the teardown worked, so the row must be deleted — on a
+	// budget that is already gone.
+	burnBudgetOnDestroy bool
 
 	scaled   []int
 	destroys int
@@ -211,6 +249,12 @@ func (d *flakyDriver) Scale(ctx context.Context, ref provision.Ref, replicas int
 func (d *flakyDriver) Destroy(ctx context.Context, ref provision.Ref) error {
 	d.destroys++
 	d.note("driver.Destroy(%s)", ref.Name)
+	if d.burnBudgetOnDestroy {
+		<-ctx.Done()
+		// SUCCEEDS despite the expiry — the instance really is gone, so the caller
+		// owes the row a delete and has no budget left to do it on.
+		return nil
+	}
 	if d.destroyErr != nil {
 		return d.destroyErr
 	}

@@ -20,9 +20,14 @@ import (
 // `s.ext.Provisioner == nil` FALSE in api.requireLifecycleProvisioner, and the
 // consequences are not confined to the agent routes:
 //
-//   - the new defects() entry fires (Provisioner "wired", PrivilegeApply nil), so
-//     EVERY default deployment with a database answers /readyz 503 → the pod is
-//     pulled from the Service → all 99 routes go dark, not just agents.
+//   - the new defects() entry fires and EVERY default deployment with a database
+//     answers /readyz 503 → the pod is pulled from the Service → all 99 routes go
+//     dark, not just agents. ⚠ THE ENTRY HAS THREE CONJUNCTS, NOT THE TWO AN EARLIER
+//     REVISION OF THIS LINE NAMED: Provisioner != nil AND Privilege != nil AND
+//     PrivilegeApply == nil. The conclusion survives because cmd/muster-server sets
+//     ext.Privilege unconditionally inside its `cfg.Database != ""` branch — but the
+//     third conjunct is what makes it true, so omitting it stated the right answer
+//     from an incomplete premise.
 //   - the boot banner prints LIFECYCLE WIRED, which is false.
 //   - a typed nil SATISFIES api.ProfileReapplier, so the grant path's type
 //     assertion succeeds and nil-derefs.

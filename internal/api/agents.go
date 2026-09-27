@@ -627,8 +627,17 @@ func (s *Server) handleAgentName(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAgentCreate handles POST /agents: build the record then provision
-// (dispatch = kick off now; save = provision at 0 replicas).
+// handleAgentCreate handles POST /agents: build the record, then provision only when
+// the action is a dispatch.
+//
+// 🔴 THIS COMMENT HAS NOW BEEN WRONG IN TWO OPPOSITE DIRECTIONS, WHICH IS WHY IT SAYS
+// SO. It read "save = provision at 0 replicas". That was wrong when written — a save
+// reached Provisioner.Dispatch(kickoff=false), and provision.Spec.Replicas ZERO MEANS
+// ONE, so the instance came up with a replica running — and it is wrong again now in
+// the other direction, because the lifecycle adapter creates NOTHING on that path.
+// A save provisions nothing at all; Start is what provisions a saved agent. The gate
+// check below relies on exactly that, which is why this sentence is load-bearing
+// rather than decorative.
 func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	if err := r.ParseForm(); err != nil {

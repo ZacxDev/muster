@@ -137,6 +137,61 @@ func TestATimedOutOperationStillRECORDSItsFailure(t *testing.T) {
 	}
 }
 
+// TestATimedOutDestroyStillDELETESTheRow is the second half of the bookkeeping-budget
+// guarantee, and it exists because a mutant found the site bookkeepingCtx's own doc had
+// predicted would be missed.
+//
+// 🔴 driver.Destroy IS THE SLOW CALL, SO THIS IS THE ONE OPERATION WHOSE BUDGET IS
+// MOST LIKELY ALREADY GONE BY THE TIME THE ROW IS TOUCHED. On the operation context the
+// sequence was: teardown succeeds, Delete runs on a dead context and fails, the error is
+// only logged — after handleAgentDelete's empty 200 has already had htmx remove the
+// card. The instance is gone and the row survives with its pre-delete status, so the
+// card comes back pointing at nothing.
+//
+// ⚠ IT ASSERTS THE ROW WAS DELETED *AND* THAT NOTHING WAS REFUSED, because either alone
+// is satisfiable by accident: a Delete that never ran records no refusal either.
+func TestATimedOutDestroyStillDELETESTheRow(t *testing.T) {
+	store := &recordingStore{agent: fixtureAgent()}
+	driver := &flakyDriver{Noop: provision.MustNewNoop(), rec: store, burnBudgetOnDestroy: true}
+	a, err := New(Config{
+		Driver:    driver,
+		Store:     store,
+		Spec:      fixtureSpecConfig(),
+		OpTimeout: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	err = a.Destroy(fixtureAgentID)
+
+	// POSITIVE CONTROL: the driver really was reached and really did burn the budget.
+	if driver.destroys != 1 {
+		t.Fatalf("positive control FAILED: Destroy ran %d time(s), want 1", driver.destroys)
+	}
+
+	// 🔴 THE TRANSCRIPT ASSERTIONS RUN BEFORE THE RETURNED ERROR IS JUDGED, AND THE
+	// ORDER WAS FOUND BY MUTATION FOR THE SECOND TIME IN THIS PACKAGE. With
+	// `t.Fatalf("Destroy: %v", err)` first, the mutant that put the delete back on the
+	// operation context stopped the test on the returned error and the two assertions
+	// that name the actual defect never ran — a kill scored for an assertion that did
+	// not execute, and still green with both of them deleted.
+	if strings.Contains(store.transcript(), "REFUSED") {
+		t.Errorf("a store write was refused by an expired context after the teardown "+
+			"succeeded:\n  transcript: %s\n"+
+			"    The instance is gone and the row survives with its pre-delete status, while "+
+			"htmx has already removed the card. Delete must run on the bookkeeping budget.",
+			store.transcript())
+	}
+	if !store.called("Delete") {
+		t.Errorf("the row was not deleted after a teardown that succeeded on a burnt "+
+			"budget.\n  transcript: %s", store.transcript())
+	}
+	if err != nil {
+		t.Errorf("Destroy reported a failure over a teardown that SUCCEEDED: %v", err)
+	}
+}
+
 // TestTheBackendLEADSTheRowInEveryMethod is the ordering guard, and it exists
 // because a mutant that moved a status write BEFORE its driver call SURVIVED the
 // whole suite.
@@ -149,6 +204,14 @@ func TestATimedOutOperationStillRECORDSItsFailure(t *testing.T) {
 // ⚠ THIS IS AN ORDER ASSERTION, WHICH THE OLD FAKE COULD NOT EXPRESS. The store
 // and the driver now share one transcript (see flakyDriver.rec); membership checks
 // over two separate lists cannot say "A before B" no matter how they are written.
+//
+// ⚠ "EVERY METHOD" MEANS EVERY METHOD THAT HAS BOTH HALVES TO ORDER — three of them.
+// The name overstated it, so here is the exhaustive account. Destroy is covered by
+// TestATimedOutDestroyStillDELETESTheRow and TestDestroyRecordsWHYItKeptTheRow instead.
+// Dispatch(kickoff=false) CANNOT be a row here and it is not an oversight: it makes no
+// driver call at all, so this test's own `di < 0` positive control would fire — that
+// path's guard is TestDispatchWithoutAKickoffCreatesNothing. Instances, TailLogs and
+// StreamLogs write nothing to the store, so there is no order to assert.
 func TestTheBackendLEADSTheRowInEveryMethod(t *testing.T) {
 	cases := []struct {
 		name string

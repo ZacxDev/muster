@@ -327,11 +327,29 @@ type Provisioner interface {
 	// An implementer that provisions on kickoff=false, or that reports a delivery
 	// it did not make, is wrong against this interface — not merely different.
 	Dispatch(agentID int64, kickoff bool) error
-	// Start scales a stopped/provisioned agent up (kicking off if pending).
+	// Start brings a stopped or never-provisioned agent up, creating its instance
+	// when the driver reports the backend does not have one.
+	//
+	// ⚠ IT DOES NOT KICK OFF, AND THIS DOC SAID IT DID. It read "(kicking off if
+	// pending)" — the same retracted claim Dispatch's doc above corrects, left
+	// behind in the sibling method for one round. The only implementation records
+	// the non-delivery instead; see agentprovision.UndeliveredKickoffReason.
 	Start(agentID int64) error
-	// Stop scales a running agent down to zero replicas.
+	// Stop scales a running agent down to zero replicas, keeping its declaration.
+	// An instance the backend does not have is already stopped, not an error.
 	Stop(agentID int64) error
-	// Destroy uninstalls the release and deletes the namespace.
+	// Destroy removes the instance and everything the driver created for it, then
+	// deletes the stored row.
+	//
+	// ⚠ IT DELETES THE ROW ONLY WHEN THE BACKEND HOLDS NOTHING, and this doc did
+	// not say so — which is the contract the lifecycle adapter added. A terminal
+	// ownership refusal or an unreachable backend KEEPS the row, because the row is
+	// then the only record of a live instance.
+	//
+	// ⚠ ITS PREVIOUS WORDING WAS "uninstalls the release and deletes the
+	// namespace" — helm and Kubernetes vocabulary in an interface whose Instances
+	// doc makes a 🔴 point of having removed exactly that, and false for any driver
+	// without namespaces.
 	Destroy(agentID int64) error
 	// Instances returns the live state of every agent workload, for status
 	// reconciliation.
@@ -342,9 +360,9 @@ type Provisioner interface {
 	// transitivity. The provisioner contract's own vocabulary is what lets
 	// agents.ComputeStatus answer for an agent running under any driver.
 	Instances(ctx context.Context) ([]provision.Instance, error)
-	// TailLogs returns the last N log lines of the agent's running pod.
+	// TailLogs returns the last N log lines of the agent's running instance.
 	TailLogs(ctx context.Context, a agents.Agent, lines int64) (string, error)
-	// StreamLogs follows the agent's pod logs, invoking emit per line.
+	// StreamLogs follows the agent's instance output, invoking emit per line.
 	StreamLogs(ctx context.Context, a agents.Agent, emit func(string)) error
 }
 
