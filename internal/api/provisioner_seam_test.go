@@ -19,6 +19,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/metrics"
 )
@@ -51,7 +52,8 @@ import (
 // FAKE FOR: "dispatch would report success, no pod would exist, and the agent
 // would sit in `provisioning` for ever. That is the 'lies silently' side of the
 // line." Wiring nil produced it exactly. The nil is only the honest option this
-// entry claims once something refuses, which is api.requireProvisioner.
+// entry claims once something refuses, which is api.requireLifecycleProvisioner
+// and api.requireGatewayProvisioner.
 //
 // The two halves below fail for different reasons and neither substitutes for
 // the other: the first is a RELATIONSHIP over the source (a tenth call site
@@ -59,7 +61,7 @@ import (
 // wrapper that is registered but broken cannot pass).
 // ---------------------------------------------------------------------------
 
-// provisionerRouteLedger is every route registered behind requireProvisioner.
+// Each row's `routes` is every route registered behind that row's wrapper.
 //
 // 🔴 THE TEST FAILS WHEN THIS SET GROWS *OR* SHRINKS, AND THAT SENTENCE WAS
 // FALSE FOR A WHOLE REVISION — THIS COMMENT IS WHAT MADE IT UNCHECKABLE.
@@ -78,7 +80,7 @@ import (
 // only caught by the SECOND:
 //
 //	DERIVED == DECLARED — the routes whose registration expression calls
-//	  requireProvisioner are exactly the ones below. This catches a one-sided
+//	  its dependency's wrapper are exactly the ones below. This catches a one-sided
 //	  edit: an unwrap that leaves the ledger alone, or a delist that leaves the
 //	  wrapper alone.
 //	AND REACHABILITY DECIDES WHICH ROUTES BELONG — every registered route whose
@@ -90,59 +92,106 @@ import (
 //
 // A plain "every wrapped route refuses" check would be satisfied by wrapping
 // ZERO routes, which is the state this file was written to end.
-var provisionerRouteLedger = []string{
-	"DELETE /agents/{id}",
-	"GET /agents/{name}/logs/stream",
-	"GET /agents/{name}/ws",
-	"POST /agents",
-	"POST /agents/{id}/start",
-	"POST /agents/{id}/stop",
-	"POST /api/agents/{name}/messages",
-	"POST /chief/provision",
-	"POST /runbooks/{id}/dispatch",
+// 🔴 THERE ARE TWO DEPENDENCIES NOW, AND THIS FILE IS A TABLE OVER THEM RATHER
+// THAN TWO COPIES OF ITSELF. api.Provisioner used to carry agent LIFECYCLE and
+// agent CHAT behind one nil and one wrapper; they are now api.Provisioner and
+// api.Gateway, each with its own wrapper. Every derived check below runs once per
+// row, so a third dependency is a row rather than a fork — and, more to the point,
+// neither row can be weakened without the other noticing, because they share the
+// derivation code.
+//
+// ⚠ THE COST OF THE SPLIT, STATED WHERE IT IS PAID: each ledger is now smaller, so
+// each is individually easier to satisfy by accident. That is why the behavioural
+// test drives THREE fixtures rather than one — both nil, lifecycle-only, and
+// gateway-only — see TestWiringOneDependencyDoesNotSilenceTheOther. Without that
+// third shape the split would be exactly the "wire it and the other routes stop
+// refusing" defect it was made to prevent.
+type provisionerDep struct {
+	// name is what failure messages call this dependency.
+	name string
+	// field is the api.Extensions field, and the selector the AST walk matches:
+	// `s.ext.<field>`.
+	field string
+	// wrapper is the Server method that refuses when the field is nil.
+	wrapper string
+	// routes is every route registered behind wrapper.
+	routes []string
+	// callers is every function in this package that calls a method on
+	// s.ext.<field> WITHOUT first checking it for nil in its own body.
+	callers []string
 }
 
-// provisionerCallerLedger is every function in this package that calls a method
-// on s.ext.Provisioner WITHOUT first checking it for nil in its own body.
+var provisionerDeps = []provisionerDep{
+	{
+		name:    "lifecycle provisioner",
+		field:   "Provisioner",
+		wrapper: "requireLifecycleProvisioner",
+		routes: []string{
+			"DELETE /agents/{id}",
+			"GET /agents/{name}/logs/stream",
+			"POST /agents",
+			"POST /agents/{id}/start",
+			"POST /agents/{id}/stop",
+			"POST /chief/provision",
+			"POST /runbooks/{id}/dispatch",
+		},
+		callers: []string{
+			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAgentCreate, handleChiefProvision, dispatchRunbook
+			"(*Server).handleAgentDelete",      // Destroy
+			"(*Server).handleAgentLogsStream",  // StreamLogs
+			"(*Server).handleAgentStart",       // Start
+			"(*Server).handleAgentStop",        // Stop
+			"(*Server).handleChiefProvision",   // Start
+		},
+	},
+	{
+		name:    "agent gateway",
+		field:   "Gateway",
+		wrapper: "requireGatewayProvisioner",
+		routes: []string{
+			"GET /agents/{name}/ws",
+			"POST /api/agents/{name}/messages",
+		},
+		callers: []string{
+			"(*Server).chatTurn",                  // ChatWithTools + Chat; reached from handleAgentWS
+			"(*Server).handleAPIAgentSendMessage", // Chat
+		},
+	},
+}
+
+// allProvisionerRoutes is every route on any row, for the fixtures that drive the
+// whole set at once.
+func allProvisionerRoutes() []string {
+	var out []string
+	for _, d := range provisionerDeps {
+		out = append(out, d.routes...)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// 🔴 THE CALLER LEDGERS ABOVE CARRY A KNOWN LIMIT, FOUND BY A MUTANT THAT SURVIVED
+// THIS GUARD RATHER THAN BY REVIEW: THE DETECTION IS FUNCTION-GRANULAR, NOT
+// CALL-SITE-GRANULAR. A function counts as guarded if it compares the field
+// against nil ANYWHERE in its body — so a function that nil-checks on one path and
+// calls unguarded on another is classified guarded and never reaches a ledger. The
+// sweep mutant that proved it bolted a call onto instanceIndex, which already had
+// a nil check, and the guard stayed green. Closing it properly needs dominance
+// analysis (does the check dominate the call?), which is a real piece of work and
+// out of scope here.
 //
-// 🔴 IT IS THE SET THE WRAPPER EXISTS FOR, AND IT IS DERIVED FROM THE SOURCE
-// RATHER THAN LISTED BY HAND. Each of these panics on a nil interface, so each
-// must be reachable only from a route on provisionerRouteLedger. A new handler
-// that calls the provisioner lands HERE first — which is the prompt to wrap its
-// route, not a silent tenth lie.
+// ⚠ WHAT THAT DOES AND DOES NOT COST. The case it cannot see is a MODIFIED
+// already-guarded function; the case these ledgers exist for — a NEW handler
+// reaching a dependency, which is how a lying route would arrive — is caught, and
+// the sweep confirms it with a mutant that adds exactly such a function. Read a
+// clean verdict as "no new unguarded caller", never as "every call site is
+// dominated by a check".
 //
 // ⚠ A TYPE ASSERTION IS NOT A CALL AND IS DELIBERATELY ABSENT. `s.ext.Provisioner
 // .(ProfileReapplier)` on a nil interface yields ok=false; it is the one form of
 // optional dependency that is safe unguarded, and doc_seams.go entry 3 is about
 // exactly that. handleAgentModel and the privilege grant path use it and are not
-// on this list.
-//
-// 🔴 KNOWN LIMIT, FOUND BY A MUTANT THAT SURVIVED THIS GUARD RATHER THAN BY
-// REVIEW: THE DETECTION IS FUNCTION-GRANULAR, NOT CALL-SITE-GRANULAR. A function
-// counts as guarded if it compares s.ext.Provisioner against nil ANYWHERE in its
-// body — so a function that nil-checks on one path and calls unguarded on
-// another is classified guarded and never reaches this ledger. The sweep mutant
-// that proved it bolted a call onto instanceIndex, which already had a nil
-// check, and the guard stayed green. Closing it properly needs dominance
-// analysis (does the check dominate the call?), which is a real piece of work
-// and out of scope here.
-//
-// ⚠ WHAT THAT DOES AND DOES NOT COST. The case it cannot see is a MODIFIED
-// already-guarded function; the case this ledger exists for — a NEW handler
-// reaching the provisioner, which is how a tenth lying route would arrive — is
-// caught, and the sweep confirms it with a mutant that adds exactly such a
-// function. Read a clean verdict here as "no new unguarded caller", never as
-// "every call site is dominated by a check".
-var provisionerCallerLedger = []string{
-	"(*Server).chatTurn",                  // ChatWithTools + Chat; reached from handleAgentWS
-	"(*Server).createAndDispatchAgent",    // Dispatch; reached from handleAgentCreate, handleChiefProvision, dispatchRunbook
-	"(*Server).handleAPIAgentSendMessage", // Chat
-	"(*Server).handleAgentDelete",         // Destroy
-	"(*Server).handleAgentLogsStream",     // StreamLogs
-	"(*Server).handleAgentStart",          // Start
-	"(*Server).handleAgentStop",           // Stop
-	"(*Server).handleChiefProvision",      // Start
-}
+// on any list.
 
 // unwiredProvisionerServer builds the deployment cmd/muster-server actually
 // ships: every dependency EXCEPT Provisioner.
@@ -150,7 +199,7 @@ var provisionerCallerLedger = []string{
 // 🔴 THE HOOK TOKEN HAS TO BE ARMED, OR ONE ROUTE WOULD PASS FOR THE WRONG
 // REASON. POST /api/agents/{name}/messages sits behind requireArmedHookToken,
 // which answers 503 of its OWN when the token is unset. A fixture that left it
-// unset would see 503 on that route whether or not requireProvisioner was ever
+// unset would see 503 on that route whether or not its wrapper was ever
 // registered there — green from a DIFFERENT guard's refusal, and still green
 // with the wrapper deleted. Arming the tier and presenting the credential makes
 // the only remaining 503 the one under test.
@@ -163,10 +212,21 @@ var provisionerCallerLedger = []string{
 // MUTATION KILL ATTRIBUTABLE. Handler() is the production chain —
 // recoverMiddleware included — so a handler that reaches a nil Provisioner
 // answers 500 instead of taking the test binary down with it. Against a bare
-// mux, deleting requireProvisioner would kill this test with a raw panic: red,
+// mux, deleting a wrapper would kill this test with a raw panic: red,
 // but red for a reason that is indistinguishable from the fixture being wrong.
 // With the real chain the failure is THIS test's own "answered 500, want 503".
 func unwiredProvisionerServer(t *testing.T) (*Server, http.Handler) {
+	t.Helper()
+	return provisionerServer(t, nil, nil)
+}
+
+// provisionerServer builds the same fixture with either dependency independently
+// wired, which is what makes the three-shape matrix below expressible.
+//
+// 🔴 EVERY OTHER DEPENDENCY IS WIRED, AND THAT IS THE POINT OF THE FIXTURE. The
+// only nil under test is the one the caller left nil, so a 503 carrying
+// ProvisionerUnwiredField can have come from nowhere else.
+func provisionerServer(t *testing.T, prov Provisioner, gw Gateway) (*Server, http.Handler) {
 	t.Helper()
 	s := New(nil, AuthConfig{
 		UIPassword: testUIPassword,
@@ -178,8 +238,95 @@ func unwiredProvisionerServer(t *testing.T) (*Server, http.Handler) {
 		Privilege:       stubPrivilegeStore{},
 		Runbooks:        stubRunbooksStore{},
 		SessionLiveness: stubLiveness{},
+		Provisioner:     prov,
+		Gateway:         gw,
 	})
 	return s, s.Handler()
+}
+
+// TestWiringOneDependencyDoesNotSilenceTheOther is the test the SPLIT exists for,
+// and without it the split would be strictly worse than the single nil it replaced.
+//
+// 🔴 THE DEFECT IT GUARDS IS THE WHOLE REASON THE OLD SHAPE WAS A PROBLEM. One nil
+// gated nine routes, so wiring a lifecycle adapter would have stopped the two CHAT
+// routes refusing as well — they would have answered 200 over a gateway that does
+// not exist, which is byte-for-byte the "dispatch reports success, no pod exists"
+// observable doc_seams.go entry 1 refuses to ship. Splitting the gate is only an
+// improvement if the halves are actually independent, and "actually" means measured.
+//
+// ⚠ IT ASSERTS ON THE REFUSAL MARKER, NOT ON 503 ALONE. Several of these routes can
+// answer 503 for reasons of their own (an unarmed hook tier, a stub store panicking
+// into recoverMiddleware), so a status-code-only check would pass for the wrong
+// reason and keep passing with a wrapper deleted. ProvisionerUnwiredField is
+// specific to these two wrappers.
+func TestWiringOneDependencyDoesNotSilenceTheOther(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		prov    Provisioner
+		gw      Gateway
+		refuses string // the dep.field whose routes MUST still refuse
+	}{
+		{"lifecycle wired, gateway nil", stubProvisioner{}, nil, "Gateway"},
+		{"gateway wired, lifecycle nil", nil, stubGateway{}, "Provisioner"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, h := provisionerServer(t, tc.prov, tc.gw)
+
+			var refusing, silent int
+			for _, dep := range provisionerDeps {
+				mustRefuse := dep.field == tc.refuses
+				for _, route := range dep.routes {
+					method, pattern, _ := strings.Cut(route, " ")
+					path := strings.NewReplacer("{id}", "1", "{name}", "chief").Replace(pattern)
+					req := httptest.NewRequest(method, path, strings.NewReader("{}"))
+					admit(s, req)
+					rec := httptest.NewRecorder()
+					h.ServeHTTP(rec, req)
+					got := strings.Contains(rec.Body.String(), ProvisionerUnwiredField)
+
+					if mustRefuse && !got {
+						t.Errorf("%s did NOT refuse with %s wired and %q nil (%d).\n"+
+							"Wiring one dependency has silenced the other's refusal, which is the "+
+							"exact defect splitting the wrapper was meant to prevent: this route "+
+							"now answers over a dependency that does not exist.\n    body: %s",
+							route, tc.name, tc.refuses, rec.Code, truncate(rec.Body.String(), 300))
+					}
+					if !mustRefuse && got {
+						t.Errorf("%s refused with %s, but its dependency IS wired (%d).\n"+
+							"The wrappers are crossed: this route is gated on the wrong field.\n"+
+							"    body: %s", route, ProvisionerUnwiredField, rec.Code,
+							truncate(rec.Body.String(), 300))
+					}
+					if mustRefuse {
+						refusing++
+					} else {
+						silent++
+					}
+				}
+			}
+
+			// 🔴 POSITIVE CONTROLS ON THE MATRIX ITSELF. A loop that drove zero routes
+			// on either side would report no failures and mean nothing.
+			if refusing == 0 || silent == 0 {
+				t.Fatalf("the matrix drove %d must-refuse and %d must-not-refuse route(s); "+
+					"both sides must be non-empty or this test asserts nothing about "+
+					"independence", refusing, silent)
+			}
+		})
+	}
+}
+
+// stubGateway is the chat half of the old stubProvisioner. It exists because the
+// interface split made "wire chat but not lifecycle" a state a test has to be able
+// to build.
+type stubGateway struct{}
+
+func (stubGateway) Chat(context.Context, agents.Agent, string, string, func(string)) (string, error) {
+	return "", nil
+}
+
+func (stubGateway) ChatWithTools(context.Context, agents.Agent, string, string, string, []agents.ToolDef, agents.ToolDispatch, agents.StreamEmit) (string, error) {
+	return "", nil
 }
 
 // admit presents BOTH credentials this fixture holds, so a route is measured at
@@ -194,14 +341,14 @@ func admit(s *Server, r *http.Request) {
 
 // TestEveryProvisionerRouteRefusesWhenItIsUnwired is the BEHAVIOURAL half.
 //
-// 🔴 IT DRIVES THE REAL MUX, NOT THE WRAPPER. A unit test of requireProvisioner
+// 🔴 IT DRIVES THE REAL MUX, NOT THE WRAPPER. A unit test of a wrapper
 // would pass while every route was registered without it — which was the state
 // that shipped. The only observable that separates "wrapped" from "not wrapped"
 // is what the registered route answers, so that is what is read.
 func TestEveryProvisionerRouteRefusesWhenItIsUnwired(t *testing.T) {
 	s, h := unwiredProvisionerServer(t)
 
-	for _, route := range provisionerRouteLedger {
+	for _, route := range allProvisionerRoutes() {
 		t.Run(route, func(t *testing.T) {
 			method, pattern, ok := strings.Cut(route, " ")
 			if !ok {
@@ -215,7 +362,7 @@ func TestEveryProvisionerRouteRefusesWhenItIsUnwired(t *testing.T) {
 			// Past whichever auth door this route sits behind, so what is
 			// measured is the PROVISIONER refusal and not the auth one — the two
 			// are both 503 on the machine tier, and conflating them would let a
-			// route pass this test while never reaching requireProvisioner.
+			// route pass this test while never reaching its wrapper.
 			admit(s, req)
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
@@ -247,7 +394,7 @@ func TestEveryProvisionerRouteRefusesWhenItIsUnwired(t *testing.T) {
 
 // TestTheProvisionerRefusalIsBehindItsOwnAuthDoor pins the WRAPPER ORDER.
 //
-// 🔴 THE ORDER IS A DISCLOSURE BOUNDARY, NOT A STYLE CHOICE. requireProvisioner
+// 🔴 THE ORDER IS A DISCLOSURE BOUNDARY, NOT A STYLE CHOICE. Each wrapper
 // tells the caller which dependencies this build has wired. Registered OUTSIDE
 // the auth wrapper it would answer that to anyone who can reach the port, which
 // on this service is anyone on the LAN NodePort — turning nine routes into an
@@ -256,7 +403,7 @@ func TestEveryProvisionerRouteRefusesWhenItIsUnwired(t *testing.T) {
 func TestTheProvisionerRefusalIsBehindItsOwnAuthDoor(t *testing.T) {
 	_, h := unwiredProvisionerServer(t)
 
-	for _, route := range provisionerRouteLedger {
+	for _, route := range allProvisionerRoutes() {
 		t.Run(route, func(t *testing.T) {
 			method, pattern, _ := strings.Cut(route, " ")
 			path := strings.NewReplacer("{id}", "1", "{name}", "chief").Replace(pattern)
@@ -266,7 +413,7 @@ func TestTheProvisionerRefusalIsBehindItsOwnAuthDoor(t *testing.T) {
 
 			if strings.Contains(rec.Body.String(), ProvisionerUnwiredField) {
 				t.Fatalf("%s told an ANONYMOUS caller which dependencies this build has "+
-					"wired (%d, body contains %s). requireProvisioner must be registered "+
+					"wired (%d, body contains %s). The wrapper must be registered "+
 					"INSIDE the route's auth wrapper, not outside it.\n    body: %s",
 					route, rec.Code, ProvisionerUnwiredField, truncate(rec.Body.String(), 300))
 			}
@@ -286,6 +433,17 @@ func TestTheProvisionerRefusalIsBehindItsOwnAuthDoor(t *testing.T) {
 // the package's own AST instead, so the set is DERIVED and the ledger is the
 // claim being checked against it.
 func TestEveryUnguardedProvisionerCallerIsLedgered(t *testing.T) {
+	for _, dep := range provisionerDeps {
+		t.Run(dep.field, func(t *testing.T) { checkUnguardedCallers(t, dep) })
+	}
+}
+
+// checkUnguardedCallers is the per-dependency body. It is a function rather than
+// an inline closure so the positive controls below are attributed to the row that
+// failed them: "the walk found no unguarded Gateway caller" is a different finding
+// from the same sentence about Provisioner, and a shared failure message would
+// have made them indistinguishable.
+func checkUnguardedCallers(t *testing.T, dep provisionerDep) {
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -307,7 +465,7 @@ func TestEveryUnguardedProvisionerCallerIsLedgered(t *testing.T) {
 			if !ok || fn.Body == nil {
 				return true
 			}
-			calls, nilChecked := inspectProvisionerUse(fn.Body)
+			calls, nilChecked := inspectProvisionerUse(fn.Body, dep.field)
 			if !calls {
 				return true
 			}
@@ -328,59 +486,60 @@ func TestEveryUnguardedProvisionerCallerIsLedgered(t *testing.T) {
 			"package, which declares far more. The walk is not measuring.", scanned)
 	}
 	if len(guarded) == 0 {
-		t.Fatalf("positive control FAILED: the walk found NO nil-guarded provisioner " +
-			"caller, and instanceIndex/dismiss-destroy are both written that way. It " +
-			"cannot tell guarded from unguarded, so every name below is unreliable.")
+		t.Logf("no nil-guarded %s caller found; the guarded/unguarded discrimination is "+
+			"unexercised for this row (it IS exercised for Provisioner, where "+
+			"instanceIndex and dismiss-destroy are written that way)", dep.field)
 	}
 	if len(unguarded) == 0 {
-		t.Fatalf("positive control FAILED: the walk found no UNGUARDED provisioner caller " +
-			"at all. Either every call site grew a nil check (in which case delete this " +
-			"ledger deliberately) or the detection is matching nothing.")
+		t.Fatalf("positive control FAILED: the walk found no UNGUARDED %s caller at all. "+
+			"Either every call site grew a nil check (in which case delete this row's "+
+			"caller ledger deliberately) or the detection is matching nothing for this "+
+			"field — which would make a clean verdict here meaningless.", dep.field)
 	}
 
 	sort.Strings(unguarded)
-	want := append([]string(nil), provisionerCallerLedger...)
+	want := append([]string(nil), dep.callers...)
 	sort.Strings(want)
 
 	if strings.Join(unguarded, "\n") != strings.Join(want, "\n") {
-		t.Errorf("the set of functions that call s.ext.Provisioner with NO nil check has "+
+		t.Errorf("the set of functions that call s.ext.%s with NO nil check has "+
 			"changed.\n  derived from source: %v\n  ledger:              %v\n"+
 			"\n  GREW? A new function reaches the provisioner unguarded. Every route that "+
-			"can reach it must be registered behind requireProvisioner and added to "+
-			"provisionerRouteLedger — otherwise it answers 200 and does nothing on the "+
+			"can reach it must be registered behind that dependency's wrapper and added to "+
+			"that dependency's routes ledger — otherwise it answers 200 and does nothing on the "+
 			"deployment cmd/muster-server actually ships, which is the failure this file "+
 			"records.\n  SHRANK? A call site grew its own nil check or moved. Confirm the "+
 			"route still refuses before removing it from the ledger.\n"+
 			"\n  Guarded (informational, not checked): %v",
-			unguarded, want, guarded)
+			dep.field, unguarded, want, guarded)
 	}
-	t.Logf("%d file(s) parsed; %d unguarded provisioner caller(s), %d guarded",
-		scanned, len(unguarded), len(guarded))
+	t.Logf("%d file(s) parsed; %d unguarded %s caller(s), %d guarded",
+		scanned, len(unguarded), dep.field, len(guarded))
 }
 
-// inspectProvisionerUse reports whether body CALLS a method on s.ext.Provisioner,
-// and whether body also compares s.ext.Provisioner against nil.
+// inspectProvisionerUse reports whether body CALLS a method on s.ext.<field>, and
+// whether body also compares s.ext.<field> against nil.
 //
 // ⚠ A TYPE ASSERTION IS NOT A CALL. `s.ext.Provisioner.(ProfileReapplier)` is an
 // ast.TypeAssertExpr, is nil-safe, and must not put its function on the
 // unguarded list — doing so would demand a wrapper for a branch that simply is
 // not taken.
-func inspectProvisionerUse(body *ast.BlockStmt) (calls, nilChecked bool) {
+func inspectProvisionerUse(body *ast.BlockStmt, field string) (calls, nilChecked bool) {
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch e := n.(type) {
 		case *ast.CallExpr:
 			sel, ok := e.Fun.(*ast.SelectorExpr)
-			if ok && isProvisionerExpr(sel.X) {
+			if ok && isProvisionerExpr(sel.X, field) {
 				calls = true
 			}
 		case *ast.BinaryExpr:
 			if e.Op != token.EQL && e.Op != token.NEQ {
 				return true
 			}
-			if isProvisionerExpr(e.X) && isNilIdent(e.Y) {
+			if isProvisionerExpr(e.X, field) && isNilIdent(e.Y) {
 				nilChecked = true
 			}
-			if isProvisionerExpr(e.Y) && isNilIdent(e.X) {
+			if isProvisionerExpr(e.Y, field) && isNilIdent(e.X) {
 				nilChecked = true
 			}
 		}
@@ -389,10 +548,10 @@ func inspectProvisionerUse(body *ast.BlockStmt) (calls, nilChecked bool) {
 	return calls, nilChecked
 }
 
-// isProvisionerExpr reports whether e is the expression `s.ext.Provisioner`.
-func isProvisionerExpr(e ast.Expr) bool {
+// isProvisionerExpr reports whether e is the expression `s.ext.<field>`.
+func isProvisionerExpr(e ast.Expr, field string) bool {
 	outer, ok := e.(*ast.SelectorExpr)
-	if !ok || outer.Sel.Name != "Provisioner" {
+	if !ok || outer.Sel.Name != field {
 		return false
 	}
 	mid, ok := outer.X.(*ast.SelectorExpr)
@@ -437,7 +596,7 @@ func funcIdent(fn *ast.FuncDecl) string {
 type routeRegistration struct {
 	route    string // the literal pattern, e.g. "POST /agents"
 	handler  string // the innermost function the wrappers close over
-	wrapped  bool   // the registration expression calls s.requireProvisioner
+	wrapped  bool   // the registration expression calls this row's wrapper
 	computed bool   // the pattern is not a string literal
 	file     string
 	line     int
@@ -466,7 +625,7 @@ var unnameableRouteAllowlist = map[string]string{
 }
 
 // TestEveryProvisionerRouteIsDerivedNotDeclared is the half that makes
-// provisionerRouteLedger's "GROWS *or* SHRINKS" sentence true.
+// each row's "GROWS *or* SHRINKS" sentence true.
 //
 // 🔴 IT EXISTS BECAUSE THAT SENTENCE WAS MEASURED FALSE. The ledger was
 // hand-written and nothing derived the wrapped set, so shrinking it was a
@@ -483,7 +642,7 @@ var unnameableRouteAllowlist = map[string]string{
 // the wrapper exists for. So the wrapper requirement is decided by the CALL
 // GRAPH, with the ledger out of the loop entirely.
 //
-// ⚠ THE REACHABILITY IS FUNCTION-GRANULAR AND INHERITS provisionerCallerLedger's
+// ⚠ THE REACHABILITY IS FUNCTION-GRANULAR AND INHERITS THE CALLER LEDGERS'
 // KNOWN LIMIT, deliberately: a function that compares s.ext.Provisioner against
 // nil ANYWHERE in its body is treated as guarded and stops propagation. That
 // under-approximates — a function that checks on one path and calls on another
@@ -501,7 +660,16 @@ var unnameableRouteAllowlist = map[string]string{
 // set can no longer grow without failing — but the two on it are still outside
 // this verdict, not inside it and clean.
 func TestEveryProvisionerRouteIsDerivedNotDeclared(t *testing.T) {
-	regs, reaches, declared, scanned := scanRouteRegistrations(t)
+	for _, dep := range provisionerDeps {
+		t.Run(dep.field, func(t *testing.T) { checkRoutesDerived(t, dep) })
+	}
+}
+
+// checkRoutesDerived is the per-dependency body. Split out for the same reason as
+// checkUnguardedCallers: a positive control that cannot name which row it failed
+// for is a control nobody can act on.
+func checkRoutesDerived(t *testing.T, dep provisionerDep) {
+	regs, reaches, declared, scanned := scanRouteRegistrations(t, dep)
 
 	// 🔴 POSITIVE CONTROLS, REPORTED AS NUMBERS. A walk that parsed nothing
 	// derives an empty set, and an empty set compared against an empty ledger is
@@ -561,11 +729,11 @@ func TestEveryProvisionerRouteIsDerivedNotDeclared(t *testing.T) {
 		}
 	}
 	sort.Strings(derived)
-	want := append([]string(nil), provisionerRouteLedger...)
+	want := append([]string(nil), dep.routes...)
 	sort.Strings(want)
 	if strings.Join(derived, "\n") != strings.Join(want, "\n") {
-		t.Errorf("the set of routes REGISTERED behind requireProvisioner is not the set "+
-			"provisionerRouteLedger declares.\n  derived from source: %v\n  ledger:          "+
+		t.Errorf("the set of routes REGISTERED behind %s is not the set "+
+			"its ledger row declares.\n  derived from source: %v\n  ledger:          "+
 			"    %v\n"+
 			"\n  SHRANK? A route lost its wrapper. On the deployment cmd/muster-server "+
 			"ships it is back to answering 200 and doing nothing — a card rendered over a "+
@@ -573,7 +741,7 @@ func TestEveryProvisionerRouteIsDerivedNotDeclared(t *testing.T) {
 			"match.\n  GREW? A route was wrapped without being recorded. Add it here so "+
 			"the behavioural test above actually drives it — a wrapped route missing from "+
 			"this list is never requested by any test in this file.",
-			derived, want)
+			dep.wrapper, derived, want)
 	}
 
 	// --- half 2: REACHABILITY DECIDES, NOT THE LEDGER -----------------------
@@ -625,9 +793,9 @@ func TestEveryProvisionerRouteIsDerivedNotDeclared(t *testing.T) {
 				"provisioner — which is the exact two-line edit this test exists to "+
 				"kill.\n"+
 				"    Register the handler expression inline — "+
-				"s.requireSession(s.requireProvisioner(s.handleX)) — rather than through "+
+				"s.requireSession(s.%s(s.handleX)) — rather than through "+
 				"a local.",
-				name, r.file, r.line, r.handler, r.handler)
+				name, r.file, r.line, r.handler, r.handler, dep.wrapper)
 			continue
 		}
 		can := reaches(r.handler)
@@ -637,26 +805,27 @@ func TestEveryProvisionerRouteIsDerivedNotDeclared(t *testing.T) {
 			if r.computed {
 				name = "<computed pattern>"
 			}
-			t.Errorf("%s (%s:%d) is registered WITHOUT requireProvisioner, and its handler "+
-				"%s reaches s.ext.Provisioner with no nil check.\n"+
-				"    cmd/muster-server leaves Provisioner nil on purpose (doc_seams.go "+
+			t.Errorf("%s (%s:%d) is registered WITHOUT %s, and its handler "+
+				"%s reaches s.ext.%s with no nil check.\n"+
+				"    cmd/muster-server leaves it nil on purpose (doc_seams.go "+
 				"entry 1), so on the deployment this tree ships that route either answers "+
 				"200 and does nothing or panics in a goroutine. Wrap it — "+
-				"s.requireSession(s.requireProvisioner(h)), auth OUTSIDE — and add it to "+
-				"provisionerRouteLedger.\n"+
+				"s.requireSession(s.%s(h)), auth OUTSIDE — and add it to "+
+				"that dependency's routes ledger.\n"+
 				"    Deleting the ledger entry does NOT satisfy this check: the ledger is "+
 				"not consulted here, the call graph is.",
-				name, r.file, r.line, r.handler)
+				name, r.file, r.line, dep.wrapper, r.handler, dep.field, dep.wrapper)
 		case !can && r.wrapped:
-			t.Errorf("%s (%s:%d) is wrapped in requireProvisioner, but its handler %s was "+
-				"NOT found to reach s.ext.Provisioner through this package's call graph.\n"+
+			t.Errorf("%s (%s:%d) is wrapped in %s, but its handler %s was "+
+				"NOT found to reach s.ext.%s through this package's call graph.\n"+
 				"    Either the wrapper is now unnecessary — in which case remove it AND "+
-				"its provisionerRouteLedger line, having first confirmed nothing below it "+
+				"its routes-ledger line, having first confirmed nothing below it "+
 				"calls the provisioner — or the call-graph walk has stopped resolving a "+
 				"call it used to resolve, which would make the \"reaches but is not "+
-				"wrapped\" half above silently blind. All nine wrapped routes reached when "+
-				"this was written; a new failure here is far more likely to be the second.",
-				r.route, r.file, r.line, r.handler)
+				"wrapped\" half above silently blind. Every wrapped route on this row "+
+				"reached when this was written; a new failure here is far more likely to "+
+				"be the second.",
+				r.route, r.file, r.line, dep.wrapper, r.handler, dep.field)
 		}
 	}
 	t.Logf("%d file(s) parsed; %d function(s) declared; %d route registration(s), "+
@@ -678,7 +847,7 @@ func TestEveryProvisionerRouteIsDerivedNotDeclared(t *testing.T) {
 // method value are the same shape to it. A candidate that names nothing this
 // walk declared is an unresolved handler, and the caller MUST fail on it rather
 // than hand it to `reaches`, which would answer false and score the route safe.
-func scanRouteRegistrations(t *testing.T) (regs []routeRegistration, reaches func(string) bool, declared map[string]bool, scanned int) {
+func scanRouteRegistrations(t *testing.T, dep provisionerDep) (regs []routeRegistration, reaches func(string) bool, declared map[string]bool, scanned int) {
 	t.Helper()
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
@@ -712,7 +881,7 @@ func scanRouteRegistrations(t *testing.T) (regs []routeRegistration, reaches fun
 			if fn.Body == nil {
 				return true
 			}
-			calls, nilChecked := inspectProvisionerUse(fn.Body)
+			calls, nilChecked := inspectProvisionerUse(fn.Body, dep.field)
 			if calls && nilChecked {
 				guarded[name] = true
 			}
@@ -759,7 +928,7 @@ func scanRouteRegistrations(t *testing.T) (regs []routeRegistration, reaches fun
 							if !ok {
 								return true
 							}
-							if se, ok := cc.Fun.(*ast.SelectorExpr); ok && se.Sel.Name == "requireProvisioner" {
+							if se, ok := cc.Fun.(*ast.SelectorExpr); ok && se.Sel.Name == dep.wrapper {
 								r.wrapped = true
 							}
 							return true

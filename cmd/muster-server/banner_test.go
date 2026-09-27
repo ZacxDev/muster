@@ -563,8 +563,17 @@ func lineNaming(banner, name string) string {
 // claim in a boot banner is the strongest documentation this service emits —
 // it is what an operator reads while debugging — so it is worth pinning to a
 // symbol a reader can go and check rather than to an adjective. The line now
-// cites api.requireProvisioner and the discriminator field, both of which are
-// real and both of which a grep resolves.
+// cites both wrapper symbols and the discriminator field, all of which are real
+// and all of which a grep resolves.
+//
+// 🔴 IT REQUIRES BOTH WRAPPERS NOW, WHICH IS STRICTLY STRONGER THAN THE ONE NAME IT
+// USED TO CHECK. api's combined Provisioner was split into Provisioner (lifecycle)
+// and Gateway (chat), each with its own wrapper. A banner naming only one would be
+// true about seven routes and silent about two — and the two it omitted would be
+// exactly the ones a reader had no way to know were separately gated. Naming one
+// wrapper was also what this test caught when the split landed: the old expectation
+// went red because the banner had stopped citing a symbol that still existed, which
+// is the behaviour it was written for.
 func TestTheProvisioningSeamLineDoesNotClaimAnUnnamedRefusal(t *testing.T) {
 	out := renderBanner(t, config{}, api.Extensions{})
 	var line string
@@ -576,13 +585,20 @@ func TestTheProvisioningSeamLineDoesNotClaimAnUnnamedRefusal(t *testing.T) {
 	if line == "" {
 		t.Fatalf("the banner no longer announces the provisioning seam at all.\n%s", out)
 	}
-	for _, want := range []string{"requireProvisioner", api.ProvisionerUnwiredField, "503"} {
+	for _, want := range []string{
+		"requireLifecycleProvisioner",
+		"requireGatewayProvisioner",
+		api.ProvisionerUnwiredField,
+		"503",
+	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the agent-provisioning banner line does not name %q.\n"+
 				"    This line asserted for the whole of the previous revision that every "+
 				"agent-control route \"refuses at request time\", while nine of them "+
 				"answered 200 and did nothing. The claim is only checkable if it names "+
-				"the mechanism, so do not soften it back to an unqualified \"refuses\".\n"+
+				"the mechanism, so do not soften it back to an unqualified \"refuses\" — "+
+				"and there are TWO mechanisms now, so naming one is a claim about seven "+
+				"routes and a silence about two.\n"+
 				"  line: %s", want, line)
 		}
 	}

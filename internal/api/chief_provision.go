@@ -53,7 +53,7 @@ func (s *Server) handleChiefProvision(w http.ResponseWriter, r *http.Request) {
 		// needed no privilege and no unusual input — click once, nothing appears,
 		// click again.
 		//
-		// ⚠ requireProvisioner NOW STOPS THE nil CASE REACHING HERE, AND THIS STILL
+		// ⚠ requireLifecycleProvisioner NOW STOPS THE nil CASE REACHING HERE, AND THIS STILL
 		// DOES NOT GO BACK TO BARE. The wrapper answers for one nil field; this
 		// recovers whatever a REAL provisioner does on the far side of a helm call
 		// to a cluster, which is the case safeGo's own doc names ("any goroutine

@@ -58,7 +58,12 @@ func fullyWiredServer(t *testing.T) *Server {
 		PrivilegeApply:  stubPrivilegeApplier{},
 		TagAutoDispatch: true,
 		Provisioner:     stubProvisioner{},
-		GitHubOAuth:     GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://example.test"},
+		// 🔴 BOTH, because this fixture's whole claim is "every dependency wired".
+		// api.Provisioner and api.Gateway are separate now, so setting only the first
+		// would quietly make this an "almost everything" fixture — and a registration
+		// test that does not wire a dependency cannot notice a route gated on it.
+		Gateway:     stubGateway{},
+		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://example.test"},
 	})
 	s.UseRouter(stubRouter{})
 	s.UseGate(stubGate{})
@@ -251,12 +256,13 @@ func (stubProvisioner) TailLogs(context.Context, agents.Agent, int64) (string, e
 	return "", nil
 }
 func (stubProvisioner) StreamLogs(context.Context, agents.Agent, func(string)) error { return nil }
-func (stubProvisioner) Chat(context.Context, agents.Agent, string, string, func(string)) (string, error) {
-	return "", nil
-}
-func (stubProvisioner) ChatWithTools(context.Context, agents.Agent, string, string, string, []agents.ToolDef, agents.ToolDispatch, agents.StreamEmit) (string, error) {
-	return "", nil
-}
+
+// ⚠ stubProvisioner HAS NO Chat METHODS ANY MORE, and their absence is load-bearing
+// rather than tidying. While one type satisfied both halves of the old combined
+// interface, any fixture that wired "the provisioner" also wired chat — so a route
+// gated on the wrong one of the two fields would have been satisfied either way and
+// no fixture could tell them apart. The chat half is stubGateway, in
+// provisioner_seam_test.go.
 
 // The five domain stores are stubbed by EMBEDDING their interface.
 //

@@ -495,12 +495,20 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// card over a row that sat `provisioning` for ever, a delete removed the card
 	// and left the row, and the log stream sent `: connected` and closed, which
 	// reads as "no logs". The refusal is real now and has a NAME — the sentence
-	// cites api.requireProvisioner so the claim can be checked against a symbol
+	// cites the wrappers BY NAME so the claim can be checked against a symbol
 	// rather than believed. Do not soften this back into an unqualified
 	// "refuses"; that word is what stopped anyone looking.
-	l.Print("agent provisioning: UNWIRED — this module has no api.Provisioner implementation, " +
-		"so every agent-control route (dispatch, start, stop, destroy, logs, chat) is " +
-		"registered and answers 503 at request time through api.requireProvisioner, " +
+	//
+	// 🔴 AND IT NAMES TWO WRAPPERS, NOT ONE, BECAUSE THERE ARE TWO NILS. api's
+	// combined Provisioner was split into Provisioner (lifecycle) and Gateway
+	// (chat), each with its own wrapper, so that a deployment can wire one and have
+	// the other keep refusing honestly. A banner that still named one wrapper would
+	// be citing a symbol that does not exist — the exact "check it against a symbol"
+	// property this line was rewritten to have.
+	l.Print("agent provisioning: UNWIRED — this module has no api.Provisioner or " +
+		"api.Gateway implementation, so every agent-control route (dispatch, start, " +
+		"stop, destroy, logs, chat) is registered and answers 503 at request time " +
+		"through api.requireLifecycleProvisioner or api.requireGatewayProvisioner, " +
 		"after its own auth check and with provisionerUnwired:true in the body. " +
 		"Privilege grants are RECORDED but not applied to any cluster. Neither is a " +
 		"misconfiguration; see cmd/muster-server/doc_seams.go")

@@ -2,7 +2,7 @@
 //
 // It is plan step 22a of the extraction this project came out of (Phase 3.5). It is
 // the FIRST of the three pieces that close doc_seams.go entry 1, and it is
-// deliberately the piece that touches neither the requireProvisioner wrapper nor
+// deliberately the piece that touches neither the provisioner wrappers nor
 // the chat path: this package has no HTTP client, no cluster client, and no
 // knowledge of any driver.
 //

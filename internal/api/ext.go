@@ -66,9 +66,18 @@ type Extensions struct {
 	// `auto:dispatch` behaves as a descriptive tag.
 	TagAutoDispatch bool
 
-	// Provisioner drives agent pod lifecycle (provision/start/stop/delete, logs,
-	// chat). Nil disables the agent-control routes even if Agents is set.
+	// Provisioner drives agent instance LIFECYCLE (provision/start/stop/delete,
+	// state, logs). Nil disables the seven lifecycle routes even if Agents is set,
+	// through requireLifecycleProvisioner.
 	Provisioner Provisioner
+
+	// Gateway drives agent CHAT. Nil disables the two chat routes even if
+	// Provisioner is set, through requireGatewayProvisioner.
+	//
+	// 🔴 IT IS A SEPARATE FIELD FROM Provisioner ON PURPOSE — see [Gateway]. The
+	// two nils are independent, so a deployment that can provision but not chat
+	// renders truthfully instead of having to choose which lie to tell.
+	Gateway Gateway
 
 	// GitHubOAuth configures the OAuth web flow for connecting an account.
 	GitHubOAuth GitHubOAuthConfig
@@ -142,7 +151,7 @@ func (e Extensions) defects() []string {
 	return out
 }
 
-// ProvisionerUnwiredField is the JSON key requireProvisioner sets to `true` on
+// ProvisionerUnwiredField is the JSON key both provisioner wrappers set to `true` on
 // its 503 body.
 //
 // 🔴 IT IS THE FIELD, NOT THE SENTENCE, THAT A CLIENT BRANCHES ON — the same
@@ -153,7 +162,7 @@ func (e Extensions) defects() []string {
 // A discriminator made of prose is one a reword silently breaks.
 const ProvisionerUnwiredField = "provisionerUnwired"
 
-// requireProvisioner refuses a route that cannot do its work without
+// The provisioner wrappers refuse a route that cannot do its work without
 // Extensions.Provisioner, rather than letting the handler reach a nil interface.
 //
 // 🔴 THIS EXISTS BECAUSE "REGISTERED AND REFUSES" WAS NOT TRUE, AND THE BOOT
@@ -186,7 +195,7 @@ const ProvisionerUnwiredField = "provisionerUnwired"
 // is NOT listed there.
 //
 // ⚠ IT IS THE INNER WRAPPER, WITH AUTH OUTSIDE IT, AND THE ORDER IS LOAD-BEARING.
-// Registered as requireSession(requireProvisioner(h)) the session check runs
+// Registered as requireSession(requireLifecycleProvisioner(h)) the session check runs
 // first, so an anonymous caller is refused before this reply can tell them which
 // dependencies this deployment has wired. The reverse order turns every one of
 // these routes into an unauthenticated probe of the server's build.
@@ -196,13 +205,37 @@ const ProvisionerUnwiredField = "provisionerUnwired"
 // banner), and a wrapper changes the handler, not the pattern. doc_seams.go
 // entry 1 says the golden moving for this nil would itself be a defect; it does
 // not move.
-func (s *Server) requireProvisioner(next http.HandlerFunc) http.HandlerFunc {
+// 🔴 THERE ARE TWO WRAPPERS NOW, NOT ONE, AND EVERY WORD ABOVE STILL APPLIES TO
+// BOTH. The split is described on [Gateway]: one nil used to gate nine routes, so
+// wiring the seven lifecycle ones meant also claiming the two chat ones. Each
+// wrapper refuses at the same door, in the same vocabulary, naming the dependency
+// the route actually needs — which is the reason the split was preferred over an
+// adapter whose chat methods returned a rendered refusal from inside a handler.
+// One condition, one refusal shape.
+func (s *Server) requireLifecycleProvisioner(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.ext.Provisioner == nil {
 			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"error": "this build has no agent provisioner wired, so it cannot " +
-					"provision, start, stop, destroy, stream logs from or chat with an " +
-					"agent. This is a declared seam, not an outage and not your " +
+					"provision, start, stop, destroy or stream logs from an agent. " +
+					"This is a declared seam, not an outage and not your credential: " +
+					"see cmd/muster-server/doc_seams.go entry 1.",
+				ProvisionerUnwiredField: true,
+			})
+			return
+		}
+		next(w, r)
+	}
+}
+
+// requireGatewayProvisioner is the chat half. See requireLifecycleProvisioner.
+func (s *Server) requireGatewayProvisioner(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.ext.Gateway == nil {
+			s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"error": "this build has no agent gateway wired, so it cannot chat " +
+					"with an agent. Provisioning may still work — the two are separate " +
+					"dependencies. This is a declared seam, not an outage and not your " +
 					"credential: see cmd/muster-server/doc_seams.go entry 1.",
 				ProvisionerUnwiredField: true,
 			})
@@ -233,9 +266,12 @@ type ProfileReapplier interface {
 	ReapplyProfiles(ctx context.Context, agentID int64) error
 }
 
-// Provisioner is the agent-pod lifecycle driver the agent handlers depend on.
-// It is defined here (consumer side) so this package does not import the heavy
-// helm/client-go dependencies unless the binary wires a real provisioner in.
+// Provisioner is the agent-instance LIFECYCLE driver the agent handlers depend
+// on: bring one into existence, scale it, destroy it, read its state and its
+// logs. It is defined here (consumer side) so this package does not import the
+// heavy cluster dependencies unless the binary wires a real provisioner in.
+//
+// ⚠ CHAT IS NOT HERE ANY MORE — see [Gateway] for why the two are separate.
 type Provisioner interface {
 	// Dispatch provisions a pod for the agent and, when kickoff is true, sends
 	// the note as the first message once the gateway is reachable.
@@ -259,6 +295,27 @@ type Provisioner interface {
 	TailLogs(ctx context.Context, a agents.Agent, lines int64) (string, error)
 	// StreamLogs follows the agent's pod logs, invoking emit per line.
 	StreamLogs(ctx context.Context, a agents.Agent, emit func(string)) error
+}
+
+// Gateway is the agent CHAT surface: talking to a running instance's model
+// gateway.
+//
+// 🔴 IT IS A SEPARATE INTERFACE FROM Provisioner, AND THE SPLIT IS THE WHOLE
+// POINT. Both used to be one, behind one nil and one wrapper, so the seven
+// LIFECYCLE methods could not be wired without also claiming the two CHAT ones.
+// That is not a packaging preference: provision.Provisioner — the driver contract
+// a lifecycle adapter is built on — has no notion of a chat turn at all, so an
+// adapter over it can implement the seven honestly and the two not at all. Behind
+// one interface the only ways to express that were to wire a stub (which
+// doc_seams.go entry 1 rejects, because dispatch reporting success over a pod that
+// does not exist is the defect the wrapper was built to remove) or to leave
+// lifecycle unwired for as long as chat is. Two interfaces make "lifecycle works,
+// chat honestly refuses" sayable.
+//
+// ⚠ A DEPLOYMENT MAY WIRE EITHER, BOTH, OR NEITHER, and each combination has a
+// truthful rendering. Chat without lifecycle is unusual but not incoherent — an
+// installation whose instances are provisioned by something else entirely.
+type Gateway interface {
 	// Chat sends a user message to the agent gateway under the given chat-session
 	// key (each session = an independent gateway context), streaming assistant
 	// deltas to emit, and returns the full assistant reply.
