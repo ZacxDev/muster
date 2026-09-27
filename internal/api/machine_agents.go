@@ -593,7 +593,7 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: body.Message,
 	})
-	reply, err := s.ext.Provisioner.Chat(ctx, a, sess.SessionKey, body.Message, nil)
+	reply, err := s.ext.Gateway.Chat(ctx, a, sess.SessionKey, body.Message, nil)
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "agent did not respond: " + err.Error()})
 		return

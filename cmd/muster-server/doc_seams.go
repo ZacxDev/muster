@@ -42,13 +42,14 @@ package main
 //	  — registration in internal/api is unconditional by design, which is what
 //	  makes the route golden a claim about production — and each one refuses at
 //	  request time with 503 + provisionerUnwired:true, through the
-//	  api.requireProvisioner wrapper it is registered behind. The Agents tab is
+//	  api.requireLifecycleProvisioner / api.requireGatewayProvisioner wrapper it is
+//	  registered behind. The Agents tab is
 //	  read-only: existing rows render, nothing can be provisioned, started,
 //	  stopped or destroyed, no logs stream and no chat turn runs. The boot banner
 //	  says so on every start, unconditionally.
 //	  🔴 THE ROUTE GOLDEN DOES NOT MOVE FOR THIS. If it ever does, the nil has
 //	  started changing the route set, which is a defect in its own right.
-//	  requireProvisioner is a WRAPPER for exactly that reason — the golden records
+//	  each is a WRAPPER for exactly that reason — the golden records
 //	  patterns, not handlers, so the honest refusal costs no route drift.
 //
 //	🔴 THE SENTENCE ABOVE WAS FALSE WHEN IT WAS FIRST WRITTEN, AND THAT IS

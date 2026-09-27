@@ -26,7 +26,7 @@ func (s *Server) registerRunbookRoutes(mux Mux) {
 	mux.HandleFunc("GET /ui/runbooks", s.requireSession(s.handleRunbooksContent))
 	mux.HandleFunc("POST /runbooks", s.requireSession(s.handleRunbookCreate))
 	mux.HandleFunc("DELETE /runbooks/{id}", s.requireSession(s.handleRunbookDelete))
-	mux.HandleFunc("POST /runbooks/{id}/dispatch", s.requireSession(s.requireProvisioner(s.handleRunbookDispatch)))
+	mux.HandleFunc("POST /runbooks/{id}/dispatch", s.requireSession(s.requireLifecycleProvisioner(s.handleRunbookDispatch)))
 }
 
 func (s *Server) handleRunbooksContent(w http.ResponseWriter, r *http.Request) {

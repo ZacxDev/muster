@@ -65,7 +65,7 @@ var notLinkedLedger = map[string]string{
 		"nothing in this module implements api.Provisioner yet, so there is no " +
 		"lifecycle method to build a spec FOR. It is landed ahead of that " +
 		"deliberately: it is the only one of the three 22x pieces that touches " +
-		"neither the requireProvisioner wrapper nor the chat path, so it is " +
+		"neither the provisioner wrappers nor the chat path, so it is " +
 		"reviewable on its own. 🔴 THIS ENTRY DISAPPEARING IS THE SIGNAL THAT 22b " +
 		"LANDED, exactly as internal/provision/k8s's entry is the signal for the " +
 		"seam as a whole. Do not wire a fake consumer to clear it.",

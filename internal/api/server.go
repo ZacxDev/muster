@@ -394,7 +394,7 @@ func (s *Server) registerAll(mux Mux) {
 	// open. TestChiefThreadSearchIsOperatorOnly asserts the refusals.
 	mux.HandleFunc("GET /ui/chief/threads/search", s.requireSession(s.handleChiefThreadSearch))
 	// chief is the reserved-name agent; nothing else can create one.
-	mux.HandleFunc("POST /chief/provision", s.requireSession(s.requireProvisioner(s.handleChiefProvision)))
+	mux.HandleFunc("POST /chief/provision", s.requireSession(s.requireLifecycleProvisioner(s.handleChiefProvision)))
 
 	s.registerNotesRoutes(mux)
 	s.registerGitHubRoutes(mux)
