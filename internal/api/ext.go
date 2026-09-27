@@ -148,6 +148,39 @@ func (e Extensions) defects() []string {
 			"silently and on every surface. Wire a liveness probe (internal/router satisfies it) "+
 			"or leave Notes unset.")
 	}
+	// 🔴 THIS ENTRY IS cmd/muster-server/doc_seams.go ENTRY 2 FALLING DUE, AND
+	// ENTRY 2 NAMED THE EXACT MOMENT. A privilege store that RECORDS grants
+	// nobody applies was defensible only while no agent pod could exist to hold
+	// one: there was no surface on which a user was told a privilege was live when
+	// it was not, because there was no live agent. A wired Provisioner creates
+	// real instances, so the grant chip becomes a page stating a falsehood — the
+	// chip says granted over a ServiceAccount with none of the permissions — and
+	// that is the "lies silently" side of this function's own line.
+	//
+	// ⚠ IT IS FAIL-CLOSED AND IT WILL REFUSE A DEPLOYMENT THAT USED TO COME UP.
+	// That is the point and it is the choice entry 2 offered: wire a
+	// PrivilegeApplier in the same change, or make the combination unready. It is
+	// listed here rather than wrapped at a route — unlike the nil Provisioner,
+	// which IS wrapped — because there is no single route to refuse: the falsehood
+	// is rendered by every surface that shows a grant, and a grant recorded
+	// through one route is read back through several.
+	//
+	// ⚠ IT OVER-TRIGGERS FOR A PROVISIONER THAT CREATES NOTHING, and that is
+	// stated rather than fixed. The noop driver records instead of provisioning,
+	// so a grant over one of its instances lies about a pod that was never real
+	// either — harmless. Distinguishing the two would mean this function reading
+	// the driver's capabilities, which makes a readiness check depend on a
+	// backend's self-report; the fail-closed direction is cheaper and wrong only
+	// in the direction of refusing to serve.
+	if e.Provisioner != nil && e.Privilege != nil && e.PrivilegeApply == nil {
+		out = append(out, "Provisioner is wired but PrivilegeApply is not, while a privilege "+
+			"store IS wired: grants would be RECORDED and never applied, over agent instances "+
+			"that now really exist. Every surface showing a grant would claim a permission the "+
+			"instance's ServiceAccount does not have. Wire a PrivilegeApplier, or leave the "+
+			"privilege store unset, or leave the provisioner unwired. See "+
+			"cmd/muster-server/doc_seams.go entry 2, which named this exact combination as the "+
+			"moment its own argument dies.")
+	}
 	return out
 }
 

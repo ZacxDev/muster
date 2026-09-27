@@ -877,7 +877,7 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	}
 	rec, err := s.ext.Agents.Create(ctx, agents.Agent{
 		Name:        name,
-		Namespace:   "devpod-" + name,
+		Namespace:   agents.NamespaceFor(name),
 		DisplayName: displayName,
 		Repo:        p.Repo,
 		RepoBranch:  s.resolveRepoBranch(ctx, p.Repo, p.RepoBranch),

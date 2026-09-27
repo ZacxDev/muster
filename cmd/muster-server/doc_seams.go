@@ -18,8 +18,43 @@ package main
 // on convenience.
 //
 // ---------------------------------------------------------------------------
-// 1. 🔴 api.Provisioner IS NIL, AND WILL BE UNTIL THE PROVISIONER ADAPTER IS
-//    CARVED. THIS IS THE LARGEST SEAM IN THE BINARY.
+// 1. 🔴 api.Provisioner IS NIL *UNLESS* MUSTER_AGENT_PROVISIONER NAMES A DRIVER.
+//    THE LIFECYCLE HALF OF THIS SEAM IS CLOSED; THE CHAT HALF IS NOT.
+//
+//	WHAT CHANGED, AND WHAT ITS MECHANICAL SIGNAL WAS: internal/agentprovision
+//	  adapts provision.Provisioner to api.Provisioner's seven LIFECYCLE methods,
+//	  and provisioner.go constructs a driver behind MUSTER_AGENT_PROVISIONER
+//	  (none | noop | kubernetes). The closing condition this entry set was that
+//	  internal/provision/k8s LEAVE the not-linked ledger in
+//	  internal/modulegate/linkage_test.go — it has, together with
+//	  internal/agentspec, and that ledger is ASSERTED so neither could be removed
+//	  from it without something really linking.
+//	🔴 WHAT IS STILL NIL, AND IT IS NOT A DETAIL: api.Gateway. Nothing in this
+//	  module implements a model gateway, so the two CHAT routes still answer 503
+//	  through api.requireGatewayProvisioner. The consequence has a name and a
+//	  place: a dispatch with kickoff=true CREATES the instance and cannot deliver
+//	  the first message, so the note stays in agents.pending_note and the
+//	  non-delivery is written to agents.kickoff_error
+//	  (agentprovision.UndeliveredKickoffReason). An agent dispatched on such a
+//	  deployment is a real pod that was never told what to do.
+//	  🔴 AND NOTHING ESCALATES THAT YET. agents.DecideReconcile already has the
+//	  decision table (ActionRetryKickoff, then ActionError past
+//	  ProvisioningStuckTimeout) and its own header records that NO loop drives it,
+//	  so the undelivered kickoff does not become a red card on its own. Until the
+//	  gateway or that loop lands, the kickoff-error field is the only place that
+//	  says so.
+//	CLOSING CONDITION FOR THE REMAINDER: a pull request wiring api.Gateway —
+//	  internal/agents/responses.go's runToolLoop already exists and its own OWED
+//	  record names the two inputs it needs — plus either a kickoff delivery on the
+//	  lifecycle path or the reconcile loop that escalates a missing one.
+//	WHO CHECKS IT: the reviewer of that pull request, against the boot banner's
+//	  CHAT line and against agents.reconcile.go's header.
+//
+//	The original entry follows, kept rather than rewritten because its argument is
+//	what the wrappers, the banner and the readiness defect are all still built on.
+//
+// ---------------------------------------------------------------------------
+// 1b. 🔴 THE ORIGINAL ENTRY 1: WHY A FAKE WAS REFUSED WHILE THIS WAS NIL.
 //
 //	WHAT: api.Extensions.Provisioner is the agent-pod lifecycle driver — nine
 //	  methods: Dispatch, Start, Stop, Destroy, Instances, TailLogs, StreamLogs,
@@ -72,9 +107,10 @@ package main
 //	  internal/api/provisioner_seam_test.go, which fails when the set GROWS or
 //	  SHRINKS. A tenth route reaching Provisioner without the wrapper reddens
 //	  there, which is the mechanical half this paragraph cannot be.
-//	CLOSING CONDITION: a pull request adding an adapter from provision.Driver to
-//	  api.Provisioner — in its own package, consumer-side interfaces unchanged —
-//	  wired here behind the configuration that names a driver, with
+//	CLOSING CONDITION (MET for the lifecycle half — see entry 1 above): a pull
+//	  request adding an adapter from provision.Driver to api.Provisioner — in its
+//	  own package, consumer-side interfaces unchanged — wired here behind the
+//	  configuration that names a driver, with
 //	  internal/provision/provisiontest's contract suite green against it. When
 //	  it lands, internal/provision/k8s LEAVES the not-linked ledger in
 //	  internal/modulegate/linkage_test.go, and that departure is the mechanical
@@ -83,7 +119,32 @@ package main
 //	  contract results and the linkage ledger.
 //
 // ---------------------------------------------------------------------------
-// 2. api.PrivilegeApplier IS NIL: GRANTS ARE RECORDED, NOT APPLIED.
+// 2. 🔴 api.PrivilegeApplier IS NIL — AND WITH A PROVISIONER WIRED THAT IS NOW A
+//    READINESS DEFECT RATHER THAN A CONFIGURATION.
+//
+//	🔴 THE PARAGRAPHS BELOW NAMED THE EXACT MOMENT THIS WOULD HAPPEN AND IT HAS
+//	  HAPPENED. "That argument dies the moment entry 1 closes." Entry 1's
+//	  lifecycle half is closed, so the combination Provisioner != nil &&
+//	  Privilege != nil && PrivilegeApply == nil is listed in
+//	  api.Extensions.defects and /readyz REFUSES it. This entry's own closing
+//	  condition offered exactly two ways out — wire an applier in the same change,
+//	  or move the entry to defects() — and the second was taken.
+//	⚠ THE CONSEQUENCE, STATED PLAINLY BECAUSE IT IS A BLOCKER SOMEONE WILL MEET:
+//	  this deployment builds a privilege store whenever it has a database, so
+//	  setting MUSTER_AGENT_PROVISIONER on it makes the pod UNREADY until a
+//	  PrivilegeApplier exists. That is fail-closed and deliberate; it is also a
+//	  prerequisite for proving a real dispatch end to end, which no earlier plan
+//	  step named.
+//	IT IS LISTED IN defects() RATHER THAN WRAPPED AT A ROUTE, unlike the nil
+//	  Provisioner, because there is no single route to refuse: the falsehood is
+//	  rendered by every surface that shows a grant, and a grant recorded through
+//	  one route is read back through several.
+//	WHO CHECKS IT: TestAWiredProvisionerWithNoPrivilegeApplierIsNotReady, which
+//	  drives /readyz rather than calling defects() — a defect list nothing reads
+//	  is not a guard.
+//
+//	The original argument follows, because it is still correct for every
+//	  deployment that wires no provisioner.
 //
 //	WHAT: api.Extensions.PrivilegeApply applies a granted profile's Kubernetes
 //	  RBAC to an agent's ServiceAccount, live. Nothing implements it here, for
@@ -107,7 +168,28 @@ package main
 //	  sentence is the instruction to check it.
 //
 // ---------------------------------------------------------------------------
-// 3. api.ProfileReapplier IS UNREACHABLE, WHICH IS ONE STEP BEYOND NIL.
+// 3. ✅ api.ProfileReapplier IS SATISFIED, AND THE ASSERTION IS ASSERTED.
+//
+//	THE ANSWER THIS ENTRY DEMANDED, IN ONE LINE: *agentprovision.Adapter DOES
+//	  implement ReapplyProfiles — it re-renders the agent's spec from its current
+//	  row and calls the driver's Update, which reconciles the live instance and
+//	  rolls it. TestTheLifecycleAdapterSatisfiesTheConsumerInterface performs the
+//	  type assertion, and
+//	  TestReapplyProfilesReconcilesRatherThanRecreates asserts the driver call
+//	  rather than a nil return — because a body that returned nil and did nothing
+//	  would satisfy the assertion, compile, wire, and make every model change and
+//	  every privilege re-apply a silent no-op.
+//	⚠ ONE LATENT CONSEQUENCE, INTENDED: rolling an instance re-delivers its
+//	  kickoff once a gateway exists, which agents.kickoffLost's own doc calls
+//	  intended and agents.MaxKickoffAttempts caps. Nothing delivers a kickoff
+//	  today, so it is dormant.
+//
+//	The original entry follows; its reasoning about type assertions is what the
+//	  new test exists to answer, and it is worth keeping for the next optional
+//	  dependency.
+//
+// ---------------------------------------------------------------------------
+// 3b. api.ProfileReapplier WAS UNREACHABLE, WHICH IS ONE STEP BEYOND NIL.
 //
 //	WHAT: the interface re-applies an agent's granted-profile env/kubeconfig to
 //	  a running pod. It has no field of its own: the grant path TYPE-ASSERTS the

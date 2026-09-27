@@ -202,6 +202,23 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		}
 	}
 
+	// 🔴 THE ASSIGNMENT IS TWO STEPS, AND THE nil-CHECK IS NOT PEDANTRY. Assigning
+	// a typed nil pointer to an interface field produces a NON-nil interface
+	// holding a nil pointer, so `s.ext.Provisioner == nil` in
+	// api.requireLifecycleProvisioner would be FALSE and every lifecycle route
+	// would sail past the wrapper into a nil-pointer method call — a panic in a
+	// goroutine instead of a 503 at the door. buildProvisioner returns a concrete
+	// *agentprovision.Adapter precisely so this is checkable here rather than
+	// invisible behind an interface return.
+	prov, err := buildProvisioner(cfg, ext.Agents, logger)
+	if err != nil {
+		a.Close()
+		return nil, fmt.Errorf("agent provisioner: %w", err)
+	}
+	if prov != nil {
+		ext.Provisioner = prov
+	}
+
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
 
 	srv := api.New(bus, cfg.authConfig(), logger)
@@ -505,13 +522,73 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// the other keep refusing honestly. A banner that still named one wrapper would
 	// be citing a symbol that does not exist — the exact "check it against a symbol"
 	// property this line was rewritten to have.
-	l.Print("agent provisioning: UNWIRED — this module has no api.Provisioner or " +
-		"api.Gateway implementation, so every agent-control route (dispatch, start, " +
-		"stop, destroy, logs, chat) is registered and answers 503 at request time " +
-		"through api.requireLifecycleProvisioner or api.requireGatewayProvisioner, " +
-		"after its own auth check and with provisionerUnwired:true in the body. " +
-		"Privilege grants are RECORDED but not applied to any cluster. Neither is a " +
-		"misconfiguration; see cmd/muster-server/doc_seams.go")
+	//
+	// 🔴 AND IT IS NOW TWO SENTENCES ABOUT TWO NILS, WHICH IS THE STATE THE SPLIT
+	// MADE REACHABLE. A single line describing "agent provisioning" as one thing
+	// was true only while both halves were always unwired together. With a
+	// lifecycle adapter wired and no gateway, a one-line banner has to pick which
+	// half to describe — and either choice is a false claim about the other.
+	switch {
+	case ext.Provisioner == nil && ext.Gateway == nil:
+		// ⚠ THE LINE NOW NAMES THE VARIABLE THAT TURNS IT ON, which is the other
+		// half of the both-directions rule bannerLedger enforces: an operator
+		// reading "UNWIRED" needs the name they can set, and it was previously
+		// findable only by reading this file.
+		l.Printf("agent provisioning: UNWIRED (%s=%s) — this module has no api.Provisioner "+
+			"or api.Gateway implementation wired, so every agent-control route (dispatch, "+
+			"start, stop, destroy, logs, chat) is registered and answers 503 at request time "+
+			"through api.requireLifecycleProvisioner or api.requireGatewayProvisioner, "+
+			"after its own auth check and with provisionerUnwired:true in the body. "+
+			"Privilege grants are RECORDED but not applied to any cluster. Neither is a "+
+			"misconfiguration; see cmd/muster-server/doc_seams.go",
+			envAgentProvisioner, a.cfg.agentProvisioner())
+	default:
+		l.Printf("agent provisioning: LIFECYCLE %s (%s=%s) — dispatch, start, stop, destroy "+
+			"and the log routes go through api.requireLifecycleProvisioner",
+			wiredWord(ext.Provisioner == nil), envAgentProvisioner, a.cfg.agentProvisioner())
+		// 🔴 THE CHAT HALF GETS ITS OWN LINE AND NAMES ITS OWN WRAPPER, because
+		// with lifecycle wired this is the half an operator will be surprised by.
+		// A dispatched agent exists, its pod runs, its logs stream — and its first
+		// turn never happens, because nothing can hand it the note. The line says
+		// where that shows up (agents.kickoff_error) so the reader is not left to
+		// infer it from a card that looks healthy.
+		if ext.Gateway == nil {
+			l.Printf("agent provisioning CHAT: UNWIRED — no api.Gateway implementation exists in "+
+				"this module, so the two chat routes answer 503 through "+
+				"api.requireGatewayProvisioner with %s:true. A dispatch with a kickoff therefore "+
+				"CREATES the instance and cannot deliver the first message: the note stays in "+
+				"agents.pending_note and the non-delivery is recorded in agents.kickoff_error. "+
+				"See cmd/muster-server/doc_seams.go entry 1", api.ProvisionerUnwiredField)
+		} else {
+			l.Print("agent provisioning CHAT: WIRED — the two chat routes are live through " +
+				"api.requireGatewayProvisioner")
+		}
+		// 🔴 THIS IS doc_seams.go ENTRY 2'S ARGUMENT DYING ON SCHEDULE. A grant
+		// recorded and not applied was defensible only while no pod could exist to
+		// hold it. With lifecycle wired, one can — so the combination is a
+		// readiness DEFECT (api.Extensions.defects) and this line is the readback
+		// of the same condition on the banner.
+		if ext.Privilege != nil && ext.PrivilegeApply == nil {
+			l.Print("agent privilege APPLY: UNWIRED while a provisioner CAN create pods — this " +
+				"combination is a readiness defect (see api.Extensions.defects) and /readyz " +
+				"refuses it, because a granted chip over a ServiceAccount with none of the " +
+				"permissions is a page stating a falsehood")
+		}
+	}
+}
+
+// wiredWord renders a nil-ness as the banner's vocabulary.
+//
+// ⚠ IT TAKES "IS IT NIL" RATHER THAN "IS IT WIRED" SO THE CALL SITE READS AS THE
+// CHECK IT PERFORMS. The inverted form (`wiredWord(ext.Provisioner != nil)`) is
+// one keystroke from its own opposite and the banner would then confidently
+// report the state the server is not in — which is the failure this whole
+// function exists to prevent.
+func wiredWord(isNil bool) string {
+	if isNil {
+		return "UNWIRED"
+	}
+	return "WIRED"
 }
 
 // missingRouterCredential names the router variable(s) that are empty when the

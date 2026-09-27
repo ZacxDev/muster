@@ -1,0 +1,186 @@
+package main
+
+import (
+	"fmt"
+	"log"
+
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
+	"github.com/ZacxDev/muster/internal/agentprovision"
+	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/provision"
+	k8sdriver "github.com/ZacxDev/muster/internal/provision/k8s"
+)
+
+// ---------------------------------------------------------------------------
+// THE PROVISIONER SEAM'S CLOSING HALF.
+//
+// 🔴 THIS FILE IS WHAT MAKES internal/provision/k8s REACHABLE FROM A PROCESS,
+// AND THAT WAS THE WHOLE MECHANICAL POINT. Before it, the Kubernetes driver —
+// 2,565 non-test lines, fully tested against a fake clientset — was on the
+// not-linked ledger in internal/modulegate/linkage_test.go: it compiled, its
+// tests passed, and `go list -deps ./cmd/...` did not resolve it, so no process
+// could execute a line of it. That ledger is ASSERTED, not an allowlist: it fails
+// when the set shrinks as well as when it grows, so the two entries this change
+// removes are the signal, not paperwork.
+//
+// 🔴 AND "IMPORTED" IS NOT "USED" — the ledger's own header says so, because an
+// import can be a blank `_` that executes nothing. The driver is CONSTRUCTED
+// here, from a real in-cluster client, behind a configuration value that names
+// it; TestBuildingTheKubernetesProvisionerUsesTheRealDriver pins that the
+// wired-up adapter reports the kubernetes driver's own name rather than any
+// stand-in.
+//
+// ⚠ WHAT IS STILL OPEN AFTER THIS FILE: chat. The adapter satisfies
+// api.Provisioner (lifecycle) and NOT api.Gateway, so the two chat routes keep
+// refusing at api.requireGatewayProvisioner. That is the split's purpose — see
+// doc_seams.go entry 1 — and the boot banner reports the two tiers separately so
+// the half-wired state is readable rather than inferred.
+// ---------------------------------------------------------------------------
+
+// buildProvisioner builds the agent lifecycle provisioner named by cfg, or
+// (nil, nil) when the configuration names none.
+//
+// ⚠ (nil, nil) IS A SUPPORTED RESULT AND NOT AN ERROR CASE. api.Extensions
+// tolerates a nil Provisioner by design — every lifecycle route refuses at the
+// door with api.ProvisionerUnwiredField — so "no provisioner" is a deployment,
+// not a failure. The caller must not treat nil as something to fall back from.
+func buildProvisioner(cfg config, store agents.Store, logger *log.Logger) (*agentprovision.Adapter, error) {
+	named := cfg.agentProvisioner()
+	if named == provisionerNone {
+		return nil, nil
+	}
+	if store == nil {
+		// Reachable only with no database: the stores are built inside the
+		// `cfg.Database != ""` branch. An adapter with no store would resolve no
+		// agent id, so every lifecycle call would fail at its first line — and it
+		// would do so from a background goroutine, where the only trace is a log
+		// line nobody is reading.
+		return nil, fmt.Errorf("%s=%s needs an agents store, and there is none because %s is "+
+			"unset: an agent provisioner resolves every request through the database",
+			envAgentProvisioner, named, envDatabase)
+	}
+
+	driver, err := buildDriver(cfg, logger)
+	if err != nil {
+		return nil, err
+	}
+	return agentprovision.New(agentprovision.Config{
+		Driver: driver,
+		Store:  store,
+		Spec:   agentSpecConfig(cfg),
+		Logger: logger,
+	})
+}
+
+// buildDriver builds the provisioning backend itself.
+func buildDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) {
+	switch cfg.agentProvisioner() {
+	case provisionerNoop:
+		// The recording driver. It is a real driver with declared capabilities
+		// that its own CheckSpec enforces and a Destroy that removes state — see
+		// its type doc on why it is not the "declared but inert" fake its
+		// predecessor was — so it is a legitimate deployment for developing
+		// everything above the provisioner without a cluster.
+		//
+		// 🔴 IT IS NOT WHAT CLEARS THE LEDGER, and that distinction is the one
+		// this whole step was told not to fudge. internal/provision already
+		// linked (internal/api imports it); the entry that had to move is
+		// internal/provision/k8s, and only the branch below reaches it. A noop
+		// wired to satisfy a ledger would be exactly the "fake consumer" the
+		// ledger's own entry forbids.
+		return provision.NewNoop()
+	case provisionerK8s:
+		return buildK8sDriver(cfg, logger)
+	default:
+		// Unreachable: config.validateProvisioner refuses anything else at boot.
+		// A silent nil here would present as a working server whose every
+		// dispatch panicked in a goroutine.
+		return nil, fmt.Errorf("unhandled %s %q (config.validateProvisioner should have refused "+
+			"it at boot; this is a wiring bug, not a configuration one)",
+			envAgentProvisioner, cfg.agentProvisioner())
+	}
+}
+
+// buildK8sDriver builds the Kubernetes driver from the pod's own service
+// account.
+//
+// 🔴 IT IS IN-CLUSTER ONLY, AND SAYING SO IS BETTER THAN A KUBECONFIG FALLBACK.
+// A fallback to a local kubeconfig would make this binary provision against
+// whatever cluster the developer's current context names — which is the failure
+// mode where a test dispatch creates pods in production. In-cluster config fails
+// with a message naming what is missing, and that message is the correct outcome
+// outside a pod.
+func buildK8sDriver(cfg config, logger *log.Logger) (provision.Provisioner, error) {
+	rc, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("%s=%s needs in-cluster credentials and there are none: %w "+
+			"(this binary does not fall back to a local kubeconfig, deliberately — a fallback "+
+			"would provision into whichever cluster the ambient context names)",
+			envAgentProvisioner, provisionerK8s, err)
+	}
+	client, err := kubernetes.NewForConfig(rc)
+	if err != nil {
+		return nil, fmt.Errorf("kubernetes client: %w", err)
+	}
+	dc := k8sDriverConfig(cfg, logger)
+	dc.Client = client
+	dc.RESTConfig = rc
+	return k8sdriver.New(dc)
+}
+
+// k8sDriverConfig maps this binary's configuration onto the driver's, WITHOUT
+// touching a cluster.
+//
+// 🔴 THE SPLIT FROM buildK8sDriver IS WHAT MAKES THE MAPPING TESTABLE, and the
+// mapping is where the mistakes are. Two of the fields below invert or default
+// their source, and neither error would announce itself: a wrong
+// NamespacePerInstance puts instances somewhere the stored row does not name, and
+// a nil WorkspaceStorageClass makes the driver refuse persistence at the first
+// dispatch rather than at boot. Acquiring the client is the part that needs a
+// pod; deciding what to tell the driver is not, so only the first is left
+// unreachable from a test.
+func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
+	dc := k8sdriver.Config{
+		// 🔴 THE FLAG IS INVERTED HERE, ON PURPOSE, AND THIS IS THE ONLY PLACE IT
+		// HAPPENS. The driver's knob is NamespacePerInstance (default false =
+		// shared); the deployment's is MUSTER_AGENT_NAMESPACE_SHARED (default
+		// false = per-instance). See config.AgentNamespaceShared for why the
+		// deployment default is the opposite of the driver's.
+		NamespacePerInstance: !cfg.AgentNamespaceShared,
+		NamespacePrefix:      cfg.AgentNamespacePrefix,
+		Namespace:            cfg.AgentNamespace,
+		EndpointTemplate:     cfg.AgentEndpointTemplate,
+		Logger:               logger,
+	}
+	if cfg.AgentWorkspacePersist {
+		// The pointer's PRESENCE is what raises Capabilities.Persistence; its
+		// value being empty means "the cluster's default StorageClass". See
+		// config.AgentWorkspacePersist on why an env var cannot express the third
+		// state on its own.
+		class := cfg.AgentStorageClass
+		dc.WorkspaceStorageClass = &class
+	}
+	return dc
+}
+
+// agentSpecConfig is the deployment-wide half of every agent spec.
+//
+// ⚠ THE RESOURCE FIELDS agentspec.Config CARRIES ARE NOT EXPOSED HERE YET, and
+// that is a gap rather than a decision: left empty, each one falls through to the
+// driver's own default. It is stated because the alternative — a reader assuming
+// the whole of agentspec.Config is reachable from the environment — is how a
+// documented knob turns out to be unread, which is the finding config.go's const
+// block exists to answer.
+func agentSpecConfig(cfg config) agentspec.Config {
+	return agentspec.Config{
+		ImageRepo:        cfg.AgentImageRepo,
+		ImageTag:         cfg.AgentImageTag,
+		APIBaseURL:       cfg.AgentAPIURL,
+		Model:            cfg.AgentModel,
+		OpenRouterAPIKey: cfg.AgentOpenRouterKey,
+		WorkspacePersist: cfg.AgentWorkspacePersist,
+	}
+}
