@@ -1,0 +1,102 @@
+{
+  "Ref": {
+    "Name": "harbour-kestrel",
+    "ID": 4291
+  },
+  "Runtime": {
+    "Image": "ghcr.io/example-org/agent-runtime:3.11.0",
+    "Command": null,
+    "Args": null,
+    "WorkingDir": "/srv/agent-work"
+  },
+  "Env": [
+    {
+      "Name": "MUSTER_API_URL",
+      "Value": "http://muster.example.test:8105"
+    },
+    {
+      "Name": "GIT_TERMINAL_PROMPT",
+      "Value": "0"
+    },
+    {
+      "Name": "NODE_OPTIONS",
+      "Value": "--max-old-space-size=3072"
+    },
+    {
+      "Name": "EXAMPLE_CALLER_FLAG",
+      "Value": "on"
+    }
+  ],
+  "Secrets": [
+    {
+      "Name": "MUSTER_HOOK_TOKEN",
+      "Value": "«redacted in the golden; see goldenView»"
+    },
+    {
+      "Name": "OPENROUTER_API_KEY",
+      "Value": "«redacted in the golden; see goldenView»"
+    }
+  ],
+  "Files": [
+    {
+      "Path": "/srv/agent-work/AGENTS.md",
+      "Content": "IyBJbnN0cnVjdGlvbnMKCmJvZHkK",
+      "Mode": 0,
+      "Secret": false
+    },
+    {
+      "Path": "/srv/agent-work/IDENTITY.md",
+      "Content": "d2hvIHlvdSBhcmU=",
+      "Mode": 0,
+      "Secret": false
+    },
+    {
+      "Path": "/srv/agent-work/USER.md",
+      "Content": "d2hvIHRoZXkgYXJl",
+      "Mode": 0,
+      "Secret": false
+    },
+    {
+      "Path": "/usr/local/bin/muster-autosave",
+      "Content": "wqsyMTQ2MSBieXRlcyBlbGlkZWQ7IHNoYTI1Nj02ZTNjNmZjOTk1YjdjMGQ0ODdjYzRhZjI1MjBiNzYzODY4ZGM0Yzc3NTA4MDhhNjQzYzY5ZjgxZmNmY2Y1YzlmOyBmdWxsIGJ5dGVzIHBpbm5lZCBieSBUZXN0VGhlRGFlbW9uSXNEZWxpdmVyZWRBc0J5dGVzUmF0aGVyVGhhbkFzQVNoZWxsUGF5bG9hZMK7",
+      "Mode": 493,
+      "Secret": false
+    }
+  ],
+  "Init": [
+    "MUSTER_WIP_REPO='/srv/agent-work/tide-charts' MUSTER_WIP_REF='refs/heads/muster-wip/harbour-kestrel-4291' MUSTER_WIP_INTERVAL=120 MUSTER_WIP_EXCLUDE='' /bin/sh /usr/local/bin/muster-autosave \u0026"
+  ],
+  "Resources": {
+    "CPURequest": "150m",
+    "CPULimit": "1250m",
+    "MemoryRequest": "384Mi",
+    "MemoryLimit": "1536Mi"
+  },
+  "Workspace": {
+    "Path": "/srv/agent-work",
+    "Size": "24Gi",
+    "Persist": true
+  },
+  "Repo": {
+    "URL": "example-org/tide-charts",
+    "Branch": "release/7.2",
+    "Path": "/srv/agent-work/tide-charts"
+  },
+  "Config": {
+    "model": {
+      "fallbacks": [
+        "openrouter/vendor-c/model-three",
+        "openrouter/vendor-d/model-four"
+      ],
+      "primary": "openrouter/vendor-b/model-two"
+    }
+  },
+  "Ports": null,
+  "Endpoint": null,
+  "Replicas": 0,
+  "Labels": {
+    "installation": "example-test",
+    "muster.agent/group": "devpod-harbour-kestrel",
+    "muster.agent/name": "harbour-kestrel"
+  }
+}
