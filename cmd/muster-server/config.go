@@ -107,10 +107,19 @@ var provisionerChoices = []string{provisionerNone, provisionerNoop, provisionerK
 // loadConfig, AND EVERY WIRING TEST IS ONE. loadConfig normalises "" to
 // provisionerNone; a config value constructed directly does not, and the first
 // draft of the wiring compared the raw field against provisionerNone — so a
-// zero-value config fell through to the "unhandled provisioner name" branch and
-// buildApp refused to assemble at all. Three pre-existing boot tests went red on
-// it, which is the only reason it was found; nothing about a zero-value struct
-// announces which of its fields were meant to be defaulted elsewhere.
+// zero-value config never reached the "none" branch at all.
+//
+// FIVE pre-existing boot tests went red on it, on TWO different branches, and
+// that is the only reason it was found: TestReadyzRefusesAnUndeclaredMissingRouter
+// and TestReadyzAcceptsADeclaredStandaloneDeployment fell through to the
+// "unhandled provisioner name" refusal in buildDriver, while
+// TestTheServerListensAndServesHealth,
+// TestTheServerServesTheDocumentRootThroughTheUILayer and
+// TestTheServerServesTheEmbeddedStylesheet hit the nil-agents-store refusal
+// instead, because they configure no database. ⚠ THE COUNT IN THIS COMMENT READ
+// "THREE" AND WAS MEASURED WRONG — it was five, and naming only one branch would
+// have sent the next reader looking for a single cause. Nothing about a zero-value
+// struct announces which of its fields were meant to be defaulted elsewhere.
 // missingRouterCredential's own doc records the same property of buildApp for the
 // router actor.
 func (c config) agentProvisioner() string {

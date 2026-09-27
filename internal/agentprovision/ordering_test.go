@@ -1,0 +1,307 @@
+package agentprovision
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/provision"
+)
+
+// TestDispatchWithoutAKickoffCreatesNothing is the guard for the defect this
+// package's Dispatch doc is about, and it is the one the suite most conspicuously
+// lacked: the behaviour changed from "creates a 1-replica instance" to "creates
+// nothing" and the ENTIRE existing suite stayed green, in both directions.
+//
+// 🔴 WHAT IT PROTECTS IS A GUARD IN ANOTHER PACKAGE. internal/api's dispatch
+// handler refuses a `gate:<reason>`-tagged task only when `action == "dispatch"`,
+// and its comment gives the reason: "save for later" is still allowed because it
+// "provisions nothing". `kickoff` IS `action == "dispatch"`, so an adapter that
+// creates on kickoff=false makes that sentence false and walks straight through the
+// gate — one pod per click, with the repository cloned into it and a model
+// credential in a Secret, for a task explicitly marked not-ready-to-work.
+//
+// ⚠ A STATUS-ONLY ASSERTION WOULD NOT HAVE CAUGHT IT. `stopped` was written on
+// both the old and the new behaviour; only the driver's own state distinguishes
+// them, which is why this asserts the CREATE COUNT and the backend's instance list
+// rather than the row.
+func TestDispatchWithoutAKickoffCreatesNothing(t *testing.T) {
+	a, store, driver := newAdapter(t, nil)
+	if err := a.Dispatch(fixtureAgentID, false); err != nil {
+		t.Fatalf("Dispatch(kickoff=false): %v", err)
+	}
+
+	if driver.creates != 0 {
+		t.Errorf("Dispatch(kickoff=false) called the driver's Create %d time(s), want 0.\n"+
+			"    The caller's other action is the UI's \"Save for later\", and internal/api's "+
+			"gate check allows a save on a `gate:` task on the stated grounds that it "+
+			"provisions nothing. Creating here bypasses that gate.\n  transcript: %s",
+			driver.creates, store.transcript())
+	}
+	insts, err := driver.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(insts) != 0 {
+		t.Errorf("the backend holds %d instance(s) after a save, want 0", len(insts))
+	}
+	// No instance means no credential should have been minted for one either.
+	if store.called("SetHooksToken") {
+		t.Errorf("Dispatch(kickoff=false) minted a hooks token, which is a secret written "+
+			"for an instance that does not exist.\n  transcript: %s", store.transcript())
+	}
+	// And the stored status must be the one that is now TRUE.
+	if !strings.Contains(store.transcript(), "UpdateStatus(4291,stopped,") {
+		t.Errorf("Dispatch(kickoff=false) did not persist %s.\n  transcript: %s",
+			agents.StatusStopped, store.transcript())
+	}
+
+	// POSITIVE CONTROL, and it is the whole reason this test can be trusted: the
+	// SAME fixture with kickoff=true MUST create. Without it, "Create was not
+	// called" would pass over an adapter whose Create never works at all.
+	a2, _, driver2 := newAdapter(t, nil)
+	if err := a2.Dispatch(fixtureAgentID, true); err != nil {
+		t.Fatalf("Dispatch(kickoff=true): %v", err)
+	}
+	if driver2.creates != 1 {
+		t.Fatalf("positive control FAILED: Dispatch(kickoff=true) called Create %d time(s), "+
+			"want 1. The assertion above is then about an adapter that cannot create at all.",
+			driver2.creates)
+	}
+}
+
+// TestATimedOutOperationStillRECORDSItsFailure is the guard for the bookkeeping
+// budget, and it was the last survivor of the fix round's own mutation sweep.
+//
+// 🔴 A RECORD WRITTEN ON THE EXPIRED BUDGET OF THE THING IT IS RECORDING CANNOT
+// LAND IN THE CASE THAT NEEDS IT MOST. One context used to cover the driver call AND
+// every store write after it: a driver call that consumed the budget left `fail`'s
+// UpdateStatus running on a dead context, so the write failed, the branch only
+// logged, and the net result was a cluster holding partial objects, a row still
+// claiming whatever the handler wrote, and one line in this pod's stdout. That is
+// the observable this package's header says it exists to remove.
+//
+// 🔴 IT ONLY WORKS BECAUSE THE FAKE HONOURS ITS CONTEXT. Every store method took
+// `_ context.Context` when the fix landed, so the mutant that reverted it SURVIVED —
+// the suite could not see a context defect at all. See recordingStore.refuse.
+//
+// ⚠ THIS IS ALSO WHAT EARNS Config.OpTimeout ITS PLACE. Round 0 proposed deleting
+// the field as an injection point nothing injects; this is the test that needs to
+// shorten the budget to observe the expiry, which is the condition its doc names.
+func TestATimedOutOperationStillRECORDSItsFailure(t *testing.T) {
+	store := &recordingStore{agent: fixtureAgent()}
+	driver := &flakyDriver{Noop: provision.MustNewNoop(), rec: store, burnBudget: true}
+	a, err := New(Config{
+		Driver:    driver,
+		Store:     store,
+		Spec:      fixtureSpecConfig(),
+		OpTimeout: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if err := a.Dispatch(fixtureAgentID, true); err == nil {
+		t.Fatal("Dispatch returned nil over a driver call that timed out")
+	}
+
+	// POSITIVE CONTROL: the driver really did burn the budget, so this is a test
+	// about a timeout and not about some other failure.
+	if driver.creates != 1 {
+		t.Fatalf("positive control FAILED: Create ran %d time(s), want 1", driver.creates)
+	}
+	if !strings.Contains(store.transcript(), "driver.Create") {
+		t.Fatalf("positive control FAILED: the driver was never reached.\n  transcript: %s",
+			store.transcript())
+	}
+
+	// The record must have LANDED — not been refused by a dead context.
+	if strings.Contains(store.transcript(), "REFUSED") {
+		t.Errorf("a store write was refused by an expired context, so the failure was "+
+			"recorded nowhere durable:\n  transcript: %s\n"+
+			"    The bookkeeping write must derive its OWN budget (bookkeepingCtx), never "+
+			"the operation's — the operation's is expired by definition in this case.",
+			store.transcript())
+	}
+	if !strings.Contains(store.transcript(), "UpdateStatus(4291,error,") {
+		t.Errorf("the timeout was not recorded as %s on the row, so the only trace is a log "+
+			"line.\n  transcript: %s", agents.StatusError, store.transcript())
+	}
+	// And the recorded message must name the cause, not just the status.
+	if !strings.Contains(store.transcript(), "deadline exceeded") {
+		t.Errorf("the recorded failure does not name the timeout.\n  transcript: %s",
+			store.transcript())
+	}
+}
+
+// TestTheBackendLEADSTheRowInEveryMethod is the ordering guard, and it exists
+// because a mutant that moved a status write BEFORE its driver call SURVIVED the
+// whole suite.
+//
+// 🔴 THE ROW MUST NEVER CLAIM SOMETHING THE BACKEND HAS NOT DONE YET. A status
+// written first is a window — however short — in which the card states an outcome
+// that may never happen, and if the driver call then fails the row is left asserting
+// it. Every method here does the cluster work first and records second.
+//
+// ⚠ THIS IS AN ORDER ASSERTION, WHICH THE OLD FAKE COULD NOT EXPRESS. The store
+// and the driver now share one transcript (see flakyDriver.rec); membership checks
+// over two separate lists cannot say "A before B" no matter how they are written.
+func TestTheBackendLEADSTheRowInEveryMethod(t *testing.T) {
+	cases := []struct {
+		name string
+		live bool
+		run  func(*Adapter) error
+		// driverCall is the transcript entry that must come FIRST.
+		driverCall string
+	}{
+		{
+			name:       "Dispatch with kickoff",
+			run:        func(a *Adapter) error { return a.Dispatch(fixtureAgentID, true) },
+			driverCall: "driver.Create",
+		},
+		{
+			name:       "Start",
+			live:       true,
+			run:        func(a *Adapter) error { return a.Start(fixtureAgentID) },
+			driverCall: "driver.Scale",
+		},
+		{
+			name:       "Stop",
+			live:       true,
+			run:        func(a *Adapter) error { return a.Stop(fixtureAgentID) },
+			driverCall: "driver.Scale",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, store, driver := newAdapter(t, nil)
+			if tc.live {
+				seedInstance(t, a, store, driver)
+			}
+			if err := tc.run(a); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			di := store.indexOf(tc.driverCall)
+			si := store.indexOf("UpdateStatus")
+			if di < 0 {
+				t.Fatalf("positive control FAILED: %s never reached %s, so the order "+
+					"assertion below is over one entry.\n  transcript: %s",
+					tc.name, tc.driverCall, store.transcript())
+			}
+			if si < 0 {
+				t.Fatalf("positive control FAILED: %s never wrote a status.\n  transcript: %s",
+					tc.name, store.transcript())
+			}
+			if di > si {
+				t.Errorf("%s wrote the row BEFORE the backend acted (%s at %d, UpdateStatus "+
+					"at %d).\n"+
+					"    The row then claims an outcome the driver has not produced, and if "+
+					"the driver call fails it is left asserting it.\n  transcript: %s",
+					tc.name, tc.driverCall, di, si, store.transcript())
+			}
+		})
+	}
+}
+
+// TestDestroyRecordsWHYItKeptTheRow closes the half of Destroy's strictness that
+// was correct and invisible.
+//
+// 🔴 KEEPING THE ROW IS ONLY HALF AN ANSWER IF NOTHING SAYS WHY. handleAgentDelete
+// runs Destroy in a background goroutine that only logs, and it has ALREADY
+// answered an empty 200 — so htmx removed the card before Destroy ran. With no row
+// write, the card simply REAPPEARS on the next render with no explanation on any
+// surface, and the row we correctly kept is the only evidence the instance is still
+// out there. `error` plus the cause turns "the card came back" into a red card
+// naming an ownership refusal or an unreachable backend.
+func TestDestroyRecordsWHYItKeptTheRow(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"ownership refusal", fmt.Errorf("foreign object: %w", provision.ErrNotManaged)},
+		{"backend unreachable", fmt.Errorf("dial tcp: %w", provision.ErrBlind)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, store, driver := newAdapter(t, nil)
+			seedInstance(t, a, store, driver)
+			driver.destroyErr = tc.err
+
+			if err := a.Destroy(fixtureAgentID); err == nil {
+				t.Fatal("Destroy returned nil while keeping the row")
+			}
+			if store.called("Delete") {
+				t.Fatalf("Destroy deleted the row over %v", tc.err)
+			}
+			if !strings.Contains(store.transcript(), "UpdateStatus(4291,error,") {
+				t.Errorf("Destroy kept the row and wrote NOTHING to it, so the card vanishes "+
+					"(htmx already removed it) and reappears unexplained.\n  transcript: %s",
+					store.transcript())
+			}
+			// The cause must be IN the recorded message, not just a status.
+			if !strings.Contains(store.transcript(), tc.err.Error()) {
+				t.Errorf("the recorded failure does not carry the driver's own reason %q, "+
+					"so a human sees `error` with no cause.\n  transcript: %s",
+					tc.err.Error(), store.transcript())
+			}
+		})
+	}
+}
+
+// TestStopTreatsAnAbsentInstanceAsAlreadyStopped pins the sentinel Stop was
+// missing.
+//
+// 🔴 AN INSTANCE EVICTED OUT OF BAND COULD NEVER BE STOPPED FROM THE UI. Scale
+// returned provision.ErrNotFound, Stop returned an error and wrote nothing, so the
+// stored status stayed `running` for ever — and internal/api's model-change roll
+// branches on the STORED status, so it kept trying to reconcile an instance that
+// does not exist. Destroy already draws this distinction; Stop did not.
+func TestStopTreatsAnAbsentInstanceAsAlreadyStopped(t *testing.T) {
+	a, store, driver := newAdapter(t, nil)
+	seedInstance(t, a, store, driver)
+	driver.scaleErr = fmt.Errorf("deployment gone: %w", provision.ErrNotFound)
+
+	if err := a.Stop(fixtureAgentID); err != nil {
+		t.Fatalf("Stop over an absent instance returned %v; absence is what a stop is FOR", err)
+	}
+	if !strings.Contains(store.transcript(), "UpdateStatus(4291,stopped,") {
+		t.Errorf("Stop did not persist %s for an absent instance, so the row stays `running` "+
+			"with no way to correct it.\n  transcript: %s", agents.StatusStopped, store.transcript())
+	}
+
+	// NEGATIVE CONTROL: a scale error that is NOT absence must still refuse, or this
+	// change would have swallowed every stop failure.
+	a2, store2, driver2 := newAdapter(t, nil)
+	seedInstance(t, a2, store2, driver2)
+	driver2.scaleErr = fmt.Errorf("dial tcp: %w", provision.ErrBlind)
+	if err := a2.Stop(fixtureAgentID); err == nil {
+		t.Error("Stop swallowed a non-absence scale failure")
+	}
+	if strings.Contains(store2.transcript(), "UpdateStatus(4291,stopped,") {
+		t.Errorf("Stop recorded `stopped` over an UNREACHABLE backend.\n  transcript: %s",
+			store2.transcript())
+	}
+}
+
+// TestReapplyProfilesMintsAMissingToken closes the call site a mutant showed was
+// untested: dropping ensureHooksToken from ReapplyProfiles SURVIVED.
+//
+// ⚠ WHY IT MATTERS THERE TOO: agentspec.Build puts the token in Spec.Secrets, so a
+// spec built without one is materially different from the instance's own. Update
+// would then reconcile the live instance to a spec with no credential.
+func TestReapplyProfilesMintsAMissingToken(t *testing.T) {
+	a, store, driver := newAdapter(t, nil)
+	if err := a.ReapplyProfiles(context.Background(), fixtureAgentID); err != nil {
+		t.Fatalf("ReapplyProfiles: %v", err)
+	}
+	if !store.called("SetHooksToken") {
+		t.Errorf("ReapplyProfiles did not mint a token for a tokenless agent, so it would "+
+			"reconcile the instance to a spec with no credential in Spec.Secrets.\n"+
+			"  transcript: %s", store.transcript())
+	}
+	if driver.updates != 1 {
+		t.Errorf("ReapplyProfiles called Update %d time(s), want 1", driver.updates)
+	}
+}

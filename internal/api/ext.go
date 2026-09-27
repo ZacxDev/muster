@@ -306,8 +306,26 @@ type ProfileReapplier interface {
 //
 // ⚠ CHAT IS NOT HERE ANY MORE — see [Gateway] for why the two are separate.
 type Provisioner interface {
-	// Dispatch provisions a pod for the agent and, when kickoff is true, sends
-	// the note as the first message once the gateway is reachable.
+	// Dispatch provisions an instance for the agent when kickoff is true, and
+	// creates NOTHING when it is false — see the note below on both halves.
+	//
+	// 🔴 THIS DOC USED TO DESCRIBE BEHAVIOUR NO IMPLEMENTATION HAS. It read
+	// "provisions a pod for the agent and, when kickoff is true, sends the note as
+	// the first message once the gateway is reachable", which is wrong twice over
+	// for internal/agentprovision — the only implementation in this module:
+	//
+	//   - it does NOT send the note. Delivery needs an api.Gateway and there is no
+	//     implementation of one here, so the non-delivery is recorded on the row
+	//     instead (agentprovision.UndeliveredKickoffReason). An interface doc
+	//     promising a delivery is how a future implementer comes to call
+	//     SetKickedOff, which is the one thing that package must never do.
+	//   - kickoff=false creates NOTHING rather than provisioning-then-storing-
+	//     stopped. The caller's OTHER action is the UI's "Save for later", whose
+	//     gate check (agents.go, the `gate:<reason>` refusal) allows a save on the
+	//     stated grounds that it "provisions nothing".
+	//
+	// An implementer that provisions on kickoff=false, or that reports a delivery
+	// it did not make, is wrong against this interface — not merely different.
 	Dispatch(agentID int64, kickoff bool) error
 	// Start scales a stopped/provisioned agent up (kicking off if pending).
 	Start(agentID int64) error

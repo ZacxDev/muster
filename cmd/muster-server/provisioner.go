@@ -38,6 +38,28 @@ import (
 // refusing at api.requireGatewayProvisioner. That is the split's purpose — see
 // doc_seams.go entry 1 — and the boot banner reports the two tiers separately so
 // the half-wired state is readable rather than inferred.
+//
+// 🔴 TWO PREREQUISITES FOR `kubernetes` THAT LIVE OUTSIDE THIS REPOSITORY, NAMED
+// HERE BECAUSE NOTHING ELSE IN IT CAN CHECK THEM:
+//
+//  1. RBAC. This module ships no Kubernetes manifest of any kind, so nothing here
+//     grants muster's own ServiceAccount the Deployment / Service / Secret /
+//     ConfigMap / ServiceAccount / Namespace permissions internal/provision/k8s
+//     needs. Past the readiness defect in doc_seams.go entry 2, every dispatch
+//     403s — and a 403 from the apiserver reads as a driver defect rather than a
+//     missing Role. CLOSING CONDITION: a merged change in the deployment's own
+//     repository adding that Role/RoleBinding, verified by one real dispatch.
+//  2. ROLLBACK IS NOT SYMMETRIC. Once this has been enabled and instances exist,
+//     rolling the image back to a build WITHOUT internal/agentprovision makes every
+//     lifecycle route answer 503 again while the rows AND the instances remain: the
+//     instances become unmanageable from muster (no stop, no destroy, no logs) and
+//     have to be torn down with cluster tooling. Destroy every instance BEFORE
+//     rolling back, or accept a manual teardown.
+//
+// ⚠ EVERY KUBERNETES ASSERTION IN THIS PACKAGE'S TESTS IS AGAINST
+// k8s.io/client-go/kubernetes/fake. That is what makes them runnable, and it means
+// no test here — or anywhere in this module — has ever driven the driver against a
+// real apiserver. Plan step 22d is that test.
 // ---------------------------------------------------------------------------
 
 // buildProvisioner builds the agent lifecycle provisioner named by cfg, or

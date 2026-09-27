@@ -42,6 +42,21 @@ func (s *recordingStore) record(format string, args ...any) {
 	s.calls = append(s.calls, fmt.Sprintf(format, args...))
 }
 
+// refuse is what makes every context-related assertion in this file non-vacuous.
+//
+// 🔴 A FAKE THAT IGNORES ITS ctx CANNOT SEE A CONTEXT DEFECT, AND THAT IS HOW THE
+// FIX FOR ONE SHIPPED UNGUARDED. Every method here took `_ context.Context`, so a
+// mutant that handed the status write an ALREADY-EXPIRED context — the exact defect
+// the bookkeeping budget exists to remove — SURVIVED the whole suite. A store fake
+// stands in for a database, and a database call on a dead context fails.
+func (s *recordingStore) refuse(ctx context.Context, what string) error {
+	if err := ctx.Err(); err != nil {
+		s.record("%s REFUSED(%v)", what, err)
+		return err
+	}
+	return nil
+}
+
 func (s *recordingStore) Get(_ context.Context, id int64) (agents.Agent, error) {
 	s.record("Get(%d)", id)
 	if s.getErr != nil {
@@ -50,7 +65,10 @@ func (s *recordingStore) Get(_ context.Context, id int64) (agents.Agent, error) 
 	return s.agent, nil
 }
 
-func (s *recordingStore) UpdateStatus(_ context.Context, id int64, status, lastOutput, errMsg string) error {
+func (s *recordingStore) UpdateStatus(ctx context.Context, id int64, status, lastOutput, errMsg string) error {
+	if err := s.refuse(ctx, fmt.Sprintf("UpdateStatus(%d,%s)", id, status)); err != nil {
+		return err
+	}
 	s.record("UpdateStatus(%d,%s,out=%q,err=%q)", id, status, lastOutput, errMsg)
 	return s.updateErr
 }
@@ -69,7 +87,10 @@ func (s *recordingStore) SetKickedOff(_ context.Context, id int64, v bool) error
 	return nil
 }
 
-func (s *recordingStore) SetKickoffError(_ context.Context, id int64, msg string) error {
+func (s *recordingStore) SetKickoffError(ctx context.Context, id int64, msg string) error {
+	if err := s.refuse(ctx, fmt.Sprintf("SetKickoffError(%d)", id)); err != nil {
+		return err
+	}
 	s.record("SetKickoffError(%d,%q)", id, msg)
 	return s.kickoffErrErr
 }
@@ -79,7 +100,10 @@ func (s *recordingStore) RecordKickoffDelivery(_ context.Context, id int64, pod 
 	return nil
 }
 
-func (s *recordingStore) ClearKickoffDelivery(_ context.Context, id int64) error {
+func (s *recordingStore) ClearKickoffDelivery(ctx context.Context, id int64) error {
+	if err := s.refuse(ctx, fmt.Sprintf("ClearKickoffDelivery(%d)", id)); err != nil {
+		return err
+	}
 	s.record("ClearKickoffDelivery(%d)", id)
 	return nil
 }
@@ -87,6 +111,17 @@ func (s *recordingStore) ClearKickoffDelivery(_ context.Context, id int64) error
 func (s *recordingStore) Delete(_ context.Context, id int64) error {
 	s.record("Delete(%d)", id)
 	return s.deleteErr
+}
+
+// indexOf returns the position of the first recorded call starting with name+"(",
+// or -1. It is what makes an ORDER assertion expressible.
+func (s *recordingStore) indexOf(name string) int {
+	for i, c := range s.calls {
+		if strings.HasPrefix(c, name+"(") {
+			return i
+		}
+	}
+	return -1
 }
 
 // transcript joins the recorded calls for a failure message.
@@ -114,9 +149,22 @@ func (s *recordingStore) called(name string) bool {
 type flakyDriver struct {
 	*provision.Noop
 
+	// rec is the SHARED transcript, so driver calls and store calls interleave in
+	// one ordered list.
+	//
+	// 🔴 WITHOUT THIS THE SEQUENCE WAS RECORDED AND NEVER READ AS ONE. The store
+	// fake's header claimed it recorded the call SEQUENCE, but every assertion was
+	// membership (a prefix match, or Contains over a joined string), so a mutant
+	// that moved the `stopped` status write BEFORE the create — exactly the
+	// row-leads-the-backend ordering error — SURVIVED. Two separate transcripts
+	// cannot express "A happened before B" at all, whatever the assertions do.
+	rec *recordingStore
+
 	scaleErr   error
 	destroyErr error
 	createErr  error
+	// burnBudget makes Create block until the operation's context expires.
+	burnBudget bool
 
 	scaled   []int
 	destroys int
@@ -124,8 +172,21 @@ type flakyDriver struct {
 	creates  int
 }
 
+func (d *flakyDriver) note(format string, args ...any) {
+	if d.rec != nil {
+		d.rec.record(format, args...)
+	}
+}
+
 func (d *flakyDriver) Create(ctx context.Context, spec provision.Spec) error {
 	d.creates++
+	d.note("driver.Create(%s)", spec.Ref.Name)
+	if d.burnBudget {
+		// Consume the operation's whole budget, the way a wedged apiserver call
+		// does, and report what the caller would see.
+		<-ctx.Done()
+		return fmt.Errorf("create timed out: %w", ctx.Err())
+	}
 	if d.createErr != nil {
 		return d.createErr
 	}
@@ -134,11 +195,13 @@ func (d *flakyDriver) Create(ctx context.Context, spec provision.Spec) error {
 
 func (d *flakyDriver) Update(ctx context.Context, spec provision.Spec) error {
 	d.updates++
+	d.note("driver.Update(%s)", spec.Ref.Name)
 	return d.Noop.Update(ctx, spec)
 }
 
 func (d *flakyDriver) Scale(ctx context.Context, ref provision.Ref, replicas int) error {
 	d.scaled = append(d.scaled, replicas)
+	d.note("driver.Scale(%s,%d)", ref.Name, replicas)
 	if d.scaleErr != nil {
 		return d.scaleErr
 	}
@@ -147,6 +210,7 @@ func (d *flakyDriver) Scale(ctx context.Context, ref provision.Ref, replicas int
 
 func (d *flakyDriver) Destroy(ctx context.Context, ref provision.Ref) error {
 	d.destroys++
+	d.note("driver.Destroy(%s)", ref.Name)
 	if d.destroyErr != nil {
 		return d.destroyErr
 	}
@@ -191,7 +255,7 @@ func fixtureSpecConfig() agentspec.Config {
 func newAdapter(t *testing.T, tune func(*recordingStore, *flakyDriver)) (*Adapter, *recordingStore, *flakyDriver) {
 	t.Helper()
 	store := &recordingStore{agent: fixtureAgent()}
-	driver := &flakyDriver{Noop: provision.MustNewNoop()}
+	driver := &flakyDriver{Noop: provision.MustNewNoop(), rec: store}
 	if tune != nil {
 		tune(store, driver)
 	}
