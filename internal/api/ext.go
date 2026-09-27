@@ -291,10 +291,16 @@ type PrivilegeApplier interface {
 	RemoveGrant(ctx context.Context, agentName, namespace, profileName string) error
 }
 
-// ProfileReapplier re-applies an agent's granted-profile env/kubeconfig to its
-// running pod (a helm upgrade; the pod rolls). Optional. The grant path
-// type-asserts for it, so a nil or fake provisioner (and the RBAC-only path) is
-// unaffected.
+// ProfileReapplier reconciles a running instance to a freshly-rendered spec, which
+// rolls it. Optional: the grant path and the model-change path type-assert for it, so a
+// nil provisioner (and the RBAC-only path) is unaffected.
+//
+// ⚠ ITS PREVIOUS WORDING WAS "re-applies an agent's granted-profile env/kubeconfig to
+// its running POD (a HELM UPGRADE; the pod rolls)" — the same helm-and-pod vocabulary
+// removed from Destroy, TailLogs and StreamLogs below, and missed in the same sweep
+// that removed them. It is false of the only implementation (which calls the driver's
+// Update), false for a driver with no pods, and it names a mechanism the provisioner
+// contract deliberately does not have.
 type ProfileReapplier interface {
 	ReapplyProfiles(ctx context.Context, agentID int64) error
 }

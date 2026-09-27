@@ -58,22 +58,51 @@ func (s *recordingStore) record(format string, args ...any) {
 // wrong budget (see Destroy). The fix was to widen the BODY to the sentence, never to
 // narrow the sentence to the body.
 //
-// ⚠ WIRED IS NOT EXERCISED, AND THE DIFFERENCE IS MEASURED RATHER THAN ASSUMED. Every
-// method refuses a dead context, so a wrong-budget call at any site CAN be seen — but
-// only THREE sites are actually driven on one by a test today: UpdateStatus and
-// SetKickoffError (TestATimedOutOperationStillRECORDSItsFailure) and Delete
-// (TestATimedOutDestroyStillDELETESTheRow). A mutant making SetHooksToken ignore its
-// context SURVIVES, because every test reaches the mint while the operation budget is
-// still alive. That is a coverage statement, not a defect: SetHooksToken is on the
-// OPERATION budget on purpose — minting is part of doing the work, not a record of it,
-// so a dead context there should fail the operation and be recorded by fail(). Do not
-// read the wiring as proof the other five are covered.
+// ⚠ WIRED IS NOT EXERCISED, AND THE COUNT BELOW IS THE SECOND ATTEMPT AT IT — the
+// first said THREE and was measured wrong, which is worth more than the number itself:
+// a coverage ledger that over-counts names an uncovered method as covered, and it is
+// the exact artefact a later reader consults before deciding a context mutant is
+// already handled.
+//
+// TWO sites are driven on a dead context by a test today:
+//   - UpdateStatus, by TestATimedOutOperationStillRECORDSItsFailure
+//   - Delete, by TestATimedOutDestroyStillDELETESTheRow
+//
+// SetKickoffError is NOT one of them, though the first draft claimed it: in that test
+// Dispatch returns at create's error, so recordUndeliveredKickoff is never reached.
+// Transcript, measured: Get -> SetHooksToken -> driver.Create -> UpdateStatus(error).
+//
+// So SIX of the eight are wired and unexercised. A mutant making SetHooksToken ignore
+// its context SURVIVES, because every test reaches the mint while the operation budget
+// is still alive. That is a coverage statement rather than a defect: SetHooksToken is
+// on the OPERATION budget on purpose — minting is part of doing the work, not a record
+// of it, so a dead context there should fail the operation and be recorded by fail().
+// Do not read the wiring as proof the other six are covered.
 func (s *recordingStore) refuse(ctx context.Context, what string) error {
 	if err := ctx.Err(); err != nil {
-		s.record("%s REFUSED(%v)", what, err)
+		// 🔴 THE PREFIX MUST NOT COLLIDE WITH THE CALL IT REFUSED, AND IT DID FOR ONE
+		// ROUND. This recorded "Delete(4291) REFUSED(…)", which shares the "Delete("
+		// prefix that called() and indexOf() match on — so a REFUSED delete made
+		// called("Delete") answer TRUE. That inverts every assertion phrased over
+		// those two helpers: "the row was deleted" passes over a delete that was
+		// refused (the exact defect the bookkeeping budget exists to prevent), and
+		// "the row was NOT deleted" fails over a row that really was kept. Recording
+		// the refusal under its OWN leading token makes a refusal unmistakably not a
+		// call, and refused() below is how a test asserts one deliberately.
+		s.record("REFUSED:%s(%v)", what, err)
 		return err
 	}
 	return nil
+}
+
+// refused reports whether a call to name was refused by a dead context.
+func (s *recordingStore) refused(name string) bool {
+	for _, c := range s.calls {
+		if strings.HasPrefix(c, "REFUSED:"+name+"(") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *recordingStore) Get(ctx context.Context, id int64) (agents.Agent, error) {

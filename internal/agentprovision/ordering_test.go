@@ -137,6 +137,61 @@ func TestATimedOutOperationStillRECORDSItsFailure(t *testing.T) {
 	}
 }
 
+// TestARefusedCallIsNotARecordedCall guards the INSTRUMENT, which is the thing that
+// decides whether any of the other guards can see anything.
+//
+// 🔴 A REFUSAL THAT LOOKS LIKE A CALL INVERTS EVERY ASSERTION PHRASED OVER called().
+// The refusal record used to begin with the refused call's own name, so
+// called("Delete") answered TRUE for a delete that never happened: "the row was
+// deleted" would pass over exactly the dead-context defect the bookkeeping budget
+// exists to prevent, and "the row was NOT deleted" would fail over a row correctly
+// kept. It was latent — no test reached it — which is precisely why it needs a guard
+// rather than a comment: the next test to assert over a refused call inherits the
+// inversion silently.
+//
+// ⚠ IT ASSERTS BOTH DIRECTIONS. A refusal must not read as a call, AND it must still
+// be observable as a refusal — a fix that simply stopped recording refusals would
+// satisfy the first half and blind TestATimedOutOperationStillRECORDSItsFailure.
+func TestARefusedCallIsNotARecordedCall(t *testing.T) {
+	store := &recordingStore{agent: fixtureAgent()}
+	dead, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := store.Delete(dead, fixtureAgentID); err == nil {
+		t.Fatal("the fake accepted a Delete on a cancelled context, so it cannot see a " +
+			"context defect at all")
+	}
+	if store.called("Delete") {
+		t.Errorf("called(\"Delete\") is TRUE after a REFUSED delete.\n"+
+			"    Every assertion phrased over called()/indexOf() is then inverted for this "+
+			"name: \"the row was deleted\" passes over a delete that did not happen.\n"+
+			"  transcript: %s", store.transcript())
+	}
+	if store.indexOf("Delete") >= 0 {
+		t.Errorf("indexOf(\"Delete\") resolved a REFUSED delete at %d, so the ordering "+
+			"guard would order an event that never occurred.\n  transcript: %s",
+			store.indexOf("Delete"), store.transcript())
+	}
+	if !store.refused("Delete") {
+		t.Errorf("the refusal is not observable as a refusal either, which blinds the "+
+			"timeout guards.\n  transcript: %s", store.transcript())
+	}
+
+	// POSITIVE CONTROL: a live Delete must read as a call, or the two assertions above
+	// pass over a fake that records nothing at all.
+	live := &recordingStore{agent: fixtureAgent()}
+	if err := live.Delete(context.Background(), fixtureAgentID); err != nil {
+		t.Fatalf("Delete on a live context: %v", err)
+	}
+	if !live.called("Delete") {
+		t.Fatalf("positive control FAILED: a live Delete does not read as a call.\n"+
+			"  transcript: %s", live.transcript())
+	}
+	if live.refused("Delete") {
+		t.Errorf("a live Delete reads as REFUSED.\n  transcript: %s", live.transcript())
+	}
+}
+
 // TestATimedOutDestroyStillDELETESTheRow is the second half of the bookkeeping-budget
 // guarantee, and it exists because a mutant found the site bookkeepingCtx's own doc had
 // predicted would be missed.
@@ -206,12 +261,24 @@ func TestATimedOutDestroyStillDELETESTheRow(t *testing.T) {
 // over two separate lists cannot say "A before B" no matter how they are written.
 //
 // ⚠ "EVERY METHOD" MEANS EVERY METHOD THAT HAS BOTH HALVES TO ORDER — three of them.
-// The name overstated it, so here is the exhaustive account. Destroy is covered by
-// TestATimedOutDestroyStillDELETESTheRow and TestDestroyRecordsWHYItKeptTheRow instead.
-// Dispatch(kickoff=false) CANNOT be a row here and it is not an oversight: it makes no
-// driver call at all, so this test's own `di < 0` positive control would fire — that
-// path's guard is TestDispatchWithoutAKickoffCreatesNothing. Instances, TailLogs and
-// StreamLogs write nothing to the store, so there is no order to assert.
+// The name overstated it, so here is the account, over all EIGHT methods on the
+// adapter (api.Provisioner's seven plus ReapplyProfiles). An earlier revision of this
+// paragraph called itself exhaustive over the seven without saying so, and omitted the
+// eighth — which is the one with a real store write:
+//
+//   - Dispatch(kickoff=true), Start, Stop — the three rows below.
+//   - Destroy — covered by TestATimedOutDestroyStillDELETESTheRow and
+//     TestDestroyRecordsWHYItKeptTheRow instead.
+//   - Dispatch(kickoff=false) — makes NO driver call, so this test's own `di < 0`
+//     positive control would fire. Its guard is
+//     TestDispatchWithoutAKickoffCreatesNothing.
+//   - Instances, TailLogs, StreamLogs — touch no store, so there is no order.
+//   - ReapplyProfiles — DOES write before its driver call (ensureHooksToken, then
+//     driver.Update), but writes no STATUS, so the `si < 0` control would fire. Its
+//     guard is TestReapplyProfilesMintsAMissingToken. ⚠ The write-then-Update order
+//     there has a recorded consequence rather than an asserted one: see
+//     ensureHooksToken's own note — a failed Update leaves the row holding a token the
+//     instance does not have, so the next Create returns provision.ErrDivergentSpec.
 func TestTheBackendLEADSTheRowInEveryMethod(t *testing.T) {
 	cases := []struct {
 		name string
@@ -277,8 +344,13 @@ func TestTheBackendLEADSTheRowInEveryMethod(t *testing.T) {
 // answered an empty 200 — so htmx removed the card before Destroy ran. With no row
 // write, the card simply REAPPEARS on the next render with no explanation on any
 // surface, and the row we correctly kept is the only evidence the instance is still
-// out there. `error` plus the cause turns "the card came back" into a red card
-// naming an ownership refusal or an unreachable backend.
+// out there.
+//
+// ⚠ WHAT THE STORED `error` ACTUALLY BUYS IS IN Destroy'S OWN DOC, AND THIS COMMENT
+// USED TO OVERSTATE IT HERE — the previous revision ended "turns 'the card came back'
+// into a red card naming an ownership refusal or an unreachable backend", which is the
+// sentence agentprovision.go retracted in the same commit that edited this file. Do
+// not restate it; read it there.
 func TestDestroyRecordsWHYItKeptTheRow(t *testing.T) {
 	for _, tc := range []struct {
 		name string

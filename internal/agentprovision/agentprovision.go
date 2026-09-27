@@ -358,18 +358,31 @@ func (a *Adapter) Destroy(agentID int64) error {
 		// with no explanation anywhere a user looks — and the row we correctly kept
 		// is the only evidence the instance is still out there.
 		//
-		// 🔴 WHAT THE RECORDED STATUS ACTUALLY BUYS, MEASURED — AND AN EARLIER
-		// REVISION OF THIS SENTENCE OVERSTATED IT IN THE SAME WAY THIS FILE RETRACTS
-		// 300 LINES ABOVE. It claimed this "turns 'the card came back' into a red
-		// card NAMING an ownership refusal or an unreachable backend". The red card
-		// is real: internal/ui renders `error` as a red pill, and
-		// agents.ComputeStatus returns StatusError FIRST, so a stored error is not
-		// refined away by a live read. The NAMING half is false — Agent.ErrorMessage
-		// has ZERO consumers in internal/ui (no view struct carries an error field)
-		// and reaches exactly one surface, the hook-token-gated GET /api/agents in
-		// internal/api/machine_agents.go. So: the operator sees a red card instead of
-		// a card that silently reappears, and reads WHY only with a token. That is
-		// still worth having, and it is less than the sentence claimed.
+		// 🔴 YOU ARE THE FIFTH WRITER OF THIS PARAGRAPH. Three successive drafts
+		// asserted something about what a HUMAN can see, and each was measured false
+		// by the next round. Do not reach for a fourth formulation — the two claims
+		// below are the ones that survived measurement, and nothing wider is known.
+		//
+		// WHAT IS TRUE:
+		//   - agents.ComputeStatus returns StatusError FIRST, so a stored `error` is
+		//     not refined away by a live read.
+		//   - internal/ui renders that status as a coloured DOT with a title
+		//     attribute (statusIcon / cardStatusIcon / liveStatusIcon). The colour
+		//     changes; no text does.
+		//
+		// WHAT THE DEAD DRAFTS CLAIMED, so nobody re-derives them:
+		//   1. "a red card NAMING an ownership refusal" — Agent.ErrorMessage reaches
+		//      no HTML surface at all.
+		//   2. "a red PILL" — ui.statusDot IS a labelled pill and has ZERO callers
+		//      tree-wide. It is not what renders. The CARD's border is unconditional.
+		//   3. "reaches exactly ONE surface, the hook-token-gated GET /api/agents" —
+		//      newAgentJSON is also called from the task API (internal/api/notes.go),
+		//      and requireHookToken is ENFORCE-WHEN-SET, so on a server with no
+		//      MUSTER_HOOK_TOKEN it is gated by nothing.
+		//
+		// So the operator gets a dot that turns red instead of a card that silently
+		// reappears, and the REASON is machine-readable only. That is worth having and
+		// it is all that is claimed.
 		return a.fail(ag, "destroy instance (the stored row was KEPT because the "+
 			"instance was not removed)", err)
 	}
@@ -608,6 +621,16 @@ func (a *Adapter) opCtx() (context.Context, context.CancelFunc) {
 
 // bookkeepingCtx is a FRESH, SHORT budget for the store write that RECORDS what an
 // operation did — never the operation's own context.
+//
+// ⚠ ONLY "FRESH" IS GUARDED. A mutant reverting this to the operation's context dies
+// on TestATimedOutDestroyStillDELETESTheRow and
+// TestATimedOutOperationStillRECORDSItsFailure. A mutant replacing the timeout with a
+// bare context.WithCancel — fresh but UNBOUNDED — SURVIVES every package, so "SHORT"
+// is a statement of intent rather than a pinned property. The cost of the gap is the
+// leak class DefaultOpTimeout's own doc exists to prevent: an unbounded bookkeeping
+// write against a wedged database holds its goroutine for the life of the process.
+// Measured, not supposed; recorded because a reader would otherwise take the whole
+// sentence as covered.
 //
 // 🔴 A RECORD WRITTEN ON THE EXPIRED BUDGET OF THE THING IT IS RECORDING CANNOT
 // LAND IN THE CASE THAT NEEDS IT MOST. The failure is exact: opCtx's budget covers
