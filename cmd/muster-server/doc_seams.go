@@ -18,8 +18,9 @@ package main
 // on convenience.
 //
 // ---------------------------------------------------------------------------
-// 1. 🔴 api.Provisioner IS NIL *UNLESS* MUSTER_AGENT_PROVISIONER NAMES A DRIVER.
-//    THE LIFECYCLE HALF OF THIS SEAM IS CLOSED; THE CHAT HALF IS NOT.
+// 1. 🔴 api.Provisioner IS NIL *UNLESS* MUSTER_AGENT_PROVISIONER NAMES A DRIVER,
+//    AND api.Gateway IS NIL UNLESS MUSTER_AGENT_GATEWAY NAMES A RUNTIME. BOTH
+//    HALVES OF THIS SEAM NOW HAVE AN IMPLEMENTATION; NEITHER IS ON BY DEFAULT.
 //
 //	WHAT CHANGED, AND WHAT ITS MECHANICAL SIGNAL WAS: internal/agentprovision
 //	  adapts provision.Provisioner to api.Provisioner's seven LIFECYCLE methods,
@@ -29,26 +30,33 @@ package main
 //	  internal/modulegate/linkage_test.go — it has, together with
 //	  internal/agentspec, and that ledger is ASSERTED so neither could be removed
 //	  from it without something really linking.
-//	🔴 WHAT IS STILL NIL, AND IT IS NOT A DETAIL: api.Gateway. Nothing in this
-//	  module implements a model gateway, so the two CHAT routes still answer 503
-//	  through api.requireGatewayProvisioner. The consequence has a name and a
-//	  place: a dispatch with kickoff=true CREATES the instance and cannot deliver
-//	  the first message, so the note stays in agents.pending_note and the
-//	  non-delivery is written to agents.kickoff_error
+//	✅ THE CHAT HALF NOW HAS AN IMPLEMENTATION, AND THE PARAGRAPH HERE THAT SAID
+//	  OTHERWISE IS REPLACED RATHER THAN LEFT TO READ AS OPEN. It said: "WHAT IS
+//	  STILL NIL, AND IT IS NOT A DETAIL: api.Gateway. Nothing in this module
+//	  implements a model gateway". internal/agentgateway does, over the SAME driver
+//	  the lifecycle adapter holds, behind MUSTER_AGENT_GATEWAY (none | hooks-sha256)
+//	  plus MUSTER_AGENT_GATEWAY_MODEL. Naming a runtime with no driver is refused at
+//	  boot, because this binary's only source of an instance's address is a driver.
+//	🔴 WHAT THAT DOES *NOT* CLOSE, AND IT IS THE HALF THAT MATTERS FOR A KICKOFF:
+//	  NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH. The two CHAT ROUTES are live;
+//	  the kickoff is not a route. A dispatch with kickoff=true still CREATES the
+//	  instance and does not deliver the first message — the note stays in
+//	  agents.pending_note and the non-delivery is written to agents.kickoff_error
 //	  (agentprovision.UndeliveredKickoffReason). An agent dispatched on such a
-//	  deployment is a real pod that was never told what to do.
+//	  deployment is still a real pod that was never told what to do; what changed is
+//	  that a human can now open its chat and talk to it.
 //	  🔴 AND NOTHING ESCALATES THAT YET. agents.DecideReconcile already has the
 //	  decision table (ActionRetryKickoff, then ActionError past
 //	  ProvisioningStuckTimeout) and its own header records that NO loop drives it,
-//	  so the undelivered kickoff does not become a red card on its own. Until the
-//	  gateway or that loop lands, the kickoff-error field is the only place that
-//	  says so.
-//	CLOSING CONDITION FOR THE REMAINDER: a pull request wiring api.Gateway —
-//	  internal/agents/responses.go's runToolLoop already exists and its own OWED
-//	  record names the two inputs it needs — plus either a kickoff delivery on the
-//	  lifecycle path or the reconcile loop that escalates a missing one.
-//	WHO CHECKS IT: the reviewer of that pull request, against the boot banner's
-//	  CHAT line and against agents.reconcile.go's header.
+//	  so the undelivered kickoff does not become a red card on its own. Until a
+//	  kickoff delivery or that loop lands, the kickoff-error field is the only place
+//	  that says so.
+//	CLOSING CONDITION FOR THE REMAINDER: a pull request in which a dispatch with
+//	  kickoff=true delivers its note through api.Extensions.Gateway — or the
+//	  reconcile loop that escalates a missing one. The transport and the wiring are
+//	  no longer the blocker; the CALL SITE is.
+//	WHO CHECKS IT: the reviewer of that pull request, against agents.reconcile.go's
+//	  header and against a dispatched agent's kickoff_error being empty.
 //
 //	The original entry follows, kept rather than rewritten because its argument is
 //	what the wrappers, the banner and the readiness defect are all still built on.

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
@@ -72,6 +73,8 @@ const (
 
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner   = "MUSTER_AGENT_PROVISIONER"
+	envAgentGateway       = "MUSTER_AGENT_GATEWAY"
+	envAgentGatewayModel  = "MUSTER_AGENT_GATEWAY_MODEL"
 	envAgentImageRepo     = "MUSTER_AGENT_IMAGE_REPO"
 	envAgentImageTag      = "MUSTER_AGENT_IMAGE_TAG"
 	envAgentAPIURL        = "MUSTER_AGENT_API_URL"
@@ -100,6 +103,38 @@ const (
 // provisionerChoices is every legal value, for the refusal message and for the
 // guard that pins the set.
 var provisionerChoices = []string{provisionerNone, provisionerNoop, provisionerK8s}
+
+// The values MUSTER_AGENT_GATEWAY accepts: which agent RUNTIME's chat wire this
+// deployment talks. See internal/agentgateway.Runtime for what the name selects.
+//
+// 🔴 THE DEFAULT IS none FOR THE SAME REASON THE PROVISIONER'S IS, AND ONE MORE.
+// The provisioner's argument is that an image bump must not start creating pods;
+// chat creates nothing, but it does send an agent a message and pay for a model
+// turn. More importantly the runtime name is a CLAIM about what is inside the
+// image, and a default would make that claim on an operator's behalf — for an
+// image they chose, whose gateway may authenticate by a different formula
+// entirely.
+const (
+	gatewayNone = "none"
+	// The scheme names are the agentgateway package's own, not copies: a second
+	// spelling of a value an operator sets is how configuration stops matching the
+	// code that checks it.
+	gatewayHooksSHA256 = agentgateway.SchemeHooksSHA256
+)
+
+// gatewayChoices is every legal value, for the refusal message and for the guard
+// that pins the set.
+var gatewayChoices = []string{gatewayNone, gatewayHooksSHA256}
+
+// agentGateway resolves the empty value to gatewayNone, for the reason
+// agentProvisioner's doc gives at length: buildApp accepts a config that did not
+// come from loadConfig, and every wiring test is one.
+func (c config) agentGateway() string {
+	if c.AgentGateway == "" {
+		return gatewayNone
+	}
+	return c.AgentGateway
+}
 
 // agentProvisioner resolves the empty value to provisionerNone.
 //
@@ -189,6 +224,27 @@ type config struct {
 	// as it did before this knob existed.
 	AgentProvisioner string
 
+	// AgentGateway names the agent runtime whose chat wire this deployment talks:
+	// one of gatewayChoices. Default gatewayNone, which leaves
+	// api.Extensions.Gateway nil and both chat routes refusing.
+	//
+	// 🔴 IT IS A SECOND KNOB RATHER THAN A BOOLEAN ON THE FIRST, BECAUSE THE TWO
+	// ANSWER DIFFERENT QUESTIONS. AgentProvisioner says where instances live;
+	// this says what protocol the process inside one speaks. A deployment can
+	// legitimately want lifecycle without chat — and did, for the whole of the
+	// step that wired the provisioner.
+	AgentGateway string
+
+	// AgentGatewayModel is the agent runtime's passthrough sentinel — the value its
+	// gateway requires in the wire's `model` field. Required whenever AgentGateway
+	// is not none, and refused at boot rather than at the first turn.
+	//
+	// 🔴 IT IS CONFIGURATION AND NOT A CONSTANT BECAUSE THE VALUE BELONGS TO THE
+	// IMAGE. It is not the model an agent runs — the runtime selects that itself
+	// — and there is no value this project could default it to that would be
+	// right for an image it has never seen.
+	AgentGatewayModel string
+
 	// AgentImageRepo and AgentAPIURL are agentspec.Config's two required fields.
 	// Required whenever AgentProvisioner is not none, and refused at boot rather
 	// than at the first dispatch — see validate.
@@ -266,6 +322,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		Standalone:         envFlag(getenv, envStandalone),
 
 		AgentProvisioner:      strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
+		AgentGateway:          strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),
+		AgentGatewayModel:     strings.TrimSpace(getenv(envAgentGatewayModel)),
 		AgentImageRepo:        strings.TrimSpace(getenv(envAgentImageRepo)),
 		AgentImageTag:         strings.TrimSpace(getenv(envAgentImageTag)),
 		AgentAPIURL:           strings.TrimSpace(getenv(envAgentAPIURL)),
@@ -283,6 +341,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 	}
 	if c.AgentProvisioner == "" {
 		c.AgentProvisioner = provisionerNone
+	}
+	if c.AgentGateway == "" {
+		c.AgentGateway = gatewayNone
 	}
 	if c.AgentNamespacePrefix == "" {
 		// 🔴 THE DEFAULT IS THE STORE'S OWN CONSTANT, NOT A COPY OF ITS VALUE.
@@ -403,6 +464,46 @@ func (c config) validateProvisioner() error {
 		return fmt.Errorf("invalid %s %q: want one of %s", envAgentProvisioner,
 			c.AgentProvisioner, strings.Join(provisionerChoices, ", "))
 	}
+
+	// 🔴 THE GATEWAY IS CHECKED *AGAINST* THE PROVISIONER, NOT BESIDE IT, AND THAT
+	// IS THIS FUNCTION'S OWN STATED LESSON APPLIED TO THE NEXT KNOB. The pair below
+	// is the mutually-exclusive kind: this binary's only source of an agent's
+	// address is a driver, so a named runtime with no named driver is a chat tier
+	// that can never resolve an endpoint. It would boot, print WIRED, and answer
+	// every turn with a resolution error from inside a request handler.
+	//
+	// ⚠ THE REFUSED COMBINATION IS COHERENT IN api's CONTRACT AND UNBUILDABLE HERE,
+	// which is a different claim and worth the distinction. api.Gateway's own doc
+	// says chat without lifecycle describes "an installation whose instances are
+	// provisioned by something else entirely" — true, and it needs an endpoint
+	// source that is not a driver. There is none in this binary, so the refusal is
+	// about this implementation rather than about the design.
+	gwLegal := false
+	for _, choice := range gatewayChoices {
+		if c.agentGateway() == choice {
+			gwLegal = true
+			break
+		}
+	}
+	if !gwLegal {
+		return fmt.Errorf("invalid %s %q: want one of %s", envAgentGateway,
+			c.AgentGateway, strings.Join(gatewayChoices, ", "))
+	}
+	if c.agentGateway() != gatewayNone && c.AgentGatewayModel == "" {
+		return fmt.Errorf("%s=%s but %s is not set: the runtime's passthrough sentinel is REQUIRED "+
+			"in the wire's model field and there is no defensible default — it is the attached "+
+			"image's own value, not this project's, and a wrong or missing one is an HTTP 400 from "+
+			"inside a chat turn rather than a boot failure",
+			envAgentGateway, c.agentGateway(), envAgentGatewayModel)
+	}
+	if c.agentGateway() != gatewayNone && named == provisionerNone {
+		return fmt.Errorf("%s=%s but %s=%s: agent chat resolves each instance's address through "+
+			"the provisioning driver, so there is nothing to talk to. Name a driver (%s), or unset "+
+			"%s and leave the two chat routes refusing at api.requireGatewayProvisioner",
+			envAgentGateway, c.agentGateway(), envAgentProvisioner, named,
+			strings.Join([]string{provisionerNoop, provisionerK8s}, "/"), envAgentGateway)
+	}
+
 	if named == provisionerNone {
 		// Nothing else is read in this mode, so nothing else is refused. An
 		// operator who set the image repository and forgot to name a driver is

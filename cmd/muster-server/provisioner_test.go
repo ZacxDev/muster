@@ -101,9 +101,9 @@ func TestBuildingTheKubernetesProvisionerUsesTheRealDriver(t *testing.T) {
 func TestTheKubernetesBranchRefusesOutsideAClusterRatherThanFallingBack(t *testing.T) {
 	// This test process is not a pod: rest.InClusterConfig has no service-account
 	// token to read.
-	_, err := buildProvisioner(provisionerTestConfig(provisionerK8s), stubStore{}, log.New(&strings.Builder{}, "", 0))
+	_, _, err := buildAgentPlane(provisionerTestConfig(provisionerK8s), stubStore{}, log.New(&strings.Builder{}, "", 0))
 	if err == nil {
-		t.Fatal("buildProvisioner succeeded for the kubernetes driver outside a cluster, " +
+		t.Fatal("buildAgentPlane succeeded for the kubernetes driver outside a cluster, " +
 			"which means it fell back to some other credential source. A fallback " +
 			"provisions into whichever cluster the ambient context names.")
 	}
@@ -123,23 +123,23 @@ func TestTheKubernetesBranchRefusesOutsideAClusterRatherThanFallingBack(t *testi
 func TestTheNoopProvisionerWiresAnAdapterAndNoneWiresNothing(t *testing.T) {
 	logger := log.New(&strings.Builder{}, "", 0)
 
-	adapter, err := buildProvisioner(provisionerTestConfig(provisionerNoop), stubStore{}, logger)
+	adapter, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), stubStore{}, logger)
 	if err != nil {
-		t.Fatalf("buildProvisioner(noop): %v", err)
+		t.Fatalf("buildAgentPlane(noop): %v", err)
 	}
 	if adapter == nil {
-		t.Fatal("buildProvisioner(noop) returned nil, so the lifecycle routes would keep refusing")
+		t.Fatal("buildAgentPlane(noop) returned nil, so the lifecycle routes would keep refusing")
 	}
 	if got := adapter.Driver(); got != "noop" {
 		t.Errorf("adapter.Driver() = %q, want %q", got, "noop")
 	}
 
-	none, err := buildProvisioner(provisionerTestConfig(provisionerNone), stubStore{}, logger)
+	none, _, err := buildAgentPlane(provisionerTestConfig(provisionerNone), stubStore{}, logger)
 	if err != nil {
-		t.Fatalf("buildProvisioner(none): %v", err)
+		t.Fatalf("buildAgentPlane(none): %v", err)
 	}
 	if none != nil {
-		t.Error("buildProvisioner(none) returned a provisioner. The default must leave " +
+		t.Error("buildAgentPlane(none) returned a provisioner. The default must leave " +
 			"api.Extensions.Provisioner nil so every lifecycle route keeps refusing at the " +
 			"door exactly as it did before this knob existed.")
 	}
@@ -151,9 +151,9 @@ func TestTheNoopProvisionerWiresAnAdapterAndNoneWiresNothing(t *testing.T) {
 	// that never went through loadConfig — every wiring test builds one — so this is
 	// the shape a zero value actually reaches the wiring in, and a default that
 	// provisioned would create pods for a deployment that asked for nothing.
-	zero, err := buildProvisioner(config{}, stubStore{}, logger)
+	zero, _, err := buildAgentPlane(config{}, stubStore{}, logger)
 	if err != nil {
-		t.Fatalf("buildProvisioner over a zero-value config: %v", err)
+		t.Fatalf("buildAgentPlane over a zero-value config: %v", err)
 	}
 	if zero != nil {
 		t.Errorf("a zero-value config produced a %q provisioner. An unset "+
@@ -164,8 +164,8 @@ func TestTheNoopProvisionerWiresAnAdapterAndNoneWiresNothing(t *testing.T) {
 
 	// A provisioner with no store could resolve no agent id, and would fail from a
 	// background goroutine whose only trace is a log line.
-	if _, err := buildProvisioner(provisionerTestConfig(provisionerNoop), nil, logger); err == nil {
-		t.Error("buildProvisioner accepted a nil agents store")
+	if _, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), nil, logger); err == nil {
+		t.Error("buildAgentPlane accepted a nil agents store")
 	}
 }
 

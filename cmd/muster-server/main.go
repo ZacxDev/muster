@@ -210,13 +210,21 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// goroutine instead of a 503 at the door. buildProvisioner returns a concrete
 	// *agentprovision.Adapter precisely so this is checkable here rather than
 	// invisible behind an interface return.
-	prov, err := buildProvisioner(cfg, ext.Agents, logger)
+	//
+	// ⚠ AND IT IS NOW TWO ASSIGNMENTS FROM ONE CALL, FOR THE SAME REASON: a nil
+	// *agentgateway.Gateway assigned into ext.Gateway would make
+	// api.requireGatewayProvisioner's nil check false and turn a 503 into a
+	// nil-pointer dereference inside a chat handler.
+	prov, gw, err := buildAgentPlane(cfg, ext.Agents, logger)
 	if err != nil {
 		a.Close()
 		return nil, fmt.Errorf("agent provisioner: %w", err)
 	}
 	if prov != nil {
 		ext.Provisioner = prov
+	}
+	if gw != nil {
+		ext.Gateway = gw
 	}
 
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
@@ -534,14 +542,20 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		// half of the both-directions rule bannerLedger enforces: an operator
 		// reading "UNWIRED" needs the name they can set, and it was previously
 		// findable only by reading this file.
-		l.Printf("agent provisioning: UNWIRED (%s=%s) — this module has no api.Provisioner "+
-			"or api.Gateway implementation wired, so every agent-control route (dispatch, "+
+		//
+		// 🔴 AND IT NAMES *BOTH* VARIABLES, BECAUSE THIS BRANCH IS BOTH TIERS OFF.
+		// There are two knobs now and this arm is the only place a reader sees the
+		// fully-off state; naming one of them would send an operator who wants chat
+		// to set the provisioner variable and conclude, correctly, that it did not
+		// turn chat on.
+		l.Printf("agent provisioning: UNWIRED (%s=%s, %s=%s) — no api.Provisioner and no "+
+			"api.Gateway is wired, so every agent-control route (dispatch, "+
 			"start, stop, destroy, logs, chat) is registered and answers 503 at request time "+
 			"through api.requireLifecycleProvisioner or api.requireGatewayProvisioner, "+
 			"after its own auth check and with provisionerUnwired:true in the body. "+
 			"Privilege grants are RECORDED but not applied to any cluster. Neither is a "+
 			"misconfiguration; see cmd/muster-server/doc_seams.go",
-			envAgentProvisioner, a.cfg.agentProvisioner())
+			envAgentProvisioner, a.cfg.agentProvisioner(), envAgentGateway, a.cfg.agentGateway())
 	default:
 		l.Printf("agent provisioning: LIFECYCLE %s (%s=%s) — dispatch, start, stop, destroy "+
 			"and the log routes go through api.requireLifecycleProvisioner",
@@ -553,15 +567,29 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		// where that shows up (agents.kickoff_error) so the reader is not left to
 		// infer it from a card that looks healthy.
 		if ext.Gateway == nil {
-			l.Printf("agent provisioning CHAT: UNWIRED — no api.Gateway implementation exists in "+
-				"this module, so the two chat routes answer 503 through "+
-				"api.requireGatewayProvisioner with %s:true. A dispatch with a kickoff therefore "+
-				"CREATES the instance and cannot deliver the first message: the note stays in "+
-				"agents.pending_note and the non-delivery is recorded in agents.kickoff_error. "+
-				"See cmd/muster-server/doc_seams.go entry 1", api.ProvisionerUnwiredField)
+			// ⚠ THE SENTENCE "no api.Gateway implementation exists in this module" WAS
+			// TRUE AND IS NOT ANY MORE — internal/agentgateway is one. What makes this
+			// branch reachable now is a deployment that did not NAME a runtime, so the
+			// line says that instead: an operator reading UNWIRED needs the variable
+			// they can set, which is the property bannerLedger enforces in both
+			// directions.
+			l.Printf("agent provisioning CHAT: UNWIRED (%s=%s) — no agent runtime is named, so "+
+				"nothing is wired to api.Extensions.Gateway and the two chat routes answer 503 "+
+				"through api.requireGatewayProvisioner with %s:true. A dispatch with a kickoff "+
+				"therefore CREATES the instance and cannot deliver the first message: the note "+
+				"stays in agents.pending_note and the non-delivery is recorded in "+
+				"agents.kickoff_error. See cmd/muster-server/doc_seams.go entry 1",
+				envAgentGateway, a.cfg.agentGateway(), api.ProvisionerUnwiredField)
 		} else {
-			l.Print("agent provisioning CHAT: WIRED — the two chat routes are live through " +
-				"api.requireGatewayProvisioner")
+			// 🔴 IT NAMES THE RUNTIME, NOT JUST "WIRED", BECAUSE THE RUNTIME IS WHAT
+			// DECIDES THE BEARER DERIVATION AND THE MODEL SENTINEL. Those are wire
+			// contracts with the agent IMAGE, and both fail as a 401 or a 400 from
+			// inside a turn — the two failures an operator is most likely to read as a
+			// credential or model problem. The name is the one readback that says which
+			// formula this process is using.
+			l.Printf("agent provisioning CHAT: WIRED %s=%s (%s=%s) — the two chat routes are live "+
+				"through api.requireGatewayProvisioner, over the same driver as lifecycle",
+				envAgentGateway, a.cfg.agentGateway(), envAgentGatewayModel, a.cfg.AgentGatewayModel)
 		}
 		// 🔴 THIS IS doc_seams.go ENTRY 2'S ARGUMENT DYING ON SCHEDULE. A grant
 		// recorded and not applied was defensible only while no pod could exist to

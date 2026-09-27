@@ -268,7 +268,7 @@ func (a *Adapter) Start(agentID int64) error {
 	if err != nil {
 		return fmt.Errorf("agentprovision: start agent %d: load row: %w", agentID, err)
 	}
-	if err := a.driver.Scale(ctx, refOf(ag), 1); err != nil {
+	if err := a.driver.Scale(ctx, agents.RefOf(ag), 1); err != nil {
 		if !errors.Is(err, provision.ErrNotFound) {
 			return a.fail(ag, "scale up", err)
 		}
@@ -304,7 +304,7 @@ func (a *Adapter) Stop(agentID int64) error {
 	// stored status stayed `running` with no way to correct it from the UI, and the
 	// model-change roll kept trying to reconcile an instance that does not exist.
 	// Destroy already draws this distinction — see its own doc.
-	if err := a.driver.Scale(ctx, refOf(ag), 0); err != nil && !errors.Is(err, provision.ErrNotFound) {
+	if err := a.driver.Scale(ctx, agents.RefOf(ag), 0); err != nil && !errors.Is(err, provision.ErrNotFound) {
 		return fmt.Errorf("agentprovision: stop agent %d (%s): %w", ag.ID, ag.Name, err)
 	}
 	// 🔴 THE DELIVERY PROVENANCE IS DROPPED, AND agents.Store's own doc on this
@@ -348,7 +348,7 @@ func (a *Adapter) Destroy(agentID int64) error {
 	if err != nil {
 		return fmt.Errorf("agentprovision: destroy agent %d: load row: %w", agentID, err)
 	}
-	err = a.driver.Destroy(ctx, refOf(ag))
+	err = a.driver.Destroy(ctx, agents.RefOf(ag))
 	if err != nil && !errors.Is(err, provision.ErrNotFound) {
 		// 🔴 THE REASON GOES ON THE ROW, NOT ONLY INTO A RETURNED ERROR, AND AN
 		// EARLIER REVISION RETURNED IT AND WROTE NOTHING. Nobody reads the return:
@@ -425,12 +425,12 @@ func (a *Adapter) Instances(ctx context.Context) ([]provision.Instance, error) {
 
 // TailLogs returns the last `lines` lines of the agent's instance.
 func (a *Adapter) TailLogs(ctx context.Context, ag agents.Agent, lines int64) (string, error) {
-	return a.driver.TailLogs(ctx, refOf(ag), lines)
+	return a.driver.TailLogs(ctx, agents.RefOf(ag), lines)
 }
 
 // StreamLogs follows the agent's instance output, calling emit per line.
 func (a *Adapter) StreamLogs(ctx context.Context, ag agents.Agent, emit func(string)) error {
-	return a.driver.StreamLogs(ctx, refOf(ag), emit)
+	return a.driver.StreamLogs(ctx, agents.RefOf(ag), emit)
 }
 
 // ReapplyProfiles re-renders the agent's spec from its current row and
@@ -655,16 +655,4 @@ func (a *Adapter) opCtx() (context.Context, context.CancelFunc) {
 // obeyed at four sites and missed at the fifth.
 func (a *Adapter) bookkeepingCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), bookkeepingTimeout)
-}
-
-// refOf is the one place an agent row becomes a driver reference.
-//
-// 🔴 IT KEYS ON Name, NOT ON Namespace, AND THE DIFFERENCE IS A SILENT ONE.
-// api.Server.instanceIndex indexes live instances by provision.Instance.Ref.Name
-// — agents.InstanceIndex's own doc says Group is empty for a driver with no
-// namespacing concept, so a group-keyed index collapses every instance onto "".
-// A reference built from the namespace would not fail: it would resolve to
-// nothing, and every agent would render stopped while running perfectly.
-func refOf(ag agents.Agent) provision.Ref {
-	return provision.Ref{Name: ag.Name, ID: ag.ID}
 }

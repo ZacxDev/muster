@@ -131,10 +131,23 @@ test-db:
 	@echo "Without it a suite that ran nothing still reports green."
 
 test-liveenv: ## run the live-environment controls (needs a real coding-agent session)
-	@# These are behind `//go:build liveenv` because they read the session id from
-	@# the REAL process environment. They are NOT in `make test` on purpose: as
-	@# t.Skip they silently no-op'd on CI and the run still looked green.
+	@# These are behind `//go:build liveenv` because they read their inputs from the
+	@# REAL process environment. They are NOT in `make test` on purpose: as t.Skip
+	@# they silently no-op'd on CI and the run still looked green.
 	go test -tags liveenv -run 'REALProcessEnvironment|SessionIDIsReadableFromThisProcess' -v ./cmd/muster/
+	@# The agent-chat controls need a reachable agent runtime, not a coding-agent
+	@# session — see internal/agentgateway/liveruntime_test.go for the three variables
+	@# and the port-forward recipe. They are the closing condition the OWED record in
+	@# internal/agents/responses.go wrote for itself: the httptest suite proves what
+	@# goes on the wire, and only these prove a runtime accepts it.
+	@#
+	@# 🔴 THE TOOL CELL IS KNOWN RED AND IS DELIBERATELY NOT HIDDEN. It needs a runtime
+	@# that BOTH speaks the tool shape agents.ToolDef sends AND has a working model
+	@# credential, and no single pod had both when this landed — that file's header
+	@# records the measurement per image. Its failure message carries the diagnosis, so
+	@# a red run here is a reading about the environment; splitting it into a target
+	@# nobody invokes is how it would stop being one.
+	go test -tags liveenv -count=1 -run 'RealTurnAgainstALiveRuntime|RealTOOLTurnAgainstALiveRuntime' -v ./internal/agentgateway/
 
 test-db-down:
 	$(COMPOSE) -f $(COMPOSE_FILE) down -v

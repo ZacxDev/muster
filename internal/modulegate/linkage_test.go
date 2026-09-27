@@ -71,10 +71,12 @@ var notLinkedLedger = map[string]string{
 	// entries is what makes that a checkable claim rather than a described one.
 	//
 	// ⚠ THE LEDGER IS NOT WHERE THE REST OF THAT STEP IS CHECKED. Linkage says
-	// "reachable from a process", nothing more: the chat half is still unwired
-	// (api.Gateway has no implementation here) and a kickoff is still undeliverable.
-	// TestBuildingTheKubernetesProvisionerUsesTheRealDriver and the boot banner's
-	// two-tier readback are the parts this gate cannot be.
+	// "reachable from a process", nothing more. internal/agentgateway implements the
+	// chat half now and links the same way — through cmd/muster-server — but a
+	// KICKOFF is still undeliverable, because nothing calls the gateway on the
+	// dispatch path. TestBuildingTheKubernetesProvisionerUsesTheRealDriver, the
+	// gateway's own wiring tests and the boot banner's two-tier readback are the
+	// parts this gate cannot be.
 
 	"internal/provision/provisiontest": "the driver contract suite, run by driver " +
 		"implementations from their own _test.go files. Same reason as internal/dbtest.",
