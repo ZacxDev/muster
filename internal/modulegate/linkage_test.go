@@ -59,22 +59,22 @@ var notLinkedLedger = map[string]string{
 
 	"internal/modulegate": "this package. Test files only; it has no importable symbol.",
 
-	"internal/agentspec": "the agent-row -> provision.Spec builder, plan step 22a. " +
-		"It has no consumer because the thing that would call it is the adapter " +
-		"from provision.Provisioner to api.Provisioner, which is plan step 22b — " +
-		"nothing in this module implements api.Provisioner yet, so there is no " +
-		"lifecycle method to build a spec FOR. It is landed ahead of that " +
-		"deliberately: it is the only one of the three 22x pieces that touches " +
-		"neither the provisioner wrappers nor the chat path, so it is " +
-		"reviewable on its own. 🔴 THIS ENTRY DISAPPEARING IS THE SIGNAL THAT 22b " +
-		"LANDED, exactly as internal/provision/k8s's entry is the signal for the " +
-		"seam as a whole. Do not wire a fake consumer to clear it.",
-
-	"internal/provision/k8s": "the Kubernetes provisioner DRIVER. It has no consumer " +
-		"because nothing in this module implements api.Provisioner — the adapter " +
-		"from provision.Driver to that interface is the chunk internal/agents/provision.go " +
-		"deliberately stayed upstream for. See cmd/muster-server/doc_seams.go entry 1. " +
-		"This entry disappearing is the signal that the seam CLOSED.",
+	// 🔴 internal/agentspec AND internal/provision/k8s WERE BOTH HERE, AND THEIR
+	// DEPARTURE IS THE ONLY MECHANICAL SIGNAL PLAN STEP 22b HAD. Both entries said
+	// so in their own text: agentspec's read "THIS ENTRY DISAPPEARING IS THE
+	// SIGNAL THAT 22b LANDED … Do not wire a fake consumer to clear it", and
+	// k8s's read "This entry disappearing is the signal that the seam CLOSED".
+	// What removed them is cmd/muster-server/provisioner.go — it CONSTRUCTS the
+	// Kubernetes driver from a real in-cluster client and hands it to
+	// internal/agentprovision, which builds specs with agentspec.Build. Neither
+	// arrived via a test fixture or a blank import; the deletion of these two
+	// entries is what makes that a checkable claim rather than a described one.
+	//
+	// ⚠ THE LEDGER IS NOT WHERE THE REST OF THAT STEP IS CHECKED. Linkage says
+	// "reachable from a process", nothing more: the chat half is still unwired
+	// (api.Gateway has no implementation here) and a kickoff is still undeliverable.
+	// TestBuildingTheKubernetesProvisionerUsesTheRealDriver and the boot banner's
+	// two-tier readback are the parts this gate cannot be.
 
 	"internal/provision/provisiontest": "the driver contract suite, run by driver " +
 		"implementations from their own _test.go files. Same reason as internal/dbtest.",

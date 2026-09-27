@@ -11,6 +11,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/privilege"
 	"github.com/ZacxDev/muster/internal/router"
 )
 
@@ -269,6 +270,7 @@ var bannerLedger = []string{
 	envServiceToken,
 	envRouterURL,
 	envGitHubEncKey,
+	envAgentProvisioner,
 }
 
 // bannerExempt is every environment variable config.go declares that logBanner
@@ -327,6 +329,57 @@ var bannerExempt = map[string]string{
 	envStandalone: "reported by the permission-router line's two NONE branches (DECLARED and " +
 		"UNDECLARED). When a router IS configured the line has nothing to say about it, " +
 		"which is the one-directional shape the ledger cannot express",
+
+	// --- agent provisioning ---------------------------------------------------
+	//
+	// 🔴 MUSTER_AGENT_PROVISIONER IS LEDGERED, NOT EXEMPT, AND EVERYTHING BELOW IT
+	// IS A PARAMETER OF THE BACKEND THAT KNOB SELECTS. The banner reports TIERS:
+	// whether a dependency is wired and which door refuses when it is not. A
+	// dozen driver and spec parameters on the banner would drown the four lines an
+	// operator actually reads, and each reason below names what reports the
+	// variable INSTEAD — either a boot refusal (the process does not start, so the
+	// absence cannot be silent) or a documented default.
+	//
+	// ⚠ EACH REASON WAS READ OFF THE CODE IT CITES, and one candidate reason was
+	// discarded for being false: "the noop driver has no storage to persist to"
+	// was measured against provision.DefaultNoopCapabilities, which declares
+	// Persistence TRUE.
+	envAgentImageRepo: "config.validateProvisioner REFUSES to start when a provisioner is " +
+		"named and this is unset, so its absence is a fatal line at boot rather than a " +
+		"silent state a banner would have to announce. agentspec.Build refuses it too, but " +
+		"that refusal happens inside a dispatch goroutine",
+	envAgentAPIURL: "same boot refusal as MUSTER_AGENT_IMAGE_REPO — an instance with no base " +
+		"URL cannot reach this server, and validateProvisioner names that consequence",
+	envAgentImageTag: "defaults to agentspec.DefaultImageTag (\"latest\"), which is a property " +
+		"of the spec an instance is built from rather than of this server's boot posture",
+	envAgentModel: "empty means the RUNTIME decides (agentspec.Config.Model), which is why " +
+		"Build omits the config key entirely rather than writing \"\". It reaches the " +
+		"instance, not this process",
+	envAgentOpenRouterKey: "a model-provider credential that is injected into the INSTANCE's " +
+		"secrets (agentspec.EnvOpenRouterKey); empty means the installation expects the " +
+		"runtime image to carry its own, per agentspec.Config's own doc. ⚠ WORTH " +
+		"REVISITING WHEN api.Gateway IS WIRED: at that point a missing provider credential " +
+		"becomes a failure of THIS server's chat path rather than of the instance",
+	envAgentNamespace: "the shared-layout namespace. The combination that could be silently " +
+		"wrong — shared layout with no namespace — is refused by validateProvisioner at " +
+		"boot, and TestTheSharedNamespaceLayoutIsRefusedWithoutANamespace holds that",
+	envAgentNSPrefix: "the per-instance namespace prefix, whose one silent hazard is " +
+		"disagreeing with what internal/api writes into agents.namespace. That is pinned " +
+		"structurally by TestTheStoredNamespacePrefixIsWhatTheDriverIsConfiguredWith, " +
+		"which is a stronger check than a log line a reader has to compare by eye",
+	envAgentNSShared: "selects between the two namespace layouts; see " +
+		"MUSTER_AGENT_NAMESPACE and MUSTER_AGENT_NAMESPACE_PREFIX, both of which are " +
+		"guarded rather than announced",
+	envAgentWorkspaceKeep: "asks the driver for a workspace that survives a restart. Unset " +
+		"means ephemeral, and a driver that cannot persist refuses the spec with " +
+		"provision.ErrUnsupported at dispatch, naming itself — see " +
+		"k8s.Config.WorkspaceStorageClass's three states",
+	envAgentStorageClass: "only read when MUSTER_AGENT_WORKSPACE_PERSIST is set, where empty " +
+		"means the cluster's default StorageClass. A banner line for it would report a " +
+		"value that is ignored in the default configuration",
+	envAgentEndpointTmpl: "overrides the driver's own DefaultEndpointTemplate. It decides " +
+		"where an instance is REACHED, which the driver resolves per instance " +
+		"(provision.Provisioner.Endpoint) rather than once at boot",
 }
 
 // bannerStubGitHubStore stands in for a wired GitHub store. Only its presence
@@ -334,6 +387,31 @@ var bannerExempt = map[string]string{
 // interface is enough and cannot accidentally be CALLED without panicking
 // loudly — which is the behaviour wanted if the banner ever starts reading it.
 type bannerStubGitHubStore struct{ github.Store }
+
+// bannerStubPrivilegeStore stands in for a wired privilege store. Only its
+// presence is read (`ext.Privilege != nil`), same shape and same reason as
+// bannerStubGitHubStore.
+type bannerStubPrivilegeStore struct{ privilege.Store }
+
+// bannerProvisioner builds the REAL lifecycle adapter over the noop driver, for
+// the banner's wired arm.
+//
+// ⚠ IT IS NOT A STUB, AND THE REASON IS THE ONE bannerStubGitHubStore GIVES IN
+// REVERSE. logBanner reads only `ext.Provisioner != nil`, so a stub would do — but
+// this one is free, exercises buildProvisioner (the function whose result the
+// banner is describing), and cannot drift from what the binary actually assigns.
+func bannerProvisioner(t *testing.T, cfg config) api.Provisioner {
+	t.Helper()
+	p, err := buildProvisioner(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
+	if err != nil {
+		t.Fatalf("building the banner's provisioner fixture: %v", err)
+	}
+	if p == nil {
+		t.Fatalf("the banner fixture's config (%s=%s) produced no provisioner, so the "+
+			"WIRED arm would never be rendered", envAgentProvisioner, cfg.AgentProvisioner)
+	}
+	return p
+}
 
 // TestTheBannerAnnouncesEveryLedgeredVariableInBothDirections is the F6 guard.
 // bannerBothDirections renders the banner twice from configurations that are
@@ -357,8 +435,21 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		RouterURL:     "https://router.example.invalid",
 		RouterToken:   "t",
 		RouterActor:   "muster",
+
+		// 🔴 THE PROVISIONER AXIS NEEDS BOTH THE CONFIG *AND* THE WIRED EXTENSION,
+		// because the banner branches on the extension and reports the config. A
+		// fixture that set only the variable would take the UNWIRED arm and the two
+		// renders would differ in nothing but a word inside one line — which the
+		// lines-must-differ check would pass while the WIRED arm stayed unrendered
+		// by any test. That is the same shape as the *pgxpool.Pool note above.
+		AgentProvisioner: provisionerNoop,
+		AgentImageRepo:   "registry.example.test/muster/agent-runtime",
+		AgentAPIURL:      "http://muster.example.test:8105",
 	}
-	onOut = renderBannerWithPool(t, on, api.Extensions{GitHub: bannerStubGitHubStore{}}, &pgxpool.Pool{})
+	onOut = renderBannerWithPool(t, on, api.Extensions{
+		GitHub:      bannerStubGitHubStore{},
+		Provisioner: bannerProvisioner(t, on),
+	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
 }
@@ -601,5 +692,87 @@ func TestTheProvisioningSeamLineDoesNotClaimAnUnnamedRefusal(t *testing.T) {
 				"routes and a silence about two.\n"+
 				"  line: %s", want, line)
 		}
+	}
+}
+
+// TestTheHalfWiredProvisioningBannerReportsBothTiersSeparately is the guard for the
+// state the capability split made reachable and nothing else describes.
+//
+// 🔴 THE ONE-LINE BANNER WAS TRUE ONLY WHILE BOTH HALVES WERE ALWAYS UNWIRED
+// TOGETHER. With a lifecycle provisioner wired and no api.Gateway, a single
+// sentence about "agent provisioning" has to pick a half, and either choice is a
+// false claim about the other — the same defect
+// TestTheProvisioningSeamLineDoesNotClaimAnUnnamedRefusal was written for, in the
+// shape the split created.
+//
+// 🔴 IT PINS WHERE THE UNDELIVERED KICKOFF IS RECORDED, NOT JUST THAT CHAT IS OFF.
+// This deployment's surprising behaviour is that a dispatch SUCCEEDS, a pod runs,
+// logs stream — and the agent was never told what to do. An operator reading only
+// "chat unwired" would not know to look at agents.kickoff_error, and the card looks
+// healthy. That field name is the actionable half of the line.
+//
+// ⚠ IT WAS WRITTEN BECAUSE A MUTANT SURVIVED. The existing seam-line test matches
+// any line containing "agent provisioning:", so renaming the wired branch's lines
+// left it green — it only ever renders the both-nil arm.
+func TestTheHalfWiredProvisioningBannerReportsBothTiersSeparately(t *testing.T) {
+	cfg := config{
+		AgentProvisioner: provisionerNoop,
+		AgentImageRepo:   "registry.example.test/muster/agent-runtime",
+		AgentAPIURL:      "http://muster.example.test:8105",
+	}
+	out := renderBanner(t, cfg, api.Extensions{Provisioner: bannerProvisioner(t, cfg)})
+
+	lifecycle := lineNaming(out, "LIFECYCLE")
+	if lifecycle == "" {
+		t.Fatalf("the banner does not report the LIFECYCLE tier with a provisioner wired, so "+
+			"an operator cannot tell this deployment can provision.\nbanner:\n%s", out)
+	}
+	for _, want := range []string{"WIRED", envAgentProvisioner, provisionerNoop,
+		"requireLifecycleProvisioner"} {
+		if !strings.Contains(lifecycle, want) {
+			t.Errorf("the LIFECYCLE line does not name %q.\n  line: %s", want, lifecycle)
+		}
+	}
+	if strings.Contains(lifecycle, "UNWIRED") {
+		t.Errorf("the LIFECYCLE line says UNWIRED while a provisioner IS wired — wiredWord's "+
+			"argument is inverted.\n  line: %s", lifecycle)
+	}
+
+	chat := lineNaming(out, "CHAT")
+	if chat == "" {
+		t.Fatalf("the banner says nothing about the CHAT tier while it is UNWIRED and "+
+			"lifecycle is not. That is the half an operator is surprised by: the dispatch "+
+			"works and the agent is never told what to do.\nbanner:\n%s", out)
+	}
+	for _, want := range []string{"UNWIRED", "requireGatewayProvisioner",
+		api.ProvisionerUnwiredField, "agents.kickoff_error", "agents.pending_note"} {
+		if !strings.Contains(chat, want) {
+			t.Errorf("the CHAT line does not name %q.\n"+
+				"    Naming the FIELD the non-delivery is recorded in is the actionable "+
+				"half: without it the card reads healthy and nothing points at the "+
+				"reason.\n  line: %s", want, chat)
+		}
+	}
+
+	// 🔴 AND THE ENTRY-2 READINESS DEFECT MUST BE ON THE BANNER TOO, because a pod
+	// that is running and NOT READY with nothing in its log is the worst of the
+	// three states. This is the readback of api.Extensions.defects' newest entry.
+	withPrivilege := renderBanner(t, cfg, api.Extensions{
+		Provisioner: bannerProvisioner(t, cfg),
+		Privilege:   bannerStubPrivilegeStore{},
+	})
+	applyLine := lineNaming(withPrivilege, "privilege APPLY")
+	if applyLine == "" {
+		t.Errorf("with a provisioner AND a privilege store wired and no applier, the banner "+
+			"says nothing — while /readyz refuses. A pod that is running and unready with "+
+			"no explanation in its own log is the state this banner exists to prevent.\n"+
+			"banner:\n%s", withPrivilege)
+	}
+
+	// CONTROL: without a privilege store there is no grant to lie about, and the
+	// line must NOT appear — otherwise it is unconditional text rather than a report.
+	if lineNaming(out, "privilege APPLY") != "" {
+		t.Errorf("the privilege-apply line appears with NO privilege store wired, so it "+
+			"reports nothing.\n  line: %s", lineNaming(out, "privilege APPLY"))
 	}
 }

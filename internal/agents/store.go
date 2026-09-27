@@ -28,6 +28,22 @@ const (
 	StatusError        = "error"
 )
 
+// NamespacePrefix is what an agent's [Agent.Namespace] is built from: the
+// prefix plus the agent's slug Name.
+//
+// 🔴 IT IS SPELLED HERE BECAUSE TWO INDEPENDENT PLACES MUST AGREE ON IT AND
+// NOTHING WOULD FAIL IF THEY DID NOT. The HTTP handler that creates an agent
+// writes this value into the row; the provisioning driver's own namespace prefix
+// decides where the instance actually goes. Those are different subsystems, and
+// a disagreement is invisible: the card renders a namespace nothing exists in,
+// so `kubectl -n <what the row says>` returns nothing and reads as "the agent
+// was never provisioned" while the instance is running one namespace over.
+// TestTheStoredNamespacePrefixIsWhatTheDriverIsConfiguredWith pins the pair.
+const NamespacePrefix = "devpod-"
+
+// NamespaceFor builds an agent's namespace from its slug name.
+func NamespaceFor(name string) string { return NamespacePrefix + name }
+
 // Agent is the stored record of one managed agent.
 type Agent struct {
 	ID           int64     `json:"id"`

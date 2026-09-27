@@ -148,6 +148,39 @@ func (e Extensions) defects() []string {
 			"silently and on every surface. Wire a liveness probe (internal/router satisfies it) "+
 			"or leave Notes unset.")
 	}
+	// 🔴 THIS ENTRY IS cmd/muster-server/doc_seams.go ENTRY 2 FALLING DUE, AND
+	// ENTRY 2 NAMED THE EXACT MOMENT. A privilege store that RECORDS grants
+	// nobody applies was defensible only while no agent pod could exist to hold
+	// one: there was no surface on which a user was told a privilege was live when
+	// it was not, because there was no live agent. A wired Provisioner creates
+	// real instances, so the grant chip becomes a page stating a falsehood — the
+	// chip says granted over a ServiceAccount with none of the permissions — and
+	// that is the "lies silently" side of this function's own line.
+	//
+	// ⚠ IT IS FAIL-CLOSED AND IT WILL REFUSE A DEPLOYMENT THAT USED TO COME UP.
+	// That is the point and it is the choice entry 2 offered: wire a
+	// PrivilegeApplier in the same change, or make the combination unready. It is
+	// listed here rather than wrapped at a route — unlike the nil Provisioner,
+	// which IS wrapped — because there is no single route to refuse: the falsehood
+	// is rendered by every surface that shows a grant, and a grant recorded
+	// through one route is read back through several.
+	//
+	// ⚠ IT OVER-TRIGGERS FOR A PROVISIONER THAT CREATES NOTHING, and that is
+	// stated rather than fixed. The noop driver records instead of provisioning,
+	// so a grant over one of its instances lies about a pod that was never real
+	// either — harmless. Distinguishing the two would mean this function reading
+	// the driver's capabilities, which makes a readiness check depend on a
+	// backend's self-report; the fail-closed direction is cheaper and wrong only
+	// in the direction of refusing to serve.
+	if e.Provisioner != nil && e.Privilege != nil && e.PrivilegeApply == nil {
+		out = append(out, "Provisioner is wired but PrivilegeApply is not, while a privilege "+
+			"store IS wired: grants would be RECORDED and never applied, over agent instances "+
+			"that now really exist. Every surface showing a grant would claim a permission the "+
+			"instance's ServiceAccount does not have. Wire a PrivilegeApplier, or leave the "+
+			"privilege store unset, or leave the provisioner unwired. See "+
+			"cmd/muster-server/doc_seams.go entry 2, which named this exact combination as the "+
+			"moment its own argument dies.")
+	}
 	return out
 }
 
@@ -258,10 +291,16 @@ type PrivilegeApplier interface {
 	RemoveGrant(ctx context.Context, agentName, namespace, profileName string) error
 }
 
-// ProfileReapplier re-applies an agent's granted-profile env/kubeconfig to its
-// running pod (a helm upgrade; the pod rolls). Optional. The grant path
-// type-asserts for it, so a nil or fake provisioner (and the RBAC-only path) is
-// unaffected.
+// ProfileReapplier reconciles a running instance to a freshly-rendered spec, which
+// rolls it. Optional: the grant path and the model-change path type-assert for it, so a
+// nil provisioner (and the RBAC-only path) is unaffected.
+//
+// ⚠ ITS PREVIOUS WORDING WAS "re-applies an agent's granted-profile env/kubeconfig to
+// its running POD (a HELM UPGRADE; the pod rolls)" — the same helm-and-pod vocabulary
+// removed from Destroy, TailLogs and StreamLogs below, and missed in the same sweep
+// that removed them. It is false of the only implementation (which calls the driver's
+// Update), false for a driver with no pods, and it names a mechanism the provisioner
+// contract deliberately does not have.
 type ProfileReapplier interface {
 	ReapplyProfiles(ctx context.Context, agentID int64) error
 }
@@ -273,14 +312,50 @@ type ProfileReapplier interface {
 //
 // ⚠ CHAT IS NOT HERE ANY MORE — see [Gateway] for why the two are separate.
 type Provisioner interface {
-	// Dispatch provisions a pod for the agent and, when kickoff is true, sends
-	// the note as the first message once the gateway is reachable.
+	// Dispatch provisions an instance for the agent when kickoff is true, and
+	// creates NOTHING when it is false — see the note below on both halves.
+	//
+	// 🔴 THIS DOC USED TO DESCRIBE BEHAVIOUR NO IMPLEMENTATION HAS. It read
+	// "provisions a pod for the agent and, when kickoff is true, sends the note as
+	// the first message once the gateway is reachable", which is wrong twice over
+	// for internal/agentprovision — the only implementation in this module:
+	//
+	//   - it does NOT send the note. Delivery needs an api.Gateway and there is no
+	//     implementation of one here, so the non-delivery is recorded on the row
+	//     instead (agentprovision.UndeliveredKickoffReason). An interface doc
+	//     promising a delivery is how a future implementer comes to call
+	//     SetKickedOff, which is the one thing that package must never do.
+	//   - kickoff=false creates NOTHING rather than provisioning-then-storing-
+	//     stopped. The caller's OTHER action is the UI's "Save for later", whose
+	//     gate check (agents.go, the `gate:<reason>` refusal) allows a save on the
+	//     stated grounds that it "provisions nothing".
+	//
+	// An implementer that provisions on kickoff=false, or that reports a delivery
+	// it did not make, is wrong against this interface — not merely different.
 	Dispatch(agentID int64, kickoff bool) error
-	// Start scales a stopped/provisioned agent up (kicking off if pending).
+	// Start brings a stopped or never-provisioned agent up, creating its instance
+	// when the driver reports the backend does not have one.
+	//
+	// ⚠ IT DOES NOT KICK OFF, AND THIS DOC SAID IT DID. It read "(kicking off if
+	// pending)" — the same retracted claim Dispatch's doc above corrects, left
+	// behind in the sibling method for one round. The only implementation records
+	// the non-delivery instead; see agentprovision.UndeliveredKickoffReason.
 	Start(agentID int64) error
-	// Stop scales a running agent down to zero replicas.
+	// Stop scales a running agent down to zero replicas, keeping its declaration.
+	// An instance the backend does not have is already stopped, not an error.
 	Stop(agentID int64) error
-	// Destroy uninstalls the release and deletes the namespace.
+	// Destroy removes the instance and everything the driver created for it, then
+	// deletes the stored row.
+	//
+	// ⚠ IT DELETES THE ROW ONLY WHEN THE BACKEND HOLDS NOTHING, and this doc did
+	// not say so — which is the contract the lifecycle adapter added. A terminal
+	// ownership refusal or an unreachable backend KEEPS the row, because the row is
+	// then the only record of a live instance.
+	//
+	// ⚠ ITS PREVIOUS WORDING WAS "uninstalls the release and deletes the
+	// namespace" — helm and Kubernetes vocabulary in an interface whose Instances
+	// doc makes a 🔴 point of having removed exactly that, and false for any driver
+	// without namespaces.
 	Destroy(agentID int64) error
 	// Instances returns the live state of every agent workload, for status
 	// reconciliation.
@@ -291,9 +366,9 @@ type Provisioner interface {
 	// transitivity. The provisioner contract's own vocabulary is what lets
 	// agents.ComputeStatus answer for an agent running under any driver.
 	Instances(ctx context.Context) ([]provision.Instance, error)
-	// TailLogs returns the last N log lines of the agent's running pod.
+	// TailLogs returns the last N log lines of the agent's running instance.
 	TailLogs(ctx context.Context, a agents.Agent, lines int64) (string, error)
-	// StreamLogs follows the agent's pod logs, invoking emit per line.
+	// StreamLogs follows the agent's instance output, invoking emit per line.
 	StreamLogs(ctx context.Context, a agents.Agent, emit func(string)) error
 }
 
