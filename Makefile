@@ -141,8 +141,12 @@ test-liveenv: ## run the live-environment controls (needs a real coding-agent se
 	@# internal/agents/responses.go wrote for itself: the httptest suite proves what
 	@# goes on the wire, and only these prove a runtime accepts it.
 	@#
-	@# 🔴 THE TOOL CELL IS OPT-IN VIA MUSTER_LIVE_AGENT_EXPECT_TOOLS, AND THAT IS A FIX
-	@# FOR A GATE THIS TARGET BRIEFLY BECAME. It shipped unconditionally red — the tool
+	@# 🔴 MUSTER_LIVE_AGENT_EXPECT_TOOLS DECIDES WHETHER A TOOL-CELL FAILURE IS FATAL —
+	@# NOT WHETHER THE CELL RUNS. An earlier heading called it "OPT-IN", which described
+	@# a first draft that skipped before doing any work: with a runtime declared that
+	@# measured nothing while calling itself a measurement. The cell now RUNS whenever a
+	@# runtime is declared and reports what it found; the variable only escalates a
+	@# failure to the target. It shipped unconditionally red — the tool
 	@# cell cannot pass without a runtime that BOTH speaks the shape agents.ToolDef
 	@# sends AND has a working model credential, and no single pod had both — with a
 	@# comment here pre-excusing the red. A comment excusing a red gate IS the
@@ -151,8 +155,9 @@ test-liveenv: ## run the live-environment controls (needs a real coding-agent se
 	@# printed its own verdict fine, so what an always-red cell buried was whether the
 	@# target as a whole passed. An earlier wording said "the cell's verdict", which is
 	@# measurably not what happened.
-	@# So: declare the expectation and the cell runs and must pass. Declare nothing and
-	@# it reports what it measured and does not fail the target.
+	@# So: no runtime declared (no ADDR/TOKEN) => skip, nothing to talk to. Runtime
+	@# declared => the cell RUNS and reports. Plus EXPECT_TOOLS => a failure is the
+	@# target's failure too.
 	go test -tags liveenv -count=1 -run 'RealTurnAgainstALiveRuntime|RealTOOLTurnAgainstALiveRuntime' -v ./internal/agentgateway/
 
 test-db-down:

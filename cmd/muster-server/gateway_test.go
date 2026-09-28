@@ -1,8 +1,10 @@
 package main
 
 import (
+	"io/fs"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -252,47 +254,180 @@ func TestTheChatWiredBannerDoesNotClaimReachability(t *testing.T) {
 	}
 }
 
-// TestTheRetractedReachabilityClaimIsGoneTREEWIDE is the sweep half, and it exists
-// because the retraction reached two of its three sites.
+// TestTheRetractedReachabilityClaimIsGoneFromEveryNonTestSource is the sweep half,
+// and it is the SECOND attempt — the first was walkable in two measured ways.
 //
-// 🔴 A RETRACTION IS A TREE-WIDE SWEEP, NOT AN EDIT WHERE YOU WERE LOOKING. The round
-// that corrected the banner and the linkage note left "The two CHAT ROUTES are live"
-// in doc_seams.go — the one document the corrected banner POINTS A READER AT. The
-// sweep that missed it was a lowercase fixed-string grep; the case-insensitive one
-// hit. So this guard is case-insensitive by construction, and it covers the sources a
-// reader arrives at, not just the file that was reported.
+// 🔴 A RETRACTION IS A SWEEP OVER THE WHOLE TREE, AND MINE WAS AN EDIT WHERE I WAS
+// LOOKING. The round that corrected the banner left "The two CHAT ROUTES are live" in
+// doc_seams.go — the one document the corrected banner POINTS A READER AT. The sweep
+// that missed it was a lowercase fixed-string grep.
 //
-// ⚠ IT ALLOWS THE PHRASE INSIDE THIS FILE'S OWN FORBIDDEN LIST AND COMMENTS, which is
-// the one place it must appear. That exemption is narrow and named rather than a
-// path-prefix skip, because an exemption wide enough to be convenient is how the next
-// occurrence hides.
-func TestTheRetractedReachabilityClaimIsGoneTREEWIDE(t *testing.T) {
-	// The claim, as a relationship rather than one spelling: "chat routes" followed
-	// closely by a reachability word.
-	re := regexp.MustCompile(`(?i)chat[ _-]?routes?[^.\n]{0,60}(live|usable|reachable)`)
+// 🔴 AND THE GUARD WRITTEN TO FIX THAT WAS ITSELF WALKABLE, MEASURED, TWICE. It matched
+// a regexp against raw file bytes over a FOUR-FILE list, so:
+//
+//   - restoring the sentence WRAPPED one word earlier survived, because the pattern
+//     forbade a newline inside the phrase and in the gap — and an ordinary comment
+//     rewrap is the likeliest way that text ever comes back;
+//   - the same sentence in internal/api/ext.go survived, because that file was not on
+//     the list — and ext.go is where api.Gateway is DECLARED, i.e. the single most
+//     likely place for a reader to restate it.
+//
+// It was named "…TREEWIDE" while sweeping 4 of 121 non-test Go files, and its docstring
+// claimed "it covers the sources a reader arrives at" and a "narrow and named
+// exemption" it did not implement. That is the same defect one level up: a guard
+// reading as coverage while providing none.
+//
+// SO THIS VERSION: every non-test .go file in the module, and the comment text
+// NORMALISED first — leading "//" and indentation stripped and lines joined — so a
+// wrap cannot hide the phrase. The cost is that it reads the whole tree on every run;
+// measured in milliseconds, which is not a reason to check less.
+func TestTheRetractedReachabilityClaimIsGoneFromEveryNonTestSource(t *testing.T) {
+	// The claim as a RELATIONSHIP, not a spelling: "chat routes" near a reachability
+	// word. Applied to normalised text, so newlines are no longer part of the puzzle.
+	re := regexp.MustCompile(`(?i)chat[ _-]?routes?.{0,80}?(live|usable|reachable)`)
 
-	roots := []string{"main.go", "doc_seams.go", "config.go", "provisioner.go"}
-	hits := 0
-	for _, f := range roots {
-		body, err := os.ReadFile(f)
+	// 🔴 A NEGATED MATCH IS THE CORRECTION, NOT THE CLAIM — AND THE FIRST RUN OF THIS
+	// WIDER SWEEP FLAGGED BOTH CORRECTIONS. "CHAT ROUTES stop REFUSING — which is not
+	// the same as reachable" and "chat routes no longer refuse … WIRED IS NOT REACHABLE"
+	// both satisfy the relationship above, because the reachability word is present
+	// precisely to be denied. That is the same family as the recorded FAIL-CLOSED
+	// hyphen trap: a detector keyed on a word also selects that word's negation, and the
+	// collision runs the DANGEROUS way — it would have forced the correction to be
+	// reworded to appease the guard.
+	//
+	// ⚠ THE COST, NAMED: a claim phrased as a double negative ("not unreachable") is
+	// excluded too. That is accepted — it is contrived, while a rewrap and a negated
+	// correction are both things that actually happened — and the alternative is a guard
+	// that fails on its own fix.
+	negated := regexp.MustCompile(`(?i)\b(not|never|no longer|rather than|stop(s)? refusing)\b`)
+
+	root := moduleRootForSweep(t)
+	var swept, hits int
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			t.Fatalf("reading %s: %v — this guard is scoped to a NAMED list, so a missing "+
-				"file is a broken guard rather than a clean sweep", f, err)
+			return err
 		}
-		for _, m := range re.FindAllString(string(body), -1) {
+		if d.IsDir() {
+			if d.Name() == ".git" || d.Name() == "node_modules" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		swept++
+		for _, m := range re.FindAllString(normaliseComments(string(body)), -1) {
+			if negated.MatchString(m) {
+				continue // the correction, not the claim — see the negation note above
+			}
 			hits++
-			t.Errorf("%s still asserts the retracted reachability claim: %q\n"+
+			rel, _ := filepath.Rel(root, path)
+			t.Errorf("%s asserts the retracted reachability claim: %q\n"+
 				"  The chat routes stop REFUSING; they are not reachable for an agent this\n"+
-				"  binary provisions. See doc_seams.go entry 1 for both blockers.", f, m)
+				"  binary provisions — agentspec declares no port, so the driver resolves no\n"+
+				"  address. See cmd/muster-server/doc_seams.go entry 1 for both blockers.", rel, m)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", root, err)
+	}
+
+	// 🔴 POSITIVE CONTROLS, ONE PER HOLE THE PREVIOUS VERSION HAD. A zero above means
+	// nothing unless the instrument can see both shapes, and the earlier control only
+	// ever exercised the shape that version could already match.
+	for _, ctl := range []struct{ name, text string }{
+		{"the single-line form that was missed",
+			"// NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH. The two CHAT ROUTES are live;"},
+		{"the WRAPPED form that survived the previous guard",
+			"// NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH. The two CHAT ROUTES are\n// live; the kickoff is not a route."},
+		{"a restatement with a file reference in the gap",
+			"// With a Gateway set the two chat routes (see ext.go) are live."},
+	} {
+		if !re.MatchString(normaliseComments(ctl.text)) {
+			t.Errorf("positive control FAILED (%s): the pattern cannot match %q, so the sweep's "+
+				"zero over %d file(s) says nothing about that shape", ctl.name, ctl.text, swept)
+		}
+	}
+	// 🔴 CONTROLS ON THE NEGATION FILTER ITSELF, IN BOTH DIRECTIONS. A filter that
+	// swallowed the real claim would make every zero above meaningless, and one that
+	// passed the corrections would fail this suite on its own fix.
+	for _, must := range []string{
+		"The two CHAT ROUTES are live;",
+		"the two chat routes are live over the same driver as lifecycle.",
+		"chat routes are FULLY USABLE against any agent",
+	} {
+		m := re.FindString(normaliseComments(must))
+		if m == "" {
+			t.Errorf("control FAILED: the relationship pattern does not match the retracted "+
+				"claim %q", must)
+			continue
+		}
+		if negated.MatchString(m) {
+			t.Errorf("control FAILED: the negation filter SWALLOWS the retracted claim %q "+
+				"(matched %q), so every zero this sweep reports is vacuous", must, m)
+		}
+	}
+	for _, mustSkip := range []string{
+		"CHAT ROUTES stop REFUSING — which is not the same as reachable",
+		"the two chat routes no longer refuse at api.requireGatewayProvisioner. WIRED IS NOT REACHABLE",
+	} {
+		m := re.FindString(normaliseComments(mustSkip))
+		if m != "" && !negated.MatchString(m) {
+			t.Errorf("control FAILED: the CORRECTION %q is not excluded (matched %q), so this "+
+				"guard fails on its own fix", mustSkip, m)
 		}
 	}
 
-	// 🔴 POSITIVE CONTROL: the pattern must be able to MATCH, or a zero above means
-	// only that the regexp is wrong. This is the exact sentence the sweep missed.
-	const missed = "NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH. The two CHAT ROUTES are live;"
-	if !re.MatchString(missed) {
-		t.Fatalf("positive control FAILED: the pattern does not match the very sentence this "+
-			"guard was written for (%q), so its %d hit(s) over the sources say nothing", missed, hits)
+	// And the instrument must be reading a real tree, not an empty one.
+	if swept < 50 {
+		t.Fatalf("swept only %d non-test .go file(s) under %s — this module has well over 100, "+
+			"so the walk is not reading what it claims to", swept, root)
+	}
+	t.Logf("swept %d non-test .go file(s), %d hit(s)", swept, hits)
+}
+
+// normaliseComments strips Go line-comment markers and indentation and joins the
+// remaining text, so a claim WRAPPED across comment lines reads as one string.
+//
+// 🔴 IT IS WHY THE SWEEP IS WRAP-PROOF, AND THE PREVIOUS VERSION'S ABSENCE OF IT IS
+// WHAT LET A REWRAP WALK PAST. It deliberately does NOT try to parse Go — a block
+// comment or a string literal is normalised too, which can only make the sweep see
+// MORE, and over-matching here fails loudly rather than silently.
+func normaliseComments(src string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(src, "\n") {
+		t := strings.TrimSpace(line)
+		t = strings.TrimPrefix(t, "//")
+		b.WriteString(strings.TrimSpace(t))
+		b.WriteByte(' ')
+	}
+	return b.String()
+}
+
+// moduleRootForSweep finds the directory holding go.mod, walking up from the test's
+// own working directory. Spelled here rather than hardcoded so the sweep cannot
+// silently read a subtree.
+func moduleRootForSweep(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("no go.mod above %s, so the sweep has no root", dir)
+		}
+		dir = parent
 	}
 }
 

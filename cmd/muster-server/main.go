@@ -602,10 +602,14 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			// SIMPLIFICATION DOES NOT SILENTLY REVERT IT. With exactly one legal
 			// non-none scheme the config value and the object's answer CANNOT disagree,
 			// so deleting this assertion leaves the whole suite green — measured. It
-			// becomes pinnable the moment a second Runtime exists; until then the
-			// mapping itself is covered by the gw.Runtime() assertion in
-			// TestNamingARuntimeWiresAGatewayAndNotNamingOneWiresNothing, which is a
-			// different claim. ⚠ The name is on ONE line deliberately: splitting it
+			// becomes pinnable the moment a second Runtime exists — AND SO DOES THE
+			// MAPPING, which an earlier wording said was already "covered by" the
+			// gw.Runtime() assertion in
+			// TestNamingARuntimeWiresAGatewayAndNotNamingOneWiresNothing. That assertion
+			// is real but cannot distinguish a correct mapping from a wrong one while
+			// only one scheme is legal: it conceded the unpinnability in its first half
+			// and asserted coverage in its second. Both tests are owed by whoever adds
+			// the second Runtime. ⚠ The name is on ONE line deliberately: splitting it
 			// across a line break made internal/modulegate's citation gate read a test
 			// that does not exist — the gate was right, and it caught this.
 			scheme := a.cfg.agentGateway()

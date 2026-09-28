@@ -46,9 +46,10 @@ var ErrResponsesUnsupported = errors.New("agent runtime does not support /v1/res
 const sessionKeyHeader = "X-Openclaw-Session-Key"
 
 // errBodyReadLimit caps how much of a non-200 response body either transport reads
-// before truncating it for the error message. It is deliberately a little above the
-// 512-byte message cap: the point is to bound the READ, and a limit equal to the
-// message cap would make every long body look identically truncated.
+// before truncating it for the error message. It is 8 KiB — 16x the 512-byte message
+// cap, not "a little above" it as an earlier wording said. The point is to bound the
+// READ: a limit equal to the message cap would make every long body look identically
+// truncated, while this leaves room to see that a body was long.
 const errBodyReadLimit = 8 << 10
 
 // MaxToolLoopIterations caps the call→execute→continue loop per user turn.

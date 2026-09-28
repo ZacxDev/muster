@@ -41,10 +41,19 @@ import (
 // sentence read "bounds one chat turn, including every tool round inside a
 // tool-enabled one … stops a wedged turn holding a request goroutine for ever, and
 // this is that". Measured false by audit: a tool-enabled turn issues up to
-// agents.MaxToolLoopIterations requests, EACH getting its own budget, and the loop
-// only checks ctx between them — so the reachable ceiling is that many multiples of
-// this value, plus whatever an in-process tool dispatch blocks for, which is not
-// under an HTTP timeout at all.
+// agents.MaxToolLoopIterations requests, EACH getting its own budget — so the
+// reachable ceiling is that many multiples of this value, plus whatever an in-process
+// tool dispatch blocks for, which is under no HTTP timeout at all because
+// agents.ToolDispatch takes no context.
+//
+// ⚠ AN EARLIER RETRACTION OF THIS PARAGRAPH ADDED ITS OWN FALSE CLAUSE — "and the loop
+// only checks ctx between them" — AND THEN A FIX ROUND CLAIMED TO HAVE REMOVED IT
+// WITHOUT WRITING THE FILE. Both transports build with http.NewRequestWithContext
+// (responses.go, chatcompletions.go), so a caller deadline aborts an IN-FLIGHT request
+// too; that is exactly why the next paragraph can say the caller's context is what
+// bounds a turn. Naming the loop instead of the tool dispatch sends a reader adding a
+// ceiling to the wrong layer — and a record asserting a retraction that did not happen
+// is worse than the clause, because it stops the next reader checking.
 //
 // ⚠ SO THE THING THAT ACTUALLY BOUNDS A TURN IS THE CALLER'S CONTEXT, and this
 // package deliberately does not invent one: a request-scoped ctx already carries the

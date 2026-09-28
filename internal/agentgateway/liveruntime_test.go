@@ -32,9 +32,10 @@
 //	export MUSTER_LIVE_AGENT_EXPECT_TOOLS=1
 //	make test-liveenv
 //
-// ⚠ IT SPENDS A MODEL TURN ON A REAL AGENT. The session key below is a fixed
-// throwaway so the turn lands in its own runtime context rather than in a
-// conversation somebody is having, and the prompt asks for one word.
+// ⚠ IT SPENDS TWO MODEL TURNS ON A REAL AGENT WHENEVER ONE IS DECLARED — one per cell,
+// and an earlier wording said one. The session keys are fixed throwaways so each turn
+// lands in its own runtime context rather than in a conversation somebody is having,
+// and both prompts ask for one word.
 //
 // 🔴 STATE OF THE TWO CONTROLS WHEN THIS LANDED, SO A RED RUN IS NOT MISREAD AS A
 // REGRESSION:
@@ -55,10 +56,13 @@
 //	                                        credential in a deployment, the other is
 //	                                        the version split ToolDef's OWED note
 //	                                        names — and both are outside this module.
-//	                                        It therefore SKIPS unless
-//	                                        MUSTER_LIVE_AGENT_EXPECT_TOOLS declares a
-//	                                        runtime that has both; see its own doc for
-//	                                        why that is not a hidden failure.
+//	                                        It therefore RUNS whenever a runtime is
+//	                                        declared and REPORTS what it found;
+//	                                        MUSTER_LIVE_AGENT_EXPECT_TOOLS decides only
+//	                                        whether a failure also fails the target. ⚠ An
+//	                                        earlier revision said it SKIPS unless that
+//	                                        variable is set — that was a first draft which
+//	                                        measured nothing, and it is retracted.
 //
 // So the tool half of the OWED record's closing condition is OPEN. CLOSING
 // CONDITION: this test passing — a dispatch count above zero — against one runtime,
@@ -222,8 +226,10 @@ func TestOneRealTOOLTurnAgainstALiveRuntime(t *testing.T) {
 	// that is always red trains everyone to click through it, which also buries the
 	// verdict of every OTHER cell in the same target. So an operator who HAS such a
 	// runtime says so, and then a failure is a real finding; an operator who does not
-	// gets the measurement without a false red. 🔴 IT IS A SKIP WITH ITS REASON
-	// PRINTED, NOT A SILENT ONE: `go test` exits 0 on a skip, so an unexplained one is
+	// gets the measurement without a false red. 🔴 AND THE MEASUREMENT IS TAKEN, NOT
+	// SKIPPED — see the paragraph below, which retracts a first draft that returned
+	// before doing any work. A skip here happens only when there is no runtime at all,
+	// and it prints its reason: `go test` exits 0 on a skip, so an unexplained one is
 	// invisible in a green run — the property this file's own header is about.
 	// 🔴 THE EXPECTATION CHANGES WHETHER A FAILURE IS FATAL — IT DOES NOT SKIP THE
 	// WORK. An earlier revision returned before liveAgent, so with a runtime fully
@@ -263,10 +269,22 @@ func TestOneRealTOOLTurnAgainstALiveRuntime(t *testing.T) {
 
 	if err != nil {
 		if strings.Contains(err.Error(), "does not support /v1/responses") {
-			t.Fatalf("the live runtime at %s does NOT support /v1/responses: %v\n"+
+			// 🔴 REPORTED, NOT FATAL WITHOUT THE DECLARATION — and this arm was the one
+			// the previous round missed while making its two siblings non-fatal. Its own
+			// message says "Report it as the measurement it is", and it was t.Fatalf: an
+			// operator pointing at an older image, with EXPECT_TOOLS unset, got a RED
+			// target carrying a comment telling them it is not a defect. That is the
+			// permanently-red gate this file and the Makefile each spend a paragraph
+			// arguing against, reintroduced by the fix for it.
+			report := t.Logf
+			if expectTools {
+				report = t.Fatalf
+			}
+			report("the live runtime at %s does NOT support /v1/responses: %v\n"+
 				"  That is a fact about the attached image, not a defect in this package — the "+
 				"toolless path is the supported one there, and a kickoff against it carries no "+
 				"tools. Report it as the measurement it is.", ep.URL(), err)
+			return
 		}
 		// 🔴 THE TOOL *SHAPE* IS VERSION-SPECIFIC AND THIS IS ITS SIGNATURE. Named
 		// here so a runner gets the diagnosis instead of a bare 400: agents.ToolDef is
