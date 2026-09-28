@@ -393,5 +393,7 @@ func agentSpecConfig(cfg config) agentspec.Config {
 		Model:            cfg.AgentModel,
 		OpenRouterAPIKey: cfg.AgentOpenRouterKey,
 		WorkspacePersist: cfg.AgentWorkspacePersist,
+		CairnURL:         cfg.AgentCairnURL,
+		CairnToken:       cfg.AgentCairnToken,
 	}
 }

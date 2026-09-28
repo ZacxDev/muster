@@ -551,9 +551,48 @@ func (a *Adapter) ensureHooksToken(ctx context.Context, ag agents.Agent) (agents
 // TestTheInstructionsAndTheDaemonReferToEachOther), so an adapter that built a
 // spec without it would ship the daemon and tell nobody to look at its log —
 // which is what that test's "move both or neither" is about, one layer up.
+//
+// 🔴 THE SUPERVISOR IS THE ONE AGENT THAT GETS DIFFERENT PROSE AND THE ONE AGENT
+// ELIGIBLE FOR THE SUBSYSTEM-STORE CREDENTIAL, AND THAT POLICY LIVES HERE BY
+// DESIGN. agentspec deliberately does not compare an agent name against a
+// constant — its own Options.SeedFiles comment argues that a name-to-privilege
+// rule is a caller's policy, not a spec-building rule — so this is the layer that
+// knows which row is the supervisor. The credential is READ+WRITE across every
+// scope of the operator's knowledge store; a dispatched worker running a model
+// over somebody's repository contents has no business holding one, and widening
+// the condition below is a one-line change here while un-polluting the store is
+// not. See internal/agentspec/cairn.go.
+//
+// 🔴 BOTH CONSUMERS GO THROUGH THE SAME PREDICATE, WHICH IS THE WHOLE POINT. The
+// PROSE claims the credential and the SPEC carries it, and those two must not be
+// able to disagree — a supervisor told it holds a read+write key it does not have
+// reports a working subsystem as broken. What makes that impossible is that both
+// answers come from [agentspec.Config.CairnConfigured]: this function passes it to
+// ChiefInstructions, and agentspec's own gate calls the same method when it decides
+// whether to place the client and the credential. The hazard is a SECOND
+// EXPRESSION — `cfg.CairnURL != ""` in one place and the method in the other, which
+// disagree for every half-configured input. Two guards pin it, both behavioural:
+// TestTheSupervisorsProseAndItsSpecAgreeAboutTheStore on the configured and
+// unconfigured cases, and the half-configured one on the inputs that DISCRIMINATE
+// between the candidate expressions.
+//
+// ⚠ THIS USED TO CLAIM THE GATE IS "READ ONCE INTO A VARIABLE AND USED TWICE", AND
+// THAT INVARIANT DOES NOT EXIST. The variable below is read ONCE; the second
+// consumer never sees it, because agentspec re-evaluates the predicate itself
+// inside its own gate. So the single-read form buys nothing, the inlined form is
+// the same expression evaluated twice, and that test's own comment says so. A 🔴
+// note defending a form that carries no invariant is worse than no note: it sends
+// the next reader to protect a formatting choice.
 func (a *Adapter) buildSpec(ag agents.Agent) (provision.Spec, error) {
+	if ag.Name != agents.ChiefName {
+		return agentspec.Build(ag, a.spec, agentspec.Options{
+			Instructions: agentspec.WorkerInstructions,
+		})
+	}
+	store := a.spec.CairnConfigured()
 	return agentspec.Build(ag, a.spec, agentspec.Options{
-		Instructions: agentspec.WorkerInstructions,
+		Instructions:  agentspec.ChiefInstructions(store),
+		CairnEligible: true,
 	})
 }
 

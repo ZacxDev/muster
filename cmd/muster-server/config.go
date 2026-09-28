@@ -86,6 +86,17 @@ const (
 	envAgentWorkspaceKeep = "MUSTER_AGENT_WORKSPACE_PERSIST"
 	envAgentStorageClass  = "MUSTER_AGENT_WORKSPACE_STORAGE_CLASS"
 	envAgentEndpointTmpl  = "MUSTER_AGENT_ENDPOINT_TEMPLATE"
+
+	// The hosted subsystem-store ("cairn") coordinates handed to the SUPERVISOR
+	// agent only. Both unset is the state this ships in, and in that state nothing
+	// cairn-related reaches any instance — see internal/agentspec/cairn.go.
+	//
+	// ⚠ THE PREFIX IS MUSTER_AGENT_, NOT MUSTER_. They are parameters of the agent
+	// SPEC, like every other name in this block, and a bare MUSTER_CAIRN_* pair
+	// would read as a property of this server — which reads nothing from the store
+	// and never contacts it.
+	envAgentCairnURL   = "MUSTER_AGENT_CAIRN_URL"
+	envAgentCairnToken = "MUSTER_AGENT_CAIRN_TOKEN"
 	envAgentPrivApply     = "MUSTER_AGENT_PRIVILEGE_APPLY"
 )
 
@@ -256,6 +267,17 @@ type config struct {
 	AgentModel         string
 	AgentOpenRouterKey string
 
+	// AgentCairnURL and AgentCairnToken are the hosted subsystem-store
+	// coordinates, reaching agentspec.Config as a BOTH-OR-NEITHER pair.
+	//
+	// 🔴 THE TOKEN IS A READ+WRITE CREDENTIAL ACROSS EVERY SCOPE OF THAT STORE, and
+	// it is handed to ONE agent — the supervisor — by internal/agentprovision, not
+	// to the fleet. Unset is the default and in that state no instance gets the
+	// client, the credential or the prose that describes them. There is deliberately
+	// no default URL: a built-in would collapse the gate to "is the token set".
+	AgentCairnURL   string
+	AgentCairnToken string
+
 	// AgentNamespaceShared puts every instance in AgentNamespace instead of
 	// giving each its own.
 	//
@@ -400,6 +422,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentWorkspacePersist: envFlag(getenv, envAgentWorkspaceKeep),
 		AgentStorageClass:     strings.TrimSpace(getenv(envAgentStorageClass)),
 		AgentEndpointTemplate: strings.TrimSpace(getenv(envAgentEndpointTmpl)),
+		AgentCairnURL:         strings.TrimSpace(getenv(envAgentCairnURL)),
+		AgentCairnToken:       strings.TrimSpace(getenv(envAgentCairnToken)),
 		AgentPrivilegeApply:   envFlag(getenv, envAgentPrivApply),
 	}
 	if c.RouterActor == "" {

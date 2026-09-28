@@ -821,12 +821,27 @@ func goldenView(spec provision.Spec) provision.Spec {
 		out.Secrets[i] = provision.EnvVar{Name: s.Name, Value: "«redacted in the golden; see goldenView»"}
 	}
 
+	// 🔴 A CONFIDENTIAL *FILE* IS REDACTED TOO, AND THIS USED TO COVER Secrets ONLY.
+	// The paragraph above reasoned about Spec.Secrets — the confidential ENVIRONMENT
+	// — and was complete while nothing produced a confidential FILE. cairn.go now
+	// does, and a [provision.File] marked Secret carries its bytes in Content, which
+	// the elision below would only have touched if it happened to be large. So a
+	// store credential would have been written verbatim into a checked-in testdata
+	// file. Redacting by the SAME flag a driver branches on is what keeps this
+	// honest: a future secret file is covered without anybody remembering to add it.
+	// TestTheGoldenViewRedactsAConfidentialFileRatherThanOnlyAConfidentialVariable
+	// pins it.
+
 	// The threshold is generous on purpose: small files — instructions, seeds —
 	// stay verbatim, because their content IS what a reviewer wants to see change.
 	const elideOver = 2048
 	out.Files = make([]provision.File, len(spec.Files))
 	for i, f := range spec.Files {
 		out.Files[i] = f
+		if f.Secret {
+			out.Files[i].Content = []byte("«confidential file redacted in the golden; see goldenView»")
+			continue
+		}
 		if len(f.Content) > elideOver {
 			out.Files[i].Content = []byte(fmt.Sprintf(
 				"«%d bytes elided; sha256=%x; full bytes pinned by TestTheDaemonIsDeliveredAsBytesRatherThanAsAShellPayload»",
