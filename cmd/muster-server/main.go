@@ -18,12 +18,20 @@
 // Configuration is read from the environment, once, in config.go — which is the
 // only place a MUSTER_* name is spelled in this binary.
 //
-// 🔴 THREE api DEPENDENCIES ARE DELIBERATELY LEFT NIL: Provisioner,
-// PrivilegeApply and the ProfileReapplier a provisioner may also satisfy. They
-// have no implementation in this module and wiring a fake one would be worse
-// than wiring none. The full statement — what, why, the closing condition and
-// who checks it — is in doc_seams.go, beside the code it affects, and the boot
-// banner says it out loud on every start.
+// 🔴 EVERY api DEPENDENCY NOW HAS AN IMPLEMENTATION IN THIS MODULE, AND EACH IS
+// STILL OFF BY DEFAULT. This paragraph read "THREE api DEPENDENCIES ARE
+// DELIBERATELY LEFT NIL: Provisioner, PrivilegeApply and the ProfileReapplier a
+// provisioner may also satisfy. They have no implementation in this module and
+// wiring a fake one would be worse than wiring none." All three of those
+// sentences were true when written and none is now: internal/agentprovision
+// satisfies Provisioner AND ProfileReapplier, internal/agentgateway satisfies
+// Gateway, and internal/agentprivilege satisfies PrivilegeApplier. What survives
+// is the SHAPE of the argument — a fake is worse than a nil — and the defaults:
+// MUSTER_AGENT_PROVISIONER, MUSTER_AGENT_GATEWAY and MUSTER_AGENT_PRIVILEGE_APPLY
+// all ship off, so an unchanged deployment gets the same nils it always had. The
+// full statement — what, why, the closing condition and who checks it — is in
+// doc_seams.go, beside the code it affects, and the boot banner says which tiers
+// are in force out loud on every start.
 package main
 
 import (
@@ -216,12 +224,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// *agentgateway.Gateway assigned into ext.Gateway would make
 	// api.requireGatewayProvisioner's nil check false and turn a 503 into a
 	// nil-pointer dereference inside a chat handler.
-	prov, gw, err := buildAgentPlane(cfg, ext.Agents, logger)
+	prov, gw, priv, err := buildAgentPlane(cfg, ext.Agents, logger)
 	if err != nil {
 		a.Close()
-		// "agent plane", not "agent provisioner": this call builds BOTH tiers, so a
-		// gateway construction failure once booted under a prefix naming the other
-		// subsystem — which sends the reader to the provisioner's configuration.
+		// "agent plane", not "agent provisioner": this call builds ALL THREE tiers,
+		// so a gateway construction failure once booted under a prefix naming the
+		// other subsystem — which sends the reader to the provisioner's
+		// configuration.
 		return nil, fmt.Errorf("agent plane: %w", err)
 	}
 	if prov != nil {
@@ -229,6 +238,17 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	if gw != nil {
 		ext.Gateway = gw
+	}
+	// 🔴 THE THIRD nil-CHECK INVERTS THE CONSEQUENCE OF THE FIRST TWO, WHICH IS WHY
+	// IT IS SPELLED OUT RATHER THAN LEFT TO READ AS MORE OF THE SAME. A typed nil
+	// in Provisioner or Gateway makes a wrapper STOP refusing; a typed nil here
+	// makes api.Extensions.defects stop FIRING — the `PrivilegeApply == nil`
+	// conjunct goes false — so /readyz would report ready for exactly the
+	// deployment that check exists to refuse, and the first grant would nil-deref
+	// inside a handler. Fail-closed becomes fail-open on one missing `if`, which is
+	// the opposite direction from the other two and the more dangerous one.
+	if priv != nil {
+		ext.PrivilegeApply = priv
 	}
 
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
@@ -557,9 +577,11 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"start, stop, destroy, logs, chat) is registered and answers 503 at request time "+
 			"through api.requireLifecycleProvisioner or api.requireGatewayProvisioner, "+
 			"after its own auth check and with provisionerUnwired:true in the body. "+
-			"Privilege grants are RECORDED but not applied to any cluster. Neither is a "+
+			"Privilege grants are RECORDED but not applied to any cluster (%s=%v, and there is "+
+			"no driver to apply them through). None of the three is a "+
 			"misconfiguration; see cmd/muster-server/doc_seams.go",
-			envAgentProvisioner, a.cfg.agentProvisioner(), envAgentGateway, a.cfg.agentGateway())
+			envAgentProvisioner, a.cfg.agentProvisioner(), envAgentGateway, a.cfg.agentGateway(),
+			envAgentPrivApply, a.cfg.AgentPrivilegeApply)
 	default:
 		l.Printf("agent provisioning: LIFECYCLE %s (%s=%s) — dispatch, start, stop, destroy "+
 			"and the log routes go through api.requireLifecycleProvisioner",
@@ -639,11 +661,51 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		// hold it. With lifecycle wired, one can — so the combination is a
 		// readiness DEFECT (api.Extensions.defects) and this line is the readback
 		// of the same condition on the banner.
-		if ext.Privilege != nil && ext.PrivilegeApply == nil {
-			l.Print("agent privilege APPLY: UNWIRED while a provisioner CAN create pods — this " +
-				"combination is a readiness defect (see api.Extensions.defects) and /readyz " +
-				"refuses it, because a granted chip over a ServiceAccount with none of the " +
-				"permissions is a page stating a falsehood")
+		//
+		// ⚠ THE REFUSAL IS NOW ESCAPABLE, AND THE LINE SAYS HOW. Until
+		// internal/agentprivilege existed this branch named a dead end: there was no
+		// applier to wire, so the only exits were unsetting the provisioner or
+		// unsetting the database. Naming the variable is the difference between a
+		// readiness refusal an operator can act on and one they work around by
+		// deleting the readiness probe.
+		//
+		// ⚠ IT HAS EXACTLY TWO ARMS AND IS SILENT FOR "no privilege store", WHICH IS A
+		// CONTROL SOMEBODY ELSE ALREADY WROTE. A three-armed version — a line in every
+		// state, so the variable is announced unconditionally — was tried first and
+		// reddened TestTheHalfWiredProvisioningBannerReportsBothTiersSeparately, whose
+		// control says the line must NOT appear without a privilege store "otherwise it
+		// is unconditional text rather than a report". That control is right: with no
+		// store there is no grant to claim, so there is no state to report. The
+		// both-directions obligation bannerLedger imposes is met by the fully-off arm
+		// above (which names this variable beside the other two) and by the WIRED arm
+		// below.
+		switch {
+		case ext.Privilege != nil && ext.PrivilegeApply == nil:
+			l.Printf("agent privilege APPLY: UNWIRED (%s unset) while a provisioner CAN create "+
+				"pods — this combination is a readiness defect (see api.Extensions.defects) and "+
+				"/readyz REFUSES it, because a granted chip over a ServiceAccount with none of "+
+				"the permissions is a page stating a falsehood. Set %s=1 to apply grants through "+
+				"this driver (it needs the rbac `escalate` and `bind` verbs on muster's own "+
+				"ServiceAccount), or leave the privilege store unset",
+				envAgentPrivApply, envAgentPrivApply)
+		case ext.PrivilegeApply != nil:
+			// 🔴 IT REPORTS THE DRIVER'S OWN NAME RATHER THAN THE CONFIGURED ONE, for
+			// the reason the gateway line above does: the value an operator set and the
+			// object that got built are two different claims, and the banner is read to
+			// find out which one is in force.
+			driverName := a.cfg.agentProvisioner()
+			if d, ok := ext.PrivilegeApply.(interface{ Driver() string }); ok {
+				driverName = d.Driver()
+			}
+			l.Printf("agent privilege APPLY: WIRED %s=1 over the %s driver — a granted profile's "+
+				"clusterRules/namespaceRules are applied to the agent's ServiceAccount for real, "+
+				"live, with no pod restart. 🔴 WIRED IS NOT THE SAME AS PERMITTED: creating a "+
+				"ClusterRole muster does not itself hold needs the rbac `escalate` verb and the "+
+				"binding needs `bind`, neither of which anything in this module can check — "+
+				"without them each grant fails at apply time with a 403 that is RETURNED to the "+
+				"caller rather than swallowed. A driver that declares no policy capability "+
+				"(the %s driver declares none) refuses each grant instead, naming itself",
+				envAgentPrivApply, driverName, provisionerNoop)
 		}
 	}
 }

@@ -86,6 +86,7 @@ const (
 	envAgentWorkspaceKeep = "MUSTER_AGENT_WORKSPACE_PERSIST"
 	envAgentStorageClass  = "MUSTER_AGENT_WORKSPACE_STORAGE_CLASS"
 	envAgentEndpointTmpl  = "MUSTER_AGENT_ENDPOINT_TEMPLATE"
+	envAgentPrivApply     = "MUSTER_AGENT_PRIVILEGE_APPLY"
 )
 
 // The values MUSTER_AGENT_PROVISIONER accepts.
@@ -281,6 +282,37 @@ type config struct {
 	AgentStorageClass     string
 
 	AgentEndpointTemplate string
+
+	// AgentPrivilegeApply arms the privilege tier: it builds
+	// internal/agentprivilege over the SAME driver the lifecycle tier holds and
+	// assigns it to api.Extensions.PrivilegeApply, so a granted profile's RBAC is
+	// applied to the agent's ServiceAccount for real. Default FALSE, which leaves
+	// that field nil and every grant RECORDED and not applied, exactly as before
+	// this knob existed.
+	//
+	// 🔴 IT IS A THIRD KNOB RATHER THAN SOMETHING THE PROVISIONER IMPLIES, FOR A
+	// REASON THAT IS NOT SYMMETRY WITH THE OTHER TWO. Applying a grant needs
+	// permissions muster's own ServiceAccount very likely does not have: the
+	// `escalate` verb on clusterroles (to create a ClusterRole holding rules
+	// muster does not itself hold) and `bind` (to create the binding). Those are
+	// the two verbs a cluster administrator grants last and most reluctantly. If
+	// naming a driver implied this tier, the first image bump that set
+	// MUSTER_AGENT_PROVISIONER would start attempting privileged writes and every
+	// grant would fail with a 403 that reads as a muster defect.
+	//
+	// 🔴 AND LEAVING IT UNSET IS NOT FREE — IT IS THE FAIL-CLOSED SIDE, WHICH IS
+	// LOUDER THAN THE OTHER TWO KNOBS' DEFAULTS. api.Extensions.defects treats
+	// `Provisioner != nil && Privilege != nil && PrivilegeApply == nil` as a
+	// readiness defect, and this deployment builds a privilege store whenever it
+	// has a database. So on a deployment WITH a database, naming a provisioner
+	// and leaving this unset makes /readyz refuse and the pod is pulled from the
+	// Service. That is deliberate: a grant chip claiming a permission the
+	// ServiceAccount does not have is a page stating a falsehood. The three ways
+	// out are this variable, no privilege store, or no provisioner —
+	// api.Extensions.defects names all three in its refusal text.
+	//
+	// ⚠ IT IS NOT REFUSED FOR THE noop DRIVER. See buildPrivilegeApplier.
+	AgentPrivilegeApply bool
 }
 
 // envFlag reads a boolean env switch. Anything other than an explicit
@@ -335,6 +367,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentWorkspacePersist: envFlag(getenv, envAgentWorkspaceKeep),
 		AgentStorageClass:     strings.TrimSpace(getenv(envAgentStorageClass)),
 		AgentEndpointTemplate: strings.TrimSpace(getenv(envAgentEndpointTmpl)),
+		AgentPrivilegeApply:   envFlag(getenv, envAgentPrivApply),
 	}
 	if c.RouterActor == "" {
 		c.RouterActor = defaultRouterActor
@@ -507,6 +540,27 @@ func (c config) validateProvisioner() error {
 			"%s and leave the two chat routes refusing at api.requireGatewayProvisioner",
 			envAgentGateway, gw, envAgentProvisioner, named,
 			strings.Join([]string{provisionerNoop, provisionerK8s}, "/"), envAgentGateway)
+	}
+
+	// 🔴 THE PRIVILEGE TIER IS CHECKED *AGAINST* THE PROVISIONER FOR THE SAME
+	// REASON THE GATEWAY IS, AND ITS SILENT FAILURE IS WORSE THAN THE GATEWAY'S.
+	// The applier applies a grant through the provisioning driver, so with no
+	// driver named there is nothing to build — and buildAgentPlane returns before
+	// it would be built, so the variable becomes a switch that is ON and does
+	// NOTHING. An operator who set it is telling us they expect grants to be
+	// applied; the observable without this refusal is a server that boots clean,
+	// prints nothing about it, reports READY (no provisioner means no readiness
+	// defect either), and records every grant unapplied — which is precisely the
+	// falsehood api.Extensions.defects exists to refuse, arrived at from the one
+	// direction defects() cannot see.
+	if c.AgentPrivilegeApply && named == provisionerNone {
+		return fmt.Errorf("%s=1 but %s=%s: a granted profile's RBAC is applied THROUGH the "+
+			"provisioning driver, so with no driver named there is nothing to apply it with and "+
+			"this variable would be an armed switch that does nothing — every grant recorded and "+
+			"none applied, with /readyz reporting ready because a nil provisioner is not a "+
+			"readiness defect. Name a driver (%s), or unset %s and leave grants recorded only",
+			envAgentPrivApply, envAgentProvisioner, named,
+			strings.Join([]string{provisionerNoop, provisionerK8s}, "/"), envAgentPrivApply)
 	}
 
 	if named == provisionerNone {

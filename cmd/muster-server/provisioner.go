@@ -8,6 +8,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
+	"github.com/ZacxDev/muster/internal/agentprivilege"
 	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
@@ -56,10 +57,27 @@ import (
 //  1. RBAC. This module ships no Kubernetes manifest of any kind, so nothing here
 //     grants muster's own ServiceAccount the Deployment / Service / Secret /
 //     ConfigMap / ServiceAccount / Namespace permissions internal/provision/k8s
-//     needs. Past the readiness defect in doc_seams.go entry 2, every dispatch
-//     403s — and a 403 from the apiserver reads as a driver defect rather than a
-//     missing Role. CLOSING CONDITION: a merged change in the deployment's own
-//     repository adding that Role/RoleBinding, verified by one real dispatch.
+//     needs. Every dispatch then 403s — and a 403 from the apiserver reads as a
+//     driver defect rather than a missing Role. CLOSING CONDITION: a merged change
+//     in the deployment's own repository adding that Role/RoleBinding, verified by
+//     one real dispatch.
+//     🔴 MUSTER_AGENT_PRIVILEGE_APPLY NEEDS *MORE* THAN THAT SET, AND THE EXTRA
+//     PERMISSION IS THE ONE A CLUSTER ADMINISTRATOR WILL ASK ABOUT. Creating a
+//     ClusterRole whose rules muster does not itself hold requires the `escalate`
+//     verb on `clusterroles` in the rbac API group, and creating the binding
+//     requires `bind`; without them the apiserver refuses the WRITE, so a grant
+//     fails at apply time with a permission error. That failure is now surfaced to
+//     the caller rather than swallowed — internal/api logs it and grantProfile
+//     returns it before recording the grant — but the cheaper answer while the
+//     verbs are missing is to leave this variable unset, which keeps the tier
+//     unbuilt. (k8s.Config.PolicyDisabled is the driver's own spelling of the same
+//     refusal and is deliberately NOT exposed as a second variable: with this one
+//     unset there is no caller of provision.Grant in the binary at all.)
+//     ⚠ THE API GROUP IS NAMED IN PROSE RATHER THAN IN ITS FULL DOTTED FORM, and
+//     that is a leak-gate accommodation rather than vagueness: the full spelling
+//     begins with the word `authorization` followed by 20+ dotted characters, which
+//     is exactly tests/leakscan.py's `Authorization: <token>` pattern, and it
+//     refused this file. The gate is right that the shape is credential-like.
 //  2. ROLLBACK IS NOT SYMMETRIC. Once this has been enabled and instances exist,
 //     rolling the image back to a build WITHOUT internal/agentprovision makes every
 //     lifecycle route answer 503 again while the rows AND the instances remain: the
@@ -73,9 +91,9 @@ import (
 // real apiserver. Plan step 22d is that test.
 // ---------------------------------------------------------------------------
 
-// buildAgentPlane builds both halves of the agent seam over ONE driver: the
-// lifecycle provisioner named by cfg, and the chat gateway named by cfg. Either
-// or both may be nil.
+// buildAgentPlane builds all THREE tiers of the agent seam over ONE driver: the
+// lifecycle provisioner named by cfg, the chat gateway named by cfg, and the
+// privilege applier cfg arms. Any of them may be nil.
 //
 // ⚠ A nil RESULT IS A SUPPORTED DEPLOYMENT AND NOT AN ERROR CASE. api.Extensions
 // tolerates a nil Provisioner and a nil Gateway by design — those routes refuse at
@@ -83,19 +101,28 @@ import (
 // without chat" are configurations, not failures. The caller must not treat either
 // nil as something to fall back from.
 //
+// 🔴 THE THIRD TIER IS THE ONE WHOSE nil IS NOT MERELY A REDUCED FEATURE SET. With
+// a privilege store present, `Provisioner != nil && PrivilegeApply == nil` is a
+// READINESS DEFECT (api.Extensions.defects), so this nil pulls the pod from the
+// Service rather than dimming a tab. That is deliberate and it is why the tier is
+// off by default: see config.AgentPrivilegeApply.
+//
 // 🔴 IT RETURNS CONCRETE POINTER TYPES, NOT INTERFACES, AND main.go's nil-check
 // DEPENDS ON THAT. Assigning a typed nil pointer to an interface field yields a
 // non-nil interface holding a nil pointer, which sails past api's wrappers into a
 // nil-pointer method call in a goroutine. The concrete return is what makes the
-// check at the assignment site possible.
-func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agentprovision.Adapter, *agentgateway.Gateway, error) {
+// check at the assignment site possible. For the privilege tier the consequence is
+// the readiness one above INVERTED: a typed nil there makes defects() go quiet and
+// /readyz report ready over an applier that nil-derefs on the first grant.
+func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agentprovision.Adapter, *agentgateway.Gateway, *agentprivilege.Applier, error) {
 	named := cfg.agentProvisioner()
 	if named == provisionerNone {
-		// The gateway needs a driver to resolve an address, so there is nothing to
-		// build here either. config.validateProvisioner refuses the combination
-		// "gateway named, provisioner none" at boot rather than letting it arrive
-		// here as a silent nil gateway.
-		return nil, nil, nil
+		// The gateway needs a driver to resolve an address, and so does the
+		// privilege applier, so there is nothing to build here either.
+		// config.validateProvisioner refuses both combinations — "gateway named,
+		// provisioner none" and "privilege apply armed, provisioner none" — at boot
+		// rather than letting them arrive here as silent nils.
+		return nil, nil, nil, nil
 	}
 	if store == nil {
 		// Reachable only with no database: the stores are built inside the
@@ -103,14 +130,14 @@ func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agent
 		// agent id, so every lifecycle call would fail at its first line — and it
 		// would do so from a background goroutine, where the only trace is a log
 		// line nobody is reading.
-		return nil, nil, fmt.Errorf("%s=%s needs an agents store, and there is none because %s is "+
+		return nil, nil, nil, fmt.Errorf("%s=%s needs an agents store, and there is none because %s is "+
 			"unset: an agent provisioner resolves every request through the database",
 			envAgentProvisioner, named, envDatabase)
 	}
 
 	driver, err := buildDriver(cfg, logger)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	prov, err := agentprovision.New(agentprovision.Config{
 		Driver: driver,
@@ -119,13 +146,43 @@ func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agent
 		Logger: logger,
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	gw, err := buildGateway(cfg, driver)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return prov, gw, nil
+	priv, err := buildPrivilegeApplier(cfg, driver)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return prov, gw, priv, nil
+}
+
+// buildPrivilegeApplier builds the privilege tier over an already-constructed
+// driver, or (nil, nil) when the configuration has not armed it.
+//
+// 🔴 IT TAKES THE DRIVER RATHER THAN BUILDING ONE, AND THAT IS THE SAME
+// LOAD-BEARING REASON THE GATEWAY DOES. The lifecycle tier creates the instance's
+// ServiceAccount; this tier binds cluster RBAC to it. A second driver built from
+// the same configuration agrees today and diverges the moment anything about a
+// driver is per-instance — and the failure would be a grant refused as "not
+// managed by this driver" over a ServiceAccount muster demonstrably created,
+// which reads as a defect in the ownership predicate rather than as two clients.
+//
+// ⚠ IT IS NOT REFUSED FOR THE noop DRIVER, AND THE FIRST DRAFT OF THIS FUNCTION
+// REFUSED IT. The noop driver implements no provision.PolicyGranter, so
+// provision.Grant refuses every grant with a reason that names the driver —
+// which is the honest, per-grant answer and leaves the privilege UI developable
+// without a cluster. A boot refusal would have rejected a working development
+// configuration; and the readiness check's own "⚠ IT OVER-TRIGGERS FOR A
+// PROVISIONER THAT CREATES NOTHING" note is why arming it there is coherent
+// rather than a lie: the grant fails loudly instead of being recorded silently.
+func buildPrivilegeApplier(cfg config, driver provision.Provisioner) (*agentprivilege.Applier, error) {
+	if !cfg.AgentPrivilegeApply {
+		return nil, nil
+	}
+	return agentprivilege.New(agentprivilege.Config{Driver: driver})
 }
 
 // buildGateway builds the agent chat gateway named by cfg over an

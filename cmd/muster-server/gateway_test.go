@@ -44,7 +44,7 @@ func gatewayTestConfig(driver, runtime string) config {
 func TestNamingARuntimeWiresAGatewayAndNotNamingOneWiresNothing(t *testing.T) {
 	logger := log.New(&strings.Builder{}, "", 0)
 
-	prov, gw, err := buildAgentPlane(gatewayTestConfig(provisionerNoop, gatewayHooksSHA256), stubStore{}, logger)
+	prov, gw, _, err := buildAgentPlane(gatewayTestConfig(provisionerNoop, gatewayHooksSHA256), stubStore{}, logger)
 	if err != nil {
 		t.Fatalf("buildAgentPlane(noop, %s): %v", gatewayHooksSHA256, err)
 	}
@@ -63,7 +63,7 @@ func TestNamingARuntimeWiresAGatewayAndNotNamingOneWiresNothing(t *testing.T) {
 		t.Error("naming a runtime cost us the lifecycle provisioner")
 	}
 
-	off, offGw, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), stubStore{}, logger)
+	off, offGw, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), stubStore{}, logger)
 	if err != nil {
 		t.Fatalf("buildAgentPlane(noop, unset gateway): %v", err)
 	}
@@ -82,7 +82,7 @@ func TestNamingARuntimeWiresAGatewayAndNotNamingOneWiresNothing(t *testing.T) {
 	// accepts configs that never went through loadConfig, so a resolver default that
 	// was wrong would be invisible to the case above, which passes its value
 	// explicitly.
-	_, zeroGw, err := buildAgentPlane(config{}, stubStore{}, logger)
+	_, zeroGw, _, err := buildAgentPlane(config{}, stubStore{}, logger)
 	if err != nil {
 		t.Fatalf("buildAgentPlane over a zero-value config: %v", err)
 	}

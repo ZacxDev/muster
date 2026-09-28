@@ -101,7 +101,7 @@ func TestBuildingTheKubernetesProvisionerUsesTheRealDriver(t *testing.T) {
 func TestTheKubernetesBranchRefusesOutsideAClusterRatherThanFallingBack(t *testing.T) {
 	// This test process is not a pod: rest.InClusterConfig has no service-account
 	// token to read.
-	_, _, err := buildAgentPlane(provisionerTestConfig(provisionerK8s), stubStore{}, log.New(&strings.Builder{}, "", 0))
+	_, _, _, err := buildAgentPlane(provisionerTestConfig(provisionerK8s), stubStore{}, log.New(&strings.Builder{}, "", 0))
 	if err == nil {
 		t.Fatal("buildAgentPlane succeeded for the kubernetes driver outside a cluster, " +
 			"which means it fell back to some other credential source. A fallback " +
@@ -123,7 +123,7 @@ func TestTheKubernetesBranchRefusesOutsideAClusterRatherThanFallingBack(t *testi
 func TestTheNoopProvisionerWiresAnAdapterAndNoneWiresNothing(t *testing.T) {
 	logger := log.New(&strings.Builder{}, "", 0)
 
-	adapter, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), stubStore{}, logger)
+	adapter, _, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), stubStore{}, logger)
 	if err != nil {
 		t.Fatalf("buildAgentPlane(noop): %v", err)
 	}
@@ -134,7 +134,7 @@ func TestTheNoopProvisionerWiresAnAdapterAndNoneWiresNothing(t *testing.T) {
 		t.Errorf("adapter.Driver() = %q, want %q", got, "noop")
 	}
 
-	none, _, err := buildAgentPlane(provisionerTestConfig(provisionerNone), stubStore{}, logger)
+	none, _, _, err := buildAgentPlane(provisionerTestConfig(provisionerNone), stubStore{}, logger)
 	if err != nil {
 		t.Fatalf("buildAgentPlane(none): %v", err)
 	}
@@ -151,7 +151,7 @@ func TestTheNoopProvisionerWiresAnAdapterAndNoneWiresNothing(t *testing.T) {
 	// that never went through loadConfig — every wiring test builds one — so this is
 	// the shape a zero value actually reaches the wiring in, and a default that
 	// provisioned would create pods for a deployment that asked for nothing.
-	zero, _, err := buildAgentPlane(config{}, stubStore{}, logger)
+	zero, _, _, err := buildAgentPlane(config{}, stubStore{}, logger)
 	if err != nil {
 		t.Fatalf("buildAgentPlane over a zero-value config: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestTheNoopProvisionerWiresAnAdapterAndNoneWiresNothing(t *testing.T) {
 
 	// A provisioner with no store could resolve no agent id, and would fail from a
 	// background goroutine whose only trace is a log line.
-	if _, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), nil, logger); err == nil {
+	if _, _, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), nil, logger); err == nil {
 		t.Error("buildAgentPlane accepted a nil agents store")
 	}
 }

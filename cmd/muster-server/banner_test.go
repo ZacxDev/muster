@@ -277,6 +277,14 @@ var bannerLedger = []string{
 	// for: the runtime it names decides the bearer derivation, and a wrong one is a
 	// 401 from inside a turn.
 	envAgentGateway,
+	// 🔴 THE PRIVILEGE TIER IS LEDGERED AND NOT EXEMPT, WHICH IS A DECISION AND NOT
+	// A DEFAULT. Its off-state is the one this banner's whole argument is about: with
+	// a privilege store wired it is a READINESS DEFECT — /readyz refuses and the pod
+	// never serves — and the refusal's only escape is this variable's name. A
+	// deployment in that state with nothing on the banner gives an operator a 503
+	// and no string to search for. The fully-off arm names it beside the other two;
+	// the default arm's three-way switch names it in every reachable state.
+	envAgentPrivApply,
 }
 
 // bannerExempt is every environment variable config.go declares that logBanner
@@ -414,7 +422,7 @@ type bannerStubPrivilegeStore struct{ privilege.Store }
 // banner is describing), and cannot drift from what the binary actually assigns.
 func bannerProvisioner(t *testing.T, cfg config) api.Provisioner {
 	t.Helper()
-	p, _, err := buildAgentPlane(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
+	p, _, _, err := buildAgentPlane(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
 	if err != nil {
 		t.Fatalf("building the banner's provisioner fixture: %v", err)
 	}
@@ -425,12 +433,32 @@ func bannerProvisioner(t *testing.T, cfg config) api.Provisioner {
 	return p
 }
 
+// bannerPrivilegeApplier is the privilege half of the same fixture, built through
+// the real wiring for the same reason bannerProvisioner and bannerGateway are —
+// and with one reason of its own. The banner's WIRED arm type-asserts the field
+// for a Driver() method and falls back to the CONFIGURED name when the assertion
+// fails; a stub with no such method would take the fallback, so the line would
+// report the value an operator SET rather than the driver that got BUILT, and the
+// assertion would never be exercised by any test.
+func bannerPrivilegeApplier(t *testing.T, cfg config) api.PrivilegeApplier {
+	t.Helper()
+	_, _, priv, err := buildAgentPlane(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
+	if err != nil {
+		t.Fatalf("building the banner's privilege-applier fixture: %v", err)
+	}
+	if priv == nil {
+		t.Fatalf("the banner fixture's config (%s=%v) produced no applier, so the privilege "+
+			"APPLY: WIRED arm would never be rendered", envAgentPrivApply, cfg.AgentPrivilegeApply)
+	}
+	return priv
+}
+
 // bannerGateway is the chat half of the same fixture, built through the real
 // wiring for the same reason bannerProvisioner is: a stub would let the banner's
 // WIRED arm render over a gateway the binary cannot actually construct.
 func bannerGateway(t *testing.T, cfg config) api.Gateway {
 	t.Helper()
-	_, gw, err := buildAgentPlane(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
+	_, gw, _, err := buildAgentPlane(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
 	if err != nil {
 		t.Fatalf("building the banner's gateway fixture: %v", err)
 	}
@@ -482,11 +510,24 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// any test while both renders still differed elsewhere.
 		AgentGateway:      gatewayHooksSHA256,
 		AgentGatewayModel: "runtime-sentinel",
+
+		// 🔴 THE PRIVILEGE AXIS NEEDS THE CONFIG, THE APPLIER *AND* THE PRIVILEGE
+		// STORE — three things, where the other two tiers need two. The banner's
+		// privilege switch is deliberately SILENT when no privilege store is wired
+		// (TestTheHalfWiredProvisioningBannerReportsBothTiersSeparately has a control
+		// asserting exactly that: a line printed in every state is unconditional text
+		// rather than a report). So a fixture that armed the variable and wired the
+		// applier but left Privilege nil would render NO privilege line at all, and
+		// bannerLedger's both-directions check would fail on the ON side while looking
+		// like a banner bug.
+		AgentPrivilegeApply: true,
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
-		GitHub:      bannerStubGitHubStore{},
-		Provisioner: bannerProvisioner(t, on),
-		Gateway:     bannerGateway(t, on),
+		GitHub:         bannerStubGitHubStore{},
+		Provisioner:    bannerProvisioner(t, on),
+		Gateway:        bannerGateway(t, on),
+		Privilege:      bannerStubPrivilegeStore{},
+		PrivilegeApply: bannerPrivilegeApplier(t, on),
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
