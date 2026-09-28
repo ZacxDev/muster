@@ -131,10 +131,34 @@ test-db:
 	@echo "Without it a suite that ran nothing still reports green."
 
 test-liveenv: ## run the live-environment controls (needs a real coding-agent session)
-	@# These are behind `//go:build liveenv` because they read the session id from
-	@# the REAL process environment. They are NOT in `make test` on purpose: as
-	@# t.Skip they silently no-op'd on CI and the run still looked green.
+	@# These are behind `//go:build liveenv` because they read their inputs from the
+	@# REAL process environment. They are NOT in `make test` on purpose: as t.Skip
+	@# they silently no-op'd on CI and the run still looked green.
 	go test -tags liveenv -run 'REALProcessEnvironment|SessionIDIsReadableFromThisProcess' -v ./cmd/muster/
+	@# The agent-chat controls need a reachable agent runtime, not a coding-agent
+	@# session — see internal/agentgateway/liveruntime_test.go for the variables
+	@# and the port-forward recipe. They are the closing condition the OWED record in
+	@# internal/agents/responses.go wrote for itself: the httptest suite proves what
+	@# goes on the wire, and only these prove a runtime accepts it.
+	@#
+	@# 🔴 MUSTER_LIVE_AGENT_EXPECT_TOOLS DECIDES WHETHER A TOOL-CELL FAILURE IS FATAL —
+	@# NOT WHETHER THE CELL RUNS. An earlier heading called it "OPT-IN", which described
+	@# a first draft that skipped before doing any work: with a runtime declared that
+	@# measured nothing while calling itself a measurement. The cell now RUNS whenever a
+	@# runtime is declared and reports what it found; the variable only escalates a
+	@# failure to the target. It shipped unconditionally red — the tool
+	@# cell cannot pass without a runtime that BOTH speaks the shape agents.ToolDef
+	@# sends AND has a working model credential, and no single pod had both — with a
+	@# comment here pre-excusing the red. A comment excusing a red gate IS the
+	@# click-through training claude/RULES.md names, not a defence against it; and it
+	@# also made the TARGET'S EXIT CODE unreadable — the cmd/muster cell runs first and
+	@# printed its own verdict fine, so what an always-red cell buried was whether the
+	@# target as a whole passed. An earlier wording said "the cell's verdict", which is
+	@# measurably not what happened.
+	@# So: no runtime declared (no ADDR/TOKEN) => skip, nothing to talk to. Runtime
+	@# declared => the cell RUNS and reports. Plus EXPECT_TOOLS => a failure is the
+	@# target's failure too.
+	go test -tags liveenv -count=1 -run 'RealTurnAgainstALiveRuntime|RealTOOLTurnAgainstALiveRuntime' -v ./internal/agentgateway/
 
 test-db-down:
 	$(COMPOSE) -f $(COMPOSE_FILE) down -v

@@ -49,6 +49,7 @@ import (
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/privilege"
+	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/runbooks"
 	"github.com/ZacxDev/muster/internal/sse"
@@ -210,13 +211,24 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// goroutine instead of a 503 at the door. buildProvisioner returns a concrete
 	// *agentprovision.Adapter precisely so this is checkable here rather than
 	// invisible behind an interface return.
-	prov, err := buildProvisioner(cfg, ext.Agents, logger)
+	//
+	// ⚠ AND IT IS NOW TWO ASSIGNMENTS FROM ONE CALL, FOR THE SAME REASON: a nil
+	// *agentgateway.Gateway assigned into ext.Gateway would make
+	// api.requireGatewayProvisioner's nil check false and turn a 503 into a
+	// nil-pointer dereference inside a chat handler.
+	prov, gw, err := buildAgentPlane(cfg, ext.Agents, logger)
 	if err != nil {
 		a.Close()
-		return nil, fmt.Errorf("agent provisioner: %w", err)
+		// "agent plane", not "agent provisioner": this call builds BOTH tiers, so a
+		// gateway construction failure once booted under a prefix naming the other
+		// subsystem — which sends the reader to the provisioner's configuration.
+		return nil, fmt.Errorf("agent plane: %w", err)
 	}
 	if prov != nil {
 		ext.Provisioner = prov
+	}
+	if gw != nil {
+		ext.Gateway = gw
 	}
 
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
@@ -534,14 +546,20 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		// half of the both-directions rule bannerLedger enforces: an operator
 		// reading "UNWIRED" needs the name they can set, and it was previously
 		// findable only by reading this file.
-		l.Printf("agent provisioning: UNWIRED (%s=%s) — this module has no api.Provisioner "+
-			"or api.Gateway implementation wired, so every agent-control route (dispatch, "+
+		//
+		// 🔴 AND IT NAMES *BOTH* VARIABLES, BECAUSE THIS BRANCH IS BOTH TIERS OFF.
+		// There are two knobs now and this arm is the only place a reader sees the
+		// fully-off state; naming one of them would send an operator who wants chat
+		// to set the provisioner variable and conclude, correctly, that it did not
+		// turn chat on.
+		l.Printf("agent provisioning: UNWIRED (%s=%s, %s=%s) — no api.Provisioner and no "+
+			"api.Gateway is wired, so every agent-control route (dispatch, "+
 			"start, stop, destroy, logs, chat) is registered and answers 503 at request time "+
 			"through api.requireLifecycleProvisioner or api.requireGatewayProvisioner, "+
 			"after its own auth check and with provisionerUnwired:true in the body. "+
 			"Privilege grants are RECORDED but not applied to any cluster. Neither is a "+
 			"misconfiguration; see cmd/muster-server/doc_seams.go",
-			envAgentProvisioner, a.cfg.agentProvisioner())
+			envAgentProvisioner, a.cfg.agentProvisioner(), envAgentGateway, a.cfg.agentGateway())
 	default:
 		l.Printf("agent provisioning: LIFECYCLE %s (%s=%s) — dispatch, start, stop, destroy "+
 			"and the log routes go through api.requireLifecycleProvisioner",
@@ -553,15 +571,68 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		// where that shows up (agents.kickoff_error) so the reader is not left to
 		// infer it from a card that looks healthy.
 		if ext.Gateway == nil {
-			l.Printf("agent provisioning CHAT: UNWIRED — no api.Gateway implementation exists in "+
-				"this module, so the two chat routes answer 503 through "+
-				"api.requireGatewayProvisioner with %s:true. A dispatch with a kickoff therefore "+
-				"CREATES the instance and cannot deliver the first message: the note stays in "+
-				"agents.pending_note and the non-delivery is recorded in agents.kickoff_error. "+
-				"See cmd/muster-server/doc_seams.go entry 1", api.ProvisionerUnwiredField)
+			// ⚠ THE SENTENCE "no api.Gateway implementation exists in this module" WAS
+			// TRUE AND IS NOT ANY MORE — internal/agentgateway is one. What makes this
+			// branch reachable now is a deployment that did not NAME a runtime, so the
+			// line says that instead: an operator reading UNWIRED needs the variable
+			// they can set, which is the property bannerLedger enforces in both
+			// directions.
+			l.Printf("agent provisioning CHAT: UNWIRED (%s=%s) — no agent runtime is named, so "+
+				"nothing is wired to api.Extensions.Gateway and the two chat routes answer 503 "+
+				"through api.requireGatewayProvisioner with %s:true. A dispatch with a kickoff "+
+				"therefore CREATES the instance and cannot deliver the first message: the note "+
+				"stays in agents.pending_note and the non-delivery is recorded in "+
+				"agents.kickoff_error. See cmd/muster-server/doc_seams.go entry 1",
+				envAgentGateway, a.cfg.agentGateway(), api.ProvisionerUnwiredField)
 		} else {
-			l.Print("agent provisioning CHAT: WIRED — the two chat routes are live through " +
-				"api.requireGatewayProvisioner")
+			// 🔴 IT NAMES THE RUNTIME, NOT JUST "WIRED", BECAUSE THE RUNTIME IS WHAT
+			// DECIDES THE BEARER DERIVATION AND THE MODEL SENTINEL. Those are wire
+			// contracts with the agent IMAGE, and both fail as a 401 or a 400 from
+			// inside a turn — the two failures an operator is most likely to read as a
+			// credential or model problem.
+			//
+			// 🔴 AND THE NAME IS READ OFF THE CONSTRUCTED GATEWAY, NOT OFF THE CONFIG.
+			// An earlier revision printed a.cfg.agentGateway() while its own comment
+			// claimed the line said "which formula this process is using" — a readback
+			// of the REQUEST, not of the object, so a buildGateway that mapped a value
+			// to the wrong Runtime would print the value the operator set and be wrong.
+			// The type assertion is what makes this the object's own answer.
+			//
+			// ⚠ AND IT IS UNPINNED, STRUCTURALLY, WHICH IS WORTH SAYING SO A LATER
+			// SIMPLIFICATION DOES NOT SILENTLY REVERT IT. With exactly one legal
+			// non-none scheme the config value and the object's answer CANNOT disagree,
+			// so deleting this assertion leaves the whole suite green — measured. It
+			// becomes pinnable the moment a second Runtime exists — AND SO DOES THE
+			// MAPPING, which an earlier wording said was already "covered by" the
+			// gw.Runtime() assertion in
+			// TestNamingARuntimeWiresAGatewayAndNotNamingOneWiresNothing. That assertion
+			// is real but cannot distinguish a correct mapping from a wrong one while
+			// only one scheme is legal: it conceded the unpinnability in its first half
+			// and asserted coverage in its second. Both tests are owed by whoever adds
+			// the second Runtime. ⚠ The name is on ONE line deliberately: splitting it
+			// across a line break made internal/modulegate's citation gate read a test
+			// that does not exist — the gate was right, and it caught this.
+			scheme := a.cfg.agentGateway()
+			if r, ok := ext.Gateway.(interface{ Runtime() string }); ok {
+				scheme = r.Runtime()
+			}
+			// 🔴 "WIRED" IS NOT "REACHABLE", AND SAYING ONLY THE FIRST IS THE FALSEHOOD
+			// THIS LINE SHIPPED IN REVIEW. The chat ROUTES stop refusing — that part is
+			// real. But a chat turn resolves the instance's address through the driver,
+			// and NOTHING BUILDS A SPEC THAT DECLARES ONE: agentspec.Build renders
+			// Ports and Endpoint nil, so the kubernetes driver creates no Service and
+			// Endpoint() answers provision.ErrNoEndpoint. A turn against an agent THIS
+			// BINARY provisioned therefore fails per-turn rather than refusing at the
+			// door — which is strictly worse than the 503 it replaced, because the 503
+			// named its own cause. Both blockers are in doc_seams.go entry 1.
+			l.Printf("agent provisioning CHAT: WIRED %s=%s (%s=%s) — the two chat routes no longer "+
+				"refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT REACHABLE: agentspec.Build "+
+				"declares no port and no endpoint, so this driver resolves no address for an agent "+
+				"this binary provisioned and every such turn fails with %v. Chat is usable only "+
+				"against an instance provisioned elsewhere, with an address this process can "+
+				"resolve. See cmd/muster-server/doc_seams.go entry 1",
+				envAgentGateway, scheme, envAgentGatewayModel, a.cfg.AgentGatewayModel,
+				provision.ErrNoEndpoint)
 		}
 		// 🔴 THIS IS doc_seams.go ENTRY 2'S ARGUMENT DYING ON SCHEDULE. A grant
 		// recorded and not applied was defensible only while no pod could exist to

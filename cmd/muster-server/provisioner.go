@@ -7,6 +7,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
@@ -33,11 +34,21 @@ import (
 // wired-up adapter reports the kubernetes driver's own name rather than any
 // stand-in.
 //
-// ⚠ WHAT IS STILL OPEN AFTER THIS FILE: chat. The adapter satisfies
-// api.Provisioner (lifecycle) and NOT api.Gateway, so the two chat routes keep
-// refusing at api.requireGatewayProvisioner. That is the split's purpose — see
-// doc_seams.go entry 1 — and the boot banner reports the two tiers separately so
-// the half-wired state is readable rather than inferred.
+// ✅ CHAT WAS THE OPEN HALF AND IT IS WIRED NOW, BY A SECOND TYPE RATHER THAN BY
+// WIDENING THE FIRST. The paragraph here used to read "WHAT IS STILL OPEN AFTER
+// THIS FILE: chat. The adapter satisfies api.Provisioner (lifecycle) and NOT
+// api.Gateway". The adapter still does not, and must not: internal/agentgateway
+// is a separate type over the SAME driver, assigned to api.Extensions.Gateway
+// below. The split's purpose was that each half can be wired independently, and
+// the way to use that is two implementations — not one type growing two methods
+// and losing the ability to refuse honestly.
+//
+// 🔴 BOTH HALVES SHARE ONE DRIVER INSTANCE, AND THAT IS LOAD-BEARING RATHER THAN
+// THRIFTY. The gateway asks the driver where an agent is reachable; the lifecycle
+// adapter asks the same driver to create it there. Two driver instances built from
+// the same configuration would agree today and diverge the moment anything about a
+// driver is stateful or per-instance — and the failure would be a chat turn that
+// resolves no endpoint for a pod that demonstrably exists.
 //
 // 🔴 TWO PREREQUISITES FOR `kubernetes` THAT LIVE OUTSIDE THIS REPOSITORY, NAMED
 // HERE BECAUSE NOTHING ELSE IN IT CAN CHECK THEM:
@@ -62,17 +73,29 @@ import (
 // real apiserver. Plan step 22d is that test.
 // ---------------------------------------------------------------------------
 
-// buildProvisioner builds the agent lifecycle provisioner named by cfg, or
-// (nil, nil) when the configuration names none.
+// buildAgentPlane builds both halves of the agent seam over ONE driver: the
+// lifecycle provisioner named by cfg, and the chat gateway named by cfg. Either
+// or both may be nil.
 //
-// ⚠ (nil, nil) IS A SUPPORTED RESULT AND NOT AN ERROR CASE. api.Extensions
-// tolerates a nil Provisioner by design — every lifecycle route refuses at the
-// door with api.ProvisionerUnwiredField — so "no provisioner" is a deployment,
-// not a failure. The caller must not treat nil as something to fall back from.
-func buildProvisioner(cfg config, store agents.Store, logger *log.Logger) (*agentprovision.Adapter, error) {
+// ⚠ A nil RESULT IS A SUPPORTED DEPLOYMENT AND NOT AN ERROR CASE. api.Extensions
+// tolerates a nil Provisioner and a nil Gateway by design — those routes refuse at
+// the door with api.ProvisionerUnwiredField — so "no provisioner" and "lifecycle
+// without chat" are configurations, not failures. The caller must not treat either
+// nil as something to fall back from.
+//
+// 🔴 IT RETURNS CONCRETE POINTER TYPES, NOT INTERFACES, AND main.go's nil-check
+// DEPENDS ON THAT. Assigning a typed nil pointer to an interface field yields a
+// non-nil interface holding a nil pointer, which sails past api's wrappers into a
+// nil-pointer method call in a goroutine. The concrete return is what makes the
+// check at the assignment site possible.
+func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agentprovision.Adapter, *agentgateway.Gateway, error) {
 	named := cfg.agentProvisioner()
 	if named == provisionerNone {
-		return nil, nil
+		// The gateway needs a driver to resolve an address, so there is nothing to
+		// build here either. config.validateProvisioner refuses the combination
+		// "gateway named, provisioner none" at boot rather than letting it arrive
+		// here as a silent nil gateway.
+		return nil, nil, nil
 	}
 	if store == nil {
 		// Reachable only with no database: the stores are built inside the
@@ -80,21 +103,59 @@ func buildProvisioner(cfg config, store agents.Store, logger *log.Logger) (*agen
 		// agent id, so every lifecycle call would fail at its first line — and it
 		// would do so from a background goroutine, where the only trace is a log
 		// line nobody is reading.
-		return nil, fmt.Errorf("%s=%s needs an agents store, and there is none because %s is "+
+		return nil, nil, fmt.Errorf("%s=%s needs an agents store, and there is none because %s is "+
 			"unset: an agent provisioner resolves every request through the database",
 			envAgentProvisioner, named, envDatabase)
 	}
 
 	driver, err := buildDriver(cfg, logger)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return agentprovision.New(agentprovision.Config{
+	prov, err := agentprovision.New(agentprovision.Config{
 		Driver: driver,
 		Store:  store,
 		Spec:   agentSpecConfig(cfg),
 		Logger: logger,
 	})
+	if err != nil {
+		return nil, nil, err
+	}
+	gw, err := buildGateway(cfg, driver)
+	if err != nil {
+		return nil, nil, err
+	}
+	return prov, gw, nil
+}
+
+// buildGateway builds the agent chat gateway named by cfg over an
+// already-constructed driver, or (nil, nil) when the configuration names none.
+//
+// 🔴 THE RUNTIME IS NAMED BY CONFIGURATION AND HAS NO DEFAULT, WHICH IS THE WHOLE
+// REASON THIS IS NOT FOLDED INTO THE PROVISIONER'S SWITCH. Two of the three facts
+// a chat turn needs — the bearer derivation and the model sentinel — belong to the
+// agent IMAGE, not to the provisioning backend, and they are independent of it: the
+// kubernetes driver can run any image, and the noop driver can record a spec for
+// one. A deployment that names a driver is saying where instances live; naming a
+// runtime is saying what protocol the thing inside speaks.
+func buildGateway(cfg config, driver provision.Provisioner) (*agentgateway.Gateway, error) {
+	switch cfg.agentGateway() {
+	case gatewayNone:
+		return nil, nil
+	case gatewayHooksSHA256:
+		return agentgateway.New(agentgateway.Config{
+			Driver:  driver,
+			Runtime: agentgateway.HooksSHA256(),
+			Model:   cfg.AgentGatewayModel,
+		})
+	default:
+		// Unreachable: config.validateProvisioner refuses anything else at boot. A
+		// silent nil here would present as a working server whose chat routes all
+		// answered 503 with no reason an operator could find.
+		return nil, fmt.Errorf("unhandled %s %q (config.validateProvisioner should have refused "+
+			"it at boot; this is a wiring bug, not a configuration one)",
+			envAgentGateway, cfg.agentGateway())
+	}
 }
 
 // buildDriver builds the provisioning backend itself.

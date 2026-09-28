@@ -272,14 +272,14 @@ func TestRunToolLoop(t *testing.T) {
 		return `{"result":"ok"}`
 	}
 
-	reply, err := runToolLoop(context.Background(), srv.Client(), srv.URL, "tok", "sess",
+	reply, err := RunToolLoop(context.Background(), srv.Client(), srv.URL, "tok", "sess",
 		testRuntimeModel, "sys", "hi", []ToolDef{{Type: "function", Name: "lookup"}}, dispatch,
 		func(ev StreamEvent) { events = append(events, ev) })
 	if err != nil {
-		t.Fatalf("runToolLoop: %v", err)
+		t.Fatalf("RunToolLoop: %v", err)
 	}
 	// 🔴 THE REQUEST'S `model` FIELD IS THE CALLER'S, NOT THIS PACKAGE'S. It was
-	// a hardcoded vendor literal upstream; a mutation that made runToolLoop ignore
+	// a hardcoded vendor literal upstream; a mutation that made RunToolLoop ignore
 	// its argument SURVIVED a fully green suite because nothing read the body's
 	// model back. The fixture is deliberately a value this package never spells.
 	mu.Lock()
@@ -363,7 +363,7 @@ func TestRunToolLoop_ErrorToolResult(t *testing.T) {
 	defer srv.Close()
 
 	var resultOK *bool
-	_, err := runToolLoop(context.Background(), srv.Client(), srv.URL, "", "", testRuntimeModel, "", "go",
+	_, err := RunToolLoop(context.Background(), srv.Client(), srv.URL, "", "", testRuntimeModel, "", "go",
 		[]ToolDef{{Type: "function", Name: "boom"}},
 		func(string, string) string { return `{"error":"nope"}` },
 		func(ev StreamEvent) {
@@ -373,7 +373,7 @@ func TestRunToolLoop_ErrorToolResult(t *testing.T) {
 			}
 		})
 	if err != nil {
-		t.Fatalf("runToolLoop: %v", err)
+		t.Fatalf("RunToolLoop: %v", err)
 	}
 	if resultOK == nil || *resultOK {
 		t.Errorf("tool_result OK = %v, want false for error output", resultOK)

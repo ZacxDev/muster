@@ -271,6 +271,12 @@ var bannerLedger = []string{
 	envRouterURL,
 	envGitHubEncKey,
 	envAgentProvisioner,
+	// The chat tier is its own axis with its own two lines — the fully-off arm names
+	// both variables, the CHAT arm names this one in each direction. It is ledgered
+	// rather than exempt because it is precisely a thing this banner is responsible
+	// for: the runtime it names decides the bearer derivation, and a wrong one is a
+	// 401 from inside a turn.
+	envAgentGateway,
 }
 
 // bannerExempt is every environment variable config.go declares that logBanner
@@ -291,6 +297,12 @@ var bannerLedger = []string{
 // GITHUB_CLIENT_ID and MUSTER_GITHUB_TOKEN and neither of the other two, so the
 // entries say what is actually true of them.
 var bannerExempt = map[string]string{
+	envAgentGatewayModel: "the CHAT: WIRED line prints it beside the scheme, and there is no " +
+		"off-direction line to write: validate refuses a named gateway with no sentinel, so the " +
+		"only states that reach a banner are \"wired, and the value is on the line\" and \"no " +
+		"gateway at all\", which the CHAT: UNWIRED line already reports by naming " +
+		"MUSTER_AGENT_GATEWAY. There is no silent state for a second line to disambiguate — the " +
+		"boot refusal is what covers the missing-value case, and it names the variable",
 	envPort: "the listen line reports the BOUND ADDRESS (main.go: \"muster %s listening on %s\" " +
 		"with ln.Addr()), which is the answer this variable is asked for and is strictly " +
 		"better than echoing the request — it is printed after the banner, by serve, not by " +
@@ -398,11 +410,11 @@ type bannerStubPrivilegeStore struct{ privilege.Store }
 //
 // ⚠ IT IS NOT A STUB, AND THE REASON IS THE ONE bannerStubGitHubStore GIVES IN
 // REVERSE. logBanner reads only `ext.Provisioner != nil`, so a stub would do — but
-// this one is free, exercises buildProvisioner (the function whose result the
+// this one is free, exercises buildAgentPlane (the function whose result the
 // banner is describing), and cannot drift from what the binary actually assigns.
 func bannerProvisioner(t *testing.T, cfg config) api.Provisioner {
 	t.Helper()
-	p, err := buildProvisioner(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
+	p, _, err := buildAgentPlane(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
 	if err != nil {
 		t.Fatalf("building the banner's provisioner fixture: %v", err)
 	}
@@ -411,6 +423,22 @@ func bannerProvisioner(t *testing.T, cfg config) api.Provisioner {
 			"WIRED arm would never be rendered", envAgentProvisioner, cfg.AgentProvisioner)
 	}
 	return p
+}
+
+// bannerGateway is the chat half of the same fixture, built through the real
+// wiring for the same reason bannerProvisioner is: a stub would let the banner's
+// WIRED arm render over a gateway the binary cannot actually construct.
+func bannerGateway(t *testing.T, cfg config) api.Gateway {
+	t.Helper()
+	_, gw, err := buildAgentPlane(cfg, stubStore{}, log.New(&strings.Builder{}, "", 0))
+	if err != nil {
+		t.Fatalf("building the banner's gateway fixture: %v", err)
+	}
+	if gw == nil {
+		t.Fatalf("the banner fixture's config (%s=%s) produced no gateway, so the CHAT: WIRED "+
+			"arm would never be rendered", envAgentGateway, cfg.AgentGateway)
+	}
+	return gw
 }
 
 // TestTheBannerAnnouncesEveryLedgeredVariableInBothDirections is the F6 guard.
@@ -445,10 +473,20 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		AgentProvisioner: provisionerNoop,
 		AgentImageRepo:   "registry.example.test/muster/agent-runtime",
 		AgentAPIURL:      "http://muster.example.test:8105",
+
+		// 🔴 THE CHAT AXIS IS SEPARATE AND NEEDS ITS OWN FLIP, FOR EXACTLY THE REASON
+		// THE NOTE ABOVE GIVES ABOUT THE PROVISIONER. The two tiers have two variables
+		// and two banner lines: a fixture that named a runtime without wiring
+		// ext.Gateway would render the CHAT: UNWIRED arm, and the WIRED arm — the one
+		// that names which bearer derivation this process uses — would be unrendered by
+		// any test while both renders still differed elsewhere.
+		AgentGateway:      gatewayHooksSHA256,
+		AgentGatewayModel: "runtime-sentinel",
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		GitHub:      bannerStubGitHubStore{},
 		Provisioner: bannerProvisioner(t, on),
+		Gateway:     bannerGateway(t, on),
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
@@ -638,13 +676,40 @@ func declaredEnvConstants(t *testing.T) map[string]string {
 }
 
 // lineNaming returns the first banner line containing name, or "".
+// 🔴 THE MATCH IS ON A WHOLE VARIABLE NAME, NOT A SUBSTRING, AND THE DIFFERENCE IS
+// A MEASURED HOLE. A plain strings.Contains is satisfied by any LONGER variable that
+// starts with the name: the moment MUSTER_AGENT_GATEWAY_MODEL joined config.go, a
+// banner line naming only the MODEL variable made every both-directions assertion
+// about MUSTER_AGENT_GATEWAY pass. Found by mutation — blanking the gateway variable
+// out of the CHAT: WIRED line SURVIVED, because the sentinel beside it still spelled
+// the shorter name as a prefix — so this is the same prefix-collision class
+// tests/leakscan.py records for its own identifier walk, in a different instrument.
+//
+// ⚠ A VARIABLE NAME IS THE MAXIMAL RUN OF [A-Z0-9_], so the boundary test is "the
+// character after the match is not one of those". It is not a word boundary in the
+// regexp sense: `_` is a word character there, which is exactly the case that has to
+// fail to match.
 func lineNaming(banner, name string) string {
 	for _, line := range strings.Split(banner, "\n") {
-		if strings.Contains(line, name) {
-			return line
+		for i := 0; ; {
+			j := strings.Index(line[i:], name)
+			if j < 0 {
+				break
+			}
+			end := i + j + len(name)
+			if end == len(line) || !isEnvNameByte(line[end]) {
+				return line
+			}
+			i = end
 		}
 	}
 	return ""
+}
+
+// isEnvNameByte reports whether b can appear inside an environment variable name,
+// i.e. whether a match ending before it is really the end of that name.
+func isEnvNameByte(b byte) bool {
+	return b == '_' || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 // TestTheProvisioningSeamLineDoesNotClaimAnUnnamedRefusal pins the corrected

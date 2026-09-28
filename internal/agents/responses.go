@@ -45,14 +45,56 @@ var ErrResponsesUnsupported = errors.New("agent runtime does not support /v1/res
 // place to change if the attached runtime ever changes.
 const sessionKeyHeader = "X-Openclaw-Session-Key"
 
-// maxToolLoopIterations caps the call→execute→continue loop per user turn.
-const maxToolLoopIterations = 8
+// errBodyReadLimit caps how much of a non-200 response body either transport reads
+// before truncating it for the error message. It is 8 KiB — 16x the 512-byte message
+// cap, not "a little above" it as an earlier wording said. The point is to bound the
+// READ: a limit equal to the message cap would make every long body look identically
+// truncated, while this leaves room to see that a body was long.
+const errBodyReadLimit = 8 << 10
 
-// ToolDef is the flat Responses-API tool shape (verified against 2026.5.7):
+// MaxToolLoopIterations caps the call→execute→continue loop per user turn.
+//
+// ⚠ IT IS EXPORTED SO A CALLER CAN REASON ABOUT THE CEILING IT IMPLIES: each
+// iteration is its own HTTP request with its own client timeout, so a turn-level
+// budget is this many multiples of that — see agentgateway.DefaultTurnTimeout,
+// whose doc asserted the opposite until an audit measured it.
+const MaxToolLoopIterations = 8
+
+// ToolDef is the flat Responses-API tool shape:
 //
 //	{"type":"function","name":"...","description":"...","parameters":{json-schema}}
 //
-// The nested {"function":{...}} form is rejected (HTTP 400) on this codepath.
+// 🔴 THE SHAPE IS RUNTIME-VERSION-SPECIFIC, AND THE TWO FORMS ARE EACH OTHER'S
+// HTTP 400. This comment used to read "verified against 2026.5.7 … The nested
+// {"function":{...}} form is rejected (HTTP 400) on this codepath", which is true
+// of that image and reads as universal. Measured live against two running agent
+// gateways, one POST /v1/responses per cell — the reproducible form is
+// internal/agentgateway/liveruntime_test.go, which re-runs the tool cell against
+// whichever gateway it is pointed at:
+//
+//	agent image tag   flat (this type)                        nested {"function":{…}}
+//	2026.5.7          200                                     400 tools.0.name: expected string
+//	latest            400 tools.0.function: expected object   200
+//
+// So a reader debugging a 400 from a `latest` gateway is looking at a version
+// mismatch, not at a malformed request — and the previous wording sent them to
+// check their own JSON. The flat form is kept because it is the shape the image tag
+// the measured deployment provisions accepts; agentspec takes that tag from
+// configuration and has no default of its own.
+//
+// 🔴 A SHAPE MISMATCH IS A LOST TURN, NOT A DEGRADED ONE. The toolless fallback
+// keys on ErrResponsesUnsupported, which is a 404 ONLY — a 400 propagates to the
+// caller, so an agent on the wrong image loses its kickoff rather than delivering
+// it without tools.
+//
+// ⚠ OWED, NAMED RATHER THAN FIXED, BECAUSE NOTHING IN THE DEPLOYED PATH NEEDS IT
+// YET: the shape belongs on the runtime descriptor (agentgateway.Runtime), beside
+// the bearer derivation and the model sentinel, which is where the other two
+// version-specific facts already live. CLOSING CONDITION: either a Runtime method
+// selecting the shape with a live 200 recorded for BOTH images, or a deployment
+// that pins the agent image tag to one whose shape this type matches, with the pin
+// asserted by a test. WHO CHECKS IT: whoever first provisions an agent on an image
+// other than the one measured above — the symptom will be a kickoff that 400s.
 type ToolDef struct {
 	Type        string         `json:"type"`
 	Name        string         `json:"name"`
@@ -267,7 +309,9 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 		return nil, ErrResponsesUnsupported
 	}
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		// 🔴 BOUNDED: the 512 below caps the MESSAGE, not the READ, and an unbounded
+		// ReadAll buffers whatever a non-200 runtime sends before truncating it.
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, errBodyReadLimit))
 		snippet := string(respBody)
 		if len(snippet) > 512 {
 			snippet = snippet[:512] + "…"
@@ -407,7 +451,7 @@ func handleResponsesEvent(ev sseEvent, emit StreamEmit, final **responsesRespons
 	}
 }
 
-// runToolLoop runs the /v1/responses call→execute→continue loop: POST {input,
+// RunToolLoop runs the /v1/responses call→execute→continue loop: POST {input,
 // tools, instructions}; for each function_call, dispatch it and feed back a
 // function_call_output; stop when the model emits no function_call (terminal
 // text) or the iteration cap is hit. Each turn streams live via streamResponses
@@ -416,10 +460,10 @@ func handleResponsesEvent(ev sseEvent, emit StreamEmit, final **responsesRespons
 // (nil-safe; the kickoff path passes nil and only the assembled text is used).
 //
 // Re-dispatch guard: the loop only continues while the model keeps emitting
-// function_calls and is hard-capped at maxToolLoopIterations, so a mid-turn
+// function_calls and is hard-capped at MaxToolLoopIterations, so a mid-turn
 // failure cannot cause unbounded re-dispatch. The terminal-text turn (no calls)
 // always stops the loop.
-// runToolLoop drives one user turn to completion: request, dispatch any
+// RunToolLoop drives one user turn to completion: request, dispatch any
 // function calls the model asks for, feed the outputs back, repeat.
 //
 // 🔴 model IS A PARAMETER RATHER THAN A CONSTANT, AND THE CALLER MUST SUPPLY
@@ -430,7 +474,7 @@ func handleResponsesEvent(ev sseEvent, emit StreamEmit, final **responsesRespons
 // requires the `model` field to be present and to carry the value IT expects;
 // there is no neutral spelling this package can invent. See the carve note at
 // the foot of this file.
-func runToolLoop(
+func RunToolLoop(
 	ctx context.Context,
 	client *http.Client,
 	url, token, sessionKey, model, instructions, userMessage string,
@@ -440,7 +484,7 @@ func runToolLoop(
 ) (string, error) {
 	input := []inputItem{{Type: "message", Role: "user", Content: userMessage}}
 
-	for i := 0; i < maxToolLoopIterations; i++ {
+	for i := 0; i < MaxToolLoopIterations; i++ {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
@@ -484,7 +528,7 @@ func runToolLoop(
 			})
 		}
 	}
-	return "", fmt.Errorf("tool loop exceeded %d iterations", maxToolLoopIterations)
+	return "", fmt.Errorf("tool loop exceeded %d iterations", MaxToolLoopIterations)
 }
 
 // toolOutputIsError best-effort detects whether a dispatch output represents an
@@ -506,24 +550,30 @@ func toolOutputIsError(out string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// 🔴 NOTHING IN THIS REPOSITORY CALLS runToolLoop YET, AND THIS IS THE RECORD
-// OF IT.
+// ✅ THE OWED RECORD THAT STOOD HERE IS PAID, AND IT IS KEPT RATHER THAN DELETED
+// BECAUSE THE TWO INPUTS IT NAMED ARE STILL THE TWO THINGS THIS PACKAGE CANNOT
+// SUPPLY.
 //
-// Upstream its two callers were methods on the provisioning type, which also
-// owned the HTTP client and computed the agent's address from a hardcoded
-// cluster DNS format string. Neither came across: the address is now
-// provision.Endpoint (see ResponsesURL), and the chat surface itself belongs to
-// a later carve.
+// It read: "NOTHING IN THIS REPOSITORY CALLS RunToolLoop YET" — true while the
+// loop was exported transport with no consumer. Upstream its two callers were
+// methods on the provisioning type, which also owned the HTTP client and
+// computed the agent's address from a hardcoded cluster DNS format string.
+// Neither came across: the address is now provision.Endpoint (see ResponsesURL),
+// and the chat surface itself was a later carve.
 //
-// ⚠ OWED, AND NAMED SO IT IS NOT AN OBJECT NOBODY CAN CLOSE. TWO things this
-// package cannot supply and a caller must:
+// THE CALLER IS internal/agentgateway. It supplies both inputs the record named:
 //
-//  1. the `model` argument — the attached runtime's passthrough sentinel. It is
-//     a REQUIRED field on the wire and the value is the runtime's, not ours.
-//  2. the endpoint — from provision.Provisioner.Endpoint, via ResponsesURL.
+//  1. the `model` argument — from the runtime descriptor it is configured with,
+//     because the sentinel is the attached runtime's and not this project's.
+//  2. the endpoint — resolved per-turn through provision.Provisioner.Endpoint
+//     and turned into a URL by ResponsesURL.
 //
-// CLOSING CONDITION: the pull request that adds muster's agent chat path wires
-// both, and verifies one real turn against a live runtime — not against the
-// test server in responses_test.go, which answers whatever it is asked. WHO
-// CHECKS IT: the reviewer of that pull request, against this comment.
+// ⚠ AND ITS CLOSING CONDITION WAS STRICTER THAN "A TEST PASSES", WHICH IS WHY IT
+// IS RESTATED HERE: one real turn against a LIVE runtime, not against the test
+// server in responses_test.go, which answers whatever it is asked. That control
+// lives in internal/agentgateway/liveruntime_test.go behind `-tags liveenv`
+// (`make test-liveenv`), because a test that reads a real cluster cannot be in
+// `make test` — as a t.Skip it would no-op silently and the run would still look
+// green. The httptest-server tests in this package and in agentgateway remain
+// necessary and remain insufficient on their own.
 // ---------------------------------------------------------------------------

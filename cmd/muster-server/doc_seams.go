@@ -18,8 +18,9 @@ package main
 // on convenience.
 //
 // ---------------------------------------------------------------------------
-// 1. 🔴 api.Provisioner IS NIL *UNLESS* MUSTER_AGENT_PROVISIONER NAMES A DRIVER.
-//    THE LIFECYCLE HALF OF THIS SEAM IS CLOSED; THE CHAT HALF IS NOT.
+// 1. 🔴 api.Provisioner IS NIL *UNLESS* MUSTER_AGENT_PROVISIONER NAMES A DRIVER,
+//    AND api.Gateway IS NIL UNLESS MUSTER_AGENT_GATEWAY NAMES A RUNTIME. BOTH
+//    HALVES OF THIS SEAM NOW HAVE AN IMPLEMENTATION; NEITHER IS ON BY DEFAULT.
 //
 //	WHAT CHANGED, AND WHAT ITS MECHANICAL SIGNAL WAS: internal/agentprovision
 //	  adapts provision.Provisioner to api.Provisioner's seven LIFECYCLE methods,
@@ -29,26 +30,69 @@ package main
 //	  internal/modulegate/linkage_test.go — it has, together with
 //	  internal/agentspec, and that ledger is ASSERTED so neither could be removed
 //	  from it without something really linking.
-//	🔴 WHAT IS STILL NIL, AND IT IS NOT A DETAIL: api.Gateway. Nothing in this
-//	  module implements a model gateway, so the two CHAT routes still answer 503
-//	  through api.requireGatewayProvisioner. The consequence has a name and a
-//	  place: a dispatch with kickoff=true CREATES the instance and cannot deliver
-//	  the first message, so the note stays in agents.pending_note and the
-//	  non-delivery is written to agents.kickoff_error
+//	✅ THE CHAT HALF NOW HAS AN IMPLEMENTATION, AND THE PARAGRAPH HERE THAT SAID
+//	  OTHERWISE IS REPLACED RATHER THAN LEFT TO READ AS OPEN. It said: "WHAT IS
+//	  STILL NIL, AND IT IS NOT A DETAIL: api.Gateway. Nothing in this module
+//	  implements a model gateway". internal/agentgateway does, over the SAME driver
+//	  the lifecycle adapter holds, behind MUSTER_AGENT_GATEWAY (none | hooks-sha256)
+//	  plus MUSTER_AGENT_GATEWAY_MODEL. Naming a runtime with no driver is refused at
+//	  boot, because this binary's only source of an instance's address is a driver.
+//	🔴 WHAT THAT DOES *NOT* CLOSE, AND IT IS THE HALF THAT MATTERS FOR A KICKOFF:
+//	  NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH. The two CHAT ROUTES stop
+//	  REFUSING — which is not the same as reachable, see below; the kickoff is not a
+//	  route at all. A dispatch with kickoff=true still CREATES the
+//	  instance and does not deliver the first message — the note stays in
+//	  agents.pending_note and the non-delivery is written to agents.kickoff_error
 //	  (agentprovision.UndeliveredKickoffReason). An agent dispatched on such a
-//	  deployment is a real pod that was never told what to do.
+//	  deployment is still a real pod that was never told what to do.
+//	🔴 AND "A HUMAN CAN NOW OPEN ITS CHAT AND TALK TO IT" WAS FALSE FOR AN AGENT
+//	  *THIS BINARY* PROVISIONED — that sentence stood here and an audit measured it.
+//	  TWO things block it, and both are OUTSIDE internal/agentgateway:
+//
+//	  (1) NO ADDRESS. agentspec.Build renders provision.Spec with Ports nil and
+//	      Endpoint nil (its committed golden says so), so k8s render creates NO
+//	      Service and driver.Endpoint answers provision.ErrNoEndpoint. Every chat
+//	      turn against such an agent fails per-turn — worse than the 503 it replaced,
+//	      which at least named its own cause.
+//	      CLOSING CONDITION: agentspec.Build declares a port (and the driver renders
+//	      a Service), verified by a test that resolves an endpoint through a REAL
+//	      driver — a fake clientset is enough — rather than through a stub resolver.
+//	      Every test in this module today uses a stub, which is exactly why this
+//	      shipped: both sides were tested and the SEAM was not.
+//	  (2) NO CREDENTIAL UNDER THE NAME THE IMAGE READS. The gateway bearer is
+//	      sha256("gw-" + HOOKS_TOKEN) — the agent CONTAINER's variable — while
+//	      agentspec ships the row's token as MUSTER_HOOK_TOKEN (agentspec.EnvToken)
+//	      and nothing bridges the two. Measured against a live runtime provisioned by
+//	      the upstream service, which ships HOOKS_TOKEN: that derivation is accepted
+//	      (200, and a deliberately wrong bearer is refused 401). So an agent THIS
+//	      binary provisions would 401 on every turn — 🔴 ONCE (1) IS FIXED, AND NOT
+//	      BEFORE. The two blockers are ORDERED: Gateway.reach resolves the endpoint
+//	      before it builds a request, so while (1) holds the observable is
+//	      ErrNoEndpoint and NO 401 is reachable. An earlier revision of this line
+//	      predicted the 401 unconditionally, which sends a debugger hunting a
+//	      credential when the first failure is address resolution.
+//	      CLOSING CONDITION: the provisioned container receives the token under the
+//	      name its gateway derives from, proven by one real turn against an instance
+//	      THIS binary created — not one created by the upstream service.
+//	  WHO CHECKS BOTH: whoever runs plan step 22d, which is the step that provisions
+//	      a real agent end to end. Neither is a defect in the chat transport, and
+//	      neither was introduced by the change that wired it.
 //	  🔴 AND NOTHING ESCALATES THAT YET. agents.DecideReconcile already has the
 //	  decision table (ActionRetryKickoff, then ActionError past
 //	  ProvisioningStuckTimeout) and its own header records that NO loop drives it,
-//	  so the undelivered kickoff does not become a red card on its own. Until the
-//	  gateway or that loop lands, the kickoff-error field is the only place that
-//	  says so.
-//	CLOSING CONDITION FOR THE REMAINDER: a pull request wiring api.Gateway —
-//	  internal/agents/responses.go's runToolLoop already exists and its own OWED
-//	  record names the two inputs it needs — plus either a kickoff delivery on the
-//	  lifecycle path or the reconcile loop that escalates a missing one.
-//	WHO CHECKS IT: the reviewer of that pull request, against the boot banner's
-//	  CHAT line and against agents.reconcile.go's header.
+//	  so the undelivered kickoff does not become a red card on its own. Until a
+//	  kickoff delivery or that loop lands, the kickoff-error field is the only place
+//	  that says so.
+//	CLOSING CONDITION FOR THE REMAINDER: a pull request in which a dispatch with
+//	  kickoff=true delivers its note through api.Extensions.Gateway — or the
+//	  reconcile loop that escalates a missing one. ⚠ THE CALL SITE IS ONE OF THREE
+//	  BLOCKERS, NOT THE ONLY ONE — an earlier revision of this line said "the
+//	  transport and the wiring are no longer the blocker; the CALL SITE is", which
+//	  named one and hid the two above it. A kickoff delivered through a gateway that
+//	  can resolve no address, over a credential the container never received, is not
+//	  a delivered kickoff.
+//	WHO CHECKS IT: the reviewer of that pull request, against agents.reconcile.go's
+//	  header and against a dispatched agent's kickoff_error being empty.
 //
 //	The original entry follows, kept rather than rewritten because its argument is
 //	what the wrappers, the banner and the readiness defect are all still built on.

@@ -561,10 +561,10 @@ func TestDispatchCreatesTheInstanceAndMintsTheAgentsOwnToken(t *testing.T) {
 	// The created instance is keyed on the agent's slug, which is what
 	// api.Server.instanceIndex looks it up by.
 	//
-	// ⚠ THIS ASSERTION PINS agentspec.Build'S REF, NOT refOf — AND AN EARLIER
+	// ⚠ THIS ASSERTION PINS agentspec.Build'S REF, NOT agents.RefOf — AND AN EARLIER
 	// DRAFT OF THIS COMMENT CLAIMED OTHERWISE. Measured by mutation: changing
-	// refOf to key on the namespace leaves this test GREEN, because Create's ref
-	// comes from the spec the builder produced and refOf is used only by
+	// agents.RefOf to key on the namespace leaves this test GREEN, because Create's ref
+	// comes from the spec the builder produced and agents.RefOf is used only by
 	// Scale/Destroy/TailLogs/StreamLogs. The claim it used to make is checked by
 	// TestTheDriverReferenceIsTheAgentsNameNotItsNamespace instead.
 	if insts[0].Ref.Name != fixtureAgentName {
@@ -815,8 +815,8 @@ func TestDestroyKeepsTheRowWhenNothingWasRemoved(t *testing.T) {
 	}
 }
 
-// TestTheDriverReferenceIsTheAgentsNameNotItsNamespace pins refOf, the one place
-// an agent row becomes a driver reference.
+// TestTheDriverReferenceIsTheAgentsNameNotItsNamespace pins agents.RefOf, the one
+// place an agent row becomes a driver reference.
 //
 // 🔴 A NAMESPACE-KEYED REFERENCE DOES NOT FAIL — IT RESOLVES TO NOTHING. Every
 // verb below would then operate on an instance that does not exist, and
@@ -826,12 +826,18 @@ func TestDestroyKeepsTheRowWhenNothingWasRemoved(t *testing.T) {
 // renders stopped while every pod runs perfectly.
 //
 // ⚠ IT EXISTS BECAUSE A MUTANT SURVIVED THE TEST THAT CLAIMED TO COVER THIS.
-// refOf is NOT on Create's path — Create's reference comes out of
+// RefOf is NOT on Create's path — Create's reference comes out of
 // agentspec.Build — so the dispatch test's Ref.Name assertion is blind to it.
-// These four verbs are refOf's only consumers, enumerated from its call sites
-// rather than from memory, and the fixture's namespace differs from its name by
-// construction (agents.NamespacePrefix is non-empty), which is what makes the
-// distinction observable at all.
+// The four verbs below are this package's consumers of it, enumerated from its
+// call sites rather than from memory, and the fixture's namespace differs from its
+// name by construction (agents.NamespacePrefix is non-empty), which is what makes
+// the distinction observable at all.
+//
+// ⚠ THE FUNCTION MOVED TO internal/agents AND THE FOUR VERBS ARE NO LONGER ALL OF
+// ITS CONSUMERS. internal/agentgateway resolves a chat endpoint through the same
+// mapping, and this test says nothing about that path — the gateway's own
+// endpoint-resolution test does. What this test still owns is that THESE verbs
+// use it: a namespace-keyed reference here breaks lifecycle whatever chat does.
 func TestTheDriverReferenceIsTheAgentsNameNotItsNamespace(t *testing.T) {
 	ag := fixtureAgent()
 	if ag.Namespace == ag.Name {
@@ -841,8 +847,8 @@ func TestTheDriverReferenceIsTheAgentsNameNotItsNamespace(t *testing.T) {
 	}
 
 	// The reference itself, directly.
-	if got := refOf(ag); got.Name != ag.Name {
-		t.Errorf("refOf(%q).Name = %q, want the agent's slug %q (NOT its namespace %q)",
+	if got := agents.RefOf(ag); got.Name != ag.Name {
+		t.Errorf("agents.RefOf(%q).Name = %q, want the agent's slug %q (NOT its namespace %q)",
 			ag.Name, got.Name, ag.Name, ag.Namespace)
 	}
 
