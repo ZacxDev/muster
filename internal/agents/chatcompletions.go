@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -89,12 +90,34 @@ func ChatStream(ctx context.Context, client *http.Client, url, token, sessionKey
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("chat completions HTTP %d", resp.StatusCode)
+		// 🔴 THE BODY IS CARRIED, AND AN EARLIER REVISION DROPPED IT WHILE THREE OTHER
+		// PLACES ARGUED FROM IT. config.validateProvisioner's sentinel refusal, and the
+		// tests that pin it, all justify a BOOT-time refusal by saying the alternative
+		// is "an HTTP 400 with a message about the model field" from inside a turn —
+		// and on this path the error read `chat completions HTTP 400`, with the message
+		// discarded. The machine route POST /api/agents/{name}/messages goes through
+		// here rather than through the tool loop, so this was the path that argument
+		// was written about. responses.go's own status branch has carried a snippet all
+		// along; the asymmetry was the defect.
+		respBody, _ := io.ReadAll(resp.Body)
+		snippet := strings.TrimSpace(string(respBody))
+		if len(snippet) > 512 {
+			snippet = snippet[:512] + "…"
+		}
+		if snippet == "" {
+			return "", fmt.Errorf("chat completions HTTP %d (empty body)", resp.StatusCode)
+		}
+		return "", fmt.Errorf("chat completions HTTP %d: %s", resp.StatusCode, snippet)
 	}
 
 	var full strings.Builder
 	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// The cap matches responses.go's deliberately: an SSE "line" here is one delta and
+	// is normally tiny, but a runtime is free to emit a large one, and a line over the
+	// cap is a SCANNER ERROR rather than a skipped line — it ends the stream and is
+	// returned below, after deltas have already reached emit. A cap smaller than the
+	// other transport's was a difference nothing justified.
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if !strings.HasPrefix(line, "data:") {
@@ -124,5 +147,9 @@ func ChatStream(ctx context.Context, client *http.Client, url, token, sessionKey
 			}
 		}
 	}
+	// ⚠ BOTH VALUES ARE RETURNED ON PURPOSE, AND A CALLER MUST NOT ASSUME THE TEXT IS
+	// EMPTY WHEN THE ERROR IS NON-NIL. Deltas already handed to emit cannot be taken
+	// back — a client has rendered them — so a mid-stream scanner failure yields the
+	// text that did arrive ALONGSIDE the error, and the caller decides which to honour.
 	return full.String(), sc.Err()
 }

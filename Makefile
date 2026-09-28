@@ -141,12 +141,15 @@ test-liveenv: ## run the live-environment controls (needs a real coding-agent se
 	@# internal/agents/responses.go wrote for itself: the httptest suite proves what
 	@# goes on the wire, and only these prove a runtime accepts it.
 	@#
-	@# 🔴 THE TOOL CELL IS KNOWN RED AND IS DELIBERATELY NOT HIDDEN. It needs a runtime
-	@# that BOTH speaks the tool shape agents.ToolDef sends AND has a working model
-	@# credential, and no single pod had both when this landed — that file's header
-	@# records the measurement per image. Its failure message carries the diagnosis, so
-	@# a red run here is a reading about the environment; splitting it into a target
-	@# nobody invokes is how it would stop being one.
+	@# 🔴 THE TOOL CELL IS OPT-IN VIA MUSTER_LIVE_AGENT_EXPECT_TOOLS, AND THAT IS A FIX
+	@# FOR A GATE THIS TARGET BRIEFLY BECAME. It shipped unconditionally red — the tool
+	@# cell cannot pass without a runtime that BOTH speaks the shape agents.ToolDef
+	@# sends AND has a working model credential, and no single pod had both — with a
+	@# comment here pre-excusing the red. A comment excusing a red gate IS the
+	@# click-through training claude/RULES.md names, not a defence against it; and it
+	@# also made the cmd/muster cell's verdict unreadable, which previously could pass.
+	@# So: declare the expectation and the cell runs and must pass. Declare nothing and
+	@# it reports what it measured and does not fail the target.
 	go test -tags liveenv -count=1 -run 'RealTurnAgainstALiveRuntime|RealTOOLTurnAgainstALiveRuntime' -v ./internal/agentgateway/
 
 test-db-down:

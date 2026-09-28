@@ -121,7 +121,7 @@ func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agent
 	if err != nil {
 		return nil, nil, err
 	}
-	gw, err := buildGateway(cfg, driver, logger)
+	gw, err := buildGateway(cfg, driver)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -138,7 +138,7 @@ func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agent
 // kubernetes driver can run any image, and the noop driver can record a spec for
 // one. A deployment that names a driver is saying where instances live; naming a
 // runtime is saying what protocol the thing inside speaks.
-func buildGateway(cfg config, driver provision.Provisioner, logger *log.Logger) (*agentgateway.Gateway, error) {
+func buildGateway(cfg config, driver provision.Provisioner) (*agentgateway.Gateway, error) {
 	switch cfg.agentGateway() {
 	case gatewayNone:
 		return nil, nil
@@ -147,7 +147,6 @@ func buildGateway(cfg config, driver provision.Provisioner, logger *log.Logger) 
 			Driver:  driver,
 			Runtime: agentgateway.HooksSHA256(),
 			Model:   cfg.AgentGatewayModel,
-			Logger:  logger,
 		})
 	default:
 		// Unreachable: config.validateProvisioner refuses anything else at boot. A

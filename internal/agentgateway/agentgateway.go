@@ -27,8 +27,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
 	"time"
 
@@ -36,13 +34,23 @@ import (
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
-// DefaultTurnTimeout bounds one chat turn, including every tool round inside a
-// tool-enabled one.
+// DefaultTurnTimeout bounds ONE REQUEST to the agent runtime — it is the default
+// http.Client.Timeout, nothing more.
 //
-// ⚠ IT IS GENEROUS ON PURPOSE AND IS NOT A LATENCY TARGET. A tool-enabled turn is
-// up to eight model round trips with in-process dispatch between them, and a
-// coding agent's first turn reads files. The number that matters is the one that
-// stops a wedged turn holding a request goroutine for ever, and this is that.
+// 🔴 IT DOES *NOT* BOUND A TURN, AND THIS COMMENT SAID IT DID. The retracted
+// sentence read "bounds one chat turn, including every tool round inside a
+// tool-enabled one … stops a wedged turn holding a request goroutine for ever, and
+// this is that". Measured false by audit: a tool-enabled turn issues up to
+// agents.MaxToolLoopIterations requests, EACH getting its own budget, and the loop
+// only checks ctx between them — so the reachable ceiling is that many multiples of
+// this value, plus whatever an in-process tool dispatch blocks for, which is not
+// under an HTTP timeout at all.
+//
+// ⚠ SO THE THING THAT ACTUALLY BOUNDS A TURN IS THE CALLER'S CONTEXT, and this
+// package deliberately does not invent one: a request-scoped ctx already carries the
+// caller's own deadline, and replacing it here would silently shorten a turn the
+// caller was willing to wait for. If a turn-level ceiling is wanted it belongs at the
+// call site, where the deadline has an owner.
 const DefaultTurnTimeout = 10 * time.Minute
 
 // EndpointResolver is the one thing this package needs from a provisioner: where
@@ -82,9 +90,16 @@ type Config struct {
 	// Client is the HTTP client for gateway calls. Optional; a client with
 	// [DefaultTurnTimeout] is built when nil.
 	Client *http.Client
-	// Logger is optional.
-	Logger *log.Logger
 }
+
+// ⚠ THERE IS DELIBERATELY NO Logger FIELD, AND THERE WAS ONE. It was accepted,
+// defaulted to io.Discard and never read — a documented knob that did nothing, which
+// is the exact pattern cmd/muster-server/config.go's const block exists to answer,
+// shipped in the change that cited it. It is DELETED rather than wired to a log line,
+// because every failure on this path is RETURNED: the caller renders it to the user
+// and the HTTP layer records it. A log line would duplicate what the error already
+// carries. If a future diagnostic genuinely has no caller to return to, add the field
+// back WITH its first reader in the same change.
 
 // Gateway implements the consumer-side chat interface over a driver and a runtime.
 //
@@ -99,7 +114,6 @@ type Gateway struct {
 	runtime Runtime
 	model   string
 	client  *http.Client
-	log     *log.Logger
 }
 
 // New validates the configuration and builds the gateway.
@@ -124,13 +138,9 @@ func New(cfg Config) (*Gateway, error) {
 		runtime: cfg.Runtime,
 		model:   cfg.Model,
 		client:  cfg.Client,
-		log:     cfg.Logger,
 	}
 	if g.client == nil {
 		g.client = &http.Client{Timeout: DefaultTurnTimeout}
-	}
-	if g.log == nil {
-		g.log = log.New(io.Discard, "", 0)
 	}
 	return g, nil
 }

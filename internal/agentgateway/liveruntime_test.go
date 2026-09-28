@@ -19,10 +19,17 @@
 //
 // RUN IT:
 //
-//	kubectl -n <agent-ns> port-forward svc/<agent>-devpod 18789:18789 &
-//	export MUSTER_LIVE_AGENT_ADDR=127.0.0.1:18789
+//	# 🔴 check what already holds the port and forward to one you proved FREE — a
+//	# local listener silently shadows a port-forward and every reading then
+//	# describes the wrong server.
+//	ss -lptnH 'sport = :28789'
+//	kubectl -n <agent-ns> port-forward --address 127.0.0.1 svc/<agent>-devpod 28789:18789 &
+//	export MUSTER_LIVE_AGENT_ADDR=127.0.0.1:28789
 //	export MUSTER_LIVE_AGENT_HOOKS_TOKEN=$(kubectl -n <agent-ns> get secret \
-//	  <agent>-devpod-secrets -o jsonpath='{.data.HOOKS_TOKEN}' | base64 -d)
+//	  devpod-secrets -o jsonpath='{.data.HOOKS_TOKEN}' | base64 -d)
+//	export MUSTER_LIVE_AGENT_MODEL=<the sentinel that runtime's gateway requires>
+//	# only if that runtime supports the tool path — see the tool cell:
+//	export MUSTER_LIVE_AGENT_EXPECT_TOOLS=1
 //	make test-liveenv
 //
 // ⚠ IT SPENDS A MODEL TURN ON A REAL AGENT. The session key below is a fixed
@@ -48,11 +55,21 @@
 //	                                        credential in a deployment, the other is
 //	                                        the version split ToolDef's OWED note
 //	                                        names — and both are outside this module.
+//	                                        It therefore SKIPS unless
+//	                                        MUSTER_LIVE_AGENT_EXPECT_TOOLS declares a
+//	                                        runtime that has both; see its own doc for
+//	                                        why that is not a hidden failure.
 //
 // So the tool half of the OWED record's closing condition is OPEN. CLOSING
 // CONDITION: this test passing — a dispatch count above zero — against one runtime,
 // which needs an image whose shape matches AND a working provider credential in the
 // same pod. WHO CHECKS IT: whoever next has both, by running this target.
+//
+// 🔴 AND NEITHER CELL REACHES AN AGENT *THIS BINARY* PROVISIONED — both take the
+// address from the environment through a stub resolver, so they say nothing about
+// whether the driver can resolve one. It cannot: see doc_seams.go entry 1. A live
+// control that supplies the address by hand is evidence about the TRANSPORT only,
+// and reading it as end-to-end is the mistake this paragraph exists to prevent.
 
 package agentgateway
 
@@ -73,6 +90,9 @@ const (
 	envLiveAddr  = "MUSTER_LIVE_AGENT_ADDR"
 	envLiveToken = "MUSTER_LIVE_AGENT_HOOKS_TOKEN"
 	envLiveModel = "MUSTER_LIVE_AGENT_MODEL"
+	// envLiveExpectTools is the operator's DECLARATION that the runtime being pointed
+	// at supports the tool path. See TestOneRealTOOLTurnAgainstALiveRuntime.
+	envLiveExpectTools = "MUSTER_LIVE_AGENT_EXPECT_TOOLS"
 )
 
 // liveSentinel is the passthrough sentinel the runtime under test requires. It
@@ -82,10 +102,14 @@ func liveSentinel(t *testing.T) string {
 	t.Helper()
 	v := strings.TrimSpace(os.Getenv(envLiveModel))
 	if v == "" {
-		t.Fatalf("%s must be set to the sentinel the runtime's gateway requires in the wire's "+
-			"model field — the same value the deployment sets in %s. Without it every turn is a "+
-			"400 and this control would report a defect that is really a missing variable.",
-			envLiveModel, "MUSTER_AGENT_GATEWAY_MODEL")
+		// A Fatalf, not a Skip, and the asymmetry with liveAgent is deliberate: by the
+		// time this is called an address and a credential WERE supplied, so a runtime
+		// was declared and the environment is half-built. Skipping there would hide a
+		// misconfiguration behind the same line as "nothing to talk to".
+		t.Fatalf("%s and %s are set but %s is not: the sentinel the runtime's gateway requires "+
+			"in the wire's model field is the same value the deployment sets in %s. Without it "+
+			"every turn is a 400 and this control would report a defect that is really a missing "+
+			"variable.", envLiveAddr, envLiveToken, envLiveModel, "MUSTER_AGENT_GATEWAY_MODEL")
 	}
 	return v
 }
@@ -98,10 +122,22 @@ func liveAgent(t *testing.T) (provision.Endpoint, agents.Agent) {
 	t.Helper()
 	addr := strings.TrimSpace(os.Getenv(envLiveAddr))
 	token := strings.TrimSpace(os.Getenv(envLiveToken))
+	// 🔴 ABSENT ENVIRONMENT IS A SKIP; A SUPPLIED-BUT-BROKEN ONE IS A FAILURE. These
+	// two are not the same state and an earlier revision failed on both, which made
+	// `make test-liveenv` unconditionally red for anyone without a port-forward — and
+	// a permanently-red target trains everyone to click through it, burying the
+	// verdict of every OTHER cell in the same target (the cmd/muster one really can
+	// pass). Declaring a runtime is what turns this into a gate.
+	//
+	// ⚠ THIS IS NOT THE SKIP THE HEADER ARGUES AGAINST. That argument is about a skip
+	// hiding inside `make test`, invisible in a green run — the BUILD TAG is what
+	// prevents that, and it still does: none of this compiles without `-tags liveenv`.
+	// A skip here is visible in the one target that exists to run it, and it prints
+	// what it wanted.
 	if addr == "" || token == "" {
-		t.Fatalf("%s and %s must both be set: this test is the live-runtime control and there is "+
-			"nothing to talk to. See this file's header for the port-forward recipe.",
-			envLiveAddr, envLiveToken)
+		t.Skipf("%s and %s are not both set, so there is no runtime to talk to and this cell is "+
+			"a no-op rather than a gate. See this file's header for the port-forward recipe; set "+
+			"them and this must pass.", envLiveAddr, envLiveToken)
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -180,6 +216,22 @@ func TestOneRealTurnAgainstALiveRuntime(t *testing.T) {
 // ErrResponsesUnsupported is a real, reportable answer about that image rather than a
 // test failure.
 func TestOneRealTOOLTurnAgainstALiveRuntime(t *testing.T) {
+	// 🔴 THE EXPECTATION IS DECLARED, NOT ASSUMED, AND THAT IS WHAT KEEPS THIS TARGET
+	// FROM BEING A PERMANENTLY-RED GATE. Without a runtime that both speaks this tool
+	// shape and holds a working model credential, this cell cannot pass — and a target
+	// that is always red trains everyone to click through it, which also buries the
+	// verdict of every OTHER cell in the same target. So an operator who HAS such a
+	// runtime says so, and then a failure is a real finding; an operator who does not
+	// gets the measurement without a false red. 🔴 IT IS A SKIP WITH ITS REASON
+	// PRINTED, NOT A SILENT ONE: `go test` exits 0 on a skip, so an unexplained one is
+	// invisible in a green run — the property this file's own header is about.
+	if os.Getenv(envLiveExpectTools) == "" {
+		t.Skipf("%s is unset, so this cell is a MEASUREMENT rather than a gate: the tool shape "+
+			"agents.ToolDef sends is accepted by one agent image tag and rejected with HTTP 400 by "+
+			"another (see ToolDef's own matrix), and the image that accepts it needs a working "+
+			"model credential to complete a turn. Set %s=1 when the runtime you are pointing at "+
+			"has BOTH, and this becomes a gate that must pass.", envLiveExpectTools, envLiveExpectTools)
+	}
 	ep, ag := liveAgent(t)
 	gw, err := New(Config{Driver: &fixedResolver{ep: ep}, Runtime: HooksSHA256(), Model: liveSentinel(t)})
 	if err != nil {

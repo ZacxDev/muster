@@ -43,8 +43,34 @@ package main
 //	  instance and does not deliver the first message — the note stays in
 //	  agents.pending_note and the non-delivery is written to agents.kickoff_error
 //	  (agentprovision.UndeliveredKickoffReason). An agent dispatched on such a
-//	  deployment is still a real pod that was never told what to do; what changed is
-//	  that a human can now open its chat and talk to it.
+//	  deployment is still a real pod that was never told what to do.
+//	🔴 AND "A HUMAN CAN NOW OPEN ITS CHAT AND TALK TO IT" WAS FALSE FOR AN AGENT
+//	  *THIS BINARY* PROVISIONED — that sentence stood here and an audit measured it.
+//	  TWO things block it, and both are OUTSIDE internal/agentgateway:
+//
+//	  (1) NO ADDRESS. agentspec.Build renders provision.Spec with Ports nil and
+//	      Endpoint nil (its committed golden says so), so k8s render creates NO
+//	      Service and driver.Endpoint answers provision.ErrNoEndpoint. Every chat
+//	      turn against such an agent fails per-turn — worse than the 503 it replaced,
+//	      which at least named its own cause.
+//	      CLOSING CONDITION: agentspec.Build declares a port (and the driver renders
+//	      a Service), verified by a test that resolves an endpoint through a REAL
+//	      driver — a fake clientset is enough — rather than through a stub resolver.
+//	      Every test in this module today uses a stub, which is exactly why this
+//	      shipped: both sides were tested and the SEAM was not.
+//	  (2) NO CREDENTIAL UNDER THE NAME THE IMAGE READS. The gateway bearer is
+//	      sha256("gw-" + HOOKS_TOKEN) — the agent CONTAINER's variable — while
+//	      agentspec ships the row's token as MUSTER_HOOK_TOKEN (agentspec.EnvToken)
+//	      and nothing bridges the two. Measured against a live runtime provisioned by
+//	      the upstream service, which ships HOOKS_TOKEN: that derivation is accepted
+//	      (200, and a deliberately wrong bearer is refused 401). So an agent THIS
+//	      binary provisions would 401 on every turn.
+//	      CLOSING CONDITION: the provisioned container receives the token under the
+//	      name its gateway derives from, proven by one real turn against an instance
+//	      THIS binary created — not one created by the upstream service.
+//	  WHO CHECKS BOTH: whoever runs plan step 22d, which is the step that provisions
+//	      a real agent end to end. Neither is a defect in the chat transport, and
+//	      neither was introduced by the change that wired it.
 //	  🔴 AND NOTHING ESCALATES THAT YET. agents.DecideReconcile already has the
 //	  decision table (ActionRetryKickoff, then ActionError past
 //	  ProvisioningStuckTimeout) and its own header records that NO loop drives it,
@@ -53,8 +79,12 @@ package main
 //	  that says so.
 //	CLOSING CONDITION FOR THE REMAINDER: a pull request in which a dispatch with
 //	  kickoff=true delivers its note through api.Extensions.Gateway — or the
-//	  reconcile loop that escalates a missing one. The transport and the wiring are
-//	  no longer the blocker; the CALL SITE is.
+//	  reconcile loop that escalates a missing one. ⚠ THE CALL SITE IS ONE OF THREE
+//	  BLOCKERS, NOT THE ONLY ONE — an earlier revision of this line said "the
+//	  transport and the wiring are no longer the blocker; the CALL SITE is", which
+//	  named one and hid the two above it. A kickoff delivered through a gateway that
+//	  can resolve no address, over a credential the container never received, is not
+//	  a delivered kickoff.
 //	WHO CHECKS IT: the reviewer of that pull request, against agents.reconcile.go's
 //	  header and against a dispatched agent's kickoff_error being empty.
 //

@@ -49,6 +49,7 @@ import (
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/privilege"
+	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/runbooks"
 	"github.com/ZacxDev/muster/internal/sse"
@@ -218,7 +219,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	prov, gw, err := buildAgentPlane(cfg, ext.Agents, logger)
 	if err != nil {
 		a.Close()
-		return nil, fmt.Errorf("agent provisioner: %w", err)
+		// "agent plane", not "agent provisioner": this call builds BOTH tiers, so a
+		// gateway construction failure once booted under a prefix naming the other
+		// subsystem — which sends the reader to the provisioner's configuration.
+		return nil, fmt.Errorf("agent plane: %w", err)
 	}
 	if prov != nil {
 		ext.Provisioner = prov
@@ -585,11 +589,35 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			// DECIDES THE BEARER DERIVATION AND THE MODEL SENTINEL. Those are wire
 			// contracts with the agent IMAGE, and both fail as a 401 or a 400 from
 			// inside a turn — the two failures an operator is most likely to read as a
-			// credential or model problem. The name is the one readback that says which
-			// formula this process is using.
-			l.Printf("agent provisioning CHAT: WIRED %s=%s (%s=%s) — the two chat routes are live "+
-				"through api.requireGatewayProvisioner, over the same driver as lifecycle",
-				envAgentGateway, a.cfg.agentGateway(), envAgentGatewayModel, a.cfg.AgentGatewayModel)
+			// credential or model problem.
+			//
+			// 🔴 AND THE NAME IS READ OFF THE CONSTRUCTED GATEWAY, NOT OFF THE CONFIG.
+			// An earlier revision printed a.cfg.agentGateway() while its own comment
+			// claimed the line said "which formula this process is using" — a readback
+			// of the REQUEST, not of the object, so a buildGateway that mapped a value
+			// to the wrong Runtime would print the value the operator set and be wrong.
+			// The type assertion is what makes this the object's own answer.
+			scheme := a.cfg.agentGateway()
+			if r, ok := ext.Gateway.(interface{ Runtime() string }); ok {
+				scheme = r.Runtime()
+			}
+			// 🔴 "WIRED" IS NOT "REACHABLE", AND SAYING ONLY THE FIRST IS THE FALSEHOOD
+			// THIS LINE SHIPPED IN REVIEW. The chat ROUTES stop refusing — that part is
+			// real. But a chat turn resolves the instance's address through the driver,
+			// and NOTHING BUILDS A SPEC THAT DECLARES ONE: agentspec.Build renders
+			// Ports and Endpoint nil, so the kubernetes driver creates no Service and
+			// Endpoint() answers provision.ErrNoEndpoint. A turn against an agent THIS
+			// BINARY provisioned therefore fails per-turn rather than refusing at the
+			// door — which is strictly worse than the 503 it replaced, because the 503
+			// named its own cause. Both blockers are in doc_seams.go entry 1.
+			l.Printf("agent provisioning CHAT: WIRED %s=%s (%s=%s) — the two chat routes no longer "+
+				"refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT REACHABLE: agentspec.Build "+
+				"declares no port and no endpoint, so this driver resolves no address for an agent "+
+				"this binary provisioned and every such turn fails with %v. Chat is usable only "+
+				"against an instance provisioned elsewhere, with an address this process can "+
+				"resolve. See cmd/muster-server/doc_seams.go entry 1",
+				envAgentGateway, scheme, envAgentGatewayModel, a.cfg.AgentGatewayModel,
+				provision.ErrNoEndpoint)
 		}
 		// 🔴 THIS IS doc_seams.go ENTRY 2'S ARGUMENT DYING ON SCHEDULE. A grant
 		// recorded and not applied was defensible only while no pod could exist to

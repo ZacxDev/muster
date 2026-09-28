@@ -438,3 +438,46 @@ func TestTheDerivedURLsArePinnedForEveryEndpointShape(t *testing.T) {
 		})
 	}
 }
+
+// TestAToollessTurnSurfacesTheRuntimesOwnRefusal pins that a non-200 carries the
+// runtime's message, not just its status code.
+//
+// 🔴 THREE OTHER PLACES ARGUE FROM THIS MESSAGE AND IT WAS BEING DISCARDED. The boot
+// refusal for a missing sentinel justifies itself by saying the alternative is "an
+// HTTP 400 with a message about the model field from inside a turn" — and on this
+// path the error read `chat completions HTTP 400`, message dropped. The machine route
+// POST /api/agents/{name}/messages goes through Chat rather than ChatWithTools, so
+// this is the path that argument was written about. The tool path carried a snippet
+// all along; the asymmetry was the defect.
+func TestAToollessTurnSurfacesTheRuntimesOwnRefusal(t *testing.T) {
+	const runtimeSaid = `{"error":{"message":"model: Invalid input: expected string"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, runtimeSaid)
+	}))
+	defer srv.Close()
+
+	gw, err := New(Config{
+		Driver:  &fixedResolver{ep: endpointOf(t, srv.URL)},
+		Runtime: HooksSHA256(),
+		Model:   testSentinel,
+		Client:  srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = gw.Chat(context.Background(), fixtureAgent(), "s", "hi", nil)
+	if err == nil {
+		t.Fatal("a 400 from the runtime produced no error")
+	}
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("the error does not carry the status.\n  got: %v", err)
+	}
+	// 🔴 THE MESSAGE IS THE ASSERTION. A status-only error sends the reader to guess
+	// which of the request's several required fields the runtime objected to.
+	if !strings.Contains(err.Error(), "model: Invalid input") {
+		t.Errorf("the error does not carry the runtime's OWN message, so the diagnosis three "+
+			"other places promise cannot be produced on this path.\n  got:  %v\n  want it to "+
+			"contain: %q", err, "model: Invalid input")
+	}
+}

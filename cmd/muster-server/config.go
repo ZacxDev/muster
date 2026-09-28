@@ -435,6 +435,24 @@ func (c config) validate() error {
 	return c.validateProvisioner()
 }
 
+// oneOf reports whether value is in choices.
+//
+// 🔴 IT IS ONE FUNCTION BECAUSE IT WAS TWO IDENTICAL LOOPS, AND THE SECOND ARRIVED
+// WITH THE CHAT TIER. claude/RULES.md's "one rule, one place" is about the
+// PREDICATE, not about any particular helper: a membership check open-coded per
+// knob is wrong at N−1 sites in the same direction the moment one of them grows a
+// case (a trim, a fold, an alias), and the disagreement is silent — an unrecognised
+// value reads as "this tier was never enabled". The change that added the second
+// copy also cited that rule while paying it elsewhere, which is how it was found.
+func oneOf(value string, choices []string) bool {
+	for _, choice := range choices {
+		if value == choice {
+			return true
+		}
+	}
+	return false
+}
+
 // validateProvisioner refuses an agent-provisioning configuration that could
 // only fail later.
 //
@@ -453,14 +471,7 @@ func (c config) validate() error {
 // that silently never provisions.
 func (c config) validateProvisioner() error {
 	named := c.agentProvisioner()
-	legal := false
-	for _, choice := range provisionerChoices {
-		if named == choice {
-			legal = true
-			break
-		}
-	}
-	if !legal {
+	if !oneOf(named, provisionerChoices) {
 		return fmt.Errorf("invalid %s %q: want one of %s", envAgentProvisioner,
 			c.AgentProvisioner, strings.Join(provisionerChoices, ", "))
 	}
@@ -478,29 +489,23 @@ func (c config) validateProvisioner() error {
 	// provisioned by something else entirely" — true, and it needs an endpoint
 	// source that is not a driver. There is none in this binary, so the refusal is
 	// about this implementation rather than about the design.
-	gwLegal := false
-	for _, choice := range gatewayChoices {
-		if c.agentGateway() == choice {
-			gwLegal = true
-			break
-		}
-	}
-	if !gwLegal {
+	gw := c.agentGateway()
+	if !oneOf(gw, gatewayChoices) {
 		return fmt.Errorf("invalid %s %q: want one of %s", envAgentGateway,
 			c.AgentGateway, strings.Join(gatewayChoices, ", "))
 	}
-	if c.agentGateway() != gatewayNone && c.AgentGatewayModel == "" {
+	if gw != gatewayNone && c.AgentGatewayModel == "" {
 		return fmt.Errorf("%s=%s but %s is not set: the runtime's passthrough sentinel is REQUIRED "+
 			"in the wire's model field and there is no defensible default — it is the attached "+
 			"image's own value, not this project's, and a wrong or missing one is an HTTP 400 from "+
 			"inside a chat turn rather than a boot failure",
-			envAgentGateway, c.agentGateway(), envAgentGatewayModel)
+			envAgentGateway, gw, envAgentGatewayModel)
 	}
-	if c.agentGateway() != gatewayNone && named == provisionerNone {
+	if gw != gatewayNone && named == provisionerNone {
 		return fmt.Errorf("%s=%s but %s=%s: agent chat resolves each instance's address through "+
 			"the provisioning driver, so there is nothing to talk to. Name a driver (%s), or unset "+
 			"%s and leave the two chat routes refusing at api.requireGatewayProvisioner",
-			envAgentGateway, c.agentGateway(), envAgentProvisioner, named,
+			envAgentGateway, gw, envAgentProvisioner, named,
 			strings.Join([]string{provisionerNoop, provisionerK8s}, "/"), envAgentGateway)
 	}
 

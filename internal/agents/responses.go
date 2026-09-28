@@ -45,8 +45,13 @@ var ErrResponsesUnsupported = errors.New("agent runtime does not support /v1/res
 // place to change if the attached runtime ever changes.
 const sessionKeyHeader = "X-Openclaw-Session-Key"
 
-// maxToolLoopIterations caps the call→execute→continue loop per user turn.
-const maxToolLoopIterations = 8
+// MaxToolLoopIterations caps the call→execute→continue loop per user turn.
+//
+// ⚠ IT IS EXPORTED SO A CALLER CAN REASON ABOUT THE CEILING IT IMPLIES: each
+// iteration is its own HTTP request with its own client timeout, so a turn-level
+// budget is this many multiples of that — see agentgateway.DefaultTurnTimeout,
+// whose doc asserted the opposite until an audit measured it.
+const MaxToolLoopIterations = 8
 
 // ToolDef is the flat Responses-API tool shape:
 //
@@ -446,7 +451,7 @@ func handleResponsesEvent(ev sseEvent, emit StreamEmit, final **responsesRespons
 // (nil-safe; the kickoff path passes nil and only the assembled text is used).
 //
 // Re-dispatch guard: the loop only continues while the model keeps emitting
-// function_calls and is hard-capped at maxToolLoopIterations, so a mid-turn
+// function_calls and is hard-capped at MaxToolLoopIterations, so a mid-turn
 // failure cannot cause unbounded re-dispatch. The terminal-text turn (no calls)
 // always stops the loop.
 // RunToolLoop drives one user turn to completion: request, dispatch any
@@ -470,7 +475,7 @@ func RunToolLoop(
 ) (string, error) {
 	input := []inputItem{{Type: "message", Role: "user", Content: userMessage}}
 
-	for i := 0; i < maxToolLoopIterations; i++ {
+	for i := 0; i < MaxToolLoopIterations; i++ {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
@@ -514,7 +519,7 @@ func RunToolLoop(
 			})
 		}
 	}
-	return "", fmt.Errorf("tool loop exceeded %d iterations", maxToolLoopIterations)
+	return "", fmt.Errorf("tool loop exceeded %d iterations", MaxToolLoopIterations)
 }
 
 // toolOutputIsError best-effort detects whether a dispatch output represents an

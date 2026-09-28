@@ -185,3 +185,72 @@ func TestAMissingSentinelIsRefusedAtBoot(t *testing.T) {
 			"sentinel: %v", err)
 	}
 }
+
+// TestTheChatWiredBannerDoesNotClaimReachability pins the correction an audit forced.
+//
+// 🔴 THE LINE SHIPPED SAYING "the two chat routes are live … over the same driver as
+// lifecycle", AND THAT WAS FALSE FOR EVERY AGENT THIS BINARY PROVISIONS. agentspec.Build
+// renders a spec with no port and no endpoint, so the driver resolves no address and a
+// chat turn fails PER TURN — strictly worse than the 503 it replaced, which named its own
+// cause. The routes really do stop refusing; that is the only part that was true.
+//
+// 🔴 IT PINS THE CLAIM, NOT A KEYWORD, because a keyword guard is walkable by rewording
+// and this defect WAS a wording. The assertions below are what a reader must still be
+// told; a cosmetic reword that keeps them is fine and one that drops them is the
+// regression. ⚠ And it asserts the NEGATIVE too — "live"/"usable" unqualified is exactly
+// what the retracted line said.
+func TestTheChatWiredBannerDoesNotClaimReachability(t *testing.T) {
+	onOut, _ := bannerBothDirections(t)
+	line := lineNaming(onOut, envAgentGateway)
+	if line == "" {
+		t.Fatalf("no banner line names %s at all.\nbanner:\n%s", envAgentGateway, onOut)
+	}
+	if !strings.Contains(line, "CHAT: WIRED") {
+		t.Fatalf("the line naming %s is not the CHAT one:\n  %s", envAgentGateway, line)
+	}
+
+	// What the reader must still be told.
+	for _, want := range []string{
+		"WIRED IS NOT REACHABLE", // the correction itself
+		"no longer refuse",       // what IS true
+		"agentspec.Build",        // where the missing declaration lives
+		"doc_seams.go entry 1",   // where both blockers are written down
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the CHAT: WIRED line no longer says %q.\n"+
+				"  That sentence is the correction an audit forced: the routes stop refusing, and a\n"+
+				"  turn against an agent THIS binary provisioned still resolves no address. Dropping\n"+
+				"  it restores a banner that states a falsehood.\n  line: %s", want, line)
+		}
+	}
+	// The retracted claim must not come back, in either of its two spellings.
+	for _, forbidden := range []string{"the two chat routes are live", "over the same driver as lifecycle"} {
+		if strings.Contains(line, forbidden) {
+			t.Errorf("the CHAT: WIRED line has regained the retracted claim %q.\n  line: %s",
+				forbidden, line)
+		}
+	}
+}
+
+// TestAnUnknownProvisionerNameIsStillRefused is the control for the oneOf consolidation.
+//
+// ⚠ IT IS HERE BECAUSE A REFACTOR MOVED A PREDICATE, NOT BECAUSE THE PROVISIONER CHANGED.
+// Folding two identical membership loops into oneOf touched the provisioner's legality
+// check, and nothing in this package asserted THAT branch — so the consolidation could
+// have broken it silently. Mutation-checked: making oneOf always return true kills this.
+func TestAnUnknownProvisionerNameIsStillRefused(t *testing.T) {
+	cfg := provisionerTestConfig("kubernets") // one letter, the realistic typo
+	err := cfg.validateProvisioner()
+	if err == nil {
+		t.Fatal("validateProvisioner accepted an unknown driver name, so a typo would fall through " +
+			"to buildDriver's unreachable default arm at dispatch time instead of failing at boot")
+	}
+	if !strings.Contains(err.Error(), envAgentProvisioner) {
+		t.Errorf("the refusal does not name %s.\n  got: %v", envAgentProvisioner, err)
+	}
+	// POSITIVE CONTROL: a legal name must still pass, or the assertion above is
+	// satisfied by any refusal at all.
+	if err := provisionerTestConfig(provisionerNoop).validateProvisioner(); err != nil {
+		t.Fatalf("positive control FAILED: a legal driver name was refused: %v", err)
+	}
+}

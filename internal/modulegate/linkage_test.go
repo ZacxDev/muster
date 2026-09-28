@@ -72,9 +72,13 @@ var notLinkedLedger = map[string]string{
 	//
 	// ⚠ THE LEDGER IS NOT WHERE THE REST OF THAT STEP IS CHECKED. Linkage says
 	// "reachable from a process", nothing more. internal/agentgateway implements the
-	// chat half now and links the same way — through cmd/muster-server — but a
-	// KICKOFF is still undeliverable, because nothing calls the gateway on the
-	// dispatch path. TestBuildingTheKubernetesProvisionerUsesTheRealDriver, the
+	// chat half now and links the same way — through cmd/muster-server. ⚠ THAT IS A
+	// CLAIM ABOUT LINKAGE AND NOTHING ELSE: a chat turn against an agent this binary
+	// PROVISIONED still resolves no address (agentspec declares no port) and would
+	// carry a credential the container never received, and a KICKOFF is undeliverable
+	// besides, because nothing calls the gateway on the dispatch path. All three are
+	// in cmd/muster-server/doc_seams.go entry 1; none of them is visible here, which
+	// is this gate's whole point. TestBuildingTheKubernetesProvisionerUsesTheRealDriver, the
 	// gateway's own wiring tests and the boot banner's two-tier readback are the
 	// parts this gate cannot be.
 
