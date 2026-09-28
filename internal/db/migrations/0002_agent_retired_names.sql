@@ -112,10 +112,31 @@
 -- the only such caller is chief, and `agents.name ... UNIQUE` still stops a
 -- collision with a LIVE agent.
 --
+-- 🔴 PRECONDITIONS. Two, and neither was stated before; both are now ENFORCED or
+-- removed rather than left for a reader to discover.
+--
+--   1. muster's schema must live in `public`. Every object this file touches is
+--      `public.`-qualified, which is not a style choice — the trigger function's
+--      INSERT targets `public.agent_retired_names` because PGStore.NameExists
+--      reads it there. Applied into a non-public schema (a DSN carrying
+--      `?search_path=<other>`, an `ALTER DATABASE … SET search_path`) the
+--      UNQUALIFIED spelling of this file created its table and attached its
+--      trigger in that schema while the trigger body still wrote to `public`,
+--      so the migration applied CLEANLY, with no warning, and every subsequent
+--      `DELETE FROM agents` then failed with
+--      `relation "public.agent_retired_names" does not exist`. A deployment
+--      that worked before 0002 stopped being able to destroy an agent at all.
+--      Step 0 below turns that into a refusal AT MIGRATION TIME, which is the
+--      only point where it is still cheap.
+--   2. The role that APPLIES this file owns the trigger function, and therefore
+--      is the role the tombstone INSERT runs as. See the SECURITY DEFINER note
+--      on the function below for what that buys and what it costs.
+--
 -- Convention: ADDITIVE + IDEMPOTENT. Nothing is dropped; CREATE TABLE IF NOT
--- EXISTS / CREATE OR REPLACE FUNCTION / DROP TRIGGER IF EXISTS + CREATE TRIGGER
--- all re-run cleanly. ROLLBACK-SAFE in the narrow sense that a rolled-back
--- binary neither reads nor writes these objects and nothing it does errors:
+-- EXISTS / CREATE OR REPLACE FUNCTION / REVOKE / DROP TRIGGER IF EXISTS +
+-- CREATE TRIGGER all re-run cleanly. ROLLBACK-SAFE in the narrow sense that a
+-- rolled-back binary neither reads nor writes these objects and nothing it does
+-- errors:
 -- the previous binary's NameExists simply does not consult the table, so during
 -- a drain it can still reissue a name retired seconds earlier — bounded by the
 -- drain, and the reissued agent is an ordinary agent, not a permanent record.
@@ -142,6 +163,52 @@
 -- stronger lock applies.
 SET LOCAL lock_timeout = '3s';
 
+-- 0. REFUSE A SCHEMA THIS FILE CANNOT WORK IN, BEFORE IT BUILDS ANYTHING.
+--
+-- 🔴 THE CONSTRAINT WAS ALREADY REAL; ONLY ITS FAILURE MODE CHANGES HERE. This
+-- file hardcodes `public` — the trigger body writes to
+-- `public.agent_retired_names` because that is where PGStore.NameExists reads.
+-- With `search_path` pointing anywhere else, the UNQUALIFIED spelling this file
+-- used to carry put the ledger and the trigger in THAT schema while the body
+-- still wrote to `public`: both migrations applied cleanly with no warning, and
+-- the deployment then discovered it at the first destroy, as
+-- `relation "public.agent_retired_names" does not exist` on every
+-- `DELETE FROM agents`. The qualification below closes the split; this check
+-- closes the case the qualification cannot — a schema where `public.agents`
+-- does not exist at all, where the trigger would have nothing to attach to and
+-- the ledger would be written to a table 0001 never created.
+--
+-- ⚠ IT IS DELIBERATELY A CHECK ON `public.agents` AND NOT ON `current_schema()`.
+-- What this file needs is not "the session's default schema is public"; it is
+-- "0001's tables are in public". A session can carry any search_path it likes
+-- and still be correct, and refusing on the search_path would reject working
+-- deployments.
+DO $$
+BEGIN
+    IF to_regclass('public.agents') IS NULL THEN
+        RAISE EXCEPTION 'muster migration 0002 requires 0001''s schema in `public`, and '
+            'public.agents does not exist. Every object this migration creates is '
+            'public-qualified, and the trigger it installs writes to '
+            'public.agent_retired_names because that is the table '
+            'internal/agents.PGStore.NameExists reads. Applying it against a schema '
+            'reached through a non-default search_path used to SUCCEED and leave every '
+            'later DELETE FROM agents failing. Point DATABASE_URL at a database whose '
+            'muster schema is in public, or migrate that schema into public first.';
+        -- 🔴 NO `USING ERRCODE`, DELIBERATELY. It used to say
+        -- `USING ERRCODE = 'undefined_table'` (42P01) — which is the SAME code
+        -- Postgres raises on its own for `relation "public.agents" does not
+        -- exist`, i.e. what the qualified DROP TRIGGER below emits when this
+        -- check is absent or asks the wrong question. A mutation sweep caught
+        -- that: with the check weakened to an UNQUALIFIED `to_regclass('agents')`
+        -- the migration still failed, with Postgres's own 42P01 whose text also
+        -- contains "public.agents", so the guard's test matched it and the
+        -- mutant SURVIVED. Bare RAISE EXCEPTION is P0001 (raise_exception),
+        -- which is what makes this refusal distinguishable from the catalog
+        -- error it exists to pre-empt — by SQLSTATE, not by wording.
+    END IF;
+END
+$$;
+
 -- 1. The tombstone ledger. One row per name that has ever been retired.
 --
 -- ⚠ NO IDENTITY COLUMN, DELIBERATELY: the name IS the key, and a surrogate id
@@ -149,14 +216,24 @@ SET LOCAL lock_timeout = '3s';
 -- this table in tablesWithNoIdentityColumn, and asserts the identity-holding set
 -- EQUALS the schema ledger minus that exemption — so adding an id here reddens
 -- the check by name.
-CREATE TABLE IF NOT EXISTS agent_retired_names (
+--
+-- ⚠ `public.`-QUALIFIED, AND IT IS NOT REDUNDANT WITH STEP 0. The trigger body
+-- writes to `public.agent_retired_names`; an unqualified CREATE resolves its
+-- CREATION namespace to the FIRST entry on the applying session's search_path
+-- and checks only that one — so with `search_path = <other>, public` it builds a
+-- SECOND, empty ledger in `<other>` even though `public.agent_retired_names`
+-- already exists, while the trigger keeps writing to `public`. Step 0 cannot see
+-- that case: `public.agents` exists, so its precondition is satisfied. Pinned by
+-- TestMigrationRefusesASchemaWhoseAgentsTableIsNotInPublic's
+-- `search_path_preferring_another_schema` subtest.
+CREATE TABLE IF NOT EXISTS public.agent_retired_names (
     name       TEXT PRIMARY KEY,
     retired_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-COMMENT ON TABLE agent_retired_names IS
+COMMENT ON TABLE public.agent_retired_names IS
     'Every agent name that has ever been released by a DELETE on agents. Written by the agents_retire_name trigger, never by application code, so it cannot be forgotten at a new call site. PGStore.NameExists treats a name here as TAKEN, which is what stops a namesake inheriting the cluster-scoped RBAC that was named after a destroyed agent. NOT backfilled: names released before this migration are unrecoverable.';
-COMMENT ON COLUMN agent_retired_names.retired_at IS
+COMMENT ON COLUMN public.agent_retired_names.retired_at IS
     'When the name was first retired. Diagnostic only — nothing branches on it. A name is reserved for all time, not for a window.';
 
 -- 2. The trigger function.
@@ -165,38 +242,88 @@ COMMENT ON COLUMN agent_retired_names.retired_at IS
 -- is the conventional, non-surprising choice and keeps the function reusable if
 -- it is ever attached BEFORE DELETE.
 --
--- 🔴 BOTH THE `SET search_path` AND THE `public.` QUALIFICATION ARE
--- LOAD-BEARING. The function is SECURITY INVOKER with no proconfig, so an
--- UNQUALIFIED `INSERT INTO agent_retired_names` resolves through the CALLING
--- SESSION's search_path. With a decoy `<schema>.agent_retired_names` first on
--- the path, a `DELETE FROM public.agents` then SUCCEEDS and writes the
--- tombstone into the decoy — public gets nothing, NameExists never sees it, and
--- the name is back in the pool, silently. That defeats precisely the property
--- this file is sold on ("any call site, any binary, including a hand-run psql
--- DELETE") — and a hand-run psql session is exactly where a non-default
--- search_path comes from.
+-- 🔴 SECURITY DEFINER, AND IT IS WHAT MAKES THE FILE'S OWN SALES PITCH TRUE.
+-- The function was SECURITY INVOKER, so the tombstone INSERT ran with the
+-- privileges of whoever issued the DELETE. Measured on Postgres 16: a role
+-- holding `GRANT SELECT, INSERT, UPDATE, DELETE ON agents` that does not own the
+-- table could no longer delete an agent AT ALL —
 --
--- The two guards cover DIFFERENT things, which is why both are here:
---   * `public.` stops THIS statement's table being redirected.
---   * `SET search_path = pg_catalog` stops anything ELSE in the body being
---     redirected — today there is nothing else, which is the point: the next
---     person to add a line inherits the protection instead of having to know.
+--     ERROR:  permission denied for table agent_retired_names
+--     CONTEXT: SQL statement "INSERT INTO public.agent_retired_names …"
+--              PL/pgSQL function public.muster_retire_agent_name() line 3
 --
--- 🔴 ONLY THE FIRST OF THE TWO IS PINNED BY A TEST, and that is deliberate.
+-- — and the row survived. That is marginal-coverage path 1 above, the hand-run
+-- `psql` DELETE, erroring instead of tombstoning for every role but the one that
+-- ran the migration. SECURITY DEFINER runs the body as the function's OWNER, so
+-- any role that can delete from `agents` tombstones the name, and the file no
+-- longer has to know a role name it cannot know. The alternative —
+-- `GRANT INSERT ON public.agent_retired_names TO <role>` — is narrower but needs
+-- exactly that.
+--
+-- ⚠ THE OLD BEHAVIOUR FAILED CLOSED, WHICH IS WHY THIS WAS NOT AN OUTAGE. The
+-- DELETE aborted, so the row stayed and the name stayed out of the pool; and
+-- muster's server migrates itself and connects as one role, so the application
+-- path never saw it.
+--
+-- 🔴 WHAT SECURITY DEFINER WIDENS, AND THE REVOKE THAT BOUNDS IT. Three things,
+-- all measured rather than reasoned:
+--   * A role with DELETE on `agents` now writes to the ledger it has no grant
+--     on. That is the intent, and the value it writes is `OLD.name` — a name it
+--     could already have chosen by creating the agent.
+--   * It removes an ACCIDENTAL barrier: while the function was INVOKER, a role
+--     without ledger grants simply could not destroy an agent. Nothing relied on
+--     that, and nothing should — `agents` grants are the control, not this.
+--   * 🔴 THE ONE THAT NEEDED CLOSING: `CREATE FUNCTION` grants EXECUTE to PUBLIC
+--     by default, so any role with CREATE on any schema could attach this
+--     function to a table OF ITS OWN and drive arbitrary names into
+--     `public.agent_retired_names` as the owner — verified end to end, and a
+--     tombstone is never freed, so that is a durable poisoning of the generator
+--     pool. `REVOKE EXECUTE … FROM PUBLIC` below refuses that borrow
+--     (`permission denied for function`) while the real `agents_retire_name`
+--     trigger keeps firing for the same non-owner role: privileges on a trigger
+--     function are checked when the TRIGGER is created, not when it fires.
+--
+-- 🔴 THE `SET search_path` LINE IS THE HIJACK GUARD, AND AN EARLIER REVISION OF
+-- THIS PARAGRAPH HAD THE TWO GUARDS' ROLES BACKWARDS. It claimed the function
+-- had "no proconfig"; it has had `{search_path=pg_catalog}` all along. Four
+-- measured combinations, under a session whose search_path puts a decoy
+-- `<schema>.agent_retired_names` first:
+--
+--   qualified + SET      -> writes to public. Correct.
+--   qualified, no SET    -> writes to public. The qualification wins alone.
+--   UNQUALIFIED + SET    -> `relation "agent_retired_names" does not exist`;
+--                           the DELETE aborts. LOUD, and fails closed.
+--   UNQUALIFIED, no SET  -> the DELETE SUCCEEDS and the tombstone lands in the
+--                           decoy. public gets nothing, NameExists never sees
+--                           it, the name is back in the pool. SILENT.
+--
+-- So the `SET` is what turns the silent case into a loud one, and `public.` is
+-- what makes the loud one work. Both stay.
+--
+-- ⚠ AND THE CLAIM THAT A FUTURE UNQUALIFIED LINE "INHERITS THE PROTECTION" IS
+-- NOT TRUE — do not rely on it. With `search_path = pg_catalog` the only schemas
+-- an unqualified reference can reach are pg_catalog and the CALLER'S TEMPORARY
+-- schema, which Postgres searches first when it is not listed. A caller with a
+-- `CREATE TEMP TABLE agent_retired_names` therefore captures any unqualified
+-- write — now with the owner's privileges. Appending `pg_temp` does NOT fix it
+-- here: measured, `pg_catalog` and `pg_catalog, pg_temp` both still resolve to
+-- the temp table, because there is no competing schema on the path for pg_temp
+-- to be demoted below (with `public` on the path the trailing `pg_temp` does
+-- change the answer — that is the shape the Postgres documentation's advice is
+-- about, and it is not this one). The rule for the next person is therefore the
+-- simple one: QUALIFY IT.
+--
+-- 🔴 ONLY THE QUALIFICATION IS PINNED BY A TEST, and that is deliberate.
 -- TestRetiredNameTombstoneIsSearchPathProof kills the unqualified version.
 -- Removing only the `SET search_path` line while keeping `public.` leaves that
--- guard green — necessarily, because with nothing unqualified in the body there
--- is no behaviour to observe. The only available guard for it would assert that
+-- guard green — necessarily, per row two of the table above: there is no
+-- behaviour to observe. The only available guard for it would assert that
 -- pg_proc.proconfig contains the string, i.e. a check on the fix's SPELLING
 -- rather than on any state. Do not "strengthen" it into one; if you add an
 -- unqualified reference to this body, add a behavioural case for it instead.
---
--- ⚠ CONSEQUENCE, stated because it is a real constraint: `public` is hardcoded,
--- so this function cannot be applied into a scratch schema and still work. That
--- matches how this schema is checked — against the migrated `public` schema,
--- not a scratch one.
-CREATE OR REPLACE FUNCTION muster_retire_agent_name() RETURNS trigger
+CREATE OR REPLACE FUNCTION public.muster_retire_agent_name() RETURNS trigger
 LANGUAGE plpgsql
+SECURITY DEFINER
 SET search_path = pg_catalog
 AS $$
 BEGIN
@@ -206,15 +333,20 @@ BEGIN
 END;
 $$;
 
+-- Idempotent: revoking a privilege that is not held is a no-op, so this re-runs
+-- with the rest of the file. The owner keeps EXECUTE through ownership, which is
+-- what lets the CREATE TRIGGER below still refer to the function.
+REVOKE EXECUTE ON FUNCTION public.muster_retire_agent_name() FROM PUBLIC;
+
 -- 3. The trigger. Postgres has no `CREATE TRIGGER IF NOT EXISTS`; DROP IF
 --    EXISTS + CREATE is the idempotent spelling, and it is safe to re-run
 --    because both statements are in the same transaction as the rest of this
 --    file.
-DROP TRIGGER IF EXISTS agents_retire_name ON agents;
+DROP TRIGGER IF EXISTS agents_retire_name ON public.agents;
 CREATE TRIGGER agents_retire_name
-    AFTER DELETE ON agents
+    AFTER DELETE ON public.agents
     FOR EACH ROW
-    EXECUTE FUNCTION muster_retire_agent_name();
+    EXECUTE FUNCTION public.muster_retire_agent_name();
 
 -- 🔴 NO SEED OF THE CURRENTLY-LIVE NAMES, deliberately. Seeding
 -- `INSERT INTO agent_retired_names SELECT name FROM agents` closes NOTHING — a

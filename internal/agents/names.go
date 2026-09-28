@@ -121,11 +121,43 @@ const firstDiscriminator = 2
 //     one place, or a discriminated name becomes the one path the tombstone does
 //     not cover.
 //
-// ⚠ THE SEARCH IS BOUNDED BY THE CALLER'S CONTEXT AND BY NOTHING ELSE. That is
-// the design: a store that keeps saying "taken" is a store this function has no
-// business giving up on, and the caller already owns a deadline (see
-// agentprovision's opCtx). ctx.Err() is checked on every iteration so a
-// cancelled caller gets an answer even from a store that ignores its context.
+// 🔴 THE ONLY BOUND ON THE SEARCH IS REQUEST CANCELLATION. NOT A DEADLINE —
+// THERE IS NONE ON THIS PATH. An earlier revision of this paragraph said "the
+// caller already owns a deadline (see agentprovision's opCtx)". That is false:
+// opCtx is never in this call path. BuildUniqueAgentName has exactly one caller,
+// internal/api's createAndDispatchAgent, reached from handleAgentCreate,
+// dispatchRunbook and handleChiefProvision — all three hand it `r.Context()`.
+// cmd/muster-server sets only ReadHeaderTimeout on its http.Server: no
+// WriteTimeout, no http.TimeoutHandler, and no context.WithTimeout anywhere
+// between the handler and here. So `ctx` is done when the CLIENT DISCONNECTS,
+// and at no other moment.
+//
+// That justification is therefore withdrawn rather than replaced. The loop has
+// no deadline bound; it has a cancellation bound, and ctx.Err() is checked on
+// every iteration so a cancelled caller gets an answer even from a store that
+// ignores its context. TestBuildUniqueAgentNameStopsWhenTheCallerCancels is what
+// pins that, and it is the whole of it.
+//
+// ⚠ WHY THAT IS TOLERATED, AS SCALE RATHER THAN AS A BOUND. Reaching a
+// hundred discriminators on one base takes on the order of 25,600 agent
+// creations, because the discriminators fill in across all 256 bases. The
+// consumption rate measured on the live deployment is ≈19.5 names/month — TWO
+// ENDPOINTS IN ONE 53-DAY WINDOW, quoted at that scope only — which puts 25,600
+// creations a century out. A run of the loop costs one NameExists round trip per
+// occupied discriminator on the drawn base, so the work per call is set by how
+// many names have actually been issued, not by anything unbounded.
+//
+// ⚠ AND THE DECISION, STATED RATHER THAN ASSUMED: THE LOOP GETS NO CAP OF ITS
+// OWN. A cap is a new exhaustion cliff, and the cliff is the thing this fallback
+// exists to remove — the previous revision's error return was exactly that, and
+// it made agent creation fail at a moment nobody chose. The case a cap would
+// catch is a store whose NameExists answers `true` for everything: that spins,
+// with nothing logged, until the request is cancelled. It is a BROKEN STORE, not
+// a full pool, and this function is not the right place to diagnose one — it has
+// no logger, and giving it one would thread a dependency through a pure function
+// for a failure mode with no production instance. What it does instead is make
+// the spin legible when it ends: the cancellation error names how many
+// discriminators were tried.
 //
 // ⚠ IT DOES NOT CHANGE THE SHAPE OF AN ORDINARY NAME. The fast path returns
 // exactly what it always did, so every name already issued, every namespace and
