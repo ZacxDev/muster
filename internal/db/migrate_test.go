@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"slices"
 	"testing"
 	"time"
 
@@ -39,6 +40,26 @@ var tablesThisSchemaMustHave = []string{
 	"privilege_requests",
 	"runbook_runs",
 	"runbooks",
+	"task_sessions",
+}
+
+// tablesWithNoIdentityColumn names the tables that deliberately have none, each
+// for its own stated reason:
+//
+//   - task_sessions is keyed by a composite.
+//   - github_connection is a singleton pinned to id = 1 by a CHECK.
+//   - agent_retired_names is keyed by the NAME itself; a surrogate id there would
+//     let one name be tombstoned twice.
+//
+// 🔴 IT IS A NAMED SET AND NOT A COUNT, AND THE DIFFERENCE IS THE WHOLE POINT.
+// This used to be arithmetic — `n == len(tablesThisSchemaMustHave) - 3` — and a
+// count cannot see a COMPENSATING PAIR: one exempt table gaining an identity
+// column while a non-exempt one loses its own leaves the total unchanged, so both
+// defects ship under a green check. A count also cannot name the table in its
+// failure message, which is the one thing the reader needs.
+var tablesWithNoIdentityColumn = []string{
+	"agent_retired_names",
+	"github_connection",
 	"task_sessions",
 }
 
@@ -103,8 +124,14 @@ func TestMigrateCreatesEveryTableTheSchemaDeclares(t *testing.T) {
 //
 // It asserts the RELATIONSHIP — "every identity column in the schema is ALWAYS"
 // — rather than naming columns, so a table added later is covered without
-// anybody remembering to extend a list. The COUNT is checked too: zero identity
-// columns would satisfy an "all of them are ALWAYS" test vacuously.
+// anybody remembering to extend a list.
+//
+// 🔴 AND IT ASSERTS WHICH TABLES HOLD ONE, AS A SET. See
+// tablesWithNoIdentityColumn: the observed set of identity-holding tables must
+// EQUAL the schema ledger minus the named exemptions, so the check fails when a
+// non-exempt table loses its identity column, when an exempt one gains one, and —
+// the case the old arithmetic could not see — when both happen at once. Every
+// failure names the table.
 func TestEveryIdentityColumnIsGeneratedALWAYS(t *testing.T) {
 	ctx, pool := migrated(t)
 
@@ -117,14 +144,16 @@ func TestEveryIdentityColumnIsGeneratedALWAYS(t *testing.T) {
 		t.Fatalf("list identity columns: %v", err)
 	}
 	defer rows.Close()
-	n := 0
+	var withIdentity []string
 	for rows.Next() {
 		var table, column, isIdentity string
 		var generation *string
 		if err := rows.Scan(&table, &column, &isIdentity, &generation); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
-		n++
+		if !slices.Contains(withIdentity, table) {
+			withIdentity = append(withIdentity, table)
+		}
 		if generation == nil || *generation != "ALWAYS" {
 			got := "<null>"
 			if generation != nil {
@@ -140,19 +169,50 @@ func TestEveryIdentityColumnIsGeneratedALWAYS(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows: %v", err)
 	}
-	// Positive control: an empty result would make the loop above assert nothing.
-	// 11 of the 14 tables have one. THREE do not, and each for its own stated
-	// reason: task_sessions is keyed by a composite, github_connection is a
-	// pinned singleton, and agent_retired_names is keyed by the NAME itself —
-	// a surrogate id there would let one name be tombstoned twice.
-	//
-	// ⚠ THE SUBTRAHEND IS THE COUPLING. It is derived from the ledger above, so
-	// adding a table WITH an identity column needs no edit here — but adding one
-	// WITHOUT breaks this check, which is the intended prompt to come and say
-	// which of the three reasons applies.
-	if want := len(tablesThisSchemaMustHave) - 3; n != want {
-		t.Fatalf("found %d identity column(s), want %d — the query is not seeing the schema this "+
-			"test believes it is checking", n, want)
+
+	want := make([]string, 0, len(tablesThisSchemaMustHave))
+	for _, tbl := range tablesThisSchemaMustHave {
+		if !slices.Contains(tablesWithNoIdentityColumn, tbl) {
+			want = append(want, tbl)
+		}
+	}
+	// The exemption ledger must be a subset of the schema ledger, or an
+	// exemption for a table that no longer exists would silently shrink `want`
+	// and excuse a real regression.
+	for _, tbl := range tablesWithNoIdentityColumn {
+		if !slices.Contains(tablesThisSchemaMustHave, tbl) {
+			t.Errorf("tablesWithNoIdentityColumn names %q, which is not in "+
+				"tablesThisSchemaMustHave; an exemption for a table that does not exist "+
+				"excuses nothing and hides the next real one", tbl)
+		}
+	}
+	// Positive control: an empty expectation would make everything below vacuous.
+	if len(want) == 0 {
+		t.Fatal("no table is expected to hold an identity column; this check would pass against " +
+			"a schema with none at all")
+	}
+
+	slices.Sort(withIdentity)
+	slices.Sort(want)
+	for _, tbl := range want {
+		if !slices.Contains(withIdentity, tbl) {
+			t.Errorf("%s has NO identity column, and it is not in tablesWithNoIdentityColumn.\n\n"+
+				"Either 0001 lost the `GENERATED ALWAYS AS IDENTITY` on its id — in which case "+
+				"nothing stops a caller supplying one — or the table is a deliberate exemption "+
+				"and belongs in that ledger with its reason written down.", tbl)
+		}
+	}
+	for _, tbl := range withIdentity {
+		if !slices.Contains(want, tbl) {
+			t.Errorf("%s HAS an identity column but is not expected to.\n\n"+
+				"It is either listed in tablesWithNoIdentityColumn — whose reason it now "+
+				"contradicts — or it is a table missing from tablesThisSchemaMustHave "+
+				"entirely.", tbl)
+		}
+	}
+	if !equal(withIdentity, want) {
+		t.Fatalf("the set of tables holding an identity column changed.\n got: %v\nwant: %v",
+			withIdentity, want)
 	}
 }
 

@@ -23,11 +23,38 @@
 -- internal/metrics/metrics.go's AgentRBACTeardown counter exists to alert on
 -- exactly the teardown failures that leave one behind.
 --
--- The `agent_privileges` rows themselves are keyed on `agent_id` and cascade,
--- so the DATABASE's record of a grant does go away with the agent. That is the
--- half that is already safe. The half that is not is everything OUTSIDE this
--- database that was named after the agent — and the only lever muster has over
--- it is to stop the name ever being issued twice.
+-- 🔴 WHAT THIS DOES *NOT* CLOSE, BECAUSE IT WAS NEVER OPEN IN THIS SERVICE.
+-- Upstream wording about namesakes covers deployments whose privilege records
+-- are keyed on the agent's NAME. muster's are not, and the difference is
+-- measurable in 0001 above: `agent_privileges.agent_id` and
+-- `privilege_requests.agent_id` are both
+-- `BIGINT NOT NULL REFERENCES agents (id) ON DELETE CASCADE`, so deleting an
+-- agent deletes its grants and its requests. `privilege_requests.agent_name` is
+-- a display copy — internal/privilege/pgstore.go names it in one column list and
+-- one INSERT and branches on it nowhere — so nothing resolves a privilege by
+-- name. A namesake therefore inherits NO in-database grant. Do not read this
+-- migration as protecting one.
+--
+-- 🔴 NOR IS THE ORDINARY DESTROY PATH THE HAZARD. internal/agentprovision's
+-- Adapter.Destroy deletes the `agents` row ONLY when the driver returned nil or
+-- ErrNotFound, and internal/provision/k8s's Destroy folds a `revokeAllPolicies`
+-- failure into its `firstErr`. So a teardown that fails to revoke already keeps
+-- the row, which already keeps the name out of the pool — the pre-existing code
+-- covers the loud case on its own.
+--
+-- ⚠ SO THE MARGINAL COVERAGE IS TWO NARROWER PATHS, AND THEY ARE THE HONEST
+-- JUSTIFICATION FOR THIS FILE:
+--   1. An `agents` row deleted WITHOUT going through the adapter — a hand-run
+--      `psql` DELETE, a future call site, another binary. Nothing else in the
+--      system notices, and this is the case a trigger covers and application
+--      code cannot.
+--   2. `revokeAllPolicies` returning nil while a cluster-side object survives —
+--      a partially-applied grant, an object whose labels diverged from the
+--      selector, anything the revoke sweep cannot see. The teardown reports
+--      success, the row is deleted, and the name goes back in the pool with an
+--      orphan still bound to it.
+-- Both are real and both are quiet. Neither is "privilege records are keyed on
+-- the name"; that claim belongs to a different codebase.
 --
 -- Precedent in this tree for rejecting name-keying on exactly this ground:
 -- internal/agentspec/autosave.go's autosaveRef is keyed on the agent ID because
@@ -47,15 +74,25 @@
 -- from that residue: it keeps its ref keyed on the id and says not to
 -- "simplify" it to the name on the strength of this table.
 --
--- ⚠ THE POOL IS FINITE AND THIS MAKES IT STRICTLY SHRINKING. names.go's lists
--- are 16 adjectives x 16 nouns = 256 combinations, and a retired name is never
--- freed. BuildUniqueAgentName takes 10 draws, so with k of 256 taken it fails
--- with probability (k/256)^10 — negligible at k=128 (0.1%), one run in twelve
--- at k=200 (8.5%), and certain at k=256. This migration is what makes that arithmetic
--- load-bearing rather than theoretical. Widening the lists is the answer when
--- it bites; it is deliberately NOT done here, because a wider pool changes what
--- every existing name-format guard is drawing from and belongs in its own
--- change with its own guards.
+-- 🔴 THE POOL IS FINITE AND THIS MAKES IT STRICTLY SHRINKING, SO THE GENERATOR
+-- HAD TO STOP BEING ABLE TO FAIL. names.go's lists are 16 adjectives x 16 nouns
+-- = 256 combinations, and a retired name is never freed. BuildUniqueAgentName
+-- takes 10 draws, so with k of 256 consumed it MISSES all ten with probability
+-- (k/256)^10 — 0.1% at k=128, 8.5% at k=200, certain at k=256 — and k only ever
+-- goes up. An earlier revision of this change turned that miss into an error,
+-- i.e. a provisioning outage on a clock, arriving at a moment nobody chose with
+-- no cause named anywhere an operator looks.
+--
+-- The draws are now a FAST PATH: when all ten collide the name is DISCRIMINATED
+-- (`brave-heron` -> `brave-heron-2`, `-3`, …) until the store says free, so the
+-- namespace is unbounded and provisioning cannot fail for want of a name. The
+-- discriminated candidate goes through the SAME `NameExists` predicate, so it is
+-- checked against this ledger exactly like a drawn one. Details, and the ceiling
+-- re-derived from provision.Ref, live in BuildUniqueAgentName's doc.
+--
+-- ⚠ Widening the word lists is still not done here, and is now an aesthetic
+-- choice rather than a fix: a wider pool changes what every existing name-format
+-- guard is drawing from and belongs in its own change with its own guards.
 --
 -- ⚠ `TRUNCATE agents` BYPASSES THIS ENTIRELY, and no FOR EACH ROW trigger can
 -- catch it — TRUNCATE fires only statement-level TRUNCATE triggers. This is
@@ -108,9 +145,10 @@ SET LOCAL lock_timeout = '3s';
 -- 1. The tombstone ledger. One row per name that has ever been retired.
 --
 -- ⚠ NO IDENTITY COLUMN, DELIBERATELY: the name IS the key, and a surrogate id
--- would let the same name be tombstoned twice. internal/db/migrate_test.go's
--- TestEveryIdentityColumnIsGeneratedALWAYS counts identity columns against the
--- table ledger and its arithmetic accounts for this table by name.
+-- would let the same name be tombstoned twice. internal/db/migrate_test.go names
+-- this table in tablesWithNoIdentityColumn, and asserts the identity-holding set
+-- EQUALS the schema ledger minus that exemption — so adding an id here reddens
+-- the check by name.
 CREATE TABLE IF NOT EXISTS agent_retired_names (
     name       TEXT PRIMARY KEY,
     retired_at TIMESTAMPTZ NOT NULL DEFAULT now()
