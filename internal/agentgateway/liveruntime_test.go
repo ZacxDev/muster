@@ -225,13 +225,15 @@ func TestOneRealTOOLTurnAgainstALiveRuntime(t *testing.T) {
 	// gets the measurement without a false red. 🔴 IT IS A SKIP WITH ITS REASON
 	// PRINTED, NOT A SILENT ONE: `go test` exits 0 on a skip, so an unexplained one is
 	// invisible in a green run — the property this file's own header is about.
-	if os.Getenv(envLiveExpectTools) == "" {
-		t.Skipf("%s is unset, so this cell is a MEASUREMENT rather than a gate: the tool shape "+
-			"agents.ToolDef sends is accepted by one agent image tag and rejected with HTTP 400 by "+
-			"another (see ToolDef's own matrix), and the image that accepts it needs a working "+
-			"model credential to complete a turn. Set %s=1 when the runtime you are pointing at "+
-			"has BOTH, and this becomes a gate that must pass.", envLiveExpectTools, envLiveExpectTools)
-	}
+	// 🔴 THE EXPECTATION CHANGES WHETHER A FAILURE IS FATAL — IT DOES NOT SKIP THE
+	// WORK. An earlier revision returned before liveAgent, so with a runtime fully
+	// declared it measured NOTHING while its own skip text called itself "a
+	// MEASUREMENT rather than a gate" — a sentence contradicted by the line under it,
+	// and it threw away the per-image reading that produced ToolDef's matrix in the
+	// first place. Now: no runtime declared ⇒ skip (nothing to talk to); runtime
+	// declared ⇒ RUN, and report; plus MUSTER_LIVE_AGENT_EXPECT_TOOLS ⇒ a failure is
+	// the target's failure.
+	expectTools := os.Getenv(envLiveExpectTools) != ""
 	ep, ag := liveAgent(t)
 	gw, err := New(Config{Driver: &fixedResolver{ep: ep}, Runtime: HooksSHA256(), Model: liveSentinel(t)})
 	if err != nil {
@@ -274,11 +276,22 @@ func TestOneRealTOOLTurnAgainstALiveRuntime(t *testing.T) {
 		// on ToolDef). It is not a malformed request, and the toolless fallback does
 		// NOT cover it, because that keys on a 404.
 		if strings.Contains(err.Error(), "tools.0.function") {
-			t.Fatalf("the live runtime at %s rejected the FLAT tool shape: %v\n"+
+			// Reported either way — the per-image reading IS the value here; the
+			// declaration only decides whether it also fails the target.
+			report := t.Logf
+			if expectTools {
+				report = t.Fatalf
+			}
+			report("the live runtime at %s rejected the FLAT tool shape: %v\n"+
 				"  This gateway wants the NESTED {\"type\":\"function\",\"function\":{…}} form, so "+
 				"it is not the 2026.5.7-family image agents.ToolDef is built for. Check the pod's "+
 				"image tag before reading this as a defect — and see ToolDef's OWED note, which "+
 				"is exactly this case.", ep.URL(), err)
+			return
+		}
+		if !expectTools {
+			t.Skipf("a real TOOL turn against %s failed and %s is unset, so this is reported "+
+				"rather than gated: %v", ep.URL(), envLiveExpectTools, err)
 		}
 		t.Fatalf("a real TOOL turn against %s failed: %v", ep.URL(), err)
 	}
@@ -286,7 +299,10 @@ func TestOneRealTOOLTurnAgainstALiveRuntime(t *testing.T) {
 	// "READY" without calling anything, and that answer would pass a reply-only
 	// check while proving the tool loop never ran — which is the entire point of this
 	// endpoint over the other one.
-	if dispatched == 0 {
+	if dispatched == 0 && !expectTools {
+		t.Logf("MEASUREMENT: the turn completed with reply %q and the tool was never dispatched; "+
+			"set %s=1 to make that a failure", reply, envLiveExpectTools)
+	} else if dispatched == 0 {
 		t.Errorf("the turn completed with reply %q but the tool was NEVER dispatched. Native "+
 			"function calling is what this endpoint is for; a text-only answer here means the "+
 			"model was given no tools it could call.", reply)

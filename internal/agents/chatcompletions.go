@@ -99,7 +99,9 @@ func ChatStream(ctx context.Context, client *http.Client, url, token, sessionKey
 		// here rather than through the tool loop, so this was the path that argument
 		// was written about. responses.go's own status branch has carried a snippet all
 		// along; the asymmetry was the defect.
-		respBody, _ := io.ReadAll(resp.Body)
+		// 🔴 BOUNDED: the 512 below caps the MESSAGE, not the READ, and an unbounded
+		// ReadAll buffers whatever a non-200 runtime sends before truncating it.
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, errBodyReadLimit))
 		snippet := strings.TrimSpace(string(respBody))
 		if len(snippet) > 512 {
 			snippet = snippet[:512] + "…"

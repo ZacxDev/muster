@@ -136,7 +136,7 @@ test-liveenv: ## run the live-environment controls (needs a real coding-agent se
 	@# they silently no-op'd on CI and the run still looked green.
 	go test -tags liveenv -run 'REALProcessEnvironment|SessionIDIsReadableFromThisProcess' -v ./cmd/muster/
 	@# The agent-chat controls need a reachable agent runtime, not a coding-agent
-	@# session — see internal/agentgateway/liveruntime_test.go for the three variables
+	@# session — see internal/agentgateway/liveruntime_test.go for the variables
 	@# and the port-forward recipe. They are the closing condition the OWED record in
 	@# internal/agents/responses.go wrote for itself: the httptest suite proves what
 	@# goes on the wire, and only these prove a runtime accepts it.
@@ -147,7 +147,10 @@ test-liveenv: ## run the live-environment controls (needs a real coding-agent se
 	@# sends AND has a working model credential, and no single pod had both — with a
 	@# comment here pre-excusing the red. A comment excusing a red gate IS the
 	@# click-through training claude/RULES.md names, not a defence against it; and it
-	@# also made the cmd/muster cell's verdict unreadable, which previously could pass.
+	@# also made the TARGET'S EXIT CODE unreadable — the cmd/muster cell runs first and
+	@# printed its own verdict fine, so what an always-red cell buried was whether the
+	@# target as a whole passed. An earlier wording said "the cell's verdict", which is
+	@# measurably not what happened.
 	@# So: declare the expectation and the cell runs and must pass. Declare nothing and
 	@# it reports what it measured and does not fail the target.
 	go test -tags liveenv -count=1 -run 'RealTurnAgainstALiveRuntime|RealTOOLTurnAgainstALiveRuntime' -v ./internal/agentgateway/

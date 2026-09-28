@@ -38,8 +38,9 @@ package main
 //	  plus MUSTER_AGENT_GATEWAY_MODEL. Naming a runtime with no driver is refused at
 //	  boot, because this binary's only source of an instance's address is a driver.
 //	🔴 WHAT THAT DOES *NOT* CLOSE, AND IT IS THE HALF THAT MATTERS FOR A KICKOFF:
-//	  NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH. The two CHAT ROUTES are live;
-//	  the kickoff is not a route. A dispatch with kickoff=true still CREATES the
+//	  NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH. The two CHAT ROUTES stop
+//	  REFUSING — which is not the same as reachable, see below; the kickoff is not a
+//	  route at all. A dispatch with kickoff=true still CREATES the
 //	  instance and does not deliver the first message — the note stays in
 //	  agents.pending_note and the non-delivery is written to agents.kickoff_error
 //	  (agentprovision.UndeliveredKickoffReason). An agent dispatched on such a
@@ -64,7 +65,12 @@ package main
 //	      and nothing bridges the two. Measured against a live runtime provisioned by
 //	      the upstream service, which ships HOOKS_TOKEN: that derivation is accepted
 //	      (200, and a deliberately wrong bearer is refused 401). So an agent THIS
-//	      binary provisions would 401 on every turn.
+//	      binary provisions would 401 on every turn — 🔴 ONCE (1) IS FIXED, AND NOT
+//	      BEFORE. The two blockers are ORDERED: Gateway.reach resolves the endpoint
+//	      before it builds a request, so while (1) holds the observable is
+//	      ErrNoEndpoint and NO 401 is reachable. An earlier revision of this line
+//	      predicted the 401 unconditionally, which sends a debugger hunting a
+//	      credential when the first failure is address resolution.
 //	      CLOSING CONDITION: the provisioned container receives the token under the
 //	      name its gateway derives from, proven by one real turn against an instance
 //	      THIS binary created — not one created by the upstream service.

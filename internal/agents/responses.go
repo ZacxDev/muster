@@ -45,6 +45,12 @@ var ErrResponsesUnsupported = errors.New("agent runtime does not support /v1/res
 // place to change if the attached runtime ever changes.
 const sessionKeyHeader = "X-Openclaw-Session-Key"
 
+// errBodyReadLimit caps how much of a non-200 response body either transport reads
+// before truncating it for the error message. It is deliberately a little above the
+// 512-byte message cap: the point is to bound the READ, and a limit equal to the
+// message cap would make every long body look identically truncated.
+const errBodyReadLimit = 8 << 10
+
 // MaxToolLoopIterations caps the call→execute→continue loop per user turn.
 //
 // ⚠ IT IS EXPORTED SO A CALLER CAN REASON ABOUT THE CEILING IT IMPLIES: each
@@ -302,7 +308,9 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 		return nil, ErrResponsesUnsupported
 	}
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(resp.Body)
+		// 🔴 BOUNDED: the 512 below caps the MESSAGE, not the READ, and an unbounded
+		// ReadAll buffers whatever a non-200 runtime sends before truncating it.
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, errBodyReadLimit))
 		snippet := string(respBody)
 		if len(snippet) > 512 {
 			snippet = snippet[:512] + "…"

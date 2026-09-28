@@ -2,8 +2,12 @@ package main
 
 import (
 	"log"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/provision"
 )
 
 // ---------------------------------------------------------------------------
@@ -188,47 +192,107 @@ func TestAMissingSentinelIsRefusedAtBoot(t *testing.T) {
 
 // TestTheChatWiredBannerDoesNotClaimReachability pins the correction an audit forced.
 //
-// 🔴 THE LINE SHIPPED SAYING "the two chat routes are live … over the same driver as
+// 🔴 THE LINE SHIPPED CLAIMING THE CHAT ROUTES WERE LIVE "over the same driver as
 // lifecycle", AND THAT WAS FALSE FOR EVERY AGENT THIS BINARY PROVISIONS. agentspec.Build
 // renders a spec with no port and no endpoint, so the driver resolves no address and a
-// chat turn fails PER TURN — strictly worse than the 503 it replaced, which named its own
-// cause. The routes really do stop refusing; that is the only part that was true.
+// chat turn fails PER TURN — strictly worse than the 503 it replaced, which named its
+// own cause. The routes really do stop refusing; that is the only part that was true.
 //
-// 🔴 IT PINS THE CLAIM, NOT A KEYWORD, because a keyword guard is walkable by rewording
-// and this defect WAS a wording. The assertions below are what a reader must still be
-// told; a cosmetic reword that keeps them is fine and one that drops them is the
-// regression. ⚠ And it asserts the NEGATIVE too — "live"/"usable" unqualified is exactly
-// what the retracted line said.
+// 🔴 IT PINS THE WHOLE NORMALISED LINE, AND THE SUBSTRING VERSION OF THIS TEST WAS
+// MEASURED WALKABLE. That version required four phrases and forbade two, and its own
+// comment claimed "IT PINS THE CLAIM, NOT A KEYWORD" — an audit then wrote a banner
+// carrying all four required phrases, neither forbidden one, and the sentence "chat is
+// FULLY USABLE against any agent, including one this binary provisioned … the old
+// warning is obsolete; ignore them", and THIS TEST PASSED. A guard that reads as
+// coverage while providing none is worse than no guard, because it stops the next
+// person looking. When the artifact under test IS PROSE, only the whole string is a
+// machine-readable claim.
+//
+// ⚠ THE COST IS REAL AND IS ACCEPTED: any cosmetic reword of that banner line fails
+// this test and wantLine must be updated with it. That is the price of the property.
+// The forbidden list stays alongside — a pinned line is walkable one way, by
+// regenerating the golden, and re-pinning is a reflex; the negatives survive a
+// careless re-pin because they encode INTENT rather than text.
 func TestTheChatWiredBannerDoesNotClaimReachability(t *testing.T) {
 	onOut, _ := bannerBothDirections(t)
 	line := lineNaming(onOut, envAgentGateway)
 	if line == "" {
 		t.Fatalf("no banner line names %s at all.\nbanner:\n%s", envAgentGateway, onOut)
 	}
-	if !strings.Contains(line, "CHAT: WIRED") {
-		t.Fatalf("the line naming %s is not the CHAT one:\n  %s", envAgentGateway, line)
+
+	// Built from the same constants the banner formats, so a renamed variable or a
+	// changed scheme spelling moves BOTH sides and this stays a claim about the
+	// SENTENCE rather than about the values interpolated into it.
+	wantLine := "agent provisioning CHAT: WIRED " + envAgentGateway + "=" + gatewayHooksSHA256 +
+		" (" + envAgentGatewayModel + "=runtime-sentinel) — the two chat routes no longer " +
+		"refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT REACHABLE: agentspec.Build " +
+		"declares no port and no endpoint, so this driver resolves no address for an agent " +
+		"this binary provisioned and every such turn fails with " + provision.ErrNoEndpoint.Error() +
+		". Chat is usable only against an instance provisioned elsewhere, with an address " +
+		"this process can resolve. See cmd/muster-server/doc_seams.go entry 1"
+
+	if line != wantLine {
+		t.Errorf("the CHAT: WIRED line changed.\n  got:  %s\n  want: %s\n"+
+			"  This line is PINNED WHOLE on purpose: it carries a correction an audit forced —\n"+
+			"  the routes stop refusing, and a turn against an agent THIS binary provisioned\n"+
+			"  still resolves no address. A reword that keeps that meaning is fine; update\n"+
+			"  wantLine with it. A reword that drops it restores a banner stating a falsehood,\n"+
+			"  and a substring version of this test was MEASURED to pass over exactly that.",
+			line, wantLine)
 	}
 
-	// What the reader must still be told.
-	for _, want := range []string{
-		"WIRED IS NOT REACHABLE", // the correction itself
-		"no longer refuse",       // what IS true
-		"agentspec.Build",        // where the missing declaration lives
-		"doc_seams.go entry 1",   // where both blockers are written down
-	} {
-		if !strings.Contains(line, want) {
-			t.Errorf("the CHAT: WIRED line no longer says %q.\n"+
-				"  That sentence is the correction an audit forced: the routes stop refusing, and a\n"+
-				"  turn against an agent THIS binary provisioned still resolves no address. Dropping\n"+
-				"  it restores a banner that states a falsehood.\n  line: %s", want, line)
-		}
-	}
-	// The retracted claim must not come back, in either of its two spellings.
-	for _, forbidden := range []string{"the two chat routes are live", "over the same driver as lifecycle"} {
-		if strings.Contains(line, forbidden) {
+	// 🔴 THE NEGATIVES ARE NOT REDUNDANT WITH THE PIN. They are what survives a lazy
+	// re-pin: regenerating wantLine from a bad line is one paste, and these two phrases
+	// are the retracted claim itself, in both spellings it has appeared in.
+	for _, forbidden := range []string{"chat routes are live", "over the same driver as lifecycle"} {
+		if strings.Contains(strings.ToLower(line), strings.ToLower(forbidden)) {
 			t.Errorf("the CHAT: WIRED line has regained the retracted claim %q.\n  line: %s",
 				forbidden, line)
 		}
+	}
+}
+
+// TestTheRetractedReachabilityClaimIsGoneTREEWIDE is the sweep half, and it exists
+// because the retraction reached two of its three sites.
+//
+// 🔴 A RETRACTION IS A TREE-WIDE SWEEP, NOT AN EDIT WHERE YOU WERE LOOKING. The round
+// that corrected the banner and the linkage note left "The two CHAT ROUTES are live"
+// in doc_seams.go — the one document the corrected banner POINTS A READER AT. The
+// sweep that missed it was a lowercase fixed-string grep; the case-insensitive one
+// hit. So this guard is case-insensitive by construction, and it covers the sources a
+// reader arrives at, not just the file that was reported.
+//
+// ⚠ IT ALLOWS THE PHRASE INSIDE THIS FILE'S OWN FORBIDDEN LIST AND COMMENTS, which is
+// the one place it must appear. That exemption is narrow and named rather than a
+// path-prefix skip, because an exemption wide enough to be convenient is how the next
+// occurrence hides.
+func TestTheRetractedReachabilityClaimIsGoneTREEWIDE(t *testing.T) {
+	// The claim, as a relationship rather than one spelling: "chat routes" followed
+	// closely by a reachability word.
+	re := regexp.MustCompile(`(?i)chat[ _-]?routes?[^.\n]{0,60}(live|usable|reachable)`)
+
+	roots := []string{"main.go", "doc_seams.go", "config.go", "provisioner.go"}
+	hits := 0
+	for _, f := range roots {
+		body, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("reading %s: %v — this guard is scoped to a NAMED list, so a missing "+
+				"file is a broken guard rather than a clean sweep", f, err)
+		}
+		for _, m := range re.FindAllString(string(body), -1) {
+			hits++
+			t.Errorf("%s still asserts the retracted reachability claim: %q\n"+
+				"  The chat routes stop REFUSING; they are not reachable for an agent this\n"+
+				"  binary provisions. See doc_seams.go entry 1 for both blockers.", f, m)
+		}
+	}
+
+	// 🔴 POSITIVE CONTROL: the pattern must be able to MATCH, or a zero above means
+	// only that the regexp is wrong. This is the exact sentence the sweep missed.
+	const missed = "NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH. The two CHAT ROUTES are live;"
+	if !re.MatchString(missed) {
+		t.Fatalf("positive control FAILED: the pattern does not match the very sentence this "+
+			"guard was written for (%q), so its %d hit(s) over the sources say nothing", missed, hits)
 	}
 }
 

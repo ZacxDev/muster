@@ -597,6 +597,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			// of the REQUEST, not of the object, so a buildGateway that mapped a value
 			// to the wrong Runtime would print the value the operator set and be wrong.
 			// The type assertion is what makes this the object's own answer.
+			//
+			// ⚠ AND IT IS UNPINNED, STRUCTURALLY, WHICH IS WORTH SAYING SO A LATER
+			// SIMPLIFICATION DOES NOT SILENTLY REVERT IT. With exactly one legal
+			// non-none scheme the config value and the object's answer CANNOT disagree,
+			// so deleting this assertion leaves the whole suite green — measured. It
+			// becomes pinnable the moment a second Runtime exists; until then the
+			// mapping itself is covered by the gw.Runtime() assertion in
+			// TestNamingARuntimeWiresAGatewayAndNotNamingOneWiresNothing, which is a
+			// different claim. ⚠ The name is on ONE line deliberately: splitting it
+			// across a line break made internal/modulegate's citation gate read a test
+			// that does not exist — the gate was right, and it caught this.
 			scheme := a.cfg.agentGateway()
 			if r, ok := ext.Gateway.(interface{ Runtime() string }); ok {
 				scheme = r.Runtime()
