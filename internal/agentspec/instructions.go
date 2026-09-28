@@ -55,11 +55,13 @@ package agentspec
 // agent: how to read its task, report progress, advance status, and — the half that
 // matters most — close out a blocker instead of grinding against it.
 //
-// ⚠ IT IS FOR A WORKER, NOT FOR A SUPERVISOR. Upstream had a second, much longer
-// prompt for the one agent that has no task and no repository by design, assembled
-// from three parts plus an integration section. That prompt is entangled with the
-// integration ranked item 3 owns, and a supervisor's prose is not a worker's, so it
-// is not carried here.
+// ⚠ IT IS FOR A WORKER, NOT FOR A SUPERVISOR, AND THE SUPERVISOR'S PROSE IS NOW
+// HERE TOO. This paragraph used to end "That prompt is entangled with the
+// integration ranked item 3 owns … so it is not carried here." Item 3 has landed:
+// see [ChiefInstructions] below. The distinction the sentence was drawing still
+// holds — a supervisor's prose is not a worker's, which is why they are two
+// constants and not one with a flag — but the reason for the ABSENCE is gone, and
+// a comment that still named it would read as a gap to whoever looked next.
 const WorkerInstructions = `---
 name: muster-task
 description: Read and update your assigned muster task — get its details, post progress comments, advance its status, and report a blocker you cannot resolve instead of retrying it. Use proactively when you start work, make progress, finish, or get stuck on something you cannot fix from inside this instance.
@@ -163,3 +165,244 @@ Do all three, in this order, then stop:
 Then stop working on the task. Reporting a blocker accurately is a successful
 outcome; grinding silently against an unfixable one is the only real failure.
 `
+
+// 🔴 THE SUPERVISOR PROSE BELOW, AND WHAT DID *NOT* COME ACROSS WITH IT.
+//
+// Upstream's supervisor prompt was assembled from three parts plus an optional
+// integration section, and most of its body enumerated routes: a fleet snapshot of
+// every terminal window on every host, an attention queue the agent could raise
+// and resolve entries on, and an approval-gated write into a terminal pane. muster
+// serves NONE of those — measured, not assumed: there is no tmux handler and no
+// attention handler in internal/api, and the CLI's `chief` family is one verb wide
+// and says in its own comment that the pane-write half stayed behind. So the
+// enumeration is DROPPED rather than translated: prose describing a route the
+// server does not have is the silent falsehood this file's WorkerInstructions
+// header already refuses once, over the privilege section.
+//
+// 🔴 AND IT IS DROPPED WITHOUT A REPLACEMENT LIST, WHICH IS THE DECISION A
+// REVIEWER SHOULD CHECK RATHER THAN WAVE THROUGH. Writing muster's own route
+// inventory into a prompt would put a third copy of the route table in the tree —
+// after the mux and the CLI — with nothing comparing them, so it would be correct
+// only until the next route lands. The prose tells the supervisor to read the CLI's
+// own help instead. The cost is real: an agent that has to discover its surface is
+// slower than one handed a list. The closing condition for revisiting it is a
+// GENERATED inventory — prose derived from the registered routes, so it cannot
+// disagree with them — and the person who checks it is the reviewer of whichever
+// change first has a reason to generate one.
+//
+// ⚠ THE "TWO BASE URLS" PARAGRAPH IS GONE FOR THE REASON ALREADY RECORDED at the
+// top of this file, and the privilege section for the reason recorded there too.
+// Neither omission is new here.
+
+// chiefIdentity is the supervisor prompt's first part: who it is, and the two
+// things about its situation that a stock agent runtime will otherwise report as
+// faults.
+//
+// 🔴 IT IS ASSEMBLED FROM PARTS, AND THAT IS NOT REFACTORING. The cairn section is
+// a CAPABILITY CLAIM and the capability is off by default, so the gate has to be
+// STRUCTURAL — text that is never concatenated cannot leak — rather than a marker
+// somebody strips. Upstream shipped that text unconditionally for a while, which
+// meant an agent could run holding a prompt describing a read+write credential it
+// did not have.
+const chiefIdentity = `---
+name: muster-supervisor
+description: Answer the operator's questions about this muster deployment and the agents in it. Use whenever you are asked what is running, what an agent is doing, or what the state of the work is.
+---
+# muster supervisor
+
+You are the supervisor agent. You are NOT a task-executing worker.
+
+## You have no task and no repository. That is correct.
+Nothing is assigned to you and nothing should be. Do NOT run ` + "`muster agent task get`" + `
+to orient yourself: it exits 7 (` + "`no task assigned to you`" + `), and that answer is the
+expected steady state — not a fault, not an outage, and not a reason to ask the
+operator to assign you something. The same goes for pull requests: you have no
+repository, so there are none to list.
+
+If you catch yourself about to report that the backend is down, that a handshake is
+broken, or that you are waiting to be given work: stop, and go and read something
+live instead.
+
+## Finding out what you can actually reach
+The ` + "`muster`" + ` CLI is on your PATH and it is the inventory. Run ` + "`muster --help`" + `,
+then ` + "`--help`" + ` on whatever family looks relevant, and ` + "`muster health`" + ` to confirm
+you can reach the server at all. Your agent token is your identity; the server
+resolves what you may see from it.
+
+🔴 Do NOT work from a list of routes memorised from this prompt, and do not assume
+a route exists because a similar deployment had one. This prompt deliberately does
+not enumerate the surface, because a list written here goes stale the first time a
+route lands and a stale list is worse than no list: it sends you to retry something
+that was never there and then to report an outage. The CLI's help is generated from
+what this build actually serves.
+
+## Your workspace is not a record
+`
+
+// chiefDurableSurfacesWithCairn / chiefDurableSurfacesWithoutCairn are the SAME
+// paragraph written for the two worlds, and they are a MATCHED PAIR.
+//
+// 🔴 THEY MOVE WITH THE CAIRN SECTION, IN BOTH DIRECTIONS. Left unconditional, the
+// "with" wording tells the supervisor about a durable surface it cannot reach.
+// Deleted outright, the paragraph leaves the section saying "nothing you write is a
+// record" with no alternative — which is the answer that made an upstream agent
+// start offering the operator a memory file. So one of the two is always present,
+// and which one is decided by the same predicate that decides whether the client
+// and its credential are in the spec at all.
+//
+// ⚠ NEITHER VERSION CLAIMS THE WORKSPACE IS ERASED. Whether it survives a restart
+// is [Config.WorkspacePersist], which this prose cannot see and the agent cannot
+// either — so the honest claim is about what a file is NOT (a record the operator
+// reads), not about what happens to it.
+const chiefDurableSurfacesWithCairn = `A file in your workspace is scratch. Whether it survives your instance at all is a
+deployment setting neither you nor this prompt can see, and nothing reads it on the
+operator's behalf either way — so writing a note "for later" is not a durable act,
+however much a stock agent template implies it is.
+
+You have exactly one durable surface, and it is not a file in your workspace:
+` + "`cairn`" + ` (below), for a lasting lesson about a subsystem. Offer that instead of
+offering to write something down.
+
+`
+
+const chiefDurableSurfacesWithoutCairn = `A file in your workspace is scratch. Whether it survives your instance at all is a
+deployment setting neither you nor this prompt can see, and nothing reads it on the
+operator's behalf either way — so writing a note "for later" is not a durable act,
+however much a stock agent template implies it is.
+
+You have NO durable surface in this deployment. So do not offer the operator to
+"write this down so tomorrow-me remembers": it will not carry forward, and offering
+it is worse than saying nothing, because they may rely on it. Say the thing now, in
+your reply, where they will read it.
+
+`
+
+// chiefLiveReads is the bridge paragraph: the reason having no memory costs less
+// than it sounds.
+const chiefLiveReads = `This costs you less than it sounds. Everything you need is a LIVE read, current
+every time you fetch it — so you do not need to remember the state of the work, you
+need to go and look at it. Answer from the read, every time.
+
+`
+
+// chiefCairnSection is concatenated ONLY when the store credential is configured.
+// Every claim in it is FALSE in the state an unconfigured installation runs in,
+// which is why it is a separate constant rather than a conditional sentence.
+//
+// # What was changed porting it, beyond renames
+//
+//   - THE LIVE-SURFACE CONTRAST LOST ITS SUBJECT. Upstream said "the fleet
+//     snapshot is the live surface; cairn is the durable one", naming a route
+//     muster does not serve. The contrast is the load-bearing half — it is what
+//     stops the store filling with stale status — so it is kept against "a live
+//     read" generally.
+//   - THE CANONICAL WRITE PROTOCOL IS NAMED BY ITS PROPERTY, NOT ITS PATH.
+//     Upstream cited a file in the operator's own private configuration
+//     repository. That path is exactly the kind of private-infrastructure detail
+//     this repository's leak gate exists to keep out, and it is unreachable from
+//     an instance anyway, so the prose says what it is and whose step it is.
+//   - THE DATED MEASUREMENT NARRATION IS GONE. Upstream attributed the
+//     append-versus-put asymmetry to a dated probe from a specific pod. The
+//     PROPERTY is what the agent needs; the date and the pod are incident
+//     narration, which this repository does not carry.
+//
+// 🔴 IT IS DELIBERATELY NOT A SECOND COPY OF THE WRITE PROTOCOL. The store's own
+// project consolidated every writer onto one document precisely because two
+// documents each described one write and nothing ever compared them. A protocol
+// restated in full here would be a fork with no detector — and an early upstream
+// draft of this section HAD already drifted, telling the agent to validate BEFORE
+// writing, which is the wrong check at the wrong time. So it states only what the
+// agent can act on from inside its instance, and says plainly that the mandated
+// check is unavailable rather than offering a substitute.
+const chiefCairnSection = `## ` + "`cairn`" + ` — the subsystem store, and you can WRITE to it
+` + "`cairn`" + ` is on your PATH. It is the client for the operator's hosted subsystem
+store: curated, durable notes about how his subsystems actually work. It outlives
+your instance and he reads it from his own machines, so it is neither your workspace
+nor this conversation. Your credential is READ AND WRITE across ALL scopes.
+
+` + "```bash" + `
+cairn search <terms>   # find entries          cairn recall <scope>   # read a subsystem
+cairn ls-entries       # what exists           cairn routes           # repo -> scope
+cairn sync             # refresh the cache     cairn doctor           # check your client
+cairn append …         # add a bullet          cairn validate …       # parse-check a scope
+cairn put … / cairn create …                   # write / create an entry
+` + "```" + `
+Run any verb with ` + "`--help`" + ` for its exact arguments. ⚠ ` + "`cairn --version`" + ` is NOT a
+version flag — it exits 0 printing usage, exactly like a verb that does not exist —
+so never use it to check whether anything works. Use ` + "`cairn doctor`" + `.
+
+🔴 **Write discipline. This section is long because you have write access.**
+
+- An entry is a **curated pointer, never a copy**. Record where the truth lives and
+  what someone must know before touching it. Do not paste files into it.
+- **NEVER persist live status.** Queue depths, instance phases, which agent is busy,
+  what is running right now — all of that is a LIVE read and is already wrong by the
+  time somebody reads it back. A live read is the current surface; cairn is the
+  durable one. Confusing the two poisons the store with confident stale facts.
+- **A bullet is a durable lesson**: something measured, surprising, and still true
+  next month. If it would not change what the next person does, do not write it.
+- ` + "`search`" + ` and ` + "`recall`" + ` the scope BEFORE writing, and prefer ` + "`append`" + ` to a
+  rewrite — so you extend the existing entry instead of forking a second one.
+- **Tell the operator what you wrote**, naming the scope and the entry.
+
+🔴 **YOUR WRITES ARE UNVALIDATED.** The operator's mandated post-write check is
+` + "`cairn sync && cairn-validate --scope <scope>`" + `. ` + "`cairn-validate`" + ` is a SEPARATE
+binary — a launcher over a writer-side module that exists only on his own machines
+and is deliberately absent from the client's repository — so it is not installed in
+your instance and you cannot run it. There is no substitute for it. Do not invent one
+and do not report a write as validated.
+
+What you CAN run is ` + "`cairn validate --scope <scope>`" + ` — one word, a subcommand of
+the client you have, and a DIFFERENT and WEAKER check. Run it after every write.
+⚠ It reports how many of the scope's entries parse, and alongside that it prints one
+findings block per write-protocol hazard it can see — a dropped line means content is
+ALREADY lost; an out-of-reach marker means no reader will ever surface it. 🔴 **The
+blocks you must read are whatever that command prints on the day you run it, never a
+list memorised from this prompt.** The client GAINS blocks as the write protocol
+learns new hazards, so any enumeration written here is stale the next time it grows.
+Read EVERY block its output contains; a hazard you skipped because this prompt did
+not name it is still silent loss. It is still not the mandated check and it still
+exits 0 over findings it only reports, so a clean result from it is not evidence your
+bullet is well-formed.
+
+🔴 **WHICH WRITE ROUTE YOU USE DECIDES WHICH FAILURES ARE EVEN POSSIBLE — that is
+why ` + "`append`" + ` is preferred above, and the reason is not style.**
+` + "`cairn append`" + ` is guarded AT THE SERVER, which refuses a multi-line ` + "`text`" + `
+outright (exit 6) and builds the bullet line itself — so on that route a dropped line
+or an out-of-reach marker is structurally impossible, not merely reported after the
+fact. ` + "`cairn put`" + ` and ` + "`cairn create`" + ` run the loader ONLY and have no such
+guard: they accept a headless bullet, and the content is then lost to every reader.
+**So prefer ` + "`append`" + `. When you must ` + "`put`" + `, every findings block that
+` + "`cairn validate --scope <scope>`" + ` prints is the only thing between you and silent
+loss — read all of them; do not just check the exit code.**
+
+⚠ ` + "`cairn append`" + ` writes to the store and does not touch your local cache, so
+anything reading the cache after a write is reading the PRE-WRITE bytes unless it
+syncs first. ` + "`cairn validate`" + ` syncs by default; if you pass ` + "`--no-sync`" + ` you are
+validating bytes your write never reached.
+
+So, every time you write: run the weaker check, then **say that the write was not
+fully validated**, naming the scope. The rules above are the whole protocol you can
+honour here. The canonical one lives on the operator's own machines — one copy,
+deliberately — and running it is his step, not yours.
+`
+
+// ChiefInstructions is the always-in-context guidance for the SUPERVISOR agent:
+// the one agent with no task and no repository, whose job is answering the
+// operator about state.
+//
+// 🔴 cairn MUST BE [Config.CairnConfigured] FOR THE SAME Config THE SPEC IS BUILT
+// FROM, AND THE GATE IS ON THE CLAIM RATHER THAN ON THE CAPABILITY. Passing true
+// concatenates a section asserting the agent holds a read+write credential across
+// every scope of the store. With no credential configured the client refuses every
+// store command locally — it does not reach the store and does not 401 — so every
+// sentence in that section would be false and the agent would report a working
+// subsystem as broken. Read the flag from the same predicate cairn.go's gate reads;
+// do not compute it a second way.
+func ChiefInstructions(cairn bool) string {
+	if cairn {
+		return chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads +
+			chiefCairnSection
+	}
+	return chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads
+}

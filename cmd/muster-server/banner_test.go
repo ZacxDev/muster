@@ -392,6 +392,20 @@ var bannerExempt = map[string]string{
 	envAgentEndpointTmpl: "overrides the driver's own DefaultEndpointTemplate. It decides " +
 		"where an instance is REACHED, which the driver resolves per instance " +
 		"(provision.Provisioner.Endpoint) rather than once at boot",
+	envAgentCairnURL: "one half of a BOTH-OR-NEITHER pair reaching agentspec.Config. Unset " +
+		"is the shipping state and in it NOTHING is emitted — no install step, no " +
+		"credential file, no environment variable — so there is no posture for a banner " +
+		"line to report. The half that could be silently wrong is a URL with no token " +
+		"(or the reverse), and that is not announced either: it is gated by " +
+		"agentspec.Config.CairnConfigured, which both the spec and the supervisor's " +
+		"prose read, and pinned by " +
+		"TestTheSupervisorsProseAndItsSpecAgreeAboutTheStore",
+	envAgentCairnToken: "the other half of the pair; see MUSTER_AGENT_CAIRN_URL. ⚠ IT IS A " +
+		"READ+WRITE CREDENTIAL across every scope of the operator's knowledge store, " +
+		"which is the positive reason it is NOT on the banner: a boot line naming it " +
+		"would put a line about a live write key into every log this process emits, and " +
+		"the only fact a reader needs — whether the integration is on — is visible from " +
+		"the instance's own spec",
 }
 
 // bannerStubGitHubStore stands in for a wired GitHub store. Only its presence

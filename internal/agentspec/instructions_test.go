@@ -1,6 +1,8 @@
 package agentspec
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -138,5 +140,296 @@ func TestTheInstructionsRefuseToTeachAStatusTheAgentCannotSet(t *testing.T) {
 		if !strings.Contains(WorkerInstructions, status) {
 			t.Errorf("the instructions do not name the settable status %q", status)
 		}
+	}
+}
+
+// --------------------------------------------------------------------------
+// The supervisor prompt, and the one capability claim inside it.
+// --------------------------------------------------------------------------
+
+// TestTheSupervisorProseClaimsTheStoreOnlyWhenTheFlagIsSet is the prose half of
+// the gate.
+//
+// 🔴 THE HAZARD IS A PROMPT DESCRIBING A CREDENTIAL THE INSTANCE DOES NOT HOLD.
+// With no store configured the client refuses every command locally — it never
+// contacts the store and never 401s — so an agent told it has read+write access
+// across every scope would report a working subsystem as broken and send whoever
+// reads that report to the store's auth layer, where there is nothing to find.
+//
+// 🔴 IT COMPARES THE WHOLE SECTION, NOT A KEYWORD. A guard on words is walkable by
+// rewording: a reintroduction that avoided the one phrase somebody thought to
+// forbid would pass. So the with-flag output must contain the section as a unit and
+// the without-flag output must contain NO part of it — checked paragraph by
+// paragraph, so a partial leak is caught too.
+func TestTheSupervisorProseClaimsTheStoreOnlyWhenTheFlagIsSet(t *testing.T) {
+	with, without := ChiefInstructions(true), ChiefInstructions(false)
+
+	// Control: the two must differ at all, or every assertion below is vacuous.
+	if with == without {
+		t.Fatal("ChiefInstructions(true) and ChiefInstructions(false) are identical, so the flag " +
+			"changes nothing and this guard is measuring a constant")
+	}
+	if len(chiefCairnSection) < 1000 {
+		t.Fatalf("the store section is only %d bytes, which is too small for the containment "+
+			"checks below to mean anything", len(chiefCairnSection))
+	}
+
+	if !strings.Contains(with, chiefCairnSection) {
+		t.Error("ChiefInstructions(true) does not carry the store section as a unit — it has been " +
+			"reassembled or edited in place, which is how a conditional section stops being " +
+			"structurally conditional")
+	}
+
+	// 🔴 PARAGRAPH BY PARAGRAPH, so a PARTIAL reintroduction is caught. A single
+	// containment check on the whole section passes for prose that leaked half of it.
+	leaked := 0
+	for _, para := range strings.Split(chiefCairnSection, "\n\n") {
+		para = strings.TrimSpace(para)
+		if len(para) < 40 {
+			continue // too short to be distinctive; the long ones carry the claims
+		}
+		if strings.Contains(without, para) {
+			leaked++
+			t.Errorf("ChiefInstructions(false) contains a paragraph of the store section:\n%q", para)
+		}
+	}
+	// A count, so a loop that matched nothing cannot report a clean zero.
+	if checked := strings.Count(chiefCairnSection, "\n\n"); checked < 5 {
+		t.Errorf("only %d paragraph breaks in the section, so the loop above inspected too few "+
+			"paragraphs to be a real check", checked)
+	}
+	if leaked > 0 {
+		t.Logf("%d paragraph(s) leaked", leaked)
+	}
+
+	// The claim the whole gate exists for, spelled here rather than taken from the
+	// constant: comparing the implementation to itself proves nothing.
+	const theClaim = "Your credential is READ AND WRITE across ALL scopes."
+	if !strings.Contains(with, theClaim) {
+		t.Errorf("the store section does not state %q. That sentence is what makes the section a "+
+			"CAPABILITY CLAIM, and the whole conditional exists because it must not be made "+
+			"falsely — if it has been reworded, this literal moves with it deliberately.", theClaim)
+	}
+	if strings.Contains(without, theClaim) {
+		t.Errorf("ChiefInstructions(false) claims %q with no credential configured", theClaim)
+	}
+}
+
+// TestTheStoreSectionIsPinnedWholeRatherThanByKeyword closes the gap a mutation
+// sweep found in the guard above.
+//
+// 🔴 A GUARD ON WORDS IS WALKABLE BY REWORDING, AND THAT WAS MEASURED HERE RATHER
+// THAN FEARED. TestTheSupervisorProseClaimsTheStoreOnlyWhenTheFlagIsSet pins ONE
+// sentence — the capability claim — against an independently-typed literal, and a
+// sweep confirmed that a reword of any OTHER sentence in the section SURVIVED it.
+// One of those other sentences is the write-discipline rule that keeps the store
+// from filling with copies instead of pointers, so "not load-bearing" was not a
+// defensible reading.
+//
+// ⚠ IT IS A CHANGE SIGNAL, NOT A CORRECTNESS ONE, and it is labelled as such for
+// the same reason the spec golden is. A digest cannot tell you the prose is right;
+// it tells you it moved. The alternative — retyping five kilobytes of prose into
+// this file — was rejected because a 5 KB duplicate diverges silently, which is
+// worse than a digest that cannot.
+//
+// 🔴 THE PRICE IS DELIBERATE: any edit to the section fails this test. Recompute the
+// numbers below, read the diff, and confirm the sentence-level guards still pass.
+func TestTheStoreSectionIsPinnedWholeRatherThanByKeyword(t *testing.T) {
+	// Recorded from the section as committed. Two independent quantities, because a
+	// digest alone gives a reader no idea how far the text moved and a length alone
+	// is satisfied by any same-length rewrite.
+	const (
+		wantLen    = 4800
+		wantSHA256 = "c9bd0443c4531aa9561a967f40ae395456f8aae5fea27ea800bce39fbd82f590"
+	)
+
+	// Control: refuse a comparison against an empty or trivially short section.
+	if len(chiefCairnSection) < 1000 {
+		t.Fatalf("the section is %d bytes; a digest over that is not pinning prose",
+			len(chiefCairnSection))
+	}
+
+	sum := fmt.Sprintf("%x", sha256.Sum256([]byte(chiefCairnSection)))
+	if len(chiefCairnSection) != wantLen || sum != wantSHA256 {
+		t.Errorf("the store section has changed.\n  length: %d (recorded %d)\n  sha256: %s "+
+			"(recorded %s)\n\n"+
+			"🔴 THIS IS A CHANGE SIGNAL, NOT A CORRECTNESS ONE. Every sentence in this section is a "+
+			"claim about a credential the instance may or may not hold, and a keyword guard is "+
+			"walkable by rewording — measured: a reword of the write-discipline rule survived every "+
+			"other guard in this file. If the edit is intended, read the diff, confirm the "+
+			"sentence-level guards above still pass, and record these two numbers.",
+			len(chiefCairnSection), wantLen, sum, wantSHA256)
+	}
+}
+
+// TestTheSupervisorsDurableSurfaceParagraphsAreAMatchedPair pins the pair that has
+// to move with the section.
+//
+// 🔴 IT PINS THE WHOLE NORMALISED STRING OF EACH VERSION AGAINST AN
+// INDEPENDENTLY-TYPED LITERAL, and the price is deliberate: any reword fails this
+// test. That is what buys a machine-readable claim about prose. Comparing against
+// the constants themselves would compare the implementation to itself.
+//
+// 🔴 EXACTLY ONE OF THE TWO IS PRESENT, EVER. Both would tell the agent it has one
+// durable surface and also none. Neither leaves the no-persistence paragraph saying
+// "nothing you write is a record" with no alternative — which is the answer that
+// made an upstream agent start offering the operator a memory file.
+func TestTheSupervisorsDurableSurfaceParagraphsAreAMatchedPair(t *testing.T) {
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+	const wantWith = "A file in your workspace is scratch. Whether it survives your instance at " +
+		"all is a deployment setting neither you nor this prompt can see, and nothing reads it on " +
+		"the operator's behalf either way — so writing a note \"for later\" is not a durable act, " +
+		"however much a stock agent template implies it is. You have exactly one durable surface, " +
+		"and it is not a file in your workspace: `cairn` (below), for a lasting lesson about a " +
+		"subsystem. Offer that instead of offering to write something down."
+
+	const wantWithout = "A file in your workspace is scratch. Whether it survives your instance " +
+		"at all is a deployment setting neither you nor this prompt can see, and nothing reads it " +
+		"on the operator's behalf either way — so writing a note \"for later\" is not a durable " +
+		"act, however much a stock agent template implies it is. You have NO durable surface in " +
+		"this deployment. So do not offer the operator to \"write this down so tomorrow-me " +
+		"remembers\": it will not carry forward, and offering it is worse than saying nothing, " +
+		"because they may rely on it. Say the thing now, in your reply, where they will read it."
+
+	// A non-empty control on both literals, so the comparison cannot run against "".
+	for name, want := range map[string]string{"with": wantWith, "without": wantWithout} {
+		if len(want) < 200 {
+			t.Fatalf("the %s literal is %d bytes, too short for this comparison to be a pin",
+				name, len(want))
+		}
+	}
+	if wantWith == wantWithout {
+		t.Fatal("the two expected paragraphs are identical, so this test cannot tell them apart")
+	}
+
+	if got := norm(chiefDurableSurfacesWithCairn); got != wantWith {
+		t.Errorf("the with-store paragraph has changed.\ngot:  %q\nwant: %q\n"+
+			"This is a whole-string pin on purpose: a guard on keywords is walkable by rewording. "+
+			"If the reword is intended, retype the literal here and read the diff.", got, wantWith)
+	}
+	if got := norm(chiefDurableSurfacesWithoutCairn); got != wantWithout {
+		t.Errorf("the without-store paragraph has changed.\ngot:  %q\nwant: %q", got, wantWithout)
+	}
+
+	// Exactly one of the two, in each rendering.
+	for _, c := range []struct {
+		name      string
+		out       string
+		wantThis  string
+		wantNotIt string
+	}{
+		{"configured", ChiefInstructions(true), chiefDurableSurfacesWithCairn, chiefDurableSurfacesWithoutCairn},
+		{"unconfigured", ChiefInstructions(false), chiefDurableSurfacesWithoutCairn, chiefDurableSurfacesWithCairn},
+	} {
+		if !strings.Contains(c.out, c.wantThis) {
+			t.Errorf("%s: the expected durable-surface paragraph is missing", c.name)
+		}
+		if strings.Contains(c.out, c.wantNotIt) {
+			t.Errorf("%s: BOTH durable-surface paragraphs are present, so the prompt says the agent "+
+				"has one durable surface and also none", c.name)
+		}
+	}
+}
+
+// TestTheSupervisorProseDoesNotDescribeRoutesMusterDoesNotServe is the guard for
+// the enumeration deliberately dropped on the way across.
+//
+// 🔴 EACH FORBIDDEN STRING IS A ROUTE FAMILY MUSTER HAS NO HANDLER FOR. An agent
+// told to read a fleet snapshot or raise an attention entry gets a 404, retries,
+// and reports an outage — the same silent-falsehood shape the worker prose's
+// dropped privilege section records.
+//
+// ⚠ THE POSITIVE HALF IS WHAT KEEPS THIS FROM BEING A BARE ABSENCE. Dropping the
+// enumeration only works if the prompt says what to do INSTEAD, which is to read
+// the CLI's own help.
+func TestTheSupervisorProseDoesNotDescribeRoutesMusterDoesNotServe(t *testing.T) {
+	for _, out := range []string{ChiefInstructions(true), ChiefInstructions(false)} {
+		for _, forbidden := range []string{
+			"/api/tmux",
+			"tmux",
+			"/api/attention",
+			"attention entry",
+			"pane",
+			"TASK_API_URL",
+			"TWO base URLs",
+		} {
+			if strings.Contains(out, forbidden) {
+				t.Errorf("the supervisor prose contains %q, describing a surface muster has no "+
+					"handler for. An agent following it gets a 404, retries, and reports an "+
+					"outage.", forbidden)
+			}
+		}
+	}
+
+	// The replacement instruction must be there, or the capability was lost rather
+	// than relocated.
+	with := ChiefInstructions(true)
+	for _, required := range []string{
+		"muster --help",
+		"muster health",
+		"muster agent task get",
+	} {
+		if !strings.Contains(with, required) {
+			t.Errorf("the supervisor prose does not teach %q, so dropping the route enumeration "+
+				"left the agent with no way to discover its surface", required)
+		}
+	}
+	// And the reason, so a later reader does not helpfully add a list back.
+	//
+	// ⚠ MATCHED AGAINST WHITESPACE-NORMALISED PROSE. The sentence is wrapped in the
+	// constant, so a raw Contains over a phrase that crosses a line break reports a
+	// confident absence — which is what the first run of this check did. A guard
+	// whose matcher cannot see the text it is looking for reads exactly like a
+	// missing sentence.
+	if !strings.Contains(strings.Join(strings.Fields(with), " "), "does not enumerate the surface") {
+		t.Error("the prose does not say WHY it lists no routes, so the next editor will add a " +
+			"list that goes stale on the first new route")
+	}
+}
+
+// TestTheSupervisorProseTellsTheAgentItsEmptyTaskIsExpected guards the one thing a
+// stock agent runtime reliably reports as a fault.
+func TestTheSupervisorProseTellsTheAgentItsEmptyTaskIsExpected(t *testing.T) {
+	for _, out := range []string{ChiefInstructions(true), ChiefInstructions(false)} {
+		if !strings.Contains(out, "You have no task and no repository") {
+			t.Error("the supervisor prose does not say the empty task is by design, so the agent " +
+				"reports it as an outage")
+		}
+		if !strings.Contains(out, "exits 7") {
+			t.Error("the prose does not name the exit code the agent will actually see, which is " +
+				"the part that makes the reassurance checkable from inside the instance")
+		}
+	}
+}
+
+// TestTheSupervisorProseCarriesNoPrivateInfrastructureDetail is a narrow, local
+// echo of the repository's leak gate.
+//
+// ⚠ tests/leakscan.py IS THE REAL OWNER and covers every file rather than this one
+// string. This exists because the upstream text this was ported from cited a path
+// inside the operator's own private configuration repository and narrated a dated
+// measurement from a specific pod — both of which are exactly what the port had to
+// strip, and a guard at the point of the edit is what tells the next editor not to
+// paste them back.
+func TestTheSupervisorProseCarriesNoPrivateInfrastructureDetail(t *testing.T) {
+	out := ChiefInstructions(true)
+	for _, forbidden := range []string{
+		"subsystem-index",
+		"SKILL.md",
+		"devrc",
+		"MEASURED 2026",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("the supervisor prose contains %q — a private repository's layout or a dated "+
+				"incident reference, neither of which belongs in a public repository and neither "+
+				"of which an instance can reach anyway", forbidden)
+		}
+	}
+	// The positive half: the canonical protocol must still be ATTRIBUTED, or
+	// stripping the path quietly turned "his step" into "nobody's step".
+	if !strings.Contains(out, "running it is his step, not yours") {
+		t.Error("the prose no longer says whose step the canonical write check is, so an agent " +
+			"reads its own weaker check as the whole protocol")
 	}
 }

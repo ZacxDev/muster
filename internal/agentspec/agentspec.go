@@ -42,11 +42,15 @@
 //     ([Options.Instructions]) and places it as a file. That is the right seam:
 //     the mechanism and the prose have different owners and different review
 //     needs.
-//   - It does not touch CAIRN. Upstream, cairnInstallCommand() and the
-//     SubsystemStore* config fields were part of the same function. They are
-//     ranked item 3 ("port the chief→cairn integration"), gated ahead of plan
-//     step 23, and folding them in here would make one PR answer to two
-//     decisions.
+//   - ⚠ IT DOES TOUCH CAIRN NOW, AND THIS BULLET USED TO SAY IT DID NOT. Ranked
+//     item 3 ("port the chief→cairn integration") has landed: see cairn.go for
+//     the client install, the credential file and the one gate that decides
+//     whether either exists, and [ChiefInstructions] for the prose half. What is
+//     still true is the SHAPE the old bullet was defending — the coordinates are
+//     [Config] fields, eligibility is an [Options] input, and nothing in this
+//     package compares an agent name against a constant to decide who gets a
+//     credential. Both-unset emits nothing at all, which is the state an
+//     installation that has not configured a store runs in.
 //   - It does not build the GATEWAY wiring — the bearer derivation, the chat
 //     endpoint, the responses model sentinel. That is plan step 22c, and
 //     internal/agents/responses.go already carries its own OWED record naming
@@ -124,6 +128,15 @@ const (
 	EnvGitTerminalPrompt = "GIT_TERMINAL_PROMPT"
 	// EnvOpenRouterKey is the shared model-provider credential. Also a secret.
 	EnvOpenRouterKey = "OPENROUTER_API_KEY"
+	// EnvCairnConfig points the subsystem-store client at [CairnConfigPath].
+	//
+	// 🔴 IT IS SET ONLY WHEN THE INTEGRATION IS ON, and it is NOT a secret: it
+	// names a path, and the credential it names travels as a confidential
+	// [provision.File]. It is in this block — and in buildEnv's reserved set —
+	// because a caller shadowing it through [Options.ExtraEnv] would point the
+	// client at a file muster did not write, which fails as "the store is
+	// unreachable" rather than as a configuration mistake. See cairn.go.
+	EnvCairnConfig = "CAIRN_CONFIG"
 )
 
 // InstructionsFileName is the file [Options.Instructions] is written to, inside
@@ -191,6 +204,25 @@ type Config struct {
 	// directions at once. Nil is valid and silent. Anchor each entry with a leading
 	// "/" unless you mean it to match at every depth.
 	AutosaveExcludePatterns []string
+
+	// CairnURL and CairnToken are the hosted subsystem-store coordinates.
+	//
+	// 🔴 BOTH-OR-NEITHER, AND INERT WHEN UNSET. With either one empty nothing
+	// cairn-related is emitted — no install step, no credential file, no
+	// environment variable — and the prose half claims nothing. A token without a
+	// URL is useless in exactly the case a credential exists for. Read the
+	// pair through [Config.CairnConfigured], never field by field.
+	//
+	// 🔴 CairnToken IS A READ+WRITE KEY ACROSS EVERY SCOPE OF THE STORE, which is
+	// why eligibility is an explicit per-call input ([Options.CairnEligible])
+	// rather than something every agent gets. cairn.go's header carries the
+	// blast-radius argument in full.
+	//
+	// ⚠ THERE IS DELIBERATELY NO DEFAULT URL. A built-in would collapse the gate
+	// to "is the token set", and a store's address is deployment state rather
+	// than a constant this package should assert.
+	CairnURL   string
+	CairnToken string
 }
 
 // Options is the per-call part that is neither deployment config nor a column on
@@ -223,6 +255,23 @@ type Options struct {
 	// [EnvAPIURL] would point an instance at the wrong server, and silently
 	// dropping the caller's value would be worse.
 	ExtraEnv []provision.EnvVar
+
+	// CairnEligible declares that THIS agent may hold the subsystem-store
+	// credential. It is one half of the gate; [Config.CairnConfigured] is the
+	// other, and both must be true before anything is emitted.
+	//
+	// 🔴 IT IS AN INPUT BECAUSE ELIGIBILITY IS A CALLER'S POLICY, exactly as
+	// [Options.SeedFiles] argues for its own case: upstream this was an agent name
+	// compared against a hardcoded constant inside the spec builder, and a
+	// name-to-privilege rule is not a spec-building rule. The caller that knows
+	// which agent is the supervisor sets it. Today that is one agent; see
+	// cairn.go's header for why widening it is a one-line change here and an
+	// unrecoverable one in the store.
+	//
+	// ⚠ SETTING IT WITH NO CREDENTIAL CONFIGURED IS NOT AN ERROR, it is simply
+	// inert. The alternative — refusing — would make an installation that has not
+	// configured a store unable to dispatch its supervisor at all.
+	CairnEligible bool
 }
 
 // Build assembles the spec for one agent.
@@ -261,7 +310,7 @@ func Build(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 	if err != nil {
 		return provision.Spec{}, err
 	}
-	files, err := buildFiles(workspace, opts)
+	files, err := buildFiles(workspace, cfg, opts)
 	if err != nil {
 		return provision.Spec{}, err
 	}
@@ -275,7 +324,10 @@ func Build(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 	// answers that question itself at runtime and posts a durability alarm to the
 	// agent's own task thread when it cannot push, which is a better place for it
 	// than a build-time guess.
-	init := buildInit()
+	init, err := buildInit(workspace, cfg, opts)
+	if err != nil {
+		return provision.Spec{}, err
+	}
 	if repo.URL != "" {
 		files = append(files, autosaveFile())
 		cmd, err := autosaveInvocation(repo.Path, a.Name, a.ID, cfg.AutosaveExcludePatterns)
@@ -343,14 +395,27 @@ func buildEnv(cfg Config, opts Options) ([]provision.EnvVar, error) {
 	if cfg.NodeOptions != "" {
 		env = append(env, provision.EnvVar{Name: EnvNodeOptions, Value: cfg.NodeOptions})
 	}
+	// The subsystem-store client's config path. See cairn.go — it names a file,
+	// so it is env rather than a secret, and it is absent entirely when the
+	// integration is off.
+	if cairnEnabled(cfg, opts) {
+		env = append(env, provision.EnvVar{Name: EnvCairnConfig, Value: CairnConfigPath})
+	}
 
 	// A collision check, not a merge. See Options.ExtraEnv.
+	//
+	// ⚠ EnvCairnConfig IS RESERVED UNCONDITIONALLY, not only when the integration
+	// is on. A reserved set that changed with the configuration would accept a
+	// caller's CAIRN_CONFIG in the default deployment and refuse the identical
+	// call once a store was configured — a collision check whose answer depends on
+	// unrelated state is worse than none.
 	reserved := map[string]bool{
 		EnvAPIURL:            true,
 		EnvGitTerminalPrompt: true,
 		EnvNodeOptions:       true,
 		EnvToken:             true,
 		EnvOpenRouterKey:     true,
+		EnvCairnConfig:       true,
 	}
 	for _, e := range opts.ExtraEnv {
 		if reserved[e.Name] {
@@ -376,10 +441,15 @@ func buildSecrets(a agents.Agent, cfg Config) []provision.EnvVar {
 // buildFiles turns instruction text and seed content into data.
 //
 // Files are emitted in a DETERMINISTIC order — the instructions file first, then
-// seeds sorted by name — because Options.SeedFiles is a map and Go randomises
-// map iteration. Without the sort the golden would fail intermittently, which is
-// the worst kind of gate: it trains people to re-run.
-func buildFiles(workspace string, opts Options) ([]provision.File, error) {
+// seeds sorted by name, then the cairn pair — because Options.SeedFiles is a map
+// and Go randomises map iteration. Without the sort the golden would fail
+// intermittently, which is the worst kind of gate: it trains people to re-run.
+//
+// The cairn pair goes LAST rather than interleaved with the seeds: neither is in
+// the workspace, so sorting them among workspace-relative names would put an
+// absolute path in the middle of a list a reader scans as "what is in the
+// workspace".
+func buildFiles(workspace string, cfg Config, opts Options) ([]provision.File, error) {
 	var files []provision.File
 	if opts.Instructions != "" {
 		files = append(files, provision.File{
@@ -408,30 +478,65 @@ func buildFiles(workspace string, opts Options) ([]provision.File, error) {
 			Content: []byte(opts.SeedFiles[name]),
 		})
 	}
+
+	// 🔴 THE TWO CAIRN FILES MOVE TOGETHER OR NOT AT ALL. The wrapper without the
+	// credential is a command that refuses every store call; the credential
+	// without the wrapper is a secret placed for nobody. One condition emits both,
+	// which is what makes the pair unable to drift apart.
+	if cairnEnabled(cfg, opts) {
+		if err := checkCairnWorkspace(workspace); err != nil {
+			return nil, err
+		}
+		files = append(files, cairnWrapperFile(workspace), cairnCredentialFile(cfg))
+	}
 	return files, nil
 }
 
 // buildInit returns the imperative steps.
 //
-// 🔴 IT IS EMPTY, DELIBERATELY, AND THAT IS A CLAIM WORTH CHECKING RATHER THAN A
-// PLACEHOLDER. Upstream this was one joined string with seven contributors, and
-// the reason it grew is that appending to it was always the cheapest option.
-// Every contributor that was really "place this content" is now a
-// [provision.File]; the ones that were really imperative — installing the in-pod
-// CLI, initialising submodules, seeding git credentials — each need a decision
-// this step does not own:
+// ⚠ IT IS NO LONGER UNCONDITIONALLY EMPTY, AND THIS COMMENT USED TO SAY IT WAS.
+// It read "🔴 IT IS EMPTY, DELIBERATELY … When the first real entry arrives, this
+// comment is what tells the author why the list was empty rather than lost." The
+// first real entry has arrived: the subsystem-store client install (cairn.go).
+// The sentence is kept in this corrected form rather than deleted, because the
+// argument it was making is the one that still governs what may be added.
 //
-//   - the CLI download needs muster's own /agent/muster route and a verified
-//     artifact, which is plan step 22b's territory because it is the first thing
-//     that requires the instance to reach a live server;
+// 🔴 THE BAR FOR AN ENTRY: IT MUST HAVE TO *RUN*, NOT HAVE TO *EXIST*. Upstream
+// this was one joined string with seven contributors, and the reason it grew is
+// that appending to it was always the cheapest option. Every contributor that was
+// really "place this content" is now a [provision.File]. The cairn entry passes
+// the bar for a reason worth stating: it FETCHES from a network at a pinned
+// revision and then PROVES what it fetched imports, and neither of those is
+// expressible as data — the client is deliberately not vendored here. The file it
+// needs on PATH is still a [provision.File]; only the fetch is a step.
+//
+// Still not here, each for a reason that is a decision rather than an oversight:
+//
+//   - the in-pod CLI download needs muster's own /agent/muster route and a
+//     verified artifact, which is plan step 22b's territory because it is the
+//     first thing that requires the instance to reach a live server;
 //   - submodule init and git credentials need the repository to have been cloned,
 //     and [provision.Repo] is DECLARED, NOT CLONED by design — so whoever does
 //     the cloning owns those steps.
 //
-// Returning nil rather than pre-writing them keeps the function's signature
-// honest about having nothing to say yet. When the first real entry arrives, this
-// comment is what tells the author why the list was empty rather than lost.
-func buildInit() []string { return nil }
+// The order is fixed and the cairn entry is FIRST, ahead of the autosave
+// invocation Build appends after this returns. That ordering is load-bearing in
+// one direction only: the autosave entry BACKGROUNDS a daemon, so a step placed
+// after it races the daemon's first snapshot, while a step placed before it
+// cannot. Nothing here depends on cairn's output, and nothing should — an Init
+// entry that needed a previous entry's side effect would be one step split in
+// two.
+func buildInit(workspace string, cfg Config, opts Options) ([]string, error) {
+	var init []string
+	if cairnEnabled(cfg, opts) {
+		cmd, err := cairnInstallCommand(workspace)
+		if err != nil {
+			return nil, err
+		}
+		init = append(init, cmd)
+	}
+	return init, nil
+}
 
 // buildRepo declares the source repository. NOTHING HERE CLONES IT — see
 // [provision.Repo], which explains that the upstream template cloned the

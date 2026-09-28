@@ -551,9 +551,33 @@ func (a *Adapter) ensureHooksToken(ctx context.Context, ag agents.Agent) (agents
 // TestTheInstructionsAndTheDaemonReferToEachOther), so an adapter that built a
 // spec without it would ship the daemon and tell nobody to look at its log —
 // which is what that test's "move both or neither" is about, one layer up.
+//
+// 🔴 THE SUPERVISOR IS THE ONE AGENT THAT GETS DIFFERENT PROSE AND THE ONE AGENT
+// ELIGIBLE FOR THE SUBSYSTEM-STORE CREDENTIAL, AND THAT POLICY LIVES HERE BY
+// DESIGN. agentspec deliberately does not compare an agent name against a
+// constant — its own Options.SeedFiles comment argues that a name-to-privilege
+// rule is a caller's policy, not a spec-building rule — so this is the layer that
+// knows which row is the supervisor. The credential is READ+WRITE across every
+// scope of the operator's knowledge store; a dispatched worker running a model
+// over somebody's repository contents has no business holding one, and widening
+// the condition below is a one-line change here while un-polluting the store is
+// not. See internal/agentspec/cairn.go.
+//
+// 🔴 THE GATE IS READ ONCE INTO A VARIABLE AND USED TWICE, WHICH IS THE WHOLE
+// POINT. The PROSE claims the credential and the SPEC carries it, and those two
+// must not be able to disagree — a supervisor told it holds a read+write key it
+// does not have reports a working subsystem as broken. One read, one answer, both
+// consumers. TestTheSupervisorsProseAndItsSpecAgreeAboutTheStore is the guard.
 func (a *Adapter) buildSpec(ag agents.Agent) (provision.Spec, error) {
+	if ag.Name != agents.ChiefName {
+		return agentspec.Build(ag, a.spec, agentspec.Options{
+			Instructions: agentspec.WorkerInstructions,
+		})
+	}
+	store := a.spec.CairnConfigured()
 	return agentspec.Build(ag, a.spec, agentspec.Options{
-		Instructions: agentspec.WorkerInstructions,
+		Instructions:  agentspec.ChiefInstructions(store),
+		CairnEligible: true,
 	})
 }
 
