@@ -20,11 +20,34 @@
 # ⚠ THIS IS A THROWAWAY. No volume, no persistence, credentials in plain sight
 # on a loopback port. It is not a template for a deployment and must never be
 # copied into one.
+#
+# 🔴 NOTHING HERE MAY BE PINNED TO A SINGLE VALUE PER HOST, BECAUSE TWO CHECKOUTS
+# OF THIS REPOSITORY RUN AT ONCE. This file used to set `container_name:
+# muster-test-postgres` AND a fixed `127.0.0.1:55432`, which are two independent
+# host-global singletons: the first makes the SECOND `up` fail outright ("the
+# container name is already in use"), and the second makes it fail on a port
+# allocation even once the name is free. A worktree is isolation of a DIRECTORY —
+# it hands you none of the host's ports — so the second agent or the second
+# terminal simply could not start a database, and the usual answer to that is to
+# `down` somebody else's and take theirs, which drops the schema under a suite
+# that is mid-run.
+#
+# The name is now compose's own (project + service), and the project defaults to
+# the basename of the directory holding this file — so two worktrees get two
+# projects for free, and `down -v` in one cannot touch the other. The port is
+# MUSTER_TEST_PG_PORT, which the Makefile defaults to 55432 and threads into
+# TEST_DSN from the SAME variable, so the port and the DSN cannot disagree.
+#
+#     MUSTER_TEST_PG_PORT=55433 make test-db     # a second, independent database
+#
+# ⚠ THE DEFAULT IS STILL 55432 AND MUST STAY SO: README.md, CONTRIBUTING.md,
+# internal/dbtest's doc and one of tests/leakscan.py's negative-control fixtures
+# all spell the default DSN literally, and the leakscan fixture is there to prove
+# the gate does NOT flag it.
 
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: muster-test-postgres
     environment:
       POSTGRES_USER: muster
       POSTGRES_PASSWORD: muster
@@ -33,7 +56,8 @@ services:
     ports:
       # 55432 rather than 5432 so it cannot collide with a Postgres you already
       # run, and so a DSN that names it cannot accidentally be a real one.
-      - "127.0.0.1:55432:5432"
+      # Overridable per checkout — see the header.
+      - "127.0.0.1:${MUSTER_TEST_PG_PORT:-55432}:5432"
     # `tmpfs` rather than a volume: the data is worthless the moment the run
     # ends, and a named volume is a thing someone has to remember to delete.
     tmpfs:
