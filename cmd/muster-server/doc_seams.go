@@ -221,7 +221,9 @@ package main
 //	  ⚠ THE OTHER FOUR ARE ASSERTED, NOT DERIVED: `escalate` and `bind` on `roles`
 //	  and on `clusterroles` have no call site by construction — they are
 //	  authorisation checks the apiserver layers on top of an ordinary write — so the
-//	  guard excludes them and nothing in this module can redden if they are wrong.
+//	  DERIVATION excludes them, while the same guard pins all four EXPLICITLY and
+//	  pins their ABSENCE on the two binding resources; what nothing in this module
+//	  can redden is whether the apiserver really asks them.
 //	IT IS LISTED IN defects() RATHER THAN WRAPPED AT A ROUTE, unlike the nil
 //	  Provisioner, because there is no single route to refuse: the falsehood is
 //	  rendered by every surface that shows a grant, and a grant recorded through

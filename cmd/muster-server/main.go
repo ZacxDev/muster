@@ -719,7 +719,13 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				"check branches on nil-ness only, so the pod stays READY and serving while "+
 				"every grant fails with the apiserver's 403. It stops new escalation; it does "+
 				"NOT remove RBAC already applied, and revoking that afterwards needs the same "+
-				"permissions back",
+				"permissions back — nor does agent DESTROY still work: its policy step 403s "+
+				"while the workload, its Service and any owned namespace go anyway, leaving an "+
+				"orphaned ClusterRoleBinding "+
+				"that internal/provision/k8s.Driver.Destroy's own comment calls a security bug "+
+				"waiting for a namesake, because the next agent to take that name inherits "+
+				"access nobody granted it, so pair this disarm with hand-removing those "+
+				"objects or destroy no agents until the binding is restored",
 				envAgentPrivApply, driverName, provisionerNoop, envAgentPrivApply, envAgentProvisioner)
 		}
 	}

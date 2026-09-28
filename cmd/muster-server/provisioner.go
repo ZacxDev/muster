@@ -79,10 +79,13 @@ import (
 //     CALLING THE WHOLE SET DERIVED ERASES THAT: `escalate` and `bind` on `roles`
 //     and on `clusterroles` have no call site BY CONSTRUCTION — they are
 //     authorisation checks the apiserver layers on top of an ordinary write, not
-//     API calls muster makes — so the guard EXCLUDES them (k8s.PolicyEscalationVerbs
-//     is where that exclusion is named rather than hardcoded in the test). Nothing
-//     in this module can redden if they are wrong; they are a claim about apiserver
-//     behaviour, and only a grant against a real apiserver tests it.
+//     API calls muster makes — so the DERIVATION EXCLUDES them
+//     (k8s.PolicyEscalationVerbs is where that exclusion is named rather than
+//     hardcoded in the test). THAT IS NOT "UNGUARDED, DELETE FREELY": the same
+//     test pins all four EXPLICITLY and pins their ABSENCE on `clusterrolebindings`
+//     and `rolebindings`, so dropping one from the enumeration reddens. What
+//     nothing in this module can redden is whether they are RIGHT; they are a claim
+//     about apiserver behaviour, and only a grant against a real apiserver tests it.
 //     It is not restated here, and it must not be: the
 //     incomplete version above existed in FOUR files simultaneously, which is why
 //     it was wrong in four places at once.
@@ -138,6 +141,20 @@ import (
 //     first move when the tier has to stop escalating NOW; the two-variable change
 //     or an image rollback to a build with no provisioner at all is what retires
 //     the tier afterwards. Plan it in that order.
+//     🔴 AND IT BREAKS AGENT DESTROY, WHICH IS THE THIRD THING THIS PARAGRAPH
+//     OMITTED AND THE ONE THAT INVERTS THE ADVICE UNDER PRESSURE: k8s
+//     Driver.Destroy's revokeAllPolicies opens with a LIST of clusterrolebindings,
+//     so with the binding gone every destroy returns `destroy … did not complete`
+//     at its policy step while the Deployment, Service and — where the driver owns
+//     one — the namespace are torn down anyway, since none of those needs an rbac
+//     permission — leaving precisely what Destroy's own comment calls policy objects
+//     outliving what points at them, "a security bug waiting for a namesake", and
+//     what internal/metrics.AgentRBACTeardown's doc spells out as "an orphaned
+//     ClusterRoleBinding silently re-grants itself to the next agent that draws
+//     the same name — a privilege escalation that no code path performs and no
+//     audit of the grant table can see" — so pair this disarm with hand-removing
+//     the orphaned ClusterRoles and bindings, or destroy no agents until the
+//     binding is back.
 //
 // ⚠ EVERY KUBERNETES ASSERTION IN THIS PACKAGE'S TESTS IS AGAINST
 // k8s.io/client-go/kubernetes/fake. That is what makes them runnable, and it means

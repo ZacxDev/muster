@@ -437,8 +437,12 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 // THE ONE INVARIANT THE THREE WRITE PATHS SHARE, STATED HERE BECAUSE IT WAS
 // STATED NOWHERE AND EACH PATH HAD PICKED ITS OWN DIRECTION.
 //
-// 🔴 THE RECORD IS NEVER NARROWER THAN THE CLUSTER: every RBAC object this server
-// has applied is named by a grant row that still exists. The record MAY be wider —
+// 🔴 THE RECORD IS NEVER NARROWER THAN THE CLUSTER — AS THE DIRECTION EACH PATH
+// FAILS IN, NOT AS A PROPERTY THE SERVER ACHIEVES, AND THE RETRACTION AT THE FOOT
+// OF THIS BLOCK IS WHY THE QUALIFIER IS HERE RATHER THAN ONLY THERE: every RBAC
+// object this server has applied is named by a grant row that still exists, EXCEPT
+// across the concurrent window the counterexample below reaches, which no ordering
+// of these three calls closes. The record MAY be wider —
 // and that direction is not harmless either: a row whose objects are gone renders a
 // grant chip claiming access the ServiceAccount does not have, which is precisely
 // the falsehood api.Extensions.defects' privilege entry refuses to serve. What makes

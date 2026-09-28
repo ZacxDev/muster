@@ -97,9 +97,12 @@ type Config struct {
 	//
 	// ⚠ THE REMAINING FOUR ARE ASSERTED RATHER THAN DERIVED, WHICH THIS SENTENCE
 	// USED TO ERASE: `escalate` and `bind` on `roles` and on `clusterroles` have no
-	// call site by construction (see PolicyEscalationVerbs), so the guard excludes
-	// them. They are a claim about what the apiserver checks, and no test in this
-	// module — all of which run against the fake clientset — can contradict it.
+	// call site by construction (see PolicyEscalationVerbs), so the DERIVATION
+	// excludes them — though the same guard pins all four EXPLICITLY, and pins
+	// their ABSENCE on the two binding resources, so dropping one reddens. What
+	// stays untested is the CLAIM: they are a claim about what the apiserver
+	// checks, and no test in this module — all of which run against the fake
+	// clientset — can contradict THAT.
 	PolicyDisabled bool
 
 	// Logger is optional.

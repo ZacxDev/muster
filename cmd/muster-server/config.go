@@ -312,8 +312,11 @@ type config struct {
 	// ⚠ THE OTHER FOUR ARE ASSERTED, NOT DERIVED, AND THIS POINTER USED TO CALL THE
 	// WHOLE SET DERIVED. `escalate` and `bind` on `roles` and on `clusterroles` have
 	// no call site by construction — they are authorisation checks the apiserver
-	// layers on top of an ordinary write, not calls muster makes — so the guard
-	// excludes them and nothing here can redden if they are wrong.
+	// layers on top of an ordinary write, not calls muster makes — so the
+	// DERIVATION excludes them. That is not the same as unguarded: the same test,
+	// TestTheRBACPrerequisiteMatchesThePolicyCallSites, pins all four EXPLICITLY
+	// and pins their ABSENCE on the two binding resources, so dropping one reddens.
+	// What nothing here can redden is whether the apiserver really asks them.
 	//
 	// 🔴 AND LEAVING IT UNSET IS NOT FREE — IT IS THE FAIL-CLOSED SIDE, WHICH IS
 	// LOUDER THAN THE OTHER TWO KNOBS' DEFAULTS. api.Extensions.defects treats
