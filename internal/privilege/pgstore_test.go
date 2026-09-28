@@ -205,6 +205,49 @@ func TestPGStoreProfilesAndGrants(t *testing.T) {
 		t.Fatalf("grant spec RBAC not joined: %+v", gspec.ClusterRules)
 	}
 
+	// 🔴 THE OTHER DIRECTION, WHICH IS A DELETE'S PRE-CONDITION RATHER THAN A
+	// SYMMETRY. internal/api's profile delete has to revoke the live RBAC from every
+	// holder BEFORE dropping the profile, because the drop cascades these rows away
+	// and the RBAC object names are derived from the (agent, profile) pair they
+	// carry. So this list is the last chance to learn who holds the profile, and a
+	// row whose ProfileName came back EMPTY would be a live ClusterRole nothing can
+	// name — which is why the name is asserted here and not just the count.
+	byProfile, err := store.ListGrantsForProfile(ctx, prof.ID)
+	if err != nil {
+		t.Fatalf("list grants for profile: %v", err)
+	}
+	if len(byProfile) == 0 {
+		t.Fatalf("ListGrantsForProfile = 0 row(s), want 1 (the agent granted above) — the delete " +
+			"path would then find no holders and delete the profile with its RBAC still bound")
+	}
+	// ⚠ Errorf, NOT Fatalf, AND THE DIFFERENCE IS MEASURED. A too-WIDE result (a
+	// filter that matches everything) must reach the ungranted-profile control below;
+	// with a Fatalf here that control was unreachable, so a mutant returning every
+	// row died only on this count and the control scored nothing.
+	if len(byProfile) != 1 {
+		t.Errorf("ListGrantsForProfile = %d row(s), want 1 (the agent granted above)", len(byProfile))
+	}
+	if byProfile[0].AgentID != ag.ID {
+		t.Errorf("ListGrantsForProfile returned agent %d, want %d — the delete path resolves the "+
+			"agent's name and namespace from this id", byProfile[0].AgentID, ag.ID)
+	}
+	if byProfile[0].ProfileName != prof.Name {
+		t.Errorf("ListGrantsForProfile returned ProfileName %q, want %q. The RBAC object name is "+
+			"derived from it, so an empty or wrong one leaves objects nothing can delete",
+			byProfile[0].ProfileName, prof.Name)
+	}
+	// Control: a profile nobody holds comes back empty rather than returning
+	// everything, which is the failure mode of a WHERE clause on the wrong column.
+	other, err := store.CreateProfile(ctx, privilege.Profile{Name: "ungranted-" + name})
+	if err != nil {
+		t.Fatalf("create control profile: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM privilege_profiles WHERE id=$1`, other.ID) })
+	if rows, err := store.ListGrantsForProfile(ctx, other.ID); err != nil || len(rows) != 0 {
+		t.Errorf("control FAILED: ListGrantsForProfile for an ungranted profile returned %d "+
+			"row(s) (err %v), want 0 — the filter is not on profile_id", len(rows), err)
+	}
+
 	// Revoke → gone.
 	if err := store.Revoke(ctx, ag.ID, prof.ID); err != nil {
 		t.Fatalf("revoke: %v", err)
@@ -212,5 +255,8 @@ func TestPGStoreProfilesAndGrants(t *testing.T) {
 	grants, _ = store.ListGrantsForAgent(ctx, ag.ID)
 	if len(grants) != 0 {
 		t.Fatalf("after revoke grants = %d, want 0", len(grants))
+	}
+	if rows, err := store.ListGrantsForProfile(ctx, prof.ID); err != nil || len(rows) != 0 {
+		t.Errorf("after revoke ListGrantsForProfile = %d row(s) (err %v), want 0", len(rows), err)
 	}
 }

@@ -61,29 +61,58 @@ import (
 //     driver defect rather than a missing Role. CLOSING CONDITION: a merged change
 //     in the deployment's own repository adding that Role/RoleBinding, verified by
 //     one real dispatch.
-//     🔴 MUSTER_AGENT_PRIVILEGE_APPLY NEEDS *MORE* THAN THAT SET, AND THE EXTRA
-//     PERMISSION IS THE ONE A CLUSTER ADMINISTRATOR WILL ASK ABOUT. Creating a
-//     ClusterRole whose rules muster does not itself hold requires the `escalate`
-//     verb on `clusterroles` in the rbac API group, and creating the binding
-//     requires `bind`; without them the apiserver refuses the WRITE, so a grant
-//     fails at apply time with a permission error. That failure is now surfaced to
-//     the caller rather than swallowed — internal/api logs it and grantProfile
-//     returns it before recording the grant — but the cheaper answer while the
-//     verbs are missing is to leave this variable unset, which keeps the tier
-//     unbuilt. (k8s.Config.PolicyDisabled is the driver's own spelling of the same
-//     refusal and is deliberately NOT exposed as a second variable: with this one
-//     unset there is no caller of provision.Grant in the binary at all.)
+//     🔴 MUSTER_AGENT_PRIVILEGE_APPLY NEEDS *MORE* THAN THAT SET, AND THIS
+//     PARAGRAPH USED TO NAME THE SMALLER HALF OF IT. It said the tier needs the
+//     `escalate` verb on `clusterroles` and `bind` for the binding, AND NOTHING
+//     ELSE — so a cluster administrator who granted exactly that got a 403 on the
+//     first grant. `escalate` and `bind` are ADDITIONAL authorisation checks the
+//     apiserver layers on top of an ordinary write, never substitutes for one: the
+//     policy path also makes ordinary create/get/update/delete/list calls on all
+//     four rbac resource types, and it needs `escalate`/`bind` on `roles` as well
+//     as on `clusterroles`, because a profile carrying only namespaceRules writes a
+//     Role and a RoleBinding and touches no cluster-scoped object at all.
+//     🔴 THE EXACT SET IS ENUMERATED ONCE, AS DATA, IN
+//     k8s.PolicyRBACPrerequisite — derived from the call sites in
+//     internal/provision/k8s/policy.go and guarded against them by
+//     TestTheRBACPrerequisiteMatchesThePolicyCallSites, which fails when the set
+//     grows OR shrinks. It is not restated here, and it must not be: the
+//     incomplete version above existed in FOUR files simultaneously, which is why
+//     it was wrong in four places at once.
+//     A missing permission now surfaces to the caller rather than being swallowed
+//     — internal/api logs it and grantProfile returns it before recording the
+//     grant — but the cheaper answer while the permissions are missing is to leave
+//     this variable unset, which keeps the tier unbuilt. (k8s.Config.PolicyDisabled
+//     is the driver's own spelling of the same refusal and is deliberately NOT
+//     exposed as a second variable: with this one unset there is no caller of
+//     provision.Grant in the binary at all.)
 //     ⚠ THE API GROUP IS NAMED IN PROSE RATHER THAN IN ITS FULL DOTTED FORM, and
 //     that is a leak-gate accommodation rather than vagueness: the full spelling
 //     begins with the word `authorization` followed by 20+ dotted characters, which
 //     is exactly tests/leakscan.py's `Authorization: <token>` pattern, and it
 //     refused this file. The gate is right that the shape is credential-like.
-//  2. ROLLBACK IS NOT SYMMETRIC. Once this has been enabled and instances exist,
-//     rolling the image back to a build WITHOUT internal/agentprovision makes every
+//     PolicyRBACPrerequisite spells the group through the generated constant for
+//     the same reason.
+//  2. ROLLBACK IS NOT SYMMETRIC — FOR EITHER KNOB, AND THE SECOND ONE IS WORSE.
+//     Once MUSTER_AGENT_PROVISIONER has been enabled and instances exist, rolling
+//     the image back to a build WITHOUT internal/agentprovision makes every
 //     lifecycle route answer 503 again while the rows AND the instances remain: the
 //     instances become unmanageable from muster (no stop, no destroy, no logs) and
 //     have to be torn down with cluster tooling. Destroy every instance BEFORE
 //     rolling back, or accept a manual teardown.
+//     🔴 UNSETTING MUSTER_AGENT_PRIVILEGE_APPLY IS NOT A ROLLBACK, IT IS AN
+//     OUTAGE, AND NOTHING SAID SO UNTIL THIS PARAGRAPH. On a deployment that has a
+//     database and a provisioner — which is the only kind that can arm this tier —
+//     taking the variable away re-enters api.Extensions.defects' second entry:
+//     /readyz answers 503, the pod is pulled from its Service, and the whole
+//     server goes dark, not just the grant path. The only escape that keeps the pod
+//     serving is to unset MUSTER_AGENT_PROVISIONER in the SAME change — and then
+//     this variable has to come off too, because config.validateProvisioner
+//     refuses an armed applier with no provisioner at boot — which costs the
+//     lifecycle tier above. "Leave the privilege store unset" is not a third
+//     escape: nothing gates that store on its own variable, so it means running
+//     with no database, which also drops notes, agents, runbooks and GitHub. Plan a
+//     privilege-tier rollback as a two-variable change, or as an image rollback to
+//     a build that has no provisioner at all.
 //
 // ⚠ EVERY KUBERNETES ASSERTION IN THIS PACKAGE'S TESTS IS AGAINST
 // k8s.io/client-go/kubernetes/fake. That is what makes them runnable, and it means

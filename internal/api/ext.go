@@ -177,9 +177,9 @@ func (e Extensions) defects() []string {
 	// the falsehood is rendered by every surface that shows a grant, and a grant
 	// recorded through one route is read back through several.
 	//
-	// ✅ THE REFUSAL IS NOW A DEPLOYMENT CHOICE RATHER THAN A BUILD ONE, AND THE
-	// PARAGRAPH THAT SAID OTHERWISE IS REPLACED RATHER THAN LEFT TO READ AS OPEN.
-	// It said: "That is the point and it is the choice entry 2 offered: wire a
+	// ✅ THE REFUSAL IS NOW ESCAPABLE WITHOUT AN IMAGE CHANGE, AND THE PARAGRAPH
+	// THAT SAID OTHERWISE IS REPLACED RATHER THAN LEFT TO READ AS OPEN. It said:
+	// "That is the point and it is the choice entry 2 offered: wire a
 	// PrivilegeApplier in the same change, or make the combination unready." The
 	// second option was taken in 2026-09, when the operator's standing decision was
 	// that privilege stays WHOLE in the permission router — route, store AND
@@ -188,8 +188,18 @@ func (e Extensions) defects() []string {
 	// DECISION WAS REVERSED (2026-09-28): internal/agentprivilege implements the
 	// interface over the SAME provisioning driver the lifecycle tier holds, and
 	// cmd/muster-server wires it behind MUSTER_AGENT_PRIVILEGE_APPLY (off by
-	// default, because applying a grant needs the rbac `escalate` and `bind` verbs
-	// that muster's own ServiceAccount may well not have).
+	// default, because applying a grant needs RBAC-writing permissions muster's own
+	// ServiceAccount may well not have — internal/provision/k8s.PolicyRBACPrerequisite
+	// enumerates them, and it is MORE than the `escalate` and `bind` verbs this
+	// paragraph used to name on their own).
+	//
+	// ⚠ "A DEPLOYMENT CHOICE" IS WHAT THIS HEADING USED TO CLAIM, AND IT
+	// OVERSTATED BY ONE ESCAPE. Setting the variable is a deployment choice;
+	// unsetting it again is NOT, because on the only kind of deployment that can
+	// arm it — one with a database and a provisioner — taking it away re-enters
+	// this very defect and pulls the pod from its Service. The tier arms forward
+	// cheaply and rolls back expensively; cmd/muster-server/provisioner.go
+	// prerequisite 2 states the asymmetry in full.
 	//
 	// 🔴 NONE OF WHICH CHANGES THIS FUNCTION — THE PREDICATE AND ITS THREE CONJUNCTS
 	// ARE UNTOUCHED, AND THAT IS WORTH STATING BECAUSE THE OBVIOUS READING OF
@@ -214,12 +224,19 @@ func (e Extensions) defects() []string {
 		out = append(out, "Provisioner is wired but PrivilegeApply is not, while a privilege "+
 			"store IS wired: grants would be RECORDED and never applied, over agent instances "+
 			"that now really exist. Every surface showing a grant would claim a permission the "+
-			"instance's ServiceAccount does not have. Set MUSTER_AGENT_PRIVILEGE_APPLY=1 to "+
-			"apply grants through the provisioning driver (internal/agentprivilege; it needs the "+
-			"rbac `escalate` and `bind` verbs on this server's own ServiceAccount), or leave the "+
-			"privilege store unset, or leave the provisioner unwired. See "+
-			"cmd/muster-server/doc_seams.go entry 2, which named this exact combination as the "+
-			"moment its own argument dies.")
+			"instance's ServiceAccount does not have. TWO WAYS OUT. (1) Set "+
+			"MUSTER_AGENT_PRIVILEGE_APPLY=1 to apply grants through the provisioning driver "+
+			"(internal/agentprivilege); this server's own ServiceAccount then needs the rbac "+
+			"permissions enumerated in internal/provision/k8s.PolicyRBACPrerequisite, which is "+
+			"MORE than the `escalate` and `bind` verbs this text used to name — those two are "+
+			"additional checks on top of ordinary create/get/update/delete/list writes, not "+
+			"substitutes for them. (2) Unset MUSTER_AGENT_PROVISIONER, which leaves the "+
+			"provisioner unwired. \"Leave the privilege store unset\" was listed here as a third "+
+			"way and is NOT one: nothing gates that store on a variable of its own, so it means "+
+			"running with no database at all, which drops notes, agents, runbooks and GitHub too. "+
+			"See cmd/muster-server/doc_seams.go entry 2, which named this exact combination as "+
+			"the moment its own argument dies, and provisioner.go prerequisite 2 for why "+
+			"unsetting the apply variable again is an outage rather than a rollback.")
 	}
 	return out
 }

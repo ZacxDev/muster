@@ -82,10 +82,18 @@ type Config struct {
 
 	// PolicyDisabled turns off Capabilities.Policy.
 	//
-	// ⚠ SET IT WHEN MUSTER'S OWN SERVICE ACCOUNT LACKS THE RBAC `escalate` AND
-	// `bind` VERBS. Without them a grant fails at apply time with a permission
-	// error that looks like a bug; with this set, provision.Grant refuses up
-	// front with a reason a user interface can display.
+	// ⚠ SET IT WHEN MUSTER'S OWN SERVICE ACCOUNT IS NOT PERMITTED TO WRITE RBAC.
+	// Without those permissions a grant fails at apply time with an error that
+	// looks like a bug; with this set, provision.Grant refuses up front with a
+	// reason a user interface can display.
+	//
+	// 🔴 "THOSE PERMISSIONS" IS MORE THAN THE RBAC `escalate` AND `bind` VERBS,
+	// WHICH IS ALL THIS COMMENT USED TO NAME. Those two are authorisation checks
+	// the apiserver layers ON TOP of an ordinary write, not substitutes for one,
+	// so the policy path also needs ordinary create/get/update/delete/list on all
+	// four rbac resource types. PolicyRBACPrerequisite enumerates the set once,
+	// derived from the call sites and guarded against them; nothing else in this
+	// module restates it.
 	PolicyDisabled bool
 
 	// Logger is optional.

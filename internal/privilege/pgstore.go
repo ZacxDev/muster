@@ -150,10 +150,28 @@ func (s *PGStore) Revoke(ctx context.Context, agentID, profileID int64) error {
 // and the joined profile spec (env + kubeconfig + RBAC), so callers resolving an
 // agent's effective access don't re-fetch each profile.
 func (s *PGStore) ListGrantsForAgent(ctx context.Context, agentID int64) ([]Grant, error) {
+	return s.listGrants(ctx, `WHERE ap.agent_id=$1 ORDER BY pp.name`, agentID)
+}
+
+// ListGrantsForProfile returns every grant of one profile, oldest agent id
+// first, with the same joined columns ListGrantsForAgent returns.
+//
+// 🔴 ITS CALLER IS A DELETE'S PRE-CONDITION, WHICH IS WHY IT SHARES THE OTHER
+// DIRECTION'S SCAN RATHER THAN GETTING ITS OWN. The two differ by a WHERE clause
+// and an ORDER BY; open-coding the projection twice is how one of them comes to
+// return a Grant with an empty ProfileName, and the caller that needs this one
+// resolves the RBAC object name FROM that name — so an empty one is a live
+// ClusterRole nothing can delete.
+func (s *PGStore) ListGrantsForProfile(ctx context.Context, profileID int64) ([]Grant, error) {
+	return s.listGrants(ctx, `WHERE ap.profile_id=$1 ORDER BY ap.agent_id`, profileID)
+}
+
+// listGrants is the one projection both directions read.
+func (s *PGStore) listGrants(ctx context.Context, where string, arg any) ([]Grant, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT ap.id, ap.agent_id, ap.profile_id, pp.name, pp.spec, ap.granted_by, ap.granted_at
 		FROM agent_privileges ap JOIN privilege_profiles pp ON pp.id = ap.profile_id
-		WHERE ap.agent_id=$1 ORDER BY pp.name`, agentID)
+		`+where, arg)
 	if err != nil {
 		return nil, err
 	}

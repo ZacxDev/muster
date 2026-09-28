@@ -1,10 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"log"
 	"os"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -156,38 +155,26 @@ func TestEverySitePopulatingPrivilegeApplyIsOnTheLedger(t *testing.T) {
 	}
 }
 
-// TestTheDefaultConfigLeavesPrivilegeApplyTrulyNil.
+// ⚠ TestTheDefaultConfigLeavesPrivilegeApplyTrulyNil WAS HERE AND IS DELETED
+// RATHER THAN KEPT WITH A LABEL, and the deletion is recorded because the next
+// reader's instinct is to re-add it.
 //
-// ⚠ IT READS THE BANNER RATHER THAN THE FIELD, for the reason
-// TestTheDefaultConfigLeavesTheProvisionerInterfaceTRULYNil states: buildApp does
-// not expose ext, and the banner is the right observable anyway because it
-// branches on exactly the nil-ness under test.
+// 🔴 THE SWEEP THAT BUILT THIS TIER CREDITED IT WITH ZERO KILLS ACROSS 19 MUTANTS
+// (reported by that round, not re-measured here), AND ITS OWN DOC EXPLAINED WHY
+// WITHOUT NOTICING — which is the part that WAS re-checked, by reading main.go. It
+// built `buildApp(config{})` and asserted the banner does
+// not say "privilege APPLY: WIRED" — but BOTH banner arms sit inside the
+// provisioner-wired block, which a zero-value config never enters, so the string
+// it looked for cannot be emitted by any mutation of the privilege wiring. It was
+// an unlabelled invariant guard over a code path the fixture does not reach, and it
+// duplicated TestTheDefaultConfigLeavesTheProvisionerInterfaceTRULYNil's identical
+// buildApp(config{}) call. Reading as coverage while providing none is worse than
+// nothing, because it stops anyone looking.
 //
-// 🔴 THE ZERO-VALUE CONFIG HAS NO DATABASE, SO ext.Privilege IS ALSO NIL, AND THAT
-// IS WHY THIS TEST ASSERTS AN ABSENCE RATHER THAN THE "UNWIRED" LINE. Both banner
-// arms sit inside the provisioner branch, which a zero config does not enter at
-// all; what must be true is that nothing claims the tier is WIRED. Asserting the
-// UNWIRED line instead would have been a test that could only ever pass.
-func TestTheDefaultConfigLeavesPrivilegeApplyTrulyNil(t *testing.T) {
-	var buf bytes.Buffer
-	app, err := buildApp(context.Background(), config{}, log.New(&buf, "", 0))
-	if err != nil {
-		t.Fatalf("buildApp over a zero-value config: %v", err)
-	}
-	defer app.Close()
-
-	out := buf.String()
-	// Instrument check: the banner has to exist at all, or the absence below is an
-	// absence of output rather than an absence of a claim.
-	if !strings.Contains(out, "agent provisioning") {
-		t.Fatalf("instrument check FAILED: the banner has no provisioning section, so asserting "+
-			"a line is missing from it proves nothing.\nbanner:\n%s", out)
-	}
-	if strings.Contains(out, "privilege APPLY: WIRED") {
-		t.Errorf("the banner claims the privilege tier is WIRED for a config that arms "+
-			"nothing.\nbanner:\n%s", out)
-	}
-}
+// WHAT COVERS THE PROPERTY IT CLAIMED: TestThePrivilegeTierIsBuiltOnlyWhenArmed
+// (both directions of the gate, behaviourally) and
+// TestEverySitePopulatingPrivilegeApplyIsOnTheLedger (the assignment is inside a
+// concrete-pointer nil-check).
 
 // TestArmingThePrivilegeApplierWithNoProvisionerIsRefusedAtBoot.
 //
@@ -402,5 +389,140 @@ func TestTheReadinessRefusalNamesTheVariableThatArmsTheApplier(t *testing.T) {
 			"names a variable this binary no longer reads — or names none — the refusal has no "+
 			"escape, and the cheapest way out becomes deleting the readiness probe.",
 			rel, envAgentPrivApply)
+	}
+}
+
+// TestThePrivilegeStoreHasNoKnobOfItsOwn pins the ABSENCE three files' prose
+// depended on without checking.
+//
+// 🔴 THE READINESS REFUSAL NAMED THREE ESCAPES AND ONLY TWO WERE REACHABLE. It
+// said "set MUSTER_AGENT_PRIVILEGE_APPLY=1, or leave the privilege store unset, or
+// leave the provisioner unwired", and config.go and the boot banner said the same.
+// The middle one is not a configuration: main.go builds the privilege store
+// UNCONDITIONALLY inside the `Database != ""` branch, so "leave the privilege
+// store unset" means "run with no database" — which also drops notes, agents,
+// runbooks and GitHub. An operator in the middle of a readiness refusal, reading
+// three escapes and picking what looks like the cheapest, would have reached for
+// one that costs the entire data layer.
+//
+// 🔴 SO THIS GUARD PINS THE RELATIONSHIP, IN BOTH DIRECTIONS, RATHER THAN THE
+// SENTENCE. It derives from the CODE that no such knob exists, and then requires
+// the refusal text to enumerate exactly the escapes that do. Add a real
+// privilege-store variable later and this reddens — which is the correct outcome,
+// because the refusal then owes a third entry. Keep the knob absent and reword the
+// refusal into claiming a third escape and it reddens too.
+func TestThePrivilegeStoreHasNoKnobOfItsOwn(t *testing.T) {
+	// --- (a) the code side: one assignment, guarded only by the database ---
+	const mainRel = "main.go"
+	body, err := os.ReadFile(mainRel)
+	if err != nil {
+		t.Fatalf("read %s: %v", mainRel, err)
+	}
+	lines := strings.Split(string(body), "\n")
+	var assignments []int
+	for i, l := range lines {
+		if strings.Contains(l, "ext.Privilege =") {
+			assignments = append(assignments, i)
+		}
+	}
+	// Positive control: the scan must HIT, or everything below is a verdict about
+	// an empty set — the reassuring zero that is indistinguishable from a harness
+	// wired to nothing.
+	if len(assignments) == 0 {
+		t.Fatalf("positive control FAILED: no assignment to ext.Privilege in %s. Either the "+
+			"store moved — in which case this guard is measuring nothing — or the field is no "+
+			"longer populated at all, which would make the readiness defect unreachable.", mainRel)
+	}
+	if len(assignments) != 1 {
+		t.Errorf("ext.Privilege is assigned at %d sites in %s (lines %v). This guard's whole "+
+			"claim is that ONE unconditional assignment inside the database branch is why "+
+			"\"leave the privilege store unset\" is not an escape; with several, read each one "+
+			"before trusting the refusal text.", len(assignments), mainRel, assignments)
+	}
+	t.Logf("ext.Privilege is assigned once, at %s:%d", mainRel, assignments[0]+1)
+
+	// The nearest enclosing `if cfg.…` above the assignment is the condition that
+	// decides whether the store exists at all.
+	guard := ""
+	for i := assignments[0]; i >= 0; i-- {
+		if strings.Contains(lines[i], "if cfg.") {
+			guard = strings.TrimSpace(lines[i])
+			break
+		}
+	}
+	const wantGuard = `if cfg.Database != "" {`
+	if guard != wantGuard {
+		t.Errorf("the nearest configuration condition above the ext.Privilege assignment is\n"+
+			"    %s\nand this guard expects\n    %s\n"+
+			"    If a knob now gates the privilege store, the readiness refusal in "+
+			"internal/api/ext.go, cmd/muster-server/config.go's AgentPrivilegeApply doc and the "+
+			"boot banner all owe a THIRD escape — they currently say there are two, on the "+
+			"strength of this line.", guard, wantGuard)
+	}
+
+	// And no field of the configuration mentions the privilege store. reflect
+	// rather than a source scan: a field is what the wiring can read.
+	rt := reflect.TypeOf(config{})
+	var privilegeFields []string
+	for i := 0; i < rt.NumField(); i++ {
+		if strings.Contains(rt.Field(i).Name, "Privilege") {
+			privilegeFields = append(privilegeFields, rt.Field(i).Name)
+		}
+	}
+	sort.Strings(privilegeFields)
+	if len(privilegeFields) != 1 || privilegeFields[0] != "AgentPrivilegeApply" {
+		t.Errorf("the configuration carries privilege-related field(s) %v; this guard expects "+
+			"exactly [AgentPrivilegeApply].\n    A second one is probably the store knob whose "+
+			"absence the refusal text argues from.", privilegeFields)
+	}
+
+	// --- (b) the prose side: the refusal enumerates exactly those escapes ---
+	const extRel = "../../internal/api/ext.go"
+	ext, err := os.ReadFile(extRel)
+	if err != nil {
+		t.Fatalf("read %s: %v", extRel, err)
+	}
+	const marker = "Provisioner is wired but PrivilegeApply is not"
+	start := strings.Index(string(ext), marker)
+	if start < 0 {
+		t.Fatalf("instrument check FAILED: %s does not contain the privilege defect's opening "+
+			"words (%q), so this test is reading the wrong text and its verdict is about nothing",
+			extRel, marker)
+	}
+	entry := string(ext)[start:]
+	if end := strings.Index(entry, "return out"); end > 0 {
+		entry = entry[:end]
+	}
+
+	// Both reachable escapes must be NAMED, because a refusal an operator cannot
+	// act on is the shape that gets the readiness probe deleted.
+	for _, want := range []string{envAgentPrivApply, envAgentProvisioner} {
+		if !strings.Contains(entry, want) {
+			t.Errorf("the privilege readiness refusal does not name %q, which is one of the two "+
+				"variables that can escape it", want)
+		}
+	}
+	// The COUNT is pinned structurally, by the enumeration's own markers, rather
+	// than by a phrase — a phrase is walkable by rewording, and this refusal is
+	// text an operator reads under pressure.
+	for _, want := range []string{"(1)", "(2)"} {
+		if !strings.Contains(entry, want) {
+			t.Errorf("the privilege readiness refusal has no %q item. The escapes are enumerated "+
+				"so their NUMBER is checkable against the configuration; without the markers this "+
+				"guard cannot tell two escapes from three.", want)
+		}
+	}
+	if strings.Contains(entry, "(3)") {
+		t.Errorf("the privilege readiness refusal enumerates a THIRD escape while the " +
+			"configuration has two (checked above: no privilege-store knob). That is the exact " +
+			"defect this guard was written for — the third entry used to be \"leave the " +
+			"privilege store unset\", which is not a setting but a deployment with no database.")
+	}
+	// And the cost of the unreachable one has to be stated, or a reader
+	// reconstructs it as a cheap option.
+	if !strings.Contains(entry, "no database") {
+		t.Errorf("the privilege readiness refusal does not say that leaving the privilege store " +
+			"unset means running with NO DATABASE. Without that, the option reads as a cheap " +
+			"third escape rather than as the loss of notes, agents, runbooks and GitHub.")
 	}
 }

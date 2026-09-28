@@ -684,10 +684,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			l.Printf("agent privilege APPLY: UNWIRED (%s unset) while a provisioner CAN create "+
 				"pods — this combination is a readiness defect (see api.Extensions.defects) and "+
 				"/readyz REFUSES it, because a granted chip over a ServiceAccount with none of "+
-				"the permissions is a page stating a falsehood. Set %s=1 to apply grants through "+
-				"this driver (it needs the rbac `escalate` and `bind` verbs on muster's own "+
-				"ServiceAccount), or leave the privilege store unset",
-				envAgentPrivApply, envAgentPrivApply)
+				"the permissions is a page stating a falsehood. TWO WAYS OUT, NOT THREE: set "+
+				"%s=1 to apply grants through this driver (muster's own ServiceAccount then "+
+				"needs the rbac permissions enumerated in "+
+				"internal/provision/k8s.PolicyRBACPrerequisite — MORE than the `escalate` and "+
+				"`bind` verbs this line used to name on their own, which omit every ordinary "+
+				"verb the policy path calls), or unset %s. Leaving the privilege store unset is "+
+				"NOT a third way: nothing gates that store on a variable of its own, so it means "+
+				"running with no database and losing notes, agents, runbooks and GitHub with it",
+				envAgentPrivApply, envAgentPrivApply, envAgentProvisioner)
 		case ext.PrivilegeApply != nil:
 			// 🔴 IT REPORTS THE DRIVER'S OWN NAME RATHER THAN THE CONFIGURED ONE, for
 			// the reason the gateway line above does: the value an operator set and the
@@ -699,13 +704,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			}
 			l.Printf("agent privilege APPLY: WIRED %s=1 over the %s driver — a granted profile's "+
 				"clusterRules/namespaceRules are applied to the agent's ServiceAccount for real, "+
-				"live, with no pod restart. 🔴 WIRED IS NOT THE SAME AS PERMITTED: creating a "+
-				"ClusterRole muster does not itself hold needs the rbac `escalate` verb and the "+
-				"binding needs `bind`, neither of which anything in this module can check — "+
-				"without them each grant fails at apply time with a 403 that is RETURNED to the "+
-				"caller rather than swallowed. A driver that declares no policy capability "+
-				"(the %s driver declares none) refuses each grant instead, naming itself",
-				envAgentPrivApply, driverName, provisionerNoop)
+				"live, with no pod restart. 🔴 WIRED IS NOT THE SAME AS PERMITTED: this path "+
+				"writes ClusterRoles, Roles and both kinds of binding, and needs the rbac "+
+				"`escalate` and `bind` verbs on top of those ordinary writes — the whole set is "+
+				"enumerated in internal/provision/k8s.PolicyRBACPrerequisite, and nothing in this "+
+				"module can check muster holds it. Without it each grant fails at apply time with "+
+				"a 403 that is RETURNED to the caller rather than swallowed. A driver that "+
+				"declares no policy capability (the %s driver declares none) refuses each grant "+
+				"instead, naming itself. 🔴 AND UNSETTING %s AGAIN IS AN OUTAGE, NOT A ROLLBACK: "+
+				"it re-enters the readiness defect above, so plan it as a two-variable change "+
+				"with %s or as an image rollback",
+				envAgentPrivApply, driverName, provisionerNoop, envAgentPrivApply, envAgentProvisioner)
 		}
 	}
 }

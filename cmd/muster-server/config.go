@@ -292,13 +292,22 @@ type config struct {
 	//
 	// 🔴 IT IS A THIRD KNOB RATHER THAN SOMETHING THE PROVISIONER IMPLIES, FOR A
 	// REASON THAT IS NOT SYMMETRY WITH THE OTHER TWO. Applying a grant needs
-	// permissions muster's own ServiceAccount very likely does not have: the
-	// `escalate` verb on clusterroles (to create a ClusterRole holding rules
-	// muster does not itself hold) and `bind` (to create the binding). Those are
-	// the two verbs a cluster administrator grants last and most reluctantly. If
-	// naming a driver implied this tier, the first image bump that set
-	// MUSTER_AGENT_PROVISIONER would start attempting privileged writes and every
-	// grant would fail with a 403 that reads as a muster defect.
+	// permissions muster's own ServiceAccount very likely does not have: it writes
+	// ClusterRoles, Roles and both kinds of binding, and the `escalate` and `bind`
+	// verbs on top of that (they are what the apiserver asks when the rules being
+	// written exceed what muster itself holds) — the two a cluster administrator
+	// grants last and most reluctantly. If naming a driver implied this tier, the
+	// first image bump that set MUSTER_AGENT_PROVISIONER would start attempting
+	// privileged writes and every grant would fail with a 403 that reads as a
+	// muster defect.
+	//
+	// ⚠ THE EXACT PERMISSION SET IS NOT LISTED HERE, DELIBERATELY. This comment
+	// used to name `escalate` and `bind` and nothing else, as did three other
+	// files, and that list is INCOMPLETE — it omits every ordinary verb the policy
+	// path actually calls, so a Role written from it 403s on the first grant. The
+	// set is enumerated once, as data, in
+	// internal/provision/k8s.PolicyRBACPrerequisite, derived from the call sites and
+	// guarded against them. Read it there.
 	//
 	// 🔴 AND LEAVING IT UNSET IS NOT FREE — IT IS THE FAIL-CLOSED SIDE, WHICH IS
 	// LOUDER THAN THE OTHER TWO KNOBS' DEFAULTS. api.Extensions.defects treats
@@ -307,9 +316,24 @@ type config struct {
 	// has a database. So on a deployment WITH a database, naming a provisioner
 	// and leaving this unset makes /readyz refuse and the pod is pulled from the
 	// Service. That is deliberate: a grant chip claiming a permission the
-	// ServiceAccount does not have is a page stating a falsehood. The three ways
-	// out are this variable, no privilege store, or no provisioner —
-	// api.Extensions.defects names all three in its refusal text.
+	// ServiceAccount does not have is a page stating a falsehood.
+	//
+	// 🔴 THERE ARE TWO WAYS OUT, NOT THREE, AND THIS SENTENCE CLAIMED THREE. It
+	// read "the three ways out are this variable, no privilege store, or no
+	// provisioner". The middle one is NOT REACHABLE as a configuration: nothing
+	// gates the privilege store on a variable of its own — main.go builds it
+	// unconditionally inside the `Database != ""` branch — so "no privilege store"
+	// means no database, which also drops notes, agents, runbooks and GitHub. The
+	// two reachable escapes are this variable and unsetting the provisioner.
+	// TestThePrivilegeStoreHasNoKnobOfItsOwn pins the absence this paragraph
+	// depends on, and api.Extensions.defects' refusal text now says the same.
+	//
+	// 🔴 AND UNSETTING IT AGAIN IS AN OUTAGE, NOT A ROLLBACK. Once armed on a
+	// deployment with a database and a provisioner, removing this variable puts the
+	// pod straight back into the readiness defect — /readyz 503, pulled from the
+	// Service, every route dark. Rolling this tier back is a two-variable change
+	// (this one and the provisioner, which config.validateProvisioner requires to
+	// be removed together) or an image rollback. See provisioner.go prerequisite 2.
 	//
 	// ⚠ IT IS NOT REFUSED FOR THE noop DRIVER. See buildPrivilegeApplier.
 	AgentPrivilegeApply bool

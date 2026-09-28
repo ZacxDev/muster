@@ -169,7 +169,7 @@ package main
 //
 //	🔴 THIS ENTRY REVERSES A DECISION, AND THAT IS RECORDED HERE RATHER THAN
 //	  QUIETLY OVERWRITTEN, BECAUSE THE PROSE BELOW ARGUES THE OPPOSITE CASE AT
-//	  LENGTH AND A READER WHO STOPS AT IT WILL CONCLUDE THE WRONG THING. On
+//	  LENGTH AND A READER WHO STOPS AT IT WILL CONCLUDE THE WRONG THING.
 //	  The operator's earlier standing decision (2026-09-25) was that the privilege
 //	  domain stays WHOLE in the permission router — route, store AND the applier —
 //	  so muster's privilege store was deliberately EMPTY: dark, not stale. The
@@ -195,14 +195,28 @@ package main
 //	  this deployment builds a privilege store whenever it has a database, so
 //	  setting MUSTER_AGENT_PROVISIONER on it makes the pod UNREADY until
 //	  MUSTER_AGENT_PRIVILEGE_APPLY is also set. That is fail-closed and deliberate.
+//	  🔴 AND IT RUNS THE OTHER WAY TOO, WHICH IS THE HALF NOBODY WROTE DOWN UNTIL
+//	  THE ROUND-1 AUDIT: once armed, taking MUSTER_AGENT_PRIVILEGE_APPLY away is an
+//	  OUTAGE, not a rollback — the pod re-enters this defect and is pulled from its
+//	  Service, taking the task board, notes, repos and runbooks with it. The escape
+//	  is a two-variable change (this one and the provisioner, which
+//	  config.validateProvisioner requires be removed together) or an image
+//	  rollback. provisioner.go prerequisite 2 carries the full statement.
 //	🔴 WHY THE TIER IS OFF BY DEFAULT, WHICH IS A DIFFERENT ARGUMENT FROM THE OTHER
-//	  TWO KNOBS' DEFAULTS: applying a grant needs the rbac `escalate` verb on
-//	  clusterroles (to create a ClusterRole holding rules muster does not itself
-//	  hold) and `bind` (to create the binding). Nothing in this module can check
-//	  for them, they are the two verbs a cluster administrator grants last, and
-//	  without them every grant fails at apply time with a 403. If naming a driver
+//	  TWO KNOBS' DEFAULTS: applying a grant writes ClusterRoles, Roles and both
+//	  kinds of binding, and needs the rbac `escalate` and `bind` verbs on top of
+//	  those ordinary writes (they are what the apiserver asks when the rules being
+//	  written exceed what muster itself holds). Nothing in this module can check for
+//	  any of it, the last two are what a cluster administrator grants last, and
+//	  without the set every grant fails at apply time with a 403. If naming a driver
 //	  implied this tier, the first image bump that set MUSTER_AGENT_PROVISIONER
 //	  would start attempting privileged writes.
+//	  ⚠ THE SET IS NOT LISTED HERE. This entry used to name `escalate` and `bind`
+//	  and nothing else — as did three other files — and that list is INCOMPLETE:
+//	  it omits every ordinary verb the policy path calls, so a Role written from it
+//	  403s on the first grant. It is enumerated once, as data, in
+//	  internal/provision/k8s.PolicyRBACPrerequisite, derived from the call sites and
+//	  guarded against them by TestTheRBACPrerequisiteMatchesThePolicyCallSites.
 //	IT IS LISTED IN defects() RATHER THAN WRAPPED AT A ROUTE, unlike the nil
 //	  Provisioner, because there is no single route to refuse: the falsehood is
 //	  rendered by every surface that shows a grant, and a grant recorded through

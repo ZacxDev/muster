@@ -109,6 +109,14 @@ type Store interface {
 	GetProfile(ctx context.Context, id int64) (Profile, error)
 	GetProfileByName(ctx context.Context, name string) (Profile, error)
 	// DeleteProfile removes a profile (and, via cascade, its grants).
+	//
+	// 🔴 THE CASCADE IS WHY ListGrantsForProfile EXISTS AND WHY A CALLER MUST USE
+	// IT FIRST. Dropping the profile drops every agent_privileges row for it, so
+	// after this call there is no record that any agent ever held it — while the
+	// ClusterRole and ClusterRoleBinding a grant created are still bound to that
+	// agent's ServiceAccount, and the only path that removes them needs the
+	// profile's NAME. A delete that does not revoke first is unrecoverable by
+	// design: see internal/api's handleProfileDelete.
 	DeleteProfile(ctx context.Context, id int64) error
 
 	// --- grants (3.2) ---
@@ -118,6 +126,16 @@ type Store interface {
 	Revoke(ctx context.Context, agentID, profileID int64) error
 	// ListGrantsForAgent returns the profiles granted to an agent (with name).
 	ListGrantsForAgent(ctx context.Context, agentID int64) ([]Grant, error)
+	// ListGrantsForProfile returns every grant of one profile — the other
+	// direction of the same table.
+	//
+	// 🔴 IT IS THE PRE-CONDITION OF A SAFE DeleteProfile, NOT A CONVENIENCE. The
+	// delete cascades the grant rows away, so this is the LAST moment at which
+	// muster can learn which agents' ServiceAccounts still have that profile's
+	// RBAC bound to them. Without it the live objects outlive every record of
+	// themselves and the revoke path — which resolves them from the (agent,
+	// profile) name pair — can never be reached again.
+	ListGrantsForProfile(ctx context.Context, profileID int64) ([]Grant, error)
 
 	// --- retention ---
 	// DeleteResolvedRequestsOlderThan deletes decided (non-pending) privilege
