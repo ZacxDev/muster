@@ -148,12 +148,43 @@ const (
 	// So every read verb still writes a home-derived cache and [EnvCairnConfig]
 	// cannot move it. The assumption this constant removes is the one about where
 	// the CREDENTIAL is read from — the half a spec can control. The cache half is
-	// the image's, and it is not removed.
+	// the image's by DEFAULT, and this constant does not move it.
+	//
+	// ⚠ "NOT BY AN ENVIRONMENT VARIABLE" IS NOT "NOT AT ALL", AND THIS PARAGRAPH
+	// USED TO READ AS THOUGH IT WERE. Read at the pinned revision: the top-level
+	// parser declares a `--cache` option, and the resolver returns the given path
+	// whenever the flag APPEARED (the flag's action sets an explicit marker; the
+	// default is false) rather than the home-derived default. So the cache root IS
+	// movable — by an explicit flag, which is a thing [cairnWrapperFile] could pass
+	// on every invocation. THE UNMITIGATED HAZARD IS THE DEFAULT WE SHIP, NOT AN
+	// ABSENT CAPABILITY.
+	//
+	// THE CANDIDATE FIX IS RECORDED AND DELIBERATELY NOT TAKEN HERE: have the
+	// wrapper exec the client with `--cache <workspace>/.muster/cairn-cache`,
+	// derived from the workspace path [checkCairnWorkspace] already refuses to let
+	// be unsafe, which removes the home-writability case below wherever the
+	// workspace itself is writable. It is not a comment fix — it changes what every
+	// installed agent runs — so it belongs to its own review, and one thing that
+	// review must settle: five verbs (sync, ls-entries, doctor, an all-scopes
+	// search, routes --check) REFUSE an explicit `--cache` when MORE THAN ONE
+	// instance is configured, because it would make them share a directory. So the
+	// flag is only unconditionally safe while a spec places exactly one credential,
+	// which is what [CairnConfigured] gates today. THE CLOSING CONDITION is a change
+	// to [cairnWrapperFile] that passes `--cache` under the workspace, checked by
+	// that change's reviewer against one mechanical run: a read verb succeeding with
+	// an unwritable home.
 	//
 	// 🔴 CONSEQUENCE: THE INSTALL CAN REPORT SUCCESS OVER A CLIENT THAT CANNOT
-	// FUNCTION, AND THESE ARE THE CASES. All three probes are `--help`, which
-	// touches neither the credential nor the cache, so neither of the following is
-	// observable at install time — each surfaces later, when the agent runs a verb:
+	// FUNCTION, AND THESE ARE THE CASES. Probes 1 and 3 are `--help` — the staged
+	// file and then the command on PATH; probe 2 is the IMPORT probe, which this
+	// file's own "DOWNLOAD -> VERIFY" section names as such. (The premise used to
+	// read "all three probes are `--help`", which was wrong about probe 2 and is
+	// corrected here because it is the stated premise of the hazard below.) The
+	// conclusion is unchanged and was measured rather than inferred: with an EMPTY,
+	// READ-ONLY home and no credential configured, probe 1's `--help` and probe 2's
+	// import of every [cairnLibModules] entry each exit 0 and create nothing under
+	// it. So neither of the following is observable at install time — each surfaces
+	// later, when the agent runs a verb:
 	//   - A HOME THE PROCESS CANNOT WRITE. Every read verb wants a cache beneath
 	//     it; nothing in the install ever tries to create one.
 	//   - A CREDENTIAL THE PROCESS CANNOT READ. The file lands 0600 (see
@@ -395,10 +426,22 @@ func cairnCredentialFile(cfg Config) provision.File {
 // `cairn --version` exits 0 printing usage, exactly like a verb that does not
 // exist." Measured at [cairnRev]: there is no `--version` option anywhere in the
 // client, and the top-level parser declares its subcommand REQUIRED, so
-// `cairn --version` exits 2 with an argparse usage error. A bogus verb exits 2 as
-// well — so the two are indistinguishable by their OUTPUT, not by their exit
-// status, which is the reverse of what was claimed and is no argument at all
-// against an exit-code probe. Probe 1 is exactly such a probe, and it works.
+// `cairn --version` exits 2 with an argparse usage error. A bogus verb also exits
+// 2. What was measured, stated as measured and no further: the two share an EXIT
+// STATUS and differ in their OUTPUT — the last line of the usage error reads
+// "the following arguments are required: cmd" for the first and
+// "argument cmd: invalid choice" for the second. That is no argument at all
+// against an exit-code probe, because `--help` is the invocation that exits 0 when
+// the client is importable and runnable. Probe 1 is exactly such a probe, and it
+// works.
+//
+// ⚠ THIS PARAGRAPH HAS NOW BEEN WRITTEN THREE TIMES. The version before this one
+// claimed the two were "indistinguishable by their OUTPUT, not by their exit
+// status", which is the opposite of both halves of the measurement above. The
+// commit message and the agent-facing prose were right; only this comment was
+// wrong. The correction here is a restatement of what the two invocations printed
+// and exited, not a fresh argument — a fresh argument is what produced the error
+// twice.
 //
 // 🔴 SO PROBE 2, THE IMPORT PROBE, HAS NO INDEPENDENT REASON AT THIS REVISION, AND
 // THAT IS WRITTEN DOWN RATHER THAN REPLACED WITH A FRESH ARGUMENT. Measured two

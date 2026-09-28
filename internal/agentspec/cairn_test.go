@@ -814,6 +814,104 @@ func TestTheClientIsInstalledWhereBothContainersCanSeeIt(t *testing.T) {
 	}
 }
 
+// curlFailsOnHTTPError reports whether the `curl` invocation on `line` passes an
+// option that makes an HTTP error response a NON-ZERO exit status.
+//
+// 🔴 IT MATCHES THE FLAG AS A TOKEN, AND A SUBSTRING CHECK IS WHAT IT REPLACES. The
+// previous form was `strings.Contains(line, "-sf") || strings.Contains(line,
+// "--fail")` over the whole line, and it accepted two options that are not the one
+// it meant plus any path that happened to spell one. Measured against a real 404 on
+// the raw-content host:
+//
+//   - `curl -sf …`               exit 22, no file written — HAS the property.
+//   - `curl -s --fail …`         exit 22, no file written — HAS the property.
+//   - `curl -s --fail-with-body` exit 22, writes the 14-byte error body — HAS the
+//     property. The body does not matter: the non-zero status reaches `|| exit 1`
+//     and the install stops before anything reads the file.
+//   - `curl -s --fail-early …`   EXIT 0, writes the 14-byte body `404: Not Found`
+//     as the module — does NOT have the property. It is about abandoning a run of
+//     several transfers early, not about HTTP status, and the old substring check
+//     accepted it.
+//
+// So the accepted set is: any SHORT option bundle carrying `f` (`-sf`, `-fs`,
+// `-sfL`), `--fail` exactly, or `--fail-with-body` exactly. A long option that
+// merely starts with `--fail` is refused, because `--fail-early` is one.
+//
+// ⚠ ONLY TOKENS AFTER `curl` ARE CONSIDERED, and that is the second half of the
+// same defect. The check ran over the whole line, which also carries `timeout`'s
+// flags and both interpolated workspace paths — so a workspace path containing
+// `-sf` would have satisfied it with a bare `curl -s`. Not live today
+// (storeWorkspace is an ordinary path), and not a property a caller-supplied path
+// should be able to decide.
+func curlFailsOnHTTPError(line string) bool {
+	fields := strings.Fields(line)
+	start := -1
+	for i, f := range fields {
+		if f == "curl" || strings.HasSuffix(f, "/curl") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return false
+	}
+	for _, tok := range fields[start+1:] {
+		if strings.HasPrefix(tok, "--") {
+			if tok == "--fail" || tok == "--fail-with-body" {
+				return true
+			}
+			continue
+		}
+		// A short bundle: `-f` anywhere in it is curl's fail flag.
+		if strings.HasPrefix(tok, "-") && strings.ContainsRune(tok, 'f') {
+			return true
+		}
+	}
+	return false
+}
+
+// TestTheFailFlagCheckAcceptsOnlySpellingsThatActuallyFailOnAnHTTPError is the
+// negative control for the guard above.
+//
+// 🔴 A GUARD IS A CLAIM ABOUT AN INSTRUMENT UNTIL THE INSTRUMENT HAS BEEN WATCHED TO
+// GO RED. The predicate it replaces was green for `curl -s --fail-early`, which was
+// measured to exit 0 and write a 404 body as the module — i.e. the guard passed in
+// exactly the state it exists to refuse. Every row below is a measured invocation,
+// not a reading of the man page; `want` is whether curl's exit status was non-zero
+// on a real 404.
+func TestTheFailFlagCheckAcceptsOnlySpellingsThatActuallyFailOnAnHTTPError(t *testing.T) {
+	const url = "\"https://example.invalid/x\""
+	for _, c := range []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"short bundle", "curl -sf " + url + " -o /tmp/x", true},
+		{"short bundle reordered", "curl -fs " + url + " -o /tmp/x", true},
+		{"short bundle with more flags", "curl -sfL " + url + " -o /tmp/x", true},
+		{"long form", "curl -s --fail " + url + " -o /tmp/x", true},
+		{"long form keeping the body", "curl -s --fail-with-body " + url + " -o /tmp/x", true},
+
+		{"no fail flag at all", "curl -s " + url + " -o /tmp/x", false},
+		// The measured defect: exit 0 on a 404, body written as the file.
+		{"fail-early is a different option", "curl -s --fail-early " + url + " -o /tmp/x", false},
+		// The second half: the flag must be curl's, not a path's.
+		{"a path spelling the flag does not count", "curl -s " + url + " -o /srv/-sf/mod.py", false},
+		{"timeout's own flags do not count", "timeout -k 5 60 curl -s " + url, false},
+		{"no curl on the line", "python3 -c \"import x\" --fail", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := curlFailsOnHTTPError(c.line); got != c.want {
+				t.Errorf("curlFailsOnHTTPError(%q) = %v, want %v.\n\n"+
+					"Accepted spellings are the ones MEASURED to exit non-zero on a real 404: a "+
+					"short bundle carrying `f`, `--fail`, or `--fail-with-body`. `--fail-early` "+
+					"exits 0 and writes the error body as the file, so accepting it is the defect "+
+					"this table exists to keep out.", c.line, got, c.want)
+			}
+		})
+	}
+}
+
 // TestTheCairnInstallDoesNotSwallowItsOwnFailures pins the deliberate inversion of
 // the upstream contract.
 //
@@ -864,9 +962,11 @@ func TestTheCairnInstallDoesNotSwallowItsOwnFailures(t *testing.T) {
 	// 404 body written in place of a module, `python3 <body> --help` exits 1, so
 	// probes 1 and 2 still fail the install. The defect this pins is a fetch loop
 	// that reports success over missing files, not a client that ships broken.
-	// ⚠ THE FAIL FLAG IS ACCEPTED IN EITHER SPELLING, so that re-ordering curl's
-	// flags or writing `--fail` in full is not a red test. What must not change is
-	// that the flag is THERE.
+	// ⚠ THE FLAG IS ACCEPTED IN EVERY SPELLING THAT HAS THE PROPERTY, AND IN NO
+	// OTHER — see [curlFailsOnHTTPError], which is where the accepted set and the
+	// measurement behind it live. Re-ordering curl's flags or writing `--fail` in
+	// full is not a red test; writing a DIFFERENT option whose name merely starts
+	// the same way is.
 	var fetch string
 	for _, l := range strings.Split(cmd, "\n") {
 		if strings.Contains(l, "curl ") {
@@ -878,12 +978,14 @@ func TestTheCairnInstallDoesNotSwallowItsOwnFailures(t *testing.T) {
 		t.Fatal("no `curl` line in the install entry, so the two assertions below would pass " +
 			"vacuously over a string that fetches nothing")
 	}
-	if !strings.Contains(fetch, "-sf") && !strings.Contains(fetch, "--fail") {
-		t.Errorf("the fetch does not pass curl's fail flag (`-f`/`--fail`):\n  %s\n\n"+
-			"Without it curl exits 0 on an HTTP error and writes the error page as the file — "+
+	if !curlFailsOnHTTPError(fetch) {
+		t.Errorf("the fetch does not pass a curl flag that makes an HTTP error a non-zero exit:\n"+
+			"  %s\n\n"+
+			"Without one curl exits 0 on an HTTP error and writes the error page as the file — "+
 			"measured against a real 404: `curl -s` exits 0 with a 14-byte body, `curl -sf` exits "+
 			"22 — so `|| exit 1` never fires and the loop reports success with a module replaced "+
-			"by an error page.", fetch)
+			"by an error page. Accepted spellings are listed on curlFailsOnHTTPError; each was "+
+			"measured against a real 404 rather than read off the man page.", fetch)
 	}
 	if !strings.Contains(fetch, "|| exit 1") {
 		t.Errorf("the fetch loop does not `|| exit 1` on a failed curl:\n  %s\n\n"+
@@ -913,6 +1015,67 @@ func TestTheCairnInstallDoesNotSwallowItsOwnFailures(t *testing.T) {
 // [provision.Spec.Init] BY A DIFFERENT JOINING RULE than "\n" into `sh -eu -c`. Then
 // the hazard is real here, and the person who checks it is the reviewer of whichever
 // change adds that driver.
+//
+// ⚠ IT ALSO CARRIED A SECOND, UNRELATED ASSERTION, AND DELETING IT TOOK THAT WITH
+// IT. The same test counted quotes on each `python3 -c` line, and nothing replaced
+// that: measured after the deletion, adding a stray escaped quote to the probe
+// payload left the whole suite green. That half is restored below, on its own,
+// because its hazard does not depend on the joining rule.
+
+// TestEveryPythonPayloadInTheInstallHasBalancedQuotes is the half of the deleted
+// test that had a hazard of its own.
+//
+// 🔴 THE PAYLOAD IS AUTHORED HERE AND PARSED BY TWO LANGUAGES. `python3 -c "…"` puts
+// a python program inside a double-quoted shell word that itself contains
+// single-quoted python strings. An unbalanced quote on that line is a broken image:
+// the init container's `sh -eu -c` fails at pod start, before the agent exists.
+//
+// ⚠ IT IS A LOUD FAILURE, NOT A SILENT ONE, which is why this is a cheap parity
+// check and not a shell parser. The instance crash-loops with the shell's own error,
+// so the cost of the bug is a diagnosis, not a wrong answer shipped quietly.
+//
+// ⚠ AND PARITY CANNOT SEE ESCAPING — SAYING SO IS PART OF THE CLAIM. A legitimately
+// escaped `\"` inside the payload would make the count odd and fail this test. There
+// is none today, and if one is ever needed the honest move is to delete this check
+// rather than to weaken it into something that cannot fail.
+//
+// ⚠ IT IS NOT [TestAWorkspacePathThatWouldBreakTheInterpolationIsRefused]. That one
+// covers quotes arriving from CALLER DATA through the workspace path; this one covers
+// quotes written into the payload by whoever edits this file.
+func TestEveryPythonPayloadInTheInstallHasBalancedQuotes(t *testing.T) {
+	cmd, err := cairnInstallCommand(storeWorkspace)
+	if err != nil {
+		t.Fatalf("cairnInstallCommand: %v", err)
+	}
+
+	payloads := 0
+	for _, l := range strings.Split(cmd, "\n") {
+		if !strings.Contains(l, "python3 -c") {
+			continue
+		}
+		payloads++
+		for _, q := range []struct {
+			name string
+			char string
+		}{{"double", "\""}, {"single", "'"}} {
+			if n := strings.Count(l, q.char); n%2 != 0 {
+				t.Errorf("a `python3 -c` line carries an ODD number (%d) of %s quotes:\n  %s\n\n"+
+					"The payload is a python program inside a shell word, and an unbalanced quote "+
+					"in either language breaks the init container's `sh -eu -c` at pod start — the "+
+					"instance crash-loops before the agent exists. Parity cannot see an escaped "+
+					"quote, so if one is genuinely needed, delete this check rather than widen it.",
+					n, q.name, l)
+			}
+		}
+	}
+
+	// Positive control: the loop must have found the payload it is checking, or an
+	// install entry that lost its probe entirely passes here.
+	if payloads == 0 {
+		t.Fatal("no `python3 -c` line in the install entry, so the parity check above ran over " +
+			"nothing and would report clean for an install with no import probe at all")
+	}
+}
 
 // TestAWorkspacePathThatWouldBreakTheInterpolationIsRefused covers the one place
 // caller data reaches two different parsers.

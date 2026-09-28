@@ -288,6 +288,132 @@ func TestTheStoreSectionIsPinnedWholeRatherThanByKeyword(t *testing.T) {
 	}
 }
 
+// TestNoTextReachesTheSupervisorPromptWithoutAPin closes a coverage hole a delta
+// audit MEASURED in this file.
+//
+// 🔴 THE HOLE WAS MEASURED, NOT FEARED, AND THE JUSTIFICATION FOR CREATING IT WAS
+// FALSE. A forbidden-literal loop used to lead
+// TestTheCanonicalWriteCheckStaysAttributedToTheOperator; it was removed on the
+// recorded grounds that tests/leakscan.py and the store section's digest already
+// owned the four strings it listed. Both halves are false. Calling
+// leakscan.scan_text directly on each string: three produce NO finding at all, and
+// only the dated-measurement spelling is caught (by the dated-incident rule). That
+// run carried a positive control — a real private address, which the scanner DID
+// refuse — so the zeros are the scanner's answer about those strings and not a
+// scanner wired to nothing. And the digest pins chiefCairnSection ONLY: chiefIdentity
+// and chiefLiveReads had no whole-string pin of any kind. Reproduced end to end: a
+// private path and a private filename pasted into chiefLiveReads — which ships in
+// EVERY supervisor prompt, store-configured or not — left this package,
+// internal/agentprovision and cmd/muster-server all green and leakscan reporting
+// nothing.
+//
+// 🔴 IT IS A PIN ON THE WHOLE RENDERED PROMPT, NOT A WORD LIST. That is the
+// difference from the loop it replaces, whose own criticism stands: a list of
+// case-sensitive literals passes while the same hazard exists in any other shape.
+// This test cannot be walked by reshaping the text, because it does not read the
+// text. It pins every PART of the prompt by digest, and then pins that the prompt is
+// NOTHING BUT those parts — new words in an existing part fail a digest, a new part
+// fails the composition.
+//
+// ⚠ IT IS A CHANGE SIGNAL, AND THE DETECTOR IS THE HUMAN READING THE DIFF. No digest
+// can tell you a sentence is free of private detail; it can only refuse to let the
+// sentence ship unlooked-at. So this test is named for what it does — nothing reaches
+// the prompt without a pin — rather than for the property the removed loop's name
+// claimed and did not have.
+//
+// ⚠ THE COMPOSITION CHECK IS A COMPLETENESS CLAIM AND NOT A VALUE ONE. Comparing
+// ChiefInstructions against the constants it concatenates says nothing about what
+// those constants SAY; it says only that no fifth string and no inline text can enter
+// the rendered prompt unpinned. It is load-bearing only because each part carries its
+// own pin: two digests here, an independently-typed literal in
+// TestTheSupervisorsDurableSurfaceParagraphsAreAMatchedPair, and a digest in
+// TestTheStoreSectionIsPinnedWholeRatherThanByKeyword. Remove any one of those and
+// this test degrades to a tautology over that part.
+//
+// 🔴 THE PRICE IS DELIBERATE, AND IT IS ONE DIGEST PER EDIT. Editing chiefIdentity or
+// chiefLiveReads fails exactly one check below; recompute that digest, read the diff,
+// and confirm nothing private came with the edit.
+func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	digest := func(s string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(norm(s)))) }
+
+	// The two parts of the rendered prompt that nothing else in this file pins.
+	// Recorded from the constants as committed.
+	for _, p := range []struct {
+		name string
+		text string
+		want string
+		min  int
+	}{
+		{
+			name: "chiefIdentity",
+			text: chiefIdentity,
+			want: "98607e713e05198e0190d4d61fa3e766395f14be342ad5de8d1e587f9ded2d28",
+			min:  1000,
+		},
+		{
+			name: "chiefLiveReads",
+			text: chiefLiveReads,
+			want: "84ea975f062c83be67aec7d3c1257c32ddc3bd87652ec95b54adbf96b0a2babb",
+			min:  150,
+		},
+	} {
+		normalised := norm(p.text)
+		// Control: refuse a digest over a string too short to be the part it names.
+		if len(normalised) < p.min {
+			t.Fatalf("%s normalises to %d bytes, under the %d-byte floor: a digest over that is "+
+				"not pinning a section of the prompt", p.name, len(normalised), p.min)
+		}
+		// Control: the normalisation must have collapsed something, or this is a raw
+		// hash wearing a normalised name and a pure re-wrap would fail it.
+		if len(normalised) == len(p.text) {
+			t.Fatalf("%s: normalising changed nothing (%d bytes both ways), so this is hashing the "+
+				"raw constant and a re-wrap with no word changed would fail it",
+				p.name, len(normalised))
+		}
+		if got := digest(p.text); got != p.want {
+			t.Errorf("%s's WORDS have changed.\n  sha256(normalised): %s\n  recorded:           %s\n"+
+				"  normalised length: %d\n\n"+
+				"🔴 THIS PART OF THE SUPERVISOR PROMPT IS PINNED WHOLE, and this is the check that "+
+				"makes an edit to it visible. It exists because leakscan does NOT refuse a private "+
+				"path, filename or directory name (measured, with a control), so text pasted into "+
+				"this constant otherwise ships to every supervisor instance with nothing red. If "+
+				"the edit is intended, read the diff, confirm no private detail came with it, and "+
+				"record the digest.", p.name, got, p.want, len(normalised))
+		}
+	}
+
+	// Completeness: the rendered prompt is exactly the pinned parts, so nothing can
+	// enter it that no digest and no literal covers.
+	for _, c := range []struct {
+		name string
+		got  string
+		want string
+	}{
+		{
+			name: "configured",
+			got:  ChiefInstructions(true),
+			want: chiefIdentity + chiefDurableSurfacesWithCairn + chiefLiveReads + chiefCairnSection,
+		},
+		{
+			name: "unconfigured",
+			got:  ChiefInstructions(false),
+			want: chiefIdentity + chiefDurableSurfacesWithoutCairn + chiefLiveReads,
+		},
+	} {
+		if c.got != c.want {
+			t.Errorf("the %s supervisor prompt is not exactly the pinned parts concatenated "+
+				"(rendered %d bytes, pinned parts %d bytes).\n\n"+
+				"🔴 EVERY PART OF THIS PROMPT MUST CARRY A PIN. The digests above and the literals "+
+				"in the two sibling tests cover chiefIdentity, the durable-surface pair, "+
+				"chiefLiveReads and chiefCairnSection. Text introduced any other way — a new "+
+				"constant in the concatenation, or a string written inline in ChiefInstructions — "+
+				"ships to every supervisor instance with no guard on its content. Add the new part "+
+				"to this list AND give it a pin of its own.", c.name, len(c.got), len(c.want))
+		}
+	}
+}
+
 // TestTheSupervisorsDurableSurfaceParagraphsAreAMatchedPair pins the pair that has
 // to move with the section.
 //
@@ -432,15 +558,19 @@ func TestTheSupervisorProseTellsTheAgentItsEmptyTaskIsExpected(t *testing.T) {
 // TestTheCanonicalWriteCheckStaysAttributedToTheOperator pins the one claim about
 // this prose that nothing else in the repository owns.
 //
-// 🔴 THE FORBIDDEN-LITERAL LOOP THAT USED TO LEAD THIS TEST IS GONE. It listed four
-// case-sensitive strings — a private repository's name, a filename, a directory, and
-// one spelling of a dated measurement — and a guard on WORDS is walkable by any other
-// shape: a different private path, a different case, a date written another way. It
-// was also duplicated twice over. tests/leakscan.py owns leak detection and walks
-// every tracked file rather than this one string, and
-// TestTheStoreSectionIsPinnedWholeRatherThanByKeyword's digest fails on any reword of
-// the section at all — so the loop bought nothing the two of them do not, while
-// reading as though it were the gate.
+// 🔴 THE FORBIDDEN-LITERAL LOOP THAT USED TO LEAD THIS TEST IS GONE, AND THE REASON
+// RECORDED HERE FOR REMOVING IT WAS FALSE. The loop listed four case-sensitive
+// strings — a private repository's name, a filename, a directory, and one spelling of
+// a dated measurement. The half that stands: a guard on WORDS is walkable by any
+// other shape (a different private path, a different case, a date written another
+// way), and it was duplicated twice over. The half that was measured FALSE: this
+// comment claimed tests/leakscan.py and
+// TestTheStoreSectionIsPinnedWholeRatherThanByKeyword's digest "own" those four
+// strings between them. Neither does — leakscan produces no finding for three of the
+// four, and the digest covers chiefCairnSection only. So removing the loop removed
+// coverage. What replaced it is not the loop but
+// TestNoTextReachesTheSupervisorPromptWithoutAPin, which pins the WHOLE rendered
+// prompt and carries that measurement.
 //
 // ⚠ WHAT REMAINS IS A REAL AND UNDUPLICATED ASSERTION, which is why the test stayed
 // rather than going with the loop. The upstream text cited the canonical write

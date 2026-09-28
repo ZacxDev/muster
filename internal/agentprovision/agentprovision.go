@@ -563,11 +563,26 @@ func (a *Adapter) ensureHooksToken(ctx context.Context, ag agents.Agent) (agents
 // the condition below is a one-line change here while un-polluting the store is
 // not. See internal/agentspec/cairn.go.
 //
-// 🔴 THE GATE IS READ ONCE INTO A VARIABLE AND USED TWICE, WHICH IS THE WHOLE
-// POINT. The PROSE claims the credential and the SPEC carries it, and those two
-// must not be able to disagree — a supervisor told it holds a read+write key it
-// does not have reports a working subsystem as broken. One read, one answer, both
-// consumers. TestTheSupervisorsProseAndItsSpecAgreeAboutTheStore is the guard.
+// 🔴 BOTH CONSUMERS GO THROUGH THE SAME PREDICATE, WHICH IS THE WHOLE POINT. The
+// PROSE claims the credential and the SPEC carries it, and those two must not be
+// able to disagree — a supervisor told it holds a read+write key it does not have
+// reports a working subsystem as broken. What makes that impossible is that both
+// answers come from [agentspec.Config.CairnConfigured]: this function passes it to
+// ChiefInstructions, and agentspec's own gate calls the same method when it decides
+// whether to place the client and the credential. The hazard is a SECOND
+// EXPRESSION — `cfg.CairnURL != ""` in one place and the method in the other, which
+// disagree for every half-configured input. Two guards pin it, both behavioural:
+// TestTheSupervisorsProseAndItsSpecAgreeAboutTheStore on the configured and
+// unconfigured cases, and the half-configured one on the inputs that DISCRIMINATE
+// between the candidate expressions.
+//
+// ⚠ THIS USED TO CLAIM THE GATE IS "READ ONCE INTO A VARIABLE AND USED TWICE", AND
+// THAT INVARIANT DOES NOT EXIST. The variable below is read ONCE; the second
+// consumer never sees it, because agentspec re-evaluates the predicate itself
+// inside its own gate. So the single-read form buys nothing, the inlined form is
+// the same expression evaluated twice, and that test's own comment says so. A 🔴
+// note defending a form that carries no invariant is worse than no note: it sends
+// the next reader to protect a formatting choice.
 func (a *Adapter) buildSpec(ag agents.Agent) (provision.Spec, error) {
 	if ag.Name != agents.ChiefName {
 		return agentspec.Build(ag, a.spec, agentspec.Options{
