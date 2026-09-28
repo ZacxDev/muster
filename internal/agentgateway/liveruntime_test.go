@@ -237,8 +237,10 @@ func TestOneRealTOOLTurnAgainstALiveRuntime(t *testing.T) {
 	// MEASUREMENT rather than a gate" — a sentence contradicted by the line under it,
 	// and it threw away the per-image reading that produced ToolDef's matrix in the
 	// first place. Now: no runtime declared ⇒ skip (nothing to talk to); runtime
-	// declared ⇒ RUN, and report; plus MUSTER_LIVE_AGENT_EXPECT_TOOLS ⇒ a failure is
-	// the target's failure.
+	// declared ⇒ RUN, and report — every failure arm logs and returns; plus
+	// MUSTER_LIVE_AGENT_EXPECT_TOOLS ⇒ a failure is the target's failure. ⚠ An earlier
+	// revision left ONE arm skipping, which made the "a skip means no runtime" claim
+	// below false for a declared-but-failing runtime.
 	expectTools := os.Getenv(envLiveExpectTools) != ""
 	ep, ag := liveAgent(t)
 	gw, err := New(Config{Driver: &fixedResolver{ep: ep}, Runtime: HooksSHA256(), Model: liveSentinel(t)})
@@ -307,9 +309,17 @@ func TestOneRealTOOLTurnAgainstALiveRuntime(t *testing.T) {
 				"is exactly this case.", ep.URL(), err)
 			return
 		}
+		// 🔴 REPORTED, NOT SKIPPED — AND THIS ARM WAS THE THIRD DISPOSITION THAT MADE A
+		// NEW SENTENCE FALSE. It used to t.Skipf, so with a runtime fully declared and
+		// answering (say) HTTP 500, this cell SKIPPED while three freshly written
+		// sentences said a skip happens only when there is no runtime at all. An audit
+		// measured that in a minute. The three arms now have ONE disposition apiece
+		// without the declaration — report and pass — so "a skip means there was nothing
+		// to talk to" is true of the code rather than merely asserted about it.
 		if !expectTools {
-			t.Skipf("a real TOOL turn against %s failed and %s is unset, so this is reported "+
+			t.Logf("a real TOOL turn against %s failed and %s is unset, so this is REPORTED "+
 				"rather than gated: %v", ep.URL(), envLiveExpectTools, err)
+			return
 		}
 		t.Fatalf("a real TOOL turn against %s failed: %v", ep.URL(), err)
 	}

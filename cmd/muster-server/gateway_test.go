@@ -286,20 +286,45 @@ func TestTheRetractedReachabilityClaimIsGoneFromEveryNonTestSource(t *testing.T)
 	// word. Applied to normalised text, so newlines are no longer part of the puzzle.
 	re := regexp.MustCompile(`(?i)chat[ _-]?routes?.{0,80}?(live|usable|reachable)`)
 
-	// 🔴 A NEGATED MATCH IS THE CORRECTION, NOT THE CLAIM — AND THE FIRST RUN OF THIS
-	// WIDER SWEEP FLAGGED BOTH CORRECTIONS. "CHAT ROUTES stop REFUSING — which is not
-	// the same as reachable" and "chat routes no longer refuse … WIRED IS NOT REACHABLE"
-	// both satisfy the relationship above, because the reachability word is present
-	// precisely to be denied. That is the same family as the recorded FAIL-CLOSED
-	// hyphen trap: a detector keyed on a word also selects that word's negation, and the
-	// collision runs the DANGEROUS way — it would have forced the correction to be
-	// reworded to appease the guard.
+	// 🔴 THE EXCLUSION IS A PINNED LIST OF THIS TREE'S OWN CORRECTIONS, NOT A NEGATION
+	// VOCABULARY — AND THE VOCABULARY VERSION WAS MEASURED WALKABLE FOUR WAYS. The first
+	// attempt excluded any match containing not/never/no longer/rather than, because the
+	// wider sweep had flagged the corrections themselves ("not the same as reachable",
+	// "WIRED IS NOT REACHABLE") — the reachability word is present there precisely to be
+	// denied, which is the recorded FAIL-CLOSED hyphen trap and runs the DANGEROUS way,
+	// pressuring the correction to be reworded to appease the guard.
 	//
-	// ⚠ THE COST, NAMED: a claim phrased as a double negative ("not unreachable") is
-	// excluded too. That is accepted — it is contrived, while a rewrap and a negated
-	// correction are both things that actually happened — and the alternative is a guard
-	// that fails on its own fix.
-	negated := regexp.MustCompile(`(?i)\b(not|never|no longer|rather than|stop(s)? refusing)\b`)
+	// But a negation word ANYWHERE in the match suppressed the hit, and the regexp's
+	// match is non-greedy, so the window is exactly where such a word sits. An audit
+	// injected four sentences that assert reachability THROUGH a negation and all four
+	// survived with the suite green:
+	//
+	//	"The two chat routes are not merely wired but live."
+	//	"The two CHAT ROUTES, never usable before this change, are live."
+	//	"The two chat routes no longer refuse and are now fully live."
+	//	"The chat routes now serve rather than refuse, and are usable end to end."
+	//
+	// The first uses this PR's own wired-vs-live vocabulary, i.e. the likeliest way the
+	// retracted claim comes back. So the exclusion is INVERTED: only the exact
+	// corrections this tree contains are allowed, pinned as literals. Anything else is
+	// flagged whether it is negated or not.
+	//
+	// ⚠ THE COST, NAMED HONESTLY THIS TIME: rewording a correction fires this guard, and
+	// the fix is to add the new wording here. That is deliberate — it forces a human to
+	// look at the sentence, which is the whole point, and it is the opposite of the first
+	// attempt's cost, which was silently allowing a false claim.
+	allowedCorrections := []string{
+		"stop REFUSING — which is not the same as reachable",
+		"chat routes no longer refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT REACHABLE",
+	}
+	isCorrection := func(m string) bool {
+		for _, ok := range allowedCorrections {
+			if strings.Contains(m, ok) || strings.Contains(ok, m) {
+				return true
+			}
+		}
+		return false
+	}
 
 	root := moduleRootForSweep(t)
 	var swept, hits int
@@ -322,8 +347,8 @@ func TestTheRetractedReachabilityClaimIsGoneFromEveryNonTestSource(t *testing.T)
 		}
 		swept++
 		for _, m := range re.FindAllString(normaliseComments(string(body)), -1) {
-			if negated.MatchString(m) {
-				continue // the correction, not the claim — see the negation note above
+			if isCorrection(m) {
+				continue // one of this tree's own corrections — see the note above
 			}
 			hits++
 			rel, _ := filepath.Rel(root, path)
@@ -338,9 +363,15 @@ func TestTheRetractedReachabilityClaimIsGoneFromEveryNonTestSource(t *testing.T)
 		t.Fatalf("walking %s: %v", root, err)
 	}
 
-	// 🔴 POSITIVE CONTROLS, ONE PER HOLE THE PREVIOUS VERSION HAD. A zero above means
-	// nothing unless the instrument can see both shapes, and the earlier control only
-	// ever exercised the shape that version could already match.
+	// 🔴 POSITIVE CONTROLS ON THE PATTERN'S SHAPES. ⚠ An earlier wording called these
+	// "ONE PER HOLE THE PREVIOUS VERSION HAD", which was not the mapping: the
+	// single-line form was already matched by that version (so it is not one of its
+	// holes), the wrapped form IS one, the file-reference-in-the-gap one closes a hole
+	// the docstring never named, and the FILE-COVERAGE hole — the claim living in a file
+	// that was not on the old four-file list — has no control here at all; it is covered
+	// by the walk plus the swept-count floor below, which is a different instrument. A
+	// sentence reading as a coverage map that is not one is the defect this whole guard
+	// exists to fix, so it is stated accurately rather than tidily.
 	for _, ctl := range []struct{ name, text string }{
 		{"the single-line form that was missed",
 			"// NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH. The two CHAT ROUTES are live;"},
@@ -354,33 +385,38 @@ func TestTheRetractedReachabilityClaimIsGoneFromEveryNonTestSource(t *testing.T)
 				"zero over %d file(s) says nothing about that shape", ctl.name, ctl.text, swept)
 		}
 	}
-	// 🔴 CONTROLS ON THE NEGATION FILTER ITSELF, IN BOTH DIRECTIONS. A filter that
-	// swallowed the real claim would make every zero above meaningless, and one that
-	// passed the corrections would fail this suite on its own fix.
-	for _, must := range []string{
+	// 🔴 CONTROLS ON THE EXCLUSION, IN BOTH DIRECTIONS — an exclusion that swallowed the
+	// real claim would make every zero above vacuous, and one that rejected the tree's
+	// own corrections would fail this suite on its own fix. The first four are the
+	// sentences that WALKED the previous vocabulary-based version.
+	for _, mustFlag := range []string{
 		"The two CHAT ROUTES are live;",
 		"the two chat routes are live over the same driver as lifecycle.",
 		"chat routes are FULLY USABLE against any agent",
+		"The two chat routes are not merely wired but live.",
+		"The two CHAT ROUTES, never usable before this change, are live.",
+		"The two chat routes no longer refuse and are now fully live.",
+		"The chat routes now serve rather than refuse, and are usable end to end.",
+		// Split across a Go concatenation, the way the banner's own strings are written.
+		`fmt.Sprintf("the two chat routes are " + "live over the same driver")`,
 	} {
-		m := re.FindString(normaliseComments(must))
+		m := re.FindString(normaliseComments(mustFlag))
 		if m == "" {
-			t.Errorf("control FAILED: the relationship pattern does not match the retracted "+
-				"claim %q", must)
+			t.Errorf("control FAILED: the relationship pattern does not match %q, so the sweep "+
+				"cannot see that shape at all", mustFlag)
 			continue
 		}
-		if negated.MatchString(m) {
-			t.Errorf("control FAILED: the negation filter SWALLOWS the retracted claim %q "+
-				"(matched %q), so every zero this sweep reports is vacuous", must, m)
+		if isCorrection(m) {
+			t.Errorf("control FAILED: the exclusion swallows the reachability claim %q "+
+				"(matched %q), so every zero this sweep reports is vacuous about that shape",
+				mustFlag, m)
 		}
 	}
-	for _, mustSkip := range []string{
-		"CHAT ROUTES stop REFUSING — which is not the same as reachable",
-		"the two chat routes no longer refuse at api.requireGatewayProvisioner. WIRED IS NOT REACHABLE",
-	} {
+	for _, mustSkip := range allowedCorrections {
 		m := re.FindString(normaliseComments(mustSkip))
-		if m != "" && !negated.MatchString(m) {
-			t.Errorf("control FAILED: the CORRECTION %q is not excluded (matched %q), so this "+
-				"guard fails on its own fix", mustSkip, m)
+		if m != "" && !isCorrection(m) {
+			t.Errorf("control FAILED: this tree's own correction %q is not excluded (matched "+
+				"%q), so the guard fails on its own fix", mustSkip, m)
 		}
 	}
 
@@ -407,8 +443,17 @@ func normaliseComments(src string) string {
 		b.WriteString(strings.TrimSpace(t))
 		b.WriteByte(' ')
 	}
-	return b.String()
+	// 🔴 GO STRING CONCATENATION IS COLLAPSED TOO, AND THE SWEEP'S FIRST RUN PROVED IT
+	// HAS TO BE. The banner's own correction is written across a `"+ "` join, so the
+	// joined text read `…no longer "+ "refuse at…` and did not match the pinned
+	// correction — the guard flagged its own fix. A claim split across a concatenation is
+	// exactly as hidden as one split across a comment wrap: same class, same remedy.
+	return goStringJoin.ReplaceAllString(b.String(), "")
 }
+
+// goStringJoin matches the `" + "` seam between two halves of a concatenated Go string
+// literal, in any spacing.
+var goStringJoin = regexp.MustCompile(`"\s*\+\s*"`)
 
 // moduleRootForSweep finds the directory holding go.mod, walking up from the test's
 // own working directory. Spelled here rather than hardcoded so the sweep cannot
