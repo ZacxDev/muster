@@ -131,9 +131,38 @@ func (s *PGStore) LastMessageByAgentIDs(ctx context.Context, ids []int64) (map[i
 	return out, rows.Err()
 }
 
+// NameExists reports whether a name is TAKEN — by a live agent, or forever by
+// one that was destroyed.
+//
+// 🔴 THE SECOND EXISTS IS THE ENFORCEMENT POINT FOR THE NAME TOMBSTONE, AND IT
+// IS HERE BECAUSE THIS IS THE ONLY THING THE GENERATOR ASKS. BuildUniqueAgentName
+// accepts any candidate this returns false for. Delete is a HARD delete, so
+// without the second clause a destroyed agent's name goes straight back into the
+// bounded pool in names.go and the next generated agent can be its namesake —
+// inheriting the per-instance namespace, ServiceAccount and cluster-scoped
+// ClusterRoleBinding that were NAMED after the dead one. See
+// internal/provision/k8s/driver.go's Destroy on why those objects outlive the
+// row, and migration 0002 for the trigger that fills the ledger this reads.
+//
+// ⚠ THE LEDGER IS ONLY EVER READ HERE. Nothing refuses an INSERT of a retired
+// name, deliberately (migration 0002 says why: `chief` is provisioned with a
+// hand-set name and a refusal would make re-provisioning it impossible). So this
+// closes the AUTO-GENERATED path and no other.
+//
+// 🔴 THIS SELECT RUNS AS THE CONNECTING ROLE, WHICH IS WHY 0002 GRANTS SELECT ON
+// THE LEDGER. The write side is a SECURITY DEFINER trigger and needs no grant;
+// this side is ordinary application SQL and cannot be made to run as anyone
+// else. `CREATE TABLE` grants nothing to anyone but the owner, so a deployment
+// whose migrating role is not its connecting role got
+// `permission denied for table agent_retired_names` (42501) here — on EVERY
+// auto-named agent creation, since BuildUniqueAgentName asks nothing else.
+// TestANonOwnerRoleCanBothRetireANameAndReadTheLedger pins both halves together;
+// each passes alone while the pair is broken.
 func (s *PGStore) NameExists(ctx context.Context, name string) (bool, error) {
 	var exists bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agents WHERE name=$1)`, name).Scan(&exists)
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS(SELECT 1 FROM agents WHERE name=$1)
+		    OR EXISTS(SELECT 1 FROM agent_retired_names WHERE name=$1)`, name).Scan(&exists)
 	return exists, err
 }
 
