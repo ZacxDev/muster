@@ -850,54 +850,69 @@ func TestTheCairnInstallDoesNotSwallowItsOwnFailures(t *testing.T) {
 			"of a swallow proves nothing")
 	}
 
-	// 🔴 ONE `|| exit 1` IS EXPECTED AND IS THE OPPOSITE OF A SWALLOW: it is inside
-	// a `sh -c` subshell whose own exit status is what the outer `-e` reads, so it
-	// converts a failed curl into a failed loop rather than hiding it. Asserted so
-	// that deleting it — which would leave the loop continuing past a 404 — is red.
-	if !strings.Contains(cmd, "|| exit 1") {
-		t.Error("the fetch loop does not `|| exit 1` on a failed curl, so it continues past a 404 " +
-			"and the subshell exits 0 with files missing")
-	}
-}
-
-// TestTheCairnInstallHasNoHeredocAndNoMultiLinePythonPayload is an INVARIANT GUARD.
-//
-// ⚠ IT IS LABELLED AS ONE BECAUSE NOTHING HERE HAS EVER VIOLATED IT. Upstream had a
-// measured reason — its chart re-indented every line of the value, so a heredoc
-// terminator never matched its opener and a multi-line `python3 -c` payload was an
-// IndentationError. muster's driver joins entries with "\n" and hands them to
-// `sh -eu -c`, where a heredoc would in fact survive.
-//
-// The invariant is kept anyway because HOW Init is rendered belongs to the driver:
-// [provision.Spec.Init] calls itself a shell contract and the least portable field
-// in the spec, so an entry that works only under one driver's joining rule is an
-// entry that breaks on the next one. Do not count this as regression coverage.
-func TestTheCairnInstallHasNoHeredocAndNoMultiLinePythonPayload(t *testing.T) {
-	cmd, err := cairnInstallCommand(storeWorkspace)
-	if err != nil {
-		t.Fatalf("cairnInstallCommand: %v", err)
-	}
-
-	if strings.Contains(cmd, "<<") {
-		t.Errorf("the install entry contains a heredoc operator:\n%s", cmd)
-	}
-	// Every `python3 -c` payload must be one line. Find the opening quote and
-	// assert no newline before its close.
+	// 🔴 `curl -sf` IS THE LOAD-BEARING HALF, AND THIS USED TO ASSERT ONLY THE OTHER
+	// ONE. Measured against a real 404 on the raw-content host: `curl -s` exits 0
+	// and writes a 14-byte body ("404: Not Found"), so `|| exit 1` never fires and
+	// the loop walks past the 404 with the flag gone. `curl -sf` exits 22 on the
+	// same URL and 0 on a URL that exists. So the `-f` is what turns an HTTP error
+	// into a non-zero status; `|| exit 1` only propagates a status that already
+	// exists. A sweep confirmed the gap rather than inferring it: `curl -sf` ->
+	// `curl -s`, applied alone, SURVIVED all three packages while this test asserted
+	// `|| exit 1` and nothing else.
+	//
+	// ⚠ THE PAYLOAD IMPACT IS BOUNDED, AND SAYING SO IS PART OF THE CLAIM. With a
+	// 404 body written in place of a module, `python3 <body> --help` exits 1, so
+	// probes 1 and 2 still fail the install. The defect this pins is a fetch loop
+	// that reports success over missing files, not a client that ships broken.
+	// ⚠ THE FAIL FLAG IS ACCEPTED IN EITHER SPELLING, so that re-ordering curl's
+	// flags or writing `--fail` in full is not a red test. What must not change is
+	// that the flag is THERE.
+	var fetch string
 	for _, l := range strings.Split(cmd, "\n") {
-		if !strings.Contains(l, "python3 -c") {
-			continue
-		}
-		// The payload is on this line by construction; the only way it could be
-		// multi-line is an unterminated quote, which shows up as an odd count.
-		if strings.Count(l, `"`)%2 != 0 {
-			t.Errorf("a `python3 -c` payload has an unbalanced quote, so it spans lines:\n  %s", l)
+		if strings.Contains(l, "curl ") {
+			fetch = l
+			break
 		}
 	}
-	// Control: the check above must have had something to look at.
-	if !strings.Contains(cmd, "python3 -c") {
-		t.Error("no `python3 -c` in the entry, so the payload check ran over nothing")
+	if fetch == "" {
+		t.Fatal("no `curl` line in the install entry, so the two assertions below would pass " +
+			"vacuously over a string that fetches nothing")
+	}
+	if !strings.Contains(fetch, "-sf") && !strings.Contains(fetch, "--fail") {
+		t.Errorf("the fetch does not pass curl's fail flag (`-f`/`--fail`):\n  %s\n\n"+
+			"Without it curl exits 0 on an HTTP error and writes the error page as the file — "+
+			"measured against a real 404: `curl -s` exits 0 with a 14-byte body, `curl -sf` exits "+
+			"22 — so `|| exit 1` never fires and the loop reports success with a module replaced "+
+			"by an error page.", fetch)
+	}
+	if !strings.Contains(fetch, "|| exit 1") {
+		t.Errorf("the fetch loop does not `|| exit 1` on a failed curl:\n  %s\n\n"+
+			"The fail flag makes curl's status non-zero; this is what carries that status out of "+
+			"the `sh -c` subshell to the outer `-e`. Without it the loop swallows the failure it "+
+			"just detected.", fetch)
 	}
 }
+
+// TestTheCairnInstallHasNoHeredocAndNoMultiLinePythonPayload WAS HERE AND IS
+// DELETED. It is recorded rather than silently dropped because a reader coming from
+// upstream will look for it.
+//
+// 🔴 IT WAS THE WORKAROUND IMPORTED WITHOUT THE PROBLEM. Upstream's reason was
+// measured: its chart re-indented every line of the value, so a heredoc terminator
+// never matched its opener and a multi-line `python3 -c` payload was an
+// IndentationError. That does not hold here, and the test's own doc comment
+// conceded it — "muster's driver joins entries with \n and hands them to
+// `sh -eu -c`, where a heredoc would in fact survive." A guard whose stated hazard
+// cannot occur is the exact mistake cairn.go's header item 2 warns about, applied to
+// a test: it cost a reader's attention and bought no coverage.
+//
+// The entry is still written with neither construct, and cairn.go's "NO HEREDOC"
+// section says why that is a style preference here rather than a constraint.
+//
+// THE CLOSING CONDITION FOR RE-ADDING IT is the first driver that renders
+// [provision.Spec.Init] BY A DIFFERENT JOINING RULE than "\n" into `sh -eu -c`. Then
+// the hazard is real here, and the person who checks it is the reviewer of whichever
+// change adds that driver.
 
 // TestAWorkspacePathThatWouldBreakTheInterpolationIsRefused covers the one place
 // caller data reaches two different parsers.

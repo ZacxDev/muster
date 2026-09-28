@@ -232,33 +232,59 @@ func TestTheSupervisorProseClaimsTheStoreOnlyWhenTheFlagIsSet(t *testing.T) {
 // this file — was rejected because a 5 KB duplicate diverges silently, which is
 // worse than a digest that cannot.
 //
-// 🔴 THE PRICE IS DELIBERATE: any edit to the section fails this test. Recompute the
-// numbers below, read the diff, and confirm the sentence-level guards still pass.
+// 🔴 IT HASHES THE WHITESPACE-NORMALISED SECTION, AND THAT IS THE SAME "WHOLE
+// STRING" ITS SIBLING MEANS. TestTheSupervisorsDurableSurfaceParagraphsAreAMatchedPair
+// compares against `strings.Join(strings.Fields(s), " ")`; this test used to hash the
+// RAW constant including its hard wraps. So a pure re-wrap — no word changed — failed
+// one guard and sailed through the other, and two guards in one file disagreed about
+// what they were pinning. Normalised, they agree: both are pins on the WORDS, and
+// neither fires on a reflow.
+//
+// ⚠ NORMALISING COSTS THE REFLOW SIGNAL AND KEEPS THE ONE THAT MATTERS. A re-wrap no
+// longer fails this test. That was verified not to cost the signal this guard exists
+// for: the mutant it alone caught — a reword of a non-load-bearing sentence — was
+// re-run after the change and still dies here.
+//
+// 🔴 THE PRICE IS DELIBERATE: any edit to the section's WORDS fails this test.
+// Recompute the digest below, read the diff, and confirm the sentence-level guards
+// still pass.
 func TestTheStoreSectionIsPinnedWholeRatherThanByKeyword(t *testing.T) {
-	// Recorded from the section as committed. Two independent quantities, because a
-	// digest alone gives a reader no idea how far the text moved and a length alone
-	// is satisfied by any same-length rewrite.
-	const (
-		wantLen    = 4800
-		wantSHA256 = "c9bd0443c4531aa9561a967f40ae395456f8aae5fea27ea800bce39fbd82f590"
-	)
+	// The section with runs of whitespace collapsed — the same normalisation the
+	// matched-pair guard below applies, so the two tests pin the same thing.
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+	// Recorded from the section as committed.
+	//
+	// ⚠ THE LENGTH CHECK THAT USED TO SIT BESIDE THIS IS GONE: a sha256 subsumes it
+	// entirely — there is no edit a length can catch that the digest does not — and
+	// carrying a second number only meant two things to recompute.
+	const wantSHA256 = "4f542f67763fe75b3cd3b92df121232a53ce092be94778de11c4e227363a022f"
+
+	normalised := norm(chiefCairnSection)
 
 	// Control: refuse a comparison against an empty or trivially short section.
-	if len(chiefCairnSection) < 1000 {
-		t.Fatalf("the section is %d bytes; a digest over that is not pinning prose",
-			len(chiefCairnSection))
+	if len(normalised) < 1000 {
+		t.Fatalf("the normalised section is %d bytes; a digest over that is not pinning prose",
+			len(normalised))
+	}
+	// Control: the normalisation must actually have collapsed something, or this is a
+	// raw hash wearing a normalised name and the disagreement it fixes is still open.
+	if len(normalised) == len(chiefCairnSection) {
+		t.Fatalf("normalising changed nothing (%d bytes both ways), so this guard is still hashing "+
+			"the raw constant and a pure re-wrap would fail it", len(normalised))
 	}
 
-	sum := fmt.Sprintf("%x", sha256.Sum256([]byte(chiefCairnSection)))
-	if len(chiefCairnSection) != wantLen || sum != wantSHA256 {
-		t.Errorf("the store section has changed.\n  length: %d (recorded %d)\n  sha256: %s "+
-			"(recorded %s)\n\n"+
+	sum := fmt.Sprintf("%x", sha256.Sum256([]byte(normalised)))
+	if sum != wantSHA256 {
+		t.Errorf("the store section's WORDS have changed.\n  sha256(normalised): %s\n  recorded:"+
+			"           %s\n  normalised length: %d\n\n"+
 			"🔴 THIS IS A CHANGE SIGNAL, NOT A CORRECTNESS ONE. Every sentence in this section is a "+
 			"claim about a credential the instance may or may not hold, and a keyword guard is "+
 			"walkable by rewording — measured: a reword of the write-discipline rule survived every "+
-			"other guard in this file. If the edit is intended, read the diff, confirm the "+
-			"sentence-level guards above still pass, and record these two numbers.",
-			len(chiefCairnSection), wantLen, sum, wantSHA256)
+			"other guard in this file. Re-wrapping the constant does NOT fail this test; changing a "+
+			"word does. If the edit is intended, read the diff, confirm the sentence-level guards "+
+			"above still pass, and record the digest.",
+			sum, wantSHA256, len(normalised))
 	}
 }
 
@@ -403,33 +429,37 @@ func TestTheSupervisorProseTellsTheAgentItsEmptyTaskIsExpected(t *testing.T) {
 	}
 }
 
-// TestTheSupervisorProseCarriesNoPrivateInfrastructureDetail is a narrow, local
-// echo of the repository's leak gate.
+// TestTheCanonicalWriteCheckStaysAttributedToTheOperator pins the one claim about
+// this prose that nothing else in the repository owns.
 //
-// ⚠ tests/leakscan.py IS THE REAL OWNER and covers every file rather than this one
-// string. This exists because the upstream text this was ported from cited a path
-// inside the operator's own private configuration repository and narrated a dated
-// measurement from a specific pod — both of which are exactly what the port had to
-// strip, and a guard at the point of the edit is what tells the next editor not to
-// paste them back.
-func TestTheSupervisorProseCarriesNoPrivateInfrastructureDetail(t *testing.T) {
+// 🔴 THE FORBIDDEN-LITERAL LOOP THAT USED TO LEAD THIS TEST IS GONE. It listed four
+// case-sensitive strings — a private repository's name, a filename, a directory, and
+// one spelling of a dated measurement — and a guard on WORDS is walkable by any other
+// shape: a different private path, a different case, a date written another way. It
+// was also duplicated twice over. tests/leakscan.py owns leak detection and walks
+// every tracked file rather than this one string, and
+// TestTheStoreSectionIsPinnedWholeRatherThanByKeyword's digest fails on any reword of
+// the section at all — so the loop bought nothing the two of them do not, while
+// reading as though it were the gate.
+//
+// ⚠ WHAT REMAINS IS A REAL AND UNDUPLICATED ASSERTION, which is why the test stayed
+// rather than going with the loop. The upstream text cited the canonical write
+// protocol by a path inside the operator's own private configuration repository. The
+// port replaced the path with an ATTRIBUTION, and attribution is the load-bearing
+// half: an agent that reads its own weaker check as the whole protocol reports a
+// write as validated when nothing validated it. A digest notices that sentence
+// moving; only this test says why it must not.
+func TestTheCanonicalWriteCheckStaysAttributedToTheOperator(t *testing.T) {
 	out := ChiefInstructions(true)
-	for _, forbidden := range []string{
-		"subsystem-index",
-		"SKILL.md",
-		"devrc",
-		"MEASURED 2026",
-	} {
-		if strings.Contains(out, forbidden) {
-			t.Errorf("the supervisor prose contains %q — a private repository's layout or a dated "+
-				"incident reference, neither of which belongs in a public repository and neither "+
-				"of which an instance can reach anyway", forbidden)
-		}
-	}
-	// The positive half: the canonical protocol must still be ATTRIBUTED, or
-	// stripping the path quietly turned "his step" into "nobody's step".
 	if !strings.Contains(out, "running it is his step, not yours") {
 		t.Error("the prose no longer says whose step the canonical write check is, so an agent " +
-			"reads its own weaker check as the whole protocol")
+			"reads its own weaker check as the whole protocol and reports a write as validated " +
+			"when nothing validated it")
+	}
+	// Control: the positive assertion above must be running against the section that
+	// contains the claim, not against the unconfigured prose where it never appears.
+	if strings.Contains(ChiefInstructions(false), "running it is his step, not yours") {
+		t.Error("the unconfigured prose attributes the canonical write check, which means the " +
+			"store section is leaking into the build with no credential configured")
 	}
 }

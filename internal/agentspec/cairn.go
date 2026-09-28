@@ -138,7 +138,39 @@ const (
 	// joined with `.config/subsystem-store/env`, and with it set it returns the
 	// path verbatim. Relying on the default would mean asserting what HOME is
 	// inside an image this package has never seen; naming the file explicitly
-	// removes the assumption entirely.
+	// removes that assumption FOR THE CREDENTIAL.
+	//
+	// 🔴 FOR THE CREDENTIAL, AND NOT FOR THE CLIENT — THE SENTENCE ABOVE USED TO
+	// CLAIM IT "REMOVES THE ASSUMPTION ENTIRELY", WHICH WAS AN OVER-CLAIM. Read at
+	// the pinned revision: lib/subsystem_read_store.py's DEFAULT_CACHE_ROOT is
+	// derived from the process's home directory, and lib/env_aliases.py's own
+	// ledger records that NOTHING in either language reads a cache-root variable.
+	// So every read verb still writes a home-derived cache and [EnvCairnConfig]
+	// cannot move it. The assumption this constant removes is the one about where
+	// the CREDENTIAL is read from — the half a spec can control. The cache half is
+	// the image's, and it is not removed.
+	//
+	// 🔴 CONSEQUENCE: THE INSTALL CAN REPORT SUCCESS OVER A CLIENT THAT CANNOT
+	// FUNCTION, AND THESE ARE THE CASES. All three probes are `--help`, which
+	// touches neither the credential nor the cache, so neither of the following is
+	// observable at install time — each surfaces later, when the agent runs a verb:
+	//   - A HOME THE PROCESS CANNOT WRITE. Every read verb wants a cache beneath
+	//     it; nothing in the install ever tries to create one.
+	//   - A CREDENTIAL THE PROCESS CANNOT READ. The file lands 0600 (see
+	//     [cairnCredentialMode]), and NOTHING in internal/provision sets a
+	//     SecurityContext, RunAsUser, RunAsGroup or FSGroup — measured absent
+	//     across the repository's own Go, not assumed — so under an image whose
+	//     user is not the mount's owner the credential is unreadable. Measured
+	//     client behaviour in that state is a refusal at exit 3 naming the two
+	//     variables it wanted and the file it looked in: loud, but only once a verb
+	//     runs.
+	//
+	// ⚠ AND THE RUNTIME IMAGE MUST PROVIDE `curl`, `python3`, AND A `timeout` THAT
+	// ACCEPTS `-k`. The install entry uses all three and checks for none of them,
+	// and nothing else in this repository records the requirement — so this is the
+	// note whoever changes the image will see. A missing one fails the INSTALL
+	// rather than the agent, which is the better of the two failures and still not
+	// a diagnosed one.
 	//
 	// ⚠ THE SENTENCE ABOVE DESCRIBES THAT DEFAULT RATHER THAN QUOTING THE PYTHON,
 	// and not for style. tests/leakscan.py's private-hostname rule matches a
@@ -335,29 +367,64 @@ func cairnCredentialFile(cfg Config) provision.File {
 //
 // # NO HEREDOC, AND NO MULTI-LINE `python3 -c`
 //
-// ⚠ THIS IS AN INVARIANT, NOT A FIX FOR ANYTHING OBSERVED HERE. Upstream had a
+// ⚠ IT IS A STYLE PREFERENCE HERE, AND ITS GUARD HAS BEEN DELETED. Upstream had a
 // measured reason — its chart re-indented every line of the value, so a heredoc
-// terminator never matched its opener. muster's driver joins entries with "\n"
-// and hands them to `sh -eu -c`, where a heredoc would in fact survive. The
-// invariant is kept anyway because HOW Init is rendered belongs to the driver:
-// [provision.Spec.Init]'s doc calls it a shell contract and the least portable
-// field in the spec, so an entry that only works under one driver's joining rule
-// is an entry that breaks on the next one. Labelled as an invariant guard in the
-// test, not counted as regression coverage.
+// terminator never matched its opener. muster's driver joins entries with "\n" and
+// hands them to `sh -eu -c`, where a heredoc would in fact survive, so the reason
+// does NOT transfer. A test asserting the absence was therefore the workaround
+// imported without the problem — the mistake item 2 of this header warns about,
+// applied to a test — and it is gone rather than kept as an "invariant guard".
+// The entry is still written without either construct, because HOW Init is
+// rendered belongs to the driver and [provision.Spec.Init]'s own doc calls itself
+// a shell contract and the least portable field in the spec.
+//
+// THE CLOSING CONDITION FOR RE-ADDING THE GUARD is the first driver that renders
+// [provision.Spec.Init] BY A DIFFERENT JOINING RULE than "\n" into `sh -eu -c`. At
+// that point the constraint is real here rather than inherited, and the person who
+// checks it is the reviewer of whichever change adds that driver.
 //
 // # DOWNLOAD -> VERIFY -> MOVE -> RE-VERIFY ON PATH
 //
 // The client must IMPORT before it is reachable, which is what catches a
-// truncated body, a missing module or a revision whose layout moved. A
-// `--version` style probe cannot do this job: `cairn --version` exits 0 printing
-// usage, exactly like a verb that does not exist.
+// truncated body, a missing module or a revision whose layout moved.
 //
-// 🔴 THE THIRD PROBE IS NOT REDUNDANT. The staged probes run a python file by
-// path; the last one runs the real command on PATH, which is the only one that
-// covers the wrapper, its mode bit, and the resolved `lib/` sibling together.
-// Upstream added it after a run that printed "installed" while the wrapper write
-// had failed — a success echo that was a claim about the DOWNLOAD, not about the
-// command the agent would invoke.
+// ⚠ AN EARLIER VERSION OF THIS PARAGRAPH JUSTIFIED THE DESIGN ON A FALSE PROPERTY
+// OF THE TOOL, and the correction is recorded rather than quietly swapped because
+// the same false sentence ALSO shipped to the agent — see [chiefCairnSection],
+// corrected there too. It read: "A `--version` style probe cannot do this job:
+// `cairn --version` exits 0 printing usage, exactly like a verb that does not
+// exist." Measured at [cairnRev]: there is no `--version` option anywhere in the
+// client, and the top-level parser declares its subcommand REQUIRED, so
+// `cairn --version` exits 2 with an argparse usage error. A bogus verb exits 2 as
+// well — so the two are indistinguishable by their OUTPUT, not by their exit
+// status, which is the reverse of what was claimed and is no argument at all
+// against an exit-code probe. Probe 1 is exactly such a probe, and it works.
+//
+// 🔴 SO PROBE 2, THE IMPORT PROBE, HAS NO INDEPENDENT REASON AT THIS REVISION, AND
+// THAT IS WRITTEN DOWN RATHER THAN REPLACED WITH A FRESH ARGUMENT. Measured two
+// ways at [cairnRev] — `python3 -X importtime` over probe 1's exact command, and
+// sys.modules after it — `cairn --help` imports ALL NINE of [cairnLibModules].
+// Eight are top-level imports of the entrypoint; the ninth, cairn_doctor, sits
+// inside a function whose own docstring states it is NOT lazy in effect, because
+// the parser builder calls it to render help text on every invocation. Every
+// module probe 2 imports, probe 1 has therefore already imported, and probe 1's
+// exit status is checked under `sh -eu`.
+//
+// It is RETAINED rather than deleted for one narrow and conditional reason, stated
+// as conditional on purpose: it imports the LEDGER's names directly, so it would
+// catch an element of [cairnLibModules] that the entrypoint's own startup path
+// does not import. No such element exists at this revision, so today it verifies
+// nothing probe 1 does not. THE CLOSING CONDITION FOR DELETING IT is a [cairnRev]
+// bump after which probe 1 is re-measured (`python3 -X importtime <client> --help`)
+// and still imports every element of the ledger; the person who checks it is the
+// reviewer of that bump. Its 11 s of the stated 98 s budget is what buys the delay.
+//
+// 🔴 THE THIRD PROBE IS NOT REDUNDANT, and nothing above touches its reason. The
+// staged probes run a python file by path; the last one runs the real command on
+// PATH, which is the only one that covers the wrapper, its mode bit, and the
+// resolved `lib/` sibling together. Upstream added it after a run that printed
+// "installed" while the wrapper write had failed — a success echo that was a claim
+// about the DOWNLOAD, not about the command the agent would invoke.
 func cairnInstallCommand(workspace string) (string, error) {
 	if err := checkCairnWorkspace(workspace); err != nil {
 		return "", err

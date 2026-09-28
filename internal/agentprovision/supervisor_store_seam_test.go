@@ -219,18 +219,33 @@ func TestOnlyTheSupervisorIsEligibleForTheStoreCredential(t *testing.T) {
 	}
 }
 
-// TestTheSupervisorGateIsReadOnceRatherThanComputedTwice is the behavioural half of
-// the "one predicate" rule.
+// TestAHalfConfiguredStoreGatesTheProseAndTheSpecTheSameWay is the behavioural half
+// of the "one predicate" rule.
 //
-// 🔴 A STRUCTURAL CHECK TYPE-CHECKS PAST A WRONG ARGUMENT. buildSpec passes the same
-// boolean to the prose selector and lets the same Config drive the spec; nothing in
-// the type system stops a future edit from computing one of them from a different
-// expression — `cfg.CairnToken != ""` alone, say. This drives the one input that
-// distinguishes those expressions and watches BOTH outputs move together.
+// 🔴 THE NAME SAYS WHAT THE BODY CHECKS, AND IT DID NOT USED TO. This was
+// TestTheSupervisorGateIsReadOnceRatherThanComputedTwice, which claimed a
+// SINGLE-READ relationship in the source. Nothing below reads the source, so the
+// name was a coverage claim the body never made — and a guard that reads as covering
+// something is worse than no guard, because it stops the next person looking.
 //
-// The discriminating input is a URL with no token: `CairnConfigured` says false,
-// while a token-only or a url-only test would say true.
-func TestTheSupervisorGateIsReadOnceRatherThanComputedTwice(t *testing.T) {
+// What it actually pins is BEHAVIOUR: across the inputs that DISCRIMINATE between
+// the candidate expressions, the prose and the spec move together. The discriminating
+// inputs are the half-configured ones — a URL with no token, a token with no URL,
+// and each blank-but-present — for which `CairnConfigured` says false while
+// `cfg.CairnURL != ""` or `cfg.CairnToken != ""` alone would say true. That is the
+// hazard that matters: the prose gated by a DIFFERENT expression than the spec, so a
+// supervisor is told it holds a credential the instance does not carry.
+//
+// ⚠ AND THE "COMPUTED TWICE" MUTANT IS NOT A HAZARD, WHICH IS WHY NO TEST HERE
+// CATCHES IT. Replacing `store := a.spec.CairnConfigured()` + `ChiefInstructions(store)`
+// with an inlined `ChiefInstructions(a.spec.CairnConfigured())` is the SAME
+// EXPRESSION evaluated twice: it is semantically equivalent, changes no output, and
+// a sweep confirmed it survives every test in these three packages. An equivalent
+// mutant surviving is correct behaviour for a behavioural suite, not a gap — and the
+// only way to kill it would be to grep this repository's own source text, which is a
+// spelled guard on a formatting choice. Mutants that change the EXPRESSION do die
+// here; those are the ones that change what an instance receives.
+func TestAHalfConfiguredStoreGatesTheProseAndTheSpecTheSameWay(t *testing.T) {
 	full := storeSpecConfig()
 
 	for _, c := range []struct {

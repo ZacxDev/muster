@@ -306,6 +306,28 @@ need to go and look at it. Answer from the read, every time.
 //     PROPERTY is what the agent needs; the date and the pod are incident
 //     narration, which this repository does not carry.
 //
+// 🔴 EVERY VERB FORM IN THE CHEAT-SHEET IS MEASURED AGAINST THE CLIENT AT
+// [cairnRev] BY RUNNING IT, AND THE NEXT EDITOR MUST DO THE SAME. Three forms in
+// the first draft of this section did not run, and a supervisor cannot tell a
+// mis-spelled verb from an absent one: both exit 2. What was wrong, and what the
+// client actually accepts —
+//
+//   - `cairn recall <scope>` took no positional and exited 2 on the scope name.
+//     The scope is a FLAG: `cairn recall --scope <scope>`. This same section
+//     already spelled `validate` that way, so the two disagreed with each other.
+//   - `cairn search <terms>` invited more than one word. `search` takes ONE
+//     positional, so a second word exited 2.
+//   - `cairn routes` was annotated "repo -> scope". It prints the
+//     scope-to-instance table; repo-to-scope is a different function of the
+//     client entirely, and on the single-instance shape this package installs the
+//     command reports that no routes are configured at all.
+//
+// The remaining verbs were re-measured and do run as written. ⚠ THE "RUN ANY VERB
+// WITH `--help`" LINE DOES NOT MAKE THIS SECTION SELF-CORRECTING: an agent tries
+// the printed form first, and exit 2 is what this same section teaches it to read
+// as a verb that does not exist. A form that does not run is a dead end, not a
+// hint.
+//
 // 🔴 IT IS DELIBERATELY NOT A SECOND COPY OF THE WRITE PROTOCOL. The store's own
 // project consolidated every writer onto one document precisely because two
 // documents each described one write and nothing ever compared them. A protocol
@@ -321,15 +343,25 @@ your instance and he reads it from his own machines, so it is neither your works
 nor this conversation. Your credential is READ AND WRITE across ALL scopes.
 
 ` + "```bash" + `
-cairn search <terms>   # find entries          cairn recall <scope>   # read a subsystem
-cairn ls-entries       # what exists           cairn routes           # repo -> scope
-cairn sync             # refresh the cache     cairn doctor           # check your client
-cairn append …         # add a bullet          cairn validate …       # parse-check a scope
-cairn put … / cairn create …                   # write / create an entry
+cairn recall --scope <scope>     # read a subsystem  — the scope is a FLAG, not a word
+cairn search <query>             # find entries      — ONE argument; quote a phrase
+cairn ls-entries                 # what exists
+cairn routes                     # which store instance a scope resolves to
+cairn sync                       # refresh the cache
+cairn doctor                     # check your client
+cairn validate --scope <scope>   # parse-check a scope
+cairn append --scope <scope> --ref <entry> --text <one line> --session <id>
+cairn put    --scope <scope> --ref <entry> --file <path>   # replace an entry
+cairn create --scope <scope> --ref <entry> --file <path>   # add a new entry
 ` + "```" + `
-Run any verb with ` + "`--help`" + ` for its exact arguments. ⚠ ` + "`cairn --version`" + ` is NOT a
-version flag — it exits 0 printing usage, exactly like a verb that does not exist —
-so never use it to check whether anything works. Use ` + "`cairn doctor`" + `.
+Those forms are the ones this client accepts; a wrong one costs you an argparse error
+(exit 2), not a hint. Run any verb with ` + "`--help`" + ` for the rest of its flags, and
+trust that over anything written here.
+
+⚠ THERE IS NO ` + "`cairn --version`" + `. The client has no such option and it requires a
+subcommand, so ` + "`cairn --version`" + ` exits 2 with a usage error — the SAME exit code
+as a verb that does not exist. It cannot tell you whether anything works. Use
+` + "`cairn doctor`" + `.
 
 🔴 **Write discipline. This section is long because you have write access.**
 
