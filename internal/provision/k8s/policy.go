@@ -145,8 +145,15 @@ func PolicyObjectName(instance, policy string) string {
 // (instance, policy) pair.
 //
 // ⚠ THEY INCLUDE managedLabels, so owned() is the SAME predicate here as for
-// every other object this driver creates. The policy-specific keys are what
-// revokeAllPolicies enumerates on; the shared pair is what says muster made it.
+// every other object this driver creates.
+//
+// ⚠ ONLY TWO OF THE THREE KEYS ARE SELECTED ON, AND NAMING THEM AS A GROUP HID
+// THAT. revokeAllPolicies enumerates on policyManaged and labelSubject (plus the
+// shared pair, which is what says muster made it). labelPolicy is WRITE-ONLY:
+// nothing in this module reads it. It is written so a human can grep for one
+// profile's objects — internal/api's failed-rollback error tells them to — and
+// privilege.ValidateName's doc used to cite a teardown selector on it that does
+// not exist.
 func policyLabels(instance, policy string) map[string]string {
 	out := map[string]string{
 		policyManaged: "true",

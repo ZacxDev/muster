@@ -72,10 +72,18 @@ import (
 //     as on `clusterroles`, because a profile carrying only namespaceRules writes a
 //     Role and a RoleBinding and touches no cluster-scoped object at all.
 //     🔴 THE EXACT SET IS ENUMERATED ONCE, AS DATA, IN
-//     k8s.PolicyRBACPrerequisite — derived from the call sites in
-//     internal/provision/k8s/policy.go and guarded against them by
-//     TestTheRBACPrerequisiteMatchesThePolicyCallSites, which fails when the set
-//     grows OR shrinks. It is not restated here, and it must not be: the
+//     k8s.PolicyRBACPrerequisite — 18 of its 22 (resource, verb) pairs DERIVED
+//     from the call sites in internal/provision/k8s/policy.go and guarded against
+//     them by TestTheRBACPrerequisiteMatchesThePolicyCallSites, which fails when
+//     that set grows OR shrinks. ⚠ THE OTHER FOUR ARE ASSERTED, NOT DERIVED, AND
+//     CALLING THE WHOLE SET DERIVED ERASES THAT: `escalate` and `bind` on `roles`
+//     and on `clusterroles` have no call site BY CONSTRUCTION — they are
+//     authorisation checks the apiserver layers on top of an ordinary write, not
+//     API calls muster makes — so the guard EXCLUDES them (k8s.PolicyEscalationVerbs
+//     is where that exclusion is named rather than hardcoded in the test). Nothing
+//     in this module can redden if they are wrong; they are a claim about apiserver
+//     behaviour, and only a grant against a real apiserver tests it.
+//     It is not restated here, and it must not be: the
 //     incomplete version above existed in FOUR files simultaneously, which is why
 //     it was wrong in four places at once.
 //     A missing permission now surfaces to the caller rather than being swallowed
@@ -110,9 +118,26 @@ import (
 //     refuses an armed applier with no provisioner at boot — which costs the
 //     lifecycle tier above. "Leave the privilege store unset" is not a third
 //     escape: nothing gates that store on its own variable, so it means running
-//     with no database, which also drops notes, agents, runbooks and GitHub. Plan a
-//     privilege-tier rollback as a two-variable change, or as an image rollback to
-//     a build that has no provisioner at all.
+//     with no database, which also drops notes, agents, runbooks and GitHub.
+//     🔴 THE CHEAPEST DISARM IS NOT A VARIABLE AT ALL, AND THIS PARAGRAPH USED TO
+//     OMIT IT: DELETE THE ClusterRoleBinding THAT GRANTS MUSTER'S OWN
+//     ServiceAccount THE RBAC WRITE SET FROM (1). Nothing in this module checks
+//     those permissions before attempting a write — PolicyRBACPrerequisite's own
+//     doc says so and says why — and api.Extensions.defects branches on NIL-NESS
+//     only, so with the binding gone the applier is still wired, the three
+//     conjuncts are unchanged, /readyz still passes, the pod stays in its Service
+//     and NO route goes dark. Every grant then fails at apply time with the
+//     apiserver's own 403, returned to the caller rather than swallowed. It is a
+//     one-file, zero-outage revert, and cheap precisely because the binding is
+//     new: the deployment that runs this today has no serviceAccountName and no
+//     ClusterRoleBinding of any kind, so arming the tier adds one manifest and
+//     disarming it deletes that same one.
+//     ⚠ IT DISARMS, IT DOES NOT UNDO. Grants already applied keep their live RBAC
+//     — nothing revoked those objects — and revoking them afterwards ALSO 403s,
+//     because teardown needs the `delete` verbs from the same set. So this is the
+//     first move when the tier has to stop escalating NOW; the two-variable change
+//     or an image rollback to a build with no provisioner at all is what retires
+//     the tier afterwards. Plan it in that order.
 //
 // ⚠ EVERY KUBERNETES ASSERTION IN THIS PACKAGE'S TESTS IS AGAINST
 // k8s.io/client-go/kubernetes/fake. That is what makes them runnable, and it means

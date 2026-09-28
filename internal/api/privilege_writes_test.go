@@ -136,22 +136,29 @@ func newPrivilegeFixture(t *testing.T, prof privilege.Profile, holders []privile
 	calls := new([]string)
 	store := &fakePrivilegeStore{profile: prof, holders: holders, calls: calls}
 	applier := &fakeApplier{calls: calls}
+	// Distinct names, so an assertion cannot be satisfied by the wrong agent.
+	//
+	// 🔴 THE NAMES ARE ASSIGNED BY WALKING `holders`, NOT THE MAP BUILT FROM IT, AND
+	// THAT IS THE WHOLE POINT OF THIS LOOP'S SHAPE. It used to be a second pass
+	// `for id, a := range byID`, which is nondeterministic: Go randomises map
+	// iteration order, so agent 11 came out `alpha` on most runs and `bravo` on the
+	// rest, while TestAFailedRBACRemovalKeepsTheGrantRecord's own control asserts
+	// `applier.RemoveGrant:alpha/<profile>` for agent 11. Measured before the change:
+	// 23 failures in 240 runs of that one test (~10%, the order of the 1-in-8 a
+	// two-key single-bucket map predicts) — and CI runs the suite twice per job, so
+	// it was a red leg on roughly one push in four. A fixture that names its subjects
+	// out of a map cannot support a per-subject assertion; the slice is the only
+	// thing here with an order.
 	byID := map[int64]agents.Agent{}
-	for _, g := range holders {
+	names := []string{"alpha", "bravo", "charlie", "delta"}
+	for i, g := range holders {
+		name := names[i%len(names)] // DNS-label shaped
 		byID[g.AgentID] = agents.Agent{
 			ID:        g.AgentID,
-			Name:      g.ProfileName + "-holder", // distinct per fixture, DNS-label shaped
-			Namespace: "devpod-holder",
+			Name:      name,
+			Namespace: "devpod-" + name,
 			Status:    agents.StatusStopped,
 		}
-	}
-	// Distinct names, so an assertion cannot be satisfied by the wrong agent.
-	i := 0
-	for id, a := range byID {
-		a.Name = []string{"alpha", "bravo", "charlie", "delta"}[i%4]
-		a.Namespace = "devpod-" + a.Name
-		byID[id] = a
-		i++
 	}
 	s := New(nil, AuthConfig{}, log.New(&strings.Builder{}, "", 0))
 	s.UseExtensions(Extensions{

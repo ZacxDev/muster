@@ -215,8 +215,13 @@ package main
 //	  and nothing else — as did three other files — and that list is INCOMPLETE:
 //	  it omits every ordinary verb the policy path calls, so a Role written from it
 //	  403s on the first grant. It is enumerated once, as data, in
-//	  internal/provision/k8s.PolicyRBACPrerequisite, derived from the call sites and
-//	  guarded against them by TestTheRBACPrerequisiteMatchesThePolicyCallSites.
+//	  internal/provision/k8s.PolicyRBACPrerequisite, 18 of whose 22 (resource, verb)
+//	  pairs are DERIVED from the call sites and guarded against them by
+//	  TestTheRBACPrerequisiteMatchesThePolicyCallSites.
+//	  ⚠ THE OTHER FOUR ARE ASSERTED, NOT DERIVED: `escalate` and `bind` on `roles`
+//	  and on `clusterroles` have no call site by construction — they are
+//	  authorisation checks the apiserver layers on top of an ordinary write — so the
+//	  guard excludes them and nothing in this module can redden if they are wrong.
 //	IT IS LISTED IN defects() RATHER THAN WRAPPED AT A ROUTE, unlike the nil
 //	  Provisioner, because there is no single route to refuse: the falsehood is
 //	  rendered by every surface that shows a grant, and a grant recorded through

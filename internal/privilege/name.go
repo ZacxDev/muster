@@ -31,11 +31,23 @@ const MaxNameLen = validation.LabelValueMaxLength
 // puts the profile name VERBATIM into the `muster.dev/policy` label on every
 // RBAC object it creates (k8s.policyLabels), and a label value is capped at 63
 // characters and restricted to alphanumerics plus `-`, `_` and `.` with
-// alphanumeric ends. That label is also what the teardown path SELECTS ON
-// (k8s.revokeAllPolicies enumerates by label, deliberately, because by the time a
-// teardown runs the grant record is usually already gone) — so a name that cannot
-// be a label value does not merely fail the grant, it would leave objects no
-// teardown could find.
+// alphanumeric ends. A name the apiserver will not take as a label value makes it
+// refuse the CREATE, so the very first object a grant writes fails and the grant
+// is refused with an apiserver error three packages from the form that accepted
+// the name.
+//
+// ⚠ THAT IS THE WHOLE OF THE REASON, AND THIS PARAGRAPH USED TO GIVE A SECOND ONE
+// THAT IS FALSE ABOUT THE CODE — IN THE COMMENT AND IN THE OPERATOR-VISIBLE 400
+// BELOW. It said `muster.dev/policy` "is also what the teardown path SELECTS ON",
+// so a bad name "would leave objects no teardown could find". It is not: that
+// label is WRITE-ONLY. It is set in k8s.policyLabels and read by no selector
+// anywhere in this module. The only selector, in k8s.revokeAllPolicies, is
+// managedSelector() plus `muster.dev/policy-managed=true` and
+// `muster.dev/policy-subject=<agent>` — the AGENT label, not this one. The orphan
+// that argument described is doubly unreachable: a refused create leaves no object
+// to orphan. The label is still written, and internal/api's failed-rollback error
+// tells an operator to grep for it by hand — but a human grep is not a selector,
+// and the cap does not rest on it.
 //
 // 🔴 AND THE OBJECT-NAME BUDGET IS SATISFIED A FORTIORI, WITH THE ARITHMETIC
 // WRITTEN DOWN RATHER THAN ASSUMED. k8s.PolicyObjectName composes
@@ -62,11 +74,11 @@ func ValidateName(name string) error {
 	}
 	if msgs := validation.IsValidLabelValue(name); len(msgs) > 0 {
 		return fmt.Errorf("profile name %q cannot be used: %s. The name is written verbatim "+
-			"into the muster.dev/policy label on every RBAC object a grant creates, and it is "+
-			"what the teardown path selects on, so it has to satisfy the label-value rules: at "+
-			"most %d characters of letters, digits, '-', '_' or '.', beginning and ending "+
-			"alphanumeric. Without this check the name is accepted here and the FIRST grant "+
-			"fails against the apiserver instead",
+			"into the muster.dev/policy label on every RBAC object a grant creates, and the "+
+			"apiserver refuses to create an object whose label value breaks those rules, so "+
+			"the name has to satisfy them: at most %d characters of letters, digits, '-', '_' "+
+			"or '.', beginning and ending alphanumeric. Without this check the name is accepted "+
+			"here and the FIRST grant fails against the apiserver instead",
 			name, strings.Join(msgs, "; "), MaxNameLen)
 	}
 	return nil

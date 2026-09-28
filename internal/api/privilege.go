@@ -131,6 +131,14 @@ func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 			"grants individually first. Cause: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// 🟢 THIS FAILURE IS NOT INERT AND THE MESSAGE DOES NOT SAY SO: the RBAC for
+	// every holder was already removed above, so the rows survive with no objects
+	// behind them — the tolerable direction (retryable; the revoke path treats an
+	// absent object as success), but the operator sees a terse "could not delete
+	// profile" and has no way to know the access is in fact already gone. FILED, NOT
+	// FIXED: widen this text the way the revoke branch above was widened. CLOSING
+	// CONDITION: a merged change replacing this string, plus the test that reads it.
+	// WHO CHECKS IT: the reviewer of that PR.
 	if err := s.ext.Privilege.DeleteProfile(ctx, id); err != nil {
 		s.logger.Printf("privilege: delete profile %d: %v", id, err)
 		http.Error(w, "could not delete profile", http.StatusInternalServerError)
@@ -139,8 +147,30 @@ func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 	s.handleProfilesContent(w, r)
 }
 
-// revokeLiveRBACForProfile removes the profile's RBAC from every agent recorded as
+// revokeLiveRBACForProfile removes the profile's RBAC from the agents recorded as
 // holding it. It is the pre-condition of a safe profile delete.
+//
+// ⚠ "EVERY AGENT" IS WHAT THIS LINE USED TO SAY AND IT IS NOT WHAT THE LOOP DOES:
+// the first holder whose removal fails returns immediately, so later holders keep
+// their RBAC. That is safe rather than a bug — the caller refuses the delete, so
+// every row survives and every remaining object is still named by one — but the
+// docstring claimed a width the body does not have, which is the shape that gets a
+// guard written against the sentence instead of the code.
+//
+// 🟡 IT IS ALSO RBAC-ONLY, AND THE PROFILE CARRIES MORE THAN RBAC. handleAgentRevoke
+// follows its removal with reapplyEnvAsync because a profile's env vars and its
+// KubeconfigSecret have to be RECOMPUTED once a grant is gone; handleProfileDelete
+// calls nothing of the sort, for any holder. So after a successful profile delete
+// each running agent still carries that profile's env vars and still has its
+// kubeconfig CREDENTIAL mounted, until something else reprovisions it — while the
+// operator has been told the profile is gone. The RBAC invariant above is stated
+// over RBAC alone and this is the gap that leaves.
+// PRE-EXISTING, NOT INTRODUCED HERE — but the round that unified these three write
+// paths on one invariant is the round that owes the statement.
+// FILED, NOT FIXED: call reapplyEnvAsync for each holder after DeleteProfile
+// succeeds (it reads current grants, so it recomputes without the deleted one).
+// CLOSING CONDITION: a merged change doing that, plus a test asserting a reapply per
+// holder on profile delete. WHO CHECKS IT: the reviewer of that PR.
 //
 // ⚠ A nil APPLIER IS A no-op, AND THAT IS THE ONE HOLE IN THE INVARIANT — STATED
 // RATHER THAN PAPERED OVER. With no applier this server has applied nothing, so
@@ -435,8 +465,30 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 //
 // ⚠ NONE OF THIS IS ATOMIC, AND CALLING IT TRANSACTIONAL WOULD BE A LIE. There is
 // no transaction spanning Postgres and an apiserver; what these paths guarantee is
-// an ORDER and a direction of failure, so every reachable intermediate state is one
-// the invariant permits and the operation is retryable from it.
+// an ORDER and a direction of failure, and that a SEQUENTIAL operation is retryable
+// from wherever it stopped.
+//
+// 🔴 WHAT THEY DO NOT GUARANTEE — AND THIS BLOCK USED TO CLAIM THEY DID, IN THE
+// WORDS "every reachable intermediate state is one the invariant permits". THAT IS
+// FALSE UNDER CONCURRENCY, AND THE COUNTEREXAMPLE IS TWO BROWSER TABS.
+// handleProfileDelete lists the holders (ListGrantsForProfile), removes each one's
+// RBAC, and only then calls DeleteProfile, which cascades the grant rows. A grant
+// recorded BETWEEN the list and the delete — through handleAgentGrant, or through
+// handleRequestApprove, both reachable from a second tab — is not in the list, so
+// its RBAC is never removed, and the cascade then takes its row. That is exactly
+// the forbidden direction: live escalated RBAC that no record names. It is a
+// TOCTOU window, not a failure-ordering bug, and no ordering of these three calls
+// closes it.
+// FILED, NOT FIXED: close it by making the read and the delete one transaction
+// (`DELETE … RETURNING agent_id`, revoking the returned set), or by serialising the
+// profile's write paths. CLOSING CONDITION: a merged change doing one of those,
+// plus a test that interleaves a grant between the list and the delete and fails on
+// the orphan. WHO CHECKS IT: the reviewer of that PR.
+//
+// 🟡 AND THE INVARIANT IS STATED OVER RBAC ONLY, WHICH IS NARROWER THAN "THE THREE
+// WRITE PATHS AGREE". A profile's env and KubeconfigSecret are recomputed by
+// reapplyEnvAsync, which handleAgentRevoke calls and handleProfileDelete does not —
+// see revokeLiveRBACForProfile's doc for what that leaves live.
 // ---------------------------------------------------------------------------
 
 // grantProfile applies the profile's RBAC live (if an applier is wired) then

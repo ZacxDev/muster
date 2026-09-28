@@ -84,12 +84,19 @@ func TestTheLongestComposableRBACNameFitsItsBudget(t *testing.T) {
 	// 🔴 AND THE OTHER HALF OF THE SAME CLAIM: the cap is the LABEL VALUE's, so a
 	// name at exactly the cap must still be a valid label value. If it were not, the
 	// validator would be admitting names the driver's own labels reject — and the
-	// teardown path selects on that label, so such objects would be unfindable.
+	// apiserver refuses to CREATE an object whose label value breaks its rules, so
+	// the first grant would fail on the first object it writes.
+	//
+	// ⚠ NOT because anything selects on that label: `muster.dev/policy` is
+	// write-only. k8s.revokeAllPolicies enumerates on `muster.dev/policy-subject`
+	// (the agent) plus the managed labels, never on this one. These two lines used
+	// to say otherwise, as did privilege.ValidateName's own doc and its 400.
 	atCap := strings.Repeat("b", privilege.MaxNameLen)
 	if msgs := validation.IsValidLabelValue(atCap); len(msgs) > 0 {
 		t.Errorf("a profile name at privilege.MaxNameLen (%d) is not a valid label value: %s.\n"+
-			"    The driver writes the name verbatim into muster.dev/policy and the teardown path "+
-			"SELECTS on it, so the cap has to be the label value's.",
+			"    The driver writes the name verbatim into muster.dev/policy, and the apiserver "+
+			"refuses to create an object whose label value breaks its rules, so the cap has to "+
+			"be the label value's.",
 			privilege.MaxNameLen, strings.Join(msgs, "; "))
 	}
 	// Control: one past the cap must NOT be, or the line above is satisfied by a

@@ -91,9 +91,15 @@ type Config struct {
 	// WHICH IS ALL THIS COMMENT USED TO NAME. Those two are authorisation checks
 	// the apiserver layers ON TOP of an ordinary write, not substitutes for one,
 	// so the policy path also needs ordinary create/get/update/delete/list on all
-	// four rbac resource types. PolicyRBACPrerequisite enumerates the set once,
-	// derived from the call sites and guarded against them; nothing else in this
-	// module restates it.
+	// four rbac resource types. PolicyRBACPrerequisite enumerates the set once —
+	// 18 of its 22 (resource, verb) pairs derived from the call sites and guarded
+	// against them; nothing else in this module restates it.
+	//
+	// ⚠ THE REMAINING FOUR ARE ASSERTED RATHER THAN DERIVED, WHICH THIS SENTENCE
+	// USED TO ERASE: `escalate` and `bind` on `roles` and on `clusterroles` have no
+	// call site by construction (see PolicyEscalationVerbs), so the guard excludes
+	// them. They are a claim about what the apiserver checks, and no test in this
+	// module — all of which run against the fake clientset — can contradict it.
 	PolicyDisabled bool
 
 	// Logger is optional.

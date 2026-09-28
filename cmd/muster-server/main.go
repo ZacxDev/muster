@@ -713,7 +713,13 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				"declares no policy capability (the %s driver declares none) refuses each grant "+
 				"instead, naming itself. 🔴 AND UNSETTING %s AGAIN IS AN OUTAGE, NOT A ROLLBACK: "+
 				"it re-enters the readiness defect above, so plan it as a two-variable change "+
-				"with %s or as an image rollback",
+				"with %s or as an image rollback. TO DISARM THIS TIER WITHOUT AN OUTAGE, DELETE "+
+				"THE ClusterRoleBinding GRANTING THIS SERVER'S OWN ServiceAccount THAT rbac "+
+				"SET: nothing here checks the permissions before writing and the readiness "+
+				"check branches on nil-ness only, so the pod stays READY and serving while "+
+				"every grant fails with the apiserver's 403. It stops new escalation; it does "+
+				"NOT remove RBAC already applied, and revoking that afterwards needs the same "+
+				"permissions back",
 				envAgentPrivApply, driverName, provisionerNoop, envAgentPrivApply, envAgentProvisioner)
 		}
 	}

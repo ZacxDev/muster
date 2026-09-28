@@ -306,8 +306,14 @@ type config struct {
 	// files, and that list is INCOMPLETE — it omits every ordinary verb the policy
 	// path actually calls, so a Role written from it 403s on the first grant. The
 	// set is enumerated once, as data, in
-	// internal/provision/k8s.PolicyRBACPrerequisite, derived from the call sites and
-	// guarded against them. Read it there.
+	// internal/provision/k8s.PolicyRBACPrerequisite: 18 of its 22 (resource, verb)
+	// pairs are DERIVED from the call sites and guarded against them. Read it there.
+	//
+	// ⚠ THE OTHER FOUR ARE ASSERTED, NOT DERIVED, AND THIS POINTER USED TO CALL THE
+	// WHOLE SET DERIVED. `escalate` and `bind` on `roles` and on `clusterroles` have
+	// no call site by construction — they are authorisation checks the apiserver
+	// layers on top of an ordinary write, not calls muster makes — so the guard
+	// excludes them and nothing here can redden if they are wrong.
 	//
 	// 🔴 AND LEAVING IT UNSET IS NOT FREE — IT IS THE FAIL-CLOSED SIDE, WHICH IS
 	// LOUDER THAN THE OTHER TWO KNOBS' DEFAULTS. api.Extensions.defects treats
