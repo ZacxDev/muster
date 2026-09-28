@@ -132,6 +132,14 @@
 --      is the role the tombstone INSERT runs as. See the SECURITY DEFINER note
 --      on the function below for what that buys and what it costs.
 --
+-- ⚠ THERE IS NO THIRD PRECONDITION ABOUT THE CONNECTING ROLE'S GRANTS, AND THAT
+-- IS THE RESULT OF A FIX RATHER THAN OF NOTHING BEING NEEDED. The tombstone is
+-- WRITTEN by a trigger and READ by ordinary application SQL, and the two need
+-- different privileges: SECURITY DEFINER covers the write, and
+-- `GRANT SELECT … TO PUBLIC` below covers the read. A revision that shipped only
+-- the first left every deployment whose migrating role differs from its
+-- connecting role able to destroy agents and unable to create one.
+--
 -- Convention: ADDITIVE + IDEMPOTENT. Nothing is dropped; CREATE TABLE IF NOT
 -- EXISTS / CREATE OR REPLACE FUNCTION / REVOKE / DROP TRIGGER IF EXISTS +
 -- CREATE TRIGGER all re-run cleanly. ROLLBACK-SAFE in the narrow sense that a
@@ -242,7 +250,9 @@ COMMENT ON COLUMN public.agent_retired_names.retired_at IS
 -- is the conventional, non-surprising choice and keeps the function reusable if
 -- it is ever attached BEFORE DELETE.
 --
--- 🔴 SECURITY DEFINER, AND IT IS WHAT MAKES THE FILE'S OWN SALES PITCH TRUE.
+-- 🔴 SECURITY DEFINER, AND IT IS WHAT MAKES THE WRITE HALF OF THE FILE'S SALES
+-- PITCH TRUE. Only the write half — the READ half is the GRANT further down, and
+-- an earlier revision of this paragraph claimed the whole pitch for this line.
 -- The function was SECURITY INVOKER, so the tombstone INSERT ran with the
 -- privileges of whoever issued the DELETE. Measured on Postgres 16: a role
 -- holding `GRANT SELECT, INSERT, UPDATE, DELETE ON agents` that does not own the
@@ -255,10 +265,19 @@ COMMENT ON COLUMN public.agent_retired_names.retired_at IS
 -- — and the row survived. That is marginal-coverage path 1 above, the hand-run
 -- `psql` DELETE, erroring instead of tombstoning for every role but the one that
 -- ran the migration. SECURITY DEFINER runs the body as the function's OWNER, so
--- any role that can delete from `agents` tombstones the name, and the file no
--- longer has to know a role name it cannot know. The alternative —
+-- any role that can delete from `agents` tombstones the name. The alternative —
 -- `GRANT INSERT ON public.agent_retired_names TO <role>` — is narrower but needs
--- exactly that.
+-- a role name this file cannot know.
+--
+-- 🔴 AND IT FIXES THE INSERT ONLY. SAY SO, BECAUSE THE UNQUALIFIED VERSION OF
+-- THAT CLAIM SHIPPED AND WAS FALSE. PGStore.NameExists is a plain
+-- `SELECT … FROM agent_retired_names` issued AS THE CONNECTING ROLE; nothing in
+-- the read path is SECURITY DEFINER and nothing can be, because it is ordinary
+-- application SQL against a table. With the write fixed and the read left alone,
+-- the same non-owner role deleted agents fine and then got
+-- `permission denied for table agent_retired_names` on EVERY auto-named agent
+-- creation. The GRANT below is what closes that half; the two together are the
+-- property, and neither is it alone.
 --
 -- ⚠ THE OLD BEHAVIOUR FAILED CLOSED, WHICH IS WHY THIS WAS NOT AN OUTAGE. The
 -- DELETE aborted, so the row stayed and the name stayed out of the pool; and
@@ -337,6 +356,42 @@ $$;
 -- with the rest of the file. The owner keeps EXECUTE through ownership, which is
 -- what lets the CREATE TRIGGER below still refer to the function.
 REVOKE EXECUTE ON FUNCTION public.muster_retire_agent_name() FROM PUBLIC;
+
+-- 🔴 THE READ HALF. WITHOUT THIS LINE THE TRIGGER ABOVE ONLY MOVES THE FAILURE.
+-- PGStore.NameExists is
+--     SELECT EXISTS(… FROM agents …) OR EXISTS(… FROM agent_retired_names …)
+-- issued as the CONNECTING role. `CREATE TABLE` grants nothing to anyone but the
+-- owner, so in any deployment where the migrating role is not the connecting
+-- role that second EXISTS is `permission denied for table agent_retired_names`
+-- (42501) — and since BuildUniqueAgentName asks nothing else, every agent
+-- created without a hand-set name fails. Measured on Postgres 16 with
+-- `GRANT USAGE ON SCHEMA public` + `GRANT SELECT,INSERT,UPDATE,DELETE ON agents`
+-- and nothing else, which is the grant set the `nonOwnerPool` fixture in
+-- internal/db/migration_0002_retired_names_test.go installs. Pinned there by
+-- TestANonOwnerRoleCanBothRetireANameAndReadTheLedger, which asserts the ROUND
+-- TRIP — delete then read back — because each half passes alone.
+--
+-- ⚠ `TO PUBLIC` RATHER THAN TO A NAMED ROLE, FOR THE SAME REASON SECURITY
+-- DEFINER WAS CHOSEN OVER `GRANT INSERT TO <role>`: this file cannot know the
+-- connecting role's name, and a precondition that says "also run this GRANT by
+-- hand" is a rule an operator discovers by hitting the outage.
+--
+-- ⚠ WHAT IT DISCLOSES, STATED RATHER THAN WAVED AT. Every row here is an
+-- `agents.name` copied by the trigger from OLD.name, and `agents.name` is never
+-- operator-supplied: internal/api's dispatchParams.Name is either empty (→
+-- BuildUniqueAgentName, an adjective-noun slug from names.go with an optional
+-- `-<n>` discriminator) or the literal agents.ChiefName. So the disclosed set is
+-- generated slugs plus possibly `chief` — no free text, no identifiers, nothing
+-- an operator chose. SELECT only: INSERT stays owner-only, which is what keeps
+-- the pool-poisoning hazard the REVOKE above bounds from being reachable by a
+-- plain GRANT instead of a borrowed function.
+--
+-- 🔴 IF A COLUMN IS EVER ADDED TO THIS TABLE, RE-ASK THAT QUESTION. The grant is
+-- on the TABLE, not on `name`, so a later column is disclosed by this line
+-- without anyone editing it.
+--
+-- Idempotent with the rest of the file: re-granting a held privilege is a no-op.
+GRANT SELECT ON public.agent_retired_names TO PUBLIC;
 
 -- 3. The trigger. Postgres has no `CREATE TRIGGER IF NOT EXISTS`; DROP IF
 --    EXISTS + CREATE is the idempotent spelling, and it is safe to re-run

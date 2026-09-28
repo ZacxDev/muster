@@ -148,6 +148,16 @@ func (s *PGStore) LastMessageByAgentIDs(ctx context.Context, ids []int64) (map[i
 // name, deliberately (migration 0002 says why: `chief` is provisioned with a
 // hand-set name and a refusal would make re-provisioning it impossible). So this
 // closes the AUTO-GENERATED path and no other.
+//
+// 🔴 THIS SELECT RUNS AS THE CONNECTING ROLE, WHICH IS WHY 0002 GRANTS SELECT ON
+// THE LEDGER. The write side is a SECURITY DEFINER trigger and needs no grant;
+// this side is ordinary application SQL and cannot be made to run as anyone
+// else. `CREATE TABLE` grants nothing to anyone but the owner, so a deployment
+// whose migrating role is not its connecting role got
+// `permission denied for table agent_retired_names` (42501) here — on EVERY
+// auto-named agent creation, since BuildUniqueAgentName asks nothing else.
+// TestANonOwnerRoleCanBothRetireANameAndReadTheLedger pins both halves together;
+// each passes alone while the pair is broken.
 func (s *PGStore) NameExists(ctx context.Context, name string) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx, `

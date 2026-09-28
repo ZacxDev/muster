@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
@@ -575,6 +576,90 @@ func TestRetiredNameIsTombstonedByANonOwnerRole(t *testing.T) {
 			"is back in the generator pool, so the next generated agent can be its namesake and "+
 			"inherit the ServiceAccount and cluster-scoped ClusterRoleBinding named after the "+
 			"dead one.", after, name, nonOwnerRole)
+	}
+}
+
+// TestANonOwnerRoleCanBothRetireANameAndReadTheLedger is the OTHER HALF of the
+// test above, and it is one test rather than two on purpose: the property 0002
+// is sold on is a ROUND TRIP, and each half passes on its own while the pair is
+// broken.
+//
+// 🔴 SECURITY DEFINER FIXED THE WRITE AND LEFT THE READ BROKEN, WHICH READ AS
+// "the file no longer has to know a role name it cannot know". It did not.
+// PGStore.NameExists is a plain SELECT over `agent_retired_names` issued AS THE
+// CONNECTING ROLE — there is no SECURITY DEFINER anywhere in that path, and the
+// ledger is created with a grant to nobody but its owner. Measured on Postgres
+// 16 with exactly the grants nonOwnerPool installs (`USAGE ON SCHEMA public` +
+// `SELECT, INSERT, UPDATE, DELETE ON public.agents`, nothing else):
+//
+//	ERROR:  permission denied for table agent_retired_names
+//
+// So a deployment whose migrating role is not its connecting role — the shape
+// nonOwnerPool's own doc describes — destroyed agents fine and then failed EVERY
+// auto-named agent creation, because createAndDispatchAgent goes through
+// BuildUniqueAgentName and BuildUniqueAgentName asks nothing but this predicate.
+// 0002 answers it with `GRANT SELECT ON public.agent_retired_names TO PUBLIC`.
+//
+// ⚠ IT CALLS THE REAL PREDICATE RATHER THAN RESTATING ITS SQL, which is the one
+// place this file departs from its own "do not import internal/agents" rule (see
+// insertAgentRow). A copy of the query here would be a guard on a SPELLING: it
+// would stay green if NameExists grew a third clause over another ungranted
+// table, which is the identical defect one layer along. The external test
+// package makes the import legal — internal/agents imports internal/db, not the
+// reverse.
+func TestANonOwnerRoleCanBothRetireANameAndReadTheLedger(t *testing.T) {
+	ctx, conn := pinnedConn(t)
+	probe := nonOwnerPool(ctx, t, conn)
+	store := agents.NewPG(probe)
+
+	const name = "zznonowner-readback"
+	clearName(ctx, t, conn, name)
+
+	// Control: the role must not already read the name as taken, or the
+	// assertion after the delete would hold whether or not the delete retired it.
+	switch exists, err := store.NameExists(ctx, name); {
+	case err != nil:
+		t.Fatalf("NameExists(%q) as %s, BEFORE anything is deleted: %v\n\n"+
+			"The generator's only predicate cannot run at all for this role. Every agent "+
+			"created without a hand-set name fails here, so a deployment whose migrating role "+
+			"is not its connecting role cannot provision an agent.", name, nonOwnerRole, err)
+	case exists:
+		t.Fatalf("NameExists(%q)=true before the test acts", name)
+	}
+
+	// The WRITE half, as a precondition rather than as the claim: the owner
+	// inserts, the non-owner deletes, and the trigger must tombstone.
+	id := insertAgentRow(ctx, t, conn, name)
+	if _, err := probe.Exec(ctx, `DELETE FROM public.agents WHERE id=$1`, id); err != nil {
+		t.Fatalf("DELETE of agent %d as %s: %v", id, nonOwnerRole, err)
+	}
+
+	// The READ half, which is the claim. The agents row is gone, so a `true` here
+	// can only have come from the ledger.
+	exists, err := store.NameExists(ctx, name)
+	if err != nil {
+		t.Fatalf("NameExists(%q) as %s, after it retired the name: %v\n\n"+
+			"The delete tombstoned the name and the same role then cannot see it. Nothing in "+
+			"the read path is SECURITY DEFINER, so this needs a grant on the ledger itself.",
+			name, nonOwnerRole, err)
+	}
+	if !exists {
+		t.Fatalf("NameExists(%q)=false for a name this role has just retired; the generator "+
+			"would hand it straight back and the namesake inherits the ServiceAccount and "+
+			"cluster-scoped ClusterRoleBinding named after the dead agent", name)
+	}
+
+	// End to end: the path the operator actually takes. BuildUniqueAgentName is
+	// the only caller of NameExists, and createAndDispatchAgent is the only caller
+	// of it.
+	got, err := agents.BuildUniqueAgentName(ctx, store)
+	if err != nil {
+		t.Fatalf("BuildUniqueAgentName as %s: %v\n\nThis is what every auto-named agent "+
+			"creation runs; a 500 here is the operator-visible symptom.", nonOwnerRole, err)
+	}
+	if got == "" || got == name {
+		t.Fatalf("BuildUniqueAgentName = %q; want a free name that is not the retired %q",
+			got, name)
 	}
 }
 

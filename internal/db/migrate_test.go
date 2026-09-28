@@ -52,7 +52,8 @@ var tablesThisSchemaMustHave = []string{
 //     let one name be tombstoned twice.
 //
 // 🔴 IT IS A NAMED SET AND NOT A COUNT, AND THE DIFFERENCE IS THE WHOLE POINT.
-// This used to be arithmetic — `n == len(tablesThisSchemaMustHave) - 3` — and a
+// This used to be arithmetic — `n == len(tablesThisSchemaMustHave) - 2`, the
+// two exemptions this schema had before agent_retired_names — and a
 // count cannot see a COMPENSATING PAIR: one exempt table gaining an identity
 // column while a non-exempt one loses its own leaves the total unchanged, so both
 // defects ship under a green check. A count also cannot name the table in its
