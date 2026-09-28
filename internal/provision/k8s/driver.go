@@ -82,10 +82,27 @@ type Config struct {
 
 	// PolicyDisabled turns off Capabilities.Policy.
 	//
-	// ⚠ SET IT WHEN MUSTER'S OWN SERVICE ACCOUNT LACKS THE RBAC `escalate` AND
-	// `bind` VERBS. Without them a grant fails at apply time with a permission
-	// error that looks like a bug; with this set, provision.Grant refuses up
-	// front with a reason a user interface can display.
+	// ⚠ SET IT WHEN MUSTER'S OWN SERVICE ACCOUNT IS NOT PERMITTED TO WRITE RBAC.
+	// Without those permissions a grant fails at apply time with an error that
+	// looks like a bug; with this set, provision.Grant refuses up front with a
+	// reason a user interface can display.
+	//
+	// 🔴 "THOSE PERMISSIONS" IS MORE THAN THE RBAC `escalate` AND `bind` VERBS,
+	// WHICH IS ALL THIS COMMENT USED TO NAME. Those two are authorisation checks
+	// the apiserver layers ON TOP of an ordinary write, not substitutes for one,
+	// so the policy path also needs ordinary create/get/update/delete/list on all
+	// four rbac resource types. PolicyRBACPrerequisite enumerates the set once —
+	// 18 of its 22 (resource, verb) pairs derived from the call sites and guarded
+	// against them; nothing else in this module restates it.
+	//
+	// ⚠ THE REMAINING FOUR ARE ASSERTED RATHER THAN DERIVED, WHICH THIS SENTENCE
+	// USED TO ERASE: `escalate` and `bind` on `roles` and on `clusterroles` have no
+	// call site by construction (see PolicyEscalationVerbs), so the DERIVATION
+	// excludes them — though the same guard pins all four EXPLICITLY, and pins
+	// their ABSENCE on the two binding resources, so dropping one reddens. What
+	// stays untested is the CLAIM: they are a claim about what the apiserver
+	// checks, and no test in this module — all of which run against the fake
+	// clientset — can contradict THAT.
 	PolicyDisabled bool
 
 	// Logger is optional.

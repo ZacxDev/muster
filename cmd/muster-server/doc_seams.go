@@ -163,37 +163,100 @@ package main
 //	  contract results and the linkage ledger.
 //
 // ---------------------------------------------------------------------------
-// 2. 🔴 api.PrivilegeApplier IS NIL — AND WITH A PROVISIONER WIRED THAT IS NOW A
-//    READINESS DEFECT RATHER THAN A CONFIGURATION.
+// 2. ✅ api.PrivilegeApplier HAS AN IMPLEMENTATION — internal/agentprivilege —
+//    AND THIS SEAM IS CLOSED. THE READINESS DEFECT STAYS, BECAUSE IT IS ABOUT
+//    WHETHER THE TIER IS *ARMED*, NOT ABOUT WHETHER ONE EXISTS.
 //
-//	🔴 THE PARAGRAPHS BELOW NAMED THE EXACT MOMENT THIS WOULD HAPPEN AND IT HAS
-//	  HAPPENED. "That argument dies the moment entry 1 closes." Entry 1's
-//	  lifecycle half is closed, so the combination Provisioner != nil &&
-//	  Privilege != nil && PrivilegeApply == nil is listed in
-//	  api.Extensions.defects and /readyz REFUSES it. This entry's own closing
-//	  condition offered exactly two ways out — wire an applier in the same change,
-//	  or move the entry to defects() — and the second was taken.
+//	🔴 THIS ENTRY REVERSES A DECISION, AND THAT IS RECORDED HERE RATHER THAN
+//	  QUIETLY OVERWRITTEN, BECAUSE THE PROSE BELOW ARGUES THE OPPOSITE CASE AT
+//	  LENGTH AND A READER WHO STOPS AT IT WILL CONCLUDE THE WRONG THING.
+//	  The operator's earlier standing decision (2026-09-25) was that the privilege
+//	  domain stays WHOLE in the permission router — route, store AND the applier —
+//	  so muster's privilege store was deliberately EMPTY: dark, not stale. The
+//	  operator's later decision (2026-09-28) was to wire the applier in muster
+//	  instead, with the contradiction pointed out. What follows below is the
+//	  argument as it stood under the first of the two.
+//	WHAT LANDED: internal/agentprivilege adapts provision.Provisioner to
+//	  api.PrivilegeApplier — two methods, translating a privilege.Profile into a
+//	  provision.Policy and delegating to provision.Grant / provision.Revoke. It
+//	  IMPLEMENTS NO RBAC OF ITS OWN: internal/provision/k8s already renders every
+//	  object, with the (instance, policy) digest name, the ownership predicate on
+//	  every read/write/delete, and the strict rules decode. A second applier beside
+//	  those would have been wrong at each of those points in the same direction.
+//	  provisioner.go builds it over the SAME driver instance the lifecycle and chat
+//	  tiers hold, behind MUSTER_AGENT_PRIVILEGE_APPLY.
+//	🔴 THE DEFECT IN api.Extensions.defects IS UNCHANGED, AND THAT IS NOT AN
+//	  OVERSIGHT. Its three conjuncts ask whether THIS SERVER can apply what it
+//	  records; an unarmed applier is exactly as unable as an absent one, so the
+//	  refusal must still fire. What changed is that the refusal now names a
+//	  variable an operator can set, instead of naming a dead end. A readiness
+//	  refusal with no escape is the shape that trains people to delete the probe.
 //	⚠ THE CONSEQUENCE, STATED PLAINLY BECAUSE IT IS A BLOCKER SOMEONE WILL MEET:
 //	  this deployment builds a privilege store whenever it has a database, so
-//	  setting MUSTER_AGENT_PROVISIONER on it makes the pod UNREADY until a
-//	  PrivilegeApplier exists. That is fail-closed and deliberate; it is also a
-//	  prerequisite for proving a real dispatch end to end, which no earlier plan
-//	  step named.
+//	  setting MUSTER_AGENT_PROVISIONER on it makes the pod UNREADY until
+//	  MUSTER_AGENT_PRIVILEGE_APPLY is also set. That is fail-closed and deliberate.
+//	  🔴 AND IT RUNS THE OTHER WAY TOO, WHICH IS THE HALF NOBODY WROTE DOWN UNTIL
+//	  THE ROUND-1 AUDIT: once armed, taking MUSTER_AGENT_PRIVILEGE_APPLY away is an
+//	  OUTAGE, not a rollback — the pod re-enters this defect and is pulled from its
+//	  Service, taking the task board, notes, repos and runbooks with it. The escape
+//	  is a two-variable change (this one and the provisioner, which
+//	  config.validateProvisioner requires be removed together) or an image
+//	  rollback. provisioner.go prerequisite 2 carries the full statement.
+//	🔴 WHY THE TIER IS OFF BY DEFAULT, WHICH IS A DIFFERENT ARGUMENT FROM THE OTHER
+//	  TWO KNOBS' DEFAULTS: applying a grant writes ClusterRoles, Roles and both
+//	  kinds of binding, and needs the rbac `escalate` and `bind` verbs on top of
+//	  those ordinary writes (they are what the apiserver asks when the rules being
+//	  written exceed what muster itself holds). Nothing in this module can check for
+//	  any of it, the last two are what a cluster administrator grants last, and
+//	  without the set every grant fails at apply time with a 403. If naming a driver
+//	  implied this tier, the first image bump that set MUSTER_AGENT_PROVISIONER
+//	  would start attempting privileged writes.
+//	  ⚠ THE SET IS NOT LISTED HERE. This entry used to name `escalate` and `bind`
+//	  and nothing else — as did three other files — and that list is INCOMPLETE:
+//	  it omits every ordinary verb the policy path calls, so a Role written from it
+//	  403s on the first grant. It is enumerated once, as data, in
+//	  internal/provision/k8s.PolicyRBACPrerequisite, 18 of whose 22 (resource, verb)
+//	  pairs are DERIVED from the call sites and guarded against them by
+//	  TestTheRBACPrerequisiteMatchesThePolicyCallSites.
+//	  ⚠ THE OTHER FOUR ARE ASSERTED, NOT DERIVED: `escalate` and `bind` on `roles`
+//	  and on `clusterroles` have no call site by construction — they are
+//	  authorisation checks the apiserver layers on top of an ordinary write — so the
+//	  DERIVATION excludes them, while the same guard pins all four EXPLICITLY and
+//	  pins their ABSENCE on the two binding resources; what nothing in this module
+//	  can redden is whether the apiserver really asks them.
 //	IT IS LISTED IN defects() RATHER THAN WRAPPED AT A ROUTE, unlike the nil
 //	  Provisioner, because there is no single route to refuse: the falsehood is
 //	  rendered by every surface that shows a grant, and a grant recorded through
 //	  one route is read back through several.
 //	WHO CHECKS IT: TestAWiredProvisionerWithNoPrivilegeApplierIsNotReady, which
 //	  drives /readyz rather than calling defects() — a defect list nothing reads
-//	  is not a guard.
+//	  is not a guard — plus TestThePrivilegeApplierSatisfiesTheConsumerInterface
+//	  (the real type, not a stub) and TestEverySitePopulatingPrivilegeApplyIsOnTheLedger.
+//	🔴 WHAT THIS DOES *NOT* CLOSE, AND IT IS OWED TO A DIFFERENT PACKAGE:
+//	  internal/agentspec's instructions.go DROPPED the agent-facing "request
+//	  elevated access" section, and its header states the condition for bringing it
+//	  back — "When a privilege applier lands in muster, this section comes back".
+//	  That condition has now fallen due. It is NOT done in the change that wrote
+//	  this paragraph: internal/agentspec was concurrently owned by another change.
+//	  CLOSING CONDITION: a pull request restoring that section to
+//	  agentspec.WorkerInstructions, gated on the tier being armed or written so an
+//	  agent on an unarmed deployment is not told to ask.
+//	  WHO CHECKS IT: the reviewer of that pull request, against instructions.go's
+//	  own header.
 //
-//	The original argument follows, because it is still correct for every
-//	  deployment that wires no provisioner.
+//	The original argument follows. Its first half is still correct for every
+//	  deployment that wires no provisioner; its second half — "nothing implements
+//	  it here" and the closing condition — is SUPERSEDED, and is kept because it is
+//	  what the wrappers, the banner and the readiness defect were built on.
 //
 //	WHAT: api.Extensions.PrivilegeApply applies a granted profile's Kubernetes
-//	  RBAC to an agent's ServiceAccount, live. Nothing implements it here, for
+//	  RBAC to an agent's ServiceAccount, live. ⚠ "Nothing implements it here, for
 //	  the same reason as entry 1 — it needs the in-cluster client and the
-//	  SA/namespace naming that live with the provisioner.
+//	  SA/namespace naming that live with the provisioner" was the next sentence,
+//	  and it is now FALSE IN ITS CONCLUSION AND RIGHT IN ITS PREMISE:
+//	  internal/agentprivilege implements it precisely BY not holding a client of
+//	  its own — it delegates to the driver that already holds one and already knows
+//	  the namespace, which is the thing this sentence identified as the obstacle.
 //	WHY THIS ONE IS A CONFIGURATION AND NOT A LIE: a grant recorded and not
 //	  applied is VISIBLE where it matters. The handlers log at the grant path,
 //	  and the thing a grant is FOR — an agent pod with wider RBAC — does not
@@ -204,12 +267,17 @@ package main
 //	  privilege store that records grants nobody applies, IS a page stating a
 //	  falsehood — the grant chip would say granted over a ServiceAccount with
 //	  none of the permissions.
-//	CLOSING CONDITION: it closes WITH entry 1 or immediately after it, never
-//	  later. The pull request that wires a real Provisioner must either wire a
-//	  PrivilegeApplier in the same change or move this entry to defects() so a
-//	  server in that combination does not report ready.
-//	WHO CHECKS IT: the reviewer of the pull request that closes entry 1. This
-//	  sentence is the instruction to check it.
+//	CLOSING CONDITION (BOTH BRANCHES NOW TAKEN, IN THAT ORDER): "it closes WITH
+//	  entry 1 or immediately after it, never later. The pull request that wires a
+//	  real Provisioner must either wire a PrivilegeApplier in the same change or
+//	  move this entry to defects() so a server in that combination does not report
+//	  ready." The provisioner PR took the second branch; the change above took the
+//	  first, three days later. "Never later" was not honoured and the cost is
+//	  written down in the ⚠ CONSEQUENCE line at the top of this entry: for those
+//	  three days, setting MUSTER_AGENT_PROVISIONER on a deployment with a database
+//	  made the pod unready with no way out but unsetting something.
+//	WHO CHECKED IT: the reviewer of the pull request that closes entry 1 — and then
+//	  the reviewer of the pull request that wired the applier.
 //
 // ---------------------------------------------------------------------------
 // 3. ✅ api.ProfileReapplier IS SATISFIED, AND THE ASSERTION IS ASSERTED.

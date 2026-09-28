@@ -16,10 +16,23 @@ SHELL := /usr/bin/env bash
 COMPOSE ?= docker compose
 COMPOSE_FILE := docker-compose.test.yml
 
+# The published port of the throwaway Postgres. 55432 by default, which is what
+# README.md, CONTRIBUTING.md and internal/dbtest's doc all spell literally.
+#
+# 🔴 IT IS A VARIABLE SO TWO CHECKOUTS CAN EACH HAVE THEIR OWN DATABASE, AND IT IS
+# `export`ED SO `docker compose` INTERPOLATES THE SAME VALUE THIS FILE USES. Make
+# does not pass an unexported variable to a recipe's environment, and compose
+# would then silently fall back to its own `:-55432` default — publishing 55432
+# while TEST_DSN named the port you asked for. The two must come from one
+# variable or they drift, which is the identical failure the compose file's header
+# records for POSTGRES_DB.
+MUSTER_TEST_PG_PORT ?= 55432
+export MUSTER_TEST_PG_PORT
+
 # The DSN docker-compose.test.yml serves. It is stated ONCE, here, and
 # `test-db` prints it — two copies is how a recipe drifts into naming the wrong
 # database, which is the specific failure that file's header is about.
-TEST_DSN := postgres://muster:muster@127.0.0.1:55432/muster_test?sslmode=disable
+TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
 .PHONY: build vet run image test test-db test-db-down leakscan css css-check check help
 
@@ -68,6 +81,7 @@ help:
 	@echo "  make image        the container image, css-check included"
 	@echo "  make vet          go vet ./..."
 	@echo "  make test-db      start the throwaway Postgres, migrate it, print the exports"
+	@echo "                    (MUSTER_TEST_PG_PORT=55433 make test-db for a second checkout)"
 	@echo "  make test         the Go suite, with the database REQUIRED (not skipped)"
 	@echo "  make leakscan     the leak gate, self-test first"
 	@echo "  make css          rebuild $(CSS_OUT) from the Go views"

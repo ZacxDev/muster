@@ -53,8 +53,22 @@ type Extensions struct {
 	SessionLiveness SessionLivenessProbe
 
 	// PrivilegeApply applies/removes a granted profile's Kubernetes RBAC live.
-	// Nil (no in-cluster client) means grants are recorded but not applied — the
-	// handlers log and carry on, mirroring a nil Provisioner.
+	// Nil means grants are recorded but not applied — the handlers log and carry
+	// on, mirroring a nil Provisioner.
+	//
+	// 🔴 "MIRRORING A NIL Provisioner" DESCRIBES THE HANDLERS AND NOT THE
+	// CONSEQUENCE, AND THE DIFFERENCE IS THE WHOLE OF defects()' SECOND ENTRY. A
+	// nil Provisioner dims a tab. A nil applier BESIDE a wired Provisioner and a
+	// wired Privilege store is a READINESS DEFECT: /readyz refuses, because the
+	// grant chip then claims a permission a real ServiceAccount does not have. The
+	// two nils look alike at the call site and do not behave alike at the pod.
+	//
+	// ⚠ ITS PARENTHETICAL USED TO READ "(no in-cluster client)", WHICH NAMED THE
+	// ONLY REASON THIS COULD BE NIL WHEN THERE WAS NO IMPLEMENTATION TO WIRE.
+	// There is one now — cmd/muster-server builds internal/agentprivilege over the
+	// same driver the lifecycle tier holds, behind MUSTER_AGENT_PRIVILEGE_APPLY —
+	// so nil today usually means the operator has not armed that variable, which
+	// is a different thing to go and check.
 	PrivilegeApply PrivilegeApplier
 
 	// TagAutoDispatch arms the `auto:dispatch` routing tag
@@ -158,28 +172,71 @@ func (e Extensions) defects() []string {
 	// that is the "lies silently" side of this function's own line.
 	//
 	// ⚠ IT IS FAIL-CLOSED AND IT WILL REFUSE A DEPLOYMENT THAT USED TO COME UP.
-	// That is the point and it is the choice entry 2 offered: wire a
-	// PrivilegeApplier in the same change, or make the combination unready. It is
-	// listed here rather than wrapped at a route — unlike the nil Provisioner,
-	// which IS wrapped — because there is no single route to refuse: the falsehood
-	// is rendered by every surface that shows a grant, and a grant recorded
-	// through one route is read back through several.
+	// It is listed here rather than wrapped at a route — unlike the nil
+	// Provisioner, which IS wrapped — because there is no single route to refuse:
+	// the falsehood is rendered by every surface that shows a grant, and a grant
+	// recorded through one route is read back through several.
 	//
-	// ⚠ IT OVER-TRIGGERS FOR A PROVISIONER THAT CREATES NOTHING, and that is
-	// stated rather than fixed. The noop driver records instead of provisioning,
-	// so a grant over one of its instances lies about a pod that was never real
-	// either — harmless. Distinguishing the two would mean this function reading
-	// the driver's capabilities, which makes a readiness check depend on a
-	// backend's self-report; the fail-closed direction is cheaper and wrong only
-	// in the direction of refusing to serve.
+	// ✅ THE REFUSAL IS NOW ESCAPABLE WITHOUT AN IMAGE CHANGE, AND THE PARAGRAPH
+	// THAT SAID OTHERWISE IS REPLACED RATHER THAN LEFT TO READ AS OPEN. It said:
+	// "That is the point and it is the choice entry 2 offered: wire a
+	// PrivilegeApplier in the same change, or make the combination unready." The
+	// second option was taken in 2026-09, when the operator's standing decision was
+	// that privilege stays WHOLE in the permission router — route, store AND
+	// applier — which left nothing in this module able to satisfy the interface, so
+	// the only exits were unsetting the provisioner or unsetting the database. THAT
+	// DECISION WAS REVERSED (2026-09-28): internal/agentprivilege implements the
+	// interface over the SAME provisioning driver the lifecycle tier holds, and
+	// cmd/muster-server wires it behind MUSTER_AGENT_PRIVILEGE_APPLY (off by
+	// default, because applying a grant needs RBAC-writing permissions muster's own
+	// ServiceAccount may well not have — internal/provision/k8s.PolicyRBACPrerequisite
+	// enumerates them, and it is MORE than the `escalate` and `bind` verbs this
+	// paragraph used to name on their own).
+	//
+	// ⚠ "A DEPLOYMENT CHOICE" IS WHAT THIS HEADING USED TO CLAIM, AND IT
+	// OVERSTATED BY ONE ESCAPE. Setting the variable is a deployment choice;
+	// unsetting it again is NOT, because on the only kind of deployment that can
+	// arm it — one with a database and a provisioner — taking it away re-enters
+	// this very defect and pulls the pod from its Service. The tier arms forward
+	// cheaply and rolls back expensively; cmd/muster-server/provisioner.go
+	// prerequisite 2 states the asymmetry in full.
+	//
+	// 🔴 NONE OF WHICH CHANGES THIS FUNCTION — THE PREDICATE AND ITS THREE CONJUNCTS
+	// ARE UNTOUCHED, AND THAT IS WORTH STATING BECAUSE THE OBVIOUS READING OF
+	// "AN APPLIER EXISTS NOW" IS THAT THE CHECK CAN RELAX. It cannot: the check is
+	// about whether THIS SERVER can apply what it records, and an unarmed applier
+	// is as unable as an absent one. What the reversal changes is the refusal TEXT
+	// below, which now names a variable an operator can set.
+	//
+	// ⚠ IT OVER-TRIGGERS FOR A PROVISIONER THAT CREATES NOTHING, and that is still
+	// stated rather than fixed. The noop driver records instead of provisioning, so
+	// a grant over one of its instances lies about a pod that was never real either
+	// — harmless. Distinguishing the two would mean this function reading the
+	// driver's capabilities, which makes a readiness check depend on a backend's
+	// self-report; the fail-closed direction is cheaper and wrong only in the
+	// direction of refusing to serve. ⚠ AND THE ESCAPE FROM THE OVER-TRIGGER IS NOW
+	// CHEAP RATHER THAN ABSENT, which is the one thing the reversal does change
+	// here: arming the applier over the noop driver satisfies this check and makes
+	// every grant FAIL LOUDLY (provision.Grant refuses a driver that implements no
+	// PolicyGranter, naming it) instead of being recorded silently. So the
+	// over-trigger no longer forces a choice between an unready pod and a lie.
 	if e.Provisioner != nil && e.Privilege != nil && e.PrivilegeApply == nil {
 		out = append(out, "Provisioner is wired but PrivilegeApply is not, while a privilege "+
 			"store IS wired: grants would be RECORDED and never applied, over agent instances "+
 			"that now really exist. Every surface showing a grant would claim a permission the "+
-			"instance's ServiceAccount does not have. Wire a PrivilegeApplier, or leave the "+
-			"privilege store unset, or leave the provisioner unwired. See "+
-			"cmd/muster-server/doc_seams.go entry 2, which named this exact combination as the "+
-			"moment its own argument dies.")
+			"instance's ServiceAccount does not have. TWO WAYS OUT. (1) Set "+
+			"MUSTER_AGENT_PRIVILEGE_APPLY=1 to apply grants through the provisioning driver "+
+			"(internal/agentprivilege); this server's own ServiceAccount then needs the rbac "+
+			"permissions enumerated in internal/provision/k8s.PolicyRBACPrerequisite, which is "+
+			"MORE than the `escalate` and `bind` verbs this text used to name — those two are "+
+			"additional checks on top of ordinary create/get/update/delete/list writes, not "+
+			"substitutes for them. (2) Unset MUSTER_AGENT_PROVISIONER, which leaves the "+
+			"provisioner unwired. \"Leave the privilege store unset\" was listed here as a third "+
+			"way and is NOT one: nothing gates that store on a variable of its own, so it means "+
+			"running with no database at all, which drops notes, agents, runbooks and GitHub too. "+
+			"See cmd/muster-server/doc_seams.go entry 2, which named this exact combination as "+
+			"the moment its own argument dies, and provisioner.go prerequisite 2 for why "+
+			"unsetting the apply variable again is an outage rather than a rollback.")
 	}
 	return out
 }

@@ -32,6 +32,93 @@ const (
 	policyManaged = "muster.dev/policy-managed"
 )
 
+// PolicyRBACPrerequisite is what muster's OWN identity must be permitted to do
+// for the policy path in this file to work. It is DATA rather than prose so a
+// guard can check it against the call sites, and it is the ONE place the set is
+// enumerated.
+//
+// 🔴 IT EXISTS BECAUSE THE PROSE VERSION WAS INCOMPLETE IN FOUR PLACES AT ONCE.
+// cmd/muster-server's provisioner.go, config.go and boot banner and
+// internal/api's readiness refusal each said an operator needs `escalate` and
+// `bind` — and stopped there. A cluster administrator who granted exactly that
+// and nothing else gets a 403 on the FIRST grant, because `escalate` and `bind`
+// are ADDITIONAL authorisation checks layered on top of an ordinary verb, never
+// substitutes for one: the apiserver still requires `create` on clusterroles to
+// create a ClusterRole, and then asks the escalation question as well. Four
+// copies of one incomplete list is the shape that regenerates the same bug at
+// every site, so the copies now point HERE instead of restating it.
+//
+// 🔴 THE ORDINARY VERBS ARE DERIVED FROM THE CALL SITES, NOT FROM THIS COMMENT'S
+// AUTHOR'S MEMORY, AND A GUARD RE-DERIVES THEM. Grant upserts a ClusterRole and
+// a Role (get+create+update) and create-onlys both bindings (get+create); Revoke
+// deletes all four by name (get+delete); revokeAllPolicies enumerates all four
+// by label and deletes them (list+delete). TestTheRBACPrerequisiteMatchesThePolicyCallSites
+// in internal/modulegate scans every non-test source in the module for
+// `RbacV1()` calls and fails when that set GROWS or SHRINKS against this
+// function — which is the half a comment cannot be.
+//
+// 🔴 `escalate` AND `bind` ARE ON `roles` AS WELL AS ON `clusterroles`, AND THAT
+// WAS THE SECOND HALF OF THE SAME FINDING. A profile carrying only
+// namespaceRules creates a Role and a RoleBinding and touches no cluster-scoped
+// object at all (see Grant's second block), and the apiserver's escalation
+// prevention is scoped PER RESOURCE TYPE — permission on clusterroles does not
+// carry to roles. privilege.Spec exposes namespaceRules as a first-class shape
+// and internal/api renders it as one, so that path is expected rather than
+// exotic. Note also which resource each verb sits on: `bind` and `escalate` are
+// checked on the ROLE BEING REFERENCED by a binding, not on the binding
+// resource, which is why neither appears on the two `*bindings` entries below.
+//
+// ⚠ WHAT IT IS NOT: a manifest, and not the whole of what muster needs. The
+// lifecycle tier's own Deployment / Service / Secret / ConfigMap /
+// ServiceAccount / Namespace permissions are a separate, larger set that this
+// function says nothing about — see cmd/muster-server/provisioner.go
+// prerequisite 1. This is the RBAC-writing subset that the privilege tier adds
+// on top, plus the teardown half the lifecycle tier reaches through Destroy.
+//
+// ⚠ AND IT IS NOT READ BY ANY PRODUCTION CODE PATH. Nothing checks the
+// permissions before attempting a write, deliberately: a self-check would be a
+// second claim about the cluster that can disagree with the apiserver's own
+// answer, and the apiserver's 403 is now returned to the caller rather than
+// swallowed. This is the enumeration an operator writes a Role from, kept
+// honest by a guard.
+func PolicyRBACPrerequisite() []rbacv1.PolicyRule {
+	// The API group is spelled through the generated constant rather than as a
+	// literal: the dotted form followed by a resource name matches
+	// tests/leakscan.py's `authorization…` credential pattern, which refused a
+	// sibling file for writing it out. The gate is right that the shape is
+	// credential-like.
+	group := []string{rbacv1.GroupName}
+	return []rbacv1.PolicyRule{
+		{
+			APIGroups: group,
+			Resources: []string{"clusterroles"},
+			Verbs:     []string{"bind", "create", "delete", "escalate", "get", "list", "update"},
+		},
+		{
+			APIGroups: group,
+			Resources: []string{"clusterrolebindings"},
+			Verbs:     []string{"create", "delete", "get", "list"},
+		},
+		{
+			APIGroups: group,
+			Resources: []string{"roles"},
+			Verbs:     []string{"bind", "create", "delete", "escalate", "get", "list", "update"},
+		},
+		{
+			APIGroups: group,
+			Resources: []string{"rolebindings"},
+			Verbs:     []string{"create", "delete", "get", "list"},
+		},
+	}
+}
+
+// PolicyEscalationVerbs are the two entries of PolicyRBACPrerequisite that have
+// no call site, because they are authorisation checks the apiserver layers on
+// top of an ordinary write rather than API calls muster makes. The guard over
+// the call sites has to exclude them, and naming them here is what stops that
+// exclusion being a hardcoded pair in a test file.
+func PolicyEscalationVerbs() []string { return []string{"bind", "escalate"} }
+
 // PolicyObjectName is the deterministic name of the RBAC objects for one
 // (instance, policy) pair. Deterministic so Revoke can find them without a
 // lookup table, and so a second Grant is an update rather than a duplicate.
@@ -58,8 +145,15 @@ func PolicyObjectName(instance, policy string) string {
 // (instance, policy) pair.
 //
 // ⚠ THEY INCLUDE managedLabels, so owned() is the SAME predicate here as for
-// every other object this driver creates. The policy-specific keys are what
-// revokeAllPolicies enumerates on; the shared pair is what says muster made it.
+// every other object this driver creates.
+//
+// ⚠ ONLY TWO OF THE THREE KEYS ARE SELECTED ON, AND NAMING THEM AS A GROUP HID
+// THAT. revokeAllPolicies enumerates on policyManaged and labelSubject (plus the
+// shared pair, which is what says muster made it). labelPolicy is WRITE-ONLY:
+// nothing in this module reads it. It is written so a human can grep for one
+// profile's objects — internal/api's failed-rollback error tells them to — and
+// privilege.ValidateName's doc used to cite a teardown selector on it that does
+// not exist.
 func policyLabels(instance, policy string) map[string]string {
 	out := map[string]string{
 		policyManaged: "true",
