@@ -56,8 +56,29 @@ func pick(list []string) string {
 // generateName returns a random adjective-noun slug.
 func generateName() string { return pick(adjectives) + "-" + pick(nouns) }
 
-// BuildUniqueAgentName returns an adjective-noun name not already used by an
-// existing agent (10 attempts).
+// BuildUniqueAgentName returns an adjective-noun name that is not TAKEN, where
+// taken means "held by a live agent, OR ever held by one that was destroyed"
+// (10 attempts, then an error).
+//
+// 🔴 A DESTROYED AGENT'S NAME IS NEVER REISSUED, AND THE REFUSAL IS THE WHOLE
+// POINT OF THE LOOP RATHER THAN A TIDINESS RULE. The name is the provisioning
+// driver's Ref.Name, so it is what the per-instance namespace, the
+// ServiceAccount and a granted profile's cluster-scoped ClusterRole /
+// ClusterRoleBinding are all named after. Those policy objects are
+// cluster-scoped and outlive the agent row; a namesake gets the same
+// ServiceAccount and silently inherits access nobody granted it. The
+// enforcement lives in the STORE — PGStore.NameExists consults the
+// agent_retired_names ledger that migration 0002's AFTER DELETE trigger fills —
+// because a check written here would only cover this one call path, while the
+// trigger covers every DELETE in any binary.
+//
+// ⚠ SO THE POOL ONLY EVER SHRINKS, AND EXHAUSTION IS A REAL ENDING. With 16
+// adjectives and 16 nouns there are 256 combinations; with k of them taken each
+// draw misses with probability k/256, so this returns an error with probability
+// (k/256)^10 — 0.1% at k=128, 8.5% at k=200, certain at k=256. The error is the
+// designed behaviour at that point: returning a name it cannot prove is free
+// would hand a caller the namesake. Widening the lists is the fix when it
+// starts failing.
 func BuildUniqueAgentName(ctx context.Context, store Store) (string, error) {
 	for i := 0; i < 10; i++ {
 		n := generateName()

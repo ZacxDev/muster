@@ -27,6 +27,7 @@ import (
 // migration that created one table and lost twelve.
 var tablesThisSchemaMustHave = []string{
 	"agent_privileges",
+	"agent_retired_names",
 	"agents",
 	"chat_messages",
 	"chat_sessions",
@@ -140,9 +141,16 @@ func TestEveryIdentityColumnIsGeneratedALWAYS(t *testing.T) {
 		t.Fatalf("rows: %v", err)
 	}
 	// Positive control: an empty result would make the loop above assert nothing.
-	// 11 of the 13 tables have one; task_sessions is keyed by a composite and
-	// github_connection is a pinned singleton.
-	if want := len(tablesThisSchemaMustHave) - 2; n != want {
+	// 11 of the 14 tables have one. THREE do not, and each for its own stated
+	// reason: task_sessions is keyed by a composite, github_connection is a
+	// pinned singleton, and agent_retired_names is keyed by the NAME itself —
+	// a surrogate id there would let one name be tombstoned twice.
+	//
+	// ⚠ THE SUBTRAHEND IS THE COUPLING. It is derived from the ledger above, so
+	// adding a table WITH an identity column needs no edit here — but adding one
+	// WITHOUT breaks this check, which is the intended prompt to come and say
+	// which of the three reasons applies.
+	if want := len(tablesThisSchemaMustHave) - 3; n != want {
 		t.Fatalf("found %d identity column(s), want %d — the query is not seeing the schema this "+
 			"test believes it is checking", n, want)
 	}
