@@ -1085,7 +1085,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status, Repo: a.Repo, Model: a.Model,
 		Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
 		NoteID: noteID, TaskStatus: taskStatus,
-	}); err != nil {
+	}, s.shellFeatures()); err != nil {
 		s.logger.Printf("agents: render detail: %v", err)
 	}
 }

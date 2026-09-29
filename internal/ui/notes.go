@@ -78,7 +78,19 @@ func NotesPanel(active bool) g.Node {
 			ID("tasks-list"),
 			Class("mt-4"),
 			hx("hx-get", "/ui/tasks"),
-			hx("hx-trigger", "load, tasks:changed from:body, sse:task.changed from:body, sse:agent.changed from:body"),
+			// 🔴 `muster:resync` IS WHY resyncScript EXISTS, AND THE BOARD WAS NOT
+			// LISTENING FOR IT. That script dispatches the event on focus, on
+			// visibility regain and on SSE reconnect, precisely because a connection
+			// dropped while the app was backgrounded can MISS the sse:task.changed
+			// events this list otherwise depends on — and its own header says it
+			// "keeps the pending list fresh after the app is backgrounded and
+			// reopened". On this document nothing had ever subscribed, so the whole
+			// mechanism was inert here: a phone reopened after an hour showed
+			// whatever the list held when it was put down, until something else
+			// happened to fire. The task DETAIL card has carried this trigger all
+			// along, which is what made the gap invisible — the feature demonstrably
+			// worked, on the other document.
+			hx("hx-trigger", "load, tasks:changed from:body, sse:task.changed from:body, sse:agent.changed from:body, muster:resync from:body"),
 			hx("hx-target", "#tasks-list"),
 			hx("hx-swap", "morph:innerHTML"),
 			// 🔴 A FAILED load must not read as "still loading". htmx does not swap a

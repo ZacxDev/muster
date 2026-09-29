@@ -24,10 +24,15 @@ import (
 // header popover's quick list, the post-decision card-removal fragment and a
 // single-card render helper. All four take a store.Request, which is the
 // permission router's type, and all four stay with it.
-func RenderPage(w io.Writer, activeTab string) error {
-	return Page(activeTab).Render(w)
+//
+// 🔴 feat SAYS WHICH OPTIONAL SUBSYSTEMS THE CALLER BUILT, AND IT IS A
+// PARAMETER SO THE ANSWER IS THE REQUEST'S OWN SERVER'S. See [Features]: the
+// zero value draws the smallest honest shell, so a caller that forgets it
+// under-draws rather than mounting a panel over nothing.
+func RenderPage(w io.Writer, activeTab string, feat Features) error {
+	return Page(activeTab, feat).Render(w)
 }
 
 // compile-time assertion that the shell is a renderable node, so a refactor
 // that changes Page's return type fails here rather than at every call site.
-var _ func(string) g.Node = Page
+var _ func(string, Features) g.Node = Page

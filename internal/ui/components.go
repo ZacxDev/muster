@@ -220,8 +220,8 @@ func tabHeading(tab string) string {
 //	  paths a second time.
 //	WHO CHECKS IT: the reviewer of the API-carve pull request, against that
 //	  derived test.
-func Page(activeTab string) g.Node {
-	activeTab = normalizeTab(activeTab)
+func Page(activeTab string, feat Features) g.Node {
+	activeTab = normalizeVisibleTab(activeTab, feat)
 	return Doctype(
 		HTML(Class("dark"), Lang("en"),
 			Head(
@@ -277,7 +277,7 @@ func Page(activeTab string) g.Node {
 					hx("sse-connect", "/events"),
 					// The shell IS the page each tab links to (pathForTab(activeTab)
 					// is this document's URL), so activeTab is also currentTab.
-					sidebar(activeTab, activeTab, true),
+					sidebar(activeTab, activeTab, true, feat),
 					// Content column: offset right of the persistent sidebar on
 					// desktop (lg+); full width on mobile (slide-out sidebar).
 					Div(
@@ -308,9 +308,19 @@ func Page(activeTab string) g.Node {
 							// NotesPanel takes no pending count here: upstream passed one so
 							// the Tasks panel could render the permission-request segment
 							// badge, and muster has no requests to count.
+							//
+							// 🔴 THE REPOS PANEL IS CONDITIONAL, AND ITS ABSENCE IS THE
+							// POINT RATHER THAN A TIDY-UP. This panel carries
+							// hx-trigger="load" and the shell renders on every tab, so on
+							// a deployment with no GitHub store every navigation in the
+							// app fetched a route that could only refuse — one failure
+							// toast per page view, on pages that have nothing to do with
+							// repositories. Mounting it only when there is a store behind
+							// it is what makes the tab's absence honest instead of making
+							// its presence noisy.
 							NotesPanel(activeTab == "tasks"),
 							AgentsPanel(activeTab == "agents"),
-							ReposPanel(activeTab == "repos"),
+							g.If(feat.GitHub, ReposPanel(activeTab == "repos")),
 							RunbooksPanel(activeTab == "runbooks"),
 							PrivilegesPanel(activeTab == "privileges"),
 						),
@@ -347,7 +357,7 @@ func Page(activeTab string) g.Node {
 					// closed-and-reopened app is never stale.
 					resyncScript(),
 					// Sidebar open/close + SPA tab routing (pushState) + FAB toggle.
-					appScript(),
+					appScript(feat),
 					// PWA: register the service worker + wire the push-subscribe
 					// flow behind the "Enable" control, surfacing failures.
 					pwaScript(),
@@ -854,7 +864,7 @@ func jsonString(s string) string {
 // falls back to 'requests') — two different links, neither of them this page.
 // Pinned by TestSidebarMarksExactlyOneCurrentPage and
 // TestOffShellPagesClaimNoCurrentPage.
-func sidebar(activeTab, currentTab string, hasPanels bool) g.Node {
+func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node {
 	return Div(
 		ID("sidebar-root"),
 		g.Attr("data-open", "false"),
@@ -917,14 +927,19 @@ func sidebar(activeTab, currentTab string, hasPanels bool) g.Node {
 			//
 			// Pinned by TestSidebarTabsCarryNoTabRoles and
 			// TestSidebarMarksExactlyOneCurrentPage.
-			// 🔴 g.Map OVER musterTabs, NOT A HAND-WRITTEN RUN OF CALLS. Upstream
-			// spelled each tab here by hand, which is the third of the four places
-			// its tab set was duplicated. A tab present in the key list but missing
-			// from this block is unreachable from the nav while still being a valid
-			// URL, and nothing in the package could observe the disagreement.
+			// 🔴 g.Map OVER THE TAB REGISTRY, NOT A HAND-WRITTEN RUN OF CALLS.
+			// Upstream spelled each tab here by hand, which is the third of the four
+			// places its tab set was duplicated. A tab present in the key list but
+			// missing from this block is unreachable from the nav while still being a
+			// valid URL, and nothing in the package could observe the disagreement.
+			//
+			// 🔴 IT IS visibleTabs, NOT musterTabs, AND THE SET MUST MATCH THE PANELS
+			// Page DREW. A link whose panel this document did not render shows a
+			// blank page when clicked; deriving both from one function is what makes
+			// the two unable to disagree.
 			Div(
 				Class("flex flex-col gap-1 p-2"),
-				g.Map(musterTabs, func(t tab) g.Node {
+				g.Map(visibleTabs(feat), func(t tab) g.Node {
 					return sidebarTab(t.Key, t.Label, t.Icon, activeTab == t.Key, currentTab == t.Key, hasPanels)
 				}),
 			),
@@ -1021,15 +1036,28 @@ func sidebarTab(tab, label, icon string, active, current, hasPanels bool) g.Node
 // ("Today's runs") pasted into a single-quoted JS literal ends the string and
 // produces a syntax error that kills the WHOLE script — sidebar, tab routing,
 // toasts and FABs — with nothing on screen to say why.
-func navRegistryJS() string {
-	keys, _ := json.Marshal(tabKeys)
-	headings, _ := json.Marshal(tabHeadings)
-	sel := make([]string, 0, len(tabKeys))
-	for _, k := range tabKeys {
-		sel = append(sel, "#"+panelID(k))
+// 🔴 IT EMITS THE VISIBLE TABS, NOT THE WHOLE REGISTRY, AND THE THREE VALUES
+// MUST AGREE WITH WHAT WAS DRAWN. A tab in TABS whose panel this document did
+// not render is a tab the swipe gesture can select and switchTab can restore
+// from localStorage, landing the operator on a document with every panel hidden;
+// and PANEL_SELECTOR is used to find the panels that exist, so naming a missing
+// one there makes every query it feeds shorter by an element that was never
+// there. Deriving all three from visibleTabs is what keeps the browser's model
+// of the shell equal to the shell.
+func navRegistryJS(feat Features) string {
+	visible := visibleTabs(feat)
+	keys := make([]string, 0, len(visible))
+	headingMap := make(map[string]string, len(visible))
+	sel := make([]string, 0, len(visible))
+	for _, t := range visible {
+		keys = append(keys, t.Key)
+		headingMap[t.Key] = t.Heading
+		sel = append(sel, "#"+panelID(t.Key))
 	}
+	keysJSON, _ := json.Marshal(keys)
+	headings, _ := json.Marshal(headingMap)
 	panels, _ := json.Marshal(strings.Join(sel, ", "))
-	return "  var TABS = " + string(keys) + ";\n" +
+	return "  var TABS = " + string(keysJSON) + ";\n" +
 		"  var HEADINGS = " + string(headings) + ";\n" +
 		"  var PANEL_SELECTOR = " + string(panels) + ";\n"
 }
@@ -1042,10 +1070,10 @@ func navRegistryJS() string {
 // panel stays on screen.
 func panelID(key string) string { return "panel-" + key }
 
-func appScript() g.Node {
+func appScript(feat Features) g.Node {
 	return Script(g.Raw(`
 (function () {
-` + navRegistryJS() + `
+` + navRegistryJS(feat) + `
 
   // --- Navigation state persistence ----------------------------------------
   // Persist the active tab + its scroll offset so the PWA reopens where the
@@ -2085,12 +2113,19 @@ func appScript() g.Node {
 `))
 }
 
-// resyncScript keeps the pending list fresh after the app is backgrounded and
+// resyncScript keeps the task list fresh after the app is backgrounded and
 // reopened. The htmx SSE extension auto-reconnects, but a dropped connection can
 // miss events while hidden; so we also refetch on focus, on visibility regain,
-// and on SSE (re)connect. It fires a body-level "muster:resync" event the
-// requests panel listens for (see Page's hx-trigger), and is fully
-// feature-detected/guarded.
+// and on SSE (re)connect. It fires a body-level "muster:resync" event, and is
+// fully feature-detected/guarded.
+//
+// 🔴 WHO LISTENS IS THE HALF THAT MATTERS, AND THIS DOC NAMED A PANEL THAT DOES
+// NOT EXIST HERE. It said "the requests panel listens for (see Page's
+// hx-trigger)" — the permission router's queue, which muster does not serve. The
+// subscribers are #tasks-list on the shell (notes.go) and the live card on the
+// task detail document (task_detail.go); a document carrying this script and
+// neither of those receives an event nobody is waiting for, which is what the
+// shell did.
 func resyncScript() g.Node {
 	return Script(g.Raw(`
 (function () {
@@ -2100,9 +2135,23 @@ func resyncScript() g.Node {
       document.body.dispatchEvent(new CustomEvent('muster:resync'));
     } catch (e) {
       // Fallback: direct htmx ajax if CustomEvent/dispatch is unavailable.
-      if (window.htmx) {
+      //
+      // 🔴 IT NAMES THE SAME ROUTE, TARGET AND SWAP THE PRIMARY PATH CAUSES, AND
+      // THAT IS THE WHOLE REQUIREMENT ON IT. It used to name a route the
+      // permission router serves and this service does not — GET /ui/requests,
+      // answered here by the mux's own 404 — into a target id no document in this
+      // app renders. Both halves were wrong, and neither could be observed:
+      // nothing reaches this branch in a browser that has CustomEvent, so the
+      // fallback had never once run.
+      //
+      // ⚠ THE ELEMENT IS LOOKED UP RATHER THAN ASSUMED. resyncScript is rendered
+      // on the shell AND on the task detail document, and only the shell has a
+      // task list; on detail the muster:resync listener above is the card's own,
+      // so there is nothing for this branch to do there.
+      var list = document.getElementById('tasks-list');
+      if (window.htmx && list) {
         try {
-          window.htmx.ajax('GET', '/ui/requests', { target: '#request-list', swap: 'innerHTML' });
+          window.htmx.ajax('GET', '/ui/tasks', { target: '#tasks-list', swap: 'morph:innerHTML' });
         } catch (e2) {}
       }
     }

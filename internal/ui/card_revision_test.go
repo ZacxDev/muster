@@ -201,7 +201,7 @@ func TestEveryDocumentThatRendersATaskCardCarriesTheStaleGuard(t *testing.T) {
 	}
 	// NEGATIVE control: a document with neither must report neither, or the two
 	// probes are matching something every page has.
-	bare := renderString(t, TaskNotFoundPage("613"))
+	bare := renderString(t, TaskNotFoundPage("613", featuresAllOn))
 	if strings.Contains(bare, guardMark) {
 		t.Fatalf("CONTROL: the 404 page renders no task card yet contains %q — the card probe matches "+
 			"something other than a card", guardMark)

@@ -23,7 +23,7 @@ import (
 // page-has-heading-one applies to a 404 too), the explanation, and an unboosted
 // link to the board. No htmx surface at all — there is nothing here to mutate,
 // so there is nothing to keep live and no failure to toast.
-func TaskNotFoundPage(id string) g.Node {
+func TaskNotFoundPage(id string, feat Features) g.Node {
 	label := "This task"
 	if id != "" {
 		label = "Task #" + id
@@ -44,7 +44,7 @@ func TaskNotFoundPage(id string) g.Node {
 				// The sidebar tabs are ordinary boosted links off this page, exactly as
 				// on the detail page (hasPanels=false — there is no panel to toggle).
 				hx("hx-boost", "true"),
-				sidebar("tasks", "tasks", false),
+				sidebar("tasks", "tasks", false, feat),
 				Div(
 					Class("lg:pl-72"),
 					Header(
@@ -89,7 +89,7 @@ func TaskNotFoundPage(id string) g.Node {
 					),
 				),
 				// Sidebar open/close.
-				appScript(),
+				appScript(feat),
 			),
 		),
 	)

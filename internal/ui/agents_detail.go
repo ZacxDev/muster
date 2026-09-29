@@ -127,7 +127,7 @@ type SessionView struct {
 
 // AgentDetailPage renders the full agent detail document: live logs (SSE) and a
 // chat box (WebSocket) to inject messages.
-func AgentDetailPage(v AgentDetailView) g.Node {
+func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 	return Doctype(
 		HTML(Class("dark"), Lang("en"),
 			Head(
@@ -164,7 +164,7 @@ func AgentDetailPage(v AgentDetailView) g.Node {
 				// 'agents', so the server's first paint and the client's show()
 				// agree on which link is current. Marking the section index for a
 				// detail view is standard practice.
-				sidebar("agents", "agents", false),
+				sidebar("agents", "agents", false, feat),
 				// Content column: offset right of the persistent desktop sidebar (lg+),
 				// mirroring Page's content column. The header + main + fixed input bar
 				// all carry lg:pl-72 so nothing sits under the sidebar.
@@ -189,7 +189,7 @@ func AgentDetailPage(v AgentDetailView) g.Node {
 				// used by the header model form). It is now the SINGLE combobox
 				// implementation — the old standalone comboboxScript was deleted,
 				// retiring the two-copies-of-the-combobox-JS debt.
-				appScript(),
+				appScript(feat),
 			),
 		),
 	)
