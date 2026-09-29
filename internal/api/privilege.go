@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/jackc/pgx/v5"
 
@@ -83,8 +84,86 @@ func (s *Server) handleProfileCreate(w http.ResponseWriter, r *http.Request) {
 	s.handleProfilesContent(w, r)
 }
 
-// handleProfileDelete revokes the profile's live RBAC from every agent holding it
-// and only then drops the profile.
+// profileLock is one profile's write lock plus the count of goroutines that want
+// it. The count is what lets the map be pruned: an entry lives exactly as long as
+// someone holds or awaits it, so the map is bounded by CONCURRENT REQUESTS rather
+// than by the number of profiles that have ever been written.
+type profileLock struct {
+	mu      sync.Mutex
+	waiters int
+}
+
+// lockProfile serialises the privilege write paths that touch one profile, and
+// returns the unlock. It is the fix for the TOCTOU window described in the
+// invariant block below: a grant recorded BETWEEN handleProfileDelete's holder
+// list and its DeleteProfile is not in the list, so its RBAC is never removed,
+// and the delete's cascade then takes the row that was the only thing able to
+// name it. Live escalated RBAC that no record names — the one direction the
+// invariant forbids and the one that is not recoverable.
+//
+// 🔴 A LOCK, NOT A TRANSACTION, AND THE CHOICE IS DELIBERATE. The other candidate
+// was to capture and remove the holders in one statement inside a transaction
+// (`DELETE FROM agent_privileges WHERE profile_id = $1 RETURNING agent_id`,
+// revoking the returned set, committing last). Three reasons it is not what this
+// does:
+//
+//  1. IT DOES NOT ACTUALLY CLOSE THE WINDOW AT THE ISOLATION LEVEL WE RUN AT.
+//     `DELETE … RETURNING` takes row locks on the rows that ALREADY exist. The
+//     interleaving grant INSERTs a row that does not exist yet, and READ
+//     COMMITTED has no predicate lock, so nothing blocks it. Making that shape
+//     airtight needs SERIALIZABLE plus a retry loop, or a `SELECT … FOR UPDATE`
+//     on the parent profile row — and the latter IS this function, implemented in
+//     the database instead of in the process.
+//  2. IT HOLDS A POSTGRES TRANSACTION OPEN ACROSS N APISERVER ROUND-TRIPS. The
+//     revokes are network calls to the kube apiserver with client-go's retries
+//     behind them, so the idle-in-transaction time — and the pinned pool
+//     connection, and the held row locks — scale with the holder count.
+//  3. A COMMIT THAT FAILS AFTER THE CLUSTER HAS ALREADY CHANGED lands in exactly
+//     the state issue #14 is about, and makes it harder to describe rather than
+//     easier: the rows come back on the rollback while the RBAC stays gone.
+//
+// 🟡 THE COST ACCEPTED IN EXCHANGE: this lock is IN-PROCESS, so it serialises one
+// muster. That is the right scope for this deployment rather than a shortcut —
+// `replicas: 1` is a documented code fact for muster, not an accident of
+// capacity: the SSE broadcaster is an in-process map of Go channels with no Redis
+// fan-out and no LISTEN/NOTIFY anywhere in the tree, and the background loops
+// have no cross-process lease in this module. The deployment's own comment says
+// raising the count means adding a lease first.
+// 🔴 SO: IF muster EVER RUNS MORE THAN ONE REPLICA, THIS MUST BECOME A POSTGRES
+// ADVISORY LOCK. internal/db's MigrationLockKey is the pattern, and LeaderGate
+// (server.go) is the precedent for reaching one from this package without a pool.
+// A second replica would reopen the window silently — no error, just two
+// processes each serialising only themselves.
+func (s *Server) lockProfile(profileID int64) func() {
+	s.profileLocksMu.Lock()
+	if s.profileLocks == nil {
+		// Lazily, because Server is constructed several ways (New, and fixtures
+		// that build it field-by-field) and a nil map here would panic on write.
+		s.profileLocks = make(map[int64]*profileLock)
+	}
+	entry, ok := s.profileLocks[profileID]
+	if !ok {
+		entry = &profileLock{}
+		s.profileLocks[profileID] = entry
+	}
+	entry.waiters++
+	s.profileLocksMu.Unlock()
+
+	entry.mu.Lock()
+
+	return func() {
+		entry.mu.Unlock()
+		s.profileLocksMu.Lock()
+		entry.waiters--
+		if entry.waiters == 0 {
+			delete(s.profileLocks, profileID)
+		}
+		s.profileLocksMu.Unlock()
+	}
+}
+
+// handleProfileDelete revokes the profile's live RBAC from every agent holding it,
+// drops the profile, and then recomputes each holder's env/kubeconfig.
 //
 // 🔴 IT USED TO CALL DeleteProfile AND NOTHING ELSE, WHICH MADE A DELETE
 // UNRECOVERABLE. The store's delete cascades the agent_privileges rows away, so
@@ -104,6 +183,18 @@ func (s *Server) handleProfileCreate(w http.ResponseWriter, r *http.Request) {
 // — delete anyway and log — is what the revoke path used to do, and that is
 // precisely the direction this round was told to make coherent (see the
 // RECORD ⊇ LIVE invariant above grantProfile).
+//
+// 🔴 IT HOLDS THE PROFILE'S WRITE LOCK FOR THE WHOLE SEQUENCE, which is what makes
+// the holder list it revokes from complete. Without it a grant recorded between
+// the list and the delete is never revoked and its row is then cascaded away. See
+// lockProfile.
+//
+// 🔴 IT REAPPLIES ENV/KUBECONFIG PER HOLDER AFTER THE DELETE, and the ORDER is
+// load-bearing: ReapplyProfiles recomputes from the grants that exist WHEN IT
+// RUNS, so a reapply before the delete would recompute with this profile's grant
+// still in place and change nothing. RBAC removal is not enough on its own — a
+// profile can contribute env vars and a mounted kubeconfig SECRET, and removing a
+// role does not unwrite a credential already in a pod's filesystem.
 func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -111,6 +202,9 @@ func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	// Serialise against the grant paths for the whole read-revoke-delete sequence.
+	unlock := s.lockProfile(id)
+	defer unlock()
 	// The NAME is what RemoveGrant needs, and this is the last moment it exists.
 	prof, err := s.ext.Privilege.GetProfile(ctx, id)
 	if err != nil {
@@ -122,55 +216,76 @@ func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not delete profile", http.StatusInternalServerError)
 		return
 	}
-	if err := s.revokeLiveRBACForProfile(ctx, prof); err != nil {
+	holders, err := s.revokeLiveRBACForProfile(ctx, prof)
+	if err != nil {
 		s.logger.Printf("privilege: delete profile %d (%q): revoking live RBAC first: %v",
 			id, prof.Name, err)
 		http.Error(w, "could not delete profile: its cluster RBAC is still bound to at least one "+
 			"agent and removing it failed, so the profile was KEPT — deleting it now would drop "+
-			"the only record of that access and leave it unrevocable. Retry, or revoke the "+
-			"grants individually first. Cause: "+err.Error(), http.StatusInternalServerError)
+			"the only record of that access and leave it unrevocable. NOTHING HAS CHANGED: every "+
+			"grant record survives and any RBAC already removed before the failure is named by a "+
+			"record that can revoke it again. Retry, or revoke the grants individually first. "+
+			"Cause: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// 🟢 THIS FAILURE IS NOT INERT AND THE MESSAGE DOES NOT SAY SO: the RBAC for
-	// every holder was already removed above, so the rows survive with no objects
-	// behind them — the tolerable direction (retryable; the revoke path treats an
-	// absent object as success), but the operator sees a terse "could not delete
-	// profile" and has no way to know the access is in fact already gone. FILED, NOT
-	// FIXED: widen this text the way the revoke branch above was widened. CLOSING
-	// CONDITION: a merged change replacing this string, plus the test that reads it.
-	// WHO CHECKS IT: the reviewer of that PR.
+	// 🔴 THIS FAILURE IS NOT INERT AND THE MESSAGE MUST SAY SO — the two branches of
+	// this function used to be calibrated in OPPOSITE directions, the safer one
+	// explaining itself and the riskier one not. Above, nothing has changed. Here,
+	// every holder's RBAC is already gone from the cluster while every grant row
+	// survives, so each grant chip in the UI now claims access the ServiceAccount no
+	// longer has. That is the TOLERABLE direction (the row still names the pair and
+	// the revoke path treats an absent object as success, so a retry converges) but
+	// it is NOT the same state as the branch above, and the operator's next move
+	// differs: there they may leave it alone, here the access is already withdrawn
+	// whatever the UI shows.
 	if err := s.ext.Privilege.DeleteProfile(ctx, id); err != nil {
-		s.logger.Printf("privilege: delete profile %d: %v", id, err)
-		http.Error(w, "could not delete profile", http.StatusInternalServerError)
+		s.logger.Printf("privilege: delete profile %d (%q): the RBAC was already removed from %d "+
+			"holder(s) and the records were kept: %v", id, prof.Name, len(holders), err)
+		http.Error(w, "could not delete profile, and THE CLUSTER HAS ALREADY CHANGED: this "+
+			"profile's RBAC was removed from every agent holding it BEFORE the delete failed, so "+
+			"the access is already withdrawn while the profile and its grant records were KEPT. "+
+			"The grant chips still shown for it now claim access the ServiceAccount no longer "+
+			"has. Nothing is unrevocable — every record survives and removal is idempotent — so "+
+			"retrying this delete is safe and is the way to converge. Cause: "+err.Error(),
+			http.StatusInternalServerError)
 		return
+	}
+	// Recompute env/kubeconfig for each holder now that the grant rows are gone, the
+	// way handleAgentRevoke does for its one agent. Best-effort and per-holder: the
+	// RBAC and the records are already consistent, so a failure here cannot reopen
+	// the invariant — it leaves a pod carrying env for a profile that no longer
+	// exists until its next provision, which is the pre-existing behaviour this
+	// closes rather than a new one it opens.
+	for _, agent := range holders {
+		s.reapplyEnvAsync(agent, prof)
 	}
 	s.handleProfilesContent(w, r)
 }
 
 // revokeLiveRBACForProfile removes the profile's RBAC from the agents recorded as
-// holding it. It is the pre-condition of a safe profile delete.
+// holding it, and RETURNS THOSE AGENTS so the caller can finish the job. It is the
+// pre-condition of a safe profile delete.
 //
-// ⚠ "EVERY AGENT" IS WHAT THIS LINE USED TO SAY AND IT IS NOT WHAT THE LOOP DOES:
-// the first holder whose removal fails returns immediately, so later holders keep
-// their RBAC. That is safe rather than a bug — the caller refuses the delete, so
-// every row survives and every remaining object is still named by one — but the
-// docstring claimed a width the body does not have, which is the shape that gets a
-// guard written against the sentence instead of the code.
+// ⚠ IT STOPS AT THE FIRST HOLDER WHOSE REMOVAL FAILS, so on error the agents after
+// that one keep their RBAC and the returned slice is not the full holder set. That
+// is safe rather than a bug — the caller refuses the delete, so every row survives
+// and every remaining object is still named by one — but it is stated because the
+// line here USED TO SAY "every agent", and a docstring claiming a width the body
+// does not have is the shape that gets a guard written against the sentence
+// instead of against the code. On success the slice IS every holder.
 //
-// 🟡 IT IS ALSO RBAC-ONLY, AND THE PROFILE CARRIES MORE THAN RBAC. handleAgentRevoke
-// follows its removal with reapplyEnvAsync because a profile's env vars and its
-// KubeconfigSecret have to be RECOMPUTED once a grant is gone; handleProfileDelete
-// calls nothing of the sort, for any holder. So after a successful profile delete
-// each running agent still carries that profile's env vars and still has its
-// kubeconfig CREDENTIAL mounted, until something else reprovisions it — while the
-// operator has been told the profile is gone. The RBAC invariant above is stated
-// over RBAC alone and this is the gap that leaves.
-// PRE-EXISTING, NOT INTRODUCED HERE — but the round that unified these three write
-// paths on one invariant is the round that owes the statement.
-// FILED, NOT FIXED: call reapplyEnvAsync for each holder after DeleteProfile
-// succeeds (it reads current grants, so it recomputes without the deleted one).
-// CLOSING CONDITION: a merged change doing that, plus a test asserting a reapply per
-// holder on profile delete. WHO CHECKS IT: the reviewer of that PR.
+// 🔴 IT IS RBAC-ONLY, AND THE PROFILE CARRIES MORE THAN RBAC — WHICH IS WHY IT
+// RETURNS THE AGENTS RATHER THAN JUST AN ERROR. A profile's env vars and its
+// KubeconfigSecret have to be RECOMPUTED once a grant is gone, and removing a role
+// does not unwrite a kubeconfig CREDENTIAL already mounted in a pod's filesystem.
+// handleAgentRevoke has always followed its removal with reapplyEnvAsync for that
+// reason; handleProfileDelete called nothing of the sort, for any holder, so a
+// deleted profile left every running holder carrying its env and its credential
+// until something else reprovisioned it — while the operator had been told the
+// profile was gone. The agents come back from here because THIS is the only place
+// that resolves them, and re-resolving them after the delete is impossible: the
+// cascade has taken the rows by then. The caller does the reapply, after the
+// delete, and the doc on handleProfileDelete says why that order is required.
 //
 // ⚠ A nil APPLIER IS A no-op, AND THAT IS THE ONE HOLE IN THE INVARIANT — STATED
 // RATHER THAN PAPERED OVER. With no applier this server has applied nothing, so
@@ -186,30 +301,58 @@ func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 // absent object is success, so attempting it costs an API call; skipping it trusts
 // that the spec has not changed since the grant was applied, which is a claim about
 // history that a spec read today cannot make.
-func (s *Server) revokeLiveRBACForProfile(ctx context.Context, prof privilege.Profile) error {
+func (s *Server) revokeLiveRBACForProfile(ctx context.Context, prof privilege.Profile) ([]agents.Agent, error) {
 	if s.ext.PrivilegeApply == nil {
-		return nil
+		// 🔴 THE HOLDERS ARE STILL RESOLVED, BECAUSE THE CALLER NEEDS THEM FOR THE
+		// ENV/KUBECONFIG HALF AND THAT HALF DOES NOT DEPEND ON AN APPLIER. A nil
+		// applier means no RBAC of this server's making exists to remove; it does not
+		// mean the profile contributed no env and no mounted kubeconfig. Returning
+		// early with nil here — which is what an RBAC-shaped reading of this function
+		// would do — would silently reinstate exactly the leak above.
+		return s.holdersOf(ctx, prof)
 	}
 	if s.ext.Agents == nil {
 		// Reachable only from a fixture: an applier needs an agent's name and
 		// namespace, and those live on the row. Refusing is fail-closed.
-		return errors.New("no agents store, so the agents holding this profile cannot be " +
+		return nil, errors.New("no agents store, so the agents holding this profile cannot be " +
 			"resolved and their cluster RBAC cannot be removed")
+	}
+	holders, err := s.holdersOf(ctx, prof)
+	if err != nil {
+		return nil, err
+	}
+	for i, agent := range holders {
+		if err := s.ext.PrivilegeApply.RemoveGrant(ctx, agent.Name, agent.Namespace, prof.Name); err != nil {
+			// Return the prefix whose RBAC IS gone, so a caller that decides to carry
+			// on is not told the set was empty. Today's caller refuses the delete.
+			return holders[:i], fmt.Errorf("removing profile %q's RBAC from agent %q: %w",
+				prof.Name, agent.Name, err)
+		}
+	}
+	return holders, nil
+}
+
+// holdersOf resolves the agents recorded as holding a profile. Separated so the
+// nil-applier path above resolves them the same way rather than open-coding a
+// second walk of the same two calls.
+func (s *Server) holdersOf(ctx context.Context, prof privilege.Profile) ([]agents.Agent, error) {
+	if s.ext.Agents == nil {
+		return nil, nil
 	}
 	grants, err := s.ext.Privilege.ListGrantsForProfile(ctx, prof.ID)
 	if err != nil {
-		return fmt.Errorf("listing the agents holding profile %q: %w", prof.Name, err)
+		return nil, fmt.Errorf("listing the agents holding profile %q: %w", prof.Name, err)
 	}
+	out := make([]agents.Agent, 0, len(grants))
 	for _, g := range grants {
 		agent, err := s.ext.Agents.Get(ctx, g.AgentID)
 		if err != nil {
-			return fmt.Errorf("resolving agent %d, which holds profile %q: %w", g.AgentID, prof.Name, err)
+			return nil, fmt.Errorf("resolving agent %d, which holds profile %q: %w",
+				g.AgentID, prof.Name, err)
 		}
-		if err := s.ext.PrivilegeApply.RemoveGrant(ctx, agent.Name, agent.Namespace, prof.Name); err != nil {
-			return fmt.Errorf("removing profile %q's RBAC from agent %q: %w", prof.Name, agent.Name, err)
-		}
+		out = append(out, agent)
 	}
-	return nil
+	return out, nil
 }
 
 func (s *Server) renderProfiles(w http.ResponseWriter, profs []privilege.Profile) {
@@ -385,6 +528,12 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	// Same lock as the grant and delete paths: a per-agent revoke racing a profile
+	// delete is benign today (removal is idempotent, an absent object is success),
+	// but serialising all three is what lets the invariant be stated without a
+	// carve-out a later reader has to re-derive.
+	unlock := s.lockProfile(profileID)
+	defer unlock()
 	agent, err := s.ext.Agents.Get(ctx, id)
 	if err != nil {
 		http.Error(w, "could not load agent", http.StatusInternalServerError)
@@ -438,11 +587,13 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 // STATED NOWHERE AND EACH PATH HAD PICKED ITS OWN DIRECTION.
 //
 // 🔴 THE RECORD IS NEVER NARROWER THAN THE CLUSTER — AS THE DIRECTION EACH PATH
-// FAILS IN, NOT AS A PROPERTY THE SERVER ACHIEVES, AND THE RETRACTION AT THE FOOT
-// OF THIS BLOCK IS WHY THE QUALIFIER IS HERE RATHER THAN ONLY THERE: every RBAC
-// object this server has applied is named by a grant row that still exists, EXCEPT
-// across the concurrent window the counterexample below reaches, which no ordering
-// of these three calls closes. The record MAY be wider —
+// FAILS IN, AND, SINCE THE THREE PATHS TOOK A SHARED PER-PROFILE LOCK, ALSO ACROSS
+// THE CONCURRENT WINDOW THAT USED TO BE THE STANDING EXCEPTION HERE: every RBAC
+// object this server has applied is named by a grant row that still exists. The
+// qualifier that used to sit in this sentence — "EXCEPT across the concurrent
+// window … which no ordering of these three calls closes" — is retired, and the
+// wording is deliberate about WHY: no ORDERING closes it, and none was what closed
+// it; serialising the paths did. See lockProfile. The record MAY be wider —
 // and that direction is not harmless either: a row whose objects are gone renders a
 // grant chip claiming access the ServiceAccount does not have, which is precisely
 // the falsehood api.Extensions.defects' privilege entry refuses to serve. What makes
@@ -472,27 +623,25 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 // an ORDER and a direction of failure, and that a SEQUENTIAL operation is retryable
 // from wherever it stopped.
 //
-// 🔴 WHAT THEY DO NOT GUARANTEE — AND THIS BLOCK USED TO CLAIM THEY DID, IN THE
-// WORDS "every reachable intermediate state is one the invariant permits". THAT IS
-// FALSE UNDER CONCURRENCY, AND THE COUNTEREXAMPLE IS TWO BROWSER TABS.
-// handleProfileDelete lists the holders (ListGrantsForProfile), removes each one's
-// RBAC, and only then calls DeleteProfile, which cascades the grant rows. A grant
-// recorded BETWEEN the list and the delete — through handleAgentGrant, or through
-// handleRequestApprove, both reachable from a second tab — is not in the list, so
-// its RBAC is never removed, and the cascade then takes its row. That is exactly
-// the forbidden direction: live escalated RBAC that no record names. It is a
-// TOCTOU window, not a failure-ordering bug, and no ordering of these three calls
-// closes it.
-// FILED, NOT FIXED: close it by making the read and the delete one transaction
-// (`DELETE … RETURNING agent_id`, revoking the returned set), or by serialising the
-// profile's write paths. CLOSING CONDITION: a merged change doing one of those,
-// plus a test that interleaves a grant between the list and the delete and fails on
-// the orphan. WHO CHECKS IT: the reviewer of that PR.
+// 🔴 CONCURRENCY IS WHY A LOCK IS PART OF THE INVARIANT AND NOT AN OPTIMISATION.
+// Ordering alone was not enough, and this block used to say so: handleProfileDelete
+// lists the holders (ListGrantsForProfile), removes each one's RBAC, and only then
+// calls DeleteProfile, which cascades the grant rows. A grant recorded BETWEEN the
+// list and the delete — through handleAgentGrant, or through handleRequestApprove,
+// both reachable from a second tab — was not in the list, so its RBAC was never
+// removed, and the cascade then took its row: live escalated RBAC that no record
+// names, the forbidden direction. All three paths now take the same per-profile
+// lock (lockProfile), so no grant can be recorded inside a delete's window. The
+// lock is IN-PROCESS and that bound is stated on lockProfile — a second replica
+// would reopen this silently.
 //
-// 🟡 AND THE INVARIANT IS STATED OVER RBAC ONLY, WHICH IS NARROWER THAN "THE THREE
-// WRITE PATHS AGREE". A profile's env and KubeconfigSecret are recomputed by
-// reapplyEnvAsync, which handleAgentRevoke calls and handleProfileDelete does not —
-// see revokeLiveRBACForProfile's doc for what that leaves live.
+// 🔴 AND THE INVARIANT IS NO LONGER RBAC-ONLY. A profile's env and its
+// KubeconfigSecret are recomputed by reapplyEnvAsync, which handleAgentRevoke has
+// always called and which handleProfileDelete now calls for every holder, after the
+// delete. That matters most for the credential: RBAC removal is visible in the
+// cluster, but a kubeconfig already written into a pod's filesystem is not undone by
+// removing a role. See revokeLiveRBACForProfile, which returns the holders for
+// exactly this, and handleProfileDelete for why the reapply must follow the delete.
 // ---------------------------------------------------------------------------
 
 // grantProfile applies the profile's RBAC live (if an applier is wired) then
@@ -501,7 +650,19 @@ func (s *Server) handleAgentRevoke(w http.ResponseWriter, r *http.Request) {
 // profile also carries env/kubeconfig and the agent is running, it re-applies
 // those to the pod — RBAC needs no restart, env does. A stopped agent picks up the
 // env at its next dispatch.
+//
+// 🔴 IT TAKES THE PROFILE'S WRITE LOCK, AND THAT IS WHERE THE TOCTOU FIX IS PAID
+// ON THIS SIDE. This is the one place both grant entry points funnel through —
+// handleAgentGrant and handleRequestApprove — so locking here rather than in each
+// of them is what makes "a grant cannot interleave with a delete" true of every
+// caller instead of true of the callers someone remembered. Note the profile is
+// read by the CALLER, before this lock: a grant that loses the race therefore
+// applies against a profile that has since been deleted, its record then fails the
+// foreign key, and the rollback below removes the RBAC it had just applied. That is
+// the correct outcome, and it is the tolerable direction.
 func (s *Server) grantProfile(ctx context.Context, agent agents.Agent, prof privilege.Profile, by string) error {
+	unlock := s.lockProfile(prof.ID)
+	defer unlock()
 	applied := false
 	if s.ext.PrivilegeApply != nil && prof.Spec.HasRBAC() {
 		if err := s.ext.PrivilegeApply.ApplyGrant(ctx, agent.Name, agent.Namespace, prof); err != nil {
