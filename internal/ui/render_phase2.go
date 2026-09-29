@@ -43,14 +43,14 @@ func RenderNoteCard(w io.Writer, v TaskCardView) error {
 // in DETAIL shape (body, attachments, session thread, comments, comment form)
 // inside the app's chrome. The view is the SAME TaskCardView the board renders,
 // so there is exactly one card renderer and no forked view.
-func RenderTaskDetail(w io.Writer, v TaskCardView) error {
-	return TaskDetailPage(v).Render(w)
+func RenderTaskDetail(w io.Writer, v TaskCardView, feat Features) error {
+	return TaskDetailPage(v, feat).Render(w)
 }
 
 // RenderTaskNotFound writes the styled GET /tasks/{id} 404 document (sidebar,
 // one <h1>, an explanation and an unboosted link back to the board).
-func RenderTaskNotFound(w io.Writer, id string) error {
-	return TaskNotFoundPage(id).Render(w)
+func RenderTaskNotFound(w io.Writer, id string, feat Features) error {
+	return TaskNotFoundPage(id, feat).Render(w)
 }
 
 // RenderAgentsCards writes the /ui/agents partial (just the cards, morphed into
@@ -73,8 +73,8 @@ func RenderDispatchModalTask(w io.Writer, v TaskDispatchView) error {
 }
 
 // RenderAgentDetail writes the full agent detail page (logs + chat).
-func RenderAgentDetail(w io.Writer, v AgentDetailView) error {
-	return AgentDetailPage(v).Render(w)
+func RenderAgentDetail(w io.Writer, v AgentDetailView, feat Features) error {
+	return AgentDetailPage(v, feat).Render(w)
 }
 
 // RenderAgentChatLog writes the inner content of #chat-log (transcript bubbles +

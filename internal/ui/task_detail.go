@@ -40,7 +40,7 @@ import (
 // 🔴 /tasks/{id} is deliberately NOT in tabFromPath. That switch is exact-match
 // and only feeds handleIndex, which never serves this document — same as
 // /agents/{name} and /suggestions/{id}, neither of which is in it either.
-func TaskDetailPage(v TaskCardView) g.Node {
+func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 	v.Detail = true
 	heading := taskDetailHeading(v.Note)
 	return Doctype(
@@ -71,7 +71,7 @@ func TaskDetailPage(v TaskCardView) g.Node {
 				// 🔴 NOTHING ELSE GOES ON <body>. See the file comment: a boosted
 				// navigation swaps body.innerHTML and leaves body's own attributes
 				// behind on the arrived-at document. bodyAttrLedger pins this set.
-				sidebar("tasks", "tasks", false),
+				sidebar("tasks", "tasks", false, feat),
 				Div(
 					Class("lg:pl-72"),
 					// Liveness, exactly as the shell wires it: connect to /events on a
@@ -128,7 +128,7 @@ func TaskDetailPage(v TaskCardView) g.Node {
 				// Sidebar open/close + the combobox the edit/dispatch forms use.
 				// It defines window.toast, which resyncScript's listeners call — so it
 				// must be present, and it is fine for it to load after them.
-				appScript(),
+				appScript(feat),
 			),
 		),
 	)
