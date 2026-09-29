@@ -44,7 +44,7 @@ func storeSpecConfig() agentspec.Config {
 func supervisorRow() agents.Agent {
 	ag := fixtureAgent()
 	ag.Name = agents.ChiefName
-	ag.Namespace = agents.NamespaceFor(agents.ChiefName)
+	ag.Namespace = agents.NamespaceFor(agents.NamespacePrefix, agents.ChiefName)
 	return ag
 }
 

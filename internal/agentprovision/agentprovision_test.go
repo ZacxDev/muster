@@ -310,7 +310,7 @@ func fixtureAgent() agents.Agent {
 	return agents.Agent{
 		ID:          fixtureAgentID,
 		Name:        fixtureAgentName,
-		Namespace:   agents.NamespaceFor(fixtureAgentName),
+		Namespace:   agents.NamespaceFor(agents.NamespacePrefix, fixtureAgentName),
 		DisplayName: "#633 rewire the seam",
 		PendingNote: "read the plan and report what is missing",
 		Status:      agents.StatusProvisioning,
@@ -602,7 +602,7 @@ func TestDispatchCreatesTheInstanceAndMintsTheAgentsOwnToken(t *testing.T) {
 	// TestTheDriverReferenceIsTheAgentsNameNotItsNamespace instead.
 	if insts[0].Ref.Name != fixtureAgentName {
 		t.Errorf("instance Ref.Name = %q, want %q (the agent's slug, NOT its namespace %q)",
-			insts[0].Ref.Name, fixtureAgentName, agents.NamespaceFor(fixtureAgentName))
+			insts[0].Ref.Name, fixtureAgentName, agents.NamespaceFor(agents.NamespacePrefix, fixtureAgentName))
 	}
 	if insts[0].Ref.ID != fixtureAgentID {
 		t.Errorf("instance Ref.ID = %d, want %d", insts[0].Ref.ID, fixtureAgentID)

@@ -82,7 +82,7 @@ func newDispatchRecorder() *dispatchRecorder {
 	return &dispatchRecorder{agent: agents.Agent{
 		ID:          7712,
 		Name:        "wiring-kestrel",
-		Namespace:   agents.NamespaceFor("wiring-kestrel"),
+		Namespace:   agents.NamespaceFor(agents.NamespacePrefix, "wiring-kestrel"),
 		PendingNote: "read the plan and report what is missing",
 		Status:      agents.StatusProvisioning,
 	}}

@@ -167,6 +167,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	ext := api.Extensions{
 		TagAutoDispatch: cfg.TagAutoDispatch,
+		// 🔴 THE SAME FIELD THE DRIVER GETS, AND THAT IS THE WHOLE POINT.
+		// k8sDriverConfig hands cfg.AgentNamespacePrefix to the driver as
+		// k8s.Config.NamespacePrefix (where the instance goes); this hands the same
+		// field to the row-writing path (what agents.namespace records). They used
+		// to be a config field and a hardcoded constant, which disagreed in
+		// production and told nobody. api.Extensions.defects refuses to serve if
+		// this line is ever dropped, because an empty prefix beside a wired
+		// Provisioner reproduces that defect exactly.
+		AgentNamespacePrefix: cfg.AgentNamespacePrefix,
 		GitHubOAuth: api.GitHubOAuthConfig{
 			ClientID:     cfg.GitHubClientID,
 			ClientSecret: cfg.GitHubClientSecret,
