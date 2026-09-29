@@ -139,6 +139,54 @@ func TestACreateWithAKickoffIsREFUSEDWhenNothingCanDeliverIt(t *testing.T) {
 	}
 }
 
+// TestTheRemedyDoesNotPromiseADeliveryTheDispatchPathCannotMake pins the
+// operator-facing text as a WHOLE NORMALISED STRING.
+//
+// 🔴 A GUARD ON WORDS IS WALKABLE BY REWORDING, AND THIS ARTEFACT *IS* PROSE. The
+// specific regression it protects against is already on the record: an earlier
+// revision of KickoffRefusalReason ended "…and dispatch again", which promises a
+// delivery the next dispatch does not make — doc_seams.go entry 1 records that
+// nothing calls the gateway on the dispatch path, plus two blockers ahead of that
+// call site. An operator who followed that remedy would land in exactly the
+// stranded-note behaviour this refusal exists to prevent, with no reason to look
+// further. No word-level assertion catches the next paraphrase of that promise, so
+// the whole string is pinned instead.
+//
+// ⚠ THE COST IS DELIBERATE AND IS THE POINT: any edit to the text fails here,
+// including a cosmetic one. That is the price of a machine-readable claim about
+// prose. WHEN IT FAILS, DO NOT COPY THE NEW VALUE IN REFLEXIVELY — read the new text
+// against the two properties below first, then update the golden.
+//
+//	1. It must not tell the operator that setting the variable makes the next
+//	   dispatch deliver the note. It does not.
+//	2. It must name where a non-delivery still lands afterwards
+//	   (agents.kickoff_error), so the remedy leads somewhere rather than dead-ending.
+func TestTheRemedyDoesNotPromiseADeliveryTheDispatchPathCannotMake(t *testing.T) {
+	const golden = "dispatch REFUSED and NOTHING was provisioned: a kickoff cannot be delivered " +
+		"on this deployment, so beginning the work is impossible and creating the instance would " +
+		"only produce a pod that reads healthy and was never told what to do. CAUSE: " +
+		"MUSTER_AGENT_GATEWAY is unset (it resolves to `none`), so no api.Gateway is wired and " +
+		"nothing can hand the pending note to the instance's model gateway. REMEDY: set " +
+		"MUSTER_AGENT_GATEWAY=hooks-sha256 together with MUSTER_AGENT_GATEWAY_MODEL on this " +
+		"deployment — the capability IS in this build (internal/agentgateway); it is switched " +
+		"off, not missing. ⚠ THAT LIFTS THIS REFUSAL AND IS NOT YET THE WHOLE FIX: nothing " +
+		"calls the gateway on the dispatch path, so a kickoff on a gateway-configured deployment " +
+		"still creates the instance and records its non-delivery in agents.kickoff_error. " +
+		"Delivery additionally needs the call site named in cmd/muster-server/doc_seams.go entry " +
+		"1, which also lists the two blockers above it (no port on the rendered spec, and the " +
+		"token name the container reads). Meanwhile \"Save for later\" still works: it provisions " +
+		"nothing by design, and Start brings the agent up. See cmd/muster-server/doc_seams.go " +
+		"entry 1."
+
+	if KickoffRefusalReason != golden {
+		t.Errorf("the operator-facing refusal text changed.\n  got:  %q\n  want: %q\n"+
+			"    Re-read the new text against the two properties in this test's doc BEFORE "+
+			"updating the golden. The regression on the record is a remedy that promises the "+
+			"next dispatch will deliver the note; nothing calls the gateway on the dispatch "+
+			"path, so it will not.", KickoffRefusalReason, golden)
+	}
+}
+
 // TestAKickoffIsNOTRefusedWhenAGatewayIsConfigured IS THE POSITIVE CONTROL, and
 // without it every other test in this file is satisfied by a refusal that fires
 // unconditionally.

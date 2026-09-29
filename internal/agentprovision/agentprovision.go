@@ -159,11 +159,23 @@ var ErrKickoffUndeliverable = errors.New("agentprovision: kickoff undeliverable"
 // and files a bug against the agent.
 //
 // 🔴 IT SAYS THE CAPABILITY EXISTS, ON PURPOSE. internal/agentgateway is shipped
-// and live-verified; the ONLY reason a kickoff cannot be delivered here is that
-// MUSTER_AGENT_GATEWAY is unset, so it resolves to `none` and
-// cmd/muster-server/provisioner.go's buildGateway returns nil. A message that read
-// "this build cannot deliver a kickoff" — which is how the pre-refusal log line was
-// phrased — sends the reader to write code that is already written.
+// and live-verified; what makes THIS refusal fire is that MUSTER_AGENT_GATEWAY is
+// unset, so it resolves to `none` and cmd/muster-server/provisioner.go's
+// buildGateway returns nil. A message that read "this build cannot deliver a
+// kickoff" — which is how the pre-refusal log line was phrased — sends the reader to
+// write code that is already written.
+//
+// 🔴 BUT SETTING THE VARIABLE IS NOT THE WHOLE FIX, AND THE TEXT MUST NOT IMPLY IT
+// IS. An earlier revision of this constant ended "...and dispatch again", which
+// promises a delivery the next dispatch does not make: doc_seams.go entry 1 records
+// that NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH, plus two blockers ahead of
+// that call site (agentspec.Build renders no port, so the driver resolves no
+// address; and the bearer is derived from a variable name the provisioned container
+// does not receive). So the honest claim is narrow: setting the variable lifts THIS
+// refusal and returns the deployment to create-then-record. Promising more would
+// walk the operator from a refusal they can act on into the stranded-note behaviour
+// this refusal exists to prevent — and they would have no reason to look further.
+// Guarded by TestTheRemedyDoesNotPromiseADeliveryTheDispatchPathCannotMake.
 //
 // ⚠ THE ENVIRONMENT VARIABLE IS SPELLED AS A LITERAL HERE AND THE BINARY HAS ITS
 // OWN CONSTANT FOR IT. This package cannot import package main, so the two
@@ -193,10 +205,14 @@ const KickoffRefusalReason = "dispatch REFUSED and NOTHING was provisioned: a ki
 	"MUSTER_AGENT_GATEWAY is unset (it resolves to `none`), so no api.Gateway is wired and nothing " +
 	"can hand the pending note to the instance's model gateway. REMEDY: set " +
 	"MUSTER_AGENT_GATEWAY=hooks-sha256 together with MUSTER_AGENT_GATEWAY_MODEL on this " +
-	"deployment and dispatch again — the capability IS in this build (internal/agentgateway); it " +
-	"is switched off, not missing. Meanwhile \"Save for later\" still works: it provisions nothing " +
-	"by design, and Start brings the agent up once a gateway is configured. See " +
-	"cmd/muster-server/doc_seams.go entry 1."
+	"deployment — the capability IS in this build (internal/agentgateway); it is switched off, not " +
+	"missing. ⚠ THAT LIFTS THIS REFUSAL AND IS NOT YET THE WHOLE FIX: nothing calls the gateway " +
+	"on the dispatch path, so a kickoff on a gateway-configured deployment still creates the " +
+	"instance and records its non-delivery in agents.kickoff_error. Delivery additionally needs " +
+	"the call site named in cmd/muster-server/doc_seams.go entry 1, which also lists the two " +
+	"blockers above it (no port on the rendered spec, and the token name the container reads). " +
+	"Meanwhile \"Save for later\" still works: it provisions nothing by design, and Start brings " +
+	"the agent up. See cmd/muster-server/doc_seams.go entry 1."
 
 // Config is everything the adapter needs. Every field without a stated default
 // is required, and New says which one is missing rather than producing an
