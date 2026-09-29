@@ -324,15 +324,48 @@ func fixtureSpecConfig() agentspec.Config {
 	}
 }
 
-// newAdapter builds an adapter over a recording store and a wrapped Noop.
+// newAdapter builds an adapter over a recording store and a wrapped Noop, for a
+// process that HAS a gateway — i.e. one where a kickoff is deliverable.
+//
+// 🔴 THAT DEFAULT IS THE OPPOSITE POLARITY FROM Config's OWN ZERO VALUE, AND SAYING
+// SO IS THE POINT. Config.KickoffDeliverable defaults to false because production
+// must fail closed; this helper defaults to TRUE because every test written before
+// the refusal existed was written against the create-then-record path, and silently
+// re-pointing those assertions at a refusal would have changed what a dozen existing
+// guards claim without anyone choosing to. They still assert exactly what they
+// always did, and they now collectively double as a broad control that the refusal
+// does NOT fire when a gateway is configured.
+//
+// ⚠ SO A NEW Dispatch TEST GETS THE DELIVERABLE PATH UNLESS IT ASKS OTHERWISE. Use
+// newAdapterWithNoKickoffDelivery for the no-gateway deployment; it is named rather
+// than expressed as a bool at 20 call sites for exactly that reason.
 func newAdapter(t *testing.T, tune func(*recordingStore, *flakyDriver)) (*Adapter, *recordingStore, *flakyDriver) {
+	t.Helper()
+	return newAdapterFor(t, true, tune)
+}
+
+// newAdapterWithNoKickoffDelivery builds an adapter for THE DEPLOYED CONFIGURATION
+// THIS REFUSAL EXISTS FOR: a provisioner wired, MUSTER_AGENT_GATEWAY unset, so
+// buildGateway returns nil and nothing in the process can hand a note to a model
+// gateway.
+func newAdapterWithNoKickoffDelivery(t *testing.T, tune func(*recordingStore, *flakyDriver)) (*Adapter, *recordingStore, *flakyDriver) {
+	t.Helper()
+	return newAdapterFor(t, false, tune)
+}
+
+func newAdapterFor(t *testing.T, kickoffDeliverable bool, tune func(*recordingStore, *flakyDriver)) (*Adapter, *recordingStore, *flakyDriver) {
 	t.Helper()
 	store := &recordingStore{agent: fixtureAgent()}
 	driver := &flakyDriver{Noop: provision.MustNewNoop(), rec: store}
 	if tune != nil {
 		tune(store, driver)
 	}
-	a, err := New(Config{Driver: driver, Store: store, Spec: fixtureSpecConfig()})
+	a, err := New(Config{
+		Driver:             driver,
+		Store:              store,
+		Spec:               fixtureSpecConfig(),
+		KickoffDeliverable: kickoffDeliverable,
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

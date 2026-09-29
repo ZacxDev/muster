@@ -389,6 +389,18 @@ type Provisioner interface {
 	//
 	// An implementer that provisions on kickoff=false, or that reports a delivery
 	// it did not make, is wrong against this interface — not merely different.
+	//
+	// 🔴 REFUSING A KICKOFF IT CANNOT DELIVER IS ALSO LEGAL, AND IS WHAT
+	// internal/agentprovision NOW DOES when its process has no Gateway: it creates
+	// nothing and returns an error (agentprovision.ErrKickoffUndeliverable). The
+	// paragraph above describes the CREATE-THEN-RECORD path, which is now the
+	// gateway-configured one only. Both are honest; what this interface forbids is
+	// the third option, doing the expensive half and reporting success.
+	// ⚠ THE CALLER OF THIS METHOD IN THIS PACKAGE CANNOT SURFACE THAT REFUSAL.
+	// createAndDispatchAgent calls it inside safeGo, after the row exists, so the
+	// error is logged and the POST has already answered. A refusal an operator can
+	// see needs a synchronous check in the create handler, before the row —
+	// cmd/muster-server/doc_seams.go entry 1 carries the closing condition.
 	Dispatch(agentID int64, kickoff bool) error
 	// Start brings a stopped or never-provisioned agent up, creating its instance
 	// when the driver reports the backend does not have one.
