@@ -5,8 +5,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	g "maragu.dev/gomponents"
 )
 
 // TestNoInlineScriptCallsAnUndefinedFunction is the regression guard for a defect
@@ -43,35 +41,42 @@ import (
 // name it reports is genuinely called and genuinely not defined in the script. A
 // false positive is therefore a signal to add a real global to jsKnownGlobals,
 // never to loosen the scan.
+// ⚠ IT SWEEPS BOTH ui.Features SHAPES, AND THAT IS NOT BOILERPLATE. Features
+// decides whether the Repos tab, its panel and its entries in the browser's tab
+// registry are drawn at all, and appScript's own TABS/HEADINGS/PANEL_SELECTOR are
+// generated FROM it (navRegistryJS). Scanning only the zero value — the shipping
+// default, and the one that draws LESS — would make a dead call reachable only on
+// a GitHub-enabled deployment structurally invisible to this guard, which is the
+// same "the config pinned a dimension" blindness the defect class above is made
+// of. See forEachFeatureShape.
 func TestNoInlineScriptCallsAnUndefinedFunction(t *testing.T) {
-	// Every document this package serves, so a script is covered wherever it is
-	// mounted rather than only in the one view a test remembered.
-	docs := map[string]g.Node{
-		"shell /tasks":   Page("tasks"),
-		"shell /agents":  Page("agents"),
-		"agent detail":   AgentDetailPage(AgentDetailView{Name: "demo", ID: 1}),
-		"task not found": TaskNotFoundPage("42"),
-	}
-	names := make([]string, 0, len(docs))
-	for name := range docs {
-		names = append(names, name)
-	}
-	sort.Strings(names)
+	total, scanned := 0, 0
+	forEachFeatureShape(t, func(t *testing.T, shape string, feat Features) {
+		// Every document this package serves, so a script is covered wherever it is
+		// mounted rather than only in the one view a test remembered.
+		docs := shellDocuments(t, feat)
+		names := make([]string, 0, len(docs))
+		for name := range docs {
+			names = append(names, name)
+		}
+		sort.Strings(names)
 
-	total := 0
-	for _, name := range names {
-		for i, body := range inlineScriptBodies(t, renderString(t, docs[name])) {
-			src := mustStripJSComments(t, body)
-			for _, call := range undefinedCalls(src, jsDefinedNames(src)) {
-				total++
-				t.Errorf("%s, inline script #%d: calls %s(), which nothing in that script defines — "+
-					"in a browser this is a ReferenceError that unwinds the rest of the handler. "+
-					"Either the function was deleted with the surface it belonged to (delete the "+
-					"call), or it is a real browser global (add it to jsKnownGlobals).", name, i, call)
+		for _, name := range names {
+			scanned++
+			for i, body := range inlineScriptBodies(t, docs[name]) {
+				src := mustStripJSComments(t, body)
+				for _, call := range undefinedCalls(src, jsDefinedNames(src)) {
+					total++
+					t.Errorf("%s, %s, inline script #%d: calls %s(), which nothing in that script "+
+						"defines — in a browser this is a ReferenceError that unwinds the rest of the "+
+						"handler. Either the function was deleted with the surface it belonged to "+
+						"(delete the call), or it is a real browser global (add it to jsKnownGlobals).",
+						shape, name, i, call)
+				}
 			}
 		}
-	}
-	t.Logf("scanned %d documents, %d undefined call sites", len(docs), total)
+	})
+	t.Logf("scanned %d rendered documents, %d undefined call sites", scanned, total)
 }
 
 // TestUndefinedCallScannerIsAWorkingInstrument is the pair of controls for the

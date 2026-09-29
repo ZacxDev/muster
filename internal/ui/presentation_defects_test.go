@@ -44,39 +44,33 @@ import (
 // It sweeps EVERY class attribute of EVERY document rather than the one element
 // that was wrong, because the next instance of this will be a different element.
 func TestTheSidebarOffsetAndTheWidthCapAreNeverOnOneElement(t *testing.T) {
-	docs := map[string]string{
-		"shell /tasks": renderString(t, Page("tasks")),
-		"agent detail": renderString(t, AgentDetailPage(AgentDetailView{Name: "demo", ID: 1})),
-		"task detail":  renderString(t, TaskNotFoundPage("42")),
-	}
-	names := make([]string, 0, len(docs))
-	for n := range docs {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-
 	checked := 0
-	for _, name := range names {
-		for _, cls := range classAttrs(docs[name]) {
-			if !hasClass(cls, "lg:pl-72") {
-				continue
-			}
-			checked++
-			for _, c := range strings.Fields(cls) {
-				if strings.Contains(c, "max-w-") {
-					t.Errorf("%s: one element carries BOTH the sidebar offset lg:pl-72 and the width "+
-						"cap %s — the 288px offset is subtracted from the cap, not added outside it, "+
-						"so the content column collapses. Put the offset on an outer column and the "+
-						"width on the element inside it (contentWidth()). class=%q", name, c, cls)
+	docs := 0
+	forEachFeatureShape(t, func(t *testing.T, shape string, feat Features) {
+		for name, doc := range shellDocuments(t, feat) {
+			docs++
+			for _, cls := range classAttrs(doc) {
+				if !hasClass(cls, "lg:pl-72") {
+					continue
+				}
+				checked++
+				for _, c := range strings.Fields(cls) {
+					if strings.Contains(c, "max-w-") {
+						t.Errorf("%s, %s: one element carries BOTH the sidebar offset lg:pl-72 and the "+
+							"width cap %s — the 288px offset is subtracted from the cap, not added "+
+							"outside it, so the content column collapses. Put the offset on an outer "+
+							"column and the width on the element inside it (contentWidth()). class=%q",
+							shape, name, c, cls)
+					}
 				}
 			}
 		}
-	}
+	})
 	if checked == 0 {
 		t.Fatal("no element carried lg:pl-72 in any document — this guard measured nothing. " +
 			"Either the sidebar offset was renamed (update the guard) or the sweep is broken.")
 	}
-	t.Logf("checked %d lg:pl-72 elements across %d documents", checked, len(docs))
+	t.Logf("checked %d lg:pl-72 elements across %d rendered documents", checked, docs)
 }
 
 // TestTheAgentDetailPageSizesItselfWithTheSharedMeasure pins the other half: the
@@ -84,18 +78,20 @@ func TestTheSidebarOffsetAndTheWidthCapAreNeverOnOneElement(t *testing.T) {
 // row and its chat column. A page that re-spells a ladder of its own is a page
 // that drifts away from the shell again — which is how this defect happened.
 func TestTheAgentDetailPageSizesItselfWithTheSharedMeasure(t *testing.T) {
-	doc := renderString(t, AgentDetailPage(AgentDetailView{Name: "demo", ID: 1}))
-	n := 0
-	for _, cls := range classAttrs(doc) {
-		if strings.HasPrefix(cls, contentWidth()) {
-			n++
+	forEachFeatureShape(t, func(t *testing.T, shape string, feat Features) {
+		doc := renderString(t, AgentDetailPage(AgentDetailView{Name: "demo", ID: 1}, feat))
+		n := 0
+		for _, cls := range classAttrs(doc) {
+			if strings.HasPrefix(cls, contentWidth()) {
+				n++
+			}
 		}
-	}
-	if n < 2 {
-		t.Errorf("the agent detail document uses contentWidth() on %d elements, want at least 2 "+
-			"(the sticky header row and the chat column). The two must come from the SAME helper "+
-			"or the brand and the transcript sit at different left edges.", n)
-	}
+		if n < 2 {
+			t.Errorf("%s: the agent detail document uses contentWidth() on %d elements, want at "+
+				"least 2 (the sticky header row and the chat column). The two must come from the "+
+				"SAME helper or the brand and the transcript sit at different left edges.", shape, n)
+		}
+	})
 }
 
 // --- Defect 2: thematic breaks ------------------------------------------------
@@ -422,21 +418,41 @@ func TestBothSurfacesRenderAnAgentNameTheSameWay(t *testing.T) {
 	// <span> element itself.
 	cardTitle := textOf(spanContaining(card, "text-base font-semibold leading-tight"))
 
-	detail := renderString(t, AgentDetailPage(AgentDetailView{Name: "agent-1", DisplayName: name, ID: 1}))
-	detailTitle := textOf(between(detail, "<h1", "</h1>"))
+	// ⚠ BOTH Features SHAPES, AND THE REASON IS THE EXTRACTION RATHER THAN THE
+	// ASSERTION. between() takes the FIRST <h1>, and the sidebar — whose contents
+	// DO vary with Features — is rendered before the header on this document.
+	// Today AgentDetailPage has exactly one <h1> (the title) under either shape,
+	// so the extraction is unambiguous; rendering both is what keeps that true if
+	// a heading is ever added to the sidebar, instead of silently comparing the
+	// wrong element under one of them.
+	forEachFeatureShape(t, func(t *testing.T, shape string, feat Features) {
+		// 🔴 documentSource, NOT renderString. Every document embeds appScript,
+		// whose COMMENTS quote the markup they are about — including a literal
+		// `<h1 id="page-heading">`. Counting `<h1` over the raw render therefore
+		// reads prose as markup and reports two headings on a document that has
+		// one; measured here, and it is the same trap helpers_test.go records
+		// documentSource as existing for. Stripping script comments first makes
+		// both the count and the extraction claims about MARKUP.
+		detail := documentSource(t, AgentDetailPage(AgentDetailView{Name: "agent-1", DisplayName: name, ID: 1}, feat))
+		if n := strings.Count(detail, "<h1"); n != 1 {
+			t.Fatalf("%s: the agent detail document has %d <h1> elements — this test extracts the "+
+				"FIRST one and can no longer claim it is the title", shape, n)
+		}
+		detailTitle := textOf(between(detail, "<h1", "</h1>"))
 
-	if cardTitle != detailTitle {
-		t.Errorf("the list and the detail page render one name two ways:\n  card:   %q\n  detail: %q",
-			cardTitle, detailTitle)
-	}
-	for surface, got := range map[string]string{"card": cardTitle, "detail": detailTitle} {
-		if got != want {
-			t.Errorf("%s title = %q, want %q", surface, got, want)
+		if cardTitle != detailTitle {
+			t.Errorf("%s: the list and the detail page render one name two ways:\n  card:   %q\n  detail: %q",
+				shape, cardTitle, detailTitle)
 		}
-		if strings.ContainsAny(got, "*`_#") {
-			t.Errorf("%s title still carries raw markdown markers: %q", surface, got)
+		for surface, got := range map[string]string{"card": cardTitle, "detail": detailTitle} {
+			if got != want {
+				t.Errorf("%s, %s title = %q, want %q", shape, surface, got, want)
+			}
+			if strings.ContainsAny(got, "*`_#") {
+				t.Errorf("%s, %s title still carries raw markdown markers: %q", shape, surface, got)
+			}
 		}
-	}
+	})
 }
 
 // TestAnAgentNameCannotEmitMarkupOnEitherSurface. The name is agent-authored
@@ -455,17 +471,22 @@ func TestAnAgentNameCannotEmitMarkupOnEitherSurface(t *testing.T) {
 
 	card := renderString(t, agentCard(AgentCardView{ID: 1, Name: "agent-1", DisplayName: name, Status: "running"}))
 	cardTitle := spanContaining(card, "text-base font-semibold leading-tight")
-	detail := renderString(t, AgentDetailPage(AgentDetailView{Name: "agent-1", DisplayName: name, ID: 1}))
-	detailTitle := between(detail, "<h1", "</h1>")
 
-	for surface, frag := range map[string]string{"card": cardTitle, "detail": detailTitle} {
-		if strings.Contains(frag, "<img") {
-			t.Errorf("%s title emitted a raw tag:\n%s", surface, frag)
+	forEachFeatureShape(t, func(t *testing.T, shape string, feat Features) {
+		// documentSource for the same reason as the test above: appScript's
+		// comments quote markup, and this assertion is about markup.
+		detail := documentSource(t, AgentDetailPage(AgentDetailView{Name: "agent-1", DisplayName: name, ID: 1}, feat))
+		detailTitle := between(detail, "<h1", "</h1>")
+
+		for surface, frag := range map[string]string{"card": cardTitle, "detail": detailTitle} {
+			if strings.Contains(frag, "<img") {
+				t.Errorf("%s, %s title emitted a raw tag:\n%s", shape, surface, frag)
+			}
+			if strings.Contains(frag, "<a ") || strings.Contains(frag, "<a href") {
+				t.Errorf("%s, %s title emitted an anchor:\n%s", shape, surface, frag)
+			}
 		}
-		if strings.Contains(frag, "<a ") || strings.Contains(frag, "<a href") {
-			t.Errorf("%s title emitted an anchor:\n%s", surface, frag)
-		}
-	}
+	})
 }
 
 // --- Defect 10: the duplicated registries -------------------------------------
@@ -481,16 +502,60 @@ func TestAnAgentNameCannotEmitMarkupOnEitherSurface(t *testing.T) {
 // write landed and the screen never changed, which reads as "the button does
 // nothing". The actions now target `closest section`, a relationship a second
 // mount cannot capture.
+//
+// 🔴 "AT MOST ONCE" IS SATISFIED BY ZERO, AND THAT IS WHY THIS RUNS UNDER BOTH
+// Features SHAPES *AND* CARRIES A POSITIVE CONTROL. `/ui/repos` is mounted only
+// when the GitHub store was built; under the shipping default the count is 0, so
+// the `n > 1` test cannot fire for it and the row passes without observing
+// anything. A zero and a one are indistinguishable to that assertion — so the
+// control below demands the count actually MOVE to 1 on the shape that draws the
+// panel, which is what makes the zero on the other shape a fact rather than a
+// silence.
 func TestEachLazyRegistryIsMountedExactlyOnce(t *testing.T) {
-	for _, tab := range []string{"tasks", "agents", "runbooks", "privileges"} {
-		doc := renderString(t, Page(tab))
-		for _, partial := range []string{"/ui/runbooks", "/ui/privileges", "/ui/repos", "/ui/agents", "/ui/tasks"} {
-			if n := strings.Count(doc, `hx-get="`+partial+`"`); n > 1 {
-				t.Errorf("Page(%q) mounts %s %d times — two live mounts of one list fetch it twice "+
-					"and, worse, split the id their in-list buttons target", tab, partial, n)
+	// Mounted on every shell regardless of Features.
+	always := []string{"/ui/runbooks", "/ui/privileges", "/ui/agents", "/ui/tasks"}
+	// Mounted only when its subsystem was built — the pair is (partial, the
+	// Features predicate that draws it).
+	gated := map[string]func(Features) bool{
+		"/ui/repos": func(f Features) bool { return f.GitHub },
+	}
+
+	forEachFeatureShape(t, func(t *testing.T, shape string, feat Features) {
+		for _, tab := range visibleTabs(feat) {
+			doc := renderString(t, Page(tab.Key, feat))
+
+			for _, partial := range always {
+				n := strings.Count(doc, `hx-get="`+partial+`"`)
+				if n > 1 {
+					t.Errorf("%s, Page(%q) mounts %s %d times — two live mounts of one list fetch it "+
+						"twice and, worse, split the id their in-list buttons target", shape, tab.Key, partial, n)
+				}
+				if n == 0 {
+					t.Errorf("%s, Page(%q) does not mount %s at all — this guard would then pass "+
+						"without observing anything. Either the mount moved (update `always`) or it "+
+						"was lost.", shape, tab.Key, partial)
+				}
+			}
+
+			for partial, drawn := range gated {
+				n := strings.Count(doc, `hx-get="`+partial+`"`)
+				switch {
+				case n > 1:
+					t.Errorf("%s, Page(%q) mounts %s %d times", shape, tab.Key, partial, n)
+				case drawn(feat) && n != 1:
+					// POSITIVE CONTROL: on the shape that DOES draw it, the count must
+					// be exactly 1. Without this the zero above proves nothing.
+					t.Errorf("%s, Page(%q) mounts %s %d times, want exactly 1 — this shape builds "+
+						"the subsystem, so a 0 here means the guard's other shape is comparing "+
+						"against a panel that is never drawn at all", shape, tab.Key, partial, n)
+				case !drawn(feat) && n != 0:
+					t.Errorf("%s, Page(%q) mounts %s %d times, want 0 — this shape did not build "+
+						"the subsystem, so the panel must not be drawn over nothing",
+						shape, tab.Key, partial, n)
+				}
 			}
 		}
-	}
+	})
 }
 
 // TestInListActionsTargetTheListTheyAreIn pins the fix's mechanism rather than
@@ -577,6 +642,61 @@ func TestTheEmptyStateCountsRenderedBubblesNotRows(t *testing.T) {
 }
 
 // --- helpers ------------------------------------------------------------------
+
+// forEachFeatureShape runs fn once per ui.Features shape a document can be
+// rendered with.
+//
+// 🔴 A SUITE WHOSE FIXTURE PINS A DIMENSION IS STRUCTURALLY BLIND TO THAT
+// DIMENSION'S BUGS, AND Features IS SUCH A DIMENSION. It decides whether the
+// Repos tab, its panel and its entries in the browser's tab registry are DRAWN AT
+// ALL (see features.go). Every guard below that sweeps a document — for a class
+// pair, for an undefined call, for a duplicated mount — would therefore be
+// looking at a different, smaller document under the zero value, and any defect
+// living only in the repos surface would pass vacuously.
+//
+// 🔴 AND THE ZERO VALUE IS THE ONE THAT DRAWS LESS, WHICH IS THE DANGEROUS
+// DIRECTION FOR A SWEEP. `Features{}` is the shipping default (the GitHub store
+// is built only when an encryption key is set), so the value a test reaches for
+// by reflex is exactly the one that hides the surface. Picking it and moving on
+// is how a green tick comes to mean "I asserted about a document that no longer
+// contains the thing".
+//
+// Both shapes, named, every time. A guard that genuinely cannot vary with
+// Features costs one extra render to say so.
+func forEachFeatureShape(t *testing.T, fn func(t *testing.T, shape string, feat Features)) {
+	t.Helper()
+	for _, tc := range []struct {
+		shape string
+		feat  Features
+	}{
+		// Named by what they DRAW, not by the field, so a second feature added to
+		// the struct does not make these names lie.
+		{"no GitHub store (the shipping default)", Features{}},
+		{"GitHub store built", Features{GitHub: true}},
+	} {
+		tc := tc
+		t.Run(tc.shape, func(t *testing.T) { fn(t, tc.shape, tc.feat) })
+	}
+}
+
+// shellDocuments renders every document shape this package serves, under one
+// Features value. Keyed by a human name so a failure says which document.
+//
+// ⚠ THE TAB LOOP GOES THROUGH visibleTabs, NOT musterTabs. Page() clamps an
+// invisible tab to the default (normalizeVisibleTab), so asking for "repos" with
+// no GitHub store silently renders the TASKS shell — two entries of the same
+// document under different names, and a guard that thought it had covered the
+// repos shell when it had not.
+func shellDocuments(t *testing.T, feat Features) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, tab := range visibleTabs(feat) {
+		out["shell /"+tab.Key] = renderString(t, Page(tab.Key, feat))
+	}
+	out["agent detail"] = renderString(t, AgentDetailPage(AgentDetailView{Name: "demo", ID: 1}, feat))
+	out["task not found"] = renderString(t, TaskNotFoundPage("42", feat))
+	return out
+}
 
 var (
 	classAttrRe = regexp.MustCompile(`class="([^"]*)"`)
