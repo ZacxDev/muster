@@ -119,6 +119,14 @@ type Server struct {
 
 	ext Extensions
 
+	// --- privilege write serialisation ---
+	// profileLocks serialises the privilege write paths that touch one profile,
+	// which is what closes the grant-between-the-list-and-the-delete window.
+	// Owned by privilege.go; see lockProfile there for the whole argument,
+	// including why an IN-PROCESS lock is the right scope for this deployment.
+	profileLocksMu sync.Mutex
+	profileLocks   map[int64]*profileLock
+
 	// --- agent activity bookkeeping ---
 	activeAgentsMu  sync.Mutex
 	activeAgents    map[string]agentPhase
