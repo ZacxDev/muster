@@ -18,10 +18,18 @@ package taskstatus
 // live on a 525-task board: `open 215 · complete 163 · ready_for_review 106 ·
 // in_progress 41`, and clicking "In progress" loaded 30 ready_for_review cards
 // beside 20 in_progress ones. So a card the per-card <select> labelled "Ready
-// for review" matched NO chip of that name, could not be isolated by any chip,
-// and 20% of the board was unreachable by the filter — while the chip row
-// silently claimed to cover it. The lane vocabulary and the status vocabulary
-// were two enumerations of one thing, and they had drifted.
+// for review" matched NO chip of that name and could not be ISOLATED by any
+// chip — 20% of the board, 106 of 525 tasks, with no filter that selects it and
+// nothing that selects the other 41 in_progress tasks without it either.
+//
+// ⚠ NOT "UNREACHABLE", AND THE DIFFERENCE IS THE WHOLE CLAIM. An earlier wording
+// here said those tasks were unreachable by the filter; they were not. The old
+// `in_progress` lane COVERED ready_for_review, so the cards did load — they
+// loaded under a chip whose label named a different state. The defect is that no
+// chip selects that state, and that one chip silently returns two; a reader who
+// believes "unreachable" will look for missing rows, find them present, and
+// conclude the defect is already closed. The lane vocabulary and the status
+// vocabulary were two enumerations of one thing, and they had drifted.
 //
 // Deriving lanes from All() makes that unrepresentable rather than merely
 // tested: a fifth status is a fifth chip the day it is added, LaneStatuses

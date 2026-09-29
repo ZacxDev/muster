@@ -80,7 +80,7 @@ func TestLaneStatusesReturnsACopy(t *testing.T) {
 	}
 }
 
-// TestTheLaneVOCABULARYISTheStatusVOCABULARY is the regression guard for the
+// TestTheLaneVocabularyIsTheStatusVocabulary is the regression guard for the
 // measured defect: the filter chips and the per-card status <select> were two
 // enumerations of one thing and had drifted.
 //
@@ -90,9 +90,21 @@ func TestLaneStatusesReturnsACopy(t *testing.T) {
 // the bug. Comparing the two SETS is the only form that cannot drift.
 //
 // What it refuses, concretely: a lane covering more than one status (that is how
-// ready_for_review became unreachable — folded under "In progress", where 30 of
-// the 50 loaded cards carried a status no chip named), and a status with no lane
-// of its own.
+// ready_for_review stopped being ISOLABLE — folded under "In progress", where 30
+// of the 50 loaded cards carried a status no chip named; they were not missing,
+// they were mislabelled), and a status with no lane of its own.
+//
+// ⚠ IT IS A STRUCTURAL GUARD, AND UNDER THE CURRENT IMPLEMENTATION IT IS
+// TRIVIALLY SATISFIED. Say it plainly rather than let the docstring above imply
+// more: `Lanes()` now RETURNS `All()`, so this comparison cannot fail while that
+// line stands, and the only way to red it is to edit the implementation back
+// toward a curated table. That is exactly the regression it names, and it was
+// measured both ways — RED at 8700b02 and at main+#18 (Lanes() was a 3-entry
+// table there), and RED again under a mutation reintroducing that table
+// (`Lanes()` returning {Open, InProgress, Complete} plus an in_progress lane
+// covering two statuses) with this test's own message. But a reader deciding
+// whether this file still needs its own layer should weigh it as a shape guard,
+// not as behavioural coverage.
 func TestTheLaneVocabularyIsTheStatusVocabulary(t *testing.T) {
 	lanes, statuses := Lanes(), All()
 	if len(lanes) != len(statuses) {
