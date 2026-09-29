@@ -435,13 +435,27 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.AgentGateway == "" {
 		c.AgentGateway = gatewayNone
 	}
-	if c.AgentNamespacePrefix == "" {
-		// 🔴 THE DEFAULT IS THE STORE'S OWN CONSTANT, NOT A COPY OF ITS VALUE.
-		// api writes agents.NamespaceFor(name) into the row; this is the other
-		// side of that pair, and a second literal here is how the two drift into
-		// a namespace the card names and nothing exists in.
-		c.AgentNamespacePrefix = agents.NamespacePrefix
-	}
+	// 🔴 RESOLVED ONCE, HERE, AND HANDED TO BOTH SIDES OF THE NAMESPACE PAIR.
+	// This field is the ONLY source for two consumers that must not disagree:
+	// k8sDriverConfig gives it to the driver as k8s.Config.NamespacePrefix
+	// (where the instance goes), and newApp gives it to
+	// api.Extensions.AgentNamespacePrefix (what the row records). One field, two
+	// readers — so a `config` built anywhere, including every struct-literal test
+	// fixture in this package, feeds them the same value and cannot configure one
+	// without the other.
+	//
+	// The defect this closes was measured live on a deployment that sets
+	// MUSTER_AGENT_NAMESPACE_PREFIX=muster-agent-: the row-writing path used
+	// agents.NamespacePrefix ("devpod-") instead of this field, so a freshly
+	// provisioned agent's row said `devpod-<name>` while the driver had created
+	// `muster-agent-<name>` — a card pointing at an empty namespace, which reads
+	// as "never provisioned".
+	//
+	// ⚠ agents.ResolveNamespacePrefix IS THE DEFAULTING SITE, NOT AN `== ""`
+	// BRANCH HERE. api.Extensions.AgentNamespace defaults too (its fixtures do not
+	// set the field), and two defaulting expressions is how one of them comes to
+	// hold a different literal.
+	c.AgentNamespacePrefix = agents.ResolveNamespacePrefix(c.AgentNamespacePrefix)
 
 	if v := strings.TrimSpace(getenv(envPort)); v != "" {
 		p, err := strconv.Atoi(v)

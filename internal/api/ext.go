@@ -41,6 +41,29 @@ type Extensions struct {
 	Privilege privilege.Store
 	Runbooks  runbooks.Store
 
+	// AgentNamespacePrefix is the prefix [Extensions.AgentNamespace] builds a new
+	// agent's stored namespace from. It is the DEPLOYMENT's prefix — the same
+	// MUSTER_AGENT_NAMESPACE_PREFIX the provisioning driver is configured with —
+	// and NOT a default this package chooses.
+	//
+	// 🔴 IT IS HERE BECAUSE A HARDCODED CONSTANT WAS SHIPPED IN ITS PLACE AND
+	// DISAGREED WITH THE DRIVER, SILENTLY. The row-writing handler used
+	// agents.NamespaceFor(name) over agents.NamespacePrefix ("devpod-") while the
+	// driver created `muster-agent-<name>`. Nothing fails when those differ: the
+	// value is recorded, served on GET /api/agents and labelled onto the
+	// instance's objects, and NOTHING places anything with it — so a card names a
+	// namespace that holds nothing and reads as "never provisioned" while the
+	// instance runs one namespace over. Measured live.
+	//
+	// 🔴 EMPTY IS NOT A SUPPORTED PRODUCTION STATE WHEN AGENTS CAN BE CREATED, and
+	// defects() says so rather than this comment: an unset prefix beside a wired
+	// Agents store and Provisioner means the wiring was FORGOTTEN, and the
+	// consequence is the defect above rather than a missing feature. It resolves
+	// to agents.NamespacePrefix so a test fixture need not set it, which is
+	// exactly why the omission has to be caught somewhere that is not a reader's
+	// attention.
+	AgentNamespacePrefix string
+
 	// SessionLiveness answers "does a transcript record for this session still
 	// exist" — the one bit SessionLink.DetailAvailable is made of.
 	//
@@ -238,7 +261,65 @@ func (e Extensions) defects() []string {
 			"the moment its own argument dies, and provisioner.go prerequisite 2 for why "+
 			"unsetting the apply variable again is an outage rather than a rollback.")
 	}
+
+	// 🔴 THIRD ENTRY: A FORGOTTEN NAMESPACE PREFIX IS THE "LIES SILENTLY" SHAPE IN
+	// ITS PUREST FORM, AND IT IS THE DEFECT THIS ENTRY WAS ADDED FOR. Every agent
+	// row this server writes records AgentNamespacePrefix+name. Nothing places
+	// anything with that value — it is recorded, served on GET /api/agents and
+	// labelled onto the instance's objects — so a prefix that does not match the
+	// driver's produces rows naming namespaces that hold nothing, with no failing
+	// request, nothing logged, and nothing for an operator to notice. That is
+	// exactly what shipped: `devpod-lively-newt` on the row, `muster-agent-lively-newt`
+	// in the cluster.
+	//
+	// 🔴 IT IS A DEFECT RATHER THAN A DEFAULT *BECAUSE* THE DEFAULT EXISTS.
+	// AgentNamespace resolves an empty prefix to agents.NamespacePrefix, which is
+	// what keeps ~20 struct-literal test fixtures from having to set it — and is
+	// therefore precisely what would let a production wiring omit it and look
+	// fine. The binary always resolves a non-empty prefix
+	// (agents.ResolveNamespacePrefix, from cmd/muster-server's config load), so
+	// empty HERE, with agents creatable, can only mean the wiring was dropped.
+	//
+	// ⚠ IT IS GATED ON Provisioner AS WELL AS Agents ON PURPOSE. With no
+	// provisioner there is no driver to disagree with and no route that can create
+	// an agent (all three callers of createAndDispatchAgent sit behind
+	// requireLifecycleProvisioner), so the value is inert and refusing to serve
+	// over it would be the "configuration, not a page that states a falsehood"
+	// case this function's header rules out.
+	if e.Agents != nil && e.Provisioner != nil && e.AgentNamespacePrefix == "" {
+		out = append(out, "Agents and Provisioner are wired but AgentNamespacePrefix is empty: "+
+			"every agent row created here would record agents.NamespacePrefix+name while the "+
+			"provisioning driver places the instance under the prefix IT was configured with "+
+			"(MUSTER_AGENT_NAMESPACE_PREFIX). Nothing fails when those disagree — the value is "+
+			"recorded, served on GET /api/agents and labelled onto the instance's objects, and "+
+			"nothing places anything with it — so `kubectl -n <what the row says>` returns "+
+			"nothing and reads as \"never provisioned\" while the instance runs one namespace "+
+			"over. That is a shipped defect, not a hypothetical. Set it from the same config "+
+			"value the driver gets: cmd/muster-server passes cfg.AgentNamespacePrefix, which "+
+			"agents.ResolveNamespacePrefix has already defaulted.")
+	}
 	return out
+}
+
+// AgentNamespace is the ONE expression that turns an agent's slug name into the
+// namespace its row records.
+//
+// 🔴 IT IS A METHOD ON Extensions, NOT A PACKAGE FUNCTION, SO IT CANNOT BE CALLED
+// WITHOUT THE DEPLOYMENT'S PREFIX IN HAND. The defect it replaces was a
+// zero-argument call — agents.NamespaceFor(name) — that captured a package
+// constant while the driver used the configured prefix; every line of the caller
+// looked correct. Reaching this value now requires holding the wiring that
+// carries the prefix, and defects() refuses to serve when that wiring is empty
+// beside a creatable agent.
+//
+// ⚠ IT IS EXPORTED FOR THE GUARD AS WELL AS THE HANDLER.
+// TestTheStoredNamespacePrefixIsWhatTheDriverIsConfiguredWith calls it from
+// cmd/muster-server and compares the result against the namespace the real
+// driver is OBSERVED to create — which is only a claim about the production path
+// if the guard and the handler evaluate the same expression, rather than two
+// copies of it.
+func (e Extensions) AgentNamespace(name string) string {
+	return agents.NamespaceFor(e.AgentNamespacePrefix, name)
 }
 
 // ProvisionerUnwiredField is the JSON key both provisioner wrappers set to `true` on

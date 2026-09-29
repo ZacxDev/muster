@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
 	"log"
+	"os"
 	"strings"
 	"testing"
 
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/api"
 	k8sdriver "github.com/ZacxDev/muster/internal/provision/k8s"
+	"github.com/ZacxDev/muster/internal/provision/provisiontest"
 )
 
 // stubStore is an agents.Store that exists only to be non-nil.
@@ -174,65 +178,182 @@ func TestTheNoopProvisionerWiresAnAdapterAndNoneWiresNothing(t *testing.T) {
 //
 // 🔴 IT PINS A RELATIONSHIP BETWEEN TWO SUBSYSTEMS THAT NEVER TALK, AND A
 // DISAGREEMENT BETWEEN THEM IS SILENT. The HTTP handler writes
-// agents.NamespaceFor(name) into the row; the driver's own NamespacePrefix decides
-// where the instance really goes. Nothing fails if they differ — the card renders
-// a namespace that holds nothing, so `kubectl -n <what the card says>` returns
-// nothing and reads as "this agent was never provisioned" while the pod runs one
+// api.Extensions.AgentNamespace(name) into the row; the driver decides where the
+// instance really goes. Nothing fails if they differ — the value is recorded,
+// served on GET /api/agents and labelled onto the instance's objects, and nothing
+// places anything with it, so `kubectl -n <what the row says>` returns nothing
+// and reads as "this agent was never provisioned" while the pod runs one
 // namespace over.
 //
-// ⚠ IT CHECKS THE *DEFAULT*, which is the case that can drift. An operator who
-// sets MUSTER_AGENT_NAMESPACE_PREFIX has said what they want and owns the
-// consequence; the default is what nobody looks at.
+// 🔴 IT CHECKS A *CONFIGURED* PREFIX AND NOT ONLY THE DEFAULT. This comment used
+// to read "⚠ IT CHECKS THE *DEFAULT*, which is the case that can drift. An
+// operator who sets MUSTER_AGENT_NAMESPACE_PREFIX has said what they want and
+// owns the consequence" — so the guard was STRUCTURALLY BLIND to the only
+// configuration anybody runs, and the defect shipped under it. Measured live on a
+// deployment that sets MUSTER_AGENT_NAMESPACE_PREFIX=muster-agent-: a freshly
+// provisioned agent's row said `devpod-lively-newt` while the driver had created
+// `muster-agent-lively-newt`.
+//
+// 🔴 AND THE DRIVER SIDE IS *OBSERVED*, NOT READ OFF THE CONFIG. It used to
+// compare `dc.NamespacePrefix + name` — the test re-implementing the driver's
+// namespace rule, so it could only ever catch a wrong PREFIX and never a wrong
+// RULE. This builds the real driver over a fake clientset, creates an instance
+// and asks where it landed, which also covers the driver's own
+// `prefix == "" → "muster-"` fallback and anything else namespaceFor does.
+//
+// ⚠ THE DEPLOYED VALUE IS ONE CASE, NOT THE CASE. A guard pinned to
+// `muster-agent-` would pass for an implementation that special-cased that one
+// string, so the table also drives an arbitrary prefix nothing else in this module
+// spells, and every expectation is a LITERAL rather than a second call to the code
+// under test.
 func TestTheStoredNamespacePrefixIsWhatTheDriverIsConfiguredWith(t *testing.T) {
-	cfg, err := loadConfig(func(name string) string {
-		switch name {
-		case envAgentProvisioner:
-			return provisionerK8s
-		case envAgentImageRepo:
-			return "registry.example.test/muster/agent-runtime"
-		case envAgentAPIURL:
-			return "http://muster.example.test:8105"
-		case envDatabase:
-			return "postgres://unused"
-		}
-		return ""
-	})
-	if err != nil {
-		t.Fatalf("loadConfig: %v", err)
-	}
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("validate: %v", err)
-	}
-
 	const name = "harbour-kestrel"
-	stored := agents.NamespaceFor(name)
-	dc := k8sDriverConfig(cfg, nil)
-	driverSide := dc.NamespacePrefix + name
-
-	if stored != driverSide {
-		t.Errorf("the row would say namespace %q and the driver would create %q.\n"+
-			"    Nothing fails when these differ: the agent card names a namespace that "+
-			"holds nothing, which reads as \"never provisioned\" while the instance runs.\n"+
-			"    Both sides must come from agents.NamespacePrefix — see its doc comment.",
-			stored, driverSide)
+	cases := []struct {
+		label string
+		env   string // MUSTER_AGENT_NAMESPACE_PREFIX
+		want  string // the namespace BOTH sides must produce, spelled out
+	}{
+		// The case the old guard covered: nothing set.
+		{label: "default", env: "", want: "devpod-harbour-kestrel"},
+		// The DEPLOYED case, which the old guard exempted by design.
+		{label: "deployed", env: "muster-agent-", want: "muster-agent-harbour-kestrel"},
+		// An arbitrary prefix, so the assertion is not pinned to the one value
+		// this installation happens to use.
+		{label: "arbitrary", env: "qx7-pen-", want: "qx7-pen-harbour-kestrel"},
 	}
 
-	// 🔴 AND THE LAYOUT MUST BE PER-INSTANCE, OR THE PREFIX IS NEVER USED AT ALL.
-	// k8s.Config.NamespacePrefix is read only when NamespacePerInstance is true, so
-	// a prefix that matches while the layout is shared makes the check above pass
-	// over a driver that puts every instance in one namespace the row never names.
-	if !dc.NamespacePerInstance {
-		t.Errorf("the default layout is SHARED, so NamespacePrefix (%q) is ignored and the "+
-			"assertion above is vacuous. %s defaults to false, which must map to "+
-			"NamespacePerInstance TRUE.", dc.NamespacePrefix, envAgentNSShared)
-	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			cfg, err := loadConfig(func(n string) string {
+				switch n {
+				case envAgentProvisioner:
+					return provisionerK8s
+				case envAgentImageRepo:
+					return "registry.example.test/muster/agent-runtime"
+				case envAgentAPIURL:
+					return "http://muster.example.test:8105"
+				case envDatabase:
+					return "postgres://unused"
+				case envAgentNSPrefix:
+					return tc.env
+				}
+				return ""
+			})
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if err := cfg.validate(); err != nil {
+				t.Fatalf("validate: %v", err)
+			}
 
-	// Control: the prefix is non-empty, or "stored == driverSide" holds trivially
-	// for every possible value.
-	if dc.NamespacePrefix == "" {
-		t.Errorf("instrument check FAILED: the default NamespacePrefix is empty, so the "+
-			"comparison above would pass for any name. %s should default to %q",
-			envAgentNSPrefix, agents.NamespacePrefix)
+			// THE ROW-WRITING PATH, through the same expression the handler
+			// evaluates (internal/api/agents.go's Create call is
+			// s.ext.AgentNamespace(name)). Wiring the Extensions here from
+			// cfg.AgentNamespacePrefix is exactly what cmd/muster-server's newApp
+			// does.
+			stored := api.Extensions{AgentNamespacePrefix: cfg.AgentNamespacePrefix}.
+				AgentNamespace(name)
+
+			dc := k8sDriverConfig(cfg, nil)
+
+			// 🔴 THE LAYOUT AND PREFIX CONTROLS COME *BEFORE* THE DRIVER IS BUILT,
+			// AND THE ORDER IS LOAD-BEARING RATHER THAN TIDY. Measured by mutation:
+			// with the controls below the driver construction, inverting
+			// k8sDriverConfig's NamespacePerInstance killed this test at
+			// `k8sdriver.New` — "Config.Namespace is required when
+			// NamespacePerInstance is false" — so the mutant died on a DIFFERENT
+			// guard's error and the layout assertion never executed. It would have
+			// stayed green with itself deleted. These run first so each reports its
+			// own failure.
+
+			// 🔴 THE LAYOUT MUST BE PER-INSTANCE, OR THE PREFIX IS NEVER USED AT ALL.
+			// k8s.Config.NamespacePrefix is read only when NamespacePerInstance is true, so
+			// a prefix that matches while the layout is shared would be a prefix the driver
+			// ignores, over instances that all land in one namespace no row ever names.
+			if !dc.NamespacePerInstance {
+				t.Errorf("the default layout is SHARED, so NamespacePrefix (%q) is ignored and "+
+					"every instance lands in one namespace no row names. %s defaults to false, "+
+					"which must map to NamespacePerInstance TRUE.", dc.NamespacePrefix,
+					envAgentNSShared)
+			}
+			// Control: the prefix is non-empty, or the equality below holds trivially
+			// for every possible name.
+			if dc.NamespacePrefix == "" {
+				t.Errorf("instrument check FAILED: the NamespacePrefix is empty, so the "+
+					"comparison below would pass for any name. %s=%q should resolve to a "+
+					"non-empty prefix (empty defaults to %q)",
+					envAgentNSPrefix, tc.env, agents.NamespacePrefix)
+			}
+
+			// THE DRIVER SIDE, OBSERVED. Build the real driver from the mapped
+			// config over a fake clientset, create the instance, and read the
+			// namespace it actually landed in.
+			dc.Client = fake.NewClientset()
+			driver, err := k8sdriver.New(dc)
+			if err != nil {
+				t.Fatalf("k8sdriver.New over the mapped config: %v", err)
+			}
+			spec := provisiontest.MinimalSpec(name)
+			if err := driver.Create(context.Background(), spec); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			inst, err := driver.Get(context.Background(), spec.Ref)
+			if err != nil {
+				t.Fatalf("Get after Create: %v", err)
+			}
+			driverSide := inst.Group
+
+			if stored != driverSide {
+				t.Errorf("%s=%q: the row would say namespace %q and the driver PUT THE INSTANCE IN %q.\n"+
+					"    Nothing fails when these differ: the value is recorded, served on "+
+					"GET /api/agents and labelled onto the instance's objects, and nothing places "+
+					"anything with it — so the row names a namespace that holds nothing, which reads "+
+					"as \"never provisioned\" while the instance runs.\n"+
+					"    Both sides must come from cfg.AgentNamespacePrefix: k8sDriverConfig gives it "+
+					"to the driver, newApp gives it to api.Extensions.AgentNamespacePrefix.",
+					envAgentNSPrefix, tc.env, stored, driverSide)
+			}
+			// 🔴 AND BOTH MUST BE THE CONFIGURED VALUE, NOT MERELY EQUAL TO EACH
+			// OTHER. Equality alone is satisfied by two sides that ignore the
+			// configuration identically — a different bug with the same green.
+			// These are literals, not a third call to the code under test.
+			if stored != tc.want {
+				t.Errorf("%s=%q: the row would say namespace %q, want %q — the stored namespace "+
+					"ignores the configured prefix", envAgentNSPrefix, tc.env, stored, tc.want)
+			}
+			if driverSide != tc.want {
+				t.Errorf("%s=%q: the driver created the instance in %q, want %q", envAgentNSPrefix,
+					tc.env, driverSide, tc.want)
+			}
+		})
+	}
+}
+
+// TestTheDefaultNamespacePrefixIsTheStoresOwnConstant pins the half of the pair
+// that has no environment variable behind it.
+//
+// ⚠ IT IS AN INVARIANT GUARD, NOT A REGRESSION TEST — no measured defect made the
+// default wrong. It exists because "empty resolves to agents.NamespacePrefix" is
+// the sentence the whole defaulting story rests on, and it is now asserted at the
+// ONE resolver both the config load and the HTTP wiring call.
+func TestTheDefaultNamespacePrefixIsTheStoresOwnConstant(t *testing.T) {
+	if got := agents.ResolveNamespacePrefix(""); got != "devpod-" {
+		t.Errorf("an unset prefix resolved to %q, want %q", got, "devpod-")
+	}
+	if agents.NamespacePrefix != "devpod-" {
+		t.Errorf("agents.NamespacePrefix is %q, want %q: %s's documented default and the "+
+			"constant are one value", agents.NamespacePrefix, "devpod-", envAgentNSPrefix)
+	}
+	// Whitespace is not a prefix. An operator's trailing newline in a ConfigMap
+	// would otherwise build a namespace Kubernetes refuses, inside a dispatch
+	// goroutine.
+	if got := agents.ResolveNamespacePrefix("  "); got != "devpod-" {
+		t.Errorf("a blank prefix resolved to %q, want the default %q", got, "devpod-")
+	}
+	// And a configured prefix survives the resolver untouched, or the default
+	// would be the only value it can ever return.
+	if got := agents.ResolveNamespacePrefix("qx7-pen-"); got != "qx7-pen-" {
+		t.Errorf("a configured prefix resolved to %q, want it unchanged", got)
 	}
 }
 
@@ -275,5 +396,56 @@ func TestAnIllegalProvisionerNameIsRefusedAtBoot(t *testing.T) {
 	// value validate would have caught.
 	if _, err := buildDriver(cfg, nil); err == nil {
 		t.Error("buildDriver returned a driver for an unknown provisioner name")
+	}
+}
+
+// TestNewAppWiresTheConfiguredNamespacePrefixIntoTheApiLayer closes the one hop
+// no behavioural test in this module can reach.
+//
+// 🔴 THE CHAIN IS env → config → api.Extensions → the row, AND EVERY LINK BUT
+// THIS ONE IS PINNED BEHAVIOURALLY. TestTheStoredNamespacePrefixIsWhatTheDriverIsConfiguredWith
+// pins config → both sides; internal/api's
+// TestTheCreatedAgentRowCarriesTheConfiguredNamespace pins Extensions → the row.
+// What neither can see is newApp's api.Extensions literal actually carrying the
+// field: dropping that one line reproduces the shipped defect exactly — the
+// handler falls back to agents.NamespacePrefix while the driver uses the
+// configured prefix — and no test in this repository would go red. Reaching it
+// behaviourally needs a booted app with a database AND a provisioner, i.e. a
+// cluster client.
+//
+// ⚠ IT IS A SPELLED GUARD, AND THE LIMITS ARE STATED RATHER THAN HIDDEN. It reads
+// source text, so it cannot tell whether the assignment is inside the literal that
+// is actually passed to UseExtensions, and a second api.Extensions literal
+// elsewhere in main.go would satisfy it. What it does catch is the whole of the
+// regression it was written for: deleting the line, or sourcing it from anything
+// other than the config field the driver also reads. api.Extensions.defects is the
+// structural half — it refuses /readyz when the prefix is empty beside a wired
+// Provisioner — and this is what makes the omission visible in CI rather than at
+// boot.
+func TestNewAppWiresTheConfiguredNamespacePrefixIntoTheApiLayer(t *testing.T) {
+	src, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	text := string(src)
+
+	// 🔴 POSITIVE CONTROL. Without it a changed variable name (`ext := api.Extensions{`
+	// → anything else) would make the assertion below vacuous, and a guard that
+	// matches nothing reports the same green as a guard that passes.
+	const literal = "api.Extensions{"
+	if !strings.Contains(text, literal) {
+		t.Fatalf("instrument check FAILED: main.go no longer contains %q, so this test is not "+
+			"reading the wiring it claims to", literal)
+	}
+
+	const want = "AgentNamespacePrefix: cfg.AgentNamespacePrefix,"
+	if !strings.Contains(text, want) {
+		t.Errorf("main.go does not contain %q.\n"+
+			"    Without it every agent row records agents.NamespacePrefix+name (the package "+
+			"default) while the driver places the instance under the prefix k8sDriverConfig gave "+
+			"it from the SAME config field. Nothing fails when those disagree — that is the "+
+			"defect this guard exists for: a row saying `devpod-<name>` while the cluster holds "+
+			"`muster-agent-<name>`.\n"+
+			"    If the wiring moved, move this assertion with it; do not delete it.", want)
 	}
 }

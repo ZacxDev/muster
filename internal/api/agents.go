@@ -884,9 +884,15 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	} else if p.NoteID != nil {
 		displayName = dispatchDisplayName(*p.NoteID, p.NoteText)
 	}
+	// 🔴 Namespace BELOW IS THE DEPLOYMENT'S PREFIX, NOT THIS PACKAGE'S CONSTANT.
+	// It read agents.NamespaceFor(name) — the package default — while the driver
+	// created `<MUSTER_AGENT_NAMESPACE_PREFIX><name>`, which shipped rows naming
+	// namespaces that hold nothing and read as "never provisioned". Nothing places
+	// anything with this value, so the disagreement failed nowhere. See
+	// Extensions.AgentNamespacePrefix and Extensions.AgentNamespace.
 	rec, err := s.ext.Agents.Create(ctx, agents.Agent{
 		Name:        name,
-		Namespace:   agents.NamespaceFor(name),
+		Namespace:   s.ext.AgentNamespace(name),
 		DisplayName: displayName,
 		Repo:        p.Repo,
 		RepoBranch:  s.resolveRepoBranch(ctx, p.Repo, p.RepoBranch),

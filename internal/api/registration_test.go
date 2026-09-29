@@ -64,6 +64,12 @@ func fullyWiredServer(t *testing.T) *Server {
 		// test that does not wire a dependency cannot notice a route gated on it.
 		Gateway:     stubGateway{},
 		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://example.test"},
+		// A NON-DEFAULT prefix on purpose. agents.NamespacePrefix here would be
+		// indistinguishable from the zero value's resolved behaviour, so this
+		// fixture would claim "fully wired" while exercising the default — which is
+		// the exact blindness that let the namespace defect ship. See
+		// Extensions.AgentNamespacePrefix.
+		AgentNamespacePrefix: "muster-agent-",
 	})
 	s.UseRouter(stubRouter{})
 	s.UseGate(stubGate{})

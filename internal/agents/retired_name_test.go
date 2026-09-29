@@ -106,7 +106,7 @@ func TestBuildUniqueAgentNameNeverReissuesADestroyedAgentsName(t *testing.T) {
 
 	created, err := store.Create(ctx, Agent{
 		Name:      want,
-		Namespace: NamespaceFor(want),
+		Namespace: NamespaceFor(NamespacePrefix, want),
 		Status:    StatusProvisioning,
 	})
 	if err != nil {

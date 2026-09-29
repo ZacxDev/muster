@@ -28,21 +28,61 @@ const (
 	StatusError        = "error"
 )
 
-// NamespacePrefix is what an agent's [Agent.Namespace] is built from: the
-// prefix plus the agent's slug Name.
+// NamespacePrefix is the DEFAULT prefix an agent's [Agent.Namespace] is built
+// from: the prefix plus the agent's slug Name.
 //
-// 🔴 IT IS SPELLED HERE BECAUSE TWO INDEPENDENT PLACES MUST AGREE ON IT AND
-// NOTHING WOULD FAIL IF THEY DID NOT. The HTTP handler that creates an agent
-// writes this value into the row; the provisioning driver's own namespace prefix
-// decides where the instance actually goes. Those are different subsystems, and
-// a disagreement is invisible: the card renders a namespace nothing exists in,
-// so `kubectl -n <what the row says>` returns nothing and reads as "the agent
-// was never provisioned" while the instance is running one namespace over.
-// TestTheStoredNamespacePrefixIsWhatTheDriverIsConfiguredWith pins the pair.
+// 🔴 IT IS A DEFAULT, NOT THE VALUE, AND THAT DISTINCTION IS A FIX FOR A
+// MEASURED LIVE DEFECT. It used to be the value — [NamespaceFor] took only a
+// name and returned NamespacePrefix+name — while the provisioning driver used
+// the prefix its OWN configuration named. Two literals, in subsystems that never
+// talk, and nothing fails when they differ: the value is recorded, displayed and
+// labelled, never used to place anything, so `kubectl -n <what the row says>`
+// returns nothing and reads as "the agent was never provisioned" while the
+// instance is running one namespace over. Measured live on a deployment that
+// sets MUSTER_AGENT_NAMESPACE_PREFIX=muster-agent-: a freshly provisioned
+// agent's row said `devpod-lively-newt` while the driver had created
+// `muster-agent-lively-newt`.
+//
+// The two sides now read ONE configured value. api.Extensions.AgentNamespace is
+// the row-writing path's only expression, the deployment's
+// MUSTER_AGENT_NAMESPACE_PREFIX feeds it and the driver from the same
+// config field, and
+// TestTheStoredNamespacePrefixIsWhatTheDriverIsConfiguredWith holds the pair
+// against the namespace the driver DEMONSTRABLY creates — for a configured
+// prefix and not only for this default, which is the case the old guard exempted
+// by design and is why the defect shipped.
 const NamespacePrefix = "devpod-"
 
-// NamespaceFor builds an agent's namespace from its slug name.
-func NamespaceFor(name string) string { return NamespacePrefix + name }
+// ResolveNamespacePrefix is the ONE place an unset prefix becomes
+// [NamespacePrefix].
+//
+// 🔴 EVERY DEFAULTING SITE MUST BE THIS CALL. Two places resolving "" — the
+// binary's config load and the HTTP layer's wiring — is how one of them comes to
+// hold a different literal, which is the defect described above in miniature.
+// Whitespace resolves to the default too: an operator's trailing newline in a
+// ConfigMap would otherwise build a namespace Kubernetes refuses, inside a
+// dispatch goroutine.
+func ResolveNamespacePrefix(raw string) string {
+	if p := strings.TrimSpace(raw); p != "" {
+		return p
+	}
+	return NamespacePrefix
+}
+
+// NamespaceFor builds an agent's namespace from a CONFIGURED prefix and its slug
+// name.
+//
+// 🔴 THE PREFIX IS A PARAMETER SO THAT NO CALLER CAN GET A NAMESPACE WITHOUT
+// DECIDING ONE. This took only a name until the defect above; a zero-argument
+// spelling is what let a caller capture the package constant while the driver
+// used something else, and the caller looked correct at every line. An empty
+// prefix resolves to the default via [ResolveNamespacePrefix] rather than
+// producing a bare slug.
+//
+// ⚠ PREFER api.Extensions.AgentNamespace ON THE ROW-WRITING PATH. That method is
+// the one expression the HTTP layer uses and the one the guard reads; this
+// function is what it is built from.
+func NamespaceFor(prefix, name string) string { return ResolveNamespacePrefix(prefix) + name }
 
 // Agent is the stored record of one managed agent.
 type Agent struct {
