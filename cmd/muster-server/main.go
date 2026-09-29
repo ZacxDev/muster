@@ -599,13 +599,26 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			// line says that instead: an operator reading UNWIRED needs the variable
 			// they can set, which is the property bannerLedger enforces in both
 			// directions.
+			// 🔴 THIS LINE USED TO SAY A KICKOFF DISPATCH "CREATES THE INSTANCE AND
+			// CANNOT DELIVER THE FIRST MESSAGE", AND THAT IS NO LONGER WHAT HAPPENS —
+			// recorded here rather than silently reworded, because the old sentence is
+			// what an operator debugging an older pod will remember. Such a dispatch is
+			// now REFUSED before anything is built
+			// (agentprovision.KickoffRefusalReason): the promise cannot be kept on this
+			// configuration, so it is not made. Both field names stay, because both are
+			// still where something is written — pending_note by the create handler, and
+			// kickoff_error by a START, which is deliberately NOT refused (see
+			// agentprovision.Adapter.Start on why refusing it would remove capability
+			// that works).
 			l.Printf("agent provisioning CHAT: UNWIRED (%s=%s) — no agent runtime is named, so "+
 				"nothing is wired to api.Extensions.Gateway and the two chat routes answer 503 "+
-				"through api.requireGatewayProvisioner with %s:true. A dispatch with a kickoff "+
-				"therefore CREATES the instance and cannot deliver the first message: the note "+
-				"stays in agents.pending_note and the non-delivery is recorded in "+
-				"agents.kickoff_error. See cmd/muster-server/doc_seams.go entry 1",
-				envAgentGateway, a.cfg.agentGateway(), api.ProvisionerUnwiredField)
+				"through api.requireGatewayProvisioner with %s:true. A dispatch with a kickoff is "+
+				"therefore REFUSED and provisions NOTHING — the row goes to `error` carrying the "+
+				"reason and the remedy, the note stays in agents.pending_note, and the refusal "+
+				"names %s as the variable to set. A START is still allowed and still records an "+
+				"owed first turn in agents.kickoff_error. See cmd/muster-server/doc_seams.go "+
+				"entry 1",
+				envAgentGateway, a.cfg.agentGateway(), api.ProvisionerUnwiredField, envAgentGateway)
 		} else {
 			// 🔴 IT NAMES THE RUNTIME, NOT JUST "WIRED", BECAUSE THE RUNTIME IS WHAT
 			// DECIDES THE BEARER DERIVATION AND THE MODEL SENTINEL. Those are wire

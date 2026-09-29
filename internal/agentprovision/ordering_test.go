@@ -95,10 +95,15 @@ func TestATimedOutOperationStillRECORDSItsFailure(t *testing.T) {
 	store := &recordingStore{agent: fixtureAgent()}
 	driver := &flakyDriver{Noop: provision.MustNewNoop(), rec: store, burnBudget: true}
 	a, err := New(Config{
-		Driver:    driver,
-		Store:     store,
-		Spec:      fixtureSpecConfig(),
-		OpTimeout: 20 * time.Millisecond,
+		Driver: driver,
+		Store:  store,
+		Spec:   fixtureSpecConfig(),
+		// This test is about a TIMEOUT inside the driver call, so the dispatch has to
+		// REACH the driver. Without this the undeliverable-kickoff refusal returns
+		// first and Create never runs — which the positive control below caught
+		// rather than letting the test pass for the wrong reason.
+		KickoffDeliverable: true,
+		OpTimeout:          20 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

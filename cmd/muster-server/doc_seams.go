@@ -45,6 +45,30 @@ package main
 //	  agents.pending_note and the non-delivery is written to agents.kickoff_error
 //	  (agentprovision.UndeliveredKickoffReason). An agent dispatched on such a
 //	  deployment is still a real pod that was never told what to do.
+//	🔴 THE PARAGRAPH ABOVE IS NOW TRUE ONLY WHERE MUSTER_AGENT_GATEWAY *NAMES* A
+//	  RUNTIME, AND IT IS CORRECTED HERE RATHER THAN REWRITTEN BECAUSE THE SENTENCE
+//	  "still CREATES the instance" IS WHAT agentprovision.KickoffRefusalReason CITES
+//	  THIS ENTRY FOR. With the variable UNSET — which is every deployment running
+//	  today — such a dispatch is now REFUSED instead: agentprovision.Adapter.Dispatch
+//	  creates nothing, mints no token, marks the row `error` with the cause and the
+//	  remedy, and returns agentprovision.ErrKickoffUndeliverable. buildAgentPlane
+//	  passes `gw != nil` into the adapter, so the refusal keys on the RESOLVED
+//	  configuration and a deployment that has named a runtime is unchanged.
+//	  ⚠ THE REFUSAL IS ON THE CREATE-WITH-KICKOFF PATH ONLY. Start is deliberately
+//	  still allowed and still records the non-delivery in agents.kickoff_error, where
+//	  it is honest because an instance exists; refusing it would have removed
+//	  restart, eviction-recovery and the save-then-start-later route this entry's own
+//	  Dispatch doc calls the supported one. See Adapter.Start.
+//	  🔴 WHAT IT DOES *NOT* FIX, STATED SO NOBODY READS IT AS CLOSED: the refusal
+//	  does not reach the HTTP RESPONSE of the POST that asked. internal/api's
+//	  createAndDispatchAgent calls Dispatch inside safeGo AFTER creating the row, so
+//	  the operator's POST has already answered 200 and the returned error is logged.
+//	  The row's `error` status is the strongest signal reachable from the provisioner.
+//	  CLOSING CONDITION: a synchronous check in internal/api's create handler, before
+//	  the row exists, keyed on the same capability, answering 4xx with
+//	  agentprovision.KickoffRefusalReason's text. WHO CHECKS IT: the reviewer of that
+//	  pull request, against this paragraph and against a POST /agents with
+//	  action=dispatch on a deployment with no gateway.
 //	🔴 AND "A HUMAN CAN NOW OPEN ITS CHAT AND TALK TO IT" WAS FALSE FOR AN AGENT
 //	  *THIS BINARY* PROVISIONED — that sentence stood here and an audit measured it.
 //	  TWO things block it, and both are OUTSIDE internal/agentgateway:

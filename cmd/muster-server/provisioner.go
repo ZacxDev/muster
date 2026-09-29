@@ -210,16 +210,34 @@ func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agent
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	prov, err := agentprovision.New(agentprovision.Config{
-		Driver: driver,
-		Store:  store,
-		Spec:   agentSpecConfig(cfg),
-		Logger: logger,
-	})
+	// 🔴 THE GATEWAY IS BUILT *BEFORE* THE LIFECYCLE ADAPTER, AND THE ORDER IS NOW
+	// LOAD-BEARING RATHER THAN INCIDENTAL. The adapter has to be told whether this
+	// process has anything that could deliver a kickoff, because a dispatch asking
+	// for one it cannot deliver is REFUSED instead of creating a pod that will never
+	// be told what to do (agentprovision.KickoffRefusalReason). It cannot answer that
+	// by looking at itself — it is the lifecycle half by construction and must never
+	// hold a gateway — so the answer is READ OFF THE CONSTRUCTED OBJECT here.
+	//
+	// 🔴 OFF THE OBJECT, NOT OFF THE CONFIG, FOR THE SAME REASON THE BANNER READS
+	// gw.Runtime() RATHER THAN cfg.agentGateway(): `gw != nil` is what the api
+	// wrappers and api.Extensions.Gateway will branch on, so it is the only claim
+	// that cannot disagree with the deployment's actual behaviour. A buildGateway
+	// that mapped a named runtime to nil would otherwise leave the adapter believing
+	// a kickoff was deliverable and restore the silent-strand behaviour exactly.
+	//
+	// ⚠ nil IS A SUPPORTED OUTCOME, so this is a capability report and not an error
+	// check — see this function's own header on why neither nil is a failure.
+	gw, err := buildGateway(cfg, driver)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	gw, err := buildGateway(cfg, driver)
+	prov, err := agentprovision.New(agentprovision.Config{
+		Driver:             driver,
+		Store:              store,
+		Spec:               agentSpecConfig(cfg),
+		Logger:             logger,
+		KickoffDeliverable: gw != nil,
+	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
