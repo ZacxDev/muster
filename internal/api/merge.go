@@ -48,7 +48,14 @@ const mergeCommentAuthor = "user"
 // tag-only PATCH carrying it hit the in-progress 409, which would break the
 // hand-rolled supersede procedure in supersede-decision-2026-08-28.md §(b).
 // TestSupersededByTagStaysDescriptive pins that.
-const supersededByNS = "superseded-by"
+//
+// 🔴 IT IS THE notes CONSTANT, NOT A SECOND SPELLING OF THE SAME WORD. notes now
+// declares it because the tag filter row has to know the namespace is an opaque
+// external id (notes.IsExternalIDTag) rather than a label; two copies of the
+// string would let the writer and the renderer disagree about which tags this
+// is, and the renderer's half would fail silently — a chip per merged task,
+// which is the shape of the defect that motivated the set.
+const supersededByNS = notes.NSSupersededBy
 
 // supersededByTag renders the loser's successor stamp. The value is an int64 the
 // handler already parsed, so the result is always a legal tag: the namespace is
@@ -262,8 +269,8 @@ func (s *Server) handleTaskMerge(w http.ResponseWriter, r *http.Request) {
 	// task answers 400 "too many tags: 21 (max 20)" and the WHOLE form is refused —
 	// title, body, model, repo, branch, privileges — naming a cap the operator never
 	// exceeded. It is recoverable in-modal by removing a chip, and the task is
-	// `complete` and therefore in the Done FILTER lane (it was the collapsed Done
-	// section before the board flattened), which is why this is
+	// `complete` and therefore behind the Done FILTER chip (it was the collapsed
+	// Done section before the board flattened), which is why this is
 	// accepted rather than blocking. Do not restate it as a tags-only refusal.
 	//
 	// ⚠ ALSO NOT ADDRESSED HERE, and named so it is not mistaken for closed: every

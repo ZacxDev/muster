@@ -1633,7 +1633,7 @@ func appScript(feat Features) g.Node {
     //
     // Precisely: an open combobox dropdown consumes the keypress ENTIRELY (early
     // return). Otherwise the keypress is broadcast to every other overlay —
-    // setOpen/popOpen/notifOpen plus BOTH cgModalDismiss calls all run. That is
+    // setOpen/notifOpen plus BOTH cgModalDismiss calls all run. That is
     // deliberate and safe, not "exactly one dismissal per keypress" (an earlier
     // version of this comment claimed that, and the code below contradicts it):
     // each of those is a no-op for an overlay that is already closed, and at most
@@ -1663,7 +1663,16 @@ func appScript(feat Features) g.Node {
       }
       return;
     }
-    setOpen(false); popOpen(false); aaPopOpen(false); notifOpen(false);
+    // 🔴 popOpen() AND aaPopOpen() USED TO BE CALLED HERE AND NEITHER FUNCTION
+    // EXISTS. They were the permission-router's popover and auto-approve popover,
+    // deleted with that surface; the CALLS came across with the carve. A call to
+    // an undefined identifier is a ReferenceError, and it landed BEFORE the
+    // cgModalDismiss line below — so Escape threw on every keypress and neither
+    // sheet ever closed. Measured in jsdom on the rendered /tasks document:
+    // "ReferenceError: popOpen is not defined", with the modal still displayed
+    // afterwards. From the outside it is indistinguishable from having no
+    // handler at all, which is exactly how it was reported.
+    setOpen(false); notifOpen(false);
     // Both dialogs were omitted from this handler, so Escape did nothing for
     // them. Both now route through the SAME dirty-guarded dismiss: an
     // in-progress edit — or a typed dispatch prompt, the longest free text in
@@ -2068,7 +2077,14 @@ func appScript(feat Features) g.Node {
     lb.click();
   });
 
-  renderQueued();
+  // 🔴 renderQueued() USED TO BE CALLED HERE AND THE FUNCTION DOES NOT EXIST.
+  // Same carve residue as the two popovers in the Escape handler above: it
+  // painted the permission router's optimistic-decision queue indicator, which
+  // muster does not render. The ReferenceError was the LAST statement of
+  // initGlobal, so it propagated out of init() — and init() calls initPage()
+  // AFTER initGlobal(). On a cold load, initPage therefore never ran at all:
+  // the sidebar open/close buttons and the SPA tab wiring were unbound until
+  // some later htmx:load re-entered init() with __cgInit already set.
   } // end initGlobal
 
   // init: per-document. Binds the global delegated listeners once (guarded), and
@@ -2626,7 +2642,7 @@ func tagScript() g.Node {
   function set(arr) {
     try { localStorage.setItem(KEY, JSON.stringify(arr)); } catch (e) {}
   }
-  // The board query URL. It carries the tag filter AND the status lane —
+  // The board query URL. It carries the tag filter AND the status —
   // see internal/ui/tags.go boardURL, which builds the same string server-side
   // for the show-more control.
   //
@@ -2646,7 +2662,7 @@ func tagScript() g.Node {
     tags.forEach(function (t) { q.push('tag=' + encodeURIComponent(t)); });
     return q.length ? '/ui/tasks?' + q.join('&') : '/ui/tasks';
   }
-  // The ACTIVE status lane, read back off #tasks-list's own hx-get.
+  // The ACTIVE status, read back off #tasks-list's own hx-get.
   //
   // 🔴 The URL is the single home of the board's query state; there is no second
   // copy in JS to fall out of step with it. Tags are the one exception (they are
@@ -2779,7 +2795,7 @@ func tagScript() g.Node {
       refreshTo(more.getAttribute('data-tasks-more'));
       return;
     }
-    // Status lane: composed with whatever tags are selected, never replacing
+    // Status: composed with whatever tags are selected, never replacing
     // them. The All chip carries an empty value, which is the same "no status
     // predicate" the server reads.
     var st = t.closest('[data-status-filter]');

@@ -20,7 +20,8 @@ import (
 //
 // Supported: bold (**x**), italic (*x* / _x_), inline code (`x`), fenced code
 // blocks (```lang … ```), blockquotes (> …), bullet lists (- / *), ordered
-// lists (1.), ATX headings (# … ######), GFM pipe tables, and paragraphs.
+// lists (1.), ATX headings (# … ######), thematic breaks (--- / *** / ___),
+// bare-URL autolinks, GFM pipe tables, and paragraphs.
 // Anything else degrades to escaped paragraph text — never to raw HTML.
 
 var (
@@ -32,9 +33,24 @@ var (
 	mdBlockquote  = regexp.MustCompile(`^\s*>\s?`)
 	mdBlankLineRe = regexp.MustCompile(`^\s*$`)
 	mdInlineCode  = regexp.MustCompile("`([^`]+)`")
-	mdBold        = regexp.MustCompile(`\*\*([^*]+)\*\*`)
-	mdItalicStar  = regexp.MustCompile(`(^|[^*])\*([^*\n]+)\*`)
-	mdItalicUnder = regexp.MustCompile(`(^|[^_])_([^_\n]+)_`)
+	// mdThematicBreak matches a horizontal rule on its own line: three or more
+	// -, * or _, with at most three leading spaces and nothing else but trailing
+	// whitespace.
+	//
+	// 🔴 IT IS CHECKED BEFORE THE LIST BRANCHES AND LISTED IN THE PARAGRAPH
+	// GATHER'S EXCLUSION SET, for the same reason mdTableStartsAt is: the gather
+	// runs LAST and swallows every contiguous line no earlier branch claimed, so a
+	// rule sitting directly above a footer line was absorbed into that paragraph
+	// and emitted as the literal text `---`. That is what every ClickUp-mirrored
+	// task body looks like, so it was the commonest body on the board.
+	//
+	// It deliberately does NOT accept internal spaces (`- - -`, which CommonMark
+	// allows): `- ` is also the bullet marker, and the two grammars overlap in a
+	// way no author here writes. Narrow and unambiguous beats complete.
+	mdThematicBreak = regexp.MustCompile(`^ {0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$`)
+	mdBold          = regexp.MustCompile(`\*\*([^*]+)\*\*`)
+	mdItalicStar    = regexp.MustCompile(`(^|[^*])\*([^*\n]+)\*`)
+	mdItalicUnder   = regexp.MustCompile(`(^|[^_])_([^_\n]+)_`)
 	// Link: [text](url). Matched on the ALREADY-ESCAPED string, so the captured
 	// groups contain escaped text/url (e.g. & → &amp;); the URL scheme is then
 	// re-checked against http(s) and anything else (javascript:, data:, …) is left
@@ -59,6 +75,22 @@ var (
 	// Case-insensitive so HTTPS:// etc. still pass; the escaped URL's scheme is
 	// scheme:// ASCII, unaffected by mdEscape.
 	mdHTTPScheme = regexp.MustCompile(`(?i)^https?://`)
+	// mdBareURL matches a BARE http(s) URL — one an author wrote without
+	// [text](url) around it. Agents paste pull-request and issue links into task
+	// bodies and comments constantly, and every one of them rendered as inert text
+	// here while the JS renderer in agents_detail.go had autolinked them since it
+	// shipped: one document, two surfaces, two answers.
+	//
+	// The \x00 exclusion is the vault sentinel, for the same reason mdLink carries
+	// it — a URL directly abutting a placeholder must not swallow it into the href.
+	// Running AFTER mdLinkify is what stops a markdown link's URL being linked
+	// twice: mdLinkify stashes the WHOLE anchor, so its href is not in the string
+	// this pattern sees.
+	mdBareURL = regexp.MustCompile(`(?i)https?://[^\s<\x00]+`)
+	// mdURLTrail is the trailing punctuation that belongs to the SENTENCE, not to
+	// the URL — `see https://example.com/x.` must not link the full stop. Mirrors
+	// the JS renderer's set exactly.
+	mdURLTrail = regexp.MustCompile(`[.,)\]!?:;"']+$`)
 	// mdVaultToken matches a vault placeholder for the single-pass restore.
 	mdVaultToken = regexp.MustCompile("\x00(\\d+)\x00")
 	// mdTableSepCell matches ONE cell of a GFM separator row: dashes with an
@@ -181,8 +213,43 @@ func mdInline(escaped string) string {
 			g[1] + `</code>`)
 	})
 	s = mdLinkify(s, v)
+	s = mdAutolink(s, v)
 	s = mdEmphasis(s)
 	return v.restore(s)
+}
+
+// mdAnchor renders ONE anchor. Both link paths — `[text](url)` and a bare URL —
+// go through it so the two can never disagree about target/rel/class; a
+// `rel="noopener"` present on one shape and absent on the other is precisely the
+// kind of drift a second spelling produces.
+//
+// href and label must ALREADY be mdEscape'd: `"` is then `&quot;`, so neither can
+// break out of the attribute, and no author text can reach the browser as markup.
+func mdAnchor(href, label string) string {
+	return `<a href="` + href + `" target="_blank" rel="noopener" class="text-emerald-300 underline decoration-emerald-500/40 underline-offset-2 hover:text-emerald-200">` +
+		label + `</a>`
+}
+
+// mdAutolink turns a BARE http(s) URL into an anchor, stashing the whole anchor
+// so later passes cannot chew on its attributes (the hazard mdVault's header
+// records). Trailing sentence punctuation is left OUTSIDE the link.
+//
+// The URL is used as both href and label, which is safe for the same reason
+// mdLinkify is: the string is already escaped, so `"` is `&quot;` and cannot
+// terminate the attribute. The scheme needs no separate check here — unlike
+// mdLinkify, the pattern itself only matches http:// and https://, so
+// `javascript:` and `data:` are not merely rejected, they are unmatchable.
+func mdAutolink(escaped string, v *mdVault) string {
+	return mdBareURL.ReplaceAllStringFunc(escaped, func(m string) string {
+		trail := mdURLTrail.FindString(m)
+		if trail != "" {
+			m = m[:len(m)-len(trail)]
+		}
+		if m == "" {
+			return trail
+		}
+		return v.stash(mdAnchor(m, m)) + trail
+	})
 }
 
 // mdEmphasis applies bold then italic to an already-escaped fragment.
@@ -222,8 +289,7 @@ func mdLinkify(escaped string, v *mdVault) string {
 			// Not an http(s) link → leave the literal markdown text (inert).
 			return m
 		}
-		return v.stash(`<a href="` + href + `" target="_blank" rel="noopener" class="text-emerald-300 underline decoration-emerald-500/40 underline-offset-2 hover:text-emerald-200">` +
-			mdEmphasis(text) + `</a>`)
+		return v.stash(mdAnchor(href, mdEmphasis(text)))
 	})
 }
 
@@ -232,13 +298,6 @@ func mdLinkify(escaped string, v *mdVault) string {
 // the JS mdRender. The returned node is safe to embed directly.
 func renderMarkdown(src string) g.Node {
 	return g.Raw(markdownHTML(src))
-}
-
-// mdInlineNode renders INLINE markdown (bold/italic/code/link — no block
-// structure) as a safe node, for embedding in a single-line element like a
-// header title. Escape-first (mdEscape) so author text can never inject tags.
-func mdInlineNode(src string) g.Node {
-	return g.Raw(mdInline(mdEscape(src)))
 }
 
 // mdStripRe removes the most common inline/block markdown markers for a clean
@@ -251,18 +310,35 @@ var (
 	mdStripSpace   = regexp.MustCompile(`\s+`)
 )
 
-// markdownSnippet returns a clean, single-line plain-text preview of a markdown
-// body, truncated to n runes. Fenced blocks are dropped, list/emphasis/heading
-// markers stripped, and whitespace collapsed — so a card preview reads as prose
-// rather than showing raw `**`/`>`/```` ``` ```` noise. Returns "" for an
-// all-markup/empty body so the caller can omit the snippet line.
-func markdownSnippet(src string, n int) string {
+// markdownPlain strips markdown markers and collapses a body to one line of
+// plain text. Fenced blocks are dropped, list/emphasis/heading markers removed,
+// whitespace collapsed.
+//
+// 🔴 IT IS THE ONE STRIP, AND BOTH ITS CALLERS EXIST BECAUSE A STRING WAS BEING
+// RENDERED TWO WAYS. An agent's display name is derived from its task title, so
+// it routinely carries `**bold**` and `code`. The agents LIST rendered it as
+// plain text (raw `**` and backticks on the card) while the DETAIL header
+// rendered it as inline markdown — one string, two answers, from the same click.
+// Stripping on both is what makes them agree; rendering markup on both was the
+// other option and it was rejected, because the card's title sits inside the
+// card's own <a> and the marked-up path can emit an anchor (see mdLinkify),
+// which is invalid nested HTML that browsers resolve by closing the outer link.
+//
+// It is intentionally lossy and is NOT a parser — just a cosmetic strip so a
+// one-liner reads as prose.
+func markdownPlain(src string) string {
 	s := mdStripFence.ReplaceAllString(src, " ")
 	s = mdStripBullet.ReplaceAllString(s, "")
 	s = mdStripMarkers.ReplaceAllString(s, "")
 	s = mdStripSpace.ReplaceAllString(s, " ")
-	s = strings.TrimSpace(s)
-	return truncate(s, n)
+	return strings.TrimSpace(s)
+}
+
+// markdownSnippet returns a clean, single-line plain-text preview of a markdown
+// body, truncated to n runes — markdownPlain plus the cap. Returns "" for an
+// all-markup/empty body so the caller can omit the snippet line.
+func markdownSnippet(src string, n int) string {
+	return truncate(markdownPlain(src), n)
 }
 
 // --- GFM pipe tables ---------------------------------------------------------
@@ -368,6 +444,15 @@ func markdownHTML(src string) string {
 			continue
 		}
 
+		// Thematic break. Checked BEFORE the list branches so `***` is a rule
+		// rather than the opening of a bullet, and before the paragraph gather
+		// (which also excludes it) so it is never swallowed as literal text.
+		if mdThematicBreak.MatchString(line) {
+			out.WriteString(`<hr class="my-2 border-white/10">`)
+			i++
+			continue
+		}
+
 		// Heading.
 		if m := mdHeadingRe.FindStringSubmatch(line); m != nil {
 			size := "text-sm"
@@ -458,6 +543,10 @@ func markdownHTML(src string) string {
 		for i < len(lines) && !mdBlankLineRe.MatchString(lines[i]) &&
 			!mdFenceRe.MatchString(lines[i]) &&
 			mdHeadingRe.FindStringSubmatch(lines[i]) == nil &&
+			// 🔴 THE SECOND HALF OF THE THEMATIC-BREAK CHANGE, and the half the
+			// defect was actually made of: without it this gather eats the `---`
+			// that sits directly above a task's footer and renders it as text.
+			!mdThematicBreak.MatchString(lines[i]) &&
 			!mdBulletRe.MatchString(lines[i]) &&
 			!mdOrderedRe.MatchString(lines[i]) &&
 			// 🔴 THE SECOND HALF OF THE TABLE CHANGE. Without this the gather below

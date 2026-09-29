@@ -170,8 +170,11 @@ func tasksListSkeleton() g.Node {
 		)
 	}
 	// h-11 (44px) + pb-1 + mb-3 mirrors the real chip row's box: its buttons carry
-	// min-h-[44px] and chipScroller wraps it in mb-3. Four pills, matching the
-	// four status chips (All + the three lanes).
+	// min-h-[44px] and chipScroller wraps it in mb-3. Four pills — a SKELETON
+	// approximating the chip row's box, not a count of it: the real row renders
+	// All plus one chip per taskstatus.All() entry, which is five today. A
+	// skeleton that tracked the vocabulary exactly would be a second consumer of
+	// it for no gain, so this is deliberately approximate and says so.
 	pill := func(w string) g.Node {
 		return Div(Class("h-11 " + w + " shrink-0 animate-pulse rounded-full bg-slate-700/50"))
 	}
@@ -305,9 +308,13 @@ type TasksView struct {
 	// Projects is the `project:` vocabulary, rendered as its OWN filter row above
 	// the general tag chips so a project is not buried among descriptive tags.
 	Projects []notes.ProjectCount
-	// ActiveStatus is the selected status LANE (taskstatus.Lane*), or "" for the
-	// All chip. It is a lane rather than a raw status because two statuses share
-	// the In-progress bucket — see internal/taskstatus/lane.go.
+	// ActiveStatus is the selected task STATUS (one of taskstatus.All()), or ""
+	// for the All chip.
+	//
+	// ⚠ IT USED TO BE A "LANE" — a separate, coarser vocabulary in which
+	// in_progress and ready_for_review shared one bucket. That layer is deleted
+	// (internal/taskstatus/label.go); the chip's value is the status itself now,
+	// which is also what travels in ?status= and into the SQL predicate.
 	ActiveStatus string
 	// Limit is the cap the server actually applied (0 = unlimited), and Total is
 	// how many tasks matched BEFORE that cap. `len(Cards) < Total` is the exact
@@ -404,10 +411,11 @@ func (v TasksView) filtered() bool {
 	return len(v.ActiveTags) > 0 || v.ActiveStatus != ""
 }
 
-// statusFilterRow renders the [All][Open][In progress][Done] chip row.
+// statusFilterRow renders the [All][Open][In progress][Ready for review][Done]
+// chip row — ONE chip per task status, derived from taskstatus.All().
 //
 // 🔑 It reuses the tag row's mechanism deliberately, exactly as projectFilterRow
-// does: a chip carries `data-status-filter="<lane>"` and the SAME delegated
+// does: a chip carries `data-status-filter="<status>"` and the SAME delegated
 // click handler in tagScript composes it with whatever tags are selected, then
 // writes the result into #tasks-list's hx-get. Composition is therefore the
 // default — status AND tag AND project all narrow together — rather than
@@ -416,12 +424,21 @@ func (v TasksView) filtered() bool {
 // The All chip carries an EMPTY data-status-filter, which is the same value the
 // server reads as "no status predicate". One vocabulary, no special case.
 //
-// Unlike the tag and project rows this ALWAYS renders: the lanes are a fixed
+// 🔴 THE CHIPS ARE THE STATUSES, AND THAT IS A FIX. They used to be a separate
+// "lane" vocabulary that GROUPED them: one chip covered in_progress AND
+// ready_for_review, and complete was spelled `done`. Measured on a 525-task
+// board, clicking "In progress" returned 30 ready_for_review cards beside 20
+// in_progress ones, and neither state could be selected on its own. Building the
+// row from All() means a status added to the vocabulary is a chip the same day,
+// and the two cannot drift again. (test:
+// TestTheStatusChipSetIsTheStatusEnum.)
+//
+// Unlike the tag and project rows this ALWAYS renders: the statuses are a fixed
 // vocabulary, not one derived from what tasks happen to exist, so there is no
 // "empty toolbar on a board that never used them" case to suppress.
 func statusFilterRow(active string) g.Node {
-	chip := func(lane, label string) g.Node {
-		on := lane == active
+	chip := func(status, label string) g.Node {
+		on := status == active
 		cls := "press inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition "
 		if on {
 			cls += "bg-sky-500/20 text-sky-100 ring-1 ring-inset ring-sky-400/50"
@@ -429,12 +446,12 @@ func statusFilterRow(active string) g.Node {
 			cls += "bg-white/5 text-slate-400 ring-1 ring-inset ring-white/5 hover:bg-white/10 hover:text-slate-200"
 		}
 		title := "Show all tasks"
-		if lane != "" {
+		if status != "" {
 			title = "Show only " + label + " tasks"
 		}
 		return Button(
 			Type("button"),
-			g.Attr("data-status-filter", lane),
+			g.Attr("data-status-filter", status),
 			g.Attr("aria-pressed", boolAttr(on)),
 			g.Attr("title", title),
 			Class(cls),
@@ -442,14 +459,20 @@ func statusFilterRow(active string) g.Node {
 		)
 	}
 	chips := []g.Node{chip("", "All")}
-	for _, lane := range taskstatus.Lanes() {
-		chips = append(chips, chip(lane, taskstatus.LaneLabel(lane)))
+	for _, status := range taskstatus.All() {
+		chips = append(chips, chip(status, taskstatus.Label(status)))
 	}
 	return chipScroller(Div(
 		ID("status-filter-row"),
 		g.Attr("data-active-status", active),
 		Class("-mx-1 flex items-center gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"),
-		Span(Class("shrink-0 text-xs font-medium uppercase tracking-wide text-slate-600"), g.Text("Status")),
+		// text-slate-400, NOT text-slate-600. Measured on the live board:
+		// rgb(71,85,105) on rgb(2,6,23) at 12px is 2.66:1, under the 4.5:1 WCAG AA
+		// floor for text this size — and this is the word that says what the row
+		// next to it DOES. slate-400 on the same ground is 7.9:1. (slate-500 is
+		// 4.2:1, i.e. still under; the next step up is the first that clears it.)
+		// Same change on the Project row, for the same measurement.
+		Span(Class("shrink-0 text-xs font-medium uppercase tracking-wide text-slate-400"), g.Text("Status")),
 		g.Group(chips),
 	), len(chips), "mb-3")
 }
@@ -774,11 +797,15 @@ func noteCard(v TaskCardView) g.Node {
 		// any amount of relabelling, and a card can no longer be "in" a status
 		// without literally carrying it.
 		//
-		// It is the RAW status (open / in_progress / ready_for_review / complete),
-		// NOT the filter lane: two statuses share the In-progress lane, and an
-		// attribute that collapsed them would lose the distinction that ranks a
-		// review-ready task above a just-started one. taskstatus.LaneOf maps one to
-		// the other where a lane is what is wanted.
+		// It is the RAW status (open / in_progress / ready_for_review / complete).
+		//
+		// ⚠ THIS USED TO WARN AGAINST COLLAPSING IT INTO A FILTER "LANE", because
+		// in_progress and ready_for_review once shared one, and an attribute that
+		// collapsed them would lose the distinction that ranks a review-ready task
+		// above a just-started one. The lane vocabulary is gone (internal/
+		// taskstatus/label.go) and the filter chips ARE the statuses now, so there
+		// is nothing left to collapse INTO — the hazard is closed rather than
+		// merely avoided here.
 		//
 		// Rendered UNCONDITIONALLY, including for the "" a bare test fixture
 		// carries: an attribute that vanishes for some cards is one a `closest()`

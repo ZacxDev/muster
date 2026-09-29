@@ -110,7 +110,7 @@ func cardTagChips(tags []string) g.Node {
 
 // boardURL builds the /ui/tasks URL for a complete board query: the active tag
 // set (repeated `tag=` params — the AND filter the store applies via
-// `tags @> …`), the status lane, and the row cap.
+// `tags @> …`), the status, and the row cap.
 //
 // 🔴 ONE BUILDER FOR ALL THREE, because the URL *is* the board's state: it is
 // what #tasks-list's hx-get holds, and — via tagScript's htmx:configRequest
@@ -176,6 +176,22 @@ func tagFilterRow(vocab []notes.TagCount, active []string) g.Node {
 		if ns, _ := notes.ParseTag(tc.Tag); ns == notes.NSProject {
 			continue
 		}
+		// 🔴 EXTERNAL-ID TAGS ARE NOT FILTERS, AND THEY WERE DROWNING THE ONES
+		// THAT ARE. `clickup:<id>` / `superseded-by:<id>` name ONE task each, so a
+		// chip for one can only ever narrow the board to the task you must already
+		// be looking at to know the id. Measured live: 241 chips, 202 of them
+		// clickup ids, a 33,967px row inside a 1,736px viewport with the scrollbar
+		// suppressed and the `›` cue pointer-events-none — twenty screens of
+		// controls with no way to reach them, hiding the ~39 real ones.
+		//
+		// They are removed from THIS ROW ONLY. Each stays on its card (tagChip),
+		// stays in the editor and its datalist, and stays filterable by URL —
+		// nothing that could act on one loses the ability to. See
+		// notes.ExternalIDNamespaces for why this is a closed namespace rule and
+		// not a "hide chips with a count of 1" heuristic.
+		if notes.IsExternalIDTag(tc.Tag) {
+			continue
+		}
 		shown = append(shown, tc.Tag)
 		seen[tc.Tag] = true
 	}
@@ -183,6 +199,10 @@ func tagFilterRow(vocab []notes.TagCount, active []string) g.Node {
 		if ns, _ := notes.ParseTag(t); ns == notes.NSProject {
 			continue // owned by projectFilterRow, which always renders an active one
 		}
+		// An ACTIVE external-id tag DOES get a chip, and that asymmetry is the
+		// point: the vocabulary loop above decides what to OFFER, this loop keeps
+		// what is already ON reachable. A filter you cannot see is a filter you
+		// cannot clear, and the board would look mysteriously empty.
 		if !seen[t] {
 			shown = append(shown, t)
 			seen[t] = true
@@ -335,7 +355,9 @@ func projectFilterRow(projects []notes.ProjectCount, active []string) g.Node {
 		ID("project-filter-row"),
 		g.Attr("data-active-project", activeProject),
 		Class("-mx-1 flex items-center gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"),
-		Span(Class("shrink-0 text-xs font-medium uppercase tracking-wide text-slate-600"), g.Text("Project")),
+		// text-slate-400 — see the identical note on the Status row label in
+		// notes.go: slate-600 on slate-950 measured 2.66:1 against a 4.5:1 floor.
+		Span(Class("shrink-0 text-xs font-medium uppercase tracking-wide text-slate-400"), g.Text("Project")),
 		g.Group(chips),
 	), len(chips), "mb-2")
 }
@@ -366,13 +388,16 @@ func boolAttr(b bool) string {
 // concludes their queue is empty when it is merely filtered), so this copy names
 // the ACTIVE FILTERS and ships a Clear control. Pinned by a render test + an e2e.
 //
-// 🔴 The status lane is named alongside the tags, not omitted. A status-only
-// filter that matched nothing would otherwise render "No tasks match " with the
+// 🔴 The status is named alongside the tags, not omitted. A status-only filter
+// that matched nothing would otherwise render "No tasks match " with the
 // sentence trailing off — copy that says a filter is on without saying WHICH,
 // which is barely better than the all-clear this state exists to avoid.
+//
+// An unknown status yields an empty Label, which is what drops it from the
+// sentence rather than printing "status: " with nothing after it.
 func tasksFilteredEmpty(active []string, status string) g.Node {
 	parts := append([]string(nil), active...)
-	if label := taskstatus.LaneLabel(status); label != "" {
+	if label := taskstatus.Label(status); label != "" {
 		parts = append(parts, "status: "+label)
 	}
 	return Div(

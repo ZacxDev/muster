@@ -275,8 +275,8 @@ type ListFilter struct {
 	Tags []string
 	// Statuses restricts to `status = ANY(...)`. Empty/nil is no status
 	// predicate — which is the "All" chip, and also what an unknown ?status=
-	// value degrades to (see taskstatus.LaneStatuses: a bad lane must show
-	// everything, never nothing).
+	// value degrades to (see statusPredicate in internal/api/tags.go: a bad
+	// status must show everything, never nothing).
 	Statuses []string
 	// Limit caps the returned rows. 0 (or negative) means no LIMIT clause.
 	// Page.Total still counts the whole matching set, so a caller can tell a
