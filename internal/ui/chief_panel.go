@@ -812,8 +812,27 @@ func chiefPanelScript() g.Node {
   // is a constant of the markup: it changes only when someone renames the panel,
   // which is a deliberate act, and it cannot be moved by anything the operator
   // or the fleet does.
-  var KEY_OPEN = 'cg.chief.v1.open.' + PANEL_ID;
-  var KEY_WIDTH = 'cg.chief.v1.width.' + PANEL_ID;
+  //
+  // 🔴 THE PREFIX IS 'muster.', AND IT USED TO BE THE PREFIX OF THE SERVICE THIS
+  // ONE WAS EXTRACTED FROM. Every other key this app writes is already 'muster.'
+  // (appScript's nav tab, nav scroll and tag filter), so three keys under the old
+  // namespace were the last place a reader of the page source could see the
+  // extraction had not finished. It is inert rather than dangerous — localStorage
+  // is per-ORIGIN, so the two services could never have read each other's — which
+  // is exactly why it survived: nothing ever broke.
+  //
+  // ⚠ THE RENAME DROPS WHAT WAS STORED, DELIBERATELY, AND NOTHING MIGRATES IT.
+  // The three values are the panel's open state, its width, and the thread it was
+  // last showing; each is rewritten by the next interaction with the panel, so
+  // the whole cost is that the panel opens shut, at its default width, on the
+  // latest thread, ONCE. A migration would be a read of the old key, a write of
+  // the new one and a removal deadline nobody would come back for — more code
+  // than the preference is worth, and the 'v1' segment exists so a reset is
+  // sayable. Orphaned entries under the old prefix are left in place rather than
+  // swept: a cleanup pass is a write on every page load to reclaim three short
+  // strings.
+  var KEY_OPEN = 'muster.chief.v1.open.' + PANEL_ID;
+  var KEY_WIDTH = 'muster.chief.v1.width.' + PANEL_ID;
   // 🔴 THE PICKED THREAD, UNDER THE SAME STABLE REFERENCE — constraint 2. A
   // SESSION ID qualifies: it is a database identity, not a description of the
   // panel's contents, so it cannot be moved by the swaps the memory must survive.
@@ -823,7 +842,7 @@ func chiefPanelScript() g.Node {
   // picked thread held until the operator shut the panel and then snapped back to
   // "latest" with nothing on screen saying so — the fifth instance of that bug
   // class in this repo.
-  var KEY_SESSION = 'cg.chief.v1.session.' + PANEL_ID;
+  var KEY_SESSION = 'muster.chief.v1.session.' + PANEL_ID;
   var MIN = ` + strconv.Itoa(chiefPanelMinWidth) + `;
   var MAX = ` + strconv.Itoa(chiefPanelMaxWidth) + `;
   var DEFAULT = ` + strconv.Itoa(chiefPanelDefaultWidth) + `;
