@@ -34,6 +34,30 @@ func ReposNotConfigured() g.Node {
 		"Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET (a GitHub OAuth App) to connect an account.")
 }
 
+// ReposUnavailable is shown when the GitHub CONNECTION STORE itself was never
+// built, so there is nowhere to read a connection from and nowhere to put one.
+//
+// 🔴 IT IS A DIFFERENT STATE FROM ReposNotConfigured, AND COLLAPSING THE TWO
+// WOULD MISDIRECT THE ONLY READER WHO SEES THIS. ReposNotConfigured means "the
+// store is there, nothing is connected, and the OAuth App that would connect one
+// is unset" — the remedy is the OAuth App. This one means the store was not
+// constructed at all, so the OAuth App would change nothing: the encryption key
+// is what decides whether the store exists (a token store with no key would have
+// to write tokens in the clear), and without it the connect flow has nothing to
+// save into. Telling an operator to set the OAuth App here sends them to fix the
+// half that is not missing.
+//
+// ⚠ IT RENDERS THROUGH reposCenter LIKE ITS THREE SIBLINGS, DELIBERATELY. The
+// stylesheet is built from these views and compared byte for byte against the
+// committed copy (`make css-check`), so a state that invents its own classes
+// makes a copy change a stylesheet change. There is no design reason for this
+// state to look unlike the other empty states either.
+func ReposUnavailable() g.Node {
+	return reposCenter("📦", "GitHub not available",
+		"This deployment did not build the GitHub connection store. Set "+
+			"MUSTER_GITHUB_ENCRYPTION_KEY (with a database configured) to enable it.")
+}
+
 // ReposConnect is shown when OAuth is configured but no account is connected.
 func ReposConnect() g.Node {
 	return Div(

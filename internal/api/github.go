@@ -12,11 +12,32 @@ import (
 
 const oauthStateCookie = "muster_gh_state"
 
+// githubUnwiredReason is what the two OAuth-flow routes answer when this build
+// cannot complete a connection. It is stated ONCE so the two cannot drift into
+// describing different deployments.
+//
+// ⚠ IT COVERS BOTH HALVES OF "CANNOT CONNECT" ON PURPOSE — no store to save the
+// token into, and no OAuth App to obtain one with. Splitting it would mean
+// telling a caller which of the two is missing at a route they reached by
+// following a link the UI only draws when both are present, which is a
+// distinction for a log line rather than for an error page.
+const githubUnwiredReason = "this build cannot connect a GitHub account: it has no " +
+	"GitHub connection store, no OAuth App, or neither"
+
 // registerGitHubRoutes wires the Repos tab + GitHub OAuth flow when a GitHub
 // connection store is set.
 // 🔴 NO EARLY RETURN ON A nil DEPENDENCY — see the package doc in server.go.
 // Every handler below answers its own "nothing to serve from" case, so the
 // recorded route set is a function of the CODE and never of the fixture.
+//
+// 🔴 THAT SENTENCE WAS A DESCRIPTION OF AN INTENTION, NOT OF THE CODE, FOR THE
+// WHOLE LIFE OF THIS FILE — AND IT IS THE REASON NOBODY LOOKED. Three of the
+// four handlers reached straight through a nil Extensions.GitHub, so on the only
+// deployment shape this module ships by default (no encryption key, therefore no
+// store) GET /ui/repos answered 500 with an empty body on every single page load,
+// not just on the Repos tab. Each handler answers its own case NOW.
+// TestEveryGitHubRouteAnswersWhenTheStoreIsUnwired drives all four through the
+// real mux, so the claim is checked rather than asserted.
 func (s *Server) registerGitHubRoutes(mux Mux) {
 	mux.HandleFunc("GET /ui/repos", s.requireSession(s.handleReposContent))
 	mux.HandleFunc("GET /github/connect", s.requireSession(s.handleGitHubConnect))
@@ -28,6 +49,25 @@ func (s *Server) registerGitHubRoutes(mux Mux) {
 // connected-with-repo-list depending on state.
 func (s *Server) handleReposContent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// 🔴 THE nil STORE IS ANSWERED HERE, AND THE REGISTRATION COMMENT ABOVE IS
+	// WHY IT HAS TO BE. Routes in this package are registered unconditionally, so
+	// this handler runs on every deployment — including the ones that build no
+	// GitHub store at all, which is every deployment without an encryption key.
+	// Without this branch the next line dereferences a nil interface: the
+	// recovered panic answers 500 with a ZERO-LENGTH body, and because the shell
+	// mounts the Repos panel on every page, every navigation in the app raises a
+	// request-failed toast. The panel is the loudest symptom and it is not the
+	// only one.
+	//
+	// ⚠ THIS IS THE CLAIM cmd/muster-server/doc_seams.go ENTRY 5 ALREADY MAKES —
+	// "unset means the store is not built, which the Repos tab says on screen" —
+	// and until this branch existed the tab said nothing on screen, because the
+	// handler never reached a renderer. A doc that describes a guard is not a
+	// guard.
+	if s.ext.GitHub == nil {
+		_ = ui.ReposUnavailable().Render(w)
+		return
+	}
 	// Check for a stored connection FIRST — it may come from the static-token
 	// path (MUSTER_GITHUB_TOKEN auto-connect) even when no OAuth App is set.
 	conn, ok, err := s.ext.GitHub.Get(r.Context())
@@ -62,6 +102,10 @@ func (s *Server) handleReposContent(w http.ResponseWriter, r *http.Request) {
 // handleGitHubConnect starts the OAuth web flow: set a state cookie and redirect
 // to GitHub's authorize page.
 func (s *Server) handleGitHubConnect(w http.ResponseWriter, r *http.Request) {
+	if s.ext.GitHub == nil || !s.ext.GitHubOAuth.Configured() {
+		http.Error(w, githubUnwiredReason, http.StatusServiceUnavailable)
+		return
+	}
 	state, err := auth.RandomToken(16)
 	if err != nil {
 		http.Error(w, "could not start oauth", http.StatusInternalServerError)
@@ -82,6 +126,10 @@ func (s *Server) handleGitHubConnect(w http.ResponseWriter, r *http.Request) {
 // handleGitHubCallback completes the flow: verify state, exchange the code,
 // fetch the login, and persist the (encrypted) token.
 func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
+	if s.ext.GitHub == nil || !s.ext.GitHubOAuth.Configured() {
+		http.Error(w, githubUnwiredReason, http.StatusServiceUnavailable)
+		return
+	}
 	wantState, err := r.Cookie(oauthStateCookie)
 	if err != nil || wantState.Value == "" || r.URL.Query().Get("state") != wantState.Value {
 		http.Error(w, "invalid oauth state", http.StatusBadRequest)
@@ -119,6 +167,15 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 
 // handleGitHubDisconnect clears the stored connection and re-renders the panel.
 func (s *Server) handleGitHubDisconnect(w http.ResponseWriter, r *http.Request) {
+	// This one answers INTO the panel (htmx swaps the response into
+	// #panel-repos), so the refusal is the panel's own unavailable state rather
+	// than an error body — a 503 here would swap nothing and leave the old
+	// markup claiming a connection that cannot be cleared.
+	if s.ext.GitHub == nil {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = ui.ReposUnavailable().Render(w)
+		return
+	}
 	if err := s.ext.GitHub.Clear(r.Context()); err != nil {
 		s.logger.Printf("github: clear connection: %v", err)
 		http.Error(w, "could not disconnect", http.StatusInternalServerError)
