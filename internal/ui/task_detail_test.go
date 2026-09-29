@@ -12,7 +12,7 @@ import (
 func renderTaskDetail(t *testing.T, v TaskCardView) string {
 	t.Helper()
 	var b bytes.Buffer
-	if err := RenderTaskDetail(&b, v); err != nil {
+	if err := RenderTaskDetail(&b, v, featuresAllOn); err != nil {
 		t.Fatalf("render task detail: %v", err)
 	}
 	return b.String()

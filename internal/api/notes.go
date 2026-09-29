@@ -1941,7 +1941,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 	view := s.taskCardView(r.Context(), note)
 	view.Detail = true
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderTaskDetail(w, view); err != nil {
+	if err := ui.RenderTaskDetail(w, view, s.shellFeatures()); err != nil {
 		s.logger.Printf("notes: render task detail %d: %v", id, err)
 	}
 }
@@ -1952,7 +1952,7 @@ func (s *Server) handleTaskDetail(w http.ResponseWriter, r *http.Request) {
 func (s *Server) renderTaskNotFound(w http.ResponseWriter, id string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusNotFound)
-	if err := ui.RenderTaskNotFound(w, id); err != nil {
+	if err := ui.RenderTaskNotFound(w, id, s.shellFeatures()); err != nil {
 		s.logger.Printf("notes: render task 404 %s: %v", id, err)
 	}
 }

@@ -266,6 +266,104 @@ func (disconnectedGitHubStore) Get(context.Context) (github.Connection, bool, er
 }
 func (disconnectedGitHubStore) Clear(context.Context) error { return nil }
 
+// TestTheShellDrawsTheReposSurfaceExactlyWhenTheStoreIsWired is the SEAM between
+// the two halves of this fix, and neither half implies it.
+//
+// 🔴 EACH HALF IS CORRECT IN ISOLATION AND STILL LEAVES THE DEFECT. The handler
+// answering its unwired case removes the 500 but leaves the shell fetching a
+// route that can only refuse, on every page; the shell hiding the panel removes
+// the fetch but leaves a stale tab and a bookmarked URL reaching a handler that
+// must still answer. What nothing inside either package can see is whether the
+// page and the handler read the SAME state — internal/ui does not know what a
+// server wired, and a handler test never renders a shell. This drives the real
+// mux at both ends of that state.
+//
+// 🔴 IT IS A RELATIONSHIP, ASSERTED IN BOTH DIRECTIONS. Checking only the
+// unwired end passes on a build that never draws the tab at all; checking only
+// the wired end passes on the shipped defect. The pair is the claim.
+func TestTheShellDrawsTheReposSurfaceExactlyWhenTheStoreIsWired(t *testing.T) {
+	cases := []struct {
+		name  string
+		store github.Store
+		want  bool
+	}{
+		{"no GitHub store (the shipping default)", nil, false},
+		{"a GitHub store, with nothing connected", disconnectedGitHubStore{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(nil, AuthConfig{UIPassword: testUIPassword}, log.New(os.Stderr, "", 0))
+			s.UseExtensions(Extensions{GitHub: tc.store})
+			h := s.Handler()
+
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, operatorRequest(s, http.MethodGet, "/"))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET / answered %d, want 200; nothing below is a claim about the shell", rec.Code)
+			}
+			body := rec.Body.String()
+
+			// The two attributes the BROWSER keys on, not the label: the panel id
+			// appScript toggles, and the data-tab the router reads off a nav link.
+			// A copy change cannot move either, and no other feature can spell them.
+			panel := strings.Contains(body, `id="panel-repos"`)
+			link := strings.Contains(body, `data-tab="repos"`)
+
+			if panel != tc.want || link != tc.want {
+				t.Errorf("shell with %s: repos panel present = %v, repos nav link present = %v; "+
+					"want both %v.\n"+
+					"    The panel carries hx-trigger=\"load\" and the shell renders on EVERY page, so "+
+					"mounting it without a store behind it is one failed fetch per navigation across the "+
+					"whole application. Hiding it without a store is what makes the tab's absence honest.",
+					tc.name, panel, link, tc.want)
+			}
+		})
+	}
+}
+
+// TestADeepLinkToAHiddenTabStillRendersAShell closes the hole the guard above
+// leaves: the tab routes stay registered whatever is wired, so /repos is served
+// on a build with no store and must land somewhere.
+//
+// 🔴 A SHELL WITH NO PANEL SHOWN IS A BLANK PAGE UNDER A CORRECT-LOOKING URL,
+// which is worse than the 500 this change removes — there is nothing at all to
+// read. The clamp sends it to the default tab, which is what an unrouted path
+// already does.
+func TestADeepLinkToAHiddenTabStillRendersAShell(t *testing.T) {
+	s, h := unwiredGitHubServer(t)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, operatorRequest(s, http.MethodGet, "/repos"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /repos with no GitHub store answered %d, want 200 — the route is "+
+			"registered unconditionally, so it must serve something", rec.Code)
+	}
+	body := rec.Body.String()
+	// The default tab's panel must be the VISIBLE one. `hidden` is the class
+	// every inactive panel carries, so its absence on this panel is the state
+	// "this is the tab being shown".
+	i := strings.Index(body, `id="panel-`+defaultTabForTest+`"`)
+	if i < 0 {
+		t.Fatalf("GET /repos rendered no #panel-%s at all", defaultTabForTest)
+	}
+	// Read the class attribute of that element only.
+	rest := body[i:]
+	end := strings.Index(rest, ">")
+	if end < 0 {
+		t.Fatal("could not read the panel's opening tag")
+	}
+	if strings.Contains(rest[:end], "hidden") {
+		t.Errorf("GET /repos with no GitHub store left #panel-%s hidden, so every panel in "+
+			"the document is hidden and the page is blank. The active tab must clamp to one "+
+			"this build draws.\n    tag: %s", defaultTabForTest, rest[:end])
+	}
+}
+
+// defaultTabForTest is the tab an unknown or undrawable tab clamps to. It is
+// internal/ui's `defaultTab`, which is unexported; spelled here because the two
+// packages are separate and this is the only thing this file needs from it.
+const defaultTabForTest = "tasks"
+
 // githubRoutePatterns is every registered route this file's handlers serve,
 // taken from the route recorder.
 //

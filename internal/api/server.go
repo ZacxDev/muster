@@ -432,11 +432,28 @@ func staticHandler() http.Handler {
 	return http.StripPrefix("/static/", http.FileServerFS(sub))
 }
 
+// shellFeatures says which optional subsystems this server holds, for the
+// documents that draw a navigation.
+//
+// 🔴 IT IS THE ONE DERIVATION, AND EVERY DOCUMENT GOES THROUGH IT. Four handlers
+// render a document carrying the sidebar; deciding the tab set at each of them
+// would be four copies of one predicate, which is the shape that ends up wrong at
+// three of the four in the same direction. It reads the SAME field the handler
+// guards on (Extensions.GitHub), so the page and the route cannot disagree about
+// whether a subsystem exists.
+//
+// ⚠ IT IS NOT A READINESS OR PERMISSION CHECK. A tab hidden here is a surface the
+// build does not have, not one this caller may not see — every route stays
+// registered and answers for itself (see internal/api/routes.go and github.go).
+func (s *Server) shellFeatures() ui.Features {
+	return ui.Features{GitHub: s.ext.GitHub != nil}
+}
+
 // handleIndex serves the document shell. The active tab is derived from the
 // request path so each tab deep-links.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderPage(w, tabFromPath(r.URL.Path)); err != nil {
+	if err := ui.RenderPage(w, tabFromPath(r.URL.Path), s.shellFeatures()); err != nil {
 		s.logger.Printf("error rendering index page: %v", err)
 	}
 }

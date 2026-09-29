@@ -57,12 +57,12 @@ type documentRenderer struct {
 var standaloneDocuments = []documentRenderer{
 	{
 		fn: "Page", label: "the app shell (/)",
-		render:      func(w io.Writer) error { return RenderPage(w, "tasks") },
-		renderEmpty: func(w io.Writer) error { return RenderPage(w, "") },
+		render:      func(w io.Writer) error { return RenderPage(w, "tasks", featuresAllOn) },
+		renderEmpty: func(w io.Writer) error { return RenderPage(w, "", featuresAllOn) },
 	},
 	{
 		fn: "AgentDetailPage", label: "the agent detail page (/agents/<name>)",
-		render: func(w io.Writer) error { return RenderAgentDetail(w, sampleAgentDetailView()) },
+		render: func(w io.Writer) error { return RenderAgentDetail(w, sampleAgentDetailView(), featuresAllOn) },
 		// A freshly-created agent: no sessions yet, so the session list renders its
 		// empty state instead of its rows. It keeps a NAME — the page's <h1> is the
 		// agent's name and the route cannot resolve without one, so a nameless view
@@ -71,7 +71,7 @@ var standaloneDocuments = []documentRenderer{
 		renderEmpty: func(w io.Writer) error {
 			return RenderAgentDetail(w, AgentDetailView{
 				ID: 8, Name: "worker-nova", DisplayName: "worker-nova", Status: "pending",
-			})
+			}, featuresAllOn)
 		},
 	},
 	{
@@ -79,7 +79,7 @@ var standaloneDocuments = []documentRenderer{
 		// only place the markdown body, the attachment list, the session thread,
 		// the comment boxes and the add-comment form render at all.
 		fn: "TaskDetailPage", label: "the task detail page (/tasks/<id>)",
-		render: func(w io.Writer) error { return RenderTaskDetail(w, sampleTaskDetailView()) },
+		render: func(w io.Writer) error { return RenderTaskDetail(w, sampleTaskDetailView(), featuresAllOn) },
 		// A task with nothing on it. Every "…nothing yet" branch renders here.
 		//
 		// 🔴 UpdatedAt IS SET, and a bare notes.Note{ID: 1} is WRONG here even
@@ -93,18 +93,18 @@ var standaloneDocuments = []documentRenderer{
 			return RenderTaskDetail(w, TaskCardView{
 				Note:   notes.Note{ID: 1, UpdatedAt: fixedNow},
 				Detail: true,
-			})
+			}, featuresAllOn)
 		},
 	},
 	{
 		// A real document a reader can LAND on — a legacy deeplink to a dismissed
 		// task arrives here — so it owes the same contract as any other page.
 		fn: "TaskNotFoundPage", label: "the task 404 page (/tasks/<id>, dismissed)",
-		render: func(w io.Writer) error { return RenderTaskNotFound(w, taskNotFoundFixtureID) },
+		render: func(w io.Writer) error { return RenderTaskNotFound(w, taskNotFoundFixtureID, featuresAllOn) },
 		// The id is the page's ONLY input, and it is not always present: a
 		// /tasks/{id} whose id never parsed reaches this document with nothing to
 		// name.
-		renderEmpty: func(w io.Writer) error { return RenderTaskNotFound(w, "") },
+		renderEmpty: func(w io.Writer) error { return RenderTaskNotFound(w, "", featuresAllOn) },
 	},
 }
 
@@ -152,15 +152,32 @@ func allDocuments() []namedDoc { return allDocumentsFrom(standaloneDocuments) }
 // swept, silently.
 func allDocumentsFrom(rows []documentRenderer) []namedDoc {
 	docs := documentsFrom(rows)
-	for _, t := range musterTabs {
+	for _, t := range visibleTabs(featuresAllOn) {
 		t := t
 		docs = append(docs, namedDoc{
 			name: "shell:" + t.Key,
-			node: g.NodeFunc(func(w io.Writer) error { return RenderPage(w, t.Key) }),
+			node: g.NodeFunc(func(w io.Writer) error { return RenderPage(w, t.Key, featuresAllOn) }),
 		})
 	}
+	// 🔴 THE SHELL WITH AN OPTIONAL SUBSYSTEM UNBUILT IS A DIFFERENT DOCUMENT AND
+	// IS SWEPT AS ONE. Every row above renders with featuresAllOn, so without this
+	// entry the sweeps would only ever see the widest shell — and the shipping
+	// default is the narrow one. It is ONE row rather than a second pass over the
+	// tabs because Features changes WHICH tabs are drawn, not what any tab draws.
+	docs = append(docs, namedDoc{
+		name: "shell:" + defaultTab + " — no optional subsystems built",
+		node: g.NodeFunc(func(w io.Writer) error { return RenderPage(w, defaultTab, Features{}) }),
+	})
 	return docs
 }
+
+// featuresAllOn is the widest shell: every optional subsystem wired.
+//
+// 🔴 IT IS NAMED RATHER THAN SPELLED AT EACH CALL SITE SO A NEW Features FIELD
+// REACHES EVERY SWEEP AT ONCE. A field added with `Features{GitHub: true}`
+// written out eight times would default to false at all eight, silently removing
+// whatever it gates from every document-level guard in this package.
+var featuresAllOn = Features{GitHub: true}
 
 // listFragments is every LIST/CARD partial the shell lazy-loads over htmx rather
 // than rendering inline. They are unreachable from Page() at ANY fixture — every
@@ -265,45 +282,104 @@ func TestEveryDocumentHasExactlyOneH1(t *testing.T) {
 // tab added to the registry whose panel nobody rendered (a nav entry that shows
 // a blank page), and a panel rendered for a tab the registry does not carry (a
 // surface reachable by URL and invisible in the nav).
+//
+// 🔴 IT RUNS ONCE PER Features SHAPE, AND THE NARROW SHAPE IS THE ONE THAT
+// SHIPS. A single pass over the widest shell cannot see the defect this matrix
+// exists for: a panel mounted for a subsystem the process did not build. That
+// panel carries hx-trigger="load" and the shell is rendered on EVERY page, so it
+// is one failed fetch per navigation across the whole application — the loudest
+// possible symptom from the quietest possible cause.
 func TestTheShellRendersOneTabpanelPerRegisteredTab(t *testing.T) {
 	if len(musterTabs) == 0 {
 		t.Fatal("musterTabs is empty — every assertion below would pass vacuously")
 	}
-	html := renderString(t, Page(defaultTab))
+	for _, shape := range featureShapes() {
+		shape := shape
+		t.Run(shape.name, func(t *testing.T) {
+			html := renderString(t, Page(defaultTab, shape.feat))
 
-	want := make([]string, 0, len(musterTabs))
-	for _, tb := range musterTabs {
-		want = append(want, panelID(tb.Key))
-	}
-	sort.Strings(want)
+			visible := visibleTabs(shape.feat)
+			want := make([]string, 0, len(visible))
+			for _, tb := range visible {
+				want = append(want, panelID(tb.Key))
+			}
+			sort.Strings(want)
 
-	// Read the ids back out of the markup rather than asking whether each
-	// expected one is present: only the full set can see an EXTRA panel.
-	var got []string
-	for _, id := range want {
-		if strings.Contains(html, `id="`+id+`"`) {
-			got = append(got, id)
-		}
+			// Read the ids back out of the markup rather than asking whether each
+			// expected one is present: only the full set can see an EXTRA panel.
+			//
+			// 🔴 THE SCAN IS OVER EVERY REGISTERED TAB, NOT OVER want. Scanning for
+			// the ids it expects can only ever confirm them — a panel for a HIDDEN
+			// tab would never be looked for, which is precisely the defect in the
+			// narrow shape.
+			var got []string
+			for _, tb := range musterTabs {
+				if id := panelID(tb.Key); strings.Contains(html, `id="`+id+`"`) {
+					got = append(got, id)
+				}
+			}
+			// Any `role="tabpanel"` whose id is not in want is an extra.
+			extras := 0
+			for i := 0; ; {
+				j := strings.Index(html[i:], `role="tabpanel"`)
+				if j < 0 {
+					break
+				}
+				extras++
+				i += j + 1
+			}
+			sort.Strings(got)
+			if strings.Join(got, ",") != strings.Join(want, ",") {
+				t.Errorf("the shell renders tabpanels %v; this shape draws %v.\n"+
+					"A tab in the registry with no panel shows a blank page when selected; a panel with no "+
+					"registry entry is reachable by URL and invisible in the nav; and a panel for a "+
+					"subsystem this build does not have fetches a route that can only refuse, on every "+
+					"page in the app.", got, want)
+			}
+			if extras != len(want) {
+				t.Errorf("the shell renders %d elements with role=\"tabpanel\" but this shape draws %d tabs — "+
+					"there is a tabpanel whose id is not panelID(<a tab this shape draws>)", extras, len(want))
+			}
+
+			// 🔴 THE NAVIGATION IS CHECKED IN THE SAME PASS, AGAINST THE SAME SET.
+			// A link and a panel that disagree fail silently in both directions: a
+			// link whose panel is absent shows a blank page, and a panel with no
+			// link is unreachable except by URL. The attribute read here is the one
+			// the browser router keys on (appScript reads data-tab), not the label,
+			// so a copy change cannot move it and a second feature cannot spell it
+			// by accident.
+			var links []string
+			for _, tb := range musterTabs {
+				if strings.Contains(html, `data-tab="`+tb.Key+`"`) {
+					links = append(links, panelID(tb.Key))
+				}
+			}
+			sort.Strings(links)
+			if strings.Join(links, ",") != strings.Join(want, ",") {
+				t.Errorf("the sidebar links to tabs %v; this shape draws panels %v — the navigation and "+
+					"the panels must be the same set", links, want)
+			}
+		})
 	}
-	// Any `role="tabpanel"` whose id is not in want is an extra.
-	extras := 0
-	for i := 0; ; {
-		j := strings.Index(html[i:], `role="tabpanel"`)
-		if j < 0 {
-			break
-		}
-		extras++
-		i += j + 1
-	}
-	sort.Strings(got)
-	if strings.Join(got, ",") != strings.Join(want, ",") {
-		t.Errorf("the shell renders tabpanels %v; musterTabs declares %v.\n"+
-			"A tab in the registry with no panel shows a blank page when selected; a panel with no "+
-			"registry entry is reachable by URL and invisible in the nav.", got, want)
-	}
-	if extras != len(want) {
-		t.Errorf("the shell renders %d elements with role=\"tabpanel\" but musterTabs declares %d tabs — "+
-			"there is a tabpanel whose id is not panelID(<a registered tab key>)", extras, len(want))
+}
+
+// featureShape is one Features value with a name for subtest output.
+type featureShape struct {
+	name string
+	feat Features
+}
+
+// featureShapes is the matrix every document-shape guard runs over.
+//
+// 🔴 BOTH ENDS ARE REQUIRED AND NEITHER IS THE "NORMAL" ONE. The all-on shape is
+// the only one in which a gated surface renders at all, so it is the only one
+// that can catch a surface that went missing; the zero shape is what an ordinary
+// deployment actually serves, so it is the only one that can catch a surface
+// drawn over nothing. A guard run at one end is half a guard.
+func featureShapes() []featureShape {
+	return []featureShape{
+		{"every optional subsystem built", featuresAllOn},
+		{"no optional subsystem built", Features{}},
 	}
 }
 
@@ -322,45 +398,107 @@ func TestTheShellRendersOneTabpanelPerRegisteredTab(t *testing.T) {
 // about one structure, satisfied by a different one. Each value is now extracted
 // and asserted on its own.
 func TestTheBrowserScriptsTabRegistryMatchesGos(t *testing.T) {
-	js := mustStripJSComments(t, jsSource(t, appScript()))
+	for _, shape := range featureShapes() {
+		shape := shape
+		t.Run(shape.name, func(t *testing.T) {
+			// 🔴 THE TWO SIDES COME FROM DIFFERENT PLACES, AND AN EARLIER VERSION OF
+			// THIS TEST HAD THEM COME FROM ONE. It compared the script's registry
+			// against visibleTabs — the very function the script is built from — so
+			// a mutation to THAT function moved both sides together and survived a
+			// green run. The independent reference is what the DOCUMENT actually
+			// drew: the panels are markup, the registry is script, and a defect in
+			// the function feeding both shows up as the two disagreeing.
+			shell := renderString(t, Page(defaultTab, shape.feat))
+			drawn := drawnTabKeys(shell)
+			if len(drawn) == 0 {
+				t.Fatal("the shell rendered no tabpanels at all, so there is no reference " +
+					"to compare the script's registry against")
+			}
+			// The script is taken from appScript directly, not carved out of the
+			// document: jsSource needs a bare <script> node (its own doc says why —
+			// the closing tag desyncs the comment stripper), and the panels above
+			// already supply the independent reference this comparison needs.
+			js := mustStripJSComments(t, jsSource(t, appScript(shape.feat)))
 
-	tabsJS := jsValueAfter(t, js, "var TABS =")
-	headingsJS := jsValueAfter(t, js, "var HEADINGS =")
-	panelsJS := jsValueAfter(t, js, "var PANEL_SELECTOR =")
+			tabsJS := jsValueAfter(t, js, "var TABS =")
+			headingsJS := jsValueAfter(t, js, "var HEADINGS =")
+			panelsJS := jsValueAfter(t, js, "var PANEL_SELECTOR =")
 
-	// POSITIVE CONTROL: the extractor must have found real content, or every
-	// assertion below is a comparison against an empty string.
-	for name, v := range map[string]string{"TABS": tabsJS, "HEADINGS": headingsJS, "PANEL_SELECTOR": panelsJS} {
-		if len(v) < 3 {
-			t.Fatalf("extracted %q for %s — the script no longer emits it under that name, so nothing "+
-				"below is a claim about the browser's copy of the registry", v, name)
+			// POSITIVE CONTROL: the extractor must have found real content, or every
+			// assertion below is a comparison against an empty string.
+			for name, v := range map[string]string{"TABS": tabsJS, "HEADINGS": headingsJS, "PANEL_SELECTOR": panelsJS} {
+				if len(v) < 3 {
+					t.Fatalf("extracted %q for %s — the script no longer emits it under that name, so nothing "+
+						"below is a claim about the browser's copy of the registry", v, name)
+				}
+			}
+
+			for _, tb := range musterTabs {
+				if !drawn[tb.Key] {
+					continue
+				}
+				if !strings.Contains(tabsJS, `"`+tb.Key+`"`) {
+					t.Errorf("the document draws #%s but the script's TABS array (%s) does not name %q — "+
+						"switchTab and the swipe gesture both index into that array, so the tab is "+
+						"unreachable in-page", panelID(tb.Key), tabsJS, tb.Key)
+				}
+				if !strings.Contains(headingsJS, `"`+tb.Heading+`"`) {
+					t.Errorf("heading %q for tab %q is not in the script's HEADINGS map — an SPA switch onto that "+
+						"tab leaves the PREVIOUS tab's <h1> in place, announcing the wrong subject",
+						tb.Heading, tb.Key)
+				}
+				if !strings.Contains(panelsJS, "#"+panelID(tb.Key)) {
+					t.Errorf("PANEL_SELECTOR does not cover %s — the swipe gesture will not arm over that panel",
+						panelID(tb.Key))
+				}
+			}
+
+			// 🔴 THE SHRINK ARM, AND IT IS DERIVED RATHER THAN LISTED. A tab this
+			// shape does NOT draw must not survive in any of the three values, or
+			// the browser router can switch onto a panel that was never rendered —
+			// restoring it from localStorage on a cold start, or walking onto it
+			// with the swipe gesture — and the operator lands on a shell with every
+			// panel hidden.
+			for _, tb := range musterTabs {
+				if drawn[tb.Key] {
+					continue
+				}
+				if strings.Contains(tabsJS, `"`+tb.Key+`"`) {
+					t.Errorf("the script's TABS array names %q, which this shape does not draw — switchTab "+
+						"would toggle #%s, which is not in the document", tb.Key, panelID(tb.Key))
+				}
+				if strings.Contains(panelsJS, "#"+panelID(tb.Key)) {
+					t.Errorf("PANEL_SELECTOR names #%s, which this shape does not render", panelID(tb.Key))
+				}
+			}
+
+			// The other SHRINK arm: a tab the shell no longer serves AT ALL must not
+			// survive in the script either.
+			for _, gone := range []string{"requests", "attention", "suggestions", "tmux", "layout"} {
+				if strings.Contains(tabsJS, `"`+gone+`"`) {
+					t.Errorf("the script's TABS array still names the upstream-only tab %q — switchTab would "+
+						"toggle #panel-%s, which muster does not render", gone, gone)
+				}
+			}
+		})
+	}
+}
+
+// drawnTabKeys is the set of tab keys whose tabpanel the given document rendered.
+//
+// 🔴 IT IS READ OUT OF THE MARKUP, WHICH IS THE POINT. It is the one reference
+// in this file that does not come from the tab registry or from visibleTabs, so
+// it is the only thing a mutation to either of those cannot move. Everything
+// asserted against it is therefore a claim about two artefacts agreeing rather
+// than about one function agreeing with itself.
+func drawnTabKeys(html string) map[string]bool {
+	out := make(map[string]bool, len(musterTabs))
+	for _, t := range musterTabs {
+		if strings.Contains(html, `id="`+panelID(t.Key)+`"`) {
+			out[t.Key] = true
 		}
 	}
-
-	for _, tb := range musterTabs {
-		if !strings.Contains(tabsJS, `"`+tb.Key+`"`) {
-			t.Errorf("tab %q is in musterTabs but not in the script's TABS array (%s) — switchTab and the "+
-				"swipe gesture both index into that array, so the tab is unreachable in-page", tb.Key, tabsJS)
-		}
-		if !strings.Contains(headingsJS, `"`+tb.Heading+`"`) {
-			t.Errorf("heading %q for tab %q is not in the script's HEADINGS map — an SPA switch onto that "+
-				"tab leaves the PREVIOUS tab's <h1> in place, announcing the wrong subject",
-				tb.Heading, tb.Key)
-		}
-		if !strings.Contains(panelsJS, "#"+panelID(tb.Key)) {
-			t.Errorf("PANEL_SELECTOR does not cover %s — the swipe gesture will not arm over that panel",
-				panelID(tb.Key))
-		}
-	}
-
-	// The SHRINK arm: a tab the shell no longer serves must not survive in the
-	// script, or the swipe gesture walks onto a panel that is not rendered.
-	for _, gone := range []string{"requests", "attention", "suggestions", "tmux", "layout"} {
-		if strings.Contains(tabsJS, `"`+gone+`"`) {
-			t.Errorf("the script's TABS array still names the upstream-only tab %q — switchTab would "+
-				"toggle #panel-%s, which muster does not render", gone, gone)
-		}
-	}
+	return out
 }
 
 // jsValueAfter returns the text between a `var X =` and its terminating `;`.
@@ -420,7 +558,7 @@ func TestBothWordmarkSitesGoThroughTheOneRenderer(t *testing.T) {
 	if mark == "" {
 		t.Fatal("wordmark() renders nothing — every count below would be vacuous")
 	}
-	shell := renderString(t, Page(defaultTab))
+	shell := renderString(t, Page(defaultTab, featuresAllOn))
 	if n := strings.Count(shell, mark); n != 2 {
 		t.Errorf("the shell renders the wordmark markup %d times, want 2 (the header and the sidebar).\n"+
 			"A site that spells the wordmark inline instead of calling wordmark() is how one of the two "+
@@ -463,7 +601,7 @@ func TestTheShellCarriesNoPermissionRouterSurface(t *testing.T) {
 	// Comment-stripped: the shell's script carries a comment NAMING the
 	// attributes this sweep looks for, recording that the listener reading them
 	// was deleted. Over the raw render that sentence is itself a finding.
-	html := documentSource(t, Page(defaultTab))
+	html := documentSource(t, Page(defaultTab, featuresAllOn))
 
 	// POSITIVE CONTROL: the sweep must be able to find something in this
 	// document at all, or a clean result says nothing.
