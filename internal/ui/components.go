@@ -2113,12 +2113,19 @@ func appScript(feat Features) g.Node {
 `))
 }
 
-// resyncScript keeps the pending list fresh after the app is backgrounded and
+// resyncScript keeps the task list fresh after the app is backgrounded and
 // reopened. The htmx SSE extension auto-reconnects, but a dropped connection can
 // miss events while hidden; so we also refetch on focus, on visibility regain,
-// and on SSE (re)connect. It fires a body-level "muster:resync" event the
-// requests panel listens for (see Page's hx-trigger), and is fully
-// feature-detected/guarded.
+// and on SSE (re)connect. It fires a body-level "muster:resync" event, and is
+// fully feature-detected/guarded.
+//
+// 🔴 WHO LISTENS IS THE HALF THAT MATTERS, AND THIS DOC NAMED A PANEL THAT DOES
+// NOT EXIST HERE. It said "the requests panel listens for (see Page's
+// hx-trigger)" — the permission router's queue, which muster does not serve. The
+// subscribers are #tasks-list on the shell (notes.go) and the live card on the
+// task detail document (task_detail.go); a document carrying this script and
+// neither of those receives an event nobody is waiting for, which is what the
+// shell did.
 func resyncScript() g.Node {
 	return Script(g.Raw(`
 (function () {
@@ -2128,9 +2135,23 @@ func resyncScript() g.Node {
       document.body.dispatchEvent(new CustomEvent('muster:resync'));
     } catch (e) {
       // Fallback: direct htmx ajax if CustomEvent/dispatch is unavailable.
-      if (window.htmx) {
+      //
+      // 🔴 IT NAMES THE SAME ROUTE, TARGET AND SWAP THE PRIMARY PATH CAUSES, AND
+      // THAT IS THE WHOLE REQUIREMENT ON IT. It used to name a route the
+      // permission router serves and this service does not — GET /ui/requests,
+      // answered here by the mux's own 404 — into a target id no document in this
+      // app renders. Both halves were wrong, and neither could be observed:
+      // nothing reaches this branch in a browser that has CustomEvent, so the
+      // fallback had never once run.
+      //
+      // ⚠ THE ELEMENT IS LOOKED UP RATHER THAN ASSUMED. resyncScript is rendered
+      // on the shell AND on the task detail document, and only the shell has a
+      // task list; on detail the muster:resync listener above is the card's own,
+      // so there is nothing for this branch to do there.
+      var list = document.getElementById('tasks-list');
+      if (window.htmx && list) {
         try {
-          window.htmx.ajax('GET', '/ui/requests', { target: '#request-list', swap: 'innerHTML' });
+          window.htmx.ajax('GET', '/ui/tasks', { target: '#tasks-list', swap: 'morph:innerHTML' });
         } catch (e2) {}
       }
     }
