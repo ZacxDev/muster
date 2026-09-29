@@ -218,30 +218,6 @@ func mdInline(escaped string) string {
 	return v.restore(s)
 }
 
-// mdInlineNoLinks applies inline markup WITHOUT producing anchors: code spans
-// and emphasis only, with `[text](url)` and bare URLs left as literal text.
-//
-// 🔴 IT EXISTS FOR THE ONE PLACE AN ANCHOR IS ILLEGAL: inside another anchor.
-// The agents list renders each card title inside the card's own <a>, and a
-// nested <a> is invalid HTML that browsers resolve by CLOSING the outer link —
-// which would silently truncate the card's tap target. Rendering nothing at all
-// was the previous answer and it leaked raw `**`/backticks onto the card while
-// the detail page rendered the same string as markup.
-func mdInlineNoLinks(escaped string) string {
-	escaped = strings.ReplaceAll(escaped, mdVaultSep, "")
-	v := &mdVault{}
-	s := mdInlineCode.ReplaceAllStringFunc(escaped, func(m string) string {
-		g := mdInlineCode.FindStringSubmatch(m)
-		if g == nil {
-			return m
-		}
-		return v.stash(`<code class="rounded bg-slate-950/60 px-1 py-0.5 font-mono text-[0.85em]">` +
-			g[1] + `</code>`)
-	})
-	s = mdEmphasis(s)
-	return v.restore(s)
-}
-
 // mdAnchor renders ONE anchor. Both link paths — `[text](url)` and a bare URL —
 // go through it so the two can never disagree about target/rel/class; a
 // `rel="noopener"` present on one shape and absent on the other is precisely the
@@ -324,20 +300,6 @@ func renderMarkdown(src string) g.Node {
 	return g.Raw(markdownHTML(src))
 }
 
-// mdInlineNode renders INLINE markdown (bold/italic/code/link — no block
-// structure) as a safe node, for embedding in a single-line element like a
-// header title. Escape-first (mdEscape) so author text can never inject tags.
-func mdInlineNode(src string) g.Node {
-	return g.Raw(mdInline(mdEscape(src)))
-}
-
-// mdInlineNoLinkNode is mdInlineNode for a context that is ALREADY inside an
-// <a>: same escape-first guarantee, but it never emits a nested anchor. See
-// mdInlineNoLinks.
-func mdInlineNoLinkNode(src string) g.Node {
-	return g.Raw(mdInlineNoLinks(mdEscape(src)))
-}
-
 // mdStripRe removes the most common inline/block markdown markers for a clean
 // plain-text snippet (the collapsed-card preview). It is intentionally lossy: it
 // is NOT a parser, just a cosmetic strip so the one-liner reads as prose.
@@ -348,18 +310,35 @@ var (
 	mdStripSpace   = regexp.MustCompile(`\s+`)
 )
 
-// markdownSnippet returns a clean, single-line plain-text preview of a markdown
-// body, truncated to n runes. Fenced blocks are dropped, list/emphasis/heading
-// markers stripped, and whitespace collapsed — so a card preview reads as prose
-// rather than showing raw `**`/`>`/```` ``` ```` noise. Returns "" for an
-// all-markup/empty body so the caller can omit the snippet line.
-func markdownSnippet(src string, n int) string {
+// markdownPlain strips markdown markers and collapses a body to one line of
+// plain text. Fenced blocks are dropped, list/emphasis/heading markers removed,
+// whitespace collapsed.
+//
+// 🔴 IT IS THE ONE STRIP, AND BOTH ITS CALLERS EXIST BECAUSE A STRING WAS BEING
+// RENDERED TWO WAYS. An agent's display name is derived from its task title, so
+// it routinely carries `**bold**` and `code`. The agents LIST rendered it as
+// plain text (raw `**` and backticks on the card) while the DETAIL header
+// rendered it as inline markdown — one string, two answers, from the same click.
+// Stripping on both is what makes them agree; rendering markup on both was the
+// other option and it was rejected, because the card's title sits inside the
+// card's own <a> and the marked-up path can emit an anchor (see mdLinkify),
+// which is invalid nested HTML that browsers resolve by closing the outer link.
+//
+// It is intentionally lossy and is NOT a parser — just a cosmetic strip so a
+// one-liner reads as prose.
+func markdownPlain(src string) string {
 	s := mdStripFence.ReplaceAllString(src, " ")
 	s = mdStripBullet.ReplaceAllString(s, "")
 	s = mdStripMarkers.ReplaceAllString(s, "")
 	s = mdStripSpace.ReplaceAllString(s, " ")
-	s = strings.TrimSpace(s)
-	return truncate(s, n)
+	return strings.TrimSpace(s)
+}
+
+// markdownSnippet returns a clean, single-line plain-text preview of a markdown
+// body, truncated to n runes — markdownPlain plus the cap. Returns "" for an
+// all-markup/empty body so the caller can omit the snippet line.
+func markdownSnippet(src string, n int) string {
+	return truncate(markdownPlain(src), n)
 }
 
 // --- GFM pipe tables ---------------------------------------------------------

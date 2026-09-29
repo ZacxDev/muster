@@ -167,14 +167,14 @@ const maxAttachmentBytes = 10 << 20 // 10 MiB
 func (s *Server) handleNotesContent(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	filter := queryTags(q)
-	lane := queryStatusLane(q)
+	status := queryStatus(q)
 	limit := queryTaskLimit(q)
 	// 🔴 ALL THREE NARROW TOGETHER. They are one ListFilter and therefore one
-	// query — a tag filter, a project (which IS a tag) and a status lane compose
-	// by construction rather than by each combination being remembered.
+	// query — a tag filter, a project (which IS a tag) and a status compose by
+	// construction rather than by each combination being remembered.
 	page, err := s.ext.Notes.ListPage(r.Context(), notes.ListFilter{
 		Tags:     filter,
-		Statuses: taskstatus.LaneStatuses(lane),
+		Statuses: statusPredicate(status),
 		Limit:    limit,
 	})
 	if err != nil {
@@ -192,7 +192,7 @@ func (s *Server) handleNotesContent(w http.ResponseWriter, r *http.Request) {
 		Vocabulary:   vocab,
 		ActiveTags:   filter,
 		Projects:     notes.ProjectsFromVocabulary(vocab),
-		ActiveStatus: lane,
+		ActiveStatus: status,
 		Limit:        limit,
 		Total:        page.Total,
 		// The next page is computed HERE, not in the browser: the server is the
@@ -786,7 +786,7 @@ func (s *Server) apiTasks(ctx context.Context, list []notes.Note, summary bool) 
 // the duplication is deliberate rather than an oversight:
 //
 //	                 /api/tasks (machine)              /ui/tasks (board)
-//	?status=         RAW statuses, repeatable          ONE lane (taskstatus.Lanes)
+//	?status=         RAW statuses, repeatable          ONE status (taskstatus.All)
 //	unknown status   400 — a closed vocabulary a       ignored, board shows all —
 //	                 producer must not typo past       a filter is a read and must
 //	                                                   not be able to hide work

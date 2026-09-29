@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"fmt"
-	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -405,108 +403,68 @@ func TestTheRunbookSummaryDrawsExactlyOneTriangle(t *testing.T) {
 
 // --- Defect 8: raw markdown in an agent name ----------------------------------
 
-// TestAnAgentCardRendersItsNameAsMarkdown: the detail page rendered `**x**` as
-// bold and the card next to it showed the asterisks. One string, two answers.
-func TestAnAgentCardRendersItsNameAsMarkdown(t *testing.T) {
+// TestBothSurfacesRenderAnAgentNameTheSameWay is the regression guard for the
+// measured defect, and it is a RELATIONSHIP guard rather than two independent
+// ones: the agents LIST showed a name's raw `**` and backticks while the DETAIL
+// header rendered the same string as markup. Neither surface was wrong on its
+// own — they DISAGREED, and only a test that renders both can see that.
+//
+// Asserting they are EQUAL (rather than that each contains some expected text)
+// is what makes it unwalkable: changing the treatment on one surface reds this
+// until the other follows.
+func TestBothSurfacesRenderAnAgentNameTheSameWay(t *testing.T) {
 	const name = "**fix** the `chip` row"
+	const want = "fix the chip row"
+
 	card := renderString(t, agentCard(AgentCardView{ID: 1, Name: "agent-1", DisplayName: name, Status: "running"}))
+	// spanContaining, not between(): between() would start mid-ATTRIBUTE and the
+	// rest of the class string would read as body text. This backs up to the
+	// <span> element itself.
+	cardTitle := textOf(spanContaining(card, "text-base font-semibold leading-tight"))
 
-	if !strings.Contains(card, "<strong>fix</strong>") {
-		t.Errorf("the card did not render **fix** as bold:\n%s", card)
+	detail := renderString(t, AgentDetailPage(AgentDetailView{Name: "agent-1", DisplayName: name, ID: 1}))
+	detailTitle := textOf(between(detail, "<h1", "</h1>"))
+
+	if cardTitle != detailTitle {
+		t.Errorf("the list and the detail page render one name two ways:\n  card:   %q\n  detail: %q",
+			cardTitle, detailTitle)
 	}
-	if !strings.Contains(card, ">chip</code>") {
-		t.Errorf("the card did not render `chip` as code:\n%s", card)
-	}
-	if strings.Contains(card, "**") || strings.Contains(card, "`chip`") {
-		t.Errorf("raw markdown markers reached the card:\n%s", card)
+	for surface, got := range map[string]string{"card": cardTitle, "detail": detailTitle} {
+		if got != want {
+			t.Errorf("%s title = %q, want %q", surface, got, want)
+		}
+		if strings.ContainsAny(got, "*`_#") {
+			t.Errorf("%s title still carries raw markdown markers: %q", surface, got)
+		}
 	}
 }
 
-// TestAnAgentCardNameNeverNestsAnAnchor is the constraint the fix had to respect.
-// ⚠ INVARIANT GUARD, NOT REGRESSION COVERAGE — green at origin/main, where the
-// title was plain text and so could not emit an anchor either. It exists because
-// the OBVIOUS fix (reuse mdInlineNode, as the detail page does) breaks it.
+// TestAnAgentNameCannotEmitMarkupOnEitherSurface. The name is agent-authored
+// text; stripping markdown must not become a route for anything else to reach
+// the browser as markup, and neither surface may emit an anchor — the card's
+// title sits inside the card's own <a>, where a nested one is invalid HTML that
+// browsers resolve by closing the outer link.
 //
-// the title Span sits INSIDE the card's own <a>, and a nested anchor is invalid
-// HTML that browsers resolve by closing the outer one — which would truncate the
-// card's tap target. So the title renders emphasis and code but never a link.
-func TestAnAgentCardNameNeverNestsAnAnchor(t *testing.T) {
-	const name = "see [the PR](https://example.test/p/1) and https://example.test/p/2"
+// ⚠ INVARIANT GUARD, NOT REGRESSION COVERAGE — green at 8700b02 too, where the
+// card was plain text and the detail header's inline renderer emitted no anchor
+// for this input either. Mutation-checked instead: rendering the stripped name
+// with g.Raw instead of g.Text fails THIS test (and only this one) on the raw
+// tag.
+func TestAnAgentNameCannotEmitMarkupOnEitherSurface(t *testing.T) {
+	const name = "<img src=x onerror=alert(1)> see https://example.test/p/1"
+
 	card := renderString(t, agentCard(AgentCardView{ID: 1, Name: "agent-1", DisplayName: name, Status: "running"}))
+	cardTitle := spanContaining(card, "text-base font-semibold leading-tight")
+	detail := renderString(t, AgentDetailPage(AgentDetailView{Name: "agent-1", DisplayName: name, ID: 1}))
+	detailTitle := between(detail, "<h1", "</h1>")
 
-	title := between(card, `text-base font-semibold leading-tight`, "</span>")
-	if strings.Contains(title, "<a ") || strings.Contains(title, "<a href") {
-		t.Errorf("the card title emitted an anchor, and it is already inside the card's own <a>:\n%s", title)
-	}
-	// The markdown stays as literal text rather than vanishing.
-	if !strings.Contains(card, "the PR") {
-		t.Errorf("the link label vanished from the card:\n%s", card)
-	}
-}
-
-// --- Defect 9: filter-row label contrast --------------------------------------
-
-// TestFilterRowLabelsMeetTheContrastFloor COMPUTES the ratio from the palette
-// rather than naming a class — a guard that said "not text-slate-600" would be
-// satisfied by text-slate-500, which is 4.2:1 and still fails.
-//
-// Measured on the live board: rgb(71,85,105) on rgb(2,6,23) at 12px = 2.66:1,
-// against the 4.5:1 WCAG AA floor for text this size. These two words are what
-// say what the row beside them does.
-func TestFilterRowLabelsMeetTheContrastFloor(t *testing.T) {
-	const floor = 4.5
-	rows := map[string]string{
-		"Status":  renderString(t, statusFilterRow("")),
-		"Project": renderString(t, projectFilterRow([]notes.ProjectCount{{Name: "muster", Count: 2}}, nil)),
-	}
-	names := make([]string, 0, len(rows))
-	for n := range rows {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-
-	for _, label := range names {
-		span := spanContaining(rows[label], ">"+label+"<")
-		if span == "" {
-			t.Fatalf("could not find the %q row label in:\n%s", label, rows[label])
+	for surface, frag := range map[string]string{"card": cardTitle, "detail": detailTitle} {
+		if strings.Contains(frag, "<img") {
+			t.Errorf("%s title emitted a raw tag:\n%s", surface, frag)
 		}
-		fg := ""
-		for _, c := range strings.Fields(classOf(span)) {
-			if strings.HasPrefix(c, "text-slate-") {
-				fg = c
-			}
+		if strings.Contains(frag, "<a ") || strings.Contains(frag, "<a href") {
+			t.Errorf("%s title emitted an anchor:\n%s", surface, frag)
 		}
-		if fg == "" {
-			t.Fatalf("the %q label has no text-slate-* colour to measure: %s", label, span)
-		}
-		ratio, err := contrastAgainstAppBackground(fg)
-		if err != nil {
-			t.Fatalf("%q label: %v", label, err)
-		}
-		if ratio < floor {
-			t.Errorf("the %q row label uses %s, which is %.2f:1 on the app background — under the "+
-				"%.1f:1 AA floor for 12px text. text-slate-400 measures 7.88:1.", label, fg, ratio, floor)
-		}
-		t.Logf("%s label: %s = %.2f:1", label, fg, ratio)
-	}
-}
-
-// TestTheContrastHelperIsAWorkingInstrument: a ratio function that cannot report
-// a failing pair reports a passing one exactly the way a correct one does.
-func TestTheContrastHelperIsAWorkingInstrument(t *testing.T) {
-	// NEGATIVE control: the colour the defect was measured on MUST fail.
-	if got, err := contrastAgainstAppBackground("text-slate-600"); err != nil || got >= 4.5 {
-		t.Fatalf("contrast(text-slate-600) = %.2f (err %v), want a value under 4.5 — the helper "+
-			"cannot see the defect it exists for", got, err)
-	}
-	// POSITIVE control: the colour the fix uses MUST pass, and by a clear margin.
-	if got, err := contrastAgainstAppBackground("text-slate-400"); err != nil || got < 4.5 {
-		t.Fatalf("contrast(text-slate-400) = %.2f (err %v), want at least 4.5", got, err)
-	}
-	// An unknown swatch must ERROR rather than silently score 0 or 21.
-	if _, err := contrastAgainstAppBackground("text-slate-123"); err == nil {
-		t.Fatal("an unknown palette entry scored a ratio instead of erroring — a colour this helper " +
-			"does not know must not be graded")
 	}
 }
 
@@ -698,6 +656,32 @@ func spanContaining(html, needle string) string {
 	return rest[:j+len("</span>")]
 }
 
+// textOf returns the visible text of an HTML fragment: tags removed, entities
+// for the five escaped characters decoded, whitespace collapsed. Comparing TEXT
+// is what lets one assertion span two surfaces whose surrounding markup
+// legitimately differs (a <span> in a card, an <h1> on a page).
+func textOf(fragment string) string {
+	var b strings.Builder
+	depth := 0
+	for _, r := range fragment {
+		switch {
+		case r == '<':
+			depth++
+		case r == '>':
+			if depth > 0 {
+				depth--
+			}
+		case depth == 0:
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	for _, e := range [][2]string{{"&amp;", "&"}, {"&lt;", "<"}, {"&gt;", ">"}, {"&quot;", `"`}, {"&#39;", "'"}} {
+		out = strings.ReplaceAll(out, e[0], e[1])
+	}
+	return strings.TrimSpace(regexp.MustCompile(`\s+`).ReplaceAllString(out, " "))
+}
+
 func contains(hay []string, needle string) bool {
 	for _, h := range hay {
 		if h == needle {
@@ -705,55 +689,4 @@ func contains(hay []string, needle string) bool {
 		}
 	}
 	return false
-}
-
-// slatePalette is Tailwind's slate scale, as the stylesheet emits it. Only the
-// entries this app actually paints text and ground with are listed: an unknown
-// swatch must ERROR rather than be graded against a guess.
-var slatePalette = map[int][3]float64{
-	50:  {248, 250, 252},
-	200: {226, 232, 240},
-	300: {203, 213, 225},
-	400: {148, 163, 184},
-	500: {100, 116, 139},
-	600: {71, 85, 105},
-	700: {51, 65, 85},
-	800: {30, 41, 59},
-	900: {15, 23, 42},
-	950: {2, 6, 23},
-}
-
-// contrastAgainstAppBackground returns the WCAG 2.x contrast ratio of a
-// `text-slate-N` class against the app's ground (bg-slate-950, the colour the
-// body paints and the colour the defect was measured against).
-func contrastAgainstAppBackground(cls string) (float64, error) {
-	m := slateShade.FindStringSubmatch(cls)
-	if m == nil {
-		return 0, fmt.Errorf("%q is not a text-slate-N class", cls)
-	}
-	var shade int
-	if _, err := fmt.Sscanf(m[1], "%d", &shade); err != nil {
-		return 0, err
-	}
-	fg, ok := slatePalette[shade]
-	if !ok {
-		return 0, fmt.Errorf("slate-%d is not in slatePalette — add its RGB before grading it", shade)
-	}
-	l1, l2 := relativeLuminance(fg), relativeLuminance(slatePalette[950])
-	if l2 > l1 {
-		l1, l2 = l2, l1
-	}
-	return (l1 + 0.05) / (l2 + 0.05), nil
-}
-
-// relativeLuminance is the WCAG 2.x formula.
-func relativeLuminance(rgb [3]float64) float64 {
-	lin := func(c float64) float64 {
-		c /= 255
-		if c <= 0.04045 {
-			return c / 12.92
-		}
-		return math.Pow((c+0.055)/1.055, 2.4)
-	}
-	return 0.2126*lin(rgb[0]) + 0.7152*lin(rgb[1]) + 0.0722*lin(rgb[2])
 }

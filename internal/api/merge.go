@@ -269,8 +269,8 @@ func (s *Server) handleTaskMerge(w http.ResponseWriter, r *http.Request) {
 	// task answers 400 "too many tags: 21 (max 20)" and the WHOLE form is refused —
 	// title, body, model, repo, branch, privileges — naming a cap the operator never
 	// exceeded. It is recoverable in-modal by removing a chip, and the task is
-	// `complete` and therefore in the Done FILTER lane (it was the collapsed Done
-	// section before the board flattened), which is why this is
+	// `complete` and therefore behind the Done FILTER chip (it was the collapsed
+	// Done section before the board flattened), which is why this is
 	// accepted rather than blocking. Do not restate it as a tags-only refusal.
 	//
 	// ⚠ ALSO NOT ADDRESSED HERE, and named so it is not mistaken for closed: every

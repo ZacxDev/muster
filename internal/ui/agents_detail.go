@@ -135,7 +135,10 @@ func AgentDetailPage(v AgentDetailView) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				Meta(Name("theme-color"), Content("#0b0f17")),
-				TitleEl(g.Text(displayOr(v.DisplayName, v.Name)+" · muster")),
+				// Stripped too: it is the same string on the same document, and a tab
+				// title reading `**fix** the `+"`chip`"+` row · muster` is the same defect in
+				// a third place.
+				TitleEl(g.Text(markdownPlain(displayOr(v.DisplayName, v.Name))+" · muster")),
 				Link(Rel("stylesheet"), Href("/static/app.css")),
 				Script(Src("/static/vendor/htmx.min.js"), Defer()),
 				Script(Src("/static/vendor/sse.js"), Defer()),
@@ -254,7 +257,12 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 // button opening the task-detail modal; otherwise a plain H1. Both render the
 // title as inline markdown.
 func agentTitle(v AgentDetailView) g.Node {
-	title := mdInlineNode(displayOr(v.DisplayName, v.Name))
+	// markdownPlain, the SAME treatment agentCard gives this string in the list.
+	// It used to be mdInlineNode — inline markdown — which is how the list and the
+	// detail page came to render one name two ways (raw `**` on the card, bold
+	// here, and a backtick that survived on both). Stripping on both is the fix;
+	// see markdownPlain.
+	title := g.Text(markdownPlain(displayOr(v.DisplayName, v.Name)))
 	if v.NoteID == nil {
 		return H1(Class("mr-auto break-all text-sm font-medium"), title)
 	}

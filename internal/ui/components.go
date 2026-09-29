@@ -2593,7 +2593,7 @@ func tagScript() g.Node {
   function set(arr) {
     try { localStorage.setItem(KEY, JSON.stringify(arr)); } catch (e) {}
   }
-  // The board query URL. It carries the tag filter AND the status lane —
+  // The board query URL. It carries the tag filter AND the status —
   // see internal/ui/tags.go boardURL, which builds the same string server-side
   // for the show-more control.
   //
@@ -2613,7 +2613,7 @@ func tagScript() g.Node {
     tags.forEach(function (t) { q.push('tag=' + encodeURIComponent(t)); });
     return q.length ? '/ui/tasks?' + q.join('&') : '/ui/tasks';
   }
-  // The ACTIVE status lane, read back off #tasks-list's own hx-get.
+  // The ACTIVE status, read back off #tasks-list's own hx-get.
   //
   // 🔴 The URL is the single home of the board's query state; there is no second
   // copy in JS to fall out of step with it. Tags are the one exception (they are
@@ -2746,7 +2746,7 @@ func tagScript() g.Node {
       refreshTo(more.getAttribute('data-tasks-more'));
       return;
     }
-    // Status lane: composed with whatever tags are selected, never replacing
+    // Status: composed with whatever tags are selected, never replacing
     // them. The All chip carries an empty value, which is the same "no status
     // predicate" the server reads.
     var st = t.closest('[data-status-filter]');

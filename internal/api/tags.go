@@ -175,18 +175,40 @@ func nextTaskLimit(limit int) int {
 	return maxTaskLimit
 }
 
-// queryStatusLane reads ?status= and returns the lane, or "" for absent/unknown.
+// queryStatus reads ?status= and returns the status, or "" for absent/unknown.
 //
-// An unknown lane degrades to "no status filter" — the whole board — rather than
-// to an empty result. A filter is a READ, so a bogus value must not be able to
-// hide work: the same rule queryTags already applies to a bogus tag, except that
-// a tag genuinely matches nothing whereas a status lane has no such reading.
-func queryStatusLane(q url.Values) string {
-	lane := strings.TrimSpace(q.Get("status"))
-	if !taskstatus.ValidLane(lane) {
+// An unknown status degrades to "no status filter" — the whole board — rather
+// than to an empty result. A filter is a READ, so a bogus value must not be able
+// to hide work: the same rule queryTags already applies to a bogus tag, except
+// that a tag genuinely matches nothing whereas a status has no such reading.
+//
+// ⚠ IT USED TO BE queryStatusLane AND TO VALIDATE AGAINST A SEPARATE "LANE"
+// VOCABULARY. That vocabulary is gone (see internal/taskstatus/label.go): the
+// chips ARE the statuses now, so there is one thing to validate against. The
+// user-visible consequence is that `?status=done` — the old spelling of
+// Complete — is no longer valid and lands on the whole board rather than on the
+// completed tasks. Pinned by TestAnUnknownStatusFilterShowsEverything.
+func queryStatus(q url.Values) string {
+	status := strings.TrimSpace(q.Get("status"))
+	if !taskstatus.Valid(status) {
 		return ""
 	}
-	return lane
+	return status
+}
+
+// statusPredicate turns a validated status into the ListFilter.Statuses value.
+//
+// 🔴 nil IS "NO PREDICATE" AND AN EMPTY NON-NIL SLICE IS "MATCH NOTHING", AND
+// THE TWO ARE ONE CHARACTER APART. `Statuses` becomes `status = ANY($n)`, so
+// handing it `[]string{}` builds a query that matches no rows — a bogus filter
+// value would silently empty the board while the chip row showed nothing
+// selected. This is the rule that used to live in taskstatus.LaneStatuses; it
+// moved here with the layer's deletion, to the ONE call site that needs it.
+func statusPredicate(status string) []string {
+	if status == "" {
+		return nil
+	}
+	return []string{status}
 }
 
 // tagVocabulary loads the tag vocabulary (tag + count, most-used first).

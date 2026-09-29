@@ -256,17 +256,13 @@ func agentCard(a AgentCardView) g.Node {
 				cardStatusIcon(a),
 				Span(
 					Class("mr-auto break-all text-base font-semibold leading-tight text-slate-50 group-hover:text-emerald-300"),
-					// The SAME rendering the detail page's header gives this string
-					// (agentTitle → mdInlineNode). A task-derived display name routinely
-					// carries `**bold**` and `code`, and rendering it as plain text here
-					// put the raw markers on the card while the detail page showed the
-					// markup — one string, two answers, from the same click.
-					//
-					// The no-LINK variant because this Span is INSIDE the card's own <a>:
-					// a nested anchor is invalid HTML that browsers resolve by closing
-					// the outer one, which would truncate the card's tap target. See
-					// mdInlineNoLinks.
-					mdInlineNoLinkNode(displayOr(a.DisplayName, a.Name)),
+					// markdownPlain, exactly as agentTitle on the detail page does. A
+					// task-derived display name routinely carries `**bold**` and `code`,
+					// and this rendered it RAW while the detail header rendered it as
+					// markup — one string, two answers, from the same click. Stripping on
+					// both surfaces is what makes them agree; see markdownPlain for why
+					// stripping was chosen over rendering markup here.
+					g.Text(markdownPlain(displayOr(a.DisplayName, a.Name))),
 				),
 				g.If(a.Repo != "", chip("repo", a.Repo)),
 			),

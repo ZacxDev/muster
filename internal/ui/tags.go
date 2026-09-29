@@ -110,7 +110,7 @@ func cardTagChips(tags []string) g.Node {
 
 // boardURL builds the /ui/tasks URL for a complete board query: the active tag
 // set (repeated `tag=` params — the AND filter the store applies via
-// `tags @> …`), the status lane, and the row cap.
+// `tags @> …`), the status, and the row cap.
 //
 // 🔴 ONE BUILDER FOR ALL THREE, because the URL *is* the board's state: it is
 // what #tasks-list's hx-get holds, and — via tagScript's htmx:configRequest
@@ -388,13 +388,16 @@ func boolAttr(b bool) string {
 // concludes their queue is empty when it is merely filtered), so this copy names
 // the ACTIVE FILTERS and ships a Clear control. Pinned by a render test + an e2e.
 //
-// 🔴 The status lane is named alongside the tags, not omitted. A status-only
-// filter that matched nothing would otherwise render "No tasks match " with the
+// 🔴 The status is named alongside the tags, not omitted. A status-only filter
+// that matched nothing would otherwise render "No tasks match " with the
 // sentence trailing off — copy that says a filter is on without saying WHICH,
 // which is barely better than the all-clear this state exists to avoid.
+//
+// An unknown status yields an empty Label, which is what drops it from the
+// sentence rather than printing "status: " with nothing after it.
 func tasksFilteredEmpty(active []string, status string) g.Node {
 	parts := append([]string(nil), active...)
-	if label := taskstatus.LaneLabel(status); label != "" {
+	if label := taskstatus.Label(status); label != "" {
 		parts = append(parts, "status: "+label)
 	}
 	return Div(
