@@ -833,9 +833,10 @@ func TestTheClientIsInstalledWhereBothContainersCanSeeIt(t *testing.T) {
 //     several transfers early, not about HTTP status, and the old substring check
 //     accepted it.
 //
-// So the accepted set is: any SHORT option bundle carrying `f` (`-sf`, `-fs`,
-// `-sfL`), `--fail` exactly, or `--fail-with-body` exactly. A long option that
-// merely starts with `--fail` is refused, because `--fail-early` is one.
+// So the accepted set is: a SHORT option bundle in which `f` is one of the OPTION
+// LETTERS (`-sf`, `-fs`, `-sfL`, `-sfo./fail`), `--fail` exactly, or
+// `--fail-with-body` exactly. A long option that merely starts with `--fail` is
+// refused, because `--fail-early` is one.
 //
 // ⚠ ONLY TOKENS AFTER `curl` ARE CONSIDERED, and that is the second half of the
 // same defect. The check ran over the whole line, which also carries `timeout`'s
@@ -843,6 +844,32 @@ func TestTheClientIsInstalledWhereBothContainersCanSeeIt(t *testing.T) {
 // `-sf` would have satisfied it with a bare `curl -s`. Not live today
 // (storeWorkspace is an ordinary path), and not a property a caller-supplied path
 // should be able to decide.
+//
+// 🔴 AND `f` MUST BE AN OPTION LETTER, NOT A CHARACTER OF AN OPTION'S VALUE — the
+// third half, filed as issue #15. This branch was `strings.HasPrefix(tok, "-") &&
+// strings.ContainsRune(tok, 'f')`, and its comment read "`-f` anywhere in it is
+// curl's fail flag", which is an invariant curl does not have: a short option's
+// parameter may ride on the same token (`-K<file>`, `-o<file>`) or be the next one,
+// and neither is scanned for option letters. Measured on curl 8.21.0 against the
+// same real 404:
+//
+//   - `curl -so./fail …`   EXIT 0, 14-byte error body written to ./fail — satisfied
+//     the old predicate while passing no fail flag at all.
+//   - `curl -sK./fail.conf` EXIT 0, same body written as the file. The `f` is in the
+//     config path.
+//   - `curl -s -o -sf …`   EXIT 0, 14-byte body written to a file named `-sf`. A
+//     SEPARATED value may itself start with `-`, so skipping the token is not
+//     optional.
+//   - `curl -sfo./fail …`  EXIT 22 — an `f` reached BEFORE a value-taking letter is
+//     still the fail flag, so the parse must stop at the value, not at the bundle.
+//
+// ⚠ THE ISSUE'S OWN EXAMPLE, `-sK/dev/null`, IS NOT ONE OF THE CASES THAT CHANGED:
+// it contains no `f` at all, so the old predicate refused it too. The rows measured
+// RED against the old predicate are the three above.
+//
+// The parse is therefore curl's: walk the letters left to right, accept on `f`, and
+// stop at the first letter that takes a parameter, because from there the token is
+// data.
 func curlFailsOnHTTPError(line string) bool {
 	fields := strings.Fields(line)
 	start := -1
@@ -855,20 +882,64 @@ func curlFailsOnHTTPError(line string) bool {
 	if start < 0 {
 		return false
 	}
-	for _, tok := range fields[start+1:] {
+	args := fields[start+1:]
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
 		if strings.HasPrefix(tok, "--") {
 			if tok == "--fail" || tok == "--fail-with-body" {
 				return true
 			}
 			continue
 		}
-		// A short bundle: `-f` anywhere in it is curl's fail flag.
-		if strings.HasPrefix(tok, "-") && strings.ContainsRune(tok, 'f') {
-			return true
+		if !strings.HasPrefix(tok, "-") {
+			continue
+		}
+		// A short bundle. `f` counts only while we are still reading option
+		// letters; the first letter that takes a parameter ends them.
+		letters := tok[1:]
+		for j := 0; j < len(letters); j++ {
+			if letters[j] == 'f' {
+				return true
+			}
+			if strings.IndexByte(curlShortOptionsTakingAValue, letters[j]) < 0 {
+				continue
+			}
+			if j == len(letters)-1 {
+				// Nothing bundled after it, so the parameter is the NEXT
+				// token — and that token can start with `-` (measured
+				// above), so it must be consumed rather than re-parsed.
+				i++
+			}
+			break
 		}
 	}
 	return false
 }
+
+// curlShortOptionsTakingAValue is every short option curl prints with a `<…>`
+// parameter, and it is the whole class the parse above needs: for those letters and
+// only those, what follows in the token is a value rather than more option letters.
+//
+// 🔴 IT IS ENUMERATED FROM curl's OWN `--help all`, NOT FROM THE TWO EXAMPLES IN THE
+// BUG. Issue #15 names `-K` and `-o`; hardcoding that pair would have left the same
+// hole under `-b`, `-d`, `-w`, `-H` and twenty others, which is the defect re-filed
+// one letter at a time. Taken from curl 8.21.0:
+//
+//	curl --help all | grep -oE '^ +-[a-zA-Z0-9#:], --[a-z0-9-]+ <'
+//
+// `-h/--help <subject>` is in the set: its parameter is optional, but when something
+// IS bundled onto it curl reads that as the subject, which is the case this parse is
+// about. `-f` is deliberately absent — `--fail` is a boolean.
+//
+// ⚠ TWO NEIGHBOURING CLASSES ARE DELIBERATELY NOT HANDLED, because neither can
+// produce a WRONG ANSWER here and both would cost a second option table to track.
+// (1) A LONG option's separated value (`--output -sf`) is not skipped; a value
+// starting with `--` would have to spell `--fail` or `--fail-with-body` exactly to
+// be accepted, and one starting with a single `-` is caught by this same parse. (2)
+// `-K <file>` and `--config <file>` can themselves CONTAIN `fail`, and a file's
+// contents are not readable from a string check — so this predicate answers about
+// the command line, which is what the install ships.
+const curlShortOptionsTakingAValue = "AbCcDdEeFHhKmoPQrTtUuwXxYyz"
 
 // TestTheFailFlagCheckAcceptsOnlySpellingsThatActuallyFailOnAnHTTPError is the
 // negative control for the guard above.
@@ -892,6 +963,40 @@ func TestTheFailFlagCheckAcceptsOnlySpellingsThatActuallyFailOnAnHTTPError(t *te
 		{"long form", "curl -s --fail " + url + " -o /tmp/x", true},
 		{"long form keeping the body", "curl -s --fail-with-body " + url + " -o /tmp/x", true},
 
+		// 🔴 THE THIRD HALF (issue #15): THE `f` MUST BE AN OPTION LETTER, NOT A
+		// CHARACTER OF AN OPTION'S VALUE. curl lets a short option's parameter ride on
+		// the same token (`-K<file>`, `-o<file>`) or be the next one, and neither is
+		// scanned for option letters. Measured against the same real 404 as the rows
+		// above, on curl 8.21.0, each command exactly as the row spells it:
+		//
+		//   - `curl -sK./fail.conf …` EXIT 0, wrote the 14-byte body as the file (with
+		//     a readable ./fail.conf present; a MISSING one exits 26 for an unrelated
+		//     reason, which is why the config file was created before measuring).
+		//   - `curl -so./fail …`      EXIT 0, wrote the 14-byte body to ./fail.
+		//   - `curl -s -o -sf …`      EXIT 0, wrote the 14-byte body to a file named
+		//     `-sf`. A SEPARATED value may itself start with `-`.
+		//   - `curl -sfo./fail …`     EXIT 22 — an `f` reached BEFORE a value-taking
+		//     letter is still the fail flag, so the fix must not over-refuse.
+		//
+		// 🔴 EVERY BUNDLED VALUE HERE IS CHOSEN SO THAT NO OTHER VALUE-TAKING LETTER
+		// TERMINATES THE BUNDLE BEFORE THE `f`, and that is not cosmetic — it is what
+		// makes the rows sensitive to the letter each one is about. The first drafts used
+		// `-sK/etc/curl.conf` and `-so/tmp/f`, and a mutation sweep killed them: `/etc/…`
+		// hits `-e` and `/tmp/…` hits `-t`, so removing `K` or `o` from
+		// [curlShortOptionsTakingAValue] left both rows GREEN — passing for a letter the
+		// row was not about. `fail`, `./` and `.conf` contain no value-taking letter.
+		//
+		// ⚠ `-sK/dev/null` IS THE ISSUE'S OWN EXAMPLE AND IT IS NOT A RED ROW. The issue
+		// says it "satisfies the predicate"; it does not — `-sK/dev/null` contains no `f`
+		// at all, so the old `ContainsRune(tok, 'f')` refused it too. It is kept as a pin
+		// that the parse does not invent a flag, not as evidence of the defect; the rows
+		// that were measured RED against the old predicate are the three above it.
+		{"a config path bundled onto -K is not the flag", "curl -sK./fail.conf " + url, false},
+		{"an output path bundled onto -o is not the flag", "curl -so./fail " + url, false},
+		{"a separated value spelling the flag is not the flag", "curl -s -o -sf " + url, false},
+		{"a bundled value with no f at all", "curl -sK/dev/null " + url + " -o /tmp/x", false},
+		{"the fail flag before a bundled value still counts", "curl -sfo./fail " + url, true},
+
 		{"no fail flag at all", "curl -s " + url + " -o /tmp/x", false},
 		// The measured defect: exit 0 on a 404, body written as the file.
 		{"fail-early is a different option", "curl -s --fail-early " + url + " -o /tmp/x", false},
@@ -904,9 +1009,11 @@ func TestTheFailFlagCheckAcceptsOnlySpellingsThatActuallyFailOnAnHTTPError(t *te
 			if got := curlFailsOnHTTPError(c.line); got != c.want {
 				t.Errorf("curlFailsOnHTTPError(%q) = %v, want %v.\n\n"+
 					"Accepted spellings are the ones MEASURED to exit non-zero on a real 404: a "+
-					"short bundle carrying `f`, `--fail`, or `--fail-with-body`. `--fail-early` "+
-					"exits 0 and writes the error body as the file, so accepting it is the defect "+
-					"this table exists to keep out.", c.line, got, c.want)
+					"short bundle in which `f` is one of the OPTION LETTERS, `--fail`, or "+
+					"`--fail-with-body`. Two things are refused because both were measured to exit "+
+					"0 and write the error body as the file: `--fail-early`, and an `f` that belongs "+
+					"to a bundled or separated option VALUE (`-so./fail`, `-o -sf`) rather than to "+
+					"curl's fail flag.", c.line, got, c.want)
 			}
 		})
 	}
