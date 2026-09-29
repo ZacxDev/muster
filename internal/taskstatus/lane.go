@@ -1,23 +1,34 @@
 package taskstatus
 
-// LANES: the three buckets the Tasks board's status filter offers.
+// LANES: the buckets the Tasks board's status filter offers.
 //
-// WHY THEY LIVE HERE. The board used to render three SECTIONS whose membership
-// rule was open-coded in internal/ui (groupTasks). The board is now one flat
-// list ordered by activity, and the same three buckets survive only as a FILTER
-// — which means the rule now has to be applied in SQL (a `status = ANY(...)`
-// predicate) as well as in the renderer's chip row. Two call sites for one rule
-// is exactly how a predicate gets fixed in one place and stays wrong in the
-// other, so the mapping is defined once, in the package that already owns the
-// status vocabulary and imports nothing.
+// WHY THEY LIVE HERE. The board used to render sections whose membership rule
+// was open-coded in internal/ui (groupTasks). The board is now one flat list
+// ordered by activity, and the buckets survive only as a FILTER — which means
+// the rule now has to be applied in SQL (a `status = ANY(...)` predicate) as
+// well as in the renderer's chip row. Two call sites for one rule is exactly how
+// a predicate gets fixed in one place and stays wrong in the other, so the
+// mapping is defined once, in the package that already owns the status
+// vocabulary and imports nothing.
 //
-// 🔴 THE MAPPING IS ONE TABLE, AND EVERYTHING ELSE IS DERIVED FROM IT. LaneOf
-// walks laneMembers rather than switching on the constants, for the same reason
-// Valid walks `all`: a switch is a second enumeration, and a fifth status added
-// to the vocabulary but not to the switch would silently belong to NO lane —
-// i.e. it would be invisible under every filter chip including the ones that
-// claim to cover the whole board. TestEveryStatusBelongsToExactlyOneLane pins
-// that: adding a status without giving it a lane reds the suite.
+// 🔴 A LANE IS A STATUS. THAT IS THE WHOLE DEFINITION, AND IT IS A FIX.
+//
+// This file used to carry a hand-written THREE-lane table that folded
+// ready_for_review into "In progress" and renamed complete to "done". Measured
+// live on a 525-task board: `open 215 · complete 163 · ready_for_review 106 ·
+// in_progress 41`, and clicking "In progress" loaded 30 ready_for_review cards
+// beside 20 in_progress ones. So a card the per-card <select> labelled "Ready
+// for review" matched NO chip of that name, could not be isolated by any chip,
+// and 20% of the board was unreachable by the filter — while the chip row
+// silently claimed to cover it. The lane vocabulary and the status vocabulary
+// were two enumerations of one thing, and they had drifted.
+//
+// Deriving lanes from All() makes that unrepresentable rather than merely
+// tested: a fifth status is a fifth chip the day it is added, LaneStatuses
+// answers with it, and the only thing a new status still needs from this file is
+// a LABEL — which laneLabels is exhaustively checked for by
+// TestEveryLaneHasALabel, so forgetting one is a red suite rather than a
+// blank chip.
 //
 // WHAT CHANGED FROM groupTasks, stated plainly rather than buried: the old
 // grouping PROMOTED an `open` task with a provisioning/running agent into the
@@ -27,43 +38,36 @@ package taskstatus
 // from the row. The agent's state is still on the card (agentStatusChip), and
 // agent activity still FLOATS the task to the top of the list — see the
 // activity ordering in internal/notes. Only the bucket rule narrowed.
+//
+// ⚠ THE `done` LANE VALUE IS GONE, and a URL is the thing that notices. The old
+// chip wrote `?status=done`; the chip now writes `?status=complete`. An old
+// bookmark or a stale localStorage value naming `done` is not a valid lane, and
+// queryStatusLane already answers an unknown lane with "" — i.e. it degrades to
+// the unfiltered board, which is the safe direction (see LaneStatuses).
 const (
-	LaneOpen       = "open"
-	LaneInProgress = "in_progress"
-	LaneDone       = "done"
+	LaneOpen           = Open
+	LaneInProgress     = InProgress
+	LaneReadyForReview = ReadyForReview
+	LaneDone           = Complete
 )
 
-// laneOrder is the order the chip row renders lanes in (lifecycle order), kept
-// separate from laneMembers because Go map iteration is randomised and a filter
-// row whose chips move between renders is a usability bug, not a nit.
-var laneOrder = [...]string{LaneOpen, LaneInProgress, LaneDone}
-
-// laneMembers is the SINGLE definition of which statuses each lane covers.
+// laneLabels is the human copy for each lane. It is the ONLY per-lane data left:
+// everything else is derived from the status vocabulary above.
 //
-// ready_for_review sits in "In progress" because it is work that is not
-// finished — that is where the old In-progress section put it too, so a user's
-// muscle memory for where a review-ready task appears is unchanged.
-var laneMembers = map[string][]string{
-	LaneOpen:       {Open},
-	LaneInProgress: {InProgress, ReadyForReview},
-	LaneDone:       {Complete},
-}
-
-// laneLabels is the human copy for each lane. Kept beside the mapping so a lane
-// can never be added without one, and read by the renderer so the chip label and
-// the filter value cannot drift.
+// "Done" rather than "Complete" for the last one is deliberate — it is the word
+// the board has always used on that chip, and the chip's VALUE (which is what
+// travels in the URL and the SQL) is the status either way.
 var laneLabels = map[string]string{
-	LaneOpen:       "Open",
-	LaneInProgress: "In progress",
-	LaneDone:       "Done",
+	Open:           "Open",
+	InProgress:     "In progress",
+	ReadyForReview: "Ready for review",
+	Complete:       "Done",
 }
 
 // Lanes returns the lane keys in lifecycle order. It returns a COPY, for the
 // same reason All does: a caller that sorts or truncates the result must not be
 // able to reorder the vocabulary for every other caller in the process.
-func Lanes() []string {
-	return append([]string(nil), laneOrder[:]...)
-}
+func Lanes() []string { return All() }
 
 // LaneStatuses returns the statuses a lane covers, or nil for an unknown lane.
 //
@@ -73,33 +77,25 @@ func Lanes() []string {
 // avoid; answering "no predicate" keeps a bad lane value honest — the board
 // shows everything and the chip row shows nothing selected.
 //
-// It returns a COPY: the slice goes straight into a pgx query argument, and a
-// caller appending to it would mutate the table.
+// It returns a fresh slice: the result goes straight into a pgx query argument,
+// and a caller appending to it must not be able to reach anything shared.
 func LaneStatuses(lane string) []string {
-	m, ok := laneMembers[lane]
-	if !ok {
+	if !Valid(lane) {
 		return nil
 	}
-	return append([]string(nil), m...)
+	return []string{lane}
 }
 
 // LaneOf returns the lane a status belongs to, or "" for an unknown status.
 func LaneOf(status string) string {
-	for _, lane := range laneOrder {
-		for _, s := range laneMembers[lane] {
-			if s == status {
-				return lane
-			}
-		}
+	if !Valid(status) {
+		return ""
 	}
-	return ""
+	return status
 }
 
 // LaneLabel returns a lane's human label, or "" for an unknown lane.
 func LaneLabel(lane string) string { return laneLabels[lane] }
 
-// ValidLane reports whether lane names one of the three buckets.
-func ValidLane(lane string) bool {
-	_, ok := laneMembers[lane]
-	return ok
-}
+// ValidLane reports whether lane names one of the buckets.
+func ValidLane(lane string) bool { return Valid(lane) }

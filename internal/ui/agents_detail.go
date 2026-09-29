@@ -166,18 +166,40 @@ func AgentDetailPage(v AgentDetailView) g.Node {
 				// detail view is standard practice.
 				sidebar("agents", "agents", false),
 				// Content column: offset right of the persistent desktop sidebar (lg+),
-				// mirroring Page's content column. The header + main + fixed input bar
-				// all carry lg:pl-72 so nothing sits under the sidebar.
+				// mirroring Page's content column. The header and the main column each
+				// carry lg:pl-72 so nothing sits under the sidebar.
 				agentDetailHeader(v),
 				// The detail page IS the chat: a single full-height chat pane between the
 				// header and the fixed input bar (flex-1 + min-h-0 so it fills + scrolls).
-				Main(
-					// pb-3 (not pb-28): the input bar is now an IN-FLOW flex child at the
-					// bottom of the chat pane, so #chat-log fills right down to it — no
-					// reserved-space gap between the transcript and the input (the old
-					// fixed input + pb-28 left ~43px of dead space above it).
-					Class("mx-auto flex w-full max-w-xl flex-1 flex-col gap-4 px-4 pb-3 pt-4 min-h-0 lg:pl-72"),
-					agentChatPane(v),
+				// 🔴 TWO ELEMENTS, NOT ONE, AND THAT IS THE FIX RATHER THAN A TIDY-UP.
+				// This used to be a single <main class="mx-auto w-full max-w-xl … lg:pl-72">:
+				// one box 576px wide with 288px of LEFT PADDING inside it. Measured on a
+				// 2256px screen, #chat-log came out 272px wide — narrower than a phone —
+				// with ~800px of dead space on either side, because max-w-xl caps the
+				// BORDER box and lg:pl-72 is subtracted from the same 576px.
+				//
+				// The shell (components.go Page) already had the right shape and this
+				// page was the odd one out: the sidebar offset goes on an OUTER column,
+				// and the width ladder — contentWidth(), the app's ONE horizontal
+				// measure — goes on the element inside it. Using the helper rather than
+				// re-spelling a ladder here is what stops this page drifting away from
+				// the shell a second time.
+				//
+				// The flex chain is preserved through BOTH elements (flex-1 + min-h-0 on
+				// each): body is `h-dvh flex flex-col overflow-hidden`, and #chat-log is
+				// the real scroll container only while every ancestor between them is a
+				// definite-height flex item. A wrapper without flex-1/min-h-0 would grow
+				// with content and silently hand the scroll back to the window, which is
+				// the failure the Body comment above describes.
+				Div(
+					Class("flex flex-1 flex-col min-h-0 lg:pl-72"),
+					Main(
+						// pb-3 (not pb-28): the input bar is an IN-FLOW flex child at the
+						// bottom of the chat pane, so #chat-log fills right down to it — no
+						// reserved-space gap between the transcript and the input.
+						Class(contentWidth()+" flex flex-1 flex-col gap-4 pb-3 pt-4 min-h-0"),
+						agentChatPane(v),
+					),
 				),
 				// Empty mount for the task-detail modal (populated by the header title's
 				// hx-get /ui/agents/{name}/task). position:fixed inside overflow-hidden
@@ -201,7 +223,11 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 		// column); on mobile the sidebar is a slide-out overlay so no offset.
 		Class("sticky top-0 z-20 border-b border-white/5 bg-slate-950/80 backdrop-blur lg:pl-72"),
 		Div(
-			Class("mx-auto flex w-full max-w-xl flex-col gap-1.5 px-4 py-2"),
+			// contentWidth() — the SAME helper the <main> below it uses, so the
+			// header's left edge and the chat column's left edge cannot drift apart.
+			// This used to be its own `max-w-xl` spelling, which is exactly how the
+			// two ended up disagreeing with the shell.
+			Class(contentWidth()+" flex flex-col gap-1.5 py-2"),
 			Div(
 				Class("flex items-center gap-3"),
 				// Hamburger: opens the shared slide-out sidebar (appScript's initPage
@@ -606,7 +632,8 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// bottom-0 + a pb-28 spacer, which left a dead gap). Now #chat-log (flex-1)
 			// fills down to it with no gap; h-dvh + the dynamic viewport handle the
 			// mobile keyboard (the shell shrinks, keeping the input visible). It sits
-			// inside Main (already max-w-xl + lg:pl-72), so no width/offset classes here.
+			// inside Main (already contentWidth() inside the lg:pl-72 column), so no
+			// width/offset classes here.
 			Class("flex-none border-t border-white/5 pt-3"),
 			Div(
 				Class("flex w-full items-end gap-2"),
@@ -847,6 +874,22 @@ func chatLogInner(v AgentDetailView) g.Node {
 		// len(v.Messages), and to say so here: the failure is silent and reads as a
 		// broken panel rather than as a bug in the new writer.
 		g.If(v.Surface == ChatSurfaceChiefPanel && len(v.Messages) == 0, chiefIntro()),
+		// Empty state for the PAGE surface. #chat-log is a flex-1 box filling the
+		// whole viewport height, so a thread with nothing in it rendered as a tall
+		// blank panel — the only thing inside it was the `hidden` working indicator,
+		// which says nothing to a reader.
+		//
+		// 🔴 IT COUNTS RENDERED BUBBLES, NOT ROWS, which is what the chief-intro
+		// branch above says to do when a second condition is added here: the loop
+		// DROPS assistant sentinels, so a `len(v.Messages) == 0` test would leave a
+		// sentinel-only thread with no affordance at all — the very gap that branch
+		// records as unreachable-but-open. len(msgs) cannot disagree with the screen.
+		//
+		// The chief panel keeps chiefIntro() (its own, richer copy) and the
+		// provisioning row below owns the still-coming-up case, so neither is
+		// doubled up.
+		g.If(v.Surface != ChatSurfaceChiefPanel && len(msgs) == 0 && !chatIsProvisioning(v.Status),
+			chatEmptyState()),
 		g.Group(msgs),
 		// Completion banner (Task 6): rendered inside #chat-log so the existing
 		// sse:chat.reply / task:changed re-fetch of this partial re-evaluates the
@@ -885,8 +928,30 @@ func chatLogInner(v AgentDetailView) g.Node {
 // running. It reuses the animate-bounce dots pattern from #chat-working. The
 // #chat-provisioning id lets agentChatScript hide it the instant a real streamed
 // message arrives.
+// chatIsProvisioning reports whether the agent is still coming up. ONE
+// predicate, read by both chatProvisioningIndicator (which renders the
+// "Provisioning agent…" row) and chatLogInner's empty state (which must NOT
+// render while that row is on screen) — two spellings of it would let the
+// transcript show "no messages yet" beside a live provisioning indicator.
+func chatIsProvisioning(status string) bool {
+	return status == agents.StatusProvisioning || status == agents.StatusPending
+}
+
+// chatEmptyState is what an empty transcript says instead of nothing. It is a
+// self-start bubble rather than a centred hero so it reads as the first line of
+// the conversation, which is what the operator is about to continue.
+func chatEmptyState() g.Node {
+	return Div(
+		g.Attr("data-chat-empty", ""),
+		Class("m-auto flex max-w-sm flex-col items-center gap-2 text-center"),
+		Div(Class("text-3xl"), g.Text("💬")),
+		P(Class("text-sm font-medium text-slate-300"), g.Text("No messages yet")),
+		P(Class("text-xs text-slate-400"), g.Text("Send the agent a message to start this thread.")),
+	)
+}
+
 func chatProvisioningIndicator(status string) g.Node {
-	if status != agents.StatusProvisioning && status != agents.StatusPending {
+	if !chatIsProvisioning(status) {
 		return g.Text("")
 	}
 	return Div(
@@ -1149,6 +1214,11 @@ func agentChatScript(name string) g.Node {
         out.push('<pre class="overflow-auto rounded-lg bg-slate-950/60 p-2 my-1 font-mono text-[0.85em] leading-relaxed"><code>' + code.join('\n') + '</code></pre>');
         continue;
       }
+      // Thematic break (--- / *** / ___ alone on a line). Checked before the
+      // list branches and excluded from the paragraph gather below, for the same
+      // reason the Go renderer does both (internal/ui/markdown.go): the gather
+      // runs last and would otherwise emit the rule as literal text.
+      if (/^ {0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$/.test(line)) { out.push('<hr class="my-2 border-white/10">'); i++; continue; }
       var h = line.match(/^(#{1,6})\s+(.*)$/);
       if (h) { out.push('<div class="mt-1 font-semibold text-slate-100 ' + (h[1].length <= 2 ? 'text-base' : 'text-sm') + '">' + mdInline(h[2]) + '</div>'); i++; continue; }
       if (/^\s*[-*]\s+/.test(line)) {
@@ -1184,7 +1254,7 @@ func agentChatScript(name string) g.Node {
       }
       if (/^\s*$/.test(line)) { i++; continue; }
       var para = [];
-      while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^` + "```" + `/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i]) && !(lines[i].indexOf('|') >= 0 && i + 1 < lines.length && mdIsTableSep(lines[i + 1]))) { para.push(lines[i]); i++; }
+      while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^` + "```" + `/.test(lines[i]) && !/^#{1,6}\s/.test(lines[i]) && !/^ {0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i]) && !/^\s*\d+\.\s+/.test(lines[i]) && !(lines[i].indexOf('|') >= 0 && i + 1 < lines.length && mdIsTableSep(lines[i + 1]))) { para.push(lines[i]); i++; }
       out.push('<p class="my-1">' + mdInline(para.join('<br>')) + '</p>');
     }
     return out.join('');

@@ -1605,7 +1605,7 @@ func appScript() g.Node {
     //
     // Precisely: an open combobox dropdown consumes the keypress ENTIRELY (early
     // return). Otherwise the keypress is broadcast to every other overlay —
-    // setOpen/popOpen/notifOpen plus BOTH cgModalDismiss calls all run. That is
+    // setOpen/notifOpen plus BOTH cgModalDismiss calls all run. That is
     // deliberate and safe, not "exactly one dismissal per keypress" (an earlier
     // version of this comment claimed that, and the code below contradicts it):
     // each of those is a no-op for an overlay that is already closed, and at most
@@ -1635,7 +1635,16 @@ func appScript() g.Node {
       }
       return;
     }
-    setOpen(false); popOpen(false); aaPopOpen(false); notifOpen(false);
+    // 🔴 popOpen() AND aaPopOpen() USED TO BE CALLED HERE AND NEITHER FUNCTION
+    // EXISTS. They were the permission-router's popover and auto-approve popover,
+    // deleted with that surface; the CALLS came across with the carve. A call to
+    // an undefined identifier is a ReferenceError, and it landed BEFORE the
+    // cgModalDismiss line below — so Escape threw on every keypress and neither
+    // sheet ever closed. Measured in jsdom on the rendered /tasks document:
+    // "ReferenceError: popOpen is not defined", with the modal still displayed
+    // afterwards. From the outside it is indistinguishable from having no
+    // handler at all, which is exactly how it was reported.
+    setOpen(false); notifOpen(false);
     // Both dialogs were omitted from this handler, so Escape did nothing for
     // them. Both now route through the SAME dirty-guarded dismiss: an
     // in-progress edit — or a typed dispatch prompt, the longest free text in
@@ -2040,7 +2049,14 @@ func appScript() g.Node {
     lb.click();
   });
 
-  renderQueued();
+  // 🔴 renderQueued() USED TO BE CALLED HERE AND THE FUNCTION DOES NOT EXIST.
+  // Same carve residue as the two popovers in the Escape handler above: it
+  // painted the permission router's optimistic-decision queue indicator, which
+  // muster does not render. The ReferenceError was the LAST statement of
+  // initGlobal, so it propagated out of init() — and init() calls initPage()
+  // AFTER initGlobal(). On a cold load, initPage therefore never ran at all:
+  // the sidebar open/close buttons and the SPA tab wiring were unbound until
+  // some later htmx:load re-entered init() with __cgInit already set.
   } // end initGlobal
 
   // init: per-document. Binds the global delegated listeners once (guarded), and

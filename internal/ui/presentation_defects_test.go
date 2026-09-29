@@ -1,0 +1,759 @@
+package ui
+
+import (
+	"fmt"
+	"math"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/taskstatus"
+)
+
+// presentation_defects_test.go — regression guards for a batch of UI defects
+// measured on the running board, one guard per defect.
+//
+// 🔴 EVERY ONE OF THESE ASSERTS RENDERED STATE, NOT A WORD THE SOURCE HAPPENS TO
+// CONTAIN. The chip guard compares the chip SET against the status enum rather
+// than four literal strings; the markdown guards look for `<hr>` and for an
+// `href` attribute rather than for the absence of `---` or the presence of
+// "http"; the contrast guard COMPUTES a ratio from the palette rather than
+// naming a class. A guard another feature can spell its way past is not a guard.
+//
+// ⚠ WHAT NO TEST HERE CAN SEE. This repository has no browser suite, so nothing
+// below renders at a VIEWPORT — these assert the markup and the class ladder the
+// browser would then lay out. For the two defects that are layout (the chat
+// column width, the contrast ratio) the guards therefore pin the INPUTS to the
+// layout — which element carries the width cap, which palette entry the label
+// uses — and the measured pixel/ratio figures that motivated them live in the
+// comments at the code, where they were taken. Say that rather than let a green
+// tick imply a rendering was checked.
+
+// --- Defect 1: the agent chat column -----------------------------------------
+
+// TestTheSidebarOffsetAndTheWidthCapAreNeverOnOneElement is the regression guard
+// for a chat column that measured 272px wide on a 2256px screen.
+//
+// THE SHAPE OF THE BUG, which is what this asserts: `max-w-*` caps the BORDER
+// box, and `lg:pl-72` (18rem = 288px) is padding INSIDE that box. Put both on one
+// element with max-w-xl (576px) and the content area is 288px before anything
+// else happens — narrower than a phone, with ~800px of dead space either side.
+// The shell always had the right shape (offset on an outer column, width on the
+// element inside it); /agents/{name} was the odd one out.
+//
+// It sweeps EVERY class attribute of EVERY document rather than the one element
+// that was wrong, because the next instance of this will be a different element.
+func TestTheSidebarOffsetAndTheWidthCapAreNeverOnOneElement(t *testing.T) {
+	docs := map[string]string{
+		"shell /tasks": renderString(t, Page("tasks")),
+		"agent detail": renderString(t, AgentDetailPage(AgentDetailView{Name: "demo", ID: 1})),
+		"task detail":  renderString(t, TaskNotFoundPage("42")),
+	}
+	names := make([]string, 0, len(docs))
+	for n := range docs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	checked := 0
+	for _, name := range names {
+		for _, cls := range classAttrs(docs[name]) {
+			if !hasClass(cls, "lg:pl-72") {
+				continue
+			}
+			checked++
+			for _, c := range strings.Fields(cls) {
+				if strings.Contains(c, "max-w-") {
+					t.Errorf("%s: one element carries BOTH the sidebar offset lg:pl-72 and the width "+
+						"cap %s — the 288px offset is subtracted from the cap, not added outside it, "+
+						"so the content column collapses. Put the offset on an outer column and the "+
+						"width on the element inside it (contentWidth()). class=%q", name, c, cls)
+				}
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no element carried lg:pl-72 in any document — this guard measured nothing. " +
+			"Either the sidebar offset was renamed (update the guard) or the sweep is broken.")
+	}
+	t.Logf("checked %d lg:pl-72 elements across %d documents", checked, len(docs))
+}
+
+// TestTheAgentDetailPageSizesItselfWithTheSharedMeasure pins the other half: the
+// page uses contentWidth(), the app's ONE horizontal measure, for BOTH its header
+// row and its chat column. A page that re-spells a ladder of its own is a page
+// that drifts away from the shell again — which is how this defect happened.
+func TestTheAgentDetailPageSizesItselfWithTheSharedMeasure(t *testing.T) {
+	doc := renderString(t, AgentDetailPage(AgentDetailView{Name: "demo", ID: 1}))
+	n := 0
+	for _, cls := range classAttrs(doc) {
+		if strings.HasPrefix(cls, contentWidth()) {
+			n++
+		}
+	}
+	if n < 2 {
+		t.Errorf("the agent detail document uses contentWidth() on %d elements, want at least 2 "+
+			"(the sticky header row and the chat column). The two must come from the SAME helper "+
+			"or the brand and the transcript sit at different left edges.", n)
+	}
+}
+
+// --- Defect 2: thematic breaks ------------------------------------------------
+
+// TestAThematicBreakRendersAsAnHR asserts the ELEMENT, not the absence of the
+// source text: `---` used to reach the page as `<p class="my-1">---</p>` and the
+// document contained zero <hr>. Every ClickUp-mirrored task body carries one
+// above its footer, so this was visible on most of the board.
+func TestAThematicBreakRendersAsAnHR(t *testing.T) {
+	cases := []struct{ name, src string }{
+		// The shape that was actually broken: no blank line, so the paragraph
+		// gather swallowed the rule into the text above it.
+		{"tight, between two paragraphs", "the body text\n---\nmirrored from task 123"},
+		{"blank lines around it", "above\n\n---\n\nbelow"},
+		{"asterisk form", "above\n\n***\n\nbelow"},
+		{"underscore form", "above\n\n___\n\nbelow"},
+		{"longer run", "above\n\n--------\n\nbelow"},
+		{"indented up to three spaces", "above\n\n   ---\n\nbelow"},
+	}
+	for _, tc := range cases {
+		got := markdownHTML(tc.src)
+		if !strings.Contains(got, "<hr") {
+			t.Errorf("%s: no <hr> in the output for %q:\n%s", tc.name, tc.src, got)
+		}
+		if strings.Contains(got, ">---<") || strings.Contains(got, ">***<") || strings.Contains(got, ">___<") {
+			t.Errorf("%s: the rule reached the page as literal text for %q:\n%s", tc.name, tc.src, got)
+		}
+		// The text on either side must survive — a rule that eats its neighbours
+		// would pass the two checks above and destroy the body.
+		for _, want := range []string{"above", "below", "the body text", "mirrored from task 123"} {
+			if strings.Contains(tc.src, want) && !strings.Contains(got, want) {
+				t.Errorf("%s: %q vanished from the output:\n%s", tc.name, want, got)
+			}
+		}
+	}
+}
+
+// TestAThematicBreakDoesNotEatListsOrText is the other direction. `-` and `*`
+// are also the bullet markers and `_` is an emphasis marker, so a rule pattern
+// that is too eager silently destroys ordinary content.
+//
+// ⚠ INVARIANT GUARD, NOT REGRESSION COVERAGE. It is green at origin/main too —
+// vacuously, because no thematic break was recognised there at all. Mutation-
+// checked instead: widening mdThematicBreak to `-{2,}` without the end anchor
+// fails THIS test (and only this one) on "two dashes only" and "a dash with
+// trailing text".
+func TestAThematicBreakDoesNotEatListsOrText(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{"a bullet item", "- first\n- second"},
+		{"emphasised text", "a _word_ here"},
+		{"two dashes only", "--"},
+		{"a dash with trailing text", "--- not a rule"},
+		{"a table separator row", "a | b\n--- | ---\n1 | 2"},
+	} {
+		got := markdownHTML(tc.src)
+		if strings.Contains(got, "<hr") {
+			t.Errorf("%s: %q was mis-read as a thematic break:\n%s", tc.name, tc.src, got)
+		}
+	}
+}
+
+// --- Defect 3: bare-URL autolinking -------------------------------------------
+
+// TestABareURLBecomesASafeAnchor asserts the rendered ANCHOR and its attributes.
+// The measured defect: a comment containing a plain pull-request URL rendered as
+// text, and the whole task page held six <a> elements, all of them sidebar nav.
+// Markdown links already worked, so the gap was specifically bare URLs.
+func TestABareURLBecomesASafeAnchor(t *testing.T) {
+	got := markdownHTML("landed in https://example.test/owner/repo/pull/141 — see there")
+
+	hrefs := hrefsIn(got)
+	if len(hrefs) != 1 || hrefs[0] != "https://example.test/owner/repo/pull/141" {
+		t.Fatalf("want exactly one href of the bare URL, got %v in:\n%s", hrefs, got)
+	}
+	// 🔴 rel AND target are asserted on the ANCHOR, because a new-tab link without
+	// rel=noopener hands the opened page a window.opener back-reference to this
+	// document.
+	for _, want := range []string{`target="_blank"`, `rel="noopener"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the autolinked anchor is missing %s:\n%s", want, got)
+		}
+	}
+}
+
+// TestAutolinkingCannotBecomeAnInjectionVector is the safety half. The rendered
+// body is user/agent-authored, so the new pass must not widen what can reach the
+// browser as markup or as a dangerous scheme.
+//
+// ⚠ INVARIANT GUARD, NOT REGRESSION COVERAGE — green at origin/main too, where
+// nothing was autolinked at all. Mutation-checked: widening mdBareURL from
+// `https?://` to `[a-z]+:` fails THIS test (and only this one) on the
+// javascript: and data: cases.
+func TestAutolinkingCannotBecomeAnInjectionVector(t *testing.T) {
+	cases := []struct {
+		name, src string
+		wantNo    []string
+	}{
+		{
+			name:   "a quote in the URL cannot break out of the href",
+			src:    `https://example.test/a"onmouseover="alert(1)`,
+			wantNo: []string{`onmouseover="alert`},
+		},
+		{
+			name:   "an angle bracket in the URL cannot open a tag",
+			src:    `https://example.test/a<script>alert(1)</script>`,
+			wantNo: []string{"<script>"},
+		},
+		{
+			name:   "javascript: is not a scheme this pass can match",
+			src:    `javascript:alert(1) and JAVASCRIPT:alert(1)`,
+			wantNo: []string{`href="javascript:`, `href="JAVASCRIPT:`},
+		},
+		{
+			name:   "data: is not a scheme this pass can match",
+			src:    `data:text/html;base64,PHNjcmlwdD4=`,
+			wantNo: []string{`href="data:`},
+		},
+	}
+	for _, tc := range cases {
+		got := markdownHTML(tc.src)
+		for _, bad := range tc.wantNo {
+			if strings.Contains(got, bad) {
+				t.Errorf("%s: output contains %q for %q:\n%s", tc.name, bad, tc.src, got)
+			}
+		}
+		for _, href := range hrefsIn(got) {
+			if !strings.HasPrefix(strings.ToLower(href), "http://") && !strings.HasPrefix(strings.ToLower(href), "https://") {
+				t.Errorf("%s: emitted a non-http(s) href %q for %q", tc.name, href, tc.src)
+			}
+		}
+	}
+}
+
+// TestAutolinkingLeavesMarkdownLinksAndCodeAlone: the new pass runs over the
+// output of the earlier ones, so the two ways it can misfire are double-linking a
+// markdown link's URL and linking a URL inside a code span.
+func TestAutolinkingLeavesMarkdownLinksAndCodeAlone(t *testing.T) {
+	got := markdownHTML("[the PR](https://example.test/p/1) and `https://example.test/p/2` and https://example.test/p/3")
+
+	hrefs := hrefsIn(got)
+	want := []string{"https://example.test/p/1", "https://example.test/p/3"}
+	if len(hrefs) != len(want) {
+		t.Fatalf("want %d anchors (the markdown link and the bare URL — NOT the one in code), got %v in:\n%s",
+			len(want), hrefs, got)
+	}
+	for i := range want {
+		if hrefs[i] != want[i] {
+			t.Errorf("href %d = %q, want %q", i, hrefs[i], want[i])
+		}
+	}
+	if !strings.Contains(got, ">the PR</a>") {
+		t.Errorf("the markdown link lost its label — the autolink pass chewed on the anchor:\n%s", got)
+	}
+	if !strings.Contains(got, "<code") || !strings.Contains(got, "https://example.test/p/2</code>") {
+		t.Errorf("the URL inside a code span did not stay literal:\n%s", got)
+	}
+}
+
+// TestAutolinkingLeavesTrailingSentencePunctuationOut: `see https://x.test/a.`
+// must not link the full stop, or every URL at the end of a sentence 404s.
+func TestAutolinkingLeavesTrailingSentencePunctuationOut(t *testing.T) {
+	for _, tc := range []struct{ src, want string }{
+		{"see https://example.test/a.", "https://example.test/a"},
+		{"see https://example.test/a, then", "https://example.test/a"},
+		{"(https://example.test/a)", "https://example.test/a"},
+		{"see https://example.test/a?b=1#c", "https://example.test/a?b=1#c"},
+	} {
+		hrefs := hrefsIn(markdownHTML(tc.src))
+		if len(hrefs) != 1 || hrefs[0] != tc.want {
+			t.Errorf("%q linked %v, want [%q]", tc.src, hrefs, tc.want)
+		}
+	}
+}
+
+// --- Defect 4: the status filter chips ----------------------------------------
+
+// TestTheStatusChipSetIsTheStatusEnum is the board-level half of the lane fix
+// (the package-level half is taskstatus.TestTheLaneVocabularyIsTheStatusVocabulary).
+//
+// Measured before: the chips were ""|open|in_progress|done while the per-card
+// <select> offered open|in_progress|ready_for_review|complete. Clicking "In
+// progress" loaded 30 ready_for_review cards beside 20 in_progress ones, and a
+// card labelled "Ready for review" matched no chip of that name — 20% of the
+// board (106 of 525 tasks) could not be isolated by any filter.
+//
+// 🔴 IT IS COMPARED AGAINST taskstatus.All(), NOT AGAINST FOUR STRINGS. A guard
+// listing the values would be satisfied by renaming an enum member on one side
+// only, which is the same two-vocabularies shape that produced the defect.
+func TestTheStatusChipSetIsTheStatusEnum(t *testing.T) {
+	got := attrValues(renderString(t, statusFilterRow("")), "data-status-filter")
+
+	want := append([]string{""}, taskstatus.All()...)
+	sort.Strings(got)
+	sort.Strings(want)
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("status chips are %v, want %v (the empty All chip plus exactly one chip per "+
+			"status). A status with no chip of its own cannot be isolated by the filter at all.",
+			got, want)
+	}
+
+	// Every chip must also carry distinct human copy, or two of them read the same.
+	labels := attrValues(renderString(t, statusFilterRow("")), "title")
+	seen := map[string]bool{}
+	for _, l := range labels {
+		if seen[l] {
+			t.Errorf("two status chips share the title %q", l)
+		}
+		seen[l] = true
+	}
+}
+
+// TestTheSelectedStatusChipIsTheOneAsked: aria-pressed must follow the active
+// lane, or the row shows a filter that is not the one narrowing the board.
+func TestTheSelectedStatusChipIsTheOneAsked(t *testing.T) {
+	for _, s := range taskstatus.All() {
+		html := renderString(t, statusFilterRow(s))
+		want := `data-status-filter="` + s + `" aria-pressed="true"`
+		if !strings.Contains(html, want) {
+			t.Errorf("with %q active, no chip renders %s:\n%s", s, want, html)
+		}
+		if n := strings.Count(html, `aria-pressed="true"`); n != 1 {
+			t.Errorf("with %q active, %d chips render as pressed, want exactly 1", s, n)
+		}
+	}
+}
+
+// --- Defect 5: the tag filter row ---------------------------------------------
+
+// TestExternalIDTagsAreNotOfferedAsFilterChips is the regression guard for a
+// filter row holding 241 chips, 202 of them `clickup:<id>` — a 33,967px row in a
+// 1,736px viewport with the scrollbar suppressed and the overflow cue
+// pointer-events-none, i.e. about twenty screens of controls with no way to reach
+// them.
+//
+// It asserts the RELATIONSHIP — the offered set excludes exactly the external-id
+// namespaces and keeps everything else — rather than the absence of the word
+// "clickup", so adding a third such namespace is covered the day it is added.
+func TestExternalIDTagsAreNotOfferedAsFilterChips(t *testing.T) {
+	vocab := []notes.TagCount{
+		{Tag: "backend", Count: 12},
+		{Tag: "runbook:deploy", Count: 3},
+		{Tag: "ui", Count: 7},
+	}
+	// One chip per external-id namespace, built from the closed allowlist so a
+	// new namespace joins this fixture automatically.
+	for _, ns := range notes.ExternalIDNamespaces() {
+		vocab = append(vocab, notes.TagCount{Tag: ns + ":86a1b2c3d", Count: 1})
+	}
+
+	offered := attrValues(renderString(t, tagFilterRow(vocab, nil)), "data-tag-filter")
+	for _, tag := range offered {
+		if notes.IsExternalIDTag(tag) {
+			t.Errorf("the filter row offers %q — an external-id tag names ONE task, so its chip can "+
+				"only narrow the board to a task you must already be looking at. It belongs on the "+
+				"card, not in the filter row.", tag)
+		}
+	}
+	for _, want := range []string{"backend", "runbook:deploy", "ui"} {
+		if !contains(offered, want) {
+			t.Errorf("the filter row dropped %q — the exclusion is too wide. Offered: %v", want, offered)
+		}
+	}
+}
+
+// TestAnActiveExternalIDTagStillGetsAChip is the asymmetry, and it is the half
+// that keeps the exclusion safe: a filter you cannot see is a filter you cannot
+// clear, and the board would look mysteriously empty with no control to fix it.
+//
+// ⚠ INVARIANT GUARD, NOT REGRESSION COVERAGE — green at origin/main, which
+// offered every tag and so offered this one too. Mutation-checked: applying the
+// exclusion to the ACTIVE loop as well fails THIS test (and only this one).
+func TestAnActiveExternalIDTagStillGetsAChip(t *testing.T) {
+	for _, ns := range notes.ExternalIDNamespaces() {
+		active := ns + ":86a1b2c3d"
+		html := renderString(t, tagFilterRow([]notes.TagCount{{Tag: "ui", Count: 1}}, []string{active}))
+		if !contains(attrValues(html, "data-tag-filter"), active) {
+			t.Errorf("%q is the ACTIVE filter and has no chip — there is no way to turn it off:\n%s", active, html)
+		}
+		if !strings.Contains(html, `data-tag-filter="`+active+`" aria-pressed="true"`) {
+			t.Errorf("the active chip for %q does not render as pressed:\n%s", active, html)
+		}
+	}
+}
+
+// --- Defect 7: the runbook Run disclosure -------------------------------------
+
+// TestTheRunbookSummaryDrawsExactlyOneTriangle. A <summary> is
+// `display: list-item` with `list-style-type: disclosure-closed`, so the browser
+// draws its own marker; this one ALSO wrote a literal ▸, and the control rendered
+// "▸ ▸ Run".
+func TestTheRunbookSummaryDrawsExactlyOneTriangle(t *testing.T) {
+	html := renderString(t, runbookRunForm(RunbookView{ID: 4, Name: "deploy"}))
+	summary := between(html, "<summary", "</summary>")
+	if summary == "" {
+		t.Fatalf("no <summary> in the rendered run form:\n%s", html)
+	}
+	if n := strings.Count(summary, "▸"); n != 1 {
+		t.Errorf("the summary writes %d ▸ characters, want 1:\n%s", n, summary)
+	}
+	if !hasClass(classOf(summary), "list-none") {
+		t.Errorf("the summary does not set list-none, so the BROWSER draws a second marker beside "+
+			"the one in the markup (this rendered as \"▸ ▸ Run\"):\n%s", summary)
+	}
+}
+
+// --- Defect 8: raw markdown in an agent name ----------------------------------
+
+// TestAnAgentCardRendersItsNameAsMarkdown: the detail page rendered `**x**` as
+// bold and the card next to it showed the asterisks. One string, two answers.
+func TestAnAgentCardRendersItsNameAsMarkdown(t *testing.T) {
+	const name = "**fix** the `chip` row"
+	card := renderString(t, agentCard(AgentCardView{ID: 1, Name: "agent-1", DisplayName: name, Status: "running"}))
+
+	if !strings.Contains(card, "<strong>fix</strong>") {
+		t.Errorf("the card did not render **fix** as bold:\n%s", card)
+	}
+	if !strings.Contains(card, ">chip</code>") {
+		t.Errorf("the card did not render `chip` as code:\n%s", card)
+	}
+	if strings.Contains(card, "**") || strings.Contains(card, "`chip`") {
+		t.Errorf("raw markdown markers reached the card:\n%s", card)
+	}
+}
+
+// TestAnAgentCardNameNeverNestsAnAnchor is the constraint the fix had to respect.
+// ⚠ INVARIANT GUARD, NOT REGRESSION COVERAGE — green at origin/main, where the
+// title was plain text and so could not emit an anchor either. It exists because
+// the OBVIOUS fix (reuse mdInlineNode, as the detail page does) breaks it.
+//
+// the title Span sits INSIDE the card's own <a>, and a nested anchor is invalid
+// HTML that browsers resolve by closing the outer one — which would truncate the
+// card's tap target. So the title renders emphasis and code but never a link.
+func TestAnAgentCardNameNeverNestsAnAnchor(t *testing.T) {
+	const name = "see [the PR](https://example.test/p/1) and https://example.test/p/2"
+	card := renderString(t, agentCard(AgentCardView{ID: 1, Name: "agent-1", DisplayName: name, Status: "running"}))
+
+	title := between(card, `text-base font-semibold leading-tight`, "</span>")
+	if strings.Contains(title, "<a ") || strings.Contains(title, "<a href") {
+		t.Errorf("the card title emitted an anchor, and it is already inside the card's own <a>:\n%s", title)
+	}
+	// The markdown stays as literal text rather than vanishing.
+	if !strings.Contains(card, "the PR") {
+		t.Errorf("the link label vanished from the card:\n%s", card)
+	}
+}
+
+// --- Defect 9: filter-row label contrast --------------------------------------
+
+// TestFilterRowLabelsMeetTheContrastFloor COMPUTES the ratio from the palette
+// rather than naming a class — a guard that said "not text-slate-600" would be
+// satisfied by text-slate-500, which is 4.2:1 and still fails.
+//
+// Measured on the live board: rgb(71,85,105) on rgb(2,6,23) at 12px = 2.66:1,
+// against the 4.5:1 WCAG AA floor for text this size. These two words are what
+// say what the row beside them does.
+func TestFilterRowLabelsMeetTheContrastFloor(t *testing.T) {
+	const floor = 4.5
+	rows := map[string]string{
+		"Status":  renderString(t, statusFilterRow("")),
+		"Project": renderString(t, projectFilterRow([]notes.ProjectCount{{Name: "muster", Count: 2}}, nil)),
+	}
+	names := make([]string, 0, len(rows))
+	for n := range rows {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	for _, label := range names {
+		span := spanContaining(rows[label], ">"+label+"<")
+		if span == "" {
+			t.Fatalf("could not find the %q row label in:\n%s", label, rows[label])
+		}
+		fg := ""
+		for _, c := range strings.Fields(classOf(span)) {
+			if strings.HasPrefix(c, "text-slate-") {
+				fg = c
+			}
+		}
+		if fg == "" {
+			t.Fatalf("the %q label has no text-slate-* colour to measure: %s", label, span)
+		}
+		ratio, err := contrastAgainstAppBackground(fg)
+		if err != nil {
+			t.Fatalf("%q label: %v", label, err)
+		}
+		if ratio < floor {
+			t.Errorf("the %q row label uses %s, which is %.2f:1 on the app background — under the "+
+				"%.1f:1 AA floor for 12px text. text-slate-400 measures 7.88:1.", label, fg, ratio, floor)
+		}
+		t.Logf("%s label: %s = %.2f:1", label, fg, ratio)
+	}
+}
+
+// TestTheContrastHelperIsAWorkingInstrument: a ratio function that cannot report
+// a failing pair reports a passing one exactly the way a correct one does.
+func TestTheContrastHelperIsAWorkingInstrument(t *testing.T) {
+	// NEGATIVE control: the colour the defect was measured on MUST fail.
+	if got, err := contrastAgainstAppBackground("text-slate-600"); err != nil || got >= 4.5 {
+		t.Fatalf("contrast(text-slate-600) = %.2f (err %v), want a value under 4.5 — the helper "+
+			"cannot see the defect it exists for", got, err)
+	}
+	// POSITIVE control: the colour the fix uses MUST pass, and by a clear margin.
+	if got, err := contrastAgainstAppBackground("text-slate-400"); err != nil || got < 4.5 {
+		t.Fatalf("contrast(text-slate-400) = %.2f (err %v), want at least 4.5", got, err)
+	}
+	// An unknown swatch must ERROR rather than silently score 0 or 21.
+	if _, err := contrastAgainstAppBackground("text-slate-123"); err == nil {
+		t.Fatal("an unknown palette entry scored a ratio instead of erroring — a colour this helper " +
+			"does not know must not be graded")
+	}
+}
+
+// --- Defect 10: the duplicated registries -------------------------------------
+
+// TestEachLazyRegistryIsMountedExactlyOnce is the regression guard for the
+// runbooks (and privileges) list being rendered TWICE in one document: once in
+// the Agents panel's "Advanced" disclosure and once as its own tab panel. Both
+// mounts were live and both fetched the same partial.
+//
+// 🔴 THE DUPLICATE WAS NOT MERELY WASTE. Each runbook card's Delete and Dispatch
+// targeted `#runbooks` BY ID, and the hidden copy owned that id — so acting on
+// the visible list swapped the server's response into the invisible one. The
+// write landed and the screen never changed, which reads as "the button does
+// nothing". The actions now target `closest section`, a relationship a second
+// mount cannot capture.
+func TestEachLazyRegistryIsMountedExactlyOnce(t *testing.T) {
+	for _, tab := range []string{"tasks", "agents", "runbooks", "privileges"} {
+		doc := renderString(t, Page(tab))
+		for _, partial := range []string{"/ui/runbooks", "/ui/privileges", "/ui/repos", "/ui/agents", "/ui/tasks"} {
+			if n := strings.Count(doc, `hx-get="`+partial+`"`); n > 1 {
+				t.Errorf("Page(%q) mounts %s %d times — two live mounts of one list fetch it twice "+
+					"and, worse, split the id their in-list buttons target", tab, partial, n)
+			}
+		}
+	}
+}
+
+// TestInListActionsTargetTheListTheyAreIn pins the fix's mechanism rather than
+// its absence: the buttons must resolve their target from their own POSITION, so
+// a second mount of the same partial cannot capture their response by owning an
+// id. Both lazy registries are covered — they had the identical defect, and
+// fixing only the one that was reported would leave the other half live.
+func TestInListActionsTargetTheListTheyAreIn(t *testing.T) {
+	cases := []struct {
+		name, id, html string
+		wantTargets    int
+	}{
+		{
+			name: "runbooks", id: "runbooks", wantTargets: 2, // delete + dispatch
+			html: renderString(t, Runbooks([]RunbookView{{ID: 4, Name: "deploy", Summary: "ship it"}})),
+		},
+		{
+			name: "privilege profiles", id: "privilege-profiles", wantTargets: 1, // delete
+			html: renderString(t, Profiles([]ProfileView{{ID: 7, Name: "read-only", Summary: "gets"}})),
+		},
+	}
+	for _, tc := range cases {
+		if !strings.Contains(tc.html, `id="`+tc.id+`"`) {
+			t.Errorf("%s: the section carries no id for its own swap to replace:\n%s", tc.name, tc.html)
+		}
+		if n := strings.Count(tc.html, `hx-target="closest section"`); n != tc.wantTargets {
+			t.Errorf("%s: want %d in-list action(s) targeting `closest section`, found %d:\n%s",
+				tc.name, tc.wantTargets, n, tc.html)
+		}
+		if strings.Contains(tc.html, `hx-target="#`+tc.id+`"`) {
+			t.Errorf("%s: an action still targets #%s by id — that is what let a second, hidden "+
+				"mount swallow the response:\n%s", tc.name, tc.id, tc.html)
+		}
+	}
+}
+
+// --- Defect 11: the empty chat transcript -------------------------------------
+
+// TestAnEmptyChatTranscriptSaysSo: #chat-log is a flex-1 box filling the viewport,
+// so an empty thread rendered as a tall blank panel whose only content was the
+// `hidden` working indicator.
+func TestAnEmptyChatTranscriptSaysSo(t *testing.T) {
+	empty := renderString(t, chatLogInner(AgentDetailView{Name: "demo", Status: "running"}))
+	if !strings.Contains(empty, "data-chat-empty") {
+		t.Errorf("an empty transcript renders no empty state:\n%s", empty)
+	}
+
+	// With a message, the empty state must be gone — an empty state beside content
+	// is worse than none.
+	full := renderString(t, chatLogInner(AgentDetailView{
+		Name:     "demo",
+		Status:   "running",
+		Messages: []ChatLine{{Role: "user", Content: "hello"}},
+	}))
+	if strings.Contains(full, "data-chat-empty") {
+		t.Errorf("the empty state rendered beside an actual message:\n%s", full)
+	}
+
+	// While PROVISIONING, the provisioning row owns the screen — two "nothing here
+	// yet" messages at once would contradict each other.
+	prov := renderString(t, chatLogInner(AgentDetailView{Name: "demo", Status: "provisioning"}))
+	if strings.Contains(prov, "data-chat-empty") {
+		t.Errorf("the empty state rendered beside the provisioning indicator:\n%s", prov)
+	}
+	if !strings.Contains(prov, "chat-provisioning") {
+		t.Fatalf("the provisioning indicator is missing — the fixture is wrong, not the code:\n%s", prov)
+	}
+}
+
+// TestTheEmptyStateCountsRenderedBubblesNotRows is the case chatLogInner's own
+// comment names as unreachable-but-open: an assistant sentinel is DROPPED by the
+// render loop, so a thread made only of sentinels has rows but no bubbles. A
+// condition on len(v.Messages) would leave that thread blank with no affordance.
+func TestTheEmptyStateCountsRenderedBubblesNotRows(t *testing.T) {
+	got := renderString(t, chatLogInner(AgentDetailView{
+		Name:     "demo",
+		Status:   "running",
+		Messages: []ChatLine{{Role: "assistant", Content: "NO_REPLY"}},
+	}))
+	if !strings.Contains(got, "data-chat-empty") {
+		t.Errorf("a thread whose only row renders NO bubble got no empty state — it is a blank "+
+			"panel with no affordance:\n%s", got)
+	}
+}
+
+// --- helpers ------------------------------------------------------------------
+
+var (
+	classAttrRe = regexp.MustCompile(`class="([^"]*)"`)
+	slateShade  = regexp.MustCompile(`^text-slate-(\d+)$`)
+)
+
+// classAttrs returns the value of every class attribute in a rendered document.
+func classAttrs(html string) []string {
+	var out []string
+	for _, m := range classAttrRe.FindAllStringSubmatch(html, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// attrValues returns the value of every `name="..."` attribute in a fragment, in
+// document order.
+func attrValues(html, name string) []string {
+	re := regexp.MustCompile(regexp.QuoteMeta(name) + `="([^"]*)"`)
+	var out []string
+	for _, m := range re.FindAllStringSubmatch(html, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// hasClass reports whether a class attribute contains cls as a whole token
+// (so `max-w-xl` does not match inside `sm:max-w-xl`).
+func hasClass(attr, cls string) bool {
+	for _, c := range strings.Fields(attr) {
+		if c == cls {
+			return true
+		}
+	}
+	return false
+}
+
+// classOf returns the class attribute of the first element in a fragment.
+func classOf(fragment string) string {
+	m := classAttrRe.FindStringSubmatch(fragment)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+// between returns the text from the first occurrence of start through the first
+// following end, or "" if either is absent.
+func between(s, start, end string) string {
+	i := strings.Index(s, start)
+	if i < 0 {
+		return ""
+	}
+	rest := s[i:]
+	j := strings.Index(rest, end)
+	if j < 0 {
+		return ""
+	}
+	return rest[:j+len(end)]
+}
+
+// spanContaining returns the <span …> element whose markup contains needle.
+func spanContaining(html, needle string) string {
+	i := strings.Index(html, needle)
+	if i < 0 {
+		return ""
+	}
+	open := strings.LastIndex(html[:i+len(needle)], "<span")
+	if open < 0 {
+		return ""
+	}
+	rest := html[open:]
+	j := strings.Index(rest, "</span>")
+	if j < 0 {
+		return rest
+	}
+	return rest[:j+len("</span>")]
+}
+
+func contains(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// slatePalette is Tailwind's slate scale, as the stylesheet emits it. Only the
+// entries this app actually paints text and ground with are listed: an unknown
+// swatch must ERROR rather than be graded against a guess.
+var slatePalette = map[int][3]float64{
+	50:  {248, 250, 252},
+	200: {226, 232, 240},
+	300: {203, 213, 225},
+	400: {148, 163, 184},
+	500: {100, 116, 139},
+	600: {71, 85, 105},
+	700: {51, 65, 85},
+	800: {30, 41, 59},
+	900: {15, 23, 42},
+	950: {2, 6, 23},
+}
+
+// contrastAgainstAppBackground returns the WCAG 2.x contrast ratio of a
+// `text-slate-N` class against the app's ground (bg-slate-950, the colour the
+// body paints and the colour the defect was measured against).
+func contrastAgainstAppBackground(cls string) (float64, error) {
+	m := slateShade.FindStringSubmatch(cls)
+	if m == nil {
+		return 0, fmt.Errorf("%q is not a text-slate-N class", cls)
+	}
+	var shade int
+	if _, err := fmt.Sscanf(m[1], "%d", &shade); err != nil {
+		return 0, err
+	}
+	fg, ok := slatePalette[shade]
+	if !ok {
+		return 0, fmt.Errorf("slate-%d is not in slatePalette — add its RGB before grading it", shade)
+	}
+	l1, l2 := relativeLuminance(fg), relativeLuminance(slatePalette[950])
+	if l2 > l1 {
+		l1, l2 = l2, l1
+	}
+	return (l1 + 0.05) / (l2 + 0.05), nil
+}
+
+// relativeLuminance is the WCAG 2.x formula.
+func relativeLuminance(rgb [3]float64) float64 {
+	lin := func(c float64) float64 {
+		c /= 255
+		if c <= 0.04045 {
+			return c / 12.92
+		}
+		return math.Pow((c+0.055)/1.055, 2.4)
+	}
+	return 0.2126*lin(rgb[0]) + 0.7152*lin(rgb[1]) + 0.0722*lin(rgb[2])
+}

@@ -437,7 +437,13 @@ func statusFilterRow(active string) g.Node {
 		ID("status-filter-row"),
 		g.Attr("data-active-status", active),
 		Class("-mx-1 flex items-center gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"),
-		Span(Class("shrink-0 text-xs font-medium uppercase tracking-wide text-slate-600"), g.Text("Status")),
+		// text-slate-400, NOT text-slate-600. Measured on the live board:
+		// rgb(71,85,105) on rgb(2,6,23) at 12px is 2.66:1, under the 4.5:1 WCAG AA
+		// floor for text this size — and this is the word that says what the row
+		// next to it DOES. slate-400 on the same ground is 7.9:1. (slate-500 is
+		// 4.2:1, i.e. still under; the next step up is the first that clears it.)
+		// Same change on the Project row, for the same measurement.
+		Span(Class("shrink-0 text-xs font-medium uppercase tracking-wide text-slate-400"), g.Text("Status")),
 		g.Group(chips),
 	), len(chips), "mb-3")
 }

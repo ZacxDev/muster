@@ -67,6 +67,70 @@ const (
 // AutoDispatchTag is the exact tag that marks a task auto-dispatch eligible.
 const AutoDispatchTag = NSAuto + ":dispatch"
 
+// EXTERNAL-ID namespaces: a tag whose VALUE is an opaque identifier naming one
+// specific thing, rather than a label shared by a group of tasks.
+//
+// 🔴 THE DISTINCTION IS WHAT MAKES THE FILTER ROW USABLE, AND IT WAS MEASURED.
+// The live board carried 241 filter chips, 202 of them `clickup:<id>` — one per
+// mirrored task, each matching exactly that one task. The row's scrollWidth was
+// 33,967px against a 1,736px viewport (about twenty screens), with the scrollbar
+// explicitly suppressed and the `›` cue pointer-events-none: on desktop there was
+// no discoverable way to reach the far end at all. The ~39 chips that ARE filters
+// were buried in it.
+//
+// A `clickup:<id>` chip is not a filter. Selecting it can only ever produce the
+// single task that carries it — and you have to be looking at that task to know
+// the id. It is a BACK-REFERENCE, which is what tagChip on the card already
+// renders it as. So these namespaces are excluded from the filter chip ROW (an
+// active one still gets a chip, or it could not be cleared) and left untouched
+// everywhere else: still on the card, still in the editor, still filterable by
+// URL.
+//
+// ⚠ WHY A NAMESPACE RULE RATHER THAN A COUNT. "Hide chips matching one task"
+// would be a heuristic over today's data — it would hide a genuine label the day
+// its second task is filed, and un-hide it the day after. Membership here is a
+// property of the NAMESPACE's meaning and changes only when someone edits this
+// list. Deliberately NOT routing and NOT reserved: neither drives behaviour and
+// neither has a narrower grammar, so ValidateTags treats them as the ordinary
+// descriptive tags they are.
+const (
+	// NSClickUp — `clickup:<id>`: the ClickUp task this one mirrors.
+	NSClickUp = "clickup"
+	// NSSupersededBy — `superseded-by:<taskID>`: stamped on the LOSER of a merge,
+	// naming the winner. internal/api/merge.go writes it.
+	NSSupersededBy = "superseded-by"
+)
+
+// externalIDNamespaces is the closed set. Closed for the same reason
+// routingNamespaces is: adding one is a code change, because it removes a chip
+// from a control.
+var externalIDNamespaces = map[string]bool{
+	NSClickUp:      true,
+	NSSupersededBy: true,
+}
+
+// ExternalIDNamespaces returns the external-id namespaces, sorted, so a test or
+// a renderer can enumerate the closed allowlist without reaching into this
+// package's internals.
+func ExternalIDNamespaces() []string {
+	out := make([]string, 0, len(externalIDNamespaces))
+	for ns := range externalIDNamespaces {
+		out = append(out, ns)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// IsExternalIDTag reports whether tag's namespace is an external-id one.
+//
+// It goes through ParseTag rather than a HasPrefix test so there is ONE
+// definition of what a namespace is — a prefix test would also match a
+// descriptive tag literally named `clickupX:…`.
+func IsExternalIDTag(tag string) bool {
+	ns, _ := ParseTag(tag)
+	return externalIDNamespaces[ns]
+}
+
 // routingNamespaces is the closed set of ROUTING namespaces. Membership is what
 // makes a tag "routing" (behaviour-bearing) rather than descriptive.
 //

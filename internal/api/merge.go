@@ -48,7 +48,14 @@ const mergeCommentAuthor = "user"
 // tag-only PATCH carrying it hit the in-progress 409, which would break the
 // hand-rolled supersede procedure in supersede-decision-2026-08-28.md §(b).
 // TestSupersededByTagStaysDescriptive pins that.
-const supersededByNS = "superseded-by"
+//
+// 🔴 IT IS THE notes CONSTANT, NOT A SECOND SPELLING OF THE SAME WORD. notes now
+// declares it because the tag filter row has to know the namespace is an opaque
+// external id (notes.IsExternalIDTag) rather than a label; two copies of the
+// string would let the writer and the renderer disagree about which tags this
+// is, and the renderer's half would fail silently — a chip per merged task,
+// which is the shape of the defect that motivated the set.
+const supersededByNS = notes.NSSupersededBy
 
 // supersededByTag renders the loser's successor stamp. The value is an int64 the
 // handler already parsed, so the result is always a legal tag: the namespace is

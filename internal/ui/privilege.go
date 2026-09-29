@@ -136,8 +136,17 @@ func RenderProfiles(w io.Writer, list []ProfileView) error {
 // Profiles is the privilege-profiles registry section: a read-only list of
 // reusable access bundles to grant to agents. Creation moved to the Operator
 // (chat) — operator_create_profile — so this no longer renders an authoring form.
+//
+// 🔴 IT CARRIES id="privilege-profiles" AND THAT IS WHAT THE DELETE BUTTON
+// TARGETS. Exactly the same correction as Runbooks in runbooks.go, for exactly
+// the same reason: the id used to belong to a SECOND, hidden mount of this list
+// inside the Agents panel's "Advanced" disclosure, so deleting a profile from
+// the visible list swapped the server's response into the invisible copy and
+// nothing on screen changed. One mount, and the id is on the thing the response
+// replaces.
 func Profiles(list []ProfileView) g.Node {
 	return Section(
+		ID("privilege-profiles"),
 		Class("rounded-2xl border border-white/5 bg-slate-900/50 p-4 ring-1 ring-white/5"),
 		Div(
 			Class("mb-3 flex items-center gap-2"),
@@ -175,8 +184,11 @@ func profileCard(p ProfileView) g.Node {
 			g.Attr("aria-label", "Delete profile"),
 			Class("press inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-slate-400 transition hover:bg-white/5 hover:text-rose-300"),
 			hx("hx-delete", "/privileges/"+ids),
-			hx("hx-target", "#privilege-profiles"),
-			hx("hx-swap", "morph:innerHTML"),
+			// `closest section` rather than `#privilege-profiles`: the list this
+			// card is IN, which is true wherever the partial is mounted. See the
+			// note on Profiles above. outerHTML because the response IS the section.
+			hx("hx-target", "closest section"),
+			hx("hx-swap", "morph:outerHTML"),
 			hx("hx-confirm", "Delete profile "+p.Name+"? Existing grants of it are removed."),
 			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 		),

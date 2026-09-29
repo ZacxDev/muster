@@ -112,52 +112,31 @@ func AgentsPanel(active bool) g.Node {
 			hx("hx-target", "#agents-list"),
 			hx("hx-swap", "morph:innerHTML"),
 		),
-		// ADVANCED: the raw forms (privilege profiles + runbooks registries). These
-		// remain fully available for desktop/power use, but the operator chat is
-		// the intended primary path on mobile, so they're collapsed by default. The
-		// dispatch modal stays reachable via the body-level FAB (Page).
-		agentsAdvanced(),
+		// 🔴 THE "ADVANCED" DISCLOSURE THAT USED TO SIT HERE IS GONE, AND THE
+		// REASON IS A BUG RATHER THAN TIDINESS. It mounted a SECOND copy of the
+		// runbooks registry (#runbooks) and of the privilege-profiles registry
+		// (#privilege-profiles), each lazy-loading the same partial the top-level
+		// Runbooks and Privileges tabs already mount (#panel-runbooks,
+		// #panel-privileges). Every shell document therefore held two of each,
+		// both live: measured on /runbooks, a hidden #runbooks inside this panel
+		// and a visible #panel-runbooks, each with its own
+		// hx-delete="/runbooks/{id}" and hx-post="/runbooks/{id}/dispatch".
+		//
+		// 🔴 AND THE DUPLICATE WAS THE ONE THE BUTTONS TALKED TO. A runbook card's
+		// actions targeted `#runbooks` by id — so pressing Delete or Dispatch on
+		// the VISIBLE list swapped the response into the HIDDEN copy. The write
+		// happened, and the list the operator was looking at never changed: it
+		// reads as "the button does nothing". Those actions now target the section
+		// they are inside (see Runbooks in runbooks.go), which is a relationship
+		// rather than a global id, so a second mount could not capture them again.
+		//
+		// The disclosure carried nothing else of its own — it wrapped these two
+		// registries plus a sentence pointing at the + button — and both surfaces
+		// are reachable from the sidebar, so nothing was lost with it.
+		//
 		// FAB + modal are rendered at the body level by Page (shellFAB +
 		// agentModalShell) so fixed positioning is reliable and they survive the
 		// 4s list refresh.
-	)
-}
-
-// agentsAdvanced wraps the raw privilege-profiles + runbooks registries in a
-// collapsed <details>. The inner partials still lazy-load on `load` (htmx SSE/
-// hx-get fire inside a closed <details>), so opening it shows current data.
-func agentsAdvanced() g.Node {
-	return Details(
-		ID("agents-advanced"),
-		Class("group/adv mt-5 rounded-2xl border border-white/5 bg-slate-900/40 ring-1 ring-white/5"),
-		Summary(
-			Class("flex cursor-pointer select-none items-center gap-2 px-4 py-3 text-sm font-medium text-slate-300 transition hover:text-slate-100"),
-			Span(Class("transition-transform group-open/adv:rotate-90"), g.Text("▸")),
-			g.Text("Advanced"),
-			Span(Class("flex-1")),
-			Span(Class("text-xs font-normal text-slate-400"), g.Text("dispatch · profiles · runbooks")),
-		),
-		Div(
-			Class("flex flex-col gap-3 px-4 pb-4"),
-			P(Class("text-xs leading-relaxed text-slate-400"), g.Text("Power tools. The everyday path is to ask the operator above. Use the + button to dispatch an agent directly, or define reusable access profiles and runbooks here.")),
-			// Privilege profiles registry (Phase 3.2): define reusable access bundles.
-			Div(
-				ID("privilege-profiles"),
-				hx("hx-get", "/ui/privileges"),
-				hx("hx-trigger", "load"),
-				hx("hx-target", "#privilege-profiles"),
-				hx("hx-swap", "morph:innerHTML"),
-			),
-			// Runbooks registry (Phase 4.1): reusable, parameterized dispatch
-			// templates. Lazy-loads its partial; one-click "Run" dispatches an agent.
-			Div(
-				ID("runbooks"),
-				hx("hx-get", "/ui/runbooks"),
-				hx("hx-trigger", "load"),
-				hx("hx-target", "#runbooks"),
-				hx("hx-swap", "morph:innerHTML"),
-			),
-		),
 	)
 }
 
@@ -277,7 +256,17 @@ func agentCard(a AgentCardView) g.Node {
 				cardStatusIcon(a),
 				Span(
 					Class("mr-auto break-all text-base font-semibold leading-tight text-slate-50 group-hover:text-emerald-300"),
-					g.Text(displayOr(a.DisplayName, a.Name)),
+					// The SAME rendering the detail page's header gives this string
+					// (agentTitle → mdInlineNode). A task-derived display name routinely
+					// carries `**bold**` and `code`, and rendering it as plain text here
+					// put the raw markers on the card while the detail page showed the
+					// markup — one string, two answers, from the same click.
+					//
+					// The no-LINK variant because this Span is INSIDE the card's own <a>:
+					// a nested anchor is invalid HTML that browsers resolve by closing
+					// the outer one, which would truncate the card's tap target. See
+					// mdInlineNoLinks.
+					mdInlineNoLinkNode(displayOr(a.DisplayName, a.Name)),
 				),
 				g.If(a.Repo != "", chip("repo", a.Repo)),
 			),

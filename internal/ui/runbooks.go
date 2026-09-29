@@ -73,8 +73,16 @@ func RenderRunbooks(w io.Writer, list []RunbookView) error {
 // Runbooks is the runbooks registry section: a list of reusable dispatch
 // templates you run with one click. Creation moved to the Operator (chat) —
 // operator_create_runbook — so this no longer renders an authoring form.
+// 🔴 IT CARRIES id="runbooks" AND THAT IS WHAT THE CARD ACTIONS TARGET. Every
+// runbook card's Delete and Dispatch swaps this whole section (morph:outerHTML)
+// for the partial the server re-renders. The id used to belong to a SECOND,
+// hidden mount of this same list inside the Agents panel — so the actions on the
+// visible list swapped their response into the invisible copy and the operator
+// saw nothing happen. There is one mount now, and the id is on the thing the
+// response replaces.
 func Runbooks(list []RunbookView) g.Node {
 	return Section(
+		ID("runbooks"),
 		Class("rounded-2xl border border-white/5 bg-slate-900/50 p-4 ring-1 ring-white/5"),
 		Div(
 			Class("mb-3 flex items-center gap-2"),
@@ -115,8 +123,13 @@ func runbookCard(rb RunbookView) g.Node {
 				g.Attr("aria-label", "Delete runbook"),
 				Class("press inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-slate-400 transition hover:bg-white/5 hover:text-rose-300"),
 				hx("hx-delete", "/runbooks/"+ids),
-				hx("hx-target", "#runbooks"),
-				hx("hx-swap", "morph:innerHTML"),
+				// `closest section` rather than `#runbooks`: the target is the list
+				// this card is IN, which is true wherever the partial is mounted. The
+				// id form sent the response to whichever mount happened to own the id
+				// — and for a while that was a hidden second copy. outerHTML because
+				// the response IS the section, id included.
+				hx("hx-target", "closest section"),
+				hx("hx-swap", "morph:outerHTML"),
 				hx("hx-confirm", "Delete runbook "+rb.Name+"?"),
 				g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 			),
@@ -161,12 +174,27 @@ func runbookRunForm(rb RunbookView) g.Node {
 			hx("hx-disabled-elt", "this"), g.Text("Dispatch")),
 	)
 	return g.El("details",
-		Class("mt-2 rounded-lg bg-slate-950/40 ring-1 ring-inset ring-white/5"),
-		g.El("summary", Class("cursor-pointer select-none px-3 py-2 text-xs font-medium text-slate-300"), g.Text("▸ Run")),
+		Class("group/run mt-2 rounded-lg bg-slate-950/40 ring-1 ring-inset ring-white/5"),
+		// 🔴 list-none IS REQUIRED, NOT COSMETIC PADDING. A <summary> is
+		// `display: list-item` with `list-style-type: disclosure-closed`, so the
+		// browser draws its OWN triangle — and this markup drew a second one as
+		// literal text. The rendered control read "▸ ▸ Run". The "Advanced"
+		// summary on the agents view already set list-style:none for exactly this
+		// reason; matching it means one triangle, and it is the one that ROTATES
+		// on open (group-open/run) so the control says which state it is in.
+		// marker:content-[''] covers the WebKit/Blink ::marker spelling the way
+		// the fenced-code <summary> in markdown.go does.
+		g.El("summary",
+			Class("flex cursor-pointer select-none list-none items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-300 marker:content-['']"),
+			Span(Class("transition-transform group-open/run:rotate-90"), g.Text("▸")),
+			g.Text("Run"),
+		),
 		Form(
 			hx("hx-post", "/runbooks/"+ids+"/dispatch"),
-			hx("hx-target", "#runbooks"),
-			hx("hx-swap", "morph:innerHTML"),
+			// Same reasoning as the Delete button above: the list this card is in,
+			// not whatever owns the id.
+			hx("hx-target", "closest section"),
+			hx("hx-swap", "morph:outerHTML"),
 			hx("hx-on::after-request", "if(event.target===this && event.detail.successful){try{window.cgTrack('runbook.run',{name:"+jsonString(rb.Name)+"});}catch(e){}}"),
 			Class("flex flex-col gap-2 p-3 pt-0"),
 			g.Group(fields),

@@ -53,7 +53,10 @@ func TestNoLaneCoversAStatusOutsideTheVocabulary(t *testing.T) {
 // would build `status = ANY('{}')`, which matches NOTHING — a typo'd ?status=
 // would then empty the board while the chip row showed nothing selected.
 func TestLaneStatusesForAnUnknownLaneIsNilNotEmpty(t *testing.T) {
-	for _, bad := range []string{"", "Open", "in-progress", "complete", "done "} {
+	// `done` is in this list deliberately: it was the OLD lane value for
+	// Complete, so a stale bookmark or localStorage entry still sends it. It must
+	// degrade to the unfiltered board, not to an empty one.
+	for _, bad := range []string{"", "Open", "in-progress", "done", "complete "} {
 		if got := LaneStatuses(bad); got != nil {
 			t.Errorf("LaneStatuses(%q) = %#v, want nil (no predicate) — a non-nil empty slice "+
 				"would match no rows and silently empty the board", bad, got)
@@ -68,8 +71,8 @@ func TestLaneStatusesForAnUnknownLaneIsNilNotEmpty(t *testing.T) {
 // argument, and an appending caller would corrupt the table for the process.
 func TestLaneStatusesReturnsACopy(t *testing.T) {
 	got := LaneStatuses(LaneInProgress)
-	if len(got) != 2 {
-		t.Fatalf("LaneStatuses(in_progress) = %v, want 2 entries", got)
+	if len(got) != 1 {
+		t.Fatalf("LaneStatuses(in_progress) = %v, want 1 entry", got)
 	}
 	got[0] = "clobbered"
 	if again := LaneStatuses(LaneInProgress); again[0] == "clobbered" {
@@ -77,11 +80,45 @@ func TestLaneStatusesReturnsACopy(t *testing.T) {
 	}
 }
 
+// TestTheLaneVOCABULARYISTheStatusVOCABULARY is the regression guard for the
+// measured defect: the filter chips and the per-card status <select> were two
+// enumerations of one thing and had drifted.
+//
+// 🔴 ASSERTED AGAINST All(), NOT AGAINST LITERAL STRINGS. A test listing
+// "open", "in_progress", "ready_for_review", "complete" would pass a rename of
+// one enum member in the other, which is the same two-copies shape that produced
+// the bug. Comparing the two SETS is the only form that cannot drift.
+//
+// What it refuses, concretely: a lane covering more than one status (that is how
+// ready_for_review became unreachable — folded under "In progress", where 30 of
+// the 50 loaded cards carried a status no chip named), and a status with no lane
+// of its own.
+func TestTheLaneVocabularyIsTheStatusVocabulary(t *testing.T) {
+	lanes, statuses := Lanes(), All()
+	if len(lanes) != len(statuses) {
+		t.Fatalf("Lanes() = %v (%d), All() = %v (%d) — every status must be reachable by exactly "+
+			"one chip, so the two vocabularies must be the same size", lanes, len(lanes), statuses, len(statuses))
+	}
+	for i := range statuses {
+		if lanes[i] != statuses[i] {
+			t.Fatalf("Lanes() = %v, All() = %v — a lane that is not a status (or in a different "+
+				"lifecycle order) means a chip the board cannot explain", lanes, statuses)
+		}
+		if got := LaneStatuses(statuses[i]); len(got) != 1 || got[0] != statuses[i] {
+			t.Errorf("LaneStatuses(%q) = %v, want exactly [%q] — a lane covering two statuses hides "+
+				"one of them behind the other's chip label", statuses[i], got, statuses[i])
+		}
+	}
+}
+
 // TestLanesIsInLifecycleOrderAndACopy: the chip row renders in this order, and
-// Go map iteration is randomised, so the order must come from the array.
+// Go map iteration is randomised, so the order must come from the vocabulary.
 func TestLanesIsInLifecycleOrderAndACopy(t *testing.T) {
 	got := Lanes()
-	want := []string{LaneOpen, LaneInProgress, LaneDone}
+	want := []string{LaneOpen, LaneInProgress, LaneReadyForReview, LaneDone}
+	if len(got) != len(want) {
+		t.Fatalf("Lanes() = %v, want %v", got, want)
+	}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("Lanes() = %v, want %v (lifecycle order — a chip row that reshuffles between "+
@@ -95,15 +132,33 @@ func TestLanesIsInLifecycleOrderAndACopy(t *testing.T) {
 }
 
 // TestEveryLaneHasALabel: a lane added without copy would render a chip with no
-// text, which is unclickable in practice and invisible to a screen reader.
+// text, which is unclickable in practice and invisible to a screen reader. Since
+// a lane IS a status, this is also the check that adding a status to the
+// vocabulary cannot ship a blank chip.
 func TestEveryLaneHasALabel(t *testing.T) {
 	for _, lane := range Lanes() {
 		if LaneLabel(lane) == "" {
-			t.Errorf("lane %q has no label — its chip would render with no text", lane)
+			t.Errorf("lane %q has no label — its chip would render with no text. Add it to "+
+				"laneLabels in lane.go", lane)
 		}
 	}
 	if LaneLabel("nope") != "" {
 		t.Errorf("LaneLabel of an unknown lane must be empty")
+	}
+}
+
+// TestLaneLabelsAreDistinct: two lanes sharing copy is worse than a missing
+// label — the row renders two chips reading the same word and the user cannot
+// tell which state either one selects. It is the shape the old table had
+// (ready_for_review had no chip of its own at all).
+func TestLaneLabelsAreDistinct(t *testing.T) {
+	seen := map[string]string{}
+	for _, lane := range Lanes() {
+		l := LaneLabel(lane)
+		if prev, dup := seen[l]; dup {
+			t.Errorf("lanes %q and %q both render as %q — two chips with one label", prev, lane, l)
+		}
+		seen[l] = lane
 	}
 }
 
