@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1141,6 +1143,85 @@ func (panickingRouter) PublishEvent(context.Context, string, string) error {
 	panic("router client exploded mid-publish")
 }
 
+// panicInGoroutineLog is the fragment safeGo's recover writes for every panic it
+// catches. It mirrors that Printf's format string; a reword there makes the wait
+// below time out and the positive control go RED, which is the direction that
+// costs a confusing failure rather than a silent pass.
+const panicInGoroutineLog = "PANIC in goroutine"
+
+// recoveredPanicLog is a log sink that reports each recovered-goroutine-panic
+// line safeGo writes, so a test can block until the recovers have actually run.
+//
+// 🔴 THIS IS THE ORDERING THE POSITIVE CONTROL BELOW NEEDS, AND ISSUE #20 IS WHAT
+// HAPPENS WITHOUT IT. safeGo registers its recover in the OUTER goroutine, so it
+// unwinds AFTER fn's own `defer s.pushInFlight.Done()` — that is the property the
+// test exists to protect, and it is also why WaitForPushes can return BEFORE
+// either recover has incremented muster_panics_total{source="goroutine"}. Reading
+// the counter once, the instant the wait returns, is therefore a race — one CI
+// hit, and one that reproduces locally at a few runs in a hundred on unmodified
+// main, every failure reading a delta of 1. The commit carries the rates.
+//
+// WaitForPushes is not the thing to fix. Its contract is that the fan-out WORK
+// has finished (cmd/muster-server's shutdown waits on it so a notification is not
+// dropped on exit); nothing in the service reads this counter, least of all at
+// shutdown, when /metrics has already been drained. The test was reading an
+// unordered value, so the test is what gains an ordering.
+//
+// The edge is the recover's own body: it increments the counter and THEN logs.
+// Receiving the line therefore orders the reader after the increment. It also
+// ATTRIBUTES the panics in a way the process-global counter cannot — this logger
+// belongs to this test's Server, so a line arriving here came from these two
+// fan-outs and not from another test's leftover goroutine.
+type recoveredPanicLog struct {
+	mu     sync.Mutex
+	lines  []string
+	landed chan struct{}
+}
+
+func newRecoveredPanicLog() *recoveredPanicLog {
+	// Buffered so Write never blocks on a test that has stopped reading; 64 is far
+	// more than any caller waits for.
+	return &recoveredPanicLog{landed: make(chan struct{}, 64)}
+}
+
+// Write records the line and, if it is one of safeGo's recovered-panic lines,
+// signals it. log.Logger emits exactly one Write per Printf, so one recovered
+// panic is one signal.
+func (l *recoveredPanicLog) Write(p []byte) (int, error) {
+	line := string(p)
+	l.mu.Lock()
+	l.lines = append(l.lines, line)
+	l.mu.Unlock()
+	if strings.Contains(line, panicInGoroutineLog) {
+		select {
+		case l.landed <- struct{}{}:
+		default:
+		}
+	}
+	return len(p), nil
+}
+
+// waitFor blocks until n recovered-goroutine-panic lines have been logged, or
+// returns an error naming how many it saw and what the log held instead.
+func (l *recoveredPanicLog) waitFor(n int, within time.Duration) error {
+	deadline := time.After(within)
+	for i := 0; i < n; i++ {
+		select {
+		case <-l.landed:
+		case <-deadline:
+			l.mu.Lock()
+			held := strings.Join(l.lines, "")
+			l.mu.Unlock()
+			if held == "" {
+				held = "    (nothing at all was logged)\n"
+			}
+			return fmt.Errorf("saw %d of %d %q log line(s) within %s; the server logged:\n%s",
+				i, n, panicInGoroutineLog, within, held)
+		}
+	}
+	return nil
+}
+
 // TestAPanickingFanOutStillReleasesTheShutdownWait is the guard for the ONE
 // invariant the safeGo conversion could have silently broken.
 //
@@ -1157,8 +1238,15 @@ func (panickingRouter) PublishEvent(context.Context, string, string) error {
 // ⚠ THE PRE-CONVERSION CODE COULD NOT HAVE PASSED THIS TEST AT ALL — it would
 // have taken the test binary down with it. That is the measurement: red by
 // process death before, green after.
+//
+// ⚠ THE POSITIVE CONTROL IS ORDERED AGAINST THE RECOVERS, NOT AGAINST
+// WaitForPushes (issue #20). The two are different events and the second happens
+// first — recoveredPanicLog's header carries the mechanism and the failure rate.
 func TestAPanickingFanOutStillReleasesTheShutdownWait(t *testing.T) {
-	s := New(nil, AuthConfig{}, log.New(os.Stderr, "", 0))
+	// The server logs through a sink the test can watch, which is what lets the
+	// positive control below read the counter only after both recovers have run.
+	logs := newRecoveredPanicLog()
+	s := New(nil, AuthConfig{}, log.New(logs, "", 0))
 	s.UseRouter(panickingRouter{})
 
 	// A DELTA, not an absolute read: metrics.Panics is a process-global counter
@@ -1188,11 +1276,24 @@ func TestAPanickingFanOutStillReleasesTheShutdownWait(t *testing.T) {
 			"inside fn above the defer, it swallows the unwind that would have run it.")
 	}
 
-	// 🔴 POSITIVE CONTROL: THE PANICS MUST ACTUALLY HAVE HAPPENED. Without this
-	// the test passes just as happily against a router that never panicked — and
-	// would keep passing if someone deleted the panic from the stub, which is the
-	// "green for the wrong reason" shape. The recovered-panic counter is the one
-	// signal that distinguishes them.
+	// 🔴 POSITIVE CONTROL, PART 1: WAIT FOR THE RECOVERS. WaitForPushes returning
+	// says the fan-out work finished; it does NOT say either recover has run, so
+	// the counter read below is only meaningful after this. With the panics deleted
+	// from panickingRouter no line ever arrives and this is where the control goes
+	// red — which is the whole point of it.
+	if err := logs.waitFor(2, 5*time.Second); err != nil {
+		t.Fatalf("positive control FAILED: safeGo did not report two recovered panics: %v\n"+
+			"    The fan-outs did not panic (or were not recovered), so the wait "+
+			"returning proves nothing about recovery — this test would read exactly "+
+			"the same against a router that works.", err)
+	}
+
+	// 🔴 POSITIVE CONTROL, PART 2: THE PANICS MUST ACTUALLY HAVE BEEN COUNTED.
+	// Without this the test passes just as happily against a router that never
+	// panicked — and would keep passing if someone deleted the panic from the stub,
+	// which is the "green for the wrong reason" shape. The recovered-panic counter
+	// is the signal a Prometheus scrape would see, and the log wait above is what
+	// makes reading it here sound rather than a race.
 	if got := goroutinePanicCount() - before; got < 2 {
 		t.Fatalf("positive control FAILED: muster_panics_total{source=\"goroutine\"} rose "+
 			"by %v across these two fan-outs, want at least 2. The fan-outs did not "+
