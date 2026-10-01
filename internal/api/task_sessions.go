@@ -13,8 +13,8 @@ import (
 	"github.com/ZacxDev/muster/internal/notes"
 )
 
-// Task threads (migration 0023): every task-scoped machine call carrying an
-// X-Muster-Session-Id joins that session to the task's thread, so "which
+// Task threads (migration 0023): every task-scoped machine call carrying a
+// session-id header joins that session to the task's thread, so "which
 // sessions worked task #N" is a query instead of prose in a comment body.
 //
 // 🔴 THE DETECTOR IS STRUCTURAL, NOT TEXTUAL. Nothing here — or anywhere else —
@@ -25,17 +25,18 @@ import (
 // number, lose every link whose phrasing changed, and be silently wrong in both
 // directions.
 
-// maxSessionHostLen caps the optional X-Muster-Host header. Like
+// maxSessionHostLen caps the optional host header. Like
 // maxSessionIDLen it is an attacker-influenceable header on any hook-token call,
 // and it lands in a stored column; a hostname is well under this.
 const maxSessionHostLen = 128
 
-// taskSessionHost reads the OPTIONAL X-Muster-Host header (rune-capped, so a
-// multibyte hostname can never be truncated into invalid UTF-8 that Postgres
-// rejects on write). Absent ⇒ "" ⇒ the column keeps whatever an earlier touch
-// recorded.
+// taskSessionHost reads the OPTIONAL host header — under BOTH the current
+// X-Muster-Host and the pre-extraction X-Clawgate-Host spelling, via the shared
+// provenanceHeader lookup (rune-capped, so a multibyte hostname can never be
+// truncated into invalid UTF-8 that Postgres rejects on write). Absent ⇒ "" ⇒ the
+// column keeps whatever an earlier touch recorded.
 func taskSessionHost(r *http.Request) string {
-	return capRunes(strings.TrimSpace(r.Header.Get("X-Muster-Host")), maxSessionHostLen)
+	return capRunes(provenanceHeader(r, headerHost, legacyHeaderHost), maxSessionHostLen)
 }
 
 // linkTaskSession joins the request's session to noteID's thread with the given
