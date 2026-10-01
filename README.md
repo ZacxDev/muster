@@ -92,9 +92,33 @@ database into a hard failure that names itself. CI sets it. Set it locally too.
 | the leak gate | `make leakscan` |
 | everything CI runs | `make check` |
 | stop the throwaway Postgres | `make test-db-down` |
+| the built CLI's verb set, asserted | `make verb-ledger` |
 | a pinned dev shell (nix) | `nix develop` |
+| build the CLI (nix) | `nix build .#muster-cli` → `result/bin/muster` |
+| run the CLI without installing (nix) | `nix run .#muster-cli -- task ls` |
 | build the migrator (nix) | `nix build .#muster-migrate` |
 | build the migrator image (nix, Linux) | `nix build .#migrate-image` |
+
+### Installing the CLI from somewhere else
+
+`cmd/muster` is a machine client for this service's JSON API, and because this
+repository is public it is **fetchable and pinnable by revision** — a downstream
+flake adds `muster.url = "github:ZacxDev/muster"` and takes
+`muster.packages.${system}.muster-cli`. That is the point of the output
+existing: the alternative is packaging a client from a local path, where the
+`vendorHash` is only ever correct for whichever checkout a given host happens to
+hold.
+
+Two things to know before you wire it up:
+
+- **The output is `muster-cli`; the binary is `muster`.** The attribute is not
+  called `muster` because that name belongs to this project's *service*
+  (`cmd/muster-server`), which will want an output of its own.
+- **The binary answers to whatever name you invoke it as.** `cmd/muster/progname.go`
+  reads `argv[0]` and uses it for help text, the error prefix and the
+  version-skew note, so symlinking it under another name is supported and
+  changes nothing else — same command tree, same config, same service. It is
+  there so a host whose tooling matches on a command line can keep matching.
 
 ## The schema
 
@@ -159,9 +183,29 @@ mechanism looks over-built and each part of it is there for a measured failure.
 - **The `e2e` and `e2e-unit` CI jobs are stubs.** They run nothing and say so in
   their own output. They fail the moment a spec file appears, so the first real
   e2e test cannot land against a green tick that never collected it.
-- **`nix build` runs the pure-Go tests only.** The sandbox has no database, so
-  every Postgres-backed test skips there. A green `nix flake check` is not a
-  green suite; the CI `test` job is.
+- **`nix build` tests only the packages the derivation installs, and this line
+  used to overstate it.** It read "`nix build` runs the pure-Go tests only",
+  which was two claims too many. What a nix build runs is `go vet ./...` over the
+  whole module plus `go test` over a *named* package set — `cmd/muster` and
+  `internal/taskstatus` for the CLI, `cmd/muster-migrate` and `internal/db` for
+  the migrator. `go test ./...` there is not merely weaker, it is **red**: four
+  packages assert properties of the *repository* (`internal/agentspec` shells out
+  to `git`; `internal/modulegate`, `internal/notes` and `internal/ui` read
+  `Dockerfile`, `.dockerignore`, `tailwind.config.js`, `web/css/input.css` and the
+  root `testdata/`), and the derivation's `src` is an allowlisted subset that
+  carries none of that. `flake.nix`'s `goCheckPhase` states the full list.
+  Postgres-backed tests still skip — the sandbox has no database. **The CI `test`
+  job is the only green suite.**
+- 🔴 **A green `nix flake check` is not evidence a check ran.** Measured on this
+  flake: it printed "checking derivation checks.x86_64-linux.muster-cli …
+  derivation evaluated to …" and then "running 0 flake checks / all checks
+  passed!", because nix skips what is already in the store. It answers "does every
+  output evaluate", which is worth having and is not the same question. The CI
+  `nix` job therefore runs `nix build` on the named attributes and keeps `flake
+  check` as a second, separate step. Until that job existed, **nothing built a nix
+  output at all** — and `nix build .#muster-migrate` was red on `main`
+  (`internal/api` imports the root-level `web` package, which the source filter did
+  not carry) for the flake's whole life, behind a full green tick.
 - **The leak gate does not scan itself — it AUDITS itself, which is narrower.**
   `tests/leakscan.py` has to contain realistic sensitive strings (they are its
   negative controls), so it is exempt from the scan and printed as a named skip.

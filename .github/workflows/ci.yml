@@ -47,6 +47,17 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
 
+      # 🔴 THE VERB LEDGER RUNS HERE, AGAINST A BINARY, AND THAT IS A DIFFERENT
+      # CLAIM FROM ANYTHING THE `test` JOB MAKES. cmd/muster/tree_test.go pins
+      # the same twelve verbs by walking the cobra tree in process — it is blind
+      # to which binary a build produced, so a `subPackages`/build wiring mistake
+      # leaves it green while the artefact is some other program. This step
+      # interrogates `go build`'s output. `nix build .#muster-cli` runs the
+      # identical script as its installCheckPhase; this is the spelling that does
+      # not need nix, so it gates every PR rather than only the `nix` job.
+      - name: verb ledger (the built CLI exposes exactly its specified verbs)
+        run: make verb-ledger
+
   # Local: make test-db && make test
   test:
     name: test (postgres)
@@ -152,6 +163,51 @@ jobs:
 
       - name: scan
         run: python3 tests/leakscan.py
+
+  # Local: nix build .#muster-cli .#muster-migrate --no-link -L
+  #
+  # 🔴 THIS JOB EXISTS BECAUSE THE FLAKE WAS BROKEN FOR ITS ENTIRE LIFE AND
+  # NOTHING NOTICED. Measured at 1bbef4d, the commit before this job: `nix build
+  # .#muster-migrate` failed in the module-fetch derivation — `internal/api`
+  # imports the root-level `web` package and `onlyGo` carried only `cmd/` and
+  # `internal/`. That is the flake's only package, its `default`, its `app` and
+  # its only `check`, all red, on main, with a full green tick. Every other job
+  # here builds with `go build` against a real checkout, which has every file, so
+  # the entire class was invisible. It also meant `goVendorHash` had never been
+  # compared against anything.
+  #
+  # 🔴 `nix build` ON NAMED ATTRIBUTES, NOT `nix flake check`. Measured on this
+  # flake: `nix flake check` printed "checking derivation
+  # checks.x86_64-linux.muster-cli … derivation evaluated to …" and then "running
+  # 0 flake checks / all checks passed!" — it EVALUATED both derivations and
+  # built neither, because nix skips what is already in the store. A green `flake
+  # check` is therefore not evidence that a check ran, which is the same
+  # reassuring zero this file's other jobs are written to avoid. `nix build`
+  # names what it must produce.
+  #
+  # ⚠ THE `nix flake check` STEP IS KEPT ANYWAY, SECOND, FOR WHAT IT *DOES*
+  # ANSWER: that every output attribute EVALUATES. A typo in an `apps` entry or a
+  # reference to a dropped package is an evaluation error no `nix build` of two
+  # named attributes would reach.
+  nix:
+    name: nix outputs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # 🔴 BOTH PACKAGES, NAMED. `muster-cli`'s own installCheckPhase runs the
+      # verb ledger against the binary it just installed, so this step is also
+      # the artefact-level verb check — see tests/verb-ledger.sh.
+      - name: build every package output
+        run: nix build --no-link --print-out-paths -L .#muster-cli .#muster-migrate
+
+      - name: every flake output evaluates
+        run: nix flake check -L
 
   # Local: make css-check
   #
