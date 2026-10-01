@@ -48,6 +48,33 @@
       # embed that matched nothing — so a filter carrying only `.go` files fails
       # the build's own check phase with a message about the embed pattern, not
       # about the filter. Same class as `go.sum` below.
+      #
+      # 🔴 `web/` IS IN THIS FILTER BECAUSE WITHOUT IT NOTHING IN THIS FLAKE
+      # BUILT AT ALL, AND THAT WENT UNNOTICED FOR THE WHOLE LIFE OF THE FLAKE.
+      # Measured at 1bbef4d, before this line existed:
+      #
+      #     go: github.com/ZacxDev/muster/internal/api imports
+      #             github.com/ZacxDev/muster/web: no required module provides
+      #             package github.com/ZacxDev/muster/web
+      #
+      # — `nix build .#muster-migrate` failed in the *module-fetch* derivation,
+      # i.e. the flake's only package, its `default`, its `app` and its only
+      # `check` were ALL red on `main`. Nothing caught it because no CI job
+      # builds a nix output (see the `nix` job added in ci.yml with this change,
+      # which is what makes this filter's correctness observable).
+      #
+      # The mechanism is the generic hazard of an allowlist: `internal/api`
+      # imports the root-level `web` package for its `//go:embed static`, and a
+      # filter enumerating `cmd/` and `internal/` cannot see a dependency that
+      # lives outside both. `go build ./...` on a real checkout is blind to it
+      # because a real checkout has every file.
+      #
+      # ⚠ `web/static/**` IS CARRIED AS *BYTES*, NOT AS `.go` FILES — the only
+      # rows in this filter that are. `//go:embed static` fails the build if the
+      # directory is absent or empty, so narrowing this to `.go` would swap one
+      # missing-package error for one missing-embed error. `web/css/input.css`
+      # is deliberately NOT here: it is Tailwind's *input*, consumed by
+      # `make css`, and no Go package reads it.
       onlyGo = pkgs: pkgs.lib.cleanSourceWith {
         src = ./.;
         name = "muster-source";
@@ -55,9 +82,12 @@
           let rel = pkgs.lib.removePrefix (toString ./. + "/") (toString path);
           in
           (type == "directory" && (
-            rel == "cmd" || rel == "internal"
+            rel == "cmd" || rel == "internal" || rel == "web"
             || pkgs.lib.hasPrefix "cmd/" rel || pkgs.lib.hasPrefix "internal/" rel
+            || rel == "web/static" || pkgs.lib.hasPrefix "web/static/" rel
           ))
+          || (rel == "web/static.go")
+          || (pkgs.lib.hasPrefix "web/static/" rel)
           || (rel == "go.mod")
           # 🔴 `go.sum` IS NAMED EXPLICITLY. `buildGoModule` with a real
           # `vendorHash` needs the lock file to resolve the module graph, so a
@@ -66,8 +96,42 @@
           # row below gives: a glob is an allowlist that says something wider
           # than it means.
           || (rel == "go.sum")
+          # 🔴 `.sh` AND `.js` ARE HERE FOR THE SAME REASON `.sql` IS: THEY ARE
+          # `//go:embed`ED. `internal/agentspec/autosave.go` embeds `autosave.sh`
+          # and `internal/ui/components.go` embeds `js/*.js`. Measured with the
+          # filter carrying only `.go`/`.sql`: the BUILD phase passed (nothing
+          # `cmd/muster-migrate` imports reaches those packages) and the CHECK
+          # phase died with
+          #
+          #     internal/agentspec/autosave.go:19:12: pattern autosave.sh: no matching files found
+          #     internal/ui/components.go:2599:12: pattern js/filter-toggle.js: no matching files found
+          #
+          # — i.e. a filter row omitted here surfaces as a `go vet`/`go test`
+          # failure naming the embed, never naming the filter. That is the good
+          # direction and it is still a trap: the message points at the code.
+          #
+          # ⚠ WHEN A NEW EMBEDDED FILE TYPE APPEARS UNDER `internal/`, IT MUST BE
+          # ADDED HERE. There is no glob doing it for you, deliberately — see the
+          # `go.sum` note. The symptom is the message above.
           || ((pkgs.lib.hasPrefix "cmd/" rel || pkgs.lib.hasPrefix "internal/" rel)
-              && (pkgs.lib.hasSuffix ".go" rel || pkgs.lib.hasSuffix ".sql" rel));
+              && (pkgs.lib.hasSuffix ".go" rel || pkgs.lib.hasSuffix ".sql" rel
+                  || pkgs.lib.hasSuffix ".sh" rel || pkgs.lib.hasSuffix ".js" rel))
+          # 🔴 `testdata/` IS CARRIED WHOLE, AND IT IS THE ONE ROW HERE THAT IS
+          # NOT AN EXTENSION. The golden files under `internal/api/testdata/` and
+          # `internal/agentspec/testdata/` are read by the tests this derivation's
+          # `checkPhase` RUNS, so omitting them makes those tests fail inside the
+          # build. Their extensions (`.golden`, `.golden.json`, `.tsv`) are a set
+          # that will keep growing, and `testdata` is a directory name Go's own
+          # tooling defines — so the directory is the stable thing to name, not
+          # the suffixes.
+          #
+          # ⚠ THIS IS THE ONE PLACE THE ALLOWLIST IS WIDER THAN A FILE LIST, so
+          # it is the one place the header's hazard applies: a local dump dropped
+          # under a `testdata/` directory WOULD be copied into the store. It
+          # would also have to be `git add`ed to get there via a flake fetch, and
+          # a reviewer sees that.
+          || (pkgs.lib.hasInfix "/testdata/" rel
+              && (pkgs.lib.hasPrefix "cmd/" rel || pkgs.lib.hasPrefix "internal/" rel));
       };
 
       # 🔴 THE GO TOOLCHAIN IS PINNED, NOT INHERITED. `pkgs.go` follows nixpkgs
@@ -100,7 +164,104 @@
       # pins the BYTES of whatever the module graph resolves to; it says nothing
       # about which modules are in that graph, and adding one just changes the
       # hash.
-      goVendorHash = "sha256-904l7LfgjynBGYgWNeM2ltHuquifgNQWfWzoXiXAoHM=";
+      #
+      # 🔴 THE PREVIOUS LITERAL HERE WAS NEVER CORRECT AND COULD NOT HAVE BEEN.
+      # The module-fetch derivation it is the hash OF failed before it produced
+      # anything (`web` was outside `onlyGo` — see the filter above), so nix never
+      # reached the comparison and the value was never contradicted. A hash that
+      # is never checked is indistinguishable from a right one. It is replaced
+      # here with the value nix printed for the first fetch that actually
+      # succeeded, and the `nix` CI job added with this change is what will
+      # contradict it next time.
+      goVendorHash = "sha256-e+cVpoLIOAjIQwlNF+joabU48IBzlcRFDM9cOIKiWrk=";
+
+      # goCheckPhase builds a check phase for one of this flake's Go
+      # derivations. `testPaths` is the package pattern `go test` is given.
+      #
+      # 🔴 IT IS SPELLED OUT RATHER THAN LEFT TO THE DEFAULT, BECAUSE THE DEFAULT
+      # CHECK PHASE HONOURS `subPackages` AND THAT MAKES IT VACUOUS. The
+      # mechanism, which is the part worth understanding rather than copying:
+      # `subPackages` exists to narrow what gets INSTALLED, and
+      # `buildGoModule`'s default `checkPhase` reuses it to narrow the TEST WALK
+      # too. With `subPackages = [ "cmd/muster-migrate" ]` the walk covers
+      # exactly one directory — and `cmd/muster-migrate` contains NO test files
+      # at all, so the build log reads
+      #
+      #     Running phase: checkPhase
+      #     ?  .../cmd/muster-migrate  [no test files]
+      #     Running phase: installPhase
+      #
+      # — a GREEN check phase that ran ZERO tests. That is a reassuring zero
+      # arriving through a build option whose only documented job is something
+      # else. (Measured on THIS module, not inherited from the project the style
+      # came from: `go test ./cmd/muster-migrate/...` prints exactly that line.)
+      #
+      # ⚠ AND THE TELL DOES NOT SURVIVE. The `[no test files]` line is what makes
+      # it visible. The day `cmd/muster-migrate` gains one test, the same
+      # narrowing would run ONE package and print a plausible-looking PASS, with
+      # nothing in the log to say the others never ran. The `ok` COUNT below is
+      # the instrument that does not depend on that tell.
+      #
+      # 🔴 `go vet ./...` COVERS THE WHOLE MODULE; `go test` COVERS A NAMED SET,
+      # AND THIS IS A NARROWING THAT HAS TO BE JUSTIFIED RATHER THAN INHERITED.
+      # `go test ./...` here is NOT the stronger option — it is a RED one, and
+      # that was measured rather than supposed. Four packages fail inside the
+      # sandbox for reasons that have nothing to do with the code under test:
+      #
+      #   internal/agentspec   — its autosave tests shell out to `git`, which the
+      #                          sandbox has no binary for
+      #   internal/modulegate  — reads Dockerfile, .dockerignore and
+      #                          tailwind.config.js, i.e. REPOSITORY files that a
+      #                          filtered `src` deliberately does not carry
+      #   internal/notes       — reads the root-level testdata/ golden vectors
+      #   internal/ui          — reads tailwind.config.js and web/css/input.css
+      #
+      # Every one of those asserts a property of the REPOSITORY, not of the
+      # compiled packages, so a derivation whose source is an allowlisted subset
+      # structurally cannot run them. Carrying enough of the tree to satisfy them
+      # would mean carrying essentially all of it, which is the filter's whole
+      # point undone. So the rule here is: a derivation's check phase tests THE
+      # PACKAGES IT INSTALLS, and `go vet` reads everything else.
+      #
+      # 🔴 WHAT THIS PHASE STRUCTURALLY CANNOT SEE, so nobody reads a green nix
+      # build as a green suite:
+      #   * the four packages above — covered ONLY by the CI `test` job, which
+      #     runs against a real checkout with `git` on PATH
+      #   * every Postgres-backed test. The sandbox has no network and no
+      #     database and `MUSTER_TEST_REQUIRE_DB` is unset, so they SKIP. That is
+      #     deliberate — a build that needed a database would not be a build —
+      #     but it means this phase covers the pure-Go half only.
+      #   * races. CI runs `-race`; this does not, to keep a package build cheap.
+      goCheckPhase = testPaths: ''
+        runHook preCheck
+
+        go vet ./...
+
+        # 🔴 A COUNT, NOT AN EXIT CODE. `go test` exits 0 when every package it
+        # was given has no test files, so the status alone cannot tell "the suite
+        # passed" from "there was no suite". This asserts at least one `ok` line,
+        # which is the smallest thing that cannot be true of a vacuous run — the
+        # same reasoning as the CI job's skip accounting, one level cruder.
+        #
+        # ⚠ The output is captured and then printed rather than piped, so the
+        # build log still shows everything while `go test`'s own exit status
+        # stays readable. A `| tee` would hand us tee's status instead.
+        if ! go test ${testPaths} > go-test.log 2>&1; then
+          cat go-test.log
+          echo "checkPhase: go test ${testPaths} FAILED" >&2
+          exit 1
+        fi
+        cat go-test.log
+        if ! grep -qE '^ok ' go-test.log; then
+          echo "🔴 checkPhase: go test ${testPaths} passed WITHOUT RUNNING A SINGLE" >&2
+          echo "   TEST PACKAGE. Every package matched reported [no test files], so this" >&2
+          echo "   phase proved nothing. Widen the paths or delete the claim." >&2
+          exit 1
+        fi
+        rm -f go-test.log
+
+        runHook postCheck
+      '';
 
       mkMigrate = pkgs: (buildGoPinned pkgs) {
         pname = "muster-migrate";
@@ -116,50 +277,115 @@
         # and `checks` is also where a `--no-link` CI job is easiest to forget.
         doCheck = true;
 
-        # 🔴 `go test ./...`, SPELLED OUT, BECAUSE THE DEFAULT CHECK PHASE
-        # HONOURS `subPackages` AND THAT MAKES IT VACUOUS. The mechanism, which
-        # is the part worth understanding rather than copying: `subPackages`
-        # exists to narrow what gets INSTALLED, and `buildGoModule`'s default
-        # `checkPhase` reuses it to narrow the TEST WALK too. With
-        # `subPackages = [ "cmd/muster-migrate" ]` the walk covers exactly one
-        # directory — and every test in this module lives under `internal/`.
-        # Measured on the project this style was taken from, the build log read
+        # The reasoning behind this narrowing, and everything it cannot see, is
+        # at `goCheckPhase` above — stated once, because both derivations here
+        # make the same trade and two copies would be two chances to drift.
         #
-        #     Running phase: checkPhase
-        #     ?  .../cmd/cairn-server  [no test files]
-        #     Running phase: installPhase
-        #
-        # — a GREEN check phase that ran ZERO tests. That is a reassuring zero
-        # arriving through a build option whose only documented job is something
-        # else.
-        #
-        # ⚠ AND THE TELL DOES NOT SURVIVE. The `[no test files]` line above is
-        # what made it visible. The day `cmd/muster-migrate` gains a test, the
-        # same narrowing would run ONE package and print a plausible-looking
-        # PASS, with nothing in the log to say twelve others never ran.
-        #
-        # `go vet` is here too: it is the cheapest check that reads the code
-        # rather than running it.
-        #
-        # 🔴 WHAT THIS CHECK PHASE STRUCTURALLY CANNOT SEE, SO NOBODY READS A
-        # GREEN NIX BUILD AS A GREEN SUITE: the sandbox has no network and no
-        # Postgres, and `MUSTER_TEST_REQUIRE_DB` is unset here — so every
-        # Postgres-backed test SKIPS. That is deliberate (a build that needed a
-        # database would not be a build), but it means this phase covers the
-        # pure-Go half only. The CI `test` job sets both variables and is the
-        # only place the store logic actually executes.
-        checkPhase = ''
-          runHook preCheck
-          go vet ./...
-          go test ./...
-          runHook postCheck
-        '';
+        # `internal/db` is in scope and `cmd/muster-migrate` alone would not be:
+        # the binary is a thin main() over the migration loader, which is where
+        # every test that matters to it lives. Without `internal/db` this phase
+        # would be the vacuous zero the comment above describes.
+        checkPhase = goCheckPhase "./cmd/muster-migrate/... ./internal/db/...";
 
         meta = with pkgs.lib; {
           description = "Apply muster's schema migrations to a Postgres database";
           homepage = "https://github.com/ZacxDev/muster";
           license = licenses.mit;
           mainProgram = "muster-migrate";
+          platforms = platforms.unix;
+        };
+      };
+
+      # ---------------------------------------------------------------------
+      # THE CLI.
+      #
+      # 🔴 WHY THIS OUTPUT EXISTS, STATED AS THE FAILURE IT CLOSES RATHER THAN AS
+      # A FEATURE. `cmd/muster` shipped in-tree with no build output and nothing
+      # that installed it, so every consumer reached for the CLI from the project
+      # muster was extracted from instead — a DIFFERENT repository, PRIVATE, with
+      # its own release cadence. The two then drifted on the provenance headers:
+      # the other client sent one spelling, muster's API read the other, and for
+      # six days every task comment was attributed to the generic API caller
+      # while the task↔session thread recorded NOTHING. The server now accepts
+      # both spellings, but that is the symptom's fix. The cause is that the
+      # client lived somewhere its server could not gate it.
+      #
+      # 🔴 AND THE REASON A PACKAGE HELPS IS THAT THIS REPOSITORY IS PUBLIC. The
+      # other client can only be packaged from a LOCAL PATH, because fetching a
+      # private source would put a credential in the nix store — and a local-path
+      # derivation's `vendorHash` is only correct for whichever checkout the host
+      # happens to hold, which broke two machines in OPPOSITE directions on one
+      # commit. A public flake output is FETCHABLE and pinnable by revision, so a
+      # downstream consumer gets the whole class deleted rather than worked
+      # around.
+      #
+      # ⚠ THE BINARY IS `muster` AND THE OUTPUT IS `muster-cli`, DELIBERATELY NOT
+      # THE SAME WORD. `cmd/muster` compiles to a binary named `muster` and
+      # `mainProgram` must say so or `lib.getExe` points at a path that does not
+      # exist. The ATTRIBUTE is a different question: `packages.muster` would be
+      # the obvious name for this project's SERVICE (`cmd/muster-server`, which
+      # has no output yet and will want one), and reading `packages.muster` as
+      # "the client" is a trap worth not setting. `muster-cli` names the thing.
+      #
+      # ⚠ `cmd/muster/progname.go` MAKES THE BINARY'S OWN NAME NEGOTIABLE, which
+      # is what frees this choice. The binary reads `argv[0]` and calls itself
+      # whatever it was invoked as — help text, error prefix and version-skew
+      # note all follow — precisely so a host can symlink it under a transitional
+      # alias and keep command-line-matching hooks armed. So a consumer is not
+      # stuck with `muster`: install this and symlink. What that code does NOT do
+      # is change behaviour per name — same command tree, same config, same
+      # service.
+      mkCLI = pkgs: (buildGoPinned pkgs) {
+        pname = "muster-cli";
+        inherit version;
+        src = onlyGo pkgs;
+        vendorHash = goVendorHash;
+
+        subPackages = [ "cmd/muster" ];
+
+        # Same reasoning as the migrate package: a consumer pinning this flake
+        # builds the PACKAGE and never runs `nix flake check`.
+        doCheck = true;
+
+        # `internal/taskstatus` is the only non-stdlib package `cmd/muster`
+        # imports, so these two directories ARE the CLI. Unlike the migrate
+        # binary, `cmd/muster` carries its own suite — including the verb ledger
+        # in tree_test.go — so this is a real test walk rather than a formality.
+        checkPhase = goCheckPhase "./cmd/muster/... ./internal/taskstatus/...";
+
+        # 🔴 THE VERB LEDGER, RUN AGAINST THE INSTALLED BINARY. This is the ONE
+        # check that can see whether this derivation packaged the CLI at all:
+        # `subPackages` pointing at the wrong directory, or a wrong
+        # `mainProgram`, leaves every Go test green while the artefact a consumer
+        # fetches is some other program. tree_test.go walks the cobra tree
+        # in-process and is blind to packaging by construction; this walks
+        # `$out/bin/muster`.
+        #
+        # It is in the PACKAGE rather than in a separate `checks` attribute for
+        # the same reason `doCheck` is: downstream tooling is being repointed at
+        # this binary for the task/agent surface, and the guard has to travel
+        # with the thing being consumed.
+        #
+        # ⚠ IT IS REFERENCED AS A STORE PATH, NOT THROUGH `src`. The script is
+        # not in `onlyGo`'s allowlist and does not need to be — `${./…}` copies
+        # that one file, which also means editing it rebuilds this derivation.
+        # `bash` explicitly, because the file's `/usr/bin/env` shebang does not
+        # resolve inside the sandbox.
+        #
+        # ⚠ `doInstallCheck` DOES NOT RUN WHEN CROSS-COMPILING, so a cross build
+        # of this package is NOT covered by it. Native builds are.
+        doInstallCheck = true;
+        installCheckPhase = ''
+          runHook preInstallCheck
+          bash ${./tests/verb-ledger.sh} "$out/bin/muster"
+          runHook postInstallCheck
+        '';
+
+        meta = with pkgs.lib; {
+          description = "muster's own machine client for its JSON API (tasks, agents, chief)";
+          homepage = "https://github.com/ZacxDev/muster";
+          license = licenses.mit;
+          mainProgram = "muster";
           platforms = platforms.unix;
         };
       };
@@ -205,6 +431,13 @@
       packages = forAll (pkgs:
         {
           muster-migrate = mkMigrate pkgs;
+          # 🔴 `muster-cli` IS AN ADDITION AND `default` IS UNTOUCHED, WHICH IS A
+          # DECISION AND NOT AN OVERSIGHT. See the note on `apps` below: the two
+          # `default`s resolve a bare `nix run`/`nix build` of this flake, moving
+          # one alone gives one name two binaries, and nothing about shipping the
+          # client asks for the flake's unnamed entry point to change meaning.
+          # Consumers address it by name.
+          muster-cli = mkCLI pkgs;
           default = mkMigrate pkgs;
         }
         // nixpkgs.lib.optionalAttrs
@@ -226,10 +459,26 @@
           type = "app";
           program = "${nixpkgs.lib.getExe (mkMigrate pkgs)}";
         };
+        # `nix run github:ZacxDev/muster#muster-cli -- task ls`.
+        #
+        # ⚠ `getExe` RESOLVES THROUGH `meta.mainProgram`, which for this package
+        # is `muster` and not the attribute name. That is why `mainProgram` is
+        # stated explicitly in `mkCLI` rather than left to default from `pname`:
+        # `pname` is `muster-cli`, `$out/bin/muster-cli` does not exist, and
+        # `getExe` would point this app at a missing path.
+        muster-cli = {
+          type = "app";
+          program = "${nixpkgs.lib.getExe (mkCLI pkgs)}";
+        };
       });
 
       checks = forAll (pkgs: {
         muster-migrate = mkMigrate pkgs;
+        # The same derivation as `packages.muster-cli`, so this costs nothing
+        # beyond making it part of `nix flake check` — which is what the `nix` CI
+        # job runs. Its `checkPhase` and its verb-ledger `installCheckPhase` are
+        # the substance; this attribute is only how they get collected.
+        muster-cli = mkCLI pkgs;
       });
 
       devShells = forAll (pkgs: {

@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: build vet run image test test-db test-db-down leakscan css css-check check help
+.PHONY: build vet run image test test-db test-db-down leakscan css css-check check help verb-ledger
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -84,6 +84,7 @@ help:
 	@echo "                    (MUSTER_TEST_PG_PORT=55433 make test-db for a second checkout)"
 	@echo "  make test         the Go suite, with the database REQUIRED (not skipped)"
 	@echo "  make leakscan     the leak gate, self-test first"
+	@echo "  make verb-ledger  prove the BUILT muster CLI exposes exactly its specified verbs"
 	@echo "  make css          rebuild $(CSS_OUT) from the Go views"
 	@echo "  make css-check    prove the committed stylesheet matches the views"
 	@echo "  make check        vet + test + leakscan + css-check"
@@ -234,4 +235,20 @@ css-check:
 	  exit 1; }; \
 	echo "css-check: $$(wc -c < $(CSS_OUT)) bytes, all $(words $(CSS_REQUIRED_CLASSES)) control classes present, committed copy matches"
 
-check: vet test leakscan css-check
+# 🔴 THE VERB SET, ASSERTED AGAINST A BINARY RATHER THAN AGAINST THE SOURCE.
+# cmd/muster/tree_test.go pins the same twelve verbs by walking the cobra tree in
+# process; it cannot see which binary a BUILD produced. This target compiles
+# cmd/muster and interrogates the result, which is the only view that catches a
+# build wired to the wrong package. `nix build .#muster-cli` runs the identical
+# script as its installCheckPhase — this is the spelling for a checkout with no
+# nix.
+#
+# ⚠ IT BUILDS INTO A TEMPORARY DIRECTORY, NOT THE TREE. A stray `muster` binary
+# beside the source is the kind of artefact that gets committed once.
+verb-ledger:
+	@set -e; \
+	tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	go build -o "$$tmp/muster" ./cmd/muster; \
+	tests/verb-ledger.sh "$$tmp/muster"
+
+check: vet test leakscan css-check verb-ledger
