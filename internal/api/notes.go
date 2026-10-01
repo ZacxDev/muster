@@ -39,11 +39,16 @@ var taskSourceAllowlist = map[string]bool{
 // label AND the stored source_type/source_session_id (migration 0017) — no client
 // change required. It returns:
 //   - source: the producer id, ALWAYS one of the fixed allowlist values so the
-//     metric label cardinality stays bounded. An explicit X-Muster-Source header
+//     metric label cardinality stays bounded. An explicit source header
 //     wins IF it names an allowlisted producer (extension/api/drafter/repo-cos/
 //     claude-code/clickup); an unknown value collapses to "api"; else a chrome-extension://
 //     or moz-extension:// Origin → "extension"; else the default "api".
-//   - sessionID: the trimmed X-Muster-Session-Id header ("" when absent).
+//   - sessionID: the trimmed session-id header ("" when absent).
+//
+// 🔴 BOTH HEADERS ARE READ UNDER TWO SPELLINGS — the current X-Muster-* and the
+// pre-extraction X-Clawgate-* that installed clients still send — via the single
+// provenanceHeader lookup in provenance_headers.go, which also holds the measured
+// account of what the rename cost. Do NOT re-open-code the preference here.
 //
 // STORAGE SEMANTICS (see handleAPITaskCreate): the default/unidentified "api"
 // source is stored as NULL — a plain `api` post or an omitted X-Muster-Source
@@ -51,21 +56,21 @@ var taskSourceAllowlist = map[string]bool{
 // (extension/drafter/repo-cos/claude-code/clickup) is persisted. The metric label,
 // however, is ALWAYS the returned source (incl. "api"), so metric behavior is
 // unchanged from pre-0017.
-// maxSessionIDLen caps the stored X-Muster-Session-Id. It's an attacker-influenced
+// maxSessionIDLen caps the stored session-id header. It's an attacker-influenced
 // header on any hook-token POST; a real id (a CC session UUID) is 36 chars, so 128 is
 // generous. Capping at ingest bounds notes.source_session_id (DB-bloat hygiene) — the
 // render path already truncates+escapes, this protects storage.
 const maxSessionIDLen = 128
 
 func taskSource(r *http.Request) (source, sessionID string) {
-	sessionID = strings.TrimSpace(r.Header.Get("X-Muster-Session-Id"))
+	sessionID = provenanceHeader(r, headerSessionID, legacyHeaderSessionID)
 	if rs := []rune(sessionID); len(rs) > maxSessionIDLen {
 		// rune-safe cap: byte-slicing could split a multibyte rune into invalid
 		// UTF-8, which Postgres rejects on INSERT (a failed task-create, not a
 		// bounded store). Cap by runes so the stored value stays valid text.
 		sessionID = string(rs[:maxSessionIDLen])
 	}
-	if h := strings.TrimSpace(r.Header.Get("X-Muster-Source")); h != "" {
+	if h := provenanceHeader(r, headerSource, legacyHeaderSource); h != "" {
 		if taskSourceAllowlist[h] {
 			return h, sessionID
 		}
