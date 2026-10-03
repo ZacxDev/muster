@@ -343,6 +343,43 @@
 
         subPackages = [ "cmd/muster" ];
 
+        # 🔴 THE LINK-TIME STAMP, AND WITHOUT IT THE ARTEFACT COULD NOT NAME
+        # ITSELF. `cmd/muster/client.go` declares `buildVersion = "dev"` and
+        # documents the override; nothing HELD this derivation to it, so every
+        # nix-built CLI kept the Go default and `muster --version` answered
+        #
+        #     muster version dev
+        #
+        # for a binary whose own store path read `muster-cli-4b5d128`. The
+        # revision a consumer fetched was recorded in the DERIVATION NAME and
+        # nowhere the program could reach it, so "which muster is installed
+        # here?" was answerable only by someone who knew to run `readlink -f` on
+        # the binary — a provenance question asked during incidents, by people
+        # holding the artefact and not the store.
+        #
+        # 🔴 IT IS THE SAME `version` BINDING THAT NAMES THE DERIVATION, ON
+        # PURPOSE AND NOT BY COINCIDENCE. One source means the two can never
+        # disagree; a second literal here would be a second chance for one to go
+        # stale, and a binary that reports a different revision from the store
+        # path it lives in is worse than one that reports nothing, because it
+        # answers the provenance question WRONGLY. `installCheckPhase` below
+        # asserts the binary's own output against this value.
+        #
+        # 🔴 THE SYMBOL PATH IS `main`, NOT `github.com/ZacxDev/muster/cmd/muster`.
+        # `cmd/muster` IS a main package, so that is where the linker looks for
+        # the variable. This matters because `-X` on a path that resolves to
+        # nothing is ACCEPTED SILENTLY — no warning, no failure, just an
+        # unstamped binary — which is the same observable as having no `ldflags`
+        # at all. The `installCheckPhase` assertion is what tells those apart.
+        #
+        # ⚠ `internal/api.BuildVersion` IS DELIBERATELY NOT STAMPED HERE. The CLI
+        # does not link internal/api (see cmd/muster/server_pins_test.go — that
+        # import is test-only, and keeping it so is the project's central claim),
+        # so a `-X` against it would be exactly the silently-ignored no-op the
+        # paragraph above warns about. The server's version travels with the
+        # server: `make image` passes VERSION, per the note on that target.
+        ldflags = [ "-X main.buildVersion=${version}" ];
+
         # Same reasoning as the migrate package: a consumer pinning this flake
         # builds the PACKAGE and never runs `nix flake check`.
         doCheck = true;
@@ -374,10 +411,28 @@
         #
         # ⚠ `doInstallCheck` DOES NOT RUN WHEN CROSS-COMPILING, so a cross build
         # of this package is NOT covered by it. Native builds are.
+        # ⚠ THE SECOND SCRIPT IS SEPARATE FROM THE FIRST, AND MERGING THEM WOULD
+        # BREAK CI. verb-ledger.sh runs in TWO places: here, and `make
+        # verb-ledger`, which the `build` CI job runs against a plain `go build`
+        # output on a runner with no nix — precisely so the verb set gates every
+        # PR rather than only the `nix` job. A plain `go build` is UNSTAMPED by
+        # construction, so folding the version assertion into that script would
+        # fail every PR for a binary behaving exactly as specified. The stamp is
+        # a property of THIS derivation; its check belongs only where the stamp
+        # is applied.
+        #
+        # 🔴 IT IS ASSERTED ON THE BINARY'S OWN OUTPUT, NOT ON THE DERIVATION
+        # NAME. The name is what was already right and already load-bearing (it
+        # is how the installed revision was identified before this change, and it
+        # still works); reading it here would re-assert nix's own naming and
+        # would stay green for a binary with no `ldflags` at all — which is the
+        # exact defect. `$out/bin/muster --version` is the only witness to
+        # whether the override reached the artefact a consumer runs.
         doInstallCheck = true;
         installCheckPhase = ''
           runHook preInstallCheck
           bash ${./tests/verb-ledger.sh} "$out/bin/muster"
+          bash ${./tests/cli-version-stamp.sh} "$out/bin/muster" ${pkgs.lib.escapeShellArg version}
           runHook postInstallCheck
         '';
 
