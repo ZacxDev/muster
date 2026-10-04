@@ -174,16 +174,24 @@ func TestTheRouteAbsentMessageNamesTheServerVersionNotTheRevision(t *testing.T) 
 		t.Fatalf("exit = %d, want %d (the router's text/plain 404 is the route-absent path).\nstderr=%q",
 			got.code, exitRouteAbsent, got.stderr)
 	}
-	const want = "harness-invoked-name: route GET /api/tasks/999 not found on this server; " +
-		"it may predate the route (this client was built against dev)\n"
-	if got.stderr != want {
-		t.Fatalf("the route-absent message changed.\n got = %q\nwant = %q", got.stderr, want)
-	}
+	// 🔴 THE REVISION CHECK RUNS BEFORE THE WHOLE-STRING CHECK, AND THE ORDER IS
+	// THE DIFFERENCE BETWEEN A LIVE GUARD AND DEAD PROSE. Measured during this
+	// change: with the string equality first, every mutation that leaked a
+	// revision into this sentence ALSO changed the sentence, so the equality's
+	// Fatalf always fired and the assertion below was never reached — it read as
+	// coverage while providing none. Checked first, it is reachable and it is
+	// the message a reader needs; the equality below then catches the OTHER
+	// failure, a reword that leaks nothing.
 	if strings.Contains(got.stderr, revStamp) {
 		t.Fatalf("the route-absent message renders the build REVISION %q. It sits next to the "+
 			"server's own version in the reader's head, and a revision cannot be compared to a "+
 			"semver — that is the whole reason buildRevision is a separate variable.\nstderr = %q",
 			revStamp, got.stderr)
+	}
+	const want = "harness-invoked-name: route GET /api/tasks/999 not found on this server; " +
+		"it may predate the route (this client was built against dev)\n"
+	if got.stderr != want {
+		t.Fatalf("the route-absent message changed.\n got = %q\nwant = %q", got.stderr, want)
 	}
 	if got.stdout != "" {
 		t.Fatalf("stdout = %q, want empty: a diagnostic must never reach the JSON stream", got.stdout)
@@ -207,14 +215,16 @@ func TestTheSkewNoteNamesTheServerVersionNotTheRevision(t *testing.T) {
 	if got.code != exitOK {
 		t.Fatalf("exit = %d, want 0.\nstderr=%q", got.code, got.stderr)
 	}
-	const want = "note: server 0.2.2, harness-invoked-name built for dev\n"
-	if got.stderr != want {
-		t.Fatalf("the skew note changed.\n got = %q\nwant = %q", got.stderr, want)
-	}
+	// Revision check first, for the reason stated in the test above: behind the
+	// string equality it is unreachable.
 	if strings.Contains(got.stderr, revStamp) {
 		t.Fatalf("the skew note renders the build REVISION %q beside the server's semver %q — "+
 			"a comparison that cannot be made, which is what makes the note noise.\nstderr = %q",
 			revStamp, "0.2.2", got.stderr)
+	}
+	const want = "note: server 0.2.2, harness-invoked-name built for dev\n"
+	if got.stderr != want {
+		t.Fatalf("the skew note changed.\n got = %q\nwant = %q", got.stderr, want)
 	}
 }
 
