@@ -250,10 +250,13 @@ func TestTheChatWiredBannerDoesNotClaimReachability(t *testing.T) {
 	if line != wantLine {
 		t.Errorf("the CHAT: WIRED line changed.\n  got:  %s\n  want: %s\n"+
 			"  This line is PINNED WHOLE on purpose: it carries a correction an audit forced —\n"+
-			"  the routes stop refusing, and a turn against an agent THIS binary provisioned\n"+
-			"  still resolves no address. A reword that keeps that meaning is fine; update\n"+
-			"  wantLine with it. A reword that drops it restores a banner stating a falsehood,\n"+
-			"  and a substring version of this test was MEASURED to pass over exactly that.",
+			"  the routes stop refusing, and nobody has yet made a turn against an agent THIS\n"+
+			"  binary provisioned, so the line claims the two mechanisms are fixed and claims\n"+
+			"  NOTHING about a turn succeeding. A reword that keeps that distinction is fine;\n"+
+			"  update wantLine with it. A reword that collapses it — in EITHER direction, to\n"+
+			"  \"the routes are live\" or back to \"declares no port\" — restores a banner\n"+
+			"  stating a falsehood, and a substring version of this test was MEASURED to pass\n"+
+			"  over exactly that.",
 			line, wantLine)
 	}
 
@@ -389,9 +392,12 @@ func TestTheRetractedReachabilityClaimIsGoneFromEveryNonTestSource(t *testing.T)
 			hits++
 			rel, _ := filepath.Rel(root, path)
 			t.Errorf("%s asserts the retracted reachability claim: %q\n"+
-				"  The chat routes stop REFUSING; they are not reachable for an agent this\n"+
-				"  binary provisions — agentspec declares no port, so the driver resolves no\n"+
-				"  address. See cmd/muster-server/doc_seams.go entry 1 for both blockers.", rel, m)
+				"  The chat routes stop REFUSING, and that is all this tree may say. The two\n"+
+				"  mechanisms that used to block a turn — no declared port, and the token\n"+
+				"  shipped under a name the bearer is not derived from — are fixed, but NO turn\n"+
+				"  has been made against an agent this binary provisioned, and the container\n"+
+				"  half of the bearer derivation lives in another repository. See\n"+
+				"  cmd/muster-server/doc_seams.go entry 1 for what that leaves open.", rel, m)
 		}
 		return nil
 	})

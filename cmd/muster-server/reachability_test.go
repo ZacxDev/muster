@@ -108,13 +108,14 @@ func reachabilityAgent() agents.Agent {
 // claim (internal/agentgateway/liveruntime_test.go), and it is the right place for
 // it — not this file.
 //
-// 🔴 WHAT THIS DOES *NOT* CLOSE: BLOCKER (2), THE CREDENTIAL. agentspec ships the
-// row's token as agentspec.EnvToken while the gateway derives its bearer from the
-// CONTAINER's own HOOKS_TOKEN, and nothing bridges the two. doc_seams.go entry 1
-// said the two blockers are ORDERED — "while (1) holds the observable is
-// ErrNoEndpoint and NO 401 is reachable" — so closing this one makes the 401 the
-// next observable rather than removing it. That is a different change and it is
-// still open.
+// 🔴 WHAT THIS ONE DOES *NOT* COVER: BLOCKER (2), THE CREDENTIAL — which is fixed
+// in the same change and guarded by its OWN test, not by this one. doc_seams.go
+// entry 1 recorded that the two are ORDERED ("while (1) holds the observable is
+// ErrNoEndpoint and NO 401 is reachable"), so an address that resolves is exactly
+// what makes a credential error reachable. This test asserts nothing about the
+// bearer, and a green run here says nothing about whether a turn authenticates:
+// TestTheProvisionedContainerCanDeriveTheBearerMusterSends is that claim, and the
+// live turn neither of them can make is still owed.
 func TestAnAgentThisBinaryProvisionsResolvesAnEndpoint(t *testing.T) {
 	cfg := provisionerTestConfig(provisionerK8s)
 	d, cs := reachabilityDriver(t, cfg)

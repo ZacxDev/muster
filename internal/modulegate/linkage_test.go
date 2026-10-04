@@ -73,14 +73,22 @@ var notLinkedLedger = map[string]string{
 	// ⚠ THE LEDGER IS NOT WHERE THE REST OF THAT STEP IS CHECKED. Linkage says
 	// "reachable from a process", nothing more. internal/agentgateway implements the
 	// chat half now and links the same way — through cmd/muster-server. ⚠ THAT IS A
-	// CLAIM ABOUT LINKAGE AND NOTHING ELSE: a chat turn against an agent this binary
-	// PROVISIONED still resolves no address (agentspec declares no port) and would
-	// carry a credential the container never received, and a KICKOFF is undeliverable
-	// besides, because nothing calls the gateway on the dispatch path. All three are
-	// in cmd/muster-server/doc_seams.go entry 1; none of them is visible here, which
-	// is this gate's whole point. TestBuildingTheKubernetesProvisionerUsesTheRealDriver, the
-	// gateway's own wiring tests and the boot banner's two-tier readback are the
-	// parts this gate cannot be.
+	// CLAIM ABOUT LINKAGE AND NOTHING ELSE, and the list of what it does not cover
+	// is SHORTER now without the point changing. It read: "a chat turn against an
+	// agent this binary PROVISIONED still resolves no address (agentspec declares no
+	// port) and would carry a credential the container never received, and a KICKOFF
+	// is undeliverable besides". The first two are fixed — agentspec declares the
+	// gateway port and ships the row's token under the name the bearer is derived
+	// from — and NEITHER fix was visible here, which is this gate's whole point
+	// restated from the other side: the ledger stayed green through a defect that
+	// made the linked code unusable, and it stays green through the change that made
+	// it usable. What remains open is the KICKOFF (nothing calls the gateway on the
+	// dispatch path) and the fact that no turn has ever been made against an
+	// instance this binary created. Both are in cmd/muster-server/doc_seams.go
+	// entry 1. TestBuildingTheKubernetesProvisionerUsesTheRealDriver,
+	// TestAnAgentThisBinaryProvisionsResolvesAnEndpoint, the gateway's own wiring
+	// tests and the boot banner's two-tier readback are the parts this gate cannot
+	// be.
 
 	"internal/provision/provisiontest": "the driver contract suite, run by driver " +
 		"implementations from their own _test.go files. Same reason as internal/dbtest.",
