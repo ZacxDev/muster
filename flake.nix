@@ -343,10 +343,16 @@
 
         subPackages = [ "cmd/muster" ];
 
-        # 🔴 THE LINK-TIME STAMP, AND WITHOUT IT THE ARTEFACT COULD NOT NAME
-        # ITSELF. `cmd/muster/client.go` declares `buildVersion = "dev"` and
-        # documents the override; nothing HELD this derivation to it, so every
-        # nix-built CLI kept the Go default and `muster --version` answered
+        # ---------------------------------------------------------------------
+        # 🔴 THE LINK-TIME STAMP — THE AUTHORITATIVE "WHY" FOR IT LIVES HERE AND
+        # NOWHERE ELSE. `tests/cli-version-stamp.sh` is the check and points at
+        # this block rather than restating it; previously the same rationale was
+        # written out in both files and in the commit that added them, so three
+        # copies could drift from one line of `ldflags`.
+        #
+        # WITHOUT THE STAMP THE ARTEFACT COULD NOT NAME ITSELF. `mkCLI` set no
+        # `ldflags`, so every nix-built CLI kept the Go default and
+        # `muster --version` answered
         #
         #     muster version dev
         #
@@ -365,6 +371,19 @@
         # answers the provenance question WRONGLY. `installCheckPhase` below
         # asserts the binary's own output against this value.
         #
+        # 🔴 THE TARGET IS `main.buildRevision`, NOT `main.buildVersion`, AND
+        # THAT DISTINCTION IS THE WHOLE REASON THE SECOND VARIABLE EXISTS. This
+        # binding is a GIT REVISION; `buildVersion` is documented as the muster
+        # SERVER version the client was built against, and two readers in
+        # `cmd/muster/client.go` print it beside the server's own semver — the
+        # skew note and the route-absent 404. Stamping a revision there made
+        # those render "server 0.2.2 … built against ba6698e": a comparison that
+        # cannot be made, on the one surface where an operator is reasoning about
+        # compatibility. `buildRevision` carries provenance, `buildVersion`
+        # carries the server pin that `cmd/muster/server_pins_test.go` holds to
+        # `api.BuildVersion`, and `cliVersion()` is the single place they meet —
+        # labelled, as `muster version dev (rev ba6698e)`.
+        #
         # 🔴 THE SYMBOL PATH IS `main`, NOT `github.com/ZacxDev/muster/cmd/muster`.
         # `cmd/muster` IS a main package, so that is where the linker looks for
         # the variable. This matters because `-X` on a path that resolves to
@@ -378,7 +397,8 @@
         # so a `-X` against it would be exactly the silently-ignored no-op the
         # paragraph above warns about. The server's version travels with the
         # server: `make image` passes VERSION, per the note on that target.
-        ldflags = [ "-X main.buildVersion=${version}" ];
+        # ---------------------------------------------------------------------
+        ldflags = [ "-X main.buildRevision=${version}" ];
 
         # Same reasoning as the migrate package: a consumer pinning this flake
         # builds the PACKAGE and never runs `nix flake check`.
@@ -411,15 +431,9 @@
         #
         # ⚠ `doInstallCheck` DOES NOT RUN WHEN CROSS-COMPILING, so a cross build
         # of this package is NOT covered by it. Native builds are.
-        # ⚠ THE SECOND SCRIPT IS SEPARATE FROM THE FIRST, AND MERGING THEM WOULD
-        # BREAK CI. verb-ledger.sh runs in TWO places: here, and `make
-        # verb-ledger`, which the `build` CI job runs against a plain `go build`
-        # output on a runner with no nix — precisely so the verb set gates every
-        # PR rather than only the `nix` job. A plain `go build` is UNSTAMPED by
-        # construction, so folding the version assertion into that script would
-        # fail every PR for a binary behaving exactly as specified. The stamp is
-        # a property of THIS derivation; its check belongs only where the stamp
-        # is applied.
+        # ⚠ THE TWO SCRIPTS STAY SEPARATE AND MERGING THEM WOULD BREAK CI —
+        # stated once, in `tests/cli-version-stamp.sh`'s header, because the
+        # person who would merge them is editing that file.
         #
         # 🔴 IT IS ASSERTED ON THE BINARY'S OWN OUTPUT, NOT ON THE DERIVATION
         # NAME. The name is what was already right and already load-bearing (it

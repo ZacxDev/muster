@@ -13,7 +13,7 @@ import (
 	"sync"
 )
 
-// buildVersion is the muster server version this CLI was built against. It is
+// buildVersion is the muster SERVER version this CLI was built against. It is
 // overridable at link time (-ldflags "-X main.buildVersion=1.2.3"), mirroring
 // how the server stamps api.BuildVersion.
 //
@@ -24,7 +24,57 @@ import (
 // catches a genuinely stale client. TestTheCLIBuildVersionDefaultMatchesTheServers
 // imports internal/api and fails when they diverge. That import is TEST-ONLY:
 // the shipped binary does not link the server.
+//
+// 🔴 ITS VALUE NAMESPACE IS THE SERVER'S — A SEMVER — AND A GIT REVISION MUST
+// NEVER BE STAMPED HERE. Both readers below put this value next to the server's
+// own: warnSkew prints "server 0.2.2, muster built for X" and the route-absent
+// 404 renders "this client was built against X" on the one surface where an
+// operator is reasoning about compatibility. A revision in X turns both into a
+// comparison that cannot be made — "0.2.2" against "ba6698e" is not older,
+// newer, or equal — and it reads as a real version rather than the obvious
+// placeholder "dev" is. buildRevision below exists so provenance has its own
+// variable instead of borrowing this one.
 var buildVersion = "dev"
+
+// buildRevision is the git revision of the source tree THIS BINARY was linked
+// from — provenance, NOT a version, and deliberately a second variable.
+//
+// 🔴 IT ANSWERS A DIFFERENT QUESTION FROM buildVersion AND IS NEVER COMPARED TO
+// THE SERVER. "Which muster is installed here?" is asked during incidents by
+// someone holding the artefact and not the nix store, and before this existed
+// the only answer was `readlink -f` on the binary: flake.nix records the
+// revision in the DERIVATION NAME (`muster-cli-ba6698e`), which the program
+// could not reach. flake.nix now stamps it here instead
+// (-ldflags "-X main.buildRevision=<rev>"), cliVersion composes it into what
+// `--version` prints, and tests/cli-version-stamp.sh asserts it against the
+// built artefact's own output.
+//
+// ⚠ EMPTY IS THE SUPPORTED DEFAULT, not a defect: a plain `go build` — which is
+// what `make build`, `make verb-ledger` and every CI job on a runner with no nix
+// produce — stamps nothing, and cliVersion omits the clause rather than printing
+// an empty one.
+var buildRevision = ""
+
+// cliVersion is the string cobra reports for `--version`. It is the ONE place
+// the two values above are allowed to meet, and it LABELS them rather than
+// letting one stand in for the other.
+//
+// 🔴 THE LABEL IS THE POINT. `muster version dev (rev ba6698e)` says which
+// server version the client was built against AND which tree produced the
+// binary; `muster version ba6698e` — this field carrying whichever value the
+// build system happened to stamp — reproduces inside `--version` exactly the
+// ambiguity the split above removes.
+//
+// ⚠ IT MUST NEVER RETURN "". cobra DISABLES the --version flag entirely when
+// Version is empty, so an empty return would delete the flag rather than print
+// nothing. buildVersion's default is non-empty, and a build that blanks it
+// still leaves the "(rev …)" clause.
+func cliVersion() string {
+	if buildRevision == "" {
+		return buildVersion
+	}
+	return buildVersion + " (rev " + buildRevision + ")"
+}
 
 // emptyPathParamMsg is the guard's own error text. Tests assert on this exact
 // string so that a mutation which removes the guard fails with THIS error and
