@@ -587,14 +587,37 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"through api.requireLifecycleProvisioner or api.requireGatewayProvisioner, "+
 			"after its own auth check and with provisionerUnwired:true in the body. "+
 			"Privilege grants are RECORDED but not applied to any cluster (%s=%v, and there is "+
-			"no driver to apply them through). None of the three is a "+
+			"no driver to apply them through). %s is UNREAD in this state: nothing is "+
+			"provisioned, so no Service carries a gateway port. None of the three is a "+
 			"misconfiguration; see cmd/muster-server/doc_seams.go",
 			envAgentProvisioner, a.cfg.agentProvisioner(), envAgentGateway, a.cfg.agentGateway(),
-			envAgentPrivApply, a.cfg.AgentPrivilegeApply)
+			envAgentPrivApply, a.cfg.AgentPrivilegeApply, envAgentGatewayPort)
 	default:
+		// 🔴 THE GATEWAY PORT IS REPORTED ON THE *LIFECYCLE* LINE, NOT ONLY ON THE CHAT
+		// ONE, AND THAT IS WHERE IT BELONGS RATHER THAN WHERE IT IS CONVENIENT.
+		// agentspec.Build declares the port UNCONDITIONALLY — see its constant's note —
+		// so with a provisioner wired it shapes the Service and the `muster.dev/port`
+		// annotation of every instance created from here on, whether or not chat is on.
+		//
+		// 🔴 IT WAS A SILENT STATE AND THE FIRST DRAFT EXEMPTED IT FROM THE BANNER
+		// ENTIRELY, with a reason claiming "with no gateway named, nothing in this
+		// process resolves an endpoint at all, so the CHAT: UNWIRED line has nothing to
+		// say about the port". That is true about RESOLUTION and irrelevant to the
+		// hazard, which is at CREATE time. Reachable, with no exotic input: an operator
+		// sets MUSTER_AGENT_GATEWAY_PORT to the runtime's SKILLS port — one higher than
+		// the gateway's, so an ordinary typo — while chat is off. Nothing says
+		// anything. Every agent provisioned in that window gets a Service on the wrong
+		// port, and arming chat later does NOT fix them, because Driver.Endpoint reads
+		// the create-time annotation and not the current configuration. An exemption
+		// documenting that would have been the silencer bannerExempt exists to prevent,
+		// so the variable is ledgered and announced in both directions instead.
 		l.Printf("agent provisioning: LIFECYCLE %s (%s=%s) — dispatch, start, stop, destroy "+
-			"and the log routes go through api.requireLifecycleProvisioner",
-			wiredWord(ext.Provisioner == nil), envAgentProvisioner, a.cfg.agentProvisioner())
+			"and the log routes go through api.requireLifecycleProvisioner. Every instance "+
+			"created from here on gets a Service on gateway port %d (%s), recorded in its "+
+			"pod-template annotation at CREATE time — changing the variable later does not "+
+			"move an existing instance",
+			wiredWord(ext.Provisioner == nil), envAgentProvisioner, a.cfg.agentProvisioner(),
+			a.cfg.agentGatewayPort(), envAgentGatewayPort)
 		// 🔴 THE CHAT HALF GETS ITS OWN LINE AND NAMES ITS OWN WRAPPER, because
 		// with lifecycle wired this is the half an operator will be surprised by.
 		// A dispatched agent exists, its pod runs, its logs stream — and its first

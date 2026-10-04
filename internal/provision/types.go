@@ -49,6 +49,24 @@ const maxNameLen = 48
 
 // dnsLabel is the permitted shape of Ref.Name: lowercase alphanumerics and
 // dashes, starting and ending alphanumeric.
+//
+// ⚠ IT ADMITS A LEADING DIGIT, AND A KUBERNETES *SERVICE* NAME DOES NOT — a
+// Service is DNS-1035 (must start alphabetic) while this is DNS-1123. So a name
+// like "1agent" passes here and the apiserver would refuse the Service.
+//
+// 🔴 THE PATH WAS DEAD AND IS NOW LIVE, WHICH IS WHY THIS NOTE EXISTS: until
+// agentspec declared a port, k8s renderService returned nil for every agent spec
+// and no Service was ever created. It is created now, and apply upserts it BEFORE
+// the Deployment — so such a name would fail mid-apply with the ServiceAccount,
+// ConfigMap and Secret already written.
+//
+// ⚠ NOT REACHABLE TODAY, AND NO UNIT TEST CAN SEE IT. Every name reaching a
+// dispatch is either agents.ChiefName or one drawn from generateName's pool, and
+// both are all-alphabetic; k8s.io/client-go/kubernetes/fake validates no names at
+// all, so the refusal only exists against a real apiserver. Tightening this to
+// DNS-1035 would be the fix, and it is deliberately NOT done here: it narrows a
+// contract every driver shares for a hazard one driver has, and the drivers that
+// do not create Services would be refusing names they can serve.
 func isDNSLabel(s string) bool {
 	if s == "" || len(s) > maxNameLen {
 		return false

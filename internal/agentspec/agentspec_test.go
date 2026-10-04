@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -421,15 +422,81 @@ func TestTheTwoRequiredConfigFieldsAreRefusedWhenEmpty(t *testing.T) {
 	}
 }
 
+// declaredEnvConstants reads this package's own Env* declarations.
+//
+// 🔴 IT PARSES THE SOURCE BECAUSE A HAND-WRITTEN LIST CANNOT EXPRESS THE
+// RELATIONSHIP "every one of them". Go gives a test no way to enumerate a
+// package's constants at runtime, so the only alternative to reading the
+// declaration is restating it — which is the shape that went stale. Same
+// technique, and the same reason, as cmd/muster-server/banner_test.go's reader of
+// config.go's const block.
+func declaredEnvConstants(t *testing.T) map[string]string {
+	t.Helper()
+	body, err := os.ReadFile("agentspec.go")
+	if err != nil {
+		t.Fatalf("read agentspec.go: %v", err)
+	}
+	re := regexp.MustCompile(`(?m)^\s*(Env[A-Za-z0-9_]+)\s*=\s*"([^"]+)"`)
+	out := map[string]string{}
+	for _, m := range re.FindAllStringSubmatch(string(body), -1) {
+		out[m[1]] = m[2]
+	}
+	return out
+}
+
+// TestExtraEnvMayNotShadowAComputedVariable asserts the RELATIONSHIP, not a sample.
+//
+// 🔴 THIS TEST USED TO BE THE VERY SHAPE ITS OWN COMMENT WARNED AGAINST, AND HAD
+// GONE STALE. It read "Every reserved name, not one sample: a per-name allowlist is
+// exactly the shape that goes stale when a constant is added" over a hand-written
+// list of five — and by the time anybody measured it, the list was missing
+// EnvCairnConfig and EnvGatewayToken. Isolated single-entry mutants: deleting
+// `EnvGatewayToken: true` or `EnvCairnConfig: true` from buildEnv's reserved map
+// both SURVIVED the full suite; deleting `EnvToken: true` was KILLED. So two of the
+// seven reserved names had no guard at all, and the one whose shadow is a CREDENTIAL
+// failure — EnvGatewayToken changes the value the container hashes, so the bearer
+// stops matching and every chat turn 401s — was one of them.
+//
+// 🔴 THE FIX IS DERIVATION, NOT TWO MORE NAMES. Adding the missing pair would have
+// regenerated the same defect at the next constant. The expected set now comes from
+// the declarations themselves, so a new Env* constant fails here until buildEnv
+// reserves it.
+//
+// ⚠ IT IS A PROPHYLACTIC GUARD AND THE REACHABILITY IS STATED HONESTLY:
+// Options.ExtraEnv has no non-test producer today, so no caller can currently reach
+// the shadow. The guard is for whoever writes the first one.
 func TestExtraEnvMayNotShadowAComputedVariable(t *testing.T) {
-	// Every reserved name, not one sample: a per-name allowlist is exactly the
-	// shape that goes stale when a constant is added.
-	for _, name := range []string{EnvAPIURL, EnvToken, EnvNodeOptions, EnvGitTerminalPrompt, EnvOpenRouterKey} {
+	declared := declaredEnvConstants(t)
+
+	// 🔴 POSITIVE CONTROL, AS A NUMBER. An empty extraction satisfies "every
+	// declared name is refused" perfectly and reads identically to a clean run —
+	// the same silent-zero this file's other instrument checks exist for.
+	if len(declared) < 7 {
+		t.Fatalf("instrument check FAILED: only %d Env* constant(s) were extracted from "+
+			"agentspec.go (%v), and this package declares at least 7. The declaration "+
+			"pattern has stopped matching, so the loop below is over a truncated set.",
+			len(declared), declared)
+	}
+	// And the extraction must really be reading values, not just names.
+	if declared["EnvGatewayToken"] != EnvGatewayToken {
+		t.Fatalf("instrument check FAILED: the extraction read EnvGatewayToken as %q, the "+
+			"constant is %q", declared["EnvGatewayToken"], EnvGatewayToken)
+	}
+
+	for ident, name := range declared {
 		_, err := Build(fixtureAgent(), fixtureConfig(), Options{
 			ExtraEnv: []provision.EnvVar{{Name: name, Value: "http://attacker.example.test"}},
 		})
 		if err == nil {
-			t.Errorf("ExtraEnv was allowed to set %s; want a refusal — shadowing it points the instance at the wrong server or credential", name)
+			t.Errorf("ExtraEnv was allowed to set %s (%s); want a refusal.\n"+
+				"    Every name this package COMPUTES must be reserved in buildEnv: shadowing "+
+				"one points the instance at the wrong server, the wrong credential file, or — "+
+				"for %s — changes the value the container HASHES, so its half of the chat "+
+				"bearer stops matching muster's and every turn is a 401 attributed to the "+
+				"credential rather than to the shadow.\n"+
+				"    Add it to buildEnv's `reserved` map. Do not add it to a list here; this "+
+				"set is DERIVED from the declarations precisely so it cannot go stale.",
+				name, ident, "EnvGatewayToken")
 		}
 	}
 

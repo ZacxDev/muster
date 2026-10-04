@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/provision"
 )
 
 // ---------------------------------------------------------------------------
@@ -155,12 +157,33 @@ func TestACreateWithAKickoffIsREFUSEDWhenNothingCanDeliverIt(t *testing.T) {
 // ⚠ THE COST IS DELIBERATE AND IS THE POINT: any edit to the text fails here,
 // including a cosmetic one. That is the price of a machine-readable claim about
 // prose. WHEN IT FAILS, DO NOT COPY THE NEW VALUE IN REFLEXIVELY — read the new text
-// against the two properties below first, then update the golden.
+// against the three properties below first, then update the golden.
 //
-//	1. It must not tell the operator that setting the variable makes the next
-//	   dispatch deliver the note. It does not.
-//	2. It must name where a non-delivery still lands afterwards
-//	   (agents.kickoff_error), so the remedy leads somewhere rather than dead-ending.
+//  1. It must not tell the operator that setting the variable makes the next
+//     dispatch deliver the note. It does not.
+//  2. It must name where a non-delivery still lands afterwards
+//     (agents.kickoff_error), so the remedy leads somewhere rather than dead-ending.
+//  3. It must not forward the operator to a blocker that is CLOSED. Added after
+//     this golden was measured GREEN over a stale clause — see below.
+//
+// 🔴 THIS TEST CANNOT CHECK PROPERTY 3, AND SAYING SO IS THE HONEST ANSWER RATHER
+// THAN A REASON TO DELETE IT. It pins BYTES. The clause "which also lists the two
+// blockers above it (no port on the rendered spec, and the token name the container
+// reads)" became false when agentspec started declaring the port and shipping the
+// gateway token — and this test stayed GREEN, because the text had not changed.
+// A golden is only ever evidence about CHANGE; it is structurally incapable of
+// noticing that an unchanged sentence stopped being true. Its own doc named two
+// properties to re-read on failure and neither was "does this still describe the
+// right blockers", so the one instrument that could have caught it was vouching for
+// it instead.
+//
+// ⚠ WHAT COVERS PROPERTY 3 IS A DIFFERENT TEST, AND ONLY PARTLY:
+// TestEveryCapabilityClaimTheRefusalMakesIsTRUE below pairs each positive claim in
+// the text with a predicate that executes. That genuinely pins the claims it
+// ENUMERATES — revert the port and it reddens — and it cannot see a NEW false claim
+// somebody adds. For that, this golden plus a human reading properties 1-3 is the
+// whole of the mechanism. Stated plainly because the alternative is a reader
+// believing the pair is complete.
 func TestTheRemedyDoesNotPromiseADeliveryTheDispatchPathCannotMake(t *testing.T) {
 	const golden = "dispatch REFUSED and NOTHING was provisioned: a kickoff cannot be delivered " +
 		"on this deployment, so beginning the work is impossible and creating the instance would " +
@@ -173,17 +196,116 @@ func TestTheRemedyDoesNotPromiseADeliveryTheDispatchPathCannotMake(t *testing.T)
 		"calls the gateway on the dispatch path, so a kickoff on a gateway-configured deployment " +
 		"still creates the instance and records its non-delivery in agents.kickoff_error. " +
 		"Delivery additionally needs the call site named in cmd/muster-server/doc_seams.go entry " +
-		"1, which also lists the two blockers above it (no port on the rendered spec, and the " +
-		"token name the container reads). Meanwhile \"Save for later\" still works: it provisions " +
-		"nothing by design, and Start brings the agent up. See cmd/muster-server/doc_seams.go " +
-		"entry 1."
+		"1, which is now the ONLY thing ahead of it: the rendered spec declares the gateway port " +
+		"and the instance receives the token the bearer is derived from, so do not go looking for " +
+		"those two. Meanwhile \"Save for later\" still works: it provisions nothing by design, " +
+		"and Start brings the agent up. See cmd/muster-server/doc_seams.go entry 1."
 
 	if KickoffRefusalReason != golden {
 		t.Errorf("the operator-facing refusal text changed.\n  got:  %q\n  want: %q\n"+
-			"    Re-read the new text against the two properties in this test's doc BEFORE "+
-			"updating the golden. The regression on the record is a remedy that promises the "+
-			"next dispatch will deliver the note; nothing calls the gateway on the dispatch "+
-			"path, so it will not.", KickoffRefusalReason, golden)
+			"    Re-read the new text against the THREE properties in this test's doc BEFORE "+
+			"updating the golden. Two regressions are on the record: a remedy that promises the "+
+			"next dispatch will deliver the note (it will not), and a remedy that forwarded the "+
+			"operator to two blockers that had been CLOSED — which this golden was green over, "+
+			"because the text had not changed.", KickoffRefusalReason, golden)
+	}
+}
+
+// TestEveryCapabilityClaimTheRefusalMakesIsTRUE is what the golden above cannot be.
+//
+// 🔴 IT PAIRS PROSE WITH A PREDICATE THAT EXECUTES, which is the only shape that can
+// notice an UNCHANGED sentence becoming false. Each row is "if the text says this,
+// then this must hold". The text currently tells an operator NOT to go looking at the
+// port or the token; if either regressed, that instruction would walk them away from
+// the real cause — so the claim and the behaviour are asserted together.
+//
+// ⚠ ITS LIMIT, NAMED RATHER THAN LEFT TO BE DISCOVERED: it covers the claims
+// ENUMERATED here. A new false claim added to the text is invisible to it, and is
+// caught only by the golden going red and a human applying properties 1-3. This is
+// not a complete guard on prose accuracy; there is no such guard in this package.
+//
+// ⚠ THE PHRASE HALF IS SPELLED AND THEREFORE WALKABLE BY REWORDING — rewrite the
+// sentence and the row goes dormant rather than red. That is why the golden stays:
+// a reword cannot be silent while the golden pins the whole string. Neither test is
+// sufficient alone, which is the honest description of the pair.
+func TestEveryCapabilityClaimTheRefusalMakesIsTRUE(t *testing.T) {
+	// A spec built the way a dispatch builds one, through this package's own
+	// configuration type — so the predicates below read what an instance would
+	// actually receive rather than a hand-written literal.
+	cfg := agentspec.Config{
+		ImageRepo:  "registry.example.test/muster/agent-runtime",
+		APIBaseURL: "http://muster.example.test:8105",
+	}
+	row := agents.Agent{ID: 4291, Name: "harbour-kestrel", HooksToken: "fixture-token-9f31c7"}
+	spec, err := agentspec.Build(row, cfg, agentspec.Options{})
+	if err != nil {
+		t.Fatalf("agentspec.Build: %v", err)
+	}
+
+	secret := func(name string) string {
+		for _, e := range spec.Secrets {
+			if e.Name == name {
+				return e.Value
+			}
+		}
+		return ""
+	}
+
+	claims := []struct {
+		phrase string
+		holds  func() bool
+		why    string
+	}{{
+		phrase: "the rendered spec declares the gateway port",
+		holds:  func() bool { return spec.PortNumber(provision.DefaultPortName) != 0 },
+		why: "Spec.PortNumber(provision.DefaultPortName) is 0, so k8s renderService creates no " +
+			"Service and Driver.Endpoint answers provision.ErrNoEndpoint. The refusal text tells " +
+			"the operator not to look here, which would send them past the real cause.",
+	}, {
+		phrase: "the instance receives the token the bearer is derived from",
+		holds:  func() bool { return secret(agentspec.EnvGatewayToken) == row.HooksToken },
+		why: "the spec does not carry the row's token under agentspec.EnvGatewayToken, so the " +
+			"container derives its half of the bearer from an unset variable and every turn is a " +
+			"401. The refusal text tells the operator not to look here.",
+	}}
+
+	var checked int
+	for _, c := range claims {
+		if !strings.Contains(KickoffRefusalReason, c.phrase) {
+			// NOT a failure: the sentence may legitimately be reworded. It IS reported,
+			// because a dormant row looks exactly like a passing one.
+			t.Logf("claim %q is no longer in the text, so its predicate was not applied. "+
+				"If the capability claim was reworded rather than dropped, update the phrase.",
+				c.phrase)
+			continue
+		}
+		checked++
+		if !c.holds() {
+			t.Errorf("the refusal text claims %q and it is FALSE.\n    %s", c.phrase, c.why)
+		}
+	}
+
+	// 🔴 POSITIVE CONTROL, AS A COUNT. Every row going dormant is byte-identical to
+	// every row passing, and a reworded sentence would silently empty this test.
+	if checked != len(claims) {
+		t.Errorf("instrument check FAILED: %d of %d capability claims were actually applied. "+
+			"A dormant row asserts nothing; re-point its phrase at the current wording.",
+			checked, len(claims))
+	}
+
+	// And the retracted forwarding must not come back. SPELLED, hence walkable —
+	// it survives a lazy re-golden, which is the one thing the golden cannot.
+	for _, retracted := range []string{
+		"two blockers above it",
+		"no port on the rendered spec",
+		"the token name the container reads",
+	} {
+		if strings.Contains(KickoffRefusalReason, retracted) {
+			t.Errorf("the refusal text has regained the retracted clause %q. Both blockers it "+
+				"forwards to are closed; this text is logged, stored in agents.error_message and "+
+				"returned to the caller, so it would send an operator hunting fixed defects.",
+				retracted)
+		}
 	}
 }
 

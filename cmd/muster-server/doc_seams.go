@@ -100,6 +100,21 @@ package main
 //	      cluster client and internal/provision/k8s's has no agent row, so neither
 //	      could hold the combined state. Mutating buildPorts back to returning nil
 //	      reproduces the exact string above — `declares no port`.
+//	      ⚠ AN ALREADY-PROVISIONED INSTANCE DOES *NOT* GAIN THE PORT BY ITSELF, AND
+//	      NO MIGRATION IS OWED — the two halves of that sentence are independent and
+//	      both were checked. The mechanism is real: Driver.Endpoint reads the
+//	      `muster.dev/port` pod-template annotation written at CREATE time, so an
+//	      instance created before this change carries none and resolving its address
+//	      would still fail. What makes it moot is that the victim set is EMPTY —
+//	      measured live with controls: zero namespaces under the configured prefix
+//	      (positive control: the upstream project's own namespaces were found, so the
+//	      query worked) and zero objects labelled managed-by muster (positive
+//	      control: objects managed by the upstream installer were found). muster has
+//	      provisioned nothing, so there is nothing holding a stale annotation, and the
+//	      next Start on any row takes the Create path and gets the port. Written down
+//	      so the next reader does not re-derive the mechanism and conclude a migration
+//	      is needed; if this binary ever provisions before a change of this shape, it
+//	      will be.
 //	  (2) NO CREDENTIAL UNDER THE NAME THE IMAGE READS. [WAS] The gateway bearer is
 //	      sha256("gw-" + HOOKS_TOKEN) — the agent CONTAINER's variable — while
 //	      agentspec ships the row's token as MUSTER_HOOK_TOKEN (agentspec.EnvToken)
