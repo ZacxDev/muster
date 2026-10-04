@@ -104,7 +104,12 @@ run:
 # 🔴 THE IMAGE BUILD RUNS css-check IN ITS FIRST STAGE, so this target is also
 # the cheapest end-to-end proof that the stylesheet the container would serve is
 # the one the views produce. VERSION reaches api.BuildVersion, which /health and
-# /readyz report and which the agent-side CLI is stamped with from the same tree.
+# /readyz report.
+#
+# ⚠ VERSION REACHES THE SERVER ONLY. The agent-side CLI in the same image is
+# built from the same tree with no `-X` at all, so it reports `main.buildVersion`'s
+# default (`dev`), not this value. Same source, different reported version — see
+# the comment on that build step in Dockerfile.
 IMAGE ?= muster-server
 VERSION ?= dev
 image:

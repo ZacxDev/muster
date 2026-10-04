@@ -77,9 +77,21 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
 # The agent-side CLI, served to dispatched agents over GET /agent/muster so they
 # can work their task with `muster agent task …` instead of hand-rolled curl.
 #
-# 🔴 BUILT HERE, FROM THE SAME SOURCE TREE AND THE SAME ${VERSION}. That is what
-# makes the served binary and the serving server the same version BY
-# CONSTRUCTION rather than by remembering to keep two pins in step.
+# 🔴 BUILT HERE, FROM THE SAME SOURCE TREE — BUT NOT STAMPED WITH ${VERSION},
+# AND THE DIFFERENCE IS VISIBLE TO AN OPERATOR. The `ldflags` below carry no
+# `-X`, so this binary keeps `main.buildVersion`'s in-source default and
+# `muster --version` inside an agent answers `dev` while the server it talks to
+# answers ${VERSION} from /health. The two are the same SOURCE by construction;
+# they are not the same reported version, and `GET /agent/muster` advertises
+# `X-Muster-Version: api.BuildVersion` — the SERVER's value, which describes the
+# serving process and not these bytes (see internal/api/agent_cli.go).
+#
+# The practical consequence: every agent that fetches this CLI gets warnSkew's
+# version note on every command, because the client says `dev` and the server
+# says a release. Closing that means adding
+# `-X main.buildVersion=${VERSION}` here, with a CI step asserting the in-image
+# binary reports it; that is deliberately a separate change, because the
+# assertion is red until the stamp lands.
 #
 # CGO_ENABLED=0 is load-bearing: the target is the agent's own image, not this
 # Alpine builder, so the binary must carry no dynamic loader dependency.

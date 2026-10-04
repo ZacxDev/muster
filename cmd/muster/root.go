@@ -135,12 +135,16 @@ func newRootCmd(a *app) *cobra.Command {
 		name = defaultProgName
 	}
 	root := &cobra.Command{
-		Use:               name,
-		Short:             "Machine client for the muster JSON API",
-		Long:              rootLong + exitCodeHelp,
-		SilenceUsage:      true,
-		SilenceErrors:     true,
-		Version:           buildVersion,
+		Use:           name,
+		Short:         "Machine client for the muster JSON API",
+		Long:          rootLong + exitCodeHelp,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		// cliVersion(), NOT buildVersion: `--version` is a PROVENANCE question
+		// ("which muster is this?") and buildVersion answers a compatibility one
+		// ("which server was it built against?"). See the comments on both
+		// variables in client.go.
+		Version:           cliVersion(),
 		DisableAutoGenTag: true,
 	}
 	// No generated `completion` subcommand: this is a machine client, and the

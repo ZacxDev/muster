@@ -343,10 +343,32 @@
 
         subPackages = [ "cmd/muster" ];
 
-        # 🔴 THE LINK-TIME STAMP, AND WITHOUT IT THE ARTEFACT COULD NOT NAME
-        # ITSELF. `cmd/muster/client.go` declares `buildVersion = "dev"` and
-        # documents the override; nothing HELD this derivation to it, so every
-        # nix-built CLI kept the Go default and `muster --version` answered
+        # ---------------------------------------------------------------------
+        # 🔴 THE LINK-TIME STAMP — THE AUTHORITATIVE "WHY" FOR THE BUILD
+        # DECISION LIVES HERE: why there is an `ldflags` at all, why the target
+        # is `main.buildRevision`, and why the binding is the same `version`
+        # that names the derivation. `tests/cli-version-stamp.sh` is the check
+        # and points at this block rather than restating it; previously the same
+        # rationale was written out in both files and in the commit that added
+        # them, so three copies could drift from one line of `ldflags`. That is
+        # now two, and the headline says "the build decision" rather than
+        # "nowhere else" because the second copy is deliberate:
+        #
+        # ⚠ `cmd/muster/client.go`'s `buildRevision` DECLARATION STATES THE SAME
+        # PROVENANCE STORY, ON PURPOSE — DO NOT DELETE IT AS A DUPLICATE. It
+        # answers a different question at the place a reader asks it: why the
+        # VARIABLE exists and why it is separate from `buildVersion`, which is a
+        # Go reader's question and not a packaging one. An earlier wording of
+        # this headline claimed the rationale lived nowhere else, which was
+        # false in exactly the way that invites someone to delete that block and
+        # leave a Go declaration whose reason is only in a build file. The
+        # shared part is the derivation-name/`readlink -f` anecdote; if the two
+        # ever disagree, THIS block is authoritative for the build and
+        # client.go's is authoritative for the variable split.
+        #
+        # WITHOUT THE STAMP THE ARTEFACT COULD NOT NAME ITSELF. `mkCLI` set no
+        # `ldflags`, so every nix-built CLI kept the Go default and
+        # `muster --version` answered
         #
         #     muster version dev
         #
@@ -365,6 +387,25 @@
         # answers the provenance question WRONGLY. `installCheckPhase` below
         # asserts the binary's own output against this value.
         #
+        # 🔴 THE TARGET IS `main.buildRevision`, NOT `main.buildVersion`, AND
+        # THAT DISTINCTION IS THE WHOLE REASON THE SECOND VARIABLE EXISTS. This
+        # binding is a GIT REVISION. `buildVersion` is the muster SERVER version
+        # the client was built against: it is the value `warnSkew` COMPARES
+        # against a live `/health`, and the unlabelled first half of every line
+        # `cliVersion()` renders. Stamping a revision there made the skew note
+        # and the route-absent 404 render "server 0.2.2 … built against
+        # ba6698e" — a comparison that cannot be made, on the one surface where
+        # an operator is reasoning about compatibility — and it would make the
+        # note fire against every server forever.
+        #
+        # All three readers — `--version`, the route-absent 404 and the skew
+        # note — now render `cliVersion()`, which is the single place the two
+        # values meet and LABELS them: `muster version dev (rev ba6698e)`. The
+        # revision is on those surfaces on purpose; what the split buys is that
+        # it arrives labelled and does not displace the server pin that
+        # `cmd/muster/server_pins_test.go` holds to `api.BuildVersion`'s default.
+        # `tests/cli-version-stamp.sh` refuses a revision-SHAPED server half.
+        #
         # 🔴 THE SYMBOL PATH IS `main`, NOT `github.com/ZacxDev/muster/cmd/muster`.
         # `cmd/muster` IS a main package, so that is where the linker looks for
         # the variable. This matters because `-X` on a path that resolves to
@@ -378,7 +419,8 @@
         # so a `-X` against it would be exactly the silently-ignored no-op the
         # paragraph above warns about. The server's version travels with the
         # server: `make image` passes VERSION, per the note on that target.
-        ldflags = [ "-X main.buildVersion=${version}" ];
+        # ---------------------------------------------------------------------
+        ldflags = [ "-X main.buildRevision=${version}" ];
 
         # Same reasoning as the migrate package: a consumer pinning this flake
         # builds the PACKAGE and never runs `nix flake check`.
@@ -411,15 +453,9 @@
         #
         # ⚠ `doInstallCheck` DOES NOT RUN WHEN CROSS-COMPILING, so a cross build
         # of this package is NOT covered by it. Native builds are.
-        # ⚠ THE SECOND SCRIPT IS SEPARATE FROM THE FIRST, AND MERGING THEM WOULD
-        # BREAK CI. verb-ledger.sh runs in TWO places: here, and `make
-        # verb-ledger`, which the `build` CI job runs against a plain `go build`
-        # output on a runner with no nix — precisely so the verb set gates every
-        # PR rather than only the `nix` job. A plain `go build` is UNSTAMPED by
-        # construction, so folding the version assertion into that script would
-        # fail every PR for a binary behaving exactly as specified. The stamp is
-        # a property of THIS derivation; its check belongs only where the stamp
-        # is applied.
+        # ⚠ THE TWO SCRIPTS STAY SEPARATE AND MERGING THEM WOULD BREAK CI —
+        # stated once, in `tests/cli-version-stamp.sh`'s header, because the
+        # person who would merge them is editing that file.
         #
         # 🔴 IT IS ASSERTED ON THE BINARY'S OWN OUTPUT, NOT ON THE DERIVATION
         # NAME. The name is what was already right and already load-bearing (it
