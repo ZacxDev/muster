@@ -52,9 +52,18 @@
 //     credential. Both-unset emits nothing at all, which is the state an
 //     installation that has not configured a store runs in.
 //   - It does not build the GATEWAY wiring — the bearer derivation, the chat
-//     endpoint, the responses model sentinel. That is plan step 22c, and
+//     transport, the responses model sentinel. That is plan step 22c, and
 //     internal/agents/responses.go already carries its own OWED record naming
 //     the two inputs a caller must supply.
+//     ⚠ IT DOES DECLARE THE GATEWAY'S PORT NOW, AND THIS BULLET USED TO SAY
+//     "the chat endpoint" AMONG WHAT IT OMITS. [DefaultGatewayPort] and
+//     [Config.GatewayPort] are read by buildPorts, which is what lets a driver
+//     RESOLVE an address for an instance this package specified — without it the
+//     k8s driver created no Service and answered provision.ErrNoEndpoint for
+//     every agent muster provisioned. That is the ADDRESS, not the transport:
+//     nothing here speaks the chat wire, derives a bearer or names a model
+//     sentinel, and the sentence is corrected rather than deleted because the
+//     separation it draws is still the one that governs what may be added.
 //   - It does not ADAPT anything to [api.Provisioner]. That is plan step 22b.
 //     Nothing here implements a lifecycle method; Build is a pure function.
 //
@@ -93,6 +102,52 @@ const DefaultWorkspacePath = "/data/workspace"
 // image reference ending in a bare colon.
 const DefaultImageTag = "latest"
 
+// DefaultGatewayPort is the port an agent runtime's MODEL GATEWAY listens on,
+// used when [Config.GatewayPort] is zero.
+//
+// 🔴 WITHOUT A PORT IN THE SPEC, AN AGENT muster PROVISIONS HAS NO ADDRESS AT
+// ALL. The chain is mechanical and every link of it is in this repository:
+// Build produced Ports nil, so k8s's renderService returned nil and created no
+// Service; (*k8s.Driver).Endpoint read the port back from the Deployment's
+// `muster.dev/port` annotation, which renderAnnotations only writes when
+// Spec.PortNumber(provision.DefaultPortName) is non-zero; so
+// provision.ResolveEndpoint was handed port 0 and answered
+// provision.ErrNoEndpoint — "declares no port". internal/agentgateway resolves
+// an endpoint BEFORE it builds a request, so that error was the only observable
+// of a chat turn against such an agent. This constant is what breaks that chain.
+//
+// 🔴 MEASUREMENT, SO THE NUMBER IS NOT A GUESS NOBODY CAN RE-CHECK: a live pod
+// of the agent runtime image the deployment this was written against pins
+// answered HTTP 200 for a real `/v1/responses` turn on this port, over
+// loopback inside the pod. The same pod's injected service environment exposed
+// the port under the `..._SERVICE_PORT_GATEWAY` name — the same word
+// provision.DefaultPortName carries — and a SECOND port one higher, which is
+// that image's skills API and is NOT what a chat turn wants:
+// agents.ResponsesURL appends `/v1/responses` to whatever endpoint resolves, so
+// the port declared here has to be the gateway's.
+//
+// 🔴 A DEFAULT *WITH* AN OVERRIDE, WHICH IS STRICTLY MORE THAN THE MODEL
+// SENTINEL BESIDE IT GETS, AND THE ASYMMETRY IS THE ARGUMENT. cmd/muster-server's
+// config.AgentGatewayModel is configuration and NOT a constant because "the value
+// belongs to the IMAGE" and no default could be right for an image this project
+// has never seen. The port belongs to the image in exactly the same way — so it
+// takes [Config.GatewayPort] for the same reason — but unlike an opaque sentinel
+// string it has a defensible default: it is a number that was MEASURED against
+// the image a deployment actually runs, and the alternative to defaulting it is
+// that every deployment is unreachable until an operator discovers a variable,
+// which is the state this constant exists to end. Pointing muster at a runtime
+// whose gateway listens elsewhere is therefore a configuration change rather
+// than a code change — the same three-layer shape provision.EndpointTemplate
+// argues for on the HOST half of the address.
+//
+// ⚠ IT IS DECLARED WHETHER OR NOT A CHAT GATEWAY IS CONFIGURED, deliberately.
+// The port reaches the cluster at CREATE time (the Service and the annotation are
+// both written by k8s apply), so gating it on the gateway tier would leave every
+// instance provisioned while chat was off permanently addressless — turning on
+// MUSTER_AGENT_GATEWAY would then need each agent re-provisioned, and nothing
+// would say so.
+const DefaultGatewayPort = 18789
+
 // Environment variable names handed to the instance.
 //
 // 🔴 THESE ARE NOT INVENTED HERE, AND THEY MUST NOT BE RENAMED IN THIS PACKAGE.
@@ -116,6 +171,47 @@ const (
 	// Build puts it in [provision.Spec.Secrets] rather than Env for that
 	// reason — see the note on Build.
 	EnvToken = "MUSTER_HOOK_TOKEN"
+	// EnvGatewayToken carries the SAME per-agent token under the name the
+	// runtime's OWN chat gateway derives its half of the bearer from. Also a
+	// SECRET, and in Secrets for the same reason.
+	//
+	// 🔴 IT IS A WIRE CONTRACT WITH A SECOND IMPLEMENTATION IN ANOTHER
+	// REPOSITORY, WHICH IS WHY THE NAME CANNOT BE CHOSEN HERE. The agent
+	// container computes its own gateway credential as
+	//
+	//	GATEWAY_TOKEN=$(echo -n "gw-${HOOKS_TOKEN}" | sha256sum | cut -d' ' -f1)
+	//
+	// — see internal/agentgateway/runtime.go, whose Bearer() is muster's half of
+	// exactly that formula. The deployment that implements the container half is
+	// not importable from here, so the agreement is held by a test rather than by
+	// the type system: cmd/muster-server's
+	// TestTheProvisionedContainerCanDeriveTheBearerMusterSends reproduces the
+	// container's derivation over the built spec's own environment and compares
+	// the two bearers.
+	//
+	// 🔴 IT IS A SECOND NAME FOR ONE VALUE AND *NOT* A RENAME OF EnvToken, AND
+	// RENAMING WOULD HAVE TRADED ONE 401 FOR ANOTHER. EnvToken is what the in-pod
+	// CLI reads (cmd/muster/config.go's envToken) and what the work-autosave
+	// daemon sends when it posts a durability alarm to the agent's own task
+	// thread; dropping it would break the instance's call-back path, which fails
+	// as "the agent went quiet" rather than as a missing variable. Both names
+	// carry a.HooksToken, and buildSecrets emits them together.
+	//
+	// ⚠ IT IS A CONSTANT RATHER THAN CONFIGURATION, UNLIKE THE PORT AND THE MODEL
+	// SENTINEL BESIDE IT, AND THE LINE IS WHERE THE SCHEME'S EDGE IS. This name
+	// is part of the `hooks-sha256` derivation, not an independent property of
+	// the image: the formula that consumes it is itself hardcoded in
+	// agentgateway.HooksSHA256, and MUSTER_AGENT_GATEWAY is the knob that selects
+	// the whole scheme. A runtime that read a different variable is a different
+	// scheme and brings its own name — which is the change that should also move
+	// this constant onto agentgateway.Runtime as a method.
+	//
+	// ⚠ DECLARING IT IN agentgateway TODAY WAS RULED OUT, not overlooked: this
+	// package deliberately imports no HTTP client (see the package doc), and
+	// agentgateway holds one. So the name lives in this const block — whose own
+	// header already says these spellings "ARE NOT INVENTED HERE" — and the
+	// cross-package agreement is held by the seam test named above.
+	EnvGatewayToken = "HOOKS_TOKEN"
 	// EnvNodeOptions passes Node heap/flag tuning through to the runtime.
 	EnvNodeOptions = "NODE_OPTIONS"
 	// EnvGitTerminalPrompt is pinned to "0" unconditionally.
@@ -185,6 +281,16 @@ type Config struct {
 	CPULimit   string
 	// NodeOptions, when set, becomes [EnvNodeOptions].
 	NodeOptions string
+	// GatewayPort is the port the runtime image's model gateway listens on. Zero
+	// means [DefaultGatewayPort]; see that constant for the measurement and for
+	// why this field exists rather than the number being written inline.
+	//
+	// ⚠ A VALUE OUTSIDE 1-65535 IS REFUSED BY Build NAMING THIS FIELD.
+	// [provision.Spec.Validate] would refuse it too, one layer down, but its
+	// message names the PORT ("port \"gateway\" number -1 out of range") and not
+	// the knob somebody set — and the only way this field holds a bad number is
+	// that somebody set it.
+	GatewayPort int
 	// WorkspacePath defaults to [DefaultWorkspacePath].
 	WorkspacePath string
 	// WorkspaceSize is the workspace volume size, e.g. "10Gi". Empty leaves the
@@ -279,10 +385,17 @@ type Options struct {
 // 🔴 SECRETS GO IN Secrets, NEVER IN Env, AND THE SPLIT IS THE WHOLE REASON
 // [provision.Spec] HAS TWO FIELDS. The type system is what makes the
 // confidential set enumerable: a driver cannot accidentally log, diff or
-// ConfigMap something it was handed through Secrets. Two values qualify here —
+// ConfigMap something it was handed through Secrets. Two SECRETS qualify here —
 // the agent's own per-agent token and the shared provider key — and both are
 // routed accordingly. If you add a third, ask which list it belongs in before
 // asking where in the function to put it.
+//
+// ⚠ TWO SECRETS, THREE ENTRIES: this sentence said "Two values" and the list has
+// three. The per-agent token travels under BOTH [EnvToken] and
+// [EnvGatewayToken] — one value, two names, because the in-pod CLI and the
+// runtime's own gateway read different variables. buildSecrets emits the pair
+// from one branch so they cannot drift apart; the count differing from the
+// secret count is the thing a reader is owed rather than left to discover.
 //
 // The returned spec is validated before it is returned, so a nil error means the
 // spec satisfies [provision.Spec.Validate] and every driver's precondition that
@@ -311,6 +424,10 @@ func Build(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 		return provision.Spec{}, err
 	}
 	files, err := buildFiles(workspace, cfg, opts)
+	if err != nil {
+		return provision.Spec{}, err
+	}
+	ports, err := buildPorts(cfg)
 	if err != nil {
 		return provision.Spec{}, err
 	}
@@ -360,6 +477,7 @@ func Build(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 		},
 		Repo:   repo,
 		Config: buildRuntimeConfig(cfg),
+		Ports:  ports,
 		Labels: buildLabels(a, cfg),
 	}
 
@@ -409,11 +527,17 @@ func buildEnv(cfg Config, opts Options) ([]provision.EnvVar, error) {
 	// caller's CAIRN_CONFIG in the default deployment and refuse the identical
 	// call once a store was configured — a collision check whose answer depends on
 	// unrelated state is worse than none.
+	// ⚠ EnvGatewayToken IS RESERVED FOR A REASON THE OTHERS DO NOT SHARE: a caller
+	// shadowing it does not merely point the instance somewhere wrong, it changes
+	// the value the instance HASHES, so the container's bearer stops matching the
+	// one muster derives from the row. The failure is a 401 on every chat turn
+	// attributed to the credential rather than to the shadow.
 	reserved := map[string]bool{
 		EnvAPIURL:            true,
 		EnvGitTerminalPrompt: true,
 		EnvNodeOptions:       true,
 		EnvToken:             true,
+		EnvGatewayToken:      true,
 		EnvOpenRouterKey:     true,
 		EnvCairnConfig:       true,
 	}
@@ -426,11 +550,81 @@ func buildEnv(cfg Config, opts Options) ([]provision.EnvVar, error) {
 	return env, nil
 }
 
+// ResolveGatewayPort is the ONE place a zero [Config.GatewayPort] becomes
+// [DefaultGatewayPort].
+//
+// 🔴 IT IS EXPORTED BECAUSE THERE ARE TWO READERS AND THEY MUST NOT DISAGREE,
+// WHICH IS THE ARGUMENT agents.ResolveNamespacePrefix ALREADY WON IN THIS
+// REPOSITORY. buildPorts resolves it to put the number in the spec;
+// cmd/muster-server's boot banner resolves it to PRINT the number an operator
+// will compare against a `kubectl get svc`. Two `if n == 0` branches holding the
+// same literal is how one of them comes to hold a different one — and the
+// observable of that drift is a banner naming a port the cluster does not
+// publish, which sends a reader to debug the Service.
+//
+// It does NOT range-check: a caller that wants the refusal wants it to name the
+// field it read, and this function does not know which field that was. buildPorts
+// and cmd/muster-server's loadConfig each refuse in their own words.
+func ResolveGatewayPort(port int) int {
+	if port == 0 {
+		return DefaultGatewayPort
+	}
+	return port
+}
+
+// buildPorts declares the one port that makes an instance addressable.
+//
+// 🔴 THE NAME IS provision.DefaultPortName AND THAT IS THE WHOLE MECHANISM, NOT
+// A LABEL. k8s's renderAnnotations writes the `muster.dev/port` annotation from
+// Spec.PortNumber(provision.DefaultPortName), which Driver.Endpoint reads back
+// and hands to provision.ResolveEndpoint. PortNumber falls back to "the single
+// declared port when there is exactly one", so a differently-named sole port
+// would resolve TODAY and silently stop resolving the moment a second port is
+// added — a regression whose cause would be a port added somewhere else
+// entirely. Naming it is what makes the resolution independent of how many
+// ports this list grows to.
+//
+// ⚠ ONE PORT, NOT EVERY PORT THE IMAGE LISTENS ON. The runtime measured for
+// DefaultGatewayPort also serves a skills API on a second port, and that port is
+// deliberately absent: nothing in muster talks to it, and a Service port nothing
+// consumes is reachable surface inside the cluster that no code here needs.
+// Adding it is a decision for whoever writes the first consumer.
+//
+// Protocol is left empty rather than spelled "TCP": provision.Port documents
+// empty AS TCP, and k8s's renderService/renderDeployment both default it that
+// way, so writing it would be a second place for the same fact to be stated.
+func buildPorts(cfg Config) ([]provision.Port, error) {
+	port := ResolveGatewayPort(cfg.GatewayPort)
+	if port < 1 || port > 65535 {
+		return nil, fmt.Errorf("agentspec: Config.GatewayPort %d is not a port (1-65535); "+
+			"leave it zero for the measured default (%d)", port, DefaultGatewayPort)
+	}
+	return []provision.Port{{Name: provision.DefaultPortName, Port: port}}, nil
+}
+
 // buildSecrets computes the sensitive environment. See Build's note on the split.
+//
+// 🔴 ONE TOKEN GOES OUT UNDER TWO NAMES, AND THEY MOVE TOGETHER OR THE CHAT TIER
+// 401s. [EnvToken] is what the instance calls muster back with; [EnvGatewayToken]
+// is what the instance's own gateway hashes into the bearer muster sends it. They
+// are emitted from a single `if` deliberately: shipping the first without the
+// second is the state this repository was in, and its observable was a 401 on
+// every chat turn that reads exactly like a bad credential rather than like a
+// variable nobody set. A caller cannot ask for one and not the other, which is
+// the only way to make that drift unexpressible.
+//
+// ⚠ THE EMPTY-TOKEN BRANCH EMITS NEITHER, which is also deliberate.
+// agentgateway's reach() refuses an agent with no token before it builds a
+// request, naming the cause — whereas sha256("gw-" + "") is a perfectly
+// well-formed 64-hex credential the runtime would reject 401. An empty secret
+// placed under either name would convert a diagnosable refusal into that 401.
 func buildSecrets(a agents.Agent, cfg Config) []provision.EnvVar {
 	var secrets []provision.EnvVar
 	if a.HooksToken != "" {
-		secrets = append(secrets, provision.EnvVar{Name: EnvToken, Value: a.HooksToken})
+		secrets = append(secrets,
+			provision.EnvVar{Name: EnvToken, Value: a.HooksToken},
+			provision.EnvVar{Name: EnvGatewayToken, Value: a.HooksToken},
+		)
 	}
 	if cfg.OpenRouterAPIKey != "" {
 		secrets = append(secrets, provision.EnvVar{Name: EnvOpenRouterKey, Value: cfg.OpenRouterAPIKey})

@@ -372,6 +372,13 @@ var bannerExempt = map[string]string{
 		"URL cannot reach this server, and validateProvisioner names that consequence",
 	envAgentImageTag: "defaults to agentspec.DefaultImageTag (\"latest\"), which is a property " +
 		"of the spec an instance is built from rather than of this server's boot posture",
+	envAgentGatewayPort: "the CHAT: WIRED line prints the RESOLVED port (config.agentGatewayPort), " +
+		"which is the value an operator compares against a `kubectl get svc` and is strictly " +
+		"better than echoing a variable that is unset on every deployment. There is no " +
+		"off-direction line to write: with no gateway named, nothing in this process resolves " +
+		"an endpoint at all, so the CHAT: UNWIRED line has nothing to say about the port — and " +
+		"a malformed value never reaches a banner, because loadConfig refuses it at boot " +
+		"naming the variable",
 	envAgentModel: "empty means the RUNTIME decides (agentspec.Config.Model), which is why " +
 		"Build omits the config key entirely rather than writing \"\". It reaches the " +
 		"instance, not this process",

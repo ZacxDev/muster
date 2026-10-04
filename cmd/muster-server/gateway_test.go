@@ -6,10 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
-	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/agentspec"
 )
 
 // ---------------------------------------------------------------------------
@@ -195,10 +196,19 @@ func TestAMissingSentinelIsRefusedAtBoot(t *testing.T) {
 // TestTheChatWiredBannerDoesNotClaimReachability pins the correction an audit forced.
 //
 // 🔴 THE LINE SHIPPED CLAIMING THE CHAT ROUTES WERE LIVE "over the same driver as
-// lifecycle", AND THAT WAS FALSE FOR EVERY AGENT THIS BINARY PROVISIONS. agentspec.Build
-// renders a spec with no port and no endpoint, so the driver resolves no address and a
-// chat turn fails PER TURN — strictly worse than the 503 it replaced, which named its
-// own cause. The routes really do stop refusing; that is the only part that was true.
+// lifecycle", AND THAT WAS FALSE FOR EVERY AGENT THIS BINARY PROVISIONS. The routes
+// really do stop refusing; that was the only part that was true.
+//
+// ⚠ BOTH MECHANISMS THAT MADE IT FALSE ARE FIXED NOW, AND THIS TEST STILL EXISTS
+// BECAUSE THE CLAIM IT FORBIDS IS NOT. The first version of this paragraph read
+// "agentspec.Build renders a spec with no port and no endpoint, so the driver resolves
+// no address and a chat turn fails PER TURN". agentspec.Build declares the gateway port
+// now and ships the token under the name the bearer is derived from, so neither failure
+// is reachable — but the container half of that derivation is a shell command in another
+// repository and NO turn has been made against an instance this binary created. The line
+// says "NOT VERIFIED REACHABLE" for that reason, which is a weaker claim than the old
+// one and a stronger one than "live". Those are three different sentences and this test
+// is what keeps them apart.
 //
 // 🔴 IT PINS THE WHOLE NORMALISED LINE, AND THE SUBSTRING VERSION OF THIS TEST WAS
 // MEASURED WALKABLE. That version required four phrases and forbade two, and its own
@@ -227,11 +237,15 @@ func TestTheChatWiredBannerDoesNotClaimReachability(t *testing.T) {
 	// SENTENCE rather than about the values interpolated into it.
 	wantLine := "agent provisioning CHAT: WIRED " + envAgentGateway + "=" + gatewayHooksSHA256 +
 		" (" + envAgentGatewayModel + "=runtime-sentinel) — the two chat routes no longer " +
-		"refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT REACHABLE: agentspec.Build " +
-		"declares no port and no endpoint, so this driver resolves no address for an agent " +
-		"this binary provisioned and every such turn fails with " + provision.ErrNoEndpoint.Error() +
-		". Chat is usable only against an instance provisioned elsewhere, with an address " +
-		"this process can resolve. See cmd/muster-server/doc_seams.go entry 1"
+		"refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT VERIFIED REACHABLE: both " +
+		"in-repo blockers are closed — the spec declares port " +
+		strconv.Itoa(agentspec.DefaultGatewayPort) + " so the driver renders a Service and " +
+		"resolves an address, and the row's token now ships as " + agentspec.EnvGatewayToken +
+		", the variable this bearer is derived from — but the container half of that " +
+		"derivation lives in the agent image's own deployment, which nothing here can read, " +
+		"so the first turn against an agent this binary provisioned is still the measurement. " +
+		"A kickoff is undeliverable regardless: nothing calls the gateway on the dispatch " +
+		"path. See cmd/muster-server/doc_seams.go entry 1"
 
 	if line != wantLine {
 		t.Errorf("the CHAT: WIRED line changed.\n  got:  %s\n  want: %s\n"+
@@ -244,9 +258,20 @@ func TestTheChatWiredBannerDoesNotClaimReachability(t *testing.T) {
 	}
 
 	// 🔴 THE NEGATIVES ARE NOT REDUNDANT WITH THE PIN. They are what survives a lazy
-	// re-pin: regenerating wantLine from a bad line is one paste, and these two phrases
-	// are the retracted claim itself, in both spellings it has appeared in.
-	for _, forbidden := range []string{"chat routes are live", "over the same driver as lifecycle"} {
+	// re-pin: regenerating wantLine from a bad line is one paste, and these phrases
+	// encode INTENT rather than text.
+	//
+	// ⚠ THE THIRD ONE IS NEW AND IT GUARDS THE OPPOSITE DIRECTION FROM THE OTHER TWO.
+	// "declares no port" was the TRUE half of the old line and is now false: the spec
+	// declares one, and a banner restating the old diagnosis would send an operator to
+	// fix a Service that exists. So this list now forbids both a claim that over-states
+	// (the routes are live) and a claim that under-states (there is no port) — a pinned
+	// line can regress in either direction and only the first was covered.
+	for _, forbidden := range []string{
+		"chat routes are live",
+		"over the same driver as lifecycle",
+		"declares no port",
+	} {
 		if strings.Contains(strings.ToLower(line), strings.ToLower(forbidden)) {
 			t.Errorf("the CHAT: WIRED line has regained the retracted claim %q.\n  line: %s",
 				forbidden, line)
@@ -313,9 +338,20 @@ func TestTheRetractedReachabilityClaimIsGoneFromEveryNonTestSource(t *testing.T)
 	// the fix is to add the new wording here. That is deliberate — it forces a human to
 	// look at the sentence, which is the whole point, and it is the opposite of the first
 	// attempt's cost, which was silently allowing a false claim.
+	// ⚠ THE THIRD ENTRY IS THE COST THIS GUARD'S OWN HEADER PROMISED, PAID. The banner
+	// line it covers used to end "🔴 WIRED IS NOT REACHABLE" and now reads "🔴 WIRED IS
+	// NOT VERIFIED REACHABLE", because the two mechanisms behind the old wording are
+	// fixed and what remains is missing EVIDENCE rather than a known defect. Inserting
+	// one word moved the match out from under the second entry — `isCorrection` compares
+	// whole strings in both directions — so the new wording is pinned here, which is
+	// exactly the "forces a human to look at the sentence" the note above describes.
+	// 🔴 THE OLD ENTRY IS KEPT RATHER THAN REPLACED: internal/modulegate and
+	// doc_seams.go still carry the un-"VERIFIED" spelling in their own prose, and
+	// dropping it would flag those as the retracted claim.
 	allowedCorrections := []string{
 		"stop REFUSING — which is not the same as reachable",
 		"chat routes no longer refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT REACHABLE",
+		"chat routes no longer refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT VERIFIED REACHABLE",
 	}
 	isCorrection := func(m string) bool {
 		for _, ok := range allowedCorrections {

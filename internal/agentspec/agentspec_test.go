@@ -72,6 +72,15 @@ func fixtureConfig() Config {
 		CPURequest:       "150m",
 		CPULimit:         "1250m",
 		NodeOptions:      "--max-old-space-size=3072",
+		// 🔴 NOT DefaultGatewayPort, AND NOT A NEIGHBOUR OF IT. A fixture that
+		// could only ever produce the constant's own value cannot see a mutant
+		// that hardcodes the literal — the same property this file's
+		// TestTheFixtureCanSeeAHardcodedConstant pins for the workspace path and
+		// the image tag, extended to the one numeric field. It also differs from
+		// every other number spelled in this fixture (the agent id, the heap size,
+		// the base URL's port), so a mutant that read the wrong field moves the
+		// output visibly rather than landing on a coincidence.
+		GatewayPort:      21473,
 		WorkspacePath:    "/srv/agent-work",
 		WorkspaceSize:    "24Gi",
 		WorkspacePersist: true,
@@ -620,6 +629,12 @@ func TestTheFixtureCanSeeAHardcodedConstant(t *testing.T) {
 	if cfg.ImageTag == DefaultImageTag {
 		t.Fatalf("fixtureConfig().ImageTag equals DefaultImageTag (%q), so a mutant that hardcoded the default tag would SURVIVE", DefaultImageTag)
 	}
+	if cfg.GatewayPort == DefaultGatewayPort {
+		t.Fatalf("fixtureConfig().GatewayPort equals DefaultGatewayPort (%d), so a mutant that hardcoded the default port would SURVIVE every port assertion in this file", DefaultGatewayPort)
+	}
+	if cfg.GatewayPort == 0 {
+		t.Fatalf("fixtureConfig().GatewayPort is zero, which buildPorts resolves TO DefaultGatewayPort (%d) — so the override path is never exercised and the previous check passes vacuously", DefaultGatewayPort)
+	}
 
 	// Watch the output move with the input, which is what "the fixture can see
 	// it" actually means.
@@ -633,11 +648,120 @@ func TestTheFixtureCanSeeAHardcodedConstant(t *testing.T) {
 	if strings.HasSuffix(spec.Runtime.Image, ":"+DefaultImageTag) {
 		t.Errorf("Runtime.Image %q ends in the DEFAULT tag even though Config set %q", spec.Runtime.Image, cfg.ImageTag)
 	}
+	if got := spec.PortNumber(provision.DefaultPortName); got == DefaultGatewayPort {
+		t.Errorf("the declared %q port is DefaultGatewayPort (%d) even though Config set %d — the config field is being ignored", provision.DefaultPortName, DefaultGatewayPort, cfg.GatewayPort)
+	}
 
 	// The same control for the two fields most likely to be confused with each
 	// other, since both are "a path in the workspace".
 	if spec.Workspace.Path == spec.Repo.Path {
 		t.Error("Workspace.Path equals Repo.Path, so a mutant swapping them would survive")
+	}
+}
+
+// --------------------------------------------------------------------------
+// The declared port, which is what makes an instance addressable at all.
+// --------------------------------------------------------------------------
+
+// TestTheBuiltSpecDeclaresTheGatewayPortUnderTheNameTheDriverResolves is the
+// regression guard for "agentspec.Build declares no port".
+//
+// 🔴 IT IS A REGRESSION TEST AND NOT AN INVARIANT GUARD, AND THE MATRIX IS THE
+// EVIDENCE: at the parent commit Build set Ports nil — its own committed golden
+// said "Ports": null — so every assertion below was red there. What that nil cost
+// is one hop away and mechanical: no Ports means k8s renderService returns nil
+// (no Service), renderAnnotations writes no `muster.dev/port`, and
+// provision.ResolveEndpoint answers provision.ErrNoEndpoint for every agent
+// muster provisioned. cmd/muster-server's reachability test is the half that
+// drives that chain; this is the half that pins the spec.
+//
+// 🔴 THE NAME IS ASSERTED, NOT JUST THE NUMBER, AND THE DIFFERENCE IS A LATENT
+// BUG. Spec.PortNumber falls back to "the single declared port when there is
+// exactly one", so a port named anything at all resolves while this list has
+// length one — and silently stops resolving when a second port is added. The
+// name is what makes resolution independent of the list's length.
+func TestTheBuiltSpecDeclaresTheGatewayPortUnderTheNameTheDriverResolves(t *testing.T) {
+	cfg := fixtureConfig()
+	spec := mustBuild(t, fixtureAgent(), cfg, Options{Instructions: "body"})
+
+	if len(spec.Ports) != 1 {
+		t.Fatalf("Ports = %+v, want exactly one; a built spec with no port resolves no address, and this is the field that was nil", spec.Ports)
+	}
+	if got := spec.Ports[0].Name; got != provision.DefaultPortName {
+		t.Errorf("the declared port is named %q, want %q — k8s renderAnnotations reads the "+
+			"annotation Driver.Endpoint resolves from Spec.PortNumber(provision.DefaultPortName), "+
+			"and any other name only resolves by PortNumber's single-port fallback",
+			got, provision.DefaultPortName)
+	}
+	// The override, pinned to the LITERAL the fixture sets rather than to a second
+	// read of cfg: an assertion spelled `== cfg.GatewayPort` passes for an
+	// implementation that echoes whatever it was handed, which is what is wanted
+	// here, but it also passes for one that read a different int field of the same
+	// value. Nothing else in fixtureConfig is 21473.
+	if got := spec.PortNumber(provision.DefaultPortName); got != 21473 {
+		t.Errorf("PortNumber(%q) = %d, want 21473 (the fixture's Config.GatewayPort)", provision.DefaultPortName, got)
+	}
+
+	// 🔴 AND THE DEFAULT PATH, WHICH IS THE ONE EVERY DEPLOYMENT RUNS. An
+	// assertion only over the override would be green for a Build that ignored the
+	// zero value and declared nothing — the exact defect — because the fixture
+	// never leaves the field unset.
+	dflt := cfg
+	dflt.GatewayPort = 0
+	spec = mustBuild(t, fixtureAgent(), dflt, Options{Instructions: "body"})
+	// The literal is deliberate: DefaultGatewayPort carries a MEASUREMENT against
+	// a real runtime image, so changing the number has to make a human look at
+	// that measurement rather than at a test that re-derives it.
+	if got := spec.PortNumber(provision.DefaultPortName); got != 18789 {
+		t.Errorf("an unset Config.GatewayPort produced port %d, want 18789 — see DefaultGatewayPort's measurement", got)
+	}
+	if DefaultGatewayPort != 18789 {
+		t.Errorf("DefaultGatewayPort is %d, not 18789. If the measurement changed, update it here AND in the constant's comment — the number is only worth having because its provenance travels with it", DefaultGatewayPort)
+	}
+
+	// Protocol is empty, which provision.Port documents AS TCP. Pinned because
+	// "TCP" written here would be a second statement of the same fact, and a later
+	// reader is entitled to know the blank is a decision.
+	if got := spec.Ports[0].Protocol; got != "" {
+		t.Errorf("Protocol = %q, want empty (provision.Port documents empty as TCP, and both k8s render paths default it that way)", got)
+	}
+}
+
+// TestABadGatewayPortIsRefusedByTheFieldThatHoldsIt pins the range refusal's own
+// message.
+//
+// 🔴 provision.Spec.Validate WOULD ALSO REFUSE THESE, WHICH IS WHY THIS TEST
+// ASSERTS THE TEXT AND NOT MERELY "an error". Deleting buildPorts' range check
+// leaves every case below still failing — one layer down, with Validate's message
+// naming the PORT ("port \"gateway\" number -1 out of range") instead of the knob
+// somebody set. A test that only required a non-nil error would therefore SURVIVE
+// that deletion, which is the shape a mutation sweep catches and an eyeball does
+// not.
+func TestABadGatewayPortIsRefusedByTheFieldThatHoldsIt(t *testing.T) {
+	for _, port := range []int{-1, 65536, 1 << 20} {
+		cfg := fixtureConfig()
+		cfg.GatewayPort = port
+		_, err := Build(fixtureAgent(), cfg, Options{Instructions: "body"})
+		if err == nil {
+			t.Errorf("Build accepted Config.GatewayPort=%d", port)
+			continue
+		}
+		if !strings.Contains(err.Error(), "Config.GatewayPort") {
+			t.Errorf("Config.GatewayPort=%d was refused without naming the field: %v\n"+
+				"    provision.Spec.Validate refuses it too, naming the PORT rather than the "+
+				"knob — so a refusal that does not name this field means the range check in "+
+				"buildPorts is gone and Validate is answering for it.", port, err)
+		}
+	}
+
+	// Control: the boundary values are ACCEPTED, or the check above would be
+	// satisfied by one that refuses every port.
+	for _, port := range []int{1, 65535} {
+		cfg := fixtureConfig()
+		cfg.GatewayPort = port
+		if _, err := Build(fixtureAgent(), cfg, Options{Instructions: "body"}); err != nil {
+			t.Errorf("Build refused the legal boundary port %d: %v", port, err)
+		}
 	}
 }
 

@@ -51,13 +51,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/privilege"
-	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/runbooks"
 	"github.com/ZacxDev/muster/internal/sse"
@@ -661,22 +661,45 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				scheme = r.Runtime()
 			}
 			// 🔴 "WIRED" IS NOT "REACHABLE", AND SAYING ONLY THE FIRST IS THE FALSEHOOD
-			// THIS LINE SHIPPED IN REVIEW. The chat ROUTES stop refusing — that part is
-			// real. But a chat turn resolves the instance's address through the driver,
-			// and NOTHING BUILDS A SPEC THAT DECLARES ONE: agentspec.Build renders
-			// Ports and Endpoint nil, so the kubernetes driver creates no Service and
-			// Endpoint() answers provision.ErrNoEndpoint. A turn against an agent THIS
-			// BINARY provisioned therefore fails per-turn rather than refusing at the
-			// door — which is strictly worse than the 503 it replaced, because the 503
-			// named its own cause. Both blockers are in doc_seams.go entry 1.
+			// THIS LINE SHIPPED IN REVIEW. BOTH of the blockers that sentence was about
+			// are closed now, and the line is rewritten rather than deleted because what
+			// replaces them is weaker evidence, not no gap:
+			//
+			//   - THE ADDRESS. It read "agentspec.Build declares no port and no endpoint,
+			//     so this driver resolves no address … every such turn fails with
+			//     <ErrNoEndpoint>". agentspec.Build now declares the gateway port
+			//     (agentspec.DefaultGatewayPort, overridable by
+			//     MUSTER_AGENT_GATEWAY_PORT), the kubernetes driver renders the Service,
+			//     and Endpoint() resolves —
+			//     TestAnAgentThisBinaryProvisionsResolvesAnEndpoint drives that through
+			//     the real driver over a fake clientset.
+			//   - THE CREDENTIAL. doc_seams entry 1 blocker (2): the bearer is
+			//     sha256("gw-" + $HOOKS_TOKEN), read from the agent CONTAINER's own
+			//     environment, and agentspec shipped the row's token only as
+			//     MUSTER_HOOK_TOKEN. It now ships under agentspec.EnvGatewayToken too,
+			//     and TestTheProvisionedContainerCanDeriveTheBearerMusterSends
+			//     reproduces the container's derivation over the built spec and requires
+			//     the two bearers to match.
+			//
+			// 🔴 SO WHY THE LINE STILL REFUSES TO SAY "REACHABLE": the container half of
+			// that derivation is a shell command in the agent image's OWN deployment, in
+			// another repository this module cannot read, and no turn has ever been made
+			// against an instance THIS binary created. Two tests agreeing about bytes is
+			// not a runtime accepting them — the Makefile's test-liveenv target is what
+			// closes that, and it needs a reachable runtime. "NOT VERIFIED REACHABLE" is
+			// the honest word and it is deliberately not the old one: claiming the fix
+			// landed is a different claim from claiming it works.
 			l.Printf("agent provisioning CHAT: WIRED %s=%s (%s=%s) — the two chat routes no longer "+
-				"refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT REACHABLE: agentspec.Build "+
-				"declares no port and no endpoint, so this driver resolves no address for an agent "+
-				"this binary provisioned and every such turn fails with %v. Chat is usable only "+
-				"against an instance provisioned elsewhere, with an address this process can "+
-				"resolve. See cmd/muster-server/doc_seams.go entry 1",
+				"refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT VERIFIED REACHABLE: both "+
+				"in-repo blockers are closed — the spec declares port %d so the driver renders a "+
+				"Service and resolves an address, and the row's token now ships as %s, the variable "+
+				"this bearer is derived from — but the container half of that derivation lives in "+
+				"the agent image's own deployment, which nothing here can read, so the first turn "+
+				"against an agent this binary provisioned is still the measurement. A kickoff is "+
+				"undeliverable regardless: nothing calls the gateway on the dispatch path. "+
+				"See cmd/muster-server/doc_seams.go entry 1",
 				envAgentGateway, scheme, envAgentGatewayModel, a.cfg.AgentGatewayModel,
-				provision.ErrNoEndpoint)
+				a.cfg.agentGatewayPort(), agentspec.EnvGatewayToken)
 		}
 		// 🔴 THIS IS doc_seams.go ENTRY 2'S ARGUMENT DYING ON SCHEDULE. A grant
 		// recorded and not applied was defensible only while no pod could exist to
