@@ -9,10 +9,12 @@
 # composes that into what cobra prints for `--version`, and this script reads it
 # back off the installed artefact.
 #
-# 🔴 THE "WHY" IS STATED ONCE, IN `flake.nix` AT THE `ldflags` LINE — read it
-# there. It is not repeated here on purpose: the same rationale used to be
-# written out in both files, and two copies of a reason for one line of
-# `ldflags` is two things to keep in step. In short: the revision a consumer
+# 🔴 THE "WHY" FOR THE BUILD DECISION LIVES IN `flake.nix` AT THE `ldflags`
+# LINE — read it there. It is not repeated here on purpose: the same rationale
+# used to be written out in both files, and two copies of a reason for one line
+# of `ldflags` is two things to keep in step. (`client.go`'s `buildRevision`
+# declaration states the provenance story too, deliberately — see the note in
+# that `flake.nix` block.) In short: the revision a consumer
 # fetched was recorded in the DERIVATION NAME and nowhere the program could
 # reach, and `buildRevision` is a SEPARATE variable from `buildVersion` because
 # the latter is a server semver that two readers print beside the server's own.

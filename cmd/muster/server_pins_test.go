@@ -35,9 +35,15 @@ func taskstatusAll() []string { return taskstatus.All() }
 // 🔴 ONLY ONE OF THESE TWO IS EVER STAMPED, SO DO NOT READ THIS AS "RELEASES
 // AGREE". The server is linked with
 // `-X github.com/ZacxDev/muster/internal/api.BuildVersion=${VERSION}` in
-// Dockerfile's build stage; `-X main.buildVersion=…` appears NOWHERE in this
-// repository — flake.nix stamps `main.buildRevision` only, and the one
-// remaining mention of the buildVersion spelling is a comment in client.go.
+// Dockerfile's build stage; `-X main.buildVersion=…` is NOWHERE AN ACTUAL BUILD
+// FLAG in this repository — the only live `-X` bindings are that one and
+// flake.nix's `-X main.buildRevision=${version}`. The spelling is MENTIONED in
+// several comments across the tree (no count is given here on purpose: one was,
+// and it was wrong), and the mention worth knowing about is Dockerfile's, which
+// RECOMMENDS adding `-X main.buildVersion=${VERSION}` to the agent-side CLI
+// build as a deliberately separate change. Verify with a sweep, not from this
+// comment: `find . -path ./.git -prune -o -type f -print0 | xargs -0 grep -n
+// 'main\.buildVersion'` — plain recursive grep honours .gitignore here.
 // Against any released server, therefore, /health answers a real semver while
 // this client still says "dev", and warnSkew's note fires on EVERY command. That
 // asymmetry is at RELEASE time, not in the defaults, and this test does not

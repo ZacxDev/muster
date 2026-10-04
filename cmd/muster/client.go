@@ -99,11 +99,23 @@ var buildRevision = ""
 //
 // No in-process test can refuse that, because every Go test in this package
 // compiles without release ldflags and observes the defaults. What DOES refuse
-// it is the nix derivation's installCheckPhase: tests/cli-version-stamp.sh's
-// marker control greps the binary's own output for a `<name> version <value>`
-// line and exits 1 naming "the binary has no --version flag" when it is absent.
-// That is the right place for the check — the hazard is created by ldflags, and
-// that script is the only reader that sees a linked artefact.
+// it is the nix derivation's installCheckPhase: tests/cli-version-stamp.sh.
+//
+// ⚠ THE GUARD THAT ACTUALLY FIRES IS NOT THE ONE THIS COMMENT USED TO NAME, AND
+// THE EXIT CODE ABOVE IS THE EVIDENCE. A binary with no --version flag exits
+// NON-ZERO — the paragraph above measures it as 2 — so
+// the script's FIRST guard — the `|| { … }` on `"$BIN" --version` — catches it
+// and exits 1 reporting `'<bin> --version' exited non-zero. Output was: <bin>:
+// unknown flag: --version`. The `<name> version <value>` marker control just
+// below it is NEVER REACHED in this case; that control pins the script's
+// dependency on cobra's version TEMPLATE, which is a different hazard — a binary
+// that exits 0 while printing a line the parser cannot read. Measured at
+// e1d711b, both branches, with the blanked binary above and with a stub that
+// exits 0 printing `muster rev ba6698e`.
+//
+// Either way the script exits 1 and the derivation fails, which is the property
+// that matters: the hazard is created by ldflags, and that script is the only
+// reader in the project that sees a linked artefact.
 func cliVersion() string {
 	if buildRevision == "" {
 		return buildVersion

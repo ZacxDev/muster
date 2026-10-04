@@ -32,7 +32,18 @@ import (
 // 🔴 THE COMPARISON IS NOT THE RENDER. `warnSkew` still compares `buildVersion`
 // alone; comparing the composed string would make every nix-built client differ
 // from every server forever. That operand is pinned by
-// TestTheSkewComparisonReadsTheServerPinNotTheComposedVersion, and only by it.
+// TestTheSkewComparisonReadsTheServerPinNotTheComposedVersion — which is the
+// only test that pins it DELIBERATELY, not the only test that fails when it
+// moves. Measured at e1d711b: swapping the operand to `cliVersion()` reds TWO
+// tests, that one and TestTheRouteAbsentMessage…. The second catch is
+// INCIDENTAL and must not be counted as coverage: it exists only because
+// `newHarness` defaults `h.version` to `buildVersion` (harness_test.go), so the
+// mutant makes the route-absent test's server "skew" against its own client and
+// prepends a note that test never asked for. Change that default and the catch
+// disappears, while the operand stays unpinned by anything but the dedicated
+// test. It is also the catch that MIS-DIAGNOSES — see the ReplaceAll note in
+// that test — so the dedicated test is what makes the operand's own failure
+// legible, and that is why it stays.
 //
 // 🔴 THE EXPECTATIONS BELOW ARE LITERAL STRINGS, NOT FORMATS BUILT FROM THE
 // CODE. Composing an expectation out of `buildVersion` would follow the
@@ -140,9 +151,12 @@ func TestCLIVersionComposesBothHalvesAndLabelsThem(t *testing.T) {
 			// above and reached it zero times.
 			//
 			// The hazard is real but is created by `ldflags`, which no test in
-			// this package links. tests/cli-version-stamp.sh's marker control,
-			// run in the nix derivation's installCheckPhase against the linked
-			// artefact, is what refuses a binary with no --version flag.
+			// this package links. tests/cli-version-stamp.sh, run in the nix
+			// derivation's installCheckPhase against the linked artefact, is
+			// what refuses a binary with no --version flag — via its FIRST
+			// guard, because such a binary exits non-zero; see cliVersion()'s
+			// own comment for which branch fires and why it is not the marker
+			// control.
 			got := cliVersion()
 			if got != tc.want {
 				t.Fatalf("cliVersion() = %q, want %q (buildVersion=%q buildRevision=%q)",
@@ -216,10 +230,24 @@ func TestTheRouteAbsentMessageNamesTheServerVersionAndTheLabelledRevision(t *tes
 	// nothing, so the labelled composition is deliberate. The hazard that
 	// SURVIVES that decision is the revision arriving where a server version is
 	// expected with nothing marking it — `buildRevision` rendered raw, or the
-	// two halves concatenated without "(rev …)". So: remove the one legitimate
+	// two halves concatenated without "(rev …)". So: remove EVERY labelled
 	// occurrence, then refuse any that is left.
+	//
+	// 🔴 `ReplaceAll`, NOT `Replace(…, 1)`, AND THE DIFFERENCE IS A FALSE
+	// DIAGNOSIS RATHER THAN A MISSED ONE. This was a single replace, which
+	// tolerates ONE label wherever it sits instead of asserting that no
+	// unlabelled revision appears ANYWHERE — a positional guard where the claim
+	// is structural. Measured at e1d711b: stderr that carries BOTH a skew note
+	// and this route-absent sentence, each with a correctly-labelled "(rev …)",
+	// left a second label standing after the single strip and fired this Fatalf
+	// — reporting an unlabelled revision when every occurrence was labelled and
+	// the real defect was warnSkew's comparison operand, in another function.
+	// That stream is reachable from any command that both skews and 404s, so it
+	// is operator output and not only a mutation artefact. With ReplaceAll the
+	// same mutation falls through to the whole-string equality below, which
+	// names what actually changed.
 	labelled := "(rev " + revStamp + ")"
-	if strings.Contains(strings.Replace(got.stderr, labelled, "", 1), revStamp) {
+	if strings.Contains(strings.ReplaceAll(got.stderr, labelled, ""), revStamp) {
 		t.Fatalf("the route-absent message renders the build REVISION %q OUTSIDE its %q label. "+
 			"Unlabelled, it sits next to the server's own version in the reader's head, and a "+
 			"revision cannot be compared to a semver — that is the whole reason buildRevision is "+
@@ -261,9 +289,11 @@ func TestTheSkewNoteNamesTheServerVersionAndTheLabelledRevision(t *testing.T) {
 	}
 	// Unlabelled-revision check first, for the reason stated in the test above:
 	// behind the string equality it is unreachable. Same shape, same hazard —
-	// a revision beside the server's semver with nothing marking it as one.
+	// a revision beside the server's semver with nothing marking it as one — and
+	// `ReplaceAll` for the same reason: a single strip makes this a check on
+	// "at most one label" rather than on "no unlabelled revision".
 	labelled := "(rev " + revStamp + ")"
-	if strings.Contains(strings.Replace(got.stderr, labelled, "", 1), revStamp) {
+	if strings.Contains(strings.ReplaceAll(got.stderr, labelled, ""), revStamp) {
 		t.Fatalf("the skew note renders the build REVISION %q OUTSIDE its %q label, beside the "+
 			"server's semver %q — a comparison that cannot be made, which is what makes the note "+
 			"noise.\nstderr = %q", revStamp, labelled, "0.2.2", got.stderr)
@@ -278,8 +308,15 @@ func TestTheSkewNoteNamesTheServerVersionAndTheLabelledRevision(t *testing.T) {
 }
 
 // TestTheSkewComparisonReadsTheServerPinNotTheComposedVersion pins warnSkew's
-// COMPARISON OPERAND, which is the one thing no other test in this file can
-// see.
+// COMPARISON OPERAND — the one thing no other test in this file pins ON PURPOSE.
+//
+// ⚠ IT IS NOT THE ONLY TEST THAT GOES RED WHEN THE OPERAND MOVES, AND THAT
+// CLAIM USED TO BE MADE HERE. Measured at e1d711b: the `cliVersion()` mutant
+// reds this test and TestTheRouteAbsentMessage… too. The latter is incidental —
+// it depends on `newHarness` defaulting `h.version` to `buildVersion`, which
+// makes the mutant emit a skew note into a stream that test pins whole — and it
+// reports the failure as an unlabelled revision, which is the wrong diagnosis.
+// This test is what names the operand.
 //
 // 🔴 THE OPERAND AND THE RENDER ARE DIFFERENT VALUES, AND ONLY SILENCE PROVES
 // WHICH ONE IS COMPARED. warnSkew compares `buildVersion` against /health and

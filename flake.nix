@@ -344,11 +344,27 @@
         subPackages = [ "cmd/muster" ];
 
         # ---------------------------------------------------------------------
-        # 🔴 THE LINK-TIME STAMP — THE AUTHORITATIVE "WHY" FOR IT LIVES HERE AND
-        # NOWHERE ELSE. `tests/cli-version-stamp.sh` is the check and points at
-        # this block rather than restating it; previously the same rationale was
-        # written out in both files and in the commit that added them, so three
-        # copies could drift from one line of `ldflags`.
+        # 🔴 THE LINK-TIME STAMP — THE AUTHORITATIVE "WHY" FOR THE BUILD
+        # DECISION LIVES HERE: why there is an `ldflags` at all, why the target
+        # is `main.buildRevision`, and why the binding is the same `version`
+        # that names the derivation. `tests/cli-version-stamp.sh` is the check
+        # and points at this block rather than restating it; previously the same
+        # rationale was written out in both files and in the commit that added
+        # them, so three copies could drift from one line of `ldflags`. That is
+        # now two, and the headline says "the build decision" rather than
+        # "nowhere else" because the second copy is deliberate:
+        #
+        # ⚠ `cmd/muster/client.go`'s `buildRevision` DECLARATION STATES THE SAME
+        # PROVENANCE STORY, ON PURPOSE — DO NOT DELETE IT AS A DUPLICATE. It
+        # answers a different question at the place a reader asks it: why the
+        # VARIABLE exists and why it is separate from `buildVersion`, which is a
+        # Go reader's question and not a packaging one. An earlier wording of
+        # this headline claimed the rationale lived nowhere else, which was
+        # false in exactly the way that invites someone to delete that block and
+        # leave a Go declaration whose reason is only in a build file. The
+        # shared part is the derivation-name/`readlink -f` anecdote; if the two
+        # ever disagree, THIS block is authoritative for the build and
+        # client.go's is authoritative for the variable split.
         #
         # WITHOUT THE STAMP THE ARTEFACT COULD NOT NAME ITSELF. `mkCLI` set no
         # `ldflags`, so every nix-built CLI kept the Go default and
