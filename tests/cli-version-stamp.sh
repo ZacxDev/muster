@@ -20,9 +20,10 @@
 # 🔴 WHY IT IS A SHELL SCRIPT IN THE DERIVATION AND NOT A GO TEST. The defect is
 # in the BUILD, not in the code: every Go test in `cmd/muster` compiles without
 # the release `ldflags` and therefore observes the defaults — correctly, which is
-# what `server_pins_test.go` and `TestCLIVersionComposition` pin. No in-process
-# test can see whether the packaging applied the override, for the same reason
-# `tree_test.go` cannot see which binary a build produced (see verb-ledger.sh).
+# what `server_pins_test.go` and `cmd/muster/version_semantics_test.go` pin. No
+# in-process test can see whether the packaging applied the override, for the
+# same reason `tree_test.go` cannot see which binary a build produced (see
+# verb-ledger.sh).
 # The only witness is the installed artefact's own output.
 #
 # 🔴 WHY IT IS A SEPARATE SCRIPT FROM verb-ledger.sh, WHICH ALSO RUNS AGAINST
