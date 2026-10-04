@@ -51,18 +51,19 @@
 #     reach this `subPackages` build, is the override actually linked in), and
 #     NOT a check that the binding itself is meaningful. If `flake.nix`'s
 #     `version` degenerated to a constant, this would stay green.
-#   * Consequently it does NOT refuse `unknown`, which is what that binding
-#     yields for a build with no git metadata at all (`nix build path:.`). That
-#     spelling is supported, so refusing it here would break it. A revision-
-#     shaped assertion would catch the degenerate case and cost that support;
-#     the trade is named here rather than left as an absence.
-#   * It reads only the `(rev …)` clause, so it says NOTHING about the
-#     `buildVersion` half of the same line. That half is the muster SERVER
-#     version the client was built against, it is pinned to `api.BuildVersion`
-#     by `cmd/muster/server_pins_test.go`, and this flake deliberately does not
-#     stamp it. The two are different claims and neither substitutes for the
-#     other; `warnSkew` in client.go is what compares the server half against a
-#     live `/health`.
+#     Consequently the REV clause's assertion does NOT refuse `unknown`, which
+#     is what that binding yields for a build with no git metadata at all
+#     (`nix build path:.`). That spelling is supported, so refusing it there
+#     would break it. ⚠ That trade is about the REV clause ONLY — it is not a
+#     reason for the server-version half below to accept a revision, and it was
+#     once mis-cited as one.
+#   * It says nothing about whether the `buildVersion` half holds the RIGHT
+#     server version — only that it does not hold a revision (the check at the
+#     end of this script). That half is the muster SERVER version the client was
+#     built against, it is pinned to `api.BuildVersion`'s DEFAULT by
+#     `cmd/muster/server_pins_test.go`, and nothing in this repository stamps it
+#     at all. `warnSkew` in client.go is what compares it against a live
+#     `/health`.
 # ---------------------------------------------------------------------------
 
 set -euo pipefail
@@ -153,24 +154,51 @@ vers="$(printf '%s\n' "$got" | sed -n 's/^\(.*\) (rev .*)$/\1/p')"
 
 echo "cli-version-stamp: $BIN reports version '$got'; the build stamped revision '$WANT'"
 
-# 🔴 THE SERVER-VERSION HALF MUST NOT ALSO CARRY THE REVISION, AND THIS IS THE
-# ONLY CHECK IN THE PROJECT THAT CAN SEE IT. `main.buildVersion` is the muster
-# SERVER version the client was built against; two readers in client.go print it
-# beside the server's own semver. A build that stamps the revision into THAT
-# symbol as well puts a git rev on both of those surfaces, where it reads as a
-# real version and cannot be compared to one — the exact regression the
+# 🔴 THE SERVER-VERSION HALF MUST NOT CARRY A REVISION, AND THIS IS THE ONLY
+# CHECK IN THE PROJECT THAT CAN SEE IT. `main.buildVersion` is the muster SERVER
+# version the client was built against; it is the value `warnSkew` COMPARES
+# against a live `/health`, and it is the unlabelled first half of every line
+# `cliVersion()` renders. A build that stamps the revision into that symbol puts
+# a git rev there with nothing marking it as one, where it reads as a real
+# version and cannot be compared to one — the exact regression the
 # `buildVersion`/`buildRevision` split removed. Every Go test in `cmd/muster`
 # compiles without release `ldflags` and is therefore blind to it by
 # construction; only an assertion on the linked artefact can refuse it.
-if [ "$vers" = "$WANT" ]; then
-  echo "🔴 cli-version-stamp: FAIL — BOTH halves of '$got' report '$WANT'." >&2
+#
+# 🔴 THE TEST IS THE SHAPE OF `$vers`, NOT EQUALITY WITH `$WANT`, AND THE
+# DIFFERENCE IS THE WHOLE FINDING. This was `[ "$vers" = "$WANT" ]`, which only
+# sees the case where the SAME STRING reached both symbols. Measured green for
+# exactly the regression the paragraph above declares it the only refuser of:
+#
+#     -X main.buildRevision=8ad413e -X main.buildVersion=8ad413e36e4b…
+#     -> muster version 8ad413e36e4b… (rev 8ad413e)
+#     -> cli-version-stamp: OK, exit 0
+#
+# A full sha in `buildVersion` and a short rev in `buildRevision` is the most
+# likely spelling of this mistake, and equality was blind to it. A shape test is
+# not: no muster SERVER version is 7-to-40 lowercase hex characters with no
+# separator. The equality clause is kept alongside it because it catches the one
+# leak the shape test cannot — `$WANT` being the literal `unknown`, which
+# `nix build path:.` produces and which is not revision-shaped.
+#
+# ⚠ WHAT THIS WOULD FALSELY REFUSE, stated rather than left as an absence: a
+# server version that is itself 7+ lowercase hex characters with no dot or dash
+# (`1234567`). `api.BuildVersion` is a semver and `make image` passes one, so
+# that spelling does not occur; if it ever does, this message names the check to
+# relax.
+if printf '%s' "$vers" | grep -Eq '^[0-9a-f]{7,40}$' || [ "$vers" = "$WANT" ]; then
+  echo "🔴 cli-version-stamp: FAIL — the SERVER-VERSION half of '$got' is '$vers'," >&2
+  echo "  which is a value from the build's REVISION binding (a git revision, or" >&2
+  echo "  its 'unknown' fallback), not a muster server version." >&2
+  echo "" >&2
   echo "  The '(rev …)' half is provenance and is correct; the half before it is" >&2
   echo "  \`main.buildVersion\`, the muster SERVER version this client was built" >&2
-  echo "  against, and something has stamped the git revision into it too." >&2
+  echo "  against, and something has stamped a git revision into it too." >&2
   echo "" >&2
-  echo "  That puts a revision on the two surfaces client.go prints beside the" >&2
-  echo "  server's own semver — the skew note and the route-absent 404 — where it" >&2
-  echo "  invites a comparison that cannot be made. Stamp ONLY" >&2
+  echo "  That puts an UNLABELLED revision on every surface client.go renders" >&2
+  echo "  beside the server's own semver — the skew note and the route-absent" >&2
+  echo "  404 — where it invites a comparison that cannot be made, and it is the" >&2
+  echo "  value \`warnSkew\` compares, so the note would fire forever. Stamp ONLY" >&2
   echo "  \`-X main.buildRevision=\${version}\`; the server's version travels with" >&2
   echo "  the server (\`make image\` passes VERSION)." >&2
   exit 1

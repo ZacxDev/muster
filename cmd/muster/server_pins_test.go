@@ -29,13 +29,36 @@ import (
 // that need it, so only THIS file carries the import.
 func taskstatusAll() []string { return taskstatus.All() }
 
+// TestTheCLIBuildVersionDefaultMatchesTheServers pins the two DEFAULTS equal,
+// which is a claim about the UNSTAMPED build and nothing more.
+//
+// 🔴 ONLY ONE OF THESE TWO IS EVER STAMPED, SO DO NOT READ THIS AS "RELEASES
+// AGREE". The server is linked with
+// `-X github.com/ZacxDev/muster/internal/api.BuildVersion=${VERSION}` in
+// Dockerfile's build stage; `-X main.buildVersion=…` appears NOWHERE in this
+// repository — flake.nix stamps `main.buildRevision` only, and the one
+// remaining mention of the buildVersion spelling is a comment in client.go.
+// Against any released server, therefore, /health answers a real semver while
+// this client still says "dev", and warnSkew's note fires on EVERY command. That
+// asymmetry is at RELEASE time, not in the defaults, and this test does not
+// close it — closing it means stamping the CLI at release, which nothing in this
+// tree does.
+//
+// ⚠ WHAT IT DOES BUY, which is why it is not vacuous: an UNSTAMPED server —
+// `make run`, `go run ./cmd/muster-server`, docker-compose.test.yml, the whole
+// local loop — reports api.BuildVersion's default from /health. Equal defaults
+// are what keep that case SILENT instead of printing a skew note against a
+// client that matches it perfectly. Measured: mutating api.BuildVersion turns
+// this red with the message below.
 func TestTheCLIBuildVersionDefaultMatchesTheServers(t *testing.T) {
 	if buildVersion != api.BuildVersion {
 		t.Fatalf("🔴 the CLI's default buildVersion is %q and the server's api.BuildVersion is %q.\n"+
 			"warnSkew compares this client's literal against what /health reports, so a divergence "+
-			"makes the version note fire on EVERY command on EVERY host forever — which trains a "+
-			"reader to ignore the one signal that catches a genuinely stale client. Both are set by "+
-			"-ldflags at release; their DEFAULTS must agree.", buildVersion, api.BuildVersion)
+			"makes the version note fire on EVERY command on EVERY host against an UNSTAMPED server "+
+			"— the local dev loop — which trains a reader to ignore the one signal that catches a "+
+			"genuinely stale client. Only the server half is stamped at release (Dockerfile); the "+
+			"CLI's is never stamped, so these DEFAULTS are the whole agreement there is.",
+			buildVersion, api.BuildVersion)
 	}
 }
 

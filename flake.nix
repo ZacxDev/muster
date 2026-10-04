@@ -373,16 +373,22 @@
         #
         # 🔴 THE TARGET IS `main.buildRevision`, NOT `main.buildVersion`, AND
         # THAT DISTINCTION IS THE WHOLE REASON THE SECOND VARIABLE EXISTS. This
-        # binding is a GIT REVISION; `buildVersion` is documented as the muster
-        # SERVER version the client was built against, and two readers in
-        # `cmd/muster/client.go` print it beside the server's own semver — the
-        # skew note and the route-absent 404. Stamping a revision there made
-        # those render "server 0.2.2 … built against ba6698e": a comparison that
-        # cannot be made, on the one surface where an operator is reasoning about
-        # compatibility. `buildRevision` carries provenance, `buildVersion`
-        # carries the server pin that `cmd/muster/server_pins_test.go` holds to
-        # `api.BuildVersion`, and `cliVersion()` is the single place they meet —
-        # labelled, as `muster version dev (rev ba6698e)`.
+        # binding is a GIT REVISION. `buildVersion` is the muster SERVER version
+        # the client was built against: it is the value `warnSkew` COMPARES
+        # against a live `/health`, and the unlabelled first half of every line
+        # `cliVersion()` renders. Stamping a revision there made the skew note
+        # and the route-absent 404 render "server 0.2.2 … built against
+        # ba6698e" — a comparison that cannot be made, on the one surface where
+        # an operator is reasoning about compatibility — and it would make the
+        # note fire against every server forever.
+        #
+        # All three readers — `--version`, the route-absent 404 and the skew
+        # note — now render `cliVersion()`, which is the single place the two
+        # values meet and LABELS them: `muster version dev (rev ba6698e)`. The
+        # revision is on those surfaces on purpose; what the split buys is that
+        # it arrives labelled and does not displace the server pin that
+        # `cmd/muster/server_pins_test.go` holds to `api.BuildVersion`'s default.
+        # `tests/cli-version-stamp.sh` refuses a revision-SHAPED server half.
         #
         # 🔴 THE SYMBOL PATH IS `main`, NOT `github.com/ZacxDev/muster/cmd/muster`.
         # `cmd/muster` IS a main package, so that is where the linker looks for

@@ -13,27 +13,37 @@ import (
 	"sync"
 )
 
-// buildVersion is the muster SERVER version this CLI was built against. It is
-// overridable at link time (-ldflags "-X main.buildVersion=1.2.3"), mirroring
-// how the server stamps api.BuildVersion.
+// buildVersion is the muster SERVER version this CLI was built against. The
+// linker accepts an override here (-ldflags "-X main.buildVersion=1.2.3"), but
+// that spelling appears NOWHERE in this repository.
 //
-// 🔴 THE TWO DEFAULTS MUST AGREE, AND A TEST — NOT DISCIPLINE — IS WHAT HOLDS
-// THEM TOGETHER. warnSkew compares this literal against what /health reports,
-// so a value that drifts from the server's makes the note fire on every command
-// on every host forever, which trains a reader to ignore the one signal that
-// catches a genuinely stale client. TestTheCLIBuildVersionDefaultMatchesTheServers
-// imports internal/api and fails when they diverge. That import is TEST-ONLY:
+// 🔴 NOTHING IN THIS TREE STAMPS IT, AND THE SERVER'S HALF IS STAMPED, SO THE
+// ASYMMETRY IS AT RELEASE TIME RATHER THAN IN THE DEFAULTS. Dockerfile's build
+// stage links the server with
+// `-X github.com/ZacxDev/muster/internal/api.BuildVersion=${VERSION}`, which is
+// what /health reports; flake.nix links this binary with buildRevision ONLY;
+// `make build`, `make verb-ledger` and every nix-built CLI therefore ship
+// buildVersion == "dev". warnSkew compares THIS literal against /health, so
+// against any released server — /health answering a real semver — the note
+// fires on EVERY command. That is not a drift to be fixed in the defaults:
+// closing it means stamping this variable at release, which is a separate
+// change nothing here makes.
+//
+// ⚠ WHAT THE DEFAULT PIN STILL BUYS, since it cannot be the release story:
+// TestTheCLIBuildVersionDefaultMatchesTheServers holds this literal equal to
+// api.BuildVersion's own default, so an UNSTAMPED server — `make run`,
+// `go run ./cmd/muster-server`, the whole local loop — stays silent instead of
+// reporting skew against a client that matches it. That import is TEST-ONLY:
 // the shipped binary does not link the server.
 //
 // 🔴 ITS VALUE NAMESPACE IS THE SERVER'S — A SEMVER — AND A GIT REVISION MUST
-// NEVER BE STAMPED HERE. Both readers below put this value next to the server's
-// own: warnSkew prints "server 0.2.2, muster built for X" and the route-absent
-// 404 renders "this client was built against X" on the one surface where an
-// operator is reasoning about compatibility. A revision in X turns both into a
-// comparison that cannot be made — "0.2.2" against "ba6698e" is not older,
-// newer, or equal — and it reads as a real version rather than the obvious
-// placeholder "dev" is. buildRevision below exists so provenance has its own
-// variable instead of borrowing this one.
+// NEVER BE STAMPED HERE. This is the variable warnSkew COMPARES against
+// /health, and it is the unlabelled first half of what cliVersion() renders. A
+// revision in it is therefore both a comparison that cannot be made — "0.2.2"
+// against "ba6698e" is not older, newer, or equal — and a git rev printed
+// where a reader expects a server version, with no "rev" label to say so.
+// buildRevision below exists so provenance has its own variable instead of
+// borrowing this one.
 var buildVersion = "dev"
 
 // buildRevision is the git revision of the source tree THIS BINARY was linked
@@ -46,8 +56,13 @@ var buildVersion = "dev"
 // revision in the DERIVATION NAME (`muster-cli-ba6698e`), which the program
 // could not reach. flake.nix now stamps it here instead
 // (-ldflags "-X main.buildRevision=<rev>"), cliVersion composes it into what
-// `--version` prints, and tests/cli-version-stamp.sh asserts it against the
-// built artefact's own output.
+// ALL THREE human-facing surfaces print — `--version`, the route-absent 404 and
+// the skew note — and tests/cli-version-stamp.sh asserts it against the built
+// artefact's own output.
+//
+// ⚠ NEVER COMPARED does not mean never PRINTED. It is printed beside the
+// server's version on two of those three surfaces, which is why it is printed
+// LABELLED; see cliVersion below.
 //
 // ⚠ EMPTY IS THE SUPPORTED DEFAULT, not a defect: a plain `go build` — which is
 // what `make build`, `make verb-ledger` and every CI job on a runner with no nix
@@ -55,20 +70,41 @@ var buildVersion = "dev"
 // an empty one.
 var buildRevision = ""
 
-// cliVersion is the string cobra reports for `--version`. It is the ONE place
-// the two values above are allowed to meet, and it LABELS them rather than
-// letting one stand in for the other.
+// cliVersion is the string EVERY human-facing surface renders: cobra's
+// `--version`, the route-absent 404, and the skew note. It is the ONE place the
+// two values above are allowed to meet, and it LABELS them rather than letting
+// one stand in for the other.
 //
-// 🔴 THE LABEL IS THE POINT. `muster version dev (rev ba6698e)` says which
+// 🔴 THE LABEL IS THE POINT, AND IT IS WHY LABELLING — NOT OMITTING — IS THE
+// ANSWER ON ALL THREE SURFACES. `muster version dev (rev ba6698e)` says which
 // server version the client was built against AND which tree produced the
 // binary; `muster version ba6698e` — this field carrying whichever value the
 // build system happened to stamp — reproduces inside `--version` exactly the
-// ambiguity the split above removes.
+// ambiguity the split above removes. The same arithmetic applies to the two
+// operator surfaces: printing buildVersion ALONE there renders a bare "dev",
+// from which an operator can conclude nothing, where the labelled form hands
+// them a revision they can `git log` to establish staleness. The revision is
+// strictly more actionable, and the label is what stops it being mistaken for
+// the server version sitting beside it.
 //
-// ⚠ IT MUST NEVER RETURN "". cobra DISABLES the --version flag entirely when
-// Version is empty, so an empty return would delete the flag rather than print
-// nothing. buildVersion's default is non-empty, and a build that blanks it
-// still leaves the "(rev …)" clause.
+// ⚠ IT CAN RETURN "", AND NOTHING IN THIS PACKAGE PREVENTS THAT. cobra DISABLES
+// the --version flag entirely when Version is empty, so an empty return deletes
+// the flag rather than printing nothing. This used to be written here as an
+// invariant — "it must never return the empty string" — justified by "a build
+// that blanks buildVersion still leaves the (rev …) clause", which is an
+// ASSUMPTION, not a guarantee: nothing requires a blanking build to also stamp
+// a revision.
+// Measured 2026-10-04: `go build -ldflags="-X main.buildVersion="` with no
+// revision produces a binary whose `--version` answers
+// `muster: unknown flag: --version` and exits 2.
+//
+// No in-process test can refuse that, because every Go test in this package
+// compiles without release ldflags and observes the defaults. What DOES refuse
+// it is the nix derivation's installCheckPhase: tests/cli-version-stamp.sh's
+// marker control greps the binary's own output for a `<name> version <value>`
+// line and exits 1 naming "the binary has no --version flag" when it is absent.
+// That is the right place for the check — the hazard is created by ldflags, and
+// that script is the only reader that sees a linked artefact.
 func cliVersion() string {
 	if buildRevision == "" {
 		return buildVersion
@@ -302,9 +338,16 @@ func classify(req request, resp *http.Response, body []byte) ([]byte, error) {
 		if isJSON {
 			return nil, failf(exitNotFound, "%s %s: not found — %s", req.method, req.path, serverError(body))
 		}
+		// 🔴 cliVersion(), NOT buildVersion. This is the surface the file's own
+		// comments call the one where an operator is reasoning about
+		// compatibility, and buildVersion alone renders a bare "dev" here on
+		// every artefact this tree produces — a string from which nothing
+		// follows. The labelled form names the revision too, which an operator
+		// can `git log` to decide whether this client predates the route or the
+		// server does. The label is what keeps it from reading as a version.
 		return nil, failf(exitRouteAbsent,
-			"route %s %s not found on this server; it may predate the route (this client was built against %s)",
-			req.method, req.path, buildVersion)
+			"route %s %s not found on this server; it may predate the route — this client was built against %s",
+			req.method, req.path, cliVersion())
 
 	case resp.StatusCode == http.StatusConflict:
 		return nil, failf(exitConflict, "%s %s: conflict — %s", req.method, req.path, serverError(body))
@@ -426,6 +469,14 @@ func (c *client) warnSkew(ctx context.Context) {
 		if err != nil {
 			return
 		}
+		// 🔴 THE COMPARISON IS buildVersion; THE RENDER IS cliVersion(). They are
+		// deliberately different values and the split is load-bearing in both
+		// directions. Comparing cliVersion() would make every nix-built client
+		// — which always carries a revision — differ from EVERY server forever,
+		// so the note would fire on every command on every host: the exact noise
+		// this whole check exists to avoid. Rendering buildVersion alone would
+		// print a bare "dev" beside the server's real semver, which tells an
+		// operator nothing about which client they are holding.
 		var h healthResponse
 		if json.Unmarshal(body, &h) != nil || h.Version == "" || h.Version == buildVersion {
 			return
@@ -434,6 +485,6 @@ func (c *client) warnSkew(ctx context.Context) {
 		if name == "" {
 			name = defaultProgName
 		}
-		fmt.Fprintf(c.stderr, "note: server %s, %s built for %s\n", h.Version, name, buildVersion)
+		fmt.Fprintf(c.stderr, "note: server %s, %s built for %s\n", h.Version, name, cliVersion())
 	})
 }
