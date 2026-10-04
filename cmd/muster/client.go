@@ -93,9 +93,8 @@ var buildRevision = ""
 // invariant — "it must never return the empty string" — justified by "a build
 // that blanks buildVersion still leaves the (rev …) clause", which is an
 // ASSUMPTION, not a guarantee: nothing requires a blanking build to also stamp
-// a revision.
-// Measured 2026-10-04: `go build -ldflags="-X main.buildVersion="` with no
-// revision produces a binary whose `--version` answers
+// a revision. Measured at 8ad413e: `go build -ldflags="-X main.buildVersion="`
+// with no revision produces a binary whose `--version` answers
 // `muster: unknown flag: --version` and exits 2.
 //
 // No in-process test can refuse that, because every Go test in this package

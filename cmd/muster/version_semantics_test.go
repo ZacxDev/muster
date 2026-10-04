@@ -135,7 +135,7 @@ func TestCLIVersionComposesBothHalvesAndLabelsThem(t *testing.T) {
 			// is empty". It was UNREACHABLE: reaching it requires got == ""
 			// AND got == tc.want, i.e. a row with want == "" — and such a row
 			// makes that very assertion fire, so the only table that executes
-			// it is a table in which it fails. Measured 2026-10-04: mutating
+			// it is a table in which it fails. Measured at 8ad413e: mutating
 			// cliVersion() to `return ""` failed all five rows at the equality
 			// above and reached it zero times.
 			//
