@@ -341,19 +341,35 @@ func TestTheRetractedReachabilityClaimIsGoneFromEveryNonTestSource(t *testing.T)
 	// the fix is to add the new wording here. That is deliberate — it forces a human to
 	// look at the sentence, which is the whole point, and it is the opposite of the first
 	// attempt's cost, which was silently allowing a false claim.
-	// ⚠ THE THIRD ENTRY IS THE COST THIS GUARD'S OWN HEADER PROMISED, PAID. The banner
+	// ⚠ THE SECOND ENTRY IS THE COST THIS GUARD'S OWN HEADER PROMISED, PAID. The banner
 	// line it covers used to end "🔴 WIRED IS NOT REACHABLE" and now reads "🔴 WIRED IS
 	// NOT VERIFIED REACHABLE", because the two mechanisms behind the old wording are
 	// fixed and what remains is missing EVIDENCE rather than a known defect. Inserting
-	// one word moved the match out from under the second entry — `isCorrection` compares
+	// one word moved the match out from under the OLD entry — `isCorrection` compares
 	// whole strings in both directions — so the new wording is pinned here, which is
 	// exactly the "forces a human to look at the sentence" the note above describes.
-	// 🔴 THE OLD ENTRY IS KEPT RATHER THAN REPLACED: internal/modulegate and
-	// doc_seams.go still carry the un-"VERIFIED" spelling in their own prose, and
-	// dropping it would flag those as the retracted claim.
+	//
+	// 🔴 AND THE OLD ENTRY IS *REPLACED*, NOT KEPT BESIDE IT, BECAUSE KEEPING IT
+	// WHITELISTED THE CLAIM THIS PR MADE FALSE. A first draft of this list carried both
+	// spellings under a comment claiming "internal/modulegate and doc_seams.go still
+	// carry the un-VERIFIED spelling in their own prose". They do not: `git grep -l
+	// 'WIRED IS NOT REACHABLE'` returns exactly ONE file — THIS one, which the sweep
+	// skips as _test.go — and modulegate's copy is a test file regardless. So the entry
+	// suppressed nothing real while licensing the old sentence anywhere in the tree.
+	// Measured, with the pair that makes it a defect rather than dead weight: plant
+	// "…🔴 WIRED IS NOT REACHABLE: agentspec.Build declares no port, so this driver
+	// resolves no address." in internal/api/ext.go — where api.Gateway is DECLARED, i.e.
+	// the likeliest place for a reader to restate it — and the sweep SURVIVED with the
+	// old entry present and CAUGHT it once removed. Removing the NEW entry instead goes
+	// red on main.go, which is the control proving that green was about the old entry
+	// and not about this sweep being blind to deletions.
+	//
+	// ⚠ SO THE RULE THIS LIST OBEYS, STATED ONCE: AN ENTRY IS A LICENCE, AND A LICENCE
+	// FOR A SENTENCE THE TREE NO LONGER CONTAINS IS A LICENCE FOR SOMEBODY TO ADD IT
+	// BACK. When a correction is reworded, REPLACE its entry — and prove the old one is
+	// unused by planting it in a swept file and watching the sweep catch it.
 	allowedCorrections := []string{
 		"stop REFUSING — which is not the same as reachable",
-		"chat routes no longer refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT REACHABLE",
 		"chat routes no longer refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT VERIFIED REACHABLE",
 	}
 	isCorrection := func(m string) bool {
