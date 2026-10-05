@@ -85,7 +85,36 @@ func fixtureConfig() Config {
 		WorkspaceSize:    "24Gi",
 		WorkspacePersist: true,
 		Labels:           map[string]string{"installation": "example-test"},
+		// 🔴 THE BUNDLE IS IN THE SHARED FIXTURE, NOT ONLY IN ITS OWN TESTS, AND
+		// THAT IS DELIBERATE: THIS IS THE SHAPE A DEPLOYMENT RUNS. Every deployment
+		// that names a runtime is REQUIRED to supply it (cmd/muster-server's
+		// validateProvisioner refuses otherwise), so a fixture without it pins a
+		// spec no production deployment produces — and the golden's whole value is
+		// that a one-field regression in the real shape is visible.
+		//
+		// ⚠ THE DERIVATION IS NOT sha256, DELIBERATELY. agentgateway.HooksSHA256 is
+		// the real one and is not importable here (see runtimeconfig.go on the HTTP
+		// client); a fixture that reproduced its formula would make this package's
+		// assertions pass over a Build that called the WRONG function with the right
+		// algorithm. A derivation that no production code can produce means the
+		// asserted value can only have come from this field.
+		RuntimeConfig: RuntimeConfig{
+			Template:     []byte("{\"example\":{\"nested\":{\"credential\":\"<injected>\"}}}\n"),
+			Install:      []byte("set -eu\nexec /example/entrypoint --flag\n"),
+			DeriveBearer: fixtureDeriveBearer,
+		},
 	}
+}
+
+// fixtureDeriveBearer is the fixture's stand-in for a real credential scheme.
+//
+// ⚠ IT IS A PACKAGE-LEVEL FUNCTION RATHER THAN A CLOSURE IN fixtureConfig SO THAT
+// A TEST CAN COMPUTE THE EXPECTED VALUE FROM THE SAME SOURCE. An assertion that
+// re-spelled the prefix inline would pass over a Build that applied a different
+// one, which is the whole failure class [RuntimeConfig.DeriveBearer] exists to
+// remove. It is deliberately NOT a hash: see fixtureConfig.
+func fixtureDeriveBearer(hooksToken string) string {
+	return "fixture-derived-bearer<" + hooksToken + ">"
 }
 
 func mustBuild(t *testing.T, a agents.Agent, cfg Config, opts Options) provision.Spec {
@@ -329,12 +358,20 @@ func TestFileOrderIsDeterministicAcrossBuilds(t *testing.T) {
 	// files, so a reader of a spec sees "the caller's content, then the
 	// installation's own machinery" — and the position is deterministic either way,
 	// which is what this test exists to pin.
+	// ⚠ AND THE RUNTIME-CONFIG BUNDLE SITS BETWEEN THE SEEDS AND THE DAEMON,
+	// WHICH IS ALSO PART OF THE CLAIM RATHER THAN AN ACCIDENT OF APPEND ORDER.
+	// buildFiles emits it last; Build then appends the daemon. Both are
+	// "installation machinery" rather than caller content, so they follow the
+	// sorted workspace files — and the bundle's paths are deliberately OUTSIDE
+	// the workspace, which is why they are not sorted among them.
 	want := []string{
 		"/srv/agent-work/AGENTS.md",
 		"/srv/agent-work/MIKE.md",
 		"/srv/agent-work/ZULU.md",
 		"/srv/agent-work/alpha.md",
 		"/srv/agent-work/bravo.txt",
+		RuntimeConfigPath,
+		RuntimeInstallPath,
 		"/usr/local/bin/muster-autosave",
 	}
 	if strings.Join(firstPaths, ",") != strings.Join(want, ",") {

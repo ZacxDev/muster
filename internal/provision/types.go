@@ -239,6 +239,51 @@ type Port struct {
 // the caller did not say which.
 const DefaultPortName = "gateway"
 
+// Health is how a driver can tell a SERVING instance from a merely RUNNING one.
+//
+// 🔴 IT EXISTS BECAUSE Instance.Ready WAS A CLAIM NOTHING MEASURED. Phase and
+// Ready are separate fields precisely so that "the process is up" and "it is
+// serving" can disagree — and with no health declaration anywhere in a spec, no
+// driver had anything to decide the second one from. Measured against the agent
+// runtime image muster's own deployment pins: an instance whose gateway refuses
+// to start (`Missing config`, exit 78) sat in CrashLoopBackOff reporting 0/1
+// indefinitely, with nothing in the cluster timing it out and nothing in muster
+// saying why. The crash was loud in `kubectl logs` and invisible everywhere a
+// person actually looks.
+//
+// 🔴 IT DECLARES A PROPERTY OF THE INSTANCE, NOT A BEHAVIOUR ASKED OF THE
+// DRIVER, WHICH IS WHY IT HAS NO [Capabilities] GATE. "This instance answers
+// HTTP GET <path> on port <name> when it is serving" is a fact about what is
+// inside, in the same way [Spec.Ports] is — and Ports has no capability bit
+// either. A driver with no supervision concept ignores it; a driver that has one
+// translates it into its own idiom, with its own timings, because a period and a
+// failure threshold are shaped by the backend and a portable spelling of them
+// here would be a second, wrong authority (the argument [Resources] makes for
+// keeping quantities as strings).
+//
+// ⚠ THERE IS DELIBERATELY NO WAY TO SAY "DO NOT PROBE ME" OTHER THAN LEAVING
+// HTTPGetPath EMPTY, and no separate readiness/liveness split. Both were
+// considered and both are knobs whose only use is to make a non-serving instance
+// look fine again, which is the state this type exists to end.
+type Health struct {
+	// HTTPGetPath is the path a serving instance answers 2xx/3xx on. Empty
+	// means "this spec declares no health signal", and a driver then reports
+	// Ready from whatever its backend says about the process alone.
+	//
+	// ⚠ IT IS A PATH AND NOT A URL. The scheme is the backend's business and
+	// the host is the instance itself; a URL here would invite an absolute one
+	// pointing somewhere else entirely.
+	HTTPGetPath string
+	// PortName names the [Port] to probe. It must match a declared port's Name
+	// — [Spec.Validate] refuses a name that resolves to nothing, because the
+	// alternative is a driver silently dropping the probe and reporting the
+	// pre-Health behaviour under a spec that asked for better.
+	PortName string
+}
+
+// IsZero reports whether the spec declares no health signal at all.
+func (h Health) IsZero() bool { return h.HTTPGetPath == "" && h.PortName == "" }
+
 // Spec is the complete desired state of one instance.
 //
 // It is the genericised form of what the original project assembled as a map of
@@ -291,6 +336,9 @@ type Spec struct {
 
 	// Ports the instance listens on.
 	Ports []Port
+
+	// Health is how a driver tells serving from running. See the type.
+	Health Health
 
 	// Endpoint, when non-nil, is the address callers should use to reach this
 	// instance, OVERRIDING whatever the driver would compute.
@@ -354,6 +402,29 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("%w: port name %q appears twice", ErrInvalidSpec, p.Name)
 		}
 		names[p.Name] = true
+	}
+	// 🔴 BOTH-OR-NEITHER, AND THE PORT NAME IS MATCHED EXACTLY RATHER THAN
+	// THROUGH PortNumber. PortNumber falls back to DefaultPortName and then to
+	// "the single declared port", which is right for RESOLVING an address a
+	// caller did not name — and wrong here: a Health naming a port that does not
+	// exist would resolve to whatever the spec happens to declare, so a typo
+	// would probe the wrong port and report an instance unhealthy for a reason no
+	// log line carries. A path with no port, and a port with no path, are each
+	// half a probe; a driver would have to invent the other half.
+	if (s.Health.HTTPGetPath == "") != (s.Health.PortName == "") {
+		return fmt.Errorf("%w: health declares %q/%q — a path and a port name are both required or both empty, "+
+			"because a driver cannot invent the missing half",
+			ErrInvalidSpec, s.Health.HTTPGetPath, s.Health.PortName)
+	}
+	if !s.Health.IsZero() {
+		if !strings.HasPrefix(s.Health.HTTPGetPath, "/") {
+			return fmt.Errorf("%w: health path %q must be absolute", ErrInvalidSpec, s.Health.HTTPGetPath)
+		}
+		if !names[s.Health.PortName] {
+			return fmt.Errorf("%w: health names port %q, which this spec does not declare; a driver would "+
+				"drop the probe and report the instance ready from its process state alone",
+				ErrInvalidSpec, s.Health.PortName)
+		}
 	}
 	if s.Repo.URL != "" {
 		u, err := url.Parse(s.Repo.URL)

@@ -370,6 +370,20 @@ func Fingerprint(s Spec) string {
 	sort.Strings(ports)
 	w("ports", strings.Join(ports, "\x1f"))
 
+	// 🔴 HEALTH COUNTS, AND LEAVING IT OUT WOULD HAVE BEEN INVISIBLE RATHER THAN
+	// HARMLESS. The k8s driver renders Spec.Health into the POD TEMPLATE, so two
+	// specs differing only in it describe two different pods — and this digest is
+	// what Create compares to decide a spec has diverged and what Update writes
+	// to decide whether to roll. A Health change absent from the digest is a
+	// probe an existing instance never gets, under a fingerprint that says it
+	// matches.
+	//
+	// ⚠ ADDING IT MOVES EVERY SPEC'S FINGERPRINT, INCLUDING SPECS THAT DECLARE NO
+	// HEALTH, because the keyed writes are positional. That is a one-time roll of
+	// every live instance on its next Update, and it is correct: the pod template
+	// genuinely changed in the same release.
+	w("health", s.Health.HTTPGetPath, s.Health.PortName)
+
 	if s.Endpoint != nil {
 		w("endpoint", s.Endpoint.Scheme, s.Endpoint.Host, strconv.Itoa(s.Endpoint.Port), s.Endpoint.Path)
 	} else {

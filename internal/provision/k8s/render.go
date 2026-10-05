@@ -104,6 +104,114 @@ const (
 // say.
 const DefaultWorkspacePath = "/data/workspace"
 
+// The probe timings this driver translates [provision.Health] into.
+//
+// 🔴 THEY LIVE HERE RATHER THAN ON provision.Health BECAUSE THEY ARE SPELLED IN
+// THIS BACKEND'S UNITS. A period and a failure threshold are a Kubernetes shape;
+// another backend expresses supervision as a retry budget, a restart policy or
+// nothing at all. What the SPEC declares is the portable half — "GET this path on
+// this port means serving" — and translating it is the driver's job. That is the
+// same division [provision.Resources] draws by keeping quantities as strings.
+//
+// 🔴 THE NUMBERS ARE TAKEN FROM A DEPLOYMENT OF THE SAME AGENT RUNTIME IMAGE THAT
+// IS KNOWN TO WORK, NOT CHOSEN. That deployment's gateway container carries a
+// startup probe of GET / on the gateway port with failureThreshold 30, period 10s
+// and initialDelay 5s, and a liveness probe of the same request with
+// failureThreshold 3 and period 30s. Measured against the image muster's own
+// deployment pins: a cold container reached `[gateway] ready` 1.3s after start, so
+// the 305s startup budget is roughly 200x the observed need — deliberately, because
+// the budget has to cover a loaded node and a cold page cache, and the cost of it
+// being too generous is a slower crash report while the cost of it being too tight
+// is a restart loop that never lets a healthy agent finish booting.
+//
+// ⚠ A STARTUP PROBE IS WHAT MAKES THE LIVENESS PROBE SAFE, AND THE PAIR MUST MOVE
+// TOGETHER. Kubernetes suspends liveness until startup succeeds; a liveness probe
+// with no startup probe would kill every container that takes longer than
+// livenessFailureThreshold x livenessPeriodSeconds to boot, which is 90s here and
+// is well inside the range an image pull plus a repository clone can reach.
+const (
+	startupInitialDelaySeconds = 5
+	startupPeriodSeconds       = 10
+	startupFailureThreshold    = 30
+
+	livenessPeriodSeconds    = 30
+	livenessFailureThreshold = 3
+)
+
+// ⚠ THERE IS NO READINESS PROBE, AND ITS ABSENCE IS A DECISION RATHER THAN THE
+// SET THE REFERENCE DEPLOYMENT HAPPENED TO HAVE.
+//
+// The startup probe already gates the container's FIRST Ready — Kubernetes holds
+// a container unready until startup succeeds — which is the signal muster needs:
+// provision.Instance.Ready is what tells an operator a provisioned agent came up
+// at all, and it is the mechanical half of this change's closing condition. What a
+// readiness probe would add on top is continuous REMOVAL from the Service after
+// startup, on the identical request, which for a single-replica Deployment serving
+// chat means one slow response takes the agent out of its own Service mid-turn and
+// the chat failure reads as a muster defect. The hang case that argument gives up
+// is covered by liveness, which restarts rather than hides.
+//
+// 🔴 IF A SECOND REPLICA EVER BECOMES POSSIBLE, RE-ARGUE THIS. The reasoning above
+// is specific to replicas: 1, where "pulled from the Service" and "unreachable"
+// are the same thing. With two replicas a readiness probe is how traffic avoids a
+// sick one, and its absence becomes a defect rather than a choice.
+func healthProbe(spec provision.Spec) *corev1.Probe {
+	if spec.Health.IsZero() {
+		return nil
+	}
+	port := 0
+	for _, p := range spec.Ports {
+		if p.Name == spec.Health.PortName {
+			port = p.Port
+			break
+		}
+	}
+	if port == 0 {
+		// Unreachable through Validate, which refuses a Health naming an
+		// undeclared port. Returning nil rather than probing a guessed port is
+		// the honest half of that: a probe against the wrong port reports an
+		// instance unhealthy for a reason nothing logs.
+		return nil
+	}
+	return &corev1.Probe{
+		ProbeHandler: corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: spec.Health.HTTPGetPath,
+				Port: intstr.FromInt32(int32(port)),
+			},
+		},
+	}
+}
+
+// startupProbe and livenessProbe are the same request with different budgets.
+//
+// 🔴 THEY ARE BUILT FROM SEPARATE CALLS TO healthProbe RATHER THAN FROM ONE VALUE
+// COPIED TWICE. A *corev1.Probe shared between the two fields would be ONE object
+// reachable from two places in the pod spec, so setting a threshold on one would
+// set it on both — and the pod would apply, with a liveness probe carrying the
+// startup budget (305s to notice a dead gateway) or a startup probe carrying the
+// liveness one (90s to boot). Both are silent.
+func startupProbe(spec provision.Spec) *corev1.Probe {
+	p := healthProbe(spec)
+	if p == nil {
+		return nil
+	}
+	p.InitialDelaySeconds = startupInitialDelaySeconds
+	p.PeriodSeconds = startupPeriodSeconds
+	p.FailureThreshold = startupFailureThreshold
+	return p
+}
+
+func livenessProbe(spec provision.Spec) *corev1.Probe {
+	p := healthProbe(spec)
+	if p == nil {
+		return nil
+	}
+	p.PeriodSeconds = livenessPeriodSeconds
+	p.FailureThreshold = livenessFailureThreshold
+	return p
+}
+
 // DefaultEndpointTemplate is the in-cluster address of an instance's Service.
 //
 // It is a DEFAULT, not a constant in the code path: Config.EndpointTemplate
@@ -475,6 +583,14 @@ func (d *Driver) renderDeployment(spec provision.Spec, ns string) (*appsv1.Deplo
 		Ports:        ports,
 		Resources:    resources,
 		VolumeMounts: mounts,
+		// ⚠ ON THIS CONTAINER ONLY, NEVER ON THE INIT CONTAINER. An init
+		// container runs to completion and is not supervised; a probe on one is
+		// ignored by the apiserver for a startup/liveness pair, so attaching them
+		// there would read as coverage and provide none. renderInitContainer
+		// copies Env, EnvFrom and VolumeMounts off this value deliberately and
+		// these two fields are deliberately not among them.
+		StartupProbe:  startupProbe(spec),
+		LivenessProbe: livenessProbe(spec),
 	}
 	if secret := d.renderEnvSecret(spec, ns); secret != nil {
 		// envFrom, not one EnvVar per secret key: the values must not appear in

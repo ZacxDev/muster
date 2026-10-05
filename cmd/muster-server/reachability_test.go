@@ -69,6 +69,24 @@ func reachabilityDriver(t *testing.T, cfg config) (*k8sdriver.Driver, *fake.Clie
 	return d, cs
 }
 
+// mustAgentSpecConfig is agentSpecConfig with its error fatal.
+//
+// ⚠ IT IS NOT A CONVENIENCE WRAPPER THAT HIDES A REFUSAL. agentSpecConfig returns
+// an error only for a gateway name config.validateProvisioner would already have
+// refused at boot, and no fixture in this file names one — so a non-nil error here
+// is a wiring bug, not a configuration this test should tolerate. Swallowing it
+// instead (`cfg, _ :=`) would silently feed agentspec.Build a ZERO config, and the
+// endpoint assertions below would then be measuring the default port on an empty
+// image reference rather than this binary's mapping.
+func mustAgentSpecConfig(t *testing.T, cfg config) agentspec.Config {
+	t.Helper()
+	sc, err := agentSpecConfig(cfg)
+	if err != nil {
+		t.Fatalf("agentSpecConfig: %v", err)
+	}
+	return sc
+}
+
 // reachabilityAgent is an agent row with the fields Build reads. The token is
 // present because buildSecrets omits the secret entirely without one, and an
 // endpoint test over a spec missing a field is a weaker spec than the one a
@@ -127,7 +145,7 @@ func TestAnAgentThisBinaryProvisionsResolvesAnEndpoint(t *testing.T) {
 	ctx := context.Background()
 
 	a := reachabilityAgent()
-	spec, err := agentspec.Build(a, agentSpecConfig(cfg), agentspec.Options{
+	spec, err := agentspec.Build(a, mustAgentSpecConfig(t, cfg), agentspec.Options{
 		Instructions: "# Instructions\nbody\n",
 	})
 	if err != nil {
@@ -242,7 +260,7 @@ func TestTheRecipesNameTheAnnotationEndpointActuallyReads(t *testing.T) {
 	ctx := context.Background()
 
 	a := reachabilityAgent()
-	spec, err := agentspec.Build(a, agentSpecConfig(cfg), agentspec.Options{})
+	spec, err := agentspec.Build(a, mustAgentSpecConfig(t, cfg), agentspec.Options{})
 	if err != nil {
 		t.Fatalf("agentspec.Build: %v", err)
 	}
@@ -382,7 +400,7 @@ func TestTheNoopArmOfTheLifecycleBannerIsTrueOfTheNoopDriver(t *testing.T) {
 		t.Helper()
 		cfg := provisionerTestConfig(provisionerNoop)
 		cfg.AgentGatewayPort = port
-		spec, err := agentspec.Build(reachabilityAgent(), agentSpecConfig(cfg), agentspec.Options{})
+		spec, err := agentspec.Build(reachabilityAgent(), mustAgentSpecConfig(t, cfg), agentspec.Options{})
 		if err != nil {
 			t.Fatalf("agentspec.Build(port=%d): %v", port, err)
 		}
@@ -474,7 +492,7 @@ func TestTheResolvedPortIsTheConfiguredOneAndNotADriverConstant(t *testing.T) {
 	ctx := context.Background()
 
 	a := reachabilityAgent()
-	spec, err := agentspec.Build(a, agentSpecConfig(cfg), agentspec.Options{})
+	spec, err := agentspec.Build(a, mustAgentSpecConfig(t, cfg), agentspec.Options{})
 	if err != nil {
 		t.Fatalf("agentspec.Build: %v", err)
 	}
@@ -510,7 +528,7 @@ func TestTheResolvedPortIsTheConfiguredOneAndNotADriverConstant(t *testing.T) {
 	// would pass for an implementation that always reported `want`.
 	dflt := provisionerTestConfig(provisionerK8s)
 	dd, _ := reachabilityDriver(t, dflt)
-	dspec, err := agentspec.Build(a, agentSpecConfig(dflt), agentspec.Options{})
+	dspec, err := agentspec.Build(a, mustAgentSpecConfig(t, dflt), agentspec.Options{})
 	if err != nil {
 		t.Fatalf("agentspec.Build (default): %v", err)
 	}
@@ -567,7 +585,7 @@ func TestTheProvisionedContainerCanDeriveTheBearerMusterSends(t *testing.T) {
 	cfg := provisionerTestConfig(provisionerK8s)
 	a := reachabilityAgent()
 
-	spec, err := agentspec.Build(a, agentSpecConfig(cfg), agentspec.Options{})
+	spec, err := agentspec.Build(a, mustAgentSpecConfig(t, cfg), agentspec.Options{})
 	if err != nil {
 		t.Fatalf("agentspec.Build: %v", err)
 	}
@@ -686,7 +704,7 @@ func TestAnAgentWithNoTokenShipsNeitherNameRatherThanAnEmptyOne(t *testing.T) {
 	a := reachabilityAgent()
 	a.HooksToken = ""
 
-	spec, err := agentspec.Build(a, agentSpecConfig(cfg), agentspec.Options{})
+	spec, err := agentspec.Build(a, mustAgentSpecConfig(t, cfg), agentspec.Options{})
 	if err != nil {
 		t.Fatalf("agentspec.Build: %v", err)
 	}
@@ -701,7 +719,7 @@ func TestAnAgentWithNoTokenShipsNeitherNameRatherThanAnEmptyOne(t *testing.T) {
 	// Control: the SAME spec WITH a token does carry both, or the loop above is
 	// satisfied by a Build that emits no secrets at all.
 	a.HooksToken = "fixture-per-agent-token-9f31c7"
-	spec, err = agentspec.Build(a, agentSpecConfig(cfg), agentspec.Options{})
+	spec, err = agentspec.Build(a, mustAgentSpecConfig(t, cfg), agentspec.Options{})
 	if err != nil {
 		t.Fatalf("agentspec.Build (with token): %v", err)
 	}
@@ -775,8 +793,8 @@ func TestAMalformedGatewayPortIsRefusedAtBootRatherThanInsideADispatch(t *testin
 			"DefaultGatewayPort, and any other sentinel would make this binary a second "+
 			"authority on the number", envAgentGatewayPort, cfg.AgentGatewayPort)
 	}
-	if agentSpecConfig(cfg).GatewayPort != 0 {
-		t.Errorf("agentSpecConfig turned an unset port into %d", agentSpecConfig(cfg).GatewayPort)
+	if mustAgentSpecConfig(t, cfg).GatewayPort != 0 {
+		t.Errorf("agentSpecConfig turned an unset port into %d", mustAgentSpecConfig(t, cfg).GatewayPort)
 	}
 
 	// 🔴 A LEGAL VALUE THE CONSTANT CANNOT EQUAL, so "it arrived" is distinguishable
@@ -791,7 +809,7 @@ func TestAMalformedGatewayPortIsRefusedAtBootRatherThanInsideADispatch(t *testin
 	if cfg.AgentGatewayPort != 21473 {
 		t.Errorf("%s=21473 parsed to %d", envAgentGatewayPort, cfg.AgentGatewayPort)
 	}
-	if got := agentSpecConfig(cfg).GatewayPort; got != 21473 {
+	if got := mustAgentSpecConfig(t, cfg).GatewayPort; got != 21473 {
 		t.Errorf("agentSpecConfig(cfg).GatewayPort = %d, want 21473 — the field is declared on "+
 			"config and not handed to the spec builder, which is the shape of an unread knob",
 			got)

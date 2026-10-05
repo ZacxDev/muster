@@ -23,13 +23,41 @@ import (
 // previous release's behaviour, which must not change), and both on.
 // ---------------------------------------------------------------------------
 
+// The runtime-config bundle every fixture in this package that names a runtime
+// must carry, SPELLED ONCE.
+//
+// 🔴 THE BANNER PRINTS THEIR BYTE LENGTHS, so a second copy of either value would
+// make TestTheChatWiredBannerDoesNotClaimReachability's pinned line disagree with
+// whatever fixture produced it — and the failure would read as a banner change
+// rather than as two fixtures. These are also what bannerBothDirections uses, so
+// the pinned line's numbers are DERIVED from the same bytes rather than typed in.
+//
+// ⚠ NEITHER IS VALID FOR ANY REAL RUNTIME, DELIBERATELY. muster never parses
+// either one — the whole point of runtimeconfig.go is that the schema is the
+// operator's — so a fixture that looked like a real configuration would suggest
+// this package validates something it does not.
+const (
+	fixtureRuntimeConfigTemplate = `{"example":{"key":"value"}}`
+	fixtureRuntimeInstallScript  = "set -eu\nexec /example/entrypoint\n"
+)
+
 // gatewayTestConfig is a config that passes validate for the named driver and
 // runtime, so each test varies one thing.
+//
+// ⚠ NAMING A RUNTIME NOW COMMITS A DEPLOYMENT TO THREE THINGS, NOT ONE, AND THIS
+// HELPER SUPPLIES ALL THREE SO THAT EVERY POSITIVE CONTROL BUILT FROM IT IS A
+// COMPLETE CONFIGURATION. The sentinel was the first; the runtime-config bundle's
+// two keys are the second and third. A helper that supplied only the sentinel would
+// make every "the same config WITH the field set must PASS" control in this file
+// fail for the OTHER missing variable — a positive control that cannot distinguish
+// the refusal it is about from any refusal at all.
 func gatewayTestConfig(driver, runtime string) config {
 	c := provisionerTestConfig(driver)
 	c.AgentGateway = runtime
 	if runtime != gatewayNone {
 		c.AgentGatewayModel = "runtime-sentinel"
+		c.AgentRuntimeConfig = fixtureRuntimeConfigTemplate
+		c.AgentRuntimeInstall = fixtureRuntimeInstallScript
 	}
 	return c
 }
@@ -245,7 +273,13 @@ func TestTheChatWiredBannerDoesNotClaimReachability(t *testing.T) {
 		"derivation lives in the agent image's own deployment, which nothing here can read, " +
 		"so the first turn against an agent this binary provisioned is still the measurement. " +
 		"A kickoff is undeliverable regardless: nothing calls the gateway on the dispatch " +
-		"path. See cmd/muster-server/doc_seams.go entry 1"
+		"path. The agent runtime-config bundle IS INSTALLED: " + envAgentRuntimeConfig +
+		" (27 bytes) is placed at " + agentspec.RuntimeConfigPath + ", " + envAgentRuntimeInstall +
+		" (" + strconv.Itoa(len(fixtureRuntimeInstallScript)) + " bytes) REPLACES the image's entrypoint as the container's command, and the " +
+		"derived credential travels as " + agentspec.EnvGatewayBearer + ". 🔴 THAT SCRIPT IS " +
+		"THE OPERATOR'S AND NOTHING HERE CAN CHECK IT: if it does not install the file and " +
+		"re-exec the real entrypoint, the instance does not serve — the startup probe is " +
+		"what reports that. See cmd/muster-server/doc_seams.go entry 1"
 
 	if line != wantLine {
 		t.Errorf("the CHAT: WIRED line changed.\n  got:  %s\n  want: %s\n"+

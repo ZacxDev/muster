@@ -294,6 +294,21 @@ var bannerLedger = []string{
 	// says the variable is UNREAD because nothing is provisioned. See the retraction
 	// in bannerExempt.
 	envAgentGatewayPort,
+	// 🔴 THE RUNTIME-CONFIG PAIR IS LEDGERED, AND ITS OFF-STATE IS THE LOUDEST ONE
+	// ON THIS BANNER. Unset with a runtime named is REFUSED at boot, so the only
+	// reachable off-state is "no runtime named" — and in that state a deployment
+	// with a kubernetes driver provisions pods that exit 78 and crashloop for ever,
+	// which is the measured defect these variables exist to close. A silent version
+	// of that state is what shipped: the pod was 0/1, nothing timed it out, and the
+	// cause was only in `kubectl logs`. The CHAT arms report the installed state in
+	// both directions and the fully-off arm names the pair as inert.
+	//
+	// ⚠ TWO ENTRIES AND NOT ONE, even though they are a both-or-neither pair. The
+	// ledger's unit is the DECLARED CONSTANT — TestEveryDeclaredEnvVariableIsLedgeredOrExempt
+	// walks config.go's const block — so one entry would leave the other on neither
+	// list, which is the gap that test exists to close.
+	envAgentRuntimeConfig,
+	envAgentRuntimeInstall,
 }
 
 // bannerExempt is every environment variable config.go declares that logBanner
@@ -546,6 +561,14 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// any test while both renders still differed elsewhere.
 		AgentGateway:      gatewayHooksSHA256,
 		AgentGatewayModel: "runtime-sentinel",
+		// 🔴 AND NAMING A RUNTIME NOW REQUIRES THE RUNTIME-CONFIG BUNDLE, so the
+		// fixture carries it for the same reason it carries the sentinel: without it
+		// this is not a configuration the binary would boot on, and the CHAT: WIRED
+		// arm — the only place the bundle's state is reported — would be rendered
+		// from an invalid config. bannerGateway runs the real buildGateway over this
+		// value, so an incomplete fixture is not merely unrealistic.
+		AgentRuntimeConfig:  fixtureRuntimeConfigTemplate,
+		AgentRuntimeInstall: fixtureRuntimeInstallScript,
 
 		// 🔴 THE PRIVILEGE AXIS NEEDS THE CONFIG, THE APPLIER *AND* THE PRIVILEGE
 		// STORE — three things, where the other two tiers need two. The banner's
