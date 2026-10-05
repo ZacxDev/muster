@@ -21,6 +21,14 @@
 // because the caller is the only place that knows whether a toolless answer is
 // acceptable for the turn it is running — a kickoff that silently lost its tools
 // produces an agent that cannot read the task it was dispatched for.
+//
+// ⚠ IT DOES FALL BACK BETWEEN THE TWO *TRANSPORTS*, AND THE TWO ARE DIFFERENT
+// DECISIONS. [Gateway.Chat] runs over /v1/responses and drops to
+// /v1/chat/completions only when the runtime answers 404 there — a choice about
+// which wire format an image speaks, which no caller has information about and
+// which changes nothing the caller asked for. Losing TOOLS changes what the agent
+// can do; changing transport does not. The reasoning-model measurement that forced
+// this is on Chat.
 package agentgateway
 
 import (
@@ -160,14 +168,67 @@ func (g *Gateway) Runtime() string { return g.runtime.Name() }
 
 // Chat sends one user message to the agent's gateway under sessionKey, streaming
 // assistant text deltas to emit (nil-safe), and returns the full reply. It carries
-// NO tools — see the package doc on why the fallback decision is the caller's.
+// NO tools — see the package doc on why the TOOLS fallback decision is the
+// caller's. The TRANSPORT choice below is not that decision and is made here.
+//
+// 🔴 IT RUNS OVER /v1/responses AND ONLY FALLS BACK TO /v1/chat/completions ON A
+// 404, BECAUSE THE STREAMING CHAT-COMPLETIONS PATH SILENTLY LOSES A REASONING
+// MODEL'S ENTIRE ANSWER. The measurement is recorded on agents.RunToollessTurn: the
+// same prompt to the same live agent produced zero content deltas over streaming
+// chat-completions — an HTTP 200 and `{"reply":""}` out of
+// POST /api/agents/{name}/messages, which is `chief ask`'s door — and the full text
+// over /v1/responses. Nothing in this package could have detected it: a 200 with no
+// deltas is indistinguishable here from a model that genuinely said nothing.
+//
+// 🔴 THE 404 FALLBACK IS THE *ONLY* ONE, AND THAT IS DELIBERATE RATHER THAN
+// INCOMPLETE. ErrResponsesUnsupported means the endpoint is absent (responses.go
+// maps a 404 and nothing else), so chat-completions is then the only transport that
+// runtime has. Every OTHER failure propagates: falling back on a 400 or a 500 would
+// route the turn straight back into the transport this change exists to leave, and
+// the observable would be the empty reply returning under a different cause.
+//
+// ⚠ WHAT THE FALLBACK COSTS, SINCE THE CALLER CANNOT SEE IT: on a runtime that
+// lacks /v1/responses, one turn is two requests — the 404 probe and the real call.
+// That is paid only by images old enough to lack the endpoint, and it buys a caller
+// that does not have to know which transport an agent's image speaks.
+//
+// ⚠ IT SENDS NO `instructions`, AND THAT IS PARITY RATHER THAN AN OVERSIGHT. The
+// transport this replaces posted one user message and no system prompt at all, so
+// supplying one here would change what the agent is told on a path whose only
+// defect was the wire format. Chat's signature has nowhere to carry a prompt; a
+// caller that needs one has ChatWithTools, which takes it.
 func (g *Gateway) Chat(ctx context.Context, a agents.Agent, sessionKey, message string, emit func(string)) (string, error) {
 	ep, bearer, err := g.reach(ctx, a)
 	if err != nil {
 		return "", err
 	}
+	reply, err := agents.RunToollessTurn(ctx, g.client, agents.ResponsesURL(ep), bearer, sessionKey,
+		g.model, "", message, textDeltasOnly(emit))
+	if !errors.Is(err, agents.ErrResponsesUnsupported) {
+		return reply, err
+	}
 	return agents.ChatStream(ctx, g.client, agents.ChatCompletionsURL(ep), bearer, sessionKey,
 		g.model, []agents.ChatMessageIn{{Role: "user", Content: message}}, emit)
+}
+
+// textDeltasOnly adapts Chat's text-delta callback to the responses transport's
+// event stream, and returns nil for a nil callback so the transport's own nil-safety
+// still applies rather than being replaced by a wrapper that calls into nothing.
+//
+// 🔴 THE KIND FILTER IS LOAD-BEARING, NOT A TIDY-UP. The responses stream carries
+// "thinking" events as well as "text" ones, and a reasoning model emits far more of
+// the former. Forwarding both would render a model's private reasoning to the user
+// as if it were the answer — and it would not even match the returned reply, which
+// is assembled from the completed response's message items only.
+func textDeltasOnly(emit func(string)) agents.StreamEmit {
+	if emit == nil {
+		return nil
+	}
+	return func(ev agents.StreamEvent) {
+		if ev.Kind == "text" {
+			emit(ev.Text)
+		}
+	}
 }
 
 // ChatWithTools runs one tool-enabled turn through the runtime's /v1/responses

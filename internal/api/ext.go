@@ -543,7 +543,15 @@ type Provisioner interface {
 type Gateway interface {
 	// Chat sends a user message to the agent gateway under the given chat-session
 	// key (each session = an independent gateway context), streaming assistant
-	// deltas to emit, and returns the full assistant reply.
+	// deltas to emit, and returns the full assistant reply. It carries no tools.
+	//
+	// ⚠ IT DOES NOT RETURN agents.ErrResponsesUnsupported, AND THE ASYMMETRY WITH
+	// ChatWithTools BELOW IS THE POINT. An implementation picks the transport
+	// itself — the one documented on agentgateway.Gateway.Chat runs over the
+	// responses endpoint and drops to chat-completions on a 404 — because no caller
+	// has information about which wire format an agent's image speaks. There is
+	// nothing for a caller to branch on here, so a caller that received that
+	// sentinel from ChatWithTools has exactly one move: call this.
 	Chat(ctx context.Context, a agents.Agent, sessionKey, message string, emit func(string)) (string, error)
 	// ChatWithTools runs a tool-enabled turn via the gateway's responses API
 	// under the given chat-session key: the model gets the native function tools

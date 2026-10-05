@@ -272,12 +272,17 @@ func TestOneRealTurnAgainstALiveRuntime(t *testing.T) {
 // TestOneRealTOOLTurnAgainstALiveRuntime covers the OTHER wire format, which is a
 // different endpoint with a different request shape and its own failure mode.
 //
-// 🔴 IT IS A SEPARATE CONTROL BECAUSE A PASSING /v1/chat/completions TURN SAYS
-// NOTHING ABOUT /v1/responses. The tool endpoint is the one that is not universal —
-// responses.go's own header records that older builds 404 it — so its outcome here is
-// itself the measurement: a pass proves the attached image supports tools, and an
-// ErrResponsesUnsupported is a real, reportable answer about that image rather than a
-// test failure.
+// 🔴 IT IS A SEPARATE CONTROL BECAUSE A PASSING TOOL-LESS TURN SAYS NOTHING ABOUT
+// TOOLS. ⚠ AND THE REASON CHANGED UNDER IT: that sentence read "a passing
+// /v1/chat/completions turn says nothing about /v1/responses", which stopped being
+// true of the cell above when Gateway.Chat moved onto the responses endpoint — both
+// cells now reach /v1/responses, and what still separates them is the REQUEST: this
+// one carries tools and runs the call→execute→continue loop, so it is the only cell
+// that can observe a dispatch. An ErrResponsesUnsupported here remains a real,
+// reportable answer about the attached image rather than a test failure — and after
+// the transport change it also predicts that Chat would answer over the LEGACY
+// transport on that image, which is the fallback agentgateway_test.go pins over a
+// fake and only this file can see against a real one.
 func TestOneRealTOOLTurnAgainstALiveRuntime(t *testing.T) {
 	// 🔴 THE EXPECTATION IS DECLARED, NOT ASSUMED, AND THAT IS WHAT KEEPS THIS TARGET
 	// FROM BEING A PERMANENTLY-RED GATE. Without a runtime that both speaks this tool

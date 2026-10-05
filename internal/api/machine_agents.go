@@ -550,9 +550,19 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 // NodePort many times a day. Full argument at the registration site
 // (registerAgentRoutes) and on the wrapper (requireArmedHookToken).
 //
-// ⚠ IT USES Provisioner.Chat, NOT chatTurn: the operator route it replaces ran a
+// ⚠ IT USES Gateway.Chat, NOT chatTurn: the operator route it replaces ran a
 // plain (tool-less) turn, and this change re-homes a path rather than widening
 // what the agent can do while answering on it.
+//
+// 🔴 THIS IS THE ROUTE THE EMPTY-REPLY DEFECT WAS MEASURED ON, AND THE READING IT
+// PRODUCES IS WORTH KNOWING: three consecutive turns against a live agent answered
+// HTTP 200 with `{"reply":""}` in under three seconds each, because the model was a
+// reasoning model and the tool-less turn ran over streaming chat-completions, which
+// drops every content delta for that model class. Gateway.Chat runs over
+// /v1/responses now; the measurement and the controls are on its doc. Note what this
+// handler does with an empty reply — it writes NO assistant message and still
+// answers 200 — so the only trace of such a turn is a user message with no answer
+// beside it in the transcript.
 func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := strings.TrimSpace(r.PathValue("name"))
