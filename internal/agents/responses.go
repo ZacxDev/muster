@@ -531,6 +531,49 @@ func RunToolLoop(
 	return "", fmt.Errorf("tool loop exceeded %d iterations", MaxToolLoopIterations)
 }
 
+// RunToollessTurn runs ONE /v1/responses turn carrying NO tools and returns the
+// assembled assistant text, streaming text/thinking deltas to emit (nil-safe).
+// 404 → ErrResponsesUnsupported, unwrapped, so a caller can fall back to
+// [ChatStream].
+//
+// 🔴 IT EXISTS BECAUSE THE STREAMING CHAT-COMPLETIONS PATH LOSES A REASONING
+// MODEL'S WHOLE ANSWER, AND THAT WAS MEASURED RATHER THAN REASONED. Against one
+// live agent runtime, all else held identical and only the request changed:
+// /v1/chat/completions with stream:true produced a role chunk, an EMPTY content
+// delta and finish_reason=stop — zero content deltas, so ChatStream assembled the
+// empty string and returned it with a nil error, which every caller reads as "the
+// agent answered nothing". The same prompt over /v1/responses with stream:true
+// returned the text, in two output_text deltas. Switching only the MODEL on the
+// chat-completions path moved the delta count between 0 and 10, which is what
+// identifies the model class rather than the request as the trigger — and the
+// runtime's own log showed it rejecting the first non-reasoning attempt and
+// retrying internally AFTER the HTTP call had already returned.
+//
+// ⚠ IT IS NOT RunToolLoop WITH NIL ARGUMENTS, AND THE DIFFERENCE IS A PANIC. That
+// loop calls dispatch for every function_call the model emits; a nil dispatch there
+// is a nil func call, i.e. a server crash, reachable the moment a runtime emits a
+// call for a tool the request never offered. One turn with no loop cannot reach it.
+//
+// ⚠ THE TEXT COMES FROM response.completed, NOT FROM THE DELTAS, which is the same
+// property RunToolLoop has: a stream that emits deltas and never completes assembles
+// to "". That is the transport's contract, not a fallback this function adds.
+func RunToollessTurn(
+	ctx context.Context,
+	client *http.Client,
+	url, token, sessionKey, model, instructions, userMessage string,
+	emit StreamEmit,
+) (string, error) {
+	resp, err := streamResponses(ctx, client, url, token, sessionKey, responsesRequest{
+		Model:        model,
+		Input:        []inputItem{{Type: "message", Role: "user", Content: userMessage}},
+		Instructions: instructions,
+	}, emit)
+	if err != nil {
+		return "", err
+	}
+	return resp.messageText(), nil
+}
+
 // toolOutputIsError best-effort detects whether a dispatch output represents an
 // error, for the tool_result "ok" flag surfaced to the UI. Dispatch handlers
 // return errors as a JSON object with an "error" field (the model reads them as

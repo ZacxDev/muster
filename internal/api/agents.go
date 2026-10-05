@@ -1537,6 +1537,25 @@ func (s *Server) wsAllowedOrigins(r *http.Request) []string {
 // chat when the agent's gateway predates /v1/responses (older image) — there the
 // only stream is text, so the StreamEmit is adapted to a text-delta callback.
 //
+// 🔴 THIS BRANCH DROPS *TOOLS*, NOT A TRANSPORT, AND THAT DISTINCTION IS WHY IT
+// SURVIVED Gateway.Chat MOVING ONTO /v1/responses. Chat now runs over the responses
+// endpoint too and falls back to chat-completions internally on a 404, so a reading
+// of this branch as "retry the same failing endpoint" is available and wrong: what
+// ChatWithTools lost on a 404 is the TOOLS, and api.Gateway's own doc puts that
+// decision here because this package is the only place that knows a toolless answer
+// is acceptable for an interactive chat turn (it is not, for a kickoff). Delete this
+// branch and an agent on an image that predates the endpoint loses every chat turn
+// to an error instead of answering without tools.
+//
+// ⚠ WHAT IT COSTS ON THAT PATH, STATED BECAUSE NOTHING ELSE CAN SEE IT: a turn
+// against such an image is now THREE requests — ChatWithTools' 404, Chat's own 404
+// probe, and the chat-completions call that answers. The alternative is a second
+// transport-specific method on api.Gateway, which would push the choice of wire
+// format into this package; two cheap 404s against an already-reachable pod buys
+// keeping it out. Nothing here may assume an image is new enough to skip it —
+// internal/agentspec takes the agent image tag from configuration and has no
+// default, so a deployment can still point at one that answers 404.
+//
 // 🔴 DELETION-TRACKING NOTE (upstream task #653, phase two). THERE USED TO BE TWO
 // TOOL SETS HERE, selected by `if a.Name == reservedOperatorSlug`: the operator arm
 // handed that one row operatorSystemPrompt + operatorToolDefs() +
@@ -1567,7 +1586,8 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 	instr, tools, dispatch := s.AgentInstructions(a), s.AgentToolDefs(), s.AgentToolDispatch(ctx, a)
 	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, instr, text, tools, dispatch, emit)
 	if errors.Is(err, agents.ErrResponsesUnsupported) {
-		s.logger.Printf("agents: %s gateway lacks /v1/responses; falling back to plain chat (image < 2026.5.7)", a.Name)
+		s.logger.Printf("agents: %s gateway lacks /v1/responses; retrying the turn WITHOUT tools "+
+			"(that runtime's image predates the endpoint, so it answers over chat-completions)", a.Name)
 		var textEmit func(string)
 		if emit != nil {
 			textEmit = func(delta string) { emit(agents.StreamEvent{Kind: "text", Text: delta}) }

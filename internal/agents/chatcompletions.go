@@ -16,13 +16,25 @@ import (
 // The OpenAI-compatible /v1/chat/completions transport: the TOOL-LESS half of
 // the two an agent runtime exposes.
 //
-// 🔴 IT EXISTS BECAUSE /v1/responses IS NOT UNIVERSAL, AND THAT IS THE ONLY
-// REASON. responses.go's own header records it: older runtime builds answer 404
-// there. A caller that had only the tool loop would lose the whole turn on such
-// a build — not degrade to a text answer, lose it — so this path is the fallback
-// ErrResponsesUnsupported is for. It carries NO tools, and a caller must not
-// pretend otherwise: a turn that silently ran here produced an answer the model
-// composed with no ability to read or write anything.
+// 🔴 IT EXISTS BECAUSE /v1/responses IS NOT UNIVERSAL, AND THAT IS NOW ITS ONLY
+// REASON TO BE REACHED AT ALL. responses.go's own header records it: older runtime
+// builds answer 404 there. A caller that had only the responses endpoint would lose
+// the whole turn on such a build — not degrade to a text answer, lose it — so this
+// path is the fallback ErrResponsesUnsupported is for. It carries NO tools, and a
+// caller must not pretend otherwise: a turn that silently ran here produced an
+// answer the model composed with no ability to read or write anything.
+//
+// 🔴 AND IT IS NO LONGER THE DEFAULT TOOL-LESS PATH, BECAUSE STREAMING HERE LOSES A
+// REASONING MODEL'S ENTIRE ANSWER. Measured against a live agent runtime, request
+// and credential held identical and only `stream` changed: stream:true produced a
+// role chunk, an EMPTY content delta and finish_reason=stop, so the loop below wrote
+// nothing into `full` and returned "" with a nil error; stream:false returned the
+// text. The runtime had in fact answered — its log shows it refusing the first
+// attempt because reasoning cannot be disabled on that endpoint and retrying
+// internally — but only AFTER this request had already returned. Nothing in this
+// function can tell that apart from a model that said nothing, which is why the fix
+// is a transport choice at the caller (agentgateway.Gateway.Chat) and not a check
+// here. Do NOT re-point a tool-less turn at this path for tidiness.
 //
 // ⚠ IT IS A SEPARATE FILE FROM responses.go BECAUSE THE TWO WIRE FORMATS ARE
 // UNRELATED. Same host, same bearer, same session-key header, and entirely
