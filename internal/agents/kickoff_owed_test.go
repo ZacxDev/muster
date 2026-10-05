@@ -184,10 +184,21 @@ var knownStatusValues = []string{"error", "pending", "provisioning", "running", 
 //     answers to be exactly these five. A function that started answering
 //     "kickoff-owed" reddens here even with no new constant declared.
 //
-// ⚠ WHAT (2) CANNOT SEE, STATED SO A GREEN IS READ AT ITS WIDTH: ComputeStatus has
-// a `return a.Status` branch, so it will echo ANY stored string. Feeding it only
-// valid statuses is what makes the output set meaningful — it is a claim about the
-// five inputs the database permits, not a proof that no other string can come out.
+// ⚠ WHAT (2) CANNOT SEE, STATED SO A GREEN IS READ AT ITS WIDTH, AND BOTH LIMITS
+// WERE MEASURED RATHER THAN SUPPOSED:
+//
+//   - ComputeStatus has a `return a.Status` branch, so it will echo ANY stored
+//     string. Feeding it only valid statuses is what makes the output set
+//     meaningful — it is a claim about the five inputs the database permits, not a
+//     proof that no other string can come out.
+//   - 🔴 IT IS BLIND TO A ComputeStatus THAT *READS* THE KICKOFF COLUMNS AND
+//     ANSWERS ONE OF THE FIVE. A mutant returning StatusError for an owed agent
+//     leaves this output set exactly as it is and SURVIVES this test. What kills
+//     that one is TestAnOwedKickoffSurvivesEveryStatusIncludingRunning's premise
+//     assertion — `ComputeStatus(owed, ready) == running` — so "ComputeStatus is
+//     functionally unchanged" is a claim the two guards hold TOGETHER, and neither
+//     alone. An earlier draft of KickoffOwed's doc credited this test with both
+//     directions; that was measured false and is corrected there.
 func TestTheStatusEnumDidNotGrowToCarryAnOwedKickoff(t *testing.T) {
 	// --- (1) the declared set ------------------------------------------------
 	declared := declaredStatusConstants(t)

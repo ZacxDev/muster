@@ -76,8 +76,14 @@ func ComputeStatus(a Agent, inst *provision.Instance) string {
 // member would reach all of that untested. This answers an ORTHOGONAL question —
 // "was this agent ever told what to do" — which is why it is true ALONGSIDE every
 // one of the five rather than instead of one. [ComputeStatus] does not read it and
-// must not: TestTheStatusEnumDidNotGrowToCarryAnOwedKickoff pins that in both
-// directions.
+// must not, and TWO guards divide that claim rather than one:
+// TestTheStatusEnumDidNotGrowToCarryAnOwedKickoff pins the declared values and
+// ComputeStatus' OUTPUT SET, while TestAnOwedKickoffSurvivesEveryStatusIncludingRunning
+// pins that an owed agent on a live ready instance still computes `running`. The
+// second is the one that catches a ComputeStatus which READS these columns and
+// answers one of the five anyway — measured: a mutant returning StatusError for an
+// owed agent leaves the output set unchanged, so the enum guard alone is blind to
+// it.
 //
 // 🔴 WHY IT IS WORTH RENDERING AT ALL, WHICH IS A MEASURED DEFECT AND NOT A
 // POLISH ITEM. An agent brought up by agentprovision.Adapter.Start with its note
