@@ -20,6 +20,16 @@ type AgentCardView struct {
 	Repo        string
 	Status      string // pending|provisioning|running|stopped|error
 	KickedOff   bool
+	// KickoffOwed is agents.KickoffOwed for this agent: a kickoff message is
+	// stored and nothing delivered it. It renders as a badge BESIDE the status
+	// dot, never as a status value — see kickoffOwedBadge.
+	//
+	// 🔴 IT IS NOT DERIVED HERE, AND IT MUST NOT BE. The note text is not on this
+	// view at all (it is operator-authored instruction text; agents.Agent tags it
+	// `json:"-"` and this package would put it in HTML), so the boolean is
+	// composed in internal/api's cardViewIndexed from the stored row and arrives
+	// already decided.
+	KickoffOwed bool
 	Recent      []string
 	// LazyRecent makes the card lazy-load its recent-log preview from
 	// /ui/agents/{id}/recent (htmx) instead of receiving Recent inline — so the
@@ -254,6 +264,12 @@ func agentCard(a AgentCardView) g.Node {
 			Div(
 				Class("flex flex-wrap items-center gap-2"),
 				cardStatusIcon(a),
+				// The owed-kickoff badge sits OUTSIDE cardStatusIcon's span on
+				// purpose: that span polls /ui/agents/{id}/status every 10s and
+				// swaps its own innerHTML, so anything nested inside it is erased
+				// on the first tick. As a sibling it survives, and the card list's
+				// agents:changed re-render is what keeps it current.
+				g.If(a.KickoffOwed, kickoffOwedBadge()),
 				Span(
 					Class("mr-auto break-all text-base font-semibold leading-tight text-slate-50 group-hover:text-emerald-300"),
 					// markdownPlain, exactly as agentTitle on the detail page does. A
@@ -399,6 +415,35 @@ func agentDeleteConfirm(ids string) g.Node {
 			hx("hx-swap", "outerHTML swap:200ms"),
 			g.Text("Confirm delete"),
 		),
+	)
+}
+
+// kickoffOwedBadge is the "kickoff owed" badge: an agent whose stored first
+// message was never delivered. It renders BESIDE the status dot and says nothing
+// about the status itself.
+//
+// 🔴 IT CARRIES NO PART OF THE NOTE. The text is a FIXED label; the only thing
+// this surface learns from the row is a boolean. The note is operator-authored
+// instruction text and this repository is public, so putting it in markup would be
+// the leak the gate exists for — see Agent.PendingNote's own comment and
+// api.TestAnOwedKickoffIsReportedWithoutTheNotesText.
+//
+// ⚠ ITS CLASSES ARE DELIBERATELY THE ONES internal/ui/privilege.go ALREADY
+// WRITES, down to the spelling. Every Tailwind class in this package is emitted
+// into the COMMITTED web/static/app.css, and `make css-check` rebuilds and refuses
+// a stale copy — reusing an existing pill's classes means this badge adds zero
+// bytes and the committed stylesheet needs no rebuild. A new colour here is not
+// free; it is a stylesheet change.
+//
+// The data attribute is the handle a test parses, so a guard can ask "is THIS
+// badge present" rather than grepping for a word any other element could spell.
+func kickoffOwedBadge() g.Node {
+	return Span(
+		g.Attr("data-kickoff-owed", ""),
+		g.Attr("title", "This agent's first message was never delivered — it has not been told what to do"),
+		g.Attr("aria-label", "Kickoff owed: this agent's first message was never delivered"),
+		Class("inline-flex items-center rounded-full bg-amber-500/15 px-2.5 py-1 text-xs font-semibold text-amber-300 ring-1 ring-inset ring-amber-500/30"),
+		g.Text("kickoff owed"),
 	)
 }
 

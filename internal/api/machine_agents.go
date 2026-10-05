@@ -57,6 +57,21 @@ type agentJSON struct {
 	// gateway. NOT omitempty — `false` is the whole signal ("provisioned but never
 	// started"), and omitempty would erase exactly the case worth alerting on.
 	KickedOff bool `json:"kickedOff"`
+	// KickoffOwed is agents.KickoffOwed: a first message is STORED on the row and
+	// nothing delivered it. NOT omitempty, for the same reason as KickedOff.
+	//
+	// 🔴 IT IS NOT `!kickedOff`, WHICH IS WHY A CONSUMER COULD NOT COMPUTE IT.
+	// The other conjunct is agents.pending_note, which is `json:"-"` and reaches
+	// no surface at all — so `kickedOff: false` alone cannot separate an agent
+	// that is owed a turn from one that was never asked to take one (saved for
+	// later with no note, or created outside a dispatch). This field is the half
+	// the wire was missing, and it is the BOOLEAN only: the note's content is
+	// operator-authored instruction text and is never serialised.
+	//
+	// ⚠ IT IS TRUE ALONGSIDE ANY status, `running` INCLUDED, and that pairing is
+	// the alert worth writing: a live, ready pod that was never told what to do.
+	// See agents.KickoffOwed for the measured defect.
+	KickoffOwed bool `json:"kickoffOwed"`
 	// ErrorMessage is the stored provisioning/reconcile failure reason, or "" when
 	// none was recorded. NOT omitempty, for the same reason: a red agent with an
 	// empty reason is a different (and worse) fact than a red agent with one.
@@ -136,6 +151,7 @@ func newAgentJSON(a agents.Agent, lastMsg time.Time) agentJSON {
 		RepoBranch:      a.RepoBranch,
 		Model:           a.Model,
 		KickedOff:       a.KickedOff,
+		KickoffOwed:     agents.KickoffOwed(a),
 		ErrorMessage:    a.ErrorMessage,
 		KickoffError:    a.KickoffError,
 		KickoffAttempts: a.KickoffAttempts,
