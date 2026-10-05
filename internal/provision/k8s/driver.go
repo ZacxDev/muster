@@ -1293,7 +1293,7 @@ func (d *Driver) Endpoint(ctx context.Context, ref provision.Ref) (provision.End
 	}
 
 	port := 0
-	if raw := dep.Annotations[annPort]; raw != "" {
+	if raw := dep.Annotations[AnnotationPort]; raw != "" {
 		port, _ = strconv.Atoi(raw)
 	}
 

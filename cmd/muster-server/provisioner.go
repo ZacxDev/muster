@@ -405,10 +405,20 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 // block exists to answer.
 func agentSpecConfig(cfg config) agentspec.Config {
 	return agentspec.Config{
-		ImageRepo:        cfg.AgentImageRepo,
-		ImageTag:         cfg.AgentImageTag,
-		APIBaseURL:       cfg.AgentAPIURL,
-		Model:            cfg.AgentModel,
+		ImageRepo:  cfg.AgentImageRepo,
+		ImageTag:   cfg.AgentImageTag,
+		APIBaseURL: cfg.AgentAPIURL,
+		Model:      cfg.AgentModel,
+		// 🔴 THIS IS THE FIELD THAT MAKES A PROVISIONED AGENT ADDRESSABLE, AND IT
+		// IS MAPPED EVEN THOUGH ZERO IS THE NORMAL VALUE. Zero is the UNSET
+		// sentinel agentspec resolves to its own measured constant, so a reader
+		// could mistake this line for dead weight — it is not: dropping it makes
+		// MUSTER_AGENT_GATEWAY_PORT a declared, validated, documented variable
+		// nothing reads, which is the exact gap this function's own header records
+		// for the resource fields. cmd/muster-server's
+		// TestAMalformedGatewayPortIsRefusedAtBootRatherThanInsideADispatch
+		// asserts the mapping with a value the constant cannot equal.
+		GatewayPort:      cfg.AgentGatewayPort,
 		OpenRouterAPIKey: cfg.AgentOpenRouterKey,
 		WorkspacePersist: cfg.AgentWorkspacePersist,
 		CairnURL:         cfg.AgentCairnURL,

@@ -73,8 +73,14 @@ package main
 //	  *THIS BINARY* PROVISIONED — that sentence stood here and an audit measured it.
 //	  TWO things block it, and both are OUTSIDE internal/agentgateway:
 //
-//	  (1) NO ADDRESS. agentspec.Build renders provision.Spec with Ports nil and
-//	      Endpoint nil (its committed golden says so), so k8s render creates NO
+//	  ✅ BOTH ARE CLOSED NOW, AND WHAT REPLACES THEM IS A WEAKER CLAIM RATHER THAN
+//	  NOTHING — read to the end of (2) before concluding a turn works. Each is kept
+//	  in its original wording with its outcome appended, because both closing
+//	  conditions were written here and the only way to check they were MET is to
+//	  read what they asked for.
+//
+//	  (1) NO ADDRESS. [WAS] agentspec.Build renders provision.Spec with Ports nil
+//	      and Endpoint nil (its committed golden says so), so k8s render creates NO
 //	      Service and driver.Endpoint answers provision.ErrNoEndpoint. Every chat
 //	      turn against such an agent fails per-turn — worse than the 503 it replaced,
 //	      which at least named its own cause.
@@ -83,7 +89,34 @@ package main
 //	      driver — a fake clientset is enough — rather than through a stub resolver.
 //	      Every test in this module today uses a stub, which is exactly why this
 //	      shipped: both sides were tested and the SEAM was not.
-//	  (2) NO CREDENTIAL UNDER THE NAME THE IMAGE READS. The gateway bearer is
+//	      ✅ MET. agentspec.Build declares one port named provision.DefaultPortName,
+//	      from agentspec.DefaultGatewayPort or MUSTER_AGENT_GATEWAY_PORT, so
+//	      renderService produces a Service and renderAnnotations writes the port the
+//	      driver resolves from. NO change to internal/provision/k8s was needed — the
+//	      driver already rendered container ports, wrote the annotation and read it
+//	      back; the whole defect was the spec. The test the condition asked for is
+//	      TestAnAgentThisBinaryProvisionsResolvesAnEndpoint, in THIS package rather
+//	      than in either package it exercises: internal/agentspec's suite has no
+//	      cluster client and internal/provision/k8s's has no agent row, so neither
+//	      could hold the combined state. Mutating buildPorts back to returning nil
+//	      reproduces the exact string above — `declares no port`.
+//	      ⚠ AN ALREADY-PROVISIONED INSTANCE DOES *NOT* GAIN THE PORT BY ITSELF, AND
+//	      NO MIGRATION IS OWED — the two halves of that sentence are independent and
+//	      both were checked. The mechanism is real: Driver.Endpoint reads the
+//	      `muster.dev/port` annotation written on the DEPLOYMENT at CREATE time (see
+//	      k8s.AnnotationPort), so an
+//	      instance created before this change carries none and resolving its address
+//	      would still fail. What makes it moot is that the victim set is EMPTY —
+//	      measured live with controls: zero namespaces under the configured prefix
+//	      (positive control: the upstream project's own namespaces were found, so the
+//	      query worked) and zero objects labelled managed-by muster (positive
+//	      control: objects managed by the upstream installer were found). muster has
+//	      provisioned nothing, so there is nothing holding a stale annotation, and the
+//	      next Start on any row takes the Create path and gets the port. Written down
+//	      so the next reader does not re-derive the mechanism and conclude a migration
+//	      is needed; if this binary ever provisions before a change of this shape, it
+//	      will be.
+//	  (2) NO CREDENTIAL UNDER THE NAME THE IMAGE READS. [WAS] The gateway bearer is
 //	      sha256("gw-" + HOOKS_TOKEN) — the agent CONTAINER's variable — while
 //	      agentspec ships the row's token as MUSTER_HOOK_TOKEN (agentspec.EnvToken)
 //	      and nothing bridges the two. Measured against a live runtime provisioned by
@@ -98,9 +131,32 @@ package main
 //	      CLOSING CONDITION: the provisioned container receives the token under the
 //	      name its gateway derives from, proven by one real turn against an instance
 //	      THIS binary created — not one created by the upstream service.
-//	  WHO CHECKS BOTH: whoever runs plan step 22d, which is the step that provisions
-//	      a real agent end to end. Neither is a defect in the chat transport, and
-//	      neither was introduced by the change that wired it.
+//	      ✅ THE FIRST HALF IS MET AND 🔴 THE PROOF IS NOT. agentspec.buildSecrets
+//	      now emits the row's token under agentspec.EnvGatewayToken as well as
+//	      EnvToken, from ONE branch so they cannot drift apart — a SECOND NAME and
+//	      not a rename, because EnvToken is what cmd/muster's in-pod CLI reads and
+//	      what the autosave daemon posts its durability alarm with, so renaming
+//	      would have traded a chat 401 for a silent agent.
+//	      TestTheProvisionedContainerCanDeriveTheBearerMusterSends reproduces the
+//	      container's documented derivation over the built spec's own environment and
+//	      requires the two bearers to match; it dies to a wrong name, a wrong value
+//	      and an empty value, each of which has the same runtime symptom.
+//	      🔴 WHAT IS STILL OWED IS THE SENTENCE THIS CONDITION ACTUALLY WROTE:
+//	      "ONE REAL TURN AGAINST AN INSTANCE THIS BINARY CREATED". No such turn has
+//	      been made. Two tests agreeing about bytes is not a runtime accepting them,
+//	      the container half of the derivation is a shell command in the agent
+//	      image's own deployment that nothing here can read, and a fake clientset
+//	      resolves no DNS and runs no pod. So this entry stays OPEN on its evidence
+//	      while being closed on its mechanism, and the boot banner says
+//	      "NOT VERIFIED REACHABLE" for exactly that reason.
+//	      WHO CHECKS IT: whoever runs the Makefile's test-liveenv target against a
+//	      muster-provisioned instance — internal/agentgateway/liveruntime_test.go
+//	      already owns that measurement and names the variables it needs.
+//	  WHO CHECKED BOTH MECHANISMS: the reviewer of the pull request that declared the
+//	      port and the second token name, against the two tests named above and
+//	      against the mutation results in its own description. Neither blocker was a
+//	      defect in the chat transport, and neither was introduced by the change that
+//	      wired it.
 //	  🔴 AND NOTHING ESCALATES THAT YET. agents.DecideReconcile already has the
 //	  decision table (ActionRetryKickoff, then ActionError past
 //	  ProvisioningStuckTimeout) and its own header records that NO loop drives it,
@@ -115,6 +171,14 @@ package main
 //	  named one and hid the two above it. A kickoff delivered through a gateway that
 //	  can resolve no address, over a credential the container never received, is not
 //	  a delivered kickoff.
+//	  ⚠ IT IS THE LAST OF THE THREE NOW, AND THAT CHANGES WHAT A CALL SITE WOULD
+//	  ACHIEVE WITHOUT CHANGING THE CONDITION. Both blockers above are closed on their
+//	  mechanism, so a dispatch call site is no longer guaranteed to deliver nothing —
+//	  but "no longer guaranteed to fail" is not "delivers", and the sentence above
+//	  stays because it is the reason this condition was written as a DELIVERY rather
+//	  than as a call. What a call site would now produce is the first real turn
+//	  against an instance this binary created, which is also the evidence blocker (2)
+//	  is still owed; whoever writes it gets both.
 //	WHO CHECKS IT: the reviewer of that pull request, against agents.reconcile.go's
 //	  header and against a dispatched agent's kickoff_error being empty.
 //

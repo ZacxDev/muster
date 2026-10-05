@@ -168,14 +168,30 @@ var ErrKickoffUndeliverable = errors.New("agentprovision: kickoff undeliverable"
 // 🔴 BUT SETTING THE VARIABLE IS NOT THE WHOLE FIX, AND THE TEXT MUST NOT IMPLY IT
 // IS. An earlier revision of this constant ended "...and dispatch again", which
 // promises a delivery the next dispatch does not make: doc_seams.go entry 1 records
-// that NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH, plus two blockers ahead of
-// that call site (agentspec.Build renders no port, so the driver resolves no
-// address; and the bearer is derived from a variable name the provisioned container
-// does not receive). So the honest claim is narrow: setting the variable lifts THIS
-// refusal and returns the deployment to create-then-record. Promising more would
-// walk the operator from a refusal they can act on into the stranded-note behaviour
-// this refusal exists to prevent — and they would have no reason to look further.
-// Guarded by TestTheRemedyDoesNotPromiseADeliveryTheDispatchPathCannotMake.
+// that NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH. So the honest claim is
+// narrow: setting the variable lifts THIS refusal and returns the deployment to
+// create-then-record. Promising more would walk the operator from a refusal they can
+// act on into the stranded-note behaviour this refusal exists to prevent — and they
+// would have no reason to look further.
+//
+// ⚠ THE CALL SITE IS NOW THE *ONLY* THING AHEAD OF DELIVERY, AND THIS PARAGRAPH USED
+// TO NAME TWO MORE. It read: "plus two blockers ahead of that call site
+// (agentspec.Build renders no port, so the driver resolves no address; and the bearer
+// is derived from a variable name the provisioned container does not receive)". Both
+// clauses are false now — agentspec declares the gateway port and ships the row's
+// token under the name the bearer is derived from, and the constant below no longer
+// forwards the operator to them. 🔴 THAT MATTERED BECAUSE THE CONSTANT IS NOT A
+// COMMENT: it is logged, stored in agents.error_message and wrapped into the returned
+// error, so an operator who clicked Dispatch was being sent to hunt two closed
+// defects, against a doc_seams.go that says they are closed.
+//
+// ⚠ WHAT IS STILL TRUE AND IS WHY THE SENTENCE SURVIVES AT ALL: a kickoff on a
+// gateway-configured deployment still records non-delivery, because no caller invokes
+// the gateway on the dispatch path. The remedy text is narrowed, not deleted.
+//
+// 🔴 AND NO TEST PINS THAT THIS PARAGRAPH DESCRIBES THE RIGHT BLOCKERS — SEE
+// TestTheRemedyDoesNotPromiseADeliveryTheDispatchPathCannotMake, which guards the
+// constant's SHAPE and is explicit that it cannot guard its ACCURACY.
 //
 // ⚠ THE ENVIRONMENT VARIABLE IS SPELLED AS A LITERAL HERE AND THE BINARY HAS ITS
 // OWN CONSTANT FOR IT. This package cannot import package main, so the two
@@ -209,8 +225,9 @@ const KickoffRefusalReason = "dispatch REFUSED and NOTHING was provisioned: a ki
 	"missing. ⚠ THAT LIFTS THIS REFUSAL AND IS NOT YET THE WHOLE FIX: nothing calls the gateway " +
 	"on the dispatch path, so a kickoff on a gateway-configured deployment still creates the " +
 	"instance and records its non-delivery in agents.kickoff_error. Delivery additionally needs " +
-	"the call site named in cmd/muster-server/doc_seams.go entry 1, which also lists the two " +
-	"blockers above it (no port on the rendered spec, and the token name the container reads). " +
+	"the call site named in cmd/muster-server/doc_seams.go entry 1, which is now the ONLY thing " +
+	"ahead of it: the rendered spec declares the gateway port and the instance receives the token " +
+	"the bearer is derived from, so do not go looking for those two. " +
 	"Meanwhile \"Save for later\" still works: it provisions nothing by design, and Start brings " +
 	"the agent up. See cmd/muster-server/doc_seams.go entry 1."
 

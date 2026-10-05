@@ -33,6 +33,10 @@
       "Value": "«redacted in the golden; see goldenView»"
     },
     {
+      "Name": "HOOKS_TOKEN",
+      "Value": "«redacted in the golden; see goldenView»"
+    },
+    {
       "Name": "OPENROUTER_API_KEY",
       "Value": "«redacted in the golden; see goldenView»"
     }
@@ -91,7 +95,13 @@
       "primary": "openrouter/vendor-b/model-two"
     }
   },
-  "Ports": null,
+  "Ports": [
+    {
+      "Name": "gateway",
+      "Port": 21473,
+      "Protocol": ""
+    }
+  ],
   "Endpoint": null,
   "Replicas": 0,
   "Labels": {

@@ -19,18 +19,59 @@
 //
 // RUN IT:
 //
+// 🔴 THE OBJECT NAMES DEPEND ON *WHICH PROVISIONER CREATED THE INSTANCE*, AND
+// GETTING THAT WRONG PRODUCES THE EXACT WRONG DIAGNOSIS. An earlier revision of
+// this recipe named `svc/<agent>-devpod` and `secret devpod-secrets`
+// unconditionally. Those are the UPSTREAM deployment's names, inherited with this
+// file. For an instance **muster** provisioned they do not exist, so both commands
+// answer NotFound — and the obvious reading of a missing Service is "the Service was
+// never created", which is the defect this target exists to prove is FIXED. Pick the
+// block that matches where the instance came from.
+//
+//	# --- an instance MUSTER provisioned (internal/provision/k8s) ---------------
+//	# Service:    <agent>            (render.go, from spec.Ref.Name)
+//	# env Secret: <agent>-env        (render.go's envSecretName)
+//	# gateway port: agentspec.DefaultGatewayPort, or MUSTER_AGENT_GATEWAY_PORT
+//	#
+//	# Confirm the objects first — if these two are empty, stop: the instance was
+//	# not provisioned by this binary and the rest of the recipe is about a
+//	# different deployment's naming.
+//	kubectl -n <agent-ns> get svc <agent> \
+//	  -o jsonpath='{.spec.ports[*].name} {.spec.ports[*].port}{"\n"}'
+//	# 🔴 THE ANNOTATION IS ON THE DEPLOYMENT, *NOT* ON THE POD TEMPLATE. An earlier
+//	# revision of this line read `.spec.template.metadata.annotations...`, which prints
+//	# EMPTY for a correctly-provisioned instance — directly under an instruction to
+//	# STOP if the output is empty. See k8s.AnnotationPort, which states this once.
+//	kubectl -n <agent-ns> get deploy <agent> \
+//	  -o jsonpath='{.metadata.annotations.muster\.dev/port}{"\n"}'
+//
 //	# 🔴 check what already holds the port and forward to one you proved FREE — a
 //	# local listener silently shadows a port-forward and every reading then
 //	# describes the wrong server.
 //	ss -lptnH 'sport = :28789'
+//	kubectl -n <agent-ns> port-forward --address 127.0.0.1 svc/<agent> 28789:18789 &
+//	export MUSTER_LIVE_AGENT_ADDR=127.0.0.1:28789
+//	export MUSTER_LIVE_AGENT_HOOKS_TOKEN=$(kubectl -n <agent-ns> get secret \
+//	  <agent>-env -o jsonpath='{.data.HOOKS_TOKEN}' | base64 -d)
+//
+//	# --- an instance the UPSTREAM deployment provisioned (its own chart) -------
+//	# Kept because every live reading recorded below was taken this way, so the
+//	# numbers in this file are only reproducible against these names.
 //	kubectl -n <agent-ns> port-forward --address 127.0.0.1 svc/<agent>-devpod 28789:18789 &
 //	export MUSTER_LIVE_AGENT_ADDR=127.0.0.1:28789
 //	export MUSTER_LIVE_AGENT_HOOKS_TOKEN=$(kubectl -n <agent-ns> get secret \
 //	  devpod-secrets -o jsonpath='{.data.HOOKS_TOKEN}' | base64 -d)
+//
+//	# --- both forms ------------------------------------------------------------
 //	export MUSTER_LIVE_AGENT_MODEL=<the sentinel that runtime's gateway requires>
 //	# only if that runtime supports the tool path — see the tool cell:
 //	export MUSTER_LIVE_AGENT_EXPECT_TOOLS=1
 //	make test-liveenv
+//
+// ⚠ 18789 IS THE *CONTAINER* PORT ON BOTH SIDES OF THE FORWARD, and it is
+// agentspec.DefaultGatewayPort rather than a number this file chose. If the
+// deployment sets MUSTER_AGENT_GATEWAY_PORT, use that instead — the first kubectl
+// above prints what the Service actually publishes, which is the authority.
 //
 // ⚠ IT SPENDS TWO MODEL TURNS ON A REAL AGENT WHENEVER ONE IS DECLARED — one per cell,
 // and an earlier wording said one. The session keys are fixed throwaways so each turn
@@ -71,9 +112,27 @@
 //
 // 🔴 AND NEITHER CELL REACHES AN AGENT *THIS BINARY* PROVISIONED — both take the
 // address from the environment through a stub resolver, so they say nothing about
-// whether the driver can resolve one. It cannot: see doc_seams.go entry 1. A live
-// control that supplies the address by hand is evidence about the TRANSPORT only,
-// and reading it as end-to-end is the mistake this paragraph exists to prevent.
+// whether the driver can resolve one. A live control that supplies the address by
+// hand is evidence about the TRANSPORT only, and reading it as end-to-end is the
+// mistake this paragraph exists to prevent.
+//
+// ⚠ THAT IS A STATEMENT ABOUT THIS FILE'S SCOPE, NOT ABOUT THE DRIVER, AND IT USED
+// TO SAY OTHERWISE. The sentence read "…so they say nothing about whether the driver
+// can resolve one. It cannot: see doc_seams.go entry 1." The driver CAN: agentspec
+// declares the gateway port, k8s renders the Service, and
+// cmd/muster-server/TestAnAgentThisBinaryProvisionsResolvesAnEndpoint drives that
+// through the real driver over a fake clientset. The retracted clause mattered here
+// more than anywhere else, because this file is named as the owner of the one proof
+// still owed — so a reader arriving to run that proof was told the thing it would
+// prove was impossible.
+//
+// 🔴 WHAT IS STILL OWED, AND IT IS THIS FILE'S: ONE REAL TURN AGAINST AN INSTANCE
+// MUSTER PROVISIONED. Resolution is proven against a fake clientset, which has no
+// DNS and no pod; the container half of the bearer derivation is a shell command in
+// the agent image's own deployment that nothing in this module can read. Running the
+// muster-named recipe above against a muster-provisioned agent IS that measurement,
+// and it is the closing condition doc_seams.go entry 1 blocker (2) wrote for itself.
+// WHO CHECKS IT: whoever next runs this target after a deploy.
 
 package agentgateway
 

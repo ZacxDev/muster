@@ -11,6 +11,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 )
 
 // defaultPort is the port this service listens on when MUSTER_PORT is unset.
@@ -75,6 +76,7 @@ const (
 	envAgentProvisioner   = "MUSTER_AGENT_PROVISIONER"
 	envAgentGateway       = "MUSTER_AGENT_GATEWAY"
 	envAgentGatewayModel  = "MUSTER_AGENT_GATEWAY_MODEL"
+	envAgentGatewayPort   = "MUSTER_AGENT_GATEWAY_PORT"
 	envAgentImageRepo     = "MUSTER_AGENT_IMAGE_REPO"
 	envAgentImageTag      = "MUSTER_AGENT_IMAGE_TAG"
 	envAgentAPIURL        = "MUSTER_AGENT_API_URL"
@@ -97,7 +99,7 @@ const (
 	// and never contacts it.
 	envAgentCairnURL   = "MUSTER_AGENT_CAIRN_URL"
 	envAgentCairnToken = "MUSTER_AGENT_CAIRN_TOKEN"
-	envAgentPrivApply     = "MUSTER_AGENT_PRIVILEGE_APPLY"
+	envAgentPrivApply  = "MUSTER_AGENT_PRIVILEGE_APPLY"
 )
 
 // The values MUSTER_AGENT_PROVISIONER accepts.
@@ -174,6 +176,18 @@ func (c config) agentProvisioner() string {
 		return provisionerNone
 	}
 	return c.AgentProvisioner
+}
+
+// agentGatewayPort is the port an instance's gateway will be reached on, with
+// the unset case resolved.
+//
+// ⚠ IT DELEGATES RATHER THAN BRANCHING, and the delegation is the point: the
+// number is agentspec's, with a measurement beside it, and this binary must not
+// become a second authority on it. The only reason this method exists is that
+// the boot banner PRINTS the resolved value — a banner naming the raw field
+// would print `0` on every deployment, which is not a port.
+func (c config) agentGatewayPort() int {
+	return agentspec.ResolveGatewayPort(c.AgentGatewayPort)
 }
 
 // defaultRouterActor is the name this service asserts to the permission router
@@ -256,6 +270,26 @@ type config struct {
 	// — and there is no value this project could default it to that would be
 	// right for an image it has never seen.
 	AgentGatewayModel string
+
+	// AgentGatewayPort is the port the agent runtime's gateway listens on. Zero
+	// means agentspec.DefaultGatewayPort, and zero is what every deployment runs
+	// with.
+	//
+	// 🔴 IT IS A PARAMETER OF THE SPEC, NOT OF THE CHAT TIER, DESPITE THE NAME.
+	// agentspec.Build declares the port UNCONDITIONALLY — see its constant's own
+	// note — because the port reaches the cluster at CREATE time, in the Service
+	// and the Deployment annotation the driver resolves an address from (see
+	// k8s.AnnotationPort). Gating
+	// it on AgentGateway would leave every instance provisioned while chat was off
+	// permanently addressless, and turning chat on later would silently require
+	// re-provisioning each one. It is spelled MUSTER_AGENT_GATEWAY_PORT anyway
+	// because the gateway is what the port is FOR and that is the word an operator
+	// will search for.
+	//
+	// ⚠ ZERO IS THE UNSET SENTINEL AND NOT A SECOND DEFAULT. loadConfig refuses a
+	// 0 that was WRITTEN, so this binary never has to decide what the number
+	// should be — agentspec owns it, with the measurement beside it.
+	AgentGatewayPort int
 
 	// AgentImageRepo and AgentAPIURL are agentspec.Config's two required fields.
 	// Required whenever AgentProvisioner is not none, and refused at boot rather
@@ -463,6 +497,33 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("invalid %s %q: must be an integer 1-65535", envPort, v)
 		}
 		c.Port = p
+	}
+
+	// 🔴 PARSED HERE, AND REFUSED HERE, FOR THE REASON EVERY OTHER AGENT-SPEC
+	// VARIABLE IS REFUSED AT BOOT: agentspec.Build refuses a bad port too, and it
+	// is called from inside a dispatch goroutine whose only output is a log line
+	// — by which point internal/api's createAndDispatchAgent has already answered
+	// the operator's POST with 200. A typo in this variable has to stop the
+	// process, not one dispatch.
+	//
+	// ⚠ 1-65535 RATHER THAN >=0, so a written `0` is refused instead of silently
+	// meaning "the default". Zero is the UNSET sentinel on config.AgentGatewayPort
+	// — agentspec resolves it to its own measured constant — and an operator who
+	// typed 0 did not mean that.
+	//
+	// The range is restated rather than shared with MUSTER_PORT's check above
+	// because the two answer different questions (a listen port this process binds
+	// versus a port inside somebody else's image) and would not move together; the
+	// one rule that IS shared is agentspec.buildPorts', which refuses the same
+	// range on the field this feeds.
+	if v := strings.TrimSpace(getenv(envAgentGatewayPort)); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 || p > 65535 {
+			return config{}, fmt.Errorf("invalid %s %q: must be an integer 1-65535, or unset for "+
+				"agentspec.DefaultGatewayPort (the port measured against the agent runtime image)",
+				envAgentGatewayPort, v)
+		}
+		c.AgentGatewayPort = p
 	}
 
 	if v := strings.TrimSpace(getenv(envTaskReapAfter)); v != "" {

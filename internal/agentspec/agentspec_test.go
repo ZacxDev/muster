@@ -72,6 +72,15 @@ func fixtureConfig() Config {
 		CPURequest:       "150m",
 		CPULimit:         "1250m",
 		NodeOptions:      "--max-old-space-size=3072",
+		// 🔴 NOT DefaultGatewayPort, AND NOT A NEIGHBOUR OF IT. A fixture that
+		// could only ever produce the constant's own value cannot see a mutant
+		// that hardcodes the literal — the same property this file's
+		// TestTheFixtureCanSeeAHardcodedConstant pins for the workspace path and
+		// the image tag, extended to the one numeric field. It also differs from
+		// every other number spelled in this fixture (the agent id, the heap size,
+		// the base URL's port), so a mutant that read the wrong field moves the
+		// output visibly rather than landing on a coincidence.
+		GatewayPort:      21473,
 		WorkspacePath:    "/srv/agent-work",
 		WorkspaceSize:    "24Gi",
 		WorkspacePersist: true,
@@ -412,15 +421,119 @@ func TestTheTwoRequiredConfigFieldsAreRefusedWhenEmpty(t *testing.T) {
 	}
 }
 
+// emittedEnvNames returns every variable name a built spec actually carries into
+// the instance — Env and Secrets together, with every optional branch turned on.
+//
+// 🔴 IT DERIVES FROM BEHAVIOUR, AND A SOURCE-PARSING VERSION OF THIS WAS MEASURED
+// TOO NARROW FOR ITS OWN DOCSTRING. That version read ONE file (`agentspec.go`)
+// with ONE declaration form (`Env… = "literal"`) while claiming "the package's own
+// Env* declarations". Three isolated mutants — a new constant in cairn.go, one in
+// the typed form `EnvX string = "…"`, one whose value is a concatenation — each
+// added an unreserved name and SURVIVED the whole suite, because none of them moved
+// the fixed floor the instrument check used.
+//
+// 🔴 AND THE SET IT WAS DERIVING WAS THE WRONG ONE ANYWAY, WHICH IS THE MORE
+// USEFUL HALF OF THAT FINDING. The hazard is a name this package COMPUTES being
+// shadowable; a declared-but-never-emitted constant is not a shadowing hazard at
+// all, so a declaration-based set would have reddened for it and been "fixed" by
+// reserving it — silently narrowing what a caller may put in ExtraEnv, for no
+// reason. Reading the names off a BUILT SPEC is both wider (any file, any
+// declaration form, any computed name — a name that never had a constant at all)
+// and narrower in the right direction (only what actually reaches the instance).
+//
+// ⚠ WHAT IT CANNOT SEE, STATED RATHER THAN IMPLIED: a name emitted only under a
+// configuration this function does not build. It turns on every optional branch
+// agentspec.Config has today — node options, the provider key, the cairn pair — and
+// a future branch keyed on something else would need adding here. That is a real
+// limit, and it is a smaller one than the source regex had.
+func emittedEnvNames(t *testing.T) map[string]string {
+	t.Helper()
+	cfg := fixtureConfig()
+	// Every optional branch ON, so no emitted name is missed because its gate was
+	// off. cairnEnabled needs BOTH coordinates plus per-call eligibility.
+	cfg.NodeOptions = "--max-old-space-size=3072"
+	cfg.OpenRouterAPIKey = "fixture-shared-provider-key-2b84af"
+	cfg.CairnURL = "https://cairn.example.test"
+	cfg.CairnToken = "fixture-cairn-token-7c21de"
+	a := fixtureAgent()
+	a.HooksToken = "fixture-per-agent-token-9f31c7"
+
+	spec, err := Build(a, cfg, Options{CairnEligible: true})
+	if err != nil {
+		t.Fatalf("Build with every optional branch on: %v", err)
+	}
+	out := map[string]string{}
+	for _, e := range spec.Env {
+		out[e.Name] = "Env"
+	}
+	for _, e := range spec.Secrets {
+		out[e.Name] = "Secrets"
+	}
+	return out
+}
+
+// TestExtraEnvMayNotShadowAComputedVariable asserts the RELATIONSHIP, not a sample.
+//
+// 🔴 THIS TEST USED TO BE THE VERY SHAPE ITS OWN COMMENT WARNED AGAINST, AND HAD
+// GONE STALE. It read "Every reserved name, not one sample: a per-name allowlist is
+// exactly the shape that goes stale when a constant is added" over a hand-written
+// list of five — and by the time anybody measured it, the list was missing
+// EnvCairnConfig and EnvGatewayToken. Isolated single-entry mutants: deleting
+// `EnvGatewayToken: true` or `EnvCairnConfig: true` from buildEnv's reserved map
+// both SURVIVED the full suite; deleting `EnvToken: true` was KILLED. So two of the
+// seven reserved names had no guard at all, and the one whose shadow is a CREDENTIAL
+// failure — EnvGatewayToken changes the value the container hashes, so the bearer
+// stops matching and every chat turn 401s — was one of them.
+//
+// 🔴 THE FIX IS DERIVATION, NOT TWO MORE NAMES. Adding the missing pair would have
+// regenerated the same defect at the next constant. The expected set is read off a
+// BUILT SPEC — see emittedEnvNames — so any name that actually reaches the instance
+// is covered regardless of which file declares it, in what form, or whether it has
+// a constant at all.
+//
+// ⚠ AN EARLIER FIX DERIVED FROM THE SOURCE AND WAS NARROWER THAN ITS OWN DOCSTRING;
+// emittedEnvNames records the three mutants that survived it and why the
+// behavioural set is the right one. The failure message below says COMPUTES and now
+// means it: the loop enumerates what a spec emits, not what the package declares.
+//
+// ⚠ IT IS A PROPHYLACTIC GUARD AND THE REACHABILITY IS STATED HONESTLY:
+// Options.ExtraEnv has no non-test producer today, so no caller can currently reach
+// the shadow. The guard is for whoever writes the first one.
 func TestExtraEnvMayNotShadowAComputedVariable(t *testing.T) {
-	// Every reserved name, not one sample: a per-name allowlist is exactly the
-	// shape that goes stale when a constant is added.
-	for _, name := range []string{EnvAPIURL, EnvToken, EnvNodeOptions, EnvGitTerminalPrompt, EnvOpenRouterKey} {
+	emitted := emittedEnvNames(t)
+
+	// 🔴 POSITIVE CONTROL, AS A NUMBER. An empty set satisfies "every emitted name is
+	// refused" perfectly and reads identically to a clean run — the same silent-zero
+	// this file's other instrument checks exist for.
+	if len(emitted) < 7 {
+		t.Fatalf("instrument check FAILED: a spec built with every optional branch on emits "+
+			"only %d variable(s) (%v), and this package computes at least 7. Either a branch "+
+			"stopped firing or emittedEnvNames no longer turns them all on, so the loop below "+
+			"is over a truncated set.", len(emitted), emitted)
+	}
+	// And the set must really contain the computed names, not just any names: these
+	// two are the ones whose shadow is a CREDENTIAL failure rather than a wrong URL.
+	for _, want := range []string{EnvGatewayToken, EnvToken} {
+		if _, ok := emitted[want]; !ok {
+			t.Fatalf("instrument check FAILED: %q is not among the names a built spec emits "+
+				"(%v), so this test is not measuring what it claims", want, emitted)
+		}
+	}
+
+	for name, list := range emitted {
 		_, err := Build(fixtureAgent(), fixtureConfig(), Options{
 			ExtraEnv: []provision.EnvVar{{Name: name, Value: "http://attacker.example.test"}},
 		})
 		if err == nil {
-			t.Errorf("ExtraEnv was allowed to set %s; want a refusal — shadowing it points the instance at the wrong server or credential", name)
+			t.Errorf("ExtraEnv was allowed to set %s (emitted in Spec.%s); want a refusal.\n"+
+				"    Every name this package COMPUTES must be reserved in buildEnv: shadowing "+
+				"one points the instance at the wrong server, the wrong credential file, or — "+
+				"for %s — changes the value the container HASHES, so its half of the chat "+
+				"bearer stops matching muster's and every turn is a 401 attributed to the "+
+				"credential rather than to the shadow.\n"+
+				"    Add it to buildEnv's `reserved` map. Do not add it to a list here; this "+
+				"set is read off a built spec precisely so it cannot go stale.",
+				name, list, EnvGatewayToken)
 		}
 	}
 
@@ -620,6 +733,12 @@ func TestTheFixtureCanSeeAHardcodedConstant(t *testing.T) {
 	if cfg.ImageTag == DefaultImageTag {
 		t.Fatalf("fixtureConfig().ImageTag equals DefaultImageTag (%q), so a mutant that hardcoded the default tag would SURVIVE", DefaultImageTag)
 	}
+	if cfg.GatewayPort == DefaultGatewayPort {
+		t.Fatalf("fixtureConfig().GatewayPort equals DefaultGatewayPort (%d), so a mutant that hardcoded the default port would SURVIVE every port assertion in this file", DefaultGatewayPort)
+	}
+	if cfg.GatewayPort == 0 {
+		t.Fatalf("fixtureConfig().GatewayPort is zero, which buildPorts resolves TO DefaultGatewayPort (%d) — so the override path is never exercised and the previous check passes vacuously", DefaultGatewayPort)
+	}
 
 	// Watch the output move with the input, which is what "the fixture can see
 	// it" actually means.
@@ -633,11 +752,120 @@ func TestTheFixtureCanSeeAHardcodedConstant(t *testing.T) {
 	if strings.HasSuffix(spec.Runtime.Image, ":"+DefaultImageTag) {
 		t.Errorf("Runtime.Image %q ends in the DEFAULT tag even though Config set %q", spec.Runtime.Image, cfg.ImageTag)
 	}
+	if got := spec.PortNumber(provision.DefaultPortName); got == DefaultGatewayPort {
+		t.Errorf("the declared %q port is DefaultGatewayPort (%d) even though Config set %d — the config field is being ignored", provision.DefaultPortName, DefaultGatewayPort, cfg.GatewayPort)
+	}
 
 	// The same control for the two fields most likely to be confused with each
 	// other, since both are "a path in the workspace".
 	if spec.Workspace.Path == spec.Repo.Path {
 		t.Error("Workspace.Path equals Repo.Path, so a mutant swapping them would survive")
+	}
+}
+
+// --------------------------------------------------------------------------
+// The declared port, which is what makes an instance addressable at all.
+// --------------------------------------------------------------------------
+
+// TestTheBuiltSpecDeclaresTheGatewayPortUnderTheNameTheDriverResolves is the
+// regression guard for "agentspec.Build declares no port".
+//
+// 🔴 IT IS A REGRESSION TEST AND NOT AN INVARIANT GUARD, AND THE MATRIX IS THE
+// EVIDENCE: at the parent commit Build set Ports nil — its own committed golden
+// said "Ports": null — so every assertion below was red there. What that nil cost
+// is one hop away and mechanical: no Ports means k8s renderService returns nil
+// (no Service), renderAnnotations writes no `muster.dev/port`, and
+// provision.ResolveEndpoint answers provision.ErrNoEndpoint for every agent
+// muster provisioned. cmd/muster-server's reachability test is the half that
+// drives that chain; this is the half that pins the spec.
+//
+// 🔴 THE NAME IS ASSERTED, NOT JUST THE NUMBER, AND THE DIFFERENCE IS A LATENT
+// BUG. Spec.PortNumber falls back to "the single declared port when there is
+// exactly one", so a port named anything at all resolves while this list has
+// length one — and silently stops resolving when a second port is added. The
+// name is what makes resolution independent of the list's length.
+func TestTheBuiltSpecDeclaresTheGatewayPortUnderTheNameTheDriverResolves(t *testing.T) {
+	cfg := fixtureConfig()
+	spec := mustBuild(t, fixtureAgent(), cfg, Options{Instructions: "body"})
+
+	if len(spec.Ports) != 1 {
+		t.Fatalf("Ports = %+v, want exactly one; a built spec with no port resolves no address, and this is the field that was nil", spec.Ports)
+	}
+	if got := spec.Ports[0].Name; got != provision.DefaultPortName {
+		t.Errorf("the declared port is named %q, want %q — k8s renderAnnotations reads the "+
+			"annotation Driver.Endpoint resolves from Spec.PortNumber(provision.DefaultPortName), "+
+			"and any other name only resolves by PortNumber's single-port fallback",
+			got, provision.DefaultPortName)
+	}
+	// The override, pinned to the LITERAL the fixture sets rather than to a second
+	// read of cfg: an assertion spelled `== cfg.GatewayPort` passes for an
+	// implementation that echoes whatever it was handed, which is what is wanted
+	// here, but it also passes for one that read a different int field of the same
+	// value. Nothing else in fixtureConfig is 21473.
+	if got := spec.PortNumber(provision.DefaultPortName); got != 21473 {
+		t.Errorf("PortNumber(%q) = %d, want 21473 (the fixture's Config.GatewayPort)", provision.DefaultPortName, got)
+	}
+
+	// 🔴 AND THE DEFAULT PATH, WHICH IS THE ONE EVERY DEPLOYMENT RUNS. An
+	// assertion only over the override would be green for a Build that ignored the
+	// zero value and declared nothing — the exact defect — because the fixture
+	// never leaves the field unset.
+	dflt := cfg
+	dflt.GatewayPort = 0
+	spec = mustBuild(t, fixtureAgent(), dflt, Options{Instructions: "body"})
+	// The literal is deliberate: DefaultGatewayPort carries a MEASUREMENT against
+	// a real runtime image, so changing the number has to make a human look at
+	// that measurement rather than at a test that re-derives it.
+	if got := spec.PortNumber(provision.DefaultPortName); got != 18789 {
+		t.Errorf("an unset Config.GatewayPort produced port %d, want 18789 — see DefaultGatewayPort's measurement", got)
+	}
+	if DefaultGatewayPort != 18789 {
+		t.Errorf("DefaultGatewayPort is %d, not 18789. If the measurement changed, update it here AND in the constant's comment — the number is only worth having because its provenance travels with it", DefaultGatewayPort)
+	}
+
+	// Protocol is empty, which provision.Port documents AS TCP. Pinned because
+	// "TCP" written here would be a second statement of the same fact, and a later
+	// reader is entitled to know the blank is a decision.
+	if got := spec.Ports[0].Protocol; got != "" {
+		t.Errorf("Protocol = %q, want empty (provision.Port documents empty as TCP, and both k8s render paths default it that way)", got)
+	}
+}
+
+// TestABadGatewayPortIsRefusedByTheFieldThatHoldsIt pins the range refusal's own
+// message.
+//
+// 🔴 provision.Spec.Validate WOULD ALSO REFUSE THESE, WHICH IS WHY THIS TEST
+// ASSERTS THE TEXT AND NOT MERELY "an error". Deleting buildPorts' range check
+// leaves every case below still failing — one layer down, with Validate's message
+// naming the PORT ("port \"gateway\" number -1 out of range") instead of the knob
+// somebody set. A test that only required a non-nil error would therefore SURVIVE
+// that deletion, which is the shape a mutation sweep catches and an eyeball does
+// not.
+func TestABadGatewayPortIsRefusedByTheFieldThatHoldsIt(t *testing.T) {
+	for _, port := range []int{-1, 65536, 1 << 20} {
+		cfg := fixtureConfig()
+		cfg.GatewayPort = port
+		_, err := Build(fixtureAgent(), cfg, Options{Instructions: "body"})
+		if err == nil {
+			t.Errorf("Build accepted Config.GatewayPort=%d", port)
+			continue
+		}
+		if !strings.Contains(err.Error(), "Config.GatewayPort") {
+			t.Errorf("Config.GatewayPort=%d was refused without naming the field: %v\n"+
+				"    provision.Spec.Validate refuses it too, naming the PORT rather than the "+
+				"knob — so a refusal that does not name this field means the range check in "+
+				"buildPorts is gone and Validate is answering for it.", port, err)
+		}
+	}
+
+	// Control: the boundary values are ACCEPTED, or the check above would be
+	// satisfied by one that refuses every port.
+	for _, port := range []int{1, 65535} {
+		cfg := fixtureConfig()
+		cfg.GatewayPort = port
+		if _, err := Build(fixtureAgent(), cfg, Options{Instructions: "body"}); err != nil {
+			t.Errorf("Build refused the legal boundary port %d: %v", port, err)
+		}
 	}
 }
 

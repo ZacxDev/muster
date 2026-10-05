@@ -51,13 +51,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/privilege"
-	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/router"
 	"github.com/ZacxDev/muster/internal/runbooks"
 	"github.com/ZacxDev/muster/internal/sse"
@@ -587,14 +587,67 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"through api.requireLifecycleProvisioner or api.requireGatewayProvisioner, "+
 			"after its own auth check and with provisionerUnwired:true in the body. "+
 			"Privilege grants are RECORDED but not applied to any cluster (%s=%v, and there is "+
-			"no driver to apply them through). None of the three is a "+
-			"misconfiguration; see cmd/muster-server/doc_seams.go",
+			"no driver to apply them through). %s HAS NO EFFECT in this state — it is still "+
+			"parsed and range-checked at boot, so a malformed value refuses to start, but "+
+			"nothing is provisioned so no Service carries a gateway port. None of the three "+
+			"is a misconfiguration; see cmd/muster-server/doc_seams.go",
 			envAgentProvisioner, a.cfg.agentProvisioner(), envAgentGateway, a.cfg.agentGateway(),
-			envAgentPrivApply, a.cfg.AgentPrivilegeApply)
+			envAgentPrivApply, a.cfg.AgentPrivilegeApply, envAgentGatewayPort)
 	default:
+		// 🔴 THE GATEWAY PORT IS REPORTED ON THE *LIFECYCLE* LINE, NOT ONLY ON THE CHAT
+		// ONE, AND THAT IS WHERE IT BELONGS RATHER THAN WHERE IT IS CONVENIENT.
+		// agentspec.Build declares the port UNCONDITIONALLY — see its constant's note —
+		// so with a provisioner wired it shapes the Service and the `muster.dev/port`
+		// annotation of every instance created from here on, whether or not chat is on.
+		//
+		// 🔴 IT WAS A SILENT STATE AND THE FIRST DRAFT EXEMPTED IT FROM THE BANNER
+		// ENTIRELY, with a reason claiming "with no gateway named, nothing in this
+		// process resolves an endpoint at all, so the CHAT: UNWIRED line has nothing to
+		// say about the port". That is true about RESOLUTION and irrelevant to the
+		// hazard, which is at CREATE time. Reachable, with no exotic input: an operator
+		// sets MUSTER_AGENT_GATEWAY_PORT to the runtime's SKILLS port — one higher than
+		// the gateway's, so an ordinary typo — while chat is off. Nothing says
+		// anything. Every agent provisioned in that window gets a Service on the wrong
+		// port, and arming chat later does NOT fix them, because Driver.Endpoint reads
+		// the create-time annotation and not the current configuration. An exemption
+		// documenting that would have been the silencer bannerExempt exists to prevent,
+		// so the variable is ledgered and announced in both directions instead.
+		//
+		// 🔴 THE SERVICE SENTENCE IS QUALIFIED BY *DRIVER*, AND UNQUALIFIED IT WAS FALSE
+		// FOR A SUPPORTED DEPLOYMENT. It read "Every instance created from here on gets a
+		// Service on gateway port N … recorded in its pod-template annotation" and was
+		// printed on BOTH driver arms — but provision.Noop creates no Service, no pod and
+		// no annotation, and resolves from DefaultNoopEndpointTemplate instead. `noop` is
+		// a deliberately-kept deployment and the banner fixture renders this very line
+		// with it. The ledger guard cannot catch that: it checks the variable is NAMED in
+		// both arms and that the two lines DIFFER — a words check over a state claim.
+		//
+		// ⚠ AND THE ANNOTATION PATH IS NOT RESTATED HERE ANY MORE. It said "pod-template
+		// annotation", which is wrong — it is on the DEPLOYMENT. That fact now lives in
+		// exactly one place, k8s.AnnotationPort's own comment, because it was open-coded
+		// in six places and wrong in all six.
+		// 🔴 AND THE NON-k8s ARM'S "instead" WAS FALSE IN THE SAME CLASS, ONE DRAFT
+		// LATER. It read "…and an address resolves from the driver's own endpoint
+		// template instead", which reads as "this variable is inert on noop". It is
+		// not: provision.Noop.Endpoint passes spec.PortNumber(DefaultPortName) into
+		// ResolveEndpoint and the template supplies only the HOST, so the port this
+		// line prints is the port a turn would dial. Measured at three points —
+		// 18789 -> http://probe.noop.invalid:18789, 29999 -> :29999, and port 0 is a
+		// hard ErrNoEndpoint. So removing one false driver claim from this line left a
+		// weaker one in the same place; the sentence now says what is true of noop.
+		svcNote := "no Service and no port annotation is created by this driver — the " +
+			"address is this driver's own template HOST with that port, so the value still " +
+			"decides what a chat turn would dial"
+		if a.cfg.agentProvisioner() == provisionerK8s {
+			svcNote = "every instance created from here on gets a Service on that port, " +
+				"recorded on the Deployment at CREATE time (see k8s.AnnotationPort) — " +
+				"changing the variable later does not move an existing instance"
+		}
 		l.Printf("agent provisioning: LIFECYCLE %s (%s=%s) — dispatch, start, stop, destroy "+
-			"and the log routes go through api.requireLifecycleProvisioner",
-			wiredWord(ext.Provisioner == nil), envAgentProvisioner, a.cfg.agentProvisioner())
+			"and the log routes go through api.requireLifecycleProvisioner. Gateway port %d "+
+			"(%s): %s",
+			wiredWord(ext.Provisioner == nil), envAgentProvisioner, a.cfg.agentProvisioner(),
+			a.cfg.agentGatewayPort(), envAgentGatewayPort, svcNote)
 		// 🔴 THE CHAT HALF GETS ITS OWN LINE AND NAMES ITS OWN WRAPPER, because
 		// with lifecycle wired this is the half an operator will be surprised by.
 		// A dispatched agent exists, its pod runs, its logs stream — and its first
@@ -661,22 +714,45 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				scheme = r.Runtime()
 			}
 			// 🔴 "WIRED" IS NOT "REACHABLE", AND SAYING ONLY THE FIRST IS THE FALSEHOOD
-			// THIS LINE SHIPPED IN REVIEW. The chat ROUTES stop refusing — that part is
-			// real. But a chat turn resolves the instance's address through the driver,
-			// and NOTHING BUILDS A SPEC THAT DECLARES ONE: agentspec.Build renders
-			// Ports and Endpoint nil, so the kubernetes driver creates no Service and
-			// Endpoint() answers provision.ErrNoEndpoint. A turn against an agent THIS
-			// BINARY provisioned therefore fails per-turn rather than refusing at the
-			// door — which is strictly worse than the 503 it replaced, because the 503
-			// named its own cause. Both blockers are in doc_seams.go entry 1.
+			// THIS LINE SHIPPED IN REVIEW. BOTH of the blockers that sentence was about
+			// are closed now, and the line is rewritten rather than deleted because what
+			// replaces them is weaker evidence, not no gap:
+			//
+			//   - THE ADDRESS. It read "agentspec.Build declares no port and no endpoint,
+			//     so this driver resolves no address … every such turn fails with
+			//     <ErrNoEndpoint>". agentspec.Build now declares the gateway port
+			//     (agentspec.DefaultGatewayPort, overridable by
+			//     MUSTER_AGENT_GATEWAY_PORT), the kubernetes driver renders the Service,
+			//     and Endpoint() resolves —
+			//     TestAnAgentThisBinaryProvisionsResolvesAnEndpoint drives that through
+			//     the real driver over a fake clientset.
+			//   - THE CREDENTIAL. doc_seams entry 1 blocker (2): the bearer is
+			//     sha256("gw-" + $HOOKS_TOKEN), read from the agent CONTAINER's own
+			//     environment, and agentspec shipped the row's token only as
+			//     MUSTER_HOOK_TOKEN. It now ships under agentspec.EnvGatewayToken too,
+			//     and TestTheProvisionedContainerCanDeriveTheBearerMusterSends
+			//     reproduces the container's derivation over the built spec and requires
+			//     the two bearers to match.
+			//
+			// 🔴 SO WHY THE LINE STILL REFUSES TO SAY "REACHABLE": the container half of
+			// that derivation is a shell command in the agent image's OWN deployment, in
+			// another repository this module cannot read, and no turn has ever been made
+			// against an instance THIS binary created. Two tests agreeing about bytes is
+			// not a runtime accepting them — the Makefile's test-liveenv target is what
+			// closes that, and it needs a reachable runtime. "NOT VERIFIED REACHABLE" is
+			// the honest word and it is deliberately not the old one: claiming the fix
+			// landed is a different claim from claiming it works.
 			l.Printf("agent provisioning CHAT: WIRED %s=%s (%s=%s) — the two chat routes no longer "+
-				"refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT REACHABLE: agentspec.Build "+
-				"declares no port and no endpoint, so this driver resolves no address for an agent "+
-				"this binary provisioned and every such turn fails with %v. Chat is usable only "+
-				"against an instance provisioned elsewhere, with an address this process can "+
-				"resolve. See cmd/muster-server/doc_seams.go entry 1",
+				"refuse at api.requireGatewayProvisioner. 🔴 WIRED IS NOT VERIFIED REACHABLE: both "+
+				"in-repo blockers are closed — the spec declares port %d so the driver renders a "+
+				"Service and resolves an address, and the row's token now ships as %s, the variable "+
+				"this bearer is derived from — but the container half of that derivation lives in "+
+				"the agent image's own deployment, which nothing here can read, so the first turn "+
+				"against an agent this binary provisioned is still the measurement. A kickoff is "+
+				"undeliverable regardless: nothing calls the gateway on the dispatch path. "+
+				"See cmd/muster-server/doc_seams.go entry 1",
 				envAgentGateway, scheme, envAgentGatewayModel, a.cfg.AgentGatewayModel,
-				provision.ErrNoEndpoint)
+				a.cfg.agentGatewayPort(), agentspec.EnvGatewayToken)
 		}
 		// 🔴 THIS IS doc_seams.go ENTRY 2'S ARGUMENT DYING ON SCHEDULE. A grant
 		// recorded and not applied was defensible only while no pod could exist to

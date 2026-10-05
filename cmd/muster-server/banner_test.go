@@ -285,6 +285,15 @@ var bannerLedger = []string{
 	// and no string to search for. The fully-off arm names it beside the other two;
 	// the default arm's three-way switch names it in every reachable state.
 	envAgentPrivApply,
+	// 🔴 LEDGERED, NOT EXEMPT, AND IT WAS EXEMPT IN A FIRST DRAFT. The port reaches
+	// the cluster at CREATE time and is read back from the Deployment's annotation
+	// (k8s.AnnotationPort, which is where that fact is stated),
+	// not from the live configuration — so a wrong value silently shapes every
+	// instance provisioned in that window and correcting the variable afterwards does
+	// not move them. The LIFECYCLE arm prints the resolved port; the fully-off arm
+	// says the variable is UNREAD because nothing is provisioned. See the retraction
+	// in bannerExempt.
+	envAgentGatewayPort,
 }
 
 // bannerExempt is every environment variable config.go declares that logBanner
@@ -372,6 +381,19 @@ var bannerExempt = map[string]string{
 		"URL cannot reach this server, and validateProvisioner names that consequence",
 	envAgentImageTag: "defaults to agentspec.DefaultImageTag (\"latest\"), which is a property " +
 		"of the spec an instance is built from rather than of this server's boot posture",
+	// 🔴 MUSTER_AGENT_GATEWAY_PORT WAS EXEMPTED HERE AND IT WAS WRONG — IT IS ON
+	// bannerLedger NOW. The reason read: "There is no off-direction line to write:
+	// with no gateway named, nothing in this process resolves an endpoint at all, so
+	// the CHAT: UNWIRED line has nothing to say about the port." That is a true
+	// statement about RESOLUTION and the hazard is at CREATE time:
+	// agentspec.Build declares the port unconditionally, so with a provisioner wired
+	// it shapes every instance's Service whether chat is on or not, and
+	// Driver.Endpoint reads the create-time annotation rather than the current
+	// configuration — so a wrong value is not fixed by correcting it later. The
+	// MUSTER_AGENT_GATEWAY_MODEL exemption below is a genuinely different shape:
+	// validate REFUSES a named gateway with no sentinel, so that variable has no
+	// silent state. This one did, and an entry here describing a silent state is
+	// exactly the silencer this map's header forbids.
 	envAgentModel: "empty means the RUNTIME decides (agentspec.Config.Model), which is why " +
 		"Build omits the config key entirely rather than writing \"\". It reaches the " +
 		"instance, not this process",
