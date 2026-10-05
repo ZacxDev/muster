@@ -52,9 +52,32 @@ const (
 	// annEndpoint records the per-instance Spec.Endpoint override as JSON, so
 	// Endpoint() can honour it later without the spec.
 	annEndpoint = "muster.dev/endpoint"
-	// annPort records the resolved reachable port, for the same reason.
-	annPort = "muster.dev/port"
 )
+
+// AnnotationPort records the resolved reachable port, for the same reason as
+// annEndpoint: so Endpoint() can answer later without the spec.
+//
+// 🔴 IT IS ON THE **DEPLOYMENT OBJECT**, NOT ON THE POD TEMPLATE, AND THIS COMMENT
+// IS THE ONE PLACE THAT FACT IS STATED. renderDeployment puts
+// renderAnnotations(spec) on the Deployment's own ObjectMeta; the pod template gets
+// annFingerprint ALONE. Endpoint() reads `dep.Annotations[AnnotationPort]`, i.e. the
+// Deployment, so these two kubectl paths are not interchangeable — measured off one
+// rendered object in one run:
+//
+//	.spec.template.metadata.annotations["muster.dev/port"]  ->  ""
+//	.metadata.annotations["muster.dev/port"]                ->  "18789"
+//
+// 🔴 WHICH IS WHY IT IS EXPORTED, AND THE EXPORT IS THE POINT RATHER THAN
+// CONVENIENCE. The fact was open-coded in SIX places — a boot log line, three
+// comments and two runnable `kubectl -o jsonpath=` recipes — and was wrong in the
+// same direction in every one of them: they all named the pod template. A
+// correctly-provisioned instance therefore printed EMPTY for the recipe that was
+// supposed to confirm it, under an instruction to STOP if the output was empty. One
+// predicate open-coded at N sites is usually wrong at N-1; this one was wrong at N.
+// Anything that needs to name this annotation names THIS constant, and
+// TestTheRecipesNameTheAnnotationEndpointActuallyReads in cmd/muster-server pins the
+// jsonpath in the prose against a rendered object.
+const AnnotationPort = "muster.dev/port"
 
 // containerName is the single application container's name. It is a CONSTANT
 // so that every log read, exec and status inspection names the same container
@@ -540,7 +563,7 @@ func (d *Driver) renderAnnotations(spec provision.Spec) map[string]string {
 		}
 	}
 	if port := spec.PortNumber(provision.DefaultPortName); port != 0 {
-		ann[annPort] = strconv.Itoa(port)
+		ann[AnnotationPort] = strconv.Itoa(port)
 	}
 	return ann
 }

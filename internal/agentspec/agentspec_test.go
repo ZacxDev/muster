@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -422,24 +421,53 @@ func TestTheTwoRequiredConfigFieldsAreRefusedWhenEmpty(t *testing.T) {
 	}
 }
 
-// declaredEnvConstants reads this package's own Env* declarations.
+// emittedEnvNames returns every variable name a built spec actually carries into
+// the instance — Env and Secrets together, with every optional branch turned on.
 //
-// 🔴 IT PARSES THE SOURCE BECAUSE A HAND-WRITTEN LIST CANNOT EXPRESS THE
-// RELATIONSHIP "every one of them". Go gives a test no way to enumerate a
-// package's constants at runtime, so the only alternative to reading the
-// declaration is restating it — which is the shape that went stale. Same
-// technique, and the same reason, as cmd/muster-server/banner_test.go's reader of
-// config.go's const block.
-func declaredEnvConstants(t *testing.T) map[string]string {
+// 🔴 IT DERIVES FROM BEHAVIOUR, AND A SOURCE-PARSING VERSION OF THIS WAS MEASURED
+// TOO NARROW FOR ITS OWN DOCSTRING. That version read ONE file (`agentspec.go`)
+// with ONE declaration form (`Env… = "literal"`) while claiming "the package's own
+// Env* declarations". Three isolated mutants — a new constant in cairn.go, one in
+// the typed form `EnvX string = "…"`, one whose value is a concatenation — each
+// added an unreserved name and SURVIVED the whole suite, because none of them moved
+// the fixed floor the instrument check used.
+//
+// 🔴 AND THE SET IT WAS DERIVING WAS THE WRONG ONE ANYWAY, WHICH IS THE MORE
+// USEFUL HALF OF THAT FINDING. The hazard is a name this package COMPUTES being
+// shadowable; a declared-but-never-emitted constant is not a shadowing hazard at
+// all, so a declaration-based set would have reddened for it and been "fixed" by
+// reserving it — silently narrowing what a caller may put in ExtraEnv, for no
+// reason. Reading the names off a BUILT SPEC is both wider (any file, any
+// declaration form, any computed name — a name that never had a constant at all)
+// and narrower in the right direction (only what actually reaches the instance).
+//
+// ⚠ WHAT IT CANNOT SEE, STATED RATHER THAN IMPLIED: a name emitted only under a
+// configuration this function does not build. It turns on every optional branch
+// agentspec.Config has today — node options, the provider key, the cairn pair — and
+// a future branch keyed on something else would need adding here. That is a real
+// limit, and it is a smaller one than the source regex had.
+func emittedEnvNames(t *testing.T) map[string]string {
 	t.Helper()
-	body, err := os.ReadFile("agentspec.go")
+	cfg := fixtureConfig()
+	// Every optional branch ON, so no emitted name is missed because its gate was
+	// off. cairnEnabled needs BOTH coordinates plus per-call eligibility.
+	cfg.NodeOptions = "--max-old-space-size=3072"
+	cfg.OpenRouterAPIKey = "fixture-shared-provider-key-2b84af"
+	cfg.CairnURL = "https://cairn.example.test"
+	cfg.CairnToken = "fixture-cairn-token-7c21de"
+	a := fixtureAgent()
+	a.HooksToken = "fixture-per-agent-token-9f31c7"
+
+	spec, err := Build(a, cfg, Options{CairnEligible: true})
 	if err != nil {
-		t.Fatalf("read agentspec.go: %v", err)
+		t.Fatalf("Build with every optional branch on: %v", err)
 	}
-	re := regexp.MustCompile(`(?m)^\s*(Env[A-Za-z0-9_]+)\s*=\s*"([^"]+)"`)
 	out := map[string]string{}
-	for _, m := range re.FindAllStringSubmatch(string(body), -1) {
-		out[m[1]] = m[2]
+	for _, e := range spec.Env {
+		out[e.Name] = "Env"
+	}
+	for _, e := range spec.Secrets {
+		out[e.Name] = "Secrets"
 	}
 	return out
 }
@@ -458,45 +486,54 @@ func declaredEnvConstants(t *testing.T) map[string]string {
 // stops matching and every chat turn 401s — was one of them.
 //
 // 🔴 THE FIX IS DERIVATION, NOT TWO MORE NAMES. Adding the missing pair would have
-// regenerated the same defect at the next constant. The expected set now comes from
-// the declarations themselves, so a new Env* constant fails here until buildEnv
-// reserves it.
+// regenerated the same defect at the next constant. The expected set is read off a
+// BUILT SPEC — see emittedEnvNames — so any name that actually reaches the instance
+// is covered regardless of which file declares it, in what form, or whether it has
+// a constant at all.
+//
+// ⚠ AN EARLIER FIX DERIVED FROM THE SOURCE AND WAS NARROWER THAN ITS OWN DOCSTRING;
+// emittedEnvNames records the three mutants that survived it and why the
+// behavioural set is the right one. The failure message below says COMPUTES and now
+// means it: the loop enumerates what a spec emits, not what the package declares.
 //
 // ⚠ IT IS A PROPHYLACTIC GUARD AND THE REACHABILITY IS STATED HONESTLY:
 // Options.ExtraEnv has no non-test producer today, so no caller can currently reach
 // the shadow. The guard is for whoever writes the first one.
 func TestExtraEnvMayNotShadowAComputedVariable(t *testing.T) {
-	declared := declaredEnvConstants(t)
+	emitted := emittedEnvNames(t)
 
-	// 🔴 POSITIVE CONTROL, AS A NUMBER. An empty extraction satisfies "every
-	// declared name is refused" perfectly and reads identically to a clean run —
-	// the same silent-zero this file's other instrument checks exist for.
-	if len(declared) < 7 {
-		t.Fatalf("instrument check FAILED: only %d Env* constant(s) were extracted from "+
-			"agentspec.go (%v), and this package declares at least 7. The declaration "+
-			"pattern has stopped matching, so the loop below is over a truncated set.",
-			len(declared), declared)
+	// 🔴 POSITIVE CONTROL, AS A NUMBER. An empty set satisfies "every emitted name is
+	// refused" perfectly and reads identically to a clean run — the same silent-zero
+	// this file's other instrument checks exist for.
+	if len(emitted) < 7 {
+		t.Fatalf("instrument check FAILED: a spec built with every optional branch on emits "+
+			"only %d variable(s) (%v), and this package computes at least 7. Either a branch "+
+			"stopped firing or emittedEnvNames no longer turns them all on, so the loop below "+
+			"is over a truncated set.", len(emitted), emitted)
 	}
-	// And the extraction must really be reading values, not just names.
-	if declared["EnvGatewayToken"] != EnvGatewayToken {
-		t.Fatalf("instrument check FAILED: the extraction read EnvGatewayToken as %q, the "+
-			"constant is %q", declared["EnvGatewayToken"], EnvGatewayToken)
+	// And the set must really contain the computed names, not just any names: these
+	// two are the ones whose shadow is a CREDENTIAL failure rather than a wrong URL.
+	for _, want := range []string{EnvGatewayToken, EnvToken} {
+		if _, ok := emitted[want]; !ok {
+			t.Fatalf("instrument check FAILED: %q is not among the names a built spec emits "+
+				"(%v), so this test is not measuring what it claims", want, emitted)
+		}
 	}
 
-	for ident, name := range declared {
+	for name, list := range emitted {
 		_, err := Build(fixtureAgent(), fixtureConfig(), Options{
 			ExtraEnv: []provision.EnvVar{{Name: name, Value: "http://attacker.example.test"}},
 		})
 		if err == nil {
-			t.Errorf("ExtraEnv was allowed to set %s (%s); want a refusal.\n"+
+			t.Errorf("ExtraEnv was allowed to set %s (emitted in Spec.%s); want a refusal.\n"+
 				"    Every name this package COMPUTES must be reserved in buildEnv: shadowing "+
 				"one points the instance at the wrong server, the wrong credential file, or — "+
 				"for %s — changes the value the container HASHES, so its half of the chat "+
 				"bearer stops matching muster's and every turn is a 401 attributed to the "+
 				"credential rather than to the shadow.\n"+
 				"    Add it to buildEnv's `reserved` map. Do not add it to a list here; this "+
-				"set is DERIVED from the declarations precisely so it cannot go stale.",
-				name, ident, "EnvGatewayToken")
+				"set is read off a built spec precisely so it cannot go stale.",
+				name, list, EnvGatewayToken)
 		}
 	}
 

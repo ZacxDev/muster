@@ -148,11 +148,20 @@ func TestACreateWithAKickoffIsREFUSEDWhenNothingCanDeliverIt(t *testing.T) {
 // specific regression it protects against is already on the record: an earlier
 // revision of KickoffRefusalReason ended "…and dispatch again", which promises a
 // delivery the next dispatch does not make — doc_seams.go entry 1 records that
-// nothing calls the gateway on the dispatch path, plus two blockers ahead of that
-// call site. An operator who followed that remedy would land in exactly the
+// nothing calls the gateway on the dispatch path, which is the ONE thing still
+// ahead of delivery. An operator who followed that remedy would land in exactly the
 // stranded-note behaviour this refusal exists to prevent, with no reason to look
 // further. No word-level assertion catches the next paraphrase of that promise, so
 // the whole string is pinned instead.
+//
+// ⚠ THE SENTENCE ABOVE ENDED "…plus two blockers ahead of that call site" AND THAT
+// IS RETRACTED. Both are closed; see this file's own property 3 and
+// TestEveryCapabilityClaimTheRefusalMakesIsTRUE. 🔴 IT IS WORTH RECORDING *WHY* IT
+// SURVIVED THE ROUND THAT RETRACTED THE SAME CLAIM TWENTY LINES BELOW: that round
+// swept the DELTA of its own commits, and this line pre-dated the delta — it was
+// true when it was written and was falsified by a LATER commit of the same change,
+// so it sat in no round's range. A claim can only be checked against the tree as it
+// IS. Sweep at HEAD, never over a diff.
 //
 // ⚠ THE COST IS DELIBERATE AND IS THE POINT: any edit to the text fails here,
 // including a cosmetic one. That is the price of a machine-readable claim about

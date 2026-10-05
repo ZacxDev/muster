@@ -278,7 +278,8 @@ type config struct {
 	// 🔴 IT IS A PARAMETER OF THE SPEC, NOT OF THE CHAT TIER, DESPITE THE NAME.
 	// agentspec.Build declares the port UNCONDITIONALLY — see its constant's own
 	// note — because the port reaches the cluster at CREATE time, in the Service
-	// and the pod-template annotation the driver resolves an address from. Gating
+	// and the Deployment annotation the driver resolves an address from (see
+	// k8s.AnnotationPort). Gating
 	// it on AgentGateway would leave every instance provisioned while chat was off
 	// permanently addressless, and turning chat on later would silently require
 	// re-provisioning each one. It is spelled MUSTER_AGENT_GATEWAY_PORT anyway

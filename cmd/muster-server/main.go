@@ -587,9 +587,10 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"through api.requireLifecycleProvisioner or api.requireGatewayProvisioner, "+
 			"after its own auth check and with provisionerUnwired:true in the body. "+
 			"Privilege grants are RECORDED but not applied to any cluster (%s=%v, and there is "+
-			"no driver to apply them through). %s is UNREAD in this state: nothing is "+
-			"provisioned, so no Service carries a gateway port. None of the three is a "+
-			"misconfiguration; see cmd/muster-server/doc_seams.go",
+			"no driver to apply them through). %s HAS NO EFFECT in this state — it is still "+
+			"parsed and range-checked at boot, so a malformed value refuses to start, but "+
+			"nothing is provisioned so no Service carries a gateway port. None of the three "+
+			"is a misconfiguration; see cmd/muster-server/doc_seams.go",
 			envAgentProvisioner, a.cfg.agentProvisioner(), envAgentGateway, a.cfg.agentGateway(),
 			envAgentPrivApply, a.cfg.AgentPrivilegeApply, envAgentGatewayPort)
 	default:
@@ -611,13 +612,32 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		// the create-time annotation and not the current configuration. An exemption
 		// documenting that would have been the silencer bannerExempt exists to prevent,
 		// so the variable is ledgered and announced in both directions instead.
+		//
+		// 🔴 THE SERVICE SENTENCE IS QUALIFIED BY *DRIVER*, AND UNQUALIFIED IT WAS FALSE
+		// FOR A SUPPORTED DEPLOYMENT. It read "Every instance created from here on gets a
+		// Service on gateway port N … recorded in its pod-template annotation" and was
+		// printed on BOTH driver arms — but provision.Noop creates no Service, no pod and
+		// no annotation, and resolves from DefaultNoopEndpointTemplate instead. `noop` is
+		// a deliberately-kept deployment and the banner fixture renders this very line
+		// with it. The ledger guard cannot catch that: it checks the variable is NAMED in
+		// both arms and that the two lines DIFFER — a words check over a state claim.
+		//
+		// ⚠ AND THE ANNOTATION PATH IS NOT RESTATED HERE ANY MORE. It said "pod-template
+		// annotation", which is wrong — it is on the DEPLOYMENT. That fact now lives in
+		// exactly one place, k8s.AnnotationPort's own comment, because it was open-coded
+		// in six places and wrong in all six.
+		svcNote := "no Service and no port annotation is created by this driver, and an " +
+			"address resolves from the driver's own endpoint template instead"
+		if a.cfg.agentProvisioner() == provisionerK8s {
+			svcNote = "every instance created from here on gets a Service on that port, " +
+				"recorded on the Deployment at CREATE time (see k8s.AnnotationPort) — " +
+				"changing the variable later does not move an existing instance"
+		}
 		l.Printf("agent provisioning: LIFECYCLE %s (%s=%s) — dispatch, start, stop, destroy "+
-			"and the log routes go through api.requireLifecycleProvisioner. Every instance "+
-			"created from here on gets a Service on gateway port %d (%s), recorded in its "+
-			"pod-template annotation at CREATE time — changing the variable later does not "+
-			"move an existing instance",
+			"and the log routes go through api.requireLifecycleProvisioner. Gateway port %d "+
+			"(%s): %s",
 			wiredWord(ext.Provisioner == nil), envAgentProvisioner, a.cfg.agentProvisioner(),
-			a.cfg.agentGatewayPort(), envAgentGatewayPort)
+			a.cfg.agentGatewayPort(), envAgentGatewayPort, svcNote)
 		// 🔴 THE CHAT HALF GETS ITS OWN LINE AND NAMES ITS OWN WRAPPER, because
 		// with lifecycle wired this is the half an operator will be surprised by.
 		// A dispatched agent exists, its pod runs, its logs stream — and its first

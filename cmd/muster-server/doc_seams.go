@@ -103,7 +103,8 @@ package main
 //	      ⚠ AN ALREADY-PROVISIONED INSTANCE DOES *NOT* GAIN THE PORT BY ITSELF, AND
 //	      NO MIGRATION IS OWED — the two halves of that sentence are independent and
 //	      both were checked. The mechanism is real: Driver.Endpoint reads the
-//	      `muster.dev/port` pod-template annotation written at CREATE time, so an
+//	      `muster.dev/port` annotation written on the DEPLOYMENT at CREATE time (see
+//	      k8s.AnnotationPort), so an
 //	      instance created before this change carries none and resolving its address
 //	      would still fail. What makes it moot is that the victim set is EMPTY —
 //	      measured live with controls: zero namespaces under the configured prefix

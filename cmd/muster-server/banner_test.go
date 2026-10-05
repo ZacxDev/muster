@@ -286,7 +286,8 @@ var bannerLedger = []string{
 	// the default arm's three-way switch names it in every reachable state.
 	envAgentPrivApply,
 	// 🔴 LEDGERED, NOT EXEMPT, AND IT WAS EXEMPT IN A FIRST DRAFT. The port reaches
-	// the cluster at CREATE time and is read back from the pod-template annotation,
+	// the cluster at CREATE time and is read back from the Deployment's annotation
+	// (k8s.AnnotationPort, which is where that fact is stated),
 	// not from the live configuration — so a wrong value silently shapes every
 	// instance provisioned in that window and correcting the variable afterwards does
 	// not move them. The LIFECYCLE arm prints the resolved port; the fully-off arm

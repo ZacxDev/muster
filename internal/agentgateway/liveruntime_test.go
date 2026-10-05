@@ -38,8 +38,12 @@
 //	# different deployment's naming.
 //	kubectl -n <agent-ns> get svc <agent> \
 //	  -o jsonpath='{.spec.ports[*].name} {.spec.ports[*].port}{"\n"}'
+//	# 🔴 THE ANNOTATION IS ON THE DEPLOYMENT, *NOT* ON THE POD TEMPLATE. An earlier
+//	# revision of this line read `.spec.template.metadata.annotations...`, which prints
+//	# EMPTY for a correctly-provisioned instance — directly under an instruction to
+//	# STOP if the output is empty. See k8s.AnnotationPort, which states this once.
 //	kubectl -n <agent-ns> get deploy <agent> \
-//	  -o jsonpath='{.spec.template.metadata.annotations.muster\.dev/port}{"\n"}'
+//	  -o jsonpath='{.metadata.annotations.muster\.dev/port}{"\n"}'
 //
 //	# 🔴 check what already holds the port and forward to one you proved FREE — a
 //	# local listener silently shadows a port-forward and every reading then

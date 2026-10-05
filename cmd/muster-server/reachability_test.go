@@ -5,7 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io/fs"
 	"log"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -100,7 +104,8 @@ func reachabilityAgent() agents.Agent {
 // listening. The commands are, from a pod that can reach the agent's namespace:
 //
 //	kubectl -n <agent-namespace> get svc <agent-name> -o jsonpath='{.spec.ports[*].name}{"\n"}{.spec.ports[*].port}'
-//	kubectl -n <agent-namespace> get deploy <agent-name> -o jsonpath='{.spec.template.metadata.annotations.muster\.dev/port}'
+//	# on the Deployment, NOT the pod template — see k8s.AnnotationPort
+//	kubectl -n <agent-namespace> get deploy <agent-name> -o jsonpath='{.metadata.annotations.muster\.dev/port}'
 //	kubectl -n <agent-namespace> run probe --rm -it --image=curlimages/curl --restart=Never -- \
 //	  curl -sS -o /dev/null -w '%{http_code}\n' http://<agent-name>.<agent-namespace>.svc:<port>/v1/responses
 //
@@ -191,6 +196,128 @@ func TestAnAgentThisBinaryProvisionsResolvesAnEndpoint(t *testing.T) {
 	if svc.Spec.Ports[0].Name != provision.DefaultPortName {
 		t.Errorf("the Service's port is named %q, want %q", svc.Spec.Ports[0].Name, provision.DefaultPortName)
 	}
+}
+
+// TestTheRecipesNameTheAnnotationEndpointActuallyReads pins a RELATIONSHIP between
+// runnable prose and a rendered object.
+//
+// 🔴 THE DEFECT IT EXISTS FOR: `muster.dev/port` is written on the DEPLOYMENT's
+// ObjectMeta, and five comments plus two `kubectl -o jsonpath=` recipes all said
+// `.spec.template.metadata.annotations` — wrong in the same direction at every site,
+// which is what a predicate open-coded at N places does. The runnable consequence is
+// the one that cost something: the recipe sat directly under "if these two are empty,
+// STOP: the instance was not provisioned by this binary", and for a CORRECTLY
+// provisioned instance it prints empty. The next person to run the one proof this
+// work still owes would have been told to stop, with precisely the wrong diagnosis.
+//
+// 🔴 SO THE GUARD IS NOT A SPELLING CHECK ON THE COMMENT. It renders a real object
+// through the real driver, measures BOTH paths off it, and then requires every
+// jsonpath in the tree that names this annotation to be the one that is non-empty.
+// The two measurements are each other's control: if the Deployment path were also
+// empty the render is broken, and if the pod-template path were also populated the
+// recipe could not be wrong.
+//
+// ⚠ IT CANNOT CHECK A RECIPE WRITTEN IN PROSE RATHER THAN AS A jsonpath, or one that
+// addresses the annotation some other way (`-o yaml | grep`, a Go client). It covers
+// the `jsonpath=` form, which is the form both recipes use and the form that silently
+// prints empty instead of erroring.
+func TestTheRecipesNameTheAnnotationEndpointActuallyReads(t *testing.T) {
+	cfg := provisionerTestConfig(provisionerK8s)
+	d, cs := reachabilityDriver(t, cfg)
+	ctx := context.Background()
+
+	a := reachabilityAgent()
+	spec, err := agentspec.Build(a, agentSpecConfig(cfg), agentspec.Options{})
+	if err != nil {
+		t.Fatalf("agentspec.Build: %v", err)
+	}
+	if err := d.Create(ctx, spec); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	dep, err := cs.AppsV1().Deployments("devpod-harbour-kestrel").
+		Get(ctx, "harbour-kestrel", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get Deployment: %v", err)
+	}
+
+	onDeployment := dep.Annotations[k8sdriver.AnnotationPort]
+	onPodTemplate := dep.Spec.Template.Annotations[k8sdriver.AnnotationPort]
+
+	// The path Driver.Endpoint reads. Non-empty is this test's positive control:
+	// an empty value here would make the comparison below vacuous.
+	if onDeployment == "" {
+		t.Fatalf("positive control FAILED: %s is absent from the Deployment's own "+
+			"annotations, which is where Driver.Endpoint reads it. Either the render "+
+			"changed or the spec declares no port, and the jsonpath check below would be "+
+			"comparing against nothing. Deployment annotations: %v",
+			k8sdriver.AnnotationPort, dep.Annotations)
+	}
+	// And the path the recipes used to name. It must be EMPTY, or the defect this
+	// test is about could not have happened and the assertion is not measuring it.
+	if onPodTemplate != "" {
+		t.Fatalf("the pod template now carries %s=%q as well. That is not a failure of "+
+			"the recipes — it means the render changed and this guard's premise is stale. "+
+			"Re-read k8s.AnnotationPort's comment and decide which path is canonical.",
+			k8sdriver.AnnotationPort, onPodTemplate)
+	}
+	t.Logf("measured off one rendered object: pod-template path = %q, Deployment path = %q",
+		onPodTemplate, onDeployment)
+
+	// 🔴 NOW THE PROSE, AGAINST THAT MEASUREMENT. The capture is whatever the recipe
+	// puts between `{` and `annotations.` — ".metadata." for the path that works,
+	// ".spec.template.metadata." for the one that prints empty.
+	re := regexp.MustCompile(`jsonpath='\{(\.[A-Za-z.]*)annotations\.muster\\\.dev/port`)
+	root := moduleRootForSweep(t)
+	var found int
+	err = filepath.WalkDir(root, func(path string, e fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if e.IsDir() {
+			if e.Name() == ".git" || e.Name() == "node_modules" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		for _, m := range re.FindAllStringSubmatch(string(body), -1) {
+			found++
+			rel, _ := filepath.Rel(root, path)
+			if m[1] != ".metadata." {
+				t.Errorf("%s names jsonpath '{%sannotations.muster\\.dev/port}', which reads "+
+					"%q on a correctly-provisioned instance.\n"+
+					"    Measured off one rendered object in this run: that path = %q, and "+
+					"'{.metadata.annotations...}' = %q.\n"+
+					"    The annotation is on the DEPLOYMENT. A recipe naming the pod template "+
+					"prints empty and does not error, so it reads as \"the instance was never "+
+					"provisioned\" — the exact opposite of what it is run to confirm. "+
+					"k8s.AnnotationPort states this once; point the recipe at it.",
+					rel, m[1], onPodTemplate, onPodTemplate, onDeployment)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", root, err)
+	}
+
+	// 🔴 POSITIVE CONTROL ON THE WALK ITSELF. Zero recipes found reads identically to
+	// every recipe being correct — and a changed quoting style in one of them would
+	// silently empty this test. Two are known: the live-runtime target's RUN IT block
+	// and this file's own closing-condition comment.
+	if found < 2 {
+		t.Errorf("instrument check FAILED: only %d jsonpath recipe(s) naming %s were found "+
+			"under %s, and at least 2 exist (internal/agentgateway/liveruntime_test.go and "+
+			"this file). The pattern has stopped matching, so the verdict above is over a "+
+			"truncated set.", found, k8sdriver.AnnotationPort, root)
+	}
+	t.Logf("checked %d jsonpath recipe(s) naming %s", found, k8sdriver.AnnotationPort)
 }
 
 // TestTheResolvedPortIsTheConfiguredOneAndNotADriverConstant is the control that
