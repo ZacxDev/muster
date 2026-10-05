@@ -19,6 +19,7 @@ import (
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/privilege"
+	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -178,18 +179,7 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 
 	cards := make([]ui.AgentCardView, 0, len(list))
 	for _, a := range list {
-		status := liveStatusIndexed(a, instIdx)
-		card := ui.AgentCardView{
-			ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
-			Repo: a.Repo, Status: status, KickedOff: a.KickedOff,
-			Model:  a.Model,
-			NoteID: a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
-		}
-		// The recent-log preview lazy-loads via /ui/agents/{id}/recent (htmx) so
-		// the list path makes NO per-agent k8s call. Only running agents with a
-		// provisioner get a preview (others render none, unchanged).
-		card.LazyRecent = s.ext.Provisioner != nil && status == agents.StatusRunning
-		cards = append(cards, card)
+		cards = append(cards, s.cardViewIndexed(a, instIdx))
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -534,17 +524,43 @@ func (s *Server) handleSessionRead(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// cardViewFor builds the single-card view for one agent, reconciling its status
-// against live pods (when a provisioner is wired) exactly like handleAgentsContent.
-// Used by the inline-rename re-render and the cancel/card re-fetch.
-func (s *Server) cardViewFor(ctx context.Context, a agents.Agent) ui.AgentCardView {
-	status := s.liveStatus(ctx, a)
+// cardViewIndexed is the ONE place an agent row becomes a card view.
+//
+// 🔴 IT IS ONE FUNCTION BECAUSE IT WAS TWO, AND THE DUPLICATE IS WHAT LET A FIELD
+// BE RENDERED ON ONE SURFACE AND NOT THE OTHER. handleAgentsContent open-coded
+// this literal for the LIST and cardViewFor wrote its own for the single-card
+// re-render (the inline rename's Cancel, GET /ui/agents/{id}/card) — the same
+// eleven fields, spelled twice, with the only difference being that one fetched
+// the instance index itself. A card composed in two places is a card that
+// disagrees with itself after the next additive field: the list would show a
+// badge the re-rendered card drops, which reads as "the warning went away".
+// TestOneCardComposerFeedsEverySurface pins the single site.
+//
+// The status is reconciled against live instances through liveStatusIndexed, so
+// callers in a loop pass an index they fetched once; cardViewFor is the
+// single-agent spelling.
+func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance) ui.AgentCardView {
+	status := liveStatusIndexed(a, idx)
 	return ui.AgentCardView{
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
 		Repo: a.Repo, Status: status, KickedOff: a.KickedOff, Model: a.Model,
-		NoteID: a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		// 🔴 THE BOOLEAN, NEVER a.PendingNote. agents.KickoffOwed reads the note to
+		// answer whether one is outstanding; what crosses into the view layer is its
+		// answer. The note is operator-authored text and this repository is public.
+		KickoffOwed: agents.KickoffOwed(a),
+		NoteID:      a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		// The recent-log preview lazy-loads via /ui/agents/{id}/recent (htmx) so
+		// the list path makes NO per-agent k8s call. Only running agents with a
+		// provisioner get a preview (others render none).
 		LazyRecent: s.ext.Provisioner != nil && status == agents.StatusRunning,
 	}
+}
+
+// cardViewFor builds the single-card view for one agent, fetching the live
+// instance index itself. Used by the inline-rename re-render and the cancel/card
+// re-fetch. Do NOT use it in a loop — see liveStatus.
+func (s *Server) cardViewFor(ctx context.Context, a agents.Agent) ui.AgentCardView {
+	return s.cardViewIndexed(a, s.instanceIndex(ctx))
 }
 
 // handleAgentRenameForm serves GET /ui/agents/{id}/rename: the inline rename

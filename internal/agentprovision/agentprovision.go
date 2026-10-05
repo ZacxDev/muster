@@ -80,6 +80,17 @@
 // not a screen. Nothing on any page says it. Do not restate the rendering claim
 // without a caller to cite.
 //
+// ✅ THE THIRD BULLET IS NOW HALF CLOSED, AND THE FIRST TWO ARE UNCHANGED — read
+// which is which before quoting any of it. What changed is NOT this field.
+// agents.KickoffError still reaches exactly one hook-token-gated JSON route and
+// agents.KickoffErrorSuffix still has no caller, so "nothing on any page says it"
+// is TRUE OF THE REASON and stays written above. What a page says now is THAT a
+// first turn is owed: agents.KickoffOwed answers it from agents.pending_note plus
+// KickedOff, internal/ui's agentCard renders it as a "kickoff owed" badge beside
+// the status dot, and internal/api's agentJSON carries the same boolean as
+// `kickoffOwed`. So a card refined to `running` over an undelivered note no longer
+// reads healthy — it reads `running` AND owed. The REASON is still machine-only.
+//
 // ⚠ THAT IS A RECORD, NOT A FIX, AND THE GAP IT RECORDS HAS TWO OWNERS. The
 // delivery itself needs a gateway (plan step 22c); the ESCALATION of an
 // undelivered kickoff to a red card already exists as a pure decision table in
@@ -87,7 +98,8 @@
 // ProvisioningStuckTimeout) and needs the reconcile loop that table's own header
 // declares OWED. Neither is in this package's scope and neither is silently
 // assumed: until they land, a dispatch with kickoff=true produces an instance that
-// reads HEALTHY on every page and was never told what to do.
+// was never told what to do — VISIBLY so on both tiers since the owed-kickoff
+// signal landed, which is a label on the gap and not a delivery of the turn.
 package agentprovision
 
 import (
@@ -147,9 +159,17 @@ const UndeliveredKickoffReason = "kickoff NOT delivered: this build wires a life
 // failure means the request was reasonable and something broke. This means the
 // request can NEVER succeed on this configuration, so doing half of it is the
 // wrong answer: the half that works (create the pod, clone the repository into
-// it, hand it a model credential) is exactly the half that costs money, holds a
-// secret and reads HEALTHY on every page, while the half that matters — telling
-// the agent what to do — cannot happen at all.
+// it, hand it a model credential) is exactly the half that costs money and holds
+// a secret, while the half that matters — telling the agent what to do — cannot
+// happen at all.
+//
+// ⚠ THIS SENTENCE SAID "and reads HEALTHY on every page", AND THAT CLAUSE IS NO
+// LONGER TRUE — the clause is removed rather than kept, because unlike the
+// retracted paragraphs in this file's header it was not load-bearing for anything
+// else. Both tiers now show agents.KickoffOwed, so such a pod reads `running` AND
+// `kickoff owed`. It does NOT weaken the refusal: the cost, the secret and the
+// impossibility of the asked-for turn are each sufficient on their own, and a
+// badge naming the gap is not a reason to create the gap.
 //
 // ⚠ IT IS A SENTINEL SO A CALLER CAN TELL IT FROM A DRIVER ERROR. Nothing in this
 // module matches on it yet: the only consumer of Dispatch's error is a background
@@ -208,6 +228,18 @@ const KickoffDeliveryWired = false
 // It is a PREFIX of [KickoffRefusalReason] rather than a second sentence of its own,
 // so the two cannot drift into saying different things — pinned by
 // TestTheShortRefusalIsAPrefixOfTheLongOne.
+//
+// ⚠ ONE CLAUSE OF THE TEXT BELOW IS NOW WEAKER THAN WHEN IT WAS WRITTEN, AND IT IS
+// FLAGGED HERE RATHER THAN SILENTLY REWORDED. "a pod that reads healthy" was
+// literally true while nothing on any page reported an undelivered first turn;
+// agents.KickoffOwed now renders a "kickoff owed" badge beside the status dot, so
+// such a pod would read `running` AND owed. The REMEDY and the cause are
+// untouched and still exactly true, which is why the operator-facing bytes are
+// left alone: this text is pinned by
+// TestTheRemedyDoesNotPromiseADeliveryTheDispatchPathCannotMake, whose own doc
+// records three regressions caused by editing it, and rewording it is a product
+// decision about copy rather than part of surfacing the signal. If it is reworded,
+// re-read that test's four properties first.
 const KickoffRefusalSummary = "dispatch REFUSED and NOTHING was provisioned: this deployment " +
 	"cannot deliver an agent's first turn, so beginning the work is impossible and creating the " +
 	"instance would only produce a pod that reads healthy and was never told what to do. " +
@@ -502,8 +534,14 @@ func (a *Adapter) Dispatch(agentID int64, kickoff bool) error {
 		// freshly-minted token, clone the repository into the pod, hand it a model
 		// credential — and then record that the one thing the caller asked for did
 		// not happen. Every object in that list is a cost, and the card that results
-		// reads `running` (agents.ComputeStatus refines a live ready instance), so
-		// the operator's only evidence was a log line and a machine-tier field.
+		// reads `running` (agents.ComputeStatus refines a live ready instance).
+		//
+		// ⚠ "SO THE OPERATOR'S ONLY EVIDENCE WAS A LOG LINE AND A MACHINE-TIER
+		// FIELD" USED TO END THAT SENTENCE AND IS NO LONGER TRUE: the card carries
+		// a "kickoff owed" badge (agents.KickoffOwed) beside the `running` dot. The
+		// refusal stands on the COST — a pod, a namespace, a ServiceAccount and a
+		// minted secret for work that cannot begin — which was always the stronger
+		// of the two reasons.
 		return a.refuseKickoff(ag)
 	}
 	if ag, err = a.create(ctx, ag); err != nil {

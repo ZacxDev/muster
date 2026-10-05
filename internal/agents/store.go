@@ -86,15 +86,43 @@ func NamespaceFor(prefix, name string) string { return ResolveNamespacePrefix(pr
 
 // Agent is the stored record of one managed agent.
 type Agent struct {
-	ID           int64     `json:"id"`
-	Name         string    `json:"name"`      // short slug; also the provision.Ref.Name
-	Namespace    string    `json:"namespace"` // the driver's scoping unit (provision.Instance.Group)
-	DisplayName  string    `json:"displayName"`
-	Repo         string    `json:"repo"` // owner/name
-	RepoBranch   string    `json:"repoBranch"`
-	NoteID       *int64    `json:"noteId,omitempty"`
-	NoteText     string    `json:"noteText,omitempty"`
-	PendingNote  string    `json:"-"`     // kickoff message awaiting first start
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`      // short slug; also the provision.Ref.Name
+	Namespace   string `json:"namespace"` // the driver's scoping unit (provision.Instance.Group)
+	DisplayName string `json:"displayName"`
+	Repo        string `json:"repo"` // owner/name
+	RepoBranch  string `json:"repoBranch"`
+	NoteID      *int64 `json:"noteId,omitempty"`
+	NoteText    string `json:"noteText,omitempty"`
+
+	// PendingNote is the first message an agent was created WITH: the text a
+	// dispatch asked to be delivered as its opening turn. It is written once, by
+	// internal/api's createAndDispatchAgent, and from then on only round-tripped
+	// by the store.
+	//
+	// 🔴 NOTHING DELIVERS IT, AND THIS COMMENT IS WHERE THAT STOPPED BEING
+	// HIDDEN. It read "kickoff message awaiting first start" — a sentence that
+	// asserts a delivery, in a field that at the time had no production reader at
+	// all: the write above, the SELECT/scan/INSERT in pgstore.go, and the column
+	// in migration 0001. "Awaiting" was doing the work of a mechanism that does
+	// not exist. agentprovision.KickoffDeliveryWired is `false` and is BOUND to a
+	// measurement of this module's call graph
+	// (modulegate.TestNothingDeliversAKickoffAndThisModuleSaysSo), so the honest
+	// statement is: an agent can hold one of these for ever.
+	//
+	// [KickoffOwed] is now its one derived reader. It answers "is a first turn
+	// still owed" from this field together with KickedOff, and that BOOLEAN is
+	// what the agent card and the machine projection (api.agentJSON) report.
+	//
+	// 🔴 THE TEXT ITSELF NEVER LEAVES THE PROCESS, AND `json:"-"` IS THE WHOLE
+	// MECHANISM. It is operator-authored instruction text, this repository is
+	// public, and the leak gate (tests/leakscan.py) is the standing reason. So the
+	// derived boolean is surfaced and the content is not — asserted both ways by
+	// agents.TestKickoffOwedTruthTable's sibling
+	// TestAnOwedKickoffIsReportedWithoutTheNotesText in internal/api, which reads
+	// the rendered card and the JSON body for the fixture's own words.
+	PendingNote string `json:"-"`
+
 	Model        string    `json:"model"` // OpenRouter slug; "" = cluster default
 	Status       string    `json:"status"`
 	HooksToken   string    `json:"-"`
