@@ -626,9 +626,18 @@ func TestAnAgentWhoseNameIsNotAUsableInstanceIdentityIsRefused(t *testing.T) {
 // TestBuildingASpecDoesNotAliasTheCallersMutableInputs is the kind of defect that
 // only ever shows up in production, because a test that builds one spec and
 // inspects it immediately can never see it.
+// ⚠ THE AGENT MUST NAME NO MODEL OF ITS OWN, AND THAT IS A PRECONDITION OF THE
+// SUBJECT RATHER THAN A WORKAROUND. The aliasing this pins is over
+// Config.ModelFallbacks, and a per-agent primary DROPS the deployment chain (see
+// TestAPerAgentModelDropsTheDeploymentFallbackChain), so with fixtureAgent()'s
+// own model set there is no fallback slice in the spec to alias and the test
+// would assert nothing. Passing fixtureAgent() unchanged used to "work" only
+// because the agent's model was ignored entirely — the defect.
 func TestBuildingASpecDoesNotAliasTheCallersMutableInputs(t *testing.T) {
 	cfg := fixtureConfig()
-	spec := mustBuild(t, fixtureAgent(), cfg, Options{})
+	a := fixtureAgent()
+	a.Model = ""
+	spec := mustBuild(t, a, cfg, Options{})
 
 	// Mutating the caller's slice must not change the built spec.
 	cfg.ModelFallbacks[0] = "openrouter/mutated/after-the-fact"
@@ -720,15 +729,208 @@ func TestRepoDirNameHandlesTheShapesTheRowCanHold(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// WHICH MODEL A BUILT SPEC NAMES.
+//
+// 🔴 THE DEFECT THESE PIN, MEASURED ON A LIVE CLUSTER RATHER THAN REASONED
+// ABOUT. An agent created with an explicit model had that slug in its database
+// row's `model` column and the DEPLOYMENT-WIDE DEFAULT in its pod's
+// MUSTER_CONFIG, with nothing anywhere reporting the substitution. The cause
+// was structural: buildRuntimeConfig took only the deployment Config, so the
+// agent row was not in scope at the one place the primary is chosen, and
+// agents.ResolveModel — the function written to own exactly that precedence —
+// had ZERO production callers.
+// --------------------------------------------------------------------------
+
+// specPrimaryModel digs the primary slug out of a built spec's opaque config.
+//
+// It returns ok=false for "no model key at all", which is a DIFFERENT state from
+// an empty primary and the whole subject of
+// TestNoModelMeansNoConfigKeyRatherThanAnEmptyOne.
+func specPrimaryModel(t *testing.T, spec provision.Spec) (string, bool) {
+	t.Helper()
+	raw, present := spec.Config[ConfigKeyModel]
+	if !present {
+		return "", false
+	}
+	model, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("Spec.Config[%q] is not a map: %#v", ConfigKeyModel, raw)
+	}
+	primary, ok := model["primary"].(string)
+	if !ok {
+		return "", false
+	}
+	return primary, true
+}
+
+// specModelFallbacks digs the fallback chain out of a built spec's opaque config.
+func specModelFallbacks(t *testing.T, spec provision.Spec) ([]string, bool) {
+	t.Helper()
+	raw, present := spec.Config[ConfigKeyModel]
+	if !present {
+		return nil, false
+	}
+	model, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("Spec.Config[%q] is not a map: %#v", ConfigKeyModel, raw)
+	}
+	fallbacks, ok := model["fallbacks"].([]string)
+	if !ok {
+		return nil, false
+	}
+	return fallbacks, true
+}
+
+// TestThePerAgentModelWinsOverTheDeploymentDefault is the regression guard.
+//
+// 🔴 RED AT origin/main WITH THE MEASURED SYMPTOM: there the primary is
+// fixtureConfig().Model, i.e. the deployment default, exactly as the live pod's
+// MUSTER_CONFIG read.
+//
+// 🔴 IT PINS THE RELATIONSHIP, AND THEN PINS THE LITERAL ANYWAY. The
+// relationship assertion (equals agents.ResolveModel over the two inputs) is
+// what makes this a statement about the precedence rule rather than about one
+// pair of strings. On its own it would be satisfied by a Build and a ResolveModel
+// that regressed TOGETHER — deriving an expectation from the implementation it
+// tests — so the literal assertions below it say which of the two inputs must
+// win, in the test's own words.
+//
+// ⚠ THE FIXTURE IS WHAT MAKES THIS OBSERVABLE, SO ITS PRECONDITION IS ASSERTED
+// AND NOT ASSUMED. Both slugs must be non-empty and DIFFERENT: a fixture whose
+// row and default could coincide cannot see this bug at all, and a later
+// "tidy-up" that aligned them would leave a green test pinning nothing.
+func TestThePerAgentModelWinsOverTheDeploymentDefault(t *testing.T) {
+	a, cfg := fixtureAgent(), fixtureConfig()
+	if a.Model == "" || cfg.Model == "" || a.Model == cfg.Model {
+		t.Fatalf("the fixtures cannot discriminate: agent model %q, deployment default %q. "+
+			"Both must be non-empty and different or the defect this test exists for is invisible.",
+			a.Model, cfg.Model)
+	}
+
+	spec := mustBuild(t, a, cfg, Options{})
+	got, ok := specPrimaryModel(t, spec)
+	if !ok {
+		t.Fatalf("the built spec names NO primary model; Spec.Config = %#v", spec.Config)
+	}
+
+	if want := agents.ResolveModel(a.Model, cfg.Model); got != want {
+		t.Errorf("the built spec's primary model is %q, but agents.ResolveModel(%q, %q) = %q.\n"+
+			"The precedence rule and the spec that is actually provisioned disagree, which is the "+
+			"defect: the row's model is stored and served and then dropped at provision time.",
+			got, a.Model, cfg.Model, want)
+	}
+	if got != a.Model {
+		t.Errorf("primary model = %q, want the AGENT ROW's own model %q.\n"+
+			"An operator who picks a model in the dispatch modal must get that model; silently "+
+			"substituting another is the measured defect.", got, a.Model)
+	}
+	if got == cfg.Model {
+		t.Errorf("primary model = %q, which is the DEPLOYMENT-WIDE DEFAULT. The agent row asked "+
+			"for %q and was overruled with no warning anywhere.", got, a.Model)
+	}
+}
+
+// TestAnAgentWithNoModelOfItsOwnGetsTheDeploymentDefault is the other side of the
+// same precedence, and it is what stops the fix above from being "always use the
+// row".
+func TestAnAgentWithNoModelOfItsOwnGetsTheDeploymentDefault(t *testing.T) {
+	a, cfg := fixtureAgent(), fixtureConfig()
+	a.Model = ""
+
+	spec := mustBuild(t, a, cfg, Options{})
+	got, ok := specPrimaryModel(t, spec)
+	if !ok {
+		t.Fatalf("the built spec names NO primary model; Spec.Config = %#v", spec.Config)
+	}
+	if want := agents.ResolveModel(a.Model, cfg.Model); got != want {
+		t.Errorf("primary model = %q, but agents.ResolveModel(%q, %q) = %q", got, a.Model, cfg.Model, want)
+	}
+	if got != cfg.Model {
+		t.Errorf("primary model = %q, want the deployment default %q. An agent that chose no "+
+			"model must inherit the installation's.", got, cfg.Model)
+	}
+}
+
+// TestAPerAgentModelDropsTheDeploymentFallbackChain pins the FALLBACKS DECISION.
+//
+// 🔴 IT IS A DECISION AND EITHER ANSWER WOULD HAVE BEEN A REAL BEHAVIOUR, which
+// is why it is asserted rather than left to whatever the code happened to do.
+// Config.ModelFallbacks is deployment-wide and there is no per-agent fallbacks
+// column, so keeping it would pair a hand-picked primary with a chain no
+// operator authored — and that chain can route the turn to a DIFFERENT model,
+// which defeats the only purpose the per-agent knob has. buildRuntimeConfig's
+// comment carries the full reasoning.
+func TestAPerAgentModelDropsTheDeploymentFallbackChain(t *testing.T) {
+	a, cfg := fixtureAgent(), fixtureConfig()
+	if len(cfg.ModelFallbacks) == 0 {
+		t.Fatal("the fixture declares no deployment fallbacks, so this test cannot see whether " +
+			"they are dropped or kept")
+	}
+
+	spec := mustBuild(t, a, cfg, Options{})
+	if got, ok := specModelFallbacks(t, spec); ok {
+		t.Errorf("an agent naming its own model %q was provisioned with the deployment's fallback "+
+			"chain %v. Any entry of that chain is a different model, so a hiccup on the chosen one "+
+			"silently reinstates whatever the operator picked %q to avoid.", a.Model, got, a.Model)
+	}
+
+	// CONTROL: the chain is NOT simply never written. An agent that chose no model
+	// of its own still gets the installation's chain, so the assertion above is
+	// about the per-agent case and not about a fallbacks key that went missing.
+	noModel := fixtureAgent()
+	noModel.Model = ""
+	dspec := mustBuild(t, noModel, cfg, Options{})
+	got, ok := specModelFallbacks(t, dspec)
+	if !ok {
+		t.Fatalf("an agent with no model of its own lost the deployment's fallback chain too; "+
+			"Spec.Config = %#v", dspec.Config)
+	}
+	if len(got) != len(cfg.ModelFallbacks) || got[0] != cfg.ModelFallbacks[0] {
+		t.Errorf("deployment fallbacks = %v, want %v", got, cfg.ModelFallbacks)
+	}
+}
+
+// --------------------------------------------------------------------------
 // "unset" and "empty" must stay distinguishable.
 // --------------------------------------------------------------------------
 
+// TestNoModelMeansNoConfigKeyRatherThanAnEmptyOne pins the contract that unset at
+// BOTH levels writes no key, so the runtime decides.
+//
+// 🔴 IT NOW CLEARS THE AGENT'S MODEL TOO, AND THAT EDIT IS ITSELF EVIDENCE OF THE
+// DEFECT. It used to clear only the deployment Config and pass fixtureAgent(),
+// which carries a non-empty Model — so "unset at both levels" was never the state
+// under test, and the test could only pass because the agent's model was being
+// dropped. With the row honoured, an agent that names a model must get a config
+// key; the no-key contract is about the case where NOBODY named one.
 func TestNoModelMeansNoConfigKeyRatherThanAnEmptyOne(t *testing.T) {
+	a := fixtureAgent()
+	a.Model = ""
 	cfg := fixtureConfig()
 	cfg.Model, cfg.ModelFallbacks = "", nil
-	spec := mustBuild(t, fixtureAgent(), cfg, Options{})
+	spec := mustBuild(t, a, cfg, Options{})
 	if spec.Config != nil {
 		t.Errorf("Spec.Config = %#v, want nil — writing {\"primary\":\"\"} hands the runtime a value it must special-case, which is how unset and empty stop being distinguishable", spec.Config)
+	}
+}
+
+// TestAnAgentNamingAModelGetsAConfigKeyEvenWithTheDeploymentUnset is the
+// complement, and it is the state the live defect was measured in reverse: a
+// deployment that names no model must still provision the agent's own choice.
+func TestAnAgentNamingAModelGetsAConfigKeyEvenWithTheDeploymentUnset(t *testing.T) {
+	a := fixtureAgent()
+	cfg := fixtureConfig()
+	cfg.Model, cfg.ModelFallbacks = "", nil
+
+	spec := mustBuild(t, a, cfg, Options{})
+	got, ok := specPrimaryModel(t, spec)
+	if !ok {
+		t.Fatalf("agent %q names model %q and the built spec has no model key at all: %#v.\n"+
+			"Omitting the key means \"the runtime decides\", which discards a choice the operator "+
+			"made explicitly.", a.Name, a.Model, spec.Config)
+	}
+	if got != a.Model {
+		t.Errorf("primary model = %q, want the agent's own %q", got, a.Model)
 	}
 }
 

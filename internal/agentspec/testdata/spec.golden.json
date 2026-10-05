@@ -112,11 +112,7 @@
   },
   "Config": {
     "model": {
-      "fallbacks": [
-        "openrouter/vendor-c/model-three",
-        "openrouter/vendor-d/model-four"
-      ],
-      "primary": "openrouter/vendor-b/model-two"
+      "primary": "openrouter/vendor-a/model-one"
     }
   },
   "Ports": [

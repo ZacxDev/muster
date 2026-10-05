@@ -294,10 +294,18 @@ type Config struct {
 	// SECRETS list. Empty means the installation expects the runtime image to
 	// carry its own provider credentials.
 	OpenRouterAPIKey string
-	// Model is the primary model slug. Empty means the runtime decides, which
-	// is why Build omits the config key entirely rather than writing "".
+	// Model is the DEPLOYMENT-WIDE DEFAULT primary model slug, not the slug
+	// every agent gets: an agent row carrying its own Model outranks it (see
+	// resolvePrimaryModel, which delegates that precedence to
+	// [agents.ResolveModel]). Empty means the runtime decides, which is why
+	// Build omits the config key entirely rather than writing "".
 	Model string
 	// ModelFallbacks are tried in order after Model.
+	//
+	// ⚠ DEPLOYMENT-WIDE, AND DROPPED FOR AN AGENT THAT NAMES ITS OWN MODEL.
+	// There is no per-agent fallbacks column, so pairing this chain with a
+	// hand-picked per-agent primary would produce a combination no operator
+	// authored; buildRuntimeConfig's own comment records the full reasoning.
 	ModelFallbacks []string
 	// MemoryRequest and MemoryLimit are passed to the driver verbatim, in the
 	// units it understands. See [provision.Resources] on why they are strings.
@@ -551,7 +559,7 @@ func Build(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 			Persist: cfg.WorkspacePersist,
 		},
 		Repo:   repo,
-		Config: buildRuntimeConfig(cfg),
+		Config: buildRuntimeConfig(a, cfg),
 		Ports:  ports,
 		// 🔴 DECLARED UNCONDITIONALLY, FOR THE REASON [DefaultGatewayPort] IS:
 		// both reach the cluster at CREATE time, in the pod template, so gating
@@ -898,27 +906,84 @@ func repoDirName(repo string) string {
 	return trimmed
 }
 
-// buildRuntimeConfig writes the opaque runtime config.
+// resolvePrimaryModel picks the primary slug for ONE agent, delegating the
+// agent-over-deployment precedence to [agents.ResolveModel].
+//
+// 🔴 THE DELEGATION IS THE POINT, NOT A STYLE CHOICE. Until this existed the
+// agent row's Model was stored, served over the API and displayed, and then
+// dropped on the floor at provision time: buildRuntimeConfig took only the
+// deployment Config, so an operator who chose a model in the dispatch modal got
+// the deployment-wide default with nothing anywhere saying so. ResolveModel had
+// ZERO production callers and its own docstring argues against a second inlined
+// copy of the three-way choice, so this routes through it rather than
+// re-spelling `if a.Model != ""` here.
+//
+// ⚠ WHY THE BOTH-EMPTY CASE SHORT-CIRCUITS INSTEAD OF CALLING ResolveModel.
+// The two packages end their precedence chains in DIFFERENT places and both are
+// right for their own layer: agents.ResolveModel falls through to a built-in
+// slug (it answers "which model does an agent run on"), while this package's
+// contract is that unset at BOTH levels writes no key at all and lets the
+// runtime decide (see Config.Model, MUSTER_AGENT_MODEL's own documentation, and
+// TestNoModelMeansNoConfigKeyRatherThanAnEmptyOne). Calling ResolveModel
+// unconditionally would silently start stamping a hardcoded slug into
+// MUSTER_CONFIG for every deployment that sets no model — a behaviour change
+// nobody asked for and the opposite of "the runtime decides". So: ResolveModel
+// owns PRECEDENCE, this package owns EXPRESSIBILITY. Whenever either input is
+// set, ResolveModel's built-in tier is unreachable and it reduces to exactly the
+// precedence wanted here.
+func resolvePrimaryModel(a agents.Agent, cfg Config) string {
+	if a.Model == "" && cfg.Model == "" {
+		return ""
+	}
+	return agents.ResolveModel(a.Model, cfg.Model)
+}
+
+// buildRuntimeConfig writes the opaque runtime config for ONE agent.
 //
 // It writes the model key ONLY when there is a model to name. An empty primary
 // with a populated fallback list is not expressible upstream either, and writing
 // {"primary": ""} would hand the runtime a value it has to special-case — which
 // is how "unset" and "empty" stop being distinguishable, the exact defect
 // plan §4.2 records against the original config.
-func buildRuntimeConfig(cfg Config) map[string]any {
-	if cfg.Model == "" && len(cfg.ModelFallbacks) == 0 {
+//
+// 🔴 A PER-AGENT PRIMARY DROPS THE DEPLOYMENT'S FALLBACK CHAIN. THIS IS A
+// DECISION, NOT AN OVERSIGHT, AND IT IS STATED BECAUSE EITHER ANSWER IS A REAL
+// BEHAVIOUR. Config.ModelFallbacks is deployment-wide and there is no per-agent
+// fallbacks column, so KEEPING it would pair an agent-specific primary with a
+// deployment-specific chain — a combination no operator ever authored and none
+// can see. Worse, it defeats the only thing the per-agent knob is for: an
+// operator names a specific model precisely because the others misbehave for
+// this agent, so a chain that can route the turn to a DIFFERENT model silently
+// reinstates the problem being worked around. A visible hard failure on the
+// chosen model beats an invisible success on the wrong one.
+//
+// ⚠ OBSERVATIONALLY INERT TODAY, WHICH IS WHY IT IS CHEAP TO STATE NOW: nothing
+// populates Config.ModelFallbacks (cmd/muster-server's agentSpecConfig maps
+// Model but no fallbacks), so production builds carry no fallbacks key either
+// way. The branch exists so that whenever a deployment-wide chain IS wired, it
+// does not quietly acquire authority over an agent whose model was chosen by
+// hand.
+func buildRuntimeConfig(a agents.Agent, cfg Config) map[string]any {
+	primary := resolvePrimaryModel(a, cfg)
+
+	fallbacks := cfg.ModelFallbacks
+	if a.Model != "" {
+		fallbacks = nil
+	}
+
+	if primary == "" && len(fallbacks) == 0 {
 		return nil
 	}
 	model := map[string]any{}
-	if cfg.Model != "" {
-		model["primary"] = cfg.Model
+	if primary != "" {
+		model["primary"] = primary
 	}
-	if len(cfg.ModelFallbacks) > 0 {
+	if len(fallbacks) > 0 {
 		// Copied, not aliased: Spec.Config is handed to a driver and a caller
 		// mutating its own slice afterwards must not change a built spec.
-		fallbacks := make([]string, len(cfg.ModelFallbacks))
-		copy(fallbacks, cfg.ModelFallbacks)
-		model["fallbacks"] = fallbacks
+		copied := make([]string, len(fallbacks))
+		copy(copied, fallbacks)
+		model["fallbacks"] = copied
 	}
 	return map[string]any{ConfigKeyModel: model}
 }
