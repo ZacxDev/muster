@@ -472,16 +472,27 @@ type Provisioner interface {
 	// it did not make, is wrong against this interface — not merely different.
 	//
 	// 🔴 REFUSING A KICKOFF IT CANNOT DELIVER IS ALSO LEGAL, AND IS WHAT
-	// internal/agentprovision NOW DOES when its process has no Gateway: it creates
-	// nothing and returns an error (agentprovision.ErrKickoffUndeliverable). The
-	// paragraph above describes the CREATE-THEN-RECORD path, which is now the
-	// gateway-configured one only. Both are honest; what this interface forbids is
-	// the third option, doing the expensive half and reporting success.
-	// ⚠ THE CALLER OF THIS METHOD IN THIS PACKAGE CANNOT SURFACE THAT REFUSAL.
-	// createAndDispatchAgent calls it inside safeGo, after the row exists, so the
-	// error is logged and the POST has already answered. A refusal an operator can
-	// see needs a synchronous check in the create handler, before the row —
-	// cmd/muster-server/doc_seams.go entry 1 carries the closing condition.
+	// internal/agentprovision NOW DOES when nothing in its process could deliver
+	// one: it creates nothing and returns an error
+	// (agentprovision.ErrKickoffUndeliverable). The paragraph above describes the
+	// CREATE-THEN-RECORD path. Both are honest; what this interface forbids is the
+	// third option, doing the expensive half and reporting success.
+	//
+	// ⚠ THIS USED TO SAY CREATE-THEN-RECORD WAS "the gateway-configured one only",
+	// WHICH MADE A CONFIGURED GATEWAY SOUND SUFFICIENT. It is not: delivering a
+	// kickoff also needs code that CALLS the gateway, and there is none, so on the
+	// only implementation in this module NO deployment reaches create-then-record
+	// today. See agentprovision.KickoffDeliveryWired.
+	//
+	// ✅ AND THE REFUSAL NOW REACHES THE CALLER, through
+	// KickoffUndeliverableReason below rather than through this method. This
+	// paragraph read "THE CALLER OF THIS METHOD IN THIS PACKAGE CANNOT SURFACE THAT
+	// REFUSAL … A refusal an operator can see needs a synchronous check in the
+	// create handler, before the row", and that check exists: handleAgentCreate
+	// answers 409 with the reason before Agents.Create. The asynchronous half is
+	// unchanged and still true of THIS method — createAndDispatchAgent calls it
+	// inside safeGo, after the row exists — which is why the pre-flight is a
+	// separate question rather than a different return value here.
 	Dispatch(agentID int64, kickoff bool) error
 	// Start brings a stopped or never-provisioned agent up, creating its instance
 	// when the driver reports the backend does not have one.
@@ -520,6 +531,31 @@ type Provisioner interface {
 	TailLogs(ctx context.Context, a agents.Agent, lines int64) (string, error)
 	// StreamLogs follows the agent's instance output, invoking emit per line.
 	StreamLogs(ctx context.Context, a agents.Agent, emit func(string)) error
+	// KickoffUndeliverableReason answers why this process cannot deliver an
+	// agent's FIRST TURN, and "" when it can. It must not create, write or
+	// provision anything: it is the question Dispatch answers by refusing, asked
+	// before anything exists to refuse over.
+	//
+	// 🔴 IT IS ON THIS INTERFACE RATHER THAN BEING A TYPE ASSERTION, AND THE
+	// POLARITY OF THE FAILURE IS WHY. An optional interface that an
+	// implementation does not satisfy yields ok=false and leaves NO TRACE —
+	// doc_seams.go entry 3 is about exactly that — and here the no-trace branch
+	// is the permissive one: no pre-flight, so a dispatch the deployment cannot
+	// satisfy answers 200 again and the operator is back to reading a `running`
+	// card over an agent nobody told what to do. A method on the interface makes
+	// omitting it a compile error instead.
+	//
+	// 🔴 A CALLER MUST NOT RE-DERIVE THIS FROM ITS OWN CONFIGURATION. The answer
+	// has to be the SAME fact the implementation's own Dispatch branches on, or
+	// the pre-flight and the dispatch disagree — which is worse than no
+	// pre-flight, because it refuses requests that would have worked or admits
+	// ones that will not. internal/agentprovision returns the field Dispatch
+	// reads; see its own doc on why.
+	//
+	// ⚠ "" IS DELIVERABLE, so the zero return is the permissive one. The
+	// fail-closed argument lives on agentprovision.Config.KickoffDeliverable,
+	// where a wiring can FORGET a struct field; a method cannot be forgotten.
+	KickoffUndeliverableReason() string
 }
 
 // Gateway is the agent CHAT surface: talking to a running instance's model

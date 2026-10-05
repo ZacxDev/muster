@@ -645,6 +645,36 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action := r.FormValue("action")
+	// 🔴 REFUSE A DISPATCH THIS DEPLOYMENT CANNOT SATISFY *HERE*, BEFORE THE ROW,
+	// BECAUSE THE PROVISIONER'S OWN REFUSAL CANNOT REACH THE PERSON WHO CLICKED.
+	// createAndDispatchAgent calls Dispatch inside safeGo — after the row exists and
+	// after this handler has answered — so a refusal there is a log line plus a red
+	// dot whose reason reaches no HTML surface. That was measured: with a kickoff
+	// undeliverable, POST /agents answered 200, rendered the agents list, and the
+	// operator's only evidence was a status colour.
+	//
+	// ⚠ ONLY action=dispatch IS REFUSED. "Save for later" asks for nothing this
+	// deployment cannot do, it is the operation the refusal's own remedy text points
+	// at, and refusing it would make that remedy a lie — the same asymmetry
+	// agentprovision.Adapter.Dispatch draws one layer down, and for the same reason.
+	// Both halves are pinned by TestADispatchIsRefusedWhileASaveAndAStartAreNot.
+	//
+	// 🔴 THE ANSWER IS THE PROVISIONER'S, NOT A SECOND OPINION ABOUT THE
+	// CONFIGURATION. Asking the implementation is what makes this pre-flight unable
+	// to disagree with what the dispatch would have done; computing it here from
+	// Extensions fields would be two expressions over one condition.
+	if action == "dispatch" {
+		if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
+			// 409 rather than 503: the request conflicts with the deployment's
+			// current state and NOTHING about retrying it later is different, which
+			// is what 503 would promise. Same status and same shape as the
+			// `gate:<reason>` refusal below — internal/ui's htmx:responseError
+			// handler toasts the body verbatim, so this text is what the operator
+			// reads.
+			http.Error(w, reason, http.StatusConflict)
+			return
+		}
+	}
 	repo := strings.TrimSpace(r.FormValue("repo"))
 	branch := strings.TrimSpace(r.FormValue("repo_branch"))
 	model := strings.TrimSpace(r.FormValue("model"))

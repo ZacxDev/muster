@@ -263,6 +263,14 @@ func (stubProvisioner) TailLogs(context.Context, agents.Agent, int64) (string, e
 }
 func (stubProvisioner) StreamLogs(context.Context, agents.Agent, func(string)) error { return nil }
 
+// ⚠ THE STUB REPORTS A KICKOFF AS DELIVERABLE, so the create handler's pre-flight
+// is a no-op for every fixture that does not override it. That is the right default
+// HERE and only here: these fixtures exist to drive the paths PAST the pre-flight,
+// and a stub that refused would silence them all with a 409. The refusal itself is
+// driven by a fixture that overrides this — see
+// TestADispatchIsRefusedWhileASaveAndAStartAreNot.
+func (stubProvisioner) KickoffUndeliverableReason() string { return "" }
+
 // ⚠ stubProvisioner HAS NO Chat METHODS ANY MORE, and their absence is load-bearing
 // rather than tidying. While one type satisfied both halves of the old combined
 // interface, any fixture that wired "the provisioner" also wired chat — so a route

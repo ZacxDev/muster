@@ -225,6 +225,19 @@ func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agent
 	// that mapped a named runtime to nil would otherwise leave the adapter believing
 	// a kickoff was deliverable and restore the silent-strand behaviour exactly.
 	//
+	// 🔴 AND `gw != nil` IS NOT THE WHOLE PREDICATE — IT WAS, AND THAT WAS A LIVE
+	// DEFECT RATHER THAN AN IMPRECISION. It is the NECESSARY half: a kickoff cannot
+	// be delivered without a gateway. It is not the SUFFICIENT half: something has
+	// to CALL the gateway when a dispatch asks for a first turn, and nothing in this
+	// module does. Measured on the deployment this binary runs on, with
+	// MUSTER_AGENT_GATEWAY set, the adapter was told a kickoff was deliverable, its
+	// pre-create refusal was skipped, and a Dispatch click created a Deployment, a
+	// ServiceAccount, a namespace, a Secret holding a minted token and a cloned
+	// repository — then recorded that the first turn never happened, behind a card
+	// agents.ComputeStatus refines to `running`. The second conjunct below is the
+	// missing half; agentprovision.KickoffDeliveryWired carries the argument and
+	// names the ledger that forces it to flip when a call site lands.
+	//
 	// ⚠ nil IS A SUPPORTED OUTCOME, so this is a capability report and not an error
 	// check — see this function's own header on why neither nil is a failure.
 	gw, err := buildGateway(cfg, driver)
@@ -240,7 +253,7 @@ func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agent
 		Store:              store,
 		Spec:               specCfg,
 		Logger:             logger,
-		KickoffDeliverable: gw != nil,
+		KickoffDeliverable: kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired),
 	})
 	if err != nil {
 		return nil, nil, nil, err
@@ -250,6 +263,28 @@ func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agent
 		return nil, nil, nil, err
 	}
 	return prov, gw, priv, nil
+}
+
+// kickoffDeliverable reports whether this process can deliver an agent's FIRST
+// TURN: it needs a gateway to deliver it THROUGH and a call site to deliver it
+// FROM, and it is the conjunction of exactly those two.
+//
+// 🔴 IT IS A FUNCTION, OVER A PARAMETER, FOR ONE REASON: THE TRUTH TABLE IS
+// TESTABLE IN ALL FOUR COMBINATIONS AND THE EXPRESSION IT REPLACES WAS NOT. Written
+// inline as `gw != nil && agentprovision.KickoffDeliveryWired`, three of the four
+// rows are unreachable from any test — the constant is a constant — so the only
+// guard possible would have been a test reading this file's source for the words.
+// Taking the second conjunct as an argument means a test can assert that BOTH are
+// required, today and after the constant flips, without knowing its current value.
+// See TestTheDeliverabilityPredicateNeedsBOTHConjuncts.
+//
+// ⚠ THE CALL SITE PASSES THE REAL CONSTANT AND NOTHING ELSE MAY. A caller that
+// passed a literal `true` here would restore, in one word, the defect the second
+// conjunct exists to remove — and internal/modulegate's kickoff-delivery ledger
+// would not see it, because that ledger measures the CONSTANT against the module's
+// call graph and knows nothing about this argument.
+func kickoffDeliverable(gw *agentgateway.Gateway, deliveryWired bool) bool {
+	return gw != nil && deliveryWired
 }
 
 // buildPrivilegeApplier builds the privilege tier over an already-constructed

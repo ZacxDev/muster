@@ -27,11 +27,21 @@
 // RECORDED on the row via agents.Store.SetKickoffError — the field whose own doc
 // calls it "evidence, not a verdict".
 //
-// 🔴 THAT IS NOW THE *GATEWAY-CONFIGURED* PATH ONLY, AND THE PARAGRAPH ABOVE IS
-// KEPT RATHER THAN REWRITTEN BECAUSE EVERYTHING BELOW IT ARGUES FROM IT. With NO
-// gateway in the process, Dispatch(kickoff=true) no longer creates anything: it
-// REFUSES. See [Config.KickoffDeliverable], [ErrKickoffUndeliverable] and
-// [KickoffRefusalReason].
+// 🔴 THAT IS NOW THE *DELIVERABLE* PATH ONLY, AND THE PARAGRAPH ABOVE IS KEPT
+// RATHER THAN REWRITTEN BECAUSE EVERYTHING BELOW IT ARGUES FROM IT. When nothing in
+// this process could deliver a kickoff, Dispatch(kickoff=true) no longer creates
+// anything: it REFUSES. See [Config.KickoffDeliverable], [ErrKickoffUndeliverable]
+// and [KickoffRefusalReason].
+//
+// 🔴 AND NO SHIPPED CONFIGURATION REACHES THE CREATE-THEN-RECORD PATH TODAY, WHICH
+// IS A CHANGE FROM WHAT THIS HEADER SAID. It called create-then-record "the
+// gateway-configured path", and cmd/muster-server passed `gw != nil` — so a
+// deployment that named a gateway took it. The binary now also requires
+// [KickoffDeliveryWired], which is false while nothing in the module calls a gateway
+// on the dispatch path, so EVERY deployment refuses a kickoff. The branch is not
+// dead code: the adapter's contract is still "do what you are told about", it is
+// reached by this package's own tests in both polarities, and it is what a deliverer
+// lands into. Nothing below assumes a deployment can reach it.
 //
 // WHY THE CREATE-THEN-RECORD BEHAVIOUR WAS THE WRONG ANSWER TO "I CANNOT DELIVER
 // THIS": it answered a request this configuration cannot satisfy by performing the
@@ -148,6 +158,62 @@ const UndeliveredKickoffReason = "kickoff NOT delivered: this build wires a life
 // that WILL match on it must not have to reach for a string.
 var ErrKickoffUndeliverable = errors.New("agentprovision: kickoff undeliverable")
 
+// KickoffDeliveryWired reports whether THIS MODULE contains production code that
+// hands an agent's pending note to its model gateway — a kickoff DELIVERER.
+//
+// 🔴 IT IS THE SECOND HALF OF A PREDICATE THAT WAS WRITTEN AS ITS FIRST HALF ALONE,
+// AND THE MISSING HALF WAS A LIVE DEFECT. Delivering a kickoff needs TWO things: a
+// gateway this process can reach, AND code that calls it when a dispatch asks for a
+// first turn. cmd/muster-server passed `gw != nil` into [Config.KickoffDeliverable],
+// which asserts only the first. Measured on the deployment that runs this today,
+// with MUSTER_AGENT_GATEWAY set so buildGateway returns a gateway: the adapter was
+// told a kickoff was deliverable, [Adapter.Dispatch]'s pre-create refusal was
+// skipped, and a Dispatch click did exactly what that refusal's own comment says it
+// exists to prevent — create a Deployment, a ServiceAccount, a namespace and a
+// Secret holding a freshly-minted token, clone the repository into the pod, hand it
+// a model credential, then record that the one thing the caller asked for did not
+// happen, behind a card that agents.ComputeStatus refines to `running`.
+//
+// ⚠ THIS PACKAGE DOES NOT READ IT AND MUST NOT. The adapter answers the question
+// from what it is TOLD ([Config.KickoffDeliverable]) — see that field on why it
+// cannot answer it by looking at itself. The constant lives here because this is
+// where the refusal and its whole argument live; its only reader is
+// cmd/muster-server/provisioner.go, which conjoins it with its own `gw != nil`.
+//
+// 🔴 IT IS A CONSTANT AND NOT A KNOB, AND FLIPPING IT IS NOT LEFT TO ANYONE'S
+// MEMORY. "A hardcoded false a future session forgets to flip" would move this
+// defect rather than fix it, so the value is BOUND to a measurement:
+// internal/modulegate's TestNothingDeliversAKickoffAndThisModuleSaysSo walks every
+// non-test file in the module for CALLS to the two store writes only a delivery can
+// make (agents.Store.SetKickedOff, agents.Store.RecordKickoffDelivery) and fails
+// when the measured set DISAGREES with this constant — in both directions. So a
+// deliverer landing reddens that test until this flips to true, and flipping it true
+// with no deliverer reddens it too.
+//
+// ⚠ WHAT IT IS *NOT* ABOUT: the ESCALATION of an undelivered kickoff to a red card.
+// That is agents.DecideReconcile, which also has no caller, and whose own header
+// carries its own closing condition. A reconcile loop that escalates without
+// delivering must NOT flip this constant, which is why the ledger's markers are the
+// delivery writes rather than the decision table.
+const KickoffDeliveryWired = false
+
+// KickoffRefusalSummary is the SHORT operator-facing form of the refusal: what
+// happened, and what to do instead. [KickoffRefusalReason] is this string plus the
+// mechanism, and nothing else.
+//
+// 🔴 IT EXISTS BECAUSE THE FULL REASON IS ~900 CHARACTERS AND THE SURFACE THAT NOW
+// SHOWS IT IS A TOAST. internal/api answers POST /agents with action=dispatch 409 +
+// this text, which internal/ui's htmx:responseError handler prints verbatim; the
+// full mechanism paragraph in a toast is a wall of text an operator scrolls past.
+// It is a PREFIX of [KickoffRefusalReason] rather than a second sentence of its own,
+// so the two cannot drift into saying different things — pinned by
+// TestTheShortRefusalIsAPrefixOfTheLongOne.
+const KickoffRefusalSummary = "dispatch REFUSED and NOTHING was provisioned: this deployment " +
+	"cannot deliver an agent's first turn, so beginning the work is impossible and creating the " +
+	"instance would only produce a pod that reads healthy and was never told what to do. " +
+	"Use \"Save for later\", then Start the agent — that brings the instance up without " +
+	"claiming a first turn nothing can deliver."
+
 // KickoffRefusalReason is the operator-facing text of that refusal. It is logged,
 // written to the agent row's error message, and carried in the returned error.
 //
@@ -155,43 +221,25 @@ var ErrKickoffUndeliverable = errors.New("agentprovision: kickoff undeliverable"
 // FROM [UndeliveredKickoffReason]. That constant is evidence about a thing that
 // already happened and its reader can do nothing with it; this one is read by
 // someone whose click was just refused, so it has to answer "why" and "what do I
-// set". An error with no remedy is how an operator concludes the feature is broken
+// do". An error with no remedy is how an operator concludes the feature is broken
 // and files a bug against the agent.
 //
-// 🔴 IT SAYS THE CAPABILITY EXISTS, ON PURPOSE. internal/agentgateway is shipped
-// and live-verified; what makes THIS refusal fire is that MUSTER_AGENT_GATEWAY is
-// unset, so it resolves to `none` and cmd/muster-server/provisioner.go's
-// buildGateway returns nil. A message that read "this build cannot deliver a
-// kickoff" — which is how the pre-refusal log line was phrased — sends the reader to
-// write code that is already written.
+// 🔴 THE REMEDY IS SAVE-THEN-START AND IT IS NO LONGER "SET THE VARIABLE", BECAUSE
+// SETTING THE VARIABLE DOES NOT LIFT THIS REFUSAL. An earlier revision led with
+// "CAUSE: MUSTER_AGENT_GATEWAY is unset (it resolves to `none`) … REMEDY: set
+// MUSTER_AGENT_GATEWAY=hooks-sha256", which was measured FALSE on the deployment
+// this text is read on: the variable IS set there, a gateway IS built, and the
+// refusal fires anyway — because [KickoffDeliveryWired] is false. A remedy an
+// operator has already applied reads as "this is broken", which is the exact
+// conclusion a remedy exists to prevent. The variables are still NAMED, as one of
+// the two conjuncts, and the text says in as many words that setting them is not
+// sufficient.
 //
-// 🔴 BUT SETTING THE VARIABLE IS NOT THE WHOLE FIX, AND THE TEXT MUST NOT IMPLY IT
-// IS. An earlier revision of this constant ended "...and dispatch again", which
-// promises a delivery the next dispatch does not make: doc_seams.go entry 1 records
-// that NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH. So the honest claim is
-// narrow: setting the variable lifts THIS refusal and returns the deployment to
-// create-then-record. Promising more would walk the operator from a refusal they can
-// act on into the stranded-note behaviour this refusal exists to prevent — and they
-// would have no reason to look further.
-//
-// ⚠ THE CALL SITE IS NOW THE *ONLY* THING AHEAD OF DELIVERY, AND THIS PARAGRAPH USED
-// TO NAME TWO MORE. It read: "plus two blockers ahead of that call site
-// (agentspec.Build renders no port, so the driver resolves no address; and the bearer
-// is derived from a variable name the provisioned container does not receive)". Both
-// clauses are false now — agentspec declares the gateway port and ships the row's
-// token under the name the bearer is derived from, and the constant below no longer
-// forwards the operator to them. 🔴 THAT MATTERED BECAUSE THE CONSTANT IS NOT A
-// COMMENT: it is logged, stored in agents.error_message and wrapped into the returned
-// error, so an operator who clicked Dispatch was being sent to hunt two closed
-// defects, against a doc_seams.go that says they are closed.
-//
-// ⚠ WHAT IS STILL TRUE AND IS WHY THE SENTENCE SURVIVES AT ALL: a kickoff on a
-// gateway-configured deployment still records non-delivery, because no caller invokes
-// the gateway on the dispatch path. The remedy text is narrowed, not deleted.
-//
-// 🔴 AND NO TEST PINS THAT THIS PARAGRAPH DESCRIBES THE RIGHT BLOCKERS — SEE
-// TestTheRemedyDoesNotPromiseADeliveryTheDispatchPathCannotMake, which guards the
-// constant's SHAPE and is explicit that it cannot guard its ACCURACY.
+// ⚠ THE SPEC AND CREDENTIAL CLAUSE SURVIVES AND IS STILL LOAD-BEARING. The text
+// tells the operator NOT to go looking at the rendered port or the gateway token,
+// because both were real blockers once and both are closed — and
+// TestEveryCapabilityClaimTheRefusalMakesIsTRUE pairs each of those two sentences
+// with a predicate that executes, so an unchanged sentence becoming false reddens.
 //
 // ⚠ THE ENVIRONMENT VARIABLE IS SPELLED AS A LITERAL HERE AND THE BINARY HAS ITS
 // OWN CONSTANT FOR IT. This package cannot import package main, so the two
@@ -201,35 +249,31 @@ var ErrKickoffUndeliverable = errors.New("agentprovision: kickoff undeliverable"
 // asserts this string contains envAgentGateway, so renaming the variable there
 // reddens here.
 //
-// ⚠ WHERE AN OPERATOR ACTUALLY READS IT, MEASURED RATHER THAN ASSUMED: the boot
-// banner, this pod's log, the agent row's status becoming `error` (which
-// agents.ComputeStatus treats as terminal, so the card can no longer be refined to
-// `running` by a live instance that does not exist), and agents.error_message on
-// the hook-token-gated GET /api/agents. 🔴 IT DOES *NOT* REACH THE HTTP RESPONSE OF
-// THE POST THAT ASKED, AND THAT IS THE HALF THIS PACKAGE CANNOT CLOSE:
-// internal/api's createAndDispatchAgent calls Dispatch inside safeGo, so the
-// returned error is logged and the operator's POST has already answered 200. The
-// row's `error` status is the strongest signal reachable from here. Closing the
-// rest is a synchronous check in internal/api's create handler, BEFORE the row is
-// created, keyed on the same capability this adapter is told about.
-// CLOSING CONDITION: a pull request in which POST /agents with action=dispatch
-// answers 4xx carrying this text on a deployment with no gateway. WHO CHECKS IT:
-// the reviewer of that pull request, against this paragraph.
-const KickoffRefusalReason = "dispatch REFUSED and NOTHING was provisioned: a kickoff cannot be " +
-	"delivered on this deployment, so beginning the work is impossible and creating the instance " +
-	"would only produce a pod that reads healthy and was never told what to do. CAUSE: " +
-	"MUSTER_AGENT_GATEWAY is unset (it resolves to `none`), so no api.Gateway is wired and nothing " +
-	"can hand the pending note to the instance's model gateway. REMEDY: set " +
-	"MUSTER_AGENT_GATEWAY=hooks-sha256 together with MUSTER_AGENT_GATEWAY_MODEL on this " +
-	"deployment — the capability IS in this build (internal/agentgateway); it is switched off, not " +
-	"missing. ⚠ THAT LIFTS THIS REFUSAL AND IS NOT YET THE WHOLE FIX: nothing calls the gateway " +
-	"on the dispatch path, so a kickoff on a gateway-configured deployment still creates the " +
-	"instance and records its non-delivery in agents.kickoff_error. Delivery additionally needs " +
-	"the call site named in cmd/muster-server/doc_seams.go entry 1, which is now the ONLY thing " +
-	"ahead of it: the rendered spec declares the gateway port and the instance receives the token " +
-	"the bearer is derived from, so do not go looking for those two. " +
-	"Meanwhile \"Save for later\" still works: it provisions nothing by design, and Start brings " +
-	"the agent up. See cmd/muster-server/doc_seams.go entry 1."
+// ✅ WHERE AN OPERATOR READS IT, MEASURED RATHER THAN ASSUMED: the boot banner, this
+// pod's log, the agent row's status becoming `error` (which agents.ComputeStatus
+// treats as terminal, so the card can no longer be refined to `running` by a live
+// instance that does not exist), agents.error_message on the hook-token-gated GET
+// /api/agents — and, since the change that added [Adapter.KickoffUndeliverableReason],
+// THE HTTP RESPONSE OF THE POST THAT ASKED. That last one was the open half and this
+// paragraph used to say so: "IT DOES *NOT* REACH THE HTTP RESPONSE OF THE POST THAT
+// ASKED … CLOSING CONDITION: a pull request in which POST /agents with
+// action=dispatch answers 4xx carrying this text." internal/api's handleAgentCreate
+// now asks [Adapter.KickoffUndeliverableReason] BEFORE the row is created and answers
+// 409 with [KickoffRefusalSummary], which is this string's own prefix.
+// ⚠ ONE CALLER IS STILL ASYNCHRONOUS AND THAT IS DELIBERATE: handleChiefProvision and
+// dispatchRunbook reach Dispatch through createAndDispatchAgent inside safeGo, so
+// their refusal is recorded on the row rather than returned. Neither has a
+// "Save for later" affordance to be sent to; the row they create can be brought up
+// with Start, which is the same escape by a different door.
+const KickoffRefusalReason = KickoffRefusalSummary + " CAUSE: a DELIVERED kickoff needs BOTH a " +
+	"gateway this process can reach — MUSTER_AGENT_GATEWAY=hooks-sha256 together with " +
+	"MUSTER_AGENT_GATEWAY_MODEL — AND a production call site that hands the pending note to it. " +
+	"The transport IS in this build (internal/agentgateway); the CALL SITE is not, which is why " +
+	"SETTING THOSE VARIABLES DOES NOT LIFT THIS REFUSAL on its own. See " +
+	"agentprovision.KickoffDeliveryWired, the constant a call site has to flip, and " +
+	"cmd/muster-server/doc_seams.go entry 1 for the call site itself. Do not go looking at the " +
+	"spec or the credential on the way: the rendered spec declares the gateway port and the " +
+	"instance receives the token the bearer is derived from."
 
 // Config is everything the adapter needs. Every field without a stated default
 // is required, and New says which one is missing rather than producing an
@@ -245,8 +289,19 @@ type Config struct {
 	// agentspec.Build refuses the two fields that have no defensible default.
 	Spec agentspec.Config
 	// KickoffDeliverable declares whether THIS PROCESS holds something that could
-	// hand an agent's pending note to its model gateway — in cmd/muster-server,
-	// whether buildGateway returned a gateway rather than nil.
+	// hand an agent's pending note to its model gateway.
+	//
+	// 🔴 "SOMETHING THAT COULD" IS A CONJUNCTION OF TWO FACTS AND THIS DOC USED TO
+	// NAME ONLY ONE OF THEM. It read "— in cmd/muster-server, whether buildGateway
+	// returned a gateway rather than nil", and that is what the binary passed: a
+	// reachable gateway, with nothing asserted about whether any code CALLS one on
+	// the dispatch path. On the deployment that runs this, with
+	// MUSTER_AGENT_GATEWAY set, the first fact was true and the second false, so
+	// this field was true, the refusal below was skipped, and a Dispatch click
+	// produced the pod-that-was-never-told-what-to-do this whole file argues
+	// against. The binary now passes `gw != nil && KickoffDeliveryWired` — see
+	// [KickoffDeliveryWired] for the second conjunct and the ledger that keeps it
+	// honest.
 	//
 	// 🔴 IT IS EXTERNAL KNOWLEDGE AND IT HAS TO BE, WHICH IS WHY IT IS A FIELD
 	// RATHER THAN A METHOD ON THIS TYPE. This adapter is the LIFECYCLE half by
@@ -326,6 +381,49 @@ func New(cfg Config) (*Adapter, error) {
 // messages that have to say which set of capability losses applies.
 func (a *Adapter) Driver() string { return a.driver.Driver() }
 
+// KickoffUndeliverableReason answers, for THIS process, why an agent's first turn
+// cannot be delivered — and "" when it can. It is the question
+// [Adapter.Dispatch] answers by refusing, asked WITHOUT performing the refusal, so
+// a caller can answer its own request before creating anything.
+//
+// ⚠ IT RETURNS THE SHORT FORM, [KickoffRefusalSummary], AND THE DIFFERENCE IS THE
+// AUDIENCE RATHER THAN A LOSS. Its one consumer puts the string straight into an
+// HTTP response body that internal/ui shows a human as a toast; the ~900-character
+// mechanism paragraph in [KickoffRefusalReason] is what a toast gets scrolled past
+// for. The full text still reaches the log, the agent row's error_message and the
+// returned error on the Dispatch path, and the short form is a literal PREFIX of it,
+// so neither surface can come to say something the other contradicts.
+//
+// 🔴 IT EXISTS SO THE REFUSAL REACHES THE HUMAN WHO ASKED, WHICH Dispatch CANNOT DO.
+// internal/api calls Dispatch inside a background goroutine after the row exists, so
+// the returned [ErrKickoffUndeliverable] is logged into this pod's stdout and the
+// operator's POST has already answered 200 — a card that turns red with the reason
+// in a machine-tier field. This method is what lets the create handler refuse
+// SYNCHRONOUSLY, before the row, and hand back [KickoffRefusalSummary] with a 409.
+//
+// 🔴 IT IS A SECOND READ OF ONE FACT, NOT A SECOND PREDICATE, AND THAT IS THE WHOLE
+// POINT OF ITS SHAPE. It returns the same field [Adapter.Dispatch] branches on, so
+// the pre-flight answer cannot disagree with what the dispatch would actually do. A
+// caller computing deliverability from its own copy of the configuration is the
+// hazard: two expressions over one condition, disagreeing for every input the two
+// were written against at different times. Guarded by internal/api's
+// TestTheCreateHandlersPreflightAgreesWithWhatDispatchWouldDo.
+//
+// ⚠ "" MEANS DELIVERABLE, AND THE ZERO VALUE OF THIS RETURN IS THEREFORE THE
+// PERMISSIVE ONE — the opposite polarity from [Config.KickoffDeliverable], whose zero
+// value refuses. That is not an oversight and it does not reopen the hole that field's
+// doc closes: a struct field can be FORGOTTEN by a wiring, which is why its zero value
+// has to fail closed; a method cannot be forgotten, because omitting it is a compile
+// error against the interface that names it. What an implementer can still do is
+// return the wrong answer, and no polarity protects against that — the guard above is
+// what does.
+func (a *Adapter) KickoffUndeliverableReason() string {
+	if a.kickoffDeliverable {
+		return ""
+	}
+	return KickoffRefusalSummary
+}
+
 // ⚠ THERE IS DELIBERATELY NO Capabilities() PASSTHROUGH. One existed and was
 // deleted: round 0 of this PR's audit measured ZERO callers anywhere in the module,
 // and its own doc argued it was "so a caller that has only the adapter can still
@@ -357,11 +455,13 @@ func (a *Adapter) Driver() string { return a.driver.Driver() }
 //
 // So the two arguments now differ in WHAT IS BUILT, not only in what is stored:
 //
-//	kickoff=true  -> WITH a gateway in the process (Config.KickoffDeliverable):
-//	                 create the instance, store `provisioning` (a first turn is
-//	                 owed), and record the non-delivery. See the package doc.
-//	                 WITHOUT one: REFUSE — create nothing, store `error` carrying
-//	                 KickoffRefusalReason, and return ErrKickoffUndeliverable.
+//	kickoff=true  -> WITH something in the process that could deliver it
+//	                 (Config.KickoffDeliverable): create the instance, store
+//	                 `provisioning` (a first turn is owed), and record the
+//	                 non-delivery. See the package doc. WITHOUT: REFUSE — create
+//	                 nothing, store `error` carrying KickoffRefusalReason, and
+//	                 return ErrKickoffUndeliverable. ⚠ NO SHIPPED DEPLOYMENT TAKES
+//	                 THE FIRST ARM TODAY; see KickoffDeliveryWired.
 //	kickoff=false -> create nothing, store `stopped`. The status is now TRUE
 //	                 rather than a statement about what this service is waiting
 //	                 for, which is also what makes the model-change roll in
