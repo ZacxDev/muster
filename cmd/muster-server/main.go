@@ -626,8 +626,18 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		// annotation", which is wrong — it is on the DEPLOYMENT. That fact now lives in
 		// exactly one place, k8s.AnnotationPort's own comment, because it was open-coded
 		// in six places and wrong in all six.
-		svcNote := "no Service and no port annotation is created by this driver, and an " +
-			"address resolves from the driver's own endpoint template instead"
+		// 🔴 AND THE NON-k8s ARM'S "instead" WAS FALSE IN THE SAME CLASS, ONE DRAFT
+		// LATER. It read "…and an address resolves from the driver's own endpoint
+		// template instead", which reads as "this variable is inert on noop". It is
+		// not: provision.Noop.Endpoint passes spec.PortNumber(DefaultPortName) into
+		// ResolveEndpoint and the template supplies only the HOST, so the port this
+		// line prints is the port a turn would dial. Measured at three points —
+		// 18789 -> http://probe.noop.invalid:18789, 29999 -> :29999, and port 0 is a
+		// hard ErrNoEndpoint. So removing one false driver claim from this line left a
+		// weaker one in the same place; the sentence now says what is true of noop.
+		svcNote := "no Service and no port annotation is created by this driver — the " +
+			"address is this driver's own template HOST with that port, so the value still " +
+			"decides what a chat turn would dial"
 		if a.cfg.agentProvisioner() == provisionerK8s {
 			svcNote = "every instance created from here on gets a Service on that port, " +
 				"recorded on the Deployment at CREATE time (see k8s.AnnotationPort) — " +

@@ -202,9 +202,13 @@ func TestAnAgentThisBinaryProvisionsResolvesAnEndpoint(t *testing.T) {
 // runnable prose and a rendered object.
 //
 // 🔴 THE DEFECT IT EXISTS FOR: `muster.dev/port` is written on the DEPLOYMENT's
-// ObjectMeta, and five comments plus two `kubectl -o jsonpath=` recipes all said
-// `.spec.template.metadata.annotations` — wrong in the same direction at every site,
-// which is what a predicate open-coded at N places does. The runnable consequence is
+// ObjectMeta, and SIX sites said `.spec.template.metadata.annotations` — wrong in the
+// same direction at every one, which is what a predicate open-coded at N places does.
+// (The breakdown of those six is in k8s.AnnotationPort's own comment and is
+// deliberately not restated here: an earlier revision of this line said "five
+// comments plus two recipes", which is seven, and disagreed with that comment about
+// the same event. One place for the fact, including the fact's arithmetic.) The
+// runnable consequence is
 // the one that cost something: the recipe sat directly under "if these two are empty,
 // STOP: the instance was not provisioned by this binary", and for a CORRECTLY
 // provisioned instance it prints empty. The next person to run the one proof this
@@ -217,10 +221,21 @@ func TestAnAgentThisBinaryProvisionsResolvesAnEndpoint(t *testing.T) {
 // empty the render is broken, and if the pod-template path were also populated the
 // recipe could not be wrong.
 //
-// ⚠ IT CANNOT CHECK A RECIPE WRITTEN IN PROSE RATHER THAN AS A jsonpath, or one that
-// addresses the annotation some other way (`-o yaml | grep`, a Go client). It covers
-// the `jsonpath=` form, which is the form both recipes use and the form that silently
-// prints empty instead of erroring.
+// ⚠ WHAT IT CANNOT SEE — AND TWO OF THESE HAVE THE SAME SILENTLY-EMPTY SYMPTOM THE
+// GUARD EXISTS FOR, WHICH IS WHY THEY ARE LISTED RATHER THAN LEFT IMPLIED:
+//
+//   - a recipe written in prose, or addressing the annotation some other way
+//     (`-o yaml | grep`, a Go client). Different symptom: those fail visibly.
+//   - 🔴 a jsonpath with the dot UNESCAPED — `{.metadata.annotations.muster.dev/port}`.
+//     The regex requires the escaped `muster\.dev` form, and kubectl reads the
+//     unescaped one as nested fields and prints EMPTY rather than erroring. Same
+//     wrong diagnosis, invisible to this guard.
+//   - 🔴 a recipe in a file that is not `.go` or `.md` — a Makefile target, a shell
+//     script, a chart's README. The walk covers those two extensions only.
+//
+// The per-file requirement below is what limits the first two: a recipe reworded into
+// an unmatched form makes its file's count drop to zero, and that is an error. It does
+// nothing for the third — a recipe in a new file type is simply not looked at.
 func TestTheRecipesNameTheAnnotationEndpointActuallyReads(t *testing.T) {
 	cfg := provisionerTestConfig(provisionerK8s)
 	d, cs := reachabilityDriver(t, cfg)
@@ -269,6 +284,7 @@ func TestTheRecipesNameTheAnnotationEndpointActuallyReads(t *testing.T) {
 	re := regexp.MustCompile(`jsonpath='\{(\.[A-Za-z.]*)annotations\.muster\\\.dev/port`)
 	root := moduleRootForSweep(t)
 	var found int
+	perFile := map[string]int{}
 	err = filepath.WalkDir(root, func(path string, e fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -289,6 +305,7 @@ func TestTheRecipesNameTheAnnotationEndpointActuallyReads(t *testing.T) {
 		for _, m := range re.FindAllStringSubmatch(string(body), -1) {
 			found++
 			rel, _ := filepath.Rel(root, path)
+			perFile[filepath.ToSlash(rel)]++
 			if m[1] != ".metadata." {
 				t.Errorf("%s names jsonpath '{%sannotations.muster\\.dev/port}', which reads "+
 					"%q on a correctly-provisioned instance.\n"+
@@ -307,17 +324,131 @@ func TestTheRecipesNameTheAnnotationEndpointActuallyReads(t *testing.T) {
 		t.Fatalf("walking %s: %v", root, err)
 	}
 
-	// 🔴 POSITIVE CONTROL ON THE WALK ITSELF. Zero recipes found reads identically to
-	// every recipe being correct — and a changed quoting style in one of them would
-	// silently empty this test. Two are known: the live-runtime target's RUN IT block
-	// and this file's own closing-condition comment.
-	if found < 2 {
-		t.Errorf("instrument check FAILED: only %d jsonpath recipe(s) naming %s were found "+
-			"under %s, and at least 2 exist (internal/agentgateway/liveruntime_test.go and "+
-			"this file). The pattern has stopped matching, so the verdict above is over a "+
-			"truncated set.", found, k8sdriver.AnnotationPort, root)
+	// 🔴 POSITIVE CONTROL ON THE WALK, PER FILE AND NOT AS A TOTAL — AND THE TOTAL
+	// VERSION WAS MEASURED WALKABLE. It read `if found < 2` with a message naming the
+	// two files that must carry a recipe, which is a count of the whole tree wearing
+	// the description of a per-file relationship: rewriting liveruntime_test.go's RUN
+	// IT recipe into a double-quoted form this regex misses, while adding one more
+	// correct jsonpath in THIS file, returns the total to 2 and the test PASSES — so
+	// the operator-facing recipe the guard exists for goes unchecked. That is the
+	// "a guard's DESCRIPTION claims coverage, the body inspects one side" shape, in
+	// the guard written to fix exactly that shape one level up.
+	//
+	// So the requirement is now stated as the relationship it always claimed: each
+	// named file must itself carry at least one matching recipe. A zero anywhere is
+	// indistinguishable from correctness, which is why it is an error rather than a
+	// log line.
+	for _, want := range []string{
+		"internal/agentgateway/liveruntime_test.go", // the live-runtime target's RUN IT block
+		"cmd/muster-server/reachability_test.go",    // this file's closing-condition comment
+	} {
+		if perFile[want] == 0 {
+			t.Errorf("instrument check FAILED: %s carries no jsonpath recipe naming %s.\n"+
+				"    Either the recipe was removed, or it was reworded into a form this "+
+				"regex does not match (a double-quoted jsonpath, or an unescaped dot) — in "+
+				"which case the recipe is UNCHECKED and the per-file counts below are the "+
+				"only thing that says so.\n    counts: %v", want, k8sdriver.AnnotationPort, perFile)
+		}
 	}
-	t.Logf("checked %d jsonpath recipe(s) naming %s", found, k8sdriver.AnnotationPort)
+	t.Logf("checked %d jsonpath recipe(s) naming %s, per file: %v",
+		found, k8sdriver.AnnotationPort, perFile)
+}
+
+// TestTheNoopArmOfTheLifecycleBannerIsTrueOfTheNoopDriver pins the one banner
+// sentence that was unguarded, and it is pinnable so it is pinned.
+//
+// 🔴 THE LINE SAID "an address resolves from the driver's own endpoint template
+// INSTEAD", WHICH READS AS "THE PORT IS INERT ON noop". Measured false at three
+// points: provision.Noop.Endpoint hands spec.PortNumber(provision.DefaultPortName) to
+// ResolveEndpoint and DefaultNoopEndpointTemplate supplies only the HOST, so 18789
+// resolves http://…:18789, 29999 resolves :29999, and port 0 is a hard
+// ErrNoEndpoint. `noop` is a supported deployment and the banner fixture renders this
+// very arm with it, so the sentence reached a real reader.
+//
+// 🔴 NOTHING GUARDED IT, WHICH IS WHY A SECOND FALSE DRAFT LANDED IN THE SAME PLACE.
+// The ledger guard checks the variable is NAMED in both arms and that the two lines
+// DIFFER — a words check over a state claim. This asserts the STATE: the port the
+// banner prints is the port this driver actually resolves, and the host is the
+// template's. The negative control is what makes it a measurement — a different
+// configured port must MOVE the resolved port, which is exactly what "instead"
+// denied.
+//
+// ⚠ IT PINS THE RELATIONSHIP, NOT THE WORDING. A reword that kept the meaning passes
+// here; one that re-asserts inertness passes here too, and only a human reading the
+// line against this test's name would catch it. That is a real gap and it is smaller
+// than the one it replaces: before, nothing at all tied the sentence to the driver.
+func TestTheNoopArmOfTheLifecycleBannerIsTrueOfTheNoopDriver(t *testing.T) {
+	build := func(port int) provision.Spec {
+		t.Helper()
+		cfg := provisionerTestConfig(provisionerNoop)
+		cfg.AgentGatewayPort = port
+		spec, err := agentspec.Build(reachabilityAgent(), agentSpecConfig(cfg), agentspec.Options{})
+		if err != nil {
+			t.Fatalf("agentspec.Build(port=%d): %v", port, err)
+		}
+		return spec
+	}
+	resolve := func(spec provision.Spec) provision.Endpoint {
+		t.Helper()
+		d := provision.MustNewNoop()
+		ctx := context.Background()
+		if err := d.Create(ctx, spec); err != nil {
+			t.Fatalf("noop Create: %v", err)
+		}
+		ep, err := d.Endpoint(ctx, provision.Ref{Name: spec.Ref.Name})
+		if err != nil {
+			t.Fatalf("noop Endpoint: %v — the banner claims an address resolves on this "+
+				"driver; if it does not, the line is wrong in the other direction", err)
+		}
+		return ep
+	}
+
+	// The default, which is what the banner prints on an unconfigured deployment.
+	dflt := resolve(build(0))
+	if dflt.Port != agentspec.DefaultGatewayPort {
+		t.Errorf("noop resolved port %d for an unset %s, want agentspec.DefaultGatewayPort "+
+			"(%d). The banner prints the resolved value, so the two would disagree.",
+			dflt.Port, envAgentGatewayPort, agentspec.DefaultGatewayPort)
+	}
+	// The HOST comes from the driver's template — the half of the old sentence that
+	// was true, kept asserted so a reword cannot quietly drop it.
+	if !strings.HasSuffix(dflt.Host, ".noop.invalid") {
+		t.Errorf("noop resolved host %q, want the driver's own template host (…%s)",
+			dflt.Host, ".noop.invalid")
+	}
+
+	// 🔴 NEGATIVE CONTROL: a configured port MOVES the resolved port. Without this the
+	// assertion above is satisfied by a driver that ignores the spec's port entirely —
+	// which is precisely what the retracted "instead" asserted.
+	const other = 21473 // not DefaultGatewayPort, not a neighbour of it
+	moved := resolve(build(other))
+	if moved.Port != other {
+		t.Errorf("noop resolved port %d with %s=%d: the port does NOT travel on this "+
+			"driver, so the banner must not claim it decides what a turn would dial.",
+			moved.Port, envAgentGatewayPort, other)
+	}
+	if moved.Port == dflt.Port {
+		t.Fatalf("the configured and default ports both resolved to %d, so this case "+
+			"could not tell them apart", moved.Port)
+	}
+
+	// And the sentence must not regain the retracted word. SPELLED, hence walkable by
+	// rewording — it is here because it survives a lazy edit, not because it is
+	// sufficient. See this test's own ⚠ note.
+	onOut, _ := bannerBothDirections(t)
+	line := lineNaming(onOut, envAgentGatewayPort)
+	if line == "" {
+		t.Fatalf("no banner line names %s.\nbanner:\n%s", envAgentGatewayPort, onOut)
+	}
+	if !strings.Contains(line, "noop") {
+		t.Fatalf("instrument check FAILED: the rendered arm is not the noop one (%q), so "+
+			"the assertion below is about a different sentence", line)
+	}
+	if strings.Contains(line, "endpoint template instead") {
+		t.Errorf("the noop arm has regained %q. The template supplies only the HOST; the "+
+			"port travels, measured at three points in this test's doc.\n  line: %s",
+			"endpoint template instead", line)
+	}
 }
 
 // TestTheResolvedPortIsTheConfiguredOneAndNotADriverConstant is the control that
