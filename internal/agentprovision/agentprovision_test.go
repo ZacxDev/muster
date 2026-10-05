@@ -325,7 +325,7 @@ func fixtureSpecConfig() agentspec.Config {
 }
 
 // newAdapter builds an adapter over a recording store and a wrapped Noop, for a
-// process that HAS a gateway — i.e. one where a kickoff is deliverable.
+// process TOLD that a kickoff is deliverable.
 //
 // 🔴 THAT DEFAULT IS THE OPPOSITE POLARITY FROM Config's OWN ZERO VALUE, AND SAYING
 // SO IS THE POINT. Config.KickoffDeliverable defaults to false because production
@@ -334,20 +334,27 @@ func fixtureSpecConfig() agentspec.Config {
 // re-pointing those assertions at a refusal would have changed what a dozen existing
 // guards claim without anyone choosing to. They still assert exactly what they
 // always did, and they now collectively double as a broad control that the refusal
-// does NOT fire when a gateway is configured.
+// does NOT fire on the arm that can deliver.
+//
+// ⚠ THIS SAID "for a process that HAS a gateway", AND THAT EQUATION IS WRONG. A
+// gateway is necessary and not sufficient: delivery also needs a call site, and
+// there is none, so NO deployment is on this arm today — see
+// [KickoffDeliveryWired]. The arm is still the adapter's contract and still has to
+// be tested; what it is not is a description of any deployment.
 //
 // ⚠ SO A NEW Dispatch TEST GETS THE DELIVERABLE PATH UNLESS IT ASKS OTHERWISE. Use
-// newAdapterWithNoKickoffDelivery for the no-gateway deployment; it is named rather
-// than expressed as a bool at 20 call sites for exactly that reason.
+// newAdapterWithNoKickoffDelivery for a deployment's configuration; it is named
+// rather than expressed as a bool at 20 call sites for exactly that reason.
 func newAdapter(t *testing.T, tune func(*recordingStore, *flakyDriver)) (*Adapter, *recordingStore, *flakyDriver) {
 	t.Helper()
 	return newAdapterFor(t, true, tune)
 }
 
 // newAdapterWithNoKickoffDelivery builds an adapter for THE DEPLOYED CONFIGURATION
-// THIS REFUSAL EXISTS FOR: a provisioner wired, MUSTER_AGENT_GATEWAY unset, so
-// buildGateway returns nil and nothing in the process can hand a note to a model
-// gateway.
+// THIS REFUSAL EXISTS FOR — every one of them, as it turns out: a provisioner wired
+// and nothing in the process that could hand a note to a model gateway, because
+// either MUSTER_AGENT_GATEWAY is unset (buildGateway returns nil) or no production
+// call site invokes the gateway it built ([KickoffDeliveryWired]).
 func newAdapterWithNoKickoffDelivery(t *testing.T, tune func(*recordingStore, *flakyDriver)) (*Adapter, *recordingStore, *flakyDriver) {
 	t.Helper()
 	return newAdapterFor(t, false, tune)

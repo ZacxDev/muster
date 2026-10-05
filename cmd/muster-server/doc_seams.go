@@ -51,24 +51,53 @@ package main
 //	  THIS ENTRY FOR. With the variable UNSET — which is every deployment running
 //	  today — such a dispatch is now REFUSED instead: agentprovision.Adapter.Dispatch
 //	  creates nothing, mints no token, marks the row `error` with the cause and the
-//	  remedy, and returns agentprovision.ErrKickoffUndeliverable. buildAgentPlane
-//	  passes `gw != nil` into the adapter, so the refusal keys on the RESOLVED
-//	  configuration and a deployment that has named a runtime is unchanged.
+//	  remedy, and returns agentprovision.ErrKickoffUndeliverable.
+//	  🔴 AND THAT REFUSAL NOW FIRES ON *EVERY* DEPLOYMENT, NOT ONLY THE UNSET ONE.
+//	  THIS PARAGRAPH SAID "buildAgentPlane passes `gw != nil` into the adapter, so the
+//	  refusal keys on the RESOLVED configuration and a deployment that has named a
+//	  runtime is unchanged", AND THAT WAS THE DEFECT RATHER THAN THE DESIGN. `gw !=
+//	  nil` is the NECESSARY half of deliverability and not the sufficient one: the
+//	  paragraph two above says in as many words that NOTHING CALLS THE GATEWAY ON THE
+//	  DISPATCH PATH, so a named runtime bought a gateway nothing invokes. Measured on
+//	  the deployment running today, which HAS named one: the adapter was told a
+//	  kickoff was deliverable, the refusal was skipped, and the click produced exactly
+//	  the pod-that-was-never-told-what-to-do this entry describes. buildAgentPlane now
+//	  passes kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired) — both
+//	  conjuncts — and internal/modulegate's
+//	  TestNothingDeliversAKickoffAndThisModuleSaysSo fails when that constant and the
+//	  module's own call graph disagree, in either direction, so the call site named in
+//	  the CLOSING CONDITION below cannot land without flipping it.
 //	  ⚠ THE REFUSAL IS ON THE CREATE-WITH-KICKOFF PATH ONLY. Start is deliberately
 //	  still allowed and still records the non-delivery in agents.kickoff_error, where
 //	  it is honest because an instance exists; refusing it would have removed
 //	  restart, eviction-recovery and the save-then-start-later route this entry's own
 //	  Dispatch doc calls the supported one. See Adapter.Start.
-//	  🔴 WHAT IT DOES *NOT* FIX, STATED SO NOBODY READS IT AS CLOSED: the refusal
-//	  does not reach the HTTP RESPONSE of the POST that asked. internal/api's
-//	  createAndDispatchAgent calls Dispatch inside safeGo AFTER creating the row, so
-//	  the operator's POST has already answered 200 and the returned error is logged.
-//	  The row's `error` status is the strongest signal reachable from the provisioner.
-//	  CLOSING CONDITION: a synchronous check in internal/api's create handler, before
-//	  the row exists, keyed on the same capability, answering 4xx with
-//	  agentprovision.KickoffRefusalReason's text. WHO CHECKS IT: the reviewer of that
-//	  pull request, against this paragraph and against a POST /agents with
-//	  action=dispatch on a deployment with no gateway.
+//	  ✅ THE REFUSAL REACHES THE HTTP RESPONSE NOW, AND THE CLOSING CONDITION THAT
+//	  ASKED FOR IT IS KEPT HERE WITH ITS OUTCOME. It read: "WHAT IT DOES *NOT* FIX …
+//	  the refusal does not reach the HTTP RESPONSE of the POST that asked.
+//	  internal/api's createAndDispatchAgent calls Dispatch inside safeGo AFTER
+//	  creating the row, so the operator's POST has already answered 200 … CLOSING
+//	  CONDITION: a synchronous check in internal/api's create handler, before the row
+//	  exists, keyed on the same capability, answering 4xx with
+//	  agentprovision.KickoffRefusalReason's text." handleAgentCreate asks
+//	  api.Provisioner.KickoffUndeliverableReason — the same field Dispatch branches on,
+//	  which is what stops the two answers disagreeing — and answers 409 carrying it
+//	  before Agents.Create. The async half of the sentence is still TRUE of Dispatch
+//	  itself, which is why the capability is a separate question rather than a
+//	  different return value.
+//	  ⚠ TWO CALLERS ARE STILL ASYNCHRONOUS, DELIBERATELY: handleChiefProvision and
+//	  dispatchRunbook reach Dispatch through createAndDispatchAgent inside safeGo, so
+//	  their refusal is recorded on the row (`error` + the reason) rather than returned.
+//	  Neither has a "Save for later" affordance for a 4xx to point at; the row they
+//	  create can be brought up with Start, which is the same escape by another door.
+//	  ⚠ AND THE UI STILL *OFFERS* THE DISPATCH BUTTON ON A DEPLOYMENT THAT WILL REFUSE
+//	  IT. The refusal is legible once clicked — internal/ui's htmx:responseError
+//	  handler toasts the 409 body verbatim — but nothing dims the affordance, so the
+//	  operator learns by being refused. CLOSING CONDITION: a pull request in which the
+//	  dispatch modal's Dispatch control is disabled, with the reason beside it, when
+//	  the provisioner reports a kickoff undeliverable. WHO CHECKS IT: the reviewer of
+//	  that pull request, against a rendered modal on a deployment with
+//	  agentprovision.KickoffDeliveryWired false.
 //	🔴 AND "A HUMAN CAN NOW OPEN ITS CHAT AND TALK TO IT" WAS FALSE FOR AN AGENT
 //	  *THIS BINARY* PROVISIONED — that sentence stood here and an audit measured it.
 //	  TWO things block it, and both are OUTSIDE internal/agentgateway:

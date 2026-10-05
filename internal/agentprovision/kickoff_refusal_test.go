@@ -24,8 +24,8 @@ import (
 // 🔴 AND THE POSITIVE CONTROL IS A TEST OF ITS OWN, NOT A COMMENT. A refusal that
 // fired unconditionally would satisfy the refusal test, the save test and the start
 // test — save and start take different branches — so
-// TestAKickoffIsNOTRefusedWhenAGatewayIsConfigured is the only thing that separates
-// "refuses when it cannot deliver" from "refuses always".
+// TestAKickoffIsNOTRefusedWhenTheAdapterIsToldItCanBeDelivered is the only thing
+// that separates "refuses when it cannot deliver" from "refuses always".
 // ---------------------------------------------------------------------------
 
 // literals the refusal must carry, spelled out rather than referenced.
@@ -170,10 +170,27 @@ func TestACreateWithAKickoffIsREFUSEDWhenNothingCanDeliverIt(t *testing.T) {
 //
 //  1. It must not tell the operator that setting the variable makes the next
 //     dispatch deliver the note. It does not.
-//  2. It must name where a non-delivery still lands afterwards
-//     (agents.kickoff_error), so the remedy leads somewhere rather than dead-ending.
+//  2. It must name an operation that WORKS, not only a variable to set — otherwise
+//     the remedy dead-ends. ⚠ THIS PROPERTY READ "it must name where a
+//     non-delivery still lands afterwards (agents.kickoff_error)" AND THAT WAS A
+//     PROPERTY OF THE OLD REMEDY, which told the operator to configure a gateway
+//     and returned the deployment to create-then-record. There is no "afterwards"
+//     on this path any more: the refusal creates nothing, so nothing lands in
+//     kickoff_error, and the thing the operator needs named is the save-then-Start
+//     route. Pinning a property of a superseded remedy is how a golden vouches for
+//     text that no longer matches the code.
 //  3. It must not forward the operator to a blocker that is CLOSED. Added after
 //     this golden was measured GREEN over a stale clause — see below.
+//  4. It must not name a REMEDY THE OPERATOR HAS ALREADY APPLIED. Added after the
+//     third recorded regression, which is the one this file's whole refusal was
+//     measured wrong by: the text led with "CAUSE: MUSTER_AGENT_GATEWAY is unset
+//     (it resolves to `none`) … REMEDY: set MUSTER_AGENT_GATEWAY=hooks-sha256",
+//     and on the deployment that reads it the variable IS set. Setting it does not
+//     lift the refusal, because deliverability needs a CALL SITE as well as a
+//     gateway (agentprovision.KickoffDeliveryWired). A remedy already in place
+//     reads as "this is broken", which is the exact conclusion a remedy exists to
+//     prevent. The variables are still named — as one of two conjuncts — and the
+//     text says in as many words that setting them is not sufficient.
 //
 // 🔴 THIS TEST CANNOT CHECK PROPERTY 3, AND SAYING SO IS THE HONEST ANSWER RATHER
 // THAN A REASON TO DELETE IT. It pins BYTES. The clause "which also lists the two
@@ -194,29 +211,66 @@ func TestACreateWithAKickoffIsREFUSEDWhenNothingCanDeliverIt(t *testing.T) {
 // whole of the mechanism. Stated plainly because the alternative is a reader
 // believing the pair is complete.
 func TestTheRemedyDoesNotPromiseADeliveryTheDispatchPathCannotMake(t *testing.T) {
-	const golden = "dispatch REFUSED and NOTHING was provisioned: a kickoff cannot be delivered " +
-		"on this deployment, so beginning the work is impossible and creating the instance would " +
-		"only produce a pod that reads healthy and was never told what to do. CAUSE: " +
-		"MUSTER_AGENT_GATEWAY is unset (it resolves to `none`), so no api.Gateway is wired and " +
-		"nothing can hand the pending note to the instance's model gateway. REMEDY: set " +
-		"MUSTER_AGENT_GATEWAY=hooks-sha256 together with MUSTER_AGENT_GATEWAY_MODEL on this " +
-		"deployment — the capability IS in this build (internal/agentgateway); it is switched " +
-		"off, not missing. ⚠ THAT LIFTS THIS REFUSAL AND IS NOT YET THE WHOLE FIX: nothing " +
-		"calls the gateway on the dispatch path, so a kickoff on a gateway-configured deployment " +
-		"still creates the instance and records its non-delivery in agents.kickoff_error. " +
-		"Delivery additionally needs the call site named in cmd/muster-server/doc_seams.go entry " +
-		"1, which is now the ONLY thing ahead of it: the rendered spec declares the gateway port " +
-		"and the instance receives the token the bearer is derived from, so do not go looking for " +
-		"those two. Meanwhile \"Save for later\" still works: it provisions nothing by design, " +
-		"and Start brings the agent up. See cmd/muster-server/doc_seams.go entry 1."
+	const golden = "dispatch REFUSED and NOTHING was provisioned: this deployment cannot " +
+		"deliver an agent's first turn, so beginning the work is impossible and creating the " +
+		"instance would only produce a pod that reads healthy and was never told what to do. " +
+		"Use \"Save for later\", then Start the agent — that brings the instance up without " +
+		"claiming a first turn nothing can deliver. CAUSE: a DELIVERED kickoff needs BOTH a " +
+		"gateway this process can reach — MUSTER_AGENT_GATEWAY=hooks-sha256 together with " +
+		"MUSTER_AGENT_GATEWAY_MODEL — AND a production call site that hands the pending note " +
+		"to it. The transport IS in this build (internal/agentgateway); the CALL SITE is not, " +
+		"which is why SETTING THOSE VARIABLES DOES NOT LIFT THIS REFUSAL on its own. See " +
+		"agentprovision.KickoffDeliveryWired, the constant a call site has to flip, and " +
+		"cmd/muster-server/doc_seams.go entry 1 for the call site itself. Do not go looking at " +
+		"the spec or the credential on the way: the rendered spec declares the gateway port and " +
+		"the instance receives the token the bearer is derived from."
 
 	if KickoffRefusalReason != golden {
 		t.Errorf("the operator-facing refusal text changed.\n  got:  %q\n  want: %q\n"+
 			"    Re-read the new text against the THREE properties in this test's doc BEFORE "+
-			"updating the golden. Two regressions are on the record: a remedy that promises the "+
-			"next dispatch will deliver the note (it will not), and a remedy that forwarded the "+
+			"updating the golden. Three regressions are on the record: a remedy that promises "+
+			"the next dispatch will deliver the note (it will not), a remedy that forwarded the "+
 			"operator to two blockers that had been CLOSED — which this golden was green over, "+
-			"because the text had not changed.", KickoffRefusalReason, golden)
+			"because the text had not changed — and a remedy the operator had ALREADY APPLIED "+
+			"(\"set MUSTER_AGENT_GATEWAY\" on a deployment where it is set), which this golden "+
+			"was green over for the same reason.", KickoffRefusalReason, golden)
+	}
+}
+
+// TestTheShortRefusalIsAPrefixOfTheLongOne pins the one relationship between the
+// two operator-facing strings.
+//
+// 🔴 THEY ARE TWO SURFACES FOR ONE REFUSAL AND THEY MUST NOT COME TO SAY DIFFERENT
+// THINGS. [KickoffRefusalSummary] is what internal/api puts in the 409 body, which
+// internal/ui toasts verbatim to the person who clicked; [KickoffRefusalReason] is
+// what reaches the log, the agent row's error_message and the returned error. Two
+// independently-written strings about one condition is the shape where one of them
+// goes stale — and the stale one would be the short one, because it is the one a
+// human reads and the long one is the one a test golden pins.
+//
+// ⚠ IT ASSERTS A PREFIX RATHER THAN "CONTAINS", on purpose: a prefix makes the
+// summary the OPENING of the long form, so the long form cannot acquire a different
+// first sentence while still technically containing the short one somewhere.
+func TestTheShortRefusalIsAPrefixOfTheLongOne(t *testing.T) {
+	if !strings.HasPrefix(KickoffRefusalReason, KickoffRefusalSummary) {
+		t.Errorf("KickoffRefusalSummary is no longer the opening of KickoffRefusalReason, so "+
+			"the toast an operator reads and the reason stored on the row can disagree.\n"+
+			"  summary: %q\n  reason:  %q", KickoffRefusalSummary, KickoffRefusalReason)
+	}
+
+	// CONTROL: a prefix assertion is trivially satisfied by an EMPTY summary, which
+	// would mean the 409 body is blank — a refusal nobody can read, which is the
+	// whole defect this pair exists to close.
+	if KickoffRefusalSummary == "" {
+		t.Fatal("KickoffRefusalSummary is empty, so POST /agents answers 409 with no body " +
+			"and the operator is told a number")
+	}
+	// And it must carry the remedy, which is the half the summary exists for: the
+	// long form's mechanism paragraph is exactly what a toast loses.
+	if !strings.Contains(KickoffRefusalSummary, wantRefusalSaveEscape) {
+		t.Errorf("the short refusal does not name %q, so the toast tells the operator what "+
+			"failed and not what still works.\n  summary: %q",
+			wantRefusalSaveEscape, KickoffRefusalSummary)
 	}
 }
 
@@ -318,31 +372,42 @@ func TestEveryCapabilityClaimTheRefusalMakesIsTRUE(t *testing.T) {
 	}
 }
 
-// TestAKickoffIsNOTRefusedWhenAGatewayIsConfigured IS THE POSITIVE CONTROL, and
-// without it every other test in this file is satisfied by a refusal that fires
-// unconditionally.
+// TestAKickoffIsNOTRefusedWhenTheAdapterIsToldItCanBeDelivered IS THE POSITIVE
+// CONTROL, and without it every other test in this file is satisfied by a refusal
+// that fires unconditionally.
 //
-// 🔴 THE REFUSAL MUST BE CONDITIONAL ON THE RESOLVED CONFIGURATION, NOT ON THE
-// BUILD. internal/agentgateway is shipped and live-verified; the only reason a
-// kickoff cannot be delivered on the deployment that motivated this change is that
-// MUSTER_AGENT_GATEWAY is unset. A refusal keyed on anything else — a build tag, the
-// package's own identity, a guess about what this binary contains — would break
-// every deployment that HAS configured a gateway, and would do so in the direction
-// that removes a working feature.
+// 🔴 THE REFUSAL MUST BE CONDITIONAL ON WHAT THIS ADAPTER IS TOLD, NOT ON ITS OWN
+// IDENTITY. A refusal keyed on anything else — a build tag, the package's name, a
+// guess about what the binary contains — cannot be lifted by the thing that will
+// eventually make a kickoff deliverable, and the only way to find that out is to
+// pin the arm this test drives.
+//
+// ⚠ THIS TEST WAS CALLED TestAKickoffIsNOTRefusedWhenAGatewayIsConfigured AND ITS
+// DOC ARGUED FROM A FALSE PREMISE. It read "the only reason a kickoff cannot be
+// delivered on the deployment that motivated this change is that
+// MUSTER_AGENT_GATEWAY is unset", and that was measured wrong: a configured gateway
+// with nothing calling it delivers nothing either, so naming one does NOT make a
+// kickoff deliverable. The old name said this arm was the gatewayed DEPLOYMENT;
+// what it actually drives is an adapter TOLD a kickoff is deliverable, which today
+// no deployment is (see [KickoffDeliveryWired]). The behaviour under test did not
+// change — the adapter's contract is unchanged — only the claim the name was
+// making about the world.
 //
 // ⚠ IT ASSERTS THE WHOLE PRE-EXISTING SEQUENCE, not merely a nil error. "Dispatch
 // did not fail" is also true of a Dispatch that silently did nothing, which is the
 // shape this package's own header calls the lie it exists to prevent.
-func TestAKickoffIsNOTRefusedWhenAGatewayIsConfigured(t *testing.T) {
+func TestAKickoffIsNOTRefusedWhenTheAdapterIsToldItCanBeDelivered(t *testing.T) {
 	a, store, driver := newAdapter(t, nil)
 
 	if err := a.Dispatch(fixtureAgentID, true); err != nil {
-		t.Fatalf("Dispatch(kickoff=true) was refused on a deployment that HAS a gateway, "+
-			"which removes a working feature: %v\n  transcript: %s", err, store.transcript())
+		t.Fatalf("Dispatch(kickoff=true) was refused by an adapter TOLD a kickoff is "+
+			"deliverable, so the refusal is firing on this package's own identity rather "+
+			"than on what it was told — nothing a deliverer lands could lift it: %v\n"+
+			"  transcript: %s", err, store.transcript())
 	}
 
 	if driver.creates != 1 {
-		t.Errorf("the driver created %d instance(s) with a gateway configured, want 1.\n"+
+		t.Errorf("the driver created %d instance(s) on the deliverable arm, want 1.\n"+
 			"  transcript: %s", driver.creates, store.transcript())
 	}
 	if !store.called("SetHooksToken") {
@@ -356,9 +421,9 @@ func TestAKickoffIsNOTRefusedWhenAGatewayIsConfigured(t *testing.T) {
 	if !store.called("SetKickoffError") {
 		t.Errorf("the owed-but-undelivered first turn was not recorded in kickoff_error.\n"+
 			"  transcript: %s\n"+
-			"    A configured gateway makes the dispatch legal; it does not by itself make "+
-			"the note delivered — nothing calls the gateway on this path yet (see "+
-			"cmd/muster-server/doc_seams.go entry 1), so the existing record must remain.",
+			"    Being told a kickoff is deliverable makes the dispatch legal; it does not "+
+			"make this package deliver one — it has no gateway by construction — so the "+
+			"existing record must remain.",
 			store.transcript())
 	}
 
@@ -366,7 +431,7 @@ func TestAKickoffIsNOTRefusedWhenAGatewayIsConfigured(t *testing.T) {
 	// on a refusal that fires in both configurations while still creating the
 	// instance — a mutant a nil-error check alone cannot see.
 	if strings.Contains(store.transcript(), "REFUSED and NOTHING was provisioned") {
-		t.Errorf("the undeliverable-kickoff refusal fired on a deployment WITH a gateway.\n"+
+		t.Errorf("the undeliverable-kickoff refusal fired on the DELIVERABLE arm.\n"+
 			"  transcript: %s", store.transcript())
 	}
 	if strings.Contains(store.transcript(), "UpdateStatus(4291,error,") {
