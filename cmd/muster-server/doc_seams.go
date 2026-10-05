@@ -141,17 +141,92 @@ package main
 //	      container's documented derivation over the built spec's own environment and
 //	      requires the two bearers to match; it dies to a wrong name, a wrong value
 //	      and an empty value, each of which has the same runtime symptom.
-//	      🔴 WHAT IS STILL OWED IS THE SENTENCE THIS CONDITION ACTUALLY WROTE:
-//	      "ONE REAL TURN AGAINST AN INSTANCE THIS BINARY CREATED". No such turn has
-//	      been made. Two tests agreeing about bytes is not a runtime accepting them,
-//	      the container half of the derivation is a shell command in the agent
-//	      image's own deployment that nothing here can read, and a fake clientset
-//	      resolves no DNS and runs no pod. So this entry stays OPEN on its evidence
-//	      while being closed on its mechanism, and the boot banner says
-//	      "NOT VERIFIED REACHABLE" for exactly that reason.
-//	      WHO CHECKS IT: whoever runs the Makefile's test-liveenv target against a
-//	      muster-provisioned instance — internal/agentgateway/liveruntime_test.go
-//	      already owns that measurement and names the variables it needs.
+//	      🔴 THE OWED MEASUREMENT WAS PARTLY TAKEN, AND IT FOUND A THIRD BLOCKER
+//	      THAT NEITHER OF THESE TWO PREDICTED. This paragraph used to read: "WHAT IS
+//	      STILL OWED IS THE SENTENCE THIS CONDITION ACTUALLY WROTE: 'ONE REAL TURN
+//	      AGAINST AN INSTANCE THIS BINARY CREATED'. No such turn has been made." A
+//	      muster-provisioned agent was then created on a live cluster, and it never
+//	      got as far as a 401 OR a 200: the pod CRASHLOOPED. exitCode 78, seven
+//	      restarts, 0/1 for ever, with
+//
+//	        [gateway] loading configuration…
+//	        [gateway] resolving authentication…
+//	        Missing config. Run `<setup>` or set gateway.mode=local (or pass --allow-unconfigured).
+//
+//	      ✅ THE BEARER FORMULA IS CONFIRMED CORRECT, AND THAT IS THE HALF THIS
+//	      ENTRY ASKED ABOUT. Reproduced locally against the same image with the
+//	      configuration installed: a request carrying sha256("gw-" + HOOKS_TOKEN) is
+//	      ACCEPTED — it reaches the route and is refused only on the model field
+//	      (HTTP 400, `Invalid model`) — while the identical request with a wrong
+//	      bearer is 401 and with no bearer is 401. agentgateway.HooksSHA256 was never
+//	      the defect.
+//	      🔴 WHAT *WAS* MISSING IS CONFIGURATION INSTALLATION, WHICH IS A DIFFERENT
+//	      BLOCKER AND IS NOW CLOSED ON ITS MECHANISM. Three measured facts, each of
+//	      which rules out an obvious fix: the image's own entrypoint already starts
+//	      its gateway, so `command: null` was never the fault; starting it with the
+//	      unconfigured escape hatch reaches ready and serves 200 on `/` while the
+//	      model-response route answers 404 for EVERY bearer (none, wrong and correct
+//	      alike — a 404 attributes nothing, so all three were measured side by side);
+//	      and what registers that route is a key in the runtime's own configuration
+//	      FILE, which is also the only place a gateway credential is read from.
+//	      internal/agentspec/runtimeconfig.go installs an OPERATOR-SUPPLIED bundle
+//	      (MUSTER_AGENT_RUNTIME_CONFIG + MUSTER_AGENT_RUNTIME_INSTALL, both required
+//	      whenever a runtime is named and both refused at boot) and ships the DERIVED
+//	      bearer as agentspec.EnvGatewayBearer, so there is one implementation of the
+//	      formula rather than one here and one in shell. That file carries the (A)/(B)
+//	      design argument and every measurement above.
+//	      🔴 AND A CRASHLOOP IS NOW VISIBLE, WHICH IT WAS NOT. This driver rendered no
+//	      probe of any kind, so the crashlooping pod reported 0/1 indefinitely with
+//	      nothing timing it out: the exit code was in `kubectl logs` and nowhere a
+//	      person looks first. provision.Spec.Health plus the kubernetes driver's
+//	      startup/liveness pair is what reports it now.
+//	      🔴 SO WHAT IS STILL OWED IS THE SAME SENTENCE, NARROWED RATHER THAN
+//	      DISCHARGED: A REAL TURN THROUGH *MUSTER'S OWN GATEWAY* TO A
+//	      *MUSTER-PROVISIONED* AGENT HAS STILL NOT HAPPENED. What has happened is a
+//	      turn against the same IMAGE, configured by hand, from a host — which proves
+//	      the wire contract and proves nothing about muster's wiring reaching it. Four
+//	      things remain unproven in-repo, and each is unprovable here by construction:
+//	      that the operator's install script does what it says (it lives in a
+//	      ConfigMap this repository never sees); that the probe PASSES against a real
+//	      kubelet; that the agent's Service name resolves; and that a turn through
+//	      api.Extensions.Gateway authenticates. A fake clientset resolves no DNS and
+//	      runs no pod.
+//	      WHO CHECKS IT, AND HOW — this is the mechanical closing condition, not
+//	      "tests pass". On a cluster, with MUSTER_AGENT_PROVISIONER=kubernetes, a
+//	      runtime named, and the ConfigMap applied:
+//
+//	        kubectl -n <agent-ns> get deploy <agent> -o jsonpath='{.status.readyReplicas}'   # want 1
+//	        kubectl -n <agent-ns> get pod -l app.kubernetes.io/instance=<agent> \
+//	          -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}{"\n"}'
+//	        # the derived bearer, from the agent's own env secret. The object name is
+//	        # k8s.envSecretName's — <agent>-env, not <agent>:
+//	        T=$(kubectl -n <agent-ns> get secret <agent>-env \
+//	          -o jsonpath='{.data.MUSTER_GATEWAY_BEARER}' | base64 -d)
+//	        kubectl -n <agent-ns> run probe --rm -i --image=curlimages/curl --restart=Never -- \
+//	          curl -sS -o /dev/null -w '%{http_code}\n' -X POST -H "Authorization: Bearer $T" \
+//	          -H 'Content-Type: application/json' -d '{"model":"not-a-model","input":"x"}' \
+//	          http://<agent>.<agent-ns>.svc:18789/v1/responses
+//
+//	      A 400 is the PASS — it means the route exists and the credential was
+//	      accepted; the model field is what was refused. 🔴 A 404 IS A FAIL AND MEANS
+//	      THE ROUTE IS NOT REGISTERED, which is a defect in the operator's TEMPLATE,
+//	      not in the credential: re-run with a deliberately wrong bearer and confirm
+//	      it ALSO 404s rather than 401ing, which is the only thing that separates the
+//	      two. Then the same POST driven through muster's own chat tier, which is the
+//	      turn this condition actually asks for.
+//	      ⚠ THE OWNER OF THAT LAST MEASUREMENT IS CITED IN A SEPARATE SENTENCE ON
+//	      PURPOSE, and the reason is a GUARD rather than style.
+//	      TestTheRetractedReachabilityClaimIsGoneFromEveryNonTestSource sweeps this
+//	      tree for the retracted claim as a RELATIONSHIP — the pair of words naming
+//	      the two chat endpoints, within 80 characters of a reachability word — and
+//	      the file that owns the on-cluster controls carries one of those
+//	      reachability words in its own NAME. Citing it beside the phrase therefore
+//	      tripped the sweep on a FILENAME. The guard was right about the shape and
+//	      the sentence was not making the claim, so the citation moved instead of the
+//	      allowlist growing an entry for a false positive — an allowlist entry is a
+//	      licence, and licensing this shape would license the real claim with it. The
+//	      owner is the Makefile's test-liveenv target, whose controls live under
+//	      internal/agentgateway and name the variables they need.
 //	  WHO CHECKED BOTH MECHANISMS: the reviewer of the pull request that declared the
 //	      port and the second token name, against the two tests named above and
 //	      against the mutation results in its own description. Neither blocker was a

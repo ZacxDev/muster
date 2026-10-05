@@ -56,6 +56,64 @@ func TestSpecValidate(t *testing.T) {
 			name:   "name exactly at the length budget",
 			mutate: func(s *provision.Spec) { s.Ref.Name = strings.Repeat("a", 48) },
 		},
+		// --- health, which is two fields that must agree ------------------------
+		//
+		// 🔴 THE REFUSALS MATTER BECAUSE THE ALTERNATIVE IS A DROPPED PROBE, NOT AN
+		// ERROR. A driver handed a Health naming a port the spec does not declare has
+		// nothing to probe, so it renders no probe and the instance reports Ready from
+		// its process state alone — which is EXACTLY the pre-Health behaviour, under a
+		// spec that asked for better. A silent downgrade is the shape this whole field
+		// exists to remove.
+		{
+			name: "health on a declared port is valid",
+			mutate: func(s *provision.Spec) {
+				s.Ports = []provision.Port{{Name: "gateway", Port: 18789}}
+				s.Health = provision.Health{HTTPGetPath: "/", PortName: "gateway"}
+			},
+		},
+		{
+			name: "health naming a port the spec does not declare",
+			mutate: func(s *provision.Spec) {
+				s.Ports = []provision.Port{{Name: "gateway", Port: 18789}}
+				s.Health = provision.Health{HTTPGetPath: "/", PortName: "skills"}
+			},
+			wantErr: true, mustSay: "does not declare",
+		},
+		{
+			// 🔴 AND NOT THROUGH PortNumber'S FALLBACK. With exactly one declared port,
+			// Spec.PortNumber answers it for ANY name — so a Health validated through
+			// that helper would accept a typo and probe the gateway anyway, then start
+			// probing something else the moment a second port is declared.
+			name: "health naming an undeclared port while exactly one port exists",
+			mutate: func(s *provision.Spec) {
+				s.Ports = []provision.Port{{Name: "gateway", Port: 18789}}
+				s.Health = provision.Health{HTTPGetPath: "/", PortName: "typo"}
+			},
+			wantErr: true, mustSay: "does not declare",
+		},
+		{
+			name: "health path with no port name",
+			mutate: func(s *provision.Spec) {
+				s.Health = provision.Health{HTTPGetPath: "/"}
+			},
+			wantErr: true, mustSay: "both required or both empty",
+		},
+		{
+			name: "health port name with no path",
+			mutate: func(s *provision.Spec) {
+				s.Ports = []provision.Port{{Name: "gateway", Port: 18789}}
+				s.Health = provision.Health{PortName: "gateway"}
+			},
+			wantErr: true, mustSay: "both required or both empty",
+		},
+		{
+			name: "relative health path",
+			mutate: func(s *provision.Spec) {
+				s.Ports = []provision.Port{{Name: "gateway", Port: 18789}}
+				s.Health = provision.Health{HTTPGetPath: "healthz", PortName: "gateway"}
+			},
+			wantErr: true, mustSay: "must be absolute",
+		},
 		{
 			name: "relative file path",
 			mutate: func(s *provision.Spec) {
@@ -203,22 +261,30 @@ func TestFingerprintMovesForEveryFieldThatMatters(t *testing.T) {
 	baseFP := provision.Fingerprint(base)
 
 	mutations := map[string]func(*provision.Spec){
-		"image":         func(s *provision.Spec) { s.Runtime.Image = "ghcr.io/muster-example/changed:9" },
-		"command":       func(s *provision.Spec) { s.Runtime.Command = []string{"/bin/other"} },
-		"args":          func(s *provision.Spec) { s.Runtime.Args = []string{"--flag"} },
-		"workdir":       func(s *provision.Spec) { s.Runtime.WorkingDir = "/srv" },
-		"env value":     func(s *provision.Spec) { s.Env = []provision.EnvVar{{Name: "MUSTER_INSTANCE", Value: "other"}} },
-		"env name":      func(s *provision.Spec) { s.Env = []provision.EnvVar{{Name: "OTHER", Value: "fp"}} },
-		"secret":        func(s *provision.Spec) { s.Secrets = []provision.EnvVar{{Name: "K", Value: "v"}} },
-		"file content":  func(s *provision.Spec) { s.Files = []provision.File{{Path: "/a", Content: []byte("x")}} },
-		"file mode":     func(s *provision.Spec) { s.Files = []provision.File{{Path: "/a", Content: []byte("x"), Mode: 0o700}} },
-		"init":          func(s *provision.Spec) { s.Init = []string{"echo hello"} },
-		"resources":     func(s *provision.Spec) { s.Resources = provision.Resources{MemoryLimit: "3Gi"} },
-		"workspace":     func(s *provision.Spec) { s.Workspace = provision.Workspace{Path: "/data", Persist: true} },
-		"repo":          func(s *provision.Spec) { s.Repo = provision.Repo{URL: "https://git.example.test/o/r.git"} },
-		"port":          func(s *provision.Spec) { s.Ports = []provision.Port{{Name: "gateway", Port: 9999}} },
-		"endpoint":      func(s *provision.Spec) { s.Endpoint = &provision.Endpoint{Host: "h.example.test", Port: 1} },
-		"config":        func(s *provision.Spec) { s.Config = map[string]any{"k": "v"} },
+		"image":        func(s *provision.Spec) { s.Runtime.Image = "ghcr.io/muster-example/changed:9" },
+		"command":      func(s *provision.Spec) { s.Runtime.Command = []string{"/bin/other"} },
+		"args":         func(s *provision.Spec) { s.Runtime.Args = []string{"--flag"} },
+		"workdir":      func(s *provision.Spec) { s.Runtime.WorkingDir = "/srv" },
+		"env value":    func(s *provision.Spec) { s.Env = []provision.EnvVar{{Name: "MUSTER_INSTANCE", Value: "other"}} },
+		"env name":     func(s *provision.Spec) { s.Env = []provision.EnvVar{{Name: "OTHER", Value: "fp"}} },
+		"secret":       func(s *provision.Spec) { s.Secrets = []provision.EnvVar{{Name: "K", Value: "v"}} },
+		"file content": func(s *provision.Spec) { s.Files = []provision.File{{Path: "/a", Content: []byte("x")}} },
+		"file mode":    func(s *provision.Spec) { s.Files = []provision.File{{Path: "/a", Content: []byte("x"), Mode: 0o700}} },
+		"init":         func(s *provision.Spec) { s.Init = []string{"echo hello"} },
+		"resources":    func(s *provision.Spec) { s.Resources = provision.Resources{MemoryLimit: "3Gi"} },
+		"workspace":    func(s *provision.Spec) { s.Workspace = provision.Workspace{Path: "/data", Persist: true} },
+		"repo":         func(s *provision.Spec) { s.Repo = provision.Repo{URL: "https://git.example.test/o/r.git"} },
+		"port":         func(s *provision.Spec) { s.Ports = []provision.Port{{Name: "gateway", Port: 9999}} },
+		"endpoint":     func(s *provision.Spec) { s.Endpoint = &provision.Endpoint{Host: "h.example.test", Port: 1} },
+		"config":       func(s *provision.Spec) { s.Config = map[string]any{"k": "v"} },
+		// 🔴 HEALTH IS RENDERED INTO THE POD TEMPLATE, so two specs differing only in
+		// it describe two different pods. Absent from the digest, a Health change is a
+		// probe an existing instance never gets under a fingerprint that says it
+		// matches — Create would call the live instance identical and Update would not
+		// roll. Both fields are varied, in separate entries, because a digest that
+		// wrote only one of them would pass a single combined mutation.
+		"health path":   func(s *provision.Spec) { s.Health = provision.Health{HTTPGetPath: "/healthz", PortName: "gateway"} },
+		"health port":   func(s *provision.Spec) { s.Health = provision.Health{HTTPGetPath: "/healthz", PortName: "skills"} },
 		"instance name": func(s *provision.Spec) { s.Ref.Name = "fp2" },
 	}
 	seen := map[string]string{baseFP: "base"}
