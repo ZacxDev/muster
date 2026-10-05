@@ -73,21 +73,26 @@ const (
 	envStandalone = "MUSTER_STANDALONE"
 
 	// --- agent provisioning (see provisioner.go) ---
-	envAgentProvisioner   = "MUSTER_AGENT_PROVISIONER"
-	envAgentGateway       = "MUSTER_AGENT_GATEWAY"
-	envAgentGatewayModel  = "MUSTER_AGENT_GATEWAY_MODEL"
-	envAgentGatewayPort   = "MUSTER_AGENT_GATEWAY_PORT"
-	envAgentImageRepo     = "MUSTER_AGENT_IMAGE_REPO"
-	envAgentImageTag      = "MUSTER_AGENT_IMAGE_TAG"
-	envAgentAPIURL        = "MUSTER_AGENT_API_URL"
-	envAgentModel         = "MUSTER_AGENT_MODEL"
-	envAgentOpenRouterKey = "MUSTER_AGENT_OPENROUTER_KEY"
-	envAgentNamespace     = "MUSTER_AGENT_NAMESPACE"
-	envAgentNSPrefix      = "MUSTER_AGENT_NAMESPACE_PREFIX"
-	envAgentNSShared      = "MUSTER_AGENT_NAMESPACE_SHARED"
-	envAgentWorkspaceKeep = "MUSTER_AGENT_WORKSPACE_PERSIST"
-	envAgentStorageClass  = "MUSTER_AGENT_WORKSPACE_STORAGE_CLASS"
-	envAgentEndpointTmpl  = "MUSTER_AGENT_ENDPOINT_TEMPLATE"
+	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
+	envAgentGateway      = "MUSTER_AGENT_GATEWAY"
+	envAgentGatewayModel = "MUSTER_AGENT_GATEWAY_MODEL"
+	envAgentGatewayPort  = "MUSTER_AGENT_GATEWAY_PORT"
+	// The agent runtime's OWN configuration, operator-supplied. Both are the
+	// CONTENT of a key in a ConfigMap the operator creates, projected into this
+	// pod with valueFrom.configMapKeyRef — see config.AgentRuntimeConfig.
+	envAgentRuntimeConfig  = "MUSTER_AGENT_RUNTIME_CONFIG"
+	envAgentRuntimeInstall = "MUSTER_AGENT_RUNTIME_INSTALL"
+	envAgentImageRepo      = "MUSTER_AGENT_IMAGE_REPO"
+	envAgentImageTag       = "MUSTER_AGENT_IMAGE_TAG"
+	envAgentAPIURL         = "MUSTER_AGENT_API_URL"
+	envAgentModel          = "MUSTER_AGENT_MODEL"
+	envAgentOpenRouterKey  = "MUSTER_AGENT_OPENROUTER_KEY"
+	envAgentNamespace      = "MUSTER_AGENT_NAMESPACE"
+	envAgentNSPrefix       = "MUSTER_AGENT_NAMESPACE_PREFIX"
+	envAgentNSShared       = "MUSTER_AGENT_NAMESPACE_SHARED"
+	envAgentWorkspaceKeep  = "MUSTER_AGENT_WORKSPACE_PERSIST"
+	envAgentStorageClass   = "MUSTER_AGENT_WORKSPACE_STORAGE_CLASS"
+	envAgentEndpointTmpl   = "MUSTER_AGENT_ENDPOINT_TEMPLATE"
 
 	// The hosted subsystem-store ("cairn") coordinates handed to the SUPERVISOR
 	// agent only. Both unset is the state this ships in, and in that state nothing
@@ -291,6 +296,51 @@ type config struct {
 	// should be — agentspec owns it, with the measurement beside it.
 	AgentGatewayPort int
 
+	// AgentRuntimeConfig and AgentRuntimeInstall are the agent runtime's own
+	// configuration bundle: the configuration FILE the runtime reads, and the
+	// script that installs it. Both are CONTENT, not names, and both are
+	// REQUIRED whenever AgentGateway is not none — refused at boot, not at the
+	// first dispatch.
+	//
+	// 🔴 THEY ARE CONFIGURATION AND NOT CONSTANTS FOR THE REASON
+	// AgentGatewayModel IS, ONE STEP FURTHER. The sentinel "belongs to the
+	// IMAGE"; so does a configuration file's SCHEMA, and so do the executable
+	// names an install script has to re-exec. This module is public and the
+	// runtime's identifier is a denied token, so carrying either would be a leak
+	// as well as a coupling. internal/agentspec/runtimeconfig.go argues the
+	// design at length and records the measurements behind it.
+	//
+	// 🔴 WHY THEY HOLD CONTENT RATHER THAN A ConfigMap NAME, WHICH IS A
+	// DELIBERATE DEPARTURE FROM THE SHAPE THIS WAS ASKED FOR. A name would make
+	// muster READ the object from the apiserver, and that costs three things the
+	// content form does not: a `get configmaps` permission in muster's own
+	// namespace — on a deployment whose single biggest out-of-repo blocker is
+	// already RBAC (see provisioner.go prerequisite 1) — a resolution of which
+	// namespace muster itself runs in, which nothing here knows today; and an
+	// asymmetry between the two drivers, because the `noop` driver exists
+	// precisely so the tiers above the provisioner can be developed with NO
+	// cluster, and it would then either need in-cluster credentials or silently
+	// build a different spec from the `kubernetes` one. With the content
+	// projected by valueFrom.configMapKeyRef the operator still edits ONE
+	// ConfigMap and `kubectl rollout restart` still applies it, the refusal below
+	// is a pure function of the environment, every wiring test can construct the
+	// configured state directly, and the spec is identical under both drivers.
+	//
+	// ⚠ WHAT IT COSTS, SO THE TRADE IS ON THE RECORD: the operator edits TWO
+	// manifests rather than one — the ConfigMap and this Deployment's env — and a
+	// key renamed in the ConfigMap without the env being updated fails the POD
+	// rather than this refusal, as a CreateContainerConfigError naming the missing
+	// key. That failure is loud and names the key, which is why it was accepted.
+	//
+	// ⚠ A ConfigMap IS NOT A SECRET STORE AND NEITHER OF THESE IS CONFIDENTIAL.
+	// The credential the installed configuration ends up holding is NOT in here:
+	// it is derived per agent from the row's token and travels to the instance as
+	// agentspec.EnvGatewayBearer, in the spec's Secrets. Putting a credential in
+	// this bundle would put it in a ConfigMap and in every instance's non-secret
+	// file store.
+	AgentRuntimeConfig  string
+	AgentRuntimeInstall string
+
 	// AgentImageRepo and AgentAPIURL are agentspec.Config's two required fields.
 	// Required whenever AgentProvisioner is not none, and refused at boot rather
 	// than at the first dispatch — see validate.
@@ -442,9 +492,17 @@ func loadConfig(getenv func(string) string) (config, error) {
 		RouterActor:        strings.TrimSpace(getenv(envRouterActor)),
 		Standalone:         envFlag(getenv, envStandalone),
 
-		AgentProvisioner:      strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
-		AgentGateway:          strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),
-		AgentGatewayModel:     strings.TrimSpace(getenv(envAgentGatewayModel)),
+		AgentProvisioner:  strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
+		AgentGateway:      strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),
+		AgentGatewayModel: strings.TrimSpace(getenv(envAgentGatewayModel)),
+		// ⚠ TrimSpace IS SAFE ON BOTH AND IS NOT A PARSE. A YAML block scalar in
+		// the operator's ConfigMap carries a trailing newline, and `sh` reads a
+		// final line without one; neither a JSON document nor a shell script
+		// changes meaning when surrounding whitespace is removed. What it buys is
+		// that a key holding only a newline reads as EMPTY and hits the refusal
+		// below, rather than reaching an instance as a one-byte script.
+		AgentRuntimeConfig:    strings.TrimSpace(getenv(envAgentRuntimeConfig)),
+		AgentRuntimeInstall:   strings.TrimSpace(getenv(envAgentRuntimeInstall)),
 		AgentImageRepo:        strings.TrimSpace(getenv(envAgentImageRepo)),
 		AgentImageTag:         strings.TrimSpace(getenv(envAgentImageTag)),
 		AgentAPIURL:           strings.TrimSpace(getenv(envAgentAPIURL)),
@@ -600,6 +658,23 @@ func (c config) validate() error {
 	return c.validateProvisioner()
 }
 
+// presence renders whether a value is set, WITHOUT rendering the value.
+//
+// 🔴 IT EXISTS SO A REFUSAL CAN NAME WHICH HALF OF A PAIR IS MISSING WITHOUT
+// PRINTING EITHER HALF. The runtime-config bundle is a multi-line configuration
+// file and a multi-line shell script; `%q` on one of those produces a refusal
+// nobody can read, and a truncation produces one that looks like corruption.
+// Neither value is confidential — the credential is derived per agent and never
+// travels in this bundle — so this is about legibility, not secrecy, and saying
+// so matters: a reader who assumes secrecy will add redaction somewhere it is not
+// needed, or assume the pair IS safe to log and print the next thing that is not.
+func presence(v string) string {
+	if v == "" {
+		return "unset"
+	}
+	return "set"
+}
+
 // oneOf reports whether value is in choices.
 //
 // 🔴 IT IS ONE FUNCTION BECAUSE IT WAS TWO IDENTICAL LOOPS, AND THE SECOND ARRIVED
@@ -672,6 +747,65 @@ func (c config) validateProvisioner() error {
 			"%s and leave the two chat routes refusing at api.requireGatewayProvisioner",
 			envAgentGateway, gw, envAgentProvisioner, named,
 			strings.Join([]string{provisionerNoop, provisionerK8s}, "/"), envAgentGateway)
+	}
+
+	// 🔴 THE RUNTIME-CONFIG BUNDLE IS CHECKED AGAINST THE GATEWAY IN BOTH
+	// DIRECTIONS, AND THE TWO REFUSALS ARE DIFFERENT FAILURES RATHER THAN ONE
+	// SYMMETRY. Missing-with-a-gateway is the measured defect: a provisioner that
+	// comes up healthy and creates pods that CRASHLOOP, exit 78, restart for ever
+	// and report 0/1 — because the agent runtime's gateway refuses to start
+	// without its own configuration, and nothing in this binary was installing
+	// one. Present-with-no-gateway is the armed-switch shape this function
+	// already refuses twice: the bundle's installer writes a gateway CREDENTIAL,
+	// and muster can only derive one when a scheme is named, so the bundle would
+	// be placed and the credential would be empty — a well-formed configuration
+	// the runtime accepts and then refuses every turn against with a 401.
+	//
+	// ⚠ THE PAIR IS CHECKED, NOT EACH HALF, so an operator who sets one of the
+	// two keys gets a message naming the OTHER one rather than a pod that fails on
+	// a missing input at startup.
+	//
+	// ⚠ IT IS PLACED AFTER THE DRIVER CROSS-CHECK DELIBERATELY, AND THE FIRST DRAFT
+	// HAD IT BEFORE. A deployment that names a runtime with NO driver provisions
+	// nothing, so a bundle is not what it is missing; refusing it for an absent
+	// bundle sends the operator to create a ConfigMap no instance would ever read.
+	// Each refusal in this function is ordered so the one an operator should act on
+	// FIRST fires first.
+	//
+	// ⚠ NAMING A RUNTIME NOW COSTS AN OPERATOR THREE VARIABLES RATHER THAN ONE,
+	// which is a real widening of this knob's commitment and is stated rather than
+	// discovered: the sentinel, and these two.
+	//
+	// 🔴 WHAT THIS DOES *NOT* COVER, NAMED SO IT IS NOT READ AS COMPLETE:
+	// MUSTER_AGENT_PROVISIONER=kubernetes WITH MUSTER_AGENT_GATEWAY=none still
+	// provisions crashlooping pods, exactly as before this change. That
+	// combination is a SUPPORTED deployment — config.AgentGateway's own doc
+	// defends "lifecycle without chat", and it is what this binary ran for the
+	// whole of the step that wired the provisioner — so refusing it here would
+	// break a documented configuration to close a defect it shares. Keying the
+	// requirement on the provisioner instead was considered and rejected for the
+	// credential reason above: with no scheme named there is no bearer to inject,
+	// so muster can place a bundle it cannot complete. doc_seams.go entry 1 carries
+	// this as an open gap with its closing condition.
+	if gw != gatewayNone && (c.AgentRuntimeConfig == "" || c.AgentRuntimeInstall == "") {
+		return fmt.Errorf("%s=%s but %s and %s are not both set (%s is %s, %s is %s): the agent "+
+			"runtime's gateway REFUSES TO START without its own configuration file — measured, it "+
+			"exits 78 with `Missing config` and the pod crashloops for ever reporting 0/1 — and the "+
+			"file's schema belongs to the image, not to this project, so it is supplied rather than "+
+			"generated. Create the ConfigMap described in internal/agentspec/runtimeconfig.go and "+
+			"project both keys into this pod, or unset %s",
+			envAgentGateway, gw, envAgentRuntimeConfig, envAgentRuntimeInstall,
+			envAgentRuntimeConfig, presence(c.AgentRuntimeConfig),
+			envAgentRuntimeInstall, presence(c.AgentRuntimeInstall), envAgentGateway)
+	}
+	if gw == gatewayNone && (c.AgentRuntimeConfig != "" || c.AgentRuntimeInstall != "") {
+		return fmt.Errorf("%s=%s but a runtime-config bundle is set (%s is %s, %s is %s): the bundle's "+
+			"installer writes the agent gateway's CREDENTIAL, and this binary derives one only from a "+
+			"NAMED scheme — so with no scheme the bundle would be installed with an empty credential, "+
+			"which the runtime accepts and then refuses every turn against with a 401. Name a runtime "+
+			"(%s), or unset both keys",
+			envAgentGateway, gw, envAgentRuntimeConfig, presence(c.AgentRuntimeConfig),
+			envAgentRuntimeInstall, presence(c.AgentRuntimeInstall), gatewayHooksSHA256)
 	}
 
 	// 🔴 THE PRIVILEGE TIER IS CHECKED *AGAINST* THE PROVISIONER FOR THE SAME

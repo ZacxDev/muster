@@ -134,7 +134,10 @@ func TestEveryAgentSpecFieldComesFromItsOwnConfigField(t *testing.T) {
 		AgentOpenRouterKey:    "key-five",
 		AgentWorkspacePersist: true,
 	}
-	got := agentSpecConfig(cfg)
+	got, err := agentSpecConfig(cfg)
+	if err != nil {
+		t.Fatalf("agentSpecConfig refused a configuration with no gateway named: %v", err)
+	}
 
 	for _, f := range []struct {
 		field string
@@ -158,7 +161,17 @@ func TestEveryAgentSpecFieldComesFromItsOwnConfigField(t *testing.T) {
 	// 🔴 AND THE CONTROL THAT MAKES THE ABOVE MORE THAN FIVE TAUTOLOGIES: a
 	// zero-value config must map to a zero-value spec config. Without it, a mapping
 	// that hardcoded the fixture's own strings would pass every assertion above.
-	if zero := agentSpecConfig(config{}); !reflect.DeepEqual(zero, agentspec.Config{}) {
+	//
+	// ⚠ reflect.DeepEqual COMPARES THE FUNCTION FIELD TOO, AND THAT IS LOAD-BEARING
+	// RATHER THAN AN OBSTACLE. agentspec.RuntimeConfig.DeriveBearer is a func, and
+	// DeepEqual holds two funcs equal only when BOTH are nil — so this assertion
+	// also pins that a zero config ships no derivation. A mapping that set it
+	// unconditionally (from a scheme defaulted rather than named) would redden here.
+	zero, err := agentSpecConfig(config{})
+	if err != nil {
+		t.Fatalf("agentSpecConfig refused the zero config: %v", err)
+	}
+	if !reflect.DeepEqual(zero, agentspec.Config{}) {
 		t.Errorf("a zero-value config produced a non-zero agentspec.Config: %+v.\n"+
 			"    Some field is being filled from something other than its config field.", zero)
 	}

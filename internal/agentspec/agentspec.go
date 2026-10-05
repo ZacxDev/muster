@@ -224,6 +224,33 @@ const (
 	EnvGitTerminalPrompt = "GIT_TERMINAL_PROMPT"
 	// EnvOpenRouterKey is the shared model-provider credential. Also a secret.
 	EnvOpenRouterKey = "OPENROUTER_API_KEY"
+	// EnvRuntimeConfig tells the operator's install script where muster placed
+	// the runtime-configuration template: [RuntimeConfigPath].
+	//
+	// 🔴 IT EXISTS SO THE SCRIPT DOES NOT HARDCODE A muster PATH. The script
+	// lives in the operator's ConfigMap and muster owns where the bundle is
+	// mounted; a script spelling the path itself would break on any change to
+	// [RuntimeConfigDir], in a container, at startup, with no version of the two
+	// values ever compared. It is NOT a secret: it names a file, and the bundle
+	// it names holds no credential.
+	EnvRuntimeConfig = "MUSTER_RUNTIME_CONFIG"
+	// EnvGatewayBearer carries the credential the agent's OWN gateway must
+	// accept, already derived. It is a SECRET.
+	//
+	// 🔴 IT IS THE DERIVED VALUE AND NOT ANOTHER COPY OF THE TOKEN, WHICH IS WHAT
+	// MAKES IT DIFFERENT FROM [EnvGatewayToken] BESIDE IT. EnvGatewayToken ships
+	// the raw token for a runtime that derives its own credential from it; this
+	// ships the RESULT, so the operator's install script needs no hash and no
+	// second implementation of muster's formula. See runtimeconfig.go on why that
+	// second implementation is the failure mode worth removing: two sha256
+	// expressions that disagree produce a 401 reading as a bad credential.
+	//
+	// ⚠ BOTH NAMES ARE SHIPPED, NOT ONE. EnvGatewayToken stays because it is part
+	// of the `hooks-sha256` scheme's contract with runtimes that read it, and
+	// because removing a variable the agent image may read is a change this
+	// package cannot verify. They carry different values and neither is the
+	// other's rename.
+	EnvGatewayBearer = "MUSTER_GATEWAY_BEARER"
 	// EnvCairnConfig points the subsystem-store client at [CairnConfigPath].
 	//
 	// 🔴 IT IS SET ONLY WHEN THE INTEGRATION IS ON, and it is NOT a secret: it
@@ -329,6 +356,21 @@ type Config struct {
 	// than a constant this package should assert.
 	CairnURL   string
 	CairnToken string
+
+	// RuntimeConfig is the operator-supplied bundle that makes the agent
+	// runtime's own gateway START. Zero means nothing is installed and the
+	// image's entrypoint runs unchanged, which is what every deployment did
+	// before this field existed — and, measured, is what crashlooped. See
+	// runtimeconfig.go's header for the defect, the measurements, and why the
+	// content is the operator's rather than this package's.
+	//
+	// ⚠ IT IS A deployment-WIDE FIELD HOLDING ONE PER-AGENT FUNCTION, which is
+	// the only shape in this struct that mixes the two. The template and the
+	// script are properties of the IMAGE, so they belong here; the credential is
+	// derived from the agent ROW, so it cannot be a value here — hence
+	// [RuntimeConfig.DeriveBearer] rather than a fourth [Options] field, which
+	// would have let a caller ship a bundle with no derivation.
+	RuntimeConfig RuntimeConfig
 }
 
 // Options is the per-call part that is neither deployment config nor a column on
@@ -454,14 +496,47 @@ func Build(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 		init = append(init, cmd)
 	}
 
+	// 🔴 THE BUNDLE'S THREE EFFECTS ARE DECIDED BY ONE PREDICATE, HERE, AND THAT
+	// IS WHAT MAKES A HALF-INSTALL UNEXPRESSIBLE. The files, the command override
+	// and the derived credential are useless apart: a script with no command
+	// override never runs, a command override with no script leaves the container
+	// executing a path that does not exist, and either without the credential
+	// installs an empty one. buildFiles, buildEnv and the secret below each ask
+	// [RuntimeConfig.Configured] rather than each being gated on a field of its
+	// own, which is the same single-branch discipline buildSecrets uses for the
+	// token pair and buildFiles uses for the cairn pair.
+	//
+	// ⚠ THE CREDENTIAL IS DERIVED *BEFORE* THE SPEC IS ASSEMBLED, so a tokenless
+	// agent is refused with its own message instead of producing a spec whose
+	// installer writes an empty one. See runtimeConfigBearer.
+	var bearer string
+	if cfg.RuntimeConfig.Configured() {
+		bearer, err = runtimeConfigBearer(cfg, a.HooksToken)
+		if err != nil {
+			return provision.Spec{}, err
+		}
+	}
+
+	runtime := provision.Runtime{
+		Image:      imageRef(cfg),
+		WorkingDir: workspace,
+	}
+	if cfg.RuntimeConfig.Configured() {
+		// 🔴 THIS OVERRIDES THE IMAGE'S ENTRYPOINT *AND* DISCARDS ITS DEFAULT
+		// ARGUMENTS, because Kubernetes drops CMD whenever Command is set and Args
+		// is empty. Args is deliberately left empty rather than carrying the
+		// image's own default command through: muster does not know what that
+		// command is, and a guess would be the vendor identifier this whole design
+		// keeps out of the repository. Re-exec'ing the real entrypoint is the
+		// operator's script's last line — see [RuntimeConfig.Install].
+		runtime.Command = runtimeConfigCommand()
+	}
+
 	spec := provision.Spec{
-		Ref: ref,
-		Runtime: provision.Runtime{
-			Image:      imageRef(cfg),
-			WorkingDir: workspace,
-		},
+		Ref:     ref,
+		Runtime: runtime,
 		Env:     env,
-		Secrets: buildSecrets(a, cfg),
+		Secrets: buildSecrets(a, cfg, bearer),
 		Files:   files,
 		Init:    init,
 		Resources: provision.Resources{
@@ -478,6 +553,22 @@ func Build(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
 		Repo:   repo,
 		Config: buildRuntimeConfig(cfg),
 		Ports:  ports,
+		// 🔴 DECLARED UNCONDITIONALLY, FOR THE REASON [DefaultGatewayPort] IS:
+		// both reach the cluster at CREATE time, in the pod template, so gating
+		// either on a tier being configured would leave every instance
+		// provisioned beforehand permanently without it and nothing would say so.
+		// A crashlooping agent reporting 0/1 for ever with nothing timing it out
+		// is the defect this closes, and it does not depend on whether chat is on.
+		//
+		// ⚠ THE PORT IS THE ONE THIS NAMES, VIA provision.DefaultPortName, SO THE
+		// PROBE AND THE SERVICE CANNOT DISAGREE. buildPorts declares exactly that
+		// name and provision.Spec.Validate refuses a Health naming a port the spec
+		// does not declare, so the two are checked against each other rather than
+		// maintained in parallel.
+		Health: provision.Health{
+			HTTPGetPath: DefaultGatewayHealthPath,
+			PortName:    provision.DefaultPortName,
+		},
 		Labels: buildLabels(a, cfg),
 	}
 
@@ -519,6 +610,14 @@ func buildEnv(cfg Config, opts Options) ([]provision.EnvVar, error) {
 	if cairnEnabled(cfg, opts) {
 		env = append(env, provision.EnvVar{Name: EnvCairnConfig, Value: CairnConfigPath})
 	}
+	// The runtime-config template's path, for the operator's install script. It
+	// names a file, so it is env rather than a secret, and it is absent entirely
+	// when no bundle is configured — a variable pointing at a file muster did not
+	// place is worse than no variable, because a script under `-u` would proceed
+	// on it rather than fail.
+	if cfg.RuntimeConfig.Configured() {
+		env = append(env, provision.EnvVar{Name: EnvRuntimeConfig, Value: RuntimeConfigPath})
+	}
 
 	// A collision check, not a merge. See Options.ExtraEnv.
 	//
@@ -532,12 +631,21 @@ func buildEnv(cfg Config, opts Options) ([]provision.EnvVar, error) {
 	// the value the instance HASHES, so the container's bearer stops matching the
 	// one muster derives from the row. The failure is a 401 on every chat turn
 	// attributed to the credential rather than to the shadow.
+	// ⚠ THE TWO RUNTIME-CONFIG NAMES ARE RESERVED UNCONDITIONALLY, like
+	// EnvCairnConfig above and for the identical reason: a reserved set that
+	// changed with the configuration would accept a caller's value on a
+	// deployment with no bundle and refuse the identical call once one was
+	// configured. EnvGatewayBearer is the one whose shadow is worst — a caller's
+	// value would be installed as the gateway's credential while muster sent its
+	// own, which is a 401 on every turn attributed to the derivation.
 	reserved := map[string]bool{
 		EnvAPIURL:            true,
 		EnvGitTerminalPrompt: true,
 		EnvNodeOptions:       true,
 		EnvToken:             true,
 		EnvGatewayToken:      true,
+		EnvGatewayBearer:     true,
+		EnvRuntimeConfig:     true,
 		EnvOpenRouterKey:     true,
 		EnvCairnConfig:       true,
 	}
@@ -618,13 +726,23 @@ func buildPorts(cfg Config) ([]provision.Port, error) {
 // request, naming the cause — whereas sha256("gw-" + "") is a perfectly
 // well-formed 64-hex credential the runtime would reject 401. An empty secret
 // placed under either name would convert a diagnosable refusal into that 401.
-func buildSecrets(a agents.Agent, cfg Config) []provision.EnvVar {
+// ⚠ THE DERIVED BEARER ARRIVES AS AN ARGUMENT RATHER THAN BEING COMPUTED HERE,
+// and the reason is the error. [RuntimeConfig.DeriveBearer] cannot be called on
+// an empty token without producing a well-formed useless credential, so the call
+// has to be able to REFUSE — and a buildSecrets that returned an error would make
+// every caller handle one for the sake of a case Build already decided. Build
+// derives it, Build refuses, and this function places what it is given. Empty
+// means "no bundle configured", which the caller's own single predicate decided.
+func buildSecrets(a agents.Agent, cfg Config, gatewayBearer string) []provision.EnvVar {
 	var secrets []provision.EnvVar
 	if a.HooksToken != "" {
 		secrets = append(secrets,
 			provision.EnvVar{Name: EnvToken, Value: a.HooksToken},
 			provision.EnvVar{Name: EnvGatewayToken, Value: a.HooksToken},
 		)
+	}
+	if gatewayBearer != "" {
+		secrets = append(secrets, provision.EnvVar{Name: EnvGatewayBearer, Value: gatewayBearer})
 	}
 	if cfg.OpenRouterAPIKey != "" {
 		secrets = append(secrets, provision.EnvVar{Name: EnvOpenRouterKey, Value: cfg.OpenRouterAPIKey})
@@ -682,6 +800,17 @@ func buildFiles(workspace string, cfg Config, opts Options) ([]provision.File, e
 			return nil, err
 		}
 		files = append(files, cairnWrapperFile(workspace), cairnCredentialFile(cfg))
+	}
+
+	// 🔴 THE RUNTIME-CONFIG BUNDLE GOES LAST, AND ITS PATHS MUST NOT BE INSIDE
+	// THE WORKSPACE. [RuntimeConfigDir]'s own note argues why; what this call site
+	// adds is that a workspace-relative seed could COLLIDE with it if the two
+	// shared a root, and provision.Spec.Validate refuses a duplicate file path —
+	// so the collision would surface as a dispatch failure rather than as one file
+	// silently winning. Keeping the bundle outside the workspace makes the
+	// collision unreachable instead of merely detected.
+	if cfg.RuntimeConfig.Configured() {
+		files = append(files, runtimeConfigFiles(cfg)...)
 	}
 	return files, nil
 }

@@ -576,6 +576,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		// reading "UNWIRED" needs the name they can set, and it was previously
 		// findable only by reading this file.
 		//
+		// ⚠ AND IT NAMES THE RUNTIME-CONFIG BUNDLE TOO, WHICH BRINGS THIS ARM'S
+		// COUNT OF "none of these is a misconfiguration" VARIABLES TO FIVE. The pair is
+		// REFUSED at boot in this state — config.validateProvisioner will not accept a
+		// bundle with no named scheme, because there is then no credential derivation to
+		// complete it with — so the only reachable value here is unset. That is exactly
+		// why it has to be named: an operator who created the ConfigMap and projected
+		// both keys but left MUSTER_AGENT_GATEWAY unset never reaches this line at all
+		// (boot refuses), while one who does reach it is told the pair is inert rather
+		// than left to infer it from its absence.
 		// 🔴 AND IT NAMES *BOTH* VARIABLES, BECAUSE THIS BRANCH IS BOTH TIERS OFF.
 		// There are two knobs now and this arm is the only place a reader sees the
 		// fully-off state; naming one of them would send an operator who wants chat
@@ -589,10 +598,13 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"Privilege grants are RECORDED but not applied to any cluster (%s=%v, and there is "+
 			"no driver to apply them through). %s HAS NO EFFECT in this state — it is still "+
 			"parsed and range-checked at boot, so a malformed value refuses to start, but "+
-			"nothing is provisioned so no Service carries a gateway port. None of the three "+
-			"is a misconfiguration; see cmd/muster-server/doc_seams.go",
+			"nothing is provisioned so no Service carries a gateway port. The agent "+
+			"runtime-config bundle (%s, %s) is UNSET and must be: with no runtime named there "+
+			"is no credential derivation to complete it with, so boot refuses the pair. None "+
+			"of the five is a misconfiguration; see cmd/muster-server/doc_seams.go",
 			envAgentProvisioner, a.cfg.agentProvisioner(), envAgentGateway, a.cfg.agentGateway(),
-			envAgentPrivApply, a.cfg.AgentPrivilegeApply, envAgentGatewayPort)
+			envAgentPrivApply, a.cfg.AgentPrivilegeApply, envAgentGatewayPort,
+			envAgentRuntimeConfig, envAgentRuntimeInstall)
 	default:
 		// 🔴 THE GATEWAY PORT IS REPORTED ON THE *LIFECYCLE* LINE, NOT ONLY ON THE CHAT
 		// ONE, AND THAT IS WHERE IT BELONGS RATHER THAN WHERE IT IS CONVENIENT.
@@ -678,9 +690,14 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				"therefore REFUSED and provisions NOTHING — the row goes to `error` carrying the "+
 				"reason and the remedy, the note stays in agents.pending_note, and the refusal "+
 				"names %s as the variable to set. A START is still allowed and still records an "+
-				"owed first turn in agents.kickoff_error. See cmd/muster-server/doc_seams.go "+
-				"entry 1",
-				envAgentGateway, a.cfg.agentGateway(), api.ProvisionerUnwiredField, envAgentGateway)
+				"owed first turn in agents.kickoff_error. 🔴 AND NO AGENT RUNTIME-CONFIG BUNDLE IS "+
+				"INSTALLED (%s and %s are unset, and boot requires them unset in this state): a "+
+				"provisioned instance then runs the image's own entrypoint with NO configuration, "+
+				"which is MEASURED to exit 78 with `Missing config` and crashloop reporting 0/1. So "+
+				"this combination provisions pods that never serve — name a runtime to install one. "+
+				"See cmd/muster-server/doc_seams.go entry 1",
+				envAgentGateway, a.cfg.agentGateway(), api.ProvisionerUnwiredField, envAgentGateway,
+				envAgentRuntimeConfig, envAgentRuntimeInstall)
 		} else {
 			// 🔴 IT NAMES THE RUNTIME, NOT JUST "WIRED", BECAUSE THE RUNTIME IS WHAT
 			// DECIDES THE BEARER DERIVATION AND THE MODEL SENTINEL. Those are wire
@@ -749,10 +766,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				"this bearer is derived from — but the container half of that derivation lives in "+
 				"the agent image's own deployment, which nothing here can read, so the first turn "+
 				"against an agent this binary provisioned is still the measurement. A kickoff is "+
-				"undeliverable regardless: nothing calls the gateway on the dispatch path. "+
+				"undeliverable regardless: nothing calls the gateway on the dispatch path. The agent "+
+				"runtime-config bundle IS INSTALLED: %s (%d bytes) is placed at %s, %s (%d bytes) "+
+				"REPLACES the image's entrypoint as the container's command, and the derived "+
+				"credential travels as %s. 🔴 THAT SCRIPT IS THE OPERATOR'S AND NOTHING HERE CAN "+
+				"CHECK IT: if it does not install the file and re-exec the real entrypoint, the "+
+				"instance does not serve — the startup probe is what reports that. "+
 				"See cmd/muster-server/doc_seams.go entry 1",
 				envAgentGateway, scheme, envAgentGatewayModel, a.cfg.AgentGatewayModel,
-				a.cfg.agentGatewayPort(), agentspec.EnvGatewayToken)
+				a.cfg.agentGatewayPort(), agentspec.EnvGatewayToken,
+				envAgentRuntimeConfig, len(a.cfg.AgentRuntimeConfig), agentspec.RuntimeConfigPath,
+				envAgentRuntimeInstall, len(a.cfg.AgentRuntimeInstall), agentspec.EnvGatewayBearer)
 		}
 		// 🔴 THIS IS doc_seams.go ENTRY 2'S ARGUMENT DYING ON SCHEDULE. A grant
 		// recorded and not applied was defensible only while no pod could exist to

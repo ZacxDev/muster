@@ -231,10 +231,14 @@ func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agent
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	specCfg, err := agentSpecConfig(cfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	prov, err := agentprovision.New(agentprovision.Config{
 		Driver:             driver,
 		Store:              store,
-		Spec:               agentSpecConfig(cfg),
+		Spec:               specCfg,
 		Logger:             logger,
 		KickoffDeliverable: gw != nil,
 	})
@@ -285,15 +289,44 @@ func buildPrivilegeApplier(cfg config, driver provision.Provisioner) (*agentpriv
 // one. A deployment that names a driver is saying where instances live; naming a
 // runtime is saying what protocol the thing inside speaks.
 func buildGateway(cfg config, driver provision.Provisioner) (*agentgateway.Gateway, error) {
+	rt, err := agentRuntime(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if rt == nil {
+		return nil, nil
+	}
+	return agentgateway.New(agentgateway.Config{
+		Driver:  driver,
+		Runtime: rt,
+		Model:   cfg.AgentGatewayModel,
+	})
+}
+
+// agentRuntime resolves MUSTER_AGENT_GATEWAY to the credential scheme it names,
+// or (nil, nil) for none.
+//
+// 🔴 IT IS ONE FUNCTION BECAUSE THERE ARE NOW TWO CONSUMERS AND THEY MUST NOT
+// DISAGREE — the same argument oneOf and agents.ResolveNamespacePrefix already
+// won in this repository. buildGateway needs the scheme to talk to an instance;
+// agentSpecConfig needs the SAME scheme's Bearer to tell the instance what
+// credential to accept. Two switches holding the same mapping is how one of them
+// comes to hold a different case, and the observable of that drift is the
+// precise failure the derivation exists to prevent: muster sending a bearer the
+// instance was configured to reject, which is a 401 on every turn reading as a
+// bad credential rather than as two mappings.
+//
+// ⚠ nil IS "none" AND IS NOT AN ERROR, so a caller must branch on it rather than
+// treat it as something to fall back from. Returning a no-op Runtime instead was
+// ruled out: it would make a deployment with no scheme ship a derived credential
+// anyway, which is a claim about the image that config.AgentGateway's doc says
+// this project must not make on an operator's behalf.
+func agentRuntime(cfg config) (agentgateway.Runtime, error) {
 	switch cfg.agentGateway() {
 	case gatewayNone:
 		return nil, nil
 	case gatewayHooksSHA256:
-		return agentgateway.New(agentgateway.Config{
-			Driver:  driver,
-			Runtime: agentgateway.HooksSHA256(),
-			Model:   cfg.AgentGatewayModel,
-		})
+		return agentgateway.HooksSHA256(), nil
 	default:
 		// Unreachable: config.validateProvisioner refuses anything else at boot. A
 		// silent nil here would present as a working server whose chat routes all
@@ -403,7 +436,33 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 // the whole of agentspec.Config is reachable from the environment — is how a
 // documented knob turns out to be unread, which is the finding config.go's const
 // block exists to answer.
-func agentSpecConfig(cfg config) agentspec.Config {
+// 🔴 IT RETURNS AN ERROR NOW, AND THE ERROR IS WHAT MAKES THE RUNTIME-CONFIG
+// BUNDLE UNABLE TO SHIP HALF-WIRED. The bundle's three parts are the operator's
+// template, the operator's script and MUSTER'S OWN derivation — and the third is
+// a property of the named scheme, which only agentRuntime resolves. Taking the
+// scheme as a PARAMETER instead was the first draft: it lets a caller pass nil
+// beside a configuration that names a runtime, and the result is a bundle
+// installed with no credential, which is the 401 this whole seam exists to close.
+// Deriving it from the same cfg the rest of this function reads makes that
+// mismatch unexpressible.
+func agentSpecConfig(cfg config) (agentspec.Config, error) {
+	rt, err := agentRuntime(cfg)
+	if err != nil {
+		return agentspec.Config{}, err
+	}
+	var rc agentspec.RuntimeConfig
+	if rt != nil {
+		// 🔴 ALL THREE FROM ONE BRANCH. config.validateProvisioner refuses a named
+		// scheme with an incomplete bundle and an incomplete bundle with no scheme,
+		// so this branch is the resolved form of a configuration that already
+		// passed both — and agentspec.RuntimeConfig.Configured is the third check,
+		// which fails toward installing NOTHING rather than something partial.
+		rc = agentspec.RuntimeConfig{
+			Template:     []byte(cfg.AgentRuntimeConfig),
+			Install:      []byte(cfg.AgentRuntimeInstall),
+			DeriveBearer: rt.Bearer,
+		}
+	}
 	return agentspec.Config{
 		ImageRepo:  cfg.AgentImageRepo,
 		ImageTag:   cfg.AgentImageTag,
@@ -423,5 +482,6 @@ func agentSpecConfig(cfg config) agentspec.Config {
 		WorkspacePersist: cfg.AgentWorkspacePersist,
 		CairnURL:         cfg.AgentCairnURL,
 		CairnToken:       cfg.AgentCairnToken,
-	}
+		RuntimeConfig:    rc,
+	}, nil
 }
