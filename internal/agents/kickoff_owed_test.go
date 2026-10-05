@@ -20,11 +20,7 @@ import (
 // interchangeable and counting one as the other is how coverage gets claimed
 // that does not exist:
 //
-//	TestKickoffOwedTruthTable                         REGRESSION. Red before
-//	                                                  KickoffOwed existed (the
-//	                                                  predicate had no reader at
-//	                                                  all) and covers all four
-//	                                                  cells of its truth table.
+//	TestKickoffOwedTruthTable                         REGRESSION, all four cells.
 //	TestAnOwedKickoffSurvivesEveryStatusIncludingRunning
 //	                                                  REGRESSION. Pins the exact
 //	                                                  combination that WAS the
@@ -40,6 +36,17 @@ import (
 //	                                                  enum — so the next session
 //	                                                  cannot "simplify" it into a
 //	                                                  sixth value.
+//
+// 🔴 AND THE TWO REGRESSION GUARDS' "RED AT BASE" IS A *COMPILE* RED, WHICH IS A
+// WEAKER CLAIM THAN A FAILED ASSERTION AND IS SAID SO HERE RATHER THAN LEFT TO BE
+// ASSUMED. KickoffOwed did not exist on the base revision, so these files do not
+// build there — `undefined: KickoffOwed`. That proves the function is new; it does
+// not prove the assertions can fail. What proves that is the mutation record:
+// inverting `!a.KickedOff` kills the first two cells and the `running` case,
+// dropping the `PendingNote != ""` conjunct kills the third cell, and each mutant
+// was confirmed to COMPILE before the suite ran. The behavioural red lives in
+// internal/ui and internal/api, whose guards fail on their own messages against a
+// base tree carrying the field and no wiring.
 // ---------------------------------------------------------------------------
 
 // TestKickoffOwedTruthTable covers every cell of the predicate.

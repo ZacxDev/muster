@@ -33,7 +33,13 @@ import (
 // WHICH GUARD IS WHICH:
 //
 //	TestBothTiersReportAnOwedKickoffForTheSameRow        REGRESSION (relationship)
-//	TestAnOwedKickoffIsReportedWithoutTheNotesText       REGRESSION (leak-shaped)
+//	TestAnOwedKickoffIsReportedWithoutTheNotesText       MIXED — see its own doc:
+//	                                                     the "this surface reports
+//	                                                     the state" half is
+//	                                                     regression, the "and not
+//	                                                     the text" half is an
+//	                                                     INVARIANT GUARD the bug
+//	                                                     never violated.
 //	TestOneCardComposerFeedsEverySurface                 INVARIANT GUARD
 // ---------------------------------------------------------------------------
 
