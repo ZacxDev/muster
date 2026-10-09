@@ -143,6 +143,48 @@ func KickoffOwed(a Agent) bool { return a.PendingNote != "" && !a.KickedOff }
 // the deliverer clears it itself.
 func KickoffFailed(a Agent) bool { return a.KickedOff && a.KickoffError != "" }
 
+// KickoffNeverConnectedReason opens agents.kickoff_error when a stamped first turn
+// failed because the connection to the agent runtime could not be OPENED (a dial
+// error: DNS, connection refused, unreachable). internal/agentkickoff writes it;
+// [KickoffResendSafe] reads it. One constant, so the writer and the reader cannot
+// drift apart.
+//
+// 🔴 IT IS THE ONE POST-STAMP CAUSE THAT PROVES NOTHING WAS SENT. Go's HTTP client
+// reports a dial error only from opening a NEW connection, before any byte of the
+// request is written on it, and it does not retry a POST whose bytes were written.
+// So no turn ran and none is running. (agentgateway.Gateway.Send can reach a dial
+// only after a /v1/responses request that the runtime answered 404, meaning it has
+// no such endpoint; that request ran no turn either.)
+const KickoffNeverConnectedReason = "kickoff turn NEVER REACHED the agent runtime: the " +
+	"connection could not be opened, so the turn was not sent and nothing was paid. The row " +
+	"was already marked delivered, so it is not retried automatically"
+
+// KickoffEmptyReplyReason is written to agents.kickoff_error when the first turn
+// came back with no text.
+const KickoffEmptyReplyReason = "kickoff turn returned an EMPTY reply, so it is recorded as NOT " +
+	"delivered: the gateway answered without error and with no text. The known cause is a " +
+	"reasoning model behind the agent runtime's /v1/responses, which discards its own " +
+	"successful retry for that model class; pin a non-reasoning model for this agent and " +
+	"send the task through its chat."
+
+// KickoffResendSafe reports whether a failed kickoff's recorded cause PROVES no
+// turn is running for it, so re-sending the task cannot pay for it twice. Only
+// [KickoffNeverConnectedReason] proves that.
+//
+// 🔴 EVERY OTHER CAUSE ANSWERS false, AN EMPTY REPLY INCLUDED. A shutdown or a
+// timeout abandons a request the runtime already received and may still be running.
+// A transport error after the request was written says nothing about the runtime's
+// side. And an empty reply is not a finished turn either: [KickoffEmptyReplyReason]
+// itself names the cause as a runtime that DISCARDS ITS OWN SUCCESSFUL RETRY, so the
+// work may have been done, or may still be under way, behind the empty answer.
+//
+// ⚠ IT READS kickoff_error BY ITS PREFIX, which muster writes from the constant
+// above. An unrecognised text answers false, the side that tells the operator to
+// check before re-sending.
+func KickoffResendSafe(a Agent) bool {
+	return KickoffFailed(a) && strings.HasPrefix(a.KickoffError, KickoffNeverConnectedReason)
+}
+
 // KickoffFailureText is the error text a surface may show for a failed kickoff:
 // [Agent.KickoffError] with the pending note scrubbed out ([ScrubNote]), or "" when
 // [KickoffFailed] is false. It is the ONE reader both tiers use, so the scrub cannot

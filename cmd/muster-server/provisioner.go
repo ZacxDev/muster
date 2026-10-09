@@ -302,7 +302,11 @@ func kickoffDeliverable(gw *agentgateway.Gateway, deliveryWired bool) bool {
 //
 // ⚠ IT TAKES THE ADAPTER AS ITS INSTANCE LISTER rather than the raw driver, so the
 // deliverer sees exactly the instances the lifecycle routes see.
-func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, logger *log.Logger) (*agentkickoff.Deliverer, error) {
+//
+// onChange is called with an agent's name whenever the deliverer changes what that
+// agent's card shows; buildApp passes api.Server.BroadcastAgentChanged so an open
+// Agents list re-renders (agentkickoff.Config.OnChange).
+func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, onChange func(string), logger *log.Logger) (*agentkickoff.Deliverer, error) {
 	if prov == nil || !kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired) {
 		return nil, nil
 	}
@@ -312,6 +316,7 @@ func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.
 		Gateway:         gw,
 		NamespacePrefix: cfg.AgentNamespacePrefix,
 		Logger:          logger,
+		OnChange:        onChange,
 	})
 }
 

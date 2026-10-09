@@ -32,11 +32,13 @@ package main
 //	  the configured prefix + name) that hold a pending note and were NEVER kicked
 //	  off; for a ready instance it takes the per-agent claim
 //	  (agents.Store.ClaimKickoff), re-reads the row, stamps KickedOff and the
-//	  recipient BEFORE the turn, and sends the note through api.Gateway.Chat into
-//	  the agent's latest chat session. A failed or EMPTY turn is recorded in
+//	  recipient BEFORE the turn, and sends the note through the gateway into the
+//	  agent's latest chat session — Resolve (address + bearer, no connection to the
+//	  runtime) before the stamp, Send after it; together they are Gateway.Chat. A failed or EMPTY turn is recorded in
 //	  agents.kickoff_error and never re-run — and (PR #37 review round 0) SURFACED:
 //	  agents.KickoffFailed drives a "kickoff failed" card badge with the scrubbed
-//	  error text and the re-send-by-hand remedy, and `kickoffFailed` on
+//	  error text and a remedy (PR #37 round 1: "re-send" only when nothing was sent,
+//	  otherwise "check whether the agent is already working first"), and `kickoffFailed` on
 //	  GET /api/agents; a turn cut off by shutdown is recorded as such and
 //	  app.shutdown waits (bounded) for that record before the pool closes. A
 //	  pre-send failure is retried until

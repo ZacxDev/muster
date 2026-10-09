@@ -102,8 +102,8 @@ type Agent struct {
 	//
 	// ✅ internal/agentkickoff DELIVERS IT. When the agent's instance is ready
 	// and the row has never been kicked off, that background loop sends this text
-	// as the agent's first turn through api.Gateway.Chat and stamps KickedOff
-	// BEFORE the turn. The text is KEPT after delivery rather than cleared: it is
+	// as the agent's first turn through agentgateway.Gateway (Resolve, then Send,
+	// which together are Gateway.Chat) and stamps KickedOff BEFORE the Send. The text is KEPT after delivery rather than cleared: it is
 	// the task the agent was given, and a re-send after a lost recipient
 	// (ActionResendKickoff) would need it.
 	//
@@ -296,6 +296,19 @@ type Store interface {
 	// model-timeout case), so this is evidence, not a verdict. The reconciler is
 	// what escalates a dead recipient to `error`.
 	SetKickoffError(ctx context.Context, id int64, msg string) error
+	// MarkKickoffStuck sets an owed row to `error` with errMsg (and clears
+	// last_output, as UpdateStatus does) ONLY if the row is still the one the
+	// caller judged stuck — updated_at exactly seenUpdatedAt, which every stamp,
+	// delivery record and status write moves — and no live kickoff claim. It
+	// reports whether the write applied.
+	//
+	// 🔴 IT IS CONDITIONAL BECAUSE THE VERDICT COMES FROM A LIST READ, AND THE ROW
+	// CAN MOVE BEFORE THE WRITE. A delivery that stamped it meanwhile has paid a
+	// turn; a Start meanwhile set it `provisioning` again (and bumped updated_at).
+	// An unconditional write turned either into an `error` card. A live claim means
+	// a delivery is past its own re-read and may be about to stamp. Pinned against
+	// real Postgres by agentkickoff's TestAStuckVerdictDoesNotOverwriteARowThatMoved.
+	MarkKickoffStuck(ctx context.Context, id int64, seenUpdatedAt time.Time, errMsg string) (bool, error)
 	// ClearKickoffDelivery forgets which pod received the kickoff, which disables
 	// restart-detection for this agent until the next delivery re-stamps it.
 	//

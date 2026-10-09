@@ -330,6 +330,16 @@ func TestAnOwedKickoffIsReportedWithoutTheNotesText(t *testing.T) {
 			t.Errorf("%s mentions no kickoff signal at all, so its clean leak result is "+
 				"a claim about an empty surface", path)
 		}
+		// PR #37 round 1 (F3): the remedy now carries the agent's namespace and name.
+		// Both HTML surfaces that render row 4 must have the remedy IN the body just
+		// searched, so the clean result above covers its dynamic part too.
+		if path == "/ui/agents" || path == "/ui/agents/4/card" {
+			wantCmd := "kubectl -n " + failed.Namespace + " logs deploy/" + failed.Name + " -c agent"
+			if !strings.Contains(got, "data-kickoff-remedy") || !strings.Contains(got, wantCmd) {
+				t.Errorf("%s does not render row 4's remedy with %q, so the leak search above "+
+					"did not cover the remedy's dynamic part.\nbody:\n%s", path, wantCmd, got)
+			}
+		}
 	}
 }
 
@@ -452,6 +462,33 @@ func cardViewLiteralSites(t *testing.T) []string {
 			"consolidation", parsed)
 	}
 	return sites
+}
+
+// TestTheCardsRemedyFollowsTheRecordedCause (PR #37 round 1, F3) pins the composer
+// half of the remedy: cardViewIndexed must hand the view agents.KickoffResendSafe's
+// answer for the row. Row 4's recorded cause is a runtime 400, which proves nothing
+// about whether a turn is still running, so its card says to check first; the same
+// row recorded as never connected says re-sending is safe.
+func TestTheCardsRemedyFollowsTheRecordedCause(t *testing.T) {
+	s, h, store := owedServer(t)
+	checkFirst := "kubectl -n devpod-failed-running logs deploy/failed-running -c agent"
+
+	card := getOwed(t, s, h, "/ui/agents/4/card").Body.String()
+	if !strings.Contains(card, checkFirst) || strings.Contains(card, "re-sending cannot pay") {
+		t.Errorf("a failure that may have left a turn running does not tell the operator to check "+
+			"first (want %q).\ncard:\n%s", checkFirst, card)
+	}
+
+	for i := range store.rows {
+		if store.rows[i].ID == 4 {
+			store.rows[i].KickoffError = agents.KickoffNeverConnectedReason +
+				": request: dial tcp 192.0.2.61:18789: connect: connection refused"
+		}
+	}
+	card = getOwed(t, s, h, "/ui/agents/4/card").Body.String()
+	if !strings.Contains(card, "re-sending cannot pay for the task twice") || strings.Contains(card, checkFirst) {
+		t.Errorf("a failure that proves nothing was sent does not say re-sending is safe.\ncard:\n%s", card)
+	}
 }
 
 // TestBothTiersReportAFailedKickoffForTheSameRow is the relationship guard for the

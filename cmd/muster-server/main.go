@@ -271,14 +271,6 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if priv != nil {
 		ext.PrivilegeApply = priv
 	}
-	// 🔴 THE DELIVERER COMES FROM THE SAME prov AND gw THE ADAPTER'S
-	// deliverability was computed from, so "a dispatch is accepted" and "something
-	// delivers it" cannot disagree. startBackgroundLoops runs it.
-	if a.kickoff, err = buildKickoffDeliverer(cfg, ext.Agents, prov, gw, logger); err != nil {
-		a.Close()
-		return nil, fmt.Errorf("kickoff deliverer: %w", err)
-	}
-
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
 
 	srv := api.New(bus, cfg.authConfig(), logger)
@@ -297,6 +289,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		srv.SetReadyCheck(a.pool.Ping)
 	}
 	a.srv = srv
+
+	// 🔴 THE DELIVERER COMES FROM THE SAME prov AND gw THE ADAPTER'S
+	// deliverability was computed from, so "a dispatch is accepted" and "something
+	// delivers it" cannot disagree. startBackgroundLoops runs it. It is built after
+	// srv so its card changes reach open Agents lists through srv's broadcast.
+	if a.kickoff, err = buildKickoffDeliverer(cfg, ext.Agents, prov, gw, srv.BroadcastAgentChanged, logger); err != nil {
+		a.Close()
+		return nil, fmt.Errorf("kickoff deliverer: %w", err)
+	}
 
 	a.http = &http.Server{
 		Addr:              net.JoinHostPort("", strconv.Itoa(cfg.Port)),

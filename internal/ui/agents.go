@@ -41,7 +41,14 @@ type AgentCardView struct {
 	// pending note already SCRUBBED out (agents.ScrubNote). This package never sees
 	// the note and must not be handed raw kickoff_error.
 	KickoffFailure string
-	Recent         []string
+	// KickoffResendSafe is agents.KickoffResendSafe: the failure proves nothing was
+	// sent, so the remedy may say re-sending is safe. Otherwise the remedy says to
+	// check whether the agent is already working first. See KickoffFailedRemedy.
+	KickoffResendSafe bool
+	// Namespace is the agent's stored namespace, used only to spell the log command
+	// in the failed-kickoff remedy.
+	Namespace string
+	Recent    []string
 	// LazyRecent makes the card lazy-load its recent-log preview from
 	// /ui/agents/{id}/recent (htmx) instead of receiving Recent inline — so the
 	// agents-list path makes no per-agent k8s call. Set for running agents.
@@ -295,7 +302,8 @@ func agentCard(a AgentCardView) g.Node {
 				),
 				g.If(a.Repo != "", chip("repo", a.Repo)),
 			),
-			g.If(a.KickoffFailed, kickoffFailureDetail(a.KickoffFailure)),
+			g.If(a.KickoffFailed, kickoffFailureDetail(a.KickoffFailure,
+				KickoffFailedRemedy(a.KickoffResendSafe, a.Namespace, a.Name))),
 			agentRecentSlot(a),
 		),
 		// Card footer (OUTSIDE the nav anchor so its task-badge link doesn't nest
@@ -461,12 +469,34 @@ func kickoffOwedBadge() g.Node {
 	)
 }
 
-// KickoffFailedRemedy is the fixed remedy line under a failed kickoff. It names
-// the ONE way to re-send, because nothing re-sends automatically: the deliverer
-// stamps kicked_off before the paid turn so a turn is never run twice, and a turn
-// that fails after the stamp is not retried (an operator decision).
-const KickoffFailedRemedy = "Not retried automatically, so it is never paid twice. " +
-	"To re-send, open this agent's chat and send the task again."
+// KickoffRemedyResendSafe is the remedy under a failed kickoff whose record proves
+// nothing reached the agent (agents.KickoffResendSafe).
+const KickoffRemedyResendSafe = "Not retried automatically. Nothing reached the agent, so " +
+	"re-sending cannot pay for the task twice: open this agent's chat and send the task again."
+
+// KickoffFailedRemedy is the remedy line under a failed kickoff. Nothing re-sends
+// automatically: the deliverer stamps kicked_off before the paid turn so a turn is
+// never run twice, and a turn that fails after the stamp is not retried (an
+// operator decision).
+//
+// 🔴 IT TELLS THE OPERATOR TO CHECK BEFORE RE-SENDING UNLESS NOTHING WAS SENT. A
+// shutdown, a timeout or a transport error after the request was written can leave
+// the runtime still running the turn, and an empty reply can hide a turn the runtime
+// retried and finished; re-sending then pays for the task twice. Only a connection
+// that was never opened proves otherwise (resendSafe).
+//
+// ⚠ ITS ONLY DYNAMIC PARTS ARE THE AGENT'S NAME AND NAMESPACE, which the card and
+// GET /api/agents already show. No part of the note or of kickoff_error is in it;
+// api.TestAnOwedKickoffIsReportedWithoutTheNotesText scans the rendered remedy.
+func KickoffFailedRemedy(resendSafe bool, namespace, name string) string {
+	if resendSafe {
+		return KickoffRemedyResendSafe
+	}
+	return "Not retried automatically, so it is never paid twice. The agent may still be " +
+		"working on this turn. Before re-sending, check its logs (kubectl -n " + namespace +
+		" logs deploy/" + name + " -c agent) or its chat transcript, and re-send through its " +
+		"chat only if it is not working on the task."
+}
 
 // kickoffFailedBadge is the "kickoff failed" badge: the first turn was handed to a
 // gateway and did not complete. It renders BESIDE the status dot, exactly like
@@ -495,14 +525,14 @@ func kickoffFailedBadge() g.Node {
 // of the pending note — a failed turn's error can quote the runtime's response
 // body, and a runtime that echoes its request would otherwise publish the note.
 // gomponents escapes it as text, so a body carrying markup renders inert.
-func kickoffFailureDetail(msg string) g.Node {
+func kickoffFailureDetail(msg, remedy string) g.Node {
 	return P(
 		g.Attr("data-kickoff-failure", ""),
 		Class("break-words rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-200 ring-1 ring-inset ring-rose-500/20"),
 		Span(Class("font-semibold"), g.Text("Kickoff failed: ")),
 		g.Text(msg),
 		g.Text(" "),
-		Span(g.Attr("data-kickoff-remedy", ""), Class("font-semibold"), g.Text(KickoffFailedRemedy)),
+		Span(g.Attr("data-kickoff-remedy", ""), Class("font-semibold"), g.Text(remedy)),
 	)
 }
 

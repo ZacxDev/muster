@@ -180,7 +180,8 @@ var ErrKickoffUndeliverable = errors.New("agentprovision: kickoff undeliverable"
 // ✅ IT IS TRUE: internal/agentkickoff is that deliverer. cmd/muster-server builds
 // it whenever a gateway is built and runs it as a background loop, which drives
 // agents.DecideReconcile over owned, never-kicked-off rows and delivers through the
-// same api.Gateway.Chat call that POST /api/agents/{name}/messages makes.
+// same agentgateway.Gateway that POST /api/agents/{name}/messages calls, using
+// Chat's two halves (Resolve before the delivered stamp, Send after it).
 //
 // 🔴 IT IS STILL ONLY THE SECOND HALF OF THE PREDICATE. Delivering a kickoff needs
 // a gateway this process can reach AND code that calls it; cmd/muster-server passes

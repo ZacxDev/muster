@@ -553,7 +553,11 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		// the note. agents.KickoffFailureText is the one reader both tiers use.
 		KickoffFailed:  agents.KickoffFailed(a),
 		KickoffFailure: agents.KickoffFailureText(a),
-		NoteID:         a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		// Decided from the RAW kickoff_error (its muster-written prefix); only the
+		// boolean crosses into the view.
+		KickoffResendSafe: agents.KickoffResendSafe(a),
+		Namespace:         a.Namespace,
+		NoteID:            a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		// The recent-log preview lazy-loads via /ui/agents/{id}/recent (htmx) so
 		// the list path makes NO per-agent k8s call. Only running agents with a
 		// provisioner get a preview (others render none).

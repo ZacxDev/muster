@@ -113,6 +113,13 @@ func (f *fakeStore) UpdateStatus(ctx context.Context, id int64, status, lastOutp
 	return nil
 }
 
+// MarkKickoffStuck is not driven by this package's tests; it exists so the fake
+// still satisfies Store. Its semantics are pinned against real Postgres in
+// internal/agentkickoff.
+func (f *fakeStore) MarkKickoffStuck(context.Context, int64, time.Time, string) (bool, error) {
+	return false, errors.New("fakeStore: MarkKickoffStuck is not modelled")
+}
+
 func (f *fakeStore) SetKickedOff(ctx context.Context, id int64, v bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

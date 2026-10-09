@@ -23,10 +23,50 @@ const failedFixtureError = "responses HTTP 502: upstream reset by peer zr51"
 
 func failedCardFor(t *testing.T, status string, failed bool, msg string) string {
 	t.Helper()
+	return failedCardWith(t, status, failed, false, msg)
+}
+
+func failedCardWith(t *testing.T, status string, failed, resendSafe bool, msg string) string {
+	t.Helper()
 	return renderString(t, agentCard(AgentCardView{
-		ID: 9, Name: "agent-9", DisplayName: "agent-9", Status: status,
-		KickoffFailed: failed, KickoffFailure: msg,
+		ID: 9, Name: "agent-9", DisplayName: "agent-9", Namespace: "ns-q7-agent-9", Status: status,
+		KickoffFailed: failed, KickoffFailure: msg, KickoffResendSafe: resendSafe,
 	}))
+}
+
+// The two remedies, spelled out literally rather than read back from
+// KickoffFailedRemedy, so a change to the text the operator acts on fails here.
+const (
+	wantRemedyCheckFirst = "Not retried automatically, so it is never paid twice. The agent may " +
+		"still be working on this turn. Before re-sending, check its logs (kubectl -n ns-q7-agent-9 " +
+		"logs deploy/agent-9 -c agent) or its chat transcript, and re-send through its chat only " +
+		"if it is not working on the task."
+	wantRemedyResendSafe = "Not retried automatically. Nothing reached the agent, so re-sending " +
+		"cannot pay for the task twice: open this agent's chat and send the task again."
+)
+
+// TestTheRemedySaysCheckFirstUnlessNothingWasSent (PR #37 round 1, F3): the remedy
+// used to tell the operator to re-send for EVERY cause. For a turn the runtime may
+// still be running (shutdown, timeout, a transport error after the request was
+// written, an empty reply) that pays for the task twice. Only a failure that proves
+// nothing was sent may say re-sending is safe.
+func TestTheRemedySaysCheckFirstUnlessNothingWasSent(t *testing.T) {
+	for _, c := range []struct {
+		safe bool
+		want string
+	}{
+		{false, wantRemedyCheckFirst},
+		{true, wantRemedyResendSafe},
+	} {
+		card := failedCardWith(t, "running", true, c.safe, failedFixtureError)
+		remedies := nodesWithAttr(t, card, "data-kickoff-remedy")
+		if len(remedies) != 1 {
+			t.Fatalf("resendSafe=%t: %d remedy element(s), want 1.\ncard:\n%s", c.safe, len(remedies), card)
+		}
+		if got := strings.TrimSpace(textOf(renderToString(t, remedies[0]))); got != c.want {
+			t.Errorf("resendSafe=%t: the remedy reads\n    %q\nwant\n    %q", c.safe, got, c.want)
+		}
+	}
 }
 
 // nodesWithAttr returns EVERY element carrying attr — every one, not the first,
@@ -90,10 +130,10 @@ func TestAFailedKickoffIsBadgedWithItsErrorAndTheRemedy(t *testing.T) {
 			"THAT it failed and not WHY.\ndetail: %q", failedFixtureError, detail)
 	}
 	if remedies := nodesWithAttr(t, card, "data-kickoff-remedy"); len(remedies) != 1 ||
-		strings.TrimSpace(textOf(renderToString(t, remedies[0]))) != KickoffFailedRemedy {
+		strings.TrimSpace(textOf(renderToString(t, remedies[0]))) != wantRemedyCheckFirst {
 		t.Errorf("the failure detail does not carry the remedy %q — nothing re-sends "+
-			"automatically, so the card must say how to re-send by hand.\ndetail: %q",
-			KickoffFailedRemedy, detail)
+			"automatically, so the card must say what to do by hand.\ndetail: %q",
+			wantRemedyCheckFirst, detail)
 	}
 	if !strings.Contains(card, `aria-label="Status: running"`) {
 		t.Errorf("the status indicator is gone from a card carrying the failed badge; the "+

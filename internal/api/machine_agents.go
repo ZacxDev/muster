@@ -79,7 +79,9 @@ type agentJSON struct {
 	// 🔴 IT IS NOT DERIVABLE AS `kickedOff && kickoffError != ""` BY A CONSUMER WITHOUT
 	// KNOWING THAT IS THE CONTRACT, so it is stated on the wire. It is the alert for
 	// the at-most-once delivery's accepted cost: such a turn is never retried
-	// automatically, and the remedy is to re-send the task through the agent's chat.
+	// automatically. Re-sending it through the agent's chat is safe only when the
+	// recorded cause proves nothing was sent (agents.KickoffResendSafe); otherwise the
+	// runtime may still be running the turn, and the card's remedy says to check first.
 	KickoffFailed bool `json:"kickoffFailed"`
 	// ErrorMessage is the stored provisioning/reconcile failure reason, or "" when
 	// none was recorded. NOT omitempty, for the same reason: a red agent with an

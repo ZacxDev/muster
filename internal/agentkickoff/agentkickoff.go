@@ -34,19 +34,33 @@
 // ActionRetryKickoff for the row and this package never touches it again — even if
 // the turn then fails, times out, or this process dies mid-turn. The cost is the
 // mirror image and it is accepted: a turn that fails AFTER the stamp is recorded in
-// agents.kickoff_error and is NOT retried automatically. Everything that can fail
-// without spending money (no token, a lost claim, no chat session) is checked
-// before the stamp, and is retried.
+// agents.kickoff_error and is NOT retried automatically. Everything muster can check
+// without opening a connection to the agent runtime — the token, the claim, a chat
+// session, and the agent's address and credential (agentgateway.Gateway.Resolve,
+// which for the k8s driver reads the Deployment from the Kubernetes API) — is checked
+// before the stamp, and a failure there is retried.
+//
+// ⚠ ONE FAILURE THAT COSTS NOTHING STILL LANDS AFTER THE STAMP: a connection to the
+// runtime that cannot be OPENED (DNS, refused). It happens inside the send, so it is
+// recorded, as agents.KickoffNeverConnectedReason, and not retried. Retrying it would
+// mean un-stamping a row that RecordKickoffDelivery has already counted as an
+// attempt — a second write after the point of no return, and the kicked_off=f with
+// attempts>0 state that round 0 deleted a guard for because no writer produced it.
+// What the record buys instead is a remedy that says re-sending is safe
+// (agents.KickoffResendSafe), which is true for this cause and no other.
 //
 // 🔴 AND THAT UNRETRIED FAILURE IS VISIBLE, NOT JUST RECORDED (an operator
 // decision). The stamp clears the "kickoff owed" badge, so before this a failed
 // turn left a card reading healthy with the failure only in a column no page
 // showed. agents.KickoffFailed (kicked_off AND kickoff_error set) now drives a
-// "kickoff failed" badge carrying the error text and the remedy — re-send the task
-// by hand through the agent's chat — and `kickoffFailed` on GET /api/agents. A
-// turn cut off by THIS process shutting down is recorded as such
+// "kickoff failed" badge carrying the error text and a remedy, and `kickoffFailed`
+// on GET /api/agents. The remedy says re-sending by hand is safe only when nothing
+// was sent (agents.KickoffResendSafe); for every other cause it says to check
+// whether the agent is already working first, because the runtime may still be
+// running the turn. A turn cut off by THIS process shutting down is recorded as such
 // ([ShutdownCancelledReason]), and the server's shutdown waits for that record
-// ([Deliverer.Done]) before it closes the pool.
+// ([Deliverer.Done]) before it closes the pool. Each of these changes calls
+// [Config.OnChange], so an open Agents list re-renders.
 //
 // 🔴 IT ACTS ONLY ON ROWS THIS DEPLOYMENT OWNS, AND NEVER ON A KICKED-OFF ROW. The
 // agents table can hold rows another system wrote (a namespace the configured
@@ -69,11 +83,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/provision"
 )
@@ -96,12 +112,9 @@ const claimMargin = 2 * time.Minute
 const bookkeepingTimeout = 15 * time.Second
 
 // EmptyReplyReason is written to agents.kickoff_error when the first turn came
-// back with no text.
-const EmptyReplyReason = "kickoff turn returned an EMPTY reply, so it is recorded as NOT " +
-	"delivered: the gateway answered without error and with no text. The known cause is a " +
-	"reasoning model behind the agent runtime's /v1/responses, which discards its own " +
-	"successful retry for that model class; pin a non-reasoning model for this agent and " +
-	"send the task through its chat."
+// back with no text. It is agents.KickoffEmptyReplyReason, which the card's remedy
+// reads.
+const EmptyReplyReason = agents.KickoffEmptyReplyReason
 
 // InstanceLister is what the deliverer needs from a provisioner: the live
 // instances, so it can tell a ready recipient from one that is not.
@@ -110,11 +123,15 @@ type InstanceLister interface {
 	Instances(ctx context.Context) ([]provision.Instance, error)
 }
 
-// Gateway is the one call a first turn needs. It is the method
+// Gateway is a first turn's two halves: Resolve (no connection to the runtime) and
+// Send (the turn). Together they are agentgateway.Gateway.Chat, the method
 // POST /api/agents/{name}/messages calls, so the kickoff travels the same path an
 // operator's message does. agentgateway.Gateway satisfies it.
+//
+// 🔴 THEY ARE SEPARATE SO RESOLVE CAN RUN BEFORE THE STAMP. See [Deliverer.deliver].
 type Gateway interface {
-	Chat(ctx context.Context, a agents.Agent, sessionKey, message string, emit func(string)) (string, error)
+	Resolve(ctx context.Context, a agents.Agent) (agentgateway.Target, error)
+	Send(ctx context.Context, t agentgateway.Target, sessionKey, message string, emit func(string)) (string, error)
 }
 
 // Config is everything the deliverer needs.
@@ -137,6 +154,16 @@ type Config struct {
 	Now func() time.Time
 	// TurnTimeout defaults to [DefaultTurnTimeout].
 	TurnTimeout time.Duration
+	// OnChange, when set, is called with an agent's name after this package changes
+	// what that agent's card shows: the stamp (the "kickoff owed" badge goes), a
+	// recorded post-stamp failure (the "kickoff failed" badge comes), and a stuck
+	// verdict (the card goes red). cmd/muster-server passes
+	// api.Server.BroadcastAgentChanged, which the Agents list re-renders on.
+	//
+	// 🔴 A PRE-SEND FAILURE DOES NOT CALL IT. It changes nothing a card shows (the row
+	// still reads "kickoff owed"), and it recurs every tick while the pod boots, so
+	// calling it there would re-render every open Agents list every 10 s.
+	OnChange func(name string)
 }
 
 // Deliverer delivers owed first turns. Build it with [New].
@@ -149,6 +176,7 @@ type Deliverer struct {
 	log    *log.Logger
 	now    func() time.Time
 	turn   time.Duration
+	notify func(name string)
 	wg     sync.WaitGroup
 	// done closes when [Deliverer.Run] has returned, which is AFTER every
 	// delivery it started has recorded its outcome. See [Deliverer.Done].
@@ -177,6 +205,7 @@ func New(cfg Config) (*Deliverer, error) {
 		log:    cfg.Logger,
 		now:    cfg.Now,
 		turn:   cfg.TurnTimeout,
+		notify: cfg.OnChange,
 		done:   make(chan struct{}),
 	}
 	if d.owner == "" {
@@ -190,6 +219,9 @@ func New(cfg Config) (*Deliverer, error) {
 	}
 	if d.turn <= 0 {
 		d.turn = DefaultTurnTimeout
+	}
+	if d.notify == nil {
+		d.notify = func(string) {}
 	}
 	return d, nil
 }
@@ -340,23 +372,40 @@ func (d *Deliverer) startDelivery(ctx context.Context, a agents.Agent, inst prov
 // arrive: it dwelt past ProvisioningStuckTimeout without a ready instance accepting
 // the turn. The last recorded send failure is appended, so error_message carries the
 // primary evidence (the card itself shows a red status dot; the text is machine tier).
+//
+// 🔴 THE WRITE IS CONDITIONAL ON THE ROW NOT HAVING MOVED SINCE THE LIST READ
+// (agents.Store.MarkKickoffStuck). The verdict was taken from a snapshot; a delivery
+// may have stamped the row since, or the operator may have Started it again, and an
+// unconditional write turned either into an `error` card.
+//
+// ⚠ THE LOG LINES ARE SCRUBBED OF THE PENDING NOTE, as recordError's is: msg carries
+// the last kickoff_error, which can quote a runtime's response body.
 func (d *Deliverer) failStuck(a agents.Agent) {
 	msg := fmt.Sprintf("kickoff never delivered: the agent dwelt more than %s without a ready "+
 		"instance accepting its first turn", agents.ProvisioningStuckTimeout) +
 		agents.KickoffErrorSuffix(a)
+	shown := agents.ScrubNote(msg, a.PendingNote)
 	ctx, cancel := bookkeeping()
 	defer cancel()
-	if err := d.store.UpdateStatus(ctx, a.ID, agents.StatusError, "", msg); err != nil {
-		d.log.Printf("agentkickoff: agent %d (%s): could not record %q: %v", a.ID, a.Name, msg, err)
+	applied, err := d.store.MarkKickoffStuck(ctx, a.ID, a.UpdatedAt, msg)
+	if err != nil {
+		d.log.Printf("agentkickoff: agent %d (%s): could not record %q: %v", a.ID, a.Name, shown, err)
 		return
 	}
-	d.log.Printf("agentkickoff: agent %d (%s): %s", a.ID, a.Name, msg)
+	if !applied {
+		d.log.Printf("agentkickoff: agent %d (%s): not marked stuck: the row changed after it "+
+			"was read (stamped, restarted, or being delivered)", a.ID, a.Name)
+		return
+	}
+	d.log.Printf("agentkickoff: agent %d (%s): %s", a.ID, a.Name, shown)
+	d.notify(a.Name)
 }
 
 // deliver runs one first turn. The order is the design: everything that can fail
-// without spending money happens BEFORE KickedOff is stamped, and is therefore
-// retried by the next tick; the turn itself happens only after the stamp, so it is
-// never run twice.
+// without contacting the agent runtime happens BEFORE KickedOff is stamped, and is
+// therefore retried by the next tick; the turn itself happens only after the stamp,
+// so it is never run twice. (The one free failure left after the stamp, a
+// connection that cannot be opened, is named in the package doc.)
 func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provision.Instance) {
 	ctx, cancel := context.WithTimeout(parent, d.turn)
 	defer cancel()
@@ -407,11 +456,24 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		return
 	}
 
+	// 🔴 RESOLVED BEFORE THE STAMP, FROM THE FRESH ROW. Finding the agent's address
+	// (a Kubernetes API read for the k8s driver) and deriving its bearer opens no
+	// connection to the runtime. A transient failure here used to happen inside Chat,
+	// after the stamp, and became a permanent "kickoff failed" for a turn that was
+	// never sent. Pinned by TestAnUnresolvableAgentIsRetriedNotStamped.
+	target, err := d.gw.Resolve(ctx, fresh)
+	if err != nil {
+		d.recordError(fresh, "kickoff not sent: could not resolve the agent's gateway: "+err.Error())
+		return
+	}
+
 	// ---- the point of no return: from here the turn is never re-run. ----
 	if err := d.store.SetKickedOff(ctx, fresh.ID, true); err != nil {
 		d.recordError(fresh, "kickoff not sent: could not stamp kicked_off: "+err.Error())
 		return
 	}
+	// The "kickoff owed" badge goes with the stamp; tell open Agents lists.
+	d.notify(fresh.Name)
 	provenance := d.store.RecordKickoffDelivery(ctx, fresh.ID, inst.InstanceID, inst.Restarts)
 	if provenance != nil {
 		// Not fatal: an unrecorded recipient disables restart detection for this
@@ -423,13 +485,15 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	_, _ = d.store.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: fresh.PendingNote,
 	})
-	reply, err := d.gw.Chat(ctx, fresh, sess.SessionKey, fresh.PendingNote, nil)
+	reply, err := d.gw.Send(ctx, target, sess.SessionKey, fresh.PendingNote, nil)
 	if err != nil {
 		d.recordError(fresh, turnFailure(parent, ctx, d.turn, err))
+		d.notify(fresh.Name)
 		return
 	}
 	if strings.TrimSpace(reply) == "" {
 		d.recordError(fresh, EmptyReplyReason)
+		d.notify(fresh.Name)
 		return
 	}
 	actx, acancel := bookkeeping()
@@ -461,22 +525,30 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 // OPERATOR'S NEXT MOVE DEPENDS ON IT. The turn was handed to the gateway and the row
 // was stamped, so it is not re-run (never paid twice) — but nothing about the agent
 // or the task was wrong. "context canceled" reads as a fault in the agent; this
-// reads as what it is: muster went away mid-turn, and the task must be re-sent by
-// hand.
+// reads as what it is: muster went away mid-turn. The runtime may have kept running
+// the turn after muster stopped waiting, so the remedy is to check whether the agent
+// is already working before re-sending (agents.KickoffResendSafe answers false).
 const ShutdownCancelledReason = "kickoff turn CANCELLED because muster was shutting down " +
 	"(a redeploy or pod stop) while the turn was in flight. It had already been handed to " +
 	"the gateway, so it is not retried automatically (a first turn is never paid twice)"
 
 // turnFailure is the kickoff_error text for a turn that failed AFTER the stamp. It
-// separates the three causes an operator acts on differently: this process shutting
-// down (parent cancelled), the turn outliving its own budget, and the gateway or
-// runtime failing.
+// separates the four causes an operator acts on differently: a connection that was
+// never opened (nothing sent), this process shutting down (parent cancelled), the
+// turn outliving its own budget, and the gateway or runtime failing.
+//
+// 🔴 THE DIAL CASE IS CHECKED FIRST, BECAUSE IT IS THE ONLY ONE THAT PROVES WHAT THE
+// RUNTIME SAW. A shutdown or a deadline that interrupted a dial still sent nothing,
+// and "never reached the runtime" is the record that lets the operator re-send
+// (agents.KickoffResendSafe). See [neverConnected] for why a dial error proves it.
 //
 // ⚠ parent IS THE WITNESS FOR A SHUTDOWN, NOT THE TURN ctx. The turn ctx derives
 // from parent, so a shutdown cancels it too and its Err() alone cannot separate
 // "muster is stopping" from a gateway that failed on a cancelled request.
 func turnFailure(parent, turn context.Context, budget time.Duration, err error) string {
 	switch {
+	case neverConnected(err):
+		return agents.KickoffNeverConnectedReason + ": " + err.Error()
 	case parent.Err() != nil:
 		return ShutdownCancelledReason + ": " + err.Error()
 	case errors.Is(turn.Err(), context.DeadlineExceeded):
@@ -486,6 +558,23 @@ func turnFailure(parent, turn context.Context, budget time.Duration, err error) 
 		return "kickoff turn failed after it was handed to the gateway (not retried, so it " +
 			"is never paid twice): " + err.Error()
 	}
+}
+
+// neverConnected reports whether err is a failure to OPEN a connection: a
+// *net.OpError whose Op is "dial", which is what Go's HTTP client returns (wrapped
+// in a *url.Error, which the transports wrap again with %w) for DNS failures,
+// refused and unreachable connections.
+//
+// 🔴 WHY THAT PROVES NOTHING WAS SENT. A dial error comes only from opening a NEW
+// connection, so no byte of the request was written on it; and net/http retries a
+// request on a new connection after a failure on a reused one only when nothing was
+// written or the request is replayable, which a POST without an Idempotency-Key is
+// not (net/http's shouldRetryRequest). A timeout or cancellation that interrupts a
+// dial can surface without the OpError, as a bare context error; that is recorded as
+// a timeout or shutdown, which errs toward "check before re-sending".
+func neverConnected(err error) bool {
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
 }
 
 // recordError writes a send failure as evidence (agents.Store.SetKickoffError —

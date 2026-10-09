@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/api"
@@ -70,7 +71,11 @@ func (s *shutdownStore) recordedError() string {
 // heldGateway blocks a turn until its ctx is done, as a real turn in flight does.
 type heldGateway struct{ entered chan struct{} }
 
-func (g *heldGateway) Chat(ctx context.Context, _ agents.Agent, _, _ string, _ func(string)) (string, error) {
+func (g *heldGateway) Resolve(context.Context, agents.Agent) (agentgateway.Target, error) {
+	return agentgateway.Target{}, nil
+}
+
+func (g *heldGateway) Send(ctx context.Context, _ agentgateway.Target, _, _ string, _ func(string)) (string, error) {
 	close(g.entered)
 	<-ctx.Done()
 	return "", fmt.Errorf("post responses: %w", ctx.Err())

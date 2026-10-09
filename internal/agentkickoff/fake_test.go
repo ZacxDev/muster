@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/provision"
 )
@@ -31,8 +32,11 @@ type fakeStore struct {
 	// provenanceErr makes RecordKickoffDelivery fail WITHOUT writing — and so
 	// without clearing kickoff_error, which is what that write normally does.
 	provenanceErr error
-	log           *recorder
-	nextMsg       int64
+	// listSkew makes List report updated_at this much EARLIER than the stored row:
+	// the row moved on after the list read, which MarkKickoffStuck must notice.
+	listSkew time.Duration
+	log      *recorder
+	nextMsg  int64
 }
 
 // recorder is the ONE transcript the store and the gateway both write, under one
@@ -72,7 +76,9 @@ func (s *fakeStore) List(context.Context) ([]agents.Agent, error) {
 	defer s.mu.Unlock()
 	var out []agents.Agent
 	for _, r := range s.rows {
-		out = append(out, *r)
+		c := *r
+		c.UpdatedAt = c.UpdatedAt.Add(-s.listSkew)
+		out = append(out, c)
 	}
 	return out, nil
 }
@@ -153,6 +159,21 @@ func (s *fakeStore) UpdateStatus(_ context.Context, id int64, status, lastOutput
 	return nil
 }
 
+// MarkKickoffStuck mirrors the PG predicate's updated_at equality; the claim
+// conjunct is pinned against real Postgres (TestAStuckVerdictDoesNotOverwriteARowThatMoved).
+func (s *fakeStore) MarkKickoffStuck(_ context.Context, id int64, seen time.Time, errMsg string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r := s.rows[id]
+	if !r.UpdatedAt.Equal(seen) {
+		s.rec("MarkKickoffStuck-REFUSED(%d)", id)
+		return false, nil
+	}
+	s.rec("MarkKickoffStuck(%d,%s)", id, errMsg)
+	r.Status, r.ErrorMessage = agents.StatusError, errMsg
+	return true, nil
+}
+
 func (s *fakeStore) LatestOrCreateSession(_ context.Context, agentID int64, name string) (agents.ChatSession, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -185,17 +206,33 @@ type fakeGateway struct {
 	reply string
 	err   error
 	calls int
-	// hold, when non-nil, makes Chat signal it and then block until the turn's ctx
+	// resolveErr makes Resolve fail: the k8s API / driver failure that costs nothing.
+	resolveErr error
+	// resolved is the name of the agent last resolved; Send logs it, since a
+	// Target from outside agentgateway carries nothing a fake can read.
+	resolved string
+	// hold, when non-nil, makes Send signal it and then block until the turn's ctx
 	// is done, returning ctx.Err() — a turn in flight when its ctx is cancelled
 	// (shutdown) or expires (turn budget), which is what the real gateway's HTTP
 	// client returns.
 	hold chan struct{}
 }
 
-func (g *fakeGateway) Chat(ctx context.Context, a agents.Agent, sessionKey, message string, _ func(string)) (string, error) {
+func (g *fakeGateway) Resolve(_ context.Context, a agents.Agent) (agentgateway.Target, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.log.add(fmt.Sprintf("Resolve(%s)", a.Name))
+	if g.resolveErr != nil {
+		return agentgateway.Target{}, g.resolveErr
+	}
+	g.resolved = a.Name
+	return agentgateway.Target{}, nil
+}
+
+func (g *fakeGateway) Send(ctx context.Context, _ agentgateway.Target, sessionKey, message string, _ func(string)) (string, error) {
 	g.mu.Lock()
 	g.calls++
-	g.log.add(fmt.Sprintf("Chat(%s,%s,%s)", a.Name, sessionKey, message))
+	g.log.add(fmt.Sprintf("Chat(%s,%s,%s)", g.resolved, sessionKey, message))
 	hold, reply, err := g.hold, g.reply, g.err
 	g.mu.Unlock()
 	if hold != nil {

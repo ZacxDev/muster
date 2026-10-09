@@ -188,7 +188,7 @@ func TestADispatchIsRefusedExactlyWhenNoGatewayIsNamed(t *testing.T) {
 			t.Errorf("an accepted dispatch on a delivering deployment wrote a NOT-delivered "+
 				"record before any delivery was attempted.\n  transcript: %s", store.transcript())
 		}
-		d, err := buildKickoffDeliverer(cfg, store, prov, gw, logger)
+		d, err := buildKickoffDeliverer(cfg, store, prov, gw, nil, logger)
 		if err != nil || d == nil {
 			t.Fatalf("the plane accepted a kickoff dispatch and built NO deliverer (err %v): "+
 				"that is the pod-nobody-told-what-to-do defect, one function over", err)
@@ -217,7 +217,7 @@ func TestADeliverableAdapterAlwaysComesWithARunningDeliverer(t *testing.T) {
 		if err != nil || prov == nil {
 			t.Fatalf("%s: buildAgentPlane: adapter=%v err=%v", c.label, prov != nil, err)
 		}
-		d, err := buildKickoffDeliverer(c.cfg, store, prov, gw, logger)
+		d, err := buildKickoffDeliverer(c.cfg, store, prov, gw, nil, logger)
 		if err != nil {
 			t.Fatalf("%s: buildKickoffDeliverer: %v", c.label, err)
 		}
@@ -238,7 +238,7 @@ func TestADeliverableAdapterAlwaysComesWithARunningDeliverer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildAgentPlane: %v", err)
 	}
-	d, err := buildKickoffDeliverer(cfg, store, prov, gw, logger)
+	d, err := buildKickoffDeliverer(cfg, store, prov, gw, nil, logger)
 	if err != nil || d == nil {
 		t.Fatalf("instrument check FAILED: no deliverer (err %v)", err)
 	}

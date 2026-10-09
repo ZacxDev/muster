@@ -225,6 +225,32 @@ func (s *PGStore) SetKickoffError(ctx context.Context, id int64, msg string) err
 	return err
 }
 
+// MarkKickoffStuck is the conditional `error` write for an owed row the deliverer
+// judged stuck (see the Store contract). updated_at is compared for EQUALITY with
+// the value the caller read: every writer that moves the row on (UpdateStatus,
+// SetKickedOff, RecordKickoffDelivery) bumps it, and SetKickoffError, which a
+// failed retry writes every tick, deliberately does not.
+//
+// ⚠ THERE IS NO `NOT kicked_off` CONJUNCT, AND THAT IS NOT AN OMISSION. The caller
+// only judges rows it read with kicked_off=f, and the only writer of kicked_off
+// (SetKickedOff) bumps updated_at, so the equality already refuses a stamped row; a
+// second conjunct could not change any outcome and no test could fail without it.
+// The claim conjunct is separate because ClaimKickoff deliberately does NOT bump
+// updated_at.
+func (s *PGStore) MarkKickoffStuck(ctx context.Context, id int64, seenUpdatedAt time.Time, errMsg string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE agents
+		   SET status=$2, last_output='', error_message=$3, updated_at=now()
+		 WHERE id=$1
+		   AND updated_at=$4
+		   AND (kickoff_claim_expires_at IS NULL OR kickoff_claim_expires_at <= now())`,
+		id, StatusError, errMsg, seenUpdatedAt)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // ClearKickoffDelivery drops the recipient stamp (see the Store contract). The
 // attempt counter and the last send error are left alone — they are history.
 func (s *PGStore) ClearKickoffDelivery(ctx context.Context, id int64) error {
