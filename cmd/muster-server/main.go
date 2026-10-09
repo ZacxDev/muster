@@ -50,6 +50,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
@@ -120,6 +121,9 @@ type app struct {
 	srv    *api.Server
 	http   *http.Server
 	pool   *pgxpool.Pool
+	// kickoff delivers dispatched agents' first turns; nil when no gateway is
+	// built. See buildKickoffDeliverer.
+	kickoff *agentkickoff.Deliverer
 }
 
 // buildApp wires the whole service from cfg WITHOUT binding a port.
@@ -259,6 +263,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if priv != nil {
 		ext.PrivilegeApply = priv
 	}
+	// 🔴 THE DELIVERER COMES FROM THE SAME prov AND gw THE ADAPTER'S
+	// deliverability was computed from, so "a dispatch is accepted" and "something
+	// delivers it" cannot disagree. startBackgroundLoops runs it.
+	if a.kickoff, err = buildKickoffDeliverer(cfg, ext.Agents, prov, gw, logger); err != nil {
+		a.Close()
+		return nil, fmt.Errorf("kickoff deliverer: %w", err)
+	}
 
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
 
@@ -390,6 +401,16 @@ func (a *app) Run(ctx context.Context, ready func(net.Addr)) error {
 // effect — but it is not zero, and it is why this deployment is
 // single-replica until the gate exists.
 func (a *app) startBackgroundLoops(ctx context.Context) {
+	// 🔴 THE KICKOFF DELIVERER IS STARTED BEFORE THE pool GUARD, AND THE ORDER IS
+	// NOT INCIDENTAL. It exists only when the adapter was told a kickoff is
+	// deliverable, which already implies a store (buildAgentPlane refuses a
+	// provisioner without one); gating it on a second condition would be one more
+	// way for "accepted" and "delivered" to come apart. It needs no leader: each
+	// delivery takes a per-agent claim (agents.Store.ClaimKickoff) and re-reads the
+	// row under it, so replicas cannot both pay one turn.
+	if a.kickoff != nil {
+		go a.kickoff.Run(ctx, agentkickoff.DefaultInterval)
+	}
 	if a.pool == nil {
 		return
 	}
@@ -765,16 +786,18 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				"Service and resolves an address, and the row's token now ships as %s, the variable "+
 				"this bearer is derived from — but the container half of that derivation lives in "+
 				"the agent image's own deployment, which nothing here can read, so the first turn "+
-				"against an agent this binary provisioned is still the measurement. A kickoff is "+
-				"undeliverable regardless: nothing calls the gateway on the dispatch path. The agent "+
-				"runtime-config bundle IS INSTALLED: %s (%d bytes) is placed at %s, %s (%d bytes) "+
+				"against an agent this binary provisioned is still the measurement. A dispatch with a "+
+				"kickoff is ACCEPTED: the kickoff deliverer (internal/agentkickoff, every %s) hands "+
+				"each owned agent's pending note to its instance through this gateway once the "+
+				"instance is ready, and records a failed or EMPTY first turn in agents.kickoff_error. "+
+				"The agent runtime-config bundle IS INSTALLED: %s (%d bytes) is placed at %s, %s (%d bytes) "+
 				"REPLACES the image's entrypoint as the container's command, and the derived "+
 				"credential travels as %s. 🔴 THAT SCRIPT IS THE OPERATOR'S AND NOTHING HERE CAN "+
 				"CHECK IT: if it does not install the file and re-exec the real entrypoint, the "+
 				"instance does not serve — the startup probe is what reports that. "+
 				"See cmd/muster-server/doc_seams.go entry 1",
 				envAgentGateway, scheme, envAgentGatewayModel, a.cfg.AgentGatewayModel,
-				a.cfg.agentGatewayPort(), agentspec.EnvGatewayToken,
+				a.cfg.agentGatewayPort(), agentspec.EnvGatewayToken, agentkickoff.DefaultInterval,
 				envAgentRuntimeConfig, len(a.cfg.AgentRuntimeConfig), agentspec.RuntimeConfigPath,
 				envAgentRuntimeInstall, len(a.cfg.AgentRuntimeInstall), agentspec.EnvGatewayBearer)
 		}

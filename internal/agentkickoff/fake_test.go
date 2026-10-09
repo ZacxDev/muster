@@ -1,0 +1,217 @@
+package agentkickoff
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/provision"
+)
+
+// fakeStore is an in-memory agents.Store that records every call in ONE shared
+// transcript — the gateway below writes into the same one, so ORDER between a store
+// write and the model turn is observable.
+//
+// ⚠ IT EMBEDS agents.Store (nil) SO A METHOD THE DELIVERER WAS NOT EXPECTED TO CALL
+// PANICS rather than returning a quiet zero value.
+type fakeStore struct {
+	agents.Store
+	mu   sync.Mutex
+	rows map[int64]*agents.Agent
+	// getOverride, when set for an id, is what Get returns — the "another replica
+	// changed the row between the list and the claim" shape.
+	getOverride map[int64]agents.Agent
+	claimLoses  bool
+	claimErr    error
+	sessionErr  error
+	log         *recorder
+	nextMsg     int64
+}
+
+// recorder is the ONE transcript the store and the gateway both write, under one
+// lock, so cross-object ORDER is observable and -race stays quiet.
+type recorder struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (r *recorder) add(line string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = append(r.lines, line)
+}
+
+func (r *recorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.lines...)
+}
+
+func newFakeStore(log *recorder, rows ...agents.Agent) *fakeStore {
+	s := &fakeStore{rows: map[int64]*agents.Agent{}, getOverride: map[int64]agents.Agent{}, log: log}
+	for i := range rows {
+		r := rows[i]
+		s.rows[r.ID] = &r
+	}
+	return s
+}
+
+func (s *fakeStore) rec(format string, args ...any) {
+	s.log.add(fmt.Sprintf(format, args...))
+}
+
+func (s *fakeStore) List(context.Context) ([]agents.Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []agents.Agent
+	for _, r := range s.rows {
+		out = append(out, *r)
+	}
+	return out, nil
+}
+
+func (s *fakeStore) Get(_ context.Context, id int64) (agents.Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec("Get(%d)", id)
+	if o, ok := s.getOverride[id]; ok {
+		return o, nil
+	}
+	r, ok := s.rows[id]
+	if !ok {
+		return agents.Agent{}, errors.New("no such row")
+	}
+	return *r, nil
+}
+
+func (s *fakeStore) ClaimKickoff(_ context.Context, id int64, owner string, ttl time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec("ClaimKickoff(%d,%s)", id, owner)
+	if s.claimErr != nil {
+		return false, s.claimErr
+	}
+	return !s.claimLoses, nil
+}
+
+func (s *fakeStore) ReleaseKickoffClaim(_ context.Context, id int64, owner string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec("ReleaseKickoffClaim(%d,%s)", id, owner)
+	return nil
+}
+
+func (s *fakeStore) SetKickedOff(_ context.Context, id int64, v bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec("SetKickedOff(%d,%t)", id, v)
+	s.rows[id].KickedOff = v
+	return nil
+}
+
+func (s *fakeStore) RecordKickoffDelivery(_ context.Context, id int64, pod string, restarts int32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec("RecordKickoffDelivery(%d,%s,%d)", id, pod, restarts)
+	r := s.rows[id]
+	r.KickoffPod, r.KickoffRestarts, r.KickoffError = pod, restarts, ""
+	r.KickoffAttempts++
+	return nil
+}
+
+func (s *fakeStore) SetKickoffError(_ context.Context, id int64, msg string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec("SetKickoffError(%d,%s)", id, msg)
+	s.rows[id].KickoffError = msg
+	return nil
+}
+
+func (s *fakeStore) UpdateStatus(_ context.Context, id int64, status, lastOutput, errMsg string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec("UpdateStatus(%d,%s,%s)", id, status, errMsg)
+	s.rows[id].Status, s.rows[id].ErrorMessage = status, errMsg
+	return nil
+}
+
+func (s *fakeStore) LatestOrCreateSession(_ context.Context, agentID int64, name string) (agents.ChatSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rec("LatestOrCreateSession(%d)", agentID)
+	if s.sessionErr != nil {
+		return agents.ChatSession{}, s.sessionErr
+	}
+	return agents.ChatSession{ID: agentID * 10, AgentID: agentID, SessionKey: "sk-" + name}, nil
+}
+
+func (s *fakeStore) AddChatMessage(_ context.Context, m agents.ChatMessage) (agents.ChatMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextMsg++
+	m.ID = s.nextMsg
+	s.rec("AddChatMessage(%d,%d,%s,%s)", m.AgentID, m.SessionID, m.Role, m.Content)
+	return m, nil
+}
+
+func (s *fakeStore) row(id int64) agents.Agent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return *s.rows[id]
+}
+
+// fakeGateway records each turn into the shared transcript.
+type fakeGateway struct {
+	mu    sync.Mutex
+	log   *recorder
+	reply string
+	err   error
+	calls int
+}
+
+func (g *fakeGateway) Chat(_ context.Context, a agents.Agent, sessionKey, message string, _ func(string)) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls++
+	g.log.add(fmt.Sprintf("Chat(%s,%s,%s)", a.Name, sessionKey, message))
+	return g.reply, g.err
+}
+
+// fakeInstances returns a fixed instance set, or an error.
+type fakeInstances struct {
+	insts []provision.Instance
+	err   error
+	calls int
+}
+
+func (f *fakeInstances) Instances(context.Context) ([]provision.Instance, error) {
+	f.calls++
+	return f.insts, f.err
+}
+
+// transcript renders the shared log for failure messages.
+func transcript(log []string) string { return "\n    " + strings.Join(log, "\n    ") }
+
+// indexOf returns the first entry with the given prefix, or -1.
+func indexOf(log []string, prefix string) int {
+	for i, l := range log {
+		if strings.HasPrefix(l, prefix) {
+			return i
+		}
+	}
+	return -1
+}
+
+func countPrefix(log []string, prefix string) int {
+	n := 0
+	for _, l := range log {
+		if strings.HasPrefix(l, prefix) {
+			n++
+		}
+	}
+	return n
+}

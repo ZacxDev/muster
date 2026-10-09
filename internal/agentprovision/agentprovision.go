@@ -33,15 +33,13 @@
 // anything: it REFUSES. See [Config.KickoffDeliverable], [ErrKickoffUndeliverable]
 // and [KickoffRefusalReason].
 //
-// 🔴 AND NO SHIPPED CONFIGURATION REACHES THE CREATE-THEN-RECORD PATH TODAY, WHICH
-// IS A CHANGE FROM WHAT THIS HEADER SAID. It called create-then-record "the
-// gateway-configured path", and cmd/muster-server passed `gw != nil` — so a
-// deployment that named a gateway took it. The binary now also requires
-// [KickoffDeliveryWired], which is false while nothing in the module calls a gateway
-// on the dispatch path, so EVERY deployment refuses a kickoff. The branch is not
-// dead code: the adapter's contract is still "do what you are told about", it is
-// reached by this package's own tests in both polarities, and it is what a deliverer
-// lands into. Nothing below assumes a deployment can reach it.
+// ✅ AND THE DELIVERABLE ARM IS NOW CREATE-THEN-DELIVER, NOT CREATE-THEN-RECORD.
+// internal/agentkickoff is the deliverer [KickoffDeliveryWired] waited for:
+// cmd/muster-server runs it whenever it builds a gateway, so on a deployment that
+// names one, Dispatch(kickoff=true) creates the instance, stores `provisioning`, and
+// the deliverer hands the pending note to the instance once it is ready. Nothing is
+// written to kickoff_error on that path unless a delivery actually fails. With no
+// gateway named the dispatch is still REFUSED, as below.
 //
 // WHY THE CREATE-THEN-RECORD BEHAVIOUR WAS THE WRONG ANSWER TO "I CANNOT DELIVER
 // THIS": it answered a request this configuration cannot satisfy by performing the
@@ -80,26 +78,15 @@
 // not a screen. Nothing on any page says it. Do not restate the rendering claim
 // without a caller to cite.
 //
-// ✅ THE THIRD BULLET IS NOW HALF CLOSED, AND THE FIRST TWO ARE UNCHANGED — read
-// which is which before quoting any of it. What changed is NOT this field.
-// agents.KickoffError still reaches exactly one hook-token-gated JSON route and
-// agents.KickoffErrorSuffix still has no caller, so "nothing on any page says it"
-// is TRUE OF THE REASON and stays written above. What a page says now is THAT a
-// first turn is owed: agents.KickoffOwed answers it from agents.pending_note plus
-// KickedOff, internal/ui's agentCard renders it as a "kickoff owed" badge beside
-// the status dot, and internal/api's agentJSON carries the same boolean as
-// `kickoffOwed`. So a card refined to `running` over an undelivered note no longer
-// reads healthy — it reads `running` AND owed. The REASON is still machine-only.
-//
-// ⚠ THAT IS A RECORD, NOT A FIX, AND THE GAP IT RECORDS HAS TWO OWNERS. The
-// delivery itself needs a gateway (plan step 22c); the ESCALATION of an
-// undelivered kickoff to a red card already exists as a pure decision table in
-// agents.DecideReconcile (ActionRetryKickoff, then ActionError past
-// ProvisioningStuckTimeout) and needs the reconcile loop that table's own header
-// declares OWED. Neither is in this package's scope and neither is silently
-// assumed: until they land, a dispatch with kickoff=true produces an instance that
-// was never told what to do — VISIBLY so on both tiers since the owed-kickoff
-// signal landed, which is a label on the gap and not a delivery of the turn.
+// ✅ THE FIRST AND THIRD BULLETS ARE CLOSED NOW, THE SECOND IS NOT — read which is
+// which before quoting any of it. agents.KickoffErrorSuffix has a caller:
+// internal/agentkickoff appends it to the error_message it writes when a first turn
+// never arrives, so an undelivered kickoff DOES escalate to `error` once it has
+// dwelt past agents.ProvisioningStuckTimeout — a red status DOT on the card, with
+// the last send failure in error_message (machine tier only). And the card no
+// longer reads healthy over an owed turn: agents.KickoffOwed renders a "kickoff owed"
+// badge. What is unchanged is the second bullet: the REASON in kickoff_error reaches
+// one hook-token-gated JSON route and no page.
 package agentprovision
 
 import (
@@ -137,19 +124,28 @@ const bookkeepingTimeout = 15 * time.Second
 // renders as the 64 hex characters the deployment's other tokens use.
 const hooksTokenBytes = 32
 
-// UndeliveredKickoffReason is written to agents.kickoff_error when a dispatch or
-// start asked for a kickoff this adapter cannot deliver.
+// UndeliveredKickoffReason is written to agents.kickoff_error when a START brings
+// up an instance that owes a first turn on a deployment with no gateway. (A
+// DISPATCH asking for one there is refused instead and creates nothing.)
 //
-// 🔴 IT NAMES THE BUILD, NOT THE AGENT, BECAUSE THE CONDITION IS A PROPERTY OF
-// THE BUILD. An operator reading it on a card must not go looking at the agent's
+// ⚠ "Start this agent again" IN THE REMEDY IS LOAD-BEARING: Start rewrites the
+// row's status, which restarts the dwell clock agents.DecideReconcile bounds the
+// first-turn retry by. A row last started more than agents.ProvisioningStuckTimeout
+// before a gateway was named is otherwise ERRORED by the deliverer's first tick
+// rather than delivered — that is the table's verdict on a ready instance that
+// never got its turn, and the remedy routes around it rather than hiding it.
+//
+// 🔴 IT NAMES THE DEPLOYMENT, NOT THE AGENT, BECAUSE THE CONDITION IS A PROPERTY
+// OF THE DEPLOYMENT. An operator reading it on a card must not go looking at the agent's
 // pod, its model or its credentials — none of them is why the turn did not run.
 // Same reasoning as api.ProvisionerUnwiredField being a field rather than a
 // sentence: the reader has to be able to tell a permanent property of the
 // deployment from a transient failure of this agent.
-const UndeliveredKickoffReason = "kickoff NOT delivered: this build wires a lifecycle-only agent " +
-	"provisioner (internal/agentprovision) and no api.Gateway, so nothing can hand the pending " +
-	"note to the instance's model gateway. The instance WAS created and the note is still in " +
-	"agents.pending_note. This is a declared seam, not a failure of this agent: see " +
+const UndeliveredKickoffReason = "kickoff NOT delivered: this deployment names no agent gateway " +
+	"(MUSTER_AGENT_GATEWAY), so nothing can hand the pending note to the instance's model gateway. " +
+	"The instance WAS created and the note is still in agents.pending_note. Name a gateway, restart " +
+	"muster and Start this agent again: the kickoff deliverer hands the note over once the instance " +
+	"is ready. This is a property of the deployment, not a failure of this agent: see " +
 	"cmd/muster-server/doc_seams.go entry 1."
 
 // ErrKickoffUndeliverable is returned by [Adapter.Dispatch] when it is asked to
@@ -181,41 +177,32 @@ var ErrKickoffUndeliverable = errors.New("agentprovision: kickoff undeliverable"
 // KickoffDeliveryWired reports whether THIS MODULE contains production code that
 // hands an agent's pending note to its model gateway — a kickoff DELIVERER.
 //
-// 🔴 IT IS THE SECOND HALF OF A PREDICATE THAT WAS WRITTEN AS ITS FIRST HALF ALONE,
-// AND THE MISSING HALF WAS A LIVE DEFECT. Delivering a kickoff needs TWO things: a
-// gateway this process can reach, AND code that calls it when a dispatch asks for a
-// first turn. cmd/muster-server passed `gw != nil` into [Config.KickoffDeliverable],
-// which asserts only the first. Measured on the deployment that runs this today,
-// with MUSTER_AGENT_GATEWAY set so buildGateway returns a gateway: the adapter was
-// told a kickoff was deliverable, [Adapter.Dispatch]'s pre-create refusal was
-// skipped, and a Dispatch click did exactly what that refusal's own comment says it
-// exists to prevent — create a Deployment, a ServiceAccount, a namespace and a
-// Secret holding a freshly-minted token, clone the repository into the pod, hand it
-// a model credential, then record that the one thing the caller asked for did not
-// happen, behind a card that agents.ComputeStatus refines to `running`.
+// ✅ IT IS TRUE: internal/agentkickoff is that deliverer. cmd/muster-server builds
+// it whenever a gateway is built and runs it as a background loop, which drives
+// agents.DecideReconcile over owned, never-kicked-off rows and delivers through the
+// same api.Gateway.Chat call that POST /api/agents/{name}/messages makes.
+//
+// 🔴 IT IS STILL ONLY THE SECOND HALF OF THE PREDICATE. Delivering a kickoff needs
+// a gateway this process can reach AND code that calls it; cmd/muster-server passes
+// `gw != nil && KickoffDeliveryWired` into [Config.KickoffDeliverable]. With
+// MUSTER_AGENT_GATEWAY unset there is no gateway, so a dispatch asking for a first
+// turn is still REFUSED — see [KickoffRefusalReason]. When this was false, the
+// first conjunct alone had been passed and a deployment WITH a gateway created pods
+// nobody ever told what to do; the two-conjunct form is what closed that.
 //
 // ⚠ THIS PACKAGE DOES NOT READ IT AND MUST NOT. The adapter answers the question
-// from what it is TOLD ([Config.KickoffDeliverable]) — see that field on why it
-// cannot answer it by looking at itself. The constant lives here because this is
-// where the refusal and its whole argument live; its only reader is
-// cmd/muster-server/provisioner.go, which conjoins it with its own `gw != nil`.
+// from what it is TOLD ([Config.KickoffDeliverable]); its only reader is
+// cmd/muster-server/provisioner.go.
 //
-// 🔴 IT IS A CONSTANT AND NOT A KNOB, AND FLIPPING IT IS NOT LEFT TO ANYONE'S
-// MEMORY. "A hardcoded false a future session forgets to flip" would move this
-// defect rather than fix it, so the value is BOUND to a measurement:
-// internal/modulegate's TestNothingDeliversAKickoffAndThisModuleSaysSo walks every
-// non-test file in the module for CALLS to the two store writes only a delivery can
-// make (agents.Store.SetKickedOff, agents.Store.RecordKickoffDelivery) and fails
-// when the measured set DISAGREES with this constant — in both directions. So a
-// deliverer landing reddens that test until this flips to true, and flipping it true
-// with no deliverer reddens it too.
-//
-// ⚠ WHAT IT IS *NOT* ABOUT: the ESCALATION of an undelivered kickoff to a red card.
-// That is agents.DecideReconcile, which also has no caller, and whose own header
-// carries its own closing condition. A reconcile loop that escalates without
-// delivering must NOT flip this constant, which is why the ledger's markers are the
-// delivery writes rather than the decision table.
-const KickoffDeliveryWired = false
+// 🔴 IT IS BOUND TO A MEASUREMENT, IN BOTH DIRECTIONS. internal/modulegate's
+// TestKickoffDeliveryLedgerAgreesWithTheModule walks every non-test file for CALLS
+// to the two store writes only a delivery makes (agents.Store.SetKickedOff,
+// agents.Store.RecordKickoffDelivery) and fails when the measured set disagrees with
+// this constant: deleting the deliverer without setting this false reddens it, and
+// so does the reverse. A deliverer that exists but is not STARTED is the other half
+// of that hazard, and cmd/muster-server's TestADeliverableAdapterAlwaysComesWithARunningDeliverer
+// is what pins it.
+const KickoffDeliveryWired = true
 
 // KickoffRefusalSummary is the SHORT operator-facing form of the refusal: what
 // happened, and what to do instead. [KickoffRefusalReason] is this string plus the
@@ -256,16 +243,14 @@ const KickoffRefusalSummary = "dispatch REFUSED and NOTHING was provisioned: thi
 // do". An error with no remedy is how an operator concludes the feature is broken
 // and files a bug against the agent.
 //
-// 🔴 THE REMEDY IS SAVE-THEN-START AND IT IS NO LONGER "SET THE VARIABLE", BECAUSE
-// SETTING THE VARIABLE DOES NOT LIFT THIS REFUSAL. An earlier revision led with
-// "CAUSE: MUSTER_AGENT_GATEWAY is unset (it resolves to `none`) … REMEDY: set
-// MUSTER_AGENT_GATEWAY=hooks-sha256", which was measured FALSE on the deployment
-// this text is read on: the variable IS set there, a gateway IS built, and the
-// refusal fires anyway — because [KickoffDeliveryWired] is false. A remedy an
-// operator has already applied reads as "this is broken", which is the exact
-// conclusion a remedy exists to prevent. The variables are still NAMED, as one of
-// the two conjuncts, and the text says in as many words that setting them is not
-// sufficient.
+// 🔴 THE REMEDY NAMES THE VARIABLE AGAIN, AND THAT IS NOW TRUE RATHER THAN A
+// REGRESSION. An earlier revision led with "set MUSTER_AGENT_GATEWAY", which was
+// measured FALSE while [KickoffDeliveryWired] was false: the variable was set on the
+// deployment reading it and the refusal fired anyway, because nothing called the
+// gateway. The text then said in as many words that setting the variable was NOT
+// sufficient. With the deliverer wired the refusal fires ONLY when no gateway was
+// built, so the variable is exactly the remedy — and "Save for later, then Start"
+// stays in the summary as the move that works without it.
 //
 // ⚠ THE SPEC AND CREDENTIAL CLAUSE SURVIVES AND IS STILL LOAD-BEARING. The text
 // tells the operator NOT to go looking at the rendered port or the gateway token,
@@ -297,13 +282,12 @@ const KickoffRefusalSummary = "dispatch REFUSED and NOTHING was provisioned: thi
 // their refusal is recorded on the row rather than returned. Neither has a
 // "Save for later" affordance to be sent to; the row they create can be brought up
 // with Start, which is the same escape by a different door.
-const KickoffRefusalReason = KickoffRefusalSummary + " CAUSE: a DELIVERED kickoff needs BOTH a " +
-	"gateway this process can reach — MUSTER_AGENT_GATEWAY=hooks-sha256 together with " +
-	"MUSTER_AGENT_GATEWAY_MODEL — AND a production call site that hands the pending note to it. " +
-	"The transport IS in this build (internal/agentgateway); the CALL SITE is not, which is why " +
-	"SETTING THOSE VARIABLES DOES NOT LIFT THIS REFUSAL on its own. See " +
-	"agentprovision.KickoffDeliveryWired, the constant a call site has to flip, and " +
-	"cmd/muster-server/doc_seams.go entry 1 for the call site itself. Do not go looking at the " +
+const KickoffRefusalReason = KickoffRefusalSummary + " CAUSE: this deployment names no agent " +
+	"gateway, and a DELIVERED kickoff is a model turn sent through one. REMEDY: set " +
+	"MUSTER_AGENT_GATEWAY=hooks-sha256 together with MUSTER_AGENT_GATEWAY_MODEL (and the agent " +
+	"runtime-config bundle boot requires with them) and restart muster; the kickoff deliverer " +
+	"(internal/agentkickoff) then hands each dispatched agent's pending note to its instance once " +
+	"the instance is ready. See cmd/muster-server/doc_seams.go entry 1. Do not go looking at the " +
 	"spec or the credential on the way: the rendered spec declares the gateway port and the " +
 	"instance receives the token the bearer is derived from."
 
@@ -488,12 +472,11 @@ func (a *Adapter) KickoffUndeliverableReason() string {
 // So the two arguments now differ in WHAT IS BUILT, not only in what is stored:
 //
 //	kickoff=true  -> WITH something in the process that could deliver it
-//	                 (Config.KickoffDeliverable): create the instance, store
-//	                 `provisioning` (a first turn is owed), and record the
-//	                 non-delivery. See the package doc. WITHOUT: REFUSE — create
-//	                 nothing, store `error` carrying KickoffRefusalReason, and
-//	                 return ErrKickoffUndeliverable. ⚠ NO SHIPPED DEPLOYMENT TAKES
-//	                 THE FIRST ARM TODAY; see KickoffDeliveryWired.
+//	                 (Config.KickoffDeliverable): create the instance and store
+//	                 `provisioning` (a first turn is owed); internal/agentkickoff
+//	                 delivers it once the instance is ready. WITHOUT: REFUSE —
+//	                 create nothing, store `error` carrying KickoffRefusalReason,
+//	                 and return ErrKickoffUndeliverable.
 //	kickoff=false -> create nothing, store `stopped`. The status is now TRUE
 //	                 rather than a statement about what this service is waiting
 //	                 for, which is also what makes the model-change roll in
@@ -547,10 +530,13 @@ func (a *Adapter) Dispatch(agentID int64, kickoff bool) error {
 	if ag, err = a.create(ctx, ag); err != nil {
 		return err
 	}
-	if err := a.setStatus(ag.ID, agents.StatusProvisioning); err != nil {
-		return err
-	}
-	return a.recordUndeliveredKickoff(ag)
+	// 🔴 NOTHING IS RECORDED IN kickoff_error HERE, AND UNTIL THE DELIVERER LANDED
+	// THIS LINE WROTE UndeliveredKickoffReason. On this arm something in the process
+	// DOES deliver — internal/agentkickoff, driven off this row's `provisioning`
+	// status once the instance is ready — so a "NOT delivered" written now would be a
+	// false statement the delivery then has to overwrite. The row stays owed
+	// (pending_note set, kicked_off false) and the deliverer pays it.
+	return a.setStatus(ag.ID, agents.StatusProvisioning)
 }
 
 // Start scales a stopped instance back up, creating it first when the backend
@@ -606,7 +592,12 @@ func (a *Adapter) Start(agentID int64) error {
 	}
 	if !ag.KickedOff {
 		// A first turn is still owed, whether this is a first start or a restart
-		// of something that never got its note.
+		// of something that never got its note. With a deliverer in the process
+		// the `provisioning` just written is what it acts on, so there is nothing
+		// to record; without one, the non-delivery is recorded where it is honest.
+		if a.kickoffDeliverable {
+			return nil
+		}
 		return a.recordUndeliveredKickoff(ag)
 	}
 	// Already kicked off: nothing is owed, so the row stops saying it is waiting.
@@ -774,7 +765,9 @@ func (a *Adapter) StreamLogs(ctx context.Context, ag agents.Agent, emit func(str
 // agents.kickoffLost's own doc says so and calls it intended: a roll has already
 // killed whatever turn was running, so the choice is between re-delivering the
 // task and silently doing nothing. It is capped by agents.MaxKickoffAttempts.
-// Today nothing here delivers a kickoff at all, so the consequence is latent.
+// ⚠ STILL LATENT: internal/agentkickoff delivers FIRST turns only and never acts on
+// a kicked-off row, so agents.ActionResendKickoff has no driver and a roll re-sends
+// nothing today.
 func (a *Adapter) ReapplyProfiles(ctx context.Context, agentID int64) error {
 	ag, err := a.store.Get(ctx, agentID)
 	if err != nil {
@@ -938,8 +931,8 @@ func (a *Adapter) clearKickoffDelivery(ag agents.Agent) error {
 func (a *Adapter) recordUndeliveredKickoff(ag agents.Agent) error {
 	ctx, cancel := a.bookkeepingCtx()
 	defer cancel()
-	a.log.Printf("agentprovision: agent %d (%s) was dispatched with a kickoff this build "+
-		"cannot deliver — instance created, note left pending. %s", ag.ID, ag.Name,
+	a.log.Printf("agentprovision: agent %d (%s) owes a first turn this deployment cannot "+
+		"deliver (no gateway) — instance up, note left pending. %s", ag.ID, ag.Name,
 		UndeliveredKickoffReason)
 	if err := a.store.SetKickoffError(ctx, ag.ID, UndeliveredKickoffReason); err != nil {
 		return fmt.Errorf("agentprovision: agent %d (%s): record undelivered kickoff: %w",

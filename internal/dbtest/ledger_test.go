@@ -98,6 +98,12 @@ var pgBackedPackages = []string{
 	// deliberately a database-free probe — so the one test that must never skip
 	// does not depend on infrastructure that can be absent.
 	"cmd/muster-server",
+	// Added by the kickoff deliverer. ONE test takes a database, and for the
+	// reason the internal/ui entry gives: the defect it pins was in SQL — a
+	// recorded send failure moved updated_at, which is the only bound on
+	// agents.DecideReconcile's retry branch — so only the real store can show the
+	// escalation firing at the dwell boundary.
+	"internal/agentkickoff",
 	"internal/agents",
 	"internal/db",
 	"internal/notes",

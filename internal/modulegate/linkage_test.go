@@ -82,10 +82,10 @@ var notLinkedLedger = map[string]string{
 	// from — and NEITHER fix was visible here, which is this gate's whole point
 	// restated from the other side: the ledger stayed green through a defect that
 	// made the linked code unusable, and it stays green through the change that made
-	// it usable. What remains open is the KICKOFF (nothing calls the gateway on the
-	// dispatch path) and the fact that no turn has ever been made against an
-	// instance this binary created. Both are in cmd/muster-server/doc_seams.go
-	// entry 1. TestBuildingTheKubernetesProvisionerUsesTheRealDriver,
+	// it usable. The KICKOFF it also named ("nothing calls the gateway on the
+	// dispatch path") is closed by internal/agentkickoff; what remains open is a
+	// turn against an instance this binary created ON A CLUSTER, which no in-repo
+	// test can make. See cmd/muster-server/doc_seams.go entry 1. TestBuildingTheKubernetesProvisionerUsesTheRealDriver,
 	// TestAnAgentThisBinaryProvisionsResolvesAnEndpoint, the gateway's own wiring
 	// tests and the boot banner's two-tier readback are the parts this gate cannot
 	// be.

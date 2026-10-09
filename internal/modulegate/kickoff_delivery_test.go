@@ -40,10 +40,15 @@ import (
 //
 // ⚠ agents.DecideReconcile IS DELIBERATELY *NOT* A MARKER, and leaving it out is a
 // decision rather than an omission. It is the ESCALATION table — it decides that an
-// undelivered kickoff should be retried or failed — and it has no caller either, with
-// its own closing condition in internal/agents/reconcile.go. A reconcile loop that
-// escalates without delivering must NOT flip the constant, so a marker that reddened
-// for it would demand exactly the wrong fix.
+// undelivered kickoff should be retried or failed. Its caller today is the same
+// deliverer that makes the two writes, but a loop that only escalated without
+// delivering must NOT flip the constant, so a marker that reddened for it would
+// demand exactly the wrong fix.
+//
+// ⚠ WHAT THIS GATE CANNOT SEE: whether the deliverer is STARTED. A deliverer that is
+// built and never run, or never built, satisfies this ledger while every dispatch is
+// accepted and nothing is delivered. cmd/muster-server's
+// TestADeliverableAdapterAlwaysComesWithARunningDeliverer is the guard for that.
 //
 // ⚠ WHAT THIS CANNOT SEE, STATED SO A CLEAN VERDICT IS READ AT ITS REAL WIDTH: a
 // CALL is what it matches, so a method VALUE taken without calling it
@@ -92,8 +97,13 @@ func kickoffDeliverySites(fset *token.FileSet, file *ast.File) []string {
 	return out
 }
 
-// TestNothingDeliversAKickoffAndThisModuleSaysSo is the gate.
-func TestNothingDeliversAKickoffAndThisModuleSaysSo(t *testing.T) {
+// TestKickoffDeliveryLedgerAgreesWithTheModule is the gate.
+//
+// ⚠ IT WAS NAMED TestNothingDeliversAKickoffAndThisModuleSaysSo, which was the
+// verdict it expected rather than the property it checks. internal/agentkickoff now
+// delivers, the constant is true, and the check is unchanged: the measured call set
+// and the constant must agree, in both directions.
+func TestKickoffDeliveryLedgerAgreesWithTheModule(t *testing.T) {
 	// 🔴 POSITIVE CONTROL FIRST, BECAUSE A ZERO IS THE VERDICT THIS GATE EXPECTS AND
 	// A SCANNER WIRED TO NOTHING RETURNS THE SAME ZERO. The fixture below CALLS both
 	// writers and also writes each name in the three shapes the real tree is full of

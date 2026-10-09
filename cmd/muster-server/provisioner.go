@@ -8,6 +8,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
+	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agentprivilege"
 	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
@@ -285,6 +286,33 @@ func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agent
 // call graph and knows nothing about this argument.
 func kickoffDeliverable(gw *agentgateway.Gateway, deliveryWired bool) bool {
 	return gw != nil && deliveryWired
+}
+
+// buildKickoffDeliverer builds the background loop that DELIVERS a dispatched
+// agent's first turn, or nil when this process has nothing to deliver it through.
+//
+// 🔴 IT IS BUILT EXACTLY WHEN THE ADAPTER IS TOLD A KICKOFF IS DELIVERABLE, AND
+// THAT EQUALITY IS THE WHOLE CONTRACT. kickoffDeliverable(gw, …) is what lifts
+// agentprovision's pre-create refusal; if it were true with no deliverer running,
+// a Dispatch click would create a pod, a namespace and a minted secret and nothing
+// would ever tell the agent what to do — the defect KickoffDeliveryWired's history
+// records. So the deliverer is keyed on the same two values, and
+// TestADeliverableAdapterAlwaysComesWithARunningDeliverer holds the two together
+// in both configurations.
+//
+// ⚠ IT TAKES THE ADAPTER AS ITS INSTANCE LISTER rather than the raw driver, so the
+// deliverer sees exactly the instances the lifecycle routes see.
+func buildKickoffDeliverer(cfg config, store agents.Store, prov *agentprovision.Adapter, gw *agentgateway.Gateway, logger *log.Logger) (*agentkickoff.Deliverer, error) {
+	if prov == nil || !kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired) {
+		return nil, nil
+	}
+	return agentkickoff.New(agentkickoff.Config{
+		Store:           store,
+		Instances:       prov,
+		Gateway:         gw,
+		NamespacePrefix: cfg.AgentNamespacePrefix,
+		Logger:          logger,
+	})
 }
 
 // buildPrivilegeApplier builds the privilege tier over an already-constructed
