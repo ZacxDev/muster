@@ -13,9 +13,17 @@ name: ci
 # recipe that was known to work on a hosted runner. This repository has its own
 # free tier, so `push` and `pull_request` are real triggers here.
 
-on: [push, pull_request]
+# ⚠ PUSH RUNS ONLY ON `main`; EVERY OTHER BRANCH IS COVERED BY ITS PULL REQUEST.
+# With an unrestricted `push`, each PR commit ran the whole suite twice, and no
+# concurrency group can merge the two without leaving the loser's cancelled
+# check-runs on the head commit. Trade-off: a branch pushed WITHOUT an open PR
+# gets no CI — run the `make` targets locally (see above).
+on:
+  push:
+    branches: [main]
+  pull_request:
 
-# A push and a PR on the same branch would otherwise run everything twice.
+# Superseded runs for the same PR (`refs/pull/N/merge`) or for `main` are cancelled.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
