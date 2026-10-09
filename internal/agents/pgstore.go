@@ -209,11 +209,46 @@ func (s *PGStore) RecordKickoffDelivery(ctx context.Context, id int64, pod strin
 }
 
 // SetKickoffError records a kickoff send failure. It touches neither status nor
-// updated_at's meaning beyond the write — the status verdict belongs to the
-// reconciler.
+// updated_at — the status verdict belongs to the reconciler.
+//
+// 🔴 updated_at IS DELIBERATELY NOT BUMPED, AND THIS WAS A LATENT DEFECT UNTIL A
+// DELIVERER DROVE THE DECISION TABLE. agents.DecideReconcile bounds the
+// ActionRetryKickoff branch ONLY by `now − updated_at > ProvisioningStuckTimeout`,
+// so a write here that bumped it reset that clock on every failed retry and made
+// ActionError unreachable — an agent whose send failed every tick stayed in
+// `provisioning` for ever. A failed send is evidence, not activity.
+// RecordKickoffDelivery still bumps it: a delivery IS a transition. Pinned by
+// TestSetKickoffErrorDoesNotMoveTheDwellClock (and, behaviourally, by
+// internal/agentkickoff's dwell-boundary test against this store).
 func (s *PGStore) SetKickoffError(ctx context.Context, id int64, msg string) error {
-	_, err := s.pool.Exec(ctx, `UPDATE agents SET kickoff_error=$2, updated_at=now() WHERE id=$1`, id, msg)
+	_, err := s.pool.Exec(ctx, `UPDATE agents SET kickoff_error=$2 WHERE id=$1`, id, msg)
 	return err
+}
+
+// MarkKickoffStuck is the conditional `error` write for an owed row the deliverer
+// judged stuck (see the Store contract). updated_at is compared for EQUALITY with
+// the value the caller read: every writer that moves the row on (UpdateStatus,
+// SetKickedOff, RecordKickoffDelivery) bumps it, and SetKickoffError, which a
+// failed retry writes every tick, deliberately does not.
+//
+// ⚠ THERE IS NO `NOT kicked_off` CONJUNCT, AND THAT IS NOT AN OMISSION. The caller
+// only judges rows it read with kicked_off=f, and the only writer of kicked_off
+// (SetKickedOff) bumps updated_at, so the equality already refuses a stamped row; a
+// second conjunct could not change any outcome and no test could fail without it.
+// The claim conjunct is separate because ClaimKickoff deliberately does NOT bump
+// updated_at.
+func (s *PGStore) MarkKickoffStuck(ctx context.Context, id int64, seenUpdatedAt time.Time, errMsg string) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE agents
+		   SET status=$2, last_output='', error_message=$3, updated_at=now()
+		 WHERE id=$1
+		   AND updated_at=$4
+		   AND (kickoff_claim_expires_at IS NULL OR kickoff_claim_expires_at <= now())`,
+		id, StatusError, errMsg, seenUpdatedAt)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // ClearKickoffDelivery drops the recipient stamp (see the Store contract). The
@@ -225,7 +260,8 @@ func (s *PGStore) ClearKickoffDelivery(ctx context.Context, id int64) error {
 }
 
 // ClaimKickoff takes the agent's cross-process kickoff claim (see the Store
-// contract + migration 0022). One atomic conditional UPDATE: it wins iff the
+// contract; the columns are in internal/db/migrations/0001_init.sql). One atomic
+// conditional UPDATE: it wins iff the
 // claim is unheld (NULL) or already expired, and holds NO connection afterwards
 // — which is the whole reason this is a row and not pg_try_advisory_lock (a
 // session lock would pin one of MaxConns=8 for up to KickoffWorkTimeout).

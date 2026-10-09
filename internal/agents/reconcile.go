@@ -215,22 +215,29 @@ func KickoffErrorSuffix(a Agent) string {
 // declares its capabilities — so the loop's BODY stayed behind and its
 // DECISION TABLE came over, exported.
 //
-// WHAT IS MISSING, PRECISELY: the driver of this table. Something must, each
-// tick, list the live instances (provision.Provisioner.List), index them
-// (InstanceIndex), read the stored agents (Store.List), call DecideReconcile
-// per agent, and act — persist a status, launch or re-send a kickoff, or fail
-// the agent with DescribeKickoffLoss + KickoffErrorSuffix. It must also be
-// gated to a single process: the duplicate-kickoff guard upstream was a
-// process-local map, and two processes ticking against one database both see
-// `ready && !KickedOff` and both dispatch — a paid model turn, twice. This
-// repository has db.LeaderGate for exactly that.
+// ✅ THE FIRST-TURN HALF OF THIS TABLE HAS A DRIVER: internal/agentkickoff. Each
+// tick it reads the stored agents (Store.List), lists and indexes the live
+// instances (InstanceIndex), calls DecideReconcile for every row this deployment
+// owns that holds a pending note and was NEVER kicked off, and acts:
+// ActionRetryKickoff delivers the note through the gateway, ActionError fails the
+// agent with KickoffErrorSuffix appended.
 //
-// ⚠ OWED, AND NAMED SO IT IS NOT AN OBJECT NOBODY CAN CLOSE: until that driver
-// exists, NOTHING IN THIS REPOSITORY CALLS DecideReconcile — it is exported,
-// tested, and unreached, and a reader who assumed otherwise would believe
-// agents self-heal here today. They do not. CLOSING CONDITION: the pull request
-// that adds muster's reconcile loop wires this table to a provision.Provisioner
-// and a db.LeaderGate, or records the decision to drop self-healing. WHO CHECKS
-// IT: the reviewer of that pull request, against this comment and against the
-// fact that `git grep DecideReconcile` returns only tests today.
+// 🔴 SINGLE-FLIGHT IS THE PER-AGENT CLAIM (Store.ClaimKickoff), NOT A LEADER LEASE.
+// This footer used to say "This repository has db.LeaderGate for exactly that".
+// It does not, and never did: the only LeaderGate is the CONSUMER-side interface
+// in internal/api/server.go, nothing implements it, and internal/db has no lease.
+// None is needed here: the claim is a conditional UPDATE on the agent's own row,
+// and the winner re-reads the row under it, so two replicas ticking against one
+// database cannot both pay one turn.
+//
+// ⚠ STILL WITHOUT A DRIVER, AND NAMED SO IT IS NOT AN OBJECT NOBODY CAN CLOSE:
+// everything this table decides for a KICKED-OFF row — ActionResendKickoff,
+// ActionErrorKickoffLost (and so DescribeKickoffLoss) — and ActionPersistStatus.
+// The deliverer excludes kicked-off rows by design: re-sending a task that was
+// already handed over is a costlier decision than paying a first turn nobody has
+// paid. So agents whose recipient dies after their first turn do NOT self-heal
+// here. CLOSING CONDITION: a pull request that either drives those actions (behind
+// the same per-agent claim) or records the decision to drop recovery. WHO CHECKS
+// IT: the reviewer of that pull request, against this comment and against a grep
+// for ActionResendKickoff returning only this file and tests.
 // ---------------------------------------------------------------------------

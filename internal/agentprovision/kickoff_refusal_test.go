@@ -147,9 +147,9 @@ func TestACreateWithAKickoffIsREFUSEDWhenNothingCanDeliverIt(t *testing.T) {
 // 🔴 A GUARD ON WORDS IS WALKABLE BY REWORDING, AND THIS ARTEFACT *IS* PROSE. The
 // specific regression it protects against is already on the record: an earlier
 // revision of KickoffRefusalReason ended "…and dispatch again", which promises a
-// delivery the next dispatch does not make — doc_seams.go entry 1 records that
-// nothing calls the gateway on the dispatch path, which is the ONE thing still
-// ahead of delivery. An operator who followed that remedy would land in exactly the
+// delivery the next dispatch did not make — at the time nothing called the gateway
+// on the dispatch path (doc_seams.go entry 1 keeps that record; internal/agentkickoff
+// has since closed it). An operator who followed that remedy would land in exactly the
 // stranded-note behaviour this refusal exists to prevent, with no reason to look
 // further. No word-level assertion catches the next paraphrase of that promise, so
 // the whole string is pinned instead.
@@ -168,8 +168,12 @@ func TestACreateWithAKickoffIsREFUSEDWhenNothingCanDeliverIt(t *testing.T) {
 // prose. WHEN IT FAILS, DO NOT COPY THE NEW VALUE IN REFLEXIVELY — read the new text
 // against the three properties below first, then update the golden.
 //
-//  1. It must not tell the operator that setting the variable makes the next
-//     dispatch deliver the note. It does not.
+//  1. It must not promise a delivery the configuration it is read on cannot make.
+//     ⚠ THIS READ "It must not tell the operator that setting the variable makes
+//     the next dispatch deliver the note. It does not." That was true while
+//     [KickoffDeliveryWired] was false. With internal/agentkickoff wired it DOES —
+//     the refusal now fires only when no gateway is named, and naming one is
+//     precisely what makes a dispatch deliverable — so the text says so.
 //  2. It must name an operation that WORKS, not only a variable to set — otherwise
 //     the remedy dead-ends. ⚠ THIS PROPERTY READ "it must name where a
 //     non-delivery still lands afterwards (agents.kickoff_error)" AND THAT WAS A
@@ -182,15 +186,14 @@ func TestACreateWithAKickoffIsREFUSEDWhenNothingCanDeliverIt(t *testing.T) {
 //  3. It must not forward the operator to a blocker that is CLOSED. Added after
 //     this golden was measured GREEN over a stale clause — see below.
 //  4. It must not name a REMEDY THE OPERATOR HAS ALREADY APPLIED. Added after the
-//     third recorded regression, which is the one this file's whole refusal was
-//     measured wrong by: the text led with "CAUSE: MUSTER_AGENT_GATEWAY is unset
-//     (it resolves to `none`) … REMEDY: set MUSTER_AGENT_GATEWAY=hooks-sha256",
-//     and on the deployment that reads it the variable IS set. Setting it does not
-//     lift the refusal, because deliverability needs a CALL SITE as well as a
-//     gateway (agentprovision.KickoffDeliveryWired). A remedy already in place
-//     reads as "this is broken", which is the exact conclusion a remedy exists to
-//     prevent. The variables are still named — as one of two conjuncts — and the
-//     text says in as many words that setting them is not sufficient.
+//     third recorded regression: the text led with "REMEDY: set
+//     MUSTER_AGENT_GATEWAY=hooks-sha256" while the deployment reading it HAD set it
+//     and was refused anyway, because nothing called the gateway. ✅ THE SAME
+//     REMEDY SATISFIES THIS PROPERTY NOW, and the reason is structural rather than a
+//     reword: with KickoffDeliveryWired true the refusal fires ONLY when no gateway
+//     was built, so a reader of this text has, by construction, not applied it.
+//     cmd/muster-server's TestADispatchIsRefusedExactlyWhenNoGatewayIsNamed pins
+//     that the gatewayed configuration is not refused.
 //
 // 🔴 THIS TEST CANNOT CHECK PROPERTY 3, AND SAYING SO IS THE HONEST ANSWER RATHER
 // THAN A REASON TO DELETE IT. It pins BYTES. The clause "which also lists the two
@@ -215,14 +218,13 @@ func TestTheRemedyDoesNotPromiseADeliveryTheDispatchPathCannotMake(t *testing.T)
 		"deliver an agent's first turn, so beginning the work is impossible and creating the " +
 		"instance would only produce a pod that reads healthy and was never told what to do. " +
 		"Use \"Save for later\", then Start the agent — that brings the instance up without " +
-		"claiming a first turn nothing can deliver. CAUSE: a DELIVERED kickoff needs BOTH a " +
-		"gateway this process can reach — MUSTER_AGENT_GATEWAY=hooks-sha256 together with " +
-		"MUSTER_AGENT_GATEWAY_MODEL — AND a production call site that hands the pending note " +
-		"to it. The transport IS in this build (internal/agentgateway); the CALL SITE is not, " +
-		"which is why SETTING THOSE VARIABLES DOES NOT LIFT THIS REFUSAL on its own. See " +
-		"agentprovision.KickoffDeliveryWired, the constant a call site has to flip, and " +
-		"cmd/muster-server/doc_seams.go entry 1 for the call site itself. Do not go looking at " +
-		"the spec or the credential on the way: the rendered spec declares the gateway port and " +
+		"claiming a first turn nothing can deliver. CAUSE: this deployment names no agent " +
+		"gateway, and a DELIVERED kickoff is a model turn sent through one. REMEDY: set " +
+		"MUSTER_AGENT_GATEWAY=hooks-sha256 together with MUSTER_AGENT_GATEWAY_MODEL (and the agent " +
+		"runtime-config bundle boot requires with them) and restart muster; the kickoff deliverer " +
+		"(internal/agentkickoff) then hands each dispatched agent's pending note to its instance " +
+		"once the instance is ready. See cmd/muster-server/doc_seams.go entry 1. Do not go looking " +
+		"at the spec or the credential on the way: the rendered spec declares the gateway port and " +
 		"the instance receives the token the bearer is derived from."
 
 	if KickoffRefusalReason != golden {
@@ -389,9 +391,8 @@ func TestEveryCapabilityClaimTheRefusalMakesIsTRUE(t *testing.T) {
 // with nothing calling it delivers nothing either, so naming one does NOT make a
 // kickoff deliverable. The old name said this arm was the gatewayed DEPLOYMENT;
 // what it actually drives is an adapter TOLD a kickoff is deliverable, which today
-// no deployment is (see [KickoffDeliveryWired]). The behaviour under test did not
-// change — the adapter's contract is unchanged — only the claim the name was
-// making about the world.
+// no deployment was until internal/agentkickoff landed (see [KickoffDeliveryWired]).
+// The name stays a claim about what the adapter is TOLD, which is what it tests.
 //
 // ⚠ IT ASSERTS THE WHOLE PRE-EXISTING SEQUENCE, not merely a nil error. "Dispatch
 // did not fail" is also true of a Dispatch that silently did nothing, which is the
@@ -418,13 +419,14 @@ func TestAKickoffIsNOTRefusedWhenTheAdapterIsToldItCanBeDelivered(t *testing.T) 
 		t.Errorf("the row does not say `provisioning` after a dispatch that created an "+
 			"instance and owes a first turn.\n  transcript: %s", store.transcript())
 	}
-	if !store.called("SetKickoffError") {
-		t.Errorf("the owed-but-undelivered first turn was not recorded in kickoff_error.\n"+
-			"  transcript: %s\n"+
-			"    Being told a kickoff is deliverable makes the dispatch legal; it does not "+
-			"make this package deliver one — it has no gateway by construction — so the "+
-			"existing record must remain.",
-			store.transcript())
+	// ⚠ THIS ASSERTION USED TO REQUIRE A SetKickoffError HERE ("the existing record
+	// must remain"). With a deliverer in the process the record is false until a
+	// delivery actually fails, so the arm now records NOTHING — and still never
+	// claims the delivery itself, which is internal/agentkickoff's.
+	if store.called("SetKickoffError") || store.called("SetKickedOff") {
+		t.Errorf("the deliverable arm wrote kickoff bookkeeping that is not this package's to "+
+			"write: a NOT-delivered record before any attempt, or a delivery claim.\n"+
+			"  transcript: %s", store.transcript())
 	}
 
 	// 🔴 AND THE REFUSAL'S OWN TEXT MUST BE ABSENT. This is the assertion that fails

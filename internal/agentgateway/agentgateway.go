@@ -197,17 +197,53 @@ func (g *Gateway) Runtime() string { return g.runtime.Name() }
 // supplying one here would change what the agent is told on a path whose only
 // defect was the wire format. Chat's signature has nowhere to carry a prompt; a
 // caller that needs one has ChatWithTools, which takes it.
+//
+// It is exactly [Gateway.Resolve] followed by [Gateway.Send]; the split exists for a
+// caller that must know whether a failure happened BEFORE anything was sent.
 func (g *Gateway) Chat(ctx context.Context, a agents.Agent, sessionKey, message string, emit func(string)) (string, error) {
-	ep, bearer, err := g.reach(ctx, a)
+	t, err := g.Resolve(ctx, a)
 	if err != nil {
 		return "", err
 	}
-	reply, err := agents.RunToollessTurn(ctx, g.client, agents.ResponsesURL(ep), bearer, sessionKey,
+	return g.Send(ctx, t, sessionKey, message, emit)
+}
+
+// Target is an agent whose address and credential are resolved: everything a
+// [Gateway.Chat] turn needs before it opens a connection. Obtain one with
+// [Gateway.Resolve]. Its fields are unexported, so a caller outside this package
+// cannot fill one in; only a zero value can be built there, and that has no address.
+type Target struct {
+	ep     provision.Endpoint
+	bearer string
+}
+
+// Resolve does the part of [Gateway.Chat] that contacts no agent runtime: it
+// refuses a token-less row and asks the driver where the agent is (for the k8s
+// driver, a Deployment read from the Kubernetes API).
+//
+// 🔴 IT IS SEPARATE SO A CALLER THAT PAYS FOR A TURN CAN RUN IT BEFORE ITS POINT OF
+// NO RETURN. internal/agentkickoff marks a first turn delivered before sending it, so
+// it is never paid twice. A transient Kubernetes API error here costs nothing and
+// sends nothing; inside Chat it used to land after that mark and was recorded as a
+// failed, unretried kickoff.
+func (g *Gateway) Resolve(ctx context.Context, a agents.Agent) (Target, error) {
+	ep, bearer, err := g.reach(ctx, a)
+	if err != nil {
+		return Target{}, err
+	}
+	return Target{ep: ep, bearer: bearer}, nil
+}
+
+// Send runs the turn half of [Gateway.Chat] against a [Target] from
+// [Gateway.Resolve]: /v1/responses, falling back to /v1/chat/completions on a 404
+// (see Chat).
+func (g *Gateway) Send(ctx context.Context, t Target, sessionKey, message string, emit func(string)) (string, error) {
+	reply, err := agents.RunToollessTurn(ctx, g.client, agents.ResponsesURL(t.ep), t.bearer, sessionKey,
 		g.model, "", message, textDeltasOnly(emit))
 	if !errors.Is(err, agents.ErrResponsesUnsupported) {
 		return reply, err
 	}
-	return agents.ChatStream(ctx, g.client, agents.ChatCompletionsURL(ep), bearer, sessionKey,
+	return agents.ChatStream(ctx, g.client, agents.ChatCompletionsURL(t.ep), t.bearer, sessionKey,
 		g.model, []agents.ChatMessageIn{{Role: "user", Content: message}}, emit)
 }
 

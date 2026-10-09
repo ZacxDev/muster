@@ -72,12 +72,29 @@ type agentJSON struct {
 	// the alert worth writing: a live, ready pod that was never told what to do.
 	// See agents.KickoffOwed for the measured defect.
 	KickoffOwed bool `json:"kickoffOwed"`
+	// KickoffFailed is agents.KickoffFailed: the first turn was handed to a gateway
+	// (kickedOff is true, so kickoffOwed is false) and it did not complete; the cause
+	// is in kickoffError. NOT omitempty, same reasoning as KickoffOwed.
+	//
+	// 🔴 IT IS NOT DERIVABLE AS `kickedOff && kickoffError != ""` BY A CONSUMER WITHOUT
+	// KNOWING THAT IS THE CONTRACT, so it is stated on the wire. It is the alert for
+	// the at-most-once delivery's accepted cost: such a turn is never retried
+	// automatically. Re-sending it through the agent's chat is safe only when the
+	// recorded cause proves nothing was sent (agents.KickoffResendSafe); otherwise the
+	// runtime may still be running the turn, and the card's remedy says to check first.
+	KickoffFailed bool `json:"kickoffFailed"`
 	// ErrorMessage is the stored provisioning/reconcile failure reason, or "" when
 	// none was recorded. NOT omitempty, for the same reason: a red agent with an
 	// empty reason is a different (and worse) fact than a red agent with one.
 	ErrorMessage string `json:"errorMessage"`
 	// KickoffError is the last kickoff SEND failure, or "" when none. NOT
 	// omitempty, same reasoning as ErrorMessage.
+	//
+	// 🔴 IT IS SCRUBBED OF THE PENDING NOTE (agents.ScrubNote), AND SO IS
+	// ErrorMessage. A failed turn's error quotes up to 512 bytes of the runtime's
+	// response body, and the stuck-row verdict appends the last send error to
+	// error_message; a runtime that echoes its request would otherwise put the
+	// note — `json:"-"` on agents.Agent — on this wire.
 	//
 	// 🔴 It is the field that separates the two states `kickedOff: true` cannot:
 	// an agent working on the message, and an agent whose gateway died holding it.
@@ -152,8 +169,9 @@ func newAgentJSON(a agents.Agent, lastMsg time.Time) agentJSON {
 		Model:           a.Model,
 		KickedOff:       a.KickedOff,
 		KickoffOwed:     agents.KickoffOwed(a),
-		ErrorMessage:    a.ErrorMessage,
-		KickoffError:    a.KickoffError,
+		KickoffFailed:   agents.KickoffFailed(a),
+		ErrorMessage:    agents.ScrubNote(a.ErrorMessage, a.PendingNote),
+		KickoffError:    agents.ScrubNote(a.KickoffError, a.PendingNote),
 		KickoffAttempts: a.KickoffAttempts,
 		CreatedAt:       a.CreatedAt,
 		UpdatedAt:       a.UpdatedAt,

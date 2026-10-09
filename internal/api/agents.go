@@ -548,7 +548,16 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		// answer whether one is outstanding; what crosses into the view layer is its
 		// answer. The note is operator-authored text and this repository is public.
 		KickoffOwed: agents.KickoffOwed(a),
-		NoteID:      a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+		// Same rule: the predicate's answer and the SCRUBBED text, never raw
+		// kickoff_error — a failed turn's error can quote a runtime body that echoes
+		// the note. agents.KickoffFailureText is the one reader both tiers use.
+		KickoffFailed:  agents.KickoffFailed(a),
+		KickoffFailure: agents.KickoffFailureText(a),
+		// Decided from the RAW kickoff_error (its muster-written prefix); only the
+		// boolean crosses into the view.
+		KickoffResendSafe: agents.KickoffResendSafe(a),
+		Namespace:         a.Namespace,
+		NoteID:            a.NoteID, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
 		// The recent-log preview lazy-loads via /ui/agents/{id}/recent (htmx) so
 		// the list path makes NO per-agent k8s call. Only running agents with a
 		// provisioner get a preview (others render none).

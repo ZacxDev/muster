@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agentprovision"
@@ -46,6 +47,8 @@ type dispatchRecorder struct {
 	mu    sync.Mutex
 	agent agents.Agent
 	calls []string
+	// listed, when non-nil, receives once per List call.
+	listed chan struct{}
 }
 
 func (s *dispatchRecorder) record(f string) {
@@ -58,6 +61,19 @@ func (s *dispatchRecorder) transcript() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return strings.Join(s.calls, " -> ")
+}
+
+// List answers the kickoff deliverer's tick. It returns NO rows — the wiring test
+// only needs to observe that a tick happened — and signals listed when set.
+func (s *dispatchRecorder) List(context.Context) ([]agents.Agent, error) {
+	s.record("List")
+	if s.listed != nil {
+		select {
+		case s.listed <- struct{}{}:
+		default:
+		}
+	}
+	return nil, nil
 }
 
 func (s *dispatchRecorder) Get(context.Context, int64) (agents.Agent, error) {
@@ -90,44 +106,21 @@ func newDispatchRecorder() *dispatchRecorder {
 	}}
 }
 
-// TestEveryDeploymentRefusesAKickoffWhileNothingCanDeliverOne is the seam guard.
+// TestADispatchIsRefusedExactlyWhenNoGatewayIsNamed is the seam guard.
 //
-// 🔴 ITS SECOND HALF IS THE REGRESSION TEST FOR THE DEFECT THIS FILE WAS WRONG
-// ABOUT, AND THE TEST USED TO ASSERT THE DEFECT. It was named
-// TestAGatewaylessDeploymentRefusesAKickoffAndAGatewayedOneDoesNot, and its
-// "a gateway is named" half asserted that the identical dispatch WENT THROUGH —
-// calling that the positive control that separates "refuses when it cannot deliver"
-// from "refuses always". That was measured false on the live deployment: naming a
-// gateway does NOT make a kickoff deliverable, because nothing in this module calls
-// a gateway on the dispatch path, so the dispatch it let through created a
-// Deployment, a ServiceAccount, a namespace and a Secret holding a minted token,
-// cloned the repository in, handed over a model credential — and recorded that the
-// first turn never happened, behind a card agents.ComputeStatus refines to
-// `running`. The old assertion's own failure message called the refusal "removing a
-// working feature from every deployment that configured one"; the feature it was
-// protecting was the half-provision.
-//
-// 🔴 SO THE PAIR NO LONGER DISCRIMINATES AND THIS TEST DOES NOT PRETEND IT DOES.
-// With agentprovision.KickoffDeliveryWired false, the predicate is constant across
-// every configuration, and NO behavioural test here can tell a wire from a constant
-// — because today it IS a constant. Saying so is the honest description; the two
-// things that keep it from going stale are elsewhere, and both are mechanical:
-//
-//   - TestTheDeliverabilityPredicateNeedsBOTHConjuncts drives all four rows of
-//     kickoffDeliverable, so "a gateway is required" stays pinned whatever the
-//     constant currently is.
-//   - internal/modulegate's TestNothingDeliversAKickoffAndThisModuleSaysSo fails
-//     when a deliverer lands and the constant is still false, which is what forces
-//     the flip that makes this pair discriminating again.
-//
-// ⚠ BOTH HALVES BELOW STILL RUN, AND THE GATEWAYED ONE IS THE ONE THAT MOVED. The
-// gatewayless half is unchanged and would pass against the old code too; the
-// gatewayed half fails against it. Keeping both is what makes "every deployment"
-// a claim about the set rather than about one configuration.
-func TestEveryDeploymentRefusesAKickoffWhileNothingCanDeliverOne(t *testing.T) {
+// 🔴 ITS SECOND HALF HAS FLIPPED TWICE, AND BOTH FLIPS WERE THE POINT. It first
+// asserted a gatewayed dispatch WENT THROUGH, which was measured wrong on the live
+// deployment: nothing called the gateway, so the dispatch created a pod nobody ever
+// told what to do. It then asserted the dispatch was REFUSED even with a gateway,
+// and named itself TestEveryDeploymentRefusesAKickoffWhileNothingCanDeliverOne.
+// internal/agentkickoff is the deliverer that was missing, KickoffDeliveryWired is
+// true, and the gatewayed dispatch is ACCEPTED again — but now the acceptance is
+// only half of what this half asserts: the same buildAgentPlane output must also
+// yield a deliverer (buildKickoffDeliverer), or "accepted" is the old defect.
+func TestADispatchIsRefusedExactlyWhenNoGatewayIsNamed(t *testing.T) {
 	logger := log.New(&strings.Builder{}, "", 0)
 
-	// MUSTER_AGENT_GATEWAY unset — the deployed configuration this refusal is for.
+	// MUSTER_AGENT_GATEWAY unset — still refused.
 	t.Run("no gateway named", func(t *testing.T) {
 		store := newDispatchRecorder()
 		prov, gw, _, err := buildAgentPlane(provisionerTestConfig(provisionerNoop), store, logger)
@@ -170,68 +163,105 @@ func TestEveryDeploymentRefusesAKickoffWhileNothingCanDeliverOne(t *testing.T) {
 		}
 	})
 
-	// 🔴 THE DEPLOYED CONFIGURATION, AND THE HALF THAT MOVED. MUSTER_AGENT_GATEWAY IS
-	// set on the deployment this guard was written for, so this is the case an
-	// operator's Dispatch click actually takes. A gateway is BUILT here — the
-	// instrument check below insists on it — and the dispatch must still be refused,
-	// because a gateway with nothing calling it delivers nothing.
-	t.Run("a gateway is named and a kickoff is STILL undeliverable", func(t *testing.T) {
+	// A gateway named: accepted, instance created, NO "not delivered" record, and the
+	// deliverer that will pay the first turn is built from the same plane.
+	t.Run("a gateway is named: accepted, and a deliverer exists to pay it", func(t *testing.T) {
 		store := newDispatchRecorder()
-		prov, gw, _, err := buildAgentPlane(
-			gatewayTestConfig(provisionerNoop, gatewayHooksSHA256), store, logger)
+		cfg := gatewayTestConfig(provisionerNoop, gatewayHooksSHA256)
+		prov, gw, _, err := buildAgentPlane(cfg, store, logger)
 		if err != nil {
 			t.Fatalf("buildAgentPlane(noop, %s): %v", gatewayHooksSHA256, err)
 		}
-		// INSTRUMENT CHECK: without a gateway this is the other subtest, not this one.
-		if gw == nil {
-			t.Fatalf("instrument check FAILED: no gateway was built for %s=%s, so this case is "+
-				"not the gateway-configured deployment it claims to be",
-				envAgentGateway, gatewayHooksSHA256)
+		if gw == nil || prov == nil {
+			t.Fatalf("instrument check FAILED: gateway=%v adapter=%v, so this is not the "+
+				"gateway-configured deployment it claims to be", gw != nil, prov != nil)
 		}
-		if prov == nil {
-			t.Fatal("instrument check FAILED: no lifecycle adapter was built, so nothing " +
-				"below is exercised")
+		if err := prov.Dispatch(store.agent.ID, true); err != nil {
+			t.Fatalf("a kickoff dispatch was REFUSED on a deployment that names a gateway and "+
+				"has a deliverer: %v\n  transcript: %s", err, store.transcript())
 		}
-
-		err = prov.Dispatch(store.agent.ID, true)
-		if err == nil {
-			t.Fatalf("a kickoff dispatch was ACCEPTED on a deployment that has a gateway and "+
-				"no call site for it.\n  transcript: %s\n"+
-				"    This is the shipped defect: `gw != nil` was the whole predicate, so a "+
-				"configured gateway was read as a deliverable kickoff and the adapter created "+
-				"the instance, minted its token and then recorded that the first turn never "+
-				"happened. Restore the second conjunct "+
-				"(agentprovision.KickoffDeliveryWired) in buildAgentPlane.", store.transcript())
+		if !store.called("SetHooksToken") || !strings.Contains(store.transcript(), "UpdateStatus("+agents.StatusProvisioning+")") {
+			t.Errorf("the accepted dispatch did not create the instance and store %s.\n  transcript: %s",
+				agents.StatusProvisioning, store.transcript())
 		}
-		if !errors.Is(err, agentprovision.ErrKickoffUndeliverable) {
-			t.Errorf("the dispatch failed for some reason OTHER than the undeliverable-kickoff "+
-				"refusal, so this test is green for the wrong cause: %v", err)
+		if store.called("SetKickoffError") {
+			t.Errorf("an accepted dispatch on a delivering deployment wrote a NOT-delivered "+
+				"record before any delivery was attempted.\n  transcript: %s", store.transcript())
 		}
-		// 🔴 THE TWO COSTS THE REFUSAL EXISTS TO NOT PAY, ASSERTED SEPARATELY FROM THE
-		// ERROR. A refusal that still minted the credential and built the instance
-		// would satisfy an assertion phrased only over the returned error, and would be
-		// the same defect with a louder log.
-		if store.called("SetHooksToken") {
-			t.Errorf("the refused dispatch still minted a token, so it reached the create "+
-				"path.\n  transcript: %s", store.transcript())
-		}
-		if !strings.Contains(store.transcript(), "UpdateStatus("+agents.StatusError+")") {
-			t.Errorf("the refusal was not recorded on the row as %s.\n  transcript: %s",
-				agents.StatusError, store.transcript())
+		d, err := buildKickoffDeliverer(cfg, store, prov, gw, nil, logger)
+		if err != nil || d == nil {
+			t.Fatalf("the plane accepted a kickoff dispatch and built NO deliverer (err %v): "+
+				"that is the pod-nobody-told-what-to-do defect, one function over", err)
 		}
 	})
+}
+
+// TestADeliverableAdapterAlwaysComesWithARunningDeliverer holds "a dispatch is
+// accepted" and "something delivers it" together, in BOTH configurations, and then
+// proves startBackgroundLoops actually RUNS the deliverer it was handed.
+//
+// 🔴 THE MODULEGATE LEDGER CANNOT SEE THIS. It counts CALLS to the delivery writes
+// anywhere in the module, so a deliverer that is built and never started — or never
+// built — satisfies it while every Dispatch is accepted and nothing is delivered.
+func TestADeliverableAdapterAlwaysComesWithARunningDeliverer(t *testing.T) {
+	logger := log.New(&strings.Builder{}, "", 0)
+	for _, c := range []struct {
+		label string
+		cfg   config
+	}{
+		{"no gateway", provisionerTestConfig(provisionerNoop)},
+		{"a gateway", gatewayTestConfig(provisionerNoop, gatewayHooksSHA256)},
+	} {
+		store := newDispatchRecorder()
+		prov, gw, _, err := buildAgentPlane(c.cfg, store, logger)
+		if err != nil || prov == nil {
+			t.Fatalf("%s: buildAgentPlane: adapter=%v err=%v", c.label, prov != nil, err)
+		}
+		d, err := buildKickoffDeliverer(c.cfg, store, prov, gw, nil, logger)
+		if err != nil {
+			t.Fatalf("%s: buildKickoffDeliverer: %v", c.label, err)
+		}
+		accepts := prov.KickoffUndeliverableReason() == ""
+		if accepts != (d != nil) {
+			t.Errorf("%s: the adapter ACCEPTS a kickoff dispatch = %t but a deliverer was built = %t. "+
+				"Accepted-with-no-deliverer creates pods nobody tells what to do; "+
+				"refused-with-a-deliverer refuses work this process could do.",
+				c.label, accepts, d != nil)
+		}
+	}
+
+	// startBackgroundLoops runs it: the deliverer's first tick reads the agents list.
+	store := newDispatchRecorder()
+	store.listed = make(chan struct{}, 1)
+	cfg := gatewayTestConfig(provisionerNoop, gatewayHooksSHA256)
+	prov, gw, _, err := buildAgentPlane(cfg, store, logger)
+	if err != nil {
+		t.Fatalf("buildAgentPlane: %v", err)
+	}
+	d, err := buildKickoffDeliverer(cfg, store, prov, gw, nil, logger)
+	if err != nil || d == nil {
+		t.Fatalf("instrument check FAILED: no deliverer (err %v)", err)
+	}
+	a := &app{cfg: cfg, logger: logger, kickoff: d}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.startBackgroundLoops(ctx)
+	select {
+	case <-store.listed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startBackgroundLoops was handed a kickoff deliverer and it never ticked: " +
+			"every dispatch would be accepted and none delivered")
+	}
 }
 
 // TestTheDeliverabilityPredicateNeedsBOTHConjuncts drives every row of
 // kickoffDeliverable.
 //
-// 🔴 IT IS WHAT THE SEAM TEST ABOVE CAN NO LONGER BE. `gw != nil &&
-// agentprovision.KickoffDeliveryWired` is constant-false today, so three of these
-// four rows are unreachable through buildAgentPlane and the one reachable row cannot
-// tell "both conjuncts are required" from "this expression is false". Driving the
-// predicate directly pins the requirement independently of the constant's current
-// value — including after it flips, which is when the gateway conjunct starts
-// carrying weight again and is exactly when nobody will be re-reading this.
+// 🔴 IT PINS THE REQUIREMENT INDEPENDENTLY OF THE CONSTANT'S CURRENT VALUE. While
+// agentprovision.KickoffDeliveryWired was false three of these rows were unreachable
+// through buildAgentPlane; it is true now, so the two gateway rows are reachable
+// (TestADispatchIsRefusedExactlyWhenNoGatewayIsNamed) and the two call-site-less
+// rows are the ones only this table can reach.
 //
 // ⚠ WHAT IT DOES *NOT* PIN: that the call site passes the real constant rather than
 // a literal. That is unobservable from here by construction — the argument is a
@@ -265,7 +295,7 @@ func TestTheDeliverabilityPredicateNeedsBOTHConjuncts(t *testing.T) {
 	}{
 		{label: "no gateway, no call site", gw: nil, wired: false, want: false},
 		{label: "no gateway, a call site", gw: nil, wired: true, want: false},
-		{label: "a gateway, no call site — THE DEPLOYED ONE", gw: built, wired: false, want: false},
+		{label: "a gateway, no call site — the shape that shipped the defect", gw: built, wired: false, want: false},
 		{label: "a gateway AND a call site", gw: built, wired: true, want: true},
 	} {
 		if got := kickoffDeliverable(c.gw, c.wired); got != c.want {

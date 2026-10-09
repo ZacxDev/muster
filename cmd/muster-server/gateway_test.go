@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ZacxDev/muster/internal/agentkickoff"
 	"github.com/ZacxDev/muster/internal/agentspec"
 )
 
@@ -272,8 +273,11 @@ func TestTheChatWiredBannerDoesNotClaimReachability(t *testing.T) {
 		", the variable this bearer is derived from — but the container half of that " +
 		"derivation lives in the agent image's own deployment, which nothing here can read, " +
 		"so the first turn against an agent this binary provisioned is still the measurement. " +
-		"A kickoff is undeliverable regardless: nothing calls the gateway on the dispatch " +
-		"path. The agent runtime-config bundle IS INSTALLED: " + envAgentRuntimeConfig +
+		"A dispatch with a kickoff is ACCEPTED: the kickoff deliverer (internal/agentkickoff, " +
+		"every " + agentkickoff.DefaultInterval.String() + ") hands each owned agent's pending " +
+		"note to its instance through this gateway once the instance is ready, and records a " +
+		"failed or EMPTY first turn in agents.kickoff_error. The agent runtime-config bundle IS " +
+		"INSTALLED: " + envAgentRuntimeConfig +
 		" (27 bytes) is placed at " + agentspec.RuntimeConfigPath + ", " + envAgentRuntimeInstall +
 		" (" + strconv.Itoa(len(fixtureRuntimeInstallScript)) + " bytes) REPLACES the image's entrypoint as the container's command, and the " +
 		"derived credential travels as " + agentspec.EnvGatewayBearer + ". 🔴 THAT SCRIPT IS " +

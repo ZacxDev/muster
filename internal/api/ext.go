@@ -479,10 +479,12 @@ type Provisioner interface {
 	// third option, doing the expensive half and reporting success.
 	//
 	// ⚠ THIS USED TO SAY CREATE-THEN-RECORD WAS "the gateway-configured one only",
-	// WHICH MADE A CONFIGURED GATEWAY SOUND SUFFICIENT. It is not: delivering a
-	// kickoff also needs code that CALLS the gateway, and there is none, so on the
-	// only implementation in this module NO deployment reaches create-then-record
-	// today. See agentprovision.KickoffDeliveryWired.
+	// WHICH MADE A CONFIGURED GATEWAY SOUND SUFFICIENT. It was not while nothing
+	// CALLED the gateway. internal/agentkickoff now does, and the first bullet
+	// above is superseded for a deployment that names a gateway: the adapter
+	// still never sends the note itself, but it records no non-delivery either —
+	// it creates the instance and leaves the owed row to that deliverer, which is
+	// the one place SetKickedOff is called. See agentprovision.KickoffDeliveryWired.
 	//
 	// ✅ AND THE REFUSAL NOW REACHES THE CALLER, through
 	// KickoffUndeliverableReason below rather than through this method. This

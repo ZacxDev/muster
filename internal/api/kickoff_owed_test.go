@@ -82,9 +82,10 @@ func (s *owedStore) LastMessageByAgentIDs(context.Context, []int64) (map[int64]t
 // like a real dispatch is a different hazard from the one being guarded.
 const owedKickoffNote = "ZZQX-pending-note-sentinel-ZZQX"
 
-// owedFixtureRows is the three-row fixture every test below shares.
+// owedFixtureRows is the four-row fixture every test below shares (row 4 added in
+// PR #37 review round 0 — see its own comment).
 //
-// 🔴 THE THREE ROWS ARE THE THREE STATES A BADGE MUST TELL APART, and row 1 is the
+// 🔴 THE FIRST THREE ROWS ARE THE THREE OWED-STATES A BADGE MUST TELL APART, and row 1 is the
 // defect: a `running` agent whose first message was never delivered. Row 2 is the
 // control the live board actually contains (a delivered kickoff whose note text is
 // still on the row — PendingNote is never cleared), and row 3 is an agent that was
@@ -97,8 +98,24 @@ func owedFixtureRows() []agents.Agent {
 			Status: agents.StatusRunning, PendingNote: owedKickoffNote, KickedOff: true},
 		{ID: 3, Name: "no-note", DisplayName: "no-note", Namespace: "devpod-no-note",
 			Status: agents.StatusStopped, PendingNote: "", KickedOff: false},
+		// Row 4 (PR #37 review round 0): a FAILED kickoff — stamped, then the turn
+		// failed. Its kickoff_error QUOTES THE NOTE, the shape a runtime that echoes
+		// its rejected request produces (agents' responses transport quotes up to
+		// 512 bytes of a non-200 body), and so does its error_message (the stuck-row
+		// verdict appends the last send error). Both must reach the surfaces SCRUBBED.
+		{ID: 4, Name: "failed-running", DisplayName: "failed-running", Namespace: "devpod-failed-running",
+			Status: agents.StatusRunning, PendingNote: owedKickoffNote, KickedOff: true,
+			KickoffError: failedKickoffErrorPrefix + owedKickoffNote + failedKickoffErrorSuffix,
+			ErrorMessage: "earlier verdict, last send error: " + owedKickoffNote},
 	}
 }
+
+// The failed row's error text around the echoed note. Pairwise distinct from the
+// note, from every label the card renders, and from NoteWithheld.
+const (
+	failedKickoffErrorPrefix = "responses HTTP 400: echoed input "
+	failedKickoffErrorSuffix = " rejected-mq58"
+)
 
 // owedServer wires both tiers over one store, with NO provisioner — so the
 // displayed status is the stored one (liveStatusIndexed's nil-index fallback) and
@@ -245,11 +262,11 @@ func TestBothTiersReportAnOwedKickoffForTheSameRow(t *testing.T) {
 		}
 	}
 	if owedCards != 1 {
-		t.Errorf("exactly one of the three fixture agents is owed a kickoff; the card "+
+		t.Errorf("exactly one of the fixture agents is owed a kickoff; the card "+
 			"extraction found %d badged cards. One is the measurement; zero would mean the "+
 			"splitter matched nothing and every assertion above passed vacuously.", owedCards)
 	}
-	t.Logf("control: 1 badged card of 3, and 1 kickoffOwed:true of 3 on the wire")
+	t.Logf("control: 1 owed-badged card of 4, and 1 kickoffOwed:true of 4 on the wire")
 }
 
 // TestAnOwedKickoffIsReportedWithoutTheNotesText is the leak-shaped guard.
@@ -289,7 +306,16 @@ func TestAnOwedKickoffIsReportedWithoutTheNotesText(t *testing.T) {
 			"not even rendering the state this guard is about")
 	}
 
-	for _, path := range []string{"/ui/agents", "/api/agents", "/ui/agents/1/card"} {
+	// Reachability for the FAILED row too: its error text really quotes the note,
+	// so the failure surfaces below are searched for something that is there to leak.
+	failed, err := store.Get(context.Background(), 4)
+	if err != nil || !strings.Contains(failed.KickoffError, owedKickoffNote) ||
+		!strings.Contains(failed.ErrorMessage, owedKickoffNote) || !agents.KickoffFailed(failed) {
+		t.Fatalf("fixture row 4 does not quote the sentinel in kickoff_error AND error_message "+
+			"as a failed kickoff (err %v): %+v", err, failed)
+	}
+
+	for _, path := range []string{"/ui/agents", "/api/agents", "/ui/agents/1/card", "/ui/agents/4/card"} {
 		got := getOwed(t, s, h, path).Body.String()
 		if strings.Contains(got, owedKickoffNote) {
 			t.Errorf("%s emits the pending note's TEXT.\n"+
@@ -303,6 +329,16 @@ func TestAnOwedKickoffIsReportedWithoutTheNotesText(t *testing.T) {
 		if !strings.Contains(got, "kickoff") && !strings.Contains(got, "kickoffOwed") {
 			t.Errorf("%s mentions no kickoff signal at all, so its clean leak result is "+
 				"a claim about an empty surface", path)
+		}
+		// PR #37 round 1 (F3): the remedy now carries the agent's namespace and name.
+		// Both HTML surfaces that render row 4 must have the remedy IN the body just
+		// searched, so the clean result above covers its dynamic part too.
+		if path == "/ui/agents" || path == "/ui/agents/4/card" {
+			wantCmd := "kubectl -n " + failed.Namespace + " logs deploy/" + failed.Name + " -c agent"
+			if !strings.Contains(got, "data-kickoff-remedy") || !strings.Contains(got, wantCmd) {
+				t.Errorf("%s does not render row 4's remedy with %q, so the leak search above "+
+					"did not cover the remedy's dynamic part.\nbody:\n%s", path, wantCmd, got)
+			}
 		}
 	}
 }
@@ -426,4 +462,103 @@ func cardViewLiteralSites(t *testing.T) []string {
 			"consolidation", parsed)
 	}
 	return sites
+}
+
+// TestTheCardsRemedyFollowsTheRecordedCause (PR #37 round 1, F3) pins the composer
+// half of the remedy: cardViewIndexed must hand the view agents.KickoffResendSafe's
+// answer for the row. Row 4's recorded cause is a runtime 400, which proves nothing
+// about whether a turn is still running, so its card says to check first; the same
+// row recorded as never connected says re-sending is safe.
+func TestTheCardsRemedyFollowsTheRecordedCause(t *testing.T) {
+	s, h, store := owedServer(t)
+	checkFirst := "kubectl -n devpod-failed-running logs deploy/failed-running -c agent"
+
+	card := getOwed(t, s, h, "/ui/agents/4/card").Body.String()
+	if !strings.Contains(card, checkFirst) || strings.Contains(card, "re-sending cannot pay") {
+		t.Errorf("a failure that may have left a turn running does not tell the operator to check "+
+			"first (want %q).\ncard:\n%s", checkFirst, card)
+	}
+
+	for i := range store.rows {
+		if store.rows[i].ID == 4 {
+			store.rows[i].KickoffError = agents.KickoffNeverConnectedReason +
+				": request: dial tcp 192.0.2.61:18789: connect: connection refused"
+		}
+	}
+	card = getOwed(t, s, h, "/ui/agents/4/card").Body.String()
+	if !strings.Contains(card, "re-sending cannot pay for the task twice") || strings.Contains(card, checkFirst) {
+		t.Errorf("a failure that proves nothing was sent does not say re-sending is safe.\ncard:\n%s", card)
+	}
+}
+
+// TestBothTiersReportAFailedKickoffForTheSameRow is the relationship guard for the
+// round-0 visibility fix: the card badge and the wire boolean agree, per agent, and
+// the failure TEXT reaches both tiers with the note scrubbed out.
+//
+// 🔴 WHY IT IS NEEDED: the deliverer stamps kicked_off BEFORE the paid turn, so a
+// failed turn turns "kickoff owed" OFF on both tiers; before this signal the
+// failure was in kickoff_error only, which no page rendered.
+func TestBothTiersReportAFailedKickoffForTheSameRow(t *testing.T) {
+	s, h, _ := owedServer(t)
+	listMarkup := getOwed(t, s, h, "/ui/agents").Body.String()
+	cards := map[string]string{}
+	for _, a := range owedFixtureRows() {
+		marker := `href="/agents/` + a.Name + `"`
+		i := strings.Index(listMarkup, marker)
+		if i < 0 {
+			t.Fatalf("no card for %q", a.Name)
+		}
+		rest := listMarkup[i:]
+		if j := strings.Index(rest, "</article>"); j >= 0 {
+			rest = rest[:j]
+		}
+		cards[a.Name] = rest
+	}
+	var wire []agentJSON
+	body := getOwed(t, s, h, "/api/agents").Body.Bytes()
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("decode GET /api/agents: %v\nbody: %s", err, body)
+	}
+	byName := map[string]agentJSON{}
+	for _, a := range wire {
+		byName[a.Name] = a
+	}
+
+	wantFailed := map[string]bool{"owed-running": false, "delivered": false, "no-note": false, "failed-running": true}
+	failedCards := 0
+	for name, want := range wantFailed {
+		card, row := cards[name], byName[name]
+		gotBadge := strings.Contains(card, "data-kickoff-failed")
+		if gotBadge {
+			failedCards++
+		}
+		if gotBadge != want || row.KickoffFailed != want {
+			t.Errorf("%s: card badge = %t, wire kickoffFailed = %t, want both %t", name, gotBadge,
+				row.KickoffFailed, want)
+		}
+		if row.KickoffFailed && row.KickoffOwed {
+			t.Errorf("%s reports kickoffFailed AND kickoffOwed on the wire", name)
+		}
+	}
+	if failedCards != 1 {
+		t.Errorf("found %d failed-badged cards, want 1 — zero would mean the extraction "+
+			"matched nothing", failedCards)
+	}
+
+	// The failure text, scrubbed, on both tiers.
+	wantText := failedKickoffErrorPrefix + agents.NoteWithheld + failedKickoffErrorSuffix
+	if got := byName["failed-running"].KickoffError; got != wantText {
+		t.Errorf("wire kickoffError = %q, want the scrubbed %q", got, wantText)
+	}
+	if !strings.Contains(cards["failed-running"], "echoed input "+agents.NoteWithheld+" rejected-mq58") {
+		t.Errorf("the failed card does not show the scrubbed error text %q.\ncard:\n%s",
+			wantText, cards["failed-running"])
+	}
+	if got := byName["failed-running"].ErrorMessage; got != "earlier verdict, last send error: "+agents.NoteWithheld {
+		t.Errorf("wire errorMessage = %q, want it scrubbed of the note", got)
+	}
+	single := getOwed(t, s, h, "/ui/agents/4/card").Body.String()
+	if !strings.Contains(single, "data-kickoff-failed") || !strings.Contains(single, "rejected-mq58") {
+		t.Errorf("the single-card re-render of a failed kickoff drops the badge or its text:\n%s", single)
+	}
 }

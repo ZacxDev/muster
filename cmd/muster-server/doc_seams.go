@@ -22,6 +22,38 @@ package main
 //    AND api.Gateway IS NIL UNLESS MUSTER_AGENT_GATEWAY NAMES A RUNTIME. BOTH
 //    HALVES OF THIS SEAM NOW HAVE AN IMPLEMENTATION; NEITHER IS ON BY DEFAULT.
 //
+//	✅ CURRENT STATE, READ THIS BEFORE ANYTHING BELOW — the rest of this entry is
+//	  history kept because its argument is what the wiring is built on, and several
+//	  paragraphs in it are now marked [WAS]. A KICKOFF IS DELIVERED: with
+//	  MUSTER_AGENT_GATEWAY naming a runtime, buildKickoffDeliverer builds
+//	  internal/agentkickoff over the same adapter and gateway, and
+//	  startBackgroundLoops runs it. Every agentkickoff.DefaultInterval it drives
+//	  agents.DecideReconcile over rows this deployment OWNS (stored namespace ==
+//	  the configured prefix + name) that hold a pending note and were NEVER kicked
+//	  off; for a ready instance it takes the per-agent claim
+//	  (agents.Store.ClaimKickoff), re-reads the row, stamps KickedOff and the
+//	  recipient BEFORE the turn, and sends the note through the gateway into the
+//	  agent's latest chat session — Resolve (address + bearer, no connection to the
+//	  runtime) before the stamp, Send after it; together they are Gateway.Chat. A failed or EMPTY turn is recorded in
+//	  agents.kickoff_error and never re-run — and (PR #37 review round 0) SURFACED:
+//	  agents.KickoffFailed drives a "kickoff failed" card badge with the scrubbed
+//	  error text and a remedy (PR #37 round 1: "re-send" only when nothing was sent,
+//	  otherwise "check whether the agent is already working first"), and `kickoffFailed` on
+//	  GET /api/agents; a turn cut off by shutdown is recorded as such and
+//	  app.shutdown waits (bounded) for that record before the pool closes. A
+//	  pre-send failure is retried until
+//	  agents.ProvisioningStuckTimeout, then the row is errored with the last send
+//	  failure appended. agentprovision.KickoffDeliveryWired is true, so a dispatch
+//	  is refused ONLY when no gateway is named.
+//	  NOT DELIVERED BY IT, deliberately: re-sends to a kicked-off row whose
+//	  recipient died (agents.ActionResendKickoff / ActionErrorKickoffLost) — the
+//	  deliverer never acts on a kicked-off row, so that half of the table still has
+//	  no driver.
+//	  NOT VERIFIED IN-REPO: a delivered first turn against a muster-provisioned agent
+//	  on a real cluster. internal/agentkickoff's seam test runs the real adapter,
+//	  deliverer and gateway against a fake runtime over HTTP; the cluster turn is the
+//	  closing condition at the foot of this entry.
+//
 //	WHAT CHANGED, AND WHAT ITS MECHANICAL SIGNAL WAS: internal/agentprovision
 //	  adapts provision.Provisioner to api.Provisioner's seven LIFECYCLE methods,
 //	  and provisioner.go constructs a driver behind MUSTER_AGENT_PROVISIONER
@@ -37,8 +69,9 @@ package main
 //	  the lifecycle adapter holds, behind MUSTER_AGENT_GATEWAY (none | hooks-sha256)
 //	  plus MUSTER_AGENT_GATEWAY_MODEL. Naming a runtime with no driver is refused at
 //	  boot, because this binary's only source of an instance's address is a driver.
-//	🔴 WHAT THAT DOES *NOT* CLOSE, AND IT IS THE HALF THAT MATTERS FOR A KICKOFF:
-//	  NOTHING CALLS THE GATEWAY ON THE DISPATCH PATH. The two CHAT ROUTES stop
+//	🔴 [WAS, until internal/agentkickoff] WHAT THAT DOES *NOT* CLOSE, AND IT IS
+//	  THE HALF THAT MATTERS FOR A KICKOFF: NOTHING CALLS THE GATEWAY ON THE DISPATCH
+//	  PATH. The two CHAT ROUTES stop
 //	  REFUSING — which is not the same as reachable, see below; the kickoff is not a
 //	  route at all. A dispatch with kickoff=true still CREATES the
 //	  instance and does not deliver the first message — the note stays in
@@ -52,7 +85,8 @@ package main
 //	  today — such a dispatch is now REFUSED instead: agentprovision.Adapter.Dispatch
 //	  creates nothing, mints no token, marks the row `error` with the cause and the
 //	  remedy, and returns agentprovision.ErrKickoffUndeliverable.
-//	  🔴 AND THAT REFUSAL NOW FIRES ON *EVERY* DEPLOYMENT, NOT ONLY THE UNSET ONE.
+//	  🔴 [WAS, until internal/agentkickoff] AND THAT REFUSAL NOW FIRES ON *EVERY*
+//	  DEPLOYMENT, NOT ONLY THE UNSET ONE.
 //	  THIS PARAGRAPH SAID "buildAgentPlane passes `gw != nil` into the adapter, so the
 //	  refusal keys on the RESOLVED configuration and a deployment that has named a
 //	  runtime is unchanged", AND THAT WAS THE DEFECT RATHER THAN THE DESIGN. `gw !=
@@ -64,12 +98,13 @@ package main
 //	  the pod-that-was-never-told-what-to-do this entry describes. buildAgentPlane now
 //	  passes kickoffDeliverable(gw, agentprovision.KickoffDeliveryWired) — both
 //	  conjuncts — and internal/modulegate's
-//	  TestNothingDeliversAKickoffAndThisModuleSaysSo fails when that constant and the
+//	  TestKickoffDeliveryLedgerAgreesWithTheModule fails when that constant and the
 //	  module's own call graph disagree, in either direction, so the call site named in
 //	  the CLOSING CONDITION below cannot land without flipping it.
 //	  ⚠ THE REFUSAL IS ON THE CREATE-WITH-KICKOFF PATH ONLY. Start is deliberately
-//	  still allowed and still records the non-delivery in agents.kickoff_error, where
-//	  it is honest because an instance exists; refusing it would have removed
+//	  still allowed and, with no gateway, still records the non-delivery in
+//	  agents.kickoff_error, where it is honest because an instance exists (with a
+//	  gateway it records nothing and the deliverer pays the turn); refusing it would have removed
 //	  restart, eviction-recovery and the save-then-start-later route this entry's own
 //	  Dispatch doc calls the supported one. See Adapter.Start.
 //	  ✅ THE REFUSAL REACHES THE HTTP RESPONSE NOW, AND THE CLOSING CONDITION THAT
@@ -261,12 +296,10 @@ package main
 //	      against the mutation results in its own description. Neither blocker was a
 //	      defect in the chat transport, and neither was introduced by the change that
 //	      wired it.
-//	  🔴 AND NOTHING ESCALATES THAT YET. agents.DecideReconcile already has the
-//	  decision table (ActionRetryKickoff, then ActionError past
-//	  ProvisioningStuckTimeout) and its own header records that NO loop drives it,
-//	  so the undelivered kickoff does not become a red card on its own. Until a
-//	  kickoff delivery or that loop lands, the kickoff-error field is the only place
-//	  that says so.
+//	  ✅ [WAS: "AND NOTHING ESCALATES THAT YET … NO loop drives it"] internal/agentkickoff
+//	  drives agents.DecideReconcile for owed rows and TAKES its ActionError past
+//	  ProvisioningStuckTimeout, so an undelivered kickoff now becomes `error` on its
+//	  own — a red status dot, with the last send failure in error_message.
 //	CLOSING CONDITION FOR THE REMAINDER: a pull request in which a dispatch with
 //	  kickoff=true delivers its note through api.Extensions.Gateway — or the
 //	  reconcile loop that escalates a missing one. ⚠ THE CALL SITE IS ONE OF THREE
@@ -285,6 +318,15 @@ package main
 //	  is still owed; whoever writes it gets both.
 //	WHO CHECKS IT: the reviewer of that pull request, against agents.reconcile.go's
 //	  header and against a dispatched agent's kickoff_error being empty.
+//	✅ THE CALL SITE IS internal/agentkickoff; THE CONDITION'S OWN EVIDENCE IS STILL
+//	  OWED. It asked for a DELIVERY, not a call, and a delivery is a fact about a
+//	  cluster. What closes it now is mechanical and is the operator's: on a real cluster,
+//	  with MUSTER_AGENT_GATEWAY=hooks-sha256 live, dispatch an agent with a kickoff
+//	  and read its row once the pod is ready —
+//	    SELECT kicked_off, kickoff_error, kickoff_attempts, kickoff_pod
+//	      FROM agents WHERE name = '<agent>';
+//	  — want kicked_off=t, kickoff_error='', kickoff_attempts=1, and an assistant
+//	  reply to the pending note in that agent's chat transcript.
 //
 //	The original entry follows, kept rather than rewritten because its argument is
 //	what the wrappers, the banner and the readiness defect are all still built on.

@@ -336,11 +336,10 @@ func fixtureSpecConfig() agentspec.Config {
 // always did, and they now collectively double as a broad control that the refusal
 // does NOT fire on the arm that can deliver.
 //
-// ⚠ THIS SAID "for a process that HAS a gateway", AND THAT EQUATION IS WRONG. A
-// gateway is necessary and not sufficient: delivery also needs a call site, and
-// there is none, so NO deployment is on this arm today — see
-// [KickoffDeliveryWired]. The arm is still the adapter's contract and still has to
-// be tested; what it is not is a description of any deployment.
+// ⚠ THIS SAID "for a process that HAS a gateway", WHICH WAS WRONG WHILE NOTHING
+// CALLED ONE — no deployment was on this arm. With internal/agentkickoff wired
+// ([KickoffDeliveryWired] true) it is the arm of every deployment that names a
+// gateway.
 //
 // ⚠ SO A NEW Dispatch TEST GETS THE DELIVERABLE PATH UNLESS IT ASKS OTHERWISE. Use
 // newAdapterWithNoKickoffDelivery for a deployment's configuration; it is named
@@ -350,11 +349,11 @@ func newAdapter(t *testing.T, tune func(*recordingStore, *flakyDriver)) (*Adapte
 	return newAdapterFor(t, true, tune)
 }
 
-// newAdapterWithNoKickoffDelivery builds an adapter for THE DEPLOYED CONFIGURATION
-// THIS REFUSAL EXISTS FOR — every one of them, as it turns out: a provisioner wired
-// and nothing in the process that could hand a note to a model gateway, because
-// either MUSTER_AGENT_GATEWAY is unset (buildGateway returns nil) or no production
-// call site invokes the gateway it built ([KickoffDeliveryWired]).
+// newAdapterWithNoKickoffDelivery builds an adapter for THE CONFIGURATION THIS
+// REFUSAL EXISTS FOR: a provisioner wired and nothing in the process that could hand
+// a note to a model gateway, because MUSTER_AGENT_GATEWAY is unset (buildGateway
+// returns nil). (Before internal/agentkickoff it was every deployment, because no
+// call site invoked a gateway that was built — see [KickoffDeliveryWired].)
 func newAdapterWithNoKickoffDelivery(t *testing.T, tune func(*recordingStore, *flakyDriver)) (*Adapter, *recordingStore, *flakyDriver) {
 	t.Helper()
 	return newAdapterFor(t, false, tune)
@@ -438,6 +437,13 @@ func seedInstance(t *testing.T, a *Adapter, store *recordingStore, driver *flaky
 // wired to nothing would record no calls at all, and "SetKickedOff was not
 // called" would pass over it perfectly.
 func TestTheAdapterNeverClaimsAKickoffItCannotDeliver(t *testing.T) {
+	// 🔴 EVERY CASE RUNS ON BOTH ARMS. The adapter never claims a delivery on
+	// EITHER; what differs is whether an owed first turn is RECORDED as undelivered.
+	// With no deliverer in the process it must be (the row is the only place that
+	// says so). With one, it must NOT be: internal/agentkickoff pays that turn, and
+	// a "NOT delivered" written now would be a false record the delivery then has to
+	// overwrite. Dispatch(kickoff=true) on the undeliverable arm is the refusal, which
+	// writes `error` rather than kickoff_error and is pinned in kickoff_refusal_test.go.
 	cases := []struct {
 		name string
 		// kickedOff is the agent's stored flag before the call.
@@ -446,39 +452,37 @@ func TestTheAdapterNeverClaimsAKickoffItCannotDeliver(t *testing.T) {
 		// operate on one that already exists.
 		live bool
 		run  func(*Adapter) error
-		// wantKickoffErrRecorded is whether this path owes a first turn and must
-		// therefore say so on the row.
-		wantKickoffErrRecorded bool
+		// recordedWithoutDeliverer / recordedWithDeliverer: whether this path writes
+		// kickoff_error on each arm.
+		recordedWithoutDeliverer, recordedWithDeliverer bool
+		// refusedWithoutDeliverer: the path returns ErrKickoffUndeliverable there.
+		refusedWithoutDeliverer bool
 	}{
 		{
-			name:                   "Dispatch with kickoff",
-			run:                    func(a *Adapter) error { return a.Dispatch(fixtureAgentID, true) },
-			wantKickoffErrRecorded: true,
+			name:                    "Dispatch with kickoff",
+			run:                     func(a *Adapter) error { return a.Dispatch(fixtureAgentID, true) },
+			refusedWithoutDeliverer: true,
 		},
 		{
 			name: "Dispatch without kickoff",
 			run:  func(a *Adapter) error { return a.Dispatch(fixtureAgentID, false) },
-			// Nothing is owed, so nothing is recorded — and SetKickedOff must
-			// still not be called, which is the half this case exists for.
-			wantKickoffErrRecorded: false,
 		},
 		{
-			name:                   "Start of an agent that never got its note",
-			live:                   true,
-			run:                    func(a *Adapter) error { return a.Start(fixtureAgentID) },
-			wantKickoffErrRecorded: true,
+			name:                     "Start of an agent that never got its note",
+			live:                     true,
+			run:                      func(a *Adapter) error { return a.Start(fixtureAgentID) },
+			recordedWithoutDeliverer: true,
 		},
 		{
-			name:                   "Start of a never-provisioned agent",
-			run:                    func(a *Adapter) error { return a.Start(fixtureAgentID) },
-			wantKickoffErrRecorded: true,
+			name:                     "Start of a never-provisioned agent",
+			run:                      func(a *Adapter) error { return a.Start(fixtureAgentID) },
+			recordedWithoutDeliverer: true,
 		},
 		{
-			name:                   "Start of an already-kicked-off agent",
-			kickedOff:              true,
-			live:                   true,
-			run:                    func(a *Adapter) error { return a.Start(fixtureAgentID) },
-			wantKickoffErrRecorded: false,
+			name:      "Start of an already-kicked-off agent",
+			kickedOff: true,
+			live:      true,
+			run:       func(a *Adapter) error { return a.Start(fixtureAgentID) },
 		},
 		{
 			name: "Stop",
@@ -492,51 +496,60 @@ func TestTheAdapterNeverClaimsAKickoffItCannotDeliver(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			a, store, driver := newAdapter(t, func(s *recordingStore, _ *flakyDriver) {
-				ag := fixtureAgent()
-				ag.KickedOff = tc.kickedOff
-				s.agent = ag
+	for _, deliverable := range []bool{true, false} {
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("%s/deliverable=%t", tc.name, deliverable), func(t *testing.T) {
+				a, store, driver := newAdapterFor(t, deliverable, func(s *recordingStore, _ *flakyDriver) {
+					ag := fixtureAgent()
+					ag.KickedOff = tc.kickedOff
+					s.agent = ag
+				})
+				if tc.live {
+					seedInstance(t, a, store, driver)
+				}
+				err := tc.run(a)
+				if !deliverable && tc.refusedWithoutDeliverer {
+					if !errors.Is(err, ErrKickoffUndeliverable) {
+						t.Fatalf("%s with no deliverer: want the refusal, got %v", tc.name, err)
+					}
+				} else if err != nil {
+					t.Fatalf("%s: %v", tc.name, err)
+				}
+
+				// POSITIVE CONTROL: the adapter must have talked to the store at all.
+				if len(store.calls) == 0 {
+					t.Fatalf("positive control FAILED: %s recorded ZERO store calls, so the "+
+						"absence assertion below would pass over a fake wired to nothing", tc.name)
+				}
+
+				if store.called("SetKickedOff") {
+					t.Errorf("%s called SetKickedOff.\n"+
+						"    This package has NO gateway, so that flag would claim the kickoff "+
+						"message was handed to one. agents.DecideReconcile never retries a "+
+						"kicked-off agent, so the false flag is permanent: the first turn never "+
+						"happens and nothing ever notices. Delivery is internal/agentkickoff's.\n"+
+						"  store calls: %s", tc.name, store.transcript())
+				}
+				// RecordKickoffDelivery stamps WHICH instance received the message. It
+				// is the same lie with a witness attached.
+				if store.called("RecordKickoffDelivery") {
+					t.Errorf("%s called RecordKickoffDelivery, which stamps the instance that "+
+						"received a kickoff this package cannot send.\n  store calls: %s",
+						tc.name, store.transcript())
+				}
+
+				want := tc.recordedWithoutDeliverer
+				if deliverable {
+					want = tc.recordedWithDeliverer
+				}
+				if got := store.called("SetKickoffError"); got != want {
+					t.Errorf("%s (deliverable=%t) recorded the undelivered kickoff = %t, want %t.\n"+
+						"    With no deliverer an owed first turn must be said on the row; with one, "+
+						"a NOT-delivered record is false until a delivery actually fails.\n"+
+						"  store calls: %s", tc.name, deliverable, got, want, store.transcript())
+				}
 			})
-			if tc.live {
-				seedInstance(t, a, store, driver)
-			}
-			if err := tc.run(a); err != nil {
-				t.Fatalf("%s: %v", tc.name, err)
-			}
-
-			// POSITIVE CONTROL: the adapter must have talked to the store at all.
-			if len(store.calls) == 0 {
-				t.Fatalf("positive control FAILED: %s recorded ZERO store calls, so the "+
-					"absence assertion below would pass over a fake wired to nothing", tc.name)
-			}
-
-			if store.called("SetKickedOff") {
-				t.Errorf("%s called SetKickedOff.\n"+
-					"    This package has NO gateway, so that flag would claim the kickoff "+
-					"message was handed to one. agents.DecideReconcile never retries a "+
-					"kicked-off agent, so the false flag is permanent: the first turn never "+
-					"happens and nothing ever notices.\n"+
-					"    Record the non-delivery with SetKickoffError instead — see "+
-					"UndeliveredKickoffReason.\n"+
-					"  store calls: %s", tc.name, store.transcript())
-			}
-			// RecordKickoffDelivery stamps WHICH instance received the message. It
-			// is the same lie with a witness attached.
-			if store.called("RecordKickoffDelivery") {
-				t.Errorf("%s called RecordKickoffDelivery, which stamps the instance that "+
-					"received a kickoff this build cannot send.\n  store calls: %s",
-					tc.name, store.transcript())
-			}
-
-			if got := store.called("SetKickoffError"); got != tc.wantKickoffErrRecorded {
-				t.Errorf("%s recorded the undelivered kickoff = %t, want %t.\n"+
-					"    A path that leaves a first turn owed must say so on the row, or the "+
-					"card sits in `provisioning` with the reason written nowhere.\n"+
-					"  store calls: %s", tc.name, got, tc.wantKickoffErrRecorded, store.transcript())
-			}
-		})
+		}
 	}
 }
 
@@ -550,21 +563,25 @@ func TestTheAdapterNeverClaimsAKickoffItCannotDeliver(t *testing.T) {
 // A cosmetic reword therefore fails this test on purpose; that is the price of a
 // machine-checkable claim.
 func TestTheRecordedNonDeliveryNamesTheBuildRatherThanTheAgent(t *testing.T) {
-	const want = "kickoff NOT delivered: this build wires a lifecycle-only agent provisioner " +
-		"(internal/agentprovision) and no api.Gateway, so nothing can hand the pending note to " +
-		"the instance's model gateway. The instance WAS created and the note is still in " +
-		"agents.pending_note. This is a declared seam, not a failure of this agent: see " +
-		"cmd/muster-server/doc_seams.go entry 1."
+	const want = "kickoff NOT delivered: this deployment names no agent gateway " +
+		"(MUSTER_AGENT_GATEWAY), so nothing can hand the pending note to the instance's model " +
+		"gateway. The instance WAS created and the note is still in agents.pending_note. Name a " +
+		"gateway, restart muster and Start this agent again: the kickoff deliverer hands the note " +
+		"over once the instance is ready. This is a property of the deployment, not a failure of " +
+		"this agent: see cmd/muster-server/doc_seams.go entry 1."
 	if UndeliveredKickoffReason != want {
 		t.Errorf("UndeliveredKickoffReason changed.\n got: %q\nwant: %q", UndeliveredKickoffReason, want)
 	}
 
 	// And it must be what actually reaches the store, not just what the constant
 	// says — a handler that wrote its own sentence would leave this constant
-	// correct and the card wrong.
-	a, store, _ := newAdapter(t, nil)
-	if err := a.Dispatch(fixtureAgentID, true); err != nil {
-		t.Fatalf("Dispatch: %v", err)
+	// correct and the card wrong. ⚠ It is written by START on a deployment with no
+	// gateway: that is the one path that still creates an instance owing a turn
+	// nothing can deliver (a Dispatch there is refused; with a gateway, the
+	// deliverer pays it and nothing is recorded).
+	a, store, _ := newAdapterWithNoKickoffDelivery(t, nil)
+	if err := a.Start(fixtureAgentID); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
 	if !strings.Contains(store.transcript(), want) {
 		t.Errorf("the reason the adapter WROTE is not UndeliveredKickoffReason.\n  store calls: %s",

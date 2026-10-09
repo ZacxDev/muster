@@ -100,22 +100,31 @@ type Agent struct {
 	// internal/api's createAndDispatchAgent, and from then on only round-tripped
 	// by the store.
 	//
-	// 🔴 NOTHING DELIVERS IT, AND THIS COMMENT IS WHERE THAT STOPPED BEING
-	// HIDDEN. It read "kickoff message awaiting first start" — a sentence that
-	// asserts a delivery, in a field that at the time had no production reader at
-	// all: the write above, the SELECT/scan/INSERT in pgstore.go, and the column
-	// in migration 0001. "Awaiting" was doing the work of a mechanism that does
-	// not exist. agentprovision.KickoffDeliveryWired is `false` and is BOUND to a
-	// measurement of this module's call graph
-	// (modulegate.TestNothingDeliversAKickoffAndThisModuleSaysSo), so the honest
-	// statement is: an agent can hold one of these for ever.
+	// ✅ internal/agentkickoff DELIVERS IT. When the agent's instance is ready
+	// and the row has never been kicked off, that background loop sends this text
+	// as the agent's first turn through agentgateway.Gateway (Resolve, then Send,
+	// which together are Gateway.Chat) and stamps KickedOff BEFORE the Send. The text is KEPT after delivery rather than cleared: it is
+	// the task the agent was given, and a re-send after a lost recipient
+	// (ActionResendKickoff) would need it.
 	//
-	// [KickoffOwed] is now its one derived reader. It answers "is a first turn
+	// ⚠ THIS COMMENT ONCE SAID "NOTHING DELIVERS IT", which was true while
+	// agentprovision.KickoffDeliveryWired was false — the field had no production
+	// reader beyond the store. That constant is bound to a measurement of the
+	// module's call graph (modulegate.TestKickoffDeliveryLedgerAgreesWithTheModule),
+	// so it could not flip without a deliverer landing. On a deployment with no
+	// gateway a dispatch asking for a first turn is still refused, so a row there
+	// can still hold one of these for ever.
+	//
+	// [KickoffOwed] is its derived reader for the UI. It answers "is a first turn
 	// still owed" from this field together with KickedOff, and that BOOLEAN is
 	// what the agent card and the machine projection (api.agentJSON) report.
 	//
-	// 🔴 THE TEXT ITSELF NEVER LEAVES THE PROCESS, AND `json:"-"` IS THE WHOLE
-	// MECHANISM. It is operator-authored instruction text, this repository is
+	// 🔴 THE TEXT IS NEVER SERIALISED WITH THE ROW, AND `json:"-"` IS THE WHOLE
+	// MECHANISM. ⚠ This read "NEVER LEAVES THE PROCESS", which delivery made false
+	// by design: internal/agentkickoff sends it to the agent's own gateway and
+	// writes it to the agent's transcript as the first user message — the same two
+	// places any operator message goes. What stays true is that no projection of
+	// the ROW carries it. It is operator-authored instruction text, this repository is
 	// public, and the leak gate (tests/leakscan.py) is the standing reason. So the
 	// derived boolean is surfaced and the content is not — asserted both ways by
 	// agents.TestKickoffOwedTruthTable's sibling
@@ -132,12 +141,14 @@ type Agent struct {
 	CreatedAt    time.Time `json:"createdAt"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 
-	// --- kickoff DELIVERY provenance (migration 0020) ---
+	// --- kickoff DELIVERY provenance (internal/db/migrations/0001_init.sql) ---
 	//
 	// KickedOff answers "was the message handed to a ready gateway"; these answer
 	// "to WHICH container", which is the only way to tell a live agent still
 	// holding the message from one whose recipient the kernel killed. See
-	// kickoffLost (reconcile.go) and migration 0020 for the full rationale.
+	// kickoffLost (reconcile.go) for the full rationale. ⚠ This cited "migration
+	// 0020" (and the claim columns "migration 0022"): those are the upstream
+	// project's numbers. Every kickoff column here is in 0001_init.sql.
 
 	// KickoffPod is the provision.Instance.InstanceID that received the
 	// kickoff. Empty = unknown (a row predating these columns, or a delivery
@@ -278,13 +289,26 @@ type Store interface {
 	// An empty pod (unknown recipient) is written verbatim rather than skipped:
 	// leaving a DEAD pod's name stamped would make the agent read as permanently
 	// "lost" and burn its whole re-send budget against a recipient we never
-	// confirmed. Empty disables detection — no worse than pre-0020 behaviour.
+	// confirmed. Empty disables detection — no worse than a row with no provenance.
 	RecordKickoffDelivery(ctx context.Context, id int64, pod string, restarts int32) error
 	// SetKickoffError records the reason a kickoff SEND failed, without touching
 	// the agent's status: the pod may still be alive and mid-work (the 0.7.80
 	// model-timeout case), so this is evidence, not a verdict. The reconciler is
 	// what escalates a dead recipient to `error`.
 	SetKickoffError(ctx context.Context, id int64, msg string) error
+	// MarkKickoffStuck sets an owed row to `error` with errMsg (and clears
+	// last_output, as UpdateStatus does) ONLY if the row is still the one the
+	// caller judged stuck — updated_at exactly seenUpdatedAt, which every stamp,
+	// delivery record and status write moves — and no live kickoff claim. It
+	// reports whether the write applied.
+	//
+	// 🔴 IT IS CONDITIONAL BECAUSE THE VERDICT COMES FROM A LIST READ, AND THE ROW
+	// CAN MOVE BEFORE THE WRITE. A delivery that stamped it meanwhile has paid a
+	// turn; a Start meanwhile set it `provisioning` again (and bumped updated_at).
+	// An unconditional write turned either into an `error` card. A live claim means
+	// a delivery is past its own re-read and may be about to stamp. Pinned against
+	// real Postgres by agentkickoff's TestAStuckVerdictDoesNotOverwriteARowThatMoved.
+	MarkKickoffStuck(ctx context.Context, id int64, seenUpdatedAt time.Time, errMsg string) (bool, error)
 	// ClearKickoffDelivery forgets which pod received the kickoff, which disables
 	// restart-detection for this agent until the next delivery re-stamps it.
 	//
