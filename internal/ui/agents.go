@@ -30,7 +30,18 @@ type AgentCardView struct {
 	// composed in internal/api's cardViewIndexed from the stored row and arrives
 	// already decided.
 	KickoffOwed bool
-	Recent      []string
+	// KickoffFailed is agents.KickoffFailed: the first turn was handed to a gateway
+	// (the row is stamped kicked_off, so KickoffOwed is false) and it did not
+	// complete. It renders as a "kickoff failed" badge beside the status dot plus the
+	// failure text and the remedy — see kickoffFailedBadge and kickoffFailureDetail.
+	// Mutually exclusive with KickoffOwed by construction.
+	KickoffFailed bool
+	// KickoffFailure is the text to show for a failed kickoff:
+	// agents.KickoffFailureText, composed in internal/api's cardViewIndexed with the
+	// pending note already SCRUBBED out (agents.ScrubNote). This package never sees
+	// the note and must not be handed raw kickoff_error.
+	KickoffFailure string
+	Recent         []string
 	// LazyRecent makes the card lazy-load its recent-log preview from
 	// /ui/agents/{id}/recent (htmx) instead of receiving Recent inline — so the
 	// agents-list path makes no per-agent k8s call. Set for running agents.
@@ -270,6 +281,8 @@ func agentCard(a AgentCardView) g.Node {
 				// on the first tick. As a sibling it survives, and the card list's
 				// agents:changed re-render is what keeps it current.
 				g.If(a.KickoffOwed, kickoffOwedBadge()),
+				// Same placement, same reason: a sibling of the polling span.
+				g.If(a.KickoffFailed, kickoffFailedBadge()),
 				Span(
 					Class("mr-auto break-all text-base font-semibold leading-tight text-slate-50 group-hover:text-emerald-300"),
 					// markdownPlain, exactly as agentTitle on the detail page does. A
@@ -282,6 +295,7 @@ func agentCard(a AgentCardView) g.Node {
 				),
 				g.If(a.Repo != "", chip("repo", a.Repo)),
 			),
+			g.If(a.KickoffFailed, kickoffFailureDetail(a.KickoffFailure)),
 			agentRecentSlot(a),
 		),
 		// Card footer (OUTSIDE the nav anchor so its task-badge link doesn't nest
@@ -444,6 +458,51 @@ func kickoffOwedBadge() g.Node {
 		g.Attr("aria-label", "Kickoff owed: this agent's first message was never delivered"),
 		Class("inline-flex items-center rounded-full bg-amber-500/15 px-2.5 py-1 text-xs font-semibold text-amber-300 ring-1 ring-inset ring-amber-500/30"),
 		g.Text("kickoff owed"),
+	)
+}
+
+// KickoffFailedRemedy is the fixed remedy line under a failed kickoff. It names
+// the ONE way to re-send, because nothing re-sends automatically: the deliverer
+// stamps kicked_off before the paid turn so a turn is never run twice, and a turn
+// that fails after the stamp is not retried (an operator decision).
+const KickoffFailedRemedy = "Not retried automatically, so it is never paid twice. " +
+	"To re-send, open this agent's chat and send the task again."
+
+// kickoffFailedBadge is the "kickoff failed" badge: the first turn was handed to a
+// gateway and did not complete. It renders BESIDE the status dot, exactly like
+// kickoffOwedBadge, and for the same reasons — additive, never a status value,
+// never inside cardStatusIcon's polling span (TestTheKickoffBadgesAreNotInsideThePollingStatusSpan).
+//
+// 🔴 IT EXISTS BECAUSE THE OWED BADGE GOES AWAY ON THE STAMP. Before it, a turn
+// that failed after the stamp turned "kickoff owed" off and left the card reading
+// healthy over an agent that was never told its task.
+//
+// The data attribute is the handle a test parses — see kickoffOwedBadge.
+func kickoffFailedBadge() g.Node {
+	return Span(
+		g.Attr("data-kickoff-failed", ""),
+		g.Attr("title", "This agent's first message was handed to its gateway and the turn did not complete"),
+		g.Attr("aria-label", "Kickoff failed: this agent's first turn did not complete and is not retried automatically"),
+		Class("inline-flex items-center rounded-full bg-rose-500/15 px-2.5 py-1 text-xs font-semibold text-rose-300 ring-1 ring-inset ring-rose-500/30"),
+		g.Text("kickoff failed"),
+	)
+}
+
+// kickoffFailureDetail renders the recorded failure and the remedy under the
+// card header.
+//
+// 🔴 msg ARRIVES SCRUBBED. It is agents.KickoffFailureText, which removes any run
+// of the pending note — a failed turn's error can quote the runtime's response
+// body, and a runtime that echoes its request would otherwise publish the note.
+// gomponents escapes it as text, so a body carrying markup renders inert.
+func kickoffFailureDetail(msg string) g.Node {
+	return P(
+		g.Attr("data-kickoff-failure", ""),
+		Class("break-words rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-200 ring-1 ring-inset ring-rose-500/20"),
+		Span(Class("font-semibold"), g.Text("Kickoff failed: ")),
+		g.Text(msg),
+		g.Text(" "),
+		Span(g.Attr("data-kickoff-remedy", ""), Class("font-semibold"), g.Text(KickoffFailedRemedy)),
 	)
 }
 

@@ -38,6 +38,16 @@
 // without spending money (no token, a lost claim, no chat session) is checked
 // before the stamp, and is retried.
 //
+// 🔴 AND THAT UNRETRIED FAILURE IS VISIBLE, NOT JUST RECORDED (an operator
+// decision). The stamp clears the "kickoff owed" badge, so before this a failed
+// turn left a card reading healthy with the failure only in a column no page
+// showed. agents.KickoffFailed (kicked_off AND kickoff_error set) now drives a
+// "kickoff failed" badge carrying the error text and the remedy — re-send the task
+// by hand through the agent's chat — and `kickoffFailed` on GET /api/agents. A
+// turn cut off by THIS process shutting down is recorded as such
+// ([ShutdownCancelledReason]), and the server's shutdown waits for that record
+// ([Deliverer.Done]) before it closes the pool.
+//
 // 🔴 IT ACTS ONLY ON ROWS THIS DEPLOYMENT OWNS, AND NEVER ON A KICKED-OFF ROW. The
 // agents table can hold rows another system wrote (a namespace the configured
 // prefix did not produce); escalating those to `error` would be this process
@@ -131,17 +141,19 @@ type Config struct {
 
 // Deliverer delivers owed first turns. Build it with [New].
 type Deliverer struct {
-	store    agents.Store
-	insts    InstanceLister
-	gw       Gateway
-	prefix   string
-	owner    string
-	log      *log.Logger
-	now      func() time.Time
-	turn     time.Duration
-	mu       sync.Mutex
-	inFlight map[int64]bool
-	wg       sync.WaitGroup
+	store  agents.Store
+	insts  InstanceLister
+	gw     Gateway
+	prefix string
+	owner  string
+	log    *log.Logger
+	now    func() time.Time
+	turn   time.Duration
+	wg     sync.WaitGroup
+	// done closes when [Deliverer.Run] has returned, which is AFTER every
+	// delivery it started has recorded its outcome. See [Deliverer.Done].
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 // New validates the configuration and builds the deliverer.
@@ -157,15 +169,15 @@ func New(cfg Config) (*Deliverer, error) {
 			"gateway delivers nothing, which is the defect this package exists to close)")
 	}
 	d := &Deliverer{
-		store:    cfg.Store,
-		insts:    cfg.Instances,
-		gw:       cfg.Gateway,
-		prefix:   agents.ResolveNamespacePrefix(cfg.NamespacePrefix),
-		owner:    cfg.Owner,
-		log:      cfg.Logger,
-		now:      cfg.Now,
-		turn:     cfg.TurnTimeout,
-		inFlight: map[int64]bool{},
+		store:  cfg.Store,
+		insts:  cfg.Instances,
+		gw:     cfg.Gateway,
+		prefix: agents.ResolveNamespacePrefix(cfg.NamespacePrefix),
+		owner:  cfg.Owner,
+		log:    cfg.Logger,
+		now:    cfg.Now,
+		turn:   cfg.TurnTimeout,
+		done:   make(chan struct{}),
 	}
 	if d.owner == "" {
 		d.owner = defaultOwner()
@@ -191,11 +203,15 @@ func defaultOwner() string {
 	return host + "/" + hex.EncodeToString(buf)
 }
 
-// Run ticks every interval until ctx is cancelled, then waits for in-flight turns.
+// Run ticks every interval until ctx is cancelled, then waits for in-flight turns
+// and closes [Deliverer.Done].
 func (d *Deliverer) Run(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = DefaultInterval
 	}
+	// Deferred FIRST so it runs LAST: Done closes only once d.Wait has returned,
+	// i.e. once every turn this Run started has written its outcome.
+	defer d.doneOnce.Do(func() { close(d.done) })
 	defer d.Wait()
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -213,6 +229,23 @@ func (d *Deliverer) Run(ctx context.Context, interval time.Duration) {
 
 // Wait blocks until every delivery started by [Deliverer.Tick] has finished.
 func (d *Deliverer) Wait() { d.wg.Wait() }
+
+// Done is closed once [Deliverer.Run] has returned — after its ctx was cancelled
+// AND every turn it started has recorded its outcome.
+//
+// 🔴 THE PROCESS'S SHUTDOWN WAITS ON THIS, AND WITHOUT THAT WAIT A TURN CANCELLED
+// BY A REDEPLOY WAS LOST SILENTLY. Run's ctx is the process's signal context, so
+// SIGTERM cancels an in-flight turn AFTER the row was stamped kicked_off. The
+// failure is then written on a DETACHED budget (bookkeeping), but main used to
+// return straight into pool.Close and exit without waiting for Run's goroutine:
+// the stamp had landed, the record had not, and the row read as a delivered
+// kickoff with no error. cmd/muster-server's shutdown waits on this channel,
+// bounded, before the pool closes.
+//
+// It is a channel rather than a second wg.Wait because a WaitGroup may not be
+// waited on while Tick can still Add to it from Run's goroutine; Run alone both
+// Adds and Waits, so only Run may say it is finished.
+func (d *Deliverer) Done() <-chan struct{} { return d.done }
 
 // owned reports whether a row was written by THIS deployment: its stored
 // namespace is exactly the one the configured prefix produces for its name.
@@ -261,9 +294,6 @@ func (d *Deliverer) Tick(ctx context.Context) error {
 	idx := agents.InstanceIndex(insts)
 	now := d.now()
 	for _, a := range owed {
-		if d.isInFlight(a.ID) {
-			continue
-		}
 		inst := idx[a.Name]
 		action, _ := agents.DecideReconcile(a, inst, now)
 		switch action {
@@ -281,28 +311,27 @@ func (d *Deliverer) Tick(ctx context.Context) error {
 	return nil
 }
 
-func (d *Deliverer) isInFlight(id int64) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.inFlight[id]
-}
-
+// startDelivery runs one delivery in the background (see [Deliverer.Wait]).
+//
+// 🔴 THERE IS NO IN-PROCESS IN-FLIGHT SET, AND THE PER-AGENT CLAIM IS WHY NONE IS
+// NEEDED. A tick that finds a row still owed while an earlier tick's delivery of
+// it is running starts a second goroutine, and that goroutine does nothing:
+//
+//   - BEFORE the stamp, the first goroutine holds agents.Store.ClaimKickoff's
+//     claim. ClaimKickoff wins only when the claim is unheld or EXPIRED — it does
+//     not special-case its own owner — and the claim lives for the whole turn plus
+//     claimMargin, so the second goroutine's claim LOSES and it returns.
+//   - AFTER the stamp, the row is kicked_off and owesFirstTurn excludes it from the
+//     tick's list, and a goroutine already past the list re-reads under its own
+//     claim and finds it kicked off.
+//
+// An in-process map duplicated that guarantee for one process only, and was a
+// second mechanism to keep correct. Pinned against the REAL claim SQL by
+// TestASecondTickInTheSameProcessDoesNotRunASecondTurn.
 func (d *Deliverer) startDelivery(ctx context.Context, a agents.Agent, inst provision.Instance) {
-	d.mu.Lock()
-	if d.inFlight[a.ID] {
-		d.mu.Unlock()
-		return
-	}
-	d.inFlight[a.ID] = true
-	d.mu.Unlock()
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
-		defer func() {
-			d.mu.Lock()
-			delete(d.inFlight, a.ID)
-			d.mu.Unlock()
-		}()
 		d.deliver(ctx, a, inst)
 	}()
 }
@@ -370,14 +399,6 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		return
 	}
 
-	// Defence in depth on the budget: a row that has somehow been delivered to
-	// MaxKickoffAttempts times while still reading never-kicked-off is not paid
-	// again.
-	if fresh.KickoffAttempts >= agents.MaxKickoffAttempts {
-		d.failBudget(fresh)
-		return
-	}
-
 	// The transcript session is opened BEFORE the stamp: failing to open one costs
 	// nothing and is retried, whereas after the stamp it would strand the turn.
 	sess, err := d.store.LatestOrCreateSession(ctx, fresh.ID, fresh.Name)
@@ -391,11 +412,12 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		d.recordError(fresh, "kickoff not sent: could not stamp kicked_off: "+err.Error())
 		return
 	}
-	if err := d.store.RecordKickoffDelivery(ctx, fresh.ID, inst.InstanceID, inst.Restarts); err != nil {
+	provenance := d.store.RecordKickoffDelivery(ctx, fresh.ID, inst.InstanceID, inst.Restarts)
+	if provenance != nil {
 		// Not fatal: an unrecorded recipient disables restart detection for this
 		// agent (agents.kickoffLost's fail-safe direction); the turn still runs.
 		d.log.Printf("agentkickoff: agent %d (%s): record delivery provenance: %v",
-			fresh.ID, fresh.Name, err)
+			fresh.ID, fresh.Name, provenance)
 	}
 
 	_, _ = d.store.AddChatMessage(ctx, agents.ChatMessage{
@@ -403,8 +425,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	})
 	reply, err := d.gw.Chat(ctx, fresh, sess.SessionKey, fresh.PendingNote, nil)
 	if err != nil {
-		d.recordError(fresh, "kickoff turn failed after it was handed to the gateway (not "+
-			"retried, so it is never paid twice): "+err.Error())
+		d.recordError(fresh, turnFailure(parent, ctx, d.turn, err))
 		return
 	}
 	if strings.TrimSpace(reply) == "" {
@@ -413,6 +434,18 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	}
 	actx, acancel := bookkeeping()
 	defer acancel()
+	if provenance != nil {
+		// 🔴 RecordKickoffDelivery IS WHAT CLEARS kickoff_error, AND IT JUST FAILED.
+		// A pre-send failure recorded on an earlier tick (no token yet, no session) is
+		// therefore still on a row that is now kicked_off — exactly agents.KickoffFailed's
+		// shape — and the card would badge a turn that SUCCEEDED as "kickoff failed".
+		// The success has to clear it itself. Pinned by
+		// TestASucceededTurnDoesNotKeepAStaleErrorWhenProvenanceFailed.
+		if err := d.store.SetKickoffError(actx, fresh.ID, ""); err != nil {
+			d.log.Printf("agentkickoff: agent %d (%s): clear stale kickoff error: %v",
+				fresh.ID, fresh.Name, err)
+		}
+	}
 	_, _ = d.store.AddChatMessage(actx, agents.ChatMessage{
 		AgentID: fresh.ID, SessionID: sess.ID, Role: "assistant", Content: reply,
 	})
@@ -420,21 +453,58 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		fresh.ID, fresh.Name, inst.InstanceID, len(reply))
 }
 
-// failBudget marks a row whose delivery budget is spent `error`.
-func (d *Deliverer) failBudget(a agents.Agent) {
-	msg := fmt.Sprintf("kickoff not sent: %d deliveries already recorded (budget %d)",
-		a.KickoffAttempts, agents.MaxKickoffAttempts) + agents.KickoffErrorSuffix(a)
-	ctx, cancel := bookkeeping()
-	defer cancel()
-	if err := d.store.UpdateStatus(ctx, a.ID, agents.StatusError, "", msg); err != nil {
-		d.log.Printf("agentkickoff: agent %d (%s): could not record %q: %v", a.ID, a.Name, msg, err)
+// ShutdownCancelledReason opens agents.kickoff_error when a stamped first turn was
+// cut off because THIS PROCESS was shutting down (SIGTERM — a redeploy, a node
+// drain, a scale-down).
+//
+// 🔴 IT IS NAMED, RATHER THAN LEFT AS A BARE "context canceled", BECAUSE THE
+// OPERATOR'S NEXT MOVE DEPENDS ON IT. The turn was handed to the gateway and the row
+// was stamped, so it is not re-run (never paid twice) — but nothing about the agent
+// or the task was wrong. "context canceled" reads as a fault in the agent; this
+// reads as what it is: muster went away mid-turn, and the task must be re-sent by
+// hand.
+const ShutdownCancelledReason = "kickoff turn CANCELLED because muster was shutting down " +
+	"(a redeploy or pod stop) while the turn was in flight. It had already been handed to " +
+	"the gateway, so it is not retried automatically (a first turn is never paid twice)"
+
+// turnFailure is the kickoff_error text for a turn that failed AFTER the stamp. It
+// separates the three causes an operator acts on differently: this process shutting
+// down (parent cancelled), the turn outliving its own budget, and the gateway or
+// runtime failing.
+//
+// ⚠ parent IS THE WITNESS FOR A SHUTDOWN, NOT THE TURN ctx. The turn ctx derives
+// from parent, so a shutdown cancels it too and its Err() alone cannot separate
+// "muster is stopping" from a gateway that failed on a cancelled request.
+func turnFailure(parent, turn context.Context, budget time.Duration, err error) string {
+	switch {
+	case parent.Err() != nil:
+		return ShutdownCancelledReason + ": " + err.Error()
+	case errors.Is(turn.Err(), context.DeadlineExceeded):
+		return fmt.Sprintf("kickoff turn exceeded its %s budget and was abandoned after it was "+
+			"handed to the gateway (not retried, so it is never paid twice): %v", budget, err)
+	default:
+		return "kickoff turn failed after it was handed to the gateway (not retried, so it " +
+			"is never paid twice): " + err.Error()
 	}
 }
 
 // recordError writes a send failure as evidence (agents.Store.SetKickoffError —
 // it does not move the dwell clock) and logs it.
+//
+// 🔴 THE WRITE RUNS ON A DETACHED BUDGET (bookkeeping), NEVER ON THE TURN'S ctx.
+// The failure most worth recording — a turn cut off by shutdown — is the one whose
+// ctx is already cancelled, so a write on it would be refused by the driver before
+// it left the process and the failure would vanish. Pinned by
+// TestAShutdownCancelledTurnIsRecordedAsSuch, whose fake store refuses a write on a
+// done ctx exactly as pgx does.
+//
+// ⚠ THE LOG LINE IS SCRUBBED OF THE PENDING NOTE (agents.ScrubNote). msg can carry
+// runtime-authored bytes — agents.responses quotes up to 512 bytes of a non-200 body
+// — and a runtime that echoes its request would put the operator's note in the pod
+// log. The stored column is not scrubbed: the row already holds the note, and every
+// surface that reads the column scrubs it there (agents.KickoffFailureText).
 func (d *Deliverer) recordError(a agents.Agent, msg string) {
-	d.log.Printf("agentkickoff: agent %d (%s): %s", a.ID, a.Name, msg)
+	d.log.Printf("agentkickoff: agent %d (%s): %s", a.ID, a.Name, agents.ScrubNote(msg, a.PendingNote))
 	ctx, cancel := bookkeeping()
 	defer cancel()
 	if err := d.store.SetKickoffError(ctx, a.ID, msg); err != nil {

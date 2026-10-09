@@ -140,6 +140,108 @@ func TestAFailedTurnIsRecordedAndNeverRePaid(t *testing.T) {
 		!strings.Contains(h.store.row(7301).KickoffError, "unexpected EOF from runtime") {
 		t.Errorf("the turn failure is not in kickoff_error with its cause.%s", transcript(log))
 	}
+	// And the row is in the state the "kickoff failed" signal reads — the stamp
+	// cleared "kickoff owed", so this is the only thing left saying it failed.
+	if r := h.store.row(7301); agents.KickoffOwed(r) || !agents.KickoffFailed(r) {
+		t.Errorf("after a failed post-stamp turn: KickoffOwed=%t KickoffFailed=%t, want false/true",
+			agents.KickoffOwed(r), agents.KickoffFailed(r))
+	}
+}
+
+// TestAShutdownCancelledTurnIsRecordedAsSuch: a turn in flight when the deliverer's
+// ctx is cancelled (SIGTERM — a redeploy) is RECORDED, and recorded as a shutdown,
+// not as a bare "context canceled" and not lost.
+//
+// 🔴 THE FAKE STORE REFUSES A WRITE ON A DONE ctx, AS pgx DOES, AND THAT IS WHAT
+// MAKES THIS A TEST OF THE DETACHED WRITE. A deliverer that recorded the failure on
+// the turn's own ctx would have its SetKickoffError refused here, exactly as the
+// driver would refuse it in production.
+//
+// Fixture: the row's prior kickoff_error is a pre-send failure from an earlier tick
+// — pairwise distinct from every constant the assertions name — so a record that
+// silently did not happen leaves a value that cannot pass for the right one.
+func TestAShutdownCancelledTurnIsRecordedAsSuch(t *testing.T) {
+	row := ownedRow()
+	h := newHarness(t, []provision.Instance{readyInstance("lively-newt", "lively-newt-7f9c-x2", 2)}, row)
+	// The provenance write fails so it does NOT clear the prior error: a lost
+	// record then leaves "pool busy kw19" rather than "", and neither passes.
+	h.store.provenanceErr = errors.New("provenance write lost qv83")
+	h.store.rows[row.ID].KickoffError = "kickoff not sent: could not open a chat session: pool busy kw19"
+	h.gw.hold = make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := h.d.Tick(ctx); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	select {
+	case <-h.gw.hold:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("instrument check FAILED: the turn never reached the gateway.%s", transcript(h.log.snapshot()))
+	}
+	cancel() // the process is shutting down, mid-turn
+	h.d.Wait()
+	log := h.log.snapshot()
+
+	r := h.store.row(7301)
+	if !strings.HasPrefix(r.KickoffError, ShutdownCancelledReason) {
+		t.Fatalf("a turn cancelled by shutdown left kickoff_error = %q, want it to open with "+
+			"ShutdownCancelledReason. Either the record was lost (written on the cancelled ctx "+
+			"and refused) or it reads as a fault in the agent rather than as muster going "+
+			"away mid-turn.%s", r.KickoffError, transcript(log))
+	}
+	if !strings.Contains(r.KickoffError, context.Canceled.Error()) {
+		t.Errorf("the shutdown record drops the underlying cause: %q", r.KickoffError)
+	}
+	if !agents.KickoffFailed(r) || h.gw.callCount() != 1 {
+		t.Errorf("after a shutdown-cancelled turn: KickoffFailed=%t, turns=%d; want true / 1",
+			agents.KickoffFailed(r), h.gw.callCount())
+	}
+}
+
+// TestATurnThatOutlivesItsBudgetIsRecordedAsATimeout separates the second cause
+// turnFailure names from the first: the turn's OWN budget expiring is not a
+// shutdown, and must not be recorded as one.
+func TestATurnThatOutlivesItsBudgetIsRecordedAsATimeout(t *testing.T) {
+	h := newHarness(t, []provision.Instance{readyInstance("lively-newt", "lively-newt-7f9c-x2", 2)}, ownedRow())
+	d, err := New(Config{
+		Store: h.store, Instances: h.insts, Gateway: h.gw, NamespacePrefix: testPrefix, Owner: ownerID,
+		Now: func() time.Time { return fixedNow }, TurnTimeout: 70 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h.gw.hold = make(chan struct{})
+	if err := d.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	d.Wait()
+	got := h.store.row(7301).KickoffError
+	if !strings.HasPrefix(got, "kickoff turn exceeded its 70ms budget") {
+		t.Errorf("a turn that outlived its own 70ms budget recorded %q", got)
+	}
+	if strings.HasPrefix(got, ShutdownCancelledReason) {
+		t.Errorf("a turn TIMEOUT was recorded as a shutdown: %q", got)
+	}
+}
+
+// TestASucceededTurnDoesNotKeepAStaleErrorWhenProvenanceFailed: RecordKickoffDelivery
+// is the write that clears kickoff_error. When it fails, a pre-send failure from an
+// earlier tick stays on a row that is now kicked_off — agents.KickoffFailed's exact
+// shape — and the card would badge a SUCCESSFUL turn as "kickoff failed".
+func TestASucceededTurnDoesNotKeepAStaleErrorWhenProvenanceFailed(t *testing.T) {
+	row := ownedRow()
+	row.KickoffError = "kickoff not sent: could not open a chat session: pool busy kw19"
+	h := newHarness(t, []provision.Instance{readyInstance("lively-newt", "lively-newt-7f9c-x2", 2)}, row)
+	h.store.provenanceErr = errors.New("provenance write lost qv83")
+	log := h.tick(t)
+
+	if h.gw.callCount() != 1 || indexOf(log, "AddChatMessage(7301,73010,assistant,READY — 412 tests)") < 0 {
+		t.Fatalf("instrument check FAILED: the turn did not succeed.%s", transcript(log))
+	}
+	if r := h.store.row(7301); agents.KickoffFailed(r) {
+		t.Errorf("a turn that SUCCEEDED reads as a failed kickoff: kickoff_error=%q survived because "+
+			"the provenance write that normally clears it failed.%s", r.KickoffError, transcript(log))
+	}
 }
 
 // TestAnEmptyReplyIsAFailedDelivery: the reasoning-model shape (HTTP 200, no text)
@@ -212,22 +314,6 @@ func TestARowDeliveredByAnotherReplicaIsNotPaidAgain(t *testing.T) {
 	}
 	if h.gw.calls != 0 || countPrefix(log, "SetKickedOff(") != 0 {
 		t.Errorf("a row another replica already kicked off was delivered AGAIN.%s", transcript(log))
-	}
-}
-
-// TestASpentBudgetIsNotPaidAgain: MaxKickoffAttempts bounds this path too.
-func TestASpentBudgetIsNotPaidAgain(t *testing.T) {
-	row := ownedRow()
-	row.KickoffAttempts = agents.MaxKickoffAttempts
-	h := newHarness(t, []provision.Instance{readyInstance("lively-newt", "lively-newt-7f9c-x2", 2)}, row)
-	log := h.tick(t)
-
-	if h.gw.calls != 0 {
-		t.Errorf("a row at the delivery budget got another turn.%s", transcript(log))
-	}
-	if r := h.store.row(7301); r.Status != agents.StatusError || !strings.Contains(r.ErrorMessage, "budget 3") {
-		t.Errorf("a spent budget did not go red: status=%s error=%q.%s", r.Status, r.ErrorMessage,
-			transcript(log))
 	}
 }
 

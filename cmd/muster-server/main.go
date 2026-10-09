@@ -85,6 +85,14 @@ const (
 	// in exactly the case it matters, which is the failure shape the permission
 	// router's own exit path records against reusing a drain context.
 	pushDrainTimeout = 5 * time.Second
+
+	// kickoffDrainTimeout bounds the wait for the kickoff deliverer to RECORD the
+	// turns SIGTERM cancelled (agentkickoff.Deliverer.Done). A cancelled turn returns
+	// at once and its record is one UPDATE, so this is slack, not a turn budget.
+	// 10 + 5 + 10 = 25 s, inside Kubernetes' default 30 s
+	// terminationGracePeriodSeconds — past that the kubelet SIGKILLs and nothing
+	// is recorded at all.
+	kickoffDrainTimeout = 10 * time.Second
 )
 
 func main() {
@@ -444,6 +452,33 @@ func (a *app) shutdown() {
 	case <-done:
 	case <-time.After(pushDrainTimeout):
 		a.logger.Printf("notification fan-outs did not finish within %s; exiting anyway", pushDrainTimeout)
+	}
+	a.waitForKickoffs(kickoffDrainTimeout)
+}
+
+// waitForKickoffs waits, bounded, for the kickoff deliverer to finish.
+//
+// 🔴 WITHOUT IT A FIRST TURN CANCELLED BY A REDEPLOY WAS LOST WITHOUT A TRACE.
+// The deliverer's ctx is the signal context, so SIGTERM cancels an in-flight
+// turn AFTER its row was stamped kicked_off; the deliverer then records the
+// failure on a detached budget — but Run returned here, main's deferred Close
+// shut the pool, and the process exited while that record was still in flight.
+// The row then read as a delivered kickoff with no error: no "kickoff owed"
+// badge (stamped) and no "kickoff failed" badge (nothing recorded). Pinned by
+// TestShutdownWaitsForACancelledKickoffToBeRecorded.
+//
+// ⚠ IT IS AFTER THE HTTP DRAIN, NOT BEFORE: the two are independent, and the
+// deliverer began stopping when ctx was cancelled, so by the time the drain is
+// done its record has usually landed and this returns immediately.
+func (a *app) waitForKickoffs(timeout time.Duration) {
+	if a.kickoff == nil {
+		return
+	}
+	select {
+	case <-a.kickoff.Done():
+	case <-time.After(timeout):
+		a.logger.Printf("kickoff deliverer did not finish recording within %s; exiting anyway "+
+			"(a cancelled first turn may be left stamped with no kickoff_error)", timeout)
 	}
 }
 

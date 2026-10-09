@@ -34,7 +34,12 @@ package main
 //	  (agents.Store.ClaimKickoff), re-reads the row, stamps KickedOff and the
 //	  recipient BEFORE the turn, and sends the note through api.Gateway.Chat into
 //	  the agent's latest chat session. A failed or EMPTY turn is recorded in
-//	  agents.kickoff_error and never re-run; a pre-send failure is retried until
+//	  agents.kickoff_error and never re-run — and (PR #37 review round 0) SURFACED:
+//	  agents.KickoffFailed drives a "kickoff failed" card badge with the scrubbed
+//	  error text and the re-send-by-hand remedy, and `kickoffFailed` on
+//	  GET /api/agents; a turn cut off by shutdown is recorded as such and
+//	  app.shutdown waits (bounded) for that record before the pool closes. A
+//	  pre-send failure is retried until
 //	  agents.ProvisioningStuckTimeout, then the row is errored with the last send
 //	  failure appended. agentprovision.KickoffDeliveryWired is true, so a dispatch
 //	  is refused ONLY when no gateway is named.

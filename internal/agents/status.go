@@ -1,6 +1,11 @@
 package agents
 
-import "github.com/ZacxDev/muster/internal/provision"
+import (
+	"strings"
+	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/provision"
+)
 
 // ComputeStatus reconciles the STORED agent status with the LIVE instance state
 // to produce the status shown on the card. The stored status is authoritative
@@ -110,6 +115,105 @@ func ComputeStatus(a Agent, inst *provision.Instance) string {
 // true, because both owe the same turn. The reason lives in
 // agents.error_message / agents.kickoff_error.
 func KickoffOwed(a Agent) bool { return a.PendingNote != "" && !a.KickedOff }
+
+// KickoffFailed reports a first turn that was HANDED to a gateway and did not
+// complete: the row is stamped [Agent.KickedOff] and a failure is recorded in
+// [Agent.KickoffError]. In SQL, `kicked_off AND kickoff_error <> ”`.
+//
+// 🔴 IT EXISTS BECAUSE THE STAMP CLEARS [KickoffOwed]. internal/agentkickoff stamps
+// kicked_off BEFORE the paid turn so a turn is never run twice, and does not retry a
+// turn that fails after the stamp (an operator decision: at-most-once). So
+// a failed, empty, timed-out or shutdown-cancelled first turn turns the "kickoff
+// owed" badge OFF while nothing was delivered — and before this predicate the
+// failure lived only in kickoff_error, which no page rendered. This is that state,
+// as its own signal.
+//
+// It is the same SHAPE as [KickoffOwed] and for the same reasons: a separate
+// boolean beside the status, never a sixth status value. The two are MUTUALLY
+// EXCLUSIVE by construction (one requires kicked_off, the other its negation), so a
+// card never carries both badges. TestKickoffFailedTruthTable covers every cell.
+//
+// ⚠ IT DOES NOT READ THE NOTE. An agent kicked off by an upstream writer with no
+// stored note but a recorded send failure still failed its kickoff, and says so.
+//
+// ⚠ WHAT KEEPS IT FROM FIRING ON A SUCCESS: every production write of kickoff_error
+// on a kicked-off row is a post-stamp FAILURE (agentkickoff.recordError after the
+// stamp); agentprovision writes it only on a never-kicked-off row; and a successful
+// turn's agents.Store.RecordKickoffDelivery clears it — or, when that write failed,
+// the deliverer clears it itself.
+func KickoffFailed(a Agent) bool { return a.KickedOff && a.KickoffError != "" }
+
+// KickoffFailureText is the error text a surface may show for a failed kickoff:
+// [Agent.KickoffError] with the pending note scrubbed out ([ScrubNote]), or "" when
+// [KickoffFailed] is false. It is the ONE reader both tiers use, so the scrub cannot
+// be present on one and missing on the other.
+func KickoffFailureText(a Agent) string {
+	if !KickoffFailed(a) {
+		return ""
+	}
+	return ScrubNote(a.KickoffError, a.PendingNote)
+}
+
+// NoteWithheld replaces any part of the pending note found inside text a surface
+// emits. See [ScrubNote].
+const NoteWithheld = "[kickoff note withheld]"
+
+// noteEchoMinBytes is the shortest run of the note [ScrubNote] removes. A note
+// shorter than this is removed whenever it appears whole.
+const noteEchoMinBytes = 16
+
+// ScrubNote returns s with every run of at least noteEchoMinBytes bytes (or the
+// whole note, if it is shorter) that also occurs in note replaced by
+// [NoteWithheld]. An empty note returns s unchanged.
+//
+// 🔴 WHY ERROR TEXT NEEDS THIS AT ALL: kickoff_error is muster-authored PREFIX plus,
+// for a failed turn, the gateway's error — and agents' responses transport quotes up
+// to 512 bytes of a non-200 runtime BODY into that error ("responses HTTP %d: %s").
+// A runtime that echoes the request it rejected therefore puts the operator's note —
+// instruction text, `json:"-"` everywhere — into a column this package now surfaces
+// on a public-repo service. The guarantee is "no 16-byte run of the note leaves the
+// process through kickoff text", which is what this enforces.
+//
+// 🔴 RUNS, NOT ONLY THE WHOLE NOTE, BECAUSE THE QUOTE IS TRUNCATED. A 512-byte snippet
+// of a body echoing a 2 KB note contains a PREFIX of it, which strings.ReplaceAll on
+// the whole note would never match. Pinned by TestScrubNoteRemovesATruncatedEcho.
+//
+// ⚠ ITS LIMITS, STATED RATHER THAN IMPLIED: a fragment shorter than 16 bytes
+// survives (an echo re-escaped every few characters would leak in pieces that
+// small), and a TRANSFORMED echo — case-folded, re-encoded — is not recognised.
+// Matching works on whole runes, so the output stays valid UTF-8.
+func ScrubNote(s, note string) string {
+	if note == "" || s == "" {
+		return s
+	}
+	floor := noteEchoMinBytes
+	if len(note) < floor {
+		floor = len(note)
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		// Longest run starting at i, extended a whole rune at a time, that the note
+		// contains.
+		n := 0
+		for j := i; j < len(s); {
+			_, size := utf8.DecodeRuneInString(s[j:])
+			if !strings.Contains(note, s[i:j+size]) {
+				break
+			}
+			j += size
+			n = j - i
+		}
+		if n >= floor {
+			b.WriteString(NoteWithheld)
+			i += n
+			continue
+		}
+		_, size := utf8.DecodeRuneInString(s[i:])
+		b.WriteString(s[i : i+size])
+		i += size
+	}
+	return b.String()
+}
 
 // InstanceIndex maps an agent NAME to its live instance, for quick
 // reconciliation against a stored agent list.

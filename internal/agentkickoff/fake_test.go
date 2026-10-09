@@ -28,8 +28,11 @@ type fakeStore struct {
 	claimLoses  bool
 	claimErr    error
 	sessionErr  error
-	log         *recorder
-	nextMsg     int64
+	// provenanceErr makes RecordKickoffDelivery fail WITHOUT writing — and so
+	// without clearing kickoff_error, which is what that write normally does.
+	provenanceErr error
+	log           *recorder
+	nextMsg       int64
 }
 
 // recorder is the ONE transcript the store and the gateway both write, under one
@@ -117,15 +120,26 @@ func (s *fakeStore) RecordKickoffDelivery(_ context.Context, id int64, pod strin
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rec("RecordKickoffDelivery(%d,%s,%d)", id, pod, restarts)
+	if s.provenanceErr != nil {
+		return s.provenanceErr
+	}
 	r := s.rows[id]
 	r.KickoffPod, r.KickoffRestarts, r.KickoffError = pod, restarts, ""
 	r.KickoffAttempts++
 	return nil
 }
 
-func (s *fakeStore) SetKickoffError(_ context.Context, id int64, msg string) error {
+// SetKickoffError REFUSES a done ctx without writing, exactly as pgx does: a query
+// on a cancelled context never reaches the server. Without that, a deliverer that
+// recorded a shutdown-cancelled turn on the turn's own (cancelled) ctx would pass
+// here and lose the record in production.
+func (s *fakeStore) SetKickoffError(ctx context.Context, id int64, msg string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		s.rec("SetKickoffError-REFUSED(%d,%v)", id, err)
+		return err
+	}
 	s.rec("SetKickoffError(%d,%s)", id, msg)
 	s.rows[id].KickoffError = msg
 	return nil
@@ -171,14 +185,31 @@ type fakeGateway struct {
 	reply string
 	err   error
 	calls int
+	// hold, when non-nil, makes Chat signal it and then block until the turn's ctx
+	// is done, returning ctx.Err() — a turn in flight when its ctx is cancelled
+	// (shutdown) or expires (turn budget), which is what the real gateway's HTTP
+	// client returns.
+	hold chan struct{}
 }
 
-func (g *fakeGateway) Chat(_ context.Context, a agents.Agent, sessionKey, message string, _ func(string)) (string, error) {
+func (g *fakeGateway) Chat(ctx context.Context, a agents.Agent, sessionKey, message string, _ func(string)) (string, error) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	g.calls++
 	g.log.add(fmt.Sprintf("Chat(%s,%s,%s)", a.Name, sessionKey, message))
-	return g.reply, g.err
+	hold, reply, err := g.hold, g.reply, g.err
+	g.mu.Unlock()
+	if hold != nil {
+		close(hold)
+		<-ctx.Done()
+		return "", fmt.Errorf("post responses: %w", ctx.Err())
+	}
+	return reply, err
+}
+
+func (g *fakeGateway) callCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.calls
 }
 
 // fakeInstances returns a fixed instance set, or an error.
