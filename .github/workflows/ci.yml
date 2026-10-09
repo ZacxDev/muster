@@ -23,10 +23,9 @@ on:
     branches: [main]
   pull_request:
 
-# Superseded runs for the same PR (or for `main`) are cancelled. Keyed on the PR
-# number because `github.ref` differs between the two events.
+# Superseded runs for the same PR (`refs/pull/N/merge`) or for `main` are cancelled.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
