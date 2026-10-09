@@ -164,8 +164,8 @@ const KickoffNeverConnectedReason = "kickoff turn NEVER REACHED the agent runtim
 const KickoffEmptyReplyReason = "kickoff turn returned an EMPTY reply, so it is recorded as NOT " +
 	"delivered: the gateway answered without error and with no text. The known cause is a " +
 	"reasoning model behind the agent runtime's /v1/responses, which discards its own " +
-	"successful retry for that model class; pin a non-reasoning model for this agent and " +
-	"send the task through its chat."
+	"successful retry for that model class, so the agent may have done the work anyway. Pin a " +
+	"non-reasoning model for this agent, and check its logs or transcript before re-sending."
 
 // KickoffResendSafe reports whether a failed kickoff's recorded cause PROVES no
 // turn is running for it, so re-sending the task cannot pay for it twice. Only

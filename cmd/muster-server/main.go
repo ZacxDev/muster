@@ -432,17 +432,22 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	go a.srv.RunTaskReap(ctx, api.TaskReapInterval)
 }
 
-// shutdown drains in-flight requests, then waits for outstanding push fan-outs.
+// shutdown drains in-flight requests and the kickoff deliverer, then waits for
+// outstanding push fan-outs.
 //
-// 🔴 THE ORDER IS FIXED: HTTP FIRST, FAN-OUTS SECOND. A fan-out is registered on
-// the handler's own goroutine (see api.Server.pushInFlight), so waiting before
-// the drain would wait on a set that is still growing.
+// 🔴 THE ORDER IS FIXED: HTTP AND THE DELIVERER FIRST, FAN-OUTS LAST. A fan-out
+// is registered on the goroutine that triggers it (see api.Server.pushInFlight)
+// — an HTTP handler, or the deliverer's card-change broadcast — so waiting for
+// fan-outs before either has stopped would wait on a set that is still growing.
 func (a *app) shutdown() {
 	drainCtx, cancel := context.WithTimeout(context.Background(), shutdownDrainTimeout)
 	defer cancel()
 	if err := a.http.Shutdown(drainCtx); err != nil {
 		a.logger.Printf("drain did not complete within %s: %v", shutdownDrainTimeout, err)
 	}
+	// The deliverer registers fan-outs too (its card-change broadcast), so it is
+	// waited for BEFORE the fan-out set, for the same reason HTTP is.
+	a.waitForKickoffs(kickoffDrainTimeout)
 
 	done := make(chan struct{})
 	go func() {
@@ -454,7 +459,6 @@ func (a *app) shutdown() {
 	case <-time.After(pushDrainTimeout):
 		a.logger.Printf("notification fan-outs did not finish within %s; exiting anyway", pushDrainTimeout)
 	}
-	a.waitForKickoffs(kickoffDrainTimeout)
 }
 
 // waitForKickoffs waits, bounded, for the kickoff deliverer to finish.
