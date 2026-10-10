@@ -583,8 +583,9 @@ func TestAForbiddenNetworkPolicyStopsTheInstanceAndNamesTheVerb(t *testing.T) {
 				for _, want := range []string{
 					"may not " + c.verb + " networkpolicies.networking.k8s.io",
 					`"quiet-heron-network" in namespace "` + ns + `"`,
-					"was NOT started",
-					`apiGroups ["networking.k8s.io"] resources ["networkpolicies"] verbs ["get", "create", "update", "delete"]`,
+					"it was NOT started",
+					"if it was ALREADY RUNNING from before this refusal it is STILL RUNNING WITHOUT A NetworkPolicy; stop it",
+					`grant muster's ClusterRole apiGroups ["networking.k8s.io"] resources ["networkpolicies"] verbs ["get", "create", "update", "delete"]`,
 				} {
 					if !strings.Contains(msg, want) {
 						t.Errorf("the refusal does not say %q:\n  %s", want, msg)
@@ -709,6 +710,51 @@ func TestAStoppedPreIsolationInstanceIsNotStartedWhenItsPolicyIsRefused(t *testi
 	}
 	if dep.Annotations[annFingerprint] != oldFP {
 		t.Errorf("the refused start rewrote the Deployment")
+	}
+	if n := policyCount(t, cs); n != 0 {
+		t.Errorf("%d policy object(s) after a refused create", n)
+	}
+}
+
+// TestARunningPreIsolationInstanceIsLeftRunningWhenItsPolicyIsRefused pins the
+// case the refusal does NOT close, so it is a decision on the page rather than a
+// surprise: the pre-existing agent is UP when a reconcile reaches it, and muster
+// may not write its policy. apply returns before touching anything, so the pod
+// keeps running exactly as it was — with no policy.
+//
+// 🔴 THIS IS NOT "FAIL CLOSED" AND THE TEST DOES NOT SAY IT IS. Nothing here
+// stops a running pod. What is pinned is that the refusal changes NOTHING (so it
+// cannot half-apply a spec) and that its message says the instance may still be
+// running and tells the operator to stop it.
+func TestARunningPreIsolationInstanceIsLeftRunningWhenItsPolicyIsRefused(t *testing.T) {
+	ctx := context.Background()
+	const ns = "muster-agent-quiet-heron"
+	d, cs := perInstanceDriver(t)
+	now := ccSpec(t)
+	if err := d.Create(ctx, preIsolation(now)); err != nil {
+		t.Fatal(err)
+	}
+	running, _ := cs.AppsV1().Deployments(ns).Get(ctx, "quiet-heron", metav1.GetOptions{})
+	if running.Spec.Replicas == nil || *running.Spec.Replicas != 1 {
+		t.Fatalf("premise: the pre-isolation instance must be running, replicas = %v", running.Spec.Replicas)
+	}
+	oldFP := running.Annotations[annFingerprint]
+
+	cs.PrependReactor("create", "networkpolicies", forbidden("create"))
+	err := d.Update(ctx, now)
+	if !errors.Is(err, provision.ErrUnsupported) {
+		t.Fatalf("update = %v, want the networkpolicies refusal", err)
+	}
+	if !strings.Contains(err.Error(), "STILL RUNNING WITHOUT A NetworkPolicy; stop it") {
+		t.Errorf("the refusal does not tell the operator the instance may still be running:\n  %v", err)
+	}
+	dep, gerr := cs.AppsV1().Deployments(ns).Get(ctx, "quiet-heron", metav1.GetOptions{})
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 1 || dep.Annotations[annFingerprint] != oldFP {
+		t.Errorf("the refused update changed the running instance (replicas %v, fingerprint moved %v); it must "+
+			"change nothing", dep.Spec.Replicas, dep.Annotations[annFingerprint] != oldFP)
 	}
 	if n := policyCount(t, cs); n != 0 {
 		t.Errorf("%d policy object(s) after a refused create", n)
@@ -897,6 +943,11 @@ func TestDestroyDoesNotReportSuccessOverAPolicyItCouldNotRemove(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "delete networkpolicy plain-heron-network") {
 			t.Fatalf("destroy = %v, want an error naming the policy read that was refused", err)
 		}
+		// The instance never had a policy, so the error has to say what to DO:
+		// "networkpolicies is forbidden" alone reads as a non sequitur here.
+		if want := `grant muster's ClusterRole apiGroups ["networking.k8s.io"] resources ["networkpolicies"] verbs ["get", "create", "update", "delete"]`; !strings.Contains(err.Error(), want) {
+			t.Errorf("the destroy failure does not name the rule to add:\n  %v", err)
+		}
 		deploymentGone(t, cs, "plain-heron")
 	})
 }
@@ -985,11 +1036,11 @@ func TestNewRefusesANetworkPolicyConfigurationThatAdmitsTooMuch(t *testing.T) {
 	}
 }
 
-// TestTheRBACPrerequisiteIsTheVerbsThisFileCalls: the declared prerequisite is
+// TestTheRBACPrerequisiteIsTheVerbsTheDriverCalls: the declared prerequisite is
 // exactly the verbs the driver uses on networkpolicies across an instance's whole
-// life, measured off the fake's action log — so the rule an operator is told to
-// add cannot drift from what the code calls.
-func TestTheRBACPrerequisiteIsTheVerbsThisFileCalls(t *testing.T) {
+// life — applyNetworkPolicy's and Destroy's — measured off the fake's action log,
+// so the rule an operator is told to add cannot drift from what the code calls.
+func TestTheRBACPrerequisiteIsTheVerbsTheDriverCalls(t *testing.T) {
 	ctx := context.Background()
 	d, cs := internalDriver(t)
 	spec := isolatedSpec("whole-life")

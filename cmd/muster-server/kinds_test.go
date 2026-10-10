@@ -267,6 +267,10 @@ func TestEveryNetworkPolicySelectorRefusalIsReachedOnItsOwn(t *testing.T) {
 			`label key "app" is written twice`},
 		{"label key not a label key", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromLabels = "app name=muster" },
 			`label key "app name"`},
+		{"label value not a label value", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromLabels = "app=muster server" },
+			`label value "muster server"`},
+		{"label value containing an equals sign", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromLabels = "app=muster=server" },
+			`label value "muster=server"`},
 		{"only separators", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromLabels = " , ," },
 			"it names no label"},
 
@@ -365,8 +369,10 @@ func TestTheNetworkBannerLineSaysWhetherAgentsAreConfined(t *testing.T) {
 	on := render(ccK8sTestConfig())
 	for _, want := range []string{
 		"a NetworkPolicy is WRITTEN per agent", "[app=Muster-Server, tier=control]", "namespace control-plane-7",
-		envAgentNetpolFromNS, envAgentNetpolFromLabels, "TCP 443", "NO policy until it is stopped and started",
+		envAgentNetpolFromNS, envAgentNetpolFromLabels, "TCP 443",
+		"an agent created before this build has NO policy", "until that agent is stopped and started",
 		"Enforcement is the cluster network plugin's",
+		"needs get/create/update/delete on networkpolicies.networking.k8s.io", "to DESTROY ANY agent",
 	} {
 		if !strings.Contains(on, want) {
 			t.Errorf("kubernetes arm does not say %q:\n  %s", want, on)

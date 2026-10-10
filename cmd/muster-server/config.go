@@ -1106,10 +1106,11 @@ func (c config) validateKinds() error {
 	}
 	// 🔴 THE KUBERNETES DRIVER WRITES A CLAUDE-CODE AGENT'S NetworkPolicy BEFORE
 	// ITS POD AND REFUSES THE AGENT WITHOUT IT — AND THE POLICY CANNOT BE
-	// RENDERED WITHOUT KNOWING WHO MUSTER IS. The kind's spec
-	// declares network isolation unconditionally (agentspec.ClaudeCodeNetwork), so
-	// without these the kubernetes driver would refuse every claude-code dispatch
-	// in a background goroutine. Refused here instead, naming both variables.
+	// RENDERED WITHOUT KNOWING WHO MUSTER IS. The kind's spec declares network
+	// isolation unconditionally (agentspec.ClaudeCodeNetwork), so the driver has
+	// to be given the selector. k8s.New refuses an empty one as well, at boot —
+	// but in the driver's words (Config.NetworkPolicy.ControllerNamespace), which
+	// name nothing an operator can set. Refused here first, naming both variables.
 	if c.claudeCodeNetworkPolicy() {
 		if c.AgentNetpolFromNS == "" || c.AgentNetpolFromLabels == "" {
 			return fmt.Errorf("%s includes %s on %s=%s but %s and %s are not both set (%s is %s, %s is %s): a "+

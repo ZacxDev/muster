@@ -133,7 +133,7 @@ func TestAClaudeCodeDispatchWritesItsNetworkPolicyAndIsRefusedWithoutOne(t *test
 			t.Fatalf("a refused dispatch left %d deployment(s) and %d policy object(s); the agent must not exist", deps, nps)
 		}
 		msg := recordedError(store)
-		for _, want := range []string{"may not create networkpolicies.networking.k8s.io", "was NOT started", `verbs [\"get\", \"create\", \"update\", \"delete\"]`} {
+		for _, want := range []string{"may not create networkpolicies.networking.k8s.io", "it was NOT started", `verbs [\"get\", \"create\", \"update\", \"delete\"]`} {
 			if !strings.Contains(msg, want) {
 				t.Errorf("the row's recorded error does not say %q:\n  %s", want, msg)
 			}
@@ -220,10 +220,15 @@ func TestAStoppedClaudeCodeAgentFromBeforeIsolationIsConfinedOrNotStarted(t *tes
 }
 
 // TestAGatewayAgentGetsNoNetworkPolicyFromTheSameDeployment: on the very
-// deployment that confines its claude-code agents, a gateway-kind dispatch writes
-// no policy and makes no call against networkpolicies — so it keeps working where
-// that RBAC rule is missing. The refusing reactor is INSTALLED for this case: any
-// such call would fail the dispatch.
+// deployment that confines its claude-code agents, a gateway-kind DISPATCH writes
+// no policy and makes no call against networkpolicies — so a dispatch keeps
+// working where that RBAC rule is missing. The refusing reactor is installed (it
+// refuses `create`, the one call a policy write starts with), and the action log
+// is what shows no OTHER verb was called either.
+//
+// ⚠ DISPATCH ONLY. Destroying that agent on this deployment DOES read
+// networkpolicies — the driver's
+// TestDestroyDoesNotReportSuccessOverAPolicyItCouldNotRemove pins that cost.
 func TestAGatewayAgentGetsNoNetworkPolicyFromTheSameDeployment(t *testing.T) {
 	row := fixtureAgent()
 	a, store, cs, _ := seamAdapter(t, row)

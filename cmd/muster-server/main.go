@@ -745,17 +745,22 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				envAgentCCAccounts, envAgentCCTokenPrefix, agents.ClaudeCodeTurnTimeout)
 			// ⚠ "WRITTEN", NOT "ENFORCED". This process writes a NetworkPolicy object;
 			// the cluster's network plugin is what enforces one, and nothing here can
-			// observe that. The line says what a NEW or RE-STARTED agent gets — an
+			// observe that. The line says what a NEW or RE-APPLIED agent gets — an
 			// agent created by an older build keeps running without a policy until
-			// its next start.
+			// it is next applied, which for an operator means stop then start. It
+			// also names the RBAC rule, because on this configuration DESTROYING ANY
+			// agent needs it (doc_seams.go entry 5).
 			if a.cfg.claudeCodeNetworkPolicy() {
 				l.Printf("%s network: a NetworkPolicy is WRITTEN per agent before its pod, and the agent is "+
 					"refused if it cannot be — ingress only from pods labelled [%s] (%s) in namespace %s (%s), "+
 					"egress only DNS and TCP %d to public IPv4 addresses. Enforcement is the cluster network "+
-					"plugin's, not this server's. An agent created before this build has NO policy until it is "+
-					"stopped and started",
+					"plugin's, not this server's. That selector is what a policy written FROM NOW ON gets: an "+
+					"agent created before this build has NO policy, and an existing policy keeps its old "+
+					"selector, until that agent is stopped and started. This server's ServiceAccount needs "+
+					"%s on networkpolicies.networking.k8s.io — to create a %s agent, and to DESTROY ANY agent",
 					agents.KindClaudeCode, a.cfg.AgentNetpolFromLabels, envAgentNetpolFromLabels,
-					a.cfg.AgentNetpolFromNS, envAgentNetpolFromNS, agentspec.ClaudeCodePublicEgressPort)
+					a.cfg.AgentNetpolFromNS, envAgentNetpolFromNS, agentspec.ClaudeCodePublicEgressPort,
+					strings.Join(networkPolicyVerbs(), "/"), agents.KindClaudeCode)
 			} else {
 				l.Printf("%s network: NOT CONFINED — %s=%s writes no NetworkPolicy (%s and %s apply to the %s "+
 					"driver only)",

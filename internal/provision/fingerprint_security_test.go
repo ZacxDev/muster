@@ -78,6 +78,26 @@ func TestDeclaringNetworkIsolationMovesTheFingerprint(t *testing.T) {
 	}
 }
 
+// pinnedIsolatedFingerprint is Fingerprint(fingerprintFixture() + the claude-code
+// kind's network declaration), MEASURED AT THE COMMIT THAT ADDED provision.Network.
+//
+// ⚠ AN INVARIANT GUARD, NOT REGRESSION COVERAGE: it is green at the commit that
+// introduced it by construction. What it is for is the NEXT change to how the
+// declaration is encoded — which would move every isolated instance's fingerprint
+// and roll every such agent's pod on its next Update, and which the "moves the
+// fingerprint" test above cannot see, because it only compares fingerprints to
+// each other.
+const pinnedIsolatedFingerprint = "cb2482f7b48eee424a02e0defb5095686d712be2b5ba4283cd423d132f27ef44"
+
+func TestAnIsolatedSpecsFingerprintIsPinned(t *testing.T) {
+	s := fingerprintFixture()
+	s.Network = Network{Isolate: true, PublicEgressTCPPorts: []int{443}}
+	if got := Fingerprint(s); got != pinnedIsolatedFingerprint {
+		t.Fatalf("Fingerprint = %s, want %s: the encoding of a network declaration changed, which rolls "+
+			"every isolated instance on its next Update", got, pinnedIsolatedFingerprint)
+	}
+}
+
 // TestValidateRefusesANetworkDeclarationThatConfinesNothing: an egress port list
 // without Isolate reads as confinement and restricts nothing; a port out of range
 // or listed twice is a typo. Each is refused by its own words.

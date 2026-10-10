@@ -178,9 +178,12 @@ func (d *Driver) Driver() string { return "kubernetes" }
 //     it: the NetworkPolicy this driver renders for an isolated instance
 //     (network.go) is an ADDRESS-RANGE policy — DNS plus the spec's ports on
 //     public addresses — so an isolated instance can still reach any public host
-//     on those ports. It keeps the instance off the cluster and the LAN; it does
-//     not keep data in. Neither does the RBAC that Policy true announces. And an
-//     instance whose spec declares no isolation gets no NetworkPolicy at all.
+//     on those ports. What it keeps the instance off is every address in
+//     nonPublicIPv4 — the cluster and the LAN WHERE THOSE ARE PRIVATE ADDRESSES,
+//     which is a property of the cluster and not something this driver checks
+//     (see that variable's ⚠). It does not keep data in. Neither does the RBAC
+//     that Policy true announces. And an instance whose spec declares no
+//     isolation gets no NetworkPolicy at all.
 //   - IT RUNS NO SIDECARS. One container plus an init container. The chart this
 //     replaces could run three log tailers, and they were structurally
 //     invisible to that project's own log reads anyway.
@@ -243,7 +246,8 @@ func blind(op string, err error) error {
 }
 
 // applyFailed attributes a failure from an object upsert on a WRITE path —
-// apply's six kinds AND Grant's RBAC objects.
+// apply's six kinds, the NetworkPolicy applyNetworkPolicy writes ahead of them,
+// AND Grant's RBAC objects.
 //
 // 🔴 AN OWNERSHIP REFUSAL IS NOT UNREACHABILITY, AND THIS IS THE ONE PLACE THE
 // WRITE PATH DISTINGUISHES THEM. All five upserts in apply() used to wrap their
@@ -499,7 +503,8 @@ func (d *Driver) createOwned(what, name, ns string, get func() (map[string]strin
 // an instance must not touch it.
 //
 // ⚠ EVERY CALLER OF THIS IS A SATELLITE OBJECT — a ConfigMap, a Secret, a
-// Service, a claim, a ServiceAccount, and the RBAC objects Revoke removes — and
+// Service, a claim, a ServiceAccount, a NetworkPolicy, and the RBAC objects
+// Revoke removes — and
 // the quiet skip is right for those and WRONG for the instance's identity
 // anchors. The Deployment and the per-instance Namespace do not come through
 // here: a foreign one of those means the name is not muster's to operate on at
@@ -867,7 +872,8 @@ func (d *Driver) ensureNamespace(ctx context.Context, instance, ns string) error
 // is harmless.
 //
 // ⚠ WHY THE CO-NAMED SATELLITES ARE STILL SKIPPED QUIETLY. A foreign
-// ConfigMap, Secret, Service, claim or ServiceAccount under the instance's name
+// ConfigMap, Secret, Service, claim, ServiceAccount or NetworkPolicy under the
+// instance's name
 // stays a logged skip (deleteIfOwned). The distinction is which objects are the
 // instance's IDENTITY ANCHORS: a foreign Deployment or a foreign per-instance
 // Namespace means no instance can exist under this name under ANY spec — Create
@@ -1154,11 +1160,18 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 	if d.cfg.NetworkPolicy != nil {
 		npName := networkPolicyName(name)
 		np := c.NetworkingV1().NetworkPolicies(ns)
-		fail("networkpolicy "+npName, d.deleteIfOwned("networkpolicy", npName,
+		err := d.deleteIfOwned("networkpolicy", npName,
 			func() (map[string]string, error) {
 				return labelsOf(np.Get(ctx, npName, metav1.GetOptions{}))
 			},
-			func() error { return np.Delete(ctx, npName, metav1.DeleteOptions{}) }))
+			func() error { return np.Delete(ctx, npName, metav1.DeleteOptions{}) })
+		if apierrors.IsForbidden(err) {
+			// The apiserver's own text names the verb; this adds the rule to
+			// write, because the instance being destroyed may never have had a
+			// policy and "forbidden: networkpolicies" then reads as a non sequitur.
+			err = fmt.Errorf("%w — %s", err, networkPolicyRBACHint)
+		}
+		fail("networkpolicy "+npName, err)
 	}
 
 	if d.cfg.NamespacePerInstance {

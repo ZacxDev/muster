@@ -75,9 +75,17 @@ const dnsPort = 53
 //	169.254.0.0/16  link-local — cloud metadata endpoints, node-local DNS caches
 //	100.64.0.0/10   RFC 6598 shared address space — overlay and mesh networks
 //
-// ⚠ A CLUSTER WHOSE POD OR SERVICE CIDR IS OUTSIDE THESE RANGES IS NOT COVERED:
-// its in-cluster addresses would count as public. Nothing here reads the
-// cluster's CIDRs.
+// ⚠ WHAT IS "OFF THE CLUSTER" DEPENDS ON THE CLUSTER'S ADDRESSES, AND NOTHING
+// HERE READS THEM. Three shapes this list does not cover:
+//
+//   - a pod or service CIDR outside these ranges: in-cluster addresses would
+//     count as public;
+//   - an apiserver whose ENDPOINT is a public address on an allowed port (usual
+//     on a managed cluster): the Service address is translated to it before the
+//     policy is evaluated, so the API stays reachable;
+//   - anything in-cluster that is ALSO published on a public address — an
+//     ingress or load balancer — which is reachable there like any other
+//     public host.
 //
 // Sorted, so the rendered object is byte-stable.
 var nonPublicIPv4 = []string{
@@ -91,9 +99,9 @@ var nonPublicIPv4 = []string{
 // publicIPv4 is the block the exceptions above are cut from.
 const publicIPv4 = "0.0.0.0/0"
 
-// networkPolicyName is the per-instance NetworkPolicy's name. A function, beside
-// the others in render.go, for the reason stated there: the render and Destroy
-// have to agree on it.
+// networkPolicyName is the per-instance NetworkPolicy's name. A function, like
+// the name functions in render.go and for the reason stated there: the render
+// and Destroy have to agree on it.
 func networkPolicyName(instance string) string { return instance + "-network" }
 
 // validate refuses a configuration that would render a policy admitting more
@@ -268,10 +276,16 @@ func (d *Driver) renderNetworkPolicy(spec provision.Spec, ns string) (*networkin
 	}, nil
 }
 
-// NetworkPolicyRBACPrerequisite is every (resource, verb) the muster
-// ServiceAccount must hold on `networking.k8s.io` for an isolated instance to be
-// created, reconciled and destroyed. It is the set the calls in this file make,
-// and nothing else: no list, no watch, no patch.
+// NetworkPolicyRBACPrerequisite is every verb the muster ServiceAccount must hold
+// on `networkpolicies.networking.k8s.io` for an isolated instance to be created,
+// reconciled and destroyed. It is the set of calls this driver makes on that
+// resource — applyNetworkPolicy's here, and Destroy's get and delete in
+// driver.go — and nothing else: no list, no watch, no patch.
+// TestTheRBACPrerequisiteIsTheVerbsTheDriverCalls measures it off an instance's
+// whole life.
+//
+// ⚠ ON A DRIVER CONFIGURED FOR ISOLATION, `get` IS NEEDED TO DESTROY ANY
+// INSTANCE, isolated or not. See Destroy.
 //
 // As a ClusterRole rule:
 //
@@ -279,6 +293,10 @@ func (d *Driver) renderNetworkPolicy(spec provision.Spec, ns string) (*networkin
 //     resources: ["networkpolicies"]
 //     verbs: ["get", "create", "update", "delete"]
 var NetworkPolicyRBACPrerequisite = []string{"get", "create", "update", "delete"}
+
+// networkPolicyRBACHint is the rule to add, as one sentence for an error message.
+var networkPolicyRBACHint = "grant muster's ClusterRole apiGroups [\"networking.k8s.io\"] resources " +
+	"[\"networkpolicies\"] verbs [" + quotedVerbs(NetworkPolicyRBACPrerequisite) + "]"
 
 // networkPolicyForbidden is the refusal for an apiserver 403 on the instance's
 // NetworkPolicy.
@@ -291,12 +309,20 @@ var NetworkPolicyRBACPrerequisite = []string{"get", "create", "update", "delete"
 // returns the same answer until an operator changes RBAC, so the message names
 // the verb and the rule to add, and the sentinel is ErrUnsupported: the driver
 // cannot do what the spec asks and is refusing rather than doing part of it.
+//
+// 🔴 "NOT STARTED" IS ONLY HALF OF WHAT CAN BE TRUE, SO THE MESSAGE SAYS BOTH
+// HALVES. apply returned before writing anything else, which means an instance
+// that was not running is still not running — and an instance that was ALREADY
+// running (one created before its kind was isolated, reached by an Update while
+// up) is STILL running, with no policy. This function cannot tell which it is
+// looking at, and a message that said only "was NOT started" told the operator
+// of the second case that there was nothing left to stop.
 func networkPolicyForbidden(verb, name, ns string, err error) error {
 	return fmt.Errorf("%w: muster's ServiceAccount may not %s networkpolicies.networking.k8s.io (%q in namespace %q): %v. "+
-		"The instance was NOT started: its spec asks for network isolation and it must not run without it. "+
-		"Grant muster's ClusterRole apiGroups [\"networking.k8s.io\"] resources [\"networkpolicies\"] verbs [%s], "+
-		"then start the agent again",
-		provision.ErrUnsupported, verb, name, ns, err, quotedVerbs(NetworkPolicyRBACPrerequisite))
+		"Nothing was written for this instance: its spec asks for network isolation, so it was NOT started — "+
+		"and if it was ALREADY RUNNING from before this refusal it is STILL RUNNING WITHOUT A NetworkPolicy; stop it. "+
+		"To fix: %s, then start the agent again",
+		provision.ErrUnsupported, verb, name, ns, err, networkPolicyRBACHint)
 }
 
 func quotedVerbs(verbs []string) string {
@@ -319,9 +345,16 @@ func quotedVerbs(verbs []string) string {
 //
 // ⚠ "EXISTS ONLY IF THIS RETURNED nil" IS A CLAIM ABOUT THIS DRIVER'S WRITES. An
 // instance created by a muster that predates this function has a Deployment and
-// no policy, and stays that way until its next Update: Scale does not come
-// through apply, and Create on an existing Deployment refuses on the changed
-// fingerprint rather than reconciling.
+// no policy, and stays that way until its next SUCCESSFUL Update: Scale does not
+// come through apply, and Create on an existing Deployment refuses on the changed
+// fingerprint rather than reconciling. A REFUSED Update of such an instance
+// leaves it exactly as it was — running, if it was running — which
+// networkPolicyForbidden's message says in as many words.
+//
+// ⚠ THE CONTROLLER SELECTOR IS NOT IN THE SPEC, SO IT IS NOT IN THE FINGERPRINT.
+// Changing Config.NetworkPolicy changes what the NEXT apply writes; an existing
+// instance's policy keeps the old selector until then, and nothing reports the
+// difference.
 //
 // 🔴 A SPEC THAT DECLARES NO ISOLATION MAKES NO networking.k8s.io CALL, NOT EVEN
 // A READ, AND THAT IS WHY THERE IS NO STALE-POLICY SWEEP HERE — unlike the
