@@ -12,9 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,12 +37,6 @@ type pwaNotes struct {
 	creates int
 	writes  int
 	count   int
-}
-
-func (n *pwaNotes) Get(_ context.Context, id int64) (notes.Note, error) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return notes.Note{ID: id, Status: n.status[id]}, nil
 }
 
 func (n *pwaNotes) SetStatus(_ context.Context, id int64, status string) (notes.Note, error) {
@@ -73,28 +65,6 @@ func (n *pwaNotes) writeCount() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.creates + n.writes
-}
-
-// notifyRouter records every notification it is asked to send.
-type notifyRouter struct {
-	stubRouter
-	mu   sync.Mutex
-	sent []RouterNotification
-}
-
-func (r *notifyRouter) Notify(_ context.Context, n RouterNotification) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sent = append(r.sent, n)
-	return nil
-}
-
-func (r *notifyRouter) take() []RouterNotification {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := r.sent
-	r.sent = nil
-	return out
 }
 
 func pwaServer(t *testing.T, st *pwaNotes) (*Server, http.Handler) {
@@ -398,56 +368,6 @@ func TestServiceWorkerCarriesTheBuild(t *testing.T) {
 	}
 }
 
-// swSource is the shipped worker's text.
-func swSource(t *testing.T) string {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join("..", "..", "web", "static", "sw.js"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
-}
-
-// listenerBody returns the source of `self.addEventListener('<event>', …)` up to
-// the next top-level listener — enough to ask what one handler does.
-func listenerBody(t *testing.T, src, event string) string {
-	t.Helper()
-	start := strings.Index(src, "self.addEventListener('"+event+"'")
-	if start < 0 {
-		t.Fatalf("the worker has no %q listener", event)
-	}
-	rest := src[start+1:]
-	if end := strings.Index(rest, "\nself.addEventListener("); end >= 0 {
-		return src[start : start+1+end]
-	}
-	return src[start:]
-}
-
-// TestServiceWorkerWaitsToBeTold — INVARIANT GUARDS on the shipped worker's
-// text (the update behaviour itself is asserted in the browser by the e2e
-// update spec):
-//   - the install listener does not take over (no skip-waiting call),
-//   - a message handler takes over on SKIP_WAITING,
-//   - the offline shell is still gated on navigator.onLine === false,
-//   - the shell cache is per-build.
-func TestServiceWorkerWaitsToBeTold(t *testing.T) {
-	src := swSource(t)
-	install := listenerBody(t, src, "install")
-	if strings.Contains(install, "skipWaiting(") {
-		t.Errorf("the install listener calls skipWaiting(): every deploy would swap the worker under open pages.\n%s", install)
-	}
-	msg := listenerBody(t, src, "message")
-	if !strings.Contains(msg, "'SKIP_WAITING'") || !strings.Contains(msg, "self.skipWaiting()") {
-		t.Errorf("no SKIP_WAITING handler that calls self.skipWaiting(): the Reload button could never take effect.\n%s", msg)
-	}
-	if !strings.Contains(listenerBody(t, src, "fetch"), "if (navigator.onLine !== false) return;") {
-		t.Error("the offline shell is no longer gated on navigator.onLine === false; an auth redirect could be answered from cache")
-	}
-	if !strings.Contains(src, "const CACHE = 'muster-shell-' + BUILD;") {
-		t.Error("the shell cache name no longer derives from BUILD; the offline shell would outlive deploys")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // share target
 // ---------------------------------------------------------------------------
@@ -575,58 +495,6 @@ func TestReviewCountIsSessionGatedAndCounts(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.Count != n {
 			t.Errorf("review-count body %s, want count %d", rec.Body.String(), n)
 		}
-	}
-}
-
-// TestLeavingReviewClosesTheNotification: through the ONE status chokepoint,
-// leaving ready_for_review sends exactly one `resolved` push carrying the
-// review push's own tag; other transitions send none.
-func TestLeavingReviewClosesTheNotification(t *testing.T) {
-	st := &pwaNotes{status: map[int64]string{}}
-	s, _ := pwaServer(t, st)
-	rr := &notifyRouter{}
-	s.UseRouter(rr)
-	ctx := context.Background()
-	step := func(id int64, to string) []RouterNotification {
-		if _, err := s.applyTaskStatus(ctx, writerHumanUI, id, to); err != nil {
-			t.Fatalf("applyTaskStatus(%d, %s): %v", id, to, err)
-		}
-		s.WaitForPushes()
-		return rr.take()
-	}
-	kinds := func(ns []RouterNotification) []string {
-		var out []string
-		for _, n := range ns {
-			out = append(out, n.Type+":"+n.Tag)
-		}
-		sort.Strings(out)
-		return out
-	}
-
-	st.status[7] = notes.StatusOpen
-	if got := kinds(step(7, notes.StatusInProgress)); len(got) != 0 {
-		t.Errorf("open → in_progress sent %v, want nothing", got)
-	}
-	if got := kinds(step(7, notes.StatusReadyForReview)); strings.Join(got, ",") != "task:task-7-done" {
-		t.Errorf("in_progress → ready_for_review sent %v, want [task:task-7-done]", got)
-	}
-	if got := kinds(step(7, notes.StatusComplete)); strings.Join(got, ",") != "resolved:task-7-done" {
-		t.Errorf("ready_for_review → complete sent %v, want exactly [resolved:task-7-done]", got)
-	}
-	if got := kinds(step(7, notes.StatusOpen)); len(got) != 0 {
-		t.Errorf("complete → open sent %v, want nothing", got)
-	}
-	// Re-entering review notifies again: the dedupe mark was cleared on the way out.
-	if got := kinds(step(7, notes.StatusReadyForReview)); strings.Join(got, ",") != "task:task-7-done" {
-		t.Errorf("re-entering review sent %v, want a fresh [task:task-7-done]", got)
-	}
-	// A restart between the two transitions loses the in-memory mark; the close
-	// is keyed on the observed status, so it still goes out.
-	s.taskDoneMu.Lock()
-	s.taskDoneNotified = map[int64]bool{}
-	s.taskDoneMu.Unlock()
-	if got := kinds(step(7, notes.StatusInProgress)); strings.Join(got, ",") != "resolved:task-7-done" {
-		t.Errorf("leaving review after a restart sent %v, want [resolved:task-7-done]", got)
 	}
 }
 

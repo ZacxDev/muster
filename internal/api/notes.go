@@ -1359,14 +1359,6 @@ func (s *Server) applyTaskStatus(ctx context.Context, writer statusWriter, id in
 	if !notes.ValidStatus(status) {
 		return notes.Note{}, errInvalidStatus
 	}
-	// The status BEFORE the write, read only to see a task LEAVE ready_for_review
-	// (below). A failed read is not a failed write: prev stays "" and the worst
-	// case is one stale notification left on a device, which is what happened on
-	// every transition before this read existed.
-	var prev string
-	if before, gerr := s.ext.Notes.Get(ctx, id); gerr == nil {
-		prev = before.Status
-	}
 	note, err := s.setNoteStatus(ctx, writer, id, status)
 	if err != nil {
 		return notes.Note{}, err
@@ -1374,14 +1366,14 @@ func (s *Server) applyTaskStatus(ctx context.Context, writer statusWriter, id in
 	// Background push when this task ENTERS ready_for_review (deduped so a re-save
 	// doesn't re-buzz). Best-effort + nil-push-safe.
 	s.notifyTaskDone(note)
-	// ...and the matching close when it LEAVES. On Android the app icon's badge
-	// is the unread-notification dot, so a review push that outlives the review
-	// keeps the dot lit after the work is done. It is keyed on the OBSERVED
-	// previous status, not on the in-memory dedupe map, so a restart between the
-	// two transitions still closes it.
-	if prev == notes.StatusReadyForReview && note.Status != notes.StatusReadyForReview {
-		s.notifyTaskLeftReview(note)
-	}
+	// ⚠ NOTHING CLOSES THAT NOTIFICATION WHEN THE TASK LEAVES REVIEW, so the
+	// Android icon dot (Android's badge is the unread-notification count; it has
+	// no badging API) is NOT cleared by muster. A router-relayed close was tried
+	// and removed (PR #38, round 0): as deployed, muster runs standalone — no
+	// router, no push routes — so it could never reach a device, and it cost a DB
+	// read before every status write. Clearing the dot needs muster-native Web Push — a
+	// separate arc. The desktop badge (setAppBadge, /ui/tasks/review-count) is
+	// unaffected: it re-reads the count on task.changed.
 	// 🔴 BROADCAST HERE, FOR EVERY CALLER, AND AFTER THE WRITE — the human route
 	// used to broadcast NOTHING while the machine route broadcast from its own
 	// handler. That split is what let the two disagree, and two comments in this

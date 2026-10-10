@@ -76,9 +76,10 @@ type WebManifest struct {
 //   - share_target is GET. Behind the forward-auth edge a POST is answered 303
 //     with its body dropped; a GET's query survives the login round trip (and
 //     muster's own ?next=), so a share started while signed out still lands.
-//   - every image lives under /static/icons/, the one static prefix the edge
-//     lets through without a session — the screenshots included, so the richer
-//     install sheet does not depend on how the browser fetches them.
+//   - every image lives under /static/icons/, the one static prefix the edge is
+//     planned to let through without a session (an Authelia bypass) — the
+//     screenshots included, so the richer install sheet does not depend on how
+//     the browser fetches them. Hence the fixture-data-only rule on them below.
 //   - Chrome on Android shows at most three shortcuts; there are three.
 func Manifest() WebManifest {
 	icon := func(src, sizes, purpose string) manifestImage {
@@ -122,6 +123,9 @@ func Manifest() WebManifest {
 			Enctype: "application/x-www-form-urlencoded",
 			Params:  map[string]string{"title": "title", "text": "text", "url": "url"},
 		},
+		// 🔴 These PNGs must only ever be generated from SEEDED FIXTURE DATA
+		// (`npm run capture` in e2e/, against the *_e2e seed): /static/icons/* is
+		// planned to be reachable without auth, so anything in them is public.
 		Screenshots: []manifestImage{
 			shot("/static/icons/screenshot-tasks-narrow.png", "The task board, with a task ready for review"),
 			shot("/static/icons/screenshot-agents-narrow.png", "Agents at work, each with its live status"),

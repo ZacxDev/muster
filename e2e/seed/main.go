@@ -31,15 +31,8 @@ func main() {
 
 func run() error {
 	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		return fmt.Errorf("DATABASE_URL is required")
-	}
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return fmt.Errorf("parse DATABASE_URL: %w", err)
-	}
-	if name := strings.TrimPrefix(u.Path, "/"); !strings.HasSuffix(name, "_e2e") {
-		return fmt.Errorf("refusing to truncate database %q: the e2e seed only touches a database whose name ends in _e2e", name)
+	if err := checkE2EDatabase(dsn); err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -95,5 +88,24 @@ func run() error {
 		}
 	}
 	fmt.Printf("seed: %d tasks, 3 agents\n", len(tasks))
+	return nil
+}
+
+// checkE2EDatabase is the package doc's guard: nil only for a DSN naming a database
+// whose name ends in _e2e. It is what keeps the manifest screenshots honest
+// too — `npm run capture` shares global-setup, which runs this seed before it
+// starts the server, so a capture pointed at a real database fails here instead
+// of photographing it.
+func checkE2EDatabase(dsn string) error {
+	if dsn == "" {
+		return fmt.Errorf("DATABASE_URL is required")
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return fmt.Errorf("parse DATABASE_URL: %w", err)
+	}
+	if name := strings.TrimPrefix(u.Path, "/"); !strings.HasSuffix(name, "_e2e") {
+		return fmt.Errorf("refusing to truncate database %q: the e2e seed only touches a database whose name ends in _e2e", name)
+	}
 	return nil
 }

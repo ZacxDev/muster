@@ -171,9 +171,9 @@ func pwaScript() g.Node {
   document.addEventListener('htmx:load', function () { showInstall(!!deferred && !standalone()); });
 
   // --- app badge (desktop / ChromeOS) ---------------------------------------
-  // Android has no badging API: its icon dot is the unread-notification count,
-  // which the server keeps true by closing a review notification when the task
-  // leaves review. Where setAppBadge exists, show the ready-for-review count.
+  // Where setAppBadge exists, show the ready-for-review count. Android has no
+  // badging API (its icon dot is the unread-notification count) and muster does
+  // not clear that dot: that needs muster-native Web Push, a separate arc.
   if ('setAppBadge' in navigator) {
     var timer = null;
     var refresh = function () {
