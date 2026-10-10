@@ -135,6 +135,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
+				manifestLink(),
 				// Stripped too: it is the same string on the same document, and a tab
 				// title reading `**fix** the `+"`chip`"+` row · muster` is the same defect in
 				// a third place.
@@ -215,6 +216,9 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// implementation — the old standalone comboboxScript was deleted,
 				// retiring the two-copies-of-the-combobox-JS debt.
 				appScript(feat),
+				// The worker, update toast and app badge — on every document, not
+				// just the shell, so an update is offered wherever the operator is.
+				pwaChrome(),
 			),
 		),
 	)

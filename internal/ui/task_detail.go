@@ -50,6 +50,7 @@ func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
+				manifestLink(),
 				TitleEl(g.Text(heading+" · muster")),
 				Link(Rel("stylesheet"), Href("/static/app.css")),
 				Script(Src("/static/vendor/htmx.min.js"), Defer()),
@@ -129,6 +130,9 @@ func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 				// It defines window.toast, which resyncScript's listeners call — so it
 				// must be present, and it is fine for it to load after them.
 				appScript(feat),
+				// The worker, update toast and app badge — on every document, not
+				// just the shell, so an update is offered wherever the operator is.
+				pwaChrome(),
 			),
 		),
 	)

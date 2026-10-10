@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: build vet run image test test-db test-db-down leakscan css css-check check help verb-ledger
+.PHONY: build vet run image test test-db test-db-down leakscan css css-check check help verb-ledger icons
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -205,6 +205,28 @@ test-db-down:
 # below a measurement rather than a claim.
 leakscan:
 	python3 tests/leakscan.py --self-test && python3 tests/leakscan.py
+
+# Render the PWA icons from their SVG sources in web/icon-src/ (the Brass Roll
+# concept). The PNGs are committed — they are go:embed inputs — so this runs
+# only when a source changes. Needs rsvg-convert (librsvg); on NixOS:
+#   nix-shell -p librsvg --run 'make icons'
+# The sizes are asserted against the manifest by TestManifestImagesShipAtTheirDeclaredSize.
+# ⚠ A GENERATOR, NOT A GATE, so CI does not run it (the header's "every target
+# runs in CI" is about checks). The gate is that test, which reads the PNGs.
+# The manifest screenshots are generated the same way by `npm run capture` in
+# e2e/ (seeded fixture data only).
+ICON_SRC := web/icon-src
+ICON_OUT := web/static/icons
+RSVG ?= rsvg-convert
+icons:
+	$(RSVG) -w 192 -h 192 $(ICON_SRC)/icon.svg -o $(ICON_OUT)/icon-192.png
+	$(RSVG) -w 512 -h 512 $(ICON_SRC)/icon.svg -o $(ICON_OUT)/icon-512.png
+	$(RSVG) -w 192 -h 192 $(ICON_SRC)/maskable.svg -o $(ICON_OUT)/maskable-192.png
+	$(RSVG) -w 512 -h 512 $(ICON_SRC)/maskable.svg -o $(ICON_OUT)/maskable-512.png
+	$(RSVG) -w 72 -h 72 $(ICON_SRC)/badge.svg -o $(ICON_OUT)/badge-72.png
+	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-new.svg -o $(ICON_OUT)/shortcut-new-96.png
+	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-tasks.svg -o $(ICON_OUT)/shortcut-tasks-96.png
+	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-agents.svg -o $(ICON_OUT)/shortcut-agents-96.png
 
 # Rebuild the stylesheet from the Go views.
 css:

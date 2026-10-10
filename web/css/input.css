@@ -118,6 +118,17 @@
   }
 
   /*
+   * The `hidden` ATTRIBUTE must win over a display utility. Preflight's
+   * `[hidden]` rule and `.flex` have equal specificity and utilities come
+   * later, so an element written `class="flex" hidden` would SHOW. The PWA
+   * chrome (update toast, install button) is toggled with el.hidden, so this
+   * is what makes that toggle mean anything.
+   */
+  [hidden] {
+    display: none !important;
+  }
+
+  /*
    * 🔴 PHONE-WIDTH FORM CONTROLS: 16px TEXT, 44px TALL, IN ONE PLACE.
    *
    * A mobile browser zooms the page when focus lands in a field whose text is

@@ -22,8 +22,8 @@ func RenderTagDatalist(w io.Writer, vocab []notes.TagCount) error {
 }
 
 // RenderNotesModal writes the /ui/notes/new partial (the create-note form body).
-func RenderNotesModal(w io.Writer, directories []string, directoriesFailed bool) error {
-	return NotesModalBody(directories, directoriesFailed).Render(w)
+func RenderNotesModal(w io.Writer, directories []string, directoriesFailed bool, prefill string) error {
+	return NotesModalBodyWith(directories, directoriesFailed, prefill).Render(w)
 }
 
 // RenderNotesEditModal writes the /ui/tasks/{id}/edit partial (the edit-task form

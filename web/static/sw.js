@@ -1,8 +1,10 @@
 /*
  * muster service worker.
  *
- * Served from "/sw.js" (root scope) so it controls the whole origin. It does
- * three jobs:
+ * Served from "/sw.js" (root scope) so it controls the whole origin, with the
+ * running build stamped into BUILD below by the server (internal/api/pwa.go) —
+ * so every deploy changes these bytes and is offered to open pages as an
+ * update. It does four jobs:
  *   1. Provide a minimal offline app shell (cache the root document + CSS so
  *      the UI still opens with no network; live data still needs the network
  *      and degrades gracefully). 🔴 Served ONLY while navigator.onLine is
@@ -12,6 +14,9 @@
  *      "resolved" control message.
  *   3. Handle notification clicks: approve/deny a PRIVILEGE request directly
  *      from the worker, or focus/open the app at the relevant card.
+ *   4. Wait to be told. A new worker does NOT take over at install; it waits
+ *      until the page's "Reload" (pwaScript) posts SKIP_WAITING, so an open
+ *      page is never switched under its own inline scripts.
  *
  * 🔴 THIS IS NOT THE UPSTREAM WORKER, AND ONE BRANCH IS DELIBERATELY ABSENT.
  * Upstream this file also decides permission requests, by POSTing to the
@@ -33,7 +38,12 @@
 
 'use strict';
 
-const CACHE = 'muster-shell-v1';
+// Replaced by the server with the build version (a JSON string literal). The
+// placeholder must appear exactly once; the server refuses to serve otherwise.
+const BUILD = "__MUSTER_BUILD__";
+// Per-build shell cache: activate deletes every other name, so the offline
+// shell is refreshed by each deploy instead of living forever.
+const CACHE = 'muster-shell-' + BUILD;
 // The minimal shell: the document and the compiled CSS. Vendored JS is fetched
 // fresh (it is small and benefits from normal HTTP caching) to avoid serving a
 // stale htmx during development.
@@ -47,8 +57,22 @@ self.addEventListener('install', (event) => {
       // Don't fail install if a shell asset is briefly unavailable; the worker
       // still installs and push keeps working.
       .catch(() => undefined)
-      .then(() => self.skipWaiting())
   );
+  // 🔴 NO SKIP-WAITING CALL HERE. It used to be unconditional, so a deploy swapped
+  // the worker under every open page silently. The page offers the update and
+  // the operator's Reload sends SKIP_WAITING (the message handler below).
+});
+
+self.addEventListener('message', (event) => {
+  const msg = event.data || {};
+  if (msg.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+    return;
+  }
+  // Lets a page (and the e2e suite) ask which build is in control.
+  if (msg.type === 'GET_VERSION' && event.ports && event.ports[0]) {
+    event.ports[0].postMessage({ build: BUILD });
+  }
 });
 
 self.addEventListener('activate', (event) => {

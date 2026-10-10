@@ -363,6 +363,16 @@ func (s *PGStore) ListPage(ctx context.Context, f ListFilter) (Page, error) {
 	return Page{Notes: out, Total: int(total)}, nil
 }
 
+// CountByStatus counts live tasks in one status. The deleted_at predicate is the
+// same soft-delete rule every other read applies: a dismissed task does not
+// exist until Restore, so it must not keep a badge lit either.
+func (s *PGStore) CountByStatus(ctx context.Context, status string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx,
+		`SELECT count(*) FROM notes WHERE status = $1 AND deleted_at IS NULL`, status).Scan(&n)
+	return n, err
+}
+
 // ListSummaries returns every LIVE note's own columns (newest-updated first) in a
 // SINGLE query, with NO attachment/comment/session fan-out. List does four
 // queries and hydrates every attachment, EVERY COMMENT OF EVERY NOTE and every

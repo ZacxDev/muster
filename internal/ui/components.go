@@ -221,8 +221,17 @@ func tabHeading(tab string) string {
 //	WHO CHECKS IT: the reviewer of the API-carve pull request, against that
 //	  derived test.
 func Page(activeTab string, feat Features) g.Node {
+	return Doctype(shell(activeTab, feat, g.Text("")))
+}
+
+// shell is the <html> element of every shell document, with one extra
+// body-level node — ComposePage's open-on-load composer, or nothing. Page and
+// ComposePage both go through here, so they cannot differ in anything but that
+// node. (Each wraps it in its own Doctype so the document registry in
+// documents_test.go sees two documents rather than one helper.)
+func shell(activeTab string, feat Features, extra g.Node) g.Node {
 	activeTab = normalizeVisibleTab(activeTab, feat)
-	return Doctype(
+	return g.Group{
 		HTML(Class("dark"), Lang("en"),
 			Head(
 				Meta(Charset("utf-8")),
@@ -234,10 +243,7 @@ func Page(activeTab string, feat Features) g.Node {
 				Meta(Name("apple-mobile-web-app-status-bar-style"), Content("black-translucent")),
 				Meta(Name("apple-mobile-web-app-title"), Content("muster")),
 				TitleEl(g.Text("muster")),
-				// crossorigin=use-credentials so the browser sends the basic-auth +
-				// session cookie when fetching the manifest on the public (Traefik
-				// basic-auth) host — otherwise the credential-less manifest fetch 401s.
-				Link(Rel("manifest"), Href("/manifest.webmanifest"), g.Attr("crossorigin", "use-credentials")),
+				manifestLink(),
 				Link(Rel("icon"), g.Attr("type", "image/png"), g.Attr("sizes", "192x192"), Href("/static/icons/icon-192.png")),
 				Link(Rel("apple-touch-icon"), Href("/static/icons/icon-192.png")),
 				Link(Rel("stylesheet"), Href("/static/app.css")),
@@ -358,9 +364,11 @@ func Page(activeTab string, feat Features) g.Node {
 					resyncScript(),
 					// Sidebar open/close + SPA tab routing (pushState) + FAB toggle.
 					appScript(feat),
-					// PWA: register the service worker + wire the push-subscribe
-					// flow behind the "Enable" control, surfacing failures.
-					pwaScript(),
+					// PWA: the service worker, install, update toast and app badge
+					// (pwa.go) — then the push-subscribe flow behind the "Enable"
+					// control, which uses the registration pwaScript made.
+					pwaChrome(),
+					pushScript(),
 					// 🔴 THE CHIEF PANEL'S OPEN/WIDTH MEMORY, IN THE SHELL — NOT IN THE
 					// PANEL. #chief-panel-body is an `hx-swap: innerHTML` target, so a
 					// persistence script rendered inside it would be destroyed by the
@@ -400,9 +408,10 @@ func Page(activeTab string, feat Features) g.Node {
 				// is lazy, so the cost of always rendering it is the shut aside and
 				// nothing else.
 				ChiefPanel(),
+				extra,
 			),
 		),
-	)
+	}
 }
 
 // panelClass returns the tabpanel class string, hidden unless active — and, for
@@ -949,6 +958,7 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 			Div(
 				ID("sidebar-prefs"),
 				Class("mt-auto flex flex-col gap-1 border-t border-line p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]"),
+				installButton(),
 				themeToggle(),
 			),
 		),
@@ -3073,12 +3083,18 @@ func cardMetaNavScript() g.Node {
 `))
 }
 
-// pwaScript registers the service worker and drives the Web Push subscription
-// flow. It is fully feature-detected: on a browser without serviceWorker /
-// PushManager / Notification it does nothing (and leaves the Enable button
-// hidden). Subscribing is gated behind a user gesture on the header Enable
-// button, as required for Notification.requestPermission() on modern browsers.
-func pwaScript() g.Node {
+// pushScript drives the Web Push subscription flow. It is fully
+// feature-detected: on a browser without serviceWorker / PushManager /
+// Notification it does nothing (and leaves the Enable button hidden).
+// Subscribing is gated behind a user gesture on the header Enable button, as
+// required for Notification.requestPermission() on modern browsers.
+//
+// 🔴 IT DOES NOT REGISTER THE SERVICE WORKER. pwaScript (pwa.go) is the one
+// registration site and publishes the promise as window.musterSWReady; install,
+// update and share all depend on the worker, and none of them should depend on
+// the script whose job is notifications. pwaScript must therefore render BEFORE
+// this one, which TestPWAScriptRegistersBeforeThePushScript pins.
+func pushScript() g.Node {
 	return Script(g.Raw(`
 (function () {
   var enableBtn = document.getElementById('enable-push');
@@ -3126,10 +3142,10 @@ func pwaScript() g.Node {
     return out;
   }
 
-  // Build credentials-free absolute URLs: when the page is reached with
-  // basic-auth credentials in the URL (https://user:pass@host/...), the Fetch
-  // API refuses any request URL that resolves to one containing credentials.
-  // location.origin is always scheme://host:port with no userinfo.
+  // Absolute, same-origin request URLs. (This used to justify itself with
+  // basic-auth credentials in the page URL — an edge muster no longer sits
+  // behind; it is harmless either way, since location.origin never carries
+  // userinfo.)
   function apiURL(p) { return location.origin + p; }
 
   async function getVapidKey() {
@@ -3193,7 +3209,13 @@ func pwaScript() g.Node {
     applyState('enable');
   }
 
-  navigator.serviceWorker.register('/sw.js').then(function (reg) {
+  var registered = window.musterSWReady;
+  if (!registered) {
+    status('Service worker failed to register; notifications are unavailable.', 'error');
+    applyState('off');
+    return;
+  }
+  registered.then(function (reg) {
     refresh(reg);
 
     if (enableBtn) {

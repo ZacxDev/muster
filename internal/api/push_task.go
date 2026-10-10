@@ -266,7 +266,31 @@ func (s *Server) notifyTaskDone(n notes.Note) {
 		ID:    strconv.FormatInt(n.ID, 10),
 		Title: fmt.Sprintf("Task #%d ready for review", n.ID),
 		Body:  taskTitle(n),
-		Tag:   fmt.Sprintf("task-%d-done", n.ID),
+		Tag:   taskDoneTag(n.ID),
+	})
+}
+
+// taskDoneTag is the notification tag of a task's ready-for-review push. ONE
+// spelling, because the close below finds the notification by it: a tag that
+// drifted between the two would close nothing and say nothing.
+func taskDoneTag(id int64) string { return fmt.Sprintf("task-%d-done", id) }
+
+// resolvedNotificationType is the control message web/static/sw.js answers by
+// closing every notification carrying the payload's tag and rendering nothing.
+const resolvedNotificationType = "resolved"
+
+// notifyTaskLeftReview closes a task's ready-for-review notification on every
+// device once the task has left that status (completed, reopened, …). Android
+// draws the app-icon badge from unread notifications, so this is what clears
+// the dot. Best-effort + nil-push-safe, like every other task push.
+func (s *Server) notifyTaskLeftReview(n notes.Note) {
+	s.taskDoneMu.Lock()
+	delete(s.taskDoneNotified, n.ID)
+	s.taskDoneMu.Unlock()
+	s.pushTask(RouterNotification{
+		Type: resolvedNotificationType,
+		ID:   strconv.FormatInt(n.ID, 10),
+		Tag:  taskDoneTag(n.ID),
 	})
 }
 

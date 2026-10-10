@@ -1947,6 +1947,13 @@ func NotesEditModalBody(v NoteEditView) g.Node {
 // #task-modal-body when the FAB is tapped. It posts multipart/form-data to
 // /tasks, morphs the result into #tasks-list, and closes the modal on success.
 func NotesModalBody(directories []string, directoriesFailed bool) g.Node {
+	return NotesModalBodyWith(directories, directoriesFailed, "")
+}
+
+// NotesModalBodyWith is NotesModalBody with the task text pre-filled — what a
+// share or the "New task" shortcut opens (ComposePage). The text is a Textarea
+// CHILD, so gomponents escapes it: shared markup arrives as inert characters.
+func NotesModalBodyWith(directories []string, directoriesFailed bool, prefill string) g.Node {
 	return g.Group{
 		Div(
 			Class("mb-4 flex items-center gap-3"),
@@ -1982,6 +1989,7 @@ func NotesModalBody(directories []string, directoriesFailed bool) g.Node {
 					g.Attr("autofocus", ""),
 					Placeholder("What needs doing? (a sentence is plenty)"),
 					Class("w-full resize-y rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
+					g.If(prefill != "", g.Text(ClampComposeBody(prefill))),
 				),
 			),
 			// Advanced: directory + optional dispatch config (model/repo/privileges).

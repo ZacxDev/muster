@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+  <!-- purpose "maskable": the same marks, background extended to the edge.
+       Every mark sits inside the 80% safe-zone circle (r = 76.8 about the
+       centre); the farthest point is ~68 units out. -->
+  <rect width="192" height="192" fill="#110F1C"/>
+  <circle cx="58" cy="64" r="13" fill="#E4B556"/>
+  <path d="m51.5 64.5 4.5 4.5 8.5-9" fill="none" stroke="#1E1606" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="84" y="58" width="58" height="12" rx="6" fill="#EEEBF7"/>
+  <circle cx="58" cy="98" r="13" fill="#E4B556"/>
+  <path d="m51.5 98.5 4.5 4.5 8.5-9" fill="none" stroke="#1E1606" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="84" y="92" width="46" height="12" rx="6" fill="#C3BDD9"/>
+  <circle cx="58" cy="132" r="11" fill="none" stroke="#6E6790" stroke-width="4"/>
+  <rect x="84" y="126" width="36" height="12" rx="6" fill="#9A93B5"/>
+</svg>

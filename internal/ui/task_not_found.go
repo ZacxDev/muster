@@ -35,6 +35,7 @@ func TaskNotFoundPage(id string, feat Features) g.Node {
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
+				manifestLink(),
 				TitleEl(g.Text(label+" not found · muster")),
 				Link(Rel("stylesheet"), Href("/static/app.css")),
 				Script(Src("/static/vendor/htmx.min.js"), Defer()),
@@ -90,6 +91,9 @@ func TaskNotFoundPage(id string, feat Features) g.Node {
 				),
 				// Sidebar open/close.
 				appScript(feat),
+				// The worker, update toast and app badge — on every document, not
+				// just the shell, so an update is offered wherever the operator is.
+				pwaChrome(),
 			),
 		),
 	)
