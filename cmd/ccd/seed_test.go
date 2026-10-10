@@ -38,7 +38,8 @@ func seedInto(t *testing.T, cfg, ws string) {
 // 🔴 A LEDGER OF THE HOOKS THE IMAGE REGISTERS: exactly these events, each running
 // `ccd hook <Event>`. It fails when the set GROWS (a new event ccd would receive
 // unasked) or SHRINKS (dropping SessionStart leaves /healthz never ready; dropping
-// StopFailure leaves a failed turn waiting out the whole turn timeout).
+// SessionEnd leaves ccd pasting into a TUI that has exited; dropping StopFailure
+// leaves a failed turn waiting out the whole turn timeout).
 func TestTheImageRegistersExactlyTheHooksCcdNeeds(t *testing.T) {
 	hooks, _ := readObj(t, imageSettingsTemplate)["hooks"].(map[string]any)
 	var events []string
@@ -58,7 +59,7 @@ func TestTheImageRegistersExactlyTheHooksCcdNeeds(t *testing.T) {
 		}
 	}
 	sort.Strings(events)
-	want := []string{"SessionStart", "Stop", "StopFailure", "UserPromptSubmit"}
+	want := []string{"SessionEnd", "SessionStart", "Stop", "StopFailure", "UserPromptSubmit"}
 	if strings.Join(events, ",") != strings.Join(want, ",") {
 		t.Fatalf("registered events %v, want exactly %v", events, want)
 	}

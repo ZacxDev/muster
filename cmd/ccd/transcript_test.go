@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -176,5 +177,31 @@ func TestExtractTurnSkipsSidechainRecords(t *testing.T) {
 `)
 	if got := extract(t, body, "p1").Text(); got != "main reply" {
 		t.Fatalf("Text() = %q", got)
+	}
+}
+
+// readTurnFile starts at the pre-paste size of the transcript; these pin what it
+// does when that offset is exact, mid-record, or stale.
+func TestReadTurnFileFromAnOffset(t *testing.T) {
+	b := fixture(t, "turn_success_tools_2.1.289.jsonl")
+	path := filepath.Join(t.TempDir(), "t.jsonl")
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prompt := bytes.Index(b, []byte(`"promptId":"`+fixturePromptID+`","type":"user"`))
+	lineStart := int64(bytes.LastIndexByte(b[:prompt], '\n') + 1)
+	want := "First segment: I will list the workspace.\n\nSecond segment: the workspace holds file-a and file-b."
+	cases := map[string]int64{
+		"exactly at the prompt's line":          lineStart,
+		"mid-way through the previous record":   lineStart / 2,
+		"past the prompt (file replaced since)": int64(len(b)) - 10,
+		"past the end of the file":              int64(len(b)) * 4,
+		"zero":                                  0,
+	}
+	for name, from := range cases {
+		res, err := readTurnFile(path, fixturePromptID, from)
+		if err != nil || res.Text() != want || !res.Complete {
+			t.Errorf("%s (from=%d): %q complete=%v err=%v", name, from, res.Text(), res.Complete, err)
+		}
 	}
 }

@@ -330,3 +330,19 @@ func TestAStopFailureHookUpdatesTheAuthStateEvenWithNoTurnPending(t *testing.T) 
 		t.Fatalf("auth = %q", got)
 	}
 }
+
+func TestSessionEndMakesTheSessionNotReadyUntilTheNextStart(t *testing.T) {
+	srv, cli := newScripted(t, cliScript{transcript: fixture(t, "turn_success_tools_2.1.289.jsonl"), stopEvent: "Stop"})
+	ts := gatewayServer(t, srv)
+	srv.onHook(hookEvent{Event: "SessionEnd", SessionID: fixtureSessionID})
+	if code, body := postResponses(t, ts.URL, pinnedDerivation, "hi"); code != http.StatusServiceUnavailable || errType(t, body) != failNotReady {
+		t.Fatalf("after SessionEnd: %d %s", code, body)
+	}
+	if len(cli.pasted) != 0 {
+		t.Fatal("pasted into an exited TUI")
+	}
+	srv.onHook(hookEvent{Event: "SessionStart", SessionID: fixtureSessionID, Source: "resume"})
+	if code, body := postResponses(t, ts.URL, pinnedDerivation, "hi"); code != http.StatusOK {
+		t.Fatalf("after the next SessionStart: %d %s", code, body)
+	}
+}

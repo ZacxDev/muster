@@ -3,6 +3,9 @@
     "SessionStart": [
       {"hooks": [{"type": "command", "command": "ccd hook SessionStart", "timeout": 10}]}
     ],
+    "SessionEnd": [
+      {"hooks": [{"type": "command", "command": "ccd hook SessionEnd", "timeout": 10}]}
+    ],
     "UserPromptSubmit": [
       {"hooks": [{"type": "command", "command": "ccd hook UserPromptSubmit", "timeout": 10}]}
     ],

@@ -233,3 +233,74 @@ func TestTmuxAnUntrustedWorkspaceIsNotReady(t *testing.T) {
 		t.Fatalf("control: the tmux session itself should be alive: %v", err)
 	}
 }
+
+// The WHOLE BINARY: `ccd serve` as its own process, configured only through the
+// environment the image's entrypoint sets, creating the tmux session itself
+// (CCD_SESSION_COMMAND) after its listeners are bound, with the probe off. Its
+// SessionStart must arrive and a turn must round-trip through muster's client.
+func TestTmuxTheServeBinaryStartsTheSessionAndAnswers(t *testing.T) {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal("tmux is REQUIRED by the tmuxit suite and is not on PATH; install it (this suite never skips)")
+	}
+	exe, _ := os.Executable()
+	root := t.TempDir()
+	bin, cfg, ws := filepath.Join(root, "bin"), filepath.Join(root, "claude"), filepath.Join(root, "workspace")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, as := range map[string]string{"ccd": "ccd", "claude": "claude"} {
+		shim := fmt.Sprintf("#!/bin/sh\nCCD_TEST_AS=%s exec %q \"$@\"\n", as, exe)
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(shim), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedInto(t, cfg, ws)
+	free := func() string {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer l.Close()
+		return l.Addr().String()
+	}
+	gwAddr, hookAddr := free(), free()
+	sock := fmt.Sprintf("ccd-it-bin-%d-%d", os.Getpid(), time.Now().UnixNano())
+	t.Cleanup(func() { _ = exec.Command(tmuxBin, "-L", sock, "kill-server").Run() })
+
+	cmd := exec.Command(filepath.Join(bin, "ccd"), "serve")
+	cmd.Dir = ws
+	cmd.Env = append(os.Environ(),
+		"PATH="+bin+":"+os.Getenv("PATH"), "SHELL=/bin/sh",
+		"HOOKS_TOKEN="+knownHooksToken, "CLAUDE_CONFIG_DIR="+cfg, "CCD_WORKSPACE="+ws,
+		"CCD_LISTEN="+gwAddr, "CCD_HOOK_LISTEN="+hookAddr, "CCD_HOOK_URL=http://"+hookAddr,
+		"CCD_TMUX_SOCKET="+sock, "CCD_TMUX_CONF=/dev/null", "CCD_PROBE=off",
+		"CCD_SESSION_COMMAND="+filepath.Join(bin, "claude"))
+	var logs strings.Builder
+	cmd.Stdout, cmd.Stderr = &logs, &logs
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+
+	var h health
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		resp, err := http.Get("http://" + gwAddr + "/healthz")
+		if err != nil {
+			continue
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&h)
+		resp.Body.Close()
+		if h.SessionStarted {
+			break
+		}
+	}
+	if !h.SessionStarted || h.Terminal != "ok" || h.Auth != authUnknown {
+		t.Fatalf("healthz %+v; ccd log:\n%s", h, logs.String())
+	}
+	reply, err := mustersGateway(t, "http://"+gwAddr).Chat(context.Background(), contractAgent, "s", "whole binary", nil)
+	sum := sha256.Sum256([]byte("whole binary"))
+	if err != nil || reply != fmt.Sprintf("received 12 bytes\n\nsha256 %s", hex.EncodeToString(sum[:])) {
+		t.Fatalf("reply %q err %v; ccd log:\n%s", reply, err, logs.String())
+	}
+}

@@ -29,8 +29,10 @@
 //	CCD_LISTEN             gateway address        (default :18789)
 //	CCD_HOOK_LISTEN        hook address, loopback (default 127.0.0.1:18790)
 //	CCD_TMUX_SOCKET        tmux -L socket name    (default: tmux's default server)
+//	CCD_TMUX_CONF          tmux -f config file    (default: tmux's default)
 //	CCD_TMUX_TARGET        tmux session/pane      (default cc)
-//	CCD_WORKSPACE          the CLI's working directory, used by the probe (default: cwd)
+//	CCD_WORKSPACE          the CLI's working directory (default: cwd)
+//	CCD_SESSION_COMMAND    if set, the tmux session ccd creates once it is listening
 //	CCD_CLAUDE_BIN         the CLI binary         (default claude)
 //	CCD_PROBE              "off" disables the auth probe (tests only; /healthz then never passes)
 //	CCD_PROBE_MODEL        model for the probe    (default haiku)
@@ -147,7 +149,7 @@ func serve() error {
 	}
 
 	term := tmuxTerminal{
-		bin: "tmux", socket: os.Getenv("CCD_TMUX_SOCKET"),
+		bin: "tmux", socket: os.Getenv("CCD_TMUX_SOCKET"), conf: os.Getenv("CCD_TMUX_CONF"),
 		target: envOr("CCD_TMUX_TARGET", "cc"), enterDelay: 150 * time.Millisecond,
 	}
 	auth := newAuthTracker()
@@ -177,6 +179,16 @@ func serve() error {
 		}
 		log.Printf("ccd: listening on %s", ln.Addr())
 		go func(s *http.Server, ln net.Listener) { errc <- s.Serve(ln) }(s, ln)
+	}
+	// 🔴 THE SESSION STARTS ONLY ONCE BOTH LISTENERS ARE BOUND. Its SessionStart
+	// hook is ccd's one readiness signal and is sent exactly once; a TUI started
+	// before the hook listener exists would announce itself to nobody, and ccd
+	// would report not_ready for the life of the pod.
+	if command := os.Getenv("CCD_SESSION_COMMAND"); command != "" {
+		if err := term.StartSession(ctx, workspace, command); err != nil {
+			return fmt.Errorf("ccd: start the session: %w", err)
+		}
+		log.Printf("ccd: tmux session %q started in %s", term.target, workspace)
 	}
 	select {
 	case <-ctx.Done():

@@ -67,7 +67,8 @@ type server struct {
 	mu             sync.Mutex
 	sessionStarted bool
 	sessionID      string
-	busy           bool // a prompt was submitted (by anyone) and has not stopped
+	transcriptPath string // the session's transcript, as the last hook named it
+	busy           bool   // a prompt was submitted (by anyone) and has not stopped
 	pending        *pendingTurn
 }
 
@@ -135,8 +136,16 @@ func (s *server) onHook(ev hookEvent) {
 		// workspace trust dialog (hooks do not run in an untrusted workspace), so it
 		// is the readiness signal that does not depend on reading the screen.
 		s.sessionStarted, s.sessionID, s.busy = true, ev.SessionID, false
+		s.transcriptPath = ev.TranscriptPath
+	case "sessionend":
+		// The TUI is exiting (an operator's /exit; the entrypoint's loop restarts
+		// it). Until the next SessionStart there is no prompt to paste into.
+		s.sessionStarted, s.busy = false, false
 	case "userpromptsubmit":
 		s.busy = true
+		if ev.TranscriptPath != "" {
+			s.transcriptPath = ev.TranscriptPath
+		}
 		if p := s.pending; p != nil && p.promptID == "" {
 			p.promptID = ev.PromptID
 			select {
@@ -297,7 +306,16 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 			Message: "the session is mid-turn (a prompt was submitted in the terminal)"}
 	}
 	s.pending = p
+	// Where this turn's records can start: the transcript's size BEFORE the paste.
+	// A long-lived session's transcript grows without bound, and readTurn re-reads
+	// it while waiting for turn_duration, so it reads from here rather than from 0.
+	offsetPath, offset := s.transcriptPath, int64(0)
 	s.mu.Unlock()
+	if offsetPath != "" {
+		if fi, err := os.Stat(offsetPath); err == nil {
+			offset = fi.Size()
+		}
+	}
 	defer func() {
 		s.mu.Lock()
 		s.pending = nil
@@ -352,7 +370,11 @@ waitSubmit:
 	if path == "" {
 		path = submitted.TranscriptPath
 	}
-	res, err := s.readTurn(path, submitted.PromptID)
+	from := int64(0)
+	if path == offsetPath {
+		from = offset
+	}
+	res, err := s.readTurn(path, submitted.PromptID, from)
 	if err != nil {
 		return turnOutcome{}, &failure{Status: http.StatusBadGateway, Type: failTranscript, Message: err.Error()}
 	}
@@ -385,7 +407,7 @@ waitSubmit:
 
 // readTurn reads the turn for promptID, re-reading briefly until the CLI has
 // written the turn_duration record that follows its Stop hooks.
-func (s *server) readTurn(path, promptID string) (turnResult, error) {
+func (s *server) readTurn(path, promptID string, from int64) (turnResult, error) {
 	if path == "" || promptID == "" {
 		return turnResult{}, errors.New("the hooks carried no transcript path or prompt id")
 	}
@@ -394,7 +416,7 @@ func (s *server) readTurn(path, promptID string) (turnResult, error) {
 	}
 	deadline := time.Now().Add(s.cfg.TranscriptGrace)
 	for {
-		res, err := readTurnFile(path, promptID)
+		res, err := readTurnFile(path, promptID, from)
 		if err == nil && res.Found && res.Complete {
 			return res, nil
 		}
@@ -411,12 +433,26 @@ func (s *server) readTurn(path, promptID string) (turnResult, error) {
 	}
 }
 
-func readTurnFile(path, promptID string) (turnResult, error) {
+// readTurnFile extracts the turn from byte offset `from` onwards, falling back to
+// the whole file when the prompt is not found after it (the file was replaced or
+// truncated since the offset was taken). A `from` that lands mid-record only
+// costs that one unparseable line, which extractTurn skips.
+func readTurnFile(path, promptID string, from int64) (turnResult, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return turnResult{}, err
 	}
 	defer f.Close()
+	if from > 0 {
+		if _, err := f.Seek(from, io.SeekStart); err == nil {
+			if res, err := extractTurn(f, promptID); err != nil || res.Found {
+				return res, err
+			}
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return turnResult{}, err
+		}
+	}
 	return extractTurn(f, promptID)
 }
 

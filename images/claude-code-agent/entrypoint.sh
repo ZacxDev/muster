@@ -3,9 +3,9 @@
 # interactive session in tmux, then run ccd in the foreground.
 #
 # 🔴 ccd IS THE FOREGROUND PROCESS, SO ITS EXIT IS THE CONTAINER'S EXIT. The TUI
-# lives in a detached tmux session beside it; a TUI that exits (an operator typing
-# /exit) is restarted by the loop below rather than leaving a pod whose chat
-# endpoint answers "not_ready" for ever.
+# lives in a detached tmux session beside it (ccd starts it); a TUI that exits (an
+# operator typing /exit) is restarted by the loop below rather than leaving a pod
+# whose chat endpoint answers "not_ready" for ever.
 #
 # 🔴 `claude --continue || claude` IS WHAT MAKES A POD RESTART RESUME THE SAME
 # CONVERSATION. --continue picks the most recent session for this working
@@ -38,9 +38,8 @@ ccd seed --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
   --settings-template /etc/ccd/settings.json
 
 cd "$CCD_WORKSPACE"
-# `new-session -A -d`: attach-or-create, detached — idempotent if the container's
-# process is restarted while a tmux server somehow survives.
-tmux new-session -A -d -s "$CCD_TMUX_TARGET" -x 200 -y 50 -c "$CCD_WORKSPACE" \
-  'while true; do claude --continue || claude; sleep 2; done'
-
+# ccd creates the tmux session itself, AFTER its hook listener is bound — the
+# TUI's SessionStart hook is ccd's readiness signal and is sent only once.
+export CCD_TMUX_TARGET
+export CCD_SESSION_COMMAND='while true; do claude --continue || claude; sleep 2; done'
 exec ccd serve

@@ -34,6 +34,7 @@ import (
 type tmuxTerminal struct {
 	bin    string
 	socket string // -L name; "" = the default server
+	conf   string // -f file for a server this process starts; "" = tmux's default
 	target string // the session (and pane) to drive
 	// enterDelay separates the paste from the Enter, so the TUI has ingested the
 	// paste before the submit key arrives.
@@ -41,10 +42,14 @@ type tmuxTerminal struct {
 }
 
 func (t tmuxTerminal) run(ctx context.Context, stdin []byte, args ...string) error {
-	full := args
+	var full []string
 	if t.socket != "" {
-		full = append([]string{"-L", t.socket}, args...)
+		full = append(full, "-L", t.socket)
 	}
+	if t.conf != "" {
+		full = append(full, "-f", t.conf)
+	}
+	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, t.bin, full...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
@@ -78,6 +83,12 @@ func (t tmuxTerminal) Paste(ctx context.Context, text string) error {
 
 func (t tmuxTerminal) Enter(ctx context.Context) error {
 	return t.run(ctx, nil, "send-keys", "-t", t.target, "Enter")
+}
+
+// StartSession creates the session (attach-or-create, detached) running command
+// in dir — idempotent if a tmux server from an earlier ccd survives.
+func (t tmuxTerminal) StartSession(ctx context.Context, dir, command string) error {
+	return t.run(ctx, nil, "new-session", "-A", "-d", "-s", t.target, "-x", "200", "-y", "50", "-c", dir, command)
 }
 
 func (t tmuxTerminal) Alive(ctx context.Context) error {
