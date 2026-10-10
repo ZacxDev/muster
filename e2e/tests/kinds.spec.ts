@@ -91,6 +91,9 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
   await expect(account).toBeVisible();
   await expect(account).toBeEnabled();
   await expect(model).toBeDisabled();
+  // Nothing in the claude-code image clones a repo and the pod mounts no
+  // ServiceAccount token, so the repo and grant fields are disabled too.
+  await expect(sheet.locator('input[name="repo"]')).toBeDisabled();
   await expect(account.locator('option')).toHaveText(['Auto (least rate-limited)', 'alpha', 'beta']);
   await account.selectOption('beta');
   const pinned = await save('e2e kinds: pinned to beta');
@@ -110,6 +113,7 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
   await sheet.locator('[data-kind-option="gateway"]').click();
   await expect(account).toBeDisabled();
   await expect(model).toBeEnabled();
+  await expect(sheet.locator('input[name="repo"]')).toBeEnabled();
   const standard = await save('e2e kinds: standard');
 
   expect([pinned.kind, pinned.ccAccount]).toEqual(['claude-code', 'beta']);

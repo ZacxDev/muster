@@ -121,6 +121,10 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 			"configured (MUSTER_AGENT_CC_ACCOUNTS); an agent keeps its account for life, so restore that "+
 			"account's token rather than expecting a re-selection", a.Name, a.CCAccount)
 	}
+	if a.Repo != "" {
+		return provision.Spec{}, fmt.Errorf("agentspec: agent %q is kind %s and names repository %q; nothing in "+
+			"that image clones one, so it would start in an empty workspace", a.Name, agents.KindClaudeCode, a.Repo)
+	}
 	if a.HooksToken == "" {
 		return provision.Spec{}, fmt.Errorf("agentspec: agent %q has no hooks token; ccd refuses to start "+
 			"without one (it derives the bearer muster sends from it)", a.Name)
@@ -156,7 +160,6 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		},
 		Resources: ClaudeCodeResources,
 		Workspace: provision.Workspace{Path: ClaudeCodeDataPath, Size: size, Persist: true},
-		Repo:      buildRepo(a, ClaudeCodeWorkspacePath),
 		Ports:     []provision.Port{{Name: provision.DefaultPortName, Port: DefaultGatewayPort}},
 		Health:    provision.Health{HTTPGetPath: DefaultGatewayHealthPath, PortName: provision.DefaultPortName},
 		Security:  ClaudeCodeSecurity,

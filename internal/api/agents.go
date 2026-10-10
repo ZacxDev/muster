@@ -900,6 +900,9 @@ type dispatchParams struct {
 	CCAccount string
 }
 
+// claudeCodeNoModel is the one sentence both model writes refuse with.
+const claudeCodeNoModel = "a claude-code agent has no per-agent model (the CLI's own settings choose it); leave the model unset"
+
 // ErrDispatchRefused marks a dispatch refused before anything was created: a
 // kind this deployment does not enable, an account pin for a kind that has none,
 // or a claude-code pool with no usable account.
@@ -926,8 +929,19 @@ func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind
 		return kind, "", nil
 	}
 	if p.Model != "" {
-		return "", "", fmt.Errorf("%w: a %s agent has no per-agent model (the CLI's own settings choose it); "+
-			"leave the model unset", ErrDispatchRefused, agents.KindClaudeCode)
+		return "", "", fmt.Errorf("%w: %s", ErrDispatchRefused, claudeCodeNoModel)
+	}
+	// ⚠ A REPO AND PRIVILEGE GRANTS ARE REFUSED FOR THE SAME REASON AS A MODEL:
+	// each would be accepted and do nothing. Nothing in the claude-code image
+	// clones a declared repository, and the pod mounts no ServiceAccount token, so
+	// RBAC bound to it has no effect.
+	if p.Repo != "" || p.RepoBranch != "" {
+		return "", "", fmt.Errorf("%w: a %s agent cannot be given a repository yet (nothing in its image "+
+			"clones one); dispatch without a repo", ErrDispatchRefused, agents.KindClaudeCode)
+	}
+	if len(p.GrantProfileIDs) > 0 {
+		return "", "", fmt.Errorf("%w: a %s agent mounts no ServiceAccount token, so a privilege grant "+
+			"would have no effect; dispatch without one", ErrDispatchRefused, agents.KindClaudeCode)
 	}
 	if s.ext.Kinds == nil {
 		return "", "", fmt.Errorf("%w: no Claude account pool is configured", ErrDispatchRefused)
@@ -1130,6 +1144,13 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	// 🔴 THE SAME RULE createAndDispatchAgent APPLIES (resolveKindAccount): a
+	// claude-code agent has no per-agent model — its spec ignores one, so storing
+	// and showing it would be a setting that does nothing. Refused, not stored.
+	if cur, gerr := s.ext.Agents.Get(ctx, id); gerr == nil && agents.ResolveKind(cur.Kind) == agents.KindClaudeCode {
+		http.Error(w, ErrDispatchRefused.Error()+": "+claudeCodeNoModel, http.StatusConflict)
+		return
+	}
 	updated, err := s.ext.Agents.SetModel(ctx, id, model)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

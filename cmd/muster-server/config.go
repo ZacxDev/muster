@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
@@ -986,6 +988,11 @@ func (c config) validateKinds() error {
 	if !imagePinned(c.AgentCCImage) {
 		return fmt.Errorf("invalid %s %q: it must pin a tag or a digest — the image carries a pinned CLI and "+
 			"ccd's wire contract, and an unpinned reference lets two agents run different ones", envAgentCCImage, c.AgentCCImage)
+	}
+	if c.AgentCCStorage != "" {
+		if _, err := resource.ParseQuantity(c.AgentCCStorage); err != nil {
+			return fmt.Errorf("invalid %s %q: %v (want a Kubernetes quantity, e.g. 10Gi)", envAgentCCStorage, c.AgentCCStorage, err)
+		}
 	}
 	if len(c.AgentCCAccountNames) == 0 {
 		return fmt.Errorf("%s includes %s but %s names no account: the setup-token pool is EMPTY, so every "+

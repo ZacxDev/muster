@@ -34,6 +34,7 @@ func ccAgent() agents.Agent {
 	a.Kind = agents.KindClaudeCode
 	a.CCAccount = "beta"
 	a.Model = ""
+	a.Repo, a.RepoBranch = "", ""
 	return a
 }
 
@@ -85,8 +86,8 @@ func TestTheClaudeCodeSpecPinsItsProfile(t *testing.T) {
 	if spec.Labels["muster.agent/kind"] != "claude-code" || spec.Labels["muster.agent/name"] != a.Name {
 		t.Errorf("labels = %v", spec.Labels)
 	}
-	if spec.Repo.Path != "/data/workspace/tide-charts" {
-		t.Errorf("repo path = %q", spec.Repo.Path)
+	if spec.Repo != (provision.Repo{}) {
+		t.Errorf("repo = %+v, want none declared (nothing in the image clones one)", spec.Repo)
 	}
 }
 
@@ -121,6 +122,7 @@ func TestTheClaudeCodeBuildRefusesEveryMissingInput(t *testing.T) {
 		{"no account", func(a *agents.Agent, _ *Config, _ *Options) { a.CCAccount = "" }, "names no Claude account"},
 		{"unknown account", func(a *agents.Agent, _ *Config, _ *Options) { a.CCAccount = "gamma" }, `"gamma", which is not configured`},
 		{"no hooks token", func(a *agents.Agent, _ *Config, _ *Options) { a.HooksToken = "" }, "no hooks token"},
+		{"a repository", func(a *agents.Agent, _ *Config, _ *Options) { a.Repo = "example-org/tide-charts" }, "nothing in that image clones one"},
 		{"seed files", func(_ *agents.Agent, _ *Config, o *Options) { o.SeedFiles = map[string]string{"x": "y"} }, "takes no seed files"},
 		{"extra env", func(_ *agents.Agent, _ *Config, o *Options) { o.ExtraEnv = []provision.EnvVar{{Name: "X", Value: "y"}} }, "takes no seed files"},
 		{"cairn", func(_ *agents.Agent, _ *Config, o *Options) { o.CairnEligible = true }, "subsystem-store credential"},

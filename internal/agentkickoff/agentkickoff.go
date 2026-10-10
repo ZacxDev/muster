@@ -84,6 +84,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -503,6 +504,25 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: fresh.PendingNote,
 	})
 	reply, err := d.gw.Send(ctx, target, sess.SessionKey, fresh.PendingNote, nil)
+	if err != nil && runtimeNotReady(err) {
+		// 🔴 THE ONE POST-STAMP FAILURE THAT PROVES NOTHING WAS SENT, SO THE STAMP IS
+		// TAKEN BACK. A claude-code pod is Ready (its `/` answers) as soon as ccd and
+		// tmux are up, which can be seconds before the CLI's SessionStart; until then
+		// ccd refuses a turn with a typed `503 not_ready` and pastes NOTHING
+		// (cmd/ccd/server.go). Recording that as a failed first turn would strand
+		// the agent's task on a race the next tick wins, so the row goes back to
+		// owed and the next tick retries; the dwell bound still ends it visibly if
+		// the CLI never comes up.
+		bctx, bcancel := bookkeeping()
+		uerr := d.store.SetKickedOff(bctx, fresh.ID, false)
+		bcancel()
+		if uerr == nil {
+			d.recordError(fresh, RuntimeNotReadyReason+": "+err.Error())
+			d.notify(fresh.Name)
+			return
+		}
+		d.log.Printf("agentkickoff: agent %d (%s): un-stamp after not_ready: %v", fresh.ID, fresh.Name, uerr)
+	}
 	if err != nil {
 		d.recordError(fresh, turnFailure(parent, ctx, turn, err))
 		d.notify(fresh.Name)
@@ -532,6 +552,19 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	})
 	d.log.Printf("agentkickoff: agent %d (%s): first turn delivered to %s (%d-byte reply)",
 		fresh.ID, fresh.Name, inst.InstanceID, len(reply))
+}
+
+// RuntimeNotReadyReason opens agents.kickoff_error when the agent's runtime
+// refused the first turn with a typed `not_ready` before accepting anything (ccd,
+// before the Claude Code CLI's SessionStart). The turn is retried on the next tick.
+const RuntimeNotReadyReason = "kickoff not sent: the agent's runtime answered not_ready (it accepted nothing), retrying"
+
+// runtimeNotReady reports a typed `503 not_ready` — ccd's refusal before it
+// pastes anything. Only ccd's typed body sets Type, so an untyped 503 from
+// anything else is NOT read as "nothing was sent".
+func runtimeNotReady(err error) bool {
+	var rt *agents.RuntimeError
+	return errors.As(err, &rt) && rt.Status == http.StatusServiceUnavailable && rt.Type == "not_ready"
 }
 
 // ShutdownCancelledReason opens agents.kickoff_error when a stamped first turn was

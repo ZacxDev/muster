@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // Fake tokens: obviously not real, and pairwise distinct so a mix-up between two
@@ -226,5 +227,20 @@ func TestEnvSuffix(t *testing.T) {
 		if got := EnvSuffix(in); got != want {
 			t.Errorf("EnvSuffix(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestALongDetailIsCutOnARuneBoundary: a byte cut through a multibyte rune is
+// invalid UTF-8, which Postgres refuses for TEXT — losing the mark.
+func TestALongDetailIsCutOnARuneBoundary(t *testing.T) {
+	st := &fakeStore{}
+	p, _ := New(tokens, st)
+	detail := strings.Repeat("a", maxDetail-1) + "·resets 5pm" // "·" is 2 bytes and straddles the cut
+	if err := p.MarkFailure(context.Background(), "alpha", FailureRateLimited, detail); err != nil {
+		t.Fatal(err)
+	}
+	stored := strings.TrimPrefix(st.calls[0], "rate_limited|alpha|")
+	if !utf8.ValidString(stored) || !strings.HasSuffix(stored, "…") || len(stored) > maxDetail+len("…") {
+		t.Fatalf("stored detail is invalid or over-long: %q", stored)
 	}
 }

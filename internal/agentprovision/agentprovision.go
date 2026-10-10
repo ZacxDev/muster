@@ -580,7 +580,25 @@ func (a *Adapter) Start(agentID int64) error {
 	if err != nil {
 		return fmt.Errorf("agentprovision: start agent %d: load row: %w", agentID, err)
 	}
-	if err := a.driver.Scale(ctx, agents.RefOf(ag), 1); err != nil {
+	if agents.ResolveKind(ag.Kind) == agents.KindClaudeCode {
+		// 🔴 A CLAUDE-CODE START RE-APPLIES THE SPEC instead of only scaling, so it
+		// carries the account's CURRENT setup-token. The token lives in the agent's
+		// own Secret, written at create; after an operator rotates an account's
+		// token (an auth_failed mark), Stop then Start is how an existing agent gets
+		// the new one — a bare Scale would bring the pod back on the revoked token.
+		// Update creates an absent instance, so the saved-agent case is covered too.
+		// It keeps the agent's stored account: buildSpec reads the row.
+		if ag, err = a.ensureHooksToken(ctx, ag); err != nil {
+			return err
+		}
+		spec, err := a.buildSpec(ag)
+		if err != nil {
+			return a.fail(ag, "build spec", err)
+		}
+		if err := a.driver.Update(ctx, spec); err != nil {
+			return a.fail(ag, "apply claude-code instance", err)
+		}
+	} else if err := a.driver.Scale(ctx, agents.RefOf(ag), 1); err != nil {
 		if !errors.Is(err, provision.ErrNotFound) {
 			return a.fail(ag, "scale up", err)
 		}

@@ -111,6 +111,8 @@ func TestADispatchTheDeploymentCannotSatisfyIsRefusedBeforeTheRow(t *testing.T) 
 		{"unknown kind", stubKinds{}, url.Values{"kind": {"teleport"}}, "unknown agent kind"},
 		{"pin on a gateway agent", stubKinds{}, url.Values{"cc_account": {"work"}}, "only be pinned"},
 		{"model on a claude-code agent", stubKinds{pick: "work"}, url.Values{"kind": {"claude-code"}, "model": {"openrouter/x/y"}}, "no per-agent model"},
+		{"repo on a claude-code agent", stubKinds{pick: "work"}, url.Values{"kind": {"claude-code"}, "repo": {"example-org/tide"}}, "cannot be given a repository"},
+		{"grant on a claude-code agent", stubKinds{pick: "work"}, url.Values{"kind": {"claude-code"}, "grant_profile": {"3"}}, "privilege grant"},
 		{"pool refuses", stubKinds{err: errors.New("ccpool: no usable Claude account: every account's current token failed")}, url.Values{"kind": {"claude-code"}}, "no usable Claude account"},
 	}
 	for _, c := range cases {
@@ -151,6 +153,46 @@ func TestTheDispatchFormOffersThePickerOnlyWithTwoKinds(t *testing.T) {
 		}
 		if c.want && (!strings.Contains(body, `<option value="personal">personal</option>`) || strings.Contains(body, "sk-ant")) {
 			t.Fatalf("account options missing (or a token present):\n%s", body)
+		}
+	}
+}
+
+// modelStore answers the model route's reads for one agent and records SetModel.
+type modelStore struct {
+	agents.Store
+	agent agents.Agent
+	sets  int
+}
+
+func (m *modelStore) Get(context.Context, int64) (agents.Agent, error) { return m.agent, nil }
+func (m *modelStore) SetModel(_ context.Context, _ int64, model string) (agents.Agent, error) {
+	m.sets++
+	m.agent.Model = model
+	return m.agent, nil
+}
+
+// TestAModelCannotBeSetOnAClaudeCodeAgentLater: the second model write refuses
+// what the first (dispatch) refuses, and stores nothing. The gateway agent is
+// the control.
+func TestAModelCannotBeSetOnAClaudeCodeAgentLater(t *testing.T) {
+	for _, c := range []struct {
+		kind string
+		want int
+	}{{agents.KindClaudeCode, http.StatusConflict}, {agents.KindGateway, http.StatusOK}} {
+		st := &modelStore{agent: agents.Agent{ID: 12, Name: "quiet-heron", Kind: c.kind, Status: agents.StatusStopped}}
+		s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(os.Stderr, "", 0))
+		s.UseExtensions(Extensions{Agents: st, SessionLiveness: stubLiveness{}, Provisioner: newPreflightProvisioner("")})
+		form := url.Values{"model": {""}}
+		req := httptest.NewRequest(http.MethodPost, "/agents/12/model", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		admit(s, req)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != c.want {
+			t.Fatalf("kind %s: %d %q, want %d", c.kind, rec.Code, rec.Body.String(), c.want)
+		}
+		if wantSets := map[bool]int{true: 0, false: 1}[c.kind == agents.KindClaudeCode]; st.sets != wantSets {
+			t.Fatalf("kind %s: SetModel called %d time(s), want %d", c.kind, st.sets, wantSets)
 		}
 	}
 }

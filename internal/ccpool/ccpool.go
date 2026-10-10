@@ -11,7 +11,6 @@
 // three questions:
 //
 //   - Select: which account should a NEW claude-code agent use?
-//   - Token: what is the token for the account an EXISTING agent was given?
 //   - MarkFailure: ccd reported `rate_limited` or `auth_failed` for an agent on
 //     account X — remember it, with a timestamp, in Postgres.
 //
@@ -40,10 +39,18 @@
 // refuses any later change. A restart, a re-provision, a model of the pool
 // changing under it — none of them re-select.
 //
-// 🔴 THE TOKEN NEVER LEAVES THIS PACKAGE EXCEPT INTO ONE PLACE: the claude-code
-// agent's own per-agent Secret, as CLAUDE_CODE_OAUTH_TOKEN, via
-// internal/agentspec. No error, log line or stored mark carries it — the mark
-// stores a truncated sha256 fingerprint.
+// 🔴 THIS PACKAGE NEVER HANDS A TOKEN OUT. It holds the tokens only to
+// fingerprint an auth failure; the token reaches a pod through a SEPARATE copy
+// of the same configuration (cmd/muster-server's claudeCodeSpecConfig →
+// agentspec.ClaudeCodeConfig), which places it in exactly one place — the
+// agent's own per-agent Secret, as CLAUDE_CODE_OAUTH_TOKEN. No error, log line
+// or stored mark here carries it; a mark stores a truncated sha256 fingerprint.
+//
+// ⚠ ROTATING A TOKEN DOES NOT REACH A RUNNING POD. The new value is in muster's
+// environment; an existing agent's Secret still holds the old one until its spec
+// is re-applied — Stop then Start a claude-code agent does that
+// (agentprovision.Adapter.Start). Until then its turns keep failing and keep
+// re-marking the account, now under the NEW token's fingerprint.
 package ccpool
 
 import (
@@ -55,6 +62,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // The failure types ccd reports that mark an account. They are ccd's own
@@ -172,22 +180,6 @@ func (p *Pool) Names() []string {
 	return out
 }
 
-// Token returns an account's setup-token.
-func (p *Pool) Token(name string) (string, bool) {
-	t, ok := p.tokens[name]
-	return t, ok
-}
-
-// Tokens returns a copy of the name->token map, for the one consumer that must
-// place a token (internal/agentspec's Config). Every other caller wants Names.
-func (p *Pool) Tokens() map[string]string {
-	out := make(map[string]string, len(p.tokens))
-	for k, v := range p.tokens {
-		out[k] = v
-	}
-	return out
-}
-
 // Select picks the account for a new claude-code agent. A non-empty pin is
 // returned as-is when it names a configured account (the operator's override),
 // and refused with [ErrUnknownAccount] otherwise.
@@ -263,7 +255,13 @@ func (p *Pool) MarkFailure(ctx context.Context, account, failure, detail string)
 		return fmt.Errorf("%w %q", ErrUnknownAccount, account)
 	}
 	if len(detail) > maxDetail {
-		detail = detail[:maxDetail] + "…"
+		// Cut on a rune boundary: a byte cut through "·" or "…" is invalid UTF-8,
+		// which Postgres refuses for TEXT (22021) — losing the mark.
+		cut := maxDetail
+		for cut > 0 && !utf8.RuneStart(detail[cut]) {
+			cut--
+		}
+		detail = detail[:cut] + "…"
 	}
 	switch failure {
 	case FailureRateLimited:

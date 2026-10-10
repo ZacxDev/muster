@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/ccpool"
 )
 
@@ -13,9 +14,20 @@ type kindSet struct {
 	pool  *ccpool.Pool
 }
 
+// Enabled is in agents.Kinds order — gateway first — whatever order
+// MUSTER_AGENT_KINDS was written in: the picker checks its first option, and
+// the default must be the kind every deployment had before kinds existed.
 func (k kindSet) Enabled() []string {
-	out := make([]string, len(k.kinds))
-	copy(out, k.kinds)
+	on := map[string]bool{}
+	for _, kind := range k.kinds {
+		on[kind] = true
+	}
+	var out []string
+	for _, kind := range agents.Kinds {
+		if on[kind] {
+			out = append(out, kind)
+		}
+	}
 	return out
 }
 

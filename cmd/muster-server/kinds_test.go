@@ -59,6 +59,7 @@ func TestEveryKindsRefusalIsReachedOnItsOwn(t *testing.T) {
 		{"no provisioner", func(c *config) { c.AgentProvisioner = provisionerNone }, "nothing to build it with"},
 		{"no image", func(c *config) { c.AgentCCImage = "" }, "MUSTER_AGENT_CC_IMAGE is not set"},
 		{"unpinned image", func(c *config) { c.AgentCCImage = "registry.example.test:5000/team/claude-code-agent" }, "must pin a tag or a digest"},
+		{"bad storage size", func(c *config) { c.AgentCCStorage = "lots" }, "invalid MUSTER_AGENT_CC_STORAGE_SIZE"},
 		{"empty pool", func(c *config) { c.AgentCCAccountNames = nil; c.AgentCCTokens = nil }, "pool is EMPTY"},
 		{"bad account name", func(c *config) { c.AgentCCAccountNames = []string{"work", "-bad"} }, `entry "-bad"`},
 		{"account twice", func(c *config) { c.AgentCCAccountNames = []string{"work", "work"} }, "listed twice"},
@@ -202,5 +203,15 @@ func TestTheKindsBannerLineNamesAccountsNeverTokens(t *testing.T) {
 				t.Fatalf("the banner prints a token:\n%s", out)
 			}
 		}
+	}
+}
+
+// TestThePickerDefaultIsGatewayWhateverTheEnvOrder: the picker checks its first
+// option, and the default must be the gateway kind even when
+// MUSTER_AGENT_KINDS lists claude-code first.
+func TestThePickerDefaultIsGatewayWhateverTheEnvOrder(t *testing.T) {
+	got := kindSet{kinds: []string{agents.KindClaudeCode, agents.KindGateway}}.Enabled()
+	if strings.Join(got, ",") != "gateway,claude-code" {
+		t.Fatalf("Enabled = %v, want gateway first", got)
 	}
 }

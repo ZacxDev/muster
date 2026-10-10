@@ -30,13 +30,14 @@ func (k KindChoices) offersClaudeCode() bool {
 
 // kindToggleScript shows the claude-code-only controls when that kind is
 // checked, and DISABLES the controls that do not apply — a disabled input is not
-// submitted. So a claude-code dispatch carries no `model` (the server refuses
-// one: the CLI's own settings choose the model) and a gateway dispatch carries
-// no `cc_account` (refused for any other kind).
+// submitted. So a claude-code dispatch carries no `model`, `repo` or
+// `grant_profile` (the server refuses each: the CLI chooses its model, nothing in
+// the image clones a repo, and the pod mounts no ServiceAccount token) and a
+// gateway dispatch carries no `cc_account` (refused for any other kind).
 const kindToggleScript = "var f=this.closest('form'),cc=!!f.querySelector('input[name=kind][value=" + agents.KindClaudeCode + "]:checked');" +
 	"this.querySelectorAll('[data-cc-only]').forEach(function(e){e.classList.toggle('hidden',!cc)});" +
 	"var a=f.querySelector('select[name=cc_account]');if(a){a.disabled=!cc}" +
-	"f.querySelectorAll('input[name=model]').forEach(function(e){e.disabled=cc});"
+	"f.querySelectorAll('input[name=model],input[name=repo],input[name=repo_branch],input[name=grant_profile]').forEach(function(e){e.disabled=cc});"
 
 // kindPicker is the dispatch form's "Agent kind" control: a segmented radio pair
 // sized for a thumb (44px rows, two columns that fit a 360px phone), plus the
