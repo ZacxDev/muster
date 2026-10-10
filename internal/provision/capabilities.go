@@ -51,8 +51,8 @@ func (i Isolation) String() string {
 //
 // 🔴 A CAPABILITY NOBODY BRANCHES ON IS NOT A GUARD, IT IS A FIELD. Every bool
 // here is refused on somewhere, and each one's refusal is spelled in exactly
-// one place: Files, Secrets, Persistence and ResourceLimits in [CheckSpec];
-// Scale in [CheckSpec] and [CheckScale], which are one rule reached by two
+// one place: Files, Secrets, Persistence, ResourceLimits and NetworkIsolation
+// in [CheckSpec]; Scale in [CheckSpec] and [CheckScale], which are one rule reached by two
 // entry points; Policy in [Grant]; Exec in [Exec]. A predicate open-coded per
 // driver instead is a predicate that is wrong in all but one of them, in the
 // same direction, and nobody hears the disagreement.
@@ -104,6 +104,16 @@ type Capabilities struct {
 
 	// Exec: the driver implements Execer against a live instance.
 	Exec bool
+
+	// NetworkIsolation: the driver can confine an instance's network as
+	// [Network] describes. False means a spec setting Network.Isolate is refused
+	// rather than started unconfined.
+	//
+	// ⚠ FOR A DRIVER THAT ONLY DECLARES THE CONFINEMENT TO SOMETHING ELSE — the
+	// kubernetes driver writes a NetworkPolicy, and the cluster's network plugin
+	// is what enforces it or does not — true means "I will write it and refuse to
+	// start the instance if I cannot", NOT "I measured it enforced".
+	NetworkIsolation bool
 }
 
 // CheckSpec is THE capability branch. It is the answer to "Capabilities is
@@ -146,6 +156,11 @@ func CheckSpec(caps Capabilities, s Spec) error {
 	if !caps.ResourceLimits && !s.Resources.IsZero() {
 		return fmt.Errorf("%w: driver cannot enforce resource limits, and the spec sets them (cpu %q/%q, memory %q/%q)",
 			ErrUnsupported, s.Resources.CPURequest, s.Resources.CPULimit, s.Resources.MemoryRequest, s.Resources.MemoryLimit)
+	}
+	if !caps.NetworkIsolation && s.Network.Isolate {
+		return fmt.Errorf("%w: driver cannot isolate an instance's network, and the spec asks for network isolation; "+
+			"starting it anyway would run something that is declared confined and can reach everything",
+			ErrUnsupported)
 	}
 	if !caps.Scale && s.DesiredReplicas() != 1 {
 		return fmt.Errorf("%w: driver runs exactly one instance, and the spec asks for %d", ErrUnsupported, s.DesiredReplicas())

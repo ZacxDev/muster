@@ -543,6 +543,22 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 		class := cfg.AgentStorageClass
 		dc.WorkspaceStorageClass = &class
 	}
+	if cfg.claudeCodeNetworkPolicy() {
+		// 🔴 THE POINTER'S PRESENCE RAISES Capabilities.NetworkIsolation, WHICH THE
+		// CLAUDE-CODE SPEC NEEDS TO BE ACCEPTED AT ALL. Like the storage class
+		// above it raises a CAPABILITY only: a gateway-kind spec declares no
+		// isolation, so the driver renders no policy for one and makes no
+		// networking call on its behalf.
+		//
+		// The parse error is dropped because config.validateKinds has already
+		// refused a value this rejects; a config that skipped validate gets an
+		// empty selector here, which k8s.New refuses by name rather than rendering.
+		labels, _ := parsePodLabels(cfg.AgentNetpolFromLabels)
+		dc.NetworkPolicy = &k8sdriver.NetworkPolicyConfig{
+			ControllerNamespace: cfg.AgentNetpolFromNS,
+			ControllerPodLabels: labels,
+		}
+	}
 	return dc
 }
 

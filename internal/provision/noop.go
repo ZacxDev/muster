@@ -17,10 +17,13 @@ const DefaultNoopEndpointTemplate = "{{.Name}}.noop.invalid"
 
 // DefaultNoopCapabilities is what a Noop declares by default.
 //
-// ⚠ IT CLAIMS Files, Secrets, Persistence, ResourceLimits AND Scale BECAUSE IT
-// RECORDS THEM FAITHFULLY, AND CLAIMS NOTHING ELSE. The honest reading of a
-// capability for an in-memory driver is "a spec asking for this survives a
-// round trip through me unchanged", and those five do. Policy and Exec do not —
+// ⚠ IT CLAIMS Files, Secrets, Persistence, ResourceLimits, Scale AND
+// NetworkIsolation BECAUSE IT RECORDS THEM FAITHFULLY, AND CLAIMS NOTHING ELSE.
+// The honest reading of a capability for an in-memory driver is "a spec asking
+// for this survives a round trip through me unchanged", and those six do — which
+// for NetworkIsolation is a statement about the RECORD and not about any
+// confinement: nothing runs here, so nothing is confined, and Isolation below
+// already says so. Policy and Exec do not —
 // there is no identity to authorise and no process to enter — so they are false
 // and the refusals in Grant and Exec have a real subject to fire on.
 //
@@ -29,12 +32,13 @@ const DefaultNoopEndpointTemplate = "{{.Name}}.noop.invalid"
 // here too; a fake that quietly claimed a safe isolation level would train
 // people to ignore the warning on the driver where it matters.
 var DefaultNoopCapabilities = Capabilities{
-	Isolation:      IsolationNone,
-	Secrets:        true,
-	Files:          true,
-	Persistence:    true,
-	ResourceLimits: true,
-	Scale:          true,
+	Isolation:        IsolationNone,
+	Secrets:          true,
+	Files:            true,
+	Persistence:      true,
+	ResourceLimits:   true,
+	Scale:            true,
+	NetworkIsolation: true,
 }
 
 // Noop is a provisioner that records instead of provisioning.

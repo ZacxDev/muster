@@ -743,6 +743,25 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 				strings.Join(a.cfg.agentKinds(), ", "), envAgentKinds, agents.KindClaudeCode,
 				a.cfg.AgentCCImage, envAgentCCImage, strings.Join(a.cfg.AgentCCAccountNames, ", "),
 				envAgentCCAccounts, envAgentCCTokenPrefix, agents.ClaudeCodeTurnTimeout)
+			// ⚠ "WRITTEN", NOT "ENFORCED". This process writes a NetworkPolicy object;
+			// the cluster's network plugin is what enforces one, and nothing here can
+			// observe that. The line says what a NEW or RE-STARTED agent gets — an
+			// agent created by an older build keeps running without a policy until
+			// its next start.
+			if a.cfg.claudeCodeNetworkPolicy() {
+				l.Printf("%s network: a NetworkPolicy is WRITTEN per agent before its pod, and the agent is "+
+					"refused if it cannot be — ingress only from pods labelled [%s] (%s) in namespace %s (%s), "+
+					"egress only DNS and TCP 443 to public IPv4 addresses. Enforcement is the cluster network "+
+					"plugin's, not this server's. An agent created before this build has NO policy until it is "+
+					"stopped and started",
+					agents.KindClaudeCode, a.cfg.AgentNetpolFromLabels, envAgentNetpolFromLabels,
+					a.cfg.AgentNetpolFromNS, envAgentNetpolFromNS)
+			} else {
+				l.Printf("%s network: NOT CONFINED — %s=%s writes no NetworkPolicy (%s and %s apply to the %s "+
+					"driver only)",
+					agents.KindClaudeCode, envAgentProvisioner, a.cfg.agentProvisioner(),
+					envAgentNetpolFromNS, envAgentNetpolFromLabels, provisionerK8s)
+			}
 		} else {
 			l.Printf("agent kinds: %s only (%s unset or naming only it)", agents.KindGateway, envAgentKinds)
 		}

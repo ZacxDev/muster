@@ -105,6 +105,18 @@ type Config struct {
 	// clientset — can contradict THAT.
 	PolicyDisabled bool
 
+	// NetworkPolicy enables Capabilities.NetworkIsolation: with it set, a spec
+	// asking for [provision.Network] isolation gets a per-instance NetworkPolicy,
+	// written BEFORE the instance's Deployment.
+	//
+	//   nil -> the driver reports NetworkIsolation FALSE, refuses such a spec, and
+	//          makes no networking.k8s.io call for any instance.
+	//
+	// ⚠ SETTING IT MAKES THE DRIVER NEED RBAC ON NetworkPolicies
+	// (NetworkPolicyRBACPrerequisite). Without it an isolated instance is refused
+	// at apply time, naming the missing verb — see networkPolicyForbidden.
+	NetworkPolicy *NetworkPolicyConfig
+
 	// Logger is optional.
 	Logger *log.Logger
 }
@@ -142,6 +154,11 @@ func New(cfg Config) (*Driver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("k8s: %w", err)
 	}
+	if cfg.NetworkPolicy != nil {
+		if err := cfg.NetworkPolicy.validate(); err != nil {
+			return nil, err
+		}
+	}
 	lg := cfg.Logger
 	if lg == nil {
 		lg = log.New(io.Discard, "", 0)
@@ -156,11 +173,14 @@ func (d *Driver) Driver() string { return "kubernetes" }
 //
 // 🔴 TWO LOSSES THIS DRIVER HAS ARE NOT ON THIS TYPE, AND HAVE TO BE READ HERE:
 //
-//   - IT RESTRICTS NO EGRESS. It renders no NetworkPolicy at all. Restricting
-//     an agent's egress by DNS NAME is the control that addresses exfiltration
-//     by a prompt-injected model; an address-range policy is not that control,
-//     and neither is the RBAC that Policy true announces. Do not read Policy as
-//     covering it.
+//   - IT RESTRICTS NO EGRESS BY DNS NAME. That is the control that addresses
+//     exfiltration by a prompt-injected model, and NetworkIsolation true is NOT
+//     it: the NetworkPolicy this driver renders for an isolated instance
+//     (network.go) is an ADDRESS-RANGE policy — DNS plus the spec's ports on
+//     public addresses — so an isolated instance can still reach any public host
+//     on those ports. It keeps the instance off the cluster and the LAN; it does
+//     not keep data in. Neither does the RBAC that Policy true announces. And an
+//     instance whose spec declares no isolation gets no NetworkPolicy at all.
 //   - IT RUNS NO SIDECARS. One container plus an init container. The chart this
 //     replaces could run three log tailers, and they were structurally
 //     invisible to that project's own log reads anyway.
@@ -183,6 +203,10 @@ func (d *Driver) Capabilities() provision.Capabilities {
 		ResourceLimits: true,
 		Scale:          true,
 		Exec:           d.cfg.RESTConfig != nil,
+		// The capability is "I will write the policy, and refuse to start the
+		// instance if I cannot" — see provision.Capabilities.NetworkIsolation on
+		// why that is not a claim that anything enforces it.
+		NetworkIsolation: d.cfg.NetworkPolicy != nil,
 	}
 }
 
@@ -612,7 +636,9 @@ func (d *Driver) Update(ctx context.Context, spec provision.Spec) error {
 // ⚠ ORDER IS LOAD-BEARING. The Deployment goes LAST, because it references the
 // ServiceAccount, the ConfigMap, the Secret and the PVC; creating it first
 // produces a pod that fails to start for a reason attributed to the wrong
-// object.
+// object. The NetworkPolicy goes FIRST (after the namespace it lives in), for a
+// different reason: it is the one object whose absence does not stop the pod
+// starting — it lets it start unconfined.
 // 🔴 IT ALSO REMOVES WHAT THE SPEC NO LONGER ASKS FOR. A render function
 // returning nil means "this instance has no such object any more", and until
 // this swept them, that left the object in the cluster: a Secret still holding
@@ -620,10 +646,13 @@ func (d *Driver) Update(ctx context.Context, spec provision.Spec) error {
 // ConfigMap still mounting a file that was deleted. Removing a credential from
 // a spec has to remove it from the cluster, or the revocation is a comment.
 //
-// ⚠ THE PVC IS THE ONE EXCEPTION, AND IT IS NOT SWEPT. A workspace claim holds
+// ⚠ THE PVC IS AN EXCEPTION, AND IT IS NOT SWEPT. A workspace claim holds
 // the instance's data; deleting it because a spec edit turned Persist off would
 // destroy that data on a reconcile. It is left for an operator to remove
 // deliberately.
+//
+// ⚠ THE NetworkPolicy IS THE OTHER EXCEPTION. A spec that stops declaring
+// isolation leaves its policy in place; applyNetworkPolicy says why.
 func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) error {
 	c := d.cfg.Client
 	name := spec.Ref.Name
@@ -632,6 +661,12 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 		if err := d.ensureNamespace(ctx, name, ns); err != nil {
 			return err
 		}
+	}
+
+	// 🔴 FIRST, BEFORE ANYTHING THAT CAN RUN OR HOLD A CREDENTIAL. See
+	// applyNetworkPolicy: a refusal here must leave no Deployment and no Secret.
+	if err := d.applyNetworkPolicy(ctx, spec, ns); err != nil {
+		return err
 	}
 
 	sa := d.renderServiceAccount(spec, ns)
@@ -1092,6 +1127,32 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 		if firstErr == nil {
 			firstErr = err
 		}
+	}
+
+	// 🔴 THE NetworkPolicy GOES AFTER EVERYTHING IT CONFINES. The Deployment's
+	// delete was issued first, but its pod is still terminating; removing the
+	// policy ahead of it would hand a shell-capable process its last seconds
+	// unconfined.
+	//
+	// ⚠ "AFTER" IS AN ORDER OF REQUESTS, NOT A WAIT. Nothing here blocks until
+	// the pod is gone, so a pod that outlives this call's remaining requests can
+	// still see the policy removed under it.
+	//
+	// ⚠ ONLY WHEN THE DRIVER IS CONFIGURED FOR ISOLATION, for the reason
+	// applyNetworkPolicy never reads without it: a deployment that enables no
+	// isolated kind holds no RBAC on NetworkPolicies, and an unconditional read
+	// here would fail the destroy of every instance it has. The cost is named: a
+	// policy written while isolation was configured outlives a Destroy issued
+	// after it was unconfigured, in the SHARED-namespace layout. (Under
+	// NamespacePerInstance the namespace deletion below takes it.)
+	if d.cfg.NetworkPolicy != nil {
+		npName := networkPolicyName(name)
+		np := c.NetworkingV1().NetworkPolicies(ns)
+		fail("networkpolicy "+npName, d.deleteIfOwned("networkpolicy", npName,
+			func() (map[string]string, error) {
+				return labelsOf(np.Get(ctx, npName, metav1.GetOptions{}))
+			},
+			func() error { return np.Delete(ctx, npName, metav1.DeleteOptions{}) }))
 	}
 
 	if d.cfg.NamespacePerInstance {

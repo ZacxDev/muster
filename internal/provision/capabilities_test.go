@@ -22,6 +22,8 @@ var allCaps = provision.Capabilities{
 	ResourceLimits: true,
 	Scale:          true,
 	Exec:           true,
+
+	NetworkIsolation: true,
 }
 
 // TestCheckSpecRefusesExactlyTheCapabilityItLacks is the isolation-sensitive
@@ -35,6 +37,7 @@ var allCaps = provision.Capabilities{
 //	delete the !caps.Persistence branch    -> "Persistence" RED
 //	delete the !caps.ResourceLimits branch -> "ResourceLimits" RED
 //	delete the !caps.Scale branch          -> "Scale" RED
+//	delete the !caps.NetworkIsolation branch -> "NetworkIsolation" RED
 //
 // Each subtest also asserts the message NAMES the capability, so a mutation
 // that returns the WRONG branch's error is caught rather than counted as a
@@ -96,6 +99,14 @@ func TestCheckSpecRefusesExactlyTheCapabilityItLacks(t *testing.T) {
 			ask:     func(s *provision.Spec) { s.Replicas = 3 },
 			mustSay: "exactly one instance",
 		},
+		{
+			name: "NetworkIsolation",
+			off:  func(c *provision.Capabilities) { c.NetworkIsolation = false },
+			ask: func(s *provision.Spec) {
+				s.Network = provision.Network{Isolate: true, PublicEgressTCPPorts: []int{8443}}
+			},
+			mustSay: "cannot isolate an instance's network",
+		},
 	}
 
 	for _, c := range cases {
@@ -132,8 +143,14 @@ func TestCheckSpecAcceptsWhatTheDriverCanDo(t *testing.T) {
 	spec.Workspace = provision.Workspace{Path: "/data", Size: "5Gi", Persist: true}
 	spec.Resources = provision.Resources{MemoryLimit: "2Gi"}
 	spec.Replicas = 3
+	spec.Network = provision.Network{Isolate: true, PublicEgressTCPPorts: []int{8443}}
 	if err := provision.CheckSpec(allCaps, spec); err != nil {
 		t.Fatalf("a fully-capable driver refused a spec it can satisfy: %v", err)
+	}
+	// A driver with NO capability at all still accepts a spec that declares no
+	// isolation: the refusal is for the ask, not for the driver.
+	if err := provision.CheckSpec(provision.Capabilities{}, provisiontest.MinimalSpec("plain")); err != nil {
+		t.Fatalf("a spec asking for nothing gated was refused: %v", err)
 	}
 }
 

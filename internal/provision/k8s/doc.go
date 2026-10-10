@@ -27,7 +27,9 @@
 //   - a PersistentVolumeClaim, only when a persistent workspace was asked for;
 //   - a Deployment with exactly ONE container, plus an init container when the
 //     spec has imperative steps;
-//   - a Service, when the spec declares ports.
+//   - a Service, when the spec declares ports;
+//   - a NetworkPolicy, only when the spec asks for network isolation and the
+//     driver was configured to render one (see network.go).
 //
 // — and nothing else. It also removes a build-time `go:embed` of a chart
 // directory from the release path, and the chart-sync tooling that went with
@@ -41,12 +43,18 @@
 //     explicit Init step. The chart this replaces cloned it about 250 lines
 //     BEFORE init commands ran, which is the whole reason that project's git
 //     credential handling had to work in two different environments at once.
-//   - 🔴 IT DOES NOT RESTRICT EGRESS. There is no NetworkPolicy. Restricting
-//     an agent's egress by DNS name is the control that addresses exfiltration
-//     by a prompt-injected model, and this driver does not implement it. Saying
-//     so is the point, and there is no capability bool to read it off: a driver
-//     that rendered an address-range policy and called it egress control would
-//     report a mitigation nobody has.
+//   - 🔴 IT DOES NOT RESTRICT EGRESS BY DNS NAME. That is the control that
+//     addresses exfiltration by a prompt-injected model, and this driver does
+//     not implement it. Saying so is the point: a driver that rendered an
+//     address-range policy and called it egress control would report a
+//     mitigation nobody has. It DOES now render an address-range policy, for a
+//     spec that asks for network isolation — and what that buys is narrower and
+//     is named for what it is (Capabilities.NetworkIsolation): the instance
+//     cannot reach the cluster's API, other namespaces or private address
+//     ranges, and can be reached only by muster. It can still send anything it
+//     holds to any public host on the allowed ports.
+//   - 🔴 IT DOES NOT ENFORCE THE NetworkPolicy IT WRITES. The cluster's network
+//     plugin does, or does not, and nothing here can tell which.
 //   - It does not run sidecars. One container, plus an init container. The
 //     chart it replaces could run three log tailers, which were structurally
 //     invisible to that project anyway — its log reads never named a container,

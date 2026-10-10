@@ -62,6 +62,13 @@ func TestTheClaudeCodeSpecPinsItsProfile(t *testing.T) {
 	if spec.Security != wantSec {
 		t.Errorf("security = %+v, want %+v", spec.Security, wantSec)
 	}
+	// 🔴 ISOLATED, WITH 443 AS THE ONE PUBLIC PORT. This is the declaration that
+	// makes a driver write the agent's NetworkPolicy and refuse to start it without
+	// one; a claude-code spec that lost it would be accepted by every driver and
+	// run with the cluster and the LAN in reach.
+	if want := (provision.Network{Isolate: true, PublicEgressTCPPorts: []int{443}}); !reflect.DeepEqual(spec.Network, want) {
+		t.Errorf("network = %+v, want %+v", spec.Network, want)
+	}
 	if want := (provision.Workspace{Path: "/data", Size: "10Gi", Persist: true}); spec.Workspace != want {
 		t.Errorf("workspace = %+v, want %+v (the PVC must mount at /data: CLAUDE_CONFIG_DIR and the workspace are under it)", spec.Workspace, want)
 	}
@@ -162,6 +169,11 @@ func TestAGatewayAgentIsBuiltIdenticallyWhetherOrNotClaudeCodeIsEnabled(t *testi
 		}
 		if !off.Security.IsZero() {
 			t.Fatalf("kind %q: a gateway spec declares security %+v; it must declare none", kind, off.Security)
+		}
+		// The gateway kind gets NO NetworkPolicy, and this is where that is decided:
+		// the driver renders one only for a spec that declares isolation.
+		if !off.Network.IsZero() || !on.Network.IsZero() {
+			t.Fatalf("kind %q: a gateway spec declares network %+v / %+v; it must declare none", kind, off.Network, on.Network)
 		}
 	}
 }
@@ -296,4 +308,20 @@ func sourcesSpelling(t *testing.T, needle string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestEveryClaudeCodeSpecIsIsolatedAndNoCallerCanShareItsPortList: the network
+// declaration is unconditional — there is no input that builds a claude-code spec
+// without it — and each spec gets its OWN port slice, so one caller mutating its
+// spec cannot widen the next agent's.
+func TestEveryClaudeCodeSpecIsIsolatedAndNoCallerCanShareItsPortList(t *testing.T) {
+	first := mustBuild(t, ccAgent(), ccConfig(), Options{})
+	first.Network.PublicEgressTCPPorts[0] = 22
+	first.Network.PublicEgressTCPPorts = append(first.Network.PublicEgressTCPPorts, 25)
+	cfg := ccConfig()
+	cfg.ClaudeCode.StorageSize = "3Gi"
+	second := mustBuild(t, ccAgent(), cfg, Options{Instructions: "anything"})
+	if want := (provision.Network{Isolate: true, PublicEgressTCPPorts: []int{443}}); !reflect.DeepEqual(second.Network, want) {
+		t.Fatalf("a second claude-code spec's network = %+v, want %+v: the first caller's edit leaked into it", second.Network, want)
+	}
 }

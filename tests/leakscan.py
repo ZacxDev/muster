@@ -70,6 +70,19 @@ DOC_ADDRESSES = {
     # about deploying muster on a cluster will spell.
     "10.244.0.0",
     "10.96.0.0",
+    # The three RFC 1918 blocks THEMSELVES, by their base address — the form a
+    # CIDR is written in ("10.0.0.0/8"). A block's name is not a host inside it
+    # and says nothing about anybody's network: it is the same string in every
+    # firewall rule ever published. The Kubernetes driver's NetworkPolicy has to
+    # spell all three, as the ranges an isolated agent may NOT reach.
+    #
+    # 🔴 THE BASE ADDRESS ONLY, AND THE MATCH IS ON THE WHOLE ADDRESS. A host in
+    # one of these blocks — including one that merely shares the base's first
+    # three octets — is still refused; NEGATIVE_CONTROLS pins that, so this
+    # cannot quietly become a prefix allowance.
+    "10.0.0.0",
+    "172.16.0.0",
+    "192.168.0.0",
 }
 
 _PRIVATE_IP = re.compile(
@@ -520,6 +533,10 @@ EXEMPT_FIXTURE_VALUES: dict[str, str] = {
         "zero files",
     "172.16.4.9":
         "the POSITIVE_CONTROL address, same argument; zero files",
+    "172.16.0.9":
+        "a host sharing three octets with an allowlisted BLOCK BASE "
+        "(DOC_ADDRESSES), which is the control that the allowance is the whole "
+        "base address and not a prefix; zero files in the source deployment",
     # -- hostnames, all on invented or IANA-reserved domains ------------------
     "workshed.lan":
         "an invented lab domain: zero occurrences in the source deployment, "
@@ -560,7 +577,7 @@ EXEMPT_FIXTURE_VALUES: dict[str, str] = {
 #: value is a two-line diff, and the second line is this number — which is the
 #: difference between a reviewer skimming a table and a reviewer being told the
 #: table grew.
-EXEMPT_FIXTURE_VALUE_COUNT = 13
+EXEMPT_FIXTURE_VALUE_COUNT = 14
 
 #: Dated stamps in an exempt file must predate this year. A control cannot use
 #: the year-SYNTHETIC_DATE_YEAR convention the rule steers toward, because the
@@ -767,6 +784,11 @@ NEGATIVE_CONTROLS = [
      "NODE = '10.255.255.1'  # the k3s node"),
     ("private-ip",
      "    endpoint: 172.20.4.9:30080"),
+    # 🔴 THE LINE ALSO SPELLS AN ALLOWLISTED BLOCK BASE, ON PURPOSE. The base must
+    # not excuse the host beside it (the allowlist is per-occurrence), and a host
+    # that shares the base's first three octets must not ride in on it.
+    ("private-ip",
+     "    except: [172.16.0.0/12]  # the node itself is 172.16.0.9"),
     ("credential",
      'Authorization: Bearer ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'),
     ("credential",
@@ -804,6 +826,8 @@ POSITIVE_CONTROL = "trusted = '172.16.4.9'  # a real private address"
 ALLOWED_CONTROLS = [
     ('    "10.244.0.0/16",  # a pod CIDR: every pod in the cluster',
      "the standard Kubernetes pod-CIDR example"),
+    ('    Except: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"},',
+     "the three RFC 1918 blocks named as CIDRs — block names, not hosts"),
     ("MUSTER_API_URL=https://muster.example.com/api/tasks",
      "a documentation hostname"),
     ('image: ghcr.io/zacxdev/muster:sha-0123456789abcdef',

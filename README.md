@@ -235,11 +235,19 @@ mechanism looks over-built and each part of it is there for a measured failure.
   which structurally cannot see scheduling, image pulls, volume attachment,
   admission, or the exec stream. A green suite there means the manifests are
   what the code says they are, not that a pod came up.
-- **The Kubernetes driver restricts no egress.** No NetworkPolicy is rendered,
-  and there is no capability flag to read that off — it is stated here and in
-  the driver's own doc comment. Restricting an agent's egress by DNS name is the
-  control that addresses exfiltration by a prompt-injected model, and muster
-  does not implement it. `Capabilities.Policy` being true does not cover it.
+- **The Kubernetes driver restricts no egress by DNS name.** Restricting an
+  agent's egress by DNS name is the control that addresses exfiltration by a
+  prompt-injected model, and muster does not implement it.
+  `Capabilities.Policy` being true does not cover it, and neither does
+  `Capabilities.NetworkIsolation`: for the one agent kind that asks for it
+  (`claude-code`), the driver writes a per-agent NetworkPolicy that is an
+  *address-range* policy — reachable only from muster's own pods, able to reach
+  only DNS and TCP 443 on public IPv4 addresses. That keeps such an agent off
+  the cluster's API, other namespaces and private networks; it can still send
+  anything it holds to any public HTTPS host. Every other agent gets no
+  NetworkPolicy at all. And a NetworkPolicy is only a declaration: the
+  cluster's network plugin enforces it or does not, and nothing in muster can
+  tell which.
 
 ## The provisioner
 

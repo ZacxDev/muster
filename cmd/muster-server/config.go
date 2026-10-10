@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
@@ -125,6 +126,21 @@ const (
 	envAgentCCAccounts    = "MUSTER_AGENT_CC_ACCOUNTS"
 	envAgentCCTokenPrefix = "MUSTER_AGENT_CC_TOKEN_"
 	envAgentCCStorage     = "MUSTER_AGENT_CC_STORAGE_SIZE"
+
+	// --- the claude-code kind's NetworkPolicy (kubernetes driver only) ---
+	//
+	// A claude-code agent's NetworkPolicy admits connections from MUSTER ITSELF
+	// and from nothing else, and these two say which pods that is: the namespace
+	// this server runs in, and a comma list of `key=value` labels its pods carry.
+	//
+	// 🔴 THERE IS NO DEFAULT FOR EITHER, AND A WRONG ONE DOES NOT FAIL OPEN. They
+	// are facts about how THIS deployment is labelled, which is installation
+	// state. A value that matches nothing produces a policy muster's own pod is
+	// not admitted by: the agent's pod reports Ready (a kubelet probe is not a
+	// pod-to-pod connection) and every turn times out. Read both off the muster
+	// Deployment's pod template.
+	envAgentNetpolFromNS     = "MUSTER_AGENT_NETPOL_FROM_NAMESPACE"
+	envAgentNetpolFromLabels = "MUSTER_AGENT_NETPOL_FROM_POD_LABELS"
 )
 
 // The values MUSTER_AGENT_PROVISIONER accepts.
@@ -490,6 +506,14 @@ type config struct {
 	AgentCCTokens       map[string]string
 	// AgentCCStorage is the claude-code kind's /data volume size ("" = 10Gi).
 	AgentCCStorage string
+
+	// AgentNetpolFromNS and AgentNetpolFromLabels say which pods a claude-code
+	// agent's NetworkPolicy admits: muster's own. AgentNetpolFromLabels is the
+	// variable AS WRITTEN; parsePodLabels is its one parser, and validateKinds
+	// refuses what that rejects. Both are required exactly when the claude-code
+	// kind is enabled on the kubernetes driver, and refused otherwise.
+	AgentNetpolFromNS     string
+	AgentNetpolFromLabels string
 }
 
 // agentKinds resolves the unset list to the gateway kind alone, for the reason
@@ -509,6 +533,59 @@ func (c config) claudeCodeEnabled() bool {
 		}
 	}
 	return false
+}
+
+// claudeCodeNetworkPolicy reports whether this deployment renders a
+// NetworkPolicy for its claude-code agents: the kind is enabled AND the driver
+// is the one that has NetworkPolicies.
+//
+// 🔴 ONE PREDICATE, THREE READERS, AND THEY MUST NOT DISAGREE: validateKinds
+// (are the two selector variables required, or refused), k8sDriverConfig (is
+// k8s.Config.NetworkPolicy set) and the banner (which arm is printed). The kind
+// declares network isolation in its spec unconditionally, so a deployment where
+// this is true and the driver was NOT given the selector would refuse every
+// claude-code dispatch at CheckSpec — which is why validateKinds makes that
+// combination a boot refusal instead.
+func (c config) claudeCodeNetworkPolicy() bool {
+	return c.claudeCodeEnabled() && c.agentProvisioner() == provisionerK8s
+}
+
+// parsePodLabels parses a comma list of `key=value` pod labels.
+//
+// 🔴 IT DOES NOT LOWER-CASE, UNLIKE splitList. A label value is case-sensitive
+// to the apiserver, so normalising one here would render a selector that matches
+// nothing — and a selector that matches nothing is a policy that admits nobody.
+//
+// It refuses rather than skips: an entry with no `=`, an empty key or value, a
+// key written twice, and an empty list. Each of those dropped silently would
+// WIDEN or EMPTY the selector the operator wrote.
+func parsePodLabels(v string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, part := range strings.Split(v, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(part, "=")
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		if !ok || key == "" || value == "" {
+			return nil, fmt.Errorf("entry %q is not key=value", part)
+		}
+		if msgs := validation.IsQualifiedName(key); len(msgs) > 0 {
+			return nil, fmt.Errorf("entry %q: label key %q: %s", part, key, strings.Join(msgs, "; "))
+		}
+		if msgs := validation.IsValidLabelValue(value); len(msgs) > 0 {
+			return nil, fmt.Errorf("entry %q: label value %q: %s", part, value, strings.Join(msgs, "; "))
+		}
+		if _, dup := out[key]; dup {
+			return nil, fmt.Errorf("label key %q is written twice", key)
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("it names no label")
+	}
+	return out, nil
 }
 
 // splitList parses a comma list: trimmed, lower-cased, empties dropped.
@@ -589,6 +666,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentCCImage:          strings.TrimSpace(getenv(envAgentCCImage)),
 		AgentCCAccountNames:   splitList(getenv(envAgentCCAccounts)),
 		AgentCCStorage:        strings.TrimSpace(getenv(envAgentCCStorage)),
+		AgentNetpolFromNS:     strings.TrimSpace(getenv(envAgentNetpolFromNS)),
+		AgentNetpolFromLabels: strings.TrimSpace(getenv(envAgentNetpolFromLabels)),
 	}
 	if len(c.AgentCCAccountNames) > 0 {
 		c.AgentCCTokens = make(map[string]string, len(c.AgentCCAccountNames))
@@ -968,6 +1047,18 @@ func (c config) validateKinds() error {
 			"created before kinds existed are that kind, and the dispatch form defaults to it",
 			envAgentKinds, strings.Join(c.AgentKinds, ","), agents.KindGateway)
 	}
+	// 🔴 THE NETWORK-POLICY SELECTOR IS REFUSED WHEREVER NOTHING WOULD RENDER IT,
+	// AND THIS RUNS BEFORE THE KIND-DISABLED RETURN BELOW ON PURPOSE. It has two
+	// ways to be an armed switch — the claude-code kind is not enabled, or it is
+	// enabled on a driver that has no NetworkPolicies — and an operator who set it
+	// believes their agents are confined to callers they named.
+	if !c.claudeCodeNetworkPolicy() && (c.AgentNetpolFromNS != "" || c.AgentNetpolFromLabels != "") {
+		return fmt.Errorf("%s or %s is set but nothing would render a NetworkPolicy from it: that needs %s to "+
+			"include %s AND %s=%s (it is %s). Left set it would be an armed switch that does nothing — "+
+			"agents you believe are confined, with no policy. Unset both, or enable the kind on that driver",
+			envAgentNetpolFromNS, envAgentNetpolFromLabels, envAgentKinds, agents.KindClaudeCode,
+			envAgentProvisioner, provisionerK8s, c.agentProvisioner())
+	}
 	if !c.claudeCodeEnabled() {
 		if c.AgentCCImage != "" || len(c.AgentCCAccountNames) > 0 || c.AgentCCStorage != "" {
 			return fmt.Errorf("%s, %s or %s is set but %s does not include %s: those settings would be "+
@@ -1011,6 +1102,33 @@ func (c config) validateKinds() error {
 		if c.AgentCCTokens[name] == "" {
 			return fmt.Errorf("%s names account %q but %s%s is not set: an account with no token is a pod "+
 				"that cannot answer one turn", envAgentCCAccounts, name, envAgentCCTokenPrefix, ccpool.EnvSuffix(name))
+		}
+	}
+	// 🔴 THE KUBERNETES DRIVER WRITES A CLAUDE-CODE AGENT'S NetworkPolicy BEFORE
+	// ITS POD AND REFUSES THE AGENT WITHOUT IT — AND THE POLICY CANNOT BE
+	// RENDERED WITHOUT KNOWING WHO MUSTER IS. The kind's spec
+	// declares network isolation unconditionally (agentspec.ClaudeCodeNetwork), so
+	// without these the kubernetes driver would refuse every claude-code dispatch
+	// in a background goroutine. Refused here instead, naming both variables.
+	if c.claudeCodeNetworkPolicy() {
+		if c.AgentNetpolFromNS == "" || c.AgentNetpolFromLabels == "" {
+			return fmt.Errorf("%s includes %s on %s=%s but %s and %s are not both set (%s is %s, %s is %s): a "+
+				"%s agent is created with a NetworkPolicy that admits connections from this server's own pods "+
+				"and nothing else, and those two say which pods that is — the namespace this server runs in "+
+				"and its pods' labels as key=value,key=value. There is no default: both are read off this "+
+				"deployment's own pod template",
+				envAgentKinds, agents.KindClaudeCode, envAgentProvisioner, provisionerK8s,
+				envAgentNetpolFromNS, envAgentNetpolFromLabels,
+				envAgentNetpolFromNS, presence(c.AgentNetpolFromNS),
+				envAgentNetpolFromLabels, presence(c.AgentNetpolFromLabels), agents.KindClaudeCode)
+		}
+		if msgs := validation.IsDNS1123Label(c.AgentNetpolFromNS); len(msgs) > 0 {
+			return fmt.Errorf("invalid %s %q: not a namespace name (%s)", envAgentNetpolFromNS,
+				c.AgentNetpolFromNS, strings.Join(msgs, "; "))
+		}
+		if _, err := parsePodLabels(c.AgentNetpolFromLabels); err != nil {
+			return fmt.Errorf("invalid %s %q: %v (want key=value,key=value — the labels on this server's own pods)",
+				envAgentNetpolFromLabels, c.AgentNetpolFromLabels, err)
 		}
 	}
 	return nil

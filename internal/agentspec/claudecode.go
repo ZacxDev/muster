@@ -68,6 +68,32 @@ var ClaudeCodeSecurity = provision.Security{
 	NoServiceAccountToken: true,
 }
 
+// ClaudeCodeNetwork is the claude-code kind's network confinement: reachable
+// only by muster, on ccd's port; able to reach only name resolution and TCP 443
+// on public addresses (the Anthropic API and GitHub).
+//
+// 🔴 IT IS UNCONDITIONAL, LIKE ClaudeCodeSecurity, AND THAT IS WHAT MAKES THE
+// KIND FAIL CLOSED. There is no knob that builds a claude-code spec without it:
+// a driver that cannot confine an instance refuses the spec (provision.CheckSpec)
+// instead of starting a shell-capable pod holding a subscription token with the
+// cluster's API, its neighbours and the operator's LAN in reach.
+//
+// ⚠ WHAT IT DOES NOT BUY: this is "public internet on 443", not "Anthropic and
+// GitHub". Nothing here names a host. A prompt-injected agent can still send
+// what it holds to any public HTTPS endpoint.
+//
+// ⚠ MUSTER ITSELF IS NOT REACHABLE FROM THE POD, although the spec still hands
+// it MUSTER_API_URL: that address is in-cluster, so it is on the wrong side of
+// this. Nothing in the image calls it today. The change that makes the pod call
+// muster (or the approval router) has to add that allowance deliberately.
+func ClaudeCodeNetwork() provision.Network {
+	return provision.Network{Isolate: true, PublicEgressTCPPorts: []int{ClaudeCodePublicEgressPort}}
+}
+
+// ClaudeCodePublicEgressPort is the one TCP port a claude-code agent may reach
+// on public addresses: HTTPS.
+const ClaudeCodePublicEgressPort = 443
+
 // ClaudeCodeConfig enables the claude-code kind. A nil *ClaudeCodeConfig on
 // [Config] means the kind is NOT enabled, and Build refuses a claude-code row.
 type ClaudeCodeConfig struct {
@@ -163,6 +189,7 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		Ports:     []provision.Port{{Name: provision.DefaultPortName, Port: DefaultGatewayPort}},
 		Health:    provision.Health{HTTPGetPath: DefaultGatewayHealthPath, PortName: provision.DefaultPortName},
 		Security:  ClaudeCodeSecurity,
+		Network:   ClaudeCodeNetwork(),
 		Labels:    labels,
 	}
 	if err := spec.Validate(); err != nil {
