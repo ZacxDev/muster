@@ -182,8 +182,18 @@ const KickoffEmptyReplyReason = "kickoff turn returned an EMPTY reply, so it is 
 // above. An unrecognised text answers false, the side that tells the operator to
 // check before re-sending.
 func KickoffResendSafe(a Agent) bool {
-	return KickoffFailed(a) && strings.HasPrefix(a.KickoffError, KickoffNeverConnectedReason)
+	return KickoffFailed(a) && (strings.HasPrefix(a.KickoffError, KickoffNeverConnectedReason) ||
+		strings.HasPrefix(a.KickoffError, KickoffNotAcceptedReason))
 }
+
+// KickoffNotAcceptedReason opens agents.kickoff_error when the runtime was
+// reached but kept refusing the first turn with a typed `not_ready` — ccd's answer
+// before the Claude Code CLI is at its prompt, given before anything is pasted —
+// until the delivery gave up (its bound, or this process shutting down). Like
+// [KickoffNeverConnectedReason], it proves nothing was sent, so a re-send is safe.
+const KickoffNotAcceptedReason = "kickoff turn NOT ACCEPTED by the agent runtime: it answered " +
+	"not_ready (its session was not at the prompt) for the whole delivery, so nothing was sent. The " +
+	"row was already marked delivered, so it is not retried automatically"
 
 // KickoffFailureText is the error text a surface may show for a failed kickoff:
 // [Agent.KickoffError] with the pending note scrubbed out ([ScrubNote]), or "" when

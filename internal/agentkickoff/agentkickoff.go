@@ -47,7 +47,13 @@
 // attempt — a second write after the point of no return, and the kicked_off=f with
 // attempts>0 state that round 0 deleted a guard for because no writer produced it.
 // What the record buys instead is a remedy that says re-sending is safe
-// (agents.KickoffResendSafe), which is true for this cause and no other.
+// (agents.KickoffResendSafe), which is true for this cause and for the next one.
+//
+// ⚠ AND ONE IS RE-SENT IN PLACE: a typed `not_ready` (ccd, before the Claude Code
+// CLI is at its prompt — answered before anything is pasted). deliver re-sends it
+// within the same delivery, under the same stamp, for a bounded wait; one that
+// outlasts the bound is recorded as agents.KickoffNotAcceptedReason, also
+// resend-safe. Nothing is un-stamped.
 //
 // 🔴 AND THAT UNRETRIED FAILURE IS VISIBLE, NOT JUST RECORDED (an operator
 // decision). The stamp clears the "kickoff owed" badge, so before this a failed
@@ -526,6 +532,15 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 			break
 		}
 		reply, err = d.gw.Send(ctx, target, sess.SessionKey, fresh.PendingNote, nil)
+	}
+	if err != nil && runtimeNotReady(err) {
+		// Still not_ready when the delivery ended — the bound, or a shutdown
+		// mid-wait. Nothing was sent, which turnFailure's texts (shutdown, budget,
+		// "handed to the gateway") would deny; this one says so, and makes the
+		// card's remedy say a re-send is safe (agents.KickoffResendSafe).
+		d.recordError(fresh, agents.KickoffNotAcceptedReason+": "+err.Error())
+		d.notify(fresh.Name)
+		return
 	}
 	if err != nil {
 		d.recordError(fresh, turnFailure(parent, ctx, turn, err))

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
@@ -160,12 +162,16 @@ func TestTheDispatchFormOffersThePickerOnlyWithTwoKinds(t *testing.T) {
 // modelStore answers the model route's reads for one agent and records SetModel.
 type modelStore struct {
 	agents.Store
-	agent agents.Agent
-	sets  int
+	agent  agents.Agent
+	sets   int
+	getErr error
 }
 
-func (m *modelStore) Get(context.Context, int64) (agents.Agent, error) { return m.agent, nil }
+func (m *modelStore) Get(context.Context, int64) (agents.Agent, error) { return m.agent, m.getErr }
 func (m *modelStore) SetModel(_ context.Context, _ int64, model string) (agents.Agent, error) {
+	if errors.Is(m.getErr, pgx.ErrNoRows) {
+		return agents.Agent{}, pgx.ErrNoRows
+	}
 	m.sets++
 	m.agent.Model = model
 	return m.agent, nil
@@ -193,6 +199,28 @@ func TestAModelCannotBeSetOnAClaudeCodeAgentLater(t *testing.T) {
 		}
 		if wantSets := map[bool]int{true: 0, false: 1}[c.kind == agents.KindClaudeCode]; st.sets != wantSets {
 			t.Fatalf("kind %s: SetModel called %d time(s), want %d", c.kind, st.sets, wantSets)
+		}
+	}
+}
+
+// TestTheModelRouteFailsClosedOnAKindReadError: a read error other than "no such
+// agent" refuses the write (500, nothing stored) instead of storing a model on
+// an agent whose kind could not be checked; a missing agent is still a 404.
+func TestTheModelRouteFailsClosedOnAKindReadError(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want int
+	}{{errors.New("conn reset"), http.StatusInternalServerError}, {pgx.ErrNoRows, http.StatusNotFound}} {
+		st := &modelStore{agent: agents.Agent{ID: 12, Name: "quiet-heron"}, getErr: c.err}
+		s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(os.Stderr, "", 0))
+		s.UseExtensions(Extensions{Agents: st, SessionLiveness: stubLiveness{}, Provisioner: newPreflightProvisioner("")})
+		req := httptest.NewRequest(http.MethodPost, "/agents/12/model", strings.NewReader("model="))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		admit(s, req)
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, req)
+		if rec.Code != c.want || st.sets != 0 {
+			t.Fatalf("Get error %v: %d (sets %d), want %d and nothing stored", c.err, rec.Code, st.sets, c.want)
 		}
 	}
 }

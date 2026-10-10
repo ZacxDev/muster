@@ -2,6 +2,7 @@ package agentkickoff
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,8 +97,9 @@ func TestALastingNotReadyEndsAsAFailedKickoffNotALoop(t *testing.T) {
 	if h.gw.callCount() != sent {
 		t.Fatalf("a second tick sent again (%d -> %d): the kickoff loops", sent, h.gw.callCount())
 	}
-	if r := h.store.row(7301); !agents.KickoffFailed(r) {
-		t.Fatalf("a lasting not_ready is not recorded as a failed kickoff: %+v", r.KickoffError)
+	if r := h.store.row(7301); !agents.KickoffFailed(r) || !strings.HasPrefix(r.KickoffError, agents.KickoffNotAcceptedReason) ||
+		!agents.KickoffResendSafe(r) {
+		t.Fatalf("a lasting not_ready is not recorded as NOT ACCEPTED (resend-safe): %q", r.KickoffError)
 	}
 
 	h2 := newHarness(t, []provision.Instance{readyInstance("lively-newt", "lively-newt-7f9c-x2", 0)}, ownedRow())
@@ -107,5 +109,21 @@ func TestALastingNotReadyEndsAsAFailedKickoffNotALoop(t *testing.T) {
 	h2.tick(t)
 	if h2.gw.callCount() != 1 || !agents.KickoffFailed(h2.store.row(7301)) {
 		t.Fatalf("an untyped 503 was re-sent (%d sends) or not recorded as failed", h2.gw.callCount())
+	}
+}
+
+// TestAShutdownDuringTheNotReadyWaitIsRecordedAsNotAccepted: the stamp is down
+// and nothing was sent; a shutdown mid-wait must not read as "cancelled after it
+// was handed to the gateway" (which tells the operator to check before re-sending).
+func TestAShutdownDuringTheNotReadyWaitIsRecordedAsNotAccepted(t *testing.T) {
+	h, _ := notReadyHarness(t, 1<<30)
+	h.d.notReadyWait, h.d.notReadyPoll = time.Hour, 20*time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(60*time.Millisecond, cancel)
+	_ = h.d.Tick(ctx)
+	h.d.Wait()
+	r := h.store.row(7301)
+	if !strings.HasPrefix(r.KickoffError, agents.KickoffNotAcceptedReason) || !agents.KickoffResendSafe(r) {
+		t.Fatalf("shutdown mid not_ready wait recorded %q, want NOT ACCEPTED (resend-safe)", r.KickoffError)
 	}
 }
