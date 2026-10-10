@@ -33,8 +33,9 @@ func TestAFailureAfterThePasteIsNeverNotReady(t *testing.T) {
 }
 
 // fakeTmux is a tmux stand-in: display-message answers "live" on its first call
-// and "dead" after (or dead from the start when deadFirst), the buffer commands
-// succeed, and every invocation is logged.
+// and "dead" after (dead from the start with a `deadfirst` file; EXITS 1 from the
+// second call with a `failsecond` file), the buffer commands succeed, and every
+// invocation is logged.
 const fakeTmux = `#!/bin/sh
 dir="$(dirname "$0")"
 echo "$*" >> "$dir/calls"
@@ -116,7 +117,16 @@ func TestATransientTmuxFailureAfterThePasteIsNotNotReady(t *testing.T) {
 	if !strings.Contains(string(calls), "paste-buffer") {
 		t.Fatalf("instrument check: nothing was pasted:\n%s", calls)
 	}
-	if err == nil || errors.Is(err, errPaneNotLive) || !errors.Is(err, errPastedNotSubmitted) {
+	// Instrument check: the failing read must be what produced this error —
+	// otherwise the script fell through to "dead" and the dead-pane test is all
+	// this one would be repeating.
+	if err == nil || !strings.Contains(err.Error(), "server exited unexpectedly") {
+		t.Fatalf("instrument check: the non-zero display-message was not reached: %v", err)
+	}
+	if errors.Is(err, errPaneNotLive) || !errors.Is(err, errPastedNotSubmitted) {
 		t.Fatalf("a transient tmux failure after the paste returned %v; want errPastedNotSubmitted, NOT errPaneNotLive", err)
+	}
+	if strings.Contains(string(calls), "send-keys") {
+		t.Fatalf("an Enter was sent after a failed liveness read:\n%s", calls)
 	}
 }
