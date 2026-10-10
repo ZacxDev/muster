@@ -116,6 +116,7 @@ func TestRetiredNameTriggerIsRegisteredOnAgents(t *testing.T) {
 		 WHERE NOT t.tgisinternal
 		   AND n.nspname = 'public'
 		   AND c.relname = 'agents'
+		   AND (t.tgtype & 8) <> 0
 		 ORDER BY t.tgname`)
 	if err != nil {
 		t.Fatalf("read pg_trigger: %v", err)
@@ -145,7 +146,10 @@ func TestRetiredNameTriggerIsRegisteredOnAgents(t *testing.T) {
 		for _, tr := range got {
 			names = append(names, tr.name)
 		}
-		t.Fatalf("`agents` carries %d non-internal trigger(s) %v, want exactly 1 "+
+		// ⚠ DELETE TRIGGERS ONLY (tgtype bit 3): migration 0003 adds a BEFORE UPDATE
+		// trigger (agents_kind_account_immutable) that changes nothing a DELETE does,
+		// and has its own guard (TestKindAndAccountAreImmutableAfterInsert).
+		t.Fatalf("`agents` carries %d non-internal DELETE trigger(s) %v, want exactly 1 "+
 			"(agents_retire_name). A missing one means a destroyed agent's name goes "+
 			"straight back into the generator pool; an extra one changes what a DELETE "+
 			"does with nothing else in the suite watching.", len(got), names)

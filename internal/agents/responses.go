@@ -316,9 +316,57 @@ func streamResponses(ctx context.Context, client *http.Client, url, token, sessi
 		if len(snippet) > 512 {
 			snippet = snippet[:512] + "…"
 		}
-		return nil, fmt.Errorf("responses HTTP %d: %s", resp.StatusCode, snippet)
+		return nil, newRuntimeError(resp.StatusCode, respBody, snippet)
 	}
 	return parseResponsesSSE(resp.Body, emit)
+}
+
+// RuntimeError is a non-200, non-404 answer from an agent runtime's
+// /v1/responses endpoint.
+//
+// 🔴 ITS Error() IS BYTE-IDENTICAL TO THE fmt.Errorf IT REPLACED
+// ("responses HTTP <status>: <body snippet>"), BECAUSE THAT TEXT IS STORED. It
+// lands in agents.kickoff_error and is matched by prefix and scrubbed by
+// ScrubNote; changing it would change every stored failure's rendering. What the
+// type ADDS is the runtime's own typed failure, when the body carries one.
+//
+// ⚠ Type IS FILLED ONLY FROM THE WIRE SHAPE ccd SPEAKS —
+// `{"error":{"type":…,"code":…,"upstream_status":…,"message":…}}` (cmd/ccd's
+// failure.go). A body that is not that JSON leaves Type empty, which every
+// consumer treats as "untyped", never as a failure kind. That is what makes it
+// safe to branch on: internal/agentgateway marks a Claude account rate-limited
+// only when Type is exactly "rate_limited", so a 429 from some other runtime or
+// a proxy is not mistaken for one.
+type RuntimeError struct {
+	Status         int
+	Type           string
+	Code           string
+	UpstreamStatus int
+	Message        string
+	snippet        string
+}
+
+func (e *RuntimeError) Error() string {
+	return fmt.Sprintf("responses HTTP %d: %s", e.Status, e.snippet)
+}
+
+func newRuntimeError(status int, body []byte, snippet string) *RuntimeError {
+	e := &RuntimeError{Status: status, snippet: snippet}
+	var typed struct {
+		Error struct {
+			Type           string `json:"type"`
+			Code           string `json:"code"`
+			UpstreamStatus int    `json:"upstream_status"`
+			Message        string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &typed) == nil {
+		e.Type = typed.Error.Type
+		e.Code = typed.Error.Code
+		e.UpstreamStatus = typed.Error.UpstreamStatus
+		e.Message = typed.Error.Message
+	}
+	return e
 }
 
 // parseResponsesSSE parses the SSE body of a streaming /v1/responses turn. It is

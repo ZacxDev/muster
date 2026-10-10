@@ -106,7 +106,23 @@ type Config struct {
 	Model string
 	// Client is the HTTP client for gateway calls. Optional; a client with
 	// [DefaultTurnTimeout] is built when nil.
+	//
+	// ⚠ A KIND WITH ITS OWN TURN BUDGET (agents.KindTurnTimeout — today only
+	// claude-code) gets a COPY of this client with that Timeout; the transport is
+	// shared. The gateway kind uses this client exactly as given.
 	Client *http.Client
+	// Accounts records a claude-code agent's typed `rate_limited` / `auth_failed`
+	// failures against the Claude account it runs on. Optional: nil means no
+	// claude-code kind is enabled, and nothing is marked.
+	Accounts AccountMarker
+}
+
+// AccountMarker is the one thing this package needs from the Claude account pool
+// (internal/ccpool.Pool satisfies it). It is narrow for the reason
+// EndpointResolver is: a chat path has no business selecting accounts or reading
+// tokens.
+type AccountMarker interface {
+	MarkFailure(ctx context.Context, account, failure, detail string) error
 }
 
 // ⚠ THERE IS DELIBERATELY NO Logger FIELD, AND THERE WAS ONE. It was accepted,
@@ -127,10 +143,11 @@ type Config struct {
 // internal/api's own seam test pins it from the side that owns the interface,
 // including what a *Gateway must NOT satisfy.
 type Gateway struct {
-	driver  EndpointResolver
-	runtime Runtime
-	model   string
-	client  *http.Client
+	driver   EndpointResolver
+	runtime  Runtime
+	model    string
+	client   *http.Client
+	accounts AccountMarker
 }
 
 // New validates the configuration and builds the gateway.
@@ -151,10 +168,11 @@ func New(cfg Config) (*Gateway, error) {
 			"inside a turn rather than at boot)")
 	}
 	g := &Gateway{
-		driver:  cfg.Driver,
-		runtime: cfg.Runtime,
-		model:   cfg.Model,
-		client:  cfg.Client,
+		driver:   cfg.Driver,
+		runtime:  cfg.Runtime,
+		model:    cfg.Model,
+		client:   cfg.Client,
+		accounts: cfg.Accounts,
 	}
 	if g.client == nil {
 		g.client = &http.Client{Timeout: DefaultTurnTimeout}
@@ -215,6 +233,10 @@ func (g *Gateway) Chat(ctx context.Context, a agents.Agent, sessionKey, message 
 type Target struct {
 	ep     provision.Endpoint
 	bearer string
+	// kind and account are the agent's, so Send can apply the kind's turn budget
+	// and mark the account a typed failure came from.
+	kind    string
+	account string
 }
 
 // Resolve does the part of [Gateway.Chat] that contacts no agent runtime: it
@@ -231,21 +253,68 @@ func (g *Gateway) Resolve(ctx context.Context, a agents.Agent) (Target, error) {
 	if err != nil {
 		return Target{}, err
 	}
-	return Target{ep: ep, bearer: bearer}, nil
+	return Target{ep: ep, bearer: bearer, kind: agents.ResolveKind(a.Kind), account: a.CCAccount}, nil
 }
 
 // Send runs the turn half of [Gateway.Chat] against a [Target] from
 // [Gateway.Resolve]: /v1/responses, falling back to /v1/chat/completions on a 404
 // (see Chat).
 func (g *Gateway) Send(ctx context.Context, t Target, sessionKey, message string, emit func(string)) (string, error) {
-	reply, err := agents.RunToollessTurn(ctx, g.client, agents.ResponsesURL(t.ep), t.bearer, sessionKey,
+	client := g.clientFor(t.kind)
+	reply, err := agents.RunToollessTurn(ctx, client, agents.ResponsesURL(t.ep), t.bearer, sessionKey,
 		g.model, "", message, textDeltasOnly(emit))
 	if !errors.Is(err, agents.ErrResponsesUnsupported) {
-		return reply, err
+		return reply, g.noteFailure(ctx, t, err)
 	}
-	return agents.ChatStream(ctx, g.client, agents.ChatCompletionsURL(t.ep), t.bearer, sessionKey,
+	return agents.ChatStream(ctx, client, agents.ChatCompletionsURL(t.ep), t.bearer, sessionKey,
 		g.model, []agents.ChatMessageIn{{Role: "user", Content: message}}, emit)
 }
+
+// clientFor returns the HTTP client a kind's turns use: the configured client,
+// or — for a kind with its own turn budget — a copy with that Timeout. See
+// agents.ClaudeCodeTurnTimeout for why claude-code's budget outlasts ccd's own.
+func (g *Gateway) clientFor(kind string) *http.Client {
+	t := agents.KindTurnTimeout(kind)
+	if t <= 0 {
+		return g.client
+	}
+	c := *g.client
+	c.Timeout = t
+	return &c
+}
+
+// noteFailure marks a claude-code agent's Claude account when ccd answered a
+// typed `rate_limited` or `auth_failed`, and returns err (annotated only if the
+// mark itself could not be written).
+//
+// 🔴 ONLY THE TYPED FAILURE MARKS, NEVER A STATUS CODE. A 429 from a proxy, or a
+// 502 from anything that is not ccd, carries no `error.type` and marks nothing:
+// an account must not be pushed to the back of the pool by a fault that was not
+// its own.
+//
+// ⚠ THE MARK IS WRITTEN ON A CONTEXT DETACHED FROM THE TURN'S, so a caller that
+// hangs up the moment the error arrives does not also cancel the record of why.
+func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
+	if err == nil || g.accounts == nil || t.account == "" || t.kind != agents.KindClaudeCode {
+		return err
+	}
+	var rt *agents.RuntimeError
+	if !errors.As(err, &rt) {
+		return err
+	}
+	if rt.Type != "rate_limited" && rt.Type != "auth_failed" {
+		return err
+	}
+	mctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), markTimeout)
+	defer cancel()
+	if merr := g.accounts.MarkFailure(mctx, t.account, rt.Type, rt.Message); merr != nil {
+		return fmt.Errorf("%w (recording %s against Claude account %q also failed: %v)", err, rt.Type, t.account, merr)
+	}
+	return err
+}
+
+// markTimeout bounds the account-mark write.
+const markTimeout = 5 * time.Second
 
 // textDeltasOnly adapts Chat's text-delta callback to the responses transport's
 // event stream, and returns nil for a nil callback so the transport's own nil-safety
@@ -272,12 +341,13 @@ func textDeltasOnly(emit func(string)) agents.StreamEmit {
 // call in this process. Returns agents.ErrResponsesUnsupported unwrapped when the
 // runtime lacks the endpoint, so a caller's errors.Is fallback works.
 func (g *Gateway) ChatWithTools(ctx context.Context, a agents.Agent, sessionKey, instructions, message string, tools []agents.ToolDef, dispatch agents.ToolDispatch, emit agents.StreamEmit) (string, error) {
-	ep, bearer, err := g.reach(ctx, a)
+	t, err := g.Resolve(ctx, a)
 	if err != nil {
 		return "", err
 	}
-	return agents.RunToolLoop(ctx, g.client, agents.ResponsesURL(ep), bearer, sessionKey,
+	reply, err := agents.RunToolLoop(ctx, g.clientFor(t.kind), agents.ResponsesURL(t.ep), t.bearer, sessionKey,
 		g.model, instructions, message, tools, dispatch, emit)
+	return reply, g.noteFailure(ctx, t, err)
 }
 
 // reach resolves where an agent is and what credential talks to it — the two

@@ -401,13 +401,30 @@ func (d *Deliverer) failStuck(a agents.Agent) {
 	d.notify(a.Name)
 }
 
+// turnFor is the budget for one agent's first turn: the configured turn, or —
+// for a kind whose single request may legitimately run longer
+// (agents.KindTurnTimeout; claude-code's outlasts ccd's own 30m budget) — that
+// request budget plus kindSlack, whichever is longer. The gateway kind gets
+// exactly d.turn, as before kinds existed.
+func (d *Deliverer) turnFor(a agents.Agent) time.Duration {
+	if k := agents.KindTurnTimeout(a.Kind); k > 0 && k+kindSlack > d.turn {
+		return k + kindSlack
+	}
+	return d.turn
+}
+
+// kindSlack is how much longer than a kind's per-request budget its first turn
+// may run end to end (resolve, session open, bookkeeping).
+const kindSlack = 2 * time.Minute
+
 // deliver runs one first turn. The order is the design: everything that can fail
 // without contacting the agent runtime happens BEFORE KickedOff is stamped, and is
 // therefore retried by the next tick; the turn itself happens only after the stamp,
 // so it is never run twice. (The one free failure left after the stamp, a
 // connection that cannot be opened, is named in the package doc.)
 func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provision.Instance) {
-	ctx, cancel := context.WithTimeout(parent, d.turn)
+	turn := d.turnFor(a)
+	ctx, cancel := context.WithTimeout(parent, turn)
 	defer cancel()
 
 	// A token-less row derives a well-formed WRONG bearer (agentgateway.reach), so
@@ -418,7 +435,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		return
 	}
 
-	won, err := d.store.ClaimKickoff(ctx, a.ID, d.owner, d.turn+claimMargin)
+	won, err := d.store.ClaimKickoff(ctx, a.ID, d.owner, turn+claimMargin)
 	if err != nil || !won {
 		// Another process holds it, or the claim could not be verified. Either way
 		// this process must not run the turn — and must not release a claim it
@@ -487,7 +504,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	})
 	reply, err := d.gw.Send(ctx, target, sess.SessionKey, fresh.PendingNote, nil)
 	if err != nil {
-		d.recordError(fresh, turnFailure(parent, ctx, d.turn, err))
+		d.recordError(fresh, turnFailure(parent, ctx, turn, err))
 		d.notify(fresh.Name)
 		return
 	}

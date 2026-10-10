@@ -30,6 +30,7 @@ var tablesThisSchemaMustHave = []string{
 	"agent_privileges",
 	"agent_retired_names",
 	"agents",
+	"cc_account_marks",
 	"chat_messages",
 	"chat_sessions",
 	"github_connection",
@@ -60,6 +61,9 @@ var tablesThisSchemaMustHave = []string{
 // failure message, which is the one thing the reader needs.
 var tablesWithNoIdentityColumn = []string{
 	"agent_retired_names",
+	// cc_account_marks is keyed by the account NAME (migration 0003), for the
+	// agent_retired_names reason: one account, one record.
+	"cc_account_marks",
 	"github_connection",
 	"task_sessions",
 }

@@ -126,6 +126,14 @@
     "HTTPGetPath": "/",
     "PortName": "gateway"
   },
+  "Security": {
+    "RunAsUser": 0,
+    "RunAsGroup": 0,
+    "FSGroup": 0,
+    "RunAsNonRoot": false,
+    "Restricted": false,
+    "NoServiceAccountToken": false
+  },
   "Endpoint": null,
   "Replicas": 0,
   "Labels": {

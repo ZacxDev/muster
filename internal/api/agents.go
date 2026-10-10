@@ -207,6 +207,7 @@ func (s *Server) handleAgentNewModal(w http.ResponseWriter, r *http.Request) {
 				// land: #agents-list exists only on the shell. See
 				// ui.TaskDispatchView.FromDetailPage.
 				v.FromDetailPage = rendersInDetailShape(r, n.ID)
+				v.Kinds = s.kindChoices()
 				if rerr := ui.RenderDispatchModalTask(w, v); rerr != nil {
 					s.logger.Printf("agents: render task dispatch modal: %v", rerr)
 				}
@@ -216,9 +217,19 @@ func (s *Server) handleAgentNewModal(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if err := ui.RenderDispatchModal(w); err != nil {
+	if err := ui.RenderDispatchModal(w, s.kindChoices()); err != nil {
 		s.logger.Printf("agents: render dispatch modal: %v", err)
 	}
+}
+
+// kindChoices is what the dispatch form offers: the enabled kinds and the
+// Claude account names (never tokens).
+func (s *Server) kindChoices() ui.KindChoices {
+	k := ui.KindChoices{Kinds: s.ext.enabledKinds()}
+	if s.ext.Kinds != nil {
+		k.Accounts = s.ext.Kinds.ClaudeAccounts()
+	}
+	return k
 }
 
 // buildTaskDispatchView resolves a task's dispatch config into the task-scoped
@@ -543,6 +554,7 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 	status := liveStatusIndexed(a, idx)
 	return ui.AgentCardView{
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
+		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount,
 		Repo: a.Repo, Status: status, KickedOff: a.KickedOff, Model: a.Model,
 		// 🔴 THE BOOLEAN, NEVER a.PendingNote. agents.KickoffOwed reads the note to
 		// answer whether one is outstanding; what crosses into the view layer is its
@@ -704,6 +716,8 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	branch := strings.TrimSpace(r.FormValue("repo_branch"))
 	model := strings.TrimSpace(r.FormValue("model"))
 	noteText := strings.TrimSpace(r.FormValue("note_text"))
+	kind := strings.TrimSpace(r.FormValue("kind"))
+	ccAccount := strings.TrimSpace(r.FormValue("cc_account"))
 
 	// Resolve the kickoff note: an existing note's body takes precedence.
 	var noteID *int64
@@ -737,8 +751,15 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.createAndDispatchAgent(ctx, dispatchParams{
 		Repo: repo, RepoBranch: branch, Model: model, NoteID: noteID, NoteText: noteText,
 		Kickoff: action == "dispatch", GrantProfileIDs: grantIDs,
+		Kind: kind, CCAccount: ccAccount,
 	}); err != nil {
 		s.logger.Printf("agents: create/dispatch: %v", err)
+		// A kind/account refusal is decided BEFORE the row exists and is the
+		// operator's to act on — the toast shows this text verbatim.
+		if errors.Is(err, ErrDispatchRefused) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		// An uncredentialed model is the OPERATOR's typo, not a server fault, and
 		// the message carries the corrected slug — answer 400 with it rather than
 		// burying the one useful sentence in a log behind a generic 500.
@@ -871,6 +892,51 @@ type dispatchParams struct {
 	// provisioning so the profiles' env/kubeconfig is picked up at provision; the
 	// live RBAC is applied AFTER, once the namespace + ServiceAccount exist.
 	GrantProfileIDs []int64
+	// Kind is the agent kind to create ("" = agents.KindGateway). It must be one
+	// Extensions.Kinds enables.
+	Kind string
+	// CCAccount PINS a claude-code agent's Claude account; "" lets the pool
+	// choose. Refused for any other kind.
+	CCAccount string
+}
+
+// ErrDispatchRefused marks a dispatch refused before anything was created: a
+// kind this deployment does not enable, an account pin for a kind that has none,
+// or a claude-code pool with no usable account.
+var ErrDispatchRefused = errors.New("dispatch refused")
+
+// resolveKindAccount decides a new agent's kind and Claude account, BEFORE its
+// row exists.
+//
+// 🔴 THE ACCOUNT IS CHOSEN HERE, ONCE, AND STORED ON THE ROW — the agent keeps
+// it for life (migration 0003 refuses a change). Every later build of this
+// agent's spec reads the stored name; nothing re-selects.
+func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind, account string, err error) {
+	kind = agents.ResolveKind(strings.ToLower(p.Kind))
+	if !agents.ValidKind(kind) {
+		return "", "", fmt.Errorf("%w: unknown agent kind %q", ErrDispatchRefused, p.Kind)
+	}
+	if !s.ext.kindEnabled(kind) {
+		return "", "", fmt.Errorf("%w: agent kind %q is not enabled on this deployment (MUSTER_AGENT_KINDS)", ErrDispatchRefused, kind)
+	}
+	if kind != agents.KindClaudeCode {
+		if p.CCAccount != "" {
+			return "", "", fmt.Errorf("%w: a Claude account can only be pinned for a %s agent", ErrDispatchRefused, agents.KindClaudeCode)
+		}
+		return kind, "", nil
+	}
+	if p.Model != "" {
+		return "", "", fmt.Errorf("%w: a %s agent has no per-agent model (the CLI's own settings choose it); "+
+			"leave the model unset", ErrDispatchRefused, agents.KindClaudeCode)
+	}
+	if s.ext.Kinds == nil {
+		return "", "", fmt.Errorf("%w: no Claude account pool is configured", ErrDispatchRefused)
+	}
+	account, err = s.ext.Kinds.SelectClaudeAccount(ctx, p.CCAccount)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: %v", ErrDispatchRefused, err)
+	}
+	return kind, account, nil
 }
 
 // resolveRepoBranch decides which branch a repo-backed agent clones. An explicit
@@ -912,6 +978,10 @@ func dispatchDisplayName(noteID int64, noteText string) string {
 // background (kickoff sends the note as the first message). Shared by the human
 // dispatch form, the operator API, and runbook dispatch.
 func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (agents.Agent, error) {
+	kind, account, err := s.resolveKindAccount(ctx, p)
+	if err != nil {
+		return agents.Agent{}, err
+	}
 	// 🔴 REFUSE A MODEL THE POD WILL HAVE NO CREDENTIAL FOR, BEFORE the record
 	// exists. This is the FIRST of the two places an operator can set an agent's
 	// model (the other is handleAgentModel); both call the same predicate so the
@@ -956,6 +1026,8 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 		NoteText:    p.NoteText,
 		PendingNote: p.NoteText,
 		Status:      agents.StatusProvisioning,
+		Kind:        kind,
+		CCAccount:   account,
 	})
 	if err != nil {
 		return agents.Agent{}, err

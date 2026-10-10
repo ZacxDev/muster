@@ -53,6 +53,10 @@ type agentJSON struct {
 	Repo       string `json:"repo"`
 	RepoBranch string `json:"repoBranch"`
 	Model      string `json:"model"`
+	// Kind is the agent's kind (agents.Kinds); CCAccount the Claude account NAME a
+	// claude-code agent runs on ("" otherwise). Never a token.
+	Kind      string `json:"kind"`
+	CCAccount string `json:"ccAccount"`
 	// KickedOff reports whether the kickoff message was DELIVERED to the agent's
 	// gateway. NOT omitempty — `false` is the whole signal ("provisioned but never
 	// started"), and omitempty would erase exactly the case worth alerting on.
@@ -167,6 +171,8 @@ func newAgentJSON(a agents.Agent, lastMsg time.Time) agentJSON {
 		Repo:            a.Repo,
 		RepoBranch:      a.RepoBranch,
 		Model:           a.Model,
+		Kind:            agents.ResolveKind(a.Kind),
+		CCAccount:       a.CCAccount,
 		KickedOff:       a.KickedOff,
 		KickoffOwed:     agents.KickoffOwed(a),
 		KickoffFailed:   agents.KickoffFailed(a),

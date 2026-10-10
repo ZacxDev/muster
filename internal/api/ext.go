@@ -116,6 +116,12 @@ type Extensions struct {
 	// renders truthfully instead of having to choose which lie to tell.
 	Gateway Gateway
 
+	// Kinds answers which agent kinds a dispatch may ask for and, for the
+	// claude-code kind, which Claude account it runs on. Nil means the gateway
+	// kind alone — every deployment before kinds existed — and the dispatch form
+	// shows no picker.
+	Kinds AgentKinds
+
 	// GitHubOAuth configures the OAuth web flow for connecting an account.
 	GitHubOAuth GitHubOAuthConfig
 }
@@ -598,4 +604,37 @@ type Gateway interface {
 	// Returns agents.ErrResponsesUnsupported when the agent's gateway lacks the
 	// responses API, so the caller can fall back to Chat.
 	ChatWithTools(ctx context.Context, a agents.Agent, sessionKey, instructions, message string, tools []agents.ToolDef, dispatch agents.ToolDispatch, emit agents.StreamEmit) (string, error)
+}
+
+// AgentKinds is the dispatch side of agent kinds (cmd/muster-server implements it
+// over internal/ccpool).
+type AgentKinds interface {
+	// Enabled is the kinds a dispatch may name, in picker order. It always
+	// includes agents.KindGateway.
+	Enabled() []string
+	// ClaudeAccounts is the configured Claude account NAMES (never tokens), for
+	// the pin picker. Empty when the claude-code kind is not enabled.
+	ClaudeAccounts() []string
+	// SelectClaudeAccount picks the account a new claude-code agent runs on, or
+	// returns the pin when it names a configured account. An error is a dispatch
+	// refusal.
+	SelectClaudeAccount(ctx context.Context, pin string) (string, error)
+}
+
+// enabledKinds is Extensions.Kinds.Enabled with the nil case resolved.
+func (e Extensions) enabledKinds() []string {
+	if e.Kinds == nil {
+		return []string{agents.KindGateway}
+	}
+	return e.Kinds.Enabled()
+}
+
+// kindEnabled reports whether a dispatch may ask for kind.
+func (e Extensions) kindEnabled(kind string) bool {
+	for _, k := range e.enabledKinds() {
+		if k == agents.ResolveKind(kind) {
+			return true
+		}
+	}
+	return false
 }

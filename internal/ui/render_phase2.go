@@ -61,8 +61,8 @@ func RenderAgentsCards(w io.Writer, list []AgentCardView) error {
 
 // RenderDispatchModal writes the /ui/agents/new partial (the FAB dispatch form
 // body: Model, Repository, Existing task, Grant privileges, ad-hoc task).
-func RenderDispatchModal(w io.Writer) error {
-	return DispatchModalBody().Render(w)
+func RenderDispatchModal(w io.Writer, k KindChoices) error {
+	return DispatchModalBodyFor(k).Render(w)
 }
 
 // RenderDispatchModalTask writes the /ui/agents/new?note=<id> partial: the

@@ -329,6 +329,14 @@ var bannerLedger = []string{
 // GITHUB_CLIENT_ID and MUSTER_GITHUB_TOKEN and neither of the other two, so the
 // entries say what is actually true of them.
 var bannerExempt = map[string]string{
+	envAgentKinds: "announced on the `agent kinds:` line in both arms (gateway-only and claude-code " +
+		"enabled); the claude-code arm cannot be rendered by bannerBothDirections' fixture, whose " +
+		"provisioner is built without an account pool. TestTheKindsBannerLineNamesAccountsNeverTokens " +
+		"renders both arms and pins them",
+	envAgentCCImage:       "printed on the claude-code arm of the `agent kinds:` line; refused at boot when the kind is not enabled (validateKinds), so there is no OFF state to announce",
+	envAgentCCAccounts:    "printed on the claude-code arm of the `agent kinds:` line (names only); same reason as " + envAgentCCImage,
+	envAgentCCTokenPrefix: "a PREFIX naming subscription credentials: the banner names the prefix and never a value (TestTheKindsBannerLineNamesAccountsNeverTokens)",
+	envAgentCCStorage:     "an optional size for the claude-code volume; refused at boot without the kind, defaulted with it (agentspec.DefaultClaudeCodeStorage)",
 	envAgentGatewayModel: "the CHAT: WIRED line prints it beside the scheme, and there is no " +
 		"off-direction line to write: validate refuses a named gateway with no sentinel, so the " +
 		"only states that reach a banner are \"wired, and the value is on the line\" and \"no " +

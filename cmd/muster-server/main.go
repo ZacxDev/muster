@@ -54,6 +54,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/api"
+	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/metrics"
@@ -245,7 +246,20 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// *agentgateway.Gateway assigned into ext.Gateway would make
 	// api.requireGatewayProvisioner's nil check false and turn a 503 into a
 	// nil-pointer dereference inside a chat handler.
-	prov, gw, priv, err := buildAgentPlane(cfg, ext.Agents, logger)
+	// The claude-code kind's account pool, over the same database. nil when that
+	// kind is not enabled — and a claude-code deployment with no database is
+	// refused here (buildClaudePool), before any agent tier is built.
+	var marks ccpool.Store
+	if a.pool != nil {
+		marks = ccpool.NewPG(a.pool)
+	}
+	ccPool, err := buildClaudePool(cfg, marks)
+	if err != nil {
+		a.Close()
+		return nil, fmt.Errorf("claude account pool: %w", err)
+	}
+	ext.Kinds = kindSet{kinds: cfg.agentKinds(), pool: ccPool}
+	prov, gw, priv, err := buildAgentPlaneWith(cfg, ext.Agents, ccPool, logger)
 	if err != nil {
 		a.Close()
 		// "agent plane", not "agent provisioner": this call builds ALL THREE tiers,
@@ -721,6 +735,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"(%s): %s",
 			wiredWord(ext.Provisioner == nil), envAgentProvisioner, a.cfg.agentProvisioner(),
 			a.cfg.agentGatewayPort(), envAgentGatewayPort, svcNote)
+		// Agent kinds. The claude-code line names ACCOUNTS, never a token: those are
+		// subscription credentials and a boot log is read by whoever reads logs.
+		if a.cfg.claudeCodeEnabled() {
+			l.Printf("agent kinds: %s (%s). %s: image %s (%s), Claude accounts [%s] (%s; tokens from %s<NAME>, "+
+				"never logged), per-agent PVC at /data, no ServiceAccount token, turn budget %s",
+				strings.Join(a.cfg.agentKinds(), ", "), envAgentKinds, agents.KindClaudeCode,
+				a.cfg.AgentCCImage, envAgentCCImage, strings.Join(a.cfg.AgentCCAccountNames, ", "),
+				envAgentCCAccounts, envAgentCCTokenPrefix, agents.ClaudeCodeTurnTimeout)
+		} else {
+			l.Printf("agent kinds: %s only (%s unset or naming only it)", agents.KindGateway, envAgentKinds)
+		}
 		// 🔴 THE CHAT HALF GETS ITS OWN LINE AND NAMES ITS OWN WRAPPER, because
 		// with lifecycle wired this is the half an operator will be surprised by.
 		// A dispatched agent exists, its pod runs, its logs stream — and its first

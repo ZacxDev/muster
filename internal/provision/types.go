@@ -284,6 +284,34 @@ type Health struct {
 // IsZero reports whether the spec declares no health signal at all.
 func (h Health) IsZero() bool { return h.HTTPGetPath == "" && h.PortName == "" }
 
+// Security is the instance's process isolation, as a property of what runs
+// inside it (the image's uid, whether it needs cluster credentials).
+//
+// 🔴 THE ZERO VALUE IS "DECLARE NOTHING", AND THAT IS WHAT EVERY SPEC CARRIED
+// BEFORE THIS TYPE EXISTED. A driver renders a zero Security exactly as it
+// rendered a spec with no such field, and [Fingerprint] writes nothing for it, so
+// introducing the type moved no existing instance's fingerprint and rolled no pod.
+//
+// ⚠ A ZERO ID MEANS UNSET, NOT ROOT. Nothing muster builds asks to run as uid 0
+// explicitly, so the type does not spend a pointer on expressing it.
+type Security struct {
+	// RunAsUser, RunAsGroup and FSGroup are numeric ids; 0 = unset.
+	RunAsUser  int64
+	RunAsGroup int64
+	FSGroup    int64
+	// RunAsNonRoot asks the backend to refuse to start the process as root.
+	RunAsNonRoot bool
+	// Restricted drops every capability, forbids privilege escalation and uses
+	// the runtime's default seccomp profile.
+	Restricted bool
+	// NoServiceAccountToken keeps the backend's own API credential out of the
+	// instance (Kubernetes: automountServiceAccountToken false).
+	NoServiceAccountToken bool
+}
+
+// IsZero reports whether nothing is declared.
+func (s Security) IsZero() bool { return s == Security{} }
+
 // Spec is the complete desired state of one instance.
 //
 // It is the genericised form of what the original project assembled as a map of
@@ -339,6 +367,9 @@ type Spec struct {
 
 	// Health is how a driver tells serving from running. See the type.
 	Health Health
+
+	// Security is the instance's process isolation. See the type.
+	Security Security
 
 	// Endpoint, when non-nil, is the address callers should use to reach this
 	// instance, OVERRIDING whatever the driver would compute.
@@ -425,6 +456,10 @@ func (s Spec) Validate() error {
 				"drop the probe and report the instance ready from its process state alone",
 				ErrInvalidSpec, s.Health.PortName)
 		}
+	}
+	if s.Security.RunAsUser < 0 || s.Security.RunAsGroup < 0 || s.Security.FSGroup < 0 {
+		return fmt.Errorf("%w: security ids must not be negative (user %d, group %d, fsGroup %d)",
+			ErrInvalidSpec, s.Security.RunAsUser, s.Security.RunAsGroup, s.Security.FSGroup)
 	}
 	if s.Repo.URL != "" {
 		u, err := url.Parse(s.Repo.URL)

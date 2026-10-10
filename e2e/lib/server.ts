@@ -34,7 +34,7 @@ export interface Running {
   stop(): Promise<void>;
 }
 
-export async function startServer(version: string, port: number): Promise<Running> {
+export async function startServer(version: string, port: number, extraEnv: Record<string, string> = {}): Promise<Running> {
   const proc = spawn(serverBinary(version), [], {
     env: {
       ...process.env,
@@ -43,6 +43,7 @@ export async function startServer(version: string, port: number): Promise<Runnin
       MUSTER_STANDALONE: '1',
       MUSTER_UI_PASSWORD: password,
       MUSTER_HOOK_TOKEN: hookToken,
+      ...extraEnv,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
