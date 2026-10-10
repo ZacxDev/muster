@@ -34,13 +34,14 @@ func TaskNotFoundPage(id string, feat Features) g.Node {
 				Meta(Charset("utf-8")),
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
-				Meta(Name("theme-color"), Content("#0b0f17")),
+				ThemeHead(),
+				manifestLink(),
 				TitleEl(g.Text(label+" not found · muster")),
 				Link(Rel("stylesheet"), Href("/static/app.css")),
 				Script(Src("/static/vendor/htmx.min.js"), Defer()),
 			),
 			Body(
-				Class("min-h-dvh bg-slate-950 text-slate-100 antialiased selection:bg-emerald-500/30"),
+				Class("min-h-dvh bg-bg text-fg antialiased selection:bg-accent/30"),
 				// The sidebar tabs are ordinary boosted links off this page, exactly as
 				// on the detail page (hasPanels=false — there is no panel to toggle).
 				hx("hx-boost", "true"),
@@ -48,7 +49,7 @@ func TaskNotFoundPage(id string, feat Features) g.Node {
 				Div(
 					Class("lg:pl-72"),
 					Header(
-						Class("sticky top-0 z-20 border-b border-white/5 bg-slate-950/80 backdrop-blur"),
+						Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur"),
 						Div(
 							// Same contentWidth() as the <main> below and as the detail
 							// page this is the 404 for — see TaskDetailPage.
@@ -63,13 +64,13 @@ func TaskNotFoundPage(id string, feat Features) g.Node {
 						Class(contentWidth()+" pb-[calc(4rem+env(safe-area-inset-bottom))] pt-10"),
 						Div(
 							g.Attr("data-task-missing", id),
-							Class("flex flex-col items-start gap-3 rounded-2xl border border-white/5 bg-slate-900/70 px-5 py-6 ring-1 ring-white/5"),
+							Class("flex flex-col items-start gap-3 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line"),
 							H1(
-								Class("text-base font-semibold text-slate-100"),
+								Class("text-base font-semibold text-fg"),
 								g.Text(label+" is not on the board"),
 							),
 							P(
-								Class("text-sm leading-relaxed text-slate-400"),
+								Class("text-sm leading-relaxed text-muted"),
 								g.Text("It was dismissed, or it never existed. Dismissing keeps the row and its "+
 									"comment thread, so a task that was dismissed can still be restored — it just "+
 									"has no page while it is off the board."),
@@ -81,7 +82,7 @@ func TaskNotFoundPage(id string, feat Features) g.Node {
 								Href("/tasks"),
 								hx("hx-boost", "false"),
 								g.Attr("data-task-back", ""),
-								Class("press mt-1 inline-flex h-11 min-h-[44px] items-center gap-1.5 rounded-lg bg-slate-800 px-4 text-sm font-medium text-slate-200 ring-1 ring-inset ring-white/10 transition hover:bg-slate-700"),
+								Class("press mt-1 inline-flex h-11 min-h-[44px] items-center gap-1.5 rounded-lg bg-s2 px-4 text-sm font-medium text-fg ring-1 ring-inset ring-edge transition hover:bg-s3"),
 								g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15l-5-5 5-5"/></svg>`),
 								g.Text("Back to tasks"),
 							),
@@ -90,6 +91,9 @@ func TaskNotFoundPage(id string, feat Features) g.Node {
 				),
 				// Sidebar open/close.
 				appScript(feat),
+				// The worker, update toast and app badge — on every document, not
+				// just the shell, so an update is offered wherever the operator is.
+				pwaChrome(),
 			),
 		),
 	)

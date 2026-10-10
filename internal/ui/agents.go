@@ -126,7 +126,7 @@ func AgentsPanel(active bool) g.Node {
 		// The running-agents list sits directly below the operator.
 		Div(
 			Class("mb-2 flex items-center gap-2"),
-			H2(Class("text-xs font-medium uppercase tracking-wide text-slate-400"), g.Text("Agents")),
+			H2(Class("text-xs font-medium uppercase tracking-wide text-muted"), g.Text("Agents")),
 		),
 		Div(
 			ID("agents-list"),
@@ -176,8 +176,8 @@ func AgentsCards(list []AgentCardView) g.Node {
 			// span both grid columns so the empty state stays centered.
 			Class("col-span-full mt-16 flex flex-col items-center justify-center gap-2 text-center"),
 			Div(Class("text-4xl"), g.Text("🧩")),
-			P(Class("text-lg font-medium text-slate-300"), g.Text("No agents yet")),
-			P(Class("text-sm text-slate-400"), g.Text("Tap + to dispatch an agent for a repo.")),
+			P(Class("text-lg font-medium text-fg2"), g.Text("No agents yet")),
+			P(Class("text-sm text-muted"), g.Text("Tap + to dispatch an agent for a repo.")),
 		)
 	}
 	return g.Group(g.Map(list, agentCard))
@@ -206,14 +206,14 @@ func agentRenameForm(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
 	return Article(
 		ID("agent-"+ids),
-		Class("group overflow-hidden rounded-2xl border border-emerald-500/20 bg-slate-900/70 shadow-lg shadow-black/20 ring-1 ring-emerald-500/10"),
+		Class("group overflow-hidden rounded-2xl border border-accent/20 bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-accent/10"),
 		Form(
 			Class("flex flex-col gap-3 p-4"),
 			hx("hx-post", "/agents/"+ids+"/name"),
 			hx("hx-target", "#agent-"+ids),
 			hx("hx-swap", "outerHTML"),
 			Label(
-				Class("flex flex-col gap-1 text-xs font-medium text-slate-400"),
+				Class("flex flex-col gap-1 text-xs font-medium text-muted"),
 				Span(g.Text("Rename agent")),
 				Input(
 					Type("text"),
@@ -223,21 +223,21 @@ func agentRenameForm(a AgentCardView) g.Node {
 					g.Attr("autocomplete", "off"),
 					g.Attr("autofocus", ""),
 					Placeholder(a.Name),
-					Class("w-full rounded-lg border-0 bg-slate-950 px-3 py-2 text-base text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+					Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 				),
 			),
-			Span(Class("break-all text-[11px] text-slate-400"), g.Text("slug: "+a.Name+" (fixed)")),
+			Span(Class("break-all text-[11px] text-muted"), g.Text("slug: "+a.Name+" (fixed)")),
 			Div(
 				Class("flex items-center gap-2"),
 				Button(
 					Type("submit"),
-					Class("press inline-flex min-h-[44px] items-center justify-center rounded-xl bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-60"),
+					Class("press inline-flex min-h-[44px] items-center justify-center rounded-xl bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
 					hx("hx-disabled-elt", "this"),
 					g.Text("Save"),
 				),
 				Button(
 					Type("button"),
-					Class("press inline-flex min-h-[44px] items-center justify-center rounded-xl px-4 text-sm font-medium text-slate-300 ring-1 ring-inset ring-white/10 transition hover:bg-white/5"),
+					Class("press inline-flex min-h-[44px] items-center justify-center rounded-xl px-4 text-sm font-medium text-fg2 ring-1 ring-inset ring-edge transition hover:bg-s2"),
 					// Cancel: re-fetch this card (boost-safe; no JS).
 					hx("hx-get", "/ui/agents/"+ids+"/card"),
 					hx("hx-target", "#agent-"+ids),
@@ -259,7 +259,7 @@ func agentCard(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
 	return Article(
 		ID("agent-"+ids),
-		Class("group relative overflow-hidden rounded-2xl border border-white/5 bg-slate-900/70 shadow-lg shadow-black/20 ring-1 ring-white/5"),
+		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		// The control cluster (rename + ⋯ menu) is positioned over the card's
 		// top-right corner, OUTSIDE the nav anchor, so its clicks don't navigate.
 		Div(
@@ -291,7 +291,7 @@ func agentCard(a AgentCardView) g.Node {
 				// Same placement, same reason: a sibling of the polling span.
 				g.If(a.KickoffFailed, kickoffFailedBadge()),
 				Span(
-					Class("mr-auto break-all text-base font-semibold leading-tight text-slate-50 group-hover:text-emerald-300"),
+					Class("mr-auto break-all text-base font-semibold leading-tight text-fg group-hover:text-accent"),
 					// markdownPlain, exactly as agentTitle on the detail page does. A
 					// task-derived display name routinely carries `**bold**` and `code`,
 					// and this rendered it RAW while the detail header rendered it as
@@ -328,17 +328,17 @@ func agentCardFooter(a AgentCardView) g.Node {
 		taskBadge = taskSourceBadge(*a.NoteID)
 	}
 	return Div(
-		Class("flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/5 px-4 py-2 text-xs text-slate-400"),
+		Class("flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-4 py-2 text-xs text-muted"),
 		g.If(!a.CreatedAt.IsZero(), Span(
 			Class("inline-flex items-center gap-1"),
-			Span(Class("text-slate-600"), g.Text("age")),
+			Span(Class("text-muted"), g.Text("age")),
 			cardTime(a.CreatedAt),
 		)),
 		g.If(!a.UpdatedAt.IsZero(), Span(
 			Class("inline-flex items-center gap-1"),
-			Span(Class("text-slate-600"), g.Text("active")),
+			Span(Class("text-muted"), g.Text("active")),
 			cardTime(a.UpdatedAt),
-			Span(Class("text-slate-600"), g.Text("ago")),
+			Span(Class("text-muted"), g.Text("ago")),
 		)),
 		Span(Class("flex-1")),
 		taskBadge,
@@ -355,7 +355,7 @@ func taskSourceBadge(noteID int64) g.Node {
 		Href("/tasks"),
 		hx("hx-boost", "false"),
 		g.Attr("aria-label", "Source task #"+strconv.FormatInt(noteID, 10)),
-		Class("press inline-flex items-center gap-1 rounded-full bg-white/5 px-2 py-0.5 font-mono text-[11px] font-medium text-slate-400 ring-1 ring-inset ring-white/5 transition hover:bg-emerald-500/10 hover:text-emerald-200"),
+		Class("press min-h-[44px] inline-flex items-center gap-1 rounded-full bg-s2 px-2 py-0.5 font-mono text-[11px] font-medium text-muted ring-1 ring-inset ring-line transition hover:bg-accent/10 hover:text-fg"),
 		g.Text("Task #"+strconv.FormatInt(noteID, 10)),
 	)
 }
@@ -368,7 +368,7 @@ func agentRenameButton(ids string) g.Node {
 	return Button(
 		Type("button"),
 		g.Attr("aria-label", "Rename agent"),
-		Class("press inline-flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 transition hover:bg-white/5 hover:text-slate-200"),
+		Class("press inline-flex h-11 w-11 items-center justify-center rounded-xl text-muted transition hover:bg-s2 hover:text-fg"),
 		hx("hx-get", "/ui/agents/"+ids+"/rename"),
 		hx("hx-target", "#agent-"+ids),
 		hx("hx-swap", "outerHTML"),
@@ -385,21 +385,21 @@ func agentMenu(a AgentCardView) g.Node {
 	var lifecycle g.Node
 	switch a.Status {
 	case "running", "provisioning":
-		lifecycle = agentMenuItem("Stop", "/agents/"+ids+"/stop", "text-slate-200")
+		lifecycle = agentMenuItem("Stop", "/agents/"+ids+"/stop", "text-fg")
 	default: // stopped/pending/error
-		lifecycle = agentMenuItem("Start", "/agents/"+ids+"/start", "text-emerald-300")
+		lifecycle = agentMenuItem("Start", "/agents/"+ids+"/start", "text-accent")
 	}
 	return Details(
 		Class("group/menu relative"),
 		Summary(
 			g.Attr("aria-label", "Agent actions"),
-			Class("press flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-xl text-slate-400 transition hover:bg-white/5 hover:text-slate-100 [&::-webkit-details-marker]:hidden"),
+			Class("press flex h-11 w-11 cursor-pointer list-none items-center justify-center rounded-xl text-muted transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
 			g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="4" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="16" cy="10" r="1.6"/></svg>`),
 		),
 		Div(
-			Class("absolute right-0 z-20 mt-1 flex w-44 flex-col gap-1 rounded-xl border border-white/10 bg-slate-900 p-1.5 shadow-2xl ring-1 ring-black/20"),
+			Class("absolute right-0 z-20 mt-1 flex w-44 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 shadow-2xl ring-1 ring-black/20"),
 			lifecycle,
-			Div(Class("my-0.5 border-t border-white/5")),
+			Div(Class("my-0.5 border-t border-line")),
 			agentDeleteConfirm(ids),
 		),
 	)
@@ -410,7 +410,7 @@ func agentMenu(a AgentCardView) g.Node {
 func agentMenuItem(label, postURL, tone string) g.Node {
 	return Button(
 		Type("button"),
-		Class("press flex min-h-[44px] w-full items-center rounded-lg px-3 text-sm font-medium transition hover:bg-white/5 disabled:opacity-60 "+tone),
+		Class("press flex min-h-[44px] w-full items-center rounded-lg px-3 text-sm font-medium transition hover:bg-s2 disabled:opacity-60 "+tone),
 		hx("hx-post", postURL),
 		hx("hx-target", "#agents-list"),
 		hx("hx-swap", "morph:innerHTML"),
@@ -426,12 +426,12 @@ func agentDeleteConfirm(ids string) g.Node {
 	return Details(
 		Class("group/del"),
 		Summary(
-			Class("press flex min-h-[44px] cursor-pointer list-none items-center rounded-lg px-3 text-sm font-medium text-slate-400 transition hover:bg-white/5 hover:text-rose-300 [&::-webkit-details-marker]:hidden"),
+			Class("press flex min-h-[44px] cursor-pointer list-none items-center rounded-lg px-3 text-sm font-medium text-muted transition hover:bg-s2 hover:text-st-error-fg [&::-webkit-details-marker]:hidden"),
 			g.Text("Delete"),
 		),
 		Button(
 			Type("button"),
-			Class("press mt-1 flex min-h-[44px] w-full items-center justify-center rounded-lg bg-rose-500/15 px-3 text-sm font-semibold text-rose-300 ring-1 ring-inset ring-rose-500/30 transition hover:bg-rose-500/25"),
+			Class("press mt-1 flex min-h-[44px] w-full items-center justify-center rounded-lg bg-st-error-bg px-3 text-sm font-semibold text-st-error-fg ring-1 ring-inset ring-st-error-fg/40 transition hover:bg-st-error-bg"),
 			hx("hx-delete", "/agents/"+ids),
 			hx("hx-target", "#agent-"+ids),
 			hx("hx-swap", "outerHTML swap:200ms"),
@@ -464,7 +464,9 @@ func kickoffOwedBadge() g.Node {
 		g.Attr("data-kickoff-owed", ""),
 		g.Attr("title", "This agent's first message was never delivered — it has not been told what to do"),
 		g.Attr("aria-label", "Kickoff owed: this agent's first message was never delivered"),
-		Class("inline-flex items-center rounded-full bg-amber-500/15 px-2.5 py-1 text-xs font-semibold text-amber-300 ring-1 ring-inset ring-amber-500/30"),
+		glyphKnock(glyphWarning),
+		Class("inline-flex items-center gap-1.5 rounded-full bg-st-warning-bg px-2.5 py-1 text-xs font-semibold text-st-warning-fg ring-1 ring-inset ring-st-warning-fg/40"),
+		statusGlyph(glyphWarning, "h-3 w-3", false),
 		g.Text("kickoff owed"),
 	)
 }
@@ -513,7 +515,9 @@ func kickoffFailedBadge() g.Node {
 		g.Attr("data-kickoff-failed", ""),
 		g.Attr("title", "This agent's first message was handed to its gateway and the turn did not complete"),
 		g.Attr("aria-label", "Kickoff failed: this agent's first turn did not complete and is not retried automatically"),
-		Class("inline-flex items-center rounded-full bg-rose-500/15 px-2.5 py-1 text-xs font-semibold text-rose-300 ring-1 ring-inset ring-rose-500/30"),
+		glyphKnock(glyphError),
+		Class("inline-flex items-center gap-1.5 rounded-full bg-st-error-bg px-2.5 py-1 text-xs font-semibold text-st-error-fg ring-1 ring-inset ring-st-error-fg/40"),
+		statusGlyph(glyphError, "h-3 w-3", false),
 		g.Text("kickoff failed"),
 	)
 }
@@ -528,7 +532,7 @@ func kickoffFailedBadge() g.Node {
 func kickoffFailureDetail(msg, remedy string) g.Node {
 	return P(
 		g.Attr("data-kickoff-failure", ""),
-		Class("break-words rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-200 ring-1 ring-inset ring-rose-500/20"),
+		Class("break-words rounded-lg bg-st-error-bg px-3 py-2 text-xs text-st-error-fg ring-1 ring-inset ring-st-error-fg/40"),
 		Span(Class("font-semibold"), g.Text("Kickoff failed: ")),
 		g.Text(msg),
 		g.Text(" "),
@@ -536,35 +540,31 @@ func kickoffFailureDetail(msg, remedy string) g.Node {
 	)
 }
 
-// statusDot is the labelled status pill (dot + text). Used by the operator-lead
-// card and the agent-detail header where space allows the word.
+// statusDot is the labelled status pill (glyph + text). Used where space
+// allows the word.
+//
+// The glyph is the status SHAPE (agentGlyphKind), so the pill does not rely on
+// colour alone; provisioning pulses because work is in flight.
 func statusDot(status string) g.Node {
-	color, label := statusStyle(status)
-	pulse := status == "provisioning"
+	label := statusLabel(status)
 	return Span(
-		Class("inline-flex items-center gap-1.5 rounded-full bg-slate-800/80 px-2.5 py-1 text-xs font-medium text-slate-300 ring-1 ring-inset ring-white/5"),
-		Span(Class("relative flex h-2 w-2"),
-			g.If(pulse, Span(Class("absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 "+color))),
-			Span(Class("relative inline-flex h-2 w-2 rounded-full "+color)),
-		),
+		Class("inline-flex items-center gap-1.5 rounded-full bg-s2 px-2.5 py-1 text-xs font-medium text-fg2 ring-1 ring-inset ring-line"),
+		statusGlyph(agentGlyphKind(status), "h-2.5 w-2.5", status == "provisioning"),
 		g.Text(label),
 	)
 }
 
-// statusIcon is the COMPACT status indicator for the agent card: just the small
-// colored dot (no text label box), with the status word carried as a title /
-// aria-label tooltip. Same color mapping as statusDot (running=emerald,
-// provisioning=amber pulse, error=rose, stopped=slate, pending).
+// statusIcon is the COMPACT status indicator for the agent card: just the glyph
+// (no text label box), with the status word carried as a title / aria-label
+// tooltip. Same mapping as statusDot.
 func statusIcon(status string) g.Node {
-	color, label := statusStyle(status)
-	pulse := status == "provisioning"
+	label := statusLabel(status)
 	return Span(
 		g.Attr("title", label),
 		g.Attr("aria-label", "Status: "+label),
 		g.Attr("role", "img"),
-		Class("relative flex h-2.5 w-2.5 shrink-0"),
-		g.If(pulse, Span(Class("absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 "+color))),
-		Span(Class("relative inline-flex h-2.5 w-2.5 rounded-full "+color)),
+		Class("relative flex h-3 w-3 shrink-0"),
+		statusGlyph(agentGlyphKind(status), "h-3 w-3", status == "provisioning"),
 	)
 }
 
@@ -588,24 +588,19 @@ func cardStatusIcon(a AgentCardView) g.Node {
 	)
 }
 
-func statusStyle(status string) (color, label string) {
+// statusLabel is the agent-facing word for a stored agent status.
+func statusLabel(status string) string {
 	switch status {
-	case "running":
-		return "bg-emerald-400", "running"
-	case "provisioning":
-		return "bg-amber-400", "provisioning"
-	case "error":
-		return "bg-rose-500", "error"
-	case "stopped":
-		return "bg-slate-500", "stopped"
+	case "running", "provisioning", "error", "stopped":
+		return status
 	default:
-		return "bg-slate-600", "pending"
+		return "pending"
 	}
 }
 
 func agentRecent(lines []string) g.Node {
 	return Pre(
-		Class("max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-950/80 p-3 text-[12px] leading-relaxed text-slate-400 ring-1 ring-inset ring-white/5"),
+		Class("max-h-28 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-bg/80 p-3 text-[12px] leading-relaxed text-muted ring-1 ring-inset ring-line"),
 		Code(g.Text(strings.Join(lines, "\n"))),
 	)
 }
@@ -643,10 +638,10 @@ func agentRecentSlot(a AgentCardView) g.Node {
 // preview loads.
 func recentSkeleton() g.Node {
 	return Pre(
-		Class("max-h-28 overflow-hidden rounded-xl bg-slate-950/80 p-3 ring-1 ring-inset ring-white/5"),
-		Div(Class("mb-1.5 h-3 w-3/4 animate-pulse rounded bg-slate-700/60")),
-		Div(Class("mb-1.5 h-3 w-1/2 animate-pulse rounded bg-slate-700/60")),
-		Div(Class("h-3 w-2/3 animate-pulse rounded bg-slate-700/60")),
+		Class("max-h-28 overflow-hidden rounded-xl bg-bg/80 p-3 ring-1 ring-inset ring-line"),
+		Div(Class("mb-1.5 h-3 w-3/4 animate-pulse rounded bg-s3/60")),
+		Div(Class("mb-1.5 h-3 w-1/2 animate-pulse rounded bg-s3/60")),
+		Div(Class("h-3 w-2/3 animate-pulse rounded bg-s3/60")),
 	)
 }
 
@@ -679,7 +674,7 @@ func agentModalShell() g.Node {
 			// pb uses the safe-area inset for the same reason <main> and the FABs do:
 			// this sheet sits flush against the viewport bottom, so a flat p-5 put its
 			// last control (Dispatch) under the iOS home indicator.
-			Class("relative z-10 max-h-[85dvh] w-full max-w-lg overflow-y-auto overscroll-contain rounded-t-2xl bg-slate-900 p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] shadow-2xl ring-1 ring-white/10 sm:rounded-2xl sm:pb-5"),
+			Class("relative z-10 max-h-[85dvh] w-full max-w-lg overflow-y-auto overscroll-contain rounded-t-2xl bg-s1 p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] shadow-2xl ring-1 ring-line sm:rounded-2xl sm:pb-5"),
 			// body injected via /ui/agents/new
 		),
 		modalDiscardBar("agent-modal"),
@@ -696,7 +691,7 @@ func DispatchModalBody() g.Node {
 	return g.Group{
 		Div(
 			Class("mb-4 flex items-center gap-3"),
-			H2(Class("text-base font-semibold text-slate-100"), g.Text("Dispatch agent")),
+			H2(Class("text-base font-semibold text-fg"), g.Text("Dispatch agent")),
 			Span(Class("flex-1")),
 			dispatchCloseButton(),
 		),
@@ -721,7 +716,7 @@ func DispatchModalBody() g.Node {
 				Name("note_text"),
 				Rows("3"),
 				Placeholder("Task for the agent (used if no task selected)…"),
-				Class("w-full resize-y rounded-lg border-0 bg-slate-950 px-3 py-2 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+				Class("w-full resize-y rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 			)),
 			advancedDisclosure(
 				labelledField("Model", modelField()),
@@ -729,11 +724,13 @@ func DispatchModalBody() g.Node {
 				labelledField("Grant privileges", lazyProfilePicker()),
 			),
 			Div(
-				Class("mt-1 grid grid-cols-2 gap-2"),
+				// Sticky as a ROW: both actions stay in view when Advanced pushes them
+				// below the sheet's fold (see TestEverySheetKeepsItsPrimaryActionInView).
+				Class("sticky bottom-0 z-10 mt-1 grid grid-cols-2 gap-2 bg-s1 shadow-[0_-16px_16px_-4px_rgb(var(--mu-s1))]"),
 				Button(
 					Type("submit"),
 					Name("action"), Value("dispatch"),
-					Class("press inline-flex items-center justify-center rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-60"),
+					Class("press inline-flex items-center justify-center rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
 					// 🔴 No hx-disabled-elt="this" here. htmx reads hx-disabled-elt from
 					// the element that ISSUES the request, and this POST is issued by the
 					// FORM's submit event — so the attribute that used to sit on both
@@ -764,7 +761,7 @@ func DispatchModalBody() g.Node {
 				Button(
 					Type("submit"),
 					Name("action"), Value("save"),
-					Class("press inline-flex items-center justify-center rounded-xl px-4 py-3 text-sm font-semibold text-slate-200 ring-1 ring-inset ring-white/10 transition hover:bg-white/5 active:scale-[0.98] disabled:opacity-60"),
+					Class("press inline-flex items-center justify-center rounded-xl px-4 py-3 text-sm font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s2 active:scale-[0.98] disabled:opacity-60"),
 					// See the Dispatch button above: hx-disabled-elt="this" on a submit
 					// button is inert.
 					g.Text("Save for later"),
@@ -785,7 +782,7 @@ func dispatchCloseButton() g.Node {
 	return Button(
 		Type("button"),
 		g.Attr("aria-label", "Close"),
-		Class("press inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/5 hover:text-slate-100"),
+		Class("press inline-flex h-11 w-11 items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"),
 		hx("hx-on:click", "if(window.cgModalClose){window.cgModalClose('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}"),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 	)
@@ -867,8 +864,8 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 			Class("mb-4 flex items-start gap-3"),
 			Div(
 				Class("min-w-0"),
-				H2(Class("text-base font-semibold text-slate-100"), g.Text("Dispatch · Task #"+ids)),
-				g.If(v.Label != "", P(Class("mt-0.5 truncate text-xs text-slate-400"), g.Text(v.Label))),
+				H2(Class("text-base font-semibold text-fg"), g.Text("Dispatch · Task #"+ids)),
+				g.If(v.Label != "", P(Class("mt-0.5 truncate text-xs text-muted"), g.Text(v.Label))),
 			),
 			Span(Class("flex-1")),
 			dispatchCloseButton(),
@@ -898,14 +895,14 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 				Class("mt-1 flex flex-col gap-2"),
 				Button(
 					Type("button"),
-					Class("press self-end inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium text-slate-400 ring-1 ring-inset ring-white/10 transition hover:bg-white/5 active:scale-[0.98]"),
+					Class("press min-h-[44px] self-end inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium text-muted ring-1 ring-inset ring-edge transition hover:bg-s2 active:scale-[0.98]"),
 					hx("hx-on:click", "if(window.cgModalClose){window.cgModalClose('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}"),
 					g.Text("Cancel"),
 				),
 				Button(
 					Type("submit"),
 					Name("action"), Value("dispatch"),
-					Class("press w-full inline-flex items-center justify-center rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-60"),
+					Class("sticky bottom-0 z-10 shadow-[0_-16px_16px_-4px_rgb(var(--mu-s1))] press w-full inline-flex items-center justify-center rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
 					hx("hx-disabled-elt", "this"),
 					g.Text("Dispatch"),
 				),
@@ -931,20 +928,20 @@ func dispatchConfirmRow(label, static string, editable g.Node) g.Node {
 		Class("flex flex-col gap-1.5"),
 		Div(
 			Class("flex items-center gap-2"),
-			Label(Class("text-xs font-medium text-slate-400"), g.Text(label)),
+			Label(Class("text-xs font-medium text-muted"), g.Text(label)),
 			Span(Class("flex-1")),
 			Button(
 				Type("button"),
 				g.Attr("data-dispatch-edit", ""),
 				g.Attr("aria-label", "Edit "+label),
-				Class("press rounded-lg px-2 py-0.5 text-xs font-medium text-emerald-300 transition hover:bg-emerald-500/10 hover:text-emerald-200"),
+				Class("press min-h-[44px] rounded-lg px-2 py-0.5 text-xs font-medium text-accent transition hover:bg-accent/10 hover:text-fg"),
 				hx("hx-on:click", toggle),
 				g.Text("Edit"),
 			),
 		),
 		Div(
 			g.Attr("data-dispatch-static", ""),
-			Class("truncate text-sm text-slate-200"),
+			Class("truncate text-sm text-fg"),
 			g.Text(static),
 		),
 		Div(
@@ -983,7 +980,7 @@ func comboOption(o ComboOption) g.Node {
 		g.Attr("data-combobox-option", ""),
 		g.Attr("data-value", o.Value),
 		g.Attr("data-label", o.Label),
-		Class("cursor-pointer truncate px-3 py-2 text-sm text-slate-200 hover:bg-emerald-500/15 hover:text-emerald-100 data-[active=true]:bg-emerald-500/15 data-[active=true]:text-emerald-100"),
+		Class("cursor-pointer truncate px-3 py-2 text-sm text-fg hover:bg-accent/15 hover:text-fg data-[active=true]:bg-accent/15 data-[active=true]:text-fg"),
 		g.Text(o.Label),
 	)
 }
@@ -999,7 +996,7 @@ func seededComboOption(o ComboOption) g.Node {
 		g.Attr("data-combobox-seed", ""),
 		g.Attr("data-value", o.Value),
 		g.Attr("data-label", o.Label),
-		Class("cursor-pointer truncate px-3 py-2 text-sm text-slate-200 hover:bg-emerald-500/15 hover:text-emerald-100 data-[active=true]:bg-emerald-500/15 data-[active=true]:text-emerald-100"),
+		Class("cursor-pointer truncate px-3 py-2 text-sm text-fg hover:bg-accent/15 hover:text-fg data-[active=true]:bg-accent/15 data-[active=true]:text-fg"),
 		g.Text(o.Label),
 	)
 }
@@ -1016,7 +1013,7 @@ func RenderNoteOptions(w io.Writer, notes []NoteOption) error {
 
 func comboOptionList(opts []ComboOption) g.Node {
 	if len(opts) == 0 {
-		return Li(Class("px-3 py-2 text-sm text-slate-400"), g.Text("none"))
+		return Li(Class("px-3 py-2 text-sm text-muted"), g.Text("none"))
 	}
 	return g.Group(g.Map(opts, comboOption))
 }
@@ -1041,7 +1038,7 @@ func noteOptions(notes []NoteOption) []ComboOption {
 // list (and inside the dropdown) until the real options load.
 func comboboxSkeleton() g.Node {
 	bar := func(w string) g.Node {
-		return Li(Class("px-3 py-2"), Div(Class("h-3 "+w+" animate-pulse rounded bg-slate-700/60")))
+		return Li(Class("px-3 py-2"), Div(Class("h-3 "+w+" animate-pulse rounded bg-s3/60")))
 	}
 	return g.Group{bar("w-3/4"), bar("w-1/2"), bar("w-2/3")}
 }
@@ -1206,7 +1203,7 @@ func modelFieldForDisplay(selected, note, displayOverride string) g.Node {
 	if note != "" {
 		noteNode = Li(
 			g.Attr("aria-hidden", "true"),
-			Class("sticky top-0 z-10 border-b border-white/5 bg-slate-900 px-3 py-1.5 text-[11px] text-amber-300/90"),
+			Class("sticky top-0 z-10 border-b border-line bg-s1 px-3 py-1.5 text-[11px] text-st-warning-fg"),
 			g.Text("↳ "+note),
 		)
 	}
@@ -1232,7 +1229,7 @@ func modelFieldForDisplay(selected, note, displayOverride string) g.Node {
 			// when nothing is selected → the cluster default wins unless changed.
 			Value(display),
 			Placeholder("Model — quick-picks, or type to filter/search…"),
-			Class("w-full rounded-lg border-0 bg-slate-950 px-3 py-2.5 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+			Class("w-full rounded-lg border-0 bg-bg px-3 py-2.5 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 		),
 		Ul(
 			ID(listID),
@@ -1240,7 +1237,7 @@ func modelFieldForDisplay(selected, note, displayOverride string) g.Node {
 			g.Attr("role", "listbox"),
 			// Pre-seeded curated quick-picks; typing filters these and also fetches
 			// matching OpenRouter slugs from the remote proxy.
-			Class("hidden absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-lg bg-slate-900 py-1 shadow-2xl ring-1 ring-white/10"),
+			Class("hidden absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-lg bg-s1 py-1 shadow-2xl ring-1 ring-line"),
 			noteNode,
 			g.Group(seeded),
 		),
@@ -1283,7 +1280,7 @@ func lazyComboboxPreselect(fieldName, label, placeholder, hiddenName, optionsURL
 		g.Attr("aria-label", label),
 		g.Attr("autocomplete", "off"),
 		Placeholder(placeholder),
-		Class("w-full rounded-lg border-0 bg-slate-950 px-3 py-2 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+		Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 	}
 	// The seeded preselect option lives at the TOP of the list (before the
 	// skeleton). The lazy load (hx-get) swaps the list's innerHTML, but
@@ -1314,7 +1311,7 @@ func lazyComboboxPreselect(fieldName, label, placeholder, hiddenName, optionsURL
 			// skeleton here would never resolve.
 			hx("hx-target", "this"),
 			hx("hx-swap", "innerHTML"),
-			Class("hidden absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-lg bg-slate-900 py-1 shadow-2xl ring-1 ring-white/10"),
+			Class("hidden absolute z-10 mt-1 max-h-56 w-full overflow-auto rounded-lg bg-s1 py-1 shadow-2xl ring-1 ring-line"),
 			seed,
 			comboboxSkeleton(),
 		),
@@ -1333,7 +1330,7 @@ func lazyProfilePicker() g.Node {
 		hx("hx-trigger", "load"),
 		hx("hx-target", "this"),
 		hx("hx-swap", "innerHTML"),
-		Class("max-h-40 overflow-auto rounded-lg bg-slate-950 p-1 ring-1 ring-inset ring-white/10"),
+		Class("max-h-40 overflow-auto rounded-lg bg-bg p-1 ring-1 ring-inset ring-line"),
 		comboboxSkeleton(),
 	)
 }

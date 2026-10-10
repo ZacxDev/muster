@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: build vet run image test test-db test-db-down leakscan css css-check check help verb-ledger
+.PHONY: build vet run image test test-db test-db-down leakscan css css-check check help verb-ledger icons e2e
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -45,7 +45,7 @@ TAILWIND ?= npx --yes tailwindcss@3
 # 🔴 EACH ENTRY IS A POSITIVE CONTROL FOR ONE CONTENT GLOB, NOT DECORATION.
 # Every class below is written in exactly one place in the tree and is reachable
 # ONLY through `./internal/ui/**/*.go`. Measured with that glob deliberately
-# pointed at a non-existent directory: Tailwind exits 0, emits a VALID 5,594-byte
+# pointed at a non-existent directory: Tailwind exits 0, emits a VALID 7,139-byte
 # stylesheet instead of the real one, and every class here drops to zero
 # occurrences. That is the whole hazard — there is no error, no warning in the
 # exit code, and nothing on a developer's machine looks wrong.
@@ -54,8 +54,10 @@ TAILWIND ?= npx --yes tailwindcss@3
 # "38,274-byte" and the real file was 38,657 by the time anyone measured — a
 # hardcoded figure with nothing deriving it does not stay true, it stays
 # written. css-check PRINTS the byte count on every run, which is a producer;
-# the 5,594 stays because it is a property of the FAILURE mode (an all-globs-miss
-# build), not of this tree, and it is the number that makes the point.
+# the 7,139 stays because it is a property of the FAILURE mode (an all-globs-miss
+# build), not of this tree, and it is the number that makes the point. (It was
+# 5,594 until the palette became custom properties: the token block in
+# input.css is base CSS that is emitted whatever the globs match.)
 #
 # ⚠ PLAIN ALPHANUMERIC CLASSES ONLY, AND THAT IS A HARNESS FIX RATHER THAN A
 # TASTE. A responsive or opacity-modified class (`lg:pl-72`, `bg-rose-500/95`)
@@ -66,13 +68,26 @@ TAILWIND ?= npx --yes tailwindcss@3
 # Each of these is written in a different moved view, so the set spans the glob
 # rather than sampling one file.
 #
-# 🔴 THE SIXTH CLASS COVERS A DIFFERENT CONTENT ENTRY, NOT A SIXTH VIEW.
-# `bg-emerald-600` is written ONLY in internal/api/login.go — the sign-in page,
+# 🔴 THE PALETTE IS ROLE TOKENS NOW, AND THE FIRST FOUR ARE TOKEN UTILITIES ON
+# PURPOSE. A broken `theme.extend.colors` in tailwind.config.js does not error
+# either: Tailwind just stops recognising `bg-s1`-style classes and emits a
+# stylesheet with no colours at all. `text-accent`, `bg-danger`,
+# `bg-st-review-bg` and `text-st-warning-fg` are each written only under
+# internal/ui and each needs a different branch of that colour map (a flat role,
+# a second flat role, and two different nested status pairs), so a missing role
+# or a mangled `st` block fails here instead of shipping.
+#
+# ⚠ `bg-s1` IS DELIBERATELY NOT A CONTROL even though it is the most common
+# surface: login.go writes `bg-s1/70`, and `grep -F bg-s1` matches the escaped
+# `.bg-s1\/70` too, so it would stay present with the internal/ui glob broken.
+#
+# 🔴 THE LAST CLASS COVERS A DIFFERENT CONTENT ENTRY, NOT ANOTHER VIEW.
+# `text-balance` is written ONLY in internal/api/login.go — the sign-in page,
 # the one document this app emits from outside internal/ui — so it is the
 # positive control for that entry. Without it, deleting `./internal/api/login.go`
-# from tailwind.config.js would ship a login page with an unstyled submit button
+# from tailwind.config.js would ship a login page with an unwrapped heading
 # and every check here would stay green.
-CSS_REQUIRED_CLASSES := bg-emerald-500 text-indigo-300 bg-rose-500 bg-sky-500 text-amber-200 bg-emerald-600
+CSS_REQUIRED_CLASSES := text-accent bg-danger bg-st-review-bg text-st-warning-fg text-balance
 
 help:
 	@echo "muster:"
@@ -88,6 +103,7 @@ help:
 	@echo "  make css          rebuild $(CSS_OUT) from the Go views"
 	@echo "  make css-check    prove the committed stylesheet matches the views"
 	@echo "  make check        vet + test + leakscan + css-check"
+	@echo "  make e2e          the Playwright suite (needs MUSTER_E2E_DATABASE_URL=…/<name>_e2e)"
 	@echo "  make test-db-down stop and remove the throwaway Postgres"
 
 build:
@@ -191,6 +207,28 @@ test-db-down:
 leakscan:
 	python3 tests/leakscan.py --self-test && python3 tests/leakscan.py
 
+# Render the PWA icons from their SVG sources in web/icon-src/ (the Brass Roll
+# concept). The PNGs are committed — they are go:embed inputs — so this runs
+# only when a source changes. Needs rsvg-convert (librsvg); on NixOS:
+#   nix-shell -p librsvg --run 'make icons'
+# The sizes are asserted against the manifest by TestManifestImagesShipAtTheirDeclaredSize.
+# ⚠ A GENERATOR, NOT A GATE, so CI does not run it (the header's "every target
+# runs in CI" is about checks). The gate is that test, which reads the PNGs.
+# The manifest screenshots are generated the same way by `npm run capture` in
+# e2e/ (seeded fixture data only).
+ICON_SRC := web/icon-src
+ICON_OUT := web/static/icons
+RSVG ?= rsvg-convert
+icons:
+	$(RSVG) -w 192 -h 192 $(ICON_SRC)/icon.svg -o $(ICON_OUT)/icon-192.png
+	$(RSVG) -w 512 -h 512 $(ICON_SRC)/icon.svg -o $(ICON_OUT)/icon-512.png
+	$(RSVG) -w 192 -h 192 $(ICON_SRC)/maskable.svg -o $(ICON_OUT)/maskable-192.png
+	$(RSVG) -w 512 -h 512 $(ICON_SRC)/maskable.svg -o $(ICON_OUT)/maskable-512.png
+	$(RSVG) -w 72 -h 72 $(ICON_SRC)/badge.svg -o $(ICON_OUT)/badge-72.png
+	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-new.svg -o $(ICON_OUT)/shortcut-new-96.png
+	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-tasks.svg -o $(ICON_OUT)/shortcut-tasks-96.png
+	$(RSVG) -w 96 -h 96 $(ICON_SRC)/shortcut-agents.svg -o $(ICON_OUT)/shortcut-agents-96.png
+
 # Rebuild the stylesheet from the Go views.
 css:
 	mkdir -p $(dir $(CSS_OUT))
@@ -255,5 +293,13 @@ verb-ledger:
 	tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 	go build -o "$$tmp/muster" ./cmd/muster; \
 	tests/verb-ledger.sh "$$tmp/muster"
+
+# The browser suite, as CI's `e2e` job runs it: playwright, then the verdict
+# (pass floor + skip cap) whatever playwright's exit code was. Needs a Postgres
+# database whose name ends in _e2e (the seed truncates it) and `npm ci` +
+# `npx playwright install chromium` in e2e/ once.
+e2e:
+	@cd e2e && MUSTER_E2E_REQUIRE_FULL=1 npx playwright test; rc=$$?; \
+	node verdict.mjs test-results/results.json && exit $$rc
 
 check: vet test leakscan css-check verb-ledger

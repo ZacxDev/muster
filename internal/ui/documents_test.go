@@ -61,6 +61,16 @@ var standaloneDocuments = []documentRenderer{
 		renderEmpty: func(w io.Writer) error { return RenderPage(w, "", featuresAllOn) },
 	},
 	{
+		// The shell with the new-task sheet opening itself, pre-filled: what a
+		// share (/share) and the "New task" shortcut (/tasks?new=1) serve. The
+		// body carries every character that must stay inert.
+		fn: "ComposePage", label: "the composer shell (/share, /tasks?new=1)",
+		render: func(w io.Writer) error {
+			return RenderComposePage(w, featuresAllOn, "Shared <b>title</b> & \"quotes\"\nhttps://example.com/a?x=1&y=2")
+		},
+		renderEmpty: func(w io.Writer) error { return RenderComposePage(w, featuresAllOn, "") },
+	},
+	{
 		fn: "AgentDetailPage", label: "the agent detail page (/agents/<name>)",
 		render: func(w io.Writer) error { return RenderAgentDetail(w, sampleAgentDetailView(), featuresAllOn) },
 		// A freshly-created agent: no sessions yet, so the session list renders its

@@ -63,6 +63,7 @@ GET /privileges
 GET /readyz
 GET /repos
 GET /runbooks
+GET /share
 GET /static/
 GET /sw.js
 GET /tasks
@@ -90,6 +91,7 @@ GET /ui/runbooks
 GET /ui/tags
 GET /ui/tasks
 GET /ui/tasks/new
+GET /ui/tasks/review-count
 GET /ui/tasks/{id}/card
 GET /ui/tasks/{id}/edit
 GET /{$}

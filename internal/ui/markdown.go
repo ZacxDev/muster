@@ -209,7 +209,7 @@ func mdInline(escaped string) string {
 		if g == nil {
 			return m
 		}
-		return v.stash(`<code class="rounded bg-slate-950/60 px-1 py-0.5 font-mono text-[0.85em]">` +
+		return v.stash(`<code class="rounded bg-bg/60 px-1 py-0.5 font-mono text-[0.85em]">` +
 			g[1] + `</code>`)
 	})
 	s = mdLinkify(s, v)
@@ -226,7 +226,7 @@ func mdInline(escaped string) string {
 // href and label must ALREADY be mdEscape'd: `"` is then `&quot;`, so neither can
 // break out of the attribute, and no author text can reach the browser as markup.
 func mdAnchor(href, label string) string {
-	return `<a href="` + href + `" target="_blank" rel="noopener" class="text-emerald-300 underline decoration-emerald-500/40 underline-offset-2 hover:text-emerald-200">` +
+	return `<a href="` + href + `" target="_blank" rel="noopener" class="text-accent underline decoration-accent/40 underline-offset-2 hover:text-fg">` +
 		label + `</a>`
 }
 
@@ -435,8 +435,8 @@ func markdownHTML(src string) string {
 				// lang is author-controlled → escape it before using as the summary text.
 				label = mdEscape(lang) + " code"
 			}
-			out.WriteString(`<details class="group/code my-1 rounded-lg bg-slate-950/60 ring-1 ring-inset ring-white/5">`)
-			out.WriteString(`<summary class="flex cursor-pointer list-none items-center gap-1.5 px-2 py-1 text-xs font-medium text-slate-400 transition hover:text-slate-200 marker:content-['']"><span class="transition group-open/code:rotate-90">▸</span>` + label + `</summary>`)
+			out.WriteString(`<details class="group/code my-1 rounded-lg bg-bg/60 ring-1 ring-inset ring-line">`)
+			out.WriteString(`<summary class="flex cursor-pointer list-none items-center gap-1.5 px-2 py-1 text-xs font-medium text-muted transition hover:text-fg marker:content-['']"><span class="transition group-open/code:rotate-90">▸</span>` + label + `</summary>`)
 			out.WriteString(`<pre class="overflow-auto rounded-b-lg px-2 pb-2 font-mono text-[0.85em] leading-relaxed"><code>`)
 			out.WriteString(strings.Join(code, "\n"))
 			out.WriteString(`</code></pre>`)
@@ -448,7 +448,7 @@ func markdownHTML(src string) string {
 		// rather than the opening of a bullet, and before the paragraph gather
 		// (which also excludes it) so it is never swallowed as literal text.
 		if mdThematicBreak.MatchString(line) {
-			out.WriteString(`<hr class="my-2 border-white/10">`)
+			out.WriteString(`<hr class="my-2 border-line">`)
 			i++
 			continue
 		}
@@ -459,7 +459,7 @@ func markdownHTML(src string) string {
 			if len(m[1]) <= 2 {
 				size = "text-base"
 			}
-			out.WriteString(`<div class="mt-1 font-semibold text-slate-100 ` + size + `">`)
+			out.WriteString(`<div class="mt-1 font-semibold text-fg ` + size + `">`)
 			out.WriteString(mdInline(mdEscape(m[2])))
 			out.WriteString(`</div>`)
 			i++
@@ -473,7 +473,7 @@ func markdownHTML(src string) string {
 				quote = append(quote, mdInline(mdEscape(mdBlockquote.ReplaceAllString(lines[i], ""))))
 				i++
 			}
-			out.WriteString(`<blockquote class="my-1 border-l-2 border-amber-500/40 bg-amber-500/5 py-1 pl-3 text-slate-300">`)
+			out.WriteString(`<blockquote class="my-1 border-l-2 border-accent/60 bg-s2 py-1 pl-3 text-fg2">`)
 			out.WriteString(strings.Join(quote, "<br>"))
 			out.WriteString(`</blockquote>`)
 			continue
@@ -517,13 +517,13 @@ func markdownHTML(src string) string {
 			i += 2 // consume the header row AND the separator row
 			out.WriteString(`<div class="overflow-x-auto my-1"><table class="my-1 w-full border-collapse text-xs"><thead><tr>`)
 			for _, c := range head {
-				out.WriteString(`<th class="border border-white/10 px-2 py-1 text-left">` + mdInline(mdEscape(c)) + `</th>`)
+				out.WriteString(`<th class="border border-line px-2 py-1 text-left">` + mdInline(mdEscape(c)) + `</th>`)
 			}
 			out.WriteString(`</tr></thead><tbody>`)
 			for i < len(lines) && strings.Contains(lines[i], "|") && !mdBlankLineRe.MatchString(lines[i]) {
 				out.WriteString(`<tr>`)
 				for _, c := range mdTableCells(lines[i]) {
-					out.WriteString(`<td class="border border-white/10 px-2 py-1">` + mdInline(mdEscape(c)) + `</td>`)
+					out.WriteString(`<td class="border border-line px-2 py-1">` + mdInline(mdEscape(c)) + `</td>`)
 				}
 				out.WriteString(`</tr>`)
 				i++

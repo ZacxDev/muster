@@ -83,45 +83,45 @@ func RenderRunbooks(w io.Writer, list []RunbookView) error {
 func Runbooks(list []RunbookView) g.Node {
 	return Section(
 		ID("runbooks"),
-		Class("rounded-2xl border border-white/5 bg-slate-900/50 p-4 ring-1 ring-white/5"),
+		Class("rounded-2xl border border-line bg-s1/50 p-4 ring-1 ring-line"),
 		Div(
 			Class("mb-3 flex items-center gap-2"),
 			Span(Class("text-base"), g.Text("📒")),
-			H2(Class("text-sm font-semibold text-slate-200"), g.Text("Runbooks")),
-			Span(Class("rounded-full bg-slate-700/50 px-2 py-0.5 text-xs font-semibold text-slate-300"), g.Text(strconv.Itoa(len(list)))),
+			H2(Class("text-sm font-semibold text-fg"), g.Text("Runbooks")),
+			Span(Class("rounded-full bg-s3/50 px-2 py-0.5 text-xs font-semibold text-fg2"), g.Text(strconv.Itoa(len(list)))),
 		),
 		g.If(len(list) == 0,
-			P(Class("mb-3 text-xs text-slate-400"), g.Text("No runbooks yet.")),
+			P(Class("mb-3 text-xs text-muted"), g.Text("No runbooks yet.")),
 		),
 		g.If(len(list) > 0,
 			Div(Class("mb-3 flex flex-col gap-2"), g.Map(list, runbookCard)),
 		),
-		P(Class("text-xs text-slate-400"), g.Text("Create via the Operator (chat) — ask it to define a runbook.")),
+		P(Class("text-xs text-muted"), g.Text("Create via the Operator (chat) — ask it to define a runbook.")),
 	)
 }
 
 func runbookCard(rb RunbookView) g.Node {
 	ids := strconv.FormatInt(rb.ID, 10)
 	return Div(
-		Class("rounded-xl bg-slate-950/50 p-3 ring-1 ring-inset ring-white/5"),
+		Class("rounded-xl bg-bg/50 p-3 ring-1 ring-inset ring-line"),
 		Div(
 			Class("flex items-start gap-2"),
 			Div(
 				Class("min-w-0 flex-1"),
 				Div(
 					Class("flex flex-wrap items-center gap-2"),
-					Span(Class("rounded-md bg-sky-500/15 px-2 py-0.5 text-xs font-semibold text-sky-300 ring-1 ring-inset ring-sky-500/30"), g.Text(rb.Name)),
-					Span(Class("text-xs text-slate-400"), g.Text(rb.Summary)),
+					Span(Class("rounded-md bg-st-progress-bg px-2 py-0.5 text-xs font-semibold text-st-progress-fg ring-1 ring-inset ring-st-progress-fg/40"), g.Text(rb.Name)),
+					Span(Class("text-xs text-muted"), g.Text(rb.Summary)),
 					runbookRunsBadge(rb),
 				),
 				g.If(rb.Description != "",
-					P(Class("mt-1 break-words text-xs text-slate-400"), g.Text(rb.Description)),
+					P(Class("mt-1 break-words text-xs text-muted"), g.Text(rb.Description)),
 				),
 			),
 			Button(
 				Type("button"),
 				g.Attr("aria-label", "Delete runbook"),
-				Class("press inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-slate-400 transition hover:bg-white/5 hover:text-rose-300"),
+				Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-s2 hover:text-st-error-fg"),
 				hx("hx-delete", "/runbooks/"+ids),
 				// `closest section` rather than `#runbooks`: the target is the list
 				// this card is IN, which is true wherever the partial is mounted. The
@@ -149,7 +149,7 @@ func runbookRunsBadge(rb RunbookView) g.Node {
 		label += " · last " + relTimeString(rb.LastRunAt) + " ago"
 	}
 	return Span(
-		Class("inline-flex items-center rounded-full bg-slate-700/40 px-2 py-0.5 text-[11px] font-medium text-slate-400 ring-1 ring-inset ring-white/5"),
+		Class("inline-flex items-center rounded-full bg-s3/40 px-2 py-0.5 text-[11px] font-medium text-muted ring-1 ring-inset ring-line"),
 		g.Text(label),
 	)
 }
@@ -168,13 +168,13 @@ func runbookRunForm(rb RunbookView) g.Node {
 	}
 	fields = append(fields,
 		Input(Type("text"), Name("repo"), Placeholder(repoPlaceholder),
-			Class("w-full rounded-lg border-0 bg-slate-950 px-3 py-2 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500/50")),
+			Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus")),
 		Button(Type("submit"),
-			Class("press inline-flex items-center justify-center rounded-lg bg-emerald-500 px-3 py-2 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-400"),
+			Class("press inline-flex items-center justify-center rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-on-accent transition hover:bg-accent/90"),
 			hx("hx-disabled-elt", "this"), g.Text("Dispatch")),
 	)
 	return g.El("details",
-		Class("group/run mt-2 rounded-lg bg-slate-950/40 ring-1 ring-inset ring-white/5"),
+		Class("group/run mt-2 rounded-lg bg-bg/40 ring-1 ring-inset ring-line"),
 		// 🔴 list-none IS REQUIRED, NOT COSMETIC PADDING. A <summary> is
 		// `display: list-item` with `list-style-type: disclosure-closed`, so the
 		// browser draws its OWN triangle — and this markup drew a second one as
@@ -185,7 +185,7 @@ func runbookRunForm(rb RunbookView) g.Node {
 		// marker:content-[''] covers the WebKit/Blink ::marker spelling the way
 		// the fenced-code <summary> in markdown.go does.
 		g.El("summary",
-			Class("flex cursor-pointer select-none list-none items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-300 marker:content-['']"),
+			Class("flex cursor-pointer select-none list-none items-center gap-1.5 px-3 py-2 text-xs font-medium text-fg2 marker:content-['']"),
 			Span(Class("transition-transform group-open/run:rotate-90"), g.Text("▸")),
 			g.Text("Run"),
 		),
@@ -207,7 +207,7 @@ func runbookParamField(p RunbookParam) g.Node {
 	if p.Required {
 		label += " *"
 	}
-	inputClass := "w-full rounded-lg border-0 bg-slate-950 px-3 py-2 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-sky-500/50"
+	inputClass := "w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"
 	var control g.Node
 	if len(p.Enum) > 0 {
 		opts := make([]g.Node, 0, len(p.Enum))
@@ -228,7 +228,7 @@ func runbookParamField(p RunbookParam) g.Node {
 		control = Input(attrs...)
 	}
 	return Label(
-		Class("flex flex-col gap-1 text-xs text-slate-400"),
+		Class("flex flex-col gap-1 text-xs text-muted"),
 		Span(g.Text(label)),
 		control,
 	)

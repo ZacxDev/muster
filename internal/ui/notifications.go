@@ -63,7 +63,7 @@ func unreadTotal(unread []NotificationRow) int {
 // the count flap during streaming; the badge stays a stable "you have N replies
 // to read" signal while the ACTIVE section carries the live indicator.
 func notifBadge(total int) g.Node {
-	cls := "absolute -right-1 -top-1 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-rose-500 px-1.5 py-0.5 text-xs font-semibold tabular-nums text-white ring-2 ring-slate-950"
+	cls := "absolute -right-1 -top-1 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-danger px-1.5 py-0.5 text-xs font-semibold tabular-nums text-fg ring-2 ring-bg"
 	if total == 0 {
 		cls += " hidden"
 	}
@@ -83,7 +83,7 @@ func notifBadge(total int) g.Node {
 func notifList(active []ActiveRow, unread []NotificationRow) g.Node {
 	if len(active) == 0 && len(unread) == 0 {
 		return Div(
-			Class("px-4 py-6 text-center text-sm text-slate-400"),
+			Class("px-4 py-6 text-center text-sm text-muted"),
 			g.Text("Nothing active."),
 		)
 	}
@@ -95,7 +95,7 @@ func notifList(active []ActiveRow, unread []NotificationRow) g.Node {
 		}
 		sections = append(sections,
 			notifSectionLabel("Active"),
-			Div(Class("divide-y divide-slate-800"), g.Group(rows)),
+			Div(Class("divide-y divide-line"), g.Group(rows)),
 		)
 	}
 	if len(unread) > 0 {
@@ -105,7 +105,7 @@ func notifList(active []ActiveRow, unread []NotificationRow) g.Node {
 		}
 		sections = append(sections,
 			notifSectionLabel("Unread"),
-			Div(Class("divide-y divide-slate-800"), g.Group(rows)),
+			Div(Class("divide-y divide-line"), g.Group(rows)),
 		)
 	}
 	return g.Group(sections)
@@ -114,7 +114,7 @@ func notifList(active []ActiveRow, unread []NotificationRow) g.Node {
 // notifSectionLabel is the small muted heading above a non-empty group.
 func notifSectionLabel(text string) g.Node {
 	return Div(
-		Class("px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-slate-400"),
+		Class("px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-muted"),
 		g.Text(text),
 	)
 }
@@ -140,7 +140,7 @@ func activeRow(it ActiveRow) g.Node {
 	}
 	return A(
 		Href(agentHref(it.Name, it.SessionID)),
-		Class("flex min-h-[44px] items-center justify-between gap-3 px-4 py-2.5 text-sm text-slate-200 transition-colors hover:bg-slate-800/60"),
+		Class("flex min-h-[44px] items-center justify-between gap-3 px-4 py-2.5 text-sm text-fg transition-colors hover:bg-s2/60"),
 		Span(Class("truncate"), g.Text(label)),
 		activePill(it),
 	)
@@ -155,8 +155,8 @@ func activePill(it ActiveRow) g.Node {
 			text = "thinking…"
 		}
 		return Span(
-			Class("inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-300 ring-1 ring-inset ring-emerald-500/30"),
-			Span(Class("text-emerald-400"), g.Text("●")),
+			Class("inline-flex items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-xs font-medium text-accent ring-1 ring-inset ring-accent/30"),
+			Span(Class("text-accent"), g.Text("●")),
 			g.Text(text),
 		)
 	}
@@ -165,7 +165,7 @@ func activePill(it ActiveRow) g.Node {
 		since = "just now"
 	}
 	return Span(
-		Class("inline-flex items-center text-xs text-slate-400 tabular-nums"),
+		Class("inline-flex items-center text-xs text-muted tabular-nums"),
 		g.Text(since),
 	)
 }
@@ -182,10 +182,10 @@ func notifRow(it NotificationRow) g.Node {
 	// WS for the picked session.
 	return A(
 		Href(agentHref(it.Name, it.SessionID)),
-		Class("flex min-h-[44px] items-center justify-between gap-3 px-4 py-2.5 text-sm text-slate-200 transition-colors hover:bg-slate-800/60"),
+		Class("flex min-h-[44px] items-center justify-between gap-3 px-4 py-2.5 text-sm text-fg transition-colors hover:bg-s2/60"),
 		Span(Class("truncate"), g.Text(label)),
 		Span(
-			Class("inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-rose-500/15 px-2 py-0.5 text-xs font-semibold tabular-nums text-rose-300 ring-1 ring-inset ring-rose-500/30"),
+			Class("inline-flex min-w-[1.5rem] items-center justify-center rounded-full bg-st-error-bg px-2 py-0.5 text-xs font-semibold tabular-nums text-st-error-fg ring-1 ring-inset ring-st-error-fg/40"),
 			g.Textf("%d", it.Count),
 		),
 	)

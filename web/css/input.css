@@ -1,14 +1,165 @@
 /*
- * muster Tailwind entrypoint (Phase 0 scaffolding).
+ * muster Tailwind entrypoint.
  *
- * Built into web/static/app.css via `npm run build:css` (Phase 1). Dark mode
- * is the default — the document root carries the `dark` class, so prefer
- * `dark:`-prefixed utilities for the primary look and treat the un-prefixed
- * (light) styles as the opt-in alternative.
+ * Built into web/static/app.css by `make css`. Dark is the default — the
+ * document root carries the `dark` class — and light is the opt-in: the
+ * sidebar's theme control removes that class (themeHeadScript in
+ * internal/ui/theme.go), and the token block below swaps every colour with it.
  */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/*
+ * 🔴 THE PALETTE ("Brass Roll") LIVES HERE AND NOWHERE ELSE.
+ *
+ * Every colour in the UI is one of these custom properties. tailwind.config.js
+ * maps them to utilities (`bg-s1`, `text-accent`, `bg-st-review-bg`, …), so a
+ * component names a ROLE and never a hue; internal/ui is forbidden from naming
+ * a Tailwind palette colour or a hex literal by TestNoHardCodedColourInUI.
+ *
+ * VALUES ARE RGB CHANNELS ("17 15 28"), not hex, so Tailwind's opacity
+ * modifier (`bg-bg/80`) still works: the utility is
+ * `rgb(var(--mu-bg) / <alpha-value>)`. The trailing comment on each line is
+ * the same colour in hex, for humans; TestThemeTokensMeetWCAG parses the
+ * CHANNELS, and fails if a comment disagrees with them.
+ *
+ * 🔴 CONTRAST IS ASSERTED, NOT ASSUMED. TestThemeTokensMeetWCAG
+ * (internal/ui/theme_test.go) parses BOTH blocks out of this file and checks
+ * every pair the palette was designed against — body text on every surface at
+ * 4.5:1, the focus ring and control edge at 3:1, every status chip label on its
+ * chip at 4.5:1 — so an edit here that breaks AA fails the suite.
+ *
+ * `line` is a decorative hairline between regions and is deliberately NOT in
+ * that table: WCAG 1.4.11 does not apply to a divider that identifies no
+ * component. A control's boundary uses `edge`, which is tested.
+ *
+ * Status tokens come in pairs: `-fg` is the glyph / label colour, `-bg` the
+ * chip it sits on. The names are the role, not the enum spelling: `progress`
+ * is in_progress, `review` is ready_for_review.
+ *
+ * Dark on `:root` (and on `.dark`), light on `:root:not(.dark)`. The light
+ * selector out-ranks the bare `:root`, so the class alone decides.
+ */
+@layer base {
+  :root,
+  .dark {
+    color-scheme: dark;
+    --mu-bg: 17 15 28; /* #110F1C */
+    --mu-s1: 25 22 42; /* #19162A */
+    --mu-s2: 34 30 55; /* #221E37 */
+    --mu-s3: 45 40 70; /* #2D2846 */
+    --mu-line: 47 42 72; /* #2F2A48 */
+    --mu-edge: 110 103 144; /* #6E6790 */
+    --mu-text: 238 235 247; /* #EEEBF7 */
+    --mu-text2: 195 189 217; /* #C3BDD9 */
+    --mu-muted: 154 147 181; /* #9A93B5 */
+    --mu-accent: 228 181 86; /* #E4B556 */
+    --mu-on-accent: 30 22 6; /* #1E1606 */
+    --mu-focus: 242 203 120; /* #F2CB78 */
+    --mu-danger: 209 59 69; /* #D13B45 */
+    --mu-on-danger: 255 255 255; /* #FFFFFF */
+    --mu-st-open-fg: 185 179 211; /* #B9B3D3 */
+    --mu-st-open-bg: 36 32 58; /* #24203A */
+    --mu-st-progress-fg: 143 184 255; /* #8FB8FF */
+    --mu-st-progress-bg: 27 37 71; /* #1B2547 */
+    --mu-st-review-fg: 215 166 255; /* #D7A6FF */
+    --mu-st-review-bg: 46 31 69; /* #2E1F45 */
+    --mu-st-complete-fg: 127 214 164; /* #7FD6A4 */
+    --mu-st-complete-bg: 22 52 40; /* #163428 */
+    --mu-st-error-fg: 255 143 143; /* #FF8F8F */
+    --mu-st-error-bg: 61 26 34; /* #3D1A22 */
+    --mu-st-warning-fg: 255 174 94; /* #FFAE5E */
+    --mu-st-warning-bg: 58 38 21; /* #3A2615 */
+    --mu-st-running-fg: 95 224 192; /* #5FE0C0 */
+    --mu-st-running-bg: 18 51 47; /* #12332F */
+  }
+
+  :root:not(.dark) {
+    color-scheme: light;
+    --mu-bg: 246 244 251; /* #F6F4FB */
+    --mu-s1: 255 255 255; /* #FFFFFF */
+    --mu-s2: 238 235 246; /* #EEEBF6 */
+    --mu-s3: 227 223 239; /* #E3DFEF */
+    --mu-line: 220 215 234; /* #DCD7EA */
+    --mu-edge: 125 118 153; /* #7D7699 */
+    --mu-text: 26 22 48; /* #1A1630 */
+    --mu-text2: 68 62 94; /* #443E5E */
+    --mu-muted: 98 92 125; /* #625C7D */
+    --mu-accent: 131 93 15; /* #835D0F */
+    --mu-on-accent: 255 255 255; /* #FFFFFF */
+    --mu-focus: 107 76 14; /* #6B4C0E */
+    --mu-danger: 180 38 48; /* #B42630 */
+    --mu-on-danger: 255 255 255; /* #FFFFFF */
+    --mu-st-open-fg: 79 72 112; /* #4F4870 */
+    --mu-st-open-bg: 236 233 245; /* #ECE9F5 */
+    --mu-st-progress-fg: 31 79 176; /* #1F4FB0 */
+    --mu-st-progress-bg: 227 236 255; /* #E3ECFF */
+    --mu-st-review-fg: 116 40 181; /* #7428B5 */
+    --mu-st-review-bg: 243 232 255; /* #F3E8FF */
+    --mu-st-complete-fg: 28 107 63; /* #1C6B3F */
+    --mu-st-complete-bg: 226 245 233; /* #E2F5E9 */
+    --mu-st-error-fg: 180 35 47; /* #B4232F */
+    --mu-st-error-bg: 253 231 232; /* #FDE7E8 */
+    --mu-st-warning-fg: 154 75 0; /* #9A4B00 */
+    --mu-st-warning-bg: 255 238 219; /* #FFEEDB */
+    --mu-st-running-fg: 13 107 90; /* #0D6B5A */
+    --mu-st-running-bg: 221 245 239; /* #DDF5EF */
+  }
+
+  /*
+   * A status glyph's knock-out strokes (the tick in `complete`, the bar in
+   * `warning`) are drawn in the surface the glyph sits on. The default is the
+   * card surface; a chip that carries its own fill sets --glyph-knock to it
+   * (statusGlyph's caller, internal/ui/theme.go).
+   */
+  :root {
+    --glyph-knock: rgb(var(--mu-s1));
+  }
+
+  /*
+   * The `hidden` ATTRIBUTE must win over a display utility. Preflight's
+   * `[hidden]` rule and `.flex` have equal specificity and utilities come
+   * later, so an element written `class="flex" hidden` would SHOW. The PWA
+   * chrome (update toast, install button) is toggled with el.hidden, so this
+   * is what makes that toggle mean anything.
+   */
+  [hidden] {
+    display: none !important;
+  }
+
+  /*
+   * 🔴 PHONE-WIDTH FORM CONTROLS: 16px TEXT, 44px TALL, IN ONE PLACE.
+   *
+   * A mobile browser zooms the page when focus lands in a field whose text is
+   * under 16px, and the views write `text-sm`/`text-xs` on most fields because
+   * that reads right on a desktop. Restating a size on ~40 call sites would be
+   * forty chances to miss one, so it is stated here once, for the viewport
+   * where it matters, and the e2e layout spec asserts the COMPUTED size of every
+   * visible field at 360px rather than trusting this rule.
+   *
+   * ⚠ `!important` IS DELIBERATE: a utility class (`.text-sm`) out-ranks an
+   * element selector whatever the layer order, so without it this rule would
+   * lose to exactly the classes it exists to correct. It is scoped to fields
+   * (checkboxes and radios excluded) and to narrow viewports only.
+   */
+  @media (max-width: 639px) {
+    input:not([type='checkbox']):not([type='radio']):not([type='hidden']):not([type='file']),
+    select,
+    textarea {
+      font-size: 16px !important;
+      min-height: 44px !important;
+    }
+    input[type='file'] {
+      font-size: 16px !important;
+      min-height: 44px;
+    }
+    summary {
+      min-height: 44px;
+    }
+  }
+}
+
 
 /*
  * Card enter/leave micro-interactions for the htmx-driven list.
@@ -132,7 +283,7 @@
     clip-path: none;
     white-space: normal;
     border-radius: 0.5rem;
-    outline: 2px solid #38bdf8; /* sky-400 — matches the label-button ring */
+    outline: 2px solid rgb(var(--mu-focus)); /* the focus token — matches the label-button ring */
     outline-offset: 2px;
   }
 
@@ -200,13 +351,13 @@
 
 @keyframes card-highlight {
   0% {
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    box-shadow: 0 0 0 0 rgb(var(--mu-accent) / 0);
   }
   25% {
-    box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.5);
+    box-shadow: 0 0 0 2px rgb(var(--mu-accent) / 0.5);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    box-shadow: 0 0 0 0 rgb(var(--mu-accent) / 0);
   }
 }
 

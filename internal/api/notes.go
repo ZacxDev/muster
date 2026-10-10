@@ -243,7 +243,10 @@ func (s *Server) directorySeed(r *http.Request) (dirs []string, failed bool) {
 func (s *Server) handleNoteNewModal(w http.ResponseWriter, r *http.Request) {
 	dirs, failed := s.directorySeed(r)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderNotesModal(w, dirs, failed); err != nil {
+	// `body` pre-fills the task text: ComposePage (a share, the New-task
+	// shortcut) opens the sheet with it. Display only — nothing is written until
+	// the operator presses Save, which is the ordinary POST /tasks.
+	if err := ui.RenderNotesModal(w, dirs, failed, r.URL.Query().Get("body")); err != nil {
 		s.logger.Printf("notes: render modal: %v", err)
 	}
 }
@@ -1363,6 +1366,14 @@ func (s *Server) applyTaskStatus(ctx context.Context, writer statusWriter, id in
 	// Background push when this task ENTERS ready_for_review (deduped so a re-save
 	// doesn't re-buzz). Best-effort + nil-push-safe.
 	s.notifyTaskDone(note)
+	// ⚠ NOTHING CLOSES THAT NOTIFICATION WHEN THE TASK LEAVES REVIEW, so the
+	// Android icon dot (Android's badge is the unread-notification count; it has
+	// no badging API) is NOT cleared by muster. A router-relayed close was tried
+	// and removed (PR #38, round 0): as deployed, muster runs standalone — no
+	// router, no push routes — so it could never reach a device, and it cost a DB
+	// read before every status write. Clearing the dot needs muster-native Web Push — a
+	// separate arc. The desktop badge (setAppBadge, /ui/tasks/review-count) is
+	// unaffected: it re-reads the count on task.changed.
 	// 🔴 BROADCAST HERE, FOR EVERY CALLER, AND AFTER THE WRITE — the human route
 	// used to broadcast NOTHING while the machine route broadcast from its own
 	// handler. That split is what let the two disagree, and two comments in this

@@ -34,24 +34,24 @@ func tagChipClass(tag string) (class, title string) {
 	base := "inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs "
 	switch {
 	case ns == notes.NSGate:
-		return base + "bg-rose-500/10 font-medium text-rose-300 ring-1 ring-inset ring-rose-500/30",
+		return base + "bg-st-error-bg font-medium text-st-error-fg ring-1 ring-inset ring-st-error-fg/40",
 			"Gated: not dispatchable — " + val
 	case ns == notes.NSRunbook:
-		return base + "bg-violet-500/10 font-medium text-violet-300 ring-1 ring-inset ring-violet-500/30",
+		return base + "bg-st-review-bg font-medium text-st-review-fg ring-1 ring-inset ring-st-review-fg/40",
 			"Routing: dispatch via the \"" + val + "\" runbook"
 	case ns == notes.NSInitiative:
-		return base + "bg-sky-500/10 font-medium text-sky-300 ring-1 ring-inset ring-sky-500/30",
+		return base + "bg-st-progress-bg font-medium text-st-progress-fg ring-1 ring-inset ring-st-progress-fg/40",
 			"Routing: initiative \"" + val + "\" (resolved by the initiatives ledger)"
 	case ns == notes.NSAuto:
-		return base + "bg-amber-500/10 font-medium text-amber-300 ring-1 ring-inset ring-amber-500/30",
+		return base + "bg-st-warning-bg font-medium text-st-warning-fg ring-1 ring-inset ring-st-warning-fg/40",
 			"Routing: auto-dispatch marker (disabled unless MUSTER_TAG_AUTODISPATCH is on)"
 	case ns == notes.NSProject:
 		// Reserved but NOT routing: a project is a grouping label, so it gets its
 		// own colour without the routing chip's "this changes behaviour" promise.
-		return base + "bg-teal-500/10 font-medium text-teal-300 ring-1 ring-inset ring-teal-500/30",
+		return base + "bg-st-running-bg font-medium text-st-running-fg ring-1 ring-inset ring-st-running-fg/40",
 			"Project: " + val
 	default:
-		return base + "bg-white/5 text-slate-400 ring-1 ring-inset ring-white/5", "Tag: " + tag
+		return base + "bg-s2 text-muted ring-1 ring-inset ring-line", "Tag: " + tag
 	}
 }
 
@@ -101,7 +101,7 @@ func cardTagChips(tags []string) g.Node {
 		nodes = append(nodes, Span(
 			g.Attr("data-tag-overflow", strconv.Itoa(overflow)),
 			g.Attr("title", strings.Join(ordered[maxCardTagChips:], ", ")),
-			Class("inline-flex shrink-0 items-center rounded-md bg-white/5 px-1.5 py-0.5 text-xs text-slate-400 ring-1 ring-inset ring-white/5"),
+			Class("inline-flex shrink-0 items-center rounded-md bg-s2 px-1.5 py-0.5 text-xs text-muted ring-1 ring-inset ring-line"),
 			g.Text("+"+strconv.Itoa(overflow)),
 		))
 	}
@@ -218,15 +218,15 @@ func tagFilterRow(vocab []notes.TagCount, active []string) g.Node {
 	chips := make([]g.Node, 0, len(shown)+1)
 	for _, t := range shown {
 		on := act[t]
-		cls := "press inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition "
+		cls := "press inline-flex min-h-[44px] min-w-[44px] shrink-0 justify-center items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition "
 		if on {
-			cls += "bg-emerald-500/15 text-emerald-200 ring-1 ring-inset ring-emerald-500/40"
+			cls += "bg-accent/15 text-fg ring-1 ring-inset ring-accent/40"
 		} else {
-			cls += "bg-white/5 text-slate-400 ring-1 ring-inset ring-white/5 hover:bg-white/10 hover:text-slate-200"
+			cls += "bg-s2 text-muted ring-1 ring-inset ring-line hover:bg-s3 hover:text-fg"
 		}
 		if notes.IsRoutingTag(t) && !on {
 			// Routing tags stay visually distinct even in the filter row.
-			cls = "press inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold text-violet-300 ring-1 ring-inset ring-violet-500/30 transition hover:bg-violet-500/10"
+			cls = "press inline-flex min-h-[44px] min-w-[44px] shrink-0 justify-center items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold text-st-review-fg ring-1 ring-inset ring-st-review-fg/40 transition hover:bg-st-review-bg"
 		}
 		chips = append(chips, Button(
 			Type("button"),
@@ -280,7 +280,7 @@ func chipScroller(row g.Node, chips int, outerCls string) g.Node {
 		Div(
 			g.Attr("data-chip-overflow", ""),
 			g.Attr("aria-hidden", "true"),
-			Class("pointer-events-none absolute inset-y-0 right-0 flex w-10 items-center justify-end bg-gradient-to-l from-slate-950 via-slate-950/80 to-transparent pb-1 text-sm text-slate-400"),
+			Class("pointer-events-none absolute inset-y-0 right-0 flex w-10 items-center justify-end bg-gradient-to-l from-bg via-bg/80 to-transparent pb-1 text-sm text-muted"),
 			g.Text("›"),
 		),
 	)
@@ -327,11 +327,11 @@ func projectFilterRow(projects []notes.ProjectCount, active []string) g.Node {
 	chips := make([]g.Node, 0, len(shown)+1)
 	for _, p := range shown {
 		on := p.Name == activeProject
-		cls := "press inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition "
+		cls := "press inline-flex min-h-[44px] min-w-[44px] shrink-0 justify-center items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition "
 		if on {
-			cls += "bg-teal-500/20 text-teal-100 ring-1 ring-inset ring-teal-400/50"
+			cls += "bg-st-running-bg text-st-running-fg ring-1 ring-inset ring-st-running-fg/40"
 		} else {
-			cls += "bg-teal-500/5 text-teal-300/80 ring-1 ring-inset ring-teal-500/20 hover:bg-teal-500/15 hover:text-teal-100"
+			cls += "bg-st-running-bg text-st-running-fg ring-1 ring-inset ring-st-running-fg/40 hover:bg-st-running-bg hover:text-st-running-fg"
 		}
 		chips = append(chips, Button(
 			Type("button"),
@@ -348,16 +348,16 @@ func projectFilterRow(projects []notes.ProjectCount, active []string) g.Node {
 			g.Attr("title", "Show only tasks in the \""+p.Name+"\" project"),
 			Class(cls),
 			g.Text(p.Name),
-			Span(Class("text-teal-400/60"), g.Text(strconv.FormatInt(p.Count, 10))),
+			Span(Class("text-st-running-fg"), g.Text(strconv.FormatInt(p.Count, 10))),
 		))
 	}
 	return chipScroller(Div(
 		ID("project-filter-row"),
 		g.Attr("data-active-project", activeProject),
 		Class("-mx-1 flex items-center gap-2 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"),
-		// text-slate-400 — see the identical note on the Status row label in
-		// notes.go: slate-600 on slate-950 measured 2.66:1 against a 4.5:1 floor.
-		Span(Class("shrink-0 text-xs font-medium uppercase tracking-wide text-slate-400"), g.Text("Project")),
+		// text-muted — see the identical note on the Status row label in
+		// notes.go: the darkest text step measured 2.66:1 against a 4.5:1 floor.
+		Span(Class("shrink-0 text-xs font-medium uppercase tracking-wide text-muted"), g.Text("Project")),
 		g.Group(chips),
 	), len(chips), "mb-2")
 }
@@ -369,7 +369,7 @@ func tagFilterClearButton(label string) g.Node {
 		Type("button"),
 		g.Attr("data-tag-filter-clear", ""),
 		g.Attr("aria-label", "Clear tag filter"),
-		Class("press inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-full px-3 py-1 text-xs font-medium text-slate-400 underline decoration-dotted underline-offset-2 transition hover:text-slate-100"),
+		Class("press inline-flex min-h-[44px] min-w-[44px] shrink-0 justify-center items-center gap-1 rounded-full px-3 py-1 text-xs font-medium text-muted underline decoration-dotted underline-offset-2 transition hover:text-fg"),
 		g.Text(label),
 	)
 }
@@ -404,9 +404,9 @@ func tasksFilteredEmpty(active []string, status string) g.Node {
 		g.Attr("data-tasks-filtered-empty", ""),
 		Class("mt-12 flex flex-col items-center justify-center gap-2 text-center"),
 		Div(Class("text-4xl"), g.Text("🔍")),
-		P(Class("text-lg font-medium text-slate-300"),
+		P(Class("text-lg font-medium text-fg2"),
 			g.Text("No tasks match "+strings.Join(parts, " + "))),
-		P(Class("text-sm text-slate-400"), g.Text("Other tasks are hidden by this filter.")),
+		P(Class("text-sm text-muted"), g.Text("Other tasks are hidden by this filter.")),
 		Div(Class("mt-2"), tagFilterClearButton("Clear filter")),
 	)
 }
@@ -465,9 +465,9 @@ func tagEditor(tags []string, vocab []notes.TagCount, inProgress bool) g.Node {
 			// hidden `tag` inputs are the form's actual value, so a half-typed tag
 			// left in the box can't silently become a tag.
 			Placeholder("add a tag…"),
-			Class("w-full rounded-lg border-0 bg-slate-950 px-3 py-2 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+			Class("w-full rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 		),
-		P(Class("text-xs text-slate-400"), g.Text(hint)),
+		P(Class("text-xs text-muted"), g.Text(hint)),
 		tagDatalist(vocab),
 	)
 }

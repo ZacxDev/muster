@@ -370,6 +370,11 @@ type Store interface {
 	// is the ONE query List and ListByTags delegate to, so the ordering, the
 	// soft-delete predicate and the batched child fan-out have a single spelling.
 	ListPage(ctx context.Context, f ListFilter) (Page, error)
+	// CountByStatus is the number of live (not dismissed) tasks in one status.
+	// It exists for the app badge, which re-reads it on every task.changed event,
+	// so it is ONE indexed count rather than ListPage with its laterals and child
+	// fan-out.
+	CountByStatus(ctx context.Context, status string) (int, error)
 	// TagVocabulary returns every tag in use with its task count, ordered by count
 	// descending (then tag ascending, so ties are deterministic). It backs the
 	// filter chip row and the editor's datalist.

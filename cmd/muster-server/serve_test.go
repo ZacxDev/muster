@@ -211,9 +211,14 @@ func TestTheServerServesTheEmbeddedStylesheet(t *testing.T) {
 		t.Fatalf("GET /static/app.css = %d, want 200", resp.StatusCode)
 	}
 	// The floor is the size Tailwind emits when EVERY content glob matches
-	// nothing — measured at 5,594 bytes and recorded in the Makefile's
+	// nothing — measured at 7,139 bytes and recorded in the Makefile's
 	// css-check comment. Anything at or below that is the silent-failure case.
-	const emptyGlobCeiling = 5594
+	// ⚠ It was 5,594 before the palette moved into custom properties: the token
+	// block in web/css/input.css is base-layer CSS Tailwind emits whatever the
+	// globs match, so the floor rose with it. Re-measured the same way (every
+	// content entry pointed at a missing path), with the old figure reproduced
+	// first from the previous input.css to prove the method.
+	const emptyGlobCeiling = 7139
 	if len(css) <= emptyGlobCeiling {
 		t.Errorf("the served stylesheet is %d bytes, at or below the %d bytes Tailwind emits "+
 			"when every content glob matches nothing. Run `make css-check`.",
@@ -221,8 +226,8 @@ func TestTheServerServesTheEmbeddedStylesheet(t *testing.T) {
 	}
 	// A control class written only in internal/ui. Its absence means the
 	// stylesheet parsed but scanned nothing useful.
-	if !strings.Contains(string(css), "bg-emerald-500") {
-		t.Error("the served stylesheet does not contain bg-emerald-500, a class written only " +
+	if !strings.Contains(string(css), "bg-st-review-bg") {
+		t.Error("the served stylesheet does not contain bg-st-review-bg, a class written only " +
 			"in internal/ui — the build did not reach the views")
 	}
 }

@@ -1,8 +1,10 @@
 /*
  * muster service worker.
  *
- * Served from "/sw.js" (root scope) so it controls the whole origin. It does
- * three jobs:
+ * Served from "/sw.js" (root scope) so it controls the whole origin, with the
+ * running build stamped into BUILD below by the server (internal/api/pwa.go) —
+ * so every deploy changes these bytes and is offered to open pages as an
+ * update. It does four jobs:
  *   1. Provide a minimal offline app shell (cache the root document + CSS so
  *      the UI still opens with no network; live data still needs the network
  *      and degrades gracefully). 🔴 Served ONLY while navigator.onLine is
@@ -12,6 +14,9 @@
  *      "resolved" control message.
  *   3. Handle notification clicks: approve/deny a PRIVILEGE request directly
  *      from the worker, or focus/open the app at the relevant card.
+ *   4. Wait to be told. A new worker does NOT take over at install; it waits
+ *      until the page's "Reload" (pwaScript) posts SKIP_WAITING, so an open
+ *      page is never switched under its own inline scripts.
  *
  * 🔴 THIS IS NOT THE UPSTREAM WORKER, AND ONE BRANCH IS DELIBERATELY ABSENT.
  * Upstream this file also decides permission requests, by POSTing to the
@@ -33,32 +38,86 @@
 
 'use strict';
 
-const CACHE = 'muster-shell-v1';
+// Replaced by the server with the build version (a JSON string literal). The
+// placeholder must appear exactly once; the server refuses to serve otherwise.
+const BUILD = "__MUSTER_BUILD__";
+// Per-build shell cache, so each deploy refreshes the offline shell instead of
+// it living forever. activate carries forward what this build could not fetch
+// and only then deletes the older shell caches.
+const CACHE_PREFIX = 'muster-shell-';
+const CACHE = CACHE_PREFIX + BUILD;
 // The minimal shell: the document and the compiled CSS. Vendored JS is fetched
 // fresh (it is small and benefits from normal HTTP caching) to avoid serving a
 // stale htmx during development.
 const SHELL = ['/', '/static/app.css', '/manifest.webmanifest'];
 
+// usable reports whether a response may be stored as (or kept as) a shell
+// entry: a same-origin 200 that was not reached through a redirect. A signed-out
+// worker fetch of "/" is refused (401 from muster, a redirect to a login portal
+// from a forward-auth edge); neither may become the shell. The install fetches
+// with redirect:'manual', so a redirect arrives as an opaqueredirect (status 0)
+// and fails here; `redirected` also rejects a followed redirect already sitting
+// in an older cache.
+function usable(res) {
+  return !!res && res.status === 200 && res.type === 'basic' && !res.redirected;
+}
+
 self.addEventListener('install', (event) => {
+  // Each entry is fetched and judged on its own: one refused entry costs that
+  // entry, not the others, and never fails the install (push keeps working).
   event.waitUntil(
-    caches
-      .open(CACHE)
-      .then((cache) => cache.addAll(SHELL))
-      // Don't fail install if a shell asset is briefly unavailable; the worker
-      // still installs and push keeps working.
-      .catch(() => undefined)
-      .then(() => self.skipWaiting())
+    caches.open(CACHE).then((cache) =>
+      Promise.all(
+        SHELL.map((path) =>
+          fetch(path, { redirect: 'manual' })
+            .then((res) => (usable(res) ? cache.put(path, res) : undefined))
+            .catch(() => undefined)
+        )
+      )
+    )
   );
+  // 🔴 NO SKIP-WAITING CALL HERE. It used to be unconditional, so a deploy swapped
+  // the worker under every open page silently. The page offers the update and
+  // the operator's Reload sends SKIP_WAITING (the message handler below).
 });
 
+self.addEventListener('message', (event) => {
+  const msg = event.data || {};
+  if (msg.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+    return;
+  }
+  // Lets a page (and the e2e suite) ask which build is in control.
+  if (msg.type === 'GET_VERSION' && event.ports && event.ports[0]) {
+    event.ports[0].postMessage({ build: BUILD });
+  }
+});
+
+// 🔴 CARRY FORWARD, THEN DELETE. A deploy installed while signed out cannot
+// fetch "/", so this build's cache has no shell document. Deleting the older
+// caches at that point used to leave the device with NO offline shell at all.
+// Each SHELL entry this build lacks is copied from an older shell cache that
+// holds a usable one (in reverse caches.keys() order); only then are the
+// older shell caches deleted, by which point no usable SHELL entry exists
+// only in them.
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches
-      .keys()
-      .then((keys) =>
-        Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
-      )
-      .then(() => self.clients.claim())
+    (async () => {
+      const cache = await caches.open(CACHE);
+      const older = (await caches.keys()).filter((k) => k !== CACHE && k.startsWith(CACHE_PREFIX)).reverse();
+      for (const path of SHELL) {
+        if (usable(await cache.match(path))) continue;
+        for (const k of older) {
+          const res = await (await caches.open(k)).match(path);
+          if (usable(res)) {
+            await cache.put(path, res);
+            break;
+          }
+        }
+      }
+      await Promise.all(older.map((k) => caches.delete(k)));
+      await self.clients.claim();
+    })()
   );
 });
 

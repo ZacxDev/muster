@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+  <!-- App shortcut icon (Tasks): accent glyph on the app background, full bleed
+       so a launcher's circular mask crops only background. -->
+  <rect width="96" height="96" fill="#110F1C"/>
+  <g fill="none" stroke="#E4B556" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M28 32h40M28 48h40M28 64h24"/>
+  </g>
+</svg>

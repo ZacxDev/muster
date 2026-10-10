@@ -361,6 +361,12 @@ func (s *Server) Handler() http.Handler {
 // servers, and compares — not a count.
 func (s *Server) registerAll(mux Mux) {
 	// --- Open: no app auth. Health, metrics, assets, PWA. ---
+	//
+	// ⚠ "Open" here means muster asks for no session. On the PUBLIC host the edge
+	// still gates every one of these except the PWA metadata it deliberately
+	// lets through (GET/HEAD /manifest.webmanifest, /static/icons/*.png, /sw.js —
+	// see pwa.go for why, and for the rule that keeps those three free of
+	// anything per-user).
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.Handle("GET /metrics", promhttp.Handler())
@@ -395,6 +401,12 @@ func (s *Server) registerAll(mux Mux) {
 		mux.HandleFunc("GET /"+tab, s.requireSession(s.handleIndex))
 	}
 	mux.HandleFunc("GET /events", s.requireSession(s.handleEvents))
+	// The manifest's share_target. Session-gated like the shell it renders; a
+	// GET, so a share that meets the login page survives the round trip in
+	// ?next=. It writes nothing — see handleShare.
+	mux.HandleFunc("GET /share", s.requireSession(s.handleShare))
+	// The desktop app badge's count. Session-gated: it is task data.
+	mux.HandleFunc("GET /ui/tasks/review-count", s.requireSession(s.handleReviewCount))
 	mux.HandleFunc("GET /ui/chief/panel", s.requireSession(s.handleChiefPanel))
 	// 🔴 THREAD SEARCH IS requireSession AND ONLY requireSession. It returns
 	// MESSAGE CONTENT — an excerpt cut out of a chat message body — so no machine
@@ -461,6 +473,14 @@ func (s *Server) shellFeatures() ui.Features {
 // request path so each tab deep-links.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// /tasks?new=1 is the manifest's "New task" shortcut: the board with the
+	// composer open. It is the same mechanism a share uses (ComposePage).
+	if r.URL.Query().Get("new") == "1" && tabFromPath(r.URL.Path) == "tasks" {
+		if err := ui.RenderComposePage(w, s.shellFeatures(), ""); err != nil {
+			s.logger.Printf("error rendering composer page: %v", err)
+		}
+		return
+	}
 	if err := ui.RenderPage(w, tabFromPath(r.URL.Path), s.shellFeatures()); err != nil {
 		s.logger.Printf("error rendering index page: %v", err)
 	}
@@ -523,37 +543,7 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"status": "ready", "version": BuildVersion})
 }
 
-// --- PWA assets (served from root for service-worker scope) ---
-
-// handleServiceWorker serves sw.js from the document root so its registration
-// scope is "/" (a worker only controls pages at or below its own path). It is
-// the same file embedded under /static, re-exposed at root with a no-cache
-// header so worker updates are picked up promptly.
-func (s *Server) handleServiceWorker(w http.ResponseWriter, _ *http.Request) {
-	data, err := web.Static.ReadFile("static/sw.js")
-	if err != nil {
-		http.Error(w, "service worker not found", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	// Allow the worker to claim the whole origin even though it is fetched from /.
-	w.Header().Set("Service-Worker-Allowed", "/")
-	w.Header().Set("Cache-Control", "no-cache")
-	_, _ = w.Write(data)
-}
-
-// handleManifest serves the web app manifest from root with the correct content
-// type so the browser treats the page as installable.
-func (s *Server) handleManifest(w http.ResponseWriter, _ *http.Request) {
-	data, err := web.Static.ReadFile("static/manifest.webmanifest")
-	if err != nil {
-		http.Error(w, "manifest not found", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache")
-	_, _ = w.Write(data)
-}
+// --- PWA assets: see pwa.go (the manifest, sw.js, /share, the badge count) ---
 
 // handleEvents is muster's own SSE stream.
 //
