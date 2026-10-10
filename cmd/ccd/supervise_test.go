@@ -23,6 +23,7 @@ type fakePane struct {
 	status   int
 	onStart  func(n int) // after the n-th start (1-based)
 	failResp bool
+	failN    int // fail this many Respawns, then succeed
 }
 
 func (p *fakePane) Start(_ context.Context, _ string, argv []string) (paneRef, error) {
@@ -44,6 +45,13 @@ func (p *fakePane) Respawn(ctx context.Context, _ paneRef, dir string, argv []st
 	if p.failResp {
 		return os.ErrPermission
 	}
+	p.mu.Lock()
+	if p.failN > 0 {
+		p.failN--
+		p.mu.Unlock()
+		return os.ErrPermission
+	}
+	p.mu.Unlock()
 	_, err := p.Start(ctx, dir, argv)
 	return err
 }
@@ -174,6 +182,9 @@ func TestFiveExitsWithinTheWindowIsACrashLoopAfterExponentialBackoff(t *testing.
 	if st.CLI != cliCrashLoop || st.Starts != 5 || len(pane.starts) != 5 || st.LastExit == nil || *st.LastExit != 7 {
 		t.Fatalf("state %+v, %d starts", st, len(pane.starts))
 	}
+	if strings.Contains(st.Detail, restartNotDone) {
+		t.Fatalf("a crash loop of the CLI itself blames a restart: %q", st.Detail)
+	}
 	if want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second}; !reflect.DeepEqual(*delays, want) {
 		t.Fatalf("backoff %v, want %v", *delays, want)
 	}
@@ -227,8 +238,44 @@ func TestARespawnThatKeepsFailingEndsInCrashLoop(t *testing.T) {
 	if err := s.run(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if st := s.state(); st.CLI != cliCrashLoop || st.Starts != 1 {
+	st := s.state()
+	if st.CLI != cliCrashLoop || st.Starts != 1 {
 		t.Fatalf("state %+v", st)
+	}
+	if !strings.Contains(st.Detail, restartNotDone+"respawn: ") {
+		t.Fatalf("crash_loop detail does not name the failed respawn: %q", st.Detail)
+	}
+}
+
+// restartNotDone is the clause a crash_loop detail carries when its exits were
+// restarts ccd could not perform rather than the CLI exiting.
+const restartNotDone = "the last in-pod restart did not happen: "
+
+// A settings.json corrupted between starts stops every in-pod restart (the strip
+// refuses it). The crash_loop that follows must name that refusal, not read as
+// the CLI exiting five times — the CLI ran once.
+func TestACrashLoopFromAFailedRestartNamesWhyTheRestartDidNotHappen(t *testing.T) {
+	cfg := t.TempDir()
+	pane := &fakePane{}
+	pane.onStart = func(n int) {
+		if n == 1 {
+			if err := os.WriteFile(filepath.Join(cfg, "settings.json"), []byte("not json"), 0o600); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	s, _ := testSupervisor(t, pane, cfg, "/data/workspace", 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st := s.state()
+	if st.CLI != cliCrashLoop || st.Starts != 1 || len(pane.starts) != 1 {
+		t.Fatalf("state %+v, %d starts", st, len(pane.starts))
+	}
+	if !strings.Contains(st.Detail, restartNotDone+"before restarting the CLI: ") {
+		t.Fatalf("crash_loop detail does not name the refused restart: %q", st.Detail)
 	}
 }
 
@@ -458,5 +505,24 @@ func TestTheSupervisorDoesNotStartACLIOverACorruptSettingsFile(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(cfg, "settings.json")); string(b) != "not json" {
 		t.Fatalf("the corrupt file was changed: %q", b)
+	}
+}
+
+// A restart that failed once and then succeeded is history: a later crash loop
+// of the CLI itself must not still blame it.
+func TestASucceededRestartClearsTheEarlierRestartFailure(t *testing.T) {
+	pane := &fakePane{status: 4, failN: 1}
+	s, _ := testSupervisor(t, pane, t.TempDir(), "/data/workspace", 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st := s.state()
+	if st.CLI != cliCrashLoop || st.Starts < 2 {
+		t.Fatalf("state %+v (the failed respawn must have been followed by a successful one)", st)
+	}
+	if strings.Contains(st.Detail, restartNotDone) {
+		t.Fatalf("a crash loop after a successful restart still blames the old failure: %q", st.Detail)
 	}
 }

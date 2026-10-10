@@ -141,6 +141,11 @@ type supervisor struct {
 	paneID   paneRef     // the CLI's pane, once Start has returned it
 	lastExit string      // paneExit.describe() of the latest exit
 	exits    []time.Time // within crashWindow of the latest
+	// restartErr is why the latest in-pod restart did not happen, cleared by a
+	// successful start. A failed restart leaves the pane dead, so the next poll
+	// counts another exit; without this the crash_loop detail would blame the
+	// CLI for exits that were really a restart ccd could not perform.
+	restartErr string
 }
 
 func newSupervisor(pane cliPane, bin, configDir, workspace string) *supervisor {
@@ -238,6 +243,16 @@ func (s *supervisor) started(pane paneRef, mode string) {
 		s.st.Detail = "previous run " + s.lastExit
 	}
 	s.st.Starts++
+	s.restartErr = ""
+}
+
+// restartFailed records and logs why an in-pod restart did not happen.
+func (s *supervisor) restartFailed(why string) {
+	log.Printf("ccd: not restarting the CLI: %s", why)
+	s.mu.Lock()
+	s.restartErr = why
+	s.mu.Unlock()
+	s.setDetail(why)
 }
 
 func (s *supervisor) setDetail(d string) {
@@ -274,6 +289,9 @@ func (s *supervisor) recordExit(e paneExit) (delay time.Duration, crash bool) {
 		s.st.CLI = cliCrashLoop
 		s.st.Detail = fmt.Sprintf("the CLI exited %d times within %s (last: %s); not restarting it — "+
 			"/healthz now fails so Kubernetes restarts the pod", k, s.crashWindow, s.lastExit)
+		if s.restartErr != "" {
+			s.st.Detail += "; the last in-pod restart did not happen: " + s.restartErr
+		}
 		return 0, true
 	}
 	delay = s.backoffMin
@@ -367,7 +385,7 @@ func (s *supervisor) run(ctx context.Context) error {
 		// it as another exit: a restart that keeps failing ends in crash_loop like
 		// a CLI that does.
 		if err := stripSettingsFile(s.configDir, log.Writer()); err != nil {
-			s.setDetail("before restarting the CLI: " + err.Error())
+			s.restartFailed("before restarting the CLI: " + err.Error())
 			continue
 		}
 		argv, mode = s.argv()
@@ -377,7 +395,7 @@ func (s *supervisor) run(ctx context.Context) error {
 				log.Printf("ccd: %s", s.state().Detail)
 				return nil
 			}
-			s.setDetail("respawn: " + err.Error())
+			s.restartFailed("respawn: " + err.Error())
 			continue
 		}
 		s.started(pane, mode)
