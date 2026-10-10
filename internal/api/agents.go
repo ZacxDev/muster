@@ -1147,7 +1147,16 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 	// 🔴 THE SAME RULE createAndDispatchAgent APPLIES (resolveKindAccount): a
 	// claude-code agent has no per-agent model — its spec ignores one, so storing
 	// and showing it would be a setting that does nothing. Refused, not stored.
-	if cur, gerr := s.ext.Agents.Get(ctx, id); gerr == nil && agents.ResolveKind(cur.Kind) == agents.KindClaudeCode {
+	// ⚠ FAIL CLOSED: a read error other than "no such agent" refuses the write
+	// rather than storing a model on an agent whose kind could not be checked.
+	// A missing agent falls through to SetModel's own 404, as before.
+	cur, gerr := s.ext.Agents.Get(ctx, id)
+	if gerr != nil && !errors.Is(gerr, pgx.ErrNoRows) {
+		s.logger.Printf("agents: set model %d: read kind: %v", id, gerr)
+		http.Error(w, "could not update model", http.StatusInternalServerError)
+		return
+	}
+	if gerr == nil && agents.ResolveKind(cur.Kind) == agents.KindClaudeCode {
 		http.Error(w, ErrDispatchRefused.Error()+": "+claudeCodeNoModel, http.StatusConflict)
 		return
 	}
@@ -1237,6 +1246,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.RenderAgentDetail(w, ui.AgentDetailView{
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status, Repo: a.Repo, Model: a.Model,
+		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount,
 		Messages: lines, Sessions: sessions, ActiveSessionID: active.ID,
 		NoteID: noteID, TaskStatus: taskStatus,
 	}, s.shellFeatures()); err != nil {

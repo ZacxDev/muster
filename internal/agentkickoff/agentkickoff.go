@@ -177,8 +177,10 @@ type Deliverer struct {
 	log    *log.Logger
 	now    func() time.Time
 	turn   time.Duration
-	notify func(name string)
-	wg     sync.WaitGroup
+	// notReadyWait / notReadyPoll: see deliver's not_ready re-send.
+	notReadyWait, notReadyPoll time.Duration
+	notify                     func(name string)
+	wg                         sync.WaitGroup
 	// done closes when [Deliverer.Run] has returned, which is AFTER every
 	// delivery it started has recorded its outcome. See [Deliverer.Done].
 	done     chan struct{}
@@ -221,6 +223,7 @@ func New(cfg Config) (*Deliverer, error) {
 	if d.turn <= 0 {
 		d.turn = DefaultTurnTimeout
 	}
+	d.notReadyWait, d.notReadyPoll = defaultNotReadyWait, defaultNotReadyPoll
 	if d.notify == nil {
 		d.notify = func(string) {}
 	}
@@ -503,25 +506,26 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	_, _ = d.store.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: fresh.PendingNote,
 	})
+	// 🔴 A TYPED `not_ready` IS RE-SENT HERE, WITHIN THIS ONE DELIVERY, AND ONLY
+	// UNTIL notReadyWait. A claude-code pod is Ready (its `/` answers) as soon as
+	// ccd and tmux are up, which can be seconds before the CLI's SessionStart;
+	// until then ccd refuses a turn with `503 not_ready` and pastes NOTHING
+	// (cmd/ccd/server.go), so re-sending cannot pay a turn twice. Retrying inside
+	// the delivery keeps ONE stamp, ONE transcript row and ONE attempt; and the
+	// bound ends it — a TUI stuck on a login screen answers not_ready for ever,
+	// and that becomes an ordinary recorded kickoff failure, not a loop. (An
+	// earlier draft un-stamped and retried on the next tick; every retry moved
+	// updated_at, so the dwell bound could never fire.)
 	reply, err := d.gw.Send(ctx, target, sess.SessionKey, fresh.PendingNote, nil)
-	if err != nil && runtimeNotReady(err) {
-		// 🔴 THE ONE POST-STAMP FAILURE THAT PROVES NOTHING WAS SENT, SO THE STAMP IS
-		// TAKEN BACK. A claude-code pod is Ready (its `/` answers) as soon as ccd and
-		// tmux are up, which can be seconds before the CLI's SessionStart; until then
-		// ccd refuses a turn with a typed `503 not_ready` and pastes NOTHING
-		// (cmd/ccd/server.go). Recording that as a failed first turn would strand
-		// the agent's task on a race the next tick wins, so the row goes back to
-		// owed and the next tick retries; the dwell bound still ends it visibly if
-		// the CLI never comes up.
-		bctx, bcancel := bookkeeping()
-		uerr := d.store.SetKickedOff(bctx, fresh.ID, false)
-		bcancel()
-		if uerr == nil {
-			d.recordError(fresh, RuntimeNotReadyReason+": "+err.Error())
-			d.notify(fresh.Name)
-			return
+	for waited := time.Duration(0); err != nil && runtimeNotReady(err) && waited < d.notReadyWait; waited += d.notReadyPoll {
+		select {
+		case <-ctx.Done():
+		case <-time.After(d.notReadyPoll):
 		}
-		d.log.Printf("agentkickoff: agent %d (%s): un-stamp after not_ready: %v", fresh.ID, fresh.Name, uerr)
+		if ctx.Err() != nil {
+			break
+		}
+		reply, err = d.gw.Send(ctx, target, sess.SessionKey, fresh.PendingNote, nil)
 	}
 	if err != nil {
 		d.recordError(fresh, turnFailure(parent, ctx, turn, err))
@@ -554,10 +558,13 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		fresh.ID, fresh.Name, inst.InstanceID, len(reply))
 }
 
-// RuntimeNotReadyReason opens agents.kickoff_error when the agent's runtime
-// refused the first turn with a typed `not_ready` before accepting anything (ccd,
-// before the Claude Code CLI's SessionStart). The turn is retried on the next tick.
-const RuntimeNotReadyReason = "kickoff not sent: the agent's runtime answered not_ready (it accepted nothing), retrying"
+// notReadyWait / notReadyPoll bound the in-delivery re-send of a typed
+// `not_ready` (see deliver). Three minutes covers a CLI cold start several times
+// over; a runtime still not ready then is recorded as a failed kickoff.
+const (
+	defaultNotReadyWait = 3 * time.Minute
+	defaultNotReadyPoll = 5 * time.Second
+)
 
 // runtimeNotReady reports a typed `503 not_ready` — ccd's refusal before it
 // pastes anything. Only ccd's typed body sets Type, so an untyped 503 from
