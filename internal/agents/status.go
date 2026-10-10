@@ -149,7 +149,8 @@ func KickoffFailed(a Agent) bool { return a.KickedOff && a.KickoffError != "" }
 // [KickoffResendSafe] reads it. One constant, so the writer and the reader cannot
 // drift apart.
 //
-// 🔴 IT IS THE ONE POST-STAMP CAUSE THAT PROVES NOTHING WAS SENT. Go's HTTP client
+// 🔴 IT IS ONE OF THE TWO POST-STAMP CAUSES THAT PROVE NOTHING WAS SENT (the
+// other is [KickoffNotAcceptedReason]). Go's HTTP client
 // reports a dial error only from opening a NEW connection, before any byte of the
 // request is written on it, and it does not retry a POST whose bytes were written.
 // So no turn ran and none is running. (agentgateway.Gateway.Send can reach a dial
@@ -169,7 +170,7 @@ const KickoffEmptyReplyReason = "kickoff turn returned an EMPTY reply, so it is 
 
 // KickoffResendSafe reports whether a failed kickoff's recorded cause PROVES no
 // turn is running for it, so re-sending the task cannot pay for it twice. Only
-// [KickoffNeverConnectedReason] proves that.
+// [KickoffNeverConnectedReason] and [KickoffNotAcceptedReason] prove that.
 //
 // 🔴 EVERY OTHER CAUSE ANSWERS false, AN EMPTY REPLY INCLUDED. A shutdown or a
 // timeout abandons a request the runtime already received and may still be running.

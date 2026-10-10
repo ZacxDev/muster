@@ -479,8 +479,8 @@ func kickoffOwedBadge() g.Node {
 }
 
 // KickoffRemedyResendSafe is the remedy under a failed kickoff whose record proves
-// nothing reached the agent (agents.KickoffResendSafe).
-const KickoffRemedyResendSafe = "Not retried automatically. Nothing reached the agent, so " +
+// the task never reached the agent (agents.KickoffResendSafe).
+const KickoffRemedyResendSafe = "Not retried automatically. The task never reached the agent, so " +
 	"re-sending cannot pay for the task twice: open this agent's chat and send the task again."
 
 // KickoffFailedRemedy is the remedy line under a failed kickoff. Nothing re-sends
@@ -492,7 +492,8 @@ const KickoffRemedyResendSafe = "Not retried automatically. Nothing reached the 
 // shutdown, a timeout or a transport error after the request was written can leave
 // the runtime still running the turn, and an empty reply can hide a turn the runtime
 // retried and finished; re-sending then pays for the task twice. Only a connection
-// that was never opened proves otherwise (resendSafe).
+// that was never opened, or a runtime that refused the turn as not_ready for the
+// whole delivery, proves otherwise (resendSafe).
 //
 // ⚠ ITS ONLY DYNAMIC PARTS ARE THE AGENT'S NAME AND NAMESPACE, which the card and
 // GET /api/agents already show. No part of the note or of kickoff_error is in it;

@@ -41,7 +41,7 @@ const (
 		"still be working on this turn. Before re-sending, check its logs (kubectl -n ns-q7-agent-9 " +
 		"logs deploy/agent-9 -c agent) or its chat transcript, and re-send through its chat only " +
 		"if it is not working on the task."
-	wantRemedyResendSafe = "Not retried automatically. Nothing reached the agent, so re-sending " +
+	wantRemedyResendSafe = "Not retried automatically. The task never reached the agent, so re-sending " +
 		"cannot pay for the task twice: open this agent's chat and send the task again."
 )
 

@@ -189,8 +189,10 @@ var errPastedNotSubmitted = errors.New("the prompt was pasted but could not be s
 //
 // 🔴 errPaneNotLive BECOMES A `503 not_ready`, AND muster RE-SENDS ON not_ready
 // because that answer promises nothing was pasted (internal/agentkickoff). Here
-// something WAS: a re-send would paste a second copy beside the first and submit
-// both as one prompt. So the pane-liveness failure of the Enter is carried as
+// something WAS. If the pane really died the text died with it; but `live` also
+// reports errPaneNotLive for a transient display-message failure on a pane that
+// is still alive, and then a re-send would paste a second copy beside the first
+// and submit both as one prompt. So the pane-liveness failure of the Enter is carried as
 // text, not as a wrapped sentinel, and the server answers it as a terminal
 // failure (502), which no caller re-sends.
 func afterPaste(err error) error {
