@@ -674,7 +674,8 @@ func (d *Driver) apply(ctx context.Context, spec provision.Spec, ns string) erro
 	}
 
 	// 🔴 FIRST, BEFORE ANYTHING THAT CAN RUN OR HOLD A CREDENTIAL. See
-	// applyNetworkPolicy: a refusal here must leave no Deployment and no Secret.
+	// applyNetworkPolicy: after a refusal here this call must WRITE no Deployment
+	// and no Secret. (What an existing instance already has, it keeps.)
 	if err := d.applyNetworkPolicy(ctx, spec, ns); err != nil {
 		return err
 	}

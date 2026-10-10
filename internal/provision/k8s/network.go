@@ -345,7 +345,7 @@ func networkPolicyForbidden(verb, name, ns string, err error) error {
 		"this refusal does not establish that it has a current policy — one created before network isolation existed "+
 		"may have none. Check `kubectl -n %s get networkpolicy %s`: if that is not found and the agent is running, it is "+
 		"running unconfined; stop it. If the refusal is about RBAC (the apiserver's text above names the ServiceAccount "+
-		"and the verb), %s, then start the agent again",
+		"and the verb), %s, then start the agent again (stop it first if it is running)",
 		provision.ErrUnsupported, verb, name, ns, err, ns, name, networkPolicyRBACHint)
 }
 
@@ -427,7 +427,7 @@ func (d *Driver) applyNetworkPolicy(ctx context.Context, spec provision.Spec, ns
 		return nil
 	case apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause):
 		// 🔴 A 403, AND NOT A REFUSAL TO REPORT AS PERMANENT. The apiserver answers
-		// Forbidden for any write into a namespace that is still being deleted —
+		// Forbidden for a CREATE into a namespace that is still being deleted —
 		// here, an instance re-created under a name whose previous namespace has
 		// not finished terminating. It clears by itself, so it is ErrBlind like the
 		// same failure on every other object apply writes; naming an RBAC rule for

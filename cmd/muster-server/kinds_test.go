@@ -242,8 +242,9 @@ func TestTheValidKubernetesClaudeCodeConfigBoots(t *testing.T) {
 // asserted by its own words.
 //
 // The first group is fail-closed (claude-code on kubernetes with no usable
-// selector would refuse every dispatch in a goroutine); the second is the
-// armed-switch shape (a selector nothing would render).
+// selector has a driver that cannot be built, or one that refuses every
+// claude-code spec); the second is the armed-switch shape (a selector nothing
+// would render).
 func TestEveryNetworkPolicySelectorRefusalIsReachedOnItsOwn(t *testing.T) {
 	cases := []struct {
 		name string

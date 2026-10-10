@@ -623,9 +623,11 @@ package main
 //	  refused ReapplyProfiles returns the failed Update's error to its caller
 //	  without writing agents.error_message — and both of its callers (the model
 //	  and privilege handlers in internal/api) only LOG it. ReapplyProfiles is
-//	  also the one path that reaches a RUNNING agent, so in the very case that
-//	  half of the message is written for, it lands in this server's log and
-//	  nowhere an operator is looking.
+//	  the path taken for an agent whose ROW reads running or provisioning (the
+//	  UI offers such a row no Start), so in the usual case that half of the
+//	  message is written for, it lands in this server's log. A Start that
+//	  reaches a running instance — the start route has no status guard — goes
+//	  through the same Update and DOES record its refusal on the row.
 //	  🔴 GATEWAY-KIND AGENTS ARE UNAFFECTED ON CREATE, UPDATE AND SCALE — their
 //	  specs declare no isolation, so the driver renders no policy and makes no
 //	  networking call for them — AND NOT ON DESTROY. On this deployment the

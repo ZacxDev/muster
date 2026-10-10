@@ -620,17 +620,15 @@ func seedOwnedPolicy(t *testing.T, cs *fake.Clientset, ns, instance string) {
 // TestTheRefusalNamesTheInstancesOwnPolicyInASharedNamespace: in the shared
 // layout the namespace holds every agent's policy, so "list the policies in the
 // namespace" answers "there are some" for an agent that has none. The refusal's
-// command names the OBJECT, and this composes it where that matters — with
-// another agent's policy sitting in the same namespace.
+// command therefore names the OBJECT, and this pins that string in the shared
+// layout — the table test above composes it in the per-instance layout only.
+//
+// ⚠ IT PINS A STRING. The message is composed from the instance's name and
+// namespace and never reads the cluster, so no fixture here could make it list
+// a neighbour; what would fail this is the command losing its object name.
 func TestTheRefusalNamesTheInstancesOwnPolicyInASharedNamespace(t *testing.T) {
 	ctx := context.Background()
 	d, cs := internalDriver(t)
-	if err := d.Create(ctx, isolatedSpec("other-agent")); err != nil {
-		t.Fatal(err)
-	}
-	if n := policyCount(t, cs); n != 1 {
-		t.Fatalf("premise: the neighbour's policy must exist, %d found", n)
-	}
 	cs.PrependReactor("create", "networkpolicies", forbidden("create"))
 	err := d.Create(ctx, isolatedSpec("lone-agent"))
 	if !errors.Is(err, provision.ErrUnsupported) {
@@ -639,13 +637,10 @@ func TestTheRefusalNamesTheInstancesOwnPolicyInASharedNamespace(t *testing.T) {
 	if want := "`kubectl -n " + internalNS + " get networkpolicy lone-agent-network`"; !strings.Contains(err.Error(), want) {
 		t.Errorf("the refusal does not name the instance's own policy (want %s):\n  %v", want, err)
 	}
-	if strings.Contains(err.Error(), "other-agent") {
-		t.Errorf("the refusal names another agent's object:\n  %v", err)
-	}
 }
 
 // TestAForbiddenFromATerminatingNamespaceIsTransientNotAnRBACRefusal: the
-// apiserver answers 403 for any write into a namespace that is still being
+// apiserver answers 403 for a create into a namespace that is still being
 // deleted. That is not muster lacking a rule and it clears by itself, so it is
 // ErrBlind — what the same failure on any other object apply writes would be —
 // and it carries no RBAC remedy. The instance is still not started.
