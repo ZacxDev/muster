@@ -81,9 +81,9 @@ func dialError() error {
 }
 
 // TestAFailedTurnIsClassifiedByWhetherAnythingWasSent pins turnFailure's four
-// causes and the one of them KickoffResendSafe accepts (the other it accepts,
-// KickoffNotAcceptedReason, is written by deliver, not turnFailure). Each error is distinct, and the
-// non-dial ones include a *net.OpError whose Op is NOT "dial" (a read on an open
+// causes and the one of them KickoffResendSafe accepts (the other it
+// accepts, KickoffNotAcceptedReason, is written by deliver, not turnFailure).
+// Each error is distinct, and the non-dial ones include a *net.OpError whose Op is NOT "dial" (a read on an open
 // connection), which is the case a looser check would misclassify.
 func TestAFailedTurnIsClassifiedByWhetherAnythingWasSent(t *testing.T) {
 	readErr := fmt.Errorf("request: %w", &url.Error{Op: "Post", URL: "http://192.0.2.44:18789/v1/responses",

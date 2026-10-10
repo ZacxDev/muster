@@ -35,19 +35,27 @@ func TestAFailureAfterThePasteIsNeverNotReady(t *testing.T) {
 // fakeTmux is a tmux stand-in: display-message answers "live" on its first call
 // and "dead" after (or dead from the start when deadFirst), the buffer commands
 // succeed, and every invocation is logged.
-const fakeTmux = `#!/usr/bin/env bash
+const fakeTmux = `#!/bin/sh
 dir="$(dirname "$0")"
 echo "$*" >> "$dir/calls"
 case "$*" in
   *display-message*)
     n=$(cat "$dir/n" 2>/dev/null || echo 0); echo $((n+1)) > "$dir/n"
-    if [ "$n" = 0 ] && [ ! -e "$dir/deadfirst" ]; then echo "4242 1791600000 %1 0  "; else echo "4242 1791600000 %1 1 3 "; fi ;;
+    if [ "$n" = 0 ] && [ ! -e "$dir/deadfirst" ]; then echo "4242 1791600000 %1 0  "
+    elif [ -e "$dir/failsecond" ]; then echo "server exited unexpectedly" >&2; exit 1
+    else echo "4242 1791600000 %1 1 3 "; fi ;;
   *load-buffer*) cat >/dev/null ;;
 esac
 exit 0
 `
 
 func fakeTerm(t *testing.T, deadFirst bool) (tmuxTerminal, string) {
+	return fakeTermMode(t, deadFirst, false)
+}
+
+// fakeTermMode: failSecond makes the second display-message EXIT NON-ZERO — a
+// transient tmux failure on a pane that may well still be alive.
+func fakeTermMode(t *testing.T, deadFirst, failSecond bool) (tmuxTerminal, string) {
 	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "tmux")
@@ -56,6 +64,11 @@ func fakeTerm(t *testing.T, deadFirst bool) (tmuxTerminal, string) {
 	}
 	if deadFirst {
 		if err := os.WriteFile(filepath.Join(dir, "deadfirst"), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if failSecond {
+		if err := os.WriteFile(filepath.Join(dir, "failsecond"), nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -88,5 +101,22 @@ func TestPasteReportsADeathAfterThePasteAsPastedNotSubmitted(t *testing.T) {
 	calls, _ = os.ReadFile(filepath.Join(dir, "calls"))
 	if !errors.Is(err, errPaneNotLive) || strings.Contains(string(calls), "paste-buffer") {
 		t.Fatalf("control: dead before the paste returned %v (pasted: %v)", err, strings.Contains(string(calls), "paste-buffer"))
+	}
+}
+
+// TestATransientTmuxFailureAfterThePasteIsNotNotReady is the case afterPaste
+// exists for: the post-paste liveness read FAILS (tmux exits non-zero) rather
+// than reporting a dead pane. state wraps that as errPaneNotLive, and the pane
+// — with the pasted text in its input box — may still be alive, so a not_ready
+// here would make muster paste the prompt a second time.
+func TestATransientTmuxFailureAfterThePasteIsNotNotReady(t *testing.T) {
+	term, dir := fakeTermMode(t, false, true)
+	err := term.Paste(context.Background(), paneRef{Server: "4242 1791600000", Pane: "%1"}, "hello")
+	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+	if !strings.Contains(string(calls), "paste-buffer") {
+		t.Fatalf("instrument check: nothing was pasted:\n%s", calls)
+	}
+	if err == nil || errors.Is(err, errPaneNotLive) || !errors.Is(err, errPastedNotSubmitted) {
+		t.Fatalf("a transient tmux failure after the paste returned %v; want errPastedNotSubmitted, NOT errPaneNotLive", err)
 	}
 }
