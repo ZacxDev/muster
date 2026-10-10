@@ -1,0 +1,193 @@
+// Command ccd is the in-pod supervisor that makes an interactive Claude Code
+// session a muster agent runtime.
+//
+// One `claude` TUI runs in a tmux session; it is the conversation, and the one an
+// operator sees when they attach. ccd speaks muster's existing agent wire on top
+// of it:
+//
+//   - POST /v1/responses — muster's chat/kickoff transport. The prompt goes IN as
+//     a bracketed paste into the pane (tmux.go); the reply comes OUT of the
+//     session transcript JSONL (transcript.go), never off the screen; the turn
+//     ends on the CLI's Stop / StopFailure hook (server.go). A failed turn is a
+//     non-200 with a typed JSON error (failure.go), never a 200 with no text.
+//   - GET /healthz — 200 only when the TUI is at its prompt, tmux is up, and the
+//     model credential has been proven by an authenticated round trip (probe.go).
+//   - /hook/{event} on a LOOPBACK-ONLY listener — where `ccd hook <Event>`, the
+//     command the CLI's settings run for each hook, reports.
+//
+// Subcommands:
+//
+//	ccd [serve]          run the server (environment below)
+//	ccd hook <Event>     forward a hook payload from stdin to the server
+//	ccd seed [--check]   write (or verify) the CLI's onboarding/trust/hook config
+//
+// Environment (serve):
+//
+//	MUSTER_GATEWAY_BEARER  the bearer /v1/responses accepts (muster derives it)
+//	HOOKS_TOKEN            alternatively, the token it is derived from (both: must agree)
+//	CLAUDE_CONFIG_DIR      the CLI's config dir; transcripts are read only under <it>/projects
+//	CCD_LISTEN             gateway address        (default :18789)
+//	CCD_HOOK_LISTEN        hook address, loopback (default 127.0.0.1:18790)
+//	CCD_TMUX_SOCKET        tmux -L socket name    (default: tmux's default server)
+//	CCD_TMUX_TARGET        tmux session/pane      (default cc)
+//	CCD_WORKSPACE          the CLI's working directory, used by the probe (default: cwd)
+//	CCD_CLAUDE_BIN         the CLI binary         (default claude)
+//	CCD_PROBE              "off" disables the auth probe (tests only; /healthz then never passes)
+//	CCD_PROBE_MODEL        model for the probe    (default haiku)
+//	CCD_PROBE_OK_INTERVAL / CCD_PROBE_RETRY_INTERVAL   (default 12h / 5m)
+//	CCD_SUBMIT_TIMEOUT / CCD_TURN_TIMEOUT              (default 20s / 30m)
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+)
+
+const (
+	defaultListen     = ":18789"
+	defaultHookListen = "127.0.0.1:18790"
+	defaultHookURL    = "http://127.0.0.1:18790"
+)
+
+func main() {
+	os.Exit(run(os.Args[1:]))
+}
+
+func run(args []string) int {
+	cmd := "serve"
+	if len(args) > 0 {
+		cmd, args = args[0], args[1:]
+	}
+	switch cmd {
+	case "serve":
+		if err := serve(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	case "hook":
+		return runHook(args, os.Stdin, os.Stderr)
+	case "seed":
+		return runSeed(args, os.Stdout, os.Stderr)
+	default:
+		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed)\n", cmd)
+		return 2
+	}
+}
+
+func envOr(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
+
+func envDuration(name string, def time.Duration) (time.Duration, error) {
+	v := os.Getenv(name)
+	if v == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("ccd: %s=%q is not a positive duration", name, v)
+	}
+	return d, nil
+}
+
+// loopbackOnly refuses a hook listen address that is reachable off-host.
+func loopbackOnly(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("ccd: CCD_HOOK_LISTEN=%q: %v", addr, err)
+	}
+	ip := net.ParseIP(host)
+	if host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return fmt.Errorf("ccd: CCD_HOOK_LISTEN=%q is not a loopback address; the hook endpoint is "+
+			"unauthenticated and must not be reachable from the network", addr)
+	}
+	return nil
+}
+
+func serve() error {
+	bearer, err := resolveBearer(os.Getenv("HOOKS_TOKEN"), os.Getenv("MUSTER_GATEWAY_BEARER"))
+	if err != nil {
+		return err
+	}
+	configDir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if configDir == "" {
+		home, _ := os.UserHomeDir()
+		configDir = filepath.Join(home, ".claude")
+	}
+	hookAddr := envOr("CCD_HOOK_LISTEN", defaultHookListen)
+	if err := loopbackOnly(hookAddr); err != nil {
+		return err
+	}
+	var durs [4]time.Duration
+	for i, d := range []struct {
+		name string
+		def  time.Duration
+	}{{"CCD_SUBMIT_TIMEOUT", 20 * time.Second}, {"CCD_TURN_TIMEOUT", 30 * time.Minute},
+		{"CCD_PROBE_OK_INTERVAL", 12 * time.Hour}, {"CCD_PROBE_RETRY_INTERVAL", 5 * time.Minute}} {
+		if durs[i], err = envDuration(d.name, d.def); err != nil {
+			return err
+		}
+	}
+	workspace := os.Getenv("CCD_WORKSPACE")
+	if workspace == "" {
+		workspace, _ = os.Getwd()
+	}
+
+	term := tmuxTerminal{
+		bin: "tmux", socket: os.Getenv("CCD_TMUX_SOCKET"),
+		target: envOr("CCD_TMUX_TARGET", "cc"), enterDelay: 150 * time.Millisecond,
+	}
+	auth := newAuthTracker()
+	srv := newServer(serverConfig{
+		Bearer: bearer, ConfigDir: configDir,
+		SubmitTimeout: durs[0], TurnTimeout: durs[1],
+	}, term, auth)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	if os.Getenv("CCD_PROBE") != "off" {
+		p := cliProber{bin: envOr("CCD_CLAUDE_BIN", "claude"), model: envOr("CCD_PROBE_MODEL", "haiku"),
+			dir: workspace, timeout: 90 * time.Second}
+		go runProbes(ctx, auth, p.probe, durs[2], durs[3])
+	}
+
+	gw := &http.Server{Addr: envOr("CCD_LISTEN", defaultListen), Handler: srv.gatewayHandler(),
+		ReadHeaderTimeout: 10 * time.Second}
+	hk := &http.Server{Addr: hookAddr, Handler: srv.hookHandler(), ReadHeaderTimeout: 5 * time.Second}
+
+	errc := make(chan error, 2)
+	for _, s := range []*http.Server{gw, hk} {
+		ln, err := net.Listen("tcp", s.Addr)
+		if err != nil {
+			return fmt.Errorf("ccd: listen %s: %w", s.Addr, err)
+		}
+		log.Printf("ccd: listening on %s", ln.Addr())
+		go func(s *http.Server, ln net.Listener) { errc <- s.Serve(ln) }(s, ln)
+	}
+	select {
+	case <-ctx.Done():
+	case err := <-errc:
+		if !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+	}
+	shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = gw.Shutdown(shut)
+	_ = hk.Shutdown(shut)
+	return nil
+}

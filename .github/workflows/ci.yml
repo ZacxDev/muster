@@ -212,7 +212,7 @@ jobs:
       # verb ledger against the binary it just installed, so this step is also
       # the artefact-level verb check — see tests/verb-ledger.sh.
       - name: build every package output
-        run: nix build --no-link --print-out-paths -L .#muster-cli .#muster-migrate
+        run: nix build --no-link --print-out-paths -L .#muster-cli .#muster-migrate .#ccd
 
       - name: every flake output evaluates
         run: nix flake check -L
@@ -258,6 +258,64 @@ jobs:
 
       - name: css-check
         run: make css-check TAILWIND=./node_modules/.bin/tailwindcss
+
+  # Local: go test -tags tmuxit -race -run '^TestTmux' ./cmd/ccd/
+  #
+  # 🔴 cmd/ccd's REAL-TMUX SUITE: ccd pastes into a real tmux pane running a fake
+  # CLI, the image's real hook template calls the real `ccd hook`, and the turn is
+  # sent through muster's own client. It is behind the `tmuxit` build tag so the
+  # `test` job and the nix sandbox (neither has tmux) do not compile it — which is
+  # ABSENCE, not a skip. This job is the only place it runs, so it must not be
+  # able to pass without running it:
+  #   - tmux is installed explicitly and its presence asserted before any test;
+  #   - the suite itself FAILS (never skips) when tmux is missing;
+  #   - the verdict step counts the tests that produced a verdict, so a `-run`
+  #     pattern that matched nothing is a failure rather than a green "ok".
+  ccd-tmux:
+    name: ccd (real tmux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: install tmux, and fail if it is not there
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tmux
+          command -v tmux
+          tmux -V
+
+      - name: go test (tmuxit)
+        run: go test -tags tmuxit -race -run '^TestTmux' -v ./cmd/ccd/
+
+      # Same flags as the step above, so Go's test cache answers. `pipefail` is
+      # deliberately NOT set: the status is verdict.py's (see the `test` job).
+      - name: assert the tmux tests ran and none skipped
+        run: go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 tests/verdict.py
+
+  # Local: docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent . \
+  #          && docker run --rm claude-code-agent cc-smoke
+  #
+  # The claude-code-agent image builds, runs as uid 1000 with the pinned CLI, and
+  # its TUI reaches the prompt with the seeded config — proven by a SessionStart
+  # hook arriving at ccd through `ccd hook`. It is given NO credential: the smoke
+  # supplies a deliberately invalid token and prints, without asserting, the auth
+  # verdict (which depends on reaching the provider's API).
+  ccd-image:
+    name: claude-code-agent image smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: docker build
+        run: docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent:ci .
+
+      - name: cc-smoke
+        run: docker run --rm claude-code-agent:ci cc-smoke
 
   # ---------------------------------------------------------------------------
   # 🔴 THE TWO JOBS BELOW ARE HONEST STUBS. THEY HAVE NOTHING TO RUN, AND THEY

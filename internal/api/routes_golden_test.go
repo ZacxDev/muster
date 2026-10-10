@@ -662,6 +662,41 @@ func moduleRoot(t *testing.T) string {
 // keys on the method NAME, so an unrelated method called Handle on some other
 // type would be a false positive; that is the safe direction (a false positive
 // is a loud failure someone reads, a false negative is a silent hole).
+// otherServerRoutes ledgers the binaries in this module that serve their OWN HTTP
+// surface — not muster-server's, so not RegisterRoutes' — keyed by directory, with
+// the exact route set each one registers.
+//
+// 🔴 IT IS AN EXEMPTION WITH A LEDGER, NOT A HOLE. The chokepoint scan skips these
+// directories, and TestOtherServersRouteLedger re-scans each one and asserts SET
+// EQUALITY against the list here, so a route added to (or dropped from) one of
+// these servers still fails a test — this one, instead of the chokepoint's.
+//
+//   - cmd/ccd: the in-pod supervisor of the claude-code-agent image. Its
+//     /v1/responses is muster's agent wire served FROM the pod, consumed by
+//     internal/agentgateway; /hook/{event} is served only on a loopback listener.
+var otherServerRoutes = map[string][]string{
+	"cmd/ccd": {"GET /healthz", "POST /hook/{event}", "POST /v1/responses"},
+}
+
+// TestOtherServersRouteLedger is the other half of the exemption above.
+func TestOtherServersRouteLedger(t *testing.T) {
+	root := moduleRoot(t)
+	for dir, want := range otherServerRoutes {
+		got := scanLiteralRoutePatterns(t, filepath.Join(root, filepath.FromSlash(dir)))
+		var have []string
+		for pat := range got {
+			have = append(have, pat)
+		}
+		sort.Strings(have)
+		w := append([]string(nil), want...)
+		sort.Strings(w)
+		if strings.Join(have, "\n") != strings.Join(w, "\n") {
+			t.Errorf("%s registers %q, but otherServerRoutes ledgers %q — update the ledger (and review "+
+				"why the route set changed)", dir, have, w)
+		}
+	}
+}
+
 func scanLiteralRoutePatterns(t *testing.T, root string) map[string]string {
 	t.Helper()
 
@@ -677,6 +712,13 @@ func scanLiteralRoutePatterns(t *testing.T, root string) map[string]string {
 			switch info.Name() {
 			case ".git", "testdata", "vendor", "node_modules":
 				return filepath.SkipDir
+			}
+			if path != root {
+				if rel, rerr := filepath.Rel(root, path); rerr == nil {
+					if _, other := otherServerRoutes[filepath.ToSlash(rel)]; other {
+						return filepath.SkipDir // held by TestOtherServersRouteLedger instead
+					}
+				}
 			}
 			return nil
 		}

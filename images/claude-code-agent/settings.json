@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {"hooks": [{"type": "command", "command": "ccd hook SessionStart", "timeout": 10}]}
+    ],
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "ccd hook UserPromptSubmit", "timeout": 10}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "ccd hook Stop", "timeout": 10}]}
+    ],
+    "StopFailure": [
+      {"hooks": [{"type": "command", "command": "ccd hook StopFailure", "timeout": 10}]}
+    ]
+  }
+}
