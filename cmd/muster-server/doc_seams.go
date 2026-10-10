@@ -619,15 +619,14 @@ package main
 //	  🔴 TWO THINGS THAT REFUSAL DOES NOT DO. It does not STOP an agent that was
 //	  already running: that agent is left exactly as it was, which for one that
 //	  predates this build can mean running with no policy (the message says the
-//	  agent may be in that state, and gives the command that checks). And a
-//	  refused ReapplyProfiles returns the failed Update's error to its caller
-//	  without writing agents.error_message — and both of its callers (the model
-//	  and privilege handlers in internal/api) only LOG it. ReapplyProfiles is
-//	  the path taken for an agent whose ROW reads running or provisioning (the
-//	  UI offers such a row no Start), so in the usual case that half of the
-//	  message is written for, it lands in this server's log. A Start that
-//	  reaches a running instance — the start route has no status guard — goes
-//	  through the same Update and DOES record its refusal on the row.
+//	  agent may be in that state, and gives the command that checks). And WHERE
+//	  that message lands depends on the path: a refused Dispatch or Start
+//	  records it on the row (agentprovision.Adapter.fail, best-effort), while
+//	  a refused ReapplyProfiles returns the failed Update's error to its caller
+//	  without writing agents.error_message, and both of its callers in
+//	  internal/api only LOG it. Those callers run it only for a row that reads
+//	  running or provisioning — so a refusal on that path concerns an agent that
+//	  may be up, and is in this server's log and not on the agent's row.
 //	  🔴 GATEWAY-KIND AGENTS ARE UNAFFECTED ON CREATE, UPDATE AND SCALE — their
 //	  specs declare no isolation, so the driver renders no policy and makes no
 //	  networking call for them — AND NOT ON DESTROY. On this deployment the

@@ -241,9 +241,8 @@ func TestTheValidKubernetesClaudeCodeConfigBoots(t *testing.T) {
 // the NetworkPolicy selector, reached from a VALID config by one mutation and
 // asserted by its own words.
 //
-// The first group is fail-closed (claude-code on kubernetes with no usable
-// selector has a driver that cannot be built, or one that refuses every
-// claude-code spec); the second is the armed-switch shape (a selector nothing
+// The first group is the selector missing or malformed where a policy WOULD be
+// rendered from it; the second is the armed-switch shape (a selector nothing
 // would render).
 func TestEveryNetworkPolicySelectorRefusalIsReachedOnItsOwn(t *testing.T) {
 	cases := []struct {

@@ -592,6 +592,7 @@ func TestAForbiddenNetworkPolicyStopsTheInstanceAndNamesTheVerb(t *testing.T) {
 					"One that was ALREADY RUNNING was left exactly as it was, and this refusal does not establish that it has a current policy",
 					"`kubectl -n " + ns + " get networkpolicy quiet-heron-network`",
 					"If the refusal is about RBAC",
+					"then start the agent again (if the UI shows it running, stop it first)",
 					`grant muster's ClusterRole apiGroups ["networking.k8s.io"] resources ["networkpolicies"] verbs ["get", "create", "update", "delete"]`,
 				} {
 					if !strings.Contains(msg, want) {

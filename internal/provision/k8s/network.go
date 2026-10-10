@@ -345,7 +345,7 @@ func networkPolicyForbidden(verb, name, ns string, err error) error {
 		"this refusal does not establish that it has a current policy — one created before network isolation existed "+
 		"may have none. Check `kubectl -n %s get networkpolicy %s`: if that is not found and the agent is running, it is "+
 		"running unconfined; stop it. If the refusal is about RBAC (the apiserver's text above names the ServiceAccount "+
-		"and the verb), %s, then start the agent again (stop it first if it is running)",
+		"and the verb), %s, then start the agent again (if the UI shows it running, stop it first)",
 		provision.ErrUnsupported, verb, name, ns, err, ns, name, networkPolicyRBACHint)
 }
 
