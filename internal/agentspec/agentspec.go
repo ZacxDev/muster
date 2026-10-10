@@ -379,6 +379,12 @@ type Config struct {
 	// [RuntimeConfig.DeriveBearer] rather than a fourth [Options] field, which
 	// would have let a caller ship a bundle with no derivation.
 	RuntimeConfig RuntimeConfig
+
+	// ClaudeCode enables the claude-code agent kind and carries its profile's
+	// deployment half (image, account tokens). Nil means the kind is not enabled.
+	// It is read ONLY by a claude-code row's build: the gateway kind's spec is
+	// identical whether or not this is set. See claudecode.go.
+	ClaudeCode *ClaudeCodeConfig
 }
 
 // Options is the per-call part that is neither deployment config nor a column on
@@ -452,6 +458,23 @@ type Options struct {
 // does not depend on the driver's own capabilities. A driver may still refuse it
 // through CheckSpec — that is a capability question, not a construction one.
 func Build(a agents.Agent, cfg Config, opts Options) (provision.Spec, error) {
+	// 🔴 THE KIND IS DECIDED FIRST, AND THE GATEWAY KIND'S PATH BELOW IS THE
+	// PRE-KINDS Build UNCHANGED. A row with no kind, or kind gateway, falls through
+	// to exactly the code every agent was built by before kinds existed — its
+	// golden (testdata/spec.golden.json) is byte-identical. A claude-code row takes
+	// its own profile (claudecode.go) and NOTHING from the gateway kind's image,
+	// runtime-config bundle, model or provider key.
+	switch kind := agents.ResolveKind(a.Kind); kind {
+	case agents.KindGateway:
+		if a.CCAccount != "" {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q is kind %s and names a Claude account; "+
+				"only a %s agent may", a.Name, kind, agents.KindClaudeCode)
+		}
+	case agents.KindClaudeCode:
+		return buildClaudeCode(a, cfg, opts)
+	default:
+		return provision.Spec{}, fmt.Errorf("agentspec: agent %q has unknown kind %q", a.Name, a.Kind)
+	}
 	if strings.TrimSpace(cfg.ImageRepo) == "" {
 		return provision.Spec{}, fmt.Errorf("agentspec: Config.ImageRepo is required (there is no defensible default for an installation-specific registry)")
 	}
@@ -656,6 +679,9 @@ func buildEnv(cfg Config, opts Options) ([]provision.EnvVar, error) {
 		EnvRuntimeConfig:     true,
 		EnvOpenRouterKey:     true,
 		EnvCairnConfig:       true,
+		// Reserved so no caller can hand the Claude subscription token to a
+		// gateway-kind agent through ExtraEnv; see EnvClaudeOAuthToken.
+		EnvClaudeOAuthToken: true,
 	}
 	for _, e := range opts.ExtraEnv {
 		if reserved[e.Name] {

@@ -66,7 +66,12 @@ type AgentDetailView struct {
 	Status      string
 	Repo        string
 	Model       string // OpenRouter slug; "" = cluster default
-	Messages    []ChatLine
+	// Kind is the agent's kind. A claude-code agent shows its kind and account
+	// instead of the model picker: it has no per-agent model (the server refuses
+	// one), so a picker there would be a control that can only fail.
+	Kind      string
+	CCAccount string
+	Messages  []ChatLine
 	// Sessions are the agent's chat sessions for the switcher (most-recently-active
 	// first); ActiveSessionID is the one whose transcript Messages holds.
 	Sessions        []SessionView
@@ -252,7 +257,9 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				newChatButton(v.ID),
 				chatHistoryButton(sessionDrawerID),
 			),
-			agentModelControl(v),
+			g.If(agents.ResolveKind(v.Kind) != agents.KindClaudeCode, agentModelControl(v)),
+			g.If(agents.ResolveKind(v.Kind) == agents.KindClaudeCode,
+				Div(Class("flex items-center gap-2"), chip("kind", agents.KindLabel(v.Kind)+" · "+v.CCAccount))),
 		),
 	)
 }

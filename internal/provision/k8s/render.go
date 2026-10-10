@@ -609,10 +609,16 @@ func (d *Driver) renderDeployment(spec provision.Spec, ns string) (*appsv1.Deplo
 			},
 		})
 	}
+	container.SecurityContext = containerSecurity(spec.Security)
 	podSpec := corev1.PodSpec{
 		ServiceAccountName: spec.Ref.Name,
 		Containers:         []corev1.Container{container},
 		Volumes:            volumes,
+		SecurityContext:    podSecurity(spec.Security),
+	}
+	if spec.Security.NoServiceAccountToken {
+		no := false
+		podSpec.AutomountServiceAccountToken = &no
 	}
 	if len(spec.Init) > 0 {
 		podSpec.InitContainers = []corev1.Container{d.renderInitContainer(spec, container)}
@@ -682,6 +688,51 @@ func (d *Driver) renderAnnotations(spec provision.Spec) map[string]string {
 		ann[AnnotationPort] = strconv.Itoa(port)
 	}
 	return ann
+}
+
+// podSecurity and containerSecurity translate [provision.Security].
+//
+// 🔴 BOTH RETURN nil FOR A ZERO Security, AND THAT IS WHAT KEEPS EVERY
+// PRE-EXISTING SPEC'S POD TEMPLATE BYTE-IDENTICAL. An empty-but-non-nil
+// SecurityContext is a different object to the apiserver and to a golden file;
+// a spec that declares nothing must render exactly what it rendered before the
+// type existed.
+func podSecurity(sec provision.Security) *corev1.PodSecurityContext {
+	if sec.RunAsUser == 0 && sec.RunAsGroup == 0 && sec.FSGroup == 0 && !sec.RunAsNonRoot && !sec.Restricted {
+		return nil
+	}
+	psc := &corev1.PodSecurityContext{}
+	if sec.RunAsUser != 0 {
+		v := sec.RunAsUser
+		psc.RunAsUser = &v
+	}
+	if sec.RunAsGroup != 0 {
+		v := sec.RunAsGroup
+		psc.RunAsGroup = &v
+	}
+	if sec.FSGroup != 0 {
+		v := sec.FSGroup
+		psc.FSGroup = &v
+	}
+	if sec.RunAsNonRoot {
+		t := true
+		psc.RunAsNonRoot = &t
+	}
+	if sec.Restricted {
+		psc.SeccompProfile = &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}
+	}
+	return psc
+}
+
+func containerSecurity(sec provision.Security) *corev1.SecurityContext {
+	if !sec.Restricted {
+		return nil
+	}
+	no := false
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: &no,
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+	}
 }
 
 // renderInitContainer runs Spec.Init before the application container.

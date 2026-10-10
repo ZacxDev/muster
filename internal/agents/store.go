@@ -132,7 +132,16 @@ type Agent struct {
 	// the rendered card and the JSON body for the fixture's own words.
 	PendingNote string `json:"-"`
 
-	Model        string    `json:"model"` // OpenRouter slug; "" = cluster default
+	Model string `json:"model"` // OpenRouter slug; "" = cluster default
+	// Kind is the runtime this agent is provisioned as: [KindGateway] or
+	// [KindClaudeCode]. "" reads as KindGateway (see [ResolveKind]). Fixed at
+	// creation — migration 0003's trigger refuses an UPDATE of it.
+	Kind string `json:"kind"`
+	// CCAccount is the Claude account (a name from MUSTER_AGENT_CC_ACCOUNTS) whose
+	// setup-token this claude-code agent runs on; "" for every other kind. It is a
+	// NAME, never the token. Chosen once at dispatch by internal/ccpool and kept
+	// for the agent's life (migration 0003 enforces both halves).
+	CCAccount    string    `json:"ccAccount,omitempty"`
 	Status       string    `json:"status"`
 	HooksToken   string    `json:"-"`
 	KickedOff    bool      `json:"kickedOff"`

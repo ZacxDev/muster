@@ -14,7 +14,10 @@ import (
 
 // AgentCardView is the per-agent data the card grid renders.
 type AgentCardView struct {
-	ID          int64
+	ID int64
+	// Kind and CCAccount are the agent's kind and Claude account name.
+	Kind        string
+	CCAccount   string
 	Name        string
 	DisplayName string
 	Repo        string
@@ -301,6 +304,10 @@ func agentCard(a AgentCardView) g.Node {
 					g.Text(markdownPlain(displayOr(a.DisplayName, a.Name))),
 				),
 				g.If(a.Repo != "", chip("repo", a.Repo)),
+				// Only a non-default kind is labelled, so a gateway-only deployment's
+				// cards are unchanged. The account is a NAME, never a token.
+				g.If(agents.ResolveKind(a.Kind) == agents.KindClaudeCode,
+					chip("kind", agents.KindLabel(a.Kind)+" · "+a.CCAccount)),
 			),
 			g.If(a.KickoffFailed, kickoffFailureDetail(a.KickoffFailure,
 				KickoffFailedRemedy(a.KickoffResendSafe, a.Namespace, a.Name))),
@@ -472,8 +479,8 @@ func kickoffOwedBadge() g.Node {
 }
 
 // KickoffRemedyResendSafe is the remedy under a failed kickoff whose record proves
-// nothing reached the agent (agents.KickoffResendSafe).
-const KickoffRemedyResendSafe = "Not retried automatically. Nothing reached the agent, so " +
+// the task never reached the agent (agents.KickoffResendSafe).
+const KickoffRemedyResendSafe = "Not retried automatically. The task never reached the agent, so " +
 	"re-sending cannot pay for the task twice: open this agent's chat and send the task again."
 
 // KickoffFailedRemedy is the remedy line under a failed kickoff. Nothing re-sends
@@ -485,7 +492,8 @@ const KickoffRemedyResendSafe = "Not retried automatically. Nothing reached the 
 // shutdown, a timeout or a transport error after the request was written can leave
 // the runtime still running the turn, and an empty reply can hide a turn the runtime
 // retried and finished; re-sending then pays for the task twice. Only a connection
-// that was never opened proves otherwise (resendSafe).
+// that was never opened, or a runtime that refused the turn as not_ready for the
+// whole delivery, proves otherwise (resendSafe).
 //
 // ⚠ ITS ONLY DYNAMIC PARTS ARE THE AGENT'S NAME AND NAMESPACE, which the card and
 // GET /api/agents already show. No part of the note or of kickoff_error is in it;
@@ -687,7 +695,11 @@ func agentModalShell() g.Node {
 // form never blocks on a slow upstream. Morphed into #agent-modal-body when the
 // FAB is tapped. The Task-card Dispatch button uses the task-scoped variant
 // (DispatchModalTaskBody) instead; this FAB form is unchanged.
-func DispatchModalBody() g.Node {
+func DispatchModalBody() g.Node { return DispatchModalBodyFor(KindChoices{}) }
+
+// DispatchModalBodyFor is DispatchModalBody with the deployment's agent kinds;
+// more than one renders the kind picker (see kindPicker).
+func DispatchModalBodyFor(k KindChoices) g.Node {
 	return g.Group{
 		Div(
 			Class("mb-4 flex items-center gap-3"),
@@ -718,6 +730,7 @@ func DispatchModalBody() g.Node {
 				Placeholder("Task for the agent (used if no task selected)…"),
 				Class("w-full resize-y rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 			)),
+			kindPicker(k),
 			advancedDisclosure(
 				labelledField("Model", modelField()),
 				labelledField("Repository", lazyCombobox("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos")),
@@ -819,6 +832,9 @@ type TaskDispatchView struct {
 	// the dispatch's real, visible effect there is the task flipping to
 	// in-progress with its new agent's status chip.
 	FromDetailPage bool
+
+	// Kinds is the deployment's agent kinds; more than one renders the picker.
+	Kinds KindChoices
 }
 
 // dispatchTarget is the (selector, swap) pair the task-scoped dispatch form
@@ -884,6 +900,7 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 			// Resolved branch rides along (no visible row; the FAB form has no branch
 			// field either — it resolves server-side when empty).
 			Input(Type("hidden"), Name("repo_branch"), Value(v.RepoBranch)),
+			kindPicker(v.Kinds),
 			dispatchConfirmRow("Model", modelStatic, modelFieldFor(v.Model, "")),
 			dispatchConfirmRow("Repository", repoStatic,
 				lazyComboboxPreselect("repo", "Repository", "Search repos… (optional)", "repo", "/ui/agents/repos", "repos", v.Repo, v.Repo)),

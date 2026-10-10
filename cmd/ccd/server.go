@@ -22,7 +22,10 @@ import (
 type terminal interface {
 	// Paste delivers text into pane as ONE bracketed paste and submits it. It
 	// fails with errPaneNotLive when the pane is gone, its process has exited, or
-	// its id now names a pane on another tmux server.
+	// its id now names a pane on another tmux server — and ONLY BEFORE anything is
+	// pasted: errPaneNotLive becomes a `503 not_ready`, which muster re-sends.
+	// A failure after the paste is never errPaneNotLive (a failed Enter is
+	// errPastedNotSubmitted, see afterPaste; a cancelled ctx is ctx.Err()).
 	Paste(ctx context.Context, pane paneRef, text string) error
 	// Enter presses Enter in pane once more (a submit the TUI may have missed),
 	// with the same refusal as Paste.

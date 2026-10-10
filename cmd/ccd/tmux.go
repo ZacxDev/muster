@@ -177,7 +177,29 @@ func (t tmuxTerminal) Paste(ctx context.Context, ref paneRef, text string) error
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return t.Enter(ctx, ref)
+	return afterPaste(t.Enter(ctx, ref))
+}
+
+// errPastedNotSubmitted marks a failure AFTER the prompt was pasted into the
+// pane: the text is sitting in the CLI's input box.
+var errPastedNotSubmitted = errors.New("the prompt was pasted but could not be submitted")
+
+// afterPaste rewraps a failure of the post-paste Enter so it is NOT
+// errPaneNotLive.
+//
+// 🔴 errPaneNotLive BECOMES A `503 not_ready`, AND muster RE-SENDS ON not_ready
+// because that answer promises nothing was pasted (internal/agentkickoff). Here
+// something WAS. If the pane really died the text died with it; but `live` also
+// reports errPaneNotLive for a transient display-message failure on a pane that
+// is still alive, and then a re-send would paste a second copy beside the first
+// and submit both as one prompt. So the pane-liveness failure of the Enter is carried as
+// text, not as a wrapped sentinel, and the server answers it as a terminal
+// failure (502), which no caller re-sends.
+func afterPaste(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %v", errPastedNotSubmitted, err)
 }
 
 func (t tmuxTerminal) Enter(ctx context.Context, ref paneRef) error {

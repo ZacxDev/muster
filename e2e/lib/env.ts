@@ -25,6 +25,8 @@ export const hookToken = 'e2e-hook-token-not-a-real-one';
 // service worker is per ORIGIN and a fresh port is a fresh origin.
 export const port = Number(process.env.MUSTER_E2E_PORT ?? 18181);
 export const updatePort = port + 1;
+// The agent-kinds spec's own server (claude-code enabled over the noop driver).
+export const kindsPort = port + 2;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

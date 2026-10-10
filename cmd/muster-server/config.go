@@ -9,9 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/ccpool"
 )
 
 // defaultPort is the port this service listens on when MUSTER_PORT is unset.
@@ -105,6 +108,23 @@ const (
 	envAgentCairnURL   = "MUSTER_AGENT_CAIRN_URL"
 	envAgentCairnToken = "MUSTER_AGENT_CAIRN_TOKEN"
 	envAgentPrivApply  = "MUSTER_AGENT_PRIVILEGE_APPLY"
+
+	// --- agent KINDS (internal/agents.Kinds) and the claude-code kind's profile ---
+	//
+	// MUSTER_AGENT_KINDS is a comma list of the kinds a dispatch may ask for; unset
+	// means "gateway" alone, which is every deployment before kinds existed. The
+	// claude-code kind's Claude accounts are NAMED by MUSTER_AGENT_CC_ACCOUNTS
+	// (a comma list of [a-z0-9-] names) and each account's `claude setup-token` is
+	// read from MUSTER_AGENT_CC_TOKEN_<NAME> — the name upper-cased with '-' as
+	// '_' (ccpool.EnvSuffix): account `work-2` -> MUSTER_AGENT_CC_TOKEN_WORK_2.
+	// 🔴 THE LIST IS EXPLICIT ON PURPOSE: a token variable no list names is not an
+	// account, so a stray variable cannot silently join the pool, and a listed
+	// name with no token is a boot refusal naming the variable.
+	envAgentKinds         = "MUSTER_AGENT_KINDS"
+	envAgentCCImage       = "MUSTER_AGENT_CC_IMAGE"
+	envAgentCCAccounts    = "MUSTER_AGENT_CC_ACCOUNTS"
+	envAgentCCTokenPrefix = "MUSTER_AGENT_CC_TOKEN_"
+	envAgentCCStorage     = "MUSTER_AGENT_CC_STORAGE_SIZE"
 )
 
 // The values MUSTER_AGENT_PROVISIONER accepts.
@@ -452,6 +472,54 @@ type config struct {
 	//
 	// ⚠ IT IS NOT REFUSED FOR THE noop DRIVER. See buildPrivilegeApplier.
 	AgentPrivilegeApply bool
+
+	// AgentKinds is MUSTER_AGENT_KINDS as written (lower-cased, trimmed, in
+	// order). Empty means agents.KindGateway alone — see config.agentKinds.
+	AgentKinds []string
+	// AgentCCImage is the claude-code kind's FULL image reference (tag or digest
+	// required). There is no default: an image reference names a registry, and
+	// that is installation state, the argument AgentImageRepo already makes.
+	AgentCCImage string
+	// AgentCCAccountNames is MUSTER_AGENT_CC_ACCOUNTS as written, in order, and
+	// AgentCCTokens maps each name to its MUSTER_AGENT_CC_TOKEN_<NAME> value ("" when
+	// that variable is unset — validateKinds refuses it).
+	//
+	// 🔴 AgentCCTokens HOLDS SUBSCRIPTION CREDENTIALS. Nothing may format this
+	// struct with %v, and the banner prints names only.
+	AgentCCAccountNames []string
+	AgentCCTokens       map[string]string
+	// AgentCCStorage is the claude-code kind's /data volume size ("" = 10Gi).
+	AgentCCStorage string
+}
+
+// agentKinds resolves the unset list to the gateway kind alone, for the reason
+// agentProvisioner's doc gives about configs built outside loadConfig.
+func (c config) agentKinds() []string {
+	if len(c.AgentKinds) == 0 {
+		return []string{agents.KindGateway}
+	}
+	return c.AgentKinds
+}
+
+// claudeCodeEnabled reports whether the claude-code kind is in the list.
+func (c config) claudeCodeEnabled() bool {
+	for _, k := range c.agentKinds() {
+		if k == agents.KindClaudeCode {
+			return true
+		}
+	}
+	return false
+}
+
+// splitList parses a comma list: trimmed, lower-cased, empties dropped.
+func splitList(v string) []string {
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.ToLower(strings.TrimSpace(part)); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // envFlag reads a boolean env switch. Anything other than an explicit
@@ -517,6 +585,16 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentCairnURL:         strings.TrimSpace(getenv(envAgentCairnURL)),
 		AgentCairnToken:       strings.TrimSpace(getenv(envAgentCairnToken)),
 		AgentPrivilegeApply:   envFlag(getenv, envAgentPrivApply),
+		AgentKinds:            splitList(getenv(envAgentKinds)),
+		AgentCCImage:          strings.TrimSpace(getenv(envAgentCCImage)),
+		AgentCCAccountNames:   splitList(getenv(envAgentCCAccounts)),
+		AgentCCStorage:        strings.TrimSpace(getenv(envAgentCCStorage)),
+	}
+	if len(c.AgentCCAccountNames) > 0 {
+		c.AgentCCTokens = make(map[string]string, len(c.AgentCCAccountNames))
+		for _, name := range c.AgentCCAccountNames {
+			c.AgentCCTokens[name] = strings.TrimSpace(getenv(envAgentCCTokenPrefix + ccpool.EnvSuffix(name)))
+		}
 	}
 	if c.RouterActor == "" {
 		c.RouterActor = defaultRouterActor
@@ -829,6 +907,10 @@ func (c config) validateProvisioner() error {
 			strings.Join([]string{provisionerNoop, provisionerK8s}, "/"), envAgentPrivApply)
 	}
 
+	if err := c.validateKinds(); err != nil {
+		return err
+	}
+
 	if named == provisionerNone {
 		// Nothing else is read in this mode, so nothing else is refused. An
 		// operator who set the image repository and forgot to name a driver is
@@ -859,6 +941,89 @@ func (c config) validateProvisioner() error {
 	// and records it. The refusal would have rejected a working configuration
 	// while reading like a safety check.
 	return nil
+}
+
+// validateKinds refuses an agent-kinds configuration that could only fail at a
+// dispatch.
+//
+// 🔴 EVERY REFUSAL HERE IS A CLAUDE-CODE POD THAT WOULD OTHERWISE BE BUILT BROKEN
+// OR NOT AT ALL, IN A BACKGROUND GOROUTINE, AFTER THE OPERATOR'S CLICK ANSWERED
+// 200: an unknown kind, an image that does not pin a version, an account list
+// with no tokens behind it, an empty pool. And the armed-switch shape this
+// function already refuses for the privilege tier: claude-code settings with the
+// kind not enabled are refused rather than ignored.
+func (c config) validateKinds() error {
+	seen := map[string]bool{}
+	for _, k := range c.agentKinds() {
+		if !agents.ValidKind(k) {
+			return fmt.Errorf("invalid %s entry %q: want a comma list of %s", envAgentKinds, k, strings.Join(agents.Kinds, ", "))
+		}
+		if seen[k] {
+			return fmt.Errorf("invalid %s: %q is listed twice", envAgentKinds, k)
+		}
+		seen[k] = true
+	}
+	if !seen[agents.KindGateway] {
+		return fmt.Errorf("invalid %s %q: it must include %s — the supervisor, runbooks and every agent "+
+			"created before kinds existed are that kind, and the dispatch form defaults to it",
+			envAgentKinds, strings.Join(c.AgentKinds, ","), agents.KindGateway)
+	}
+	if !c.claudeCodeEnabled() {
+		if c.AgentCCImage != "" || len(c.AgentCCAccountNames) > 0 || c.AgentCCStorage != "" {
+			return fmt.Errorf("%s, %s or %s is set but %s does not include %s: those settings would be "+
+				"an armed switch that does nothing. Add %s to %s, or unset them",
+				envAgentCCImage, envAgentCCAccounts, envAgentCCStorage, envAgentKinds, agents.KindClaudeCode,
+				agents.KindClaudeCode, envAgentKinds)
+		}
+		return nil
+	}
+	if c.agentProvisioner() == provisionerNone {
+		return fmt.Errorf("%s includes %s but %s=%s: a kind is something a DRIVER provisions, so there is "+
+			"nothing to build it with", envAgentKinds, agents.KindClaudeCode, envAgentProvisioner, provisionerNone)
+	}
+	if c.AgentCCImage == "" {
+		return fmt.Errorf("%s includes %s but %s is not set: there is no default image (a reference names "+
+			"a registry, which is installation state)", envAgentKinds, agents.KindClaudeCode, envAgentCCImage)
+	}
+	if !imagePinned(c.AgentCCImage) {
+		return fmt.Errorf("invalid %s %q: it must pin a tag or a digest — the image carries a pinned CLI and "+
+			"ccd's wire contract, and an unpinned reference lets two agents run different ones", envAgentCCImage, c.AgentCCImage)
+	}
+	if c.AgentCCStorage != "" {
+		if _, err := resource.ParseQuantity(c.AgentCCStorage); err != nil {
+			return fmt.Errorf("invalid %s %q: %v (want a Kubernetes quantity, e.g. 10Gi)", envAgentCCStorage, c.AgentCCStorage, err)
+		}
+	}
+	if len(c.AgentCCAccountNames) == 0 {
+		return fmt.Errorf("%s includes %s but %s names no account: the setup-token pool is EMPTY, so every "+
+			"claude-code dispatch would build a pod with no credential", envAgentKinds, agents.KindClaudeCode, envAgentCCAccounts)
+	}
+	names := map[string]bool{}
+	for _, name := range c.AgentCCAccountNames {
+		if !ccpool.ValidName(name) {
+			return fmt.Errorf("invalid %s entry %q: an account name is 1-32 of [a-z0-9-], not starting or "+
+				"ending with '-'", envAgentCCAccounts, name)
+		}
+		if names[name] {
+			return fmt.Errorf("invalid %s: account %q is listed twice", envAgentCCAccounts, name)
+		}
+		names[name] = true
+		if c.AgentCCTokens[name] == "" {
+			return fmt.Errorf("%s names account %q but %s%s is not set: an account with no token is a pod "+
+				"that cannot answer one turn", envAgentCCAccounts, name, envAgentCCTokenPrefix, ccpool.EnvSuffix(name))
+		}
+	}
+	return nil
+}
+
+// imagePinned reports whether an image reference names a digest or a tag (a ':'
+// after the last '/').
+func imagePinned(ref string) bool {
+	if strings.Contains(ref, "@") {
+		return true
+	}
+	slash := strings.LastIndex(ref, "/")
+	return strings.Contains(ref[slash+1:], ":")
 }
 
 // osGetenv is os.Getenv as a value, so main() can hand loadConfig the real

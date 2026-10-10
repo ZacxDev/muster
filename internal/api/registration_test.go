@@ -63,6 +63,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		// would quietly make this an "almost everything" fixture — and a registration
 		// test that does not wire a dependency cannot notice a route gated on it.
 		Gateway:     stubGateway{},
+		Kinds:       stubKinds{},
 		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://example.test"},
 		// A NON-DEFAULT prefix on purpose. agents.NamespacePrefix here would be
 		// indistinguishable from the zero value's resolved behaviour, so this

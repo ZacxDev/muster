@@ -408,5 +408,19 @@ func Fingerprint(s Spec) string {
 		w("config", "")
 	}
 
+	// 🔴 SECURITY COUNTS — it is rendered into the pod template, so two specs that
+	// differ only in it are two different pods — BUT ONLY WHEN DECLARED, which is
+	// the opposite of the "health" write above and deliberately so. Health was
+	// added in a release whose pod templates genuinely all changed; Security was
+	// added with every existing spec's value zero, and an unconditional write
+	// would have moved every live instance's fingerprint and rolled every agent on
+	// its next Update for a pod template that had not changed. Written last, and
+	// only when non-zero, every pre-existing fingerprint is byte-identical.
+	if sec := s.Security; !sec.IsZero() {
+		w("security", strconv.FormatInt(sec.RunAsUser, 10), strconv.FormatInt(sec.RunAsGroup, 10),
+			strconv.FormatInt(sec.FSGroup, 10), strconv.FormatBool(sec.RunAsNonRoot),
+			strconv.FormatBool(sec.Restricted), strconv.FormatBool(sec.NoServiceAccountToken))
+	}
+
 	return hex.EncodeToString(h.Sum(nil))
 }

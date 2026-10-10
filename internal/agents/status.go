@@ -149,7 +149,8 @@ func KickoffFailed(a Agent) bool { return a.KickedOff && a.KickoffError != "" }
 // [KickoffResendSafe] reads it. One constant, so the writer and the reader cannot
 // drift apart.
 //
-// 🔴 IT IS THE ONE POST-STAMP CAUSE THAT PROVES NOTHING WAS SENT. Go's HTTP client
+// 🔴 IT IS ONE OF THE TWO POST-STAMP CAUSES THAT PROVE NOTHING WAS SENT (the
+// other is [KickoffNotAcceptedReason]). Go's HTTP client
 // reports a dial error only from opening a NEW connection, before any byte of the
 // request is written on it, and it does not retry a POST whose bytes were written.
 // So no turn ran and none is running. (agentgateway.Gateway.Send can reach a dial
@@ -169,7 +170,7 @@ const KickoffEmptyReplyReason = "kickoff turn returned an EMPTY reply, so it is 
 
 // KickoffResendSafe reports whether a failed kickoff's recorded cause PROVES no
 // turn is running for it, so re-sending the task cannot pay for it twice. Only
-// [KickoffNeverConnectedReason] proves that.
+// [KickoffNeverConnectedReason] and [KickoffNotAcceptedReason] prove that.
 //
 // 🔴 EVERY OTHER CAUSE ANSWERS false, AN EMPTY REPLY INCLUDED. A shutdown or a
 // timeout abandons a request the runtime already received and may still be running.
@@ -182,8 +183,18 @@ const KickoffEmptyReplyReason = "kickoff turn returned an EMPTY reply, so it is 
 // above. An unrecognised text answers false, the side that tells the operator to
 // check before re-sending.
 func KickoffResendSafe(a Agent) bool {
-	return KickoffFailed(a) && strings.HasPrefix(a.KickoffError, KickoffNeverConnectedReason)
+	return KickoffFailed(a) && (strings.HasPrefix(a.KickoffError, KickoffNeverConnectedReason) ||
+		strings.HasPrefix(a.KickoffError, KickoffNotAcceptedReason))
 }
+
+// KickoffNotAcceptedReason opens agents.kickoff_error when the runtime was
+// reached but kept refusing the first turn with a typed `not_ready` — ccd's answer
+// before the Claude Code CLI is at its prompt, given before anything is pasted —
+// until the delivery gave up (its bound, or this process shutting down). Like
+// [KickoffNeverConnectedReason], it proves nothing was sent, so a re-send is safe.
+const KickoffNotAcceptedReason = "kickoff turn NOT ACCEPTED by the agent runtime: it answered " +
+	"not_ready (its session was not at the prompt) for the whole delivery, so nothing was sent. The " +
+	"row was already marked delivered, so it is not retried automatically"
 
 // KickoffFailureText is the error text a surface may show for a failed kickoff:
 // [Agent.KickoffError] with the pending note scrubbed out ([ScrubNote]), or "" when

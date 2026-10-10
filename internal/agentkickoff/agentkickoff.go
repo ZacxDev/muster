@@ -47,7 +47,13 @@
 // attempt — a second write after the point of no return, and the kicked_off=f with
 // attempts>0 state that round 0 deleted a guard for because no writer produced it.
 // What the record buys instead is a remedy that says re-sending is safe
-// (agents.KickoffResendSafe), which is true for this cause and no other.
+// (agents.KickoffResendSafe), which is true for this cause and for the next one.
+//
+// ⚠ AND ONE IS RE-SENT IN PLACE: a typed `not_ready` (ccd, before the Claude Code
+// CLI is at its prompt — answered before anything is pasted). deliver re-sends it
+// within the same delivery, under the same stamp, for a bounded wait; one that
+// outlasts the bound is recorded as agents.KickoffNotAcceptedReason, also
+// resend-safe. Nothing is un-stamped.
 //
 // 🔴 AND THAT UNRETRIED FAILURE IS VISIBLE, NOT JUST RECORDED (an operator
 // decision). The stamp clears the "kickoff owed" badge, so before this a failed
@@ -84,6 +90,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -176,8 +183,10 @@ type Deliverer struct {
 	log    *log.Logger
 	now    func() time.Time
 	turn   time.Duration
-	notify func(name string)
-	wg     sync.WaitGroup
+	// notReadyWait / notReadyPoll: see deliver's not_ready re-send.
+	notReadyWait, notReadyPoll time.Duration
+	notify                     func(name string)
+	wg                         sync.WaitGroup
 	// done closes when [Deliverer.Run] has returned, which is AFTER every
 	// delivery it started has recorded its outcome. See [Deliverer.Done].
 	done     chan struct{}
@@ -220,6 +229,7 @@ func New(cfg Config) (*Deliverer, error) {
 	if d.turn <= 0 {
 		d.turn = DefaultTurnTimeout
 	}
+	d.notReadyWait, d.notReadyPoll = defaultNotReadyWait, defaultNotReadyPoll
 	if d.notify == nil {
 		d.notify = func(string) {}
 	}
@@ -401,13 +411,30 @@ func (d *Deliverer) failStuck(a agents.Agent) {
 	d.notify(a.Name)
 }
 
+// turnFor is the budget for one agent's first turn: the configured turn, or —
+// for a kind whose single request may legitimately run longer
+// (agents.KindTurnTimeout; claude-code's outlasts ccd's own 30m budget) — that
+// request budget plus kindSlack, whichever is longer. The gateway kind gets
+// exactly d.turn, as before kinds existed.
+func (d *Deliverer) turnFor(a agents.Agent) time.Duration {
+	if k := agents.KindTurnTimeout(a.Kind); k > 0 && k+kindSlack > d.turn {
+		return k + kindSlack
+	}
+	return d.turn
+}
+
+// kindSlack is how much longer than a kind's per-request budget its first turn
+// may run end to end (resolve, session open, bookkeeping).
+const kindSlack = 2 * time.Minute
+
 // deliver runs one first turn. The order is the design: everything that can fail
 // without contacting the agent runtime happens BEFORE KickedOff is stamped, and is
 // therefore retried by the next tick; the turn itself happens only after the stamp,
 // so it is never run twice. (The one free failure left after the stamp, a
 // connection that cannot be opened, is named in the package doc.)
 func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provision.Instance) {
-	ctx, cancel := context.WithTimeout(parent, d.turn)
+	turn := d.turnFor(a)
+	ctx, cancel := context.WithTimeout(parent, turn)
 	defer cancel()
 
 	// A token-less row derives a well-formed WRONG bearer (agentgateway.reach), so
@@ -418,7 +445,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		return
 	}
 
-	won, err := d.store.ClaimKickoff(ctx, a.ID, d.owner, d.turn+claimMargin)
+	won, err := d.store.ClaimKickoff(ctx, a.ID, d.owner, turn+claimMargin)
 	if err != nil || !won {
 		// Another process holds it, or the claim could not be verified. Either way
 		// this process must not run the turn — and must not release a claim it
@@ -485,9 +512,38 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	_, _ = d.store.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: fresh.PendingNote,
 	})
+	// 🔴 A TYPED `not_ready` IS RE-SENT HERE, WITHIN THIS ONE DELIVERY, AND ONLY
+	// UNTIL notReadyWait. A claude-code pod is Ready (its `/` answers) as soon as
+	// ccd and tmux are up, which can be seconds before the CLI's SessionStart;
+	// until then ccd refuses a turn with `503 not_ready` and pastes NOTHING
+	// (cmd/ccd/server.go), so re-sending cannot pay a turn twice. Retrying inside
+	// the delivery keeps ONE stamp, ONE transcript row and ONE attempt; and the
+	// bound ends it — a TUI stuck on a login screen answers not_ready for ever,
+	// and that becomes an ordinary recorded kickoff failure, not a loop. (An
+	// earlier draft un-stamped and retried on the next tick; every retry moved
+	// updated_at, so the dwell bound could never fire.)
 	reply, err := d.gw.Send(ctx, target, sess.SessionKey, fresh.PendingNote, nil)
+	for waited := time.Duration(0); err != nil && runtimeNotReady(err) && waited < d.notReadyWait; waited += d.notReadyPoll {
+		select {
+		case <-ctx.Done():
+		case <-time.After(d.notReadyPoll):
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		reply, err = d.gw.Send(ctx, target, sess.SessionKey, fresh.PendingNote, nil)
+	}
+	if err != nil && runtimeNotReady(err) {
+		// Still not_ready when the delivery ended — the bound, or a shutdown
+		// mid-wait. Nothing was sent, which turnFailure's texts (shutdown, budget,
+		// "handed to the gateway") would deny; this one says so, and makes the
+		// card's remedy say a re-send is safe (agents.KickoffResendSafe).
+		d.recordError(fresh, agents.KickoffNotAcceptedReason+": "+err.Error())
+		d.notify(fresh.Name)
+		return
+	}
 	if err != nil {
-		d.recordError(fresh, turnFailure(parent, ctx, d.turn, err))
+		d.recordError(fresh, turnFailure(parent, ctx, turn, err))
 		d.notify(fresh.Name)
 		return
 	}
@@ -515,6 +571,22 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	})
 	d.log.Printf("agentkickoff: agent %d (%s): first turn delivered to %s (%d-byte reply)",
 		fresh.ID, fresh.Name, inst.InstanceID, len(reply))
+}
+
+// notReadyWait / notReadyPoll bound the in-delivery re-send of a typed
+// `not_ready` (see deliver). Three minutes covers a CLI cold start several times
+// over; a runtime still not ready then is recorded as a failed kickoff.
+const (
+	defaultNotReadyWait = 3 * time.Minute
+	defaultNotReadyPoll = 5 * time.Second
+)
+
+// runtimeNotReady reports a typed `503 not_ready` — ccd's refusal before it
+// pastes anything. Only ccd's typed body sets Type, so an untyped 503 from
+// anything else is NOT read as "nothing was sent".
+func runtimeNotReady(err error) bool {
+	var rt *agents.RuntimeError
+	return errors.As(err, &rt) && rt.Status == http.StatusServiceUnavailable && rt.Type == "not_ready"
 }
 
 // ShutdownCancelledReason opens agents.kickoff_error when a stamped first turn was

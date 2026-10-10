@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agentprovision"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
+	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/provision"
 	k8sdriver "github.com/ZacxDev/muster/internal/provision/k8s"
 )
@@ -187,7 +188,38 @@ import (
 // the readiness one above INVERTED: a typed nil there makes defects() go quiet and
 // /readyz report ready over an applier that nil-derefs on the first grant.
 func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agentprovision.Adapter, *agentgateway.Gateway, *agentprivilege.Applier, error) {
+	return buildAgentPlaneWith(cfg, store, nil, logger)
+}
+
+// buildClaudePool builds the claude-code kind's account pool, or (nil, nil) when
+// the kind is not enabled.
+//
+// 🔴 IT NEEDS THE DATABASE: selection reads each account's marks and live-agent
+// count, and a mark that could not be persisted would be forgotten at the next
+// restart — the account would be picked again straight into its rate limit. So a
+// claude-code deployment with no marks store is refused here rather than
+// degraded to an in-memory pool.
+func buildClaudePool(cfg config, marks ccpool.Store) (*ccpool.Pool, error) {
+	if !cfg.claudeCodeEnabled() {
+		return nil, nil
+	}
+	if marks == nil {
+		return nil, fmt.Errorf("%s includes %s, whose account pool persists its rate-limit and auth marks "+
+			"in Postgres, and %s is unset", envAgentKinds, agents.KindClaudeCode, envDatabase)
+	}
+	return ccpool.New(cfg.AgentCCTokens, marks)
+}
+
+// buildAgentPlaneWith is buildAgentPlane with the claude-code account pool,
+// which the gateway marks typed ccd failures against. A claude-code deployment
+// MUST pass one; buildAgentPlane (pool nil) is the pre-kinds wiring every
+// gateway-only test uses.
+func buildAgentPlaneWith(cfg config, store agents.Store, pool *ccpool.Pool, logger *log.Logger) (*agentprovision.Adapter, *agentgateway.Gateway, *agentprivilege.Applier, error) {
 	named := cfg.agentProvisioner()
+	if cfg.claudeCodeEnabled() && named != provisionerNone && pool == nil {
+		return nil, nil, nil, fmt.Errorf("%s includes %s but no account pool was built (it needs %s)",
+			envAgentKinds, agents.KindClaudeCode, envDatabase)
+	}
 	if named == provisionerNone {
 		// The gateway needs a driver to resolve an address, and so does the
 		// privilege applier, so there is nothing to build here either.
@@ -241,7 +273,7 @@ func buildAgentPlane(cfg config, store agents.Store, logger *log.Logger) (*agent
 	//
 	// ⚠ nil IS A SUPPORTED OUTCOME, so this is a capability report and not an error
 	// check — see this function's own header on why neither nil is a failure.
-	gw, err := buildGateway(cfg, driver)
+	gw, err := buildGatewayWith(cfg, driver, pool)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -357,6 +389,14 @@ func buildPrivilegeApplier(cfg config, driver provision.Provisioner) (*agentpriv
 // one. A deployment that names a driver is saying where instances live; naming a
 // runtime is saying what protocol the thing inside speaks.
 func buildGateway(cfg config, driver provision.Provisioner) (*agentgateway.Gateway, error) {
+	return buildGatewayWith(cfg, driver, nil)
+}
+
+// buildGatewayWith is buildGateway with the claude-code account pool as the
+// gateway's failure marker. A nil pool leaves Accounts nil — NOT a typed nil
+// inside the interface, which would make the gateway's nil check pass and call
+// a method on a nil *Pool.
+func buildGatewayWith(cfg config, driver provision.Provisioner, pool *ccpool.Pool) (*agentgateway.Gateway, error) {
 	rt, err := agentRuntime(cfg)
 	if err != nil {
 		return nil, err
@@ -364,11 +404,15 @@ func buildGateway(cfg config, driver provision.Provisioner) (*agentgateway.Gatew
 	if rt == nil {
 		return nil, nil
 	}
-	return agentgateway.New(agentgateway.Config{
+	gc := agentgateway.Config{
 		Driver:  driver,
 		Runtime: rt,
 		Model:   cfg.AgentGatewayModel,
-	})
+	}
+	if pool != nil {
+		gc.Accounts = pool
+	}
+	return agentgateway.New(gc)
 }
 
 // agentRuntime resolves MUSTER_AGENT_GATEWAY to the credential scheme it names,
@@ -485,7 +529,13 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 		EndpointTemplate:     cfg.AgentEndpointTemplate,
 		Logger:               logger,
 	}
-	if cfg.AgentWorkspacePersist {
+	if cfg.AgentWorkspacePersist || cfg.claudeCodeEnabled() {
+		// ⚠ ...OR THE CLAUDE-CODE KIND IS ENABLED: its /data volume is not optional
+		// (the conversation `claude --continue` resumes lives on it), so the driver
+		// must accept a persistent workspace even when gateway-kind agents keep
+		// theirs ephemeral. This raises the CAPABILITY only; a gateway-kind spec
+		// still asks for persistence exactly when AgentWorkspacePersist says so.
+		//
 		// The pointer's PRESENCE is what raises Capabilities.Persistence; its
 		// value being empty means "the cluster's default StorageClass". See
 		// config.AgentWorkspacePersist on why an env var cannot express the third
@@ -551,5 +601,20 @@ func agentSpecConfig(cfg config) (agentspec.Config, error) {
 		CairnURL:         cfg.AgentCairnURL,
 		CairnToken:       cfg.AgentCairnToken,
 		RuntimeConfig:    rc,
+		ClaudeCode:       claudeCodeSpecConfig(cfg),
 	}, nil
+}
+
+// claudeCodeSpecConfig is the claude-code kind's deployment half, or nil when the
+// kind is not enabled. The token map is COPIED, so nothing downstream can mutate
+// the configuration it came from.
+func claudeCodeSpecConfig(cfg config) *agentspec.ClaudeCodeConfig {
+	if !cfg.claudeCodeEnabled() {
+		return nil
+	}
+	accounts := make(map[string]string, len(cfg.AgentCCTokens))
+	for k, v := range cfg.AgentCCTokens {
+		accounts[k] = v
+	}
+	return &agentspec.ClaudeCodeConfig{Image: cfg.AgentCCImage, Accounts: accounts, StorageSize: cfg.AgentCCStorage}
 }

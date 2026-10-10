@@ -105,6 +105,7 @@ var pgBackedPackages = []string{
 	// escalation firing at the dwell boundary.
 	"internal/agentkickoff",
 	"internal/agents",
+	"internal/ccpool",
 	"internal/db",
 	"internal/notes",
 	"internal/privilege",
