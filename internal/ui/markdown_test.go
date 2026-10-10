@@ -34,7 +34,7 @@ func TestMarkdownHTMLElements(t *testing.T) {
 		{
 			name: "inline code",
 			in:   "call `foo()` now",
-			want: []string{`<code class="rounded bg-slate-950/60 px-1 py-0.5 font-mono text-[0.85em]">foo()</code>`},
+			want: []string{`<code class="rounded bg-bg/60 px-1 py-0.5 font-mono text-[0.85em]">foo()</code>`},
 			deny: []string{"`foo()`"},
 		},
 		{
@@ -44,7 +44,7 @@ func TestMarkdownHTMLElements(t *testing.T) {
 			// "json code" summary, so raw JSON never walls the card. The <pre><code>
 			// content still lives inside, escaped.
 			want: []string{`<details`, `<summary`, "json code", `<pre`, `<code>`, `{&quot;a&quot;: 1}`, "</code></pre>", "</details>", "before", "after"},
-			deny: []string{"```", "<details open", `<details class="group/code my-1 rounded-lg bg-slate-950/60 ring-1 ring-inset ring-white/5" open`},
+			deny: []string{"```", "<details open", `<details class="group/code my-1 rounded-lg bg-bg/60 ring-1 ring-inset ring-line" open`},
 		},
 		{
 			name: "bare fenced block summary falls back to 'code'",

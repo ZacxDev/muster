@@ -42,7 +42,7 @@ func hx(name, value string) g.Node { return g.Attr(name, value) }
 // this one node instead of hunting for a substring in a document.
 func wordmark() g.Node {
 	return g.Group{
-		Span(Class("text-emerald-400"), g.Text("mu")),
+		Span(Class("text-accent"), g.Text("mu")),
 		g.Text("ster"),
 	}
 }
@@ -228,7 +228,7 @@ func Page(activeTab string, feat Features) g.Node {
 				Meta(Charset("utf-8")),
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
-				Meta(Name("theme-color"), Content("#0b0f17")),
+				ThemeHead(),
 				Meta(Name("mobile-web-app-capable"), Content("yes")),
 				Meta(Name("apple-mobile-web-app-capable"), Content("yes")),
 				Meta(Name("apple-mobile-web-app-status-bar-style"), Content("black-translucent")),
@@ -252,7 +252,7 @@ func Page(activeTab string, feat Features) g.Node {
 				faroHead(),
 			),
 			Body(
-				Class("min-h-dvh bg-slate-950 text-slate-100 antialiased selection:bg-emerald-500/30"),
+				Class("min-h-dvh bg-bg text-fg antialiased selection:bg-accent/30"),
 				// SPA navigation: boost internal <a> links + forms into AJAX
 				// body-swaps with pushState + working back/forward (no white flash).
 				// Init scripts are made boost-safe (they run on htmx:load, not just
@@ -525,10 +525,10 @@ func notifFAB() g.Node {
 			ID("notif-panel"),
 			g.Attr("role", "dialog"),
 			g.Attr("aria-label", "Agent replies"),
-			Class("hidden fixed bottom-[calc(6rem+env(safe-area-inset-bottom))] left-[calc(1.5rem+env(safe-area-inset-left))] z-30 w-[22rem] max-w-[calc(100vw-3rem)] origin-bottom-left translate-y-2 scale-95 opacity-0 overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl shadow-black/50 transition duration-200 ease-out"),
+			Class("hidden fixed bottom-[calc(6rem+env(safe-area-inset-bottom))] left-[calc(1.5rem+env(safe-area-inset-left))] z-30 w-[22rem] max-w-[calc(100vw-3rem)] origin-bottom-left translate-y-2 scale-95 opacity-0 overflow-hidden rounded-2xl border border-line bg-s1 shadow-2xl shadow-black/50 transition duration-200 ease-out"),
 			Div(
-				Class("flex items-center gap-2 border-b border-white/5 px-4 py-2.5"),
-				Span(Class("text-sm font-semibold text-slate-200"), g.Text("Agent replies")),
+				Class("flex items-center gap-2 border-b border-line px-4 py-2.5"),
+				Span(Class("text-sm font-semibold text-fg"), g.Text("Agent replies")),
 				Span(Class("flex-1")),
 			),
 			Div(
@@ -546,13 +546,13 @@ func notifFAB() g.Node {
 			Type("button"),
 			g.Attr("aria-label", "Agent replies"),
 			g.Attr("title", "Agent replies"),
-			Class("press fixed bottom-[calc(1.5rem+env(safe-area-inset-bottom))] left-[calc(1.5rem+env(safe-area-inset-left))] z-30 inline-flex h-14 w-14 items-center justify-center rounded-full bg-slate-800 text-2xl text-slate-100 shadow-xl shadow-black/40 ring-1 ring-inset ring-white/10 transition hover:bg-slate-700 active:scale-95"),
+			Class("press fixed bottom-[calc(1.5rem+env(safe-area-inset-bottom))] left-[calc(1.5rem+env(safe-area-inset-left))] z-30 inline-flex h-14 w-14 items-center justify-center rounded-full bg-s2 text-2xl text-fg shadow-xl shadow-black/40 ring-1 ring-inset ring-edge transition hover:bg-s3 active:scale-95"),
 			g.Text("💬"),
 			// Unread badge overlay. Hidden at zero; the backend's hx-swap-oob span
 			// (id=notif-badge) replaces it in place with the live count.
 			Span(
 				ID("notif-badge"),
-				Class("hidden absolute -right-1 -top-1 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-emerald-500 px-1.5 py-0.5 text-xs font-bold tabular-nums text-emerald-950 ring-2 ring-slate-950"),
+				Class("hidden absolute -right-1 -top-1 inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-accent px-1.5 py-0.5 text-xs font-bold tabular-nums text-on-accent ring-2 ring-bg"),
 				g.Text("0"),
 			),
 		),
@@ -573,7 +573,7 @@ func modalOpenClick(modalID string) string {
 // the router shows only the active tab's FAB. Tapping it loads the modal body
 // (hxGet → #<modalID>-body) and reveals the modal.
 func shellFAB(id, tab, ariaLabel, hxGet, modalID, bottomCls string, active bool) g.Node {
-	cls := "press fixed " + bottomCls + " right-[calc(1.5rem+env(safe-area-inset-right))] z-30 inline-flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500 text-emerald-950 shadow-xl shadow-emerald-500/30 transition hover:bg-emerald-400 active:scale-95"
+	cls := "press fixed " + bottomCls + " right-[calc(1.5rem+env(safe-area-inset-right))] z-30 inline-flex h-14 w-14 items-center justify-center rounded-full bg-accent text-on-accent shadow-xl shadow-accent/30 transition hover:bg-accent/90 active:scale-95"
 	if !active {
 		cls += " hidden"
 	}
@@ -677,7 +677,7 @@ func proseWidth() string {
 // because it reads as "zero" rather than "not applicable".
 func header() g.Node {
 	return Header(
-		Class("sticky top-0 z-20 border-b border-white/5 bg-slate-950/80 backdrop-blur supports-[backdrop-filter]:bg-slate-950/60"),
+		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur supports-[backdrop-filter]:bg-bg/60"),
 		Div(
 			// Same contentWidth() as the tab content column below — see the helper.
 			// The two MUST move together: widening only the content leaves the brand
@@ -722,7 +722,7 @@ func sidebarOpenButton() g.Node {
 		// audit). Only
 		// the hit area grows — the icon stays h-5 w-5 — so the compact top bar's
 		// layout is unchanged apart from the button box.
-		Class("press -ml-1 inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-300 transition hover:bg-white/5 hover:text-slate-100 lg:hidden"),
+		Class("press -ml-1 inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 hover:text-fg lg:hidden"),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14"/></svg>`),
 	)
 }
@@ -735,7 +735,7 @@ func pushStatusMessage() g.Node {
 		ID("push-status"),
 		g.Attr("role", "status"),
 		g.Attr("aria-live", "polite"),
-		Class("hidden border-b border-white/5 bg-slate-900/60 px-4 py-2 text-center text-xs"),
+		Class("hidden border-b border-line bg-s1/60 px-4 py-2 text-center text-xs"),
 	)
 }
 
@@ -746,7 +746,7 @@ func pushOnIndicator() g.Node {
 		ID("push-on"),
 		g.Attr("title", "Notifications on"),
 		g.Attr("aria-label", "Notifications enabled"),
-		Class("hidden items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-300/90 ring-1 ring-inset ring-emerald-500/20"),
+		Class("hidden items-center gap-1 rounded-full bg-accent/10 px-2.5 py-1 text-xs font-medium text-accent ring-1 ring-inset ring-accent/20"),
 		Span(g.Text("🔔")),
 		Span(Class("hidden sm:inline"), g.Text("on")),
 	)
@@ -772,7 +772,7 @@ func enableNotificationsButton() g.Node {
 		ID("enable-push"),
 		Type("button"),
 		// hidden until the client decides push is available + ungranted.
-		Class("press hidden items-center gap-1.5 rounded-full bg-emerald-500/15 px-3 py-1 text-sm font-medium text-emerald-300 ring-1 ring-inset ring-emerald-500/30 transition hover:bg-emerald-500/25"),
+		Class("press hidden items-center gap-1.5 rounded-full bg-accent/15 px-3 py-1 text-sm font-medium text-accent ring-1 ring-inset ring-accent/30 transition hover:bg-accent/25"),
 		Span(g.Text("🔔")),
 		Span(g.Text("Enable")),
 	)
@@ -788,7 +788,7 @@ func cardTime(t time.Time) g.Node {
 	return g.El("time",
 		g.Attr("data-ts", strconv.FormatInt(t.UnixMilli(), 10)),
 		g.Attr("title", t.Format(time.RFC3339)),
-		Class("shrink-0 self-center text-xs tabular-nums text-slate-400"),
+		Class("shrink-0 self-center text-xs tabular-nums text-muted"),
 		g.Text(relTimeString(t)),
 	)
 }
@@ -815,8 +815,8 @@ func relTimeString(t time.Time) string {
 // chip is a small muted label (e.g. host name).
 func chip(label, value string) g.Node {
 	return Span(
-		Class("inline-flex items-center gap-1 rounded-full bg-slate-800/80 px-2.5 py-1 text-xs font-medium text-slate-300 ring-1 ring-inset ring-white/5"),
-		Span(Class("text-slate-400"), g.Text(label)),
+		Class("inline-flex items-center gap-1 rounded-full bg-s2/80 px-2.5 py-1 text-xs font-medium text-fg2 ring-1 ring-inset ring-line"),
+		Span(Class("text-muted"), g.Text(label)),
 		g.Text(value),
 	)
 }
@@ -842,7 +842,7 @@ func jsonString(s string) string {
 //
 // 🔴 activeTab and currentTab are DIFFERENT claims and must not be conflated:
 //
-//   - activeTab drives the VISUAL emerald highlight. It is a best-effort
+//   - activeTab drives the VISUAL accent highlight. It is a best-effort
 //     "which section does this document belong to", and is allowed to be a
 //     fallback — /operator paints Agents because that is the section it hangs
 //     off. (appScript's show() then moves the highlight to Requests via its own
@@ -879,10 +879,10 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 			ID("sidebar"),
 			g.Attr("role", "navigation"),
 			g.Attr("aria-label", "Main menu"),
-			Class("sidebar-panel fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] -translate-x-full flex-col bg-slate-900 shadow-2xl shadow-black/50 ring-1 ring-white/10 transition-transform duration-300 ease-out"),
+			Class("sidebar-panel fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] -translate-x-full flex-col bg-s1 shadow-2xl shadow-black/50 ring-1 ring-line transition-transform duration-300 ease-out"),
 			// Sidebar header: brand + close.
 			Div(
-				Class("flex items-center gap-3 border-b border-white/5 px-4 py-3"),
+				Class("flex items-center gap-3 border-b border-line px-4 py-3"),
 				Span(Class("text-lg font-semibold tracking-tight"), wordmark()),
 				Span(Class("flex-1")),
 				Button(
@@ -892,7 +892,7 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 					// ≥44x44 tap target (measured at 32x32 by an automated
 					// accessibility audit). The icon stays h-5 w-5 — only the hit area grows,
 					// so the compact header layout is unchanged.
-					Class("press inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/5 hover:text-slate-100"),
+					Class("press inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"),
 					g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 				),
 			),
@@ -943,6 +943,14 @@ func sidebar(activeTab, currentTab string, hasPanels bool, feat Features) g.Node
 					return sidebarTab(t.Key, t.Label, t.Icon, activeTab == t.Key, currentTab == t.Key, hasPanels)
 				}),
 			),
+			// Device preferences, pinned to the bottom of the panel and clear of
+			// the home indicator. They are per-device (localStorage), so they live
+			// with the navigation rather than in any server-side settings.
+			Div(
+				ID("sidebar-prefs"),
+				Class("mt-auto flex flex-col gap-1 border-t border-line p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]"),
+				themeToggle(),
+			),
 		),
 	)
 }
@@ -987,16 +995,16 @@ func pathForTab(key string) string { return "/" + normalizeTab(key) }
 // Verified correct (one extra request, arguably fresher content).
 func sidebarTab(tab, label, icon string, active, current, hasPanels bool) g.Node {
 	base := "sidebar-tab press flex items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition"
-	tone := "text-slate-300 hover:bg-white/5 hover:text-slate-100"
+	tone := "text-fg2 hover:bg-s2 hover:text-fg"
 	if active {
-		tone = "bg-emerald-500/15 text-emerald-200 ring-1 ring-inset ring-emerald-500/30"
+		tone = "bg-accent/15 text-fg ring-1 ring-inset ring-accent/30"
 	}
 	return A(
 		Href(pathForTab(tab)),
 		g.Attr("data-tab", tab),
 		// aria-current="page" marks the link that POINTS AT THIS DOCUMENT, and
 		// is emitted ONLY when `current` — which is NOT the same flag as
-		// `active` (the emerald highlight). See sidebar()'s activeTab vs
+		// `active` (the accent highlight). See sidebar()'s activeTab vs
 		// currentTab comment: /operator highlights Agents but no sidebar link
 		// routes to /operator, so it renders no aria-current at all rather than
 		// naming an arbitrary link as the page you are on.
@@ -1512,7 +1520,7 @@ func appScript(feat Features) g.Node {
 
   // show reflects the given tab in the visible state. isPage is a SEPARATE claim: true
   // only when a sidebar link actually points at the document being displayed.
-  // The two are decoupled deliberately — the emerald highlight is decoration,
+  // The two are decoupled deliberately — the accent highlight is decoration,
   // aria-current="page" is an assertion about the URL. See showForPath.
   function show(tab, isPage) {
     if (TABS.indexOf(tab) < 0) tab = 'requests';
@@ -1546,14 +1554,14 @@ func appScript(feat Features) g.Node {
     document.querySelectorAll('.sidebar-tab').forEach(function (b) {
       var on = b.getAttribute('data-tab') === tab;
       if (on && isPage) { b.setAttribute('aria-current', 'page'); } else { b.removeAttribute('aria-current'); }
-      b.classList.toggle('bg-emerald-500/15', on);
-      b.classList.toggle('text-emerald-200', on);
+      b.classList.toggle('bg-accent/15', on);
+      b.classList.toggle('text-fg', on);
       b.classList.toggle('ring-1', on);
       b.classList.toggle('ring-inset', on);
-      b.classList.toggle('ring-emerald-500/30', on);
-      b.classList.toggle('text-slate-300', !on);
-      b.classList.toggle('hover:bg-white/5', !on);
-      b.classList.toggle('hover:text-slate-100', !on);
+      b.classList.toggle('ring-accent/30', on);
+      b.classList.toggle('text-fg2', !on);
+      b.classList.toggle('hover:bg-s2', !on);
+      b.classList.toggle('hover:text-fg', !on);
     });
   }
 
@@ -1704,6 +1712,11 @@ func appScript(feat Features) g.Node {
   // varied, can ever exceed it (oldest is evicted). Coalescing by a normalized key
   // means that in practice a network blip shows just ONE toast with a ×N counter.
   var TOAST_CAP = 3;
+  // The error glyph, rendered by the same Go helper every other status glyph
+  // uses (statusGlyph), so the toast cannot draw a different shape. Static
+  // markup with no request-derived content, so innerHTML is safe here; the
+  // MESSAGE goes in through textContent.
+  var TOAST_GLYPH = ` + toastGlyphJS() + `;
   // toastKey normalizes a message so volatile detail (status codes, ids, the
   // server's per-request error body) collapses to ONE coalesced toast. Without
   // this, htmx:responseError messages like "Request failed (500)" / "(502)" or
@@ -1733,7 +1746,8 @@ func appScript(feat Features) g.Node {
         var n = (parseInt(el.getAttribute('data-toast-count'), 10) || 1) + 1;
         el.setAttribute('data-toast-count', String(n));
         // Keep the FIRST message text (most representative) + a count.
-        el.textContent = el.getAttribute('data-toast-msg') + '  (×' + n + ')';
+        var txt = el.querySelector('[data-toast-text]') || el;
+        txt.textContent = el.getAttribute('data-toast-msg') + '  (×' + n + ')';
         if (el._t) clearTimeout(el._t);
         el._t = setTimeout(function () { el.remove(); }, 5000);
         return;
@@ -1744,12 +1758,20 @@ func appScript(feat Features) g.Node {
       host.removeChild(host.firstChild);
     }
     var t = document.createElement('div');
-    t.className = 'pointer-events-auto rounded-lg bg-rose-500/95 px-3 py-2 text-sm font-medium text-white shadow-lg shadow-black/30';
+    // danger / on-danger: the pair the palette tests at 4.5:1. The old
+    // translucent rose over the page measured 4.02:1, under AA for 14px text.
+    // The glyph is the error SHAPE, so the toast does not rely on colour alone.
+    t.className = 'pointer-events-auto flex items-start gap-2 rounded-lg bg-danger px-3 py-2 text-sm font-medium text-on-danger shadow-lg shadow-black/30';
+    t.style.setProperty('--glyph-knock', 'rgb(var(--mu-danger))');
     t.setAttribute('role', 'alert');
     t.setAttribute('data-toast-msg', msg);
     t.setAttribute('data-toast-key', key);
     t.setAttribute('data-toast-count', '1');
-    t.textContent = msg;
+    t.innerHTML = TOAST_GLYPH;
+    var tx = document.createElement('span');
+    tx.setAttribute('data-toast-text', '');
+    tx.textContent = msg;
+    t.appendChild(tx);
     host.appendChild(t);
     t._t = setTimeout(function () { t.remove(); }, 5000);
   };
@@ -1783,7 +1805,7 @@ func appScript(feat Features) g.Node {
   // --- remote (model search) ---
   // A [data-combobox-remote="URL"] box fetches its options from URL?q=<input>
   // (debounced + cached). The visible input IS the submitted value (no hidden).
-  var cbOptClass = 'cursor-pointer truncate px-3 py-2 text-sm text-slate-200 hover:bg-emerald-500/15 hover:text-emerald-100 data-[active=true]:bg-emerald-500/15 data-[active=true]:text-emerald-100';
+  var cbOptClass = 'cursor-pointer truncate px-3 py-2 text-sm text-fg hover:bg-accent/15 hover:text-fg data-[active=true]:bg-accent/15 data-[active=true]:text-fg';
   var cbCache = {};
   var cbTimers = {};
   function cbRemote(box) { return box.getAttribute('data-combobox-remote'); }
@@ -2328,7 +2350,7 @@ func relTimeScript() g.Node {
 //     suppressed in the installed standalone PWA.
 //  2. A successful save gave NO feedback at all — the modal just vanished.
 //     cgTaskModalSaved re-pulses the app's EXISTING .card-enter highlight (the
-//     emerald ring already defined in web/css/input.css and already zeroed by the
+//     accent ring already defined in web/css/input.css and already zeroed by the
 //     prefers-reduced-motion block) on the morphed card. No new CSS.
 //  3. Focus was dropped on the document body when the modal closed, so a keyboard
 //     user restarted their traversal from the top of the page. A MutationObserver
@@ -2812,7 +2834,7 @@ func tagScript() g.Node {
     var span = document.createElement('span');
     span.setAttribute('data-tag-chip', tag);
     span.setAttribute('data-tag-kind', tag.indexOf(':') > 0 ? 'routing' : 'descriptive');
-    span.className = 'inline-flex shrink-0 items-center gap-1.5 rounded-md bg-white/5 px-1.5 py-1 text-xs text-slate-400 ring-1 ring-inset ring-white/5';
+    span.className = 'inline-flex shrink-0 items-center gap-1.5 rounded-md bg-s2 px-1.5 py-1 text-xs text-muted ring-1 ring-inset ring-line';
     span.appendChild(document.createTextNode(tag));
     var hid = document.createElement('input');
     hid.type = 'hidden'; hid.name = 'tag'; hid.value = tag;
@@ -3067,8 +3089,8 @@ func pwaScript() g.Node {
     if (!statusEl) return;
     if (!msg) { statusEl.classList.add('hidden'); statusEl.textContent = ''; return; }
     statusEl.textContent = msg;
-    statusEl.classList.remove('hidden', 'text-rose-300', 'text-amber-300', 'text-emerald-300');
-    statusEl.classList.add(kind === 'error' ? 'text-rose-300' : (kind === 'ok' ? 'text-emerald-300' : 'text-amber-300'));
+    statusEl.classList.remove('hidden', 'text-st-error-fg', 'text-st-warning-fg', 'text-accent');
+    statusEl.classList.add(kind === 'error' ? 'text-st-error-fg' : (kind === 'ok' ? 'text-accent' : 'text-st-warning-fg'));
   }
   function showEnable() { if (enableBtn) { enableBtn.classList.remove('hidden'); enableBtn.classList.add('inline-flex'); } }
   function hideEnable() { if (enableBtn) { enableBtn.classList.add('hidden'); enableBtn.classList.remove('inline-flex'); } }

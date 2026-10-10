@@ -45,7 +45,7 @@ TAILWIND ?= npx --yes tailwindcss@3
 # 🔴 EACH ENTRY IS A POSITIVE CONTROL FOR ONE CONTENT GLOB, NOT DECORATION.
 # Every class below is written in exactly one place in the tree and is reachable
 # ONLY through `./internal/ui/**/*.go`. Measured with that glob deliberately
-# pointed at a non-existent directory: Tailwind exits 0, emits a VALID 5,594-byte
+# pointed at a non-existent directory: Tailwind exits 0, emits a VALID 7,139-byte
 # stylesheet instead of the real one, and every class here drops to zero
 # occurrences. That is the whole hazard — there is no error, no warning in the
 # exit code, and nothing on a developer's machine looks wrong.
@@ -54,8 +54,10 @@ TAILWIND ?= npx --yes tailwindcss@3
 # "38,274-byte" and the real file was 38,657 by the time anyone measured — a
 # hardcoded figure with nothing deriving it does not stay true, it stays
 # written. css-check PRINTS the byte count on every run, which is a producer;
-# the 5,594 stays because it is a property of the FAILURE mode (an all-globs-miss
-# build), not of this tree, and it is the number that makes the point.
+# the 7,139 stays because it is a property of the FAILURE mode (an all-globs-miss
+# build), not of this tree, and it is the number that makes the point. (It was
+# 5,594 until the palette became custom properties: the token block in
+# input.css is base CSS that is emitted whatever the globs match.)
 #
 # ⚠ PLAIN ALPHANUMERIC CLASSES ONLY, AND THAT IS A HARNESS FIX RATHER THAN A
 # TASTE. A responsive or opacity-modified class (`lg:pl-72`, `bg-rose-500/95`)
@@ -66,13 +68,26 @@ TAILWIND ?= npx --yes tailwindcss@3
 # Each of these is written in a different moved view, so the set spans the glob
 # rather than sampling one file.
 #
-# 🔴 THE SIXTH CLASS COVERS A DIFFERENT CONTENT ENTRY, NOT A SIXTH VIEW.
-# `bg-emerald-600` is written ONLY in internal/api/login.go — the sign-in page,
+# 🔴 THE PALETTE IS ROLE TOKENS NOW, AND THE FIRST FOUR ARE TOKEN UTILITIES ON
+# PURPOSE. A broken `theme.extend.colors` in tailwind.config.js does not error
+# either: Tailwind just stops recognising `bg-s1`-style classes and emits a
+# stylesheet with no colours at all. `text-accent`, `bg-danger`,
+# `bg-st-review-bg` and `text-st-warning-fg` are each written only under
+# internal/ui and each needs a different branch of that colour map (a flat role,
+# a second flat role, and two different nested status pairs), so a missing role
+# or a mangled `st` block fails here instead of shipping.
+#
+# ⚠ `bg-s1` IS DELIBERATELY NOT A CONTROL even though it is the most common
+# surface: login.go writes `bg-s1/70`, and `grep -F bg-s1` matches the escaped
+# `.bg-s1\/70` too, so it would stay present with the internal/ui glob broken.
+#
+# 🔴 THE LAST CLASS COVERS A DIFFERENT CONTENT ENTRY, NOT ANOTHER VIEW.
+# `text-balance` is written ONLY in internal/api/login.go — the sign-in page,
 # the one document this app emits from outside internal/ui — so it is the
 # positive control for that entry. Without it, deleting `./internal/api/login.go`
-# from tailwind.config.js would ship a login page with an unstyled submit button
+# from tailwind.config.js would ship a login page with an unwrapped heading
 # and every check here would stay green.
-CSS_REQUIRED_CLASSES := bg-emerald-500 text-indigo-300 bg-rose-500 bg-sky-500 text-amber-200 bg-emerald-600
+CSS_REQUIRED_CLASSES := text-accent bg-danger bg-st-review-bg text-st-warning-fg text-balance
 
 help:
 	@echo "muster:"

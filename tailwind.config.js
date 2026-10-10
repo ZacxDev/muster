@@ -2,10 +2,11 @@
 //
 // muster Tailwind config.
 //
-// Dark mode is the DEFAULT: the app root (<html>/<body>) carries the `dark`
-// class by default so the UI renders dark-first, with light as an opt-in
-// toggle. `darkMode: 'class'` makes that switch class-driven rather than tied
-// to the OS preference.
+// Dark mode is the DEFAULT: the app root (<html>) carries the `dark` class by
+// default so the UI renders dark-first, with light as an opt-in toggle.
+// `darkMode: 'class'` makes that switch class-driven rather than tied to the OS
+// preference. Colour no longer needs the `dark:` variant at all: the palette is
+// a set of custom properties that the class swaps (web/css/input.css).
 //
 // 🔴 TAILWIND DOES NOT ERROR ON A CONTENT PATH THAT MATCHES NOTHING. It emits
 // no rules for it and exits 0, so a missing or mistyped entry produces a
@@ -16,6 +17,9 @@
 // stylesheet and then asserts that classes only reachable through each content
 // entry are PRESENT in the output, so an entry that stopped matching fails
 // loudly instead of shipping a thinner file.
+// role(name) is the utility value for one palette token. See theme.extend.colors.
+const role = (name) => `rgb(var(--mu-${name}) / <alpha-value>)`;
+
 module.exports = {
   darkMode: 'class',
   content: [
@@ -106,7 +110,44 @@ module.exports = {
     //     added and passing after.
   ],
   theme: {
-    extend: {},
+    extend: {
+      // 🔴 EVERY COLOUR IS A ROLE THAT READS A CUSTOM PROPERTY FROM
+      // web/css/input.css. The palette (dark and light) is defined there ONCE;
+      // this block only names the roles, so a theme change never touches the
+      // views and the views never name a hue. `<alpha-value>` keeps the opacity
+      // modifier working (`bg-bg/80`).
+      //
+      // ⚠ A ROLE ADDED HERE WITHOUT ITS VARIABLE IN input.css DOES NOT ERROR —
+      // the browser resolves `rgb(var(--mu-missing))` to nothing and the element
+      // simply loses its colour. TestEveryTailwindRoleHasATokenInBothThemes
+      // (internal/ui/theme_test.go) reads this file and input.css and fails on
+      // that disagreement.
+      colors: {
+        bg: role('bg'),
+        s1: role('s1'),
+        s2: role('s2'),
+        s3: role('s3'),
+        line: role('line'),
+        edge: role('edge'),
+        fg: role('text'),
+        fg2: role('text2'),
+        muted: role('muted'),
+        accent: role('accent'),
+        'on-accent': role('on-accent'),
+        focus: role('focus'),
+        danger: role('danger'),
+        'on-danger': role('on-danger'),
+        st: {
+          open: { fg: role('st-open-fg'), bg: role('st-open-bg') },
+          progress: { fg: role('st-progress-fg'), bg: role('st-progress-bg') },
+          review: { fg: role('st-review-fg'), bg: role('st-review-bg') },
+          complete: { fg: role('st-complete-fg'), bg: role('st-complete-bg') },
+          error: { fg: role('st-error-fg'), bg: role('st-error-bg') },
+          warning: { fg: role('st-warning-fg'), bg: role('st-warning-bg') },
+          running: { fg: role('st-running-fg'), bg: role('st-running-bg') },
+        },
+      },
+    },
   },
   plugins: [],
 };

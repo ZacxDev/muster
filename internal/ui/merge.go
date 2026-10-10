@@ -51,7 +51,7 @@ import (
 // and unlike the existing single-button actions, this flow REQUIRES moving
 // between several controls before committing. Scoped to the new controls
 // deliberately (retro-fitting the whole app is a separate change).
-const focusRing = " focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
+const focusRing = " focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
 
 // minMergeableTasks is how many MERGEABLE cards must be on screen before the merge
 // affordance renders at all. Merging needs two tasks; offering "Select" over a
@@ -102,7 +102,7 @@ func taskMergeToolbar(cards int) g.Node {
 			g.Attr("aria-pressed", "false"),
 			g.Attr("title", "Select tasks to merge"),
 			// min-h-[44px] matches the app's touch-target standard.
-			Class("press inline-flex min-h-[44px] items-center gap-1.5 rounded-xl px-3 text-xs font-medium text-slate-400 ring-1 ring-inset ring-white/10 transition hover:bg-white/5 hover:text-slate-100"+focusRing),
+			Class("press inline-flex min-h-[44px] items-center gap-1.5 rounded-xl px-3 text-xs font-medium text-muted ring-1 ring-inset ring-edge transition hover:bg-s2 hover:text-fg"+focusRing),
 			g.Text("Select"),
 		),
 	)
@@ -131,20 +131,20 @@ func taskMergeBar(cards int) g.Node {
 			g.Attr("data-merge-keep", slot),
 			// Populated by taskMergeScript with the chosen task's label. Hidden until
 			// exactly two tasks are checked.
-			Class("hidden press min-h-[44px] items-center justify-center rounded-xl bg-emerald-500/90 px-3 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-400"+focusRing),
+			Class("hidden press min-h-[44px] items-center justify-center rounded-xl bg-accent px-3 text-xs font-semibold text-on-accent transition hover:bg-accent/90"+focusRing),
 		)
 	}
 	return Div(
 		ID("task-merge-bar"),
 		g.Attr("data-merge-bar", ""),
-		Class("mb-3 hidden flex-col gap-2 rounded-2xl border border-white/5 bg-slate-900/70 p-3 ring-1 ring-white/5"),
+		Class("mb-3 hidden flex-col gap-2 rounded-2xl border border-line bg-s1/70 p-3 ring-1 ring-line"),
 		P(
 			g.Attr("data-merge-status", ""),
 			// aria-live so a screen-reader user hears the count change as they check
 			// boxes — without it the whole flow is silent until submit.
 			g.Attr("role", "status"),
 			g.Attr("aria-live", "polite"),
-			Class("text-xs text-slate-400"),
+			Class("text-xs text-muted"),
 			g.Text("Select two tasks to merge."),
 		),
 		FormEl(
@@ -177,7 +177,7 @@ func taskMergeBar(cards int) g.Node {
 			keep("second"),
 		),
 		P(
-			Class("text-[11px] leading-snug text-slate-400"),
+			Class("text-[11px] leading-snug text-muted"),
 			// Says exactly what happens, because "merge" is ambiguous and the
 			// destructive reading (one task disappears) is the one users assume.
 			//
@@ -229,7 +229,7 @@ func taskSelectControl(n notes.Note) g.Node {
 			Type("checkbox"),
 			g.Attr("data-task-select-box", ids),
 			g.Attr("aria-label", "Select task #"+ids+" for merge"),
-			Class("h-5 w-5 cursor-pointer rounded border-white/20 bg-slate-800 text-emerald-500"+focusRing),
+			Class("h-5 w-5 cursor-pointer rounded border-edge bg-s2 text-accent"+focusRing),
 		),
 	)
 }

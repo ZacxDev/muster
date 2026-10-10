@@ -63,12 +63,12 @@ func PrivilegeRequests(list []PrivilegeRequestView) g.Node {
 		return g.Text("")
 	}
 	return Section(
-		Class("rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4 ring-1 ring-amber-500/10"),
+		Class("rounded-2xl border border-st-warning-fg/40 bg-st-warning-bg p-4 ring-1 ring-st-warning-fg/40"),
 		Div(
 			Class("mb-3 flex items-center gap-2"),
 			Span(Class("text-base"), g.Text("🔑")),
-			H2(Class("text-sm font-semibold text-amber-200"), g.Text("Privilege requests")),
-			Span(Class("rounded-full bg-amber-500/20 px-2 py-0.5 text-xs font-semibold text-amber-200"), g.Text(strconv.Itoa(len(list)))),
+			H2(Class("text-sm font-semibold text-st-warning-fg"), g.Text("Privilege requests")),
+			Span(Class("rounded-full bg-st-warning-bg px-2 py-0.5 text-xs font-semibold text-st-warning-fg"), g.Text(strconv.Itoa(len(list)))),
 		),
 		Div(Class("flex flex-col gap-2"), g.Map(list, privilegeRequestCard)),
 	)
@@ -77,26 +77,26 @@ func PrivilegeRequests(list []PrivilegeRequestView) g.Node {
 func privilegeRequestCard(pr PrivilegeRequestView) g.Node {
 	ids := strconv.FormatInt(pr.ID, 10)
 	return Div(
-		Class("rounded-xl bg-slate-900/70 p-3 ring-1 ring-inset ring-white/5"),
+		Class("rounded-xl bg-s1/70 p-3 ring-1 ring-inset ring-line"),
 		Div(
 			Class("flex flex-wrap items-center gap-2"),
-			Span(Class("text-sm font-semibold text-slate-100"), g.Text(pr.AgentName)),
-			Span(Class("text-slate-400"), g.Text("wants")),
+			Span(Class("text-sm font-semibold text-fg"), g.Text(pr.AgentName)),
+			Span(Class("text-muted"), g.Text("wants")),
 			Span(
-				Class("inline-flex items-center rounded-full bg-amber-500/15 px-2.5 py-1 text-xs font-semibold text-amber-300 ring-1 ring-inset ring-amber-500/30"),
+				Class("inline-flex items-center rounded-full bg-st-warning-bg px-2.5 py-1 text-xs font-semibold text-st-warning-fg ring-1 ring-inset ring-st-warning-fg/40"),
 				g.Text(pr.Profile),
 			),
 			Span(Class("flex-1")),
 			cardTime(pr.CreatedAt),
 		),
 		g.If(pr.Reason != "",
-			P(Class("mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-400"), g.Text(pr.Reason)),
+			P(Class("mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted"), g.Text(pr.Reason)),
 		),
 		Div(
 			Class("mt-3 flex items-center gap-2"),
 			Button(
 				Type("button"),
-				Class("press inline-flex items-center justify-center rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-400"),
+				Class("press inline-flex items-center justify-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:bg-accent/90"),
 				hx("hx-post", "/ui/privilege-requests/"+ids+"/approve"),
 				hx("hx-target", "#privilege-requests"),
 				hx("hx-swap", "morph:innerHTML"),
@@ -105,7 +105,7 @@ func privilegeRequestCard(pr PrivilegeRequestView) g.Node {
 			),
 			Button(
 				Type("button"),
-				Class("press inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium text-slate-300 ring-1 ring-inset ring-white/10 transition hover:bg-white/5 hover:text-rose-300"),
+				Class("press inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium text-fg2 ring-1 ring-inset ring-edge transition hover:bg-s2 hover:text-st-error-fg"),
 				hx("hx-post", "/ui/privilege-requests/"+ids+"/deny"),
 				hx("hx-target", "#privilege-requests"),
 				hx("hx-swap", "morph:innerHTML"),
@@ -147,42 +147,42 @@ func RenderProfiles(w io.Writer, list []ProfileView) error {
 func Profiles(list []ProfileView) g.Node {
 	return Section(
 		ID("privilege-profiles"),
-		Class("rounded-2xl border border-white/5 bg-slate-900/50 p-4 ring-1 ring-white/5"),
+		Class("rounded-2xl border border-line bg-s1/50 p-4 ring-1 ring-line"),
 		Div(
 			Class("mb-3 flex items-center gap-2"),
 			Span(Class("text-base"), g.Text("🛡️")),
-			H2(Class("text-sm font-semibold text-slate-200"), g.Text("Privilege profiles")),
-			Span(Class("rounded-full bg-slate-700/50 px-2 py-0.5 text-xs font-semibold text-slate-300"), g.Text(strconv.Itoa(len(list)))),
+			H2(Class("text-sm font-semibold text-fg"), g.Text("Privilege profiles")),
+			Span(Class("rounded-full bg-s3/50 px-2 py-0.5 text-xs font-semibold text-fg2"), g.Text(strconv.Itoa(len(list)))),
 		),
 		g.If(len(list) == 0,
-			P(Class("mb-3 text-xs text-slate-400"), g.Text("No profiles yet.")),
+			P(Class("mb-3 text-xs text-muted"), g.Text("No profiles yet.")),
 		),
 		g.If(len(list) > 0,
 			Div(Class("mb-3 flex flex-col gap-2"), g.Map(list, profileCard)),
 		),
-		P(Class("text-xs text-slate-400"), g.Text("Create via the Operator (chat) — ask it to define an access profile.")),
+		P(Class("text-xs text-muted"), g.Text("Create via the Operator (chat) — ask it to define an access profile.")),
 	)
 }
 
 func profileCard(p ProfileView) g.Node {
 	ids := strconv.FormatInt(p.ID, 10)
 	return Div(
-		Class("flex items-start gap-2 rounded-xl bg-slate-950/50 p-3 ring-1 ring-inset ring-white/5"),
+		Class("flex items-start gap-2 rounded-xl bg-bg/50 p-3 ring-1 ring-inset ring-line"),
 		Div(
 			Class("min-w-0 flex-1"),
 			Div(
 				Class("flex flex-wrap items-center gap-2"),
-				Span(Class("rounded-md bg-indigo-500/15 px-2 py-0.5 text-xs font-semibold text-indigo-300 ring-1 ring-inset ring-indigo-500/30"), g.Text(p.Name)),
-				Span(Class("text-xs text-slate-400"), g.Text(p.Summary)),
+				Span(Class("rounded-md bg-st-review-bg px-2 py-0.5 text-xs font-semibold text-st-review-fg ring-1 ring-inset ring-st-review-fg/40"), g.Text(p.Name)),
+				Span(Class("text-xs text-muted"), g.Text(p.Summary)),
 			),
 			g.If(p.Description != "",
-				P(Class("mt-1 break-words text-xs text-slate-400"), g.Text(p.Description)),
+				P(Class("mt-1 break-words text-xs text-muted"), g.Text(p.Description)),
 			),
 		),
 		Button(
 			Type("button"),
 			g.Attr("aria-label", "Delete profile"),
-			Class("press inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-slate-400 transition hover:bg-white/5 hover:text-rose-300"),
+			Class("press inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-s2 hover:text-st-error-fg"),
 			hx("hx-delete", "/privileges/"+ids),
 			// `closest section` rather than `#privilege-profiles`: the list this
 			// card is IN, which is true wherever the partial is mounted. See the
@@ -220,15 +220,15 @@ func RenderProfileGrantOptions(w io.Writer, options []ProfileOption) error {
 // granted least-privilege bundles at creation time. An empty list → a muted note.
 func ProfileGrantChecklist(options []ProfileOption) g.Node {
 	if len(options) == 0 {
-		return P(Class("px-1 py-1.5 text-xs text-slate-400"), g.Text("No privilege profiles defined."))
+		return P(Class("px-1 py-1.5 text-xs text-muted"), g.Text("No privilege profiles defined."))
 	}
 	rows := make([]g.Node, 0, len(options))
 	for _, o := range options {
 		rows = append(rows, Label(
-			Class("flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-slate-200 transition hover:bg-white/5"),
+			Class("flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-fg transition hover:bg-s2"),
 			Input(
 				Type("checkbox"), Name("grant_profile"), Value(strconv.FormatInt(o.ID, 10)),
-				Class("h-4 w-4 rounded border-white/20 bg-slate-950 text-emerald-500 focus:ring-2 focus:ring-emerald-500/50"),
+				Class("h-4 w-4 rounded border-edge bg-bg text-accent focus:ring-2 focus:ring-focus"),
 			),
 			Span(Class("truncate"), g.Text(o.Name)),
 		))
@@ -242,7 +242,7 @@ func ProfileGrantChecklist(options []ProfileOption) g.Node {
 // pre-checks are server-resolved. An empty options list → the same muted note.
 func profileGrantChecklistChecked(options []ProfileOption, selected []int64) g.Node {
 	if len(options) == 0 {
-		return P(Class("px-1 py-1.5 text-xs text-slate-400"), g.Text("No privilege profiles defined."))
+		return P(Class("px-1 py-1.5 text-xs text-muted"), g.Text("No privilege profiles defined."))
 	}
 	checked := make(map[int64]bool, len(selected))
 	for _, id := range selected {
@@ -252,13 +252,13 @@ func profileGrantChecklistChecked(options []ProfileOption, selected []int64) g.N
 	for _, o := range options {
 		box := []g.Node{
 			Type("checkbox"), Name("grant_profile"), Value(strconv.FormatInt(o.ID, 10)),
-			Class("h-4 w-4 rounded border-white/20 bg-slate-950 text-emerald-500 focus:ring-2 focus:ring-emerald-500/50"),
+			Class("h-4 w-4 rounded border-edge bg-bg text-accent focus:ring-2 focus:ring-focus"),
 		}
 		if checked[o.ID] {
 			box = append(box, g.Attr("checked", ""))
 		}
 		rows = append(rows, Label(
-			Class("flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-slate-200 transition hover:bg-white/5"),
+			Class("flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-fg transition hover:bg-s2"),
 			Input(box...),
 			Span(Class("truncate"), g.Text(o.Name)),
 		))
@@ -281,10 +281,10 @@ func AgentGrants(agentID int64, grants []GrantView, options []ProfileOption) g.N
 		Div(
 			Class("flex items-center gap-2"),
 			Span(Class("text-base"), g.Text("🔑")),
-			H3(Class("text-sm font-semibold text-slate-200"), g.Text("Privileges")),
+			H3(Class("text-sm font-semibold text-fg"), g.Text("Privileges")),
 		),
 		g.If(len(grants) == 0,
-			P(Class("text-xs text-slate-400"), g.Text("No privileges granted.")),
+			P(Class("text-xs text-muted"), g.Text("No privileges granted.")),
 		),
 		g.If(len(grants) > 0,
 			Div(Class("flex flex-wrap gap-2"), g.Map(grants, func(gr GrantView) g.Node {
@@ -298,12 +298,12 @@ func AgentGrants(agentID int64, grants []GrantView, options []ProfileOption) g.N
 func grantChip(agentIDs string, gr GrantView) g.Node {
 	pid := strconv.FormatInt(gr.ProfileID, 10)
 	return Span(
-		Class("inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-semibold text-emerald-300 ring-1 ring-inset ring-emerald-500/30"),
+		Class("inline-flex items-center gap-1.5 rounded-full bg-accent/15 px-2.5 py-1 text-xs font-semibold text-accent ring-1 ring-inset ring-accent/30"),
 		g.Text(gr.ProfileName),
 		Button(
 			Type("button"),
 			g.Attr("aria-label", "Revoke "+gr.ProfileName),
-			Class("press -mr-1 inline-flex h-4 w-4 items-center justify-center rounded-full text-emerald-300/70 transition hover:bg-white/10 hover:text-rose-300"),
+			Class("press -mr-1 inline-flex h-4 w-4 items-center justify-center rounded-full text-accent transition hover:bg-s3 hover:text-st-error-fg"),
 			hx("hx-delete", "/agents/"+agentIDs+"/grants/"+pid),
 			hx("hx-target", "#agent-grants"),
 			hx("hx-swap", "morph:innerHTML"),
@@ -331,11 +331,11 @@ func grantForm(agentIDs string, options []ProfileOption) g.Node {
 			Name("profile_id"),
 			Required(),
 			g.Attr("aria-label", "Profile to grant"),
-			Class("rounded-lg border-0 bg-slate-950 px-2.5 py-1.5 text-xs text-slate-100 ring-1 ring-inset ring-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+			Class("rounded-lg border-0 bg-bg px-2.5 py-1.5 text-xs text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
 			g.Group(opts),
 		),
 		Button(Type("submit"),
-			Class("press inline-flex items-center justify-center rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-200 ring-1 ring-inset ring-white/10 transition hover:bg-slate-700"),
+			Class("press inline-flex items-center justify-center rounded-lg bg-s2 px-3 py-1.5 text-xs font-medium text-fg ring-1 ring-inset ring-edge transition hover:bg-s3"),
 			hx("hx-disabled-elt", "this"), g.Text("Grant")),
 	)
 }

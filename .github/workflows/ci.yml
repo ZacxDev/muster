@@ -229,7 +229,7 @@ jobs:
   # 🔴 TAILWIND CANNOT FAIL THE WAY THIS NEEDS IT TO, WHICH IS THE WHOLE POINT. A
   # content glob that matches nothing is not an error and not a non-zero exit — it
   # emits a smaller, perfectly valid stylesheet and exits 0. Measured on this tree:
-  # 5,594 valid bytes instead of ~38,000. `make css-check` asserts the OUTPUT
+  # 7,139 valid bytes instead of ~38,000. `make css-check` asserts the OUTPUT
   # (control classes present, committed copy byte-identical via `cmp`), which is
   # the only thing that can see that.
   css:

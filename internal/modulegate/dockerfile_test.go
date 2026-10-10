@@ -17,7 +17,7 @@ import (
 // smaller, perfectly valid stylesheet and a page that renders unstyled IN THE
 // CONTAINER while looking correct on a dev box, where the file is present.
 // Measured on this tree with one glob pointed at a directory that does not
-// exist: 5,594 valid bytes instead of ~38,000, exit 0, no warning.
+// exist: 7,139 valid bytes instead of ~38,000, exit 0, no warning.
 //
 // `make css-check` catches this AT BUILD TIME and the Dockerfile runs it — but
 // only for the classes CSS_REQUIRED_CLASSES names. This test catches it at
