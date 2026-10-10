@@ -200,17 +200,15 @@ func TestRootScopedPWADocumentsAreServed(t *testing.T) {
 }
 
 // TestEveryManifestIconShips closes the transitive half: the manifest is served
-// from root and names four icons the scanner above cannot see, because no Go
-// source mentions them.
+// from root and names icons, shortcut icons and screenshots the scanner above
+// cannot see, because no view mentions them.
 //
-// 🔴 THE PATHS ARE READ OUT OF THE MANIFEST ITSELF, NOT LISTED HERE. A fifth
-// icon added to the manifest is then covered automatically; a hardcoded list
-// would not be.
+// 🔴 THE PATHS ARE READ OUT OF THE SERVED MANIFEST, NOT LISTED HERE — and not
+// out of a file either: the manifest is rendered by a handler now (pwa.go), so
+// the bytes a browser receives are the only honest source. A new image added to
+// the manifest is then covered automatically.
 func TestEveryManifestIconShips(t *testing.T) {
-	b, err := web.Static.ReadFile("static/manifest.webmanifest")
-	if err != nil {
-		t.Fatalf("read the manifest: %v", err)
-	}
+	_, b := servedManifest(t)
 	refs := staticRef.FindAllString(string(b), -1)
 	if len(refs) < 2 {
 		t.Fatalf("found only %d icon reference(s) in the manifest; the pattern is not "+

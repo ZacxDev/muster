@@ -59,6 +59,10 @@ var notLinkedLedger = map[string]string{
 
 	"internal/modulegate": "this package. Test files only; it has no importable symbol.",
 
+	"e2e/seed": "the browser suite's fixture loader (`go run ./e2e/seed`). It TRUNCATES " +
+		"the board before seeding, so it must never be reachable from a shipped binary; it " +
+		"also refuses any database whose name does not end in _e2e.",
+
 	// 🔴 internal/agentspec AND internal/provision/k8s WERE BOTH HERE, AND THEIR
 	// DEPARTURE IS THE ONLY MECHANICAL SIGNAL PLAN STEP 22b HAD. Both entries said
 	// so in their own text: agentspec's read "THIS ENTRY DISAPPEARING IS THE

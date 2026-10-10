@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 192 192">
+  <!-- Monochrome notification badge: white on transparent; Android uses the alpha only. -->
+  <defs>
+    <mask id="m"><rect width="192" height="192" fill="#fff"/>
+      <path d="m42 47.5 9 9 17-18" fill="none" stroke="#000" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="m42 97.5 9 9 17-18" fill="none" stroke="#000" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <g fill="#fff" mask="url(#m)">
+    <circle cx="55" cy="48" r="26"/>
+    <circle cx="55" cy="98" r="26"/>
+  </g>
+  <circle cx="55" cy="148" r="20" fill="none" stroke="#fff" stroke-width="10"/>
+  <rect x="96" y="38" width="80" height="20" rx="10" fill="#fff"/>
+  <rect x="96" y="88" width="64" height="20" rx="10" fill="#fff"/>
+  <rect x="96" y="138" width="48" height="20" rx="10" fill="#fff"/>
+</svg>

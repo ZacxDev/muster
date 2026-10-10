@@ -49,7 +49,8 @@ func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 				Meta(Charset("utf-8")),
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
-				Meta(Name("theme-color"), Content("#0b0f17")),
+				ThemeHead(),
+				manifestLink(),
 				TitleEl(g.Text(heading+" · muster")),
 				Link(Rel("stylesheet"), Href("/static/app.css")),
 				Script(Src("/static/vendor/htmx.min.js"), Defer()),
@@ -62,7 +63,7 @@ func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 				faroHead(),
 			),
 			Body(
-				Class("min-h-dvh bg-slate-950 text-slate-100 antialiased selection:bg-emerald-500/30"),
+				Class("min-h-dvh bg-bg text-fg antialiased selection:bg-accent/30"),
 				// SPA navigation for the sidebar tabs and any other internal link.
 				hx("hx-boost", "true"),
 				// morph must be ACTIVE on an ancestor of the card, or every
@@ -129,6 +130,9 @@ func TaskDetailPage(v TaskCardView, feat Features) g.Node {
 				// It defines window.toast, which resyncScript's listeners call — so it
 				// must be present, and it is fine for it to load after them.
 				appScript(feat),
+				// The worker, update toast and app badge — on every document, not
+				// just the shell, so an update is offered wherever the operator is.
+				pwaChrome(),
 			),
 		),
 	)
@@ -179,7 +183,7 @@ func taskDetailHeader() g.Node {
 		// is rendered INTO (TaskDetailPage's lg:pl-72 Div), which is where the
 		// shell puts it too. (This comment used to claim lg:pl-72 was on this
 		// element — it never was.)
-		Class("sticky top-0 z-20 border-b border-white/5 bg-slate-950/80 backdrop-blur"),
+		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur"),
 		Div(
 			// Same contentWidth() as the <main> below, so the back link and the card
 			// under it cannot sit at different left edges.
@@ -205,7 +209,7 @@ func taskDetailHeader() g.Node {
 				hx("hx-boost", "false"),
 				g.Attr("data-task-back", ""),
 				g.Attr("aria-label", "Back to tasks"),
-				Class("press inline-flex h-11 min-h-[44px] items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-slate-300 transition hover:bg-white/5 hover:text-slate-100"),
+				Class("press inline-flex h-11 min-h-[44px] items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg"),
 				g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15l-5-5 5-5"/></svg>`),
 				g.Text("Tasks"),
 			),

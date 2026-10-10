@@ -223,7 +223,7 @@ func ChiefPanelToggle() g.Node {
 		g.Attr(chiefPanelToggleAttr, ""),
 		g.Attr("aria-controls", chiefPanelID),
 		g.Attr("aria-expanded", "false"),
-		Class("press inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] font-medium text-slate-300 transition hover:bg-slate-800 hover:text-slate-100"),
+		Class("press min-h-[44px] inline-flex items-center gap-1 rounded-md border border-edge bg-s1 px-2 py-1 text-[11px] font-medium text-fg2 transition hover:bg-s2 hover:text-fg"),
 		g.Text("Ask chief"),
 	)
 }
@@ -248,7 +248,7 @@ func ChiefPanel() g.Node {
 		// reader's radar, which `translate-x-full` alone does not do.
 		g.Attr("inert", "inert"),
 		g.Attr("aria-label", "Chief"),
-		Class("fixed inset-y-0 right-0 z-40 flex w-full max-w-full translate-x-full flex-col border-l border-slate-800 bg-slate-950 shadow-2xl transition-transform duration-200 sm:w-[28rem]"),
+		Class("fixed inset-y-0 right-0 z-40 flex w-full max-w-full translate-x-full flex-col border-l border-line bg-bg shadow-2xl transition-transform duration-200 sm:w-[28rem]"),
 		// The resize grip: a thin strip down the left edge.
 		//
 		// ⚠ `role=separator` + `aria-orientation=vertical` + tabindex is the
@@ -261,7 +261,7 @@ func ChiefPanel() g.Node {
 			g.Attr("aria-orientation", "vertical"),
 			g.Attr("aria-label", "Resize the chief panel"),
 			g.Attr("tabindex", "0"),
-			Class("absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize bg-transparent transition hover:bg-emerald-500/40 focus:bg-emerald-500/60 focus:outline-none"),
+			Class("absolute inset-y-0 left-0 z-10 w-1.5 cursor-col-resize bg-transparent transition hover:bg-accent/40 focus:bg-accent/60 focus:outline-none"),
 		),
 		// ⚠ A <div>, NOT A <header>, AND THAT IS A GUARD'S FINDING RATHER THAN A
 		// preference. This panel is rendered into the SHELL, which serves every tab
@@ -271,11 +271,11 @@ func ChiefPanel() g.Node {
 		// here broke them on both counts. The title bar of a slide-out is not the
 		// document's banner in any case.
 		Div(
-			Class("flex flex-none items-center justify-between gap-2 border-b border-slate-800 px-3 py-2"),
+			Class("flex flex-none items-center justify-between gap-2 border-b border-line px-3 py-2"),
 			Div(
 				Class("flex items-baseline gap-2"),
-				Span(Class("text-sm font-semibold text-slate-100"), g.Text("Chief")),
-				Span(Class("text-[10px] text-slate-400"), g.Text("the fleet's orchestrator")),
+				Span(Class("text-sm font-semibold text-fg"), g.Text("Chief")),
+				Span(Class("text-[10px] text-muted"), g.Text("the fleet's orchestrator")),
 			),
 			// The launcher slot: new-thread + thread-list, filled out of band by the
 			// body partial (see chiefPanelActionsID). It renders EMPTY here rather
@@ -288,7 +288,7 @@ func ChiefPanel() g.Node {
 				Type("button"),
 				g.Attr(chiefPanelCloseAttr, ""),
 				g.Attr("aria-label", "Close the chief panel"),
-				Class("press inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"),
+				Class("press inline-flex h-11 w-11 items-center justify-center rounded-md text-muted transition hover:bg-s2 hover:text-fg"),
 				g.Text("✕"),
 			),
 		),
@@ -315,7 +315,7 @@ func ChiefPanel() g.Node {
 			hx("hx-trigger", "muster:chief-open from:document"),
 			hx("hx-target", "this"),
 			hx("hx-swap", "innerHTML"),
-			P(Class("text-xs text-slate-400"), g.Text("Loading…")),
+			P(Class("text-xs text-muted"), g.Text("Loading…")),
 		),
 	)
 }
@@ -341,7 +341,7 @@ func chiefPanelBody(v ChiefPanelView) g.Node {
 			chiefPanelActions(v),
 			Div(
 				g.Attr(chiefPanelMissingAttr, ""),
-				Class("space-y-2 text-xs leading-relaxed text-slate-400"),
+				Class("space-y-2 text-xs leading-relaxed text-muted"),
 				P(g.Text(reason)),
 				// 🔴 IT SAYS WHAT IS MISSING AND WHERE TO FIX IT. "Chief is
 				// unavailable" with no further text is the shape that gets reported as
@@ -439,7 +439,7 @@ func chiefNewThreadButton(agentID int64) g.Node {
 			Type("submit"),
 			g.Attr("aria-label", "New thread"),
 			g.Attr("title", "New thread"),
-			Class("press inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition hover:bg-slate-800 hover:text-slate-100"),
+			Class("press inline-flex h-11 w-11 items-center justify-center rounded-md text-muted transition hover:bg-s2 hover:text-fg"),
 			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`),
 		),
 	)
@@ -466,19 +466,19 @@ func chiefIntro() g.Node {
 			// the two are ever nested: the operator must always press Send themselves.
 			Type("button"),
 			g.Attr(chiefQuickActionAttr, a),
-			Class("press inline-flex min-h-[36px] items-center rounded-lg bg-slate-800/80 px-3 py-1.5 text-left text-xs text-slate-200 ring-1 ring-inset ring-white/10 transition hover:bg-slate-700 hover:text-slate-50"),
+			Class("press inline-flex min-h-[36px] items-center rounded-lg bg-s2/80 px-3 py-1.5 text-left text-xs text-fg ring-1 ring-inset ring-edge transition hover:bg-s3 hover:text-fg"),
 			g.Text(a),
 		))
 	}
 	return Div(
 		g.Attr(chiefIntroAttr, ""),
-		Class("flex flex-col gap-3 rounded-xl bg-slate-900/60 p-3 ring-1 ring-inset ring-white/5"),
+		Class("flex flex-col gap-3 rounded-xl bg-s1/60 p-3 ring-1 ring-inset ring-line"),
 		Div(
 			Class("flex flex-wrap gap-2"),
 			g.Group(actions),
 		),
 		P(
-			Class("text-[10px] text-slate-400"),
+			Class("text-[10px] text-muted"),
 			g.Text("Tapping one fills the box below — you send it."),
 		),
 	)
@@ -587,7 +587,7 @@ func RenderChiefThreadRows(w io.Writer, v ChiefThreadsView) error {
 // distinguishes them — so rows rendered here are a list of UNKNOWN completeness, drawn
 // as tappable, active-highlighted, visually identical to a whole one. An operator who
 // reads the rows and not the sentence above them draws exactly the false conclusion
-// this arc exists to prevent. With the rows gone the amber sentence is the only thing
+// this arc exists to prevent. With the rows gone the warning sentence is the only thing
 // in the container, so it cannot be skimmed past, and nothing reachable is lost.
 //
 // 🔴 AND THE RETRY IS IN PLACE, WHICH IS THE CHEAPEST ONE AND NOT THE ONE THIS COMMENT
@@ -610,9 +610,9 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 		if v.Reason != "" {
 			msg = v.Reason
 		}
-		// Not slate: the operator has to be able to tell at a glance that they are
+		// Not the muted text colour: the operator has to be able to tell at a glance that they are
 		// looking at a broken read rather than at an answer.
-		return chiefThreadNotice(chiefThreadStateError, msg, "text-amber-300")
+		return chiefThreadNotice(chiefThreadStateError, msg, "text-st-warning-fg")
 	}
 	if len(v.Threads) == 0 {
 		// Two remaining facts, two different sentences, and the STATE on the element so
@@ -621,7 +621,7 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 		if v.Searched {
 			state, msg = chiefThreadStateNoMatch, "No thread matches that."
 		}
-		return chiefThreadNotice(state, msg, "text-slate-400")
+		return chiefThreadNotice(state, msg, "text-muted")
 	}
 	rows := make([]g.Node, 0, len(v.Threads))
 	for _, sess := range v.Threads {
@@ -631,9 +631,9 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 		}
 		cls := "press flex min-h-[44px] w-full flex-col items-start gap-0.5 rounded-xl px-3 py-2 text-left text-sm transition ring-1 ring-inset "
 		if sess.Active {
-			cls += "bg-emerald-500/15 text-emerald-100 ring-emerald-500/50"
+			cls += "bg-accent/15 text-fg ring-accent/50"
 		} else {
-			cls += "bg-slate-900 text-slate-300 ring-white/10 hover:bg-slate-800"
+			cls += "bg-s1 text-fg2 ring-line hover:bg-s2"
 		}
 		id := strconv.FormatInt(sess.ID, 10)
 		rows = append(rows, Button(
@@ -648,13 +648,13 @@ func chiefThreadRows(v ChiefThreadsView) g.Node {
 				Class("flex w-full items-baseline gap-2"),
 				Span(Class("mr-auto truncate"), g.Text(title)),
 				g.If(!sess.LastActive.IsZero(),
-					Span(Class("shrink-0 text-xs text-slate-400"), g.Text(relTimeString(sess.LastActive)+" ago")),
+					Span(Class("shrink-0 text-xs text-muted"), g.Text(relTimeString(sess.LastActive)+" ago")),
 				),
 			),
 			// The matched excerpt, body matches only. A title-only match renders no
 			// snippet — see SessionView.Snippet.
 			g.If(sess.Snippet != "", Span(
-				Class("line-clamp-2 w-full text-[11px] leading-snug text-slate-400 [overflow-wrap:anywhere]"),
+				Class("line-clamp-2 w-full text-[11px] leading-snug text-muted [overflow-wrap:anywhere]"),
 				g.Text(sess.Snippet),
 			)),
 		))
@@ -730,10 +730,10 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 		Div(
 			g.Attr("role", "dialog"),
 			g.Attr("aria-label", "Threads"),
-			Class("absolute inset-0 z-20 flex translate-x-full flex-col rounded-lg bg-slate-950 ring-1 ring-white/10 transition-transform duration-200 ease-out peer-checked:translate-x-0"),
+			Class("absolute inset-0 z-20 flex translate-x-full flex-col rounded-lg bg-bg ring-1 ring-line transition-transform duration-200 ease-out peer-checked:translate-x-0"),
 			Div(
-				Class("flex flex-none items-center gap-2 border-b border-white/5 px-3 py-2"),
-				H2(Class("mr-auto text-sm font-semibold text-slate-200"), g.Text("Threads")),
+				Class("flex flex-none items-center gap-2 border-b border-line px-3 py-2"),
+				H2(Class("mr-auto text-sm font-semibold text-fg"), g.Text("Threads")),
 				// role="button" + tabindex="0" IS claimed here and IS honoured, by
 				// appScript's delegated label[role="button"] Enter/Space handler — the
 				// same contract chatHistoryButton relies on. The backdrop above is
@@ -744,7 +744,7 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 					g.Attr("for", chiefThreadsToggleID),
 					g.Attr("role", "button"),
 					g.Attr("tabindex", "0"),
-					Class("press inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/5 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"),
+					Class("press inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 					g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 					Span(Class("sr-only"), g.Text("Close threads")),
 				),
@@ -763,7 +763,7 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 					g.Attr("autocomplete", "off"),
 					g.Attr("aria-label", "Search threads"),
 					Placeholder("Search threads and messages…"),
-					Class("min-h-[40px] w-full rounded-lg border-0 bg-slate-900 px-3 py-2 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+					Class("min-h-[40px] w-full rounded-lg border-0 bg-s1 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 					// The ACTIVE thread travels in the url so the answer can highlight it
 					// without the handler resolving (and therefore possibly CREATING) a
 					// session on a read — see handleChiefThreadSearch.

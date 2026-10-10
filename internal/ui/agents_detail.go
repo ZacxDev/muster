@@ -134,7 +134,8 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				Meta(Charset("utf-8")),
 				Meta(Name("viewport"), Content("width=device-width, initial-scale=1, viewport-fit=cover")),
 				Meta(Name("color-scheme"), Content("dark light")),
-				Meta(Name("theme-color"), Content("#0b0f17")),
+				ThemeHead(),
+				manifestLink(),
 				// Stripped too: it is the same string on the same document, and a tab
 				// title reading `**fix** the `+"`chip`"+` row · muster` is the same defect in
 				// a third place.
@@ -151,7 +152,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// had no definite height, so the flex children grew with content and the
 				// WINDOW scrolled instead — making logEl.scrollTop a no-op (autoscroll
 				// silently did nothing). The input bar is position:fixed (out of flow).
-				Class("flex h-dvh flex-col overflow-hidden bg-slate-950 text-slate-100 antialiased"),
+				Class("flex h-dvh flex-col overflow-hidden bg-bg text-fg antialiased"),
 				// SPA navigation: boost the sidebar tabs + any internal links into AJAX
 				// body-swaps. The chat WebSocket is made boost-safe (torn down on the
 				// outgoing full-body swap, re-connected via htmx:load on arrival) in
@@ -215,6 +216,9 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// implementation — the old standalone comboboxScript was deleted,
 				// retiring the two-copies-of-the-combobox-JS debt.
 				appScript(feat),
+				// The worker, update toast and app badge — on every document, not
+				// just the shell, so an update is offered wherever the operator is.
+				pwaChrome(),
 			),
 		),
 	)
@@ -224,7 +228,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 	return Header(
 		// lg:pl-72 clears the persistent desktop sidebar (mirrors Page's content
 		// column); on mobile the sidebar is a slide-out overlay so no offset.
-		Class("sticky top-0 z-20 border-b border-white/5 bg-slate-950/80 backdrop-blur lg:pl-72"),
+		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur lg:pl-72"),
 		Div(
 			// contentWidth() — the SAME helper the <main> below it uses, so the
 			// header's left edge and the chat column's left edge cannot drift apart.
@@ -271,13 +275,13 @@ func agentTitle(v AgentDetailView) g.Node {
 			Type("button"),
 			g.Attr("aria-label", "View task details"),
 			g.Attr("title", "View task details"),
-			Class("group flex w-full items-center gap-1 text-left text-sm font-medium text-slate-100 transition hover:text-white"),
+			Class("group flex min-h-[44px] w-full items-center gap-1 text-left text-sm font-medium text-fg transition hover:text-accent"),
 			hx("hx-get", "/ui/agents/"+v.Name+"/task"),
 			hx("hx-target", "#task-modal"),
 			hx("hx-swap", "innerHTML"),
 			Span(Class("min-w-0 break-all"), title),
 			// A subtle chevron hints the title is tappable.
-			g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 text-slate-400 transition group-hover:text-slate-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`),
+			g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 text-muted transition group-hover:text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`),
 		),
 	)
 }
@@ -325,16 +329,16 @@ func taskModal(v TaskModalView) g.Node {
 	comments := make([]g.Node, 0, len(v.Comments))
 	for _, c := range v.Comments {
 		comments = append(comments, Div(
-			Class("rounded-xl bg-slate-950/50 p-3 ring-1 ring-inset ring-white/5"),
+			Class("rounded-xl bg-bg/50 p-3 ring-1 ring-inset ring-line"),
 			g.If(c.Retracted, g.Attr("data-comment-retracted", "")),
-			Div(Class("mb-1 flex items-center gap-2 text-[11px] text-slate-400"),
-				Span(Class("font-medium text-slate-400"), g.Text(displayOr(c.Author, "comment"))),
+			Div(Class("mb-1 flex items-center gap-2 text-[11px] text-muted"),
+				Span(Class("font-medium text-muted"), g.Text(displayOr(c.Author, "comment"))),
 				g.If(c.When != "", Span(g.Text("· "+c.When))),
 			),
 			// Same tombstone as the task card (commentTombstone, internal/ui/notes.go)
 			// — one placeholder, not a second spelling that could drift.
 			g.If(c.Retracted, commentTombstone()),
-			g.If(!c.Retracted, Div(Class("text-sm text-slate-200 [overflow-wrap:anywhere]"), renderMarkdown(c.Body))),
+			g.If(!c.Retracted, Div(Class("text-sm text-fg [overflow-wrap:anywhere]"), renderMarkdown(c.Body))),
 		))
 	}
 	return Div(
@@ -344,16 +348,16 @@ func taskModal(v TaskModalView) g.Node {
 		// Backdrop: click to close.
 		Div(Class("absolute inset-0 bg-black/60 backdrop-blur-sm"), hx("hx-on:click", close)),
 		Div(
-			Class("relative z-10 flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-slate-900 shadow-2xl ring-1 ring-white/10 sm:rounded-2xl"),
+			Class("relative z-10 flex max-h-[85dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-s1 shadow-2xl ring-1 ring-line sm:rounded-2xl"),
 			Div(
-				Class("flex items-center gap-2 border-b border-white/5 px-4 py-3"),
-				H2(Class("text-sm font-semibold text-slate-100"), g.Text("Task #"+strconv.FormatInt(v.ID, 10))),
+				Class("flex items-center gap-2 border-b border-line px-4 py-3"),
+				H2(Class("text-sm font-semibold text-fg"), g.Text("Task #"+strconv.FormatInt(v.ID, 10))),
 				taskStatusBadge(v.Status),
 				Span(Class("flex-1")),
 				Button(
 					Type("button"),
 					g.Attr("aria-label", "Close"),
-					Class("press inline-flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/5 hover:text-slate-100"),
+					Class("press inline-flex h-11 w-11 items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"),
 					hx("hx-on:click", close),
 					g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>`),
 				),
@@ -361,10 +365,10 @@ func taskModal(v TaskModalView) g.Node {
 			Div(
 				Class("flex-1 overflow-auto px-4 py-3"),
 				g.If(len(meta) > 0, Div(Class("mb-3 flex flex-wrap gap-1.5"), g.Group(meta))),
-				Div(Class("text-sm text-slate-200 [overflow-wrap:anywhere]"), renderMarkdown(v.Body)),
+				Div(Class("text-sm text-fg [overflow-wrap:anywhere]"), renderMarkdown(v.Body)),
 				g.If(len(comments) > 0, Div(
-					Class("mt-4 flex flex-col gap-2 border-t border-white/5 pt-3"),
-					Span(Class("text-[11px] font-medium uppercase tracking-wide text-slate-400"), g.Text("Comments")),
+					Class("mt-4 flex flex-col gap-2 border-t border-line pt-3"),
+					Span(Class("text-[11px] font-medium uppercase tracking-wide text-muted"), g.Text("Comments")),
 					g.Group(comments),
 				)),
 			),
@@ -374,28 +378,20 @@ func taskModal(v TaskModalView) g.Node {
 
 func taskMetaChip(label, val string) g.Node {
 	return Span(
-		Class("inline-flex max-w-full items-center gap-1 truncate rounded-full bg-slate-800/80 px-2.5 py-1 text-[11px] text-slate-400 ring-1 ring-inset ring-white/5"),
-		Span(Class("text-slate-400"), g.Text(label)),
+		Class("inline-flex max-w-full items-center gap-1 truncate rounded-full bg-s2/80 px-2.5 py-1 text-[11px] text-muted ring-1 ring-inset ring-line"),
+		Span(Class("text-muted"), g.Text(label)),
 		g.Text(val),
 	)
 }
 
-// taskStatusBadge renders a small status pill for the modal header.
+// taskStatusBadge renders a small status pill for the modal header: the task
+// status's glyph and its stored word, on that status's chip colours.
 func taskStatusBadge(status string) g.Node {
-	tone := "bg-slate-700/60 text-slate-300"
-	switch status {
-	case string(notes.StatusComplete):
-		tone = "bg-emerald-500/20 text-emerald-300"
-	case string(notes.StatusReadyForReview):
-		tone = "bg-amber-500/20 text-amber-300"
-	case string(notes.StatusInProgress):
-		tone = "bg-indigo-500/20 text-indigo-300"
-	}
 	label := status
 	if label == "" {
 		label = "open"
 	}
-	return Span(Class("inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium "+tone), g.Text(label))
+	return statusChip(taskGlyphKind(status), label)
 }
 
 // sessionDrawerID is the checkbox-hack toggle for the PAGE surfaces' drawer.
@@ -442,7 +438,7 @@ func chatHistoryButton(forID string) g.Node {
 		g.Attr("aria-label", "Chat history"),
 		g.Attr("role", "button"),
 		g.Attr("tabindex", "0"),
-		Class("press inline-flex h-11 w-11 min-h-[44px] cursor-pointer items-center justify-center rounded-lg text-slate-300 transition hover:bg-white/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"),
+		Class("press inline-flex h-11 w-11 min-h-[44px] cursor-pointer items-center justify-center rounded-lg text-fg2 transition hover:bg-s2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>`),
 	)
 }
@@ -462,7 +458,7 @@ func newChatButton(agentID int64) g.Node {
 			Type("submit"),
 			g.Attr("aria-label", "New chat session"),
 			g.Attr("title", "New chat"),
-			Class("press inline-flex h-11 w-11 min-h-[44px] cursor-pointer items-center justify-center rounded-lg text-slate-300 transition hover:bg-white/5"),
+			Class("press inline-flex h-11 w-11 min-h-[44px] cursor-pointer items-center justify-center rounded-lg text-fg2 transition hover:bg-s2"),
 			g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`),
 		),
 	)
@@ -519,13 +515,13 @@ func agentModelControl(v AgentDetailView) g.Node {
 			// "deepseek-v4-pro" — while the hidden input still submits the FULL slug
 			// so model switching is unaffected. Empty model ("") → the default label.
 			modelFieldWithDisplay(v.Model, "Selecting a model restarts the agent", modelName(v.Model)),
-			Span(g.Attr("data-model-saving", ""), Class("mt-1 hidden text-[11px] text-amber-300/90"), g.Text("↳ restarting…")),
+			Span(g.Attr("data-model-saving", ""), Class("mt-1 hidden text-[11px] text-st-warning-fg"), g.Text("↳ restarting…")),
 		),
 		// Surface the agent's repo alongside the model, value only (no "repo" label —
 		// the slug speaks for itself). Operator has no repo → omitted. shrink-0 so
 		// the model selector yields width first; truncates if the slug is long.
 		g.If(v.Repo != "", Span(
-			Class("inline-flex max-w-[45%] shrink-0 items-center truncate rounded-full bg-slate-800/80 px-2.5 py-1 text-[11px] text-slate-400 ring-1 ring-inset ring-white/5"),
+			Class("inline-flex max-w-[45%] shrink-0 items-center truncate rounded-full bg-s2/80 px-2.5 py-1 text-[11px] text-muted ring-1 ring-inset ring-line"),
 			g.Text(v.Repo),
 		)),
 	)
@@ -566,7 +562,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 		g.If(v.Surface != ChatSurfaceChiefPanel, sessionDrawer(v)),
 		Div(
 			ID("chat-log"),
-			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-slate-900/40 p-3 ring-1 ring-inset ring-white/5 min-h-0"),
+			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-s1/40 p-3 ring-1 ring-inset ring-line min-h-0"),
 			// Live-refresh the transcript from the canonical server state when a chat
 			// reply is persisted (chat.reply). This is what makes a KICKOFF turn — which
 			// streams server-side, NOT over this page's WS — appear live without a
@@ -642,19 +638,19 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// mobile keyboard (the shell shrinks, keeping the input visible). It sits
 			// inside Main (already contentWidth() inside the lg:pl-72 column), so no
 			// width/offset classes here.
-			Class("flex-none border-t border-white/5 pt-3"),
+			Class("flex-none border-t border-line pt-3"),
 			Div(
 				Class("flex w-full items-end gap-2"),
 				Textarea(
 					ID("chat-input"),
 					Rows("1"),
 					Placeholder("Message the agent…"),
-					Class("max-h-32 min-h-[2.75rem] w-full resize-none rounded-xl border-0 bg-slate-900 px-3 py-2.5 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+					Class("max-h-32 min-h-[2.75rem] w-full resize-none rounded-xl border-0 bg-s1 px-3 py-2.5 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 				),
 				Button(
 					Type("submit"),
 					ID("chat-send"),
-					Class("press inline-flex h-11 shrink-0 items-center justify-center rounded-xl bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400 active:scale-[0.98] disabled:opacity-60"),
+					Class("press inline-flex h-11 shrink-0 items-center justify-center rounded-xl bg-accent px-4 text-sm font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
 					g.Text("Send"),
 				),
 			),
@@ -699,9 +695,9 @@ func sessionDrawer(v AgentDetailView) g.Node {
 		}
 		cls := "press flex min-h-[44px] items-center rounded-xl px-3 py-2 text-sm transition ring-1 ring-inset "
 		if sess.Active {
-			cls += "bg-emerald-500/15 text-emerald-100 ring-emerald-500/50"
+			cls += "bg-accent/15 text-fg ring-accent/50"
 		} else {
-			cls += "bg-slate-900 text-slate-300 ring-white/10 hover:bg-slate-800"
+			cls += "bg-s1 text-fg2 ring-line hover:bg-s2"
 		}
 		links = append(links, A(
 			Href(base+"?session="+strconv.FormatInt(sess.ID, 10)),
@@ -712,7 +708,7 @@ func sessionDrawer(v AgentDetailView) g.Node {
 			Class(cls+" gap-2"),
 			Span(Class("mr-auto truncate"), g.Text(title)),
 			g.If(!sess.LastActive.IsZero(),
-				Span(Class("shrink-0 text-xs text-slate-400"), g.Text(relTimeString(sess.LastActive)+" ago")),
+				Span(Class("shrink-0 text-xs text-muted"), g.Text(relTimeString(sess.LastActive)+" ago")),
 			),
 		))
 	}
@@ -752,10 +748,10 @@ func sessionDrawer(v AgentDetailView) g.Node {
 		Div(
 			g.Attr("role", "dialog"),
 			g.Attr("aria-label", "Chat history"),
-			Class("fixed inset-y-0 right-0 z-40 flex w-80 max-w-[85vw] translate-x-full flex-col bg-slate-900 shadow-2xl shadow-black/50 ring-1 ring-white/10 transition-transform duration-300 ease-out peer-checked:translate-x-0"),
+			Class("fixed inset-y-0 right-0 z-40 flex w-80 max-w-[85vw] translate-x-full flex-col bg-s1 shadow-2xl shadow-black/50 ring-1 ring-line transition-transform duration-300 ease-out peer-checked:translate-x-0"),
 			Div(
-				Class("flex items-center gap-2 border-b border-white/5 px-4 py-3"),
-				H2(Class("mr-auto text-sm font-semibold text-slate-200"), g.Text("Chat history")),
+				Class("flex items-center gap-2 border-b border-line px-4 py-3"),
+				H2(Class("mr-auto text-sm font-semibold text-fg"), g.Text("Chat history")),
 				// Same rule as the backdrop label above: aria-label is prohibited on
 				// a role-less <label>, so the accessible name is visually-hidden
 				// content instead.
@@ -771,7 +767,7 @@ func sessionDrawer(v AgentDetailView) g.Node {
 					g.Attr("for", sessionDrawerID),
 					g.Attr("role", "button"),
 					g.Attr("tabindex", "0"),
-					Class("press inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-slate-400 transition hover:bg-white/5 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"),
+					Class("press inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 					g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 					Span(Class("sr-only"), g.Text("Close chat history")),
 				),
@@ -916,16 +912,16 @@ func chatLogInner(v AgentDetailView) g.Node {
 		// the bottom of the transcript. aria-live so assistive tech announces it.
 		Div(
 			ID("chat-working"),
-			Class("hidden max-w-[85%] items-center gap-2 self-start rounded-2xl bg-slate-800 px-3 py-2 text-sm text-slate-400"),
+			Class("hidden max-w-[85%] items-center gap-2 self-start rounded-2xl bg-s2 px-3 py-2 text-sm text-muted"),
 			g.Attr("role", "status"),
 			g.Attr("aria-live", "polite"),
 			Span(Class("animate-pulse"), g.Text("working")),
 			Span(
 				g.Attr("aria-hidden", "true"),
 				Class("inline-flex gap-1"),
-				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500 [animation-delay:-0.3s]")),
-				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500 [animation-delay:-0.15s]")),
-				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500")),
+				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:-0.3s]")),
+				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:-0.15s]")),
+				Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-muted")),
 			),
 		),
 	}
@@ -953,8 +949,8 @@ func chatEmptyState() g.Node {
 		g.Attr("data-chat-empty", ""),
 		Class("m-auto flex max-w-sm flex-col items-center gap-2 text-center"),
 		Div(Class("text-3xl"), g.Text("💬")),
-		P(Class("text-sm font-medium text-slate-300"), g.Text("No messages yet")),
-		P(Class("text-xs text-slate-400"), g.Text("Send the agent a message to start this thread.")),
+		P(Class("text-sm font-medium text-fg2"), g.Text("No messages yet")),
+		P(Class("text-xs text-muted"), g.Text("Send the agent a message to start this thread.")),
 	)
 }
 
@@ -964,16 +960,16 @@ func chatProvisioningIndicator(status string) g.Node {
 	}
 	return Div(
 		ID("chat-provisioning"),
-		Class("flex max-w-[85%] items-center gap-2 self-start rounded-2xl bg-slate-800 px-3 py-2 text-sm text-slate-400"),
+		Class("flex max-w-[85%] items-center gap-2 self-start rounded-2xl bg-s2 px-3 py-2 text-sm text-muted"),
 		g.Attr("role", "status"),
 		g.Attr("aria-live", "polite"),
 		Span(Class("animate-pulse"), g.Text("Provisioning agent…")),
 		Span(
 			g.Attr("aria-hidden", "true"),
 			Class("inline-flex gap-1"),
-			Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500 [animation-delay:-0.3s]")),
-			Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500 [animation-delay:-0.15s]")),
-			Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-slate-500")),
+			Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:-0.3s]")),
+			Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-muted [animation-delay:-0.15s]")),
+			Span(Class("h-1.5 w-1.5 animate-bounce rounded-full bg-muted")),
 		),
 	)
 }
@@ -1002,14 +998,14 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 	id := strconv.FormatInt(*v.NoteID, 10)
 
 	headline := "✅ Agent finished — ready for review"
-	tone := "border-emerald-500/30 bg-emerald-500/10"
+	tone := "border-accent/30 bg-accent/10"
 	if complete {
 		headline = "✅ Task complete"
-		tone = "border-emerald-500/40 bg-emerald-500/15"
+		tone = "border-accent/40 bg-accent/15"
 	}
 
 	children := []g.Node{
-		Div(Class("text-sm font-medium text-emerald-100"), g.Text(headline)),
+		Div(Class("text-sm font-medium text-fg"), g.Text(headline)),
 	}
 	// Mark-complete: hidden once the task is already complete.
 	if !complete {
@@ -1025,7 +1021,7 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 			Input(Type("hidden"), Name("status"), Value(notes.StatusComplete)),
 			Button(
 				Type("submit"),
-				Class("press inline-flex items-center justify-center rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-semibold text-emerald-950 transition hover:bg-emerald-400 active:scale-[0.98]"),
+				Class("press min-h-[44px] inline-flex items-center justify-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98]"),
 				g.Text("Mark complete"),
 			),
 		))
@@ -1046,7 +1042,7 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 			// Send only appears once there's non-whitespace input — an empty feedback
 			// box shows no submit affordance. CSP allows hx-on (unsafe-eval).
 			hx("hx-on:input", "var s=this.form.querySelector('[data-feedback-send]');if(s)s.classList.toggle('hidden', this.value.trim()==='');"),
-			Class("w-full resize-none rounded-lg border-0 bg-slate-950 px-3 py-2 text-sm text-slate-100 ring-1 ring-inset ring-white/10 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"),
+			Class("w-full resize-none rounded-lg border-0 bg-bg px-3 py-2 text-sm text-fg ring-1 ring-inset ring-edge placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
 		),
 		Div(
 			Class("flex items-center gap-2"),
@@ -1054,10 +1050,10 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 				Type("submit"),
 				g.Attr("data-feedback-send", ""),
 				// Hidden until the textarea has content (revealed by the input handler).
-				Class("press hidden items-center justify-center rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 ring-1 ring-inset ring-white/10 transition hover:bg-slate-700"),
+				Class("press min-h-[44px] hidden items-center justify-center rounded-lg bg-s2 px-3 py-1.5 text-xs font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s3"),
 				g.Text("Send"),
 			),
-			Span(g.Attr("data-feedback-added", ""), Class("hidden text-xs text-emerald-300"), g.Text("Feedback added")),
+			Span(g.Attr("data-feedback-added", ""), Class("hidden text-xs text-accent"), g.Text("Feedback added")),
 		),
 	))
 
@@ -1070,9 +1066,9 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 
 func chatBubble(role, content string) g.Node {
 	mine := role == "user"
-	tone := "bg-slate-800 text-slate-200 self-start"
+	tone := "bg-s2 text-fg self-start"
 	if mine {
-		tone = "bg-emerald-500/15 text-emerald-100 self-end ring-1 ring-inset ring-emerald-500/30"
+		tone = "bg-accent/15 text-fg self-end ring-1 ring-inset ring-accent/30"
 	}
 	return Div(
 		// data-md: rendered as markdown client-side (mdConvert in agentChatScript);
@@ -1094,12 +1090,12 @@ func chatToolChip(call ChatLine, result *ChatLine) g.Node {
 	if name == "" {
 		name = "tool"
 	}
-	status, statusClass := "…", "ml-auto text-slate-400"
+	status, statusClass := "…", "ml-auto text-muted"
 	if result != nil {
 		if result.ToolOK {
-			status, statusClass = "✓", "ml-auto font-semibold text-emerald-400"
+			status, statusClass = "✓", "ml-auto font-semibold text-accent"
 		} else {
-			status, statusClass = "✗", "ml-auto font-semibold text-rose-400"
+			status, statusClass = "✗", "ml-auto font-semibold text-st-error-fg"
 		}
 	}
 	body := []g.Node{}
@@ -1110,11 +1106,11 @@ func chatToolChip(call ChatLine, result *ChatLine) g.Node {
 		body = append(body, toolPre("result", result.Content))
 	}
 	return Details(
-		Class("max-w-[92%] self-start rounded-xl bg-slate-950/50 text-xs ring-1 ring-inset ring-white/5"),
+		Class("max-w-[92%] self-start rounded-xl bg-bg/50 text-xs ring-1 ring-inset ring-line"),
 		Summary(
-			Class("flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-slate-300 hover:text-slate-100"),
+			Class("flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg"),
 			Span(g.Text("🔧")),
-			Span(Class("font-mono text-indigo-300"), g.Text(name)),
+			Span(Class("font-mono text-st-review-fg"), g.Text(name)),
 			Span(Class(statusClass), g.Text(status)),
 		),
 		Div(Class("flex flex-col gap-1 px-3 pb-2 pt-0"), g.Group(body)),
@@ -1125,8 +1121,8 @@ func chatToolChip(call ChatLine, result *ChatLine) g.Node {
 // (matching the live stream's pre()). Long output is truncated in the DOM.
 func toolPre(label, txt string) g.Node {
 	return Div(
-		Div(Class("text-[10px] uppercase tracking-wide text-slate-600"), g.Text(label)),
-		Pre(Class("max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-950/80 p-2 text-[11px] leading-relaxed text-slate-400"), g.Text(truncate(txt, 4000))),
+		Div(Class("text-[10px] uppercase tracking-wide text-muted"), g.Text(label)),
+		Pre(Class("max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-bg/80 p-2 text-[11px] leading-relaxed text-muted"), g.Text(truncate(txt, 4000))),
 	)
 }
 
@@ -1166,7 +1162,7 @@ func agentChatScript(name string) g.Node {
     function stash(html) { toks.push(html); return '\uE000' + (toks.length - 1) + '\uE000'; }
     // Inline ` + "`" + `code` + "`" + ` → token (verbatim; no further markdown/autolink).
     s = s.replace(/` + "`" + `([^` + "`" + `]+)` + "`" + `/g, function (_, c) {
-      return stash('<code class="rounded bg-slate-950/60 px-1 py-0.5 font-mono text-[0.85em]">' + c + '</code>');
+      return stash('<code class="rounded bg-bg/60 px-1 py-0.5 font-mono text-[0.85em]">' + c + '</code>');
     });
     // [text](url) markdown links → token, so the bare-URL autolinker below can't
     // double-link the href.
@@ -1178,7 +1174,7 @@ func agentChatScript(name string) g.Node {
     // which is what it was before the tokenizer existed. Same fix as the Go
     // renderer's mdLink (internal/ui/markdown.go).
     s = s.replace(/\[([^\]\uE000]+)\]\((https?:\/\/[^\s)\uE000]+)\)/g, function (_, t, u) {
-      return stash('<a href="' + u + '" target="_blank" rel="noopener noreferrer" class="text-emerald-300 underline">' + t + '</a>');
+      return stash('<a href="' + u + '" target="_blank" rel="noopener noreferrer" class="text-accent underline">' + t + '</a>');
     });
     // Autolink bare http(s) URLs. Trailing punctuation (. , ) ] ! ? : ; ") stays
     // OUT of the href. Code + markdown-link URLs are already tokenized out above;
@@ -1188,7 +1184,7 @@ func agentChatScript(name string) g.Node {
       var trail = '';
       var mm = m.match(/[.,)\]!?:;"']+$/);
       if (mm) { trail = mm[0]; m = m.slice(0, m.length - trail.length); }
-      return '<a href="' + m + '" target="_blank" rel="noopener noreferrer" class="text-emerald-300 underline">' + m + '</a>' + trail;
+      return '<a href="' + m + '" target="_blank" rel="noopener noreferrer" class="text-accent underline">' + m + '</a>' + trail;
     });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
@@ -1219,16 +1215,16 @@ func agentChatScript(name string) g.Node {
         var code = []; i++;
         while (i < lines.length && !/^` + "```" + `\s*$/.test(lines[i])) { code.push(lines[i]); i++; }
         i++;
-        out.push('<pre class="overflow-auto rounded-lg bg-slate-950/60 p-2 my-1 font-mono text-[0.85em] leading-relaxed"><code>' + code.join('\n') + '</code></pre>');
+        out.push('<pre class="overflow-auto rounded-lg bg-bg/60 p-2 my-1 font-mono text-[0.85em] leading-relaxed"><code>' + code.join('\n') + '</code></pre>');
         continue;
       }
       // Thematic break (--- / *** / ___ alone on a line). Checked before the
       // list branches and excluded from the paragraph gather below, for the same
       // reason the Go renderer does both (internal/ui/markdown.go): the gather
       // runs last and would otherwise emit the rule as literal text.
-      if (/^ {0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$/.test(line)) { out.push('<hr class="my-2 border-white/10">'); i++; continue; }
+      if (/^ {0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$/.test(line)) { out.push('<hr class="my-2 border-line">'); i++; continue; }
       var h = line.match(/^(#{1,6})\s+(.*)$/);
-      if (h) { out.push('<div class="mt-1 font-semibold text-slate-100 ' + (h[1].length <= 2 ? 'text-base' : 'text-sm') + '">' + mdInline(h[2]) + '</div>'); i++; continue; }
+      if (h) { out.push('<div class="mt-1 font-semibold text-fg ' + (h[1].length <= 2 ? 'text-base' : 'text-sm') + '">' + mdInline(h[2]) + '</div>'); i++; continue; }
       if (/^\s*[-*]\s+/.test(line)) {
         var ul = [];
         while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) { ul.push('<li>' + mdInline(lines[i].replace(/^\s*[-*]\s+/, '')) + '</li>'); i++; }
@@ -1247,13 +1243,13 @@ func agentChatScript(name string) g.Node {
         var headCells = mdTableCells(line);
         i += 2; // consume header + separator
         var head = '<thead><tr>' + headCells.map(function (c) {
-          return '<th class="border border-white/10 px-2 py-1 text-left">' + mdInline(c) + '</th>';
+          return '<th class="border border-line px-2 py-1 text-left">' + mdInline(c) + '</th>';
         }).join('') + '</tr></thead>';
         var rows = [];
         while (i < lines.length && lines[i].indexOf('|') >= 0 && !/^\s*$/.test(lines[i])) {
           var cells = mdTableCells(lines[i]);
           rows.push('<tr>' + cells.map(function (c) {
-            return '<td class="border border-white/10 px-2 py-1">' + mdInline(c) + '</td>';
+            return '<td class="border border-line px-2 py-1">' + mdInline(c) + '</td>';
           }).join('') + '</tr>');
           i++;
         }
@@ -1378,8 +1374,8 @@ func agentChatScript(name string) g.Node {
     var d = document.createElement('div');
     var mine = role === 'user';
     d.className = 'max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm ' +
-      (mine ? 'bg-emerald-500/15 text-emerald-100 self-end ring-1 ring-inset ring-emerald-500/30'
-            : 'bg-slate-800 text-slate-200 self-start');
+      (mine ? 'bg-accent/15 text-fg self-end ring-1 ring-inset ring-accent/30'
+            : 'bg-s2 text-fg self-start');
     var w = workingEl();
     logEl.insertBefore(d, (w && w.parentNode === logEl) ? w : null);
     scroll();
@@ -1402,7 +1398,7 @@ func agentChatScript(name string) g.Node {
     if (!text) {
       ensureTurn();
       text = document.createElement('div');
-      text.className = 'break-words rounded-2xl bg-slate-800 px-3 py-2 text-sm text-slate-200';
+      text.className = 'break-words rounded-2xl bg-s2 px-3 py-2 text-sm text-fg';
       turn.appendChild(text);
     }
     return text;
@@ -1413,12 +1409,12 @@ func agentChatScript(name string) g.Node {
     if (!think) {
       ensureTurn();
       var d = document.createElement('details');
-      d.className = 'rounded-xl bg-slate-950/40 text-xs ring-1 ring-inset ring-white/5';
+      d.className = 'rounded-xl bg-bg/40 text-xs ring-1 ring-inset ring-line';
       var s = document.createElement('summary');
-      s.className = 'cursor-pointer select-none px-3 py-2 font-medium text-slate-400 hover:text-slate-200';
+      s.className = 'cursor-pointer select-none px-3 py-2 font-medium text-muted hover:text-fg';
       s.textContent = '💭 thinking';
       var body = document.createElement('div');
-      body.className = 'whitespace-pre-wrap break-words px-3 pb-2 pt-0 leading-relaxed text-slate-400';
+      body.className = 'whitespace-pre-wrap break-words px-3 pb-2 pt-0 leading-relaxed text-muted';
       d.appendChild(s); d.appendChild(body);
       turn.appendChild(d);
       think = body;
@@ -1438,12 +1434,12 @@ func agentChatScript(name string) g.Node {
     if (tools[id]) return tools[id];
     ensureTurn();
     var d = document.createElement('details');
-    d.className = 'rounded-xl bg-slate-950/50 text-xs ring-1 ring-inset ring-white/5';
+    d.className = 'rounded-xl bg-bg/50 text-xs ring-1 ring-inset ring-line';
     var s = document.createElement('summary');
-    s.className = 'flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-slate-300 hover:text-slate-100';
+    s.className = 'flex cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg';
     var icon = document.createElement('span'); icon.textContent = '🔧';
-    var nameEl = document.createElement('span'); nameEl.className = 'font-mono text-indigo-300'; nameEl.textContent = nm || 'tool';
-    var stat = document.createElement('span'); stat.className = 'ml-auto text-slate-400'; stat.textContent = '…';
+    var nameEl = document.createElement('span'); nameEl.className = 'font-mono text-st-review-fg'; nameEl.textContent = nm || 'tool';
+    var stat = document.createElement('span'); stat.className = 'ml-auto text-muted'; stat.textContent = '…';
     s.appendChild(icon); s.appendChild(nameEl); s.appendChild(stat);
     var body = document.createElement('div'); body.className = 'flex flex-col gap-1 px-3 pb-2 pt-0';
     d.appendChild(s); d.appendChild(body);
@@ -1454,8 +1450,8 @@ func agentChatScript(name string) g.Node {
   }
   function pre(label, txt) {
     var wrap = document.createElement('div');
-    var lab = document.createElement('div'); lab.className = 'text-[10px] uppercase tracking-wide text-slate-600'; lab.textContent = label;
-    var p = document.createElement('pre'); p.className = 'max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-950/80 p-2 text-[11px] leading-relaxed text-slate-400';
+    var lab = document.createElement('div'); lab.className = 'text-[10px] uppercase tracking-wide text-muted'; lab.textContent = label;
+    var p = document.createElement('pre'); p.className = 'max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-bg/80 p-2 text-[11px] leading-relaxed text-muted';
     p.textContent = txt;
     wrap.appendChild(lab); wrap.appendChild(p);
     return wrap;
@@ -1505,7 +1501,7 @@ func agentChatScript(name string) g.Node {
       case 'tool_result': {
         var r = toolChip(msg.id, msg.name); // defensive: create if missing
         r.status.textContent = msg.ok ? '✓' : '✗';
-        r.status.className = 'ml-auto font-semibold ' + (msg.ok ? 'text-emerald-400' : 'text-rose-400');
+        r.status.className = 'ml-auto font-semibold ' + (msg.ok ? 'text-accent' : 'text-st-error-fg');
         if (r.result) r.result.remove();
         r.result = pre('result', clip(msg.output));
         r.body.appendChild(r.result);

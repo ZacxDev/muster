@@ -229,7 +229,7 @@ jobs:
   # 🔴 TAILWIND CANNOT FAIL THE WAY THIS NEEDS IT TO, WHICH IS THE WHOLE POINT. A
   # content glob that matches nothing is not an error and not a non-zero exit — it
   # emits a smaller, perfectly valid stylesheet and exits 0. Measured on this tree:
-  # 5,594 valid bytes instead of ~38,000. `make css-check` asserts the OUTPUT
+  # 7,139 valid bytes instead of ~38,000. `make css-check` asserts the OUTPUT
   # (control classes present, committed copy byte-identical via `cmp`), which is
   # the only thing that can see that.
   css:
@@ -317,68 +317,96 @@ jobs:
       - name: cc-smoke
         run: docker run --rm claude-code-agent:ci cc-smoke
 
-  # ---------------------------------------------------------------------------
-  # 🔴 THE TWO JOBS BELOW ARE HONEST STUBS. THEY HAVE NOTHING TO RUN, AND THEY
-  # SAY SO IN THEIR OWN OUTPUT RATHER THAN PASSING QUIETLY.
+  # Local: make e2e (after `npm ci && npx playwright install chromium` in e2e/,
+  # with MUSTER_E2E_DATABASE_URL naming a database ending in _e2e). On NixOS set
+  # PLAYWRIGHT_BROWSERS_PATH=$(nix build --print-out-paths
+  # nixpkgs#playwright-driver.browsers) — it must match @playwright/test 1.63.0.
   #
-  # 🔴 THE REASON THESE ARE STILL STUBS HAS CHANGED, AND THE OLD REASON IS NOW
-  # FALSE. They used to say "muster has no HTTP surface, no UI and therefore no
-  # browser tests yet". It has both: cmd/muster-server binds a port and serves 99
-  # routes, and internal/ui renders every one of the views. What it does not have
-  # is a SPEC — nobody has written a browser test — so these jobs still run zero
-  # of them, and the expiry guard below is now the only thing standing between
-  # the first spec somebody writes and a green tick that never collected it.
+  # 🔴 THIS JOB WAS AN HONEST STUB THAT FAILED THE MOMENT A SPEC APPEARED, AND THE
+  # SPECS HAVE APPEARED. It is now the real browser suite: Chromium against a
+  # locally built muster-server and a seeded Postgres, every spec in e2e/tests/.
   #
-  # A job that passes by having nothing to do is the most dangerous kind of green:
-  # it appears in the checks list beside the real ones, with the same tick, and
-  # reads as coverage of exactly the layer that has none.
+  # 🔴 A SKIP IS IMPOSSIBLE HERE, TWICE OVER. MUSTER_E2E_REQUIRE_FULL=1 makes a
+  # missing database a hard failure in global-setup, and the verdict step reads
+  # the JSON report and fails on fewer passes than the floor or ANY skip — the
+  # PAIR is printed, never a bare exit code. `playwright test` exits 0 when
+  # everything skipped; that is the green this step exists to refuse.
   #
-  # So each one prints a banner naming what it does NOT cover, and each one
-  # GUARDS ITS OWN OBSOLESCENCE: the moment specs appear on disk, the stub FAILS
-  # and tells you to implement the job. Without that, the first e2e spec anyone
-  # writes would be collected by nothing and the tick would stay green.
-  # ---------------------------------------------------------------------------
+  # ⚠ THE FLOOR (e2e/verdict.mjs) IS THE CURRENT SPEC COUNT, measured with
+  # every spec passing locally. Adding a spec without raising it
+  # leaves a floor indistinguishable from none for that spec.
   e2e:
-    name: e2e (stub — nothing to run yet)
+    name: e2e (playwright, chromium)
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: muster
+          POSTGRES_PASSWORD: muster
+          # The seed refuses any database whose name does not end in _e2e: it
+          # truncates what it seeds.
+          POSTGRES_DB: muster_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U muster -d muster_e2e"
+          --health-interval 1s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      MUSTER_E2E_DATABASE_URL: postgres://muster:muster@127.0.0.1:5432/muster_e2e?sslmode=disable
+      MUSTER_E2E_REQUIRE_FULL: "1"
     steps:
       - uses: actions/checkout@v6
 
-      - name: report that this job covers NOTHING
-        run: |
-          echo "==================================================================="
-          echo " e2e: NOT IMPLEMENTED. This job ran ZERO browser tests."
-          echo
-          echo " This tick is NOT evidence of anything — and it is now a WEAKER"
-          echo " position than it was. muster HAS an HTTP surface (cmd/muster-server"
-          echo " binds a port and serves 99 routes) and it HAS a UI. There is"
-          echo " something to drive; nobody has written a spec to drive it with."
-          echo " The step after this one is the only thing stopping the first spec"
-          echo " landing against a green tick that never collected it."
-          echo
-          echo " To implement this job:"
-          echo "   - services: postgres:16-alpine (see the 'test' job)"
-          echo "   - npx playwright install --with-deps chromium"
-          echo "   - MUSTER_E2E_REQUIRE_FULL=1, because the suite will default to"
-          echo "     SKIPPING when it cannot reach a database, and a skip is"
-          echo "     invisible in a verdict"
-          echo "   - a verdict step asserting passed+flaky >= a floor and"
-          echo "     skipped <= a cap, with BOTH numbers re-derived from a"
-          echo "     measured run and the measurement written beside them. A floor"
-          echo "     set too low is indistinguishable from no floor."
-          echo "==================================================================="
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
-      # 🔴 THE STUB'S EXPIRY, ENFORCED RATHER THAN REMEMBERED.
-      - name: fail if e2e specs exist but this job is still a stub
-        run: |
-          if [ -d e2e ] && find e2e -name '*.spec.*' -print -quit | grep -q .; then
-            echo "FAIL: e2e/ contains spec files, but this job is still a stub and"
-            echo "      runs none of them. A green tick here would be a lie about"
-            echo "      the exact tests somebody just wrote."
-            exit 1
-          fi
-          echo "confirmed: no e2e specs on disk, so there is genuinely nothing to run"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
 
+      # e2e/ commits its lock file (the repository root deliberately does not),
+      # so the Playwright version CI runs is exactly the one the specs and the
+      # local nix browsers were written against.
+      - name: install the harness
+        working-directory: e2e
+        run: npm ci --no-audit --no-fund
+
+      - name: install chromium
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      # global-setup builds two server versions, migrates, seeds, starts one,
+      # and signs in; the update spec runs the pair itself on its own port.
+      - name: playwright test
+        working-directory: e2e
+        run: npx playwright test
+
+      - name: verdict — the pass floor and the skip cap
+        if: always()
+        working-directory: e2e
+        run: node verdict.mjs test-results/results.json
+
+      - name: keep traces of failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results
+          path: e2e/test-results/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # 🔴 THE JOB BELOW IS STILL AN HONEST STUB. IT HAS NOTHING TO RUN, AND IT SAYS
+  # SO IN ITS OWN OUTPUT RATHER THAN PASSING QUIETLY — and it guards its own
+  # obsolescence: the moment a harness unit test appears, it FAILS and tells you
+  # to implement it.
+  # ---------------------------------------------------------------------------
   e2e-unit:
     name: e2e-unit (stub — nothing to run yet)
     runs-on: ubuntu-latest

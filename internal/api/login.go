@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/auth"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // --- The human login tier ----------------------------------------------------
@@ -180,7 +181,7 @@ func (s *Server) renderLoginPage(w http.ResponseWriter, code int, next, problem 
 	if problem != "" {
 		// role=alert so a screen reader announces the failure without the operator
 		// hunting for it; the text is server-authored, and escaped regardless.
-		problemNode = `<p role="alert" class="rounded-lg bg-rose-500/10 px-3 py-2 text-sm text-rose-200 ring-1 ring-inset ring-rose-500/30">` +
+		problemNode = `<p role="alert" class="rounded-lg bg-st-error-bg px-3 py-2 text-sm text-st-error-fg ring-1 ring-inset ring-st-error-fg/40">` +
 			html.EscapeString(problem) + `</p>`
 	}
 	doc := `<!doctype html>
@@ -189,22 +190,22 @@ func (s *Server) renderLoginPage(w http.ResponseWriter, code int, next, problem 
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
-<meta name="theme-color" content="#0b0f17">
+` + ui.ThemeHeadHTML() + `
 <meta name="robots" content="noindex">
 <title>Sign in · muster</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
-<body class="flex min-h-dvh items-center justify-center bg-slate-950 px-4 text-slate-100 antialiased">
+<body class="flex min-h-dvh items-center justify-center bg-bg px-4 text-fg antialiased">
 <main class="w-full max-w-sm">
-<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-white/5 bg-slate-900/70 px-5 py-6 ring-1 ring-white/5">
-<h1 class="text-base font-semibold text-slate-100">Sign in to muster</h1>
-<p class="text-sm text-slate-300">Enter the operator password to continue.</p>
+<form method="POST" action="` + loginPath + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<h1 class="text-balance text-base font-semibold text-fg">Sign in to muster</h1>
+<p class="text-sm text-fg2">Enter the operator password to continue.</p>
 ` + problemNode + `
-<label for="muster-password" class="text-sm font-medium text-slate-200">Operator password</label>
+<label for="muster-password" class="text-sm font-medium text-fg">Operator password</label>
 <input id="muster-password" name="password" type="password" autocomplete="current-password" autofocus required
- class="rounded-md bg-slate-950 px-3 py-2 text-sm text-slate-100 ring-1 ring-inset ring-white/10 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+ class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
 <input type="hidden" name="next" value="` + html.EscapeString(safeReturnTo(next)) + `">
-<button type="submit" class="rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-500">Sign in</button>
+<button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Sign in</button>
 </form>
 </main>
 </body>

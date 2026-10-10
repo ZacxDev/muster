@@ -180,9 +180,13 @@ mechanism looks over-built and each part of it is there for a measured failure.
   unguarded. Both are idempotent, so a second replica costs duplicated work
   rather than duplicated effect — but it is not free. See
   `cmd/muster-server/doc_seams.go` entry 4.
-- **The `e2e` and `e2e-unit` CI jobs are stubs.** They run nothing and say so in
-  their own output. They fail the moment a spec file appears, so the first real
-  e2e test cannot land against a green tick that never collected it.
+- **The `e2e` job is real; `e2e-unit` is still a stub.** `e2e` runs the
+  Playwright suite in `e2e/tests/` (Chromium, a locally built server, a seeded
+  Postgres) and fails on any skip or on fewer passes than its floor
+  (`e2e/verdict.mjs`); `make e2e` is the local spelling. `e2e-unit` runs nothing,
+  says so, and fails the moment a `*.unit.mjs` harness test appears. ⚠ Several
+  comments in `internal/ui` still cite upstream spec files (`tasks.spec.ts`,
+  `task-board-paging.spec.ts`) that were never carried into `e2e/tests/`.
 - **`nix build` tests only the packages the derivation installs, and this line
   used to overstate it.** It read "`nix build` runs the pure-Go tests only",
   which was two claims too many. What a nix build runs is `go vet ./...` over the
