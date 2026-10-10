@@ -109,6 +109,12 @@ func pwaScript() g.Node {
   }
   registered.then(function (reg) {
     if (reg.waiting && navigator.serviceWorker.controller) offerUpdate(reg.waiting);
+    // A boosted navigation swaps the body, and the toast with it: the new one
+    // arrives from the server hidden while the update is still waiting. Offer
+    // it again whenever a waiting worker exists.
+    document.addEventListener('htmx:load', function () {
+      if (reg.waiting && navigator.serviceWorker.controller) offerUpdate(reg.waiting);
+    });
     reg.addEventListener('updatefound', function () {
       var w = reg.installing;
       if (!w) return;
@@ -119,11 +125,11 @@ func pwaScript() g.Node {
       });
     });
     // An installed app resumes from the background rather than navigating, so
-    // the browser's own navigation-time check rarely runs. Ask on resume, at
-    // most every 30 minutes.
-    var last = Date.now();
+    // the browser's own navigation-time check rarely runs. Ask on every resume,
+    // at most once a minute; a throttled resume does not move the window.
+    var last = 0;
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState !== 'visible' || Date.now() - last < 30 * 60 * 1000) return;
+      if (document.visibilityState !== 'visible' || Date.now() - last < 60 * 1000) return;
       last = Date.now();
       reg.update().catch(function () {});
     });

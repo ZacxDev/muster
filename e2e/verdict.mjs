@@ -7,13 +7,13 @@
 // PAIR (how many passed, how many skipped) and fails when fewer than FLOOR tests
 // passed or more than CAP skipped.
 //
-// FLOOR is the number of tests in e2e/tests/ as written at the commit that
-// introduced this file (measured: every one passes against a seeded database
-// — see the PR). A floor below the real count is indistinguishable from no
-// floor, so when a spec is added, raise it in the same change.
+// FLOOR is the number of tests in e2e/tests/ (measured: every one passes
+// against a seeded database — see the PR). A floor below the real count is
+// indistinguishable from no floor, so when a spec is added, raise it in the
+// same change.
 import fs from 'node:fs';
 
-const FLOOR = Number(process.env.E2E_PASS_FLOOR ?? 17);
+const FLOOR = Number(process.env.E2E_PASS_FLOOR ?? 23);
 const CAP = Number(process.env.E2E_SKIP_CAP ?? 0);
 const file = process.argv[2] ?? 'test-results/results.json';
 

@@ -274,8 +274,8 @@ jobs:
   # PAIR is printed, never a bare exit code. `playwright test` exits 0 when
   # everything skipped; that is the green this step exists to refuse.
   #
-  # ⚠ THE FLOOR (e2e/verdict.mjs) IS THE SPEC COUNT AT THE COMMIT THAT ADDED IT,
-  # measured with every spec passing locally. Adding a spec without raising it
+  # ⚠ THE FLOOR (e2e/verdict.mjs) IS THE CURRENT SPEC COUNT, measured with
+  # every spec passing locally. Adding a spec without raising it
   # leaves a floor indistinguishable from none for that spec.
   e2e:
     name: e2e (playwright, chromium)

@@ -79,9 +79,9 @@ module.exports = {
     // ⚠ THE FILE, NOT ITS PACKAGE, FOR THE REASON THE SEAM GAVE: an api package
     // is full of JSON, SQL and log strings, and a package-wide glob would also
     // scan _test.go files, where fixture data reads as arbitrary-value classes.
-    // `bg-emerald-600` is in the css-check control set precisely so this entry
-    // has a positive control rather than merely having been typed — it is
-    // written in this file and nowhere else in the tree.
+    // `text-balance` is in the css-check control set (Makefile) precisely so
+    // this entry has a positive control rather than merely having been typed —
+    // of every file this config scans, only login.go writes it.
     './internal/api/login.go',
     //
     // ✅ SEAM CLOSED BY THE API CARVE — kept, rather than deleted, because it
