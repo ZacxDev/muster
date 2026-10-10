@@ -10,8 +10,9 @@
 //     session transcript JSONL (transcript.go), never off the screen; the turn
 //     ends on the CLI's Stop / StopFailure hook (server.go). A failed turn is a
 //     non-200 with a typed JSON error (failure.go), never a 200 with no text.
-//   - GET /healthz — 200 only when the TUI is at its prompt, tmux is up, and the
-//     model credential has been proven by an authenticated round trip (probe.go).
+//   - GET /healthz (and GET /, identically) — 200 while ccd is up, the tmux
+//     session is alive and the CLI is not crash-looping. Session and auth state
+//     are reported in the body and never gate it (server.go handleHealthz).
 //   - /hook/{event} on a LOOPBACK-ONLY listener — where `ccd hook <Event>`, the
 //     command the CLI's settings run for each hook, reports.
 //
@@ -32,13 +33,15 @@
 //	CCD_TMUX_CONF          tmux -f config file    (default: tmux's default)
 //	CCD_TMUX_TARGET        tmux session/pane      (default cc)
 //	CCD_WORKSPACE          the CLI's working directory (default: cwd)
-//	CCD_SESSION_COMMAND    if set, the tmux session ccd creates once it is listening
+//	CCD_SUPERVISE          "1": once listening, create the tmux session and keep the
+//	                       CLI running in it — `claude --continue` when a transcript
+//	                       exists, `claude` on a fresh volume (supervise.go)
 //	CCD_CLAUDE_BIN         the CLI binary         (default claude)
-//	CCD_PROBE              "off" disables the auth probe (tests only; /healthz then never passes)
-//	CCD_PROBE_MODEL        model for the probe    (default haiku)
-//	CCD_PROBE_OK_INTERVAL / CCD_PROBE_RETRY_INTERVAL   (default 12h / 5m)
 //	CCD_SUBMIT_TIMEOUT / CCD_TURN_TIMEOUT              (default 20s / 30m)
-//	CCD_HOOK_LOG           append every raw hook payload to this file (capture only; holds prompts)
+//	CCD_HOOK_LOG           append every raw hook payload to this file. OFF by default;
+//	                       when on it writes every prompt's text there (on the volume,
+//	                       when pointed under /data). Capture-only, for the OWED note in
+//	                       failure.go, and removed by the PR that closes it.
 package main
 
 import (
@@ -134,12 +137,11 @@ func serve() error {
 	if err := loopbackOnly(hookAddr); err != nil {
 		return err
 	}
-	var durs [4]time.Duration
+	var durs [2]time.Duration
 	for i, d := range []struct {
 		name string
 		def  time.Duration
-	}{{"CCD_SUBMIT_TIMEOUT", 20 * time.Second}, {"CCD_TURN_TIMEOUT", 30 * time.Minute},
-		{"CCD_PROBE_OK_INTERVAL", 12 * time.Hour}, {"CCD_PROBE_RETRY_INTERVAL", 5 * time.Minute}} {
+	}{{"CCD_SUBMIT_TIMEOUT", 20 * time.Second}, {"CCD_TURN_TIMEOUT", 30 * time.Minute}} {
 		if durs[i], err = envDuration(d.name, d.def); err != nil {
 			return err
 		}
@@ -157,16 +159,14 @@ func serve() error {
 	srv := newServer(serverConfig{
 		Bearer: bearer, ConfigDir: configDir,
 		SubmitTimeout: durs[0], TurnTimeout: durs[1], HookLog: os.Getenv("CCD_HOOK_LOG"),
+		HasCredential: credentialVisible(configDir),
 	}, term, auth)
+	if os.Getenv("CCD_SUPERVISE") == "1" {
+		srv.sup = newSupervisor(term, envOr("CCD_CLAUDE_BIN", "claude"), configDir, workspace)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-
-	if os.Getenv("CCD_PROBE") != "off" {
-		p := cliProber{bin: envOr("CCD_CLAUDE_BIN", "claude"), model: envOr("CCD_PROBE_MODEL", "haiku"),
-			dir: workspace, timeout: 90 * time.Second}
-		go runProbes(ctx, auth, p.probe, durs[2], durs[3])
-	}
 
 	gw := &http.Server{Addr: envOr("CCD_LISTEN", defaultListen), Handler: srv.gatewayHandler(),
 		ReadHeaderTimeout: 10 * time.Second}
@@ -182,20 +182,31 @@ func serve() error {
 		go func(s *http.Server, ln net.Listener) { errc <- s.Serve(ln) }(s, ln)
 	}
 	// 🔴 THE SESSION STARTS ONLY ONCE BOTH LISTENERS ARE BOUND. Its SessionStart
-	// hook is ccd's one readiness signal and is sent exactly once; a TUI started
-	// before the hook listener exists would announce itself to nobody, and ccd
-	// would report not_ready for the life of the pod.
-	if command := os.Getenv("CCD_SESSION_COMMAND"); command != "" {
-		if err := term.StartSession(ctx, workspace, command); err != nil {
-			return fmt.Errorf("ccd: start the session: %w", err)
-		}
-		log.Printf("ccd: tmux session %q started in %s", term.target, workspace)
+	// hook, sent as the CLI starts, is ccd's one readiness signal for turns; a TUI
+	// started before the hook listener exists would announce itself to nobody, and
+	// ccd would answer not_ready until the CLI next restarted.
+	var supErr chan error // nil (never ready) unless ccd supervises the CLI
+	if srv.sup != nil {
+		supErr = make(chan error, 1)
+		go func() { supErr <- srv.sup.run(ctx) }()
 	}
-	select {
-	case <-ctx.Done():
-	case err := <-errc:
-		if !errors.Is(err, http.ErrServerClosed) {
-			return err
+	for done := false; !done; {
+		select {
+		case <-ctx.Done():
+			done = true
+		case err := <-supErr:
+			// nil: crash_loop (or shutdown). ccd keeps serving /healthz, which now
+			// fails, so Kubernetes rather than ccd restarts the pod. An error is a
+			// session that could not be created at all.
+			if err != nil {
+				return fmt.Errorf("ccd: start the session: %w", err)
+			}
+			supErr = nil
+		case err := <-errc:
+			if !errors.Is(err, http.ErrServerClosed) {
+				return err
+			}
+			done = true
 		}
 	}
 	shut, cancel := context.WithTimeout(context.Background(), 5*time.Second)

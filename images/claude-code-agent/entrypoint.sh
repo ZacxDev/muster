@@ -3,16 +3,17 @@
 # interactive session in tmux, then run ccd in the foreground.
 #
 # 🔴 ccd IS THE FOREGROUND PROCESS, SO ITS EXIT IS THE CONTAINER'S EXIT. The TUI
-# lives in a detached tmux session beside it (ccd starts it); a TUI that exits (an
-# operator typing /exit) is restarted by the loop below rather than leaving a pod
-# whose chat endpoint answers "not_ready" for ever.
+# lives in a detached tmux session beside it, which ccd creates and SUPERVISES
+# (CCD_SUPERVISE=1, cmd/ccd/supervise.go): a TUI that exits (an operator typing
+# /exit, a crash) is restarted in the same pane with backoff; repeated exits in a
+# short window are reported as crash_loop and fail /healthz, so Kubernetes
+# restarts the pod.
 #
-# 🔴 `claude --continue || claude` IS WHAT MAKES A POD RESTART RESUME THE SAME
-# CONVERSATION. --continue picks the most recent session for this working
-# directory from CLAUDE_CONFIG_DIR, which must therefore be on a persistent volume
-# (as must the workspace) — wiring that volume is the provisioner's job, not this
-# image's. With nothing to continue, --continue exits non-zero and a fresh session
-# starts.
+# 🔴 EVERY START RESUMES THE SAME CONVERSATION WHEN THERE IS ONE: ccd runs
+# `claude --continue` when CLAUDE_CONFIG_DIR already holds a transcript for the
+# workspace, and plain `claude` only when it holds none. CLAUDE_CONFIG_DIR must
+# therefore be on a persistent volume (as must the workspace) — wiring that volume
+# is the provisioner's job, not this image's.
 set -euo pipefail
 
 # `docker run <image> cc-smoke` (or any command): run it instead.
@@ -39,7 +40,7 @@ ccd seed --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
 
 cd "$CCD_WORKSPACE"
 # ccd creates the tmux session itself, AFTER its hook listener is bound — the
-# TUI's SessionStart hook is ccd's readiness signal and is sent only once.
+# TUI's SessionStart hook is ccd's readiness signal for turns.
 export CCD_TMUX_TARGET
-export CCD_SESSION_COMMAND='while true; do claude --continue || claude; sleep 2; done'
+export CCD_SUPERVISE=1
 exec ccd serve

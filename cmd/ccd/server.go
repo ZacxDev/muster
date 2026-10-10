@@ -57,9 +57,15 @@ type serverConfig struct {
 	// which the CLI writes only after its Stop hooks have run.
 	TranscriptGrace time.Duration
 	// HookLog, when set, is a file every raw hook payload is appended to — the
-	// capture step for shapes not yet recorded (a rate-limited StopFailure). It
-	// holds prompt text, so it is off by default.
+	// capture step for shapes not yet recorded (a rate-limited StopFailure).
+	// ⚠ OFF BY DEFAULT, AND WHEN ON IT WRITES EVERY PROMPT'S TEXT TO THAT FILE (a
+	// UserPromptSubmit payload carries the prompt) — on the volume when the path is
+	// under it, as the live check's is. It is removed by the PR that closes the
+	// OWED note in failure.go.
 	HookLog string
+	// HasCredential reports whether a credential the CLI would use is visible to
+	// ccd; it only shapes the `session` field of /healthz (see sessionState).
+	HasCredential func() bool
 }
 
 type server struct {
@@ -69,8 +75,11 @@ type server struct {
 
 	slot chan struct{} // capacity 1: one ccd-driven turn at a time
 
+	sup *supervisor // nil when ccd does not run the CLI itself
+
 	mu             sync.Mutex
 	sessionStarted bool
+	sessionEnded   bool // a SessionEnd arrived and no SessionStart since
 	sessionID      string
 	transcriptPath string // the session's transcript, as the last hook named it
 	busy           bool   // a prompt was submitted (by anyone) and has not stopped
@@ -96,7 +105,12 @@ func newServer(cfg serverConfig, term terminal, auth *authTracker) *server {
 func (s *server) gatewayHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
+	// `/` is the same check: muster's default agent health path is "/"
+	// (agentspec.DefaultGatewayHealthPath), which its renderer uses for the
+	// startup and liveness probes. A per-kind health path for this image is muster
+	// PR 2's concern; until then both answer identically.
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /{$}", s.handleHealthz)
 	return mux
 }
 
@@ -146,12 +160,13 @@ func (s *server) onHook(ev hookEvent) {
 		// SessionStart only fires once the CLI is past its first-run screens AND the
 		// workspace trust dialog (hooks do not run in an untrusted workspace), so it
 		// is the readiness signal that does not depend on reading the screen.
-		s.sessionStarted, s.sessionID, s.busy = true, ev.SessionID, false
+		s.sessionStarted, s.sessionEnded, s.sessionID, s.busy = true, false, ev.SessionID, false
 		s.transcriptPath = ev.TranscriptPath
 	case "sessionend":
-		// The TUI is exiting (an operator's /exit; the entrypoint's loop restarts
-		// it). Until the next SessionStart there is no prompt to paste into.
-		s.sessionStarted, s.busy = false, false
+		// The session is ending (an operator's /exit, after which the supervisor
+		// restarts the CLI). Until the next SessionStart there is no prompt to
+		// paste into.
+		s.sessionStarted, s.sessionEnded, s.busy = false, true, false
 	case "userpromptsubmit":
 		s.busy = true
 		if ev.TranscriptPath != "" {
@@ -232,21 +247,24 @@ func promptFrom(raw json.RawMessage) (string, error) {
 	return "", errors.New("`input` carries no user message")
 }
 
-// neutralizeInputMode keeps a chat message a message.
+// neutralizeInputMode keeps a leading `!` from becoming a shell command.
 //
-// 🔴 A PROMPT WHOSE FIRST BYTE IS `!` OR `/` IS NOT SENT TO THE MODEL AT ALL —
-// EVEN AS A BRACKETED PASTE. Measured on the pinned CLI: a pasted "! pasted bang
-// first" ran `pasted bang first` in bash inside the pod (the TUI's shell mode,
-// which no permission prompt and no approval hook sees), and a pasted "/ …" ran
-// a local slash command. Neither fires UserPromptSubmit, so ccd would also have
-// waited out its submit timeout after the command had already run. `#`, `&`,
-// `@`, `>` and `?` were measured too and are plain text.
+// 🔴 A PROMPT WHOSE FIRST BYTE IS `!` RUNS IN BASH INSIDE THE POD — EVEN AS A
+// BRACKETED PASTE. Measured on the pinned CLI: a pasted "! pasted bang first" ran
+// `pasted bang first` in bash (the TUI's shell mode, which no permission prompt
+// and no approval hook sees) and fired no UserPromptSubmit. One leading space
+// disarms it (measured: " ! …" reached the model as text, the space kept verbatim
+// in the transcript). That one byte is the only change ccd makes to a prompt
+// besides folding CRLF.
 //
-// One leading space disarms both (measured: " ! …" and " /help …" reached the
-// model as text, the space kept verbatim in the transcript). That one byte is the
-// only change ccd makes to a prompt besides folding CRLF.
+// `/` IS DELIBERATELY LET THROUGH (operator decision, 2026-10-10: the session is
+// a trusted operator's, sandboxed in its own pod). Measured on the pinned CLI: a
+// known command ("/compact") runs locally and fires NO UserPromptSubmit (see
+// runTurn's local_command failure); a `/` text that is not a command ("/etc/hosts
+// is broken") fires UserPromptSubmit and is an ordinary model turn. `#`, `&`, `@`,
+// `>` and `?` were measured too and are plain text.
 func neutralizeInputMode(prompt string) string {
-	if strings.HasPrefix(prompt, "!") || strings.HasPrefix(prompt, "/") {
+	if strings.HasPrefix(prompt, "!") {
 		return " " + prompt
 	}
 	return prompt
@@ -310,7 +328,7 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 		s.mu.Unlock()
 		return turnOutcome{}, &failure{Status: http.StatusServiceUnavailable, Type: failNotReady,
 			Message: "the session has not started (no SessionStart hook yet): the TUI may be on a " +
-				"first-run or trust screen — attach to the pane to see it"}
+				"first-run, trust or login screen, or restarting — attach to the pane to see it"}
 	case s.busy:
 		s.mu.Unlock()
 		return turnOutcome{}, &failure{Status: http.StatusConflict, Type: failBusy,
@@ -340,11 +358,18 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 	// Wait for the CLI to accept the prompt. One extra Enter half-way through
 	// covers an Enter that landed while the TUI was still ingesting the paste; an
 	// extra Enter on an empty input line is a no-op in the TUI.
+	//
+	// ⚠ NOT FOR A `/` PROMPT: a slash command may have opened a picker or menu
+	// (/model, /login), where an extra Enter would SELECT whatever is highlighted.
+	slash := strings.HasPrefix(prompt, "/")
 	var submitted hookEvent
 	submitTimer := time.NewTimer(s.cfg.SubmitTimeout)
 	defer submitTimer.Stop()
 	retry := time.NewTimer(s.cfg.SubmitTimeout / 2)
 	defer retry.Stop()
+	if slash {
+		retry.Stop()
+	}
 waitSubmit:
 	for {
 		select {
@@ -353,6 +378,12 @@ waitSubmit:
 		case <-retry.C:
 			_ = s.term.Enter(ctx)
 		case <-submitTimer.C:
+			if slash {
+				return turnOutcome{}, &failure{Status: http.StatusBadGateway, Type: failLocalCommand,
+					Message: fmt.Sprintf("no UserPromptSubmit within %s of pasting a `/` prompt: the CLI most "+
+						"likely ran it as a local slash command, which has no model turn and so no reply — "+
+						"attach to the pane to see its output", s.cfg.SubmitTimeout)}
+			}
 			return turnOutcome{}, &failure{Status: http.StatusGatewayTimeout, Type: failNotSubmitted,
 				Message: fmt.Sprintf("no UserPromptSubmit within %s of the paste: the prompt is sitting "+
 					"unsent in the input box or a dialog has focus — attach to the pane", s.cfg.SubmitTimeout)}
@@ -479,18 +510,41 @@ func (s *server) underProjects(path string) error {
 
 // --- /healthz ---------------------------------------------------------------
 
+// Session states reported on /healthz (never gating).
+const (
+	sessionStartedState = "started"       // SessionStart seen: the TUI is at its prompt
+	sessionEndedState   = "ended"         // SessionEnd seen: the CLI is exiting or restarting
+	sessionWaitLogin    = "waiting_login" // no SessionStart, and no credential visible (see below)
+	sessionNotStarted   = "not_started"   // no SessionStart yet (first-run/trust screens, or still booting)
+)
+
 type health struct {
-	OK             bool   `json:"ok"`
-	SessionStarted bool   `json:"session_started"`
-	Busy           bool   `json:"busy"`
-	Terminal       string `json:"terminal"`
+	OK       bool   `json:"ok"`
+	Terminal string `json:"terminal"`
+	// Supervisor is the supervised CLI's state; absent when ccd does not run it.
+	Supervisor *cliState `json:"supervisor,omitempty"`
+	Session    string    `json:"session"`
+	Busy       bool      `json:"busy"`
 	authSnapshot
 }
 
-// handleHealthz answers 200 only when the session is at (or past) its prompt,
-// tmux is alive, AND the model credential is known to work. Each check is one
-// the others cannot see: a running tmux says nothing about the screen it shows,
-// and `claude auth status` reports logged-in for a token the API rejects.
+// handleHealthz serves /healthz and / (identically). It answers 200 when ccd is
+// up and the tmux session is alive, and non-200 only when one of these is not:
+//   - tmux is not answering for the session (`tmux has-session` fails);
+//   - the supervised CLI is in crash_loop (supervise.go) — so the liveness probe
+//     restarts the pod.
+//
+// 🔴 SESSION AND AUTH ARE REPORTED, NEVER GATING. muster's renderer points the
+// pod's startup and liveness probes at this path, so anything that fails it gets
+// the pod restarted:
+//   - waiting for SessionStart would kill a pod sitting at the /login screen
+//     before an operator could attach and log in;
+//   - a rate-limited account is healthy and resting, and an auth-failed one needs
+//     a new token, not a restart — either would restart-loop a pod that cannot
+//     fix itself by restarting.
+//
+// `auth` comes only from real turns (authTracker.observeTurn); ccd spends no
+// request of its own to learn it.
 func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
@@ -498,13 +552,51 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if err := s.term.Alive(ctx); err != nil {
 		h.Terminal = err.Error()
 	}
+	if s.sup != nil {
+		st := s.sup.state()
+		h.Supervisor = &st
+	}
 	s.mu.Lock()
-	h.SessionStarted, h.Busy = s.sessionStarted, s.busy
+	started, ended := s.sessionStarted, s.sessionEnded
+	h.Busy = s.busy
 	s.mu.Unlock()
-	h.OK = h.SessionStarted && h.Terminal == "ok" && h.Auth == authOK
+	h.Session = s.sessionState(started, ended)
+	h.OK = h.Terminal == "ok" && (h.Supervisor == nil || h.Supervisor.CLI != cliCrashLoop)
 	w.Header().Set("Content-Type", "application/json")
 	if !h.OK {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	_ = json.NewEncoder(w).Encode(h)
+}
+
+// sessionState names where the TUI is. ⚠ `waiting_login` IS AN INFERENCE: before
+// SessionStart ccd cannot see which screen the TUI is on (it never reads the
+// screen), so it says `waiting_login` when it also cannot see any credential the
+// CLI would use — the case in which the pinned CLI stops at its login-method
+// screen (measured: with no token it never fires SessionStart).
+func (s *server) sessionState(started, ended bool) string {
+	switch {
+	case started:
+		return sessionStartedState
+	case ended:
+		return sessionEndedState
+	case s.cfg.HasCredential != nil && !s.cfg.HasCredential():
+		return sessionWaitLogin
+	}
+	return sessionNotStarted
+}
+
+// credentialVisible is the production HasCredential: CLAUDE_CODE_OAUTH_TOKEN in
+// the environment ccd (and so the tmux server it starts) runs with, or the file
+// an interactive /login writes, <CLAUDE_CONFIG_DIR>/.credentials.json. The file
+// name is the one the pinned CLI binary carries; a /login writing it was not
+// observed (that needs a real account).
+func credentialVisible(configDir string) func() bool {
+	return func() bool {
+		if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" {
+			return true
+		}
+		_, err := os.Stat(filepath.Join(configDir, ".credentials.json"))
+		return err == nil
+	}
 }

@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -172,6 +174,23 @@ func TestAPasteThatNeverSubmitsTimesOutAfterOneRetryEnter(t *testing.T) {
 	}
 }
 
+// A `/` prompt the CLI runs locally fires no UserPromptSubmit. That is a typed
+// local_command failure, and NO retry Enter is pressed: the command may have
+// opened a picker, where an Enter would select something.
+func TestASlashPromptThatNeverSubmitsIsALocalCommandWithNoRetryEnter(t *testing.T) {
+	srv, cli := newScripted(t, cliScript{noSubmit: true})
+	code, body := postResponses(t, gatewayServer(t, srv).URL, pinnedDerivation, "/model")
+	if code != http.StatusBadGateway || errType(t, body) != failLocalCommand {
+		t.Fatalf("%d %s", code, body)
+	}
+	if cli.enters != 0 {
+		t.Fatalf("retry Enter pressed %d times after a `/` prompt, want 0", cli.enters)
+	}
+	if cli.pasted[0] != "/model" {
+		t.Fatalf("pasted %q", cli.pasted[0])
+	}
+}
+
 func TestATranscriptOutsideTheConfigDirIsRefused(t *testing.T) {
 	srv, _ := newScripted(t, cliScript{transcript: fixture(t, "turn_success_tools_2.1.289.jsonl"),
 		stopEvent: "Stop", transcriptPath: "/etc/passwd"})
@@ -192,12 +211,15 @@ func TestCRLFIsFoldedBeforeThePaste(t *testing.T) {
 	}
 }
 
-// The unit half of the `!`/`/` guard (the real-tmux suite has the other).
-func TestALeadingBangOrSlashIsDisarmedBeforeThePaste(t *testing.T) {
+// The unit half of the `!` guard and of the `/` pass-through (the real-tmux suite
+// has the other half of each): a leading `!` gets one space; a leading `/` is
+// pasted byte-exact.
+func TestALeadingBangIsDisarmedAndASlashPassesByteExact(t *testing.T) {
 	cases := map[string]string{
 		"!rm -rf /":            " !rm -rf /",
-		"/compact":             " /compact",
-		"/etc/hosts is broken": " /etc/hosts is broken",
+		"!ls":                  " !ls",
+		"/compact":             "/compact",
+		"/etc/hosts is broken": "/etc/hosts is broken",
 		"plain":                "plain",
 		" !already spaced":     " !already spaced",
 		"a ! in the middle":    "a ! in the middle",
@@ -281,50 +303,101 @@ func TestTheGatewayMuxDoesNotServeHooks(t *testing.T) {
 	}
 }
 
-func TestHealthz(t *testing.T) {
+func getHealth(t *testing.T, url, path string) (int, string, health) {
+	t.Helper()
+	resp, err := http.Get(url + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	var h health
+	if err := json.Unmarshal(b, &h); err != nil {
+		t.Fatalf("%s body is not health JSON: %q", path, b)
+	}
+	return resp.StatusCode, string(b), h
+}
+
+// 🔴 HEALTH DOES NOT DEPEND ON AUTH OR ON SessionStart. muster's renderer points
+// the startup AND liveness probes at the health path, so a non-200 restarts the
+// pod: a rate-limited or auth-failed account, or a TUI waiting at /login for the
+// operator, must still answer 200 — with the state reported in the body.
+func TestHealthzIsUpWhateverTheSessionAndAuthState(t *testing.T) {
+	srv, _ := newScripted(t, cliScript{})
+	url := gatewayServer(t, srv).URL
+	cases := []struct {
+		name    string
+		prep    func()
+		session string
+		auth    string
+	}{
+		{"started, auth unknown", func() {}, sessionStartedState, authUnknown},
+		{"rate limited", func() { srv.auth.set(authRateLimited, "You've hit your session limit · resets 9pm") }, sessionStartedState, authRateLimited},
+		{"auth failed", func() { srv.auth.set(authFailed, "401") }, sessionStartedState, authFailed},
+		{"before SessionStart, credential visible", func() {
+			srv.mu.Lock()
+			srv.sessionStarted = false
+			srv.mu.Unlock()
+		}, sessionNotStarted, authFailed},
+		{"before SessionStart, no credential", func() { srv.cfg.HasCredential = func() bool { return false } }, sessionWaitLogin, authFailed},
+		{"after SessionEnd", func() { srv.onHook(hookEvent{Event: "SessionEnd"}) }, sessionEndedState, authFailed},
+	}
+	srv.cfg.HasCredential = func() bool { return true }
+	for _, c := range cases {
+		c.prep()
+		code, body, h := getHealth(t, url, "/healthz")
+		if code != http.StatusOK || !h.OK || h.Session != c.session || h.Auth != c.auth {
+			t.Fatalf("%s: %d %s; want 200 session=%s auth=%s", c.name, code, body, c.session, c.auth)
+		}
+	}
+}
+
+// `/` is muster's default agent health path; it must be the same check.
+func TestHealthzAndRootAnswerIdentically(t *testing.T) {
 	srv, cli := newScripted(t, cliScript{})
-	ts := gatewayServer(t, srv)
-	get := func() (int, health) {
-		resp, err := http.Get(ts.URL + "/healthz")
-		if err != nil {
-			t.Fatal(err)
+	url := gatewayServer(t, srv).URL
+	same := func(label string, wantCode int) {
+		c1, b1, _ := getHealth(t, url, "/healthz")
+		c2, b2, _ := getHealth(t, url, "/")
+		if c1 != wantCode || c2 != c1 || b2 != b1 {
+			t.Fatalf("%s: /healthz %d %s, / %d %s, want both %d and equal", label, c1, b1, c2, b2, wantCode)
 		}
-		defer resp.Body.Close()
-		var h health
-		if err := json.NewDecoder(resp.Body).Decode(&h); err != nil {
-			t.Fatal(err)
-		}
-		return resp.StatusCode, h
 	}
-	// Session started, terminal alive, credential UNPROVEN: not healthy.
-	if code, h := get(); code != 503 || h.Auth != authUnknown || !h.SessionStarted {
-		t.Fatalf("unproven credential: %d %+v", code, h)
-	}
-	srv.auth.set(authOK, "", "probe")
-	if code, h := get(); code != 200 || !h.OK {
-		t.Fatalf("all green: %d %+v", code, h)
-	}
+	same("up", http.StatusOK)
 	cli.aliveErr = errors.New("no server running")
-	if code, h := get(); code != 503 || h.Terminal == "ok" {
-		t.Fatalf("dead tmux: %d %+v", code, h)
+	same("tmux dead", http.StatusServiceUnavailable)
+	// `/` is exact: an unknown path is not a health check.
+	if resp, err := http.Get(url + "/nope"); err != nil || resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /nope: %v %v", resp, err)
+	}
+}
+
+// The two things health DOES gate on: tmux, and a crash-looping CLI.
+func TestHealthzFailsOnDeadTmuxOrACrashLoop(t *testing.T) {
+	srv, cli := newScripted(t, cliScript{})
+	url := gatewayServer(t, srv).URL
+	cli.aliveErr = errors.New("no server running")
+	if code, body, h := getHealth(t, url, "/healthz"); code != 503 || h.Terminal == "ok" {
+		t.Fatalf("dead tmux: %d %s", code, body)
 	}
 	cli.aliveErr = nil
-	srv.auth.set(authFailed, "401", "turn")
-	if code, h := get(); code != 503 || h.Auth != authFailed {
-		t.Fatalf("auth failed: %d %+v", code, h)
+	sup := newSupervisor(nil, "claude", t.TempDir(), "/w")
+	srv.sup = sup
+	sup.started(modeFresh)
+	if code, body, h := getHealth(t, url, "/healthz"); code != 200 || h.Supervisor == nil || h.Supervisor.CLI != cliRunning {
+		t.Fatalf("running: %d %s", code, body)
 	}
-	srv.auth.set(authOK, "", "probe")
-	srv.mu.Lock()
-	srv.sessionStarted = false
-	srv.mu.Unlock()
-	if code, _ := get(); code != 503 {
-		t.Fatalf("no session: %d", code)
+	for i := 0; i < sup.crashExits; i++ {
+		sup.recordExit(1)
+	}
+	if code, body, h := getHealth(t, url, "/healthz"); code != 503 || h.Supervisor.CLI != cliCrashLoop {
+		t.Fatalf("crash loop: %d %s", code, body)
 	}
 }
 
 func TestAStopFailureHookUpdatesTheAuthStateEvenWithNoTurnPending(t *testing.T) {
 	srv, _ := newScripted(t, cliScript{})
-	srv.auth.set(authOK, "", "probe")
+	srv.auth.set(authOK, "")
 	srv.onHook(hookEvent{Event: "StopFailure", Error: "authentication_failed", LastAssistantMessage: "401"})
 	if got := srv.auth.snapshot().Auth; got != authFailed {
 		t.Fatalf("auth = %q", got)
@@ -344,5 +417,24 @@ func TestSessionEndMakesTheSessionNotReadyUntilTheNextStart(t *testing.T) {
 	srv.onHook(hookEvent{Event: "SessionStart", SessionID: fixtureSessionID, Source: "resume"})
 	if code, body := postResponses(t, ts.URL, pinnedDerivation, "hi"); code != http.StatusOK {
 		t.Fatalf("after the next SessionStart: %d %s", code, body)
+	}
+}
+
+// The production HasCredential: the env token, or the file /login writes.
+func TestCredentialVisible(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	if credentialVisible(cfg)() {
+		t.Fatal("no env token and no file: reported a credential")
+	}
+	if err := os.WriteFile(filepath.Join(cfg, ".credentials.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !credentialVisible(cfg)() {
+		t.Fatal(".credentials.json present: reported none")
+	}
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-env-token")
+	if !credentialVisible(t.TempDir())() {
+		t.Fatal("env token set: reported none")
 	}
 }

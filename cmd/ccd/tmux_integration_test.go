@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -122,6 +123,17 @@ func (r *tmuxRig) waitStarted(t *testing.T) {
 	t.Fatalf("no SessionStart hook reached ccd within 15s; the pane shows:\n%s\nhook log:\n%s", pane, hooklog)
 }
 
+// transcriptHas reports whether some user record's content is exactly s.
+func (r *tmuxRig) transcriptHas(t *testing.T, s string) bool {
+	t.Helper()
+	for _, v := range r.userRecords(t) {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // userRecords returns promptId -> prompt content from the transcript the fake wrote.
 func (r *tmuxRig) userRecords(t *testing.T) map[string]string {
 	t.Helper()
@@ -135,6 +147,7 @@ func (r *tmuxRig) userRecords(t *testing.T) map[string]string {
 	}
 	defer f.Close()
 	out := map[string]string{}
+	n := 0
 	sc := bufio.NewScanner(f)
 	sc.Buffer(nil, 1<<20)
 	for sc.Scan() {
@@ -150,7 +163,12 @@ func (r *tmuxRig) userRecords(t *testing.T) map[string]string {
 		}
 		var s string
 		if json.Unmarshal(rec.Message.Content, &s) == nil {
-			out[rec.PromptID] = s
+			key := rec.PromptID
+			if key == "" { // a local command or shell record: no prompt id
+				n++
+				key = fmt.Sprintf("local-%d", n)
+			}
+			out[key] = s
 		}
 	}
 	return out
@@ -177,9 +195,9 @@ func TestTmuxPastedBytesArriveExactlyAndTheReplyComesBack(t *testing.T) {
 			t.Fatalf("prompt %q:\nreply %q\nwant  %q", p, reply, want)
 		}
 	}
-	// A leading `!` or `/` would run locally in the real CLI (and here); ccd
-	// prefixes one space, so these reach the model as text.
-	for _, p := range []string{"!echo this must not run in a shell", "/help is a path, not a command"} {
+	// A leading `!` would run in a shell in the real CLI (and here); ccd prefixes
+	// one space, so it reaches the model as text.
+	for _, p := range []string{"!echo this must not run in a shell", "!ls"} {
 		reply, err := gw.Chat(context.Background(), contractAgent, "s", p, nil)
 		if err != nil {
 			t.Fatalf("prompt %q: %v", p, err)
@@ -189,6 +207,26 @@ func TestTmuxPastedBytesArriveExactlyAndTheReplyComesBack(t *testing.T) {
 			t.Fatalf("prompt %q: reply %q, want %q", p, reply, want)
 		}
 		prompts = append(prompts, " "+p)
+	}
+	// A leading `/` is let through byte-exact. Text that names no command is an
+	// ordinary turn (as on the real CLI)...
+	{
+		p := "/etc/hosts is broken"
+		reply, err := gw.Chat(context.Background(), contractAgent, "s", p, nil)
+		sum := sha256.Sum256([]byte(p))
+		if want := fmt.Sprintf("received %d bytes\n\nsha256 %s", len(p), hex.EncodeToString(sum[:])); err != nil || reply != want {
+			t.Fatalf("prompt %q: reply %q err %v, want %q", p, reply, err, want)
+		}
+		prompts = append(prompts, p)
+	}
+	// ...and a command runs in the CLI, reaching it byte-exact, with a typed
+	// local_command error to the caller (there is no model turn to reply).
+	if _, err := gw.Chat(context.Background(), contractAgent, "s", "/compact", nil); err == nil ||
+		!strings.Contains(err.Error(), `"type":"local_command"`) {
+		t.Fatalf("/compact: err %v, want local_command", err)
+	}
+	if !rig.transcriptHas(t, "<local-command>/compact</local-command>") {
+		t.Fatal("the CLI did not receive /compact byte-exact as a command")
 	}
 	// The other end of the same claim: the transcript holds each prompt verbatim.
 	got := rig.userRecords(t)
@@ -235,10 +273,16 @@ func TestTmuxAnUntrustedWorkspaceIsNotReady(t *testing.T) {
 }
 
 // The WHOLE BINARY: `ccd serve` as its own process, configured only through the
-// environment the image's entrypoint sets, creating the tmux session itself
-// (CCD_SESSION_COMMAND) after its listeners are bound, with the probe off. Its
-// SessionStart must arrive and a turn must round-trip through muster's client.
-func TestTmuxTheServeBinaryStartsTheSessionAndAnswers(t *testing.T) {
+// environment the image's entrypoint sets, creating and SUPERVISING the tmux
+// session itself (CCD_SUPERVISE=1) after its listeners are bound.
+//
+//   - health is 200 with no credential proof (there is no probe) and reports a
+//     FRESH supervised start;
+//   - a turn round-trips through muster's client;
+//   - 🔴 `/exit` typed in the pane restarts the CLI IN THE POD with --continue:
+//     the same session id, ONE transcript file holding the prompts from before
+//     and after, and a turn works again.
+func TestTmuxTheServeBinarySupervisesTheSessionAndResumesAfterExit(t *testing.T) {
 	tmuxBin, err := exec.LookPath("tmux")
 	if err != nil {
 		t.Fatal("tmux is REQUIRED by the tmuxit suite and is not on PATH; install it (this suite never skips)")
@@ -274,33 +318,144 @@ func TestTmuxTheServeBinaryStartsTheSessionAndAnswers(t *testing.T) {
 		"PATH="+bin+":"+os.Getenv("PATH"), "SHELL=/bin/sh",
 		"HOOKS_TOKEN="+knownHooksToken, "CLAUDE_CONFIG_DIR="+cfg, "CCD_WORKSPACE="+ws,
 		"CCD_LISTEN="+gwAddr, "CCD_HOOK_LISTEN="+hookAddr, "CCD_HOOK_URL=http://"+hookAddr,
-		"CCD_TMUX_SOCKET="+sock, "CCD_TMUX_CONF=/dev/null", "CCD_PROBE=off",
-		"CCD_SESSION_COMMAND="+filepath.Join(bin, "claude"))
-	var logs strings.Builder
+		"CCD_TMUX_SOCKET="+sock, "CCD_TMUX_CONF=/dev/null",
+		"CCD_SUPERVISE=1", "CCD_CLAUDE_BIN="+filepath.Join(bin, "claude"))
+	var logs syncBuffer
 	cmd.Stdout, cmd.Stderr = &logs, &logs
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 
-	var h health
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		resp, err := http.Get("http://" + gwAddr + "/healthz")
+	waitHealth := func(label string, ok func(health) bool) health {
+		t.Helper()
+		var h health
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			resp, err := http.Get("http://" + gwAddr + "/healthz")
+			if err != nil {
+				continue
+			}
+			h = health{}
+			_ = json.NewDecoder(resp.Body).Decode(&h)
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK && ok(h) {
+				return h
+			}
+		}
+		t.Fatalf("%s: healthz never got there; last %+v sup=%+v; ccd log:\n%s", label, h, h.Supervisor, logs.String())
+		return h
+	}
+	h := waitHealth("first start", func(h health) bool { return h.Session == sessionStartedState })
+	if h.Terminal != "ok" || h.Auth != authUnknown || h.Supervisor == nil ||
+		h.Supervisor.CLI != cliRunning || h.Supervisor.Mode != modeFresh || h.Supervisor.Starts != 1 {
+		t.Fatalf("after the first start: %+v sup=%+v", h, h.Supervisor)
+	}
+	gw := mustersGateway(t, "http://"+gwAddr)
+	chat := func(p string) {
+		t.Helper()
+		reply, err := gw.Chat(context.Background(), contractAgent, "s", p, nil)
+		sum := sha256.Sum256([]byte(p))
+		if want := fmt.Sprintf("received %d bytes\n\nsha256 %s", len(p), hex.EncodeToString(sum[:])); err != nil || reply != want {
+			t.Fatalf("prompt %q: reply %q err %v; ccd log:\n%s", p, reply, err, logs.String())
+		}
+	}
+	chat("before the exit")
+
+	// The operator types /exit in the attached terminal.
+	term := tmuxTerminal{bin: tmuxBin, socket: sock, target: "cc"}
+	if err := term.run(context.Background(), nil, "send-keys", "-t", "cc", "-l", "/exit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.Enter(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h = waitHealth("restart after /exit", func(h health) bool {
+		return h.Supervisor != nil && h.Supervisor.Starts == 2 && h.Session == sessionStartedState
+	})
+	if h.Supervisor.Mode != modeContinue || h.Supervisor.LastExit == nil || *h.Supervisor.LastExit != 0 {
+		t.Fatalf("after /exit: sup=%+v", h.Supervisor)
+	}
+	chat("after the exit")
+
+	files, _ := filepath.Glob(filepath.Join(cfg, "projects", "*", "*.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("want ONE transcript (the conversation resumed, not forked), have %v", files)
+	}
+	b, _ := os.ReadFile(files[0])
+	for _, p := range []string{`"content":"before the exit"`, `"content":"after the exit"`} {
+		if !strings.Contains(string(b), p) {
+			t.Fatalf("the one transcript lacks %s", p)
+		}
+	}
+}
+
+// 🔴 A CLI THAT DIES AT ONCE, IN A REAL tmux PANE: the supervisor restarts it with
+// backoff, then reports crash_loop and /healthz turns 503. Also proves the
+// remain-on-exit ordering: a process that exits immediately still leaves a dead
+// pane to read its status from.
+func TestTmuxACrashingCLIEndsInCrashLoopAndFailsHealth(t *testing.T) {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal("tmux is REQUIRED by the tmuxit suite and is not on PATH; install it (this suite never skips)")
+	}
+	exe, _ := os.Executable()
+	root := t.TempDir()
+	shim := filepath.Join(root, "claude")
+	if err := os.WriteFile(shim, []byte(fmt.Sprintf("#!/bin/sh\nCCD_TEST_AS=claude CCD_FAKE_CRASH=1 exec %q \"$@\"\n", exe)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sock := fmt.Sprintf("ccd-it-crash-%d-%d", os.Getpid(), time.Now().UnixNano())
+	t.Cleanup(func() { _ = exec.Command(tmuxBin, "-L", sock, "kill-server").Run() })
+	term := tmuxTerminal{bin: tmuxBin, socket: sock, conf: "/dev/null", target: "cc"}
+	srv := newServer(serverConfig{Bearer: "x", ConfigDir: root}, term, newAuthTracker())
+	sup := newSupervisor(term, shim, root, root)
+	sup.poll, sup.backoffMin = 20*time.Millisecond, 10*time.Millisecond
+	srv.sup = sup
+	gw := gatewayServer(t, srv)
+
+	done := make(chan error, 1)
+	go func() { done <- sup.run(context.Background()) }()
+	select {
+	case err := <-done:
 		if err != nil {
-			continue
+			t.Fatal(err)
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&h)
-		resp.Body.Close()
-		if h.SessionStarted {
-			break
-		}
+	case <-time.After(20 * time.Second):
+		t.Fatalf("no crash loop within 20s: %+v", sup.state())
 	}
-	if !h.SessionStarted || h.Terminal != "ok" || h.Auth != authUnknown {
-		t.Fatalf("healthz %+v; ccd log:\n%s", h, logs.String())
+	st := sup.state()
+	if st.CLI != cliCrashLoop || st.Starts != 5 || st.LastExit == nil || *st.LastExit != 3 {
+		t.Fatalf("state %+v", st)
 	}
-	reply, err := mustersGateway(t, "http://"+gwAddr).Chat(context.Background(), contractAgent, "s", "whole binary", nil)
-	sum := sha256.Sum256([]byte("whole binary"))
-	if err != nil || reply != fmt.Sprintf("received 12 bytes\n\nsha256 %s", hex.EncodeToString(sum[:])) {
-		t.Fatalf("reply %q err %v; ccd log:\n%s", reply, err, logs.String())
+	resp, err := http.Get(gw.URL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
 	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("healthz %d during a crash loop, want 503", resp.StatusCode)
+	}
+	// Control: the tmux session itself is alive (the dead pane is kept), so the
+	// 503 is the crash loop's, not a dead terminal's.
+	if err := term.Alive(context.Background()); err != nil {
+		t.Fatalf("control: %v", err)
+	}
+}
+
+// syncBuffer is a strings.Builder safe to write from a child's two streams.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }

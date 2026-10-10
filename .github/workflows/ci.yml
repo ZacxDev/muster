@@ -212,7 +212,7 @@ jobs:
       # verb ledger against the binary it just installed, so this step is also
       # the artefact-level verb check — see tests/verb-ledger.sh.
       - name: build every package output
-        run: nix build --no-link --print-out-paths -L .#muster-cli .#muster-migrate .#ccd
+        run: nix build --no-link --print-out-paths -L .#muster-cli .#muster-migrate
 
       - name: every flake output evaluates
         run: nix flake check -L
@@ -302,9 +302,9 @@ jobs:
   #
   # The claude-code-agent image builds, runs as uid 1000 with the pinned CLI, and
   # its TUI reaches the prompt with the seeded config — proven by a SessionStart
-  # hook arriving at ccd through `ccd hook`. It is given NO credential: the smoke
-  # supplies a deliberately invalid token and prints, without asserting, the auth
-  # verdict (which depends on reaching the provider's API).
+  # hook arriving at ccd through `ccd hook` — under ccd's supervisor, which
+  # restarts it in-pod after a typed `/exit`. It is given NO credential (the smoke
+  # supplies a deliberately invalid token) and sends no turn.
   ccd-image:
     name: claude-code-agent image smoke
     runs-on: ubuntu-latest

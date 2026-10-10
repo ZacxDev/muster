@@ -653,15 +653,6 @@ func moduleRoot(t *testing.T) string {
 	}
 }
 
-// scanLiteralRoutePatterns parses every non-test .go file under root and
-// returns each literal string handed as the first argument to a .Handle or
-// .HandleFunc call, mapped to its source position.
-//
-// ⚠ DECLARED LIMITS, so a zero from this is read for what it is. It sees only
-// STRING LITERALS — a pattern assembled at runtime is invisible to it. It
-// keys on the method NAME, so an unrelated method called Handle on some other
-// type would be a false positive; that is the safe direction (a false positive
-// is a loud failure someone reads, a false negative is a silent hole).
 // otherServerRoutes ledgers the binaries in this module that serve their OWN HTTP
 // surface — not muster-server's, so not RegisterRoutes' — keyed by directory, with
 // the exact route set each one registers.
@@ -673,9 +664,11 @@ func moduleRoot(t *testing.T) string {
 //
 //   - cmd/ccd: the in-pod supervisor of the claude-code-agent image. Its
 //     /v1/responses is muster's agent wire served FROM the pod, consumed by
-//     internal/agentgateway; /hook/{event} is served only on a loopback listener.
+//     internal/agentgateway; /hook/{event} is served only on a loopback listener;
+//     GET /{$} is the same health check as /healthz, at muster's default agent
+//     health path ("/").
 var otherServerRoutes = map[string][]string{
-	"cmd/ccd": {"GET /healthz", "POST /hook/{event}", "POST /v1/responses"},
+	"cmd/ccd": {"GET /healthz", "GET /{$}", "POST /hook/{event}", "POST /v1/responses"},
 }
 
 // TestOtherServersRouteLedger is the other half of the exemption above.
@@ -697,6 +690,15 @@ func TestOtherServersRouteLedger(t *testing.T) {
 	}
 }
 
+// scanLiteralRoutePatterns parses every non-test .go file under root and
+// returns each literal string handed as the first argument to a .Handle or
+// .HandleFunc call, mapped to its source position.
+//
+// ⚠ DECLARED LIMITS, so a zero from this is read for what it is. It sees only
+// STRING LITERALS — a pattern assembled at runtime is invisible to it. It
+// keys on the method NAME, so an unrelated method called Handle on some other
+// type would be a false positive; that is the safe direction (a false positive
+// is a loud failure someone reads, a false negative is a silent hole).
 func scanLiteralRoutePatterns(t *testing.T, root string) map[string]string {
 	t.Helper()
 

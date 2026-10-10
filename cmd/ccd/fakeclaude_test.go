@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"time"
 )
 
 // fakeClaude is a stand-in for the interactive CLI, run INSIDE a real tmux pane
@@ -27,8 +29,15 @@ import (
 //     Stop/StopFailure), so the image's real `ccd hook` wiring is exercised;
 //   - it writes transcript records shaped like the recorded ones, the prompt
 //     verbatim as received;
-//   - a prompt whose first byte is `!` or `/` runs LOCALLY (shell mode / a slash
-//     command) with no UserPromptSubmit and no model turn — as the real CLI does.
+//   - a prompt whose first byte is `!` runs LOCALLY (shell mode), and so does a
+//     `/` prompt naming a known command (fakeLocalCommands) — no UserPromptSubmit,
+//     no model turn — while a `/` text naming no command ("/etc/hosts is broken")
+//     is an ordinary prompt; all as measured on the real CLI. `/exit` fires
+//     SessionEnd and exits 0;
+//   - `--continue` resumes the newest transcript for the cwd (SessionStart source
+//     "resume", same session id) and, with none, prints "No conversation found to
+//     continue" and exits 1 — the real CLI's measured behaviour;
+//   - CCD_FAKE_CRASH=1 makes it exit 3 at once (the supervisor's crash-loop test).
 //
 // Its reply states the prompt's length and SHA-256, so a test can check the
 // bytes that ARRIVED from both ends: the transcript and the reply.
@@ -36,9 +45,17 @@ import (
 // ⚠ WHAT IT DOES NOT IMITATE: the real CLI expands a TAB to four spaces; this
 // fake keeps it. That is a property of the CLI, not of ccd's paste, so the suite
 // sends no tabs and the PR records the real CLI's behaviour instead.
+// fakeLocalCommands are the slash commands the fake runs locally.
+var fakeLocalCommands = map[string]bool{"/compact": true, "/help": true, "/clear": true, "/model": true}
+
 func fakeClaude() int {
+	if os.Getenv("CCD_FAKE_CRASH") == "1" {
+		fmt.Print("fake crash\r\n")
+		return 3
+	}
 	cfg := os.Getenv("CLAUDE_CONFIG_DIR")
 	cwd, _ := os.Getwd()
+	resume := len(os.Args) > 1 && os.Args[1] == "--continue"
 	st := map[string]any{}
 	if b, err := os.ReadFile(filepath.Join(cfg, ".claude.json")); err == nil {
 		_ = json.Unmarshal(b, &st)
@@ -60,9 +77,26 @@ func fakeClaude() int {
 		blockForever()
 	}
 
-	sid := randomID()
-	transcript := filepath.Join(cfg, "projects", strings.ReplaceAll(cwd, "/", "-"), sid+".jsonl")
-	_ = os.MkdirAll(filepath.Dir(transcript), 0o700)
+	// The real CLI's project-directory encoding, written out here independently of
+	// ccd's own copy (hasPriorSession) so a wrong copy cannot agree with itself.
+	projDir := filepath.Join(cfg, "projects", regexp.MustCompile(`[^A-Za-z0-9]`).ReplaceAllString(cwd, "-"))
+	sid, source := randomID(), "startup"
+	if resume {
+		newest, newestAt := "", time.Time{}
+		entries, _ := os.ReadDir(projDir)
+		for _, e := range entries {
+			if fi, err := e.Info(); err == nil && strings.HasSuffix(e.Name(), ".jsonl") && fi.ModTime().After(newestAt) {
+				newest, newestAt = strings.TrimSuffix(e.Name(), ".jsonl"), fi.ModTime()
+			}
+		}
+		if newest == "" {
+			fmt.Print("No conversation found to continue\r\n")
+			return 1
+		}
+		sid, source = newest, "resume"
+	}
+	transcript := filepath.Join(projDir, sid+".jsonl")
+	_ = os.MkdirAll(projDir, 0o700)
 	hooks := loadHooks(filepath.Join(cfg, "settings.json"))
 	base := map[string]any{"session_id": sid, "transcript_path": transcript, "cwd": cwd}
 
@@ -104,16 +138,30 @@ func fakeClaude() int {
 		write(rec)
 	}
 
-	fire("SessionStart", map[string]any{"source": "startup"})
+	fire("SessionStart", map[string]any{"source": source})
 	fmt.Print("\x1b[?2004h> ")
 
+	exit := false
 	submit := func(prompt string) {
-		if strings.HasPrefix(prompt, "!") || strings.HasPrefix(prompt, "/") {
-			// Measured on the real CLI: shell mode / a local slash command. No
-			// UserPromptSubmit, nothing sent to the model.
+		if prompt == "/exit" {
+			fire("SessionEnd", map[string]any{"reason": "prompt_input_exit"})
+			exit = true
+			return
+		}
+		if strings.HasPrefix(prompt, "!") {
+			// Measured on the real CLI: shell mode. No UserPromptSubmit, nothing
+			// sent to the model.
 			write(map[string]any{"type": "user", "isSidechain": false,
 				"message": map[string]any{"role": "user", "content": "<bash-input>" + prompt[1:] + "</bash-input>"}})
 			fmt.Print("\r\n! ran locally\r\n> ")
+			return
+		}
+		if fakeLocalCommands[strings.Fields(prompt)[0]] {
+			// A local slash command: no UserPromptSubmit, no model turn. The record
+			// keeps the bytes that arrived, so a test can see them.
+			write(map[string]any{"type": "user", "isSidechain": false,
+				"message": map[string]any{"role": "user", "content": "<local-command>" + prompt + "</local-command>"}})
+			fmt.Print("\r\n/ ran locally\r\n> ")
 			return
 		}
 		pid := randomID()
@@ -176,6 +224,9 @@ func fakeClaude() int {
 					if len(cur) > 0 {
 						submit(string(cur))
 						cur = nil
+						if exit {
+							return 0
+						}
 					}
 				default:
 					cur = append(cur, c)

@@ -6,17 +6,22 @@
 # It asserts, INSIDE the built image:
 #   1. the container runs as uid 1000, not root;
 #   2. the pinned CLI is the one on PATH;
-#   3. the entrypoint's seed produced the onboarding/trust/hook shape (`ccd seed --check`);
-#   4. ccd's /healthz answers with JSON;
-#   5. the TUI reached its prompt: /healthz reports session_started=true, which only
-#      a SessionStart hook can set — so this also proves the seeded hook wiring
-#      reaches ccd through `ccd hook`.
+#   3. ccd's /healthz answers 200 with JSON, and GET / answers the same status;
+#   4. the TUI reached its prompt: /healthz reports session "started", which only a
+#      SessionStart hook can set — so this also proves the seeded hook wiring
+#      reaches ccd through `ccd hook`; and ccd's supervisor started it as a FRESH
+#      session (no transcript on a new volume);
+#   5. `/exit` typed into the pane is followed by an in-pod restart that RESUMES:
+#      the supervisor's start count goes to 2 with `--continue` (the CLI records
+#      the /exit itself in a transcript, measured, so there is now one to resume)
+#      and SessionStart arrives again, with the container never restarting;
+#   6. the entrypoint's seed produced the onboarding/trust/hook shape (`ccd seed --check`).
 #
-# ⚠ IT NEEDS NO REAL CREDENTIAL AND MUST NEVER BE GIVEN ONE. Without any token the
-# CLI stops at its login-method screen and never fires SessionStart, so a
-# deliberately INVALID token is supplied when none is set; the auth verdict is then
-# printed (expected: auth_failed, or probe_error offline) but not asserted, because
-# it depends on reaching the provider's API.
+# ⚠ IT NEEDS NO REAL CREDENTIAL AND MUST NEVER BE GIVEN ONE, AND IT SENDS NO TURN:
+# nothing here needs the provider's API. Without any token the CLI stops at its
+# login-method screen and never fires SessionStart, so a deliberately INVALID
+# token is supplied when none is set. Resuming a conversation that has real turns
+# in it is the operator live check's step 5.
 set -euo pipefail
 
 fail() { echo "cc-smoke: FAIL: $*" >&2; exit 1; }
@@ -31,43 +36,52 @@ echo "cc-smoke: claude $got ok"
 
 export CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-sk-ant-oat01-SMOKE-DELIBERATELY-INVALID}"
 export HOOKS_TOKEN="${HOOKS_TOKEN:-smoke-hooks-token}"
-export CCD_PROBE_RETRY_INTERVAL="${CCD_PROBE_RETRY_INTERVAL:-1h}"
 
 /usr/local/bin/cc-entrypoint >/tmp/cc-entrypoint.log 2>&1 &
 ep=$!
 
-healthz() {
-  # bash's /dev/tcp: the image carries no curl, and needs none for this.
+# get PATH: prints "<status code> <body>". bash's /dev/tcp: the image carries no
+# curl, and needs none for this.
+get() {
   exec 3<>/dev/tcp/127.0.0.1/18789 || return 1
-  printf 'GET /healthz HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3
-  local body
-  body="$(cat <&3)"
+  printf 'GET %s HTTP/1.0\r\nHost: localhost\r\n\r\n' "$1" >&3
+  local resp
+  resp="$(cat <&3)"
   exec 3<&-
-  printf '%s' "${body#*$'\r\n\r\n'}"
+  local status="${resp#HTTP/* }"
+  printf '%s %s' "${status%% *}" "${resp#*$'\r\n\r\n'}"
 }
 
+# wait_for PATTERN: poll /healthz until "<status> <body>" matches, or fail after 120s.
 body=""
-for _ in $(seq 1 120); do
-  kill -0 "$ep" 2>/dev/null || { cat /tmp/cc-entrypoint.log >&2; fail "the entrypoint exited"; }
-  body="$(healthz 2>/dev/null || true)"
-  [[ "$body" == *'"session_started":true'* ]] && break
-  sleep 1
-done
-echo "cc-smoke: /healthz -> $body"
-[[ "$body" == "{"* ]] || { cat /tmp/cc-entrypoint.log >&2; fail "/healthz did not answer with JSON"; }
-[[ "$body" == *'"session_started":true'* ]] || {
+wait_for() {
+  for _ in $(seq 1 120); do
+    kill -0 "$ep" 2>/dev/null || { cat /tmp/cc-entrypoint.log >&2; fail "the entrypoint exited"; }
+    body="$(get /healthz 2>/dev/null || true)"
+    # shellcheck disable=SC2053 # $1 is a glob pattern on purpose
+    [[ "$body" == $1 ]] && return 0
+    sleep 1
+  done
   tmux capture-pane -p -t cc >&2 || true
-  fail "the TUI never reached its prompt (no SessionStart hook within 120s); the pane is above"
+  cat /tmp/cc-entrypoint.log >&2
+  fail "/healthz never matched $1 within 120s; last: $body (the pane and ccd's log are above)"
 }
-echo "cc-smoke: session started ok"
 
-# The auth verdict is REPORTED, not asserted (see the header).
-for _ in $(seq 1 90); do
-  body="$(healthz 2>/dev/null || true)"
-  [[ "$body" == *'"auth":"unknown"'* ]] || break
-  sleep 1
-done
-echo "cc-smoke: auth verdict (not asserted): $body"
+wait_for '200 {*"session":"started"*'
+echo "cc-smoke: /healthz -> $body"
+[[ "$body" == *'"supervisor":{"cli":"running","cli_mode":"fresh","cli_starts":1'* ]] \
+  || fail "expected one fresh supervised start: $body"
+root="$(get /)"
+[[ "${root%% *}" == "200" && "${root#* }" == "{"* ]] || fail "GET / -> $root, expected 200 JSON like /healthz"
+echo "cc-smoke: session started (fresh); GET / ok"
+
+# /exit in the pane: the CLI exits, and the supervisor restarts it in the same pane.
+tmux send-keys -t cc -l '/exit'
+sleep 0.3
+tmux send-keys -t cc Enter
+wait_for '200 {*"cli_starts":2*"session":"started"*'
+[[ "$body" == *'"cli_mode":"continue"'* ]] || fail "the restart after /exit did not --continue: $body"
+echo "cc-smoke: /exit -> resumed in-pod: $body"
 
 ccd seed --check --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
   --settings-template /etc/ccd/settings.json || fail "seeded config has the wrong shape"

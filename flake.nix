@@ -131,15 +131,7 @@
           # would also have to be `git add`ed to get there via a flake fetch, and
           # a reviewer sees that.
           || (pkgs.lib.hasInfix "/testdata/" rel
-              && (pkgs.lib.hasPrefix "cmd/" rel || pkgs.lib.hasPrefix "internal/" rel))
-          # 🔴 ONE FILE OUTSIDE cmd/ AND internal/, NAMED EXACTLY: the
-          # claude-code-agent image's hook template. cmd/ccd's tests read the
-          # REAL file the image ships (a copy would be a second statement that
-          # can drift), so without this row they fail inside the build with a
-          # missing-file error naming the test, not this filter. The two
-          # directory rows only let the walk reach it.
-          || (type == "directory" && (rel == "images" || rel == "images/claude-code-agent"))
-          || (rel == "images/claude-code-agent/settings.json");
+              && (pkgs.lib.hasPrefix "cmd/" rel || pkgs.lib.hasPrefix "internal/" rel));
       };
 
       # 🔴 THE GO TOOLCHAIN IS PINNED, NOT INHERITED. `pkgs.go` follows nixpkgs
@@ -489,50 +481,6 @@
         };
       };
 
-      # ---------------------------------------------------------------------
-      # ccd: the in-pod supervisor of the claude-code-agent image
-      # (images/claude-code-agent/Dockerfile builds the same package with
-      # `go build`; this output is the nix spelling of that binary).
-      # ---------------------------------------------------------------------
-      mkCCD = pkgs: (buildGoPinned pkgs) {
-        pname = "ccd";
-        inherit version;
-        src = onlyGo pkgs;
-        vendorHash = goVendorHash;
-
-        subPackages = [ "cmd/ccd" ];
-
-        doCheck = true;
-        # cmd/ccd's own suite, including the contract test that drives it with
-        # muster's client (internal/agentgateway) — so that package's code is
-        # exercised here too. The real-tmux suite is behind the `tmuxit` build
-        # tag and is NOT run here: the sandbox has no tmux. It runs in CI's
-        # `ccd (real tmux)` job, which fails rather than skips without tmux.
-        checkPhase = goCheckPhase "./cmd/ccd/...";
-
-        # The artefact-level check: the INSTALLED binary seeds a config dir from
-        # the image's real template and then verifies it. A wrong `subPackages`
-        # leaves every Go test green and installs some other program; this runs
-        # `$out/bin/ccd`.
-        doInstallCheck = true;
-        installCheckPhase = ''
-          runHook preInstallCheck
-          "$out/bin/ccd" seed --config-dir "$TMPDIR/ccd-cfg" --workspace "$TMPDIR/ccd-ws" \
-            --settings-template ${./images/claude-code-agent/settings.json}
-          "$out/bin/ccd" seed --check --config-dir "$TMPDIR/ccd-cfg" --workspace "$TMPDIR/ccd-ws" \
-            --settings-template ${./images/claude-code-agent/settings.json}
-          runHook postInstallCheck
-        '';
-
-        meta = with pkgs.lib; {
-          description = "In-pod supervisor that serves muster's agent wire over an interactive Claude Code session";
-          homepage = "https://github.com/ZacxDev/muster";
-          license = licenses.mit;
-          mainProgram = "ccd";
-          platforms = platforms.unix;
-        };
-      };
-
       # 🔴 THE IMAGE CARRIES BUSYBOX AND DECLARES `PATH`, AND NEITHER IS
       # DECORATION. `buildLayeredImage` with `contents` set to the binary alone
       # produces an image with NO `PATH` and no `sh` — so `kubectl exec … -- sh`
@@ -581,7 +529,6 @@
           # client asks for the flake's unnamed entry point to change meaning.
           # Consumers address it by name.
           muster-cli = mkCLI pkgs;
-          ccd = mkCCD pkgs;
           default = mkMigrate pkgs;
         }
         // nixpkgs.lib.optionalAttrs
@@ -623,7 +570,6 @@
         # job runs. Its `checkPhase` and its verb-ledger `installCheckPhase` are
         # the substance; this attribute is only how they get collected.
         muster-cli = mkCLI pkgs;
-        ccd = mkCCD pkgs;
       });
 
       devShells = forAll (pkgs: {

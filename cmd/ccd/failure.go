@@ -29,6 +29,7 @@ const (
 	failBusy         = "busy"          // 409: a turn is already running in the session
 	failNotReady     = "not_ready"     // 503: the TUI has not reached its prompt
 	failNotSubmitted = "not_submitted" // 504: the paste never produced a UserPromptSubmit
+	failLocalCommand = "local_command" // 502: a `/` prompt the CLI ran locally — no model turn, no reply
 	failTurnTimeout  = "turn_timeout"  // 504: no Stop/StopFailure within the turn budget
 	failTerminal     = "terminal"      // 502: tmux could not be driven
 	failTranscript   = "transcript"    // 502: the reply could not be read back
@@ -72,6 +73,10 @@ func writeFailure(w http.ResponseWriter, f *failure) {
 // a limit. Capture: run the pod with CCD_HOOK_LOG=/data/claude/hooks.jsonl (every
 // raw hook payload is appended there) and copy the StopFailure line plus the
 // transcript's isApiErrorMessage record, with content replaced, into testdata/.
+//
+// 🔴 THE PR THAT CLOSES THIS ALSO REMOVES CCD_HOOK_LOG (serverConfig.HookLog and
+// its env wiring in main.go). It exists only to make this capture possible; it is
+// off by default, and when on it writes every prompt's text to the volume.
 func classifyAPIError(e apiError) *failure {
 	f := &failure{Code: e.Code, Upstream: e.Status, Message: e.Message}
 	switch {
