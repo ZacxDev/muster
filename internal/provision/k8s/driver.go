@@ -1141,10 +1141,16 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 	// ⚠ ONLY WHEN THE DRIVER IS CONFIGURED FOR ISOLATION, for the reason
 	// applyNetworkPolicy never reads without it: a deployment that enables no
 	// isolated kind holds no RBAC on NetworkPolicies, and an unconditional read
-	// here would fail the destroy of every instance it has. The cost is named: a
-	// policy written while isolation was configured outlives a Destroy issued
-	// after it was unconfigured, in the SHARED-namespace layout. (Under
-	// NamespacePerInstance the namespace deletion below takes it.)
+	// here would fail the destroy of every instance it has. Two costs, named:
+	//
+	//   - a policy written while isolation was configured outlives a Destroy
+	//     issued after it was unconfigured, in the SHARED-namespace layout. (Under
+	//     NamespacePerInstance the namespace deletion below takes it.)
+	//   - on a driver that IS configured, this read happens for EVERY instance,
+	//     isolated or not: Destroy has no spec to consult. So there, a missing
+	//     networkpolicies rule fails the destroy of an instance that never had a
+	//     policy — after its Deployment's delete was issued, and loudly.
+	//     TestDestroyDoesNotReportSuccessOverAPolicyItCouldNotRemove pins both.
 	if d.cfg.NetworkPolicy != nil {
 		npName := networkPolicyName(name)
 		np := c.NetworkingV1().NetworkPolicies(ns)

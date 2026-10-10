@@ -852,6 +852,55 @@ func TestDestroyLeavesAStrangersCoNamedPolicyAlone(t *testing.T) {
 	}
 }
 
+// TestDestroyDoesNotReportSuccessOverAPolicyItCouldNotRemove: Destroy's nil means
+// removed or already absent. A NetworkPolicy the apiserver would not let muster
+// delete is neither, so the call reports it — after the Deployment's delete was
+// issued, because stopping the workload does not wait on tidying.
+//
+// 🔴 THE SECOND CASE IS A COST, PINNED SO IT IS NOT DISCOVERED: on a driver
+// CONFIGURED for isolation, Destroy reads networkpolicies for EVERY instance —
+// it has no spec to tell it which ones were isolated. So on such a deployment a
+// missing RBAC rule fails the destroy of an instance that never had a policy.
+// It fails loudly and removes the workload first; it does not report success.
+func TestDestroyDoesNotReportSuccessOverAPolicyItCouldNotRemove(t *testing.T) {
+	ctx := context.Background()
+	deploymentGone := func(t *testing.T, cs *fake.Clientset, name string) {
+		t.Helper()
+		if _, err := cs.AppsV1().Deployments(internalNS).Get(ctx, name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+			t.Errorf("the Deployment was not removed before the policy failure was reported (get: %v)", err)
+		}
+	}
+
+	t.Run("an isolated instance whose policy cannot be deleted", func(t *testing.T) {
+		d, cs := internalDriver(t)
+		if err := d.Create(ctx, isolatedSpec("stuck-heron")); err != nil {
+			t.Fatal(err)
+		}
+		cs.PrependReactor("delete", "networkpolicies", forbidden("delete"))
+		err := d.Destroy(ctx, provision.Ref{Name: "stuck-heron"})
+		if err == nil || !strings.Contains(err.Error(), "delete networkpolicy stuck-heron-network") {
+			t.Fatalf("destroy = %v, want an error naming the policy it could not delete", err)
+		}
+		deploymentGone(t, cs, "stuck-heron")
+		if n := policyCount(t, cs); n != 1 {
+			t.Fatalf("instrument check: the refused delete left %d policy object(s), want 1", n)
+		}
+	})
+
+	t.Run("an unisolated instance on a configured driver that may not read policies", func(t *testing.T) {
+		d, cs := internalDriver(t)
+		if err := d.Create(ctx, internalSpec("plain-heron")); err != nil {
+			t.Fatal(err)
+		}
+		cs.PrependReactor("get", "networkpolicies", forbidden("get"))
+		err := d.Destroy(ctx, provision.Ref{Name: "plain-heron"})
+		if err == nil || !strings.Contains(err.Error(), "delete networkpolicy plain-heron-network") {
+			t.Fatalf("destroy = %v, want an error naming the policy read that was refused", err)
+		}
+		deploymentGone(t, cs, "plain-heron")
+	})
+}
+
 // TestADriverNotConfiguredForIsolationRefusesItAndNeverTouchesNetworking: with no
 // Config.NetworkPolicy the capability is off, an isolated spec is refused before
 // anything is written, and Destroy makes no networking call — a deployment that
@@ -870,8 +919,10 @@ func TestADriverNotConfiguredForIsolationRefusesItAndNeverTouchesNetworking(t *t
 		t.Fatal("control: a configured driver does not claim NetworkIsolation")
 	}
 
+	// The CAPABILITY refusal, by its own words: renderNetworkPolicy has a guard of
+	// its own that also says "network isolation", and it fires one API call later.
 	err = d.Create(ctx, isolatedSpec("bare-swift"))
-	if !errors.Is(err, provision.ErrUnsupported) || !strings.Contains(err.Error(), "network isolation") {
+	if !errors.Is(err, provision.ErrUnsupported) || !strings.Contains(err.Error(), "driver cannot isolate an instance's network") {
 		t.Fatalf("create = %v, want the capability refusal", err)
 	}
 	if len(cs.Actions()) != 0 {

@@ -751,11 +751,11 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			if a.cfg.claudeCodeNetworkPolicy() {
 				l.Printf("%s network: a NetworkPolicy is WRITTEN per agent before its pod, and the agent is "+
 					"refused if it cannot be — ingress only from pods labelled [%s] (%s) in namespace %s (%s), "+
-					"egress only DNS and TCP 443 to public IPv4 addresses. Enforcement is the cluster network "+
+					"egress only DNS and TCP %d to public IPv4 addresses. Enforcement is the cluster network "+
 					"plugin's, not this server's. An agent created before this build has NO policy until it is "+
 					"stopped and started",
 					agents.KindClaudeCode, a.cfg.AgentNetpolFromLabels, envAgentNetpolFromLabels,
-					a.cfg.AgentNetpolFromNS, envAgentNetpolFromNS)
+					a.cfg.AgentNetpolFromNS, envAgentNetpolFromNS, agentspec.ClaudeCodePublicEgressPort)
 			} else {
 				l.Printf("%s network: NOT CONFINED — %s=%s writes no NetworkPolicy (%s and %s apply to the %s "+
 					"driver only)",
