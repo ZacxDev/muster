@@ -355,7 +355,7 @@ func taskSourceBadge(noteID int64) g.Node {
 		Href("/tasks"),
 		hx("hx-boost", "false"),
 		g.Attr("aria-label", "Source task #"+strconv.FormatInt(noteID, 10)),
-		Class("press inline-flex items-center gap-1 rounded-full bg-s2 px-2 py-0.5 font-mono text-[11px] font-medium text-muted ring-1 ring-inset ring-line transition hover:bg-accent/10 hover:text-fg"),
+		Class("press min-h-[44px] inline-flex items-center gap-1 rounded-full bg-s2 px-2 py-0.5 font-mono text-[11px] font-medium text-muted ring-1 ring-inset ring-line transition hover:bg-accent/10 hover:text-fg"),
 		g.Text("Task #"+strconv.FormatInt(noteID, 10)),
 	)
 }
@@ -368,7 +368,7 @@ func agentRenameButton(ids string) g.Node {
 	return Button(
 		Type("button"),
 		g.Attr("aria-label", "Rename agent"),
-		Class("press inline-flex h-9 w-9 items-center justify-center rounded-xl text-muted transition hover:bg-s2 hover:text-fg"),
+		Class("press inline-flex h-11 w-11 items-center justify-center rounded-xl text-muted transition hover:bg-s2 hover:text-fg"),
 		hx("hx-get", "/ui/agents/"+ids+"/rename"),
 		hx("hx-target", "#agent-"+ids),
 		hx("hx-swap", "outerHTML"),
@@ -393,7 +393,7 @@ func agentMenu(a AgentCardView) g.Node {
 		Class("group/menu relative"),
 		Summary(
 			g.Attr("aria-label", "Agent actions"),
-			Class("press flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-xl text-muted transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
+			Class("press flex h-11 w-11 cursor-pointer list-none items-center justify-center rounded-xl text-muted transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
 			g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="4" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="16" cy="10" r="1.6"/></svg>`),
 		),
 		Div(
@@ -724,7 +724,9 @@ func DispatchModalBody() g.Node {
 				labelledField("Grant privileges", lazyProfilePicker()),
 			),
 			Div(
-				Class("mt-1 grid grid-cols-2 gap-2"),
+				// Sticky as a ROW: both actions stay in view when Advanced pushes them
+				// below the sheet's fold (see TestEverySheetKeepsItsPrimaryActionInView).
+				Class("sticky bottom-0 z-10 mt-1 grid grid-cols-2 gap-2 bg-s1 shadow-[0_-16px_16px_-4px_rgb(var(--mu-s1))]"),
 				Button(
 					Type("submit"),
 					Name("action"), Value("dispatch"),
@@ -780,7 +782,7 @@ func dispatchCloseButton() g.Node {
 	return Button(
 		Type("button"),
 		g.Attr("aria-label", "Close"),
-		Class("press inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"),
+		Class("press inline-flex h-11 w-11 items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"),
 		hx("hx-on:click", "if(window.cgModalClose){window.cgModalClose('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}"),
 		g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 	)
@@ -893,14 +895,14 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 				Class("mt-1 flex flex-col gap-2"),
 				Button(
 					Type("button"),
-					Class("press self-end inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium text-muted ring-1 ring-inset ring-edge transition hover:bg-s2 active:scale-[0.98]"),
+					Class("press min-h-[44px] self-end inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium text-muted ring-1 ring-inset ring-edge transition hover:bg-s2 active:scale-[0.98]"),
 					hx("hx-on:click", "if(window.cgModalClose){window.cgModalClose('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}"),
 					g.Text("Cancel"),
 				),
 				Button(
 					Type("submit"),
 					Name("action"), Value("dispatch"),
-					Class("press w-full inline-flex items-center justify-center rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
+					Class("sticky bottom-0 z-10 shadow-[0_-16px_16px_-4px_rgb(var(--mu-s1))] press w-full inline-flex items-center justify-center rounded-xl bg-accent px-4 py-3 text-sm font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
 					hx("hx-disabled-elt", "this"),
 					g.Text("Dispatch"),
 				),
@@ -932,7 +934,7 @@ func dispatchConfirmRow(label, static string, editable g.Node) g.Node {
 				Type("button"),
 				g.Attr("data-dispatch-edit", ""),
 				g.Attr("aria-label", "Edit "+label),
-				Class("press rounded-lg px-2 py-0.5 text-xs font-medium text-accent transition hover:bg-accent/10 hover:text-fg"),
+				Class("press min-h-[44px] rounded-lg px-2 py-0.5 text-xs font-medium text-accent transition hover:bg-accent/10 hover:text-fg"),
 				hx("hx-on:click", toggle),
 				g.Text("Edit"),
 			),

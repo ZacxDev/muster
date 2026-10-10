@@ -116,6 +116,37 @@
   :root {
     --glyph-knock: rgb(var(--mu-s1));
   }
+
+  /*
+   * 🔴 PHONE-WIDTH FORM CONTROLS: 16px TEXT, 44px TALL, IN ONE PLACE.
+   *
+   * A mobile browser zooms the page when focus lands in a field whose text is
+   * under 16px, and the views write `text-sm`/`text-xs` on most fields because
+   * that reads right on a desktop. Restating a size on ~40 call sites would be
+   * forty chances to miss one, so it is stated here once, for the viewport
+   * where it matters, and the e2e layout spec asserts the COMPUTED size of every
+   * visible field at 360px rather than trusting this rule.
+   *
+   * ⚠ `!important` IS DELIBERATE: a utility class (`.text-sm`) out-ranks an
+   * element selector whatever the layer order, so without it this rule would
+   * lose to exactly the classes it exists to correct. It is scoped to fields
+   * (checkboxes and radios excluded) and to narrow viewports only.
+   */
+  @media (max-width: 639px) {
+    input:not([type='checkbox']):not([type='radio']):not([type='hidden']):not([type='file']),
+    select,
+    textarea {
+      font-size: 16px !important;
+      min-height: 44px !important;
+    }
+    input[type='file'] {
+      font-size: 16px !important;
+      min-height: 44px;
+    }
+    summary {
+      min-height: 44px;
+    }
+  }
 }
 
 

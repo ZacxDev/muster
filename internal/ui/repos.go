@@ -87,7 +87,7 @@ func ReposConnected(login string, repos []RepoView) g.Node {
 			Span(Class("flex-1")),
 			Button(
 				Type("button"),
-				Class("press rounded-lg px-2 py-1 text-xs font-medium text-muted transition hover:text-st-error-fg"),
+				Class("press min-h-[44px] rounded-lg px-2 py-1 text-xs font-medium text-muted transition hover:text-st-error-fg"),
 				hx("hx-post", "/github/disconnect"),
 				hx("hx-target", "#"+panelID("repos")),
 				hx("hx-swap", "innerHTML"),

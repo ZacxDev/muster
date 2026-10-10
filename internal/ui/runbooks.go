@@ -121,7 +121,7 @@ func runbookCard(rb RunbookView) g.Node {
 			Button(
 				Type("button"),
 				g.Attr("aria-label", "Delete runbook"),
-				Class("press inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-s2 hover:text-st-error-fg"),
+				Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-s2 hover:text-st-error-fg"),
 				hx("hx-delete", "/runbooks/"+ids),
 				// `closest section` rather than `#runbooks`: the target is the list
 				// this card is IN, which is true wherever the partial is mounted. The

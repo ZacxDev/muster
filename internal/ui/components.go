@@ -691,7 +691,7 @@ func header() g.Node {
 			// AJAX body-swap to / rather than a full reload.
 			A(Href("/"),
 				g.Attr("aria-label", "muster home"),
-				Class("text-lg font-semibold tracking-tight transition-opacity hover:opacity-80"),
+				Class("inline-flex min-h-[44px] items-center text-lg font-semibold tracking-tight transition-opacity hover:opacity-80"),
 				wordmark(),
 			),
 			Span(Class("flex-1")),
@@ -772,7 +772,7 @@ func enableNotificationsButton() g.Node {
 		ID("enable-push"),
 		Type("button"),
 		// hidden until the client decides push is available + ungranted.
-		Class("press hidden items-center gap-1.5 rounded-full bg-accent/15 px-3 py-1 text-sm font-medium text-accent ring-1 ring-inset ring-accent/30 transition hover:bg-accent/25"),
+		Class("press min-h-[44px] hidden items-center gap-1.5 rounded-full bg-accent/15 px-3 py-1 text-sm font-medium text-accent ring-1 ring-inset ring-accent/30 transition hover:bg-accent/25"),
 		Span(g.Text("🔔")),
 		Span(g.Text("Enable")),
 	)

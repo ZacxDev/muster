@@ -271,7 +271,7 @@ func agentTitle(v AgentDetailView) g.Node {
 			Type("button"),
 			g.Attr("aria-label", "View task details"),
 			g.Attr("title", "View task details"),
-			Class("group flex w-full items-center gap-1 text-left text-sm font-medium text-fg transition hover:text-fg"),
+			Class("group flex min-h-[44px] w-full items-center gap-1 text-left text-sm font-medium text-fg transition hover:text-accent"),
 			hx("hx-get", "/ui/agents/"+v.Name+"/task"),
 			hx("hx-target", "#task-modal"),
 			hx("hx-swap", "innerHTML"),
@@ -353,7 +353,7 @@ func taskModal(v TaskModalView) g.Node {
 				Button(
 					Type("button"),
 					g.Attr("aria-label", "Close"),
-					Class("press inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"),
+					Class("press inline-flex h-11 w-11 items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"),
 					hx("hx-on:click", close),
 					g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>`),
 				),
@@ -763,7 +763,7 @@ func sessionDrawer(v AgentDetailView) g.Node {
 					g.Attr("for", sessionDrawerID),
 					g.Attr("role", "button"),
 					g.Attr("tabindex", "0"),
-					Class("press inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+					Class("press inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 					g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 					Span(Class("sr-only"), g.Text("Close chat history")),
 				),
@@ -1017,7 +1017,7 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 			Input(Type("hidden"), Name("status"), Value(notes.StatusComplete)),
 			Button(
 				Type("submit"),
-				Class("press inline-flex items-center justify-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98]"),
+				Class("press min-h-[44px] inline-flex items-center justify-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98]"),
 				g.Text("Mark complete"),
 			),
 		))
@@ -1046,7 +1046,7 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 				Type("submit"),
 				g.Attr("data-feedback-send", ""),
 				// Hidden until the textarea has content (revealed by the input handler).
-				Class("press hidden items-center justify-center rounded-lg bg-s2 px-3 py-1.5 text-xs font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s3"),
+				Class("press min-h-[44px] hidden items-center justify-center rounded-lg bg-s2 px-3 py-1.5 text-xs font-semibold text-fg ring-1 ring-inset ring-edge transition hover:bg-s3"),
 				g.Text("Send"),
 			),
 			Span(g.Attr("data-feedback-added", ""), Class("hidden text-xs text-accent"), g.Text("Feedback added")),

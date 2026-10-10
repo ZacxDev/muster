@@ -223,7 +223,7 @@ func ChiefPanelToggle() g.Node {
 		g.Attr(chiefPanelToggleAttr, ""),
 		g.Attr("aria-controls", chiefPanelID),
 		g.Attr("aria-expanded", "false"),
-		Class("press inline-flex items-center gap-1 rounded-md border border-edge bg-s1 px-2 py-1 text-[11px] font-medium text-fg2 transition hover:bg-s2 hover:text-fg"),
+		Class("press min-h-[44px] inline-flex items-center gap-1 rounded-md border border-edge bg-s1 px-2 py-1 text-[11px] font-medium text-fg2 transition hover:bg-s2 hover:text-fg"),
 		g.Text("Ask chief"),
 	)
 }
@@ -288,7 +288,7 @@ func ChiefPanel() g.Node {
 				Type("button"),
 				g.Attr(chiefPanelCloseAttr, ""),
 				g.Attr("aria-label", "Close the chief panel"),
-				Class("press inline-flex h-7 w-7 items-center justify-center rounded-md text-muted transition hover:bg-s2 hover:text-fg"),
+				Class("press inline-flex h-11 w-11 items-center justify-center rounded-md text-muted transition hover:bg-s2 hover:text-fg"),
 				g.Text("✕"),
 			),
 		),
@@ -439,7 +439,7 @@ func chiefNewThreadButton(agentID int64) g.Node {
 			Type("submit"),
 			g.Attr("aria-label", "New thread"),
 			g.Attr("title", "New thread"),
-			Class("press inline-flex h-7 w-7 items-center justify-center rounded-md text-muted transition hover:bg-s2 hover:text-fg"),
+			Class("press inline-flex h-11 w-11 items-center justify-center rounded-md text-muted transition hover:bg-s2 hover:text-fg"),
 			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`),
 		),
 	)
@@ -744,7 +744,7 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 					g.Attr("for", chiefThreadsToggleID),
 					g.Attr("role", "button"),
 					g.Attr("tabindex", "0"),
-					Class("press inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+					Class("press inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
 					g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 					Span(Class("sr-only"), g.Text("Close threads")),
 				),

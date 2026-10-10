@@ -218,7 +218,7 @@ func tagFilterRow(vocab []notes.TagCount, active []string) g.Node {
 	chips := make([]g.Node, 0, len(shown)+1)
 	for _, t := range shown {
 		on := act[t]
-		cls := "press inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition "
+		cls := "press inline-flex min-h-[44px] min-w-[44px] shrink-0 justify-center items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition "
 		if on {
 			cls += "bg-accent/15 text-fg ring-1 ring-inset ring-accent/40"
 		} else {
@@ -226,7 +226,7 @@ func tagFilterRow(vocab []notes.TagCount, active []string) g.Node {
 		}
 		if notes.IsRoutingTag(t) && !on {
 			// Routing tags stay visually distinct even in the filter row.
-			cls = "press inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold text-st-review-fg ring-1 ring-inset ring-st-review-fg/40 transition hover:bg-st-review-bg"
+			cls = "press inline-flex min-h-[44px] min-w-[44px] shrink-0 justify-center items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold text-st-review-fg ring-1 ring-inset ring-st-review-fg/40 transition hover:bg-st-review-bg"
 		}
 		chips = append(chips, Button(
 			Type("button"),
@@ -327,7 +327,7 @@ func projectFilterRow(projects []notes.ProjectCount, active []string) g.Node {
 	chips := make([]g.Node, 0, len(shown)+1)
 	for _, p := range shown {
 		on := p.Name == activeProject
-		cls := "press inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition "
+		cls := "press inline-flex min-h-[44px] min-w-[44px] shrink-0 justify-center items-center gap-1 rounded-full px-3 py-1 text-xs font-medium transition "
 		if on {
 			cls += "bg-st-running-bg text-st-running-fg ring-1 ring-inset ring-st-running-fg/40"
 		} else {
@@ -369,7 +369,7 @@ func tagFilterClearButton(label string) g.Node {
 		Type("button"),
 		g.Attr("data-tag-filter-clear", ""),
 		g.Attr("aria-label", "Clear tag filter"),
-		Class("press inline-flex min-h-[44px] shrink-0 items-center gap-1 rounded-full px-3 py-1 text-xs font-medium text-muted underline decoration-dotted underline-offset-2 transition hover:text-fg"),
+		Class("press inline-flex min-h-[44px] min-w-[44px] shrink-0 justify-center items-center gap-1 rounded-full px-3 py-1 text-xs font-medium text-muted underline decoration-dotted underline-offset-2 transition hover:text-fg"),
 		g.Text(label),
 	)
 }

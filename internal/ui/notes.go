@@ -439,7 +439,7 @@ func (v TasksView) filtered() bool {
 func statusFilterRow(active string) g.Node {
 	chip := func(status, label string) g.Node {
 		on := status == active
-		cls := "press inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition "
+		cls := "press inline-flex min-h-[44px] min-w-[44px] shrink-0 justify-center items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium transition "
 		switch {
 		case on && status == "":
 			cls += "bg-s3 text-fg ring-1 ring-inset ring-edge"
@@ -1106,7 +1106,7 @@ func openChatButton(name string) g.Node {
 		Href("/agents/"+name),
 		hx("hx-boost", "false"),
 		g.Attr("aria-label", "Open agent chat"),
-		Class("press inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-accent ring-1 ring-inset ring-accent/30 transition hover:bg-accent/10 hover:text-fg"),
+		Class("press inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-accent ring-1 ring-inset ring-accent/30 transition hover:bg-accent/10 hover:text-fg"),
 		g.Raw(`<svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h12v9H7l-3 3z"/></svg>`),
 		g.Text("Open chat"),
 	)
@@ -1474,7 +1474,10 @@ func taskStatusSelect(id int64, current string) g.Node {
 	kind := taskGlyphKind(current)
 	return Div(
 		Class("flex min-w-0 items-center gap-2"),
-		Label(Class("shrink-0 text-xs font-medium text-muted"), g.Text("Status")),
+		// The visible word is redundant beside the glyph and the select's own
+		// aria-label, and at phone width it is what pushed the select into
+		// truncating its value ("Ready fo…"), so it is visual-only from sm up.
+		Label(Class("sr-only shrink-0 text-xs font-medium text-muted sm:not-sr-only"), g.Text("Status")),
 		statusGlyph(kind, "h-3.5 w-3.5", false),
 		Select(
 			Name("status"),
@@ -1598,7 +1601,7 @@ func commentDeleteButton(noteID, commentID int64) g.Node {
 			g.Attr("data-comment-delete-trigger", ""),
 			g.Attr("title", "Retract this comment (hidden from the board; the row is kept)"),
 			g.Attr("aria-label", "Delete comment"),
-			Class("press inline-flex h-8 w-8 items-center justify-center rounded-full text-muted transition hover:bg-s2 hover:text-st-error-fg"),
+			Class("press inline-flex h-11 w-11 items-center justify-center rounded-full text-muted transition hover:bg-s2 hover:text-st-error-fg"),
 			hx("hx-on:click", "var c=this.closest('[data-comment-delete-control]');c.querySelector('[data-comment-delete-trigger]').classList.add('hidden');c.querySelector('[data-comment-delete-confirm]').classList.remove('hidden')"),
 			g.Raw(`<svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h12M8 6V4.5A.5.5 0 0 1 8.5 4h3a.5.5 0 0 1 .5.5V6M6 6l.7 9a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9L14 6M8.5 9v4M11.5 9v4"/></svg>`),
 		),
@@ -1608,7 +1611,7 @@ func commentDeleteButton(noteID, commentID int64) g.Node {
 			Button(
 				Type("button"),
 				g.Attr("aria-label", "Confirm delete comment"),
-				Class("press inline-flex h-8 items-center justify-center gap-1 rounded-full bg-danger px-2.5 text-[0.7rem] font-semibold text-on-danger transition hover:bg-danger/90"),
+				Class("press inline-flex h-11 items-center justify-center gap-1 rounded-full bg-danger px-2.5 text-[0.7rem] font-semibold text-on-danger transition hover:bg-danger/90"),
 				hx("hx-delete", "/tasks/"+ids+"/comments/"+cids),
 				hx("hx-target", "#task-"+ids),
 				// Morph, like the comment FORM's swap: a plain outerHTML swap of the
@@ -1621,7 +1624,7 @@ func commentDeleteButton(noteID, commentID int64) g.Node {
 			Button(
 				Type("button"),
 				g.Attr("aria-label", "Cancel delete comment"),
-				Class("press inline-flex h-8 w-8 items-center justify-center rounded-full text-muted ring-1 ring-inset ring-edge transition hover:bg-s2 hover:text-fg"),
+				Class("press inline-flex h-11 w-11 items-center justify-center rounded-full text-muted ring-1 ring-inset ring-edge transition hover:bg-s2 hover:text-fg"),
 				hx("hx-on:click", "var c=this.closest('[data-comment-delete-control]');c.querySelector('[data-comment-delete-confirm]').classList.add('hidden');c.querySelector('[data-comment-delete-trigger]').classList.remove('hidden')"),
 				g.Text("✕"),
 			),
@@ -1656,7 +1659,7 @@ func taskCommentForm(id int64) g.Node {
 		),
 		Button(
 			Type("submit"),
-			Class("press inline-flex shrink-0 items-center justify-center rounded-lg bg-s2 px-3 py-2 text-xs font-medium text-fg ring-1 ring-inset ring-edge transition hover:bg-s3"),
+			Class("press inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-lg bg-s2 px-3 py-2 text-xs font-medium text-fg ring-1 ring-inset ring-edge transition hover:bg-s3"),
 			hx("hx-disabled-elt", "this"),
 			g.Text("Comment"),
 		),
@@ -1705,7 +1708,7 @@ func noteDeleteButton(id int64) g.Node {
 			g.Attr("data-delete-trigger", ""),
 			g.Attr("title", "Delete task permanently"),
 			g.Attr("aria-label", "Delete task"),
-			Class("press inline-flex h-9 w-9 items-center justify-center rounded-full text-muted transition hover:bg-s2 hover:text-st-error-fg"),
+			Class("press inline-flex h-11 w-11 items-center justify-center rounded-full text-muted transition hover:bg-s2 hover:text-st-error-fg"),
 			hx("hx-on:click", "var c=this.closest('[data-delete-control]');c.querySelector('[data-delete-trigger]').classList.add('hidden');c.querySelector('[data-delete-confirm]').classList.remove('hidden')"),
 			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h12M8 6V4.5A.5.5 0 0 1 8.5 4h3a.5.5 0 0 1 .5.5V6M6 6l.7 9a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9L14 6M8.5 9v4M11.5 9v4"/></svg>`),
 		),
@@ -1716,7 +1719,7 @@ func noteDeleteButton(id int64) g.Node {
 			Button(
 				Type("button"),
 				g.Attr("aria-label", "Confirm delete task"),
-				Class("press inline-flex h-9 items-center justify-center gap-1 rounded-full bg-danger px-3 text-xs font-semibold text-on-danger transition hover:bg-danger/90"),
+				Class("press inline-flex h-11 items-center justify-center gap-1 rounded-full bg-danger px-3 text-xs font-semibold text-on-danger transition hover:bg-danger/90"),
 				hx("hx-delete", "/tasks/"+ids),
 				hx("hx-target", "#task-"+ids),
 				hx("hx-swap", "outerHTML swap:200ms"),
@@ -1726,7 +1729,7 @@ func noteDeleteButton(id int64) g.Node {
 			Button(
 				Type("button"),
 				g.Attr("aria-label", "Cancel delete task"),
-				Class("press inline-flex h-9 w-9 items-center justify-center rounded-full text-muted ring-1 ring-inset ring-edge transition hover:bg-s2 hover:text-fg"),
+				Class("press inline-flex h-11 w-11 items-center justify-center rounded-full text-muted ring-1 ring-inset ring-edge transition hover:bg-s2 hover:text-fg"),
 				hx("hx-on:click", "var c=this.closest('[data-delete-control]');c.querySelector('[data-delete-confirm]').classList.add('hidden');c.querySelector('[data-delete-trigger]').classList.remove('hidden')"),
 				g.Text("✕"),
 			),
@@ -1752,7 +1755,7 @@ func noteDispatchButton(n notes.Note) g.Node {
 			g.Attr("data-dispatch-gated", reason),
 			g.Attr("title", "Gated: "+reason+" — remove the gate: tag to dispatch"),
 			g.Attr("aria-label", "Dispatch blocked: "+reason),
-			Class("press inline-flex h-9 shrink-0 cursor-not-allowed items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-muted ring-1 ring-inset ring-line"),
+			Class("press inline-flex h-11 shrink-0 cursor-not-allowed items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-muted ring-1 ring-inset ring-line"),
 			g.Text("Dispatch"),
 		)
 	}
@@ -1767,7 +1770,7 @@ func noteDispatchButton(n notes.Note) g.Node {
 		Type("button"),
 		g.Attr("title", "Dispatch agent for this task"),
 		g.Attr("aria-label", "Dispatch agent for this task"),
-		Class("press inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-accent ring-1 ring-inset ring-accent/30 transition hover:bg-accent/10 hover:text-fg"),
+		Class("press inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-accent ring-1 ring-inset ring-accent/30 transition hover:bg-accent/10 hover:text-fg"),
 		// Mirror shellFAB: load the dispatch form into the modal body, then reveal
 		// the always-present modal shell.
 		hx("hx-get", "/ui/agents/new?"+q.Encode()),
@@ -1792,7 +1795,7 @@ func noteEditButton(n notes.Note) g.Node {
 			Disabled(),
 			g.Attr("title", "Can't edit while in progress — change the status first"),
 			g.Attr("aria-label", "Edit disabled while in progress"),
-			Class("press inline-flex h-9 shrink-0 cursor-not-allowed items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-muted ring-1 ring-inset ring-line"),
+			Class("press inline-flex h-11 shrink-0 cursor-not-allowed items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-muted ring-1 ring-inset ring-line"),
 			g.Text("Edit"),
 		)
 	}
@@ -1801,7 +1804,7 @@ func noteEditButton(n notes.Note) g.Node {
 		g.Attr("data-edit-trigger", ""),
 		g.Attr("title", "Edit task"),
 		g.Attr("aria-label", "Edit task"),
-		Class("press inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-fg2 ring-1 ring-inset ring-edge transition hover:bg-s2 hover:text-fg"),
+		Class("press inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-fg2 ring-1 ring-inset ring-edge transition hover:bg-s2 hover:text-fg"),
 		hx("hx-get", "/ui/tasks/"+ids+"/edit"),
 		hx("hx-target", "#task-modal-body"),
 		hx("hx-swap", "innerHTML"),
@@ -1933,7 +1936,7 @@ func NotesEditModalBody(v NoteEditView) g.Node {
 			// second, working guard.
 			Button(
 				Type("submit"),
-				Class("press mt-1 inline-flex items-center justify-center gap-2 rounded-xl bg-accent px-4 py-3 text-base font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
+				Class("sticky bottom-0 z-10 shadow-[0_-16px_16px_-4px_rgb(var(--mu-s1))] press mt-1 inline-flex items-center justify-center gap-2 rounded-xl bg-accent px-4 py-3 text-base font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
 				g.Text("Save changes"),
 			),
 		),
@@ -2009,7 +2012,7 @@ func NotesModalBody(directories []string, directoriesFailed bool) g.Node {
 			),
 			Button(
 				Type("submit"),
-				Class("press mt-1 inline-flex items-center justify-center gap-2 rounded-xl bg-accent px-4 py-3 text-base font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
+				Class("sticky bottom-0 z-10 shadow-[0_-16px_16px_-4px_rgb(var(--mu-s1))] press mt-1 inline-flex items-center justify-center gap-2 rounded-xl bg-accent px-4 py-3 text-base font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98] disabled:opacity-60"),
 				hx("hx-disabled-elt", "this"),
 				g.Text("Save task"),
 			),

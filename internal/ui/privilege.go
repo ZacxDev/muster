@@ -96,7 +96,7 @@ func privilegeRequestCard(pr PrivilegeRequestView) g.Node {
 			Class("mt-3 flex items-center gap-2"),
 			Button(
 				Type("button"),
-				Class("press inline-flex items-center justify-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:bg-accent/90"),
+				Class("press min-h-[44px] inline-flex items-center justify-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:bg-accent/90"),
 				hx("hx-post", "/ui/privilege-requests/"+ids+"/approve"),
 				hx("hx-target", "#privilege-requests"),
 				hx("hx-swap", "morph:innerHTML"),
@@ -105,7 +105,7 @@ func privilegeRequestCard(pr PrivilegeRequestView) g.Node {
 			),
 			Button(
 				Type("button"),
-				Class("press inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium text-fg2 ring-1 ring-inset ring-edge transition hover:bg-s2 hover:text-st-error-fg"),
+				Class("press min-h-[44px] inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-xs font-medium text-fg2 ring-1 ring-inset ring-edge transition hover:bg-s2 hover:text-st-error-fg"),
 				hx("hx-post", "/ui/privilege-requests/"+ids+"/deny"),
 				hx("hx-target", "#privilege-requests"),
 				hx("hx-swap", "morph:innerHTML"),
@@ -182,7 +182,7 @@ func profileCard(p ProfileView) g.Node {
 		Button(
 			Type("button"),
 			g.Attr("aria-label", "Delete profile"),
-			Class("press inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-s2 hover:text-st-error-fg"),
+			Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-s2 hover:text-st-error-fg"),
 			hx("hx-delete", "/privileges/"+ids),
 			// `closest section` rather than `#privilege-profiles`: the list this
 			// card is IN, which is true wherever the partial is mounted. See the
@@ -335,7 +335,7 @@ func grantForm(agentIDs string, options []ProfileOption) g.Node {
 			g.Group(opts),
 		),
 		Button(Type("submit"),
-			Class("press inline-flex items-center justify-center rounded-lg bg-s2 px-3 py-1.5 text-xs font-medium text-fg ring-1 ring-inset ring-edge transition hover:bg-s3"),
+			Class("press min-h-[44px] inline-flex items-center justify-center rounded-lg bg-s2 px-3 py-1.5 text-xs font-medium text-fg ring-1 ring-inset ring-edge transition hover:bg-s3"),
 			hx("hx-disabled-elt", "this"), g.Text("Grant")),
 	)
 }
