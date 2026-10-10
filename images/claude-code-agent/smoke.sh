@@ -14,7 +14,10 @@
 #   5. `/exit` typed into the pane is followed by an in-pod restart that RESUMES:
 #      the supervisor's start count goes to 2 with `--continue` (the CLI records
 #      the /exit itself in a transcript, measured, so there is now one to resume)
-#      and SessionStart arrives again, with the container never restarting;
+#      and SessionStart arrives again, with the container never restarting — and
+#      `env` / `apiKeyHelper` planted in settings.json while the first CLI ran are
+#      gone after that restart, removed by ccd's supervisor (the entrypoint's seed
+#      ran only once, before the first start);
 #   6. the entrypoint's seed produced the onboarding/trust/hook shape (`ccd seed --check`);
 #   7. the entrypoint REFUSES to start (exit 1, naming the variable) with each of
 #      ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_USE_BEDROCK,
@@ -80,6 +83,15 @@ root="$(get /)"
 [[ "${root%% *}" == "200" && "${root#* }" == "{"* ]] || fail "GET / -> $root, expected 200 JSON like /healthz"
 echo "cc-smoke: session started (fresh); GET / ok"
 
+# While the first CLI runs, plant env / apiKeyHelper in the persisted settings.json
+# (harmless values; every other key, the hooks included, kept as seeded).
+node -e '
+  const f = process.argv[1], s = JSON.parse(require("fs").readFileSync(f, "utf8"));
+  s.env = {CCD_SMOKE_PLANTED: "1"}; s.apiKeyHelper = "/bin/false";
+  require("fs").writeFileSync(f, JSON.stringify(s));
+' "$CLAUDE_CONFIG_DIR/settings.json" || fail "could not plant env/apiKeyHelper"
+grep -q '"apiKeyHelper"' "$CLAUDE_CONFIG_DIR/settings.json" || fail "control: the plant did not land"
+
 # /exit in the pane: the CLI exits, and the supervisor restarts it in the same pane.
 tmux send-keys -t cc -l '/exit'
 sleep 0.3
@@ -87,6 +99,12 @@ tmux send-keys -t cc Enter
 wait_for '200 {*"cli_starts":2*"session":"started"*'
 [[ "$body" == *'"cli_mode":"continue"'* ]] || fail "the restart after /exit did not --continue: $body"
 echo "cc-smoke: /exit -> resumed in-pod: $body"
+s="$(cat "$CLAUDE_CONFIG_DIR/settings.json")"
+[[ "$s" != *'"env"'* && "$s" != *'"apiKeyHelper"'* && "$s" == *'"hooks"'* ]] \
+  || fail "after the in-pod restart settings.json still holds env/apiKeyHelper (or lost its hooks): $s"
+grep -q 'removed "apiKeyHelper"' /tmp/cc-entrypoint.log \
+  || fail "ccd did not log removing apiKeyHelper before the restart: $(cat /tmp/cc-entrypoint.log)"
+echo "cc-smoke: the in-pod restart removed env and apiKeyHelper planted since the pod started"
 
 ccd seed --check --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
   --settings-template /etc/ccd/settings.json || fail "seeded config has the wrong shape"

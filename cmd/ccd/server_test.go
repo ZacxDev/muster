@@ -373,7 +373,8 @@ func TestHealthzAndRootAnswerIdentically(t *testing.T) {
 	}
 }
 
-// The two things health DOES gate on: tmux, and a crash-looping CLI.
+// The things health DOES gate on: tmux (for the supervisor's own pane, once it has
+// one), a crash-looping CLI, and a lost terminal.
 func TestHealthzFailsOnDeadTmuxOrACrashLoop(t *testing.T) {
 	srv, cli := newScripted(t, cliScript{})
 	url := gatewayServer(t, srv).URL
@@ -384,15 +385,31 @@ func TestHealthzFailsOnDeadTmuxOrACrashLoop(t *testing.T) {
 	cli.aliveErr = nil
 	sup := newSupervisor(nil, "claude", t.TempDir(), "/w")
 	srv.sup = sup
-	sup.started("%0", modeFresh)
+	if getHealth(t, url, "/healthz"); cli.lastAliveRef() != (paneRef{}) {
+		t.Fatalf("before the first start health checked pane %v, want the session (zero ref)", cli.lastAliveRef())
+	}
+	sup.started(fakeRef, modeFresh)
 	if code, body, h := getHealth(t, url, "/healthz"); code != 200 || h.Supervisor == nil || h.Supervisor.CLI != cliRunning {
 		t.Fatalf("running: %d %s", code, body)
+	}
+	// 🔴 R2-F1: once there is a pane, the terminal check is about THAT pane on
+	// THAT server, not about any session named cc.
+	if cli.lastAliveRef() != fakeRef {
+		t.Fatalf("health checked %v, want the supervisor's pane %v", cli.lastAliveRef(), fakeRef)
 	}
 	for i := 0; i < sup.crashExits; i++ {
 		sup.recordExit(paneExit{Dead: true, Known: true, Status: 1})
 	}
 	if code, body, h := getHealth(t, url, "/healthz"); code != 503 || h.Supervisor.CLI != cliCrashLoop {
 		t.Fatalf("crash loop: %d %s", code, body)
+	}
+	// terminal_lost gates on its own, with the terminal check still answering ok.
+	lost := newSupervisor(nil, "claude", t.TempDir(), "/w")
+	srv.sup = lost
+	lost.started(fakeRef, modeFresh)
+	lost.lose(errTerminalLost)
+	if code, body, h := getHealth(t, url, "/healthz"); code != 503 || h.Terminal != "ok" || h.Supervisor.CLI != "terminal_lost" {
+		t.Fatalf("terminal_lost: %d %s", code, body)
 	}
 }
 
@@ -507,7 +524,7 @@ func TestBenignTextPassesTheControlCharacterGuardByteExact(t *testing.T) {
 // prompt" → "AN EARLIER REPLY that is not this turn").
 type opFirstCLI struct{ *scriptedCLI }
 
-func (c opFirstCLI) Paste(ctx context.Context, pane, text string) error {
+func (c opFirstCLI) Paste(ctx context.Context, pane paneRef, text string) error {
 	if err := os.MkdirAll(filepath.Dir(c.transcriptFile()), 0o700); err != nil {
 		return err
 	}

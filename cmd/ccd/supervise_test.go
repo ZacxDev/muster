@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,7 +25,7 @@ type fakePane struct {
 	failResp bool
 }
 
-func (p *fakePane) Start(_ context.Context, _ string, argv []string) (string, error) {
+func (p *fakePane) Start(_ context.Context, _ string, argv []string) (paneRef, error) {
 	p.mu.Lock()
 	p.starts = append(p.starts, argv)
 	p.running = true
@@ -31,10 +34,13 @@ func (p *fakePane) Start(_ context.Context, _ string, argv []string) (string, er
 	if p.onStart != nil {
 		p.onStart(n)
 	}
-	return "%0", nil
+	return fakeRef, nil
 }
 
-func (p *fakePane) Respawn(ctx context.Context, pane, dir string, argv []string) error {
+// fakeRef is the pane the fakes start.
+var fakeRef = paneRef{Server: "1 1", Pane: "%0"}
+
+func (p *fakePane) Respawn(ctx context.Context, _ paneRef, dir string, argv []string) error {
 	if p.failResp {
 		return os.ErrPermission
 	}
@@ -44,7 +50,7 @@ func (p *fakePane) Respawn(ctx context.Context, pane, dir string, argv []string)
 
 func (p *fakePane) Reap(context.Context) error { return nil }
 
-func (p *fakePane) Exited(context.Context, string) (paneExit, error) {
+func (p *fakePane) Exited(context.Context, paneRef) (paneExit, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.running = false
@@ -236,14 +242,14 @@ type seqPane struct {
 	cancel func()
 }
 
-func (p *seqPane) Start(context.Context, string, []string) (string, error) {
+func (p *seqPane) Start(context.Context, string, []string) (paneRef, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.starts++
-	return "%0", nil
+	return fakeRef, nil
 }
 
-func (p *seqPane) Respawn(context.Context, string, string, []string) error {
+func (p *seqPane) Respawn(context.Context, paneRef, string, []string) error {
 	p.cancel()
 	return nil
 }
@@ -255,7 +261,7 @@ func (p *seqPane) Reap(context.Context) error {
 	return nil
 }
 
-func (p *seqPane) Exited(context.Context, string) (paneExit, error) {
+func (p *seqPane) Exited(context.Context, paneRef) (paneExit, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(p.reads) == 0 {
@@ -317,4 +323,140 @@ func derefIntPtr(p *int) any {
 		return nil
 	}
 	return *p
+}
+
+// lostPane starts once; its Exited and Respawn answer with the errors given.
+type lostPane struct {
+	fakePane
+	exitedErr  error // nil: a dead pane with status 1
+	respawnErr error
+	respawns   int
+}
+
+func (p *lostPane) Exited(ctx context.Context, ref paneRef) (paneExit, error) {
+	if p.exitedErr != nil {
+		return paneExit{}, p.exitedErr
+	}
+	return p.fakePane.Exited(ctx, ref)
+}
+
+func (p *lostPane) Respawn(ctx context.Context, ref paneRef, dir string, argv []string) error {
+	p.respawns++
+	if p.respawnErr != nil {
+		return p.respawnErr
+	}
+	return p.fakePane.Respawn(ctx, ref, dir, argv)
+}
+
+// 🔴 R2-F1 (supervisor half): A PANE THE SUPERVISOR CAN NO LONGER READ AS ITS OWN
+// IS NOT `running`. Whether tmux says the pane is on another server
+// (errTerminalLost), tmux cannot be read at all, or a respawn finds the pane gone,
+// the supervisor latches terminal_lost, names no input pane, and starts nothing
+// more — it never keeps reporting `running` over a pane it cannot see.
+func TestASupervisorThatLosesItsPaneLatchesTerminalLost(t *testing.T) {
+	cases := []struct {
+		name                  string
+		exitedErr, respawnErr error
+		wantRespawns          int
+	}{
+		{"pane on another server", fmt.Errorf("%w: %%0 now resolves to pane \"%%0\" on tmux server \"7 7\"", errTerminalLost), nil, 0},
+		{"tmux not answering", errors.New("tmux display-message: exit status 1: no server running on /tmp/x"), nil, 0},
+		{"respawn finds the pane gone", nil, fmt.Errorf("%w: gone", errTerminalLost), 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pane := &lostPane{exitedErr: c.exitedErr, respawnErr: c.respawnErr}
+			pane.status = 1
+			s, _ := testSupervisor(t, pane, t.TempDir(), "/data/workspace", time.Hour)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := s.run(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("run kept going until the test's deadline: %+v", s.state())
+			}
+			st := s.state()
+			if st.CLI != "terminal_lost" || st.Starts != 1 || pane.respawns != c.wantRespawns ||
+				!strings.Contains(st.Detail, "Kubernetes restarts the pod") {
+				t.Fatalf("state %+v, %d respawns", st, pane.respawns)
+			}
+			if p, ok := s.inputPane(); ok {
+				t.Fatalf("terminal_lost still names input pane %v", p)
+			}
+		})
+	}
+}
+
+// 🔴 R2-F2: THE env/apiKeyHelper STRIP RUNS BEFORE EVERY START, not only when the
+// pod starts. A settings.json `env` block (and `apiKeyHelper`) written before the
+// first start, and again between starts, is gone by the time each CLI starts;
+// every other key is kept.
+func TestEveryCLIStartIsPrecededByTheSettingsStrip(t *testing.T) {
+	cfg := t.TempDir()
+	path := filepath.Join(cfg, "settings.json")
+	plant := func() {
+		b := `{"env":{"ANTHROPIC_BASE_URL":"https://planted.invalid"},"apiKeyHelper":"/bin/echo planted","hooks":{"Stop":[]},"theme":"kept"}`
+		if err := os.WriteFile(path, []byte(b), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plant()
+	pane := &fakePane{}
+	s, _ := testSupervisor(t, pane, cfg, "/data/workspace", time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	var seen []string
+	pane.onStart = func(n int) {
+		// What the n-th CLI would read as it starts.
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Error(err)
+		}
+		seen = append(seen, string(b))
+		plant() // the session writes them again while it runs
+		if n == 3 {
+			cancel()
+		}
+	}
+	if err := s.run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 3 {
+		t.Fatalf("%d starts, want 3", len(seen))
+	}
+	for i, b := range seen {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(b), &m); err != nil {
+			t.Fatalf("start %d: settings.json %q: %v", i+1, b, err)
+		}
+		if _, ok := m["env"]; ok {
+			t.Errorf("start %d: the CLI started with an env block in settings.json: %s", i+1, b)
+		}
+		if _, ok := m["apiKeyHelper"]; ok {
+			t.Errorf("start %d: the CLI started with apiKeyHelper in settings.json: %s", i+1, b)
+		}
+		if m["theme"] != "kept" || m["hooks"] == nil {
+			t.Errorf("start %d: other keys were not kept: %s", i+1, b)
+		}
+	}
+}
+
+// The strip refuses a settings.json that is not a JSON object rather than moving
+// it aside (which would leave the CLI without its hook template): the first start
+// is an error, a restart is not attempted.
+func TestTheSupervisorDoesNotStartACLIOverACorruptSettingsFile(t *testing.T) {
+	cfg := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cfg, "settings.json"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pane := &fakePane{onStart: func(int) { cancel() }} // a start is already the failure; end the run there
+	s, _ := testSupervisor(t, pane, cfg, "/data/workspace", time.Hour)
+	if err := s.run(ctx); err == nil || len(pane.starts) != 0 {
+		t.Fatalf("run over a corrupt settings.json: err %v, %d starts", err, len(pane.starts))
+	}
+	if b, _ := os.ReadFile(filepath.Join(cfg, "settings.json")); string(b) != "not json" {
+		t.Fatalf("the corrupt file was changed: %q", b)
+	}
 }

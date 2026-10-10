@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -32,14 +33,41 @@ import (
 // answers non-200, so the liveness probe restarts the pod and the restart count
 // is visible in `kubectl get pod`. It latches: without a liveness probe (a bare
 // `docker run`) nothing restarts it.
+//
+// 🔴 A LOST TERMINAL IS HANDED TO KUBERNETES TOO, FOR THE SAME REASON. When the
+// pane ccd started can no longer be read as ITS pane — the tmux server went away
+// (`kill-server`, the last `kill-session`), or one started again on the socket now
+// owns that pane id (tmuxTerminal.state) — the supervisor reports
+// `cli: terminal_lost`, refuses input, and /healthz fails. It does NOT start a
+// new CLI in a new session of its own, because:
+//   - it can no longer see the old CLI process: it is nobody's pane, so no tmux
+//     will report its exit, and a second `claude --continue` started beside a CLI
+//     that survived would be two writers of one conversation — a fork in all but
+//     name. A container restart ends every process in the container, so the
+//     `--continue` that follows is the only one;
+//   - a session named `cc` that ccd did not create belongs to whoever created it,
+//     and ccd would have to kill it or work around it to start its own.
+//
+// The pod's next start resumes the conversation exactly as an in-pod restart
+// would: argv() chooses `--continue` whenever a transcript exists. Like
+// crash_loop it latches, and without a liveness probe nothing restarts it.
+//
+// 🔴 EVERY START IS PRECEDED BY THE SEED'S STRIP of settingsForbidden (seed.go
+// stripSettingsFile): the entrypoint's `ccd seed` runs once per POD, and the
+// in-pod restarts here are where a key written into settings.json since then (an
+// operator's /config, the session editing its own config) would otherwise reach
+// the next CLI.
 type cliPane interface {
 	// Start creates the session running argv in dir, with the pane kept (dead)
-	// after its process exits, and returns the pane's id.
-	Start(ctx context.Context, dir string, argv []string) (pane string, err error)
-	// Respawn runs argv in the (dead) pane again.
-	Respawn(ctx context.Context, pane, dir string, argv []string) error
-	// Exited reports whether the pane's process has exited and, once known, how.
-	Exited(ctx context.Context, pane string) (paneExit, error)
+	// after its process exits, and returns the pane's ref.
+	Start(ctx context.Context, dir string, argv []string) (paneRef, error)
+	// Respawn runs argv in the (dead) pane again; errTerminalLost when the pane
+	// is no longer ref's.
+	Respawn(ctx context.Context, ref paneRef, dir string, argv []string) error
+	// Exited reports whether the pane's process has exited and, once known, how;
+	// an error (errTerminalLost, or tmux not answering) means the supervisor can
+	// no longer see its CLI.
+	Exited(ctx context.Context, ref paneRef) (paneExit, error)
 	// Reap makes the terminal collect an exited pane process whose exit it has
 	// not noticed yet (see run).
 	Reap(ctx context.Context) error
@@ -79,6 +107,7 @@ const (
 	cliRunning    = "running"
 	cliRestarting = "restarting"
 	cliCrashLoop  = "crash_loop"
+	cliLost       = "terminal_lost"
 
 	modeContinue = "continue"
 	modeFresh    = "fresh"
@@ -109,7 +138,7 @@ type supervisor struct {
 
 	mu       sync.Mutex
 	st       cliState
-	paneID   string      // the CLI's pane, once Start has returned it
+	paneID   paneRef     // the CLI's pane, once Start has returned it
 	lastExit string      // paneExit.describe() of the latest exit
 	exits    []time.Time // within crashWindow of the latest
 }
@@ -169,20 +198,38 @@ func (s *supervisor) argv() ([]string, string) {
 	return []string{s.bin}, modeFresh
 }
 
-// inputPane is the pane the server pastes into: the CLI's pane id, and only while
+// inputPane is the pane the server pastes into: the CLI's paneRef, and only while
 // the supervisor believes the CLI in it is running. Before the first start,
-// between an exit and its restart, and in crash_loop it reports none, and the
-// server answers not_ready rather than typing into a pane with no CLI in it. (An
-// exit the next poll has not seen yet is caught by tmuxTerminal.Paste's own
-// pane_dead check.)
-func (s *supervisor) inputPane() (string, bool) {
+// between an exit and its restart, in crash_loop and in terminal_lost it reports
+// none, and the server answers not_ready rather than typing into a pane with no
+// CLI in it. (An exit or a lost server the next poll has not seen yet is caught by
+// tmuxTerminal.Paste's own read of the pane's server, id and pane_dead.)
+func (s *supervisor) inputPane() (paneRef, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.paneID, s.paneID != "" && s.st.CLI == cliRunning
+	return s.paneID, s.paneID.Pane != "" && s.st.CLI == cliRunning
+}
+
+// ref is the CLI's paneRef in any state (zero before the first start), for
+// /healthz's terminal check.
+func (s *supervisor) ref() paneRef {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.paneID
+}
+
+// lose latches terminal_lost (see the type comment): the supervisor can no longer
+// see the CLI it started.
+func (s *supervisor) lose(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st.CLI = cliLost
+	s.st.Detail = fmt.Sprintf("ccd can no longer see the CLI's pane %s (%v); not starting another CLI "+
+		"in this pod — /healthz now fails so Kubernetes restarts the pod", s.paneID, err)
 }
 
 // started records a (re)start in pane. A previous exit stays named in Detail.
-func (s *supervisor) started(pane, mode string) {
+func (s *supervisor) started(pane paneRef, mode string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.st.CLI, s.st.Mode, s.paneID = cliRunning, mode, pane
@@ -239,8 +286,12 @@ func (s *supervisor) recordExit(e paneExit) (delay time.Duration, crash bool) {
 	return delay, false
 }
 
-// run starts the CLI and keeps it running until ctx ends or it crash-loops.
+// run starts the CLI and keeps it running until ctx ends, it crash-loops, or the
+// terminal is lost. Its error is a CLI that could not be started at all.
 func (s *supervisor) run(ctx context.Context) error {
+	if err := stripSettingsFile(s.configDir, log.Writer()); err != nil {
+		return fmt.Errorf("before starting the CLI: %w", err)
+	}
 	argv, mode := s.argv()
 	pane, err := s.pane.Start(ctx, s.workspace, argv)
 	if err != nil {
@@ -257,10 +308,14 @@ func (s *supervisor) run(ctx context.Context) error {
 		}
 		e, err := s.pane.Exited(ctx, pane)
 		if err != nil {
-			// The session itself is gone or tmux is not answering: /healthz's own
-			// terminal check reports that. Keep looking.
-			s.setDetail(err.Error())
-			continue
+			if ctx.Err() != nil {
+				return nil
+			}
+			// The pane is gone, belongs to another tmux server, or tmux cannot be
+			// read: the supervisor can no longer see its CLI (see the type comment).
+			s.lose(err)
+			log.Printf("ccd: %s", s.state().Detail)
+			return nil
 		}
 		// Dead but not yet reaped (see parsePaneExit). First make tmux reap: it can
 		// MISS a pane process's SIGCHLD and leave it a zombie it never waits for
@@ -308,10 +363,20 @@ func (s *supervisor) run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		// The pane stays dead after either failure below, so the next poll counts
+		// it as another exit: a restart that keeps failing ends in crash_loop like
+		// a CLI that does.
+		if err := stripSettingsFile(s.configDir, log.Writer()); err != nil {
+			s.setDetail("before restarting the CLI: " + err.Error())
+			continue
+		}
 		argv, mode = s.argv()
 		if err := s.pane.Respawn(ctx, pane, s.workspace, argv); err != nil {
-			// The pane stays dead, so the next poll counts this as another exit:
-			// a respawn that keeps failing ends in crash_loop like a CLI that does.
+			if errors.Is(err, errTerminalLost) {
+				s.lose(err)
+				log.Printf("ccd: %s", s.state().Detail)
+				return nil
+			}
 			s.setDetail("respawn: " + err.Error())
 			continue
 		}

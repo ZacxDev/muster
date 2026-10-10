@@ -11,8 +11,10 @@
 //     ends on the CLI's Stop / StopFailure hook (server.go). A failed turn is a
 //     non-200 with a typed JSON error (failure.go), never a 200 with no text.
 //   - GET /healthz (and GET /, identically) — 200 while ccd is up, the tmux
-//     session is alive and the CLI is not crash-looping. Session and auth state
-//     are reported in the body and never gate it (server.go handleHealthz).
+//     session (once the CLI is started: the CLI's own pane, on the tmux server it
+//     was started in) is alive, and the CLI is neither crash-looping nor lost.
+//     Session and auth state are reported in the body and never gate it
+//     (server.go handleHealthz).
 //   - /hook/{event} on a LOOPBACK-ONLY listener — where `ccd hook <Event>`, the
 //     command the CLI's settings run for each hook, reports.
 //
@@ -198,9 +200,9 @@ func serve() error {
 		case <-ctx.Done():
 			done = true
 		case err := <-supErr:
-			// nil: crash_loop (or shutdown). ccd keeps serving /healthz, which now
-			// fails, so Kubernetes rather than ccd restarts the pod. An error is a
-			// session that could not be created at all.
+			// nil: crash_loop or terminal_lost (or shutdown). ccd keeps serving
+			// /healthz, which now fails, so Kubernetes rather than ccd restarts the
+			// pod. An error is a CLI that could not be started at all.
 			if err != nil {
 				return fmt.Errorf("ccd: start the session: %w", err)
 			}

@@ -22,9 +22,10 @@ type scriptedCLI struct {
 
 	mu       sync.Mutex
 	pasted   []string
-	panes    []string // the pane each Paste and Enter addressed
+	panes    []paneRef // the pane each Paste and Enter addressed
 	enters   int
 	aliveErr error
+	aliveRef paneRef // the pane the last Alive was asked about
 }
 
 // cliScript decides what the "CLI" does with one prompt.
@@ -41,8 +42,8 @@ type cliScript struct {
 	reported func(string) string
 }
 
-// scriptedPane is the pane id newScripted's server is told the CLI runs in.
-const scriptedPane = "%7"
+// scriptedPane is the pane newScripted's server is told the CLI runs in.
+var scriptedPane = paneRef{Server: "4242 1791600000", Pane: "%7"}
 
 const fixtureSessionID = "11111111-2222-4333-8444-555555555555"
 
@@ -50,7 +51,7 @@ func (c *scriptedCLI) transcriptFile() string {
 	return filepath.Join(c.dir, "projects", "-data-workspace", fixtureSessionID+".jsonl")
 }
 
-func (c *scriptedCLI) Paste(ctx context.Context, pane, text string) error {
+func (c *scriptedCLI) Paste(ctx context.Context, pane paneRef, text string) error {
 	c.mu.Lock()
 	c.pasted = append(c.pasted, text)
 	c.panes = append(c.panes, pane)
@@ -86,7 +87,7 @@ func (c *scriptedCLI) Paste(ctx context.Context, pane, text string) error {
 	return nil
 }
 
-func (c *scriptedCLI) Enter(_ context.Context, pane string) error {
+func (c *scriptedCLI) Enter(_ context.Context, pane paneRef) error {
 	c.mu.Lock()
 	c.enters++
 	c.panes = append(c.panes, pane)
@@ -94,10 +95,17 @@ func (c *scriptedCLI) Enter(_ context.Context, pane string) error {
 	return nil
 }
 
-func (c *scriptedCLI) Alive(context.Context) error {
+func (c *scriptedCLI) Alive(_ context.Context, ref paneRef) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.aliveRef = ref
 	return c.aliveErr
+}
+
+func (c *scriptedCLI) lastAliveRef() paneRef {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.aliveRef
 }
 
 // newScripted builds a server around a scripted CLI whose session has STARTED,
@@ -113,7 +121,7 @@ func newScripted(t *testing.T, script cliScript) (*server, *scriptedCLI) {
 	srv := newServer(serverConfig{Bearer: bearer, ConfigDir: dir, SubmitTimeout: 2 * time.Second,
 		TurnTimeout: 5 * time.Second, TranscriptGrace: 200 * time.Millisecond}, cli, newAuthTracker())
 	cli.srv = srv
-	srv.inputPane = func() (string, bool) { return scriptedPane, true }
+	srv.inputPane = func() (paneRef, bool) { return scriptedPane, true }
 	srv.onHook(hookEvent{Event: "SessionStart", SessionID: fixtureSessionID, Source: "startup"})
 	return srv, cli
 }

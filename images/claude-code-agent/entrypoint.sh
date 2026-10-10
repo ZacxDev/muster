@@ -7,7 +7,8 @@
 # (CCD_SUPERVISE=1, cmd/ccd/supervise.go): a TUI that exits (an operator typing
 # /exit, a crash) is restarted in the same pane with backoff; repeated exits in a
 # short window are reported as crash_loop and fail /healthz, so Kubernetes
-# restarts the pod.
+# restarts the pod. So does a tmux server that went away or was replaced
+# (terminal_lost): ccd never starts a second CLI beside one it can no longer see.
 #
 # 🔴 EVERY START RESUMES THE SAME CONVERSATION WHEN THERE IS ONE: ccd runs
 # `claude --continue` when CLAUDE_CONFIG_DIR already holds a transcript for the
@@ -35,10 +36,12 @@ CCD_TMUX_TARGET="${CCD_TMUX_TARGET:-cc}"
 #   ANTHROPIC_BASE_URL — sends every request, the subscription token included, to
 #     another endpoint. No deployment of this image documents a gateway, so there
 #     is no reason here to allow it.
-# The same variables set through settings.json's `env` are covered by `ccd seed`,
-# which removes `env` and `apiKeyHelper` from <CLAUDE_CONFIG_DIR>/settings.json
+# The same variables set through settings.json's `env` are covered by removing
+# `env` and `apiKeyHelper` from <CLAUDE_CONFIG_DIR>/settings.json: here by `ccd
+# seed`, and by ccd's supervisor again before every in-pod restart of the CLI
 # (cmd/ccd/seed.go settingsForbidden). NOT covered: a .claude/settings*.json in
-# the workspace, and any other variable the CLI may read.
+# the workspace, a key written while a CLI is running (until its next start), and
+# any other variable the CLI may read.
 for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL; do
   if [[ -n "${!v:-}" ]]; then
     echo "cc-entrypoint: $v is set; only CLAUDE_CODE_OAUTH_TOKEN may select the session's credential and endpoint. Refusing." >&2

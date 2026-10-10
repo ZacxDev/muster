@@ -36,8 +36,20 @@ import (
 // to the session's ACTIVE pane — whichever pane an attached operator last focused —
 // so a split with a shell in it would receive the prompt and run it (measured
 // against this code's predecessor, which targeted the session). Paste and Enter
-// take the pane id the supervisor got from new-session, and Paste refuses a pane
-// that is gone or dead (errPaneNotLive) rather than pasting somewhere else.
+// take the paneRef the supervisor got from new-session.
+//
+// 🔴 A PANE ID ALONE DOES NOT NAME A PANE: tmux numbers panes per SERVER, from %0.
+// After `kill-server` (or the last session's `kill-session`), a server someone
+// starts again on the same socket gives ITS first pane the id %0 — measured on
+// tmux 3.7c and 3.3a — and the code before this one pasted a turn into exactly such
+// a recreated SHELL pane, which ran it. So a paneRef also carries the server's
+// identity, `#{pid} #{start_time}`, and every Paste, Enter and Respawn first reads
+// that identity, the pane id and pane_dead in ONE display-message, refusing
+// (errPaneNotLive / errTerminalLost) a pane that is gone, dead or on another server.
+// ⚠ It is a check before the paste, not a lock: load-buffer and paste-buffer are
+// further tmux invocations, so a server replaced in the milliseconds between them
+// and the check is not caught. What it closes is a server replaced at ANY earlier
+// time, which is the case that was measured.
 //
 // ⚠ NOT EVERY BYTE IS PRESERVED, AND THE EXCEPTIONS ARE THE CLI'S, NOT tmux's: a
 // TAB became four spaces in the same measurement. CRLF and lone CR are folded to
@@ -46,8 +58,8 @@ type tmuxTerminal struct {
 	bin    string
 	socket string // -L name; "" = the default server
 	conf   string // -f file for a server this process starts; "" = tmux's default
-	// target is the SESSION name: what Start creates and Alive checks. It is never
-	// an input target (see above).
+	// target is the SESSION name: what Start creates, and what Alive checks
+	// before there is a pane. It is never an input target (see above).
 	target string
 	// enterDelay separates the paste from the Enter, so the TUI has ingested the
 	// paste before the submit key arrives.
@@ -84,23 +96,71 @@ func (t tmuxTerminal) exec(ctx context.Context, stdin []byte, args ...string) (s
 	return outb.String(), nil
 }
 
-// errPaneNotLive: the pane to paste into no longer exists or its process has
-// exited. The server answers not_ready for it.
+// errPaneNotLive: the pane to paste into no longer exists, its process has
+// exited, or it is not the pane ccd started (errTerminalLost). The server answers
+// not_ready for it.
 var errPaneNotLive = errors.New("the CLI's pane is gone or its process has exited")
 
-func (t tmuxTerminal) Paste(ctx context.Context, pane, text string) error {
-	if !strings.HasPrefix(pane, "%") {
-		return fmt.Errorf("%w: %q is not a pane id", errPaneNotLive, pane)
+// errTerminalLost: the pane ccd started is gone, or the pane with its id now
+// belongs to a DIFFERENT tmux server (one started again on the same socket). The
+// supervisor treats it as the end of the CLI it can see (supervisor.lose).
+var errTerminalLost = errors.New("the CLI's tmux pane is gone or now belongs to another tmux server")
+
+// paneRef names the CLI's pane: its id AND the tmux server it was created in.
+type paneRef struct {
+	Server string // "#{pid} #{start_time}" of the server, as Start read it
+	Pane   string // "%N"
+}
+
+func (r paneRef) String() string { return fmt.Sprintf("%s (tmux server %q)", r.Pane, r.Server) }
+
+// serverFormat is the tmux server's identity: its pid and its start time. Either
+// alone could repeat (a recycled pid; two servers started in one second); the
+// pair, read on the socket ccd uses, does not in practice.
+const serverFormat = "#{pid} #{start_time}"
+
+// paneStateFormat is what state reads: the server identity, the pane id actually
+// resolved (EMPTY when the id names no pane — measured on 3.3a and 3.7c, where
+// `display-message -t %999` prints empty pane fields and exits 0), then
+// paneDeadFormat.
+const paneStateFormat = serverFormat + " #{pane_id} " + paneDeadFormat
+
+// state reads ref's pane in ONE display-message and refuses, with
+// errTerminalLost, a pane that does not exist or a server that is not ref's.
+func (t tmuxTerminal) state(ctx context.Context, ref paneRef) (paneExit, error) {
+	if !strings.HasPrefix(ref.Pane, "%") || ref.Server == "" {
+		return paneExit{}, fmt.Errorf("%w: %w: %v is not a pane id with its server's identity", errPaneNotLive, errTerminalLost, ref)
 	}
-	// Refuse a dead or vanished pane up front. (One that dies between this check
-	// and the paste is still addressed by its own id, so the paste cannot land
-	// in another pane.)
-	out, err := t.output(ctx, "display-message", "-p", "-t", pane, "#{pane_dead}")
+	out, err := t.output(ctx, "display-message", "-p", "-t", ref.Pane, paneStateFormat)
 	if err != nil {
-		return fmt.Errorf("%w: %v", errPaneNotLive, err)
+		return paneExit{}, fmt.Errorf("%w: %w: %v", errPaneNotLive, errTerminalLost, err)
 	}
-	if strings.TrimSpace(out) != "0" {
-		return fmt.Errorf("%w: pane %s reports pane_dead=%q", errPaneNotLive, pane, strings.TrimSpace(out))
+	f := strings.SplitN(strings.TrimRight(out, "\r\n"), " ", 4)
+	if len(f) != 4 {
+		return paneExit{}, fmt.Errorf("tmux display-message %q printed %q", paneStateFormat, out)
+	}
+	if server := f[0] + " " + f[1]; server != ref.Server || f[2] != ref.Pane {
+		return paneExit{}, fmt.Errorf("%w: %w: %s now resolves to pane %q on tmux server %q", errPaneNotLive,
+			errTerminalLost, ref, f[2], server)
+	}
+	return parsePaneExit(f[3])
+}
+
+// live is state for input: a pane that is ref's and whose process is running.
+func (t tmuxTerminal) live(ctx context.Context, ref paneRef) error {
+	e, err := t.state(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if e.Dead {
+		return fmt.Errorf("%w: pane %s is dead (%s)", errPaneNotLive, ref.Pane, e.describe())
+	}
+	return nil
+}
+
+func (t tmuxTerminal) Paste(ctx context.Context, ref paneRef, text string) error {
+	if err := t.live(ctx, ref); err != nil {
+		return err
 	}
 	var rnd [6]byte
 	_, _ = rand.Read(rnd[:])
@@ -108,7 +168,7 @@ func (t tmuxTerminal) Paste(ctx context.Context, pane, text string) error {
 	if err := t.run(ctx, []byte(text), "load-buffer", "-b", buf, "-"); err != nil {
 		return err
 	}
-	if err := t.run(ctx, nil, "paste-buffer", "-p", "-d", "-b", buf, "-t", pane); err != nil {
+	if err := t.run(ctx, nil, "paste-buffer", "-p", "-d", "-b", buf, "-t", ref.Pane); err != nil {
 		_ = t.run(context.Background(), nil, "delete-buffer", "-b", buf)
 		return err
 	}
@@ -117,20 +177,20 @@ func (t tmuxTerminal) Paste(ctx context.Context, pane, text string) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return t.Enter(ctx, pane)
+	return t.Enter(ctx, ref)
 }
 
-func (t tmuxTerminal) Enter(ctx context.Context, pane string) error {
-	if !strings.HasPrefix(pane, "%") {
-		return fmt.Errorf("%w: %q is not a pane id", errPaneNotLive, pane)
+func (t tmuxTerminal) Enter(ctx context.Context, ref paneRef) error {
+	if err := t.live(ctx, ref); err != nil {
+		return err
 	}
-	return t.run(ctx, nil, "send-keys", "-t", pane, "Enter")
+	return t.run(ctx, nil, "send-keys", "-t", ref.Pane, "Enter")
 }
 
 // Start creates the detached session running argv in dir and returns its pane's
-// id, which the supervisor polls and respawns and the server pastes into from then
-// on (the session name alone would resolve to whatever pane an attached operator
-// last focused).
+// paneRef, which the supervisor polls and respawns and the server pastes into from
+// then on (the session name alone would resolve to whatever pane an attached
+// operator last focused).
 //
 // remain-on-exit is set IN THE SAME tmux COMMAND LIST as new-session, so a CLI
 // that dies at once still leaves a dead pane to read its status from, rather than
@@ -139,37 +199,39 @@ func (t tmuxTerminal) Enter(ctx context.Context, pane string) error {
 //
 // ⚠ argv of ONE element is run by tmux through the shell (`sh -c`); two or more
 // are exec'd directly. Both are fine for `claude` / `claude --continue`.
-func (t tmuxTerminal) Start(ctx context.Context, dir string, argv []string) (string, error) {
-	args := append([]string{"new-session", "-d", "-P", "-F", "#{pane_id}", "-s", t.target,
+func (t tmuxTerminal) Start(ctx context.Context, dir string, argv []string) (paneRef, error) {
+	args := append([]string{"new-session", "-d", "-P", "-F", serverFormat + " #{pane_id}", "-s", t.target,
 		"-x", "200", "-y", "50", "-c", dir}, argv...)
 	args = append(args, ";", "set-option", "-w", "-t", t.target, "remain-on-exit", "on")
 	out, err := t.output(ctx, args...)
 	if err != nil {
-		return "", err
+		return paneRef{}, err
 	}
-	pane := strings.TrimSpace(out)
-	if !strings.HasPrefix(pane, "%") {
-		return "", fmt.Errorf("tmux new-session printed %q, not a pane id", out)
+	f := strings.Fields(out)
+	if len(f) != 3 || !strings.HasPrefix(f[2], "%") {
+		return paneRef{}, fmt.Errorf("tmux new-session printed %q, not %q", out, serverFormat+" #{pane_id}")
 	}
-	return pane, nil
+	return paneRef{Server: f[0] + " " + f[1], Pane: f[2]}, nil
 }
 
-// Respawn runs argv in the dead pane again. Without -k it refuses a pane whose
+// Respawn runs argv in the dead pane again, after checking the pane is still
+// ref's (errTerminalLost otherwise: a respawn on a recreated server would start a
+// CLI in a pane ccd did not create). Without -k respawn-pane refuses a pane whose
 // process is still running, so it can never kill a live CLI.
-func (t tmuxTerminal) Respawn(ctx context.Context, pane, dir string, argv []string) error {
-	return t.run(ctx, nil, append([]string{"respawn-pane", "-t", pane, "-c", dir}, argv...)...)
+func (t tmuxTerminal) Respawn(ctx context.Context, ref paneRef, dir string, argv []string) error {
+	if _, err := t.state(ctx, ref); err != nil {
+		return err
+	}
+	return t.run(ctx, nil, append([]string{"respawn-pane", "-t", ref.Pane, "-c", dir}, argv...)...)
 }
 
-// paneDeadFormat is what Exited asks tmux for; parsePaneExit reads its output.
+// paneDeadFormat is the part of paneStateFormat parsePaneExit reads.
 const paneDeadFormat = "#{pane_dead} #{pane_dead_status} #{pane_dead_signal}"
 
-// Exited reads whether the pane's process has exited and, once tmux knows it, how.
-func (t tmuxTerminal) Exited(ctx context.Context, pane string) (paneExit, error) {
-	out, err := t.output(ctx, "display-message", "-p", "-t", pane, paneDeadFormat)
-	if err != nil {
-		return paneExit{}, err
-	}
-	return parsePaneExit(out)
+// Exited reads whether the pane's process has exited and, once tmux knows it, how
+// — or errTerminalLost when the pane is gone or on another server.
+func (t tmuxTerminal) Exited(ctx context.Context, ref paneRef) (paneExit, error) {
+	return t.state(ctx, ref)
 }
 
 // parsePaneExit reads "<dead> <status> <signal>", where status and signal are
@@ -221,6 +283,14 @@ func (t tmuxTerminal) Reap(ctx context.Context) error {
 	return t.run(ctx, nil, "run-shell", "true")
 }
 
-func (t tmuxTerminal) Alive(ctx context.Context) error {
-	return t.run(ctx, nil, "has-session", "-t", t.target)
+// Alive reports whether the terminal is there: with no pane yet (zero ref), that
+// the session exists; once there is one, that ref's pane exists on ref's server —
+// a session of the same name on a recreated server is NOT alive. A dead pane is
+// alive here: it is kept on purpose (remain-on-exit) while the supervisor restarts it.
+func (t tmuxTerminal) Alive(ctx context.Context, ref paneRef) error {
+	if ref == (paneRef{}) {
+		return t.run(ctx, nil, "has-session", "-t", t.target)
+	}
+	_, err := t.state(ctx, ref)
+	return err
 }

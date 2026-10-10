@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -28,10 +29,10 @@ func TestInputGoesOnlyToTheSupervisorsPane(t *testing.T) {
 
 	cases := []struct {
 		name string
-		src  func() (string, bool)
+		src  func() (paneRef, bool)
 	}{
 		{"no pane source (unsupervised)", nil},
-		{"supervisor has no running CLI", func() (string, bool) { return scriptedPane, false }},
+		{"supervisor has no running CLI", func() (paneRef, bool) { return scriptedPane, false }},
 	}
 	for _, c := range cases {
 		srv.inputPane = c.src
@@ -49,7 +50,7 @@ func TestInputGoesOnlyToTheSupervisorsPane(t *testing.T) {
 // deadPaneCLI is a terminal whose pane died after the supervisor last looked.
 type deadPaneCLI struct{ *scriptedCLI }
 
-func (deadPaneCLI) Paste(context.Context, string, string) error {
+func (deadPaneCLI) Paste(context.Context, paneRef, string) error {
 	return fmt.Errorf("%w: pane %%7 reports pane_dead=\"1\"", errPaneNotLive)
 }
 
@@ -67,23 +68,29 @@ func TestAPaneThatDiedSinceTheLastPollIsNotReady(t *testing.T) {
 // CLI in it is running.
 func TestTheSupervisorNamesItsPaneOnlyWhileTheCLIRuns(t *testing.T) {
 	sup := newSupervisor(nil, "claude", t.TempDir(), "/w")
+	ref := paneRef{Server: "9 9", Pane: "%3"}
 	if p, ok := sup.inputPane(); ok {
-		t.Fatalf("before any start: %q", p)
+		t.Fatalf("before any start: %v", p)
 	}
-	sup.started("%3", modeFresh)
-	if p, ok := sup.inputPane(); !ok || p != "%3" {
-		t.Fatalf("running: %q %v", p, ok)
+	sup.started(ref, modeFresh)
+	if p, ok := sup.inputPane(); !ok || p != ref {
+		t.Fatalf("running: %v %v", p, ok)
 	}
 	sup.recordExit(paneExit{Dead: true, Known: true, Status: 1})
 	if p, ok := sup.inputPane(); ok {
-		t.Fatalf("restarting: %q", p)
+		t.Fatalf("restarting: %v", p)
 	}
-	sup.started("%3", modeContinue)
+	sup.started(ref, modeContinue)
 	for i := 0; i < sup.crashExits; i++ {
 		sup.recordExit(paneExit{Dead: true, Known: true, Status: 1})
 	}
 	if p, ok := sup.inputPane(); ok {
-		t.Fatalf("crash_loop: %q", p)
+		t.Fatalf("crash_loop: %v", p)
+	}
+	sup.started(ref, modeContinue)
+	sup.lose(errTerminalLost)
+	if p, ok := sup.inputPane(); ok {
+		t.Fatalf("terminal_lost: %v", p)
 	}
 }
 
@@ -92,12 +99,15 @@ func TestTheSupervisorNamesItsPaneOnlyWhileTheCLIRuns(t *testing.T) {
 // would be a different error.
 func TestInputRefusesATargetThatIsNotAPaneID(t *testing.T) {
 	term := tmuxTerminal{bin: "/nonexistent/tmux-must-not-run", target: "cc"}
-	for _, target := range []string{"cc", "", "cc:0.0"} {
-		if err := term.Paste(context.Background(), target, "x"); err == nil || !errors.Is(err, errPaneNotLive) {
-			t.Fatalf("Paste(%q): %v, want errPaneNotLive", target, err)
+	for _, target := range []paneRef{{Server: "1 1", Pane: "cc"}, {}, {Server: "1 1", Pane: "cc:0.0"},
+		{Pane: "%1"}} { // the last: a pane id with no server identity
+		if err := term.Paste(context.Background(), target, "x"); err == nil || !errors.Is(err, errPaneNotLive) ||
+			strings.Contains(err.Error(), "tmux-must-not-run") {
+			t.Fatalf("Paste(%v): %v, want errPaneNotLive without running tmux", target, err)
 		}
-		if err := term.Enter(context.Background(), target); err == nil || !errors.Is(err, errPaneNotLive) {
-			t.Fatalf("Enter(%q): %v, want errPaneNotLive", target, err)
+		if err := term.Enter(context.Background(), target); err == nil || !errors.Is(err, errPaneNotLive) ||
+			strings.Contains(err.Error(), "tmux-must-not-run") {
+			t.Fatalf("Enter(%v): %v, want errPaneNotLive without running tmux", target, err)
 		}
 	}
 }
@@ -109,29 +119,40 @@ func TestExitedReadsDeadStatusAndSignalAndKnowsWhenItDoesNotKnow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const me = "4242 1791600000 %1 " // ref's server identity and pane id, as state reads them
 	cases := []struct {
 		out  string
 		want paneExit
 		err  bool
+		lost bool // the error must be errTerminalLost
 	}{
-		{"0  \n", paneExit{}, false},
-		{"1  \n", paneExit{Dead: true}, false},                                                        // dead, not yet reaped
-		{"1 3 \n", paneExit{Dead: true, Known: true, Status: 3}, false},                               // exit 3
-		{"1 0 \n", paneExit{Dead: true, Known: true, Status: 0}, false},                               // clean exit
-		{"1  9\n", paneExit{Dead: true, Known: true, Status: 137, Signal: 9, SignalText: "9"}, false}, // SIGKILL
-		{"1  15\n", paneExit{Dead: true, Known: true, Status: 143, Signal: 15, SignalText: "15"}, false},
+		{me + "0  \n", paneExit{}, false, false},
+		{me + "1  \n", paneExit{Dead: true}, false, false},                                                        // dead, not yet reaped
+		{me + "1 3 \n", paneExit{Dead: true, Known: true, Status: 3}, false, false},                               // exit 3
+		{me + "1 0 \n", paneExit{Dead: true, Known: true, Status: 0}, false, false},                               // clean exit
+		{me + "1  9\n", paneExit{Dead: true, Known: true, Status: 137, Signal: 9, SignalText: "9"}, false, false}, // SIGKILL
+		{me + "1  15\n", paneExit{Dead: true, Known: true, Status: 143, Signal: 15, SignalText: "15"}, false, false},
 		// A tmux built with sys_signame (BSD, macOS) prints the name: known, number not.
-		{"1  KILL\n", paneExit{Dead: true, Known: true, Status: exitUnknown, SignalText: "KILL"}, false},
-		{"1 \n", paneExit{}, true}, // the OLD two-field format: refused, not read as status 0
-		{"garbage\n", paneExit{}, true},
+		{me + "1  KILL\n", paneExit{Dead: true, Known: true, Status: exitUnknown, SignalText: "KILL"}, false, false},
+		{me + "1 \n", paneExit{}, true, false}, // the OLD two-field format: refused, not read as status 0
+		{"garbage\n", paneExit{}, true, false},
+		// 🔴 R2-F1: the same pane id on ANOTHER server (a different pid, or the same
+		// pid with a different start time) is not ref's pane, live or not; and an id
+		// that names no pane prints empty pane fields with exit 0 (measured on 3.3a
+		// and 3.7c), which is not ref's pane either.
+		{"5151 1791600000 %1 0  \n", paneExit{}, true, true},
+		{"4242 1791600999 %1 0  \n", paneExit{}, true, true},
+		{"4242 1791600000    \n", paneExit{}, true, true},
+		{"4242 1791600000 %2 0  \n", paneExit{}, true, true},
 	}
 	t.Setenv("CCD_TEST_AS", "tmuxprint")
 	t.Setenv("GORACE", "atexit_sleep_ms=0") // a -race child otherwise sleeps 1s at exit
+	ref := paneRef{Server: "4242 1791600000", Pane: "%1"}
 	for _, c := range cases {
 		t.Setenv("CCD_TEST_TMUX_OUT", c.out)
-		got, err := tmuxTerminal{bin: exe}.Exited(context.Background(), "%1")
-		if (err != nil) != c.err || got != c.want {
-			t.Errorf("%q -> %+v, %v; want %+v (error %v)", c.out, got, err, c.want, c.err)
+		got, err := tmuxTerminal{bin: exe}.Exited(context.Background(), ref)
+		if (err != nil) != c.err || got != c.want || errors.Is(err, errTerminalLost) != c.lost {
+			t.Errorf("%q -> %+v, %v; want %+v (error %v, lost %v)", c.out, got, err, c.want, c.err, c.lost)
 		}
 	}
 }

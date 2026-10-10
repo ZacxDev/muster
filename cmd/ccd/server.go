@@ -21,12 +21,15 @@ import (
 // The production implementation is tmux (tmux.go); tests substitute a fake.
 type terminal interface {
 	// Paste delivers text into pane as ONE bracketed paste and submits it. It
-	// fails with errPaneNotLive when pane is gone or its process has exited.
-	Paste(ctx context.Context, pane, text string) error
-	// Enter presses Enter in pane once more (a submit the TUI may have missed).
-	Enter(ctx context.Context, pane string) error
-	// Alive reports whether the session exists.
-	Alive(ctx context.Context) error
+	// fails with errPaneNotLive when the pane is gone, its process has exited, or
+	// its id now names a pane on another tmux server.
+	Paste(ctx context.Context, pane paneRef, text string) error
+	// Enter presses Enter in pane once more (a submit the TUI may have missed),
+	// with the same refusal as Paste.
+	Enter(ctx context.Context, pane paneRef) error
+	// Alive reports whether the session exists (zero pane) or, once there is a
+	// pane, whether it still exists on the server it was created in.
+	Alive(ctx context.Context, pane paneRef) error
 }
 
 // hookEvent is the subset of a Claude Code hook payload ccd reads. Field names are
@@ -85,7 +88,7 @@ type server struct {
 	// one to paste into now. Production wires the supervisor's (main.go); nil, or
 	// a false answer, is not_ready — never a fallback to the session name, which
 	// tmux resolves to whatever pane an attached operator last focused.
-	inputPane func() (pane string, ok bool)
+	inputPane func() (pane paneRef, ok bool)
 
 	mu             sync.Mutex
 	sessionStarted bool
@@ -326,6 +329,15 @@ func promptKey(s string) string {
 // disarms it (measured: " ! …" reached the model as text, the space kept verbatim
 // in the transcript).
 //
+// ONLY THE FIRST BYTE IS CHECKED, AND THAT IS MEASURED TO BE ENOUGH on the pinned
+// CLI (2.1.296, in the image, tmux 3.3a, pasted exactly as ccd pastes, one fresh
+// container per shape, 2026-10-10): a `!touch <marker>` behind each of "\n",
+// "\t", " ", "\n\n", " \n", U+00A0 and U+3000 created no marker and fired
+// UserPromptSubmit — a model turn, 0 of 7 — while the bare `!touch <marker>`
+// positive control created its marker and fired no UserPromptSubmit, 2 of 2 (first
+// and last). A CR never reaches the paste (sanitizePrompt folds it to LF). A
+// different CLI version can decide differently: re-measure on a bump.
+//
 // 🔴 IT IS ONE OF TWO GUARDS, AND NEITHER IS ENOUGH ALONE. This one covers the
 // paste's own first byte; it cannot see a `!` that a control sequence smuggles
 // OUT of the paste ("\x1b[201~!…" starts with ESC) — sanitizePrompt refuses those.
@@ -404,7 +416,7 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 	pane, ok := s.inputPane()
 	if !ok {
 		return turnOutcome{}, paneNotReady("the supervisor reports no running CLI in its pane (starting, " +
-			"restarting or crash_loop — see /healthz)")
+			"restarting, crash_loop or terminal_lost — see /healthz)")
 	}
 
 	p := &pendingTurn{want: promptKey(prompt), submitted: make(chan hookEvent, 1), done: make(chan hookEvent, 1)}
@@ -626,9 +638,11 @@ type health struct {
 
 // handleHealthz serves /healthz and / (identically). It answers 200 when ccd is
 // up and the tmux session is alive, and non-200 only when one of these is not:
-//   - tmux is not answering for the session (`tmux has-session` fails);
-//   - the supervised CLI is in crash_loop (supervise.go) — so the liveness probe
-//     restarts the pod.
+//   - tmux is not answering for the session (`tmux has-session` fails) or, once
+//     the supervisor has started the CLI, the CLI's pane no longer exists on the
+//     tmux server it was created in (tmuxTerminal.Alive);
+//   - the supervised CLI is in crash_loop or terminal_lost (supervise.go) — so
+//     the liveness probe restarts the pod.
 //
 // 🔴 SESSION AND AUTH ARE REPORTED, NEVER GATING. muster's renderer points the
 // pod's startup and liveness probes at this path, so anything that fails it gets
@@ -645,19 +659,21 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	h := health{Terminal: "ok", authSnapshot: s.auth.snapshot()}
-	if err := s.term.Alive(ctx); err != nil {
-		h.Terminal = err.Error()
-	}
+	var ref paneRef
 	if s.sup != nil {
 		st := s.sup.state()
 		h.Supervisor = &st
+		ref = s.sup.ref()
+	}
+	if err := s.term.Alive(ctx, ref); err != nil {
+		h.Terminal = err.Error()
 	}
 	s.mu.Lock()
 	started, ended := s.sessionStarted, s.sessionEnded
 	h.Busy = s.busy
 	s.mu.Unlock()
 	h.Session = s.sessionState(started, ended)
-	h.OK = h.Terminal == "ok" && (h.Supervisor == nil || h.Supervisor.CLI != cliCrashLoop)
+	h.OK = h.Terminal == "ok" && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))
 	w.Header().Set("Content-Type", "application/json")
 	if !h.OK {
 		w.WriteHeader(http.StatusServiceUnavailable)

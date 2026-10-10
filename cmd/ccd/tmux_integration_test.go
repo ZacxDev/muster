@@ -38,7 +38,7 @@ type tmuxRig struct {
 	gwURL   string
 	cfg, ws string
 	tmux    tmuxTerminal
-	pane    string // the CLI's pane id
+	pane    paneRef // the CLI's pane
 }
 
 func startTmuxRig(t *testing.T, trustWorkspace bool) *tmuxRig {
@@ -88,7 +88,7 @@ func startTmuxRig(t *testing.T, trustWorkspace bool) *tmuxRig {
 	t.Cleanup(func() { hs.Close() })
 	gw := gatewayServer(t, srv)
 
-	cmd := exec.Command(tmuxBin, "-L", sock, "-f", "/dev/null", "new-session", "-d", "-P", "-F", "#{pane_id}",
+	cmd := exec.Command(tmuxBin, "-L", sock, "-f", "/dev/null", "new-session", "-d", "-P", "-F", serverFormat+" #{pane_id}",
 		"-s", "cc", "-x", "200", "-y", "50", "-c", ws, filepath.Join(bin, "claude"))
 	// The environment goes on the tmux CLIENT that starts this private server, so
 	// it becomes the server's global environment. (`new-session -e` was not
@@ -107,12 +107,14 @@ func startTmuxRig(t *testing.T, trustWorkspace bool) *tmuxRig {
 	}
 	t.Cleanup(func() { _ = exec.Command(tmuxBin, "-L", sock, "kill-server").Run() })
 	// This rig starts the CLI itself (no supervisor), so it names the pane the way
-	// the supervisor does in production: by the id new-session printed.
-	pane := strings.TrimSpace(string(out))
-	if !strings.HasPrefix(pane, "%") {
-		t.Fatalf("new-session printed %q, not a pane id", out)
+	// the supervisor does in production: by the server identity and pane id
+	// new-session printed.
+	f := strings.Fields(string(out))
+	if len(f) != 3 || !strings.HasPrefix(f[2], "%") {
+		t.Fatalf("new-session printed %q, not a server identity and pane id", out)
 	}
-	srv.inputPane = func() (string, bool) { return pane, true }
+	pane := paneRef{Server: f[0] + " " + f[1], Pane: f[2]}
+	srv.inputPane = func() (paneRef, bool) { return pane, true }
 	return &tmuxRig{srv: srv, gwURL: gw.URL, cfg: cfg, ws: ws, tmux: term, pane: pane}
 }
 
@@ -278,7 +280,7 @@ func TestTmuxAnUntrustedWorkspaceIsNotReady(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `"type":"not_ready"`) {
 		t.Fatalf("err = %v", err)
 	}
-	if err := rig.tmux.Alive(context.Background()); err != nil {
+	if err := rig.tmux.Alive(context.Background(), rig.pane); err != nil {
 		t.Fatalf("control: the tmux session itself should be alive: %v", err)
 	}
 }
@@ -467,6 +469,84 @@ func TestTmuxATurnGoesToTheCLIPaneNotTheFocusedShellPane(t *testing.T) {
 	}
 }
 
+// recreateWithShell starts a new tmux server on sock with a session `cc` running a
+// shell in dir, and returns its pane id. A new-session racing the old server's
+// exit can fail ("server exited unexpectedly", measured on 3.7c), so it retries
+// until the old server is gone.
+func recreateWithShell(t *testing.T, tmuxBin, sock, dir string) string {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		out, err := exec.Command(tmuxBin, "-L", sock, "-f", "/dev/null", "new-session", "-d", "-P", "-F", "#{pane_id}",
+			"-s", "cc", "-c", dir, "/bin/sh").CombinedOutput()
+		if err == nil {
+			return strings.TrimSpace(string(out))
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("recreate the tmux server: %v: %s", err, out)
+		}
+	}
+}
+
+// 🔴 R2-F1: A RECREATED tmux SERVER NEVER RECEIVES A TURN, AND HEALTH SAYS SO.
+// The tmux server ccd started goes away (`kill-server`) and someone recreates a
+// session named `cc` on the same socket with a SHELL in it. The new server numbers
+// its panes from %0 again, so the shell pane carries the very id ccd recorded for
+// its CLI. A turn whose text is a shell command must not run there (no marker),
+// must be refused as not_ready, and /healthz must stop answering 200 and report
+// the supervisor's CLI as lost — never `running`.
+//
+// Positive controls, built WITHOUT ccd: the recreated pane really does carry the
+// recorded id (otherwise this test could not see the bug), and a command sent to
+// it does run (the shell is live).
+func TestTmuxARecreatedServerWithARecycledPaneIDNeverReceivesATurn(t *testing.T) {
+	r := startServe(t)
+	r.waitHealth(t, "first start", func(h health) bool { return h.Session == sessionStartedState })
+	cliPane := r.tmux(t, "display-message", "-p", "-t", "cc", "#{pane_id}")
+
+	r.tmux(t, "kill-server")
+	shellPane := recreateWithShell(t, r.tmuxBin, r.sock, r.root)
+	if shellPane != cliPane {
+		t.Fatalf("control: the recreated server's shell pane is %s, not the recycled id %s — this test "+
+			"could not see the bug", shellPane, cliPane)
+	}
+
+	marker := filepath.Join(r.root, "turn-ran-in-the-recreated-shell")
+	_, err := mustersGateway(t, "http://"+r.gwAddr).Chat(context.Background(), contractAgent, "s", "touch "+marker, nil)
+	if waitFile(marker, 2*time.Second) {
+		t.Fatalf("the turn ran in the recreated server's shell pane %s: %s exists (turn err %v)", shellPane, marker, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), `"type":"not_ready"`) {
+		t.Fatalf("turn into a recreated server: err %v, want not_ready", err)
+	}
+
+	var code int
+	var h health
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		resp, err := http.Get("http://" + r.gwAddr + "/healthz")
+		if err != nil {
+			continue
+		}
+		h = health{}
+		_ = json.NewDecoder(resp.Body).Decode(&h)
+		resp.Body.Close()
+		code = resp.StatusCode
+		if code != http.StatusOK && h.Supervisor != nil && h.Supervisor.CLI == "terminal_lost" {
+			break
+		}
+	}
+	if code != http.StatusServiceUnavailable || h.Supervisor == nil || h.Supervisor.CLI != "terminal_lost" {
+		t.Fatalf("healthz after the server was recreated: %d %+v sup=%+v, want 503 with cli \"terminal_lost\"; ccd log:\n%s",
+			code, h, h.Supervisor, r.logs.String())
+	}
+
+	control := filepath.Join(r.root, "control-recreated-shell-is-live")
+	r.tmux(t, "send-keys", "-t", shellPane, "-l", "touch "+control)
+	r.tmux(t, "send-keys", "-t", shellPane, "Enter")
+	if !waitFile(control, 5*time.Second) {
+		t.Fatal("control: a command sent to the recycled pane id did not run in the shell, so this test could not see the bug")
+	}
+}
+
 // 🔴 F2: A SMUGGLED PASTE TERMINATOR RUNS NOTHING. "\x1b[201~!touch X" ends the
 // bracketed paste at once and leaves `!touch X` TYPED at an empty prompt — shell
 // mode. ccd refuses it (400 invalid_input) and no marker appears.
@@ -571,23 +651,98 @@ func TestTmuxPasteRefusesADeadOrMissingPane(t *testing.T) {
 	if err := term.Paste(ctx, live, "x"); err != nil {
 		t.Fatalf("control: paste into a live pane: %v", err)
 	}
-	dead, err := term.output(ctx, "split-window", "-t", "cc", "-P", "-F", "#{pane_id}", "true")
+	deadID, err := term.output(ctx, "split-window", "-t", "cc", "-P", "-F", "#{pane_id}", "true")
 	if err != nil {
 		t.Fatal(err)
 	}
-	dead = strings.TrimSpace(dead)
+	dead := paneRef{Server: live.Server, Pane: strings.TrimSpace(deadID)}
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
 		if e, err := term.Exited(ctx, dead); err == nil && e.Dead {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("pane %s never died", dead)
+			t.Fatalf("pane %v never died", dead)
 		}
 	}
-	for _, p := range []string{dead, "%999"} {
+	for _, p := range []paneRef{dead, {Server: live.Server, Pane: "%999"}} {
 		if err := term.Paste(ctx, p, "x"); !errors.Is(err, errPaneNotLive) {
-			t.Fatalf("paste into %s: %v, want errPaneNotLive", p, err)
+			t.Fatalf("paste into %v: %v, want errPaneNotLive", p, err)
 		}
+	}
+}
+
+// 🔴 R2-F1 (terminal half): tmuxTerminal ITSELF refuses a pane id that a
+// recreated server has recycled — Paste, Enter, Respawn, Exited and Alive — with no
+// supervisor poll in front of it to have noticed first. The pane ccd started runs
+// `sleep`; the server is killed and recreated with a SHELL whose pane gets the same
+// id. Nothing may be typed into that shell (no marker) and Respawn must not start
+// anything in it.
+//
+// Controls, on the recreated server: its pane carries the recycled id, the shell
+// in it runs what is sent to it, and the SESSION check (zero ref) passes — so only
+// the server identity tells the two apart.
+func TestTmuxTheTerminalRefusesAPaneIDRecycledByARecreatedServer(t *testing.T) {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal("tmux is REQUIRED by the tmuxit suite and is not on PATH; install it (this suite never skips)")
+	}
+	sock := fmt.Sprintf("ccd-it-recycle-%d-%d", os.Getpid(), time.Now().UnixNano())
+	t.Cleanup(func() { _ = exec.Command(tmuxBin, "-L", sock, "kill-server").Run() })
+	term := tmuxTerminal{bin: tmuxBin, socket: sock, conf: "/dev/null", target: "cc"}
+	ctx := context.Background()
+	dir := t.TempDir()
+	ref, err := term.Start(ctx, dir, []string{"sleep", "60"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := term.Alive(ctx, ref); err != nil {
+		t.Fatalf("control: the pane ccd started is alive: %v", err)
+	}
+	if err := exec.Command(tmuxBin, "-L", sock, "kill-server").Run(); err != nil {
+		t.Fatal(err)
+	}
+	shellPane := recreateWithShell(t, tmuxBin, sock, dir)
+	if shellPane != ref.Pane {
+		t.Fatalf("control: the recreated shell pane is %s, not the recycled id %s — this test could not see the bug", shellPane, ref.Pane)
+	}
+	if err := term.Alive(ctx, paneRef{}); err != nil {
+		t.Fatalf("control: the recreated session `cc` should pass the session check: %v", err)
+	}
+
+	marker := filepath.Join(dir, "typed-into-the-recreated-shell")
+	if err := term.Paste(ctx, ref, "touch "+marker); !errors.Is(err, errPaneNotLive) || !errors.Is(err, errTerminalLost) {
+		t.Fatalf("Paste into the recycled id: %v, want errPaneNotLive and errTerminalLost", err)
+	}
+	if err := term.Enter(ctx, ref); !errors.Is(err, errTerminalLost) {
+		t.Fatalf("Enter into the recycled id: %v, want errTerminalLost", err)
+	}
+	if _, err := term.Exited(ctx, ref); !errors.Is(err, errTerminalLost) {
+		t.Fatalf("Exited on the recycled id: %v, want errTerminalLost", err)
+	}
+	if err := term.Alive(ctx, ref); !errors.Is(err, errTerminalLost) {
+		t.Fatalf("Alive for the recycled id: %v, want errTerminalLost", err)
+	}
+	respawned := filepath.Join(dir, "respawned-in-the-recreated-server")
+	if err := term.Respawn(ctx, ref, dir, []string{"touch", respawned}); !errors.Is(err, errTerminalLost) {
+		t.Fatalf("Respawn on the recycled id: %v, want errTerminalLost", err)
+	}
+	// Enter the shell's own line, so anything typed above would have run by now.
+	if out, err := exec.Command(tmuxBin, "-L", sock, "send-keys", "-t", shellPane, "Enter").CombinedOutput(); err != nil {
+		t.Fatalf("send-keys: %v: %s", err, out)
+	}
+	if waitFile(marker, time.Second) || waitFile(respawned, 10*time.Millisecond) {
+		t.Fatal("the terminal acted on the recreated server's pane")
+	}
+
+	control := filepath.Join(dir, "control-recycled-shell-runs")
+	if out, err := exec.Command(tmuxBin, "-L", sock, "send-keys", "-t", shellPane, "-l", "touch "+control).CombinedOutput(); err != nil {
+		t.Fatalf("send-keys: %v: %s", err, out)
+	}
+	if out, err := exec.Command(tmuxBin, "-L", sock, "send-keys", "-t", shellPane, "Enter").CombinedOutput(); err != nil {
+		t.Fatalf("send-keys: %v: %s", err, out)
+	}
+	if !waitFile(control, 5*time.Second) {
+		t.Fatal("control: the recreated shell did not run a command sent to it — this test could not see the bug")
 	}
 }
 
@@ -639,7 +794,7 @@ func TestTmuxACrashingCLIEndsInCrashLoopAndFailsHealth(t *testing.T) {
 	}
 	// Control: the tmux session itself is alive (the dead pane is kept), so the
 	// 503 is the crash loop's, not a dead terminal's.
-	if err := term.Alive(context.Background()); err != nil {
+	if err := term.Alive(context.Background(), sup.ref()); err != nil {
 		t.Fatalf("control: %v", err)
 	}
 }

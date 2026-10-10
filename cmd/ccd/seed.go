@@ -126,28 +126,64 @@ func seed(o seedOpts, stderr io.Writer) error {
 	for k, v := range want {
 		have[k] = v
 	}
-	for _, k := range settingsForbidden {
-		if _, ok := have[k]; ok {
-			delete(have, k)
-			fmt.Fprintf(stderr, "ccd seed: removed %q from %s (it can carry a credential or endpoint that "+
-				"outranks the session's subscription token)\n", k, setPath)
-		}
-	}
+	stripForbidden(have, setPath, stderr)
 	return writeJSONAtomic(setPath, have)
 }
 
-// settingsForbidden are the settings.json keys seed REMOVES from the persisted
-// file on every start, whatever wrote them (an operator's /config, a session
-// editing its own config). `env` is applied to the CLI's environment, so it can
-// set exactly the variables the entrypoint refuses (ANTHROPIC_API_KEY,
-// ANTHROPIC_BASE_URL, CLAUDE_CODE_USE_BEDROCK, …); `apiKeyHelper` is a command
-// whose output the CLI uses as its API key. The template names neither, so
-// "template keys replace the file's" alone never removed them.
+// settingsForbidden are the settings.json keys REMOVED from the persisted file,
+// whatever wrote them (an operator's /config, a session editing its own config):
+// by `ccd seed` when the pod starts, and by stripSettingsFile before EVERY start
+// and in-pod restart of the CLI by the supervisor (supervise.go). `env` is applied
+// to the CLI's environment, so it can set exactly the variables the entrypoint
+// refuses (ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, CLAUDE_CODE_USE_BEDROCK, …);
+// `apiKeyHelper` is a command whose output the CLI uses as its API key. The
+// template names neither, so "template keys replace the file's" alone never
+// removed them.
 //
-// ⚠ SCOPE: this file only — <CLAUDE_CONFIG_DIR>/settings.json. The settings*.json
+// ⚠ SCOPE, IN FILES: <CLAUDE_CONFIG_DIR>/settings.json only. The settings*.json
 // files under the WORKSPACE's .claude/ are project configuration the CLI also
-// reads, and seed neither touches nor checks them.
+// reads, and nothing here touches or checks them.
+// ⚠ SCOPE, IN TIME: the removal happens before a CLI starts. A key written while
+// a CLI is running is not removed until the next start, and whether the RUNNING
+// CLI re-reads settings.json and applies it before then was not measured.
 var settingsForbidden = []string{"env", "apiKeyHelper"}
+
+// stripForbidden deletes settingsForbidden from a settings object, naming each key
+// it removes (never its value), and reports whether it removed any.
+func stripForbidden(settings map[string]any, path string, stderr io.Writer) bool {
+	removed := false
+	for _, k := range settingsForbidden {
+		if _, ok := settings[k]; ok {
+			delete(settings, k)
+			removed = true
+			fmt.Fprintf(stderr, "ccd seed: removed %q from %s (it can carry a credential or endpoint that "+
+				"outranks the session's subscription token)\n", k, path)
+		}
+	}
+	return removed
+}
+
+// stripSettingsFile applies stripForbidden to <configDir>/settings.json in place.
+// The file is rewritten only when a key was removed; a missing file is left
+// missing. The supervisor runs it before every CLI start.
+//
+// A settings.json that is not a JSON object is an ERROR here, not moved aside as
+// `ccd seed` does: moving it would leave the CLI with no hook template. The
+// supervisor answers the error by not starting the CLI — before the first start
+// ccd exits; before a restart the pane stays dead until crash_loop — so either way
+// the pod restarts, and the entrypoint's `ccd seed` moves the file aside and
+// writes the template.
+func stripSettingsFile(configDir string, stderr io.Writer) error {
+	path := filepath.Join(configDir, "settings.json")
+	settings, err := readJSONObject(path, nil)
+	if err != nil {
+		return err
+	}
+	if !stripForbidden(settings, path, stderr) {
+		return nil
+	}
+	return writeJSONAtomic(path, settings)
+}
 
 // checkSeed verifies the shape `seed` produces, for the image's smoke test.
 func checkSeed(o seedOpts) error {
