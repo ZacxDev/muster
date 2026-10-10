@@ -602,10 +602,11 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 		// Grant (ClusterRole, ClusterRoleBinding, Role, RoleBinding).
 		//
 		// The NetworkPolicy is the seventh kind apply writes and its site is in
-		// applyNetworkPolicy, which apply calls first. Its 403 does NOT come
-		// through here — networkPolicyForbidden names the verb instead — and
-		// everything else does.
-		"applyFailed": {"apply": 6, "Grant": 4, "applyNetworkPolicy": 1},
+		// applyNetworkPolicy, which apply calls first. That function has TWO
+		// calls: the default arm, and the arm for a 403 from a namespace that is
+		// still terminating (a transient). Every OTHER 403 does not come through
+		// here — networkPolicyForbidden names the verb instead.
+		"applyFailed": {"apply": 6, "Grant": 4, "applyNetworkPolicy": 2},
 		// The create-then-update-if-ours predicate.
 		"upsertOwned": {"apply": 4, "Grant": 2, "applyNetworkPolicy": 1},
 		// The create-only-if-ours predicate: a bound claim and two bindings,

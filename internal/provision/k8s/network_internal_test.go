@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -581,12 +582,16 @@ func TestAForbiddenNetworkPolicyStopsTheInstanceAndNamesTheVerb(t *testing.T) {
 				}
 				msg := err.Error()
 				for _, want := range []string{
-					"may not " + c.verb + " networkpolicies.networking.k8s.io",
+					"the apiserver refused (403 Forbidden) muster's " + c.verb + " of networkpolicies.networking.k8s.io",
 					`"quiet-heron-network" in namespace "` + ns + `"`,
+					// The apiserver's own text travels with it: it is what says
+					// whether this 403 is RBAC at all.
+					"fixture RBAC: the service account cannot " + c.verb + " this resource",
 					"NetworkPolicy was NOT written and neither was anything after it",
 					"an instance that was not running was NOT started",
-					"One that was ALREADY RUNNING was left exactly as it was, and muster did not confirm it has a policy",
-					"`kubectl -n " + ns + " get networkpolicy`",
+					"One that was ALREADY RUNNING was left exactly as it was, and this refusal does not establish that it has a current policy",
+					"`kubectl -n " + ns + " get networkpolicy quiet-heron-network`",
+					"If the refusal is about RBAC",
 					`grant muster's ClusterRole apiGroups ["networking.k8s.io"] resources ["networkpolicies"] verbs ["get", "create", "update", "delete"]`,
 				} {
 					if !strings.Contains(msg, want) {
@@ -610,6 +615,65 @@ func seedOwnedPolicy(t *testing.T, cs *fake.Clientset, ns, instance string) {
 	if err != nil {
 		t.Fatalf("seed policy: %v", err)
 	}
+}
+
+// TestTheRefusalNamesTheInstancesOwnPolicyInASharedNamespace: in the shared
+// layout the namespace holds every agent's policy, so "list the policies in the
+// namespace" answers "there are some" for an agent that has none. The refusal's
+// command names the OBJECT, and this composes it where that matters — with
+// another agent's policy sitting in the same namespace.
+func TestTheRefusalNamesTheInstancesOwnPolicyInASharedNamespace(t *testing.T) {
+	ctx := context.Background()
+	d, cs := internalDriver(t)
+	if err := d.Create(ctx, isolatedSpec("other-agent")); err != nil {
+		t.Fatal(err)
+	}
+	if n := policyCount(t, cs); n != 1 {
+		t.Fatalf("premise: the neighbour's policy must exist, %d found", n)
+	}
+	cs.PrependReactor("create", "networkpolicies", forbidden("create"))
+	err := d.Create(ctx, isolatedSpec("lone-agent"))
+	if !errors.Is(err, provision.ErrUnsupported) {
+		t.Fatalf("create = %v, want the networkpolicies refusal", err)
+	}
+	if want := "`kubectl -n " + internalNS + " get networkpolicy lone-agent-network`"; !strings.Contains(err.Error(), want) {
+		t.Errorf("the refusal does not name the instance's own policy (want %s):\n  %v", want, err)
+	}
+	if strings.Contains(err.Error(), "other-agent") {
+		t.Errorf("the refusal names another agent's object:\n  %v", err)
+	}
+}
+
+// TestAForbiddenFromATerminatingNamespaceIsTransientNotAnRBACRefusal: the
+// apiserver answers 403 for any write into a namespace that is still being
+// deleted. That is not muster lacking a rule and it clears by itself, so it is
+// ErrBlind — what the same failure on any other object apply writes would be —
+// and it carries no RBAC remedy. The instance is still not started.
+//
+// ⚠ THE ERROR IS BUILT BY HAND: the fake clientset has no namespace lifecycle.
+// What is pinned is this driver's reading of the API's own cause type, not that
+// a real apiserver sends it.
+func TestAForbiddenFromATerminatingNamespaceIsTransientNotAnRBACRefusal(t *testing.T) {
+	d, cs := perInstanceDriver(t)
+	cs.PrependReactor("create", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
+		e := apierrors.NewForbidden(schema.GroupResource{Group: "networking.k8s.io", Resource: "networkpolicies"},
+			"quiet-heron-network", errors.New("unable to create new content in namespace muster-agent-quiet-heron because it is being terminated"))
+		e.ErrStatus.Details.Causes = append(e.ErrStatus.Details.Causes, metav1.StatusCause{
+			Type: corev1.NamespaceTerminatingCause, Message: "namespace muster-agent-quiet-heron is being terminated", Field: "metadata.namespace",
+		})
+		return true, nil, e
+	})
+	err := d.Create(context.Background(), ccSpec(t))
+	if !errors.Is(err, provision.ErrBlind) || errors.Is(err, provision.ErrUnsupported) {
+		t.Fatalf("want ErrBlind alone for a terminating namespace, got %v", err)
+	}
+	if strings.Contains(err.Error(), "ClusterRole") {
+		t.Errorf("a terminating namespace was reported with an RBAC remedy:\n  %v", err)
+	}
+	if !strings.Contains(err.Error(), "being terminated") {
+		t.Errorf("the apiserver's reason was dropped:\n  %v", err)
+	}
+	assertNothingRunnable(t, cs, d, "muster-agent-quiet-heron", "quiet-heron")
 }
 
 // TestANetworkPolicyFailureThatIsNotA403StillStopsTheInstance: any other
@@ -700,7 +764,7 @@ func TestAStoppedPreIsolationInstanceIsNotStartedWhenItsPolicyIsRefused(t *testi
 
 	cs.PrependReactor("create", "networkpolicies", forbidden("create"))
 	err := d.Update(ctx, now)
-	if !errors.Is(err, provision.ErrUnsupported) || !strings.Contains(err.Error(), "may not create networkpolicies") {
+	if !errors.Is(err, provision.ErrUnsupported) || !strings.Contains(err.Error(), "muster's create of networkpolicies") {
 		t.Fatalf("update = %v, want the networkpolicies refusal", err)
 	}
 	dep, gerr := cs.AppsV1().Deployments(ns).Get(ctx, "quiet-heron", metav1.GetOptions{})
@@ -749,8 +813,9 @@ func TestARunningPreIsolationInstanceIsLeftRunningWhenItsPolicyIsRefused(t *test
 	if !errors.Is(err, provision.ErrUnsupported) {
 		t.Fatalf("update = %v, want the networkpolicies refusal", err)
 	}
-	if want := "if it predates network isolation it is STILL RUNNING WITHOUT ONE — check `kubectl -n " + ns +
-		" get networkpolicy`, and stop the agent if there is none"; !strings.Contains(err.Error(), want) {
+	if want := "one created before network isolation existed may have none. Check `kubectl -n " + ns +
+		" get networkpolicy quiet-heron-network`: if that is not found and the agent is running, it is running " +
+		"unconfined; stop it"; !strings.Contains(err.Error(), want) {
 		t.Errorf("the refusal does not tell the operator the instance may still be running:\n  %v", err)
 	}
 	dep, gerr := cs.AppsV1().Deployments(ns).Get(ctx, "quiet-heron", metav1.GetOptions{})
@@ -950,7 +1015,7 @@ func TestDestroyDoesNotReportSuccessOverAPolicyItCouldNotRemove(t *testing.T) {
 		}
 		// The instance never had a policy, so the error has to say what to DO:
 		// "networkpolicies is forbidden" alone reads as a non sequitur here.
-		if want := `grant muster's ClusterRole apiGroups ["networking.k8s.io"] resources ["networkpolicies"] verbs ["get", "create", "update", "delete"]`; !strings.Contains(err.Error(), want) {
+		if want := `if this refusal is about RBAC, grant muster's ClusterRole apiGroups ["networking.k8s.io"] resources ["networkpolicies"] verbs ["get", "create", "update", "delete"]`; !strings.Contains(err.Error(), want) {
 			t.Errorf("the destroy failure does not name the rule to add:\n  %v", err)
 		}
 		deploymentGone(t, cs, "plain-heron")

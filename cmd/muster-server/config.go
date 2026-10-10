@@ -545,10 +545,11 @@ func (c config) claudeCodeEnabled() bool {
 // declares network isolation in its spec unconditionally, so where this is true
 // the driver MUST be given the selector: k8sDriverConfig sets the pointer on
 // exactly this predicate, and validateKinds requires the two variables on
-// exactly this predicate. A reader that used a different expression would
-// either hand the driver an empty selector (k8s.New refuses it, at boot) or
-// leave the pointer nil (the driver refuses every claude-code spec at
-// CheckSpec, in a goroutine).
+// exactly this predicate. If those two disagreed, k8sDriverConfig would either
+// hand the driver an empty selector (k8s.New refuses it, at boot) or leave the
+// pointer nil (the driver then refuses every claude-code spec at CheckSpec, on
+// whatever path reached it). A banner that disagreed would print the wrong arm
+// — "WRITTEN" over a deployment that writes nothing, or the reverse.
 func (c config) claudeCodeNetworkPolicy() bool {
 	return c.claudeCodeEnabled() && c.agentProvisioner() == provisionerK8s
 }

@@ -304,37 +304,49 @@ var networkPolicyRBACHint = "grant muster's ClusterRole apiGroups [\"networking.
 // 🔴 IT IS NOT blind(), AND THE DIFFERENCE IS THE WHOLE POINT OF THE FUNCTION.
 // Every other upsert in apply reports an apiserver failure as
 // provision.ErrBlind — "backend unreachable", a transient a caller retries. A
-// 403 here is neither: the backend answered, and what it said is that muster is
-// not permitted to write the one object that confines this instance. Retrying
-// returns the same answer until an operator changes RBAC, so the message names
-// the verb and the rule to add, and the sentinel is ErrUnsupported: the driver
-// cannot do what the spec asks and is refusing rather than doing part of it.
+// 403 here is neither: the backend answered, and what it said is that muster's
+// write of the one object that confines this instance is not allowed. The
+// sentinel is ErrUnsupported: the driver cannot do what the spec asks and is
+// refusing rather than doing part of it.
+//
+// ⚠ A 403 IS USUALLY RBAC AND NOT ALWAYS. A ResourceQuota denial and an
+// admission webhook's refusal are 403s too, and the fix for those is not a
+// ClusterRole rule. So the message carries the apiserver's own text, names the
+// verb muster attempted, and offers the rule conditionally — "if the refusal is
+// about RBAC" — instead of asserting a cause it did not check. (One 403 never
+// reaches here at all: a namespace still terminating is a transient, and
+// applyNetworkPolicy routes it to applyFailed like every other object's.)
 //
 // 🔴 "NOT STARTED" IS ONLY HALF OF WHAT CAN BE TRUE, SO THE MESSAGE SAYS BOTH
 // HALVES — AND CLAIMS NEITHER MORE THAN THIS FUNCTION KNOWS. apply returned
 // here, having written at most the instance's (empty) namespace, so an instance
 // that was not running is still not running. An instance that was ALREADY
 // running is still running, exactly as it was — and whether THAT one has a
-// policy is not something a refusal reveals:
+// policy, and a current one, is not something a refusal establishes:
 //
-//   - one created before its kind was isolated has none, and a message that said
-//     only "was NOT started" told its operator there was nothing left to stop;
-//   - one refused on `get` or `update` does have one (those are reached only
-//     after `create` answered AlreadyExists) — stale, perhaps, but present;
+//   - one created before its kind was isolated may have none, and a message that
+//     said only "was NOT started" told its operator there was nothing left to
+//     stop;
+//   - one refused on `update` has muster's own policy, which was not updated;
+//   - one refused on `get` has SOME object under the policy's name (the create
+//     answered AlreadyExists) that muster could not read, so not even its
+//     ownership is known;
 //   - one refused on `create` may have either: the apiserver authorises before
 //     it looks, so a 403 on create says nothing about what exists.
 //
-// So the message does not assert "running without a policy". It says the
-// instance was left as it was, names the case in which that means unconfined,
-// and gives the command that settles it.
+// So the message asserts none of those. It says the running instance was left as
+// it was and gives a command that names the OBJECT — not a listing of the
+// namespace, which in the shared layout holds every other agent's policy and
+// would answer "there are some" for an agent that has none.
 func networkPolicyForbidden(verb, name, ns string, err error) error {
-	return fmt.Errorf("%w: muster's ServiceAccount may not %s networkpolicies.networking.k8s.io (%q in namespace %q): %v. "+
-		"This instance's NetworkPolicy was NOT written and neither was anything after it, so an instance that was "+
-		"not running was NOT started. One that was ALREADY RUNNING was left exactly as it was, and muster did not "+
-		"confirm it has a policy: if it predates network isolation it is STILL RUNNING WITHOUT ONE — check "+
-		"`kubectl -n %s get networkpolicy`, and stop the agent if there is none. "+
-		"To fix: %s, then start the agent again",
-		provision.ErrUnsupported, verb, name, ns, err, ns, networkPolicyRBACHint)
+	return fmt.Errorf("%w: the apiserver refused (403 Forbidden) muster's %s of networkpolicies.networking.k8s.io %q "+
+		"in namespace %q: %v. This instance's NetworkPolicy was NOT written and neither was anything after it, so an "+
+		"instance that was not running was NOT started. One that was ALREADY RUNNING was left exactly as it was, and "+
+		"this refusal does not establish that it has a current policy — one created before network isolation existed "+
+		"may have none. Check `kubectl -n %s get networkpolicy %s`: if that is not found and the agent is running, it is "+
+		"running unconfined; stop it. If the refusal is about RBAC (the apiserver's text above names the ServiceAccount "+
+		"and the verb), %s, then start the agent again",
+		provision.ErrUnsupported, verb, name, ns, err, ns, name, networkPolicyRBACHint)
 }
 
 func quotedVerbs(verbs []string) string {
@@ -352,8 +364,8 @@ func quotedVerbs(verbs []string) string {
 // RETURNS ON ITS ERROR. That order is the fail-closed guarantee: the Deployment
 // is the last object apply writes, so a Deployment whose spec asked for
 // isolation exists only if this returned nil first. It runs ahead of the Secret
-// too, so a refused instance leaves no credential behind — only the (empty)
-// per-instance namespace.
+// too, so a refused FIRST apply writes no credential — only, in the per-instance
+// layout, the (empty) namespace.
 //
 // ⚠ "EXISTS ONLY IF THIS RETURNED nil" IS A CLAIM ABOUT THIS DRIVER'S WRITES. An
 // instance created by a muster that predates this function has a Deployment and
@@ -362,6 +374,8 @@ func quotedVerbs(verbs []string) string {
 // fingerprint rather than reconciling. A REFUSED Update of such an instance
 // leaves it exactly as it was — running, if it was running — which
 // networkPolicyForbidden's message says, with the command that checks it.
+//
+// An instance that already had a Secret keeps it, for the same reason.
 //
 // ⚠ THE CONTROLLER SELECTOR IS NOT IN THE SPEC, SO IT IS NOT IN THE FINGERPRINT.
 // Changing Config.NetworkPolicy changes what the NEXT apply writes; an existing
@@ -411,6 +425,18 @@ func (d *Driver) applyNetworkPolicy(ctx context.Context, spec provision.Spec, ns
 	switch {
 	case err == nil:
 		return nil
+	case apierrors.HasStatusCause(err, corev1.NamespaceTerminatingCause):
+		// 🔴 A 403, AND NOT A REFUSAL TO REPORT AS PERMANENT. The apiserver answers
+		// Forbidden for any write into a namespace that is still being deleted —
+		// here, an instance re-created under a name whose previous namespace has
+		// not finished terminating. It clears by itself, so it is ErrBlind like the
+		// same failure on every other object apply writes; naming an RBAC rule for
+		// it would send an operator to fix something that is not broken.
+		//
+		// ⚠ NOT OBSERVED ON A CLUSTER FROM THIS TREE. The cause type is the API's
+		// own constant; the fake clientset has no namespace lifecycle, so the test
+		// for this branch builds the error by hand.
+		return applyFailed("apply networkpolicy "+np.Name, err)
 	case apierrors.IsForbidden(err):
 		return networkPolicyForbidden(verb, np.Name, ns, err)
 	default:

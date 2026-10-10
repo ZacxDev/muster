@@ -133,7 +133,7 @@ func TestAClaudeCodeDispatchWritesItsNetworkPolicyAndIsRefusedWithoutOne(t *test
 			t.Fatalf("a refused dispatch left %d deployment(s) and %d policy object(s); the agent must not exist", deps, nps)
 		}
 		msg := recordedError(store)
-		for _, want := range []string{"may not create networkpolicies.networking.k8s.io", "an instance that was not running was NOT started", `verbs [\"get\", \"create\", \"update\", \"delete\"]`} {
+		for _, want := range []string{"muster's create of networkpolicies.networking.k8s.io", "an instance that was not running was NOT started", `verbs [\"get\", \"create\", \"update\", \"delete\"]`} {
 			if !strings.Contains(msg, want) {
 				t.Errorf("the row's recorded error does not say %q:\n  %s", want, msg)
 			}
@@ -213,7 +213,7 @@ func TestAStoppedClaudeCodeAgentFromBeforeIsolationIsConfinedOrNotStarted(t *tes
 		if _, nps := seamCounts(t, cs); nps != 0 {
 			t.Fatalf("%d policy object(s) exist after a refused create", nps)
 		}
-		if msg := recordedError(store); !strings.Contains(msg, "may not create networkpolicies.networking.k8s.io") {
+		if msg := recordedError(store); !strings.Contains(msg, "muster's create of networkpolicies.networking.k8s.io") {
 			t.Fatalf("the row's recorded error does not name the refused verb: %q", msg)
 		}
 	})

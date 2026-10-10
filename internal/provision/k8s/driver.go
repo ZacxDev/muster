@@ -1174,7 +1174,9 @@ func (d *Driver) Destroy(ctx context.Context, ref provision.Ref) error {
 			// The apiserver's own text names the verb; this adds the rule to
 			// write, because the instance being destroyed may never have had a
 			// policy and "forbidden: networkpolicies" then reads as a non sequitur.
-			err = fmt.Errorf("%w — %s", err, networkPolicyRBACHint)
+			// Conditionally, for networkPolicyForbidden's reason: a 403 is usually
+			// RBAC and this did not check.
+			err = fmt.Errorf("%w — if this refusal is about RBAC, %s", err, networkPolicyRBACHint)
 		}
 		fail("networkpolicy "+npName, err)
 	}
