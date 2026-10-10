@@ -289,12 +289,22 @@ jobs:
           command -v tmux
           tmux -V
 
+      # CCD_TMUXIT_RAW_ESC=1: Ubuntu 24.04's tmux (3.4 — measured in an
+      # ubuntu:24.04 container, as is the image's 3.3a) delivers ESC raw inside a
+      # bracketed paste, so the smuggled-paste test's positive control MUST fire
+      # here. tmux 3.7c escapes ESC itself, which makes that test's no-marker
+      # half vacuous on such a host; if the runner's tmux ever does the same,
+      # this flag turns that into a failure instead of a silent pass.
       - name: go test (tmuxit)
+        env:
+          CCD_TMUXIT_RAW_ESC: "1"
         run: go test -tags tmuxit -race -run '^TestTmux' -v ./cmd/ccd/
 
       # Same flags as the step above, so Go's test cache answers. `pipefail` is
       # deliberately NOT set: the status is verdict.py's (see the `test` job).
       - name: assert the tmux tests ran and none skipped
+        env:
+          CCD_TMUXIT_RAW_ESC: "1"
         run: go test -tags tmuxit -race -run '^TestTmux' -json ./cmd/ccd/ | python3 tests/verdict.py
 
   # Local: docker build -f images/claude-code-agent/Dockerfile -t claude-code-agent . \

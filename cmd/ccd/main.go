@@ -31,11 +31,13 @@
 //	CCD_HOOK_LISTEN        hook address, loopback (default 127.0.0.1:18790)
 //	CCD_TMUX_SOCKET        tmux -L socket name    (default: tmux's default server)
 //	CCD_TMUX_CONF          tmux -f config file    (default: tmux's default)
-//	CCD_TMUX_TARGET        tmux session/pane      (default cc)
+//	CCD_TMUX_TARGET        tmux SESSION name      (default cc); never an input target:
+//	                       prompts go to the CLI's pane id (tmux.go)
 //	CCD_WORKSPACE          the CLI's working directory (default: cwd)
 //	CCD_SUPERVISE          "1": once listening, create the tmux session and keep the
 //	                       CLI running in it — `claude --continue` when a transcript
-//	                       exists, `claude` on a fresh volume (supervise.go)
+//	                       exists, `claude` on a fresh volume (supervise.go). Without
+//	                       it ccd knows no pane id, so every turn is not_ready.
 //	CCD_CLAUDE_BIN         the CLI binary         (default claude)
 //	CCD_SUBMIT_TIMEOUT / CCD_TURN_TIMEOUT              (default 20s / 30m)
 //	CCD_HOOK_LOG           append every raw hook payload to this file. OFF by default;
@@ -163,6 +165,7 @@ func serve() error {
 	}, term, auth)
 	if os.Getenv("CCD_SUPERVISE") == "1" {
 		srv.sup = newSupervisor(term, envOr("CCD_CLAUDE_BIN", "claude"), configDir, workspace)
+		srv.inputPane = srv.sup.inputPane
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

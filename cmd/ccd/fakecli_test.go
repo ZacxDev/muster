@@ -22,6 +22,7 @@ type scriptedCLI struct {
 
 	mu       sync.Mutex
 	pasted   []string
+	panes    []string // the pane each Paste and Enter addressed
 	enters   int
 	aliveErr error
 }
@@ -35,7 +36,13 @@ type cliScript struct {
 	noSubmit   bool   // the paste never becomes a prompt (a dialog has focus)
 	// transcriptPath overrides where the hooks say the transcript is.
 	transcriptPath string
+	// reported, when set, maps the pasted text to the `prompt` UserPromptSubmit
+	// carries (the real CLI's whitespace changes); nil reports it verbatim.
+	reported func(string) string
 }
+
+// scriptedPane is the pane id newScripted's server is told the CLI runs in.
+const scriptedPane = "%7"
 
 const fixtureSessionID = "11111111-2222-4333-8444-555555555555"
 
@@ -43,9 +50,10 @@ func (c *scriptedCLI) transcriptFile() string {
 	return filepath.Join(c.dir, "projects", "-data-workspace", fixtureSessionID+".jsonl")
 }
 
-func (c *scriptedCLI) Paste(ctx context.Context, text string) error {
+func (c *scriptedCLI) Paste(ctx context.Context, pane, text string) error {
 	c.mu.Lock()
 	c.pasted = append(c.pasted, text)
+	c.panes = append(c.panes, pane)
 	c.mu.Unlock()
 	if c.script.noSubmit {
 		return nil
@@ -54,9 +62,13 @@ func (c *scriptedCLI) Paste(ctx context.Context, text string) error {
 	if c.script.transcriptPath != "" {
 		path = c.script.transcriptPath
 	}
+	reported := text
+	if c.script.reported != nil {
+		reported = c.script.reported(text)
+	}
 	go func() {
 		c.srv.onHook(hookEvent{Event: "UserPromptSubmit", SessionID: fixtureSessionID,
-			TranscriptPath: path, PromptID: fixturePromptID, Prompt: text})
+			TranscriptPath: path, PromptID: fixturePromptID, Prompt: reported})
 		if err := os.MkdirAll(filepath.Dir(c.transcriptFile()), 0o700); err != nil {
 			c.t.Error(err)
 			return
@@ -74,9 +86,10 @@ func (c *scriptedCLI) Paste(ctx context.Context, text string) error {
 	return nil
 }
 
-func (c *scriptedCLI) Enter(context.Context) error {
+func (c *scriptedCLI) Enter(_ context.Context, pane string) error {
 	c.mu.Lock()
 	c.enters++
+	c.panes = append(c.panes, pane)
 	c.mu.Unlock()
 	return nil
 }
@@ -100,6 +113,7 @@ func newScripted(t *testing.T, script cliScript) (*server, *scriptedCLI) {
 	srv := newServer(serverConfig{Bearer: bearer, ConfigDir: dir, SubmitTimeout: 2 * time.Second,
 		TurnTimeout: 5 * time.Second, TranscriptGrace: 200 * time.Millisecond}, cli, newAuthTracker())
 	cli.srv = srv
+	srv.inputPane = func() (string, bool) { return scriptedPane, true }
 	srv.onHook(hookEvent{Event: "SessionStart", SessionID: fixtureSessionID, Source: "startup"})
 	return srv, cli
 }

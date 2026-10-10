@@ -15,7 +15,12 @@
 #      the supervisor's start count goes to 2 with `--continue` (the CLI records
 #      the /exit itself in a transcript, measured, so there is now one to resume)
 #      and SessionStart arrives again, with the container never restarting;
-#   6. the entrypoint's seed produced the onboarding/trust/hook shape (`ccd seed --check`).
+#   6. the entrypoint's seed produced the onboarding/trust/hook shape (`ccd seed --check`);
+#   7. the entrypoint REFUSES to start (exit 1, naming the variable) with each of
+#      ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_USE_BEDROCK,
+#      CLAUDE_CODE_USE_VERTEX, ANTHROPIC_BASE_URL set to a FAKE value — before it
+#      seeds or starts anything;
+#   8. `ccd seed` removes `env` and `apiKeyHelper` planted in settings.json.
 #
 # ⚠ IT NEEDS NO REAL CREDENTIAL AND MUST NEVER BE GIVEN ONE, AND IT SENDS NO TURN:
 # nothing here needs the provider's API. Without any token the CLI stops at its
@@ -88,4 +93,31 @@ ccd seed --check --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" 
 
 kill "$ep" 2>/dev/null || true
 tmux kill-server 2>/dev/null || true
+
+# 7. Each refused variable, with a FAKE value, alone. `timeout` bounds the case
+# where the refusal is missing and the entrypoint goes on to serve; a separate
+# config dir and port keep a non-refused start from touching the one above.
+for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL; do
+  rc=0
+  out="$(env "$v=fake-smoke-value" CLAUDE_CONFIG_DIR=/tmp/refuse-cfg CCD_WORKSPACE=/tmp/refuse-ws \
+    CCD_LISTEN=127.0.0.1:18799 CCD_HOOK_LISTEN=127.0.0.1:18798 CCD_TMUX_SOCKET=refuse \
+    timeout 15 /usr/local/bin/cc-entrypoint 2>&1)" || rc=$?
+  [[ "$rc" == "1" && "$out" == *"$v is set"*"Refusing."* ]] \
+    || fail "with $v set the entrypoint exited $rc, want 1 naming $v: $out"
+  [[ ! -e /tmp/refuse-cfg/settings.json ]] || fail "with $v set the entrypoint seeded before refusing"
+  echo "cc-smoke: $v refused"
+done
+
+# 8. env / apiKeyHelper planted in the persisted settings.json are removed by seed.
+cat >"$CLAUDE_CONFIG_DIR/settings.json" <<'JSON'
+{"env": {"ANTHROPIC_BASE_URL": "https://fake.invalid"}, "apiKeyHelper": "/bin/echo fake", "model": "kept"}
+JSON
+ccd seed --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
+  --settings-template /etc/ccd/settings.json 2>/tmp/seed.err || fail "re-seed failed: $(cat /tmp/seed.err)"
+s="$(cat "$CLAUDE_CONFIG_DIR/settings.json")"
+[[ "$s" != *'"env"'* && "$s" != *'"apiKeyHelper"'* && "$s" == *'"model": "kept"'* ]] \
+  || fail "seed did not remove env/apiKeyHelper (or dropped another key): $s"
+ccd seed --check --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
+  --settings-template /etc/ccd/settings.json || fail "re-seeded config has the wrong shape"
+echo "cc-smoke: seed removed env and apiKeyHelper"
 echo "cc-smoke: PASS"

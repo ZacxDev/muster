@@ -29,7 +29,9 @@ import (
 //     Stop/StopFailure), so the image's real `ccd hook` wiring is exercised;
 //   - it writes transcript records shaped like the recorded ones, the prompt
 //     verbatim as received;
-//   - a prompt whose first byte is `!` runs LOCALLY (shell mode), and so does a
+//   - a prompt whose first byte is `!` runs LOCALLY in `sh -c` (shell mode) —
+//     including a `!` that arrives TYPED after a control sequence ended the
+//     paste early, as on the real CLI — and so does a
 //     `/` prompt naming a known command (fakeLocalCommands) — no UserPromptSubmit,
 //     no model turn — while a `/` text naming no command ("/etc/hosts is broken")
 //     is an ordinary prompt; all as measured on the real CLI. `/exit` fires
@@ -150,9 +152,11 @@ func fakeClaude() int {
 		}
 		if strings.HasPrefix(prompt, "!") {
 			// Measured on the real CLI: shell mode. No UserPromptSubmit, nothing
-			// sent to the model.
+			// sent to the model — and the command RUNS, as it does there, so a
+			// test can see a shell-mode escape by the file it creates.
 			write(map[string]any{"type": "user", "isSidechain": false,
 				"message": map[string]any{"role": "user", "content": "<bash-input>" + prompt[1:] + "</bash-input>"}})
+			_ = exec.Command("sh", "-c", prompt[1:]).Run()
 			fmt.Print("\r\n! ran locally\r\n> ")
 			return
 		}

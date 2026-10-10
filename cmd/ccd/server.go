@@ -14,15 +14,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // terminal is the input side: how a prompt reaches the interactive session.
 // The production implementation is tmux (tmux.go); tests substitute a fake.
 type terminal interface {
-	// Paste delivers text as ONE bracketed paste and submits it.
-	Paste(ctx context.Context, text string) error
-	// Enter presses Enter once more (a submit the TUI may have missed).
-	Enter(ctx context.Context) error
+	// Paste delivers text into pane as ONE bracketed paste and submits it. It
+	// fails with errPaneNotLive when pane is gone or its process has exited.
+	Paste(ctx context.Context, pane, text string) error
+	// Enter presses Enter in pane once more (a submit the TUI may have missed).
+	Enter(ctx context.Context, pane string) error
 	// Alive reports whether the session exists.
 	Alive(ctx context.Context) error
 }
@@ -43,6 +45,9 @@ type hookEvent struct {
 }
 
 type pendingTurn struct {
+	// want is promptKey of the text ccd pasted: a UserPromptSubmit binds to this
+	// turn only when its prompt has the same key (see onHook).
+	want      string
 	promptID  string
 	submitted chan hookEvent // UserPromptSubmit
 	done      chan hookEvent // Stop or StopFailure
@@ -76,6 +81,11 @@ type server struct {
 	slot chan struct{} // capacity 1: one ccd-driven turn at a time
 
 	sup *supervisor // nil when ccd does not run the CLI itself
+	// inputPane names the tmux pane prompts are pasted into, and whether there is
+	// one to paste into now. Production wires the supervisor's (main.go); nil, or
+	// a false answer, is not_ready — never a fallback to the session name, which
+	// tmux resolves to whatever pane an attached operator last focused.
+	inputPane func() (pane string, ok bool)
 
 	mu             sync.Mutex
 	sessionStarted bool
@@ -172,7 +182,11 @@ func (s *server) onHook(ev hookEvent) {
 		if ev.TranscriptPath != "" {
 			s.transcriptPath = ev.TranscriptPath
 		}
-		if p := s.pending; p != nil && p.promptID == "" {
+		// Only the submit of the text ccd pasted is ccd's turn. Another one
+		// arriving while a turn is pending (an operator submitting in the
+		// attached terminal) is left unbound, so its reply is never returned as
+		// this caller's.
+		if p := s.pending; p != nil && p.promptID == "" && promptKey(ev.Prompt) == p.want {
 			p.promptID = ev.PromptID
 			select {
 			case p.submitted <- ev:
@@ -247,6 +261,62 @@ func promptFrom(raw json.RawMessage) (string, error) {
 	return "", errors.New("`input` carries no user message")
 }
 
+// sanitizePrompt folds line endings and refuses control characters; handleResponses
+// runs it BEFORE neutralizeInputMode, so the `!` check sees the text that will
+// actually be pasted.
+//
+// 🔴 A CONTROL CHARACTER CAN END THE PASTE, AND WHAT FOLLOWS IT IS TYPED. tmux
+// wraps the buffer in ESC[200~ … ESC[201~, and tmux 3.3a (the image's) and 3.4
+// pass an ESC inside it through raw (measured; 3.7c sends it as the text "^["),
+// so a prompt "\x1b[201~!touch X" closes the paste at its first byte and the `!`
+// lands as TYPED input at an empty prompt — shell mode, past the neutraliser,
+// which only ever sees a first byte of ESC (measured on the pinned CLI in the
+// image: the file was created and no UserPromptSubmit fired). So every C0 control except LF and
+// TAB is refused, and so are DEL and the C1 controls U+0080–U+009F (U+009B is a
+// one-character CSI to a terminal that honours C1) — a typed 400 invalid_input,
+// never a silent strip, so the caller learns the text was not sent.
+//
+// CR IS FOLDED, NOT REFUSED: CRLF and then any lone CR become LF. tmux turns every
+// LF in a paste into CR anyway, so the pane receives the same bytes either way;
+// folding makes the text ccd records (pendingTurn.want) the text the CLI reports
+// (measured: a pasted "cr\rinside" came back in UserPromptSubmit as "cr\ninside"),
+// and stops a CRLF arriving as TWO newlines.
+func sanitizePrompt(prompt string) (string, error) {
+	prompt = strings.ReplaceAll(prompt, "\r\n", "\n")
+	prompt = strings.ReplaceAll(prompt, "\r", "\n")
+	for i, r := range prompt {
+		if r == '\n' || r == '\t' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return "", fmt.Errorf("the prompt contains control character U+%04X at byte %d; only "+
+				"newline and tab are accepted (a control character could end the bracketed paste early)", r, i)
+		}
+	}
+	return prompt, nil
+}
+
+// promptKey is how a UserPromptSubmit's `prompt` is matched to the text ccd
+// pasted: equal after deleting every Unicode whitespace character from both.
+//
+// Exact equality was measured to be wrong for the pinned CLI, whose reported
+// prompt differs from the pasted text in whitespace alone: a TAB comes back as
+// four spaces; a trailing run of whitespace holding a space, tab or NBSP is
+// trimmed whole ("endsp \n" → "endsp", "endnl\n  " → "endnl") while a run of
+// newlines alone survived ("trail\nline2\n\n" intact); a lone CR comes back as
+// LF. Leading spaces, inner blank lines and a 4194-byte multi-line paste came back
+// verbatim. Deleting whitespace absorbs all of that and still separates any two
+// prompts that differ in a non-whitespace character — which is the case this
+// match exists for: an operator's own prompt is never bound to ccd's turn.
+func promptKey(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // neutralizeInputMode keeps a leading `!` from becoming a shell command.
 //
 // 🔴 A PROMPT WHOSE FIRST BYTE IS `!` RUNS IN BASH INSIDE THE POD — EVEN AS A
@@ -254,8 +324,13 @@ func promptFrom(raw json.RawMessage) (string, error) {
 // `pasted bang first` in bash (the TUI's shell mode, which no permission prompt
 // and no approval hook sees) and fired no UserPromptSubmit. One leading space
 // disarms it (measured: " ! …" reached the model as text, the space kept verbatim
-// in the transcript). That one byte is the only change ccd makes to a prompt
-// besides folding CRLF.
+// in the transcript).
+//
+// 🔴 IT IS ONE OF TWO GUARDS, AND NEITHER IS ENOUGH ALONE. This one covers the
+// paste's own first byte; it cannot see a `!` that a control sequence smuggles
+// OUT of the paste ("\x1b[201~!…" starts with ESC) — sanitizePrompt refuses those.
+// And sanitizePrompt alone would let a plain "!ls" through. The space is the only
+// byte ccd ADDS to a prompt; the only bytes it CHANGES are CRs (sanitizePrompt).
 //
 // `/` IS DELIBERATELY LET THROUGH (operator decision, 2026-10-10: the session is
 // a trusted operator's, sandboxed in its own pod). Measured on the pinned CLI: a
@@ -286,9 +361,10 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, &failure{Status: http.StatusBadRequest, Type: failBadRequest, Message: err.Error()})
 		return
 	}
-	// CRLF → LF before tmux sees it: tmux turns every LF into CR on paste and the
-	// TUI turns CR back into a newline, so a CRLF would arrive as TWO newlines.
-	prompt = strings.ReplaceAll(prompt, "\r\n", "\n")
+	if prompt, err = sanitizePrompt(prompt); err != nil {
+		writeFailure(w, &failure{Status: http.StatusBadRequest, Type: failInvalidInput, Message: err.Error()})
+		return
+	}
 	if strings.TrimSpace(prompt) == "" {
 		writeFailure(w, &failure{Status: http.StatusBadRequest, Type: failBadRequest, Message: "empty prompt"})
 		return
@@ -321,7 +397,17 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 			Message: "another turn is already being driven through this session"}
 	}
 
-	p := &pendingTurn{submitted: make(chan hookEvent, 1), done: make(chan hookEvent, 1)}
+	if s.inputPane == nil {
+		return turnOutcome{}, paneNotReady("ccd does not supervise the CLI (CCD_SUPERVISE is not 1), so it " +
+			"knows no pane id to paste into, and it never falls back to the session name")
+	}
+	pane, ok := s.inputPane()
+	if !ok {
+		return turnOutcome{}, paneNotReady("the supervisor reports no running CLI in its pane (starting, " +
+			"restarting or crash_loop — see /healthz)")
+	}
+
+	p := &pendingTurn{want: promptKey(prompt), submitted: make(chan hookEvent, 1), done: make(chan hookEvent, 1)}
 	s.mu.Lock()
 	switch {
 	case !s.sessionStarted:
@@ -351,7 +437,10 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 		s.mu.Unlock()
 	}()
 
-	if err := s.term.Paste(ctx, prompt); err != nil {
+	if err := s.term.Paste(ctx, pane, prompt); err != nil {
+		if errors.Is(err, errPaneNotLive) {
+			return turnOutcome{}, paneNotReady(err.Error())
+		}
 		return turnOutcome{}, &failure{Status: http.StatusBadGateway, Type: failTerminal, Message: err.Error()}
 	}
 
@@ -376,7 +465,7 @@ waitSubmit:
 		case submitted = <-p.submitted:
 			break waitSubmit
 		case <-retry.C:
-			_ = s.term.Enter(ctx)
+			_ = s.term.Enter(ctx, pane)
 		case <-submitTimer.C:
 			if slash {
 				return turnOutcome{}, &failure{Status: http.StatusBadGateway, Type: failLocalCommand,
@@ -385,8 +474,10 @@ waitSubmit:
 						"attach to the pane to see its output", s.cfg.SubmitTimeout)}
 			}
 			return turnOutcome{}, &failure{Status: http.StatusGatewayTimeout, Type: failNotSubmitted,
-				Message: fmt.Sprintf("no UserPromptSubmit within %s of the paste: the prompt is sitting "+
-					"unsent in the input box or a dialog has focus — attach to the pane", s.cfg.SubmitTimeout)}
+				Message: fmt.Sprintf("no UserPromptSubmit matching the pasted prompt within %s of the paste: the "+
+					"prompt is sitting unsent in the input box, a dialog has focus, or the CLI reported a "+
+					"different prompt (an operator's own submit is never taken for this turn's) — attach to "+
+					"the pane", s.cfg.SubmitTimeout)}
 		case <-ctx.Done():
 			return turnOutcome{}, &failure{Status: http.StatusGatewayTimeout, Type: failTurnTimeout,
 				Message: "caller went away before the prompt was submitted"}
@@ -445,6 +536,11 @@ waitSubmit:
 	}
 	s.auth.observeTurn(nil)
 	return out, nil
+}
+
+// paneNotReady is the not_ready answer for a pane ccd cannot or will not paste into.
+func paneNotReady(why string) *failure {
+	return &failure{Status: http.StatusServiceUnavailable, Type: failNotReady, Message: why}
 }
 
 // readTurn reads the turn for promptID, re-reading briefly until the CLI has

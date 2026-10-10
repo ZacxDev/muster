@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -383,12 +384,12 @@ func TestHealthzFailsOnDeadTmuxOrACrashLoop(t *testing.T) {
 	cli.aliveErr = nil
 	sup := newSupervisor(nil, "claude", t.TempDir(), "/w")
 	srv.sup = sup
-	sup.started(modeFresh)
+	sup.started("%0", modeFresh)
 	if code, body, h := getHealth(t, url, "/healthz"); code != 200 || h.Supervisor == nil || h.Supervisor.CLI != cliRunning {
 		t.Fatalf("running: %d %s", code, body)
 	}
 	for i := 0; i < sup.crashExits; i++ {
-		sup.recordExit(1)
+		sup.recordExit(paneExit{Dead: true, Known: true, Status: 1})
 	}
 	if code, body, h := getHealth(t, url, "/healthz"); code != 503 || h.Supervisor.CLI != cliCrashLoop {
 		t.Fatalf("crash loop: %d %s", code, body)
@@ -436,5 +437,121 @@ func TestCredentialVisible(t *testing.T) {
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-env-token")
 	if !credentialVisible(t.TempDir())() {
 		t.Fatal("env token set: reported none")
+	}
+}
+
+// 🔴 F2: A CONTROL CHARACTER IS REFUSED, NEVER PASTED. "\x1b[201~" would end the
+// bracketed paste at its first byte and turn the rest into TYPED input — a `!`
+// there is shell mode, which the leading-`!` neutraliser cannot see. Every C0
+// control but LF and TAB, DEL, and the C1 controls are a typed 400.
+func TestAPromptWithAControlCharacterIsRefusedAndNeverPasted(t *testing.T) {
+	hostile := map[string]string{
+		"paste terminator then bang": "\x1b[201~!touch /tmp/x",
+		"paste opener":               "\x1b[200~hello",
+		"ESC mid-text":               "harmless text \x1b[201~ then more",
+		"CSI cursor move":            "a\x1b[2Ab",
+		"OSC title":                  "a\x1b]0;title\x07b",
+		"bare BEL":                   "ring\x07",
+		"NUL":                        "a\x00b",
+		"backspace":                  "abc\x08\x08",
+		"vertical tab":               "a\x0bb",
+		"form feed":                  "a\x0cb",
+		"DEL":                        "abc\x7f",
+		"C1 CSI U+009B":              "a\u009b201~!touch /tmp/x",
+		"C1 first U+0080":            "a\u0080b",
+		"C1 last U+009F":             "a\u009fb",
+		"bang AFTER a terminator":    "!\x1b[201~!ls",
+	}
+	for name, in := range hostile {
+		t.Run(name, func(t *testing.T) {
+			srv, cli := newScripted(t, cliScript{transcript: fixture(t, "turn_success_tools_2.1.289.jsonl"), stopEvent: "Stop"})
+			code, body := postResponses(t, gatewayServer(t, srv).URL, pinnedDerivation, in)
+			if code != http.StatusBadRequest || errType(t, body) != "invalid_input" {
+				t.Fatalf("%q: %d %s, want 400 invalid_input", in, code, body)
+			}
+			if len(cli.pasted) != 0 {
+				t.Fatalf("%q reached the terminal as %q", in, cli.pasted)
+			}
+		})
+	}
+}
+
+// The other side of the same guard: text that only LOOKS unusual is pasted
+// byte-exact — newlines, tabs, non-ASCII (including U+00A0, the first code point
+// past the C1 block, and U+2028), and the printable bytes either side of DEL.
+// CR is folded to LF (CRLF first, so it is one newline, not two).
+func TestBenignTextPassesTheControlCharacterGuardByteExact(t *testing.T) {
+	cases := map[string]string{
+		"para one\n\npara two":                 "para one\n\npara two",
+		"col1\tcol2\n\tindented":               "col1\tcol2\n\tindented",
+		"é 日本 ✓ \u00a0nbsp \u2028 ~ and space": "é 日本 ✓ \u00a0nbsp \u2028 ~ and space",
+		"trailing newline\n":                   "trailing newline\n",
+		"crlf\r\nline":                         "crlf\nline",
+		"lone\rcr":                             "lone\ncr",
+		"mixed\r\n\r\rend":                     "mixed\n\n\nend",
+	}
+	for in, want := range cases {
+		srv, cli := newScripted(t, cliScript{transcript: fixture(t, "turn_success_tools_2.1.289.jsonl"), stopEvent: "Stop"})
+		if code, body := postResponses(t, gatewayServer(t, srv).URL, pinnedDerivation, in); code != http.StatusOK {
+			t.Fatalf("%q: %d %s", in, code, body)
+		}
+		if len(cli.pasted) != 1 || cli.pasted[0] != want {
+			t.Fatalf("%q pasted as %q, want %q", in, cli.pasted, want)
+		}
+	}
+}
+
+// opFirstCLI is a scripted CLI where, between ccd's paste and ccd's own submit,
+// the OPERATOR submits a different prompt in the attached terminal and that turn
+// stops — the fixture transcript's earlier turn (promptId 9999…, "an earlier
+// prompt" → "AN EARLIER REPLY that is not this turn").
+type opFirstCLI struct{ *scriptedCLI }
+
+func (c opFirstCLI) Paste(ctx context.Context, pane, text string) error {
+	if err := os.MkdirAll(filepath.Dir(c.transcriptFile()), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(c.transcriptFile(), c.script.transcript, 0o600); err != nil {
+		return err
+	}
+	const opID = "99999999-8888-4777-8666-555555555555"
+	c.srv.onHook(hookEvent{Event: "UserPromptSubmit", SessionID: fixtureSessionID,
+		TranscriptPath: c.transcriptFile(), PromptID: opID, Prompt: "an earlier prompt"})
+	c.srv.onHook(hookEvent{Event: "Stop", SessionID: fixtureSessionID, TranscriptPath: c.transcriptFile(), PromptID: opID})
+	return c.scriptedCLI.Paste(ctx, pane, text)
+}
+
+// 🔴 F4: AN OPERATOR'S SUBMIT THAT ARRIVES FIRST IS NOT THIS TURN. Only a
+// UserPromptSubmit whose prompt matches what ccd pasted binds to the turn, so the
+// reply is ccd's turn's, never the operator's.
+func TestAnOperatorSubmitArrivingFirstIsNotReturnedAsTheReply(t *testing.T) {
+	srv, cli := newScripted(t, cliScript{transcript: fixture(t, "turn_success_tools_2.1.289.jsonl"), stopEvent: "Stop"})
+	srv.term = opFirstCLI{cli}
+	code, body := postResponses(t, gatewayServer(t, srv).URL, pinnedDerivation, "list the workspace")
+	if code != http.StatusOK {
+		t.Fatalf("%d %s", code, body)
+	}
+	if strings.Contains(body, "AN EARLIER REPLY") || !strings.Contains(body, "Second segment") {
+		t.Fatalf("the reply is not ccd's own turn's: %s", body)
+	}
+}
+
+// The other side of F4: the CLI reports the prompt with ITS whitespace changes
+// (measured on the pinned CLI: TAB → four spaces, a trailing run holding a space
+// or NBSP trimmed whole, CR → LF). That is still ccd's own submit and binds.
+func TestASubmitDifferingFromThePasteOnlyInWhitespaceIsStillThisTurn(t *testing.T) {
+	cliTransform := func(s string) string {
+		s = strings.ReplaceAll(s, "\t", "    ")
+		return strings.TrimRight(s, " \u00a0\n")
+	}
+	srv, _ := newScripted(t, cliScript{transcript: fixture(t, "turn_success_tools_2.1.289.jsonl"), stopEvent: "Stop",
+		reported: cliTransform})
+	in := "col1\tcol2\nendsp \u00a0\n"
+	if got := cliTransform(in); got == in {
+		t.Fatalf("control: the transform changed nothing (%q)", got)
+	}
+	code, body := postResponses(t, gatewayServer(t, srv).URL, pinnedDerivation, in)
+	if code != http.StatusOK || !strings.Contains(body, "Second segment") {
+		t.Fatalf("%d %s", code, body)
 	}
 }

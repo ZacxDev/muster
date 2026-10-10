@@ -15,10 +15,12 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -36,6 +38,7 @@ type tmuxRig struct {
 	gwURL   string
 	cfg, ws string
 	tmux    tmuxTerminal
+	pane    string // the CLI's pane id
 }
 
 func startTmuxRig(t *testing.T, trustWorkspace bool) *tmuxRig {
@@ -85,8 +88,8 @@ func startTmuxRig(t *testing.T, trustWorkspace bool) *tmuxRig {
 	t.Cleanup(func() { hs.Close() })
 	gw := gatewayServer(t, srv)
 
-	cmd := exec.Command(tmuxBin, "-L", sock, "-f", "/dev/null", "new-session", "-d", "-s", "cc",
-		"-x", "200", "-y", "50", "-c", ws, filepath.Join(bin, "claude"))
+	cmd := exec.Command(tmuxBin, "-L", sock, "-f", "/dev/null", "new-session", "-d", "-P", "-F", "#{pane_id}",
+		"-s", "cc", "-x", "200", "-y", "50", "-c", ws, filepath.Join(bin, "claude"))
 	// The environment goes on the tmux CLIENT that starts this private server, so
 	// it becomes the server's global environment. (`new-session -e` was not
 	// applied to PATH for the pane's command on tmux 3.7c, which left the
@@ -98,11 +101,19 @@ func startTmuxRig(t *testing.T, trustWorkspace bool) *tmuxRig {
 		"CLAUDE_CONFIG_DIR="+cfg,
 		"CCD_HOOK_URL=http://"+hl.Addr().String(),
 		"SHELL=/bin/sh")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("tmux new-session: %v: %s", err, out)
 	}
 	t.Cleanup(func() { _ = exec.Command(tmuxBin, "-L", sock, "kill-server").Run() })
-	return &tmuxRig{srv: srv, gwURL: gw.URL, cfg: cfg, ws: ws, tmux: term}
+	// This rig starts the CLI itself (no supervisor), so it names the pane the way
+	// the supervisor does in production: by the id new-session printed.
+	pane := strings.TrimSpace(string(out))
+	if !strings.HasPrefix(pane, "%") {
+		t.Fatalf("new-session printed %q, not a pane id", out)
+	}
+	srv.inputPane = func() (string, bool) { return pane, true }
+	return &tmuxRig{srv: srv, gwURL: gw.URL, cfg: cfg, ws: ws, tmux: term, pane: pane}
 }
 
 func (r *tmuxRig) started() bool {
@@ -272,17 +283,18 @@ func TestTmuxAnUntrustedWorkspaceIsNotReady(t *testing.T) {
 	}
 }
 
-// The WHOLE BINARY: `ccd serve` as its own process, configured only through the
-// environment the image's entrypoint sets, creating and SUPERVISING the tmux
-// session itself (CCD_SUPERVISE=1) after its listeners are bound.
-//
-//   - health is 200 with no credential proof (there is no probe) and reports a
-//     FRESH supervised start;
-//   - a turn round-trips through muster's client;
-//   - 🔴 `/exit` typed in the pane restarts the CLI IN THE POD with --continue:
-//     the same session id, ONE transcript file holding the prompts from before
-//     and after, and a turn works again.
-func TestTmuxTheServeBinarySupervisesTheSessionAndResumesAfterExit(t *testing.T) {
+// serveRig is `ccd serve` running as its own process, configured only through
+// the environment the image's entrypoint sets, creating and SUPERVISING the tmux
+// session itself (CCD_SUPERVISE=1) — the production wiring end to end.
+type serveRig struct {
+	tmuxBin, sock string
+	gwAddr        string
+	root, cfg, ws string
+	logs          *syncBuffer
+}
+
+func startServe(t *testing.T) *serveRig {
+	t.Helper()
 	tmuxBin, err := exec.LookPath("tmux")
 	if err != nil {
 		t.Fatal("tmux is REQUIRED by the tmuxit suite and is not on PATH; install it (this suite never skips)")
@@ -320,64 +332,93 @@ func TestTmuxTheServeBinarySupervisesTheSessionAndResumesAfterExit(t *testing.T)
 		"CCD_LISTEN="+gwAddr, "CCD_HOOK_LISTEN="+hookAddr, "CCD_HOOK_URL=http://"+hookAddr,
 		"CCD_TMUX_SOCKET="+sock, "CCD_TMUX_CONF=/dev/null",
 		"CCD_SUPERVISE=1", "CCD_CLAUDE_BIN="+filepath.Join(bin, "claude"))
-	var logs syncBuffer
-	cmd.Stdout, cmd.Stderr = &logs, &logs
+	logs := &syncBuffer{}
+	cmd.Stdout, cmd.Stderr = logs, logs
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	return &serveRig{tmuxBin: tmuxBin, sock: sock, gwAddr: gwAddr, root: root, cfg: cfg, ws: ws, logs: logs}
+}
 
-	waitHealth := func(label string, ok func(health) bool) health {
-		t.Helper()
-		var h health
-		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-			resp, err := http.Get("http://" + gwAddr + "/healthz")
-			if err != nil {
-				continue
-			}
-			h = health{}
-			_ = json.NewDecoder(resp.Body).Decode(&h)
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK && ok(h) {
-				return h
-			}
+func (r *serveRig) waitHealth(t *testing.T, label string, ok func(health) bool) health {
+	t.Helper()
+	var h health
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		resp, err := http.Get("http://" + r.gwAddr + "/healthz")
+		if err != nil {
+			continue
 		}
-		t.Fatalf("%s: healthz never got there; last %+v sup=%+v; ccd log:\n%s", label, h, h.Supervisor, logs.String())
-		return h
+		h = health{}
+		_ = json.NewDecoder(resp.Body).Decode(&h)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK && ok(h) {
+			return h
+		}
 	}
-	h := waitHealth("first start", func(h health) bool { return h.Session == sessionStartedState })
+	t.Fatalf("%s: healthz never got there; last %+v sup=%+v; ccd log:\n%s", label, h, h.Supervisor, r.logs.String())
+	return h
+}
+
+// chat sends p through muster's client and requires the fake CLI's reply for
+// exactly those bytes.
+func (r *serveRig) chat(t *testing.T, p string) {
+	t.Helper()
+	reply, err := mustersGateway(t, "http://"+r.gwAddr).Chat(context.Background(), contractAgent, "s", p, nil)
+	sum := sha256.Sum256([]byte(p))
+	if want := fmt.Sprintf("received %d bytes\n\nsha256 %s", len(p), hex.EncodeToString(sum[:])); err != nil || reply != want {
+		t.Fatalf("prompt %q: reply %q err %v; ccd log:\n%s", p, reply, err, r.logs.String())
+	}
+}
+
+func (r *serveRig) tmux(t *testing.T, args ...string) string {
+	t.Helper()
+	out, err := exec.Command(r.tmuxBin, append([]string{"-L", r.sock}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("tmux %q: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// waitFile reports whether path appears within d.
+func waitFile(path string, d time.Duration) bool {
+	for deadline := time.Now().Add(d); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// The WHOLE BINARY, supervising:
+//
+//   - health is 200 with no credential proof (there is no probe) and reports a
+//     FRESH supervised start;
+//   - a turn round-trips through muster's client;
+//   - 🔴 `/exit` typed in the pane restarts the CLI IN THE POD with --continue:
+//     the same session id, ONE transcript file holding the prompts from before
+//     and after, and a turn works again.
+func TestTmuxTheServeBinarySupervisesTheSessionAndResumesAfterExit(t *testing.T) {
+	r := startServe(t)
+	h := r.waitHealth(t, "first start", func(h health) bool { return h.Session == sessionStartedState })
 	if h.Terminal != "ok" || h.Auth != authUnknown || h.Supervisor == nil ||
 		h.Supervisor.CLI != cliRunning || h.Supervisor.Mode != modeFresh || h.Supervisor.Starts != 1 {
 		t.Fatalf("after the first start: %+v sup=%+v", h, h.Supervisor)
 	}
-	gw := mustersGateway(t, "http://"+gwAddr)
-	chat := func(p string) {
-		t.Helper()
-		reply, err := gw.Chat(context.Background(), contractAgent, "s", p, nil)
-		sum := sha256.Sum256([]byte(p))
-		if want := fmt.Sprintf("received %d bytes\n\nsha256 %s", len(p), hex.EncodeToString(sum[:])); err != nil || reply != want {
-			t.Fatalf("prompt %q: reply %q err %v; ccd log:\n%s", p, reply, err, logs.String())
-		}
-	}
-	chat("before the exit")
+	r.chat(t, "before the exit")
 
 	// The operator types /exit in the attached terminal.
-	term := tmuxTerminal{bin: tmuxBin, socket: sock, target: "cc"}
-	if err := term.run(context.Background(), nil, "send-keys", "-t", "cc", "-l", "/exit"); err != nil {
-		t.Fatal(err)
-	}
-	if err := term.Enter(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	h = waitHealth("restart after /exit", func(h health) bool {
+	r.tmux(t, "send-keys", "-t", "cc", "-l", "/exit")
+	r.tmux(t, "send-keys", "-t", "cc", "Enter")
+	h = r.waitHealth(t, "restart after /exit", func(h health) bool {
 		return h.Supervisor != nil && h.Supervisor.Starts == 2 && h.Session == sessionStartedState
 	})
 	if h.Supervisor.Mode != modeContinue || h.Supervisor.LastExit == nil || *h.Supervisor.LastExit != 0 {
 		t.Fatalf("after /exit: sup=%+v", h.Supervisor)
 	}
-	chat("after the exit")
+	r.chat(t, "after the exit")
 
-	files, _ := filepath.Glob(filepath.Join(cfg, "projects", "*", "*.jsonl"))
+	files, _ := filepath.Glob(filepath.Join(r.cfg, "projects", "*", "*.jsonl"))
 	if len(files) != 1 {
 		t.Fatalf("want ONE transcript (the conversation resumed, not forked), have %v", files)
 	}
@@ -385,6 +426,167 @@ func TestTmuxTheServeBinarySupervisesTheSessionAndResumesAfterExit(t *testing.T)
 	for _, p := range []string{`"content":"before the exit"`, `"content":"after the exit"`} {
 		if !strings.Contains(string(b), p) {
 			t.Fatalf("the one transcript lacks %s", p)
+		}
+	}
+}
+
+// 🔴 F1: AN OPERATOR'S SPLIT PANE NEVER RECEIVES A TURN. The operator splits the
+// window and leaves a SHELL pane focused — the session's active pane. A turn
+// whose text is a shell command must reach the CLI (the fake's reply hashes the
+// exact bytes) and must not run in the shell (no marker file).
+//
+// Positive control, built WITHOUT ccd: the same command sent to the session name
+// (what the code before this fix pasted into) does create a marker — the shell
+// pane is live and would have run it.
+func TestTmuxATurnGoesToTheCLIPaneNotTheFocusedShellPane(t *testing.T) {
+	r := startServe(t)
+	r.waitHealth(t, "first start", func(h health) bool { return h.Session == sessionStartedState })
+	cliPane := r.tmux(t, "display-message", "-p", "-t", "cc", "#{pane_id}")
+
+	shellPane := r.tmux(t, "split-window", "-t", "cc", "-P", "-F", "#{pane_id}", "-c", r.root, "/bin/sh")
+	if active := r.tmux(t, "display-message", "-p", "-t", "cc", "#{pane_id}"); active != shellPane || active == cliPane {
+		t.Fatalf("setup: the session's active pane is %s, want the new shell pane %s (CLI pane %s)", active, shellPane, cliPane)
+	}
+
+	marker := filepath.Join(r.root, "turn-ran-in-the-shell")
+	p := "touch " + marker
+	reply, err := mustersGateway(t, "http://"+r.gwAddr).Chat(context.Background(), contractAgent, "s", p, nil)
+	if waitFile(marker, time.Second) {
+		t.Fatalf("the turn ran in the operator's focused shell pane %s: %s exists (turn err %v)", shellPane, marker, err)
+	}
+	sum := sha256.Sum256([]byte(p))
+	if want := fmt.Sprintf("received %d bytes\n\nsha256 %s", len(p), hex.EncodeToString(sum[:])); err != nil || reply != want {
+		t.Fatalf("the CLI did not receive the turn's bytes: reply %q err %v", reply, err)
+	}
+
+	control := filepath.Join(r.root, "control-shell-is-live")
+	r.tmux(t, "send-keys", "-t", "cc", "-l", "touch "+control)
+	r.tmux(t, "send-keys", "-t", "cc", "Enter")
+	if !waitFile(control, 5*time.Second) {
+		t.Fatal("control: a command sent to the SESSION name did not run in the focused shell pane, so this test could not see the bug")
+	}
+}
+
+// 🔴 F2: A SMUGGLED PASTE TERMINATOR RUNS NOTHING. "\x1b[201~!touch X" ends the
+// bracketed paste at once and leaves `!touch X` TYPED at an empty prompt — shell
+// mode. ccd refuses it (400 invalid_input) and no marker appears.
+//
+// Positive control, built WITHOUT ccd's sanitiser: the same bytes pasted straight
+// into the CLI's pane by tmux do run the command, so the fake (like the real CLI)
+// would have executed it.
+func TestTmuxASmuggledPasteTerminatorIsRefusedAndRunsNothing(t *testing.T) {
+	r := startServe(t)
+	r.waitHealth(t, "first start", func(h health) bool { return h.Session == sessionStartedState })
+	cliPane := r.tmux(t, "display-message", "-p", "-t", "cc", "#{pane_id}")
+
+	marker := filepath.Join(r.root, "smuggled")
+	_, err := mustersGateway(t, "http://"+r.gwAddr).Chat(context.Background(), contractAgent, "s",
+		"\x1b[201~!touch "+marker, nil)
+	if waitFile(marker, 2*time.Second) {
+		t.Fatalf("the smuggled `!` ran in shell mode: %s exists (turn err %v)", marker, err)
+	}
+	if err == nil || !strings.Contains(err.Error(), `"type":"invalid_input"`) {
+		t.Fatalf("err %v, want invalid_input", err)
+	}
+	r.chat(t, "the session is still usable")
+
+	control := filepath.Join(r.root, "control-smuggle-runs")
+	load := exec.Command(r.tmuxBin, "-L", r.sock, "load-buffer", "-b", "ctl", "-")
+	load.Stdin = strings.NewReader("\x1b[201~!touch " + control)
+	if out, err := load.CombinedOutput(); err != nil {
+		t.Fatalf("load-buffer: %v: %s", err, out)
+	}
+	r.tmux(t, "paste-buffer", "-p", "-d", "-b", "ctl", "-t", cliPane)
+	time.Sleep(150 * time.Millisecond)
+	r.tmux(t, "send-keys", "-t", cliPane, "Enter")
+	if waitFile(control, 5*time.Second) {
+		return
+	}
+	// ⚠ A tmux that escapes ESC inside a bracketed paste ITSELF (measured: 3.7c
+	// delivers it as the two characters "^[") closes this hole on its own, and
+	// on it the marker half above cannot fail. tmux 3.3a (the image's) and 3.4
+	// (CI's) deliver ESC raw — measured — so CI sets CCD_TMUXIT_RAW_ESC=1 and
+	// this control must fire there.
+	ver, _ := exec.Command(r.tmuxBin, "-V").Output()
+	if os.Getenv("CCD_TMUXIT_RAW_ESC") == "1" {
+		t.Fatalf("control: the smuggle shape pasted directly did not run on %s, and CCD_TMUXIT_RAW_ESC=1 "+
+			"says this tmux delivers ESC raw — this test could not see the bug", bytes.TrimSpace(ver))
+	}
+	files, _ := filepath.Glob(filepath.Join(r.cfg, "projects", "*", "*.jsonl"))
+	var tr []byte
+	if len(files) == 1 {
+		tr, _ = os.ReadFile(files[0])
+	}
+	if !bytes.Contains(tr, []byte(`"content":"^[[201~!touch `+control)) {
+		t.Fatalf("control: the smuggle shape pasted directly neither ran nor arrived escaped as \"^[\"; "+
+			"this test could not see the bug on %s", bytes.TrimSpace(ver))
+	}
+	t.Logf("⚠ %s escapes ESC inside a bracketed paste itself, so the no-marker assertion above is "+
+		"VACUOUS on this host; it is live where CCD_TMUXIT_RAW_ESC=1 (CI). The refusal half "+
+		"(invalid_input) was asserted here regardless.", bytes.TrimSpace(ver))
+}
+
+// 🔴 F3: A CLI KILLED BY A SIGNAL IS RECORDED AS ONE. tmux reports a signal
+// death with an EMPTY pane_dead_status for ever; reading that as status 0 calls a
+// SIGKILL a clean exit. The supervisor records 128+9 and names the signal.
+func TestTmuxASignalKilledCLIIsRecordedAsSignal9(t *testing.T) {
+	r := startServe(t)
+	r.waitHealth(t, "first start", func(h health) bool { return h.Session == sessionStartedState })
+	pid := r.tmux(t, "display-message", "-p", "-t", "cc", "#{pane_pid}")
+	if out, err := exec.Command("kill", "-9", pid).CombinedOutput(); err != nil {
+		t.Fatalf("kill -9 %s: %v: %s", pid, err, out)
+	}
+	h := r.waitHealth(t, "restart after SIGKILL", func(h health) bool {
+		return h.Supervisor != nil && h.Supervisor.Starts == 2 && h.Session == sessionStartedState
+	})
+	if h.Supervisor.LastExit == nil || *h.Supervisor.LastExit != 137 || !strings.Contains(h.Supervisor.Detail, "signal 9") {
+		t.Fatalf("after kill -9: sup=%+v (last exit %v), want 137 and signal 9 named", h.Supervisor, derefInt(h.Supervisor.LastExit))
+	}
+	r.chat(t, "after the kill")
+}
+
+func derefInt(p *int) any {
+	if p == nil {
+		return nil
+	}
+	return *p
+}
+
+// tmuxTerminal.Paste refuses a pane whose process has exited (errPaneNotLive)
+// instead of pasting into it, and a pane id that does not exist; the server
+// turns that into not_ready. Control: the same terminal pastes into a live pane.
+func TestTmuxPasteRefusesADeadOrMissingPane(t *testing.T) {
+	tmuxBin, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Fatal("tmux is REQUIRED by the tmuxit suite and is not on PATH; install it (this suite never skips)")
+	}
+	sock := fmt.Sprintf("ccd-it-dead-%d-%d", os.Getpid(), time.Now().UnixNano())
+	t.Cleanup(func() { _ = exec.Command(tmuxBin, "-L", sock, "kill-server").Run() })
+	term := tmuxTerminal{bin: tmuxBin, socket: sock, conf: "/dev/null", target: "cc"}
+	ctx := context.Background()
+	live, err := term.Start(ctx, t.TempDir(), []string{"sleep", "60"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := term.Paste(ctx, live, "x"); err != nil {
+		t.Fatalf("control: paste into a live pane: %v", err)
+	}
+	dead, err := term.output(ctx, "split-window", "-t", "cc", "-P", "-F", "#{pane_id}", "true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead = strings.TrimSpace(dead)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if e, err := term.Exited(ctx, dead); err == nil && e.Dead {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pane %s never died", dead)
+		}
+	}
+	for _, p := range []string{dead, "%999"} {
+		if err := term.Paste(ctx, p, "x"); !errors.Is(err, errPaneNotLive) {
+			t.Fatalf("paste into %s: %v, want errPaneNotLive", p, err)
 		}
 	}
 }

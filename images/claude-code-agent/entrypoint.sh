@@ -25,12 +25,23 @@ fi
 : "${CCD_WORKSPACE:?CCD_WORKSPACE must be set}"
 CCD_TMUX_TARGET="${CCD_TMUX_TARGET:-cc}"
 
-# A subscription token is the ONLY credential this image is meant to carry. These
-# outrank CLAUDE_CODE_OAUTH_TOKEN in the CLI's precedence and would silently move
-# the session onto API billing.
-for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
+# A subscription token is the ONLY credential this image is meant to carry. The
+# entrypoint refuses to start when any of these is set (non-empty) in ITS
+# environment:
+#   ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN — outrank CLAUDE_CODE_OAUTH_TOKEN in
+#     the CLI's precedence and would silently move the session onto API billing;
+#   CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_USE_VERTEX — move the session onto a
+#     cloud provider's credentials and billing;
+#   ANTHROPIC_BASE_URL — sends every request, the subscription token included, to
+#     another endpoint. No deployment of this image documents a gateway, so there
+#     is no reason here to allow it.
+# The same variables set through settings.json's `env` are covered by `ccd seed`,
+# which removes `env` and `apiKeyHelper` from <CLAUDE_CONFIG_DIR>/settings.json
+# (cmd/ccd/seed.go settingsForbidden). NOT covered: a .claude/settings*.json in
+# the workspace, and any other variable the CLI may read.
+for v in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX ANTHROPIC_BASE_URL; do
   if [[ -n "${!v:-}" ]]; then
-    echo "cc-entrypoint: $v is set; it outranks CLAUDE_CODE_OAUTH_TOKEN and would switch billing. Refusing." >&2
+    echo "cc-entrypoint: $v is set; only CLAUDE_CODE_OAUTH_TOKEN may select the session's credential and endpoint. Refusing." >&2
     exit 1
   fi
 done

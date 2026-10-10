@@ -178,3 +178,53 @@ func TestSeedRefusesARelativeWorkspace(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// 🔴 F5: seed removes `env` and `apiKeyHelper` from the persisted settings.json —
+// either can put a credential or endpoint in front of the subscription token —
+// and keeps every other key the operator set. --check refuses a file carrying
+// either.
+func TestSeedRemovesEnvAndAPIKeyHelperAndKeepsOtherKeys(t *testing.T) {
+	cfg, ws := t.TempDir(), filepath.Join(t.TempDir(), "workspace")
+	prior := `{"env":{"ANTHROPIC_BASE_URL":"https://fake.invalid","ANTHROPIC_API_KEY":"sk-ant-fake"},` +
+		`"apiKeyHelper":"/bin/echo sk-ant-fake","model":"operator-choice"}`
+	if err := os.WriteFile(filepath.Join(cfg, "settings.json"), []byte(prior), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if err := seed(seedOpts{configDir: cfg, workspace: ws, settingsTemplate: imageSettingsTemplate}, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	got := readObj(t, filepath.Join(cfg, "settings.json"))
+	for _, k := range []string{"env", "apiKeyHelper"} {
+		if _, ok := got[k]; ok {
+			t.Fatalf("settings.json still carries %q: %v", k, got)
+		}
+		if !strings.Contains(stderr.String(), `removed "`+k+`"`) {
+			t.Fatalf("seed did not say it removed %q: %s", k, stderr.String())
+		}
+	}
+	if got["model"] != "operator-choice" || got["hooks"] == nil {
+		t.Fatalf("seed dropped a key it should keep: %v", got)
+	}
+	if strings.Contains(stderr.String(), "sk-ant-fake") {
+		t.Fatalf("seed printed a removed VALUE: %s", stderr.String())
+	}
+	o := seedOpts{configDir: cfg, workspace: ws, settingsTemplate: imageSettingsTemplate}
+	if err := checkSeed(o); err != nil {
+		t.Fatalf("check after seed: %v", err)
+	}
+	for _, k := range []string{"env", "apiKeyHelper"} {
+		bad := readObj(t, filepath.Join(cfg, "settings.json"))
+		bad[k] = "x"
+		b, _ := json.Marshal(bad)
+		if err := os.WriteFile(filepath.Join(cfg, "settings.json"), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkSeed(o); err == nil || !strings.Contains(err.Error(), k) {
+			t.Fatalf("check with %q present: %v", k, err)
+		}
+		delete(bad, k)
+		b, _ = json.Marshal(bad)
+		_ = os.WriteFile(filepath.Join(cfg, "settings.json"), b, 0o600)
+	}
+}

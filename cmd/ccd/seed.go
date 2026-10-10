@@ -28,7 +28,8 @@ import (
 //
 // settings.json is IMAGE-OWNED at the top level: every top-level key the
 // template names replaces the file's key wholesale (so the hook set is exactly
-// the template's), and keys the template does not name are kept.
+// the template's), the keys in settingsForbidden are removed, and every other
+// key is kept.
 
 type seedOpts struct {
 	configDir, workspace, settingsTemplate string
@@ -125,8 +126,28 @@ func seed(o seedOpts, stderr io.Writer) error {
 	for k, v := range want {
 		have[k] = v
 	}
+	for _, k := range settingsForbidden {
+		if _, ok := have[k]; ok {
+			delete(have, k)
+			fmt.Fprintf(stderr, "ccd seed: removed %q from %s (it can carry a credential or endpoint that "+
+				"outranks the session's subscription token)\n", k, setPath)
+		}
+	}
 	return writeJSONAtomic(setPath, have)
 }
+
+// settingsForbidden are the settings.json keys seed REMOVES from the persisted
+// file on every start, whatever wrote them (an operator's /config, a session
+// editing its own config). `env` is applied to the CLI's environment, so it can
+// set exactly the variables the entrypoint refuses (ANTHROPIC_API_KEY,
+// ANTHROPIC_BASE_URL, CLAUDE_CODE_USE_BEDROCK, …); `apiKeyHelper` is a command
+// whose output the CLI uses as its API key. The template names neither, so
+// "template keys replace the file's" alone never removed them.
+//
+// ⚠ SCOPE: this file only — <CLAUDE_CONFIG_DIR>/settings.json. The settings*.json
+// files under the WORKSPACE's .claude/ are project configuration the CLI also
+// reads, and seed neither touches nor checks them.
+var settingsForbidden = []string{"env", "apiKeyHelper"}
 
 // checkSeed verifies the shape `seed` produces, for the image's smoke test.
 func checkSeed(o seedOpts) error {
@@ -162,6 +183,11 @@ func checkSeed(o seedOpts) error {
 		b, _ := json.Marshal(have[k])
 		if string(a) != string(b) {
 			return fmt.Errorf("settings.json: key %q differs from the template", k)
+		}
+	}
+	for _, k := range settingsForbidden {
+		if _, ok := have[k]; ok {
+			return fmt.Errorf("settings.json: carries %q, which seed removes", k)
 		}
 	}
 	return nil

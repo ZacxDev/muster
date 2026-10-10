@@ -38,9 +38,41 @@ type cliPane interface {
 	Start(ctx context.Context, dir string, argv []string) (pane string, err error)
 	// Respawn runs argv in the (dead) pane again.
 	Respawn(ctx context.Context, pane, dir string, argv []string) error
-	// Exited reports whether the pane's process has exited, and its status.
-	Exited(ctx context.Context, pane string) (exited bool, status int, err error)
+	// Exited reports whether the pane's process has exited and, once known, how.
+	Exited(ctx context.Context, pane string) (paneExit, error)
+	// Reap makes the terminal collect an exited pane process whose exit it has
+	// not noticed yet (see run).
+	Reap(ctx context.Context) error
 }
+
+// paneExit is one read of a pane's process state.
+type paneExit struct {
+	Dead bool // the process has exited
+	// Known: how it exited is known. A dead pane can be not-Known (see
+	// parsePaneExit); the supervisor Reaps and waits statusGrace before giving up.
+	Known  bool
+	Status int // the exit status; 128+Signal for a signal death (exitUnknown when only SignalText is known)
+	Signal int // the killing signal's number, or 0
+	// SignalText is pane_dead_signal as tmux printed it: the number on Linux, a
+	// name where tmux has sys_signame.
+	SignalText string
+}
+
+// describe names how the process ended, for Detail and the log.
+func (e paneExit) describe() string {
+	switch {
+	case !e.Known:
+		return "exited, status unknown (tmux reported the pane dead with neither a status nor a signal)"
+	case e.Signal != 0:
+		return fmt.Sprintf("was killed by signal %d (recorded as status %d)", e.Signal, e.Status)
+	case e.SignalText != "":
+		return fmt.Sprintf("was killed by signal %s (status recorded as unknown)", e.SignalText)
+	}
+	return fmt.Sprintf("exited with status %d", e.Status)
+}
+
+// exitUnknown is cli_last_exit for an exit whose status never became known.
+const exitUnknown = -1
 
 const (
 	cliStarting   = "starting"
@@ -68,21 +100,24 @@ type supervisor struct {
 	workspace string
 
 	poll                   time.Duration
+	statusGrace            time.Duration // how long a dead pane may report no status (see run)
 	backoffMin, backoffMax time.Duration
 	crashExits             int
 	crashWindow            time.Duration
 	now                    func() time.Time
 	after                  func(time.Duration) <-chan time.Time
 
-	mu    sync.Mutex
-	st    cliState
-	exits []time.Time // within crashWindow of the latest
+	mu       sync.Mutex
+	st       cliState
+	paneID   string      // the CLI's pane, once Start has returned it
+	lastExit string      // paneExit.describe() of the latest exit
+	exits    []time.Time // within crashWindow of the latest
 }
 
 func newSupervisor(pane cliPane, bin, configDir, workspace string) *supervisor {
 	return &supervisor{
 		pane: pane, bin: bin, configDir: configDir, workspace: workspace,
-		poll: time.Second, backoffMin: time.Second, backoffMax: 30 * time.Second,
+		poll: time.Second, statusGrace: 2 * time.Second, backoffMin: time.Second, backoffMax: 30 * time.Second,
 		crashExits: 5, crashWindow: 2 * time.Minute,
 		now: time.Now, after: time.After,
 		st: cliState{CLI: cliStarting},
@@ -134,10 +169,27 @@ func (s *supervisor) argv() ([]string, string) {
 	return []string{s.bin}, modeFresh
 }
 
-func (s *supervisor) started(mode string) {
+// inputPane is the pane the server pastes into: the CLI's pane id, and only while
+// the supervisor believes the CLI in it is running. Before the first start,
+// between an exit and its restart, and in crash_loop it reports none, and the
+// server answers not_ready rather than typing into a pane with no CLI in it. (An
+// exit the next poll has not seen yet is caught by tmuxTerminal.Paste's own
+// pane_dead check.)
+func (s *supervisor) inputPane() (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.st.CLI, s.st.Mode, s.st.Detail = cliRunning, mode, ""
+	return s.paneID, s.paneID != "" && s.st.CLI == cliRunning
+}
+
+// started records a (re)start in pane. A previous exit stays named in Detail.
+func (s *supervisor) started(pane, mode string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.st.CLI, s.st.Mode, s.paneID = cliRunning, mode, pane
+	s.st.Detail = ""
+	if s.lastExit != "" {
+		s.st.Detail = "previous run " + s.lastExit
+	}
 	s.st.Starts++
 }
 
@@ -149,7 +201,11 @@ func (s *supervisor) setDetail(d string) {
 
 // recordExit counts one exit and decides what follows it: the delay before the
 // next start, or (crash = true) no next start at all.
-func (s *supervisor) recordExit(status int) (delay time.Duration, crash bool) {
+//
+// cli_last_exit is the exit status, 128+N for a process killed by signal N (the
+// shell's convention), and exitUnknown (-1) when tmux never reported either;
+// Detail names which.
+func (s *supervisor) recordExit(e paneExit) (delay time.Duration, crash bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
@@ -160,12 +216,17 @@ func (s *supervisor) recordExit(status int) (delay time.Duration, crash bool) {
 		}
 	}
 	s.exits = append(kept, now)
+	status := e.Status
+	if !e.Known {
+		status = exitUnknown
+	}
 	s.st.LastExit = &status
+	s.lastExit = e.describe()
 	k := len(s.exits)
 	if k >= s.crashExits {
 		s.st.CLI = cliCrashLoop
-		s.st.Detail = fmt.Sprintf("the CLI exited %d times within %s (last status %d); not restarting it — "+
-			"/healthz now fails so Kubernetes restarts the pod", k, s.crashWindow, status)
+		s.st.Detail = fmt.Sprintf("the CLI exited %d times within %s (last: %s); not restarting it — "+
+			"/healthz now fails so Kubernetes restarts the pod", k, s.crashWindow, s.lastExit)
 		return 0, true
 	}
 	delay = s.backoffMin
@@ -174,6 +235,7 @@ func (s *supervisor) recordExit(status int) (delay time.Duration, crash bool) {
 	}
 	delay = min(delay, s.backoffMax)
 	s.st.CLI = cliRestarting
+	s.st.Detail = fmt.Sprintf("the CLI %s; restarting in %s", s.lastExit, delay)
 	return delay, false
 }
 
@@ -184,30 +246,60 @@ func (s *supervisor) run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	s.started(mode)
+	s.started(pane, mode)
 	log.Printf("ccd: started %q in pane %s (%s)", strings.Join(argv, " "), pane, mode)
+	var deadSince time.Time // first poll that saw the pane dead with no status yet
 	for ctx.Err() == nil {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-s.after(s.poll):
 		}
-		exited, status, err := s.pane.Exited(ctx, pane)
+		e, err := s.pane.Exited(ctx, pane)
 		if err != nil {
 			// The session itself is gone or tmux is not answering: /healthz's own
 			// terminal check reports that. Keep looking.
 			s.setDetail(err.Error())
 			continue
 		}
-		if !exited {
+		// Dead but not yet reaped (see parsePaneExit). First make tmux reap: it can
+		// MISS a pane process's SIGCHLD and leave it a zombie it never waits for
+		// (measured on tmux 3.3a, the image's: in about 1 serve-test run in 10,
+		// the pane's `sh` sat <defunct> under the tmux server and its status was
+		// still unreported 12s later). Any later SIGCHLD in the server runs its
+		// waitpid(WAIT_ANY) loop, which reaps the zombie and records the status —
+		// so Reap runs a job (measured: the read right after it had the status in
+		// all 6 such runs observed). Then poll again, for at most statusGrace, and
+		// count it as an exit of unknown status rather than waiting for ever.
+		if e.Dead && !e.Known {
+			if err := s.pane.Reap(ctx); err == nil {
+				if again, err := s.pane.Exited(ctx, pane); err == nil {
+					if again.Known {
+						log.Printf("ccd: tmux had not reaped the CLI's exited pane process; after Reap it reports: %s", again.describe())
+					}
+					e = again
+				}
+			}
+		}
+		if !e.Dead {
+			deadSince = time.Time{}
 			continue
 		}
-		delay, crash := s.recordExit(status)
+		if !e.Known {
+			if deadSince.IsZero() {
+				deadSince = s.now()
+			}
+			if s.now().Sub(deadSince) < s.statusGrace {
+				continue
+			}
+		}
+		deadSince = time.Time{}
+		delay, crash := s.recordExit(e)
 		if crash {
 			log.Printf("ccd: %s", s.state().Detail)
 			return nil
 		}
-		log.Printf("ccd: the CLI exited with status %d; restarting in %s", status, delay)
+		log.Printf("ccd: the CLI %s; restarting in %s", e.describe(), delay)
 		select {
 		case <-ctx.Done():
 			return nil
@@ -223,7 +315,7 @@ func (s *supervisor) run(ctx context.Context) error {
 			s.setDetail("respawn: " + err.Error())
 			continue
 		}
-		s.started(mode)
+		s.started(pane, mode)
 		log.Printf("ccd: restarted %q (%s)", strings.Join(argv, " "), mode)
 	}
 	return nil

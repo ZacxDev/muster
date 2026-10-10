@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -41,14 +42,13 @@ func (p *fakePane) Respawn(ctx context.Context, pane, dir string, argv []string)
 	return err
 }
 
-func (p *fakePane) Exited(context.Context, string) (bool, int, error) {
+func (p *fakePane) Reap(context.Context) error { return nil }
+
+func (p *fakePane) Exited(context.Context, string) (paneExit, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.running {
-		p.running = false
-		return true, p.status, nil
-	}
-	return true, p.status, nil
+	p.running = false
+	return paneExit{Dead: true, Known: true, Status: p.status}, nil
 }
 
 // testSupervisor uses a fake clock: `after` fires at once and records every wait
@@ -205,7 +205,7 @@ func TestBackoffIsCapped(t *testing.T) {
 	s.now = func() time.Time { return clock }
 	var last time.Duration
 	for i := 0; i < 10; i++ {
-		last, _ = s.recordExit(1)
+		last, _ = s.recordExit(paneExit{Dead: true, Known: true, Status: 1})
 	}
 	if last != s.backoffMax {
 		t.Fatalf("10th backoff %v, want the cap %v", last, s.backoffMax)
@@ -224,4 +224,97 @@ func TestARespawnThatKeepsFailingEndsInCrashLoop(t *testing.T) {
 	if st := s.state(); st.CLI != cliCrashLoop || st.Starts != 1 {
 		t.Fatalf("state %+v", st)
 	}
+}
+
+// seqPane answers Exited from a script of reads, then (once the script runs out)
+// reports a live pane; Respawn ends the test by cancelling.
+type seqPane struct {
+	mu     sync.Mutex
+	reads  []paneExit
+	starts int
+	reaps  int
+	cancel func()
+}
+
+func (p *seqPane) Start(context.Context, string, []string) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.starts++
+	return "%0", nil
+}
+
+func (p *seqPane) Respawn(context.Context, string, string, []string) error {
+	p.cancel()
+	return nil
+}
+
+func (p *seqPane) Reap(context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.reaps++
+	return nil
+}
+
+func (p *seqPane) Exited(context.Context, string) (paneExit, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.reads) == 0 {
+		return paneExit{}, nil
+	}
+	e := p.reads[0]
+	p.reads = p.reads[1:]
+	return e, nil
+}
+
+// 🔴 F3: DEAD IS NOT REAPED. A pane read as dead with no status yet is polled
+// again — within statusGrace — and the status that then arrives is the one
+// recorded, never a 0 read off the empty field; a signal death is 128+N and
+// named; a dead pane that never reports either is recorded as exitUnknown after
+// the grace instead of being waited on for ever.
+func TestTheSupervisorWaitsForTheExitStatusButNotForEver(t *testing.T) {
+	unreaped := paneExit{Dead: true}
+	cases := []struct {
+		name   string
+		reads  []paneExit
+		want   int
+		detail string
+	}{
+		{"status arrives on a later poll", []paneExit{unreaped, unreaped, {Dead: true, Known: true, Status: 3}}, 3, "exited with status 3"},
+		{"signal death, known as soon as Reap ran", []paneExit{unreaped, {Dead: true, Known: true, Status: 137, Signal: 9}},
+			137, "killed by signal 9"},
+		{"never reported", []paneExit{unreaped, unreaped, unreaped, unreaped, unreaped, unreaped, unreaped, unreaped,
+			unreaped, unreaped, unreaped, unreaped}, exitUnknown, "status unknown"},
+		// Each unknown poll reads twice (before and after Reap). The live read on
+		// poll 2 restarts the wait; without that reset, poll 5 (2s after poll 1)
+		// would give up as unknown before poll 7's status arrives.
+		{"a live read in between resets the wait", []paneExit{unreaped, unreaped, unreaped, {}, unreaped, unreaped,
+			unreaped, unreaped, unreaped, unreaped, unreaped, unreaped, {Dead: true, Known: true, Status: 5}}, 5,
+			"exited with status 5"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			pane := &seqPane{reads: c.reads, cancel: cancel}
+			s, _ := testSupervisor(t, pane, t.TempDir(), "/data/workspace", 0)
+			s.poll = 500 * time.Millisecond // statusGrace (2s) spans 4 polls on the fake clock
+			if err := s.run(ctx); err != nil {
+				t.Fatal(err)
+			}
+			st := s.state()
+			if pane.reaps == 0 {
+				t.Fatal("a dead pane with no status was never Reaped")
+			}
+			if st.LastExit == nil || *st.LastExit != c.want || !strings.Contains(st.Detail, c.detail) {
+				t.Fatalf("state %+v (last exit %v), want %d and %q", st, derefIntPtr(st.LastExit), c.want, c.detail)
+			}
+		})
+	}
+}
+
+func derefIntPtr(p *int) any {
+	if p == nil {
+		return nil
+	}
+	return *p
 }
