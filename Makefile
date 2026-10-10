@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: build vet run image test test-db test-db-down leakscan css css-check check help verb-ledger icons
+.PHONY: build vet run image test test-db test-db-down leakscan css css-check check help verb-ledger icons e2e
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -103,6 +103,7 @@ help:
 	@echo "  make css          rebuild $(CSS_OUT) from the Go views"
 	@echo "  make css-check    prove the committed stylesheet matches the views"
 	@echo "  make check        vet + test + leakscan + css-check"
+	@echo "  make e2e          the Playwright suite (needs MUSTER_E2E_DATABASE_URL=…/<name>_e2e)"
 	@echo "  make test-db-down stop and remove the throwaway Postgres"
 
 build:
@@ -292,5 +293,13 @@ verb-ledger:
 	tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
 	go build -o "$$tmp/muster" ./cmd/muster; \
 	tests/verb-ledger.sh "$$tmp/muster"
+
+# The browser suite, as CI's `e2e` job runs it: playwright, then the verdict
+# (pass floor + skip cap) whatever playwright's exit code was. Needs a Postgres
+# database whose name ends in _e2e (the seed truncates it) and `npm ci` +
+# `npx playwright install chromium` in e2e/ once.
+e2e:
+	@cd e2e && MUSTER_E2E_REQUIRE_FULL=1 npx playwright test; rc=$$?; \
+	node verdict.mjs test-results/results.json && exit $$rc
 
 check: vet test leakscan css-check verb-ledger
