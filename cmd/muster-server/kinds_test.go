@@ -215,3 +215,180 @@ func TestThePickerDefaultIsGatewayWhateverTheEnvOrder(t *testing.T) {
 		t.Fatalf("Enabled = %v, want gateway first", got)
 	}
 }
+
+// ccK8sTestConfig is the VALID claude-code deployment on the kubernetes driver:
+// the one configuration that writes a NetworkPolicy per agent, and so the one
+// that must name which pods are muster's.
+//
+// The selector's values are not the ones any real deployment uses, and the label
+// VALUE is mixed-case on purpose: a parser that lower-cased it would render a
+// selector matching nothing.
+func ccK8sTestConfig() config {
+	c := ccTestConfig()
+	c.AgentProvisioner = provisionerK8s
+	c.AgentNetpolFromNS = "control-plane-7"
+	c.AgentNetpolFromLabels = "app=Muster-Server, tier=control"
+	return c
+}
+
+func TestTheValidKubernetesClaudeCodeConfigBoots(t *testing.T) {
+	if err := ccK8sTestConfig().validate(); err != nil {
+		t.Fatalf("control: the valid kubernetes claude-code config is refused: %v", err)
+	}
+}
+
+// TestEveryNetworkPolicySelectorRefusalIsReachedOnItsOwn: each boot refusal about
+// the NetworkPolicy selector, reached from a VALID config by one mutation and
+// asserted by its own words.
+//
+// The first group is the selector missing or malformed where a policy WOULD be
+// rendered from it; the second is the armed-switch shape (a selector nothing
+// would render).
+func TestEveryNetworkPolicySelectorRefusalIsReachedOnItsOwn(t *testing.T) {
+	cases := []struct {
+		name string
+		base func() config
+		mut  func(*config)
+		want string
+	}{
+		{"both missing", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromNS, c.AgentNetpolFromLabels = "", "" },
+			"MUSTER_AGENT_NETPOL_FROM_NAMESPACE is unset, MUSTER_AGENT_NETPOL_FROM_POD_LABELS is unset"},
+		{"namespace missing", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromNS = "" },
+			"MUSTER_AGENT_NETPOL_FROM_NAMESPACE is unset, MUSTER_AGENT_NETPOL_FROM_POD_LABELS is set"},
+		{"labels missing", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromLabels = "" },
+			"MUSTER_AGENT_NETPOL_FROM_NAMESPACE is set, MUSTER_AGENT_NETPOL_FROM_POD_LABELS is unset"},
+		{"namespace not a name", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromNS = "Control_Plane" },
+			`invalid MUSTER_AGENT_NETPOL_FROM_NAMESPACE "Control_Plane"`},
+		{"label with no value", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromLabels = "app=muster,tier" },
+			`entry "tier" is not key=value`},
+		{"label with an empty value", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromLabels = "app=" },
+			`entry "app=" is not key=value`},
+		{"label key twice", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromLabels = "app=a,app=b" },
+			`label key "app" is written twice`},
+		{"label key not a label key", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromLabels = "app name=muster" },
+			`label key "app name"`},
+		{"label value not a label value", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromLabels = "app=muster server" },
+			`label value "muster server"`},
+		{"label value containing an equals sign", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromLabels = "app=muster=server" },
+			`label value "muster=server"`},
+		{"only separators", ccK8sTestConfig, func(c *config) { c.AgentNetpolFromLabels = " , ," },
+			"it names no label"},
+
+		{"selector on the noop driver", ccTestConfig, func(c *config) { c.AgentNetpolFromNS = "control-plane-7" },
+			"nothing would render a NetworkPolicy from it"},
+		{"labels on the noop driver", ccTestConfig, func(c *config) { c.AgentNetpolFromLabels = "app=muster" },
+			"nothing would render a NetworkPolicy from it"},
+		{"selector without the kind", func() config { return provisionerTestConfig(provisionerK8s) },
+			func(c *config) { c.AgentNetpolFromNS = "control-plane-7" }, "nothing would render a NetworkPolicy from it"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := c.base()
+			if err := cfg.validate(); err != nil {
+				t.Fatalf("premise: the base config must be valid before the mutation, got %v", err)
+			}
+			c.mut(&cfg)
+			err := cfg.validate()
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want one containing %q", err, c.want)
+			}
+		})
+	}
+}
+
+// TestTheNetworkPolicySelectorIsReadFromTheEnvironmentAndReachesTheDriver: the
+// two variables, as written, arrive on k8s.Config.NetworkPolicy — with the label
+// value's CASE intact — and only when the claude-code kind is on the kubernetes
+// driver. A gateway-only deployment's driver gets none, which is what keeps it
+// from ever needing networkpolicies RBAC.
+func TestTheNetworkPolicySelectorIsReadFromTheEnvironmentAndReachesTheDriver(t *testing.T) {
+	env := map[string]string{
+		envAgentProvisioner:            "kubernetes",
+		envAgentKinds:                  "gateway,claude-code",
+		envAgentNetpolFromNS:           " control-plane-7 ",
+		envAgentNetpolFromLabels:       " app=Muster-Server , example.test/tier=control ",
+		envAgentCCImage:                "ghcr.io/example-org/cc:1",
+		envAgentCCAccounts:             "work",
+		envAgentCCTokenPrefix + "WORK": fakeTokWork,
+	}
+	cfg, err := loadConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AgentNetpolFromNS != "control-plane-7" || cfg.AgentNetpolFromLabels != "app=Muster-Server , example.test/tier=control" {
+		t.Fatalf("read %q / %q", cfg.AgentNetpolFromNS, cfg.AgentNetpolFromLabels)
+	}
+	logger := log.New(&strings.Builder{}, "", 0)
+	np := k8sDriverConfig(cfg, logger).NetworkPolicy
+	if np == nil {
+		t.Fatal("claude-code on kubernetes: the driver was given no NetworkPolicy configuration, so it would refuse every claude-code spec")
+	}
+	if np.ControllerNamespace != "control-plane-7" {
+		t.Errorf("ControllerNamespace = %q", np.ControllerNamespace)
+	}
+	if len(np.ControllerPodLabels) != 2 || np.ControllerPodLabels["app"] != "Muster-Server" || np.ControllerPodLabels["example.test/tier"] != "control" {
+		t.Errorf("ControllerPodLabels = %v, want app=Muster-Server and example.test/tier=control exactly", np.ControllerPodLabels)
+	}
+	if np.DNSNamespace != "" || np.DNSPodLabels != nil {
+		t.Errorf("the DNS selector is not configurable from the environment and must be left to the driver's default: %q %v", np.DNSNamespace, np.DNSPodLabels)
+	}
+
+	// Neither a gateway-only kubernetes deployment nor a claude-code noop one
+	// configures the driver for it.
+	if got := k8sDriverConfig(provisionerTestConfig(provisionerK8s), logger).NetworkPolicy; got != nil {
+		t.Errorf("a gateway-only deployment's driver was configured for NetworkPolicies: %+v", got)
+	}
+	if got := k8sDriverConfig(ccTestConfig(), logger).NetworkPolicy; got != nil {
+		t.Errorf("a noop claude-code deployment produced a NetworkPolicy configuration: %+v", got)
+	}
+}
+
+// TestTheNetworkBannerLineSaysWhetherAgentsAreConfined renders both arms of the
+// `claude-code network:` line. The kubernetes arm names the selector and both
+// variables and says a pre-existing agent has no policy; the other arm says NOT
+// CONFINED. A gateway-only deployment prints neither.
+func TestTheNetworkBannerLineSaysWhetherAgentsAreConfined(t *testing.T) {
+	logger := log.New(&strings.Builder{}, "", 0)
+	render := func(c config) string {
+		t.Helper()
+		// The provisioner is built on the noop driver in both arms: the banner
+		// reads the CONFIG, and the kubernetes driver needs a pod to construct.
+		build := c
+		build.AgentProvisioner = provisionerNoop
+		build.AgentNetpolFromNS, build.AgentNetpolFromLabels = "", ""
+		pool, err := buildClaudePool(build, memMarks{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		prov, _, _, err := buildAgentPlaneWith(build, stubStore{}, pool, logger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return lineNaming(renderBanner(t, c, api.Extensions{Provisioner: prov}), "claude-code network:")
+	}
+	on := render(ccK8sTestConfig())
+	for _, want := range []string{
+		"a NetworkPolicy is WRITTEN per agent", "[app=Muster-Server, tier=control]", "namespace control-plane-7",
+		envAgentNetpolFromNS, envAgentNetpolFromLabels, "TCP 443",
+		"an agent created before this build has NO policy", "until that agent is stopped and started",
+		"Enforcement is the cluster network plugin's",
+		"needs get/create/update/delete on networkpolicies.networking.k8s.io", "to DESTROY ANY agent",
+	} {
+		if !strings.Contains(on, want) {
+			t.Errorf("kubernetes arm does not say %q:\n  %s", want, on)
+		}
+	}
+	off := render(ccTestConfig())
+	for _, want := range []string{"NOT CONFINED", envAgentNetpolFromNS, envAgentNetpolFromLabels, "MUSTER_AGENT_PROVISIONER=noop"} {
+		if !strings.Contains(off, want) {
+			t.Errorf("noop arm does not say %q:\n  %s", want, off)
+		}
+	}
+	if on == off {
+		t.Fatal("the two arms print the same line")
+	}
+	gw := provisionerTestConfig(provisionerNoop)
+	if out := renderBanner(t, gw, api.Extensions{Provisioner: bannerProvisioner(t, gw)}); strings.Contains(out, "claude-code network:") {
+		t.Errorf("a gateway-only deployment prints a claude-code network line:\n%s", out)
+	}
+}

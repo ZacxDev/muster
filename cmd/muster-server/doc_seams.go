@@ -580,7 +580,75 @@ package main
 //	  first deployment manifest — the replica count is the thing to look at.
 //
 // ---------------------------------------------------------------------------
-// 5. NOT A SEAM: WHAT IS NIL HERE ON PURPOSE AND CLOSES NOTHING.
+// 5. 🔴 A CLAUDE-CODE AGENT'S NetworkPolicy IS WRITTEN, NOT ENFORCED, BY THIS
+//    BINARY — AND AN AGENT THAT PREDATES IT HAS NONE UNTIL IT IS RESTARTED.
+//
+//	WHAT: with the claude-code kind on the kubernetes driver, every claude-code
+//	  agent's spec declares network isolation (agentspec.ClaudeCodeNetwork) and
+//	  the driver writes a per-agent NetworkPolicy BEFORE the agent's Secret and
+//	  Deployment, refusing the agent if it cannot (internal/provision/k8s
+//	  network.go). Two things about that are NOT closed by any test here:
+//	  (a) ENFORCEMENT. A NetworkPolicy is a declaration the cluster's network
+//	      plugin acts on, or does not. Every test in this module runs against a
+//	      fake clientset, which stores the object and confines nothing, so the
+//	      suite is structurally blind to whether a packet is dropped — including
+//	      whether the kubelet's own probes and muster's own turns still get
+//	      through. The boot banner says WRITTEN for that reason.
+//	  (b) AGENTS CREATED BEFORE THIS. Nothing at boot reconciles them. What
+//	      reaches the driver's apply is a dispatch, a claude-code Start (always;
+//	      a gateway-kind Start only when its instance is missing) and
+//	      ReapplyProfiles. So a claude-code agent that was already running keeps
+//	      running with NO policy until its next SUCCESSFUL apply — in practice,
+//	      until an operator stops it and starts it.
+//	  (c) THE SELECTOR IS NOT IN THE FINGERPRINT. MUSTER_AGENT_NETPOL_FROM_* is
+//	      driver configuration, not part of an agent's spec, so changing it
+//	      rewrites an existing agent's policy only at that agent's next apply.
+//	      The boot banner prints the configured selector; it is what a NEW
+//	      policy gets, not a reading of the policies that exist.
+//	WHY (b) IS NOT A BOOT-TIME SWEEP: the driver's reconcile is Update, which
+//	  sets one replica — a sweep would start every agent the operator had
+//	  stopped — and it rolls the pod, because the network declaration is in the
+//	  spec fingerprint the pod template carries. Writing the policy alone, without
+//	  the rest of apply, would be a second write path for the one object whose
+//	  ordering before the Deployment is the fail-closed guarantee.
+//	WHAT A REFUSAL LOOKS LIKE: muster's ServiceAccount needs get, create, update
+//	  and delete on networkpolicies.networking.k8s.io
+//	  (k8s.NetworkPolicyRBACPrerequisite). Without it a claude-code dispatch or
+//	  start fails, an agent that was not running is not started, and
+//	  agents.error_message names the verb and the rule.
+//	  🔴 TWO THINGS THAT REFUSAL DOES NOT DO. It does not STOP an agent that was
+//	  already running: that agent is left exactly as it was, which for one that
+//	  predates this build can mean running with no policy (the message says the
+//	  agent may be in that state, and gives the command that checks). And WHERE
+//	  that message lands depends on the path: a refused Dispatch or Start
+//	  records it on the row (agentprovision.Adapter.fail, best-effort), while
+//	  a refused ReapplyProfiles returns the failed Update's error to its caller
+//	  without writing agents.error_message, and both of its callers in
+//	  internal/api only LOG it. Those callers run it only for a row that reads
+//	  running or provisioning — so a refusal on that path concerns an agent that
+//	  may be up, and is in this server's log and not on the agent's row.
+//	  🔴 GATEWAY-KIND AGENTS ARE UNAFFECTED ON CREATE, UPDATE AND SCALE — their
+//	  specs declare no isolation, so the driver renders no policy and makes no
+//	  networking call for them — AND NOT ON DESTROY. On this deployment the
+//	  driver is configured for isolation, and its Destroy reads networkpolicies
+//	  for EVERY instance (it has no spec to tell it which were isolated). With
+//	  the rule missing, destroying a gateway agent removes its Deployment and
+//	  then fails, keeping the row, until the rule exists. APPLY THE RBAC RULE
+//	  BEFORE DEPLOYING A BUILD WITH THIS KIND ENABLED.
+//	CLOSING CONDITION for (a): on a real cluster, from inside a claude-code
+//	  agent's pod, the cluster API, another namespace's Service and a private
+//	  address each fail to connect while a public HTTPS endpoint answers — the
+//	  PAIR, not the failures alone — AND the pod stays Ready and answers a turn
+//	  from muster. For (b): every claude-code agent that predates this build has
+//	  been stopped and started (or destroyed), checked by
+//	  `kubectl get networkpolicy -A -l app.kubernetes.io/managed-by=muster`
+//	  listing one policy per claude-code agent namespace. (c) has no closing
+//	  condition: it is how the configuration works, recorded so a selector
+//	  change is followed by restarting the agents it should apply to.
+//	WHO CHECKS IT: the operator deploying this build, on their cluster.
+//
+// ---------------------------------------------------------------------------
+// 6. NOT A SEAM: WHAT IS NIL HERE ON PURPOSE AND CLOSES NOTHING.
 //
 //   - api.Extensions.GitHub is nil without MUSTER_GITHUB_ENCRYPTION_KEY. There
 //     is deliberately no generate-a-key-if-unset branch: an ephemeral key makes

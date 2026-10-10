@@ -422,5 +422,21 @@ func Fingerprint(s Spec) string {
 			strconv.FormatBool(sec.Restricted), strconv.FormatBool(sec.NoServiceAccountToken))
 	}
 
+	// 🔴 NETWORK COUNTS, AND ONLY WHEN DECLARED — the rule and the reason are
+	// Security's, immediately above. A spec declaring none keeps the fingerprint
+	// it had before the type existed. A spec that GAINS a declaration moves, which
+	// is what makes an instance created before its kind was confined reconcile on
+	// its next Update instead of comparing equal to a spec that now asks for more.
+	//
+	// The ports are sorted: their order changes nothing about what is allowed.
+	if n := s.Network; !n.IsZero() {
+		ports := make([]string, 0, len(n.PublicEgressTCPPorts))
+		for _, p := range n.PublicEgressTCPPorts {
+			ports = append(ports, strconv.Itoa(p))
+		}
+		sort.Strings(ports)
+		w("network", strconv.FormatBool(n.Isolate), strings.Join(ports, "\x1f"))
+	}
+
 	return hex.EncodeToString(h.Sum(nil))
 }

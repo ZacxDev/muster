@@ -23,6 +23,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -44,11 +45,26 @@ func newForeignDeployment(name string) *appsv1.Deployment {
 
 const internalNS = "agents"
 
+// internalNetworkPolicy is the isolation half of internalDriver's configuration.
+// Its values are deliberately NOT the ones any real deployment or any default in
+// network.go uses, so an assertion that pins them cannot be satisfied by a
+// hardcoded literal.
+func internalNetworkPolicy() *NetworkPolicyConfig {
+	return &NetworkPolicyConfig{
+		ControllerNamespace: "control-plane-7",
+		ControllerPodLabels: map[string]string{"app": "muster-server", "tier": "control"},
+	}
+}
+
+// internalDriver is configured for network isolation, which is the shape of a
+// deployment that enables an isolated kind: every spec that declares NO isolation
+// still goes through a driver that could render a policy, and must get none.
 func internalDriver(t *testing.T) (*Driver, *fake.Clientset) {
 	t.Helper()
 	cs := fake.NewClientset()
 	empty := ""
-	d, err := New(Config{Client: cs, Namespace: internalNS, WorkspaceStorageClass: &empty})
+	d, err := New(Config{Client: cs, Namespace: internalNS, WorkspaceStorageClass: &empty,
+		NetworkPolicy: internalNetworkPolicy()})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -232,6 +248,24 @@ func TestEveryWriteSiteRefusalKeepsItsTypeAndItsSentinels(t *testing.T) {
 					&corev1.Service{ObjectMeta: internalForeignMeta("sv")}, metav1.CreateOptions{})
 			},
 			act: func(d *Driver) error { return d.Create(ctx, internalSpec("sv")) },
+		},
+		{
+			// A stranger's co-named NetworkPolicy is NOT adopted and NOT
+			// overwritten: muster's rules written over it would silently replace
+			// whatever that policy was protecting, and leaving it as the instance's
+			// "confinement" would start a pod under rules nobody here chose.
+			site: "apply/networkpolicy",
+			kind: "networkpolicy",
+			seed: func(cs *fake.Clientset) {
+				cs.NetworkingV1().NetworkPolicies(internalNS).Create(ctx, //nolint:errcheck
+					&networkingv1.NetworkPolicy{ObjectMeta: internalForeignMeta("np-network")},
+					metav1.CreateOptions{})
+			},
+			act: func(d *Driver) error {
+				s := internalSpec("np")
+				s.Network = provision.Network{Isolate: true, PublicEgressTCPPorts: []int{8443}}
+				return d.Create(ctx, s)
+			},
 		},
 		{
 			// ⚠ THIS ROW REACHES UPDATE'S PRE-FLIGHT, NOT apply'S DEPLOYMENT
@@ -566,16 +600,26 @@ func TestTheWriteHelperLedgerIsComplete(t *testing.T) {
 		// apply (ServiceAccount, ConfigMap, Secret, claim, Service, Deployment
 		// — the Secret site serves both Secrets, through the loop) and four in
 		// Grant (ClusterRole, ClusterRoleBinding, Role, RoleBinding).
-		"applyFailed": {"apply": 6, "Grant": 4},
+		//
+		// The NetworkPolicy is the seventh kind apply writes and its site is in
+		// applyNetworkPolicy, which apply calls first. That function has TWO
+		// calls: the default arm, and the arm for a 403 from a namespace that is
+		// still terminating (a transient). Every OTHER 403 does not come through
+		// here — networkPolicyForbidden names the verb instead.
+		"applyFailed": {"apply": 6, "Grant": 4, "applyNetworkPolicy": 2},
 		// The create-then-update-if-ours predicate.
-		"upsertOwned": {"apply": 4, "Grant": 2},
+		"upsertOwned": {"apply": 4, "Grant": 2, "applyNetworkPolicy": 1},
 		// The create-only-if-ours predicate: a bound claim and two bindings,
 		// all three immutable in the fields that matter.
 		"createOwned": {"apply": 1, "Grant": 2},
 		// Every by-name DELETE. A satellite is a logged skip, so these are the
 		// sites where a stranger's co-named object is left alone rather than
 		// destroyed.
-		"deleteIfOwned": {"apply": 3, "Destroy": 1, "Revoke": 4},
+		//
+		// Destroy's two: the loop over the six satellites, and the NetworkPolicy,
+		// which is separate because it is deleted LAST and only when the driver
+		// is configured for isolation.
+		"deleteIfOwned": {"apply": 3, "Destroy": 2, "Revoke": 4},
 		// The predicate itself. Every by-name path that reads, writes or
 		// deletes reaches exactly one of these.
 		"owned": {

@@ -72,6 +72,39 @@ DOC_ADDRESSES = {
     "10.96.0.0",
 }
 
+# The three RFC 1918 blocks THEMSELVES — "10.0.0.0/8", "172.16.0.0/12",
+# "192.168.0.0/16". A block's NAME is not a host inside it and says nothing
+# about anybody's network: it is the same string in every firewall rule ever
+# published. The Kubernetes driver's NetworkPolicy has to spell all three, as the
+# ranges an isolated agent may NOT reach.
+#
+# 🔴 THE BASE ADDRESS IS ALLOWED ONLY WITH ITS OWN MASK, AND THAT IS THE WHOLE
+# DIFFERENCE BETWEEN A BLOCK'S NAME AND SOMEBODY'S SUBNET. `10.0.0.0/8` is RFC
+# 1918; `10.0.0.0/24` and `192.168.0.0/24` are subnet definitions — topology —
+# and so is the bare address with no mask at all. The first draft of this
+# allowance listed the three base addresses in DOC_ADDRESSES, which matches the
+# dotted quad and ignores what follows, so all of those passed.
+#
+# 🔴 AND THE MATCH IS ON THE WHOLE ADDRESS. A host that merely shares a base's
+# first three octets is still refused. NEGATIVE_CONTROLS pins each of these.
+DOC_BLOCKS = {
+    "10.0.0.0": "/8",
+    "172.16.0.0": "/12",
+    "192.168.0.0": "/16",
+}
+
+
+def _is_named_block(line: str, m: "re.Match[str]") -> bool:
+    """Whether the address `m` matched in `line` is an RFC 1918 block's NAME:
+    its base address followed by exactly its own mask."""
+    mask = DOC_BLOCKS.get(m.group(0))
+    if mask is None:
+        return False
+    rest = line[m.end():]
+    # The mask, and then not another digit: "/8" must not excuse "/80"-shaped
+    # text, and "/1" must not be read as a prefix of "/16".
+    return rest.startswith(mask) and not rest[len(mask):len(mask) + 1].isdigit()
+
 _PRIVATE_IP = re.compile(
     r"\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
     r"|192\.168\.\d{1,3}\.\d{1,3}"
@@ -332,7 +365,7 @@ def scan_text(text: str, path: str = "<memory>") -> list[Finding]:
         # allowlist can be applied per-OCCURRENCE rather than per-line: one real
         # address on a line full of examples must still be caught.
         for m in _PRIVATE_IP.finditer(line):
-            if m.group(0) not in DOC_ADDRESSES:
+            if m.group(0) not in DOC_ADDRESSES and not _is_named_block(line, m):
                 out.append(Finding(
                     path, n, "private-ip", line,
                     f"{m.group(0)} is a real private address — network topology. "
@@ -456,9 +489,18 @@ SKIP_FILES = {"tests/leakscan.py"}
 #
 # Every value an exempt file spells must clear one of three bars:
 #
-#   1. OBJECTIVELY UNROUTABLE — a reserved documentation or loopback address
-#      needs no argument from anybody (RFC 5737, RFC 1122), and neither does one
-#      of the conventional cluster CIDRs already argued for in DOC_ADDRESSES.
+#   1. OBJECTIVELY UNROUTABLE OR ALREADY ARGUED — a reserved documentation or
+#      loopback address needs no argument from anybody (RFC 5737, RFC 1122), and
+#      neither does one of the conventional cluster CIDRs already argued for in
+#      DOC_ADDRESSES, nor the base address of an RFC 1918 block argued for in
+#      DOC_BLOCKS.
+#      ⚠ THE LAST OF THOSE IS WIDER HERE THAN IN THE SCAN, AND KNOWINGLY. The
+#      scan allows a block base only with its own mask; this audit is held to
+#      VALUES, and the value is the dotted quad, so it passes the base whatever
+#      follows it. It has to: this file's own negative controls spell the bases
+#      with the WRONG mask, on purpose. The cost is that a real subnet written
+#      on a block base (`192.168.0.0/24`) inside an exempt file passes this
+#      audit — review such a line by hand.
 #   2. OBJECTIVELY SYNTHETIC — a dated stamp older than this project can be, and
 #      (for denied names) this module's own sentinels. Neither needs judgement.
 #   3. DECLARED — everything else must appear in EXEMPT_FIXTURE_VALUES with the
@@ -520,6 +562,10 @@ EXEMPT_FIXTURE_VALUES: dict[str, str] = {
         "zero files",
     "172.16.4.9":
         "the POSITIVE_CONTROL address, same argument; zero files",
+    "172.16.0.9":
+        "a host sharing three octets with an allowlisted BLOCK BASE "
+        "(DOC_BLOCKS), which is the control that the allowance is the whole "
+        "base address and not a prefix; zero files in the source deployment",
     # -- hostnames, all on invented or IANA-reserved domains ------------------
     "workshed.lan":
         "an invented lab domain: zero occurrences in the source deployment, "
@@ -560,7 +606,7 @@ EXEMPT_FIXTURE_VALUES: dict[str, str] = {
 #: value is a two-line diff, and the second line is this number — which is the
 #: difference between a reviewer skimming a table and a reviewer being told the
 #: table grew.
-EXEMPT_FIXTURE_VALUE_COUNT = 13
+EXEMPT_FIXTURE_VALUE_COUNT = 14
 
 #: Dated stamps in an exempt file must predate this year. A control cannot use
 #: the year-SYNTHETIC_DATE_YEAR convention the rule steers toward, because the
@@ -621,8 +667,11 @@ def undeclared(rule: str, value: str) -> str | None:
                 f"{SYNTHETIC_DATE_YEAR} convention — use a pre-"
                 f"{EXEMPT_DATE_YEAR_CEILING} one, which cannot pin an "
                 f"observation to a day on any real deployment")
+    # ⚠ A block base passes HERE without its mask: this audit is held to VALUES,
+    # and the value is the dotted quad. The scan above is what requires the mask.
     if rule == "address" and (value.startswith(RESERVED_ADDRESS_PREFIXES)
-                              or value in DOC_ADDRESSES):
+                              or value in DOC_ADDRESSES
+                              or value in DOC_BLOCKS):
         return None
     if value in EXEMPT_FIXTURE_VALUES:
         return None
@@ -767,6 +816,22 @@ NEGATIVE_CONTROLS = [
      "NODE = '10.255.255.1'  # the k3s node"),
     ("private-ip",
      "    endpoint: 172.20.4.9:30080"),
+    # 🔴 THE LINE ALSO SPELLS AN ALLOWLISTED BLOCK, ON PURPOSE. The block must
+    # not excuse the host beside it (the allowance is per-occurrence), and a host
+    # that shares the base's first three octets must not ride in on it.
+    ("private-ip",
+     "    except: [172.16.0.0/12]  # the node itself is 172.16.0.9"),
+    # 🔴 A BLOCK'S BASE WITH A DIFFERENT MASK IS A SUBNET, NOT THE BLOCK, and so
+    # is the base with no mask. Each is one of the three bases, so between them
+    # every DOC_BLOCKS row has a control that its mask is what is checked.
+    ("private-ip",
+     "    podSubnet: 10.0.0.0/24"),
+    ("private-ip",
+     "    lan: 192.168.0.0/24  # the office network"),
+    ("private-ip",
+     "    cidr: 172.16.0.0/120"),
+    ("private-ip",
+     "    route add 192.168.0.0 dev eth0"),
     ("credential",
      'Authorization: Bearer ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'),
     ("credential",
@@ -804,6 +869,8 @@ POSITIVE_CONTROL = "trusted = '172.16.4.9'  # a real private address"
 ALLOWED_CONTROLS = [
     ('    "10.244.0.0/16",  # a pod CIDR: every pod in the cluster',
      "the standard Kubernetes pod-CIDR example"),
+    ('    Except: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"},',
+     "the three RFC 1918 blocks named as CIDRs — block names, not hosts"),
     ("MUSTER_API_URL=https://muster.example.com/api/tasks",
      "a documentation hostname"),
     ('image: ghcr.io/zacxdev/muster:sha-0123456789abcdef',

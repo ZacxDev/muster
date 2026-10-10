@@ -132,7 +132,8 @@ func portOf(p *corev1.Probe) int32 {
 // seam ledger (agentspec's TestTheClaudeTokenNameAppearsOnlyInTheClaudeCodeKindsSecret):
 // every object the driver creates is serialised and searched; the token value
 // may appear in the `-env` Secret and NOWHERE else — not the Deployment (pod
-// spec, annotations, env literals), not a ConfigMap, Service or ServiceAccount.
+// spec, annotations, env literals), not a ConfigMap, Service, ServiceAccount or
+// NetworkPolicy.
 func TestTheClaudeTokenRendersOnlyIntoTheEnvSecret(t *testing.T) {
 	d, cs := internalDriver(t)
 	if err := d.Create(context.Background(), ccSpec(t)); err != nil {
@@ -164,6 +165,13 @@ func TestTheClaudeTokenRendersOnlyIntoTheEnvSecret(t *testing.T) {
 	sas, _ := cs.CoreV1().ServiceAccounts(internalNS).List(ctx, metav1.ListOptions{})
 	for _, o := range sas.Items {
 		scan("serviceaccount", o.Name, o)
+	}
+	nps, _ := cs.NetworkingV1().NetworkPolicies(internalNS).List(ctx, metav1.ListOptions{})
+	for _, o := range nps.Items {
+		scan("networkpolicy", o.Name, o)
+	}
+	if len(nps.Items) != 1 {
+		t.Fatalf("instrument check: %d networkpolicy object(s), want the agent's one", len(nps.Items))
 	}
 	secs, _ := cs.CoreV1().Secrets(internalNS).List(ctx, metav1.ListOptions{})
 	for _, o := range secs.Items {

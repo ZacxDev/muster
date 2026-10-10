@@ -493,6 +493,13 @@ var capabilityProbes = []struct {
 		claim: func(c provision.Capabilities) bool { return c.Scale },
 		ask:   func(s *provision.Spec) { s.Replicas = 3 },
 	},
+	{
+		name:  "NetworkIsolation",
+		claim: func(c provision.Capabilities) bool { return c.NetworkIsolation },
+		ask: func(s *provision.Spec) {
+			s.Network = provision.Network{Isolate: true, PublicEgressTCPPorts: []int{8443}}
+		},
+	},
 }
 
 // testRestrictedRefuses is the case that makes Capabilities a guard rather than

@@ -337,6 +337,11 @@ var bannerExempt = map[string]string{
 	envAgentCCAccounts:    "printed on the claude-code arm of the `agent kinds:` line (names only); same reason as " + envAgentCCImage,
 	envAgentCCTokenPrefix: "a PREFIX naming subscription credentials: the banner names the prefix and never a value (TestTheKindsBannerLineNamesAccountsNeverTokens)",
 	envAgentCCStorage:     "an optional size for the claude-code volume; refused at boot without the kind, defaulted with it (agentspec.DefaultClaudeCodeStorage)",
+	envAgentNetpolFromNS: "named on the `claude-code network:` line in both arms (a policy is written / NOT CONFINED), " +
+		"which bannerBothDirections' fixture cannot render for the reason given for " + envAgentKinds + "; " +
+		"TestTheNetworkBannerLineSaysWhetherAgentsAreConfined renders both and pins them. There is no silent " +
+		"state: validateKinds refuses it unset when a policy would be written and set when none would be",
+	envAgentNetpolFromLabels: "the other half of the same selector; same line, same test and same boot refusals as " + envAgentNetpolFromNS,
 	envAgentGatewayModel: "the CHAT: WIRED line prints it beside the scheme, and there is no " +
 		"off-direction line to write: validate refuses a named gateway with no sentinel, so the " +
 		"only states that reach a banner are \"wired, and the value is on the line\" and \"no " +

@@ -134,6 +134,10 @@
     "Restricted": false,
     "NoServiceAccountToken": false
   },
+  "Network": {
+    "Isolate": false,
+    "PublicEgressTCPPorts": null
+  },
   "Endpoint": null,
   "Replicas": 0,
   "Labels": {

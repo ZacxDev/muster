@@ -543,8 +543,33 @@ func k8sDriverConfig(cfg config, logger *log.Logger) k8sdriver.Config {
 		class := cfg.AgentStorageClass
 		dc.WorkspaceStorageClass = &class
 	}
+	if cfg.claudeCodeNetworkPolicy() {
+		// 🔴 THE POINTER'S PRESENCE RAISES Capabilities.NetworkIsolation, WHICH THE
+		// CLAUDE-CODE SPEC NEEDS TO BE ACCEPTED AT ALL. Like the storage class
+		// above it raises a CAPABILITY only: a gateway-kind spec declares no
+		// isolation, so the driver renders no policy for one and makes no
+		// networking call to create, update or scale it.
+		//
+		// 🔴 IT DOES CHANGE ONE THING FOR EVERY AGENT: with this set, the driver's
+		// Destroy reads networkpolicies for every instance, gateway-kind included,
+		// so the RBAC rule (k8s.NetworkPolicyRBACPrerequisite) has to exist before
+		// this deployment destroys anything. See doc_seams.go entry 5.
+		//
+		// The parse error is dropped because config.validateKinds has already
+		// refused a value this rejects; a config that skipped validate gets an
+		// empty selector here, which k8s.New refuses by name rather than rendering.
+		labels, _ := parsePodLabels(cfg.AgentNetpolFromLabels)
+		dc.NetworkPolicy = &k8sdriver.NetworkPolicyConfig{
+			ControllerNamespace: cfg.AgentNetpolFromNS,
+			ControllerPodLabels: labels,
+		}
+	}
 	return dc
 }
+
+// networkPolicyVerbs is the driver's own list of the verbs it needs on
+// networkpolicies, for the banner — which must not carry a second spelling of it.
+func networkPolicyVerbs() []string { return k8sdriver.NetworkPolicyRBACPrerequisite }
 
 // agentSpecConfig is the deployment-wide half of every agent spec.
 //

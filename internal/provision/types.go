@@ -312,6 +312,46 @@ type Security struct {
 // IsZero reports whether nothing is declared.
 func (s Security) IsZero() bool { return s == Security{} }
 
+// Network is the instance's network confinement, as a property of what runs
+// inside it: who may reach it, and what it may reach.
+//
+// 🔴 THE ZERO VALUE IS "DECLARE NOTHING", FOR THE REASON [Security]'S IS. Every
+// spec built before this type existed carried no such field; a driver renders a
+// zero Network exactly as it rendered those, and [Fingerprint] writes nothing
+// for it, so introducing the type moved no existing instance's fingerprint.
+//
+// 🔴 UNLIKE [Health], IT IS A BEHAVIOUR ASKED OF THE DRIVER, SO IT HAS A
+// [Capabilities] GATE. A driver that ignored Isolate would start an instance
+// that LOOKS confined — the declaration is on the spec, the card says the kind
+// is the confined one — and can reach everything. [CheckSpec] refuses it
+// instead (Capabilities.NetworkIsolation).
+//
+// ⚠ WHAT "PUBLIC" MEANS IS THE DRIVER'S TO SPELL, in its own address-range
+// idiom, for the reason [Resources] keeps quantities as strings. What is
+// portable is the intent: the instance may open TCP connections on these ports
+// to the public internet, and to nothing private — not the backend's own
+// control plane, not its neighbours, not the operator's LAN.
+type Network struct {
+	// Isolate asks the backend to confine the instance:
+	//
+	//   - inbound: only the instance's declared [Spec.Ports], and only from
+	//     whatever the driver is configured to treat as its controller (muster
+	//     itself);
+	//   - outbound: name resolution, plus PublicEgressTCPPorts on public
+	//     addresses. Nothing else.
+	Isolate bool
+	// PublicEgressTCPPorts are the TCP ports the instance may reach on public
+	// addresses. Empty with Isolate set means "name resolution only".
+	//
+	// ⚠ SETTING IT WITHOUT Isolate IS REFUSED by [Spec.Validate]: a port list on
+	// an unconfined instance is an allow-list that allows nothing it was not
+	// already allowed, and reads like confinement.
+	PublicEgressTCPPorts []int
+}
+
+// IsZero reports whether nothing is declared.
+func (n Network) IsZero() bool { return !n.Isolate && len(n.PublicEgressTCPPorts) == 0 }
+
 // Spec is the complete desired state of one instance.
 //
 // It is the genericised form of what the original project assembled as a map of
@@ -370,6 +410,9 @@ type Spec struct {
 
 	// Security is the instance's process isolation. See the type.
 	Security Security
+
+	// Network is the instance's network confinement. See the type.
+	Network Network
 
 	// Endpoint, when non-nil, is the address callers should use to reach this
 	// instance, OVERRIDING whatever the driver would compute.
@@ -460,6 +503,20 @@ func (s Spec) Validate() error {
 	if s.Security.RunAsUser < 0 || s.Security.RunAsGroup < 0 || s.Security.FSGroup < 0 {
 		return fmt.Errorf("%w: security ids must not be negative (user %d, group %d, fsGroup %d)",
 			ErrInvalidSpec, s.Security.RunAsUser, s.Security.RunAsGroup, s.Security.FSGroup)
+	}
+	if !s.Network.Isolate && len(s.Network.PublicEgressTCPPorts) > 0 {
+		return fmt.Errorf("%w: network names public egress ports %v without Isolate; on an unconfined instance "+
+			"that list restricts nothing and reads as if it did", ErrInvalidSpec, s.Network.PublicEgressTCPPorts)
+	}
+	egress := map[int]bool{}
+	for _, p := range s.Network.PublicEgressTCPPorts {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("%w: network public egress port %d out of range", ErrInvalidSpec, p)
+		}
+		if egress[p] {
+			return fmt.Errorf("%w: network public egress port %d appears twice", ErrInvalidSpec, p)
+		}
+		egress[p] = true
 	}
 	if s.Repo.URL != "" {
 		u, err := url.Parse(s.Repo.URL)
