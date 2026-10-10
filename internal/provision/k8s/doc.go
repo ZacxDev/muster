@@ -50,11 +50,13 @@
 //     mitigation nobody has. It DOES now render an address-range policy, for a
 //     spec that asks for network isolation — and what that buys is narrower and
 //     is named for what it is (Capabilities.NetworkIsolation): the policy admits
-//     no pod but muster's, and allows no destination in a private address range.
-//     Whether that puts the cluster's API and its other namespaces out of reach
-//     depends on their addresses being private, which this driver does not
+//     no pod but muster's, and allows no destination in a private address range
+//     other than the cluster's DNS pods on port 53. Whether that puts the
+//     cluster's API, its other namespaces and the network around it out of
+//     reach depends on their addresses being private, which this driver does not
 //     check (network.go, nonPublicIPv4). The instance can still send anything it
-//     holds to any public host on the allowed ports.
+//     holds to any public host on the allowed ports — and can still resolve
+//     names, which is a channel of its own.
 //   - 🔴 IT DOES NOT ENFORCE THE NetworkPolicy IT WRITES. The cluster's network
 //     plugin does, or does not, and nothing here can tell which.
 //   - It does not run sidecars. One container, plus an init container. The

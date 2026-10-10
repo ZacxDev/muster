@@ -617,9 +617,11 @@ package main
 //	  start fails, an agent that was not running is not started, and
 //	  agents.error_message names the verb and the rule.
 //	  🔴 TWO THINGS THAT REFUSAL DOES NOT DO. It does not STOP an agent that was
-//	  already running without a policy (the message says so, and says to stop
-//	  it). And a refused ReapplyProfiles returns its error to its caller without
-//	  writing agents.error_message, as it does for every other failure.
+//	  already running: that agent is left exactly as it was, which for one that
+//	  predates this build means running with no policy (the message says the
+//	  agent may be in that state, and gives the command that checks). And a
+//	  refused ReapplyProfiles returns its error to its caller without writing
+//	  agents.error_message, as it does for every other failure.
 //	  🔴 GATEWAY-KIND AGENTS ARE UNAFFECTED ON CREATE, UPDATE AND SCALE — their
 //	  specs declare no isolation, so the driver renders no policy and makes no
 //	  networking call for them — AND NOT ON DESTROY. On this deployment the

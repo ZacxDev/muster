@@ -489,9 +489,18 @@ SKIP_FILES = {"tests/leakscan.py"}
 #
 # Every value an exempt file spells must clear one of three bars:
 #
-#   1. OBJECTIVELY UNROUTABLE — a reserved documentation or loopback address
-#      needs no argument from anybody (RFC 5737, RFC 1122), and neither does one
-#      of the conventional cluster CIDRs already argued for in DOC_ADDRESSES.
+#   1. OBJECTIVELY UNROUTABLE OR ALREADY ARGUED — a reserved documentation or
+#      loopback address needs no argument from anybody (RFC 5737, RFC 1122), and
+#      neither does one of the conventional cluster CIDRs already argued for in
+#      DOC_ADDRESSES, nor the base address of an RFC 1918 block argued for in
+#      DOC_BLOCKS.
+#      ⚠ THE LAST OF THOSE IS WIDER HERE THAN IN THE SCAN, AND KNOWINGLY. The
+#      scan allows a block base only with its own mask; this audit is held to
+#      VALUES, and the value is the dotted quad, so it passes the base whatever
+#      follows it. It has to: this file's own negative controls spell the bases
+#      with the WRONG mask, on purpose. The cost is that a real subnet written
+#      on a block base (`192.168.0.0/24`) inside an exempt file passes this
+#      audit — review such a line by hand.
 #   2. OBJECTIVELY SYNTHETIC — a dated stamp older than this project can be, and
 #      (for denied names) this module's own sentinels. Neither needs judgement.
 #   3. DECLARED — everything else must appear in EXEMPT_FIXTURE_VALUES with the

@@ -113,8 +113,11 @@ type Config struct {
 	//          makes no networking.k8s.io call for any instance.
 	//
 	// ⚠ SETTING IT MAKES THE DRIVER NEED RBAC ON NetworkPolicies
-	// (NetworkPolicyRBACPrerequisite). Without it an isolated instance is refused
-	// at apply time, naming the missing verb — see networkPolicyForbidden.
+	// (NetworkPolicyRBACPrerequisite), AND NOT ONLY FOR ISOLATED INSTANCES.
+	// Without it an isolated instance is refused at apply time, naming the missing
+	// verb — see networkPolicyForbidden. And with this set, Destroy reads
+	// networkpolicies for EVERY instance, isolated or not, so without `get` the
+	// destroy of any instance fails after its Deployment is removed. See Destroy.
 	NetworkPolicy *NetworkPolicyConfig
 
 	// Logger is optional.
@@ -179,9 +182,11 @@ func (d *Driver) Driver() string { return "kubernetes" }
 //     (network.go) is an ADDRESS-RANGE policy — DNS plus the spec's ports on
 //     public addresses — so an isolated instance can still reach any public host
 //     on those ports. What it keeps the instance off is every address in
-//     nonPublicIPv4 — the cluster and the LAN WHERE THOSE ARE PRIVATE ADDRESSES,
-//     which is a property of the cluster and not something this driver checks
-//     (see that variable's ⚠). It does not keep data in. Neither does the RBAC
+//     nonPublicIPv4 EXCEPT THE CLUSTER'S DNS PODS (reachable on port 53, which
+//     is itself a channel) — so the cluster and the LAN WHERE THOSE ARE PRIVATE
+//     ADDRESSES, which is a property of the cluster and not something this
+//     driver checks (see that variable's ⚠). It does not keep data in. Neither
+//     does the RBAC
 //     that Policy true announces. And an instance whose spec declares no
 //     isolation gets no NetworkPolicy at all.
 //   - IT RUNS NO SIDECARS. One container plus an init container. The chart this

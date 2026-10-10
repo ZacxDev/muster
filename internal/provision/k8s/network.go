@@ -80,8 +80,8 @@ const dnsPort = 53
 //
 //   - a pod or service CIDR outside these ranges: in-cluster addresses would
 //     count as public;
-//   - an apiserver whose ENDPOINT is a public address on an allowed port (usual
-//     on a managed cluster): the Service address is translated to it before the
+//   - an apiserver whose ENDPOINT is a public address on an allowed port (some
+//     managed clusters'): the Service address is translated to it before the
 //     policy is evaluated, so the API stays reachable;
 //   - anything in-cluster that is ALSO published on a public address — an
 //     ingress or load balancer — which is reachable there like any other
@@ -311,18 +311,30 @@ var networkPolicyRBACHint = "grant muster's ClusterRole apiGroups [\"networking.
 // cannot do what the spec asks and is refusing rather than doing part of it.
 //
 // 🔴 "NOT STARTED" IS ONLY HALF OF WHAT CAN BE TRUE, SO THE MESSAGE SAYS BOTH
-// HALVES. apply returned before writing anything else, which means an instance
-// that was not running is still not running — and an instance that was ALREADY
-// running (one created before its kind was isolated, reached by an Update while
-// up) is STILL running, with no policy. This function cannot tell which it is
-// looking at, and a message that said only "was NOT started" told the operator
-// of the second case that there was nothing left to stop.
+// HALVES — AND CLAIMS NEITHER MORE THAN THIS FUNCTION KNOWS. apply returned
+// here, having written at most the instance's (empty) namespace, so an instance
+// that was not running is still not running. An instance that was ALREADY
+// running is still running, exactly as it was — and whether THAT one has a
+// policy is not something a refusal reveals:
+//
+//   - one created before its kind was isolated has none, and a message that said
+//     only "was NOT started" told its operator there was nothing left to stop;
+//   - one refused on `get` or `update` does have one (those are reached only
+//     after `create` answered AlreadyExists) — stale, perhaps, but present;
+//   - one refused on `create` may have either: the apiserver authorises before
+//     it looks, so a 403 on create says nothing about what exists.
+//
+// So the message does not assert "running without a policy". It says the
+// instance was left as it was, names the case in which that means unconfined,
+// and gives the command that settles it.
 func networkPolicyForbidden(verb, name, ns string, err error) error {
 	return fmt.Errorf("%w: muster's ServiceAccount may not %s networkpolicies.networking.k8s.io (%q in namespace %q): %v. "+
-		"Nothing was written for this instance: its spec asks for network isolation, so it was NOT started — "+
-		"and if it was ALREADY RUNNING from before this refusal it is STILL RUNNING WITHOUT A NetworkPolicy; stop it. "+
+		"This instance's NetworkPolicy was NOT written and neither was anything after it, so an instance that was "+
+		"not running was NOT started. One that was ALREADY RUNNING was left exactly as it was, and muster did not "+
+		"confirm it has a policy: if it predates network isolation it is STILL RUNNING WITHOUT ONE — check "+
+		"`kubectl -n %s get networkpolicy`, and stop the agent if there is none. "+
 		"To fix: %s, then start the agent again",
-		provision.ErrUnsupported, verb, name, ns, err, networkPolicyRBACHint)
+		provision.ErrUnsupported, verb, name, ns, err, ns, networkPolicyRBACHint)
 }
 
 func quotedVerbs(verbs []string) string {
@@ -349,7 +361,7 @@ func quotedVerbs(verbs []string) string {
 // come through apply, and Create on an existing Deployment refuses on the changed
 // fingerprint rather than reconciling. A REFUSED Update of such an instance
 // leaves it exactly as it was — running, if it was running — which
-// networkPolicyForbidden's message says in as many words.
+// networkPolicyForbidden's message says, with the command that checks it.
 //
 // ⚠ THE CONTROLLER SELECTOR IS NOT IN THE SPEC, SO IT IS NOT IN THE FINGERPRINT.
 // Changing Config.NetworkPolicy changes what the NEXT apply writes; an existing

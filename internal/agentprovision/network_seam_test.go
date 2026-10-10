@@ -133,7 +133,7 @@ func TestAClaudeCodeDispatchWritesItsNetworkPolicyAndIsRefusedWithoutOne(t *test
 			t.Fatalf("a refused dispatch left %d deployment(s) and %d policy object(s); the agent must not exist", deps, nps)
 		}
 		msg := recordedError(store)
-		for _, want := range []string{"may not create networkpolicies.networking.k8s.io", "it was NOT started", `verbs [\"get\", \"create\", \"update\", \"delete\"]`} {
+		for _, want := range []string{"may not create networkpolicies.networking.k8s.io", "an instance that was not running was NOT started", `verbs [\"get\", \"create\", \"update\", \"delete\"]`} {
 			if !strings.Contains(msg, want) {
 				t.Errorf("the row's recorded error does not say %q:\n  %s", want, msg)
 			}

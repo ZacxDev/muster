@@ -583,8 +583,10 @@ func TestAForbiddenNetworkPolicyStopsTheInstanceAndNamesTheVerb(t *testing.T) {
 				for _, want := range []string{
 					"may not " + c.verb + " networkpolicies.networking.k8s.io",
 					`"quiet-heron-network" in namespace "` + ns + `"`,
-					"it was NOT started",
-					"if it was ALREADY RUNNING from before this refusal it is STILL RUNNING WITHOUT A NetworkPolicy; stop it",
+					"NetworkPolicy was NOT written and neither was anything after it",
+					"an instance that was not running was NOT started",
+					"One that was ALREADY RUNNING was left exactly as it was, and muster did not confirm it has a policy",
+					"`kubectl -n " + ns + " get networkpolicy`",
 					`grant muster's ClusterRole apiGroups ["networking.k8s.io"] resources ["networkpolicies"] verbs ["get", "create", "update", "delete"]`,
 				} {
 					if !strings.Contains(msg, want) {
@@ -719,13 +721,15 @@ func TestAStoppedPreIsolationInstanceIsNotStartedWhenItsPolicyIsRefused(t *testi
 // TestARunningPreIsolationInstanceIsLeftRunningWhenItsPolicyIsRefused pins the
 // case the refusal does NOT close, so it is a decision on the page rather than a
 // surprise: the pre-existing agent is UP when a reconcile reaches it, and muster
-// may not write its policy. apply returns before touching anything, so the pod
-// keeps running exactly as it was — with no policy.
+// may not write its policy. apply returns before touching any of the instance's
+// own objects (its namespace already exists here), so the pod keeps running
+// exactly as it was — with no policy.
 //
 // 🔴 THIS IS NOT "FAIL CLOSED" AND THE TEST DOES NOT SAY IT IS. Nothing here
-// stops a running pod. What is pinned is that the refusal changes NOTHING (so it
-// cannot half-apply a spec) and that its message says the instance may still be
-// running and tells the operator to stop it.
+// stops a running pod. What is pinned is narrower than "changes nothing": the
+// Deployment's replica count and fingerprint are as they were (so the spec was
+// not half-applied), no policy exists, and the message names this case and the
+// command that checks for it.
 func TestARunningPreIsolationInstanceIsLeftRunningWhenItsPolicyIsRefused(t *testing.T) {
 	ctx := context.Background()
 	const ns = "muster-agent-quiet-heron"
@@ -745,7 +749,8 @@ func TestARunningPreIsolationInstanceIsLeftRunningWhenItsPolicyIsRefused(t *test
 	if !errors.Is(err, provision.ErrUnsupported) {
 		t.Fatalf("update = %v, want the networkpolicies refusal", err)
 	}
-	if !strings.Contains(err.Error(), "STILL RUNNING WITHOUT A NetworkPolicy; stop it") {
+	if want := "if it predates network isolation it is STILL RUNNING WITHOUT ONE — check `kubectl -n " + ns +
+		" get networkpolicy`, and stop the agent if there is none"; !strings.Contains(err.Error(), want) {
 		t.Errorf("the refusal does not tell the operator the instance may still be running:\n  %v", err)
 	}
 	dep, gerr := cs.AppsV1().Deployments(ns).Get(ctx, "quiet-heron", metav1.GetOptions{})
@@ -753,8 +758,8 @@ func TestARunningPreIsolationInstanceIsLeftRunningWhenItsPolicyIsRefused(t *test
 		t.Fatal(gerr)
 	}
 	if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 1 || dep.Annotations[annFingerprint] != oldFP {
-		t.Errorf("the refused update changed the running instance (replicas %v, fingerprint moved %v); it must "+
-			"change nothing", dep.Spec.Replicas, dep.Annotations[annFingerprint] != oldFP)
+		t.Errorf("the refused update changed the running instance's Deployment (replicas %v, fingerprint moved %v)",
+			dep.Spec.Replicas, dep.Annotations[annFingerprint] != oldFP)
 	}
 	if n := policyCount(t, cs); n != 0 {
 		t.Errorf("%d policy object(s) after a refused create", n)

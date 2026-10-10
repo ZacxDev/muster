@@ -242,13 +242,14 @@ mechanism looks over-built and each part of it is there for a measured failure.
   `Capabilities.NetworkIsolation`: for the one agent kind that asks for it
   (`claude-code`), the driver writes a per-agent NetworkPolicy that is an
   *address-range* policy — reachable only from muster's own pods, able to reach
-  only DNS and TCP 443 on public IPv4 addresses. On a cluster whose pod,
-  service and API-server addresses are all private (RFC 1918, link-local or
-  CGNAT), that keeps such an agent off the cluster's API, other namespaces and
-  the surrounding network; where any of those is a public address it does not,
-  and muster does not check which kind of cluster it is on. Either way the
-  agent can still send anything it holds to any public HTTPS host. Every other
-  agent gets no NetworkPolicy at all. And a NetworkPolicy is only a declaration: the
+  only the cluster's DNS pods and TCP 443 on public IPv4 addresses. Where the
+  cluster's pod, service, API-server and node addresses, and the network around
+  it, are all private (RFC 1918, link-local or CGNAT), that keeps such an agent
+  off the cluster's API, other namespaces and that network; where any of those
+  is a public address it does not, and muster does not check which kind of
+  cluster it is on. Either way the agent can still resolve names and can still
+  send anything it holds to any public HTTPS host. Every other agent gets no
+  NetworkPolicy at all. And a NetworkPolicy is only a declaration: the
   cluster's network plugin enforces it or does not, and nothing in muster can
   tell which.
 
