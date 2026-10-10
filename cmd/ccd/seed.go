@@ -1,0 +1,280 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// `ccd seed` prepares CLAUDE_CONFIG_DIR so the interactive CLI starts straight at
+// its prompt.
+//
+// 🔴 WITHOUT IT THE TUI NEVER REACHES A PROMPT, EVEN WITH A VALID TOKEN IN THE
+// ENVIRONMENT. Two screens block it, both measured on the pinned CLI with the
+// token set: the first-run theme picker (skipped by hasCompletedOnboarding) and
+// the workspace trust dialog (skipped by projects[<cwd>].hasTrustDialogAccepted,
+// keyed by the EXACT absolute working directory). A prompt pasted into either
+// screen is consumed as menu input.
+//
+// It MERGES rather than overwrites: on a persistent volume the CLI rewrites
+// .claude.json with its own state (session bookkeeping, per-project history), and
+// a seed that replaced the file on every start would erase it. Only the keys
+// below are asserted.
+//
+// settings.json is IMAGE-OWNED at the top level: every top-level key the
+// template names replaces the file's key wholesale (so the hook set is exactly
+// the template's), the keys in settingsForbidden are removed, and every other
+// key is kept.
+
+type seedOpts struct {
+	configDir, workspace, settingsTemplate string
+	check                                  bool
+}
+
+func runSeed(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("seed", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var o seedOpts
+	fs.StringVar(&o.configDir, "config-dir", os.Getenv("CLAUDE_CONFIG_DIR"), "CLAUDE_CONFIG_DIR to seed")
+	fs.StringVar(&o.workspace, "workspace", os.Getenv("CCD_WORKSPACE"), "absolute working directory the CLI runs in")
+	fs.StringVar(&o.settingsTemplate, "settings-template", "", "settings.json template whose top-level keys are imposed")
+	fs.BoolVar(&o.check, "check", false, "verify an existing seed instead of writing one")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	var err error
+	if o.check {
+		err = checkSeed(o)
+	} else {
+		err = seed(o, stderr)
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, "ccd seed:", err)
+		return 1
+	}
+	if o.check {
+		fmt.Fprintln(stdout, "ccd seed: ok:", filepath.Join(o.configDir, ".claude.json"), "and settings.json have the seeded shape")
+	}
+	return 0
+}
+
+func (o seedOpts) validate() error {
+	if o.configDir == "" || !filepath.IsAbs(o.configDir) {
+		return errors.New("--config-dir (or CLAUDE_CONFIG_DIR) must be an absolute path")
+	}
+	if o.workspace == "" || !filepath.IsAbs(o.workspace) {
+		return errors.New("--workspace (or CCD_WORKSPACE) must be an absolute path: the trust key is the exact absolute cwd")
+	}
+	if o.settingsTemplate == "" {
+		return errors.New("--settings-template is required")
+	}
+	return nil
+}
+
+func seed(o seedOpts, stderr io.Writer) error {
+	if err := o.validate(); err != nil {
+		return err
+	}
+	for _, d := range []string{o.configDir, o.workspace} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return err
+		}
+	}
+
+	stPath := filepath.Join(o.configDir, ".claude.json")
+	st, err := readJSONObject(stPath, stderr)
+	if err != nil {
+		return err
+	}
+	st["hasCompletedOnboarding"] = true
+	if _, ok := st["theme"]; !ok {
+		st["theme"] = "dark"
+	}
+	projects, _ := st["projects"].(map[string]any)
+	if projects == nil {
+		projects = map[string]any{}
+	}
+	proj, _ := projects[filepath.Clean(o.workspace)].(map[string]any)
+	if proj == nil {
+		proj = map[string]any{}
+	}
+	proj["hasTrustDialogAccepted"] = true
+	projects[filepath.Clean(o.workspace)] = proj
+	st["projects"] = projects
+	if err := writeJSONAtomic(stPath, st); err != nil {
+		return err
+	}
+
+	tmpl, err := os.ReadFile(o.settingsTemplate)
+	if err != nil {
+		return err
+	}
+	var want map[string]any
+	if err := json.Unmarshal(tmpl, &want); err != nil {
+		return fmt.Errorf("settings template %s: %w", o.settingsTemplate, err)
+	}
+	setPath := filepath.Join(o.configDir, "settings.json")
+	have, err := readJSONObject(setPath, stderr)
+	if err != nil {
+		return err
+	}
+	for k, v := range want {
+		have[k] = v
+	}
+	stripForbidden(have, setPath, stderr)
+	return writeJSONAtomic(setPath, have)
+}
+
+// settingsForbidden are the settings.json keys REMOVED from the persisted file,
+// whatever wrote them (an operator's /config, a session editing its own config):
+// by `ccd seed` when the pod starts, and by stripSettingsFile before EVERY start
+// and in-pod restart of the CLI by the supervisor (supervise.go). `env` is applied
+// to the CLI's environment, so it can set exactly the variables the entrypoint
+// refuses (ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, CLAUDE_CODE_USE_BEDROCK, …);
+// `apiKeyHelper` is a command whose output the CLI uses as its API key. The
+// template names neither, so "template keys replace the file's" alone never
+// removed them.
+//
+// ⚠ SCOPE, IN FILES: <CLAUDE_CONFIG_DIR>/settings.json only. The settings*.json
+// files under the WORKSPACE's .claude/ are project configuration the CLI also
+// reads, and nothing here touches or checks them.
+// ⚠ SCOPE, IN TIME: the removal happens before a CLI starts. A key written while
+// a CLI is running is not removed until the next start, and whether the RUNNING
+// CLI re-reads settings.json and applies it before then was not measured.
+var settingsForbidden = []string{"env", "apiKeyHelper"}
+
+// stripForbidden deletes settingsForbidden from a settings object, naming each key
+// it removes (never its value), and reports whether it removed any.
+func stripForbidden(settings map[string]any, path string, stderr io.Writer) bool {
+	removed := false
+	for _, k := range settingsForbidden {
+		if _, ok := settings[k]; ok {
+			delete(settings, k)
+			removed = true
+			fmt.Fprintf(stderr, "ccd seed: removed %q from %s (it can carry a credential or endpoint that "+
+				"outranks the session's subscription token)\n", k, path)
+		}
+	}
+	return removed
+}
+
+// stripSettingsFile applies stripForbidden to <configDir>/settings.json in place.
+// The file is rewritten only when a key was removed; a missing file is left
+// missing. The supervisor runs it before every CLI start.
+//
+// A settings.json that is not a JSON object is an ERROR here, not moved aside as
+// `ccd seed` does: moving it would leave the CLI with no hook template. The
+// supervisor answers the error by not starting the CLI — before the first start
+// ccd exits; before a restart the pane stays dead until crash_loop — so either way
+// the pod restarts, and the entrypoint's `ccd seed` moves the file aside and
+// writes the template.
+func stripSettingsFile(configDir string, stderr io.Writer) error {
+	path := filepath.Join(configDir, "settings.json")
+	settings, err := readJSONObject(path, nil)
+	if err != nil {
+		return err
+	}
+	if !stripForbidden(settings, path, stderr) {
+		return nil
+	}
+	return writeJSONAtomic(path, settings)
+}
+
+// checkSeed verifies the shape `seed` produces, for the image's smoke test.
+func checkSeed(o seedOpts) error {
+	if err := o.validate(); err != nil {
+		return err
+	}
+	st, err := readJSONObject(filepath.Join(o.configDir, ".claude.json"), nil)
+	if err != nil {
+		return err
+	}
+	if st["hasCompletedOnboarding"] != true {
+		return errors.New(".claude.json: hasCompletedOnboarding is not true (the theme picker will block the TUI)")
+	}
+	projects, _ := st["projects"].(map[string]any)
+	proj, _ := projects[filepath.Clean(o.workspace)].(map[string]any)
+	if proj == nil || proj["hasTrustDialogAccepted"] != true {
+		return fmt.Errorf(".claude.json: projects[%q].hasTrustDialogAccepted is not true (the trust dialog will block the TUI)", o.workspace)
+	}
+	tmpl, err := os.ReadFile(o.settingsTemplate)
+	if err != nil {
+		return err
+	}
+	var want map[string]any
+	if err := json.Unmarshal(tmpl, &want); err != nil {
+		return err
+	}
+	have, err := readJSONObject(filepath.Join(o.configDir, "settings.json"), nil)
+	if err != nil {
+		return err
+	}
+	for k, v := range want {
+		a, _ := json.Marshal(v)
+		b, _ := json.Marshal(have[k])
+		if string(a) != string(b) {
+			return fmt.Errorf("settings.json: key %q differs from the template", k)
+		}
+	}
+	for _, k := range settingsForbidden {
+		if _, ok := have[k]; ok {
+			return fmt.Errorf("settings.json: carries %q, which seed removes", k)
+		}
+	}
+	return nil
+}
+
+// readJSONObject reads a JSON object file; a missing file is an empty object. A
+// file that is not a JSON object is moved aside (when stderr is non-nil) rather
+// than blocking every future start of the pod on a hand-repair.
+func readJSONObject(path string, stderr io.Writer) (map[string]any, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]any{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil || m == nil {
+		if stderr == nil {
+			return nil, fmt.Errorf("%s is not a JSON object", path)
+		}
+		aside := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
+		if rerr := os.Rename(path, aside); rerr != nil {
+			return nil, fmt.Errorf("%s is not a JSON object and could not be moved aside: %v", path, rerr)
+		}
+		fmt.Fprintf(stderr, "ccd seed: %s was not a JSON object; moved to %s and starting fresh\n", path, aside)
+		return map[string]any{}, nil
+	}
+	return m, nil
+}
+
+func writeJSONAtomic(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".ccd-seed-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
