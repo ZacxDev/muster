@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,6 +56,10 @@ type serverConfig struct {
 	// TranscriptGrace is how long to wait after Stop for the turn_duration record,
 	// which the CLI writes only after its Stop hooks have run.
 	TranscriptGrace time.Duration
+	// HookLog, when set, is a file every raw hook payload is appended to — the
+	// capture step for shapes not yet recorded (a rate-limited StopFailure). It
+	// holds prompt text, so it is off by default.
+	HookLog string
 }
 
 type server struct {
@@ -120,6 +125,12 @@ func (s *server) handleHook(w http.ResponseWriter, r *http.Request) {
 	}
 	if ev.Event == "" {
 		ev.Event = r.PathValue("event")
+	}
+	if s.cfg.HookLog != "" {
+		if f, err := os.OpenFile(s.cfg.HookLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+			_, _ = f.Write(append(bytes.TrimSpace(body), '\n'))
+			f.Close()
+		}
 	}
 	s.onHook(ev)
 	w.WriteHeader(http.StatusNoContent)

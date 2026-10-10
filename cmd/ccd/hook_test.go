@@ -114,3 +114,30 @@ func TestLoopbackOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestHookLogCapturesRawPayloadsOnlyWhenSet(t *testing.T) {
+	srv, _ := newScripted(t, cliScript{})
+	hs := httptest.NewServer(srv.hookHandler())
+	defer hs.Close()
+	payload := fixture(t, "hook_StopFailure_2.1.296.json")
+	post := func() {
+		resp, err := http.Post(hs.URL+"/hook/StopFailure", "application/json", bytes.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	post() // HookLog unset: nothing written anywhere
+	log := t.TempDir() + "/hooks.jsonl"
+	srv.cfg.HookLog = log
+	post()
+	post()
+	got, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := append(bytes.TrimSpace(payload), '\n')
+	if !bytes.Equal(got, append(append([]byte{}, line...), line...)) {
+		t.Fatalf("hook log = %q", got)
+	}
+}

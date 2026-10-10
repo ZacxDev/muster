@@ -69,7 +69,9 @@ func writeFailure(w http.ResponseWriter, f *failure) {
 // CLOSING CONDITION: one rate-limited turn through ccd on the pinned CLI, whose
 // StopFailure payload and transcript record are captured into testdata/ and
 // asserted here; checked by whoever runs the operator live check and first sees
-// a limit (the PR that added this file lists the capture step).
+// a limit. Capture: run the pod with CCD_HOOK_LOG=/data/claude/hooks.jsonl (every
+// raw hook payload is appended there) and copy the StopFailure line plus the
+// transcript's isApiErrorMessage record, with content replaced, into testdata/.
 func classifyAPIError(e apiError) *failure {
 	f := &failure{Code: e.Code, Upstream: e.Status, Message: e.Message}
 	switch {

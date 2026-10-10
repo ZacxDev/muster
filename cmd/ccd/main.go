@@ -38,6 +38,7 @@
 //	CCD_PROBE_MODEL        model for the probe    (default haiku)
 //	CCD_PROBE_OK_INTERVAL / CCD_PROBE_RETRY_INTERVAL   (default 12h / 5m)
 //	CCD_SUBMIT_TIMEOUT / CCD_TURN_TIMEOUT              (default 20s / 30m)
+//	CCD_HOOK_LOG           append every raw hook payload to this file (capture only; holds prompts)
 package main
 
 import (
@@ -155,7 +156,7 @@ func serve() error {
 	auth := newAuthTracker()
 	srv := newServer(serverConfig{
 		Bearer: bearer, ConfigDir: configDir,
-		SubmitTimeout: durs[0], TurnTimeout: durs[1],
+		SubmitTimeout: durs[0], TurnTimeout: durs[1], HookLog: os.Getenv("CCD_HOOK_LOG"),
 	}, term, auth)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
