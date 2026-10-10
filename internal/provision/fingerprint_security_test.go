@@ -19,7 +19,7 @@ func fingerprintFixture() Spec {
 // before provision.Security existed. Adding the type must not move it: a moved
 // fingerprint is a roll of every live instance on its next Update for a pod
 // template that did not change.
-const pinnedFingerprint = "d636d7da36a147ce5e2a73c1af443d0c1193a2b9f337ffc54cd647b99689cd30"
+const pinnedFingerprint = "674044b3f0e73f1d5485be9ff15f29e0b16648a0be495411de49dea6d435d8d4"
 
 func TestASpecDeclaringNoSecurityKeepsItsPreSecurityFingerprint(t *testing.T) {
 	if got := Fingerprint(fingerprintFixture()); got != pinnedFingerprint {

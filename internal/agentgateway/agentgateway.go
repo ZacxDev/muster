@@ -295,7 +295,12 @@ func (g *Gateway) clientFor(kind string) *http.Client {
 // ⚠ THE MARK IS WRITTEN ON A CONTEXT DETACHED FROM THE TURN'S, so a caller that
 // hangs up the moment the error arrives does not also cancel the record of why.
 func (g *Gateway) noteFailure(ctx context.Context, t Target, err error) error {
-	if err == nil || g.accounts == nil || t.account == "" || t.kind != agents.KindClaudeCode {
+	// ⚠ t.account IS THE ONLY KIND TEST, AND IT IS SUFFICIENT: migration 0003's
+	// agents_cc_account_matches_kind makes "has an account" and "is claude-code"
+	// the same row property. A second `t.kind` conjunct was unreachable — the
+	// mutation sweep showed it could be deleted with every test green — so it
+	// is not here pretending to guard something.
+	if err == nil || g.accounts == nil || t.account == "" {
 		return err
 	}
 	var rt *agents.RuntimeError
