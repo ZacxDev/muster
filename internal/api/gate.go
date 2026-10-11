@@ -83,16 +83,20 @@ type GatePort interface {
 	ClearGate(ctx context.Context, id string) error
 }
 
-// gateTypeCheckpoint is the request type the claude-code approval relay
-// (approvals.go) files its cards under. (The agent_checkpoint tool that also
-// used it was removed: it was never invoked.)
+// gateTypeAgentPermission is the request type a claude-code pod's permission
+// prompt is filed under by the approval relay (approvals.go). The router lets
+// its auto-approval decide this type: auto-approve-ALL approves it, and a
+// per-project window approves it when the window's project is the card's own.
+// (The relay used to file the human-only type "checkpoint", which the router
+// exempts from every auto-approval path.)
 //
 // 🔴 IT IS A LITERAL HERE AND AN ALLOWLIST ENTRY ON THE ROUTER, AND THE
 // DUPLICATION IS DELIBERATE. The router's gate mints only allowlisted types and
 // refuses anything else; this side cannot import that allowlist without
-// importing the service. A typo here is therefore a 400 at the door naming the
-// type — loud — rather than a silently mis-filed card.
-const gateTypeCheckpoint = "checkpoint"
+// importing the service. A typo here — or a router older than the type — is
+// therefore a 400 at the door naming the type, loud, rather than a silently
+// mis-filed card.
+const gateTypeAgentPermission = "agent-permission"
 
 // errNoGate is the refusal when no approval queue is reachable.
 var errNoGate = errors.New("this server has no approval queue, so no approval could be sought")

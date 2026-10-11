@@ -41,13 +41,25 @@ import (
 //     other id answers 404, whoever filed it;
 //   - report that its terminal is blocked on a permission prompt
 //     (POST /agent/blocked), which only drives this agent's own badge.
-// There is no route that DECIDES. A decision exists only on the router's human
-// tier.
+// There is no route that DECIDES. A decision is made only on the router: by a
+// human on its human tier, or by an auto-approve window the operator opened there.
 //
-// ⚠ THE CARD IS A GATE TYPE (checkpoint), WHICH THE ROUTER EXEMPTS FROM EVERY
-// AUTO-APPROVAL PATH. That is deliberate: the operator's decision for these pods
-// is "default permissions + approvals, never bypass", and an auto-approve window
-// opened for a laptop project must not approve a pod's tool call.
+// ⚠ THE CARD FOLLOWS THE ROUTER'S AUTO-APPROVAL, SCOPED TO THE POD'S OWN PROJECT.
+// It is filed as the gate type `agent-permission` (gateTypeAgentPermission), which
+// the router treats like any other permission prompt: its auto-approve-ALL mode
+// approves it, and a per-project auto-approve window approves it ONLY when that
+// window's project equals the card's Project. muster forces that Project to
+// ApprovalCardProject(agent) = "muster-agent/<name>" — never a value the pod
+// sends, and never the bare agent name, which a laptop project could share. So
+// an auto-approve window opened for a laptop project still cannot approve a
+// pod's tool call. An auto-approved card is already decided when it is filed;
+// the pod's first poll reads `approve`. (It used to be a `checkpoint`, which the
+// router exempts from every auto-approval path; the operator's decision is
+// that a pod's prompts go through the router's auto-approve.)
+//
+// 🔴 DEPLOY ORDER: the router must know `agent-permission` BEFORE this ships.
+// An older router answers 400 for the type, the relay answers 502, and every
+// pod prompt falls back to the terminal (fail closed, but no phone approvals).
 //
 // ⚠ THE LEDGER IS IN MEMORY. A muster restart forgets which agent filed which
 // request; the pod's next poll then answers 404 and its hook falls back to the
@@ -125,8 +137,12 @@ type mintBucket struct {
 
 // takeMintTokenLocked spends one of agentID's mint tokens, reporting false when
 // the bucket is empty. Caller holds mu.
-// humanDecision reports whether a decided card's response is a human's approve
-// or deny. A dismissal ("ignore") or anything else is not.
+// humanDecision reports whether a decided card's response is an approve or a
+// deny. A dismissal ("ignore") or anything else is not.
+//
+// ⚠ THE NAME SAYS "human"; THE WIRE CANNOT. The router's gate read carries no
+// actor, so an AUTO-approved card is indistinguishable here and counts too. That
+// is wanted: see settleDecided.
 func humanDecision(response string) bool {
 	switch strings.ToLower(strings.TrimSpace(response)) {
 	case "approve", "allow", "reject", "deny":
@@ -145,6 +161,13 @@ func humanDecision(response string) bool {
 // faster than one per approvalMintEvery would push the 4th one to the terminal.
 // A clear (DELETE), a confirmed "gone" and a dismissal do NOT refund, so a
 // file-and-clear loop stays limited.
+//
+// ⚠ AN AUTO-APPROVED CARD REFUNDS TOO, and it has to: without it a pod working
+// under an auto-approve window would be pushed to the terminal prompt on its 4th
+// tool call inside approvalMintEvery, which is the wait the window exists to
+// remove. The cost is that the mint rate does not bound a filing loop while a
+// window covers the pod; such a card sends no Web Push, and the window already
+// approves whatever that pod runs.
 func (s *Server) settleDecided(id string, agentID int64, human bool) {
 	l := &s.approvals
 	l.mu.Lock()
@@ -296,6 +319,16 @@ type ApprovalRequest struct {
 // agent. The caller cannot choose it.
 func ApprovalCardHost(a agents.Agent) string { return "muster-agent/" + a.Name }
 
+// ApprovalCardProject is the Project a relayed card carries, and so the ONLY
+// per-project auto-approve window on the router that can approve it.
+//
+// 🔴 IT IS NAMESPACED ("muster-agent/<name>"), NOT THE BARE AGENT NAME, AND THE
+// CALLER CANNOT CHOOSE IT. The router matches a window to a card by exact
+// Project. A bare name could equal a laptop project's name, and a pod-supplied
+// one could name any project with an open window; either would let a window
+// opened for something else approve this pod's tool call.
+func ApprovalCardProject(a agents.Agent) string { return ApprovalCardHost(a) }
+
 func clip(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= n {
@@ -382,11 +415,11 @@ func (s *Server) handleApprovalCreate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	id, err := g.MintGate(ctx, GateSpec{
-		Type:    gateTypeCheckpoint,
+		Type:    gateTypeAgentPermission,
 		Tool:    tool,
 		Command: cmd,
 		Host:    ApprovalCardHost(a),
-		Project: a.Name,
+		Project: ApprovalCardProject(a),
 		Cwd:     clip(body.Cwd, 500),
 		Session: clip(body.Session, 200),
 		Context: ctxLines,

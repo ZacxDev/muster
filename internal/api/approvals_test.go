@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -68,6 +69,24 @@ type fakeGate struct {
 	// counts the mints waiting on it.
 	block    chan struct{}
 	inflight int
+
+	// The router's auto-approval, modelled: autoAll is its auto-approve-ALL mode
+	// and windows its per-project windows. Either decides a card AT MINT, exactly
+	// when the real router would (see routerAutoApproves); autoDecided records it.
+	autoAll     bool
+	windows     map[string]bool
+	autoDecided map[string]bool
+}
+
+// routerAutoApproves is the permission router's auto-approval rule, restated
+// here from its contract rather than imported: a human-only type ("checkpoint",
+// "agent-term-write") is never auto-approved; any other type is approved by
+// auto-approve-ALL, or by a per-project window whose project EQUALS the card's.
+func (g *fakeGate) routerAutoApproves(spec GateSpec) bool {
+	if spec.Type != "agent-permission" {
+		return false
+	}
+	return g.autoAll || (spec.Project != "" && g.windows[spec.Project])
 }
 
 func (g *fakeGate) MintGate(_ context.Context, spec GateSpec) (string, error) {
@@ -84,7 +103,14 @@ func (g *fakeGate) MintGate(_ context.Context, spec GateSpec) (string, error) {
 	}
 	g.nextID++
 	g.minted = append(g.minted, spec)
-	return "req-" + strconv.Itoa(g.nextID), nil
+	id := "req-" + strconv.Itoa(g.nextID)
+	if g.routerAutoApproves(spec) {
+		if g.autoDecided == nil {
+			g.autoDecided = map[string]bool{}
+		}
+		g.autoDecided[id] = true
+	}
+	return id, nil
 }
 
 func (g *fakeGate) ReadGate(_ context.Context, id string) (GateDecision, error) {
@@ -93,6 +119,9 @@ func (g *fakeGate) ReadGate(_ context.Context, id string) (GateDecision, error) 
 	g.reads = append(g.reads, id)
 	if g.readErr != nil {
 		return GateDecision{}, g.readErr
+	}
+	if g.autoDecided[id] {
+		return GateDecision{State: GateStateDecided, Response: "approve", Comment: "auto-approved"}, nil
 	}
 	if len(g.states) > 0 {
 		d := g.states[0]
@@ -186,7 +215,7 @@ func TestTheRelayRefusesSharedTokensAndStrangers(t *testing.T) {
 }
 
 // The card names the agent that asked; the caller cannot choose Host or
-// Project, and the type is the auto-approval-exempt gate type.
+// Project, and the type is the auto-approvable pod-permission gate type.
 func TestAFiledCardNamesTheAgentNotTheCallersClaim(t *testing.T) {
 	f := newRelayFixture(t, true)
 	w := f.call("POST", "/agent/approvals", relayBody, relayTokenA)
@@ -194,8 +223,8 @@ func TestAFiledCardNamesTheAgentNotTheCallersClaim(t *testing.T) {
 		t.Fatalf("file: %d %s", w.Code, w.Body)
 	}
 	got := f.gate.minted[0]
-	want := GateSpec{Type: "checkpoint", Tool: "Bash", Command: "rm -rf build", Host: "muster-agent/bold-hawk",
-		Project: "bold-hawk", Cwd: "/data/workspace", Session: "s1", Context: []string{"clean the build dir"}}
+	want := GateSpec{Type: "agent-permission", Tool: "Bash", Command: "rm -rf build", Host: "muster-agent/bold-hawk",
+		Project: "muster-agent/bold-hawk", Cwd: "/data/workspace", Session: "s1", Context: []string{"clean the build dir"}}
 	if got.Type != want.Type || got.Tool != want.Tool || got.Command != want.Command || got.Host != want.Host ||
 		got.Project != want.Project || got.Cwd != want.Cwd || got.Session != want.Session ||
 		strings.Join(got.Context, "|") != strings.Join(want.Context, "|") {
@@ -601,5 +630,88 @@ func TestAFailedMintSpendsAToken(t *testing.T) {
 	f.gate.mintErr = nil
 	if w := f.call("POST", "/agent/approvals", relayBody, relayTokenA); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("after %d failed mints: %d, want 429 (failed mints spend tokens)", approvalMintBurst, w.Code)
+	}
+}
+
+// --- the relay honours the router's auto-approval ---------------------------
+
+// fileAndPollOnce files one card as the agent holding token and returns the
+// state and response of its FIRST poll, which is what `ccd approve` acts on.
+func (f *relayFixture) fileAndPollOnce(t *testing.T, token string) (state, response string) {
+	t.Helper()
+	w := f.call("POST", "/agent/approvals", relayBody, token)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("file: %d %s", w.Code, w.Body)
+	}
+	id := "req-" + strconv.Itoa(f.gate.nextID)
+	g := f.call("GET", "/agent/approvals/"+id, "", token)
+	if g.Code != http.StatusOK {
+		t.Fatalf("poll: %d %s", g.Code, g.Body)
+	}
+	var out struct{ State, Response string }
+	if err := json.Unmarshal(g.Body.Bytes(), &out); err != nil {
+		t.Fatalf("poll body: %v (%s)", err, g.Body)
+	}
+	return out.State, out.Response
+}
+
+// The router's auto-approve-ALL approves a pod's request, and the pod's first
+// poll reads it.
+func TestAutoApproveAllApprovesAPodsRequestOnItsFirstPoll(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.gate.autoAll = true
+	if st, resp := f.fileAndPollOnce(t, relayTokenA); st != GateStateDecided || resp != "approve" {
+		t.Fatalf("first poll under auto-approve-ALL: state %q response %q, want decided/approve", st, resp)
+	}
+	if f.srv.AwaitingApproval(relayAgentA.ID) {
+		t.Fatal("an auto-approved request still shows the agent as awaiting approval")
+	}
+}
+
+// A window on the pod's OWN project approves its request.
+func TestAWindowOnThePodsOwnProjectApprovesItsRequest(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.gate.windows = map[string]bool{"muster-agent/bold-hawk": true}
+	if st, resp := f.fileAndPollOnce(t, relayTokenA); st != GateStateDecided || resp != "approve" {
+		t.Fatalf("first poll with a window on the pod's own project: state %q response %q, want decided/approve", st, resp)
+	}
+}
+
+// 🔴 A WINDOW ON A DIFFERENT PROJECT DOES NOT APPROVE A POD. The windows open
+// here are every project a wrongly-built card could carry: the project the POD
+// CLAIMED in its body ("some-other-project"), the pod's BARE name ("bold-hawk",
+// which a laptop project could share), the host it claimed ("laptop"), and
+// another pod's project. The request stays pending for a human.
+//
+// The POSITIVE CONTROL is the other pod: the same windows approve brave-heron's
+// request, so the pending answer above is the project scoping and not a fake
+// that approves nothing.
+func TestAWindowOnADifferentProjectLeavesThePodsRequestPending(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.gate.windows = map[string]bool{
+		"some-other-project": true, "bold-hawk": true, "laptop": true, "muster-agent/brave-heron": true,
+	}
+	if st, resp := f.fileAndPollOnce(t, relayTokenA); st != GateStatePending || resp != "" {
+		t.Fatalf("a window on a different project decided bold-hawk's request: state %q response %q, want pending (card: %+v)",
+			st, resp, f.gate.minted[0])
+	}
+	if !f.srv.AwaitingApproval(relayAgentA.ID) {
+		t.Fatal("the still-pending request does not show the agent as awaiting approval")
+	}
+	if st, resp := f.fileAndPollOnce(t, relayTokenB); st != GateStateDecided || resp != "approve" {
+		t.Fatalf("POSITIVE CONTROL: a window on muster-agent/brave-heron did not approve brave-heron's own request: state %q response %q",
+			st, resp)
+	}
+}
+
+// A pod working under an auto-approve window is never throttled to the terminal:
+// each auto-approved card gives its mint token back.
+func TestAutoApprovedPromptsBackToBackAreNeverThrottled(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.gate.autoAll = true
+	for i := 0; i < 30; i++ {
+		if st, _ := f.fileAndPollOnce(t, relayTokenA); st != GateStateDecided {
+			t.Fatalf("prompt #%d: state %q, want decided", i+1, st)
+		}
 	}
 }
