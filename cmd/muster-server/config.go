@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -254,6 +255,16 @@ func (c config) agentGatewayPort() int {
 	return agentspec.ResolveGatewayPort(c.AgentGatewayPort)
 }
 
+// routerActorLabel and routerReservedActor are the permission router's rule for
+// the actor name a service-tier caller asserts (a DNS-label-like shape, and one
+// reserved backfill sentinel). The router refuses anything else with 403, so
+// validate checks RouterActor against it when the approval gate is configured.
+// A copy of a rule another service owns: if the router widens it, this only
+// refuses a value that would have worked; if it narrows it, prompts 403 again.
+var routerActorLabel = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+const routerReservedActor = "pre-0035-unattributed"
+
 // defaultRouterActor is the name this service asserts to the permission router
 // when MUSTER_ROUTER_ACTOR is unset. The router validates it as an actor label.
 const defaultRouterActor = "muster"
@@ -326,9 +337,10 @@ type config struct {
 	// Standalone, they never reach buildSessionLiveness, api.Server.UseRouter or
 	// api.Server.UseGate (agent checkpoints keep their standalone behaviour), and
 	// the client built from them is handed to the server ONLY as the relay's
-	// api.GatePort. When unset, a configured router's client serves the relay
-	// instead; with neither, the relay answers 503 and every prompt falls back to
-	// the agent's terminal. The actor asserted is RouterActor (default "muster").
+	// api.GatePort. They are the relay's ONLY gate: when unset the relay answers
+	// 503 and every prompt falls back to the agent's terminal, whether or not a
+	// permission router is configured. The actor asserted is RouterActor
+	// (default "muster"), checked by validate against the router's label rule.
 	ApprovalGateURL   string
 	ApprovalGateToken string
 
@@ -935,6 +947,18 @@ func (c config) validate() error {
 			"configuration would boot a relay that can never file a card. Set both or neither",
 			envApprovalGateURL, envApprovalGateToken, envApprovalGateURL, presence(c.ApprovalGateURL),
 			envApprovalGateToken, presence(c.ApprovalGateToken))
+	}
+	if c.ApprovalGateURL != "" {
+		actor := c.RouterActor
+		if actor == "" {
+			actor = defaultRouterActor
+		}
+		if !routerActorLabel.MatchString(actor) || actor == routerReservedActor {
+			return fmt.Errorf("%s=%q is not an actor label the permission router accepts "+
+				"(%s, and not %q): with %s set, every approval card would be refused 403 "+
+				"and every prompt would fall back to the terminal. Fix or unset it",
+				envRouterActor, actor, routerActorLabel, routerReservedActor, envApprovalGateURL)
+		}
 	}
 	if err := c.validateConnectors(); err != nil {
 		return err

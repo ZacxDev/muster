@@ -216,7 +216,9 @@ func (a approver) decide(ctx context.Context, ev permissionEvent) approvalDecisi
 			a.logf("%s decided %q", id, st.Response)
 			return d
 		case st.State == "gone":
-			decided = true
+			// Not `decided`: the deferred DELETE still runs, so a card the router
+			// reports gone (muster has already confirmed it over several reads) is
+			// cleared from the phone rather than left approvable with nobody waiting.
 			a.logf("%s is gone; deferring", id)
 			return decisionDefer
 		case st.State != "pending":

@@ -275,3 +275,27 @@ func TestTheApprovalGateBannerNamesWhichGateTheRelayUses(t *testing.T) {
 		}
 	}
 }
+
+// A gate config with an actor the router would refuse 403 is refused at boot,
+// instead of failing every prompt at run time.
+func TestAnApprovalGateWithAnUnacceptableActorIsRefusedAtBoot(t *testing.T) {
+	gate := config{Database: "postgres://x/y", Standalone: true, ApprovalGateURL: "https://g.example.invalid", ApprovalGateToken: "g"}
+	for _, bad := range []string{"Muster", "-muster", "muster agent", "pre-0035-unattributed", strings.Repeat("a", 65)} {
+		c := gate
+		c.RouterActor = bad
+		if err := c.validate(); err == nil || !strings.Contains(err.Error(), envRouterActor) {
+			t.Errorf("actor %q with the gate set: validate = %v, want a refusal naming %s", bad, err, envRouterActor)
+		}
+		c.ApprovalGateURL, c.ApprovalGateToken = "", ""
+		if err := c.validate(); err != nil {
+			t.Errorf("actor %q WITHOUT the gate: validate = %v, want accepted (nothing uses it)", bad, err)
+		}
+	}
+	for _, ok := range []string{"", "muster", "muster-2.a_b", strings.Repeat("a", 64)} {
+		c := gate
+		c.RouterActor = ok
+		if err := c.validate(); err != nil {
+			t.Errorf("actor %q: validate = %v, want accepted", ok, err)
+		}
+	}
+}

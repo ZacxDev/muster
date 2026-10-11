@@ -693,7 +693,8 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		// this process see my variable at all" returned nothing precisely when
 		// the answer was yes. Found by the both-directions ledger, not by review.
 		l.Printf("permission router: CONFIGURED — %s=%s, actor %q — session liveness, event "+
-			"publish, notifications, the directory picker and the approval gate are live",
+			"publish, notifications, the directory picker and agent checkpoints are live (the "+
+			"claude-code approval relay is NOT: see the approval relay gate line)",
 			envRouterURL, a.cfg.RouterURL, a.cfg.RouterActor)
 	case a.cfg.Standalone:
 		l.Printf("permission router: NONE, DECLARED (%s=1) — session transcript links will all "+

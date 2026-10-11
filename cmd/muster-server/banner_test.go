@@ -132,7 +132,8 @@ func TestTheRouterBannerNamesTheVariableThatIsActuallyMissing(t *testing.T) {
 			cfg:  config{RouterURL: url, RouterToken: "t", RouterActor: "muster"},
 			wantLine: `permission router: CONFIGURED — ` + envRouterURL + `=` + url +
 				`, actor "muster" — session liveness, event publish, notifications, the ` +
-				`directory picker and the approval gate are live`,
+				`directory picker and agent checkpoints are live (the claude-code approval ` +
+				`relay is NOT: see the approval relay gate line)`,
 			// It is the only branch that may call itself CONFIGURED.
 			mustContain: []string{"CONFIGURED", url},
 			// 🔴 "NOT CONFIGURED" AND "PARTIALLY" ARE THE MEASURED HOLE. Without

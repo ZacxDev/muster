@@ -62,10 +62,22 @@ type fakeGate struct {
 	mintErr error
 	readErr error
 	nextID  int
+	// states, when non-empty, is answered in order by ReadGate (then state).
+	states []GateDecision
+	// block, when non-nil, holds every MintGate until it is closed; inflight
+	// counts the mints waiting on it.
+	block    chan struct{}
+	inflight int
 }
 
 func (g *fakeGate) MintGate(_ context.Context, spec GateSpec) (string, error) {
 	g.mu.Lock()
+	if b := g.block; b != nil {
+		g.inflight++
+		g.mu.Unlock()
+		<-b
+		g.mu.Lock()
+	}
 	defer g.mu.Unlock()
 	if g.mintErr != nil {
 		return "", g.mintErr
@@ -81,6 +93,11 @@ func (g *fakeGate) ReadGate(_ context.Context, id string) (GateDecision, error) 
 	g.reads = append(g.reads, id)
 	if g.readErr != nil {
 		return GateDecision{}, g.readErr
+	}
+	if len(g.states) > 0 {
+		d := g.states[0]
+		g.states = g.states[1:]
+		return d, nil
 	}
 	return g.state, nil
 }
@@ -272,8 +289,12 @@ func TestTheRelayUsesOnlyItsOwnGate(t *testing.T) {
 	}
 }
 
-func TestOneAgentCannotFloodThePhone(t *testing.T) {
+// The outstanding cap, sequentially. The rate limit is lifted so it cannot be
+// what refuses (its burst is below the cap); TestAFileAndClearLoopIsRateLimited
+// covers the rate.
+func TestOneAgentCannotHoldMoreThanTheCapOpen(t *testing.T) {
 	f := newRelayFixture(t, true)
+	f.srv.approvals.burst = 100
 	for i := 0; i < approvalMaxOutstanding; i++ {
 		if w := f.call("POST", "/agent/approvals", relayBody, relayTokenA); w.Code != http.StatusCreated {
 			t.Fatalf("file %d: %d", i, w.Code)
@@ -375,5 +396,145 @@ func TestTheConnectListenerServesTheRelay(t *testing.T) {
 		if w.Code != http.StatusNotFound {
 			t.Errorf("%s: %d through the connect listener, want 404", p, w.Code)
 		}
+	}
+}
+
+// --- round 1 of the #48 audit ---------------------------------------------
+
+var (
+	gone    = GateDecision{State: GateStateGone}
+	pending = GateDecision{State: GateStatePending}
+	approve = GateDecision{State: GateStateDecided, Response: "approve"}
+)
+
+func (f *relayFixture) poll(t *testing.T) (int, string) {
+	t.Helper()
+	w := f.call("GET", "/agent/approvals/req-1", "", relayTokenA)
+	return w.Code, w.Body.String()
+}
+
+// 🔴 ONE "gone" FROM THE ROUTER IS NOT EVIDENCE: its store reports a card absent
+// on any query error. A single gone read must leave the card owned and the agent
+// waiting, so the operator's later approval still reaches it.
+func TestASingleGoneReadDoesNotOrphanTheCard(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.call("POST", "/agent/approvals", relayBody, relayTokenA)
+	f.gate.states = []GateDecision{gone, approve}
+	if code, body := f.poll(t); code != http.StatusOK || !strings.Contains(body, `"state":"pending"`) {
+		t.Fatalf("first (transient) gone: %d %s, want 200 pending", code, body)
+	}
+	if code, body := f.poll(t); code != http.StatusOK || !strings.Contains(body, `"response":"approve"`) {
+		t.Fatalf("after the transient gone the approval was lost: %d %s", code, body)
+	}
+	if len(f.gate.cleared) != 0 {
+		t.Fatalf("a live card was cleared: %v", f.gate.cleared)
+	}
+}
+
+// Three gone reads IN A ROW: muster believes it, forgets the id and clears the
+// card so nothing stays approvable that nobody waits on.
+func TestConsecutiveGoneReadsForgetAndClearTheCard(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.call("POST", "/agent/approvals", relayBody, relayTokenA)
+	f.gate.state = gone
+	for i := 1; i < approvalGoneReads; i++ {
+		if _, body := f.poll(t); !strings.Contains(body, `"state":"pending"`) {
+			t.Fatalf("gone read %d: %s, want pending until %d in a row", i, body, approvalGoneReads)
+		}
+	}
+	if code, body := f.poll(t); code != http.StatusOK || !strings.Contains(body, `"state":"gone"`) {
+		t.Fatalf("gone read %d: %d %s, want gone", approvalGoneReads, code, body)
+	}
+	if strings.Join(f.gate.cleared, ",") != "req-1" {
+		t.Fatalf("the gone card was not cleared on the router: %v", f.gate.cleared)
+	}
+	if code, _ := f.poll(t); code != http.StatusNotFound {
+		t.Fatalf("after giving up, the id still answers %d", code)
+	}
+}
+
+// The streak is CONSECUTIVE: any other state in between restarts it.
+func TestAPendingReadResetsTheGoneStreak(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.call("POST", "/agent/approvals", relayBody, relayTokenA)
+	f.gate.states = []GateDecision{gone, gone, pending, gone, gone}
+	for i := 0; i < 5; i++ {
+		if _, body := f.poll(t); !strings.Contains(body, `"state":"pending"`) {
+			t.Fatalf("read %d: %s, want pending (no %d gone reads in a row)", i, body, approvalGoneReads)
+		}
+	}
+}
+
+// 🔴 THE CAP DOES NOT BOUND A FILE-AND-CLEAR LOOP; THE MINT RATE DOES. Each
+// iteration has at most one card open, and each mint is a Web Push.
+func TestAFileAndClearLoopIsRateLimited(t *testing.T) {
+	f := newRelayFixture(t, true)
+	limited := 0
+	for i := 0; i < 10; i++ {
+		w := f.call("POST", "/agent/approvals", relayBody, relayTokenA)
+		if w.Code == http.StatusTooManyRequests {
+			limited++
+			continue
+		}
+		if w.Code != http.StatusCreated {
+			t.Fatalf("file %d: %d", i, w.Code)
+		}
+		f.call("DELETE", "/agent/approvals/req-"+strconv.Itoa(f.gate.nextID), "", relayTokenA)
+	}
+	if n := len(f.gate.minted); n != approvalMintBurst || limited != 10-approvalMintBurst {
+		t.Fatalf("10 file-and-clear rounds minted %d cards (%d refused), want %d minted", n, limited, approvalMintBurst)
+	}
+	// One token refills per approvalMintEvery.
+	f.now = f.now.Add(approvalMintEvery)
+	if w := f.call("POST", "/agent/approvals", relayBody, relayTokenA); w.Code != http.StatusCreated {
+		t.Fatalf("after %s: %d, want one refilled mint", approvalMintEvery, w.Code)
+	}
+	if w := f.call("POST", "/agent/approvals", relayBody, relayTokenA); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("a second mint in the same window: %d, want 429", w.Code)
+	}
+	// Another agent has its own bucket.
+	if w := f.call("POST", "/agent/approvals", relayBody, relayTokenB); w.Code != http.StatusCreated {
+		t.Fatalf("another agent: %d", w.Code)
+	}
+}
+
+// 🔴 PARALLEL FILES CANNOT EXCEED THE CAP: the slot is reserved under the lock
+// before the network call. The rate limit is lifted here so it cannot be what
+// stops them (its burst is below the cap).
+func TestParallelFilesCannotExceedTheOutstandingCap(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.srv.approvals.burst = 100
+	f.gate.block = make(chan struct{})
+	const n = 10
+	codes := make(chan int, n)
+	for i := 0; i < n; i++ {
+		go func() { codes <- f.call("POST", "/agent/approvals", relayBody, relayTokenA).Code }()
+	}
+	refused := 0
+	deadline := time.After(10 * time.Second)
+	for refused < n-approvalMaxOutstanding {
+		select {
+		case c := <-codes:
+			if c != http.StatusTooManyRequests {
+				t.Fatalf("a POST finished with %d while mints were held", c)
+			}
+			refused++
+		case <-deadline:
+			f.gate.mu.Lock()
+			in := f.gate.inflight
+			f.gate.mu.Unlock()
+			close(f.gate.block)
+			t.Fatalf("only %d of %d parallel POSTs were refused; %d mints in flight (cap %d)",
+				refused, n, in, approvalMaxOutstanding)
+		}
+	}
+	close(f.gate.block)
+	for i := 0; i < approvalMaxOutstanding; i++ {
+		if c := <-codes; c != http.StatusCreated {
+			t.Fatalf("a held mint finished with %d", c)
+		}
+	}
+	if len(f.gate.minted) != approvalMaxOutstanding {
+		t.Fatalf("minted %d, want %d", len(f.gate.minted), approvalMaxOutstanding)
 	}
 }

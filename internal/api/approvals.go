@@ -28,9 +28,10 @@ import (
 // MUSTER with its own per-agent token (the connector surface's credential, with
 // the shared tokens refused by name), and muster files the request through the
 // router's gate door on the service tier, using the relay's OWN gate
-// (Server.UseApprovalGate). A STANDALONE muster can have that gate without any
-// router behaviour; with a router configured and no dedicated gate, the
-// router's client serves it.
+// (Server.UseApprovalGate), built only from MUSTER_APPROVAL_GATE_URL/_TOKEN. A
+// STANDALONE muster can have that gate without any router behaviour, and a
+// configured router's client is never used for it: without the dedicated gate
+// the relay answers 503.
 //
 // WHAT AN AGENT CAN DO HERE, AND NOTHING ELSE:
 //   - file a request (POST /agent/approvals). The card's Host and Project are
@@ -50,16 +51,35 @@ import (
 //
 // ⚠ THE LEDGER IS IN MEMORY. A muster restart forgets which agent filed which
 // request; the pod's next poll then answers 404 and its hook falls back to the
-// in-terminal prompt. That is the safe direction: no decision is ever invented.
+// in-terminal prompt, so no decision is ever invented. ⚠ IT IS NOT CLEAN FOR THE
+// PHONE: the forgotten card is not cleared (ccd's DELETE also answers 404), so it
+// stays on the operator's screen until the router's own TTL, and approving it
+// there reaches nobody.
 // ---------------------------------------------------------------------------
 
 const (
 	// approvalOwnerTTL bounds how long a filed request stays readable by its
 	// agent. The pod's hook gives up after ~170s; this only has to outlive it.
 	approvalOwnerTTL = 10 * time.Minute
-	// approvalMaxOutstanding caps the requests one agent may have open at once,
-	// so a looping agent cannot flood the operator's phone.
+	// approvalMaxOutstanding caps the requests one agent may have open (filed and
+	// not yet decided, cleared or expired) at once, counting mints in flight. It
+	// does NOT bound how often cards are filed: an agent that files and clears in
+	// a loop never has more than one open. approvalMintBurst/approvalMintEvery
+	// bound that.
 	approvalMaxOutstanding = 4
+	// approvalMintBurst and approvalMintEvery are the per-agent MINT RATE: a
+	// token bucket holding approvalMintBurst cards, refilled one per
+	// approvalMintEvery. Every mint attempt spends a token (a failed one too), and
+	// every mint is one card plus one Web Push on the operator's phone, so this is
+	// what bounds a filing loop: 3 at once, then about one per 10s.
+	approvalMintBurst = 3
+	approvalMintEvery = 10 * time.Second
+	// approvalGoneReads is how many CONSECUTIVE "gone" reads muster needs before it
+	// believes a card is gone. The router's store reports a card absent on ANY
+	// query error, not only when it is evicted, and its own in-process waiter
+	// tolerates 3 consecutive misses for that reason; one transient error must not
+	// orphan a card the operator can still see and approve.
+	approvalGoneReads = 3
 	// blockedReportTTL is how long a "blocked on a prompt" report counts without
 	// a refresh. ccd re-reports every minute while blocked, so a pod that died
 	// blocked stops showing the badge within this window.
@@ -77,11 +97,55 @@ type approvalLedger struct {
 	owners map[string]approvalOwner
 	// blocked maps an agent id to its latest "blocked on a prompt" report.
 	blocked map[int64]blockedReport
+	// minting counts, per agent, mints in flight: reserved under mu before the
+	// network call so concurrent POSTs cannot all pass the outstanding cap.
+	minting map[int64]int
+	// buckets is the per-agent mint-rate token bucket.
+	buckets map[int64]mintBucket
+	// burst and every override approvalMintBurst/approvalMintEvery when non-zero
+	// (tests isolate the outstanding cap from the rate limit with them).
+	burst int
+	every time.Duration
 }
 
 type approvalOwner struct {
 	agentID int64
 	filed   time.Time
+	// goneStreak counts consecutive "gone" reads; any other state resets it.
+	goneStreak int
+}
+
+type mintBucket struct {
+	tokens float64
+	at     time.Time
+}
+
+// takeMintTokenLocked spends one of agentID's mint tokens, reporting false when
+// the bucket is empty. Caller holds mu.
+func (l *approvalLedger) takeMintTokenLocked(agentID int64, now time.Time) bool {
+	burst, every := approvalMintBurst, approvalMintEvery
+	if l.burst > 0 {
+		burst = l.burst
+	}
+	if l.every > 0 {
+		every = l.every
+	}
+	b, ok := l.buckets[agentID]
+	if !ok {
+		b = mintBucket{tokens: float64(burst), at: now}
+	}
+	b.tokens += float64(now.Sub(b.at)) / float64(every)
+	if b.tokens > float64(burst) {
+		b.tokens = float64(burst)
+	}
+	b.at = now
+	if b.tokens < 1 {
+		l.buckets[agentID] = b
+		return false
+	}
+	b.tokens--
+	l.buckets[agentID] = b
+	return true
 }
 
 type blockedReport struct {
@@ -94,6 +158,12 @@ func (l *approvalLedger) init() {
 	}
 	if l.blocked == nil {
 		l.blocked = map[int64]blockedReport{}
+	}
+	if l.minting == nil {
+		l.minting = map[int64]int{}
+	}
+	if l.buckets == nil {
+		l.buckets = map[int64]mintBucket{}
 	}
 }
 
@@ -217,23 +287,41 @@ func (s *Server) handleApprovalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 🔴 THE CAP CHECK, THE RATE CHECK AND THE SLOT RESERVATION ARE ONE CRITICAL
+	// SECTION. Counting, unlocking and then minting let N parallel POSTs all see
+	// the same count and all mint.
 	l := &s.approvals
 	now := s.now()
 	l.mu.Lock()
 	l.init()
 	l.pruneLocked(now)
-	open := 0
+	open := l.minting[a.ID]
 	for _, o := range l.owners {
 		if o.agentID == a.ID {
 			open++
 		}
 	}
-	l.mu.Unlock()
 	if open >= approvalMaxOutstanding {
+		l.mu.Unlock()
 		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{
 			"error": "this agent already has the maximum number of open approval requests",
 		})
 		return
+	}
+	if !l.takeMintTokenLocked(a.ID, now) {
+		l.mu.Unlock()
+		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"error": "this agent is filing approval requests too fast",
+		})
+		return
+	}
+	l.minting[a.ID]++
+	l.mu.Unlock()
+	release := func() {
+		l.minting[a.ID]--
+		if l.minting[a.ID] <= 0 {
+			delete(l.minting, a.ID)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -249,12 +337,15 @@ func (s *Server) handleApprovalCreate(w http.ResponseWriter, r *http.Request) {
 		Context: ctxLines,
 	})
 	if err != nil {
+		l.mu.Lock()
+		release()
+		l.mu.Unlock()
 		s.logger.Printf("approvals: %s: filing a card: %v", a.Name, err)
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "the approval queue could not be reached"})
 		return
 	}
 	l.mu.Lock()
-	l.init()
+	release()
 	l.owners[id] = approvalOwner{agentID: a.ID, filed: now}
 	l.mu.Unlock()
 	s.logger.Printf("approvals: %s filed %s tool=%q", a.Name, id, tool)
@@ -270,6 +361,34 @@ func (s *Server) ownedBy(id string, a agents.Agent) bool {
 	l.pruneLocked(s.now())
 	o, ok := l.owners[id]
 	return ok && o.agentID == a.ID
+}
+
+// noteGoneRead records one "gone" read of id and reports whether it is the
+// approvalGoneReads-th in a row.
+func (s *Server) noteGoneRead(id string) bool {
+	l := &s.approvals
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.init()
+	o, ok := l.owners[id]
+	if !ok {
+		return true
+	}
+	o.goneStreak++
+	l.owners[id] = o
+	return o.goneStreak >= approvalGoneReads
+}
+
+// resetGoneReads clears id's consecutive-gone count after any other state.
+func (s *Server) resetGoneReads(id string) {
+	l := &s.approvals
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.init()
+	if o, ok := l.owners[id]; ok {
+		o.goneStreak = 0
+		l.owners[id] = o
+	}
 }
 
 func (s *Server) forgetApproval(id string) {
@@ -303,11 +422,27 @@ func (s *Server) handleApprovalGet(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "the approval queue could not be read"})
 		return
 	}
-	switch d.State {
-	case GateStateDecided, GateStateGone:
+	state := d.State
+	switch state {
+	case GateStateDecided:
 		s.forgetApproval(id)
+	case GateStateGone:
+		// 🔴 ONE "gone" IS NOT EVIDENCE. Until approvalGoneReads arrive in a row the
+		// card may still be on the operator's screen, so the agent is told to keep
+		// waiting. On the last one muster gives up, forgets the id and clears the
+		// card (best effort) so nothing stays approvable that nobody waits on.
+		if !s.noteGoneRead(id) {
+			state = GateStatePending
+			break
+		}
+		s.forgetApproval(id)
+		if err := g.ClearGate(r.Context(), id); err != nil {
+			s.logger.Printf("approvals: clearing gone card %s: %v", id, err)
+		}
+	default:
+		s.resetGoneReads(id)
 	}
-	out := map[string]any{"state": d.State}
+	out := map[string]any{"state": state}
 	if d.State == GateStateDecided {
 		out["response"] = d.Response
 		if d.Comment != "" {
