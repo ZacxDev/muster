@@ -1,0 +1,565 @@
+package connectors
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
+	"net/http/httputil"
+	"net/netip"
+	"net/url"
+	"strings"
+	"syscall"
+	"time"
+)
+
+// Policy is the proxy's network policy for upstream connections.
+//
+// 🔴 THE ZERO VALUE IS PRODUCTION, AND IT IS THE STRICT ONE: HTTPS only, the
+// system resolver, and no non-public destination. Each field below LOOSENS it and
+// exists for tests (a fake upstream on loopback); cmd/muster-server never sets
+// one outside a binary built with the e2e tag.
+type Policy struct {
+	// AllowLoopback admits loopback destinations (127.0.0.0/8, ::1). Every other
+	// non-public range stays refused.
+	AllowLoopback bool
+	// InsecureHTTP speaks plain HTTP to the upstream instead of HTTPS.
+	InsecureHTTP bool
+	// Resolve replaces the system resolver. nil means net.DefaultResolver.
+	Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+}
+
+// ErrForbiddenAddress is the dial refusal for a non-public destination.
+var ErrForbiddenAddress = errors.New("connectors: refusing to connect to a non-public address")
+
+// nonPublic are the ranges no connector may reach, beyond what netip's own
+// predicates (private, loopback, link-local, multicast, unspecified) cover.
+var nonPublic = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),      // "this network"
+	netip.MustParsePrefix("100.64.0.0/10"),  // RFC 6598 shared address space (CGNAT, mesh overlays)
+	netip.MustParsePrefix("192.0.0.0/24"),   // IETF protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"),  // benchmarking
+	netip.MustParsePrefix("240.0.0.0/4"),    // reserved, and broadcast
+	netip.MustParsePrefix("64:ff9b::/96"),   // NAT64: maps onto IPv4, private ranges included
+	netip.MustParsePrefix("64:ff9b:1::/48"), // local-use NAT64
+	netip.MustParsePrefix("2002::/16"),      // 6to4: embeds an IPv4 address
+	netip.MustParsePrefix("100::/64"),       // discard-only
+	netip.MustParsePrefix("2001:db8::/32"),  // documentation
+	netip.MustParsePrefix("fec0::/10"),      // deprecated site-local
+	netip.MustParsePrefix("::ffff:0:0/96"),  // IPv4-mapped (unmapped before the check; belt and braces)
+}
+
+// AllowedAddr reports whether the policy permits connecting to ip.
+func (p Policy) AllowedAddr(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	if !ip.IsValid() {
+		return false
+	}
+	if ip.IsLoopback() {
+		return p.AllowLoopback
+	}
+	if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsInterfaceLocalMulticast() ||
+		ip.IsMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	for _, pfx := range nonPublic {
+		if pfx.Contains(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+func (p Policy) resolve(ctx context.Context, host string) ([]netip.Addr, error) {
+	if p.Resolve != nil {
+		return p.Resolve(ctx, host)
+	}
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+}
+
+// dialContext resolves the host itself, refuses the connection if ANY resolved
+// address is non-public, and dials a checked ADDRESS rather than the name.
+//
+// 🔴 DIALLING THE CHECKED ADDRESS IS WHAT DEFEATS DNS REBINDING. Checking a
+// name's resolution and then handing the NAME to the dialer resolves twice; an
+// attacker-controlled zone can answer public the first time and private the
+// second. The Dialer's Control hook re-checks the socket's actual destination as
+// a backstop for any path that reaches the dialer without coming through here.
+func (p Policy) dialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	var ips []netip.Addr
+	if ip, perr := netip.ParseAddr(host); perr == nil {
+		ips = []netip.Addr{ip}
+	} else {
+		ips, err = p.resolve(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("connectors: %s resolved to no address", host)
+	}
+	for _, ip := range ips {
+		if !p.AllowedAddr(ip) {
+			return nil, fmt.Errorf("%w (%s resolves to one)", ErrForbiddenAddress, host)
+		}
+	}
+	d := &net.Dialer{
+		Timeout: 15 * time.Second,
+		Control: func(_, address string, _ syscall.RawConn) error { return p.checkSocketAddr(address) },
+	}
+	var lastErr error
+	for _, ip := range ips {
+		c, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return c, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// checkSocketAddr is the dialer's last-moment check on the address a socket is
+// about to connect to ("ip:port").
+func (p Policy) checkSocketAddr(address string) error {
+	ap, err := netip.ParseAddrPort(address)
+	if err != nil || !p.AllowedAddr(ap.Addr()) {
+		return fmt.Errorf("%w (socket destination)", ErrForbiddenAddress)
+	}
+	return nil
+}
+
+// Transport builds the upstream transport for this policy.
+//
+// 🔴 Proxy IS nil, DELIBERATELY: an HTTPS_PROXY in muster's environment would
+// otherwise carry every injected credential through a third party, and the
+// address checks above would be checking the proxy rather than the platform.
+func (p Policy) Transport() *http.Transport {
+	return &http.Transport{
+		Proxy:                 nil,
+		DialContext:           p.dialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          32,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 2 * time.Minute,
+		ExpectContinueTimeout: time.Second,
+	}
+}
+
+// Caller is the authenticated agent a proxied request is made for.
+type Caller struct {
+	AgentID   int64
+	AgentName string
+}
+
+// Proxy forwards an agent's request to a connector's upstream with the
+// credential injected.
+type Proxy struct {
+	Store  Store
+	Policy Policy
+	Logger *log.Logger
+	// OnGrantRequested is called (synchronously; keep it cheap) when a proxied
+	// request files a NEW pending grant, so the operator can be prompted.
+	OnGrantRequested func(Grant)
+	// Now defaults to time.Now.
+	Now func() time.Time
+
+	transport http.RoundTripper
+}
+
+// SetTransport overrides the upstream transport (tests).
+func (p *Proxy) SetTransport(rt http.RoundTripper) { p.transport = rt }
+
+func (p *Proxy) now() time.Time {
+	if p.Now != nil {
+		return p.Now()
+	}
+	return time.Now()
+}
+
+func (p *Proxy) logf(format string, args ...any) {
+	if p.Logger != nil {
+		p.Logger.Printf(format, args...)
+	}
+}
+
+// RefusalBody is the JSON every refusal from the proxy carries.
+type RefusalBody struct {
+	Error     string `json:"error"`
+	Connector string `json:"connector,omitempty"`
+	// Grant is the caller's grant status for the connector, when the refusal is
+	// about access: "pending", "denied", "revoked", "expired".
+	Grant   string `json:"grant,omitempty"`
+	GrantID int64  `json:"grantId,omitempty"`
+}
+
+func writeRefusal(w http.ResponseWriter, code int, body RefusalBody) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// Access is the outcome of checking a caller's grant.
+type Access struct {
+	Grant  Grant
+	Usable bool
+	// Filed is true when THIS check filed a new pending request.
+	Filed bool
+}
+
+// CheckAccess resolves whether the caller may use the connector now, filing a
+// pending request when the caller has never asked (or its approval expired).
+//
+// 🔴 A DENIAL OR A REVOCATION IS NOT RE-FILED HERE. A retrying client would
+// otherwise turn one "no" into a prompt per retry. The agent must ask again
+// explicitly (the request route / the connector_request tool), which is a
+// deliberate act the operator then sees as a new request.
+func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reason string) (Access, error) {
+	g, err := p.Store.LatestGrant(ctx, caller.AgentID, connector)
+	switch {
+	case err == nil && g.Usable(p.now()):
+		return Access{Grant: g, Usable: true}, nil
+	case err == nil && (g.Status == StatusPending || g.Status == StatusDenied ||
+		(g.Status == StatusRevoked && g.DecidedBy != "expired")):
+		return Access{Grant: g}, nil
+	case err != nil && !errors.Is(err, ErrNotFound):
+		return Access{}, err
+	}
+	// No grant at all, or one that expired: file (or find) a pending request.
+	ng, created, err := p.Store.RequestGrant(ctx, caller.AgentID, connector, reason)
+	if err != nil {
+		return Access{}, err
+	}
+	if created {
+		p.recordGrantEvent(ctx, ng, "requested")
+		if p.OnGrantRequested != nil {
+			p.OnGrantRequested(ng)
+		}
+	}
+	return Access{Grant: ng, Usable: ng.Usable(p.now()), Filed: created}, nil
+}
+
+func (p *Proxy) recordGrantEvent(ctx context.Context, g Grant, detail string) {
+	if err := p.Store.Audit(ctx, AuditEntry{Kind: "grant", AgentID: g.AgentID, AgentName: g.AgentName,
+		Connector: g.Connector, Detail: detail}); err != nil {
+		p.logf("connectors: audit grant %d %s: %v", g.ID, detail, err)
+	}
+}
+
+// hopHeaders are the request headers never forwarded upstream, beyond the
+// hop-by-hop set httputil.ReverseProxy already removes.
+//
+// 🔴 Authorization AND THE MUSTER TOKEN ARE THE LOAD-BEARING ENTRIES: the
+// caller's own credential to muster must never reach a third party, and an
+// agent-supplied Authorization must never override (or accompany) the injected
+// one. Cookie is dropped because a cookie the agent holds for the platform is a
+// credential muster did not issue.
+var droppedRequestHeaders = []string{
+	"Authorization", "Proxy-Authorization", "Cookie", "X-Muster-Token", "X-Muster-Actor",
+	"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-Ip",
+	"Accept-Encoding",
+}
+
+// Serve proxies one request. connector and host are the path's first two
+// segments after /connect/, and rest is everything after the host segment,
+// still escaped (no leading slash).
+func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, connector, host, rest string) {
+	ctx := r.Context()
+	auditPath := "/" + rest
+	status := 0
+	detail := ""
+	defer func() {
+		if err := p.Store.Audit(context.WithoutCancel(ctx), AuditEntry{
+			Kind: "proxy", AgentID: caller.AgentID, AgentName: caller.AgentName, Connector: connector,
+			Method: r.Method, Host: strings.ToLower(host), Path: auditPath, Status: status, Detail: detail,
+		}); err != nil {
+			p.logf("connectors: audit %s %s/%s: %v", r.Method, connector, host, err)
+		}
+	}()
+	refuse := func(code int, body RefusalBody, why string) {
+		status, detail = code, why
+		body.Connector = connector
+		writeRefusal(w, code, body)
+	}
+
+	if err := ValidateName(connector); err != nil {
+		refuse(http.StatusBadRequest, RefusalBody{Error: err.Error()}, "bad connector name")
+		return
+	}
+	if strings.ContainsAny(rest, "\r\n\x00") || strings.ContainsAny(host, "/\\@?#\r\n\x00") {
+		refuse(http.StatusBadRequest, RefusalBody{Error: "malformed proxy path"}, "malformed path")
+		return
+	}
+
+	acc, err := p.CheckAccess(ctx, caller, connector, "")
+	if err != nil {
+		p.logf("connectors: access check agent=%d connector=%q: %v", caller.AgentID, connector, err)
+		refuse(http.StatusInternalServerError, RefusalBody{Error: "could not check access"}, "access check failed")
+		return
+	}
+	if !acc.Usable {
+		st := acc.Grant.EffectiveStatus(p.now())
+		msg := "this agent has no approved grant for connector " + connector + ": "
+		switch st {
+		case StatusPending:
+			msg += "a request is pending the operator's approval; retry once it is approved " +
+				"(poll GET /agent/connectors/" + connector + ")"
+		case StatusDenied:
+			msg += "the operator denied the request; file a new one with POST /agent/connectors/" + connector + "/request if it is still needed"
+		default:
+			msg += "the grant was " + st + "; file a new request with POST /agent/connectors/" + connector + "/request"
+		}
+		refuse(http.StatusForbidden, RefusalBody{Error: msg, Grant: st, GrantID: acc.Grant.ID}, "no grant: "+st)
+		return
+	}
+
+	c, secret, err := p.Store.Credential(ctx, connector)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		refuse(http.StatusNotFound, RefusalBody{Error: "connector " + connector + " does not exist"}, "no connector")
+		return
+	case errors.Is(err, ErrDecrypt):
+		p.logf("connectors: connector %q: %v", connector, err)
+		refuse(http.StatusBadGateway, RefusalBody{Error: "the connector's credential could not be decrypted; the operator must rotate it"}, "decrypt failed")
+		return
+	case err != nil:
+		p.logf("connectors: load connector %q: %v", connector, err)
+		refuse(http.StatusInternalServerError, RefusalBody{Error: "could not load the connector"}, "load failed")
+		return
+	}
+	if !c.AllowsHost(host) {
+		refuse(http.StatusForbidden, RefusalBody{Error: "host " + host + " is not in connector " + connector +
+			"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")
+		return
+	}
+	host = strings.ToLower(host)
+
+	scheme := "https"
+	if p.Policy.InsecureHTTP {
+		scheme = "http"
+	}
+	target := &url.URL{Scheme: scheme, Host: host}
+	if unescaped, err := url.PathUnescape("/" + rest); err == nil {
+		target.Path = unescaped
+		target.RawPath = "/" + rest
+	} else {
+		refuse(http.StatusBadRequest, RefusalBody{Error: "malformed proxy path"}, "bad escape")
+		return
+	}
+	// The URL is BUILT from the allowlisted host, never parsed out of the path,
+	// so nothing in the path can change where the request goes.
+	target.RawQuery = r.URL.RawQuery
+
+	authName, authValue := authHeader(c, secret)
+	red := newRedactor(secretForms(c, secret))
+	prefix := "/connect/" + connector + "/"
+
+	rp := &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL = target
+			pr.Out.Host = host
+			for _, h := range droppedRequestHeaders {
+				pr.Out.Header.Del(h)
+			}
+			// Set REPLACES every value the caller sent under this name.
+			pr.Out.Header.Set(authName, authValue)
+		},
+		Transport: p.upstreamTransport(),
+		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Del("Set-Cookie")
+			if loc := resp.Header.Get("Location"); loc != "" {
+				resp.Header.Set("Location", rewriteLocation(loc, target, c, prefix))
+			}
+			red.headers(resp.Header)
+			resp.Body = red.reader(resp.Body)
+			resp.Header.Del("Content-Length")
+			resp.ContentLength = -1
+			status = resp.StatusCode
+			return nil
+		},
+		ErrorHandler: func(_ http.ResponseWriter, _ *http.Request, err error) {
+			why := "upstream unreachable"
+			if errors.Is(err, ErrForbiddenAddress) {
+				why = "upstream resolves to a non-public address"
+			}
+			p.logf("connectors: proxy agent=%q connector=%q host=%q: %s", caller.AgentName, connector, host, why)
+			refuse(http.StatusBadGateway, RefusalBody{Error: why}, why)
+		},
+		FlushInterval: -1,
+	}
+	rp.ServeHTTP(w, r)
+
+	bg := context.WithoutCancel(ctx)
+	if err := p.Store.TouchGrant(bg, acc.Grant.ID); err != nil {
+		p.logf("connectors: touch grant %d: %v", acc.Grant.ID, err)
+	}
+	if err := p.Store.TouchConnector(bg, connector); err != nil {
+		p.logf("connectors: touch connector %q: %v", connector, err)
+	}
+}
+
+func (p *Proxy) upstreamTransport() http.RoundTripper {
+	if p.transport == nil {
+		p.transport = p.Policy.Transport()
+	}
+	return p.transport
+}
+
+// authHeader is the header name and value that carries the credential.
+func authHeader(c Connector, secret string) (string, string) {
+	switch c.Scheme {
+	case SchemeHeader:
+		return c.HeaderName, secret
+	case SchemeBasic:
+		return "Authorization", "Basic " + base64.StdEncoding.EncodeToString([]byte(c.Username+":"+secret))
+	default:
+		return "Authorization", "Bearer " + secret
+	}
+}
+
+// secretForms are the strings that must never appear in a response: the secret
+// itself and every encoding of it the proxy put on the wire.
+func secretForms(c Connector, secret string) []string {
+	forms := []string{secret}
+	if c.Scheme == SchemeBasic {
+		pair := c.Username + ":" + secret
+		// The UNPADDED encodings only: each is a prefix of its padded form, so
+		// replacing it removes the credential from the padded one too.
+		forms = append(forms,
+			base64.RawStdEncoding.EncodeToString([]byte(pair)),
+			base64.RawURLEncoding.EncodeToString([]byte(pair)),
+		)
+	}
+	if esc := url.QueryEscape(secret); esc != secret {
+		forms = append(forms, esc)
+	}
+	return forms
+}
+
+// rewriteLocation maps an absolute redirect to one of the connector's hosts back
+// into the proxy, so the client's next request comes through muster again. A
+// redirect anywhere else is passed through UNCHANGED and is never followed: the
+// client may follow it, but directly, without the credential, which only muster
+// holds.
+func rewriteLocation(loc string, base *url.URL, c Connector, prefix string) string {
+	u, err := url.Parse(loc)
+	if err != nil {
+		return loc
+	}
+	abs := base.ResolveReference(u)
+	if abs.Scheme != base.Scheme || !c.AllowsHost(abs.Host) {
+		return loc
+	}
+	out := prefix + strings.ToLower(abs.Host) + abs.EscapedPath()
+	if abs.RawQuery != "" {
+		out += "?" + abs.RawQuery
+	}
+	return out
+}
+
+// RedactedMarker replaces every occurrence of the credential in a response.
+const RedactedMarker = "[REDACTED-BY-MUSTER]"
+
+// redactor removes the credential's forms from response headers and bodies.
+type redactor struct {
+	needles [][]byte
+	maxLen  int
+}
+
+func newRedactor(forms []string) *redactor {
+	r := &redactor{}
+	seen := map[string]bool{}
+	for _, f := range forms {
+		if f == "" || seen[f] {
+			continue
+		}
+		seen[f] = true
+		r.needles = append(r.needles, []byte(f))
+		if len(f) > r.maxLen {
+			r.maxLen = len(f)
+		}
+	}
+	return r
+}
+
+func (r *redactor) replace(b []byte) []byte {
+	for _, n := range r.needles {
+		if bytes.Contains(b, n) {
+			b = bytes.ReplaceAll(b, n, []byte(RedactedMarker))
+		}
+	}
+	return b
+}
+
+func (r *redactor) headers(h http.Header) {
+	for k, vs := range h {
+		for i, v := range vs {
+			vs[i] = string(r.replace([]byte(v)))
+		}
+		h[k] = vs
+	}
+}
+
+func (r *redactor) reader(rc io.ReadCloser) io.ReadCloser {
+	return &redactingReader{src: rc, red: r}
+}
+
+// redactingReader streams src with every needle replaced, holding back just
+// enough bytes (the longest needle, less one) that a needle split across two
+// reads is still caught.
+type redactingReader struct {
+	src     io.ReadCloser
+	red     *redactor
+	pending []byte // read from src, not yet scanned to completion
+	out     []byte // scanned, ready to return
+	eof     bool
+}
+
+func (rr *redactingReader) Read(p []byte) (int, error) {
+	for len(rr.out) == 0 {
+		if rr.eof {
+			if len(rr.pending) > 0 {
+				rr.out = rr.red.replace(rr.pending)
+				rr.pending = nil
+				continue
+			}
+			return 0, io.EOF
+		}
+		buf := make([]byte, 32*1024)
+		n, err := rr.src.Read(buf)
+		rr.pending = append(rr.pending, buf[:n]...)
+		if err == io.EOF {
+			rr.eof = true
+		} else if err != nil {
+			return 0, err
+		}
+		rr.pending = rr.red.replace(rr.pending)
+		keep := rr.red.maxLen - 1
+		if keep < 0 {
+			keep = 0
+		}
+		if !rr.eof && len(rr.pending) > keep {
+			// A needle not yet complete in pending starts within the last keep
+			// bytes, so everything before them is final.
+			cut := len(rr.pending) - keep
+			rr.out = append(rr.out, rr.pending[:cut]...)
+			rr.pending = append([]byte(nil), rr.pending[cut:]...)
+		}
+	}
+	n := copy(p, rr.out)
+	rr.out = rr.out[n:]
+	return n, nil
+}
+
+func (rr *redactingReader) Close() error { return rr.src.Close() }
