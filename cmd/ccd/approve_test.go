@@ -135,7 +135,7 @@ func TestApproveDefersOnEveryNonDecision(t *testing.T) {
 	}{
 		{"dismissed card (ignore)", &fakeRelay{states: []string{"decided:ignore"}}, false},
 		{"empty response", &fakeRelay{states: []string{"decided:"}}, false},
-		{"gone (cleared, so nothing is left approvable)", &fakeRelay{states: []string{"gone"}}, true},
+		{"gone (muster already cleared it; no DELETE)", &fakeRelay{states: []string{"gone"}}, false},
 		{"muster forgot the id", &fakeRelay{states: []string{"404"}}, true},
 		{"unknown state", &fakeRelay{states: []string{"weird"}}, true},
 		{"no approval queue (503 on file)", &fakeRelay{createSt: http.StatusServiceUnavailable}, false},

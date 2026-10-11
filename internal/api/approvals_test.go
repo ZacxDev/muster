@@ -538,3 +538,88 @@ func TestParallelFilesCannotExceedTheOutstandingCap(t *testing.T) {
 		t.Fatalf("minted %d, want %d", len(f.gate.minted), approvalMaxOutstanding)
 	}
 }
+
+// --- round 2 of the #48 audit ---------------------------------------------
+
+// fileAndSettle files one card at the fixture's clock and lets the agent's poll
+// see d (enough polls to settle a gone card too), returning the POST's status.
+func (f *relayFixture) fileAndSettle(t *testing.T, d GateDecision) int {
+	t.Helper()
+	w := f.call("POST", "/agent/approvals", relayBody, relayTokenA)
+	if w.Code != http.StatusCreated {
+		return w.Code
+	}
+	id := "req-" + strconv.Itoa(f.gate.nextID)
+	f.gate.state = d
+	for i := 0; i < approvalGoneReads; i++ {
+		if c := f.call("GET", "/agent/approvals/"+id, "", relayTokenA).Code; c != http.StatusOK {
+			break
+		}
+	}
+	return http.StatusCreated
+}
+
+// 🔴 A HUMAN ANSWERING PROMPTS BACK TO BACK IS NOT A FLOOD. Every approve or
+// deny gives the card's mint token back, so prompts arriving every 3s (well
+// under approvalMintEvery) are never pushed to the terminal.
+func TestAnOperatorAnsweringBackToBackIsNeverThrottled(t *testing.T) {
+	f := newRelayFixture(t, true)
+	for i := 0; i < 30; i++ {
+		d := approve
+		if i%2 == 1 {
+			d = GateDecision{State: GateStateDecided, Response: "reject"}
+		}
+		if code := f.fileAndSettle(t, d); code != http.StatusCreated {
+			t.Fatalf("prompt #%d (3s apart, each answered by a human): %d, want 201", i+1, code)
+		}
+		f.now = f.now.Add(3 * time.Second)
+	}
+}
+
+// No refund without a human decision: a clear, a confirmed gone and a dismissal
+// leave the filing loop limited to the burst at a frozen clock.
+func TestOnlyAHumanDecisionRefundsAMint(t *testing.T) {
+	cases := map[string]func(f *relayFixture, t *testing.T) int{
+		"clear": func(f *relayFixture, t *testing.T) int {
+			w := f.call("POST", "/agent/approvals", relayBody, relayTokenA)
+			if w.Code == http.StatusCreated {
+				f.call("DELETE", "/agent/approvals/req-"+strconv.Itoa(f.gate.nextID), "", relayTokenA)
+			}
+			return w.Code
+		},
+		"gone": func(f *relayFixture, t *testing.T) int { return f.fileAndSettle(t, gone) },
+		"dismiss": func(f *relayFixture, t *testing.T) int {
+			return f.fileAndSettle(t, GateDecision{State: GateStateDecided, Response: "ignore"})
+		},
+	}
+	for name, settle := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newRelayFixture(t, true)
+			created := 0
+			for i := 0; i < 10; i++ {
+				if settle(f, t) == http.StatusCreated {
+					created++
+				}
+			}
+			if created != approvalMintBurst {
+				t.Fatalf("10 %s rounds at a frozen clock minted %d, want %d (no refund)", name, created, approvalMintBurst)
+			}
+		})
+	}
+}
+
+// A FAILED mint spends its token: a router that keeps failing must not turn the
+// relay into an unthrottled retry loop.
+func TestAFailedMintSpendsAToken(t *testing.T) {
+	f := newRelayFixture(t, true)
+	f.gate.mintErr = errors.New("router down")
+	for i := 0; i < approvalMintBurst; i++ {
+		if w := f.call("POST", "/agent/approvals", relayBody, relayTokenA); w.Code != http.StatusBadGateway {
+			t.Fatalf("failed mint %d: %d, want 502", i, w.Code)
+		}
+	}
+	f.gate.mintErr = nil
+	if w := f.call("POST", "/agent/approvals", relayBody, relayTokenA); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("after %d failed mints: %d, want 429 (failed mints spend tokens)", approvalMintBurst, w.Code)
+	}
+}

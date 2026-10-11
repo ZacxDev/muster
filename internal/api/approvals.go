@@ -71,7 +71,10 @@ const (
 	// token bucket holding approvalMintBurst cards, refilled one per
 	// approvalMintEvery. Every mint attempt spends a token (a failed one too), and
 	// every mint is one card plus one Web Push on the operator's phone, so this is
-	// what bounds a filing loop: 3 at once, then about one per 10s.
+	// what bounds a filing loop: 3 at once, then about one per 10s. A card a
+	// HUMAN approved or denied gives its token back (settleDecided), so an
+	// operator answering prompts back to back is not throttled; clears, "gone"
+	// and dismissals do not.
 	approvalMintBurst = 3
 	approvalMintEvery = 10 * time.Second
 	// approvalGoneReads is how many CONSECUTIVE "gone" reads muster needs before it
@@ -122,6 +125,58 @@ type mintBucket struct {
 
 // takeMintTokenLocked spends one of agentID's mint tokens, reporting false when
 // the bucket is empty. Caller holds mu.
+// humanDecision reports whether a decided card's response is a human's approve
+// or deny. A dismissal ("ignore") or anything else is not.
+func humanDecision(response string) bool {
+	switch strings.ToLower(strings.TrimSpace(response)) {
+	case "approve", "allow", "reject", "deny":
+		return true
+	}
+	return false
+}
+
+// settleDecided forgets a decided card and, when a HUMAN approved or denied it,
+// gives its mint token back. Both happen under one lock and only if the card was
+// still tracked, so a card refunds at most once however many polls see it.
+//
+// 🔴 ONLY A HUMAN DECISION REFUNDS. The rate limit exists to bound a filing loop
+// (each mint is a card and a Web Push); a card a person answered is a human in
+// the loop, not a flood, and without the refund an operator approving prompts
+// faster than one per approvalMintEvery would push the 4th one to the terminal.
+// A clear (DELETE), a confirmed "gone" and a dismissal do NOT refund, so a
+// file-and-clear loop stays limited.
+func (s *Server) settleDecided(id string, agentID int64, human bool) {
+	l := &s.approvals
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.init()
+	if _, ok := l.owners[id]; !ok {
+		return
+	}
+	delete(l.owners, id)
+	if human {
+		l.refundMintTokenLocked(agentID)
+	}
+}
+
+// refundMintTokenLocked returns one mint token to agentID's bucket, never above
+// the burst. Caller holds mu.
+func (l *approvalLedger) refundMintTokenLocked(agentID int64) {
+	burst := approvalMintBurst
+	if l.burst > 0 {
+		burst = l.burst
+	}
+	b, ok := l.buckets[agentID]
+	if !ok {
+		return
+	}
+	b.tokens++
+	if b.tokens > float64(burst) {
+		b.tokens = float64(burst)
+	}
+	l.buckets[agentID] = b
+}
+
 func (l *approvalLedger) takeMintTokenLocked(agentID int64, now time.Time) bool {
 	burst, every := approvalMintBurst, approvalMintEvery
 	if l.burst > 0 {
@@ -425,7 +480,7 @@ func (s *Server) handleApprovalGet(w http.ResponseWriter, r *http.Request) {
 	state := d.State
 	switch state {
 	case GateStateDecided:
-		s.forgetApproval(id)
+		s.settleDecided(id, a.ID, humanDecision(d.Response))
 	case GateStateGone:
 		// 🔴 ONE "gone" IS NOT EVIDENCE. Until approvalGoneReads arrive in a row the
 		// card may still be on the operator's screen, so the agent is told to keep
