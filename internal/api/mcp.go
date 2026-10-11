@@ -2,13 +2,8 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
-	"strings"
-	"time"
-
-	"github.com/ZacxDev/muster/internal/connectors"
 )
 
 // muster's MCP server: the connector store's tools for agents, over MCP's
@@ -22,10 +17,11 @@ import (
 // transport defines as "this server offers none") and no session id: every
 // call carries the agent's own token, so there is nothing to resume.
 //
-// 🔴 THE TOOLS NEVER RETURN A SECRET. They are thin wrappers over the same
-// agent JSON API (AgentConnectorList / AgentRequestConnector /
-// AgentConnectorStatus) whose view type has no field for one; using a connector
-// is the proxy's job, and the tool output says how.
+// 🔴 THIS FILE IS A TRANSPORT, NOT A TOOL SET. It declares no tool and executes
+// none: tools/list is the agent tool registry's MCP subset ([Server.MCPToolDefs])
+// and tools/call runs the registry's one dispatcher (dispatchAgentTool). Which
+// tools are on /mcp is a per-tool flag in agentTools (agent.go), whose comment
+// says why only the connector tools carry it.
 
 // mcpProtocolVersions are the protocol revisions this server answers. A client
 // asking for one gets it back; any other gets the newest.
@@ -43,39 +39,24 @@ type mcpError struct {
 	Message string `json:"message"`
 }
 
-// MCPToolNames are the tools this server lists, in order.
-var MCPToolNames = []string{"connectors_list", "connector_request", "connector_status"}
+// mcpInstructions is the initialize result's instructions. The proxy recipe in
+// it is ProxyRecipe's — the same sentence a connector's usage line carries — so
+// the two cannot teach different URL shapes.
+func mcpInstructions() string {
+	return "muster's connector store. To reach an external platform (e.g. GitHub), call connector_request " +
+		"for it, wait for the operator's approval with connector_status, then call it through muster's proxy: " +
+		ProxyRecipe("<connector>", "<host>") + " You never see the credential."
+}
 
-func mcpTools() []map[string]any {
-	str := func(desc string) map[string]any { return map[string]any{"type": "string", "description": desc} }
-	return []map[string]any{
-		{
-			"name": "connectors_list",
-			"description": "List the platform connectors muster holds (e.g. github) and this agent's access to each " +
-				"(none, pending, approved, denied, revoked, expired). Credentials are never shown: an approved " +
-				"connector is used through muster's proxy, as each entry's `usage` explains.",
-			"inputSchema": objSchema(map[string]any{}),
-		},
-		{
-			"name": "connector_request",
-			"description": "Ask the operator for access to a connector by name (lowercase letters, digits, '-'). " +
-				"If it does not exist yet, the operator is prompted to enter the credential. Returns the request's " +
-				"status; poll connector_status until it is approved or denied. A denial is final for that request.",
-			"inputSchema": objSchema(map[string]any{
-				"name":   str("The connector name, e.g. github."),
-				"reason": str("Why access is needed — shown to the operator."),
-			}, "name"),
-		},
-		{
-			"name": "connector_status",
-			"description": "This agent's access to one connector, and how to use it once approved. With " +
-				"wait_seconds (max 50) it waits for a pending request to be decided.",
-			"inputSchema": objSchema(map[string]any{
-				"name":         str("The connector name."),
-				"wait_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 50, "description": "Wait this long for a pending request to be decided."},
-			}, "name"),
-		},
+// isToolErr reports whether a dispatched tool's text is toolErr's encoding —
+// the registry's one spelling of a failed tool call — so MCP can flag it isError.
+func isToolErr(text string) bool {
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(text), &m) != nil || len(m) != 1 {
+		return false
 	}
+	_, ok := m["error"]
+	return ok
 }
 
 func (s *Server) writeMCP(w http.ResponseWriter, id json.RawMessage, result any, rpcErr *mcpError) {
@@ -131,15 +112,17 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			"protocolVersion": version,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "muster", "version": BuildVersion},
-			"instructions": "muster's connector store. To reach an external platform (e.g. GitHub), call " +
-				"connector_request for it, wait for the operator's approval with connector_status, then send HTTP " +
-				"requests through $MUSTER_CONNECT_URL/connect/<connector>/<host>/<path> with header " +
-				"`X-Muster-Token: $MUSTER_HOOK_TOKEN`. You never see the credential; muster adds it.",
+			"instructions":    mcpInstructions(),
 		}, nil)
 	case "ping":
 		s.writeMCP(w, req.ID, map[string]any{}, nil)
 	case "tools/list":
-		s.writeMCP(w, req.ID, map[string]any{"tools": mcpTools()}, nil)
+		defs := s.MCPToolDefs()
+		tools := make([]map[string]any, 0, len(defs))
+		for _, d := range defs {
+			tools = append(tools, map[string]any{"name": d.Name, "description": d.Description, "inputSchema": d.Parameters})
+		}
+		s.writeMCP(w, req.ID, map[string]any{"tools": tools}, nil)
 	case "tools/call":
 		var p struct {
 			Name      string          `json:"name"`
@@ -149,47 +132,22 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			s.writeMCP(w, req.ID, nil, &mcpError{Code: -32602, Message: "invalid tools/call params"})
 			return
 		}
-		var args struct {
-			Name        string `json:"name"`
-			Reason      string `json:"reason"`
-			WaitSeconds int    `json:"wait_seconds"`
+		// Only a tool this transport LISTS may be called through it: a gateway-only
+		// tool's name is as unknown here as a made-up one.
+		listed := false
+		for _, d := range s.MCPToolDefs() {
+			listed = listed || d.Name == p.Name
 		}
-		_ = json.Unmarshal([]byte(orEmptyJSON(string(p.Arguments))), &args)
-		var (
-			out  any
-			terr error
-		)
-		ctx := r.Context()
-		switch p.Name {
-		case "connectors_list":
-			out, terr = s.AgentConnectorList(ctx, a)
-		case "connector_request":
-			out, _, terr = s.AgentRequestConnector(ctx, a, strings.TrimSpace(args.Name), args.Reason)
-		case "connector_status":
-			if err := connectors.ValidateName(strings.TrimSpace(args.Name)); err != nil {
-				terr = err
-				break
-			}
-			wait := args.WaitSeconds
-			if wait < 0 {
-				wait = 0
-			}
-			out, terr = s.AgentConnectorStatus(ctx, a, strings.TrimSpace(args.Name), time.Duration(wait)*time.Second)
-		default:
+		if !listed {
 			s.writeMCP(w, req.ID, nil, &mcpError{Code: -32602, Message: "unknown tool " + p.Name})
 			return
 		}
-		if terr != nil {
-			msg := "the tool failed"
-			if errors.Is(terr, connectors.ErrInvalid) {
-				msg = terr.Error()
-			} else {
-				s.logger.Printf("mcp: %s for agent %d: %v", p.Name, a.ID, terr)
-			}
-			s.writeMCP(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": toolErr("%s", msg)}}, "isError": true}, nil)
-			return
+		text := s.dispatchAgentTool(r.Context(), a, p.Name, string(p.Arguments))
+		result := map[string]any{"content": []map[string]any{{"type": "text", "text": text}}}
+		if isToolErr(text) {
+			result["isError"] = true
 		}
-		s.writeMCP(w, req.ID, map[string]any{"content": []map[string]any{{"type": "text", "text": toolJSON(out)}}}, nil)
+		s.writeMCP(w, req.ID, result, nil)
 	default:
 		s.writeMCP(w, req.ID, nil, &mcpError{Code: -32601, Message: "method not found: " + req.Method})
 	}

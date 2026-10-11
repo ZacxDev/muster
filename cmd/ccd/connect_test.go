@@ -68,8 +68,9 @@ func TestSeedRegistersMustersMCPServerOnlyWhenOffered(t *testing.T) {
 	}
 }
 
-// fakeMuster answers /agent/connectors/{name}[/request] with a scripted grant,
-// and records whatever reaches /connect/ (git's smart-HTTP discovery request).
+// fakeMuster answers /agent/connectors/{name} with a scripted grant, records any
+// POST (connect-git must never file a request), and records whatever reaches
+// /connect/ (git's smart-HTTP discovery request).
 type fakeMuster struct {
 	srv     *httptest.Server
 	mu      sync.Mutex
@@ -92,8 +93,8 @@ func newFakeMuster(t *testing.T) *fakeMuster {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		if r.Method == http.MethodPost {
-			f.posted, f.grant = true, "pending"
+		if r.Method != http.MethodGet {
+			f.posted = true
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"name": "github", "exists": true,
 			"hosts": []string{"api.github.com", "github.com"}, "grant": f.grant})
@@ -164,8 +165,15 @@ func TestConnectGitRoutesGitThroughTheProxyOnlyWhenApproved(t *testing.T) {
 		t.Fatalf("routing (or the token) left behind after revocation:\n%s", cfg)
 	}
 
-	if rc := runConnectGit([]string{"--request", "--reason", "push a branch"}, &out, &errb); rc != exitNotApproved || !f.posted {
-		t.Fatalf("--request: rc=%d posted=%v", rc, f.posted)
+	if !strings.Contains(out.String(), "connector_request tool") || strings.Contains(out.String(), "--request") {
+		t.Fatalf("the not-approved message does not point at the one request path: %q", out.String())
+	}
+	if f.posted {
+		t.Fatal("connect-git filed a request; asking is the connector_request tool's job only")
+	}
+	// The removed flags are gone, not silently accepted.
+	if rc := runConnectGit([]string{"--request"}, &out, &errb); rc != 2 {
+		t.Fatalf("--request: rc=%d, want 2 (unknown flag)", rc)
 	}
 }
 

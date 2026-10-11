@@ -30,7 +30,8 @@ import (
 //     approved grant it REMOVES that routing, so git talks to the platform
 //     directly (public clones keep working) rather than through a proxy that
 //     would refuse it. The entrypoint runs it once at start; the agent runs it
-//     again after an approval.
+//     again after an approval. It never ASKS for access: requesting a connector
+//     has one path, the connector_request tool.
 //
 // 🔴 NO PLATFORM CREDENTIAL EVER REACHES THIS POD. The only secret written here
 // is the agent's OWN muster token, which the pod already holds in its
@@ -86,8 +87,6 @@ const exitNotApproved = 3
 func runConnectGit(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("connect-git", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	request := fs.Bool("request", false, "if not approved, ask the operator for access (files a request)")
-	reason := fs.String("reason", "", "with --request: why access is needed")
 	timeout := fs.Duration("timeout", 10*time.Second, "how long to wait for muster")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -105,7 +104,7 @@ func runConnectGit(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	c, err := fetchConnector(ctx, base, token, name, *request, *reason)
+	c, err := fetchConnector(ctx, base, token, name)
 	if err != nil {
 		fmt.Fprintln(stderr, "ccd connect-git:", err)
 		return 1
@@ -117,8 +116,8 @@ func runConnectGit(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		fmt.Fprintf(stdout, "ccd connect-git: %s is %s for this agent; git talks to the platform directly. "+
-			"Ask with `ccd connect-git --request %s` (or the connector_request tool), then run this again.\n",
-			name, c.Grant, name)
+			"Ask for it with the connector_request tool, then run this again once it is approved.\n",
+			name, c.Grant)
 		return exitNotApproved
 	}
 	if err := setGitRouting(proxy, c.Hosts, token); err != nil {
@@ -130,20 +129,15 @@ func runConnectGit(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func fetchConnector(ctx context.Context, base, token, name string, request bool, reason string) (agentConnector, error) {
+// fetchConnector reads this agent's status for one connector. It is a GET and
+// files nothing.
+func fetchConnector(ctx context.Context, base, token, name string) (agentConnector, error) {
 	var c agentConnector
-	u := base + "/agent/connectors/" + url.PathEscape(name)
-	method, body := http.MethodGet, io.Reader(nil)
-	if request {
-		b, _ := json.Marshal(map[string]string{"reason": reason})
-		method, u, body = http.MethodPost, u+"/request", strings.NewReader(string(b))
-	}
-	req, err := http.NewRequestWithContext(ctx, method, u, body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/agent/connectors/"+url.PathEscape(name), nil)
 	if err != nil {
 		return c, err
 	}
 	req.Header.Set("X-Muster-Token", token)
-	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return c, fmt.Errorf("reaching muster: %w", err)
