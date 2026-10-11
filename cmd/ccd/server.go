@@ -48,6 +48,9 @@ type hookEvent struct {
 	// StopFailure only.
 	Error                string `json:"error"`
 	LastAssistantMessage string `json:"last_assistant_message"`
+	// Notification only: which notification ("permission_prompt" is the one
+	// read here).
+	NotificationType string `json:"notification_type"`
 }
 
 type pendingTurn struct {
@@ -99,7 +102,14 @@ type server struct {
 	sessionID      string
 	transcriptPath string // the session's transcript, as the last hook named it
 	busy           bool   // a prompt was submitted (by anyone) and has not stopped
-	pending        *pendingTurn
+	// awaitingApproval: the TUI showed a permission prompt (Notification
+	// permission_prompt) and no later hook says the session moved on. See
+	// blocked.go.
+	awaitingApproval bool
+	// blocked reports awaitingApproval to muster; nil when the pod is not
+	// offered muster's agent surface.
+	blocked *blockedReporter
+	pending *pendingTurn
 }
 
 func newServer(cfg serverConfig, term terminal, auth *authTracker) *server {
@@ -171,6 +181,7 @@ func (s *server) handleHook(w http.ResponseWriter, r *http.Request) {
 func (s *server) onHook(ev hookEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	defer s.trackApprovalLocked(ev)
 	switch strings.ToLower(ev.Event) {
 	case "sessionstart":
 		// SessionStart only fires once the CLI is past its first-run screens AND the
@@ -636,6 +647,8 @@ type health struct {
 	Supervisor *cliState `json:"supervisor,omitempty"`
 	Session    string    `json:"session"`
 	Busy       bool      `json:"busy"`
+	// AwaitingApproval: the session is blocked on a permission prompt.
+	AwaitingApproval bool `json:"awaiting_approval"`
 	authSnapshot
 }
 
@@ -674,6 +687,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	started, ended := s.sessionStarted, s.sessionEnded
 	h.Busy = s.busy
+	h.AwaitingApproval = s.awaitingApproval
 	s.mu.Unlock()
 	h.Session = s.sessionState(started, ended)
 	h.OK = h.Terminal == "ok" && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))

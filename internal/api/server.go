@@ -99,6 +99,11 @@ type Server struct {
 	// gatePort is the approval queue an agent checkpoint asks through. See gate.go.
 	gatePort GatePort
 
+	// approvals is the claude-code approval relay's in-memory ledger: which agent
+	// filed which request, and which agents report a blocked terminal. See
+	// approvals.go.
+	approvals approvalLedger
+
 	startedAt time.Time
 	now       func() time.Time
 
@@ -437,6 +442,7 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerRunbookRoutes(mux)
 	s.registerAgentSelfServiceRoutes(mux)
 	s.registerConnectorRoutes(mux)
+	s.registerApprovalRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are
