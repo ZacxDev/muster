@@ -110,7 +110,9 @@ test('an agent requests a connector, the operator enters the credential, the pro
   await save.click();
   await expect(page.locator('#connectors-notice')).toContainText('docs-sweeper approved');
   await expect(page.locator('[data-connector="fakehub"]')).toBeVisible();
-  await expect(page.locator('[data-connector="fakehub"] [data-secret-hint]')).toHaveText('••••6789');
+  // No fragment of the secret is shown back (the masked hint was removed 2026-10-10).
+  await expect(page.locator('[data-connector="fakehub"] [data-rotated]')).toContainText('rotated never');
+  await expect(page.locator('[data-secret-hint]')).toHaveCount(0);
   await expect(page.locator('[data-request-card], [data-connector-request="fakehub"]')).toHaveCount(0);
   expect(await page.content(), 'the page never shows the secret').not.toContain(FAKE_SECRET);
   await noHorizontalScroll(page);

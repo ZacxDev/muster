@@ -28,7 +28,7 @@ func TestTheCustomPlatformFormRenders(t *testing.T) {
 			Preset: "custom", Presets: []ConnectorPresetView{{Key: "github", Label: "GitHub", Hosts: []string{"api.github.com"}}}})
 	})
 	for _, want := range []string{`id="connector-hosts"`, `id="connector-scheme"`, `id="connector-secret"`, `type="password"`,
-		`name="request_id" value="9"`, "Save and approve", `id="expiry-new"`} {
+		`name="request_id" value="9"`, "Save and approve"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the custom form lacks %s", want)
 		}
@@ -54,13 +54,13 @@ func TestTheConnectorsPanelRendersEveryState(t *testing.T) {
 			Notice:   "saved",
 			Requests: []ConnectorRequestView{{ID: 1, AgentName: "a", Connector: "svc", Exists: true}, {ID: 2, AgentName: "b", Connector: "new-one"}},
 			Connectors: []ConnectorView{{Name: "svc", Platform: "custom", Hosts: []string{"api.example.com"}, Scheme: "header",
-				HeaderName: "X-Api-Key", SecretHint: "WXYZ", LastUsedAt: &used,
+				HeaderName: "X-Api-Key", LastUsedAt: &used,
 				Grants: []ConnectorGrantView{{ID: 3, AgentName: "a", Status: "approved"}}}},
 			Audit:      []ConnectorAuditView{{Kind: "proxy", AgentName: "a", Connector: "svc", Method: "GET", Host: "api.example.com", Path: "/x", Status: 200}},
 			EditorForm: &ConnectorFormView{Name: "x", Preset: "custom", Error: "bad host"},
 		})
 	})
-	for _, want := range []string{`data-approve="1"`, `data-enter-credential="2"`, `data-connector="svc"`, "••••WXYZ",
+	for _, want := range []string{`data-approve="1"`, `data-enter-credential="2"`, `data-connector="svc"`, "data-rotated",
 		`data-revoke="a"`, "GET api.example.com/x → 200", "bad host", `id="connector-form"`, "header X-Api-Key"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the panel lacks %q", want)

@@ -14,7 +14,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -127,13 +126,13 @@ func newFixture(t *testing.T, scheme connectors.Scheme) *fixture {
 	return f
 }
 
-func (f *fixture) approve(t *testing.T, c connectors.Caller, expires *time.Time) connectors.Grant {
+func (f *fixture) approve(t *testing.T, c connectors.Caller) connectors.Grant {
 	t.Helper()
 	g, _, err := f.store.RequestGrant(f.ctx, c.AgentID, "svc", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err = f.store.DecideGrant(f.ctx, g.ID, true, "operator", expires)
+	g, err = f.store.DecideGrant(f.ctx, g.ID, true, "operator")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +172,7 @@ func assertNoSecret(t *testing.T, w *httptest.ResponseRecorder) {
 
 func TestTheProxyForwardsToTheAllowlistedHostWithTheCredential(t *testing.T) {
 	f := newFixture(t, connectors.SchemeBasic)
-	f.approve(t, f.agentA, nil)
+	f.approve(t, f.agentA)
 	w := f.do(t, "GET", "/connect/svc/"+f.host+"/repos/o/r?per_page=5", nil)
 	if w.Code != 200 {
 		t.Fatalf("status %d: %s", w.Code, w.Body)
@@ -190,7 +189,7 @@ func TestTheProxyForwardsToTheAllowlistedHostWithTheCredential(t *testing.T) {
 
 func TestTheProxyRefusesAHostOutsideTheAllowlist(t *testing.T) {
 	f := newFixture(t, connectors.SchemeBearer)
-	f.approve(t, f.agentA, nil)
+	f.approve(t, f.agentA)
 	for _, h := range []string{"evil.fake.test:" + f.up.port(), "api.fake.test", "API.fake.test:1"} {
 		w := f.do(t, "GET", "/connect/svc/"+h+"/x", nil)
 		if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "allowlist") {
@@ -207,7 +206,7 @@ func TestTheProxyRefusesAHostOutsideTheAllowlist(t *testing.T) {
 // address is refused at dial time — the upstream never sees a byte.
 func TestTheProxyRefusesNonPublicDestinations(t *testing.T) {
 	f := newFixture(t, connectors.SchemeBearer)
-	f.approve(t, f.agentA, nil)
+	f.approve(t, f.agentA)
 	for name, addr := range map[string]netip.Addr{
 		"loopback":  netip.MustParseAddr("127.0.0.1"),
 		"private":   netip.AddrFrom4([4]byte{10, 9, 8, 7}),
@@ -233,7 +232,7 @@ func TestTheProxyRefusesNonPublicDestinations(t *testing.T) {
 
 func TestTheProxyNeverFollowsARedirectOffHost(t *testing.T) {
 	f := newFixture(t, connectors.SchemeBasic)
-	f.approve(t, f.agentA, nil)
+	f.approve(t, f.agentA)
 	evil := newUpstream(t)
 	evilURL := "http://evil.fake.test:" + evil.port() + "/steal"
 	f.up.handle = func(w http.ResponseWriter, r *http.Request) {
@@ -268,7 +267,7 @@ func TestTheProxyDropsTheCallersHeadersThatCarryIdentity(t *testing.T) {
 	for _, scheme := range []connectors.Scheme{connectors.SchemeBearer, connectors.SchemeHeader} {
 		t.Run(string(scheme), func(t *testing.T) {
 			f := newFixture(t, scheme)
-			f.approve(t, f.agentA, nil)
+			f.approve(t, f.agentA)
 			w := f.do(t, "POST", "/connect/svc/"+f.host+"/x", http.Header{
 				"X-Muster-Token":      {"tok-pa-0123456789"},
 				"Authorization":       {"Bearer agent-chosen"},
@@ -314,7 +313,7 @@ func TestTheProxyDropsTheCallersHeadersThatCarryIdentity(t *testing.T) {
 // the credential replaced before the agent sees it.
 func TestAnEchoingUpstreamCannotReturnTheCredential(t *testing.T) {
 	f := newFixture(t, connectors.SchemeBasic)
-	f.approve(t, f.agentA, nil)
+	f.approve(t, f.agentA)
 	f.up.handle = func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		dec, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(auth, "Basic "))
@@ -330,7 +329,7 @@ func TestAnEchoingUpstreamCannotReturnTheCredential(t *testing.T) {
 
 func TestAnUnreachableUpstreamErrorCarriesNoSecret(t *testing.T) {
 	f := newFixture(t, connectors.SchemeBasic)
-	f.approve(t, f.agentA, nil)
+	f.approve(t, f.agentA)
 	f.up.srv.Close()
 	w := f.do(t, "GET", "/connect/svc/"+f.host+"/x", nil)
 	if w.Code != http.StatusBadGateway {
@@ -369,7 +368,7 @@ func TestAnAgentWithoutAGrantIsRefusedAndARequestIsFiled(t *testing.T) {
 func TestADeniedAgentIsRefusedWithoutAFreshPrompt(t *testing.T) {
 	f := newFixture(t, connectors.SchemeBasic)
 	g, _, _ := f.store.RequestGrant(f.ctx, f.agentA.AgentID, "svc", "")
-	if _, err := f.store.DecideGrant(f.ctx, g.ID, false, "operator", nil); err != nil {
+	if _, err := f.store.DecideGrant(f.ctx, g.ID, false, "operator"); err != nil {
 		t.Fatal(err)
 	}
 	w := f.do(t, "GET", "/connect/svc/"+f.host+"/x", nil)
@@ -386,7 +385,7 @@ func TestADeniedAgentIsRefusedWithoutAFreshPrompt(t *testing.T) {
 
 func TestARevokedGrantStopsWorking(t *testing.T) {
 	f := newFixture(t, connectors.SchemeBasic)
-	g := f.approve(t, f.agentA, nil)
+	g := f.approve(t, f.agentA)
 	if w := f.do(t, "GET", "/connect/svc/"+f.host+"/x", nil); w.Code != 200 {
 		t.Fatalf("control: approved status %d", w.Code)
 	}
@@ -400,18 +399,9 @@ func TestARevokedGrantStopsWorking(t *testing.T) {
 	if n := f.up.hits.Load(); n != 1 {
 		t.Fatalf("upstream hits = %d, want only the control's 1", n)
 	}
-}
-
-func TestAnExpiredGrantStopsWorkingAndRefilesARequest(t *testing.T) {
-	f := newFixture(t, connectors.SchemeBasic)
-	past := time.Now().Add(-time.Minute)
-	f.approve(t, f.agentA, &past)
-	w := f.do(t, "GET", "/connect/svc/"+f.host+"/x", nil)
-	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"grant":"pending"`) {
-		t.Fatalf("expired: status %d %s, want 403 with a fresh pending request", w.Code, w.Body)
-	}
-	if f.filed.Load() != 1 || f.up.hits.Load() != 0 {
-		t.Fatalf("filed=%d hits=%d", f.filed.Load(), f.up.hits.Load())
+	// Like a denial, a revocation is not re-filed by a retrying client.
+	if n := f.filed.Load(); n != 0 {
+		t.Fatalf("a revocation was re-filed as %d new request(s) by a retry", n)
 	}
 }
 
@@ -419,7 +409,7 @@ func TestAnExpiredGrantStopsWorkingAndRefilesARequest(t *testing.T) {
 // identical request is refused (and files B's OWN request).
 func TestAnotherAgentCannotUseAGrantItDoesNotHold(t *testing.T) {
 	f := newFixture(t, connectors.SchemeBasic)
-	f.approve(t, f.agentA, nil)
+	f.approve(t, f.agentA)
 	w := f.do(t, "GET", "/connect/svc/"+f.host+"/x", http.Header{"X-Test-Agent": {"b"}})
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("agent B: status %d %s", w.Code, w.Body)
@@ -438,7 +428,7 @@ func TestAnotherAgentCannotUseAGrantItDoesNotHold(t *testing.T) {
 
 func TestEveryProxiedRequestIsAudited(t *testing.T) {
 	f := newFixture(t, connectors.SchemeBasic)
-	f.approve(t, f.agentA, nil)
+	f.approve(t, f.agentA)
 	f.do(t, "DELETE", "/connect/svc/"+f.host+"/repos/o/r?token=should-not-be-logged", nil)
 	list, err := f.store.ListAudit(f.ctx, 10)
 	if err != nil {

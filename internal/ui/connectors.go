@@ -17,8 +17,8 @@ import (
 //
 // 🔴 NO VIEW HERE CAN RENDER A SECRET, BECAUSE NO VIEW TYPE HAS A FIELD FOR ONE.
 // The secret is write-only: it travels from the operator's form to the store and
-// is never read back into a page. SecretHint (at most the last four characters)
-// is the whole of what the operator sees again.
+// is never read back into a page — not even a masked fragment of it. What the
+// operator sees again is when it was created and last rotated.
 //
 // ⚠ THE CREDENTIAL FORM LIVES IN #connector-editor, WHICH NOTHING REFRESHES.
 // The request list polls and listens for SSE; a form inside it would be wiped
@@ -34,7 +34,6 @@ type ConnectorView struct {
 	Scheme     string
 	HeaderName string
 	Username   string
-	SecretHint string
 	CreatedAt  time.Time
 	RotatedAt  *time.Time
 	LastUsedAt *time.Time
@@ -45,8 +44,7 @@ type ConnectorView struct {
 type ConnectorGrantView struct {
 	ID          int64
 	AgentName   string
-	Status      string // pending | approved | expired
-	ExpiresAt   *time.Time
+	Status      string // pending | approved
 	LastUsedAt  *time.Time
 	RequestedAt time.Time
 }
@@ -221,7 +219,6 @@ func connectorRequestCard(r ConnectorRequestView) g.Node {
 			Class("mt-3 flex flex-wrap items-center gap-2"),
 			hx("hx-post", "/ui/connector-requests/"+ids+"/approve"),
 			g.Group(panelTarget()),
-			expirySelect("expiry-"+ids),
 			Button(Type("submit"), Class(btnPrimary), g.Attr("data-approve", ids), g.Text("Approve")),
 			Button(Type("button"), Class(btnDanger), g.Attr("data-deny", ids),
 				hx("hx-post", "/ui/connector-requests/"+ids+"/deny"), g.Group(panelTarget()), g.Text("Deny")),
@@ -252,19 +249,6 @@ func connectorRequestCard(r ConnectorRequestView) g.Node {
 		g.If(!r.Exists, P(Class("mt-2 text-xs text-muted"), g.Text("No connector by that name exists yet. Enter a credential to create it and approve this request in one step."))),
 		g.If(r.Reason != "", P(Class("mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted"), g.Text(r.Reason))),
 		actions,
-	)
-}
-
-func expirySelect(id string) g.Node {
-	return Select(
-		ID(id), Name("expiry"),
-		g.Attr("aria-label", "Grant expires"),
-		Class("min-h-[44px] rounded-lg border-0 bg-bg px-2.5 py-1.5 text-xs text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
-		Option(Value(""), g.Text("Until the agent is destroyed")),
-		Option(Value("1h"), g.Text("For 1 hour")),
-		Option(Value("24h"), g.Text("For 24 hours")),
-		Option(Value("168h"), g.Text("For 7 days")),
-		Option(Value("720h"), g.Text("For 30 days")),
 	)
 }
 
@@ -348,7 +332,6 @@ func ConnectorForm(f ConnectorFormView) g.Node {
 			labelledFieldFor("connector-secret", secretLabel,
 				Input(ID("connector-secret"), Name("secret"), Type("password"), Required(), g.Attr("minlength", "8"),
 					g.Attr("autocomplete", "new-password"), g.Attr("spellcheck", "false"), Class(fieldCls))),
-			g.If(f.RequestID != 0, labelledFieldFor("expiry-new", "Grant this agent access", expirySelect("expiry-new"))),
 			Div(
 				Class("flex flex-wrap items-center gap-2"),
 				Button(Type("submit"), Class(btnPrimary), g.Attr("data-save-connector", ""), hx("hx-disabled-elt", "this"),
@@ -419,10 +402,6 @@ func connectorCard(c ConnectorView) g.Node {
 	case "basic":
 		auth = "basic (" + c.Username + ")"
 	}
-	hint := "••••"
-	if c.SecretHint != "" {
-		hint = "••••" + c.SecretHint
-	}
 	return Div(
 		Class("min-w-0 rounded-xl bg-bg/50 p-3 ring-1 ring-inset ring-line"),
 		g.Attr("data-connector", c.Name),
@@ -430,13 +409,12 @@ func connectorCard(c ConnectorView) g.Node {
 			Class("flex flex-wrap items-center gap-2"),
 			Span(Class("rounded-md bg-st-review-bg px-2 py-0.5 text-xs font-semibold text-st-review-fg ring-1 ring-inset ring-st-review-fg/40"), g.Text(c.Name)),
 			Span(Class("text-xs text-muted"), g.Text(c.Platform)),
-			Span(Class("font-mono text-xs text-muted"), g.Attr("data-secret-hint", ""), g.Text(hint)),
 		),
 		P(Class("mt-1 break-all text-xs text-muted"), g.Text(strings.Join(c.Hosts, ", ")+" · "+auth)),
 		P(Class("mt-1 flex flex-wrap gap-x-3 text-xs text-muted"),
 			Span(g.Text("created "), cardTime(c.CreatedAt)),
 			Span(g.Attr("data-last-used", ""), g.Text("last used "), optTime(c.LastUsedAt, "never")),
-			g.If(c.RotatedAt != nil, Span(g.Text("rotated "), optTime(c.RotatedAt, ""))),
+			Span(g.Attr("data-rotated", ""), g.Text("rotated "), optTime(c.RotatedAt, "never")),
 		),
 		g.If(len(c.Grants) > 0, Div(Class("mt-2 flex flex-col gap-1"), g.Map(c.Grants, connectorGrantRow))),
 		g.If(len(c.Grants) == 0, P(Class("mt-2 text-xs text-muted"), g.Text("No agent holds a grant."))),
@@ -455,16 +433,11 @@ func connectorCard(c ConnectorView) g.Node {
 
 func connectorGrantRow(gv ConnectorGrantView) g.Node {
 	ids := strconv.FormatInt(gv.ID, 10)
-	exp := "no expiry"
-	if gv.ExpiresAt != nil {
-		exp = "until " + gv.ExpiresAt.UTC().Format("2006-01-02 15:04 UTC")
-	}
 	return Div(
 		Class("flex flex-wrap items-center gap-2 rounded-lg bg-s1/60 px-2 py-1"),
 		g.Attr("data-grant", gv.AgentName),
 		Span(Class("min-w-0 break-all text-xs font-semibold text-fg"), g.Text(gv.AgentName)),
 		Span(Class("text-xs text-muted"), g.Attr("data-grant-status", gv.Status), g.Text(gv.Status)),
-		g.If(gv.Status != "pending", Span(Class("text-xs text-muted"), g.Text(exp))),
 		Span(Class("flex-1")),
 		Button(Type("button"), Class("press min-h-[44px] rounded-lg px-2 text-xs font-medium text-fg2 transition hover:text-st-error-fg"),
 			g.Attr("data-revoke", gv.AgentName),

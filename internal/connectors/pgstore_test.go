@@ -74,10 +74,7 @@ func createGitHub(t *testing.T, ctx context.Context, s connectors.Store) connect
 func TestTheStoredRowNeverContainsThePlaintext(t *testing.T) {
 	ctx, pool := testPool(t)
 	s := newStore(t, pool, key(1))
-	c := createGitHub(t, ctx, s)
-	if c.SecretHint != "6789" {
-		t.Fatalf("hint = %q", c.SecretHint)
-	}
+	createGitHub(t, ctx, s)
 	var row string
 	if err := pool.QueryRow(ctx, `SELECT row_to_json(c)::text FROM connectors c WHERE name='github'`).Scan(&row); err != nil {
 		t.Fatal(err)
@@ -156,16 +153,12 @@ func TestGrantLifecycle(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("pending = %d, want 1", len(pending))
 	}
-	exp := time.Now().Add(time.Hour)
-	d, err := s.DecideGrant(ctx, g.ID, true, "operator", &exp)
-	if err != nil || d.Status != connectors.StatusApproved || d.ExpiresAt == nil || !d.Usable(time.Now()) {
+	d, err := s.DecideGrant(ctx, g.ID, true, "operator")
+	if err != nil || d.Status != connectors.StatusApproved || !d.Usable() {
 		t.Fatalf("approve = %+v %v", d, err)
 	}
-	if _, err := s.DecideGrant(ctx, g.ID, false, "operator", nil); !errors.Is(err, connectors.ErrNotPending) {
+	if _, err := s.DecideGrant(ctx, g.ID, false, "operator"); !errors.Is(err, connectors.ErrNotPending) {
 		t.Fatalf("re-deciding = %v, want ErrNotPending", err)
-	}
-	if d.Usable(exp.Add(time.Second)) {
-		t.Fatal("a grant is usable after its expiry")
 	}
 	r, err := s.RevokeGrant(ctx, g.ID, "operator")
 	if err != nil || r.Status != connectors.StatusRevoked {
@@ -184,7 +177,7 @@ func TestDeletingAConnectorDeletesItsGrants(t *testing.T) {
 	a := seedAgent(t, ctx, pool, "grant-agent-del", "tok-del-0123456789")
 	createGitHub(t, ctx, s)
 	g, _, _ := s.RequestGrant(ctx, a, "github", "")
-	if _, err := s.DecideGrant(ctx, g.ID, true, "operator", nil); err != nil {
+	if _, err := s.DecideGrant(ctx, g.ID, true, "operator"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteConnector(ctx, "github"); err != nil {

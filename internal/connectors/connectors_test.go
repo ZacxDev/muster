@@ -75,18 +75,6 @@ func TestNewConnectorValidate(t *testing.T) {
 	}
 }
 
-func TestHintShowsAtMostFourCharacters(t *testing.T) {
-	if h := Hint("FAKE-hint-fixture-WXYZ"); h != "WXYZ" {
-		t.Fatalf("Hint = %q", h)
-	}
-	if h := Hint("short-secret"); h != "cret" {
-		t.Fatalf("Hint = %q", h)
-	}
-	if h := Hint("elevenchars"); h != "" {
-		t.Fatalf("a secret under 12 characters must show no hint, got %q", h)
-	}
-}
-
 func TestGitHubPresetCoversTheAPIAndGit(t *testing.T) {
 	p, ok := PresetFor("github")
 	if !ok {

@@ -224,7 +224,7 @@ func TestTheAgentRequestsAndTheOperatorEntersTheCredential(t *testing.T) {
 	}
 
 	body, hdr := form(url.Values{"request_id": {strconv.FormatInt(v.GrantID, 10)}, "preset": {"github"},
-		"name": {"github"}, "secret": {connTestSecret}, "expiry": {""}})
+		"name": {"github"}, "secret": {connTestSecret}})
 	w = f.call(t, "POST", "/connectors", body, merge(f.operator(), hdr))
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "flow-agent approved") {
 		t.Fatalf("create+approve: %d %s", w.Code, w.Body)
@@ -233,8 +233,8 @@ func TestTheAgentRequestsAndTheOperatorEntersTheCredential(t *testing.T) {
 		t.Fatal("the create response echoes the secret")
 	}
 	panel = f.call(t, "GET", "/ui/connectors", nil, f.operator())
-	if strings.Contains(panel.Body.String(), connTestSecret) || !strings.Contains(panel.Body.String(), "••••6789") {
-		t.Fatalf("the panel leaks the secret or lacks the hint:\n%s", panel.Body)
+	if strings.Contains(panel.Body.String(), connTestSecret) || strings.Contains(panel.Body.String(), "••••") {
+		t.Fatalf("the panel leaks the secret or a fragment of it:\n%s", panel.Body)
 	}
 
 	w = f.call(t, "GET", "/agent/connectors/github", nil, agent)
@@ -243,8 +243,8 @@ func TestTheAgentRequestsAndTheOperatorEntersTheCredential(t *testing.T) {
 		t.Fatalf("status after approval: %s", w.Body)
 	}
 	list := f.call(t, "GET", "/agent/connectors", nil, agent)
-	if strings.Contains(list.Body.String(), connTestSecret) || strings.Contains(list.Body.String(), "6789\"") {
-		t.Fatalf("the agent listing carries the secret or its hint: %s", list.Body)
+	if strings.Contains(list.Body.String(), connTestSecret) || strings.Contains(list.Body.String(), "secretHint") {
+		t.Fatalf("the agent listing carries the secret or a fragment of it: %s", list.Body)
 	}
 	audit, _ := f.store.ListAudit(f.ctx, 10)
 	var decisions []string
@@ -271,11 +271,10 @@ func TestTheOperatorDeniesAndRevokes(t *testing.T) {
 		t.Fatalf("deny: %d %+v", w.Code, got)
 	}
 	g2, _, _ := f.store.RequestGrant(f.ctx, a, "svc", "")
-	body, hdr := form(url.Values{"expiry": {"24h"}})
-	w = f.call(t, "POST", "/ui/connector-requests/"+strconv.FormatInt(g2.ID, 10)+"/approve", body, merge(f.operator(), hdr))
+	w = f.call(t, "POST", "/ui/connector-requests/"+strconv.FormatInt(g2.ID, 10)+"/approve", nil, f.operator())
 	got, _ := f.store.GetGrant(f.ctx, g2.ID)
-	if w.Code != 200 || got.Status != "approved" || got.ExpiresAt == nil || time.Until(*got.ExpiresAt) < 23*time.Hour {
-		t.Fatalf("approve with expiry: %d %+v", w.Code, got)
+	if w.Code != 200 || got.Status != "approved" {
+		t.Fatalf("approve: %d %+v", w.Code, got)
 	}
 	w = f.call(t, "DELETE", "/connector-grants/"+strconv.FormatInt(g2.ID, 10), nil, f.operator())
 	if got, _ := f.store.GetGrant(f.ctx, g2.ID); w.Code != 200 || got.Status != "revoked" {

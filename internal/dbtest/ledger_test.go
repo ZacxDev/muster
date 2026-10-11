@@ -117,8 +117,7 @@ var pgBackedPackages = []string{
 	"internal/ccpool",
 	// Added by the connector store. "The stored row never contains the plaintext"
 	// and "the wrong key fails closed" are claims about what reaches Postgres, and
-	// the proxy's grant checks are SQL (the partial unique index, the expiry
-	// retirement) — only a real database can falsify either.
+	// the proxy's grant checks are SQL (the partial unique index) — only a real database can falsify either.
 	"internal/connectors",
 	"internal/db",
 	"internal/notes",

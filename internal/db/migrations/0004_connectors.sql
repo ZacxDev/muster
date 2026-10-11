@@ -8,7 +8,6 @@
 -- 🔴 THE SECRET IS STORED ONLY AS AES-256-GCM CIPHERTEXT (secret_ciphertext),
 -- sealed with MUSTER_CONNECTOR_ENCRYPTION_KEY and bound to the connector's NAME
 -- as additional data, so a ciphertext copied onto another row does not open.
--- secret_hint is the last four characters at most, for the operator's eye.
 --
 -- 🔴 GRANTS ARE KEYED BY CONNECTOR *NAME*, NOT BY connectors.id, BECAUSE AN
 -- AGENT MAY ASK FOR A CONNECTOR THAT DOES NOT EXIST YET — the operator's answer
@@ -29,7 +28,6 @@ CREATE TABLE IF NOT EXISTS connectors (
     auth_header       TEXT        NOT NULL DEFAULT '',
     auth_username     TEXT        NOT NULL DEFAULT '',
     secret_ciphertext BYTEA       NOT NULL,
-    secret_hint       TEXT        NOT NULL DEFAULT '',
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     rotated_at        TIMESTAMPTZ,
@@ -47,7 +45,6 @@ CREATE TABLE IF NOT EXISTS connector_grants (
     requested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     decided_at     TIMESTAMPTZ,
     decided_by     TEXT        NOT NULL DEFAULT '',
-    expires_at     TIMESTAMPTZ,
     last_used_at   TIMESTAMPTZ
 );
 

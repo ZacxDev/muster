@@ -179,16 +179,15 @@ func (s *Server) handleConnectProxy(w http.ResponseWriter, r *http.Request) {
 
 // --- the agent JSON API ------------------------------------------------------------------
 
-// AgentConnectorView is what an agent sees of one connector. No secret, no hint.
+// AgentConnectorView is what an agent sees of one connector. No secret.
 type AgentConnectorView struct {
 	Name     string   `json:"name"`
 	Exists   bool     `json:"exists"`
 	Platform string   `json:"platform,omitempty"`
 	Hosts    []string `json:"hosts,omitempty"`
-	// Grant is this agent's status: none | pending | approved | denied | revoked | expired.
-	Grant     string     `json:"grant"`
-	GrantID   int64      `json:"grantId,omitempty"`
-	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
+	// Grant is this agent's status: none | pending | approved | denied | revoked.
+	Grant   string `json:"grant"`
+	GrantID int64  `json:"grantId,omitempty"`
 	// Usage is how to call it once approved.
 	Usage string `json:"usage,omitempty"`
 }
@@ -215,7 +214,7 @@ func (s *Server) agentConnectorView(ctx context.Context, a agents.Agent, name st
 	g, err := s.ext.Connectors.LatestGrant(ctx, a.ID, name)
 	switch {
 	case err == nil:
-		v.Grant, v.GrantID, v.ExpiresAt = g.EffectiveStatus(time.Now()), g.ID, g.ExpiresAt
+		v.Grant, v.GrantID = g.Status, g.ID
 	case !errors.Is(err, connectors.ErrNotFound):
 		return v, err
 	}
@@ -332,7 +331,7 @@ func (s *Server) AgentRequestConnector(ctx context.Context, a agents.Agent, name
 	if err := connectors.ValidateName(name); err != nil {
 		return AgentConnectorView{}, false, err
 	}
-	if g, err := s.ext.Connectors.LatestGrant(ctx, a.ID, name); err == nil && g.Usable(time.Now()) {
+	if g, err := s.ext.Connectors.LatestGrant(ctx, a.ID, name); err == nil && g.Usable() {
 		v, err := s.agentConnectorView(ctx, a, name)
 		return v, false, err
 	}
@@ -461,16 +460,15 @@ func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsCont
 	if err != nil {
 		return err
 	}
-	now := time.Now()
 	by := map[string][]ui.ConnectorGrantView{}
 	for _, g := range grants {
 		by[g.Connector] = append(by[g.Connector], ui.ConnectorGrantView{ID: g.ID, AgentName: g.AgentName,
-			Status: g.EffectiveStatus(now), ExpiresAt: g.ExpiresAt, LastUsedAt: g.LastUsedAt, RequestedAt: g.RequestedAt})
+			Status: g.Status, LastUsedAt: g.LastUsedAt, RequestedAt: g.RequestedAt})
 	}
 	c.Connectors = make([]ui.ConnectorView, 0, len(list))
 	for _, k := range list {
 		c.Connectors = append(c.Connectors, ui.ConnectorView{Name: k.Name, Platform: k.Platform, Hosts: k.Hosts,
-			Scheme: string(k.Scheme), HeaderName: k.HeaderName, Username: k.Username, SecretHint: k.SecretHint,
+			Scheme: string(k.Scheme), HeaderName: k.HeaderName, Username: k.Username,
 			CreatedAt: k.CreatedAt, RotatedAt: k.RotatedAt, LastUsedAt: k.LastUsedAt, Grants: by[k.Name]})
 	}
 	audit, err := s.ext.Connectors.ListAudit(ctx, 25)
@@ -580,19 +578,6 @@ func (s *Server) handleConnectorRotateForm(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-// parseExpiry turns the approve form's expiry choice into an absolute time.
-func parseExpiry(v string, now time.Time) (*time.Time, error) {
-	if v == "" {
-		return nil, nil
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil || d <= 0 || d > 366*24*time.Hour {
-		return nil, errors.New("invalid expiry")
-	}
-	t := now.Add(d)
-	return &t, nil
-}
-
 // handleConnectorCreate creates a connector from the form and, when the form
 // answers a pending request, approves that request in the same step.
 func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
@@ -613,11 +598,6 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 	fail := func(msg string) {
 		f.Error = msg
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{EditorForm: &f})
-	}
-	expiresAt, err := parseExpiry(r.PostForm.Get("expiry"), time.Now())
-	if err != nil {
-		fail("Choose a valid expiry.")
-		return
 	}
 	nc := connectors.NewConnector{Name: f.Name, Secret: r.PostForm.Get("secret")}
 	if p, ok := connectors.PresetFor(f.Preset); ok {
@@ -641,7 +621,7 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 	s.auditGrant(ctx, connectors.Grant{Connector: c.Name}, "connector created by the operator")
 	notice := "Connector " + c.Name + " saved."
 	if f.RequestID != 0 {
-		g, err := s.ext.Connectors.DecideGrant(ctx, f.RequestID, true, "operator", expiresAt)
+		g, err := s.ext.Connectors.DecideGrant(ctx, f.RequestID, true, "operator")
 		if err != nil {
 			s.logger.Printf("connectors: approve %d after create: %v", f.RequestID, err)
 			s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice,
@@ -717,9 +697,7 @@ func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	_ = r.ParseForm()
 	ctx := r.Context()
-	var expiresAt *time.Time
 	if approve {
 		g, err := s.ext.Connectors.GetGrant(ctx, id)
 		if err != nil {
@@ -731,12 +709,8 @@ func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, 
 				" does not exist; enter a credential for it instead."})
 			return
 		}
-		if expiresAt, err = parseExpiry(r.PostForm.Get("expiry"), time.Now()); err != nil {
-			s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "Choose a valid expiry."})
-			return
-		}
 	}
-	g, err := s.ext.Connectors.DecideGrant(ctx, id, approve, "operator", expiresAt)
+	g, err := s.ext.Connectors.DecideGrant(ctx, id, approve, "operator")
 	switch {
 	case errors.Is(err, connectors.ErrNotPending), errors.Is(err, connectors.ErrNotFound):
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "That request was already decided."})

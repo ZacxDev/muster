@@ -29,13 +29,13 @@ func NewPG(pool *pgxpool.Pool, key []byte) (*PGStore, error) {
 
 var _ Store = (*PGStore)(nil)
 
-const connectorCols = `id, name, platform, hosts, auth_scheme, auth_header, auth_username, secret_hint,
+const connectorCols = `id, name, platform, hosts, auth_scheme, auth_header, auth_username,
 	created_at, updated_at, rotated_at, last_used_at`
 
 func scanConnector(row pgx.Row) (Connector, error) {
 	var c Connector
 	var scheme string
-	err := row.Scan(&c.ID, &c.Name, &c.Platform, &c.Hosts, &scheme, &c.HeaderName, &c.Username, &c.SecretHint,
+	err := row.Scan(&c.ID, &c.Name, &c.Platform, &c.Hosts, &scheme, &c.HeaderName, &c.Username,
 		&c.CreatedAt, &c.UpdatedAt, &c.RotatedAt, &c.LastUsedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Connector{}, ErrNotFound
@@ -79,10 +79,10 @@ func (s *PGStore) CreateConnector(ctx context.Context, nc NewConnector) (Connect
 		return Connector{}, err
 	}
 	c, err := scanConnector(s.pool.QueryRow(ctx, `
-		INSERT INTO connectors (name, platform, hosts, auth_scheme, auth_header, auth_username, secret_ciphertext, secret_hint)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO connectors (name, platform, hosts, auth_scheme, auth_header, auth_username, secret_ciphertext)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING `+connectorCols,
-		nc.Name, nc.Platform, nc.Hosts, string(nc.Scheme), nc.HeaderName, nc.Username, ct, Hint(nc.Secret)))
+		nc.Name, nc.Platform, nc.Hosts, string(nc.Scheme), nc.HeaderName, nc.Username, ct))
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 		return Connector{}, fmt.Errorf("%w: a connector named %q already exists", ErrInvalid, nc.Name)
@@ -101,8 +101,8 @@ func (s *PGStore) RotateSecret(ctx context.Context, name, secret string) error {
 		return err
 	}
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE connectors SET secret_ciphertext=$2, secret_hint=$3, rotated_at=now(), updated_at=now()
-		WHERE name=$1`, name, ct, Hint(secret))
+		UPDATE connectors SET secret_ciphertext=$2, rotated_at=now(), updated_at=now()
+		WHERE name=$1`, name, ct)
 	if err != nil {
 		return err
 	}
@@ -141,7 +141,7 @@ func (s *PGStore) Credential(ctx context.Context, name string) (Connector, strin
 	var c Connector
 	var scheme string
 	err := s.pool.QueryRow(ctx, `SELECT `+connectorCols+`, secret_ciphertext FROM connectors WHERE name=$1`, name).
-		Scan(&c.ID, &c.Name, &c.Platform, &c.Hosts, &scheme, &c.HeaderName, &c.Username, &c.SecretHint,
+		Scan(&c.ID, &c.Name, &c.Platform, &c.Hosts, &scheme, &c.HeaderName, &c.Username,
 			&c.CreatedAt, &c.UpdatedAt, &c.RotatedAt, &c.LastUsedAt, &ct)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Connector{}, "", ErrNotFound
@@ -166,14 +166,14 @@ func (s *PGStore) TouchConnector(ctx context.Context, name string) error {
 // --- grants -----------------------------------------------------------------------
 
 const grantCols = `g.id, g.agent_id, coalesce(a.name, ''), g.connector_name, g.status, g.reason, g.requested_at,
-	g.decided_at, g.decided_by, g.expires_at, g.last_used_at`
+	g.decided_at, g.decided_by, g.last_used_at`
 
 const grantFrom = ` FROM connector_grants g LEFT JOIN agents a ON a.id = g.agent_id`
 
 func scanGrant(row pgx.Row) (Grant, error) {
 	var g Grant
 	err := row.Scan(&g.ID, &g.AgentID, &g.AgentName, &g.Connector, &g.Status, &g.Reason, &g.RequestedAt,
-		&g.DecidedAt, &g.DecidedBy, &g.ExpiresAt, &g.LastUsedAt)
+		&g.DecidedAt, &g.DecidedBy, &g.LastUsedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Grant{}, ErrNotFound
 	}
@@ -198,22 +198,13 @@ func (s *PGStore) queryGrants(ctx context.Context, where string, args ...any) ([
 }
 
 // RequestGrant returns the live grant for (agent, connector) or files a pending
-// one. An approved grant past its expiry is not live: it is marked revoked and a
-// fresh pending request is filed.
+// one.
 func (s *PGStore) RequestGrant(ctx context.Context, agentID int64, connector, reason string) (Grant, bool, error) {
 	if err := ValidateName(connector); err != nil {
 		return Grant{}, false, err
 	}
 	if len(reason) > 2000 {
 		reason = reason[:2000]
-	}
-	// Retire an expired approval first, so the partial unique index admits the new
-	// pending row.
-	if _, err := s.pool.Exec(ctx, `
-		UPDATE connector_grants SET status='revoked', decided_by='expired', decided_at=now()
-		WHERE agent_id=$1 AND connector_name=$2 AND status='approved' AND expires_at IS NOT NULL AND expires_at <= now()`,
-		agentID, connector); err != nil {
-		return Grant{}, false, err
 	}
 	var id int64
 	err := s.pool.QueryRow(ctx, `
@@ -245,16 +236,14 @@ func (s *PGStore) GetGrant(ctx context.Context, id int64) (Grant, error) {
 }
 
 // DecideGrant approves or denies a pending grant.
-func (s *PGStore) DecideGrant(ctx context.Context, id int64, approve bool, by string, expiresAt *time.Time) (Grant, error) {
+func (s *PGStore) DecideGrant(ctx context.Context, id int64, approve bool, by string) (Grant, error) {
 	status := StatusDenied
 	if approve {
 		status = StatusApproved
-	} else {
-		expiresAt = nil
 	}
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE connector_grants SET status=$2, decided_by=$3, decided_at=now(), expires_at=$4
-		WHERE id=$1 AND status='pending'`, id, status, by, expiresAt)
+		UPDATE connector_grants SET status=$2, decided_by=$3, decided_at=now()
+		WHERE id=$1 AND status='pending'`, id, status, by)
 	if err != nil {
 		return Grant{}, err
 	}

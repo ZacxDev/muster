@@ -11,8 +11,9 @@
 // 🔴 ACCESS IS PER AGENT, APPROVED ON FIRST USE. Any agent may ASK for any
 // connector by name; the first ask files a pending [Grant] and the operator is
 // prompted. Once approved, that agent keeps access until it is destroyed (the
-// grant row cascades with the agent), the grant is revoked, or the grant's
-// optional expiry passes. A denial is final for that request.
+// grant row cascades with the agent), the grant is revoked, or the connector is
+// deleted (its grants go with it). There is no time-based expiry: those three
+// are the whole model. A denial is final for that request.
 //
 // ⚠ HTTP ONLY. HTTPS APIs and git's smart-HTTP protocol go through the proxy.
 // Non-HTTP platforms (a database, SSH) are out of scope: a future "handout"
@@ -76,7 +77,6 @@ type Connector struct {
 	Scheme     Scheme     `json:"scheme"`
 	HeaderName string     `json:"headerName,omitempty"`
 	Username   string     `json:"username,omitempty"`
-	SecretHint string     `json:"secretHint"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	UpdatedAt  time.Time  `json:"updatedAt"`
 	RotatedAt  *time.Time `json:"rotatedAt,omitempty"`
@@ -108,27 +108,11 @@ type Grant struct {
 	RequestedAt time.Time  `json:"requestedAt"`
 	DecidedAt   *time.Time `json:"decidedAt,omitempty"`
 	DecidedBy   string     `json:"decidedBy,omitempty"`
-	ExpiresAt   *time.Time `json:"expiresAt,omitempty"`
 	LastUsedAt  *time.Time `json:"lastUsedAt,omitempty"`
 }
 
-// Usable reports whether the grant currently authorises use: approved and not
-// expired at now.
-func (g Grant) Usable(now time.Time) bool {
-	if g.Status != StatusApproved {
-		return false
-	}
-	return g.ExpiresAt == nil || now.Before(*g.ExpiresAt)
-}
-
-// EffectiveStatus is Status, except that an approved grant past its expiry
-// reads "expired".
-func (g Grant) EffectiveStatus(now time.Time) string {
-	if g.Status == StatusApproved && !g.Usable(now) {
-		return "expired"
-	}
-	return g.Status
-}
+// Usable reports whether the grant currently authorises use: it is approved.
+func (g Grant) Usable() bool { return g.Status == StatusApproved }
 
 // AuditEntry is one line of the audit trail. It carries no body and no header.
 type AuditEntry struct {
@@ -175,7 +159,7 @@ type Store interface {
 	LatestGrant(ctx context.Context, agentID int64, connector string) (Grant, error)
 	GetGrant(ctx context.Context, id int64) (Grant, error)
 	// DecideGrant approves or denies a PENDING grant; ErrNotPending otherwise.
-	DecideGrant(ctx context.Context, id int64, approve bool, by string, expiresAt *time.Time) (Grant, error)
+	DecideGrant(ctx context.Context, id int64, approve bool, by string) (Grant, error)
 	RevokeGrant(ctx context.Context, id int64, by string) (Grant, error)
 	ListPendingGrants(ctx context.Context) ([]Grant, error)
 	// ListGrants returns every pending and approved grant (the live set).
@@ -323,15 +307,6 @@ func ValidateSecret(s string) error {
 		return fmt.Errorf("%w: the secret is longer than 8192 bytes", ErrInvalid)
 	}
 	return nil
-}
-
-// Hint is the masked form shown to the operator: the last four characters of a
-// secret at least 12 long, else nothing.
-func Hint(secret string) string {
-	if len(secret) < 12 {
-		return ""
-	}
-	return secret[len(secret)-4:]
 }
 
 // --- presets --------------------------------------------------------------------

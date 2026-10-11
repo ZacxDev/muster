@@ -171,21 +171,12 @@ type Proxy struct {
 	// OnGrantRequested is called (synchronously; keep it cheap) when a proxied
 	// request files a NEW pending grant, so the operator can be prompted.
 	OnGrantRequested func(Grant)
-	// Now defaults to time.Now.
-	Now func() time.Time
 
 	transport http.RoundTripper
 }
 
 // SetTransport overrides the upstream transport (tests).
 func (p *Proxy) SetTransport(rt http.RoundTripper) { p.transport = rt }
-
-func (p *Proxy) now() time.Time {
-	if p.Now != nil {
-		return p.Now()
-	}
-	return time.Now()
-}
 
 func (p *Proxy) logf(format string, args ...any) {
 	if p.Logger != nil {
@@ -198,7 +189,7 @@ type RefusalBody struct {
 	Error     string `json:"error"`
 	Connector string `json:"connector,omitempty"`
 	// Grant is the caller's grant status for the connector, when the refusal is
-	// about access: "pending", "denied", "revoked", "expired".
+	// about access: "pending", "denied", "revoked".
 	Grant   string `json:"grant,omitempty"`
 	GrantID int64  `json:"grantId,omitempty"`
 }
@@ -219,7 +210,7 @@ type Access struct {
 }
 
 // CheckAccess resolves whether the caller may use the connector now, filing a
-// pending request when the caller has never asked (or its approval expired).
+// pending request when the caller has never asked.
 //
 // 🔴 A DENIAL OR A REVOCATION IS NOT RE-FILED HERE. A retrying client would
 // otherwise turn one "no" into a prompt per retry. The agent must ask again
@@ -228,15 +219,13 @@ type Access struct {
 func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reason string) (Access, error) {
 	g, err := p.Store.LatestGrant(ctx, caller.AgentID, connector)
 	switch {
-	case err == nil && g.Usable(p.now()):
-		return Access{Grant: g, Usable: true}, nil
-	case err == nil && (g.Status == StatusPending || g.Status == StatusDenied ||
-		(g.Status == StatusRevoked && g.DecidedBy != "expired")):
-		return Access{Grant: g}, nil
+	case err == nil:
+		// approved -> usable; pending, denied, revoked -> refused as they stand.
+		return Access{Grant: g, Usable: g.Usable()}, nil
 	case err != nil && !errors.Is(err, ErrNotFound):
 		return Access{}, err
 	}
-	// No grant at all, or one that expired: file (or find) a pending request.
+	// No grant at all: file (or find) a pending request.
 	ng, created, err := p.Store.RequestGrant(ctx, caller.AgentID, connector, reason)
 	if err != nil {
 		return Access{}, err
@@ -247,7 +236,7 @@ func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reaso
 			p.OnGrantRequested(ng)
 		}
 	}
-	return Access{Grant: ng, Usable: ng.Usable(p.now()), Filed: created}, nil
+	return Access{Grant: ng, Usable: ng.Usable(), Filed: created}, nil
 }
 
 func (p *Proxy) recordGrantEvent(ctx context.Context, g Grant, detail string) {
@@ -309,7 +298,7 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 		return
 	}
 	if !acc.Usable {
-		st := acc.Grant.EffectiveStatus(p.now())
+		st := acc.Grant.Status
 		msg := "this agent has no approved grant for connector " + connector + ": "
 		switch st {
 		case StatusPending:
