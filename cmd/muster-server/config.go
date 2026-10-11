@@ -125,7 +125,13 @@ const (
 	// and never contacts it.
 	envAgentCairnURL   = "MUSTER_AGENT_CAIRN_URL"
 	envAgentCairnToken = "MUSTER_AGENT_CAIRN_TOKEN"
-	envAgentPrivApply  = "MUSTER_AGENT_PRIVILEGE_APPLY"
+
+	// --- RETIRED: names this binary no longer acts on (see retiredEnvNames) ---
+	//
+	// MUSTER_AGENT_PRIVILEGE_APPLY armed the privilege tier, which was removed with
+	// the privilege subsystem (superseded by connectors). A deployment that still
+	// sets it must keep booting, so it is read for one thing only: a boot warning.
+	envRetiredPrivApply = "MUSTER_AGENT_PRIVILEGE_APPLY"
 
 	// --- agent KINDS (internal/agents.Kinds) and the claude-code kind's profile ---
 	//
@@ -484,69 +490,10 @@ type config struct {
 
 	AgentEndpointTemplate string
 
-	// AgentPrivilegeApply arms the privilege tier: it builds
-	// internal/agentprivilege over the SAME driver the lifecycle tier holds and
-	// assigns it to api.Extensions.PrivilegeApply, so a granted profile's RBAC is
-	// applied to the agent's ServiceAccount for real. Default FALSE, which leaves
-	// that field nil and every grant RECORDED and not applied, exactly as before
-	// this knob existed.
-	//
-	// 🔴 IT IS A THIRD KNOB RATHER THAN SOMETHING THE PROVISIONER IMPLIES, FOR A
-	// REASON THAT IS NOT SYMMETRY WITH THE OTHER TWO. Applying a grant needs
-	// permissions muster's own ServiceAccount very likely does not have: it writes
-	// ClusterRoles, Roles and both kinds of binding, and the `escalate` and `bind`
-	// verbs on top of that (they are what the apiserver asks when the rules being
-	// written exceed what muster itself holds) — the two a cluster administrator
-	// grants last and most reluctantly. If naming a driver implied this tier, the
-	// first image bump that set MUSTER_AGENT_PROVISIONER would start attempting
-	// privileged writes and every grant would fail with a 403 that reads as a
-	// muster defect.
-	//
-	// ⚠ THE EXACT PERMISSION SET IS NOT LISTED HERE, DELIBERATELY. This comment
-	// used to name `escalate` and `bind` and nothing else, as did three other
-	// files, and that list is INCOMPLETE — it omits every ordinary verb the policy
-	// path actually calls, so a Role written from it 403s on the first grant. The
-	// set is enumerated once, as data, in
-	// internal/provision/k8s.PolicyRBACPrerequisite: 18 of its 22 (resource, verb)
-	// pairs are DERIVED from the call sites and guarded against them. Read it there.
-	//
-	// ⚠ THE OTHER FOUR ARE ASSERTED, NOT DERIVED, AND THIS POINTER USED TO CALL THE
-	// WHOLE SET DERIVED. `escalate` and `bind` on `roles` and on `clusterroles` have
-	// no call site by construction — they are authorisation checks the apiserver
-	// layers on top of an ordinary write, not calls muster makes — so the
-	// DERIVATION excludes them. That is not the same as unguarded: the same test,
-	// TestTheRBACPrerequisiteMatchesThePolicyCallSites, pins all four EXPLICITLY
-	// and pins their ABSENCE on the two binding resources, so dropping one reddens.
-	// What nothing here can redden is whether the apiserver really asks them.
-	//
-	// 🔴 AND LEAVING IT UNSET IS NOT FREE — IT IS THE FAIL-CLOSED SIDE, WHICH IS
-	// LOUDER THAN THE OTHER TWO KNOBS' DEFAULTS. api.Extensions.defects treats
-	// `Provisioner != nil && Privilege != nil && PrivilegeApply == nil` as a
-	// readiness defect, and this deployment builds a privilege store whenever it
-	// has a database. So on a deployment WITH a database, naming a provisioner
-	// and leaving this unset makes /readyz refuse and the pod is pulled from the
-	// Service. That is deliberate: a grant chip claiming a permission the
-	// ServiceAccount does not have is a page stating a falsehood.
-	//
-	// 🔴 THERE ARE TWO WAYS OUT, NOT THREE, AND THIS SENTENCE CLAIMED THREE. It
-	// read "the three ways out are this variable, no privilege store, or no
-	// provisioner". The middle one is NOT REACHABLE as a configuration: nothing
-	// gates the privilege store on a variable of its own — main.go builds it
-	// unconditionally inside the `Database != ""` branch — so "no privilege store"
-	// means no database, which also drops notes, agents, runbooks and GitHub. The
-	// two reachable escapes are this variable and unsetting the provisioner.
-	// TestThePrivilegeStoreHasNoKnobOfItsOwn pins the absence this paragraph
-	// depends on, and api.Extensions.defects' refusal text now says the same.
-	//
-	// 🔴 AND UNSETTING IT AGAIN IS AN OUTAGE, NOT A ROLLBACK. Once armed on a
-	// deployment with a database and a provisioner, removing this variable puts the
-	// pod straight back into the readiness defect — /readyz 503, pulled from the
-	// Service, every route dark. Rolling this tier back is a two-variable change
-	// (this one and the provisioner, which config.validateProvisioner requires to
-	// be removed together) or an image rollback. See provisioner.go prerequisite 2.
-	//
-	// ⚠ IT IS NOT REFUSED FOR THE noop DRIVER. See buildPrivilegeApplier.
-	AgentPrivilegeApply bool
+	// RetiredEnv names the RETIRED variables (retiredEnvNames) the environment
+	// still sets. They change nothing; main() logs a warning per entry so the
+	// deployment manifest can be cleaned up. See retiredEnvWarnings.
+	RetiredEnv []string
 
 	// AgentKinds is MUSTER_AGENT_KINDS as written (lower-cased, trimmed, in
 	// order). Empty means agents.KindGateway alone — see config.agentKinds.
@@ -726,7 +673,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentEndpointTemplate: strings.TrimSpace(getenv(envAgentEndpointTmpl)),
 		AgentCairnURL:         strings.TrimSpace(getenv(envAgentCairnURL)),
 		AgentCairnToken:       strings.TrimSpace(getenv(envAgentCairnToken)),
-		AgentPrivilegeApply:   envFlag(getenv, envAgentPrivApply),
+		RetiredEnv:            retiredEnvSet(getenv),
 		AgentKinds:            splitList(getenv(envAgentKinds)),
 		AgentCCImage:          strings.TrimSpace(getenv(envAgentCCImage)),
 		AgentCCAccountNames:   splitList(getenv(envAgentCCAccounts)),
@@ -1116,27 +1063,6 @@ func (c config) validateProvisioner() error {
 			envAgentRuntimeInstall, presence(c.AgentRuntimeInstall), gatewayHooksSHA256)
 	}
 
-	// 🔴 THE PRIVILEGE TIER IS CHECKED *AGAINST* THE PROVISIONER FOR THE SAME
-	// REASON THE GATEWAY IS, AND ITS SILENT FAILURE IS WORSE THAN THE GATEWAY'S.
-	// The applier applies a grant through the provisioning driver, so with no
-	// driver named there is nothing to build — and buildAgentPlane returns before
-	// it would be built, so the variable becomes a switch that is ON and does
-	// NOTHING. An operator who set it is telling us they expect grants to be
-	// applied; the observable without this refusal is a server that boots clean,
-	// prints nothing about it, reports READY (no provisioner means no readiness
-	// defect either), and records every grant unapplied — which is precisely the
-	// falsehood api.Extensions.defects exists to refuse, arrived at from the one
-	// direction defects() cannot see.
-	if c.AgentPrivilegeApply && named == provisionerNone {
-		return fmt.Errorf("%s=1 but %s=%s: a granted profile's RBAC is applied THROUGH the "+
-			"provisioning driver, so with no driver named there is nothing to apply it with and "+
-			"this variable would be an armed switch that does nothing — every grant recorded and "+
-			"none applied, with /readyz reporting ready because a nil provisioner is not a "+
-			"readiness defect. Name a driver (%s), or unset %s and leave grants recorded only",
-			envAgentPrivApply, envAgentProvisioner, named,
-			strings.Join([]string{provisionerNoop, provisionerK8s}, "/"), envAgentPrivApply)
-	}
-
 	if err := c.validateKinds(); err != nil {
 		return err
 	}
@@ -1179,9 +1105,8 @@ func (c config) validateProvisioner() error {
 // 🔴 EVERY REFUSAL HERE IS A CLAUDE-CODE POD THAT WOULD OTHERWISE BE BUILT BROKEN
 // OR NOT AT ALL, IN A BACKGROUND GOROUTINE, AFTER THE OPERATOR'S CLICK ANSWERED
 // 200: an unknown kind, an image that does not pin a version, an account list
-// with no tokens behind it, an empty pool. And the armed-switch shape this
-// function already refuses for the privilege tier: claude-code settings with the
-// kind not enabled are refused rather than ignored.
+// with no tokens behind it, an empty pool. And the armed-switch shape: claude-code
+// settings with the kind not enabled are refused rather than ignored.
 func (c config) validateKinds() error {
 	seen := map[string]bool{}
 	for _, k := range c.agentKinds() {
@@ -1194,7 +1119,7 @@ func (c config) validateKinds() error {
 		seen[k] = true
 	}
 	if !seen[agents.KindGateway] {
-		return fmt.Errorf("invalid %s %q: it must include %s — the supervisor, runbooks and every agent "+
+		return fmt.Errorf("invalid %s %q: it must include %s — the supervisor and every agent "+
 			"created before kinds existed are that kind, and the dispatch form defaults to it",
 			envAgentKinds, strings.Join(c.AgentKinds, ","), agents.KindGateway)
 	}
@@ -1299,3 +1224,37 @@ func imagePinned(ref string) bool {
 // osGetenv is os.Getenv as a value, so main() can hand loadConfig the real
 // environment and tests can hand it a map.
 func osGetenv(name string) string { return os.Getenv(name) }
+
+// retiredEnvNames are variables this binary USED to read and no longer does.
+//
+// 🔴 A RETIRED NAME IS A WARNING, NEVER A BOOT REFUSAL. The deployment manifest
+// and the image ship separately, so the image that stops reading a variable
+// always boots at least once against a manifest that still sets it. Refusing to
+// start there would turn a dead line in a manifest into an outage; ignoring it
+// silently would leave the line there for ever, still reading as a live knob.
+// The warning is the middle: the pod serves, and the boot log names the line to
+// delete.
+var retiredEnvNames = []string{envRetiredPrivApply}
+
+// retiredEnvSet returns the retired names the environment sets to a non-empty
+// value, in retiredEnvNames order.
+func retiredEnvSet(getenv func(string) string) []string {
+	var out []string
+	for _, n := range retiredEnvNames {
+		if strings.TrimSpace(getenv(n)) != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// retiredEnvWarnings is the boot-log line for each retired variable c carries.
+func retiredEnvWarnings(c config) []string {
+	out := make([]string, 0, len(c.RetiredEnv))
+	for _, n := range c.RetiredEnv {
+		out = append(out, fmt.Sprintf("WARNING: %s is set but is no longer read by this binary — "+
+			"the subsystem it configured was removed. It has no effect; delete it from the "+
+			"deployment manifest", n))
+	}
+	return out
+}

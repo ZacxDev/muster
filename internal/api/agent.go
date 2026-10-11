@@ -15,8 +15,6 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/notes"
-	"github.com/ZacxDev/muster/internal/privilege"
-	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // agentCtxKey carries the authenticated agent through the request context.
@@ -160,42 +158,6 @@ func (s *Server) handleAgentTaskStatus(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, note)
 }
 
-type agentPrivilegeRequest struct {
-	Profile string `json:"profile"`
-	Reason  string `json:"reason"`
-}
-
-// handleAgentPrivilegeRequest serves POST /agent/privilege/request: the agent
-// asks for an elevated privilege profile. The request is recorded and surfaced
-// to the human (granting arrives in Phase 3.2).
-func (s *Server) handleAgentPrivilegeRequest(w http.ResponseWriter, r *http.Request) {
-	a, _ := agentFromContext(r.Context())
-	var body agentPrivilegeRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
-		return
-	}
-	if strings.TrimSpace(body.Profile) == "" {
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "profile required"})
-		return
-	}
-	req, err := s.ext.Privilege.CreateRequest(r.Context(), privilege.Request{
-		AgentID:   a.ID,
-		AgentName: a.Name,
-		Profile:   strings.TrimSpace(body.Profile),
-		Reason:    body.Reason,
-	})
-	if err != nil {
-		s.logger.Printf("agent: privilege request (agent %d): %v", a.ID, err)
-		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not file privilege request"})
-		return
-	}
-	s.logger.Printf("privilege request created id=%d agent=%q profile=%q", req.ID, req.AgentName, req.Profile)
-	s.broadcast(EventPrivilegeCreated, strconv.FormatInt(req.ID, 10))
-	s.pushPrivilegeRequest(req)
-	s.writeJSON(w, http.StatusCreated, req)
-}
-
 // --- worker self-service native tools (the /v1/responses mechanism) ---
 
 // --- tool plumbing shared by every native-tool surface ---------------------
@@ -253,7 +215,7 @@ func orEmptyJSON(s string) string {
 
 // agentSystemPrompt is the worker's system prompt for the tool loop. The tools
 // carry their own schemas; this frames when to use them.
-const agentSystemPrompt = `You are a muster worker agent. You have native tools to read and update YOUR assigned task. Use them: call agent_get_task to read your task before starting; agent_set_task_status to set "in_progress" when you begin and "ready_for_review" when done (you CANNOT set "complete" — only the operator/human can); agent_comment_task to post progress notes; agent_request_privilege if you need access (e.g. Kubernetes) you don't have. If your task marks a step as a checkpoint, call agent_checkpoint with a summary BEFORE doing that step and WAIT — only proceed when it returns approved:true; if it is not approved, stop and set your task ready_for_review explaining why. Then do the work.`
+const agentSystemPrompt = `You are a muster worker agent. You have native tools to read and update YOUR assigned task. Use them: call agent_get_task to read your task before starting; agent_set_task_status to set "in_progress" when you begin and "ready_for_review" when done (you CANNOT set "complete" — only the operator/human can); agent_comment_task to post progress notes. If your task marks a step as a checkpoint, call agent_checkpoint with a summary BEFORE doing that step and WAIT — only proceed when it returns approved:true; if it is not approved, stop and set your task ready_for_review explaining why. Then do the work.`
 
 // agentTool is one entry of muster's ONE agent tool registry.
 //
@@ -268,7 +230,7 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // /mcp is served on the connect listener — the ONE muster port a claude-code
 // pod's network policy lets it reach — and that listener's contract is "the
 // connector surface and nothing else" (OnlyConnectSurface). The other tools stay
-// gateway-only on purpose: the task/status/comment/privilege/checkpoint tools
+// gateway-only on purpose: the task/status/comment/checkpoint tools
 // would hand a claude-code pod muster's task API through a door that was opened
 // for connectors only, agent_checkpoint blocks a request for up to an hour, and
 // agent_list_pull_requests spends muster's OWN server-side GitHub connection,
@@ -297,10 +259,7 @@ func (s *Server) agentTools() []agentTool {
 		fn("agent_set_task_status", "Set your task's status. Allowed: open, in_progress, ready_for_review (you cannot set complete).", objSchema(map[string]any{
 			"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "ready_for_review"}},
 		}, "status")),
-		fn("agent_request_privilege", "Request elevated access you don't have (e.g. Kubernetes). The human is notified and decides.", objSchema(map[string]any{
-			"profile": strProp("the access bundle name, e.g. k8s-read"), "reason": strProp("why you need it"),
-		}, "profile")),
-		fn("agent_checkpoint", "Pause for human approval at a runbook checkpoint. Surfaces an approval card to the human and BLOCKS until they decide. Returns approved:true to proceed, or approved:false (stop). Call this before a step your task marks as a checkpoint.", objSchema(map[string]any{
+		fn("agent_checkpoint", "Pause for human approval at a checkpoint. Surfaces an approval card to the human and BLOCKS until they decide. Returns approved:true to proceed, or approved:false (stop). Call this before a step your task marks as a checkpoint.", objSchema(map[string]any{
 			"summary": strProp("what you are about to do and why it needs approval"),
 			"step":    strProp("the checkpoint step title (optional)"),
 		}, "summary")),
@@ -340,8 +299,7 @@ func (s *Server) MCPToolDefs() []agents.ToolDef {
 
 // AgentInstructions returns the worker's system prompt (used by the kickoff loop
 // AND every interactive chat turn). It grounds the agent in its ACTUAL
-// environment — its repo, and whether a kubeconfig is mounted via a granted
-// privilege profile — and tells it to describe only its real capabilities. The
+// environment — its repo and, when configured, the connector store — and tells it to describe only its real capabilities. The
 // base image prompt otherwise advertises a generic assistant feature set (Signal/
 // Telegram messaging, paired devices, image/video, calendar/email) this sandboxed
 // worker does not have, so "what can you do" answers confabulate without this.
@@ -371,18 +329,12 @@ func (s *Server) AgentInstructions(a agents.Agent) string {
 				"\nOnly finish once the change is pushed, a PR is open, and the task is marked ready_for_review. If you genuinely cannot (e.g. no change is needed), comment on the task explaining why and set it ready_for_review."
 		}
 	}
-	// A granted privilege profile may mount a kubeconfig at /root/.kube/config.
-	if s.ext.Privilege != nil {
-		if _, kubeconfig := s.AgentProfileEnv(context.Background(), a.ID); kubeconfig != "" {
-			b += "\n\nA kubeconfig is mounted at /root/.kube/config — run `kubectl` to inspect the cluster you've been granted access to (treat your access as read-only unless told otherwise)."
-		}
-	}
 	if s.ext.Connectors != nil {
 		b += "\n\nTo use an external platform's API (e.g. GitHub), ask for its connector with connector_request, wait with connector_status, then call it through muster's proxy: " +
 			ProxyRecipe("<connector>", "<host>") + " You never see the credential."
 	}
 	b += "\n\nWhen asked what you can do, describe ONLY these real capabilities: your task tools (above), reading/writing files + git + shell in your workspace" +
-		", and kubectl when a kubeconfig is mounted. Do NOT claim messaging (Signal/Telegram/WhatsApp/Discord), paired devices/cameras/location, image/video generation, web browsing, or calendar/email — you do not have those here."
+		". Do NOT claim messaging (Signal/Telegram/WhatsApp/Discord), paired devices/cameras/location, image/video generation, web browsing, or calendar/email — you do not have those here."
 	return b
 }
 
@@ -471,22 +423,6 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		// Background push when the agent's own tool marks the task ready_for_review.
 		s.notifyTaskDone(n)
 		return toolJSON(n)
-	case "agent_request_privilege":
-		if s.ext.Privilege == nil {
-			return toolErr("privilege requests unavailable")
-		}
-		var in struct{ Profile, Reason string }
-		_ = arg(&in)
-		if strings.TrimSpace(in.Profile) == "" {
-			return toolErr("profile required")
-		}
-		req, err := s.ext.Privilege.CreateRequest(ctx, privilege.Request{AgentID: a.ID, AgentName: a.Name, Profile: strings.TrimSpace(in.Profile), Reason: in.Reason})
-		if err != nil {
-			return toolErr("could not file request: %v", err)
-		}
-		s.broadcast(EventPrivilegeCreated, strconv.FormatInt(req.ID, 10))
-		s.pushPrivilegeRequest(req)
-		return toolJSON(req)
 	case "agent_checkpoint":
 		var in struct{ Summary, Step string }
 		_ = arg(&in)
@@ -765,49 +701,4 @@ func checkpointGuidance(approved bool, comment string) string {
 		g += " The human's note: " + comment
 	}
 	return g
-}
-
-// handlePrivilegeRequests serves the /ui/privilege-requests partial: the pending
-// privilege requests, surfaced on the Agents tab (session/human surface).
-func (s *Server) handlePrivilegeRequests(w http.ResponseWriter, r *http.Request) {
-	reqs, err := s.ext.Privilege.ListPendingRequests(r.Context())
-	if err != nil {
-		s.logger.Printf("privilege: list pending: %v", err)
-		http.Error(w, "could not load privilege requests", http.StatusInternalServerError)
-		return
-	}
-	views := make([]ui.PrivilegeRequestView, 0, len(reqs))
-	for _, pr := range reqs {
-		views = append(views, ui.PrivilegeRequestView{
-			ID: pr.ID, AgentName: pr.AgentName, Profile: pr.Profile,
-			Reason: pr.Reason, CreatedAt: pr.CreatedAt,
-		})
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderPrivilegeRequests(w, views); err != nil {
-		s.logger.Printf("privilege: render: %v", err)
-	}
-}
-
-// pushPrivilegeRequest fires a Web Push so the human is alerted that an agent
-// wants elevated access even with the app closed. Fire-and-forget.
-func (s *Server) pushPrivilegeRequest(req privilege.Request) {
-	if s.router == nil {
-		return
-	}
-	body := req.Profile
-	if strings.TrimSpace(req.Reason) != "" {
-		body = req.Profile + " — " + req.Reason
-	}
-	payload := RouterNotification{
-		Type:  "privilege",
-		ID:    strconv.FormatInt(req.ID, 10),
-		Title: "Privilege request: " + req.AgentName,
-		Body:  body,
-		Tag:   "privilege-" + strconv.FormatInt(req.ID, 10),
-		Data:  map[string]string{"url": "/agents"},
-	}
-	s.goNotify(payload, func(n int) {
-		s.logger.Printf("push: delivered privilege.created id=%d to %d device(s)", req.ID, n)
-	})
 }
