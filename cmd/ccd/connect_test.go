@@ -75,17 +75,24 @@ type fakeMuster struct {
 	srv     *httptest.Server
 	mu      sync.Mutex
 	grant   string
+	listed  bool // whether /agent/connectors lists the connector at all
 	posted  bool
 	proxied []*http.Request
+	// onProxy, when set, answers /connect/ requests instead of a 404.
+	onProxy func(w http.ResponseWriter, r *http.Request)
 }
 
 func newFakeMuster(t *testing.T) *fakeMuster {
-	f := &fakeMuster{grant: "approved"}
+	f := &fakeMuster{grant: "approved", listed: true}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		if strings.HasPrefix(r.URL.Path, "/connect/") {
 			f.proxied = append(f.proxied, r.Clone(r.Context()))
+			if f.onProxy != nil {
+				f.onProxy(w, r)
+				return
+			}
 			http.NotFound(w, r)
 			return
 		}
@@ -96,8 +103,17 @@ func newFakeMuster(t *testing.T) *fakeMuster {
 		if r.Method != http.MethodGet {
 			f.posted = true
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"name": "github", "exists": true,
-			"hosts": []string{"api.github.com", "github.com"}, "grant": f.grant})
+		view := map[string]any{"name": "github", "exists": true,
+			"hosts": []string{"api.github.com", "github.com"}, "grant": f.grant}
+		if r.URL.Path == "/agent/connectors" {
+			list := []any{}
+			if f.listed {
+				list = append(list, view)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"connectors": list})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(view)
 	}))
 	t.Cleanup(f.srv.Close)
 	return f

@@ -56,7 +56,8 @@ ccd seed --config-dir "$CLAUDE_CONFIG_DIR" --workspace "$CCD_WORKSPACE" \
 # route git through muster's proxy for the `github` connector IF this agent
 # already holds an approved grant (a pod restarted after an approval comes back
 # wired). Best effort and bounded: it never blocks or fails the start, and it
-# never files a request — asking is the session's decision.
+# never files a request — asking is the session's decision. From then on
+# `ccd serve` keeps the routing in step with the grants (approve, revoke).
 if [[ -n "${MUSTER_CONNECT_URL:-}" ]]; then
   ccd connect-git --timeout 5s github || true
 fi

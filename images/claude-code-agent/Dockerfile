@@ -22,9 +22,10 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /ccd ./cmd/ccd
 FROM node:22-bookworm-slim
 
 # curl is for muster's connector proxy: an agent calls a platform's HTTP API as
-# `curl -H "X-Muster-Token: $MUSTER_HOOK_TOKEN" "$MUSTER_CONNECT_URL/connect/<connector>/<host>/<path>"`,
-# and muster adds the credential (see cmd/ccd/connect.go). git goes through the
-# proxy by `ccd connect-git`. `gh` is NOT installed: it only speaks HTTPS to a
+# `curl -H "Authorization: Bearer $MUSTER_HOOK_TOKEN" "$MUSTER_CONNECT_URL/connect/<connector>/<host>/<path>"`,
+# and muster replaces it with the credential (see cmd/ccd/connect.go). git goes
+# through the proxy by routing `ccd serve` keeps in step with the agent's grants
+# (`ccd connect-git` applies it at once). `gh` is NOT installed: it only speaks HTTPS to a
 # fixed host, so it cannot be pointed at the plain-HTTP in-cluster proxy.
 #
 # 🔴 PINNED. A floating CLI is a different program on every rebuild, and ccd parses

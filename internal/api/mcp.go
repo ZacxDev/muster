@@ -42,11 +42,21 @@ type mcpError struct {
 // mcpInstructions is the initialize result's instructions. The proxy recipe in
 // it is ProxyRecipe's — the same sentence a connector's usage line carries — so
 // the two cannot teach different URL shapes.
+//
+// The git sentence is true because ccd keeps git's routing in step with the
+// grants by itself (cmd/ccd/connect.go, syncGitRouting): the MCP server is
+// served only to claude-code agents, and ccd runs in every one of them.
 func mcpInstructions() string {
 	return "muster's connector store. To reach an external platform (e.g. GitHub), call connector_request " +
 		"for it, wait for the operator's approval with connector_status, then call it through muster's proxy: " +
-		ProxyRecipe("<connector>", "<host>") + " You never see the credential."
+		ProxyRecipe("<connector>", "<host>") + " You never see the credential. " + mcpGitNote
 }
+
+// mcpGitNote tells a claude-code agent how git follows a grant.
+const mcpGitNote = "For git, plain `git clone/fetch/push https://<host>/...` goes through the proxy on its own: " +
+	"once a connector is approved, git is routed through muster for its hosts within " +
+	"about 15 seconds (run `ccd connect-git <connector>` to apply it at once), and the routing is removed " +
+	"the same way when access is revoked."
 
 // isToolErr reports whether a dispatched tool's text is toolErr's encoding —
 // the registry's one spelling of a failed tool call — so MCP can flag it isError.

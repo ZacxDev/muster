@@ -395,8 +395,24 @@ func (s *Server) pushSteps(repo string) string {
 			"\n2. If the push succeeded, open a pull request against the repo's default branch if this environment lets you."
 	}
 	return "\n1. Create a branch and commit your work. You hold no GitHub token — do NOT ask for one. Get the `github` connector: connector_request{name:\"github\", reason:\"push <branch> to " + repo + "\"}, then connector_status{name:\"github\", wait_seconds:50} until it is approved. Push through muster's proxy: " +
-		ProxyRecipe("github", "github.com") + " For git: `git -c http.extraHeader=\"X-Muster-Token: $MUSTER_HOOK_TOKEN\" push $MUSTER_CONNECT_URL/connect/github/github.com/" + repo + ".git <branch>`." +
+		ProxyRecipe("github", "github.com") + " For git: `" + GitPushRecipe("github", "github.com/"+repo+".git") + " <branch>`." +
 		"\n2. Open a pull request against the repo's default branch through the same connector: POST $MUSTER_CONNECT_URL/connect/github/api.github.com/repos/" + repo + "/pulls with the same header."
+}
+
+// GitPushRecipe is the git command line (up to the refspec) that pushes through
+// a connector's proxy.
+//
+// 🔴 BOTH -c KEYS ARE SCOPED TO THE CONNECTOR'S PROXY URL, AND REDIRECTS ARE OFF.
+// An unscoped `http.extraHeader` goes to every URL git talks to, and git's
+// default redirect policy follows the first request's redirect carrying that
+// header to whatever host it names — measured. Scoped to
+// `$MUSTER_CONNECT_URL/connect/<connector>/` the token goes to the proxy only,
+// and `followRedirects=false` keeps git from following even a redirect the
+// proxy itself would never hand out (it answers 502 instead).
+func GitPushRecipe(connector, path string) string {
+	proxy := "$MUSTER_CONNECT_URL/connect/" + connector + "/"
+	return `git -c "http.` + proxy + `.extraHeader=X-Muster-Token: $MUSTER_HOOK_TOKEN" -c "http.` + proxy +
+		`.followRedirects=false" push ` + proxy + path
 }
 
 // AgentToolDispatch returns the dispatch closure executing a worker's tool calls

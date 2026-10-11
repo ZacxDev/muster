@@ -48,13 +48,14 @@ func connectorToolDefs() []agents.ToolDef {
 }
 
 // connectorToolResult encodes a connector tool's outcome. A validation refusal
-// is shown to the agent verbatim; anything else is logged and summarised, so a
+// or the per-agent pending cap is shown to the agent verbatim (it says what to
+// do next); anything else is logged and summarised, so a
 // database error never reaches a model.
 func (s *Server) connectorToolResult(tool string, a agents.Agent, out any, err error) string {
 	if err == nil {
 		return toolJSON(out)
 	}
-	if errors.Is(err, connectors.ErrInvalid) {
+	if errors.Is(err, connectors.ErrInvalid) || errors.Is(err, connectors.ErrTooManyPending) {
 		return toolErr("%s", err.Error())
 	}
 	s.logger.Printf("connectors: tool %s for agent %d: %v", tool, a.ID, err)
