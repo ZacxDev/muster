@@ -647,8 +647,6 @@ type health struct {
 	Supervisor *cliState `json:"supervisor,omitempty"`
 	Session    string    `json:"session"`
 	Busy       bool      `json:"busy"`
-	// AwaitingApproval: the session is blocked on a permission prompt.
-	AwaitingApproval bool `json:"awaiting_approval"`
 	authSnapshot
 }
 
@@ -687,7 +685,6 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	started, ended := s.sessionStarted, s.sessionEnded
 	h.Busy = s.busy
-	h.AwaitingApproval = s.awaitingApproval
 	s.mu.Unlock()
 	h.Session = s.sessionState(started, ended)
 	h.OK = h.Terminal == "ok" && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))

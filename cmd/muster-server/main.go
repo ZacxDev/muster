@@ -326,7 +326,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	// The claude-code approval relay's gate: its OWN field, so a standalone
 	// deployment can arm it without UseRouter / UseGate / session liveness.
-	if g, _ := approvalGateFor(cfg, port); g != nil {
+	if g := approvalGateFor(cfg); g != nil {
 		srv.UseApprovalGate(g)
 	}
 	if cfg.TaskReapAfter > 0 {
@@ -371,42 +371,35 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	return a, nil
 }
 
-// Where the approval relay's gate comes from (approvalGateFor's second result).
-const (
-	approvalGateDedicated = "dedicated" // MUSTER_APPROVAL_GATE_URL/_TOKEN
-	approvalGateRouter    = "router"    // the configured permission router's client
-	approvalGateNone      = "none"
-)
-
-// approvalGateFor picks the gate the claude-code approval relay files through.
+// approvalGateFor builds the gate the claude-code approval relay files through:
+// a client for MUSTER_APPROVAL_GATE_URL + _TOKEN, asserting RouterActor, or nil
+// when they are unset (the relay then answers 503 and prompts fall back to the
+// agent's terminal).
 //
-//   - MUSTER_APPROVAL_GATE_URL + _TOKEN set: a client built from THEM, asserting
-//     RouterActor. It wins over a configured router, so an operator who names a
-//     dedicated gate gets exactly that one.
-//   - else a configured router: its client (the simplest reuse; a router
-//     deployment already trusts that credential with the gate).
-//   - else none: the relay answers 503 and prompts fall back to the terminal.
+// 🔴 THERE IS NO FALLBACK TO A CONFIGURED PERMISSION ROUTER'S CLIENT. One existed
+// and was deleted (#48 audit round 0): no deployment runs router mode, the
+// operator chose standalone, and a second source would be a second credential
+// path into the gate for no consumer. A router deployment that wants approvals
+// sets these two variables like any other.
 //
 // 🔴 THE RESULT IS HANDED TO THE SERVER ONLY AS THE RELAY'S api.GatePort
 // (Server.UseApprovalGate). It is never passed to UseRouter, UseGate or
-// buildSessionLiveness, so the dedicated gate turns on no router behaviour —
+// buildSessionLiveness, so the gate turns on no router behaviour —
 // TestTheApprovalGateDoesNotTurnOnRouterBehaviour pins that.
 //
 // ⚠ A nil api.GatePort, never a typed nil: an unconfigured router.Port inside the
 // interface would make the relay call a client that answers ErrNotConfigured on
 // every request (a 502 per prompt) instead of the honest 503.
-func approvalGateFor(cfg config, port router.Port) (api.GatePort, string) {
-	if cfg.ApprovalGateURL != "" && cfg.ApprovalGateToken != "" {
-		if p := router.NewPort(router.Config{
-			BaseURL: cfg.ApprovalGateURL, Token: cfg.ApprovalGateToken, Actor: cfg.RouterActor,
-		}); p.Configured() {
-			return p, approvalGateDedicated
-		}
+func approvalGateFor(cfg config) api.GatePort {
+	if cfg.ApprovalGateURL == "" || cfg.ApprovalGateToken == "" {
+		return nil
 	}
-	if port.Configured() {
-		return port, approvalGateRouter
+	if p := router.NewPort(router.Config{
+		BaseURL: cfg.ApprovalGateURL, Token: cfg.ApprovalGateToken, Actor: cfg.RouterActor,
+	}); p.Configured() {
+		return p
 	}
-	return nil, approvalGateNone
+	return nil
 }
 
 // buildSessionLiveness decides what answers "does this session still have a
@@ -736,20 +729,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// The claude-code approval relay's gate, on its own line: it is configurable
 	// apart from the router (and beside MUSTER_STANDALONE), so "router: NONE" does
 	// not answer whether prompts reach the operator's phone.
-	switch _, src := approvalGateFor(a.cfg, port); src {
-	case approvalGateDedicated:
+	if approvalGateFor(a.cfg) != nil {
 		l.Printf("approval relay gate: DEDICATED — %s=%s (%s set), actor %q. Used ONLY by "+
 			"/agent/approvals to file and poll checkpoint cards; it turns on no router "+
 			"behaviour (session liveness, events, notifications, checkpoints are unchanged)",
 			envApprovalGateURL, a.cfg.ApprovalGateURL, envApprovalGateToken, a.cfg.RouterActor)
-	case approvalGateRouter:
-		l.Printf("approval relay gate: THE PERMISSION ROUTER'S — %s/%s are unset, so "+
-			"/agent/approvals files cards through %s=%s with the router's credential",
-			envApprovalGateURL, envApprovalGateToken, envRouterURL, a.cfg.RouterURL)
-	default:
-		l.Printf("approval relay gate: NONE — %s/%s are unset and no permission router is "+
-			"configured, so /agent/approvals answers 503 and every claude-code permission "+
-			"prompt falls back to the agent's own terminal", envApprovalGateURL, envApprovalGateToken)
+	} else {
+		l.Printf("approval relay gate: NONE — %s/%s are unset, so /agent/approvals answers 503 "+
+			"and every claude-code permission prompt falls back to the agent's own terminal "+
+			"(a configured permission router is NOT used for this)", envApprovalGateURL, envApprovalGateToken)
 	}
 
 	if ext.Connectors != nil {

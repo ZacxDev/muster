@@ -226,36 +226,48 @@ func TestHalfAnApprovalGateIsRefusedAtBoot(t *testing.T) {
 	}
 }
 
-// Which gate the relay gets: dedicated wins, then the router, then none — and
-// "none" is an untyped nil, never an unconfigured client in an interface.
+// The relay's gate exists exactly when the pair is set, and "none" is an untyped
+// nil, never an unconfigured client inside the interface.
 func TestApprovalGateSelection(t *testing.T) {
-	routerPort := router.NewPort(router.Config{BaseURL: "https://router.example.invalid", Token: "r", Actor: "muster"})
-	unset := router.NewPort(router.Config{})
-	dedicated := config{ApprovalGateURL: "https://gate.example.invalid", ApprovalGateToken: "g", RouterActor: "muster"}
-
-	g, src := approvalGateFor(dedicated, routerPort)
-	if src != approvalGateDedicated || g == nil {
-		t.Fatalf("dedicated + router: %q %v, want dedicated", src, g)
+	g := approvalGateFor(config{ApprovalGateURL: "https://gate.example.invalid", ApprovalGateToken: "g", RouterActor: "muster"})
+	if p, ok := g.(router.Port); !ok || !p.Configured() {
+		t.Fatalf("pair set: %#v, want a configured gate client", g)
 	}
-	if p, ok := g.(router.Port); !ok || p.C == routerPort.C {
-		t.Fatal("the dedicated gate reused the router's client")
+	if g := approvalGateFor(config{RouterActor: "muster"}); g != nil {
+		t.Fatalf("pair unset: %#v, want an untyped nil", g)
 	}
-	if g, src = approvalGateFor(config{RouterActor: "muster"}, routerPort); src != approvalGateRouter || g == nil {
-		t.Fatalf("router only: %q %v, want router", src, g)
-	}
-	if g, src = approvalGateFor(config{RouterActor: "muster"}, unset); src != approvalGateNone || g != nil {
-		t.Fatalf("neither: %q %#v, want none and an untyped nil", src, g)
-	}
-	var _ api.GatePort = g
 }
 
-// Each arm of the relay-gate banner line, rendered: the ledger test covers the
-// dedicated and none arms; this pins all three by STATE word.
+// 🔴 NO FALLBACK TO THE ROUTER. A router-mode muster with no dedicated gate
+// answers 503 on the relay and never files through the router's credential.
+// (The fallback existed and was deleted in #48's audit round 0.)
+func TestARouterModeMusterWithoutAnApprovalGateDoesNotRelayThroughTheRouter(t *testing.T) {
+	door := &fakeGateDoor{}
+	rtr := httptest.NewServer(door.handler())
+	defer rtr.Close()
+
+	cfg := dbConfig(t)
+	cfg.Standalone = false
+	cfg.RouterURL, cfg.RouterToken = rtr.URL, "router-token-0123456789"
+	seedRelayAgent(t, cfg.Database, "gate-test-agent", gateTestAgentToken)
+	base := startServer(t, cfg)
+	code, body := relayCall(t, "POST", base+"/agent/approvals", `{"tool":"Bash","command":"ls"}`, gateTestAgentToken)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("POST /agent/approvals = %d %s, want 503 (no dedicated gate)", code, body)
+	}
+	for _, p := range door.seen() {
+		if strings.Contains(p, "/api/gate") {
+			t.Fatalf("the relay filed through the router: %v", door.seen())
+		}
+	}
+}
+
+// Both arms of the relay-gate banner line, by STATE word, with a router
+// configured in the NONE case so the line cannot be read as "the router's".
 func TestTheApprovalGateBannerNamesWhichGateTheRelayUses(t *testing.T) {
 	for want, cfg := range map[string]config{
-		"approval relay gate: DEDICATED":               {Standalone: true, RouterActor: "muster", ApprovalGateURL: "https://g.example.invalid", ApprovalGateToken: "g"},
-		"approval relay gate: THE PERMISSION ROUTER'S": {RouterURL: "https://r.example.invalid", RouterToken: "r", RouterActor: "muster"},
-		"approval relay gate: NONE":                    {Standalone: true, RouterActor: "muster"},
+		"approval relay gate: DEDICATED": {Standalone: true, RouterActor: "muster", ApprovalGateURL: "https://g.example.invalid", ApprovalGateToken: "g"},
+		"approval relay gate: NONE":      {RouterURL: "https://r.example.invalid", RouterToken: "r", RouterActor: "muster"},
 	} {
 		out := renderBanner(t, cfg, api.Extensions{})
 		if n := strings.Count(out, "approval relay gate:"); n != 1 || !strings.Contains(out, want) {
