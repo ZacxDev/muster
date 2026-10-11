@@ -124,7 +124,7 @@ func TestRedactingReaderCatchesASecretSplitAcrossReads(t *testing.T) {
 	secret := "s3cr3t-T0KEN-value"
 	body := "a" + secret + strings.Repeat("x", 40000) + secret[:7]
 	body += secret[7:] + "tail" + secret
-	r := newRedactor([]string{secret})
+	r := newRedactor([]needle{{s: secret}})
 	// OneByteReader forces every boundary to fall inside the secret somewhere.
 	for name, src := range map[string]io.Reader{
 		"one-byte": iotest.OneByteReader(strings.NewReader(body)),
@@ -178,6 +178,33 @@ func TestTheBasicEncodingIsRedactedInEveryAlphabet(t *testing.T) {
 	}
 }
 
+// TestUnalignedBase64IsRedacted: the credential inside a LARGER base64 blob, at
+// every byte offset and in both alphabets, is redacted down to the characters
+// that also carry its neighbours' bits — no further. The bounds are exact: a
+// character made only of the secret's bits never survives.
+func TestUnalignedBase64IsRedacted(t *testing.T) {
+	c := Connector{Scheme: SchemeBearer}
+	for _, secret := range []string{"ghp_FAKE0123456789", "FAKE~~~~????>>>>0x", "abcdefgh"} {
+		r := newRedactor(secretForms(c, secret))
+		for pre := 0; pre < 6; pre++ {
+			for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.URLEncoding, base64.RawStdEncoding} {
+				blob := enc.EncodeToString([]byte(strings.Repeat("Q", pre) + secret + "ZZZZ"))
+				out := string(r.replace([]byte(blob)))
+				left, right, ok := strings.Cut(out, RedactedMarker)
+				if !ok || strings.Contains(right, RedactedMarker) {
+					t.Fatalf("secret %q prefix %d: want exactly one marker, got %q", secret, pre, out)
+				}
+				if maxLeft := (8*pre + 5) / 6; len(left) > maxLeft {
+					t.Errorf("secret %q prefix %d: %d characters survive before the marker, at most %d may", secret, pre, len(left), maxLeft)
+				}
+				if maxRight := len(blob) - (8*(pre+len(secret)))/6; len(right) > maxRight {
+					t.Errorf("secret %q prefix %d: %d characters survive after the marker, at most %d may", secret, pre, len(right), maxRight)
+				}
+			}
+		}
+	}
+}
+
 // TestAQueryEscapedSecretIsRedacted: an upstream that reflects the credential
 // inside a URL (a redirect, a link) escapes it; that form is redacted too.
 func TestAQueryEscapedSecretIsRedacted(t *testing.T) {
@@ -189,17 +216,31 @@ func TestAQueryEscapedSecretIsRedacted(t *testing.T) {
 	}
 }
 
+// TestRewriteLocation: a redirect to an allowlisted host comes back into the
+// proxy; ANY other target is refused (ok=false), never handed to the client.
 func TestRewriteLocation(t *testing.T) {
 	c := Connector{Hosts: []string{"api.example.com", "example.com"}}
 	base, _ := url.Parse("https://api.example.com/v1/x")
 	for in, want := range map[string]string{
-		"https://example.com/a?b=c":   "/connect/svc/example.com/a?b=c",
-		"/v2/y":                       "/connect/svc/api.example.com/v2/y",
-		"https://evil.example.org/p":  "https://evil.example.org/p",
-		"http://api.example.com/down": "http://api.example.com/down", // a scheme downgrade is not ours
+		"https://example.com/a?b=c": "/connect/svc/example.com/a?b=c",
+		"/v2/y":                     "/connect/svc/api.example.com/v2/y",
+		"//EXAMPLE.com/z":           "/connect/svc/example.com/z",
 	} {
-		if got := rewriteLocation(in, base, c, "/connect/svc/"); got != want {
-			t.Errorf("rewriteLocation(%q) = %q, want %q", in, got, want)
+		if got, ok := rewriteLocation(in, base, c, "/connect/svc/"); !ok || got != want {
+			t.Errorf("rewriteLocation(%q) = %q %v, want %q", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{
+		"https://evil.example.org/p",
+		"http://api.example.com/down", // a scheme downgrade is not ours
+		"//evil.example.org/p",
+		"https://user:pw@api.example.com/p",
+		"https://api.example.com.evil.example.org/p",
+		"https://api.example.com:8443/p",
+		"%zz",
+	} {
+		if got, ok := rewriteLocation(in, base, c, "/connect/svc/"); ok || got != "" {
+			t.Errorf("rewriteLocation(%q) = %q %v, want a refusal", in, got, ok)
 		}
 	}
 }

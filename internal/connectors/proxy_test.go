@@ -99,10 +99,15 @@ type fixture struct {
 // header, because AUTHENTICATION is internal/api's and is tested there).
 func newFixture(t *testing.T, scheme connectors.Scheme) *fixture {
 	t.Helper()
+	return newFixtureWithSecret(t, scheme, fakeSecret)
+}
+
+func newFixtureWithSecret(t *testing.T, scheme connectors.Scheme, secret string) *fixture {
+	t.Helper()
 	ctx, pool := testPool(t)
 	f := &fixture{ctx: ctx, pool: pool, store: newStore(t, pool, key(7)), up: newUpstream(t)}
 	f.host = "api.fake.test:" + f.up.port()
-	nc := connectors.NewConnector{Name: "svc", Hosts: []string{f.host}, Scheme: scheme, Secret: fakeSecret}
+	nc := connectors.NewConnector{Name: "svc", Hosts: []string{f.host}, Scheme: scheme, Secret: secret}
 	switch scheme {
 	case connectors.SchemeBasic:
 		nc.Username = "x-access-token"
@@ -218,7 +223,7 @@ func TestTheProxyRefusesNonPublicDestinations(t *testing.T) {
 		f.proxy.Policy = connectors.Policy{InsecureHTTP: true, Resolve: func(context.Context, string) ([]netip.Addr, error) {
 			return []netip.Addr{addr}, nil
 		}}
-		f.proxy.SetTransport(nil)
+		f.proxy.SetTransport(f.proxy.Policy.Transport())
 		w := f.do(t, "GET", "/connect/svc/"+f.host+"/x", nil)
 		if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "non-public") {
 			t.Fatalf("%s: status %d %s, want 502 naming a non-public address", name, w.Code, w.Body)
@@ -242,9 +247,13 @@ func TestTheProxyNeverFollowsARedirectOffHost(t *testing.T) {
 		}
 		http.Redirect(w, r, evilURL, http.StatusFound)
 	}
+	// 🔴 An off-allowlist redirect is not handed to the client at all: its
+	// muster token travels in a header that curl and git resend cross-host.
 	w := f.do(t, "GET", "/connect/svc/"+f.host+"/off-host", nil)
-	if w.Code != http.StatusFound || w.Header().Get("Location") != evilURL {
-		t.Fatalf("off-host: status %d Location %q", w.Code, w.Header().Get("Location"))
+	if w.Code != http.StatusBadGateway || w.Header().Get("Location") != "" ||
+		!strings.Contains(w.Body.String(), "allowlist") || strings.Contains(w.Body.String(), evilURL) {
+		t.Fatalf("off-host: status %d Location %q body %s, want 502 naming the allowlist and no Location",
+			w.Code, w.Header().Get("Location"), w.Body)
 	}
 	if n := evil.hits.Load(); n != 0 {
 		t.Fatalf("the proxy followed an off-host redirect: the other host got %d request(s)", n)

@@ -8,6 +8,13 @@
 // no API, page or log line ever returns it after it was entered: the [Connector]
 // type has no field that could carry it.
 //
+// ⚠ A RESPONSE IS NOT A GUARANTEED-CLEAN CHANNEL. An upstream that reflects the
+// request (an echo endpoint, an error quoting a header) could hand the
+// credential back; the proxy redacts the forms it knows and refuses the
+// response shapes that would bypass that (proxy.go, secretForms). That is
+// defence in depth, not a proof — the guarantee is that the secret is never in
+// the pod, and only an approved agent reaches only the connector's own hosts.
+//
 // 🔴 ACCESS IS PER AGENT, APPROVED ON FIRST USE. Any agent may ASK for any
 // connector by name; the first ask files a pending [Grant] and the operator is
 // prompted. Once approved, that agent keeps access until it is destroyed (the
@@ -63,6 +70,21 @@ var ErrInvalid = errors.New("connectors: invalid")
 // ErrNotPending is returned when a decision targets a grant that was already
 // decided (or revoked).
 var ErrNotPending = errors.New("connectors: the request is no longer pending")
+
+// MaxPendingGrantsPerAgent is how many requests one agent may have waiting on
+// the operator at once.
+//
+// 🔴 EVERY NEW REQUEST PUSHES A NOTIFICATION. Without a cap, an agent looping
+// over invented connector names (or a client retrying across names) files a
+// row and buzzes the operator's phone per name. Past the cap a request is
+// refused with ErrTooManyPending: nothing is filed and nothing is pushed. A
+// request for a connector the agent ALREADY has a live grant for is answered
+// with that grant and does not count.
+const MaxPendingGrantsPerAgent = 5
+
+// ErrTooManyPending is the refusal past MaxPendingGrantsPerAgent.
+var ErrTooManyPending = fmt.Errorf("connectors: this agent already has %d requests waiting for the operator; "+
+	"wait for them to be decided (or ask the operator) before requesting another connector", MaxPendingGrantsPerAgent)
 
 // Connector is one stored credential's PUBLIC description.
 //
@@ -290,9 +312,9 @@ func (nc NewConnector) Validate() (NewConnector, error) {
 }
 
 // MinSecretLen is the shortest secret accepted. It is a floor on what the proxy
-// can REDACT: a response that echoes the credential has every occurrence
-// replaced (proxy.go), and replacing a two-character string would mangle bodies
-// while protecting nothing.
+// can REDACT: a response that reflects the credential has the forms the
+// redactor knows replaced (proxy.go, secretForms), and replacing a
+// two-character string would mangle bodies while protecting nothing.
 const MinSecretLen = 8
 
 // ValidateSecret refuses a too-short secret or one that cannot travel in a header.

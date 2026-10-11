@@ -74,12 +74,22 @@ func (s *Server) registerConnectorRoutes(mux Mux) {
 	mux.HandleFunc("GET /ui/connector-requests", s.requireSession(s.handleConnectorRequests))
 	mux.HandleFunc("GET /ui/connectors/new", s.requireSession(s.handleConnectorNewForm))
 	mux.HandleFunc("GET /ui/connectors/{name}/rotate", s.requireSession(s.handleConnectorRotateForm))
-	mux.HandleFunc("POST /connectors", s.requireSession(s.handleConnectorCreate))
-	mux.HandleFunc("POST /connectors/{name}/rotate", s.requireSession(s.handleConnectorRotate))
-	mux.HandleFunc("DELETE /connectors/{name}", s.requireSession(s.handleConnectorDelete))
-	mux.HandleFunc("POST /ui/connector-requests/{id}/approve", s.requireSession(s.handleConnectorApprove))
-	mux.HandleFunc("POST /ui/connector-requests/{id}/deny", s.requireSession(s.handleConnectorDeny))
-	mux.HandleFunc("DELETE /connector-grants/{id}", s.requireSession(s.handleConnectorRevoke))
+	// 🔴 EVERY STATE-CHANGING OPERATOR ROUTE IS requireOperatorWrite: a session
+	// AND a same-origin request (requireSameOrigin). Approving a grant or
+	// entering a credential from a forged cross-origin form would hand an agent
+	// a platform credential. TestConnectorOperatorWritesRefuseCrossOrigin holds
+	// the ledger of these routes.
+	mux.HandleFunc("POST /connectors", s.requireOperatorWrite(s.handleConnectorCreate))
+	mux.HandleFunc("POST /connectors/{name}/rotate", s.requireOperatorWrite(s.handleConnectorRotate))
+	mux.HandleFunc("DELETE /connectors/{name}", s.requireOperatorWrite(s.handleConnectorDelete))
+	mux.HandleFunc("POST /ui/connector-requests/{id}/approve", s.requireOperatorWrite(s.handleConnectorApprove))
+	mux.HandleFunc("POST /ui/connector-requests/{id}/deny", s.requireOperatorWrite(s.handleConnectorDeny))
+	mux.HandleFunc("DELETE /connector-grants/{id}", s.requireOperatorWrite(s.handleConnectorRevoke))
+}
+
+// requireOperatorWrite is requireSession plus requireSameOrigin.
+func (s *Server) requireOperatorWrite(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireSession(s.requireSameOrigin(next))
 }
 
 // --- agent authentication -----------------------------------------------------------
@@ -193,13 +203,22 @@ type AgentConnectorView struct {
 }
 
 // ProxyUsage is the one-line instruction an agent is given for a connector.
+//
+// 🔴 THE RECIPE SENDS THE AGENT'S TOKEN AS `Authorization: Bearer`, NOT AS
+// X-Muster-Token. HTTP clients resend a custom header on a redirect to another
+// host (curl -L does, for every -H), but drop Authorization when the host
+// changes. The proxy never hands out an off-allowlist redirect in the first
+// place (rewriteLocation); this is the second layer. X-Muster-Token stays
+// accepted (connectorAgentToken) for clients whose Authorization header is
+// already spoken for; such a client must be told not to follow redirects.
 func ProxyUsage(name string, hosts []string) string {
 	h := "<host>"
 	if len(hosts) > 0 {
 		h = hosts[0]
 	}
 	return "Send requests to $MUSTER_CONNECT_URL/connect/" + name + "/" + h + "/<path> with header " +
-		"`X-Muster-Token: $MUSTER_HOOK_TOKEN`; muster adds the credential. Allowed hosts: " + strings.Join(hosts, ", ")
+		"`Authorization: Bearer $MUSTER_HOOK_TOKEN`; muster replaces it with the credential. Allowed hosts: " +
+		strings.Join(hosts, ", ")
 }
 
 func (s *Server) agentConnectorView(ctx context.Context, a agents.Agent, name string) (AgentConnectorView, error) {
@@ -367,6 +386,10 @@ func (s *Server) handleAgentConnectorRequest(w http.ResponseWriter, r *http.Requ
 	v, created, err := s.AgentRequestConnector(r.Context(), a, r.PathValue("name"), body.Reason)
 	if errors.Is(err, connectors.ErrInvalid) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	if errors.Is(err, connectors.ErrTooManyPending) {
+		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": err.Error()})
 		return
 	}
 	if err != nil {
@@ -660,6 +683,12 @@ func (s *Server) handleConnectorRotate(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, connectors.ErrNotFound):
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "No connector named " + name + "."})
+		return
+	case errors.Is(err, connectors.ErrDecrypt):
+		s.logger.Printf("connectors: rotate %q: %v", name, err)
+		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "The stored secret of " + name + " no longer " +
+			"opens (the encryption key changed, or its hosts or auth settings were altered outside muster), so it " +
+			"cannot be rotated in place. Delete the connector and create it again."})
 		return
 	case err != nil:
 		s.logger.Printf("connectors: rotate %q: %v", name, err)

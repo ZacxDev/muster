@@ -88,7 +88,9 @@ func (f *connFixture) call(t *testing.T, method, path string, body io.Reader, hd
 }
 
 func (f *connFixture) operator() map[string]string {
-	return map[string]string{"Cookie": sessionCookieFor(f.srv), "HX-Request": "true"}
+	// Origin is what a browser sends from muster's own page (httptest's Host is
+	// example.com); requireSameOrigin refuses the write without it.
+	return map[string]string{"Cookie": sessionCookieFor(f.srv), "HX-Request": "true", "Origin": "http://example.com"}
 }
 
 func form(v url.Values) (io.Reader, map[string]string) {

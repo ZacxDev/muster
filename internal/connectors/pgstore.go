@@ -74,7 +74,8 @@ func (s *PGStore) CreateConnector(ctx context.Context, nc NewConnector) (Connect
 	if err != nil {
 		return Connector{}, err
 	}
-	ct, err := s.seal.seal(nc.Name, nc.Secret)
+	ct, err := s.seal.seal(binding{Name: nc.Name, Hosts: nc.Hosts, Scheme: nc.Scheme, HeaderName: nc.HeaderName,
+		Username: nc.Username}, nc.Secret)
 	if err != nil {
 		return Connector{}, err
 	}
@@ -92,22 +93,38 @@ func (s *PGStore) CreateConnector(ctx context.Context, nc NewConnector) (Connect
 
 // RotateSecret replaces a connector's secret. Grants are kept: rotation changes
 // what is sent, not who may send it.
+//
+// 🔴 THE OLD SECRET MUST OPEN UNDER THE ROW AS IT STANDS, OR NOTHING IS
+// WRITTEN (ErrDecrypt). The new ciphertext is bound to the row's current hosts
+// and auth shape; re-sealing a row someone edited out of band would bind the
+// secret to THEIR hosts and launder the edit. The UPDATE also matches the
+// ciphertext it verified, so a concurrent change to the row is not overwritten.
+// A connector whose secret no longer opens (wrong key, altered row) is deleted
+// and created again.
 func (s *PGStore) RotateSecret(ctx context.Context, name, secret string) error {
 	if err := ValidateSecret(secret); err != nil {
 		return err
 	}
-	ct, err := s.seal.seal(name, secret)
+	c, old, err := s.credentialRow(ctx, name)
+	if err != nil {
+		return err
+	}
+	if _, err := s.seal.open(bindingOf(c), old); err != nil {
+		return err
+	}
+	ct, err := s.seal.seal(bindingOf(c), secret)
 	if err != nil {
 		return err
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE connectors SET secret_ciphertext=$2, rotated_at=now(), updated_at=now()
-		WHERE name=$1`, name, ct)
+		WHERE name=$1 AND secret_ciphertext=$3 AND hosts=$4 AND auth_scheme=$5 AND auth_header=$6 AND auth_username=$7`,
+		name, ct, old, c.Hosts, string(c.Scheme), c.HeaderName, c.Username)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return fmt.Errorf("connectors: connector %q changed while its secret was being rotated; try again", name)
 	}
 	return nil
 }
@@ -136,7 +153,24 @@ func (s *PGStore) DeleteConnector(ctx context.Context, name string) error {
 
 // Credential returns the connector with its decrypted secret. A secret that
 // does not open under the configured key is ErrDecrypt.
+//
+// The secret opens only under the row's CURRENT name, hosts, scheme, header and
+// username (seal.go), so the connector returned is exactly the one the secret
+// was sealed for: a row edited outside muster is ErrDecrypt, not a credential
+// sent somewhere new.
 func (s *PGStore) Credential(ctx context.Context, name string) (Connector, string, error) {
+	c, ct, err := s.credentialRow(ctx, name)
+	if err != nil {
+		return Connector{}, "", err
+	}
+	secret, err := s.seal.open(bindingOf(c), ct)
+	if err != nil {
+		return Connector{}, "", err
+	}
+	return c, secret, nil
+}
+
+func (s *PGStore) credentialRow(ctx context.Context, name string) (Connector, []byte, error) {
 	var ct []byte
 	var c Connector
 	var scheme string
@@ -144,17 +178,13 @@ func (s *PGStore) Credential(ctx context.Context, name string) (Connector, strin
 		Scan(&c.ID, &c.Name, &c.Platform, &c.Hosts, &scheme, &c.HeaderName, &c.Username,
 			&c.CreatedAt, &c.UpdatedAt, &c.RotatedAt, &c.LastUsedAt, &ct)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return Connector{}, "", ErrNotFound
+		return Connector{}, nil, ErrNotFound
 	}
 	if err != nil {
-		return Connector{}, "", err
+		return Connector{}, nil, err
 	}
 	c.Scheme = Scheme(scheme)
-	secret, err := s.seal.open(c.Name, ct)
-	if err != nil {
-		return Connector{}, "", err
-	}
-	return c, secret, nil
+	return c, ct, nil
 }
 
 // TouchConnector stamps last_used_at.
@@ -206,23 +236,53 @@ func (s *PGStore) RequestGrant(ctx context.Context, agentID int64, connector, re
 	if len(reason) > 2000 {
 		reason = reason[:2000]
 	}
-	var id int64
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO connector_grants (agent_id, connector_name, reason) VALUES ($1, $2, $3)
-		ON CONFLICT (agent_id, connector_name) WHERE status IN ('pending', 'approved') DO NOTHING
-		RETURNING id`, agentID, connector, reason).Scan(&id)
-	created := true
-	if errors.Is(err, pgx.ErrNoRows) {
-		created = false
-		err = s.pool.QueryRow(ctx, `SELECT id FROM connector_grants
-			WHERE agent_id=$1 AND connector_name=$2 AND status IN ('pending', 'approved')`, agentID, connector).Scan(&id)
-	}
+	// One transaction, serialised PER AGENT by a transaction-scoped advisory
+	// lock, so the count below and the insert cannot interleave with another
+	// request from the same agent (two concurrent requests at the cap would
+	// otherwise both see room and both file).
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
+		return Grant{}, false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // a no-op after Commit
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, $2)`, grantLockClass, int32(agentID)); err != nil {
+		return Grant{}, false, err
+	}
+	var id int64
+	err = tx.QueryRow(ctx, `SELECT id FROM connector_grants
+		WHERE agent_id=$1 AND connector_name=$2 AND status IN ('pending', 'approved')`, agentID, connector).Scan(&id)
+	created := false
+	switch {
+	case err == nil:
+	case errors.Is(err, pgx.ErrNoRows):
+		var pending int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM connector_grants WHERE agent_id=$1 AND status='pending'`,
+			agentID).Scan(&pending); err != nil {
+			return Grant{}, false, err
+		}
+		if pending >= MaxPendingGrantsPerAgent {
+			return Grant{}, false, ErrTooManyPending
+		}
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO connector_grants (agent_id, connector_name, reason) VALUES ($1, $2, $3)
+			RETURNING id`, agentID, connector, reason).Scan(&id); err != nil {
+			return Grant{}, false, err
+		}
+		created = true
+	default:
+		return Grant{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return Grant{}, false, err
 	}
 	g, err := s.GetGrant(ctx, id)
 	return g, created, err
 }
+
+// grantLockClass is the first key of the per-agent advisory lock RequestGrant
+// takes (the second is the agent id). The two-int form keeps it out of the
+// single-bigint keyspace the migration lock uses.
+const grantLockClass int32 = 0x6d636772 // "mcgr"
 
 // LatestGrant returns the newest grant row for the pair.
 func (s *PGStore) LatestGrant(ctx context.Context, agentID int64, connector string) (Grant, error) {
