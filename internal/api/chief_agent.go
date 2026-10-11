@@ -124,7 +124,7 @@ func resolveChief(list []agents.Agent) (agents.Agent, bool) {
 // the only inference path muster has; deleting it by a stray tap in a ⋯ menu, or
 // as a side effect of dismissing the task it was once linked to, removes the
 // thing the operator talks to. Every caller of Provisioner.Destroy in this package
-// asks isChiefAmong first (TestEveryDestroyCallSiteIsChiefGuarded holds the
+// asks agentIsChief first (TestEveryDestroyCallSiteIsChiefGuarded holds the
 // ledger of those callers), and the card's menu reads the same answer to hide
 // Delete.
 //
@@ -139,8 +139,20 @@ func resolveChief(list []agents.Agent) (agents.Agent, bool) {
 // deletable the moment someone relabels it.
 // ---------------------------------------------------------------------------
 
-// errChiefProtected is the refusal every destroy path returns for the chief.
-var errChiefProtected = errors.New("the chief agent cannot be deleted; relabel it first if it is really meant to go")
+// chiefRefusal is the text every refused delete of the chief carries.
+//
+// ⚠ THE TWO CHIEFS GET DIFFERENT ADVICE BECAUSE ONLY ONE OF THEM HAS A WAY OUT.
+// The reserved slug is protected ABSOLUTELY (operator decision): its name is
+// immutable, so there is nothing to relabel and the message must not suggest
+// there is. An agent that is the chief only because of its display name stops
+// being the chief the moment it is renamed, and saying so is the remedy.
+func chiefRefusal(a agents.Agent) string {
+	if a.Name == agents.ChiefName {
+		return "the chief agent cannot be deleted"
+	}
+	return "the chief agent cannot be deleted; this agent is the chief because it is labelled \"" +
+		ChiefDisplayName + "\" — rename it first if it is really meant to go"
+}
 
 // chiefPredicate is THE chief predicate, bound to one read of the agent list:
 // the chief is resolved once, so a caller deciding many agents (the card list)
@@ -155,87 +167,23 @@ func chiefPredicate(list []agents.Agent) func(agents.Agent) bool {
 // isChiefAmong reports whether a is the chief, given the full agent list.
 func isChiefAmong(a agents.Agent, list []agents.Agent) bool { return chiefPredicate(list)(a) }
 
-// agentIsChief reads the agent table and answers isChiefAmong for id. An agent
-// that is not in the table is not the chief. A read error is returned, and
+// agentIsChief reads the agent table and answers isChiefAmong for id, returning
+// the agent's row with it (the refusal text depends on which chief it is). An
+// agent that is not in the table is not the chief. A read error is returned, and
 // every destroy path treats it as "might be the chief" — it FAILS CLOSED, since
 // a refused delete can be retried and a destroyed chief cannot be undone.
-func (s *Server) agentIsChief(ctx context.Context, id int64) (bool, error) {
+func (s *Server) agentIsChief(ctx context.Context, id int64) (agents.Agent, bool, error) {
 	if s.ext.Agents == nil {
-		return false, nil
+		return agents.Agent{}, false, nil
 	}
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
-		return false, err
+		return agents.Agent{}, false, err
 	}
 	for _, a := range list {
 		if a.ID == id {
-			return isChiefAmong(a, list), nil
+			return a, isChiefAmong(a, list), nil
 		}
 	}
-	return false, nil
-}
-
-// 🔴 THERE IS NO chat_sessions ROW FOR RECAPS, AND DELETING IT IS THE FIX.
-//
-// This used to be a `chiefRecapSession` type holding a mutex, a key and an id,
-// with the row created on first use. Its stated purpose — from its own comment —
-// was that "up to 120 windows summarised on a loop would bury the operator's own
-// conversation with chief under machine traffic, on the very page the slide-out
-// adds for talking to them."
-//
-// 🔴 THAT HARM IS STRUCTURALLY IMPOSSIBLE AND ALWAYS WAS. A recap turn is NEVER
-// persisted: chiefRecapGenerator.Generate calls Provisioner.Chat and returns the
-// string. Enumerated with a positive control — AddChatMessage appears on the
-// kickoff path (provision.go), the operator path (operator.go) and the web-chat
-// path (agents.go), and ZERO times anywhere on the recap path. So no recap has
-// ever been able to appear in any transcript, whatever session key it used, and
-// the dedicated row was permanently empty by construction.
-//
-// 🔴 AND THE ROW WAS ACTIVELY HARMFUL — IT CAUSED THE BUG IT LOOKED LIKE IT WAS
-// PREVENTING. chat_sessions.updated_at DEFAULTS TO now() (migration 0009), and
-// both LatestOrCreateSession and ListSessions order `updated_at DESC, id DESC`.
-// So the instant a recap row was inserted it became the agent's most-recently-
-// updated session — which is where `muster chief ask` posts (operator.go)
-// AND what GET /api/agents/{name}/messages resolves to by default
-// (machine_agents.go). Measured on the upstream database: one agent
-// carried four sessions, two of them empty recap rows created 29s and 24s after
-// two pod rollouts, and reading chief's chat answered `count: 0` while the
-// operator's actual conversation sat in the session one row back.
-//
-// ⚠ A DETERMINISTIC KEY DOES NOT FIX THAT, which is worth recording because it
-// was the first fix attempted here. Inserting the row ONCE with a stable key
-// still makes it newest — once, permanently — so the default read still resolves
-// to an empty session. Only having no row at all removes the failure.
-//
-// ⚠ WHAT THE SEPARATION ACTUALLY BUYS is one GATEWAY CONTEXT, so recaps do not
-// pollute the operator's conversational memory with the agent. That is bought by
-// the session KEY STRING alone: Provisioner.Chat takes a sessionKey and hands it
-// straight to chatStream, consulting no chat_sessions row. So the key below is
-// all that was ever load-bearing.
-
-// recapSessionName is the recap conversation's gateway key.
-//
-// 🔴 IT IS A PURE FUNCTION OF THE AGENT NAME — no clock, no counter, no store.
-// That is what makes it survive a restart: the same agent yields the same key
-// forever, so a rebooted pod rejoins the gateway context it was using instead of
-// starting a new one. The store's own newSessionKey stamps
-// time.Now().UnixNano(), which is precisely why it cannot be used here.
-//
-// ⚠ THE SUFFIX MUST NOT COLLIDE WITH legacySessionKey (`agent:<name>:webchat`),
-// which is the key LatestOrCreateSession gives an agent's FIRST auto-created
-// session — i.e. the operator's own thread on a fresh agent. Sharing it would put
-// recaps back in the operator's gateway context, which is the one thing the
-// separation is for.
-func recapSessionName(agentName string) string {
-	return "agent:" + agentName + ":webchat:recap"
-}
-
-// recapSessionKey returns the chief's recap gateway key.
-//
-// ⚠ IT TOUCHES NO STORE AND CANNOT FAIL. The (ctx, error) shape is kept because
-// every caller already handles an error from it and the signature is the seam a
-// future store-backed variant would need; returning a nil error from a pure
-// function is cheaper than churning four call sites for no behaviour change.
-func (s *Server) recapSessionKey(_ context.Context, a agents.Agent) (string, error) {
-	return recapSessionName(a.Name), nil
+	return agents.Agent{}, false, nil
 }

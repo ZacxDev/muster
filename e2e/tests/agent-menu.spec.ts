@@ -147,27 +147,82 @@ for (const vp of [
       });
     }
 
-    // The card list morphs on every lifecycle event, under an open menu. Measured:
-    // the morph CLOSES it. What must never happen is the third outcome — open but
-    // no longer beside its trigger (the popover default is mid-screen).
-    test('a list morph never strands the open menu away from its trigger', async ({ page }) => {
+    // 🔴 THE LIST RE-RENDERS UNDER AN OPEN MENU THROUGH ITS OWN hx-trigger, AND
+    // THE RE-RENDER CAN RE-ORDER THE CARDS. sse:chat.reply / agent.changed /
+    // agents:changed all morph #agents-list in place, and the server sorts by last
+    // activity, so a reply MOVES cards. Moving the open menu's card made idiomorph
+    // strip the inline position the placer wrote, while the menu stayed open and
+    // the same size — so nothing re-placed it and it sat at 0,0 with its actions
+    // live, away from its trigger. An earlier version of this test drove
+    // htmx.ajax(), which REPLACES the node instead of morphing it, so it could only
+    // ever see the menu closed and passed for the wrong reason.
+    //
+    // Here the response is the server's own, with the cards REVERSED, so the open
+    // menu's card is guaranteed to move; the swap is fired by the list's own
+    // trigger event, which is the real path.
+    //
+    // EVERY card, because idiomorph — not this test — chooses which nodes of a
+    // re-order it moves: measured, reversing three cards moved the open card at
+    // 412px and a different one at 1280px, so a single card is red at one width
+    // and vacuously green at the other.
+    test('a re-ordering list morph keeps the open menu beside its trigger', async ({ page }) => {
+      // Only the swap this test fires is reversed; every page load is the server's.
+      let armed = false;
+      await page.route('**/ui/agents', async (route) => {
+        if (!armed) return route.continue();
+        armed = false;
+        const res = await route.fetch();
+        const body = await res.text();
+        const starts = [...body.matchAll(/<article id="agent-/g)].map((m) => m.index!);
+        const end = body.lastIndexOf('</article>') + '</article>'.length;
+        const parts = starts.map((st, k) => body.slice(st, k + 1 < starts.length ? starts[k + 1] : end));
+        await route.fulfill({ response: res, body: body.slice(0, starts[0]) + parts.reverse().join('') + body.slice(end) });
+      });
+      for (let k = 0; k < 3; k++) {
+      await cards(page);
+      const before = await page.evaluate(() => [...document.querySelectorAll('#agents-list article')].map((a) => a.id).join(','));
+      const id = before.split(',')[k];
+      await page.locator(`#${id} [aria-label="Agent actions"]`).click();
+      const settled = page.waitForResponse('**/ui/agents');
+      armed = true;
+      await page.evaluate(() => document.body.dispatchEvent(new CustomEvent('agents:changed', { bubbles: true })));
+      await settled;
+      // Positive control: the morph really did move the cards. Without it, an
+      // unchanged order would make "still beside" trivially true.
+      await expect
+        .poll(() => page.evaluate(() => [...document.querySelectorAll('#agents-list article')].map((a) => a.id).join(',')))
+        .toBe(before.split(',').reverse().join(','));
+      await expect
+        .poll(
+          () =>
+            page.evaluate((cid) => {
+              const m = document.getElementById('agent-menu-' + cid.replace('agent-', ''));
+              if (!m || !m.matches(':popover-open')) return 'closed';
+              const t = document.querySelector(`#${cid} [aria-label="Agent actions"]`)!.getBoundingClientRect();
+              const r = m.getBoundingClientRect();
+              const beside = Math.abs(r.right - t.right) <= 1 && (Math.abs(r.top - t.bottom) <= 8 || Math.abs(t.top - r.bottom) <= 8);
+              return beside ? 'beside' : `stranded: menu ${Math.round(r.left)},${Math.round(r.top)} trigger ${Math.round(t.left)},${Math.round(t.top)}`;
+            }, id),
+          { timeout: 3000, message: `card ${k} (${id})` },
+        )
+        .toBe('beside');
+      }
+    });
+
+    // Closing the menu resets it: reopening starts at step 1 (no armed "Confirm
+    // delete" waiting from last time).
+    test('reopening the menu starts at step 1 of the delete', async ({ page }) => {
       await cards(page);
       const id = await lastInRow(page);
-      await page.locator(`#${id} [aria-label="Agent actions"]`).click();
-      await page.evaluate(() => {
-        const w = window as unknown as { htmx: { ajax: (m: string, u: string, o: object) => Promise<void> } };
-        return w.htmx.ajax('GET', '/ui/agents', { target: '#agents-list', swap: 'morph:innerHTML' });
-      });
-      await page.waitForTimeout(300);
-      const where = await page.evaluate((cid) => {
-        const m = document.getElementById('agent-menu-' + cid.replace('agent-', ''));
-        if (!m || !m.matches(':popover-open')) return 'closed';
-        const t = document.querySelector(`#${cid} [aria-label="Agent actions"]`)!.getBoundingClientRect();
-        const r = m.getBoundingClientRect();
-        const beside = Math.abs(r.right - t.right) <= 1 && (Math.abs(r.top - t.bottom) <= 8 || Math.abs(t.top - r.bottom) <= 8);
-        return beside ? 'beside' : `stranded: menu ${Math.round(r.left)},${Math.round(r.top)} trigger ${Math.round(t.left)},${Math.round(t.top)}`;
-      }, id);
-      expect(['closed', 'beside']).toContain(where);
+      const trigger = page.locator(`#${id} [aria-label="Agent actions"]`);
+      const confirm = page.locator(`#${id} button`, { hasText: 'Confirm delete' });
+      await trigger.click();
+      await page.locator(`#${id} summary`, { hasText: 'Delete' }).click();
+      await expect(confirm).toBeVisible();
+      await page.keyboard.press('Escape');
+      await trigger.click();
+      await expect(page.locator(`#${id} summary`, { hasText: 'Delete' })).toBeVisible();
+      await expect(confirm).toBeHidden();
     });
 
     // Start/Stop post and morph the list; the menu must not linger over the

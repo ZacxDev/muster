@@ -1227,7 +1227,7 @@ func (s *Server) dismissTask(ctx context.Context, id int64) error {
 		}
 	}
 	if linkedAgentID != 0 {
-		chief, err := s.agentIsChief(ctx, linkedAgentID)
+		_, chief, err := s.agentIsChief(ctx, linkedAgentID)
 		switch {
 		case err != nil:
 			s.logger.Printf("dismiss task %d: chief check for linked agent %d: %v; leaving the agent running", id, linkedAgentID, err)

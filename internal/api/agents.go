@@ -1134,14 +1134,14 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	chief, err := s.agentIsChief(r.Context(), id)
+	a, chief, err := s.agentIsChief(r.Context(), id)
 	if err != nil {
 		s.logger.Printf("agents: delete %d: chief check: %v", id, err)
 		http.Error(w, "could not check whether this is the chief agent; nothing was deleted", http.StatusInternalServerError)
 		return
 	}
 	if chief {
-		http.Error(w, errChiefProtected.Error(), http.StatusConflict)
+		http.Error(w, chiefRefusal(a), http.StatusConflict)
 		return
 	}
 	safeGo(s.logger, "destroy", func() {

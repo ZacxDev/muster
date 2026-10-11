@@ -13,25 +13,41 @@ import (
 //   - right-aligned to the trigger, just below it;
 //   - flipped ABOVE the trigger when below would cross the viewport bottom, and
 //     pinned to the bottom edge when neither side fits;
-//   - clamped horizontally inside an 8px edge, which is what keeps a 176px menu
-//     on screen when its trigger sits near either edge of a 412px phone.
+//   - clamped horizontally inside an 8px edge. ⚠ DEFENSIVE, AND UNEXERCISED: the
+//     only trigger today sits at a card's right edge, where right-alignment can
+//     never leave the viewport, so no test reaches the clamp (a mutant deleting
+//     it survives the suite). It is kept for a trigger placed somewhere else.
 //
-// 🔴 IT RE-PLACES WHENEVER THE MENU CAN HAVE MOVED OR GROWN, NOT ONLY ON OPEN.
-// Opening the nested "Delete" <details> makes the menu taller, so a menu placed
-// above or below a trigger near the bottom must be re-placed when it GROWS
-// (a ResizeObserver, see below — the toggle event arrives a task too late);
-// and a scroll or resize moves the trigger out from under it.
+// 🔴 IT RE-PLACES WHENEVER THE MENU CAN HAVE MOVED, GROWN, OR LOST ITS POSITION,
+// NOT ONLY ON OPEN. Three separate causes, each with its own observer because
+// no one of them sees the others:
 //
-// ⚠ A MORPH OF THE CARD LIST CLOSES AN OPEN MENU — MEASURED, NOT ASSUMED. This
-// script once also re-placed after every htmx settle, on the theory that a morph
-// keeps a popover open while stripping its inline position; an e2e probe found
-// the menu CLOSED after the morph every time, so that listener was dead code and
-// is gone. agent-menu.spec.ts pins the invariant that matters either way: after a
-// morph the menu is closed or beside its trigger, never stranded mid-screen.
+//   - IT GREW. Opening the nested "Delete" <details> makes the menu taller. A
+//     ResizeObserver re-places it — NOT the <details>' toggle event, which is
+//     dispatched a task after the synchronous growth; a probe sampling between
+//     the two saw the grown menu hanging over its trigger. ResizeObserver
+//     callbacks run in the rendering steps before paint.
+//   - THE TRIGGER MOVED. Scroll and resize.
+//   - A MORPH STRIPPED THE POSITION. #agents-list morphs in place on every
+//     lifecycle and chat event, and the server orders cards by last activity, so
+//     a reply RE-ORDERS them. An open popover stays open through that (its state
+//     is not an attribute), but when idiomorph moves its card it rewrites the
+//     element's attributes to the server's — which carry no inline style — and the
+//     menu fell to the popover default corner (measured: 0,0) with Start/Delete
+//     still live, nowhere near its trigger. Its SIZE does not change, so the
+//     ResizeObserver cannot see it. A MutationObserver on the open menu's `style`
+//     attribute does, and runs as a microtask — before paint — so it is re-placed
+//     beside the trigger's NEW position. It is re-placed rather than closed:
+//     these morphs are fired by background events, and a menu that shuts under
+//     the operator's finger because some other agent replied is worse than one
+//     that follows its card.
+//     ⚠ What the morph still does: it closes the nested Delete step (the
+//     server's markup has no `open`), so an armed "Confirm delete" drops back to
+//     step 1. That is the safe direction and is left alone.
 //
-// A request started from inside a menu closes it as the request STARTS, rather
-// than waiting for the response's morph — and a request that fails, and so
-// morphs nothing, still closes it.
+// A request started from inside a menu closes it as the request STARTS, so a
+// request that fails (and morphs nothing) does not leave it open. Closing — by
+// any route — also closes the nested Delete step, so reopening starts at step 1.
 //
 // Bound once per document (__musterFloatingMenu), like every other script here:
 // htmx re-executes in-body <script> tags on each boosted swap.
@@ -67,25 +83,33 @@ func floatingMenuScript() g.Node {
     var ms = document.querySelectorAll('[data-floating-menu]');
     for (var i = 0; i < ms.length; i++) place(ms[i]);
   }
-  // A size change re-places through a ResizeObserver, NOT through the nested
-  // <details>' toggle event: opening Delete grows the menu SYNCHRONOUSLY, but
-  // toggle is dispatched in a LATER task, and until it ran the grown menu hung
-  // over its trigger (measured: an e2e probe sampling between the two saw it,
-  // every time at 412px). ResizeObserver callbacks run in the rendering steps
-  // BEFORE paint, so the overhanging frame is never drawn.
-  var ro = window.ResizeObserver ? new ResizeObserver(function (es) {
+  var grew = new ResizeObserver(function (es) {
     for (var i = 0; i < es.length; i++) place(es[i].target);
-  }) : null;
-  // toggle does not bubble; a CAPTURING listener on document sees every one —
-  // the popover's own (start/stop observing it) and the nested <details>' (a
-  // fallback re-place where ResizeObserver is missing).
+  });
+  // Re-place ONLY when the position is gone. place() itself writes style, which
+  // re-enters this observer; a menu that still has its top is this script's own
+  // write and is left alone, which is what ends the loop.
+  var stripped = new MutationObserver(function (rs) {
+    for (var i = 0; i < rs.length; i++) {
+      var m = rs[i].target;
+      if (isOpen(m) && !m.style.top) place(m);
+    }
+  });
+  // toggle does not bubble; a CAPTURING listener on document sees the popover's
+  // own. Open: place it and start observing. Close: stop, and reset the Delete
+  // step.
   document.addEventListener('toggle', function (e) {
-    var el = e.target;
-    if (!el || !el.closest) return;
-    var m = el.closest('[data-floating-menu]');
-    if (!m) return;
-    if (ro && el === m) { if (isOpen(m)) ro.observe(m); else ro.unobserve(m); }
-    place(m);
+    var m = e.target;
+    if (!m || !m.matches || !m.matches('[data-floating-menu]')) return;
+    if (isOpen(m)) {
+      grew.observe(m);
+      stripped.observe(m, { attributes: true, attributeFilter: ['style'] });
+      place(m);
+      return;
+    }
+    grew.unobserve(m);
+    var ds = m.querySelectorAll('details[open]');
+    for (var i = 0; i < ds.length; i++) ds[i].open = false;
   }, true);
   window.addEventListener('resize', placeAll);
   document.addEventListener('scroll', placeAll, { capture: true, passive: true });

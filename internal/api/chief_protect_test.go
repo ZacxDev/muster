@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -185,6 +187,11 @@ func TestTheChiefCannotBeDeletedFromItsCard(t *testing.T) {
 				if !strings.Contains(rec.Body.String(), "chief agent cannot be deleted") {
 					t.Errorf("the 409 does not say why: %q", rec.Body.String())
 				}
+				// Only a display-name chief has a way out, so only its refusal may
+				// offer one: the reserved slug is protected absolutely.
+				if got, want := strings.Contains(rec.Body.String(), "rename it first"), tc.id != chiefSlugID; got != want {
+					t.Errorf("the 409 advises renaming = %v, want %v: %q", got, want, rec.Body.String())
+				}
 				if len(got) != 0 {
 					t.Errorf("the chief was refused AND torn down anyway: Destroy(%v)", got)
 				}
@@ -318,19 +325,72 @@ func cardChunk(t *testing.T, markup string, id int64) string {
 }
 
 // TestEveryDestroyCallSiteIsChiefGuarded is the LEDGER of every function in this
-// package that calls Provisioner.Destroy, and each one must consult the chief
-// predicate (agentIsChief). It fails when a caller is ADDED (a new destroy path
-// nobody guarded) and when one is REMOVED (the ledger, and the behavioural tests
-// above that name its route, have gone stale). Structural only: the tests above
-// are what prove each guard actually refuses.
+// package that USES the Provisioner interface's Destroy method.
+//
+// 🔴 IT IS RESOLVED BY TYPE, NOT BY SPELLING. An earlier version matched the
+// literal selector `X.Provisioner.Destroy`, so `p := s.ext.Provisioner;
+// p.Destroy(id)` — or a method value handed to a helper — was a destroy path it
+// could not see. This type-checks the package and records every selector that
+// resolves to (Provisioner).Destroy, called or not, whatever it is spelled
+// through.
+//
+// ⚠ WHAT IT PROVES, EXACTLY, AND NO MORE: (1) the SET of functions using that
+// method is the two named below — it fails when one is added or removed; and
+// (2) each of them also calls agentIsChief. It does NOT prove the answer gates
+// the destroy — a function could call the predicate and ignore it. The
+// behavioural tests above are what prove each named path refuses. And it reads
+// THIS package only: Provisioner is api's own interface and nothing outside
+// internal/api holds a Server to reach it through, but a caller that built its
+// own path around a concrete provisioner is outside this ledger.
+//
+// 🔴 THE LEDGER CARRIES ITS OWN POSITIVE CONTROL, IN THE SAME TYPE-CHECK. Two
+// control functions are added to the checked file set — a destroy through a local
+// alias, and a bare method value — and must be FOUND, or the two real names
+// below were matched by an instrument not shown to see the spellings it claims
+// to. (One check rather than two: the source importer costs ~20s a pass.)
 func TestEveryDestroyCallSiteIsChiefGuarded(t *testing.T) {
-	files, err := filepath.Glob("*.go")
+	controls := map[string]bool{"ledgerControlAlias": true, "ledgerControlValue": true}
+	users := destroyUsers(t, map[string]string{"zz_ledger_control.go": `package api
+
+func (s *Server) ledgerControlAlias() { p := s.ext.Provisioner; _ = p.Destroy(1) }
+func (s *Server) ledgerControlValue() { f := s.ext.Provisioner.Destroy; _ = f }
+`})
+	var names []string
+	for n := range users {
+		if controls[n] {
+			delete(controls, n)
+			continue
+		}
+		names = append(names, n)
+	}
+	if len(controls) != 0 {
+		t.Fatalf("the ledger did not see its own controls %v — it cannot see a destroy reached "+
+			"through a variable or a method value, so the list below proves nothing", controls)
+	}
+	sort.Strings(names)
+	if got, want := strings.Join(names, ","), "dismissTask,handleAgentDelete"; got != want {
+		t.Fatalf("functions using (Provisioner).Destroy = %s, want %s — a destroy path was added "+
+			"or removed; guard it with agentIsChief and add its route to the tests above", got, want)
+	}
+	for _, n := range names {
+		if !users[n] {
+			t.Errorf("%s uses (Provisioner).Destroy without calling agentIsChief", n)
+		}
+	}
+}
+
+// destroyUsers type-checks this package's non-test files (plus extra, name ->
+// source) and returns each function that uses (Provisioner).Destroy, mapped to
+// whether it also calls agentIsChief.
+func destroyUsers(t *testing.T, extra map[string]string) map[string]bool {
+	t.Helper()
+	paths, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
-	callers := map[string]bool{} // func name -> calls agentIsChief
-	for _, f := range files {
+	var files []*ast.File
+	for _, f := range paths {
 		if strings.HasSuffix(f, "_test.go") {
 			continue
 		}
@@ -338,48 +398,59 @@ func TestEveryDestroyCallSiteIsChiefGuarded(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		files = append(files, file)
+	}
+	for name, src := range extra {
+		file, err := parser.ParseFile(fset, name, src, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, file)
+	}
+	info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}}
+	conf := types.Config{Importer: importer.ForCompiler(fset, "source", nil)}
+	pkg, err := conf.Check("github.com/ZacxDev/muster/internal/api", fset, files, info)
+	if err != nil {
+		t.Fatalf("type-check: %v", err)
+	}
+	iface, ok := pkg.Scope().Lookup("Provisioner").Type().Underlying().(*types.Interface)
+	if !ok {
+		t.Fatal("api.Provisioner is not an interface any more; this ledger needs rewriting")
+	}
+	var destroy *types.Func
+	for i := 0; i < iface.NumMethods(); i++ {
+		if m := iface.Method(i); m.Name() == "Destroy" {
+			destroy = m
+		}
+	}
+	if destroy == nil {
+		t.Fatal("api.Provisioner has no Destroy method; this ledger needs rewriting")
+	}
+	out := map[string]bool{}
+	for _, file := range files {
 		for _, d := range file.Decls {
 			fn, ok := d.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
 				continue
 			}
-			var destroys, guarded bool
+			var uses, guarded bool
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
+				sel, ok := n.(*ast.SelectorExpr)
 				if !ok {
 					return true
 				}
-				sel, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok {
-					return true
+				if s := info.Selections[sel]; s != nil && s.Obj() == destroy {
+					uses = true
 				}
-				switch sel.Sel.Name {
-				case "Destroy":
-					if inner, ok := sel.X.(*ast.SelectorExpr); ok && inner.Sel.Name == "Provisioner" {
-						destroys = true
-					}
-				case "agentIsChief":
+				if sel.Sel.Name == "agentIsChief" {
 					guarded = true
 				}
 				return true
 			})
-			if destroys {
-				callers[fn.Name.Name] = guarded
+			if uses {
+				out[fn.Name.Name] = guarded
 			}
 		}
 	}
-	var names []string
-	for n := range callers {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	if got, want := strings.Join(names, ","), "dismissTask,handleAgentDelete"; got != want {
-		t.Fatalf("functions calling Provisioner.Destroy = %s, want %s — a destroy path was added "+
-			"or removed; guard it with agentIsChief and add its route to the tests above", got, want)
-	}
-	for _, n := range names {
-		if !callers[n] {
-			t.Errorf("%s calls Provisioner.Destroy without consulting agentIsChief", n)
-		}
-	}
+	return out
 }
