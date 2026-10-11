@@ -111,9 +111,6 @@ func main() {
 	if err := cfg.validate(); err != nil {
 		logger.Fatalf("config: %v", err)
 	}
-	for _, w := range retiredEnvWarnings(cfg) {
-		logger.Printf("config: %s", w)
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -307,10 +304,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	srv.UseExtensions(ext)
 	if port.Configured() {
 		srv.UseRouter(port)
-		srv.UseGate(port)
 	}
 	// The claude-code approval relay's gate: its OWN field, so a standalone
-	// deployment can arm it without UseRouter / UseGate / session liveness.
+	// deployment can arm it without UseRouter / session liveness.
 	if g := approvalGateFor(cfg); g != nil {
 		srv.UseApprovalGate(g)
 	}
@@ -368,7 +364,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 // sets these two variables like any other.
 //
 // 🔴 THE RESULT IS HANDED TO THE SERVER ONLY AS THE RELAY'S api.GatePort
-// (Server.UseApprovalGate). It is never passed to UseRouter, UseGate or
+// (Server.UseApprovalGate). It is never passed to UseRouter or
 // buildSessionLiveness, so the gate turns on no router behaviour —
 // TestTheApprovalGateDoesNotTurnOnRouterBehaviour pins that.
 //
@@ -678,13 +674,13 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		// this process see my variable at all" returned nothing precisely when
 		// the answer was yes. Found by the both-directions ledger, not by review.
 		l.Printf("permission router: CONFIGURED — %s=%s, actor %q — session liveness, event "+
-			"publish, notifications, the directory picker and agent checkpoints are live (the "+
+			"publish, notifications and the directory picker are live (the "+
 			"claude-code approval relay is NOT: see the approval relay gate line)",
 			envRouterURL, a.cfg.RouterURL, a.cfg.RouterActor)
 	case a.cfg.Standalone:
 		l.Printf("permission router: NONE, DECLARED (%s=1) — session transcript links will all "+
 			"read \"no transcript recorded\", which is TRUE here because nothing records "+
-			"transcripts. Notifications, the directory picker and agent checkpoints degrade "+
+			"transcripts. Notifications and the directory picker degrade "+
 			"and say so where a human can see it", envStandalone)
 	// 🔴 THE PARTIAL CASE IS ITS OWN LINE, BECAUSE THE TWO-BRANCH VERSION NAMED
 	// THE WRONG VARIABLE. router.New returns nil when base, token OR actor is
@@ -718,7 +714,7 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	if approvalGateFor(a.cfg) != nil {
 		l.Printf("approval relay gate: DEDICATED — %s=%s (%s set), actor %q. Used ONLY by "+
 			"/agent/approvals to file and poll checkpoint cards; it turns on no router "+
-			"behaviour (session liveness, events, notifications, checkpoints are unchanged)",
+			"behaviour (session liveness, events, notifications are unchanged)",
 			envApprovalGateURL, a.cfg.ApprovalGateURL, envApprovalGateToken, a.cfg.RouterActor)
 	} else {
 		l.Printf("approval relay gate: NONE — %s/%s are unset, so /agent/approvals answers 503 "+

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -447,5 +448,43 @@ func TestNewAppWiresTheConfiguredNamespacePrefixIntoTheApiLayer(t *testing.T) {
 			"defect this guard exists for: a row saying `devpod-<name>` while the cluster holds "+
 			"`muster-agent-<name>`.\n"+
 			"    If the wiring moved, move this assertion with it; do not delete it.", want)
+	}
+}
+
+// TestAStalePrivilegeApplyVariableChangesNothing: the live manifest still sets
+// MUSTER_AGENT_PRIVILEGE_APPLY=1 beside MUSTER_AGENT_PROVISIONER=kubernetes. The
+// privilege tier is removed, so the binary must load and validate that
+// environment, and the resulting config must be IDENTICAL to the one built
+// without the variable — it is ignored like any unknown MUSTER_* name.
+func TestAStalePrivilegeApplyVariableChangesNothing(t *testing.T) {
+	base := map[string]string{
+		envAgentProvisioner: provisionerK8s,
+		envAgentImageRepo:   "registry.example.test/muster/agent-runtime",
+		envAgentAPIURL:      "http://muster.example.test:8105",
+		envDatabase:         "postgres://unused",
+	}
+	load := func(extra map[string]string) config {
+		t.Helper()
+		cfg, err := loadConfig(func(n string) string {
+			if v, ok := extra[n]; ok {
+				return v
+			}
+			return base[n]
+		})
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if err := cfg.validate(); err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		return cfg
+	}
+	with := load(map[string]string{"MUSTER_AGENT_PRIVILEGE_APPLY": "1"})
+	without := load(nil)
+	if !reflect.DeepEqual(with, without) {
+		t.Fatalf("MUSTER_AGENT_PRIVILEGE_APPLY=1 changed the loaded config:\nwith:    %+v\nwithout: %+v", with, without)
+	}
+	if with.agentProvisioner() != provisionerK8s {
+		t.Fatalf("control: the provisioner did not load (%q); the comparison is over an empty config", with.agentProvisioner())
 	}
 }

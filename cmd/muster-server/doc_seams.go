@@ -406,8 +406,8 @@ package main
 //	operator retired privileges (superseded by connectors): the store, routes,
 //	views, tool, applier, the driver's RBAC grant path and the tables (migration
 //	0005) are gone, so there is no seam left to close and no defect to raise.
-//	MUSTER_AGENT_PRIVILEGE_APPLY is RETIRED — read only for a boot warning, see
-//	config.go retiredEnvNames.
+//	MUSTER_AGENT_PRIVILEGE_APPLY is no longer read; like any unknown MUSTER_*
+//	name it is ignored (config never refuses one).
 //
 // ---------------------------------------------------------------------------
 // 3. ✅ api.ProfileReapplier IS SATISFIED, AND THE ASSERTION IS ASSERTED.

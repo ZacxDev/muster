@@ -130,8 +130,8 @@ func TestTheRouterBannerNamesTheVariableThatIsActuallyMissing(t *testing.T) {
 			name: "all three set: configured",
 			cfg:  config{RouterURL: url, RouterToken: "t", RouterActor: "muster"},
 			wantLine: `permission router: CONFIGURED — ` + envRouterURL + `=` + url +
-				`, actor "muster" — session liveness, event publish, notifications, the ` +
-				`directory picker and agent checkpoints are live (the claude-code approval ` +
+				`, actor "muster" — session liveness, event publish, notifications and the ` +
+				`directory picker are live (the claude-code approval ` +
 				`relay is NOT: see the approval relay gate line)`,
 			// It is the only branch that may call itself CONFIGURED.
 			mustContain: []string{"CONFIGURED", url},
@@ -176,8 +176,8 @@ func TestTheRouterBannerNamesTheVariableThatIsActuallyMissing(t *testing.T) {
 			cfg:  config{Standalone: true},
 			wantLine: `permission router: NONE, DECLARED (` + envStandalone + `=1) — session ` +
 				`transcript links will all read "no transcript recorded", which is TRUE here ` +
-				`because nothing records transcripts. Notifications, the directory picker ` +
-				`and agent checkpoints degrade and say so where a human can see it`,
+				`because nothing records transcripts. Notifications and the directory picker ` +
+				`degrade and say so where a human can see it`,
 			mustContain: []string{envStandalone},
 			mustNotSay:  []string{envRouterToken + " is unset", "CONFIGURED"},
 		},
@@ -335,9 +335,6 @@ var bannerLedger = []string{
 // GITHUB_CLIENT_ID and MUSTER_GITHUB_TOKEN and neither of the other two, so the
 // entries say what is actually true of them.
 var bannerExempt = map[string]string{
-	envRetiredPrivApply: "RETIRED: no longer read for any setting. When the environment still sets it, main() logs " +
-		"retiredEnvWarnings' line naming it (TestABootWithTheRetiredPrivilegeApplyVariableStillLoadsAndValidates); " +
-		"there is no tier left for the banner to report on",
 	envAgentKinds: "announced on the `agent kinds:` line in both arms (gateway-only and claude-code " +
 		"enabled); the claude-code arm cannot be rendered by bannerBothDirections' fixture, whose " +
 		"provisioner is built without an account pool. TestTheKindsBannerLineNamesAccountsNeverTokens " +

@@ -130,8 +130,9 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	//     and refusing when the shared secret is absent is the least it should cost.
 	//
 	// ⚠ ITS GET TWIN STAYS enforce-when-set. Not an oversight: the read discloses a
-	// transcript, the write runs work inside a devpod that carries a kubeconfig and a
-	// GitHub token, and the read predates this change.
+	// transcript, the write runs arbitrary work inside an agent instance (a shell,
+	// its repository checkout, whatever connectors it has been granted), and the
+	// read predates this change.
 	//
 	// ⚠ REGISTERED AFTER THE PROVISIONER GATE, unlike its GET twin: the write
 	// reaches Provisioner.Chat, so on a provisioner-less deployment there is nothing

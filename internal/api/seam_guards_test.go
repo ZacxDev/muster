@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/notes"
 )
@@ -426,117 +425,6 @@ func TestDirectoryReadDistinguishesFailureFromEmptiness(t *testing.T) {
 				"clampDirectoryLimit is not on the path to the call.", rr.gotLimit, notes.MaxDirectoryResults)
 		}
 	})
-}
-
-// ---------------------------------------------------------------------------
-// 5. A CHECKPOINT THAT COULD NOT BE ANSWERED IS NOT AN APPROVAL.
-// ---------------------------------------------------------------------------
-
-type scriptedGate struct {
-	decisions []GateDecision
-	errs      []error
-	i         int
-	cleared   int
-}
-
-func (g *scriptedGate) MintGate(context.Context, GateSpec) (string, error) { return "card-1", nil }
-func (g *scriptedGate) ClearGate(context.Context, string) error            { g.cleared++; return nil }
-func (g *scriptedGate) ReadGate(context.Context, string) (GateDecision, error) {
-	i := g.i
-	g.i++
-	if i < len(g.errs) && g.errs[i] != nil {
-		return GateDecision{}, g.errs[i]
-	}
-	if i < len(g.decisions) {
-		return g.decisions[i], nil
-	}
-	return GateDecision{State: GateStatePending}, nil
-}
-
-// TestCheckpointRefusesEveryNonDecision drives awaitCheckpointDecision through
-// every exit and asserts only ONE of them can report a decision.
-//
-// 🔴 THE STATUSES ARE PAIRWISE DISTINCT AND NONE EQUALS "resolved" EXCEPT THE
-// DECIDED CASE. A test that only checked "resolved on approve" would pass with
-// every refusal branch deleted.
-func TestCheckpointRefusesEveryNonDecision(t *testing.T) {
-	boom := errors.New("transport")
-	cases := []struct {
-		name       string
-		gate       GatePort
-		wantStatus string
-		cancel     bool
-	}{
-		{
-			name:       "decided",
-			gate:       &scriptedGate{decisions: []GateDecision{{State: GateStateDecided, Response: "approve"}}},
-			wantStatus: "resolved",
-		},
-		{
-			name:       "gone is conclusive, not a retry",
-			gate:       &scriptedGate{decisions: []GateDecision{{State: GateStateGone}}},
-			wantStatus: "expired",
-		},
-		{
-			name:       "consecutive transport failures",
-			gate:       &scriptedGate{errs: []error{boom, boom, boom, boom, boom}},
-			wantStatus: "expired",
-		},
-		{
-			name:       "no gate at all",
-			gate:       nil,
-			wantStatus: "unavailable",
-		},
-		{
-			name:       "the caller went away",
-			gate:       &scriptedGate{},
-			wantStatus: "aborted",
-			cancel:     true,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			s := New(nil, AuthConfig{}, log.New(os.Stderr, "", 0))
-			if tc.gate != nil {
-				s.UseGate(tc.gate)
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			if tc.cancel {
-				cancel()
-			} else {
-				defer cancel()
-			}
-			dec, status := s.awaitCheckpointDecision(ctx, "card-1")
-			if status != tc.wantStatus {
-				t.Fatalf("status = %q, want %q", status, tc.wantStatus)
-			}
-			if status != "resolved" && dec.Response != "" {
-				t.Errorf("a NON-decision exit carried a response %q; an agent switching on "+
-					"`approved` would read it as consent", dec.Response)
-			}
-		})
-	}
-}
-
-// TestCheckpointDeadlineProducesTimeout pins the fifth exit, which the table
-// above cannot reach without waiting an hour.
-func TestCheckpointDeadlineProducesTimeout(t *testing.T) {
-	s := New(nil, AuthConfig{}, log.New(os.Stderr, "", 0))
-	s.UseGate(&scriptedGate{})
-	// Drive the clock past the backstop on the first read.
-	base := time.Now()
-	calls := 0
-	s.now = func() time.Time {
-		calls++
-		if calls == 1 {
-			return base
-		}
-		return base.Add(checkpointMaxWait).Add(time.Second)
-	}
-	_, status := s.awaitCheckpointDecision(context.Background(), "card-1")
-	if status != "timeout" {
-		t.Fatalf("status = %q, want %q", status, "timeout")
-	}
 }
 
 // ---------------------------------------------------------------------------

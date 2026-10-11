@@ -1489,7 +1489,7 @@ func (s *Server) handleAPITaskStatus(w http.ResponseWriter, r *http.Request) {
 	// "for EVERY status writer" and was "the single site", and BOTH are false.
 	// Only ONE setNoteStatus caller is applyTaskStatus; the rest bypass it —
 	// advanceTaskToInProgress (agents.go), handleTaskMerge (merge.go), and
-	// handleAgentTaskStatus / dispatchAgentTool / strandCheckpointTask (agent.go).
+	// handleAgentTaskStatus / dispatchAgentTool (agent.go).
 	// Each of those broadcasts from its own handler, so the property holds by
 	// REPETITION, not by construction, exactly as the corrected comment in
 	// agents.go says. Restating it as a package-wide invariant is the same

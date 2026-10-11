@@ -126,13 +126,6 @@ const (
 	envAgentCairnURL   = "MUSTER_AGENT_CAIRN_URL"
 	envAgentCairnToken = "MUSTER_AGENT_CAIRN_TOKEN"
 
-	// --- RETIRED: names this binary no longer acts on (see retiredEnvNames) ---
-	//
-	// MUSTER_AGENT_PRIVILEGE_APPLY armed the privilege tier, which was removed with
-	// the privilege subsystem (superseded by connectors). A deployment that still
-	// sets it must keep booting, so it is read for one thing only: a boot warning.
-	envRetiredPrivApply = "MUSTER_AGENT_PRIVILEGE_APPLY"
-
 	// --- agent KINDS (internal/agents.Kinds) and the claude-code kind's profile ---
 	//
 	// MUSTER_AGENT_KINDS is a comma list of the kinds a dispatch may ask for; unset
@@ -340,8 +333,7 @@ type config struct {
 	// else. They are a both-or-neither pair (validate refuses half of one).
 	//
 	// 🔴 THEY DO NOT MAKE THIS A ROUTER DEPLOYMENT. They are legal beside
-	// Standalone, they never reach buildSessionLiveness, api.Server.UseRouter or
-	// api.Server.UseGate (agent checkpoints keep their standalone behaviour), and
+	// Standalone, they never reach buildSessionLiveness or api.Server.UseRouter, and
 	// the client built from them is handed to the server ONLY as the relay's
 	// api.GatePort. They are the relay's ONLY gate: when unset the relay answers
 	// 503 and every prompt falls back to the agent's terminal, whether or not a
@@ -489,11 +481,6 @@ type config struct {
 	AgentStorageClass     string
 
 	AgentEndpointTemplate string
-
-	// RetiredEnv names the RETIRED variables (retiredEnvNames) the environment
-	// still sets. They change nothing; main() logs a warning per entry so the
-	// deployment manifest can be cleaned up. See retiredEnvWarnings.
-	RetiredEnv []string
 
 	// AgentKinds is MUSTER_AGENT_KINDS as written (lower-cased, trimmed, in
 	// order). Empty means agents.KindGateway alone — see config.agentKinds.
@@ -673,7 +660,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AgentEndpointTemplate: strings.TrimSpace(getenv(envAgentEndpointTmpl)),
 		AgentCairnURL:         strings.TrimSpace(getenv(envAgentCairnURL)),
 		AgentCairnToken:       strings.TrimSpace(getenv(envAgentCairnToken)),
-		RetiredEnv:            retiredEnvSet(getenv),
 		AgentKinds:            splitList(getenv(envAgentKinds)),
 		AgentCCImage:          strings.TrimSpace(getenv(envAgentCCImage)),
 		AgentCCAccountNames:   splitList(getenv(envAgentCCAccounts)),
@@ -1224,37 +1210,3 @@ func imagePinned(ref string) bool {
 // osGetenv is os.Getenv as a value, so main() can hand loadConfig the real
 // environment and tests can hand it a map.
 func osGetenv(name string) string { return os.Getenv(name) }
-
-// retiredEnvNames are variables this binary USED to read and no longer does.
-//
-// 🔴 A RETIRED NAME IS A WARNING, NEVER A BOOT REFUSAL. The deployment manifest
-// and the image ship separately, so the image that stops reading a variable
-// always boots at least once against a manifest that still sets it. Refusing to
-// start there would turn a dead line in a manifest into an outage; ignoring it
-// silently would leave the line there for ever, still reading as a live knob.
-// The warning is the middle: the pod serves, and the boot log names the line to
-// delete.
-var retiredEnvNames = []string{envRetiredPrivApply}
-
-// retiredEnvSet returns the retired names the environment sets to a non-empty
-// value, in retiredEnvNames order.
-func retiredEnvSet(getenv func(string) string) []string {
-	var out []string
-	for _, n := range retiredEnvNames {
-		if strings.TrimSpace(getenv(n)) != "" {
-			out = append(out, n)
-		}
-	}
-	return out
-}
-
-// retiredEnvWarnings is the boot-log line for each retired variable c carries.
-func retiredEnvWarnings(c config) []string {
-	out := make([]string, 0, len(c.RetiredEnv))
-	for _, n := range c.RetiredEnv {
-		out = append(out, fmt.Sprintf("WARNING: %s is set but is no longer read by this binary — "+
-			"the subsystem it configured was removed. It has no effect; delete it from the "+
-			"deployment manifest", n))
-	}
-	return out
-}

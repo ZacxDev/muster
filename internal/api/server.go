@@ -95,16 +95,13 @@ type Server struct {
 	auth   AuthConfig
 	router RouterPort
 
-	// gatePort is the approval queue an agent checkpoint asks through. See gate.go.
-	gatePort GatePort
-
 	// approvals is the claude-code approval relay's in-memory ledger: which agent
 	// filed which request, and which agents report a blocked terminal. See
 	// approvals.go.
 	approvals approvalLedger
-	// approvalGatePort is the queue the approval relay files through. It is NOT
-	// gatePort: a standalone deployment may arm the relay without arming agent
-	// checkpoints or any router behaviour. See UseApprovalGate.
+	// approvalGatePort is the queue the approval relay files through: a
+	// standalone deployment may arm the relay without arming any router
+	// behaviour. See UseApprovalGate.
 	approvalGatePort GatePort
 
 	startedAt time.Time
@@ -319,12 +316,6 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 //
 // ⚠ A nil port is the standalone deployment and is supported; see RouterPort.
 func (s *Server) UseRouter(r RouterPort) { s.router = r }
-
-// UseGate attaches the approval queue an agent checkpoint asks through.
-//
-// ⚠ A nil gate is supported and means NOBODY CAN BE ASKED, which resolves to
-// NOT APPROVED at every checkpoint — never to "proceed". See gate.go.
-func (s *Server) UseGate(g GatePort) { s.gatePort = g }
 
 // UseApprovalGate attaches the queue the claude-code approval relay
 // (approvals.go) files cards through, and nothing else uses. A nil gate is

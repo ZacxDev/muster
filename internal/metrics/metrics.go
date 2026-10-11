@@ -113,22 +113,6 @@ var (
 		Help: "Cross-process kickoff claim outcomes (won|lost|error|renew_lost|renew_error|shutdown_released|shutdown_release_failed|stale_swept).",
 	}, []string{"result"})
 
-	// Checkpoints counts agent_checkpoint outcomes (an agent pausing for human
-	// approval before a step its task marks as gated).
-	Checkpoints = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "muster_checkpoints_total",
-		// "unavailable" is the outcome when the checkpoint could NOT BE FILED at
-		// all, so no human was ever asked. It is distinct from the four
-		// decision/non-decision exits because it means the card never existed.
-		Help: "Agent checkpoint outcomes (resolved|timeout|expired|aborted|unavailable).",
-	}, []string{"outcome"})
-
-	CheckpointWait = promauto.NewHistogram(prometheus.HistogramOpts{
-		Name:    "muster_checkpoint_wait_seconds",
-		Help:    "Time an agent blocked at a checkpoint before it resolved.",
-		Buckets: []float64{1, 5, 15, 60, 300, 900, 3600},
-	})
-
 	// TasksCreated counts tasks created through the HTTP API, by their derived
 	// producer source.
 	//

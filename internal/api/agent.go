@@ -8,12 +8,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/notes"
 )
 
@@ -215,7 +213,7 @@ func orEmptyJSON(s string) string {
 
 // agentSystemPrompt is the worker's system prompt for the tool loop. The tools
 // carry their own schemas; this frames when to use them.
-const agentSystemPrompt = `You are a muster worker agent. You have native tools to read and update YOUR assigned task. Use them: call agent_get_task to read your task before starting; agent_set_task_status to set "in_progress" when you begin and "ready_for_review" when done (you CANNOT set "complete" — only the operator/human can); agent_comment_task to post progress notes. If your task marks a step as a checkpoint, call agent_checkpoint with a summary BEFORE doing that step and WAIT — only proceed when it returns approved:true; if it is not approved, stop and set your task ready_for_review explaining why. Then do the work.`
+const agentSystemPrompt = `You are a muster worker agent. You have native tools to read and update YOUR assigned task. Use them: call agent_get_task to read your task before starting; agent_set_task_status to set "in_progress" when you begin and "ready_for_review" when done (you CANNOT set "complete" — only the operator/human can); agent_comment_task to post progress notes. Then do the work.`
 
 // agentTool is one entry of muster's ONE agent tool registry.
 //
@@ -230,9 +228,9 @@ const agentSystemPrompt = `You are a muster worker agent. You have native tools 
 // /mcp is served on the connect listener — the ONE muster port a claude-code
 // pod's network policy lets it reach — and that listener's contract is "the
 // connector surface and nothing else" (OnlyConnectSurface). The other tools stay
-// gateway-only on purpose: the task/status/comment/checkpoint tools
+// gateway-only on purpose: the task/status/comment tools
 // would hand a claude-code pod muster's task API through a door that was opened
-// for connectors only, agent_checkpoint blocks a request for up to an hour, and
+// for connectors only, and
 // agent_list_pull_requests spends muster's OWN server-side GitHub connection,
 // which would let a pod read through a credential it was never granted under the
 // per-agent connector model. TestTheMCPToolsAreTheRegistrysMCPSubset pins both
@@ -259,10 +257,6 @@ func (s *Server) agentTools() []agentTool {
 		fn("agent_set_task_status", "Set your task's status. Allowed: open, in_progress, ready_for_review (you cannot set complete).", objSchema(map[string]any{
 			"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "ready_for_review"}},
 		}, "status")),
-		fn("agent_checkpoint", "Pause for human approval at a checkpoint. Surfaces an approval card to the human and BLOCKS until they decide. Returns approved:true to proceed, or approved:false (stop). Call this before a step your task marks as a checkpoint.", objSchema(map[string]any{
-			"summary": strProp("what you are about to do and why it needs approval"),
-			"step":    strProp("the checkpoint step title (optional)"),
-		}, "summary")),
 		fn("agent_list_pull_requests", "List the pull requests on YOUR repo (the one cloned into your workspace). muster calls the GitHub API with its stored token server-side — do NOT ask for a token. Returns each PR's number, title, state, author, head→base branches, draft flag, url and updated time.", objSchema(map[string]any{
 			"state": map[string]any{"type": "string", "description": "which PRs to list", "enum": []string{"open", "closed", "all"}},
 		})),
@@ -423,13 +417,6 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		// Background push when the agent's own tool marks the task ready_for_review.
 		s.notifyTaskDone(n)
 		return toolJSON(n)
-	case "agent_checkpoint":
-		var in struct{ Summary, Step string }
-		_ = arg(&in)
-		if strings.TrimSpace(in.Summary) == "" {
-			return toolErr("summary required: describe what you're about to do and why it needs approval")
-		}
-		return s.runCheckpoint(ctx, a, strings.TrimSpace(in.Summary), strings.TrimSpace(in.Step))
 	case "agent_list_pull_requests":
 		return s.listAgentPullRequests(ctx, a, arguments)
 	case "connectors_list":
@@ -503,202 +490,4 @@ func (s *Server) listAgentPullRequests(ctx context.Context, a agents.Agent, argu
 		})
 	}
 	return toolJSON(out)
-}
-
-// Checkpoint poll cadence + backstop. A checkpoint reuses the permission-request
-// inbox: it creates a pending request (push + SSE + the same Approve/Deny card)
-// and blocks until the human decides. The backstop is a safety net; in practice
-// the request's own TTL eviction (MUSTER_REQUEST_TTL) ends the wait first and
-// surfaces as "expired".
-const (
-	checkpointPollInterval = time.Second
-	checkpointMaxWait      = time.Hour
-	// checkpointMissesBeforeExpired: how many consecutive "request not found"
-	// polls before we conclude the request was really evicted (vs. a transient DB
-	// blip — the store maps query errors to not-found). Checkpoints are exempt
-	// from the TTL sweep, so a mid-wait not-found is almost always transient;
-	// requiring several consecutive misses avoids flipping a pending approval to a
-	// denial on a one-off database hiccup.
-	checkpointMissesBeforeExpired = 5
-	// checkpointOutcomeTimeout bounds the post-wait bookkeeping (outcome comment +
-	// terminal task state). It runs on a DETACHED context — see checkpointOutcomeCtx.
-	checkpointOutcomeTimeout = 15 * time.Second
-)
-
-// checkpointOutcomeCtx derives a short-lived context for the bookkeeping that
-// must happen AFTER the wait ends, DETACHED from the caller's cancellation.
-//
-// ⚠ WHY DETACHED (bug fix, 0.7.80): the two non-decision exits ("aborted" and,
-// once the wait outlives it, anything downstream of a cancelled kickoff) are
-// reached precisely BECAUSE ctx is already dead. Reusing it meant the outcome
-// comment and the task's terminal state were written with an expired context and
-// failed instantly — observed live as `checkpoint: comment task 127: context
-// deadline exceeded`, which is exactly why a stranded task showed NO trace of
-// why it stalled. The bookkeeping has to survive the very cancellation it is
-// reporting on.
-func checkpointOutcomeCtx(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), checkpointOutcomeTimeout)
-}
-
-// runCheckpoint files a checkpoint approval request, blocks until it is decided
-// (or the wait ends), records the outcome on the agent's task thread, and returns
-// a tool result telling the agent whether to proceed.
-func (s *Server) runCheckpoint(ctx context.Context, a agents.Agent, summary, step string) string {
-	title := a.DisplayName
-	if title == "" {
-		title = a.Name
-	}
-	project := "Checkpoint · " + title
-	if step != "" {
-		project = "Checkpoint: " + step + " · " + title
-	}
-	start := time.Now()
-	// 🔴 MINTED THROUGH THE GATE, NOT THROUGH store.Create. This used to be a
-	// direct s.store.Create plus its own metric/broadcast/push lines. It now goes
-	// through the one chokepoint an external service will also use (gate.go), so
-	// the contract is exercised by a real caller before a network hop exists to
-	// debug — the reason the migration happens BEFORE the extraction, not after.
-	// MetricLabel and the log line below reproduce what this site did verbatim.
-	reqID, err := s.mintGateRequest(ctx, GateSpec{
-		Type:    gateTypeCheckpoint,
-		Tool:    "checkpoint",
-		Command: summary,
-		Host:    a.Namespace,
-		Project: project,
-		Session: a.Name,
-	})
-	if err != nil {
-		// 🔴 A CHECKPOINT THAT COULD NOT BE FILED IS NOT AN APPROVAL. This path is
-		// new only in that it no longer PANICS: the old code called Create on a
-		// possibly-nil store directly (chief.go has always had the nil guard this
-		// site lacked). The default is refusal, matching every other non-decision
-		// exit below, and the agent is told why rather than being left to read a
-		// missing answer as consent.
-		s.logger.Printf("checkpoint NOT filed for agent=%q step=%q: %v (treated as not approved)", a.Name, step, err)
-		metrics.Checkpoints.WithLabelValues("unavailable").Inc()
-		return toolJSON(map[string]any{
-			"approved": false,
-			"status":   "unavailable",
-			"response": "",
-			"comment":  "",
-			"guidance": checkpointGuidance(false, ""),
-		})
-	}
-	s.logger.Printf("checkpoint created id=%s agent=%q step=%q", reqID, a.Name, step)
-	s.checkpointComment(ctx, a, "⏸️ Checkpoint: "+summary)
-
-	dec, status := s.awaitCheckpointDecision(ctx, reqID)
-	metrics.Checkpoints.WithLabelValues(status).Inc()
-	metrics.CheckpointWait.Observe(time.Since(start).Seconds())
-
-	// Clean up the pending card (best-effort): a recorded decision already
-	// broadcast resolved; deleting also covers the timeout/abort paths.
-	// clearGateRequest is the same Delete + broadcast + pushResolved triple, named
-	// once and shared with chief.go and handleDeleteResponse so the three cannot
-	// diverge. TestEveryCardClearerIsOnTheLedger pins that set.
-	s.clearGateRequest(ctx, reqID)
-
-	approved := status == "resolved" && dec.Response == "approve"
-	outcome := "❌ Checkpoint not approved (" + status + ")"
-	if approved {
-		outcome = "✅ Checkpoint approved"
-	}
-	if strings.TrimSpace(dec.Comment) != "" {
-		outcome += ": " + dec.Comment
-	}
-	// Detached: on the aborted path ctx is already dead, and the audit trail for a
-	// stranded task is exactly what must NOT be lost with it.
-	octx, ocancel := checkpointOutcomeCtx(ctx)
-	defer ocancel()
-	s.checkpointComment(octx, a, outcome)
-	if status != "resolved" {
-		s.strandCheckpointTask(octx, a, status)
-	}
-
-	return toolJSON(map[string]any{
-		"approved": approved,
-		// resolved | timeout | expired | aborted — plus "unavailable", returned from
-		// the early exit above when the checkpoint could not be FILED (no queue), so
-		// nobody was asked. Five values, not four; an agent switching on this must
-		// treat unavailable as NOT approved like the other non-decisions.
-		"status":   status,
-		"response": dec.Response,
-		"comment":  dec.Comment,
-		"guidance": checkpointGuidance(approved, dec.Comment),
-	})
-}
-
-// checkpointComment appends an audit line to the agent's task thread, if it has
-// one. Best-effort: a comment failure never blocks the checkpoint.
-func (s *Server) checkpointComment(ctx context.Context, a agents.Agent, body string) {
-	if a.NoteID == nil || s.ext.Notes == nil {
-		return
-	}
-	if _, err := s.ext.Notes.AddComment(ctx, notes.Comment{NoteID: *a.NoteID, Author: a.Name, Body: body}); err != nil {
-		s.logger.Printf("checkpoint: comment task %d: %v", *a.NoteID, err)
-		return
-	}
-	s.broadcast(EventTaskChanged, strconv.FormatInt(*a.NoteID, 10))
-}
-
-// checkpointStrandReason explains, in the human's words, why a checkpoint ended
-// without a decision — so the task card says what happened instead of stalling
-// silently.
-func checkpointStrandReason(status string) string {
-	switch status {
-	case "timeout":
-		return "no one decided within " + checkpointMaxWait.String()
-	case "expired":
-		return "the approval card was evicted before anyone decided"
-	case "aborted":
-		return "the dispatch turn ended before anyone decided"
-	default:
-		return "the checkpoint ended without a decision (" + status + ")"
-	}
-}
-
-// strandCheckpointTask drives a task whose checkpoint ended WITHOUT a human
-// decision to a terminal state, naming the reason.
-//
-// ⚠ WHY (bug fix, 0.7.80): a checkpoint that timed out/expired/aborted used to
-// leave the task sitting in_progress forever with no explanation. The agent
-// cannot rescue it — the same dead context that ended the wait also kills the
-// tool loop on its next ctx.Err() check, so the agent never gets to act on the
-// guidance — and its finished work is left committed-but-unpushed in a pod the
-// idle-task reaper eventually tears down. That is a SILENT LOSS of work. Parking
-// the task in ready_for_review puts it in the human's review queue with a comment
-// naming the cause; "complete" would be a lie (nothing was pushed) and there is
-// no dedicated failed state. Best-effort — this is a bookkeeping backstop and
-// must never itself panic or block the tool result.
-func (s *Server) strandCheckpointTask(ctx context.Context, a agents.Agent, status string) {
-	if a.NoteID == nil || s.ext.Notes == nil {
-		return
-	}
-	reason := checkpointStrandReason(status)
-	s.checkpointComment(ctx, a,
-		"⚠️ Checkpoint ended without a decision — "+reason+". Moving this task to ready_for_review so it is not left silently in progress. "+
-			"The agent stopped at the gate, so the gated step (e.g. the push) did NOT happen; any work it finished is un-pushed in its pod. Re-dispatch to redo it.")
-	if _, err := s.setNoteStatus(ctx, writerCheckpointStrand, *a.NoteID, notes.StatusReadyForReview); err != nil {
-		s.logger.Printf("checkpoint: strand task %d (%s): %v", *a.NoteID, status, err)
-		return
-	}
-	s.logger.Printf("checkpoint: task %d moved to ready_for_review after checkpoint %s (agent=%s)", *a.NoteID, status, a.Name)
-	s.broadcast(EventTaskChanged, strconv.FormatInt(*a.NoteID, 10))
-}
-
-// checkpointGuidance is the instruction handed back to the agent alongside the
-// decision so it acts correctly without re-reasoning the protocol.
-func checkpointGuidance(approved bool, comment string) string {
-	if approved {
-		g := "Approved — proceed with the gated step."
-		if strings.TrimSpace(comment) != "" {
-			g += " The human added guidance; follow it: " + comment
-		}
-		return g
-	}
-	g := "NOT approved — do NOT perform the gated step. Stop here, set your task to ready_for_review, and explain that the checkpoint was declined."
-	if strings.TrimSpace(comment) != "" {
-		g += " The human's note: " + comment
-	}
-	return g
 }

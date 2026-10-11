@@ -74,7 +74,6 @@ func fullyWiredServer(t *testing.T) *Server {
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true},
 	})
 	s.UseRouter(stubRouter{})
-	s.UseGate(stubGate{})
 	return s
 }
 

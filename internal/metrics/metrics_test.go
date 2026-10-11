@@ -49,8 +49,6 @@ var wantMetrics = map[string][]string{
 	"muster_agent_provision_duration_seconds": {},
 	"muster_agent_kickoff_resend_total":       {"result"},
 	"muster_agent_kickoff_claim_total":        {"result"},
-	"muster_checkpoints_total":                {"outcome"},
-	"muster_checkpoint_wait_seconds":          {},
 	"muster_tasks_created_total":              {"source"},
 	"muster_task_routing_tags_total":          {"namespace"},
 	"muster_task_session_links_total":         {"role"},
@@ -78,7 +76,6 @@ func gather(t *testing.T) map[string][]string {
 	AgentProvision.WithLabelValues("ok")
 	AgentKickoffResend.WithLabelValues("resent")
 	AgentKickoffClaim.WithLabelValues("won")
-	Checkpoints.WithLabelValues("resolved")
 	TasksCreated.WithLabelValues("api")
 	RoutingTags.WithLabelValues("gate")
 	TaskSessionLinks.WithLabelValues("read")
