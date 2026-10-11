@@ -1,0 +1,201 @@
+import { test, expect } from '../lib/fixtures';
+import { Page } from '@playwright/test';
+
+// 🔴 THE ⋯ MENU MUST BE FULLY ON SCREEN AND ON TOP — ASSERTED BY HIT-TESTING,
+// NOT BY VISIBILITY. The operator report: "Agent card three dots context menu is
+// cut off by card bounds". The menu used to be an absolute dropdown inside the
+// card, and the card is overflow-hidden, so the part below the card's edge was
+// clipped. Playwright's toBeVisible() is TRUE for a clipped element (it has a
+// box), so it cannot see this bug; what can is asking the page which element
+// is at each item's centre. A clipped item answers with whatever is under it —
+// the next card, the page — instead of itself.
+//
+// Each case is run where the clip is worst: the right-most card of the last
+// grid row (the menu right-aligns against the viewport edge) and with that card
+// pushed down to the viewport's bottom (the menu has no room below), at a 412px
+// phone and at a desktop width. The Delete step is opened too, because it is
+// what GROWS the menu.
+
+async function cards(page: Page) {
+  await page.goto('/agents');
+  const list = page.locator('#agents-list article[id^="agent-"]');
+  await expect(list.first()).toBeVisible();
+  // The seed's three agents; a list that rendered fewer would make "the last
+  // card in a row" a different card than the one this was measured on.
+  await expect(list).toHaveCount(3);
+  return list;
+}
+
+// lastInRow is the right-most card of the bottom-most row.
+async function lastInRow(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const cs = [...document.querySelectorAll('#agents-list article[id^="agent-"]')] as HTMLElement[];
+    const rs = cs.map((c) => ({ id: c.id, r: c.getBoundingClientRect() }));
+    const bottomRowTop = Math.max(...rs.map((x) => Math.round(x.r.top)));
+    const row = rs.filter((x) => Math.round(x.r.top) === bottomRowTop);
+    row.sort((a, b) => b.r.right - a.r.right);
+    return row[0].id;
+  });
+}
+
+// pushToBottom moves the card down so its ⋯ trigger sits `room` px above the
+// viewport bottom. It adds space ABOVE the list rather than scrolling, because
+// three seeded cards do not make a page tall enough to scroll at 915px.
+async function pushToBottom(page: Page, cardID: string, room: number) {
+  await page.evaluate(
+    ([id, room]) => {
+      const list = document.getElementById('agents-list')!;
+      const t = document.querySelector(`#${id} [aria-label="Agent actions"]`)!;
+      const r = t.getBoundingClientRect();
+      const add = Math.max(0, window.innerHeight - room - r.bottom);
+      list.style.marginTop = add + 'px';
+      window.scrollTo(0, 0);
+    },
+    [cardID, room] as [string, number],
+  );
+}
+
+// fullyHittable reports, for every visible menu control of the card, whether
+// the element at its centre is the control itself (or inside it), and whether
+// its box is inside the viewport.
+async function hitReport(page: Page, cardID: string, labels: string[]) {
+  return page.evaluate(
+    ([id, labels]) => {
+      const card = document.getElementById(id)!;
+      const out: string[] = [];
+      let found = 0;
+      for (const el of card.querySelectorAll('button, summary') as NodeListOf<HTMLElement>) {
+        const label = (el.textContent || '').trim();
+        if (!labels.includes(label)) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) continue;
+        found++;
+        const inView = r.left >= 0 && r.top >= 0 && r.right <= document.documentElement.clientWidth && r.bottom <= window.innerHeight;
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        const hit = document.elementFromPoint(x, y);
+        const ok = !!hit && (hit === el || el.contains(hit));
+        if (!inView || !ok) {
+          out.push(`${label}: inView=${inView} box=${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.right)},${Math.round(r.bottom)} hit=${hit ? hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + '.' + String(hit.className).slice(0, 40) : 'null'}`);
+        }
+      }
+      return { found, problems: out };
+    },
+    [cardID, labels] as [string, string[]],
+  );
+}
+
+for (const vp of [
+  { name: 'phone 412x915', width: 412, height: 915 },
+  { name: 'desktop 1280x800', width: 1280, height: 800 },
+]) {
+  test.describe(vp.name, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height } });
+
+    for (const where of ['in place', 'at the viewport bottom']) {
+      test(`the last card's ⋯ menu is fully visible and on top (${where})`, async ({ page }) => {
+        await cards(page);
+        const id = await lastInRow(page);
+        // 96px: the lowest a trigger can sit and still be TAPPED. The dispatch FAB
+        // (56px, 24px off the bottom-right) covers anything lower at phone width,
+        // and a click there is not a click on the trigger: Playwright scrolled the
+        // page 150px to find an unoccluded one, the menu then fitted below, and
+        // the flip assertion went red on a geometry the test never meant to build.
+        const room = 96;
+        if (where !== 'in place') await pushToBottom(page, id, room);
+        const trigger = page.locator(`#${id} [aria-label="Agent actions"]`);
+        await trigger.click();
+        if (where !== 'in place') {
+          // The precondition, asserted: the trigger is STILL at the bottom after
+          // the click, so "no room below" is the state actually under test.
+          // pushToBottom leaves the page at scrollY 0; a click that had to scroll
+          // to reach the trigger leaves it elsewhere.
+          expect(await page.evaluate(() => window.scrollY), 'the click scrolled the page to reach the trigger').toBe(0);
+        }
+
+        // Lifecycle item + Delete: both must be reachable where they are drawn.
+        // Polled, not sampled once: placement runs in the browser's rendering
+        // steps, and a probe in the same task as the click can read the frame
+        // before it. A clipped menu never becomes hittable, so a poll cannot turn
+        // the old code green.
+        const settled = (labels: string[], n: number) =>
+          expect.poll(async () => {
+            const r = await hitReport(page, id, labels);
+            return r.found === n ? r.problems : [`found ${r.found} items, want ${n}`];
+          }, { timeout: 3000 });
+        // Lifecycle item + Delete: both must be reachable where they are drawn.
+        await settled(['Start', 'Stop', 'Delete'], 2).toEqual([]);
+
+        // The two-step delete GROWS the menu; the confirm must be reachable too.
+        await page.locator(`#${id} summary`, { hasText: 'Delete' }).click();
+        await settled(['Start', 'Stop', 'Delete', 'Confirm delete'], 3).toEqual([]);
+
+        // At the bottom there is no room below, so the menu must have FLIPPED
+        // above its trigger — not merely fit by accident of a short menu.
+        if (where !== 'in place') {
+          await expect
+            .poll(
+              () =>
+                page.evaluate((cid) => {
+                  const c = [...document.querySelectorAll(`#${cid} button`)].find((b) => (b.textContent || '').trim() === 'Confirm delete')!;
+                  const t = document.querySelector(`#${cid} [aria-label="Agent actions"]`)!;
+                  return t.getBoundingClientRect().top - c.getBoundingClientRect().bottom;
+                }, id),
+              { message: 'the grown menu did not flip above its trigger (gap = trigger top - confirm bottom)', timeout: 3000 },
+            )
+            .toBeGreaterThanOrEqual(0);
+        }
+      });
+    }
+
+    // The card list morphs on every lifecycle event, under an open menu. Measured:
+    // the morph CLOSES it. What must never happen is the third outcome — open but
+    // no longer beside its trigger (the popover default is mid-screen).
+    test('a list morph never strands the open menu away from its trigger', async ({ page }) => {
+      await cards(page);
+      const id = await lastInRow(page);
+      await page.locator(`#${id} [aria-label="Agent actions"]`).click();
+      await page.evaluate(() => {
+        const w = window as unknown as { htmx: { ajax: (m: string, u: string, o: object) => Promise<void> } };
+        return w.htmx.ajax('GET', '/ui/agents', { target: '#agents-list', swap: 'morph:innerHTML' });
+      });
+      await page.waitForTimeout(300);
+      const where = await page.evaluate((cid) => {
+        const m = document.getElementById('agent-menu-' + cid.replace('agent-', ''));
+        if (!m || !m.matches(':popover-open')) return 'closed';
+        const t = document.querySelector(`#${cid} [aria-label="Agent actions"]`)!.getBoundingClientRect();
+        const r = m.getBoundingClientRect();
+        const beside = Math.abs(r.right - t.right) <= 1 && (Math.abs(r.top - t.bottom) <= 8 || Math.abs(t.top - r.bottom) <= 8);
+        return beside ? 'beside' : `stranded: menu ${Math.round(r.left)},${Math.round(r.top)} trigger ${Math.round(t.left)},${Math.round(t.top)}`;
+      }, id);
+      expect(['closed', 'beside']).toContain(where);
+    });
+
+    // Start/Stop post and morph the list; the menu must not linger over the
+    // result. The request is answered here, so no seeded agent is started.
+    test('a menu action closes the menu', async ({ page }) => {
+      await page.route('**/agents/*/st*', (r) => r.fulfill({ status: 204, body: '' }));
+      await cards(page);
+      const id = await lastInRow(page);
+      await page.locator(`#${id} [aria-label="Agent actions"]`).click();
+      const action = page.locator(`#${id} button`, { hasText: /^(Start|Stop)$/ });
+      await expect(action).toBeVisible();
+      await action.click();
+      await expect(action).toBeHidden();
+    });
+
+    test('Escape and an outside tap close the menu', async ({ page }) => {
+      await cards(page);
+      const id = await lastInRow(page);
+      const trigger = page.locator(`#${id} [aria-label="Agent actions"]`);
+      const item = page.locator(`#${id} summary`, { hasText: 'Delete' });
+      await trigger.click();
+      await expect(item).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(item).toBeHidden();
+      await trigger.click();
+      await expect(item).toBeVisible();
+      await page.mouse.click(5, vp.height - 5);
+      await expect(item).toBeHidden();
+    });
+  });
+}
