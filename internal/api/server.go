@@ -103,6 +103,10 @@ type Server struct {
 	// filed which request, and which agents report a blocked terminal. See
 	// approvals.go.
 	approvals approvalLedger
+	// approvalGatePort is the queue the approval relay files through. It is NOT
+	// gatePort: a standalone deployment may arm the relay without arming agent
+	// checkpoints or any router behaviour. See UseApprovalGate.
+	approvalGatePort GatePort
 
 	startedAt time.Time
 	now       func() time.Time
@@ -334,6 +338,11 @@ func (s *Server) UseRouter(r RouterPort) { s.router = r }
 // ⚠ A nil gate is supported and means NOBODY CAN BE ASKED, which resolves to
 // NOT APPROVED at every checkpoint — never to "proceed". See gate.go.
 func (s *Server) UseGate(g GatePort) { s.gatePort = g }
+
+// UseApprovalGate attaches the queue the claude-code approval relay
+// (approvals.go) files cards through, and nothing else uses. A nil gate is
+// supported: the relay answers 503 and every prompt falls back to the terminal.
+func (s *Server) UseApprovalGate(g GatePort) { s.approvalGatePort = g }
 
 // SetTaskReapAfter overrides the idle window the stale-task sweep uses.
 func (s *Server) SetTaskReapAfter(d time.Duration) { s.taskReapAfter = d }

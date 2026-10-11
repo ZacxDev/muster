@@ -86,6 +86,12 @@ const (
 
 	envStandalone = "MUSTER_STANDALONE"
 
+	// The approval relay's OWN gate (internal/api/approvals.go): the permission
+	// router's /api/gate door, reached for ONE purpose, allowed beside
+	// MUSTER_STANDALONE. It turns on no router behaviour. See config.ApprovalGateURL.
+	envApprovalGateURL   = "MUSTER_APPROVAL_GATE_URL"
+	envApprovalGateToken = "MUSTER_APPROVAL_GATE_TOKEN"
+
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
 	envAgentGateway      = "MUSTER_AGENT_GATEWAY"
@@ -311,6 +317,20 @@ type config struct {
 	// the deployment. If a router IS configured, the router's probe wins and this
 	// flag changes nothing — see buildSessionLiveness.
 	Standalone bool
+
+	// ApprovalGateURL / ApprovalGateToken point the claude-code approval relay at
+	// the permission router's gate door (POST/GET/DELETE /api/gate) and NOTHING
+	// else. They are a both-or-neither pair (validate refuses half of one).
+	//
+	// 🔴 THEY DO NOT MAKE THIS A ROUTER DEPLOYMENT. They are legal beside
+	// Standalone, they never reach buildSessionLiveness, api.Server.UseRouter or
+	// api.Server.UseGate (agent checkpoints keep their standalone behaviour), and
+	// the client built from them is handed to the server ONLY as the relay's
+	// api.GatePort. When unset, a configured router's client serves the relay
+	// instead; with neither, the relay answers 503 and every prompt falls back to
+	// the agent's terminal. The actor asserted is RouterActor (default "muster").
+	ApprovalGateURL   string
+	ApprovalGateToken string
 
 	// AgentProvisioner names the provisioning backend: one of
 	// provisionerChoices. Default provisionerNone, which leaves
@@ -667,6 +687,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		RouterToken:        strings.TrimSpace(getenv(envRouterToken)),
 		RouterActor:        strings.TrimSpace(getenv(envRouterActor)),
 		Standalone:         envFlag(getenv, envStandalone),
+		ApprovalGateURL:    strings.TrimSpace(getenv(envApprovalGateURL)),
+		ApprovalGateToken:  strings.TrimSpace(getenv(envApprovalGateToken)),
 
 		AgentProvisioner:  strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
 		AgentGateway:      strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),
@@ -907,6 +929,12 @@ func (c config) validate() error {
 	if c.Standalone && c.RouterURL != "" {
 		return fmt.Errorf("%s=1 and %s are both set: they are contradictory claims about "+
 			"whether a permission router exists. Unset one", envStandalone, envRouterURL)
+	}
+	if (c.ApprovalGateURL == "") != (c.ApprovalGateToken == "") {
+		return fmt.Errorf("%s and %s are a pair and only one is set (%s=%s, %s=%s): half a gate "+
+			"configuration would boot a relay that can never file a card. Set both or neither",
+			envApprovalGateURL, envApprovalGateToken, envApprovalGateURL, presence(c.ApprovalGateURL),
+			envApprovalGateToken, presence(c.ApprovalGateToken))
 	}
 	if err := c.validateConnectors(); err != nil {
 		return err

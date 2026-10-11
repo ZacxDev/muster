@@ -27,7 +27,10 @@ import (
 // interfere with the operator's other sessions. So the pod authenticates to
 // MUSTER with its own per-agent token (the connector surface's credential, with
 // the shared tokens refused by name), and muster files the request through the
-// gate it already uses for checkpoints (gate.go, the service tier).
+// router's gate door on the service tier, using the relay's OWN gate
+// (Server.UseApprovalGate). A STANDALONE muster can have that gate without any
+// router behaviour; with a router configured and no dedicated gate, the
+// router's client serves it.
 //
 // WHAT AN AGENT CAN DO HERE, AND NOTHING ELSE:
 //   - file a request (POST /agent/approvals). The card's Host and Project are
@@ -207,7 +210,7 @@ func (s *Server) handleApprovalCreate(w http.ResponseWriter, r *http.Request) {
 			ctxLines = append(ctxLines, l)
 		}
 	}
-	g := s.gate()
+	g := s.approvalGatePort
 	if g == nil {
 		// No approval queue: the hook falls back to the in-terminal prompt.
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": errNoGate.Error(), HookUnarmedField: true})
@@ -288,7 +291,7 @@ func (s *Server) handleApprovalGet(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": errNotYours.Error()})
 		return
 	}
-	g := s.gate()
+	g := s.approvalGatePort
 	if g == nil {
 		s.writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": errNoGate.Error()})
 		return
@@ -322,7 +325,11 @@ func (s *Server) handleApprovalDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.forgetApproval(id)
-	s.clearGateRequest(r.Context(), id)
+	if g := s.approvalGatePort; g != nil {
+		if err := g.ClearGate(r.Context(), id); err != nil {
+			s.logger.Printf("approvals: clearing card %s: %v", id, err)
+		}
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
