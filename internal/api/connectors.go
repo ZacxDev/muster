@@ -41,7 +41,7 @@ const ConnectorsUnconfigured = "this server has no connector store: MUSTER_CONNE
 // is made of. cmd/muster-server's connect listener serves these and refuses
 // everything else, so the network allowance an isolated agent pod is given to
 // reach muster reaches this surface and no other route.
-var ConnectSurfacePrefixes = []string{"/connect/", "/agent/connectors"}
+var ConnectSurfacePrefixes = []string{"/connect/", "/agent/connectors", "/mcp"}
 
 // OnlyConnectSurface wraps h so it serves only ConnectSurfacePrefixes (and
 // /health, for a probe), answering 404 for every other path.
@@ -68,6 +68,9 @@ func (s *Server) registerConnectorRoutes(mux Mux) {
 	mux.HandleFunc("GET /agent/connectors", s.requireConnectorAgent(s.handleAgentConnectors))
 	mux.HandleFunc("GET /agent/connectors/{name}", s.requireConnectorAgent(s.handleAgentConnectorStatus))
 	mux.HandleFunc("POST /agent/connectors/{name}/request", s.requireConnectorAgent(s.handleAgentConnectorRequest))
+	// The same tools over MCP (mcp.go). POST only: GET /mcp answers 405, which
+	// MCP's streamable-HTTP transport reads as "no server-initiated stream".
+	mux.HandleFunc("POST /mcp", s.requireConnectorAgent(s.handleMCP))
 
 	// --- the operator ---
 	mux.HandleFunc("GET /ui/connectors", s.requireSession(s.handleConnectorsContent))

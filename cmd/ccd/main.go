@@ -88,8 +88,10 @@ func run(args []string) int {
 		return runHook(args, os.Stdin, os.Stderr)
 	case "seed":
 		return runSeed(args, os.Stdout, os.Stderr)
+	case "connect-git":
+		return runConnectGit(args, os.Stdout, os.Stderr)
 	default:
-		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed)\n", cmd)
+		fmt.Fprintf(os.Stderr, "ccd: unknown command %q (serve | hook <Event> | seed | connect-git [connector])\n", cmd)
 		return 2
 	}
 }
