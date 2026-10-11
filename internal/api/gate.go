@@ -53,16 +53,18 @@ type GateSpec struct {
 type GateDecision struct {
 	// State is one of GateStateDecided, GateStatePending, GateStateGone.
 	State string
-	// Response is the human's answer when State is decided ("approve" / "reject").
+	// Response is the answer when State is decided ("approve" / "reject"): a
+	// human's, or the router's auto-approval for a type it lets that decide.
 	Response string
-	// Comment is the human's note, when they left one.
+	// Comment is the note left with the decision, when there is one.
 	Comment string
 }
 
 // The three states a gate read can report. They are the router's wire
 // vocabulary, spelled here so a handler does not have to import the client.
 const (
-	// GateStateDecided: a human answered.
+	// GateStateDecided: the card was answered, by a human or by the router's
+	// auto-approval.
 	GateStateDecided = "decided"
 	// GateStatePending: the card is on the operator's screen, undecided.
 	GateStatePending = "pending"
