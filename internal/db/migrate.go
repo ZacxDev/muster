@@ -161,7 +161,7 @@ var ErrSkippedMigration = errors.New("db: an embedded migration below the applie
 // A normal database — every embedded version up to max recorded — is unchanged.
 // TestMigrateRefusesToSkipAMigrationBelowTheAppliedVersion.
 func checkNoSkippedMigration(ctx context.Context, queryRow func(context.Context, string, ...any) pgx.Row, migrations []migration, current int) error {
-	var missing []string
+	var missing []migration
 	for _, m := range migrations {
 		if m.version >= current {
 			break
@@ -171,16 +171,38 @@ func checkNoSkippedMigration(ctx context.Context, queryRow func(context.Context,
 			return fmt.Errorf("read schema_migrations: %w", err)
 		}
 		if !present {
-			missing = append(missing, m.name)
+			missing = append(missing, m)
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("%w: %s (the database is at version %d). Apply each by hand as the database owner "+
-			"(psql -v ON_ERROR_STOP=1 -f internal/db/migrations/<file>, then INSERT INTO schema_migrations "+
-			"(version, name) VALUES (<n>, '<file>')) or deploy an image in which it precedes every applied "+
-			"migration; this server will not boot past it", ErrSkippedMigration, strings.Join(missing, ", "), current)
+		names := make([]string, len(missing))
+		cmds := make([]string, len(missing))
+		for i, m := range missing {
+			names[i], cmds[i] = m.name, ApplyByHandCommand(m.version, m.name)
+		}
+		return fmt.Errorf("%w: %s (the database is at version %d). Apply each by hand, in this order, as the "+
+			"database owner from the repository root — %s — or deploy an image in which it precedes every "+
+			"applied migration; this server will not boot past it",
+			ErrSkippedMigration, strings.Join(names, ", "), current, strings.Join(cmds, " ; then "))
 	}
 	return nil
+}
+
+// ApplyByHandCommand is the operator's remedy for one skipped migration: apply
+// the file AND record it, in ONE transaction.
+//
+// 🔴 -1 IS THE POINT (round-3 audit on #69). Without it psql runs the file in
+// autocommit: every file begins `SET LOCAL lock_timeout`, which outside a
+// transaction only warns — the 3 s guard is silently gone — and a failure part
+// way through leaves the file half-applied and unrecorded. With -1 the -f file
+// and the -c INSERT run as one transaction; ON_ERROR_STOP makes the first error
+// abort it. Measured on PostgreSQL 16 (psql 16.15): a re-applied 0009 plus its
+// row commits with no SET LOCAL warning; a file that fails on its third
+// statement leaves neither its table nor the schema_migrations row, psql rc 3.
+// Pinned by TestTheSkippedMigrationRefusalGivesTheSingleTransactionCommand.
+func ApplyByHandCommand(version int, name string) string {
+	return fmt.Sprintf(`psql -v ON_ERROR_STOP=1 -1 -f internal/db/migrations/%s -c "INSERT INTO schema_migrations (version, name) VALUES (%d, '%s')"`,
+		name, version, name)
 }
 
 // sortMigrations orders migrations by version, ascending.

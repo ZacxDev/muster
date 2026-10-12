@@ -1,10 +1,6 @@
 package db
 
-import (
-	"context"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-)
+import "context"
 
 // AsMigratorForTest exposes the migration runner's context to this package's
 // external tests (package db_test). The migration and schema tests operate as
@@ -22,22 +18,23 @@ func AsMigratorForTest(ctx context.Context) context.Context {
 // released connection carries nobody's id.
 var AfterReleaseForTest = afterRelease
 
-// SkippedMigrationCheckForTest runs the runner's skipped-migration check over
-// the EMBEDDED migrations plus extra (version -> file name), against pool's
-// schema_migrations. extra lets a test stand in for a migration another branch
-// adds (#67's 0010) before that file exists in this tree.
-func SkippedMigrationCheckForTest(ctx context.Context, pool *pgxpool.Pool, extra map[int]string) error {
+// EmbeddedMigrationForTest is one embedded migration's version and file name.
+type EmbeddedMigrationForTest struct {
+	Version int
+	Name    string
+}
+
+// EmbeddedMigrationsForTest lists the embedded migrations, ascending — so a
+// test can pick a version from whatever files this tree holds rather than
+// hard-coding one that a later migration (or another branch's) shifts.
+func EmbeddedMigrationsForTest() ([]EmbeddedMigrationForTest, error) {
 	ms, err := loadMigrations()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	for v, name := range extra {
-		ms = append(ms, migration{version: v, name: name})
+	out := make([]EmbeddedMigrationForTest, len(ms))
+	for i, m := range ms {
+		out[i] = EmbeddedMigrationForTest{Version: m.version, Name: m.name}
 	}
-	sortMigrations(ms)
-	var current int
-	if err := pool.QueryRow(ctx, `SELECT coalesce(max(version), 0) FROM schema_migrations`).Scan(&current); err != nil {
-		return err
-	}
-	return checkNoSkippedMigration(ctx, pool.QueryRow, ms, current)
+	return out, nil
 }
