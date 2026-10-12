@@ -158,8 +158,13 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   // 4. The member's board is EMPTY (the admin's, on the same page, is not).
   await mp.goto(browserURL + '/tasks');
   await expect(mp.locator('#fab-tasks')).toBeVisible();
+  // Wait for the board to have LOADED (it renders after the shell): a count
+  // read before then is 0 for any board, which proves nothing either way —
+  // the first version read the admin's count too early and saw 0.
+  await expect(mp.getByText('No tasks yet'), "the member's board loaded, and empty").toBeVisible();
   await expect(mp.locator(taskCards)).toHaveCount(0);
   await page.goto(browserURL + '/tasks');
+  await expect(page.locator(`#task-${adminTask}`), 'CONTROL: the admin board loaded with its task').toBeVisible();
   expect(await page.locator(taskCards).count(), 'CONTROL: the admin board has tasks').toBeGreaterThan(0);
 
   // 5. The admin's task is a 404 to the member; the admin pages are a 403; no Admin link.
