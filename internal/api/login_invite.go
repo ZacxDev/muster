@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/mail"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -47,56 +46,28 @@ const (
 )
 
 // inviteLimits is the redemption pages' throttle state (zero value ready).
+// Both are #65's boundedWindow: a fixed window per key with a hard cap on
+// how many keys are held, so a spray of invented tokens cannot grow it.
 type inviteLimits struct {
-	ip       keyedWindow
-	tokenBad failureBudget
+	ip       boundedWindow
+	tokenBad boundedWindow
 }
 
-// failureBudget holds at most limit failures per key per window.
+// refund hands back one slot take gave key, for an attempt that did not fail.
 //
-// 🔴 A SLOT IS RESERVED BEFORE THE ATTEMPT AND REFUNDED IF IT DID NOT FAIL —
-// not counted after. A check-then-record counter lets N concurrent attempts
-// all pass the check before any records its failure (accounts PR 4's audit
-// found that shape in the sign-in limiter), so a held link would still take a
-// burst of guesses. Reserving under the lock bounds in-flight attempts too
-// (TestALinkStopsAnsweringAfterRepeatedFailures).
-type failureBudget struct {
-	mu   sync.Mutex
-	hits map[string]*windowCount
-}
-
-// reserve takes one slot for key, or reports false when limit are held.
-func (b *failureBudget) reserve(key string, now time.Time, window time.Duration, limit int) bool {
+// 🔴 A LINK-FAILURE SLOT IS TAKEN BEFORE THE ATTEMPT AND REFUNDED IF IT DID NOT
+// FAIL — not counted after. A check-then-record counter lets N concurrent
+// attempts all pass the check before any records its failure (accounts PR 4's
+// audit found that shape in the sign-in limiter), so a held link would still
+// take a burst of guesses. Taking under the lock bounds in-flight attempts too
+// (TestConcurrentFailuresCannotOutrunTheLinkHold).
+func (b *boundedWindow) refund(key string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.hits == nil {
-		b.hits = map[string]*windowCount{}
-	}
-	c, ok := b.hits[key]
-	if !ok || now.Sub(c.start) >= window {
-		if len(b.hits) > 10000 {
-			for k, c := range b.hits {
-				if now.Sub(c.start) >= window {
-					delete(b.hits, k)
-				}
-			}
+	if e, ok := b.items[key]; ok {
+		if en := e.Value.(*boundedEntry); en.n > 0 {
+			en.n--
 		}
-		b.hits[key] = &windowCount{start: now, n: 1}
-		return true
-	}
-	if c.n >= limit {
-		return false
-	}
-	c.n++
-	return true
-}
-
-// refund returns a slot whose attempt did not fail.
-func (b *failureBudget) refund(key string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if c, ok := b.hits[key]; ok && c.n > 0 {
-		c.n--
 	}
 }
 
@@ -213,7 +184,7 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	token := r.FormValue("token")
 	key := tokenKey(token)
-	if token == "" || !lim.tokenBad.reserve(key, now, inviteTokenFailWindow, inviteTokenFailures) {
+	if token == "" || !lim.tokenBad.take(key, now, inviteTokenFailWindow, inviteTokenFailures) {
 		s.renderInvalidInvite(w)
 		return
 	}
