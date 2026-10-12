@@ -13,9 +13,9 @@
 // Which code may call those two is the test-level half, and it is a
 // relationship over the source rather than a convention: see
 // internal/api/principal_test.go (every authenticated route observes a
-// Principal with the right Via; the WithPrincipal call sites are a ledger) and
-// authz_allowlist_test.go in this package (System is called only from the
-// listed background loops).
+// Principal with the right Via) and ledger_test.go in this package (the
+// type-checked set of code that reaches System, WithPrincipal and api's admit,
+// and this package's exported names, are each a ledger).
 //
 // ⚠ NOTHING ENFORCES ON A PRINCIPAL YET. This package is accounts PR 2/6: it
 // threads identity through every door with no behaviour change, so that PR 3's

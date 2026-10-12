@@ -3,15 +3,10 @@ package api
 import (
 	"context"
 	"errors"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -356,75 +351,6 @@ func TestEveryAuthenticatedRouteAttachesAPrincipal(t *testing.T) {
 	// golden agree; this pins that the loop actually ran them).
 	if nonPublic := len(readGolden(t)) - len(publicRoutes); checked < nonPublic || nonPublic < 90 {
 		t.Fatalf("drove %d route/door pairs; the golden has %d non-public routes", checked, nonPublic)
-	}
-}
-
-// adminLedger is every function in this package allowed to reference admit —
-// i.e. every authentication wrapper. Set equality: a wrapper added without an
-// entry fails, and so does one that stopped attaching.
-var adminLedger = []string{
-	"(*Server).admitAttributedService", // requireServiceToken + the service branch of requireHookOrServiceToken
-	"(*Server).requireAgentToken",
-	"(*Server).requireArmedHookToken",
-	"(*Server).requireConnectorAgent",
-	"(*Server).requireHookOrServiceToken",
-	"(*Server).requireHookToken",
-	"(*Server).requireRelayAgent",
-	"(*Server).requireSession",
-}
-
-func TestOnlyAdmitAttachesAPrincipal(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := map[string]bool{}
-	scanned := 0
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		b, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		af, err := parser.ParseFile(token.NewFileSet(), f, b, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatal(err)
-		}
-		scanned++
-		for _, d := range af.Decls {
-			fd, ok := d.(*ast.FuncDecl)
-			if !ok {
-				continue
-			}
-			name := fd.Name.Name
-			if fd.Recv != nil {
-				if st, ok := fd.Recv.List[0].Type.(*ast.StarExpr); ok {
-					name = "(*" + st.X.(*ast.Ident).Name + ")." + name
-				}
-			}
-			ast.Inspect(fd, func(n ast.Node) bool {
-				if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "admit" && name != "(*Server).admit" {
-					got[name] = true
-				}
-				return true
-			})
-		}
-	}
-	if scanned < 20 {
-		t.Fatalf("scanned only %d files", scanned)
-	}
-	var g []string
-	for k := range got {
-		g = append(g, k)
-	}
-	sort.Strings(g)
-	w := append([]string(nil), adminLedger...)
-	sort.Strings(w)
-	if strings.Join(g, "\n") != strings.Join(w, "\n") {
-		t.Fatalf("admit is referenced from:\n  %s\nthe ledger lists:\n  %s",
-			strings.Join(g, "\n  "), strings.Join(w, "\n  "))
 	}
 }
 

@@ -17,8 +17,9 @@ import (
 // row-level security is an empty board and a failing insert.
 // TestEveryAuthenticatedRouteAttachesAPrincipal drives every route in
 // routes.golden through its real wrapper and demands the principal (with the
-// right Via) arrive at admit's hand-off; TestOnlyAdmitAttachesAPrincipal pins
-// the call-site ledger.
+// right Via) arrive at admit's hand-off; internal/authz's
+// TestOnlyTheAuthWrappersCallAdmit pins the call-site ledger (type-resolved, so
+// a method value or package-level alias of admit counts too).
 //
 // ⚠ NO BEHAVIOUR CHANGES HERE. muster has one user today, so every principal
 // names authz.OperatorUserID as admin; nothing reads the principal yet.
@@ -38,12 +39,19 @@ func sessionUserID() int64 { return authz.OperatorUserID }
 // agentOwnerID is who a request authenticated by an AGENT'S OWN token acts as:
 // the agent's owner.
 //
-// 🔴 THIS IS THE ONE FUNCTION PR 3 CHANGES TO `return a.OwnerID`. Every
-// per-agent door (requireAgentToken, requireConnectorAgent, requireRelayAgent)
-// resolves its row and derives the user here, so the switch from "the
-// operator" to "the row's owner" is one line, not three wrappers. Today the
-// agents table has no owner column (PR 1 adds it, default 1), so every agent
-// is the operator's.
+// 🔴 PR 3 CHANGES THIS TO `return a.OwnerID` — AND THAT IS NOT THE WHOLE SWITCH.
+// Every per-agent door (requireAgentToken, requireConnectorAgent,
+// requireRelayAgent) derives the user here, so the PRINCIPAL side is one line.
+// But each of those doors first resolves the agent row by token
+// (Agents.GetByHooksToken, in requireAgentToken and in
+// authenticateCallingAgent) BEFORE any principal exists — it is how the owner
+// is learned. Under PR 3's FORCE RLS that lookup runs with no muster.uid and
+// sees no rows, so every /agent/*, /connect/*, /mcp and relay request would
+// 401. PR 3 must run the token lookup outside the caller's scope — under
+// authz.System (adding the lookup to the System ledger) or through a SECURITY
+// DEFINER function that returns only the matched row — and only then build the
+// principal from the row's owner here. Today the agents table has no owner
+// column (PR 1 adds it, default 1), so every agent is the operator's.
 func agentOwnerID(_ agents.Agent) int64 { return authz.OperatorUserID }
 
 // roleOf is the role a user acts with. Today the only user is the operator,
