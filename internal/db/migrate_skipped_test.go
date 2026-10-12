@@ -61,6 +61,9 @@ func TestMigrateRefusesToSkipAMigrationBelowTheAppliedVersion(t *testing.T) {
 	if !strings.Contains(msg, db.ApplyByHandCommand(gap.Version, gap.Name)) {
 		t.Errorf("the refusal does not give %s's command: %s", gap.Name, msg)
 	}
+	if !strings.Contains(msg, "From a checkout at the commit the running image was built from") {
+		t.Errorf("the refusal does not say which checkout to run it from: %s", msg)
+	}
 	for _, m := range embedded {
 		if m != gap && strings.Contains(msg, m.Name) {
 			t.Errorf("the refusal names %s, which is not missing: %s", m.Name, msg)
@@ -94,13 +97,14 @@ func TestMigrateRefusesToSkipAMigrationBelowTheAppliedVersion(t *testing.T) {
 }
 
 // TestTheSkippedMigrationRefusalGivesTheSingleTransactionCommand pins the
-// operator's command WHOLE (round-3 audit on #69): -1 makes the file and its
+// operator's command WHOLE (round-3 audit on #69; the in-cluster stdin form
+// since round 4): -1 makes the file and its
 // schema_migrations row one transaction (without it the files' SET LOCAL
 // lock_timeout is lost and a mid-file failure half-applies the file), and
 // ON_ERROR_STOP aborts on the first error. This exact form was run against
 // PostgreSQL 16 — see ApplyByHandCommand.
 func TestTheSkippedMigrationRefusalGivesTheSingleTransactionCommand(t *testing.T) {
-	const want = `psql -v ON_ERROR_STOP=1 -1 -f internal/db/migrations/0010_sessions_not_before.sql -c "INSERT INTO schema_migrations (version, name) VALUES (10, '0010_sessions_not_before.sql')"`
+	const want = `kubectl -n muster exec -i deploy/muster-postgres -- psql -U muster -d muster -v ON_ERROR_STOP=1 -1 -f - -c "INSERT INTO schema_migrations (version, name) VALUES (10, '0010_sessions_not_before.sql')" < internal/db/migrations/0010_sessions_not_before.sql`
 	if got := db.ApplyByHandCommand(10, "0010_sessions_not_before.sql"); got != want {
 		t.Fatalf("ApplyByHandCommand =\n  %s\nwant\n  %s", got, want)
 	}

@@ -180,29 +180,35 @@ func checkNoSkippedMigration(ctx context.Context, queryRow func(context.Context,
 		for i, m := range missing {
 			names[i], cmds[i] = m.name, ApplyByHandCommand(m.version, m.name)
 		}
-		return fmt.Errorf("%w: %s (the database is at version %d). Apply each by hand, in this order, as the "+
-			"database owner from the repository root — %s — or deploy an image in which it precedes every "+
-			"applied migration; this server will not boot past it",
+		return fmt.Errorf("%w: %s (the database is at version %d). From a checkout at the commit the running "+
+			"image was built from (so each file is the one this image embeds), apply each, in this order: %s — or "+
+			"deploy an image in which it precedes every applied migration; this server will not boot past it",
 			ErrSkippedMigration, strings.Join(names, ", "), current, strings.Join(cmds, " ; then "))
 	}
 	return nil
 }
 
 // ApplyByHandCommand is the operator's remedy for one skipped migration: apply
-// the file AND record it, in ONE transaction.
+// the file AND record it, in ONE transaction, through the deployment's own
+// Postgres pod (the in-cluster form: the file is streamed on stdin, so it is
+// read from the operator's checkout — which must be at the commit the running
+// image was built from, the refusal says so).
 //
 // 🔴 -1 IS THE POINT (round-3 audit on #69). Without it psql runs the file in
 // autocommit: every file begins `SET LOCAL lock_timeout`, which outside a
 // transaction only warns — the 3 s guard is silently gone — and a failure part
-// way through leaves the file half-applied and unrecorded. With -1 the -f file
-// and the -c INSERT run as one transaction; ON_ERROR_STOP makes the first error
-// abort it. Measured on PostgreSQL 16 (psql 16.15): a re-applied 0009 plus its
-// row commits with no SET LOCAL warning; a file that fails on its third
-// statement leaves neither its table nor the schema_migrations row, psql rc 3.
+// way through leaves the file half-applied and unrecorded. With -1 the file
+// (-f -, stdin) and the -c INSERT run as one transaction; ON_ERROR_STOP makes
+// the first error abort it. Measured on PostgreSQL 16 (psql 16.15) with this
+// exact stdin form (`docker exec -i … psql … -1 -f - -c … < file`): a
+// re-applied 0009 plus its row committed, rc 0, no SET LOCAL warning; a file
+// failing on its third statement left neither its table nor the
+// schema_migrations row, rc 3.
 // Pinned by TestTheSkippedMigrationRefusalGivesTheSingleTransactionCommand.
 func ApplyByHandCommand(version int, name string) string {
-	return fmt.Sprintf(`psql -v ON_ERROR_STOP=1 -1 -f internal/db/migrations/%s -c "INSERT INTO schema_migrations (version, name) VALUES (%d, '%s')"`,
-		name, version, name)
+	return fmt.Sprintf(`kubectl -n muster exec -i deploy/muster-postgres -- psql -U muster -d muster `+
+		`-v ON_ERROR_STOP=1 -1 -f - -c "INSERT INTO schema_migrations (version, name) VALUES (%d, '%s')" `+
+		`< internal/db/migrations/%s`, version, name, name)
 }
 
 // sortMigrations orders migrations by version, ascending.
