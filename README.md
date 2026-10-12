@@ -189,16 +189,19 @@ mechanism looks over-built and each part of it is there for a measured failure.
 - **The `e2e` job is real; `e2e-unit` is still a stub.** `e2e` runs the
   Playwright suite in `e2e/tests/` (Chromium, a locally built server, a seeded
   Postgres) and fails on any skip or on fewer passes than its floor
-  (`e2e/verdict.mjs`); `make e2e` is the local spelling. `e2e-unit` runs nothing,
+  (`e2e/verdict.mjs`); `make e2e` is the local spelling. In CI it runs as
+  parallel legs, each with its own Postgres (`e2e/legs.json`), and the `e2e`
+  check is their aggregate — it refuses a spec that ran in no leg or in two. `e2e-unit` runs nothing,
   says so, and fails the moment a `*.unit.mjs` harness test appears. ⚠ Several
   comments in `internal/ui` still cite upstream spec files (`tasks.spec.ts`,
   `task-board-paging.spec.ts`) that were never carried into `e2e/tests/`.
 - **`nix build` tests only the packages the derivation installs, and this line
   used to overstate it.** It read "`nix build` runs the pure-Go tests only",
-  which was two claims too many. What a nix build runs is `go vet ./...` over the
-  whole module plus `go test` over a *named* package set — `cmd/muster` and
-  `internal/taskstatus` for the CLI, `cmd/muster-migrate` and `internal/db` for
-  the migrator. `go test ./...` there is not merely weaker, it is **red**: four
+  which was two claims too many. What a nix build runs is `go vet` and `go test`
+  over the same *named* package set — `cmd/muster` and `internal/taskstatus` for
+  the CLI, `cmd/muster-migrate` and `internal/db` for the migrator. The
+  whole-module `go vet ./...` is the CI `build` job's, not the nix build's.
+  `go test ./...` there is not merely weaker, it is **red**: four
   packages assert properties of the *repository* (`internal/agentspec` shells out
   to `git`; `internal/modulegate`, `internal/notes` and `internal/ui` read
   `Dockerfile`, `.dockerignore`, `tailwind.config.js`, `web/css/input.css` and the

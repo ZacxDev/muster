@@ -533,7 +533,20 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 // — an HTTP handler, or the deliverer's card-change broadcast — so waiting for
 // fan-outs before either has stopped would wait on a set that is still growing.
 func (a *app) shutdown() {
-	// Terminals first and CONCURRENTLY with the HTTP drain: their sockets are
+	// Streams end FIRST, by one explicit call, before EITHER server's Shutdown.
+	// Shutdown waits for active connections and an SSE stream never goes idle,
+	// so an open stream would otherwise hold the drain to its deadline — see
+	// api.EndStreams; that covers event streams relayed by the /connect/ proxy,
+	// on BOTH listeners, too. It is a call here rather than a RegisterOnShutdown
+	// hook per server so that no listener's drain depends on another's having
+	// begun first: one hook on the main server alone covered the connect
+	// listener only because a.http happens to be drained first.
+	// Pinned by TestShutdownDoesNotWaitOutAnOpenEventStream and
+	// TestShutdownEndsAProxiedEventStreamOnBothListeners; that ONLY streams end,
+	// by TestShutdownEndsStreamsButLetsAnOrdinaryRequestFinish and
+	// TestShutdownLetsAnOrdinaryProxiedRequestFinish.
+	a.srv.EndStreams()
+	// Terminals next, and CONCURRENTLY with the HTTP drain: their sockets are
 	// hijacked, so Shutdown neither ends nor waits for them, and each one's
 	// release (a second exec into its pod) must run before the process exits or
 	// its tmux client stays attached in the pod.
@@ -713,7 +726,9 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// not answer whether prompts reach the operator's phone.
 	if approvalGateFor(a.cfg) != nil {
 		l.Printf("approval relay gate: DEDICATED — %s=%s (%s set), actor %q. Used ONLY by "+
-			"/agent/approvals to file and poll checkpoint cards; it turns on no router "+
+			"/agent/approvals to file and poll agent-permission cards, which the router's "+
+			"auto-approve may decide (auto-approve-ALL, or a window on the pod's own "+
+			"project muster-agent/<name>); it turns on no router "+
 			"behaviour (session liveness, events, notifications are unchanged)",
 			envApprovalGateURL, a.cfg.ApprovalGateURL, envApprovalGateToken, a.cfg.RouterActor)
 	} else {
