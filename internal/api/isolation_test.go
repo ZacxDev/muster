@@ -802,6 +802,13 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	// --- user B, a member, through every one of B's credentials ---
 	bResults := w.walkAs(w.b, w.objA, []cred{{sessionUser: w.b.uid}, {agentToken: w.b.token}}, routes)
 	w.checkOutsider(t, "B", bResults)
+	// The operator's own data (the router's directory list) is not A's, so the
+	// canary check above cannot see it: a MEMBER must not get it either.
+	for _, res := range bResults {
+		if strings.Contains(res.body, w.opCanary) {
+			t.Errorf("LEAK: B %s %s → %d carries the OPERATOR's data\n  body: %s", res.via, res.route, res.status, truncate(res.body, 300))
+		}
+	}
 	if len(bResults) < 3*len(isolationClasses) {
 		t.Fatalf("the walk drove %d requests for %d routes", len(bResults), len(isolationClasses))
 	}
