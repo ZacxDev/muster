@@ -282,8 +282,13 @@ func TestAuditRecordsAndPrunes(t *testing.T) {
 // alone — and a scope-all (System) caller, which row-level security would let
 // see BOTH rows, is refused rather than handed whichever came first.
 //
-// RED when the owner predicate is dropped from credentialRow (System then
-// opens one of the two secrets instead of refusing).
+// 🔴 THE EXPLICIT `owner_id = …` PREDICATE IS NOT REDUNDANT WITH ROW-LEVEL
+// SECURITY, AND THE LAST LEG SHOWS WHERE: the documented rollback runs
+// `muster-migrate --rls-off` while THIS image is still serving (internal/db's
+// rls_off.sql: off first, then change the pin). In that window RLS shows every
+// user's rows, and only the predicate keeps user 2's `github` from resolving to
+// user 1's. RED when the predicate is dropped from credentialRow — here, and
+// for System (which then opens one of the two secrets instead of refusing).
 func TestAConnectorNameResolvesOnlyWithinItsOwner(t *testing.T) {
 	ctx, pool := testPool(t)
 	s := newStore(t, pool, key(1))
@@ -340,5 +345,28 @@ func TestAConnectorNameResolvesOnlyWithinItsOwner(t *testing.T) {
 	}
 	if _, got, err := s.Credential(ctx, "github"); err != nil || got != fakeSecret {
 		t.Errorf("user 2's delete took user 1's connector: %q, %v", got, err)
+	}
+
+	// The rollback window: RLS OFF, this image still serving.
+	if _, err := s.CreateConnector(asTwo, connectors.NewConnector{Name: "github", Platform: p.Key, Hosts: p.Hosts,
+		Scheme: p.Scheme, Username: p.Username, Secret: secretTwo}); err != nil {
+		t.Fatalf("user 2's connector again: %v", err)
+	}
+	if err := db.RLSOff(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := db.RLSOn(context.Background(), pool); err != nil {
+			t.Errorf("RLSOn: %v", err)
+		}
+	})
+	for _, c := range []struct {
+		who  string
+		ctx  context.Context
+		want string
+	}{{"user 1", ctx, fakeSecret}, {"user 2", asTwo, secretTwo}} {
+		if _, got, err := s.Credential(c.ctx, "github"); err != nil || got != c.want {
+			t.Errorf("RLS off: %s's Credential(github) = %q, %v; want its own secret", c.who, got, err)
+		}
 	}
 }
