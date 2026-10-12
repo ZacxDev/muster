@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
@@ -47,11 +48,11 @@ func pgStore(t *testing.T) (*PGStore, *pgxpool.Pool) {
 }
 
 const (
-	tokA  = "sk-ant-oat01-FAKE-store-A-0123456789"
-	tokB  = "sk-ant-oat01-FAKE-store-B-9876543210"
-	orA   = "sk-or-v1-FAKE-api-key-of-A-000000AAA1"
-	orA2  = "sk-or-v1-FAKE-api-key-of-A-000000AAA2"
-	orB   = "sk-or-v1-FAKE-api-key-of-B-000000BBB1"
+	tokA = "sk-ant-oat01-FAKE-store-A-0123456789"
+	tokB = "sk-ant-oat01-FAKE-store-B-9876543210"
+	orA  = "sk-or-v1-FAKE-api-key-of-A-000000AAA1"
+	orA2 = "sk-or-v1-FAKE-api-key-of-A-000000AAA2"
+	orB  = "sk-or-v1-FAKE-api-key-of-B-000000BBB1"
 )
 
 // TestACiphertextMovedToAnotherOwnerDoesNotOpen: user A's sealed setup-token,
@@ -193,5 +194,72 @@ func TestTheOpenRouterKeyIsUsedAsEnteredPerOwner(t *testing.T) {
 	}
 	if _, ok, _ := s.OpenRouterKey(sys, 41); ok {
 		t.Fatal("a deleted key is still served")
+	}
+}
+
+// TestACredentialWriteIsAuditedWithoutItsSecret (round-1 audit on #69): every
+// save and delete appends ONE audit_log row for the writer — action, kind,
+// name and fingerprint — and no row anywhere in audit_log carries the secret
+// (nor any long fragment of it). The writer can read their own rows; another
+// member cannot.
+func TestACredentialWriteIsAuditedWithoutItsSecret(t *testing.T) {
+	s, pool := pgStore(t)
+	sys := authz.System(context.Background())
+	if _, err := pool.Exec(sys, `DELETE FROM audit_log WHERE user_id IN (41, 42)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutClaude(as(41), "work", tokA); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutOpenRouter(as(41), orA); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.Delete(as(41), KindClaude, "work"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	// A delete of nothing records nothing.
+	if ok, err := s.Delete(as(41), KindClaude, "nope"); err != nil || ok {
+		t.Fatal(ok, err)
+	}
+	rows, err := pool.Query(sys, `SELECT action, object, detail::text, via FROM audit_log WHERE user_id = 41 ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for rows.Next() {
+		var action, object, detail, via string
+		if err := rows.Scan(&action, &object, &detail, &via); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, action+" "+object+" "+detail+" "+via)
+	}
+	rows.Close()
+	fpA, fpOR := ccpool.Fingerprint(tokA), ccpool.Fingerprint(orA)
+	want := []string{
+		`credential.save claude:work {"kind": "claude", "name": "work", "fingerprint": "` + fpA + `"} session`,
+		`credential.save openrouter:default {"kind": "openrouter", "name": "default", "fingerprint": "` + fpOR + `"} session`,
+		`credential.delete claude:work {"kind": "claude", "name": "work", "fingerprint": "` + fpA + `"} session`,
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("audit rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	var all string
+	if err := pool.QueryRow(sys, `SELECT coalesce(json_agg(t)::text, '') FROM audit_log t`).Scan(&all); err != nil {
+		t.Fatal(err)
+	}
+	for _, sec := range []string{tokA, orA, strings.TrimPrefix(tokA, ClaudeTokenPrefix), strings.TrimPrefix(orA, OpenRouterKeyPrefix)} {
+		if strings.Contains(all, sec) {
+			t.Fatalf("audit_log carries a secret (%d bytes of it)", len(sec))
+		}
+	}
+	var mine, theirs int
+	if err := pool.QueryRow(as(41), `SELECT count(*) FROM audit_log WHERE user_id = 41`).Scan(&mine); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(as(42), `SELECT count(*) FROM audit_log WHERE user_id = 41`).Scan(&theirs); err != nil {
+		t.Fatal(err)
+	}
+	if mine != 3 || theirs != 0 {
+		t.Fatalf("A reads %d of its own audit rows (want 3); B reads %d of A's (want 0)", mine, theirs)
 	}
 }

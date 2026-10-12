@@ -8,7 +8,7 @@ import (
 )
 
 // PGStore is the Postgres-backed [Store] (table cc_account_marks, migration
-// 0003; per owner since 0010).
+// 0003; per owner since 0011).
 type PGStore struct{ pool *pgxpool.Pool }
 
 // NewPG constructs the Postgres store.
@@ -17,7 +17,7 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 // Marks returns every one of owner's accounts' records.
 //
 // 🔴 EVERY QUERY HERE NAMES THE OWNER. cc_account_marks is under row-level
-// security (0010), which scopes a user principal on its own — but selection may
+// security (0011), which scopes a user principal on its own — but selection may
 // run under a scope-all context, and there an un-predicated read would merge
 // two owners' marks for one account NAME.
 func (s *PGStore) Marks(ctx context.Context, owner int64) (map[string]Mark, error) {
@@ -54,7 +54,7 @@ const liveStatuses = `('pending', 'provisioning', 'running')`
 // LiveCounts returns, per account of owner's, how many of owner's live
 // claude-code agents use it.
 //
-// 🔴 THE owner_id PREDICATE IS THE FIX FOR #64's AUDIT NOTE. Before 0010 this
+// 🔴 THE owner_id PREDICATE IS THE FIX FOR #64's AUDIT NOTE. Before 0011 this
 // counted "agents under the caller's scope": a user principal saw only its own
 // agents (row-level security), while a scope-all caller counted EVERY owner's
 // agents on an account name. With per-owner accounts the count must be exactly

@@ -38,11 +38,11 @@ func RLSOff(ctx context.Context, pool *pgxpool.Pool) error {
 // HAS the table, so RLSOn never creates it outside Migrate.
 const mirrorTokensMigrationVersion = 8
 
-// userCredentialsMigrationVersion is 0010: user_credentials and the owned
+// userCredentialsMigrationVersion is 0011: user_credentials and the owned
 // cc_account_marks, under the same row-level security. Same treatment as 0008:
-// RLSOff turns them off, RLSOn re-applies 0010's (idempotent) body when the
+// RLSOff turns them off, RLSOn re-applies 0011's (idempotent) body when the
 // schema has user_credentials.
-const userCredentialsMigrationVersion = 10
+const userCredentialsMigrationVersion = 11
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

@@ -1,4 +1,4 @@
--- muster 0010 — bring-your-own model credentials (accounts, after PR 3b).
+-- muster 0011 — bring-your-own model credentials (accounts, after PR 3b).
 --
 -- The operator decision (accounts plan, "Operator decisions", 2026-10-11):
 -- members BRING THEIR OWN Claude setup-tokens and OpenRouter API key,
@@ -27,10 +27,37 @@
 --    share a rate-limit mark. Every existing row is a mark on the environment
 --    pool, which is the admin's (user 1) — backfilled so.
 --
--- ⚠ ROLLBACK. An image older than this one writes marks with
--- `ON CONFLICT (account)`, which no longer names a unique constraint: its mark
--- WRITES fail (the chat error it annotates says so) while dispatch, selection
--- and every other path keep working. It never reads user_credentials.
+-- 🔴 ROLLBACK PAST THIS IMAGE LENDS THE ADMIN'S CREDENTIALS TO MEMBERS.
+-- An image older than this one has no per-owner credentials: every spec it
+-- builds — a dispatch, a Start, a model change, a chief provision — places the
+-- ENVIRONMENT's Claude pool token and MUSTER_AGENT_OPENROUTER_KEY, whoever owns
+-- the agent. With GoTrue live, members exist, so a rollback without the steps
+-- below runs members' agents on the operator's subscriptions. (It also never
+-- reads user_credentials, and its mark writes use `ON CONFLICT (account)`,
+-- which no longer names a unique constraint, so marks stop being recorded.)
+-- Before rolling the image back below this one, as the database owner:
+--
+--   1. List every member and their live agents (psql as `muster`, which
+--      bypasses row-level security; the query is pinned by
+--      TestTheRollbackQueryFindsExactlyTheMembersLiveAgents):
+--
+-- BEGIN rollback-member-agents
+--   SELECT u.id AS user_id, u.email, a.id AS agent_id, a.name, a.kind, a.status, a.namespace
+--     FROM public.users u
+--     LEFT JOIN public.agents a
+--       ON a.owner_id = u.id AND a.status IN ('pending', 'provisioning', 'running')
+--    WHERE u.role <> 'admin' AND u.disabled_at IS NULL
+--    ORDER BY u.id, a.id;
+-- END rollback-member-agents
+--
+--   2. Disable each member listed, so nobody can dispatch or Start on the old
+--      image (`disabled_at` + GoTrue ban; the old image honours both):
+--        kubectl -n muster exec deploy/muster -- /muster-server user disable <user_id>
+--   3. Stop each listed agent's pod (its namespace is in the row):
+--        kubectl -n <namespace> scale deployment --all --replicas=0
+--   4. Roll the image back. Re-enable members only after rolling forward again
+--      (`muster-server user enable <user_id>`).
+--
 -- rollback/rls_off.sql turns both tables' RLS off with the rest (both carry
 -- owner_id, so --rls-off's read-back checks them), and --rls-on re-applies this
 -- file, which is idempotent.

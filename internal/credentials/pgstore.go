@@ -13,7 +13,7 @@ import (
 )
 
 // PGStore is the Postgres-backed credential store (table user_credentials,
-// migration 0010).
+// migration 0011).
 //
 // 🔴 EVERY READ AND WRITE NAMES ITS OWNER EXPLICITLY (`owner_id = $n`), AS THE
 // CONNECTOR STORE DOES. Row-level security already scopes a user principal to
@@ -88,13 +88,7 @@ func (s *PGStore) PutClaude(ctx context.Context, name, token string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint)
-		VALUES ($1, 'claude', $2, $3, $4)
-		ON CONFLICT (owner_id, kind, name) DO UPDATE SET secret_ciphertext = EXCLUDED.secret_ciphertext,
-			fingerprint = EXCLUDED.fingerprint, updated_at = now()`,
-		owner, name, ct, ccpool.Fingerprint(token))
-	return err
+	return s.upsert(ctx, owner, KindClaude, name, ct, ccpool.Fingerprint(token))
 }
 
 // Delete removes the acting user's credential (kind, name). Reports whether a
@@ -107,11 +101,24 @@ func (s *PGStore) Delete(ctx context.Context, kind, name string) (bool, error) {
 	if kind == KindOpenRouter {
 		name = OpenRouterName
 	}
-	tag, err := s.pool.Exec(ctx, `DELETE FROM user_credentials WHERE owner_id = $1 AND kind = $2 AND name = $3`, owner, kind, name)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
-	return tag.RowsAffected() > 0, nil
+	defer func() { _ = tx.Rollback(ctx) }()
+	var fp string
+	err = tx.QueryRow(ctx, `DELETE FROM user_credentials WHERE owner_id = $1 AND kind = $2 AND name = $3
+		RETURNING fingerprint`, owner, kind, name).Scan(&fp)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if err := audit(ctx, tx, owner, ActionDelete, kind, name, fp); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }
 
 // PutOpenRouter stores (or replaces) the acting user's OpenRouter API key —
@@ -132,12 +139,54 @@ func (s *PGStore) PutOpenRouter(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pool.Exec(ctx, `
+	return s.upsert(ctx, owner, KindOpenRouter, OpenRouterName, ct, ccpool.Fingerprint(key))
+}
+
+// The audit_log actions a credential write records.
+const (
+	ActionSave   = "credential.save"
+	ActionDelete = "credential.delete"
+)
+
+// upsert writes owner's sealed credential and its audit_log row in ONE
+// transaction: a save that is not audited does not happen.
+func (s *PGStore) upsert(ctx context.Context, owner int64, kind, name string, ct []byte, fingerprint string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint)
-		VALUES ($1, 'openrouter', 'default', $2, $3)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (owner_id, kind, name) DO UPDATE SET secret_ciphertext = EXCLUDED.secret_ciphertext,
 			fingerprint = EXCLUDED.fingerprint, updated_at = now()`,
-		owner, ct, ccpool.Fingerprint(key))
+		owner, kind, name, ct, fingerprint); err != nil {
+		return err
+	}
+	if err := audit(ctx, tx, owner, ActionSave, kind, name, fingerprint); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// audit appends one audit_log row for a credential write by owner (round-1
+// audit on #69: saves and deletes were unrecorded).
+//
+// 🔴 IT IS HANDED NO SECRET AND CANNOT WRITE ONE: its parameters are the kind,
+// the name and the 48-bit fingerprint — the same three things the page lists.
+// TestACredentialWriteIsAuditedWithoutItsSecret reads the rows back.
+//
+// The row is the actor's own (audit_log's self_append policy, 0009): user_id
+// is the writer, via is how they were admitted.
+func audit(ctx context.Context, tx pgx.Tx, owner int64, action, kind, name, fingerprint string) error {
+	via := ""
+	if p, ok := authz.From(ctx); ok {
+		via = string(p.Via)
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO audit_log (user_id, via, action, object, detail)
+		VALUES ($1, $2, $3, $4, jsonb_build_object('kind', $5::text, 'name', $6::text, 'fingerprint', $7::text))`,
+		owner, via, action, kind+":"+name, kind, name, fingerprint)
 	return err
 }
 

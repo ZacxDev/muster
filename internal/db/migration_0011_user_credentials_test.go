@@ -2,8 +2,10 @@ package db_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,26 +34,26 @@ func readMigration(t *testing.T, name string) string {
 	return string(b)
 }
 
-// TestMigration0010MakesTheMarksPerOwnerAndKeepsTheEnvironmentPoolsMarks: a
+// TestMigration0011MakesTheMarksPerOwnerAndKeepsTheEnvironmentPoolsMarks: a
 // database at version 9 holding marks on the environment pool's accounts
-// arrives at 0010 with those marks owned by user 1 (the admin, whose pool it
+// arrives at 0011 with those marks owned by user 1 (the admin, whose pool it
 // is) — none lost — and from then on an account is (owner, name): a member may
 // mark their own "work" beside the admin's, while a second mark on the same
 // (owner, name) is still refused. Re-running the body changes nothing.
-func TestMigration0010MakesTheMarksPerOwnerAndKeepsTheEnvironmentPoolsMarks(t *testing.T) {
+func TestMigration0011MakesTheMarksPerOwnerAndKeepsTheEnvironmentPoolsMarks(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0010_marks", 9)
+	pool := freshAt(ctx, t, "ms_0011_marks", 9)
 	mustExec(ctx, t, pool, `INSERT INTO cc_account_marks (account, rate_limited_detail) VALUES ('work', 'env pool'), ('personal-2', 'env pool')`)
 	member := scanID(ctx, t, pool, `INSERT INTO users (role) VALUES ('member') RETURNING id`)
 
-	applyThroughFrom(ctx, t, pool, 10)
+	applyThroughFrom(ctx, t, pool, 11)
 
 	var owner1 int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM cc_account_marks WHERE owner_id = 1 AND rate_limited_detail = 'env pool'`).Scan(&owner1); err != nil {
 		t.Fatal(err)
 	}
 	if owner1 != 2 || countRows(ctx, t, pool, "cc_account_marks") != 2 {
-		t.Fatalf("after 0010: %d of the environment pool's marks are user 1's (of %d rows); want 2 of 2",
+		t.Fatalf("after 0011: %d of the environment pool's marks are user 1's (of %d rows); want 2 of 2",
 			owner1, countRows(ctx, t, pool, "cc_account_marks"))
 	}
 	mustExec(ctx, t, pool, `INSERT INTO cc_account_marks (owner_id, account, rate_limited_detail) VALUES ($1, 'work', 'member')`, member)
@@ -60,14 +62,14 @@ func TestMigration0010MakesTheMarksPerOwnerAndKeepsTheEnvironmentPoolsMarks(t *t
 	}
 
 	// The body is idempotent (--rls-on re-applies it).
-	body := readMigration(t, "0010_user_credentials.sql")
+	body := readMigration(t, "0011_user_credentials.sql")
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(ctx, body); err != nil {
 		_ = tx.Rollback(ctx)
-		t.Fatalf("re-running 0010: %v", err)
+		t.Fatalf("re-running 0011: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
@@ -90,7 +92,7 @@ func TestMigration0010MakesTheMarksPerOwnerAndKeepsTheEnvironmentPoolsMarks(t *t
 // the account-name rule; one row per (owner, kind, name).
 func TestUserCredentialsRowsAreShapedByKind(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshMigrated(ctx, t, "ms_0010_shape")
+	pool := freshMigrated(ctx, t, "ms_0011_shape")
 	ok := []string{
 		`INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint) VALUES (1, 'claude', 'work', '\x00', 'f')`,
 		`INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint) VALUES (1, 'openrouter', 'default', '\x00', 'f')`,
@@ -110,5 +112,65 @@ func TestUserCredentialsRowsAreShapedByKind(t *testing.T) {
 		} else if s := sqlState(err); s != "23514" && s != "23505" {
 			t.Errorf("%s: %v; want a check (23514) or unique (23505) violation", name, err)
 		}
+	}
+}
+
+// TestTheRollbackQueryFindsExactlyTheMembersLiveAgents runs the query 0011's
+// rollback note tells the operator to run (read OUT of the migration file, so
+// the note cannot drift from what is tested): it lists every enabled member —
+// with each live agent, or alone when they have none, so they still get
+// disabled — and nothing of the admin's, nothing stopped, nothing of a member
+// already disabled.
+func TestTheRollbackQueryFindsExactlyTheMembersLiveAgents(t *testing.T) {
+	ctx := ctx0006(t)
+	pool := freshMigrated(ctx, t, "ms_0011_rollback_query")
+	body := readMigration(t, "0011_user_credentials.sql")
+	i, j := strings.Index(body, "-- BEGIN rollback-member-agents\n"), strings.Index(body, "-- END rollback-member-agents")
+	if i < 0 || j < i {
+		t.Fatal("0011 has no rollback-member-agents block")
+	}
+	var q strings.Builder
+	for _, line := range strings.Split(strings.TrimSpace(body[i+len("-- BEGIN rollback-member-agents\n"):j]), "\n") {
+		q.WriteString(strings.TrimPrefix(line, "--   ") + "\n")
+	}
+	a := scanID(ctx, t, pool, `INSERT INTO users (role, email) VALUES ('member', 'a@example.test') RETURNING id`)
+	b := scanID(ctx, t, pool, `INSERT INTO users (role, email) VALUES ('member', 'b@example.test') RETURNING id`)
+	c := scanID(ctx, t, pool, `INSERT INTO users (role, email, disabled_at) VALUES ('member', 'c@example.test', now()) RETURNING id`)
+	mk := func(owner int64, name, status string) {
+		mustExec(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace, status) VALUES ($1, $2, $3, $4)`, owner, name, "ns-"+name, status)
+	}
+	mk(1, "rq-admin-live", "running")
+	mk(a, "rq-a-live", "running")
+	mk(a, "rq-a-prov", "provisioning")
+	mk(a, "rq-a-stopped", "stopped")
+	mk(c, "rq-c-live", "running")
+
+	rows, err := pool.Query(ctx, q.String())
+	if err != nil {
+		t.Fatalf("the rollback query does not run: %v\n%s", err, q.String())
+	}
+	var got []string
+	for rows.Next() {
+		var uid int64
+		var email string
+		var agentID *int64
+		var name, kind, status, ns *string
+		if err := rows.Scan(&uid, &email, &agentID, &name, &kind, &status, &ns); err != nil {
+			t.Fatal(err)
+		}
+		n := "-"
+		if name != nil {
+			n = *name + "@" + *ns
+		}
+		got = append(got, fmt.Sprintf("%d:%s", uid, n))
+	}
+	rows.Close()
+	want := []string{
+		fmt.Sprintf("%d:rq-a-live@ns-rq-a-live", a),
+		fmt.Sprintf("%d:rq-a-prov@ns-rq-a-prov", a),
+		fmt.Sprintf("%d:-", b),
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("rollback query rows = %v\nwant %v", got, want)
 	}
 }

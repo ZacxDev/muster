@@ -602,14 +602,27 @@ func (a *Adapter) Start(ctx context.Context, agentID int64) error {
 	if err != nil {
 		return fmt.Errorf("agentprovision: start agent %d: load row: %w", agentID, err)
 	}
-	if agents.ResolveKind(ag.Kind) == agents.KindClaudeCode {
-		// 🔴 A CLAUDE-CODE START RE-APPLIES THE SPEC instead of only scaling, so it
-		// carries the account's CURRENT setup-token. The token lives in the agent's
-		// own Secret, written at create; after an operator rotates an account's
-		// token (an auth_failed mark), Stop then Start is how an existing agent gets
-		// the new one — a bare Scale would bring the pod back on the revoked token.
-		// Update creates an absent instance, so the saved-agent case is covered too.
-		// It keeps the agent's stored account: buildSpec reads the row.
+	// 🔴 A START RE-APPLIES THE SPEC instead of only scaling WHENEVER THE SPEC
+	// CARRIES A CREDENTIAL THAT CAN HAVE CHANGED SINCE CREATE: always for
+	// claude-code (the account's setup-token), and for every kind once credentials
+	// resolve per owner ([Config.Credentials] — a gateway agent's OpenRouter key).
+	// Both live in the agent's own Secret, written at create; after a token or key
+	// is rotated (an operator replacing an env token after an auth_failed mark, a
+	// member saving a new key in Account → Credentials), Stop then Start is how an
+	// existing agent gets the new value — a bare Scale brings the pod back on the
+	// old one. And when the owner has DELETED the credential, building the spec
+	// fails, so Start refuses instead of reviving a pod on a credential its owner
+	// withdrew. (Round-1 audit on #69: gateway Start only scaled, so a member's
+	// rotated key never reached the pod and a deleted key kept working —
+	// TestAGatewayStartPicksUpARotatedKeyAndRefusesADeletedOne.)
+	// Update creates an absent instance, so the saved-agent case is covered too.
+	// It keeps the agent's stored account: buildSpec reads the row.
+	//
+	// ⚠ WITH NO RESOLVER (the pre-accounts wiring every older test builds) a
+	// gateway Start still only scales: its spec then carries nothing per-owner
+	// that could have changed, and the scale-first contract those tests pin
+	// (create only when the backend SAYS the instance is absent) stands.
+	if agents.ResolveKind(ag.Kind) == agents.KindClaudeCode || a.creds != nil {
 		if ag, err = a.ensureHooksToken(ctx, ag); err != nil {
 			return err
 		}
@@ -618,7 +631,7 @@ func (a *Adapter) Start(ctx context.Context, agentID int64) error {
 			return a.fail(ctx, ag, "build spec", err)
 		}
 		if err := a.driver.Update(ctx, spec); err != nil {
-			return a.fail(ctx, ag, "apply claude-code instance", err)
+			return a.fail(ctx, ag, "apply instance", err)
 		}
 	} else if err := a.driver.Scale(ctx, agents.RefOf(ag), 1); err != nil {
 		if !errors.Is(err, provision.ErrNotFound) {

@@ -1064,6 +1064,23 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 }
 
 func (s *Server) handleAgentStart(w http.ResponseWriter, r *http.Request) {
+	// 🔴 A START IS REFUSED, LIKE A DISPATCH, FOR A KIND THE CALLER HAS NO
+	// CREDENTIAL FOR — 409 with what to add. Start re-applies the agent's spec
+	// through its owner's credentials (agentprovision.Adapter.Start), so a
+	// member who deleted their key would only get a background failure; this
+	// says why at the door. The row is read as the caller (row-level security),
+	// so another user's agent is not found here and falls through to the
+	// lifecycle path exactly as before.
+	if s.ext.Kinds != nil && s.ext.Agents != nil {
+		if id, err := strconv.ParseInt(r.PathValue("id"), 10, 64); err == nil {
+			if a, err := s.ext.Agents.Get(r.Context(), id); err == nil {
+				if why := s.ext.Kinds.Unavailable(r.Context(), callerID(r.Context()))[agents.ResolveKind(a.Kind)]; why != "" {
+					http.Error(w, fmt.Sprintf("%v: %s", ErrDispatchRefused, why), http.StatusConflict)
+					return
+				}
+			}
+		}
+	}
 	s.agentLifecycle(w, r, func(ctx context.Context, id int64) error { return s.ext.Provisioner.Start(ctx, id) }, "start")
 }
 

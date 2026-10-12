@@ -52,7 +52,7 @@ BEGIN
         ALTER TABLE public.mirror_tokens DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.mirror_tokens ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
-    -- 0010 (bring-your-own credentials: user_credentials, and cc_account_marks
+    -- 0011 (bring-your-own credentials: user_credentials, and cc_account_marks
     -- made owned), when this schema has it. Both carry owner_id, so the
     -- read-back (RLSStatus) checks them with the rest; leaving them on would
     -- make --rls-off exit non-zero.

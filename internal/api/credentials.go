@@ -226,6 +226,6 @@ func (s *Server) writeCredentialSections(b *strings.Builder, r *http.Request) {
 	b.WriteString(`<form method="POST" action="` + ui.CredentialsPath + `/openrouter" class="flex flex-col gap-2">
 <label for="cred-openrouter-key" class="text-sm font-medium text-fg">OpenRouter API key</label>
 <input id="cred-openrouter-key" name="key" type="password" required autocomplete="off" spellcheck="false" placeholder="` + credentials.OpenRouterKeyPrefix + `…" ` + credInput + `>
-<p class="text-xs text-muted">An ordinary OpenRouter API key, billed to your OpenRouter account. Your agents use it as entered. Saving again replaces it; restart a running agent to give it the new one.</p>
+<p class="text-xs text-muted">An ordinary OpenRouter API key, billed to your OpenRouter account. Your agents use it as entered. Saving again replaces it; stop and start a running agent to give it the new one.</p>
 <button type="submit" ` + credButton + `>Save OpenRouter API key</button></form></section>`)
 }

@@ -14,7 +14,7 @@
 //
 // # Storage
 //
-// One table, user_credentials (migration 0010), owned and under FORCE row-level
+// One table, user_credentials (migration 0011), owned and under FORCE row-level
 // security like every other owned table. Each secret is sealed (seal.go) with
 // the owner, kind and name bound in the associated data, so a ciphertext copied
 // to another owner's row does not open.

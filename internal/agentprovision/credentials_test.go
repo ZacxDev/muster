@@ -133,3 +133,84 @@ func TestASpecIsBuiltFromItsOwnersCredentialsOnly(t *testing.T) {
 		t.Fatalf("member claude-code config: accounts %d, openrouter key set %v", len(c.ClaudeCode.Accounts), c.OpenRouterAPIKey != "")
 	}
 }
+
+// specSpy is a Noop that remembers the last spec it was handed to create or
+// update — the Secret a pod would boot with.
+type specSpy struct {
+	*provision.Noop
+	last provision.Spec
+	n    int
+}
+
+func (d *specSpy) Create(ctx context.Context, spec provision.Spec) error {
+	d.last, d.n = spec, d.n+1
+	return d.Noop.Create(ctx, spec)
+}
+
+func (d *specSpy) Update(ctx context.Context, spec provision.Spec) error {
+	d.last, d.n = spec, d.n+1
+	return d.Noop.Update(ctx, spec)
+}
+
+// TestAGatewayStartPicksUpARotatedKeyAndRefusesADeletedOne (round-1 audit on
+// #69): a member's gateway agent dispatched on key OLD; the member saves NEW;
+// Stop then Start must hand the pod NEW (and ask the owner's credentials to get
+// it). The member deletes the key; Stop then Start must REFUSE, not revive the
+// pod on the deleted key. Before the fix a gateway Start only scaled: the pod
+// kept OLD and the credential lookup was never made.
+func TestAGatewayStartPicksUpARotatedKeyAndRefusesADeletedOne(t *testing.T) {
+	const oldKey, newKey = "sk-or-v1-FAKE-rotate-OLD-key-1111111", "sk-or-v1-FAKE-rotate-NEW-key-2222222"
+	ctx := context.Background()
+	// setup: a member's gateway agent, dispatched (kickoff) on OLD.
+	setup := func(t *testing.T) (*Adapter, *ownerCreds, *specSpy, agents.Agent) {
+		t.Helper()
+		creds := &ownerCreds{or: map[int64]string{41: oldKey}}
+		row := fixtureAgent()
+		row.OwnerID, row.Kind = 41, agents.KindGateway
+		drv := &specSpy{Noop: provision.MustNewNoop()}
+		a, err := New(Config{Driver: drv, Store: &recordingStore{agent: row}, Spec: fixtureSpecConfig(), Credentials: creds, KickoffDeliverable: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Dispatch(ctx, row.ID, true); err != nil {
+			t.Fatalf("dispatch: %v", err)
+		}
+		if !strings.Contains(secretsOf(drv.last), oldKey) {
+			t.Fatalf("control: the dispatched pod does not carry OLD:\n%s", secretsOf(drv.last))
+		}
+		if err := a.Stop(ctx, row.ID); err != nil {
+			t.Fatal(err)
+		}
+		return a, creds, drv, row
+	}
+
+	t.Run("rotate", func(t *testing.T) {
+		a, creds, drv, row := setup(t)
+		creds.or[41] = newKey
+		creds.asked = nil
+		if err := a.Start(ctx, row.ID); err != nil {
+			t.Fatalf("start after rotate: %v", err)
+		}
+		if got := secretsOf(drv.last); !strings.Contains(got, newKey) || strings.Contains(got, oldKey) {
+			t.Fatalf("after rotate + Stop + Start the pod's spec is not on NEW:\n%s", got)
+		}
+		if len(creds.asked) == 0 {
+			t.Fatal("Start never asked the owner's credentials")
+		}
+	})
+
+	t.Run("delete", func(t *testing.T) {
+		a, creds, drv, row := setup(t)
+		delete(creds.or, 41)
+		applied := drv.n
+		if err := a.Start(ctx, row.ID); err == nil || !strings.Contains(err.Error(), "OpenRouter") {
+			t.Fatalf("start after the key was deleted: %v; want a refusal naming the OpenRouter key", err)
+		}
+		if drv.n != applied {
+			t.Fatal("a refused Start still applied a spec")
+		}
+		if inst, err := drv.Get(ctx, agents.RefOf(row)); err == nil && inst.Phase != provision.PhaseStopped {
+			t.Fatalf("the pod came back on a deleted key: phase %s", inst.Phase)
+		}
+	})
+}

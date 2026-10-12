@@ -13,7 +13,7 @@ import (
 )
 
 // TestPGStoreMarksUpsertAndLiveCountsByKindAndStatus runs the store against real
-// Postgres (migration 0003's table and columns, per owner since 0010).
+// Postgres (migration 0003's table and columns, per owner since 0011).
 //
 // Owner 2 (a member) has an account with the SAME NAME as the admin's
 // ("alpha") and live agents on it: the admin's marks and counts must not see

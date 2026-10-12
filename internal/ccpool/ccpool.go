@@ -15,7 +15,7 @@
 //   - MarkFailure: ccd reported `rate_limited` or `auth_failed` for an agent on
 //     account X — remember it, with a timestamp, in Postgres.
 //
-// # Whose accounts (bring-your-own, migration 0010)
+// # Whose accounts (bring-your-own, migration 0011)
 //
 // The environment pool is the ADMIN's. A member's agents run only on accounts
 // the member entered in muster (internal/credentials). The [Source] answers
@@ -149,7 +149,7 @@ type Mark struct {
 // different subscriptions, so a rate-limit mark on one must not push the other
 // down the order, and one owner's live agents must not count against the
 // other's. Every method takes the owner and every query names it (migration
-// 0010 keys cc_account_marks on (owner_id, account)).
+// 0011 keys cc_account_marks on (owner_id, account)).
 type Store interface {
 	Marks(ctx context.Context, owner int64) (map[string]Mark, error)
 	LiveCounts(ctx context.Context, owner int64) (map[string]int, error)

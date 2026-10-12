@@ -80,8 +80,8 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 // the owner-column and RLS ledgers check both (rlsTables).
 //
 //   - mirror_tokens (0008, the mirrored-agents plugin's per-host tokens).
-//   - user_credentials (0010, members' own Claude/OpenRouter credentials).
-//   - cc_account_marks (0010: SHARED until then — the environment pool's marks
+//   - user_credentials (0011, members' own Claude/OpenRouter credentials).
+//   - cc_account_marks (0011: SHARED until then — the environment pool's marks
 //     — and owned since, because an account is (owner, name) once members bring
 //     their own).
 var ownedAfter0006 = []string{"cc_account_marks", "mirror_tokens", "user_credentials"}
@@ -104,7 +104,7 @@ var ownedTables = []string{
 }
 
 // sharedTables deliberately have NO owner: the global agent-name ledger and
-// the migration ledger. (cc_account_marks was here until 0010 made it owned.)
+// the migration ledger. (cc_account_marks was here until 0011 made it owned.)
 var sharedTables = []string{"agent_retired_names", "schema_migrations"}
 
 // wantForeignKeys is EVERY foreign key in the public schema after 0006, as
