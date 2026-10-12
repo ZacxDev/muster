@@ -255,7 +255,9 @@ func TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt(t *testing.
 		}
 		tag := page[strings.LastIndex(page[:i], "<"):]
 		tag = tag[:strings.Index(tag, ">")]
-		offered := !strings.Contains(tag, " hidden")
+		// The CLASS decides (an author display utility beats the [hidden]
+		// attribute), so the class is what is asserted.
+		offered := !strings.Contains(tag, `class="hidden `)
 		if offered != interactive {
 			t.Errorf("host interactive=%v: the Interactive switch is offered = %v (%s)", interactive, offered, tag)
 		}

@@ -84,6 +84,12 @@ func TestSessionsTrackTheHost(t *testing.T) {
 	if err := within(t, res, "attach to an ended session"); !errors.Is(err, mirror.ErrSessionGone) {
 		t.Fatalf("attach to an ended session = %v, want ErrSessionGone", err)
 	}
+	// A session that appears later is listed on both sides and attachable (the
+	// host's own allowlist follows its list).
+	b.set("main", "late")
+	r.online(t, 1, "ws", "late")
+	_, screen, _, _, _ := attach(t, asUser(1), r.svc, "ws", "late", true)
+	eventually(t, "the late session draws", func() bool { return strings.Contains(screen.String(), "SCREEN late") })
 }
 
 // TestAReadOnlyAttachShowsTheScreenAndTypesNothing (an interactive host, so only
