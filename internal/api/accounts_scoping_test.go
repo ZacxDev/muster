@@ -158,6 +158,32 @@ func TestAnEventWithNoOwnerIsDroppedAndReported(t *testing.T) {
 	}
 }
 
+// TestAMirroredHostsNudgeReachesItsOwnerOnly: the mirror plugin names the
+// host's owner (cmd/muster-server wires BroadcastAgentsChangedFor); the nudge
+// reaches that owner's streams and no one else's. #63 shipped it as
+// BroadcastAgentChanged("") — no agent, so no owner — which under the owner
+// filter would reach nobody at all.
+func TestAMirroredHostsNudgeReachesItsOwnerOnly(t *testing.T) {
+	bus := sse.New(8)
+	s := New(bus, AuthConfig{}, log.New(io.Discard, "", 0))
+	_, two := bus.Subscribe(2)
+	_, three := bus.Subscribe(3)
+	s.BroadcastAgentsChangedFor(2)
+	select {
+	case ev := <-two:
+		if ev.Name != EventAgentChanged {
+			t.Fatalf("owner 2 got %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the host's owner never got the nudge")
+	}
+	select {
+	case ev := <-three:
+		t.Fatalf("another user got owner 2's host nudge: %+v", ev)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 // TestTheReaperNotifiesOnlyTheTasksOwner: the idle-task reaper runs as System
 // (every user's tasks), so its event's owner must come from the ROW
 // (notes.ListSummaries reads owner_id). Real Postgres; A's idle task is
