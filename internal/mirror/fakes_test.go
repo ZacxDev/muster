@@ -42,6 +42,8 @@ type memStore struct {
 	liveCalls int
 	// sawSystem records whether every Authenticate/TokenLive ran under System.
 	nonSystem []string
+	// authCalls counts Authenticate calls (database reads, in PGStore).
+	authCalls int
 }
 
 func newMemStore() *memStore { return &memStore{tokens: map[string]mirror.Token{}} }
@@ -65,6 +67,7 @@ func (m *memStore) Authenticate(ctx context.Context, token string) (mirror.Token
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.system(ctx, "Authenticate")
+	m.authCalls++
 	t, ok := m.tokens[mirror.HashToken(token)]
 	if !ok || t.RevokedAt != nil {
 		return mirror.Token{}, mirror.ErrBadToken
@@ -384,6 +387,14 @@ func (h *rawHost) frames() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]string(nil), h.data...)
+}
+
+func (h *rawHost) sendSessions(t *testing.T, sessions ...string) {
+	t.Helper()
+	b, _ := json.Marshal(mirror.Msg{Type: mirror.TypeSessions, Sessions: sessions})
+	if err := h.ws.Write(context.Background(), websocket.MessageText, b); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func hello(host string, interactive bool, sessions ...string) mirror.Msg {

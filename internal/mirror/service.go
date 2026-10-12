@@ -63,6 +63,13 @@ func NewService(store Store, logger *log.Logger) *Service {
 // re-fetch, and each re-fetch is scoped to its own principal.
 func (s *Service) SetNotify(fn func()) { s.hub.SetNotify(fn) }
 
+// SetNotifyDebounce overrides the nudge coalescing window (tests).
+func (s *Service) SetNotifyDebounce(d time.Duration) {
+	s.hub.mu.Lock()
+	s.hub.debounce = d
+	s.hub.mu.Unlock()
+}
+
 // Hub is the service's hub (tests).
 func (s *Service) Hub() *Hub { return s.hub }
 
@@ -78,12 +85,13 @@ func bearer(r *http.Request) string {
 	return ""
 }
 
-// clientAddr is the rate limiter's key: the TCP peer.
+// clientAddr is the failure counter's key: the TCP peer.
 //
-// ⚠ NOT X-Forwarded-For, which any client can write. Behind a proxy every
-// client then shares the proxy's bucket, so a flood of bad tokens can make a
-// legitimate host wait out one window — the trade taken for a limiter nobody can
-// walk around by spoofing a header. It only ever counts FAILURES.
+// ⚠ NOT X-Forwarded-For, which any client can write. Behind the public path
+// (Traefik → nginx relay → gateway → muster) every client therefore shares ONE
+// address and one failure count — which is safe ONLY because the count never
+// refuses a VALID token (see ServeConnect): a flood of bad tokens from anyone
+// earns those bad tokens 429s, and a legitimate host's reconnect is unaffected.
 func clientAddr(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -105,17 +113,40 @@ func clientAddr(r *http.Request) string {
 // security and nobody is known until the token is found. What the token yields
 // — its OWNER and HOST — is everything the connection is then allowed: its
 // sessions are registered under that owner only.
+//
+// 🔴 THE TOKEN IS LOOKED UP FIRST, AND A VALID TOKEN IS NEVER REFUSED BY THE
+// FAILURE LIMIT. The limit used to be checked before the lookup, keyed on the
+// TCP peer — which behind the public path is one address for everyone — so ~10
+// bad tokens a minute from anyone kept every legitimate host's reconnect
+// refused. Now:
+//   - a string that is not even SHAPED like a mirror token (TokenShapeOK) is
+//     refused without touching the database — that, not the limiter, is what
+//     keeps junk off the database;
+//   - a well-shaped token is always looked up (one indexed read by unique hash);
+//     a valid one proceeds whatever the failure count says;
+//   - only FAILURES count, and an address past the limit gets 429 instead of
+//     401 for its failures — a signal to a misconfigured host that it is
+//     hammering, not a lock on anyone. The secret's strength (256 bits) is the
+//     guessing defence.
 func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	addr := clientAddr(r)
-	if s.limiter.blocked(addr) {
-		http.Error(w, "mirror: too many failed token checks from this address; wait a minute", http.StatusTooManyRequests)
+	refuse := func() {
+		s.limiter.fail(addr)
+		if s.limiter.blocked(addr) {
+			http.Error(w, "mirror: too many failed token checks from this address; wait a minute", http.StatusTooManyRequests)
+			return
+		}
+		http.Error(w, ErrBadToken.Error(), http.StatusUnauthorized)
+	}
+	presented := bearer(r)
+	if !TokenShapeOK(presented) {
+		refuse()
 		return
 	}
-	tok, err := s.store.Authenticate(authz.System(r.Context()), bearer(r))
+	tok, err := s.store.Authenticate(authz.System(r.Context()), presented)
 	if err != nil {
 		if errors.Is(err, ErrBadToken) {
-			s.limiter.fail(addr)
-			http.Error(w, ErrBadToken.Error(), http.StatusUnauthorized)
+			refuse()
 			return
 		}
 		s.logger.Printf("mirror: authenticate: %v", err)
@@ -167,7 +198,7 @@ func (s *Service) watchToken(ctx context.Context, cancel context.CancelCauseFunc
 			}
 			failures = 0
 			if !live {
-				cancel(fmt.Errorf("mirror: token %d for host %s was revoked", tok.ID, tok.Host))
+				cancel(fmt.Errorf("%w (token %d, host %s)", ErrTokenRevoked, tok.ID, tok.Host))
 				return
 			}
 		}

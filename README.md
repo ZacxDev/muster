@@ -362,13 +362,19 @@ route to the host, and the host holds no muster credential but its own token.
   `offline` for a day. Only `mirror_tokens` is in the database (owned, under
   row-level security; only each token's sha256 is stored).
 - **Read-only unless the host opts in.** `muster-mirror` is read-only by default:
-  muster offers no Interactive switch and refuses a rw attach. Start it with
-  `-interactive` to allow typing. Read-only is enforced by muster, by the host,
-  and by `tmux attach -r`. The host attaches only sessions it listed itself.
-- **Limits:** 8 terminals per host, 64 hosts; repeated bad tokens from one
-  address get 429 for a minute; a revoked token (or one the database cannot
-  re-verify twice running) ends the host's connection and its open terminals
-  within 30 s. One muster replica (the tunnel is in-process state).
+  muster offers no Interactive switch and refuses a rw attach. Read-only is
+  enforced by muster, by the host, and by `tmux attach -r`, and the host opens
+  only sessions it listed itself.
+- 🔴 **`-interactive` is a shell on the host.** An interactive tmux client can
+  switch to any session on that tmux server or open a new window, so anyone who
+  can use muster's Interactive switch for the host can run commands there as the
+  user `muster-mirror` runs as. The "only listed sessions" rule bounds read-only
+  viewing; it is not a boundary once an interactive client is attached.
+- **Limits:** 8 terminals per host, 64 hosts. A revoked token (or one the
+  database cannot re-verify twice running) ends the host's connection and its
+  open terminals within 30 s, and removes the host from the view. Repeated bad
+  tokens get 429, but a valid token is never refused by that limit. One muster
+  replica (the tunnel is in-process state).
 
 Mint a token where the server runs (it is printed once, owned by the operator),
 then install and run the host binary:

@@ -3,9 +3,11 @@ package mirror_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -249,36 +251,51 @@ func TestOnlyALiveMirrorTokenOpensTheConnectRoute(t *testing.T) {
 	}
 }
 
-// TestRepeatedAuthFailuresAreRateLimited: past the per-address failure limit
-// the route answers 429 — even to a good token from that address, until the
-// window ends.
-func TestRepeatedAuthFailuresAreRateLimited(t *testing.T) {
+// TestAuthFailuresAreLimitedButAValidTokenAlwaysConnects: past the failure
+// limit for an address — which behind the public path is EVERY client's address
+// — bad tokens get 429, and a VALID token from that same address still connects
+// and registers. A string not even shaped like a token is refused without a
+// store lookup.
+func TestAuthFailuresAreLimitedButAValidTokenAlwaysConnects(t *testing.T) {
 	r := newRig(t)
 	live, _ := r.store.mint(t, 1, "alpha")
-	bad := mirror.TokenPrefix + "bad"
-	codes := []int{}
-	for i := 0; i < 12; i++ {
+	get := func(tok string) int {
 		req, _ := http.NewRequest("GET", r.srv.URL+mirror.ConnectPath, nil)
-		req.Header.Set("Authorization", "Bearer "+bad)
+		req.Header.Set("Authorization", "Bearer "+tok)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
 		resp.Body.Close()
-		codes = append(codes, resp.StatusCode)
+		return resp.StatusCode
 	}
-	if codes[0] != http.StatusUnauthorized || codes[9] != http.StatusUnauthorized || codes[10] != http.StatusTooManyRequests {
-		t.Fatalf("failure codes %v; want 401 x10 then 429", codes)
+	malformed := mirror.TokenPrefix + "bad"
+	wellShaped := mirror.TokenPrefix + strings.Repeat("A", 43)
+	codes := []int{}
+	for i := 0; i < 12; i++ {
+		tok := malformed
+		if i%2 == 1 {
+			tok = wellShaped
+		}
+		codes = append(codes, get(tok))
 	}
-	req, _ := http.NewRequest("GET", r.srv.URL+mirror.ConnectPath, nil)
-	req.Header.Set("Authorization", "Bearer "+live)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	if codes[0] != http.StatusUnauthorized || codes[8] != http.StatusUnauthorized || codes[10] != http.StatusTooManyRequests || codes[11] != http.StatusTooManyRequests {
+		t.Fatalf("failure codes %v; want 401 for the first %d, then 429", codes, 10)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("a blocked address's good token got %d, want 429 until the window ends", resp.StatusCode)
+	r.store.mu.Lock()
+	lookups := r.store.authCalls
+	r.store.mu.Unlock()
+	if lookups != 6 {
+		t.Fatalf("%d store lookups for 6 well-shaped and 6 malformed tokens; malformed ones must not reach the store", lookups)
+	}
+
+	// The budget is exhausted for this address. A valid token still connects.
+	b := &fakeBackend{}
+	b.set("main")
+	r.connect(t, "alpha", live, b, false)
+	r.online(t, 1, "alpha", "main")
+	if code := get(wellShaped); code != http.StatusTooManyRequests {
+		t.Fatalf("after the valid connect, a bad token got %d; the limit must still hold for failures", code)
 	}
 }
 
@@ -328,6 +345,34 @@ func TestARevokedTokenClosesOpenTerminals(t *testing.T) {
 		t.Fatalf("the open terminal ended with %v, want ErrHostDisconnected", err)
 	}
 	eventually(t, "the host's client closed", func() bool { _, _, c := b.term(t, 0).snapshot(); return c })
+	// A REVOKED host is gone from the view at once, not kept as offline.
+	eventually(t, "the revoked host leaves the view", func() bool { return len(r.svc.Hosts(asUser(1))) == 0 })
+}
+
+// TestChangeNudgesAreCoalesced: a burst of session-list changes reaches open
+// views as a handful of nudges, not one per change.
+func TestChangeNudgesAreCoalesced(t *testing.T) {
+	r := newRig(t)
+	r.svc.SetNotifyDebounce(200 * time.Millisecond)
+	var mu sync.Mutex
+	nudges := 0
+	r.svc.SetNotify(func() { mu.Lock(); nudges++; mu.Unlock() })
+	tok, _ := r.store.mint(t, 1, "flappy")
+	h, err := r.rawConnect(t, tok, hello("flappy", false, "s0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "flappy", "s0")
+	for i := 1; i <= 40; i++ {
+		h.sendSessions(t, fmt.Sprintf("s%d", i))
+	}
+	r.online(t, 1, "flappy", "s40")
+	time.Sleep(500 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if nudges == 0 || nudges > 3 {
+		t.Fatalf("41 changes within ~0.2 s produced %d nudges; want 1-3 (coalesced)", nudges)
+	}
 }
 
 // TestARecheckThatCannotReachTheDatabaseFailsClosed: RecheckFailClosedAfter

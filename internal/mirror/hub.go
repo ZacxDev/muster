@@ -87,7 +87,20 @@ type Hub struct {
 	now     func() time.Time
 	// maxHosts is MaxHosts; a test lowers it.
 	maxHosts int
+	// debounce coalesces change nudges (notifyDebounce; a test shortens it), and
+	// notifyPending is whether one is already scheduled.
+	debounce      time.Duration
+	notifyPending bool
 }
+
+// notifyDebounce is the window change nudges are coalesced in: however fast
+// hosts connect, drop or change their lists, open Agents views are told at most
+// once per window.
+const notifyDebounce = time.Second
+
+// ErrTokenRevoked is the cause a connection ends with when its token is
+// revoked. Such a host is dropped from the view at once — not kept as offline.
+var ErrTokenRevoked = errors.New("mirror: the host's token was revoked")
 
 type offlineHost struct {
 	sessions    []string
@@ -100,7 +113,7 @@ func NewHub(logger *log.Logger) *Hub {
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Hub{logger: logger, hosts: map[hostKey]*hostConn{}, offline: map[hostKey]offlineHost{}, now: time.Now, maxHosts: MaxHosts}
+	return &Hub{logger: logger, hosts: map[hostKey]*hostConn{}, offline: map[hostKey]offlineHost{}, now: time.Now, maxHosts: MaxHosts, debounce: notifyDebounce}
 }
 
 // SetNotify installs the change nudge (a host connected, disconnected or
@@ -111,13 +124,26 @@ func (h *Hub) SetNotify(fn func()) {
 	h.mu.Unlock()
 }
 
+// changed schedules ONE nudge for the end of the debounce window, unless one is
+// already scheduled: a burst of changes (a flapping host, a session list that
+// changes every refresh) costs open views one re-fetch per window, not one per
+// change.
 func (h *Hub) changed() {
 	h.mu.Lock()
-	fn := h.notify
-	h.mu.Unlock()
-	if fn != nil {
-		go fn()
+	defer h.mu.Unlock()
+	if h.notify == nil || h.notifyPending {
+		return
 	}
+	h.notifyPending = true
+	time.AfterFunc(h.debounce, func() {
+		h.mu.Lock()
+		h.notifyPending = false
+		fn := h.notify
+		h.mu.Unlock()
+		if fn != nil {
+			fn()
+		}
+	})
 }
 
 type hostConn struct {
@@ -321,15 +347,22 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 }
 
 // drop removes hc (if it is still the host's current connection), remembers its
-// last list as offline, and ends every stream on it with ErrHostDisconnected.
+// last list as offline (unless its token was revoked), and ends every stream on it with ErrHostDisconnected.
 // It runs for EVERY ending of ServeConn — read error, revocation, replacement —
 // so it is the one place a disconnect ends a terminal.
 func (h *Hub) drop(hc *hostConn) {
+	revoked := errors.Is(context.Cause(hc.ctx), ErrTokenRevoked)
 	h.mu.Lock()
 	current := h.hosts[hc.key] == hc
 	if current {
 		delete(h.hosts, hc.key)
-		h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), interactive: hc.interactive, since: h.now()}
+		if revoked {
+			// A revoked host is GONE, not offline: nothing it listed stays on
+			// anyone's view.
+			delete(h.offline, hc.key)
+		} else {
+			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), interactive: hc.interactive, since: h.now()}
+		}
 	}
 	h.mu.Unlock()
 	hc.mu.Lock()

@@ -76,6 +76,9 @@ type AgentTerminalView struct {
 	// refuses an interactive attach regardless; this keeps the page from
 	// offering one.
 	ReadOnlyOnly bool
+	// InteractiveNote, when set, is shown as the switch's tooltip and beside it
+	// while interactive: what typing into this terminal really reaches.
+	InteractiveNote string
 }
 
 // termModeDisplay is the switch's display utility: gone when the far side is
@@ -152,6 +155,8 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						// ⚠ The `hidden` CLASS, not the attribute: an author display
 						// utility (inline-flex) beats the UA's [hidden] rule.
 						g.If(v.ReadOnlyOnly, g.Attr("hidden", "")),
+						g.If(v.InteractiveNote != "", g.Attr("title", v.InteractiveNote)),
+						g.If(v.InteractiveNote != "", g.Attr("data-interactive-note", v.InteractiveNote)),
 						Class(termModeDisplay(v.ReadOnlyOnly)+" press min-h-[44px] shrink-0 items-center gap-2 rounded-lg bg-s2 px-3 text-xs font-semibold text-fg ring-1 ring-inset ring-line transition aria-checked:bg-danger aria-checked:text-on-accent disabled:opacity-40"),
 						Span(ID("term-mode-label"), g.Text("Read-only")),
 					),

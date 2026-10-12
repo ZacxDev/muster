@@ -67,6 +67,18 @@ func NewToken() (string, error) {
 	return TokenPrefix + base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
+// TokenShapeOK reports whether token is shaped like one NewToken mints:
+// TokenPrefix + 43 base64url characters. It is a FILTER, not authentication:
+// it lets the connect route refuse junk without a database read.
+func TokenShapeOK(token string) bool {
+	rest, ok := strings.CutPrefix(token, TokenPrefix)
+	if !ok || len(rest) != 43 {
+		return false
+	}
+	b, err := base64.RawURLEncoding.DecodeString(rest)
+	return err == nil && len(b) == 32
+}
+
 // PGStore is Store over Postgres (migration 0008).
 type PGStore struct{ pool *pgxpool.Pool }
 

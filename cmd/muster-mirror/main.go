@@ -81,7 +81,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	host := fs.String("host", or(getenv(envHost), defaultHost()), "this host's name; the token must have been minted for it ("+envHost+")")
 	socket := fs.String("tmux-socket", getenv(envSocket), "tmux -L socket name; empty = the default server ("+envSocket+")")
 	socketPath := fs.String("tmux-socket-path", getenv(envSocketPath), "tmux -S socket path ("+envSocketPath+")")
-	interactive := fs.Bool("interactive", envBool(envInteractive), "let muster open INTERACTIVE terminals on this host (default: read-only; muster then offers no Interactive switch) ("+envInteractive+")")
+	interactive := fs.Bool("interactive", envBool(envInteractive), "let muster open INTERACTIVE terminals on this host — effectively a SHELL here: an interactive tmux client can switch to any session or open a new window (default: read-only; muster then offers no Interactive switch) ("+envInteractive+")")
 	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL, which sends the token in cleartext ("+envAllowHTTP+")")
 	list := fs.Bool("list", false, "print the sessions this host would register, and exit")
 	version := fs.Bool("version", false, "print the version and exit")

@@ -99,6 +99,12 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// 🔴 THE SWITCH IS OFFERED ONLY WHEN THE HOST ADVERTISED -interactive.
 		// The hub refuses a rw attach to a host that did not, regardless.
 		ReadOnlyOnly: !h.Interactive,
+		// 🔴 SAY WHAT INTERACTIVE REALLY IS: a tmux client on the host. From it
+		// a user can switch to ANY session there, or open a new window — a
+		// shell on the host. The "only listed sessions" rule guards opening an
+		// attach, not what an interactive client does once attached.
+		InteractiveNote: "Interactive types into a tmux client on " + h.Host +
+			": from it you can switch to any tmux session there or open a shell on the host.",
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {

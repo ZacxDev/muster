@@ -59,6 +59,11 @@ type Config struct {
 	// by default (muster-mirror's -interactive flag): a host that did not opt in
 	// is read-only — it advertises so in its hello, so muster offers no
 	// Interactive switch and refuses a rw attach, and this side refuses one too.
+	//
+	// 🔴 INTERACTIVE IS A SHELL ON THIS HOST. An interactive tmux client can
+	// switch to any session on the server or open a new window, so whoever can
+	// use muster's Interactive switch for this host can run commands here as the
+	// user muster-mirror runs as. Turn it on only where that is intended.
 	Interactive bool
 	// AllowHTTP permits a plain http:// URL — FOR TESTS AND LOCAL DEVELOPMENT
 	// ONLY; the documented install is https. Without it only https is accepted:
@@ -326,7 +331,9 @@ func (h *hostSide) open(m mirror.Msg) {
 		return
 	}
 	// 🔴 ONLY A SESSION THIS HOST LISTED. tmux would attach any session on the
-	// server; muster may reach only the ones this host last reported.
+	// server; muster may OPEN only the ones this host last reported. ⚠ This
+	// bounds read-only viewing. It is NOT a boundary for an interactive client,
+	// which can switch sessions or open a shell once attached (see Interactive).
 	if !h.isListed(m.Session) {
 		fail(fmt.Errorf("session %q is not in this host's latest list", m.Session))
 		return
