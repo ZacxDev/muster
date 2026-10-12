@@ -33,7 +33,9 @@ type Store interface {
 }
 
 // encrypt seals plaintext with AES-256-GCM, returning nonce||ciphertext||tag.
-func encrypt(key, plaintext []byte) ([]byte, error) {
+// encrypt seals plaintext under key, binding it to aad (the owner; see
+// ownerAAD). A nil aad is the pre-3b legacy form.
+func encrypt(key, plaintext, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("github: new cipher: %w", err)
@@ -46,11 +48,11 @@ func encrypt(key, plaintext []byte) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, fmt.Errorf("github: nonce: %w", err)
 	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
+	return gcm.Seal(nonce, nonce, plaintext, aad), nil
 }
 
 // decrypt opens a nonce||ciphertext||tag blob produced by encrypt.
-func decrypt(key, blob []byte) ([]byte, error) {
+func decrypt(key, blob, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("github: new cipher: %w", err)
@@ -63,5 +65,5 @@ func decrypt(key, blob []byte) ([]byte, error) {
 		return nil, errors.New("github: ciphertext too short")
 	}
 	nonce, ct := blob[:gcm.NonceSize()], blob[gcm.NonceSize():]
-	return gcm.Open(nil, nonce, ct, nil)
+	return gcm.Open(nil, nonce, ct, aad)
 }

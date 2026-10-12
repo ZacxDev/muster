@@ -35,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/users"
 	"log"
 	"net"
 	"net/http"
@@ -232,6 +233,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// Unwrapping it here re-opens that blind spot for every writer at once.
 		ext.Notes = notes.WithStatusLogging(notes.NewPG(pool), logger)
 		ext.Agents = agents.NewPG(pool)
+		// The request Principal's role comes from users.role (accounts PR 3b);
+		// without this store only user 1 would be admin, by fallback.
+		ext.Users = users.NewPG(pool)
 
 		if len(cfg.ConnectorEncKey) > 0 {
 			cs, err := connectors.NewPG(pool, cfg.ConnectorEncKey)

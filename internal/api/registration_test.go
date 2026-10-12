@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -52,6 +53,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Notes:           stubNotesStore{},
 		Agents:          stubAgentsStore{},
 		GitHub:          stubGitHubStore{},
+		Users:           stubUsers{},
 		SessionLiveness: stubLiveness{},
 		TagAutoDispatch: true,
 		Provisioner:     stubProvisioner{},
@@ -347,4 +349,15 @@ func TestEveryTabHasADocumentRoute(t *testing.T) {
 				"A tab whose document route is missing renders a 404 from the navigation.", tab, want)
 		}
 	}
+}
+
+// stubUsers is the seeded users table without a database: user 1 is the
+// admin, everyone else a member.
+type stubUsers struct{}
+
+func (stubUsers) Role(_ context.Context, id int64) (authz.Role, error) {
+	if id == authz.OperatorUserID {
+		return authz.RoleAdmin, nil
+	}
+	return authz.RoleMember, nil
 }

@@ -174,6 +174,16 @@ type Server struct {
 	// and it exists so principal_test.go can observe the principal at the
 	// hand-off without running the handler.
 	principalProbe func(*http.Request)
+
+	// sessionUserOverride, when set, names the user a valid browser session
+	// acts as (principal.go's sessionUserID). TEST-ONLY until PR 4's GoTrue
+	// mode resolves the session's user for real.
+	sessionUserOverride func(*http.Request) int64
+
+	// droppedEventProbe, when set, is called with every event publish drops
+	// for naming no owner. TEST-ONLY: the positive control for "no production
+	// path broadcasts without an owner".
+	droppedEventProbe func(sse.Event)
 }
 
 // LeaderGate is the cross-process singleton gate the background loops consult.
@@ -585,7 +595,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
-	id, ch := s.bus.Subscribe()
+	// 🔴 THE STREAM IS THE SESSION USER'S, AND ONLY THEIRS (accounts PR 3b).
+	// requireSession attached the principal; the bus delivers this subscriber
+	// only the events its user owns. A principal-less or scope-all request
+	// cannot reach here (requireSession admits a user), and would subscribe as
+	// nobody (0) if it did.
+	id, ch := s.bus.Subscribe(requestOwner(r.Context()))
 	defer s.bus.Unsubscribe(id)
 
 	// Initial comment so clients know the stream is open and proxies flush.
@@ -733,7 +748,7 @@ func (s *Server) reapIdleTasks(ctx context.Context, now time.Time) {
 		if !ok {
 			continue
 		}
-		s.broadcast(EventTaskChanged, strconv.FormatInt(n.ID, 10))
+		s.broadcastTo(n.OwnerID, EventTaskChanged, strconv.FormatInt(n.ID, 10))
 		reaped++
 	}
 	if reaped > 0 {
@@ -743,19 +758,85 @@ func (s *Server) reapIdleTasks(ctx context.Context, now time.Time) {
 
 // --- broadcast helpers ------------------------------------------------------
 
-// broadcast publishes one SSE event carrying an id.
+// broadcast publishes one SSE event carrying an id, OWNED BY THE USER THE
+// REQUEST ACTS AS (ctx's principal).
+//
+// 🔴 EVERY EVENT HAS AN OWNER AND REACHES ONLY THAT USER (accounts PR 3b). The
+// bus used to fan every event to every open stream, which with a second user
+// is a cross-user leak with no handler bug (task ids, agent names, and on
+// agent.stream a live turn's text). The classification of every call site:
+//
+//   - request handlers (session, hook/service, agent, connect, relay doors):
+//     broadcast(ctx, …). Under row-level security a request can only have
+//     touched its OWN principal's rows, so the principal's user IS the owner
+//     of the task / agent / connector / grant the event names.
+//   - the idle-task reaper (authz.System): broadcastTo(n.OwnerID, …) — the
+//     task row's owner, read with it (notes.ListSummaries).
+//   - agent-named nudges handed only a NAME, from loops and handlers alike
+//     (BroadcastAgentChanged, BroadcastChatReply, BroadcastAgentStream):
+//     broadcastTo(s.agentOwner(name), …).
+//
+// None is global: there is no "every user" event, so there is no path that
+// delivers to everyone. A zero owner (a System context reaching broadcast, or
+// an agent name that no longer resolves) is DROPPED and logged — fail closed
+// — never sent to all. TestEveryBroadcastCallSiteIsClassified pins the list.
+func (s *Server) broadcast(ctx context.Context, name, id string) {
+	s.broadcastTo(requestOwner(ctx), name, id)
+}
+
+// requestOwner is the user a request-scoped event belongs to: the principal's
+// user, or 0 ("nobody") for a scope-all or principal-less context.
+func requestOwner(ctx context.Context) int64 {
+	p, ok := authz.From(ctx)
+	if !ok || p.All() {
+		return 0
+	}
+	return p.UserID
+}
+
+// broadcastTo publishes one SSE event carrying an id to owner's streams.
+func (s *Server) broadcastTo(owner int64, name, id string) {
+	data, _ := json.Marshal(map[string]any{"id": id})
+	s.publish(sse.Event{Name: name, Data: string(data), OwnerID: owner})
+}
+
+// publish is the ONE place an event leaves for the bus and the router mirror.
 //
 // 🔴 IT ALSO MIRRORS ONTO THE ROUTER'S BUS WHEN ONE IS WIRED, so an operator
 // with the router's page open sees muster's changes without a second
-// EventSource. Best-effort by design: a failed mirror must never fail the write
-// that caused it — a task was still created, and refusing it because a
-// notification did not land would be strictly worse than a panel one poll stale.
-func (s *Server) broadcast(name, id string) {
-	data, _ := json.Marshal(map[string]any{"id": id})
-	if s.bus != nil {
-		s.bus.Broadcast(sse.Event{Name: name, Data: string(data)})
+// EventSource — BUT ONLY AN ADMIN'S EVENTS. The router is the operator's own
+// service (the same one the approval relay files cards on, which takes only
+// admin-owned agents — operator decision), and its bus has no notion of a
+// muster user, so a member's event mirrored there would be the very leak the
+// owner filter closes. Best-effort by design: a failed mirror must never fail
+// the write that caused it.
+func (s *Server) publish(ev sse.Event) {
+	if ev.OwnerID <= 0 {
+		s.logger.Printf("sse: dropped %s %s: it names no owner (fail closed; see broadcast)", ev.Name, ev.Data)
+		if s.droppedEventProbe != nil {
+			s.droppedEventProbe(ev)
+		}
+		return
 	}
-	s.mirrorToRouter(name, string(data))
+	if s.bus != nil {
+		s.bus.Broadcast(ev)
+	}
+	s.mirrorToRouter(ev.OwnerID, ev.Name, ev.Data)
+}
+
+// agentOwner is the owner of the agent named name, or 0 when it does not
+// resolve. It reads under authz.System — the nudges it serves are handed only
+// a name, by background loops (no principal) as well as handlers — and hands
+// nothing on but the id. System ledger entry.
+func (s *Server) agentOwner(name string) int64 {
+	if s.ext.Agents == nil {
+		return 0
+	}
+	a, err := s.ext.Agents.GetByName(authz.System(context.Background()), name)
+	if err != nil {
+		return 0
+	}
+	return a.OwnerID
 }
 
 // pushBroadcastTimeout bounds one notification fan-out.
@@ -818,8 +899,9 @@ func (s *Server) goNotify(n RouterNotification, onDelivered func(int)) {
 	})
 }
 
-// mirrorToRouter forwards one event to the router's SSE bus, if configured.
-func (s *Server) mirrorToRouter(name, data string) {
+// mirrorToRouter forwards one of owner's events to the router's SSE bus, if
+// configured and owner is an admin (see publish).
+func (s *Server) mirrorToRouter(owner int64, name, data string) {
 	if s.router == nil {
 		return
 	}
@@ -829,6 +911,9 @@ func (s *Server) mirrorToRouter(name, data string) {
 		defer s.pushInFlight.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
+		if s.roleOf(ctx, owner) != authz.RoleAdmin {
+			return
+		}
 		if err := s.router.PublishEvent(ctx, name, data); err != nil {
 			s.logger.Printf("router: publish %s: %v", name, err)
 		}
@@ -839,11 +924,20 @@ func (s *Server) mirrorToRouter(name, data string) {
 // an open Tasks tab and the Agents tab refresh live. Best-effort + nil-safe: it
 // is wired into the reconciler's status-change hook, which runs on a background
 // goroutine, so it must never panic.
+//
+// It is handed only a NAME (the loops' OnChange hooks), so the owner the
+// nudge reaches is read from the row (agentOwner). A request that has the
+// agent in hand calls agentChangedFor with the request's owner instead.
 func (s *Server) BroadcastAgentChanged(agentName string) {
 	if s == nil {
 		return
 	}
-	s.broadcast(EventAgentChanged, agentName)
+	s.agentChangedFor(s.agentOwner(agentName), agentName)
+}
+
+// agentChangedFor is BroadcastAgentChanged for an owner already known.
+func (s *Server) agentChangedFor(owner int64, agentName string) {
+	s.broadcastTo(owner, EventAgentChanged, agentName)
 	// Ride the same status-change hook to fire the "agent ready" notification
 	// ONCE when a task-linked agent first reaches `running`. It re-reads the
 	// agent to see the new status + NoteID and dedupes internally.
@@ -856,7 +950,7 @@ func (s *Server) BroadcastChatReply(agentName string) {
 	if s == nil {
 		return
 	}
-	s.broadcast(EventChatReply, agentName)
+	s.broadcastTo(s.agentOwner(agentName), EventChatReply, agentName)
 }
 
 // BroadcastAgentStream fires an SSE agent.stream event carrying ONE live event
@@ -866,6 +960,8 @@ func (s *Server) BroadcastAgentStream(agentName string, ev agents.StreamEvent) {
 	if s == nil || s.bus == nil {
 		return
 	}
+	// 🔴 THE LIVE TURN'S TEXT, SO THE OWNER FILTER MATTERS MOST HERE.
+	owner := s.agentOwner(agentName)
 	data, err := json.Marshal(agentStreamPayload{
 		Agent:      agentName,
 		Kind:       ev.Kind,
@@ -879,7 +975,7 @@ func (s *Server) BroadcastAgentStream(agentName string, ev agents.StreamEvent) {
 	if err != nil {
 		return
 	}
-	s.bus.Broadcast(sse.Event{Name: EventAgentStream, Data: string(data)})
+	s.publish(sse.Event{Name: EventAgentStream, Data: string(data), OwnerID: owner})
 }
 
 // WaitForPushes blocks until every in-flight notification fan-out has finished.

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"github.com/ZacxDev/muster/internal/users"
 	"io"
 	"net/http"
 
@@ -39,6 +40,9 @@ type Extensions struct {
 	Notes  notes.Store
 	Agents agents.Store
 	GitHub github.Store
+	// Users answers a user's role for the request Principal (principal.go's
+	// roleOf). Nil: user 1 is admin and everyone else a member.
+	Users users.Store
 
 	// AgentNamespacePrefix is the prefix [Extensions.AgentNamespace] builds a new
 	// agent's stored namespace from. It is the DEPLOYMENT's prefix — the same

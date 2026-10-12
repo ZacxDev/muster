@@ -846,7 +846,7 @@ func (s *Server) advanceTaskToInProgress(ctx context.Context, noteID int64) {
 	// what makes it true: it is emitted after the status is committed, so the
 	// re-fetch it triggers reads in_progress, and the stale-card guard in
 	// resyncScript keeps the earlier, older read from landing on top of it.
-	s.broadcast(EventTaskChanged, strconv.FormatInt(noteID, 10))
+	s.broadcast(ctx, EventTaskChanged, strconv.FormatInt(noteID, 10))
 }
 
 // dispatchParams are the inputs to create + provision an agent.
@@ -1018,7 +1018,7 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	}
 	// The agent was just created (provisioning): nudge open Tasks/Agents tabs so a
 	// task's linked-agent chip + the agents list appear live (best-effort).
-	s.BroadcastAgentChanged(rec.Name)
+	s.agentChangedFor(requestOwner(ctx), rec.Name)
 	// WithoutCancel: the dispatch outlives this request, but it must keep the
 	// request's principal — row-level security scopes every store call the
 	// adapter makes to it (see Provisioner).
@@ -1613,7 +1613,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 			// Nudge the shell's notification FAB to refetch its panel + badge: one
 			// broadcast per completed turn. Carries the agent name (the client only
 			// needs the nudge).
-			s.broadcast(EventChatReply, a.Name)
+			s.broadcast(r.Context(), EventChatReply, a.Name)
 		}
 	}
 }

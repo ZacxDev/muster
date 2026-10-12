@@ -3,23 +3,48 @@ package github
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/ZacxDev/muster/internal/authz"
 )
 
-// operatorOwnerID is the owner every PGStore call reads and writes.
+// actingOwner is the user whose connection a call reads or writes: the
+// principal's user (accounts PR 3b — one GitHub connection PER USER; it was
+// the constant 1 until then).
 //
-// ⚠ TEMPORARY, AND DELIBERATELY A CONSTANT RATHER THAN A PARAMETER. Migration
-// 0006 keyed github_connection by owner_id (it used to be an id = 1 singleton)
-// and backfilled the existing connection to user 1, the operator. Until the
-// request principal exists (accounts PR 2/3) there is exactly one user, so this
-// store keeps today's single-connection behaviour byte for byte by always
-// naming owner 1. Accounts PR 3b replaces it with the principal's user id.
-const operatorOwnerID int64 = 1
+// 🔴 A SCOPE-ALL (System) OR PRINCIPAL-LESS CONTEXT HAS NO CONNECTION. It
+// refuses rather than guessing a user: under row-level security System would
+// see every user's row, and "the" connection would be whichever the query
+// returned first.
+func actingOwner(ctx context.Context) (int64, error) {
+	p, ok := authz.From(ctx)
+	if !ok || p.All() || p.UserID <= 0 {
+		return 0, errNoOwner
+	}
+	return p.UserID, nil
+}
 
-// PGStore persists the operator's GitHub connection, encrypting the token with
-// the provided 32-byte AES key.
+var errNoOwner = errors.New("github: no acting user to own the connection")
+
+// legacyOwnerID is the one owner whose connection may still be sealed in the
+// pre-3b form (no associated data): the github_connection table held exactly
+// one row, CHECK(id=1), before accounts PR 1, and every row was backfilled to
+// user 1. See Get.
+const legacyOwnerID int64 = 1
+
+// ownerAAD binds a sealed token to its owner. A ciphertext copied onto
+// another user's row fails to open, so the composite row-level boundary
+// holds even against a write that bypasses it (the plan's "ciphertext bound
+// to owner").
+func ownerAAD(owner int64) []byte {
+	return []byte("muster/github_connection/owner=" + strconv.FormatInt(owner, 10))
+}
+
+// PGStore persists each user's GitHub connection (one row per owner),
+// encrypting the token with the provided 32-byte AES key, bound to the owner.
 type PGStore struct {
 	pool *pgxpool.Pool
 	key  []byte
@@ -36,7 +61,11 @@ func NewPG(pool *pgxpool.Pool, key []byte) (*PGStore, error) {
 
 // Save upserts the connection, encrypting the token at rest.
 func (s *PGStore) Save(ctx context.Context, login, scopes, token string) error {
-	ct, err := encrypt(s.key, []byte(token))
+	owner, err := actingOwner(ctx)
+	if err != nil {
+		return err
+	}
+	ct, err := encrypt(s.key, []byte(token), ownerAAD(owner))
 	if err != nil {
 		return err
 	}
@@ -46,18 +75,22 @@ func (s *PGStore) Save(ctx context.Context, login, scopes, token string) error {
 		ON CONFLICT (owner_id) DO UPDATE
 		SET login=EXCLUDED.login, scopes=EXCLUDED.scopes,
 		    token_ciphertext=EXCLUDED.token_ciphertext, updated_at=now()`,
-		operatorOwnerID, login, scopes, ct)
+		owner, login, scopes, ct)
 	return err
 }
 
 // Get returns the connection with its decrypted token, or ok=false if none.
 func (s *PGStore) Get(ctx context.Context) (Connection, bool, error) {
+	owner, err := actingOwner(ctx)
+	if err != nil {
+		return Connection{}, false, err
+	}
 	var (
 		c  Connection
 		ct []byte
 	)
-	err := s.pool.QueryRow(ctx, `
-		SELECT login, scopes, token_ciphertext, connected_at FROM github_connection WHERE owner_id=$1`, operatorOwnerID).
+	err = s.pool.QueryRow(ctx, `
+		SELECT login, scopes, token_ciphertext, connected_at FROM github_connection WHERE owner_id=$1`, owner).
 		Scan(&c.Login, &c.Scopes, &ct, &c.ConnectedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -65,7 +98,23 @@ func (s *PGStore) Get(ctx context.Context) (Connection, bool, error) {
 		}
 		return Connection{}, false, err
 	}
-	tok, err := decrypt(s.key, ct)
+	tok, err := decrypt(s.key, ct, ownerAAD(owner))
+	if err != nil && owner == legacyOwnerID {
+		// 🔴 THE PRE-3b FORM, AND ONLY FOR THE OWNER IT CAN BELONG TO. The
+		// operator's existing row was sealed with no associated data; it opens
+		// that way once and is re-sealed bound to its owner, so the fallback
+		// retires itself on the first read. It is NOT tried for any other user:
+		// a legacy blob on user N's row can only have been copied there, which
+		// is exactly what the binding exists to refuse.
+		legacy, lerr := decrypt(s.key, ct, nil)
+		if lerr == nil {
+			tok, err = legacy, nil
+			if nct, serr := encrypt(s.key, legacy, ownerAAD(owner)); serr == nil {
+				_, _ = s.pool.Exec(ctx, `UPDATE github_connection SET token_ciphertext=$2
+					WHERE owner_id=$1 AND token_ciphertext=$3`, owner, nct, ct)
+			}
+		}
+	}
 	if err != nil {
 		return Connection{}, false, err
 	}
@@ -75,7 +124,11 @@ func (s *PGStore) Get(ctx context.Context) (Connection, bool, error) {
 
 // Clear removes the connection.
 func (s *PGStore) Clear(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `DELETE FROM github_connection WHERE owner_id=$1`, operatorOwnerID)
+	owner, err := actingOwner(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `DELETE FROM github_connection WHERE owner_id=$1`, owner)
 	return err
 }
 
