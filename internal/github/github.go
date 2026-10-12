@@ -34,9 +34,6 @@ type Store interface {
 	Clear(ctx context.Context) error
 }
 
-// encrypt seals plaintext with AES-256-GCM, returning nonce||ciphertext||tag.
-// encrypt seals plaintext under key, binding it to aad (the owner; see
-// ownerAAD). A nil aad is the pre-3b legacy form.
 // OAuthStateKey derives the key muster MACs GitHub OAuth `state` values with
 // (accounts PR 3b) from the GitHub store's encryption key
 // (MUSTER_GITHUB_ENCRYPTION_KEY), by HKDF-SHA256 under its own label.
@@ -57,6 +54,8 @@ func OAuthStateKey(encKey []byte) ([]byte, error) {
 	return hkdf.Key(sha256.New, encKey, nil, "muster github oauth state v1", 32)
 }
 
+// encrypt seals plaintext with AES-256-GCM under key, binding it to aad (the
+// owner; see ownerAAD), and returns nonce||ciphertext||tag.
 func encrypt(key, plaintext, aad []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {

@@ -260,6 +260,15 @@ type listAgents struct {
 
 func (l listAgents) List(context.Context) ([]agents.Agent, error) { return l.list, nil }
 
+func (l listAgents) GetByName(_ context.Context, name string) (agents.Agent, error) {
+	for _, a := range l.list {
+		if a.Name == name {
+			return a, nil
+		}
+	}
+	return agents.Agent{}, errors.New("not found")
+}
+
 // TestEachUserProvisionsTheirOwnChief: POST /chief/provision as a member
 // creates THAT member's chief (`chief-<id>`), owned by them, beside the
 // operator's `chief` — which it neither starts nor collides with. Real
@@ -414,6 +423,11 @@ func TestTheGitHubOAuthStateNeedsAKey(t *testing.T) {
 	if s.githubOAuthStateNames("1.nonce."+hexMAC(nil, "1.nonce"), 1) {
 		t.Fatal("a state MACed under the empty key was accepted")
 	}
+	// And a state with an EMPTY mac: with no key the expected mac is "" too,
+	// so only the no-key refusal itself stops hmac.Equal("", "") (round-2 🟡2).
+	if s.githubOAuthStateNames("1.nonce.", 1) {
+		t.Fatal("a state with an empty mac was accepted under no key")
+	}
 	k1, err := github.OAuthStateKey([]byte("0123456789abcdef0123456789abcdef"))
 	if err != nil || len(k1) != 32 || string(k1) == "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("OAuthStateKey = %x, %v; want a distinct 32-byte key", k1, err)
@@ -427,4 +441,38 @@ func hexMAC(key []byte, body string) string {
 	m := hmac.New(sha256.New, key)
 	m.Write([]byte(body))
 	return hex.EncodeToString(m.Sum(nil))
+}
+
+// TestTheActiveListIsTheCallersOwn (round-2 audit 🟡1): the active-agent
+// registry is one server-wide map fed by every user's chat turns. Each reader
+// sees only its own user's entries, a principal-less reader none — and the
+// panel ALSO drops any entry whose agent the caller cannot read (the second,
+// independent check, here exercised alone by a store that cannot see it).
+func TestTheActiveListIsTheCallersOwn(t *testing.T) {
+	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
+	s.markAgentActive(1, "ones-agent", "thinking")
+	s.markAgentActive(2, "twos-agent", "responding")
+	s.markAgentActive(0, "nobodys-agent", "thinking")
+	names := func(owner int64) []string {
+		var out []string
+		for _, a := range s.activeAgentsList(owner) {
+			out = append(out, a.Name)
+		}
+		return out
+	}
+	if got := names(1); len(got) != 1 || got[0] != "ones-agent" {
+		t.Errorf("user 1's active list = %v; want [ones-agent]", got)
+	}
+	if got := names(2); len(got) != 1 || got[0] != "twos-agent" {
+		t.Errorf("user 2's active list = %v; want [twos-agent]", got)
+	}
+	if got := names(0); len(got) != 0 {
+		t.Errorf("a principal-less reader's active list = %v; want none", got)
+	}
+	// The panel's lookup: an entry the caller's store cannot read is dropped.
+	s.UseExtensions(Extensions{Agents: listAgents{list: nil}})
+	one := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
+	if rows := s.activeNotificationRows(one); len(rows) != 0 {
+		t.Errorf("rows for an agent the caller cannot read: %+v; want none", rows)
+	}
 }

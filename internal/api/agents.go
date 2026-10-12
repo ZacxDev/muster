@@ -457,7 +457,7 @@ func (s *Server) activeNotificationRows(ctx context.Context) []ui.ActiveRow {
 		return nil
 	}
 	now := s.activeAgentsNow()
-	entries := s.activeAgentsList()
+	entries := s.activeAgentsList(requestOwner(ctx))
 	rows := make([]ui.ActiveRow, 0, len(entries))
 	for _, e := range entries {
 		row := ui.ActiveRow{
@@ -468,14 +468,19 @@ func (s *Server) activeNotificationRows(ctx context.Context) []ui.ActiveRow {
 		if !e.InFlight {
 			row.Since = humanizeSince(now.Sub(e.At))
 		}
-		// Resolve display name + latest session to deep-link. A lookup failure is
-		// non-fatal: the row links to /agents/{name} (SessionID 0) and the server
-		// redirects to the agent's active session.
-		if a, err := s.ext.Agents.GetByName(ctx, e.Name); err == nil {
-			row.DisplayName = a.DisplayName
-			if sess, serr := s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name); serr == nil {
-				row.SessionID = sess.ID
-			}
+		// Resolve display name + latest session to deep-link, on the caller's
+		// own (row-level-secured) context. 🔴 AN AGENT THE CALLER CANNOT READ IS
+		// DROPPED, not shown by name: the registry is server-wide, and this
+		// lookup is the second, independent owner check behind the list's
+		// filter (it used to keep the row "non-fatally" — which, with a second
+		// user, named that user's agent in this one's panel).
+		a, err := s.ext.Agents.GetByName(ctx, e.Name)
+		if err != nil {
+			continue
+		}
+		row.DisplayName = a.DisplayName
+		if sess, serr := s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name); serr == nil {
+			row.SessionID = sess.ID
 		}
 		rows = append(rows, row)
 	}
@@ -1582,7 +1587,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		// Mark active immediately (a turn always starts thinking) so the agent
 		// shows in the notification panel's ACTIVE section before its first stream
 		// event lands; wsStreamEmit then refines the phase as events arrive.
-		s.markAgentActive(a.Name, "thinking")
+		s.markAgentActive(requestOwner(ctx), a.Name, "thinking")
 		emit := wsStreamEmit(ctx, c, s, a.Name)
 		// Observe the stream to persist the turn's ORDERED parts (text + tool calls
 		// interleaved), so a reload/reconcile shows the full response, not just the
@@ -1729,13 +1734,14 @@ func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text 
 // (markAgentIdle on turn end). srv may be nil (tests / paths without a server),
 // in which case only the WS translation happens.
 func wsStreamEmit(ctx context.Context, c *websocket.Conn, srv *Server, agentName string) agents.StreamEmit {
+	owner := requestOwner(ctx) // the chat's session user: the agent's owner under RLS
 	return func(ev agents.StreamEvent) {
 		if srv != nil {
 			switch ev.Kind {
 			case "text":
-				srv.markAgentActive(agentName, "responding")
+				srv.markAgentActive(owner, agentName, "responding")
 			case "thinking":
-				srv.markAgentActive(agentName, "thinking")
+				srv.markAgentActive(owner, agentName, "thinking")
 			}
 		}
 		switch ev.Kind {

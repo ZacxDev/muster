@@ -34,11 +34,15 @@ var errNoOwner = errors.New("github: no acting user to own the connection")
 // holds even against a write that bypasses it (the plan's "ciphertext bound
 // to owner").
 //
-// ⚠ THERE IS NO PRE-OWNER (no associated data) FALLBACK. A row sealed before
-// accounts PR 3b does not open and reads as an error: GitHub is not enabled on
-// the live deployment (no MUSTER_GITHUB_ENCRYPTION_KEY), so there is nothing
-// to re-seal, and a fallback would be a second, weaker way to open a row.
-// Reconnect through the OAuth flow if one ever exists.
+// ⚠ THERE IS NO PRE-OWNER (no associated data) FALLBACK, AND THE LIVE TABLE
+// HOLDS ONE ROW IT WILL NOT OPEN. The live github_connection table has the
+// operator's row, sealed before accounts PR 3b with no associated data. GitHub
+// is not enabled on that deployment (no MUSTER_GITHUB_ENCRYPTION_KEY), so no
+// store is built and nothing reads it today. If the key is ever set, Get on
+// that row returns an error (the Repos panel answers "could not load GitHub
+// connection") until it is replaced: Disconnect (Clear needs no decrypt), then
+// connect again. A fallback that opened it would be a second, weaker way to
+// open a row — the binding exists to refuse exactly that shape.
 func ownerAAD(owner int64) []byte {
 	return []byte("muster/github_connection/owner=" + strconv.FormatInt(owner, 10))
 }

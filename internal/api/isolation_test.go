@@ -491,6 +491,12 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(pool.QueryRow(w.sys, `INSERT INTO connector_grants (agent_id, owner_id, connector_name, status, reason)
 		VALUES ($1, $2, $3, 'pending', $4) RETURNING id`, w.aChief.ID, w.a.uid, w.aConnName, w.canary+" reason").Scan(&w.aGrantID), "a pending grant")
 	w.objA.grant = w.aGrantID
+	// An ACTIVE TURN of A's chief (round-2 audit 🟡1): the notifications
+	// panel's ACTIVE section reads a SERVER-WIDE in-memory registry, not a
+	// table, so row-level security never sees it. The chief has no unread
+	// messages, so its name on a panel can only come from this registry.
+	// (markAgentActive is exactly what handleAgentWS calls at turn start.)
+	srv.markAgentActive(w.a.uid, w.aChief.Name, "thinking")
 	// The operator's own tag and project: the positive control for the admin's
 	// vocabulary routes, whose leak check looks for A's.
 	_, err = ns.AddTags(authz.Operator(ctx), w.op.task.ID, []string{"isoop" + w.suffix, "project:isoopproj" + w.suffix})
@@ -926,6 +932,11 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	if len(reached) < 30 {
 		t.Errorf("CONTROL: A's walk distinguished its own objects on only %d routes", len(reached))
 	}
+	// The ACTIVE-section control: A's panel names A's in-flight chief.
+	if body := w.do(w.h, "GET", "/ui/notifications", "", cred{sessionUser: w.a.uid}).Body.String(); !strings.Contains(body, w.aChief.Name) {
+		t.Errorf("CONTROL: A's notifications panel does not name A's in-flight %s, so B's clean panel proves nothing\n  body: %s",
+			w.aChief.Name, truncate(body, 300))
+	}
 	// The side-effect controls.
 	if w.up.sawSecret(w.canary+"-SECRET") == 0 {
 		t.Error("CONTROL: A's own agent never got A's connector secret upstream — the connect leg proves nothing")
@@ -966,6 +977,19 @@ func (w *isoWorld) checkCounts(t *testing.T) {
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Count != truth(u) {
 			t.Errorf("COUNT: %s's review count = %s; want its own %d", u.name, rec.Body, truth(u))
+		}
+	}
+	// The ACTIVE section: A's in-flight chief is on nobody else's panel (the
+	// walk's identity check covers this too). A's own panel is the control,
+	// asserted after the mutation legs — rendering it creates A's chat session.
+	for _, c := range []struct {
+		u    isoUser
+		want bool
+	}{{w.b, false}, {w.op, false}} {
+		body := w.do(w.h, "GET", "/ui/notifications", "", cred{sessionUser: c.u.uid}).Body.String()
+		if strings.Contains(body, w.aChief.Name) != c.want {
+			t.Errorf("ACTIVE: %s's notifications panel names A's in-flight %s = %v; want %v\n  body: %s",
+				c.u.name, w.aChief.Name, !c.want, c.want, truncate(body, 300))
 		}
 	}
 	if truth(w.a) == 0 {
