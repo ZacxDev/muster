@@ -224,6 +224,13 @@ func (g *gotrueState) track(parent context.Context, uid int64, c gotrue.Claims) 
 	}, true
 }
 
+// endUserStreams cancels every live request of uid (a password reset).
+func (g *gotrueState) endUserStreams(uid int64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.endLocked(uid, "")
+}
+
 // endLocked cancels uid's live requests — all of them, or only session sid's.
 func (g *gotrueState) endLocked(uid int64, sid string) {
 	for lr := range g.live[uid] {

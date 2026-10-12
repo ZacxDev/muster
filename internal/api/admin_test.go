@@ -22,6 +22,8 @@ type memAccounts struct {
 	mu    sync.Mutex
 	audit []users.AuditEntry
 	rows  *memUsers // the disable path's rows
+	// bumpErr makes BumpSessionCutoff fail.
+	bumpErr error
 }
 
 var errMemAccounts = errors.New("memAccounts: not modelled")
@@ -60,8 +62,19 @@ func (m *memAccounts) SetDisabledAs(ctx context.Context, by *users.Actor, id int
 	}
 	return u, err
 }
-func (m *memAccounts) BumpSessionCutoff(context.Context, int64) (time.Time, error) {
-	return time.Now(), nil
+func (m *memAccounts) BumpSessionCutoff(_ context.Context, id int64) (time.Time, error) {
+	if m.bumpErr != nil {
+		return time.Time{}, m.bumpErr
+	}
+	now := time.Now()
+	if m.rows != nil {
+		m.rows.mu.Lock()
+		if u, ok := m.rows.rows[id]; ok {
+			u.SessionsNotBefore = &now
+		}
+		m.rows.mu.Unlock()
+	}
+	return now, nil
 }
 func (m *memAccounts) Audited(ctx context.Context, by users.Actor, action, object string, detail map[string]any, fn func() error) error {
 	if err := fn(); err != nil {
@@ -236,5 +249,50 @@ func TestAMemberCannotReachAnyAdminRoute(t *testing.T) {
 	}
 	if after := row(); after == before {
 		t.Error("CONTROL: the admin's walk changed nothing, so the member's unchanged rows prove nothing")
+	}
+}
+
+// TestAResetEndsTheOtherDevicesOpenStreams (round-3 MED): moving the session
+// cutoff refuses the other devices' NEXT requests, but a stream already open
+// was admitted before it — so the reset must END them too, as a disable and a
+// sign-out-everywhere do. Every kind of stream (SSE, agent terminal, mirror
+// terminal) opened by another device of the user ends; the session the reset
+// signs in still works.
+func TestAResetEndsTheOtherDevicesOpenStreams(t *testing.T) {
+	f := newStreamFixture(t)
+	f.s.gt.sweepInterval = time.Hour // the sweep must not be what ends them
+	f.fake.UseRealClock()
+	f.s.gt.Accounts = &memAccounts{rows: f.store}
+	at, rt, _ := f.fake.Mint(f.sub)
+	other := f.openAll(t, at, rt)
+	requireOpen(t, "before the reset", other)
+	w := do(f.edge, "POST", ResetPath, url.Values{"token": {f.fake.RecoveryHash(f.sub)},
+		"password": {"a-new-long-password"}, "password2": {"a-new-long-password"}})
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("reset: %d %s", w.Code, truncate(w.Body.String(), 300))
+	}
+	for _, s := range other {
+		if !s.ended(2 * time.Second) {
+			t.Errorf("the other device's %s stream is still open 2 s after the reset", s.name)
+		}
+		s.close()
+	}
+	ck := setCookies(w)
+	if g := do(f.edge, "GET", "/account", nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value)); g.Code != http.StatusOK {
+		t.Fatalf("the session the reset signed in: %d, want 200", g.Code)
+	}
+}
+
+// TestAResetWhoseCutoffCannotMoveSaysAskForANewLink (round-3 LOW): by then
+// GoTrue has SPENT the single-use recovery token, so "try the link again" is
+// wrong advice.
+func TestAResetWhoseCutoffCannotMoveSaysAskForANewLink(t *testing.T) {
+	f := newStreamFixture(t)
+	f.s.gt.Accounts = &memAccounts{rows: f.store, bumpErr: errors.New("database down")}
+	w := do(f.edge, "POST", ResetPath, url.Values{"token": {f.fake.RecoveryHash(f.sub)},
+		"password": {"a-new-long-password"}, "password2": {"a-new-long-password"}})
+	if w.Code == http.StatusSeeOther || !strings.Contains(w.Body.String(), "Ask for a new reset link") ||
+		strings.Contains(w.Body.String(), "Try the link again") {
+		t.Fatalf("a failed cutoff move: %d %s", w.Code, truncate(w.Body.String(), 400))
 	}
 }

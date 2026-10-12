@@ -495,10 +495,19 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	cut, err := s.gt.Accounts.BumpSessionCutoff(r.Context(), u.ID)
 	if err != nil {
 		s.logger.Printf("reset: moving the session cutoff for user %d failed: %v", u.ID, err)
-		s.renderNotice(w, http.StatusInternalServerError, "The password could not be set", "Try the link again in a moment.")
+		// GoTrue has already SPENT the single-use recovery token (/verify
+		// above), so the link cannot be tried again.
+		s.renderNotice(w, http.StatusInternalServerError, "The password could not be set", "Ask for a new reset link.")
 		return
 	}
 	s.gt.forgetUser(u.ID)
+	// 🔴 AND END WHAT IS ALREADY OPEN. The cutoff refuses the other devices'
+	// NEXT requests, but an SSE stream or a terminal/chat socket was admitted
+	// before it and is checked once, at connect — so a disable and a
+	// sign-out-everywhere end them, and so must a reset. The session the reset
+	// is about to sign in is not open yet, so ending every one of the user's
+	// streams spares nothing it should (TestAResetEndsTheOtherDevicesOpenStreams).
+	s.gt.endUserStreams(u.ID)
 	// The audit row (actor: the user; the client address in the detail)
 	// commits only if GoTrue set the password.
 	//
