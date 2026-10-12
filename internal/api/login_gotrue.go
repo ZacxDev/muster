@@ -428,22 +428,11 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderClaimForm(w, http.StatusBadRequest, token, email, "The two passwords are different.")
 		return
 	}
-	var createErr error
-	u, err := s.gt.Users.RedeemClaim(r.Context(), claimHash(token), email,
-		func(ctx context.Context) (string, error) {
-			sub, err := s.gt.Client.AdminCreateUser(ctx, ip, email, pw)
-			createErr = err
-			return sub, err
-		},
-		func(sub string) {
-			// Compensation: the GoTrue user exists but its muster binding did
-			// not commit. Delete it, so the email is not stranded in GoTrue.
-			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
-			defer cancel()
-			if err := s.gt.Client.AdminDeleteUser(ctx, ip, sub); err != nil {
-				s.logger.Printf("claim: COMPENSATION FAILED — GoTrue user %s has no muster binding and could not be deleted: %v", sub, err)
-			}
-		})
+	// Compensation (undo): the GoTrue user exists but its muster binding did
+	// not commit. Delete it, so the email is not stranded in GoTrue.
+	create, undo, createErrp := s.gotrueCreate(r, ip, email, pw, "claim")
+	u, err := s.gt.Users.RedeemClaim(r.Context(), claimHash(token), email, create, undo)
+	createErr := *createErrp
 	switch {
 	case errors.Is(err, users.ErrInvalidInvite):
 		outcome = outcomeFailed

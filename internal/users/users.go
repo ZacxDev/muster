@@ -130,12 +130,28 @@ func (s *PGStore) ByID(ctx context.Context, id int64) (User, error) {
 
 // SetDisabled sets (or clears) disabled_at and returns the updated row.
 // Disabling an already-disabled user keeps its original timestamp.
+//
+// 🔴 DISABLING THE LAST ENABLED ADMIN IS REFUSED (ErrLastAdmin), for the reason
+// SetRole refuses demoting it: nobody would be left who can reach /admin to undo
+// it. The check runs under guardLastAdmin's lock (accounts PR 5).
 func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (User, error) {
-	q := `UPDATE users SET disabled_at = COALESCE(disabled_at, now()) WHERE id = $1 RETURNING ` + userCols
 	if !disabled {
-		q = `UPDATE users SET disabled_at = NULL WHERE id = $1 RETURNING ` + userCols
+		return scanUser(s.pool.QueryRow(sys(ctx), `UPDATE users SET disabled_at = NULL WHERE id = $1 RETURNING `+userCols, id))
 	}
-	return scanUser(s.pool.QueryRow(sys(ctx), q, id))
+	ctx = sys(ctx)
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return User{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := guardLastAdmin(ctx, tx, id); err != nil {
+		return User{}, err
+	}
+	u, err := scanUser(tx.QueryRow(ctx, `UPDATE users SET disabled_at = COALESCE(disabled_at, now()) WHERE id = $1 RETURNING `+userCols, id))
+	if err != nil {
+		return User{}, err
+	}
+	return u, tx.Commit(ctx)
 }
 
 // IDByEmail returns the id of the user whose email is email (case-folded), and
@@ -286,34 +302,47 @@ func (s *PGStore) RedeemClaim(ctx context.Context, tokenHash []byte, email strin
 	if _, err := tx.Exec(ctx, `UPDATE invites SET redeemed_at = now(), redeemed_by = $2 WHERE id = $1`, inviteID, uid); err != nil {
 		return User{}, err
 	}
+	committed, err = s.commitDeciding(ctx, tx, sub, func(rctx context.Context) (bool, error) {
+		var bound string
+		err := s.pool.QueryRow(rctx, `SELECT COALESCE(gotrue_sub::text, '') FROM users WHERE id = $1`, uid).Scan(&bound)
+		return bound == sub, err
+	})
+	if err != nil {
+		return User{}, err
+	}
+	return u, nil
+}
+
+// commitDeciding commits a redeem transaction that has already created GoTrue
+// user sub, and reports whether that user must be KEPT (true) or undone.
+//
+// 🔴 A FAILED COMMIT IS AN UNKNOWN OUTCOME, NOT A ROLLBACK. The server may have
+// committed and the reply been lost; deleting the GoTrue user then would leave
+// a muster row bound to a subject that no longer exists — that account locked
+// out. So landed re-reads the row and the outcome is decided from what is there
+// (TestAnAmbiguousCommitIsDecidedByRereadingTheRow): bound → kept, success;
+// not bound → undo, the commit's error; re-read failed → still unknown, so the
+// GoTrue user is kept (an orphan login is recoverable, a deleted bound one is
+// not) and the error says so. Shared by the admin claim and invite redemption.
+func (s *PGStore) commitDeciding(ctx context.Context, tx pgx.Tx, sub string, landed func(context.Context) (bool, error)) (bool, error) {
 	commit := s.commit
 	if commit == nil {
 		commit = func(ctx context.Context, tx pgx.Tx) error { return tx.Commit(ctx) }
 	}
-	if err := commit(ctx, tx); err != nil {
-		// 🔴 A FAILED COMMIT IS AN UNKNOWN OUTCOME, NOT A ROLLBACK. The server
-		// may have committed and the reply been lost; deleting the GoTrue user
-		// then would leave user 1 bound to a subject that no longer exists —
-		// the admin locked out. Re-read the row and decide from what is there
-		// (TestAnAmbiguousCommitIsDecidedByRereadingTheRow).
-		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-		defer cancel()
-		var bound string
-		rerr := s.pool.QueryRow(rctx, `SELECT COALESCE(gotrue_sub::text, '') FROM users WHERE id = $1`, uid).Scan(&bound)
-		switch {
-		case rerr == nil && bound == sub:
-			committed = true
-			return u, nil
-		case rerr != nil:
-			// Still unknown: keep the GoTrue user (an orphan login is
-			// recoverable; a deleted bound one is not) and say so.
-			committed = true
-			return User{}, fmt.Errorf("users: claim commit outcome unknown (%v; re-read failed: %v) — the GoTrue user %s was kept", err, rerr, sub)
-		}
-		return User{}, err
+	err := commit(ctx, tx)
+	if err == nil {
+		return true, nil
 	}
-	committed = true
-	return u, nil
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	ok, rerr := landed(rctx)
+	switch {
+	case rerr == nil && ok:
+		return true, nil
+	case rerr != nil:
+		return true, fmt.Errorf("users: commit outcome unknown (%v; re-read failed: %v) — the GoTrue user %s was kept", err, rerr, sub)
+	}
+	return false, err
 }
 
 func looksLikeUUID(s string) bool {

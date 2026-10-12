@@ -283,3 +283,56 @@ func decodeError(status int, raw []byte) error {
 	}
 	return ae
 }
+
+// --- accounts PR 5: the password-reset link -----------------------------------
+//
+// muster has no SMTP, so a reset is a link the ADMIN hands over: GoTrue's
+// admin/generate_link mints a recovery token for the user, muster puts its
+// HASHED form in the fragment of `<public>/auth/reset#<hash>`, and the reset
+// page posts it back. muster — never the browser — exchanges it at GoTrue's
+// /verify for a session, sets the new password through the admin path (where
+// MinPasswordLength is enforced here, as for AdminCreateUser), and signs in.
+
+// AdminRecoveryLink mints a single-use recovery token for email and returns its
+// hashed form (GoTrue's `hashed_token`), which /verify accepts as token_hash.
+func (c *Client) AdminRecoveryLink(ctx context.Context, clientIP, email string) (string, error) {
+	var out struct {
+		HashedToken string `json:"hashed_token"`
+		Properties  struct {
+			HashedToken string `json:"hashed_token"`
+		} `json:"properties"`
+	}
+	if err := c.admin(ctx, clientIP, http.MethodPost, "/admin/generate_link",
+		map[string]any{"type": "recovery", "email": email}, &out); err != nil {
+		return "", err
+	}
+	h := out.HashedToken
+	if h == "" {
+		h = out.Properties.HashedToken
+	}
+	if h == "" {
+		return "", errors.New("gotrue: /admin/generate_link answered with no hashed_token")
+	}
+	return h, nil
+}
+
+// VerifyRecovery exchanges a recovery token_hash for a session. GoTrue spends
+// the token: a second exchange is refused.
+func (c *Client) VerifyRecovery(ctx context.Context, clientIP, tokenHash string) (Session, error) {
+	var s Session
+	err := c.do(ctx, clientIP, http.MethodPost, "/verify", "",
+		map[string]string{"type": "recovery", "token_hash": tokenHash}, &s)
+	if err == nil && s.AccessToken == "" {
+		err = errors.New("gotrue: /verify answered with no session")
+	}
+	return s, err
+}
+
+// AdminSetPassword sets userID's password through the admin path.
+func (c *Client) AdminSetPassword(ctx context.Context, clientIP, userID, password string) error {
+	if len(password) < MinPasswordLength {
+		return ErrWeakPassword
+	}
+	return c.admin(ctx, clientIP, http.MethodPut, "/admin/users/"+url.PathEscape(userID),
+		map[string]any{"password": password}, nil)
+}

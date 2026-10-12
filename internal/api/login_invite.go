@@ -1,0 +1,387 @@
+package api
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"html"
+	"net/http"
+	"net/mail"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/gotrue"
+	"github.com/ZacxDev/muster/internal/users"
+)
+
+// --- accounts PR 5: redeeming an invite link, and the password reset ----------
+//
+// Beside the admin claim (login_gotrue.go), and built from the same parts: the
+// token in the URL FRAGMENT (never a path, a query or a log line), one uniform
+// "invalid or expired" page for every way a link can be bad, the redemption in
+// ONE transaction with a compensating GoTrue delete only when the muster side
+// is known not to have committed, and a real sign-in at the end.
+//
+// The page is two POSTs. GET /invite serves a page whose script moves the
+// fragment into a form and submits it (step=open); the server answers with the
+// account form — the email LOCKED when the invite is bound to one — or the
+// uniform page. That form posts step=redeem.
+
+// Redemption throttles.
+//
+// 🔴 TWO KEYS, BECAUSE A GUESSER AND A LINK-HOLDER ARE DIFFERENT ATTACKS. An
+// unknown token has a different hash on every guess, so guessing is limited per
+// client address (inviteIPLimit per minute, every POST). A REAL link that keeps
+// failing — a bound email being guessed, GoTrue's "email exists" being used to
+// enumerate accounts — is limited per token hash: after inviteTokenFailures the
+// link answers the uniform page for inviteTokenFailWindow, whatever is posted.
+const (
+	inviteIPLimit         = 10
+	inviteIPWindow        = time.Minute
+	inviteTokenFailures   = 5
+	inviteTokenFailWindow = time.Hour
+)
+
+// inviteLimits is the redemption pages' throttle state (zero value ready).
+type inviteLimits struct {
+	ip       keyedWindow
+	tokenBad keyedWindow
+}
+
+// inviteRefusal reports why this request may not use the invite or reset flow:
+// GoTrue and the account store must be wired, the server must sign people in
+// with GoTrue (an invitee could not sign in under the shared password), and the
+// request must have come through the browser listener.
+func (s *Server) inviteRefusal(w http.ResponseWriter, r *http.Request) bool {
+	switch {
+	case !s.adminPagesServed():
+		http.NotFound(w, r)
+	case !s.auth.goTrueMode():
+		s.renderNotice(w, http.StatusServiceUnavailable, "Not open yet",
+			"This muster does not use per-user sign-in yet. Ask the operator to try the link again later.")
+	case !viaBrowserListener(r):
+		s.renderNotice(w, http.StatusForbidden, "Open this link at the public address",
+			"This port serves muster's machine API only. Open the link at muster's public address"+s.publicURLSuffix()+".")
+	case r.Method == http.MethodPost && !s.isSameOrigin(r):
+		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": CrossOriginRefusal})
+	default:
+		return false
+	}
+	return true
+}
+
+func tokenKey(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+// renderInvalidInvite is the ONE page for every bad link, so it cannot be used
+// to learn which tokens exist, which are bound, or why one failed.
+func (s *Server) renderInvalidInvite(w http.ResponseWriter) {
+	s.renderNotice(w, http.StatusNotFound, "This link is invalid or expired", "Ask the person who invited you for a new link.")
+}
+
+// fragmentForm is the bootstrap page: its script moves the URL fragment into
+// the hidden token field, strips it from the address bar, and (auto) submits.
+func fragmentForm(action, heading, body, button string, autoSubmit bool, extra, token, problem string) string {
+	auto := ""
+	if autoSubmit {
+		auto = `if (t.value) { f.submit(); }`
+	}
+	return `<form id="frag-form" method="POST" action="` + action + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<h1 class="text-balance text-base font-semibold text-fg">` + html.EscapeString(heading) + `</h1>
+<p class="text-sm text-fg2">` + html.EscapeString(body) + `</p>
+` + problemNode(problem) + extra + `
+<input type="hidden" id="frag-token" name="token" value="` + html.EscapeString(token) + `">
+<button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">` + html.EscapeString(button) + `</button>
+</form>
+<script>
+(function () {
+  var f = document.getElementById('frag-form'), t = document.getElementById('frag-token');
+  if (!t.value && location.hash.length > 1) { t.value = location.hash.slice(1); }
+  if (location.hash) { history.replaceState(null, '', location.pathname); }
+  ` + auto + `
+})();
+</script>`
+}
+
+func (s *Server) handleInvitePage(w http.ResponseWriter, r *http.Request) {
+	if s.inviteRefusal(w, r) {
+		return
+	}
+	writeAuthDocument(w, http.StatusOK, "You are invited", fragmentForm(InvitePath, "You are invited to muster",
+		"Continue to set up your account.", "Continue", true, `<input type="hidden" name="step" value="open">`, "", ""))
+}
+
+func (s *Server) renderInviteForm(w http.ResponseWriter, code int, token string, inv users.Invite, email, name, problem string) {
+	field := func(id, fname, label, typ, auto, value string, required, locked bool) string {
+		attrs := ""
+		if required {
+			attrs += " required"
+		}
+		if locked {
+			attrs += ` readonly aria-readonly="true"`
+		}
+		return `<label for="` + id + `" class="text-sm font-medium text-fg">` + label + `</label>
+<input id="` + id + `" name="` + fname + `" type="` + typ + `" autocomplete="` + auto + `"` + attrs + ` value="` + html.EscapeString(value) + `"
+ class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">`
+	}
+	locked := inv.Email != ""
+	if locked {
+		email = inv.Email
+	}
+	writeAuthDocument(w, code, "Create your account", `<form method="POST" action="`+InvitePath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+<h1 class="text-balance text-base font-semibold text-fg">Create your muster account</h1>
+<p class="text-sm text-fg2">You are joining as <span class="font-semibold text-fg">`+html.EscapeString(string(inv.Role))+`</span>. This link works once.</p>
+`+problemNode(problem)+`
+`+field("invite-email", "email", "Email", "email", "username", email, true, locked)+`
+`+field("invite-name", "display_name", "Your name", "text", "name", name, false, false)+`
+`+field("invite-password", "password", "Password (at least 12 characters)", "password", "new-password", "", true, false)+`
+`+field("invite-password2", "password2", "Password again", "password", "new-password", "", true, false)+`
+<input type="hidden" name="token" value="`+html.EscapeString(token)+`">
+<input type="hidden" name="step" value="redeem">
+<button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">Create account</button>
+</form>`)
+}
+
+func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
+	if s.inviteRefusal(w, r) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.renderInvalidInvite(w)
+		return
+	}
+	ip := clientIP(r)
+	now := s.gt.now()
+	lim := &s.inviteLimits
+	if lim.ip.count(ip, now, inviteIPWindow) >= inviteIPLimit {
+		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
+		return
+	}
+	lim.ip.add(ip, now, inviteIPWindow)
+	token := r.FormValue("token")
+	key := tokenKey(token)
+	if token == "" || lim.tokenBad.count(key, now, inviteTokenFailWindow) >= inviteTokenFailures {
+		s.renderInvalidInvite(w)
+		return
+	}
+	bad := func() {
+		lim.tokenBad.add(key, now, inviteTokenFailWindow)
+		s.renderInvalidInvite(w)
+	}
+	hash := claimHash(token)
+	inv, err := s.gt.Accounts.OpenInvite(r.Context(), hash)
+	if errors.Is(err, users.ErrInvalidInvite) {
+		bad()
+		return
+	}
+	if err != nil {
+		s.logger.Printf("invite: open: %v", err)
+		s.renderNotice(w, http.StatusInternalServerError, "Something went wrong", "Try the link again in a moment.")
+		return
+	}
+	if r.FormValue("step") != "redeem" {
+		s.renderInviteForm(w, http.StatusOK, token, inv, "", "", "")
+		return
+	}
+	email := strings.TrimSpace(r.FormValue("email"))
+	name := strings.TrimSpace(r.FormValue("display_name"))
+	pw, pw2 := r.FormValue("password"), r.FormValue("password2")
+	if inv.Email == "" {
+		if a, err := mail.ParseAddress(email); err != nil || a.Address != email {
+			s.renderInviteForm(w, http.StatusBadRequest, token, inv, email, name, "Enter a valid email address.")
+			return
+		}
+	}
+	if utf8.RuneCountInString(name) > 80 {
+		s.renderInviteForm(w, http.StatusBadRequest, token, inv, email, name, "Keep your name under 80 characters.")
+		return
+	}
+	// 🔴 THE 12-CHARACTER FLOOR IS ENFORCED HERE AND IN gotrue.AdminCreateUser:
+	// GoTrue's admin path does not check GOTRUE_PASSWORD_MIN_LENGTH (measured,
+	// #986). This one answers with the form instead of a GoTrue round trip.
+	if len(pw) < gotrue.MinPasswordLength {
+		s.renderInviteForm(w, http.StatusBadRequest, token, inv, email, name, "The password must be at least 12 characters.")
+		return
+	}
+	if pw != pw2 {
+		s.renderInviteForm(w, http.StatusBadRequest, token, inv, email, name, "The two passwords are different.")
+		return
+	}
+	// A bound invite's email is compared by the store against what was POSTed,
+	// so a page whose locked field was edited is refused there
+	// (ErrEmailMismatch), never trusted here.
+	create, undo, createErr := s.gotrueCreate(r, ip, email, pw, "invite")
+	u, err := s.gt.Accounts.RedeemInvite(r.Context(), hash, email, name, create, undo)
+	var ae *gotrue.APIError
+	switch {
+	case errors.Is(err, users.ErrInvalidInvite), errors.Is(err, users.ErrEmailMismatch), errors.Is(err, users.ErrEmailTaken),
+		*createErr != nil && errors.As(*createErr, &ae) && ae.Status == http.StatusUnprocessableEntity:
+		// Every refusal about the LINK or the IDENTITY is the uniform page, and
+		// counts against the link.
+		s.logger.Printf("invite: refused a redemption from %s: %v", ip, err)
+		bad()
+		return
+	case err != nil && *createErr != nil:
+		s.logger.Printf("invite: GoTrue create failed: %v", *createErr)
+		s.renderInviteForm(w, http.StatusBadGateway, token, inv, email, name, "Sign-up is unavailable right now. Try again shortly.")
+		return
+	case err != nil:
+		s.logger.Printf("invite: redeem failed: %v", err)
+		s.renderInviteForm(w, http.StatusInternalServerError, token, inv, email, name, "The account could not be created. Try again.")
+		return
+	}
+	s.gt.forgetUser(u.ID)
+	s.logger.Printf("invite: user %d (%s) created from invite %d", u.ID, inv.Role, inv.ID)
+	s.signInNewLogin(w, r, ip, email, pw)
+}
+
+// gotrueCreate is the create/undo pair a redemption hands the store: create
+// makes a CONFIRMED GoTrue user (email_confirm:true, the client's 12-character
+// floor, this request's client IP); undo deletes it again, detached from the
+// request, when the store reports the muster side did not commit. createErr is
+// create's own error, so the caller can tell a GoTrue refusal from a database
+// failure. Shared by the admin claim and invite redemption.
+func (s *Server) gotrueCreate(r *http.Request, ip, email, pw, what string) (func(context.Context) (string, error), func(string), *error) {
+	createErr := new(error)
+	create := func(ctx context.Context) (string, error) {
+		sub, err := s.gt.Client.AdminCreateUser(ctx, ip, email, pw)
+		*createErr = err
+		return sub, err
+	}
+	undo := func(sub string) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
+		defer cancel()
+		if err := s.gt.Client.AdminDeleteUser(ctx, ip, sub); err != nil {
+			s.logger.Printf("%s: COMPENSATION FAILED — GoTrue user %s has no muster binding and could not be deleted: %v", what, sub, err)
+		}
+	}
+	return create, undo, createErr
+}
+
+// signInNewLogin signs a just-created (or just-reset) login in: a real
+// password grant — which proves the login works — the same admission checks
+// /login applies, cookies, and a redirect to the board.
+func (s *Server) signInNewLogin(w http.ResponseWriter, r *http.Request, ip, email, pw string) {
+	sess, err := s.gt.Client.PasswordGrant(r.Context(), ip, email, pw)
+	if err != nil {
+		s.logger.Printf("sign-in after account setup failed: %v", err)
+		s.renderNotice(w, http.StatusBadGateway, "Your account is ready, but sign-in failed",
+			"Sign in with your email and new password in a moment.")
+		return
+	}
+	if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
+		s.renderNotice(w, code, "Your account is ready, but sign-in failed", problem)
+		return
+	}
+	s.setGoTrueCookies(w, sess)
+	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// registerInviteRoutes wires the invitee's page and the password reset. Open
+// by necessity (the visitor has no session yet); literal patterns, for the
+// reason registerLoginRoutes gives.
+func (s *Server) registerInviteRoutes(mux Mux) {
+	mux.HandleFunc("GET /invite", s.handleInvitePage)
+	mux.HandleFunc("POST /invite", s.handleInviteSubmit)
+	mux.HandleFunc("GET /auth/reset", s.handleResetPage)
+	mux.HandleFunc("POST /auth/reset", s.handleResetSubmit)
+}
+
+// --- the password reset ---------------------------------------------------------
+
+func (s *Server) handleResetPage(w http.ResponseWriter, r *http.Request) {
+	if s.inviteRefusal(w, r) {
+		return
+	}
+	renderResetForm(w, http.StatusOK, "", "")
+}
+
+func renderResetForm(w http.ResponseWriter, code int, token, problem string) {
+	pw := func(id, name, label string) string {
+		return `<label for="` + id + `" class="text-sm font-medium text-fg">` + label + `</label>
+<input id="` + id + `" name="` + name + `" type="password" autocomplete="new-password" required
+ class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">`
+	}
+	writeAuthDocument(w, code, "Set a new password", fragmentForm(ResetPath, "Set a new password",
+		"This link works once.", "Set password", false,
+		pw("reset-password", "password", "New password (at least 12 characters)")+pw("reset-password2", "password2", "New password again"),
+		token, problem))
+}
+
+// handleResetSubmit exchanges the recovery token SERVER-SIDE (GoTrue /verify),
+// sets the new password through the admin path, and signs the user in. The
+// token never reaches GoTrue from the browser, and never a log.
+func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
+	if s.inviteRefusal(w, r) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		s.renderInvalidInvite(w)
+		return
+	}
+	ip := clientIP(r)
+	now := s.gt.now()
+	lim := &s.inviteLimits
+	if lim.ip.count(ip, now, inviteIPWindow) >= inviteIPLimit {
+		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
+		return
+	}
+	lim.ip.add(ip, now, inviteIPWindow)
+	token, pw, pw2 := r.FormValue("token"), r.FormValue("password"), r.FormValue("password2")
+	if token == "" {
+		s.renderInvalidInvite(w)
+		return
+	}
+	if len(pw) < gotrue.MinPasswordLength || pw != pw2 {
+		// Refused before GoTrue sees the token, so it is still unspent: the
+		// form comes back carrying it.
+		msg := "The password must be at least 12 characters."
+		if len(pw) >= gotrue.MinPasswordLength {
+			msg = "The two passwords are different."
+		}
+		renderResetForm(w, http.StatusBadRequest, token, msg)
+		return
+	}
+	sess, err := s.gt.Client.VerifyRecovery(r.Context(), ip, token)
+	if gotrue.IsClientError(err) {
+		s.renderInvalidInvite(w)
+		return
+	}
+	if err != nil {
+		s.logger.Printf("reset: GoTrue /verify failed: %v", err)
+		s.renderNotice(w, http.StatusBadGateway, "Password reset is unavailable right now", "Try the link again shortly.")
+		return
+	}
+	c, err := s.gt.Verifier.Verify(sess.AccessToken)
+	if err != nil {
+		s.logger.Printf("reset: a token GoTrue just issued does not verify: %v", err)
+		s.renderNotice(w, http.StatusInternalServerError, "Password reset is misconfigured on this server", "Tell the operator.")
+		return
+	}
+	u, err := s.gt.Users.BySub(r.Context(), c.Subject)
+	if err != nil || u.Disabled() {
+		// A recovery token for a login with no (enabled) muster account sets
+		// nothing.
+		s.renderInvalidInvite(w)
+		return
+	}
+	if err := s.gt.Client.AdminSetPassword(r.Context(), ip, c.Subject, pw); err != nil {
+		s.logger.Printf("reset: setting the password for user %d failed: %v", u.ID, err)
+		s.renderNotice(w, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
+		return
+	}
+	// The verify session is not the one the browser will hold; end it.
+	if err := s.gt.Client.Logout(r.Context(), ip, sess.AccessToken, gotrue.ScopeLocal); err != nil {
+		s.logger.Printf("reset: ending the recovery session for user %d: %v", u.ID, err)
+	}
+	if err := s.gt.Accounts.Audit(r.Context(), users.Actor{UserID: u.ID, Via: authz.Via("reset")}, "user.password_reset", users.UserObject(u.ID), nil); err != nil {
+		s.logger.Printf("reset: AUDIT WRITE FAILED for user %d: %v", u.ID, err)
+	}
+	s.logger.Printf("reset: user %d set a new password", u.ID)
+	s.signInNewLogin(w, r, ip, u.Email, pw)
+}

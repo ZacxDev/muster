@@ -94,6 +94,9 @@ type GoTrueAuth struct {
 	Client   *gotrue.Client
 	Verifier gotrue.Verifier
 	Users    UserStore
+	// Accounts serves link invites and the admin pages (accounts PR 5; see
+	// admin.go). Nil: /admin/* answers 503 and /invite is not served.
+	Accounts AccountStore
 }
 
 // UserStore is what the session tier needs from internal/users.
