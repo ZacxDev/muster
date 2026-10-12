@@ -55,11 +55,15 @@ func (m *memAccounts) RecentAudit(context.Context, int) ([]users.AuditEntry, err
 }
 
 // TestDisablingAMemberEndsItsStreams: an admin disabling a member through
-// /admin/users ends every stream that member has open — through #65's
-// registry, the same one sign-out uses — while the admin's own stream (a
-// different user) stays open.
+// /admin/users ends every stream that member has open AT ONCE — through #65's
+// DisableUser and its registry, not the periodic sweep — and bans the GoTrue
+// user, while the admin's own stream (a different user) stays open.
 func TestDisablingAMemberEndsItsStreams(t *testing.T) {
 	f := newStreamFixture(t)
+	// The disable SWEEP (accounts PR 4) would also end the streams within its
+	// interval; push it out of reach, so what ends them here is the page
+	// calling DisableUser — the in-process, immediate path.
+	f.s.gt.sweepInterval = time.Hour
 	acct := &memAccounts{}
 	f.s.gt.Accounts = acct
 	msub := f.member("m@example.com", 7, authz.RoleMember)
@@ -80,6 +84,9 @@ func TestDisablingAMemberEndsItsStreams(t *testing.T) {
 	requireOpen(t, "the ADMIN's own stream after disabling someone else", admin)
 	for _, s := range admin {
 		s.close()
+	}
+	if u, _ := f.fake.User(msub); !u.Banned {
+		t.Fatal("the disable through the page did not ban the GoTrue user")
 	}
 	if w := do(f.edge, "GET", "/account", nil, withCookies(ma1, mr1), asXHR); w.Code != http.StatusUnauthorized {
 		t.Fatalf("the member's next request: %d, want 401", w.Code)

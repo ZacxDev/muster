@@ -376,6 +376,52 @@ func TestALinkStopsAnsweringAfterRepeatedFailures(t *testing.T) {
 	}
 }
 
+// slowOpens counts OpenInvite calls and holds each open, so concurrent
+// attempts overlap.
+type slowOpens struct {
+	*users.PGStore
+	mu sync.Mutex
+	n  int
+}
+
+func (s *slowOpens) OpenInvite(ctx context.Context, h []byte) (users.Invite, error) {
+	s.mu.Lock()
+	s.n++
+	s.mu.Unlock()
+	time.Sleep(50 * time.Millisecond)
+	return s.PGStore.OpenInvite(ctx, h)
+}
+
+// TestConcurrentFailuresCannotOutrunTheLinkHold: 20 simultaneous bad
+// attempts on one link — at most inviteTokenFailures reach the store, because
+// the slot is reserved before the attempt, not counted after it.
+func TestConcurrentFailuresCannotOutrunTheLinkHold(t *testing.T) {
+	w := newInviteWorld(t)
+	tok := w.createInvite("held@invite.test", "member")
+	slow := &slowOpens{PGStore: w.store}
+	w.s.gt.Accounts = slow
+	const n = 20
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			do(w.edge, "POST", InvitePath, redeemForm(tok, "guess"+strconv.Itoa(i)+"@invite.test", "", goodPW, goodPW),
+				fromIP("203.0.113."+strconv.Itoa(100+i)))
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if slow.n > inviteTokenFailures {
+		t.Fatalf("%d concurrent attempts reached the store, want at most %d", slow.n, inviteTokenFailures)
+	}
+	if slow.n == 0 {
+		t.Fatal("CONTROL: no attempt reached the store")
+	}
+}
+
 func TestRedemptionIsRateLimitedPerAddress(t *testing.T) {
 	w := newInviteWorld(t)
 	for i := 0; i < inviteIPLimit; i++ {

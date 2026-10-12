@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/mail"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -48,7 +49,55 @@ const (
 // inviteLimits is the redemption pages' throttle state (zero value ready).
 type inviteLimits struct {
 	ip       keyedWindow
-	tokenBad keyedWindow
+	tokenBad failureBudget
+}
+
+// failureBudget holds at most limit failures per key per window.
+//
+// 🔴 A SLOT IS RESERVED BEFORE THE ATTEMPT AND REFUNDED IF IT DID NOT FAIL —
+// not counted after. A check-then-record counter lets N concurrent attempts
+// all pass the check before any records its failure (accounts PR 4's audit
+// found that shape in the sign-in limiter), so a held link would still take a
+// burst of guesses. Reserving under the lock bounds in-flight attempts too
+// (TestALinkStopsAnsweringAfterRepeatedFailures).
+type failureBudget struct {
+	mu   sync.Mutex
+	hits map[string]*windowCount
+}
+
+// reserve takes one slot for key, or reports false when limit are held.
+func (b *failureBudget) reserve(key string, now time.Time, window time.Duration, limit int) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.hits == nil {
+		b.hits = map[string]*windowCount{}
+	}
+	c, ok := b.hits[key]
+	if !ok || now.Sub(c.start) >= window {
+		if len(b.hits) > 10000 {
+			for k, c := range b.hits {
+				if now.Sub(c.start) >= window {
+					delete(b.hits, k)
+				}
+			}
+		}
+		b.hits[key] = &windowCount{start: now, n: 1}
+		return true
+	}
+	if c.n >= limit {
+		return false
+	}
+	c.n++
+	return true
+}
+
+// refund returns a slot whose attempt did not fail.
+func (b *failureBudget) refund(key string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if c, ok := b.hits[key]; ok && c.n > 0 {
+		c.n--
+	}
 }
 
 // inviteRefusal reports why this request may not use the invite or reset flow:
@@ -158,19 +207,26 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	now := s.gt.now()
 	lim := &s.inviteLimits
-	if lim.ip.count(ip, now, inviteIPWindow) >= inviteIPLimit {
+	if !lim.ip.take(ip, now, inviteIPWindow, inviteIPLimit) {
 		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
 		return
 	}
-	lim.ip.add(ip, now, inviteIPWindow)
 	token := r.FormValue("token")
 	key := tokenKey(token)
-	if token == "" || lim.tokenBad.count(key, now, inviteTokenFailWindow) >= inviteTokenFailures {
+	if token == "" || !lim.tokenBad.reserve(key, now, inviteTokenFailWindow, inviteTokenFailures) {
 		s.renderInvalidInvite(w)
 		return
 	}
+	// The reserved slot is kept only by a failure (bad); every other way out
+	// of this handler hands it back.
+	failed := false
+	defer func() {
+		if !failed {
+			lim.tokenBad.refund(key)
+		}
+	}()
 	bad := func() {
-		lim.tokenBad.add(key, now, inviteTokenFailWindow)
+		failed = true
 		s.renderInvalidInvite(w)
 	}
 	hash := claimHash(token)
@@ -326,12 +382,10 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	ip := clientIP(r)
 	now := s.gt.now()
-	lim := &s.inviteLimits
-	if lim.ip.count(ip, now, inviteIPWindow) >= inviteIPLimit {
+	if !s.inviteLimits.ip.take(ip, now, inviteIPWindow, inviteIPLimit) {
 		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
 		return
 	}
-	lim.ip.add(ip, now, inviteIPWindow)
 	token, pw, pw2 := r.FormValue("token"), r.FormValue("password"), r.FormValue("password2")
 	if token == "" {
 		s.renderInvalidInvite(w)
