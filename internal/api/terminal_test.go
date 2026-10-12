@@ -629,7 +629,10 @@ func TestEndTerminalsEndsALiveTerminalAndWaitsForItsRelease(t *testing.T) {
 // so "at its timeout" is asserted as an ORDER — still waiting before it, false
 // right after it — rather than as a duration measured on a loaded host. The
 // last step goes through EndTerminals itself, with a real timer, because the
-// duration-to-timer wiring lives there and nowhere else.
+// duration-to-timer wiring lives there and nowhere else: EndTerminals(1ms)
+// must return false within 2s, which is what "not past its budget" means for
+// the exported call (a wrapper that stretched the timeout would pass the
+// order checks above).
 func TestEndTerminalsGivesUpAtItsTimeout(t *testing.T) {
 	ft := newFakeTerminal()
 	ft.release = make(chan struct{})
@@ -668,12 +671,18 @@ func TestEndTerminalsGivesUpAtItsTimeout(t *testing.T) {
 	}
 
 	// The same terminal is still releasing: the exported call, on a real
-	// timer, must also give up and say so.
+	// timer, must also give up, say so, and do it PROMPTLY — the wrapper is
+	// where the duration becomes a timer, so a budget it stretches is caught
+	// only here. 2s against 1ms leaves three orders of magnitude for load.
+	start := time.Now()
 	go func() { returned <- s.EndTerminals(time.Millisecond) }()
 	select {
 	case ok := <-returned:
 		if ok {
 			t.Fatal("EndTerminals(1ms) reported success for a terminal still releasing")
+		}
+		if d := time.Since(start); d > 2*time.Second {
+			t.Fatalf("EndTerminals(1ms) took %s: it held the shutdown past its budget", d)
 		}
 	case <-time.After(terminalTestWatchdog):
 		t.Fatal("EndTerminals(1ms) did not give up: its timeout is not wired to the drain")
