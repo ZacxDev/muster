@@ -91,6 +91,7 @@ func newInviteWorld(t *testing.T) *invWorld {
 	w := &invWorld{t: t, pool: pool, store: users.NewPG(pool), logs: &syncBuf{}}
 	w.fake = gotruetest.New(t, gtSecret)
 	w.fake.SetAccessTTL(time.Hour)
+	w.fake.UseRealClock() // iat is compared with Postgres-stamped cutoffs
 	w.s = New(sse.New(16), AuthConfig{Mode: AuthModeGoTrue, HookToken: gtHook, PublicURL: invitePublic},
 		log.New(w.logs, "", 0))
 	w.s.UseExtensions(Extensions{Users: w.store})
@@ -997,6 +998,206 @@ func TestALinkPageWithNoFragmentAsksForThePastedLink(t *testing.T) {
 	// token is the uniform page.
 	if rec := do(w.edge, "POST", InvitePath, url.Values{"step": {"open"}, "token": {invitePublic + InvitePath + "#nope"}}); rec.Code != http.StatusNotFound {
 		t.Fatalf("a pasted wrong link: %d", rec.Code)
+	}
+}
+
+// promotedAdmin joins a member, promotes it on the page, and returns its id
+// and session.
+func (w *invWorld) promotedAdmin(email string) (int64, reqOpt) {
+	w.t.Helper()
+	uid, _, at, rt := w.joinMember(email)
+	if r := do(w.edge, "POST", "/admin/users/"+strconv.FormatInt(uid, 10)+"/role", url.Values{"role": {"admin"}}, w.asAdmin()); r.Code != http.StatusSeeOther {
+		w.t.Fatalf("promote: %d", r.Code)
+	}
+	return uid, withCookies(at, rt)
+}
+
+// inviteAs creates an invite on the page with session as and returns its token.
+func (w *invWorld) inviteAs(as reqOpt) string {
+	w.t.Helper()
+	rec := do(w.edge, "POST", "/admin/invites", url.Values{"expires_hours": {"72"}}, as)
+	m := inviteLinkRE.FindStringSubmatch(rec.Body.String())
+	if rec.Code != http.StatusOK || m == nil {
+		w.t.Fatalf("invite as a promoted admin: %d", rec.Code)
+	}
+	return m[1]
+}
+
+// TestAnInviteDiesWithItsCreatorsAdminRights (round-2 MED): an invite is the
+// creator's admin authority, delegated. When the creator is disabled or
+// demoted, their pending invites are revoked in the same transaction (with an
+// audit row), and redemption refuses any invite whose creator is not an
+// enabled admin — which covers a row changed some other way.
+func TestAnInviteDiesWithItsCreatorsAdminRights(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(w *invWorld, uid int64)
+		// revoked: the change goes through the store, so the invite is
+		// REVOKED (the list says so, audited); otherwise only the redeem-time
+		// check stands between the invite and an account.
+		revoked bool
+	}{
+		{"disabled on the page", func(w *invWorld, uid int64) {
+			if r := do(w.edge, "POST", "/admin/users/"+strconv.FormatInt(uid, 10)+"/disable", url.Values{}, w.asAdmin()); r.Code != http.StatusSeeOther {
+				w.t.Fatalf("disable: %d", r.Code)
+			}
+		}, true},
+		{"demoted on the page", func(w *invWorld, uid int64) {
+			if r := do(w.edge, "POST", "/admin/users/"+strconv.FormatInt(uid, 10)+"/role", url.Values{"role": {"member"}}, w.asAdmin()); r.Code != http.StatusSeeOther {
+				w.t.Fatalf("demote: %d", r.Code)
+			}
+		}, true},
+		{"disabled behind the store's back", func(w *invWorld, uid int64) {
+			if _, err := w.pool.Exec(authz.System(context.Background()), `UPDATE users SET disabled_at = now() WHERE id = $1`, uid); err != nil {
+				w.t.Fatal(err)
+			}
+		}, false},
+		{"demoted behind the store's back", func(w *invWorld, uid int64) {
+			if _, err := w.pool.Exec(authz.System(context.Background()), `UPDATE users SET role = 'member' WHERE id = $1`, uid); err != nil {
+				w.t.Fatal(err)
+			}
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newInviteWorld(t)
+			uid, as := w.promotedAdmin("creator@invite.test")
+			tok := w.inviteAs(as)
+			// CONTROL: a sibling invite from the same creator redeems while the
+			// creator is an enabled admin — the refusal below is about the change.
+			if r := do(w.edge, "POST", InvitePath, redeemForm(w.inviteAs(as), "before@invite.test", "", goodPW, goodPW)); r.Code != http.StatusSeeOther {
+				t.Fatalf("CONTROL: redeem while the creator is an admin: %d", r.Code)
+			}
+			tc.change(w, uid)
+			creates := w.fake.CountCalls("POST", "/admin/users")
+			r := do(w.edge, "POST", InvitePath, redeemForm(tok, "after@invite.test", "", goodPW, goodPW))
+			if r.Code != http.StatusNotFound || !strings.Contains(r.Body.String(), "invalid or expired") {
+				t.Fatalf("redeeming the creator's invite after the change: %d, want the invalid page", r.Code)
+			}
+			if w.fake.CountCalls("POST", "/admin/users") != creates {
+				t.Fatal("the refused invite reached GoTrue")
+			}
+			var revokedAt *time.Time
+			_ = w.pool.QueryRow(authz.System(context.Background()), `SELECT revoked_at FROM invites WHERE token_hash = $1`, claimHash(tok)).Scan(&revokedAt)
+			if (revokedAt != nil) != tc.revoked {
+				t.Fatalf("invite revoked_at = %v, want revoked=%v", revokedAt, tc.revoked)
+			}
+			if tc.revoked {
+				found := false
+				for _, e := range w.audit("invite.revoke") {
+					if e.UserID == 1 && e.Detail["reason"] != nil {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("no invite.revoke audit row (by user 1, with a reason): %+v", w.audit("invite.revoke"))
+				}
+			}
+		})
+	}
+}
+
+// TestAResetEndsOtherDevicesAccessTokensAtOnce (round-2 LOW): a reset sets
+// the session cutoff BEFORE it mints the new session, so another device's
+// still-valid ACCESS token is refused at once — no clock jump — while the
+// session the reset signs in is admitted.
+func TestAResetEndsOtherDevicesAccessTokensAtOnce(t *testing.T) {
+	w := newInviteWorld(t)
+	_, sub, at, rt := w.joinMember("device@invite.test")
+	other := withCookies(at, rt)
+	if r := do(w.edge, "GET", "/account", nil, other); r.Code != 200 {
+		t.Fatalf("before: %d", r.Code)
+	}
+	r := do(w.edge, "POST", ResetPath, url.Values{"token": {w.fake.RecoveryHash(sub)}, "password": {"a-new-long-password"}, "password2": {"a-new-long-password"}})
+	if r.Code != http.StatusSeeOther {
+		t.Fatalf("reset: %d %s", r.Code, truncate(r.Body.String(), 300))
+	}
+	ck := setCookies(r)
+	if g := do(w.edge, "GET", "/account", nil, other, asXHR); g.Code != http.StatusUnauthorized {
+		t.Fatalf("the other device's access token right after the reset: %d, want 401", g.Code)
+	}
+	if g := do(w.edge, "GET", "/account", nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value)); g.Code != 200 {
+		t.Fatalf("the session the reset signed in: %d, want 200", g.Code)
+	}
+}
+
+// TestAResetSignsInPastAGoTrueClockThatLags: GoTrue's clock 1.5 s BEHIND
+// Postgres's. Waiting for the next second on muster's clock is then not
+// enough — the first session GoTrue mints is stamped inside the cutoff's
+// second, which the session tier would refuse on the very next request. The
+// reset sees that, signs that session out, and retries; the session it hands
+// over works.
+func TestAResetSignsInPastAGoTrueClockThatLags(t *testing.T) {
+	w := newInviteWorld(t)
+	_, sub, _, _ := w.joinMember("lagging@invite.test")
+	w.fake.Advance(-1500 * time.Millisecond)
+	r := do(w.edge, "POST", ResetPath, url.Values{"token": {w.fake.RecoveryHash(sub)}, "password": {"a-new-long-password"}, "password2": {"a-new-long-password"}})
+	if r.Code != http.StatusSeeOther {
+		t.Fatalf("reset: %d", r.Code)
+	}
+	ck := setCookies(r)
+	if g := do(w.edge, "GET", "/account", nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value)); g.Code != 200 {
+		t.Fatalf("the session the reset signed in, with GoTrue's clock behind: %d, want 200", g.Code)
+	}
+	if n := w.fake.CountCalls("POST", "/logout"); n == 0 {
+		t.Fatal("CONTROL: no in-cutoff session was signed out, so the lag never bit")
+	}
+}
+
+// TestTheDisableCutoffIsStampedAfterTheLockWait (round-2 LOW): the cutoff is
+// clock_timestamp() at the UPDATE, not now() (the transaction's start, taken
+// before SetDisabledAs waited for the last-admin lock). A token minted during
+// that wait was issued before the disable took effect and must be refused.
+func TestTheDisableCutoffIsStampedAfterTheLockWait(t *testing.T) {
+	w := newInviteWorld(t)
+	uid, _, _, _ := w.joinMember("waited@invite.test")
+	ctx := authz.System(context.Background())
+	hold, err := w.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hold.Exec(ctx, `SELECT id FROM users WHERE role = 'admin' AND disabled_at IS NULL FOR UPDATE`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan users.User, 1)
+	go func() {
+		u, _ := w.store.SetDisabledAs(context.Background(), &users.Actor{UserID: 1, Via: authz.ViaSession}, uid, true)
+		done <- u
+	}()
+	time.Sleep(1500 * time.Millisecond)
+	released := time.Now()
+	_ = hold.Rollback(ctx)
+	u := <-done
+	if u.SessionsNotBefore == nil || u.SessionsNotBefore.Before(released.Add(-200*time.Millisecond)) {
+		t.Fatalf("cutoff %v, released at %v: stamped before the lock wait ended", u.SessionsNotBefore, released)
+	}
+}
+
+// TestARefreshFailsClosedWhenTheCutoffCannotBeRead (round-2 LOW): if the
+// user row cannot be read when an expired token is presented, muster does NOT
+// refresh (a refresh would mint a post-cutoff token and walk past the cutoff
+// once the lookup recovers).
+func TestARefreshFailsClosedWhenTheCutoffCannotBeRead(t *testing.T) {
+	f := newGoTrueFixture(t)
+	sub := f.member("blip@example.com", 7, authz.RoleMember)
+	at, rt, _ := f.fake.Mint(sub)
+	cut := f.fake.Now().Add(time.Second)
+	f.store.mu.Lock()
+	f.store.rows[7].SessionsNotBefore = &cut // the session predates the cutoff
+	f.store.lookupFailures = 1               // the cutoff read blips once
+	f.store.mu.Unlock()
+	f.fake.Advance(2 * time.Hour) // the access token has expired: the refresh path
+	before := f.fake.CountCalls("POST", "/token")
+	r := do(f.edge, "GET", "/account", nil, withCookies(at, rt), asXHR)
+	if r.Code == http.StatusOK {
+		t.Fatalf("a pre-cutoff session refreshed past an unreadable cutoff: %d", r.Code)
+	}
+	if got := f.fake.CountCalls("POST", "/token") - before; got != 0 {
+		t.Fatalf("muster refreshed (%d GoTrue call(s)) without having read the cutoff", got)
+	}
+	// CONTROL: with the lookup working, the same request is refused by the
+	// cutoff itself (and still makes no refresh call).
+	if r := do(f.edge, "GET", "/account", nil, withCookies(at, rt), asXHR); r.Code != http.StatusUnauthorized {
+		t.Fatalf("CONTROL: %d, want 401", r.Code)
 	}
 }
 

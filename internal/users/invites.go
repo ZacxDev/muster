@@ -274,8 +274,48 @@ func (s *PGStore) RevokeInvite(ctx context.Context, by Actor, id int64) error {
 
 // liveInviteWhere is what makes a general invite redeemable. ONE predicate,
 // used by OpenInvite (the form) and RedeemInvite (under the lock).
+//
+// 🔴 AN INVITE IS ITS CREATOR'S ADMIN AUTHORITY, DELEGATED, AND DIES WITH IT.
+// Disabling or demoting an admin revokes their pending invites in the same
+// transaction (revokePendingInvitesOf); the creator clause here is the belt
+// to that brace — an invite whose creator is not, right now, an enabled admin
+// is not live, however the creator's row came to change
+// (TestAnInviteDiesWithItsCreatorsAdminRights). cu is inviteFrom's creator join.
 const liveInviteWhere = `i.token_hash = $1 AND i.claim_user_id IS NULL
-	AND i.redeemed_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now()`
+	AND i.redeemed_at IS NULL AND i.revoked_at IS NULL AND i.expires_at > now()
+	AND cu.role = 'admin' AND cu.disabled_at IS NULL`
+
+// revokePendingInvitesOf revokes every pending general invite creator made,
+// inside tx, with one invite.revoke audit row each (actor by, detail reason).
+// Called by a disable and by a demotion from admin.
+func revokePendingInvitesOf(ctx context.Context, tx pgx.Tx, by Actor, creator int64, reason string) error {
+	rows, err := tx.Query(ctx, `UPDATE invites SET revoked_at = clock_timestamp()
+		WHERE created_by = $1 AND claim_user_id IS NULL AND redeemed_at IS NULL AND revoked_at IS NULL
+		RETURNING id`, creator)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := auditInsert(ctx, tx, by, "invite.revoke", inviteObject(id),
+			map[string]any{"reason": reason, "creator": creator}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // OpenInvite returns the live general invite tokenHash names, for rendering
 // the invitee's form (its bound email). ErrInvalidInvite for every other case.
@@ -439,6 +479,11 @@ func (s *PGStore) SetRole(ctx context.Context, by Actor, id int64, role authz.Ro
 		u, err = scanUser(tx.QueryRow(ctx, `UPDATE users SET role = $2 WHERE id = $1 RETURNING `+userCols, id, string(role)))
 		if err != nil {
 			return err
+		}
+		if before == string(authz.RoleAdmin) && role != authz.RoleAdmin {
+			if err := revokePendingInvitesOf(ctx, tx, by, id, "creator demoted"); err != nil {
+				return err
+			}
 		}
 		return auditInsert(ctx, tx, by, "user.role", UserObject(id), map[string]any{"from": before, "to": string(role)})
 	})

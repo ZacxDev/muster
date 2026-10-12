@@ -484,12 +484,28 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderInvalidInvite(w)
 		return
 	}
+	// 🔴 THE SESSION CUTOFF MOVES FIRST, BEFORE THE PASSWORD AND BEFORE THE NEW
+	// SESSION. GoTrue's admin password change revokes the user's REFRESH tokens,
+	// but an access token is a signed statement GoTrue cannot recall: without
+	// the cutoff another device's access token kept working until its exp (up
+	// to JWT_EXP, 900 s). With it, that token is refused on its next request
+	// (TestAResetEndsOtherDevicesAccessTokensAtOnce). Moving it first means a
+	// failure below leaves the old sessions ended and the password unchanged —
+	// the safe half — never the reverse.
+	cut, err := s.gt.Accounts.BumpSessionCutoff(r.Context(), u.ID)
+	if err != nil {
+		s.logger.Printf("reset: moving the session cutoff for user %d failed: %v", u.ID, err)
+		s.renderNotice(w, http.StatusInternalServerError, "The password could not be set", "Try the link again in a moment.")
+		return
+	}
+	s.gt.forgetUser(u.ID)
 	// The audit row (actor: the user; the client address in the detail)
 	// commits only if GoTrue set the password.
 	//
 	// ⚠ NO /logout OF THE RECOVERY SESSION AFTERWARDS. It always answered 403
-	// against the real GoTrue: an admin password change already revokes every
-	// session the user has — the recovery one, and every other device's
+	// against the real GoTrue: the admin password change already revokes the
+	// refresh side of every session the user has (the recovery one included),
+	// and the cutoff above refuses their access tokens
 	// (TestAResetRevokesTheUsersOtherSessions).
 	if err := s.gt.Accounts.Audited(r.Context(), users.Actor{UserID: u.ID, Via: authz.Via("reset")}, "user.password_reset",
 		users.UserObject(u.ID), map[string]any{"ip": ip}, func() error {
@@ -500,5 +516,44 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logger.Printf("reset: user %d set a new password", u.ID)
-	s.signInNewLogin(w, r, ip, u.Email, pw)
+	s.signInAfterCutoff(w, r, ip, u.Email, pw, cut)
+}
+
+// signInAfterCutoff is signInNewLogin for a session that must be issued AFTER
+// cut. iat is whole seconds and the session tier refuses iat <= cut's second
+// (issuedBeforeCutoff), so a sign-in in the cutoff's own second would mint a
+// session muster refuses on its next request. It waits for the next second
+// first, and checks what GoTrue issued: a token still inside the cutoff's
+// second (GoTrue's clock behind Postgres's) is signed out again and the grant
+// retried, at most three times.
+func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, email, pw string, cut time.Time) {
+	for attempt := 0; attempt < 3; attempt++ {
+		// Attempt n waits until n+1 whole seconds past the cutoff's second.
+		if wait := time.Until(cut.Truncate(time.Second).Add(time.Duration(attempt+1) * time.Second)); wait > 0 {
+			select {
+			case <-time.After(wait):
+			case <-r.Context().Done():
+				return
+			}
+		}
+		sess, err := s.gt.Client.PasswordGrant(r.Context(), ip, email, pw)
+		if err != nil {
+			s.logger.Printf("sign-in after the reset failed: %v", err)
+			break
+		}
+		c, err := s.gt.Verifier.Verify(sess.AccessToken)
+		if err == nil && c.IssuedAt <= cut.Unix() {
+			_ = s.gt.Client.Logout(r.Context(), ip, sess.AccessToken, gotrue.ScopeLocal)
+			continue
+		}
+		if _, problem, code := s.admitFreshSession(r.Context(), sess); problem != "" {
+			s.renderNotice(w, code, "Your password is set, but sign-in failed", problem)
+			return
+		}
+		s.setGoTrueCookies(w, sess)
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	s.renderNotice(w, http.StatusBadGateway, "Your password is set, but sign-in failed",
+		"Sign in with your email and new password in a moment.")
 }

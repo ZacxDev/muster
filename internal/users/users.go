@@ -49,7 +49,8 @@ type User struct {
 	DisplayName string
 	DisabledAt  *time.Time
 	// SessionsNotBefore is the session cutoff (migration 0010): a token issued
-	// at or before it is refused. Set by every disable, never cleared.
+	// at or before it is refused. Set by every disable and every password
+	// reset, never cleared.
 	SessionsNotBefore *time.Time
 }
 
@@ -146,8 +147,22 @@ func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (Use
 	return s.SetDisabledAs(ctx, nil, id, disabled)
 }
 
+// BumpSessionCutoff moves user id's session cutoff to clock_timestamp() and
+// returns it: every token issued at or before it is refused from now on
+// (a password reset; TestAResetEndsOtherDevicesAccessTokensAtOnce).
+func (s *PGStore) BumpSessionCutoff(ctx context.Context, id int64) (time.Time, error) {
+	var t time.Time
+	err := s.pool.QueryRow(sys(ctx), `UPDATE users SET sessions_not_before = clock_timestamp() WHERE id = $1
+		RETURNING sessions_not_before`, id).Scan(&t)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return t, ErrNotFound
+	}
+	return t, err
+}
+
 // SetDisabledAs is SetDisabled that, when by is non-nil, writes the
 // user.disable / user.enable audit row in the SAME transaction as the change.
+// A disable also revokes the user's pending invites, in that transaction.
 func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabled bool) (User, error) {
 	ctx = sys(ctx)
 	tx, err := s.pool.Begin(ctx)
@@ -161,13 +176,30 @@ func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabl
 		if err := guardLastAdmin(ctx, tx, id); err != nil {
 			return User{}, err
 		}
-		q = `UPDATE users SET disabled_at = COALESCE(disabled_at, now()), sessions_not_before = now()
+		// 🔴 clock_timestamp(), NOT now(): now() is the TRANSACTION's start,
+		// taken before guardLastAdmin waited for its lock, so a token minted
+		// during that wait would have been issued after the cutoff and
+		// survived (TestTheDisableCutoffIsStampedAfterTheLockWait). No extra
+		// margin: the session tier already refuses a token stamped with the
+		// cutoff's own second (iat is whole seconds), and Postgres and GoTrue
+		// share the cluster's NTP time; skew beyond a second is not
+		// compensated.
+		q = `UPDATE users SET disabled_at = COALESCE(disabled_at, clock_timestamp()), sessions_not_before = clock_timestamp()
 			WHERE id = $1 RETURNING ` + userCols
 		action = "user.disable"
 	}
 	u, err := scanUser(tx.QueryRow(ctx, q, id))
 	if err != nil {
 		return User{}, err
+	}
+	if disabled {
+		actor := Actor{Via: "system"}
+		if by != nil {
+			actor = *by
+		}
+		if err := revokePendingInvitesOf(ctx, tx, actor, id, "creator disabled"); err != nil {
+			return User{}, err
+		}
 	}
 	if by != nil {
 		if err := auditInsert(ctx, tx, *by, action, UserObject(id), nil); err != nil {

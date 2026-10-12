@@ -65,8 +65,12 @@ type Fake struct {
 	Secret []byte
 	srv    *httptest.Server
 
-	mu        sync.Mutex
-	now       time.Time
+	mu  sync.Mutex
+	now time.Time
+	// realClock: the clock is the wall clock plus offset (UseRealClock), so
+	// iat lines up with Postgres's clock; Advance moves offset.
+	realClock bool
+	offset    time.Duration
 	accessTTL time.Duration
 	// createDelay holds every /admin/users call open this long, to widen a
 	// race a concurrency test wants to observe.
@@ -118,6 +122,13 @@ func New(t interface {
 func (f *Fake) Now() time.Time {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.nowLocked()
+}
+
+func (f *Fake) nowLocked() time.Time {
+	if f.realClock {
+		return time.Now().Add(f.offset)
+	}
 	return f.now
 }
 
@@ -125,6 +136,16 @@ func (f *Fake) Now() time.Time {
 func (f *Fake) Advance(d time.Duration) {
 	f.mu.Lock()
 	f.now = f.now.Add(d)
+	f.offset += d
+	f.mu.Unlock()
+}
+
+// UseRealClock makes the clock the wall clock (plus whatever Advance adds),
+// for tests where a token's iat is compared with a timestamp Postgres stamped
+// (users.sessions_not_before).
+func (f *Fake) UseRealClock() {
+	f.mu.Lock()
+	f.realClock = true
 	f.mu.Unlock()
 }
 
@@ -358,7 +379,7 @@ func (f *Fake) logout(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	v := gotrue.Verifier{Secret: f.Secret, Issuer: Issuer, Audience: Audience, Now: func() time.Time { return f.now }}
+	v := gotrue.Verifier{Secret: f.Secret, Issuer: Issuer, Audience: Audience, Now: func() time.Time { return f.nowLocked() }}
 	c, err := v.Verify(tok)
 	if err != nil {
 		writeErr(w, 401, "bad_jwt", "invalid JWT")
@@ -524,7 +545,7 @@ func (f *Fake) issueLocked(sid, _ string) (access, refresh string) {
 	}
 	at, err := gotrue.Sign(f.Secret, gotrue.Claims{
 		Subject: s.user, Issuer: Issuer, Audience: gotrue.Audience{Audience},
-		IssuedAt: f.now.Unix(), ExpiresAt: f.now.Add(f.accessTTL).Unix(),
+		IssuedAt: f.nowLocked().Unix(), ExpiresAt: f.nowLocked().Add(f.accessTTL).Unix(),
 		Role: "authenticated", Email: email, SessionID: sid,
 	})
 	if err != nil {

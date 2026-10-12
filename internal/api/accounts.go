@@ -573,7 +573,17 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 		// ban is lifted, so after disable → enable the old refresh token is
 		// live in GoTrue; this check, on the expired access token it is paired
 		// with, is what keeps it dead (TestEnablingDoesNotResurrectOldSessions).
-		if u, uerr := g.user(r.Context(), expiredSub); uerr == nil && issuedBeforeCutoff(u, c) {
+		//
+		// 🔴 FAIL CLOSED: a lookup error refuses the refresh (503 with cookies
+		// kept, or the end of the session for an unknown subject — see
+		// endsTheSession). Skipping the check on an error would mint a
+		// post-cutoff token and walk past the cutoff once the lookup recovered
+		// (TestARefreshFailsClosedWhenTheCutoffCannotBeRead).
+		u, uerr := g.user(r.Context(), expiredSub)
+		if uerr != nil {
+			return sess, uerr
+		}
+		if issuedBeforeCutoff(u, c) {
 			return sess, errRevoked
 		}
 		fresh, rerr := g.refresh(r.Context(), clientIP(r), rt, func() (func(error), bool) {

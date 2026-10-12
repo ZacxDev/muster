@@ -39,6 +39,8 @@ type memUsers struct {
 	bindFail error
 	// lookupErr makes BySub fail as a database outage would.
 	lookupErr error
+	// lookupFailures makes only the next N BySub calls fail (a blip).
+	lookupFailures int
 }
 
 type memInvite struct {
@@ -65,6 +67,10 @@ func (m *memUsers) BySub(_ context.Context, sub string) (users.User, error) {
 	defer m.mu.Unlock()
 	if m.lookupErr != nil {
 		return users.User{}, m.lookupErr
+	}
+	if m.lookupFailures > 0 {
+		m.lookupFailures--
+		return users.User{}, errors.New("simulated database blip")
 	}
 	for _, u := range m.rows {
 		if u.GotrueSub == sub && sub != "" {

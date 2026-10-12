@@ -60,6 +60,9 @@ func (m *memAccounts) SetDisabledAs(ctx context.Context, by *users.Actor, id int
 	}
 	return u, err
 }
+func (m *memAccounts) BumpSessionCutoff(context.Context, int64) (time.Time, error) {
+	return time.Now(), nil
+}
 func (m *memAccounts) Audited(ctx context.Context, by users.Actor, action, object string, detail map[string]any, fn func() error) error {
 	if err := fn(); err != nil {
 		return err
