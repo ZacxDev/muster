@@ -96,6 +96,9 @@ func TestReportedPromptMatches(t *testing.T) {
 		{"tags with spaces escaped, not wrapped", spacePasted, spaceReported, true},
 		{"tags with punctuation escaped, not wrapped", punctPasted, punctReported, true},
 		{"a real backslash, reported verbatim", realBackslash, realBackslash, true},
+		// The CLI escapes before any whitespace is gone: `<` + ` \` + name.
+		{"a space and a real backslash between < and the name", `what < \pasted_content> is`, `what <\ \pasted_content> is`, true},
+		{"the same, wrapped", `what < \pasted_content> is`, wrapLikeTheCLI(liveID, liveID, `what <\ \pasted_content> is`), true},
 		{"a tag name followed by a word", wordPasted, wordReported, true},
 		{"wrapped and escaped", livePasted + mixedTail, wrapLikeTheCLI(liveID, liveID, livePasted+mixedTailCLI), true},
 		{"wrapped, a real backslash in the body", realBackslash, wrapLikeTheCLI(liveID, liveID, realBackslash), true},

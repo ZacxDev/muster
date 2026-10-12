@@ -339,11 +339,16 @@ func promptKey(s string) string {
 	}, s)
 }
 
-// turnKey is the key a turn is matched on: promptKey, with the CLI's escaping of
-// its paste-wrapper tag name removed (unescapePastedContentTag). It is applied to
-// BOTH sides — the text ccd pasted and the prompt the CLI reported.
+// turnKey is the key a turn is matched on: the CLI's escaping of its
+// paste-wrapper tag name removed (unescapePastedContentTag), THEN promptKey. It is
+// applied to BOTH sides — the text ccd pasted and the prompt the CLI reported.
+//
+// The order matters: the CLI applies its rule to text that still has its
+// whitespace, so this must too. Stripping whitespace first turns a pasted
+// `< \pasted_content>` (which the CLI reports as `<\ \pasted_content>`) into
+// keys that differ by one backslash — a false not_submitted.
 func turnKey(s string) string {
-	return unescapePastedContentTag(promptKey(s))
+	return promptKey(unescapePastedContentTag(s))
 }
 
 // reportedPromptMatches says whether a UserPromptSubmit's `prompt` is the text
@@ -358,9 +363,9 @@ func reportedPromptMatches(reported, want string) bool {
 	return ok && turnKey(body) == want
 }
 
-// escapedPastedContentTag finds, in a promptKey (so: no whitespace left), a `<`
-// followed by a backslash, any run of characters that are neither ASCII
-// name characters nor angle brackets, and the tag name in any ASCII case.
+// escapedPastedContentTag finds a `<` followed by a backslash, any run of
+// characters that are neither ASCII name characters nor angle brackets
+// (whitespace included), and the tag name in any ASCII case.
 var escapedPastedContentTag = regexp.MustCompile(`(?i)<\\([^A-Za-z0-9_<>-]*pasted_content)`)
 
 // unescapePastedContentTag removes the backslash the CLI puts after a `<` that
@@ -388,10 +393,12 @@ var escapedPastedContentTag = regexp.MustCompile(`(?i)<\\([^A-Za-z0-9_<>-]*paste
 // escapes look-alike spellings — a fullwidth `＜`, which it REPLACES with `<\`
 // (measured: `＜pasted_content>` came back `<\pasted_content>`, a not_submitted),
 // look-alike letters, other underscore-like characters. Those are not undone, so
-// a prompt holding one is still a not_submitted: never a wrong match. (3) The CLI
-// requires the name to END there (`<pasted_contents` is not escaped); this does
-// not check that, because the key has no whitespace left and `<pasted_content x`
-// reads as `<pasted_contentx`. It only widens (1) to longer names.
+// ccd's OWN prompt holding one is a not_submitted. The other direction is a wrong
+// match ccd cannot prevent: a kickoff holding `<pasted_content>` and an operator
+// typing the same text with `＜` or `‹` are made byte-identical by the CLI (both
+// reported as `<\pasted_content>`), so the operator's submit binds to ccd's turn.
+// (3) The CLI requires the name to END there (`<pasted_contents` is not escaped);
+// this does not check that. It only widens (1) to longer names.
 func unescapePastedContentTag(key string) string {
 	return escapedPastedContentTag.ReplaceAllString(key, "<$1")
 }
