@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS public.mirror_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_mirror_tokens_owner ON public.mirror_tokens (owner_id);
 
+-- Stated again outside CREATE TABLE so re-applying this body (db.RLSOn, after
+-- the rls_off rollback set it to 1) restores the principal default.
+ALTER TABLE public.mirror_tokens ALTER COLUMN owner_id
+    SET DEFAULT nullif(current_setting('muster.uid', true), '')::bigint;
+
 ALTER TABLE public.mirror_tokens ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.mirror_tokens FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS owner_isolation ON public.mirror_tokens;

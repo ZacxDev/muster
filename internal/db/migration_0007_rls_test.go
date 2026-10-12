@@ -592,7 +592,7 @@ func assertRLSState(t *testing.T, f *rlsFixture, on bool) {
 			t.Errorf("%s after rls on=%v: %+v", st.Table, on, st)
 		}
 	}
-	want := slices.Clone(ownedTables)
+	want := rlsTables()
 	sort.Strings(want)
 	if !slices.Equal(tables, want) {
 		t.Errorf("RLSStatus tables = %v; want %v", tables, want)
