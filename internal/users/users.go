@@ -1,8 +1,9 @@
 // Package users is muster's account store: the `users` and `invites` tables
 // (migration 0006). It answers a user's ROLE for the request Principal
 // (accounts PR 3b) and, for accounts PR 4, reads users by GoTrue subject,
-// disables them, and runs the ONE invite flow PR 4 ships — the admin bootstrap
-// claim that binds a new GoTrue user to users.id = 1.
+// disables them, and runs the admin bootstrap claim that binds a new GoTrue
+// user to users.id = 1. Accounts PR 5 adds general link invites, the admin's
+// user management (role, last-admin guard) and the audit log (invites.go).
 //
 // 🔴 THE ROLE IS READ, NOT ASSUMED, AND IT IS READ IN ONE PLACE: Role, which
 // internal/api's roleOf calls for every principal (failure → member). Nothing
