@@ -8,7 +8,9 @@
 // logout, admin create (with email_confirm required to sign in and NO
 // password-length check, as measured), ban, delete, a service_role check on
 // /admin/*, and (accounts PR 5) admin/generate_link for recovery, POST /verify
-// with a single-use token_hash, and an admin password update. The e2e suite
+// with a single-use token_hash, and an admin password update (which revokes
+// the user's sessions). A ban does NOT revoke sessions — refreshes are
+// refused only while it stands, as measured. The e2e suite
 // runs the REAL image for the claim → login → refresh → logout path and the
 // invite redemption; this fake exists so every guard can be
 // driven from `go test` with a controllable clock.
@@ -442,17 +444,20 @@ func (f *Fake) adminRoute(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPut:
 			if pw, ok := body["password"].(string); ok {
+				// Measured (v2.189.0): an admin password change revokes every
+				// session the user has.
 				u.Password = pw
-			}
-			if d, ok := body["ban_duration"].(string); ok {
-				u.Banned = d != "none"
-				if u.Banned {
-					for _, s := range f.sessions {
-						if s.user == id {
-							s.revoked = true
-						}
+				for _, s := range f.sessions {
+					if s.user == id {
+						s.revoked = true
 					}
 				}
+			}
+			if d, ok := body["ban_duration"].(string); ok {
+				// Measured (v2.189.0): a ban does NOT revoke sessions. A
+				// refresh is refused WHILE banned and accepted again once the
+				// ban is lifted — so unbanning resurrects pre-ban sessions.
+				u.Banned = d != "none"
 			}
 			writeJSON(w, 200, map[string]any{"id": id})
 		case http.MethodDelete:

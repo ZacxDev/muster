@@ -57,6 +57,7 @@ func TestEveryCallCarriesTheClientIP(t *testing.T) {
 			return err
 		},
 		"AdminSetPassword": func(ip string) error { return c.AdminSetPassword(ctx, ip, id, "a-long-enough-password") },
+		"AdminSignOutEverywhere": func(ip string) error { return c.AdminSignOutEverywhere(ctx, ip, id) },
 	}
 	for name, call := range calls {
 		before := len(f.Calls())
@@ -174,5 +175,26 @@ func TestTheRecoveryExchangeIsSingleUseAndTheNewPasswordHasAFloor(t *testing.T) 
 	}
 	if u, _ := f.User(id); u.Password != "twelve-chars" {
 		t.Fatal("the password did not change")
+	}
+}
+
+// TestSignOutEverywhereRevokesEverySessionOfTheUser: the minted-token global
+// sign-out ends all of the user's sessions and no other user's.
+func TestSignOutEverywhereRevokesEverySessionOfTheUser(t *testing.T) {
+	f := gotruetest.New(t, secret)
+	c := f.Client()
+	a := f.AddUser("a@example.com", "a-long-enough-password")
+	b := f.AddUser("b@example.com", "a-long-enough-password")
+	_, _, s1 := f.Mint(a)
+	_, _, s2 := f.Mint(a)
+	_, _, other := f.Mint(b)
+	if err := c.AdminSignOutEverywhere(context.Background(), "198.51.100.1", a); err != nil {
+		t.Fatal(err)
+	}
+	if !f.SessionRevoked(s1) || !f.SessionRevoked(s2) {
+		t.Fatal("a session of the user survived")
+	}
+	if f.SessionRevoked(other) {
+		t.Fatal("another user's session was revoked")
 	}
 }

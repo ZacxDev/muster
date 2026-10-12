@@ -22,7 +22,7 @@
     "tests/sw.spec.ts": 0.8,
     "tests/mirrored.spec.ts": 5.4,
     "tests/gotrue-login.spec.ts": 50.0,
-    "tests/invites.spec.ts": 30.0
+    "tests/invites.spec.ts": 45.0
   },
   "legs": {
     "1": [

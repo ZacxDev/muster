@@ -21,11 +21,12 @@ import (
 type memAccounts struct {
 	mu    sync.Mutex
 	audit []users.AuditEntry
+	rows  *memUsers // the disable path's rows
 }
 
 var errMemAccounts = errors.New("memAccounts: not modelled")
 
-func (m *memAccounts) CreateInvite(context.Context, users.Actor, []byte, string, authz.Role, time.Time) (users.Invite, error) {
+func (m *memAccounts) CreateInvite(context.Context, users.Actor, []byte, string, time.Time) (users.Invite, error) {
 	return users.Invite{}, errMemAccounts
 }
 func (m *memAccounts) ListInvites(context.Context) ([]users.Invite, error) { return nil, nil }
@@ -48,6 +49,23 @@ func (m *memAccounts) Audit(_ context.Context, by users.Actor, action, object st
 	m.audit = append(m.audit, users.AuditEntry{UserID: by.UserID, Via: string(by.Via), Action: action, Object: object, Detail: detail})
 	return nil
 }
+func (m *memAccounts) SetDisabledAs(ctx context.Context, by *users.Actor, id int64, disabled bool) (users.User, error) {
+	u, err := m.rows.SetDisabled(ctx, id, disabled)
+	if err == nil && by != nil {
+		action := "user.enable"
+		if disabled {
+			action = "user.disable"
+		}
+		_ = m.Audit(ctx, *by, action, users.UserObject(id), nil)
+	}
+	return u, err
+}
+func (m *memAccounts) Audited(ctx context.Context, by users.Actor, action, object string, detail map[string]any, fn func() error) error {
+	if err := fn(); err != nil {
+		return err
+	}
+	return m.Audit(ctx, by, action, object, detail)
+}
 func (m *memAccounts) RecentAudit(context.Context, int) ([]users.AuditEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -64,7 +82,7 @@ func TestDisablingAMemberEndsItsStreams(t *testing.T) {
 	// interval; push it out of reach, so what ends them here is the page
 	// calling DisableUser — the in-process, immediate path.
 	f.s.gt.sweepInterval = time.Hour
-	acct := &memAccounts{}
+	acct := &memAccounts{rows: f.store}
 	f.s.gt.Accounts = acct
 	msub := f.member("m@example.com", 7, authz.RoleMember)
 	ma1, mr1, _ := f.fake.Mint(msub)
@@ -113,7 +131,7 @@ func TestAMemberCannotReachAnyAdminRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	inv, err := users.NewPG(w.pool).CreateInvite(ctx, users.Actor{UserID: 1, Via: authz.ViaSession},
-		claimHash("admin-walk-"+w.suffix), "", authz.RoleMember, time.Now().Add(time.Hour))
+		claimHash("admin-walk-"+w.suffix), "", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -31,15 +31,17 @@ import (
 
 // AccountStore is what invites and the admin pages need from internal/users.
 type AccountStore interface {
-	CreateInvite(ctx context.Context, by users.Actor, tokenHash []byte, email string, role authz.Role, expiresAt time.Time) (users.Invite, error)
+	CreateInvite(ctx context.Context, by users.Actor, tokenHash []byte, email string, expiresAt time.Time) (users.Invite, error)
 	ListInvites(ctx context.Context) ([]users.Invite, error)
 	RevokeInvite(ctx context.Context, by users.Actor, id int64) error
 	OpenInvite(ctx context.Context, tokenHash []byte) (users.Invite, error)
 	RedeemInvite(ctx context.Context, tokenHash []byte, email, displayName string,
 		create func(context.Context) (string, error), undo func(sub string)) (users.User, error)
 	ListUsers(ctx context.Context) ([]users.User, error)
+	SetDisabledAs(ctx context.Context, by *users.Actor, id int64, disabled bool) (users.User, error)
 	SetRole(ctx context.Context, by users.Actor, id int64, role authz.Role) (users.User, error)
 	Audit(ctx context.Context, by users.Actor, action, object string, detail map[string]any) error
+	Audited(ctx context.Context, by users.Actor, action, object string, detail map[string]any, fn func() error) error
 	RecentAudit(ctx context.Context, limit int) ([]users.AuditEntry, error)
 }
 
@@ -248,10 +250,12 @@ func (s *Server) handleAdminUserEnable(w http.ResponseWriter, r *http.Request) {
 	s.adminSetDisabled(w, r, false)
 }
 
-// adminSetDisabled disables or enables a user through DisableUser — the same
-// path the CLI takes: users.disabled_at, the GoTrue ban, and (on disable) the
-// END of every stream the user has open, so the user's next request and every
-// open SSE/terminal/chat stream is refused (TestDisablingAMemberEndsItsStreams).
+// adminSetDisabled disables or enables a user through DisableUserAs — the
+// same path the CLI takes: users.disabled_at (and, on disable, the session
+// cutoff), the audit row IN THE SAME TRANSACTION, the GoTrue ban, and (on
+// disable) the END of every stream the user has open, so the user's next
+// request and every open SSE/terminal/chat stream is refused
+// (TestDisablingAMemberEndsItsStreams).
 func (s *Server) adminSetDisabled(w http.ResponseWriter, r *http.Request, disabled bool) {
 	u, ok := s.adminUserTarget(w, r)
 	if !ok {
@@ -262,37 +266,29 @@ func (s *Server) adminSetDisabled(w http.ResponseWriter, r *http.Request, disabl
 		s.renderAdminUsers(w, r, http.StatusConflict, "You cannot disable your own account.", "")
 		return
 	}
-	err := s.DisableUser(r.Context(), u.ID, disabled)
+	err := s.DisableUserAs(r.Context(), by, u.ID, disabled)
 	if errors.Is(err, users.ErrLastAdmin) {
-		s.renderAdminUsers(w, r, http.StatusConflict, "That is the last enabled admin; make another admin first.", "")
+		s.renderAdminUsers(w, r, http.StatusConflict, lastAdminRefusal, "")
 		return
 	}
-	action := "user.enable"
-	if disabled {
-		action = "user.disable"
-	}
-	detail := map[string]any{}
 	if err != nil {
-		// DisableUser changes the row FIRST; an error after that is the GoTrue
-		// ban (the message says so). The row change stands and is audited.
-		// Decided by re-reading the row, not by the error's wording.
+		// The row change (and its audit row) committed or did not, together;
+		// re-read to tell which. A committed change whose GoTrue ban failed is
+		// reported, and SetUserDisabledAs has recorded user.ban_failed.
 		if cur, rerr := s.gt.Users.ByID(r.Context(), u.ID); rerr != nil || cur.Disabled() != disabled {
-			s.logger.Printf("admin: %s user %d: %v", action, u.ID, err)
+			s.logger.Printf("admin: disable=%v user %d: %v", disabled, u.ID, err)
 			s.renderAdminUsers(w, r, http.StatusInternalServerError, "That change could not be made. Try again.", "")
 			return
 		}
-		detail["warning"] = err.Error()
-	}
-	if aerr := s.gt.Accounts.Audit(r.Context(), by, action, users.UserObject(u.ID), detail); aerr != nil {
-		s.logger.Printf("admin: AUDIT WRITE FAILED for %s user %d by %d: %v", action, u.ID, by.UserID, aerr)
-	}
-	s.logger.Printf("admin: user %d %s by user %d", u.ID, action, by.UserID)
-	if err != nil {
 		s.renderAdminUsers(w, r, http.StatusBadGateway, err.Error(), "")
 		return
 	}
+	s.logger.Printf("admin: user %d disabled=%v by user %d", u.ID, disabled, by.UserID)
 	http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 }
+
+// lastAdminRefusal is the page's answer to ErrLastAdmin.
+const lastAdminRefusal = "That is the last enabled admin; make another admin first."
 
 func (s *Server) handleAdminUserRole(w http.ResponseWriter, r *http.Request) {
 	u, ok := s.adminUserTarget(w, r)
@@ -307,7 +303,7 @@ func (s *Server) handleAdminUserRole(w http.ResponseWriter, r *http.Request) {
 	by := actorOf(r)
 	_, err := s.gt.Accounts.SetRole(r.Context(), by, u.ID, role)
 	if errors.Is(err, users.ErrLastAdmin) {
-		s.renderAdminUsers(w, r, http.StatusConflict, "That is the last enabled admin; make another admin first.", "")
+		s.renderAdminUsers(w, r, http.StatusConflict, lastAdminRefusal, "")
 		return
 	}
 	if err != nil {
@@ -337,15 +333,19 @@ func (s *Server) handleAdminUserResetLink(w http.ResponseWriter, r *http.Request
 		s.renderAdminUsers(w, r, http.StatusConflict, "That user has no login to reset.", "")
 		return
 	}
-	hashed, err := s.gt.Client.AdminRecoveryLink(r.Context(), clientIP(r), u.Email)
+	by := actorOf(r)
+	var hashed string
+	// The audit row and the link are one fact: the row commits only if GoTrue
+	// made the link, and the link is shown only if the row committed.
+	err := s.gt.Accounts.Audited(r.Context(), by, "user.reset_link", users.UserObject(u.ID), nil, func() error {
+		var err error
+		hashed, err = s.gt.Client.AdminRecoveryLink(r.Context(), clientIP(r), u.Email)
+		return err
+	})
 	if err != nil {
 		s.logger.Printf("admin: reset link for user %d: %v", u.ID, err)
-		s.renderAdminUsers(w, r, http.StatusBadGateway, "GoTrue could not make a reset link right now.", "")
+		s.renderAdminUsers(w, r, http.StatusBadGateway, "A reset link could not be made right now.", "")
 		return
-	}
-	by := actorOf(r)
-	if aerr := s.gt.Accounts.Audit(r.Context(), by, "user.reset_link", users.UserObject(u.ID), nil); aerr != nil {
-		s.logger.Printf("admin: AUDIT WRITE FAILED for user.reset_link user %d by %d: %v", u.ID, by.UserID, aerr)
 	}
 	link := strings.TrimRight(s.auth.PublicURL, "/") + ResetPath + "#" + hashed
 	s.renderAdminUsers(w, r, http.StatusOK, "", shownOnce("Reset link for "+u.Email, link,
@@ -373,8 +373,7 @@ func (s *Server) renderAdminInvites(w http.ResponseWriter, r *http.Request, code
 <h1 class="text-base font-semibold text-fg">New invite link</h1>
 <label for="invite-email" class="text-sm font-medium text-fg">Email (optional — binds the link to it)</label>
 <input id="invite-email" name="email" type="email" autocomplete="off" class="` + adminInput + `">
-<label for="invite-role" class="text-sm font-medium text-fg">Role</label>
-<select id="invite-role" name="role" class="` + adminInput + `"><option value="member" selected>member</option><option value="admin">admin</option></select>
+<p class="text-sm text-fg2">The new account is a <span class="font-semibold text-fg">member</span>. To make an admin, promote them on Users after they join.</p>
 <label for="invite-ttl" class="text-sm font-medium text-fg">Expires after</label>
 <select id="invite-ttl" name="expires_hours" class="` + adminInput + `">`)
 	for _, h := range inviteTTLChoices {
@@ -427,14 +426,6 @@ func (s *Server) handleAdminInviteCreate(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	role := authz.Role(r.FormValue("role"))
-	if role == "" {
-		role = authz.RoleMember
-	}
-	if role != authz.RoleMember && role != authz.RoleAdmin {
-		s.renderAdminInvites(w, r, http.StatusBadRequest, "Choose member or admin.", "")
-		return
-	}
 	ttl := InviteTTL
 	if v := r.FormValue("expires_hours"); v != "" {
 		h, err := strconv.Atoi(v)
@@ -451,7 +442,7 @@ func (s *Server) handleAdminInviteCreate(w http.ResponseWriter, r *http.Request)
 	}
 	sum := sha256.Sum256([]byte(token))
 	by := actorOf(r)
-	inv, err := s.gt.Accounts.CreateInvite(r.Context(), by, sum[:], email, role, s.now().Add(ttl))
+	inv, err := s.gt.Accounts.CreateInvite(r.Context(), by, sum[:], email, s.now().Add(ttl))
 	if errors.Is(err, users.ErrEmailTaken) {
 		s.renderAdminInvites(w, r, http.StatusConflict, "A muster account already uses that email.", "")
 		return
@@ -461,7 +452,7 @@ func (s *Server) handleAdminInviteCreate(w http.ResponseWriter, r *http.Request)
 		s.renderAdminInvites(w, r, http.StatusInternalServerError, "The invite could not be created. Try again.", "")
 		return
 	}
-	s.logger.Printf("admin: invite %d (%s) created by user %d", inv.ID, role, by.UserID)
+	s.logger.Printf("admin: invite %d created by user %d", inv.ID, by.UserID)
 	link := strings.TrimRight(s.auth.PublicURL, "/") + InvitePath + "#" + token
 	s.renderAdminInvites(w, r, http.StatusOK, "", shownOnce("Invite link", link,
 		"Send this link to the person you are inviting. It works once."))

@@ -67,7 +67,7 @@ function claimLink(): string {
 const taskCards = '[data-tasks-flat] > [id^="task-"]';
 
 test('an admin invites a member by link; the member sees only its own (empty) board and is refused once disabled (real GoTrue, 412px)', async ({ page, browser }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(240_000);
   const stamp = Date.now();
   const adminEmail = `admin-${stamp}@example.com`;
   const memberEmail = `member-${stamp}@example.com`;
@@ -93,7 +93,9 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
 
   // 2. Create an invite link; it is shown once, with the token in the FRAGMENT.
   await page.goto(browserURL + '/admin/invites');
-  await expect(page.locator('#invite-role')).toHaveValue('member');
+  // An invite always makes a member: there is no role to choose (admins are
+  // made only by promoting a member on /admin/users).
+  await expect(page.locator('#invite-role, [name="role"]')).toHaveCount(0);
   await expect(page.locator('#invite-ttl')).toHaveValue('72');
   await page.getByRole('button', { name: 'Create link' }).click();
   const link = await page.locator('#once-link').inputValue();
@@ -183,6 +185,45 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await mp.fill('#muster-password', newPW);
   await mp.click('button[type=submit]');
   await expect(mp).toHaveURL(/\/login/);
+
+  // 8. Enabling does NOT resurrect the pre-disable session. A GoTrue ban alone
+  // would (an unban accepts pre-ban refresh tokens again — measured), so a
+  // disable also signs the user out everywhere in GoTrue, and muster's
+  // per-user cutoff refuses the held cookies: first while their access token is
+  // still alive (only muster can — GoTrue cannot recall a JWT), then after it
+  // expires on the refresh path. A sign-in made after the enable works.
+  await page.goto(browserURL + '/admin/users');
+  await page.locator(`[data-user-email="${memberEmail}"]`).getByRole('button', { name: 'Enable' }).click();
+  await expect(page.locator(`[data-user-email="${memberEmail}"] [data-user-state]`)).toHaveText('active');
+  const live = await browser.newContext({ viewport });
+  await live.addCookies(held);
+  expect((await live.request.get(browserURL + '/ui/tasks/review-count', { headers: { 'HX-Request': 'true' } })).status(),
+    'the pre-disable access token after enable').toBe(401);
+  await live.close();
+  // Outlive the held access token (JWT_EXP 5 s + muster's 30 s skew + margin):
+  // muster would now have to REFRESH from the held refresh token.
+  await page.waitForTimeout(37_000);
+  const late = await browser.newContext({ viewport });
+  await late.addCookies(held);
+  const lp = await late.newPage();
+  await lp.goto(browserURL + '/tasks');
+  await expect(lp, 'the pre-disable refresh token after enable').toHaveURL(/\/login/);
+  await late.close();
+  // And GoTrue no longer holds it either: the disable signed the user out
+  // everywhere there (a ban alone would not — an unban resurrects it).
+  const heldRT = held.find((c) => c.name === 'muster_rt')!.value;
+  const direct = await fetch(gotrueURL + '/token?grant_type=refresh_token', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Muster-Client-IP': '127.0.0.1' },
+    body: JSON.stringify({ refresh_token: heldRT }),
+  });
+  expect(direct.status, 'GoTrue refuses the pre-disable refresh token after enable').toBe(400);
+  // A sign-in after the enable works.
+  await mp.goto(browserURL + '/login');
+  await mp.fill('#muster-email', memberEmail);
+  await mp.fill('#muster-password', newPW);
+  await Promise.all([mp.waitForURL(browserURL + '/'), mp.click('button[type=submit]')]);
+  await mp.goto(browserURL + '/tasks');
+  await expect(mp.locator('#fab-tasks')).toBeVisible();
 
   await invitee.close();
   await machine.dispose();

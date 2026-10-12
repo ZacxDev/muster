@@ -568,6 +568,14 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 		//
 		// And per refresh token, a ceiling on calls (a replay of one token).
 		expiredSub := c.Subject
+		// 🔴 NO REFRESH FROM A TOKEN ISSUED BEFORE THE USER'S SESSION CUTOFF
+		// (accounts PR 5). GoTrue accepts a pre-ban refresh token again once a
+		// ban is lifted, so after disable → enable the old refresh token is
+		// live in GoTrue; this check, on the expired access token it is paired
+		// with, is what keeps it dead (TestEnablingDoesNotResurrectOldSessions).
+		if u, uerr := g.user(r.Context(), expiredSub); uerr == nil && issuedBeforeCutoff(u, c) {
+			return sess, errRevoked
+		}
 		fresh, rerr := g.refresh(r.Context(), clientIP(r), rt, func() (func(error), bool) {
 			rtSum := sha256.Sum256([]byte(rt))
 			rtKey := hex.EncodeToString(rtSum[:])
@@ -629,8 +637,20 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 	if u.Disabled() {
 		return sess, errDisabled
 	}
+	if issuedBeforeCutoff(u, c) {
+		return sess, errRevoked
+	}
 	sess.user, sess.claims, sess.access = u, c, at
 	return sess, nil
+}
+
+// issuedBeforeCutoff reports whether c was issued at or before u's session
+// cutoff (users.sessions_not_before, set by every disable; migration 0010).
+// "At" as well as before: iat is whole seconds, so a token stamped with the
+// cutoff's own second may predate it, and refusing it costs only a sign-in
+// made in that same second.
+func issuedBeforeCutoff(u users.User, c gotrue.Claims) bool {
+	return u.SessionsNotBefore != nil && c.IssuedAt <= u.SessionsNotBefore.Unix()
 }
 
 var (
@@ -799,10 +819,37 @@ func (s *Server) DisableUser(ctx context.Context, id int64, disabled bool) error
 	})
 }
 
-// SetUserDisabled is DisableUser without a server, for the CLI. invalidate
-// (may be nil) drops a cache entry once the row has changed.
+// DisableUserAs is DisableUser on behalf of by: the user.disable /
+// user.enable audit row is written in the same transaction as the change
+// (accounts PR 5; the admin page).
+func (s *Server) DisableUserAs(ctx context.Context, by users.Actor, id int64, disabled bool) error {
+	if s.gt == nil {
+		return errors.New("GoTrue is not configured (MUSTER_GOTRUE_URL)")
+	}
+	return SetUserDisabledAs(ctx, s.gt.GoTrueAuth, &by, id, disabled, func() {
+		s.gt.forgetUser(id)
+		s.gt.setDisabled(id, disabled)
+	})
+}
+
+// SetUserDisabled is DisableUser without a server. invalidate (may be nil)
+// drops a cache entry once the row has changed.
 func SetUserDisabled(ctx context.Context, g GoTrueAuth, id int64, disabled bool, invalidate func()) error {
-	u, err := g.Users.SetDisabled(ctx, id, disabled)
+	return SetUserDisabledAs(ctx, g, nil, id, disabled, invalidate)
+}
+
+// SetUserDisabledAs is SetUserDisabled that audits as by (the CLI passes
+// Via "cli"). With by set and an account store wired, the audit row commits
+// with the change; a GoTrue ban that fails AFTER it gets its own
+// user.ban_failed row.
+func SetUserDisabledAs(ctx context.Context, g GoTrueAuth, by *users.Actor, id int64, disabled bool, invalidate func()) error {
+	var u users.User
+	var err error
+	if by != nil && g.Accounts != nil {
+		u, err = g.Accounts.SetDisabledAs(ctx, by, id, disabled)
+	} else {
+		u, err = g.Users.SetDisabled(ctx, id, disabled)
+	}
 	if err != nil {
 		return err
 	}
@@ -813,7 +860,23 @@ func SetUserDisabled(ctx context.Context, g GoTrueAuth, id int64, disabled bool,
 		return nil
 	}
 	if err := g.Client.AdminSetBanned(ctx, "muster-server", u.GotrueSub, disabled); err != nil {
+		if by != nil && g.Accounts != nil {
+			_ = g.Accounts.Audit(ctx, *by, "user.ban_failed", users.UserObject(id), map[string]any{"disabled": disabled, "error": err.Error()})
+		}
 		return errors.New("users.disabled_at is updated, but the GoTrue ban did not apply: " + err.Error())
+	}
+	if disabled {
+		// A ban does not end GoTrue sessions (an unban resurrects them), so
+		// a disable also signs the user out everywhere in GoTrue. muster's
+		// own cutoff (users.sessions_not_before) refuses those sessions
+		// regardless; this keeps GoTrue from holding them live.
+		if err := g.Client.AdminSignOutEverywhere(ctx, "muster-server", u.GotrueSub); err != nil {
+			if by != nil && g.Accounts != nil {
+				_ = g.Accounts.Audit(ctx, *by, "user.signout_failed", users.UserObject(id), map[string]any{"error": err.Error()})
+			}
+			return errors.New("users.disabled_at is updated and the login banned, but GoTrue's sign-out-everywhere did not apply " +
+				"(muster still refuses the old sessions): " + err.Error())
+		}
 	}
 	return nil
 }
@@ -848,8 +911,10 @@ func viaBrowserListener(r *http.Request) bool {
 //
 // ⚠ THE HEADERS ARE TRUSTED BECAUSE OF WHERE THE REQUEST ARRIVED, NOT BECAUSE
 // OF WHO SENT IT. Anything that can reach the browser port without passing the
-// CDN can choose its own address — which is why the per-address limit sits
-// under a process-wide ceiling (loginAttemptCeiling) rather than replacing it.
+// CDN can choose its own address — which is why every per-address limit is a
+// SECONDARY signal: sign-in is throttled per ACCOUNT (signin_limiter.go) and
+// invite links per INVITE (login_invite.go), neither keyed on this value. There
+// is no process-wide ceiling (an earlier draft had one; it was a lockout lever).
 func clientIP(r *http.Request) string {
 	if viaBrowserListener(r) {
 		if ip := parseIP(r.Header.Get("CF-Connecting-IP")); ip != "" {

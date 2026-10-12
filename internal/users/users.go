@@ -48,6 +48,9 @@ type User struct {
 	Email       string
 	DisplayName string
 	DisabledAt  *time.Time
+	// SessionsNotBefore is the session cutoff (migration 0010): a token issued
+	// at or before it is refused. Set by every disable, never cleared.
+	SessionsNotBefore *time.Time
 }
 
 // Disabled reports whether the account is disabled.
@@ -101,11 +104,11 @@ func (s *PGStore) Role(ctx context.Context, id int64) (authz.Role, error) {
 // sys is the store's one authz.System call. See the package doc.
 func sys(ctx context.Context) context.Context { return authz.System(ctx) }
 
-const userCols = `id, COALESCE(gotrue_sub::text, ''), COALESCE(email, ''), display_name, disabled_at`
+const userCols = `id, COALESCE(gotrue_sub::text, ''), COALESCE(email, ''), display_name, disabled_at, sessions_not_before`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	if err := row.Scan(&u.ID, &u.GotrueSub, &u.Email, &u.DisplayName, &u.DisabledAt); err != nil {
+	if err := row.Scan(&u.ID, &u.GotrueSub, &u.Email, &u.DisplayName, &u.DisabledAt, &u.SessionsNotBefore); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return User{}, ErrNotFound
 		}
@@ -135,22 +138,41 @@ func (s *PGStore) ByID(ctx context.Context, id int64) (User, error) {
 // 🔴 DISABLING THE LAST ENABLED ADMIN IS REFUSED (ErrLastAdmin), for the reason
 // SetRole refuses demoting it: nobody would be left who can reach /admin to undo
 // it. The check runs under guardLastAdmin's lock (accounts PR 5).
+//
+// 🔴 A DISABLE ALSO MOVES sessions_not_before TO NOW, AND AN ENABLE LEAVES IT.
+// A GoTrue unban resurrects every pre-ban session (migration 0010), so the
+// session tier's cutoff is what keeps a disable from being undone by an enable.
 func (s *PGStore) SetDisabled(ctx context.Context, id int64, disabled bool) (User, error) {
-	if !disabled {
-		return scanUser(s.pool.QueryRow(sys(ctx), `UPDATE users SET disabled_at = NULL WHERE id = $1 RETURNING `+userCols, id))
-	}
+	return s.SetDisabledAs(ctx, nil, id, disabled)
+}
+
+// SetDisabledAs is SetDisabled that, when by is non-nil, writes the
+// user.disable / user.enable audit row in the SAME transaction as the change.
+func (s *PGStore) SetDisabledAs(ctx context.Context, by *Actor, id int64, disabled bool) (User, error) {
 	ctx = sys(ctx)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return User{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := guardLastAdmin(ctx, tx, id); err != nil {
-		return User{}, err
+	q := `UPDATE users SET disabled_at = NULL WHERE id = $1 RETURNING ` + userCols
+	action := "user.enable"
+	if disabled {
+		if err := guardLastAdmin(ctx, tx, id); err != nil {
+			return User{}, err
+		}
+		q = `UPDATE users SET disabled_at = COALESCE(disabled_at, now()), sessions_not_before = now()
+			WHERE id = $1 RETURNING ` + userCols
+		action = "user.disable"
 	}
-	u, err := scanUser(tx.QueryRow(ctx, `UPDATE users SET disabled_at = COALESCE(disabled_at, now()) WHERE id = $1 RETURNING `+userCols, id))
+	u, err := scanUser(tx.QueryRow(ctx, q, id))
 	if err != nil {
 		return User{}, err
+	}
+	if by != nil {
+		if err := auditInsert(ctx, tx, *by, action, UserObject(id), nil); err != nil {
+			return User{}, err
+		}
 	}
 	return u, tx.Commit(ctx)
 }

@@ -328,6 +328,33 @@ func (c *Client) VerifyRecovery(ctx context.Context, clientIP, tokenHash string)
 	return s, err
 }
 
+// AdminSignOutEverywhere revokes every GoTrue session (refresh token) of user
+// userID, as a disable must.
+//
+// 🔴 GoTrue HAS NO ADMIN "SIGN OUT USER" ENDPOINT, AND A BAN DOES NOT END A
+// SESSION — measured on v2.189.0: a refresh token from before a ban is
+// accepted again once the ban is lifted. What does end them is the user's own
+// global sign-out, and muster holds the HS256 secret GoTrue verifies with, so
+// it mints a short-lived token FOR the user (no session_id: GoTrue refuses a
+// session_id that is not a real session's UUID) and calls /logout?scope=global
+// with it. Measured: 204, and the user's refresh tokens are then
+// refresh_token_not_found.
+func (c *Client) AdminSignOutEverywhere(ctx context.Context, clientIP, userID string) error {
+	now := c.now()
+	tok, err := Sign(c.Secret, Claims{
+		Subject:   userID,
+		Issuer:    c.Issuer,
+		Audience:  Audience{"authenticated"},
+		Role:      "authenticated",
+		IssuedAt:  now.Unix(),
+		ExpiresAt: now.Add(ServiceTokenTTL).Unix(),
+	})
+	if err != nil {
+		return err
+	}
+	return c.Logout(ctx, clientIP, tok, ScopeGlobal)
+}
+
 // AdminSetPassword sets userID's password through the admin path.
 func (c *Client) AdminSetPassword(ctx context.Context, clientIP, userID, password string) error {
 	if len(password) < MinPasswordLength {

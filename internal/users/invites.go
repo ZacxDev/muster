@@ -132,6 +132,20 @@ func (s *PGStore) Audit(ctx context.Context, by Actor, action, object string, de
 	})
 }
 
+// Audited runs action fn with its audit row ALREADY WRITTEN in an open
+// transaction, and commits the row only if fn succeeded — for an action that
+// happens outside the database (a GoTrue call), so the log holds a row for it
+// exactly when it happened. If the commit itself fails after fn succeeded, the
+// error says so; the caller must then not hand out what fn produced.
+func (s *PGStore) Audited(ctx context.Context, by Actor, action, object string, detail map[string]any, fn func() error) error {
+	return s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := auditInsert(ctx, tx, by, action, object, detail); err != nil {
+			return err
+		}
+		return fn()
+	})
+}
+
 // RecentAudit returns the newest audit rows, newest first.
 func (s *PGStore) RecentAudit(ctx context.Context, limit int) ([]AuditEntry, error) {
 	rows, err := s.pool.Query(sys(ctx), `SELECT id, at, COALESCE(user_id, 0), via, action, object, detail
@@ -163,12 +177,13 @@ func validRole(r authz.Role) bool { return r == authz.RoleAdmin || r == authz.Ro
 // CreateInvite stores a general invite: tokenHash (sha256 of a token the
 // caller shows once), an optional bound email, a role and an expiry. A bound
 // email that a muster account already uses is refused (ErrEmailTaken).
-func (s *PGStore) CreateInvite(ctx context.Context, by Actor, tokenHash []byte, email string, role authz.Role, expiresAt time.Time) (Invite, error) {
+func (s *PGStore) CreateInvite(ctx context.Context, by Actor, tokenHash []byte, email string, expiresAt time.Time) (Invite, error) {
+	// 🔴 AN INVITE ALWAYS MAKES A MEMBER (operator decision D1). There is no
+	// role parameter to pass "admin" through: an admin is made only by
+	// promoting a redeemed member on /admin/users, which is audited as such.
+	role := authz.RoleMember
 	if len(tokenHash) != 32 {
 		return Invite{}, fmt.Errorf("users: token hash must be 32 bytes, got %d", len(tokenHash))
-	}
-	if !validRole(role) {
-		return Invite{}, fmt.Errorf("users: unknown role %q", role)
 	}
 	email = strings.TrimSpace(email)
 	var inv Invite
@@ -275,7 +290,8 @@ func (s *PGStore) OpenInvite(ctx context.Context, tokenHash []byte) (Invite, err
 
 // RedeemInvite redeems a general invite in ONE transaction: lock the invite
 // row (FOR UPDATE), check the bound email, create the GoTrue user, insert the
-// users row, mark the invite redeemed, write the audit row, commit.
+// users row — ALWAYS a member, whatever the invite row says (D1) — mark the
+// invite redeemed, write the audit row, commit.
 //
 // 🔴 THE INVITE ROW LOCK IS WHAT MAKES THE LINK SINGLE-USE UNDER CONCURRENCY.
 // Two redemptions of one token serialize on it; the second re-evaluates the
@@ -324,15 +340,22 @@ func (s *PGStore) RedeemInvite(ctx context.Context, tokenHash []byte, email, dis
 		}
 	}()
 	u, err := scanUser(tx.QueryRow(ctx, `INSERT INTO users (gotrue_sub, email, display_name, role)
-		VALUES ($1::uuid, $2, $3, $4) RETURNING `+userCols, sub, email, displayName, string(inv.Role)))
+		VALUES ($1::uuid, $2, $3, 'member') RETURNING `+userCols, sub, email, displayName))
 	if err != nil {
 		return User{}, err
 	}
-	if _, err := tx.Exec(ctx, `UPDATE invites SET redeemed_at = now(), redeemed_by = $2 WHERE id = $1`, inv.ID, u.ID); err != nil {
+	// Belt to the row lock's braces: the UPDATE states the precondition it
+	// relies on, and anything but exactly one row is a refusal.
+	tag, err := tx.Exec(ctx, `UPDATE invites SET redeemed_at = now(), redeemed_by = $2
+		WHERE id = $1 AND redeemed_at IS NULL AND revoked_at IS NULL`, inv.ID, u.ID)
+	if err != nil {
 		return User{}, err
 	}
+	if tag.RowsAffected() != 1 {
+		return User{}, ErrInvalidInvite
+	}
 	if err := auditInsert(ctx, tx, Actor{UserID: u.ID, Via: "invite"}, "invite.redeem", inviteObject(inv.ID),
-		map[string]any{"user_id": u.ID, "role": string(inv.Role)}); err != nil {
+		map[string]any{"user_id": u.ID, "role": string(authz.RoleMember)}); err != nil {
 		return User{}, err
 	}
 	committed, err = s.commitDeciding(ctx, tx, sub, func(rctx context.Context) (bool, error) {

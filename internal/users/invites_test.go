@@ -23,25 +23,31 @@ func TestInviteStatesAndAudit(t *testing.T) {
 	s, pool := storeFor(t)
 	ctx := context.Background()
 	now := time.Now()
-	pending, err := s.CreateInvite(ctx, opActor, hash("p"), "", authz.RoleMember, now.Add(time.Hour))
+	pending, err := s.CreateInvite(ctx, opActor, hash("p"), "", now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	revoked, _ := s.CreateInvite(ctx, opActor, hash("r"), "", authz.RoleMember, now.Add(time.Hour))
+	revoked, _ := s.CreateInvite(ctx, opActor, hash("r"), "", now.Add(time.Hour))
 	if err := s.RevokeInvite(ctx, opActor, revoked.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RevokeInvite(ctx, opActor, revoked.ID); !errors.Is(err, ErrNotRevocable) {
 		t.Fatalf("revoking twice: %v", err)
 	}
-	expired, _ := s.CreateInvite(ctx, opActor, hash("e"), "", authz.RoleMember, now.Add(-time.Second))
-	redeemed, _ := s.CreateInvite(ctx, opActor, hash("d"), "", authz.RoleAdmin, now.Add(time.Hour))
+	expired, _ := s.CreateInvite(ctx, opActor, hash("e"), "", now.Add(-time.Second))
+	redeemed, _ := s.CreateInvite(ctx, opActor, hash("d"), "", now.Add(time.Hour))
+	// D1: an invite ALWAYS makes a member — even a row that says admin (no
+	// code path writes one any more; this pins that redemption does not read
+	// the row's role into the new account).
+	if _, err := pool.Exec(authz.System(ctx), `UPDATE invites SET role = 'admin' WHERE id = $1`, redeemed.ID); err != nil {
+		t.Fatal(err)
+	}
 	u, err := s.RedeemInvite(ctx, hash("d"), "d@example.com", "Dee", okCreate(subA), nil)
 	if err != nil || u.DisplayName != "Dee" {
 		t.Fatalf("redeem: %+v %v", u, err)
 	}
-	if r, err := s.Role(authz.System(ctx), u.ID); err != nil || r != authz.RoleAdmin {
-		t.Fatalf("the redeemed user's role is %q (%v), want the invite's admin", r, err)
+	if r, err := s.Role(authz.System(ctx), u.ID); err != nil || r != authz.RoleMember {
+		t.Fatalf("the redeemed user's role is %q (%v), want member whatever the invite row says", r, err)
 	}
 	if err := s.RevokeInvite(ctx, opActor, redeemed.ID); !errors.Is(err, ErrNotRevocable) {
 		t.Fatalf("revoking a redeemed invite: %v", err)
@@ -96,7 +102,7 @@ func TestInviteStatesAndAudit(t *testing.T) {
 func TestRedeemInviteChecksTheBoundEmailBeforeCreating(t *testing.T) {
 	s, _ := storeFor(t)
 	ctx := context.Background()
-	if _, err := s.CreateInvite(ctx, opActor, hash("b"), "Ann@Example.com", authz.RoleMember, time.Now().Add(time.Hour)); err != nil {
+	if _, err := s.CreateInvite(ctx, opActor, hash("b"), "Ann@Example.com", time.Now().Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	called := false
@@ -109,7 +115,7 @@ func TestRedeemInviteChecksTheBoundEmailBeforeCreating(t *testing.T) {
 		t.Fatalf("case-insensitive match: %+v %v", u, err)
 	}
 	// A bound email already in use is refused at creation.
-	if _, err := s.CreateInvite(ctx, opActor, hash("b2"), "ANN@example.com", authz.RoleMember, time.Now().Add(time.Hour)); !errors.Is(err, ErrEmailTaken) {
+	if _, err := s.CreateInvite(ctx, opActor, hash("b2"), "ANN@example.com", time.Now().Add(time.Hour)); !errors.Is(err, ErrEmailTaken) {
 		t.Fatalf("an invite for a taken email: %v", err)
 	}
 }
@@ -136,7 +142,7 @@ func TestRedeemInviteDecidesAnAmbiguousCommitByRereading(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, pool := storeFor(t)
 			ctx := context.Background()
-			if _, err := s.CreateInvite(ctx, opActor, hash("amb"), "", authz.RoleMember, time.Now().Add(time.Hour)); err != nil {
+			if _, err := s.CreateInvite(ctx, opActor, hash("amb"), "", time.Now().Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 			s.commit = tc.commit
@@ -193,5 +199,45 @@ func TestTheLastEnabledAdminIsGuarded(t *testing.T) {
 	_ = pool.QueryRow(authz.System(ctx), `INSERT INTO users (role) VALUES ('member') RETURNING id`).Scan(&member)
 	if _, err := s.SetDisabled(ctx, member, true); err != nil {
 		t.Fatalf("disabling a member: %v", err)
+	}
+}
+
+// TestAnAuditedActionWritesItsRowOnlyIfItHappened: the row and the external
+// action are one fact (G2).
+func TestAnAuditedActionWritesItsRowOnlyIfItHappened(t *testing.T) {
+	s, _ := storeFor(t)
+	ctx := context.Background()
+	boom := errors.New("GoTrue said no")
+	if err := s.Audited(ctx, opActor, "user.reset_link", UserObject(1), nil, func() error { return boom }); !errors.Is(err, boom) {
+		t.Fatalf("a failed action: %v", err)
+	}
+	if err := s.Audited(ctx, opActor, "user.reset_link", UserObject(1), map[string]any{"ok": true}, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := s.RecentAudit(ctx, 10)
+	if len(entries) != 1 || entries[0].Detail["ok"] != true {
+		t.Fatalf("audit rows %+v, want only the action that happened", entries)
+	}
+}
+
+// TestADisableSetsTheSessionCutoffAndAnEnableKeepsIt (Y1).
+func TestADisableSetsTheSessionCutoffAndAnEnableKeepsIt(t *testing.T) {
+	s, pool := storeFor(t)
+	ctx := context.Background()
+	var id int64
+	_ = pool.QueryRow(authz.System(ctx), `INSERT INTO users (role) VALUES ('member') RETURNING id`).Scan(&id)
+	before := time.Now().Add(-time.Second)
+	u, err := s.SetDisabledAs(ctx, &opActor, id, true)
+	if err != nil || u.SessionsNotBefore == nil || u.SessionsNotBefore.Before(before) {
+		t.Fatalf("disable: %+v %v", u, err)
+	}
+	cut := *u.SessionsNotBefore
+	u, err = s.SetDisabledAs(ctx, &opActor, id, false)
+	if err != nil || u.SessionsNotBefore == nil || !u.SessionsNotBefore.Equal(cut) || u.Disabled() {
+		t.Fatalf("enable: %+v %v (cutoff must stay %v)", u, err, cut)
+	}
+	entries, _ := s.RecentAudit(ctx, 10)
+	if len(entries) != 2 || entries[0].Action != "user.enable" || entries[1].Action != "user.disable" || entries[0].Object != UserObject(id) {
+		t.Fatalf("audit rows %+v", entries)
 	}
 }

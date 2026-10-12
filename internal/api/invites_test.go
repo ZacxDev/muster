@@ -21,6 +21,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
+	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/sse"
 	"github.com/ZacxDev/muster/internal/users"
@@ -109,9 +110,9 @@ func (w *invWorld) asAdmin() reqOpt { return withCookies(w.adminAT, w.adminRT) }
 var inviteLinkRE = regexp.MustCompile(regexp.QuoteMeta(invitePublic+InvitePath+"#") + `([A-Za-z0-9_-]+)`)
 
 // createInvite drives the admin page and returns the token from the link.
-func (w *invWorld) createInvite(email, role string) string {
+func (w *invWorld) createInvite(email string) string {
 	w.t.Helper()
-	form := url.Values{"email": {email}, "role": {role}, "expires_hours": {"72"}}
+	form := url.Values{"email": {email}, "expires_hours": {"72"}}
 	rec := do(w.edge, "POST", "/admin/invites", form, w.asAdmin())
 	m := inviteLinkRE.FindStringSubmatch(rec.Body.String())
 	if rec.Code != http.StatusOK || m == nil {
@@ -144,7 +145,7 @@ func (w *invWorld) audit(action string) []users.AuditEntry {
 
 func TestAnAdminInvitesAMemberWhoRedeemsTheLinkAndIsSignedIn(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("", "member")
+	tok := w.createInvite("")
 
 	// Only the sha256 is stored, and the token appears in no audit detail.
 	var stored []byte
@@ -230,7 +231,7 @@ func base64RawURLDecode(s string) ([]byte, error) {
 // link: exactly one wins, GoTrue gets exactly one user.
 func TestAnInviteLinkIsSingleUseUnderConcurrency(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("", "member")
+	tok := w.createInvite("")
 	// Hold each GoTrue create open, so without the row lock every racer would
 	// pass the live check before any commits.
 	w.fake.SetCreateDelay(100 * time.Millisecond)
@@ -278,17 +279,17 @@ func TestAnInviteLinkIsSingleUseUnderConcurrency(t *testing.T) {
 func TestEveryBadLinkGetsTheSameInvalidPage(t *testing.T) {
 	w := newInviteWorld(t)
 	sys := authz.System(context.Background())
-	expired := w.createInvite("", "member")
+	expired := w.createInvite("")
 	if _, err := w.pool.Exec(sys, `UPDATE invites SET expires_at = now() - interval '1 second' WHERE token_hash = $1`, claimHash(expired)); err != nil {
 		t.Fatal(err)
 	}
-	revoked := w.createInvite("", "member")
+	revoked := w.createInvite("")
 	var rid int64
 	_ = w.pool.QueryRow(sys, `SELECT id FROM invites WHERE token_hash = $1`, claimHash(revoked)).Scan(&rid)
 	if rec := do(w.edge, "POST", "/admin/invites/"+strconv.FormatInt(rid, 10)+"/revoke", url.Values{}, w.asAdmin()); rec.Code != http.StatusSeeOther {
 		t.Fatalf("revoke: %d", rec.Code)
 	}
-	redeemed := w.createInvite("", "member")
+	redeemed := w.createInvite("")
 	if rec := do(w.edge, "POST", InvitePath, redeemForm(redeemed, "first@invite.test", "", goodPW, goodPW)); rec.Code != http.StatusSeeOther {
 		t.Fatalf("control redemption: %d", rec.Code)
 	}
@@ -327,7 +328,7 @@ func TestEveryBadLinkGetsTheSameInvalidPage(t *testing.T) {
 // stops answering after inviteTokenFailures such failures.
 func TestABoundInviteRefusesAnyOtherEmail(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("Bound@Invite.test", "member")
+	tok := w.createInvite("Bound@Invite.test")
 	open := do(w.edge, "POST", InvitePath, url.Values{"step": {"open"}, "token": {tok}})
 	if !strings.Contains(open.Body.String(), `value="Bound@Invite.test"`) || !strings.Contains(open.Body.String(), "readonly") {
 		t.Fatalf("the form does not lock the bound email:\n%s", truncate(open.Body.String(), 600))
@@ -354,7 +355,7 @@ func TestABoundInviteRefusesAnyOtherEmail(t *testing.T) {
 
 func TestALinkStopsAnsweringAfterRepeatedFailures(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("held@invite.test", "member")
+	tok := w.createInvite("held@invite.test")
 	for i := 0; i < inviteTokenFailures; i++ {
 		rec := do(w.edge, "POST", InvitePath, redeemForm(tok, "guess"+strconv.Itoa(i)+"@invite.test", "", goodPW, goodPW),
 			fromIP("192.0.2."+strconv.Itoa(i+1)))
@@ -367,7 +368,7 @@ func TestALinkStopsAnsweringAfterRepeatedFailures(t *testing.T) {
 		t.Fatalf("after %d failures the right email: %d, want the invalid page", inviteTokenFailures, rec.Code)
 	}
 	// Control: one failure fewer leaves a link usable.
-	tok2 := w.createInvite("held2@invite.test", "member")
+	tok2 := w.createInvite("held2@invite.test")
 	for i := 0; i < inviteTokenFailures-1; i++ {
 		do(w.edge, "POST", InvitePath, redeemForm(tok2, "guess@invite.test", "", goodPW, goodPW), fromIP("192.0.2."+strconv.Itoa(50+i)))
 	}
@@ -376,28 +377,29 @@ func TestALinkStopsAnsweringAfterRepeatedFailures(t *testing.T) {
 	}
 }
 
-// slowOpens counts OpenInvite calls and holds each open, so concurrent
-// attempts overlap.
+// slowOpens counts RedeemInvite calls (the attempts past the per-link hold)
+// and holds each open, so concurrent attempts overlap.
 type slowOpens struct {
 	*users.PGStore
 	mu sync.Mutex
 	n  int
 }
 
-func (s *slowOpens) OpenInvite(ctx context.Context, h []byte) (users.Invite, error) {
+func (s *slowOpens) RedeemInvite(ctx context.Context, h []byte, email, name string,
+	create func(context.Context) (string, error), undo func(string)) (users.User, error) {
 	s.mu.Lock()
 	s.n++
 	s.mu.Unlock()
 	time.Sleep(50 * time.Millisecond)
-	return s.PGStore.OpenInvite(ctx, h)
+	return s.PGStore.RedeemInvite(ctx, h, email, name, create, undo)
 }
 
 // TestConcurrentFailuresCannotOutrunTheLinkHold: 20 simultaneous bad
-// attempts on one link — at most inviteTokenFailures reach the store, because
+// attempts on one link — at most inviteTokenFailures reach the redemption, because
 // the slot is reserved before the attempt, not counted after it.
 func TestConcurrentFailuresCannotOutrunTheLinkHold(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("held@invite.test", "member")
+	tok := w.createInvite("held@invite.test")
 	slow := &slowOpens{PGStore: w.store}
 	w.s.gt.Accounts = slow
 	const n = 20
@@ -415,7 +417,7 @@ func TestConcurrentFailuresCannotOutrunTheLinkHold(t *testing.T) {
 	close(start)
 	wg.Wait()
 	if slow.n > inviteTokenFailures {
-		t.Fatalf("%d concurrent attempts reached the store, want at most %d", slow.n, inviteTokenFailures)
+		t.Fatalf("%d concurrent attempts reached the redemption, want at most %d", slow.n, inviteTokenFailures)
 	}
 	if slow.n == 0 {
 		t.Fatal("CONTROL: no attempt reached the store")
@@ -439,7 +441,7 @@ func TestRedemptionIsRateLimitedPerAddress(t *testing.T) {
 
 func TestAWeakOrMismatchedPasswordIsRefusedBeforeGoTrue(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("", "member")
+	tok := w.createInvite("")
 	calls := len(w.fake.Calls())
 	for name, form := range map[string]url.Values{
 		"11 characters": redeemForm(tok, "weak@invite.test", "", "elevenchars", "elevenchars"),
@@ -465,7 +467,7 @@ func TestAWeakOrMismatchedPasswordIsRefusedBeforeGoTrue(t *testing.T) {
 // the GoTrue user is deleted again and the invite stays pending.
 func TestARedemptionWhoseRowFailsUndoesTheGoTrueUser(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("", "member")
+	tok := w.createInvite("")
 	w.s.gt.Accounts = racingStore{PGStore: w.store, pool: w.pool}
 	before := w.fake.UserCount()
 	rec := do(w.edge, "POST", InvitePath, redeemForm(tok, "taken@invite.test", "", goodPW, goodPW))
@@ -507,31 +509,46 @@ func (r racingStore) RedeemInvite(ctx context.Context, h []byte, email, name str
 
 func TestTheLastAdminCannotBeDemotedOrDisabled(t *testing.T) {
 	w := newInviteWorld(t)
-	for path, form := range map[string]url.Values{
-		"/admin/users/1/role":    {"role": {"member"}},
-		"/admin/users/1/disable": {},
-	} {
-		rec := do(w.edge, "POST", path, form, w.asAdmin())
-		if rec.Code != http.StatusConflict {
-			t.Errorf("%s on the only admin: %d, want 409", path, rec.Code)
-		}
+	// Demotion through the page reaches the last-admin guard: the body is the
+	// guard's own refusal, not some other 409.
+	rec := do(w.edge, "POST", "/admin/users/1/role", url.Values{"role": {"member"}}, w.asAdmin())
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "last enabled admin") {
+		t.Fatalf("demoting the only admin: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	// Disabling the last admin cannot be ASKED for through the page by anyone
+	// but that admin (a disabled or non-admin actor never reaches it), and the
+	// page refuses self-disable first (TestAnAdminCannotDisableItself). So the
+	// guard is driven through the page's own path, DisableUserAs.
+	if err := w.s.DisableUserAs(context.Background(), users.Actor{UserID: 1, Via: authz.ViaSession}, 1, true); !errors.Is(err, users.ErrLastAdmin) {
+		t.Fatalf("disabling the only admin: %v, want ErrLastAdmin", err)
 	}
 	u, _ := w.store.ByID(context.Background(), 1)
 	if r, _ := w.store.Role(authz.System(context.Background()), 1); r != authz.RoleAdmin || u.Disabled() {
 		t.Fatalf("user 1 changed: %+v role %q", u, r)
 	}
-	// With a second admin, user 1 can be demoted (by itself); the other is then last.
-	tok := w.createInvite("", "admin")
+	// With a second admin — an invited member PROMOTED on the page, the only
+	// way to make one (D1) — user 1 can be demoted (by itself).
+	tok := w.createInvite("")
 	if rec := do(w.edge, "POST", InvitePath, redeemForm(tok, "second@invite.test", "", goodPW, goodPW)); rec.Code != http.StatusSeeOther {
-		t.Fatalf("second admin: %d", rec.Code)
+		t.Fatalf("second user: %d", rec.Code)
+	}
+	var second int64
+	_ = w.pool.QueryRow(authz.System(context.Background()), `SELECT id FROM users WHERE email = 'second@invite.test'`).Scan(&second)
+	if r, _ := w.store.Role(authz.System(context.Background()), second); r != authz.RoleMember {
+		t.Fatalf("an invite made a %q, want member", r)
+	}
+	if rec := do(w.edge, "POST", "/admin/users/"+strconv.FormatInt(second, 10)+"/role", url.Values{"role": {"admin"}}, w.asAdmin()); rec.Code != http.StatusSeeOther {
+		t.Fatalf("promoting: %d", rec.Code)
 	}
 	if rec := do(w.edge, "POST", "/admin/users/1/role", url.Values{"role": {"member"}}, w.asAdmin()); rec.Code != http.StatusSeeOther {
 		t.Fatalf("demoting one of two admins: %d %s", rec.Code, truncate(rec.Body.String(), 300))
 	}
-	if a := w.audit("user.role"); len(a) != 1 || a[0].UserID != 1 || a[0].Detail["from"] != "admin" || a[0].Detail["to"] != "member" {
+	a := w.audit("user.role")
+	if len(a) != 2 || a[0].Object != "user:1" || a[0].Detail["from"] != "admin" || a[0].Detail["to"] != "member" ||
+		a[1].Detail["to"] != "admin" {
 		t.Fatalf("user.role audit %+v", a)
 	}
-	// The demotion applies on the NEXT request (the session cache is dropped).
+	// The demotion applies on the NEXT request (roleOf reads per request).
 	if rec := do(w.edge, "GET", "/admin/users", nil, w.asAdmin(), asXHR); rec.Code != http.StatusForbidden {
 		t.Fatalf("the demoted admin's next admin request: %d, want 403", rec.Code)
 	}
@@ -570,7 +587,7 @@ func TestTwoAdminsCannotDemoteEachOtherAtOnce(t *testing.T) {
 
 func TestDisablingThroughThePageRefusesTheUserAndIsAudited(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("", "member")
+	tok := w.createInvite("")
 	rec := do(w.edge, "POST", InvitePath, redeemForm(tok, "dis@invite.test", "", goodPW, goodPW))
 	ck := setCookies(rec)
 	var uid int64
@@ -609,9 +626,148 @@ func TestDisablingThroughThePageRefusesTheUserAndIsAudited(t *testing.T) {
 	}
 }
 
+// joinMember redeems a fresh invite as email and returns (user id, GoTrue sub,
+// the session's access and refresh cookies).
+func (w *invWorld) joinMember(email string) (int64, string, string, string) {
+	w.t.Helper()
+	rec := do(w.edge, "POST", InvitePath, redeemForm(w.createInvite(""), email, "", goodPW, goodPW))
+	if rec.Code != http.StatusSeeOther {
+		w.t.Fatalf("join %s: %d %s", email, rec.Code, truncate(rec.Body.String(), 300))
+	}
+	ck := setCookies(rec)
+	var uid int64
+	var sub string
+	if err := w.pool.QueryRow(authz.System(context.Background()), `SELECT id, gotrue_sub::text FROM users WHERE email = $1`, email).Scan(&uid, &sub); err != nil {
+		w.t.Fatal(err)
+	}
+	return uid, sub, ck[accessCookieName].Value, ck[refreshCookieName].Value
+}
+
+// TestEnablingDoesNotResurrectOldSessions (audit Y1): GoTrue accepts a
+// pre-ban refresh token again once the ban is lifted (measured on v2.189.0;
+// the fake models it). Disable → enable must NOT hand the old session back:
+// neither its still-valid access token nor, once that expires, a refresh from
+// it. A sign-in made after the enable works.
+//
+// Two layers, each driven where it is the only one: through the page, the
+// disable also signs the user out everywhere in GoTrue; with GoTrue still
+// holding the session (a disable whose sign-out did not apply), muster's cutoff
+// alone must refuse it — and the CONTROL there shows GoTrue would accept it.
+func TestEnablingDoesNotResurrectOldSessions(t *testing.T) {
+	t.Run("through the page", func(t *testing.T) {
+		w := newInviteWorld(t)
+		uid, _, at, rt := w.joinMember("lazarus@invite.test")
+		held := withCookies(at, rt)
+		c, _ := w.fake.Verifier().Verify(at)
+		id := strconv.FormatInt(uid, 10)
+		for _, step := range []string{"disable", "enable"} {
+			if r := do(w.edge, "POST", "/admin/users/"+id+"/"+step, url.Values{}, w.asAdmin()); r.Code != http.StatusSeeOther {
+				t.Fatalf("%s: %d", step, r.Code)
+			}
+		}
+		if !w.fake.SessionRevoked(c.SessionID) {
+			t.Fatal("the disable did not sign the user out everywhere in GoTrue")
+		}
+		// The held access token is still within its life: only muster can
+		// refuse it (GoTrue cannot recall a JWT) — the cutoff.
+		if r := do(w.edge, "GET", "/account", nil, held, asXHR); r.Code != http.StatusUnauthorized {
+			t.Fatalf("the pre-disable access token after enable: %d, want 401", r.Code)
+		}
+		w.fake.Advance(2 * time.Hour)
+		if r := do(w.edge, "GET", "/account", nil, held, asXHR); r.Code != http.StatusUnauthorized {
+			t.Fatalf("a refresh from the pre-disable session after enable: %d, want 401", r.Code)
+		}
+		w.fake.Advance(2 * time.Second)
+		r := do(w.edge, "POST", "/login", url.Values{"email": {"lazarus@invite.test"}, "password": {goodPW}})
+		if r.Code != http.StatusSeeOther {
+			t.Fatalf("a fresh sign-in after enable: %d %s", r.Code, truncate(r.Body.String(), 300))
+		}
+		ck := setCookies(r)
+		if r := do(w.edge, "GET", "/account", nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value)); r.Code != 200 {
+			t.Fatalf("the fresh session: %d", r.Code)
+		}
+	})
+	t.Run("GoTrue still holding the session", func(t *testing.T) {
+		w := newInviteWorld(t)
+		uid, sub, at, rt := w.joinMember("lazarus2@invite.test")
+		held := withCookies(at, rt)
+		ctx := context.Background()
+		gt := w.fake.Client()
+		// A disable and enable whose GoTrue sign-out did not happen: the row
+		// (with its cutoff) and the ban, nothing else.
+		for _, disabled := range []bool{true, false} {
+			if _, err := w.store.SetDisabled(ctx, uid, disabled); err != nil {
+				t.Fatal(err)
+			}
+			if err := gt.AdminSetBanned(ctx, "127.0.0.1", sub, disabled); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w.s.gt.forgetUser(uid)
+		if r := do(w.edge, "GET", "/account", nil, held, asXHR); r.Code != http.StatusUnauthorized {
+			t.Fatalf("the pre-disable access token after enable: %d, want 401", r.Code)
+		}
+		w.fake.Advance(2 * time.Hour)
+		refreshes := w.fake.CountCalls("POST", "/token")
+		if r := do(w.edge, "GET", "/account", nil, held, asXHR); r.Code != http.StatusUnauthorized {
+			t.Fatalf("a refresh from the pre-disable session after enable: %d, want 401", r.Code)
+		}
+		if w.fake.CountCalls("POST", "/token") != refreshes {
+			t.Fatal("muster sent a pre-cutoff refresh token to GoTrue")
+		}
+		// CONTROL: GoTrue itself still accepts that refresh token.
+		if _, err := gt.Refresh(ctx, "127.0.0.1", rt); err != nil {
+			t.Fatalf("CONTROL: GoTrue refused the pre-ban refresh token after unban (%v), so this proves nothing", err)
+		}
+	})
+}
+
+// TestAResetRevokesTheUsersOtherSessions (audit G6): a password reset ends
+// the user's other sessions — GoTrue's admin password change revokes them, so
+// an old session dies at its next refresh (within one access-token life).
+func TestAResetRevokesTheUsersOtherSessions(t *testing.T) {
+	w := newInviteWorld(t)
+	_, sub, at, rt := w.joinMember("twodevices@invite.test")
+	other := withCookies(at, rt)
+	hash := w.fake.RecoveryHash(sub)
+	if r := do(w.edge, "POST", ResetPath, url.Values{"token": {hash}, "password": {"a-new-long-password"}, "password2": {"a-new-long-password"}}); r.Code != http.StatusSeeOther {
+		t.Fatalf("reset: %d %s", r.Code, truncate(r.Body.String(), 300))
+	}
+	if w.fake.CountCalls("POST", "/logout") != 0 {
+		t.Fatal("the reset still calls /logout (it always 403s against the real GoTrue)")
+	}
+	w.fake.Advance(2 * time.Hour)
+	if r := do(w.edge, "GET", "/account", nil, other, asXHR); r.Code != http.StatusUnauthorized {
+		t.Fatalf("the other device's session after a reset: %d, want 401", r.Code)
+	}
+}
+
+// TestAHeldLinkCannotBeEvictedAndJunkCreatesNoRecord (audit G1): the
+// per-link hold is keyed by INVITE ID after the lookup, so tokens that name
+// no invite create no record at all, and nothing can push a held link out.
+func TestAHeldLinkCannotBeEvictedAndJunkCreatesNoRecord(t *testing.T) {
+	w := newInviteWorld(t)
+	tok := w.createInvite("held@invite.test")
+	for i := 0; i < inviteTokenFailures; i++ {
+		do(w.edge, "POST", InvitePath, redeemForm(tok, "g"+strconv.Itoa(i)+"@invite.test", "", goodPW, goodPW), fromIP("192.0.2."+strconv.Itoa(i+1)))
+	}
+	held := len(w.s.inviteLimits.hold.m)
+	// A spray of invented tokens, each from a fresh address.
+	for i := 0; i < 2000; i++ {
+		do(w.edge, "POST", InvitePath, url.Values{"step": {"open"}, "token": {"junk-" + strconv.Itoa(i)}},
+			fromIP("10."+strconv.Itoa(i/250)+"."+strconv.Itoa(i%250)+".1"))
+	}
+	if got := len(w.s.inviteLimits.hold.m); got != held || held != 1 {
+		t.Fatalf("per-link records: %d before the spray, %d after; want 1 and 1", held, got)
+	}
+	if rec := do(w.edge, "POST", InvitePath, redeemForm(tok, "held@invite.test", "", goodPW, goodPW), fromIP("192.0.2.250")); rec.Code != http.StatusNotFound {
+		t.Fatalf("the held link after a junk spray: %d, want the invalid page", rec.Code)
+	}
+}
+
 func TestTheResetLinkSetsANewPasswordOnceAndSignsIn(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("", "member")
+	tok := w.createInvite("")
 	do(w.edge, "POST", InvitePath, redeemForm(tok, "forgot@invite.test", "", goodPW, goodPW))
 	var uid int64
 	var sub string
@@ -637,7 +793,7 @@ func TestTheResetLinkSetsANewPasswordOnceAndSignsIn(t *testing.T) {
 	if gu, _ := w.fake.User(sub); gu.Password != newPW {
 		t.Fatal("the GoTrue password did not change")
 	}
-	if a := w.audit("user.password_reset"); len(a) != 1 || a[0].UserID != uid {
+	if a := w.audit("user.password_reset"); len(a) != 1 || a[0].UserID != uid || a[0].Detail["ip"] == nil || a[0].Detail["ip"] == "" {
 		t.Fatalf("user.password_reset audit %+v", a)
 	}
 	// Single use.
@@ -672,7 +828,7 @@ func TestInviteAndResetTokensNeverReachTheLog(t *testing.T) {
 
 func TestInvitesAreServedOnlyOnTheBrowserListenerInGoTrueMode(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("", "member")
+	tok := w.createInvite("")
 	machine := w.s.Handler()
 	if rec := do(machine, "POST", InvitePath, redeemForm(tok, "m@invite.test", "", goodPW, goodPW)); rec.Code != http.StatusForbidden {
 		t.Fatalf("redeem on the machine port: %d, want 403", rec.Code)
@@ -693,7 +849,7 @@ func TestInvitesAreServedOnlyOnTheBrowserListenerInGoTrueMode(t *testing.T) {
 
 func TestTheSidebarLinksAdminOnlyForAnAdmin(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("", "member")
+	tok := w.createInvite("")
 	ck := setCookies(do(w.edge, "POST", InvitePath, redeemForm(tok, "nav@invite.test", "", goodPW, goodPW)))
 	admin := do(w.edge, "GET", "/tasks", nil, w.asAdmin()).Body.String()
 	member := do(w.edge, "GET", "/tasks", nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value)).Body.String()
@@ -721,7 +877,7 @@ func TestAdminWritesRefuseACrossSitePost(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("a cross-site POST created %d invite(s)", n)
 	}
-	w.createInvite("", "member") // control: same-origin works
+	w.createInvite("") // control: same-origin works
 }
 
 // TestAnAdminCannotDisableItself — with a SECOND admin present, so the
@@ -741,7 +897,7 @@ func TestAnAdminCannotDisableItself(t *testing.T) {
 // with an email a muster account already has never reaches GoTrue.
 func TestARedemptionWithATakenEmailIsTheUniformPage(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("", "member")
+	tok := w.createInvite("")
 	creates := w.fake.CountCalls("POST", "/admin/users")
 	rec := do(w.edge, "POST", InvitePath, redeemForm(tok, "OP@invite.test", "", goodPW, goodPW))
 	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "invalid or expired") {
@@ -757,7 +913,7 @@ func TestARedemptionWithATakenEmailIsTheUniformPage(t *testing.T) {
 // a link cannot be used to learn which emails have GoTrue logins.
 func TestAnEmailGoTrueAlreadyHasIsTheUniformPage(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("", "member")
+	tok := w.createInvite("")
 	w.fake.AddUser("orphan@invite.test", "some-long-password")
 	rec := do(w.edge, "POST", InvitePath, redeemForm(tok, "orphan@invite.test", "", goodPW, goodPW))
 	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "invalid or expired") {
@@ -771,7 +927,7 @@ func TestAnEmailGoTrueAlreadyHasIsTheUniformPage(t *testing.T) {
 // TestAResetLinkForADisabledUserSetsNothing.
 func TestAResetLinkForADisabledUserSetsNothing(t *testing.T) {
 	w := newInviteWorld(t)
-	tok := w.createInvite("", "member")
+	tok := w.createInvite("")
 	do(w.edge, "POST", InvitePath, redeemForm(tok, "gone@invite.test", "", goodPW, goodPW))
 	var uid int64
 	var sub string
@@ -791,5 +947,20 @@ func TestAResetLinkForADisabledUserSetsNothing(t *testing.T) {
 	}
 	if gu, _ := w.fake.User(sub); gu.Password != goodPW {
 		t.Fatal("a disabled user's password was changed")
+	}
+}
+
+// TestTheCutoffIncludesItsOwnSecond: iat is whole seconds, so a token stamped
+// with the cutoff's own second may predate the disable and is refused.
+func TestTheCutoffIncludesItsOwnSecond(t *testing.T) {
+	cut := time.Unix(1_700_000_000, 400_000_000)
+	u := users.User{SessionsNotBefore: &cut}
+	for iat, want := range map[int64]bool{1_699_999_999: true, 1_700_000_000: true, 1_700_000_001: false} {
+		if got := issuedBeforeCutoff(u, gotrue.Claims{IssuedAt: iat}); got != want {
+			t.Errorf("iat %d: refused=%v, want %v", iat, got, want)
+		}
+	}
+	if issuedBeforeCutoff(users.User{}, gotrue.Claims{IssuedAt: 1}) {
+		t.Error("no cutoff refused a token")
 	}
 }

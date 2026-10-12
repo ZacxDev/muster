@@ -2,13 +2,12 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"html"
 	"net/http"
 	"net/mail"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -34,10 +33,17 @@ import (
 //
 // 🔴 TWO KEYS, BECAUSE A GUESSER AND A LINK-HOLDER ARE DIFFERENT ATTACKS. An
 // unknown token has a different hash on every guess, so guessing is limited per
-// client address (inviteIPLimit per minute, every POST). A REAL link that keeps
-// failing — a bound email being guessed, GoTrue's "email exists" being used to
-// enumerate accounts — is limited per token hash: after inviteTokenFailures the
-// link answers the uniform page for inviteTokenFailWindow, whatever is posted.
+// client address only (inviteIPLimit per minute, every POST) — and a hash that
+// names no live invite gets NO per-link record, so a spray of invented tokens
+// creates nothing to hold. A REAL link that keeps failing — a bound email
+// being guessed, GoTrue's "email exists" used to enumerate accounts — is held
+// per INVITE ID, looked up from the hash: after inviteTokenFailures the link
+// answers the uniform page for inviteTokenFailWindow, whatever is posted.
+//
+// 🔴 THE PER-INVITE HOLD IS NEVER EVICTED. It is keyed by invites that exist
+// (bounded by what admins create), not by attacker-chosen strings, so it needs
+// no capacity bound — and a bounded, evicting map is exactly what a flood of
+// other keys could use to push a held link's record out (audit G1).
 const (
 	inviteIPLimit         = 10
 	inviteIPWindow        = time.Minute
@@ -46,28 +52,57 @@ const (
 )
 
 // inviteLimits is the redemption pages' throttle state (zero value ready).
-// Both are #65's boundedWindow: a fixed window per key with a hard cap on
-// how many keys are held, so a spray of invented tokens cannot grow it.
 type inviteLimits struct {
-	ip       boundedWindow
-	tokenBad boundedWindow
+	ip   boundedWindow // #65's capped window: keys are attacker-chosen
+	hold linkHold
 }
 
-// refund hands back one slot take gave key, for an attempt that did not fail.
+// linkHold counts failures per invite ID, reserved before the attempt.
 //
-// 🔴 A LINK-FAILURE SLOT IS TAKEN BEFORE THE ATTEMPT AND REFUNDED IF IT DID NOT
-// FAIL — not counted after. A check-then-record counter lets N concurrent
-// attempts all pass the check before any records its failure (accounts PR 4's
-// audit found that shape in the sign-in limiter), so a held link would still
-// take a burst of guesses. Taking under the lock bounds in-flight attempts too
-// (TestConcurrentFailuresCannotOutrunTheLinkHold).
-func (b *boundedWindow) refund(key string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if e, ok := b.items[key]; ok {
-		if en := e.Value.(*boundedEntry); en.n > 0 {
-			en.n--
+// 🔴 A SLOT IS TAKEN BEFORE THE ATTEMPT AND REFUNDED IF IT DID NOT FAIL — not
+// counted after. A check-then-record counter lets N concurrent attempts all
+// pass the check before any records its failure (accounts PR 4's audit found
+// that shape in the sign-in limiter). Taking under the lock bounds in-flight
+// attempts too (TestConcurrentFailuresCannotOutrunTheLinkHold).
+type linkHold struct {
+	mu sync.Mutex
+	m  map[int64]*linkCount
+}
+
+type linkCount struct {
+	start time.Time
+	n     int
+}
+
+func (h *linkHold) take(id int64, now time.Time, window time.Duration, limit int) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.m == nil {
+		h.m = map[int64]*linkCount{}
+	}
+	c, ok := h.m[id]
+	if !ok || now.Sub(c.start) >= window {
+		// Expired records are dropped here, never live ones.
+		for k, v := range h.m {
+			if now.Sub(v.start) >= window {
+				delete(h.m, k)
+			}
 		}
+		h.m[id] = &linkCount{start: now, n: 1}
+		return true
+	}
+	if c.n >= limit {
+		return false
+	}
+	c.n++
+	return true
+}
+
+func (h *linkHold) refund(id int64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if c, ok := h.m[id]; ok && c.n > 0 {
+		c.n--
 	}
 }
 
@@ -91,11 +126,6 @@ func (s *Server) inviteRefusal(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	return true
-}
-
-func tokenKey(token string) string {
-	sum := sha256.Sum256([]byte(token))
-	return hex.EncodeToString(sum[:])
 }
 
 // renderInvalidInvite is the ONE page for every bad link, so it cannot be used
@@ -155,7 +185,7 @@ func (s *Server) renderInviteForm(w http.ResponseWriter, code int, token string,
 	}
 	writeAuthDocument(w, code, "Create your account", `<form method="POST" action="`+InvitePath+`" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Create your muster account</h1>
-<p class="text-sm text-fg2">You are joining as <span class="font-semibold text-fg">`+html.EscapeString(string(inv.Role))+`</span>. This link works once.</p>
+<p class="text-sm text-fg2">You are joining as a member. This link works once.</p>
 `+problemNode(problem)+`
 `+field("invite-email", "email", "Email", "email", "username", email, true, locked)+`
 `+field("invite-name", "display_name", "Your name", "text", "name", name, false, false)+`
@@ -183,8 +213,23 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := r.FormValue("token")
-	key := tokenKey(token)
-	if token == "" || !lim.tokenBad.take(key, now, inviteTokenFailWindow, inviteTokenFailures) {
+	if token == "" {
+		s.renderInvalidInvite(w)
+		return
+	}
+	hash := claimHash(token)
+	inv, err := s.gt.Accounts.OpenInvite(r.Context(), hash)
+	if errors.Is(err, users.ErrInvalidInvite) {
+		// No live invite: no per-link record (only the per-address count).
+		s.renderInvalidInvite(w)
+		return
+	}
+	if err != nil {
+		s.logger.Printf("invite: open: %v", err)
+		s.renderNotice(w, http.StatusInternalServerError, "Something went wrong", "Try the link again in a moment.")
+		return
+	}
+	if !lim.hold.take(inv.ID, now, inviteTokenFailWindow, inviteTokenFailures) {
 		s.renderInvalidInvite(w)
 		return
 	}
@@ -193,23 +238,12 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 	failed := false
 	defer func() {
 		if !failed {
-			lim.tokenBad.refund(key)
+			lim.hold.refund(inv.ID)
 		}
 	}()
 	bad := func() {
 		failed = true
 		s.renderInvalidInvite(w)
-	}
-	hash := claimHash(token)
-	inv, err := s.gt.Accounts.OpenInvite(r.Context(), hash)
-	if errors.Is(err, users.ErrInvalidInvite) {
-		bad()
-		return
-	}
-	if err != nil {
-		s.logger.Printf("invite: open: %v", err)
-		s.renderNotice(w, http.StatusInternalServerError, "Something went wrong", "Try the link again in a moment.")
-		return
 	}
 	if r.FormValue("step") != "redeem" {
 		s.renderInviteForm(w, http.StatusOK, token, inv, "", "", "")
@@ -395,17 +429,20 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderInvalidInvite(w)
 		return
 	}
-	if err := s.gt.Client.AdminSetPassword(r.Context(), ip, c.Subject, pw); err != nil {
+	// The audit row (actor: the user; the client address in the detail)
+	// commits only if GoTrue set the password.
+	//
+	// ⚠ NO /logout OF THE RECOVERY SESSION AFTERWARDS. It always answered 403
+	// against the real GoTrue: an admin password change already revokes every
+	// session the user has — the recovery one, and every other device's
+	// (TestAResetRevokesTheUsersOtherSessions).
+	if err := s.gt.Accounts.Audited(r.Context(), users.Actor{UserID: u.ID, Via: authz.Via("reset")}, "user.password_reset",
+		users.UserObject(u.ID), map[string]any{"ip": ip}, func() error {
+			return s.gt.Client.AdminSetPassword(r.Context(), ip, c.Subject, pw)
+		}); err != nil {
 		s.logger.Printf("reset: setting the password for user %d failed: %v", u.ID, err)
 		s.renderNotice(w, http.StatusBadGateway, "The password could not be set", "Ask for a new reset link.")
 		return
-	}
-	// The verify session is not the one the browser will hold; end it.
-	if err := s.gt.Client.Logout(r.Context(), ip, sess.AccessToken, gotrue.ScopeLocal); err != nil {
-		s.logger.Printf("reset: ending the recovery session for user %d: %v", u.ID, err)
-	}
-	if err := s.gt.Accounts.Audit(r.Context(), users.Actor{UserID: u.ID, Via: authz.Via("reset")}, "user.password_reset", users.UserObject(u.ID), nil); err != nil {
-		s.logger.Printf("reset: AUDIT WRITE FAILED for user %d: %v", u.ID, err)
 	}
 	s.logger.Printf("reset: user %d set a new password", u.ID)
 	s.signInNewLogin(w, r, ip, u.Email, pw)
