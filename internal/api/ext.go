@@ -146,6 +146,10 @@ type GitHubOAuthConfig struct {
 	// BaseURL is the externally reachable origin used to construct the callback
 	// URL. If empty the callback is derived from the inbound request host.
 	BaseURL string
+	// StateKey MACs the OAuth `state` (github.OAuthStateKey, derived from the
+	// store's encryption key). Empty: no state is minted and every callback is
+	// refused — the flow never runs on an unkeyed MAC.
+	StateKey []byte
 }
 
 // Configured reports whether the OAuth App credentials are present.

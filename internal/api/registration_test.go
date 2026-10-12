@@ -61,9 +61,10 @@ func fullyWiredServer(t *testing.T) *Server {
 		// api.Provisioner and api.Gateway are separate now, so setting only the first
 		// would quietly make this an "almost everything" fixture — and a registration
 		// test that does not wire a dependency cannot notice a route gated on it.
-		Gateway:     stubGateway{},
-		Kinds:       stubKinds{},
-		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://example.test"},
+		Gateway: stubGateway{},
+		Kinds:   stubKinds{},
+		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://example.test",
+			StateKey: []byte("registration-test-state-key-01234567")},
 		// A NON-DEFAULT prefix on purpose. agents.NamespacePrefix here would be
 		// indistinguishable from the zero value's resolved behaviour, so this
 		// fixture would claim "fully wired" while exercising the default — which is

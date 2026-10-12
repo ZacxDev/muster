@@ -77,9 +77,9 @@ var (
 	//     re-reads the row to decide whether to push.
 	//
 	// Accounts PR 3b added two more, each reading one value of one row:
-	//   - agentOwner: the agent-named SSE nudges (BroadcastAgentChanged,
-	//     BroadcastChatReply, BroadcastAgentStream) are handed only a NAME, by
-	//     loops with no principal; the owner the event reaches is read here.
+	//   - agentOwner: the agent-named SSE nudge (BroadcastAgentChanged) is
+	//     handed only a NAME, by loops with no principal; the owner the event
+	//     reaches is read here.
 	//   - roleOf: the request principal's ROLE, read inside the wrappers before
 	//     the principal it completes exists (as agentByToken learns the owner).
 	systemLedger = []string{

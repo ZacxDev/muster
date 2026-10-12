@@ -29,16 +29,16 @@ func actingOwner(ctx context.Context) (int64, error) {
 
 var errNoOwner = errors.New("github: no acting user to own the connection")
 
-// legacyOwnerID is the one owner whose connection may still be sealed in the
-// pre-3b form (no associated data): the github_connection table held exactly
-// one row, CHECK(id=1), before accounts PR 1, and every row was backfilled to
-// user 1. See Get.
-const legacyOwnerID int64 = 1
-
 // ownerAAD binds a sealed token to its owner. A ciphertext copied onto
 // another user's row fails to open, so the composite row-level boundary
 // holds even against a write that bypasses it (the plan's "ciphertext bound
 // to owner").
+//
+// ⚠ THERE IS NO PRE-OWNER (no associated data) FALLBACK. A row sealed before
+// accounts PR 3b does not open and reads as an error: GitHub is not enabled on
+// the live deployment (no MUSTER_GITHUB_ENCRYPTION_KEY), so there is nothing
+// to re-seal, and a fallback would be a second, weaker way to open a row.
+// Reconnect through the OAuth flow if one ever exists.
 func ownerAAD(owner int64) []byte {
 	return []byte("muster/github_connection/owner=" + strconv.FormatInt(owner, 10))
 }
@@ -99,22 +99,6 @@ func (s *PGStore) Get(ctx context.Context) (Connection, bool, error) {
 		return Connection{}, false, err
 	}
 	tok, err := decrypt(s.key, ct, ownerAAD(owner))
-	if err != nil && owner == legacyOwnerID {
-		// 🔴 THE PRE-3b FORM, AND ONLY FOR THE OWNER IT CAN BELONG TO. The
-		// operator's existing row was sealed with no associated data; it opens
-		// that way once and is re-sealed bound to its owner, so the fallback
-		// retires itself on the first read. It is NOT tried for any other user:
-		// a legacy blob on user N's row can only have been copied there, which
-		// is exactly what the binding exists to refuse.
-		legacy, lerr := decrypt(s.key, ct, nil)
-		if lerr == nil {
-			tok, err = legacy, nil
-			if nct, serr := encrypt(s.key, legacy, ownerAAD(owner)); serr == nil {
-				_, _ = s.pool.Exec(ctx, `UPDATE github_connection SET token_ciphertext=$2
-					WHERE owner_id=$1 AND token_ciphertext=$3`, owner, nct, ct)
-			}
-		}
-	}
 	if err != nil {
 		return Connection{}, false, err
 	}

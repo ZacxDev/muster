@@ -45,7 +45,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/github"
@@ -68,26 +67,9 @@ const (
 	EventAgentChanged = "agent.changed"
 	// EventChatReply announces a persisted assistant turn.
 	EventChatReply = "chat.reply"
-	// EventAgentStream carries ONE live event of an agent's kickoff turn.
-	EventAgentStream = "agent.stream"
 	// EventConnectorChanged announces a connector request, decision or change.
 	EventConnectorChanged = "connector.changed"
 )
-
-// agentStreamPayload is the JSON Data of an EventAgentStream SSE event: the agent
-// name (so the chat page filters to its own agent) plus the StreamEvent fields the
-// browser renders — keyed the same way the user-turn WS keys them so the shared
-// client renderer handles both. Empty fields are omitted to keep the payload small.
-type agentStreamPayload struct {
-	Agent      string `json:"agent"`
-	Kind       string `json:"kind"`
-	Text       string `json:"text,omitempty"`
-	ToolID     string `json:"toolId,omitempty"`
-	ToolName   string `json:"toolName,omitempty"`
-	ToolArgs   string `json:"toolArgs,omitempty"`
-	ToolOK     bool   `json:"toolOk,omitempty"`
-	ToolOutput string `json:"toolOutput,omitempty"`
-}
 
 // Server is muster's HTTP application.
 type Server struct {
@@ -763,8 +745,8 @@ func (s *Server) reapIdleTasks(ctx context.Context, now time.Time) {
 //
 // 🔴 EVERY EVENT HAS AN OWNER AND REACHES ONLY THAT USER (accounts PR 3b). The
 // bus used to fan every event to every open stream, which with a second user
-// is a cross-user leak with no handler bug (task ids, agent names, and on
-// agent.stream a live turn's text). The classification of every call site:
+// is a cross-user leak with no handler bug (task ids, agent names, connector
+// grant ids). The classification of every call site:
 //
 //   - request handlers (session, hook/service, agent, connect, relay doors):
 //     broadcast(ctx, …). Under row-level security a request can only have
@@ -772,9 +754,10 @@ func (s *Server) reapIdleTasks(ctx context.Context, now time.Time) {
 //     of the task / agent / connector / grant the event names.
 //   - the idle-task reaper (authz.System): broadcastTo(n.OwnerID, …) — the
 //     task row's owner, read with it (notes.ListSummaries).
-//   - agent-named nudges handed only a NAME, from loops and handlers alike
-//     (BroadcastAgentChanged, BroadcastChatReply, BroadcastAgentStream):
-//     broadcastTo(s.agentOwner(name), …).
+//   - the agent-named nudge handed only a NAME, by the loops' OnChange hooks
+//     (BroadcastAgentChanged): agentChangedFor(s.agentOwner(name), …).
+//   - the mirror plugin's host nudge (BroadcastAgentsChangedFor): the host's
+//     owner, named by the hub.
 //
 // None is global: there is no "every user" event, so there is no path that
 // delivers to everyone. A zero owner (a System context reaching broadcast, or
@@ -952,40 +935,6 @@ func (s *Server) agentChangedFor(owner int64, agentName string) {
 	// ONCE when a task-linked agent first reaches `running`. It re-reads the
 	// agent to see the new status + NoteID and dedupes internally.
 	s.notifyAgentRunning(agentName)
-}
-
-// BroadcastChatReply fires an SSE chat.reply nudge for the named agent so an
-// open chat page live-refreshes its #chat-log.
-func (s *Server) BroadcastChatReply(agentName string) {
-	if s == nil {
-		return
-	}
-	s.broadcastTo(s.agentOwner(agentName), EventChatReply, agentName)
-}
-
-// BroadcastAgentStream fires an SSE agent.stream event carrying ONE live event
-// of the named agent's kickoff turn, so an open chat page renders it live. The
-// payload mirrors the user-turn WS fields so the browser uses one renderer.
-func (s *Server) BroadcastAgentStream(agentName string, ev agents.StreamEvent) {
-	if s == nil || s.bus == nil {
-		return
-	}
-	// 🔴 THE LIVE TURN'S TEXT, SO THE OWNER FILTER MATTERS MOST HERE.
-	owner := s.agentOwner(agentName)
-	data, err := json.Marshal(agentStreamPayload{
-		Agent:      agentName,
-		Kind:       ev.Kind,
-		Text:       ev.Text,
-		ToolID:     ev.ToolID,
-		ToolName:   ev.ToolName,
-		ToolArgs:   ev.ToolArgs,
-		ToolOK:     ev.ToolOK,
-		ToolOutput: ev.ToolOutput,
-	})
-	if err != nil {
-		return
-	}
-	s.publish(sse.Event{Name: EventAgentStream, Data: string(data), OwnerID: owner})
 }
 
 // WaitForPushes blocks until every in-flight notification fan-out has finished.

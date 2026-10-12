@@ -2,7 +2,11 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"github.com/ZacxDev/muster/internal/github"
 	"io"
 	"log"
 	"net/http"
@@ -270,6 +274,12 @@ func TestEachUserProvisionsTheirOwnChief(t *testing.T) {
 	if err == nil {
 		t.Cleanup(func() { _, _ = w.pool.Exec(w.sys, `DELETE FROM agents WHERE id=$1`, opChief.ID) })
 	}
+	panel := func() string {
+		return w.do(w.h, "GET", "/ui/chief/panel", "", cred{sessionUser: w.b.uid}).Body.String()
+	}
+	if before := panel(); !strings.Contains(before, "data-chief-panel-missing") {
+		t.Fatalf("control: before provisioning, B's panel already resolves a chief:\n%s", truncate(before, 300))
+	}
 	rec := w.do(w.h, "POST", "/chief/provision", url.Values{"model": {""}}.Encode(), cred{sessionUser: w.b.uid})
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"created":true`) {
 		t.Fatalf("B's chief provision: %d %s; want 200 created", rec.Code, rec.Body)
@@ -278,6 +288,14 @@ func TestEachUserProvisionsTheirOwnChief(t *testing.T) {
 	var name string
 	if err := w.pool.QueryRow(w.sys, `SELECT owner_id, name FROM agents WHERE name=$1`, agents.ChiefNameFor(w.b.uid)).Scan(&owner, &name); err != nil || owner != w.b.uid {
 		t.Fatalf("B's chief row: owner %d name %q (%v); want owned by B", owner, name, err)
+	}
+	// 🔴 The chief must RESOLVE for the member: everything that talks to it
+	// finds it by display name (audit 🟡2 — it used to keep the slug).
+	if after := panel(); strings.Contains(after, "data-chief-panel-missing") {
+		t.Errorf("B's panel still says there is no chief after B provisioned one:\n%s", truncate(after, 300))
+	}
+	if a, err := agents.NewPG(w.pool).GetByName(w.sys, agents.ChiefNameFor(w.b.uid)); err != nil || a.DisplayName != ChiefDisplayName {
+		t.Errorf("B's chief display name = %q (%v); want %q", a.DisplayName, err, ChiefDisplayName)
 	}
 	if got := w.prov.actedOn(opChief.ID, w.b.uid); got != 0 {
 		t.Errorf("B's provision acted on the operator's chief %d time(s)", got)
@@ -330,7 +348,8 @@ func TestAGrantNeverResolvesAnotherOwnersConnector(t *testing.T) {
 func TestTheGitHubOAuthStateIsBoundToItsUser(t *testing.T) {
 	s := New(nil, AuthConfig{UIPassword: connTestPassword}, log.New(io.Discard, "", 0))
 	s.UseExtensions(Extensions{GitHub: stubGitHubStore{}, Users: stubUsers{},
-		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://muster.test"}})
+		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://muster.test",
+			StateKey: []byte("iso-oauth-state-key-0123456789abcdef")}})
 	const a, b = 5, 6
 	s.sessionUserOverride = func(r *http.Request) int64 {
 		v, _ := strconv.ParseInt(r.Header.Get(isoUserHeader), 10, 64)
@@ -371,4 +390,41 @@ func TestTheGitHubOAuthStateIsBoundToItsUser(t *testing.T) {
 	if got := callback(a, state); !strings.Contains(got, "missing code") {
 		t.Errorf("control: A completing its own flow: %q; want it past the state check (to the missing code)", got)
 	}
+}
+
+// TestTheGitHubOAuthStateNeedsAKey (audit 🟡3): with no state key nothing is
+// minted (connect answers 503) and no callback is accepted — a MAC under an
+// empty key is a public function of its input. And the key is derived from the
+// GitHub encryption key under its own label, never from MUSTER_UI_PASSWORD.
+func TestTheGitHubOAuthStateNeedsAKey(t *testing.T) {
+	s := New(nil, AuthConfig{UIPassword: connTestPassword}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{GitHub: stubGitHubStore{}, Users: stubUsers{},
+		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://muster.test"}})
+	h := s.Handler()
+	r := httptest.NewRequest("GET", "/github/connect", nil)
+	r.Header.Set("Cookie", sessionCookieFor(s))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("connect with no state key: %d; want 503", rec.Code)
+	}
+	if st, ok := s.githubOAuthState(1, "nonce"); ok || st != "" {
+		t.Fatalf("minted %q with no key", st)
+	}
+	if s.githubOAuthStateNames("1.nonce."+hexMAC(nil, "1.nonce"), 1) {
+		t.Fatal("a state MACed under the empty key was accepted")
+	}
+	k1, err := github.OAuthStateKey([]byte("0123456789abcdef0123456789abcdef"))
+	if err != nil || len(k1) != 32 || string(k1) == "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("OAuthStateKey = %x, %v; want a distinct 32-byte key", k1, err)
+	}
+	if _, err := github.OAuthStateKey(nil); err == nil {
+		t.Fatal("OAuthStateKey derived a key from nothing")
+	}
+}
+
+func hexMAC(key []byte, body string) string {
+	m := hmac.New(sha256.New, key)
+	m.Write([]byte(body))
+	return hex.EncodeToString(m.Sum(nil))
 }

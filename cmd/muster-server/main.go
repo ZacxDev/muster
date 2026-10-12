@@ -253,6 +253,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 				return nil, fmt.Errorf("github store: %w", err)
 			}
 			ext.GitHub = gh
+			// The OAuth state's MAC key, derived from the same secret under its
+			// own label (github.OAuthStateKey) — never from the UI password.
+			if ext.GitHubOAuth.StateKey, err = github.OAuthStateKey(cfg.GitHubEncKey); err != nil {
+				a.Close()
+				return nil, fmt.Errorf("github oauth state key: %w", err)
+			}
 			if cfg.GitHubToken != "" {
 				// Backgrounded: it is one network round trip to github.com and a
 				// boot that blocks on a third party is a boot that a third party's

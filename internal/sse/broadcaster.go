@@ -5,7 +5,7 @@
 // 🔴 DELIVERY IS BY OWNER, AND AN EVENT WITH NO OWNER REACHES NOBODY (accounts
 // PR 3b). This bus used to fan every event to every subscriber: with a second
 // user, user B's open board would have received user A's task ids and agent
-// names (and agent.stream carries a live turn's TEXT) with no handler bug at
+// names with no handler bug at
 // all — row-level security never sees the bus. So an Event names its OwnerID,
 // a subscriber names its user, and Broadcast delivers only where they are
 // equal. There is no "deliver to everyone" path: every event muster emits is

@@ -115,7 +115,11 @@ func (s *Server) handleGitHubConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not start oauth", http.StatusInternalServerError)
 		return
 	}
-	state := s.githubOAuthState(requestOwner(r.Context()), nonce)
+	state, ok := s.githubOAuthState(requestOwner(r.Context()), nonce)
+	if !ok {
+		http.Error(w, githubUnwiredReason, http.StatusServiceUnavailable)
+		return
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     oauthStateCookie,
 		Value:    state,
@@ -202,9 +206,15 @@ func (s *Server) handleGitHubDisconnect(w http.ResponseWriter, r *http.Request) 
 // The cookie equality check alone does not stop that: it proves the same
 // browser, not the same user. The mac makes the uid unforgeable; the callback
 // demands it equal its own principal (githubOAuthStateNames).
-func (s *Server) githubOAuthState(uid int64, nonce string) string {
-	body := strconv.FormatInt(uid, 10) + "." + nonce
-	return body + "." + s.githubStateMAC(body)
+//
+// 🔴 THE KEY IS GitHubOAuthConfig.StateKey AND AN EMPTY ONE MINTS NOTHING
+// (false): a MAC under no key is a public function of the state.
+func (s *Server) githubOAuthState(uid int64, nonce string) (string, bool) {
+	mac, ok := s.githubStateMAC(strconv.FormatInt(uid, 10) + "." + nonce)
+	if !ok || uid <= 0 {
+		return "", false
+	}
+	return strconv.FormatInt(uid, 10) + "." + nonce + "." + mac, true
 }
 
 // githubOAuthStateNames reports whether state is a well-formed, authentic
@@ -218,17 +228,22 @@ func (s *Server) githubOAuthStateNames(state string, uid int64) bool {
 		return false
 	}
 	body, mac := state[:i], state[i+1:]
-	if !hmac.Equal([]byte(mac), []byte(s.githubStateMAC(body))) {
+	want, ok := s.githubStateMAC(body)
+	if !ok || !hmac.Equal([]byte(mac), []byte(want)) {
 		return false
 	}
 	owner, _, ok := strings.Cut(body, ".")
 	return ok && owner == strconv.FormatInt(uid, 10)
 }
 
-func (s *Server) githubStateMAC(body string) string {
-	m := hmac.New(sha256.New, append([]byte("muster-github-oauth-state-v1\x00"), s.auth.uiSessionSecret()...))
+func (s *Server) githubStateMAC(body string) (string, bool) {
+	key := s.ext.GitHubOAuth.StateKey
+	if len(key) == 0 {
+		return "", false
+	}
+	m := hmac.New(sha256.New, key)
 	m.Write([]byte(body))
-	return hex.EncodeToString(m.Sum(nil))
+	return hex.EncodeToString(m.Sum(nil)), true
 }
 
 // callbackURL builds the OAuth redirect URI. It prefers the configured public

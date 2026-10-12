@@ -219,6 +219,14 @@ var isolationClasses = map[string]routeClass{
 var wantCanaryForA = []string{
 	"GET /ui/agents", "GET /ui/agents/notes", "GET /ui/connector-requests", "GET /ui/connectors",
 	"GET /ui/repos", "GET /ui/tasks", "GET /ui/chief/panel",
+	// The AGGREGATES — vocabularies, suggestion lists, unread rolls — read
+	// across rows rather than by id, which is exactly where a missing scope
+	// hides (plan §Recon 4). A's tag and project are identities, its unread
+	// assistant message names its agent.
+	// (/ui/tasks/new and /ui/agents/new carry no per-user aggregate: the
+	// first lists the router's directories, admin-only and checked by the
+	// operator canary; the second is the bare dispatch form.)
+	"GET /ui/tags", "GET /ui/notifications",
 }
 
 func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
@@ -296,6 +304,7 @@ type isoWorld struct {
 	aSessionLink string
 	aChief       agents.Agent
 	opApproval   string
+	aProject     string
 	objA, ghost  isoObjs
 	upHost       string
 	up           *isoUpstream
@@ -363,7 +372,11 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		if u == &w.op {
 			title = w.opCanary + " title"
 		}
-		u.task, err = ns.Create(uc, notes.Note{Title: title, Body: body, Status: notes.StatusOpen})
+		nt := notes.Note{Title: title, Body: body, Status: notes.StatusOpen}
+		if u == &w.a {
+			nt.Repo, nt.Directory = w.canary+"/repo", "/srv/"+w.canary
+		}
+		u.task, err = ns.Create(uc, nt)
 		must(err, u.name+" task")
 		u.token = "iso-" + u.name + "-agent-token-" + w.suffix
 		display := u.name + " agent"
@@ -377,15 +390,19 @@ func newIsoWorld(t *testing.T) *isoWorld {
 
 	// A's every other object, each carrying the canary.
 	ua := as2(w.a)
-	w.aTask2, err = ns.Create(ua, notes.Note{Title: w.canary + " second", Status: notes.StatusOpen})
+	// A's second task is READY FOR REVIEW: the review-count aggregate.
+	w.aTask2, err = ns.Create(ua, notes.Note{Title: w.canary + " second", Status: notes.StatusReadyForReview})
 	must(err, "a task2")
+	_, err = ns.SetStatus(ua, w.aTask2.ID, notes.StatusReadyForReview) // Create files every task open
+	must(err, "a task2 review")
 	w.aComment, err = ns.AddComment(ua, notes.Comment{NoteID: w.a.task.ID, Author: "a", Body: w.canary + " comment"})
 	must(err, "a comment")
 	w.aAttachment, err = ns.AddAttachment(ua, w.a.task.ID, notes.Attachment{Filename: w.canary + ".txt",
 		ContentType: "text/plain", SizeBytes: int64(len(w.canary)), Data: []byte(w.canary)})
 	must(err, "a attachment")
 	w.aTag = "isotag" + w.suffix
-	_, err = ns.AddTags(ua, w.a.task.ID, []string{w.aTag})
+	w.aProject = "isoproj" + w.suffix
+	_, err = ns.AddTags(ua, w.a.task.ID, []string{w.aTag, "project:" + w.aProject})
 	must(err, "a tag")
 	w.aSessionLink = "isosess-" + w.suffix
 	_, _, err = ns.LinkSession(ua, w.a.task.ID, notes.SessionLink{SessionID: w.aSessionLink, Role: "created", Project: w.canary}, false)
@@ -394,9 +411,9 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a chat session")
 	_, err = as.AddChatMessage(ua, agents.ChatMessage{AgentID: w.a.agent.ID, SessionID: w.aChatSession.ID, Role: "user", Content: w.canary + " chat"})
 	must(err, "a chat message")
-	w.aChief, err = as.Create(ua, agents.Agent{Name: agents.ChiefNameFor(w.a.uid), DisplayName: ChiefDisplayName,
-		Namespace: "ns-isochief" + w.suffix, HooksToken: "iso-a-chief-" + w.suffix, Status: agents.StatusRunning})
-	must(err, "a chief")
+	// An UNREAD assistant reply: the notifications roll-up.
+	_, err = as.AddChatMessage(ua, agents.ChatMessage{AgentID: w.a.agent.ID, SessionID: w.aChatSession.ID, Role: "assistant", Kind: "text", Content: w.canary + " reply"})
+	must(err, "a chat reply")
 
 	w.up = newIsoUpstream(t)
 	w.upHost = "iso.fake.test:" + w.up.port
@@ -409,8 +426,6 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	_, err = pool.Exec(w.sys, `INSERT INTO connector_grants (agent_id, owner_id, connector_name, status, reason)
 		VALUES ($1, $2, $3, 'approved', 'ok')`, w.a.agent.ID, w.a.uid, w.aConnName)
 	must(err, "a approved grant")
-	must(pool.QueryRow(w.sys, `INSERT INTO connector_grants (agent_id, owner_id, connector_name, status, reason)
-		VALUES ($1, $2, $3, 'pending', $4) RETURNING id`, w.aChief.ID, w.a.uid, w.aConnName, w.canary+" reason").Scan(&w.aGrantID), "a pending grant")
 	// A second connector whose NAME is the canary: the one no other user ever
 	// names in a request, so its name on any of B's pages is A's data. (The
 	// path connector's name is not a canary — B's walk sends it, and a grant B
@@ -422,7 +437,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Connector: w.aConnName, Method: "GET", Host: w.upHost, Path: "/", Status: 200, Detail: w.canary + " audit"}), "a audit")
 	must(gh.Save(ua, w.canary+"-login", "repo", "gho_"+w.canary), "a github")
 
-	w.aIdentities = []string{w.a.agent.Name, w.aChief.Name, w.aSessionLink}
+	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
 	w.objA = isoObjs{task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main"}
@@ -440,7 +455,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.prov = &isoProvisioner{store: as}
 	srv.UseExtensions(Extensions{
 		Notes: ns, Agents: as, GitHub: gh, Users: users.NewPG(pool),
-		GitHubOAuth: GitHubOAuthConfig{ClientID: "iso-client", ClientSecret: "iso-secret", BaseURL: "http://muster.test"},
+		GitHubOAuth: GitHubOAuthConfig{ClientID: "iso-client", ClientSecret: "iso-secret", BaseURL: "http://muster.test",
+			StateKey: []byte("iso-walk-oauth-state-key-0123456789")},
 		Provisioner: w.prov, Gateway: w.prov, Connectors: cs,
 		Mirror: &isoMirror{owner: w.a.uid, host: w.canary + "-host"},
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true, InsecureHTTP: true,
@@ -463,6 +479,22 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.srv = srv
 	w.h = srv.Handler()
 	w.connectH = OnlyConnectSurface(w.h)
+
+	// A's chief, through the REAL provision path (POST /chief/provision as A's
+	// session) — not a hand-set display name, so the walk sees the chief a
+	// member actually gets.
+	if rec := w.do(w.h, "POST", "/chief/provision", url.Values{"model": {""}}.Encode(), cred{sessionUser: w.a.uid}); rec.Code != http.StatusOK {
+		t.Fatalf("seed: A's chief provision: %d %s", rec.Code, rec.Body)
+	}
+	w.aChief, err = as.GetByName(ua, agents.ChiefNameFor(w.a.uid))
+	must(err, "a chief")
+	must(pool.QueryRow(w.sys, `INSERT INTO connector_grants (agent_id, owner_id, connector_name, status, reason)
+		VALUES ($1, $2, $3, 'pending', $4) RETURNING id`, w.aChief.ID, w.a.uid, w.aConnName, w.canary+" reason").Scan(&w.aGrantID), "a pending grant")
+	w.objA.grant = w.aGrantID
+	// The operator's own tag and project: the positive control for the admin's
+	// vocabulary routes, whose leak check looks for A's.
+	_, err = ns.AddTags(authz.Operator(ctx), w.op.task.ID, []string{"isoop" + w.suffix, "project:isoopproj" + w.suffix})
+	must(err, "op tags")
 
 	// The operator's agent files one approval: the only kind of id there is,
 	// and the target for B's GET/DELETE /agent/approvals/{id}.
@@ -817,6 +849,7 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 			t.Errorf("B's (a member's) agent filing an approval: %d %s; want 503 → its own terminal", res.status, truncate(res.body, 200))
 		}
 	}
+	w.checkCounts(t)
 	w.srv.WaitForPushes()
 	if got := w.router.snapshot(); len(got) != 0 {
 		t.Errorf("a MEMBER's walk reached the operator's router %d time(s): %v", len(got), got)
@@ -910,6 +943,41 @@ func TestNoRouteLetsOneUserReachAnothersData(t *testing.T) {
 	}
 }
 
+// checkCounts: a COUNT aggregate must be the caller's own — nothing in its
+// body names A, so only the number can show the leak. B's review count must
+// equal B's own (from System's view of B's rows), A's must equal A's (the
+// control: A has a ready-for-review task, so a scope that dropped A's rows
+// would also show). The admin's vocabulary routes must show the operator's
+// own tag and project (their leak check above looks for A's).
+func (w *isoWorld) checkCounts(t *testing.T) {
+	t.Helper()
+	truth := func(u isoUser) int {
+		var n int
+		if err := w.pool.QueryRow(w.sys, `SELECT count(*) FROM notes WHERE owner_id=$1 AND status='ready_for_review'
+			AND deleted_at IS NULL`, u.uid).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for _, u := range []isoUser{w.b, w.a} {
+		rec := w.do(w.h, "GET", "/ui/tasks/review-count", "", cred{sessionUser: u.uid})
+		var body struct {
+			Count int `json:"count"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Count != truth(u) {
+			t.Errorf("COUNT: %s's review count = %s; want its own %d", u.name, rec.Body, truth(u))
+		}
+	}
+	if truth(w.a) == 0 {
+		t.Error("CONTROL: A has no ready-for-review task, so B's count proves nothing")
+	}
+	for _, rt := range []struct{ path, want string }{{"/api/tags", "isoop" + w.suffix}, {"/api/projects", "isoopproj" + w.suffix}} {
+		if rec := w.do(w.h, "GET", rt.path, "", cred{hook: true}); !strings.Contains(rec.Body.String(), rt.want) {
+			t.Errorf("CONTROL: the admin's %s does not show the operator's own %q: %s", rt.path, rt.want, truncate(rec.Body.String(), 200))
+		}
+	}
+}
+
 // sameRows asserts every row A owns is unchanged since before.
 func (w *isoWorld) sameRows(t *testing.T, what string, before map[string]string) {
 	t.Helper()
@@ -967,8 +1035,6 @@ func TestAnotherUsersWritesNeverReachYourEventStream(t *testing.T) {
 		}
 	}
 	w.srv.BroadcastAgentChanged(w.a.agent.Name) // a loop's nudge about A's agent
-	w.srv.BroadcastChatReply(w.a.agent.Name)
-	w.srv.BroadcastAgentStream(w.a.agent.Name, agents.StreamEvent{Kind: "text", Text: w.canary + " live"})
 	// And B's own write, so B's stream is shown live.
 	if rec := w.do(w.h, "PATCH", "/tasks/"+strconv.FormatInt(w.b.task.ID, 10)+"/status",
 		url.Values{"status": {"in_progress"}}.Encode(), cred{sessionUser: w.b.uid}); rec.Code >= 400 {
@@ -977,7 +1043,7 @@ func TestAnotherUsersWritesNeverReachYourEventStream(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	aGot, bGot := aStream.text(), bStream.text()
-	for _, needle := range []string{`"id":"` + aTask + `"`, w.a.agent.Name, w.canary} {
+	for _, needle := range []string{`"id":"` + aTask + `"`, w.a.agent.Name} {
 		if strings.Contains(bGot, needle) {
 			t.Errorf("LEAK: B's /events stream carried A's %q:\n%s", needle, bGot)
 		}

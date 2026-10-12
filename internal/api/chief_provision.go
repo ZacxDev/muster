@@ -90,7 +90,14 @@ func (s *Server) handleChiefProvision(w http.ResponseWriter, r *http.Request) {
 	intro := "You are chief, muster's fleet agent. You have no task and no repo, and that is expected. " +
 		"Read AGENTS.md, then report the current state of the fleet."
 	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
-		Name: chiefName, Model: model, NoteText: intro, Kickoff: true,
+		// 🔴 THE DISPLAY NAME IS SET EXPLICITLY. Everything that TALKS to the
+		// chief (the panel, recaps, threads, `chief ask`) resolves it by display
+		// name (chiefAgent), and a dispatch keeps the slug as the display name
+		// when none is given. For the operator that was harmless — the slug IS
+		// `chief` — but a member's `chief-<id>` would never resolve, so the
+		// member's panel said "no agent carries the chief display name" over a
+		// chief that existed (accounts PR 3b audit). Same value for user 1.
+		Name: chiefName, DisplayName: ChiefDisplayName, Model: model, NoteText: intro, Kickoff: true,
 	})
 	if err != nil {
 		s.logger.Printf("chief: provision: %v", err)

@@ -2,8 +2,6 @@ package db_test
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"errors"
 	"sort"
 	"strconv"
@@ -167,8 +165,7 @@ func TestAnOwnerHoldsOneReservedChief(t *testing.T) {
 // acts for the PRINCIPAL's user (it was the constant 1). Two users each save
 // and read their own connection; neither Clear touches the other; a scope-all
 // caller has no connection to read; and a token sealed for one owner does not
-// open on another owner's row. The operator's PRE-3b row (sealed with no
-// associated data) still opens — once, re-sealed to its owner on that read.
+// open on another owner's row.
 func TestEachUserHasTheirOwnGitHubConnection(t *testing.T) {
 	f := newRLSFixture(t, "ms_0009_github")
 	st, err := github.NewPG(f.pool, []byte("0123456789abcdef0123456789abcdef"))
@@ -210,45 +207,5 @@ func TestEachUserHasTheirOwnGitHubConnection(t *testing.T) {
 	}
 	if _, ok, _ := st.Get(two); ok {
 		t.Error("user 2's Clear left its own connection")
-	}
-}
-
-// TestThePre3bGitHubTokenStillOpensForItsOwnerOnly: the operator's connection
-// was sealed with NO associated data before 3b. It opens for user 1 — and is
-// re-sealed bound to user 1 by that read — while the same legacy blob on any
-// other user's row is refused.
-func TestThePre3bGitHubTokenStillOpensForItsOwnerOnly(t *testing.T) {
-	f := newRLSFixture(t, "ms_0009_github_legacy")
-	key := []byte("0123456789abcdef0123456789abcdef")
-	st, err := github.NewPG(f.pool, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	block, _ := aes.NewCipher(key)
-	gcm, _ := cipher.NewGCM(block)
-	nonce := make([]byte, gcm.NonceSize())
-	legacy := gcm.Seal(nonce, nonce, []byte("gho_legacy"), nil) // the pre-3b form
-	for _, owner := range []int64{1, f.two} {
-		if _, err := f.pool.Exec(f.mig, `INSERT INTO github_connection (owner_id, login, scopes, token_ciphertext)
-			VALUES ($1, 'legacy', 'repo', $2)`, owner, legacy); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got, ok, err := st.Get(asUser(f.base, f.two)); err == nil {
-		t.Errorf("a legacy blob opened for user 2: %+v %v", got, ok)
-	}
-	got, ok, err := st.Get(asUser(f.base, 1))
-	if err != nil || !ok || got.Token != "gho_legacy" {
-		t.Fatalf("the operator's pre-3b connection: %+v %v %v; want it to open", got, ok, err)
-	}
-	var now []byte
-	if err := f.pool.QueryRow(f.mig, `SELECT token_ciphertext FROM github_connection WHERE owner_id=1`).Scan(&now); err != nil {
-		t.Fatal(err)
-	}
-	if string(now) == string(legacy) {
-		t.Error("the legacy blob was not re-sealed to its owner on read")
-	}
-	if got, _, err := st.Get(asUser(f.base, 1)); err != nil || got.Token != "gho_legacy" {
-		t.Errorf("the re-sealed connection: %+v %v", got, err)
 	}
 }
