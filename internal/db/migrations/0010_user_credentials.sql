@@ -1,7 +1,7 @@
 -- muster 0010 — bring-your-own model credentials (accounts, after PR 3b).
 --
 -- The operator decision (accounts plan, "Operator decisions", 2026-10-11):
--- members BRING THEIR OWN Claude setup-tokens and OpenRouter management key,
+-- members BRING THEIR OWN Claude setup-tokens and OpenRouter API key,
 -- stored sealed per owner; a member's agents only ever use that member's
 -- credentials; the environment pool stays the admin's; and cc_account_marks
 -- becomes per (owner, account).
@@ -12,11 +12,10 @@
 --      kind 'claude'      name = the account name (ccpool's [a-z0-9-] rule);
 --                         secret_ciphertext = the sealed setup-token.
 --      kind 'openrouter'  name = 'default' (one per user);
---                         secret_ciphertext = the sealed MANAGEMENT key,
---                         derived_ciphertext = the sealed inference key muster
---                         minted with it, derived_ref = that key's OpenRouter
---                         hash (what revoking it takes).
---    Ciphertexts are sealed with the owner, kind, name and slot in the AEAD's
+--                         secret_ciphertext = the sealed OpenRouter API key (an
+--                         ordinary key, used as entered — operator decision on
+--                         #69; no key is minted from it).
+--    Ciphertexts are sealed with the owner, kind and name in the AEAD's
 --    associated data (internal/credentials/seal.go), so a ciphertext moved to
 --    another owner's row does not open. fingerprint is a 48-bit one-way hash
 --    for display; nothing in this table is plaintext.
@@ -49,8 +48,6 @@ CREATE TABLE IF NOT EXISTS public.user_credentials (
     name               TEXT        NOT NULL,
     secret_ciphertext  BYTEA       NOT NULL,
     fingerprint        TEXT        NOT NULL,
-    derived_ciphertext BYTEA,
-    derived_ref        TEXT,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT user_credentials_owner_kind_name_key UNIQUE (owner_id, kind, name),
@@ -58,11 +55,6 @@ CREATE TABLE IF NOT EXISTS public.user_credentials (
     CONSTRAINT user_credentials_name_check CHECK (
         (kind = 'openrouter' AND name = 'default')
         OR (kind = 'claude' AND name ~ '^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$')
-    ),
-    -- An OpenRouter row always carries the key it minted; a Claude row never
-    -- carries one.
-    CONSTRAINT user_credentials_derived_check CHECK (
-        (kind = 'openrouter') = (derived_ciphertext IS NOT NULL AND derived_ref IS NOT NULL)
     )
 );
 

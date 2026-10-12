@@ -298,7 +298,7 @@ func TestEachUserProvisionsTheirOwnChief(t *testing.T) {
 		t.Fatalf("B's chief provision with no OpenRouter key: %d %s; want 409 naming what to add", rec.Code, rec.Body)
 	}
 	bctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: w.b.uid, Role: authz.RoleMember, Via: authz.ViaSession})
-	if err := w.creds.PutOpenRouter(bctx, "sk-or-v1-iso-member-B-management-3333"); err != nil {
+	if err := w.creds.PutOpenRouter(bctx, "sk-or-v1-iso-member-B-api-key-0003333"); err != nil {
 		t.Fatal(err)
 	}
 	rec = w.do(w.h, "POST", "/chief/provision", url.Values{"model": {""}}.Encode(), cred{sessionUser: w.b.uid})

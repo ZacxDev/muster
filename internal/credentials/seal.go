@@ -58,20 +58,17 @@ func newSealer(master []byte) (sealer, error) {
 }
 
 // binding is everything a ciphertext is bound to: whose it is, which kind of
-// credential, its name, and which of the row's two secrets it is.
+// credential, and its name.
 type binding struct {
 	Owner int64
 	Kind  string
 	Name  string
-	// Slot is "secret" (what the user entered) or "derived" (the inference key
-	// muster minted from an OpenRouter management key).
-	Slot string
 }
 
 func (b binding) aad() []byte {
 	out := []byte(hkdfInfo)
 	out = binary.BigEndian.AppendUint64(out, uint64(b.Owner))
-	for _, s := range []string{b.Kind, b.Name, b.Slot} {
+	for _, s := range []string{b.Kind, b.Name} {
 		out = binary.BigEndian.AppendUint32(out, uint32(len(s)))
 		out = append(out, s...)
 	}

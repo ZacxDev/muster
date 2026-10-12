@@ -1,5 +1,5 @@
 // Package credentials is the per-owner model-provider credential store: the
-// Claude Code `setup-token`s and the OpenRouter management key a MEMBER brings
+// Claude Code `setup-token`s and the OpenRouter API key a MEMBER brings
 // to muster, and the one place that decides whose credentials an owner's agents
 // run on ([Plane]).
 //
@@ -24,16 +24,11 @@
 // a secret is [PGStore.ClaudeTokens] and [PGStore.OpenRouterKey], whose only
 // callers are the pod-spec path (internal/agentprovision, through [Plane]).
 //
-// # OpenRouter: a MANAGEMENT key, so muster mints the inference key
+// # OpenRouter: an ordinary API key, used as entered
 //
-// The operator asked for members' OpenRouter MANAGEMENT keys. OpenRouter's
-// documentation is explicit that a management key "cannot be used to make API
-// calls to OpenRouter's completion endpoints" — placed in a pod as
-// OPENROUTER_API_KEY it would fail every turn. So saving one MINTS an ordinary
-// inference key with it (POST /api/v1/keys, [Minter]); that minted key is what
-// the member's gateway agents receive, sealed beside the management key it came
-// from. Replacing or deleting the management key revokes the minted key
-// (best-effort, logged without either secret).
+// The member pastes an ordinary OpenRouter API key (operator decision on #69);
+// it is sealed like a setup-token and placed, as entered, in the member's
+// gateway pods as OPENROUTER_API_KEY. muster makes no OpenRouter call with it.
 package credentials
 
 import (
@@ -57,8 +52,7 @@ const OpenRouterName = "default"
 // ClaudeTokenPrefix is the shape of a `claude setup-token` value.
 const ClaudeTokenPrefix = "sk-ant-oat01-"
 
-// OpenRouterKeyPrefix is the shape of every OpenRouter key, management keys
-// included.
+// OpenRouterKeyPrefix is the shape of an OpenRouter API key.
 const OpenRouterKeyPrefix = "sk-or-"
 
 // ErrNoCredential: the owner has no credential of the kind asked for. It is a

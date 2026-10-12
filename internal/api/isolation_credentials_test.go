@@ -2,11 +2,9 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -19,20 +17,6 @@ import (
 // the REAL account pool over it, so the walk's routes — the credentials page,
 // the dispatch form, the dispatch itself — answer from the same decision
 // production does.
-
-// isoMinter mints OpenRouter keys without a network.
-type isoMinter struct {
-	mu sync.Mutex
-	n  int
-}
-
-func (m *isoMinter) Mint(context.Context, string, string) (string, string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.n++
-	return fmt.Sprintf("sk-or-v1-iso-minted-%d-0123456789", m.n), fmt.Sprintf("iso-hash-%d", m.n), nil
-}
-func (m *isoMinter) Revoke(context.Context, string, string) error { return nil }
 
 // isoKinds is api.AgentKinds over the real pool and plane (cmd/muster-server's
 // kindSet, which this package cannot import).
@@ -67,7 +51,7 @@ const (
 	isoEnvAccount = "isoenvpool"
 	isoEnvToken   = "sk-ant-oat01-iso-ENV-pool-token-000000"
 	isoATok       = "sk-ant-oat01-iso-member-A-token-111111"
-	isoAMgmt      = "sk-or-v1-iso-member-A-management-2222"
+	isoAORKey     = "sk-or-v1-iso-member-A-api-key-0002222"
 )
 
 // TestAnotherUsersCredentialsCannotBeSeenOrUsed: B (a member with no

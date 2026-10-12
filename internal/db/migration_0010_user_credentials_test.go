@@ -86,22 +86,21 @@ func TestMigration0010MakesTheMarksPerOwnerAndKeepsTheEnvironmentPoolsMarks(t *t
 }
 
 // TestUserCredentialsRowsAreShapedByKind: the table's own checks — an
-// OpenRouter row always carries the key minted from it and is named 'default';
-// a Claude row carries none and its name follows the account-name rule.
+// OpenRouter row is named 'default' (one per user); a Claude row's name follows
+// the account-name rule; one row per (owner, kind, name).
 func TestUserCredentialsRowsAreShapedByKind(t *testing.T) {
 	ctx := ctx0006(t)
 	pool := freshMigrated(ctx, t, "ms_0010_shape")
 	ok := []string{
 		`INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint) VALUES (1, 'claude', 'work', '\x00', 'f')`,
-		`INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint, derived_ciphertext, derived_ref) VALUES (1, 'openrouter', 'default', '\x00', 'f', '\x01', 'h')`,
+		`INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint) VALUES (1, 'openrouter', 'default', '\x00', 'f')`,
 	}
 	for _, q := range ok {
 		mustExec(ctx, t, pool, q)
 	}
 	for name, q := range map[string]string{
-		"claude with a derived key":      `INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint, derived_ciphertext, derived_ref) VALUES (1, 'claude', 'w2', '\x00', 'f', '\x01', 'h')`,
-		"openrouter without one":         `INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint) VALUES (1, 'openrouter', 'default', '\x00', 'f')`,
-		"openrouter not named default":   `INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint, derived_ciphertext, derived_ref) VALUES (1, 'openrouter', 'two', '\x00', 'f', '\x01', 'h')`,
+		"openrouter not named default":   `INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint) VALUES (1, 'openrouter', 'two', '\x00', 'f')`,
+		"a second openrouter key":        `INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint) VALUES (1, 'openrouter', 'default', '\x00', 'f')`,
 		"a bad account name":             `INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint) VALUES (1, 'claude', 'Work', '\x00', 'f')`,
 		"an unknown kind":                `INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint) VALUES (1, 'gemini', 'x', '\x00', 'f')`,
 		"a second claude 'work' for one": `INSERT INTO user_credentials (owner_id, kind, name, secret_ciphertext, fingerprint) VALUES (1, 'claude', 'work', '\x00', 'f')`,

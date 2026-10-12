@@ -19,7 +19,7 @@ const (
 	envTokSpare   = "sk-ant-oat01-FAKE-env-spare-111111111"
 	memberTok     = "sk-ant-oat01-FAKE-member-zulu-2222222"
 	envORKey      = "sk-or-v1-FAKE-env-operator-key-3333333"
-	memberORKey   = "sk-or-v1-FAKE-minted-for-member-444444"
+	memberORKey   = "sk-or-v1-FAKE-api-key-of-member-444444"
 	admin         = int64(1)
 	memberA       = int64(41)
 	memberB       = int64(42)
@@ -160,7 +160,7 @@ func TestAMemberDispatchNeverSelectsAnAdminPoolAccount(t *testing.T) {
 }
 
 // TestOpenRouterKeySelectionIsPerOwner: the admin's gateway pods get the
-// environment key; member A's get the key minted from A's management key; a
+// environment key; member A's get A's own API key; a
 // member with none is refused with the sentence that says what to add — never
 // the admin's key.
 func TestOpenRouterKeySelectionIsPerOwner(t *testing.T) {

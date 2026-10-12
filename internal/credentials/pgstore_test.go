@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -19,42 +18,11 @@ import (
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
 
-// fakeMinter records every mint and revoke. Keys it mints are distinct and
-// carry the management key's last 4 so a test can tell whose key minted what.
-type fakeMinter struct {
-	mu      sync.Mutex
-	n       int
-	minted  []string // "mgmt-suffix|ref"
-	revoked []string // "mgmt-suffix|ref"
-	fail    error
-}
-
-func suffix(s string) string { return s[len(s)-4:] }
-
-func (m *fakeMinter) Mint(_ context.Context, mgmt, _ string) (string, string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.fail != nil {
-		return "", "", m.fail
-	}
-	m.n++
-	ref := fmt.Sprintf("hash-%d", m.n)
-	m.minted = append(m.minted, suffix(mgmt)+"|"+ref)
-	return fmt.Sprintf("sk-or-v1-FAKE-minted-%d-from-%s", m.n, suffix(mgmt)), ref, nil
-}
-
-func (m *fakeMinter) Revoke(_ context.Context, mgmt, ref string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.revoked = append(m.revoked, suffix(mgmt)+"|"+ref)
-	return nil
-}
-
 func as(uid int64) context.Context {
 	return authz.WithPrincipal(context.Background(), authz.Principal{UserID: uid, Role: authz.RoleMember, Via: authz.ViaSession})
 }
 
-func pgStore(t *testing.T) (*PGStore, *pgxpool.Pool, *fakeMinter, *bytes.Buffer) {
+func pgStore(t *testing.T) (*PGStore, *pgxpool.Pool) {
 	t.Helper()
 	dsn := dbtest.DSN(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -71,20 +39,19 @@ func pgStore(t *testing.T) (*PGStore, *pgxpool.Pool, *fakeMinter, *bytes.Buffer)
 		dbtest.OwnerExec(t, dsn, `INSERT INTO users (id, role) OVERRIDING SYSTEM VALUE VALUES ($1, 'member') ON CONFLICT (id) DO NOTHING`, id)
 	}
 	dbtest.OwnerExec(t, dsn, `DELETE FROM user_credentials`)
-	m := &fakeMinter{}
-	var logs bytes.Buffer
-	s, err := NewPG(pool, bytes.Repeat([]byte{7}, KeySize), m, log.New(&logs, "", 0))
+	s, err := NewPG(pool, bytes.Repeat([]byte{7}, KeySize))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s, pool, m, &logs
+	return s, pool
 }
 
 const (
 	tokA  = "sk-ant-oat01-FAKE-store-A-0123456789"
 	tokB  = "sk-ant-oat01-FAKE-store-B-9876543210"
-	mgmtA = "sk-or-v1-FAKE-management-A-key-AAA1"
-	mgmtB = "sk-or-v1-FAKE-management-A-key-AAA2"
+	orA   = "sk-or-v1-FAKE-api-key-of-A-000000AAA1"
+	orA2  = "sk-or-v1-FAKE-api-key-of-A-000000AAA2"
+	orB   = "sk-or-v1-FAKE-api-key-of-B-000000BBB1"
 )
 
 // TestACiphertextMovedToAnotherOwnerDoesNotOpen: user A's sealed setup-token,
@@ -92,7 +59,7 @@ const (
 // restore into the wrong place), does not open for B — the owner is in the
 // associated data — while the same bytes still open in A's row.
 func TestACiphertextMovedToAnotherOwnerDoesNotOpen(t *testing.T) {
-	s, pool, _, _ := pgStore(t)
+	s, pool := pgStore(t)
 	sys := authz.System(context.Background())
 	if err := s.PutClaude(as(41), "work", tokA); err != nil {
 		t.Fatal(err)
@@ -122,12 +89,12 @@ func TestACiphertextMovedToAnotherOwnerDoesNotOpen(t *testing.T) {
 // delete A's credentials (a same-named one is B's own); List carries no secret;
 // writes need a user principal; the stored row holds no plaintext.
 func TestTheStoreIsPerOwnerAndNeverReturnsASecret(t *testing.T) {
-	s, pool, _, _ := pgStore(t)
+	s, pool := pgStore(t)
 	sys := authz.System(context.Background())
 	if err := s.PutClaude(as(41), "work", tokA); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutOpenRouter(as(41), mgmtA); err != nil {
+	if err := s.PutOpenRouter(as(41), orA); err != nil {
 		t.Fatal(err)
 	}
 	// B's view: nothing.
@@ -159,14 +126,14 @@ func TestTheStoreIsPerOwnerAndNeverReturnsASecret(t *testing.T) {
 	if err != nil || len(l) != 2 {
 		t.Fatalf("A lists %+v, %v", l, err)
 	}
-	if dump := fmt.Sprintf("%+v", l); strings.Contains(dump, tokA) || strings.Contains(dump, mgmtA) || strings.Contains(dump, "minted") {
+	if dump := fmt.Sprintf("%+v", l); strings.Contains(dump, tokA) || strings.Contains(dump, orA) {
 		t.Fatalf("List carries a secret: %s", dump)
 	}
 	var row string
 	if err := pool.QueryRow(sys, `SELECT coalesce(json_agg(t)::text, '') FROM user_credentials t`).Scan(&row); err != nil {
 		t.Fatal(err)
 	}
-	for _, sec := range []string{tokA, tokB, mgmtA, "FAKE-minted"} {
+	for _, sec := range []string{tokA, tokB, orA} {
 		if strings.Contains(row, sec) || strings.Contains(row, strings.TrimPrefix(sec, "sk-")) {
 			t.Fatalf("a stored row holds plaintext %q", sec)
 		}
@@ -182,49 +149,49 @@ func TestTheStoreIsPerOwnerAndNeverReturnsASecret(t *testing.T) {
 	}
 }
 
-// TestOpenRouterMintsTheAgentsKeyAndRevokesTheOldOne: saving a management key
-// mints the inference key agents get (and it is THAT key OpenRouterKey
-// returns, not the management key); replacing it revokes the old minted key
-// with the OLD management key; deleting revokes the current one; a failed mint
-// stores nothing.
-func TestOpenRouterMintsTheAgentsKeyAndRevokesTheOldOne(t *testing.T) {
-	s, _, m, logs := pgStore(t)
+// TestTheOpenRouterKeyIsUsedAsEnteredPerOwner: an ordinary API key is sealed
+// and handed back AS ENTERED for its owner's agents; replacing it replaces it;
+// another owner's key is a different row; a ciphertext moved to another owner's
+// row does not open; a Claude-shaped value is refused; delete removes it.
+func TestTheOpenRouterKeyIsUsedAsEnteredPerOwner(t *testing.T) {
+	s, pool := pgStore(t)
 	sys := authz.System(context.Background())
-	if err := s.PutOpenRouter(as(41), mgmtA); err != nil {
+	if err := s.PutOpenRouter(as(41), orA); err != nil {
 		t.Fatal(err)
 	}
-	k, ok, err := s.OpenRouterKey(sys, 41)
-	if err != nil || !ok || k != "sk-or-v1-FAKE-minted-1-from-AAA1" {
-		t.Fatalf("A's agents' key = %q %v %v; want the MINTED key, not the management key", k, ok, err)
-	}
-	if err := s.PutOpenRouter(as(41), mgmtB); err != nil {
+	if err := s.PutOpenRouter(as(42), orB); err != nil {
 		t.Fatal(err)
 	}
-	if k, _, _ := s.OpenRouterKey(sys, 41); k != "sk-or-v1-FAKE-minted-2-from-AAA2" {
-		t.Fatalf("after replace: %q", k)
+	if k, ok, err := s.OpenRouterKey(sys, 41); err != nil || !ok || k != orA {
+		t.Fatalf("A's agents' key: right=%v ok=%v err=%v; want A's key as entered", k == orA, ok, err)
 	}
-	if strings.Join(m.revoked, ",") != "AAA1|hash-1" {
-		t.Fatalf("revoked %v; want the first minted key, with the first management key", m.revoked)
+	if err := s.PutOpenRouter(as(41), orA2); err != nil {
+		t.Fatal(err)
+	}
+	if k, _, _ := s.OpenRouterKey(sys, 41); k != orA2 {
+		t.Fatalf("after replace: A's key is not the new one")
+	}
+	if k, _, _ := s.OpenRouterKey(sys, 42); k != orB {
+		t.Fatalf("A's replace touched B's key")
+	}
+	if has, err := s.HasOpenRouterKey(as(42), 41); err != nil || has {
+		t.Fatalf("B's principal sees that A has a key: %v %v", has, err)
+	}
+	if _, err := pool.Exec(sys, `UPDATE user_credentials SET secret_ciphertext =
+		(SELECT secret_ciphertext FROM user_credentials WHERE owner_id = 41 AND kind = 'openrouter')
+		WHERE owner_id = 42 AND kind = 'openrouter'`); err != nil {
+		t.Fatal(err)
+	}
+	if k, _, err := s.OpenRouterKey(sys, 42); !errors.Is(err, ErrDecrypt) || k != "" {
+		t.Fatalf("B's row holding A's ciphertext opened (got A's key: %v), err %v", k == orA2, err)
+	}
+	if err := s.PutOpenRouter(as(41), "sk-ant-oat01-not-an-openrouter-key-0123"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a Claude-shaped value as an OpenRouter key: %v", err)
 	}
 	if ok, err := s.Delete(as(41), KindOpenRouter, ""); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
-	if strings.Join(m.revoked, ",") != "AAA1|hash-1,AAA2|hash-2" {
-		t.Fatalf("revoked %v after delete", m.revoked)
-	}
-	m.fail = errors.New("OpenRouter refused")
-	if err := s.PutOpenRouter(as(41), mgmtA); err == nil {
-		t.Fatal("a failed mint was accepted")
-	}
 	if _, ok, _ := s.OpenRouterKey(sys, 41); ok {
-		t.Fatal("a failed mint stored a key")
-	}
-	if err := s.PutOpenRouter(as(41), "sk-ant-oat01-not-an-openrouter-key"); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("a Claude-shaped value as an OpenRouter key: %v", err)
-	}
-	for _, sec := range []string{mgmtA, mgmtB, "minted"} {
-		if strings.Contains(logs.String(), sec) {
-			t.Fatalf("the log carries a secret: %s", logs)
-		}
+		t.Fatal("a deleted key is still served")
 	}
 }

@@ -313,7 +313,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if a.pool != nil {
 		roles = users.NewPG(a.pool)
 		if len(cfg.ConnectorEncKey) > 0 {
-			cs, err := credentials.NewPG(a.pool, cfg.ConnectorEncKey, nil, logger)
+			cs, err := credentials.NewPG(a.pool, cfg.ConnectorEncKey)
 			if err != nil {
 				a.Close()
 				return nil, fmt.Errorf("credential store: %w", err)

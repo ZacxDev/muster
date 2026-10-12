@@ -12,7 +12,7 @@ import (
 )
 
 // Account → Credentials: where a member brings their own Claude setup-tokens
-// and OpenRouter management key (accounts plan, operator decisions). The store
+// and OpenRouter API key (accounts plan, operator decisions). The store
 // is internal/credentials; whose credentials an agent runs on is decided by
 // credentials.Plane, which this page only asks "does this user run on the
 // environment's?" (an admin does, and has nothing to add here).
@@ -27,7 +27,7 @@ import (
 type CredentialStore interface {
 	List(ctx context.Context) ([]credentials.Summary, error)
 	PutClaude(ctx context.Context, name, token string) error
-	PutOpenRouter(ctx context.Context, managementKey string) error
+	PutOpenRouter(ctx context.Context, key string) error
 	Delete(ctx context.Context, kind, name string) (bool, error)
 	// UsesEnvironment reports whether owner's agents run on the environment's
 	// credentials (an admin): such a user has nothing to add here.
@@ -65,7 +65,7 @@ func (s *Server) handleCredentialsPage(w http.ResponseWriter, r *http.Request) {
 	case "claude":
 		notice = "Claude account saved."
 	case "openrouter":
-		notice = "OpenRouter key saved, and a key for your agents was created with it."
+		notice = "OpenRouter API key saved."
 	case "deleted":
 		notice = "Deleted."
 	}
@@ -89,9 +89,6 @@ func (s *Server) credentialProblem(err error) (int, string) {
 		return http.StatusBadRequest, err.Error()
 	}
 	s.logger.Printf("credentials: user write failed: %v", err)
-	if strings.HasPrefix(err.Error(), "OpenRouter ") {
-		return http.StatusBadGateway, err.Error()
-	}
 	return http.StatusInternalServerError, "That could not be saved; try again."
 }
 
@@ -223,12 +220,12 @@ func (s *Server) writeCredentialSections(b *strings.Builder, r *http.Request) {
 		b.WriteString(`<p class="text-sm text-fg2" data-credentials-empty>No key yet. Without one, Standard agents are unavailable to you.</p>`)
 	} else {
 		b.WriteString(`<div class="flex items-center justify-between gap-2" data-credential-openrouter>` +
-			`<span class="text-sm text-fg">Management key <span class="font-mono text-xs text-muted">` + html.EscapeString(credentials.OpenRouterKeyPrefix) + `… · ` + html.EscapeString(openrouter.Fingerprint) + `</span></span>` +
+			`<span class="text-sm text-fg">API key <span class="font-mono text-xs text-muted">` + html.EscapeString(credentials.OpenRouterKeyPrefix) + `… · ` + html.EscapeString(openrouter.Fingerprint) + `</span></span>` +
 			`<form method="POST" action="` + ui.CredentialsPath + `/openrouter/delete"><button type="submit" ` + credDelete + `>Delete</button></form></div>`)
 	}
 	b.WriteString(`<form method="POST" action="` + ui.CredentialsPath + `/openrouter" class="flex flex-col gap-2">
-<label for="cred-openrouter-key" class="text-sm font-medium text-fg">Management key</label>
+<label for="cred-openrouter-key" class="text-sm font-medium text-fg">OpenRouter API key</label>
 <input id="cred-openrouter-key" name="key" type="password" required autocomplete="off" spellcheck="false" placeholder="` + credentials.OpenRouterKeyPrefix + `…" ` + credInput + `>
-<p class="text-xs text-muted">An OpenRouter <em>management</em> key: muster uses it to create the key your agents run on, billed to your OpenRouter account. Replacing or deleting it revokes that key; restart a running agent to give it the new one.</p>
-<button type="submit" ` + credButton + `>Save OpenRouter key</button></form></section>`)
+<p class="text-xs text-muted">An ordinary OpenRouter API key, billed to your OpenRouter account. Your agents use it as entered. Saving again replaces it; restart a running agent to give it the new one.</p>
+<button type="submit" ` + credButton + `>Save OpenRouter API key</button></form></section>`)
 }

@@ -441,13 +441,13 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a chat reply")
 
 	// A's own model-provider credentials (bring-your-own): a Claude account
-	// whose NAME is the canary, and an OpenRouter management key (minted
-	// through a fake). B has none; the operator runs on the environment pool.
-	w.creds, err = credentials.NewPG(pool, bytes.Repeat([]byte{3}, 32), &isoMinter{}, log.New(io.Discard, "", 0))
+	// whose NAME is the canary, and an OpenRouter API key. B has none; the
+	// operator runs on the environment pool.
+	w.creds, err = credentials.NewPG(pool, bytes.Repeat([]byte{3}, 32))
 	must(err, "credential store")
 	w.objA.ccAccount = w.canary
 	must(w.creds.PutClaude(ua, w.canary, isoATok), "a claude account")
-	must(w.creds.PutOpenRouter(ua, isoAMgmt), "a openrouter key")
+	must(w.creds.PutOpenRouter(ua, isoAORKey), "a openrouter key")
 
 	w.up = newIsoUpstream(t)
 	w.upHost = "iso.fake.test:" + w.up.port

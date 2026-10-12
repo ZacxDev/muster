@@ -8,8 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/ZacxDev/muster/internal/agents"
 )
 
 // OpenRouter model-search proxy. The dispatch modal's model field queries this
@@ -84,24 +82,7 @@ func fetchOpenRouterModels(ctx context.Context) ([]string, error) {
 
 // handleOpenRouterModels serves GET /api/openrouter/models?q=…: a JSON array of
 // matching agent-runtime model slugs (case-insensitive substring), capped.
-//
-// 🔴 PER OWNER: A CALLER WITH NO OpenRouter KEY GETS NO MODELS (403 + what to
-// add). The model field is the gateway kind's, and a member who brought no
-// OpenRouter key cannot dispatch that kind, so the search answers for the
-// caller exactly as the dispatch would.
-//
-// ⚠ NO KEY IS SENT UPSTREAM, THE CALLER'S INCLUDED, AND THAT IS DELIBERATE.
-// /api/v1/models is OpenRouter's PUBLIC catalogue — it needs no key and its
-// answer does not depend on one — and the cache below is process-wide. Sending
-// a member's key would put their credential on a request that needs none, and
-// would make one member's request fill the cache every other caller reads.
 func (s *Server) handleOpenRouterModels(w http.ResponseWriter, r *http.Request) {
-	if s.ext.Kinds != nil {
-		if why := s.ext.Kinds.Unavailable(r.Context(), callerID(r.Context()))[agents.KindGateway]; why != "" {
-			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": why})
-			return
-		}
-	}
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	all := orCache.models(r.Context())
 	out := make([]string, 0, openRouterMaxResult)
