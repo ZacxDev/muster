@@ -71,10 +71,19 @@
 -- children is refused. Ownership transfer is a later feature and will move a
 -- parent and its children in one statement set; nothing does it today.
 --
--- ⚠ ROLLOUT: muster rolls with maxUnavailable 0, so the previous image serves
--- briefly against this schema. Every INSERT it makes still works (DEFAULT 1).
--- Its github_connection SQL names the dropped `id` column, so a GitHub read on
--- the draining pod errors until it is replaced — bounded by the drain.
+-- ⚠ ROLLOUT AND ROLLBACK. muster rolls with maxUnavailable 0, so the previous
+-- image serves briefly against this schema; every INSERT it makes still works
+-- (DEFAULT 1). 🔴 BUT ANY IMAGE BUILT BEFORE THIS MIGRATION (0.10.0 and older)
+-- NAMES THE DROPPED github_connection.id COLUMN IN EVERY GitHub QUERY, and this
+-- file is not reversed by rolling the image back. So with GitHub ENABLED
+-- (MUSTER_GITHUB_ENCRYPTION_KEY set), an old image against this schema is
+-- broken for as long as it runs, not just for a drain: Save/Clear error, and
+-- Get errors — which internal/api's resolveRepoBranch swallows, silently
+-- cloning `main` instead of a repo's real default branch (e.g. `trunk`). It is
+-- harmless only while GitHub is disabled, as it is in production today. A
+-- rollback below this migration with GitHub enabled needs this table restored
+-- by hand (re-add `id INTEGER DEFAULT 1`, set it to 1 for owner 1's row, make it
+-- the key again).
 --
 -- Convention: idempotent where Postgres allows it (IF [NOT] EXISTS, DROP
 -- CONSTRAINT IF EXISTS before ADD), one transaction (internal/db/migrate.go).
