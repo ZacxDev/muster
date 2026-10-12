@@ -55,7 +55,7 @@ type hookEvent struct {
 }
 
 type pendingTurn struct {
-	// want is promptKey of the text ccd pasted: a UserPromptSubmit binds to this
+	// want is turnKey of the text ccd pasted: a UserPromptSubmit binds to this
 	// turn only when its prompt has the same key (see onHook).
 	want      string
 	promptID  string
@@ -327,8 +327,9 @@ func sanitizePrompt(prompt string) (string, error) {
 // prompts that differ in a non-whitespace character — which is the case this
 // match exists for: an operator's own prompt is never bound to ccd's turn.
 //
-// One difference it does not absorb, handled by reportedPromptMatches: the CLI's
-// paste wrapper (unwrapPastedContent).
+// Two differences it does not absorb, handled by reportedPromptMatches: the
+// CLI's paste wrapper (unwrapPastedContent) and its escaping of that wrapper's
+// tag name (turnKey).
 func promptKey(s string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsSpace(r) {
@@ -338,33 +339,83 @@ func promptKey(s string) string {
 	}, s)
 }
 
+// turnKey is the key a turn is matched on: promptKey, with the CLI's escaping of
+// its paste-wrapper tag name removed (unescapePastedContentTag). It is applied to
+// BOTH sides — the text ccd pasted and the prompt the CLI reported.
+func turnKey(s string) string {
+	return unescapePastedContentTag(promptKey(s))
+}
+
 // reportedPromptMatches says whether a UserPromptSubmit's `prompt` is the text
-// ccd pasted, given want = promptKey of that text. It is promptKey equality on
-// the reported prompt as it stands, or — when the CLI reported the paste inside
-// its own wrapper — on the wrapper's body (unwrapPastedContent).
+// ccd pasted, given want = turnKey of that text. It is turnKey equality on the
+// reported prompt as it stands, or — when the CLI reported the paste inside its
+// own wrapper — on the wrapper's body (unwrapPastedContent).
 func reportedPromptMatches(reported, want string) bool {
-	if promptKey(reported) == want {
+	if turnKey(reported) == want {
 		return true
 	}
 	body, ok := unwrapPastedContent(reported)
-	return ok && promptKey(body) == want
+	return ok && turnKey(body) == want
 }
 
-// pastedContentEscape is the CLI's own escaping of its tag name inside a wrapped
-// paste: it puts a backslash after the `<` of `<pasted_content` and
-// `</pasted_content`.
-var pastedContentEscape = regexp.MustCompile(`<\\(/?pasted_content)`)
+// escapedPastedContentTag finds, in a promptKey (so: no whitespace left), a `<`
+// followed by a backslash, any run of characters that are neither ASCII
+// name characters nor angle brackets, and the tag name in any ASCII case.
+var escapedPastedContentTag = regexp.MustCompile(`(?i)<\\([^A-Za-z0-9_<>-]*pasted_content)`)
+
+// unescapePastedContentTag removes the backslash the CLI puts after a `<` that
+// could be read as its paste-wrapper tag.
+//
+// The CLI's rule, read from the pinned CLI's bundle (2.1.296) and measured on its
+// real TUI: in ANY submitted prompt, wrapped or not, a `<` that is not already
+// followed by a backslash, then any run of characters that are not name
+// characters or angle brackets (so `/`, spaces, punctuation), then
+// `pasted_content` in any case, then a non-name character or the end, has `\`
+// inserted after the `<`. Measured: `<pasted_content id="abcd">` →
+// `<\pasted_content id="abcd">`, `</pasted_content>` → `<\/pasted_content>`,
+// `<PASTED_CONTENT>` → `<\PASTED_CONTENT>`, `< pasted_content` →
+// `<\ pasted_content`, `<#/pasted_content` → `<\#/pasted_content`; a
+// `<\pasted_content` already in the prompt is left as it is (2.1.296 in the
+// image, `tengu_virtual_pancake` on, 2026-10-11; not measured with it off).
+//
+// ccd cannot tell an inserted backslash from one the prompt already had, so it
+// does not try: the backslash is removed on both sides of the comparison, and a
+// real one cancels out.
+//
+// ⚠ ACCEPTED LIMITS. (1) Two prompts that differ ONLY in such a backslash have
+// the same key, so an operator submitting `<\pasted_content` while ccd waits on
+// the same text with `<pasted_content` would bind to ccd's turn. (2) The CLI also
+// escapes look-alike spellings — a fullwidth `＜`, which it REPLACES with `<\`
+// (measured: `＜pasted_content>` came back `<\pasted_content>`, a not_submitted),
+// look-alike letters, other underscore-like characters. Those are not undone, so
+// a prompt holding one is still a not_submitted: never a wrong match. (3) The CLI
+// requires the name to END there (`<pasted_contents` is not escaped); this does
+// not check that, because the key has no whitespace left and `<pasted_content x`
+// reads as `<pasted_contentx`. It only widens (1) to longer names.
+func unescapePastedContentTag(key string) string {
+	return escapedPastedContentTag.ReplaceAllString(key, "<$1")
+}
+
+func isTagNameByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' || c == '-'
+}
 
 // unwrapPastedContent returns the body of a prompt that is, whitespace around it
 // aside, exactly ONE block of the CLI's paste wrapper:
 //
 //	\n\n<pasted_content id="1c0d">\n…body…\n</pasted_content id="1c0d">\n
 //
-// The id is four lowercase hex digits and the CLOSING tag repeats it. ok is false
-// for anything else — text before or after the block, differing ids, a plain
+// The CLOSING tag repeats the opening tag's id. ok is false for anything else —
+// text before or after the block, differing ids, an empty id, a plain
 // `</pasted_content>` close (the pinned CLI never writes one), or a body holding
 // another unescaped tag (two blocks) — so a prompt that merely CONTAINS the paste
-// is still not ccd's turn.
+// is still not ccd's turn. The body is returned as reported, tag escaping and all
+// (turnKey removes that).
+//
+// What makes this safe is the anchoring and the id repeated in both tags, not the
+// id's spelling: the pinned CLI writes four lowercase hex digits, and any
+// non-empty run of ASCII letters, digits, `_` and `-` is accepted so that a CLI
+// that lengthens its id does not bring the false not_submitted back.
 //
 // Measured on the pinned CLI (2.1.296, the real TUI in the image, pasted by ccd,
 // hook payloads captured with CCD_HOOK_LOG, 2026-10-11): with the CLI's
@@ -374,29 +425,24 @@ var pastedContentEscape = regexp.MustCompile(`<\\(/?pasted_content)`)
 // single 900-character line were wrapped; 19 characters on one line and on two
 // lines were not. With the flag off (a CLI with no cached flags) the same seven
 // came back verbatim. The flag is served to the CLI per account, so which one a
-// pod gets is not ccd's to know: both are accepted.
-//
-// Inside the body the CLI changed two things, both measured: a paste's trailing
-// newline is not doubled (promptKey ignores it), and a literal
-// `<pasted_content id="abcd">` / `</pasted_content>` in the pasted text came back
-// as `<\pasted_content id="abcd">` / `<\/pasted_content>` — undone here.
-// ⚠ Only those two spellings were measured; the CLI's pattern is wider (look-alike
-// characters), and a prompt it escapes some other way stays unmatched: a
-// not_submitted, never a wrong match.
+// pod gets is not ccd's to know: both are accepted. A paste's trailing newline is
+// not doubled inside the block (promptKey ignores it).
 func unwrapPastedContent(reported string) (body string, ok bool) {
 	const open, tagEnd, closeStart = `<pasted_content id="`, "\">\n", "\n</pasted_content id=\""
 	s := strings.TrimSpace(reported)
 	rest, found := strings.CutPrefix(s, open)
-	if !found || len(rest) < 4 {
+	if !found {
 		return "", false
 	}
-	id := rest[:4]
-	for _, c := range []byte(id) {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return "", false
-		}
+	n := 0
+	for n < len(rest) && isTagNameByte(rest[n]) {
+		n++
 	}
-	if rest, found = strings.CutPrefix(rest[4:], tagEnd); !found {
+	if n == 0 {
+		return "", false
+	}
+	id := rest[:n]
+	if rest, found = strings.CutPrefix(rest[n:], tagEnd); !found {
 		return "", false
 	}
 	if body, found = strings.CutSuffix(rest, closeStart+id+`">`); !found {
@@ -405,7 +451,7 @@ func unwrapPastedContent(reported string) (body string, ok bool) {
 	if strings.Contains(body, "<pasted_content") || strings.Contains(body, "</pasted_content") {
 		return "", false
 	}
-	return pastedContentEscape.ReplaceAllString(body, "<$1"), true
+	return body, true
 }
 
 // neutralizeInputMode keeps a leading `!` from becoming a shell command.
@@ -507,7 +553,7 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 			"restarting, crash_loop or terminal_lost — see /healthz)")
 	}
 
-	p := &pendingTurn{want: promptKey(prompt), submitted: make(chan hookEvent, 1), done: make(chan hookEvent, 1)}
+	p := &pendingTurn{want: turnKey(prompt), submitted: make(chan hookEvent, 1), done: make(chan hookEvent, 1)}
 	s.mu.Lock()
 	switch {
 	case !s.sessionStarted:
