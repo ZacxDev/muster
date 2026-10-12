@@ -108,7 +108,7 @@ func count(t *testing.T, ctx context.Context, pool *pgxpool.Pool, table, where s
 	return n
 }
 
-// userKeyedTables are the account tables migration 0008 puts under row-level
+// userKeyedTables are the account tables migration 0009 puts under row-level
 // security: keyed by a USER column (users.id, api_tokens.user_id,
 // audit_log.user_id) or admin-only (invites), not by owner_id. Their policies
 // are pinned whole by TestTheUserKeyedTablesCarryExactlyTheirPolicies.
@@ -117,7 +117,7 @@ var userKeyedTables = []string{"api_tokens", "audit_log", "invites", "users"}
 // TestRLSCoversExactlyTheOwnedTables is the LEDGER: the set of public tables
 // with an owner_id column and the set carrying the owner_isolation policy must
 // be the same eleven, and the sets with RLS ENABLED and FORCED must be those
-// eleven plus the user-keyed account tables (0008) — and each owner_isolation
+// eleven plus the user-keyed account tables (0009) — and each owner_isolation
 // policy must have BOTH arms (the user and the scope-all) in USING and in WITH
 // CHECK, and each owner_id must default to the principal. It fails when a new
 // owned table arrives without RLS, and when RLS appears on a table that is in
@@ -139,7 +139,7 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 	}
 	want := rlsTables()
 	sort.Strings(want)
-	all := append(slices.Clone(ownedTables), userKeyedTables...)
+	all := append(rlsTables(), userKeyedTables...)
 	sort.Strings(all)
 	for name, c := range map[string]struct {
 		got, want []string
@@ -159,7 +159,7 @@ func TestRLSCoversExactlyTheOwnedTables(t *testing.T) {
 		}
 	}
 	rows, err := f.pool.Query(f.mig, `SELECT tablename::text, policyname::text, cmd, permissive, coalesce(qual,''), coalesce(with_check,'')
-		FROM pg_policies WHERE schemaname='public' AND tablename = ANY($1)`, ownedTables)
+		FROM pg_policies WHERE schemaname='public' AND tablename = ANY($1)`, rlsTables())
 	if err != nil {
 		t.Fatal(err)
 	}

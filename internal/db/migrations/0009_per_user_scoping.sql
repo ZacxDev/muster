@@ -1,4 +1,4 @@
--- muster 0008 — per-user scoping (multi-user accounts PR 3b of 6).
+-- muster 0009 — per-user scoping (multi-user accounts PR 3b of 6).
 --
 -- Two things, both small, both enforced by the database rather than by a
 -- handler remembering:
@@ -10,7 +10,7 @@
 --    holds AT MOST ONE reserved chief slug, whatever minted it.
 --
 -- 2. ROW-LEVEL SECURITY ON THE USER-KEYED ACCOUNT TABLES (users, invites,
---    api_tokens, audit_log). 0007 left them policy-less because nothing read
+--    api_tokens, audit_log). 0007 (and 0008) left them policy-less because nothing read
 --    them yet, so muster_app could read every row from any request. The first
 --    reader arrives with this PR (the principal's ROLE, read from users.role),
 --    and PR 5/6 add invites and personal tokens; the default must be closed

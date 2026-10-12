@@ -16,7 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/github"
 )
 
-// Migration 0008 — per-user scoping (accounts PR 3b): one reserved chief per
+// Migration 0009 — per-user scoping (accounts PR 3b): one reserved chief per
 // owner, and row-level security on the user-keyed account tables.
 
 // wantUserKeyedPolicies is every policy on the user-keyed tables, in full:
@@ -36,7 +36,7 @@ var wantUserKeyedPolicies = []string{
 }
 
 func TestTheUserKeyedTablesCarryExactlyTheirPolicies(t *testing.T) {
-	f := newRLSFixture(t, "ms_0008_policies")
+	f := newRLSFixture(t, "ms_0009_policies")
 	rows, err := f.pool.Query(f.mig, `SELECT tablename::text, policyname::text, cmd, permissive,
 			coalesce(qual,''), coalesce(with_check,'')
 		FROM pg_policies WHERE schemaname='public' AND tablename = ANY($1)`, userKeyedTables)
@@ -66,7 +66,7 @@ func TestTheUserKeyedTablesCarryExactlyTheirPolicies(t *testing.T) {
 // row (its own included — no self-promotion to admin), sees no invite, and
 // sees and writes only its own tokens and audit entries. System sees all.
 func TestTheUserKeyedTablesAreScopedPerUser(t *testing.T) {
-	f := newRLSFixture(t, "ms_0008_behaviour")
+	f := newRLSFixture(t, "ms_0009_behaviour")
 	two := asUser(f.base, f.two)
 	sys := authz.System(f.base)
 	hash := func(b byte) []byte {
@@ -141,7 +141,7 @@ func TestTheUserKeyedTablesAreScopedPerUser(t *testing.T) {
 // TestAnOwnerHoldsOneReservedChief: the partial unique index refuses a second
 // reserved chief slug for the same owner, and lets two owners each have one.
 func TestAnOwnerHoldsOneReservedChief(t *testing.T) {
-	f := newRLSFixture(t, "ms_0008_chief")
+	f := newRLSFixture(t, "ms_0009_chief")
 	ins := func(owner int64, name string) error {
 		_, err := f.pool.Exec(f.mig, `INSERT INTO agents (owner_id, name, namespace) VALUES ($1, $2, $3)`,
 			owner, name, "ns-"+name)
@@ -170,7 +170,7 @@ func TestAnOwnerHoldsOneReservedChief(t *testing.T) {
 // open on another owner's row. The operator's PRE-3b row (sealed with no
 // associated data) still opens — once, re-sealed to its owner on that read.
 func TestEachUserHasTheirOwnGitHubConnection(t *testing.T) {
-	f := newRLSFixture(t, "ms_0008_github")
+	f := newRLSFixture(t, "ms_0009_github")
 	st, err := github.NewPG(f.pool, []byte("0123456789abcdef0123456789abcdef"))
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +218,7 @@ func TestEachUserHasTheirOwnGitHubConnection(t *testing.T) {
 // re-sealed bound to user 1 by that read — while the same legacy blob on any
 // other user's row is refused.
 func TestThePre3bGitHubTokenStillOpensForItsOwnerOnly(t *testing.T) {
-	f := newRLSFixture(t, "ms_0008_github_legacy")
+	f := newRLSFixture(t, "ms_0009_github_legacy")
 	key := []byte("0123456789abcdef0123456789abcdef")
 	st, err := github.NewPG(f.pool, key)
 	if err != nil {

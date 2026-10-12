@@ -85,7 +85,7 @@ func TestACiphertextMovedToAnotherOwnersRowDoesNotOpen(t *testing.T) {
 		t.Fatalf("a created connector is owned by %d (%v), want 1", owner, err)
 	}
 	var two int64
-	// users is under row-level security since 0008: only scope-all creates one.
+	// users is under row-level security since 0009: only scope-all creates one.
 	if err := pool.QueryRow(authz.System(ctx), `INSERT INTO users (role) VALUES ('member') RETURNING id`).Scan(&two); err != nil {
 		t.Fatal(err)
 	}

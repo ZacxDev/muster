@@ -68,6 +68,8 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// agent-named nudges: the owner is read from the agent row by name.
 		"(*Server).BroadcastAgentChanged → agentChangedFor(s.agentOwner(agentName))",
 		"(*Server).BroadcastChatReply → broadcastTo(s.agentOwner(agentName))",
+		// the mirror plugin's host nudge: the hub names the host's owner.
+		"(*Server).BroadcastAgentsChangedFor → broadcastTo(owner)",
 		"(*Server).BroadcastAgentStream → publish(sse.Event{Name: EventAgentStream, Data: string(data), OwnerID: owner})",
 		// plumbing.
 		"(*Server).agentChangedFor → broadcastTo(owner)",

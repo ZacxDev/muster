@@ -28,6 +28,7 @@ import (
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/sse"
@@ -85,7 +86,7 @@ const (
 	classAdmin      routeClass = "admin"       // the shared machine (hook/service) tier: acts as user 1
 	classAgentToken routeClass = "agent-token" // an agent's own token: /agent/task, /agent/approvals, ...
 	classConnect    routeClass = "connect"     // the connector surface (also served on the connect port)
-	classMirror     routeClass = "mirror"      // mirrored-session routes (PR #63) — none in this tree
+	classMirror     routeClass = "mirror"      // the mirrored terminal (#63), addressed by ?host=&session=
 )
 
 // isolationClasses classifies EVERY route in routes.golden. Exhaustive both
@@ -202,6 +203,14 @@ var isolationClasses = map[string]routeClass{
 	"GET /agent/connectors/{name}":          classConnect,
 	"POST /agent/connectors/{name}/request": classConnect,
 	"POST /mcp":                             classConnect,
+
+	// The mirrored terminal names its object in the QUERY (?host=&session=),
+	// and fill() puts A's mirrored host there. The tunnel door is public to
+	// the principal walk (only a mirror token opens it): B's credentials must
+	// open nothing on it and leak nothing.
+	"GET /mirror/connect":     classPublic,
+	"GET /mirror/terminal":    classMirror,
+	"GET /mirror/terminal/ws": classMirror,
 }
 
 // wantCanaryForA: list routes that render A's data to A. The negative control
@@ -223,12 +232,9 @@ func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
 			unclassified = append(unclassified, r)
 		}
 	}
-	for r, c := range isolationClasses {
+	for r := range isolationClasses {
 		if !golden[r] {
 			stale = append(stale, r)
-		}
-		if c == classMirror {
-			t.Errorf("%s is classified %s, which the walk does not drive yet: add the mirror leg first", r, c)
 		}
 	}
 	sort.Strings(unclassified)
@@ -419,12 +425,13 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	w.aIdentities = []string{w.a.agent.Name, w.aChief.Name, w.aSessionLink}
 	w.objA = isoObjs{task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
-		tag: w.aTag, link: w.aSessionLink}
+		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main"}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
 	w.ghost = isoObjs{task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
-		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix}
+		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
+		mirrorHost: "ghost-host", mirrorSession: "main"}
 
 	// The server, fully wired over the real stores.
 	w.bus = sse.New(64)
@@ -435,6 +442,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		Notes: ns, Agents: as, GitHub: gh, Users: users.NewPG(pool),
 		GitHubOAuth: GitHubOAuthConfig{ClientID: "iso-client", ClientSecret: "iso-secret", BaseURL: "http://muster.test"},
 		Provisioner: w.prov, Gateway: w.prov, Connectors: cs,
+		Mirror: &isoMirror{owner: w.a.uid, host: w.canary + "-host"},
 		ConnectorPolicy: connectors.Policy{AllowLoopback: true, InsecureHTTP: true,
 			Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
 				if strings.HasSuffix(host, ".fake.test") {
@@ -554,6 +562,7 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 type isoObjs struct {
 	task, agent, grant, comment, attach, chat int64
 	agentName, connName, tag, link            string
+	mirrorHost, mirrorSession                 string
 }
 
 // fill turns a route pattern into a concrete request naming objects o, with a
@@ -589,6 +598,9 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	).Replace(path)
 	if path == "/static/" {
 		path = "/static/app.css"
+	}
+	if strings.HasPrefix(path, "/mirror/terminal") {
+		path += "?" + url.Values{"host": {o.mirrorHost}, "session": {o.mirrorSession}}.Encode()
 	}
 	if method == http.MethodGet || method == http.MethodDelete {
 		if strings.HasPrefix(path, "/github/callback") {
@@ -641,7 +653,7 @@ func (w *isoWorld) snapshot() map[string]string {
 	w.t.Helper()
 	out := map[string]string{}
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
-		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection"} {
+		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every
@@ -698,7 +710,8 @@ func (w *isoWorld) walkAs(actor isoUser, o isoObjs, creds []cred, routes []strin
 // namesObject reports whether a route names an object — in its path, or (for
 // the dispatch and merge forms) in its body.
 func namesObject(route string) bool {
-	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge"
+	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
+		strings.HasPrefix(route, "GET /mirror/terminal")
 }
 
 var paramRE = regexp.MustCompile(`\{[a-z]`)
@@ -995,6 +1008,39 @@ func (s *isoStream) text() string {
 }
 
 // --- fakes for the parts that are not this package's -------------------------
+
+// isoMirror plays the mirror plugin as mirror.Service behaves: A's one host
+// (named with the canary) is visible to A's principal only — Hosts and Attach
+// act for ctx's principal; a scope-all or principal-less context has none.
+// #63's own tests cover the real Service's owner keying; this is the API side.
+type isoMirror struct {
+	owner int64
+	host  string
+}
+
+func (m *isoMirror) mine(ctx context.Context) bool {
+	p, ok := authz.From(ctx)
+	return ok && !p.All() && p.UserID == m.owner
+}
+
+func (m *isoMirror) ServeConnect(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "mirror token required", http.StatusUnauthorized)
+}
+
+func (m *isoMirror) Hosts(ctx context.Context) []mirror.HostView {
+	if !m.mine(ctx) {
+		return nil
+	}
+	return []mirror.HostView{{Host: m.host, Sessions: []string{"main"}, Online: true}}
+}
+
+func (m *isoMirror) Attach(ctx context.Context, host, _ string, _ bool, _ io.Reader, stdout io.Writer, _ <-chan provision.TermSize) error {
+	if !m.mine(ctx) || host != m.host {
+		return mirror.ErrHostOffline
+	}
+	_, err := io.WriteString(stdout, "mirrored "+m.host)
+	return err
+}
 
 // isoUpstream records the credentials the proxy injected.
 type isoUpstream struct {

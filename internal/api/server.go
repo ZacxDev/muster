@@ -935,6 +935,16 @@ func (s *Server) BroadcastAgentChanged(agentName string) {
 	s.agentChangedFor(s.agentOwner(agentName), agentName)
 }
 
+// BroadcastAgentsChangedFor nudges owner's open Agents views to re-fetch, with
+// no agent named — the mirror plugin's host connected / dropped / re-listed
+// hook, which knows the host's owner and nothing else.
+func (s *Server) BroadcastAgentsChangedFor(owner int64) {
+	if s == nil {
+		return
+	}
+	s.broadcastTo(owner, EventAgentChanged, "")
+}
+
 // agentChangedFor is BroadcastAgentChanged for an owner already known.
 func (s *Server) agentChangedFor(owner int64, agentName string) {
 	s.broadcastTo(owner, EventAgentChanged, agentName)

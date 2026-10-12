@@ -39,7 +39,7 @@ func NewPG(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
 var _ Store = (*PGStore)(nil)
 
-// Role reads users.role. Under row-level security (migration 0008) a user
+// Role reads users.role. Under row-level security (migration 0009) a user
 // principal sees only its own row, so the api package reads it under
 // authz.System: it is how a request's role is LEARNED, before any principal
 // exists.

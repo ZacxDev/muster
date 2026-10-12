@@ -323,9 +323,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	srv := api.New(bus, cfg.authConfig(), logger)
 	srv.UseExtensions(ext)
 	if mirrorSvc != nil {
-		// No agent name: a mirrored session is not an agent. The nudge only makes
-		// open Agents views re-fetch, each scoped to its own principal.
-		mirrorSvc.SetNotify(func() { srv.BroadcastAgentChanged("") })
+		// No agent name: a mirrored session is not an agent. The nudge makes the
+		// host OWNER's open Agents views re-fetch — and only that owner's: an SSE
+		// event reaches its owner's streams alone (accounts PR 3b), so a nudge
+		// with no owner would reach nobody.
+		mirrorSvc.SetNotify(srv.BroadcastAgentsChangedFor)
 	}
 	if port.Configured() {
 		srv.UseRouter(port)

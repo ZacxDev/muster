@@ -64,7 +64,7 @@ const ChiefName = "chief"
 // 🔴 agents.name IS ONE GLOBAL NAMESPACE (it keys the instance's namespace),
 // so two users cannot both be "chief"; the id suffix is what makes each
 // user's reserved slug unique without a lookup. The adjective-noun pool can
-// mint none of these (it has no "chief"), and migration 0008's partial unique
+// mint none of these (it has no "chief"), and migration 0009's partial unique
 // index holds one reserved chief per owner.
 func ChiefNameFor(owner int64) string {
 	if owner == 1 {
