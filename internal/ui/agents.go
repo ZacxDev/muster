@@ -403,6 +403,9 @@ func agentRenameButton(ids string) g.Node {
 // viewport bottom, clamped inside the viewport at phone width) is
 // floatingMenuScript's, and is re-run whenever the menu's size can change.
 //
+// `invisible` is the other half of the placement contract: the menu is drawn
+// only once floatingMenuScript has put it beside its trigger (see there).
+//
 // ⚠ `hidden [&:popover-open]:flex`, NOT `flex`. The UA hides a closed popover
 // with a UA-origin rule, and ANY author display utility beats it — a plain
 // `flex` here renders every closed menu inline in every card.
@@ -430,7 +433,7 @@ func agentMenu(a AgentCardView) g.Node {
 			g.Attr("popover", "auto"),
 			g.Attr("role", "menu"),
 			g.Attr("data-floating-menu", ""),
-			Class("hidden [&:popover-open]:flex m-0 w-44 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
+			Class("invisible hidden [&:popover-open]:flex m-0 w-44 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
 			lifecycle,
 			g.If(!a.IsChief, Div(Class("my-0.5 border-t border-line"))),
 			g.If(!a.IsChief, agentDeleteConfirm(ids)),

@@ -324,36 +324,57 @@ func cardChunk(t *testing.T, markup string, id int64) string {
 	return markup[start:]
 }
 
-// TestEveryDestroyCallSiteIsChiefGuarded is the LEDGER of every function in this
-// package that USES the Provisioner interface's Destroy method.
+// TestEveryDestroyCallSiteIsChiefGuarded is the LEDGER of every top-level
+// declaration in this package that can reach the provisioner's Destroy.
 //
-// 🔴 IT IS RESOLVED BY TYPE, NOT BY SPELLING. An earlier version matched the
-// literal selector `X.Provisioner.Destroy`, so `p := s.ext.Provisioner;
-// p.Destroy(id)` — or a method value handed to a helper — was a destroy path it
-// could not see. This type-checks the package and records every selector that
-// resolves to (Provisioner).Destroy, called or not, whatever it is spelled
-// through.
+// 🔴 IT IS RESOLVED BY TYPE, NOT BY SPELLING, AND IT WALKS WHOLE FILES. Earlier
+// versions each had a shape they could not see, found by audit rather than by
+// the test: matching the literal selector `X.Provisioner.Destroy` missed
+// `p := s.ext.Provisioner; p.Destroy(id)`; walking only function BODIES missed a
+// package-level `var x = func(s *Server) … { return s.ext.Provisioner.Destroy }`;
+// and matching only (Provisioner).Destroy missed a narrower local interface
+// (`type d interface{ Destroy(int64) error }`) assigned from the provisioner.
 //
-// ⚠ WHAT IT PROVES, EXACTLY, AND NO MORE: (1) the SET of functions using that
-// method is the two named below — it fails when one is added or removed; and
-// (2) each of them also calls agentIsChief. It does NOT prove the answer gates
-// the destroy — a function could call the predicate and ignore it. The
-// behavioural tests above are what prove each named path refuses. And it reads
-// THIS package only: Provisioner is api's own interface and nothing outside
-// internal/api holds a Server to reach it through, but a caller that built its
-// own path around a concrete provisioner is outside this ledger.
+// ⚠ WHAT IT PROVES, EXACTLY, AND NO MORE. A "use" is any selector, anywhere in a
+// non-test file of THIS package, that type-checks to a method named Destroy
+// whose receiver is api.Provisioner OR any interface api.Provisioner satisfies —
+// called or merely taken as a value. Each use is attributed to its enclosing
+// top-level declaration (a func, or a package-level var/const/type). It proves:
 //
-// 🔴 THE LEDGER CARRIES ITS OWN POSITIVE CONTROL, IN THE SAME TYPE-CHECK. Two
-// control functions are added to the checked file set — a destroy through a local
-// alias, and a bare method value — and must be FOUND, or the two real names
-// below were matched by an instrument not shown to see the spellings it claims
-// to. (One check rather than two: the source importer costs ~20s a pass.)
+//	(1) the SET of such declarations is exactly the two named below — it fails
+//	    when one is added, including outside any function, or removed; and
+//	(2) each of them also mentions agentIsChief.
+//
+// It does NOT prove:
+//   - that agentIsChief's ANSWER gates the destroy (a function can call it and
+//     ignore it) — the behavioural tests above prove that for each named route;
+//   - anything about a destroy reached by REFLECTION, through an `any`, or
+//     through a concrete provisioner type rather than an interface; or
+//   - anything outside internal/api.
+//
+// 🔴 THE LEDGER CARRIES ITS OWN POSITIVE CONTROLS, IN THE SAME TYPE-CHECK: one
+// control declaration per shape above is added to the checked file set and must
+// be FOUND, or the two real names were matched by an instrument not shown to
+// see the spellings it claims to. (One check: the source importer costs ~12s.)
 func TestEveryDestroyCallSiteIsChiefGuarded(t *testing.T) {
-	controls := map[string]bool{"ledgerControlAlias": true, "ledgerControlValue": true}
+	controls := map[string]bool{
+		"ledgerControlAlias":  true, // through a local variable
+		"ledgerControlValue":  true, // a bare method value
+		"ledgerControlPkgLit": true, // a package-level func literal, outside any FuncDecl
+		"ledgerControlNarrow": true, // a narrower local interface
+	}
 	users := destroyUsers(t, map[string]string{"zz_ledger_control.go": `package api
 
 func (s *Server) ledgerControlAlias() { p := s.ext.Provisioner; _ = p.Destroy(1) }
 func (s *Server) ledgerControlValue() { f := s.ext.Provisioner.Destroy; _ = f }
+
+var ledgerControlPkgLit = func(s *Server) func(int64) error { return s.ext.Provisioner.Destroy }
+
+func (s *Server) ledgerControlNarrow() {
+	type destroyer interface{ Destroy(int64) error }
+	var d destroyer = s.ext.Provisioner
+	_ = d.Destroy(1)
+}
 `})
 	var names []string
 	for n := range users {
@@ -364,24 +385,25 @@ func (s *Server) ledgerControlValue() { f := s.ext.Provisioner.Destroy; _ = f }
 		names = append(names, n)
 	}
 	if len(controls) != 0 {
-		t.Fatalf("the ledger did not see its own controls %v — it cannot see a destroy reached "+
-			"through a variable or a method value, so the list below proves nothing", controls)
+		t.Fatalf("the ledger did not see its own controls %v — the list below proves nothing "+
+			"about that shape", controls)
 	}
 	sort.Strings(names)
 	if got, want := strings.Join(names, ","), "dismissTask,handleAgentDelete"; got != want {
-		t.Fatalf("functions using (Provisioner).Destroy = %s, want %s — a destroy path was added "+
-			"or removed; guard it with agentIsChief and add its route to the tests above", got, want)
+		t.Fatalf("declarations that can reach the provisioner's Destroy = %s, want %s — a destroy "+
+			"path was added or removed; guard it with agentIsChief and add its route to the tests above", got, want)
 	}
 	for _, n := range names {
 		if !users[n] {
-			t.Errorf("%s uses (Provisioner).Destroy without calling agentIsChief", n)
+			t.Errorf("%s can reach the provisioner's Destroy without mentioning agentIsChief", n)
 		}
 	}
 }
 
 // destroyUsers type-checks this package's non-test files (plus extra, name ->
-// source) and returns each function that uses (Provisioner).Destroy, mapped to
-// whether it also calls agentIsChief.
+// source) and returns each top-level declaration that uses a provisioner
+// Destroy (see the ledger's doc for what counts), mapped to whether it also
+// mentions agentIsChief.
 func destroyUsers(t *testing.T, extra map[string]string) map[string]bool {
 	t.Helper()
 	paths, err := filepath.Glob("*.go")
@@ -413,33 +435,37 @@ func destroyUsers(t *testing.T, extra map[string]string) map[string]bool {
 	if err != nil {
 		t.Fatalf("type-check: %v", err)
 	}
-	iface, ok := pkg.Scope().Lookup("Provisioner").Type().Underlying().(*types.Interface)
-	if !ok {
+	prov := pkg.Scope().Lookup("Provisioner").Type()
+	if _, ok := prov.Underlying().(*types.Interface); !ok {
 		t.Fatal("api.Provisioner is not an interface any more; this ledger needs rewriting")
 	}
-	var destroy *types.Func
-	for i := 0; i < iface.NumMethods(); i++ {
-		if m := iface.Method(i); m.Name() == "Destroy" {
-			destroy = m
+	// isDestroy: a method named Destroy on Provisioner itself or on any
+	// interface Provisioner satisfies (the narrower-interface shape).
+	isDestroy := func(sel *types.Selection) bool {
+		if sel == nil || sel.Obj().Name() != "Destroy" {
+			return false
 		}
-	}
-	if destroy == nil {
-		t.Fatal("api.Provisioner has no Destroy method; this ledger needs rewriting")
+		if _, ok := sel.Obj().(*types.Func); !ok {
+			return false
+		}
+		recv := sel.Recv()
+		if types.Identical(recv, prov) {
+			return true
+		}
+		iface, ok := recv.Underlying().(*types.Interface)
+		return ok && types.Implements(prov, iface)
 	}
 	out := map[string]bool{}
 	for _, file := range files {
 		for _, d := range file.Decls {
-			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Body == nil {
-				continue
-			}
+			name := declName(d)
 			var uses, guarded bool
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
+			ast.Inspect(d, func(n ast.Node) bool {
 				sel, ok := n.(*ast.SelectorExpr)
 				if !ok {
 					return true
 				}
-				if s := info.Selections[sel]; s != nil && s.Obj() == destroy {
+				if isDestroy(info.Selections[sel]) {
 					uses = true
 				}
 				if sel.Sel.Name == "agentIsChief" {
@@ -448,9 +474,30 @@ func destroyUsers(t *testing.T, extra map[string]string) map[string]bool {
 				return true
 			})
 			if uses {
-				out[fn.Name.Name] = guarded
+				out[name] = guarded
 			}
 		}
 	}
 	return out
+}
+
+// declName names a top-level declaration: a func by its name, anything else by
+// the first name it declares.
+func declName(d ast.Decl) string {
+	switch d := d.(type) {
+	case *ast.FuncDecl:
+		return d.Name.Name
+	case *ast.GenDecl:
+		for _, sp := range d.Specs {
+			switch sp := sp.(type) {
+			case *ast.ValueSpec:
+				if len(sp.Names) > 0 {
+					return sp.Names[0].Name
+				}
+			case *ast.TypeSpec:
+				return sp.Name.Name
+			}
+		}
+	}
+	return "(unnamed declaration)"
 }

@@ -209,6 +209,50 @@ for (const vp of [
       }
     });
 
+    // 🔴 NO FRAME WITH THE MENU SHOWN AWAY FROM ITS TRIGGER — NOT EVEN THE FIRST.
+    // The popover opens synchronously on the click, but the `toggle` event that
+    // places it is a later task, and a rendering update runs between the two:
+    // measured, a requestAnimationFrame callback saw the menu open and painted at
+    // 0,0 before it jumped to its trigger. So the first frame after the click is
+    // sampled from INSIDE the page: by then the menu must be not yet open, not yet
+    // visible, or already beside its trigger.
+    test('the menu is never shown unplaced, even on its first frame', async ({ page }) => {
+      await cards(page);
+      const id = await lastInRow(page);
+      await page.evaluate((cid) => {
+        const w = window as unknown as { __firstFrame: string };
+        w.__firstFrame = 'no frame sampled';
+        const t = document.querySelector(`#${cid} [aria-label="Agent actions"]`)!;
+        t.addEventListener('click', () => {
+          requestAnimationFrame(() => {
+            const m = document.getElementById('agent-menu-' + cid.replace('agent-', ''))!;
+            if (!m.matches(':popover-open')) return void (w.__firstFrame = 'not open yet');
+            if (getComputedStyle(m).visibility !== 'visible') return void (w.__firstFrame = 'open, not visible yet');
+            const tr = t.getBoundingClientRect();
+            const r = m.getBoundingClientRect();
+            const beside = Math.abs(r.right - tr.right) <= 1 && (Math.abs(r.top - tr.bottom) <= 8 || Math.abs(tr.top - r.bottom) <= 8);
+            w.__firstFrame = beside ? 'beside' : `SHOWN UNPLACED at ${Math.round(r.left)},${Math.round(r.top)}`;
+          });
+        });
+      }, id);
+      await page.locator(`#${id} [aria-label="Agent actions"]`).click();
+      await expect(page.locator(`#${id} summary`, { hasText: 'Delete' })).toBeVisible();
+      const read = () => page.evaluate(() => (window as unknown as { __firstFrame: string }).__firstFrame);
+      const ok = ['not open yet', 'open, not visible yet', 'beside'];
+      expect(ok, 'first open').toContain(await read());
+
+      // And on a REOPEN after the card has moved: a menu that kept its last
+      // position would be shown for a frame where the trigger USED to be.
+      await page.keyboard.press('Escape');
+      await page.evaluate(() => {
+        document.getElementById('agents-list')!.style.marginTop = '120px';
+        (window as unknown as { __firstFrame: string }).__firstFrame = 'no frame sampled';
+      });
+      await page.locator(`#${id} [aria-label="Agent actions"]`).click();
+      await expect(page.locator(`#${id} summary`, { hasText: 'Delete' })).toBeVisible();
+      expect(ok, 'reopen after the card moved').toContain(await read());
+    });
+
     // Closing the menu resets it: reopening starts at step 1 (no armed "Confirm
     // delete" waiting from last time).
     test('reopening the menu starts at step 1 of the delete', async ({ page }) => {

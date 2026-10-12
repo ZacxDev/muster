@@ -45,6 +45,14 @@ import (
 //     server's markup has no `open`), so an armed "Confirm delete" drops back to
 //     step 1. That is the safe direction and is left alone.
 //
+// 🔴 AND IT IS INVISIBLE UNTIL PLACED. A popover opens synchronously on the
+// click, but its `toggle` event — where it is first placed — is a later task,
+// and a rendering update runs in between: measured, a requestAnimationFrame
+// callback saw the menu open and drawn at 0,0 before it jumped to its trigger,
+// on every open. `beforetoggle` cannot place it (the menu has no box to measure
+// until it is shown), so the markup carries `invisible` and place() is the only
+// thing that makes it visible; closing drops the inline style again.
+//
 // A request started from inside a menu closes it as the request STARTS, so a
 // request that fails (and morphs nothing) does not leave it open. Closing — by
 // any route — also closes the nested Delete step, so reopening starts at step 1.
@@ -78,6 +86,10 @@ func floatingMenuScript() g.Node {
     }
     m.style.left = left + 'px';
     m.style.top = top + 'px';
+    // Shown only now. The menu is rendered with the invisible class (agentMenu), so every
+    // frame before this line — and every frame after a morph strips this style —
+    // draws nothing rather than a menu in the wrong place.
+    m.style.visibility = 'visible';
   }
   function placeAll() {
     var ms = document.querySelectorAll('[data-floating-menu]');
@@ -96,8 +108,11 @@ func floatingMenuScript() g.Node {
     }
   });
   // toggle does not bubble; a CAPTURING listener on document sees the popover's
-  // own. Open: place it and start observing. Close: stop, and reset the Delete
-  // step.
+  // own. Open: place it and start observing. Close: stop observing its SIZE,
+  // drop the position (so the next open starts invisible again instead of
+  // flashing at this one's stale coordinates) and reset the Delete step. The
+  // style observer is NOT stopped — MutationObserver has no per-node unobserve —
+  // and does nothing for a closed menu (its callback checks isOpen).
   document.addEventListener('toggle', function (e) {
     var m = e.target;
     if (!m || !m.matches || !m.matches('[data-floating-menu]')) return;
@@ -108,6 +123,7 @@ func floatingMenuScript() g.Node {
       return;
     }
     grew.unobserve(m);
+    m.removeAttribute('style');
     var ds = m.querySelectorAll('details[open]');
     for (var i = 0; i < ds.length; i++) ds[i].open = false;
   }, true);
