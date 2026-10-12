@@ -10,6 +10,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // PGStore is the Postgres-backed credential store (table user_credentials,
@@ -171,7 +172,8 @@ func (s *PGStore) upsert(ctx context.Context, owner int64, kind, name string, ct
 }
 
 // audit appends one audit_log row for a credential write by owner (round-1
-// audit on #69: saves and deletes were unrecorded).
+// audit on #69: saves and deletes were unrecorded), through users.AuditTx —
+// the account packages' one audit writer — inside the write's transaction.
 //
 // 🔴 IT IS HANDED NO SECRET AND CANNOT WRITE ONE: its parameters are the kind,
 // the name and the 48-bit fingerprint — the same three things the page lists.
@@ -180,14 +182,12 @@ func (s *PGStore) upsert(ctx context.Context, owner int64, kind, name string, ct
 // The row is the actor's own (audit_log's self_append policy, 0009): user_id
 // is the writer, via is how they were admitted.
 func audit(ctx context.Context, tx pgx.Tx, owner int64, action, kind, name, fingerprint string) error {
-	via := ""
+	by := users.Actor{UserID: owner}
 	if p, ok := authz.From(ctx); ok {
-		via = string(p.Via)
+		by.Via = p.Via
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO audit_log (user_id, via, action, object, detail)
-		VALUES ($1, $2, $3, $4, jsonb_build_object('kind', $5::text, 'name', $6::text, 'fingerprint', $7::text))`,
-		owner, via, action, kind+":"+name, kind, name, fingerprint)
-	return err
+	return users.AuditTx(ctx, tx, by, action, kind+":"+name,
+		map[string]any{"kind": kind, "name": name, "fingerprint": fingerprint})
 }
 
 // ClaudeTokens returns owner's Claude accounts, name → setup-token. An empty
