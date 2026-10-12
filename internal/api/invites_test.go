@@ -950,6 +950,56 @@ func TestAResetLinkForADisabledUserSetsNothing(t *testing.T) {
 	}
 }
 
+// TestALinkPageWithNoFragmentAsksForThePastedLink: a sign-in redirect drops
+// the fragment (measured live behind Authelia), so every link page renders a
+// VISIBLE paste field named token — never an empty hidden one — and a pasted
+// WHOLE link redeems, the server keeping only what follows '#'.
+func TestALinkPageWithNoFragmentAsksForThePastedLink(t *testing.T) {
+	w := newInviteWorld(t)
+	pasteRE := regexp.MustCompile(`<label for="([a-z-]+)"[^>]*>` + pasteLinkLabel + `</label>`)
+	for _, path := range []string{ClaimPath, InvitePath, ResetPath} {
+		body := do(w.edge, "GET", path, nil).Body.String()
+		m := pasteRE.FindStringSubmatch(body)
+		if m == nil {
+			t.Fatalf("%s: no visible %q field\n%s", path, pasteLinkLabel, truncate(body, 600))
+		}
+		if !regexp.MustCompile(`<input id="` + m[1] + `" name="token" type="text"`).MatchString(body) {
+			t.Fatalf("%s: the paste field is not the visible token input", path)
+		}
+		if regexp.MustCompile(`type="hidden"[^>]*name="token"`).MatchString(body) {
+			t.Fatalf("%s: an empty hidden token field is still rendered", path)
+		}
+	}
+	// A pasted whole invite link opens and redeems (server-side extraction:
+	// the page's script did not run here).
+	tok := w.createInvite("")
+	link := invitePublic + InvitePath + "#" + tok
+	open := do(w.edge, "POST", InvitePath, url.Values{"step": {"open"}, "token": {link}})
+	if open.Code != 200 || !strings.Contains(open.Body.String(), "Create your muster account") {
+		t.Fatalf("open with a pasted link: %d %s", open.Code, truncate(open.Body.String(), 300))
+	}
+	if rec := do(w.edge, "POST", InvitePath, redeemForm(link, "pasted@invite.test", "", goodPW, goodPW)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("redeem with a pasted link: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	// And the claim, with its pasted link (a claim needs user 1 unbound; the
+	// admin session is not used after this).
+	if _, err := w.pool.Exec(authz.System(context.Background()), `UPDATE users SET gotrue_sub = NULL, email = NULL WHERE id = 1`); err != nil {
+		t.Fatal(err)
+	}
+	clink, err := NewAdminClaimLink(context.Background(), w.store, invitePublic, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := do(w.edge, "POST", ClaimPath, claimForm("  "+clink+" ", "claimed@invite.test", goodPW, goodPW)); rec.Code != http.StatusSeeOther {
+		t.Fatalf("claim with a pasted link: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	// CONTROL: what was pasted is still judged — a pasted link with a wrong
+	// token is the uniform page.
+	if rec := do(w.edge, "POST", InvitePath, url.Values{"step": {"open"}, "token": {invitePublic + InvitePath + "#nope"}}); rec.Code != http.StatusNotFound {
+		t.Fatalf("a pasted wrong link: %d", rec.Code)
+	}
+}
+
 // TestTheCutoffIncludesItsOwnSecond: iat is whole seconds, so a token stamped
 // with the cutoff's own second may predate the disable and is refused.
 func TestTheCutoffIncludesItsOwnSecond(t *testing.T) {

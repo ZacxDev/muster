@@ -137,25 +137,80 @@ func (s *Server) renderInvalidInvite(w http.ResponseWriter) {
 // fragmentForm is the bootstrap page: its script moves the URL fragment into
 // the hidden token field, strips it from the address bar, and (auto) submits.
 func fragmentForm(action, heading, body, button string, autoSubmit bool, extra, token, problem string) string {
-	auto := ""
-	if autoSubmit {
-		auto = `if (t.value) { f.submit(); }`
-	}
 	return `<form id="frag-form" method="POST" action="` + action + `" class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">` + html.EscapeString(heading) + `</h1>
 <p class="text-sm text-fg2">` + html.EscapeString(body) + `</p>
 ` + problemNode(problem) + extra + `
-<input type="hidden" id="frag-token" name="token" value="` + html.EscapeString(token) + `">
+` + linkTokenField("frag-token", token) + `
 <button type="submit" class="press min-h-[44px] rounded-md bg-accent px-3 py-2 text-base font-semibold text-on-accent transition hover:bg-accent/90">` + html.EscapeString(button) + `</button>
 </form>
-<script>
+` + linkTokenScript("frag-form", "frag-token", autoSubmit)
+}
+
+// --- the link token when the fragment did not arrive -------------------------
+//
+// 🔴 A FRAGMENT DOES NOT SURVIVE A SIGN-IN REDIRECT. Measured live: with
+// Authelia in front of the host, opening <public>/auth/claim#<token> bounced
+// through the sign-in portal, whose rd= return URL carries no fragment, so the
+// page loaded with an empty token and the POST was refused as "invalid or
+// expired". So every link page (claim, invite, reset) renders a VISIBLE "Paste
+// your link" field; the page's script fills it from the fragment and hides it
+// when the fragment did arrive. The pasted value may be the whole link or the
+// bare token: the script keeps only what follows '#' before the form posts,
+// and postedLinkToken does the same server-side, so a token is only ever in a
+// POST body — never a URL (TestALinkPageWithNoFragmentAsksForThePastedLink).
+
+// pasteLinkLabel is the visible field's label.
+const pasteLinkLabel = "Paste your link"
+
+// linkTokenField renders the token input: hidden when the server already has
+// the token (a re-render after a form problem), otherwise the paste field.
+func linkTokenField(id, token string) string {
+	if token != "" {
+		return `<input type="hidden" id="` + id + `" name="token" value="` + html.EscapeString(token) + `">`
+	}
+	return `<div id="` + id + `-paste" class="flex flex-col gap-2">
+<label for="` + id + `" class="text-sm font-medium text-fg">` + pasteLinkLabel + `</label>
+<p class="text-sm text-fg2">If this page opened without your link (for example after a sign-in page), paste the whole link you were sent.</p>
+<input id="` + id + `" name="token" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" required value=""
+ class="min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus">
+</div>`
+}
+
+// linkTokenScript fills the token from the URL fragment (hiding the paste
+// field), strips the fragment from the address bar, reduces a pasted full
+// link to its fragment on submit, and — for autoSubmit — posts at once when
+// the fragment supplied the token.
+func linkTokenScript(formID, id string, autoSubmit bool) string {
+	auto := ""
+	if autoSubmit {
+		auto = `if (t.value) { f.submit(); }`
+	}
+	return `<script>
 (function () {
-  var f = document.getElementById('frag-form'), t = document.getElementById('frag-token');
-  if (!t.value && location.hash.length > 1) { t.value = location.hash.slice(1); }
+  var f = document.getElementById('` + formID + `'), t = document.getElementById('` + id + `'),
+      wrap = document.getElementById('` + id + `-paste');
+  if (!t.value && location.hash.length > 1) {
+    t.value = location.hash.slice(1);
+    if (wrap) { wrap.style.display = 'none'; }
+  }
   if (location.hash) { history.replaceState(null, '', location.pathname); }
+  function bare() { var v = t.value.trim(), i = v.lastIndexOf('#'); t.value = i >= 0 ? v.slice(i + 1) : v; }
+  f.addEventListener('submit', bare);
   ` + auto + `
 })();
 </script>`
+}
+
+// postedLinkToken is the link token a claim, invite or reset form posted:
+// the bare token, or — if a whole link was pasted and the page's script did
+// not run — the part after its '#'.
+func postedLinkToken(r *http.Request) string {
+	v := strings.TrimSpace(r.FormValue("token"))
+	if i := strings.LastIndex(v, "#"); i >= 0 {
+		v = v[i+1:]
+	}
+	return v
 }
 
 func (s *Server) handleInvitePage(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +267,7 @@ func (s *Server) handleInviteSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
 		return
 	}
-	token := r.FormValue("token")
+	token := postedLinkToken(r)
 	if token == "" {
 		s.renderInvalidInvite(w)
 		return
@@ -391,7 +446,7 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderNotice(w, http.StatusTooManyRequests, "Too many attempts", "Wait a minute and try again.")
 		return
 	}
-	token, pw, pw2 := r.FormValue("token"), r.FormValue("password"), r.FormValue("password2")
+	token, pw, pw2 := postedLinkToken(r), r.FormValue("password"), r.FormValue("password2")
 	if token == "" {
 		s.renderInvalidInvite(w)
 		return

@@ -56,7 +56,7 @@ func TestEveryCallCarriesTheClientIP(t *testing.T) {
 			_, err := c.VerifyRecovery(ctx, ip, f.RecoveryHash(id))
 			return err
 		},
-		"AdminSetPassword": func(ip string) error { return c.AdminSetPassword(ctx, ip, id, "a-long-enough-password") },
+		"AdminSetPassword":       func(ip string) error { return c.AdminSetPassword(ctx, ip, id, "a-long-enough-password") },
 		"AdminSignOutEverywhere": func(ip string) error { return c.AdminSignOutEverywhere(ctx, ip, id) },
 	}
 	for name, call := range calls {

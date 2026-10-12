@@ -81,7 +81,14 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   const adminTask = ((await created.json()) as { id: number }).id;
 
   // 1. The admin claims the account and reaches the admin pages from the sidebar.
-  await page.goto(claimLink());
+  // The claim page opened WITHOUT its fragment — what a sign-in redirect in
+  // front of muster does (measured live behind Authelia: rd= carries no
+  // fragment). The page asks for the link; the WHOLE link is pasted, and the
+  // page's script keeps only the token before posting.
+  const claim = claimLink();
+  await page.goto(browserURL + '/auth/claim');
+  await expect(page.getByLabel('Paste your link')).toBeVisible();
+  await page.getByLabel('Paste your link').fill(claim);
   await page.fill('#claim-email', adminEmail);
   await page.fill('#claim-password', adminPW);
   await page.fill('#claim-password2', adminPW);
@@ -119,6 +126,34 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await Promise.all([mp.waitForURL(browserURL + '/'), mp.getByRole('button', { name: 'Create account' }).click()]);
   const mcookies = await invitee.cookies(browserURL);
   expect(mcookies.find((c) => c.name === 'muster_at' && c.httpOnly && c.secure), 'the member is signed in').toBeTruthy();
+
+  // 3b. The same for an invite opened without its fragment: a third context
+  // loads /invite bare, pastes the whole link, and redeems it. (With the
+  // fragment, step 3 above, the paste field stays hidden.)
+  await page.goto(browserURL + '/admin/invites');
+  await page.getByRole('button', { name: 'Create link' }).click();
+  const link2 = await page.locator('#once-link').inputValue();
+  const paster = await browser.newContext({ viewport });
+  const pp = await paster.newPage();
+  const posted: string[] = [];
+  pp.on('request', (r) => { if (r.method() === 'POST') posted.push(r.url() + ' ' + (r.postData() ?? '')); });
+  await pp.goto(browserURL + '/invite');
+  await expect(pp.getByLabel('Paste your link')).toBeVisible();
+  await pp.getByLabel('Paste your link').fill(link2);
+  await pp.getByRole('button', { name: 'Continue' }).click();
+  await expect(pp.getByRole('heading', { name: 'Create your muster account' })).toBeVisible();
+  await pp.fill('#invite-email', `paster-${stamp}@example.com`);
+  await pp.fill('#invite-password', memberPW);
+  await pp.fill('#invite-password2', memberPW);
+  await Promise.all([pp.waitForURL(browserURL + '/'), pp.getByRole('button', { name: 'Create account' }).click()]);
+  const token2 = link2.slice(link2.indexOf('#') + 1);
+  // The token travelled only in POST bodies, as the bare token — never in a URL.
+  expect(posted.some((p) => p.includes('token=' + token2)), `posts: ${posted.join(' | ')}`).toBe(true);
+  expect(posted.every((p) => !p.split(' ')[0].includes(token2)), 'no POST URL carries the token').toBe(true);
+  expect(posted.every((p) => !decodeURIComponent(p.split(' ')[1] ?? '').includes('/invite#')), 'the whole link was reduced to its token').toBe(true);
+  await paster.close();
+  await page.goto(browserURL + '/admin/invites');
+  await expect(page.locator('[data-invite-state="pending"]'), 'both links are redeemed').toHaveCount(0);
 
   // 4. The member's board is EMPTY (the admin's, on the same page, is not).
   await mp.goto(browserURL + '/tasks');
