@@ -706,6 +706,22 @@ func TestARedemptionWithATakenEmailIsTheUniformPage(t *testing.T) {
 	}
 }
 
+// TestAnEmailGoTrueAlreadyHasIsTheUniformPage: GoTrue refuses the create (422
+// email_exists) for an email muster has no account for — the uniform page, so
+// a link cannot be used to learn which emails have GoTrue logins.
+func TestAnEmailGoTrueAlreadyHasIsTheUniformPage(t *testing.T) {
+	w := newInviteWorld(t)
+	tok := w.createInvite("", "member")
+	w.fake.AddUser("orphan@invite.test", "some-long-password")
+	rec := do(w.edge, "POST", InvitePath, redeemForm(tok, "orphan@invite.test", "", goodPW, goodPW))
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "invalid or expired") {
+		t.Fatalf("an email GoTrue already has: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+	if w.fake.CountCalls("POST", "/admin/users") != 1 {
+		t.Fatal("CONTROL: the create was not attempted, so the 422 path was not reached")
+	}
+}
+
 // TestAResetLinkForADisabledUserSetsNothing.
 func TestAResetLinkForADisabledUserSetsNothing(t *testing.T) {
 	w := newInviteWorld(t)
