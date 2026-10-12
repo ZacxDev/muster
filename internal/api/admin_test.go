@@ -296,3 +296,106 @@ func TestAResetWhoseCutoffCannotMoveSaysAskForANewLink(t *testing.T) {
 		t.Fatalf("a failed cutoff move: %d %s", w.Code, truncate(w.Body.String(), 400))
 	}
 }
+
+// stalledRead arms f.store so the next BySub stalls after reading its row,
+// and returns (reading: closed once the read is in flight, release).
+func stalledRead(f *gtFixture) (<-chan struct{}, func()) {
+	reading, release := make(chan struct{}), make(chan struct{})
+	f.store.mu.Lock()
+	f.store.stallNext = func() { close(reading); <-release }
+	f.store.mu.Unlock()
+	return reading, func() { close(release) }
+}
+
+// TestARequestInFlightAcrossAResetIsRefusedAtAdmission (round-4 A): a
+// request that passed the cutoff check BEFORE the reset moved the cutoff, and
+// registers its stream (track) AFTER the reset ended the user's streams, must
+// be refused there — the reset is recorded under the same lock as a
+// sign-out-everywhere (notBefore[sub] = cutoff), which track checks. The
+// reset's own new session (iat > cutoff) is still admitted.
+func TestARequestInFlightAcrossAResetIsRefusedAtAdmission(t *testing.T) {
+	f := newStreamFixture(t)
+	f.s.gt.sweepInterval = time.Hour
+	f.fake.UseRealClock()
+	f.s.gt.Accounts = &memAccounts{rows: f.store}
+	at, rt, _ := f.fake.Mint(f.sub)
+	reading, release := stalledRead(f.gtFixture)
+	got := make(chan int, 1)
+	go func() { got <- do(f.edge, "GET", "/account", nil, withCookies(at, rt), asXHR).Code }()
+	<-reading // the old request has read the PRE-reset row and is resolving
+	w := do(f.edge, "POST", ResetPath, url.Values{"token": {f.fake.RecoveryHash(f.sub)},
+		"password": {"a-new-long-password"}, "password2": {"a-new-long-password"}})
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("reset: %d", w.Code)
+	}
+	release()
+	if code := <-got; code != http.StatusUnauthorized {
+		t.Fatalf("a request that resolved before the reset and registered after it: %d, want 401", code)
+	}
+	ck := setCookies(w)
+	if g := do(f.edge, "GET", "/account", nil, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value)); g.Code != http.StatusOK {
+		t.Fatalf("the reset's own new session: %d, want 200", g.Code)
+	}
+}
+
+// TestAStaleReadDoesNotRePoisonTheUserCache (round-4 B): a user-row read in
+// flight across an invalidation (forgetUser, after the row changed) must not
+// write its pre-change row back into the 30 s cache. The row change here is a
+// session cutoff moved WITHOUT this process's reset record — as a cutoff moved
+// elsewhere would be — so the cache is the only thing that can carry it.
+func TestAStaleReadDoesNotRePoisonTheUserCache(t *testing.T) {
+	f := newStreamFixture(t)
+	f.fake.SetAccessTTL(time.Hour)
+	at, rt, _ := f.fake.Mint(f.sub)
+	reading, release := stalledRead(f.gtFixture)
+	done := make(chan struct{})
+	go func() { do(f.edge, "GET", "/account", nil, withCookies(at, rt)); close(done) }()
+	<-reading
+	cut := f.fake.Now().Add(time.Second)
+	f.store.mu.Lock()
+	f.store.rows[1].SessionsNotBefore = &cut
+	f.store.mu.Unlock()
+	f.s.gt.forgetUser(1)
+	release()
+	<-done
+	if g := do(f.edge, "GET", "/account", nil, withCookies(at, rt), asXHR); g.Code != http.StatusUnauthorized {
+		t.Fatalf("the pre-cutoff token after a stale read re-cached the old row: %d, want 401", g.Code)
+	}
+	// CONTROL: without the in-flight read the same sequence refuses too.
+	f2 := newStreamFixture(t)
+	f2.fake.SetAccessTTL(time.Hour)
+	at2, rt2, _ := f2.fake.Mint(f2.sub)
+	do(f2.edge, "GET", "/account", nil, withCookies(at2, rt2))
+	cut2 := f2.fake.Now().Add(time.Second)
+	f2.store.mu.Lock()
+	f2.store.rows[1].SessionsNotBefore = &cut2
+	f2.store.mu.Unlock()
+	f2.s.gt.forgetUser(1)
+	if g := do(f2.edge, "GET", "/account", nil, withCookies(at2, rt2), asXHR); g.Code != http.StatusUnauthorized {
+		t.Fatalf("CONTROL: %d, want 401", g.Code)
+	}
+}
+
+// TestAStaleReadAcrossADisableIsStillRefused: the same in-flight read across
+// a DISABLE re-caches the pre-disable row too, but track refuses the user
+// (g.disabled); and once the generation guard drops the stale write, the next
+// request reads the disabled row itself. An invariant guard: it held on
+// 7ba2569 (track already covered disable); kept so the two layers stay two.
+func TestAStaleReadAcrossADisableIsStillRefused(t *testing.T) {
+	f := newStreamFixture(t)
+	f.fake.SetAccessTTL(time.Hour)
+	sub := f.member("d@example.com", 7, authz.RoleMember)
+	at, rt, _ := f.fake.Mint(sub)
+	reading, release := stalledRead(f.gtFixture)
+	done := make(chan struct{})
+	go func() { do(f.edge, "GET", "/account", nil, withCookies(at, rt)); close(done) }()
+	<-reading
+	if err := f.s.DisableUser(context.Background(), 7, true); err != nil {
+		t.Fatal(err)
+	}
+	release()
+	<-done
+	if g := do(f.edge, "GET", "/account", nil, withCookies(at, rt), asXHR); g.Code != http.StatusUnauthorized {
+		t.Fatalf("after a disable with a stale read in flight: %d, want 401", g.Code)
+	}
+}

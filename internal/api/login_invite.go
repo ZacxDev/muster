@@ -507,7 +507,9 @@ func (s *Server) handleResetSubmit(w http.ResponseWriter, r *http.Request) {
 	// sign-out-everywhere end them, and so must a reset. The session the reset
 	// is about to sign in is not open yet, so ending every one of the user's
 	// streams spares nothing it should (TestAResetEndsTheOtherDevicesOpenStreams).
-	s.gt.endUserStreams(u.ID)
+	// Recorded like a sign-out-everywhere, so a request that resolved before
+	// this point is refused when it registers after it (recordReset).
+	s.gt.recordReset(u.ID, c.Subject, cut)
 	// The audit row (actor: the user; the client address in the detail)
 	// commits only if GoTrue set the password.
 	//

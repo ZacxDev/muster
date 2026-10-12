@@ -133,7 +133,9 @@ type gotrueState struct {
 
 	mu        sync.Mutex
 	userCache map[string]cachedUser
-	flights   map[string]*refreshFlight
+	// cacheGen counts user-cache invalidations (forgetUserLocked); see user.
+	cacheGen uint64
+	flights  map[string]*refreshFlight
 	// revokedSessions: GoTrue session ids signed out through this process,
 	// until their access tokens could no longer verify anyway.
 	revokedSessions map[string]time.Time
@@ -224,10 +226,24 @@ func (g *gotrueState) track(parent context.Context, uid int64, c gotrue.Claims) 
 	}, true
 }
 
-// endUserStreams cancels every live request of uid (a password reset).
-func (g *gotrueState) endUserStreams(uid int64) {
+// recordReset records a password reset of uid (GoTrue subject sub, session
+// cutoff cut) the way revoke records a sign-out-everywhere: under g.mu,
+// notBefore[sub] moves to cut — so track, which checks it under the same lock,
+// refuses any request that passed the cutoff check before the reset and
+// registers after it (TestARequestInFlightAcrossAResetIsRefusedAtAdmission) —
+// and then every live request of the user is cancelled. The session the reset
+// signs in is issued after cut (signInAfterCutoff), so it is not refused.
+func (g *gotrueState) recordReset(uid int64, sub string, cut time.Time) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.revokedSessions == nil {
+		g.revokedSessions = map[string]time.Time{}
+		g.notBefore = map[string]time.Time{}
+		g.afterSignOut = map[string]bool{}
+	}
+	if nb, ok := g.notBefore[sub]; !ok || cut.After(nb) {
+		g.notBefore[sub] = cut
+	}
 	g.endLocked(uid, "")
 }
 
@@ -351,6 +367,16 @@ type refreshFlight struct {
 var errRevoked = errors.New("session signed out")
 
 // user resolves a subject to its muster row, through the 30 s cache.
+//
+// 🔴 A READ THAT STARTED BEFORE AN INVALIDATION DOES NOT WRITE THE CACHE. The
+// row is read with the lock released; if forgetUser runs meanwhile (a disable,
+// an enable, a reset, a role change), the row this read returns may predate
+// that change, and caching it would undo the invalidation for userCacheTTL
+// (TestAStaleReadDoesNotRePoisonTheUserCache). cacheGen counts invalidations;
+// a write whose read began under an older generation is dropped — the caller
+// still gets its row, the next request reads again. One counter for every
+// user: an invalidation of one user only costs another's in-flight read its
+// cache write.
 func (g *gotrueState) user(ctx context.Context, sub string) (users.User, error) {
 	now := g.now()
 	g.mu.Lock()
@@ -358,16 +384,19 @@ func (g *gotrueState) user(ctx context.Context, sub string) (users.User, error) 
 		g.mu.Unlock()
 		return c.u, nil
 	}
+	gen := g.cacheGen
 	g.mu.Unlock()
 	u, err := g.Users.BySub(ctx, sub)
 	if err != nil {
 		return users.User{}, err
 	}
 	g.mu.Lock()
-	if g.userCache == nil {
-		g.userCache = map[string]cachedUser{}
+	if g.cacheGen == gen {
+		if g.userCache == nil {
+			g.userCache = map[string]cachedUser{}
+		}
+		g.userCache[sub] = cachedUser{u: u, at: now}
 	}
-	g.userCache[sub] = cachedUser{u: u, at: now}
 	g.mu.Unlock()
 	return u, nil
 }
@@ -380,6 +409,7 @@ func (g *gotrueState) forgetUser(id int64) {
 }
 
 func (g *gotrueState) forgetUserLocked(id int64) {
+	g.cacheGen++
 	for sub, c := range g.userCache {
 		if c.u.ID == id {
 			delete(g.userCache, sub)

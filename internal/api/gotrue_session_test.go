@@ -41,6 +41,10 @@ type memUsers struct {
 	lookupErr error
 	// lookupFailures makes only the next N BySub calls fail (a blip).
 	lookupFailures int
+	// stallNext, if set, is called ONCE by the next BySub after it has read
+	// its row and before it returns it (outside the lock): a read in flight
+	// across whatever the test does meanwhile.
+	stallNext func()
 }
 
 type memInvite struct {
@@ -74,7 +78,14 @@ func (m *memUsers) BySub(_ context.Context, sub string) (users.User, error) {
 	}
 	for _, u := range m.rows {
 		if u.GotrueSub == sub && sub != "" {
-			return *u, nil
+			row, stall := *u, m.stallNext
+			m.stallNext = nil
+			if stall != nil {
+				m.mu.Unlock()
+				stall()
+				m.mu.Lock()
+			}
+			return row, nil
 		}
 	}
 	return users.User{}, users.ErrNotFound
