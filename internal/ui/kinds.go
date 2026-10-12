@@ -145,10 +145,17 @@ func kindPicker(k KindChoices) g.Node {
 	})
 }
 
-// kindInitScript fires the picker's own change handler once for a picker that
-// opened on a kind other than the first (see kindPicker).
+// kindInitScript runs the picker's own toggle once for a picker that opened on
+// a kind other than the first (see kindPicker).
+//
+// ⚠ IT CALLS kindToggleScript DIRECTLY (bound to the fieldset), RATHER THAN
+// DISPATCHING A change EVENT, BECAUSE THE EVENT WAS MEASURED TO DO NOTHING:
+// htmx evaluates a swapped-in <script> during the swap, before it has wired the
+// fieldset's hx-on:change listener, so the dispatched event reached no handler
+// and the form opened on Claude Code with its account pin hidden (the e2e
+// byo-credentials spec caught it). Same string, so still one toggle.
 const kindInitScript = "document.querySelectorAll('[data-kind-picker][data-kind-init]').forEach(function(p){" +
-	"p.removeAttribute('data-kind-init');p.dispatchEvent(new Event('change'))})"
+	"p.removeAttribute('data-kind-init');(function(){" + kindToggleScript + "}).call(p)})"
 
 // unavailableNotice lists, for each kind the caller cannot use, what to add —
 // with a link to the page where they add it. Empty when every kind is usable.

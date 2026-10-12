@@ -66,7 +66,7 @@ func TestASpecIsBuiltFromItsOwnersCredentialsOnly(t *testing.T) {
 	}
 	cfg := fixtureSpecConfig()
 	cfg.OpenRouterAPIKey = envKey
-	cfg.ClaudeCode = &agentspec.ClaudeCodeConfig{Image: "ghcr.io/example-org/claude-code-agent:1", Accounts: map[string]string{"work": envTok}}
+	cfg.ClaudeCode = &agentspec.ClaudeCodeConfig{Image: "ghcr.io/example-org/claude-code-agent:1", Accounts: map[string]string{"work": envTok, "spare": envTok + "-spare"}}
 	a, err := New(Config{Driver: provision.MustNewNoop(), Store: &recordingStore{}, Spec: cfg, Credentials: creds, KickoffDeliverable: true})
 	if err != nil {
 		t.Fatal(err)
@@ -115,5 +115,21 @@ func TestASpecIsBuiltFromItsOwnersCredentialsOnly(t *testing.T) {
 	}
 	if got, err := build(1, agents.KindGateway); err != nil || !strings.Contains(got, envKey) {
 		t.Fatalf("admin gateway: %v\n%s", err, got)
+	}
+	// The CONFIG a member's spec is built from carries none of the
+	// environment's credentials either — replaced, not merged — so a kind that
+	// read both (or another account name) still could not reach the admin's.
+	for _, kind := range []string{agents.KindClaudeCode, agents.KindGateway} {
+		c, err := a.specFor(ctx, row(41, kind))
+		if err != nil {
+			t.Fatal(err)
+		}
+		dump := fmt.Sprintf("%v %q", c.ClaudeCode.Accounts, c.OpenRouterAPIKey)
+		if strings.Contains(dump, envTok) || strings.Contains(dump, envKey) {
+			t.Fatalf("member %s spec config carries an environment credential: %s", kind, dump)
+		}
+	}
+	if c, _ := a.specFor(ctx, row(41, agents.KindClaudeCode)); len(c.ClaudeCode.Accounts) != 1 || c.OpenRouterAPIKey != "" {
+		t.Fatalf("member claude-code config: accounts %d, openrouter key set %v", len(c.ClaudeCode.Accounts), c.OpenRouterAPIKey != "")
 	}
 }
