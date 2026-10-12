@@ -106,7 +106,7 @@ type commentedTaskRef struct {
 // connector request pushed there would land on the operator's phone — the same
 // cross-user leak the SSE owner filter closes, through a different door. The
 // approval relay draws the same line (operator decision: only admin-owned
-// agents relay to clawgate). A member's notifications arrive with per-user
+// agents relay to the router). A member's notifications arrive with per-user
 // delivery in a later PR; until then a member gets none, never the operator's.
 // roleOf fails to member, so an unreadable role notifies nobody.
 func (s *Server) routerServes(owner int64) bool {

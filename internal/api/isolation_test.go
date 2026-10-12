@@ -443,7 +443,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 				return nil, fmt.Errorf("no such host %s", host)
 			}},
 	})
-	w.router = &isoRouter{dirs: []string{"/home/operator/" + w.opCanary}}
+	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
 	srv.UseApprovalGate(&isoGate{})
 	srv.sessionUserOverride = func(r *http.Request) int64 {
