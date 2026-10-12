@@ -42,7 +42,8 @@
 --      TestTheRollbackQueryFindsExactlyTheMembersLiveAgents):
 --
 -- BEGIN rollback-member-agents
---   SELECT u.id AS user_id, u.email, a.id AS agent_id, a.name, a.kind, a.status, a.namespace
+--   SELECT u.id AS user_id, u.email, a.id AS agent_id, a.kind, a.status,
+--          a.namespace AS namespace, a.name AS deployment
 --     FROM public.users u
 --     LEFT JOIN public.agents a
 --       ON a.owner_id = u.id AND a.status IN ('pending', 'provisioning', 'running')
@@ -53,8 +54,13 @@
 --   2. Disable each member listed, so nobody can dispatch or Start on the old
 --      image (`disabled_at` + GoTrue ban; the old image honours both):
 --        kubectl -n muster exec deploy/muster -- /muster-server user disable <user_id>
---   3. Stop each listed agent's pod (its namespace is in the row):
---        kubectl -n <namespace> scale deployment --all --replicas=0
+--   3. Stop each listed agent — ONLY that agent's Deployment, never `--all`:
+--        kubectl -n <namespace> scale deployment/<deployment> --replicas=0
+--      <deployment> is the agent's name (the driver names the Deployment after
+--      it). <namespace> is the row's in the default per-agent layout; with
+--      MUSTER_AGENT_NAMESPACE_SHARED=true every agent — the admin's too — is in
+--      MUSTER_AGENT_NAMESPACE instead, which is exactly why `--all` would stop
+--      the admin's agents as well.
 --   4. Roll the image back. Re-enable members only after rolling forward again
 --      (`muster-server user enable <user_id>`).
 --

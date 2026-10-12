@@ -120,7 +120,9 @@ func TestUserCredentialsRowsAreShapedByKind(t *testing.T) {
 // the note cannot drift from what is tested): it lists every enabled member —
 // with each live agent, or alone when they have none, so they still get
 // disabled — and nothing of the admin's, nothing stopped, nothing of a member
-// already disabled.
+// already disabled. Each agent row carries the namespace and the Deployment
+// name step 3 scales (one Deployment, never --all: in shared-namespace mode
+// --all would stop the admin's agents too — round-2 audit on #69).
 func TestTheRollbackQueryFindsExactlyTheMembersLiveAgents(t *testing.T) {
 	ctx := ctx0006(t)
 	pool := freshMigrated(ctx, t, "ms_0011_rollback_query")
@@ -149,18 +151,26 @@ func TestTheRollbackQueryFindsExactlyTheMembersLiveAgents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the rollback query does not run: %v\n%s", err, q.String())
 	}
+	// Closed on every path: a Fatalf with the rows open would hold the pool's
+	// connection and hang the cleanup.
+	defer rows.Close()
 	var got []string
 	for rows.Next() {
 		var uid int64
 		var email string
 		var agentID *int64
-		var name, kind, status, ns *string
-		if err := rows.Scan(&uid, &email, &agentID, &name, &kind, &status, &ns); err != nil {
+		var kind, status, ns, deployment *string
+		if err := rows.Scan(&uid, &email, &agentID, &kind, &status, &ns, &deployment); err != nil {
 			t.Fatal(err)
 		}
+		cols := rows.FieldDescriptions()
+		if string(cols[5].Name) != "namespace" || string(cols[6].Name) != "deployment" {
+			t.Fatalf("the rollback query's last columns are %q, %q; the note's step 3 reads namespace and deployment",
+				cols[5].Name, cols[6].Name)
+		}
 		n := "-"
-		if name != nil {
-			n = *name + "@" + *ns
+		if deployment != nil {
+			n = *deployment + "@" + *ns
 		}
 		got = append(got, fmt.Sprintf("%d:%s", uid, n))
 	}
