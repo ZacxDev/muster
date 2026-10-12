@@ -72,6 +72,9 @@ func TestInviteStatesAndAudit(t *testing.T) {
 	if err := s.CreateClaimInvite(ctx, hash("claim"), 1, 1, now.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
+	if l, _ := s.ListInvites(ctx); len(l) != 4 {
+		t.Fatalf("the list has %d invites, want the 4 general ones (no claim link)", len(l))
+	}
 	if _, err := s.OpenInvite(ctx, hash("claim")); !errors.Is(err, ErrInvalidInvite) {
 		t.Fatalf("a claim link opened as an invite: %v", err)
 	}

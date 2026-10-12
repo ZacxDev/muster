@@ -661,3 +661,73 @@ func TestTheSidebarLinksAdminOnlyForAnAdmin(t *testing.T) {
 		t.Fatalf("a member opening /admin/users: %d, want 403", rec.Code)
 	}
 }
+
+// TestAdminWritesRefuseACrossSitePost: requireAdmin's same-origin check, with
+// the same request from muster's own origin as the control.
+func TestAdminWritesRefuseACrossSitePost(t *testing.T) {
+	w := newInviteWorld(t)
+	evil := func(r *http.Request) { r.Header.Set("Origin", "https://evil.example") }
+	if rec := do(w.edge, "POST", "/admin/invites", url.Values{"role": {"member"}}, w.asAdmin(), evil); rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-site create: %d", rec.Code)
+	}
+	var n int
+	_ = w.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM invites`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("a cross-site POST created %d invite(s)", n)
+	}
+	w.createInvite("", "member") // control: same-origin works
+}
+
+// TestAnAdminCannotDisableItself — with a SECOND admin present, so the
+// last-admin guard is not what refuses it.
+func TestAnAdminCannotDisableItself(t *testing.T) {
+	w := newInviteWorld(t)
+	if _, err := w.pool.Exec(authz.System(context.Background()), `INSERT INTO users (email, role) VALUES ('other-admin@invite.test', 'admin')`); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(w.edge, "POST", "/admin/users/1/disable", url.Values{}, w.asAdmin())
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "your own account") {
+		t.Fatalf("self-disable with another admin present: %d %s", rec.Code, truncate(rec.Body.String(), 300))
+	}
+}
+
+// TestARedemptionWithATakenEmailIsTheUniformPage: an unbound invite redeemed
+// with an email a muster account already has never reaches GoTrue.
+func TestARedemptionWithATakenEmailIsTheUniformPage(t *testing.T) {
+	w := newInviteWorld(t)
+	tok := w.createInvite("", "member")
+	creates := w.fake.CountCalls("POST", "/admin/users")
+	rec := do(w.edge, "POST", InvitePath, redeemForm(tok, "OP@invite.test", "", goodPW, goodPW))
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "invalid or expired") {
+		t.Fatalf("taken email: %d", rec.Code)
+	}
+	if w.fake.CountCalls("POST", "/admin/users") != creates {
+		t.Fatal("a taken email reached GoTrue")
+	}
+}
+
+// TestAResetLinkForADisabledUserSetsNothing.
+func TestAResetLinkForADisabledUserSetsNothing(t *testing.T) {
+	w := newInviteWorld(t)
+	tok := w.createInvite("", "member")
+	do(w.edge, "POST", InvitePath, redeemForm(tok, "gone@invite.test", "", goodPW, goodPW))
+	var uid int64
+	var sub string
+	_ = w.pool.QueryRow(authz.System(context.Background()), `SELECT id, gotrue_sub::text FROM users WHERE email = 'gone@invite.test'`).Scan(&uid, &sub)
+	hash := w.fake.RecoveryHash(sub) // minted before the disable, as a link handed out earlier would be
+	if rec := do(w.edge, "POST", "/admin/users/"+strconv.FormatInt(uid, 10)+"/disable", url.Values{}, w.asAdmin()); rec.Code != http.StatusSeeOther {
+		t.Fatalf("disable: %d", rec.Code)
+	}
+	// The fake (like GoTrue) refuses a banned user's token; un-ban in GoTrue
+	// only, so muster's own disabled_at check is the one under test.
+	if err := w.fake.Client().AdminSetBanned(context.Background(), "127.0.0.1", sub, false); err != nil {
+		t.Fatal(err)
+	}
+	rec := do(w.edge, "POST", ResetPath, url.Values{"token": {hash}, "password": {"a-new-long-password"}, "password2": {"a-new-long-password"}})
+	if rec.Code != http.StatusNotFound || len(setCookies(rec)) != 0 {
+		t.Fatalf("reset for a disabled user: %d cookies %v", rec.Code, setCookies(rec))
+	}
+	if gu, _ := w.fake.User(sub); gu.Password != goodPW {
+		t.Fatal("a disabled user's password was changed")
+	}
+}
