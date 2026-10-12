@@ -24,7 +24,9 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/ccpool"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/github"
@@ -109,6 +111,13 @@ var isolationClasses = map[string]routeClass{
 	"GET /auth/claim":  classPublic,
 	"POST /auth/claim": classPublic,
 	"GET /account":     classList,
+	// Bring-your-own credentials: the caller's own page and writes (list), and
+	// the delete that names an account (param, by NAME — A's is the canary).
+	"GET /account/credentials":                       classList,
+	"POST /account/credentials/claude":               classList,
+	"POST /account/credentials/openrouter":           classList,
+	"POST /account/credentials/openrouter/delete":    classList,
+	"POST /account/credentials/claude/{name}/delete": classParam,
 
 	"GET /{$}":                     classList,
 	"GET /agents":                  classList,
@@ -232,6 +241,10 @@ var wantCanaryForA = []string{
 	// first lists the router's directories, admin-only and checked by the
 	// operator canary; the second is the bare dispatch form.)
 	"GET /ui/tags", "GET /ui/notifications",
+	// The caller's own credentials: A's Claude account is NAMED with the canary,
+	// so it shows on A's credentials page and on A's dispatch form's account
+	// pin (which lists the caller's own accounts since bring-your-own).
+	"GET /account/credentials", "GET /ui/agents/new",
 }
 
 func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
@@ -311,6 +324,7 @@ type isoWorld struct {
 	opApproval   string
 	aProject     string
 	objA, ghost  isoObjs
+	creds        *credentials.PGStore
 	upHost       string
 	up           *isoUpstream
 	router       *isoRouter
@@ -426,6 +440,15 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	_, err = as.AddChatMessage(ua, agents.ChatMessage{AgentID: w.a.agent.ID, SessionID: w.aChatSession.ID, Role: "assistant", Kind: "text", Content: w.canary + " reply"})
 	must(err, "a chat reply")
 
+	// A's own model-provider credentials (bring-your-own): a Claude account
+	// whose NAME is the canary, and an OpenRouter management key (minted
+	// through a fake). B has none; the operator runs on the environment pool.
+	w.creds, err = credentials.NewPG(pool, bytes.Repeat([]byte{3}, 32), &isoMinter{}, log.New(io.Discard, "", 0))
+	must(err, "credential store")
+	w.objA.ccAccount = w.canary
+	must(w.creds.PutClaude(ua, w.canary, isoATok), "a claude account")
+	must(w.creds.PutOpenRouter(ua, isoAMgmt), "a openrouter key")
+
 	w.up = newIsoUpstream(t)
 	w.upHost = "iso.fake.test:" + w.up.port
 	w.aConnName = "isoconn" + w.suffix
@@ -449,7 +472,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(gh.Save(ua, w.canary+"-login", "repo", "gho_"+w.canary), "a github")
 
 	w.aIdentities = []string{w.a.agent.Name, agents.ChiefNameFor(w.a.uid), w.aSessionLink, w.aTag, w.aProject}
-	w.objA = isoObjs{task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
+	w.objA = isoObjs{ccAccount: w.objA.ccAccount, task: w.a.task.ID, agent: w.a.agent.ID, grant: w.aGrantID, comment: w.aComment.ID,
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main"}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
@@ -457,14 +480,21 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	const ghostID = 9_000_000_000
 	w.ghost = isoObjs{task: ghostID, agent: ghostID, grant: ghostID, comment: ghostID, attach: ghostID, chat: ghostID,
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
-		mirrorHost: "ghost-host", mirrorSession: "main"}
+		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct"}
 
 	// The server, fully wired over the real stores.
 	w.bus = sse.New(64)
 	srv := New(w.bus, AuthConfig{HookToken: isoHookToken, ServiceToken: isoServiceToken, UIPassword: isoPassword},
 		log.New(io.Discard, "", 0))
 	w.prov = &isoProvisioner{store: as}
+	envPool, err := ccpool.NewStatic(map[string]string{isoEnvAccount: isoEnvToken})
+	must(err, "env pool")
+	plane := &credentials.Plane{EnvClaude: envPool, EnvOpenRouterKey: "sk-or-v1-iso-ENV-operator-key-000000",
+		Personal: w.creds, Roles: users.NewPG(pool)}
+	ccp, err := ccpool.New(plane, ccpool.NewPG(pool))
+	must(err, "account pool")
 	ext := Extensions{
+		Kinds: isoKinds{pool: ccp, plane: plane}, Credentials: isoCredPage{PGStore: w.creds, plane: plane},
 		Notes: ns, Agents: as, GitHub: gh, Users: users.NewPG(pool),
 		GitHubOAuth: GitHubOAuthConfig{ClientID: "iso-client", ClientSecret: "iso-secret", BaseURL: "http://muster.test",
 			StateKey: []byte("iso-walk-oauth-state-key-0123456789")},
@@ -563,7 +593,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 			`DELETE FROM chat_sessions WHERE owner_id = ANY($1)`, `DELETE FROM agents WHERE owner_id = ANY($1)`,
 			`DELETE FROM task_sessions WHERE owner_id = ANY($1)`, `DELETE FROM note_attachments WHERE owner_id = ANY($1)`,
 			`DELETE FROM note_comments WHERE owner_id = ANY($1)`, `DELETE FROM notes WHERE owner_id = ANY($1)`,
-			`DELETE FROM github_connection WHERE owner_id = ANY($1)`, `DELETE FROM users WHERE id = ANY($1)`,
+			`DELETE FROM github_connection WHERE owner_id = ANY($1)`, `DELETE FROM user_credentials WHERE owner_id = ANY($1)`,
+			`DELETE FROM cc_account_marks WHERE owner_id = ANY($1)`, `DELETE FROM users WHERE id = ANY($1)`,
 		} {
 			_, _ = pool.Exec(bg, q, ids)
 		}
@@ -650,6 +681,7 @@ func (w *isoWorld) do(h http.Handler, method, path, body string, c cred) *httpte
 
 // isoObjs names one set of objects a request can point at.
 type isoObjs struct {
+	ccAccount                                 string
 	task, agent, grant, comment, attach, chat int64
 	agentName, connName, tag, link            string
 	mirrorHost, mirrorSession                 string
@@ -679,6 +711,9 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 	name := o.agentName
 	if strings.Contains(path, "connectors/{name}") {
 		name = o.connName
+	}
+	if strings.Contains(path, "credentials/claude/{name}") {
+		name = o.ccAccount
 	}
 	path = strings.NewReplacer(
 		"{$}", "", "{id}", url.PathEscape(id), "{name}", url.PathEscape(name),
@@ -743,7 +778,8 @@ func (w *isoWorld) snapshot() map[string]string {
 	w.t.Helper()
 	out := map[string]string{}
 	for _, tbl := range []string{"notes", "note_comments", "note_attachments", "task_sessions", "agents",
-		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens"} {
+		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
+		"user_credentials", "cc_account_marks"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every
@@ -815,6 +851,8 @@ func sortedRoutes() []string {
 	// A can run them all against one fixture.
 	rank := func(r string) int {
 		switch {
+		case strings.HasSuffix(r, "/delete"): // a POST that deletes (a plain HTML form cannot DELETE)
+			return 2
 		case !strings.HasPrefix(r, "DELETE "):
 			return 0
 		case strings.Contains(r, "{cid}"), strings.Contains(r, "{tag}"), strings.Contains(r, "grants"), strings.Contains(r, "approvals"):

@@ -65,6 +65,11 @@ var publicRoutes = []string{
 var routeVias = map[authz.Via][]string{
 	authz.ViaSession: {
 		"GET /account",
+		"GET /account/credentials",
+		"POST /account/credentials/claude",
+		"POST /account/credentials/claude/{name}/delete",
+		"POST /account/credentials/openrouter",
+		"POST /account/credentials/openrouter/delete",
 		"DELETE /agents/{id}",
 		"GET /mirror/terminal",
 		"GET /mirror/terminal/ws",
