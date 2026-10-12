@@ -318,7 +318,14 @@ const credentialsLockClass int32 = 0x6d75746b // "mutk"
 //     api_tokens → audit_log
 //   - ResetCredentials      lock → UPDATE users → UPDATE api_tokens
 //
-// and the one that deliberately does NOT take it: apitokens.Authenticate's
+// NOT api_tokens writers, and deliberately outside the rule: the
+// bring-your-own-credentials writers (internal/credentials Put*/Delete). Each
+// writes user_credentials and an audit row, needing only FOR KEY SHARE on the
+// owner's users row; nothing else writes user_credentials, so they can wait
+// for a disable but hold nothing it wants. They are in the stress test all the
+// same (0 deadlocks).
+//
+// and the one api_tokens writer that deliberately does NOT take it: apitokens.Authenticate's
 // last_used_at stamp, a single autocommit UPDATE of one token row that takes
 // no users lock (last_used_at is in no foreign key), so it can only ever wait,
 // never hold-and-wait.

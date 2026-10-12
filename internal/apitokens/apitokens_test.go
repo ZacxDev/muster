@@ -1,6 +1,7 @@
 package apitokens
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/users"
@@ -674,6 +676,24 @@ func stressCredentialWriters(t *testing.T, w world, rounds int, budget time.Dura
 			return err
 		},
 	}
+	// Bring-your-own credentials (#69): a save and a delete each write a
+	// user_credentials row and an audit row, both keyed on the owner's users
+	// row. They take neither lock, and need neither: nothing else writes
+	// user_credentials, so they can wait for a disable but hold nothing it wants.
+	creds, err := credentials.NewPG(w.pool, bytes.Repeat([]byte{9}, credentials.KeySize))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = w.pool.Exec(sysCtx(), `DELETE FROM user_credentials WHERE owner_id = ANY($1)`, []int64{w.a, w.b})
+	})
+	ops["credential-save"] = func(i int) error {
+		return creds.PutOpenRouter(asX, credentials.OpenRouterKeyPrefix+fmt.Sprintf("stress-key-%020d", i))
+	}
+	ops["credential-delete"] = func(int) error {
+		_, err := creds.Delete(asX, credentials.KindOpenRouter, "")
+		return err
+	}
 	{
 		ops["invite-create"] = func(i int) error {
 			h := sha256.Sum256([]byte(fmt.Sprintf("stress-%d-%d-%d", w.a, i, time.Now().UnixNano())))
@@ -734,9 +754,9 @@ func stressCredentialWriters(t *testing.T, w world, rounds int, budget time.Dura
 
 // TestCredentialWritersNeverDeadlock (review round 5) is the guard on the
 // ORDER RULE (users.LockCredentialsTx, users' account-writers lock): mint, mint
-// by another admin, revoke, list, disable, enable, reset, demote/promote and
-// invite create/revoke, all at once against an ADMIN, with nothing
-// choreographed — and not one SQLSTATE 40P01.
+// by another admin, revoke, list, disable, enable, reset, demote/promote,
+// invite create/revoke and credential save/delete (#69), all at once against
+// an ADMIN, with nothing choreographed — and not one SQLSTATE 40P01.
 //
 // 🔴 IT ASSERTS AN OUTCOME (zero deadlocks), NOT AN INTERLEAVING. The
 // choreographed tests above each pin one window; this is what fails when a
@@ -746,12 +766,13 @@ func stressCredentialWriters(t *testing.T, w world, rounds int, budget time.Dura
 // RevokeInvite, every choreographed test stays green and this one goes red.
 //
 // ⚠ BOUNDED: up to stressRounds rounds per writer or 8 s, and it stops at the
-// first deadlock (each costs Postgres's 1 s deadlock_timeout). 250 rounds is
-// what made the WEAKEST of the measured mutants (Revoke's lock removed) red
-// 10 runs in 10; at 60 rounds it was caught only 2 runs in 3. The controls keep a
+// first deadlock (each costs Postgres's 1 s deadlock_timeout). The round count
+// is set by the WEAKEST measured mutant (Revoke's lock removed): caught 2 runs
+// in 3 at 60 rounds, 8 in 10 at 250 once the credential writers joined, and
+// 20 in 20 at 700 — about 1.5 s when green. The controls keep a
 // run that did nothing from passing: every writer must have succeeded at
 // least once and the disable must have run at least 20 times.
-const stressRounds = 250
+const stressRounds = 700
 
 func TestCredentialWritersNeverDeadlock(t *testing.T) {
 	w := newWorld(t)
@@ -760,7 +781,7 @@ func TestCredentialWritersNeverDeadlock(t *testing.T) {
 		t.Fatalf("%d deadlock(s) (SQLSTATE 40P01) among the credential writers; first: %s", res.deadlocks, res.firstDead)
 	}
 	for _, name := range []string{"mint", "mint-by-another-admin", "revoke-one", "list", "disable", "enable", "reset", "demote",
-		"invite-create", "invite-revoke"} {
+		"invite-create", "invite-revoke", "credential-save", "credential-delete"} {
 		if res.ok[name] == 0 {
 			t.Errorf("CONTROL: %q never succeeded, so its absence of deadlocks proves nothing (ok counts %v)", name, res.ok)
 		}
