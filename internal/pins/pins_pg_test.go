@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -228,4 +229,79 @@ func itoa(i int) string {
 		b = append([]byte{byte('0' + i%10)}, b...)
 	}
 	return string(b)
+}
+
+// TestAPinRacingTheAgentsDeleteIsNoSuchAgent: the agent is deleted by a
+// transaction that is still open when the pin is inserted. The owner trigger
+// still sees the row and passes; the foreign key check then waits on the
+// deleter's row lock, and when the deleter commits it fails 23503. That is "no
+// such agent" too — not a 500.
+//
+// Deterministic: the commit is issued only once the insert is observed
+// WAITING on a lock (pg_stat_activity), so the insert cannot run before the
+// delete nor after its commit. The 23503 is asserted on the store's wrapped
+// error path: with the 23503 arm removed the error is not ErrNoSuchAgent.
+func TestAPinRacingTheAgentsDeleteIsNoSuchAgent(t *testing.T) {
+	s, pool := pgStore(t)
+	a := mustAgent(t, pool, 2, "pin-race")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// The deleter: the login role, so it sees and may delete the row.
+	del, err := pgx.Connect(ctx, dbtest.DSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer del.Close(context.Background())
+	tx, err := del.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	if tag, err := tx.Exec(ctx, `DELETE FROM agents WHERE id = $1`, a.ID); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("uncommitted delete: %v (%d rows)", err, tag.RowsAffected())
+	}
+
+	// The observer: a third connection, as the login role — pg_stat_activity
+	// hides another session's query text from the application role.
+	obs, err := pgx.Connect(ctx, dbtest.DSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer obs.Close(context.Background())
+
+	done := make(chan error, 1)
+	go func() { done <- s.PinAgent(as(2), a.ID) }()
+
+	// Wait until the insert is blocked on a lock — the FK check on the row
+	// the open transaction deleted.
+	waiting := false
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		select {
+		case err := <-done:
+			t.Fatalf("the pin returned (%v) before the delete committed: the race was not reproduced", err)
+		default:
+		}
+		var n int
+		if err := obs.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND query LIKE '%INSERT INTO pins%'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n > 0 {
+			waiting = true
+			break
+		}
+	}
+	if !waiting {
+		t.Fatal("the pin never waited on the deleter's lock: the race was not reproduced")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	err = <-done
+	if !errors.Is(err, ErrNoSuchAgent) {
+		t.Fatalf("a pin racing its agent's delete: %v, want ErrNoSuchAgent", err)
+	}
+	if got := mustList(t, s, 2); got.Agent(a.ID) {
+		t.Fatalf("the racing pin landed: %+v", got)
+	}
 }
