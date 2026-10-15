@@ -239,8 +239,9 @@ func pinPost(t *testing.T, s *Server, h http.Handler, path string, form url.Valu
 }
 
 // TestThePinRoutesPinAndUnpinIdempotently: through the real mux — an htmx post
-// answers the re-rendered list with the pinned card first, a plain form post a
-// 303 back to /agents (no JavaScript needed), each twice with the same result.
+// answers the re-rendered list with the pinned card first, a non-htmx form post
+// a 303 back to /agents (a route behaviour only: no page without JavaScript
+// draws a toggle), each twice with the same result.
 func TestThePinRoutesPinAndUnpinIdempotently(t *testing.T) {
 	fm := &fakeMirror{online: true, windows: pinWindows()}
 	mp := &memPins{agents: map[int64]bool{5: true, 6: true, 7: true}}

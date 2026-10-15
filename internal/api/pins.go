@@ -20,8 +20,10 @@ import (
 // idempotent: pinning a pinned entry, or unpinning an unpinned one, succeeds.
 //
 // The answer is the re-rendered list for an htmx post (hx-target #agents-list)
-// and a 303 back to /agents for a plain form post — the toggle works without
-// JavaScript.
+// and a 303 back to /agents for a non-htmx form post. That second branch has no
+// user-reachable purpose today: #agents-list and its cards are loaded only by
+// htmx, so a page without JavaScript draws no toggle to post. It is a route
+// behaviour (TestThePinRoutesPinAndUnpinIdempotently), not a no-JS path.
 func (s *Server) registerPinRoutes(mux Mux) {
 	// Spelled literally (ui.PinPath / ui.UnpinPath are the same strings): the
 	// route walks in this package's tests read the pattern from the source.

@@ -155,10 +155,14 @@ func (s *PGStore) insert(ctx context.Context, q string, args ...any) error {
 		}
 		if _, err := tx.Exec(ctx, q, args...); err != nil {
 			var pg *pgconn.PgError
-			// 23503: no such agent row. 23514 from the owner trigger (which
-			// names no constraint): an agent row exists but is not the
-			// caller's — it reads as no owner under row-level security. Both
-			// are "no such agent" to the caller.
+			// The BEFORE INSERT owner trigger (plugin_rows_owner_is_agents_owner)
+			// runs before the foreign key is checked, and it raises 23514 with
+			// no constraint name BOTH for an absent agent and for another
+			// owner's agent (which reads as no owner under row-level security)
+			// — observed: "owner 2 is not the owner of agent 987654321".
+			// 23503 (the foreign key) is unreachable today; it is kept only so
+			// a pin of an absent agent stays "no such agent" if the trigger is
+			// ever dropped.
 			if errors.As(err, &pg) && (pg.Code == "23503" || (pg.Code == "23514" && pg.ConstraintName == "")) {
 				return ErrNoSuchAgent
 			}

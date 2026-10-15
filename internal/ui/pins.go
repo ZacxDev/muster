@@ -7,9 +7,10 @@ import (
 	. "maragu.dev/gomponents/html"
 )
 
-// The pin routes (internal/api pins.go). Form posts, so a pin works without
-// JavaScript: the browser posts the form and is sent back to /agents. With htmx
-// the same form posts in place and the answer is the re-rendered list.
+// The pin routes (internal/api pins.go). The toggles are forms with hx-post:
+// htmx posts them in place and the answer is the re-rendered list. They also
+// carry method/action, but that is not a no-JavaScript path — #agents-list and
+// its cards are loaded only by htmx, so without JavaScript no toggle is drawn.
 const (
 	PinPath   = "/agents/pins"
 	UnpinPath = "/agents/pins/delete"
