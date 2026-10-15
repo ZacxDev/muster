@@ -449,7 +449,27 @@ for (const vp of [
       expect(qOf()).toBe('solo');
       await page.reload();
       await expect(box).toHaveValue('solo');
-      expect(await names()).toEqual(['solo:3']);
+      await expect.poll(names, { message: 'the reloaded list is filtered', timeout: 20_000 }).toEqual(['solo:3']);
+
+      // 🔴 LEAVING THE TAB AND COMING BACK KEEPS ?q=. The tab router pushes a
+      // bare /<tab>; the URL must carry the filter the moment the Agents panel is
+      // back — read right after the click, before any list poll could heal it —
+      // and no other tab may carry it.
+      const tab = async (t: string) => {
+        const open = page.locator('#sidebar-open');
+        if (await open.isVisible()) await open.click();
+        await page.locator(`#sidebar a[data-tab="${t}"]`).click();
+        await expect(page.locator(`#sidebar a[data-tab="${t}"][aria-current="page"]`)).toHaveCount(1);
+      };
+      const hist = await page.evaluate(() => history.length);
+      await tab('tasks');
+      expect(new URL(page.url()).pathname).toBe('/tasks');
+      expect(qOf(), 'the Tasks tab carries no ?q=').toBeNull();
+      await tab('agents');
+      const back = new URL(page.url());
+      expect(back.pathname + back.search, 'back on Agents, the URL carries the filter at once').toBe('/agents?q=solo');
+      expect(await page.evaluate(() => history.length), 'two tab switches, two history entries').toBe(hist + 2);
+      await expect(box).toHaveValue('solo');
       await noHorizontalScroll(page);
     });
 

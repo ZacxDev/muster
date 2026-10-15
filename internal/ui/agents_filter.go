@@ -288,6 +288,12 @@ func agentsFilterScript() g.Node {
     if (e.target && e.target.id === 'agents-list') apply();
   });
   document.addEventListener('htmx:load', restore);
+  // Back on the Agents tab (switchTab pushed a bare /agents): put the filter's
+  // ?q= back on it at once — a replace, so the switch is still one entry.
+  document.addEventListener('muster:tabshown', function (e) {
+    var input = el('agents-search');
+    if (input && e.detail && e.detail.tab === 'agents') syncURL(input.value);
+  });
   // Back/forward onto an /agents entry: its ?q= is the filter it had.
   window.addEventListener('popstate', restore);
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', restore); else restore();
