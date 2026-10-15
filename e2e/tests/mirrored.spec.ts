@@ -573,6 +573,29 @@ test('the Rendered composer stays on screen at a phone size: pinned to the viewp
   await onScreen(H - KB, 'above an overlaid keyboard');
   await endAboveComposer('above an overlaid keyboard');
   await noHorizontalScroll(page);
+
+  // A composer TALLER than the shell's no-script fallback reserve (4.5rem =
+  // 72px): a read-only host's composer carries its note. Only the MEASURED
+  // reserve (--mv-compose-h) keeps the transcript's end out from behind it —
+  // the 65px interactive composer above fits inside the fallback either way.
+  // A fresh page: the stubbed visualViewport above is that page's alone.
+  await stopMirror();
+  mirrorProc = startMirror(false, tr);
+  const ro = await page.context().newPage();
+  await ro.goto(origin + viewPath('main'));
+  await expect(ro.locator('#mv-readonly')).toBeVisible();
+  const roLast = ro.locator('#mv-log [data-bubble="assistant"]').last();
+  await expect(roLast).toContainText('answer number 30');
+  const roH = (await ro.locator('#mv-compose').boundingBox())!.height;
+  expect(roH, 'the read-only composer is taller than the 72px fallback reserve (else this check cannot see the measurement)').toBeGreaterThan(72);
+  await expect
+    .poll(async () => {
+      const a = (await roLast.boundingBox())!;
+      const c = (await ro.locator('#mv-compose').boundingBox())!;
+      return Math.round(a.y + a.height - c.y);
+    }, { message: `a ${Math.round(roH)}px read-only composer: the last message ends above it (overlap px, must be <= 0)` })
+    .toBeLessThanOrEqual(0);
+  await ro.close();
   await stopMirror();
   mirrorProc = startMirror(false);
 });
