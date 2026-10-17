@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -266,7 +267,7 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 		}
 		octx := d.AsOwner(ctx, h.Owner)
 		st := d.Probe(octx, h)
-		if !d.Decide(h, st).Send {
+		if dd := d.Decide(h, st); !dd.Send && !strings.HasPrefix(dd.Why, "waiting for the previous") { // MUTANT M_hold
 			continue
 		}
 		it, ok, err := d.Store.Claim(ctx, h.ID, d.now(), Claim{By: d.InstanceID(), Lease: d.lease(), Since: st.Since})

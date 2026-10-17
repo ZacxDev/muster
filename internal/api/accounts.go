@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -601,7 +602,7 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 	// with the access cookie absent ("" is malformed) or forged — cannot make
 	// muster call GoTrue at all (TestARefreshNeedsASignedExpiredAccessToken).
 	c, err := g.Verifier.Verify(at)
-	if errors.Is(err, gotrue.ErrExpired) && rt != "" {
+	if errors.Is(err, gotrue.ErrExpired) && rt != "" && os.Getenv("MUTANT_NEVER") == "1" { // MUTANT GM1
 		// TWO refresh throttles, applied by the flight's LEADER only (the one
 		// request that calls GoTrue; joiners of a flight cost GoTrue nothing),
 		// and both RESERVED before the call — see refreshGuard for why a
