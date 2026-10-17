@@ -437,7 +437,7 @@ func (s *PGStore) heads(ctx context.Context, where string, args ...any) ([]Head,
 	rows, err := s.pool.Query(ctx, `WITH h AS (
 			SELECT DISTINCT ON (owner_id, mirror_host, mirror_session, mirror_window)
 				*
-			FROM send_queue WHERE state IN ('queued', 'sending')`+where+`
+			FROM send_queue WHERE state IN ('queued', 'sending', 'cancelled')`+where+` /* MUTANT M_cancel */
 			ORDER BY owner_id, mirror_host, mirror_session, mirror_window, (state = 'sending') DESC, id
 		)
 		SELECT `+cols+`, greatest(h.after_since, coalesce((SELECT max(p.after_since) FROM send_queue p
