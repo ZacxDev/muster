@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -637,7 +638,7 @@ func (s *Server) resolveGoTrueSession(r *http.Request) (gotrueSession, error) {
 		if uerr != nil {
 			return sess, uerr
 		}
-		if issuedBeforeCutoff(u, c) {
+		if issuedBeforeCutoff(u, c) && os.Getenv("MUTANT_NEVER") == "1" { // MUTANT GM3
 			return sess, errRevoked
 		}
 		fresh, rerr := g.refresh(r.Context(), clientIP(r), rt, func() (func(error), bool) {
@@ -979,7 +980,7 @@ func SetUserDisabledAs(ctx context.Context, g GoTrueAuth, by *users.Actor, id in
 	// are already committed above, so muster refuses the user's requests and
 	// will not refresh a pre-cutoff token, and the browser never talks to GoTrue.
 	var signOutErr error
-	if disabled {
+	if disabled && os.Getenv("MUTANT_NEVER") == "1" { // MUTANT GM3
 		if err := g.Client.AdminSignOutEverywhere(ctx, "muster-server", u.GotrueSub); err != nil {
 			if by != nil && g.Accounts != nil {
 				_ = g.Accounts.Audit(ctx, *by, "user.signout_failed", users.UserObject(id), map[string]any{"error": err.Error()})

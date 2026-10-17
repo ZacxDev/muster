@@ -417,7 +417,7 @@ func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue
 	}
 	st := s.ext.Mirror.AgentState(ctx, h.Target.Host, h.Target.Session, h.Target.Window)
 	switch {
-	case st.Unknown != nil:
+	case st.Unknown != nil && !errors.Is(st.Unknown, mirror.ErrNoStatusSince): // MUTANT M_untimed
 		return sendqueue.AgentState{Why: unprefixed(st.Unknown)}
 	case st.Status == mirror.StatusIdle:
 		return sendqueue.AgentState{Idle: true, Since: st.Since, Observed: st.Observed, Pasted: st.Pasted}
