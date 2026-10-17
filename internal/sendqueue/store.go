@@ -487,7 +487,7 @@ func (s *PGStore) Claim(ctx context.Context, id int64, now time.Time, c Claim) (
 	}
 	it, err := scanItem(s.pool.QueryRow(sys(ctx), `UPDATE send_queue SET state = 'sending', claimed_at = $2,
 		claimed_by = $3, lease_until = now() + $4 * interval '1 microsecond', claim_since = $5
-		WHERE id = $1 AND state = 'queued' RETURNING `+cols, id, now, c.By, leaseMicros(c.Lease), max(c.Since, 0)))
+		WHERE id = $1 AND state IN ('queued', 'cancelled') RETURNING `+cols, id, now, c.By, leaseMicros(c.Lease), max(c.Since, 0)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Item{}, false, nil
 	}

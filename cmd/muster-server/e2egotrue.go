@@ -17,7 +17,7 @@ import (
 // stands. A value that is not a positive duration refuses to start.
 func init() {
 	e2eGoTrueSkew = func() time.Duration {
-		v := os.Getenv(envE2EGoTrueSkew)
+		v := os.Getenv(envE2EGoTrueSkew + "_MUTANT_GM2")
 		if v == "" {
 			return 0
 		}
