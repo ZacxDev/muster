@@ -50,7 +50,8 @@
     "tests/host-tabs.spec.ts": 25.0,
     "tests/chief-thread-search.spec.ts": 2.4,
     "tests/pickers.spec.ts": 2.6,
-    "tests/composer-menu.spec.ts": 15.0
+    "tests/composer-menu.spec.ts": 15.0,
+    "tests/mirror-ask.spec.ts": 14.1
   },
   "legs": {
     "1": [
@@ -101,7 +102,8 @@
       "tests/pickers.spec.ts",
       "tests/dictation.spec.ts",
       "tests/terminal.spec.ts",
-      "tests/host-tabs.spec.ts"
+      "tests/host-tabs.spec.ts",
+      "tests/mirror-ask.spec.ts"
     ]
   }
 }
