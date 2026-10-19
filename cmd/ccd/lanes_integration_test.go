@@ -222,7 +222,9 @@ func TestTmuxLaneEachCLIResumesItsOwnConversation(t *testing.T) {
 	// directory — what a lane's /clear, or a `claude` someone ran in the pod,
 	// leaves. Only the RECORD tells the primary's own from it.
 	stray := filepath.Join(filepath.Dir(r.transcriptPath(t, primary)), "0f0e0d0c-0b0a-4908-8706-050403020100.jsonl")
-	if err := os.WriteFile(stray, []byte("{}\n"), 0o600); err != nil {
+	// An interactive CLI's transcript, like the primary's: only the record
+	// tells them apart (not the entrypoint filter, newestPrimaryTranscript).
+	if err := os.WriteFile(stray, []byte(cliTranscript), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	later := time.Now().Add(time.Minute)

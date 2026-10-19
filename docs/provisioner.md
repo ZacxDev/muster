@@ -95,7 +95,7 @@ gateway agent — but only one of your **connected** GitHub repositories, from
 every door (its session starts pre-trusted in the checkout, so the repository's
 own `.claude/` runs beside the subscription token; see below). An agent without
 one is exactly what it was before: no clone, the CLI in `/data/workspace`, the
-same `--continue` resume.
+same resume (`--resume` of its own conversation by id).
 
 - **The checkout.** muster gives the pod `CCD_REPO`, `CCD_REPO_BRANCH` (when
   there is a branch) and `CCD_WORKSPACE=/data/workspace/<name>`. Before it

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -48,11 +51,13 @@ import (
 // (primaryRecordFile) — only when the primary's own process fired it, never a
 // `claude` running inside it (proctree.go) — and every later primary start is
 // `--resume <that id>`. With no usable record it is `--resume` of the newest
-// transcript that is not a lane's (laneUUIDMarker), chosen by ccd before the
-// start, so a lane transcript written while the CLI boots cannot be taken; it
-// is never a bare `--continue` (supervisor.argv). No lane starts until the
-// primary has started in this process (lanes.acquire); see server.runLanes on
-// what that gate still does.
+// transcript that is an interactive CLI's and not a lane's
+// (newestPrimaryTranscript), chosen by ccd before the start, so a lane
+// transcript written while the CLI boots cannot be taken; it is never a bare
+// `--continue` (supervisor.argv). So a lane may start before the primary ever
+// has — and must: a primary that is not logged in, or crash-loops, never sends
+// SessionStart, and gating lanes on it refused every lane turn (503 not_ready,
+// which muster's interactive chat does not re-send) for as long as it lasted.
 //
 // 🔴 MEMORY IS WHY THERE IS A CAP. A Claude Code CLI is a node process: measured
 // at about 250MiB (median) to 550MiB (largest) on workstation CLIs, against the
@@ -181,24 +186,125 @@ func recordedPrimary(configDir, workspace string) string {
 }
 
 // newestPrimaryTranscript returns the id of the newest transcript in the
-// workspace's project directory that is not a lane's ("" with none).
+// workspace's project directory that may be the primary's ("" with none): not a
+// lane's by name (laneUUIDMarker), not a session a lane's hooks named
+// (laneSessionsFile: a lane's /clear), and written by an INTERACTIVE CLI
+// (interactiveTranscript) — never a `claude -p` run in the pod, which writes its
+// transcript in the same directory.
 func newestPrimaryTranscript(configDir, workspace string) string {
-	entries, err := os.ReadDir(projectDir(configDir, workspace))
+	dir := projectDir(configDir, workspace)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""
 	}
+	lanesSaw := laneSessions(configDir)
 	var newest string
 	var at time.Time
 	for _, e := range entries {
 		name, ok := strings.CutSuffix(e.Name(), ".jsonl")
-		if !ok || !e.Type().IsRegular() || strings.HasPrefix(name, laneUUIDMarker) {
+		if !ok || !e.Type().IsRegular() || strings.HasPrefix(name, laneUUIDMarker) || !sessionIDPattern.MatchString(name) || lanesSaw[name] {
 			continue
 		}
-		if fi, err := e.Info(); err == nil && sessionIDPattern.MatchString(name) && (newest == "" || fi.ModTime().After(at)) {
+		fi, err := e.Info()
+		if err != nil || (newest != "" && !fi.ModTime().After(at)) {
+			continue
+		}
+		if interactiveTranscript(filepath.Join(dir, e.Name())) {
 			newest, at = name, fi.ModTime()
 		}
 	}
 	return newest
+}
+
+// transcriptHeadCap bounds how much of a transcript interactiveTranscript reads.
+// The first entry carrying an entrypoint came within the first 6 lines and 5.7
+// KiB of every workstation transcript measured that has one (811 of 813, read
+// 2026-10-19); the rest of a transcript can be many MiB.
+const transcriptHeadCap = 64 << 10
+
+// interactiveTranscript reports whether the transcript at path was written by an
+// interactive CLI: its FIRST entry that carries an "entrypoint" says "cli".
+// `claude -p` stamps "sdk-cli" (measured on CLI 2.1.289); the header entries a
+// transcript opens with ("mode", "permission-mode", …) carry none. Each line is
+// decoded as JSON and only the top-level field is read; a line that is not JSON
+// (or that the cap cut) is skipped. No entrypoint within the cap is false: a
+// fresh start beats resuming a conversation that cannot be shown to be one.
+func interactiveTranscript(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head, err := io.ReadAll(io.LimitReader(f, transcriptHeadCap))
+	if err != nil {
+		return false
+	}
+	// A line the cap cut short does not decode (a JSON object's text has no
+	// shorter prefix that is one), so it is skipped like any other bad line.
+	for _, line := range bytes.Split(head, []byte("\n")) {
+		var entry struct {
+			Entrypoint string `json:"entrypoint"`
+		}
+		if json.Unmarshal(line, &entry) != nil || entry.Entrypoint == "" {
+			continue
+		}
+		return entry.Entrypoint == "cli"
+	}
+	return false
+}
+
+// laneSessionsFile holds the session ids lanes' SessionStart hooks named that
+// are not marked as a lane's (laneUUIDMarker) — what /clear in a lane's CLI
+// starts. Its transcript is an interactive CLI's like the primary's, so only
+// this record tells it apart (newestPrimaryTranscript). Beside
+// primaryRecordFile; the newest maxLaneSessions are kept.
+const laneSessionsFile = "ccd-lane-sessions"
+
+const maxLaneSessions = 256
+
+// laneSessionsMu serializes laneSessionsFile's read-modify-write.
+var laneSessionsMu sync.Mutex
+
+// recordLaneSession adds id to laneSessionsFile. A lane's own id is not
+// recorded: its name already says it is a lane's.
+func recordLaneSession(configDir, id string) error {
+	if !sessionIDPattern.MatchString(id) || strings.HasPrefix(id, laneUUIDMarker) {
+		return nil
+	}
+	laneSessionsMu.Lock()
+	defer laneSessionsMu.Unlock()
+	path := filepath.Join(configDir, laneSessionsFile)
+	var ids []string
+	if b, err := os.ReadFile(path); err == nil {
+		for _, l := range strings.Fields(string(b)) {
+			if l == id {
+				return nil
+			}
+			ids = append(ids, l)
+		}
+	}
+	ids = append(ids, id)
+	if len(ids) > maxLaneSessions {
+		ids = ids[len(ids)-maxLaneSessions:]
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(ids, "\n")+"\n"), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// laneSessions is the set laneSessionsFile holds (empty when it is missing).
+func laneSessions(configDir string) map[string]bool {
+	b, err := os.ReadFile(filepath.Join(configDir, laneSessionsFile))
+	if err != nil {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, id := range strings.Fields(string(b)) {
+		set[id] = true
+	}
+	return set
 }
 
 // laneTerminal is what a lane needs of tmux beyond what its supervisor does:
@@ -242,12 +348,7 @@ type lanes struct {
 	bin, configDir, workspace string
 	max                       int
 	startTimeout              time.Duration
-	// primaryStarted reports whether the primary has started (sent SessionStart)
-	// at any time in this process (see the type comment on why no lane may start
-	// before it). A one-way latch, never the primary's CURRENT readiness: a
-	// primary restarting must not refuse a running lane (server.runLanes).
-	primaryStarted func() bool
-	now            func() time.Time
+	now                       func() time.Time
 	// stuckAfter is how long a lane may sit at a permission prompt before it
 	// may be stopped like an idle one (stuckLaneAfter; tests shorten it).
 	stuckAfter time.Duration
@@ -273,10 +374,6 @@ func (l *lanes) get(id string) *lane {
 // lane comes back RESERVED (lane.reserved): the caller releases it once its turn
 // is over.
 func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure) {
-	if l.primaryStarted != nil && !l.primaryStarted() {
-		return nil, &failure{Status: http.StatusServiceUnavailable, Type: failNotReady,
-			Message: "the original Claude Code session has not started yet; no other session starts before it (lanes.go)"}
-	}
 	id := laneID(key)
 	l.mu.Lock()
 	if ln, ok := l.set[id]; ok {

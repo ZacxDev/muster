@@ -165,6 +165,9 @@ func fakeClaude() int {
 	}
 	write := func(rec map[string]any) {
 		rec["sessionId"] = sid
+		// An interactive CLI stamps every conversation entry "cli" (`claude -p`
+		// stamps "sdk-cli"; newestPrimaryTranscript tells them apart by it).
+		rec["entrypoint"] = "cli"
 		b, _ := json.Marshal(rec)
 		f, err := os.OpenFile(transcript, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 		if err != nil {
