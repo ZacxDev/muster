@@ -106,10 +106,23 @@ func TestTheCardBadgesAreTheQueuesItems(t *testing.T) {
 		t.Fatal("instrument check: the cardless ask is not on the queue")
 	}
 
+	// An ANSWERED ask (#152: listed under "Answered", its delivery queued) is no
+	// longer pending: off the badge, though the page still shows it answered.
+	if _, err := f.attn.Answer(ctx, opNew, "yes"); err != nil {
+		t.Fatal(err)
+	}
+	after := f.srv.cardAttention(ctx).agents[f.op.ID]
+	if after == nil || after.Count != 2 || slices.Contains(after.Keys, attentionAskKey(opNew)) || after.Href != "/attention#"+attentionAskKey(opOld) {
+		t.Fatalf("after answering %d, op's badge = %+v, want 2 (the older ask and the draft)", opNew, after)
+	}
+	if !slices.ContainsFunc(f.srv.recentAnswers(ctx), func(a attention.Ask) bool { return a.ID == opNew }) {
+		t.Fatal("instrument check: the answered ask is not in the Answered listing")
+	}
+
 	// The list draws them: each card its own badge, a link to the queue item.
 	list := f.page(t, "/ui/agents")
 	opCard := articleWithID(t, list, "agent-"+strconv.FormatInt(f.op.ID, 10))
-	if !strings.Contains(opCard, `href="/attention#`+attentionAskKey(opNew)+`"`) || !strings.Contains(opCard, `data-kind="ask" data-count="3"`) {
+	if !strings.Contains(opCard, `href="/attention#`+attentionAskKey(opOld)+`"`) || !strings.Contains(opCard, `data-kind="ask" data-count="2"`) {
 		t.Fatalf("op's card does not carry its badge:\n%s", opCard)
 	}
 	if n := strings.Count(list, "data-attention-badge"); n != 5 {
