@@ -412,11 +412,20 @@ func (ln *lane) run(ctx context.Context, l *lanes) {
 	if ctx.Err() == nil {
 		st := ln.sup.state()
 		log.Printf("ccd: session %s (%s) ended: %s %s (err=%v); its next turn starts it again", ln.id, ln.key, st.CLI, st.Detail, err)
+		// 🔴 OWNERSHIP FIRST, THEN THE KILL. The session is killed BY NAME, and
+		// a lane started again for this key (after this one was taken out of
+		// the set) has the SAME name: killing it unconditionally here killed the
+		// replacement's CLI. A lane no longer in the set was removed by whoever
+		// took it out (an eviction stops it itself).
 		l.mu.Lock()
-		if l.set[ln.id] == ln {
+		owned := l.set[ln.id] == ln
+		if owned {
 			delete(l.set, ln.id)
 		}
 		l.mu.Unlock()
+		if !owned {
+			return
+		}
 		ln.clearBlocked()
 		kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = ln.term.KillSession(kctx)
