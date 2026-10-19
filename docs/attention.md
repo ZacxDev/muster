@@ -232,7 +232,7 @@ When you answer an ask on `/attention`, the answer goes to whoever asked
 
 | asker | what happens |
 |---|---|
-| a dispatched agent (the chief included) | muster pushes the answer into the agent's **default** chat session (the chief's pinned one) as a new turn: muster's line naming the ask, then the question and your answer, fenced (`<<<attention-answer untrusted …>>>`). The agent acts on it without polling. |
+| a dispatched agent (the chief included) | muster pushes the answer into the agent's **default** chat session (the chief's pinned one) as a new turn: muster's line naming the ask by id (no question text outside the fence), then the question and your answer, fenced (`<<<attention-answer untrusted …>>>`). The agent acts on it without polling. |
 | a mirrored Claude Code session | nothing is pushed: muster types into a mirrored window only for your own message (the send queue's step-up gate). The session reads the answer with `attention_wait`. |
 | muster itself (a system ask) | nothing to deliver. |
 
@@ -252,7 +252,9 @@ answer queued, saying why, and the sweep retries it.
 
 **Unconfirmed is never resent on its own.** A turn that failed after the text
 may have reached the agent, or whose process died mid-turn (its lease lapsed),
-settles *unconfirmed* — the plugin deliverer's rule. A turn the runtime provably
+settles *unconfirmed* — the plugin deliverer's rule. So does an answer still
+queued a day after it was given or retried (its agent stopped, never started,
+or stayed busy), saying why; unconfirmed answers stay listed until retried. A turn the runtime provably
 did not take (busy, not ready) stays queued.
 
 **Where it went.** Below the open items, `/attention` lists the last day's
