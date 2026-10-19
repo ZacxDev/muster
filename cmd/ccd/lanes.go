@@ -44,7 +44,9 @@ import (
 // write their transcripts in the same project directory (same workspace), so
 // `claude --continue` — "the most recent conversation in this directory" — could
 // resume a LANE's conversation in the primary. So the primary's session id is
-// recorded when its SessionStart arrives (primaryRecordFile) and every later
+// recorded when its SessionStart arrives (primaryRecordFile) — only when the
+// primary's own process fired it, never a `claude` running inside it
+// (proctree.go) — and every later
 // primary start is `--resume <that id>`; and no lane starts until the primary
 // has started in this process, so on the first start after an upgrade (no
 // record yet) the only transcripts `--continue` can see are the primary's own.

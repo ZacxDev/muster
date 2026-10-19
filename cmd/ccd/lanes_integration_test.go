@@ -251,6 +251,41 @@ func TestTmuxLaneEachCLIResumesItsOwnConversation(t *testing.T) {
 	}
 }
 
+// 🔴 A `claude` RUN INSIDE THE PRIMARY IS NOT THE PRIMARY. The chief's own shell
+// (here the fake's `!` shell mode, typed in the pane) starts a nested CLI that
+// inherits CLAUDE_CONFIG_DIR and the hook settings and has no CCD_LANE; its
+// SessionStart reaches ccd as a primary hook. Its session id must not replace
+// the primary's record — which the next primary restart resumes.
+func TestTmuxLaneANestedCLIIsNotRecordedAsThePrimary(t *testing.T) {
+	r := startServe(t)
+	r.waitHealth(t, "primary start", func(h health) bool { return h.Session == sessionStartedState })
+	r.chat(t, "p1")
+	primary := r.primaryID(t)
+
+	r.tmux(t, "send-keys", "-t", "=cc:", "-l", "!claude")
+	r.tmux(t, "send-keys", "-t", "=cc:", "Enter")
+	var nested string
+	waitLane(t, "the nested CLI's start", func() bool {
+		for _, line := range strings.Split(r.argvLog(t), "\n") {
+			if f := strings.Fields(line); len(f) > 2 && f[1] == "source=startup" && f[3] == "lane=" &&
+				strings.TrimPrefix(f[0], "sid=") != primary {
+				nested = strings.TrimPrefix(f[0], "sid=")
+				return true
+			}
+		}
+		return false
+	}, r)
+	// Wait until ccd has HANDLED the nested CLI's SessionStart — it either
+	// replaced the record (the bug) or logged declining it — so an unchanged
+	// record below is never a hook that simply had not arrived yet.
+	waitLane(t, "the nested CLI's SessionStart reaching ccd", func() bool {
+		return r.primaryID(t) != primary || strings.Contains(r.logs.String(), "not recording session "+nested)
+	}, r)
+	if got := r.primaryID(t); got != primary {
+		t.Fatalf("the primary's record is now %q (the nested CLI's is %q); want the primary's own %q", got, nested, primary)
+	}
+}
+
 // 🔴 THE CAP: with CCD_MAX_SESSIONS=1 a second session stops the first (idle)
 // one's CLI, whose next turn starts it again and resumes its conversation; and
 // while the running one is mid-turn, another session is refused 503 capacity

@@ -120,6 +120,10 @@ type server struct {
 	// recordsPrimary: this is the primary's server, and its SessionStart's
 	// session id is recorded so the primary resumes ITS conversation (lanes.go).
 	recordsPrimary bool
+	// primaryPID is the pid of the primary CLI's process (its tmux pane's). A
+	// SessionStart is recorded only when THAT process fired it (proctree.go);
+	// nil records none.
+	primaryPID func(ctx context.Context) (int, error)
 
 	// gateway hands a gateway-runtime turn to the runtime beside ccd
 	// (gateway.go); nil when the pod runs none.
@@ -227,11 +231,36 @@ func (s *server) handleHook(w http.ResponseWriter, r *http.Request) {
 	}
 	target.onHook(ev)
 	if target.recordsPrimary && strings.EqualFold(ev.Event, "sessionstart") && ev.SessionID != "" {
-		if err := recordPrimary(s.cfg.ConfigDir, ev.SessionID); err != nil {
+		if why := s.notFiredByPrimary(r); why != "" {
+			log.Printf("ccd: not recording session %s as the primary's: %s", ev.SessionID, why)
+		} else if err := recordPrimary(s.cfg.ConfigDir, ev.SessionID); err != nil {
 			log.Printf("ccd: record the primary session id: %v", err)
 		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// notFiredByPrimary says why a hook cannot be shown to come from the primary
+// CLI's own process ("" when it can). See proctree.go: a `claude` the primary
+// runs inside itself sends its hooks here with no lane too.
+func (s *server) notFiredByPrimary(r *http.Request) string {
+	pid, err := strconv.Atoi(r.URL.Query().Get("pid"))
+	if err != nil || pid <= 1 {
+		return "the hook named no pid"
+	}
+	if s.primaryPID == nil {
+		return "ccd does not know the primary's process"
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	cli, err := s.primaryPID(ctx)
+	if err != nil {
+		return "the primary's process: " + err.Error()
+	}
+	if !hookFiredBy(procRoot, cli, pid) {
+		return fmt.Sprintf("hook process %d was not started by the primary CLI (pid %d) — a CLI running inside it, or none", pid, cli)
+	}
+	return ""
 }
 
 // onHook updates session state from one hook. It never blocks: a hook command that
