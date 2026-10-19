@@ -113,8 +113,10 @@ func (s *Server) writeChiefPanelBodyFor(ctx context.Context, w http.ResponseWrit
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
 
 	write(ui.ChiefPanelView{
-		Configured:    true,
-		ThreadsFailed: listErr != nil,
+		Configured:      true,
+		ThreadsFailed:   listErr != nil,
+		SessionRuntimes: s.pickerRuntimes(ctx, a),
+		ClaudeModels:    agents.ClaudeCodeModels,
 		Chat: ui.AgentDetailView{
 			ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status,
 			Repo: a.Repo, Model: a.Model,

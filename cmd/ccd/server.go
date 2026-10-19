@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -119,6 +120,11 @@ type server struct {
 	// recordsPrimary: this is the primary's server, and its SessionStart's
 	// session id is recorded so the primary resumes ITS conversation (lanes.go).
 	recordsPrimary bool
+
+	// gateway hands a gateway-runtime turn to the runtime beside ccd
+	// (gateway.go); nil when the pod runs none. gatewayURL is its address.
+	gateway    *httputil.ReverseProxy
+	gatewayURL string
 }
 
 // started reports whether the session has sent SessionStart (and no SessionEnd since).
@@ -163,6 +169,7 @@ func newServer(cfg serverConfig, term terminal, auth *authTracker) *server {
 func (s *server) gatewayHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/responses", s.handleResponses)
+	mux.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	// `/` is the same check: muster's default agent health path is "/"
 	// (agentspec.DefaultGatewayHealthPath), which its renderer uses for the
 	// startup and liveness probes. A per-kind health path for this image is muster
@@ -550,6 +557,11 @@ func neutralizeInputMode(prompt string) string {
 }
 
 func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
+	// A turn for the gateway runtime beside ccd is handed over unread (gateway.go).
+	if isGatewayTurn(r) {
+		s.handleGatewayTurn(w, r)
+		return
+	}
 	if !bearerOK(r, s.cfg.Bearer) {
 		writeFailure(w, &failure{Status: http.StatusUnauthorized, Type: failUnauthorized,
 			Message: "missing or wrong bearer"})
@@ -838,6 +850,9 @@ type health struct {
 	Busy       bool      `json:"busy"`
 	// Lanes are the explicit sessions' CLIs (lanes.go); reported, never gating.
 	Lanes []laneHealth `json:"lanes,omitempty"`
+	// Gateway is the gateway runtime beside ccd (gateway.go): "ok", or why not;
+	// absent when the pod runs none. Reported, never gating.
+	Gateway string `json:"gateway,omitempty"`
 	authSnapshot
 }
 
@@ -881,6 +896,7 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if s.lanes != nil {
 		h.Lanes = s.lanes.health()
 	}
+	h.Gateway = s.gatewayHealth(ctx)
 	h.OK = h.Terminal == "ok" && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))
 	w.Header().Set("Content-Type", "application/json")
 	if !h.OK {
