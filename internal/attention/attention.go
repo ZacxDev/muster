@@ -287,8 +287,9 @@ type Store interface {
 	// --- the answer's delivery (migration 0031) ---
 
 	// MarkWaited records that the asker read ask id's answer through
-	// attention_wait: a queued or pull delivery becomes DeliveryWaited, so no
-	// turn is pushed. It reports whether it moved the row.
+	// attention_wait: a queued, pull or in-flight delivery becomes
+	// DeliveryWaited (an in-flight one loses its lease), so no turn is pushed.
+	// It reports whether it moved the row.
 	MarkWaited(ctx context.Context, id int64) (bool, error)
 	// ClaimDelivery takes ask id's delivery lease for by, for lease: one
 	// conditional UPDATE on DeliveryQueued and on the answer being at least
@@ -474,9 +475,16 @@ func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, err
 func cutDetail(s string) string { return truncateRunes(strings.TrimSpace(s), MaxDeliveryDetailRunes) }
 
 // MarkWaited runs under the caller's principal (the asker's tool call).
+//
+// 🔴 IT ALSO TAKES A DELIVERY IN FLIGHT. A wait that reads the answer while an
+// attempt holds the lease wins it: the lease is dropped, so the attempt's
+// give-up (ReleaseDelivery) or outcome (FinishDelivery), both conditional on
+// still holding it, change nothing — the give-up used to put a read answer
+// back in the queue, and the sweep pushed it a second time.
 func (s *PGStore) MarkWaited(ctx context.Context, id int64) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE attention_asks SET delivery = 'waited', delivery_detail = ''
-		WHERE id = $1 AND delivery IN ('queued', 'pull')`, id)
+	tag, err := s.pool.Exec(ctx, `UPDATE attention_asks SET delivery = 'waited', delivery_detail = '',
+		  delivery_claimed_by = NULL, delivery_lease_until = NULL
+		WHERE id = $1 AND delivery IN ('queued', 'pull', 'delivering')`, id)
 	if err != nil {
 		return false, err
 	}

@@ -75,31 +75,37 @@ func TestAnAnswerOwesADeliveryOnlyToAnAgent(t *testing.T) {
 	}
 }
 
-// TestTheReaderAndThePusherRaceToOneOutcome: of a wait reading the answer
-// (MarkWaited) and a delivery claiming it, exactly one wins, every time.
+// TestTheReaderAndThePusherRaceToOneOutcome: a wait reading the answer
+// (MarkWaited) and a delivery claiming it, concurrently, every time end with
+// the answer READ and the attempt unable to settle it — the reader wins
+// whether it ran before the claim or during it.
 func TestTheReaderAndThePusherRaceToOneOutcome(t *testing.T) {
 	s, pool, _ := pgStore(t)
 	agent := agentFor(t, pool, 2)
 	for i := 0; i < 20; i++ {
 		a := answered(t, s, 2, agent, "left")
-		var wins atomic.Int32
+		var read, claimed atomic.Bool
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			if ok, err := s.MarkWaited(as(2), a.ID); err == nil && ok {
-				wins.Add(1)
-			}
+			ok, err := s.MarkWaited(as(2), a.ID)
+			read.Store(err == nil && ok)
 		}()
 		go func() {
 			defer wg.Done()
-			if _, ok, err := s.ClaimDelivery(as(2), a.ID, "p1", time.Minute, 0); err == nil && ok {
-				wins.Add(1)
-			}
+			_, ok, err := s.ClaimDelivery(as(2), a.ID, "p1", time.Minute, 0)
+			claimed.Store(err == nil && ok)
 		}()
 		wg.Wait()
-		if wins.Load() != 1 {
-			t.Fatalf("round %d: %d winners", i, wins.Load())
+		if !read.Load() {
+			t.Fatalf("round %d: the reader did not win (claimed=%v)", i, claimed.Load())
+		}
+		if held, err := s.FinishDelivery(as(2), a.ID, "p1", true, 7, ""); err != nil || held {
+			t.Fatalf("round %d: the attempt settled an answer its asker read (claimed=%v)", i, claimed.Load())
+		}
+		if got, _ := s.Get(as(2), a.ID); got.Delivery != DeliveryWaited {
+			t.Fatalf("round %d: %q", i, got.Delivery)
 		}
 	}
 }
@@ -253,5 +259,51 @@ func TestTheSweepTakesTheLeastTriedFirst(t *testing.T) {
 	due, err := s.DueDeliveries(context.Background(), 0, 1)
 	if err != nil || len(due) != 1 || due[0].ID != fresh.ID {
 		t.Fatalf("a batch of one took %+v; want the untried answer %d before the thrice-refused %d", due, fresh.ID, stuck.ID)
+	}
+}
+
+// TestAWaitDuringADeliveryAttemptIsNotPushedAgain: the asker reads the answer
+// while a delivery holds its lease, and that attempt then gives up (the agent
+// was busy — it was in that very wait). The answer is the waiter's: the give-up
+// does not put it back in the queue, and no sweep hands it out again. And the
+// other order: a wait arriving after the attempt delivered marks nothing.
+func TestAWaitDuringADeliveryAttemptIsNotPushedAgain(t *testing.T) {
+	s, pool, _ := pgStore(t)
+	agent := agentFor(t, pool, 2)
+	a := answered(t, s, 2, agent, "left")
+	if _, ok, err := s.ClaimDelivery(as(2), a.ID, "p1", time.Minute, 0); err != nil || !ok {
+		t.Fatal(err)
+	}
+	if ok, err := s.MarkWaited(as(2), a.ID); err != nil || !ok {
+		t.Errorf("a wait during the attempt did not record the read: %v %v", ok, err)
+	}
+	if err := s.ReleaseDelivery(as(2), a.ID, "p1", "the agent is in the middle of a turn"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get(as(2), a.ID)
+	if got.Delivery != DeliveryWaited {
+		t.Fatalf("after the attempt gave up: %q; want waited", got.Delivery)
+	}
+	due, err := s.DueDeliveries(context.Background(), 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range due {
+		if d.ID == a.ID {
+			t.Fatal("the sweep would push an answer its asker already read")
+		}
+	}
+	if held, err := s.FinishDelivery(as(2), a.ID, "p1", true, 7, ""); err != nil || held {
+		t.Fatalf("a read answer was settled delivered by the attempt that lost it: %v %v", held, err)
+	}
+	b := answered(t, s, 2, agent, "right")
+	if _, ok, _ := s.ClaimDelivery(as(2), b.ID, "p2", time.Minute, 0); !ok {
+		t.Fatal("claim")
+	}
+	if held, err := s.FinishDelivery(as(2), b.ID, "p2", true, 7, ""); err != nil || !held {
+		t.Fatal(err)
+	}
+	if ok, _ := s.MarkWaited(as(2), b.ID); ok {
+		t.Error("a wait after the delivery marked a delivered answer read")
 	}
 }
