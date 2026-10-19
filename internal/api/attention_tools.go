@@ -147,8 +147,8 @@ func attentionToolDefs() []agents.ToolDef {
 		{Type: "function", Name: attentionAskTool,
 			Description: "Ask your owner a question and get their answer. It appears in muster's Attention view and as a notification on their phone. " +
 				"Offer options when the answer is a choice (they can still type a free answer). Returns the ask's id. A dispatched agent (the chief included) " +
-					"gets the answer delivered as a new message in its default session, so it need not wait (it MAY call attention_wait to block on it); " +
-					"a mirrored Claude Code session gets it ONLY through attention_wait, so it must call attention_wait with the id." + attentionToolNote,
+				"gets the answer delivered as a new message in its default session, so it need not wait (it MAY call attention_wait to block on it); " +
+				"a mirrored Claude Code session gets it ONLY through attention_wait, so it must call attention_wait with the id." + attentionToolNote,
 			Parameters: objSchema(map[string]any{
 				"question": strProp("The question, self-contained: your owner may read it on a lock screen without context."),
 				"options": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": attention.MaxOptions,

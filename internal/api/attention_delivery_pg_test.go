@@ -31,11 +31,11 @@ import (
 // its latest one.
 type deliveryFixture struct {
 	*attnFixture
-	gw              *turnGateway
-	chief           agents.Agent
-	chiefTok        string
-	def, newer      agents.ChatSession
-	agentsStore     *agents.PGStore
+	gw          *turnGateway
+	chief       agents.Agent
+	chiefTok    string
+	def, newer  agents.ChatSession
+	agentsStore *agents.PGStore
 }
 
 func newDeliveryFixture(t *testing.T) *deliveryFixture {
