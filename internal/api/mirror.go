@@ -139,9 +139,9 @@ func (s *Server) mirrorList(ctx context.Context, pinned pins.Set, focused focusI
 }
 
 // mirrorCardShown is whether a mirrored entry is a card on the Agents list:
-// its host reports Claude Code in its pane — or its host is one that reports
-// nothing either way (a tunnel-v1 muster-mirror, HostView.ClaudeReport false),
-// whose entries cannot be told apart and so are all drawn, as they always were.
+// its host reports Claude Code in its pane — or its host does not say of every
+// window (HostView.ClaudeReport false: a tunnel-v1 or a per-session
+// muster-mirror), whose entries are all drawn, as they always were.
 func mirrorCardShown(e mirror.SessionView, claudeReport bool) bool { return e.Claude || !claudeReport }
 
 // mirrorTitle is what an entry with no label is called, for the ui views'

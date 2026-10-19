@@ -745,8 +745,10 @@ func statusLabel(status string) string {
 //
 // sse:attention_queue.changed (internal/api's EventAttentionChanged, the event
 // the sidebar's attention badge refreshes on) keeps each card's attention badge
-// live: the queue moved, so the cards' counts may have.
-const agentsListTrigger = "load, agents:changed from:body, sse:agent.changed from:body, sse:chat.reply from:body, sse:attention_queue.changed from:body, muster:resync from:body"
+// live: the queue moved, so the cards' counts may have. It is debounced
+// (delay:50ms) for the reason attentionBadgeTrigger gives: the sidebar badge
+// listens for the same event, so each one reaches this list twice.
+const agentsListTrigger = "load, agents:changed from:body, sse:agent.changed from:body, sse:chat.reply from:body, sse:attention_queue.changed from:body delay:50ms, muster:resync from:body"
 
 // agentModalShell is the static (always-present, hidden) dispatch modal. Its
 // body is loaded on demand by the FAB so it stays out of the 4s poll cycle.

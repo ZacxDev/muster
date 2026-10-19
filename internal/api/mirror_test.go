@@ -141,7 +141,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 		hv.OfflineSince = f.offlineSince
 	}
 	if f.v2 != nil {
-		hv.Rendered, hv.Claude, hv.ClaudeReport = f.online, []string{"main"}, true
+		hv.Rendered, hv.Claude = f.online, []string{"main"}
 		hv.PanePaste = f.online && f.interactive && !f.oldMirror
 	}
 	hv.PaneScroll = f.online && f.interactive && f.scroll
@@ -150,6 +150,8 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 		// exactly as the hub derives it.
 		hv.Windows = mirror.NormalizeWindows(f.windows, 0)
 		hv.Sessions, hv.Claude, hv.Labels, hv.Activity = mirror.SessionsOf(hv.Windows)
+		// A per-window v2 host says of every window whether it is Claude Code.
+		hv.ClaudeReport = f.v2 != nil
 	}
 	return append([]mirror.HostView{hv}, f.others...)
 }

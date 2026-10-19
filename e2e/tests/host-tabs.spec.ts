@@ -39,7 +39,11 @@ const LONG = 'Untangling the reconnect backoff so a flapping tunnel stops resett
 
 const t0 = Math.floor(Date.now() / 1000);
 // session|id|index|active|command|activity|claude-transcript
-const line = (session: string, id: string, ago: number) => `${session}|${id}|1|1|zsh|${t0 - ago}|`;
+// Every window is a Claude Code window (only those are cards), each with a
+// transcript of its own, made once per (session, window).
+const trs: Record<string, string> = {};
+const trOf = (session: string, id: string) => (trs[session + id] ??= rig.transcript('', 'tr-' + session + '-' + id.slice(1)));
+const line = (session: string, id: string, ago: number) => `${session}|${id}|1|1|claude|${t0 - ago}|${trOf(session, id)}`;
 let filesA = '';
 let filesB = '';
 let filesC = '';

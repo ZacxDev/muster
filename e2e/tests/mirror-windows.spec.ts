@@ -16,9 +16,11 @@ import { serverBinary, startServer, Running } from '../lib/server';
 //
 // The host is the operator's own shape: session `scratch2` (codename Gold) has
 // three windows — a shell at index 1, Claude Code at index 8 (its ACTIVE
-// window), Claude Code at index 11 — and session `solo` has one, opencode. With
-// one card per session that host showed two cards and reached two windows; the
-// other two were unreachable.
+// window), Claude Code at index 11 — and session `solo` has one, Claude Code.
+// With one card per session that host showed two cards and reached two windows;
+// the other two were unreachable. Only its CLAUDE windows are cards (an
+// operator decision): the shell is reached by its address, and counted on the
+// host's tab as "1 other window".
 //
 // Each test runs at a phone's size (390×844, touch) and at a desktop's.
 
@@ -30,6 +32,10 @@ const windowsFile = path.join(dir, 'windows');
 const pasteFile = path.join(dir, 'pasted');
 const trEight = path.join(dir, 'aaaaaaaa-0008.jsonl');
 const trEleven = path.join(dir, 'bbbbbbbb-0011.jsonl');
+const trSolo = path.join(dir, 'cccccccc-0003.jsonl');
+const trTwelve = path.join(dir, 'dddddddd-0012.jsonl');
+const trTrap = path.join(dir, 'eeeeeeee-0001.jsonl');
+const trExtra = path.join(dir, 'ffffffff-0004.jsonl');
 let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
@@ -50,7 +56,7 @@ const shellWin: Win = { session: 'scratch2', id: '@4', index: 1, active: false, 
 const eightWin: Win = { session: 'scratch2', id: '@7', index: 8, active: true, command: 'claude', activity: now - 1800, claude: trEight };
 // The most recently active window is NOT its session's active one.
 const elevenWin: Win = { session: 'scratch2', id: '@9', index: 11, active: false, command: 'claude', activity: now - 120, claude: trEleven };
-const soloWin: Win = { session: 'solo', id: '@2', index: 3, active: true, command: 'opencode', activity: now - 900 };
+const soloWin: Win = { session: 'solo', id: '@2', index: 3, active: true, command: 'claude', activity: now - 900, claude: trSolo };
 
 function writeWindows(ws: Win[]) {
   const tmp = windowsFile + '.tmp';
@@ -80,6 +86,7 @@ test.beforeAll(async () => {
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   fs.writeFileSync(trEight, prompt('the prompt of window EIGHT'));
   fs.writeFileSync(trEleven, prompt('the prompt of window ELEVEN'));
+  for (const t of [trSolo, trTwelve, trTrap, trExtra]) fs.writeFileSync(t, prompt('another window'));
   fs.writeFileSync(path.join(dir, 'labels.json'), JSON.stringify({ scratch2: 'Gold' }));
   writeWindows([shellWin, eightWin, elevenWin, soloWin]);
   mirrorProc = spawn(mirrorBin, [], {
@@ -153,35 +160,37 @@ for (const vp of [
     // per-window registration this host draws TWO cards (one per session), so
     // the count of four fails there — and the two windows that are not their
     // session's active one have no card to open at all.
-    test('every window is a card of its own, named <codename>:<index>, most recently active first', async ({ page }) => {
-      await openList(page, 4);
+    test('every Claude window is a card of its own, named <codename>:<index>, most recently active first', async ({ page }) => {
+      await openList(page, 3);
       const eleven = cardOf(page, viewPath(elevenWin));
       const eight = cardOf(page, viewPath(eightWin));
       const shell = cardOf(page, termPath(shellWin));
-      const solo = cardOf(page, termPath(soloWin));
+      const solo = cardOf(page, viewPath(soloWin));
+      // The shell is no card (Claude only): its host's tab counts it.
+      await expect(shell).toHaveCount(0);
+      const note = page.locator(`#agents-hosts [role="tab"][data-host="${host}"] [data-tab-other]`);
+      await expect(note).toHaveText('1 other window');
 
       // Named by codename and the window's OWN index, with the tmux session
       // name beside it; a session with no codename is <session>:<index>.
       await expect(eleven.locator('[data-mirror-label]')).toHaveText('Gold:11');
       await expect(eight.locator('[data-mirror-label]')).toHaveText('Gold:8');
-      await expect(shell.locator('[data-mirror-label]')).toHaveText('Gold:1');
-      for (const c of [eleven, eight, shell]) await expect(c.locator('[data-mirror-session]')).toHaveText('scratch2');
+      for (const c of [eleven, eight]) await expect(c.locator('[data-mirror-session]')).toHaveText('scratch2');
       await expect(solo.locator('[data-mirror-name]')).toHaveText('solo:3');
       await expect(solo.locator('[data-mirror-label]')).toHaveCount(0);
 
       // What runs in each.
       await expect(eleven.locator('[data-mirror-claude]')).toContainText('Claude Code');
       await expect(eight.locator('[data-mirror-claude]')).toContainText('Claude Code');
-      await expect(shell.locator('[data-mirror-kind]')).toContainText('shell');
-      await expect(solo.locator('[data-mirror-kind]')).toContainText('opencode');
-      for (const c of [eleven, eight, shell, solo]) await expect(c.locator('[data-mirror-host]')).toHaveText(host);
+      await expect(solo.locator('[data-mirror-claude]')).toContainText('Claude Code');
+      for (const c of [eleven, eight, solo]) await expect(c.locator('[data-mirror-host]')).toHaveText(host);
 
       // One flat list, most recently active first — two windows of ONE session
       // sit either side of another session's.
       const order = await cards(page).evaluateAll((els) =>
         els.map((e) => ((e.querySelector('[data-mirror-label]') ?? e.querySelector('[data-mirror-name]')) as HTMLElement).textContent),
       );
-      expect(order).toEqual(['Gold:11', 'solo:3', 'Gold:8', 'Gold:1']);
+      expect(order).toEqual(['Gold:11', 'solo:3', 'Gold:8']);
 
       await noHorizontalScroll(page);
       for (const c of [eleven, solo]) {
@@ -195,15 +204,20 @@ for (const vp of [
       writeWindows([shellWin, eightWin, { ...elevenWin, index: 2 }, soloWin]);
       await expect(eleven.locator('[data-mirror-label]'), `the card follows the renumbering (log:\n${mirrorLog})`).toHaveText('Gold:2', { timeout: 20_000 });
       expect(await eleven.getAttribute('id'), 'a renumbered window is the SAME card: its address is the window id, not the index').toBe(id);
-      writeWindows([eightWin, { ...elevenWin, index: 2 }, soloWin]);
+      writeWindows([eightWin, { ...elevenWin, index: 2 }]);
+      await expect(cards(page)).toHaveCount(2, { timeout: 20_000 });
+      await expect(solo).toHaveCount(0);
+      // With the shell closed too, the host has no other window: no note. (Its
+      // index back at 11, so the next test's list is this beforeEach's.)
+      writeWindows([eightWin, elevenWin, soloWin]);
       await expect(cards(page)).toHaveCount(3, { timeout: 20_000 });
-      await expect(shell).toHaveCount(0);
+      await expect(note).toBeHidden();
     });
 
     // The window that is NOT its session's active one: its rendered view is
     // ITS transcript, and a message sent from it reaches ITS pane.
     test('a non-active Claude Code window opens its own rendered view, and Send reaches that window', async ({ page }) => {
-      await openList(page, 4);
+      await openList(page, 3);
       await cardOf(page, viewPath(elevenWin)).locator('a').first().click();
       await page.waitForURL((u) => u.pathname === '/mirror/view');
       expect(new URL(page.url()).searchParams.get('window'), 'opened by the window id').toBe('@9');
@@ -231,10 +245,12 @@ for (const vp of [
       await noHorizontalScroll(page);
     });
 
-    test('a non-active window that is not Claude Code opens its own terminal, and Send reaches that window', async ({ page }) => {
-      await openList(page, 4);
-      await cardOf(page, termPath(shellWin)).locator('a').first().click();
-      await page.waitForURL((u) => u.pathname === '/mirror/terminal');
+    test('a non-active window that is not Claude Code opens its own terminal by its address, and Send reaches that window', async ({ page }) => {
+      await openList(page, 3);
+      // The host lists the shell again (its tab counts it: no card, Claude only).
+      await expect(page.locator(`#agents-hosts [role="tab"][data-host="${host}"] [data-tab-other]`)).toHaveText('1 other window', { timeout: 20_000 });
+      // No card: reached by its address.
+      await page.goto(origin + termPath(shellWin));
       await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@4 mode=ro');
       await expect(page.locator('#term-status')).toHaveText('Connected');
       await expect(page.locator('header h1')).toContainText('Gold:1');
@@ -254,7 +270,7 @@ for (const vp of [
     test('the filter narrows the cards as you type, ANDs its words, counts, clears — and survives the list refreshing itself', async ({ page }) => {
       const sockets: string[] = [];
       page.on('websocket', (ws) => sockets.push(ws.url()));
-      await openList(page, 4);
+      await openList(page, 3);
       const box = page.locator('#agents-search');
       const count = page.locator('#agents-count');
       const visible = () => cards(page).filter({ visible: true });
@@ -272,30 +288,30 @@ for (const vp of [
       // With nothing typed, everything is shown and counted. (Other cards — the
       // seeded agents — are in the list too: the count is of all of it.)
       const all = await page.locator('#agents-list > article').count();
-      expect(all).toBeGreaterThanOrEqual(4);
+      expect(all).toBeGreaterThanOrEqual(3);
       await expect(count).toHaveText(`${all} of ${all}`);
 
       // One word: a label, case-insensitively.
       await box.pressSequentially('GOLD');
-      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8']);
-      await expect(count).toHaveText(`3 of ${all}`);
+      expect(await names()).toEqual(['Gold:11', 'Gold:8']);
+      await expect(count).toHaveText(`2 of ${all}`);
       await expect(page.locator('#agents-search-clear')).toBeVisible();
-      // Several words must ALL match: a label and a kind…
-      await box.pressSequentially('   shell');
-      expect(await names()).toEqual(['Gold:1']);
+      // Several words must ALL match: a label and an index…
+      await box.pressSequentially('   11');
+      expect(await names()).toEqual(['Gold:11']);
       await expect(count).toHaveText(`1 of ${all}`);
       // …the raw session name and a kind…
       await box.fill('scratch2 claude');
       expect(await names()).toEqual(['Gold:11', 'Gold:8']);
-      // …the host and a kind (a window with no codename)…
-      await box.fill(`${host} opencode`);
+      // …the host and a session (a window with no codename)…
+      await box.fill(`${host} solo`);
       expect(await names()).toEqual(['solo:3']);
       // …and "mirrored" finds every mirrored card of this host and no agent.
       await box.fill(`mirrored ${host}`);
-      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
-      await expect(count).toHaveText(`4 of ${all}`);
+      expect(await names()).toEqual(['Gold:11', 'Gold:8', 'solo:3']);
+      await expect(count).toHaveText(`3 of ${all}`);
       // Nothing matches: said, not a blank list.
-      await box.fill('gold opencode');
+      await box.fill('gold solo');
       await expect(visible()).toHaveCount(0);
       await expect(count).toHaveText(`0 of ${all}`);
       await expect(page.locator('#agents-nomatch')).toBeVisible();
@@ -317,22 +333,22 @@ for (const vp of [
       // count follows, and the box keeps its text, its focus and its caret.
       await box.fill('gold');
       await box.evaluate((e: HTMLInputElement) => e.setSelectionRange(2, 2));
-      await expect(count).toHaveText(`3 of ${all}`);
+      await expect(count).toHaveText(`2 of ${all}`);
       const marked = await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
       expect(marked).toBe(1);
-      const twelve: Win = { session: 'scratch2', id: '@12', index: 12, active: false, command: 'zsh', activity: now - 30 };
+      const twelve: Win = { session: 'scratch2', id: '@12', index: 12, active: false, command: 'claude', activity: now - 30, claude: trTwelve };
       writeWindows([shellWin, eightWin, { ...elevenWin, index: 2 }, soloWin, twelve]);
       await expect(cardOf(page, viewPath(elevenWin)).locator('[data-mirror-label]'), `the list refreshed (log:\n${mirrorLog})`).toHaveText('Gold:2', { timeout: 20_000 });
       // The new window lands above the cards in view: it waits behind the pill,
       // uncounted, and a tap — which does not take focus from the box — draws it.
-      await expect(page.locator(`#agents-list article[data-mirror-card]:has(a[href="${termPath(twelve)}"])`)).toHaveCount(1, { timeout: 20_000 });
-      await expect(cardOf(page, termPath(twelve))).toBeHidden();
-      await expect(count).toHaveText(`3 of ${all}`);
+      await expect(page.locator(`#agents-list article[data-mirror-card]:has(a[href="${viewPath(twelve)}"])`)).toHaveCount(1, { timeout: 20_000 });
+      await expect(cardOf(page, viewPath(twelve))).toBeHidden();
+      await expect(count).toHaveText(`2 of ${all}`);
       await page.locator('#agents-new-pill').click();
-      await expect(cardOf(page, termPath(twelve))).toBeVisible();
-      expect(await names()).toEqual(['Gold:1', 'Gold:12', 'Gold:2', 'Gold:8']);
-      await expect(cardOf(page, termPath(soloWin)), 'a card the filter hides stays hidden through the refresh').toBeHidden();
-      await expect(count).toHaveText(`4 of ${all + 1}`);
+      await expect(cardOf(page, viewPath(twelve))).toBeVisible();
+      expect(await names()).toEqual(['Gold:12', 'Gold:2', 'Gold:8']);
+      await expect(cardOf(page, viewPath(soloWin)), 'a card the filter hides stays hidden through the refresh').toBeHidden();
+      await expect(count).toHaveText(`3 of ${all + 1}`);
       await expect(box).toHaveValue('gold');
       await expect(box).toBeFocused();
       expect(await box.evaluate((e: HTMLInputElement) => [e.selectionStart, e.selectionEnd]), 'the caret did not move').toEqual([2, 2]);
@@ -349,7 +365,7 @@ for (const vp of [
 
       // It is remembered across a visit to a card and back.
       await visible().first().locator('a').first().click();
-      await page.waitForURL((u) => u.pathname === '/mirror/terminal');
+      await page.waitForURL((u) => u.pathname === '/mirror/view');
       await page.goto(origin + '/agents');
       await expect(page.locator('#agents-search')).toHaveValue('gold:12');
       await expect(cards(page).filter({ visible: true })).toHaveCount(1);
@@ -366,12 +382,12 @@ for (const vp of [
     // one free word no card's text contains, so it hides every card — the pod
     // agents included — and `?q=` is never read.
     test('host:<x> matches the host field only, and survives the list refreshing itself', async ({ page }) => {
-      const trap: Win = { session: 'cluster-notes', id: '@3', index: 1, active: true, command: 'zsh', activity: now - 60 };
+      const trap: Win = { session: 'cluster-notes', id: '@3', index: 1, active: true, command: 'claude', activity: now - 60, claude: trTrap };
       writeWindows([shellWin, eightWin, elevenWin, soloWin, trap]);
-      await openList(page, 5);
+      await openList(page, 4);
       const box = page.locator('#agents-search');
       const count = page.locator('#agents-count');
-      const trapCard = cardOf(page, termPath(trap));
+      const trapCard = cardOf(page, viewPath(trap));
       const pods = page.locator('#agents-list > article:not([data-mirror-card])');
       const names = async () =>
         (await cards(page).filter({ visible: true }).evaluateAll((els) => els.map((e) => ((e.querySelector('[data-mirror-label]') ?? e.querySelector('[data-mirror-name]')) as HTMLElement).textContent))).sort();
@@ -394,17 +410,17 @@ for (const vp of [
       await expect(count).toHaveText(`${podCount} of ${all}`);
       expect(qOf(), 'the filter is in the URL').toBe('host:cluster');
 
-      // This host: its five windows, and no pod agent.
+      // This host: its four Claude windows, and no pod agent.
       await box.fill(`host:${host}`);
-      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'cluster-notes:1', 'solo:3']);
+      expect(await names()).toEqual(['Gold:11', 'Gold:8', 'cluster-notes:1', 'solo:3']);
       await expect(pods.filter({ visible: true })).toHaveCount(0);
       // Fields AND with each other and with free words; a quoted value may hold a space.
-      await box.fill(`host:${host} kind:opencode`);
+      await box.fill(`host:${host} session:solo`);
       expect(await names()).toEqual(['solo:3']);
       await box.fill(`HOST:${host.toUpperCase()} kind:"claude code"`);
-      expect(await names()).toEqual(['Gold:11', 'Gold:8']);
-      await box.fill(`session:scratch2 shell`);
-      expect(await names()).toEqual(['Gold:1']);
+      expect(await names()).toEqual(['Gold:11', 'Gold:8', 'cluster-notes:1', 'solo:3']);
+      await box.fill(`session:scratch2 11`);
+      expect(await names()).toEqual(['Gold:11']);
       // An unknown field is free text: "gold:8" is a title, not a field.
       await box.fill('gold:8');
       expect(await names()).toEqual(['Gold:8']);
@@ -419,10 +435,10 @@ for (const vp of [
       await box.fill('host:cluster');
       await expect(count).toHaveText(`${podCount} of ${all}`);
       await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
-      const extra: Win = { session: 'cluster-two', id: '@5', index: 4, active: true, command: 'zsh', activity: now - 30 };
+      const extra: Win = { session: 'cluster-two', id: '@5', index: 4, active: true, command: 'claude', activity: now - 30, claude: trExtra };
       writeWindows([shellWin, eightWin, elevenWin, soloWin, { ...trap, index: 2 }, extra]);
       await expect(trapCard.locator('[data-mirror-name]'), `the list refreshed (log:\n${mirrorLog})`).toHaveText('cluster-notes:2', { timeout: 20_000 });
-      await expect(page.locator(`#agents-list article[data-mirror-card]:has(a[href="${termPath(extra)}"])`)).toHaveCount(1, { timeout: 20_000 });
+      await expect(page.locator(`#agents-list article[data-mirror-card]:has(a[href="${viewPath(extra)}"])`)).toHaveCount(1, { timeout: 20_000 });
       await takeNew(page);
       await expect(trapCard, 'a refreshed card the token hides stays hidden').toBeHidden();
       await expect(page.locator('#agents-list > article[data-mirror-card]').filter({ visible: true })).toHaveCount(0);
@@ -437,18 +453,18 @@ for (const vp of [
     // sessionStorage only — a shared link carried nothing, and the box came back
     // with whatever this tab last typed.
     test('a shared ?q= link reproduces the filter, wins over the remembered one, and clearing removes it', async ({ page }) => {
-      await openList(page, 4);
+      await openList(page, 3);
       const box = page.locator('#agents-search');
       const qOf = () => new URL(page.url()).searchParams.get('q');
       const names = async () =>
         (await cards(page).filter({ visible: true }).evaluateAll((els) => els.map((e) => ((e.querySelector('[data-mirror-label]') ?? e.querySelector('[data-mirror-name]')) as HTMLElement).textContent))).sort();
       // This tab remembers a filter of its own…
       await box.fill('gold');
-      await expect(cards(page).filter({ visible: true })).toHaveCount(3);
+      await expect(cards(page).filter({ visible: true })).toHaveCount(2);
       // …and a link with another one wins over it, on first paint. Its tokens
       // are TYPED ones (field:value, a substring), so they stay in the box.
-      await page.goto(origin + '/agents?q=' + encodeURIComponent(`host:${host} kind:opencode`));
-      await expect(box).toHaveValue(`host:${host} kind:opencode`);
+      await page.goto(origin + '/agents?q=' + encodeURIComponent(`host:${host} session:solo`));
+      await expect(box).toHaveValue(`host:${host} session:solo`);
       await expect(page.locator('#agents-hosts [role="tab"][aria-selected="true"]'), 'a link chooses no host tab').toHaveAttribute('data-host', '');
       await expect(cards(page).filter({ visible: true })).toHaveCount(1, { timeout: 20_000 });
       expect(await names()).toEqual(['solo:3']);
@@ -492,7 +508,7 @@ for (const vp of [
     //
     // 🔴 A REGRESSION TEST: on the commit before there is no #agents-hosts.
     test('the host tabs filter, combine with typed tokens, round-trip ?q= and survive a reload', async ({ page }) => {
-      await openList(page, 4);
+      await openList(page, 3);
       const press = (l: ReturnType<Page['locator']>) => (vp.use.hasTouch ? l.tap() : l.click());
       const hostTab = (h: string) => page.locator(`#agents-hosts [role="tab"][data-host="${h}"]`);
       const box = page.locator('#agents-search');
@@ -512,7 +528,10 @@ for (const vp of [
       await expect.poll(() => page.locator('#agents-hosts [data-tab-label]').allTextContents(), { timeout: 20_000 }).toEqual(['All', 'cluster', host]);
       await expect(hostTab('').locator('[data-tab-count]')).toHaveText(String(all));
       await expect(hostTab('cluster').locator('[data-tab-count]')).toHaveText(String(podCount));
-      await expect(hostTab(host).locator('[data-tab-count]')).toHaveText('4');
+      await expect(hostTab(host).locator('[data-tab-count]')).toHaveText('3');
+      // …and the host's windows with no card (the shell): "1 other window".
+      await expect(hostTab(host).locator('[data-tab-other]')).toHaveText('1 other window');
+      await expect(hostTab('cluster').locator('[data-tab-other]')).toBeHidden();
       // Thumb-friendly: each tab a 44px target (measured before any is pressed).
       for (const t of await page.locator('#agents-hosts [role="tab"]').all()) {
         expect((await t.boundingBox())!.height, 'a tab is a 44px target').toBeGreaterThanOrEqual(44);
@@ -522,29 +541,29 @@ for (const vp of [
       await press(hostTab(host));
       await expect(hostTab(host)).toHaveAttribute('aria-selected', 'true');
       expect(qOf()).toBeNull();
-      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
+      expect(await names()).toEqual(['Gold:11', 'Gold:8', 'solo:3']);
       await expect(pods.filter({ visible: true })).toHaveCount(0);
-      await expect(count).toHaveText(`4 of ${all}`);
+      await expect(count).toHaveText(`3 of ${all}`);
 
-      // Combine: a typed kind with a space in it, then a word too.
-      await box.fill('kind="claude code"');
-      expect(qOf()).toBe('kind="claude code"');
+      // Combine: a typed session, then a word too.
+      await box.fill('session=scratch2');
+      expect(qOf()).toBe('session=scratch2');
       expect(await names()).toEqual(['Gold:11', 'Gold:8']);
       await expect(hostTab(host).locator('[data-tab-count]'), 'the tab counts what the box shows').toHaveText('2');
-      await box.fill('kind="claude code" 11');
+      await box.fill('session=scratch2 11');
       expect(await names()).toEqual(['Gold:11']);
       await expect(count).toHaveText(`1 of ${all}`);
       // The box's × clears the box and keeps the tab.
       await press(clear);
       await expect(box).toHaveValue('');
       expect(qOf()).toBeNull();
-      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
+      expect(await names()).toEqual(['Gold:11', 'Gold:8', 'solo:3']);
       await expect(hostTab(host)).toHaveAttribute('aria-selected', 'true');
 
       // Type + status, typed on All: this host's online windows, no pod agent.
       await press(hostTab(''));
       await box.fill('type=mirrored status=running');
-      expect(await names()).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
+      expect(await names()).toEqual(['Gold:11', 'Gold:8', 'solo:3']);
       await expect(pods.filter({ visible: true })).toHaveCount(0);
       // A typed token and the tab AND: the "cluster" tab holds no mirrored window.
       await press(hostTab('cluster'));
@@ -555,21 +574,21 @@ for (const vp of [
 
       // A reload brings back the tab (localStorage) and the box (?q=).
       await press(hostTab(host));
-      await box.fill('opencode');
+      await box.fill('solo');
       expect(await names()).toEqual(['solo:3']);
       await page.reload();
       await expect(hostTab(host)).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
-      await expect(box).toHaveValue('opencode');
+      await expect(box).toHaveValue('solo');
       await expect.poll(names, { timeout: 20_000 }).toEqual(['solo:3']);
       // A ?q= link with exact tokens filters on first paint, from the box.
-      await page.goto(origin + '/agents?q=' + encodeURIComponent('kind=opencode'));
-      await expect(box).toHaveValue('kind=opencode');
+      await page.goto(origin + '/agents?q=' + encodeURIComponent('session=solo'));
+      await expect(box).toHaveValue('session=solo');
       await expect.poll(names, { timeout: 20_000 }).toEqual(['solo:3']);
       // …and coming back with no ?q= at all is the session's copy.
       await page.goto(origin + '/agents');
-      await expect(box).toHaveValue('kind=opencode');
+      await expect(box).toHaveValue('session=solo');
       await expect.poll(names, { timeout: 20_000 }).toEqual(['solo:3']);
-      expect(qOf(), 'the remembered filter is put back on the URL').toBe('kind=opencode');
+      expect(qOf(), 'the remembered filter is put back on the URL').toBe('session=solo');
       // A partial host typed EXACTLY matches nothing; typed with a colon it is
       // a substring again.
       await press(hostTab(''));
@@ -577,7 +596,7 @@ for (const vp of [
       await box.fill(`host=${part}`);
       await expect(page.locator('#agents-nomatch')).toBeVisible();
       await box.fill(`host:${part}`);
-      await expect.poll(names).toEqual(['Gold:1', 'Gold:11', 'Gold:8', 'solo:3']);
+      await expect.poll(names).toEqual(['Gold:11', 'Gold:8', 'solo:3']);
       await press(clear);
       expect(qOf()).toBeNull();
       await noHorizontalScroll(page);
@@ -634,7 +653,7 @@ for (const vp of [
     // THE COMPOSER WHEN ITS SCRIPT'S WAY FAILS. Send must never be a silent
     // no-op: when the fetch gets no answer the browser submits the form itself.
     test('a send whose request gets no answer is handed to the browser, and a message is never delivered twice', async ({ page }) => {
-      await openList(page, 4);
+      await openList(page, 3);
       await page.goto(origin + termPath(shellWin));
       await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@4');
       const isFetch = (h: Record<string, string>) => h['x-requested-with'] === 'XMLHttpRequest';
@@ -729,7 +748,7 @@ for (const vp of [
     // fixed overlay near the bottom of every page; it must never sit on the
     // message box or on Send.
     test('the update toast does not cover the composer', async ({ page }) => {
-      await openList(page, 4);
+      await openList(page, 3);
       for (const p of [termPath(shellWin), viewPath(elevenWin)]) {
         await page.goto(origin + p);
         await expect(page.locator('#mv-send')).toBeVisible();
