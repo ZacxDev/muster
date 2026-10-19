@@ -18,8 +18,12 @@ import (
 //   - POST /plugins/messages/{id}/retry — the /plugins page's Retry button, behind
 //     requireOperatorWrite exactly like Revoke and a draft's Reject (a session and
 //     same-origin). No fresh sign-in: like Reject, nothing leaves muster here — the
-//     message goes back to the owner's own chief, and anything the chief then
-//     drafts still waits for an Approve, which does take one.
+//     message goes back to the owner's own chief. What the chief then does is
+//     what it does with any message: a reply it drafts waits for an Approve
+//     (which does take one), EXCEPT an answer it routes through a session for a
+//     verified sender the owner allowlisted for this plugin
+//     (MUSTER_ROUTE_RELAY_ALLOW), which relayRoute approves automatically. The
+//     page's copy (retryCopy) says so; it used to claim every draft waits.
 //   - POST /api/plugins/messages/{id}/retry — `muster plugins retry <id>`, behind
 //     requireArmedHookToken (a personal token acts as its owner; the shared hook
 //     token as the operator, and only on an armed server): it steers what the
@@ -119,6 +123,17 @@ func (s *Server) handlePluginRetryAPI(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, code, map[string]any{"id": m.ID, "status": string(m.Status), "retrying": true})
 }
 
+// retryCopy is the /plugins explanation above the retry list.
+//
+// 🔴 IT MUST NOT SAY EVERY REPLY WAITS FOR APPROVAL: an answer routed through a
+// session for a verified sender the owner allowlisted for this plugin
+// (MUSTER_ROUTE_RELAY_ALLOW) is approved automatically (relayRoute), on a
+// retried delivery exactly as on a first one. Retry does not change that.
+const retryCopy = "Your chief's turn on each of these was cut off, so it may or may not have acted on it. " +
+	"Retry hands it to your chief again, which handles it like any message: a reply it drafts waits for your " +
+	"approval, except an answer it routes through one of your sessions to a verified sender you allowlisted " +
+	"for this plugin, which is sent without it."
+
 // retryableSectionHTML is the /plugins list of messages the chief never
 // confirmed, each with its Retry button. The sender and subject are an outside
 // party's text: escaped, never interpreted.
@@ -130,7 +145,7 @@ func retryableSectionHTML(msgs []plugins.Message) string {
 	var b strings.Builder
 	b.WriteString(`<section id="plugin-retryable" class="flex flex-col gap-2" data-testid="plugin-retryable">
 <h2 class="text-sm font-semibold text-fg">Not confirmed by your chief</h2>
-<p class="text-xs text-fg2">Your chief's turn on each of these was cut off, so it may or may not have acted on it. Retry hands it to your chief again; anything it drafts still waits for your approval.</p>
+<p class="text-xs text-fg2" data-retry-copy>` + retryCopy + `</p>
 <ul class="flex flex-col gap-2">
 `)
 	for _, m := range msgs {

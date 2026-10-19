@@ -428,8 +428,11 @@ may already have acted on it. You can decide otherwise:
 
 - On `/plugins`, **Not confirmed by your chief** lists those messages, each with a
   **Retry** button (a signed-in, same-origin form, like Revoke and Reject; no
-  fresh sign-in, since nothing leaves muster — any reply your chief drafts still
-  waits for your approval).
+  fresh sign-in, since nothing leaves muster at that point). Your chief then
+  handles the message like any other: a reply it drafts waits for your approval,
+  **except** an answer it routes through one of your sessions to a verified
+  sender you allowlisted for this plugin (`MUSTER_ROUTE_RELAY_ALLOW`), which is
+  sent without it.
 - From a session: `muster plugins retry <message-id>`
   (`POST /api/plugins/messages/{id}/retry`, the hook tier: your personal token,
   or the shared hook token on an armed server).
