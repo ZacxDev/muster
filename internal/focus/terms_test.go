@@ -31,8 +31,14 @@ func TestWhatIsDistinctive(t *testing.T) {
 		{"Quick follow-up on the sign-up form", nil},
 		{"a self-hosted, well-known, built-in, up-to-date check-in", nil},
 		{"merge muster-followups today", []string{"muster-followups"}},
-		// Plain words never.
+		// Code identifiers and file names, which prose does not write.
+		{"is match_history done?", []string{"match_history"}},
+		{"did matchHistory or MatchHistory land?", []string{"matchhistory"}},
+		{"see history_search.go and README.md", []string{"history_search.go", "readme.md"}},
+		{"e.g. i.e. U.S. a.m.", nil},
+		// Plain words never — nor acronyms.
 		{"Please review the update before the release", nil},
+		{"The HTTP API and OAuth", nil},
 	} {
 		got, _ := distinctiveTerms(c.text, MaxDistinctiveTerms)
 		if fmt.Sprint(got) != fmt.Sprint(c.want) {

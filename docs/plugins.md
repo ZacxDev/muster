@@ -576,7 +576,8 @@ wrote a focus in the last six hours that shares at least two terms with the
 message's subject and body, at least one of them an **identifier**: a word
 with letters and digits (`node-7k`), a reference (`#137`, `PR 137`, `PR-137` —
 one term however it is spelled; a bare `137` is not one), a version
-(`v1.2.3`), or a hyphenated word with a part that is not a dictionary word
+(`v1.2.3`), a code name (`match_history`, `matchHistory`) or file name
+(`hints.go`), or a hyphenated word with a part that is not a dictionary word
 (`follow-up` and `sign-up` are not identifiers). An identifier counts once,
 not again as the words it is made of, and a message contributes at most its
 first 20. Common words alone ("update", "next week", "review") name nothing: an

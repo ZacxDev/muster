@@ -318,3 +318,37 @@ func TestJunkCannotSteerTheHint(t *testing.T) {
 		t.Errorf("control: \"#137\" named %v; want [%s]", got, pr)
 	}
 }
+
+// 🔴 TestRealIdentifiersGetAHint (#139 follow-up 8): identifiers people do
+// write got no hint — snake_case and camelCase names and file names (hints.go
+// has no underscore, so the snake rule cannot stand in for the file rule) hold
+// neither a digit nor a hyphen, and "PR-137" became the lexemes `pr` and
+// `-137`, which a focus saying "PR 137" (`pr`, `137`) does not share. Each
+// message names exactly the session on that identifier.
+func TestRealIdentifiersGetAHint(t *testing.T) {
+	s, pool := pgStore(t)
+	snake := AgentSubject(mustAgent(t, pool, 2, "focus-hs-snake").ID)
+	camel := AgentSubject(mustAgent(t, pool, 2, "focus-hs-camel").ID)
+	file := AgentSubject(mustAgent(t, pool, 2, "focus-hs-file").ID)
+	pr := AgentSubject(mustAgent(t, pool, 2, "focus-hs-prdash").ID)
+	write(t, s, 2, snake, "Fixing the match_history ranking", "Tie-breaks are next.", "")
+	write(t, s, 2, camel, "Refactoring MatchRows in the store", "Splitting the scan loop.", "")
+	write(t, s, 2, file, "Editing hints.go for the routing line", "Adding the cap.", "")
+	write(t, s, 2, pr, "Reviewing PR 137 for the release", "Two comments left.", "")
+	live := Live{Agents: []int64{snake.AgentID(), camel.AgentID(), file.AgentID(), pr.AgentID()}}
+	since := time.Now().Add(-HistoryWindow)
+	for _, c := range []struct {
+		text string
+		want Subject
+	}{
+		{"Is match_history done? The ranking looked off.", snake},
+		{"Did the matchRows refactor land in the store?", camel},
+		{"Please look at hints.go before the routing change ships.", file},
+		{"Status of PR-137? The release depends on it.", pr},
+	} {
+		ms, err := s.MatchHistory(as(2), c.text, live, since, 2, 5)
+		if err != nil || fmt.Sprint(subjectsOf(ms)) != fmt.Sprint([]string{c.want.String()}) {
+			t.Errorf("%q named %v (%v); want [%s]", c.text, subjectsOf(ms), err, c.want)
+		}
+	}
+}

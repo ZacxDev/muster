@@ -28,6 +28,8 @@ import (
 //   - a word holding letters AND digits: `node-7k`, `k8s`, `6a99a92`, `utf-8` →
 //     itself, lower-cased — except an ordinal, a decade or a clock time
 //     (`2nd`, `1990s`, `5pm`), which prose writes all the time.
+//   - snake_case (`match_history`), camelCase (`matchHistory`, `MatchHistory`)
+//     and a file name (`history_search.go`, `README.md`) → itself, lower-cased.
 //   - a hyphenated word with a part (3+ letters) that is NOT a dictionary word
 //     (`muster-followups`) → itself, lower-cased. One made only of dictionary
 //     words (`follow-up`, `sign-up`, `self-hosted`) is prose, not an identifier.
@@ -55,6 +57,8 @@ var (
 	tokenRE = regexp.MustCompile(`[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*`)
 	// proseNumberRE: a number prose writes with letters, which is not an identifier.
 	proseNumberRE = regexp.MustCompile(`^\d+(?:st|nd|rd|th|s|am|pm)$`)
+	camelRE       = regexp.MustCompile(`[a-z][A-Z]`)
+	lettersRE     = regexp.MustCompile(`^[a-z]+$`)
 )
 
 // dictText is the dictionary distinctiveTerms reads hyphenated words against:
@@ -100,6 +104,18 @@ func tokenKey(tok string) string {
 	if !hasLetter {
 		return "" // a bare number (or 3.14): never on its own
 	}
+	if strings.Contains(lower, "_") {
+		return lower // snake_case
+	}
+	if i := strings.LastIndexByte(lower, '.'); i > 0 {
+		base, ext := lower[:i], lower[i+1:]
+		if lettersRE.MatchString(ext) && len(ext) <= 8 && len(base) >= 2 && strings.IndexFunc(base, isLetter) >= 0 {
+			return lower // a file name (or a domain)
+		}
+	}
+	if camelRE.MatchString(tok) {
+		return lower // camelCase
+	}
 	if hasDigit {
 		if proseNumberRE.MatchString(lower) {
 			return ""
@@ -115,6 +131,8 @@ func tokenKey(tok string) string {
 	}
 	return ""
 }
+
+func isLetter(r rune) bool { return r >= 'a' && r <= 'z' }
 
 // span is one distinctive term found in a text, at byte offsets [start, end).
 type span struct {
