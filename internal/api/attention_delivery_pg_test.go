@@ -116,7 +116,7 @@ func answeredItem(html string, id int64) string {
 // later sweeps and a direct second delivery push nothing more.
 func TestAnAnswerToTheChiefIsPushedOnceIntoItsDefaultSession(t *testing.T) {
 	f := newDeliveryFixture(t)
-	id := f.ask(t, f.chiefTok, "Who should take task 775?", "forward it", "dispatch a new agent")
+	id := f.ask(t, f.chiefTok, "Who should take task 42?", "forward it", "dispatch a new agent")
 	f.answerForm(t, id, "dispatch a new agent")
 	a := f.delivery(t, id)
 	if a.Delivery != attention.DeliveryDelivered || a.DeliveredSession != f.def.ID {
@@ -130,7 +130,7 @@ func TestAnAnswerToTheChiefIsPushedOnceIntoItsDefaultSession(t *testing.T) {
 		t.Fatalf("a turn went to the latest, non-default session: %q", other)
 	}
 	for _, want := range []string{"your owner answered attention #" + strconv.FormatInt(id, 10), "<<<attention-answer untrusted nonce=",
-		"| answer:", "|   dispatch a new agent", "|   Who should take task 775?"} {
+		"| answer:", "|   dispatch a new agent", "|   Who should take task 42?"} {
 		if !strings.Contains(turns[0], want) {
 			t.Errorf("the turn lacks %q:\n%s", want, turns[0])
 		}
@@ -464,5 +464,31 @@ func TestAnotherOwnerCannotAnswerSeeOrRetryAnAnswer(t *testing.T) {
 	sess, err := f.agentsStore.GetSession(asUser(f.member), got.DeliveredSession)
 	if err != nil || sess.AgentID != f.attnFixture.chief.ID {
 		t.Fatalf("delivered into session %d of agent %d (%v); want the member's chief %d", got.DeliveredSession, sess.AgentID, err, f.attnFixture.chief.ID)
+	}
+}
+
+// TestShutdownEndsADeliveryWaitingOutItsGrace: EndStreams ends a delivery
+// still in its grace at once (WaitForAttentionDeliveries returns), pushing
+// nothing and leaving the answer queued for the next process's sweep.
+func TestShutdownEndsADeliveryWaitingOutItsGrace(t *testing.T) {
+	f := newDeliveryFixture(t)
+	id := f.ask(t, f.chiefTok, "Upgrade the cluster?")
+	if _, err := f.attn.Answer(asUser(1), id, "after the weekend"); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.startAnswerDelivery(1, id, time.Hour)
+	done := make(chan struct{})
+	go func() { f.srv.WaitForAttentionDeliveries(); close(done) }()
+	f.srv.EndStreams()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a delivery waiting out its grace held the shutdown")
+	}
+	if a := f.askStatus(t, id); a.Delivery != attention.DeliveryQueued {
+		t.Fatalf("after the shutdown: %q", a.Delivery)
+	}
+	if n := len(f.gw.seen()); n != 0 {
+		t.Fatalf("%d turns", n)
 	}
 }

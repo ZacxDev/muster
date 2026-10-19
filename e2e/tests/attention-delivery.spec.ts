@@ -122,14 +122,14 @@ test('the operator answers the chief on /attention and the chief\'s session rece
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
 
   // The chief asks and does not wait: its tool result says it need not.
-  const asked = await mcpCall('attention_ask', { question: 'Who should take task 775?', options: ['forward it', 'dispatch a new agent'] });
+  const asked = await mcpCall('attention_ask', { question: 'Who should take task 42?', options: ['forward it', 'dispatch a new agent'] });
   expect(asked.isError, asked.text).toBe(false);
   const { id, next } = JSON.parse(asked.text) as { id: number; next: string };
   expect(next).toContain('you do not need to wait');
 
   await page.goto(origin + '/attention');
   const item = page.locator(`#ask-${id}`);
-  await expect(item.locator('[data-attention-text]')).toHaveText('Who should take task 775?');
+  await expect(item.locator('[data-attention-text]')).toHaveText('Who should take task 42?');
   await Promise.all([page.waitForURL(origin + '/attention'), item.getByRole('button', { name: 'dispatch a new agent' }).click()]);
   await expect(page.locator(`#ask-${id}`)).toHaveCount(0);
 

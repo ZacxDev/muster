@@ -233,3 +233,25 @@ func TestDeliveriesAreTheirOwnersAlone(t *testing.T) {
 		t.Errorf("the owner's answered list: %+v %v", got, err)
 	}
 }
+
+// TestTheSweepTakesTheLeastTriedFirst: an old answer whose agent keeps
+// refusing it (many attempts) does not hold a newer one out of the sweep's
+// batch.
+func TestTheSweepTakesTheLeastTriedFirst(t *testing.T) {
+	s, pool, _ := pgStore(t)
+	agent := agentFor(t, pool, 2)
+	stuck := answered(t, s, 2, agent, "left")
+	for i := 0; i < 3; i++ {
+		if _, ok, err := s.ClaimDelivery(as(2), stuck.ID, "p", time.Minute, 0); err != nil || !ok {
+			t.Fatal(err)
+		}
+		if err := s.ReleaseDelivery(as(2), stuck.ID, "p", "the agent is not running (stopped)"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fresh := answered(t, s, 2, agent, "right")
+	due, err := s.DueDeliveries(context.Background(), 0, 1)
+	if err != nil || len(due) != 1 || due[0].ID != fresh.ID {
+		t.Fatalf("a batch of one took %+v; want the untried answer %d before the thrice-refused %d", due, fresh.ID, stuck.ID)
+	}
+}

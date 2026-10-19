@@ -121,18 +121,28 @@ func (s *Server) answerSession(ctx context.Context, a agents.Agent) (agents.Chat
 }
 
 // startAnswerDelivery delivers ask id's answer in the background after the
-// grace (an answer just given), registered so a shutdown waits for it.
+// grace (an answer just given), registered so a shutdown waits for it — and
+// ended by EndStreams, like a plugin delivery, so a turn cut off by shutdown is
+// recorded (unconfirmed) rather than left to its lease.
 func (s *Server) startAnswerDelivery(owner, id int64, after time.Duration) {
 	if s.ext.Attention == nil || s.ext.Agents == nil {
 		return
 	}
+	ctx, cancel := s.streamContext(context.Background())
 	s.attention.deliveries.Add(1)
 	safeGo(s.logger, "attention answer delivery", func() {
 		defer s.attention.deliveries.Done()
+		defer cancel()
 		if after > 0 {
-			time.Sleep(after)
+			t := time.NewTimer(after)
+			defer t.Stop()
+			select {
+			case <-ctx.Done():
+				return // the sweep of the next process delivers it
+			case <-t.C:
+			}
 		}
-		s.deliverAnswer(context.Background(), owner, id)
+		s.deliverAnswer(ctx, owner, id)
 	})
 }
 
@@ -156,7 +166,9 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 	if s.ext.Attention == nil || s.ext.Agents == nil || owner <= 0 {
 		return answerNotTaken
 	}
-	ctx := s.attentionPrincipal(context.WithoutCancel(parent), owner)
+	// parent's cancellation is kept (shutdown ends the turn); every write after
+	// the turn runs on a detached bookkeeping context.
+	ctx := s.attentionPrincipal(parent, owner)
 	if s.waitingOn(id) {
 		// The asker is blocked in attention_wait on it here: the answer is the
 		// waiter's (it records MarkWaited as it returns).

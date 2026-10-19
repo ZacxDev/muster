@@ -309,7 +309,8 @@ type Store interface {
 	// delivery to show (or were a system asker's), newest first, at most limit.
 	Answered(ctx context.Context, since time.Time, limit int) ([]Ask, error)
 	// DueDeliveries is every owner's queued deliveries at least grace old,
-	// oldest first, at most limit (system scope).
+	// least-tried first (so answers stuck on an agent that will not take them
+	// cannot starve newer ones), then oldest, at most limit (system scope).
 	DueDeliveries(ctx context.Context, grace time.Duration, limit int) ([]Ask, error)
 	// RecoverDeliveries settles as DeliveryUnconfirmed every owner's delivery
 	// whose lease lapsed (its process died mid-turn) and returns them (system
@@ -547,7 +548,7 @@ func (s *PGStore) Answered(ctx context.Context, since time.Time, limit int) ([]A
 func (s *PGStore) DueDeliveries(ctx context.Context, grace time.Duration, limit int) ([]Ask, error) {
 	return collect(s.pool.Query(sys(ctx), `SELECT `+cols+` FROM attention_asks
 		WHERE delivery = 'queued' AND resolved_at <= now() - make_interval(secs => $1)
-		ORDER BY resolved_at, id LIMIT $2`, grace.Seconds(), limit))
+		ORDER BY delivery_attempts, resolved_at, id LIMIT $2`, grace.Seconds(), limit))
 }
 
 // DeliveryLapsedDetail is an unconfirmed delivery's detail when its process
