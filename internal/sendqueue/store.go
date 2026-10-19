@@ -475,6 +475,37 @@ func (s *PGStore) Recover(ctx context.Context, now time.Time) (int, error) {
 	return int(tag.RowsAffected()), nil
 }
 
+// ExpiredDetail is the outcome of a person's message that was not sent within
+// AuthorizedFor of being queued: the delivery's refusal (internal/api
+// sendQueueAuthorization) and Expire's, the same words either way.
+var ExpiredDetail = "Not sent: it was queued more than " + authorizedText + " ago, and a queued message is sent only within " +
+	authorizedText + " of being queued. Retry it to queue it again."
+
+// authorizedText is AuthorizedFor as a person reads it.
+var authorizedText = fmt.Sprintf("%d days", int(AuthorizedFor/(24*time.Hour)))
+
+// Expire fails, at now, every PERSON's message still queued that was queued
+// more than AuthorizedFor before now — as expired (ExpiredDetail), never
+// delivered, so it offers Retry — and returns how many. The delivery refuses
+// such a row anyway, but only once its window goes idle: a window that never
+// does would show it "queued" past the bound and keep holding one of its
+// MaxOpenPerTarget slots. A routed message is gated by its route, not by this
+// bound, and is left alone; so is one being sent (its claimant finishes it).
+// now is muster's clock, as the delivery's check is (created_at is
+// Postgres's; a skew of seconds is immaterial at a bound of days). The row's
+// claimed_at is stamped now too, unclaimed (claimed_by NULL): a failed row
+// carries one (0019's send_queue_claimed_check), and this sweep is what
+// processed it.
+func (s *PGStore) Expire(ctx context.Context, now time.Time) (int, error) {
+	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET state = 'failed', detail = $1, finished_at = $2,
+		claimed_at = $2, may_have_delivered = false
+		WHERE state = 'queued' AND route_id IS NULL AND created_at < $3`, clampDetail(ExpiredDetail), now, now.Add(-AuthorizedFor))
+	if err != nil {
+		return 0, fmt.Errorf("sendqueue: expire: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // Head is one target's next message (its oldest open row), with what the
 // dispatcher decides on.
 type Head struct {

@@ -406,3 +406,30 @@ func TestARoutedRowOffersNoRetry(t *testing.T) {
 		t.Fatalf("a Retry of a routed row marked it retried as %d", got.RetriedAs)
 	}
 }
+
+// TestAQueuedMessageExpiresWhileItsWindowNeverGoesIdle: a message queued 7
+// days and a minute ago for a window that is BUSY on every pass is failed as
+// expired by the dispatcher's own pass — not left "queued" until the window
+// next goes idle — pasting nothing; its slot frees (no open rows) and its row
+// offers Retry. The control is a message queued 6 days 23 hours ago for the
+// same busy window, which stays queued.
+func TestAQueuedMessageExpiresWhileItsWindowNeverGoesIdle(t *testing.T) {
+	f := newSQFixture(t)
+	f.mirror.agentState = &mirror.AgentState{Status: mirror.StatusBusy, Since: time.Now().UnixMilli()}
+	old := f.enqueue(t, "queued a week ago", time.Hour, 7*24*time.Hour+time.Minute)
+	young := f.enqueue(t, "queued six days ago", time.Hour, (6*24+23)*time.Hour)
+	f.tick(t)
+	if got := f.row(t, old.ID); got.State != sendqueue.Failed || got.Detail != SendQueueExpired || got.MayHaveDelivered {
+		t.Fatalf("a week-old message for a busy window: %s %q (may have: %v); want failed as expired", got.State, got.Detail, got.MayHaveDelivered)
+	}
+	if len(f.pasted()) != 0 {
+		t.Fatalf("an expired message was pasted: %q", f.pasted())
+	}
+	if open := f.open(t); len(open) != 1 || open[0].ID != young.ID {
+		t.Fatalf("open rows after the pass: %+v; want only the six-day-old one (CONTROL: still queued)", open)
+	}
+	_, page := mirrorGet(t, f.srv, f.ts, ui.SendQueuePath+"?"+url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}}.Encode())
+	if !strings.Contains(page, `action="`+ui.SendQueueRetryPath(old.ID)+`"`) {
+		t.Fatalf("the expired row draws no Retry: %s", page)
+	}
+}

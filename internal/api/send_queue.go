@@ -905,14 +905,12 @@ func sendQueueStale() sendqueue.Outcome {
 		". Retry it to queue it again."}
 }
 
-// sendQueueAuthorizedText is sendqueue.AuthorizedFor as a person reads it.
-var sendQueueAuthorizedText = strconv.Itoa(int(sendqueue.AuthorizedFor/(24*time.Hour))) + " days"
-
 // Why a person's queued message is not sent on the sign-in that queued it
 // (sendQueueAuthorization).
 var (
-	SendQueueExpired = "Not sent: it was queued more than " + sendQueueAuthorizedText + " ago, and a queued message is sent only within " +
-		sendQueueAuthorizedText + " of being queued. Retry it to queue it again."
+	// SendQueueExpired is the same words the dispatcher's expiry sweep
+	// records (sendqueue.PGStore.Expire).
+	SendQueueExpired            = sendqueue.ExpiredDetail
 	SendQueueNotFreshWhenQueued = "Not sent: the sign-in that queued it was not a recent one when it was queued. Retry it to queue it again."
 )
 
