@@ -91,8 +91,11 @@ always be in it.
 
 A claude-code agent can be dispatched with a repository (`owner/name`, and a
 branch), from the dispatch forms, the API or the chief's `task_dispatch`, like a
-gateway agent. An agent without one is exactly what it was before: no clone,
-the CLI in `/data/workspace`, the same `--continue` resume.
+gateway agent — but only one of your **connected** GitHub repositories, from
+every door (its session starts pre-trusted in the checkout, so the repository's
+own `.claude/` runs beside the subscription token; see below). An agent without
+one is exactly what it was before: no clone, the CLI in `/data/workspace`, the
+same `--continue` resume.
 
 - **The checkout.** muster gives the pod `CCD_REPO`, `CCD_REPO_BRANCH` (when
   there is a branch) and `CCD_WORKSPACE=/data/workspace/<name>`. Before it

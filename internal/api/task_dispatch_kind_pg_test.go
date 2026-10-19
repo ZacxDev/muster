@@ -136,7 +136,7 @@ func TestTaskDispatchRefusesAKindItCannotStart(t *testing.T) {
 // existed for this kind both were refused.)
 func TestTaskDispatchGivesAClaudeCodeAgentItsRepository(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
-	f.withConnectedRepos(t, "example/app")
+	f.withConnectedRepos(t, "example/app", "example/other")
 	n := f.task(t, "repo arg")
 	f.ownerAnswered(t, n.ID, "using the x skill")
 	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/app",

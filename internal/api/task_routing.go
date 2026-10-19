@@ -528,11 +528,24 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		return toolErr("%s", err.Error())
 	}
 	cc := kind == agents.KindClaudeCode
-	// 🔴 A REPO THE CHIEF NAMES MUST BE ONE THE OWNER CONNECTED. The chief picks
-	// it reading outside text, so the set it may pick from is the owner's own
-	// GitHub connection's — never an arbitrary owner/name an outside party wrote.
-	if repo != "" {
-		if why := s.connectedRepo(ctx, repo); why != "" {
+	// 🔴 THE REPOSITORY THE AGENT WILL WORK IN MUST BE ONE THE OWNER CONNECTED —
+	// the EFFECTIVE one: the chief's `repo`, else the task's own. Both can come
+	// from outside text: the chief picks `repo` while reading it, and a task's
+	// repository can have been written by an agent (task_create_gated stores
+	// any). A claude-code agent's session starts PRE-TRUSTED inside that
+	// checkout, so its .claude/settings.json (hooks, env) runs beside the
+	// subscription token. So the set it may come from is the owner's own GitHub
+	// connection's, for every kind, checked before anything is reserved. The
+	// task is re-read under the reservation's lock (check) and refused if its
+	// repository is no longer the one checked here.
+	effective := repo
+	if effective == "" {
+		if n, ok := s.ownersTask(ctx, a, taskID); ok {
+			effective = n.Repo
+		}
+	}
+	if effective != "" {
+		if why := s.connectedRepo(ctx, effective); why != "" {
 			return toolErr("%s", why)
 		}
 	}
@@ -541,6 +554,9 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		n, ok := s.ownersTask(ctx, a, taskID)
 		if !ok {
 			return errTaskDispatch(chiefDispatchNoTask)
+		}
+		if repo == "" && !strings.EqualFold(n.Repo, effective) {
+			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + "'s repository changed while it was being checked; call again")
 		}
 		if why, err := s.chiefDispatchTaskRefusal(ctx, owner, n); err != nil {
 			return err

@@ -1010,6 +1010,17 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	if err != nil {
 		return agents.Agent{}, err
 	}
+	// 🔴 A CLAUDE-CODE AGENT'S REPOSITORY MUST BE A CONNECTED ONE, from every
+	// door (the forms, the API, task_dispatch): its session starts PRE-TRUSTED
+	// in the checkout (ccd seed), so the repository's .claude/settings.json
+	// (hooks, env) runs beside the subscription token. One predicate,
+	// connectedRepo, the same task_dispatch applies to every kind before it
+	// reserves. Before the row, so a refusal creates nothing.
+	if kind == agents.KindClaudeCode && p.Repo != "" {
+		if why := s.connectedRepo(ctx, p.Repo); why != "" {
+			return agents.Agent{}, fmt.Errorf("%w: %s", ErrDispatchRefused, why)
+		}
+	}
 	// 🔴 REFUSE A MODEL THE POD WILL HAVE NO CREDENTIAL FOR, BEFORE the record
 	// exists. This is the FIRST of the two places an operator can set an agent's
 	// model (the other is handleAgentModel); both call the same predicate so the

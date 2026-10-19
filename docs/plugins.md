@@ -370,9 +370,13 @@ Each refusal has its own sentence, in this order:
    typed it; to get one, it calls `task_route_attention` and waits.
 6. `kind` is unknown, not enabled on the deployment (`MUSTER_AGENT_KINDS`), or
    one you have no credential for.
-7. `repo` is given and is not `owner/name`, you have no GitHub connection, or
-   it is not one of your connected repositories. The chief picks it while
-   reading outside text, so it may only pick from your own.
+7. The **effective** repository — `repo`, or else the task's own — is not
+   `owner/name`, you have no GitHub connection, or it is not one of your
+   connected repositories. This holds for every kind. The chief picks `repo`
+   while reading outside text, and a task's repository may have been written
+   by an agent (`task_create_gated`), so either may only be one of your own.
+   The task is re-read under the lock below, and a repository changed in
+   between is refused.
 8. Under a per-owner lock: **one start per task, ever.** A task the chief
    already started an agent for answers with that start
    (`already_dispatched`) and starts nothing, whatever became of the agent.
