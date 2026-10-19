@@ -41,6 +41,8 @@ interface AgentRow {
   name: string;
   kind: string;
   status: string;
+  repo: string;
+  repoBranch: string;
 }
 
 async function machine() {
@@ -105,12 +107,14 @@ for (const vp of [
       await sheet.locator('summary[aria-label="Advanced options"]').click();
       const model = sheet.locator('#model-input');
       await expect(model).toBeVisible();
-      // Claude Code: the whole gateway-only block leaves the screen — the
-      // model selector and the repository — and nothing submits.
+      // Claude Code: the gateway-only model selector leaves the screen and
+      // does not submit; the repository stays (a claude-code agent's session
+      // starts in a checkout of it), live, under Advanced.
       await sheet.locator('[data-kind-option="claude-code"]').click();
       await expect(model).toBeHidden();
-      await expect(sheet.locator('summary[aria-label="Advanced options"]')).toBeHidden();
-      await expect(sheet.locator('input[name="repo"]')).toBeHidden();
+      await expect(sheet.locator('summary[aria-label="Advanced options"]')).toBeVisible();
+      await expect(sheet.locator('input[aria-label="Repository"]')).toBeVisible();
+      await expect(sheet.locator('input[name="repo"]')).toBeEnabled();
       await expect(sheet.locator('select[name="cc_account"]')).toBeVisible();
       await expect(sheet.locator('input[name="model"]')).toBeDisabled();
       // Back to Standard: it returns.
@@ -121,9 +125,12 @@ for (const vp of [
       expect(sw).toBeLessThanOrEqual(cw);
     });
 
-    test('1b. the task-scoped dispatch confirm hides its Model/Repository rows for Claude Code', async ({ page }) => {
+    test('1b. the task-scoped dispatch confirm hides its Model row for Claude Code, and dispatches it onto the task repository', async ({ page }) => {
       const ctx = await machine();
-      const r = await ctx.post('/api/tasks', { data: { title: `polish ${vp.label} task-dispatch`, body: 'task-scoped dispatch' } });
+      const repo = `example-org/polish-${vp.label.toLowerCase()}`;
+      const r = await ctx.post('/api/tasks', {
+        data: { title: `polish ${vp.label} task-dispatch`, body: 'task-scoped dispatch', repo, branch: 'release/e2e' },
+      });
       expect(r.status(), await r.text()).toBeLessThan(300);
       const task = (await r.json()) as { id: number };
       await ctx.dispose();
@@ -136,9 +143,19 @@ for (const vp of [
       await expect(modelRow).toBeVisible();
       await sheet.locator('[data-kind-option="claude-code"]').click();
       await expect(modelRow).toBeHidden();
-      await expect(sheet.locator('[data-dispatch-row]').filter({ hasText: 'Repository' })).toBeHidden();
+      await expect(sheet.locator('[data-dispatch-row]').filter({ hasText: 'Repository' })).toBeVisible();
       await sheet.locator('[data-kind-option="gateway"]').click();
       await expect(modelRow).toBeVisible();
+      // Claude Code again, and dispatch: the agent is a claude-code agent on the
+      // task's repository and branch.
+      await sheet.locator('[data-kind-option="claude-code"]').click();
+      const before = new Set((await agentRows()).map((a) => a.name));
+      const resp = page.waitForResponse((x) => x.url().endsWith('/agents') && x.request().method() === 'POST');
+      await sheet.locator('button[value="dispatch"]').click();
+      expect((await resp).status()).toBe(200);
+      const created = (await agentRows()).filter((a) => !before.has(a.name));
+      expect(created.length, 'exactly one agent created').toBe(1);
+      expect([created[0].kind, created[0].repo, created[0].repoBranch]).toEqual(['claude-code', repo, 'release/e2e']);
     });
 
     test('1c. a Claude Code agent page shows its account where the model would be and never asks OpenRouter', async ({ page }) => {
