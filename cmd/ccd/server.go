@@ -122,9 +122,8 @@ type server struct {
 	recordsPrimary bool
 
 	// gateway hands a gateway-runtime turn to the runtime beside ccd
-	// (gateway.go); nil when the pod runs none. gatewayURL is its address.
-	gateway    *httputil.ReverseProxy
-	gatewayURL string
+	// (gateway.go); nil when the pod runs none.
+	gateway *httputil.ReverseProxy
 }
 
 // started reports whether the session has sent SessionStart (and no SessionEnd since).
@@ -850,9 +849,6 @@ type health struct {
 	Busy       bool      `json:"busy"`
 	// Lanes are the explicit sessions' CLIs (lanes.go); reported, never gating.
 	Lanes []laneHealth `json:"lanes,omitempty"`
-	// Gateway is the gateway runtime beside ccd (gateway.go): "ok", or why not;
-	// absent when the pod runs none. Reported, never gating.
-	Gateway string `json:"gateway,omitempty"`
 	authSnapshot
 }
 
@@ -896,7 +892,6 @@ func (s *server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	if s.lanes != nil {
 		h.Lanes = s.lanes.health()
 	}
-	h.Gateway = s.gatewayHealth(ctx)
 	h.OK = h.Terminal == "ok" && (h.Supervisor == nil || (h.Supervisor.CLI != cliCrashLoop && h.Supervisor.CLI != cliLost))
 	w.Header().Set("Content-Type", "application/json")
 	if !h.OK {

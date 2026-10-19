@@ -239,6 +239,8 @@ build tag, which the Playwright suite uses. The shipped binaries do not read the
 | `MUSTER_E2E_FOCUS` | none | no | (`e2e/mkchat`) A JSON array of `{subject, title, description, history}` (or `{subject, error}`, a failed refresh's reason; `history` writes that many earlier focuses first, for the focus history): session focus to write for the agent it creates (`"self"`) or for a mirrored session (`"mirror:<claude session id>"`), used by the focus spec. Deleting also deletes the mirrored ones it names. |
 | `MUSTER_E2E_DISPLAY_NAME` | none | no | (`e2e/mkchat`) The agent's display name; `chief` makes it the chief panel's agent. |
 | `MUSTER_E2E_THREADS` | off | no | (`e2e/mkchat`) `1` reads several threads (title, age, messages) from stdin instead of one message list. |
+| `MUSTER_E2E_KIND` | the default kind | no | (`e2e/mkchat`) The agent's kind, e.g. `claude-code`. |
+| `MUSTER_E2E_CC_ACCOUNT` | none | no | (`e2e/mkchat`) The Claude account a `claude-code` agent names. Only a name: nothing is provisioned. |
 | `MUSTER_E2E_HOLD_READY_DIR` | none | no | (`e2eterm`) Holds fake instances not-ready until a file named after each instance appears in this directory. |
 | `MUSTER_E2E_TERM_WINDOW` | none | no | (`e2eterm`) The `CxR` window size the fake agent pod reports. |
 | `MUSTER_E2E_GITHUB_API` | none | no | (`e2eterm`) Points every GitHub API call at this base URL (a fake GitHub), so the dispatch dialog's repo picker can be driven with fixture repos. |

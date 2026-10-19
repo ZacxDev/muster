@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"time"
 )
 
 // THE GATEWAY RUNTIME BESIDE ccd (muster's agentspec/chief_sidecar.go).
@@ -89,27 +87,4 @@ func (s *server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.handleGatewayTurn(w, r)
-}
-
-// gatewayHealth is the runtime's state on /healthz: reported, never gating (a
-// gateway that is down fails its own sessions' turns, not the pod).
-func (s *server) gatewayHealth(ctx context.Context) string {
-	if s.gatewayURL == "" {
-		return ""
-	}
-	ctx, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.gatewayURL+"/", nil)
-	if err != nil {
-		return err.Error()
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "unreachable"
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Sprintf("HTTP %d", resp.StatusCode)
-	}
-	return "ok"
 }

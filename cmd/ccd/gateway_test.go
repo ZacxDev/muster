@@ -61,7 +61,7 @@ func gatewayRig(t *testing.T) (*fakeGatewayRuntime, *httptest.Server) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.gateway, srv.gatewayURL = p, up.URL
+	srv.gateway = p
 	return rt, gatewayServer(t, srv)
 }
 
@@ -137,6 +137,11 @@ func TestAGatewayTurnIsRefusedBeforeTheRuntimeWithoutTheBearer(t *testing.T) {
 
 // TestTheGatewayStreamIsPassedOnAsItComes: the first event reaches the caller
 // while the runtime is still answering.
+//
+// ⚠ AN INVARIANT GUARD, NOT A GUARD ON FlushInterval: net/http/httputil's
+// ReverseProxy flushes a text/event-stream response as it comes whatever
+// FlushInterval says (the mutant that removes it survives). It pins the
+// observable a caller depends on, so a change of proxy cannot lose it unseen.
 func TestTheGatewayStreamIsPassedOnAsItComes(t *testing.T) {
 	rt, gw := gatewayRig(t)
 	rt.hold = make(chan struct{})

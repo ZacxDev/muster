@@ -207,7 +207,6 @@ func serve() error {
 		if srv.gateway, err = newGatewayProxy(up); err != nil {
 			return err
 		}
-		srv.gatewayURL = strings.TrimRight(up, "/")
 	}
 	if os.Getenv("CCD_SUPERVISE") == "1" {
 		bin := envOr("CCD_CLAUDE_BIN", "claude")
