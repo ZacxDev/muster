@@ -636,7 +636,8 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 
 	// The chief's messages go to its DEFAULT session (session_runtime.go) — the
 	// one plugin deliveries go to — and every other agent's to its latest, as
-	// before.
+	// before. Whether or not MUSTER_CHIEF_SESSION_RUNTIMES is set: that flag
+	// draws the runtime picker, it does not gate this routing.
 	var sess agents.ChatSession
 	if s.isChiefAgent(ctx, a) {
 		sess, err = s.defaultSession(ctx, a)

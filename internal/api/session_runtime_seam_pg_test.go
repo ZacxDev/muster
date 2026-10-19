@@ -378,3 +378,85 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 		t.Errorf("a refused move changed the default to %d", d.ID)
 	}
 }
+
+// TestChiefAskGoesToTheDefaultSessionWithTheRuntimesFlagUnset pins what the docs
+// now say: MUSTER_CHIEF_SESSION_RUNTIMES draws the runtime picker and does NOT
+// gate default-session routing. With it unset, `chief ask` still lands in the
+// chief's default (its legacy-key session), not in its newer, latest one.
+//
+// ⚠ AN INVARIANT GUARD, NOT A REGRESSION TEST: the behaviour was already this
+// at origin/main; what was wrong was the docs and comments claiming otherwise.
+func TestChiefAskGoesToTheDefaultSessionWithTheRuntimesFlagUnset(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	t.Cleanup(cancel)
+	pool, err := db.Connect(ctx, dbtest.DSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	sys := authz.System(ctx)
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	var owner int64
+	if err := pool.QueryRow(sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`, "rf"+suffix).Scan(&owner); err != nil {
+		t.Fatal(err)
+	}
+	asOwner := authz.WithPrincipal(ctx, authz.Principal{UserID: owner, Role: authz.RoleMember, Via: authz.ViaSession})
+	t.Cleanup(func() {
+		for _, q := range []string{`DELETE FROM agents WHERE owner_id = $1`, `DELETE FROM audit_log WHERE user_id = $1`, `DELETE FROM users WHERE id = $1`} {
+			_, _ = pool.Exec(authz.System(context.Background()), q, owner)
+		}
+	})
+	as := agents.NewPG(pool)
+	chief, err := as.Create(asOwner, agents.Agent{Name: "rfchief-" + suffix, Namespace: "devpod-rfchief-" + suffix,
+		DisplayName: "chief", Status: agents.StatusRunning, HooksToken: "rf-hooks-" + suffix, Kind: agents.KindGateway})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := as.LatestOrCreateSession(asOwner, chief.ID, chief.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newer, err := as.CreateSession(asOwner, chief.ID, chief.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := as.AddChatMessage(asOwner, agents.ChatMessage{AgentID: chief.ID, SessionID: newer.ID, Role: "user", Content: "newer"}); err != nil {
+		t.Fatal(err)
+	}
+	// Control: the latest session is the newer one, so landing in legacy can
+	// only be the default rule.
+	if l, err := as.LatestOrCreateSession(asOwner, chief.ID, chief.Name); err != nil || l.ID != newer.ID {
+		t.Fatalf("control: the latest session is %d (%v); want the newer %d", l.ID, err, newer.ID)
+	}
+
+	rt := &routeRuntime{}
+	up := httptest.NewServer(rt)
+	t.Cleanup(up.Close)
+	host, portStr, _ := net.SplitHostPort(strings.TrimPrefix(up.URL, "http://"))
+	port, _ := strconv.Atoi(portStr)
+	gw, err := agentgateway.New(agentgateway.Config{Driver: fixedEndpoint{provision.Endpoint{Host: host, Port: port}},
+		Runtime: agentgateway.HooksSHA256(), Model: "runtime-sentinel", Client: up.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(nil, AuthConfig{HookToken: tokTestHook, UIPassword: "rf-seam-operator-pw"}, log.New(io.Discard, "", 0))
+	toks := newFakeAPITokens()
+	ownerTok := toks.add(t, owner)
+	srv.UseExtensions(Extensions{Agents: as, Users: users.NewPG(pool), Gateway: gw, APITokens: toks}) // no SessionRuntimes
+	r := httptest.NewRequest("POST", "/api/agents/"+chief.Name+"/messages", strings.NewReader(`{"message":"status?"}`))
+	r.Host = "muster.test"
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer "+ownerTok)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, r)
+	var body struct {
+		SessionID int64 `json:"sessionId"`
+	}
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &body) != nil {
+		t.Fatalf("chief ask: %d %s", rec.Code, rec.Body.String())
+	}
+	if body.SessionID != legacy.ID || rt.last(t).key != legacy.SessionKey {
+		t.Errorf("with MUSTER_CHIEF_SESSION_RUNTIMES unset, chief ask went to session %d (key %s); want the default, %d",
+			body.SessionID, rt.last(t).key, legacy.ID)
+	}
+}

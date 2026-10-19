@@ -121,7 +121,9 @@ since that runtime has no standing file of the chief's.
 
 **The default session.** One session per agent is its default. Plugin
 deliveries and `muster chief ask` go to it, so they share one conversation
-instead of one per plugin. Until you choose one, it is the chief's original
+instead of one per plugin. This is so whether or not
+`MUSTER_CHIEF_SESSION_RUNTIMES` is set; that setting only adds the runtime
+picker. Until you choose one, it is the chief's original
 session (the one keyed `agent:<name>:webchat`, or the oldest). Move it with
 `POST /agents/{id}/sessions/{sid}/default`.
 
