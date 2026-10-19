@@ -94,6 +94,9 @@ type fakeConnectors struct {
 	grant    string
 	requests []map[string]string
 	tokens   []string
+	// stayNone: a filed request does not move the grant to pending (muster
+	// lost or dropped it), so only ccd's own memory stops a re-request.
+	stayNone bool
 }
 
 func (fc *fakeConnectors) server(t *testing.T) *httptest.Server {
@@ -110,7 +113,9 @@ func (fc *fakeConnectors) server(t *testing.T) *httptest.Server {
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			fc.requests = append(fc.requests, body)
-			fc.grant = "pending"
+			if !fc.stayNone {
+				fc.grant = "pending"
+			}
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]any{"name": "github", "grant": "pending"})
 		case r.Method == http.MethodPost && r.URL.Path == "/agent/blocked":
@@ -394,5 +399,28 @@ func TestTheCheckoutComesOnlyFromCCDRepo(t *testing.T) {
 	t.Setenv(envRepo, "example-org/tide-charts")
 	if _, err := checkoutFromEnv("workspace/tide-charts"); err == nil || !strings.Contains(err.Error(), "must be an absolute path") {
 		t.Fatalf("relative workspace: %v", err)
+	}
+}
+
+// TestARequestIsFiledOnceEvenIfTheGrantStaysNone: when muster still answers
+// `none` after ccd filed the request, ccd does not file it again on every
+// retry — it says the request is no longer pending instead.
+func TestARequestIsFiledOnceEvenIfTheGrantStaysNone(t *testing.T) {
+	root := t.TempDir()
+	gh := newFakeGitHub(t, root)
+	for _, e := range gh.env() {
+		k, v, _ := strings.Cut(e, "=")
+		t.Setenv(k, v)
+	}
+	fc := &fakeConnectors{grant: "none", stayNone: true}
+	srv := fc.server(t)
+	c := newTestCheckout(t, "example-org/private-app", "", filepath.Join(root, "ws", "private-app"), srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.run(ctx)
+	st := waitState(t, c, func(s checkoutState) bool { return strings.Contains(s.Detail, "no longer pending") })
+	time.Sleep(200 * time.Millisecond)
+	if n := len(fc.filed()); n != 1 {
+		t.Fatalf("filed %d requests over the retries (detail %q); want 1", n, st.Detail)
 	}
 }
