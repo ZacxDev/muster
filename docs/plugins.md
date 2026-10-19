@@ -447,7 +447,9 @@ routed to a session that is still routed, answered or relayed; when it is a
 the task, or started an agent on it, at or after this event's latest delivery
 attempt — for a message that can be retried, the turn that handed it over — so
 an action on another event of the same task does not count; the same rule that
-takes it off "Task to route"); and when you have no chief. Another user's message answers 404.
+takes it off "Task to route"); when its plugin has been revoked (a revoked
+plugin's messages never reach your chief again, by retry or otherwise); and when
+you have no chief. Another user's message answers 404.
 
 The data-scope sentence is **advisory**. The chief's own memory credential can
 write anywhere; only the preface asks it to keep what it records from plugin

@@ -23,7 +23,9 @@ import (
 // message queued and is refused). Retryable means: `unconfirmed`, and nothing
 // the first turn did is still live or done — no reply draft pending, approved,
 // sent or itself unconfirmed (another turn would draft a second answer), and no
-// session route that is routed, answered or relayed.
+// session route that is routed, answered or relayed — and its plugin is not
+// revoked (revokedPlugin): a revoked plugin's messages are never handed to the
+// chief again, as Submit and QueuedForOwner already refuse them.
 
 // liveDraft and liveRoute are the two "the first turn's work is still live or
 // done" clauses; retryableWhere and Requeue's refusal reasons both read THESE,
@@ -35,12 +37,19 @@ const (
 		AND r.state IN ('routed', 'answered', 'relayed'))`
 )
 
+// revokedPlugin: the message's plugin has been revoked. Revoking a plugin
+// stops everything it sent from reaching the chief (Submit refuses new
+// messages, QueuedForOwner skips queued ones, Deliver refuses to hand one
+// over), so a retry must not be the one door that still opens.
+const revokedPlugin = `EXISTS (SELECT 1 FROM plugins p WHERE p.id = m.plugin_id AND p.revoked_at IS NOT NULL)`
+
 // chiefActedTask: a task event (task_id set) the chief already acted on
 // (chiefActedOn, chief_dispatch.go): a retry would forward or ask twice.
 const chiefActedTask = `(m.task_id IS NOT NULL AND ` + chiefActedOn + `)`
 
 // retryableWhere is that predicate over plugin_messages aliased m.
-const retryableWhere = `m.status = 'unconfirmed' AND NOT ` + liveDraft + ` AND NOT ` + liveRoute + ` AND NOT ` + chiefActedTask
+const retryableWhere = `m.status = 'unconfirmed' AND NOT ` + liveDraft + ` AND NOT ` + liveRoute + ` AND NOT ` + chiefActedTask +
+	` AND NOT ` + revokedPlugin
 
 // ErrNotRetryable refuses a retry; the wrapped text says why (409).
 var ErrNotRetryable = errors.New("plugins: not retryable")
@@ -77,9 +86,9 @@ func (s *PGStore) Requeue(ctx context.Context, id int64) (Message, error) {
 	var out Message
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var st string
-		var drafts, routes, acted bool
-		err := tx.QueryRow(ctx, `SELECT m.status, `+liveDraft+`, `+liveRoute+`, `+chiefActedTask+`
-			FROM plugin_messages m WHERE m.id = $1 FOR UPDATE OF m`, id).Scan(&st, &drafts, &routes, &acted)
+		var drafts, routes, acted, revoked bool
+		err := tx.QueryRow(ctx, `SELECT m.status, `+liveDraft+`, `+liveRoute+`, `+chiefActedTask+`, `+revokedPlugin+`
+			FROM plugin_messages m WHERE m.id = $1 FOR UPDATE OF m`, id).Scan(&st, &drafts, &routes, &acted, &revoked)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -87,6 +96,8 @@ func (s *PGStore) Requeue(ctx context.Context, id int64) (Message, error) {
 			return err
 		}
 		switch {
+		case revoked:
+			return fmt.Errorf("%w: its plugin has been revoked", ErrNotRetryable)
 		case Status(st) == StatusQueued:
 			return fmt.Errorf("%w: it is already queued for your chief (a retry is under way)", ErrNotRetryable)
 		case Status(st) == StatusDelivering:
