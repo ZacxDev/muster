@@ -170,6 +170,11 @@ export const agentToken = 'e2e-agent-token-not-a-real-one';
 // runtimes offered) and the fake OpenRouter model list it searches.
 export const chiefRuntimesPort = port + 90;
 export const chiefRuntimesFakePort = port + 91;
+// The Agents list's cards (agent-cards.spec.ts): its own server (the e2eterm
+// binary, mirror plugin on), its connect listener (the asking agent's /mcp
+// door), and one mirrored host with a Claude window and two other windows.
+export const cardsPort = port + 96;
+export const cardsConnectPort = port + 97;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

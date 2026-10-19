@@ -54,7 +54,8 @@
     "tests/uploads.spec.ts": 10.0,
     "tests/mirror-ask.spec.ts": 14.1,
     "tests/attention.spec.ts": 20.0,
-    "chief-runtimes.spec.ts": 12.0
+    "chief-runtimes.spec.ts": 12.0,
+    "tests/agent-cards.spec.ts": 25.0
   },
   "legs": {
     "1": [
@@ -79,7 +80,8 @@
       "tests/plugins.spec.ts",
       "tests/composer-menu.spec.ts",
       "tests/attention.spec.ts",
-      "chief-runtimes.spec.ts"
+      "chief-runtimes.spec.ts",
+      "tests/agent-cards.spec.ts"
     ],
     "2": [
       "tests/provisioning-indicator.spec.ts",
