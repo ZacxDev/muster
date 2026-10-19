@@ -150,6 +150,18 @@ each setting does and which combinations are valid.
 | `MUSTER_AGENT_NETPOL_FROM_NAMESPACE` | none | `claude-code` on Kubernetes | The namespace muster runs in. The agent's NetworkPolicy only admits muster. |
 | `MUSTER_AGENT_NETPOL_FROM_POD_LABELS` | none | `claude-code` on Kubernetes | Comma-separated `key=value` labels on muster's pods. |
 
+The install script receives each `gateway`-kind agent's settings as JSON in
+`MUSTER_CONFIG`. It is the script's job to copy them into the runtime's own
+configuration:
+
+| key | value | the runtime's setting |
+|---|---|---|
+| `workspace` | always: the agent's workspace (`/data/workspace` by default), where muster puts its `AGENTS.md` | the agent workspace (`agents.defaults.workspace`). Without it the runtime uses a directory under its `HOME` and never reads that `AGENTS.md`. |
+| `model` | only when a model is named: `{"primary": …, "fallbacks": […]}` | the default model (`agents.defaults.model`) |
+
+For example, in a `jq` filter that reads `MUSTER_CONFIG` as `$mc`:
+`| if ($mc[0].workspace // null) then .agents.defaults.workspace = $mc[0].workspace else . end`.
+
 ## muster-mirror (host agent)
 
 Each setting is also a flag (`-url`, `-token-file`, …). See

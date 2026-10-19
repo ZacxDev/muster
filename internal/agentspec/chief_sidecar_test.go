@@ -51,6 +51,7 @@ func TestAClaudeCodeChiefRunsTheGatewayRuntimeBesideCcd(t *testing.T) {
 	for name, want := range map[string]string{
 		"HOME": "/home/node", "MUSTER_GATEWAY_PORT": "18791", "MUSTER_RUNTIME_CONFIG": "/muster/runtime/config",
 		// The gateway kind's model config for this row, fallbacks included.
+		// No workspace: the sidecar mounts none.
 		"MUSTER_CONFIG": `{"model":{"fallbacks":["openrouter/vendor-c/model-three","openrouter/vendor-d/model-four"],"primary":"openrouter/vendor-b/model-two"}}`,
 	} {
 		if env[name] != want {

@@ -111,8 +111,18 @@ func buildGatewaySidecar(a agents.Agent, cfg Config) (*provision.Sidecar, error)
 	// MUSTER_CONFIG is what the k8s driver renders Spec.Config as for the
 	// instance's own container; a sidecar has no Config of its own, so the same
 	// variable is set here, from the same value.
-	if len(gw.Config) > 0 {
-		b, err := json.Marshal(gw.Config)
+	//
+	// WITHOUT the workspace key: the sidecar mounts no workspace, so a runtime
+	// told to use one would try to create it under / as an unprivileged user. Its
+	// instructions travel with each turn instead (internal/api's turnInstructions).
+	conf := make(map[string]any, len(gw.Config))
+	for k, v := range gw.Config {
+		if k != ConfigKeyWorkspace {
+			conf[k] = v
+		}
+	}
+	if len(conf) > 0 {
+		b, err := json.Marshal(conf)
 		if err != nil {
 			return nil, fmt.Errorf("agentspec: the gateway runtime's config for %q: %w", a.Name, err)
 		}
