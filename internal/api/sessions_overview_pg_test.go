@@ -146,6 +146,16 @@ func TestTheHintListsOnlyTheLiveSessionOnTheJob(t *testing.T) {
 		len(h.Sessions[0].Titles) != 1 || h.Sessions[0].Titles[0].Title != "Upgrading node-7k: drain and reboot" {
 		t.Fatalf("hint %+v; want exactly %s with its node-7k focus", h, a)
 	}
+	// Ordinary mail and a newsletter share common words with these sessions
+	// ("release", "cache", "notes") and name none of them.
+	for _, body := range []string{
+		"Quick update on our meeting next week: please review the release notes and the cache dashboards before then.",
+		"This week's newsletter: billing export tips, the next release, cache dashboards and release notes. See you next week.",
+	} {
+		if h := g.srv.pluginSessionHints(g.asOwner, g.chief, plugins.Message{ID: 2, Subject: "news", Body: body}); len(h.Sessions) != 0 {
+			t.Errorf("generic mail named %+v: %q", h.Sessions, body)
+		}
+	}
 	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_search", `{"query":"node-7k"}`) {
 		if strings.Contains(text, a) {
 			t.Errorf("%s: the current-focus search found A, so the fixture does not reproduce the miss: %s", surface, text)

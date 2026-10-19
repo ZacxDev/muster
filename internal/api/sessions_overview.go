@@ -65,7 +65,8 @@ const (
 	overviewParallel = 4
 
 	// hintMinTerms is how many distinct words a session's recent focus must
-	// share with a plugin message to be hinted (focus.PGStore.MatchHistory).
+	// share with a plugin message to be hinted; at least one must also be
+	// identifier-like, or nothing is (focus.PGStore.MatchHistory).
 	hintMinTerms = 2
 )
 

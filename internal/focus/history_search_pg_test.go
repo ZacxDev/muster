@@ -152,12 +152,13 @@ func TestOnlyLiveSessionsAreRead(t *testing.T) {
 	}
 }
 
-// TestOneSharedWordIsNotAMatch: a session sharing only "drain" is left out at
-// minTerms 2, and found at 1 (control).
+// TestOneSharedWordIsNotAMatch: a session sharing a single word with the
+// message — even a distinctive one, "7k" — is left out at minTerms 2, and
+// found at 1 (control).
 func TestOneSharedWordIsNotAMatch(t *testing.T) {
 	s, pool := pgStore(t)
 	w := AgentSubject(mustAgent(t, pool, 2, "focus-hs-weak").ID)
-	write(t, s, 2, w, "Fixing the sink drain alert", "", "")
+	write(t, s, 2, w, "Labelling the 7k spare parts", "", "")
 	live := Live{Agents: []int64{w.AgentID()}}
 	since := time.Now().Add(-HistoryWindow)
 	if ms, _ := s.MatchHistory(as(2), replayText, live, since, 2, 5); len(ms) != 0 {
@@ -202,6 +203,41 @@ func TestAHistoryReadNeedsAWindow(t *testing.T) {
 	}
 	if _, err := s.RecentTitles(as(2), Live{}, time.Time{}); err == nil {
 		t.Error("titles with no window")
+	}
+}
+
+// 🔴 TestGenericOverlapNamesNothing: three sessions on ordinary work (a PR
+// review, an invoice export, release planning) and messages made of common
+// words — an ordinary mail, a newsletter, a two-word nudge — share several
+// lexemes with the sessions, yet name none: a session is named only when it
+// shares a DISTINCTIVE term (identifier-like: a digit or a hyphen). The
+// two-word nudge is the case a "term in at most one candidate's history" rule
+// gets wrong: "review" and "update" are in ONE session's history here, so that
+// rule would call them distinctive and name it.
+func TestGenericOverlapNamesNothing(t *testing.T) {
+	s, pool := pgStore(t)
+	p := AgentSubject(mustAgent(t, pool, 2, "focus-hs-pr").ID)
+	i := AgentSubject(mustAgent(t, pool, 2, "focus-hs-inv").ID)
+	r := AgentSubject(mustAgent(t, pool, 2, "focus-hs-rel").ID)
+	write(t, s, 2, p, "Reviewing open pull requests", "Next round of review comments; update the summary.", "")
+	write(t, s, 2, i, "Exporting the March invoices", "Splitting the CSV writer next week.", "")
+	write(t, s, 2, r, "Planning the next release", "Weekly checklist for the release meeting.", "")
+	live := Live{Agents: []int64{p.AgentID(), i.AgentID(), r.AgentID()}}
+	since := time.Now().Add(-HistoryWindow)
+	for name, text := range map[string]string{
+		"ordinary mail": "Quick update on our meeting next week, please review the agenda and send your notes before the release.",
+		"newsletter": "This week's newsletter: product updates, the next release, a review of what is new, " +
+			"and the invoices feature. Thanks for reading, see you next week.",
+		"two-word nudge": "Please review the update.",
+	} {
+		if ms, err := s.MatchHistory(as(2), text, live, since, 2, 5); err != nil || len(ms) != 0 {
+			t.Errorf("%s named %v (%v); generic overlap must name nothing", name, subjectsOf(ms), err)
+		}
+	}
+	// Control: a message naming an identifier one session carries names it.
+	write(t, s, 2, p, "Reviewing pull request 4711", "Next round of review comments.", "")
+	if ms, _ := s.MatchHistory(as(2), "Please review pull request 4711 before Friday.", live, since, 2, 5); fmt.Sprint(subjectsOf(ms)) != fmt.Sprint([]string{p.String()}) {
+		t.Fatalf("control: an identifier match named %v; want [%s]", subjectsOf(ms), p)
 	}
 }
 

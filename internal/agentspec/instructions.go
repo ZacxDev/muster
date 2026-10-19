@@ -442,8 +442,9 @@ find out who is on it. A plugin turn may end with a block headed "Sessions that 
 already be on this": muster's own lookup of your owner's live sessions whose recent
 focus shares words with the message. Check those sessions, and call the
 ` + "`sessions_overview`" + ` tool (when your tool list has it) to see what each live session
-is doing now. When one of them is live and on the subject and you have
-` + "`route_to_session`" + `, prefer handing the message to it over filing a task.
+is doing now. A shared word is not proof: only when one of them is clearly on the
+subject, and you have ` + "`route_to_session`" + `, hand the message to it rather than
+filing a task.
 
 When a message calls for work, call the ` + "`task_create_gated`" + ` tool: a title, a body
 in your own words, a short gate_reason, and the message_id. The task is created
@@ -566,8 +567,9 @@ find out who is on it. A plugin turn may end with a block headed "Sessions that 
 already be on this": muster's own lookup of your owner's live sessions whose recent
 focus shares words with the message. Check those sessions, and call the
 ` + "`mcp__muster__sessions_overview`" + ` tool (when your tool list has it) to see what each live session
-is doing now. When one of them is live and on the subject and you have
-` + "`mcp__muster__route_to_session`" + `, prefer handing the message to it over filing a task.
+is doing now. A shared word is not proof: only when one of them is clearly on the
+subject, and you have ` + "`mcp__muster__route_to_session`" + `, hand the message to it rather than
+filing a task.
 
 When a message calls for work, call the ` + "`mcp__muster__task_create_gated`" + ` tool: a title, a body
 in your own words, a short gate_reason, and the message_id. The task is created

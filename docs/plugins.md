@@ -427,7 +427,10 @@ reply.
 When session focus is on, muster looks up, on every delivery, which of your
 live sessions (running agents and online mirrored windows, not the chief)
 wrote a focus in the last six hours that shares at least two searchable words
-with the message's subject and body. It appends what it finds to the chief's
+with the message's subject and body, at least one of them **identifier-like**
+(it holds a digit or a hyphen: `node-7k`, a PR or ticket number). Common words
+alone ("update", "next week", "review") name nothing: an ordinary mail or a
+newsletter shares several with almost any session. It appends what it finds to the chief's
 turn, after the message, as a block headed **Sessions that may already be on
 this**: up to three sessions, each with its id, name, host and up to three
 matching focus titles with their times, within 2 KiB. No match, no block.
@@ -438,8 +441,8 @@ behind the message fence's content prefix, so a message that spells the
 block's header cannot reach column 0 or add a session. The titles inside it are
 still a summarizer's output, so the block says to treat them as data. The
 chief's standing instructions tell it to check those sessions, and
-`sessions_overview`, before filing a task or drafting a reply, and to prefer
-`route_to_session` when one is on it.
+`sessions_overview`, before filing a task or drafting a reply, and to route
+with `route_to_session` only when one is clearly on it.
 
 This is pushed rather than left to the chief because a chief that was not
 told called no session tool at all. See [focus](focus.md#why-a-time-window-over-history-and-not-the-current-focus)

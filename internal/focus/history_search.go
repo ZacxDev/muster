@@ -98,6 +98,13 @@ func (l Live) nonNil() ([]string, []int64) {
 	return m, a
 }
 
+// distinctiveTermSQL is the predicate over a shared lexeme t that makes it
+// DISTINCTIVE: identifier-like — it holds a digit or a hyphen ("node-7k",
+// "7k", a PR or ticket number, a kebab-case name). Plain words never are.
+// ⚠ A hyphenated common word ("follow-up") counts too; it must still be in
+// both the message and the session's focus.
+const distinctiveTermSQL = `t ~ '[0-9-]'`
+
 // errNoWindow refuses a history read with no window: an unbounded read is not
 // what any caller here means.
 var errNoWindow = errf("a history read needs a since")
@@ -149,13 +156,25 @@ func (s *PGStore) SearchHistory(ctx context.Context, query string, live Live, si
 // MatchHistory is the live sessions whose history written at or after since
 // shares at least minTerms distinct searchable words (english lexemes, stop
 // words dropped) with text — any of them, not all: text is a whole message,
-// not a query — most shared words first, then most recently written, at most
-// limit sessions, each with up to MaxMatchTitles of its titles that share any.
+// not a query — AT LEAST ONE OF THEM DISTINCTIVE (distinctiveTermSQL); most
+// distinctive shared words first, then most shared words, then most recently
+// written; at most limit sessions, each with up to MaxMatchTitles of its titles
+// that share any word.
 //
-// minTerms < 1 is 1. ⚠ A single shared word is a weak signal (two sessions
-// that both mention "cache" are not on one job), which is why a caller asks
-// for more; an identifier like "node-7k" counts as three ("node-7k", "node",
-// "7k") on its own, so naming one is enough.
+// minTerms < 1 is 1. An identifier like "node-7k" counts as three words
+// ("node-7k", "node", "7k"), all distinctive, so naming one is enough.
+//
+// 🔴 GENERIC OVERLAP ALONE NAMES NOTHING. Measured: an ordinary mail ("quick
+// update on our meeting next week, please review…") and a newsletter each
+// shared two or more common words with unrelated sessions' focus — "update",
+// "next", "review" — and named them. A message's sender can also add common
+// words at will. So a match needs a shared identifier-like term, which a mail
+// about some other subject does not carry by accident.
+//
+// ⚠ WHY NOT "A TERM IN AT MOST ONE CANDIDATE'S HISTORY": in a small fleet a
+// common word is often in exactly one session's history ("review" in the one
+// reviewing PRs), so that rule calls it distinctive and names the session for
+// "please review the update" (TestGenericOverlapNamesNothing's nudge case).
 func (s *PGStore) MatchHistory(ctx context.Context, text string, live Live, since time.Time, minTerms, limit int) ([]Match, error) {
 	if len(text) > MaxMatchTextBytes {
 		text = strings.ToValidUTF8(text[:MaxMatchTextBytes], "")
@@ -182,15 +201,17 @@ func (s *PGStore) MatchHistory(ctx context.Context, text string, live Live, sinc
 			WHERE h.created_at >= $2 AND `+liveHistorySQL("$3", "$4")+`),
 		hits AS (SELECT r.subject_kind, r.subject_key, r.title, r.created_at, terms.t
 			FROM rows r JOIN terms ON terms.t = ANY(r.lx)),
-		subj AS (SELECT subject_kind, subject_key, count(DISTINCT t) AS n, max(created_at) AS newest
-			FROM hits GROUP BY subject_kind, subject_key HAVING count(DISTINCT t) >= $5
-			ORDER BY n DESC, newest DESC, subject_kind, subject_key LIMIT $6)
+		subj AS (SELECT subject_kind, subject_key, count(DISTINCT t) AS n,
+				count(DISTINCT t) FILTER (WHERE `+distinctiveTermSQL+`) AS nd, max(created_at) AS newest
+			FROM hits GROUP BY subject_kind, subject_key
+			HAVING count(DISTINCT t) >= $5 AND count(DISTINCT t) FILTER (WHERE `+distinctiveTermSQL+`) >= 1
+			ORDER BY nd DESC, n DESC, newest DESC, subject_kind, subject_key LIMIT $6)
 		SELECT s.subject_kind, s.subject_key, s.n, x.title, x.at
 		FROM subj s JOIN LATERAL (
 			SELECT title, max(created_at) AS at FROM hits
 			WHERE hits.subject_kind = s.subject_kind AND hits.subject_key = s.subject_key
 			GROUP BY title ORDER BY at DESC LIMIT $7) x ON true
-		ORDER BY s.n DESC, s.newest DESC, s.subject_kind, s.subject_key, x.at DESC`,
+		ORDER BY s.nd DESC, s.n DESC, s.newest DESC, s.subject_kind, s.subject_key, x.at DESC`,
 		text, since, m, a, minTerms, limit, MaxMatchTitles)
 	if err != nil {
 		return nil, errf("match history: %w", err)
