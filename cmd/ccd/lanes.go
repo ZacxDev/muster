@@ -52,9 +52,10 @@ import (
 // 🔴 MEMORY IS WHY THERE IS A CAP. A Claude Code CLI is a node process: measured
 // at about 250MiB (median) to 550MiB (largest) on workstation CLIs, against the
 // pod's 3Gi limit. At most maxLanes lanes run at once (CCD_MAX_SESSIONS, default
-// 3). A lane needed beyond that stops the least recently used IDLE lane (its
-// conversation is on disk, and its next turn resumes it); when every lane is
-// mid-turn the new one is refused (503 capacity), never queued.
+// 3). A lane needed beyond that stops the least recently used IDLE lane that no
+// turn holds (lane.reserved): its conversation is on disk, and its next turn
+// resumes it. When no lane is free to stop the new one is refused (503
+// capacity), never queued.
 //
 // ⚠ WHAT A LANE DOES NOT HAVE, STATED: the "awaiting approval" badge reports
 // the primary's permission prompts only (blocked.go), and /healthz's ok is the
@@ -213,6 +214,19 @@ type lane struct {
 	cancel         context.CancelFunc
 	done           chan struct{} // closed when the supervisor's run returns
 	lastUsed       time.Time
+	// reserved counts the turns holding this lane, from acquire until their
+	// runTurn has returned (lanes.release). Guarded by lanes.mu.
+	//
+	// 🔴 A RESERVED LANE IS NEVER EVICTED, HOWEVER IDLE ITS SERVER LOOKS. From
+	// acquire until runTurn takes the lane's turn slot — waitStarted included,
+	// up to laneStartTimeout for a lane that is starting — the server's own
+	// idle() is true: no slot held, nothing pending, nothing submitted. Counting
+	// that as idle let two sessions at the cap evict each other's starting CLI
+	// in turn, and let a paste land just before the eviction's kill-session (a
+	// 504 and an unanswered prompt). The count is read and written under
+	// lanes.mu, the lock eviction chooses under, so a turn that has its lane
+	// cannot lose it.
+	reserved int
 }
 
 // lanes is the set of running lanes.
@@ -245,8 +259,10 @@ func (l *lanes) get(id string) *lane {
 	return l.set[id]
 }
 
-// acquire returns key's lane, starting it (and stopping an idle one when at the
-// cap) if it is not running. model must match a running lane's.
+// acquire returns key's lane, starting it (and stopping an idle, unreserved one
+// when at the cap) if it is not running. model must match a running lane's. The
+// lane comes back RESERVED (lane.reserved): the caller releases it once its turn
+// is over.
 func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure) {
 	if l.primaryStarted != nil && !l.primaryStarted() {
 		return nil, &failure{Status: http.StatusServiceUnavailable, Type: failNotReady,
@@ -255,17 +271,19 @@ func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure
 	id := laneID(key)
 	l.mu.Lock()
 	if ln, ok := l.set[id]; ok {
-		l.mu.Unlock()
 		if ln.model != model {
+			l.mu.Unlock()
 			return nil, &failure{Status: http.StatusBadRequest, Type: failBadRequest,
 				Message: fmt.Sprintf("session %q runs on model %q, not %q: a session's model is fixed", key, ln.model, model)}
 		}
+		ln.reserved++
+		l.mu.Unlock()
 		return ln, nil
 	}
 	var evict *lane
 	if len(l.set) >= l.max {
 		for _, ln := range l.set {
-			if ln.srv.idle() && (evict == nil || ln.lastUsed.Before(evict.lastUsed)) {
+			if ln.reserved == 0 && ln.srv.idle() && (evict == nil || ln.lastUsed.Before(evict.lastUsed)) {
 				evict = ln
 			}
 		}
@@ -280,6 +298,7 @@ func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure
 	// Detached from the turn's request: the CLI outlives the turn that started it.
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	ln.cancel = cancel
+	ln.reserved = 1
 	l.set[id] = ln
 	l.mu.Unlock()
 	if evict != nil {
@@ -288,6 +307,15 @@ func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure
 	}
 	go ln.run(runCtx, l)
 	return ln, nil
+}
+
+// release ends one reservation acquire took.
+func (l *lanes) release(ln *lane) {
+	l.mu.Lock()
+	if ln.reserved > 0 {
+		ln.reserved--
+	}
+	l.mu.Unlock()
 }
 
 func (l *lanes) newLane(id, key, model string) *lane {

@@ -595,6 +595,8 @@ func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
 			writeFailure(w, f)
 			return
 		}
+		// Held until runTurn returns: no eviction may take the lane under its turn.
+		defer s.lanes.release(ln)
 		target = ln.srv
 	}
 	res, f := target.runTurn(r.Context(), prompt)
@@ -933,7 +935,9 @@ func credentialVisible(configDir string) func() bool {
 }
 
 // laneFor resolves an explicit session's lane, starting its CLI when it is not
-// running, and waits for that CLI to reach its prompt.
+// running, and waits for that CLI to reach its prompt. The lane it returns is
+// reserved (lanes.acquire) and the caller releases it; on failure nothing is
+// held.
 func (s *server) laneFor(ctx context.Context, key, model string) (*lane, *failure) {
 	if s.lanes == nil {
 		return nil, paneNotReady("this ccd runs one Claude Code session only (it does not supervise the CLI, " +
@@ -949,6 +953,7 @@ func (s *server) laneFor(ctx context.Context, key, model string) (*lane, *failur
 	}
 	s.lanes.touch(ln)
 	if f := ln.waitStarted(ctx, s.lanes.startTimeout); f != nil {
+		s.lanes.release(ln)
 		return nil, f
 	}
 	return ln, nil
