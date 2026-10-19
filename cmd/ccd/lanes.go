@@ -218,8 +218,8 @@ func newestPrimaryTranscript(configDir, workspace string) string {
 
 // transcriptHeadCap bounds how much of a transcript interactiveTranscript reads.
 // The first entry carrying an entrypoint came within the first 6 lines and 5.7
-// KiB of every workstation transcript measured that has one (811 of 813, read
-// 2026-10-19); the rest of a transcript can be many MiB.
+// KiB of every workstation transcript measured that has one (811 of 813); the
+// rest of a transcript can be many MiB.
 const transcriptHeadCap = 64 << 10
 
 // interactiveTranscript reports whether the transcript at path was written by an
