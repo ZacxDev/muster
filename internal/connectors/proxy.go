@@ -165,6 +165,10 @@ func (p Policy) Transport() *http.Transport {
 type Caller struct {
 	AgentID   int64
 	AgentName string
+	// Repo is the agent's own repository (owner/name), "" when it was dispatched
+	// without one. A virtual connector that scopes its credential to the agent's
+	// repository (the GitHub App) reads it; a stored connector ignores it.
+	Repo string
 }
 
 // Proxy forwards an agent's request to a connector's upstream with the
@@ -375,6 +379,31 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 		return
 	}
 
+	// A virtual connector (the GitHub App) mints its credential for THIS caller
+	// and THIS target. The host allowlist is checked FIRST, so a request for a
+	// host the connector does not serve mints nothing.
+	if v, ok := VirtualOf(p.Store, connector); ok {
+		c := v.Describe()
+		if !c.AllowsHost(host) {
+			refuse(http.StatusForbidden, RefusalBody{Error: "host " + host + " is not in connector " + connector +
+				"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")
+			return
+		}
+		secret, err := v.Credential(ctx, caller, strings.ToLower(host), rest)
+		switch {
+		case errors.Is(err, ErrTargetRefused):
+			refuse(http.StatusForbidden, RefusalBody{Error: err.Error()}, "target refused")
+			return
+		case err != nil:
+			p.logf("connectors: virtual connector %q for agent %q: %v", connector, caller.AgentName, err)
+			refuse(http.StatusBadGateway, RefusalBody{Error: "connector " + connector + " could not obtain a credential: " +
+				err.Error()}, "credential unavailable")
+			return
+		}
+		p.forward(w, r, caller, acc, c, secret, connector, host, rest, &status, &detail, refuse)
+		return
+	}
+
 	c, secret, err := p.Store.Credential(ctx, connector)
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -396,6 +425,15 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 			"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")
 		return
 	}
+	p.forward(w, r, caller, acc, c, secret, connector, host, rest, &status, &detail, refuse)
+}
+
+// forward sends the request upstream with the credential injected and relays the
+// answer. Serve has already decided access, the connector and the secret; status
+// and detail are Serve's audit fields, written here as the exchange resolves.
+func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, acc Access, c Connector, secret,
+	connector, host, rest string, status *int, detail *string, refuse func(int, RefusalBody, string)) {
+	ctx := r.Context()
 	host = strings.ToLower(host)
 
 	scheme := "https"
@@ -449,7 +487,7 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 		},
 		Transport: p.upstreamTransport(),
 		ModifyResponse: func(resp *http.Response) error {
-			status = resp.StatusCode
+			*status = resp.StatusCode
 			if resp.StatusCode == http.StatusSwitchingProtocols {
 				return errSwitchedProtocols
 			}
@@ -534,7 +572,7 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 	}
 	rp.ServeHTTP(&trailerlessWriter{w: w}, r.WithContext(outCtx))
 	if endedAtShutdown.Load() {
-		detail = "event stream ended at server shutdown"
+		*detail = "event stream ended at server shutdown"
 	}
 
 	bg := context.WithoutCancel(ctx)

@@ -187,7 +187,7 @@ func (s *Server) authenticateCallingAgent(w http.ResponseWriter, r *http.Request
 }
 
 func callerOf(a agents.Agent) connectors.Caller {
-	return connectors.Caller{AgentID: a.ID, AgentName: a.Name}
+	return connectors.Caller{AgentID: a.ID, AgentName: a.Name, Repo: a.Repo}
 }
 
 // --- the proxy ------------------------------------------------------------------------
@@ -503,8 +503,15 @@ func (s *Server) connectorRequestViews(ctx context.Context) ([]ui.ConnectorReque
 	}
 	out := make([]ui.ConnectorRequestView, 0, len(pending))
 	for _, g := range pending {
-		out = append(out, ui.ConnectorRequestView{ID: g.ID, AgentName: g.AgentName, Connector: g.Connector,
-			Reason: g.Reason, RequestedAt: g.RequestedAt, Exists: exists[g.Connector]})
+		v := ui.ConnectorRequestView{ID: g.ID, AgentName: g.AgentName, Connector: g.Connector,
+			Reason: g.Reason, RequestedAt: g.RequestedAt, Exists: exists[g.Connector]}
+		// A virtual connector (the GitHub App) says on the card when it cannot
+		// serve this agent — its credentials refused, say — so the owner knows an
+		// approval alone will not make the clone succeed.
+		if vc, ok := connectors.VirtualOf(s.ext.Connectors, g.Connector); ok {
+			v.Problem = vc.Problem(g.AgentID)
+		}
+		out = append(out, v)
 	}
 	return out, nil
 }
@@ -530,9 +537,16 @@ func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsCont
 	}
 	c.Connectors = make([]ui.ConnectorView, 0, len(list))
 	for _, k := range list {
-		c.Connectors = append(c.Connectors, ui.ConnectorView{Name: k.Name, Platform: k.Platform, Hosts: k.Hosts,
+		cv := ui.ConnectorView{Name: k.Name, Platform: k.Platform, Hosts: k.Hosts,
 			Scheme: string(k.Scheme), HeaderName: k.HeaderName, Username: k.Username,
-			CreatedAt: k.CreatedAt, RotatedAt: k.RotatedAt, LastUsedAt: k.LastUsedAt, Grants: by[k.Name]})
+			CreatedAt: k.CreatedAt, RotatedAt: k.RotatedAt, LastUsedAt: k.LastUsedAt, Grants: by[k.Name]}
+		if vc, ok := connectors.VirtualOf(s.ext.Connectors, k.Name); ok {
+			cv.Managed = "Provided by the GitHub App this server is configured with: each approved agent's " +
+				"requests carry a 1-hour token limited to its own repository (Contents and Pull requests, " +
+				"read and write). There is no stored secret to rotate or delete."
+			cv.Problem = vc.Problem(0)
+		}
+		c.Connectors = append(c.Connectors, cv)
 	}
 	audit, err := s.ext.Connectors.ListAudit(ctx, 25)
 	if err != nil {

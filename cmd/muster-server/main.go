@@ -65,6 +65,7 @@ import (
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/memorelay"
 	"github.com/ZacxDev/muster/internal/metrics"
@@ -219,6 +220,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	a := &app{cfg: cfg, logger: logger}
 
+	// MUSTER_CHECKOUT_WAIT_TIMEOUT. Written only when set, so a test that builds
+	// an app with the default never writes the package variable a running
+	// deliverer reads.
+	if cfg.CheckoutWaitTimeout > 0 {
+		agents.SetCheckoutWaitTimeout(cfg.CheckoutWaitTimeout)
+	}
+
 	// The permission router client. nil when unconfigured, and every method on a
 	// nil client answers router.ErrNotConfigured rather than a zero value — see
 	// that package's header for why the distinction is load-bearing.
@@ -293,6 +301,30 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 				return nil, fmt.Errorf("connector store: %w", err)
 			}
 			ext.Connectors = cs
+		}
+
+		// The GitHub App, when configured, is muster's GitHub identity: the Repos
+		// tab and every connected-repository check read its installation
+		// repositories (api/github_source.go), and it backs the `github`
+		// connector — presented through the SAME connector store, so the agent's
+		// status route, the request card, the approve route and the proxy all see
+		// one connector (connectors.WithVirtual). validateConnectors refuses an App
+		// without a connector store; buildApp only skips the wrap.
+		if cfg.GitHubAppID != 0 {
+			gapp, err := githubapp.New(githubapp.Config{AppID: cfg.GitHubAppID, PrivateKey: cfg.GitHubAppKey,
+				InstallationID: cfg.GitHubAppInstallationID, Logger: logger})
+			if err != nil {
+				a.Close()
+				return nil, fmt.Errorf("github app: %w", err)
+			}
+			ext.GitHubApp = gapp
+			if ext.Connectors != nil {
+				ext.Connectors = connectors.WithVirtual(ext.Connectors, gapp)
+			}
+			// Backgrounded, like connectStaticGitHub: a boot that blocks on a third
+			// party is a boot that party's outage can stop. Its outcome is logged and
+			// recorded as the App's problem (the request and agent cards show it).
+			go checkGitHubApp(ctx, gapp, logger)
 		}
 
 		if len(cfg.GitHubEncKey) > 0 {
@@ -1147,6 +1179,33 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	a.logSTTBanner(ext)
 	a.logUploadsBanner(ext)
 
+	if ext.GitHubApp != nil {
+		inst := "chosen per repository by its owner's login (" + envGitHubAppInstallation + " unset)"
+		if a.cfg.GitHubAppInstallationID != 0 {
+			inst = fmt.Sprintf("pinned to %d (%s)", a.cfg.GitHubAppInstallationID, envGitHubAppInstallation)
+		}
+		agentsSee := "the `github` connector is backed by it: each approved agent's requests through the proxy carry a " +
+			"1-hour installation token limited to its own repository (contents + pull_requests write)"
+		if ext.Connectors == nil {
+			agentsSee = "NO connector store, so agents cannot use it"
+		}
+		l.Printf("github app: ON — %s=%d (its JWT signed with the key in %s) is muster's GitHub identity (the "+
+			"Repos tab and every connected-repository check list its installation repositories; the OAuth "+
+			"connection below is the deprecated fallback and is not consulted); installation %s; %s",
+			envGitHubAppID, a.cfg.GitHubAppID, envGitHubAppKey, inst, agentsSee)
+	} else {
+		l.Printf("github app: OFF — %s/%s (and %s) are unset, so muster's GitHub identity is the OAuth connection "+
+			"(deprecated) and a `github` connector needs a stored token", envGitHubAppID, envGitHubAppKey,
+			envGitHubAppInstallation)
+	}
+	if a.cfg.CheckoutWaitTimeout > 0 {
+		l.Printf("checkout wait: %s=%s — a claude-code agent's first turn waits that long for its repository "+
+			"checkout (the github approval) before the agent is marked error", envCheckoutWaitTimeout, a.cfg.CheckoutWaitTimeout)
+	} else {
+		l.Printf("checkout wait: the default %s — a claude-code agent's first turn waits that long for its "+
+			"repository checkout (the github approval) before the agent is marked error (%s unset)",
+			agents.DefaultCheckoutWaitTimeout, envCheckoutWaitTimeout)
+	}
 	if ext.GitHub != nil {
 		l.Printf("github connection: ENCRYPTED AT REST (%s set). %s",
 			envGitHubEncKey, githubAuthPosture(a.cfg))
@@ -1532,6 +1591,26 @@ func (c config) serviceWriteRefusal() string { return c.authConfig().ServiceWrit
 // connectStaticGitHub resolves the static token's login and stores it encrypted,
 // so the Repos tab and agent dispatch work WITHOUT an OAuth App.
 //
+// checkGitHubApp lists the App's installations once at boot and logs the
+// outcome. A failure (a 401 from a wrong key or a skewed clock) is also recorded
+// as the App's problem, which the connector request card and the agent cards
+// show, so it is not only in this log.
+func checkGitHubApp(ctx context.Context, app *githubapp.App, logger *log.Logger) {
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	logins, err := app.Check(cctx)
+	if err != nil {
+		logger.Printf("github app: the boot check FAILED: %v", err)
+		return
+	}
+	if len(logins) == 0 {
+		logger.Printf("github app: App %d authenticates but is installed on NO account: install it (with the "+
+			"repositories agents should reach) before approving any agent's github request", app.AppID())
+		return
+	}
+	logger.Printf("github app: App %d authenticates and is installed on %s", app.AppID(), strings.Join(logins, ", "))
+}
+
 // 🔴 A FAILURE HERE IS LOGGED, NOT FATAL. The token may be expired or the
 // network may be down at boot, and neither is a reason to refuse to serve a task
 // board. The Repos tab shows "not connected", which is what is true.
