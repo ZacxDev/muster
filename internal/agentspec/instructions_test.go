@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "32f5b19be15dfa71914f63a810adcf3215136c034ad29c9a7c6ef234e10523e7",
+			want: "3ea5e27a53164fc3fae0cb9cd6751463af6db6af3b874b4fc154be6a8a0213b3",
 			min:  1000,
 		},
 		{
@@ -370,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "d81b1176d0272da125db9558392393d537ade48dbcad0e8d7a9117b6323c2b16",
+			want: "533753d017a163250ec536e3be84c505995019e0d33c848db0b71342137fc9dd",
 			min:  1000,
 		},
 	} {
@@ -685,19 +685,21 @@ func TestThePluginSectionShipsOnlyWhenPluginsAreOn(t *testing.T) {
 
 // TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames pins the RELATIONSHIP
 // between the two plugin sections, not each side: the claude-code one is the
-// gateway one with exactly the two tool names replaced by their MCP spelling.
+// gateway one with exactly its tool names replaced by their MCP spelling.
 // An edit to one section's claims that is not made to the other fails here —
 // the two runtimes would otherwise be told different rules about outside text.
 func TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames(t *testing.T) {
 	derived := strings.NewReplacer(
 		"`task_create_gated`", "`mcp__muster__task_create_gated`",
 		"`reply_draft`", "`mcp__muster__reply_draft`",
+		"`sessions_overview`", "`mcp__muster__sessions_overview`",
+		"`route_to_session`", "`mcp__muster__route_to_session`",
 	).Replace(chiefPluginSection)
 	if derived == chiefPluginSection {
 		t.Fatal("control: the replacer changed nothing, so the comparison below would compare a section to itself")
 	}
 	if derived != chiefPluginSectionClaudeCode {
-		t.Fatalf("the claude-code plugin section is not the gateway's with the two MCP names:\n--- derived\n%s\n--- actual\n%s",
+		t.Fatalf("the claude-code plugin section is not the gateway's with its tool names in MCP spelling:\n--- derived\n%s\n--- actual\n%s",
 			derived, chiefPluginSectionClaudeCode)
 	}
 }

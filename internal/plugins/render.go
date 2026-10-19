@@ -53,9 +53,11 @@ const NoReplySentence = "This message cannot be replied to: do not draft a reply
 
 // RenderMessage is the whole turn delivered to the chief for one plugin message,
 // with a fresh nonce. routing says session routing is on (the chief has
-// route_to_session), which adds RoutingSentence to the preface.
-func RenderMessage(p Plugin, m Message, routing bool) string {
-	return renderMessage(p, m, fence.NewNonce(), routing)
+// route_to_session), which adds RoutingSentence to the preface. hints, when it
+// names any session, appends the session-hint block (renderHints) AFTER the
+// message's fence, under its own nonce.
+func RenderMessage(p Plugin, m Message, routing bool, hints Hints) string {
+	return renderMessage(p, m, fence.NewNonce(), routing) + renderHints(hints, fence.NewNonce(), routing)
 }
 
 func renderMessage(p Plugin, m Message, nonce string, routing bool) string {
