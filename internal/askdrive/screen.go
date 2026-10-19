@@ -466,7 +466,12 @@ func wrapEq(lines []string, want string, exact bool) bool {
 
 // labelMatch reports whether row r's label is want: its first line and as
 // many of its further lines as the CLI wrapped the label over (the rest are
-// its description).
+// its description). The screen cannot say where a wrapped label ends and its
+// description begins, so a label "Red" over a description "Warm" also reads
+// as a label "Red Warm" — accepted: it picks the same row with the same key,
+// and an ask that differs from the registered one only so must also match
+// its question, headers and every other row. Descriptions are not compared
+// (they never were).
 func labelMatch(r Row, want string) bool {
 	lines := append([]string{r.Label}, r.More...)
 	for n := 1; n <= len(lines); n++ {
