@@ -572,11 +572,15 @@ reply.
 
 When session focus is on, muster looks up, on every delivery, which of your
 live sessions (running agents and online mirrored windows, not the chief)
-wrote a focus in the last six hours that shares at least two searchable words
-with the message's subject and body, at least one of them **identifier-like**
-(it holds a digit or a hyphen: `node-7k`, a PR or ticket number). Common words
-alone ("update", "next week", "review") name nothing: an ordinary mail or a
-newsletter shares several with almost any session. It appends what it finds to the chief's
+wrote a focus in the last six hours that shares at least two terms with the
+message's subject and body, at least one of them an **identifier**: a word
+with letters and digits (`node-7k`), a reference (`#137`, `PR 137`, `PR-137` —
+one term however it is spelled; a bare `137` is not one), a version
+(`v1.2.3`), or a hyphenated word with a part that is not a dictionary word
+(`follow-up` and `sign-up` are not identifiers). An identifier counts once,
+not again as the words it is made of, and a message contributes at most its
+first 20. Common words alone ("update", "next week", "review") name nothing: an
+ordinary mail or a newsletter shares several with almost any session. It appends what it finds to the chief's
 turn, after the message, as a block headed **Sessions that may already be on
 this**: up to three sessions, each with its id, name, host and up to three
 matching focus titles with their times, within 2 KiB. No match, no block.
