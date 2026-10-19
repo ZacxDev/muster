@@ -23,7 +23,7 @@ func sidecarSpec(name string) provision.Spec {
 	spec.Security = provision.Security{RunAsUser: 1000, RunAsGroup: 1000, FSGroup: 1000, RunAsNonRoot: true, Restricted: true}
 	spec.Sidecar = &provision.Sidecar{
 		Name:    "gateway",
-		Runtime: provision.Runtime{Image: "registry.example.test/side:1", Command: []string{"sh", "-eu", "/srv/side/install"}, WorkingDir: "/data/side"},
+		Runtime: provision.Runtime{Image: "ghcr.io/example-org/side:1", Command: []string{"sh", "-eu", "/srv/side/install"}, WorkingDir: "/data/side"},
 		Env:     []provision.EnvVar{{Name: "SIDE_PORT", Value: "18791"}},
 		Secrets: []provision.EnvVar{{Name: "SIDE_KEY", Value: "side-secret-value"}},
 		Files: []provision.File{
@@ -117,7 +117,7 @@ func TestASidecarRunsBesideTheInstanceWithOnlyItsOwnSecretsAndFiles(t *testing.T
 		if side.SecurityContext == nil || side.SecurityContext.AllowPrivilegeEscalation == nil || *side.SecurityContext.AllowPrivilegeEscalation {
 			t.Errorf("the sidecar's security context %+v is not the instance's restricted one", side.SecurityContext)
 		}
-		if side.Resources.Limits.Memory().String() != "1Gi" || side.Image != "registry.example.test/side:1" ||
+		if side.Resources.Limits.Memory().String() != "1Gi" || side.Image != "ghcr.io/example-org/side:1" ||
 			strings.Join(side.Command, " ") != "sh -eu /srv/side/install" || side.WorkingDir != "/data/side" {
 			t.Errorf("the sidecar container %+v is not the spec's", side)
 		}

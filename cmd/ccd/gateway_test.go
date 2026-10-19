@@ -203,7 +203,7 @@ func TestTheGatewayUpstreamIsLoopbackOnly(t *testing.T) {
 			t.Errorf("%s: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"http://10.0.0.5:18791", "http://gateway.example.test:18791", "https://127.0.0.1:18791",
+	for _, bad := range []string{"http://198.51.100.7:18791", "http://gateway.example.test:18791", "https://127.0.0.1:18791",
 		"127.0.0.1:18791", "http://127.0.0.1:18791/v1", ""} {
 		if _, err := newGatewayProxy(bad); err == nil {
 			t.Errorf("%q was accepted", bad)
