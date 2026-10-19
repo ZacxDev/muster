@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -55,6 +57,11 @@ type WindowInfo struct {
 	Command string
 	// Claude is the Claude Code session in the active pane; nil for none.
 	Claude *ClaudePane
+	// Cwd is the working directory of that Claude Code process (its
+	// /proc/<pid>/cwd link, " (deleted)" and all), "" for a window with no
+	// Claude pane or one it could not be read for: what the window's repo name
+	// is found from (repo.go).
+	Cwd string
 	// Others are the Claude Code sessions in the window's OTHER panes (a
 	// split), by pane: what lets a session in a non-active pane be resolved
 	// from its pane (MCPProxy) and recognised by muster (mirror.Window's
@@ -134,6 +141,13 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	}
 	windows := parseWindows(out.String())
 	attachClaude(windows, t.Claude.LocatePanes)
+	// Each Claude window's working directory: one readlink of its Claude
+	// process's cwd — a syscall, no process — and none for any other window.
+	for i := range windows {
+		if c := windows[i].Claude; c != nil && c.PID > 0 {
+			windows[i].Cwd, _ = os.Readlink(filepath.Join(t.Claude.proc(), strconv.Itoa(c.PID), "cwd"))
+		}
+	}
 	return windows, nil
 }
 
