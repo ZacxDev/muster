@@ -57,10 +57,10 @@ type WindowInfo struct {
 	Command string
 	// Claude is the Claude Code session in the active pane; nil for none.
 	Claude *ClaudePane
-	// Cwd is the working directory of that Claude Code process (its
-	// /proc/<pid>/cwd link, " (deleted)" and all), "" for a window with no
-	// Claude pane or one it could not be read for: what the window's repo name
-	// is found from (repo.go).
+	// Cwd is the working directory of the window's active pane (its
+	// /proc/<pid>/cwd link, " (deleted)" and all): of its Claude Code process
+	// when it runs one, else of the pane's root process (the shell), "" when it
+	// could not be read. What the window's repo name is found from (repo.go).
 	Cwd string
 	// Others are the Claude Code sessions in the window's OTHER panes (a
 	// split), by pane: what lets a session in a non-active pane be resolved
@@ -141,14 +141,26 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	}
 	windows := parseWindows(out.String())
 	attachClaude(windows, t.Claude.LocatePanes)
-	// Each Claude window's working directory: one readlink of its Claude
-	// process's cwd — a syscall, no process — and none for any other window.
+	// Each window's working directory: one readlink per window — a syscall, no
+	// process (windowCwdPID says whose).
 	for i := range windows {
-		if c := windows[i].Claude; c != nil && c.PID > 0 {
-			windows[i].Cwd, _ = os.Readlink(filepath.Join(t.Claude.proc(), strconv.Itoa(c.PID), "cwd"))
+		if pid := windowCwdPID(windows[i]); pid > 0 {
+			windows[i].Cwd, _ = os.Readlink(filepath.Join(t.Claude.proc(), strconv.Itoa(pid), "cwd"))
 		}
 	}
 	return windows, nil
+}
+
+// windowCwdPID is the process whose working directory is w's: its Claude Code
+// process when the active pane runs one (where that session works, even if it
+// was started elsewhere than the shell now sits), else the pane's root
+// process — the shell, whose cwd is the directory a plain shell window is in.
+// 0 for none.
+func windowCwdPID(w WindowInfo) int {
+	if w.Claude != nil && w.Claude.PID > 0 {
+		return w.Claude.PID
+	}
+	return w.PanePID
 }
 
 // attachClaude sets each window's Claude (its active pane's session) and

@@ -17,8 +17,8 @@ import { serverBinary, startServer, Running } from '../lib/server';
 //   - REPO CHIP: the window's Claude Code works in a SUBDIRECTORY of a git
 //     repository; its host names the repository (the git top level's name) and
 //     the card shows it — and typing the repo's name in the filter finds it.
-//   - CLAUDE ONLY: the host's two other windows (a shell, an editor) draw no
-//     card; the host's tab says "2 other windows".
+//   - EVERY WINDOW HAS ONE: a plain shell window (no Claude Code at all) in
+//     another repository shows that repository's chip too, and is found by it.
 //
 // A password-mode server: the operator (user 1) owns the agent and the host.
 
@@ -36,6 +36,9 @@ const tr = path.join(dir, sid + '.jsonl');
 // the session, the window or the agent.
 const repoName = 'quokkafixture';
 const repoDir = path.join(dir, 'src', repoName);
+// The shell window's repository, at its root.
+const shellRepo = 'wombatfixture';
+const shellRepoDir = path.join(dir, 'src', shellRepo);
 let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
@@ -68,6 +71,7 @@ test.beforeAll(async () => {
   // The repository, and the subdirectory the window's Claude Code runs in.
   fs.mkdirSync(path.join(repoDir, '.git'), { recursive: true });
   fs.mkdirSync(path.join(repoDir, 'deploy', 'scripts'), { recursive: true });
+  fs.mkdirSync(path.join(shellRepoDir, '.git'), { recursive: true });
   fs.writeFileSync(tr, JSON.stringify({ type: 'user', message: { role: 'user', content: 'rolling the fleet' } }) + '\n');
   // Claude Code idle at first; the first test puts it waiting while the list
   // is open.
@@ -78,7 +82,7 @@ test.beforeAll(async () => {
     windows,
     [
       `fleet|@5|5|1|claude|${now - 60}|${tr}||${path.join(repoDir, 'deploy', 'scripts')}`,
-      `fleet|@6|6|0|zsh|${now - 120}|`,
+      `fleet|@6|6|0|zsh|${now - 120}|||${shellRepoDir}`,
       `notes|@7|0|1|vim|${now - 180}|`,
     ].join('\n') + '\n',
   );
@@ -190,18 +194,19 @@ test('typing the repo name in the filter finds the mirrored card, which shows it
   await expect(page.locator('#agents-count')).toHaveText(/^1 of \d+$/);
 });
 
-test('a host tab says how many of its windows have no card', async ({ page }) => {
+test('a plain shell window shows its repo as a chip too, and the filter finds it by it', async ({ page }) => {
   test.setTimeout(60_000);
   await signIn(page);
   await page.goto(origin + '/agents');
-  await expect(mirrorCard(page), mirrorLog).toBeVisible({ timeout: 30_000 });
-  // Claude only: the shell and the editor are not cards.
-  await expect(page.locator('#agents-list > article[data-mirror-card]').filter({ hasText: 'fleet:6' })).toHaveCount(0);
-  await expect(page.locator('#agents-list > article[data-mirror-card]').filter({ hasText: 'notes:0' })).toHaveCount(0);
-  const tab = page.locator(`#agents-hosts [role="tab"][data-host="${host}"]`);
-  await expect(tab.locator('[data-tab-other]')).toHaveText('2 other windows');
-  await expect(tab.locator('[data-tab-other]')).toBeVisible();
-  // Its count of cards is the one Claude window; All carries no note.
-  await expect(tab.locator('[data-tab-count]')).toHaveText('1');
-  await expect(page.locator('#agents-host-all [data-tab-other]')).toBeHidden();
+  const shell = page.locator('#agents-list > article[data-mirror-card]').filter({ hasText: 'fleet:6' });
+  // Every window keeps its card, a shell's included.
+  await expect(shell, mirrorLog).toHaveCount(1, { timeout: 30_000 });
+  await expect(shell.locator('[data-mirror-kind]')).toContainText('shell');
+  await expect(shell.locator('[data-mirror-repo]')).toHaveText(new RegExp(`repo\\s*${shellRepo}`), { timeout: 30_000 });
+  // The editor's pane has no working directory the host could read: no chip.
+  await expect(page.locator('#agents-list > article[data-mirror-card]').filter({ hasText: 'notes:0' }).locator('[data-mirror-repo]')).toHaveCount(0);
+  await page.locator('#agents-search').fill(shellRepo.slice(0, 6));
+  await expect(shell).toBeVisible();
+  await expect(mirrorCard(page)).toBeHidden();
+  await expect(page.locator('#agents-count')).toHaveText(/^1 of \d+$/);
 });

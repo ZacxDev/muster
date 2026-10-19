@@ -76,7 +76,7 @@ func TestTheStripIsAboveTheListAndOutsideIt(t *testing.T) {
 func listPartial(t *testing.T, list []AgentCardView, mirrors []MirrorCardView, recent []RecentRef) string {
 	t.Helper()
 	var b strings.Builder
-	if err := RenderAgentsList(&b, list, mirrors, nil, recent); err != nil {
+	if err := RenderAgentsList(&b, list, mirrors, recent); err != nil {
 		t.Fatal(err)
 	}
 	return b.String()

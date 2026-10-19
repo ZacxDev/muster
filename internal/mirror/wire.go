@@ -353,8 +353,8 @@ type Msg struct {
 	// and every request to a per-session host — is the session's ACTIVE window.
 	Window string `json:"window,omitempty"`
 
-	// Repos (repos) is, per window id, the short name of the repository its
-	// Claude Code session works in — the WHOLE map each time (repos.go).
+	// Repos (repos) is, per window id, the short name of the repository the
+	// window works in — the WHOLE map each time (repos.go).
 	Repos map[string]string `json:"repos,omitempty"`
 }
 

@@ -96,53 +96,18 @@ func (s *Server) handleMirrorConnect(w http.ResponseWriter, r *http.Request) {
 // pin whose window is not listed matches nothing here and draws nothing — it
 // stays dormant until the window is listed again.
 func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focusIndex) []ui.MirrorCardView {
-	cards, _ := s.mirrorList(ctx, pinned, focused)
-	return cards
-}
-
-// mirrorList is mirrorCards and, per host, how many of its windows have NO
-// card (ui.HostOtherWindows) — from ONE read of the hosts, so the count is the
-// host's entries minus exactly the cards drawn for it.
-//
-// 🔴 CLAUDE ONLY (an operator decision): an entry whose pane its host reports
-// runs no Claude Code (a plain shell, an editor, opencode) gets no card. It is still a window of
-// the host — reachable by its URL, counted in its host tab's "N other windows"
-// — so nothing looks silently missing. mirrorCardShown is the one rule.
-func (s *Server) mirrorList(ctx context.Context, pinned pins.Set, focused focusIndex) ([]ui.MirrorCardView, []ui.HostOtherWindows) {
 	if s.ext.Mirror == nil {
-		return nil, nil
-	}
-	hosts := s.ext.Mirror.Hosts(ctx)
-	reports := map[string]bool{}
-	for _, h := range hosts {
-		reports[h.Host] = h.ClaudeReport
+		return nil
 	}
 	var out []ui.MirrorCardView
-	cards := map[string]int{}
-	for _, m := range mirror.Ordered(hosts) {
-		if !mirrorCardShown(m, reports[m.Host]) {
-			continue
-		}
-		cards[m.Host]++
+	for _, m := range mirror.Ordered(s.ext.Mirror.Hosts(ctx)) {
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
 			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude,
 			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.ClaudeSession), Repo: m.Repo,
 			Pinned: pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window})})
 	}
-	var others []ui.HostOtherWindows
-	for _, h := range hosts {
-		if n := len(h.Entries()) - cards[h.Host]; n > 0 {
-			others = append(others, ui.HostOtherWindows{Host: h.Host, N: n})
-		}
-	}
-	return out, others
+	return out
 }
-
-// mirrorCardShown is whether a mirrored entry is a card on the Agents list:
-// its host reports Claude Code in its pane — or its host does not say of every
-// window (HostView.ClaudeReport false: a tunnel-v1 or a per-session
-// muster-mirror), whose entries are all drawn, as they always were.
-func mirrorCardShown(e mirror.SessionView, claudeReport bool) bool { return e.Claude || !claudeReport }
 
 // mirrorTitle is what an entry with no label is called, for the ui views'
 // Title: "<session>:<window index>" for a window, "" (the session name) for a

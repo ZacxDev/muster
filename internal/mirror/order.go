@@ -48,8 +48,8 @@ type SessionView struct {
 	// by Ordered (qualify) and only there; a SessionView from HostView.Entries
 	// or Find alone has none — Qualified gives one the list's.
 	Qualifier string
-	// Repo is the short name of the repository the entry's Claude Code session
-	// works in (HostView.Repos, repos.go), "" when its host did not say.
+	// Repo is the short name of the repository the entry works in
+	// (HostView.Repos, repos.go), "" when its host did not say.
 	Repo string
 }
 

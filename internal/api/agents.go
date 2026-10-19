@@ -192,14 +192,14 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 // with live pods) plus the FAB + dispatch modal.
 func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	cards, mirrors, others, err := s.agentsListCards(ctx)
+	cards, mirrors, err := s.agentsListCards(ctx)
 	if err != nil {
 		s.logger.Printf("agents: list: %v", err)
 		http.Error(w, "could not load agents", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentsList(w, cards, mirrors, others, s.recentRefs(ctx)); err != nil {
+	if err := ui.RenderAgentsList(w, cards, mirrors, s.recentRefs(ctx)); err != nil {
 		s.logger.Printf("agents: render: %v", err)
 	}
 }
@@ -209,12 +209,11 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 // The list partial renders them, and the shell resolves the "Recently viewed"
 // strip against them (handleIndex), so both read the one list.
 //
-// others is each host's windows with no card (mirrorList), and every card
-// carries its attention badge (withCardAttention).
-func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.MirrorCardView, []ui.HostOtherWindows, error) {
+// Every card carries its attention badge (withCardAttention).
+func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	instIdx := s.instanceIndex(ctx)
@@ -240,9 +239,9 @@ func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.
 	}
 	// The viewer's mirrored sessions (internal/mirror), after the agents: from
 	// the plugin's in-memory hub, scoped to this request's principal.
-	mirrors, others := s.mirrorList(ctx, pinned, focused)
+	mirrors := s.mirrorCards(ctx, pinned, focused)
 	s.withCardAttention(ctx, cards, mirrors)
-	return cards, mirrors, others, nil
+	return cards, mirrors, nil
 }
 
 // handleAgentNewModal serves the /ui/agents/new partial: the dispatch form. It

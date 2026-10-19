@@ -61,8 +61,8 @@ type MirrorCardView struct {
 	// Focus is what the Claude Code session in the window is working on
 	// (internal/focus, keyed by its Claude session id), nil for none.
 	Focus *FocusView
-	// Repo is the short name of the repository the window's Claude Code works
-	// in (mirror.SessionView.Repo: its git top level's name, else its cwd's),
+	// Repo is the short name of the repository the window works in
+	// (mirror.SessionView.Repo: its git top level's name, else its cwd's),
 	// "" when the host did not say (an older muster-mirror). A chip, and found
 	// by the filter (`repo:` and free text). The card's NAME is unchanged.
 	Repo string

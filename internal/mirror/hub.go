@@ -95,15 +95,6 @@ type HostView struct {
 	// Rendered: the host speaks tunnel v2, so its Claude sessions have a
 	// rendered view. False for a v1 host and for an offline one.
 	Rendered bool
-	// ClaudeReport: the host registers PER WINDOW over tunnel v2, so it SAYS of
-	// every window whether its pane runs Claude Code (Window.Claude) — and a
-	// window it does not mark is not one. Unlike Rendered it is KEPT while the
-	// host is offline (its last list keeps its Claude marks). False for a v1
-	// host, which says nothing either way, and for a PER-SESSION host (a
-	// muster-mirror from before per-window registration), which describes each
-	// session by its active window only: the Agents list draws a card for each
-	// of such a host's entries, as it always did.
-	ClaudeReport bool
 	// Online: connected now. False is a host that disconnected within
 	// offlineRetention; Sessions is then its last list.
 	Online bool
@@ -212,9 +203,7 @@ type offlineHost struct {
 	activity    map[string]int64
 	repos       map[string]string
 	interactive bool
-	// claudeReport is HostView.ClaudeReport as the host connected.
-	claudeReport bool
-	since        time.Time
+	since       time.Time
 }
 
 // NewHub builds an empty hub.
@@ -371,7 +360,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
-			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Rendered: hc.version >= 2, ClaudeReport: hc.claudeReport(), Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
+			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
 			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer})
 		hc.mu.Unlock()
 	}
@@ -383,7 +372,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		}
 		if k.owner == owner {
 			out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), o.sessions...), Windows: slices.Clone(o.windows),
-				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Repos: maps.Clone(o.repos), Interactive: o.interactive, ClaudeReport: o.claudeReport,
+				Claude: append([]string(nil), o.claude...), Labels: maps.Clone(o.labels), Activity: maps.Clone(o.activity), Repos: maps.Clone(o.repos), Interactive: o.interactive,
 				OfflineSince: o.since})
 		}
 	}
@@ -823,7 +812,7 @@ func (h *Hub) drop(hc *hostConn) {
 				}
 			}
 			hc.mu.Unlock()
-			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), windows: windows, claude: claude, labels: labels, activity: activity, repos: repos, interactive: hc.interactive, claudeReport: hc.version >= 2 && windows != nil, since: h.now()}
+			h.offline[hc.key] = offlineHost{sessions: hc.sessionsCopy(), windows: windows, claude: claude, labels: labels, activity: activity, repos: repos, interactive: hc.interactive, since: h.now()}
 		}
 	}
 	h.mu.Unlock()
@@ -862,9 +851,6 @@ func (h *Hub) drop(hc *hostConn) {
 		h.changed(hc.key.owner)
 	}
 }
-
-// claudeReport is HostView.ClaudeReport for a connected host; hc.mu held.
-func (hc *hostConn) claudeReport() bool { return hc.version >= 2 && hc.windows != nil }
 
 func (hc *hostConn) sessionsCopy() []string {
 	hc.mu.Lock()

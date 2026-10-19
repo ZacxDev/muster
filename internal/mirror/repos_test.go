@@ -101,28 +101,11 @@ func TestAReposMessageNamesEachWindowsEntry(t *testing.T) {
 	if n := nudges.Load(); n != settled {
 		t.Fatalf("the same names again nudged %d times, want none", n-settled)
 	}
-	// A per-window v2 host says of every window whether it is Claude Code.
-	if !r.svc.Hub().Hosts(7)[0].ClaudeReport {
-		t.Fatal("a per-window v2 host does not report Claude")
-	}
-	// Offline: the last names are kept with the last list, and so is that.
+	// Offline: the last names are kept with the last list.
 	host.ws.CloseNow()
 	eventually(t, "the host offline", func() bool { hs := r.svc.Hub().Hosts(7); return len(hs) == 1 && !hs[0].Online })
 	if got := repoOf("@7"); got != "fixture-repo" {
 		t.Fatalf("an offline host's entry has repo %q, want its last name", got)
-	}
-	if !r.svc.Hub().Hosts(7)[0].ClaudeReport {
-		t.Fatal("an offline per-window host lost ClaudeReport")
-	}
-	// A per-SESSION v2 host (an older muster-mirror) does not say of every
-	// window: every one of its entries stays a card.
-	tokS, _ := r.store.mint(t, 9, "sessbox")
-	if _, err := r.rawConnect(t, tokS, hello("sessbox", false, "main", "scratch")); err != nil {
-		t.Fatal(err)
-	}
-	eventually(t, "the per-session host", func() bool { return len(r.svc.Hub().Hosts(9)) == 1 })
-	if r.svc.Hub().Hosts(9)[0].ClaudeReport {
-		t.Fatal("a per-session host reports Claude for every window")
 	}
 
 	// A v1 host has no rendered view, and its repos message is dropped.

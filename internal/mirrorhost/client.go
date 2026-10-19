@@ -144,7 +144,7 @@ type Client struct {
 	log *log.Logger
 	// catalog outlives each connection, so its cache does too.
 	catalog *CatalogScanner
-	// repos names each Claude window's repository (repo.go); its per-cwd cache
+	// repos names each window's repository (repo.go); its per-cwd cache
 	// outlives each connection too.
 	repos *repoNamer
 
@@ -476,7 +476,7 @@ type listing struct {
 	activity map[string]int64
 	// windows is nil for a per-session host.
 	windows []mirror.Window
-	// repos is each Claude window's repo name by window id (repo.go): NOT part
+	// repos is each window's repo name by window id (repo.go): NOT part
 	// of the hello or sessions message, and not compared by equal — it travels
 	// on a repos message of its own (sendRepos), the window list having no room
 	// for it (mirror/repos.go).

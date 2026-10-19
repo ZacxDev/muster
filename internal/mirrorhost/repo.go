@@ -18,7 +18,7 @@ import (
 // found the way git itself finds it — the nearest directory, from the cwd up,
 // holding a `.git` (a directory, or a worktree's `.git` file) — with one stat
 // per level, and the answer is CACHED PER CWD (repoNamer) for repoCacheTTL: a
-// host whose Claude windows sit in the same directories costs nothing between
+// host whose windows sit in the same directories costs nothing between
 // expiries, however many windows and ticks. TestTheRepoLookupIsCachedPerCwd
 // counts the stats.
 
@@ -114,12 +114,13 @@ func repoName(cwd string, stat func(string) (os.FileInfo, error)) string {
 	return mirror.CleanRepoName(filepath.Base(start))
 }
 
-// windowRepos is each Claude window's repo name, by window id: what a v2
-// per-window host sends as its repos message.
+// windowRepos is EVERY window's repo name, by window id — a shell's as much as
+// a Claude Code session's: what a v2 per-window host sends as its repos
+// message.
 func (r *repoNamer) windowRepos(windows []WindowInfo) map[string]string {
 	var out map[string]string
 	for _, w := range windows {
-		if w.Claude == nil || w.Cwd == "" {
+		if w.Cwd == "" {
 			continue
 		}
 		if n := r.name(w.Cwd); n != "" {

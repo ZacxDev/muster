@@ -365,9 +365,9 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 			info.Others = []mirrorhost.ClaudePane{{Pane: info.Pane + "-split", PID: 1, Transcript: f[7],
 				Gen: strings.TrimSuffix(filepath.Base(f[7]), ".jsonl")}}
 		}
-		// A 9th field: the working directory of the window's Claude Code
-		// process (WindowInfo.Cwd), what its repo chip is named from.
-		if len(f) == 9 && info.Claude != nil {
+		// A 9th field: the working directory of the window's active pane
+		// (WindowInfo.Cwd), what its repo chip is named from.
+		if len(f) == 9 {
 			info.Cwd = f[8]
 		}
 		out = append(out, info)

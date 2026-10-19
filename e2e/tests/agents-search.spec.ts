@@ -29,23 +29,17 @@ test.use({ storageState: { cookies: [], origins: [] } });
 
 let windowsFile = '';
 const t0 = Math.floor(Date.now() / 1000);
-// Every window is a Claude Code window (only those are cards), each with a
-// transcript of its own; its "command" is carried as its working directory's
-// name — its REPO chip (data-f-repo) — which is what a content-only refresh
-// changes.
-const transcripts: Record<string, string> = {};
-const windowLine = (session: string, id: string, command: string, ago: number) =>
-  `${session}|${id}|1|1|${command}|${t0 - ago}|${transcripts[session]}||/e2e-search-cwd/${command}`;
+const windowLine = (session: string, id: string, command: string, ago: number) => `${session}|${id}|1|1|${command}|${t0 - ago}|`;
 
 test.beforeAll(async () => {
   test.setTimeout(120_000);
   await rig.start();
+  const now = t0;
   windowsFile = rig.transcript('', 'windows');
-  for (const n of ['qbase', 'old-qdock', 'mqtail', 'qzest']) transcripts[n] = rig.transcript('', 'tr-' + n);
   // session|id|index|active|command|activity|claude-transcript — newest first by activity.
   fs.writeFileSync(
     windowsFile,
-    [windowLine('qbase', '@1', 'zsh', 3000), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n',
+    [`qbase|@1|1|1|zsh|${now - 3000}|`, `old-qdock|@2|1|1|zsh|${now - 2000}|`, `mqtail|@3|1|1|zsh|${now - 1000}|`].join('\n') + '\n',
   );
   await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windowsFile });
 });
@@ -247,7 +241,7 @@ test.describe('held behind the pill', () => {
     fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2040), windowLine('mqtail', '@3', 'zsh', 1020)].join('\n') + '\n');
     await expect(pill, 'the change waits behind the pill').toHaveText('1 new ↑', { timeout: 30_000 });
     expect(await domOrder(), 'held: no card moved').toEqual(['mqtail', 'old-qdock', 'qbase']);
-    await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'its content updated in place').toHaveAttribute('data-f-repo', 'vim');
+    await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'its content updated in place').toHaveAttribute('data-f-kind', 'vim');
 
     // An arrival: kept out of view, counted by the pill — and NOT counted by
     // its host's tab while it is held: a tab counts what is drawn.
@@ -345,7 +339,7 @@ for (const leg of [
       await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'old-qdock', 'mqtail']);
       await tabInto('mqtail');
       fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
-      await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'the refresh landed').toHaveAttribute('data-f-repo', 'vim', { timeout: 30_000 });
+      await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'the refresh landed').toHaveAttribute('data-f-kind', 'vim', { timeout: 30_000 });
       await expect(pill).toBeVisible();
       expect(await stillFocused(), 'focus survived the refresh').toMatchObject({ same: true, connected: true });
       // The tap applies the live order and does not take focus.
@@ -395,7 +389,7 @@ test.describe('held behind the pill: off screen', () => {
     expect(await page.evaluate(() => document.getElementById('agents-list')!.getBoundingClientRect().top), 'the list is below the screen').toBeGreaterThan(800);
     await resetCls(page);
     fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
-    await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'the refresh landed').toHaveAttribute('data-f-repo', 'vim', { timeout: 30_000 });
+    await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'the refresh landed').toHaveAttribute('data-f-kind', 'vim', { timeout: 30_000 });
     await expect.poll(() => sessionsOrder(page), { message: 'applied at once' }).toEqual(['qbase', 'mqtail', 'old-qdock']);
     await expect(page.locator('#agents-new-pill')).toBeHidden();
     const c = await readCls(page);
@@ -518,7 +512,7 @@ for (const leg of [
       const open = () => card('mqtail').locator(':popover-open').count();
       expect(await open(), 'control: the popover opened').toBe(1);
       write('zsh', 'vim');
-      await expect(card('mqtail'), 'the content-only refresh landed').toHaveAttribute('data-f-repo', 'vim', { timeout: 30_000 });
+      await expect(card('mqtail'), 'the content-only refresh landed').toHaveAttribute('data-f-kind', 'vim', { timeout: 30_000 });
       expect(await open(), 'the popover survived the refresh').toBe(1);
     });
 
@@ -532,7 +526,7 @@ for (const leg of [
         fs.writeFileSync(windowsFile, [windowLine('qbase', '@1', qbaseCmd, 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', mqtailCmd, 1000)].join('\n') + '\n');
       write('zsh', 'vim');
       await expect(pill).toHaveText('1 new ↑', { timeout: 30_000 });
-      await expect(card('mqtail')).toHaveAttribute('data-f-repo', 'vim', { timeout: 30_000 });
+      await expect(card('mqtail')).toHaveAttribute('data-f-kind', 'vim', { timeout: 30_000 });
 
       // Focus on an element of a held card, and a content-only refresh.
       await card('old-qdock').locator('a[href]').first().focus();
@@ -543,8 +537,8 @@ for (const leg of [
         w.__f?.addEventListener('blur', () => w.__blurs++);
       });
       write('vim', 'zsh');
-      await expect(card('mqtail'), 'the second refresh landed').toHaveAttribute('data-f-repo', 'zsh', { timeout: 30_000 });
-      await expect(card('qbase')).toHaveAttribute('data-f-repo', 'vim');
+      await expect(card('mqtail'), 'the second refresh landed').toHaveAttribute('data-f-kind', 'shell', { timeout: 30_000 });
+      await expect(card('qbase')).toHaveAttribute('data-f-kind', 'vim');
       const f = await page.evaluate(() => {
         const w = window as unknown as { __f?: Element; __blurs: number };
         return { same: document.activeElement === w.__f, blurs: w.__blurs };

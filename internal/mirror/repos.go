@@ -5,10 +5,11 @@ import (
 	"unicode/utf8"
 )
 
-// THE REPO CHIP: which repository a mirrored Claude Code window works in, as a
-// SHORT NAME — the git top-level directory's basename ("datapacket-talos"), or,
-// outside a repository, the working directory's own basename. The card shows it
-// as a chip and the Agents filter finds the card by it (`repo:`).
+// THE REPO CHIP: which repository a mirrored window — a shell or a Claude Code
+// session alike — works in, as a SHORT NAME: the top-level directory's
+// basename ("datapacket-talos"), or, outside a repository, the working
+// directory's own basename. The card shows it as a chip and the Agents filter
+// finds the card by it (`repo:`).
 //
 // 🔴 IT TRAVELS ON A MESSAGE OF ITS OWN (TypeRepos), NOT ON Window. The window
 // list is ONE message, and its worst case already measures 98% of MaxFrame

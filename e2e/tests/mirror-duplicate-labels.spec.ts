@@ -44,33 +44,21 @@ interface Win {
   command: string;
   activity: number;
   claude?: string;
-  // The working directory of its Claude Code: what its repo chip is named by.
-  cwd?: string;
 }
 const now = Math.floor(Date.now() / 1000);
 // Host A: mango:1 runs Claude Code (its card opens the RENDERED view), and an
 // unlabelled kiwi:2 that no other host has.
 const aMango: Win = { session: 'mango', id: '@1', index: 1, active: true, command: 'claude', activity: now - 60, claude: transcript };
-// Only Claude Code windows are cards, so every window here is one, each with a
-// transcript of its own.
-const trOf = (name: string) => {
-  const p = path.join(dir, name + '.jsonl');
-  if (!fs.existsSync(p)) fs.writeFileSync(p, '');
-  return p;
-};
-const aKiwi: Win = { session: 'kiwi', id: '@3', index: 2, active: true, command: 'claude', activity: now - 600, claude: trOf('kiwi-a') };
-// Host B: mango:1 runs Claude Code too.
-const bMango: Win = { session: 'mango', id: '@5', index: 1, active: true, command: 'claude', activity: now - 120, claude: trOf('mango-b') };
+const aKiwi: Win = { session: 'kiwi', id: '@3', index: 2, active: true, command: 'zsh', activity: now - 600 };
+// Host B: mango:1 is a shell (its card opens the TERMINAL).
+const bMango: Win = { session: 'mango', id: '@5', index: 1, active: true, command: 'zsh', activity: now - 120 };
 // Host C: one window.
-const cFig: Win = { session: 'fig', id: '@2', index: 1, active: true, command: 'claude', activity: now - 300, claude: trOf('fig-c') };
+const cFig: Win = { session: 'fig', id: '@2', index: 1, active: true, command: 'zsh', activity: now - 300 };
 
 const windowsFile = (host: string) => path.join(dir, host + '.windows');
 function writeWindows(host: string, ws: Win[]) {
   const f = windowsFile(host);
-  fs.writeFileSync(
-    f + '.tmp',
-    ws.map((w) => [w.session, w.id, w.index, w.active ? 1 : 0, w.command, w.activity, w.claude ?? '', ...(w.cwd ? ['', w.cwd] : [])].join('|')).join('\n') + '\n',
-  );
+  fs.writeFileSync(f + '.tmp', ws.map((w) => [w.session, w.id, w.index, w.active ? 1 : 0, w.command, w.activity, w.claude ?? ''].join('|')).join('\n') + '\n');
   fs.renameSync(f + '.tmp', f); // atomic: the host never reads half a list
 }
 
@@ -207,7 +195,8 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   await expect(visible(hostB)).toHaveCount(0);
   await page.locator('#agents-search-clear').click();
 
-  // Each card opens a page titled EXACTLY as the card: its rendered view.
+  // Each card opens a page titled EXACTLY as the card: A's (Claude Code) the
+  // rendered view, B's (a shell) the terminal.
   const aTitle = await shownTitle(a);
   await a.locator('a').first().click();
   await page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('host') === hostA);
@@ -219,9 +208,9 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   const bTitle = await shownTitle(mangoCard(page, hostB));
   expect(bTitle).toBe(`mango:1 · ${hostB}`);
   await mangoCard(page, hostB).locator('a').first().click();
-  await page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('host') === hostB);
+  await page.waitForURL((u) => u.pathname === '/mirror/terminal' && u.searchParams.get('host') === hostB);
   await expect.poll(() => shownTitle(page.locator('header h1'))).toBe(bTitle);
-  await expect(page).toHaveTitle(`${bTitle} · Mirrored · muster`);
+  await expect(page).toHaveTitle(`Terminal · ${bTitle} · muster`);
   expect(aTitle).not.toBe(bTitle);
 
   // The clash goes away (host B closes its mango window): A's card is plain
@@ -375,16 +364,15 @@ test('a refresh never undoes a chosen tab; a link fills the box', async ({ page 
 });
 
 // A VALUE WITH A DOUBLE QUOTE (AND A BACKSLASH) CAN BE TYPED AND MATCHES. A
-// mirrored window's repo is its working directory's name, so it can hold any
-// printable character but '/'; a quoted exact token reads `\"` and `\\` back,
-// so the value round-trips through ?q=. (This was the KIND — a pane's command —
-// until only Claude Code windows were cards, whose kind is always Claude Code.)
+// mirrored window's kind is its pane's command when muster has no name for it,
+// so it can hold any printable character; a quoted exact token reads `\"` and
+// `\\` back, so the value round-trips through ?q=.
 //
 // 🔴 A REGRESSION TEST (ported from the kind dropdown): at b58779b the quote was
 // dropped (kind=odd\cmd), which no card carries, so the filter hid everything.
-test('a repo holding a double quote and a backslash, typed as a quoted token, matches its card and round-trips ?q=', async ({ page }) => {
+test('a kind holding a double quote and a backslash, typed as a quoted token, matches its card and round-trips ?q=', async ({ page }) => {
   const odd = 'odd\\"cmd'; // odd\"cmd
-  const plum: Win = { session: 'plum', id: '@8', index: 3, active: true, command: 'claude', activity: now - 30, claude: trOf('plum-a'), cwd: path.join(dir, odd) };
+  const plum: Win = { session: 'plum', id: '@8', index: 3, active: true, command: odd, activity: now - 30 };
   writeWindows(hostA, [aMango, aKiwi, plum]);
   await signIn(page);
   await page.goto(origin + '/agents');
@@ -393,11 +381,11 @@ test('a repo holding a double quote and a backslash, typed as a quoted token, ma
   // It may have registered after the first paint, and wait behind the pill.
   await takeNew(page);
   const shown = page.locator('#agents-list > article').filter({ visible: true });
-  const token = 'repo="odd\\\\\\"cmd"'; // repo="odd\\\"cmd"
+  const token = 'kind="odd\\\\\\"cmd"'; // kind="odd\\\"cmd"
   const box = page.locator('#agents-search');
 
   await box.fill(token);
-  await expect(plumCard, 'the typed repo matches its card').toBeVisible();
+  await expect(plumCard, 'the typed kind matches its card').toBeVisible();
   await expect(shown, 'only the plum window').toHaveCount(1);
   expect(new URL(page.url()).searchParams.get('q')).toBe(token);
   // A reload reads the token back into the same filter.

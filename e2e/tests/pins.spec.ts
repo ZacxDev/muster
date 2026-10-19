@@ -28,15 +28,12 @@ let pinnedAgentID = '';
 
 const now = Math.floor(Date.now() / 1000);
 // session|id|index|active|command|activity|claude-transcript
-// Both are Claude Code windows (only those are cards), so each opens its
-// rendered view.
-const windows = [`pinme|@1|1|1|claude|${now - 60}|${path.join(rig.dir, 'pin-one.jsonl')}`, `pinme|@2|2|0|claude|${now - 7200}|${path.join(rig.dir, 'pin-two.jsonl')}`];
-const newerHref = `/mirror/view?host=${host}&session=pinme&window=%401`;
-const olderHref = `/mirror/view?host=${host}&session=pinme&window=%402`;
+const windows = [`pinme|@1|1|1|zsh|${now - 60}|`, `pinme|@2|2|0|zsh|${now - 7200}|`];
+const newerHref = `/mirror/terminal?host=${host}&session=pinme&window=%401`;
+const olderHref = `/mirror/terminal?host=${host}&session=pinme&window=%402`;
 
 test.beforeAll(async () => {
   await rig.start();
-  for (const t of ['pin-one', 'pin-two']) fs.writeFileSync(path.join(rig.dir, t + '.jsonl'), '');
   fs.writeFileSync(windowsFile, windows.join('\n') + '\n');
   await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windowsFile });
 });

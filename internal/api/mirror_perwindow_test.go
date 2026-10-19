@@ -49,31 +49,24 @@ func cardFor(t *testing.T, markup, href string) string {
 	return rest
 }
 
-// TestAPerWindowHostsWindowsAreEachACard: EVERY CLAUDE WINDOW is a card of its
-// own — two of one session are two cards, where one card per session showed
-// one. Each is titled by its own label, opens the rendered view, and its link
-// carries the window's ID. The raw session name stays visible beside a
-// codename. The host's other two windows (a shell, opencode) draw no card
-// (Claude only) and are its "2 other windows".
+// TestAPerWindowHostsWindowsAreEachACard: four windows, four cards — where one
+// card per session showed two. Each is titled by its own label (or
+// "<session>:<index>" with none), says what runs in it, opens the rendered view
+// when that is Claude Code and the terminal otherwise, and its link carries the
+// window's ID. The raw session name stays visible beside a codename.
 func TestAPerWindowHostsWindowsAreEachACard(t *testing.T) {
 	s, ts := viewServer(t, goldHost())
 	_, list := mirrorGet(t, s, ts, "/ui/agents")
-	if n := strings.Count(list, "data-mirror-card"); n != 2 {
-		t.Fatalf("a host with 2 Claude windows (of 4) drew %d mirrored cards", n)
-	}
-	for _, other := range []string{ref("scratch2", "@4").TerminalPath(), ref("solo", "@2").TerminalPath()} {
-		if strings.Contains(list, `href="`+amp(other)+`"`) {
-			t.Errorf("a window running no Claude Code drew a card (%s)", other)
-		}
-	}
-	if !strings.Contains(list, `data-host-others="" data-f-host="ws" data-l-host="ws" data-n="2" data-text="2 other windows"`) {
-		t.Errorf("the host's 2 other windows are not counted:\n%s", list)
+	if n := strings.Count(list, "data-mirror-card"); n != 4 {
+		t.Fatalf("a host with 4 windows drew %d mirrored cards", n)
 	}
 	for _, tc := range []struct {
 		href, title, small, kind string
 	}{
+		{ref("scratch2", "@4").TerminalPath(), "Gold:1", "scratch2", "shell"},
 		{ref("scratch2", "@7").ViewPath(), "Gold:8", "scratch2", "Claude Code"},
 		{ref("scratch2", "@9").ViewPath(), "Gold:11", "scratch2", "Claude Code"},
+		{ref("solo", "@2").TerminalPath(), "solo:3", "", "opencode"},
 	} {
 		card := cardFor(t, list, tc.href)
 		if tc.small != "" {

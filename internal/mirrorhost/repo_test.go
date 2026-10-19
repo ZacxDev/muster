@@ -1,6 +1,7 @@
 package mirrorhost
 
 import (
+	"context"
 	"encoding/json"
 	"maps"
 	"os"
@@ -66,8 +67,8 @@ func TestRepoNameIsTheGitTopLevelElseTheCwdsOwnName(t *testing.T) {
 	}
 }
 
-// TestTheRepoLookupIsCachedPerCwd: ten Claude windows in two working
-// directories, read twice. The first read stats each directory's levels ONCE
+// TestTheRepoLookupIsCachedPerCwd: eleven windows (ten Claude, one shell) in
+// two working directories, read twice. The first read stats each directory's levels ONCE
 // (two cwds, not ten windows); the second stats NOTHING; past repoCacheTTL the
 // cwds are looked up again. No git process exists to count: the lookup is
 // stats alone.
@@ -85,7 +86,8 @@ func TestTheRepoLookupIsCachedPerCwd(t *testing.T) {
 		}
 		windows = append(windows, WindowInfo{Session: "s", ID: "@" + strconv.Itoa(i+1), Claude: &ClaudePane{PID: 1}, Cwd: cwd})
 	}
-	// A window with no Claude pane is never looked up, whatever its cwd.
+	// A plain shell window is named too (every window has a chip), from the
+	// same cache.
 	windows = append(windows, WindowInfo{Session: "s", ID: "@99", Cwd: inRepo})
 
 	first := r.windowRepos(windows)
@@ -95,7 +97,7 @@ func TestTheRepoLookupIsCachedPerCwd(t *testing.T) {
 	if want := 3 + levels; stats != want {
 		t.Fatalf("the first read made %d stats, want %d (each cwd's levels once, not once per window)", stats, want)
 	}
-	if len(first) != 10 || first["@1"] != "fixture-repo" || first["@2"] != "inner" || first["@99"] != "" {
+	if len(first) != 11 || first["@1"] != "fixture-repo" || first["@2"] != "inner" || first["@99"] != "fixture-repo" {
 		t.Fatalf("windowRepos = %v", first)
 	}
 	stats = 0
@@ -115,8 +117,8 @@ func TestTheRepoLookupIsCachedPerCwd(t *testing.T) {
 }
 
 // TestAPerWindowHostSendsItsReposAfterItsWindows: the host's repos message —
-// after the hello that listed the windows, one entry per Claude window with a
-// cwd, sent again only when a name CHANGES.
+// after the hello that listed the windows, one entry per window with a cwd (a
+// shell's as much as Claude Code's), sent again only when a name CHANGES.
 func TestAPerWindowHostSendsItsReposAfterItsWindows(t *testing.T) {
 	root := repoTree(t)
 	d := newDrivenMuster(t)
@@ -127,8 +129,8 @@ func TestAPerWindowHostSendsItsReposAfterItsWindows(t *testing.T) {
 	}}
 	d.run(t, b, nil, false)
 	waitUntil(t, "the first repos message", func() bool { return len(d.of(mirror.TypeRepos)) == 1 })
-	if got := d.of(mirror.TypeRepos)[0].Repos; !maps.Equal(got, map[string]string{"@7": "fixture-repo"}) {
-		t.Fatalf("repos = %v, want only the Claude window's", got)
+	if got := d.of(mirror.TypeRepos)[0].Repos; !maps.Equal(got, map[string]string{"@7": "fixture-repo", "@4": "plain-dir"}) {
+		t.Fatalf("repos = %v, want the Claude window's AND the shell's", got)
 	}
 	d.mu.Lock()
 	if d.msgs[0].Type != mirror.TypeHello || d.msgs[0].Windows == nil {
@@ -148,7 +150,7 @@ func TestAPerWindowHostSendsItsReposAfterItsWindows(t *testing.T) {
 	w[0].Cwd = filepath.Join(root, "wt/fixture-worktree")
 	b.set(w...)
 	waitUntil(t, "the second repos message", func() bool { return len(d.of(mirror.TypeRepos)) == 2 })
-	if got := d.of(mirror.TypeRepos)[1].Repos; !maps.Equal(got, map[string]string{"@7": "fixture-worktree"}) {
+	if got := d.of(mirror.TypeRepos)[1].Repos; !maps.Equal(got, map[string]string{"@7": "fixture-worktree", "@4": "plain-dir"}) {
 		t.Fatalf("repos after the move = %v", got)
 	}
 }
@@ -193,4 +195,46 @@ func TestTheLargestReposMessageFitsOneFrame(t *testing.T) {
 	}
 	t.Logf("largest repos message: %d names in %d bytes (%.0f%% of MaxFrame); inline it would have made the window list %d bytes",
 		len(kept), len(b), 100*float64(len(b))/float64(mirror.MaxFrame), windowListWorst+mirror.MaxWindows*perName)
+}
+
+// TestTmuxReadsEveryWindowsWorkingDirectory: the real backend's listing gives
+// EVERY window its working directory — a plain shell's from its pane's root
+// process (/proc/<pane pid>/cwd), with no Claude Code anywhere — and a window
+// whose process has no readable cwd gets none. The listing is one tmux call
+// (a script here); the cwds are readlinks of the fake /proc.
+func TestTmuxReadsEveryWindowsWorkingDirectory(t *testing.T) {
+	root := repoTree(t)
+	proc := newFakeProc(t)
+	proc.add(300, 1, "zsh", filepath.Join(root, "src/fixture-repo/cmd/tool"), "-zsh")
+	proc.add(400, 1, "vim", "", "vim") // no cwd link
+	bin := filepath.Join(t.TempDir(), "tmux")
+	out := "1\t@3\t1\t1\t%3\t300\t1791903000\t1791903000\tzsh\tshells\n" +
+		"1\t@4\t2\t0\t%4\t400\t1791903000\t1791903000\tvim\tshells\n"
+	listing := filepath.Join(t.TempDir(), "listing")
+	must(t, os.WriteFile(listing, []byte(out), 0o644))
+	must(t, os.WriteFile(bin, []byte("#!/bin/sh\ncat '"+listing+"'\n"), 0o755))
+	ws, err := Tmux{Bin: bin, Claude: ClaudeLocator{Proc: proc.root, Home: t.TempDir()}}.Windows(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ws) != 2 || ws[0].Claude != nil || ws[1].Claude != nil {
+		t.Fatalf("instrument check: want two plain windows, got %+v", ws)
+	}
+	if ws[0].Cwd != filepath.Join(root, "src/fixture-repo/cmd/tool") || ws[1].Cwd != "" {
+		t.Fatalf("cwds = %q, %q; want the shell's, and none for the unreadable one", ws[0].Cwd, ws[1].Cwd)
+	}
+	if got := (&repoNamer{}).windowRepos(ws); !maps.Equal(got, map[string]string{"@3": "fixture-repo"}) {
+		t.Fatalf("windowRepos = %v, want the shell window named by its repository", got)
+	}
+}
+
+// TestAClaudeWindowIsNamedByItsClaudeProcess: a Claude Code window's cwd is its
+// Claude process's (where the session works), not the shell's around it.
+func TestAClaudeWindowIsNamedByItsClaudeProcess(t *testing.T) {
+	if pid := windowCwdPID(WindowInfo{PanePID: 10, Claude: &ClaudePane{PID: 11}}); pid != 11 {
+		t.Fatalf("a Claude window reads pid %d's cwd, want its Claude process 11", pid)
+	}
+	if pid := windowCwdPID(WindowInfo{PanePID: 10}); pid != 10 {
+		t.Fatalf("a shell window reads pid %d's cwd, want its pane's 10", pid)
+	}
 }

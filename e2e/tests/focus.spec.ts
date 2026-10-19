@@ -38,10 +38,6 @@ const transcript = path.join(dir, sid + '.jsonl');
 // A second Claude window whose only refresh FAILED: its card says why.
 const sid2 = '0b2c3d4e-5f60-4718-8a9c-' + stamp.padStart(12, '0').slice(-12);
 const transcript2 = path.join(dir, sid2 + '.jsonl');
-// A third Claude window, with NO focus: its card has no chip. (Only Claude
-// windows are cards, so the window without a chip is a Claude one.)
-const sid3 = '0b2c3d4e-5f60-4718-8a9d-' + stamp.padStart(12, '0').slice(-12);
-const transcript3 = path.join(dir, sid3 + '.jsonl');
 // `history`: that many earlier focuses are written first (e2e/mkchat), so the
 // mirrored session's history is 46 rows — three pages of 20 — and the agent's 4.
 const MIRROR_HISTORY = 45;
@@ -82,10 +78,9 @@ test.beforeAll(async () => {
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   fs.writeFileSync(transcript, '');
   fs.writeFileSync(transcript2, '');
-  fs.writeFileSync(transcript3, '');
   const now = Math.floor(Date.now() / 1000);
   // session|id|index|active|command|activity|claude-transcript
-  fs.writeFileSync(windowsFile, `focuswin|@1|1|1|claude|${now - 60}|${transcript}\nfocuswin|@2|2|0|zsh|${now - 120}|\nfocuswin|@3|3|0|claude|${now - 180}|${transcript2}\nreconciling|@4|1|1|claude|${now - 240}|${transcript3}\n`);
+  fs.writeFileSync(windowsFile, `focuswin|@1|1|1|claude|${now - 60}|${transcript}\nfocuswin|@2|2|0|zsh|${now - 120}|\nfocuswin|@3|3|0|claude|${now - 180}|${transcript2}\nreconciling|@4|1|1|zsh|${now - 240}|\n`);
   mirrorProc = spawn(mirrorBin, [], {
     env: {
       ...process.env,
@@ -127,9 +122,6 @@ const claudeCard = (page: Page) =>
   page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="window=%401"])`);
 const shellCard = (page: Page) =>
   page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="window=%402"])`);
-// The Claude window with no focus (reconciling:1).
-const plainCard = (page: Page) =>
-  page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="window=%404"])`);
 const failedCard = (page: Page) =>
   page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="window=%403"])`);
 const agentCard = (page: Page) => page.locator(`#agents-list article[id^="agent-"]:has(a[href="/agents/${agentName}"])`);
@@ -261,7 +253,7 @@ for (const vp of [
     });
 
     // 🔴 A DISCRIMINATING PAIR: "reconciling" is the START of the agent's FOCUS
-    // TITLE and the start of another window's NAME ("reconciling:1"). Ranked by
+    // TITLE and the start of a shell window's NAME ("reconciling:1"). Ranked by
     // names (data-rank-title), the window ranks first; were the visible heading
     // — the focus title — ranked, the agent would tie it at the top and keep
     // its list place, ahead. Both stay listed: the filter matches focus text.
@@ -297,13 +289,10 @@ for (const vp of [
       expect(pb.x + pb.width).toBeLessThanOrEqual(vp.use.viewport.width);
     });
 
-    test('a window whose session has no focus has no chip, and the filter finds cards by their focus', async ({ page }) => {
+    test('a window whose host reports no Claude session has no chip, and the filter finds cards by their focus', async ({ page }) => {
       await openList(page);
-      // A shell window is no card at all (Claude only); a Claude window with
-      // no focus is a card with no chip.
-      await expect(shellCard(page)).toHaveCount(0);
-      await expect(plainCard(page)).toHaveCount(1);
-      await expect(plainCard(page).locator('[data-card-focus]')).toHaveCount(0);
+      await expect(shellCard(page)).toHaveCount(1);
+      await expect(shellCard(page).locator('[data-card-focus]')).toHaveCount(0);
       const search = page.locator('#agents-search');
       await search.fill('quarterly ledgers');
       await expect(agentCard(page)).toBeVisible();
@@ -311,7 +300,7 @@ for (const vp of [
       await search.fill('flaky tunnel');
       await expect(claudeCard(page)).toBeVisible();
       await expect(agentCard(page)).toBeHidden();
-      await expect(plainCard(page)).toBeHidden();
+      await expect(shellCard(page)).toBeHidden();
     });
 
     test('the rendered view\'s sheet tabs "Your messages" with "Focus history", by arrow keys, and keeps the choice', async ({ page }) => {

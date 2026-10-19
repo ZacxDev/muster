@@ -150,8 +150,6 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 		// exactly as the hub derives it.
 		hv.Windows = mirror.NormalizeWindows(f.windows, 0)
 		hv.Sessions, hv.Claude, hv.Labels, hv.Activity = mirror.SessionsOf(hv.Windows)
-		// A per-window v2 host says of every window whether it is Claude Code.
-		hv.ClaudeReport = f.v2 != nil
 	}
 	return append([]mirror.HostView{hv}, f.others...)
 }

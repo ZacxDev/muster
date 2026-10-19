@@ -100,30 +100,3 @@ func TestAMirroredCardShowsAndIsFoundByItsRepo(t *testing.T) {
 		t.Errorf("a card with no repo drew one:\n%s", old)
 	}
 }
-
-// TestTheListCarriesEachHostsOtherWindows: one hidden, non-article child of
-// the list per host with windows that have no card, carrying its count and
-// its tab's words; none for a host with none.
-func TestTheListCarriesEachHostsOtherWindows(t *testing.T) {
-	var b strings.Builder
-	if err := RenderAgentsList(&b, nil, []MirrorCardView{realisticMirror()},
-		[]HostOtherWindows{{Host: "lapbox", N: 19}, {Host: "tower", N: 1}, {Host: "quiet", N: 0}}, nil); err != nil {
-		t.Fatal(err)
-	}
-	out := b.String()
-	for _, want := range []string{
-		`<div hidden="" data-host-others="" data-f-host="lapbox" data-l-host="lapbox" data-n="19" data-text="19 other windows"></div>`,
-		`<div hidden="" data-host-others="" data-f-host="tower" data-l-host="tower" data-n="1" data-text="1 other window"></div>`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("the list lacks %s:\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, `data-l-host="quiet"`) {
-		t.Error("a host with no other windows is noted")
-	}
-	// The host tab template has the note's slot, hidden.
-	if bar := renderNode(t, agentsHostTabs()); !strings.Contains(bar, `<span data-tab-other="" hidden=""`) {
-		t.Errorf("the tab template has no hidden other-windows note:\n%s", bar)
-	}
-}
