@@ -65,6 +65,20 @@ const chiefActedTask = `(m.task_id IS NOT NULL AND ` + chiefActedOn + `)`
 const retryableWhere = `m.status = 'unconfirmed' AND NOT ` + liveDraft + ` AND NOT ` + liveRoute + ` AND NOT ` + chiefActedTask +
 	` AND NOT ` + gatedTaskCited + ` AND NOT ` + revokedPlugin
 
+// ActionRetried is the audit_log action a requeue appends (object
+// MessageObject). Retries COUNTS these rows, so the audit trail and what the
+// chief is told about a retry cannot disagree.
+const ActionRetried = "plugin.retried"
+
+// Retries is how many times the principal retried message id (its
+// ActionRetried rows). Deliver reads it to tell the chief (retrySentence).
+func (s *PGStore) Retries(ctx context.Context, id int64) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action = $1 AND object = $2`,
+		ActionRetried, MessageObject(id)).Scan(&n)
+	return n, err
+}
+
 // ErrNotRetryable refuses a retry; the wrapped text says why (409).
 var ErrNotRetryable = errors.New("plugins: not retryable")
 
@@ -140,7 +154,7 @@ func (s *PGStore) Requeue(ctx context.Context, id int64) (Message, error) {
 			return err
 		}
 		out = m
-		return audit(ctx, tx, "plugin.retried", MessageObject(id), map[string]any{"plugin_id": m.PluginID, "from": st})
+		return audit(ctx, tx, ActionRetried, MessageObject(id), map[string]any{"plugin_id": m.PluginID, "from": st})
 	})
 	return out, err
 }

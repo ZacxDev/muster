@@ -440,7 +440,10 @@ may already have acted on it. You can decide otherwise:
 A retry puts the message back in the queue and hands it to your **current** chief
 the way every message is delivered: the session claim, a turn with the chief's
 tools, the attempt counted. With no agent runtime wired, it stays queued. It is
-recorded as `plugin.retried` in the audit log.
+recorded as `plugin.retried` in the audit log. The turn's preface (outside the
+fence, muster's own words) tells your chief it is a retry — the retry and
+delivery-attempt numbers, that the earlier turn may already have acted on it,
+to check its tasks and reply drafts before acting again, and the message's age.
 
 A retry is refused (409, nothing changed) when the message is queued (including
 a second click), being delivered or delivered; when your chief already drafted a
