@@ -69,8 +69,9 @@ test.beforeAll(async () => {
   fs.mkdirSync(path.join(repoDir, '.git'), { recursive: true });
   fs.mkdirSync(path.join(repoDir, 'deploy', 'scripts'), { recursive: true });
   fs.writeFileSync(tr, JSON.stringify({ type: 'user', message: { role: 'user', content: 'rolling the fleet' } }) + '\n');
-  // Claude Code waiting on the person, as its sessions file says it.
-  fs.writeFileSync(tr + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 30_000 }));
+  // Claude Code idle at first; the first test puts it waiting while the list
+  // is open.
+  fs.writeFileSync(tr + '.status', JSON.stringify({ status: 'idle', statusUpdatedAt: Date.now() - 60_000 }));
   const now = Math.floor(Date.now() / 1000);
   const windows = path.join(dir, 'windows');
   fs.writeFileSync(
@@ -141,17 +142,23 @@ test('each card shows its attention badge, live, and tapping it opens the item i
   await expect(agentBadge).toHaveAttribute('data-count', '1', { timeout: 20_000 });
   await expect(agentBadge).toHaveAttribute('data-kind', 'ask');
   await expect(agentBadge).toContainText('❓');
-  // The waiting window's card: its session item (the host's status reaches
-  // muster on its own refresh, so poll).
+  await expect(mirrorCard(page), mirrorLog).toBeVisible({ timeout: 30_000 });
   const winBadge = mirrorCard(page).locator('[data-attention-badge]');
-  await expect(winBadge, mirrorLog).toHaveAttribute('data-kind', 'session', { timeout: 30_000 });
-  await expect(winBadge).toHaveAttribute('data-count', '1');
-
-  // A second ask while the list is open raises the count without a reload.
+  await expect(winBadge, 'control: an idle window has no badge').toHaveCount(0);
   let navigations = 0;
   page.on('framenavigated', (f) => {
     if (f === page.mainFrame()) navigations++;
   });
+
+  // The window goes waiting at a prompt while the list is open: its card's
+  // badge appears LIVE. Nothing but the queue's own event says so — a status
+  // change draws no card, so no list nudge carries it.
+  fs.writeFileSync(tr + '.status', JSON.stringify({ status: 'waiting', statusUpdatedAt: Date.now() - 1_000 }));
+  await expect(winBadge, mirrorLog).toHaveAttribute('data-kind', 'session', { timeout: 30_000 });
+  await expect(winBadge).toHaveAttribute('data-count', '1');
+  await expect(winBadge).toContainText('🔒');
+
+  // A second ask while the list is open raises the agent's count too.
   const second = await ask('Rotate the staging key too?');
   await expect(agentBadge).toHaveAttribute('data-count', '2', { timeout: 15_000 });
   expect(navigations, 'the badge moved without a page load').toBe(0);
