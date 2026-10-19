@@ -358,10 +358,23 @@ func TestTmuxLaneTheCapStopsTheIdleLaneAndRefusesWhenAllAreBusy(t *testing.T) {
 	if !errors.As(err, &rt) || rt.Type != failCapacity {
 		t.Errorf("a second session while the only lane is mid-turn: %v; want a typed %s refusal", err, failCapacity)
 	}
-	if err := <-done; err != nil {
-		t.Errorf("the turn in progress was disturbed: %v", err)
+	// BOUNDED: an unbounded receive hung here until the binary's 10-minute
+	// timeout panicked, which skips every t.Cleanup — the tmux server and the
+	// ccd it serves were left running. A Fatalf returns, so they run.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("the turn in progress was disturbed: %v", err)
+		}
+	case <-time.After(laneTurnWait):
+		t.Fatalf("the turn in progress never returned within %s; ccd log:\n%s", laneTurnWait, r.logs.String())
 	}
 }
+
+// laneTurnWait bounds waiting on a turn the test started in a goroutine. The
+// turn takes 1.5s (SLOW); the bound is generous for a loaded host and far
+// below the binary's -timeout.
+const laneTurnWait = 30 * time.Second
 
 // A model ccd will not pass to --model is refused before any CLI starts.
 func TestTmuxLaneABadModelIsRefusedAndStartsNothing(t *testing.T) {
