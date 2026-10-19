@@ -86,8 +86,10 @@ type HintFunc func(ctx context.Context, chief agents.Agent, m Message) Hints
 
 // hintsFor is the hint for m, bounded by hintTimeout; the zero Hints without a
 // HintFunc.
+//
+// A task event gets none (RenderMessage says why): the HintFunc is not called.
 func (d *Deliverer) hintsFor(ctx context.Context, chief agents.Agent, m Message) Hints {
-	if d.hints == nil {
+	if d.hints == nil || IsTaskEvent(m) {
 		return Hints{}
 	}
 	hctx, cancel := context.WithTimeout(ctx, hintTimeout)

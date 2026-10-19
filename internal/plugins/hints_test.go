@@ -68,7 +68,29 @@ func TestANoReplyMessagesHintNamesNoRouting(t *testing.T) {
 	}
 }
 
-// TestNoSessionsIsNoBlock:no hit, no block at all — not an empty one.
+// 🔴 TestATaskEventGetsNoHint: a task event (#136) is rendered as muster's
+// structured event with no session hint, even when one is handed in, and the
+// deliverer does not compute one for it; a mail message still gets its hint
+// (control).
+func TestATaskEventGetsNoHint(t *testing.T) {
+	h := Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:7", Name: "n"}}}
+	task := int64(812)
+	ev := Message{ID: 42, Body: `{"event":"assigned","task_id":812,"title":"node-7k"}`, TaskID: &task, NoReply: true}
+	if got := RenderMessage(Plugin{Label: "Example tracker"}, ev, true, h); hintLineCount(got) != 0 || strings.Contains(got, hintMarker) ||
+		!strings.Contains(got, "<<<task-event untrusted") {
+		t.Fatalf("a task event's turn:\n%s", got)
+	}
+	calls := 0
+	d := &Deliverer{hints: func(context.Context, agents.Agent, Message) Hints { calls++; return h }}
+	if got := d.hintsFor(context.Background(), agents.Agent{}, ev); len(got.Sessions) != 0 || calls != 0 {
+		t.Fatalf("hint computed for a task event: %+v (%d call(s))", got, calls)
+	}
+	if got := d.hintsFor(context.Background(), agents.Agent{}, Message{ID: 1, Body: "node-7k"}); len(got.Sessions) != 1 || calls != 1 {
+		t.Fatalf("control: a mail message's hint: %+v (%d call(s))", got, calls)
+	}
+}
+
+// TestNoSessionsIsNoBlock: no hit, no block at all — not an empty one.
 func TestNoSessionsIsNoBlock(t *testing.T) {
 	if got := renderHints(Hints{Window: 6 * time.Hour}, hintNonce, true); got != "" {
 		t.Fatalf("an empty hint rendered %q", got)
