@@ -363,3 +363,46 @@ func TestAnotherOwnersRetryIsNotFound(t *testing.T) {
 		t.Fatalf("CONTROL: user 1's own Retry: %d %q", rec.Code, rec.Body.String())
 	}
 }
+
+// TestARoutedRowOffersNoRetry: a routed message that failed draws no Retry in
+// its list, and a Retry posted for it anyway is 409 from the script and a
+// not-retried notice to a browser form, queueing nothing: Retry would requeue
+// it as the person's own, with no route and no session binding. The control
+// is a person's failed row in the same list, which draws its Retry.
+func TestARoutedRowOffersNoRetry(t *testing.T) {
+	f := newSQFixture(t)
+	f.mirror.agentState = &mirror.AgentState{Status: mirror.StatusBusy, Since: time.Now().UnixMilli()}
+	routed, err := f.queue.Enqueue(asQueueUser(1, time.Now()), sendqueue.Item{Target: queueTarget, Body: "routed answer",
+		StepUpAt: time.Now(), RouteID: "rt_0123456789abcdef01234567"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := f.queue.Claim(context.Background(), routed.ID, time.Now(), sendqueue.Claim{By: "test", Lease: time.Minute}); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if err := f.queue.Finish(context.Background(), routed.ID, "test", sendqueue.Outcome{Detail: SendQueueRouteMoved}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	own := f.expired(t, "my own")
+	_, page := mirrorGet(t, f.srv, f.ts, ui.SendQueuePath+"?"+url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}}.Encode())
+	if strings.Contains(page, `action="`+ui.SendQueueRetryPath(routed.ID)+`"`) {
+		t.Fatalf("the failed routed row draws a Retry: %s", page)
+	}
+	if !strings.Contains(page, `action="`+ui.SendQueueRetryPath(own.ID)+`"`) {
+		t.Fatalf("CONTROL: the person's own failed row draws no Retry: %s", page)
+	}
+	cookie := sessionCookieFor(f.srv)
+	if resp, body := f.retry(t, ui.SendQueueRetryPath(routed.ID), cookie, true, nil); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("a Retry of a routed row from the script: %d %q; want 409", resp.StatusCode, body)
+	}
+	resp, body := f.retry(t, ui.SendQueueRetryPath(routed.ID), cookie, false, nil)
+	if resp.StatusCode != http.StatusSeeOther || !strings.Contains(resp.Header.Get("Location"), "notice="+noticeRoutedNotRetried) {
+		t.Fatalf("a Retry of a routed row from a form: %d %q (Location %q)", resp.StatusCode, body, resp.Header.Get("Location"))
+	}
+	if got := f.open(t); len(got) != 0 {
+		t.Fatalf("a Retry of a routed row queued %+v", got)
+	}
+	if got := f.row(t, routed.ID); got.RetriedAs != 0 {
+		t.Fatalf("a Retry of a routed row marked it retried as %d", got.RetriedAs)
+	}
+}

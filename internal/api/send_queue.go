@@ -422,10 +422,11 @@ func (s *Server) handleSendQueueCancel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// sendQueueRetryable is whether it's row offers Retry: it failed, and has not
-// been retried yet (sendqueue.PGStore.Retry refuses it otherwise).
+// sendQueueRetryable is whether it's row offers Retry: it failed, has not
+// been retried yet, and is a person's own — never a ROUTED row, whose failed
+// route goes back to the chief (sendqueue.PGStore.Retry refuses it otherwise).
 func sendQueueRetryable(it sendqueue.Item) bool {
-	return it.State == sendqueue.Failed && it.RetriedAs == 0
+	return it.State == sendqueue.Failed && it.RetriedAs == 0 && it.RouteID == ""
 }
 
 // SendQueueRetryConfirmField is the form field that says the person confirmed
@@ -536,7 +537,11 @@ func (s *Server) sendQueueRetry(w http.ResponseWriter, r *http.Request, ctx cont
 		http.Error(w, msg, status)
 	}
 	if !sendQueueRetryable(it) {
-		refuse(http.StatusConflict, composerNotices[noticeNotRetried].text, noticeNotRetried)
+		n := noticeNotRetried
+		if it.RouteID != "" {
+			n = noticeRoutedNotRetried
+		}
+		refuse(http.StatusConflict, composerNotices[n].text, n)
 		return
 	}
 	// 🔴 ONE CONFIRM FOR A MESSAGE THAT MAY ALREADY HAVE BEEN SENT: a second

@@ -164,6 +164,11 @@ var (
 	ErrEmpty = errors.New("sendqueue: nothing to queue: type a message first")
 	// ErrNotRetryable: the message did not fail, or was already retried.
 	ErrNotRetryable = errors.New("sendqueue: only a failed message can be retried, and only once")
+	// ErrRoutedNotRetryable: the message was routed by the chief (RouteID).
+	// Its failed route goes back to the chief; a Retry would requeue it as
+	// the person's own, with no route and no session binding. It is an
+	// ErrNotRetryable (errors.Is), so a caller that maps that one maps this.
+	ErrRoutedNotRetryable = fmt.Errorf("%w: a message your chief routed is not retried here; its failed route goes back to the chief", ErrNotRetryable)
 )
 
 // PGStore is the queue on Postgres.
@@ -284,10 +289,13 @@ func (s *PGStore) enqueueTx(ctx context.Context, tx pgx.Tx, it Item) (Item, erro
 // afterSince as Enqueue's does. The failed row stays failed and records the new
 // row (RetriedAs), in the same transaction and under the row's lock, so it is
 // retried at most once
-// (ErrNotRetryable after). A routed message is retried as the person's own: the
-// person, not its route, now asks for it to be sent. Another user's message is
-// not found; the per-target bound applies (ErrFull). Whether a message that may
-// already have been delivered may be retried is the caller's decision.
+// (ErrNotRetryable after). A ROUTED message is never retried
+// (ErrRoutedNotRetryable): requeued as the person's own it would carry no route
+// and no session binding, so nothing would check the route its delivery is
+// gated on (internal/api sendQueueRoutedGate); its failed route goes back to
+// the chief instead. Another user's message is not found; the per-target bound
+// applies (ErrFull). Whether a message that may already have been delivered
+// may be retried is the caller's decision.
 func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, afterSince int64) (Item, error) {
 	var out Item
 	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
@@ -300,6 +308,9 @@ func (s *PGStore) Retry(ctx context.Context, id int64, stepUpAt time.Time, after
 		}
 		if old.State != Failed || old.RetriedAs != 0 {
 			return ErrNotRetryable
+		}
+		if old.RouteID != "" {
+			return ErrRoutedNotRetryable
 		}
 		out, err = s.enqueueTx(ctx, tx, Item{Target: old.Target, Body: old.Body, StepUpAt: stepUpAt, AfterSince: afterSince})
 		if err != nil {
