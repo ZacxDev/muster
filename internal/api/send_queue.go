@@ -672,7 +672,17 @@ func sendQueueNonce(id int64) string { return fmt.Sprintf("send-queue-%020d", id
 
 // sendQueueSend delivers one claimed message: mirrorSend's gates, then
 // mirrorPaste into the window's Claude Code pane. ctx acts as the message's
-// owner; the sign-in time presented is the one the message was QUEUED with.
+// owner.
+//
+// 🔴 THE SIGN-IN TIME THE PASTE'S FRESHNESS CHECK SEES IS THE DELIVERY MOMENT,
+// NOT THE ONE THE MESSAGE WAS QUEUED WITH — and only once the row is
+// authorized by what actually gates it. The queued sign-in (StepUpAt) is read
+// twice before that: against the owner's account cutoffs
+// (sendQueueOwnerRefusal), and, for a person's message, against the row's own
+// age (sendQueueAuthorization: fresh when queued, at most
+// sendqueue.AuthorizedFor ago). A routed message is gated by its route instead
+// (sendQueueRoutedGate). Only after the applicable gate passes is ctx's auth
+// time moved to now; a row that fails either is refused before it is.
 //
 // 🔴 THE PASTE CARRIES THE TURN IT WAS DECIDED ON (st's Since and Pasted;
 // mirror.ExpectTurn). A person's Send that lands between the dispatcher's
