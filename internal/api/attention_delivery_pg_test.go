@@ -498,6 +498,23 @@ func TestAnAnswerAStoppedAgentNeverTakesEndsUnconfirmed(t *testing.T) {
 	if !strings.Contains(item, "Delivery failed: ") || !strings.Contains(item, "data-attention-redeliver") {
 		t.Fatalf("the given-up answer is not listed with Retry:\n%s", item)
 	}
+	// Retry starts a new day: with the agent still stopped the answer waits
+	// queued again rather than being given up at once; once it runs, it is
+	// delivered.
+	rd, hdr := form(url.Values{})
+	if w := f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(id, 10)+"/redeliver", rd, merge(f.operator(), hdr)); w.Code != http.StatusSeeOther {
+		t.Fatalf("retry: %d", w.Code)
+	}
+	if a := f.delivery(t, id); a.Delivery != attention.DeliveryQueued {
+		t.Fatalf("a retried answer to a still-stopped agent: %q %q; want queued for a new day", a.Delivery, a.DeliveryDetail)
+	}
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'running' WHERE id = $1`, f.chief.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.deliverDueAnswers(context.Background())
+	if a := f.delivery(t, id); a.Delivery != attention.DeliveryDelivered {
+		t.Fatalf("once the agent runs: %q %q", a.Delivery, a.DeliveryDetail)
+	}
 }
 
 // TestShutdownEndsADeliveryWaitingOutItsGrace: EndStreams ends a delivery
