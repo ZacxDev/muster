@@ -3,16 +3,16 @@
 // route in a few seconds — a message queued days ago, and a message whose
 // sender stopped mid-send.
 //
-//	DATABASE_URL=…_e2e go run ./e2e/sqfix age <host> <body> <seconds>
-//	DATABASE_URL=…_e2e go run ./e2e/sqfix strand <host> <body>
+//		DATABASE_URL=…_e2e go run ./e2e/sqfix age <host> <body> <seconds>
+//		DATABASE_URL=…_e2e go run ./e2e/sqfix strand <host> <body>
 //
-//   - age: moves the QUEUED message <body> for <host> back by <seconds> — its
-//     created_at and the sign-in time it was queued under, together, so it was
-//     authorized when it was queued. The dispatcher's own delivery then decides
-//     what that age means (internal/api sendQueueAuthorization).
-//   - strand: marks the QUEUED message <body> for <host> as being sent by a pod
-//     that has stopped: claimed, its lease already run out. The dispatcher's
-//     own Recover then fails it as "may have been delivered" on its next pass.
+//	  - age: moves the QUEUED message <body> for <host> back by <seconds> — its
+//	    created_at and the sign-in time it was queued under, together, so it was
+//	    authorized when it was queued. The dispatcher's own delivery then decides
+//	    what that age means (internal/api sendQueueAuthorization).
+//	  - strand: marks the QUEUED message <body> for <host> as being sent by a pod
+//	    that has stopped: claimed, its lease already run out. The dispatcher's
+//	    own Recover then fails it as "may have been delivered" on its next pass.
 //
 // Each refuses unless exactly one row matched: a fixture that silently moved
 // nothing would let the spec test a state it never built.
