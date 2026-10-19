@@ -52,7 +52,23 @@ func TestTheHintBlockIsExactlyThis(t *testing.T) {
 	}
 }
 
-// TestNoSessionsIsNoBlock: no hit, no block at all — not an empty one.
+// 🔴 TestANoReplyMessagesHintNamesNoRouting: route_to_session refuses a
+// no_reply message, so its hint must not suggest routing — while a replyable
+// message's hint, with routing on, does (control).
+func TestANoReplyMessagesHintNamesNoRouting(t *testing.T) {
+	p := Plugin{Label: "L", DataScope: "d"}
+	h := Hints{Window: 6 * time.Hour, Sessions: []SessionHint{{ID: "agent:7", Name: "n"}}}
+	m := Message{ID: 3, Sender: "s", Subject: "s", Body: "node-7k", NoReply: true}
+	if got := RenderMessage(p, m, true, h); hintLineCount(got) != 1 || strings.Contains(got, "route_to_session") {
+		t.Fatalf("a no_reply message's turn names route_to_session (or has no hint):\n%s", got)
+	}
+	m.NoReply = false
+	if got := RenderMessage(p, m, true, h); !strings.Contains(got[strings.Index(got, "\n"+HintHeader):], "route_to_session") {
+		t.Fatalf("control: a replyable message's hint does not name route_to_session:\n%s", got)
+	}
+}
+
+// TestNoSessionsIsNoBlock:no hit, no block at all — not an empty one.
 func TestNoSessionsIsNoBlock(t *testing.T) {
 	if got := renderHints(Hints{Window: 6 * time.Hour}, hintNonce, true); got != "" {
 		t.Fatalf("an empty hint rendered %q", got)

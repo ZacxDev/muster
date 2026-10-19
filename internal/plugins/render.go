@@ -57,7 +57,7 @@ const NoReplySentence = "This message cannot be replied to: do not draft a reply
 // names any session, appends the session-hint block (renderHints) AFTER the
 // message's fence, under its own nonce.
 func RenderMessage(p Plugin, m Message, routing bool, hints Hints) string {
-	return renderMessage(p, m, fence.NewNonce(), routing) + renderHints(hints, fence.NewNonce(), routing)
+	return renderMessage(p, m, fence.NewNonce(), routing) + renderHints(hints, fence.NewNonce(), routing && !m.NoReply)
 }
 
 func renderMessage(p Plugin, m Message, nonce string, routing bool) string {
