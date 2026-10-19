@@ -213,6 +213,41 @@ func TestTheBoxIsStrippedOnEitherEdge(t *testing.T) {
 	if got, _ := unbox([]string{"│ one", "two"}); got[0] != "│ one" {
 		t.Errorf("a bar on one line only was stripped: %q", got)
 	}
+	// ONE line: a box is there only with both edges. A one-line question
+	// whose own text starts (or ends) with a bar is not boxed — the CLI
+	// boxes a question too long for a line, which is never one line with
+	// only a left edge — and keeps it.
+	if got, _ := unbox([]string{"│ one two │"}); strings.Join(got, "\n") != "one two" {
+		t.Errorf("a one-line box with both edges: %q", got)
+	}
+	for _, in := range []string{"│ one two", "one two │"} {
+		if got, _ := unbox([]string{in}); got[0] != in {
+			t.Errorf("a one-line question %q lost its own bar: %q", in, got)
+		}
+	}
+	// A right edge with no left edge is not a frame either.
+	if got, _ := unbox([]string{"one │", "two │"}); strings.Join(got, "\n") != "one │\ntwo │" {
+		t.Errorf("a right-only edge was stripped: %q", got)
+	}
+}
+
+// TestAOneLineQuestionThatStartsWithABarIsReadAsAsked: a short question whose
+// own text begins "│ " (the real three-q1 capture, its question so) reads as
+// asked, bar and all — not as an untouched picker asking something else.
+func TestAOneLineQuestionThatStartsWithABarIsReadAsAsked(t *testing.T) {
+	scr := strings.Replace(fixture(t, "three-q1"), "Which color do you prefer?", "│ Which color do you prefer?", 1)
+	if scr == fixture(t, "three-q1") {
+		t.Fatal("the fixture edit did not apply")
+	}
+	qs := slices.Clone(three)
+	qs[0].Question = "│ Which color do you prefer?"
+	if err := Match(Parse(scr), Want{Kind: Question, Q: 0, Cursor: 1}, qs, nil); err != nil {
+		t.Fatalf("a one-line question starting with a bar: %v (parsed %q)", err, Parse(scr).Question)
+	}
+	// CONTROL: the question as it would read with the bar taken off is not it.
+	if err := Match(Parse(scr), Want{Kind: Question, Q: 0, Cursor: 1}, three, nil); err == nil {
+		t.Fatal("the bar-less question matched a screen asking it with a bar")
+	}
 }
 
 // singleLong is the real long-q2-80 capture as the FIRST question of a

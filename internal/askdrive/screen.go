@@ -360,10 +360,12 @@ var hborderRE = regexp.MustCompile(`^\s*[╭┌┏╔╰└┗╚][─━═]*[�
 
 // unbox is lines (a question's screen lines, right-trimmed) with the box the
 // CLI draws round a long one taken off: a top or bottom edge, and a left
-// (right) edge glyph with the padding beside it when EVERY line has one — a
-// text whose own first character happens to be "│" is drawn inside the box
-// and keeps it. Each line comes back trimmed, with the screen column its text
-// ends in (inside a right edge, when one is taken off).
+// (right) edge glyph with the padding beside it when EVERY line has one and
+// the frame is really there — a left edge down two or more lines, or a left
+// and a right edge (one line). A text whose own first character happens to
+// be "│" is drawn inside the box and keeps it, and so does a one-line question
+// that merely starts or ends with one. Each line comes back trimmed, with the
+// screen column its text ends in (inside a right edge, when one is taken off).
 func unbox(lines []string) ([]string, []int) {
 	var ls []string
 	var ends []int
@@ -382,13 +384,20 @@ func unbox(lines []string) ([]string, []int) {
 		return len(ls) > 0
 	}
 	isBar := func(r rune) bool { return strings.ContainsRune(vbars, r) }
-	if all(func(l string) bool { r, _ := utf8.DecodeRuneInString(l); return isBar(r) }) {
-		for i, l := range ls {
-			_, n := utf8.DecodeRuneInString(l)
-			ls[i] = strings.TrimSpace(l[n:])
-		}
+	left := all(func(l string) bool { r, _ := utf8.DecodeRuneInString(l); return isBar(r) })
+	right := all(func(l string) bool { r, _ := utf8.DecodeLastRuneInString(l); return isBar(r) })
+	// 🔴 ONLY A FRAME THAT IS REALLY THERE: a left edge down two or more
+	// lines (the CLI's box, measured), or both edges. One line with a bar at
+	// one end — a short question's own text, which the CLI does not box — is
+	// text, and so is a right edge with no left one.
+	if !left || (len(ls) < 2 && !right) {
+		return ls, ends
 	}
-	if all(func(l string) bool { r, _ := utf8.DecodeLastRuneInString(l); return isBar(r) }) {
+	for i, l := range ls {
+		_, n := utf8.DecodeRuneInString(l)
+		ls[i] = strings.TrimSpace(l[n:])
+	}
+	if right {
 		for i, l := range ls {
 			_, n := utf8.DecodeLastRuneInString(l)
 			t := strings.TrimSpace(l[:len(l)-n])
