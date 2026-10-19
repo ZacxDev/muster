@@ -87,8 +87,17 @@ runtime and model never change; open a new session to use another.
   conversations afresh (muster keeps the transcript).
 
 The operator's install script (`MUSTER_AGENT_RUNTIME_INSTALL`) must start the
-runtime on loopback on the port in `MUSTER_GATEWAY_PORT` when that is set, e.g.
-`--bind loopback --port "${MUSTER_GATEWAY_PORT:-18789}"`; `MUSTER_CHIEF_SESSION_RUNTIMES`
+runtime on loopback on the port in `MUSTER_GATEWAY_PORT` when that is set — and
+as before when it is not, which is every `gateway`-kind agent:
+
+```sh
+if [ -n "${MUSTER_GATEWAY_PORT:-}" ]; then
+  exec /usr/bin/tini -- <runtime> gateway --bind loopback --port "$MUSTER_GATEWAY_PORT"
+fi
+exec /usr/bin/tini -- <runtime> gateway --bind lan
+```
+
+`MUSTER_CHIEF_SESSION_RUNTIMES`
 naming `gateway` on a deployment with the `claude-code` kind needs that bundle
 configured (it refuses to boot otherwise). A running chief gains the sidecar on
 its next **Stop → Start** (Start re-applies its spec).
