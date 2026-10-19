@@ -156,6 +156,7 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("POST /agents/{id}/name", s.requireSession(s.handleAgentName))
 	mux.HandleFunc("POST /agents/{id}/model", s.requireSession(s.handleAgentModel))
 	mux.HandleFunc("POST /agents/{id}/sessions", s.requireSession(s.handleAgentSessionCreate))
+	mux.HandleFunc("POST /agents/{id}/sessions/{sid}/default", s.requireSession(s.handleAgentSessionDefault))
 	mux.HandleFunc("DELETE /agents/{id}", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentDelete)))
 	mux.HandleFunc("GET /agents/{name}", s.requireSession(s.handleAgentDetail))
 	// Live transcript partial: the detail page's #chat-log re-fetches this on the
@@ -1377,11 +1378,7 @@ func (s *Server) resolveSessions(ctx context.Context, a agents.Agent, sessionPar
 		// discard the error still leave a trace, and no caller has to remember to.
 		s.logger.Printf("agents: list sessions for %d: %v", a.ID, err)
 	}
-	views := make([]ui.SessionView, 0, len(list))
-	for _, sess := range list {
-		views = append(views, ui.SessionView{ID: sess.ID, Title: sess.Title, Active: sess.ID == active.ID, LastActive: sess.UpdatedAt})
-	}
-	return active, views, err
+	return active, s.sessionViews(ctx, a, list, active.ID), err
 }
 
 // handleAgentSessionCreate handles POST /agents/{id}/sessions: open a chat
@@ -1473,6 +1470,21 @@ func (s *Server) handleAgentSessionCreate(w http.ResponseWriter, r *http.Request
 	// write goes to `a.ID`. Logging `id` attributed a failure to the agent that was
 	// never touched — and the retarget already logged both ids, so `a.ID` alone is
 	// unambiguous here.
+	//
+	// 🔴 A SESSION ASKED FOR ON A RUNTIME IS ALWAYS NEW (session_runtime.go): the
+	// empty latest one may be on another runtime or model, and both are fixed for
+	// a session's life, so reusing it would answer the picker with a session that
+	// is not what was picked.
+	if rt := r.FormValue("runtime"); rt != "" {
+		sess, err := s.createRuntimeSession(ctx, a, rt, r.FormValue("model"))
+		if err != nil {
+			s.logger.Printf("agents: create %s session for %d: %v", rt, a.ID, err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.answerSessionOpened(ctx, w, r, a, sess)
+		return
+	}
 	latest, err := s.ext.Agents.LatestOrCreateSession(ctx, a.ID, a.Name)
 	if err != nil {
 		s.logger.Printf("agents: latest session for %d: %v", a.ID, err)
@@ -1489,6 +1501,12 @@ func (s *Server) handleAgentSessionCreate(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
+	s.answerSessionOpened(ctx, w, r, a, sess)
+}
+
+// answerSessionOpened answers a request that opened (or chose) session sess of
+// agent a: the panel body re-rendered on it, or a redirect to it.
+func (s *Server) answerSessionOpened(ctx context.Context, w http.ResponseWriter, r *http.Request, a agents.Agent, sess agents.ChatSession) {
 	// 🔴 THE PANEL GETS A BODY, THE PAGES KEEP THE REDIRECT, AND BOTH HALVES ARE
 	// LOAD-BEARING. HX-Redirect makes htmx navigate; on /agents/{name} (and, before
 	// task #633 deleted it, /operator) that is exactly right and is an existing
@@ -1816,7 +1834,10 @@ func (s *Server) wsAllowedOrigins(r *http.Request) []string {
 // That ledger is updated in the same commit — do not re-add a row for a path that
 // no longer exists.
 func (s *Server) chatTurn(ctx context.Context, a agents.Agent, sessionKey, text string, emit agents.StreamEmit) (string, error) {
-	instr, tools, dispatch := s.AgentInstructions(a), s.AgentToolDefsFor(ctx, a), s.AgentToolDispatch(ctx, a)
+	// The session's runtime and model ride on the requests (session_runtime.go);
+	// a legacy session carries nothing, exactly as before.
+	ctx = s.sessionRoute(ctx, a, sessionKey)
+	instr, tools, dispatch := s.turnInstructions(ctx, a), s.AgentToolDefsFor(ctx, a), s.AgentToolDispatch(ctx, a)
 	reply, err := s.ext.Gateway.ChatWithTools(ctx, a, sessionKey, instr, text, tools, dispatch, emit)
 	// 🔴 ONLY A 404 ON THE FIRST REQUEST MEANS "THIS IMAGE HAS NO /v1/responses". A
 	// 404 on request 2+ comes after the runtime answered request 1 and its tools

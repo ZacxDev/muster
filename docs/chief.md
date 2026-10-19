@@ -45,7 +45,7 @@ The chief is offered these tools, and no other agent is:
 | tool | needs |
 |---|---|
 | `task_create_gated`, `reply_draft` | plugins on |
-| `agents_list`, `focus_search`, `focus_refresh`, `sessions_overview` | session focus |
+| `fleet_list`, `focus_search`, `focus_refresh`, `sessions_overview` | session focus |
 | `route_to_session` | session routing |
 | `attention_list`, `session_transcript` | the attention queue |
 
@@ -53,6 +53,68 @@ The chief is offered these tools, and no other agent is:
 `tasks_list` covers your whole board, where a worker's covers only its own
 tasks. That scope, like the chief-only filter, is decided by the chief
 predicate, never by the kind.
+
+## Sessions on more than one runtime
+
+With `MUSTER_CHIEF_SESSION_RUNTIMES` set, each new chief chat session can be
+started on a runtime and a model of its own, both fixed for the session's life:
+
+| runtime | model | what runs the session |
+|---|---|---|
+| (none) | the chief's own | the chief's own runtime. On a `claude-code` chief, the one CLI `ccd` has always run. Every session that existed before migration 0030 is one of these. |
+| `claude-code` | a Claude model (`opus`, `sonnet`, `haiku`, or a model id) | a Claude Code CLI of its own in the chief's pod, started with `--model`. Needs a `claude-code` chief. |
+| `gateway` | an OpenRouter model, as the model search returns it (`openrouter/<vendor>/<model>`) | the gateway runtime. On a `claude-code` chief that is the runtime beside `ccd` in the same pod, sharing the chief's instructions, tools and identity. |
+
+Open one from the chief panel: its thread list has a **New session** picker
+(a Claude model for Claude Code; an OpenRouter model, searched, for OpenRouter).
+Each thread names its runtime and model. The route underneath is
+`POST /agents/{id}/sessions` with `runtime` and `model` form fields. A session's
+runtime and model never change; open a new session to use another.
+
+**How a `claude-code` chief runs both.** One pod, two containers:
+
+- `agent` (the Claude Code image): `ccd` on port 18789 — still the only port the
+  pod exposes. A turn for a `claude-code` session runs in a CLI of its own
+  (tmux session `cc-<id>`, started with the session's `--model`); a turn for a
+  session with no runtime runs in the original CLI, as before. At most
+  `CCD_MAX_SESSIONS` (3) such CLIs run at once.
+- `gateway` (the gateway runtime's image, built exactly as a `gateway`-kind
+  agent's): serves on **loopback** port 18791 only. `ccd` hands it a
+  `gateway` session's turn after checking the bearer. Its own memory budget
+  (512Mi request, 1536Mi limit), its own Secret (OpenRouter key and gateway
+  credential) — the Claude Code container never holds those, nor it the Claude
+  token. Its state lives in its own container, so a pod restart starts its
+  conversations afresh (muster keeps the transcript).
+
+The operator's install script (`MUSTER_AGENT_RUNTIME_INSTALL`) must start the
+runtime on loopback on the port in `MUSTER_GATEWAY_PORT` when that is set — and
+as before when it is not, which is every `gateway`-kind agent:
+
+```sh
+if [ -n "${MUSTER_GATEWAY_PORT:-}" ]; then
+  exec /usr/bin/tini -- <runtime> gateway --bind loopback --port "$MUSTER_GATEWAY_PORT"
+fi
+exec /usr/bin/tini -- <runtime> gateway --bind lan
+```
+
+`MUSTER_CHIEF_SESSION_RUNTIMES`
+naming `gateway` on a deployment with the `claude-code` kind needs that bundle
+configured (it refuses to boot otherwise). A running chief gains the sidecar on
+its next **Stop → Start** (Start re-applies its spec).
+
+A `gateway` session's turn carries the chief's instructions for function tools,
+since that runtime has no standing file of the chief's.
+
+**The default session.** One session per agent is its default. Plugin
+deliveries and `muster chief ask` go to it, so they share one conversation
+instead of one per plugin. Until you choose one, it is the chief's original
+session (the one keyed `agent:<name>:webchat`, or the oldest). Move it with
+`POST /agents/{id}/sessions/{sid}/default`.
+
+**Tool names.** The gateway runtime refuses a whole turn when one of the tools
+muster offers has the name of one of its built-in tools. `agents_list` was such
+a name and is now `fleet_list` on every runtime; a test pins every chief tool
+against the runtime's built-in names.
 
 ## Replacing the chief on another kind
 
@@ -145,4 +207,4 @@ command.
      others above.
 5. A plugin message reaches it. Post one with a plugin token
    (`POST /plugin/v1/messages`). It settles `delivered` with `agent_id` = the
-   new chief, and the chief's conversation for that plugin shows the turn.
+   new chief, and the chief's default session shows the turn.
