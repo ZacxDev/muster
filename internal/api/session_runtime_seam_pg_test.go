@@ -18,6 +18,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/db"
 	"github.com/ZacxDev/muster/internal/dbtest"
@@ -32,6 +33,8 @@ import (
 type routeRuntime struct {
 	mu    sync.Mutex
 	turns []routedTurn
+	// instructions is each turn's request `instructions`, beside turns.
+	instructions []string
 }
 
 type routedTurn struct {
@@ -43,8 +46,13 @@ func (r routedTurn) String() string {
 }
 
 func (f *routeRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	_, _ = io.ReadAll(r.Body)
+	raw, _ := io.ReadAll(r.Body)
+	var req struct {
+		Instructions string `json:"instructions"`
+	}
+	_ = json.Unmarshal(raw, &req)
 	f.mu.Lock()
+	f.instructions = append(f.instructions, req.Instructions)
 	f.turns = append(f.turns, routedTurn{key: r.Header.Get("X-Openclaw-Session-Key"),
 		runtime: r.Header.Get("X-Muster-Runtime"), ccSession: r.Header.Get("X-Muster-CC-Session"),
 		ccModel: r.Header.Get("X-Muster-CC-Model"), gwModel: r.Header.Get("X-Openclaw-Model")})
@@ -63,6 +71,16 @@ func (f *routeRuntime) last(t *testing.T) routedTurn {
 		t.Fatal("the runtime saw no turn")
 	}
 	return f.turns[len(f.turns)-1]
+}
+
+func (f *routeRuntime) lastInstructions(t *testing.T) string {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.instructions) == 0 {
+		t.Fatal("the runtime saw no turn")
+	}
+	return f.instructions[len(f.instructions)-1]
 }
 
 func (f *routeRuntime) count() int {
@@ -291,6 +309,10 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	if got, sid := ask(); got != want[legacy.ID] || sid != legacy.ID {
 		t.Errorf("chief ask with the legacy default: %v in session %d; want %v in %d", got, sid, want[legacy.ID], legacy.ID)
 	}
+	// ccd's own CLI reads the chief's CLAUDE.md: the ask carries no instructions.
+	if got := rt.lastInstructions(t); got != "" {
+		t.Errorf("chief ask with the legacy default carried %d bytes of instructions; want none", len(got))
+	}
 	if got, sid := deliver(); got != want[legacy.ID] || sid != legacy.ID {
 		t.Errorf("a plugin delivery with the legacy default: %v in session %d; want %v in %d", got, sid, want[legacy.ID], legacy.ID)
 	}
@@ -302,6 +324,12 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 	}
 	if got, sid := ask(); got != want[or.ID] || sid != or.ID {
 		t.Errorf("chief ask with the OpenRouter default: %v in session %d; want %v in %d", got, sid, want[or.ID], or.ID)
+	}
+	// The gateway runtime beside ccd has no standing file of the chief's: the
+	// ask carries the chief's function-tool prose, as a chat turn there does.
+	if got, want := rt.lastInstructions(t), agentspec.ChiefInstructionsFunctionTools(true); got != want || want == "" {
+		t.Errorf("chief ask with the OpenRouter default carried instructions %.60q (%d bytes); want the chief's function-tool prose (%d bytes)",
+			got, len(got), len(want))
 	}
 	if got, sid := deliver(); got != want[or.ID] || sid != or.ID {
 		t.Errorf("a plugin delivery with the OpenRouter default: %v in session %d; want %v in %d", got, sid, want[or.ID], or.ID)

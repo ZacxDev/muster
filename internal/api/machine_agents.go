@@ -589,9 +589,10 @@ func (s *Server) handleAPIAgentMessages(w http.ResponseWriter, r *http.Request) 
 // NodePort many times a day. Full argument at the registration site
 // (registerAgentRoutes) and on the wrapper (requireArmedHookToken).
 //
-// ⚠ IT USES Gateway.Chat, NOT chatTurn: the operator route it replaces ran a
-// plain (tool-less) turn, and this change re-homes a path rather than widening
-// what the agent can do while answering on it.
+// ⚠ IT RUNS A TOOL-LESS TURN (askTurn), NOT chatTurn: the operator route it
+// replaces ran a plain turn, and this change re-homes a path rather than widening
+// what the agent can do while answering on it. A turn for the gateway runtime
+// beside a claude-code chief's ccd carries the chief's instructions (askTurn).
 //
 // 🔴 THIS IS THE ROUTE THE EMPTY-REPLY DEFECT WAS MEASURED ON, AND THE READING IT
 // PRODUCES IS WORTH KNOWING: three consecutive turns against a live agent answered
@@ -650,7 +651,7 @@ func (s *Server) handleAPIAgentSendMessage(w http.ResponseWriter, r *http.Reques
 	_, _ = s.ext.Agents.AddChatMessage(ctx, agents.ChatMessage{
 		AgentID: a.ID, SessionID: sess.ID, Role: "user", Content: body.Message,
 	})
-	reply, err := s.ext.Gateway.Chat(withSessionRoute(ctx, a, sess), a, sess.SessionKey, body.Message, nil)
+	reply, err := s.askTurn(withSessionRoute(ctx, a, sess), a, sess.SessionKey, body.Message)
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]any{"error": "agent did not respond: " + err.Error()})
 		return
