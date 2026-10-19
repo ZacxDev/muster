@@ -216,9 +216,9 @@ func (t *MirrorTranscript) subOf(toolID string) *mirror.Subagent {
 }
 
 // SubagentOps is a subagent list (mirror.Msg.Subagents) as the page's DOM
-// operations: each card whose summary changed is redrawn — its <summary>, and
-// its state and agent attributes — and nothing else, so an opened card keeps
-// its tail. A summary for a call this socket never drew is drawn only when the
+// operations: each card whose summary changed is redrawn — its <summary> (a
+// "patch": a page without that card draws nothing), and its state and agent
+// attributes — and nothing else, so an opened card keeps its tail. A summary for a call this socket never drew is drawn only when the
 // page may have it from an earlier socket (Resumed); otherwise it is kept for
 // the card the call will draw.
 func (t *MirrorTranscript) SubagentOps(list []mirror.Subagent) []MirrorOp {
@@ -237,7 +237,7 @@ func (t *MirrorTranscript) SubagentOps(list []mirror.Subagent) []MirrorOp {
 		}
 		id := toolRowID(s.ToolID)
 		ops = append(ops,
-			MirrorOp{Op: "replace", ID: id + "-s", HTML: render(subagentSummary(id, c, &s))},
+			MirrorOp{Op: "patch", ID: id + "-s", HTML: render(subagentSummary(id, c, &s))},
 			MirrorOp{Op: "attr", ID: id, Name: "data-subagent-state", Value: s.State},
 			MirrorOp{Op: "attr", ID: id, Name: "data-agent", Value: s.Agent},
 		)

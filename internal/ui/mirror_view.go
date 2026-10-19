@@ -217,9 +217,12 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 //   - attr: set attribute Name to Value on the element with ID (a group's state);
 //   - result: a tool row's result for a call an EARLIER socket drew (Resumed):
 //     the row with ID takes HTML's status and output and keeps the rest; with
-//     no such row on the page, it is an append.
+//     no such row on the page, it is an append;
+//   - patch: put HTML in place of the element with ID when the page has one,
+//     and do nothing when it does not (a subagent card's summary: never drawn
+//     anywhere but inside its card).
 type MirrorOp struct {
-	Op    string `json:"op"` // "append" | "replace" | "wrap" | "attr" | "result"
+	Op    string `json:"op"` // "append" | "replace" | "wrap" | "attr" | "result" | "patch"
 	ID    string `json:"id,omitempty"`
 	HTML  string `json:"html,omitempty"`
 	Into  string `json:"into,omitempty"`
@@ -701,6 +704,12 @@ func mirrorViewScript() g.Node {
           grp.querySelector('[data-tool-group-body]').appendChild(first);
           return;
         }
+      }
+      // Only where it is: a subagent card's summary (subagent_cards.go).
+      if (op.op === 'patch') {
+        var pt = op.id && document.getElementById(op.id);
+        if (pt) pt.replaceWith(frag(op.html));
+        return;
       }
       if (op.op === 'result' && op.id) {
         var row = document.getElementById(op.id);
