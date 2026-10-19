@@ -1,0 +1,169 @@
+package main
+
+import (
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// testHookSecret is the hook credential the unit tests give ccd and `ccd hook`.
+const testHookSecret = "test-hook-secret-not-real-3f1a"
+
+// hookServer serves srv's hook handler (with srv's credential set to
+// testHookSecret) as `ccd hook` reaches it: every request carries the
+// credential. For tests about what a hook DOES; whether one without the
+// credential is refused is TestAHookWithoutTheCredentialIsRefusedAndChangesNothing.
+func hookServer(t *testing.T, srv *server) *httptest.Server {
+	t.Helper()
+	srv.cfg.HookSecret = testHookSecret
+	h := srv.hookHandler()
+	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("Authorization", "Bearer "+testHookSecret)
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(hs.Close)
+	return hs
+}
+
+// unixHookTarget serves h on a unix socket and points `ccd hook` at it, with
+// testHookSecret as its credential, as ccd does for the CLIs it starts.
+func unixHookTarget(t *testing.T, h http.Handler) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ccdh-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	path := filepath.Join(dir, "hook.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hs := &http.Server{Handler: h}
+	go hs.Serve(ln)
+	t.Cleanup(func() { hs.Close() })
+	t.Setenv(envHookSocket, path)
+	t.Setenv(envHookSecret, testHookSecret)
+	return path
+}
+
+// 🔴 A HOOK WITHOUT THE CREDENTIAL IS REFUSED AND CHANGES NOTHING. The session
+// is mid-turn at a permission prompt (busy, awaitingApproval); a Stop with no
+// credential, a wrong one, or sent to a ccd that holds none is 401 and leaves
+// both set — a Stop accepted here is what made the next turn's paste answer
+// the prompt. The control: the same Stop with the credential clears both.
+func TestAHookWithoutTheCredentialIsRefusedAndChangesNothing(t *testing.T) {
+	post := func(srv *server, cred string) int {
+		hs := httptest.NewServer(srv.hookHandler())
+		defer hs.Close()
+		req, _ := http.NewRequest(http.MethodPost, hs.URL+"/hook/Stop", strings.NewReader(`{}`))
+		if cred != "" {
+			req.Header.Set("Authorization", "Bearer "+cred)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	blockedSession := func(secret string) *server {
+		srv := newServer(serverConfig{HookSecret: secret, ConfigDir: t.TempDir()}, nil, newAuthTracker())
+		srv.onHook(hookEvent{Event: "UserPromptSubmit", PromptID: "p"})
+		srv.onHook(hookEvent{Event: "Notification", NotificationType: "permission_prompt"})
+		if !srv.busy || !srv.awaitingApproval {
+			t.Fatal("instrument check: the session is not mid-turn at a prompt")
+		}
+		return srv
+	}
+	for _, c := range []struct{ name, secret, cred string }{
+		{"no credential", testHookSecret, ""},
+		{"a wrong credential", testHookSecret, "not-the-credential"},
+		{"a ccd holding no credential", "", ""},
+	} {
+		srv := blockedSession(c.secret)
+		if code := post(srv, c.cred); code != http.StatusUnauthorized {
+			t.Errorf("%s: %d, want 401", c.name, code)
+		}
+		if !srv.busy || !srv.awaitingApproval || srv.idle() {
+			t.Errorf("%s: the refused Stop changed the session (busy=%v awaiting=%v)", c.name, srv.busy, srv.awaitingApproval)
+		}
+	}
+	srv := blockedSession(testHookSecret)
+	if code := post(srv, testHookSecret); code != http.StatusNoContent || srv.busy || srv.awaitingApproval {
+		t.Fatalf("control: with the credential: %d busy=%v awaiting=%v; want 204, both cleared", code, srv.busy, srv.awaitingApproval)
+	}
+}
+
+// The hook channel serve makes: a socket only ccd's user can reach, a fresh
+// credential per process, and both — and only both — in the CLI's environment.
+// CCD_HOOK_LISTEN (the old TCP listener) is refused rather than ignored.
+func TestTheHookChannelIsAPrivateSocketWithAPerProcessCredential(t *testing.T) {
+	a, err := newHookChannel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(a.dir)
+	b, err := newHookChannel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(b.dir)
+	if a.secret == b.secret || len(a.secret) != 64 || a.path == b.path {
+		t.Fatalf("two channels share a credential or socket, or the credential is short: %q %q", a.secret, b.secret)
+	}
+	ln, err := a.listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	if ln.Addr().Network() != "unix" {
+		t.Fatalf("the hook listener is %s, want a unix socket", ln.Addr().Network())
+	}
+	for path, want := range map[string]os.FileMode{a.dir: 0o700, a.path: 0o600} {
+		fi, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fi.Mode().Perm(); got != want {
+			t.Errorf("%s: mode %o, want %o", path, got, want)
+		}
+	}
+	if got := strings.Join(a.cliEnv(), " "); got != envHookSocket+"="+a.path+" "+envHookSecret+"="+a.secret {
+		t.Errorf("the CLI's environment: %q", got)
+	}
+	t.Setenv("CCD_HOOK_LISTEN", "127.0.0.1:18790")
+	if _, err := newHookChannel(); err == nil || !strings.Contains(err.Error(), "CCD_HOOK_LISTEN") {
+		t.Fatalf("CCD_HOOK_LISTEN set: %v; want a refusal naming it", err)
+	}
+}
+
+// tmux is told to put the hook channel in the environment of every CLI it
+// starts: the primary's and each lane's (Start), and every restart (Respawn).
+// (That the CLI then HAS it is the tmux suite's: no hook would be accepted.)
+func TestEveryCLIStartCarriesTheHookChannel(t *testing.T) {
+	term, dir := fakeTermScreen(t, "")
+	term.env = []string{envHookSocket + "=/s/hook.sock", envHookSecret + "=sekrit"}
+	if _, err := term.Start(context.Background(), "/w", []string{"claude"}); err == nil {
+		t.Log("(fake new-session printed nothing parseable; only its argv matters here)")
+	}
+	_ = term.Respawn(context.Background(), paneRef{Server: "4242 1791600000", Pane: "%1"}, "/w", []string{"claude"})
+	calls, _ := os.ReadFile(filepath.Join(dir, "calls"))
+	var starts int
+	for _, l := range strings.Split(string(calls), "\n") {
+		if strings.Contains(l, "new-session") || strings.Contains(l, "respawn-pane") {
+			starts++
+			if !strings.Contains(l, "-e "+envHookSocket+"=/s/hook.sock -e "+envHookSecret+"=sekrit") {
+				t.Errorf("a CLI start without the hook channel: %s", l)
+			}
+		}
+	}
+	if starts != 2 {
+		t.Fatalf("instrument check: %d starts seen, want 2:\n%s", starts, calls)
+	}
+}

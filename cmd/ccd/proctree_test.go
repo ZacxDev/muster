@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -107,8 +106,7 @@ func TestOnlyThePrimaryProcessSessionStartIsRecorded(t *testing.T) {
 		}
 		return pane, nil
 	}
-	hs := httptest.NewServer(primary.hookHandler())
-	t.Cleanup(hs.Close)
+	hs := hookServer(t, primary)
 	record := func() string {
 		b, _ := os.ReadFile(filepath.Join(cfg, primaryRecordFile))
 		return strings.TrimSpace(string(b))
@@ -164,11 +162,9 @@ func TestALoneArgvIsExecdNotShelled(t *testing.T) {
 // `ccd hook` names its own pid, beside its lane.
 func TestRunHookSendsItsPID(t *testing.T) {
 	var got []string
-	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	unixHookTarget(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got = append(got, r.URL.Query().Get("pid")+"|"+r.URL.Query().Get("lane"))
 	}))
-	t.Cleanup(hs.Close)
-	t.Setenv("CCD_HOOK_URL", hs.URL)
 	t.Setenv("CCD_LANE", "")
 	runHook([]string{"SessionStart"}, strings.NewReader(`{}`), io.Discard)
 	t.Setenv("CCD_LANE", laneID("k"))
@@ -204,8 +200,7 @@ func TestThePrimarysSessionStartIsRecordedWhileItsFirstStartIsPending(t *testing
 	ran := make(chan struct{})
 	go func() { defer close(ran); _ = sup.run(ctx) }()
 	t.Cleanup(func() { cancel(); <-ran })
-	hs := httptest.NewServer(srv.hookHandler())
-	t.Cleanup(hs.Close)
+	hs := hookServer(t, srv)
 
 	const own = "0f0e0d0c-0b0a-4908-8706-050403020100"
 	done := make(chan error, 1)

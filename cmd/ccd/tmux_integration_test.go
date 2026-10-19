@@ -76,10 +76,17 @@ func startTmuxRig(t *testing.T, trustWorkspace bool) *tmuxRig {
 	sock := fmt.Sprintf("ccd-it-%d-%d", os.Getpid(), time.Now().UnixNano())
 	term := tmuxTerminal{bin: tmuxBin, socket: sock, target: "cc", enterDelay: 150 * time.Millisecond}
 	bearer, _ := resolveBearer(knownHooksToken, "")
-	srv := newServer(serverConfig{Bearer: bearer, ConfigDir: cfg, SubmitTimeout: 10 * time.Second,
-		TurnTimeout: 30 * time.Second}, term, newAuthTracker())
+	srv := newServer(serverConfig{Bearer: bearer, HookSecret: testHookSecret, ConfigDir: cfg,
+		SubmitTimeout: 10 * time.Second, TurnTimeout: 30 * time.Second}, term, newAuthTracker())
 
-	hl, err := net.Listen("tcp", "127.0.0.1:0")
+	// The hook socket, as main.go's hookChannel makes it (in a short directory:
+	// a unix socket's path is limited to 107 bytes).
+	sockDir, err := os.MkdirTemp("", "ccdh-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockDir) })
+	hl, err := net.Listen("unix", filepath.Join(sockDir, "hook.sock"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +106,7 @@ func startTmuxRig(t *testing.T, trustWorkspace bool) *tmuxRig {
 	cmd.Env = append(os.Environ(),
 		"PATH="+bin+":"+os.Getenv("PATH"),
 		"CLAUDE_CONFIG_DIR="+cfg,
-		"CCD_HOOK_URL=http://"+hl.Addr().String(),
+		envHookSocket+"="+hl.Addr().String(), envHookSecret+"="+testHookSecret,
 		"SHELL=/bin/sh")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -330,7 +337,7 @@ func startServeAt(t *testing.T, wsRel string, env func(root string) []string, ex
 		defer l.Close()
 		return l.Addr().String()
 	}
-	gwAddr, hookAddr := free(), free()
+	gwAddr := free()
 	sock := fmt.Sprintf("ccd-it-bin-%d-%d", os.Getpid(), time.Now().UnixNano())
 	t.Cleanup(func() { _ = exec.Command(tmuxBin, "-L", sock, "kill-server").Run() })
 
@@ -339,7 +346,7 @@ func startServeAt(t *testing.T, wsRel string, env func(root string) []string, ex
 	cmd.Env = append(os.Environ(),
 		"PATH="+bin+":"+os.Getenv("PATH"), "SHELL=/bin/sh",
 		"HOOKS_TOKEN="+knownHooksToken, "CLAUDE_CONFIG_DIR="+cfg, "CCD_WORKSPACE="+ws,
-		"CCD_LISTEN="+gwAddr, "CCD_HOOK_LISTEN="+hookAddr, "CCD_HOOK_URL=http://"+hookAddr,
+		"CCD_LISTEN="+gwAddr,
 		"CCD_TMUX_SOCKET="+sock, "CCD_TMUX_CONF=/dev/null",
 		"CCD_SUPERVISE=1", "CCD_CLAUDE_BIN="+filepath.Join(bin, "claude"))
 	cmd.Env = append(cmd.Env, extra...)

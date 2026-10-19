@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -292,8 +291,7 @@ func TestTheGatewayMuxDoesNotServeHooks(t *testing.T) {
 		t.Fatal("a hook POSTed to the gateway mux changed session state")
 	}
 	// Positive control: the hook mux DOES serve it.
-	hs := httptest.NewServer(srv.hookHandler())
-	defer hs.Close()
+	hs := hookServer(t, srv)
 	resp, err = http.Post(hs.URL+"/hook/Stop", "application/json", strings.NewReader(`{"hook_event_name":"Stop"}`))
 	if err != nil {
 		t.Fatal(err)

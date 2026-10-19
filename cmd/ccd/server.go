@@ -66,7 +66,11 @@ type pendingTurn struct {
 }
 
 type serverConfig struct {
-	Bearer        string
+	Bearer string
+	// HookSecret is the credential every hook must present (hookHandler): ccd
+	// makes it per process and hands it only to the CLIs it starts (main.go).
+	// Empty refuses every hook.
+	HookSecret    string
 	ConfigDir     string        // CLAUDE_CONFIG_DIR: transcripts must live under <it>/projects
 	SubmitTimeout time.Duration // paste → UserPromptSubmit
 	TurnTimeout   time.Duration // UserPromptSubmit → Stop/StopFailure
@@ -226,23 +230,40 @@ func (s *server) gatewayHandler() http.Handler {
 	return mux
 }
 
-// hookHandler is served ONLY on a loopback listener (see main.go). The hooks the
-// CLI runs are `ccd hook <Event>` commands that POST their stdin here.
+// hookHandler is served ONLY on ccd's hook socket: a unix socket in a directory
+// only ccd's user can enter (main.go). The hooks the CLI runs are `ccd hook
+// <Event>` commands that POST their stdin there, with the credential ccd put in
+// the CLI's environment; a hook without it is refused (401) and changes nothing.
 //
-// ⚠ IT IS UNAUTHENTICATED, ON THE ARGUMENT THAT anything that can connect to
-// 127.0.0.1 in the pod can already type into the tmux session, which is strictly
-// more than a forged Stop can do. 🔴 THAT ARGUMENT DOES NOT HOLD IN A CHIEF'S POD
-// WITH THE GATEWAY RUNTIME BESIDE ccd (gateway.go): the runtime shares this
-// loopback and NOT ccd's filesystem, so it can reach this listener without being
-// able to reach tmux. A hook carries no prompt and decides no permission, so a
-// forged one cannot submit a turn or allow a tool; what it can do is bookkeeping
-// — end a pending turn early, set the auth state /healthz reports, set or clear
-// the awaiting-approval badge, record a primary session id. Authenticating this
-// listener (or moving it off TCP loopback) is still owed.
+// 🔴 A FORGED HOOK IS NOT BOOKKEEPING. ccd decides whether a turn may be pasted
+// from hook state, so a forged Stop or SessionStart makes a session sitting at a
+// permission prompt read idle (busy and awaitingApproval cleared), and the next
+// turn's paste-then-Enter would ANSWER the prompt — Enter takes the highlighted
+// "1. Yes", allowing the tool. A forged UserPromptSubmit holds the session busy
+// (every turn 409); a forged SessionStart can record a primary session id. That
+// is why the channel is authenticated, and why the paste itself refuses a pane
+// showing a dialog whatever the hook state says (dialog.go).
+//
+// WHO CAN STILL FORGE ONE, STATED PLAINLY: a process running as ccd's user in
+// ccd's container — which includes every tool the CLI runs. It can reach the
+// socket and read the credential (it inherits it from the CLI, and could read
+// /proc/<pid>/environ of any same-user process). The gateway runtime beside ccd
+// in a chief's pod cannot: it is another container, with its own filesystem
+// (the socket is not in it, and no volume is shared) and its own process
+// namespace (no /proc of ccd's), and a unix socket bound to a PATH — unlike
+// 127.0.0.1, and unlike an abstract unix socket — is not reachable through the
+// network namespace the two share.
 func (s *server) hookHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /hook/{event}", s.handleHook)
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !bearerOK(r, s.cfg.HookSecret) {
+			log.Printf("ccd: refused a %s %s without the hook credential", r.Method, r.URL.Path)
+			http.Error(w, "missing or wrong hook credential", http.StatusUnauthorized)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func (s *server) handleHook(w http.ResponseWriter, r *http.Request) {
@@ -791,6 +812,9 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 	}()
 
 	if err := s.term.Paste(ctx, pane, prompt); err != nil {
+		if errors.Is(err, errDialogShown) {
+			return turnOutcome{}, awaitingApproval(err.Error())
+		}
 		if errors.Is(err, errPaneNotLive) {
 			return turnOutcome{}, paneNotReady(err.Error())
 		}
@@ -889,6 +913,14 @@ waitSubmit:
 	}
 	s.auth.observeTurn(nil)
 	return out, nil
+}
+
+// awaitingApproval is the answer for a pane showing a dialog (dialog.go): 409
+// `busy`, the refusal muster reads as "nothing was pasted, send it later", with
+// code awaiting_approval naming why.
+func awaitingApproval(why string) *failure {
+	return &failure{Status: http.StatusConflict, Type: failBusy, Code: codeAwaitingApproval,
+		Message: why + "; nothing was typed — answer it in the terminal (attach to the pane), then send again"}
 }
 
 // paneNotReady is the not_ready answer for a pane ccd cannot or will not paste into.
