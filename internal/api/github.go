@@ -70,7 +70,7 @@ func (s *Server) handleReposContent(w http.ResponseWriter, r *http.Request) {
 	// guard.
 	// A configured GitHub App is muster's GitHub identity (github_source.go), so
 	// the tab lists ITS installation repositories, whatever the OAuth store holds.
-	if s.ext.GitHubApp != nil {
+	if s.githubApp(r.Context()) != nil {
 		s.renderReposViaApp(w, r)
 		return
 	}
@@ -114,13 +114,14 @@ func (s *Server) handleReposContent(w http.ResponseWriter, r *http.Request) {
 // or disconnect — the App is configured by the deployment, not per user.
 func (s *Server) renderReposViaApp(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	accounts, err := s.ext.GitHubApp.Accounts(ctx)
+	app := s.githubApp(ctx)
+	accounts, err := app.Accounts(ctx)
 	if err != nil {
 		s.logger.Printf("github app: list installations: %v", err)
 		_ = ui.ReposViaApp(nil, nil, err.Error()).Render(w)
 		return
 	}
-	repos, err := s.ext.GitHubApp.Repos(ctx)
+	repos, err := app.Repos(ctx)
 	if err != nil {
 		s.logger.Printf("github app: list repositories: %v", err)
 		_ = ui.ReposViaApp(accounts, nil, err.Error()).Render(w)
@@ -130,7 +131,7 @@ func (s *Server) renderReposViaApp(w http.ResponseWriter, r *http.Request) {
 	for _, rp := range repos {
 		views = append(views, ui.RepoView{FullName: rp.FullName, Private: rp.Private, HTMLURL: rp.HTMLURL})
 	}
-	_ = ui.ReposViaApp(accounts, views, s.ext.GitHubApp.Problem(0)).Render(w)
+	_ = ui.ReposViaApp(accounts, views, app.Problem(0)).Render(w)
 }
 
 // handleGitHubConnect starts the OAuth web flow: set a state cookie and redirect

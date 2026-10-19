@@ -267,6 +267,10 @@ func (s *Server) agentConnectorView(ctx context.Context, a agents.Agent, name st
 	g, err := s.ext.Connectors.LatestGrant(ctx, a.ID, name)
 	switch {
 	case err == nil:
+		g, err = s.reconcileGrant(ctx, g)
+		if err != nil {
+			return v, err
+		}
 		v.Grant, v.GrantID = g.Status, g.ID
 	case !errors.Is(err, connectors.ErrNotFound):
 		return v, err
@@ -384,9 +388,14 @@ func (s *Server) AgentRequestConnector(ctx context.Context, a agents.Agent, name
 	if err := connectors.ValidateName(name); err != nil {
 		return AgentConnectorView{}, false, err
 	}
-	if g, err := s.ext.Connectors.LatestGrant(ctx, a.ID, name); err == nil && g.Usable() {
-		v, err := s.agentConnectorView(ctx, a, name)
-		return v, false, err
+	if g, err := s.ext.Connectors.LatestGrant(ctx, a.ID, name); err == nil {
+		if g, err = s.reconcileGrant(ctx, g); err != nil {
+			return AgentConnectorView{}, false, err
+		}
+		if g.Usable() {
+			v, err := s.agentConnectorView(ctx, a, name)
+			return v, false, err
+		}
 	}
 	g, created, err := s.ext.Connectors.RequestGrant(ctx, a.ID, name, strings.TrimSpace(reason))
 	if err != nil {
@@ -436,6 +445,31 @@ func (s *Server) handleAgentConnectorRequest(w http.ResponseWriter, r *http.Requ
 		code = http.StatusAccepted
 	}
 	s.writeJSON(w, code, v)
+}
+
+// reconcileGrant is connectors.ReconcileGrant for the agent routes (ctx is the
+// agent's owner): a grant re-opened because its credential source changed is
+// audited and prompts the owner like a new request.
+func (s *Server) reconcileGrant(ctx context.Context, g connectors.Grant) (connectors.Grant, error) {
+	g, reopened, err := connectors.ReconcileGrant(ctx, s.ext.Connectors, g)
+	if err != nil || !reopened {
+		return g, err
+	}
+	s.auditGrant(ctx, g, "re-opened: the connector's credential source changed")
+	s.onConnectorRequested(ctx, g)
+	return g, nil
+}
+
+// grantOwnerContext is ctx acting as the grant's OWNER (the agent's owner), for
+// deciding what the connector is FOR THAT USER: the approve routes run under
+// the approver's session, and whether `github` is the App or a stored token is
+// a property of the agent's owner (connectors.WithVirtual), not of who clicks.
+func (s *Server) grantOwnerContext(ctx context.Context, g connectors.Grant) context.Context {
+	if g.OwnerID <= 0 {
+		return ctx
+	}
+	p, _ := authz.From(ctx)
+	return authz.WithPrincipal(ctx, s.principalFor(ctx, g.OwnerID, p.Via))
 }
 
 // onConnectorRequested prompts the operator for a new pending grant: an SSE
@@ -508,7 +542,7 @@ func (s *Server) connectorRequestViews(ctx context.Context) ([]ui.ConnectorReque
 		// A virtual connector (the GitHub App) says on the card when it cannot
 		// serve this agent — its credentials refused, say — so the owner knows an
 		// approval alone will not make the clone succeed.
-		if vc, ok := connectors.VirtualOf(s.ext.Connectors, g.Connector); ok {
+		if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); ok {
 			v.Problem = vc.Problem(g.AgentID)
 		}
 		out = append(out, v)
@@ -540,10 +574,11 @@ func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsCont
 		cv := ui.ConnectorView{Name: k.Name, Platform: k.Platform, Hosts: k.Hosts,
 			Scheme: string(k.Scheme), HeaderName: k.HeaderName, Username: k.Username,
 			CreatedAt: k.CreatedAt, RotatedAt: k.RotatedAt, LastUsedAt: k.LastUsedAt, Grants: by[k.Name]}
-		if vc, ok := connectors.VirtualOf(s.ext.Connectors, k.Name); ok {
+		if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, k.Name); ok {
 			cv.Managed = "Provided by the GitHub App this server is configured with: each approved agent's " +
-				"requests carry a 1-hour token limited to its own repository (Contents and Pull requests, " +
-				"read and write). There is no stored secret to rotate or delete."
+				"requests to its own repository carry a 1-hour token limited to it (Contents and Pull requests " +
+				"read and write, Checks and Commit statuses read); other repositories are reached anonymously, " +
+				"and an agent with no repository gets no access. There is no stored secret to rotate or delete."
 			cv.Problem = vc.Problem(0)
 		}
 		c.Connectors = append(c.Connectors, cv)
@@ -698,7 +733,11 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 	s.auditGrant(ctx, connectors.Grant{Connector: c.Name}, "connector created by the operator")
 	notice := "Connector " + c.Name + " saved."
 	if f.RequestID != 0 {
-		g, err := s.ext.Connectors.DecideGrant(ctx, f.RequestID, true, "operator")
+		src := connectors.SourceStored
+		if pg, gerr := s.ext.Connectors.GetGrant(ctx, f.RequestID); gerr == nil {
+			src = connectors.SourceFor(s.grantOwnerContext(ctx, pg), s.ext.Connectors, pg.Connector)
+		}
+		g, err := s.ext.Connectors.DecideGrant(ctx, f.RequestID, true, "operator", src)
 		if err != nil {
 			s.logger.Printf("connectors: approve %d after create: %v", f.RequestID, err)
 			s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice,
@@ -781,19 +820,25 @@ func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	ctx := r.Context()
+	src := ""
 	if approve {
 		g, err := s.ext.Connectors.GetGrant(ctx, id)
 		if err != nil {
 			s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "That request no longer exists."})
 			return
 		}
-		if _, err := s.ext.Connectors.GetConnector(ctx, g.Connector); err != nil {
+		// 🔴 AS THE GRANT'S OWNER: whether `github` is the App (admins only) or
+		// that owner's stored token is decided for the agent's owner, so a member
+		// cannot approve their agent onto the App, whoever clicks.
+		octx := s.grantOwnerContext(ctx, g)
+		if _, err := s.ext.Connectors.GetConnector(octx, g.Connector); err != nil {
 			s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "Connector " + g.Connector +
 				" does not exist; enter a credential for it instead."})
 			return
 		}
+		src = connectors.SourceFor(octx, s.ext.Connectors, g.Connector)
 	}
-	g, err := s.ext.Connectors.DecideGrant(ctx, id, approve, "operator")
+	g, err := s.ext.Connectors.DecideGrant(ctx, id, approve, "operator", src)
 	switch {
 	case errors.Is(err, connectors.ErrNotPending), errors.Is(err, connectors.ErrNotFound):
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "That request was already decided."})

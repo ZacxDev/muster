@@ -82,13 +82,13 @@ const (
 	envGitHubClientID  = "GITHUB_CLIENT_ID"
 	envGitHubClientSec = "GITHUB_CLIENT_SECRET"
 
-	// The GitHub App (internal/githubapp): muster's GitHub identity when set,
-	// taking precedence over the OAuth connection above (deprecated). The ID and
-	// the key are a pair; the installation is chosen by the repository owner's
-	// login unless the third pins one.
-	envGitHubAppID           = "MUSTER_GITHUB_APP_ID"
-	envGitHubAppKey          = "MUSTER_GITHUB_APP_PRIVATE_KEY"
-	envGitHubAppInstallation = "MUSTER_GITHUB_APP_INSTALLATION_ID"
+	// The GitHub App (internal/githubapp): muster's GitHub identity (for admins)
+	// when set, taking precedence over the OAuth connection above (deprecated).
+	// The ID and the key are a pair, and the account allowlist is REQUIRED with
+	// them: the App is public, so anyone can install it.
+	envGitHubAppID       = "MUSTER_GITHUB_APP_ID"
+	envGitHubAppKey      = "MUSTER_GITHUB_APP_PRIVATE_KEY"
+	envGitHubAppAccounts = "MUSTER_GITHUB_APP_ACCOUNTS"
 
 	// How long a claude-code agent's first turn waits for its repository checkout
 	// (agents.CheckoutWaitTimeout) before the agent is marked error.
@@ -446,10 +446,10 @@ type config struct {
 
 	// GitHubAppID / GitHubAppKey configure the GitHub App (both or neither;
 	// loadConfig refuses half, and a key that does not parse).
-	// GitHubAppInstallationID, when non-zero, pins its installation.
-	GitHubAppID             int64
-	GitHubAppKey            *rsa.PrivateKey
-	GitHubAppInstallationID int64
+	// GitHubAppAccounts is the REQUIRED allowlist of installation accounts.
+	GitHubAppID       int64
+	GitHubAppKey      *rsa.PrivateKey
+	GitHubAppAccounts []string
 
 	// CheckoutWaitTimeout is agents.CheckoutWaitTimeout for this server: 0 means
 	// the default (agents.DefaultCheckoutWaitTimeout).
@@ -1257,6 +1257,9 @@ func (c config) validateConnectors() error {
 	return nil
 }
 
+// githubLoginRE is a GitHub user or organization login.
+var githubLoginRE = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
+
 // loadGitHubApp reads the GitHub App's three variables.
 //
 // 🔴 HALF A PAIR, AND A KEY THAT DOES NOT PARSE, REFUSE TO BOOT. Either would
@@ -1265,10 +1268,10 @@ func (c config) validateConnectors() error {
 func (c *config) loadGitHubApp(getenv func(string) string) error {
 	id := strings.TrimSpace(getenv(envGitHubAppID))
 	key := getenv(envGitHubAppKey)
-	inst := strings.TrimSpace(getenv(envGitHubAppInstallation))
+	accounts := splitList(getenv(envGitHubAppAccounts))
 	if id == "" && strings.TrimSpace(key) == "" {
-		if inst != "" {
-			return fmt.Errorf("%s is set but %s is not: an installation needs its App", envGitHubAppInstallation, envGitHubAppID)
+		if len(accounts) > 0 {
+			return fmt.Errorf("%s is set but %s is not: an account allowlist needs its App", envGitHubAppAccounts, envGitHubAppID)
 		}
 		return nil
 	}
@@ -1285,14 +1288,20 @@ func (c *config) loadGitHubApp(getenv func(string) string) error {
 		// The error names the shape, never the value.
 		return fmt.Errorf("invalid %s: %v", envGitHubAppKey, err)
 	}
-	c.GitHubAppID, c.GitHubAppKey = n, k
-	if inst != "" {
-		in, err := strconv.ParseInt(inst, 10, 64)
-		if err != nil || in <= 0 {
-			return fmt.Errorf("invalid %s %q: a numeric installation ID", envGitHubAppInstallation, inst)
-		}
-		c.GitHubAppInstallationID = in
+	// 🔴 REQUIRED. The App must be installable on "Any account" to reach an
+	// organization its owner does not own, so a stranger can install it on their
+	// own repositories; without the list those would become "connected".
+	if len(accounts) == 0 {
+		return fmt.Errorf("%s is set but %s is empty: name the GitHub accounts (users or organizations, "+
+			"comma-separated) whose installations muster may use — anyone can install a public App",
+			envGitHubAppID, envGitHubAppAccounts)
 	}
+	for _, a := range accounts {
+		if !githubLoginRE.MatchString(a) {
+			return fmt.Errorf("invalid %s entry %q: a GitHub login", envGitHubAppAccounts, a)
+		}
+	}
+	c.GitHubAppID, c.GitHubAppKey, c.GitHubAppAccounts = n, k, accounts
 	return nil
 }
 

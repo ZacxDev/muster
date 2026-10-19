@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/githubapp"
 )
@@ -42,11 +43,13 @@ type fakeGitHubUpstream struct {
 	srv  *httptest.Server
 	root string
 
-	mu      sync.Mutex
-	mints   []string          // request bodies, in order
+	mu    sync.Mutex
+	mints []string // request bodies, in order
 	// refuseApp answers every App-JWT call 401, as GitHub does for a key that
 	// is not the App's or a JWT outside its validity window.
 	refuseApp bool
+	// public repositories are served to anyone, with no Authorization.
+	public  map[string]bool
 	minted  map[string]string // token -> repository name it was minted for
 	gitSeen []string          // "<path> <authorization>" per git request
 	apiSeen []string          // the Authorization of each /repos/ request
@@ -60,7 +63,7 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 	if err != nil {
 		t.Fatal("git is required (CI runners have it): ", err)
 	}
-	f := &fakeGitHubUpstream{root: t.TempDir(), minted: map[string]string{}}
+	f := &fakeGitHubUpstream{root: t.TempDir(), minted: map[string]string{}, public: map[string]bool{}}
 	backend := &cgi.Handler{Path: gitBin, Args: []string{"http-backend"},
 		Env: []string{"GIT_PROJECT_ROOT=" + f.root, "GIT_HTTP_EXPORT_ALL=1"}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +76,14 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 				http.Error(w, `{"message":"no JWT"}`, http.StatusUnauthorized)
 				return
 			}
-			_, _ = io.WriteString(w, `[{"id":42,"account":{"login":"example-org"}}]`)
+			// A second installation, on an account NOT on the allowlist: a stranger
+			// who installed the public App on their own repositories.
+			_, _ = io.WriteString(w, `[{"id":42,"account":{"login":"example-org"}},{"id":77,"account":{"login":"stranger"}}]`)
+		case p == "/app/installations/77/access_tokens":
+			f.mu.Lock()
+			f.mints = append(f.mints, "STRANGER INSTALLATION")
+			f.mu.Unlock()
+			http.Error(w, `{"message":"should never be called"}`, http.StatusTeapot)
 		case p == "/app/installations/42/access_tokens":
 			body, _ := io.ReadAll(r.Body)
 			f.mu.Lock()
@@ -86,6 +96,10 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"token": tok,
 				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+		case p == "/installation/repositories":
+			// Only ever reached with a listing token minted on installation 42
+			// (example-org): the stranger's installation is never minted on.
+			_, _ = io.WriteString(w, `{"total_count":1,"repositories":[{"full_name":"example-org/widget","private":true}]}`)
 		case strings.HasPrefix(p, "/repos/"):
 			// The REST API: record and echo what arrived (the echo exercises the
 			// proxy's redactor; the record is what GitHub was actually sent).
@@ -100,6 +114,10 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 			f.mu.Unlock()
 			// owner/name.git/...: the token must have been minted for `name`.
 			segs := strings.Split(strings.TrimPrefix(p, "/"), "/")
+			if auth == "" && len(segs) >= 2 && f.public[segs[0]+"/"+strings.TrimSuffix(segs[1], ".git")] {
+				backend.ServeHTTP(w, r)
+				return
+			}
 			raw, _ := base64.StdEncoding.DecodeString(strings.TrimPrefix(auth, "Basic "))
 			user, tok, _ := strings.Cut(string(raw), ":")
 			f.mu.Lock()
@@ -180,13 +198,13 @@ func appServer(t *testing.T, f *connFixture, up *fakeGitHubUpstream) (*Server, h
 		t.Fatal(err)
 	}
 	app, err := githubapp.New(githubapp.Config{AppID: 12345, PrivateKey: k, BaseURL: up.srv.URL,
-		GitHost: "github.fake.test:" + up.port(), APIHost: "api.fake.test:" + up.port()})
+		GitHost: "github.fake.test:" + up.port(), APIHost: "api.fake.test:" + up.port(), Accounts: []string{"example-org"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := New(nil, AuthConfig{HookToken: connTestHookToken, ServiceToken: connTestServiceToken, UIPassword: connTestPassword},
 		log.New(io.Discard, "", 0))
-	s.UseExtensions(Extensions{Agents: agents.NewPG(f.pool), Connectors: connectors.WithVirtual(f.store, app),
+	s.UseExtensions(Extensions{Agents: agents.NewPG(f.pool), Connectors: connectors.WithVirtual(f.store, app, authz.IsAdmin),
 		GitHubApp: app, ConnectorPolicy: fakeTestPolicy()})
 	return s, s.Handler(), app
 }
@@ -228,6 +246,8 @@ func TestAPendingGitHubRequestFiledBeforeTheAppBecomesApprovableAndTheCloneSucce
 	up := newFakeGitHubUpstream(t)
 	up.addRepo(t, "example-org/widget")
 	up.addRepo(t, "example-org/gadget")
+	up.addRepo(t, "public-org/dependency")
+	up.public["public-org/dependency"] = true
 	const tok = "seam-agent-token-0123456789abcdef"
 	id := f.seedAgent(t, "quiet-fixture", tok)
 	if _, err := f.pool.Exec(f.ctx, `UPDATE agents SET repo='example-org/widget' WHERE id=$1`, id); err != nil {
@@ -294,7 +314,7 @@ func TestAPendingGitHubRequestFiledBeforeTheAppBecomesApprovableAndTheCloneSucce
 	up.mu.Lock()
 	mints, seen := append([]string(nil), up.mints...), append([]string(nil), up.gitSeen...)
 	up.mu.Unlock()
-	const wantMint = `{"repositories":["widget"],"permissions":{"contents":"write","pull_requests":"write"}}`
+	const wantMint = `{"repositories":["widget"],"permissions":{"contents":"write","pull_requests":"write","checks":"read","statuses":"read"}}`
 	if len(mints) != 1 || mints[0] != wantMint {
 		t.Fatalf("mints = %q, want exactly one: %s", mints, wantMint)
 	}
@@ -308,18 +328,28 @@ func TestAPendingGitHubRequestFiledBeforeTheAppBecomesApprovableAndTheCloneSucce
 		t.Fatal("positive control: no git request reached the fake GitHub")
 	}
 
-	// 5. The same agent, another repository: refused by muster before a mint,
-	// and no git request for it reaches GitHub.
+	// 5. The same agent, another repository: forwarded ANONYMOUSLY — a public
+	// dependency clones, a private one fails as it would for anyone, nothing is
+	// minted for either, and no request for them carries a credential.
+	if out, err := clone("public-org/dependency", filepath.Join(t.TempDir(), "dep")); err != nil {
+		t.Fatalf("a public dependency did not clone through the anonymous pass-through: %v\n%s", err, out)
+	}
 	if out, err := clone("example-org/gadget", filepath.Join(t.TempDir(), "other")); err == nil {
-		t.Fatalf("the agent cloned a repository that is not its own:\n%s", out)
+		t.Fatalf("the agent cloned a PRIVATE repository that is not its own:\n%s", out)
 	}
 	up.mu.Lock()
 	defer up.mu.Unlock()
 	if len(up.mints) != 1 {
 		t.Fatalf("a token was minted for another repository: %q", up.mints)
 	}
-	for _, s := range up.gitSeen[len(seen):] {
-		t.Errorf("a request for another repository reached GitHub: %s", s)
+	others := up.gitSeen[len(seen):]
+	if len(others) == 0 {
+		t.Fatal("positive control: no request for the other repositories reached GitHub")
+	}
+	for _, s := range others {
+		if !strings.HasSuffix(s, " ") {
+			t.Errorf("a request for another repository carried a credential: %s", s)
+		}
 	}
 }
 
@@ -340,7 +370,7 @@ func TestTheProxyInjectsTheAppTokenForTheAgentsRepoAndRefusesAnother(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.store.DecideGrant(f.ctx, g.ID, true, "operator"); err != nil {
+	if _, err := f.store.DecideGrant(f.ctx, g.ID, true, "operator", connectors.SourceApp); err != nil {
 		t.Fatal(err)
 	}
 	api := "/connect/github/api.fake.test:" + up.port() + "/repos/example-org/"
@@ -367,14 +397,18 @@ func TestTheProxyInjectsTheAppTokenForTheAgentsRepoAndRefusesAnother(t *testing.
 		t.Fatalf("the upstream's echo of the injected credential reached the agent: %q", echo["authorization"])
 	}
 
+	// Another repository: anonymous — no Authorization reaches GitHub, no mint.
 	w = serveCall(t, h, "GET", api+"gadget/pulls", nil, agentHdr)
-	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "only its own repository example-org/widget") {
+	if w.Code != http.StatusOK {
 		t.Fatalf("another repository: %d %s", w.Code, w.Body)
 	}
 	up.mu.Lock()
 	defer up.mu.Unlock()
+	if len(up.apiSeen) != 2 || up.apiSeen[1] != "" {
+		t.Fatalf("the other repository's request reached GitHub with Authorization %q, want none", up.apiSeen)
+	}
 	if len(up.mints) != 1 {
-		t.Fatalf("a token was minted for the refused request: %q", up.mints)
+		t.Fatalf("a token was minted for another repository: %q", up.mints)
 	}
 }
 
@@ -425,5 +459,146 @@ func TestTheRequestCardShowsTheAppsProblem(t *testing.T) {
 	if strings.Count(page, "data-connector-problem") < 2 || !strings.Contains(page, "(401)") ||
 		!strings.Contains(page, "MUSTER_GITHUB_APP_PRIVATE_KEY") {
 		t.Fatalf("the request card and the connector card do not both show the App's 401 problem:\n%s", page)
+	}
+}
+
+// TestAMembersAgentGetsNoAppConnectorAndCannotBeApprovedOntoIt (R2): on a
+// multi-user muster the App is the admin's. A MEMBER's agent sees no github
+// connector (exists=false), its pending request is not approvable through the
+// App — whoever clicks Approve — and the proxy mints nothing for it. The
+// admin's own agent, in the same server, still gets all three (control).
+func TestAMembersAgentGetsNoAppConnectorAndCannotBeApprovedOntoIt(t *testing.T) {
+	f := newConnFixture(t)
+	up := newFakeGitHubUpstream(t)
+	up.addRepo(t, "example-org/widget")
+	srv, h, _ := appServer(t, f, up)
+	op := map[string]string{"Cookie": sessionCookieFor(srv), "HX-Request": "true", "Origin": "http://example.com"}
+
+	var member int64
+	sys := authz.System(f.ctx)
+	if err := f.pool.QueryRow(sys, `INSERT INTO users (role, display_name) VALUES ('member', $1) RETURNING id`,
+		"gh-app-member-"+strconv.FormatInt(time.Now().UnixNano(), 36)).Scan(&member); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		s := authz.System(context.Background())
+		_, _ = f.pool.Exec(s, `DELETE FROM agents WHERE owner_id = $1`, member)
+		_, _ = f.pool.Exec(s, `DELETE FROM users WHERE id = $1`, member)
+	})
+	const mtok, atok = "member-agent-token-0123456789abcdef", "admin-agent-token-0123456789abcdefg"
+	var mid int64
+	if err := f.pool.QueryRow(sys, `INSERT INTO agents (name, namespace, hooks_token, owner_id, repo)
+		VALUES ('member-gh', 'ns-member-gh', $1, $2, 'example-org/widget') RETURNING id`, mtok, member).Scan(&mid); err != nil {
+		t.Fatal(err)
+	}
+	aid := f.seedAgent(t, "admin-gh", atok)
+	if _, err := f.pool.Exec(f.ctx, `UPDATE agents SET repo='example-org/widget' WHERE id=$1`, aid); err != nil {
+		t.Fatal(err)
+	}
+
+	if v := agentView(t, h, mtok); v.Exists {
+		t.Fatalf("a member's agent sees the App-backed github connector: %+v", v)
+	}
+	if v := agentView(t, h, atok); !v.Exists {
+		t.Fatalf("control: the admin's agent does not see it: %+v", v)
+	}
+
+	// The member's agent files its request; the operator (an admin) tries to
+	// approve it. It must stay pending: for its OWNER there is no github
+	// connector to approve it onto.
+	w := serveCall(t, h, "POST", "/agent/connectors/github/request", strings.NewReader(`{}`),
+		map[string]string{"X-Muster-Token": mtok, "Content-Type": "application/json"})
+	var filed AgentConnectorView
+	_ = json.Unmarshal(w.Body.Bytes(), &filed)
+	if filed.GrantID == 0 {
+		t.Fatalf("filing the member's request: %d %s", w.Code, w.Body)
+	}
+	_ = serveCall(t, h, "POST", "/ui/connector-requests/"+strconv.FormatInt(filed.GrantID, 10)+"/approve", nil, op)
+	g, err := f.store.GetGrant(sys, filed.GrantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Status == connectors.StatusApproved {
+		t.Fatalf("a member's agent was approved onto the App-backed github connector (source %q)", g.Source)
+	}
+
+	// Even with an approval forced into the row, the proxy mints nothing for
+	// the member's agent: for its owner, github is not the App.
+	if _, err := f.store.DecideGrant(sys, filed.GrantID, true, "forced", connectors.SourceApp); err != nil {
+		t.Fatal(err)
+	}
+	_ = serveCall(t, h, "GET", "/connect/github/github.fake.test:"+up.port()+"/example-org/widget.git/info/refs",
+		nil, map[string]string{"X-Muster-Token": mtok})
+	up.mu.Lock()
+	n := len(up.mints)
+	up.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("the proxy minted an App token for a member's agent: %d mint(s)", n)
+	}
+}
+
+// TestAGrantApprovedUnderTheStoredTokenNeedsReapprovalOnceTheAppIsConfigured
+// (Y4), through the real routes: a github grant approved against a stored
+// token (source stored) reads PENDING to the agent once the App backs github,
+// and so does an App-approved grant once the App is gone — so ccd stops
+// routing, and the owner is asked again.
+func TestAGrantApprovedUnderTheStoredTokenNeedsReapprovalOnceTheAppIsConfigured(t *testing.T) {
+	f := newConnFixture(t)
+	up := newFakeGitHubUpstream(t)
+	const tok = "reopen-agent-token-0123456789abcdef"
+	id := f.seedAgent(t, "reopen-gh", tok)
+	if _, err := f.pool.Exec(f.ctx, `UPDATE agents SET repo='example-org/widget' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	g, _, err := f.store.RequestGrant(f.ctx, id, "github", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DecideGrant(f.ctx, g.ID, true, "operator", connectors.SourceStored); err != nil {
+		t.Fatal(err)
+	}
+	if v := agentView(t, f.h, tok); v.Grant != connectors.StatusApproved {
+		t.Fatalf("control: without the App the stored approval stands: %+v", v)
+	}
+	_, h, _ := appServer(t, f, up)
+	if v := agentView(t, h, tok); v.Grant != connectors.StatusPending || v.GrantID != g.ID {
+		t.Fatalf("with the App, a stored-token approval still reads %+v; want the same grant pending again", v)
+	}
+	// Approve it under the App: source app, approved.
+	srv, h2, _ := appServer(t, f, up)
+	op := map[string]string{"Cookie": sessionCookieFor(srv), "HX-Request": "true", "Origin": "http://example.com"}
+	_ = serveCall(t, h2, "POST", "/ui/connector-requests/"+strconv.FormatInt(g.ID, 10)+"/approve", nil, op)
+	if ng, _ := f.store.GetGrant(f.ctx, g.ID); ng.Status != connectors.StatusApproved || ng.Source != connectors.SourceApp {
+		t.Fatalf("approving under the App: %+v", ng)
+	}
+	// The App removed: the App approval must not start serving a stored token.
+	if v := agentView(t, f.h, tok); v.Grant != connectors.StatusPending {
+		t.Fatalf("without the App, an App approval still reads %+v", v)
+	}
+}
+
+// TestAStrangersInstallationConnectsNothing (R1): the App is public, so a
+// stranger installs it on stranger/payload. With the allowlist naming only
+// example-org, that repository is not a connected one — the chief's
+// task_dispatch and every dispatch door refuse it — and nothing is minted on
+// the stranger's installation. The admin's real repository is accepted
+// (control).
+func TestAStrangersInstallationConnectsNothing(t *testing.T) {
+	f := newConnFixture(t)
+	up := newFakeGitHubUpstream(t)
+	srv, _, _ := appServer(t, f, up)
+	admin := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
+	if why := srv.connectedRepo(admin, "stranger/payload"); !strings.Contains(why, chiefDispatchRepo) {
+		t.Fatalf("a stranger's installation repository is connected: %q", why)
+	}
+	if why := srv.connectedRepo(admin, "example-org/widget"); why != "" {
+		t.Fatalf("control: the allowlisted installation's repository is refused: %q", why)
+	}
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	for _, m := range up.mints {
+		if m == "STRANGER INSTALLATION" {
+			t.Fatal("a token was minted on the stranger's installation")
+		}
 	}
 }

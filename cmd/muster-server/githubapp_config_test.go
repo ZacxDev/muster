@@ -55,12 +55,12 @@ func TestGitHubAppConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 		}
 		return out
 	}
-	cfg, err := load(with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppInstallation: "678"}))
+	cfg, err := load(with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org, Second-Org"}))
 	if err != nil {
 		t.Fatalf("control: a coherent App configuration is refused: %v", err)
 	}
-	if cfg.GitHubAppID != 12345 || cfg.GitHubAppKey == nil || cfg.GitHubAppInstallationID != 678 {
-		t.Fatalf("control: loaded %d / key=%v / %d", cfg.GitHubAppID, cfg.GitHubAppKey != nil, cfg.GitHubAppInstallationID)
+	if cfg.GitHubAppID != 12345 || cfg.GitHubAppKey == nil || strings.Join(cfg.GitHubAppAccounts, ",") != "example-org,second-org" {
+		t.Fatalf("control: loaded %d / key=%v / %q", cfg.GitHubAppID, cfg.GitHubAppKey != nil, cfg.GitHubAppAccounts)
 	}
 	// A PEM block of the right type holding bytes that are not a key, built at
 	// run time, so no key-shaped literal sits in this public repository.
@@ -69,14 +69,15 @@ func TestGitHubAppConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		"id without key":           {with(map[string]string{envGitHubAppID: "12345"}), envGitHubAppKey},
-		"key without id":           {with(map[string]string{envGitHubAppKey: keyPEM}), envGitHubAppID},
-		"id not a number":          {with(map[string]string{envGitHubAppID: "my-app", envGitHubAppKey: keyPEM}), envGitHubAppID},
-		"key does not parse":       {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: garbage}), envGitHubAppKey},
-		"key is a token":           {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: "ghp_synthetic0123456789"}), envGitHubAppKey},
-		"installation without app": {with(map[string]string{envGitHubAppInstallation: "678"}), envGitHubAppID},
-		"bad installation":         {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppInstallation: "x"}), envGitHubAppInstallation},
-		"app without connectors":   {map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM}, envConnectorEncKey},
+		"no account allowlist":   {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM}), envGitHubAppAccounts},
+		"bad account":            {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "ok,not a login"}), envGitHubAppAccounts},
+		"id without key":         {with(map[string]string{envGitHubAppID: "12345", envGitHubAppAccounts: "example-org"}), envGitHubAppKey},
+		"key without id":         {with(map[string]string{envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org"}), envGitHubAppID},
+		"id not a number":        {with(map[string]string{envGitHubAppID: "my-app", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org"}), envGitHubAppID},
+		"key does not parse":     {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: garbage, envGitHubAppAccounts: "example-org"}), envGitHubAppKey},
+		"key is a token":         {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: "ghp_synthetic0123456789", envGitHubAppAccounts: "example-org"}), envGitHubAppKey},
+		"accounts without app":   {with(map[string]string{envGitHubAppAccounts: "example-org"}), envGitHubAppID},
+		"app without connectors": {map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org"}, envConnectorEncKey},
 	} {
 		_, err := load(c.env)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
@@ -133,6 +134,8 @@ func TestBuildAppPresentsTheAppAsTheGitHubConnector(t *testing.T) {
 			return "12345"
 		case envGitHubAppKey:
 			return testAppKeyPEM(t)
+		case envGitHubAppAccounts:
+			return "example-org"
 		}
 		return ""
 	})
@@ -142,7 +145,7 @@ func TestBuildAppPresentsTheAppAsTheGitHubConnector(t *testing.T) {
 	cfg := testConfig()
 	cfg.Database = dbtest.DSN(t)
 	cfg.ConnectorEncKey = []byte(strings.Repeat("k", 32))
-	cfg.GitHubAppID, cfg.GitHubAppKey = key.GitHubAppID, key.GitHubAppKey
+	cfg.GitHubAppID, cfg.GitHubAppKey, cfg.GitHubAppAccounts = key.GitHubAppID, key.GitHubAppKey, key.GitHubAppAccounts
 	const tok = "wiring-agent-own-token-0123456789"
 	seedRelayAgent(t, cfg.Database, "wiring-agent", tok)
 	base := startServer(t, cfg)

@@ -14,6 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"testing"
@@ -108,12 +109,12 @@ func TestParsePrivateKeyAcceptsGitHubsFormatsAndRefusesTheRest(t *testing.T) {
 
 // TestTheAgentMintCarriesExactlyItsOneRepositoryAndTwoPermissions pins the
 // mint request's body LITERALLY: one repository (the agent's, by name), and
-// contents + pull_requests write — nothing else. A mutant that adds a
+// contents + pull_requests write, checks + statuses read — nothing else. A mutant that adds a
 // permission, widens a level, or drops the repositories restriction changes
 // these bytes.
 func TestTheAgentMintCarriesExactlyItsOneRepositoryAndTwoPermissions(t *testing.T) {
 	app, f, _ := newTestApp(t)
-	tok, err := app.Credential(context.Background(), agent(7, "example-org/widget"), DefaultGitHost, "example-org/widget.git/info/refs")
+	tok, _, err := app.Credential(context.Background(), agent(7, "example-org/widget"), DefaultGitHost, "example-org/widget.git/info/refs")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +122,7 @@ func TestTheAgentMintCarriesExactlyItsOneRepositoryAndTwoPermissions(t *testing.
 	if len(m) != 1 {
 		t.Fatalf("%d mints, want 1", len(m))
 	}
-	const want = `{"repositories":["widget"],"permissions":{"contents":"write","pull_requests":"write"}}`
+	const want = `{"repositories":["widget"],"permissions":{"contents":"write","pull_requests":"write","checks":"read","statuses":"read"}}`
 	if m[0].body != want {
 		t.Fatalf("the mint request body is\n%s\nwant exactly\n%s", m[0].body, want)
 	}
@@ -141,7 +142,7 @@ func TestATokenIsReusedUntilFiveMinutesBeforeItsExpiry(t *testing.T) {
 	start := c.now()
 	get := func() string {
 		t.Helper()
-		tok, err := app.Credential(context.Background(), agent(7, "example-org/widget"), DefaultAPIHost, "repos/example-org/widget/pulls")
+		tok, _, err := app.Credential(context.Background(), agent(7, "example-org/widget"), DefaultAPIHost, "repos/example-org/widget/pulls")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -160,7 +161,7 @@ func TestATokenIsReusedUntilFiveMinutesBeforeItsExpiry(t *testing.T) {
 		t.Fatalf("at +55m1s (under 5 min left): the old token was reused (%d mints)", len(f.mintsSoFar()))
 	}
 	// Per agent: another agent on the SAME repository gets its own token.
-	if _, err := app.Credential(context.Background(), agent(8, "example-org/widget"), DefaultGitHost, "example-org/widget"); err != nil {
+	if _, _, err := app.Credential(context.Background(), agent(8, "example-org/widget"), DefaultGitHost, "example-org/widget"); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(f.mintsSoFar()); n != 3 {
@@ -168,46 +169,100 @@ func TestATokenIsReusedUntilFiveMinutesBeforeItsExpiry(t *testing.T) {
 	}
 }
 
-// TestCredentialRefusesEveryTargetOutsideTheAgentsRepository: refused BEFORE a
-// token is minted (no mint recorded), with ErrTargetRefused.
-func TestCredentialRefusesEveryTargetOutsideTheAgentsRepository(t *testing.T) {
+// TestCredentialRefusesEveryAmbiguousTarget: a path whose repository muster
+// cannot decide is refused BEFORE a token is minted, with ErrTargetRefused —
+// including the shapes that slipped through the first cut (case-varied
+// `Repos`, a decoded leading slash, `repositories/<id>`).
+func TestCredentialRefusesEveryAmbiguousTarget(t *testing.T) {
 	app, f, _ := newTestApp(t)
 	me := agent(7, "example-org/widget")
 	for _, tc := range []struct{ host, rest string }{
-		{DefaultGitHost, "example-org/gadget.git/info/refs"},
-		{DefaultGitHost, "other-org/widget.git/git-upload-pack"},
 		{DefaultGitHost, "example-org"},
 		{DefaultGitHost, ""},
-		{DefaultAPIHost, "repos/example-org/gadget/pulls"},
 		{DefaultAPIHost, "repos/example-org"},
+		{DefaultAPIHost, "Repos/example-org"},
 		{DefaultAPIHost, "repos/example-org/widget/../gadget/pulls"},
 		{DefaultAPIHost, "graphql/../repos/example-org/gadget"},
 		{DefaultAPIHost, "repos/example-org/widget/%2e%2e/gadget"},
+		{DefaultAPIHost, "repos/example-org/widget/%252e%252e/gadget"},
+		{DefaultAPIHost, "%2Frepos/example-org/gadget"},
+		{DefaultAPIHost, "/repos/example-org/gadget"},
+		{DefaultAPIHost, "repositories/123456/contents/README.md"},
+		{DefaultAPIHost, "REPOSITORIES/123456"},
 		{DefaultAPIHost, "repos/example-org/%zz"},
+		{DefaultAPIHost, "repos\\example-org\\gadget"},
 		{"uploads.github.com", "repos/example-org/widget/releases"},
 	} {
-		_, err := app.Credential(context.Background(), me, tc.host, tc.rest)
-		if !errors.Is(err, connectors.ErrTargetRefused) {
-			t.Errorf("%s/%s: err = %v, want ErrTargetRefused", tc.host, tc.rest, err)
+		tok, anon, err := app.Credential(context.Background(), me, tc.host, tc.rest)
+		if !errors.Is(err, connectors.ErrTargetRefused) || tok != "" || anon {
+			t.Errorf("%s/%s: tok=%q anon=%v err=%v, want ErrTargetRefused", tc.host, tc.rest, tok, anon, err)
 		}
 	}
-	if _, err := app.Credential(context.Background(), agent(9, ""), DefaultGitHost, "example-org/widget.git"); !errors.Is(err, connectors.ErrTargetRefused) {
+	if _, _, err := app.Credential(context.Background(), agent(9, ""), DefaultGitHost, "example-org/widget.git"); !errors.Is(err, connectors.ErrTargetRefused) {
 		t.Errorf("an agent with no repository: err = %v, want ErrTargetRefused", err)
 	}
 	if n := len(f.mintsSoFar()); n != 0 {
 		t.Fatalf("%d token(s) minted for refused targets", n)
 	}
-	// Positive control: the agent's own repository, in each accepted shape, and
-	// a repository-less API path, are served (case-insensitive on the name).
+	// Positive control: the agent's own repository, in each accepted shape
+	// (case-insensitive, `Repos` too), and a repository-less API path, get the
+	// token.
 	for _, tc := range []struct{ host, rest string }{
 		{DefaultGitHost, "example-org/widget.git/info/refs"},
 		{DefaultGitHost, "Example-Org/Widget/git-receive-pack"},
 		{DefaultAPIHost, "repos/example-org/widget/pulls"},
+		{DefaultAPIHost, "REPOS/Example-Org/widget/check-runs"},
 		{DefaultAPIHost, "graphql"},
 	} {
-		if _, err := app.Credential(context.Background(), me, tc.host, tc.rest); err != nil {
-			t.Errorf("positive control %s/%s: %v", tc.host, tc.rest, err)
+		tok, anon, err := app.Credential(context.Background(), me, tc.host, tc.rest)
+		if err != nil || anon || tok == "" {
+			t.Errorf("positive control %s/%s: tok=%q anon=%v err=%v", tc.host, tc.rest, tok, anon, err)
 		}
+	}
+}
+
+// TestAnotherRepositoryIsAnonymousAndNeverGetsTheToken: a request for any
+// repository but the agent's own — in any spelling GitHub routes to it — gets
+// NO credential (anonymous), and nothing is minted for it.
+func TestAnotherRepositoryIsAnonymousAndNeverGetsTheToken(t *testing.T) {
+	app, f, _ := newTestApp(t)
+	me := agent(7, "example-org/widget")
+	for _, tc := range []struct{ host, rest string }{
+		{DefaultGitHost, "example-org/gadget.git/info/refs"},
+		{DefaultGitHost, "other-org/widget.git/git-upload-pack"},
+		{DefaultAPIHost, "repos/example-org/gadget/pulls"},
+		{DefaultAPIHost, "Repos/example-org/gadget/contents/x"},
+		{DefaultAPIHost, "REPOS/Example-Org/Gadget"},
+		{DefaultAPIHost, "repos/example-org/gad%67et"},
+	} {
+		tok, anon, err := app.Credential(context.Background(), me, tc.host, tc.rest)
+		if err != nil || !anon || tok != "" {
+			t.Errorf("%s/%s: tok=%q anon=%v err=%v, want anonymous with no token", tc.host, tc.rest, tok, anon, err)
+		}
+	}
+	if n := len(f.mintsSoFar()); n != 0 {
+		t.Fatalf("%d token(s) minted for other repositories", n)
+	}
+}
+
+// TestARejectedTokenIsDroppedFromTheCache: after the upstream 401s an agent's
+// token (Rejected), its next request mints anew; another agent's cache stays.
+func TestARejectedTokenIsDroppedFromTheCache(t *testing.T) {
+	app, f, _ := newTestApp(t)
+	a, b := agent(7, "example-org/widget"), agent(8, "example-org/widget")
+	for _, c := range []connectors.Caller{a, b} {
+		if _, _, err := app.Credential(context.Background(), c, DefaultGitHost, "example-org/widget.git"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app.Rejected(a)
+	for _, c := range []connectors.Caller{a, b} {
+		if _, _, err := app.Credential(context.Background(), c, DefaultGitHost, "example-org/widget.git"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(f.mintsSoFar()); n != 3 {
+		t.Fatalf("%d mints, want 3 (two, then one re-mint for the rejected agent only)", n)
 	}
 }
 
@@ -219,7 +274,7 @@ func TestAMint401IsAnOperatorFacingProblemAndClearsOnSuccess(t *testing.T) {
 	f.mu.Lock()
 	f.mintStatus = http.StatusUnauthorized
 	f.mu.Unlock()
-	_, err := app.Credential(context.Background(), agent(7, "example-org/widget"), DefaultGitHost, "example-org/widget.git")
+	_, _, err := app.Credential(context.Background(), agent(7, "example-org/widget"), DefaultGitHost, "example-org/widget.git")
 	if err == nil {
 		t.Fatal("a 401 mint succeeded")
 	}
@@ -234,7 +289,7 @@ func TestAMint401IsAnOperatorFacingProblemAndClearsOnSuccess(t *testing.T) {
 	f.mu.Lock()
 	f.mintStatus = 0
 	f.mu.Unlock()
-	if _, err := app.Credential(context.Background(), agent(7, "example-org/widget"), DefaultGitHost, "example-org/widget.git"); err != nil {
+	if _, _, err := app.Credential(context.Background(), agent(7, "example-org/widget"), DefaultGitHost, "example-org/widget.git"); err != nil {
 		t.Fatal(err)
 	}
 	if p := app.Problem(7); p != "" {
@@ -248,7 +303,7 @@ func TestAMint401IsAnOperatorFacingProblemAndClearsOnSuccess(t *testing.T) {
 func TestAWrongKeyIsRefusedByTheJWTCheck(t *testing.T) {
 	_, f, c := newTestApp(t)
 	wrong, _ := rsa.GenerateKey(rand.Reader, 2048)
-	app, err := New(Config{AppID: 12345, PrivateKey: wrong, BaseURL: f.srv.URL, Now: c.now})
+	app, err := New(Config{AppID: 12345, PrivateKey: wrong, BaseURL: f.srv.URL, Now: c.now, Accounts: []string{"example-org"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +323,7 @@ func TestA422MintNamesTheInstallationsRepositoryAccess(t *testing.T) {
 	f.mu.Lock()
 	f.mintStatus = http.StatusUnprocessableEntity
 	f.mu.Unlock()
-	_, err := app.Credential(context.Background(), agent(7, "example-org/widget"), DefaultGitHost, "example-org/widget.git")
+	_, _, err := app.Credential(context.Background(), agent(7, "example-org/widget"), DefaultGitHost, "example-org/widget.git")
 	if err == nil || !strings.Contains(err.Error(), "Repository access") {
 		t.Fatalf("err = %v", err)
 	}
@@ -280,7 +335,8 @@ func TestA422MintNamesTheInstallationsRepositoryAccess(t *testing.T) {
 // TestAnOwnerWithoutAnInstallationIsRefusedByName.
 func TestAnOwnerWithoutAnInstallationIsRefusedByName(t *testing.T) {
 	app, f, _ := newTestApp(t)
-	_, err := app.Credential(context.Background(), agent(7, "someone-else/widget"), DefaultGitHost, "someone-else/widget.git")
+	app.cfg.Accounts = append(app.cfg.Accounts, "someone-else") // allowlisted, but not installed
+	_, _, err := app.Credential(context.Background(), agent(7, "someone-else/widget"), DefaultGitHost, "someone-else/widget.git")
 	if err == nil || !strings.Contains(err.Error(), "not installed on someone-else") {
 		t.Fatalf("err = %v", err)
 	}
@@ -289,21 +345,43 @@ func TestAnOwnerWithoutAnInstallationIsRefusedByName(t *testing.T) {
 	}
 }
 
-// TestAPinnedInstallationIsTheOnlyOneUsed: with InstallationID set, an owner on
-// another installation is refused even though the App is installed there.
-func TestAPinnedInstallationIsTheOnlyOneUsed(t *testing.T) {
-	_, f, c := newTestApp(t)
-	f.install(77, "second-org", "second-org/thing")
-	app, err := New(Config{AppID: 12345, PrivateKey: key(t), BaseURL: f.srv.URL, Now: c.now, InstallationID: 42})
+// TestAnInstallationOffTheAllowlistIsIgnored: the App is public, so a stranger
+// can install it on their own account. That installation contributes no
+// repository and mints no token, and is logged once, by login.
+func TestAnInstallationOffTheAllowlistIsIgnored(t *testing.T) {
+	app, f, _ := newTestApp(t) // allowlist: Example-Org (different case on purpose)
+	f.install(77, "stranger", "stranger/payload")
+	var logBuf strings.Builder
+	app.cfg.Logger = log.New(&logBuf, "", 0)
+	repos, err := app.Repos(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := app.Credential(context.Background(), agent(1, "second-org/thing"), DefaultGitHost, "second-org/thing.git"); err == nil ||
-		!strings.Contains(err.Error(), "pinned installation 42") {
-		t.Fatalf("second-org under a pin to 42: err = %v", err)
+	for _, r := range repos {
+		if strings.HasPrefix(r.FullName, "stranger/") {
+			t.Fatalf("a non-allowlisted installation contributed %s", r.FullName)
+		}
 	}
-	if _, err := app.Credential(context.Background(), agent(1, "example-org/widget"), DefaultGitHost, "example-org/widget.git"); err != nil {
-		t.Fatalf("control, the pinned installation's own repo: %v", err)
+	if len(repos) != 2 {
+		t.Fatalf("control: %d repositories, want example-org's 2", len(repos))
+	}
+	_, _, err = app.Credential(context.Background(), agent(1, "stranger/payload"), DefaultGitHost, "stranger/payload.git")
+	if err == nil || !strings.Contains(err.Error(), "MUSTER_GITHUB_APP_ACCOUNTS") {
+		t.Fatalf("minting for a non-allowlisted account: err = %v", err)
+	}
+	for _, m := range f.mintsSoFar() {
+		if m.installation == 77 {
+			t.Fatalf("a token was minted on the stranger's installation: %s", m.body)
+		}
+	}
+	if _, err := app.Accounts(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(logBuf.String(), `"stranger"`) != 1 || strings.Contains(logBuf.String(), "payload") {
+		t.Fatalf("the ignored installation is not logged exactly once by login only:\n%s", logBuf.String())
+	}
+	if _, err := New(Config{AppID: 1, PrivateKey: key(t)}); err == nil {
+		t.Fatal("New accepted an App with no account allowlist")
 	}
 }
 
@@ -320,7 +398,7 @@ func TestReposListsEveryInstallationRepositoryAcrossPages(t *testing.T) {
 	}
 	f.install(42, "example-org", many...)
 	f.install(43, "second-org", "second-org/thing")
-	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now})
+	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now, Accounts: []string{"example-org", "second-org"}})
 	if err != nil {
 		t.Fatal(err)
 	}

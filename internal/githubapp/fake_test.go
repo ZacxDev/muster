@@ -211,7 +211,7 @@ func newTestApp(t *testing.T) (*App, *fakeGitHub, *clock) {
 	k := key(t)
 	f := newFakeGitHub(t, &k.PublicKey, c.now)
 	f.install(42, "example-org", "example-org/widget", "example-org/gadget")
-	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now})
+	app, err := New(Config{AppID: 12345, PrivateKey: k, BaseURL: f.srv.URL, Now: c.now, Accounts: []string{"Example-Org"}})
 	if err != nil {
 		t.Fatal(err)
 	}

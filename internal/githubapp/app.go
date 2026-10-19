@@ -3,11 +3,19 @@
 // connector's credential, the Repos tab's repository list, and the
 // "is this a connected repository" check behind every dispatch door.
 //
+// 🔴 ONLY INSTALLATIONS ON ALLOWLISTED ACCOUNTS EXIST (Config.Accounts,
+// MUSTER_GITHUB_APP_ACCOUNTS, required). The App must be public ("Any account")
+// to be installable on an organization its owner does not own, so ANYONE can
+// install it on their own account. An installation on an account that is not
+// on the list contributes no repository, mints no token and passes no
+// connected-repository check: it is ignored, and logged once by login.
+//
 // 🔴 AN AGENT'S TOKEN IS MINTED FOR THAT AGENT'S ONE REPOSITORY, WITH EXACTLY
-// TWO PERMISSIONS. Each proxied request from an approved agent is served with an
-// installation access token minted by POST /app/installations/{id}/access_tokens
-// with `repositories: [<the agent's repo>]` and `permissions: {contents: write,
-// pull_requests: write}` (GitHub adds metadata: read implicitly). Nothing wider
+// FOUR PERMISSIONS. Each proxied request from an approved agent to its own
+// repository is served with an installation access token minted by POST
+// /app/installations/{id}/access_tokens with `repositories: [<the agent's
+// repo>]` and `permissions: {contents: write, pull_requests: write, checks:
+// read, statuses: read}` (GitHub adds metadata: read implicitly). Nothing wider
 // is ever asked for on an agent's behalf: the request body is a fixed struct
 // (mintRequest), pinned literally by the tests.
 //
@@ -17,20 +25,23 @@
 // (agent, repository) until refreshBefore of its expiry (GitHub issues them for
 // one hour), never written to the database, a log line or a response.
 //
-// 🔴 A REQUEST FOR ANOTHER REPOSITORY IS REFUSED HERE, BEFORE ANY TOKEN IS
-// MINTED. GitHub would refuse it too (the token names one repository), but the
-// early refusal is what the operator and the agent see, and it does not depend
-// on GitHub's enforcement. See targetRepo for exactly which paths are checked.
+// 🔴 A REQUEST FOR ANOTHER REPOSITORY CARRIES NO CREDENTIAL AT ALL. It is
+// forwarded anonymously (a public dependency or submodule clones as it would
+// for anyone; a private one fails as it would for anyone), and the App token is
+// never attached to it. A path whose repository cannot be decided — a `.`/`..`
+// or encoded traversal, a leading empty segment, a `repositories/<id>` path —
+// is refused outright. See targetRepo.
 //
 // The App's own credential (a 10-minute RS256 JWT signed with the private key)
 // is used only for /app/... calls — listing installations and minting tokens —
 // and never leaves muster either.
 //
-// ⚠ THE APP IS DEPLOYMENT-WIDE, NOT PER USER. The OAuth connection it replaces
-// was one GitHub account per muster user; the App's installation repositories
-// are the same for every user of this muster. On a single-owner deployment that
-// is the same thing; on a multi-user one, every user's dispatch check accepts
-// the installation's repositories.
+// 🔴 THE APP IS THE ADMIN'S, NOT EVERY USER'S. The OAuth connection it replaces
+// was one GitHub account per muster user; the App is the deployment's. So it is
+// offered only to admin-role principals: the `github` connector is presented
+// to them alone (connectors.WithVirtual's allow), and internal/api's
+// github_source.go gives the App's repositories to them alone. A member keeps
+// their own OAuth connection and stored connectors, as before.
 package githubapp
 
 import (
@@ -86,9 +97,10 @@ const maxRepoPages = 30
 type Config struct {
 	AppID      int64
 	PrivateKey *rsa.PrivateKey
-	// InstallationID, when non-zero, pins the installation instead of choosing
-	// one by the repository owner's login.
-	InstallationID int64
+	// Accounts are the GitHub logins (users or organizations) whose
+	// installations are used, compared without case. REQUIRED: New refuses an
+	// empty list, because the App is installable by anyone.
+	Accounts []string
 	// BaseURL is the REST API base; "" means github's (github.APIBaseURL()).
 	BaseURL string
 	// GitHost and APIHost are the hosts the connector serves; "" means
@@ -111,6 +123,7 @@ type App struct {
 	tokens     map[tokenKey]token
 	repos      []github.Repo
 	reposAt    time.Time
+	ignored    map[string]bool  // logins of non-allowlisted installations, logged once
 	problems   map[int64]string // per agent: the last mint's failure
 	global     string           // the last App-JWT call's failure (auth, rate limit)
 }
@@ -142,6 +155,10 @@ func New(cfg Config) (*App, error) {
 	if cfg.PrivateKey == nil {
 		return nil, errors.New("githubapp: no private key")
 	}
+	if len(cfg.Accounts) == 0 {
+		return nil, errors.New("githubapp: no allowlisted accounts: anyone can install a public App, so the " +
+			"accounts whose installations are used must be named")
+	}
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = github.APIBaseURL()
 	}
@@ -159,14 +176,21 @@ func New(cfg Config) (*App, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &App{cfg: cfg, tokens: map[tokenKey]token{}, problems: map[int64]string{}}, nil
+	return &App{cfg: cfg, tokens: map[tokenKey]token{}, problems: map[int64]string{}, ignored: map[string]bool{}}, nil
 }
 
 // AppID is the configured App ID.
 func (a *App) AppID() int64 { return a.cfg.AppID }
 
-// InstallationID is the pinned installation, 0 when chosen by owner login.
-func (a *App) InstallationID() int64 { return a.cfg.InstallationID }
+// allowed reports whether login is on the account allowlist.
+func (a *App) allowed(login string) bool {
+	for _, acc := range a.cfg.Accounts {
+		if strings.EqualFold(strings.TrimSpace(acc), login) {
+			return true
+		}
+	}
+	return false
+}
 
 // --- the connector ---------------------------------------------------------------
 
@@ -185,22 +209,23 @@ func (a *App) Describe() connectors.Connector {
 	}
 }
 
-// Credential is the installation token for caller's own repository, after
-// checking the request targets that repository (targetRepo).
-func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, rest string) (string, error) {
+// Credential is the installation token for caller's own repository; a request
+// for ANOTHER repository is anonymous (no credential at all); a request whose
+// repository cannot be decided is refused (targetRepo).
+func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, rest string) (string, bool, error) {
 	repo := strings.TrimSpace(caller.Repo)
 	if repo == "" {
-		return "", fmt.Errorf("%w: the %s connector is backed by a GitHub App, which mints a token for the "+
-			"calling agent's own repository, and agent %s was dispatched without one", connectors.ErrTargetRefused,
+		return "", false, fmt.Errorf("%w: the %s connector is backed by a GitHub App, which mints a token for the "+
+			"calling agent's own repository, and agent %s was dispatched without one (an agent with no "+
+			"repository, a chief, has no github access while the App is configured)", connectors.ErrTargetRefused,
 			ConnectorName, caller.AgentName)
 	}
 	target, scoped, err := a.targetRepo(host, rest)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", connectors.ErrTargetRefused, err)
+		return "", false, fmt.Errorf("%w: %v", connectors.ErrTargetRefused, err)
 	}
 	if scoped && !strings.EqualFold(target, repo) {
-		return "", fmt.Errorf("%w: agent %s may reach only its own repository %s through the %s connector, "+
-			"and this request is for %s", connectors.ErrTargetRefused, caller.AgentName, repo, ConnectorName, target)
+		return "", true, nil // another repository: anonymous, never the App token
 	}
 	tok, err := a.repoToken(ctx, caller.AgentID, repo)
 	a.mu.Lock()
@@ -210,7 +235,19 @@ func (a *App) Credential(ctx context.Context, caller connectors.Caller, host, re
 		delete(a.problems, caller.AgentID)
 	}
 	a.mu.Unlock()
-	return tok, err
+	return tok, false, err
+}
+
+// Rejected drops every cached token of caller's: GitHub answered 401 to one
+// (revoked, or the installation's access changed), so the next request mints.
+func (a *App) Rejected(caller connectors.Caller) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for k := range a.tokens {
+		if k.agent == caller.AgentID {
+			delete(a.tokens, k)
+		}
+	}
 }
 
 // Problem is the operator-facing reason the App cannot currently serve agentID:
@@ -229,23 +266,35 @@ func (a *App) Problem(agentID int64) string {
 }
 
 // targetRepo is the repository a proxied request is for. scoped is false for an
-// API path that names no repository (/graphql, /rate_limit, /user …): those are
-// left to the token, which can reach only the agent's repository anyway.
+// API path that names no repository (/graphql, /rate_limit, /user …): those
+// carry the agent's token, which can reach only the agent's repository anyway.
+//
+// The path is FULLY percent-decoded first and compared without case, as GitHub
+// routes it:
 //
 //   - github.com: every path is <owner>/<repo>[.git]/… (git's smart-HTTP
 //     protocol, and the web URLs). A path with fewer segments is refused.
-//   - api.github.com: /repos/<owner>/<repo>/… is checked; any other path is not
+//   - api.github.com: /repos/<owner>/<repo>/… (any case) names a repository;
+//     /repositories/<id>/… is REFUSED (an id muster cannot match to the
+//     agent's repository without another API call); any other path is not
 //     repository-scoped.
 //
-// A `.` or `..` segment, or an escape that does not decode, is refused outright:
-// the upstream may normalise it into a path naming another repository after
-// the check has passed.
+// Refused outright, because the upstream may resolve them to another
+// repository after this check: a `.` or `..` segment, a leading empty segment
+// (`%2Frepos/…` decodes to one), a `%` left after decoding (double encoding), a
+// backslash, and an escape that does not decode.
 func (a *App) targetRepo(host, rest string) (repo string, scoped bool, err error) {
 	p, err := url.PathUnescape(rest)
 	if err != nil {
 		return "", false, errors.New("the request path does not decode")
 	}
+	if strings.ContainsAny(p, "%\\") {
+		return "", false, errors.New("the request path is encoded more than once or holds a backslash")
+	}
 	segs := strings.Split(p, "/")
+	if segs[0] == "" {
+		return "", false, errors.New("the request path begins with an empty segment")
+	}
 	for _, s := range segs {
 		if s == "." || s == ".." {
 			return "", false, errors.New("the request path has a '.' or '..' segment")
@@ -253,18 +302,21 @@ func (a *App) targetRepo(host, rest string) (repo string, scoped bool, err error
 	}
 	switch host {
 	case a.cfg.GitHost:
-		if len(segs) < 2 || segs[0] == "" || segs[1] == "" {
+		if len(segs) < 2 || segs[1] == "" {
 			return "", false, fmt.Errorf("%s/%s names no repository", host, p)
 		}
 		return segs[0] + "/" + strings.TrimSuffix(segs[1], ".git"), true, nil
 	case a.cfg.APIHost:
-		if segs[0] != "repos" {
-			return "", false, nil
+		switch strings.ToLower(segs[0]) {
+		case "repos":
+			if len(segs) < 3 || segs[1] == "" || segs[2] == "" {
+				return "", false, fmt.Errorf("%s/%s names no repository", host, p)
+			}
+			return segs[1] + "/" + segs[2], true, nil
+		case "repositories":
+			return "", false, fmt.Errorf("%s/%s names a repository by id; use /repos/<owner>/<name>", host, p)
 		}
-		if len(segs) < 3 || segs[1] == "" || segs[2] == "" {
-			return "", false, fmt.Errorf("%s/%s names no repository", host, p)
-		}
-		return segs[1] + "/" + segs[2], true, nil
+		return "", false, nil
 	}
 	return "", false, fmt.Errorf("host %s is not served by the GitHub App connector", host)
 }
@@ -280,12 +332,14 @@ type mintRequest struct {
 type mintPermissions struct {
 	Contents     string `json:"contents"`
 	PullRequests string `json:"pull_requests"`
+	Checks       string `json:"checks"`
+	Statuses     string `json:"statuses"`
 }
 
 func agentMintRequest(repoName string) mintRequest {
 	return mintRequest{
 		Repositories: []string{repoName},
-		Permissions:  mintPermissions{Contents: "write", PullRequests: "write"},
+		Permissions:  mintPermissions{Contents: "write", PullRequests: "write", Checks: "read", Statuses: "read"},
 	}
 }
 
@@ -351,9 +405,18 @@ func (a *App) cached(k tokenKey) (string, bool) {
 	return t.value, true
 }
 
+// store caches t, and drops every cached token past its expiry, so the map is
+// bounded by the agents active in the last hour (a deleted agent's tokens go
+// with the rest).
 func (a *App) store(k tokenKey, t token) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	now := a.cfg.Now()
+	for kk, tt := range a.tokens {
+		if !now.Before(tt.expires) {
+			delete(a.tokens, kk)
+		}
+	}
 	a.tokens[k] = t
 }
 
@@ -390,9 +453,9 @@ func (a *App) installationFor(ctx context.Context, owner string) (installation, 
 			}
 		}
 	}
-	if a.cfg.InstallationID != 0 {
-		return installation{}, fmt.Errorf("the GitHub App's pinned installation %d is not on %s's account; the "+
-			"repository's owner must be the account the App is installed on", a.cfg.InstallationID, owner)
+	if !a.allowed(owner) {
+		return installation{}, fmt.Errorf("%s is not on MUSTER_GITHUB_APP_ACCOUNTS, so the GitHub App does not "+
+			"serve its repositories", owner)
 	}
 	return installation{}, fmt.Errorf("the GitHub App (ID %d) is not installed on %s: install it there "+
 		"(github.com/apps/<app>/installations/new) and give it access to the repository", a.cfg.AppID, owner)
@@ -407,29 +470,32 @@ func (a *App) installations(ctx context.Context, force bool) ([]installation, er
 		return list, nil
 	}
 	a.mu.Unlock()
-	var list []installation
-	if a.cfg.InstallationID != 0 {
-		var in installation
-		u := a.cfg.BaseURL + "/app/installations/" + strconv.FormatInt(a.cfg.InstallationID, 10)
-		if err := a.appCall(ctx, http.MethodGet, u, nil, &in, "reading the pinned installation", ""); err != nil {
+	list := []installation{}
+	for page := 1; page <= 10; page++ {
+		var batch []installation
+		u := a.cfg.BaseURL + "/app/installations?per_page=100&page=" + strconv.Itoa(page)
+		if err := a.appCall(ctx, http.MethodGet, u, nil, &batch, "listing the App's installations", ""); err != nil {
 			return nil, err
 		}
-		list = []installation{in}
-	} else {
-		for page := 1; page <= 10; page++ {
-			var batch []installation
-			u := a.cfg.BaseURL + "/app/installations?per_page=100&page=" + strconv.Itoa(page)
-			if err := a.appCall(ctx, http.MethodGet, u, nil, &batch, "listing the App's installations", ""); err != nil {
-				return nil, err
+		// 🔴 THE ALLOWLIST IS APPLIED HERE, AT THE ONE SOURCE every reader
+		// (repository listing, minting, default branch) takes installations from.
+		for _, in := range batch {
+			if a.allowed(in.Account.Login) {
+				list = append(list, in)
+				continue
 			}
-			list = append(list, batch...)
-			if len(batch) < 100 {
-				break
+			a.mu.Lock()
+			first := !a.ignored[strings.ToLower(in.Account.Login)]
+			a.ignored[strings.ToLower(in.Account.Login)] = true
+			a.mu.Unlock()
+			if first && a.cfg.Logger != nil {
+				a.cfg.Logger.Printf("github app: ignoring the installation on %q: not on MUSTER_GITHUB_APP_ACCOUNTS",
+					in.Account.Login)
 			}
 		}
-	}
-	if list == nil {
-		list = []installation{}
+		if len(batch) < 100 {
+			break
+		}
 	}
 	a.mu.Lock()
 	a.installs, a.installsAt = list, a.cfg.Now()
@@ -437,7 +503,8 @@ func (a *App) installations(ctx context.Context, force bool) ([]installation, er
 	return list, nil
 }
 
-// Check lists the installations, recording the outcome as the App-wide problem.
+// Check lists the (allowlisted) installations, recording the outcome as the
+// App-wide problem.
 // cmd/muster-server runs it once at boot, in the background.
 func (a *App) Check(ctx context.Context) ([]string, error) {
 	list, err := a.installations(ctx, true)

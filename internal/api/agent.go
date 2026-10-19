@@ -669,9 +669,9 @@ func (s *Server) listAgentPullRequests(ctx context.Context, a agents.Agent, argu
 	}
 	var prs []github.PullRequest
 	var err error
-	if s.ext.GitHubApp != nil {
+	if app := s.githubApp(ctx); app != nil {
 		// The App's token for THIS agent's repository (githubapp.App.ListPullRequests).
-		prs, err = s.ext.GitHubApp.ListPullRequests(ctx, a.ID, a.Repo, state)
+		prs, err = app.ListPullRequests(ctx, a.ID, a.Repo, state)
 	} else {
 		token, terr := s.githubOAuthToken(ctx)
 		if errors.Is(terr, errNoGitHub) {

@@ -242,6 +242,18 @@ func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reaso
 	g, err := p.Store.LatestGrant(ctx, caller.AgentID, connector)
 	switch {
 	case err == nil:
+		// An approval about another credential source than the connector now
+		// has (the GitHub App configured, or removed) is pending again.
+		g, reopened, rerr := ReconcileGrant(ctx, p.Store, g)
+		if rerr != nil {
+			return Access{}, rerr
+		}
+		if reopened {
+			p.recordGrantEvent(ctx, g, "re-opened: the connector's credential source changed")
+			if p.OnGrantRequested != nil {
+				p.OnGrantRequested(ctx, g)
+			}
+		}
 		// approved -> usable; pending, denied, revoked -> refused as they stand.
 		return Access{Grant: g, Usable: g.Usable()}, nil
 	case err != nil && !errors.Is(err, ErrNotFound):
@@ -382,14 +394,14 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 	// A virtual connector (the GitHub App) mints its credential for THIS caller
 	// and THIS target. The host allowlist is checked FIRST, so a request for a
 	// host the connector does not serve mints nothing.
-	if v, ok := VirtualOf(p.Store, connector); ok {
+	if v, ok := VirtualOf(ctx, p.Store, connector); ok {
 		c := v.Describe()
 		if !c.AllowsHost(host) {
 			refuse(http.StatusForbidden, RefusalBody{Error: "host " + host + " is not in connector " + connector +
 				"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")
 			return
 		}
-		secret, err := v.Credential(ctx, caller, strings.ToLower(host), rest)
+		secret, anonymous, err := v.Credential(ctx, caller, strings.ToLower(host), rest)
 		switch {
 		case errors.Is(err, ErrTargetRefused):
 			refuse(http.StatusForbidden, RefusalBody{Error: err.Error()}, "target refused")
@@ -400,7 +412,17 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 				err.Error()}, "credential unavailable")
 			return
 		}
-		p.forward(w, r, caller, acc, c, secret, connector, host, rest, &status, &detail, refuse)
+		// anonymous: a target outside the agent's own repository goes to the
+		// platform with NO credential (a public dependency clones as for anyone).
+		var onStatus func(int)
+		if !anonymous {
+			onStatus = func(code int) {
+				if code == http.StatusUnauthorized {
+					v.Rejected(caller)
+				}
+			}
+		}
+		p.forward(w, r, caller, acc, c, secret, anonymous, onStatus, connector, host, rest, &status, &detail, refuse)
 		return
 	}
 
@@ -425,14 +447,19 @@ func (p *Proxy) Serve(w http.ResponseWriter, r *http.Request, caller Caller, con
 			"'s allowlist (" + strings.Join(c.Hosts, ", ") + ")"}, "host not allowed")
 		return
 	}
-	p.forward(w, r, caller, acc, c, secret, connector, host, rest, &status, &detail, refuse)
+	p.forward(w, r, caller, acc, c, secret, false, nil, connector, host, rest, &status, &detail, refuse)
 }
 
 // forward sends the request upstream with the credential injected and relays the
 // answer. Serve has already decided access, the connector and the secret; status
 // and detail are Serve's audit fields, written here as the exchange resolves.
-func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, acc Access, c Connector, secret,
-	connector, host, rest string, status *int, detail *string, refuse func(int, RefusalBody, string)) {
+//
+// anonymous forwards with NO credential: nothing is injected (the caller's own
+// Authorization is still dropped), and there is nothing to redact. onStatus, when
+// set, is told the upstream's status.
+func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, acc Access, c Connector, secret string,
+	anonymous bool, onStatus func(int), connector, host, rest string, status *int, detail *string,
+	refuse func(int, RefusalBody, string)) {
 	ctx := r.Context()
 	host = strings.ToLower(host)
 
@@ -453,7 +480,12 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 	target.RawQuery = r.URL.RawQuery
 
 	authName, authValue := authHeader(c, secret)
-	red := newRedactor(secretForms(c, secret))
+	var red *redactor
+	if anonymous {
+		red = newRedactor(nil)
+	} else {
+		red = newRedactor(secretForms(c, secret))
+	}
 	prefix := "/connect/" + connector + "/"
 
 	// The upstream request runs on outCtx, which only an event stream's shutdown
@@ -479,7 +511,9 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 				pr.Out.Header.Del(h)
 			}
 			// Set REPLACES every value the caller sent under this name.
-			pr.Out.Header.Set(authName, authValue)
+			if !anonymous {
+				pr.Out.Header.Set(authName, authValue)
+			}
 			// identity, STATED: with no Accept-Encoding at all Go's transport asks
 			// for gzip itself; a stated one turns that off, so the body the
 			// redactor scans is the bytes the upstream sent, uncompressed.
@@ -488,6 +522,9 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, caller Caller, a
 		Transport: p.upstreamTransport(),
 		ModifyResponse: func(resp *http.Response) error {
 			*status = resp.StatusCode
+			if onStatus != nil {
+				onStatus(resp.StatusCode)
+			}
 			if resp.StatusCode == http.StatusSwitchingProtocols {
 				return errSwitchedProtocols
 			}

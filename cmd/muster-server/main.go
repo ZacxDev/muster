@@ -312,14 +312,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// without a connector store; buildApp only skips the wrap.
 		if cfg.GitHubAppID != 0 {
 			gapp, err := githubapp.New(githubapp.Config{AppID: cfg.GitHubAppID, PrivateKey: cfg.GitHubAppKey,
-				InstallationID: cfg.GitHubAppInstallationID, Logger: logger})
+				Accounts: cfg.GitHubAppAccounts, Logger: logger})
 			if err != nil {
 				a.Close()
 				return nil, fmt.Errorf("github app: %w", err)
 			}
 			ext.GitHubApp = gapp
 			if ext.Connectors != nil {
-				ext.Connectors = connectors.WithVirtual(ext.Connectors, gapp)
+				// Admins only: the App is the deployment's (connectors.WithVirtual).
+				ext.Connectors = connectors.WithVirtual(ext.Connectors, gapp, authz.IsAdmin)
 			}
 			// Backgrounded, like connectStaticGitHub: a boot that blocks on a third
 			// party is a boot that party's outage can stop. Its outcome is logged and
@@ -1180,23 +1181,22 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	a.logUploadsBanner(ext)
 
 	if ext.GitHubApp != nil {
-		inst := "chosen per repository by its owner's login (" + envGitHubAppInstallation + " unset)"
-		if a.cfg.GitHubAppInstallationID != 0 {
-			inst = fmt.Sprintf("pinned to %d (%s)", a.cfg.GitHubAppInstallationID, envGitHubAppInstallation)
-		}
-		agentsSee := "the `github` connector is backed by it: each approved agent's requests through the proxy carry a " +
-			"1-hour installation token limited to its own repository (contents + pull_requests write)"
+		agentsSee := "the `github` connector is backed by it for ADMINS' agents: each approved agent's requests to " +
+			"its own repository carry a 1-hour installation token limited to that repository (contents + " +
+			"pull_requests write, checks + statuses read), other repositories go out anonymously, and an agent " +
+			"with NO repository (a chief) gets no github access"
 		if ext.Connectors == nil {
 			agentsSee = "NO connector store, so agents cannot use it"
 		}
-		l.Printf("github app: ON — %s=%d (its JWT signed with the key in %s) is muster's GitHub identity (the "+
-			"Repos tab and every connected-repository check list its installation repositories; the OAuth "+
-			"connection below is the deprecated fallback and is not consulted); installation %s; %s",
-			envGitHubAppID, a.cfg.GitHubAppID, envGitHubAppKey, inst, agentsSee)
+		l.Printf("github app: ON — %s=%d (its JWT signed with the key in %s) is the admins' GitHub identity (their "+
+			"Repos tab and connected-repository checks list its installation repositories; members keep their "+
+			"OAuth connection, deprecated); only installations on %s=%s are used; %s",
+			envGitHubAppID, a.cfg.GitHubAppID, envGitHubAppKey, envGitHubAppAccounts,
+			strings.Join(a.cfg.GitHubAppAccounts, ","), agentsSee)
 	} else {
-		l.Printf("github app: OFF — %s/%s (and %s) are unset, so muster's GitHub identity is the OAuth connection "+
+		l.Printf("github app: OFF — %s/%s/%s are unset, so muster's GitHub identity is the OAuth connection "+
 			"(deprecated) and a `github` connector needs a stored token", envGitHubAppID, envGitHubAppKey,
-			envGitHubAppInstallation)
+			envGitHubAppAccounts)
 	}
 	if a.cfg.CheckoutWaitTimeout > 0 {
 		l.Printf("checkout wait: %s=%s — a claude-code agent's first turn waits that long for its repository "+
@@ -1605,7 +1605,8 @@ func checkGitHubApp(ctx context.Context, app *githubapp.App, logger *log.Logger)
 	}
 	if len(logins) == 0 {
 		logger.Printf("github app: App %d authenticates but is installed on NO account: install it (with the "+
-			"repositories agents should reach) before approving any agent's github request", app.AppID())
+			"repositories agents should reach) on an account in %s before approving any agent's github request",
+			app.AppID(), envGitHubAppAccounts)
 		return
 	}
 	logger.Printf("github app: App %d authenticates and is installed on %s", app.AppID(), strings.Join(logins, ", "))

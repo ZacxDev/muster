@@ -357,7 +357,7 @@ var bannerLedger = []string{
 	// (ON / OFF), and the `checkout wait:` line names its variable in both.
 	envGitHubAppID,
 	envGitHubAppKey,
-	envGitHubAppInstallation,
+	envGitHubAppAccounts,
 	envCheckoutWaitTimeout,
 	envConnectPort,
 	envAgentConnectURL,
@@ -725,9 +725,9 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		ChiefSessionRuntimes: []string{"claude-code", "gateway"},
 		// The GitHub App: the banner branches on ext.GitHubApp (below); the key
 		// itself is never printed, so the fixture needs none.
-		GitHubAppID:             12345,
-		GitHubAppInstallationID: 678,
-		CheckoutWaitTimeout:     48 * time.Hour,
+		GitHubAppID:         12345,
+		GitHubAppAccounts:   []string{"example-org"},
+		CheckoutWaitTimeout: 48 * time.Hour,
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
 		GitHubApp:   bannerStubGitHubApp{},
