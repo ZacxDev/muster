@@ -954,13 +954,9 @@ func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind
 	if p.Model != "" {
 		return "", "", fmt.Errorf("%w: %s", ErrDispatchRefused, claudeCodeNoModel)
 	}
-	// ⚠ A REPO IS REFUSED FOR THE SAME REASON AS A MODEL: it would be accepted
-	// and do nothing. Nothing in the claude-code image clones a declared
-	// repository.
-	if p.Repo != "" || p.RepoBranch != "" {
-		return "", "", fmt.Errorf("%w: a %s agent cannot be given a repository yet (nothing in its image "+
-			"clones one); dispatch without a repo", ErrDispatchRefused, agents.KindClaudeCode)
-	}
+	// A repository IS taken (unlike a model): ccd checks it out before it starts
+	// the CLI and runs the CLI in the checkout (agentspec.claudeCodeRepo,
+	// cmd/ccd/checkout.go).
 	if s.ext.Kinds == nil {
 		return "", "", fmt.Errorf("%w: no Claude account pool is configured", ErrDispatchRefused)
 	}

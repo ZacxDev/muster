@@ -112,23 +112,39 @@ func TestTaskDispatchRefusesAKindItCannotStart(t *testing.T) {
 	u.mustRefuse(t, u.call(u.chief, taskDispatchTool, map[string]any{"task_id": m.ID}), "add a Claude account first", m.ID)
 }
 
-// TestTaskDispatchRefusesARepoForClaudeCode: a claude-code agent cannot take a
-// repository, named by the chief or by the task — refused before the
-// reservation, with the sentence naming gateway.
-func TestTaskDispatchRefusesARepoForClaudeCode(t *testing.T) {
+// TestTaskDispatchGivesAClaudeCodeAgentItsRepository: a claude-code agent
+// takes a repository — the chief's `repo` for a task with none, or the task's
+// own — with the task's branch, and still no model. (Before repositories
+// existed for this kind both were refused.)
+func TestTaskDispatchGivesAClaudeCodeAgentItsRepository(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	f.withConnectedRepos(t, "example/app")
 	n := f.task(t, "repo arg")
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/app"}), chiefDispatchCCRepo, n.ID)
-	r, err := f.notes.Create(f.asOwner, notes.Note{Title: "task repo", Body: "b", Repo: "example/app"})
+	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/app",
+		"instructions": "using the x skill"}), n.ID)
+	if got.Kind != agents.KindClaudeCode || got.Repo != "example/app" || got.Model != "" || got.CCAccount != "pool-acct-a" {
+		t.Fatalf("chief-repo agent %+v", got)
+	}
+	r, err := f.notes.Create(f.asOwner, notes.Note{Title: "task repo", Body: "b", Repo: "example/other", RepoBranch: "release/9"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": r.ID}), chiefDispatchCCRepo, r.ID)
-	// The same task as a gateway agent starts, on its repository.
-	if got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": r.ID, "kind": "gateway"}), r.ID); got.Repo != "example/app" {
-		t.Fatalf("gateway agent repo %q", got.Repo)
+	if got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": r.ID}), r.ID); got.Kind != agents.KindClaudeCode ||
+		got.Repo != "example/other" || got.RepoBranch != "release/9" {
+		t.Fatalf("task-repo agent %+v", got)
 	}
+}
+
+// TestTaskDispatchStillRefusesAnUnconnectedRepoForClaudeCode: lifting the
+// claude-code refusal did not loosen the connected-repository guard — a repo
+// the owner has not connected is refused for the default kind (claude-code)
+// before the reservation, and no agent starts.
+func TestTaskDispatchStillRefusesAnUnconnectedRepoForClaudeCode(t *testing.T) {
+	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	f.withConnectedRepos(t, "example/app")
+	n := f.task(t, "stranger repo")
+	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app"}), chiefDispatchRepo, n.ID)
+	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "stranger/app", "kind": "claude-code"}), chiefDispatchRepo, n.ID)
 }
 
 // TestTaskDispatchPutsTheInstructionsFirstAndTheRulesLast: the chief's

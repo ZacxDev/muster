@@ -110,7 +110,6 @@ const chiefInstructionsMarker = "chief-instructions"
 // The kind and instructions refusals (task_dispatch).
 const (
 	chiefDispatchInstructionsCap = "instructions are over 1 KiB: shorten them"
-	chiefDispatchCCRepo          = "a claude-code agent cannot be given a repository yet; pass kind gateway for a task that needs one"
 )
 
 // chiefDefaultKind is the kind task_dispatch starts when the chief names none:
@@ -200,11 +199,11 @@ func taskRoutingToolDefs(dispatch bool) []agents.ToolDef {
 				strconv.Itoa(plugins.MaxChiefDispatchesPerDay) + " a day; once per task (calling it again answers with the first start). " +
 				"The agent opens a DRAFT pull request at most and never marks the task complete. " +
 				"It starts a claude-code agent (a Claude Code pod) unless you pass kind \"gateway\" or this deployment has no " +
-				"claude-code; a claude-code agent takes no repository yet.",
+				"claude-code. Either kind works in the task's repository, or the one you pass: a claude-code agent's session " +
+				"starts inside a checkout of it, so the repository's CLAUDE.md and project skills (.claude/skills) load.",
 			Parameters: objSchema(map[string]any{"task_id": id,
 				"repo": strProp("The repository to work in (owner/name), only when the task names none: it must be one of " +
-					"your owner's connected GitHub repositories. Without a repository the agent cannot open a pull request. " +
-					"Gateway agents only."),
+					"your owner's connected GitHub repositories. Without a repository the agent cannot open a pull request."),
 				"kind": map[string]any{"type": "string", "enum": []string{agents.KindClaudeCode, agents.KindGateway},
 					"description": "The agent to start: \"claude-code\" (the default when this deployment enables it) or \"gateway\"."},
 				"instructions": map[string]any{"type": "string", "maxLength": chiefInstructionsMax,
@@ -488,10 +487,10 @@ func (e errTaskDispatch) Error() string { return string(e) }
 // The ORDER is the contract, each refusal its own sentence: the flag (checked
 // by the caller), the owner's opt-in, the deployment's ability to start
 // anything, the instructions' cap, the kind (known, enabled, usable by the owner:
-// resolveKind) and a repo that kind cannot take, then — under the owner's
-// reservation lock — the one start per task (a repeat answers with the first),
-// the task (the owner's, open, ungated, nobody on it, no repository a
-// claude-code agent cannot take), and the two caps. Only a reservation that
+// resolveKind), a repo that is not one of the owner's connected repositories,
+// then — under the owner's reservation lock — the one start per task (a repeat
+// answers with the first), the task (the owner's, open, ungated, nobody on it,
+// no repository other than `repo`), and the two caps. Only a reservation that
 // passed all of them spends a unit, and only then is the agent created. A Claude
 // account pool with no usable account is found only at the create, after the
 // unit is spent — fail-closed, like any create that fails.
@@ -514,9 +513,6 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		return toolErr("%s", err.Error())
 	}
 	cc := kind == agents.KindClaudeCode
-	if cc && repo != "" {
-		return toolErr("%s", chiefDispatchCCRepo)
-	}
 	// 🔴 A REPO THE CHIEF NAMES MUST BE ONE THE OWNER CONNECTED. The chief picks
 	// it reading outside text, so the set it may pick from is the owner's own
 	// GitHub connection's — never an arbitrary owner/name an outside party wrote.
@@ -535,9 +531,6 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 			return err
 		} else if why != "" {
 			return errTaskDispatch(why)
-		}
-		if cc && (n.Repo != "" || n.RepoBranch != "") {
-			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " names a repository: " + chiefDispatchCCRepo)
 		}
 		if repo != "" && n.Repo != "" && !strings.EqualFold(n.Repo, repo) {
 			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " " + chiefDispatchTaskRepo + " (" + n.Repo + "): omit repo")
@@ -627,9 +620,10 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		NoteID:      &task.ID, NoteText: kickoff, Kickoff: true,
 	}
 	if cc {
-		// A claude-code agent has no per-agent model (claudeCodeNoModel) and no
-		// repository; its Claude account comes from the owner's pool.
-		p.Model, p.Repo, p.RepoBranch = "", "", ""
+		// A claude-code agent has no per-agent model (claudeCodeNoModel); its
+		// Claude account comes from the owner's pool. It keeps the repository and
+		// branch: ccd checks them out and runs the CLI in the checkout.
+		p.Model = ""
 	}
 	// chiefDispatchDeploymentRefusal answered these before the reservation; they
 	// are read again HERE, at the call, because the provisioner-seam walk
