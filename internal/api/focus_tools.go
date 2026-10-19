@@ -53,7 +53,7 @@ func focusToolDefs() []agents.ToolDef {
 			Parameters: objSchema(map[string]any{
 				"query": strProp("Words to look for, e.g. \"invoice reconciliation\"."),
 				"limit": map[string]any{"type": "integer", "description": "At most this many results (1-20, default 5)."},
-				"since_hours": intProp("Search the focus history of the last this-many hours instead of the current focus (1-720; "+
+				"since_hours": intProp("Search the focus history of the last this-many hours instead of the current focus (1-24; "+
 					"omit for the current focus). Each hit is a session's best-matching past focus, with when it was written.", 1, focusSearchMaxHours),
 			}, "query")},
 		{Type: "function", Name: focusRefreshToolName,
@@ -156,9 +156,10 @@ func (s *Server) toolFocusSearch(ctx context.Context, arguments string) string {
 	return toolJSON(map[string]any{"untrusted": focus.UntrustedNote, "results": out})
 }
 
-// focusSearchMaxHours bounds focus_search's since_hours: focus history's own
-// retention (focus.DefaultHistoryRetention, 30 days).
-const focusSearchMaxHours = 720
+// focusSearchMaxHours bounds focus_search's since_hours: a day. The window is
+// for finding who is on something NOW (the measured need was 6 h), not a trawl
+// through history's 30 days.
+const focusSearchMaxHours = 24
 
 // focusSearchHistory is focus_search with since_hours: each session's best
 // focus written in the last window, under the SAME liveness rule as the

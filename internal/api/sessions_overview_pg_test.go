@@ -189,9 +189,16 @@ func TestTheHintListsOnlyTheLiveSessionOnTheJob(t *testing.T) {
 			t.Errorf("%s: an offline mirror or a 7 h old row is a hit: %s", surface, text)
 		}
 	}
-	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_search", `{"query":"node-7k","since_hours":721}`) {
-		if !isToolErr(text) {
-			t.Errorf("%s: since_hours past retention accepted: %s", surface, text)
+	// since_hours is a recent-work window, at most a day: not a trawl through
+	// the 30 days of history.
+	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_search", `{"query":"node-7k","since_hours":25}`) {
+		if text != toolErr("since_hours is 1 to 24 (omit it to search the current focus)") {
+			t.Errorf("%s: since_hours 25 was not refused: %s", surface, text)
+		}
+	}
+	for surface, text := range g.surfaces(t, g.chief, g.chiefTok, "focus_search", `{"query":"node-7k","since_hours":24}`) {
+		if isToolErr(text) || !strings.Contains(text, a) {
+			t.Errorf("%s: control, since_hours 24: %s", surface, text)
 		}
 	}
 }
