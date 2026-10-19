@@ -156,7 +156,8 @@ func TestAPerWindowHostSendsItsReposAfterItsWindows(t *testing.T) {
 }
 
 // TestTheLargestReposMessageFitsOneFrame is the size behind sending the names
-// on a message of their own: MaxWindows entries, the longest window id, a name
+// on a message of their own: MaxWindows entries — EVERY window named, shells
+// as much as Claude Code windows — the longest window id, a name
 // at MaxRepoName of bytes JSON writes six-fold. It must fit one frame. The
 // window list could not have carried it: its own worst case
 // (TestTheLargestWindowListFitsOneFrame) plus even the field's NAME per window
