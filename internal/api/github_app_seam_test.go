@@ -44,6 +44,9 @@ type fakeGitHubUpstream struct {
 
 	mu      sync.Mutex
 	mints   []string          // request bodies, in order
+	// refuseApp answers every App-JWT call 401, as GitHub does for a key that
+	// is not the App's or a JWT outside its validity window.
+	refuseApp bool
 	minted  map[string]string // token -> repository name it was minted for
 	gitSeen []string          // "<path> <authorization>" per git request
 	apiSeen []string          // the Authorization of each /repos/ request
@@ -63,6 +66,8 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		switch {
+		case strings.HasPrefix(p, "/app/") && f.refuseApp:
+			http.Error(w, `{"message":"A JSON web token could not be decoded"}`, http.StatusUnauthorized)
 		case p == "/app/installations":
 			if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
 				http.Error(w, `{"message":"no JWT"}`, http.StatusUnauthorized)
@@ -392,5 +397,33 @@ func TestTheManagedGitHubConnectorCannotBeReplacedByAStoredOne(t *testing.T) {
 	page := serveCall(t, h, "GET", "/ui/connectors", nil, op).Body.String()
 	if !strings.Contains(page, `data-connector-managed="github"`) || strings.Contains(page, `data-delete="github"`) {
 		t.Fatalf("the github card is not marked managed / still offers Delete:\n%s", page)
+	}
+}
+
+// TestTheRequestCardShowsTheAppsProblem: when the App's credentials are refused
+// (here: GitHub's 401 at the boot check), the pending github request card says
+// so — the owner learns an approval alone will not make the clone succeed —
+// and so does the github connector's card.
+func TestTheRequestCardShowsTheAppsProblem(t *testing.T) {
+	f := newConnFixture(t)
+	up := newFakeGitHubUpstream(t)
+	up.refuseApp = true
+	const tok = "problem-agent-token-0123456789abcdef"
+	id := f.seedAgent(t, "problem-fixture", tok)
+	if _, err := f.pool.Exec(f.ctx, `UPDATE agents SET repo='example-org/widget' WHERE id=$1`, id); err != nil {
+		t.Fatal(err)
+	}
+	srv, h, app := appServer(t, f, up)
+	if _, err := app.Check(context.Background()); err == nil {
+		t.Fatal("control: the boot check passed against a GitHub refusing the App")
+	}
+	if _, _, err := f.store.RequestGrant(f.ctx, id, "github", "clone"); err != nil {
+		t.Fatal(err)
+	}
+	op := map[string]string{"Cookie": sessionCookieFor(srv), "HX-Request": "true", "Origin": "http://example.com"}
+	page := serveCall(t, h, "GET", "/ui/connectors", nil, op).Body.String()
+	if strings.Count(page, "data-connector-problem") < 2 || !strings.Contains(page, "(401)") ||
+		!strings.Contains(page, "MUSTER_GITHUB_APP_PRIVATE_KEY") {
+		t.Fatalf("the request card and the connector card do not both show the App's 401 problem:\n%s", page)
 	}
 }
