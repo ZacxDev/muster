@@ -92,6 +92,7 @@ type checkout struct {
 	// is not offered the connector store.
 	connectBase, token string
 	retry              time.Duration
+	timeout            time.Duration // one clone's bound; 0 is checkoutTimeout
 	logf               func(string, ...any)
 
 	mu        sync.Mutex
@@ -183,8 +184,23 @@ func (c *checkout) run(ctx context.Context) {
 // attempt makes the checkout exist: an existing one is used as it is; an empty
 // (or absent) directory is cloned into; a directory holding anything else is
 // refused rather than cloned over.
+//
+// 🔴 A CHECKOUT IS A .git WITH A COMMIT CHECKED OUT, NOT A .git. A clone that is
+// killed (the timeout, ccd shutting down, the pod evicted) leaves a .git whose
+// HEAD names no commit; treating that as ready would start the CLI in an empty
+// tree. So: the clone goes into a sibling scratch directory and is moved into
+// place (moveCheckout, .git last) only once `git rev-parse --verify HEAD`
+// succeeds there — a kill leaves the workspace untouched (the scratch directory
+// is replaced on the next attempt) — and an existing .git counts only when HEAD
+// verifies too. One with
+// no HEAD (an interrupted clone by an older ccd) is refused, not deleted: ccd
+// never removes what it did not just create.
 func (c *checkout) attempt(ctx context.Context) error {
 	if _, err := os.Lstat(filepath.Join(c.dir, ".git")); err == nil {
+		if err := verifyHEAD(ctx, c.dir); err != nil {
+			return fmt.Errorf("%s holds a .git with no commit checked out (an interrupted clone?); ccd does not "+
+				"clone over it — remove %s to let it clone again", c.dir, filepath.Join(c.dir, ".git"))
+		}
 		c.logf("ccd: checkout: using the existing checkout of %s in %s", c.repo, c.dir)
 		return nil
 	}
@@ -196,12 +212,20 @@ func (c *checkout) attempt(ctx context.Context) error {
 	case len(entries) > 0:
 		return fmt.Errorf("%s holds files but is not a git checkout; ccd does not clone over them", c.dir)
 	}
+	scratch := filepath.Join(filepath.Dir(c.dir), "."+filepath.Base(c.dir)+".ccd-clone")
+	if err := os.RemoveAll(scratch); err != nil {
+		return err
+	}
 	args := []string{"clone", "--quiet"}
 	if c.branch != "" {
 		args = append(args, "--branch="+c.branch)
 	}
-	args = append(args, "--", githubCloneBase+c.repo+".git", c.dir)
-	cctx, cancel := context.WithTimeout(ctx, checkoutTimeout)
+	args = append(args, "--", githubCloneBase+c.repo+".git", scratch)
+	timeout := c.timeout
+	if timeout <= 0 {
+		timeout = checkoutTimeout
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, "git", args...)
 	// The hang guard muster also sets on the pod: with nobody to answer, a
@@ -215,7 +239,52 @@ func (c *checkout) attempt(ctx context.Context) error {
 		}
 		return err
 	}
+	if err := verifyHEAD(ctx, scratch); err != nil {
+		return fmt.Errorf("the clone of %s finished with no commit checked out: %v", c.repo, err)
+	}
+	if err := moveCheckout(scratch, c.dir); err != nil {
+		return fmt.Errorf("moving the clone into %s: %w", c.dir, err)
+	}
 	c.logf("ccd: checkout: cloned %s into %s", c.repo, c.dir)
+	return nil
+}
+
+// moveCheckout moves a verified clone's entries from scratch into dir, its
+// .git LAST, then removes scratch.
+//
+// ⚠ dir itself is NOT replaced (no rename of the directory): it is ccd's own
+// working directory (the entrypoint cd's into it), and replacing it would leave
+// ccd — and every git it runs — in a deleted directory. Each entry's rename is
+// atomic, and because .git moves last, an interruption leaves files with no
+// .git: refused as "not a git checkout", never mistaken for one.
+func moveCheckout(scratch, dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(scratch)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == ".git" {
+			continue
+		}
+		if err := os.Rename(filepath.Join(scratch, e.Name()), filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(filepath.Join(scratch, ".git"), filepath.Join(dir, ".git")); err != nil {
+		return err
+	}
+	return os.Remove(scratch)
+}
+
+// verifyHEAD reports whether dir's HEAD names a commit.
+func verifyHEAD(ctx context.Context, dir string) error {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--verify", "--quiet", "HEAD^{commit}").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git rev-parse --verify HEAD: %v %s", err, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 

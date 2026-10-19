@@ -309,8 +309,11 @@ func TestAFailedCloneFilesOneGithubRequestAndSaysWhatToDo(t *testing.T) {
 	if len(reqs) != 1 || !strings.Contains(reqs[0]["reason"], "clone example-org/private-app") {
 		t.Fatalf("requests filed: %+v", reqs)
 	}
-	if st := c.state(); !strings.Contains(st.Detail, "approve this agent's request for the github connector") {
-		t.Fatalf("pending detail %q", st.Detail)
+	waitState(t, c, func(s checkoutState) bool {
+		return strings.Contains(s.Detail, "approve this agent's request for the github connector")
+	})
+	if n := len(fc.filed()); n != 1 {
+		t.Fatalf("requests filed after the pending retry: %d", n)
 	}
 	select {
 	case <-c.done:
