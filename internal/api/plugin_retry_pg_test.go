@@ -84,9 +84,11 @@ func TestRetryDeliversAnUnconfirmedMessageAndTheChiefDrafts(t *testing.T) {
 
 // TestRetryRefusesWhatMustNotBeSentAgain: each state that must not be handed to
 // the chief again is refused (409) and left exactly as it was — queued (which is
-// also a double click), delivering, delivered, a pending draft, a sent draft, a
-// live session route — as is a message of another owner (404) and an owner with
-// no chief (409).
+// also a double click), delivering, delivered, a draft in each live status
+// (pending, approved, sent, unconfirmed), a session route in each live state
+// (routed, answered, relayed) — as is a message of another owner (404) and an
+// owner with no chief (409). Every status of liveDraft's and every state of
+// liveRoute's list has its own case, so dropping any one of them goes red.
 func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 	pp := newPluginPlane(t, &scriptedRuntime{name: replyDraftToolName})
 	sys := authz.System(context.Background())
@@ -109,7 +111,16 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, _ = pp.ps.RecordDelivery(pp.owner, m.ID, pp.chief.ID, plugins.StatusUnconfirmed)
-		if status != "pending" {
+		// An approved draft is NOT claimed: a claim whose lease has run out is
+		// settled unconfirmed by the plane's draft sweep, which would turn this
+		// fixture into the unconfirmed case (measured: it did).
+		switch status {
+		case "approved":
+			if _, err := pool.Exec(sys, `UPDATE plugin_reply_drafts SET status=$2, decided_at=now(), approved_at=now() WHERE id=$1`, d.ID, status); err != nil {
+				t.Fatal(err)
+			}
+		case "pending":
+		default:
 			if _, err := pool.Exec(sys, `UPDATE plugin_reply_drafts SET status=$2, decided_at=now(), approved_at=now(), claimed_at=now(), lease_until=now(), finished_at=now() WHERE id=$1`, d.ID, status); err != nil {
 				t.Fatal(err)
 			}
@@ -117,12 +128,23 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 		return m
 	}
 	pending, sent := drafted("r-pending", "pending"), drafted("r-sent", "sent")
-	routed := pp.unconfirmed(t, "r-routed")
-	if _, err := pool.Exec(sys, `INSERT INTO session_routes (owner_id, route_id, plugin_message_id, agent_id, target_kind, target_key, timeout_at)
-		VALUES ($1, $4, $2, $3, 'mirror', 'sess-1', now() + interval '1 hour')`, pp.ownerID, routed.ID, pp.chief.ID,
-		fmt.Sprintf("rt_%024x", time.Now().UnixNano())); err != nil {
-		t.Fatal(err)
+	approved, unconfDraft := drafted("r-approved", "approved"), drafted("r-unconf-draft", "unconfirmed")
+	// A session route in state; answered and relayed carry the answer (and a
+	// relayed one is finished), as 0021's CHECKs require.
+	routedAs := func(ext, state string) plugins.Message {
+		m := pp.unconfirmed(t, ext)
+		if _, err := pool.Exec(sys, `INSERT INTO session_routes (owner_id, route_id, plugin_message_id, agent_id, target_kind, target_key, timeout_at,
+				state, reply_body, answered_at, finished_at)
+			VALUES ($1, $4, $2, $3, 'mirror', 'sess-1', now() + interval '1 hour', $5,
+				CASE WHEN $5 = 'routed' THEN NULL ELSE 'an answer' END,
+				CASE WHEN $5 = 'routed' THEN NULL ELSE now() END,
+				CASE WHEN $5 = 'relayed' THEN now() ELSE NULL END)`, pp.ownerID, m.ID, pp.chief.ID,
+			fmt.Sprintf("rt_%024x", time.Now().UnixNano()), state); err != nil {
+			t.Fatal(err)
+		}
+		return m
 	}
+	routed, answered, relayed := routedAs("r-routed", "routed"), routedAs("r-answered", "answered"), routedAs("r-relayed", "relayed")
 
 	for _, c := range []struct {
 		name string
@@ -134,7 +156,11 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 		{"delivered", delivered, "already received it"},
 		{"pending draft", pending, "already drafted a reply"},
 		{"sent draft", sent, "already drafted a reply"},
-		{"live route", routed, "routed it to a session"},
+		{"approved draft", approved, "already drafted a reply"},
+		{"unconfirmed draft", unconfDraft, "already drafted a reply"},
+		{"routed route", routed, "routed it to a session"},
+		{"answered route", answered, "routed it to a session"},
+		{"relayed route", relayed, "routed it to a session"},
 	} {
 		before, _ := pp.ps.Message(pp.owner, c.m.ID)
 		code, _, problem := pp.srv.retryPluginMessage(asSession(pp.ownerID), c.m.ID)
@@ -161,7 +187,8 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 		t.Fatalf("control: a plain unconfirmed message is not listed retryable")
 	}
 	for name, m := range map[string]plugins.Message{"queued": queued, "delivering": delivering, "delivered": delivered,
-		"pending draft": pending, "sent draft": sent, "live route": routed} {
+		"pending draft": pending, "sent draft": sent, "approved draft": approved, "unconfirmed draft": unconfDraft,
+		"routed route": routed, "answered route": answered, "relayed route": relayed} {
 		if listed[m.ID] {
 			t.Errorf("%s: listed with a Retry button the retry would refuse", name)
 		}
