@@ -271,6 +271,9 @@ func agentsHostTabs() g.Node {
 			Class(tabClass),
 			Span(g.Attr("data-tab-label", ""), g.Text("All")),
 			Span(g.Attr("data-tab-count", ""), Class("ml-1.5 min-w-[1.25rem] rounded-full bg-s2 px-1.5 text-center text-xs tabular-nums text-fg2")),
+			// A host tab's "N other windows" (hostOthersNodes): its windows with
+			// no card. Hidden on All, and on a host with none.
+			Span(g.Attr("data-tab-other", ""), g.Attr("hidden", ""), Class("ml-1.5 text-xs font-normal text-muted")),
 		),
 	)
 }
@@ -522,6 +525,18 @@ func agentsFilterScript() g.Node {
       seen[v] = true;
       hosts.push({ v: v, l: a.getAttribute('data-l-host') || v });
     });
+    // Each host's windows with NO card (hostOthersNodes: "N other windows"),
+    // shown on its tab. A host whose every window is such still gets a tab, so
+    // nothing of it looks silently missing.
+    var others = Object.create(null);
+    [].forEach.call(list.querySelectorAll(':scope > [data-host-others]'), function (o) {
+      var v = o.getAttribute('data-f-host');
+      if (!v) return;
+      others[v] = o.getAttribute('data-text') || '';
+      if (seen[v]) return;
+      seen[v] = true;
+      hosts.push({ v: v, l: o.getAttribute('data-l-host') || v });
+    });
     var h = linkAll ? '' : hostChosen();
     var on = h && seen[h] ? h : '';
     hosts.sort(function (x, y) {
@@ -564,6 +579,11 @@ func agentsFilterScript() g.Node {
       if (sel_) picked = t;
       var c = t.querySelector('[data-tab-count]'), k = String(v ? n[v] || 0 : total);
       if (c && c.textContent !== k) c.textContent = k;
+      var o = t.querySelector('[data-tab-other]'), ot = v ? others[v] || '' : '';
+      if (o) {
+        if (o.textContent !== ot) o.textContent = ot;
+        o.hidden = !ot;
+      }
     });
     if (picked && on !== shownHost) revealTab(s, picked);
     shownHost = on;

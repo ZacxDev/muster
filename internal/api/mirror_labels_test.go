@@ -18,10 +18,15 @@ func TestMirrorLabelsReachEverySurfaceAndNeverTheAddress(t *testing.T) {
 
 	_, list := mirrorGet(t, s, ts, "/ui/agents")
 	for _, want := range []string{`<span data-mirror-label="">mango:1</span>`, `title="tmux session main"`,
-		`href="` + amp(ui.MirrorViewPath("ws", "main")) + `"`, `data-mirror-name="">chief</span>`} {
+		`href="` + amp(ui.MirrorViewPath("ws", "main")) + `"`} {
 		if !strings.Contains(list, want) {
 			t.Errorf("the Agents list lacks %q", want)
 		}
+	}
+	// chief runs no Claude Code on a host that reports it: no card (Claude
+	// only), and its raw name is checked on its terminal page below.
+	if strings.Contains(list, `data-mirror-name="">chief</span>`) {
+		t.Error("a non-Claude window of a v2 host drew a card")
 	}
 	if strings.Contains(list, "session=mango") {
 		t.Error("a link addresses the session by its label")
@@ -67,7 +72,6 @@ func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
 	for _, want := range []string{
 		`<span data-mirror-label="">mango:1</span><span data-mirror-qualifier=""> · ws</span>`,
 		`<span data-mirror-label="">mango:1</span><span data-mirror-qualifier=""> · tower</span>`,
-		`<span data-mirror-label="">solo</span><span data-mirror-session=""`,
 		// The filter finds it by the title as shown, too.
 		`data-filter="mango:1 mango:1 · ws main ws `,
 	} {
@@ -77,6 +81,11 @@ func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
 	}
 	if n := strings.Count(list, "data-mirror-qualifier"); n != 2 {
 		t.Errorf("%d qualified titles, want 2 (the two mango:1 cards, not solo)", n)
+	}
+	// solo (chief) runs no Claude Code on a v2 host: no card at all (Claude
+	// only) — its title is checked unqualified on its own pages.
+	if strings.Contains(list, `<span data-mirror-label="">solo</span>`) {
+		t.Error("a non-Claude window of a v2 host drew a card")
 	}
 
 	_, term := mirrorGet(t, s, ts, ui.MirrorTerminalPath("ws", "main"))

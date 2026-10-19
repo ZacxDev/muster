@@ -65,8 +65,10 @@ func RenderAgentsCards(w io.Writer, list []AgentCardView) error {
 // mirror plugin is on, the viewer's mirrored sessions after them — plus, out of
 // band, the recently-viewed strip resolved against those same cards
 // (recentStrip). recent is the viewer's recently opened entries, newest first.
-func RenderAgentsList(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, recent []RecentRef) error {
-	return g.Group{AgentsCardsWithMirrors(list, mirrors), recentStrip(recentItems(list, mirrors, recent), true)}.Render(w)
+// others is each host's windows that have no card (hostOthersNodes), which the
+// host tabs show as "N other windows".
+func RenderAgentsList(w io.Writer, list []AgentCardView, mirrors []MirrorCardView, others []HostOtherWindows, recent []RecentRef) error {
+	return g.Group{AgentsCardsWithMirrors(list, mirrors), hostOthersNodes(others), recentStrip(recentItems(list, mirrors, recent), true)}.Render(w)
 }
 
 // RenderDispatchModal writes the /ui/agents/new partial (the FAB dispatch form

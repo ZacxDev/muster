@@ -166,8 +166,11 @@ func TestAClaudePanesCardOpensTheRenderedViewAndOthersTheTerminal(t *testing.T) 
 		if !strings.Contains(list, `href="`+amp(wantMain)+`"`) {
 			t.Errorf("v2=%v: main's card does not open %s:\n%s", v2, wantMain, list)
 		}
-		if !strings.Contains(list, `href="`+amp(ui.MirrorTerminalPath("ws", "chief"))+`"`) {
-			t.Errorf("v2=%v: a non-Claude session's card does not open its terminal", v2)
+		// A v2 host SAYS chief runs no Claude Code: no card (Claude only). A v1
+		// host says nothing either way, so chief keeps its card, opening the
+		// terminal.
+		if got := strings.Contains(list, `href="`+amp(ui.MirrorTerminalPath("ws", "chief"))+`"`); got == v2 {
+			t.Errorf("v2=%v: a card for the non-Claude session chief = %v, want %v", v2, got, !v2)
 		}
 		if got := strings.Count(list, "data-mirror-claude"); got != map[bool]int{true: 1, false: 0}[v2] {
 			t.Errorf("v2=%v: %d Claude Code badges", v2, got)

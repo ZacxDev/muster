@@ -141,7 +141,7 @@ func (f *fakeMirror) Hosts(ctx context.Context) []mirror.HostView {
 		hv.OfflineSince = f.offlineSince
 	}
 	if f.v2 != nil {
-		hv.Rendered, hv.Claude = f.online, []string{"main"}
+		hv.Rendered, hv.Claude, hv.ClaudeReport = f.online, []string{"main"}, true
 		hv.PanePaste = f.online && f.interactive && !f.oldMirror
 	}
 	hv.PaneScroll = f.online && f.interactive && f.scroll

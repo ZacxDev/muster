@@ -192,14 +192,14 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 // with live pods) plus the FAB + dispatch modal.
 func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	cards, mirrors, err := s.agentsListCards(ctx)
+	cards, mirrors, others, err := s.agentsListCards(ctx)
 	if err != nil {
 		s.logger.Printf("agents: list: %v", err)
 		http.Error(w, "could not load agents", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentsList(w, cards, mirrors, s.recentRefs(ctx)); err != nil {
+	if err := ui.RenderAgentsList(w, cards, mirrors, others, s.recentRefs(ctx)); err != nil {
 		s.logger.Printf("agents: render: %v", err)
 	}
 }
@@ -208,10 +208,13 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 // most recently active first, pins marked, and the viewer's mirrored sessions.
 // The list partial renders them, and the shell resolves the "Recently viewed"
 // strip against them (handleIndex), so both read the one list.
-func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
+//
+// others is each host's windows with no card (mirrorList), and every card
+// carries its attention badge (withCardAttention).
+func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.MirrorCardView, []ui.HostOtherWindows, error) {
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	instIdx := s.instanceIndex(ctx)
@@ -237,7 +240,9 @@ func (s *Server) agentsListCards(ctx context.Context) ([]ui.AgentCardView, []ui.
 	}
 	// The viewer's mirrored sessions (internal/mirror), after the agents: from
 	// the plugin's in-memory hub, scoped to this request's principal.
-	return cards, s.mirrorCards(ctx, pinned, focused), nil
+	mirrors, others := s.mirrorList(ctx, pinned, focused)
+	s.withCardAttention(ctx, cards, mirrors)
+	return cards, mirrors, others, nil
 }
 
 // handleAgentNewModal serves the /ui/agents/new partial: the dispatch form. It
@@ -596,7 +601,11 @@ func (s *Server) cardViewFor(ctx context.Context, a agents.Agent) ui.AgentCardVi
 		s.logger.Printf("agents: card %d: list for chief check: %v", a.ID, err)
 		list = nil
 	}
-	return s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], chiefPredicate(list), s.pinSet(ctx), s.focusIndex(ctx))
+	v := s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], chiefPredicate(list), s.pinSet(ctx), s.focusIndex(ctx))
+	// The same badge the list draws, so a re-rendered card keeps it.
+	one := []ui.AgentCardView{v}
+	s.withCardAttention(ctx, one, nil)
+	return one[0]
 }
 
 // handleAgentRenameForm serves GET /ui/agents/{id}/rename: the inline rename
