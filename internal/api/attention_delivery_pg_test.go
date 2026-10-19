@@ -467,6 +467,39 @@ func TestAnotherOwnerCannotAnswerSeeOrRetryAnAnswer(t *testing.T) {
 	}
 }
 
+// TestAnAnswerAStoppedAgentNeverTakesEndsUnconfirmed: an answer still queued a
+// day after it was given (its agent stopped and never came back) stops being
+// retried: it settles unconfirmed, saying why, and its item — though older than
+// the Answered list's day — still shows it with Retry.
+func TestAnAnswerAStoppedAgentNeverTakesEndsUnconfirmed(t *testing.T) {
+	f := newDeliveryFixture(t)
+	id := f.ask(t, f.chiefTok, "Rotate the backups?")
+	if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE agents SET status = 'stopped' WHERE id = $1`, f.chief.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.answerForm(t, id, "yes")
+	if a := f.delivery(t, id); a.Delivery != attention.DeliveryQueued {
+		t.Fatalf("a fresh answer to a stopped agent: %q", a.Delivery)
+	}
+	if _, err := f.pool.Exec(authz.System(context.Background()),
+		`UPDATE attention_asks SET resolved_at = now() - interval '25 hours', delivery_queued_at = now() - interval '25 hours', created_at = now() - interval '26 hours', expires_at = now() + interval '1 hour' WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.deliverDueAnswers(context.Background())
+	a := f.delivery(t, id)
+	if a.Delivery != attention.DeliveryUnconfirmed || !strings.Contains(a.DeliveryDetail, "the agent is not running (stopped)") {
+		t.Fatalf("a day on: %q %q; want unconfirmed, saying why", a.Delivery, a.DeliveryDetail)
+	}
+	f.srv.deliverDueAnswers(context.Background())
+	if a := f.delivery(t, id); a.Delivery != attention.DeliveryUnconfirmed || a.DeliveryAttempts != 2 {
+		t.Fatalf("a given-up answer was retried by the sweep: %q after %d attempts", a.Delivery, a.DeliveryAttempts)
+	}
+	item := answeredItem(f.page(t, "/attention"), id)
+	if !strings.Contains(item, "Delivery failed: ") || !strings.Contains(item, "data-attention-redeliver") {
+		t.Fatalf("the given-up answer is not listed with Retry:\n%s", item)
+	}
+}
+
 // TestShutdownEndsADeliveryWaitingOutItsGrace: EndStreams ends a delivery
 // still in its grace at once (WaitForAttentionDeliveries returns), pushing
 // nothing and leaving the answer queued for the next process's sweep.

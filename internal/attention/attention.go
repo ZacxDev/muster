@@ -152,6 +152,9 @@ type Ask struct {
 	DeliveryDetail   string   `json:"-"`
 	DeliveryAttempts int      `json:"-"`
 	DeliveredSession int64    `json:"-"`
+	// DeliveryQueuedAt is when the delivery was last queued (the answer, or a
+	// Retry); zero when there is none.
+	DeliveryQueuedAt time.Time `json:"-"`
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -307,7 +310,9 @@ type Store interface {
 	// DeliveryQueued (ErrNotRetryable otherwise).
 	RetryDelivery(ctx context.Context, id int64) (Ask, error)
 	// Answered is the caller's answers resolved since since that have a
-	// delivery to show (or were a system asker's), newest first, at most limit.
+	// delivery to show (or were a system asker's) — and every unconfirmed one,
+	// however old, since it waits on the owner's Retry — newest first, at most
+	// limit.
 	Answered(ctx context.Context, since time.Time, limit int) ([]Ask, error)
 	// DueDeliveries is every owner's queued deliveries at least grace old,
 	// least-tried first (so answers stuck on an agent that will not take them
@@ -335,17 +340,20 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	question, options,
 	CASE WHEN status = 'open' AND expires_at <= now() THEN 'expired' ELSE status END,
 	coalesce(answer, ''), coalesce(answered_by, ''), created_at, expires_at, resolved_at,
-	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0)`
+	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0), delivery_queued_at`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
 	var opts []byte
-	var resolved *time.Time
+	var resolved, queued *time.Time
 	var status, delivery string
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
-		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession); err != nil {
+		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued); err != nil {
 		return Ask{}, err
+	}
+	if queued != nil {
+		a.DeliveryQueuedAt = *queued
 	}
 	a.Status = Status(status)
 	a.Delivery = Delivery(delivery)
@@ -467,7 +475,8 @@ func (s *PGStore) Answer(ctx context.Context, id int64, answer string) (Ask, err
 	// is left for its attention_wait (pull); a system asker's has nobody to
 	// reach (NULL).
 	return s.settle(ctx, id, `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
-		  delivery = CASE WHEN agent_id IS NOT NULL THEN 'queued' WHEN mirror_session IS NOT NULL THEN 'pull' END
+		  delivery = CASE WHEN agent_id IS NOT NULL THEN 'queued' WHEN mirror_session IS NOT NULL THEN 'pull' END,
+		  delivery_queued_at = CASE WHEN agent_id IS NOT NULL THEN now() END
 		WHERE id = $1 AND status = 'open' AND expires_at > now() RETURNING `+cols, id, answer, ByOperator)
 }
 
@@ -534,7 +543,7 @@ func (s *PGStore) FinishDelivery(ctx context.Context, id int64, by string, deliv
 // RetryDelivery runs under the caller's principal: row-level security keeps it
 // to their own asks.
 func (s *PGStore) RetryDelivery(ctx context.Context, id int64) (Ask, error) {
-	a, err := scan(s.pool.QueryRow(ctx, `UPDATE attention_asks SET delivery = 'queued', delivery_detail = ''
+	a, err := scan(s.pool.QueryRow(ctx, `UPDATE attention_asks SET delivery = 'queued', delivery_detail = '', delivery_queued_at = now()
 		WHERE id = $1 AND delivery = 'unconfirmed' RETURNING `+cols, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		cur, gerr := s.Get(ctx, id)
@@ -549,7 +558,8 @@ func (s *PGStore) RetryDelivery(ctx context.Context, id int64) (Ask, error) {
 // Answered runs under the caller's principal.
 func (s *PGStore) Answered(ctx context.Context, since time.Time, limit int) ([]Ask, error) {
 	return collect(s.pool.Query(ctx, `SELECT `+cols+` FROM attention_asks
-		WHERE status = 'answered' AND resolved_at >= $1 AND (delivery IS NOT NULL OR system_asker)
+		WHERE status = 'answered' AND (delivery IS NOT NULL OR system_asker)
+		  AND (resolved_at >= $1 OR delivery = 'unconfirmed')
 		ORDER BY resolved_at DESC, id DESC LIMIT $2`, since, limit))
 }
 

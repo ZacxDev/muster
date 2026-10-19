@@ -76,6 +76,12 @@ func (s *Server) deliveryGrace() time.Duration {
 	return attentionDeliveryGrace
 }
 
+// attentionDeliveryGiveUp is how long an answer may stay queued (since it was
+// given, or retried) before the delivery stops: an agent that is stopped, never
+// started, or busy for a day settles it unconfirmed, saying why, and the
+// owner's Retry queues it again.
+const attentionDeliveryGiveUp = 24 * time.Hour
+
 // attentionDeliveryBatch bounds one sweep's deliveries.
 const attentionDeliveryBatch = 50
 
@@ -202,7 +208,11 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 	bookkeeping := func() (context.Context, context.CancelFunc) {
 		return context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	}
+	var settle func(delivered bool, session int64, detail string) string
 	leave := func(detail string) string {
+		if !a.DeliveryQueuedAt.IsZero() && time.Since(a.DeliveryQueuedAt) >= attentionDeliveryGiveUp {
+			return settle(false, 0, "not taken within a day — "+detail)
+		}
 		bctx, cancel := bookkeeping()
 		defer cancel()
 		if err := s.ext.Attention.ReleaseDelivery(bctx, a.ID, by, detail); err != nil {
@@ -212,7 +222,7 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 		s.attentionChanged(a.Owner, key)
 		return answerLeftQueued
 	}
-	settle := func(delivered bool, session int64, detail string) string {
+	settle = func(delivered bool, session int64, detail string) string {
 		bctx, cancel := bookkeeping()
 		defer cancel()
 		if held, err := s.ext.Attention.FinishDelivery(bctx, a.ID, by, delivered, session, detail); err != nil || !held {

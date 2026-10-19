@@ -16,9 +16,10 @@
 --   queued       answered; a delivery is owed (Answer writes it for an agent asker)
 --   delivering   one process holds the delivery lease (claimed_by, lease_until)
 --   delivered    the turn completed in session delivered_session_id
---   unconfirmed  the turn failed after the text may have reached the agent, or the
---                lease lapsed mid-turn (a crash): NEVER sent again automatically —
---                the operator's Retry moves it back to queued
+--   unconfirmed  the turn failed after the text may have reached the agent, the
+--                lease lapsed mid-turn (a crash), or it was still queued a day
+--                after delivery_queued_at (the agent never took it): NEVER sent
+--                again automatically — the operator's Retry moves it back to queued
 --   waited       the asker read the answer through attention_wait: nothing to push
 --   pull         a mirrored session's answer: muster cannot type into its window
 --                unasked, so it waits for the session's attention_wait (→ waited)
@@ -40,6 +41,10 @@ ALTER TABLE public.attention_asks ADD COLUMN IF NOT EXISTS delivery_attempts    
 ALTER TABLE public.attention_asks ADD COLUMN IF NOT EXISTS delivery_claimed_by  TEXT;
 ALTER TABLE public.attention_asks ADD COLUMN IF NOT EXISTS delivery_lease_until TIMESTAMPTZ;
 ALTER TABLE public.attention_asks ADD COLUMN IF NOT EXISTS delivered_at         TIMESTAMPTZ;
+-- When the delivery was last queued (the answer, or the operator's Retry): an
+-- answer still queued a day later (its agent never took it) is given up as
+-- unconfirmed, with Retry.
+ALTER TABLE public.attention_asks ADD COLUMN IF NOT EXISTS delivery_queued_at   TIMESTAMPTZ;
 -- The chat session the answer went to. A display link, like answer_queue_id: no
 -- foreign key (a deleted session leaves a harmless dangling number).
 ALTER TABLE public.attention_asks ADD COLUMN IF NOT EXISTS delivered_session_id BIGINT;
