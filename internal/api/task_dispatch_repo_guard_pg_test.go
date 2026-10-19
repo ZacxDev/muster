@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
@@ -62,4 +64,32 @@ func TestTaskDispatchRefusesATaskWhoseRepoChangedAfterTheCheck(t *testing.T) {
 	t.Cleanup(func() { github.UseAPIBaseURL("https://api.github.com") })
 	f.srv.ext.GitHub = fakeGitHubConn{}
 	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), "repository changed while it was being checked", n.ID)
+}
+
+// TestTaskDispatchStillRunsTheTaskRefusalsWithEveryOtherCheckPassing: the
+// merged toolTaskDispatch must still call chiefDispatchTaskRefusal (#152) under
+// the reservation lock. A task with a live agent, a CONNECTED repository and
+// instructions that ARE the owner's answer on it — every check this branch
+// added passes — is refused with #152's own sentence, and nothing is reserved.
+// A merge that kept only this branch's side of the `check` closure would start
+// a second agent here.
+func TestTaskDispatchStillRunsTheTaskRefusalsWithEveryOtherCheckPassing(t *testing.T) {
+	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	f.withConnectedRepos(t, "example/app")
+	n, err := f.notes.Create(f.asOwner, notes.Note{Title: "busy, connected", Body: "b", Repo: "example/app"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.ownerAnswered(t, n.ID, ownersWords)
+	if _, err := agents.NewPG(f.pool).Create(f.asOwner, agents.Agent{Name: "trbusy2-" + strconv.FormatInt(f.owner, 10),
+		Namespace: "ns-trbusy2", Status: agents.StatusRunning, NoteID: &n.ID}); err != nil {
+		t.Fatal(err)
+	}
+	text := f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": ownersWords})
+	if !strings.Contains(text, chiefDispatchHasAgent) {
+		t.Fatalf("answer %s; want #152's live-agent refusal", text)
+	}
+	if got := len(f.agentsOn(t, n.ID)); got != 1 || f.reservations(t, n.ID) != 0 || f.prov.calls(0) != 0 {
+		t.Fatalf("a busy task got %d agents / a reservation / a dispatch", got)
+	}
 }
