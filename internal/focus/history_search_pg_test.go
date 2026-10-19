@@ -69,9 +69,23 @@ func TestTheReplayMatchesTheSessionOnTheJobAndOnlyIt(t *testing.T) {
 	if len(ms[0].Titles) != 1 || ms[0].Titles[0].Title != "Upgrading node-7k: drain and reboot" || ms[0].Terms < 3 {
 		t.Fatalf("A's match: %+v; want its node-7k title, sharing node-7k, node, 7k, drain…", ms[0])
 	}
-	// Another owner reads none of it (row-level security).
+	// Another owner reads none of it through any of the three (row-level
+	// security), even naming the owner's live session ids. ⚠ Invariant
+	// guards: the queries run under the caller's principal and the table's
+	// policy does the rest; each is shown sensitive by running the read under
+	// the system scope instead (the mutation sweep).
 	if ms, err := s.MatchHistory(as(3), replayText, live, since, 1, 5); err != nil || len(ms) != 0 {
 		t.Fatalf("another owner's match: %v %v", subjectsOf(ms), err)
+	}
+	if hits, err := s.SearchHistory(as(3), "node-7k", live, since, 5); err != nil || len(hits) != 0 {
+		t.Fatalf("another owner's history search: %+v %v", hits, err)
+	}
+	if titles, err := s.RecentTitles(as(3), live, since); err != nil || len(titles) != 0 {
+		t.Fatalf("another owner's recent titles: %+v %v", titles, err)
+	}
+	// Control: the owner reads its titles through the same Live.
+	if titles, _ := s.RecentTitles(as(2), live, since); len(titles[a]) != 2 {
+		t.Fatalf("control: the owner's titles for A: %+v", titles[a])
 	}
 }
 
