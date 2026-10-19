@@ -244,6 +244,35 @@ func TestChiefSessionRuntimesThroughTheRealPlane(t *testing.T) {
 		t.Errorf("refused opens wrote sessions: chief %d → %d, worker %d", before, after, sessionsOf(worker))
 	}
 
+	// A cross-site form (the operator's cookie, another site's Origin) can
+	// neither open a session nor move the default: both are 403 and write nothing.
+	crossSite := func(path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", path, strings.NewReader(body))
+		r.Host = "muster.test"
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		r.Header.Set("Cookie", sessionCookieFor(srv))
+		r.Header.Set("Origin", "https://elsewhere.example")
+		r.Header.Set(userHeader, strconv.FormatInt(owner, 10))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+	if rec := crossSite("/agents/"+strconv.FormatInt(chief.ID, 10)+"/sessions",
+		url.Values{"runtime": {"claude-code"}, "model": {"opus"}}.Encode()); rec.Code != http.StatusForbidden ||
+		!strings.Contains(rec.Body.String(), CrossOriginRefusal) {
+		t.Errorf("a cross-site session open: %d %q; want 403 %q", rec.Code, rec.Body.String(), CrossOriginRefusal)
+	}
+	if after := sessionsOf(chief); after != before {
+		t.Errorf("a cross-site open wrote a session: %d → %d", before, after)
+	}
+	if rec := crossSite("/agents/"+strconv.FormatInt(chief.ID, 10)+"/sessions/"+strconv.FormatInt(cc.ID, 10)+"/default", ""); rec.Code != http.StatusForbidden ||
+		!strings.Contains(rec.Body.String(), CrossOriginRefusal) {
+		t.Errorf("a cross-site default move: %d %q; want 403 %q", rec.Code, rec.Body.String(), CrossOriginRefusal)
+	}
+	if d, _ := srv.defaultSession(asOwner, chief); d.ID != legacy.ID {
+		t.Errorf("a cross-site POST moved the default to %d; want it still %d", d.ID, legacy.ID)
+	}
+
 	// Each session's turn carries its route, and only its route.
 	want := map[int64]routedTurn{
 		legacy.ID: {key: legacy.SessionKey},
