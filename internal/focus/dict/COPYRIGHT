@@ -1,3 +1,13 @@
+PROVENANCE OF words.txt (read this first). words.txt is SCOWL's American
+English list at size 35 — wamerican.35 from scowl 2020.12.07 — keeping only the
+entries made of lower-case ASCII letters, minus two words this repository's
+leak gate refuses. It is NOT the level-60 list the notice below mentions: the
+notice is the copyright file shipped with SCOWL's aspell dictionary (which is
+built from levels up to 60), reproduced unchanged because the same copyright
+and permission notice cover every SCOWL level, size 35 included.
+
+----------------------------------------------------------------------------
+
 This English word list is comes directly from SCOWL unknown (up to level 60,
 using the speller/make-aspell-dict script, http://wordlist.sourceforge.net/) 
 and is thus under the same copyright of SCOWL.  The affix file (only
