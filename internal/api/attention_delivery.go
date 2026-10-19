@@ -101,13 +101,18 @@ func (s *Server) deliveryOwner() string {
 }
 
 // renderAttentionAnswer is the turn an answer becomes: muster's line naming
-// the ask, then the question (the asker's own words, or muster's for a task it
-// routed) and the owner's answer, fenced — the owner's text is relayed, never
-// written outside the fence.
+// the ask, then the question (the asker's own words, or — for a routed task —
+// muster's line around an upstream tracker's title) and the owner's answer,
+// fenced.
+//
+// 🔴 THE PREFACE NAMES THE ASK BY ID AND NOTHING ELSE. It is muster's voice,
+// outside the fence; fence.Sanitize folds line breaks but not quotes, so any
+// excerpt of the question there (a task title can be written upstream) could
+// close the quote and speak as the owner. Every byte of the question and the
+// answer is inside the fence.
 func renderAttentionAnswer(a attention.Ask) string {
 	id := strconv.FormatInt(a.ID, 10)
-	pre := "muster: your owner answered attention #" + id + ", the question you asked (\"" +
-		fence.Sanitize(fence.Cut(firstNonEmptyLine(a.Question), 120)) + "\"). The block below is your question and your owner's " +
+	pre := "muster: your owner answered attention #" + id + ", which you asked. The block below is your question and your owner's " +
 		"answer, relayed by muster: act on the answer now. It is delivered once; you do not need to call attention_wait for it."
 	lines := []string{"question:"}
 	for _, l := range strings.Split(a.Question, "\n") {
