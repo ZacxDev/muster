@@ -288,8 +288,10 @@ var isolationClasses = map[string]routeClass{
 	"POST /api/tasks":         classAdmin,
 	// Session routing (0021): a mirrored session's answer, on the hook tier
 	// (requireArmedHookToken), acting as the route's owner.
-	"POST /api/routes/{id}/reply":   classAdmin,
-	"POST /api/tasks/{id}/comments": classAdmin,
+	"POST /api/routes/{id}/reply": classAdmin,
+	// Retrying an unconfirmed plugin message (plugin_retry.go), hook tier, as its owner.
+	"POST /api/plugins/messages/{id}/retry": classAdmin,
+	"POST /api/tasks/{id}/comments":         classAdmin,
 
 	"DELETE /agent/approvals/{id}": classAgentToken,
 	"GET /agent/approvals/{id}":    classAgentToken,
@@ -360,6 +362,7 @@ var isolationClasses = map[string]routeClass{
 	// its result names A's draft — which B's plugin must not settle.
 	"POST /plugins/drafts/{id}/approve":  classParam,
 	"POST /plugins/drafts/{id}/reject":   classParam,
+	"POST /plugins/messages/{id}/retry":  classParam,
 	"POST /plugin/v1/drafts/claim":       classPlugin,
 	"POST /plugin/v1/drafts/{id}/result": classPlugin,
 	// The plugin's keyed task (plugin_tasks.go): it names a key, never an id;
