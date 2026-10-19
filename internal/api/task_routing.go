@@ -631,6 +631,17 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		// repository; its Claude account comes from the owner's pool.
 		p.Model, p.Repo, p.RepoBranch = "", "", ""
 	}
+	// chiefDispatchDeploymentRefusal answered these before the reservation; they
+	// are read again HERE, at the call, because the provisioner-seam walk
+	// (provisioner_seam_test.go) is function-granular — a body that calls the
+	// provisioner and nil-checks it is the barrier — and because the deployment
+	// can stop taking kickoffs while the reservation ran.
+	if s.ext.Provisioner == nil {
+		return toolErr("this deployment cannot start agents")
+	}
+	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
+		return toolErr("this deployment cannot start an agent now: %s", reason)
+	}
 	rec, err := s.createAndDispatchAgent(ctx, p)
 	if err != nil {
 		// The unit stays spent (fail-closed, plugins.ReserveChiefDispatch).
