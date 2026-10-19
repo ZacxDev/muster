@@ -560,7 +560,32 @@ func TestAGrantApprovedUnderTheStoredTokenNeedsReapprovalOnceTheAppIsConfigured(
 	if v := agentView(t, f.h, tok); v.Grant != connectors.StatusApproved {
 		t.Fatalf("control: without the App the stored approval stands: %+v", v)
 	}
+	// A second agent, approved the same way, is read only through the PROXY,
+	// so each door's re-open is exercised on its own (neither can lean on the
+	// other having re-opened the grant first).
+	const ptok = "reopen-proxy-agent-token-0123456789ab"
+	pid := f.seedAgent(t, "reopen-gh-proxy", ptok)
+	if _, err := f.pool.Exec(f.ctx, `UPDATE agents SET repo='example-org/widget' WHERE id=$1`, pid); err != nil {
+		t.Fatal(err)
+	}
+	pg, _, err := f.store.RequestGrant(f.ctx, pid, "github", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.store.DecideGrant(f.ctx, pg.ID, true, "operator", connectors.SourceStored); err != nil {
+		t.Fatal(err)
+	}
 	_, h, _ := appServer(t, f, up)
+	// The PROXY: the stale stored-token approval must not be served with an
+	// App token.
+	w := serveCall(t, h, "GET", "/connect/github/github.fake.test:"+up.port()+"/example-org/widget.git/info/refs",
+		nil, map[string]string{"X-Muster-Token": ptok})
+	up.mu.Lock()
+	minted := len(up.mints)
+	up.mu.Unlock()
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"grant":"pending"`) || minted != 0 {
+		t.Fatalf("the proxy served a stored-token approval with the App (%d mints): %d %s", minted, w.Code, w.Body)
+	}
 	if v := agentView(t, h, tok); v.Grant != connectors.StatusPending || v.GrantID != g.ID {
 		t.Fatalf("with the App, a stored-token approval still reads %+v; want the same grant pending again", v)
 	}

@@ -215,6 +215,12 @@ var (
 		// question, read as the question's owner (its host's token's), through
 		// authz.ViaAsk.
 		"internal/api.(*Server).askPrincipal",
+		// The connector approve routes: whether `github` is the GitHub App
+		// (admins only) or a stored token is a property of the grant's OWNER, so
+		// the existence check and the recorded source are read as that owner —
+		// two reads (GetConnector, connectors.SourceFor) and nothing written as
+		// them; the decision itself is written as the approver.
+		"internal/api.(*Server).grantOwnerContext",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
@@ -236,7 +242,7 @@ var (
 	// name — `var Everyone = System`, a helper wrapping WithPrincipal — is a
 	// new door until someone has decided it is not.
 	authzExports = []string{
-		"From", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
+		"From", "IsAdmin", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
 		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaFocus", "ViaHook", "ViaMirrorHost", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
