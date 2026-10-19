@@ -109,10 +109,17 @@ type server struct {
 	// permission_prompt) and no later hook says the session moved on. See
 	// blocked.go.
 	awaitingApproval bool
+	// approvalSince is when awaitingApproval last became true (zero while it
+	// is false); a lane stuck there long enough may be stopped (lanes.go).
+	approvalSince time.Time
 	// blocked reports awaitingApproval to muster; nil when the pod is not
-	// offered muster's agent surface.
-	blocked *blockedReporter
-	pending *pendingTurn
+	// offered muster's agent surface. Every CLI's server shares the one
+	// reporter, each as its own source (blockedSrc: "" the primary, else the
+	// lane's id).
+	blocked    *blockedReporter
+	blockedSrc string
+	clock      func() time.Time
+	pending    *pendingTurn
 
 	// lanes runs a CLI per explicit muster session (lanes.go); nil when ccd
 	// does not supervise, and on a lane's own server.
@@ -163,7 +170,7 @@ func newServer(cfg serverConfig, term terminal, auth *authTracker) *server {
 	if cfg.TranscriptGrace == 0 {
 		cfg.TranscriptGrace = 3 * time.Second
 	}
-	return &server{cfg: cfg, term: term, auth: auth, slot: make(chan struct{}, 1)}
+	return &server{cfg: cfg, term: term, auth: auth, slot: make(chan struct{}, 1), clock: time.Now}
 }
 
 // gatewayHandler is the NETWORK-facing mux. It deliberately does not serve /hook:

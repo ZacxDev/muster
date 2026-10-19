@@ -59,10 +59,13 @@ import (
 // resumes it. When no lane is free to stop the new one is refused (503
 // capacity), never queued.
 //
-// ⚠ WHAT A LANE DOES NOT HAVE, STATED: the "awaiting approval" badge reports
-// the primary's permission prompts only (blocked.go), and /healthz's ok is the
-// primary's alone — a lane that crash-loops is dropped and restarted by its next
-// turn, it does not fail the pod.
+// A lane at a permission prompt shows on the agent's "awaiting approval" badge
+// like the primary (blockedReporter), and one left there past stuckAfter may be
+// stopped for a new session (pickEvictLocked).
+//
+// ⚠ WHAT A LANE DOES NOT HAVE, STATED: /healthz's ok is the primary's alone — a
+// lane that crash-loops is dropped and restarted by its next turn, it does not
+// fail the pod.
 
 // The request headers a lane turn carries. A WIRE CONTRACT with muster's
 // internal/agents (turnroute.go), which this binary does not import;
@@ -244,6 +247,9 @@ type lanes struct {
 	// (see the type comment on why no lane may start before it).
 	primaryStarted func() bool
 	now            func() time.Time
+	// stuckAfter is how long a lane may sit at a permission prompt before it
+	// may be stopped like an idle one (stuckLaneAfter; tests shorten it).
+	stuckAfter time.Duration
 	// tweak, when set, adjusts a new lane's supervisor (tests shorten its poll).
 	tweak func(*supervisor)
 
@@ -283,12 +289,9 @@ func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure
 		return ln, nil
 	}
 	var evict *lane
+	stuck := false
 	if len(l.set) >= l.max {
-		for _, ln := range l.set {
-			if ln.reserved == 0 && ln.srv.idle() && (evict == nil || ln.lastUsed.Before(evict.lastUsed)) {
-				evict = ln
-			}
-		}
+		evict, stuck = l.pickEvictLocked()
 		if evict == nil {
 			l.mu.Unlock()
 			return nil, &failure{Status: http.StatusServiceUnavailable, Type: failCapacity,
@@ -304,11 +307,68 @@ func (l *lanes) acquire(ctx context.Context, key, model string) (*lane, *failure
 	l.set[id] = ln
 	l.mu.Unlock()
 	if evict != nil {
-		log.Printf("ccd: stopping idle session %s (%s) to start %s: at most %d run at once", evict.id, evict.key, id, l.max)
+		if stuck {
+			since, _ := evict.srv.awaitingSince()
+			log.Printf("ccd: WARNING stopping session %s (%s), stuck at a permission prompt since %s, to start %s: "+
+				"at most %d run at once; the prompt was never answered and its turn is abandoned",
+				evict.id, evict.key, since.UTC().Format(time.RFC3339), id, l.max)
+		} else {
+			log.Printf("ccd: stopping idle session %s (%s) to start %s: at most %d run at once", evict.id, evict.key, id, l.max)
+		}
 		evict.stop()
 	}
 	go ln.run(runCtx, l)
 	return ln, nil
+}
+
+// stuckLaneAfter is stuckAfter's default.
+const stuckLaneAfter = 10 * time.Minute
+
+// pickEvictLocked chooses the lane to stop for a new one: the least recently
+// used IDLE lane no turn holds; failing that, the lane no turn holds that has
+// sat at a permission prompt longest, once that is past stuckAfter. Caller
+// holds l.mu.
+//
+// 🔴 A LANE AT A PERMISSION PROMPT IS BUSY FOR EVER WITHOUT THIS. Its prompt was
+// submitted and no Stop follows until someone answers in its terminal, so its
+// server is never idle(); and the turn that drove it gives up (the caller's
+// timeout) and releases the lane long before. CCD_MAX_SESSIONS such lanes
+// refused every new session with 503 until the pod restarted. Answering is the
+// operator's — the "awaiting approval" badge now shows a lane's prompt as well
+// as the primary's (blockedReporter) — but after stuckAfter unanswered the lane
+// is fair game: its conversation is on disk and its next turn resumes it.
+//
+// ⚠ NOT A TIMEOUT TO IDLE: the CLI would still be showing the dialog, and a
+// paste into it would answer the dialog rather than reach the model.
+//
+// ⚠ A LANE A TURN STILL HOLDS IS NEVER TAKEN, stuck or not (lane.reserved).
+func (l *lanes) pickEvictLocked() (evict *lane, stuck bool) {
+	for _, ln := range l.set {
+		if ln.reserved == 0 && ln.srv.idle() && (evict == nil || ln.lastUsed.Before(evict.lastUsed)) {
+			evict = ln
+		}
+	}
+	if evict != nil {
+		return evict, false
+	}
+	var oldest time.Time
+	for _, ln := range l.set {
+		if ln.reserved != 0 {
+			continue
+		}
+		since, waiting := ln.srv.awaitingSince()
+		if waiting && l.now().Sub(since) >= l.stuckAfterOr() && (evict == nil || since.Before(oldest)) {
+			evict, oldest = ln, since
+		}
+	}
+	return evict, evict != nil
+}
+
+func (l *lanes) stuckAfterOr() time.Duration {
+	if l.stuckAfter > 0 {
+		return l.stuckAfter
+	}
+	return stuckLaneAfter
 }
 
 // release ends one reservation acquire took.
@@ -339,6 +399,7 @@ func (l *lanes) newLane(id, key, model string) *lane {
 	}
 	srv := l.newServer(term)
 	srv.sup, srv.inputPane = sup, sup.inputPane
+	srv.blockedSrc = id
 	return &lane{id: id, key: key, model: model, srv: srv, sup: sup, term: term,
 		done: make(chan struct{}), lastUsed: l.now()}
 }
@@ -356,9 +417,18 @@ func (ln *lane) run(ctx context.Context, l *lanes) {
 			delete(l.set, ln.id)
 		}
 		l.mu.Unlock()
+		ln.clearBlocked()
 		kctx, kcancel := context.WithTimeout(context.Background(), 5*time.Second)
 		_ = ln.term.KillSession(kctx)
 		kcancel()
+	}
+}
+
+// clearBlocked withdraws the lane's "awaiting approval" from the agent's badge:
+// a stopped lane's prompt is gone with its CLI.
+func (ln *lane) clearBlocked() {
+	if ln.srv.blocked != nil {
+		ln.srv.blocked.setFrom(ln.id, false)
 	}
 }
 
@@ -367,6 +437,7 @@ func (ln *lane) stop() {
 	if ln.cancel != nil {
 		ln.cancel()
 	}
+	ln.clearBlocked()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = ln.term.KillSession(ctx)
@@ -412,6 +483,12 @@ type laneHealth struct {
 	CLI     string `json:"cli"`
 	Session string `json:"session"`
 	Busy    bool   `json:"busy"`
+	// AwaitingApproval: the lane's CLI is at a permission prompt (since
+	// AwaitingSince); Stuck: for longer than stuckAfter, so a new session at
+	// the cap may stop it (pickEvictLocked).
+	AwaitingApproval bool   `json:"awaiting_approval,omitempty"`
+	AwaitingSince    string `json:"awaiting_since,omitempty"`
+	Stuck            bool   `json:"stuck,omitempty"`
 }
 
 func (l *lanes) health() []laneHealth {
@@ -424,8 +501,13 @@ func (l *lanes) health() []laneHealth {
 	out := make([]laneHealth, 0, len(list))
 	for _, ln := range list {
 		started, ended, busy := ln.srv.snapshot()
-		out = append(out, laneHealth{ID: ln.id, Model: ln.model, CLI: ln.sup.state().CLI,
-			Session: ln.srv.sessionState(started, ended), Busy: busy})
+		h := laneHealth{ID: ln.id, Model: ln.model, CLI: ln.sup.state().CLI,
+			Session: ln.srv.sessionState(started, ended), Busy: busy}
+		if since, waiting := ln.srv.awaitingSince(); waiting {
+			h.AwaitingApproval, h.AwaitingSince = true, since.UTC().Format(time.RFC3339)
+			h.Stuck = l.now().Sub(since) >= l.stuckAfterOr()
+		}
+		out = append(out, h)
 	}
 	return out
 }

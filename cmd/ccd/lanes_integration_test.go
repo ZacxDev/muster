@@ -14,8 +14,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -283,6 +285,47 @@ func TestTmuxLaneANestedCLIIsNotRecordedAsThePrimary(t *testing.T) {
 	}, r)
 	if got := r.primaryID(t); got != primary {
 		t.Fatalf("the primary's record is now %q (the nested CLI's is %q); want the primary's own %q", got, nested, primary)
+	}
+}
+
+// 🔴 A LANE'S PERMISSION PROMPT SHOWS ON THE AGENT'S BADGE, through the whole
+// binary: ccd posts blocked=true to muster's /agent/blocked when a LANE's CLI
+// stops at the dialog — not only the primary's — and /healthz names the lane as
+// waiting.
+func TestTmuxLaneAPermissionPromptInALaneReachesTheBadge(t *testing.T) {
+	var mu sync.Mutex
+	var posts []string
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/agent/blocked":
+			b, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			posts = append(posts, strings.TrimSpace(string(b)))
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		case r.URL.Path == "/agent/connectors":
+			_, _ = io.WriteString(w, `{"connectors":[]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(fake.Close)
+	r := startServe(t, "MUSTER_CONNECT_URL="+fake.URL, "MUSTER_HOOK_TOKEN=agent-own-token",
+		"HOME="+t.TempDir(), "CCD_TURN_TIMEOUT=2s")
+	r.waitHealth(t, "primary start", func(h health) bool { return h.Session == sessionStartedState })
+	r.mustLaneChat(t, "sess-p", "opus", "first")
+
+	if _, err := r.laneChat("sess-p", "opus", "ASK-PERMISSION run it"); err == nil {
+		t.Fatal("a turn stopped at a permission dialog returned a reply")
+	}
+	waitLane(t, "blocked=true posted for the lane's prompt", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(posts) > 0 && posts[len(posts)-1] == `{"blocked":true}`
+	}, r)
+	h := r.waitHealth(t, "the lane waiting", func(h health) bool { return len(h.Lanes) == 1 })
+	if !h.Lanes[0].AwaitingApproval || h.Lanes[0].AwaitingSince == "" || h.Lanes[0].Stuck {
+		t.Errorf("/healthz lane: %+v; want awaiting approval, not yet stuck", h.Lanes[0])
 	}
 }
 
