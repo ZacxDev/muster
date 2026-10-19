@@ -149,6 +149,14 @@ func TestThePrimaryFallbackNeverResumesALane(t *testing.T) {
 	if argv, _ := sup.argv(); strings.Join(argv, " ") != "claude --resume "+primary {
 		t.Errorf("an older non-lane transcript beside the primary's: %v; want --resume %s (the newest)", argv, primary)
 	}
+	// A record beats "the newest": the recorded conversation is resumed though
+	// another non-lane one is newer.
+	if err := recordPrimary(cfg, older); err != nil {
+		t.Fatal(err)
+	}
+	if argv, _ := sup.argv(); strings.Join(argv, " ") != "claude --resume "+older {
+		t.Errorf("recorded %s, newer %s beside it: %v; want --resume %s (the record)", older, primary, argv, older)
+	}
 }
 
 // TestALaneHookReachesItsLaneAndNoOther: a hook carrying ?lane= updates that
