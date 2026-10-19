@@ -206,7 +206,7 @@ func (c *checkout) attempt(ctx context.Context) error {
 	cmd := exec.CommandContext(cctx, "git", args...)
 	// The hang guard muster also sets on the pod: with nobody to answer, a
 	// credential prompt must fail the clone, not block it.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
