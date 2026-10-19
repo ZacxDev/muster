@@ -827,7 +827,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		attach: w.aAttachment.ID, chat: w.aChatSession.ID, agentName: w.a.agent.Name, connName: w.aConnName,
 		tag: w.aTag, link: w.aSessionLink, mirrorHost: w.canary + "-host", mirrorSession: "main", token: w.aToken2.ID,
 		pushDevice: w.objA.pushDevice, flowJob: w.aJob.ID, runnerTok: w.aRunner2.ID, flowReq: w.aFlowReq.ID,
-		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID}
+		plugin: w.aPlugin2.ID, draft: w.aDraft.ID, queued: aQueued.ID, route: aRoute.RouteID, upload: aUpload.PublicID, ask: aAsk.ID,
+		pluginMsg: aMsg.ID}
 	// The ghost: ids and names that exist for NOBODY. A refusal of A's object
 	// must be indistinguishable from the answer about the ghost.
 	const ghostID = 9_000_000_000
@@ -835,7 +836,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 		agentName: "ghost-agent" + w.suffix, connName: "ghostconn" + w.suffix, tag: "ghosttag", link: "ghost-sess-" + w.suffix,
 		mirrorHost: "ghost-host", mirrorSession: "main", ccAccount: "ghostacct", token: ghostID, pushDevice: ghostID,
 		flowJob: ghostID, runnerTok: ghostID, flowReq: ghostID, plugin: ghostID, draft: ghostID, passkey: "00000000-0000-4000-a000-00000000ghost",
-		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID}
+		queued: ghostID, route: "rt_000000000000000000000000", upload: "GhostGhostGhostGhost00", ask: ghostID, pluginMsg: ghostID}
 
 	// A's push device: through the real store, as the claim the subscribe route
 	// makes. Its user agent and endpoint carry the canary.
@@ -1120,6 +1121,7 @@ type isoObjs struct {
 	queued                                    int64  // a queued message's id (0019)
 	upload                                    string // a file attachment's public id (0024)
 	route                                     string // a session route's id (0021)
+	pluginMsg                                 int64  // a plugin message's id (its retry route)
 	ask                                       int64  // an attention ask's id (0025)
 }
 
@@ -1168,6 +1170,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.queued, 10)
 	case strings.HasPrefix(path, "/api/routes/{id}"):
 		id = o.route
+	case strings.HasPrefix(path, "/plugins/messages/{id}") || strings.HasPrefix(path, "/api/plugins/messages/{id}"):
+		id = strconv.FormatInt(o.pluginMsg, 10)
 	case strings.HasPrefix(path, "/uploads/{id}") || strings.HasPrefix(path, "/f/{id}"):
 		id = o.upload
 	case strings.HasPrefix(path, "/attention/asks/{id}"):

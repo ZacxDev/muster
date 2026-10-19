@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -118,7 +119,8 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 	pending, sent := drafted("r-pending", "pending"), drafted("r-sent", "sent")
 	routed := pp.unconfirmed(t, "r-routed")
 	if _, err := pool.Exec(sys, `INSERT INTO session_routes (owner_id, route_id, plugin_message_id, agent_id, target_kind, target_key, timeout_at)
-		VALUES ($1, 'rt_0123456789abcdef0123abcd', $2, $3, 'mirror', 'sess-1', now() + interval '1 hour')`, pp.ownerID, routed.ID, pp.chief.ID); err != nil {
+		VALUES ($1, $4, $2, $3, 'mirror', 'sess-1', now() + interval '1 hour')`, pp.ownerID, routed.ID, pp.chief.ID,
+		fmt.Sprintf("rt_%024x", time.Now().UnixNano())); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,12 +146,36 @@ func TestRetryRefusesWhatMustNotBeSentAgain(t *testing.T) {
 		}
 	}
 
+	// The page's list uses the same predicate: none of the refused messages is
+	// offered a Retry button, and a plain unconfirmed one is (positive control).
+	plain := pp.unconfirmed(t, "r-plain")
+	list, err := pp.ps.Retryable(pp.owner, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[int64]bool{}
+	for _, m := range list {
+		listed[m.ID] = true
+	}
+	if !listed[plain.ID] {
+		t.Fatalf("control: a plain unconfirmed message is not listed retryable")
+	}
+	for name, m := range map[string]plugins.Message{"queued": queued, "delivering": delivering, "delivered": delivered,
+		"pending draft": pending, "sent draft": sent, "live route": routed} {
+		if listed[m.ID] {
+			t.Errorf("%s: listed with a Retry button the retry would refuse", name)
+		}
+	}
+
 	// A double click: the first retry requeues it, the second finds it queued.
 	again := pp.unconfirmed(t, "r-twice")
 	if code, _, p := pp.srv.retryPluginMessage(asSession(pp.ownerID), again.ID); code != http.StatusAccepted {
 		t.Fatalf("first click: %d %q", code, p)
 	}
-	if code, _, p := pp.srv.retryPluginMessage(asSession(pp.ownerID), again.ID); code != http.StatusConflict || !strings.Contains(p, "already queued") {
+	// The first click's delivery runs in the background, so the second click
+	// finds the message queued OR already being delivered: both are refusals.
+	if code, _, p := pp.srv.retryPluginMessage(asSession(pp.ownerID), again.ID); code != http.StatusConflict ||
+		!(strings.Contains(p, "already queued") || strings.Contains(p, "being delivered") || strings.Contains(p, "already received")) {
 		t.Fatalf("second click: %d %q", code, p)
 	}
 	pp.srv.WaitForPluginDeliveries()

@@ -25,12 +25,18 @@ import (
 // sent or itself unconfirmed (another turn would draft a second answer), and no
 // session route that is routed, answered or relayed.
 
-// retryableWhere is that predicate over plugin_messages aliased m.
-const retryableWhere = `m.status = 'unconfirmed'
-	AND NOT EXISTS (SELECT 1 FROM plugin_reply_drafts d WHERE d.message_id = m.id
-		AND d.status IN ('pending', 'approved', 'sent', 'unconfirmed'))
-	AND NOT EXISTS (SELECT 1 FROM session_routes r WHERE r.plugin_message_id = m.id
+// liveDraft and liveRoute are the two "the first turn's work is still live or
+// done" clauses; retryableWhere and Requeue's refusal reasons both read THESE,
+// so the list, the reasons and the guarded UPDATE cannot disagree.
+const (
+	liveDraft = `EXISTS (SELECT 1 FROM plugin_reply_drafts d WHERE d.message_id = m.id
+		AND d.status IN ('pending', 'approved', 'sent', 'unconfirmed'))`
+	liveRoute = `EXISTS (SELECT 1 FROM session_routes r WHERE r.plugin_message_id = m.id
 		AND r.state IN ('routed', 'answered', 'relayed'))`
+)
+
+// retryableWhere is that predicate over plugin_messages aliased m.
+const retryableWhere = `m.status = 'unconfirmed' AND NOT ` + liveDraft + ` AND NOT ` + liveRoute
 
 // ErrNotRetryable refuses a retry; the wrapped text says why (409).
 var ErrNotRetryable = errors.New("plugins: not retryable")
@@ -68,11 +74,7 @@ func (s *PGStore) Requeue(ctx context.Context, id int64) (Message, error) {
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var st string
 		var drafts, routes bool
-		err := tx.QueryRow(ctx, `SELECT m.status,
-			EXISTS (SELECT 1 FROM plugin_reply_drafts d WHERE d.message_id = m.id
-				AND d.status IN ('pending', 'approved', 'sent', 'unconfirmed')),
-			EXISTS (SELECT 1 FROM session_routes r WHERE r.plugin_message_id = m.id
-				AND r.state IN ('routed', 'answered', 'relayed'))
+		err := tx.QueryRow(ctx, `SELECT m.status, `+liveDraft+`, `+liveRoute+`
 			FROM plugin_messages m WHERE m.id = $1 FOR UPDATE OF m`, id).Scan(&st, &drafts, &routes)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
