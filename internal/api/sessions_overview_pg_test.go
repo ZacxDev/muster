@@ -397,7 +397,45 @@ func TestAQuietHostDoesNotStallTheOverview(t *testing.T) {
 	}
 }
 
-// TestSessionsOverviewRefusesAWorker: a worker is refused on the gateway (the
+// 🔴 TestTheOverviewHasATotalBudget: with many stalled hosts the call ends
+// at its total budget, not after (sessions / parallel) per-session timeouts;
+// every session the budget cut — mid-read or never reached — says so, and a
+// session read before it keeps its tail.
+func TestTheOverviewHasATotalBudget(t *testing.T) {
+	g := newGatedFixture(t)
+	prevT, prevB := overviewTranscriptTimeout, overviewBudget
+	overviewTranscriptTimeout, overviewBudget = time.Second, 400*time.Millisecond
+	t.Cleanup(func() { overviewTranscriptTimeout, overviewBudget = prevT, prevB })
+	g.chat(t, g.worker, agents.ChatMessage{Role: "user", Content: "hello worker"})
+	// The windows were active a minute ago, so the worker (active now) is read first.
+	ago := time.Now().Add(-time.Minute).Unix()
+	om := overviewMirror{sids: map[string]string{}, hang: map[string]bool{}}
+	var ws []mirror.Window
+	for i := 1; i <= overviewParallel+2; i++ {
+		id := "@" + strconv.Itoa(i)
+		sid := fmt.Sprintf("0b2c3d4e-ov-stall-%d", i)
+		ws = append(ws, mirror.Window{Session: "work", ID: id, Index: i, Claude: true, ClaudeSession: sid, Activity: ago})
+		om.sids[id], om.hang[id] = sid, true
+	}
+	om.hosts = []mirror.HostView{overviewHost("box-1", true, ws...)}
+	g.srv.ext.Mirror = om
+	start := time.Now()
+	text := g.srv.AgentToolDispatch(g.asOwner, g.chief)("sessions_overview", `{}`)
+	if took := time.Since(start); took > 900*time.Millisecond {
+		t.Fatalf("the overview took %s; its total budget is %s (per session %s)", took, overviewBudget, overviewTranscriptTimeout)
+	}
+	_, by := decodeOverview(t, text)
+	for i := 1; i <= overviewParallel+2; i++ {
+		if q := by[fmt.Sprintf("mirror:0b2c3d4e-ov-stall-%d", i)]; string(q.Transcript) != `"unavailable (overview budget)"` {
+			t.Errorf("stalled session %d: %s", i, q.raw)
+		}
+	}
+	if l := by["agent:"+strconv.FormatInt(g.worker.ID, 10)].lines(t); len(l) != 1 || l[0].Text != "hello worker" {
+		t.Fatalf("the worker's tail %+v", l)
+	}
+}
+
+// TestSessionsOverviewRefusesAWorker:a worker is refused on the gateway (the
 // chief-only error) and is not offered it on /mcp; the chief is answered.
 func TestSessionsOverviewRefusesAWorker(t *testing.T) {
 	g := newGatedFixture(t)

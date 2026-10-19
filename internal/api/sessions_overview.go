@@ -76,6 +76,10 @@ const (
 // test can shorten it.
 var overviewTranscriptTimeout = 5 * time.Second
 
+// overviewBudget bounds ALL of one call's transcript reads together
+// (overviewTails). A var so a test can shorten it.
+var overviewBudget = 12 * time.Second
+
 func sessionsOverviewToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: sessionsOverviewToolName,
 		Description: "What each of your owner's live sessions — running agents and online mirrored Claude Code windows active in the " +
@@ -318,24 +322,43 @@ func (s *Server) pendingBySubject(ctx context.Context) map[focus.Subject]*overvi
 }
 
 // overviewTails reads each session's transcript tail in parallel, each read
-// bounded by overviewTranscriptTimeout: the i-th answer is live[i]'s tail
-// ([]overviewLine) or "unavailable (<reason>)".
+// bounded by overviewTranscriptTimeout and ALL of them by overviewBudget: the
+// i-th answer is live[i]'s tail ([]overviewLine) or "unavailable (<reason>)".
+//
+// 🔴 THE TOTAL BUDGET. Per-session timeouts alone let 40 stalled sessions,
+// overviewParallel at a time, hold the call for ten timeouts (~50 s). Every
+// read runs under the budget's context, so a read the budget cuts — and every
+// session not reached before it ran out — answers "unavailable (overview
+// budget)", and the call returns at the budget.
 func (s *Server) overviewTails(ctx context.Context, live []liveSession) []any {
+	const budgetSpent = "unavailable (overview budget)"
 	out := make([]any, len(live))
+	bctx, bcancel := context.WithTimeout(ctx, overviewBudget)
+	defer bcancel()
 	sem := make(chan struct{}, overviewParallel)
 	var wg sync.WaitGroup
 	for i, ls := range live {
+		select {
+		case sem <- struct{}{}:
+		case <-bctx.Done():
+		}
+		if bctx.Err() != nil {
+			out[i] = budgetSpent // never reached
+			continue
+		}
 		out[i] = "unavailable (could not be read)" // what a read that panicked leaves
 		wg.Add(1)
-		sem <- struct{}{}
 		safeGo(s.logger, "sessions_overview: read a tail", func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			tctx, cancel := context.WithTimeout(ctx, overviewTranscriptTimeout)
+			tctx, cancel := context.WithTimeout(bctx, overviewTranscriptTimeout)
 			defer cancel()
 			entries, err := focusSessions{s}.Tail(tctx, ls.sub)
+			timedOut := tctx.Err() != nil || errors.Is(err, context.DeadlineExceeded)
 			switch {
-			case len(entries) == 0 && (tctx.Err() != nil || errors.Is(err, context.DeadlineExceeded)):
+			case len(entries) == 0 && timedOut && bctx.Err() != nil:
+				out[i] = budgetSpent
+			case len(entries) == 0 && timedOut:
 				out[i] = "unavailable (timed out)"
 			case errors.Is(err, focus.ErrNoSession):
 				out[i] = "unavailable (not visible now)"
