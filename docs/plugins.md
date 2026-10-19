@@ -432,7 +432,8 @@ may already have acted on it. You can decide otherwise:
   handles the message like any other: a reply it drafts waits for your approval,
   **except** an answer it routes through one of your sessions to a verified
   sender you allowlisted for this plugin (`MUSTER_ROUTE_RELAY_ALLOW`), which is
-  sent without it.
+  sent without it. While you have no chief the messages are still listed, but
+  their Retry buttons are disabled and the section says why.
 - From a session: `muster plugins retry <message-id>`
   (`POST /api/plugins/messages/{id}/retry`, the hook tier: your personal token,
   or the shared hook token on an armed server).

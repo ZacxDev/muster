@@ -17,7 +17,7 @@ import (
 // approves it automatically). The WHOLE explanation is pinned, normalised —
 // a guard on a word would pass a reworded false claim.
 func TestTheRetryCopyDoesNotPromiseEveryReplyWaits(t *testing.T) {
-	page := retryableSectionHTML([]plugins.Message{{ID: 7, Sender: "a@example.test", Subject: "s", CreatedAt: time.Unix(0, 0)}})
+	page := retryableSectionHTML([]plugins.Message{{ID: 7, Sender: "a@example.test", Subject: "s", CreatedAt: time.Unix(0, 0)}}, false)
 	p := regexp.MustCompile(`(?s)</h2>\s*<p[^>]*>(.*?)</p>`).FindStringSubmatch(page)
 	if p == nil {
 		t.Fatalf("no explanation paragraph after the heading:\n%s", page)

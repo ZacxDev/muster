@@ -95,6 +95,22 @@ func (s *Server) startPluginDelivery(ctx context.Context, pluginID, messageID in
 	})
 }
 
+// retryHasNoChief reports whether the page must disable its Retry buttons:
+// there is something to retry and the owner has no chief (chiefAgent's
+// ErrNoChief, the same lookup retryPluginMessage refuses on). A lookup that
+// FAILS leaves the buttons on — the POST answers for itself — rather than
+// calling an outage "no chief".
+func (s *Server) retryHasNoChief(ctx context.Context, msgs []plugins.Message) bool {
+	if len(msgs) == 0 {
+		return false
+	}
+	_, err := s.chiefAgent(ctx)
+	if err != nil && !errors.Is(err, ErrNoChief) {
+		s.logger.Printf("plugins: page: resolve the chief: %v", err)
+	}
+	return errors.Is(err, ErrNoChief)
+}
+
 func (s *Server) handlePluginRetryForm(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -134,10 +150,21 @@ const retryCopy = "Your chief's turn on each of these was cut off, so it may or 
 	"approval, except an answer it routes through one of your sessions to a verified sender you allowlisted " +
 	"for this plugin, which is sent without it."
 
+// retryNoChief is what the retry section says, in place of working buttons,
+// when the owner has no chief: the reason every Retry would be refused (409).
+const retryNoChief = "Retry is off: you have no chief agent to deliver these to. " +
+	"An agent becomes your chief when its display name is \"chief\"."
+
 // retryableSectionHTML is the /plugins list of messages the chief never
 // confirmed, each with its Retry button. The sender and subject are an outside
 // party's text: escaped, never interpreted.
-func retryableSectionHTML(msgs []plugins.Message) string {
+//
+// noChief: the owner has no chief, so every retry would be refused (409,
+// retryPluginMessage). The buttons are then DISABLED and the section says why
+// (retryNoChief) — the messages are still listed, since they still need a
+// decision once there is a chief. The POST still refuses on its own; this is
+// the page not offering what the write would refuse.
+func retryableSectionHTML(msgs []plugins.Message, noChief bool) string {
 	if len(msgs) == 0 {
 		return ""
 	}
@@ -146,7 +173,14 @@ func retryableSectionHTML(msgs []plugins.Message) string {
 	b.WriteString(`<section id="plugin-retryable" class="flex flex-col gap-2" data-testid="plugin-retryable">
 <h2 class="text-sm font-semibold text-fg">Not confirmed by your chief</h2>
 <p class="text-xs text-fg2" data-retry-copy>` + retryCopy + `</p>
-<ul class="flex flex-col gap-2">
+`)
+	disabled := ""
+	if noChief {
+		b.WriteString(`<p id="retry-no-chief-reason" class="text-xs font-semibold text-fg" data-retry-no-chief>` + esc(retryNoChief) + `</p>
+`)
+		disabled = ` disabled aria-disabled="true" aria-describedby="retry-no-chief-reason"`
+	}
+	b.WriteString(`<ul class="flex flex-col gap-2">
 `)
 	for _, m := range msgs {
 		id := strconv.FormatInt(m.ID, 10)
@@ -155,7 +189,7 @@ func retryableSectionHTML(msgs []plugins.Message) string {
 <span class="break-all text-sm text-fg">` + esc(m.Sender) + ` <span class="text-fg2">` + esc(m.Subject) + `</span></span>
 <span class="text-xs text-fg2">message ` + id + ` · ` + when + ` · ` + strconv.Itoa(m.Attempts) + ` attempt(s)</span>
 <form method="POST" action="` + pluginsPath + `/messages/` + id + `/retry">
-<button type="submit" class="` + flowsButtonClass + `" data-retry-button>Retry</button></form>
+<button type="submit" class="` + flowsButtonClass + ` disabled:cursor-not-allowed disabled:opacity-50" data-retry-button` + disabled + `>Retry</button></form>
 </li>
 `)
 	}

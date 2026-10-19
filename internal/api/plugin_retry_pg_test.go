@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -378,5 +380,50 @@ func TestTheRetryRoutes(t *testing.T) {
 	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM audit_log WHERE action='plugin.retried' AND object = ANY($1)`,
 		[]string{plugins.MessageObject(viaCLI.ID), plugins.MessageObject(viaForm.ID)}).Scan(&audits); err != nil || audits != 2 {
 		t.Fatalf("plugin.retried audit rows = %d (%v), want 2", audits, err)
+	}
+}
+
+// TestRetryButtonsAreDisabledWithNoChief (#138 follow-up 6): with no chief
+// every retry is refused (409), so the page must not offer a working Retry
+// button. The message is still listed — it still needs a decision — with its
+// button disabled and the section saying why; with a chief, the same page
+// offers a working button (control). The POST still refuses on its own
+// (TestRetryRefusesWhatMustNotBeSentAgain's no-chief case). The owner is the
+// plane's own fresh user, so no other test's chief can stand in.
+func TestRetryButtonsAreDisabledWithNoChief(t *testing.T) {
+	pp := newPluginPlane(t, &scriptedRuntime{name: replyDraftToolName})
+	m := pp.unconfirmed(t, "nochief-1")
+	render := func() string {
+		t.Helper()
+		w := httptest.NewRecorder()
+		pp.srv.renderPluginsPage(w, httptest.NewRequest(http.MethodGet, "/plugins", nil).WithContext(asSession(pp.ownerID)), http.StatusOK, "", "")
+		return w.Body.String()
+	}
+	button := regexp.MustCompile(`<li [^>]*data-retry-message-id="` + strconv.FormatInt(m.ID, 10) + `"(?s:.*?)<button ([^>]*data-retry-button[^>]*)>`)
+	reason := regexp.MustCompile(`<p [^>]*data-retry-no-chief>([^<]*)</p>`)
+	disabled := func(attrs string) bool { return strings.Contains(" "+attrs+" ", " disabled ") }
+
+	page := render()
+	if b := button.FindStringSubmatch(page); b == nil || disabled(b[1]) {
+		t.Fatalf("CONTROL: with a chief the Retry button is missing or disabled: %q", b)
+	}
+	if reason.MatchString(page) {
+		t.Fatalf("CONTROL: with a chief the page says there is none")
+	}
+
+	if _, err := pp.pool.Exec(authz.System(context.Background()), `UPDATE agents SET display_name='retired' WHERE id=$1`, pp.chief.ID); err != nil {
+		t.Fatal(err)
+	}
+	page = render()
+	b := button.FindStringSubmatch(page)
+	if b == nil {
+		t.Fatalf("with no chief the unconfirmed message is no longer listed:\n%s", page)
+	}
+	if !disabled(b[1]) {
+		t.Errorf("with no chief the Retry button is not disabled: <button %s>", b[1])
+	}
+	const want = `Retry is off: you have no chief agent to deliver these to. An agent becomes your chief when its display name is &#34;chief&#34;.`
+	if r := reason.FindStringSubmatch(page); r == nil || r[1] != want {
+		t.Errorf("with no chief the section does not say why: %q; want %q", r, want)
 	}
 }
