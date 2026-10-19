@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 
+	"strconv"
+
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -19,13 +21,16 @@ import (
 //
 // 🔴 ONE PREDICATE PER ACTION, AND THE TOOL ITSELF CALLS IT. The offer is not a
 // second reading of the gates: task_forward finds its target with forwardTarget
-// and task_dispatch checks the owner with chiefMayDispatch — the same functions
+// and task_dispatch refuses through chiefDispatchDeploymentRefusal and
+// chiefDispatchTaskRefusal — the same functions
 // chiefTaskActions calls — so the offer and the gate cannot disagree.
 //
 //   - task_forward: a running agent other than the chief works the task
 //     (forwardTarget; the tool refuses otherwise).
-//   - task_dispatch: task_dispatch is on and the owner opted in
-//     (chiefMayDispatch: MUSTER_CHIEF_DISPATCH_OWNERS).
+//   - task_dispatch: the tool would start an agent on the task — the opt-in and
+//     the deployment (chiefDispatchDeploymentRefusal) and the task itself: not
+//     gated, open, no live agent on it (chiefDispatchTaskRefusal). The tool's
+//     argument checks (kind, repo, instructions) are the chief's to satisfy.
 //   - route_to_session is NEVER offered for a task: it routes a plugin message
 //     to a session for a REPLY, and a task event is no_reply, so the tool refuses
 //     it (RefusedNoReply). Offering it would be exactly the action the chief
@@ -64,6 +69,50 @@ func chiefMayDispatch(ext Extensions, owner int64) bool {
 	return chiefDispatchOn(ext) && owner > 0 && ext.TaskRouting.DispatchOwners[owner]
 }
 
+// chiefDispatchDeploymentRefusal is task_dispatch's refusal for owner that no
+// task or argument changes, "" when there is none: the opt-in
+// (chiefMayDispatch), then the deployment's ability to start an agent at all.
+// toolTaskDispatch answers with it first; chiefTaskActions offers dispatch only
+// when it is "".
+func (s *Server) chiefDispatchDeploymentRefusal(owner int64) string {
+	if !chiefMayDispatch(s.ext, owner) {
+		return chiefDispatchOptOut
+	}
+	if s.ext.Provisioner == nil {
+		return "this deployment cannot start agents"
+	}
+	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
+		return "this deployment cannot start an agent now: " + reason
+	}
+	return ""
+}
+
+// chiefDispatchTaskRefusal is task_dispatch's refusal for task n itself, ""
+// when there is none: gated, not open, or a live agent (pending, provisioning,
+// running) already on it. toolTaskDispatch runs it under its reservation lock;
+// chiefTaskActions offers dispatch only when it is "". The tool's ARGUMENT
+// checks (kind, repo, instructions) come on top and are not part of the offer:
+// the chief picks those.
+func (s *Server) chiefDispatchTaskRefusal(ctx context.Context, owner int64, n notes.Note) (string, error) {
+	id := strconv.FormatInt(n.ID, 10)
+	if reason, gated := notes.GateReason(n.Tags); gated {
+		return "task " + id + " (" + reason + ") " + chiefDispatchGatedText, nil
+	}
+	if n.Status != notes.StatusOpen {
+		return "task " + id + " " + chiefDispatchNotOpen + " (" + n.Status + ")", nil
+	}
+	on, err := s.agentsOnTask(ctx, owner, n.ID)
+	if err != nil {
+		return "", err
+	}
+	for _, x := range on {
+		if agentLive(x.Status) {
+			return "task " + id + " " + chiefDispatchHasAgent, nil
+		}
+	}
+	return "", nil
+}
+
 // chiefTaskActions is the actions chief can take on task n now, in a fixed
 // order (forward, then dispatch).
 func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n notes.Note) ([]chiefTaskAction, error) {
@@ -76,8 +125,14 @@ func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n not
 		out = append(out, chiefTaskAction{Tool: taskForwardTool,
 			Label: "task_forward: pass it to " + mirror.OneLine(firstNonBlank(t.DisplayName, t.Name), 80) + ", already working it"})
 	}
-	if chiefMayDispatch(s.ext, agentOwnerID(chief)) {
-		out = append(out, chiefTaskAction{Tool: taskDispatchTool, Label: "task_dispatch: start a new agent on it"})
+	if s.chiefDispatchDeploymentRefusal(agentOwnerID(chief)) == "" {
+		why, err := s.chiefDispatchTaskRefusal(ctx, agentOwnerID(chief), n)
+		if err != nil {
+			return nil, err
+		}
+		if why == "" {
+			out = append(out, chiefTaskAction{Tool: taskDispatchTool, Label: "task_dispatch: start a new agent on it"})
+		}
 	}
 	return out, nil
 }

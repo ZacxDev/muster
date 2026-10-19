@@ -497,14 +497,10 @@ func (e errTaskDispatch) Error() string { return string(e) }
 // unit is spent — fail-closed, like any create that fails.
 func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID int64, repo, kindArg, instructions string) string {
 	owner := agentOwnerID(a)
-	if !chiefMayDispatch(s.ext, owner) { // also task_route_attention's offer (task_actions.go)
-		return toolErr("%s", chiefDispatchOptOut)
-	}
-	if s.ext.Provisioner == nil {
-		return toolErr("this deployment cannot start agents")
-	}
-	if reason := s.ext.Provisioner.KickoffUndeliverableReason(); reason != "" {
-		return toolErr("this deployment cannot start an agent now: %s", reason)
+	// The opt-in and the deployment: shared with task_route_attention's offer
+	// (task_actions.go), as is chiefDispatchTaskRefusal below.
+	if why := s.chiefDispatchDeploymentRefusal(owner); why != "" {
+		return toolErr("%s", why)
 	}
 	instructions, ok := cleanInstructions(instructions)
 	if !ok {
@@ -535,26 +531,16 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		if !ok {
 			return errTaskDispatch(chiefDispatchNoTask)
 		}
-		if reason, gated := notes.GateReason(n.Tags); gated {
-			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " (" + reason + ") " + chiefDispatchGatedText)
+		if why, err := s.chiefDispatchTaskRefusal(ctx, owner, n); err != nil {
+			return err
+		} else if why != "" {
+			return errTaskDispatch(why)
 		}
 		if cc && (n.Repo != "" || n.RepoBranch != "") {
 			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " names a repository: " + chiefDispatchCCRepo)
 		}
 		if repo != "" && n.Repo != "" && !strings.EqualFold(n.Repo, repo) {
 			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " " + chiefDispatchTaskRepo + " (" + n.Repo + "): omit repo")
-		}
-		if n.Status != notes.StatusOpen {
-			return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " " + chiefDispatchNotOpen + " (" + n.Status + ")")
-		}
-		on, err := s.agentsOnTask(ctx, owner, taskID)
-		if err != nil {
-			return err
-		}
-		for _, x := range on {
-			if agentLive(x.Status) {
-				return errTaskDispatch("task " + strconv.FormatInt(taskID, 10) + " " + chiefDispatchHasAgent)
-			}
 		}
 		task = n
 		return nil
