@@ -47,6 +47,24 @@ func (f *taskRouteFixture) startedOne(t *testing.T, text string, id int64) agent
 	return on[0]
 }
 
+// ownerAnswered puts task id in front of the owner the way the chief does
+// (task_route_attention, which links the ask to the task) and records the
+// owner's answer, as the attention view does. It returns the ask's id.
+func (f *taskRouteFixture) ownerAnswered(t *testing.T, id int64, answer string) int64 {
+	t.Helper()
+	text := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": id})
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil || out.ID <= 0 {
+		t.Fatalf("task_route_attention: %s (%v)", text, err)
+	}
+	if _, err := f.srv.ext.Attention.Answer(f.asOwner, out.ID, answer); err != nil {
+		t.Fatal(err)
+	}
+	return out.ID
+}
+
 // modelTask is an owner's task that names a (credentialed) model, so a start
 // that passed it to a claude-code agent would be refused (claudeCodeNoModel).
 func (f *taskRouteFixture) modelTask(t *testing.T, title string) notes.Note {
@@ -120,6 +138,7 @@ func TestTaskDispatchGivesAClaudeCodeAgentItsRepository(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	f.withConnectedRepos(t, "example/app")
 	n := f.task(t, "repo arg")
+	f.ownerAnswered(t, n.ID, "using the x skill")
 	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "repo": "example/app",
 		"instructions": "using the x skill"}), n.ID)
 	if got.Kind != agents.KindClaudeCode || got.Repo != "example/app" || got.Model != "" || got.CCAccount != "pool-acct-a" {
@@ -155,6 +174,7 @@ func TestTaskDispatchPutsTheInstructionsFirstAndTheRulesLast(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	n := f.task(t, "with instructions")
 	raw := "Open with the example-blocks skill.\x1b[31m‮\nThen read the task."
+	askID := f.ownerAnswered(t, n.ID, raw)
 	got := f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID, "instructions": raw}), n.ID)
 	msg := got.PendingNote
 	iInstr := strings.Index(msg, "| Open with the example-blocks skill.[31m\n| Then read the task.\n")
@@ -176,8 +196,9 @@ func TestTaskDispatchPutsTheInstructionsFirstAndTheRulesLast(t *testing.T) {
 		t.Errorf("display name %q, want the task's", got.DisplayName)
 	}
 	d := f.reservationDetail(t, n.ID)
-	if d["instructions"] != "Open with the example-blocks skill.[31m\nThen read the task." || d["kind"] != agents.KindClaudeCode {
-		t.Errorf("reservation detail %v: want the cleaned instructions and the kind", d)
+	if d["instructions"] != "Open with the example-blocks skill.[31m\nThen read the task." || d["kind"] != agents.KindClaudeCode ||
+		d["instructions_ask"] != float64(askID) {
+		t.Errorf("reservation detail %v: want the cleaned instructions, the kind and the ask %d they came from", d, askID)
 	}
 }
 
@@ -186,6 +207,8 @@ func TestTaskDispatchPutsTheInstructionsFirstAndTheRulesLast(t *testing.T) {
 func TestTaskDispatchRefusesInstructionsOverTheCap(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
 	n := f.task(t, "long instructions")
+	f.ownerAnswered(t, n.ID, strings.Repeat("a", chiefInstructionsMax+1))
+	f.ownerAnswered(t, n.ID, strings.Repeat("a", chiefInstructionsMax))
 	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID,
 		"instructions": strings.Repeat("a", chiefInstructionsMax+1)}), chiefDispatchInstructionsCap, n.ID)
 	f.startedOne(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID,
