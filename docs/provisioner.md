@@ -89,10 +89,12 @@ always be in it.
   If it is **not empty** or is a **symlink**, nothing is removed: the pod
   crash-loops with `ccd seed: <dir> is a directory this process (uid 1000) cannot
   create files in …` (or `… is a symlink …`). `kubectl exec` into the agent is
-  impossible because its pod never starts. Instead, run a debug pod as root that
-  mounts the agent's PVC (`<agent>-workspace`) at `/data` and run `chown 1000
-  /data/workspace` there (or `chmod u+w` if uid 1000 already owns it). Then delete
-  the agent's pod so it restarts.
+  impossible because its pod never starts. Instead, in the agent's namespace
+  (`<MUSTER_AGENT_NAMESPACE_PREFIX><agent>`, e.g. `muster-agent-<agent>`), run a
+  debug pod as root that mounts the agent's PVC (`<agent>-workspace`) at `/data`
+  and run `chown -R 1000 /data/workspace && chmod u+rwx /data/workspace` there —
+  one command whoever owns it (for a symlink, the error names the link's target:
+  run it on that). Then delete the agent's pod so it restarts.
 
   **Permission prompts.** These go to `ccd approve`. If
   `MUSTER_APPROVAL_GATE_URL` is configured, it relays the prompt to the
