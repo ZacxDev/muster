@@ -23,7 +23,8 @@ import (
 // message queued and is refused). Retryable means: `unconfirmed`, and nothing
 // the first turn did is still live or done — no reply draft pending, approved,
 // sent or itself unconfirmed (another turn would draft a second answer), and no
-// session route that is routed, answered or relayed — and its plugin is not
+// session route that is routed, answered or relayed, no gated task filed citing
+// it (gatedTaskCited) — and its plugin is not
 // revoked (revokedPlugin): a revoked plugin's messages are never handed to the
 // chief again, as Submit and QueuedForOwner already refuse them.
 
@@ -43,13 +44,26 @@ const (
 // over), so a retry must not be the one door that still opens.
 const revokedPlugin = `EXISTS (SELECT 1 FROM plugins p WHERE p.id = m.plugin_id AND p.revoked_at IS NOT NULL)`
 
+// gatedTaskCited: the chief already filed a gated task citing this message
+// (task_create_gated with its message_id). The link is the budget's
+// ActionGatedTask audit row, which carries the message_id and the owner; the
+// task itself records the citation only as a line in its body, and
+// plugin_messages.task_id is a different link (the task a task EVENT is about).
+//
+// ⚠ THE ROW IS THE RESERVATION, WRITTEN BEFORE THE TASK IS CREATED, so a create
+// that then failed (an infrastructure error) also refuses the retry. That is the
+// direction that never files a second task; the owner can still see the board.
+// ⚠ A gated task filed WITHOUT citing the message is invisible here.
+const gatedTaskCited = `EXISTS (SELECT 1 FROM audit_log a WHERE a.action = '` + ActionGatedTask + `'
+		AND a.user_id = m.owner_id AND a.detail->>'message_id' = m.id::text)`
+
 // chiefActedTask: a task event (task_id set) the chief already acted on
 // (chiefActedOn, chief_dispatch.go): a retry would forward or ask twice.
 const chiefActedTask = `(m.task_id IS NOT NULL AND ` + chiefActedOn + `)`
 
 // retryableWhere is that predicate over plugin_messages aliased m.
 const retryableWhere = `m.status = 'unconfirmed' AND NOT ` + liveDraft + ` AND NOT ` + liveRoute + ` AND NOT ` + chiefActedTask +
-	` AND NOT ` + revokedPlugin
+	` AND NOT ` + gatedTaskCited + ` AND NOT ` + revokedPlugin
 
 // ErrNotRetryable refuses a retry; the wrapped text says why (409).
 var ErrNotRetryable = errors.New("plugins: not retryable")
@@ -86,9 +100,9 @@ func (s *PGStore) Requeue(ctx context.Context, id int64) (Message, error) {
 	var out Message
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var st string
-		var drafts, routes, acted, revoked bool
-		err := tx.QueryRow(ctx, `SELECT m.status, `+liveDraft+`, `+liveRoute+`, `+chiefActedTask+`, `+revokedPlugin+`
-			FROM plugin_messages m WHERE m.id = $1 FOR UPDATE OF m`, id).Scan(&st, &drafts, &routes, &acted, &revoked)
+		var drafts, routes, acted, gated, revoked bool
+		err := tx.QueryRow(ctx, `SELECT m.status, `+liveDraft+`, `+liveRoute+`, `+chiefActedTask+`, `+gatedTaskCited+`, `+revokedPlugin+`
+			FROM plugin_messages m WHERE m.id = $1 FOR UPDATE OF m`, id).Scan(&st, &drafts, &routes, &acted, &gated, &revoked)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}
@@ -110,6 +124,8 @@ func (s *PGStore) Requeue(ctx context.Context, id int64) (Message, error) {
 			return fmt.Errorf("%w: your chief already routed it to a session", ErrNotRetryable)
 		case acted:
 			return fmt.Errorf("%w: your chief already acted on this task", ErrNotRetryable)
+		case gated:
+			return fmt.Errorf("%w: your chief already filed a gated task citing it", ErrNotRetryable)
 		}
 		m, err := scanMessage(tx.QueryRow(ctx, `UPDATE plugin_messages m
 			SET status = 'queued', agent_id = NULL, delivered_at = NULL

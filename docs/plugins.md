@@ -447,7 +447,10 @@ routed to a session that is still routed, answered or relayed; when it is a
 the task, or started an agent on it, at or after this event's latest delivery
 attempt — for a message that can be retried, the turn that handed it over — so
 an action on another event of the same task does not count; the same rule that
-takes it off "Task to route"); when its plugin has been revoked (a revoked
+takes it off "Task to route"); when your chief already filed a gated task
+citing it (`task_create_gated` with its `message_id`, read from that call's
+audit row — a task filed without citing the message is not seen); when its
+plugin has been revoked (a revoked
 plugin's messages never reach your chief again, by retry or otherwise); and when
 you have no chief. Another user's message answers 404.
 

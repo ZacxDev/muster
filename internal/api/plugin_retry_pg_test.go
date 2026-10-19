@@ -82,6 +82,58 @@ func TestRetryDeliversAnUnconfirmedMessageAndTheChiefDrafts(t *testing.T) {
 	}
 }
 
+// TestARetryDoesNotFileASecondGatedTask (#138 follow-up 2), through the real
+// plane: the chief's turn on a retried message runs the REAL task_create_gated
+// citing it (so the link is whatever that tool really writes), and that turn's
+// end is then lost — the message is unconfirmed again. A second retry would
+// hand it over again and file a second task, so it is refused (409, saying
+// why) and the runtime is not called; exactly one gated task exists.
+func TestARetryDoesNotFileASecondGatedTask(t *testing.T) {
+	rt := &scriptedRuntime{name: gatedTaskToolName}
+	pp := newPluginPlane(t, rt)
+	m := pp.unconfirmed(t, "retry-gated")
+	args, _ := json.Marshal(map[string]any{"title": "Book the room", "body": "The sender asks for a room.",
+		"gate_reason": "outside request", "message_id": m.ID})
+	rt.mu.Lock()
+	rt.args = string(args)
+	rt.mu.Unlock()
+	if code, _, problem := pp.srv.retryPluginMessage(asSession(pp.ownerID), m.ID); code != http.StatusAccepted {
+		t.Fatalf("first retry: %d %q", code, problem)
+	}
+	pp.srv.WaitForPluginDeliveries()
+	countTasks := func() int {
+		t.Helper()
+		var n int
+		if err := pp.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM notes WHERE owner_id = $1
+			AND body LIKE '%cites plugin message ' || $2::bigint || ' %'`, pp.ownerID, m.ID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := countTasks(); n != 1 {
+		t.Fatalf("CONTROL: the retried turn filed %d gated task(s) citing the message; want 1", n)
+	}
+	// The turn's end is lost: the message is unconfirmed again.
+	if _, err := pp.pool.Exec(authz.System(context.Background()), `UPDATE plugin_messages SET status = 'unconfirmed' WHERE id = $1`, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := pp.ps.Retryable(pp.owner, 10); len(list) != 0 {
+		t.Errorf("a message a gated task cites is listed retryable: %+v", list)
+	}
+	calls := len(rt.seen())
+	code, _, problem := pp.srv.retryPluginMessage(asSession(pp.ownerID), m.ID)
+	if code != http.StatusConflict || !strings.Contains(problem, "already filed a gated task citing it") {
+		t.Errorf("second retry: %d %q; want 409 saying a gated task cites it", code, problem)
+	}
+	pp.srv.WaitForPluginDeliveries()
+	if n := len(rt.seen()); n != calls {
+		t.Errorf("the refused retry reached the runtime (%d calls, want %d)", n, calls)
+	}
+	if n := countTasks(); n != 1 {
+		t.Errorf("%d gated tasks cite the message; want 1", n)
+	}
+}
+
 // TestRetryRefusesWhatMustNotBeSentAgain: each state that must not be handed to
 // the chief again is refused (409) and left exactly as it was — queued (which is
 // also a double click), delivering, delivered, a draft in each live status
