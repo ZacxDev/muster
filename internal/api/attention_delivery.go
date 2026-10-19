@@ -63,8 +63,18 @@ import (
 
 // attentionDeliveryGrace is how old an answer must be before it is pushed: an
 // asker blocked in attention_wait reads it first (its wake-up is immediate in
-// this process; attentionPoll bounds it otherwise). A var so a test can set it.
-var attentionDeliveryGrace = 3 * attentionPoll
+// this process; attentionPoll bounds it otherwise).
+const attentionDeliveryGrace = 3 * attentionPoll
+
+// deliveryGrace is this server's grace: attentionDeliveryGrace, or a test's
+// override (attentionState.graceOverride — per server, never a package var a
+// delivery left running by another test's server would race on).
+func (s *Server) deliveryGrace() time.Duration {
+	if g := s.attention.graceOverride; g != nil {
+		return *g
+	}
+	return attentionDeliveryGrace
+}
 
 // attentionDeliveryBatch bounds one sweep's deliveries.
 const attentionDeliveryBatch = 50
@@ -175,7 +185,7 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 		return answerNotTaken
 	}
 	by := s.deliveryOwner()
-	a, ok, err := s.ext.Attention.ClaimDelivery(ctx, id, by, attentionDeliveryLease(), attentionDeliveryGrace)
+	a, ok, err := s.ext.Attention.ClaimDelivery(ctx, id, by, attentionDeliveryLease(), s.deliveryGrace())
 	if err != nil {
 		s.logger.Printf("attention: ask %d: claim its delivery: %v", id, err)
 		return answerNotTaken
@@ -314,7 +324,7 @@ func (s *Server) deliverDueAnswers(ctx context.Context) {
 		s.logger.Printf("attention: ask %d: its delivery's process stopped mid-turn: unconfirmed (Retry on /attention)", a.ID)
 		s.attentionChanged(a.Owner, attentionAskKey(a.ID))
 	}
-	due, err := s.ext.Attention.DueDeliveries(ctx, attentionDeliveryGrace, attentionDeliveryBatch)
+	due, err := s.ext.Attention.DueDeliveries(ctx, s.deliveryGrace(), attentionDeliveryBatch)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			s.logger.Printf("attention: owed deliveries: %v", err)

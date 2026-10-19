@@ -101,6 +101,9 @@ type attentionState struct {
 	deliveries     sync.WaitGroup
 	deliveryByOnce sync.Once
 	deliveryBy     string
+	// graceOverride, when set (tests, before any delivery starts), replaces
+	// attentionDeliveryGrace for this server.
+	graceOverride *time.Duration
 	// waiting is each owner's waiting sessions as last seen, by item key: what
 	// a hub nudge is diffed against to push a new one and clear a gone one.
 	waiting map[int64]map[string]attentionItem
@@ -876,7 +879,7 @@ func (s *Server) answerAsk(ctx context.Context, id int64, answer string) (attent
 	if err == nil {
 		s.askSettled(a)
 		if a.Delivery == attention.DeliveryQueued {
-			s.startAnswerDelivery(a.Owner, a.ID, attentionDeliveryGrace+500*time.Millisecond)
+			s.startAnswerDelivery(a.Owner, a.ID, s.deliveryGrace()+500*time.Millisecond)
 		}
 	}
 	return a, err

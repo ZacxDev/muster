@@ -43,9 +43,8 @@ func newDeliveryFixture(t *testing.T) *deliveryFixture {
 	gw := &turnGateway{}
 	f := &deliveryFixture{gw: gw}
 	f.attnFixture = newAttnFixture(t, func(ext *Extensions, _ *pgxpool.Pool) { ext.Gateway = gw })
-	prev := attentionDeliveryGrace
-	attentionDeliveryGrace = 0
-	t.Cleanup(func() { attentionDeliveryGrace = prev })
+	noGrace := time.Duration(0)
+	f.srv.attention.graceOverride = &noGrace
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	f.chiefTok = "attn-opchief-token-" + suffix
 	f.chief = f.agentFor(t, 1, "attnopchief-"+suffix, "chief", f.chiefTok)
@@ -173,6 +172,7 @@ func TestAnAnswerToTheChiefIsPushedOnceIntoItsDefaultSession(t *testing.T) {
 func (f *attnFixture) restarted() *Server {
 	s := New(nil, AuthConfig{HookToken: connTestHookToken, ServiceToken: connTestServiceToken, UIPassword: connTestPassword}, log.New(io.Discard, "", 0))
 	s.UseExtensions(f.srv.ext)
+	s.attention.graceOverride = f.srv.attention.graceOverride
 	return s
 }
 
