@@ -149,3 +149,26 @@ func TestTaskDispatchWithoutInstructionsNeedsNoAnswer(t *testing.T) {
 		t.Fatalf("detail %v", d)
 	}
 }
+
+// TestTaskDispatchRefusesAnInSessionAnswer: the owner writes to the chief's
+// session while it has asks open on tasks A and B. That one message settles
+// BOTH asks (AnswerInSession matches on the asker), so it was addressed to
+// neither task's ask: it is not instructions-provenance for B — nor for A. Only
+// an answer given through the ask itself counts.
+func TestTaskDispatchRefusesAnInSessionAnswer(t *testing.T) {
+	f := newTaskRouteFixture(t, true, true, withKinds("pool-acct-a"))
+	a, b := f.task(t, "task A"), f.task(t, "task B")
+	for _, n := range []notes.Note{a, b} {
+		if text := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": n.ID}); !json.Valid([]byte(text)) {
+			t.Fatalf("task_route_attention: %s", text)
+		}
+	}
+	settled, err := f.srv.ext.Attention.AnswerInSession(f.asOwner, attention.Asker{AgentID: f.chief.ID}, ownersWords, 0)
+	if err != nil || len(settled) != 2 {
+		t.Fatalf("the in-session message settled %d asks (%v); want both", len(settled), err)
+	}
+	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": b.ID, "instructions": ownersWords}),
+		chiefDispatchInstructionsUnsourced, b.ID)
+	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": a.ID, "instructions": ownersWords}),
+		chiefDispatchInstructionsUnsourced, a.ID)
+}

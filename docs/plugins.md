@@ -362,7 +362,10 @@ Each refusal has its own sentence, in this order:
    your answer to an attention ask linked to **this** task. An ask is linked
    to its task only when muster filed it on the task's behalf
    (`task_route_attention`, or a mention's route to `/attention`) — never by
-   its question's text, which any asker can write. The comparison is exact
+   its question's text, which any asker can write. The answer must be given
+   **through that ask** (on `/attention`): a message you write into the
+   chief's chat also settles its open asks, but every one of them at once, on
+   every task, so it counts for none. The comparison is exact
    after trimming surrounding whitespace and normalising line endings: one
    word added, a changed letter case or a doubled space is refused. Your
    answer on another task, another user's answer, the task's own text and

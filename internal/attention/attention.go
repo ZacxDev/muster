@@ -332,8 +332,11 @@ type Store interface {
 	// scope).
 	RecoverDeliveries(ctx context.Context) ([]Ask, error)
 
-	// AnswersForTask is the caller's ANSWERED asks (Answered or
-	// AnsweredInSession) linked to taskID, newest first.
+	// AnswersForTask is the caller's asks linked to taskID that were answered
+	// THROUGH THE ASK ITSELF (Answered), newest first. AnsweredInSession is
+	// left out on purpose: one message to the asker's session settles every
+	// open ask that asker raised, on every task, so it is not an answer to any
+	// one task's ask (task_dispatch's instructions provenance).
 	AnswersForTask(ctx context.Context, taskID int64) ([]Ask, error)
 }
 
@@ -465,7 +468,7 @@ func (s *PGStore) Get(ctx context.Context, id int64) (Ask, error) {
 // to their own asks), and names the owner as well.
 func (s *PGStore) AnswersForTask(ctx context.Context, taskID int64) ([]Ask, error) {
 	return collect(s.pool.Query(ctx, `SELECT `+cols+` FROM attention_asks
-		WHERE task_id = $1 AND status IN ('answered', 'answered_in_session') AND answered_by = $2
+		WHERE task_id = $1 AND status = 'answered' AND answered_by = $2
 		  AND owner_id = nullif(current_setting('muster.uid', true), '')::bigint
 		ORDER BY id DESC`, taskID, ByOperator))
 }
