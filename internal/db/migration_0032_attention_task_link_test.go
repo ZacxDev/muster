@@ -4,10 +4,10 @@ import (
 	"testing"
 )
 
-// TestMigration0033LinksOnlyTheChiefRoutedAsks: a database before 0033 holding
+// TestMigration0032LinksOnlyTheChiefRoutedAsks: a database before 0032 holding
 // the live shape — the chief's task_route_attention asks (each written beside
 // its `task.chief_routed` audit row), plus asks that only LOOK like one — arrives
-// at 0033 with task_id set on exactly the chief-routed ones:
+// at 0032 with task_id set on exactly the chief-routed ones:
 //
 //   - linked: question "Task #N needs you: …" AND the owner's chief_routed row for
 //     note:N, tool task_route_attention, within 5s after the ask;
@@ -18,9 +18,9 @@ import (
 //
 // Then the new rules hold: an ask cannot name another owner's task (the
 // trigger), and deleting the task un-links the ask without deleting it.
-func TestMigration0033LinksOnlyTheChiefRoutedAsks(t *testing.T) {
+func TestMigration0032LinksOnlyTheChiefRoutedAsks(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0033_task_link", 32)
+	pool := freshAt(ctx, t, "ms_0032_task_link", 31)
 
 	other := scanID(ctx, t, pool, `INSERT INTO users (role) VALUES ('member') RETURNING id`)
 	chief := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace, kind, cc_account)
@@ -61,7 +61,7 @@ func TestMigration0033LinksOnlyTheChiefRoutedAsks(t *testing.T) {
 	notMine := ask(1, nil, theirs, "10 seconds")
 	audit(1, theirs, "task_route_attention", "9.99 seconds")
 
-	applyThroughFrom(ctx, t, pool, 33)
+	applyThroughFrom(ctx, t, pool, 32)
 
 	linked := map[int64]int64{}
 	rows, err := pool.Query(ctx, `SELECT id, task_id FROM attention_asks WHERE task_id IS NOT NULL`)
@@ -95,5 +95,5 @@ func TestMigration0033LinksOnlyTheChiefRoutedAsks(t *testing.T) {
 		t.Fatalf("after deleting the task: %d rows (%v)", n, err)
 	}
 	// Re-running the body changes nothing and does not fail.
-	mustExec(ctx, t, pool, readMigration(t, "0033_attention_task_link.sql"))
+	mustExec(ctx, t, pool, readMigration(t, "0032_attention_task_link.sql"))
 }

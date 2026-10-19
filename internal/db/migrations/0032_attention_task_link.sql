@@ -1,4 +1,4 @@
--- muster 0033 — AN ATTENTION ASK NAMES THE TASK IT IS ABOUT (task_dispatch's
+-- muster 0032 — AN ATTENTION ASK NAMES THE TASK IT IS ABOUT (task_dispatch's
 -- instructions provenance, internal/api/task_routing.go).
 --
 -- task_dispatch's `instructions` are accepted only when they are, verbatim, the
@@ -22,7 +22,8 @@
 -- task_route_attention, written within 5 seconds of the ask (the two are
 -- written by one call, ask first). The text alone is never enough.
 --
--- Must apply after 0031 and 0032 (the contiguity test refuses a gap). Not
+-- Must apply after 0031 (feat/attention-answer-delivery; the contiguity test
+-- refuses a gap). Not
 -- re-applied by db.RLSOn (no policy, grant or default) and idempotent.
 
 SET LOCAL lock_timeout = '3s';

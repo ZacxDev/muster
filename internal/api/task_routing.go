@@ -686,7 +686,7 @@ func sameWords(s string) string {
 }
 
 // ownerAnswer finds the owner's answer to an attention ask linked to task
-// taskID (attention_asks.task_id, migration 0033) that is exactly text
+// taskID (attention_asks.task_id, migration 0032) that is exactly text
 // (sameWords), or says why there is none.
 //
 // 🔴 THREE MATCHES, EACH STRUCTURAL: the TASK (the ask's task_id, written only

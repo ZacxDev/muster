@@ -155,7 +155,7 @@ type Ask struct {
 	// DeliveryQueuedAt is when the delivery was last queued (the answer, or a
 	// Retry); zero when there is none.
 	DeliveryQueuedAt time.Time `json:"-"`
-	// TaskID is the task the ask is about (migration 0033), 0 for none. Only
+	// TaskID is the task the ask is about (migration 0032), 0 for none. Only
 	// muster's own task path sets it (New.TaskID); an agent's attention_ask
 	// never does.
 	TaskID int64 `json:"task_id,omitempty"`
