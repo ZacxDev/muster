@@ -385,7 +385,7 @@ func (s *Server) UseExtensions(ext Extensions) {
 	// queued saying so — the answer route itself never reaches the gateway.
 	s.answerTurn = nil
 	if ext.Gateway != nil && ext.Agents != nil {
-		s.answerTurn = s.runEnteredTurn
+		s.answerTurn = s.runDeliveredTurn
 	}
 	s.connectProxy = nil
 	if ext.Connectors != nil {

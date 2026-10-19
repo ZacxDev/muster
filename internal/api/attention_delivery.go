@@ -29,7 +29,8 @@ import (
 // the agent acts on it without polling.
 //
 // 🔴 THE TURN IS THE ORDINARY CHAT TURN, UNDER THE SAME LOCKS. It runs through
-// runEnteredTurn (the agent's instructions and tools, stored like any turn),
+// chatTurn (the agent's instructions and tools; runDeliveredTurn stores it like
+// any turn),
 // holding the agent's SESSION CLAIM (agents.Store.ClaimKickoff — the claim a
 // plugin delivery, a first turn and a route hand-back hold, so it never overlaps
 // one of those) AND the in-process turn gate idle (turnGate.enterIdle — an
@@ -254,6 +255,36 @@ func (s *Server) deliverAnswer(parent context.Context, owner, id int64) string {
 	}
 	s.persistTurn(bctx, ag, sess, parts)
 	return settle(true, sess.ID, "")
+}
+
+// runDeliveredTurn is the delivery's turn: the ordinary chat turn (chatTurn —
+// the agent's instructions and tools), with the delivered text stored in the
+// session only when it may have reached the runtime — the plugin deliverer's
+// order. runEnteredTurn stores it FIRST, so a turn the runtime provably refused
+// (agentgateway.Unsent: queued again, delivered later) would leave the answer in
+// the transcript twice. UseExtensions sets s.answerTurn to it when a gateway is
+// wired.
+func (s *Server) runDeliveredTurn(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, emit agents.StreamEmit) ([]agents.TurnPart, error) {
+	s.markAgentActive(requestOwner(ctx), a.Name, "thinking")
+	pc := &agents.PartCollector{}
+	reply, err := s.chatTurn(ctx, a, session.SessionKey, text, pc.Observe)
+	s.markAgentIdle(a.Name)
+	if agentgateway.Unsent(err) != "" {
+		return nil, err
+	}
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	if _, serr := s.ext.Agents.AddChatMessage(sctx, agents.ChatMessage{AgentID: a.ID, SessionID: session.ID, Role: "user", Content: text}); serr != nil {
+		s.logger.Printf("attention: store the delivered answer in agent %d's session %d: %v", a.ID, session.ID, serr)
+	}
+	if err != nil {
+		return nil, err
+	}
+	parts := pc.Parts()
+	if len(parts) == 0 && reply != "" {
+		parts = []agents.TurnPart{{Kind: "text", Content: reply}}
+	}
+	return parts, nil
 }
 
 // deliverDueAnswers is one delivery sweep: settle every delivery a dead

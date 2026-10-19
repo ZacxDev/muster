@@ -127,7 +127,7 @@ type Server struct {
 	// (nil: the forward is stored and no turn starts).
 	taskForwardTurn func(ctx context.Context, a agents.Agent, session agents.ChatSession, text string)
 	// answerTurn runs the turn an answer delivery pushes into the asking
-	// agent's session (attention_delivery.go): runEnteredTurn, set by
+	// agent's session (attention_delivery.go): runDeliveredTurn, set by
 	// UseExtensions only when a gateway is wired (nil: the answer stays queued).
 	answerTurn func(ctx context.Context, a agents.Agent, session agents.ChatSession, text string, emit agents.StreamEmit) ([]agents.TurnPart, error)
 	// pluginRetrying holds the owners whose queued messages a claim is
