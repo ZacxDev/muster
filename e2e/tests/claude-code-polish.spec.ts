@@ -146,16 +146,22 @@ for (const vp of [
       await expect(sheet.locator('[data-dispatch-row]').filter({ hasText: 'Repository' })).toBeVisible();
       await sheet.locator('[data-kind-option="gateway"]').click();
       await expect(modelRow).toBeVisible();
-      // Claude Code again, and dispatch: the agent is a claude-code agent on the
-      // task's repository and branch.
+      // Claude Code again, and dispatch: what the browser submits is a
+      // claude-code dispatch carrying the task's repository and branch and no
+      // model. (This server has no agent gateway, so the dispatch itself is
+      // refused for that reason — and for no other: not for the repository.
+      // That the server stores a claude-code row with its repository is
+      // TestAClaudeCodeDispatchKeepsItsRepository.)
       await sheet.locator('[data-kind-option="claude-code"]').click();
-      const before = new Set((await agentRows()).map((a) => a.name));
-      const resp = page.waitForResponse((x) => x.url().endsWith('/agents') && x.request().method() === 'POST');
+      const reqP = page.waitForRequest((x) => x.url().endsWith('/agents') && x.method() === 'POST');
+      const respP = page.waitForResponse((x) => x.url().endsWith('/agents') && x.request().method() === 'POST');
       await sheet.locator('button[value="dispatch"]').click();
-      expect((await resp).status()).toBe(200);
-      const created = (await agentRows()).filter((a) => !before.has(a.name));
-      expect(created.length, 'exactly one agent created').toBe(1);
-      expect([created[0].kind, created[0].repo, created[0].repoBranch]).toEqual(['claude-code', repo, 'release/e2e']);
+      const form = new URLSearchParams((await reqP).postData() ?? '');
+      expect([form.get('kind'), form.get('repo'), form.get('repo_branch'), form.has('model')]).toEqual(['claude-code', repo, 'release/e2e', false]);
+      const resp = await respP;
+      const text = await resp.text();
+      expect(text).not.toContain('repositor');
+      expect([resp.status(), text]).toEqual([409, expect.stringContaining('cannot deliver an agent\'s first turn')]);
     });
 
     test('1c. a Claude Code agent page shows its account where the model would be and never asks OpenRouter', async ({ page }) => {
