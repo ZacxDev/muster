@@ -173,14 +173,10 @@ func TestALaneHookReachesItsLaneAndNoOther(t *testing.T) {
 	laneSrv := newServer(serverConfig{ConfigDir: cfg}, nil, newAuthTracker())
 	id := laneID("k")
 	primary.lanes = &lanes{set: map[string]*lane{id: {id: id, key: "k", srv: laneSrv}}}
-	hs := hookServer(t, primary)
+	hp := hooks(t, primary)
 	post := func(q, body string) {
-		resp, err := http.Post(hs.URL+"/hook/SessionStart"+q, "application/json", strings.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		t.Helper()
+		hp.mustPost(t, "SessionStart"+q, body)
 	}
 	// A lane's SessionStart with an id that is NOT marked as a lane's — what a
 	// /clear in the lane's CLI starts — is still the lane's, and is not recorded.

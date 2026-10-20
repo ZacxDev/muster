@@ -291,14 +291,12 @@ func TestTheGatewayMuxDoesNotServeHooks(t *testing.T) {
 		t.Fatal("a hook POSTed to the gateway mux changed session state")
 	}
 	// Positive control: the hook mux DOES serve it.
-	hs := hookServer(t, srv)
-	resp, err = http.Post(hs.URL+"/hook/Stop", "application/json", strings.NewReader(`{"hook_event_name":"Stop"}`))
+	code, err := hooks(t, srv).post("Stop", `{"hook_event_name":"Stop"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent || srv.busy {
-		t.Fatalf("hook mux: %d busy=%v", resp.StatusCode, srv.busy)
+	if code != http.StatusNoContent || srv.busy {
+		t.Fatalf("hook mux: %d busy=%v", code, srv.busy)
 	}
 }
 

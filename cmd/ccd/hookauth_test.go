@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,20 +15,80 @@ import (
 // testHookSecret is the hook credential the unit tests give ccd and `ccd hook`.
 const testHookSecret = "test-hook-secret-not-real-3f1a"
 
-// hookServer serves srv's hook handler (with srv's credential set to
-// testHookSecret) as `ccd hook` reaches it: every request carries the
-// credential. For tests about what a hook DOES; whether one without the
-// credential is refused is TestAHookWithoutTheCredentialIsRefusedAndChangesNothing.
-func hookServer(t *testing.T, srv *server) *httptest.Server {
+// hookPoster is THE way a unit test posts a hook: srv's real hook handler,
+// with srv's credential set to testHookSecret, reached as `ccd hook` reaches it —
+// every request carries the credential. TestOnlyTheHookHelperServesTheHookHandler
+// keeps a test from serving hookHandler itself and forgetting the credential
+// (which is how #164's test, written before the credential existed, broke on
+// the merged tree: its hooks were refused 401 and changed nothing).
+type hookPoster struct{ url string }
+
+func hooks(t *testing.T, srv *server) *hookPoster {
 	t.Helper()
 	srv.cfg.HookSecret = testHookSecret
-	h := srv.hookHandler()
-	hs := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Header.Set("Authorization", "Bearer "+testHookSecret)
-		h.ServeHTTP(w, r)
-	}))
+	hs := httptest.NewServer(srv.hookHandler())
 	t.Cleanup(hs.Close)
-	return hs
+	return &hookPoster{url: hs.URL}
+}
+
+// post sends body to /hook/<pathAndQuery> with the credential. Safe off the
+// test goroutine (it never calls t.Fatal).
+func (p *hookPoster) post(pathAndQuery, body string) (int, error) {
+	req, err := http.NewRequest(http.MethodPost, p.url+"/hook/"+pathAndQuery, strings.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testHookSecret)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, nil
+}
+
+// mustPost is post, failing the test on a transport error or a refusal.
+func (p *hookPoster) mustPost(t *testing.T, pathAndQuery, body string) {
+	t.Helper()
+	code, err := p.post(pathAndQuery, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code/100 != 2 {
+		t.Fatalf("POST /hook/%s: %d", pathAndQuery, code)
+	}
+}
+
+// 🔴 ONLY THE HELPER SERVES hookHandler IN A UNIT TEST. A test that serves it
+// itself and posts without the credential gets 401s that change nothing, and
+// then fails — or, worse, passes — for a reason that has nothing to do with
+// what it tests. The exceptions are this file (the helper, and the test that
+// posts WITHOUT the credential on purpose) and the tmux suite's rig, which
+// serves it over the socket to the real `ccd hook`.
+func TestOnlyTheHookHelperServesTheHookHandler(t *testing.T) {
+	files, err := filepath.Glob("*_test.go")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("instrument check: no test files found (%v)", err)
+	}
+	allowed := map[string]bool{"hookauth_test.go": true, "tmux_integration_test.go": true}
+	seen := 0
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		n := strings.Count(string(b), ".hookHandler()")
+		seen += n
+		if n > 0 && !allowed[f] {
+			t.Errorf("%s serves hookHandler itself (%d site(s)); post hooks with hooks(t, srv).post / mustPost, "+
+				"which carry the hook credential", f, n)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("instrument check: no .hookHandler() site found at all; the scan is reading nothing")
+	}
 }
 
 // unixHookTarget serves h on a unix socket and points `ccd hook` at it, with

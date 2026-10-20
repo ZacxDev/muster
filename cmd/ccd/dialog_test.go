@@ -330,3 +330,34 @@ func TestWithdrawingTheScreenBadgeLeavesTheHooksPrompt(t *testing.T) {
 	default:
 	}
 }
+
+// A lane's id is laneID(key), the same for the next CLI started for that
+// session, and the reporter's sources outlive the server that raised one. A
+// raised screen source left behind by a lane's CLI that died is withdrawn by the
+// NEXT lane server's first clear, although that server never raised it itself.
+func TestANewLaneServerWithdrawsAScreenSourceItsPredecessorLeftRaised(t *testing.T) {
+	rep := &blockedReporter{ch: make(chan bool, 1)}
+	id := laneID("k")
+	old := newServer(serverConfig{}, nil, newAuthTracker())
+	old.blocked, old.blockedSrc = rep, id
+	old.setScreenBlocked(true, "a permission prompt")
+	if !rep.sources[screenSource(id)] {
+		t.Fatalf("instrument check: the old lane's screen source is not raised: %v", rep.sources)
+	}
+	// The old CLI dies; a new server serves the same lane id.
+	next := newServer(serverConfig{}, nil, newAuthTracker())
+	next.blocked, next.blockedSrc = rep, id
+	next.setScreenBlocked(false, "") // its first pasted turn
+	if _, raised := rep.sources[screenSource(id)]; raised {
+		t.Fatalf("the predecessor's screen source is still raised: %v", rep.sources)
+	}
+	// The same through a hook that says the session moved on.
+	old.setScreenBlocked(false, "")
+	old.setScreenBlocked(true, "a permission prompt")
+	next2 := newServer(serverConfig{}, nil, newAuthTracker())
+	next2.blocked, next2.blockedSrc = rep, id
+	next2.onHook(hookEvent{Event: "SessionStart", SessionID: "s"})
+	if _, raised := rep.sources[screenSource(id)]; raised {
+		t.Fatalf("a SessionStart in the new lane did not withdraw the predecessor's screen source: %v", rep.sources)
+	}
+}

@@ -99,15 +99,9 @@ func TestRunHookIsInertWhenDisabled(t *testing.T) {
 
 func TestHookLogCapturesRawPayloadsOnlyWhenSet(t *testing.T) {
 	srv, _ := newScripted(t, cliScript{})
-	hs := hookServer(t, srv)
+	hp := hooks(t, srv)
 	payload := fixture(t, "hook_StopFailure_2.1.296.json")
-	post := func() {
-		resp, err := http.Post(hs.URL+"/hook/StopFailure", "application/json", bytes.NewReader(payload))
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-	}
+	post := func() { hp.mustPost(t, "StopFailure", string(payload)) }
 	post() // HookLog unset: nothing written anywhere
 	log := t.TempDir() + "/hooks.jsonl"
 	srv.cfg.HookLog = log
