@@ -72,7 +72,7 @@ func TestGitHubAppConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 		"no account allowlist": {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM}), envGitHubAppAccounts},
 		"bad account":          {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "ok:1,not a login:2"}), envGitHubAppAccounts},
 		// 🔴 A BARE LOGIN REFUSES TO BOOT, and says how to find the id.
-		"bare login":             {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org:4200,second-org"}), "gh api users/second-org -q .id"},
+		"bare login":             {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org:4200,second-org"}), "give the account's numeric id as well, as second-org:<id> — a login alone can be renamed and re-registered by someone else. Find the id with `gh api users/second-org -q .id`"},
 		"id not numeric":         {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org:abc"}), "not a numeric account id"},
 		"id zero":                {with(map[string]string{envGitHubAppID: "12345", envGitHubAppKey: keyPEM, envGitHubAppAccounts: "example-org:0"}), "not a numeric account id"},
 		"id without key":         {with(map[string]string{envGitHubAppID: "12345", envGitHubAppAccounts: "example-org:4200"}), envGitHubAppKey},
