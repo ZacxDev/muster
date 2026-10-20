@@ -129,8 +129,9 @@ func fakeClaude() int {
 	for i, sk := range skills {
 		skills[i] = filepath.Base(filepath.Dir(sk))
 	}
-	appendFile(filepath.Join(cfg, "fake-argv.log"), fmt.Sprintf("sid=%s source=%s model=%s lane=%s args=%q cwd=%s skills=%s\n",
-		sid, source, model, os.Getenv("CCD_LANE"), os.Args[1:], cwd, strings.Join(skills, ",")))
+	// entrypoint= is CLAUDE_CODE_ENTRYPOINT as the CLI sees it (execArgv unsets it).
+	appendFile(filepath.Join(cfg, "fake-argv.log"), fmt.Sprintf("sid=%s source=%s model=%s lane=%s args=%q entrypoint=%s cwd=%s skills=%s\n",
+		sid, source, model, os.Getenv("CCD_LANE"), os.Args[1:], os.Getenv("CLAUDE_CODE_ENTRYPOINT"), cwd, strings.Join(skills, ",")))
 	if resume {
 		newest := fakeContinueTarget(projDir)
 		if newest == "" {

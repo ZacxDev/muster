@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -62,13 +64,78 @@ func TestTheUnrecordedFallbackSkipsAnSDKRun(t *testing.T) {
 		t.Fatalf("A `claude -p` RUN TAKEN AS THE PRIMARY: a newer sdk-cli transcript beside an older cli one: %q %s; "+
 			"want --resume %s (the interactive one)", argv, mode, primary)
 	}
-	// Only the sdk-cli one: a fresh start, never the -p run's conversation.
-	if err := os.Remove(filepath.Join(dir, primary+".jsonl")); err != nil {
-		t.Fatal(err)
+}
+
+// realHeader is what precedes the first entry carrying an entrypoint in a real
+// interactive transcript, shaped like the pinned CLI's: a long last-prompt, the
+// mode entries, and a file-history snapshot — several KiB in all (past the
+// first KiB in most of 811 workstation transcripts measured).
+var realHeader = func() string {
+	var b strings.Builder
+	b.WriteString(`{"type":"last-prompt","lastPrompt":"` + strings.Repeat("please refactor the lane gate and keep the tests green ", 30) + `","sessionId":"0f0e0d0c-0b0a-4908-8706-050403020100"}` + "\n")
+	b.WriteString(`{"type":"mode","mode":"default","sessionId":"0f0e0d0c-0b0a-4908-8706-050403020100"}` + "\n")
+	b.WriteString(`{"type":"permission-mode","permissionMode":"default","sessionId":"0f0e0d0c-0b0a-4908-8706-050403020100"}` + "\n")
+	b.WriteString(`{"type":"atis-latch","sessionId":"0f0e0d0c-0b0a-4908-8706-050403020100"}` + "\n")
+	b.WriteString(`{"type":"file-history-snapshot","messageId":"m1","snapshot":{"trackedFileBackups":{`)
+	for i := 0; i < 40; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`"/data/workspace/cmd/ccd/file_` + strings.Repeat("x", 20) + `_` + string(rune('a'+i%26)) + `.go":{"backupFileName":"abcdef0123456789@v2","version":2,"backupTime":"2000-01-01T00:00:00.000Z"}`)
 	}
-	if argv, mode := sup.argv(); strings.Join(argv, " ") != "claude" || mode != modeFresh {
-		t.Fatalf("only an sdk-cli transcript: %q %s; want a fresh start", argv, mode)
+	b.WriteString(`}},"isSnapshotUpdate":false}` + "\n")
+	return b.String()
+}()
+
+// The fallback chain, tier by tier, with no record: (1) the newest transcript
+// stamped "cli"; (2) else the newest non-lane transcript of ANY stamp — a CLI
+// that renames, drops or moves the stamp degrades to the old "newest non-lane"
+// choice, never to a fresh start that abandons the conversation; (3) else a
+// fresh start. Each choice says which tier made it in the log.
+func TestTheUnrecordedFallbackTiers(t *testing.T) {
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	cfg, ws := t.TempDir(), "/data/workspace"
+	dir := projectDir(cfg, ws)
+	sup := newSupervisor(nil, "claude", cfg, ws)
+	const (
+		stamped   = "0f0e0d0c-0b0a-4908-8706-050403020100"
+		sdk       = "1f0e0d0c-0b0a-4908-8706-050403020100"
+		unstamped = "2f0e0d0c-0b0a-4908-8706-050403020100"
+	)
+	now := time.Now()
+	argvLog := func() (string, string) {
+		t.Helper()
+		logBuf.Reset()
+		argv, _ := sup.argv()
+		return strings.Join(argv, " "), strings.TrimSpace(logBuf.String())
 	}
+	check := func(what, wantArgv, wantLog string) {
+		t.Helper()
+		argv, logged := argvLog()
+		if argv != wantArgv || !strings.HasSuffix(logged, wantLog) {
+			t.Errorf("%s: argv %q, log %q; want argv %q, log ending %q", what, argv, logged, wantArgv, wantLog)
+		}
+	}
+
+	check("tier 3, nothing on disk", "claude", "ccd: starting fresh: no primary transcript")
+
+	// Only a transcript with no stamp (a CLI that dropped the field), and a lane's.
+	writeTranscriptAt(t, dir, laneUUID("k"), cliTranscript, now.Add(time.Hour))
+	writeTranscriptAt(t, dir, unstamped, `{"type":"mode"}`+"\n"+`{"type":"user","message":{"content":"hi"}}`+"\n", now.Add(-2*time.Hour))
+	check("tier 2, only an unstamped transcript", "claude --resume "+unstamped,
+		"ccd: resuming "+unstamped+": newest primary transcript (no record, unstamped fallback)")
+
+	// A newer sdk-cli one: tier 2 is the newest of ANY stamp.
+	writeTranscriptAt(t, dir, sdk, sdkTranscript, now)
+	check("tier 2, newest of any stamp", "claude --resume "+sdk,
+		"ccd: resuming "+sdk+": newest primary transcript (no record, unstamped fallback)")
+
+	// An OLDER cli-stamped one, behind real-shaped KiB of header: tier 1 wins.
+	writeTranscriptAt(t, dir, stamped, realHeader+cliTranscript, now.Add(-time.Hour))
+	check("tier 1, stamped cli beats newer others", "claude --resume "+stamped,
+		"ccd: resuming "+stamped+": newest primary transcript (no record, stamped cli)")
 }
 
 // TestTheEntrypointIsReadStructurally: the decision is the FIRST entry that
@@ -80,6 +147,8 @@ func TestTheEntrypointIsReadStructurally(t *testing.T) {
 		want       bool
 	}{
 		{"interactive", cliTranscript, true},
+		// Several KiB of real-shaped header before the first stamped entry.
+		{"interactive behind a real-sized header", realHeader + cliTranscript, true},
 		{"claude -p", sdkTranscript, false},
 		{"entrypoint before type", `{"entrypoint":"cli","type":"user"}` + "\n", true},
 		{"another entrypoint", `{"type":"user","entrypoint":"sdk-ts"}` + "\n", false},
@@ -154,5 +223,27 @@ func TestTheUnrecordedFallbackSkipsALanesClearedSession(t *testing.T) {
 	}
 	if argv, _ := sup.argv(); strings.Join(argv, " ") != "claude --resume "+cleared {
 		t.Fatalf("control: with no lane record the newer cli transcript is resumed: %q", argv)
+	}
+}
+
+// 🟢 A lane that `/resume`s the PRIMARY's conversation names the primary's id
+// on its SessionStart; that id is not recorded as a lane's, or the primary's
+// own fallback would pass over it. Control: another id on the same path is.
+func TestTheLaneSessionRecordNeverHoldsThePrimarysID(t *testing.T) {
+	cfg := t.TempDir()
+	const own = "0f0e0d0c-0b0a-4908-8706-050403020100"
+	const other = "11111111-2222-4333-8444-555555555555"
+	if err := recordPrimary(cfg, own); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordLaneSession(cfg, own); err != nil {
+		t.Fatal(err)
+	}
+	if err := recordLaneSession(cfg, other); err != nil {
+		t.Fatal(err)
+	}
+	got := laneSessions(cfg)
+	if got[own] || !got[other] || len(got) != 1 {
+		t.Fatalf("lane sessions = %v; want only %s (never the primary's recorded %s)", got, other, own)
 	}
 }

@@ -31,8 +31,8 @@ import (
 // this cannot place (no pid, an unreadable /proc, no started pane within the
 // hook's wait — supervisor.startedRef) is not recorded,
 // and the primary then starts as it did before any record existed
-// (supervisor.argv's fallback: the newest transcript that is an interactive
-// CLI's and not a lane's, newestPrimaryTranscript). That fallback is a
+// (supervisor.argv's fallback: the newest transcript that is not a lane's,
+// preferring an interactive CLI's, newestPrimaryTranscript). That fallback is a
 // heuristic, NOT proof the conversation is the primary's: an interactive
 // `claude` run inside the pane, or a lane's /clear whose SessionStart ccd never
 // saw, leaves a transcript it cannot tell apart. Not recording a hook it cannot

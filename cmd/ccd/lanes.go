@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -51,13 +52,15 @@ import (
 // (primaryRecordFile) — only when the primary's own process fired it, never a
 // `claude` running inside it (proctree.go) — and every later primary start is
 // `--resume <that id>`. With no usable record it is `--resume` of the newest
-// transcript that is an interactive CLI's and not a lane's
+// transcript that is not a lane's, an interactive CLI's preferred
 // (newestPrimaryTranscript), chosen by ccd before the start, so a lane
 // transcript written while the CLI boots cannot be taken; it is never a bare
 // `--continue` (supervisor.argv). So a lane may start before the primary ever
-// has — and must: a primary that is not logged in, or crash-loops, never sends
-// SessionStart, and gating lanes on it refused every lane turn (503 not_ready,
-// which muster's interactive chat does not re-send) for as long as it lasted.
+// has: a primary that crash-loops, or never reaches its prompt for a reason of
+// its own, never sends SessionStart, and gating lanes on it refused every lane
+// turn (503 not_ready, which muster's interactive chat does not re-send) for as
+// long as it lasted. What a lane DOES wait for is the repository checkout, like
+// the primary (server.laneFor).
 //
 // 🔴 MEMORY IS WHY THERE IS A CAP. A Claude Code CLI is a node process: measured
 // at about 250MiB (median) to 550MiB (largest) on workstation CLIs, against the
@@ -185,41 +188,65 @@ func recordedPrimary(configDir, workspace string) string {
 	return id
 }
 
-// newestPrimaryTranscript returns the id of the newest transcript in the
-// workspace's project directory that may be the primary's ("" with none): not a
-// lane's by name (laneUUIDMarker), not a session a lane's hooks named
-// (laneSessionsFile: a lane's /clear), and written by an INTERACTIVE CLI
-// (interactiveTranscript) — never a `claude -p` run in the pod, which writes its
-// transcript in the same directory.
-func newestPrimaryTranscript(configDir, workspace string) string {
+// Which tier of the unrecorded fallback chose the primary's conversation
+// (newestPrimaryTranscript), for the log.
+const (
+	fallbackStampedCLI = "stamped cli"
+	fallbackUnstamped  = "unstamped fallback"
+)
+
+// newestPrimaryTranscript chooses the conversation the primary resumes when no
+// record names it, from the transcripts in the workspace's project directory
+// that may be the primary's: not a lane's by name (laneUUIDMarker) and not a
+// session a lane's hooks named (laneSessionsFile: a lane's /clear). It returns
+// "" with none.
+//
+//  1. the newest of them written by an INTERACTIVE CLI (interactiveTranscript)
+//     — so a newer `claude -p` run in the pod, which writes its transcript in
+//     the same directory, is passed over (fallbackStampedCLI);
+//  2. else the newest of them whatever its stamp (fallbackUnstamped).
+//
+// ⚠ TIER 2 IS DELIBERATE. A CLI that renames or drops the entrypoint stamp, or
+// moves it past transcriptHeadCap, must degrade to "the newest non-lane
+// transcript" (the behaviour before the stamp was read), never to a fresh start
+// that silently abandons the primary's conversation.
+func newestPrimaryTranscript(configDir, workspace string) (id, tier string) {
 	dir := projectDir(configDir, workspace)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	lanesSaw := laneSessions(configDir)
-	var newest string
-	var at time.Time
+	type cand struct {
+		name string
+		at   time.Time
+	}
+	var cands []cand
 	for _, e := range entries {
 		name, ok := strings.CutSuffix(e.Name(), ".jsonl")
 		if !ok || !e.Type().IsRegular() || strings.HasPrefix(name, laneUUIDMarker) || !sessionIDPattern.MatchString(name) || lanesSaw[name] {
 			continue
 		}
-		fi, err := e.Info()
-		if err != nil || (newest != "" && !fi.ModTime().After(at)) {
-			continue
-		}
-		if interactiveTranscript(filepath.Join(dir, e.Name())) {
-			newest, at = name, fi.ModTime()
+		if fi, err := e.Info(); err == nil {
+			cands = append(cands, cand{name, fi.ModTime()})
 		}
 	}
-	return newest
+	sort.SliceStable(cands, func(a, b int) bool { return cands[a].at.After(cands[b].at) })
+	for _, c := range cands {
+		if interactiveTranscript(filepath.Join(dir, c.name+".jsonl")) {
+			return c.name, fallbackStampedCLI
+		}
+	}
+	if len(cands) > 0 {
+		return cands[0].name, fallbackUnstamped
+	}
+	return "", ""
 }
 
 // transcriptHeadCap bounds how much of a transcript interactiveTranscript reads.
 // The first entry carrying an entrypoint came within the first 6 lines and 5.7
-// KiB of every workstation transcript measured that has one (811 of 813); the
-// rest of a transcript can be many MiB.
+// KiB of every workstation transcript measured that has one (811 of 813), and
+// past the first KiB in most of them; the rest of a transcript can be many MiB.
 const transcriptHeadCap = 64 << 10
 
 // interactiveTranscript reports whether the transcript at path was written by an
@@ -266,9 +293,14 @@ const maxLaneSessions = 256
 var laneSessionsMu sync.Mutex
 
 // recordLaneSession adds id to laneSessionsFile. A lane's own id is not
-// recorded: its name already says it is a lane's.
+// recorded: its name already says it is a lane's. Nor is the primary's
+// recorded id: a lane that `/resume`s the primary's conversation must not mark
+// it as a lane's, or the primary's fallback would pass over its own.
 func recordLaneSession(configDir, id string) error {
 	if !sessionIDPattern.MatchString(id) || strings.HasPrefix(id, laneUUIDMarker) {
+		return nil
+	}
+	if b, err := os.ReadFile(filepath.Join(configDir, primaryRecordFile)); err == nil && strings.TrimSpace(string(b)) == id {
 		return nil
 	}
 	laneSessionsMu.Lock()

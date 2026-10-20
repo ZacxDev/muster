@@ -1071,6 +1071,14 @@ func (s *server) laneFor(ctx context.Context, key, model string) (*lane, *failur
 		return nil, &failure{Status: http.StatusBadRequest, Type: failInvalidInput,
 			Message: fmt.Sprintf("%q is not a Claude model ccd will pass to --model", model)}
 	}
+	// 🔴 No lane before the repository is checked out — the primary is held back
+	// the same way (main.go, checkout.wait). A lane CLI in the empty workspace
+	// would run without the repository's CLAUDE.md and .claude/, and a file it
+	// wrote there would make every later clone refuse the directory, so the
+	// primary would never start (TestNoLaneStartsBeforeTheCheckoutExists).
+	if s.checkout != nil && !s.checkout.ready() {
+		return nil, paneNotReady(s.checkout.notReady())
+	}
 	ln, f := s.lanes.acquire(ctx, key, model)
 	if f != nil {
 		return nil, f

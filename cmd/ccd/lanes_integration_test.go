@@ -123,7 +123,10 @@ func has(transcript, prompt string) bool {
 //     transcript holds only its own prompt;
 //   - /healthz lists both lanes.
 func TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels(t *testing.T) {
-	r := startServe(t)
+	// ccd itself runs with an inherited `claude -p`-style stamp; no CLI it
+	// starts may see it (execArgv), or the interactive primary's transcript
+	// would read as sdk-cli.
+	r := startServe(t, "CLAUDE_CODE_ENTRYPOINT=sdk-cli")
 	r.waitHealth(t, "primary start", primaryReady)
 	r.chat(t, "primary first")
 
@@ -169,6 +172,9 @@ func TestTmuxLaneTwoSessionsRunInTheirOwnCLIsOnTheirOwnModels(t *testing.T) {
 		}
 	}
 	argv := r.argvLog(t)
+	if n := strings.Count(argv, " entrypoint= cwd="); n < 3 || strings.Contains(argv, "entrypoint=sdk-cli") {
+		t.Errorf("CLAUDE_CODE_ENTRYPOINT REACHED A CLI: %d start(s) without it (want >= 3: the primary and two lanes); argv log:\n%s", n, argv)
+	}
 	for _, c := range []struct{ key, model string }{{"sess-a", "opus"}, {"sess-b", "sonnet"}} {
 		want := fmt.Sprintf("sid=%s source=startup model=%s lane=%s args=[\"--model\" %q \"--session-id\" %q]",
 			laneUUID(c.key), c.model, laneID(c.key), c.model, laneUUID(c.key))

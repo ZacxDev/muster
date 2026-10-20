@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// latchRig is a supervised primary whose lanes are wired the way main.go wires
+// primaryLaneRig is a supervised primary whose lanes are wired the way main.go wires
 // them (server.runLanes), each CLI on a killablePane of its own.
-type latchRig struct {
+type primaryLaneRig struct {
 	s        *server
 	sup      *supervisor
 	primary  *killablePane
@@ -20,10 +20,10 @@ type latchRig struct {
 	l        *lanes
 }
 
-func newLatchRig(t *testing.T) *latchRig {
+func newPrimaryLaneRig(t *testing.T) *primaryLaneRig {
 	t.Helper()
 	cfg := t.TempDir()
-	r := &latchRig{primary: newKillablePane(), lanePane: newKillablePane()}
+	r := &primaryLaneRig{primary: newKillablePane(), lanePane: newKillablePane()}
 	r.s = newServer(serverConfig{Bearer: "b", ConfigDir: cfg, SubmitTimeout: 200 * time.Millisecond}, r.primary, newAuthTracker())
 	r.sup = newSupervisor(r.primary, "claude", cfg, "/data/workspace")
 	fastRestarts(r.sup)
@@ -44,7 +44,7 @@ func newLatchRig(t *testing.T) *latchRig {
 	return r
 }
 
-func (r *latchRig) laneStarts() int {
+func (r *primaryLaneRig) laneStarts() int {
 	r.lanePane.mu.Lock()
 	defer r.lanePane.mu.Unlock()
 	return r.lanePane.starts
@@ -104,7 +104,7 @@ func TestALaneKilledMidTurnIsEvictableWhileItRestarts(t *testing.T) {
 // primary would resume the LANE's conversation. The respawn must name the
 // primary's own conversation by id.
 func TestThePrimaryRespawnDoesNotContinueALaneThatWritesDuringItsBoot(t *testing.T) {
-	r := newLatchRig(t)
+	r := newPrimaryLaneRig(t)
 	const primary = "0f0e0d0c-0b0a-4908-8706-050403020100"
 	dir := projectDir(r.sup.configDir, r.sup.workspace)
 	writeAt := func(id string, at time.Time) {
@@ -173,18 +173,20 @@ func TestThePrimaryRespawnDoesNotContinueALaneThatWritesDuringItsBoot(t *testing
 
 // 🔴 A LANE IS NOT HOSTAGE TO A PRIMARY THAT NEVER STARTS. A lane turn is
 // served while the primary has not sent SessionStart in this process at all:
-// its CLI is up but not logged in (no SessionStart ever comes), or it is down
-// and held in its respawn (a crash loop). The primary resumes by id, never a
+// its CLI is up but never reaches its prompt (no SessionStart ever comes), or
+// it is down and held in its respawn (a crash loop). (A primary that is not
+// logged in is NOT this case for long: lanes share its config dir, so a lane is
+// not logged in either.) The primary resumes by id, never a
 // bare --continue (supervisor.argv), so there is nothing for a lane started
 // first to take from it — and muster's interactive chat does not re-send a 503
 // not_ready, so refusing the turn loses the user's message.
 func TestALaneTurnIsServedWhileThePrimaryHasNeverStarted(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		down func(r *latchRig)
+		down func(r *primaryLaneRig)
 	}{
-		{"not logged in", func(*latchRig) {}},
-		{"crash-looping", func(r *latchRig) {
+		{"never reaches its prompt", func(*primaryLaneRig) {}},
+		{"crash-looping", func(r *primaryLaneRig) {
 			r.primary.kill()
 			select {
 			case <-r.primary.respawning:
@@ -194,7 +196,7 @@ func TestALaneTurnIsServedWhileThePrimaryHasNeverStarted(t *testing.T) {
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			r := newLatchRig(t)
+			r := newPrimaryLaneRig(t)
 			r.l.startTimeout = 5 * time.Second
 			c.down(r)
 			if r.s.started() {
