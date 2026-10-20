@@ -536,11 +536,11 @@ func TestAMembersAgentGetsNoAppConnectorAndCannotBeApprovedOntoIt(t *testing.T) 
 	req.SetPathValue("id", strconv.FormatInt(filed.GrantID, 10))
 	rec := httptest.NewRecorder()
 	srv.handleConnectorApprove(rec, req)
-	if !strings.Contains(rec.Body.String(), "does not exist") {
-		t.Fatalf("control: the member's approve did not reach the existence check: %s", rec.Body)
-	}
 	if g, _ := f.store.GetGrant(sys, filed.GrantID); g.Status == connectors.StatusApproved {
 		t.Fatalf("a member approved their own agent onto the App-backed github connector (source %q)", g.Source)
+	}
+	if !strings.Contains(rec.Body.String(), "does not exist") {
+		t.Fatalf("control: the member's approve did not reach the existence check: %s", rec.Body)
 	}
 
 	// Even with an approval forced into the row, the proxy mints nothing for
