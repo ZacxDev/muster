@@ -129,8 +129,14 @@ type server struct {
 	// lane's id).
 	blocked    *blockedReporter
 	blockedSrc string
-	clock      func() time.Time
-	pending    *pendingTurn
+	// screenBlocked: ccd's last turn was refused because the pane showed a dialog
+	// (dialog.go), and nothing since says the session moved on. It is reported
+	// on the same badge as awaitingApproval, as its own source (screenSource), so
+	// a refusal is never only a silent retry: a dialog no hook announced — or a
+	// screen ccd misreads as one — shows on the agent's card.
+	screenBlocked bool
+	clock         func() time.Time
+	pending       *pendingTurn
 
 	// lanes runs a CLI per explicit muster session (lanes.go); nil when ccd
 	// does not supervise, and on a lane's own server.
@@ -249,13 +255,15 @@ func (s *server) gatewayHandler() http.Handler {
 // turn's paste-then-Enter would ANSWER the prompt — Enter takes the highlighted
 // "1. Yes", allowing the tool. A forged UserPromptSubmit holds the session busy
 // (every turn 409); a forged SessionStart can record a primary session id. That
-// is why the channel is authenticated, and why the paste itself refuses a pane
-// showing a dialog whatever the hook state says (dialog.go).
+// is why the channel is off TCP and authenticated, and why ccd will not type
+// into a pane showing a dialog whatever the hook state says (dialog.go).
 //
 // WHO CAN STILL FORGE ONE, STATED PLAINLY: a process running as ccd's user in
 // ccd's container — which includes every tool the CLI runs. It can reach the
 // socket and read the credential (it inherits it from the CLI, and could read
-// /proc/<pid>/environ of any same-user process). The gateway runtime beside ccd
+// /proc/<pid>/environ of any same-user process). The credential is defence in
+// depth against everything else, not against that user; and such a process does
+// not need ccd at all to answer a dialog — it can `tmux send-keys` itself. The gateway runtime beside ccd
 // in a chief's pod cannot: it is another container, with its own filesystem
 // (the socket is not in it, and no volume is shared) and its own process
 // namespace (no /proc of ccd's), and a unix socket bound to a PATH — unlike
@@ -821,6 +829,7 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 
 	if err := s.term.Paste(ctx, pane, prompt); err != nil {
 		if errors.Is(err, errDialogShown) {
+			s.setScreenBlocked(true, err.Error())
 			return turnOutcome{}, awaitingApproval(err.Error())
 		}
 		if errors.Is(err, errPaneNotLive) {
@@ -828,6 +837,7 @@ func (s *server) runTurn(ctx context.Context, prompt string) (turnOutcome, *fail
 		}
 		return turnOutcome{}, &failure{Status: http.StatusBadGateway, Type: failTerminal, Message: err.Error()}
 	}
+	s.setScreenBlocked(false, "")
 
 	// Wait for the CLI to accept the prompt. One extra Enter half-way through
 	// covers an Enter that landed while the TUI was still ingesting the paste; an

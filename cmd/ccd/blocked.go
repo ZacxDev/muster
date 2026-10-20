@@ -40,6 +40,7 @@ func (s *server) trackApprovalLocked(ev hookEvent) {
 		}
 	case "posttooluse", "stop", "stopfailure", "userpromptsubmit", "sessionstart", "sessionend":
 		s.awaitingApproval = false
+		s.setScreenBlockedLocked(false, "")
 	}
 	if s.awaitingApproval != was {
 		if s.awaitingApproval {
@@ -50,6 +51,32 @@ func (s *server) trackApprovalLocked(ev hookEvent) {
 		if s.blocked != nil {
 			s.blocked.setFrom(s.blockedSrc, s.awaitingApproval)
 		}
+	}
+}
+
+// screenSource is the badge source of src's screenBlocked: its own, so a hook
+// that clears awaitingApproval does not clear it and vice versa.
+func screenSource(src string) string { return src + "#screen" }
+
+// setScreenBlocked records whether the last turn was refused for a dialog on the
+// pane (server.screenBlocked) and reports a change on the badge.
+func (s *server) setScreenBlocked(blocked bool, why string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setScreenBlockedLocked(blocked, why)
+}
+
+// setScreenBlockedLocked is setScreenBlocked with s.mu held.
+func (s *server) setScreenBlockedLocked(blocked bool, why string) {
+	if s.screenBlocked == blocked {
+		return
+	}
+	s.screenBlocked = blocked
+	if blocked {
+		log.Printf("ccd: turns refused: %s; showing it on the agent's awaiting-approval badge", why)
+	}
+	if s.blocked != nil {
+		s.blocked.setFrom(screenSource(s.blockedSrc), blocked)
 	}
 }
 

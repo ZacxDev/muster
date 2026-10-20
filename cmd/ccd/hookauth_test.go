@@ -102,7 +102,6 @@ func TestAHookWithoutTheCredentialIsRefusedAndChangesNothing(t *testing.T) {
 
 // The hook channel serve makes: a socket only ccd's user can reach, a fresh
 // credential per process, and both — and only both — in the CLI's environment.
-// CCD_HOOK_LISTEN (the old TCP listener) is refused rather than ignored.
 func TestTheHookChannelIsAPrivateSocketWithAPerProcessCredential(t *testing.T) {
 	a, err := newHookChannel()
 	if err != nil {
@@ -136,10 +135,6 @@ func TestTheHookChannelIsAPrivateSocketWithAPerProcessCredential(t *testing.T) {
 	}
 	if got := strings.Join(a.cliEnv(), " "); got != envHookSocket+"="+a.path+" "+envHookSecret+"="+a.secret {
 		t.Errorf("the CLI's environment: %q", got)
-	}
-	t.Setenv("CCD_HOOK_LISTEN", "127.0.0.1:18790")
-	if _, err := newHookChannel(); err == nil || !strings.Contains(err.Error(), "CCD_HOOK_LISTEN") {
-		t.Fatalf("CCD_HOOK_LISTEN set: %v; want a refusal naming it", err)
 	}
 }
 

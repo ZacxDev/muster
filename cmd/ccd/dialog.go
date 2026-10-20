@@ -17,18 +17,20 @@ import (
 // (internal/agentgateway.Unsent).
 var errDialogShown = errors.New("the CLI's pane shows a dialog that a paste or Enter would answer")
 
-// 🔴 WHY ccd READS THE SCREEN BEFORE IT TYPES, WHEN EVERYTHING ELSE IT KNOWS
-// COMES FROM HOOKS. Whether a turn may be pasted is decided from hook state
-// (sessionStarted, busy, awaitingApproval), and hook state is only as true as the
-// hooks: a forged Stop or SessionStart makes a session at a permission prompt
-// read idle, and the next turn's paste-then-Enter would answer the prompt —
-// Enter takes the highlighted option, which on the permission prompt is "1. Yes".
-// The hook channel is authenticated (server.go hookHandler), but the CLI's own tools run as the
-// same user as ccd and can read that credential, so hook state can still be
-// forged from inside the session. The screen cannot be forged that way: this
-// check holds whatever the hook channel's state. It is also what stops the
-// submit-retry Enter (runTurn) from answering a dialog that opened after a
-// paste whose UserPromptSubmit never arrived.
+// 🔴 WHY ccd READS THE SCREEN BEFORE IT TYPES — AND WHAT THAT DOES NOT STOP.
+// Whether a turn may be pasted is decided from hook state (sessionStarted, busy,
+// awaitingApproval), and hook state can be wrong: a hook that never arrived, a
+// stale one, or a forged one. ccd's keys then land on whatever the pane shows,
+// and on a dialog they answer it — Enter takes the highlighted option, which on
+// the permission prompt is "1. Yes". This check is for ccd's OWN keys: the paste
+// and its Enter, and runTurn's submit-retry Enter, which before this would answer
+// a dialog that opened after a paste whose UserPromptSubmit never arrived.
+//
+// IT IS NOT A DEFENCE AGAINST A PROCESS OF ccd's OWN USER. Every tool the CLI
+// runs inherits TMUX and can `tmux send-keys` into the pane itself, answering
+// any dialog with no help from ccd. What the check closes is the path where such
+// a process — or anything else that gets a hook accepted — makes ccd type into
+// a dialog for it.
 //
 // ⚠ A DENY-LIST, NOT AN ALLOW-LIST, AND READ FROM ONE CAPTURE. It recognises the
 // dialogs below by their structure; a dialog drawn some other way is not
@@ -52,26 +54,37 @@ func isRule(line string) bool {
 // dialogOnScreen reports whether capture (tmux capture-pane -p -J of the CLI's
 // pane) shows a dialog that keys typed into the pane would answer, and which.
 //
-// Recognised:
-//   - the AskUserQuestion picker or its review screen — askdrive.Parse, the
-//     reader muster's mirror drives that picker with, which also flags a
-//     picker it could not fully read;
-//   - below the screen's LAST horizontal rule: a numbered select menu's cursor
-//     on an option ("❯ 1. Yes"), or the permission prompt's footer ("Esc to
-//     cancel · Tab to amend …") as one of the last three lines.
+// 🔴 A FALSE "YES" WEDGES THE AGENT, SO ONLY THE BOTTOM OF THE SCREEN COUNTS.
+// Every paste is refused while this answers true, and an idle screen does not
+// change by itself: text that merely LOOKS like a dialog — model output quoting a
+// picker's "Review your answers" / "Submit answers" or a permission prompt's
+// "❯ 1. Yes" and "Esc to cancel", or such text sitting in the input box — would
+// refuse every turn for as long as it is on screen. (The first version ran
+// askdrive.Parse and kept its Unknown kind, a guess from those words ANYWHERE on
+// the screen; a transcript quoting them wedged an idle prompt.) At its prompt the
+// CLI draws the input box between two rules with its status line under the
+// second, so the transcript and the box are never at the bottom, nor below the
+// last rule. What is recognised:
 //
-// 🔴 WHY ONLY BELOW THE LAST RULE. At its prompt the CLI draws its input box
-// between two rules with only status lines under the second, so whatever is in
-// the box — an operator's half-typed "1. x", or the turn ccd has just pasted,
-// whose Enter is checked here too — is above the last rule and cannot read as a
-// dialog. A dialog replaces the input box, so the last rule is then the dialog's
-// own top border (the permission prompt draws one) or one further up, and the
-// dialog is below it either way. Read against captures of the real CLI: the
-// pinned 2.1.296 at its prompt and at a Bash permission prompt
-// (testdata/pane_*_2.1.296.txt, captured in the image), and 2.1.289's
-// permission prompt, pickers and finished turns (internal/askdrive/testdata).
+//   - the AskUserQuestion picker, by askdrive.Parse's STRUCTURAL kinds only
+//     (Question, Review, Clipped), each anchored to the bottom of the screen: its
+//     footer among the last three lines, or its review screen's Submit/Cancel rows
+//     as the last two. Not Unknown. (Not "below the last rule" either: the picker
+//     draws a rule of its own between its options and "Chat about this".)
+//   - below the screen's LAST horizontal rule: a numbered select menu's cursor on
+//     an option ("❯ 1. Yes"), or the permission prompt's footer ("Esc to cancel ·
+//     Tab to amend …") as one of the last three lines. The permission prompt
+//     replaces the input box and draws a rule as its top border, so it is below
+//     the last one.
+//
+// Read against captures of the real CLI: the pinned 2.1.296 at its prompt, at a
+// Bash permission prompt, and at its prompt with those words in the transcript
+// and in the input box (testdata/pane_*_2.1.296.txt, captured in the image); and
+// 2.1.289's permission prompt, pickers and finished turns
+// (internal/askdrive/testdata).
 func dialogOnScreen(capture string) (what string, shown bool) {
-	if askdrive.Parse(capture).Kind != askdrive.None {
+	switch askdrive.Parse(capture).Kind {
+	case askdrive.Question, askdrive.Review, askdrive.Clipped:
 		return "the AskUserQuestion picker", true
 	}
 	lines := strings.Split(strings.ReplaceAll(capture, "\r", ""), "\n")

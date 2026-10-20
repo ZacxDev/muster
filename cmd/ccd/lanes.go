@@ -439,6 +439,7 @@ func (ln *lane) run(ctx context.Context, l *lanes) {
 func (ln *lane) clearBlocked() {
 	if ln.srv.blocked != nil {
 		ln.srv.blocked.setFrom(ln.id, false)
+		ln.srv.blocked.setFrom(screenSource(ln.id), false)
 	}
 }
 

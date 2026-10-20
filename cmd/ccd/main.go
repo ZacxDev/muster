@@ -37,8 +37,8 @@
 //	                       presents when it hands a gateway turn on (never its own)
 //	CLAUDE_CONFIG_DIR      the CLI's config dir; transcripts are read only under <it>/projects
 //	CCD_LISTEN             gateway address        (default :18789)
-//	                       (CCD_HOOK_LISTEN is gone: the hook listener is a unix socket
-//	                       ccd creates itself, and ccd refuses to start with it set)
+//	                       (the hook listener is a unix socket ccd creates itself under
+//	                       $TMPDIR; CCD_HOOK_LISTEN, the old TCP address, is no longer read)
 //	CCD_TMUX_SOCKET        tmux -L socket name    (default: tmux's default server)
 //	CCD_TMUX_CONF          tmux -f config file    (default: tmux's default)
 //	CCD_TMUX_TARGET        tmux SESSION name      (default cc); never an input target:
@@ -162,17 +162,15 @@ func envDuration(name string, def time.Duration) (time.Duration, error) {
 // its own (agentspec's gateway sidecar mounts no volume of the chief's). The
 // directory is os.MkdirTemp's, mode 0700, owned by ccd's user. The credential is
 // per process: 32 random bytes, never written to disk, handed only to the CLIs
-// ccd starts (tmuxTerminal.env). What a process of ccd's own user can still do
-// is on server.go hookHandler.
+// ccd starts (tmuxTerminal.env). It is defence in depth — it keeps the channel
+// authenticated if the socket's isolation ever fails (a shared volume, a shared
+// process namespace) — and it does NOT stop a process of ccd's own user, every
+// tool the CLI runs included, which inherits it (server.go hookHandler).
 type hookChannel struct {
 	dir, path, secret string
 }
 
 func newHookChannel() (*hookChannel, error) {
-	if v, ok := os.LookupEnv("CCD_HOOK_LISTEN"); ok {
-		return nil, fmt.Errorf("ccd: CCD_HOOK_LISTEN=%q is no longer read: the hook listener is a unix socket ccd "+
-			"creates itself (a TCP listener on loopback is reachable from every container in the pod); unset it", v)
-	}
 	var rnd [32]byte
 	if _, err := rand.Read(rnd[:]); err != nil {
 		return nil, fmt.Errorf("ccd: hook credential: %w", err)

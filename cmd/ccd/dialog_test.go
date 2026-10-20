@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // askdriveFixture is a capture of the real CLI's pane from internal/askdrive's
@@ -160,10 +161,14 @@ func TestAnUnreadableScreenIsRefusedBeforeTyping(t *testing.T) {
 	}
 }
 
-// dialogTerm is a terminal whose pane shows a dialog: tmuxTerminal's refusal.
-type dialogTerm struct{ pasted bool }
+// dialogTerm is a terminal whose pane shows a dialog (tmuxTerminal's refusal)
+// until clear is set.
+type dialogTerm struct{ clear bool }
 
 func (d *dialogTerm) Paste(context.Context, paneRef, string) error {
+	if d.clear {
+		return nil
+	}
 	return errors.Join(errDialogShown, errors.New("a permission prompt"))
 }
 func (d *dialogTerm) Enter(context.Context, paneRef) error { return errDialogShown }
@@ -178,5 +183,150 @@ func TestADialogOnScreenIsABusyAwaitingApprovalRefusal(t *testing.T) {
 	_, f := srv.runTurn(context.Background(), "hello")
 	if f == nil || f.Status != http.StatusConflict || f.Type != failBusy || f.Code != codeAwaitingApproval {
 		t.Fatalf("runTurn with a dialog on screen: %+v; want 409 busy code %s", f, codeAwaitingApproval)
+	}
+}
+
+// 🔴 WORDS ARE NOT A DIALOG: text that quotes a picker's or a permission prompt's
+// lines, in the transcript or in the input box, is not one. Read as one, it
+// refuses every turn for as long as it is on screen — and an idle screen does not
+// change by itself, so the agent is wedged. Real captures (2.1.296, the image):
+// a reply quoting "Review your answers", "❯ 1. Submit answers", "❯ 1. Yes" and
+// "Esc to cancel · Tab to amend" above the prompt; a multi-line paste of those
+// words in the box (the CLI collapses it); a short one it draws verbatim. And
+// the idle capture with the two picker lines written into the transcript and into
+// the box, as the audit described.
+func TestDialogWordsInTheTranscriptOrTheInputBoxAreNotADialog(t *testing.T) {
+	for _, name := range []string{
+		"pane_idle_quoted_transcript_2.1.296.txt",
+		"pane_idle_quoted_inputbox_2.1.296.txt",
+		"pane_idle_dialogwords_inputbox_2.1.296.txt",
+	} {
+		if what, shown := dialogOnScreen(string(fixture(t, name))); shown {
+			t.Errorf("%s: read as %s; want no dialog", name, what)
+		}
+	}
+	idle := string(fixture(t, "pane_idle_2.1.296.txt"))
+	lines := strings.Split(idle, "\n")
+	first, prompt := -1, -1
+	for i, l := range lines {
+		if isRule(l) && first < 0 {
+			first = i
+		}
+		if strings.HasPrefix(l, "❯") {
+			prompt = i
+		}
+	}
+	if first < 0 || prompt != first+1 {
+		t.Fatalf("instrument check: the idle capture's input box is not where expected (rule %d, prompt %d)", first, prompt)
+	}
+	words := []string{"  Review your answers", "", "  1. Submit answers", "  2. Cancel"}
+	inject := func(at int) string {
+		out := append(append(append([]string{}, lines[:at]...), words...), lines[at:]...)
+		return strings.Join(out, "\n")
+	}
+	for where, screen := range map[string]string{
+		"in the transcript": inject(first),
+		"in the input box":  inject(prompt + 1),
+	} {
+		if what, shown := dialogOnScreen(screen); shown {
+			t.Errorf("the picker's words %s: read as %s; want no dialog", where, what)
+		}
+	}
+	// Control: the same words AS the bottom of the screen are a picker's review.
+	if _, shown := dialogOnScreen(strings.Join(append(append([]string{}, lines[:first]...), "Review your answers", "",
+		"❯ 1. Submit answers", "  2. Cancel"), "\n")); !shown {
+		t.Error("control: a review screen at the bottom was not read as a dialog")
+	}
+}
+
+// A turn refused for a dialog shows on the agent's awaiting-approval badge, as
+// its own source, and the next turn that is pasted withdraws it — a refusal is
+// never only a silent retry.
+func TestADialogRefusalShowsOnTheBadgeUntilATurnIsPasted(t *testing.T) {
+	term := &dialogTerm{}
+	srv := newServer(serverConfig{Bearer: "b", ConfigDir: t.TempDir(), SubmitTimeout: 50 * time.Millisecond}, term, newAuthTracker())
+	srv.blocked = &blockedReporter{ch: make(chan bool, 1)}
+	srv.inputPane = func() (paneRef, bool) { return fakeRef, true }
+	srv.onHook(hookEvent{Event: "SessionStart", SessionID: "s"})
+	if _, f := srv.runTurn(context.Background(), "hello"); f == nil || f.Code != codeAwaitingApproval {
+		t.Fatalf("instrument check: the turn was not refused for the dialog: %+v", f)
+	}
+	select {
+	case v := <-srv.blocked.ch:
+		if !v {
+			t.Fatal("the refusal reported blocked=false")
+		}
+	default:
+		t.Fatal("the refusal did not reach the badge")
+	}
+	if srv.awaitingApproval {
+		t.Fatal("instrument check: no hook said a prompt was up; awaitingApproval should be false")
+	}
+	term.clear = true
+	_, _ = srv.runTurn(context.Background(), "hello") // pasted; it then times out waiting for its submit
+	select {
+	case v := <-srv.blocked.ch:
+		if v {
+			t.Fatal("the pasted turn reported blocked=true")
+		}
+	default:
+		t.Fatal("the pasted turn did not withdraw the badge")
+	}
+}
+
+// The screen source is withdrawn by a hook that says the session moved on (as
+// awaitingApproval is), and by its lane's stop: a stopped lane's screen is gone.
+func TestTheScreenBadgeIsWithdrawnByAHookAndByTheLanesStop(t *testing.T) {
+	rep := &blockedReporter{ch: make(chan bool, 1)}
+	srv := newServer(serverConfig{}, nil, newAuthTracker())
+	srv.blocked = rep
+	srv.setScreenBlocked(true, "a permission prompt")
+	if v := <-rep.ch; !v {
+		t.Fatal("instrument check: the refusal did not set the badge")
+	}
+	srv.onHook(hookEvent{Event: "Stop"})
+	select {
+	case v := <-rep.ch:
+		if v {
+			t.Fatal("the Stop reported blocked=true")
+		}
+	default:
+		t.Fatal("a Stop did not withdraw the screen badge")
+	}
+
+	ls := newServer(serverConfig{}, nil, newAuthTracker())
+	ls.blocked, ls.blockedSrc = rep, "aaaaaaaaaaaa"
+	ln := &lane{id: "aaaaaaaaaaaa", srv: ls}
+	ls.setScreenBlocked(true, "a permission prompt")
+	if v := <-rep.ch; !v {
+		t.Fatal("instrument check: the lane's refusal did not set the badge")
+	}
+	ln.clearBlocked()
+	select {
+	case v := <-rep.ch:
+		if v {
+			t.Fatal("the lane's stop reported blocked=true")
+		}
+	default:
+		t.Fatal("the lane's stop did not withdraw its screen badge")
+	}
+}
+
+// The screen source is the session's OWN source beside the hook's: withdrawing
+// it leaves a permission prompt a hook reported on the badge.
+func TestWithdrawingTheScreenBadgeLeavesTheHooksPrompt(t *testing.T) {
+	rep := &blockedReporter{ch: make(chan bool, 1)}
+	srv := newServer(serverConfig{}, nil, newAuthTracker())
+	srv.blocked = rep
+	srv.onHook(hookEvent{Event: "Notification", NotificationType: "permission_prompt"})
+	if v := <-rep.ch; !v {
+		t.Fatal("instrument check: the prompt did not set the badge")
+	}
+	srv.setScreenBlocked(true, "a permission prompt")
+	srv.setScreenBlocked(false, "")
+	select {
+	case v := <-rep.ch:
+		t.Fatalf("withdrawing the screen source reported %v while the hook's prompt is still up", v)
+	default:
 	}
 }

@@ -341,6 +341,15 @@ func startServeAt(t *testing.T, wsRel string, env func(root string) []string, ex
 	sock := fmt.Sprintf("ccd-it-bin-%d-%d", os.Getpid(), time.Now().UnixNano())
 	t.Cleanup(func() { _ = exec.Command(tmuxBin, "-L", sock, "kill-server").Run() })
 
+	// ccd makes its hook socket's directory under $TMPDIR (hookChannel) and
+	// removes it on a clean exit only; this rig ends ccd with SIGKILL. So $TMPDIR
+	// is a directory of the test's own, removed with it — and a short one, since a
+	// unix socket's path is limited to 107 bytes.
+	tmp, err := os.MkdirTemp("", "ccdt-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tmp) })
 	cmd := exec.Command(filepath.Join(bin, "ccd"), "serve")
 	cmd.Dir = ws
 	cmd.Env = append(os.Environ(),
@@ -348,7 +357,7 @@ func startServeAt(t *testing.T, wsRel string, env func(root string) []string, ex
 		"HOOKS_TOKEN="+knownHooksToken, "CLAUDE_CONFIG_DIR="+cfg, "CCD_WORKSPACE="+ws,
 		"CCD_LISTEN="+gwAddr,
 		"CCD_TMUX_SOCKET="+sock, "CCD_TMUX_CONF=/dev/null",
-		"CCD_SUPERVISE=1", "CCD_CLAUDE_BIN="+filepath.Join(bin, "claude"))
+		"CCD_SUPERVISE=1", "CCD_CLAUDE_BIN="+filepath.Join(bin, "claude"), "TMPDIR="+tmp)
 	cmd.Env = append(cmd.Env, extra...)
 	if env != nil {
 		cmd.Env = append(cmd.Env, env(root)...)
