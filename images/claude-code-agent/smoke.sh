@@ -23,7 +23,7 @@
 #      session (no transcript on a new volume); a hook WITHOUT the credential is
 #      refused 401, the socket is private, and nothing listens on 127.0.0.1:18790;
 #   5. `/exit` typed into the pane is followed by an in-pod restart that RESUMES:
-#      the supervisor's start count goes to 2 with `--continue` (the CLI records
+#      the supervisor's start count goes to 2 with `--resume <id>` (the CLI records
 #      the /exit itself in a transcript, measured, so there is now one to resume)
 #      and SessionStart arrives again, with the container never restarting — and
 #      `env` / `apiKeyHelper` planted in settings.json while the first CLI ran are
@@ -270,7 +270,7 @@ tmux send-keys -t cc -l '/exit'
 sleep 0.3
 tmux send-keys -t cc Enter
 wait_for '200 {*"cli_starts":2*"session":"started"*'
-[[ "$body" == *'"cli_mode":"continue"'* ]] || fail "the restart after /exit did not --continue: $body"
+[[ "$body" == *'"cli_mode":"continue"'* ]] || fail "the restart after /exit did not resume: $body"
 echo "cc-smoke: /exit -> resumed in-pod: $body"
 s="$(cat "$CLAUDE_CONFIG_DIR/settings.json")"
 [[ "$s" != *'"env"'* && "$s" != *'"apiKeyHelper"'* && "$s" == *'"hooks"'* ]] \
