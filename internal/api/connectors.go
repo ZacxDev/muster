@@ -820,7 +820,7 @@ func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, 
 		// agents. So for a member `github` is never the App here
 		// (connectors.WithVirtual's allow is authz.IsAdmin): a member cannot
 		// approve their agent onto the App. Measured: an operator session cannot
-		// even read a member's grant (TestAMembersAgentGetsNoAppConnector…).
+		// even read a member's grant (TestAMembersAgentGetsNoAppConnectorAndCannotBeApprovedOntoIt).
 		if _, err := s.ext.Connectors.GetConnector(ctx, g.Connector); err != nil {
 			s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "Connector " + g.Connector +
 				" does not exist; enter a credential for it instead."})
