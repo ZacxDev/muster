@@ -80,10 +80,14 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 			// who installed the public App on their own repositories.
 			_, _ = io.WriteString(w, `[{"id":42,"account":{"login":"example-org"}},{"id":77,"account":{"login":"stranger"}}]`)
 		case p == "/app/installations/77/access_tokens":
+			// A real installation: it mints, and its token lists the stranger's
+			// repository. Only the allowlist keeps muster from using it.
 			f.mu.Lock()
 			f.mints = append(f.mints, "STRANGER INSTALLATION")
 			f.mu.Unlock()
-			http.Error(w, `{"message":"should never be called"}`, http.StatusTeapot)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": "stranger-installation-token",
+				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
 		case p == "/app/installations/42/access_tokens":
 			body, _ := io.ReadAll(r.Body)
 			f.mu.Lock()
@@ -97,8 +101,10 @@ func newFakeGitHubUpstream(t *testing.T) *fakeGitHubUpstream {
 			_ = json.NewEncoder(w).Encode(map[string]any{"token": tok,
 				"expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
 		case p == "/installation/repositories":
-			// Only ever reached with a listing token minted on installation 42
-			// (example-org): the stranger's installation is never minted on.
+			if r.Header.Get("Authorization") == "token stranger-installation-token" {
+				_, _ = io.WriteString(w, `{"total_count":1,"repositories":[{"full_name":"stranger/payload","private":false}]}`)
+				return
+			}
 			_, _ = io.WriteString(w, `{"total_count":1,"repositories":[{"full_name":"example-org/widget","private":true}]}`)
 		case strings.HasPrefix(p, "/repos/"):
 			// The REST API: record and echo what arrived (the echo exercises the
@@ -520,6 +526,21 @@ func TestAMembersAgentGetsNoAppConnectorAndCannotBeApprovedOntoIt(t *testing.T) 
 	}
 	if g.Status == connectors.StatusApproved {
 		t.Fatalf("a member's agent was approved onto the App-backed github connector (source %q)", g.Source)
+	}
+
+	// The MEMBER approves their own agent's request (the approve handler under
+	// the member's principal — a member session; requireSession is not what is
+	// under test). It must not be approvable onto the App.
+	memberCtx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: member, Role: authz.RoleMember, Via: authz.ViaSession})
+	req := httptest.NewRequest("POST", "/ui/connector-requests/"+strconv.FormatInt(filed.GrantID, 10)+"/approve", nil).WithContext(memberCtx)
+	req.SetPathValue("id", strconv.FormatInt(filed.GrantID, 10))
+	rec := httptest.NewRecorder()
+	srv.handleConnectorApprove(rec, req)
+	if !strings.Contains(rec.Body.String(), "does not exist") {
+		t.Fatalf("control: the member's approve did not reach the existence check: %s", rec.Body)
+	}
+	if g, _ := f.store.GetGrant(sys, filed.GrantID); g.Status == connectors.StatusApproved {
+		t.Fatalf("a member approved their own agent onto the App-backed github connector (source %q)", g.Source)
 	}
 
 	// Even with an approval forced into the row, the proxy mints nothing for

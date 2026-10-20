@@ -460,18 +460,6 @@ func (s *Server) reconcileGrant(ctx context.Context, g connectors.Grant) (connec
 	return g, nil
 }
 
-// grantOwnerContext is ctx acting as the grant's OWNER (the agent's owner), for
-// deciding what the connector is FOR THAT USER: the approve routes run under
-// the approver's session, and whether `github` is the App or a stored token is
-// a property of the agent's owner (connectors.WithVirtual), not of who clicks.
-func (s *Server) grantOwnerContext(ctx context.Context, g connectors.Grant) context.Context {
-	if g.OwnerID <= 0 {
-		return ctx
-	}
-	p, _ := authz.From(ctx)
-	return authz.WithPrincipal(ctx, s.principalFor(ctx, g.OwnerID, p.Via))
-}
-
 // onConnectorRequested prompts the operator for a new pending grant: an SSE
 // nudge for an open Connectors tab and a push notification.
 //
@@ -735,7 +723,7 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 	if f.RequestID != 0 {
 		src := connectors.SourceStored
 		if pg, gerr := s.ext.Connectors.GetGrant(ctx, f.RequestID); gerr == nil {
-			src = connectors.SourceFor(s.grantOwnerContext(ctx, pg), s.ext.Connectors, pg.Connector)
+			src = connectors.SourceFor(ctx, s.ext.Connectors, pg.Connector)
 		}
 		g, err := s.ext.Connectors.DecideGrant(ctx, f.RequestID, true, "operator", src)
 		if err != nil {
@@ -827,16 +815,18 @@ func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, 
 			s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "That request no longer exists."})
 			return
 		}
-		// 🔴 AS THE GRANT'S OWNER: whether `github` is the App (admins only) or
-		// that owner's stored token is decided for the agent's owner, so a member
-		// cannot approve their agent onto the App, whoever clicks.
-		octx := s.grantOwnerContext(ctx, g)
-		if _, err := s.ext.Connectors.GetConnector(octx, g.Connector); err != nil {
+		// 🔴 UNDER THE APPROVER'S PRINCIPAL, WHICH ROW-LEVEL SECURITY MAKES THE
+		// GRANT'S OWNER: a user can read (and so decide) only grants on their own
+		// agents. So for a member `github` is never the App here
+		// (connectors.WithVirtual's allow is authz.IsAdmin): a member cannot
+		// approve their agent onto the App. Measured: an operator session cannot
+		// even read a member's grant (TestAMembersAgentGetsNoAppConnector…).
+		if _, err := s.ext.Connectors.GetConnector(ctx, g.Connector); err != nil {
 			s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "Connector " + g.Connector +
 				" does not exist; enter a credential for it instead."})
 			return
 		}
-		src = connectors.SourceFor(octx, s.ext.Connectors, g.Connector)
+		src = connectors.SourceFor(ctx, s.ext.Connectors, g.Connector)
 	}
 	g, err := s.ext.Connectors.DecideGrant(ctx, id, approve, "operator", src)
 	switch {

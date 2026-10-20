@@ -131,8 +131,6 @@ type Grant struct {
 	DecidedAt   *time.Time `json:"decidedAt,omitempty"`
 	DecidedBy   string     `json:"decidedBy,omitempty"`
 	LastUsedAt  *time.Time `json:"lastUsedAt,omitempty"`
-	// OwnerID is the user who owns the agent (and so the grant).
-	OwnerID int64 `json:"-"`
 	// Source is the credential the approval was about: SourceStored or
 	// SourceApp (migration 0033). See ReconcileGrant.
 	Source string `json:"source,omitempty"`

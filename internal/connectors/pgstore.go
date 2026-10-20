@@ -253,14 +253,14 @@ func (s *PGStore) TouchConnector(ctx context.Context, name string) error {
 // --- grants -----------------------------------------------------------------------
 
 const grantCols = `g.id, g.agent_id, coalesce(a.name, ''), g.connector_name, g.status, g.reason, g.requested_at,
-	g.decided_at, g.decided_by, g.last_used_at, coalesce(g.owner_id, 0), g.source`
+	g.decided_at, g.decided_by, g.last_used_at, g.source`
 
 const grantFrom = ` FROM connector_grants g LEFT JOIN agents a ON a.id = g.agent_id`
 
 func scanGrant(row pgx.Row) (Grant, error) {
 	var g Grant
 	err := row.Scan(&g.ID, &g.AgentID, &g.AgentName, &g.Connector, &g.Status, &g.Reason, &g.RequestedAt,
-		&g.DecidedAt, &g.DecidedBy, &g.LastUsedAt, &g.OwnerID, &g.Source)
+		&g.DecidedAt, &g.DecidedBy, &g.LastUsedAt, &g.Source)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Grant{}, ErrNotFound
 	}
