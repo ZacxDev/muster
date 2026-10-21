@@ -33,6 +33,10 @@ type relayEntry struct {
 	// contain "@"), or an agent-mail address "<owner>/<handle>" or "<owner>/*"
 	// (never containing "@"). The two kinds are disjoint by construction, so
 	// a mail entry never matches an agent-mail sender, nor the reverse.
+	// A verified agent-mail sender proves only the OWNER (the signature is
+	// checked against any of the owner's published keys); the handle is the
+	// owner's gateway's assertion, so "<owner>/<handle>" trusts no less than
+	// "<owner>/*" against a compromised key of that owner.
 	address string
 }
 
