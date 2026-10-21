@@ -378,6 +378,55 @@ func TestAFullBudgetIsNotBlamedForATaskThatRefusesItself(t *testing.T) {
 	}
 }
 
+// TestTheAskNamesTheDeploymentAndAStartingAgent: the two remaining reasons an
+// opted-in owner's chief cannot dispatch carry their own WHOLE line — a
+// deployment that cannot start an agent now, and an agent on the task that is
+// still starting — never "not enabled for you".
+func TestTheAskNamesTheDeploymentAndAStartingAgent(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		setup func(f *taskRouteFixture, t *testing.T, taskID int64)
+		line  string
+	}{
+		{"deployment-cannot-start", func(f *taskRouteFixture, _ *testing.T, _ int64) {
+			f.prov.undeliverable = "the kickoff path is down (test)"
+		}, "Your chief cannot forward or dispatch this task now (no agent is working it, and this deployment cannot start an agent now): it is yours to handle."},
+		{"agent-still-starting", func(f *taskRouteFixture, t *testing.T, taskID int64) {
+			if _, err := agents.NewPG(f.pool).Create(f.asOwner, agents.Agent{Name: "trbud-starting-" + strconv.FormatInt(f.owner, 10),
+				Namespace: "ns-trbud", Status: agents.StatusPending, NoteID: &taskID}); err != nil {
+				t.Fatal(err)
+			}
+		}, "Your chief cannot forward or dispatch this task now (no agent is working it, and an agent on this task is still starting, so it cannot start another): it is yours to handle."},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newTaskRouteFixture(t, true, true)
+			n := f.task(t, "why not")
+			c.setup(f, t, n.ID)
+			res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": n.ID, "note": "?"})
+			var out struct {
+				ID      int64    `json:"id"`
+				Offered []string `json:"actions_offered"`
+			}
+			if err := json.Unmarshal([]byte(res), &out); err != nil || out.ID <= 0 {
+				t.Fatalf("task_route_attention answered %s", res)
+			}
+			if len(out.Offered) != 0 {
+				t.Fatalf("offered %q; want nothing", out.Offered)
+			}
+			ask, err := f.srv.ext.Attention.Get(f.asOwner, out.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasSuffix(ask.Question, "\n\n"+c.line) {
+				t.Errorf("the ask %q\nwant it to end with the whole line %q", ask.Question, c.line)
+			}
+			if strings.Contains(ask.Question, "not enabled for you") {
+				t.Errorf("an opted-in owner's ask says dispatch is not enabled: %q", ask.Question)
+			}
+		})
+	}
+}
+
 // TestTaskRouteAttentionOffersDispatchOnlyWithinTheBudget pins the
 // RELATIONSHIP for the budget: across a budget with room, a full live cap and a
 // full day, task_dispatch is in actions_offered exactly when the tool then
