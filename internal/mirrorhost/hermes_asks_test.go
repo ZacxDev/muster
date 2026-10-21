@@ -594,8 +594,19 @@ func TestAClarifyIsListedFromTheDatabaseOncePerWait(t *testing.T) {
 	if p := list(7); p.Summary != HermesClarifyText || p.Detail != "" {
 		t.Fatalf("a failed read: %+v", *p)
 	}
-	list(7)
-	if reads != 4 {
-		t.Fatalf("a failed read was cached (%d reads)", reads)
+	// 🟢 A failing read is not retried on every listing (audit #214): it
+	// backs off, and is read again once the backoff has passed.
+	for i := 0; i < 5; i++ {
+		list(7)
+	}
+	if reads != 3 {
+		t.Fatalf("a failing read was retried on every listing (%d reads)", reads)
+	}
+	m.mu.Lock()
+	m.now = func() time.Time { return time.Now().Add(hermesClarifyBackoff + time.Second) }
+	m.mu.Unlock()
+	fail = nil
+	if p := list(7); p.Summary != "Which colour should it use?" || reads != 4 {
+		t.Fatalf("not read again after the backoff (%d reads): %+v", reads, *p)
 	}
 }

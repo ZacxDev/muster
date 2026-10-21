@@ -1136,7 +1136,9 @@ these ways:
 - **The questions come from the database**, as the design says: the newest
   `clarify` call in the conversation's last 64 rows that no `tool` row answers
   (1–5 questions, at most 4 choices, as the tool bounds them), read once per
-  wait (keyed by the status time) with or without `-hermes-answer` — it is the
+  wait (keyed by the status time; a failed read is cached too and retried no
+  sooner than 30 s, so a failing read never rides every listing) with or
+  without `-hermes-answer` — it is the
   read the rendered view already makes. The item shows the first question,
   its choices and how many more there are ("red · blue — and 1 more question —
   answer in the terminal"), each through the host's redaction and the wire's

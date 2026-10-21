@@ -19,9 +19,8 @@ import (
 
 // ClarifyQuestion is one question of a pending clarify.
 type ClarifyQuestion struct {
-	Question    string
-	Choices     []string
-	MultiSelect bool
+	Question string
+	Choices  []string
 }
 
 // The bounds a pending clarify is read within (the tool's own).
@@ -62,9 +61,8 @@ func PendingClarifyOf(rows []Row) []ClarifyQuestion {
 			}
 			var args struct {
 				Questions []struct {
-					Question    string   `json:"question"`
-					Choices     []string `json:"choices"`
-					MultiSelect bool     `json:"multi_select"`
+					Question string   `json:"question"`
+					Choices  []string `json:"choices"`
 				} `json:"questions"`
 			}
 			if json.Unmarshal([]byte(c.Function.Arguments), &args) != nil {
@@ -78,7 +76,7 @@ func PendingClarifyOf(rows []Row) []ClarifyQuestion {
 				if q.Question == "" {
 					continue
 				}
-				cq := ClarifyQuestion{Question: q.Question, MultiSelect: q.MultiSelect}
+				cq := ClarifyQuestion{Question: q.Question}
 				for _, ch := range q.Choices {
 					if len(cq.Choices) < maxClarifyChoices && ch != "" {
 						cq.Choices = append(cq.Choices, ch)

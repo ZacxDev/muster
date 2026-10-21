@@ -41,7 +41,7 @@ func TestAPendingClarifyIsReadFromTheDatabase(t *testing.T) {
 	}
 	want := []ClarifyQuestion{
 		{Question: "Which colour should it use?", Choices: []string{"red", "blue", "green", "teal"}},
-		{Question: "Both sides?", MultiSelect: true},
+		{Question: "Both sides?"},
 		{Question: "3"}, {Question: "4"}, {Question: "5"},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -59,5 +59,18 @@ func TestAPendingTerminalCallIsNotAClarify(t *testing.T) {
 	b, _ := json.Marshal([]map[string]any{{"id": "c1", "type": "function", "function": map[string]any{"name": "terminal", "arguments": `{"command":"rm -r x","questions":[{"question":"not a clarify"}]}`}}})
 	if got := PendingClarifyOf([]Row{{Role: "assistant", ToolCalls: string(b)}}); got != nil {
 		t.Fatalf("%+v", got)
+	}
+}
+
+// A pending clarify keeps only what the card shows (audit #214 D1): no field
+// nobody reads.
+func TestAClarifyKeepsOnlyWhatTheCardShows(t *testing.T) {
+	rt := reflect.TypeOf(ClarifyQuestion{})
+	var got []string
+	for i := 0; i < rt.NumField(); i++ {
+		got = append(got, rt.Field(i).Name)
+	}
+	if !reflect.DeepEqual(got, []string{"Question", "Choices"}) {
+		t.Fatalf("ClarifyQuestion fields = %v", got)
 	}
 }

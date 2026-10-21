@@ -122,6 +122,9 @@ type hermesAsks struct {
 type clarifyRead struct {
 	since int64
 	p     *mirror.Pending
+	// retryAt: the read failed; the words alone are shown, and it is read
+	// again no sooner than this (zero for a read that succeeded).
+	retryAt time.Time
 }
 
 // hermesAsk is one session's viewer: attaching, attached (viewer set), or
@@ -145,8 +148,12 @@ func newHermesAsks(ctx context.Context, attacher HermesViewerAttacher, nudge fun
 		clarified: map[string]clarifyRead{}}
 }
 
-// hermesClarifyTimeout bounds one clarify read (a short state.db read).
-const hermesClarifyTimeout = 2 * time.Second
+// hermesClarifyTimeout bounds one clarify read (a short state.db read);
+// hermesClarifyBackoff is how long a failed read waits before the next.
+const (
+	hermesClarifyTimeout = 2 * time.Second
+	hermesClarifyBackoff = 30 * time.Second
+)
 
 // clarifyPending is what a window waiting on a clarify in session shows: its
 // first question, the first question's choices, and how many more there are
@@ -159,15 +166,22 @@ func (m *hermesAsks) clarifyPending(session string, since int64) *mirror.Pending
 	}
 	m.mu.Lock()
 	c, ok := m.clarified[session]
+	now := m.now()
 	m.mu.Unlock()
-	if ok && c.since == since {
+	if ok && c.since == since && (c.retryAt.IsZero() || now.Before(c.retryAt)) {
 		return c.p
 	}
 	ctx, cancel := context.WithTimeout(m.ctx, hermesClarifyTimeout)
 	qs, err := m.clarify(ctx, session)
 	cancel()
 	if err != nil {
-		return p // not cached: the next listing reads again
+		// Off the listing's hot path: a failing read is cached too, with a
+		// backoff, never retried on every listing.
+		m.mu.Lock()
+		m.clarified[session] = clarifyRead{since: since, p: p, retryAt: now.Add(hermesClarifyBackoff)}
+		m.mu.Unlock()
+		m.logf("muster-mirror: read Hermes session %s's pending clarify: %v (retried in %s)", session, err, hermesClarifyBackoff)
+		return p
 	}
 	if len(qs) > 0 {
 		p.Summary = redact.Secrets(qs[0].Question)
