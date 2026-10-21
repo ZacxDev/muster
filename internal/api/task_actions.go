@@ -97,23 +97,42 @@ func (s *Server) chiefDispatchDeploymentRefusal(owner int64) string {
 // checks (kind, repo, instructions) come on top and are not part of the offer:
 // the chief picks those.
 func (s *Server) chiefDispatchTaskRefusal(ctx context.Context, owner int64, n notes.Note) (string, error) {
+	r, err := s.chiefDispatchTaskBlock(ctx, owner, n)
+	return r.refusal, err
+}
+
+// taskBlock is why task_dispatch refuses a task itself: the chief's refusal
+// sentence, and the same reason in the OWNER's words for the ask
+// (chiefTaskActionsLine). Both zero when the task allows a start.
+type taskBlock struct {
+	refusal string
+	owner   string
+}
+
+// chiefDispatchTaskBlock is THE task predicate behind chiefDispatchTaskRefusal
+// (the tool's refusal) and chiefTaskActions (the ask's reason): one check,
+// two wordings.
+func (s *Server) chiefDispatchTaskBlock(ctx context.Context, owner int64, n notes.Note) (taskBlock, error) {
 	id := strconv.FormatInt(n.ID, 10)
 	if reason, gated := notes.GateReason(n.Tags); gated {
-		return "task " + id + " (" + reason + ") " + chiefDispatchGatedText, nil
+		return taskBlock{"task " + id + " (" + reason + ") " + chiefDispatchGatedText,
+			"this task is gated (" + reason + "), so only you can release it"}, nil
 	}
 	if n.Status != notes.StatusOpen {
-		return "task " + id + " " + chiefDispatchNotOpen + " (" + n.Status + ")", nil
+		return taskBlock{"task " + id + " " + chiefDispatchNotOpen + " (" + n.Status + ")",
+			"this task is not open (" + n.Status + "), so it cannot start one on it"}, nil
 	}
 	on, err := s.agentsOnTask(ctx, owner, n.ID)
 	if err != nil {
-		return "", err
+		return taskBlock{}, err
 	}
 	for _, x := range on {
 		if agentLive(x.Status) {
-			return "task " + id + " " + chiefDispatchHasAgent, nil
+			return taskBlock{"task " + id + " " + chiefDispatchHasAgent,
+				"an agent on this task is still starting, so it cannot start another"}, nil
 		}
 	}
-	return "", nil
+	return taskBlock{}, nil
 }
 
 // chiefTaskActions is the actions chief can take on task n now, in a fixed
@@ -125,10 +144,11 @@ func (s *Server) chiefDispatchTaskRefusal(ctx context.Context, owner int64, n no
 // so a full budget is an action the chief cannot take. A budget that could not
 // be read withholds the offer (the ask is still filed; the tool re-checks).
 //
-// withheld is why task_dispatch was withheld when the BUDGET is the reason —
-// the opt-in, the deployment and the task itself would all allow it:
-// dispatchWithheldBudgetFull or dispatchWithheldBudgetUnknown; "" otherwise
-// (offered, or refused for another reason).
+// withheld is why task_dispatch was NOT offered, in the owner's words, for
+// the ask (chiefTaskActionsLine); "" exactly when it was offered. Each reason
+// is named only when it is the one that applies, checked in the tool's own
+// order: the opt-in (only then "not enabled for you"), the deployment, the
+// task itself, then the budget (could not be read, or full).
 func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n notes.Note) (acts []chiefTaskAction, budget *plugins.ChiefBudget, withheld string, err error) {
 	var out []chiefTaskAction
 	t, err := s.forwardTarget(ctx, chief, n.ID)
@@ -143,17 +163,23 @@ func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n not
 	if chiefMayDispatch(s.ext, owner) {
 		budget = s.chiefBudgetNow(ctx)
 	}
-	if s.chiefDispatchDeploymentRefusal(owner) == "" {
-		why, err := s.chiefDispatchTaskRefusal(ctx, owner, n)
+	switch {
+	case !chiefMayDispatch(s.ext, owner):
+		withheld = withheldNotEnabled
+	case s.chiefDispatchDeploymentRefusal(owner) != "":
+		withheld = withheldDeployment
+	default:
+		blk, err := s.chiefDispatchTaskBlock(ctx, owner, n)
 		if err != nil {
 			return nil, nil, "", err
 		}
 		switch {
-		case why != "": // the task itself refuses: not the budget's doing
+		case blk.refusal != "": // the task itself refuses: not the budget's doing
+			withheld = blk.owner
 		case budget == nil:
-			withheld = dispatchWithheldBudgetUnknown
+			withheld = withheldBudgetUnknown
 		case budget.Full():
-			withheld = dispatchWithheldBudgetFull
+			withheld = withheldBudgetFull
 		default:
 			out = append(out, chiefTaskAction{Tool: taskDispatchTool, Label: "task_dispatch: start a new agent on it"})
 		}
@@ -161,24 +187,21 @@ func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n not
 	return out, budget, withheld, nil
 }
 
-// Why chiefTaskActions withheld task_dispatch when the budget is the reason.
+// Why chiefTaskActions withheld task_dispatch, in the owner's words (the
+// task's own reasons are chiefDispatchTaskBlock's).
 const (
-	dispatchWithheldBudgetFull    = "budget_full"
-	dispatchWithheldBudgetUnknown = "budget_unknown"
+	withheldNotEnabled    = "starting agents is not enabled for you"
+	withheldDeployment    = "this deployment cannot start an agent now"
+	withheldBudgetUnknown = "its allowance for starting agents could not be read right now"
+	withheldBudgetFull    = "it has used up its allowance for starting agents for now"
 )
 
 // chiefTaskActionsLine is the ask's line saying what the chief can do — muster's
-// words, after the chief's note. withheld is chiefTaskActions's: the budget is
-// named only when it is what withheld task_dispatch.
+// words, after the chief's note. withheld is chiefTaskActions's reason
+// task_dispatch was not offered.
 func chiefTaskActionsLine(acts []chiefTaskAction, withheld string) string {
 	if len(acts) == 0 {
-		switch withheld {
-		case dispatchWithheldBudgetFull:
-			return "Your chief cannot forward or dispatch this task now (no agent is working it, and it has used up its allowance for starting agents for now): it is yours to handle."
-		case dispatchWithheldBudgetUnknown:
-			return "Your chief cannot forward or dispatch this task now (no agent is working it, and its allowance for starting agents could not be read right now): it is yours to handle."
-		}
-		return "Your chief cannot forward or dispatch this task now (no agent is working it, and starting agents is not enabled for you): it is yours to handle."
+		return "Your chief cannot forward or dispatch this task now (no agent is working it, and " + withheld + "): it is yours to handle."
 	}
 	return "Your chief can act on your answer: pick one of the actions below, or write your own answer."
 }

@@ -304,40 +304,77 @@ func TestAnUnreadableBudgetNeverFailsTheCall(t *testing.T) {
 	}
 }
 
-// TestAFullBudgetIsNotBlamedForATaskThatRefusesItself: with the budget full, a
-// task the chief could not dispatch anyway (gated, not open) is not said to be
-// withheld for the allowance; an open task is.
+// TestAFullBudgetIsNotBlamedForATaskThatRefusesItself: the ask names the
+// reason task_dispatch is not offered, and only the one that applies. For an
+// opted-in owner — budget full or with room — a gated or not-open task gets
+// the task's own reason (never the allowance, never "not enabled for you"); an
+// open task with a full budget gets the allowance, and with room is offered
+// dispatch. An owner who is not opted in gets "not enabled for you".
 func TestAFullBudgetIsNotBlamedForATaskThatRefusesItself(t *testing.T) {
-	f := newTaskRouteFixture(t, true, true)
-	f.finishedStarts(t, 900900, plugins.MaxChiefDispatchesPerDay) // the day is spent
-	gated := f.task(t, "gated", "gate:needs-owner-ok")
-	moved := f.task(t, "moved on")
-	if _, err := f.notes.SetStatus(f.asOwner, moved.ID, notes.StatusInProgress); err != nil {
-		t.Fatal(err)
-	}
-	open := f.task(t, "open")
-	for _, c := range []struct {
-		name  string
-		id    int64
-		blame bool
-	}{{"gated", gated.ID, false}, {"not-open", moved.ID, false}, {"open", open.ID, true}} {
-		res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": c.id, "note": "?"})
-		var out struct {
-			ID int64 `json:"id"`
-		}
-		if err := json.Unmarshal([]byte(res), &out); err != nil || out.ID <= 0 {
-			t.Fatalf("%s: %s", c.name, res)
-		}
-		ask, err := f.srv.ext.Attention.Get(f.asOwner, out.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := strings.Contains(ask.Question, "used up its allowance"); got != c.blame {
-			t.Errorf("%s task with a full budget: blames the allowance=%v, want %v: %q", c.name, got, c.blame, ask.Question)
-		}
-		if !strings.Contains(ask.Question, "it is yours to handle") {
-			t.Errorf("%s: an ask offering nothing does not say so: %q", c.name, ask.Question)
-		}
+	const (
+		gatedLine   = "no agent is working it, and this task is gated (needs-owner-ok), so only you can release it): it is yours to handle."
+		notOpenLine = "no agent is working it, and this task is not open (in_progress), so it cannot start one on it): it is yours to handle."
+		fullLine    = "no agent is working it, and it has used up its allowance for starting agents for now): it is yours to handle."
+		offLine     = "no agent is working it, and starting agents is not enabled for you): it is yours to handle."
+	)
+	for _, bc := range []struct {
+		name         string
+		optIn, full  bool
+		gated, moved string // the line each task's ask must carry
+		open         string // "" = task_dispatch offered instead
+	}{
+		{"opted-in/budget-full", true, true, gatedLine, notOpenLine, fullLine},
+		{"opted-in/budget-room", true, false, gatedLine, notOpenLine, ""},
+		{"not-opted-in", false, false, offLine, offLine, offLine},
+	} {
+		t.Run(bc.name, func(t *testing.T) {
+			f := newTaskRouteFixture(t, true, bc.optIn)
+			if bc.full {
+				f.finishedStarts(t, 900900, plugins.MaxChiefDispatchesPerDay) // the day is spent
+			}
+			gated := f.task(t, "gated", "gate:needs-owner-ok")
+			moved := f.task(t, "moved on")
+			if _, err := f.notes.SetStatus(f.asOwner, moved.ID, notes.StatusInProgress); err != nil {
+				t.Fatal(err)
+			}
+			open := f.task(t, "open")
+			for _, c := range []struct {
+				name string
+				id   int64
+				line string
+			}{{"gated", gated.ID, bc.gated}, {"not-open", moved.ID, bc.moved}, {"open", open.ID, bc.open}} {
+				res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": c.id, "note": "?"})
+				var out struct {
+					ID      int64    `json:"id"`
+					Offered []string `json:"actions_offered"`
+				}
+				if err := json.Unmarshal([]byte(res), &out); err != nil || out.ID <= 0 {
+					t.Fatalf("%s: %s", c.name, res)
+				}
+				ask, err := f.srv.ext.Attention.Get(f.asOwner, out.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if c.line == "" {
+					if strings.Join(out.Offered, ",") != taskDispatchTool {
+						t.Errorf("%s task with room: offered %q; want task_dispatch", c.name, out.Offered)
+					}
+					continue
+				}
+				if len(out.Offered) != 0 {
+					t.Errorf("%s task: offered %q; want nothing", c.name, out.Offered)
+				}
+				if !strings.Contains(ask.Question, c.line) {
+					t.Errorf("%s task: the ask %q\nwant it to carry %q", c.name, ask.Question, c.line)
+				}
+				if bc.optIn && strings.Contains(ask.Question, "not enabled for you") {
+					t.Errorf("%s task of an opted-in owner says dispatch is not enabled: %q", c.name, ask.Question)
+				}
+				if c.line != fullLine && strings.Contains(ask.Question, "used up its allowance") {
+					t.Errorf("%s task blames the allowance: %q", c.name, ask.Question)
+				}
+			}
+		})
 	}
 }
 
