@@ -418,17 +418,25 @@ func (v *Viewer) answer(f frameWire) {
 	if ch == nil {
 		return
 	}
+	var a rpcAnswer
 	switch {
 	case f.Error != nil:
 		reason := boundedWord(f.Error.Message)
 		if reason == "unreadable" {
 			reason = boundedWord(f.Error.Data.Reason)
 		}
-		ch <- rpcAnswer{reason: reason}
+		a = rpcAnswer{reason: reason}
 	case len(f.Result) > 0 && f.Result[0] == '{':
-		ch <- rpcAnswer{result: f.Result}
+		a = rpcAnswer{result: f.Result}
 	default:
-		ch <- rpcAnswer{err: fmt.Errorf("%w: an answer with no result", ErrGatewayProtocol)}
+		a = rpcAnswer{err: fmt.Errorf("%w: an answer with no result", ErrGatewayProtocol)}
+	}
+	// 🔴 NEVER BLOCK THE READER: the first answer to an id is the one kept;
+	// a gateway that answers it again is dropped, so the reader always reads
+	// on and Close always returns.
+	select {
+	case ch <- a:
+	default:
 	}
 }
 

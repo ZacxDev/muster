@@ -1,6 +1,7 @@
 package hermeshost
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -261,4 +262,51 @@ func TestAttachRefusesAnotherInstanceOrProtocol(t *testing.T) {
 			t.Fatal("it resumed over another protocol")
 		}
 	})
+}
+
+// A same-uid gateway answering one request id several times never blocks the
+// viewer's reader: the first answer is kept, the rest dropped, so Close
+// always returns (audit #206).
+func TestARepeatedAnswerNeverBlocksTheReader(t *testing.T) {
+	v := &Viewer{waiting: map[int64]chan rpcAnswer{1: make(chan rpcAnswer, 1)}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 3; i++ {
+			v.answer(frameWire{ID: json.RawMessage("1"), Result: json.RawMessage(`{"status":"resolved"}`)})
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the reader blocked on a repeated answer")
+	}
+	if a := <-v.waiting[1]; a.result == nil {
+		t.Fatalf("the first answer was not kept: %+v", a)
+	}
+}
+
+// End to end: the gateway answers approval.respond three times with one id,
+// and the viewer still closes.
+func TestCloseReturnsAfterARepeatedAnswer(t *testing.T) {
+	dir := shortHome(t)
+	g := hermestest.NewGateway(t, dir)
+	g.AddPrompt("p1", 1, "rm -r x", "")
+	g.RespondRepeat = 3
+	v, ps, err := NewHome(dir).Attach(gctx(t), viewSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Respond(gctx(t), ps[0], "deny"); err != nil {
+		t.Fatal(err)
+	}
+	// The duplicates are the next reads; give them time to land.
+	time.Sleep(200 * time.Millisecond)
+	closed := make(chan struct{})
+	go func() { v.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close hung behind a repeated answer")
+	}
 }

@@ -47,6 +47,9 @@ type Gateway struct {
 	Prompts []map[string]any
 	// Responds are the approval.respond params received.
 	Responds []map[string]any
+	// RespondRepeat, when over 1, answers approval.respond that many times
+	// with the same id (a misbehaving gateway).
+	RespondRepeat int
 	// RespondError, when set, is the error message approval.respond answers.
 	RespondError string
 	// Tickets are the tickets minted; Resumes the session ids resumed.
@@ -334,7 +337,12 @@ func (g *Gateway) serveWS(w http.ResponseWriter, r *http.Request) {
 				write(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": 4009, "message": errMsg}})
 				continue
 			}
-			write(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"status": "resolved", "prompt_id": req.Params["prompt_id"]}})
+			g.mu.Lock()
+			n := max(g.RespondRepeat, 1)
+			g.mu.Unlock()
+			for i := 0; i < n; i++ {
+				write(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"status": "resolved", "prompt_id": req.Params["prompt_id"]}})
+			}
 		default:
 			g.mu.Unlock()
 			write(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32601, "message": "unknown_method"}})
