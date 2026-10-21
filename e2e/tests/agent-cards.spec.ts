@@ -43,6 +43,7 @@ let server: Running | undefined;
 let mirrorProc: ChildProcess | undefined;
 let mirrorLog = '';
 let agentMade = false;
+let agentID = '';
 
 const fix = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
@@ -62,7 +63,7 @@ test.beforeAll(async () => {
     MUSTER_AGENT_IMAGE_REPO: 'registry.example.test/runtime',
     MUSTER_AGENT_API_URL: 'http://muster.example.test:8105',
   });
-  fix('agent', '1', agentName, agentToken);
+  agentID = fix('agent', '1', agentName, agentToken);
   agentMade = true;
   const token = execFileSync(serverBinary(versionTerm), ['mirror', 'token', 'create', host], { env: { ...process.env, DATABASE_URL: dsn } })
     .toString()
@@ -223,17 +224,21 @@ test('a plain shell window shows its repo as a chip too, and the filter finds it
 });
 
 // LIVE WORK COUNTS ON A DISPATCHED AGENT'S CARD (docs/design/agent-cards.md
-// (a)): what its pod's ccd reports draws the mirrored card's own chip on the
-// agent's card, LIVE while the list is open (no reload); a report of nothing
-// takes it off; a stranger's token is refused. (A report that simply stops
-// expires after its TTL: the Go tests pin that, at agentWorkTTL, which is
-// longer than an e2e run should wait.)
+// (a)): what a RUNNING agent's pod reports draws the mirrored card's own chip
+// on the agent's card, LIVE while the list is open (no reload); a report of
+// nothing takes it off; a stranger's token is refused; and stopping the agent
+// takes it off too, though its pod never posts a clear. (A report that simply
+// stops expires after its TTL: the Go tests pin that, at agentWorkTTL, which is
+// longer than an e2e run should wait.) The agent is started first — the noop
+// provisioner then reports it live — because only a running agent wears a chip.
 test('a dispatched agent card shows the work its pod reports, live, and loses it', async ({ page }) => {
   test.setTimeout(90_000);
   await signIn(page);
+  expect((await page.request.post(`${origin}/agents/${agentID}/start`, { headers: { Origin: origin } })).status()).toBe(200);
   await page.goto(origin + '/agents');
   const agentCard = page.locator('#agents-list > article').filter({ hasText: agentName });
   const chip = agentCard.locator('[data-mirror-work] > [aria-hidden="true"]');
+  await expect(agentCard.locator('[aria-label="Status: running"]')).toHaveCount(1, { timeout: 20_000 });
   await expect(agentCard).toBeVisible({ timeout: 20_000 });
   await expect(chip, 'control: an agent that reported nothing has no chip').toHaveCount(0);
   let navigations = 0;
@@ -249,4 +254,12 @@ test('a dispatched agent card shows the work its pod reports, live, and loses it
   expect(await reportWork({})).toBe(204);
   await expect(chip).toHaveCount(0, { timeout: 15_000 });
   expect(navigations, 'the chip came and went without a page load').toBe(0);
+  // Stopped with a report up: the pod is gone and posts no clear, and the
+  // card loses the chip anyway.
+  expect(await reportWork({ subagents: 2 })).toBe(204);
+  await expect(chip).toHaveText('2 subagents', { timeout: 15_000 });
+  expect((await page.request.post(`${origin}/agents/${agentID}/stop`, { headers: { Origin: origin } })).status()).toBe(200);
+  await page.reload();
+  await expect(agentCard).toBeVisible({ timeout: 20_000 });
+  await expect(chip, 'a stopped agent wears no chip').toHaveCount(0);
 });

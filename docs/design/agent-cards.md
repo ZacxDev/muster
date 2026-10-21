@@ -405,8 +405,9 @@ inherits its hooks, and its SessionStart or SessionEnd must not take the card
 over. That is the ledger muster-mirror
 counts with, moved into a leaf package that imports no websocket, object-store
 or database client (`internal/modulegate`'s
-`TestTheSubagentLeafPullsNoNetworkOrStorageClient` pins it for the leaf and for
-`cmd/ccd`), so a dispatched card and a mirrored one count subagents
+`TestTheSubagentLeafPullsNoNetworkOrStorageClient` pins it for the leaf, and
+pins `cmd/ccd` against the websocket, MinIO and SQLite clients — ccd already
+links pgx through `internal/agents`), so a dispatched card and a mirrored one count subagents
 identically: one shared transcript fixture is counted through both callers
 (`TestADispatchedCardCountsTheSharedWorkFixtureAsTheMirrorDoes`,
 `TestAMirroredWindowCountsTheSharedWorkFixture`). ccd samples every 5 s; the
