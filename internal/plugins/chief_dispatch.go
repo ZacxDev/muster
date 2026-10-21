@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -76,6 +77,47 @@ type ChiefDispatch struct {
 	// AgentID is the agent the prior start recorded, nil when it recorded none
 	// (it failed before an agent existed).
 	AgentID *int64
+	// Budget is the budget a cap refusal (ErrChiefLiveCap, ErrChiefDailyCap)
+	// was decided on; nil otherwise.
+	Budget *ChiefBudget
+}
+
+// ChiefBudget is the chief's dispatch budget as the chief is shown it: every
+// task_dispatch answer and refusal, and task_route_attention, carry it, so the
+// caps are DATA read at the call — never numbers the chief remembers from an
+// older conversation (its session survives restarts, and it kept believing a
+// cap that had since been raised).
+type ChiefBudget struct {
+	// Live is how many chief-started agents count as live now: len(LiveAgents).
+	Live    int `json:"live"`
+	LiveCap int `json:"live_cap"`
+	// Today is the chief's starts (reservations) in the last ChiefDispatchWindow.
+	Today    int `json:"today"`
+	DailyCap int `json:"daily_cap"`
+	// LiveAgents is what Live counts: the recorded agents, oldest first, then
+	// the starts whose agent is not recorded yet (ID and Name nil).
+	LiveAgents []ChiefLiveAgent `json:"live_agents"`
+}
+
+// LiveFull reports whether the live cap refuses another start. THE live-cap
+// predicate: ReserveChiefDispatch refuses on it, Full offers on it.
+func (b ChiefBudget) LiveFull() bool { return b.Live >= b.LiveCap }
+
+// DailyFull reports whether the daily cap refuses another start.
+func (b ChiefBudget) DailyFull() bool { return b.Today >= b.DailyCap }
+
+// Full reports whether either cap refuses another start.
+func (b ChiefBudget) Full() bool { return b.LiveFull() || b.DailyFull() }
+
+// ChiefLiveAgent is one entry the live count counts. A recorded agent has ID and
+// Name; a reservation whose agent is not recorded yet — a start in flight, or
+// one that failed before an agent existed, counted for pendingAgentWindow —
+// has both nil (JSON null) and only Task.
+type ChiefLiveAgent struct {
+	ID   *int64  `json:"id"`
+	Name *string `json:"name"`
+	// Task is the task the start was for (the ledger row's object).
+	Task int64 `json:"task"`
 }
 
 // DispatchStore is the chief-dispatch ledger. Every method acts as ctx's
@@ -89,7 +131,12 @@ type DispatchStore interface {
 	// passed all of them writes anything. detail (nil-safe) is written into the
 	// reservation's audit row: what the chief asked for (the kind, its relayed
 	// instructions), for the owner to read.
+	// A cap refusal returns, with its error, the budget it was decided on
+	// (ChiefDispatch.Budget).
 	ReserveChiefDispatch(ctx context.Context, taskID int64, detail map[string]any, check func() error) (ChiefDispatch, error)
+	// ChiefDispatchBudget is the principal's chief-dispatch budget now
+	// (chiefBudget, the count the caps compare). Read-only.
+	ChiefDispatchBudget(ctx context.Context) (ChiefBudget, error)
 	// RecordChiefDispatchAgent records the agent a reservation for taskID started.
 	RecordChiefDispatchAgent(ctx context.Context, taskID, agentID int64) error
 	// ReleaseChiefDispatch records that the owner destroyed agentID, releasing
@@ -193,27 +240,18 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, detail
 				return err
 			}
 		}
-		var live int
-		if err := tx.QueryRow(ctx, `SELECT
-			  (SELECT count(*) FROM agents
-			    WHERE status = ANY($2) AND id IN (
-			      SELECT (detail->>'agent_id')::bigint FROM audit_log WHERE action = $1 AND user_id = $5))
-			+ (SELECT count(*) FROM audit_log r
-			    WHERE r.action = $3 AND r.user_id = $5 AND r.at > now() - make_interval(secs => $4)
-			      AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $1 AND g.user_id = $5 AND g.object = r.object AND g.id > r.id))`,
-			ActionChiefDispatchAgent, liveAgentStatuses, ActionChiefDispatch, pendingAgentWindow.Seconds(), p.UserID).Scan(&live); err != nil {
+		// The caps are decided on the SAME budget the chief is shown
+		// (chiefBudget): the refusal carries it (out.Budget).
+		b, err := chiefBudget(ctx, tx, p.UserID)
+		if err != nil {
 			return err
 		}
-		if live >= MaxChiefLiveAgents {
+		if b.LiveFull() {
+			out.Budget = &b
 			return ErrChiefLiveCap
 		}
-		var today int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM audit_log
-			WHERE action = $1 AND user_id = $3 AND at > now() - make_interval(secs => $2)`,
-			ActionChiefDispatch, ChiefDispatchWindow.Seconds(), p.UserID).Scan(&today); err != nil {
-			return err
-		}
-		if today >= MaxChiefDispatchesPerDay {
+		if b.DailyFull() {
+			out.Budget = &b
 			return ErrChiefDailyCap
 		}
 		if detail == nil {
@@ -222,9 +260,109 @@ func (s *PGStore) ReserveChiefDispatch(ctx context.Context, taskID int64, detail
 		return audit(ctx, tx, ActionChiefDispatch, NoteObject(taskID), detail)
 	})
 	if err != nil {
-		return ChiefDispatch{}, err
+		// Only a cap refusal carries anything: the budget it was decided on.
+		return ChiefDispatch{Budget: out.Budget}, err
 	}
 	return out, nil
+}
+
+// ChiefDispatchBudget: see DispatchStore. A read: it writes nothing and takes no
+// reservation lock, so a reservation racing it can make it one start stale —
+// it is what the chief is SHOWN, never what a reservation is decided on (that
+// reads chiefBudget again under the lock).
+func (s *PGStore) ChiefDispatchBudget(ctx context.Context) (ChiefBudget, error) {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return ChiefBudget{}, errors.New("plugins: reading the chief's budget needs a user principal")
+	}
+	var b ChiefBudget
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		b, err = chiefBudget(ctx, tx, p.UserID)
+		return err
+	})
+	return b, err
+}
+
+// chiefBudget is owner's chief-dispatch budget, counted from the ledger: THE
+// one count, shared by ReserveChiefDispatch (whose caps compare it) and
+// ChiefDispatchBudget (what the chief is shown). Live is len(LiveAgents), so the
+// list and the number cannot disagree.
+//
+//   - a RECORDED agent (an ActionChiefDispatchAgent row of owner's naming it)
+//     whose stored status is live (liveAgentStatuses), once per agent;
+//   - a reservation from the last pendingAgentWindow with no agent row for its
+//     task newer than it: a start in flight, or one that failed before any agent
+//     existed — listed with ID and Name nil.
+//
+// Today is owner's reservations in the last ChiefDispatchWindow.
+//
+// 🔴 EVERY LEDGER READ NAMES THE OWNER (user_id = $n), not only row-level
+// security: see ReserveChiefDispatch.
+func chiefBudget(ctx context.Context, tx pgx.Tx, owner int64) (ChiefBudget, error) {
+	b := ChiefBudget{LiveCap: MaxChiefLiveAgents, DailyCap: MaxChiefDispatchesPerDay, LiveAgents: []ChiefLiveAgent{}}
+	rows, err := tx.Query(ctx, `SELECT a.id, a.name, l.object FROM agents a
+		  JOIN LATERAL (SELECT object FROM audit_log
+		                 WHERE action = $1 AND user_id = $3 AND (detail->>'agent_id')::bigint = a.id
+		                 ORDER BY id DESC LIMIT 1) l ON true
+		 WHERE a.status = ANY($2)
+		 ORDER BY a.id`,
+		ActionChiefDispatchAgent, liveAgentStatuses, owner)
+	if err != nil {
+		return ChiefBudget{}, err
+	}
+	for rows.Next() {
+		var (
+			id     int64
+			name   string
+			object string
+		)
+		if err := rows.Scan(&id, &name, &object); err != nil {
+			rows.Close()
+			return ChiefBudget{}, err
+		}
+		b.LiveAgents = append(b.LiveAgents, ChiefLiveAgent{ID: &id, Name: &name, Task: noteObjectID(object)})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return ChiefBudget{}, err
+	}
+	rows, err = tx.Query(ctx, `SELECT r.object FROM audit_log r
+		 WHERE r.action = $1 AND r.user_id = $4 AND r.at > now() - make_interval(secs => $3)
+		   AND NOT EXISTS (SELECT 1 FROM audit_log g WHERE g.action = $2 AND g.user_id = $4 AND g.object = r.object AND g.id > r.id)
+		 ORDER BY r.id`,
+		ActionChiefDispatch, ActionChiefDispatchAgent, pendingAgentWindow.Seconds(), owner)
+	if err != nil {
+		return ChiefBudget{}, err
+	}
+	for rows.Next() {
+		var object string
+		if err := rows.Scan(&object); err != nil {
+			rows.Close()
+			return ChiefBudget{}, err
+		}
+		b.LiveAgents = append(b.LiveAgents, ChiefLiveAgent{Task: noteObjectID(object)})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return ChiefBudget{}, err
+	}
+	b.Live = len(b.LiveAgents)
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM audit_log
+		WHERE action = $1 AND user_id = $3 AND at > now() - make_interval(secs => $2)`,
+		ActionChiefDispatch, ChiefDispatchWindow.Seconds(), owner).Scan(&b.Today); err != nil {
+		return ChiefBudget{}, err
+	}
+	return b, nil
+}
+
+// noteObjectID is the task id a NoteObject names, 0 when object is not one.
+func noteObjectID(object string) int64 {
+	id, err := strconv.ParseInt(strings.TrimPrefix(object, "note:"), 10, 64)
+	if err != nil || !strings.HasPrefix(object, "note:") {
+		return 0
+	}
+	return id
 }
 
 // RecordChiefDispatchAgent: see DispatchStore.

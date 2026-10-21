@@ -8,6 +8,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/plugins"
 )
 
 // ---------------------------------------------------------------------------
@@ -29,8 +30,10 @@ import (
 //     (forwardTarget; the tool refuses otherwise).
 //   - task_dispatch: the tool would start an agent on the task — the opt-in and
 //     the deployment (chiefDispatchDeploymentRefusal) and the task itself: not
-//     gated, open, no live agent on it (chiefDispatchTaskRefusal). The tool's
-//     argument checks (kind, repo, instructions) are the chief's to satisfy.
+//     gated, open, no live agent on it (chiefDispatchTaskRefusal) — and the
+//     chief's budget not Full (plugins.ChiefBudget, the predicates the
+//     reservation refuses on). The tool's argument checks (kind, repo,
+//     instructions) are the chief's to satisfy.
 //   - route_to_session is NEVER offered for a task: it routes a plugin message
 //     to a session for a REPLY, and a task event is no_reply, so the tool refuses
 //     it (RefusedNoReply). Offering it would be exactly the action the chief
@@ -114,33 +117,47 @@ func (s *Server) chiefDispatchTaskRefusal(ctx context.Context, owner int64, n no
 }
 
 // chiefTaskActions is the actions chief can take on task n now, in a fixed
-// order (forward, then dispatch).
-func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n notes.Note) ([]chiefTaskAction, error) {
+// order (forward, then dispatch), and — when the owner opted in to dispatch —
+// the chief's dispatch budget (nil otherwise, or when it could not be read).
+//
+// task_dispatch is offered only when the budget is NOT Full: the reservation
+// refuses on the same predicates (plugins.ChiefBudget.LiveFull / DailyFull),
+// so a full budget is an action the chief cannot take. A budget that could not
+// be read withholds the offer (the ask is still filed; the tool re-checks).
+func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n notes.Note) ([]chiefTaskAction, *plugins.ChiefBudget, error) {
 	var out []chiefTaskAction
 	t, err := s.forwardTarget(ctx, chief, n.ID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if t != nil {
 		out = append(out, chiefTaskAction{Tool: taskForwardTool,
 			Label: "task_forward: pass it to " + mirror.OneLine(firstNonBlank(t.DisplayName, t.Name), 80) + ", already working it"})
 	}
-	if s.chiefDispatchDeploymentRefusal(agentOwnerID(chief)) == "" {
-		why, err := s.chiefDispatchTaskRefusal(ctx, agentOwnerID(chief), n)
+	owner := agentOwnerID(chief)
+	var budget *plugins.ChiefBudget
+	if chiefMayDispatch(s.ext, owner) {
+		budget = s.chiefBudgetNow(ctx)
+	}
+	if s.chiefDispatchDeploymentRefusal(owner) == "" {
+		why, err := s.chiefDispatchTaskRefusal(ctx, owner, n)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if why == "" {
+		if why == "" && budget != nil && !budget.Full() {
 			out = append(out, chiefTaskAction{Tool: taskDispatchTool, Label: "task_dispatch: start a new agent on it"})
 		}
 	}
-	return out, nil
+	return out, budget, nil
 }
 
 // chiefTaskActionsLine is the ask's line saying what the chief can do — muster's
-// words, after the chief's note.
-func chiefTaskActionsLine(acts []chiefTaskAction) string {
+// words, after the chief's note. budget is chiefTaskActions's.
+func chiefTaskActionsLine(acts []chiefTaskAction, budget *plugins.ChiefBudget) string {
 	if len(acts) == 0 {
+		if budget != nil && budget.Full() {
+			return "Your chief cannot forward or dispatch this task now (no agent is working it, and it has used up its allowance for starting agents for now): it is yours to handle."
+		}
 		return "Your chief cannot forward or dispatch this task now (no agent is working it, and starting agents is not enabled for you): it is yours to handle."
 	}
 	return "Your chief can act on your answer: pick one of the actions below, or write your own answer."
