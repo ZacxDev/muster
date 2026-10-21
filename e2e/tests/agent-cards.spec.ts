@@ -134,6 +134,17 @@ async function signIn(page: import('@playwright/test').Page) {
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
 }
 
+// reportWork is what ccd's work reporter sends (cmd/ccd/work.go): POST
+// /agent/work on the connect listener, with the agent's own token.
+async function reportWork(body: object, token = agentToken): Promise<number> {
+  const r = await fetch(connectURL + '/agent/work', {
+    method: 'POST',
+    headers: { 'X-Muster-Token': token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return r.status;
+}
+
 const mirrorCard = (page: import('@playwright/test').Page) => page.locator('#agents-list > article[data-mirror-card]').filter({ hasText: 'fleet:5' });
 
 test('each card shows its attention badge, live, and tapping it opens the item in the queue', async ({ page }) => {
@@ -209,4 +220,33 @@ test('a plain shell window shows its repo as a chip too, and the filter finds it
   await expect(shell).toBeVisible();
   await expect(mirrorCard(page)).toBeHidden();
   await expect(page.locator('#agents-count')).toHaveText(/^1 of \d+$/);
+});
+
+// LIVE WORK COUNTS ON A DISPATCHED AGENT'S CARD (docs/design/agent-cards.md
+// (a)): what its pod's ccd reports draws the mirrored card's own chip on the
+// agent's card, LIVE while the list is open (no reload); a report of nothing
+// takes it off; a stranger's token is refused. (A report that simply stops
+// expires after its TTL: the Go tests pin that, at agentWorkTTL, which is
+// longer than an e2e run should wait.)
+test('a dispatched agent card shows the work its pod reports, live, and loses it', async ({ page }) => {
+  test.setTimeout(90_000);
+  await signIn(page);
+  await page.goto(origin + '/agents');
+  const agentCard = page.locator('#agents-list > article').filter({ hasText: agentName });
+  const chip = agentCard.locator('[data-mirror-work] > [aria-hidden="true"]');
+  await expect(agentCard).toBeVisible({ timeout: 20_000 });
+  await expect(chip, 'control: an agent that reported nothing has no chip').toHaveCount(0);
+  let navigations = 0;
+  page.on('framenavigated', (f) => {
+    if (f === page.mainFrame()) navigations++;
+  });
+  expect(await reportWork({ subagents: 1 }, 'nobody-has-this-token-0123')).toBe(401);
+  expect(await reportWork({ subagents: 3, shells: 2, shellsAtLeast: true })).toBe(204);
+  await expect(chip).toHaveText('3 subagents · 2+ shells', { timeout: 15_000 });
+  await expect(agentCard.locator('[data-mirror-work] .sr-only')).toHaveText('3 subagents and at least 2 background shells running');
+  expect(await reportWork({ shells: 1 })).toBe(204);
+  await expect(chip).toHaveText('1 shell', { timeout: 15_000 });
+  expect(await reportWork({})).toBe(204);
+  await expect(chip).toHaveCount(0, { timeout: 15_000 });
+  expect(navigations, 'the chip came and went without a page load').toBe(0);
 });

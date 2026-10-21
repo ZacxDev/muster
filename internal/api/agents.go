@@ -437,7 +437,16 @@ func (s *Server) handleAgentStatusIcon(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// The card says what it was drawn with (ui.StatusPollPath); when that is no
 	// longer true its data-wait is stale, so the list is asked to re-render.
+	stale := false
 	if drawn := r.URL.Query().Get("awaiting"); drawn != "" && (drawn == "1") != awaiting {
+		stale = true
+	}
+	// The work chip too (agent_work.go): a report that expired is announced by no
+	// POST, so this poll is what takes a dead pod's chip off the card.
+	if drawn := r.URL.Query().Get("work"); drawn != "" && drawn != ui.WorkPollToken(s.AgentWork(a.ID)) {
+		stale = true
+	}
+	if stale {
 		w.Header().Set("HX-Trigger", ui.AgentsAwaitingEvent)
 	}
 	if err := ui.RenderStatusIcon(w, status, awaiting); err != nil {
@@ -586,6 +595,8 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		// The polled badge's own answer (in memory), so "Waiting on ask" finds an
 		// agent blocked at a permission prompt.
 		AwaitingApproval: s.AwaitingApproval(a.ID),
+		// The pod's live work counts (agent_work.go), expired when stale.
+		Work: s.AgentWork(a.ID),
 	}
 }
 

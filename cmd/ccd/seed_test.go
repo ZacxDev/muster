@@ -42,7 +42,8 @@ func seedInto(t *testing.T, cfg, ws string) {
 // leaves a failed turn waiting out the whole turn timeout; dropping
 // PermissionRequest silently stops routing prompts to the operator's phone;
 // dropping Notification or PostToolUse leaves the "awaiting approval" badge
-// never set or never cleared).
+// never set or never cleared; dropping SubagentStart or SubagentStop leaves the
+// card's live subagent count — work.go — never raised or never lowered).
 var imageHooks = map[string]struct{ matcher, command string }{
 	"SessionStart":      {"", "ccd hook SessionStart"},
 	"SessionEnd":        {"", "ccd hook SessionEnd"},
@@ -52,6 +53,8 @@ var imageHooks = map[string]struct{ matcher, command string }{
 	"PermissionRequest": {"", "ccd approve"},
 	"Notification":      {"permission_prompt", "ccd hook Notification"},
 	"PostToolUse":       {"", "ccd hook PostToolUse"},
+	"SubagentStart":     {"", "ccd hook SubagentStart"},
+	"SubagentStop":      {"", "ccd hook SubagentStop"},
 }
 
 func TestTheImageRegistersExactlyTheHooksCcdNeeds(t *testing.T) {

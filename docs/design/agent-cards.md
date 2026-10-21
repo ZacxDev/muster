@@ -9,12 +9,17 @@ describe the design as decided. What is built, and what is not:
   rule), the host's transcript ledger (`internal/mirrorhost/work.go`), the
   `work` message, and the chip on mirrored cards (`internal/ui/work_chip.go`).
   The chip is display only: it is **not** a filter field.
+- **Built (a), dispatched agents:** ccd's reporter (`cmd/ccd/work.go`),
+  `POST /agent/work` (`internal/api/agent_work.go`) and the same chip on a
+  dispatched `claude-code` agent's card. **One deviation from the design
+  below:** ccd takes the SUBAGENT count from its CLIs' hooks, not from the
+  transcript ledger — see [ccd: POST /agent/work](#ccd-post-agentwork).
 - **Built (b):** the fixed `@muster-color` option read in the one listing, the
   `colors` message, and the tint on mirrored CARDS' border and title
   (`internal/ui/identity_color.go`). The option name is a constant: there is
   **no** `-color-option` flag or environment variable. The rendered view's and
   terminal page's headers are **not** tinted (the operator asked for the cards).
-- **Deferred:** the cluster/ccd agent chip (`POST /agent/work`); the rendered
+- **Deferred:** the rendered
   view's work chip (that page has no live refresh); Hermes counts (after Hermes
   Phase 2); the Phase 0 spike (until it lands, a running turn shows `1+ shell`);
   and (c), below.
@@ -389,14 +394,33 @@ and re-sends it every minute, like `/agent/blocked` (`cmd/ccd/blocked.go:30`,
 `blockedReportTTL` (`internal/api/approvals.go:289`). A pod that stops reporting
 loses its chip within the TTL.
 
+*As built:* the status and the shells are exactly the above (the sessions file
+— present in a live pod on 2.1.296 — and `cctasks.CountShells`, through
+`cctasks.Decide`). **The subagents are not the transcript ledger:** that ledger
+lives in `internal/mirrorhost`, whose dependencies (MinIO, SQLite, the
+websocket client) would come into the pod with it. ccd owns its CLIs' hook
+settings and already hears their hooks, so it registers `SubagentStart` and
+`SubagentStop` (the image's `settings.json`) and keeps the set from them. The
+reasons this page gives for rejecting hooks do not hold for ccd: no host has to
+register anything; shells still come from the process tree; and a missed event
+is corrected, because the `Stop` and `SubagentStop` payloads carry
+`background_tasks`, the CLI's own registry of running background tasks (an agent
+task's id is its agent id), which replaces the set, and an `idle` or `shell`
+status empties it of everything learned before that status. Each Stop,
+SubagentStop and idle bounds an over- or under-count. One difference from the
+mirror's count: it includes a subagent's own subagents. The heartbeat is
+re-sent every minute only while something runs; the card's status poll carries
+the chip it was drawn with, so an expiry that no POST announces still
+re-renders the list.
+
 #### UI
 
 - **Card:** a chip in the header row next to the repo chip
   (`internal/ui/mirror.go:207`), for example `2 subagents · 1 shell`,
   `1 subagent` or `1+ shell`. There is no chip when both counts are zero. It has
   an accessible label ("2 subagents and 1 background shell running").
-  *(As built: display only — no `work:` filter field. Agent cards (ccd) are
-  deferred.)*
+  *(As built: display only — no `work:` filter field. Dispatched agents'
+  cards draw the same chip from ccd's report.)*
 - **Rendered view:** the same chip in the header. *(Deferred: the page has no
   live refresh.)* The per-agent cards stay as they are. A list of the shells
   themselves is out of scope.

@@ -84,6 +84,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/cctasks"
 )
 
 const defaultListen = ":18789"
@@ -267,6 +269,12 @@ func serve() error {
 	// serves, so onHook never races its assignment.
 	if base, tok := strings.TrimRight(os.Getenv(envConnectURL), "/"), os.Getenv(envAgentToken); base != "" && tok != "" {
 		srv.blocked = newBlockedReporter(base, tok)
+		// The live work counts on the agent's card (work.go), on the same token.
+		srv.work = newWorkReporter(base, tok, func() cctasks.Work {
+			w, _ := podWork(configDir, procRoot, srv.workServers())
+			return w
+		}, log.Printf)
+		srv.workPoke = srv.work.pokeNow
 	}
 	if up := os.Getenv("CCD_GATEWAY_UPSTREAM"); up != "" {
 		// A missing or reused runtime credential refuses gateway turns only;
@@ -300,6 +308,8 @@ func serve() error {
 						HasCredential: credentialVisible(configDir)}, t, auth)
 					// The agent's one badge: a lane's prompt shows on it too.
 					ls.blocked = srv.blocked
+					// And its one work report: a lane's subagents count too.
+					ls.workPoke = srv.workPoke
 					return ls
 				},
 				bin: bin, configDir: configDir, workspace: workspace, max: maxLanes,
@@ -345,6 +355,9 @@ func serve() error {
 	}
 	if srv.blocked != nil {
 		go srv.blocked.run(ctx)
+	}
+	if srv.work != nil {
+		go srv.work.run(ctx)
 	}
 	// The agent's repository is checked out before the CLI starts, and the CLI
 	// starts in it (checkout.go). No repository: the CLI starts at once, as
