@@ -200,8 +200,14 @@ func (m *hermesAsks) approvalPending(session string) *mirror.Pending {
 // never a denylist of shapes:
 //
 //   - its description is one the pinned TERMINAL gate emits
-//     (hermeshost.TerminalDescriptions): a write guard, a plugin's rule,
-//     computer use or execute_code — whose "command" is a label — never is;
+//     (hermeshost.TerminalDescriptions): a write guard, computer use or
+//     execute_code — whose "command" is a label — never is (a plugin's
+//     rule CAN be: its description is the plugin's own text — the next rule);
+//   - its command is not shaped like any pinned non-terminal gate's label
+//     (hermeshost.NonTerminalLabel): a plugin rule's description is the
+//     plugin's own text and can equal a terminal one, and a `terminal` call
+//     whose command IS that label can be pending beside it (audit #212
+//     round 3);
 //   - its command equals the command of a `terminal` call pending in the
 //     conversation (running, read from state.db: the RAW command), so it is
 //     the command that runs, unredacted, unlabelled;
@@ -216,7 +222,7 @@ func approvable(ap hermeshost.ApprovalPrompt, running []string) (shown string, c
 	red := redact.Secrets(cmd)
 	shown = mirror.OneLine(hermesCommandPrefix+red, mirror.MaxPendingSummary)
 	once := printableASCII(cmd) && red == cmd && shown == hermesCommandPrefix+cmd && !hermeshost.GatewayMasked(cmd) &&
-		!ap.Unshown && hermeshost.TerminalDescriptions[ap.Description] && slices.Contains(running, cmd)
+		!ap.Unshown && hermeshost.TerminalDescriptions[ap.Description] && !hermeshost.NonTerminalLabel(cmd) && slices.Contains(running, cmd)
 	for _, c := range mirror.HermesApprovalChoices {
 		if !ap.Offers(c) || (c == "once" && !once) {
 			continue
@@ -280,8 +286,8 @@ func (m *hermesAsks) follow(ctx context.Context, session string, a *hermesAsk) {
 		}
 		return
 	}
-	a.attaching = false
 	if err != nil {
+		a.attaching = false
 		a.why, a.retryAt = mirror.OneLine(err.Error(), 160), m.now().Add(hermesRetry)
 		m.mu.Unlock()
 		m.logf("muster-mirror: no Hermes gateway viewer for session %s: %v (its approvals are answered in the terminal)", session, err)
@@ -289,8 +295,18 @@ func (m *hermesAsks) follow(ctx context.Context, session string, a *hermesAsk) {
 		return
 	}
 	m.mu.Unlock()
+	// 🟡 Still attaching while the pending calls are read (unlocked, up to
+	// hermesTerminalReadTimeout): a listing in that gap must not start a
+	// second attach (audit #212 round 3). And a detach in that gap replaced
+	// or dropped a, so a is re-checked before it is written.
 	running := m.readRunning(ctx, session)
 	m.mu.Lock()
+	if m.sessions[session] != a || ctx.Err() != nil {
+		m.mu.Unlock()
+		v.Close()
+		return
+	}
+	a.attaching = false
 	a.viewer, a.prompts, a.why, a.running = v, ps, "", running
 	m.mu.Unlock()
 	m.logf("muster-mirror: attached Hermes's gateway viewer to session %s (%d pending approval(s))", session, len(ps))

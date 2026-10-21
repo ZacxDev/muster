@@ -36,6 +36,9 @@
 #     sample run through both of its passes);
 #   - internal/hermeshost TestTheTerminalGateLedgerMatchesThePin: the terminal
 #     gate's descriptions, re-extracted from the pin, and its sources pinned;
+#   - internal/hermeshost TestTheApprovalGatesMatchThePin: every approval
+#     site in the pin classified, and each non-terminal gate's label caught
+#     by NonTerminalLabel (never offered "once");
 #   - internal/hermeshost TestOverlayLedgerMatchesThePinnedSource,
 #     TestScreenConditionsMatchThePinnedSource and
 #     TestViLabelsMatchThePinnedLocales: the ledgers held against the pin.
@@ -56,7 +59,7 @@ command -v hermes >/dev/null || { echo "livehermes: no hermes on PATH" >&2; exit
 command -v tmux >/dev/null || { echo "livehermes: no tmux on PATH" >&2; exit 2; }
 rev="$(grep -o "HERMES_REVISION='[0-9a-f]*'" "$(readlink -f "$(command -v hermes)")" | cut -d"'" -f2 || true)"
 
-required=(TestLiveHermesScreens TestLiveHermesSend TestLiveHermesGateway TestLiveHermesApprovalThroughTheHost TestLiveHermesMaskedApprovalIsDenyOnly TestLiveHermesLabelApprovalIsDenyOnly TestTheGatewayMasksCoverAPinnedSample TestTheTerminalGateLedgerMatchesThePin TestOverlayLedgerMatchesThePinnedSource TestScreenConditionsMatchThePinnedSource TestViLabelsMatchThePinnedLocales)
+required=(TestLiveHermesScreens TestLiveHermesSend TestLiveHermesGateway TestLiveHermesApprovalThroughTheHost TestLiveHermesMaskedApprovalIsDenyOnly TestLiveHermesLabelApprovalIsDenyOnly TestTheGatewayMasksCoverAPinnedSample TestTheTerminalGateLedgerMatchesThePin TestTheApprovalGatesMatchThePin TestOverlayLedgerMatchesThePinnedSource TestScreenConditionsMatchThePinnedSource TestViLabelsMatchThePinnedLocales)
 live='TestLiveHermesScreens|TestLiveHermesSend|TestLiveHermesGateway|TestLiveHermesApprovalThroughTheHost|TestLiveHermesMaskedApprovalIsDenyOnly|TestLiveHermesLabelApprovalIsDenyOnly'
 if [[ "${MUSTER_LIVEHERMES_TIMINGS:-}" == 1 ]]; then
   required+=(TestLiveHermesTimings)
@@ -68,7 +71,7 @@ for r in "${required[@]}"; do req+=(--require "$r"); done
 set +e
 set -o pipefail
 go test -tags livehermes -count=1 -timeout 60m -json \
-  -run "^(${live}|TestOverlayLedgerMatchesThePinnedSource|TestTheGatewayMasksCoverAPinnedSample|TestTheTerminalGateLedgerMatchesThePin|TestScreenConditionsMatchThePinnedSource|TestViLabelsMatchThePinnedLocales)\$" \
+  -run "^(${live}|TestOverlayLedgerMatchesThePinnedSource|TestTheGatewayMasksCoverAPinnedSample|TestTheTerminalGateLedgerMatchesThePin|TestTheApprovalGatesMatchThePin|TestScreenConditionsMatchThePinnedSource|TestViLabelsMatchThePinnedLocales)\$" \
   ./internal/mirrorhost/ ./internal/hermeshost/ |
   python3 -u tests/verdict.py --echo all "${req[@]}"
 rc=$?

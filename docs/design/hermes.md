@@ -1060,6 +1060,25 @@ these ways:
   passes an approval takes (`P:tools/approval.py:855`, then the gateway's);
   `[redacted` is no longer a listed mask (the pinned string redactor never
   emits it).
+- 🔴 **Round-3 audit (#212): the allowlist alone could still be walked by a
+  plugin rule.** A plugin's approval rule (`P:tools/approval.py`
+  `request_tool_approval`, from `P:hermes_cli/plugins.py`'s
+  `pre_tool_call`) takes its description from the PLUGIN's reason — free
+  text that can equal a terminal description — and shows the label
+  `<tool> (plugin approval rule)`. An injected model issuing
+  `sql_query("DROP …")` and `terminal("<sql_query> (plugin approval rule)")`
+  in one batch passes both checks, and "once" would run SQL the card never
+  showed. So `approvable` also refuses "once" for any command shaped like a
+  pinned non-terminal gate's label (`hermeshost.NonTerminalLabel`:
+  `<…> (plugin approval rule)`, `<write to …>`, `computer_use: …`,
+  `execute_code <<…`). The livehermes ledger
+  `TestTheApprovalGatesMatchThePin` enumerates every approval site in the
+  pinned distribution (19, from its `RECORD`), requires each to be one this
+  was classified against, and evaluates each label's f-string in the pinned
+  Python through `NonTerminalLabel` — a new gate or a changed label is RED.
+  The remaining non-terminal gates (MCP elicitation, an untrusted MCP tool,
+  a payment-card fill) show free text under a fixed-format description no
+  terminal gate emits, so the description allowlist refuses them.
 - **The wire** (no version bump): `Pending` gains `kind`
   (`approval`/`clarify`/`sudo`), `detail` (the description, 120 runes),
   `promptId` and `choices` (a space-separated string, so `Pending` stays
