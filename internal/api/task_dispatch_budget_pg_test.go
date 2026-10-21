@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
 
@@ -260,7 +261,9 @@ func (budgetUnreadable) ChiefDispatchBudget(context.Context) (plugins.ChiefBudge
 
 // TestAnUnreadableBudgetNeverFailsTheCall: with the budget read failing, a
 // start still starts and answers (without a budget), a refusal still refuses
-// with its own sentence, and task_route_attention still files its ask.
+// with its own sentence, and task_route_attention still files its ask —
+// withholding task_dispatch, and saying the allowance could not be read
+// (never "not enabled for you", which an opted-in owner is not).
 func TestAnUnreadableBudgetNeverFailsTheCall(t *testing.T) {
 	f := newTaskRouteFixture(t, true, true, func(ext *Extensions) {
 		ext.ChiefDispatch = budgetUnreadable{ext.ChiefDispatch}
@@ -278,6 +281,63 @@ func TestAnUnreadableBudgetNeverFailsTheCall(t *testing.T) {
 	res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": o.ID, "note": "?"})
 	if isToolErr(res) || !strings.Contains(res, `"actions_offered"`) || strings.Contains(res, `"budget"`) {
 		t.Fatalf("task_route_attention with the budget unreadable: %s", res)
+	}
+	var out struct {
+		ID      int64    `json:"id"`
+		Offered []string `json:"actions_offered"`
+	}
+	if err := json.Unmarshal([]byte(res), &out); err != nil {
+		t.Fatal(res)
+	}
+	for _, tool := range out.Offered {
+		if tool == taskDispatchTool {
+			t.Fatalf("task_dispatch offered with the budget unreadable: %q", out.Offered)
+		}
+	}
+	ask, err := f.srv.ext.Attention.Get(f.asOwner, out.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ask.Question, "its allowance for starting agents could not be read right now") ||
+		strings.Contains(ask.Question, "not enabled for you") {
+		t.Errorf("the ask with the budget unreadable: %q; want the could-not-be-read sentence", ask.Question)
+	}
+}
+
+// TestAFullBudgetIsNotBlamedForATaskThatRefusesItself: with the budget full, a
+// task the chief could not dispatch anyway (gated, not open) is not said to be
+// withheld for the allowance; an open task is.
+func TestAFullBudgetIsNotBlamedForATaskThatRefusesItself(t *testing.T) {
+	f := newTaskRouteFixture(t, true, true)
+	f.finishedStarts(t, 900900, plugins.MaxChiefDispatchesPerDay) // the day is spent
+	gated := f.task(t, "gated", "gate:needs-owner-ok")
+	moved := f.task(t, "moved on")
+	if _, err := f.notes.SetStatus(f.asOwner, moved.ID, notes.StatusInProgress); err != nil {
+		t.Fatal(err)
+	}
+	open := f.task(t, "open")
+	for _, c := range []struct {
+		name  string
+		id    int64
+		blame bool
+	}{{"gated", gated.ID, false}, {"not-open", moved.ID, false}, {"open", open.ID, true}} {
+		res := f.call(f.chief, taskRouteAttentionTool, map[string]any{"task_id": c.id, "note": "?"})
+		var out struct {
+			ID int64 `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(res), &out); err != nil || out.ID <= 0 {
+			t.Fatalf("%s: %s", c.name, res)
+		}
+		ask, err := f.srv.ext.Attention.Get(f.asOwner, out.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(ask.Question, "used up its allowance"); got != c.blame {
+			t.Errorf("%s task with a full budget: blames the allowance=%v, want %v: %q", c.name, got, c.blame, ask.Question)
+		}
+		if !strings.Contains(ask.Question, "it is yours to handle") {
+			t.Errorf("%s: an ask offering nothing does not say so: %q", c.name, ask.Question)
+		}
 	}
 }
 

@@ -85,8 +85,8 @@ type ChiefDispatch struct {
 // ChiefBudget is the chief's dispatch budget as the chief is shown it: every
 // task_dispatch answer and refusal, and task_route_attention, carry it, so the
 // caps are DATA read at the call — never numbers the chief remembers from an
-// older conversation (its session survives restarts, and it kept believing a
-// cap that had since been raised).
+// older conversation (its session survives restarts, and after the live cap
+// was raised it kept quoting the old one, "at most 2").
 type ChiefBudget struct {
 	// Live is how many chief-started agents count as live now: len(LiveAgents).
 	Live    int `json:"live"`

@@ -94,8 +94,8 @@ const (
 // 🔴 IT STATES NO CAP NUMBER, AND A TEST PINS THE WHOLE STRING
 // (TestTaskDispatchDescriptionCarriesNoCapNumbers). The chief's conversation
 // survives restarts (claude --resume), so a number written here is a number it
-// remembers: after the live cap was raised it kept refusing itself at the old
-// one, read from its own history. The caps are DATA instead — every
+// remembers: after the live cap was raised it kept quoting the old one ("at
+// most 2") from its own history. The caps are DATA instead — every
 // task_dispatch answer and refusal, and task_route_attention, carry the current
 // `budget` (plugins.ChiefBudget).
 const chiefDispatchDescription = "Start a new agent on one of your owner's open, ungated tasks. Only with your owner's opt-in. " +
@@ -332,7 +332,7 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 	if !ok {
 		return toolErr("%s", chiefDispatchNoTask)
 	}
-	acts, budget, err := s.chiefTaskActions(ctx, a, n)
+	acts, budget, withheld, err := s.chiefTaskActions(ctx, a, n)
 	if err != nil {
 		s.logger.Printf("task routing: the actions on task %d: %v", taskID, err)
 		return toolErr("the task could not be put in front of your owner")
@@ -341,7 +341,7 @@ func (s *Server) toolTaskRouteAttention(ctx context.Context, a agents.Agent, tas
 	if c := cleanNote(note); c != "" {
 		addendum = "Your chief's note: " + c + "\n\n"
 	}
-	addendum += chiefTaskActionsLine(acts, budget)
+	addendum += chiefTaskActionsLine(acts, withheld)
 	options, offered := make([]string, 0, len(acts)), make([]string, 0, len(acts))
 	for _, x := range acts {
 		options, offered = append(options, x.Label), append(offered, x.Tool)
@@ -658,9 +658,9 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 	// A cap refusal carries the budget the reservation decided it on — the
 	// SAME numbers the cap compared (plugins.chiefBudget), not a second read.
 	case errors.Is(err, plugins.ErrChiefLiveCap):
-		return capRefusal(chiefDispatchLiveCap, res.Budget, refuse)
+		return dispatchRefusal(chiefDispatchLiveCap, res.Budget)
 	case errors.Is(err, plugins.ErrChiefDailyCap):
-		return capRefusal(chiefDispatchDailyCap, res.Budget, refuse)
+		return dispatchRefusal(chiefDispatchDailyCap, res.Budget)
 	default:
 		s.logger.Printf("task routing: reserve a start for task %d: %v", taskID, err)
 		return refuse("the start could not be reserved")
@@ -774,15 +774,6 @@ func (s *Server) toolTaskDispatch(ctx context.Context, a agents.Agent, taskID in
 		out["budget"] = b
 	}
 	return toolJSON(out)
-}
-
-// capRefusal is a cap refusal carrying b, the budget the reservation decided it
-// on; with none (a store that does not return one), refuse's fresh read.
-func capRefusal(msg string, b *plugins.ChiefBudget, refuse func(string) string) string {
-	if b != nil {
-		return dispatchRefusal(msg, b)
-	}
-	return refuse(msg)
 }
 
 // chiefDispatchInstructionsUnsourced is task_dispatch's refusal of instructions

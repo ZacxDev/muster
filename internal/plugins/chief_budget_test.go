@@ -23,8 +23,9 @@ import (
 //	814  no agent, two days old    -> neither
 //
 // and, for owner 3, a running recorded agent and two fresh starts — on 810, the
-// same task id — none of which may count for owner 2. It returns the agent of
-// task 810.
+// same task id — none of which may count for owner 2, plus an agent row of
+// owner 3's on 812 NEWER than owner 2's pending start there, which must not
+// make that start read as recorded. It returns the agent of task 810.
 func budgetFixture(t *testing.T, s *PGStore, dsn string) (int64, string) {
 	t.Helper()
 	dbtest.OwnerExec(t, dsn, `DELETE FROM audit_log WHERE action LIKE 'task.chief_%'`)
@@ -51,7 +52,11 @@ func budgetFixture(t *testing.T, s *PGStore, dsn string) (int64, string) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.RecordChiefDispatchAgent(session(3), 810, mustAgent(t, dsn, 3, "plg-budget-theirs").ID); err != nil {
+	theirs := mustAgent(t, dsn, 3, "plg-budget-theirs")
+	if err := s.RecordChiefDispatchAgent(session(3), 810, theirs.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordChiefDispatchAgent(session(3), 812, theirs.ID); err != nil {
 		t.Fatal(err)
 	}
 	return running.ID, running.Name

@@ -124,39 +124,59 @@ func (s *Server) chiefDispatchTaskRefusal(ctx context.Context, owner int64, n no
 // refuses on the same predicates (plugins.ChiefBudget.LiveFull / DailyFull),
 // so a full budget is an action the chief cannot take. A budget that could not
 // be read withholds the offer (the ask is still filed; the tool re-checks).
-func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n notes.Note) ([]chiefTaskAction, *plugins.ChiefBudget, error) {
+//
+// withheld is why task_dispatch was withheld when the BUDGET is the reason —
+// the opt-in, the deployment and the task itself would all allow it:
+// dispatchWithheldBudgetFull or dispatchWithheldBudgetUnknown; "" otherwise
+// (offered, or refused for another reason).
+func (s *Server) chiefTaskActions(ctx context.Context, chief agents.Agent, n notes.Note) (acts []chiefTaskAction, budget *plugins.ChiefBudget, withheld string, err error) {
 	var out []chiefTaskAction
 	t, err := s.forwardTarget(ctx, chief, n.ID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 	if t != nil {
 		out = append(out, chiefTaskAction{Tool: taskForwardTool,
 			Label: "task_forward: pass it to " + mirror.OneLine(firstNonBlank(t.DisplayName, t.Name), 80) + ", already working it"})
 	}
 	owner := agentOwnerID(chief)
-	var budget *plugins.ChiefBudget
 	if chiefMayDispatch(s.ext, owner) {
 		budget = s.chiefBudgetNow(ctx)
 	}
 	if s.chiefDispatchDeploymentRefusal(owner) == "" {
 		why, err := s.chiefDispatchTaskRefusal(ctx, owner, n)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, "", err
 		}
-		if why == "" && budget != nil && !budget.Full() {
+		switch {
+		case why != "": // the task itself refuses: not the budget's doing
+		case budget == nil:
+			withheld = dispatchWithheldBudgetUnknown
+		case budget.Full():
+			withheld = dispatchWithheldBudgetFull
+		default:
 			out = append(out, chiefTaskAction{Tool: taskDispatchTool, Label: "task_dispatch: start a new agent on it"})
 		}
 	}
-	return out, budget, nil
+	return out, budget, withheld, nil
 }
 
+// Why chiefTaskActions withheld task_dispatch when the budget is the reason.
+const (
+	dispatchWithheldBudgetFull    = "budget_full"
+	dispatchWithheldBudgetUnknown = "budget_unknown"
+)
+
 // chiefTaskActionsLine is the ask's line saying what the chief can do — muster's
-// words, after the chief's note. budget is chiefTaskActions's.
-func chiefTaskActionsLine(acts []chiefTaskAction, budget *plugins.ChiefBudget) string {
+// words, after the chief's note. withheld is chiefTaskActions's: the budget is
+// named only when it is what withheld task_dispatch.
+func chiefTaskActionsLine(acts []chiefTaskAction, withheld string) string {
 	if len(acts) == 0 {
-		if budget != nil && budget.Full() {
+		switch withheld {
+		case dispatchWithheldBudgetFull:
 			return "Your chief cannot forward or dispatch this task now (no agent is working it, and it has used up its allowance for starting agents for now): it is yours to handle."
+		case dispatchWithheldBudgetUnknown:
+			return "Your chief cannot forward or dispatch this task now (no agent is working it, and its allowance for starting agents could not be read right now): it is yours to handle."
 		}
 		return "Your chief cannot forward or dispatch this task now (no agent is working it, and starting agents is not enabled for you): it is yours to handle."
 	}

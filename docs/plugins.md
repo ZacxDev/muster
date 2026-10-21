@@ -410,7 +410,7 @@ The two caps (guards 10 and 11) are **data the chief reads at the call**, not
 numbers it is told: `task_dispatch`'s description says only that limits on
 live agents and on daily starts apply. The chief's conversation survives
 restarts, so a number in a tool description is a number it remembers — after
-the live cap was raised it kept holding itself to the old one, read from its
+the live cap was raised it kept quoting the old one ("at most 2") from its
 own history. Instead, every `task_dispatch` answer — a start, an
 `already_dispatched`, and every refusal from guard 4 on (the live-cap and
 daily-cap refusals included) — carries the current `budget`, as does
