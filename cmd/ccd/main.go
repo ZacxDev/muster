@@ -272,7 +272,7 @@ func serve() error {
 		// The live work counts on the agent's card (work.go), on the same token.
 		counter := &podCounter{configDir: configDir, root: procRoot}
 		srv.work = newWorkReporter(base, tok, func() cctasks.Work {
-			w, _ := counter.work(srv.workServers())
+			w, _ := counter.work(context.Background(), srv.workServers())
 			return w
 		}, log.Printf)
 	}

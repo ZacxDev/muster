@@ -38,6 +38,10 @@ import (
 //     muster-mirror counts with (internal/mirrorhost/work.go). So a dispatched
 //     card and a mirrored one count subagents identically.
 //
+// Each CLI is found by its own process — the primary's pane, each lane's pane
+// (server.cliPID) — and read through ITS sessions file and the transcript that
+// file names, never through the session the last hook named (cliSessionOf).
+//
 // STALE-SAFE: the report is re-sent every workHeartbeat while non-zero, and
 // muster drops one it has not seen refreshed within its TTL
 // (internal/api/agent_work.go) — a pod that died loses its chip. A CLI that
@@ -55,6 +59,7 @@ const workHeartbeat = time.Minute
 type cliSession struct {
 	PID       int    `json:"pid"`
 	SessionID string `json:"sessionId"`
+	Cwd       string `json:"cwd"`
 	Status    string `json:"status"`
 	StartedAt int64  `json:"startedAt"`
 	ProcStart string `json:"procStart"`
@@ -95,50 +100,64 @@ func readProcTable(root string) procTable {
 	return t
 }
 
-// liveSessions is every sessions file under configDir whose process is alive —
-// its pid runs, with the start time the file records — by session id.
-func liveSessions(configDir, root string) map[string]cliSession {
-	out := map[string]cliSession{}
-	files, _ := filepath.Glob(filepath.Join(configDir, "sessions", "*.json"))
-	for _, p := range files {
-		b, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		var cs cliSession
-		if json.Unmarshal(b, &cs) != nil || cs.PID <= 1 || cs.SessionID == "" {
-			continue
-		}
-		stat, err := os.ReadFile(filepath.Join(root, strconv.Itoa(cs.PID), "stat"))
-		if err != nil {
-			continue
-		}
-		st, ok := procstat.Parse(stat)
-		if !ok || st.State == "Z" || (cs.ProcStart != "" && cs.ProcStart != st.Start) {
-			continue
-		}
-		if prev, dup := out[cs.SessionID]; dup && prev.PID < cs.PID {
-			continue // two live files for one session: the lower pid, deterministically
-		}
-		out[cs.SessionID] = cs
+// cliSessionOf is the sessions file of CLI process pid — <configDir>/sessions/
+// <pid>.json — while that process is alive with the start time the file
+// records (a sessions file outlives its process, and a pid can be reused), and
+// the session's transcript under <configDir>/projects ("" when there is none
+// yet). ok is false when there is no live file.
+//
+// 🔴 BY THE CLI'S PID, NEVER BY THE LAST HOOK'S SESSION. A `claude` that a tool
+// call runs inside the CLI inherits its hook settings and environment, so its
+// SessionStart and SessionEnd reach this CLI's server (proctree.go). Picked by
+// the hook's session, the card would count that nested CLI while it ran and
+// nothing at all once it exited; picked by the pane's pid it is always this
+// CLI's own file.
+func cliSessionOf(configDir, root string, pid int) (cs cliSession, transcript string, ok bool) {
+	if pid <= 1 {
+		return cliSession{}, "", false
 	}
-	return out
+	b, err := os.ReadFile(filepath.Join(configDir, "sessions", strconv.Itoa(pid)+".json"))
+	if err != nil || json.Unmarshal(b, &cs) != nil || cs.PID != pid || !sessionIDPattern.MatchString(cs.SessionID) {
+		return cliSession{}, "", false
+	}
+	stat, err := os.ReadFile(filepath.Join(root, strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return cliSession{}, "", false
+	}
+	st, okStat := procstat.Parse(stat)
+	if !okStat || st.State == "Z" || (cs.ProcStart != "" && cs.ProcStart != st.Start) {
+		return cliSession{}, "", false
+	}
+	name := cs.SessionID + ".jsonl"
+	if cs.Cwd != "" {
+		if p := filepath.Join(projectDir(configDir, cs.Cwd), name); fileIsRegular(p) {
+			return cs, p, true
+		}
+	}
+	// The cwd moved, or its encoding differs: the id is unique, so find it.
+	if m, _ := filepath.Glob(filepath.Join(configDir, "projects", "*", name)); len(m) > 0 {
+		return cs, m[0], true
+	}
+	return cs, "", true
 }
 
-// cliSessionView is what work reads of a CLI's server: its session, as its
-// last SessionStart named it, and that session's transcript ("" when unknown
-// or outside <CLAUDE_CONFIG_DIR>/projects).
-func (s *server) cliSessionView() (id, transcript string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.sessionStarted {
-		return "", ""
+func fileIsRegular(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular()
+}
+
+// cliPIDOf is the pid of s's CLI now, 0 when ccd does not know it.
+func (s *server) cliPIDOf(ctx context.Context) int {
+	if s.cliPID == nil {
+		return 0
 	}
-	id, transcript = s.sessionID, s.transcriptPath
-	if transcript != "" && s.underProjects(transcript) != nil {
-		transcript = ""
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	pid, err := s.cliPID(ctx)
+	if err != nil {
+		return 0
 	}
-	return id, transcript
+	return pid
 }
 
 // podCounter counts the pod's work, keeping one subagent ledger per session it
@@ -156,7 +175,7 @@ type podCounter struct {
 // work is the work of every CLI in servers, summed: subagents and shells
 // added, a lower bound if any is one. ok is false when no CLI has a live
 // sessions file to read a status from — nothing may be claimed.
-func (c *podCounter) work(servers []*server) (cctasks.Work, bool) {
+func (c *podCounter) work(ctx context.Context, servers []*server) (cctasks.Work, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.ledgers == nil {
@@ -166,17 +185,16 @@ func (c *podCounter) work(servers []*server) (cctasks.Work, bool) {
 	if c.now != nil {
 		now = c.now
 	}
-	sessions := liveSessions(c.configDir, c.root)
 	var tbl *procTable
 	var sum cctasks.Work
 	any := false
 	seen := map[string]bool{}
 	for _, s := range servers {
-		id, transcript := s.cliSessionView()
-		cs, ok := sessions[id]
+		cs, transcript, ok := cliSessionOf(c.configDir, c.root, s.cliPIDOf(ctx))
 		if !ok {
 			continue
 		}
+		id := cs.SessionID
 		seen[id] = true
 		var sh cctasks.Shells
 		switch cs.Status {
@@ -276,6 +294,14 @@ func (r *workReporter) run(ctx context.Context) {
 		}
 		select {
 		case <-ctx.Done():
+			// ccd is shutting down (the agent is being stopped): withdraw what it
+			// last reported, best effort — muster also clears a stopped agent's
+			// chip itself, and the TTL ends it if neither reaches it.
+			if last != (cctasks.Work{}) {
+				cctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_ = r.post(cctx, cctasks.Work{})
+				cancel()
+			}
 			return
 		case <-t.C:
 		}

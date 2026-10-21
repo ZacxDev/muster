@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
@@ -62,6 +63,26 @@ func (s *Server) AgentWork(id int64) mirror.WindowWork {
 		return mirror.WindowWork{}
 	}
 	return r.work
+}
+
+// cardWork is what agent id's card may show for status (its live status): its
+// report while it is running, and nothing otherwise. 🔴 ONE RULE FOR EVERY DOOR
+// THAT STOPS AN AGENT: a stopped pod's ccd cannot post its clear (it is gone),
+// so a stopped agent's last report would otherwise stay on its card until the
+// TTL. Both the card and its status poll read it, so they cannot disagree.
+func (s *Server) cardWork(id int64, status string) mirror.WindowWork {
+	if status != agents.StatusRunning {
+		return mirror.WindowWork{}
+	}
+	return s.AgentWork(id)
+}
+
+// clearAgentWork forgets agent id's report: it was stopped or destroyed.
+func (s *Server) clearAgentWork(id int64) {
+	l := &s.agentWork
+	l.mu.Lock()
+	delete(l.m, id)
+	l.mu.Unlock()
 }
 
 func (s *Server) registerAgentWorkRoutes(mux Mux) {

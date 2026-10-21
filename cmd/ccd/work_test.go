@@ -76,11 +76,12 @@ func projectTranscript(t *testing.T, config, session string) string {
 	return p
 }
 
-// startedServer is a CLI's server after its (recorded) SessionStart named
-// session and transcript.
-func startedServer(t *testing.T, config, session, transcript string) *server {
+// startedServer is the server of the CLI running as pid, after its (recorded)
+// SessionStart named session and transcript.
+func startedServer(t *testing.T, config, session, transcript string, pid int) *server {
 	t.Helper()
 	s := newServer(serverConfig{ConfigDir: config}, nil, newAuthTracker())
+	s.cliPID = func(context.Context) (int, error) { return pid, nil }
 	deliver(t, s, hookFixture(t, "hook_SessionStart_2.1.296.json", map[string]string{"session_id": q(session), "transcript_path": q(transcript)}))
 	return s
 }
@@ -157,10 +158,10 @@ func taskProc(ppid int, id string) fakeProcess {
 func TestADispatchedCardCountsTheSharedWorkFixtureAsTheMirrorDoes(t *testing.T) {
 	config := t.TempDir()
 	root := fakeProcFS(t, map[int]fakeProcess{100: cliProc(1, "777")})
-	s := startedServer(t, config, fixtureSession, projectTranscript(t, config, fixtureSession))
+	s := startedServer(t, config, fixtureSession, projectTranscript(t, config, fixtureSession), 100)
 	sessionFile(t, config, 100, fixtureSession, cctasks.StatusBusy, "777")
 	c := &podCounter{configDir: config, root: root, now: func() time.Time { return workFixtureBase.Add(100 * time.Second) }}
-	if w, ok := c.work([]*server{s}); !ok || w != (cctasks.Work{Subagents: 2}) {
+	if w, ok := c.work(context.Background(), []*server{s}); !ok || w != (cctasks.Work{Subagents: 2}) {
 		t.Fatalf("the shared fixture counts %+v (ok=%v) on a dispatched card, want 2 subagents", w, ok)
 	}
 }
@@ -177,10 +178,10 @@ func TestPodWorkIsTheMirrorsRuleOverEveryCLI(t *testing.T) {
 		200: cliProc(1, "778"), 201: taskProc(200, "b0000000d"),
 	})
 	config := t.TempDir()
-	primary := startedServer(t, config, fixtureSession, projectTranscript(t, config, fixtureSession))
-	lane := startedServer(t, config, laneSession, projectTranscript(t, config, laneSession))
+	primary := startedServer(t, config, fixtureSession, projectTranscript(t, config, fixtureSession), 100)
+	lane := startedServer(t, config, laneSession, projectTranscript(t, config, laneSession), 200)
 	c := &podCounter{configDir: config, root: root, now: func() time.Time { return workFixtureBase.Add(100 * time.Second) }}
-	work := func(servers ...*server) (cctasks.Work, bool) { return c.work(servers) }
+	work := func(servers ...*server) (cctasks.Work, bool) { return c.work(context.Background(), servers) }
 
 	// No sessions file at all: nothing may be claimed.
 	if w, ok := work(primary, lane); ok || w != (cctasks.Work{}) {
@@ -218,18 +219,20 @@ func TestPodWorkIsTheMirrorsRuleOverEveryCLI(t *testing.T) {
 	if w, ok := work(lane); !ok || w != (cctasks.Work{}) {
 		t.Fatalf("idle lane: %+v ok=%v, want nothing running", w, ok)
 	}
-	// A transcript the hooks named OUTSIDE <config>/projects is not read — a
-	// real copy of the fixture, which would count 2 if it were: busy, but no
-	// subagents.
+	// The transcript is the one the CLI's OWN sessions file names, under
+	// <config>/projects — never one a hook named: a session with no transcript
+	// there has no subagents, even when a hook pointed at a real copy of the
+	// fixture elsewhere (which would count 2 if it were read).
+	const bare = "44444444-2222-4333-8444-555555555555"
 	elsewhere := t.TempDir()
-	outsideTr := filepath.Join(elsewhere, laneSession+".jsonl")
-	if err := os.Rename(projectTranscript(t, elsewhere, laneSession), outsideTr); err != nil {
+	outsideTr := filepath.Join(elsewhere, bare+".jsonl")
+	if err := os.Rename(projectTranscript(t, elsewhere, bare), outsideTr); err != nil {
 		t.Fatal(err)
 	}
-	outside := startedServer(t, config, laneSession, outsideTr)
-	sessionFile(t, config, 200, laneSession, cctasks.StatusBusy, "778")
-	if w, _ := work(outside); w != (cctasks.Work{Shells: 1, ShellsAtLeast: true}) {
-		t.Fatalf("a transcript outside projects was read: %+v", w)
+	other := startedServer(t, config, bare, outsideTr, 200)
+	sessionFile(t, config, 200, bare, cctasks.StatusBusy, "778")
+	if w, _ := work(other); w != (cctasks.Work{Shells: 1, ShellsAtLeast: true}) {
+		t.Fatalf("a transcript a hook named outside projects was read: %+v", w)
 	}
 }
 
@@ -305,5 +308,46 @@ func TestTheReporterPostsWorkOnChangeAndHeartbeatsWhileRunning(t *testing.T) {
 		if tokens[i] != "agent-token" {
 			t.Errorf("post %d sent token %q", i, tokens[i])
 		}
+	}
+}
+
+// TestTheReporterWithdrawsItsReportWhenCcdStops: ccd shutting down (the agent
+// being stopped) posts a last, empty report when it had something running —
+// best effort, beside muster's own clear on stop.
+func TestTheReporterWithdrawsItsReportWhenCcdStops(t *testing.T) {
+	var mu sync.Mutex
+	var got []mirror.WindowWork
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var ww mirror.WindowWork
+		_ = json.Unmarshal(b, &ww)
+		mu.Lock()
+		got = append(got, ww)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+	r := newWorkReporter(ts.URL, "agent-token", func() cctasks.Work { return cctasks.Work{Subagents: 3, Shells: 2} }, t.Logf)
+	r.interval = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { r.run(ctx); close(done) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n == 1 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	want := []mirror.WindowWork{{Subagents: 3, Shells: 2}, {}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("posts %+v, want %+v (the report, then its withdrawal)", got, want)
 	}
 }

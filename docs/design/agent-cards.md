@@ -398,7 +398,11 @@ loses its chip within the TTL.
 *As built:* each CLI's raw status comes from its own sessions file (present in
 a live pod on 2.1.296), its shells from `cctasks.CountShells`, and its
 subagents — read only while busy or waiting — from `internal/ccsubagents`'
-`Ledger` over the transcript its hooks name. That is the ledger muster-mirror
+`Ledger` over the transcript that sessions file names. Each CLI is found by
+its own process (the primary's and each lane's tmux pane), never by the
+session the last hook named: a `claude` a tool call runs inside the CLI
+inherits its hooks, and its SessionStart or SessionEnd must not take the card
+over. That is the ledger muster-mirror
 counts with, moved into a leaf package that imports no websocket, object-store
 or database client (`internal/modulegate`'s
 `TestTheSubagentLeafPullsNoNetworkOrStorageClient` pins it for the leaf and for
@@ -408,7 +412,9 @@ identically: one shared transcript fixture is counted through both callers
 `TestAMirroredWindowCountsTheSharedWorkFixture`). ccd samples every 5 s; the
 report is re-sent every minute only while something runs, and the card's
 status poll carries the chip it was drawn with, so an expiry that no POST
-announces still re-renders the list.
+announces still re-renders the list. A card shows a chip only while its agent
+is running; stopping or deleting an agent forgets its report, and ccd posts an
+empty report as it shuts down.
 
 #### UI
 
