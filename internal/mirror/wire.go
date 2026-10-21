@@ -464,9 +464,9 @@ type Window struct {
 	//
 	// ⚠ THE TRANSCRIPT PATH IS DELIBERATELY NOT ON THE WIRE. The window list is
 	// ONE message within MaxFrame, and with this field at its 64-byte bound its
-	// worst case measures 98% of it (1,030,215 of 1,048,576 bytes, measured
-	// 2026-10-21 with every field this list carries today:
-	// TestTheLargestWindowListFitsOneFrame, which logs the figure) — a host path
+	// worst case measures 98% of it (1,030,215 of 1,048,576 bytes, with every
+	// field this list carries now: TestTheLargestWindowListFitsOneFrame, which
+	// logs the figure) — a host path
 	// per window does not fit beside it. muster never needs the path: it reads a transcript
 	// through the host's own watch (Hub.WatchWindow), which resolves the path
 	// on the host.

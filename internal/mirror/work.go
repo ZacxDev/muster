@@ -13,8 +13,7 @@ import "regexp"
 // and `,"subagents":64,"shells":64` alone is 13.8 KB at MaxWindows. Each is
 // the WHOLE map of window id → value, sent after the window list whenever it
 // changed; an empty map clears it. Their worst cases are measured by
-// TestTheLargestWorkMessageFitsOneFrame and
-// TestTheLargestColorsMessageFitsOneFrame.
+// TestTheLargestWorkAndColorsMessagesFitOneFrame (3.1% and 1.2% of MaxFrame).
 //
 // 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an older muster's read
 // loop has no case for either type and drops the message; an older host never

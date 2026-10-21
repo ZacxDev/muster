@@ -186,6 +186,7 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_TMUX_SOCKET` | tmux's default | no | Uses a different tmux server: `tmux -L <name>`. |
 | `MUSTER_MIRROR_TMUX_SOCKET_PATH` | none | no | `tmux -S <path>`. It wins over the socket name. |
 | `MUSTER_MIRROR_LABELS_FILE` | none | no | A JSON object `{"<session>": "<codename>"}` of display labels. |
+| `MUSTER_MIRROR_COLOR_OPTION` | `@muster-color` | no | The tmux user option each window's identity colour (`#rrggbb`) is read from, resolved window, then session, then global; muster tints the window's card border and title with it (`-color-option`; docs/design/agent-cards.md (b)). Must match `^@[A-Za-z0-9_-]{1,64}$`. |
 | `MUSTER_MIRROR_PANE_MAP_DIR` | none | no | A directory of per-pane Claude Code records, kept current by a hook. |
 | `MUSTER_MIRROR_SNIPPETS_FILE` | `$XDG_CONFIG_HOME/muster-mirror/snippets.json` | no | A JSON array of `{trigger, label, body}`: the prewritten messages the Rendered view's message bar offers after `:`. Re-read when it changes; missing or invalid = none. |
 | `MUSTER_MIRROR_MCP_LISTEN` | none (off) | no | A loopback address (`127.0.0.1:<port>` or `[::1]:<port>`) on which to serve this host's Claude Code sessions muster's attention and task tools as an MCP endpoint (`http://<addr>/mcp`); any other address is refused. Optional: if it cannot start, the host logs why and mirrors without it. See [attention.md](attention.md#mirrored-claude-code-sessions). |
@@ -312,6 +313,7 @@ build tag, which the Playwright suite uses. The shipped binaries do not read the
 | `MUSTER_MIRROR_E2E_NO_PROMPT_INDEX` | unset | no | (`e2emirror`) `1`: the host sends no prompt index and no prompt places, as one that predates them (`mirrorhost.Config.NoPromptIndex`). |
 | `MUSTER_MIRROR_E2E_NO_CATALOG` | unset | no | (`e2emirror`) `1`: the host advertises no composer-menu catalog and answers no request, as one that predates it (`mirrorhost.Config.NoCatalog`). |
 | `MUSTER_MIRROR_E2E_NO_SUBAGENTS` | unset | no | (`e2emirror`) `1`: the host advertises no subagent reporting — no subagent summaries on a view's stream, no tail request answered — as one that predates the subagent cards (`mirrorhost.Config.NoSubagents`). |
+| `MUSTER_MIRROR_E2E_NO_WORK` | unset | no | (`e2emirror`) `1`: the host sends no `work` and no `colors` message, as one that predates the live work counts and identity colours (`mirrorhost.Config.NoWork`). |
 | `MUSTER_MIRROR_E2E_CWD` | unset | no | (`e2emirror`) The working directory of every window of the per-window fake: where its project `.claude` is found. |
 | `MUSTER_MIRROR_E2E_PASTE_FILE` | none | no | (`e2emirror`) Where pastes into non-Claude panes are recorded. |
 | `MUSTER_MIRROR_E2E_ACTIVE_FILE` | none | no | (`e2emirror`) `session=index` lines: each session's active window. |
