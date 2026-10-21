@@ -307,6 +307,9 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 		listed: map[string]bool{}, listedWindows: map[windowKey]bool{}, watches: map[uint32]context.CancelFunc{},
 		kick: make(chan chan struct{})}
 	conn.hermes = newHermesAsks(ctx, conn.hermesAttacher(), conn.nudge, c.log.Printf)
+	if src, ok := conn.hermesSource(); ok {
+		conn.hermes.terminal = src.State().PendingTerminalCommands
+	}
 	defer conn.hermes.close()
 	if sb, ok := ScrollOf(c.cfg.Backend); ok {
 		conn.scroller = newScroller(sb, c.cfg.ScrollIdle, c.log)

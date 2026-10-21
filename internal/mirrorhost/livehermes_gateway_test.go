@@ -183,6 +183,7 @@ func TestLiveHermesApprovalThroughTheHost(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	m := newHermesAsks(ctx, tm, func() {}, t.Logf)
+	m.terminal = tm.Hermes.State().PendingTerminalCommands
 	defer m.close()
 	list := func() *AgentPane {
 		ws, err := tm.Windows(ctx)

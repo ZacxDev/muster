@@ -1020,8 +1020,8 @@ these ways:
   `P:agent/redact.py`): a mask can swallow shell syntax (measured: `ls -H
   X-Api-Key:a;rm -rf ~/work` arrives as `ls -H X-Api-Key:*** -rf ~/work`).
   `hermeshost.GatewayMasks` lists the forms the pinned redactor emits (`***`,
-  `...`, `«redacted`, `[REDACTED`, `[redacted`); the livehermes ledger
-  `TestTheGatewayMasksMatchThePinnedRedactor` pins `agent/redact.py`'s and
+  `...`, `«redacted`, `[REDACTED`); the livehermes ledger
+  `TestTheGatewayMasksCoverAPinnedSample` pins `agent/redact.py`'s and
   the wrapper's source and runs the real redactor over a corpus, and
   `TestLiveHermesMaskedApprovalIsDenyOnly` drives the case end to end. An
   approval carrying any field muster does not render (a file edit's `edit`
@@ -1033,6 +1033,33 @@ these ways:
   chat` in a pane. The card never names why the gateway cannot be reached
   (no path, no uid): that is the host's log. `TimeoutS` is gone from the
   viewer's approval (nothing showed it).
+- 🔴 **Round-2 audit (#212): "once" is an ALLOWLIST.** The pin asks for
+  approval through more than one gate, and every one reaches the viewer with
+  the same fields: the terminal gate (`check_dangerous_command`,
+  `check_all_command_guards`), but also a file-write guard
+  (`P:tools/file_tools_write_guards.py:389`, "command" = the label `<write to
+  …/.ssh/config>`), a plugin's approval rule (`<tool> (plugin approval
+  rule)`), computer use and execute_code. Measured live before the fix: the
+  SSH-config write's card offered `once deny` (approving it writes a
+  `ProxyCommand` muster never showed). Now ONE predicate (`approvable`, used
+  by the listing and the answer check alike) offers "once" only when ALL hold:
+  the description is one the pinned **terminal** gate emits
+  (`hermeshost.TerminalDescriptions`, 111 descriptions re-extracted from
+  `P:tools/approval_detection.py` by the livehermes ledger
+  `TestTheTerminalGateLedgerMatchesThePin`, which also pins
+  `approval_detection.py` and `approval.py` by sha256); the command EQUALS a
+  pending `terminal` call's raw `command` in `state.db` (so it is what runs,
+  unredacted, unlabelled); it is printable ASCII (a value of only control or
+  zero-width characters the redactor drops without a mask, a homoglyph or a
+  combining mark, all refused); one line within the cap; nothing muster's
+  redactor would hide; none of the gateway's masks; no unrendered field.
+  Everything else is deny only. `TestLiveHermesLabelApprovalIsDenyOnly`
+  drives the SSH-config write live. ("arbitrary program execution via …",
+  built at run time, is not in the ledger: such approvals are deny only.)
+  The redactor sample (`TestTheGatewayMasksCoverAPinnedSample`) runs both
+  passes an approval takes (`P:tools/approval.py:855`, then the gateway's);
+  `[redacted` is no longer a listed mask (the pinned string redactor never
+  emits it).
 - **The wire** (no version bump): `Pending` gains `kind`
   (`approval`/`clarify`/`sudo`), `detail` (the description, 120 runes),
   `promptId` and `choices` (a space-separated string, so `Pending` stays

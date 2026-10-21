@@ -254,6 +254,12 @@ test('a Hermes approval is answered from the attention queue; a sudo prompt is o
   home = fs.mkdtempSync(path.join(rig.dir, 'hermes-answer-'));
   rows = path.join(home, 'rows.jsonl');
   row({ role: 'user', content: 'clean the build' });
+  // The terminal call the approval is for, pending (no tool row): the host
+  // offers "once" only for a command that IS a pending terminal call's.
+  row({
+    role: 'assistant',
+    tool_calls: JSON.stringify([{ id: 'call_build_rm', type: 'function', function: { name: 'terminal', arguments: JSON.stringify({ command: 'rm -r ./build' }) } }]),
+  });
   const hermesWindows = path.join(rig.dir, 'hermes-windows');
   fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|waiting|approval\nherm|@3|1|0|${t0 - 20}||waiting|sudo\n`);
   await rig.startHost({ ...hostEnv, MUSTER_MIRROR_E2E_HERMES_HOME: home, MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_HERMES_ANSWER: '1' });

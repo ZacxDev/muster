@@ -15,6 +15,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/ZacxDev/muster/internal/hermeshost"
+	"github.com/ZacxDev/muster/internal/hermeshost/hermestest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 )
@@ -258,7 +259,12 @@ func TestAHermesApprovalAnsweredEndToEnd(t *testing.T) {
 		r := newRig(t)
 		ctx, cancel := context.WithTimeout(asUser(1), 10*time.Second)
 		tok, _ := r.store.mint(t, 1, "on")
-		b := &e2eHermesBackend{fakeBackend: &fakeBackend{}, src: mirrorhost.NewHermesSource(t.TempDir(), t.TempDir())}
+		// The conversation holds the pending terminal call the approval is for:
+		// the host offers "once" only for a command that IS one.
+		hh := hermestest.New(t)
+		hh.Session(ansSID, hermestest.SessionOpts{})
+		hh.Message(ansSID, hermestest.Msg{Role: "assistant", ToolCalls: `[{"id":"c1","type":"function","function":{"name":"terminal","arguments":"{\"command\":\"rm -r ./build\"}"}}]`})
+		b := &e2eHermesBackend{fakeBackend: &fakeBackend{}, src: mirrorhost.NewHermesSource(hh.Dir, t.TempDir())}
 		c, err := mirrorhost.New(mirrorhost.Config{URL: r.srv.URL, Token: tok, Host: "on", Backend: b, Interactive: true, HermesAnswer: on,
 			AllowHTTP: true, Refresh: 30 * time.Millisecond, Logger: log.New(io.Discard, "", 0)})
 		if err != nil {

@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/text/unicode/bidi"
-
 	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/redact"
@@ -79,11 +77,15 @@ const (
 	// hermesCommandPrefix starts an approval's Summary: the command it would
 	// run ("terminal: rm -r build").
 	hermesCommandPrefix = "terminal: "
-	// HermesNotWholeText is an approval's Detail when its command cannot be
-	// shown whole: muster offers deny only.
+	// HermesNotWholeText is an approval's Detail when muster offers deny only
+	// (approvable).
 	HermesUnreachableText = "muster cannot reach Hermes's gateway on this host: answer it in the terminal."
-	HermesNotWholeText    = "muster cannot show this approval whole (too long, several lines, partly masked, or a file edit): approve it in the terminal, or deny it here."
+	HermesNotWholeText    = "muster offers only Deny here: this is not a plain terminal command it can show whole (a file write, a plugin rule, too long, several lines, masked, or not plain ASCII). Approve it in the terminal, or deny it here."
 )
+
+// hermesTerminalReadTimeout bounds one read of a session's pending terminal
+// calls (a short state.db read).
+const hermesTerminalReadTimeout = 2 * time.Second
 
 // hermesAttachTimeout bounds one attach (identify, a ticket, a WebSocket, a
 // resume); hermesRetry is how long a failed attach waits before the next.
@@ -97,6 +99,10 @@ type hermesAsks struct {
 	ctx      context.Context
 	attacher HermesViewerAttacher // nil: this host does not answer approvals
 	nudge    func()               // asks for a fresh listing (non-blocking)
+	// terminal reads the commands of the `terminal` calls pending in a
+	// session (hermeshost.State.PendingTerminalCommands); nil reads none, and
+	// then no approval is offered "once".
+	terminal func(ctx context.Context, session string) ([]string, error)
 	logf     func(string, ...any)
 	now      func() time.Time
 
@@ -111,8 +117,11 @@ type hermesAsk struct {
 	attaching bool
 	viewer    HermesViewer
 	prompts   []hermeshost.ApprovalPrompt
-	why       string
-	retryAt   time.Time
+	// running is the commands of the `terminal` calls pending in the
+	// conversation when prompts last changed (approvable).
+	running []string
+	why     string
+	retryAt time.Time
 }
 
 // newHermesAsks is the asks of one connection; attacher nil for a host that
@@ -172,52 +181,59 @@ func (m *hermesAsks) approvalPending(session string) *mirror.Pending {
 		return p
 	}
 	ap := a.prompts[len(a.prompts)-1]
-	shown, whole := commandShown(ap.Command)
-	whole = whole && !ap.Unshown
+	shown, choices := approvable(ap, a.running)
 	p.Summary, p.Detail, p.PromptID = shown, redact.Secrets(ap.Description), ap.PromptID
-	p.Choices = strings.Join(offeredChoices(ap, whole), " ")
-	if !whole {
+	p.Choices = strings.Join(choices, " ")
+	if !slices.Contains(choices, "once") {
 		p.Detail = HermesNotWholeText
 	}
 	return p
 }
 
-// commandShown is an approval's command as a card shows it ("terminal: …",
-// one line, capped, what looks like a secret redacted) and whether that is
-// the WHOLE command, verbatim — which it never is when the gateway's own
-// redactor already masked part of it (hermeshost.GatewayMasked: the mask can
-// swallow shell syntax, so the command that runs is not the one shown).
-func commandShown(cmd string) (shown string, whole bool) {
+// approvable is THE ONE RULE for a Hermes approval muster shows (audit #212):
+// the card's line ("terminal: …", one line, capped, what looks like a secret
+// redacted) and the answers muster offers — the listing (approvalPending) and
+// the answer check (answer) both call it, and nothing else decides.
+//
+// "deny" whenever the approval offers it. "once" ONLY for an approval that is
+// provably a terminal command whose command IS what will run — an allowlist,
+// never a denylist of shapes:
+//
+//   - its description is one the pinned TERMINAL gate emits
+//     (hermeshost.TerminalDescriptions): a write guard, a plugin's rule,
+//     computer use or execute_code — whose "command" is a label — never is;
+//   - its command equals the command of a `terminal` call pending in the
+//     conversation (running, read from state.db: the RAW command), so it is
+//     the command that runs, unredacted, unlabelled;
+//   - and the card shows it whole: printable ASCII only (no control,
+//     zero-width, homoglyph, combining or right-to-left character — any of
+//     which the redactor can drop or a browser reorder), one line within the
+//     cap, nothing muster's redactor would hide, none of the gateway's masks
+//     (hermeshost.GatewayMasked), and no field the card does not render
+//     (Unshown: a file edit's diff).
+func approvable(ap hermeshost.ApprovalPrompt, running []string) (shown string, choices []string) {
+	cmd := ap.Command
 	red := redact.Secrets(cmd)
 	shown = mirror.OneLine(hermesCommandPrefix+red, mirror.MaxPendingSummary)
-	return shown, red == cmd && shown == hermesCommandPrefix+cmd && !hermeshost.GatewayMasked(cmd) && !rightToLeft(cmd)
-}
-
-// rightToLeft reports whether s holds any character a browser lays out right
-// to left (bidi classes R, AL and AN): such a command can be drawn reordered,
-// so the card does not show it as it runs.
-func rightToLeft(s string) bool {
-	for _, r := range s {
-		p, _ := bidi.LookupRune(r)
-		switch p.Class() {
-		case bidi.R, bidi.AL, bidi.AN:
-			return true
-		}
-	}
-	return false
-}
-
-// offeredChoices are the answers muster offers for ap: once and deny as ap
-// offers them — once only for a command shown whole.
-func offeredChoices(ap hermeshost.ApprovalPrompt, whole bool) []string {
-	var out []string
+	once := printableASCII(cmd) && red == cmd && shown == hermesCommandPrefix+cmd && !hermeshost.GatewayMasked(cmd) &&
+		!ap.Unshown && hermeshost.TerminalDescriptions[ap.Description] && slices.Contains(running, cmd)
 	for _, c := range mirror.HermesApprovalChoices {
-		if !ap.Offers(c) || (c == "once" && !whole) {
+		if !ap.Offers(c) || (c == "once" && !once) {
 			continue
 		}
-		out = append(out, c)
+		choices = append(choices, c)
 	}
-	return out
+	return shown, choices
+}
+
+// printableASCII reports whether s is printable ASCII and spaces only.
+func printableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 // reconcile attaches a viewer to every session in want that has none (and
@@ -272,7 +288,10 @@ func (m *hermesAsks) follow(ctx context.Context, session string, a *hermesAsk) {
 		m.nudge()
 		return
 	}
-	a.viewer, a.prompts, a.why = v, ps, ""
+	m.mu.Unlock()
+	running := m.readRunning(ctx, session)
+	m.mu.Lock()
+	a.viewer, a.prompts, a.why, a.running = v, ps, "", running
 	m.mu.Unlock()
 	m.logf("muster-mirror: attached Hermes's gateway viewer to session %s (%d pending approval(s))", session, len(ps))
 	m.nudge()
@@ -293,16 +312,40 @@ func (m *hermesAsks) follow(ctx context.Context, session string, a *hermesAsk) {
 				m.nudge()
 				return
 			}
+			fresh := false
 			switch e.Kind {
 			case hermeshost.EventApprovalRequest:
 				a.prompts = append(slices.DeleteFunc(a.prompts, func(p hermeshost.ApprovalPrompt) bool { return p.PromptID == e.PromptID }), e.Prompt)
+				fresh = true
 			case hermeshost.EventApprovalSettled:
 				a.prompts = slices.DeleteFunc(a.prompts, func(p hermeshost.ApprovalPrompt) bool { return p.PromptID == e.PromptID })
 			}
 			m.mu.Unlock()
+			if fresh {
+				running := m.readRunning(ctx, session)
+				m.mu.Lock()
+				a.running = running
+				m.mu.Unlock()
+			}
 			m.nudge()
 		}
 	}
+}
+
+// readRunning is session's pending terminal commands now; nil when they
+// cannot be read (then nothing is offered "once").
+func (m *hermesAsks) readRunning(ctx context.Context, session string) []string {
+	if m.terminal == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, hermesTerminalReadTimeout)
+	defer cancel()
+	cmds, err := m.terminal(ctx, session)
+	if err != nil {
+		m.logf("muster-mirror: read Hermes session %s's pending terminal calls: %v (no approval offered once)", session, err)
+		return nil
+	}
+	return cmds
 }
 
 // close detaches every viewer.
@@ -324,7 +367,7 @@ var (
 
 // answer answers the approval promptID of session with choice through its
 // viewer — only an approval the viewer holds NOW, with an answer muster
-// offers for it (offeredChoices: once only for a command shown whole).
+// offers for it (approvable).
 func (m *hermesAsks) answer(ctx context.Context, session, promptID, choice string) error {
 	m.mu.Lock()
 	a := m.sessions[session]
@@ -346,8 +389,9 @@ func (m *hermesAsks) answer(ctx context.Context, session, promptID, choice strin
 	case !found:
 		return errHermesGone
 	}
-	_, whole := commandShown(ap.Command)
-	if !slices.Contains(offeredChoices(ap, whole && !ap.Unshown), choice) {
+	// THE SAME RULE as the listing, against the conversation as it is now.
+	running := m.readRunning(ctx, session)
+	if _, choices := approvable(ap, running); !slices.Contains(choices, choice) {
 		return fmt.Errorf("%w with %q: muster does not offer that answer for it", errHermesGone, choice)
 	}
 	err := v.Respond(ctx, ap, choice)
