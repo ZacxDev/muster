@@ -109,7 +109,7 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 	for _, m := range mirror.Ordered(hosts) {
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
 			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude, HermesView: m.HermesView(),
-			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.SessionKey()), Repo: m.Repo,
+			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.SessionKey()), Repo: m.Repo, Work: m.Work, Color: m.Color,
 			Pinned:   pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window}),
 			HostIcon: ui.HostIconFor(ranks, m.Host)})
 	}
@@ -227,6 +227,8 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// or password) when this has passed; the socket and the send route below
 		// refuse a stale write whatever the page does.
 		StepUp: s.stepUpView(r, "mirror:"+h.Host),
+		// The window's identity colour tints the title, as on its card.
+		Color: e.Color,
 	}
 	// 🔴 THE COMPOSER TAKES TEXT ONLY ON A HOST THAT ADVERTISED -interactive,
 	// and it does not need the switch above: it is one gated paste per Send into

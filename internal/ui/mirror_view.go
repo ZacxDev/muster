@@ -85,6 +85,10 @@ type MirrorViewView struct {
 	Upload string
 	// Queue is the composer's send queue (ComposerView.Queue); nil for none.
 	Queue *ComposerQueue
+	// Color is the window's tmux identity colour (mirror.SessionView.Color),
+	// "" for none: the header's title is tinted with it, as its card's is
+	// (identity_color.go).
+	Color string
 	// FocusHistory is the session's focus history, the newest page
 	// (FocusHistoryPath); "" when the host reports no Claude session for the
 	// window, which then has none. The index sheet's second tab.
@@ -146,6 +150,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				Class(pinnedShellClass+" bg-bg text-fg antialiased"),
 				Header(
 					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
+					// The window's identity colour tints the title (input.css).
+					identityAttrs(v.Color),
 					A(
 						ID("mv-back"),
 						Href("/agents"),

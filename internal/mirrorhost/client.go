@@ -115,6 +115,11 @@ type Config struct {
 	// advertised, no tail request answered. FOR THE OLDER-HOST TESTS ONLY
 	// (cmd/muster-mirror's e2emirror build); no flag sets it.
 	NoSubagents bool
+	// NoWork makes this host behave as one that predates the live work counts
+	// and identity colours (mirror/work.go): it sends no work and no colors
+	// message. FOR THE OLDER-HOST TESTS ONLY (cmd/muster-mirror's e2emirror
+	// build); no flag sets it.
+	NoWork bool
 }
 
 // ErrUnauthorized: muster refused the token (unknown, revoked, or not a mirror
@@ -554,8 +559,10 @@ func (h *hostSide) read() (listing, bool) {
 	l := listing{windows: windows}
 	if h.sendsRepos() {
 		l.repos = mirror.NormalizeRepos(h.c.repoNamer().windowRepos(raw), windows)
-		l.work = mirror.NormalizeWork(h.c.workCounter().windowWork(raw), windows)
-		l.colors = mirror.NormalizeColors(windowColors(raw), windows)
+		if !h.c.cfg.NoWork {
+			l.work = mirror.NormalizeWork(h.c.workCounter().windowWork(raw), windows)
+			l.colors = mirror.NormalizeColors(windowColors(raw), windows)
+		}
 	}
 	l.sessions, l.claude, l.labels, l.activity = mirror.SessionsOf(windows)
 	// What a muster that predates Windows keeps is at most MaxSessions sessions,

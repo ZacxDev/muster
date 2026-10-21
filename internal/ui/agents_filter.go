@@ -104,6 +104,9 @@ import (
 // exists to make. `ns:` is the finer cut for pods.
 type cardFields struct {
 	Host, Type, Name, Status, Kind, Repo, Account, Session, NS, Mode, State string
+	// Work is what a mirrored window has running ("subagents", "shells", or
+	// both: work_chip.go's workField), "" for nothing.
+	Work string
 	// Titles are what the card is CALLED — an agent's display name and name, a
 	// window's label, title and session — in the order the card shows them. They
 	// rank a match (rankAttrs); they filter nothing.
@@ -131,6 +134,7 @@ var cardFieldRegistry = []cardField{
 	{"status", func(f cardFields) string { return f.Status }},
 	{"kind", func(f cardFields) string { return f.Kind }},
 	{"repo", func(f cardFields) string { return f.Repo }},
+	{"work", func(f cardFields) string { return f.Work }},
 	{"account", func(f cardFields) string { return f.Account }},
 	{"session", func(f cardFields) string { return f.Session }},
 	{"ns", func(f cardFields) string { return f.NS }},

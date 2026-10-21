@@ -115,6 +115,10 @@ type AgentTerminalView struct {
 	// muster-mirror, a read-only host) leaves it "", and the page then has no
 	// gesture handlers at all — touch pans #term-scroll exactly as before.
 	ScrollForm string
+	// Color is a mirrored window's tmux identity colour, "" for none (and
+	// always for an agent pod): the header's title is tinted with it, as the
+	// window's card is (identity_color.go).
+	Color string
 }
 
 // MirrorTerminalScrollPath is where the Terminal view's drag-to-scroll posts
@@ -251,6 +255,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					// on one line, and a header that cannot wrap pushes the
 					// document sideways instead.
 					Class("flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line px-2 py-1.5"),
+					identityAttrs(v.Color),
 					A(
 						ID("term-back"),
 						Href(back),
@@ -261,6 +266,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					Div(
 						Class("min-w-[6rem] flex-1"),
 						H1(Class("truncate text-sm font-semibold"),
+							g.If(v.Color != "", g.Attr("data-identity-title", "")),
 							g.If(v.RawName == "" && v.TitleQualifier == "", g.Text(markdownPlain(title))),
 							// A mirrored entry: its label with the raw session name
 							// beside it, and/or its qualifier — drawn like its card.
