@@ -310,3 +310,35 @@ func TestTheDiagnosticLedger(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// ONE RULE, ONE PLACE (audit #212 D2, D3): the answers muster sends a Hermes
+// approval and the shape of a Hermes request id are mirror's
+// (HermesApprovalChoices, ValidPromptID), never re-declared here.
+func TestTheApprovalRulesAreDeclaredOnce(t *testing.T) {
+	files, _ := filepath.Glob("*.go")
+	fset := token.NewFileSet()
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		af, err := parser.ParseFile(fset, f, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range af.Decls {
+			g, ok := d.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, sp := range g.Specs {
+				if vs, ok := sp.(*ast.ValueSpec); ok {
+					for _, n := range vs.Names {
+						if n.Name == "ApprovalChoices" || n.Name == "requestIDPattern" {
+							t.Errorf("%s re-declares %s: use mirror's", fset.Position(n.Pos()), n.Name)
+						}
+					}
+				}
+			}
+		}
+	}
+}
