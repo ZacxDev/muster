@@ -309,6 +309,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	conn.hermes = newHermesAsks(ctx, conn.hermesAttacher(), conn.nudge, c.log.Printf)
 	if src, ok := conn.hermesSource(); ok {
 		conn.hermes.terminal = src.State().PendingTerminalCommands
+		conn.hermes.clarify = src.State().PendingClarify
 	}
 	defer conn.hermes.close()
 	if sb, ok := ScrollOf(c.cfg.Backend); ok {

@@ -309,3 +309,41 @@ test('a Hermes approval is answered from the attention queue; a sudo prompt is o
   }
   fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
 });
+
+// HERMES PHASE 4c: a window waiting on a CLARIFY question lists the question
+// and its choices, read from the conversation's database (the assistant row
+// that called the tool, with no answer yet), and says to answer it in the
+// terminal — there is nothing to answer here. Phone and desktop widths.
+//
+// 🔴 REGRESSION TEST. Before 4c the item says only that Hermes is asking a
+// question in the terminal.
+test('a Hermes clarify question is listed in the attention queue with its choices, to answer in the terminal', async ({ page }) => {
+  const sid2 = 'local-' + 'cd'.repeat(32);
+  const rowFor = (r: Record<string, string>) => fs.appendFileSync(rows, JSON.stringify({ session: sid2, ...r }) + '\n');
+  rowFor({ role: 'user', content: 'paint it' });
+  rowFor({
+    role: 'assistant',
+    tool_calls: JSON.stringify([{ id: 'call_clarify_1', type: 'function', function: { name: 'clarify', arguments: JSON.stringify({ questions: [
+      { question: 'Which colour should it use?', choices: ['red', 'blue'] }, { question: 'Both sides?' },
+    ] }) } }]),
+  });
+  const hermesWindows = path.join(rig.dir, 'hermes-windows');
+  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@4|2|0|${t0 - 30}|${sid2}|waiting|clarify\n`);
+  await rig.login(page);
+  for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
+    await page.setViewportSize(vp);
+    const item = page.locator('[data-attention-item]').filter({ hasText: 'Which colour should it use?' });
+    await expect
+      .poll(async () => {
+        await page.goto(rig.origin + '/attention');
+        return item.count();
+      }, { message: `the clarify in the queue (mirror log:\n${rig.log})`, timeout: 30_000 })
+      .toBe(1);
+    await expect(item.locator('[data-attention-text]')).toHaveText('Which colour should it use?');
+    await expect(item.locator('[data-attention-detail]')).toHaveText('red · blue — and 1 more question — answer in the terminal');
+    await expect(item.locator('[data-hermes-note]')).toHaveText('Answer it in the terminal.');
+    await expect(item.locator('form')).toHaveCount(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  }
+  fs.writeFileSync(hermesWindows, `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+});

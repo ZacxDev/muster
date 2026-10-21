@@ -39,6 +39,8 @@
 #   - internal/hermeshost TestTheApprovalGatesMatchThePin: every approval
 #     site in the pin classified, and each non-terminal gate's label caught
 #     by NonTerminalLabel (never offered "once");
+#   - internal/mirrorhost TestLiveHermesClarifyThroughTheHost: a clarify's
+#     question and choices listed from the real state.db, nothing answered;
 #   - internal/hermeshost TestOverlayLedgerMatchesThePinnedSource,
 #     TestScreenConditionsMatchThePinnedSource and
 #     TestViLabelsMatchThePinnedLocales: the ledgers held against the pin.
@@ -59,8 +61,8 @@ command -v hermes >/dev/null || { echo "livehermes: no hermes on PATH" >&2; exit
 command -v tmux >/dev/null || { echo "livehermes: no tmux on PATH" >&2; exit 2; }
 rev="$(grep -o "HERMES_REVISION='[0-9a-f]*'" "$(readlink -f "$(command -v hermes)")" | cut -d"'" -f2 || true)"
 
-required=(TestLiveHermesScreens TestLiveHermesSend TestLiveHermesGateway TestLiveHermesApprovalThroughTheHost TestLiveHermesMaskedApprovalIsDenyOnly TestLiveHermesLabelApprovalIsDenyOnly TestTheGatewayMasksCoverAPinnedSample TestTheTerminalGateLedgerMatchesThePin TestTheApprovalGatesMatchThePin TestOverlayLedgerMatchesThePinnedSource TestScreenConditionsMatchThePinnedSource TestViLabelsMatchThePinnedLocales)
-live='TestLiveHermesScreens|TestLiveHermesSend|TestLiveHermesGateway|TestLiveHermesApprovalThroughTheHost|TestLiveHermesMaskedApprovalIsDenyOnly|TestLiveHermesLabelApprovalIsDenyOnly'
+required=(TestLiveHermesScreens TestLiveHermesSend TestLiveHermesGateway TestLiveHermesApprovalThroughTheHost TestLiveHermesMaskedApprovalIsDenyOnly TestLiveHermesLabelApprovalIsDenyOnly TestLiveHermesClarifyThroughTheHost TestTheGatewayMasksCoverAPinnedSample TestTheTerminalGateLedgerMatchesThePin TestTheApprovalGatesMatchThePin TestOverlayLedgerMatchesThePinnedSource TestScreenConditionsMatchThePinnedSource TestViLabelsMatchThePinnedLocales)
+live='TestLiveHermesScreens|TestLiveHermesSend|TestLiveHermesGateway|TestLiveHermesApprovalThroughTheHost|TestLiveHermesMaskedApprovalIsDenyOnly|TestLiveHermesLabelApprovalIsDenyOnly|TestLiveHermesClarifyThroughTheHost'
 if [[ "${MUSTER_LIVEHERMES_TIMINGS:-}" == 1 ]]; then
   required+=(TestLiveHermesTimings)
   live+='|TestLiveHermesTimings'

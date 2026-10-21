@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/hermeshost"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE GATEWAY VIEWER AGAINST THE PIN (docs/design/hermes.md, Phase 4): the
@@ -235,6 +236,59 @@ func TestLiveHermesApprovalThroughTheHost(t *testing.T) {
 		t.Fatalf("%d viewer(s) still attached after the window stopped waiting", n)
 	}
 	r.keys(pane, "x")
+	r.killWindow(pane)
+}
+
+// TestLiveHermesClarifyThroughTheHost is Phase 4c against the pin: a window
+// waiting on a clarify lists its question and choices, read by the host from
+// the real state.db (the assistant row that called the tool, no tool row
+// yet), with nothing to answer from muster; the CLI's own picker stays up.
+func TestLiveHermesClarifyThroughTheHost(t *testing.T) {
+	r := newLiveRun(t)
+	home := r.makeHome(homeOpts{name: "gwc", hook: true})
+	src := NewHermesSource(home, r.statusDir())
+	tm := Tmux{SocketPath: r.tmux.SocketPath, Hermes: src}
+	pane := r.cli(home, 120, 40, []string{"chat"})
+	if !r.waitIdle(pane, 90*time.Second) {
+		t.Fatalf("not idle:\n%s", showScreen(r.capture(pane), 12))
+	}
+	typed(r, pane, "CLARIFY please")
+	if !shows(r, pane, "needs your input", 60*time.Second) {
+		t.Fatalf("no clarify picker:\n%s", showScreen(r.capture(pane), 20))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	m := newHermesAsks(ctx, nil, func() {}, t.Logf)
+	m.clarify = src.State().PendingClarify
+	defer m.close()
+	var p *mirror.Pending
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		ws, err := tm.Windows(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.attachPending(ws)
+		for _, w := range ws {
+			if w.Pane == pane && w.Agent != nil {
+				p = w.Agent.Pending
+			}
+		}
+		if p != nil && p.Summary != HermesClarifyText {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the clarify was never listed: %+v", p)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	want := mirror.Pending{Kind: "clarify", Summary: "Which colour should it use?", Tool: "clarify", Detail: "red · blue — answer in the terminal"}
+	if *p != want {
+		t.Fatalf("%+v\nwant %+v", *p, want)
+	}
+	if raw := r.capture(pane); !strings.Contains(raw, "needs your input") {
+		t.Fatalf("the CLI's picker went away:\n%s", showScreen(raw, 20))
+	}
 	r.killWindow(pane)
 }
 

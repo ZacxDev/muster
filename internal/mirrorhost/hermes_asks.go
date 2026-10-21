@@ -106,8 +106,25 @@ type hermesAsks struct {
 	logf     func(string, ...any)
 	now      func() time.Time
 
+	// clarify reads a session's pending clarify questions from state.db
+	// (hermeshost.State.PendingClarify); nil reads none. It needs no viewer
+	// and no -hermes-answer: it is the read the rendered view already makes.
+	clarify func(ctx context.Context, session string) ([]hermeshost.ClarifyQuestion, error)
+
 	mu       sync.Mutex
 	sessions map[string]*hermesAsk
+	// clarified caches each session's pending clarify by the status time it
+	// was read at: one database read per wait, not per listing.
+	clarified map[string]clarifyRead
+}
+
+// clarifyRead is one session's pending clarify, as read at since.
+type clarifyRead struct {
+	since int64
+	p     *mirror.Pending
+	// retryAt: the read failed; the words alone are shown, and it is read
+	// again no sooner than this (zero for a read that succeeded).
+	retryAt time.Time
 }
 
 // hermesAsk is one session's viewer: attaching, attached (viewer set), or
@@ -127,7 +144,63 @@ type hermesAsk struct {
 // newHermesAsks is the asks of one connection; attacher nil for a host that
 // does not answer approvals.
 func newHermesAsks(ctx context.Context, attacher HermesViewerAttacher, nudge func(), logf func(string, ...any)) *hermesAsks {
-	return &hermesAsks{ctx: ctx, attacher: attacher, nudge: nudge, logf: logf, now: time.Now, sessions: map[string]*hermesAsk{}}
+	return &hermesAsks{ctx: ctx, attacher: attacher, nudge: nudge, logf: logf, now: time.Now, sessions: map[string]*hermesAsk{},
+		clarified: map[string]clarifyRead{}}
+}
+
+// hermesClarifyTimeout bounds one clarify read (a short state.db read);
+// hermesClarifyBackoff is how long a failed read waits before the next.
+const (
+	hermesClarifyTimeout = 2 * time.Second
+	hermesClarifyBackoff = 30 * time.Second
+)
+
+// clarifyPending is what a window waiting on a clarify in session shows: its
+// first question, the first question's choices, and how many more there are
+// — read from the database once per wait (since). Its answer is the
+// terminal's (no PromptID, no Choices).
+func (m *hermesAsks) clarifyPending(session string, since int64) *mirror.Pending {
+	p := &mirror.Pending{Kind: mirror.PendingClarify, Summary: HermesClarifyText, Tool: "clarify"}
+	if m.clarify == nil || session == "" {
+		return p
+	}
+	m.mu.Lock()
+	c, ok := m.clarified[session]
+	now := m.now()
+	m.mu.Unlock()
+	if ok && c.since == since && (c.retryAt.IsZero() || now.Before(c.retryAt)) {
+		return c.p
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, hermesClarifyTimeout)
+	qs, err := m.clarify(ctx, session)
+	cancel()
+	if err != nil {
+		// Off the listing's hot path: a failing read is cached too, with a
+		// backoff, never retried on every listing.
+		m.mu.Lock()
+		m.clarified[session] = clarifyRead{since: since, p: p, retryAt: now.Add(hermesClarifyBackoff)}
+		m.mu.Unlock()
+		m.logf("muster-mirror: read Hermes session %s's pending clarify: %v (retried in %s)", session, err, hermesClarifyBackoff)
+		return p
+	}
+	if len(qs) > 0 {
+		p.Summary = redact.Secrets(qs[0].Question)
+		var d []string
+		if len(qs[0].Choices) > 0 {
+			d = append(d, redact.Secrets(strings.Join(qs[0].Choices, " · ")))
+		}
+		if n := len(qs) - 1; n == 1 {
+			d = append(d, "and 1 more question")
+		} else if n > 1 {
+			d = append(d, fmt.Sprintf("and %d more questions", n))
+		}
+		d = append(d, "answer in the terminal")
+		p.Detail = strings.Join(d, " — ")
+	}
+	m.mu.Lock()
+	m.clarified[session] = clarifyRead{since: since, p: p}
+	m.mu.Unlock()
+	return p
 }
 
 // attachPending sets each WAITING Hermes window's Pending (a copy of its
@@ -135,7 +208,7 @@ func newHermesAsks(ctx context.Context, attacher HermesViewerAttacher, nudge fun
 // waiting on an approval — and to no other. It never blocks on a gateway:
 // a viewer attaches in the background and nudges a fresh listing.
 func (m *hermesAsks) attachPending(windows []WindowInfo) {
-	want := map[string]bool{}
+	want, clarifying := map[string]bool{}, map[string]bool{}
 	for i := range windows {
 		a := windows[i].Agent
 		if a == nil || a.Runtime != mirror.RuntimeHermes || a.Status != mirror.StatusWaiting || a.Hermes == nil {
@@ -151,7 +224,8 @@ func (m *hermesAsks) attachPending(windows []WindowInfo) {
 		case mirror.PendingSudo:
 			p = &mirror.Pending{Kind: mirror.PendingSudo, Summary: HermesSudoText, Tool: "sudo"}
 		case mirror.PendingClarify:
-			p = &mirror.Pending{Kind: mirror.PendingClarify, Summary: HermesClarifyText, Tool: "clarify"}
+			clarifying[a.Gen] = true
+			p = m.clarifyPending(a.Gen, a.StatusSince)
 		default:
 			continue
 		}
@@ -159,7 +233,7 @@ func (m *hermesAsks) attachPending(windows []WindowInfo) {
 		cp.Pending = p
 		windows[i].Agent = &cp
 	}
-	m.reconcile(want)
+	m.reconcile(want, clarifying)
 }
 
 // approvalPending is what a window waiting on an approval in session shows:
@@ -244,16 +318,26 @@ func printableASCII(s string) bool {
 
 // reconcile attaches a viewer to every session in want that has none (and
 // whose last refusal is old enough) and detaches every other.
-func (m *hermesAsks) reconcile(want map[string]bool) {
-	if m.attacher == nil {
-		return
-	}
+func (m *hermesAsks) reconcile(want, clarifying map[string]bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.attacher == nil {
+		for s := range m.clarified {
+			if !clarifying[s] {
+				delete(m.clarified, s)
+			}
+		}
+		return
+	}
 	for s, a := range m.sessions {
 		if !want[s] {
 			a.cancel()
 			delete(m.sessions, s)
+		}
+	}
+	for s := range m.clarified {
+		if !clarifying[s] {
+			delete(m.clarified, s)
 		}
 	}
 	now := m.now()
