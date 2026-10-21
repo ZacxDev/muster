@@ -227,8 +227,6 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// or password) when this has passed; the socket and the send route below
 		// refuse a stale write whatever the page does.
 		StepUp: s.stepUpView(r, "mirror:"+h.Host),
-		// The window's identity colour tints the title, as on its card.
-		Color: e.Color,
 	}
 	// 🔴 THE COMPOSER TAKES TEXT ONLY ON A HOST THAT ADVERTISED -interactive,
 	// and it does not need the switch above: it is one gated paste per Send into

@@ -76,8 +76,7 @@ type MirrorCardView struct {
 	// none.
 	Attention *CardAttention
 	// Work is what the window's Claude Code session has running now
-	// (mirror.SessionView.Work): its chip (work_chip.go), and the `work:`
-	// filter field. The zero value — nothing running, or a host that did not
+	// (mirror.SessionView.Work): its chip (work_chip.go), display only. The zero value — nothing running, or a host that did not
 	// say — draws no chip.
 	Work mirror.WindowWork
 	// Color is the window's tmux identity colour (mirror.SessionView.Color,
@@ -269,7 +268,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 // data-l-*) attributes, which the filter's options are read from.
 func mirrorFields(m MirrorCardView) cardFields {
 	f := cardFields{Host: m.Host, Type: "Mirrored", Name: displayOr(m.Label, displayOr(m.Title, m.Session)),
-		Session: m.Session, Status: "running", Kind: m.Kind, Repo: m.Repo, Work: workField(m.Work), Titles: []string{m.Label, m.Title, m.Session}}
+		Session: m.Session, Status: "running", Kind: m.Kind, Repo: m.Repo, Titles: []string{m.Label, m.Title, m.Session}}
 	if !m.Online {
 		f.Status, f.State = "stopped", "offline"
 	}

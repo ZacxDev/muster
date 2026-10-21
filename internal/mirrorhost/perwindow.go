@@ -66,7 +66,7 @@ type WindowInfo struct {
 	// always nil when Claude is set (attachAgents).
 	Agent *AgentPane
 	// Color is the window's tmux identity colour, lowercase "#rrggbb" — from
-	// the user option Tmux.ColorOption (@muster-color by default), which tmux
+	// the user option ColorOption (@muster-color), which tmux
 	// resolves window, then session, then global — "" when it is unset or not a
 	// colour (windowColor). docs/design/agent-cards.md (b).
 	Color string
@@ -140,40 +140,22 @@ func WindowAttacherOf(b Backend) (WindowAttacher, bool) { return capabilityOf[Wi
 // strict identity rule to claim it.
 //
 // The two fields before the session name are the identity colour option
-// (colorOpt, already ValidColorOption's), EXPANDED and RAW (windowColor says
-// why both). 🔴 EACH IS PASSED THROUGH `s/[^ -~]/!/`: a user option is
+// (ColorOption, a constant: nothing from outside the binary is ever spliced
+// into this format), EXPANDED and RAW (windowColor says why both). 🔴 EACH IS PASSED THROUGH `s/[^ -~]/!/`: a user option is
 // arbitrary text, and tmux prints a tab or a newline in it as it is (measured
 // on 3.7c) — which would shift the session name or split the line, and lose
 // the window. Every byte outside printable ASCII becomes '!', so such a value
 // is simply not a colour, and the line keeps its shape.
-func windowsFormat(colorOpt string) string {
-	return "#{pane_active}\t#{window_id}\t#{window_index}\t#{window_active}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{session_activity}\t#{pane_current_command}\t#{pane_tty}\t" +
-		"#{s/[^ -~]/!/;E:" + colorOpt + "}\t#{s/[^ -~]/!/:" + colorOpt + "}\t#{session_name}"
-}
+const windowsFormat = "#{pane_active}\t#{window_id}\t#{window_index}\t#{window_active}\t#{pane_id}\t#{pane_pid}\t#{window_activity}\t#{session_activity}\t#{pane_current_command}\t#{pane_tty}\t" +
+	"#{s/[^ -~]/!/;E:" + ColorOption + "}\t#{s/[^ -~]/!/:" + ColorOption + "}\t#{session_name}"
 
 // windowsFields is how many fields a windowsFormat line has.
 const windowsFields = 13
 
-// DefaultColorOption is the tmux user option a window's identity colour is
-// read from unless Tmux.ColorOption names another.
-const DefaultColorOption = "@muster-color"
-
-// colorOptionPattern is a tmux user option name muster-mirror will put in its
-// listing's format: it is spliced into the format, so nothing but a plain
-// name is ever accepted.
-var colorOptionPattern = regexp.MustCompile(`^@[A-Za-z0-9_-]{1,64}$`)
-
-// ValidColorOption is whether name may be Tmux.ColorOption (-color-option).
-func ValidColorOption(name string) bool { return colorOptionPattern.MatchString(name) }
-
-// colorOption is the option the listing reads: ColorOption when it is a valid
-// name, else DefaultColorOption.
-func (t Tmux) colorOption() string {
-	if ValidColorOption(t.ColorOption) {
-		return t.ColorOption
-	}
-	return DefaultColorOption
-}
+// ColorOption is the tmux user option a window's identity colour is read
+// from. A constant on purpose: a host's tmux config sets it (window, session or
+// global), and no flag or environment variable can name another.
+const ColorOption = "@muster-color"
 
 // colorFieldPattern is what windowColor accepts from either field: six hex
 // digits, with or without the '#'.
@@ -202,7 +184,7 @@ func windowColor(expanded, raw string) string {
 // active pane (its input target and the root of the Claude Code lookup), its
 // activity and its command all come from that read.
 func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
-	cmd := exec.CommandContext(ctx, t.bin(), t.query("list-panes", "-a", "-F", windowsFormat(t.colorOption()))...)
+	cmd := exec.CommandContext(ctx, t.bin(), t.query("list-panes", "-a", "-F", windowsFormat)...)
 	cmd.Env = tmuxEnv()
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb

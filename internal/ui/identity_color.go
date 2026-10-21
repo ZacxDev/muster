@@ -63,16 +63,31 @@ type IdentityTint struct {
 	BorderDark, BorderLight, TitleDark, TitleLight idRGB
 }
 
-var identityCache sync.Map // string → IdentityTint
+// identityCache memoises identityTint per colour. 🔴 BOUNDED: the colours are
+// values hosts send, so a host cycling through distinct ones must not grow it
+// without limit. Past identityCacheMax entries it is cleared and refilled;
+// an operator's palette (a few dozen slot colours) stays resident.
+var identityCache = struct {
+	sync.Mutex
+	m    map[string]IdentityTint
+	hits int
+}{m: map[string]IdentityTint{}}
+
+// identityCacheMax bounds identityCache.
+const identityCacheMax = 2048
 
 // identityTint is c's variants, and false when c is not a wire colour.
 func identityTint(c string) (IdentityTint, bool) {
 	if !mirror.ValidColor(c) {
 		return IdentityTint{}, false
 	}
-	if v, ok := identityCache.Load(c); ok {
-		return v.(IdentityTint), true
+	identityCache.Lock()
+	if v, ok := identityCache.m[c]; ok {
+		identityCache.hits++
+		identityCache.Unlock()
+		return v, true
 	}
+	identityCache.Unlock()
 	n, err := strconv.ParseUint(c[1:], 16, 32)
 	if err != nil {
 		return IdentityTint{}, false
@@ -84,7 +99,12 @@ func identityTint(c string) (IdentityTint, bool) {
 		TitleDark:   meetContrast(base, identitySurfacesDark, identityTitleContrast, true),
 		TitleLight:  meetContrast(base, identitySurfacesLight, identityTitleContrast, false),
 	}
-	identityCache.Store(c, t)
+	identityCache.Lock()
+	if len(identityCache.m) >= identityCacheMax {
+		clear(identityCache.m)
+	}
+	identityCache.m[c] = t
+	identityCache.Unlock()
 	return t, true
 }
 

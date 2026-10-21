@@ -9,59 +9,31 @@ import (
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 )
 
-// TestColorOptionReachesTheListing: -color-option (or its environment
-// variable) is the user option the tmux listing reads — observed in the
-// format the listing passes to tmux (a script here, never the operator's
-// server) — the default is @muster-color, and a name that is not a plain tmux
-// user option is refused before anything is listed.
-func TestColorOptionReachesTheListing(t *testing.T) {
+// TestTheColourOptionIsFixedAndNothingIsSplicedIn: the tmux listing reads the
+// identity colour from `@muster-color` and nothing else — observed in the
+// format it passes to tmux (a script here, never the operator's server). No
+// environment variable names another option, and there is no flag for one:
+// no value from outside the binary is ever spliced into a tmux format.
+func TestTheColourOptionIsFixedAndNothingIsSplicedIn(t *testing.T) {
 	dir := t.TempDir()
 	args := filepath.Join(dir, "args")
 	bin := filepath.Join(dir, "tmux")
-	must := func(err error) {
-		t.Helper()
-		if err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >> '"+args+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	must(os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >> '"+args+"'\n"), 0o755))
 	prev := newTmuxBackend
 	t.Cleanup(func() { newTmuxBackend = prev })
-	listed := 0
 	newTmuxBackend = func(s, sp, dir string, h *mirrorhost.HermesSource) mirrorhost.Backend {
-		listed++
 		return mirrorhost.Tmux{Bin: bin, Claude: mirrorhost.ClaudeLocator{Proc: t.TempDir(), Home: t.TempDir()}}
 	}
-	formatOf := func(env map[string]string, flags ...string) string {
-		t.Helper()
-		_ = os.Remove(args)
-		if rc, _, errs := runWith(t, env, append([]string{"-list", "-windows"}, flags...)...); rc != 0 {
-			t.Fatalf("-list -windows %v: rc %d %s", flags, rc, errs)
-		}
-		b, _ := os.ReadFile(args)
-		return string(b)
+	if rc, _, errs := runWith(t, map[string]string{"MUSTER_MIRROR_COLOR_OPTION": "@from-env"}, "-list", "-windows"); rc != 0 {
+		t.Fatalf("-list -windows: rc %d %s", rc, errs)
 	}
-	for _, c := range []struct {
-		env   map[string]string
-		flags []string
-		want  string
-	}{
-		{nil, nil, "@muster-color"},
-		{map[string]string{envColorOption: "@from-env"}, nil, "@from-env"},
-		{map[string]string{envColorOption: "@from-env"}, []string{"-color-option", "@from_flag"}, "@from_flag"},
-	} {
-		if got := formatOf(c.env, c.flags...); !strings.Contains(got, ";E:"+c.want+"}") || !strings.Contains(got, "/:"+c.want+"}") {
-			t.Fatalf("env %v flags %v: the listing's format %q does not read %s", c.env, c.flags, got, c.want)
-		}
+	b, _ := os.ReadFile(args)
+	if got := string(b); !strings.Contains(got, ";E:@muster-color}") || !strings.Contains(got, "/:@muster-color}") || strings.Contains(got, "from-env") {
+		t.Fatalf("the listing's format %q: want @muster-color, and nothing from the environment", got)
 	}
-	before := listed
-	for _, bad := range []string{"muster-color", "@a}b", "@", "@x y"} {
-		rc, _, errs := runWith(t, nil, "-list", "-windows", "-color-option", bad)
-		if rc != 2 || !strings.Contains(errs, "is not a tmux user option name") {
-			t.Fatalf("-color-option %q: rc %d %q, want 2 and the refusal", bad, rc, errs)
-		}
-	}
-	if listed != before {
-		t.Fatalf("a refused -color-option still built a backend (%d times)", listed-before)
+	if rc, _, errs := runWith(t, nil, "-list", "-windows", "-color-option", "@from-flag"); rc != 2 || !strings.Contains(errs, "flag provided but not defined: -color-option") {
+		t.Fatalf("-color-option: rc %d %q, want 2 and an unknown flag", rc, errs)
 	}
 }

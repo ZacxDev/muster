@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -169,7 +171,7 @@ func TestTheStylesheetTintsTheBorderAndTheTitle(t *testing.T) {
 		"[data-identity]":                   "--id-bd: var(--id-bd-d); --id-tt: var(--id-tt-d);",
 		":root:not(.dark) [data-identity]":  "--id-bd: var(--id-bd-l); --id-tt: var(--id-tt-l);",
 		"[data-identity][data-mirror-card]": "border-color: rgb(var(--id-bd)); --tw-ring-color: rgb(var(--id-bd));",
-		"[data-identity] [data-mirror-name], [data-identity] [data-card-title], [data-identity] [data-identity-title]": "color: rgb(var(--id-tt));",
+		"[data-identity] [data-mirror-name], [data-identity] [data-card-title]": "color: rgb(var(--id-tt));",
 	} {
 		if got := norm(cssBlock(t, css, sel)); got != want {
 			t.Errorf("%s { %s }, want { %s }", sel, got, want)
@@ -201,28 +203,6 @@ func TestATintedCardsBorderAndTitleCarryTheColourAndAnUntintedOneIsUnchanged(t *
 	}
 }
 
-// TestTheRenderedViewAndTerminalHeadersAreTinted: the same variables on the
-// rendered view's and the terminal page's header, the title being an element
-// the title rule reaches; none on either page without a colour.
-func TestTheRenderedViewAndTerminalHeadersAreTinted(t *testing.T) {
-	view := renderNode(t, MirrorViewPage(MirrorViewView{Host: "h", Session: "s", Window: "@1", Color: "#458588"}))
-	if !regexp.MustCompile(`<header[^>]*data-identity="#458588"`).MatchString(view) || !strings.Contains(view, "data-mirror-name") {
-		t.Fatalf("the rendered view's header is not tinted: %s", view)
-	}
-	term := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "s", DisplayName: "s:1", BackHref: "/agents", Color: "#458588"}))
-	if !regexp.MustCompile(`<header[^>]*data-identity="#458588"`).MatchString(term) || !regexp.MustCompile(`<h1[^>]*data-identity-title`).MatchString(term) {
-		t.Fatalf("the terminal page's header is not tinted: %s", term)
-	}
-	for name, html := range map[string]string{
-		"view":     renderNode(t, MirrorViewPage(MirrorViewView{Host: "h", Session: "s", Window: "@1"})),
-		"terminal": renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "s", DisplayName: "s:1", BackHref: "/agents"})),
-	} {
-		if strings.Contains(html, "data-identity") {
-			t.Fatalf("the %s page without a colour carries a tint", name)
-		}
-	}
-}
-
 // parseWire is a wire colour as idRGB.
 func parseWire(c string) idRGB {
 	var r, g, b int
@@ -237,4 +217,82 @@ func hueDelta(a, b float64) float64 {
 		d = 360 - d
 	}
 	return d
+}
+
+// TestTheTintIsOnTheCardsOnly: the operator asked for the CARDS. The one
+// caller of identityAttrs is the mirrored card — not the rendered view's
+// header, not the terminal page's — and the stylesheet's title rule reaches
+// only a card's title elements. The ledger fails when the set of callers
+// grows or shrinks.
+func TestTheTintIsOnTheCardsOnly(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	callers := map[string]int{}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") || f == "identity_color.go" {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(string(b), "identityAttrs("); n > 0 {
+			callers[f] = n
+		}
+	}
+	if len(callers) != 1 || callers["mirror.go"] != 1 {
+		t.Fatalf("identityAttrs is called from %v, want exactly once, from mirror.go (the card)", callers)
+	}
+	if css := readInputCSS(t); strings.Contains(css, "data-identity-title") {
+		t.Fatal("input.css still tints a [data-identity-title] (a page header's title)")
+	}
+}
+
+// TestTheIdentityCacheStaysBounded: colours come from hosts, so a stream of
+// distinct ones must not grow the cache past identityCacheMax. The control is
+// the slot palette: once computed, each of its 16 colours is a HIT, and the
+// palette is resident again right after a flood.
+func TestTheIdentityCacheStaysBounded(t *testing.T) {
+	size := func() (n, hits int) {
+		identityCache.Lock()
+		defer identityCache.Unlock()
+		return len(identityCache.m), identityCache.hits
+	}
+	for _, c := range slotPalette {
+		identityTint(c)
+	}
+	_, h0 := size()
+	for _, c := range slotPalette {
+		identityTint(c)
+	}
+	if _, h1 := size(); h1-h0 != len(slotPalette) {
+		t.Fatalf("control: the warm slot palette scored %d hits of %d", h1-h0, len(slotPalette))
+	}
+	const n = 3*identityCacheMax + 7
+	peak := 0
+	for i := 0; i < n; i++ {
+		identityTint(fmt.Sprintf("#%06x", 0x100000+i*37))
+		if l, _ := size(); l > peak {
+			peak = l
+		}
+	}
+	if peak > identityCacheMax {
+		t.Fatalf("after %d distinct colours the cache peaked at %d entries, over %d", n, peak, identityCacheMax)
+	}
+	if peak < identityCacheMax {
+		t.Fatalf("instrument check: the flood only reached %d entries, so the bound was never tested", peak)
+	}
+	for _, c := range slotPalette {
+		identityTint(c)
+	}
+	_, h2 := size()
+	for _, c := range slotPalette {
+		identityTint(c)
+	}
+	if _, h3 := size(); h3-h2 != len(slotPalette) {
+		t.Fatalf("after the flood the slot palette scored %d hits of %d", h3-h2, len(slotPalette))
+	}
+	t.Logf("%d distinct colours: the cache peaked at %d (max %d)", n, peak, identityCacheMax)
 }

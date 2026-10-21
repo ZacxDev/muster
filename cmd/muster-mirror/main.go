@@ -91,7 +91,6 @@ const (
 	envHermesSend  = "MUSTER_MIRROR_HERMES_SEND"
 	envAllowHTTP   = "MUSTER_MIRROR_ALLOW_HTTP"
 	envLabelsFile  = "MUSTER_MIRROR_LABELS_FILE"
-	envColorOption = "MUSTER_MIRROR_COLOR_OPTION"
 	envPaneMapDir  = "MUSTER_MIRROR_PANE_MAP_DIR"
 	envSnippets    = "MUSTER_MIRROR_SNIPPETS_FILE"
 	envMCPListen   = "MUSTER_MIRROR_MCP_LISTEN"
@@ -158,7 +157,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	interactive := fs.Bool("interactive", envBool(envInteractive), "let muster open INTERACTIVE terminals on this host — effectively a SHELL here: an interactive tmux client can switch to any session or open a new window (default: read-only; muster then offers no Interactive switch) ("+envInteractive+")")
 	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL, which sends the token in cleartext ("+envAllowHTTP+")")
 	labelsFile := fs.String("labels-file", getenv(envLabelsFile), "JSON object {\"<session>\": \"<codename>\"}: muster shows such a session as <codename>:<active window index> instead of its name; unreadable or invalid = no labels, logged, never fatal ("+envLabelsFile+")")
-	colorOption := fs.String("color-option", or(getenv(envColorOption), mirrorhost.DefaultColorOption), "the tmux user option each window's identity colour (#rrggbb) is read from, resolved window, then session, then global; muster tints the window's card with it (docs/design/agent-cards.md (b)) ("+envColorOption+")")
 	paneMapDir := fs.String("pane-map-dir", getenv(envPaneMapDir), "directory of per-pane Claude Code records (claude-p<N>.json for pane %N, written by a hook on every event) that the rendered view resolves a pane's transcript from FIRST, each validated against the process in the pane; empty = not consulted ("+envPaneMapDir+")")
 	writeHook := fs.Bool("write-hook-config", envBool(envWriteHookConfig), "record this daemon's URL and token file (never the token) for `muster-mirror ask`, in "+defaultHookConfig+" ("+envHookConfig+"); for the host's managed service only — an ad-hoc daemon must not repoint the hook ("+envWriteHookConfig+")")
 	snippetsFile := fs.String("snippets-file", getenv(envSnippets), "JSON array of {\"trigger\", \"label\", \"body\"}: the prewritten messages muster's message bar offers after `:`; re-read when it changes; missing or invalid = none, never fatal (default "+mirrorhost.DefaultSnippetsFile()+"; "+envSnippets+")")
@@ -184,18 +182,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return 0
 	}
 
-	if !mirrorhost.ValidColorOption(*colorOption) {
-		fmt.Fprintf(stderr, "muster-mirror: -color-option %q is not a tmux user option name (@ and 1-64 of A-Z a-z 0-9 _ -)\n", *colorOption)
-		return 2
-	}
 	if *hermesStatusDir == "" {
 		fmt.Fprintln(stderr, "muster-mirror: HOME is not set, so there is no Hermes status directory (set -hermes-status-dir): every Hermes window's status is unknown")
 	}
 	backend := newTmuxBackend(*socket, *socketPath, *paneMapDir, mirrorhost.NewHermesSource(*hermesHome, *hermesStatusDir))
-	if tm, ok := backend.(mirrorhost.Tmux); ok {
-		tm.ColorOption = *colorOption
-		backend = tm
-	}
 	if e2eBackend != nil {
 		backend = e2eBackend()
 	}

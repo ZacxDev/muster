@@ -59,18 +59,6 @@ func TestTmuxReadsTheIdentityColourOption(t *testing.T) {
 	if !maps.Equal(got, want) {
 		t.Fatalf("colours = %v, want %v", got, want)
 	}
-	// Another option name reads that option instead; the default one is then
-	// not read at all.
-	r.run("set", "-t", "plain", "@slot-colour", "#0a0b0c")
-	ws, err = (Tmux{Socket: r.sock, ColorOption: "@slot-colour", Claude: ClaudeLocator{Proc: t.TempDir(), Home: t.TempDir()}}).Windows(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, w := range ws {
-		if want := map[string]string{"plain": "#0a0b0c"}[w.Session]; w.Color != want {
-			t.Fatalf("with -color-option @slot-colour, %s's colour = %q, want %q", w.Session, w.Color, want)
-		}
-	}
 }
 
 // TestTmuxCountsAFakeClaudesBackgroundShell: a pane runs a fake `claude` (a

@@ -86,18 +86,6 @@ func workChipLabel(w mirror.WindowWork) string {
 	return strings.Join(parts, " and ") + " running"
 }
 
-// workField is the card's `work:` filter value: "subagents", "shells" or both.
-func workField(w mirror.WindowWork) string {
-	var out []string
-	if w.Subagents > 0 {
-		out = append(out, "subagents")
-	}
-	if w.Shells > 0 || w.ShellsAtLeast {
-		out = append(out, "shells")
-	}
-	return strings.Join(out, " ")
-}
-
 // workChip is the chip, or nothing when there is nothing running to show. It
 // wears chip()'s classes (no new CSS) without chip()'s muted label.
 func workChip(w mirror.WindowWork) g.Node {
@@ -106,7 +94,7 @@ func workChip(w mirror.WindowWork) g.Node {
 		return g.Group(nil)
 	}
 	return Span(
-		g.Attr("data-mirror-work", workField(w)),
+		g.Attr("data-mirror-work", ""),
 		g.Attr("title", workChipLabel(w)),
 		Class("inline-flex items-center gap-1 rounded-full bg-s2/80 px-2.5 py-1 text-xs font-medium text-fg2 ring-1 ring-inset ring-line"),
 		Span(g.Attr("aria-hidden", "true"), g.Text(text)),

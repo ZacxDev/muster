@@ -16,7 +16,7 @@ import { clsInit, readCls, resetCls, settle } from '../lib/cls';
 //   - THE CHIP: a busy window with two running Agent calls and a shell reads
 //     "2 subagents · 1+ shell" (a turn may be running, so the shell count is a
 //     lower bound); a window whose CLI says "shell" with three reads "3 shells";
-//     it goes away LIVE when the CLI goes idle; `work:subagents` finds it.
+//     it goes away LIVE when the CLI goes idle. It is display only (no filter field).
 //   - THE TINT: the card's border is the window's colour and its title the
 //     title variant, the server's own per-theme values, in BOTH themes; a card
 //     with no colour keeps the line border; a shell window is tinted too.
@@ -127,11 +127,8 @@ for (const vp of viewports) {
       const chip = (await card(page, 'fleet:5').locator('[data-mirror-work]').boundingBox())!;
       expect(chip.x >= box.x && chip.x + chip.width <= box.x + box.width + 0.5, `the chip ${JSON.stringify(chip)} is inside the card ${JSON.stringify(box)}`).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-      // The filter field finds the busy window by its subagents.
-      await page.locator('#agents-search').fill('work:subagents');
-      await expect(card(page, 'fleet:5')).toBeVisible();
-      await expect(card(page, 'fleet:6')).toBeHidden();
-      await expect(card(page, 'relic:0')).toBeHidden();
+      // Display only: the chip is not a filter field.
+      expect(await card(page, 'fleet:5').getAttribute('data-f-work')).toBeNull();
     });
 
     test('the border and title wear the window colour in both themes; untinted and older-host cards keep the line', async ({ page }) => {
@@ -164,12 +161,10 @@ for (const vp of viewports) {
       await expect(card(page, 'fleet:5')).toHaveCount(1, { timeout: 20_000 });
       expect(await borderOf(page, 'fleet:5')).toBe('rgb(215, 153, 33)');
       expect(await variant(page, 'fleet:5', '--id-tt-l')).not.toBe('rgb(215, 153, 33)');
-      // The rendered view's header title wears the same title variant.
-      const tt = await variant(page, 'fleet:5', '--id-tt-d');
+      // The CARDS only: the rendered view's header title is not tinted.
       await page.goto(rig.origin + `/mirror/view?host=${encodeURIComponent(rig.host)}&session=fleet&window=${encodeURIComponent('@5')}`);
-      const head = page.locator('header[data-identity] [data-mirror-name]');
-      await expect(head).toHaveCount(1, { timeout: 15_000 });
-      expect(await head.evaluate((el) => getComputedStyle(el).color)).toBe(tt);
+      await expect(page.locator('header [data-mirror-name]')).toHaveCount(1, { timeout: 15_000 });
+      await expect(page.locator('[data-identity]')).toHaveCount(0);
     });
 
     test(`the list with chips and tints shifts less than ${BAR}`, async ({ page }) => {

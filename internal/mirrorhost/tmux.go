@@ -32,10 +32,6 @@ type Tmux struct {
 	// Hermes is where Hermes windows' sessions and status are read from
 	// (hermes_source.go); nil detects Hermes windows without resolving them.
 	Hermes *HermesSource
-	// ColorOption is the tmux user option each window's identity colour is read
-	// from (WindowInfo.Color); "" — or a name ValidColorOption refuses — reads
-	// DefaultColorOption.
-	ColorOption string
 }
 
 func (t Tmux) bin() string {

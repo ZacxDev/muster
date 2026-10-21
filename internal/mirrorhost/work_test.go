@@ -299,34 +299,21 @@ func TestParseWindowsReadsTheColourAndKeepsTheSessionNameWhole(t *testing.T) {
 	}
 }
 
-// TestTheListingReadsTheConfiguredColourOption: the one listing's format names
-// the option (each field passed through the control-character substitution);
-// a name ValidColorOption refuses is never spliced in — the default is read.
-func TestTheListingReadsTheConfiguredColourOption(t *testing.T) {
-	for _, c := range []struct{ opt, want string }{
-		{"", "@muster-color"},
-		{"@slot_colour-2", "@slot_colour-2"},
-		{"@bad}name", "@muster-color"},
-		{"no-at", "@muster-color"},
-		{"@" + strings.Repeat("x", 65), "@muster-color"},
-	} {
-		dir := t.TempDir()
-		args := filepath.Join(dir, "args")
-		bin := filepath.Join(dir, "tmux")
-		must(t, os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+args+"'\n"), 0o755))
-		if _, err := (Tmux{Bin: bin, ColorOption: c.opt, Claude: ClaudeLocator{Proc: t.TempDir(), Home: t.TempDir()}}).Windows(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		b, _ := os.ReadFile(args)
-		want := "\t#{s/[^ -~]/!/;E:" + c.want + "}\t#{s/[^ -~]/!/:" + c.want + "}\t#{session_name}"
-		if !strings.Contains(string(b), want) {
-			t.Errorf("ColorOption %q: the listing's format is %q, want it to end %q", c.opt, b, want)
-		}
+// TestTheListingReadsTheMusterColorOption: the one listing's format names
+// @muster-color, each field passed through the control-character
+// substitution — and nothing else.
+func TestTheListingReadsTheMusterColorOption(t *testing.T) {
+	dir := t.TempDir()
+	args := filepath.Join(dir, "args")
+	bin := filepath.Join(dir, "tmux")
+	must(t, os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+args+"'\n"), 0o755))
+	if _, err := (Tmux{Bin: bin, Claude: ClaudeLocator{Proc: t.TempDir(), Home: t.TempDir()}}).Windows(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	for name, ok := range map[string]bool{"@muster-color": true, "@a": true, "@": false, "muster-color": false, "@a b": false, "@a}": false, "@a#": false} {
-		if ValidColorOption(name) != ok {
-			t.Errorf("ValidColorOption(%q) = %v, want %v", name, !ok, ok)
-		}
+	b, _ := os.ReadFile(args)
+	want := "\t#{s/[^ -~]/!/;E:@muster-color}\t#{s/[^ -~]/!/:@muster-color}\t#{session_name}\n"
+	if !strings.HasSuffix(string(b), want) {
+		t.Fatalf("the listing's format is %q, want it to end %q", b, want)
 	}
 }
 
