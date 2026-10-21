@@ -56,11 +56,6 @@ type hookEvent struct {
 	// Notification only: which notification ("permission_prompt" is the one
 	// read here).
 	NotificationType string `json:"notification_type"`
-	// SubagentStart / SubagentStop only: the subagent's id (work.go).
-	AgentID string `json:"agent_id"`
-	// Stop and SubagentStop only: the CLI's background tasks still running —
-	// nil when the payload has no such key (work.go).
-	BackgroundTasks *[]backgroundTask `json:"background_tasks"`
 }
 
 type pendingTurn struct {
@@ -140,13 +135,6 @@ type server struct {
 	screenBlocked bool
 	clock         func() time.Time
 	pending       *pendingTurn
-	// subagents is the subagents this CLI has running, by id, each with when ccd
-	// learned of it — from its SubagentStart / SubagentStop hooks and its Stop
-	// hook's background tasks (work.go). Guarded by mu.
-	subagents map[string]time.Time
-	// workPoke, when set, is told that subagents changed, so the work reporter
-	// samples now rather than at its next tick (work.go). Never blocks.
-	workPoke func()
 	// work reports the pod's work counts to muster (work.go); set on the
 	// primary's server only, nil when the pod is not offered muster's surface.
 	work *workReporter
@@ -394,7 +382,6 @@ func (s *server) onHook(ev hookEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	defer s.trackApprovalLocked(ev)
-	defer s.trackSubagentsLocked(ev)
 	switch strings.ToLower(ev.Event) {
 	case "sessionstart":
 		// SessionStart only fires once the CLI is past its first-run screens AND the

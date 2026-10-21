@@ -7,12 +7,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/ccsubagents"
 	"github.com/ZacxDev/muster/internal/cctasks"
 	"github.com/ZacxDev/muster/internal/procstat"
 )
@@ -22,38 +23,20 @@ import (
 // primary and every lane — have running now, reported to muster for the
 // agent's card, which draws the chip a mirrored window's card does.
 //
-// THE RULE IS THE MIRROR'S, cctasks.Decide, over the same three inputs:
+// 🔴 THE SAME CODE AS A MIRRORED WINDOW'S COUNT, OVER THE SAME THREE INPUTS,
+// through the same rule (cctasks.Decide):
 //
 //   - the CLI's RAW session status, from its own sessions file
 //     (<CLAUDE_CONFIG_DIR>/sessions/<pid>.json — measured in a live pod on
 //     2.1.296: "idle", with pid, sessionId, startedAt, procStart). With no live
 //     file there is no Work: the CLI says nothing, so the card shows nothing.
-//   - its background shells, from its process tree: cctasks.CountShells, the
-//     mirror's own function — exact while nothing can run in the foreground,
-//     "1+" while a turn may be running (operator decision 3).
-//   - its running subagents, read only while the status is busy or waiting.
-//
-// 🔴 THE ONE DIFFERENCE IS WHERE THE SUBAGENTS COME FROM. The mirror reads them
-// from the transcript (internal/mirrorhost/work.go's ledger, which lives in
-// the host package and would bring the host's dependencies into the pod). ccd
-// owns its CLIs' hook settings and already hears their hooks, so it keeps the
-// set from them (trackSubagentsLocked):
-//
-//   - SubagentStart adds agent_id, SubagentStop removes it (payload fields read
-//     from the 2.1.296 bundle in the image: `hook_event_name:"SubagentStart",
-//     agent_id, agent_type`);
-//   - Stop and SubagentStop carry `background_tasks`, the CLI's own registry of
-//     the background tasks still running ({id, type, status}: type "subagent"
-//     for an agent, whose id IS its agent_id — the bundle builds the task with
-//     id = agentId). Each one REPLACES the set, so a missed start or stop is
-//     corrected by the next one;
-//   - an "idle" or "shell" status — the CLI saying no agent runs — empties it of
-//     every agent learned before that status was written.
-//
-// So a missed hook over- or under-counts only while the CLI stays busy, and
-// only until the next Stop, SubagentStop or idle; the mirror's ledger has the
-// same window for a kill it does not see. ⚠ It counts a subagent's OWN
-// subagents too (both sources include them); the mirror's ledger does not.
+//   - its background shells, from its process tree: cctasks.CountShells —
+//     exact while nothing can run in the foreground, "1+" while a turn may be
+//     running (operator decision 3).
+//   - its running subagents, read only while the status is busy or waiting:
+//     internal/ccsubagents' Ledger over the session's transcript, the ledger
+//     muster-mirror counts with (internal/mirrorhost/work.go). So a dispatched
+//     card and a mirrored one count subagents identically.
 //
 // STALE-SAFE: the report is re-sent every workHeartbeat while non-zero, and
 // muster drops one it has not seen refreshed within its TTL
@@ -61,136 +44,20 @@ import (
 // exited leaves its sessions file behind, but not its process: a file is live
 // only while its pid runs with the start time the file records.
 
-// workInterval is how often ccd samples its CLIs' work; a hook that changes the
-// subagent set samples at once (server.workPoke).
+// workInterval is how often ccd samples its CLIs' work. The chip is display
+// only: this, plus the card's 10 s status poll, bounds how stale it can be.
 const workInterval = 5 * time.Second
 
 // workHeartbeat is how often an unchanged non-zero report is re-sent.
 const workHeartbeat = time.Minute
 
-// maxTrackedSubagents bounds a CLI's subagent set: hooks are claims any tool
-// call holding the hook secret can make, and this is memory they cannot grow.
-const maxTrackedSubagents = 256
-
-// subagentIDPattern bounds what an id may be (the measured form is "a" and 16
-// hex; this does not insist on it, so a longer id in a later build still counts).
-var subagentIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-
-// backgroundTask is one entry of a Stop / SubagentStop hook's background_tasks.
-type backgroundTask struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	Status    string `json:"status"`
-	AgentType string `json:"agent_type"`
-}
-
-// isRunningSubagent: an agent task the CLI says is still running. A
-// "main-session" agent is a backgrounded conversation, not a subagent.
-func (t backgroundTask) isRunningSubagent() bool {
-	return t.Type == "subagent" && (t.Status == "running" || t.Status == "pending") &&
-		t.AgentType != "main-session" && subagentIDPattern.MatchString(t.ID)
-}
-
-// trackSubagentsLocked updates s.subagents from one hook. Caller holds s.mu.
-func (s *server) trackSubagentsLocked(ev hookEvent) {
-	// A hook naming another session is a `claude` some tool call ran inside this
-	// one (proctree.go): its subagents are not this CLI's.
-	own := ev.SessionID == "" || s.sessionID == "" || ev.SessionID == s.sessionID
-	before := len(s.subagents)
-	changed := false
-	switch strings.ToLower(ev.Event) {
-	case "sessionstart", "sessionend":
-		changed = before > 0
-		s.subagents = nil
-	case "subagentstart":
-		if own && subagentIDPattern.MatchString(ev.AgentID) {
-			if s.subagents == nil {
-				s.subagents = map[string]time.Time{}
-			}
-			if _, seen := s.subagents[ev.AgentID]; !seen && len(s.subagents) < maxTrackedSubagents {
-				s.subagents[ev.AgentID] = s.clock()
-				changed = true
-			}
-		}
-	case "stop", "subagentstop":
-		if !own {
-			return
-		}
-		if ev.BackgroundTasks != nil {
-			next := map[string]time.Time{}
-			for _, t := range *ev.BackgroundTasks {
-				if !t.isRunningSubagent() || len(next) >= maxTrackedSubagents {
-					continue
-				}
-				at, known := s.subagents[t.ID]
-				if !known {
-					at = s.clock()
-				}
-				next[t.ID] = at
-			}
-			changed = !sameIDs(next, s.subagents)
-			s.subagents = next
-		}
-		// The agent that stopped is no longer running, whether or not the
-		// snapshot was taken before it was marked done.
-		if _, ok := s.subagents[ev.AgentID]; ok && ev.AgentID != "" {
-			delete(s.subagents, ev.AgentID)
-			changed = true
-		}
-	}
-	if changed && s.workPoke != nil {
-		s.workPoke()
-	}
-}
-
-func sameIDs(a, b map[string]time.Time) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k := range a {
-		if _, ok := b[k]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// runningSubagents is how many subagents the CLI has running, by its hooks.
-func (s *server) runningSubagents() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.subagents)
-}
-
-// forgetSubagentsBefore drops every subagent learned before t: the CLI wrote a
-// status at t that says none was running then.
-func (s *server) forgetSubagentsBefore(t time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id, at := range s.subagents {
-		if at.Before(t) {
-			delete(s.subagents, id)
-		}
-	}
-}
-
-// currentSession is the session id the CLI's last SessionStart named.
-func (s *server) currentSession() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.sessionStarted {
-		return ""
-	}
-	return s.sessionID
-}
-
 // cliSession is a sessions file, the fields read.
 type cliSession struct {
-	PID             int    `json:"pid"`
-	SessionID       string `json:"sessionId"`
-	Status          string `json:"status"`
-	StatusUpdatedAt int64  `json:"statusUpdatedAt"`
-	ProcStart       string `json:"procStart"`
+	PID       int    `json:"pid"`
+	SessionID string `json:"sessionId"`
+	Status    string `json:"status"`
+	StartedAt int64  `json:"startedAt"`
+	ProcStart string `json:"procStart"`
 }
 
 // procTable is the pod's processes: each one's argv, and each one's children.
@@ -258,39 +125,80 @@ func liveSessions(configDir, root string) map[string]cliSession {
 	return out
 }
 
-// podWork is the work of every CLI in servers, summed: subagents and shells
+// cliSessionView is what work reads of a CLI's server: its session, as its
+// last SessionStart named it, and that session's transcript ("" when unknown
+// or outside <CLAUDE_CONFIG_DIR>/projects).
+func (s *server) cliSessionView() (id, transcript string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.sessionStarted {
+		return "", ""
+	}
+	id, transcript = s.sessionID, s.transcriptPath
+	if transcript != "" && s.underProjects(transcript) != nil {
+		transcript = ""
+	}
+	return id, transcript
+}
+
+// podCounter counts the pod's work, keeping one subagent ledger per session it
+// has read (as muster-mirror's workCounter does per window): a session no
+// longer seen drops its ledger, and a new one starts from the backfill window.
+type podCounter struct {
+	configDir, root string
+	// now is time.Now; a test moves it.
+	now func() time.Time
+
+	mu      sync.Mutex
+	ledgers map[string]*ccsubagents.Ledger
+}
+
+// work is the work of every CLI in servers, summed: subagents and shells
 // added, a lower bound if any is one. ok is false when no CLI has a live
 // sessions file to read a status from — nothing may be claimed.
-func podWork(configDir, root string, servers []*server) (cctasks.Work, bool) {
-	sessions := liveSessions(configDir, root)
+func (c *podCounter) work(servers []*server) (cctasks.Work, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ledgers == nil {
+		c.ledgers = map[string]*ccsubagents.Ledger{}
+	}
+	now := time.Now
+	if c.now != nil {
+		now = c.now
+	}
+	sessions := liveSessions(c.configDir, c.root)
 	var tbl *procTable
 	var sum cctasks.Work
 	any := false
+	seen := map[string]bool{}
 	for _, s := range servers {
-		cs, ok := sessions[s.currentSession()]
+		id, transcript := s.cliSessionView()
+		cs, ok := sessions[id]
 		if !ok {
 			continue
 		}
+		seen[id] = true
 		var sh cctasks.Shells
 		switch cs.Status {
 		case cctasks.StatusShell, cctasks.StatusBusy, cctasks.StatusWaiting:
 			if tbl == nil {
-				t := readProcTable(root)
+				t := readProcTable(c.root)
 				tbl = &t
 			}
-			sh = cctasks.CountShells(root, cs.PID, tbl.children, func(pid int) []string { return tbl.argv[pid] }, configDir)
-		case cctasks.StatusIdle:
-		default:
-			continue
+			sh = cctasks.CountShells(c.root, cs.PID, tbl.children, func(pid int) []string { return tbl.argv[pid] }, c.configDir)
 		}
-		if cs.Status == cctasks.StatusIdle || cs.Status == cctasks.StatusShell {
-			// The CLI says no agent runs: what the hooks still hold from before
-			// that is a stop ccd never heard.
-			if cs.StatusUpdatedAt > 0 {
-				s.forgetSubagentsBefore(time.UnixMilli(cs.StatusUpdatedAt))
+		w, ok := cctasks.Decide(cs.Status, sh, func() int {
+			if transcript == "" {
+				return 0
 			}
-		}
-		w, ok := cctasks.Decide(cs.Status, sh, s.runningSubagents)
+			l := c.ledgers[id]
+			if l == nil || l.Path() != transcript || l.Started() != cs.StartedAt {
+				l = ccsubagents.NewLedger(transcript, cs.StartedAt)
+				c.ledgers[id] = l
+			}
+			l.Read()
+			return l.Running(now())
+		})
 		if !ok {
 			continue
 		}
@@ -298,6 +206,11 @@ func podWork(configDir, root string, servers []*server) (cctasks.Work, bool) {
 		sum.Subagents += w.Subagents
 		sum.Shells += w.Shells
 		sum.ShellsAtLeast = sum.ShellsAtLeast || w.ShellsAtLeast
+	}
+	for id := range c.ledgers {
+		if !seen[id] {
+			delete(c.ledgers, id)
+		}
 	}
 	return sum, any
 }
@@ -321,16 +234,15 @@ func (s *server) workServers() []*server {
 	return out
 }
 
-// workReporter samples the pod's work and posts it to muster (POST /agent/work,
-// the agent's own token, like /agent/blocked) when it changes, and every
-// heartbeat while it is non-zero.
+// workReporter samples the pod's work every interval and posts it to muster
+// (POST /agent/work, the agent's own token, like /agent/blocked) when it
+// changes, and every heartbeat while it is non-zero.
 type workReporter struct {
 	base, token string
 	client      *http.Client
 	interval    time.Duration
 	heartbeat   time.Duration
 	sample      func() cctasks.Work
-	poke        chan struct{} // capacity 1
 	now         func() time.Time
 	logf        func(format string, args ...any)
 }
@@ -340,15 +252,7 @@ func newWorkReporter(base, token string, sample func() cctasks.Work, logf func(s
 		base: strings.TrimRight(base, "/"), token: token,
 		client:   &http.Client{Timeout: 5 * time.Second, CheckRedirect: noRedirects.CheckRedirect},
 		interval: workInterval, heartbeat: workHeartbeat,
-		sample: sample, poke: make(chan struct{}, 1), now: time.Now, logf: logf,
-	}
-}
-
-// pokeNow asks for a sample now, without blocking.
-func (r *workReporter) pokeNow() {
-	select {
-	case r.poke <- struct{}{}:
-	default:
+		sample: sample, now: time.Now, logf: logf,
 	}
 }
 
@@ -374,7 +278,6 @@ func (r *workReporter) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-		case <-r.poke:
 		}
 	}
 }

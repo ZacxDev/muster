@@ -25,7 +25,8 @@ func heavyIn(set map[string]bool) []string {
 
 // TestTheSubagentLeafPullsNoNetworkOrStorageClient: internal/ccsubagents —
 // the ONE reading of a session's subagents, kept a leaf for the agent pod's
-// ccd — imports no websocket, object-store or database client, transitively.
+// ccd — imports no websocket, object-store or database client, transitively;
+// nor does cmd/ccd, which links it into the agent pod.
 //
 // The instrument is checked first, one class at a time, on packages of this
 // module that DO pull each one, so a matcher that cannot see a class fails
@@ -53,5 +54,8 @@ func TestTheSubagentLeafPullsNoNetworkOrStorageClient(t *testing.T) {
 	}
 	if got := heavyIn(depsOf(t, root, "./internal/ccsubagents")); len(got) != 0 {
 		t.Fatalf("internal/ccsubagents pulls in %v; it is meant for the agent pod's ccd and must stay a leaf", got)
+	}
+	if got := heavyIn(depsOf(t, root, "./cmd/ccd")); len(got) != 0 {
+		t.Fatalf("cmd/ccd pulls in %v; the agent pod's supervisor must not link them", got)
 	}
 }

@@ -28,12 +28,6 @@
     ],
     "PostToolUse": [
       {"hooks": [{"type": "command", "command": "ccd hook PostToolUse", "timeout": 10}]}
-    ],
-    "SubagentStart": [
-      {"hooks": [{"type": "command", "command": "ccd hook SubagentStart", "timeout": 10}]}
-    ],
-    "SubagentStop": [
-      {"hooks": [{"type": "command", "command": "ccd hook SubagentStop", "timeout": 10}]}
     ]
   }
 }
