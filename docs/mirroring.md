@@ -435,7 +435,9 @@ it:
   already been taken. Without `-hermes-answer`, or when the host cannot reach
   the gateway (none running, not the pinned commit — `-list -hermes` names
   it), the item says to answer in the terminal.
-- **a question** (Hermes's clarify tool): answer it in the terminal.
+- **a question** (Hermes's clarify tool): the queue shows the first question,
+  its choices and how many more there are, read from the conversation; answer
+  it in the terminal.
 - **a sudo password**: listed only. muster never answers a password prompt.
 
 The viewer is attached only while a session waits on an approval, and only

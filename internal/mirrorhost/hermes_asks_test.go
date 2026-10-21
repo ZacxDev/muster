@@ -555,3 +555,47 @@ func TestTheListingAndTheAnswerShareOnePredicate(t *testing.T) {
 		t.Fatalf("approvable is called by %v; want exactly approvalPending and answer", callers)
 	}
 }
+
+// A window waiting on a clarify shows its first question, the question's
+// choices and how many more there are — read from the database once per wait —
+// and offers nothing to answer.
+func TestAClarifyIsListedFromTheDatabaseOncePerWait(t *testing.T) {
+	m, _ := newTestAsks(t, nil)
+	reads := 0
+	var fail error
+	m.clarify = func(_ context.Context, s string) ([]hermeshost.ClarifyQuestion, error) {
+		reads++
+		if s != askSID {
+			t.Errorf("read session %q", s)
+		}
+		return []hermeshost.ClarifyQuestion{{Question: "Which colour should it use?", Choices: []string{"red", "blue"}}, {Question: "Both?"}}, fail
+	}
+	list := func(since int64) *mirror.Pending {
+		ws := hermesWindow(mirror.StatusWaiting, "clarify")
+		ws[0].Agent.StatusSince = since
+		m.attachPending(ws)
+		return ws[0].Agent.Pending
+	}
+	want := mirror.Pending{Kind: "clarify", Summary: "Which colour should it use?", Tool: "clarify",
+		Detail: "red · blue — and 1 more question — answer in the terminal"}
+	for i := 0; i < 3; i++ {
+		if p := list(5); *p != want {
+			t.Fatalf("%+v\nwant %+v", *p, want)
+		}
+	}
+	if reads != 1 {
+		t.Fatalf("%d reads for one wait", reads)
+	}
+	list(6)
+	if reads != 2 {
+		t.Fatalf("a new wait was not read again (%d reads)", reads)
+	}
+	fail = errors.New("database is locked")
+	if p := list(7); p.Summary != HermesClarifyText || p.Detail != "" {
+		t.Fatalf("a failed read: %+v", *p)
+	}
+	list(7)
+	if reads != 4 {
+		t.Fatalf("a failed read was cached (%d reads)", reads)
+	}
+}

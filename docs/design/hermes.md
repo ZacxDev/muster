@@ -1,6 +1,6 @@
 # Design: Hermes mirroring and the `hermes` agent kind
 
-**Status: proposed, with Phases 0, 1, 2, 3 and 5 done.** Phase 5, the `hermes`
+**Status: Phases 0–5 done** (Phase 4 in three stacked parts, 4a–4c). Phase 5, the `hermes`
 agent kind, is implemented (`cmd/hermesd`, `images/hermes-agent`, the kind in
 `internal/agents` and `internal/agentspec`, migration `0038`); what it built
 differently from this page is under [Phase 5 as built](#phase-5-as-built).
@@ -25,11 +25,12 @@ Send, Queue and Send now for Hermes windows, and its live harness,
 `make test-livehermes`, whose fixtures and measurements are recorded there.
 **Send ships OFF**: the operator enables it per host once the harness is
 green against that host's Hermes; the host refuses vi mode itself. Phase 4
-is in progress (see [Phase 4 as built](#phase-4-as-built)): 4a, the gateway
+is implemented (see [Phase 4 as built](#phase-4-as-built)): 4a, the gateway
 viewer itself — discovery, the pin check, attach, `approval.respond` and the
 hygiene filters — and `-list -hermes`'s gateway line; 4b, approval and sudo
 attention items and the approval's answer through the viewer, behind the
-host's `-hermes-answer`. The
+host's `-hermes-answer`; 4c, clarify questions read from the database, answered
+in the terminal (the viewer's clarify answer was measured and is not wired). The
 version target is **decided** (below). Every other section describes the design
 the Phase 0 spikes support; the [Phase 0 results](#phase-0-results) table names
 what each spike changed. Where this page states how muster works today, the
@@ -1113,6 +1114,38 @@ these ways:
   victim directory intact; the viewer is detached once the window stops
   waiting.
 
+**4c** (`internal/hermeshost`'s `clarify.go`, the host's clarify listing):
+
+- 🔴 **The viewer's clarify answer, MEASURED against the pin, and NOT wired.**
+  A viewer attached BEFORE Hermes asks receives the `clarify` server request
+  (`{id: "srq-…", method: "clarify", params: {questions: [{qid, question,
+  choices, multi_select}]}}` — the recommended choice already suffixed
+  "(Recommended)") and its answer `{answers: {q0: "blue"}, outcome:
+  "submitted"}` is taken: the tool result records it, `request.cancel` releases
+  the CLI's picker, and the CLI returns to its idle prompt cleanly. But a
+  viewer attached AFTER — which is what attaching on the hook's `waiting` is —
+  gets nothing: `session.resume` lists approvals only (`prompts: []`), carries
+  no `open_requests` at the pin's gateway runtime, and `session.events.since`
+  answers `snapshot_required` with no events. So the design's
+  attach-to-answer cannot reach a clarify, and the card says to answer it in
+  the terminal. Wiring it would need a viewer attached to every session while
+  it is busy, before it asks — a standing attachment the design rules out
+  ("attach only to answer"); question for the operator. (Measured with a
+  scratch home, a private tmux server and the stub model, by a throwaway
+  Python viewer using the pin's own `websockets`; not committed.)
+- **The questions come from the database**, as the design says: the newest
+  `clarify` call in the conversation's last 64 rows that no `tool` row answers
+  (1–5 questions, at most 4 choices, as the tool bounds them), read once per
+  wait (keyed by the status time) with or without `-hermes-answer` — it is the
+  read the rendered view already makes. The item shows the first question,
+  its choices and how many more there are ("red · blue — and 1 more question —
+  answer in the terminal"), each through the host's redaction and the wire's
+  caps. Not `askq.Question` cards: there is nothing muster can answer, and the
+  questions in full do not fit the window list's frame budget.
+- **Measured against the pin** (`TestLiveHermesClarifyThroughTheHost`): the
+  host lists "Which colour should it use?" with "red · blue" from the real
+  `state.db`, and the CLI's picker stays up.
+
 ### Pane to session resolution
 
 **Recognising a Hermes CLI** (S10). A process is a Hermes CLI only if all hold:
@@ -1833,7 +1866,7 @@ dropped on receipt, `sudo` frames included.
 | ask | answered by |
 |---|---|
 | approval | the viewer's `approval.respond` |
-| clarify | the viewer, if Phase 4 measures it; else the terminal |
+| clarify | the terminal (Phase 4 measured the viewer's answer: it reaches only a viewer attached before Hermes asks; see [4c](#phase-4-as-built)) |
 | sudo | never from muster |
 
 - **Approvals: the viewer's `approval.respond({session_id,
@@ -2382,10 +2415,10 @@ Efforts are rough engineer-days, including tests and docs. Phase 0 is done.
 | ~~1~~ | Runtime seam: `mirrorhost.Runtime` for Claude Code and Hermes, Claude behind it, `Window.Runtime`/`AgentSession` with the wider id bound. 🔴 **The host paste guard**, first, with the broad process identity (**done**, 1a). The strict mirroring identity rule moves to Phase 2 and the chrome check to Phase 3 (operator decision); the strict rule was later pulled forward into 1b (coordinator decision, **done**). [Server changes](#server-changes): runtime-aware `AgentState` and waiting set, Send now refusing unknown and busy for Hermes, the `hermesSend` switch, the migration widening the session-key checks of 0020, 0021, 0022 and 0025 (**done**, 1b; see [as built](#phase-1-as-built)). No behaviour change for Claude Code. | done | — |
 | ~~2~~ | (**done**, see [as built](#phase-2-as-built)) Read-only Hermes mirroring: the strict mirroring identity rule (moved from Phase 1; then pulled forward into 1b by coordinator decision, and landed there — Phase 2 builds on it), breadcrumb locator with the end-reason staleness rule (no view, unknown status), SQLite reader (compaction, compression-only lineage), renderer, the `hermes-hook` command and its status files with lease and newest-row checks, the Home Manager declaration and the locking allowlist writer, mismatch diagnostics, listing and kind chip, secret-path ledger, `-list -hermes` | 6–8 | 1 |
 | ~~3~~ | (**done**, see [as built](#phase-3-as-built)) Gated pane send **and its live harness**. `make test-livehermes`: the pinned Hermes in a scratch tmux server and home; fixtures for every blocking state, and from them the paste guard's chrome check (moved from Phase 1), including the palette, model picker and stash; the overlay-state ledger; measuring the Escape sequence (with the abort rule and waits above `timeoutlen`) against every overlay at its non-default stages (filtered picker, reasoning stage, palette and stash together, the picker opened over a draft, vi mode); re-measuring under load the false-idle slack, the 150 ms Enter margin and the queue gap. Then the send: per-runtime server gates, host `CheckSend` with the image-region and input-line rules and the bounded Escape sequence, the `hermesSend` switch on both sides, the `/`, `!` and trailing-`\` refusals, collapse-aware post-paste check, database-confirmed submit with "may have been submitted", Queue and Send now for Hermes, host docs. Send stays off until these measurements are done and the harness is green; then the operator enables it per host, with the residual cases named in the host docs. | done | 2 |
-| **4** | Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
+| ~~4~~ | (**done**, see [as built](#phase-4-as-built)) Questions and approvals: clarify cards from the DB, approval and sudo attention items from the hooks, viewer discovery through `gateway.sock.path`, attach-to-answer, `approval.respond` with the stale-modal card, measuring the viewer's clarify answer (and wiring it if it passes), the hygiene filters; harness cases for each | 5–7 | 2, 3 |
 | ~~5~~ | `hermes` kind: `hermesd` (runs, events, exact approval body, relay timeout, a stable API key on the volume, intent-before-POST with the exact body and `Idempotency-Key`, 409 and retention handling, `resolve-unknown` recovery on every gateway start, SIGTERM handling), the Nix image without ffmpeg, `agentspec`, migration, config, smoke test like `cc-smoke` (**done**; see [as built](#phase-5-as-built)). A first run in a real pod is the release's (muster-ops), not this phase's code. | done | 1 |
 
-Remaining: about 5–7 days (Phase 4). Each phase is released and shipped to the hosts as
+Every phase is implemented. Each phase is released and shipped to the hosts as
 it merges. Phases 2–4 and 5 are independent after Phase 1. The shortest useful
 slice is Phases 1–2: read-only Hermes windows with status, with the paste
 guard already in place. `make test-livehermes` re-runs on every pin bump.
@@ -2416,7 +2449,8 @@ guard already in place. `make test-livehermes` re-runs on every pin bump.
     from the highlighted choice);
   - the `session` and `always` approval choices, and a viewer declaring
     `server_requests: true`;
-  - answering a clarify from the viewer (measured in Phase 4);
+  - ~~answering a clarify from the viewer~~ (measured in Phase 4: only a
+    viewer attached before the question can; not wired);
   - whether an attached viewer keeps an auto-started gateway alive past its
     idle exit;
   - skins or themes changing the input-line glyphs;
