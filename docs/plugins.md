@@ -722,7 +722,15 @@ turn for each message says when to do this.
    Allowlist entries are `<user id>:<plugin name>:<address>` or
    `<user id>:<plugin name>:*@<domain>`. Addresses are compared in ASCII only
    (no Unicode case folding), so a look-alike such as the Kelvin sign `K` never
-   matches `k`.
+   matches `k`. For agent mail (a sender of the form `<owner>/<handle>`), an
+   entry is `<user id>:<plugin name>:<owner>/<handle>` (that agent) or
+   `<user id>:<plugin name>:<owner>/*` (every handle of exactly that owner:
+   `x/*` does not match `x-y/h`). Agent-mail addresses use the protocol's own
+   grammar — lower-case ASCII letters, digits and hyphens, the owner starting
+   with a letter or digit and at most 39 characters, the handle starting with a
+   letter and 2–32 characters — and are never case-folded: an entry outside it
+   refuses to boot, and a sender outside it matches nothing. A mail entry never
+   matches an agent-mail sender, nor the reverse.
 
    A draft names its route (`plugin_reply_drafts.route_id`, unique), so a route
    can never become two replies. The chief's conversation for the plugin gets a
