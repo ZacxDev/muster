@@ -885,10 +885,17 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 			b.WriteString(`<span class="break-words text-xs font-semibold text-fg2" data-attention-focus>` + esc(it.Focus) + `</span>
 `)
 		}
-		b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-text>` + esc(it.Text) + `</p>
+		text, detail := esc(it.Text), esc(it.Detail)
+		if it.hermes != nil {
+			// A Hermes ask quotes a command: drawn left to right and isolated
+			// (<bdi>), so right-to-left text in it cannot reorder what the
+			// person reads around it.
+			text, detail = `<bdi dir="ltr">`+text+`</bdi>`, `<bdi dir="ltr">`+detail+`</bdi>`
+		}
+		b.WriteString(`<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-text>` + text + `</p>
 `)
 		if it.Detail != "" {
-			b.WriteString(`<p class="break-words text-sm text-fg2" data-attention-detail>` + esc(it.Detail) + `</p>
+			b.WriteString(`<p class="break-words text-sm text-fg2" data-attention-detail>` + detail + `</p>
 `)
 		}
 		switch it.Kind {

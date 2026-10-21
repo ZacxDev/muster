@@ -236,7 +236,7 @@ func (w windowFake) AttachHermesViewer(ctx context.Context, session string) (mir
 		return v, nil, nil
 	}
 	return v, []hermeshost.ApprovalPrompt{{PromptID: a.PromptID, Generation: 1, Command: a.Command, Description: a.Description,
-		Choices: []string{"once", "deny", "session", "always"}, TimeoutS: 300}}, nil
+		Choices: []string{"once", "deny", "session", "always"}}}, nil
 }
 
 // e2eViewer is the fake's gateway viewer: an answer is written down.

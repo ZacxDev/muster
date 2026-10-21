@@ -158,7 +158,7 @@ func postApprove(t *testing.T, ts *httptest.Server, cookie, origin string, form 
 	return resp, string(b)
 }
 
-// 🔴 The answer passes the gates of a send, each before the plugin is asked;
+// 🔴 The answer passes the gates of the Claude ask-answer path, each before the plugin is asked;
 // a good one reaches it and comes back to the queue with the stale-prompt
 // words.
 func TestAHermesApprovalAnswerIsGated(t *testing.T) {
@@ -230,6 +230,20 @@ func TestAHermesApprovalAnswersRefusalsAreSaid(t *testing.T) {
 		}
 		if want != "" && !strings.Contains(body, strings.ReplaceAll(want, "'", "&#39;")) {
 			t.Errorf("%v: the page does not say %q", err, want)
+		}
+	}
+}
+
+// 🟢 A Hermes item's text and detail are drawn left to right, isolated from
+// the page's bidi context (audit #212).
+func TestAHermesItemIsDrawnLeftToRightIsolated(t *testing.T) {
+	m := &hermesAskMirror{fakeMirror: &fakeMirror{online: true, interactive: true, statusReport: true, windows: askHermesWindows()}, answers: true}
+	s := New(nil, AuthConfig{}, log.New(io.Discard, "", 0))
+	s.UseExtensions(Extensions{Mirror: m})
+	html := attentionItemsHTML([]attentionItem{itemsByWindow(s.waitingSessions(hermesUser()))["@1"]}, time.Now())
+	for _, want := range []string{`data-attention-text><bdi dir="ltr">terminal: rm -r ./build</bdi>`, `data-attention-detail><bdi dir="ltr">recursive delete</bdi>`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("not drawn left to right, isolated (%s):\n%s", want, html)
 		}
 	}
 }

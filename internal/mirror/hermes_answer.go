@@ -23,10 +23,11 @@ import (
 // this choice (Pending.Offers) — "once" or "deny", never "session" or
 // "always". The host checks again against what its viewer holds NOW.
 //
-// 🔴 THE GATES OF A SEND: an -interactive v2 host that advertised
-// Msg.HermesAnswer (-hermes-answer), and a fresh sign-in (internal/stepup);
-// the owner and same-origin gates are the caller's (internal/api), exactly as
-// for a Send.
+// 🔴 THE GATES COPY THE CLAUDE ASK-ANSWER PATH (askanswer.go's
+// prepareAnswer): an -interactive v2 host that advertised the capability
+// (here Msg.HermesAnswer, -hermes-answer), and a fresh sign-in
+// (internal/stepup); the owner and same-origin gates are the caller's
+// (internal/api's handleMirrorAskAnswer and its Hermes twin).
 
 // HermesApprovalAnswer is a Hermes approval's answer on the wire
 // (Msg.HermesApproval).

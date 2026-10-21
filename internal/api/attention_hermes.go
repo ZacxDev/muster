@@ -20,10 +20,11 @@ import (
 // A sudo prompt is never answered from muster; a clarify question is
 // answered in the terminal.
 //
-// 🔴 AN ANSWER PASSES THE GATES OF A SEND: the session's owner (another
-// owner's host is not found), same-origin (requireOperatorWrite), a fresh
-// sign-in (internal/stepup) — and the hub and host check again that the window
-// still waits on exactly this approval, offering this answer.
+// 🔴 THE GATES COPY THE CLAUDE ASK-ANSWER PATH (mirror_ask.go's
+// handleMirrorAskAnswer): the session's owner (another owner's host is not
+// found), same-origin (requireOperatorWrite), a fresh sign-in
+// (internal/stepup) — and the hub and host check again that the window still
+// waits on exactly this approval, offering this answer.
 
 // attentionHermesPath answers a Hermes approval (the no-script form).
 const attentionHermesPath = attentionPath + "/hermes/approve"

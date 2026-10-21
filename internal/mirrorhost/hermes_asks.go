@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/text/unicode/bidi"
+
 	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/redact"
@@ -79,7 +81,8 @@ const (
 	hermesCommandPrefix = "terminal: "
 	// HermesNotWholeText is an approval's Detail when its command cannot be
 	// shown whole: muster offers deny only.
-	HermesNotWholeText = "The command is too long to show here whole: approve it in the terminal, or deny it here."
+	HermesUnreachableText = "muster cannot reach Hermes's gateway on this host: answer it in the terminal."
+	HermesNotWholeText    = "muster cannot show this approval whole (too long, several lines, partly masked, or a file edit): approve it in the terminal, or deny it here."
 )
 
 // hermesAttachTimeout bounds one attach (identify, a ticket, a WebSocket, a
@@ -163,12 +166,14 @@ func (m *hermesAsks) approvalPending(session string) *mirror.Pending {
 	}
 	if a.viewer == nil || len(a.prompts) == 0 {
 		if a.why != "" {
-			p.Detail = "muster cannot reach Hermes's gateway (" + a.why + "): answer it in the terminal."
+			// Why is in the host's log; the card names no path or uid.
+			p.Detail = HermesUnreachableText
 		}
 		return p
 	}
 	ap := a.prompts[len(a.prompts)-1]
 	shown, whole := commandShown(ap.Command)
+	whole = whole && !ap.Unshown
 	p.Summary, p.Detail, p.PromptID = shown, redact.Secrets(ap.Description), ap.PromptID
 	p.Choices = strings.Join(offeredChoices(ap, whole), " ")
 	if !whole {
@@ -179,11 +184,27 @@ func (m *hermesAsks) approvalPending(session string) *mirror.Pending {
 
 // commandShown is an approval's command as a card shows it ("terminal: …",
 // one line, capped, what looks like a secret redacted) and whether that is
-// the WHOLE command, verbatim.
+// the WHOLE command, verbatim — which it never is when the gateway's own
+// redactor already masked part of it (hermeshost.GatewayMasked: the mask can
+// swallow shell syntax, so the command that runs is not the one shown).
 func commandShown(cmd string) (shown string, whole bool) {
 	red := redact.Secrets(cmd)
 	shown = mirror.OneLine(hermesCommandPrefix+red, mirror.MaxPendingSummary)
-	return shown, red == cmd && shown == hermesCommandPrefix+cmd
+	return shown, red == cmd && shown == hermesCommandPrefix+cmd && !hermeshost.GatewayMasked(cmd) && !rightToLeft(cmd)
+}
+
+// rightToLeft reports whether s holds any character a browser lays out right
+// to left (bidi classes R, AL and AN): such a command can be drawn reordered,
+// so the card does not show it as it runs.
+func rightToLeft(s string) bool {
+	for _, r := range s {
+		p, _ := bidi.LookupRune(r)
+		switch p.Class() {
+		case bidi.R, bidi.AL, bidi.AN:
+			return true
+		}
+	}
+	return false
 }
 
 // offeredChoices are the answers muster offers for ap: once and deny as ap
@@ -326,7 +347,7 @@ func (m *hermesAsks) answer(ctx context.Context, session, promptID, choice strin
 		return errHermesGone
 	}
 	_, whole := commandShown(ap.Command)
-	if !slices.Contains(offeredChoices(ap, whole), choice) {
+	if !slices.Contains(offeredChoices(ap, whole && !ap.Unshown), choice) {
 		return fmt.Errorf("%w with %q: muster does not offer that answer for it", errHermesGone, choice)
 	}
 	err := v.Respond(ctx, ap, choice)

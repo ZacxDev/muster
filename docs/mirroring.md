@@ -424,9 +424,11 @@ it:
   waits, the queue shows the command (`terminal: rm -r ./build`) and why
   Hermes asks, and offers **Allow once** and **Deny**. muster never offers
   `session` or `always`, and offers **Allow once** only for a command it can
-  show whole: several lines, over the card's length, or with something that
-  looks like a secret redacted out of it, and only **Deny** is offered. An
-  answer needs a fresh sign-in, like a send, and goes through the gateway,
+  show whole: several lines, over the card's length, with something that looks
+  like a secret redacted out of it (by muster, or already masked by Hermes's
+  own redactor), with right-to-left text, or a file edit whose diff the card
+  does not show — and then only **Deny** is offered. An answer needs a fresh
+  sign-in, as answering Claude's questions does, and goes through the gateway,
   never as keys into the pane. After it, the terminal keeps showing Hermes's
   prompt until a key is pressed there (the queue says so); the answer has
   already been taken. Without `-hermes-answer`, or when the host cannot reach

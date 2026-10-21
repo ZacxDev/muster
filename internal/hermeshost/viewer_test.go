@@ -34,7 +34,7 @@ func TestAttachListsTheSessionsPendingApprovals(t *testing.T) {
 		t.Fatalf("session = %q", v.Session)
 	}
 	want := []ApprovalPrompt{{PromptID: "38e56375cfb240e2a3c84ed68712afdb", Generation: 3, Command: "rm -r ./victim",
-		Description: "recursive delete", Choices: []string{"once", "deny", "session", "always"}, TimeoutS: 300}}
+		Description: "recursive delete", Choices: []string{"once", "deny", "session", "always"}}}
 	if !reflect.DeepEqual(ps, want) {
 		t.Fatalf("prompts = %+v\nwant %+v", ps, want)
 	}
@@ -183,7 +183,7 @@ func TestTheViewerKeepsOnlyTheApprovalFields(t *testing.T) {
 		}
 		return out
 	}
-	if got := fields(ApprovalPrompt{}); !reflect.DeepEqual(got, []string{"PromptID", "Generation", "Command", "Description", "Choices", "TimeoutS"}) {
+	if got := fields(ApprovalPrompt{}); !reflect.DeepEqual(got, []string{"PromptID", "Generation", "Command", "Description", "Choices", "Unshown"}) {
 		t.Fatalf("ApprovalPrompt fields = %v", got)
 	}
 	if got := fields(ViewerEvent{}); !reflect.DeepEqual(got, []string{"Kind", "Prompt", "PromptID"}) {
@@ -192,7 +192,7 @@ func TestTheViewerKeepsOnlyTheApprovalFields(t *testing.T) {
 	if got := fields(resumeWire{}); !reflect.DeepEqual(got, []string{"SessionID", "Generation", "Prompts"}) {
 		t.Fatalf("resumeWire fields = %v", got)
 	}
-	if got := fields(promptWire{}); !reflect.DeepEqual(got, []string{"Kind", "PromptID", "Generation", "Command", "Description", "Choices", "TimeoutS"}) {
+	if got := fields(promptWire{}); !reflect.DeepEqual(got, []string{"Kind", "PromptID", "Generation", "Command", "Description", "Choices", "extra"}) {
 		t.Fatalf("promptWire fields = %v", got)
 	}
 }
@@ -308,5 +308,31 @@ func TestCloseReturnsAfterARepeatedAnswer(t *testing.T) {
 	case <-closed:
 	case <-time.After(10 * time.Second):
 		t.Fatal("Close hung behind a repeated answer")
+	}
+}
+
+// 🔴 A file-edit approval (command "Edit <path>" beside an `edit` diff, or any
+// field muster does not render) is marked Unshown, from the resume and from
+// an approval.request alike (audit #212).
+func TestAnApprovalCarryingAnEditIsUnshown(t *testing.T) {
+	dir := shortHome(t)
+	g := hermestest.NewGateway(t, dir)
+	g.AddPrompt("p1", 1, "rm -r x", "")
+	g.Prompts = append(g.Prompts, map[string]any{"kind": "approval", "prompt_id": "p2", "execution_generation": 1,
+		"command": "Edit src/main.go", "description": "Approve proposed file change", "choices": []any{"once", "deny"},
+		"edit": map[string]any{"path": "src/main.go", "diff": "+rm -rf /"}})
+	v, ps := attach(t, dir)
+	if len(ps) != 2 || ps[0].Unshown || !ps[1].Unshown {
+		t.Fatalf("prompts = %+v", ps)
+	}
+	g.Event(viewSession, "approval.request", map[string]any{"prompt_id": "p3", "execution_generation": 1, "command": "Edit a",
+		"choices": []any{"once", "deny"}, "edit": map[string]any{"diff": "x"}})
+	select {
+	case e := <-v.Events():
+		if !e.Prompt.Unshown {
+			t.Fatalf("%+v", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no event")
 	}
 }

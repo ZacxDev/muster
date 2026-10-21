@@ -999,9 +999,13 @@ these ways:
 - 🔴 **Answering is its own host switch, `-hermes-answer`
   (`MUSTER_MIRROR_HERMES_ANSWER`), OFF by default, with `-interactive`**, and
   the host advertises `hermesAnswer` in its hello; the hub believes it only
-  from an `-interactive` v2 host. The design gives answers the gates of a send
-  but names no switch; an answer of `once` lets a command run, so it ships
-  off, like Send (question for the operator). **Without it no viewer is ever
+  from an `-interactive` v2 host. The design names no switch for answers;
+  an answer of `once` lets a command run, so it ships off, like Send
+  (**operator decision: kept, off by default in muster; the operator turns it
+  on per host in the host configuration**). Its gates copy the Claude
+  AskUserQuestion answer path (`internal/api`'s `handleMirrorAskAnswer`): the
+  session's owner, same origin, an `-interactive` host that advertised the
+  capability, and a fresh sign-in. **Without it no viewer is ever
   attached**: the card says "waiting for an approval in the terminal", with no
   command — the conservative reading of "attach only to answer".
 - 🔴 **`once` only for a command the card shows whole.** The card's line is
@@ -1010,6 +1014,25 @@ these ways:
   lines, too long, a tab or doubled space, a redaction) is offered **deny
   only**, and the card says to approve it in the terminal; the host checks it
   again at answer time.
+- 🔴 **Round-1 audit (#212), built in:** `once` is never offered for a
+  command the GATEWAY's own redactor already masked
+  (`_redact_approval_command`, `P:gateway/run.py:577` →
+  `P:agent/redact.py`): a mask can swallow shell syntax (measured: `ls -H
+  X-Api-Key:a;rm -rf ~/work` arrives as `ls -H X-Api-Key:*** -rf ~/work`).
+  `hermeshost.GatewayMasks` lists the forms the pinned redactor emits (`***`,
+  `...`, `«redacted`, `[REDACTED`, `[redacted`); the livehermes ledger
+  `TestTheGatewayMasksMatchThePinnedRedactor` pins `agent/redact.py`'s and
+  the wrapper's source and runs the real redactor over a corpus, and
+  `TestLiveHermesMaskedApprovalIsDenyOnly` drives the case end to end. An
+  approval carrying any field muster does not render (a file edit's `edit`
+  diff, `P:gateway/session_local_editor.py:46`) and a command holding
+  right-to-left text are deny only too; the card draws the command in a
+  left-to-right `<bdi>`. ⚠ The edit path is not reachable from a mirrored
+  CLI at the pin: the editor's approval requester is installed only for an
+  ACP session (`editor_scope`, `policy.source == 'acp'`), never a `hermes
+  chat` in a pane. The card never names why the gateway cannot be reached
+  (no path, no uid): that is the host's log. `TimeoutS` is gone from the
+  viewer's approval (nothing showed it).
 - **The wire** (no version bump): `Pending` gains `kind`
   (`approval`/`clarify`/`sudo`), `detail` (the description, 120 runes),
   `promptId` and `choices` (a space-separated string, so `Pending` stays
@@ -1791,8 +1814,9 @@ dropped on receipt, `sudo` frames included.
   approved (open question 1).
 - Approval defaults shape what muster ever sees: `approvals.mode: smart` lets
   an auxiliary model decide without prompting, and `timeout: 300` denies on
-  timeout (`P:hermes_cli/config_defaults.py:1670-1713`). The card says when it
-  timed out.
+  timeout (`P:hermes_cli/config_defaults.py:1670-1713`). (Phase 4 does not
+  show the timeout: an approval that timed out is simply gone from the card,
+  and an answer to it is refused as no longer pending.)
 
 Questions and approvals live in muster's memory, as Claude Code's do.
 

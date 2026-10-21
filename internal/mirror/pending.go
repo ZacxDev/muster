@@ -84,11 +84,12 @@ const (
 // never offers them.
 var HermesApprovalChoices = []string{"once", "deny"}
 
-// promptIDPattern is an approval id as the wire carries it (Hermes mints
-// uuid4().hex), within the status file's request-id bound.
+// promptIDPattern is a Hermes request id — an approval's prompt id, a status
+// file's request id — as Hermes mints it (uuid4().hex): THE one rule for it
+// (internal/hermeshost uses ValidPromptID too).
 var promptIDPattern = regexp.MustCompile(`^[0-9A-Za-z_-]{1,64}$`)
 
-// ValidPromptID reports whether id is a Hermes approval id the wire carries.
+// ValidPromptID reports whether id is a Hermes request or approval id.
 func ValidPromptID(id string) bool { return promptIDPattern.MatchString(id) }
 
 // The Pending bounds.

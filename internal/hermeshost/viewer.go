@@ -42,13 +42,8 @@ import (
 // carrying a canary).
 //
 // 🔴 IT ANSWERS NOTHING BY ITSELF. Respond is called only for an answer a
-// person gave in muster, with "once" or "deny" (ApprovalChoices); a server
+// person gave in muster, with "once" or "deny" (mirror.HermesApprovalChoices); a server
 // request (sudo, secret, clarify) is never answered.
-
-// ApprovalChoices are the choices muster ever sends: the moment being
-// approved, or no. `session` and `always` widen what the agent may do beyond
-// it (open question 1), so muster never offers them.
-var ApprovalChoices = []string{"once", "deny"}
 
 // The bounds of an approval as the viewer keeps it.
 const (
@@ -71,8 +66,10 @@ type ApprovalPrompt struct {
 	// Choices are what the gateway offers (once, deny, session, always), in
 	// its order.
 	Choices []string
-	// TimeoutS is how long the gateway waits before it denies.
-	TimeoutS int
+	// Unshown: the approval carries content muster does not render (an
+	// `edit` diff — gateway/session_local_editor.py — or any field beyond
+	// these): never offered "once" from muster.
+	Unshown bool
 }
 
 // Offers reports whether p offers choice.
@@ -108,7 +105,36 @@ type promptWire struct {
 	Command     string   `json:"command"`
 	Description string   `json:"description"`
 	Choices     []string `json:"choices"`
-	TimeoutS    float64  `json:"timeout_s"`
+	// extra: the prompt carries a field beyond these and timeout_s (an
+	// `edit` diff): muster cannot show it whole.
+	extra bool
+}
+
+// shownPromptKeys are the approval fields muster renders (or needs to
+// answer); timeout_s is read by nobody. Any other key — `edit` at the pin —
+// is content the card would not show, so the prompt is Unshown.
+var shownPromptKeys = map[string]bool{"kind": true, "prompt_id": true, "execution_generation": true, "command": true,
+	"description": true, "choices": true, "timeout_s": true}
+
+// UnmarshalJSON decodes an approval's own fields and notes whether it
+// carries any other (its VALUE is never kept).
+func (w *promptWire) UnmarshalJSON(b []byte) error {
+	type plain promptWire
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err != nil {
+		return err
+	}
+	for k := range keys {
+		if !shownPromptKeys[k] {
+			p.extra = true
+		}
+	}
+	*w = promptWire(p)
+	return nil
 }
 
 // knownChoices are the choices the pin offers; any other is dropped.
@@ -128,14 +154,11 @@ func (w promptWire) prompt(fallbackGen int64) (ApprovalPrompt, bool) {
 		return ApprovalPrompt{}, false
 	}
 	p := ApprovalPrompt{PromptID: w.PromptID, Generation: gen, Command: capRunes(w.Command, MaxApprovalCommand),
-		Description: capRunes(w.Description, MaxApprovalDescription)}
+		Description: capRunes(w.Description, MaxApprovalDescription), Unshown: w.extra}
 	for _, c := range w.Choices {
 		if knownChoices[c] && !p.Offers(c) {
 			p.Choices = append(p.Choices, c)
 		}
-	}
-	if w.TimeoutS > 0 && w.TimeoutS < 1e6 {
-		p.TimeoutS = int(w.TimeoutS)
 	}
 	return p, true
 }
@@ -307,11 +330,11 @@ var (
 )
 
 // Respond answers the approval p with choice — "once" or "deny" only
-// (ApprovalChoices), and only one p offers. nil means the gateway resolved
+// (mirror.HermesApprovalChoices), and only one p offers. nil means the gateway resolved
 // it with this answer.
 func (v *Viewer) Respond(ctx context.Context, p ApprovalPrompt, choice string) error {
 	allowed := false
-	for _, c := range ApprovalChoices {
+	for _, c := range mirror.HermesApprovalChoices {
 		allowed = allowed || c == choice
 	}
 	if !allowed || !p.Offers(choice) {
@@ -498,5 +521,5 @@ func (v *Viewer) event(params json.RawMessage) bool {
 }
 
 // validPromptID: an approval's id as the gateway mints it (uuid4().hex at
-// the pin), within the status file's request-id bound.
-func validPromptID(id string) bool { return requestIDPattern.MatchString(id) }
+// the pin): mirror's one rule for a Hermes request id.
+func validPromptID(id string) bool { return mirror.ValidPromptID(id) }
