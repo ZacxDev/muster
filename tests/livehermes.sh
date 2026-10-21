@@ -20,6 +20,10 @@
 #     with it set it is REQUIRED, so a failure is still RED;
 #   - internal/mirrorhost TestLiveHermesSend: the gated send end to end, and
 #     every blocking state refused with nothing pasted;
+#   - internal/mirrorhost TestLiveHermesGateway: the gateway viewer (Phase 4)
+#     — identify names the pin (in the home, and through gateway.sock.path),
+#     an approval answered deny and once from the viewer (each with an effect
+#     that can fail), the CLI's modal left drawn, a sudo prompt never answered;
 #   - internal/hermeshost TestOverlayLedgerMatchesThePinnedSource,
 #     TestScreenConditionsMatchThePinnedSource and
 #     TestViLabelsMatchThePinnedLocales: the ledgers held against the pin.
@@ -40,8 +44,8 @@ command -v hermes >/dev/null || { echo "livehermes: no hermes on PATH" >&2; exit
 command -v tmux >/dev/null || { echo "livehermes: no tmux on PATH" >&2; exit 2; }
 rev="$(grep -o "HERMES_REVISION='[0-9a-f]*'" "$(readlink -f "$(command -v hermes)")" | cut -d"'" -f2 || true)"
 
-required=(TestLiveHermesScreens TestLiveHermesSend TestOverlayLedgerMatchesThePinnedSource TestScreenConditionsMatchThePinnedSource TestViLabelsMatchThePinnedLocales)
-live='TestLiveHermesScreens|TestLiveHermesSend'
+required=(TestLiveHermesScreens TestLiveHermesSend TestLiveHermesGateway TestOverlayLedgerMatchesThePinnedSource TestScreenConditionsMatchThePinnedSource TestViLabelsMatchThePinnedLocales)
+live='TestLiveHermesScreens|TestLiveHermesSend|TestLiveHermesGateway'
 if [[ "${MUSTER_LIVEHERMES_TIMINGS:-}" == 1 ]]; then
   required+=(TestLiveHermesTimings)
   live+='|TestLiveHermesTimings'

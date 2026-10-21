@@ -485,8 +485,13 @@ believe. `muster-mirror -list -hermes` says why:
   `unknown` reasons (no breadcrumb, a breadcrumb older than the CLI, a switched
   session, no status file, a stale busy, an idle under a live turn).
 
-It does not check the Hermes gateway's version (`code_sha`): that needs the
-gateway connection a later release adds.
+- `gateway`: the home's Hermes gateway, as its control socket's `identify`
+  names it — `none running`, `code_sha <sha> (the pin)`, `NOT THE PIN` (the
+  commit it booted from is not the one muster supports), or `refused` with
+  why (a control path another user could reach, a gateway that is not ready).
+  muster attaches its gateway viewer (to answer Hermes approvals) only to the
+  pin; otherwise every Hermes approval is answered in the terminal. It asks
+  `identify` only: no ticket, no attach.
 
 muster also refuses every send into a window the host reports as Hermes on
 its own side, before anything reaches the host. A Hermes the host does not

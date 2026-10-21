@@ -24,8 +24,10 @@ database-confirmed submit — behind the `-hermes-send` switch on both sides,
 Send, Queue and Send now for Hermes windows, and its live harness,
 `make test-livehermes`, whose fixtures and measurements are recorded there.
 **Send ships OFF**: the operator enables it per host once the harness is
-green against that host's Hermes; the host refuses vi mode itself. Nothing of
-Phase 4 is implemented. The
+green against that host's Hermes; the host refuses vi mode itself. Phase 4
+is in progress (see [Phase 4 as built](#phase-4-as-built)): 4a, the gateway
+viewer itself — discovery, the pin check, attach, `approval.respond` and the
+hygiene filters — and `-list -hermes`'s gateway line. The
 version target is **decided** (below). Every other section describes the design
 the Phase 0 spikes support; the [Phase 0 results](#phase-0-results) table names
 what each spike changed. Where this page states how muster works today, the
@@ -932,6 +934,60 @@ show what more would do; the gated send sends one.)
 - the queue gap (queue mode: idle written → the queued message's row), 6
   runs each: 305–1,915 ms, 364–506 ms, 433–543 ms — a residual window up to
   about 2 s under load, named below.
+
+### Phase 4 as built
+
+Phase 4 is stacked in pull requests. **4a** (`internal/hermeshost`'s
+`gateway.go` and `viewer.go`, `-list -hermes`'s `gateway` line, and
+`TestLiveHermesGateway` in `make test-livehermes`) differs from the sections
+above in these ways, each decided while building it:
+
+- **Measured against the pin** (a scratch home, the stub model, 2026-10-21):
+  `identify` answers `kind: hermes-gateway`, `code_sha` the full pin,
+  `state: ready`, `api_origin` `http://127.0.0.1:<port>`, `served_profiles`
+  naming the home, and the capabilities `session-authority-v1`,
+  `durable-admission-v1` and `event-replay-v1`; `session.resume` on a session
+  waiting on an approval lists it in `prompts` (`kind: approval`, a 32-hex
+  `prompt_id`, `execution_generation`, `command`, `description`, `choices`
+  `once, deny, session, always`, `timeout_s: 300`); a viewer's
+  `approval.respond` answers `{status: resolved, prompt_id}` and is
+  authoritative — `deny` and the command did not run, `once` and it ran (the
+  harness's victim directory) — while the CLI's modal stays drawn. 🔴 The
+  hook's `request_id` is **not** the approval's `prompt_id` (measured: two
+  different ids for one approval), so a card is keyed by the `prompt_id` the
+  viewer read, never by the status file.
+- 🔴 **`session.resume` carries the whole conversation**, `pending[].text`
+  (what the person typed) and `info` (tools, skills); the events after it
+  carry every delta and tool result, and `session.info` carries
+  `system_prompt` and `credential_hint`. The pin has no `omit_messages` on
+  the gateway's resume. So the hygiene filter is **structural**: a frame is
+  decoded only into the fields an approval needs (`promptWire`,
+  `resumeWire`, an event's `type`, `session_id` and payload); nothing else is
+  kept, logged or quoted in an error, and a server request (`sudo`,
+  `secret`, `clarify`) is dropped unanswered.
+  `TestTheViewerDropsEverySecretBearingFrame` feeds every such frame with a
+  canary; `TestTheViewerKeepsOnlyTheApprovalFields` pins the types' fields.
+  The live harness types a canary into the prompt and checks it never reaches
+  what the viewer hands out.
+- **Discovery is stricter than Hermes's own** in one place: a
+  group-writable home is refused outright (Hermes admits one whose group is
+  the owner's private group). The rest is upstream's `_socket_path`
+  (`gateway.sock`, else `gateway.sock.path` → `hermes-gw-<hash>/
+  control.sock`, each owned by this uid and private, the pointer never a
+  symlink or FIFO), then `SO_PEERCRED` on the connection. 🔴 On a platform
+  without `SO_PEERCRED` (macOS) the viewer is refused, not attached on the
+  path checks alone as Hermes's client does: every Hermes ask there is
+  answered in the terminal.
+- **Only a `ready` gateway is attached to.** Hermes's own client also attaches
+  to a gateway draining for a restart (`restart_wait`) to answer a parked
+  approval; muster does not, and answers in the terminal then (question for
+  the operator).
+- **`-list -hermes` asks `identify` only** — no ticket, no attach — and prints
+  `gateway none running`, `code_sha <sha> (the pin)`, `NOT THE PIN` or
+  `refused` with why.
+- `ReadPaths` adds `gateway.sock` (connected to, never opened) and
+  `gateway.sock.path` (read), as [secret hygiene](#secret-hygiene) listed
+  them; the pointed-at `hermes-gw-<hash>/` directory is outside the home.
 
 ### Pane to session resolution
 
