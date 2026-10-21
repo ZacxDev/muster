@@ -160,6 +160,83 @@ func TestLiveHermesGateway(t *testing.T) {
 	})
 }
 
+// TestLiveHermesApprovalThroughTheHost is Phase 4's host half against the
+// pin: the REAL listing (Tmux with the home's HermesSource) and the host's
+// asks (hermes_asks.go) attach a viewer to the window waiting on an approval,
+// list its command with once and deny, and answer it — "deny", and the
+// command does not run (an effect that can fail); once the window stops
+// waiting, the viewer is detached.
+func TestLiveHermesApprovalThroughTheHost(t *testing.T) {
+	r := newLiveRun(t)
+	home := r.makeHome(homeOpts{name: "gwh", hook: true})
+	tm := Tmux{SocketPath: r.tmux.SocketPath, Hermes: NewHermesSource(home, r.statusDir())}
+	victim := filepath.Join(r.work, "livehermes-victim-dir")
+	must(t, os.MkdirAll(victim, 0o700))
+	pane := r.cli(home, 120, 40, []string{"chat"})
+	if !r.waitIdle(pane, 90*time.Second) {
+		t.Fatalf("not idle:\n%s", showScreen(r.capture(pane), 12))
+	}
+	typed(r, pane, "APPROVE please")
+	if !shows(r, pane, "Dangerous", 60*time.Second) {
+		t.Fatalf("no approval modal:\n%s", showScreen(r.capture(pane), 20))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	m := newHermesAsks(ctx, tm, func() {}, t.Logf)
+	defer m.close()
+	list := func() *AgentPane {
+		ws, err := tm.Windows(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.attachPending(ws)
+		for _, w := range ws {
+			if w.Pane == pane && w.Agent != nil {
+				return w.Agent
+			}
+		}
+		t.Fatal("the pane is not listed as Hermes")
+		return nil
+	}
+	var ap *AgentPane
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		ap = list()
+		if ap.Pending != nil && ap.Pending.PromptID != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the approval was never listed: %+v (pending %+v)", ap, ap.Pending)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	p := ap.Pending
+	if p.Kind != "approval" || p.Summary != "terminal: rm -r ./livehermes-victim-dir" || p.Choices != "once deny" || p.Detail != "recursive delete" {
+		t.Fatalf("the listed approval: %+v", *p)
+	}
+	if err := m.answer(ctx, ap.Gen, p.PromptID, "deny"); err != nil {
+		t.Fatal(err)
+	}
+	for time.Now().Before(deadline) && list().Status == "waiting" {
+		time.Sleep(300 * time.Millisecond)
+	}
+	if st := waitStatus(t, r, ap.Gen, "idle", 60*time.Second); st == "" {
+		t.Fatal("the turn did not finish after the answer")
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("denied through the host, but the command ran: %v", err)
+	}
+	list()
+	m.mu.Lock()
+	n := len(m.sessions)
+	m.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d viewer(s) still attached after the window stopped waiting", n)
+	}
+	r.keys(pane, "x")
+	r.killWindow(pane)
+}
+
 // liveStatus is a status file as the harness reads it.
 type liveStatus struct {
 	SessionID string `json:"session_id"`

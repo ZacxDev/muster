@@ -27,7 +27,9 @@ Send, Queue and Send now for Hermes windows, and its live harness,
 green against that host's Hermes; the host refuses vi mode itself. Phase 4
 is in progress (see [Phase 4 as built](#phase-4-as-built)): 4a, the gateway
 viewer itself — discovery, the pin check, attach, `approval.respond` and the
-hygiene filters — and `-list -hermes`'s gateway line. The
+hygiene filters — and `-list -hermes`'s gateway line; 4b, approval and sudo
+attention items and the approval's answer through the viewer, behind the
+host's `-hermes-answer`. The
 version target is **decided** (below). Every other section describes the design
 the Phase 0 spikes support; the [Phase 0 results](#phase-0-results) table names
 what each spike changed. Where this page states how muster works today, the
@@ -988,6 +990,59 @@ above in these ways, each decided while building it:
 - `ReadPaths` adds `gateway.sock` (connected to, never opened) and
   `gateway.sock.path` (read), as [secret hygiene](#secret-hygiene) listed
   them; the pointed-at `hermes-gw-<hash>/` directory is outside the home.
+
+**4b** (`internal/mirrorhost`'s `hermes_asks.go`, `internal/mirror`'s
+`hermes_answer.go` and `Pending`'s Hermes fields, `internal/api`'s
+`attention_hermes.go`, `-hermes-answer`) differs from the sections above in
+these ways:
+
+- 🔴 **Answering is its own host switch, `-hermes-answer`
+  (`MUSTER_MIRROR_HERMES_ANSWER`), OFF by default, with `-interactive`**, and
+  the host advertises `hermesAnswer` in its hello; the hub believes it only
+  from an `-interactive` v2 host. The design gives answers the gates of a send
+  but names no switch; an answer of `once` lets a command run, so it ships
+  off, like Send (question for the operator). **Without it no viewer is ever
+  attached**: the card says "waiting for an approval in the terminal", with no
+  command — the conservative reading of "attach only to answer".
+- 🔴 **`once` only for a command the card shows whole.** The card's line is
+  `terminal: <command>`, cleaned and capped at 120 runes, with what looks like
+  a secret redacted. A command that does not survive that unchanged (several
+  lines, too long, a tab or doubled space, a redaction) is offered **deny
+  only**, and the card says to approve it in the terminal; the host checks it
+  again at answer time.
+- **The wire** (no version bump): `Pending` gains `kind`
+  (`approval`/`clarify`/`sudo`), `detail` (the description, 120 runes),
+  `promptId` and `choices` (a space-separated string, so `Pending` stays
+  comparable), on a waiting **Hermes** window only — a Claude window's Pending
+  is stripped of them, so its bytes are unchanged, and a Hermes Pending without
+  a kind is dropped. The worst-case window list with eight Hermes approvals at
+  every bound measures 1,023,474 bytes (97.6% of a frame), below the Claude
+  worst case (1,030,215, unchanged). An answer is `answer` with `runtime:
+  hermes` and `hermesApproval {promptId, choice}`; refusals `hermes-gone`,
+  `hermes-unreachable`, `hermes-unknown` ("may have been answered").
+- **Three checks of one answer**: the hub against the window it lists (still
+  waiting on that prompt, offering that choice), the host against what its
+  viewer holds now (re-resolving the window's pane), and the gateway itself.
+- **The attention queue lists every waiting Hermes window** (the Phase 1
+  carve-out is gone): an approval with Allow once / Deny when its host answers
+  and could read it, else "Answer it in the terminal"; sudo "muster never
+  answers a password prompt"; clarify "Answer it in the terminal" (4c adds its
+  questions). After an answer the page says the terminal will show a stale
+  prompt until a key is pressed there. Its focus is keyed `hermes:<id>`.
+- **The viewer is per session, per connection**: attached when a listed
+  window first waits on an approval, detached as soon as none does, retried no
+  sooner than 30 s after a refused attach (the card names why), re-attached
+  when the gateway hangs up. A new approval while attached arrives as
+  `approval.request` and replaces the shown one.
+- Not built: the approval card in the rendered view's live region (the queue
+  and the card badge show it); a push names the tool only ("terminal"), as
+  today.
+- **Measured against the pin** (`TestLiveHermesApprovalThroughTheHost`): the
+  real listing (Tmux with the home's source) lists the approval through the
+  host's viewer as `terminal: rm -r ./livehermes-victim-dir`, `once deny`,
+  `recursive delete`; the host's answer `deny` lets the turn finish with the
+  victim directory intact; the viewer is detached once the window stops
+  waiting.
 
 ### Pane to session resolution
 

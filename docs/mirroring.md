@@ -412,6 +412,33 @@ it, Hermes can still submit a queued message up to about 2 s after it says
 idle, under load. A pasted message of 2,000 characters or more is saved by
 Hermes in `~/.hermes/pastes/`; muster never reads that directory.
 
+#### Hermes's approvals, questions and sudo prompts (`-hermes-answer`)
+
+A Hermes window waiting on you is in the **Attention** queue (and counts on
+its card's badge), saying what it waits on, as Hermes's status hook recorded
+it:
+
+- **an approval** — Hermes wants to run a command. On a host that runs with
+  `-interactive` **and** `-hermes-answer` (`MUSTER_MIRROR_HERMES_ANSWER`),
+  the host attaches Hermes's **gateway viewer** to that session while it
+  waits, the queue shows the command (`terminal: rm -r ./build`) and why
+  Hermes asks, and offers **Allow once** and **Deny**. muster never offers
+  `session` or `always`, and offers **Allow once** only for a command it can
+  show whole: several lines, over the card's length, or with something that
+  looks like a secret redacted out of it, and only **Deny** is offered. An
+  answer needs a fresh sign-in, like a send, and goes through the gateway,
+  never as keys into the pane. After it, the terminal keeps showing Hermes's
+  prompt until a key is pressed there (the queue says so); the answer has
+  already been taken. Without `-hermes-answer`, or when the host cannot reach
+  the gateway (none running, not the pinned commit — `-list -hermes` names
+  it), the item says to answer in the terminal.
+- **a question** (Hermes's clarify tool): answer it in the terminal.
+- **a sudo password**: listed only. muster never answers a password prompt.
+
+The viewer is attached only while a session waits on an approval, and only
+to the pinned Hermes's gateway; it keeps nothing of the session but the
+approval's command, description and choices (docs/design/hermes.md, Phase 4).
+
 #### Installing the Hermes status hook
 
 The hook runs inside Hermes's gateway. Hermes runs a configured hook only when

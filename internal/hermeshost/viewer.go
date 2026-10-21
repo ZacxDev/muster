@@ -294,9 +294,17 @@ func (v *Viewer) Close() {
 	<-v.done
 }
 
-// ErrApprovalRefused: the gateway did not take the answer (already settled,
-// timed out, another generation).
-var ErrApprovalRefused = errors.New("Hermes did not take the answer")
+var (
+	// ErrApprovalRefused: the gateway did not take the answer (already
+	// settled, timed out, another generation). Nothing was answered.
+	ErrApprovalRefused = errors.New("Hermes did not take the answer")
+	// ErrViewerNotSent: the request never reached the gateway (the viewer had
+	// ended, or the write failed). Nothing was answered.
+	ErrViewerNotSent = errors.New("the request did not reach Hermes's gateway")
+	// ErrViewerNoAnswer: the request was sent and no answer came (a timeout,
+	// or the gateway hung up): its outcome is unknown.
+	ErrViewerNoAnswer = errors.New("Hermes's gateway did not answer")
+)
 
 // Respond answers the approval p with choice — "once" or "deny" only
 // (ApprovalChoices), and only one p offers. nil means the gateway resolved
@@ -336,7 +344,7 @@ func (v *Viewer) rpc(ctx context.Context, method string, params map[string]any) 
 	v.mu.Lock()
 	if v.closed {
 		v.mu.Unlock()
-		return nil, fmt.Errorf("%w: the viewer has ended", ErrGatewayProtocol)
+		return nil, fmt.Errorf("%w: %w: the viewer has ended", ErrGatewayProtocol, ErrViewerNotSent)
 	}
 	v.next++
 	id := v.next
@@ -352,7 +360,7 @@ func (v *Viewer) rpc(ctx context.Context, method string, params map[string]any) 
 	ctx, cancel := context.WithTimeout(ctx, viewerRPCTimeout)
 	defer cancel()
 	if err := v.ws.Write(ctx, websocket.MessageText, b); err != nil {
-		return nil, fmt.Errorf("%w: %s not sent (%s)", ErrGatewayProtocol, method, errClass(err))
+		return nil, fmt.Errorf("%w: %w: %s (%s)", ErrGatewayProtocol, ErrViewerNotSent, method, errClass(err))
 	}
 	select {
 	case a := <-ch:
@@ -364,9 +372,9 @@ func (v *Viewer) rpc(ctx context.Context, method string, params map[string]any) 
 		}
 		return a.result, nil
 	case <-ctx.Done():
-		return nil, fmt.Errorf("%w: no answer to %s", ErrGatewayProtocol, method)
+		return nil, fmt.Errorf("%w: %w: to %s", ErrGatewayProtocol, ErrViewerNoAnswer, method)
 	case <-v.done:
-		return nil, fmt.Errorf("%w: the gateway hung up", ErrGatewayProtocol)
+		return nil, fmt.Errorf("%w: %w: it hung up", ErrGatewayProtocol, ErrViewerNoAnswer)
 	}
 }
 

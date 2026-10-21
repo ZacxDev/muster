@@ -1,0 +1,436 @@
+package mirrorhost
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ZacxDev/muster/internal/hermeshost"
+	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/redact"
+)
+
+// WHAT A WAITING HERMES WINDOW WAITS ON, AND ANSWERING ITS APPROVAL (Hermes
+// Phase 4, docs/design/hermes.md, "Questions and approvals"). The host half.
+//
+// The hook says a session waits, and on what (Believed.Kind): an approval, a
+// clarify or a sudo prompt. That is all a WAITING window's Pending says,
+// unless this host answers approvals (-interactive and -hermes-answer):
+// then, for a window waiting on an APPROVAL, it attaches Hermes's gateway
+// viewer (internal/hermeshost's Viewer) to that session — the only place an
+// approval's command lives (S5: no database row records it) — and lists the
+// approval's command, description and the answers muster may send. It
+// detaches as soon as the window no longer waits on an approval: muster must
+// not be the reason a gateway outlives its panes (it idles out without
+// clients).
+//
+// 🔴 "ONCE" ONLY FOR A COMMAND SHOWN WHOLE. A person approves what the card
+// shows. A command that does not fit the card as one line — several lines,
+// over the cap, or with what looks like a secret redacted out of it — is
+// offered "deny" only, and the card says to approve it in the terminal.
+//
+// 🔴 A sudo prompt is never answered from muster, and a clarify is answered
+// in the terminal (the viewer's answer to a clarify reaches only a viewer
+// attached before Hermes asked it — measured, Phase 4 — which attaching on
+// "waiting" never is).
+
+// HermesViewer is one attached gateway viewer (hermeshost.Viewer), as the
+// host uses it.
+type HermesViewer interface {
+	Respond(ctx context.Context, p hermeshost.ApprovalPrompt, choice string) error
+	Events() <-chan hermeshost.ViewerEvent
+	Done() <-chan struct{}
+	Close()
+}
+
+// HermesViewerAttacher is a backend that can attach a gateway viewer to a
+// Hermes session: Tmux through its HermesSource's home; the browser suite's
+// fake its own.
+type HermesViewerAttacher interface {
+	AttachHermesViewer(ctx context.Context, session string) (HermesViewer, []hermeshost.ApprovalPrompt, error)
+}
+
+// AttachHermesViewer implements HermesViewerAttacher: the gateway of t's
+// Hermes home. An error when t resolves no Hermes.
+func (t Tmux) AttachHermesViewer(ctx context.Context, session string) (HermesViewer, []hermeshost.ApprovalPrompt, error) {
+	if t.Hermes == nil {
+		return nil, nil, errors.New("muster-mirror: this host resolves no Hermes home")
+	}
+	v, ps, err := t.Hermes.Home.Attach(ctx, session)
+	if err != nil {
+		return nil, nil, err
+	}
+	return v, ps, nil
+}
+
+// The words a waiting Hermes window's Pending says when there is no command
+// to show (mirror.Pending.Summary).
+const (
+	HermesApprovalText     = "Hermes is waiting for an approval in the terminal"
+	HermesSudoText         = "Hermes is asking for a sudo password in the terminal"
+	HermesClarifyText      = "Hermes is asking a question in the terminal"
+	hermesApprovalToolName = "terminal"
+	// hermesCommandPrefix starts an approval's Summary: the command it would
+	// run ("terminal: rm -r build").
+	hermesCommandPrefix = "terminal: "
+	// HermesNotWholeText is an approval's Detail when its command cannot be
+	// shown whole: muster offers deny only.
+	HermesNotWholeText = "The command is too long to show here whole: approve it in the terminal, or deny it here."
+)
+
+// hermesAttachTimeout bounds one attach (identify, a ticket, a WebSocket, a
+// resume); hermesRetry is how long a failed attach waits before the next.
+const (
+	hermesAttachTimeout = 20 * time.Second
+	hermesRetry         = 30 * time.Second
+)
+
+// hermesAsks is one connection's gateway viewers, by Hermes session id.
+type hermesAsks struct {
+	ctx      context.Context
+	attacher HermesViewerAttacher // nil: this host does not answer approvals
+	nudge    func()               // asks for a fresh listing (non-blocking)
+	logf     func(string, ...any)
+	now      func() time.Time
+
+	mu       sync.Mutex
+	sessions map[string]*hermesAsk
+}
+
+// hermesAsk is one session's viewer: attaching, attached (viewer set), or
+// refused (why set, retried after retryAt).
+type hermesAsk struct {
+	cancel    context.CancelFunc
+	attaching bool
+	viewer    HermesViewer
+	prompts   []hermeshost.ApprovalPrompt
+	why       string
+	retryAt   time.Time
+}
+
+// newHermesAsks is the asks of one connection; attacher nil for a host that
+// does not answer approvals.
+func newHermesAsks(ctx context.Context, attacher HermesViewerAttacher, nudge func(), logf func(string, ...any)) *hermesAsks {
+	return &hermesAsks{ctx: ctx, attacher: attacher, nudge: nudge, logf: logf, now: time.Now, sessions: map[string]*hermesAsk{}}
+}
+
+// attachPending sets each WAITING Hermes window's Pending (a copy of its
+// AgentPane) to what it waits on, and keeps a viewer attached to each session
+// waiting on an approval — and to no other. It never blocks on a gateway:
+// a viewer attaches in the background and nudges a fresh listing.
+func (m *hermesAsks) attachPending(windows []WindowInfo) {
+	want := map[string]bool{}
+	for i := range windows {
+		a := windows[i].Agent
+		if a == nil || a.Runtime != mirror.RuntimeHermes || a.Status != mirror.StatusWaiting || a.Hermes == nil {
+			continue
+		}
+		var p *mirror.Pending
+		switch a.Hermes.Status.Kind {
+		case mirror.PendingApproval:
+			if m.attacher != nil && a.Gen != "" {
+				want[a.Gen] = true
+			}
+			p = m.approvalPending(a.Gen)
+		case mirror.PendingSudo:
+			p = &mirror.Pending{Kind: mirror.PendingSudo, Summary: HermesSudoText, Tool: "sudo"}
+		case mirror.PendingClarify:
+			p = &mirror.Pending{Kind: mirror.PendingClarify, Summary: HermesClarifyText, Tool: "clarify"}
+		default:
+			continue
+		}
+		cp := *a
+		cp.Pending = p
+		windows[i].Agent = &cp
+	}
+	m.reconcile(want)
+}
+
+// approvalPending is what a window waiting on an approval in session shows:
+// the newest pending approval its viewer holds, or — no viewer, none yet —
+// the words alone.
+func (m *hermesAsks) approvalPending(session string) *mirror.Pending {
+	p := &mirror.Pending{Kind: mirror.PendingApproval, Summary: HermesApprovalText, Tool: hermesApprovalToolName}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a := m.sessions[session]
+	if a == nil {
+		return p
+	}
+	if a.viewer == nil || len(a.prompts) == 0 {
+		if a.why != "" {
+			p.Detail = "muster cannot reach Hermes's gateway (" + a.why + "): answer it in the terminal."
+		}
+		return p
+	}
+	ap := a.prompts[len(a.prompts)-1]
+	shown, whole := commandShown(ap.Command)
+	p.Summary, p.Detail, p.PromptID = shown, redact.Secrets(ap.Description), ap.PromptID
+	p.Choices = strings.Join(offeredChoices(ap, whole), " ")
+	if !whole {
+		p.Detail = HermesNotWholeText
+	}
+	return p
+}
+
+// commandShown is an approval's command as a card shows it ("terminal: …",
+// one line, capped, what looks like a secret redacted) and whether that is
+// the WHOLE command, verbatim.
+func commandShown(cmd string) (shown string, whole bool) {
+	red := redact.Secrets(cmd)
+	shown = mirror.OneLine(hermesCommandPrefix+red, mirror.MaxPendingSummary)
+	return shown, red == cmd && shown == hermesCommandPrefix+cmd
+}
+
+// offeredChoices are the answers muster offers for ap: once and deny as ap
+// offers them — once only for a command shown whole.
+func offeredChoices(ap hermeshost.ApprovalPrompt, whole bool) []string {
+	var out []string
+	for _, c := range mirror.HermesApprovalChoices {
+		if !ap.Offers(c) || (c == "once" && !whole) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// reconcile attaches a viewer to every session in want that has none (and
+// whose last refusal is old enough) and detaches every other.
+func (m *hermesAsks) reconcile(want map[string]bool) {
+	if m.attacher == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for s, a := range m.sessions {
+		if !want[s] {
+			a.cancel()
+			delete(m.sessions, s)
+		}
+	}
+	now := m.now()
+	for s := range want {
+		a := m.sessions[s]
+		if a != nil && (a.attaching || a.viewer != nil || now.Before(a.retryAt)) {
+			continue
+		}
+		if a != nil {
+			a.cancel()
+		}
+		ctx, cancel := context.WithCancel(m.ctx)
+		a = &hermesAsk{cancel: cancel, attaching: true}
+		m.sessions[s] = a
+		go m.follow(ctx, s, a)
+	}
+}
+
+// follow attaches a's viewer to session and keeps its approvals current
+// until ctx ends (detached) or the gateway hangs up.
+func (m *hermesAsks) follow(ctx context.Context, session string, a *hermesAsk) {
+	actx, cancel := context.WithTimeout(ctx, hermesAttachTimeout)
+	v, ps, err := m.attacher.AttachHermesViewer(actx, session)
+	cancel()
+	m.mu.Lock()
+	if m.sessions[session] != a || ctx.Err() != nil {
+		m.mu.Unlock()
+		if v != nil {
+			v.Close()
+		}
+		return
+	}
+	a.attaching = false
+	if err != nil {
+		a.why, a.retryAt = mirror.OneLine(err.Error(), 160), m.now().Add(hermesRetry)
+		m.mu.Unlock()
+		m.logf("muster-mirror: no Hermes gateway viewer for session %s: %v (its approvals are answered in the terminal)", session, err)
+		m.nudge()
+		return
+	}
+	a.viewer, a.prompts, a.why = v, ps, ""
+	m.mu.Unlock()
+	m.logf("muster-mirror: attached Hermes's gateway viewer to session %s (%d pending approval(s))", session, len(ps))
+	m.nudge()
+	defer v.Close()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case e, ok := <-v.Events():
+			m.mu.Lock()
+			if !ok {
+				// The gateway hung up: drop the viewer; the next listing that
+				// still wants one attaches again.
+				if m.sessions[session] == a {
+					a.viewer, a.prompts, a.retryAt = nil, nil, m.now()
+				}
+				m.mu.Unlock()
+				m.nudge()
+				return
+			}
+			switch e.Kind {
+			case hermeshost.EventApprovalRequest:
+				a.prompts = append(slices.DeleteFunc(a.prompts, func(p hermeshost.ApprovalPrompt) bool { return p.PromptID == e.PromptID }), e.Prompt)
+			case hermeshost.EventApprovalSettled:
+				a.prompts = slices.DeleteFunc(a.prompts, func(p hermeshost.ApprovalPrompt) bool { return p.PromptID == e.PromptID })
+			}
+			m.mu.Unlock()
+			m.nudge()
+		}
+	}
+}
+
+// close detaches every viewer.
+func (m *hermesAsks) close() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for s, a := range m.sessions {
+		a.cancel()
+		delete(m.sessions, s)
+	}
+}
+
+// The outcomes of answer, for the reply's refusal kind.
+var (
+	errHermesGone        = errors.New("Hermes is no longer waiting on that approval")
+	errHermesUnreachable = errors.New("muster-mirror has no gateway viewer for this Hermes session")
+	errHermesUnknown     = errors.New("the answer was sent to Hermes's gateway, which did not answer")
+)
+
+// answer answers the approval promptID of session with choice through its
+// viewer — only an approval the viewer holds NOW, with an answer muster
+// offers for it (offeredChoices: once only for a command shown whole).
+func (m *hermesAsks) answer(ctx context.Context, session, promptID, choice string) error {
+	m.mu.Lock()
+	a := m.sessions[session]
+	var v HermesViewer
+	var ap hermeshost.ApprovalPrompt
+	found := false
+	if a != nil && a.viewer != nil {
+		v = a.viewer
+		for _, p := range a.prompts {
+			if p.PromptID == promptID {
+				ap, found = p, true
+			}
+		}
+	}
+	m.mu.Unlock()
+	switch {
+	case v == nil:
+		return errHermesUnreachable
+	case !found:
+		return errHermesGone
+	}
+	_, whole := commandShown(ap.Command)
+	if !slices.Contains(offeredChoices(ap, whole), choice) {
+		return fmt.Errorf("%w with %q: muster does not offer that answer for it", errHermesGone, choice)
+	}
+	err := v.Respond(ctx, ap, choice)
+	switch {
+	case err == nil:
+		m.mu.Lock()
+		if m.sessions[session] == a {
+			a.prompts = slices.DeleteFunc(a.prompts, func(p hermeshost.ApprovalPrompt) bool { return p.PromptID == promptID })
+		}
+		m.mu.Unlock()
+		m.nudge()
+		return nil
+	case errors.Is(err, hermeshost.ErrApprovalRefused):
+		return fmt.Errorf("%w (%v)", errHermesGone, err)
+	case errors.Is(err, hermeshost.ErrViewerNoAnswer):
+		return fmt.Errorf("%w (%v)", errHermesUnknown, err)
+	}
+	return fmt.Errorf("%w (%v)", errHermesUnreachable, err)
+}
+
+// hermesAttacher is what this connection attaches gateway viewers with: nil
+// unless it answers Hermes approvals — an -interactive v2 host started with
+// -hermes-answer whose backend resolves Hermes sessions and can attach.
+func (h *hostSide) hermesAttacher() HermesViewerAttacher {
+	if h.version < 2 || !h.c.cfg.Interactive || !h.c.cfg.HermesAnswer {
+		return nil
+	}
+	if _, ok := h.hermesSource(); !ok {
+		return nil
+	}
+	a, ok := capabilityOf[HermesViewerAttacher](h.c.cfg.Backend)
+	if !ok {
+		return nil
+	}
+	return a
+}
+
+// hermesAnswer is what this host advertises as Msg.HermesAnswer.
+func (h *hostSide) hermesAnswer() bool { return h.hermes != nil && h.hermes.attacher != nil }
+
+// nudge asks the refresh goroutine for a listing now, without waiting: a
+// viewer's news reaches muster at once rather than at the next Refresh.
+func (h *hostSide) nudge() {
+	select {
+	case h.kick <- make(chan struct{}):
+	default:
+	}
+}
+
+// answerHermes answers a Hermes approval (m.Runtime "hermes",
+// m.HermesApproval) through the session's gateway viewer, and answers
+// answered.
+//
+// 🔴 REFUSED UNLESS THIS HOST OPTED IN (-interactive and -hermes-answer),
+// whatever muster asks — muster refuses it too — and only for a listed
+// window whose pane runs Hermes NOW, waiting on an approval: the window is
+// re-resolved here, and the session answered is the one its pane runs. Never
+// a key into the pane.
+func (h *hostSide) answerHermes(m mirror.Msg) {
+	reply := func(err error) {
+		ans := mirror.Msg{Type: mirror.TypeAnswered, ID: m.ID}
+		if err != nil {
+			ans.Error = err.Error()
+			switch {
+			case errors.Is(err, errHermesGone):
+				ans.Refusal = mirror.AskRefusalHermesGone
+			case errors.Is(err, errHermesUnreachable):
+				ans.Refusal = mirror.AskRefusalHermesUnreachable
+			case errors.Is(err, errHermesUnknown):
+				ans.Refusal = mirror.AskRefusalHermesUnknown
+			case errors.Is(err, errCannotAnswer):
+				ans.Refusal = mirror.AskRefusalUnsupported
+			}
+			h.c.log.Printf("muster-mirror: Hermes approval in %q%s not answered: %v", m.Session, windowSuffix(m.Window), err)
+		} else {
+			h.c.log.Printf("muster-mirror: answered a Hermes approval in %q%s through its gateway (%s)", m.Session, windowSuffix(m.Window), m.HermesApproval.Choice)
+		}
+		_ = h.send(ans)
+	}
+	if !h.hermesAnswer() {
+		reply(fmt.Errorf("%w: this host does not answer Hermes approvals (muster-mirror needs -interactive and -hermes-answer)", errCannotAnswer))
+		return
+	}
+	if err := h.allowed(m); err != nil {
+		reply(err)
+		return
+	}
+	a := m.HermesApproval
+	if a == nil || !slices.Contains(mirror.HermesApprovalChoices, a.Choice) || !mirror.ValidPromptID(a.PromptID) {
+		reply(fmt.Errorf("%w: not an approval answer muster sends", errHermesGone))
+		return
+	}
+	ctx, cancel := context.WithTimeout(h.ctx, 35*time.Second)
+	defer cancel()
+	wi, err := h.window(ctx, m.Session, m.Window)
+	if err != nil {
+		reply(fmt.Errorf("%w: %v", errHermesGone, err))
+		return
+	}
+	ag := wi.Agent
+	if ag == nil || ag.Runtime != mirror.RuntimeHermes || ag.Gen == "" || ag.Status != mirror.StatusWaiting ||
+		ag.Hermes == nil || ag.Hermes.Status.Kind != mirror.PendingApproval {
+		reply(fmt.Errorf("%w: the window's pane is not Hermes waiting on an approval now", errHermesGone))
+		return
+	}
+	reply(h.hermes.answer(ctx, ag.Gen, a.PromptID, a.Choice))
+}
