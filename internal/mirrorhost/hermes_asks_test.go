@@ -353,7 +353,7 @@ func TestARightToLeftCommandIsDenyOnly(t *testing.T) {
 // 🟢 The card says only that the gateway cannot be reached: no path, no uid
 // (those go to the host's log) (audit #206).
 func TestTheCardDoesNotQuoteWhyTheGatewayIsUnreachable(t *testing.T) {
-	a := &fakeAttacher{err: fmt.Errorf("%w: /home/someone/.hermes/gateway.sock is owned by uid 1234, not this user's 1000", hermeshost.ErrGatewayUnsafe)}
+	a := &fakeAttacher{err: fmt.Errorf("%w: /srv/hermes-home/gateway.sock is owned by uid 1234, not this user's 1000", hermeshost.ErrGatewayUnsafe)}
 	m, _ := newTestAsks(t, a)
 	p := pendingAfter(t, m, mirror.StatusWaiting, "approval", func(p *mirror.Pending) bool { return p.Detail != "" })
 	if p.Detail != HermesUnreachableText || strings.Contains(p.Detail, "/") || strings.Contains(p.Detail, "uid") {

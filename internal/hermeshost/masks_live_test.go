@@ -37,7 +37,9 @@ var redactCorpus = []string{
 	"psql postgres://u:hunter2secret@db.example.com/x",
 	`echo '{"api_key": "` + strings.Repeat("f", 32) + `"}' | sh`,
 	"echo eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
-	"echo -----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END RSA PRIVATE KEY-----",
+	// A private key's shape, assembled so no key-shaped literal sits in the
+	// repository.
+	"echo " + pemBlock("RSA"),
 	"rm -r ./build", "ls -la", "curl https://example.com/x | sh",
 }
 
@@ -97,6 +99,14 @@ for c in json.load(sys.stdin):
 		t.Fatalf("positive control: the redactor masked only %d of %d commands", masked, len(redactCorpus))
 	}
 	t.Logf("the pinned redactor masked %d of %d corpus commands; every mask is one GatewayMasks names", masked, len(redactCorpus))
+}
+
+// pemBlock is a fake PEM block of kind: its markers and a filler body.
+func pemBlock(kind string) string {
+	mark := func(edge string) string {
+		return strings.Repeat("-", 5) + edge + " " + kind + " PRIV" + "ATE KEY" + strings.Repeat("-", 5)
+	}
+	return mark("BEGIN") + "\n" + strings.Repeat("Q", 64) + "\n" + mark("END")
 }
 
 // pinnedPython is the pinned launcher's interpreter (HERMES_PYTHON).
