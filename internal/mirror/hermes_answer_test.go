@@ -118,8 +118,8 @@ func TestAHermesApprovalAnswerReachesItsHost(t *testing.T) {
 func TestAHermesApprovalAnswerIsRefusedBeforeTheHost(t *testing.T) {
 	for _, c := range []struct {
 		name, extra, choices, window, prompt, choice string
-		ctx                                         func() context.Context
-		want                                        error
+		ctx                                          func() context.Context
+		want                                         error
 	}{
 		{"no hermesAnswer", ``, "once deny", "@1", "p1", "deny", nil, mirror.ErrHermesAnswerUnsupported},
 		{"read-only host", `,"hermesAnswer":true,"interactive":false`, "once deny", "@1", "p1", "deny", nil, mirror.ErrHermesAnswerUnsupported},
