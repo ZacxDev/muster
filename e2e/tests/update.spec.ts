@@ -89,6 +89,13 @@ const checkForUpdate = async () => {
 // hazard is exercised on every run rather than when a timer happens to land
 // in the window. Navigations, the worker's own fetches (page.route never sees
 // them) and the update check are untouched.
+//
+// ⚠ THIS GUARD DELIBERATELY MASKS A REAL PRODUCT PATH. A signed-out tab's 401
+// goes to the auth gate's location.reload() (internal/ui/components.go,
+// htmx:beforeSwap), and during a deploy's restart window that reload lands on
+// chrome-error:// — a dead tab. These tests are about the worker's update, not
+// that path, so they keep it out; NO spec covers it. It is tracked as a
+// separate product defect.
 async function signOutUnderPage(page: Page): Promise<void> {
   let stopped = 0;
   await page.route('**/*', (route) => {

@@ -141,7 +141,7 @@ test.beforeAll(async () => {
 // askQuestion registers luxq's AskUserQuestion through the REAL hook, as
 // Claude Code would run it (the payload on stdin, the host's token).
 async function askQuestion() {
-  fs.writeFileSync(trQ + '.picker.json', JSON.stringify({ toolUseId: 'toolu_lux_' + stamp, questions: [question] }));
+  writeFileAtomic(trQ + '.picker.json', JSON.stringify({ toolUseId: 'toolu_lux_' + stamp, questions: [question] }));
   const h = spawn(mirrorBin, ['ask'], {
     env: { ...process.env, MUSTER_MIRROR_URL: origin, MUSTER_MIRROR_ALLOW_HTTP: '1', MUSTER_MIRROR_TOKEN: token },
     stdio: ['pipe', 'pipe', 'pipe'],
