@@ -198,18 +198,8 @@ func (s *Server) handleAgentsContent(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load agents", http.StatusInternalServerError)
 		return
 	}
-	refs := s.recentRefs(ctx)
-	// The version of what the caller drew (ui.AgentsListVersion): unchanged, the
-	// answer is 204 and htmx swaps nothing — the document's first live refresh
-	// does not re-swap the list it server-rendered (agents_list_ssr.go).
-	v := ui.AgentsListVersion(cards, mirrors, refs)
-	if v != "" && r.Header.Get(ui.AgentsListVersionHeader) == v {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	w.Header().Set(ui.AgentsListVersionHeader, v)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentsList(w, cards, mirrors, refs); err != nil {
+	if err := ui.RenderAgentsList(w, cards, mirrors, s.recentRefs(ctx)); err != nil {
 		s.logger.Printf("agents: render: %v", err)
 	}
 }

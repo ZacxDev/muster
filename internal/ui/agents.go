@@ -191,10 +191,7 @@ func agentsPanel(active bool, recent []recentItem, list *shellList) g.Node {
 			// the document, so its first paint is the list and nothing is filled in
 			// under the reader. They are the SAME renderer's output as the
 			// /ui/agents partial (agentsListBody; TestTheAgentsDocumentDrawsTheListPartial
-			// holds the two byte for byte), and data-list-v is the version of the
-			// state they were drawn from (AgentsListVersion): the list's first live
-			// refresh sends it back, and the server answers 204 — no swap — while
-			// nothing changed (agentsListVersionScript).
+			// holds the two byte for byte).
 			drawnList(list),
 			hx("hx-get", "/ui/agents"),
 			// Event-driven only — NO timer. A 4s poll churned the list constantly;

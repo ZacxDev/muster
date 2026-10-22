@@ -2,13 +2,11 @@ package api
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/recents"
-	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // agentsListOpen is #agents-list's opening tag in a document.
@@ -61,10 +59,8 @@ func TestTheAgentsDocumentDrawsTheListPartial(t *testing.T) {
 
 // TestTheAgentsFirstPaintBuildsTheListOnce: the Agents tab's first paint is
 // ONE list build. The document draws the cards (one provisioner read, for their
-// live status) and its list issues no `load` request of its own; the document's
-// first live refresh, carrying the version the document stamped, is answered
-// 204 — no markup, nothing to swap. A refresh after the state moved gets the
-// list, and the new version, again.
+// live status) and its list issues no `load` request of its own — every live
+// trigger is kept.
 //
 // On the base tree the document read no instances and drew no cards; every
 // paint of the tab was empty until /ui/agents answered.
@@ -93,54 +89,6 @@ func TestTheAgentsFirstPaintBuildsTheListOnce(t *testing.T) {
 			t.Errorf("the list lost its live trigger %q: %q", live, trig[1])
 		}
 	}
-	v := regexp.MustCompile(ui.AgentsListVersionAttr + `="([0-9a-f]+)"`).FindStringSubmatch(open)
-	if v == nil {
-		t.Fatalf("the list carries no %s: %s", ui.AgentsListVersionAttr, open)
-	}
-
-	refresh := func(version string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodGet, "/ui/agents", nil)
-		admit(s, req)
-		if version != "" {
-			req.Header.Set(ui.AgentsListVersionHeader, version)
-		}
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		return rec
-	}
-	if rec := refresh(v[1]); rec.Code != http.StatusNoContent || rec.Body.Len() != 0 {
-		t.Errorf("the first live refresh with the document's version = %d (%d bytes), want 204 with nothing", rec.Code, rec.Body.Len())
-	}
-	// Control: an older version (or none) gets the list and the current version.
-	for _, stale := range []string{"", "0123456789abcdef01234567"} {
-		rec := refresh(stale)
-		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<article ") {
-			t.Errorf("a refresh with version %q = %d, want 200 with the cards", stale, rec.Code)
-		}
-		if got := rec.Header().Get(ui.AgentsListVersionHeader); got != v[1] {
-			t.Errorf("a refresh with version %q answered version %q, want the current %q", stale, got, v[1])
-		}
-	}
-	// The state moves — on EACH input the list is drawn from: the version
-	// moves, and the version the client holds gets the list again.
-	fm := s.ext.Mirror.(*fakeMirror)
-	held := v[1]
-	for _, step := range []struct {
-		what string
-		move func()
-	}{
-		{"an agent pinned", func() { s.ext.Pins.(*memPins).pinFor(1).Agents[5] = true }},
-		{"a mirrored window active again", func() { fm.mu.Lock(); fm.windows[1].Activity += 600; fm.mu.Unlock() }},
-		{"an entry viewed (the recents strip)", func() { s.ext.Recents.(*memRecents).put(recents.Entry{AgentID: 7}) }},
-	} {
-		step.move()
-		rec := refresh(held)
-		got := rec.Header().Get(ui.AgentsListVersionHeader)
-		if rec.Code != http.StatusOK || got == held {
-			t.Errorf("after %s, the held version answered %d with version %q — the change would never reach the list", step.what, rec.Code, got)
-		}
-		held = got
-	}
 }
 
 // TestOtherTabsStillLoadTheListThemselves: a tab that is not Agents draws the
@@ -155,9 +103,6 @@ func TestOtherTabsStillLoadTheListThemselves(t *testing.T) {
 	open := agentsListOpen.FindString(doc)
 	if !strings.Contains(open, `hx-trigger="load, `) {
 		t.Errorf("the /tasks document's hidden list does not load itself: %s", open)
-	}
-	if strings.Contains(open, ui.AgentsListVersionAttr) {
-		t.Errorf("an empty list carries a version: %s", open)
 	}
 	rest := doc[strings.Index(doc, open)+len(open):]
 	if strings.HasPrefix(rest, "<article") {

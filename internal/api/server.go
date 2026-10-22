@@ -664,9 +664,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // the strip (a lighter read) and leave the list to a `load` request, so the
 // document was a filter bar over nothing until that request landed. Now the
 // document reads the provisioner's instances ONCE and the list issues no load
-// of its own (ui.agentsListLiveTrigger); its first live refresh is answered 204
-// while the state it was drawn from is current (handleAgentsContent).
-// TestTheAgentsFirstPaintBuildsTheListOnce counts the provisioner reads.
+// of its own (ui.agentsListLiveTrigger). (Its first live refresh — the SSE
+// open's resync — still rebuilds and morphs it; see ui/agents_list_ssr.go for
+// why that is measured and kept.) TestTheAgentsFirstPaintBuildsTheListOnce counts the provisioner reads.
 //
 // ⚠ A FAILED BUILD DRAWS THE OLD WAY (an empty list its own load fills, an
 // empty strip), not an error: that load reports its own failure.
@@ -680,7 +680,7 @@ func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
 		return ui.ShellData{}
 	}
 	refs := s.recentRefs(ctx)
-	return ui.ShellData{}.WithList(cards, mirrors, refs, ui.AgentsListVersion(cards, mirrors, refs))
+	return ui.ShellData{}.WithList(cards, mirrors, refs)
 }
 
 // tabFromPath maps a request path to a tab key.

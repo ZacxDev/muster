@@ -243,9 +243,7 @@ for (const vp of [
           if ((e.target as HTMLElement).id === 'agents-list') resolve();
         });
       }));
-      // The list's version dropped, so the server answers with the list and it is
-      // morphed (an unchanged list is a 204 that swaps nothing — agents_list_ssr.go).
-      await page.evaluate(() => { (document.getElementById('agents-list') as HTMLElement).removeAttribute('data-list-v'); (window as any).htmx.trigger(document.body, 'agents:changed'); });
+      await page.evaluate(() => (window as any).htmx.trigger(document.body, 'agents:changed'));
       await settled;
       await expect(pop, 'the popover stays open through the morph').toBeVisible();
       await expect(chip).toHaveAttribute('aria-expanded', 'true');

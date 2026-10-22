@@ -358,12 +358,7 @@ for (const vp of [
       await press(chip(page, 'idle-1d'));
       await expect.poll(() => shown(page)).toEqual(kept);
       const swapped = page.waitForResponse((r) => new URL(r.url()).pathname === '/ui/agents');
-      // Its version dropped, so the refresh carries the list and morphs it (an
-      // unchanged list is otherwise a 204 that swaps nothing — agents_list_ssr.go).
-      await page.evaluate(() => {
-        (document.getElementById('agents-list') as HTMLElement).removeAttribute('data-list-v');
-        document.body.dispatchEvent(new Event('muster:resync', { bubbles: true }));
-      });
+      await page.evaluate(() => document.body.dispatchEvent(new Event('muster:resync', { bubbles: true })));
       await swapped;
       await page.waitForTimeout(300);
       await expect(chip(page, 'question'), 'a list refresh keeps the chips').toHaveAttribute('aria-pressed', 'true');

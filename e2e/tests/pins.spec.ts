@@ -125,12 +125,7 @@ for (const vp of [
       await expect(older.locator('[data-pin-toggle]')).toHaveAttribute('aria-pressed', 'true');
 
       // A list refresh (what an SSE event or a lifecycle action does) keeps it.
-      // Its version dropped, so the refresh carries the list (an unchanged list
-      // is otherwise a 204 that swaps nothing — internal/ui/agents_list_ssr.go).
-      await page.evaluate(() => {
-        (document.getElementById('agents-list') as HTMLElement).removeAttribute('data-list-v');
-        (window as any).htmx.trigger(document.body, 'agents:changed');
-      });
+      await page.evaluate(() => (window as any).htmx.trigger(document.body, 'agents:changed'));
       await page.waitForTimeout(500);
       expect(await order(page), 'after a list refresh').toEqual(want);
       // And a reload: the pins are the server's, not the page's.
