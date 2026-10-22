@@ -74,6 +74,8 @@ var titleCases = []struct {
 	{"index then call", "call fns[0](arg) once", "call fns[0](arg) once"},
 	{"double index", "read grid[0][1] value", "read grid[0][1] value"},
 	{"type params", "type List[T any](x T) helper", "type List[T any](x T) helper"},
+	{"bracket then spaced parens", "generic [K comparable, V any](m map[K]V) form", "generic [K comparable, V any](m map[K]V) form"},
+	{"spaced image-like", "![not an image](a b c)", "![not an image](a b c)"},
 	{"plain", "Plain words only", "Plain words only"},
 	{"empty", "", ""},
 }
