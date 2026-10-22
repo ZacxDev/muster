@@ -66,7 +66,13 @@ for it, or [`connector_request_decide`](#deciding-a-request-from-your-own-sessio
 | any stored credential (a `github` personal access token included) | the connector: the credential is the same whichever agent sends it |
 
 The key also carries the credential source, so an approval of a stored
-`github` token is not an approval of the App, or the other way round.
+`github` token is not an approval of the App, or the other way round. Only one
+source's shared approvals are live per connector: approving under the App
+retires the connector's shared approvals of the stored token (and the other way
+round), so an old stored-token approval never comes back into force when the
+App is removed. When the source changes, each agent's grant is re-opened and
+asks you again (it is not approved from a shared approval in that request);
+your next approval is shared under the new source.
 
 Then:
 
@@ -80,17 +86,24 @@ Then:
   `approved`.
 - **It gives exactly what a manual approval gives.** An automatic approval is
   the same per-agent grant, against the same credential: the connector's hosts,
-  or the App's 1-hour token for the agent's own repository. The refusals a
-  manual approval has still apply: a worker-pool member is never given a
-  GitHub credential ([jobs.md](jobs.md#worker-pools)), so its request still
-  waits for you, and you are refused if you approve it.
+  or the App's 1-hour token for the agent's own repository. The connector
+  must exist.
+- **Never for a worker-pool member.** A pool worker runs machine jobs on code
+  that may not be yours ([jobs.md](jobs.md#worker-pools)), so it is never
+  approved from a shared approval, for any connector: each of its requests
+  waits for you as before. Approving one of them is not shared either. (A
+  GitHub-reaching approval for a pool worker is refused outright, as before.)
 - **Provenance is never a fake human decision.** An automatic approval
   records `decided_by = 'standing-grant'`, `decided_via = 'standing'` and the
   standing grant's id; its audit line reads *"approved automatically by
   standing grant N (shared from your approval of request M)"*. The Connectors
   tab marks the grant *shared approval*.
 - **Denials are not shared.** A denial answers that one request; the next
-  agent to ask prompts you.
+  agent to ask prompts you. ⚠ The reverse is not remembered either: a denial
+  (or revocation) of an agent made BEFORE you approve the connector for another
+  agent does not hold against that later shared approval — when the denied
+  agent asks again, it is approved from it. Only a denial or revocation made
+  after the shared approval exists keeps that agent out (below).
 - **Your own approvals only.** A standing grant is yours (row-level security,
   as for every owned table, plus an explicit owner predicate in the store), so
   it never approves another user's agent.

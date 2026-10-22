@@ -404,9 +404,14 @@ func (s *Server) AgentRequestConnector(ctx context.Context, a agents.Agent, name
 	if err := connectors.ValidateName(name); err != nil {
 		return AgentConnectorView{}, false, err
 	}
+	reopened := int64(0)
 	if g, err := s.ext.Connectors.LatestGrant(ctx, a.ID, name); err == nil {
+		was := g.Status
 		if g, err = s.reconcileGrant(ctx, g); err != nil {
 			return AgentConnectorView{}, false, err
+		}
+		if was == connectors.StatusApproved && g.Status == connectors.StatusPending {
+			reopened = g.ID // re-opened by THIS request: it asks the owner (0033)
 		}
 		if g.Usable() {
 			v, err := s.agentConnectorView(ctx, a, name)
@@ -423,9 +428,10 @@ func (s *Server) AgentRequestConnector(ctx context.Context, a agents.Agent, name
 			s.logger.Printf("connectors: audit request %d: %v", g.ID, err)
 		}
 		s.onGrantPending(ctx, g)
-	} else if g.Status == connectors.StatusPending {
+	} else if g.Status == connectors.StatusPending && g.ID != reopened {
 		// A request still waiting from before a standing grant covered it:
-		// asking again applies the shared approval.
+		// asking again applies the shared approval. Not one this very request
+		// re-opened because the credential source changed: that one asks.
 		s.approveFromStanding(ctx, g)
 	}
 	v, err := s.agentConnectorView(ctx, a, name)

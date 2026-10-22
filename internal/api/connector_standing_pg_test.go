@@ -414,26 +414,152 @@ func TestADenialIsNotShared(t *testing.T) {
 	}
 }
 
-// TestAPoolWorkerIsNeverApprovedFromAStandingGrant: a worker-pool member holds
-// no GitHub credential (jobs_grants.go), and a standing grant does not change
-// that: with the owner's shared approval of a connector reaching github.com,
-// the pool worker's request stays pending (and an approval of it is refused, as
-// before). The CONTROL is an agent in no pool, approved at once.
+// TestAPoolWorkerIsNeverApprovedFromAStandingGrant: a worker-pool member runs
+// machine jobs on code that may not be the operator's own (jobs_grants.go), so
+// no shared approval reaches it — for a connector reaching github.com AND for
+// one that does not (svc): each of its requests stays pending and prompts the
+// owner, exactly as before shared approvals. Nor is an approval OF a pool
+// worker's request shared: approving its svc3 request records no standing
+// grant, and another agent asking for svc3 still waits. The CONTROL is an
+// agent in no pool, approved at once on svc and gh-token.
 func TestAPoolWorkerIsNeverApprovedFromAStandingGrant(t *testing.T) {
 	f := newDecideFixture(t)
-	if _, err := f.store.CreateConnector(f.ctx, connectors.NewConnector{Name: "gh-token", Hosts: []string{"github.com"},
-		Scheme: connectors.SchemeBearer, Secret: connTestSecret}); err != nil {
+	for _, name := range []string{"gh-token", "svc3"} {
+		host := "api.example.com"
+		if name == "gh-token" {
+			host = "github.com"
+		}
+		if _, err := f.store.CreateConnector(f.ctx, connectors.NewConnector{Name: name, Hosts: []string{host},
+			Scheme: connectors.SchemeBearer, Secret: connTestSecret}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sfx := strconv.FormatInt(time.Now().UnixNano(), 36)
+	poolTok := "pool-token-" + sfx
+	f.agentWith(t, 1, "rev-"+sfx, "example-org/widget", "reviewers", poolTok)
+	for _, name := range []string{"svc", "gh-token"} {
+		_, first := f.ask(t, f.opTok, name)
+		f.approveOn(t, "tab", first)
+		st, id := f.ask(t, poolTok, name)
+		if st != "pending" {
+			t.Fatalf("a pool worker's %s request is %s from a standing grant; want pending", name, st)
+		}
+		if n := f.prompts(id); n != 1 {
+			t.Fatalf("a pool worker's %s request prompted the owner %d time(s); want 1", name, n)
+		}
+		if st, _ := f.ask(t, f.op2Tok, name); st != "approved" {
+			t.Fatalf("control: an agent in no pool is %s on %s; want approved", st, name)
+		}
+	}
+	_, own := f.ask(t, poolTok, "svc3")
+	f.approveOn(t, "tab", own)
+	if g := f.grantRow(t, own); g.status != "approved" {
+		t.Fatalf("the pool worker's svc3 request after the owner approved it: %+v", g)
+	}
+	var n int
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM connector_standing_grants WHERE connector_name = 'svc3'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("approving a pool worker's request recorded %d standing grant(s) (%v); want 0", n, err)
+	}
+	if st, _ := f.ask(t, f.op2Tok, "svc3"); st != "pending" {
+		t.Fatalf("another agent asking for svc3 after a pool worker's approval is %s; want pending", st)
+	}
+}
+
+// TestRemovingTheAppDoesNotReviveTheStoredTokensApproval: the owner shared an
+// approval of a STORED github token; the App is configured and an agent is
+// re-approved under it — which retires the stored-token approval. When the App
+// is removed again, a new agent on ANOTHER repository asking for github waits
+// for the owner: the old stored-token approval (the token reaches whatever it
+// reaches) does not come back into force.
+func TestRemovingTheAppDoesNotReviveTheStoredTokensApproval(t *testing.T) {
+	f := newDecideFixture(t)
+	p := connectors.GitHubPreset
+	if _, err := f.store.CreateConnector(f.ctx, connectors.NewConnector{Name: "github", Platform: p.Key, Hosts: p.Hosts,
+		Scheme: p.Scheme, Username: p.Username, Secret: connTestSecret}); err != nil {
 		t.Fatal(err)
 	}
 	sfx := strconv.FormatInt(time.Now().UnixNano(), 36)
-	f.agentWith(t, 1, "rev-"+sfx, "example-org/widget", "reviewers", "pool-token-"+sfx)
-	_, first := f.ask(t, f.opTok, "gh-token")
-	f.approveOn(t, "tab", first)
-	if st, _ := f.ask(t, "pool-token-"+sfx, "gh-token"); st != "pending" {
-		t.Fatalf("a pool worker's GitHub request is %s from a standing grant; want pending", st)
+	ta, tc := "rv-a-token-"+sfx, "rv-c-token-"+sfx
+	f.agentWith(t, 1, "rv-a-"+sfx, "example-org/widget", "", ta)
+	f.agentWith(t, 1, "rv-c-"+sfx, "example-org/other", "", tc)
+	_, ga := f.ask(t, ta, "github")
+	f.approveOn(t, "tab", ga)
+	stored := f.standingFrom(t, ga)
+
+	f.srv.ext.Connectors = connectors.WithVirtual(f.store, fakeApp{}, func(context.Context) bool { return true })
+	if st, _ := f.ask(t, ta, "github"); st != "pending" {
+		t.Fatalf("under the App the agent's re-opened grant is %s; want pending", st)
 	}
-	if st, _ := f.ask(t, f.op2Tok, "gh-token"); st != "approved" {
-		t.Fatalf("control: an agent in no pool is %s; want approved", st)
+	f.approveOn(t, "tab", ga)
+	if r := f.standingFrom(t, ga); r.source != connectors.SourceApp {
+		t.Fatalf("the re-approval under the App: %+v", r)
+	}
+	var retired bool
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT revoked_at IS NOT NULL FROM connector_standing_grants WHERE id = $1`,
+		stored.id).Scan(&retired); err != nil || !retired {
+		t.Fatalf("the stored-token standing grant after an App approval: retired=%v (%v); want retired", retired, err)
+	}
+
+	f.srv.ext.Connectors = f.store // the App is removed
+	if st, _ := f.ask(t, tc, "github"); st != "pending" {
+		t.Fatalf("after the App was removed a new agent on another repository is %s; want pending (the stored-token approval was retired)", st)
+	}
+}
+
+// TestARequestThatReOpensAGrantDoesNotApproveItInTheSameStep: an agent's grant
+// approved under the App (an agent with no repository: an App approval that is
+// not shared, so the stored-token standing grant stays live) is re-opened when
+// the App is removed. The request that re-opens it must leave it pending for
+// the owner — a credential-source change asks again (0033) — even though a
+// live stored-token standing grant would match it.
+func TestARequestThatReOpensAGrantDoesNotApproveItInTheSameStep(t *testing.T) {
+	f := newDecideFixture(t)
+	p := connectors.GitHubPreset
+	if _, err := f.store.CreateConnector(f.ctx, connectors.NewConnector{Name: "github", Platform: p.Key, Hosts: p.Hosts,
+		Scheme: p.Scheme, Username: p.Username, Secret: connTestSecret}); err != nil {
+		t.Fatal(err)
+	}
+	sfx := strconv.FormatInt(time.Now().UnixNano(), 36)
+	ta, tb := "ro-a-token-"+sfx, "ro-b-token-"+sfx
+	f.agentWith(t, 1, "ro-a-"+sfx, "example-org/widget", "", ta)
+	f.agentWith(t, 1, "ro-b-"+sfx, "", "", tb)
+	_, ga := f.ask(t, ta, "github")
+	f.approveOn(t, "tab", ga) // stored-token standing grant, live
+
+	f.srv.ext.Connectors = connectors.WithVirtual(f.store, fakeApp{}, func(context.Context) bool { return true })
+	_, gb := f.ask(t, tb, "github")
+	f.approveOn(t, "tab", gb) // under the App, no repository: not shared, retires nothing
+	if g := f.grantRow(t, gb); g.status != "approved" || g.source != connectors.SourceApp {
+		t.Fatalf("control: b under the App: %+v", g)
+	}
+
+	f.srv.ext.Connectors = f.store // the App is removed
+	if st, id := f.ask(t, tb, "github"); st != "pending" || id != gb {
+		t.Fatalf("the request that re-opened b's grant left it %s (grant %d, want %d); want pending", st, id, gb)
+	}
+	if f.standingOf(t, gb) != 0 {
+		t.Fatalf("b's re-opened grant was approved from a standing grant in the same request")
+	}
+}
+
+// TestAStandingGrantNeverMatchesOnAnUncertainRole: when the owner's role could
+// not be read (authz RoleUncertain: an admin then acts as a member, for whom
+// the App vanishes), no standing grant is matched — the request waits. The
+// CONTROL is the same pending request under a readable role, approved.
+func TestAStandingGrantNeverMatchesOnAnUncertainRole(t *testing.T) {
+	f := newDecideFixture(t)
+	_, first := f.ask(t, f.opTok, "svc")
+	f.approveOn(t, "tab", first)
+	g, _, err := f.store.RequestGrant(asUser(1), f.op2.ID, "svc", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uncertain := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleMember, Via: authz.ViaSession, RoleUncertain: true})
+	if ng, ok := f.srv.approveFromStanding(uncertain, g); ok || f.grantRow(t, g.ID).status != "pending" {
+		t.Fatalf("on an uncertain role a standing grant approved %+v", ng)
+	}
+	if _, ok := f.srv.approveFromStanding(asUser(1), g); !ok {
+		t.Fatal("control: under a readable role the request was not approved")
 	}
 }
 

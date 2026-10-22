@@ -275,3 +275,34 @@ func TestDeletingAConnectorDeletesItsStandingGrants(t *testing.T) {
 		t.Fatalf("a re-created connector inherited a standing grant: %v", err)
 	}
 }
+
+// TestAStandingGrantUnderOneSourceRetiresTheOther: recording a standing grant
+// for the App retires the connector's live stored-token standing grant (and
+// the other way round), so only one source's shared approval is ever live.
+// Another connector's standing grant is untouched.
+func TestAStandingGrantUnderOneSourceRetiresTheOther(t *testing.T) {
+	ctx, pool := testPool(t)
+	s := newStore(t, pool, key(1))
+	a := seedAgent(t, ctx, pool, "standing-src-a", "tok-standing-src-a-0123456789")
+	b := seedAgent(t, ctx, pool, "standing-src-b", "tok-standing-src-b-0123456789")
+	ga := approved(t, ctx, s, a, "github")
+	gs := approved(t, ctx, s, a, "svc")
+	stored, _, _ := s.CreateStandingGrant(ctx, "github", connectors.SourceStored, "", ga.ID)
+	other, _, _ := s.CreateStandingGrant(ctx, "svc", connectors.SourceStored, "", gs.ID)
+	gb := approved(t, ctx, s, b, "github")
+	app, created, err := s.CreateStandingGrant(ctx, "github", connectors.SourceApp, "example-org/widget", gb.ID)
+	if err != nil || !created {
+		t.Fatalf("the App standing grant: %+v %v %v", app, created, err)
+	}
+	live := map[int64]bool{}
+	list, _ := s.ListStandingGrants(ctx)
+	for _, sg := range list {
+		live[sg.ID] = true
+	}
+	if live[stored.ID] || !live[app.ID] || !live[other.ID] {
+		t.Fatalf("live standing grants %v: want the App one and svc's, not the stored github one %d", live, stored.ID)
+	}
+	if _, err := s.MatchStandingGrant(ctx, b, "github", connectors.SourceStored, ""); !errors.Is(err, connectors.ErrNotFound) {
+		t.Fatalf("the retired stored-token standing grant still matches: %v", err)
+	}
+}

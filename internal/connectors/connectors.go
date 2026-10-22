@@ -289,6 +289,7 @@ type Store interface {
 	// CreateStandingGrant records the owner's standing grant for the key
 	// (connector, source, repo — see StandingRepo), from the approval of grant
 	// origin; when a live one already exists it is returned and created is false.
+	// It retires the connector's live standing grants under the OTHER source.
 	CreateStandingGrant(ctx context.Context, connector, source, repo string, origin int64) (sg StandingGrant, created bool, err error)
 	// MatchStandingGrant returns the owner's live standing grant for the key that
 	// may approve agentID's request, or ErrNotFound. A standing grant does not

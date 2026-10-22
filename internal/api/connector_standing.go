@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -22,9 +23,13 @@ import (
 // (shareApproval). Every request filed — by the request route, the
 // connector_request tool or the proxy — is first offered to
 // approveFromStanding, and the owner is prompted only when no standing grant
-// covers it. (A grant RE-OPENED because its connector's credential source
-// changed is not: that change asks the owner again, as 0033 decided, and the
-// approval is then shared.)
+// covers it. A grant RE-OPENED because its connector's credential source
+// changed is not offered, by any door, in the request that re-opened it: that
+// change asks the owner again, as 0033 decided, and the approval is then
+// shared. And recording a standing grant under one source RETIRES the
+// connector's standing grants under the other (CreateStandingGrant), so an
+// approval of the stored token cannot come back into force when the App that
+// replaced it is removed.
 //
 // 🔴 THE KEY IS (connector, credential source, repository for the GitHub App).
 // The App's token reaches only the agent's OWN repository, so an App approval
@@ -35,10 +40,10 @@ import (
 // 🔴 AN AUTOMATIC APPROVAL GIVES EXACTLY WHAT A MANUAL ONE WOULD: it is the
 // same per-agent grant row, approved against the same credential source, so the
 // proxy serves it exactly as it serves a grant the owner approved by hand. And
-// it passes every refusal a manual approval passes — the connector must exist,
-// and a worker-pool member is never given a GitHub credential
-// (refusePoolWorkerGitHubGrant): such a request stays pending for the owner,
-// whose approval is refused there as it always was.
+// it passes every refusal a manual approval passes — the connector must exist.
+// A worker-pool member is never approved from a standing grant at all, for any
+// connector (its requests wait for the owner as before), and its own approvals
+// are never shared.
 // ---------------------------------------------------------------------------
 
 // standingKey is the standing-grant key a grant on connector would be approved
@@ -46,7 +51,15 @@ import (
 // connector has for the owner and the repository part. ok is false when an
 // approval for this agent is never shared (the App, an agent with no
 // repository: that approval grants nothing usable).
+//
+// 🔴 NEVER ON A FALLBACK ROLE (connectors.ReconcileGrant's rule): a principal
+// whose role could not be read acts as a member, for whom the App vanishes, so
+// an admin's `github` would be keyed `stored` and could match a stored-token
+// standing grant. No key, no match: the request waits for the owner.
 func (s *Server) standingKey(ctx context.Context, connector string, a agents.Agent) (source, repo string, ok bool) {
+	if p, has := authz.From(ctx); has && p.RoleUncertain {
+		return "", "", false
+	}
 	source = connectors.SourceFor(ctx, s.ext.Connectors, connector)
 	repo, ok = connectors.StandingRepo(source, a.Repo)
 	return source, repo, ok
@@ -68,7 +81,11 @@ func (s *Server) approveFromStanding(ctx context.Context, g connectors.Grant) (c
 	if _, err := s.ext.Connectors.GetConnector(ctx, g.Connector); err != nil {
 		return g, false
 	}
-	if err := s.refusePoolWorkerGitHubGrant(ctx, g); err != nil {
+	// 🔴 A WORKER-POOL MEMBER IS NEVER APPROVED FROM A STANDING GRANT, FOR ANY
+	// CONNECTOR: it runs machine jobs that review code which may not be the
+	// operator's own (jobs_grants.go), possibly with permission bypass, so each
+	// of its requests waits for the owner, as before shared approvals.
+	if a.WorkerPool != "" {
 		return g, false
 	}
 	source, repo, ok := s.standingKey(ctx, g.Connector, a)
@@ -142,6 +159,11 @@ func (s *Server) shareApproval(ctx context.Context, g connectors.Grant, via conn
 	a, err := s.ext.Agents.Get(ctx, g.AgentID)
 	if err != nil {
 		s.logger.Printf("connectors: share approval %d: agent: %v", g.ID, err)
+		return out
+	}
+	// A pool worker's approval is its own: it is never shared (and never
+	// matched: approveFromStanding).
+	if a.WorkerPool != "" {
 		return out
 	}
 	repo, ok := connectors.StandingRepo(g.Source, a.Repo)
@@ -225,7 +247,7 @@ func (s *Server) requestShares(ctx context.Context, g connectors.Grant) string {
 		return ""
 	}
 	a, err := s.ext.Agents.Get(ctx, g.AgentID)
-	if err != nil || s.refusePoolWorkerGitHubGrant(ctx, g) != nil {
+	if err != nil || a.WorkerPool != "" {
 		return ""
 	}
 	source, repo, ok := s.standingKey(ctx, g.Connector, a)

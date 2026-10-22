@@ -31,21 +31,40 @@ func (s *PGStore) CreateStandingGrant(ctx context.Context, connector, source, re
 	if !ok {
 		return StandingGrant{}, false, ErrInvalid
 	}
-	sg, err := scanStanding(s.pool.QueryRow(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return StandingGrant{}, false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // a no-op after Commit
+	// 🔴 ONE SOURCE AT A TIME: an approval under this credential source retires
+	// the connector's live standing grants under the OTHER source. Otherwise an
+	// approval of the stored `github` token, superseded when the App was
+	// configured and an agent re-approved under it, would come back into force
+	// — for every repository — the moment the App is removed.
+	if _, err := tx.Exec(ctx, `UPDATE connector_standing_grants SET revoked_at = now()
+		WHERE owner_id = (SELECT owner_id FROM connector_grants WHERE id = $3)
+		  AND connector_name = $1 AND source <> $2 AND revoked_at IS NULL`, connector, source, origin); err != nil {
+		return StandingGrant{}, false, err
+	}
+	created := true
+	sg, err := scanStanding(tx.QueryRow(ctx, `
 		INSERT INTO connector_standing_grants (owner_id, connector_name, source, repo, origin_grant_id)
 		VALUES ((SELECT owner_id FROM connector_grants WHERE id = $4), $1, $2, $3, $4)
 		ON CONFLICT (owner_id, connector_name, source, repo) WHERE revoked_at IS NULL DO NOTHING
 		RETURNING `+standingCols, connector, source, repo, origin))
-	if err == nil {
-		return sg, true, nil
+	if errors.Is(err, ErrNotFound) {
+		created = false
+		sg, err = scanStanding(tx.QueryRow(ctx, `SELECT `+standingCols+` FROM connector_standing_grants
+			WHERE owner_id = (SELECT owner_id FROM connector_grants WHERE id = $4)
+			  AND connector_name=$1 AND source=$2 AND repo=$3 AND revoked_at IS NULL`, connector, source, repo, origin))
 	}
-	if !errors.Is(err, ErrNotFound) {
+	if err != nil {
 		return StandingGrant{}, false, err
 	}
-	sg, err = scanStanding(s.pool.QueryRow(ctx, `SELECT `+standingCols+` FROM connector_standing_grants
-		WHERE owner_id = (SELECT owner_id FROM connector_grants WHERE id = $4)
-		  AND connector_name=$1 AND source=$2 AND repo=$3 AND revoked_at IS NULL`, connector, source, repo, origin))
-	return sg, false, err
+	if err := tx.Commit(ctx); err != nil {
+		return StandingGrant{}, false, err
+	}
+	return sg, created, nil
 }
 
 // MatchStandingGrant is the live standing grant for the key that may approve
