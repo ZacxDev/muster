@@ -58,7 +58,18 @@ waiting. **A notification says WHO and WHERE, never WHAT** — a lock screen sho
 it to anyone holding the phone: `<asker> is asking` for a question, `Waiting:
 <tool name> · <window> @ <host>` for a session (no command, path or URL). The
 question, the command and the message are on the page. Each item has one tag, so a
-notification is replaced, never stacked. A session is not re-notified:
+notification is replaced, never stacked. **A tap opens the item's session**
+when it has one, on the browser and the paired phone alike: a waiting window or
+a held question opens that window's rendered view; a dispatched agent's question
+opens the agent's page (`/agents/<name>`); a mirrored Claude session's question
+opens the window running that session, found when the notification is sent.
+Everything else opens its item on `/attention`: a question muster raised itself,
+a Hermes window that names no conversation, an asking agent that cannot be read,
+and an asking session no listed window runs at that moment
+(`internal/api/attention_push_target.go`, the one rule). A session's page does
+not show an agent's question or its option buttons: there you answer by writing
+to the agent or session (which records it as *answered in the session*), or open
+`/attention` to answer the question itself. A session is not re-notified:
 
 - when muster restarts or a host reconnects: the first time this process sees
   a host — and again each time it comes back after disconnecting — its

@@ -224,3 +224,96 @@ test('an attention notification is shown with its tag and link, and its resolved
   await deliver('{"type":"resolved","id":"ask-41","tag":"attention-ask-41"}');
   await expect.poll(shown).toEqual([{ ...note, open: false }]);
 });
+
+// TAPPING an attention notification (operator ask: "go straight to the
+// session"): a session item's notification brings the OPEN muster tab forward
+// and navigates it to that session's page; a no-session item's to its item on
+// /attention. Each payload is delivered to the real worker exactly as the
+// server sends it — the session one is the document internal/api's
+// TestTheSessionPushPayloadIsWhatTheWorkerReads pins (encoding/json writes "&"
+// as &) — and the worker's real notificationclick handler, clients
+// lookup and client.navigate do the rest.
+//
+// ⚠ STUBBED, AND WHY: headless Chromium shows no notification (see above), so
+// the click is a synthetic notificationclick carrying the notification the
+// worker recorded; and the browser only lets a worker focus a window inside a
+// TRUSTED notificationclick, so WindowClient.focus is replaced by a counter
+// (what it would have focused is the same client navigate() then moves, which
+// is real) and waitUntil, which refuses an untrusted event, by a collector.
+test('tapping an attention notification opens its session, or its item when it has none, in the open tab', async ({ page, context }) => {
+  await signIn(page);
+  const registered = context.serviceWorkers().length ? Promise.resolve(context.serviceWorkers()[0]) : context.waitForEvent('serviceworker');
+  await page.goto(origin + '/tasks');
+  const worker = await registered;
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller) {
+      await new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', r, { once: true }));
+    }
+  });
+  await worker.evaluate(() => {
+    type Note = { title: string; tag: string; data: Record<string, string> };
+    const scope = self as unknown as {
+      __notes: Note[];
+      __focused: number;
+      __click: (tag: string) => Promise<void>;
+      registration: ServiceWorkerRegistration;
+      dispatchEvent: (e: Event) => boolean;
+    };
+    scope.__notes = [];
+    scope.__focused = 0;
+    scope.registration.showNotification = async (title: string, o?: NotificationOptions) => {
+      scope.__notes.push({ title, tag: o?.tag ?? '', data: (o?.data || {}) as Record<string, string> });
+    };
+    (WindowClient.prototype as unknown as { focus: () => Promise<WindowClient> }).focus = async function (this: WindowClient) {
+      scope.__focused++;
+      return this;
+    };
+    scope.__click = async (tag: string) => {
+      const n = scope.__notes.find((x) => x.tag === tag);
+      if (!n) throw new Error('no notification tagged ' + tag);
+      const ev = new ExtendableEvent('notificationclick');
+      const waits: Promise<unknown>[] = [];
+      Object.defineProperty(ev, 'notification', { value: { tag: n.tag, data: n.data, close() {} } });
+      Object.defineProperty(ev, 'action', { value: '' });
+      Object.defineProperty(ev, 'waitUntil', { value: (p: Promise<unknown>) => waits.push(p) });
+      scope.dispatchEvent(ev);
+      await Promise.all(waits);
+    };
+  });
+  const cdp = await context.newCDPSession(page);
+  const regs: { registrationId: string; scopeURL: string; isDeleted?: boolean }[] = [];
+  cdp.on('ServiceWorker.workerRegistrationUpdated', (e) => regs.push(...e.registrations));
+  await cdp.send('ServiceWorker.enable');
+  await expect.poll(() => regs.find((r) => r.scopeURL === origin + '/' && !r.isDeleted)?.registrationId ?? '').not.toBe('');
+  const registrationId = regs.find((r) => r.scopeURL === origin + '/' && !r.isDeleted)!.registrationId;
+  const deliver = (data: string) => cdp.send('ServiceWorker.deliverPushMessage', { origin, registrationId, data });
+  const recorded = (tag: string) =>
+    worker.evaluate((t) => (self as unknown as { __notes: { tag: string }[] }).__notes.some((n) => n.tag === t), tag);
+  const click = (tag: string) => worker.evaluate((t) => (self as unknown as { __click: (t: string) => Promise<void> }).__click(t), tag);
+  const focused = () => worker.evaluate(() => (self as unknown as { __focused: number }).__focused);
+
+  // A waiting mirrored session: the session's rendered view, query and all.
+  const amp = '\\' + 'u0026';
+  const session = '/mirror/view?host=ws&session=main&window=%401';
+  await deliver(
+    '{"type":"attention","id":"session-0011223344556677","title":"A session is waiting on you","body":"Waiting: build @ ws",' +
+      '"tag":"attention-session-0011223344556677","data":{"url":"/mirror/view?host=ws' + amp + 'session=main' + amp + 'window=%401"}}',
+  );
+  await expect.poll(() => recorded('attention-session-0011223344556677')).toBe(true);
+  await click('attention-session-0011223344556677');
+  await page.waitForURL(origin + session);
+  expect(new URL(page.url()).searchParams.get('window'), 'the window survives the query encoding').toBe('@1');
+  expect(await focused(), 'the open tab is the one brought forward').toBe(1);
+  expect(context.pages(), 'no second tab is opened').toHaveLength(1);
+
+  // A question muster raised itself (no session): its item on the queue.
+  await deliver(
+    '{"type":"attention","id":"ask-71","title":"An agent needs your input","body":"muster is asking","tag":"attention-ask-71","data":{"url":"/attention#ask-71"}}',
+  );
+  await expect.poll(() => recorded('attention-ask-71')).toBe(true);
+  await click('attention-ask-71');
+  await page.waitForURL(origin + '/attention#ask-71');
+  expect(await focused()).toBe(2);
+  expect(context.pages()).toHaveLength(1);
+});

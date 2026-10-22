@@ -104,7 +104,7 @@ func (s *Server) askingAgentPath(owner, id int64) string {
 		}
 		return ""
 	}
-	if a.OwnerID != owner || a.Name == "" {
+	if a.OwnerID != owner {
 		return ""
 	}
 	return "/agents/" + url.PathEscape(a.Name)

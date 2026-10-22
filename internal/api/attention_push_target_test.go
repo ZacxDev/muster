@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"regexp"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -158,11 +160,17 @@ func TestAnAgentReadFailureLinksTheQueue(t *testing.T) {
 	store, pusher := &memPush{}, &payloadPusher{}
 	claim(t, store, 1, ep("pt-blip"))
 	s := pushTargetServer(t, store, pusher)
+	var logs strings.Builder
+	s.logger = log.New(&syncWriter{w: &logs}, "", 0)
 	s.ext.Agents = pushTargetAgents{err: errors.New("connection reset")}
 	s.attentionNotify(1, askItem(attention.Ask{ID: 61, Owner: 1, Asker: attention.Asker{AgentID: 7}, Question: "q"}))
 	s.WaitForPushes()
 	if got := pusher.to(ep("pt-blip")); len(got) != 1 || got[0].Data["url"] != "/attention#ask-61" {
 		t.Fatalf("pushes %+v", got)
+	}
+	// The read failure is the reason, and it is said (a missing row is not).
+	if !strings.Contains(logs.String(), "the push target of agent 7's ask: connection reset") {
+		t.Fatalf("log %q", logs.String())
 	}
 }
 
@@ -244,4 +252,16 @@ func TestTheSessionPushPayloadIsWhatTheWorkerReads(t *testing.T) {
 	if string(raw) != want {
 		t.Fatalf("payload:\n%s\nwant:\n%s", raw, want)
 	}
+}
+
+// syncWriter serialises writes to w (the push goroutine logs too).
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }
