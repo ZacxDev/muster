@@ -668,13 +668,23 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // open's resync — still rebuilds and morphs it; see ui/agents_list_ssr.go for
 // why that is measured and kept.) TestTheAgentsFirstPaintBuildsTheListOnce counts the provisioner reads.
 //
+// 🔴 THE DOCUMENT'S FIRST BYTE WAITS ON THAT INSTANCE READ AT MOST
+// shellInstancesWithin. It is a Kubernetes list (two API reads) with no timeout
+// of its own, and a stalled apiserver made GET /agents — every reload, a pin's
+// redirect, a boosted click — a blank tab for as long as it stalled (measured by
+// review: 3.002s behind a 3s-delayed provisioner, against 1ms for the shell
+// before). Past the bound the cards are drawn with their STORED status — still
+// the cards, so the first paint is still the list — and the list's first live
+// refresh (the SSE open's resync, GET /ui/agents, which waits for its read as
+// it always did) brings the live one, morphed in place.
+//
 // ⚠ A FAILED BUILD DRAWS THE OLD WAY (an empty list its own load fills, an
 // empty strip), not an error: that load reports its own failure.
 func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
 	if tab != "agents" || s.ext.Agents == nil {
 		return ui.ShellData{}
 	}
-	cards, mirrors, err := s.agentsListCards(ctx)
+	cards, mirrors, err := s.agentsListCardsWithin(ctx, shellInstancesWithin)
 	if err != nil {
 		s.logger.Printf("agents: shell list: %v", err)
 		return ui.ShellData{}
@@ -682,6 +692,11 @@ func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
 	refs := s.recentRefs(ctx)
 	return ui.ShellData{}.WithList(cards, mirrors, refs)
 }
+
+// shellInstancesWithin bounds the Agents document's instance read (shellData):
+// long enough for a healthy apiserver's two list calls, short enough that a
+// stalled one costs a reload a moment rather than the tab.
+const shellInstancesWithin = 1500 * time.Millisecond
 
 // tabFromPath maps a request path to a tab key.
 //

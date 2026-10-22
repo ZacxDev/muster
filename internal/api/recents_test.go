@@ -227,11 +227,15 @@ func (c *countingInstances) Instances(ctx context.Context) ([]provision.Instance
 
 // 🔴 A REGRESSION TEST: the shell's first paint built the strip's cards with NO
 // Status, so statusLabel("") drew every agent "pending" until the list's load
-// replaced the strip. It must draw the agent's status — since the document
-// server-renders the list (agents_list_ssr.go) the strip is resolved against the
-// list's own cards, so the status is the list's. The fixture's two agents are
-// stored running and stopped, two different answers, neither "pending".
-func TestTheShellStripDrawsTheStoredStatusOnFirstPaint(t *testing.T) {
+// replaced the strip. It must draw the status the LIST's cards are drawn with:
+// the document server-renders the list (agents_list_ssr.go) and resolves the
+// strip against those same cards — the live status, read from the provisioner
+// (the stored one only when that read does not answer in time:
+// TestTheAgentsDocumentDoesNotWaitOnAStalledInstanceRead). This fixture's
+// provisioner reports no instance, and the live rule (agents.ComputeStatus)
+// leaves these two at running and stopped — two different answers, neither
+// "pending".
+func TestTheShellStripDrawsTheListsStatusOnFirstPaint(t *testing.T) {
 	mem := &memRecents{}
 	mem.put(recents.Entry{AgentID: 5})
 	mem.put(recents.Entry{AgentID: 7})

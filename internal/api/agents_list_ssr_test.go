@@ -1,11 +1,15 @@
 package api
 
 import (
+	"context"
 	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/recents"
 )
 
@@ -107,5 +111,80 @@ func TestOtherTabsStillLoadTheListThemselves(t *testing.T) {
 	rest := doc[strings.Index(doc, open)+len(open):]
 	if strings.HasPrefix(rest, "<article") {
 		t.Error("the /tasks document drew the list's cards")
+	}
+}
+
+// blockingInstances is a Provisioner whose Instances read never answers (a
+// stalled apiserver) — not even to its context — until release is closed.
+type blockingInstances struct {
+	Provisioner
+	release chan struct{}
+}
+
+func (b *blockingInstances) Instances(context.Context) ([]provision.Instance, error) {
+	<-b.release
+	return nil, nil
+}
+
+// pendingInstances is a Provisioner that answers at once: chatting-oldest's
+// instance is still starting.
+type pendingInstances struct{ Provisioner }
+
+func (pendingInstances) Instances(context.Context) ([]provision.Instance, error) {
+	return []provision.Instance{{Ref: provision.Ref{Name: "chatting-oldest"}, Phase: provision.PhasePending}}, nil
+}
+
+// statusOf is the status agent card <name> was drawn with.
+func statusOf(t *testing.T, body, name string) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?s)<a href="/agents/` + name + `" hx-boost="false" data-card-slot="body".*?aria-label="Status: ([a-z]+)"`).FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no card for %s with a status", name)
+	}
+	return m[1]
+}
+
+// 🔴 A STALLED APISERVER MUST NOT TAKE THE AGENTS TAB WITH IT: GET /agents
+// answers within shellInstancesWithin (plus a margin) behind an instance read
+// that never returns, and still draws the CARDS — with their stored status
+// ("running" for chatting-oldest, which is stored running). A provisioner that
+// answers is waited for: the same card is drawn with the LIVE status (its
+// instance still starting: "provisioning"). On c055625f the document waited for the read forever.
+func TestTheAgentsDocumentDoesNotWaitOnAStalledInstanceRead(t *testing.T) {
+	s, h, _ := listServer(t)
+	block := &blockingInstances{Provisioner: newFakeTerminal(), release: make(chan struct{})}
+	t.Cleanup(func() { close(block.release) })
+	s.ext.Provisioner = block
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	start := time.Now()
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/agents", nil)
+		admit(s, req)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		done <- rec
+	}()
+	var rec *httptest.ResponseRecorder
+	select {
+	case rec = <-done:
+	case <-time.After(shellInstancesWithin + 3*time.Second):
+		t.Fatalf("GET /agents did not answer within %s behind a stalled instance read", shellInstancesWithin+3*time.Second)
+	}
+	if took := time.Since(start); took > shellInstancesWithin+time.Second {
+		t.Errorf("GET /agents took %s behind a stalled instance read, want under %s", took, shellInstancesWithin+time.Second)
+	}
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || strings.Count(body[strings.Index(body, `id="agents-list"`):], "<article ") != 5 {
+		t.Fatalf("GET /agents = %d without the fixture's 5 cards", rec.Code)
+	}
+	if got := statusOf(t, body, "chatting-oldest"); got != "running" {
+		t.Errorf("past the bound the card is drawn %q, want its stored status running", got)
+	}
+
+	// Control: a provisioner that answers is waited for, and its answer is drawn.
+	s.ext.Provisioner = pendingInstances{Provisioner: newFakeTerminal()}
+	if got := statusOf(t, getOwed(t, s, h, "/agents").Body.String(), "chatting-oldest"); got != "provisioning" {
+		t.Errorf("with the live read answered, the card is drawn %q, want the live status provisioning", got)
 	}
 }

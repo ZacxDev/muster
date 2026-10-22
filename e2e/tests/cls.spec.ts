@@ -528,6 +528,9 @@ const framesProbe = `(() => {
       let v = 0;
       for (const a of l.children) if (a.tagName === 'ARTICLE' && a.getClientRects().length) v++;
       window.__frames.push(v);
+      // Frames painted with cards while the document was still held before
+      // its body scripts (the stall below): the positive control.
+      if (v > 0 && !window.__stallEnded) window.__preStall = (window.__preStall || 0) + 1;
     }
     if (document.readyState !== 'complete' || after++ < 10) requestAnimationFrame(tick);
   };
@@ -639,7 +642,25 @@ test.describe('a long Agents list', () => {
         const statuses: number[] = [];
         page.on('response', (r) => { if (new URL(r.url()).pathname === '/ui/agents') statuses.push(r.status()); });
         await page.addInitScript(framesProbe);
+        // 🔴 THE FIRST PAINT IS FORCED TO COME BEFORE THE BODY SCRIPTS. Left to
+        // itself Chromium parses this document in one go and paints after
+        // agentsFilterScript has run, so a missing head script read green four
+        // times out of four at both sizes (review, round 1). Here the document
+        // is held, between its panels and its scripts, on a parser-blocking
+        // script that answers after 1.2 s: the browser paints the list while it
+        // waits — with only what the HEAD has applied. (The frames counted
+        // during the hold are the positive control: __preStall.)
+        await page.route(lrig.origin + '/agents', async (r) => {
+          const res = await r.fetch();
+          const html = (await res.text()).replace('</main>', '</main><script src="/__e2e-stall.js"></script>');
+          await r.fulfill({ response: res, body: html });
+        });
+        await page.route('**/__e2e-stall.js', async (r) => {
+          await new Promise((res) => setTimeout(res, 1200));
+          await r.fulfill({ contentType: 'text/javascript', body: 'window.__stallEnded = true;' });
+        });
         await page.goto(lrig.origin + '/agents');
+        await page.unroute(lrig.origin + '/agents');
         await settle(page);
         // The resync the SSE stream's open fires is the list's first live
         // refresh: it morphs the list over its identical server-rendered self.
@@ -654,6 +675,8 @@ test.describe('a long Agents list', () => {
         expect(shown, 'and hides some of it').toBeLessThan(await listCards.count());
         await expect(mine(0), 'a window active 2 minutes ago is hidden by Idle >1h').toBeHidden();
         await expect(mine(20), 'a window idle 2h22m is shown').toBeVisible();
+        const preStall = await page.evaluate(() => (window as any).__preStall || 0);
+        expect(preStall, `control: frames were painted with cards before the body scripts ran (frames: ${frames.join(',')})`).toBeGreaterThan(0);
         expect(Math.max(...frames), `no frame drew a card the restored filter hides (frames: ${frames.join(',')})`).toBeLessThanOrEqual(shown);
 
         // A live nudge: the list refreshes and morphs; nothing moves.
