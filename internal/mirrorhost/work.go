@@ -18,7 +18,8 @@ import (
 // cctasks.Decide. What this file adds is the SUBAGENT count while the CLI is
 // busy: a ledger of the parent transcript's Agent calls, followed from a byte
 // cursor, applying the subagent cards' own state rule — internal/ccsubagents'
-// Ledger — so a card and its rendered view's subagent list cannot disagree.
+// Ledger, the same one ccd counts with — so a card and its rendered view's
+// subagent list cannot disagree.
 //
 // 🔴 THE LEDGER IS READ ONLY WHILE THE STATUS IS busy OR waiting. An idle
 // window costs no transcript read: the CLI's own "idle"/"shell" already says

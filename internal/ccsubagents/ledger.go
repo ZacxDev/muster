@@ -17,7 +17,7 @@ import (
 // (docs/design/agent-cards.md (a)). It follows the parent transcript from a
 // byte cursor and applies the subagent cards' own status rule (State), so a
 // card's count and its rendered view's subagent list cannot disagree.
-// muster-mirror (internal/mirrorhost) counts with it.
+// muster-mirror (internal/mirrorhost) and ccd (cmd/ccd) both count with it.
 
 // Ledger follows ONE parent transcript's Agent calls: the calls and the
 // parent's signals (Tracker.Observe), when each call was made, and

@@ -3,20 +3,19 @@
 // say, the status rule that decides running / done / failed (State), and the
 // work ledger that counts how many run now (Ledger).
 //
-// 🔴 ONE RULE, ONE PLACE. muster-mirror reads it for a mirrored window
-// (internal/mirrorhost: the rendered view's subagent cards and the card's live
-// work chip), and it is a leaf so that ccd, inside a dispatched claude-code
-// pod, can read the same one — and the two kinds of card cannot count
-// subagents differently.
+// 🔴 ONE RULE, ONE PLACE, TWO READERS. muster-mirror reads it for a mirrored
+// window (internal/mirrorhost: the rendered view's subagent cards and the
+// card's live work chip) and ccd reads it inside a dispatched claude-code pod
+// (cmd/ccd/work.go), so the two kinds of card cannot count subagents
+// differently.
 //
 // 🔴 A LEAF: it imports the standard library, internal/cctranscript and
-// internal/redact only. It is meant for the agent pod's ccd, so it must not bring the wire package
-// (internal/mirror, which pulls a websocket client) or the host package
-// (internal/mirrorhost, which pulls object-store and database clients) with
-// it. The wire's subagent names and bounds live HERE, and internal/mirror
-// re-exports them unchanged; internal/modulegate's
-// TestTheSubagentLeafPullsNoNetworkOrStorageClient pins
-// the dependency set.
+// internal/redact only. It is linked into the agent pod's ccd, so it must not
+// bring the wire package (internal/mirror, which pulls a websocket client) or
+// the host package (internal/mirrorhost, which pulls object-store and database
+// clients) with it. The wire's subagent names and bounds live HERE, and
+// internal/mirror re-exports them unchanged; internal/modulegate's
+// TestTheSubagentLeafPullsNoNetworkOrStorageClient pins the dependency set.
 package ccsubagents
 
 import "regexp"

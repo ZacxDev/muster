@@ -20,7 +20,7 @@ import (
 // session's own subagents directory and sent on that view's stream.
 //
 // What a session's subagents are, and the status rule, are
-// internal/ccsubagents' (the ONE reading, a leaf ccd can share); this
+// internal/ccsubagents' (the ONE reading, shared with ccd's work count); this
 // file is the rendered view's half: the summaries a view's stream sends and a
 // card's tail.
 //
