@@ -469,15 +469,17 @@ func (s *Server) handleAgentConnectorRequest(w http.ResponseWriter, r *http.Requ
 
 // reconcileGrant is connectors.ReconcileGrant for the agent routes (ctx is the
 // agent's owner): a grant re-opened because its credential source changed is
-// audited and handled like a new request: approved by a standing grant for the
-// new source, or else the owner is prompted (onGrantPending).
+// audited and prompts the owner like a new request. It is deliberately NOT
+// offered to a standing grant: a change of credential source asks the owner
+// again (0033), and their approval is then shared like any other.
 func (s *Server) reconcileGrant(ctx context.Context, g connectors.Grant) (connectors.Grant, error) {
 	g, reopened, err := connectors.ReconcileGrant(ctx, s.ext.Connectors, g)
 	if err != nil || !reopened {
 		return g, err
 	}
 	s.auditGrant(ctx, g, "re-opened: the connector's credential source changed")
-	return s.onGrantPending(ctx, g), nil
+	s.onConnectorRequested(ctx, g)
+	return g, nil
 }
 
 // onConnectorRequested prompts the operator for a new pending grant: an SSE
@@ -594,8 +596,18 @@ func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsCont
 	}
 	shared := map[string][]ui.ConnectorSharedView{}
 	for _, sg := range standing {
-		shared[sg.Connector] = append(shared[sg.Connector], ui.ConnectorSharedView{ID: sg.ID, Repo: sg.Repo,
-			CreatedAt: sg.CreatedAt, Agents: uses[sg.ID]})
+		sv := ui.ConnectorSharedView{ID: sg.ID, Repo: sg.Repo, CreatedAt: sg.CreatedAt, Agents: uses[sg.ID]}
+		// A shared approval of the OTHER credential source (the GitHub App
+		// configured over a stored token, or removed from under one) approves
+		// nothing now — the key carries the source — but would again if the
+		// source switched back, so it is shown, and says so.
+		if src := connectors.SourceFor(ctx, s.ext.Connectors, sg.Connector); src != sg.Source {
+			sv.Inactive = "approved for the stored credential, which is not in use now"
+			if sg.Source == connectors.SourceApp {
+				sv.Inactive = "approved for the GitHub App, which is not in use now"
+			}
+		}
+		shared[sg.Connector] = append(shared[sg.Connector], sv)
 	}
 	c.Connectors = make([]ui.ConnectorView, 0, len(list))
 	for _, k := range list {

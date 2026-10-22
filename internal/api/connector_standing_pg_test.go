@@ -53,7 +53,7 @@ func (f *decideFixture) standingOf(t *testing.T, id int64) int64 {
 	return sg
 }
 
-// standingRow is the live standing grant created from origin grant id.
+// standingRow is one standing grant, read from its row.
 type standingRow struct {
 	id           int64
 	source, repo string
@@ -61,11 +61,13 @@ type standingRow struct {
 	revoked      bool
 }
 
+// standingFrom is the NEWEST standing grant created from origin grant id (one
+// grant can originate two: re-approved after its credential source changed).
 func (f *decideFixture) standingFrom(t *testing.T, origin int64) standingRow {
 	t.Helper()
 	var r standingRow
 	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT id, source, repo, connector_name, revoked_at IS NOT NULL
-		FROM connector_standing_grants WHERE origin_grant_id = $1`, origin).Scan(&r.id, &r.source, &r.repo, &r.connector, &r.revoked); err != nil {
+		FROM connector_standing_grants WHERE origin_grant_id = $1 ORDER BY id DESC LIMIT 1`, origin).Scan(&r.id, &r.source, &r.repo, &r.connector, &r.revoked); err != nil {
 		t.Fatalf("the standing grant from request %d: %v", origin, err)
 	}
 	return r
@@ -262,6 +264,57 @@ func TestAnAppApprovalIsSharedOnlyForTheSameRepository(t *testing.T) {
 		} else if f.prompts(id) != 1 {
 			t.Fatalf("agent %s's request did not prompt the owner", n)
 		}
+	}
+}
+
+// TestACredentialSourceChangeAsksAgainThenShares: the owner shared an approval
+// of a STORED `github` token; then the GitHub App is configured. Both agents'
+// grants re-open (0033) and stay pending — the stored-token approval does not
+// approve the App — and the Connectors tab marks that shared approval as not in
+// use. Approving one agent under the App shares THAT approval: the other agent,
+// on the same repository, is approved in the same step from the new (app)
+// standing grant.
+func TestACredentialSourceChangeAsksAgainThenShares(t *testing.T) {
+	f := newDecideFixture(t)
+	p := connectors.GitHubPreset
+	if _, err := f.store.CreateConnector(f.ctx, connectors.NewConnector{Name: "github", Platform: p.Key, Hosts: p.Hosts,
+		Scheme: p.Scheme, Username: p.Username, Secret: connTestSecret}); err != nil {
+		t.Fatal(err)
+	}
+	sfx := strconv.FormatInt(time.Now().UnixNano(), 36)
+	ta, tb := "src-a-token-"+sfx, "src-b-token-"+sfx
+	f.agentWith(t, 1, "src-a-"+sfx, "example-org/widget", "", ta)
+	f.agentWith(t, 1, "src-b-"+sfx, "example-org/widget", "", tb)
+	_, ga := f.ask(t, ta, "github")
+	f.approveOn(t, "tab", ga)
+	stored := f.standingFrom(t, ga)
+	st, gb := f.ask(t, tb, "github")
+	if st != "approved" || f.standingOf(t, gb) != stored.id {
+		t.Fatalf("control: under the stored token the second agent is %s", st)
+	}
+
+	f.srv.ext.Connectors = connectors.WithVirtual(f.store, fakeApp{}, func(context.Context) bool { return true })
+	for _, tok := range []string{ta, tb} {
+		if text, _, _ := f.tool(t, tok, "connector_status", map[string]any{"name": "github"}); !strings.Contains(text, `"grant":"pending"`) {
+			t.Fatalf("after the App was configured an agent's github grant reads %s; want pending (re-opened, not re-approved)", text)
+		}
+	}
+	tc := "src-c-token-" + sfx
+	f.agentWith(t, 1, "src-c-"+sfx, "example-org/widget", "", tc)
+	if st, _ := f.ask(t, tc, "github"); st != "pending" {
+		t.Fatalf("a new agent asking under the App is %s from the stored-token approval; want pending", st)
+	}
+	page := f.call(t, http.MethodGet, "/ui/connectors", nil, f.operator()).Body.String()
+	if !strings.Contains(page, "approved for the stored credential, which is not in use now") {
+		t.Fatalf("the stored-token shared approval is not marked as not in use:\n%s", page)
+	}
+	f.approveOn(t, "tab", ga)
+	app := f.standingFrom(t, ga)
+	if app.source != connectors.SourceApp || app.repo != "example-org/widget" || app.id == stored.id {
+		t.Fatalf("the App approval's standing grant: %+v", app)
+	}
+	if g := f.grantRow(t, gb); g.status != "approved" || g.source != connectors.SourceApp || f.standingOf(t, gb) != app.id {
+		t.Fatalf("the other agent after the App approval: %+v (standing %d)", g, f.standingOf(t, gb))
 	}
 }
 

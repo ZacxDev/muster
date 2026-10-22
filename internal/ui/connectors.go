@@ -75,6 +75,9 @@ type ConnectorSharedView struct {
 	CreatedAt time.Time
 	// Agents is how many live grants it approved automatically.
 	Agents int
+	// Inactive, when non-empty, says why it approves nothing now (it is of a
+	// credential source the connector does not have at the moment).
+	Inactive string
 }
 
 // ConnectorRequestView is one pending request.
@@ -513,6 +516,7 @@ func connectorSharedRow(connector string, sv ConnectorSharedView) g.Node {
 		Span(Class("min-w-0 break-all text-xs font-semibold text-fg"), g.Text("Shared with "+scope)),
 		Span(Class("text-xs text-muted"), g.Attr("data-shared-agents", strconv.Itoa(sv.Agents)),
 			g.Text(strconv.Itoa(sv.Agents)+" approved automatically · since "), cardTime(sv.CreatedAt)),
+		g.If(sv.Inactive != "", Span(Class("text-xs text-muted"), g.Attr("data-shared-inactive", ""), g.Text("("+sv.Inactive+")"))),
 		Span(Class("flex-1")),
 		Button(Type("button"), Class("press min-h-[44px] rounded-lg px-2 text-xs font-medium text-fg2 transition hover:text-st-error-fg"),
 			g.Attr("data-revoke-shared", ids),

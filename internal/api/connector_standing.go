@@ -20,10 +20,12 @@ import (
 // An approval — on the Connectors tab, from a mirrored session
 // (connector_request_decide) or with a credential entered for a request — goes
 // through decideConnectorGrant, which records a STANDING GRANT for the owner
-// (shareApproval). Every grant that is left pending — filed by the request
-// route, the connector_request tool or the proxy, or re-opened because its
-// credential source changed — is first offered to approveFromStanding, and the
-// owner is prompted only when no standing grant covers it.
+// (shareApproval). Every request filed — by the request route, the
+// connector_request tool or the proxy — is first offered to
+// approveFromStanding, and the owner is prompted only when no standing grant
+// covers it. (A grant RE-OPENED because its connector's credential source
+// changed is not: that change asks the owner again, as 0033 decided, and the
+// approval is then shared.)
 //
 // 🔴 THE KEY IS (connector, credential source, repository for the GitHub App).
 // The App's token reaches only the agent's OWN repository, so an App approval
@@ -105,9 +107,9 @@ func standingApprovalDetail(sg connectors.StandingGrant) string {
 	return d
 }
 
-// onGrantPending is what the agent routes do with a grant they just left
-// pending (filed, or re-opened): approve it from a standing grant, or else
-// prompt the owner (onConnectorRequested). It returns the grant as it now is.
+// onGrantPending is what the agent routes do with a request they just filed:
+// approve it from a standing grant, or else prompt the owner
+// (onConnectorRequested). It returns the grant as it now is.
 func (s *Server) onGrantPending(ctx context.Context, g connectors.Grant) connectors.Grant {
 	if ng, ok := s.approveFromStanding(ctx, g); ok {
 		return ng
