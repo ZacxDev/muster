@@ -8,10 +8,12 @@
 // disagreed: ui.markdownPlain (removed every ` * _ # > anywhere, so it mangled
 // snake_case_names, "#123" and "C#" and left [text](url) links, ~~strike~~ and
 // HTML tags untouched), api.notificationText (unwrapped links but stripped
-// intraword underscores), and focus.oneLine (only * ` #). A title therefore read
-// differently on the card, in its <title> and on the phone. All three now call
-// Title, and TestTheTitleSinkLedger (internal/ui, internal/api) fails when a
-// display sink reads a title without it.
+// intraword underscores), and focus.oneLine (deleted every * ` # from a focus
+// title BEFORE IT WAS STORED). The first two now call Title; the third strips
+// no markdown at all any more, because it writes storage (see below). A title
+// therefore reads the same on the card, in its <title> and on the phone, and
+// TestTheTitleSinkLedger (internal/textplain) fails when a display sink reads a
+// title without it.
 //
 // 🔴 APPLIED AT RENDER/EMIT TIME, NEVER TO STORED DATA. Titles are stored as the
 // author wrote them; an edit form shows them raw. Stripping on the way out keeps

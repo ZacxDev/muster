@@ -94,3 +94,32 @@ func excerpt(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
+
+// TestTheTerminalTitleAndHeadingAgree: the terminal page's <title> and its <h1>
+// show the SAME name, for an input on which the title rule is not idempotent.
+// `\*\*x\*\*` (escaped markers) reads "**x**" once plained; plained a second
+// time it reads "x". The heading used to be plained twice — once on the page,
+// again inside mirrorEntryTitle — so the tab said "**x**" and the header "x".
+func TestTheTerminalTitleAndHeadingAgree(t *testing.T) {
+	out := renderString(t, AgentTerminalPage(AgentTerminalView{Name: "a15", DisplayName: `\*\*x\*\*`, TitleQualifier: "laptop"}))
+	if !strings.Contains(out, "<title>Terminal · **x** · laptop · muster</title>") {
+		t.Fatalf("<title> is not the once-plained name:\n%s", excerpt(out, 800))
+	}
+	h1 := out[strings.Index(out, "<h1"):]
+	h1 = h1[:strings.Index(h1, "</h1>")]
+	if !strings.Contains(h1, ">**x**<") {
+		t.Errorf("the <h1> does not show the same name as the <title> (%q):\n%s", "**x**", h1)
+	}
+}
+
+// TestAFocusStoredWithMarkdownLookalikesRendersRight: the focus store keeps
+// "C#", "a*b" and "#123" as written (internal/focus), and the card renders them
+// as written while still removing real markup around them.
+func TestAFocusStoredWithMarkdownLookalikesRendersRight(t *testing.T) {
+	out := renderString(t, cardFocusTitle("c16", &FocusView{Title: "**Port** C# to a*b for #123", Description: "Uses `cfg` and C#."}, ""))
+	for _, want := range []string{">Port C# to a*b for #123<", ">Uses cfg and C#.<"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("render lacks %q:\n%s", want, out)
+		}
+	}
+}

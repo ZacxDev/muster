@@ -182,7 +182,7 @@ func focusPopover(pop string, f *FocusView) g.Node {
 		g.Attr("data-focus-popover", ""),
 		Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
 		g.If(title != "", Span(g.Attr("data-focus-title", ""), Class("break-words text-sm font-semibold"), g.Text(title))),
-		g.If(f.Description != "", P(g.Attr("data-focus-description", ""), Class("break-words text-sm text-fg2"), g.Text(f.Description))),
+		g.If(textplain.Title(f.Description) != "", P(g.Attr("data-focus-description", ""), Class("break-words text-sm text-fg2"), g.Text(textplain.Title(f.Description)))),
 		g.If(!f.UpdatedAt.IsZero(), Span(
 			g.Attr("data-focus-updated", ""),
 			Class("inline-flex items-center gap-1 text-xs text-muted"),

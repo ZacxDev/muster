@@ -262,7 +262,8 @@ func TestTheAgentPageHasAFocusHistoryDialog(t *testing.T) {
 // what a summarizer could be talked into writing into a focus.
 const escapePayload = `<img src=x onerror="alert(1)">"'&`
 
-// escapeTitlePayload is the same attack for a TITLE. A title is drawn through
+// escapeTitlePayload is the same attack for a TITLE (and a focus description,
+// drawn through the same rule). A title is drawn through
 // the title rule (internal/textplain), which removes real HTML elements such as
 // <img> as markup, so escapePayload would reach the escaper as just "'& and
 // this test would stop testing escaping there. <svg> is not on the rule's list
@@ -278,12 +279,12 @@ func TestFocusTextIsEscapedEverywhereItIsDrawn(t *testing.T) {
 	href := FocusHistoryRoute + "?subject=" + escapePayload
 	var b strings.Builder
 	if err := RenderFocusHistoryPage(&b, FocusHistoryPageView{First: true, Next: href,
-		Entries: []FocusHistoryEntry{{Title: escapeTitlePayload, Description: escapePayload, At: time.Now()}}}); err != nil {
+		Entries: []FocusHistoryEntry{{Title: escapeTitlePayload, Description: escapeTitlePayload, At: time.Now()}}}); err != nil {
 		t.Fatal(err)
 	}
 	rows := b.String()
 	a := realisticAgent()
-	a.Focus = &FocusView{Title: escapeTitlePayload, Description: escapePayload, UpdatedAt: time.Now()}
+	a.Focus = &FocusView{Title: escapeTitlePayload, Description: escapeTitlePayload, UpdatedAt: time.Now()}
 	card := renderNode(t, agentCard(a))
 	for name, markup := range map[string]string{"history rows": rows, "card": card} {
 		if strings.Contains(markup, "<img") || strings.Contains(markup, `onerror="alert`) ||
@@ -296,7 +297,7 @@ func TestFocusTextIsEscapedEverywhereItIsDrawn(t *testing.T) {
 	if got := focusNodeText(findAttr(item, "data-focus-history-title")); got != escapeTitlePayload {
 		t.Errorf("history title reads %q", got)
 	}
-	if got := focusNodeText(findAttr(item, "data-focus-history-description")); got != escapePayload {
+	if got := focusNodeText(findAttr(item, "data-focus-history-description")); got != escapeTitlePayload {
 		t.Errorf("history description reads %q", got)
 	}
 	if got := attrOf(findAttr(doc, "data-focus-history-more"), "data-href"); got != href {

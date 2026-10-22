@@ -80,6 +80,7 @@ const (
 
 // uiExempt: "file func expr" → exemption.
 var uiExempt = map[string]exemption{
+	"terminal.go AgentTerminalPage v.DisplayName":      {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
 	"agents.go agentCard a.DisplayName":                {1, whyFilter},
 	"mirror.go mirrorCard m.Label":                     {4, whyFilter + "; and " + whyPredicate},
 	"mirror.go mirrorCard m.Title":                     {2, whyFilter},
@@ -120,7 +121,7 @@ var apiExempt = map[string]exemption{
 // service or the router, and why each is safe.
 var pushEmitters = map[string]string{
 	"push_routes.go Server.sendPush":        "the wrapper goNotify and handlePushTest call",
-	"server.go Server.goNotify":             "applies Title to the notification's title and body",
+	"server.go Server.goNotify":             "applies Title to the notification's title (bodies: see checkPushEmitters)",
 	"push_routes.go Server.handlePushTest":  "a fixed test title and body",
 	"devices.go Server.handleDevicePushPut": "a fixed probe payload (devicePushProbe)",
 }
@@ -140,6 +141,16 @@ func TestTheTitleSinkLedger(t *testing.T) {
 		checkReads(t, "../api", names, true, apiExempt)
 	})
 	t.Run("plaining helpers", checkPlainingHelpers)
+	t.Run("applied once", func(t *testing.T) {
+		for _, dir := range []string{"../ui", "../api"} {
+			fset, files := parseDir(t, dir)
+			for name, f := range files {
+				for _, d := range doubleApplications(fset, name, f) {
+					t.Errorf("DOUBLE title rule: %s — Title is not idempotent (an escaped marker becomes markup the second pass strips), so a value must be plained exactly once on its way to a sink", d)
+				}
+			}
+		}
+	})
 	t.Run("push emitters", checkPushEmitters)
 }
 
@@ -334,6 +345,72 @@ func funcName(fn *ast.FuncDecl) string {
 
 // checkPlainingHelpers: each helper exists and calls Title or another helper,
 // so "passed to a helper" cannot mean "passed to something that draws it raw".
+// doubleApplications finds, in each function, a value the title rule reaches
+// twice: Title(...Title(x)...), Title(p) or helper(p) where p was assigned from
+// Title in the same function, and helper(...Title(x)...) — a plaining helper
+// applies Title itself. Syntactic and per-function: it catches the shape that
+// shipped (terminal.go plained a name, then handed it to mirrorEntryTitle),
+// not a value carried through a struct field into another function.
+func doubleApplications(fset *token.FileSet, file string, f *ast.File) []string {
+	var out []string
+	for _, d := range f.Decls {
+		fn, ok := d.(*ast.FuncDecl)
+		if !ok || fn.Body == nil {
+			continue
+		}
+		plained := map[string]bool{}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if as, ok := n.(*ast.AssignStmt); ok && len(as.Lhs) == len(as.Rhs) {
+				for i, r := range as.Rhs {
+					if c, ok := r.(*ast.CallExpr); ok && isTitleCall(c) {
+						if id, ok := as.Lhs[i].(*ast.Ident); ok {
+							plained[id.Name] = true
+						}
+					}
+				}
+			}
+			return true
+		})
+		carriesPlain := func(e ast.Expr) bool {
+			found := false
+			ast.Inspect(e, func(n ast.Node) bool {
+				switch x := n.(type) {
+				case *ast.CallExpr:
+					if isTitleCall(x) {
+						found = true
+					}
+				case *ast.Ident:
+					if plained[x.Name] {
+						found = true
+					}
+				}
+				return !found
+			})
+			return found
+		}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			c, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			helper := false
+			if id, ok := c.Fun.(*ast.Ident); ok && plainingHelpers[id.Name] {
+				helper = true
+			}
+			if !isTitleCall(c) && !helper {
+				return true
+			}
+			for _, a := range c.Args {
+				if carriesPlain(a) {
+					out = append(out, fmt.Sprintf("%s %s at %s", file, funcName(fn), fset.Position(c.Pos())))
+				}
+			}
+			return true
+		})
+	}
+	return out
+}
+
 func checkPlainingHelpers(t *testing.T) {
 	_, files := parseDir(t, "../ui")
 	seen := map[string]bool{}
@@ -406,17 +483,23 @@ func checkPushEmitters(t *testing.T) {
 				return true
 			})
 			if funcName(fn) == "Server.goNotify" {
-				titled := 0
+				// The title is plained here; the body is NOT (it is plained
+				// upstream where it is a title-like line, and verbatim where it
+				// is not) — applying the rule to it again is a double.
+				fields := map[string]int{}
 				ast.Inspect(fn.Body, func(n ast.Node) bool {
 					if c, ok := n.(*ast.CallExpr); ok && isTitleCall(c) && len(c.Args) == 1 {
-						if s, ok := c.Args[0].(*ast.SelectorExpr); ok && (s.Sel.Name == "Title" || s.Sel.Name == "Body") {
-							titled++
+						if s, ok := c.Args[0].(*ast.SelectorExpr); ok {
+							fields[s.Sel.Name]++
 						}
 					}
 					return true
 				})
-				if titled != 2 {
-					t.Errorf("goNotify applies textplain.Title to %d of the notification's Title/Body (want both)", titled)
+				if fields["Title"] != 1 {
+					t.Errorf("goNotify applies textplain.Title to the notification's Title %d time(s), want 1", fields["Title"])
+				}
+				if fields["Body"] != 0 {
+					t.Errorf("goNotify applies textplain.Title to the notification's Body %d time(s), want 0 (bodies are plained upstream, once, or are not titles)", fields["Body"])
 				}
 			}
 		}
@@ -454,6 +537,36 @@ func selectorEndsIn(x ast.Expr, name string) bool {
 // TestTheLedgerWalkSeesAnUnplainedRead is the negative control on the walk
 // itself: a raw title drawn into a node is reported uncovered, the same read
 // inside Title is covered, and a read passed to a plaining helper is covered.
+// TestTheLedgerSeesADoubleApplication is the negative control for "applied
+// once": each double shape is reported, and the single ones are not.
+func TestTheLedgerSeesADoubleApplication(t *testing.T) {
+	src := `package ui
+func nested(n Note) string     { return textplain.Title(textplain.Title(n.Title)) }
+func viaVar(v View) Node        { t := textplain.Title(v.Name); return mirrorEntryTitle(t, "", "", "", "") }
+func viaVarTwice(v View) string { t := textplain.Title(v.Name); return textplain.Title(t) }
+func intoHelper(v View) Node    { return mirrorEntryTitle(textplain.Title(v.Name), "", "", "", "") }
+func once(v View) Node          { t := textplain.Title(v.Name); _ = t; return mirrorEntryTitle(v.Name, "", "", "", "") }
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "x.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, d := range doubleApplications(fset, "x.go", f) {
+		got[strings.Fields(d)[1]]++
+	}
+	want := map[string]int{"nested": 1, "viaVar": 1, "viaVarTwice": 1, "intoHelper": 1}
+	if len(got) != len(want) {
+		t.Errorf("reported %v, want %v (once must not be reported)", got, want)
+	}
+	for k, n := range want {
+		if got[k] != n {
+			t.Errorf("%s: reported %d time(s), want %d", k, got[k], n)
+		}
+	}
+}
+
 func TestTheLedgerWalkSeesAnUnplainedRead(t *testing.T) {
 	src := `package ui
 func raw(n Note) Node     { return Text(n.Title) }

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/push"
 )
@@ -41,11 +43,13 @@ func (p *rawPusher) one(t *testing.T, ep string, into any) {
 	}
 }
 
-// TestGoNotifyPlainsTitleAndBody: a notification's title and body reach BOTH
-// kinds of device — the browser's payload and the native device's payload v2 —
-// as plain text. goNotify is the one push title sink (the ledger in
-// internal/textplain pins that nothing else sends); this is its behaviour.
-func TestGoNotifyPlainsTitleAndBody(t *testing.T) {
+// TestGoNotifyPlainsTheTitleOnly: a notification's TITLE reaches both kinds of
+// device — the browser's payload and the native device's payload v2 — as plain
+// text, and its BODY as the caller built it. goNotify is the one push title
+// sink (the ledger in internal/textplain pins that nothing else sends); bodies
+// are plained upstream where they carry a title (taskTitle,
+// commentNotificationText) and are sent as written where they do not.
+func TestGoNotifyPlainsTheTitleOnly(t *testing.T) {
 	store := &memPush{}
 	web, native := ep("web-plain"), ep("native-plain")
 	claim(t, store, 7, web)
@@ -63,7 +67,7 @@ func TestGoNotifyPlainsTitleAndBody(t *testing.T) {
 		Body:  "`muster` ~~v1~~ <b>v2</b> for snake_case_names", Tag: "t31"}, nil)
 	s.WaitForPushes()
 
-	const wantTitle, wantBody = "Task #31: Ship the fix", "muster v1 v2 for snake_case_names"
+	const wantTitle, wantBody = "Task #31: Ship the fix", "`muster` ~~v1~~ <b>v2</b> for snake_case_names"
 	var b push.Payload
 	pusher.one(t, web, &b)
 	if b.Title != wantTitle || b.Body != wantBody {
@@ -100,7 +104,8 @@ func TestATaskPushBodyKeepsSnakeCase(t *testing.T) {
 
 // TestTheAttentionQueueShowsPlainTitles: the attention page's hand-written
 // HTML draws an item's source (an agent's or window's name) and its focus (an
-// LLM summary) — both titles — as plain text, and an unrouted task's label too.
+// LLM summary) — both titles — as plain text, and an unrouted task's label too
+// (while the label that is stored keeps the raw title).
 func TestTheAttentionQueueShowsPlainTitles(t *testing.T) {
 	out := attentionItemsHTML([]attentionItem{{
 		Key: "k33", Kind: attentionKindSession, Since: time.Now(),
@@ -116,7 +121,53 @@ func TestTheAttentionQueueShowsPlainTitles(t *testing.T) {
 			t.Errorf("attention HTML lacks %q:\n%s", want, out)
 		}
 	}
-	if got, want := taskLabel(notes.Note{ID: 34, Title: "1. **Route** [it](https://example.com/r) to #34"}), "Route it to #34"; got != want {
-		t.Errorf("taskLabel = %q, want %q", got, want)
+	// The queue's label is plained (taskLabelPlain); the label that is STORED
+	// and quoted to the chief (taskLabel) keeps the title as written.
+	n := notes.Note{ID: 34, Title: "1. **Route** [it](https://example.com/r) to #34"}
+	if got, want := taskLabelPlain(n), "Route it to #34"; got != want {
+		t.Errorf("taskLabelPlain = %q, want %q", got, want)
+	}
+	if got := taskLabel(n); got != n.Title {
+		t.Errorf("taskLabel = %q, want the raw title %q", got, n.Title)
+	}
+}
+
+// TestAConnectorReasonIsSentVerbatim: a connector request's body is the
+// connector and the agent's stated reason — not a title — so markdown-looking
+// text in it reaches the phone as written.
+func TestAConnectorReasonIsSentVerbatim(t *testing.T) {
+	store := &memPush{}
+	claim(t, store, authz.OperatorUserID, ep("connector-verbatim"))
+	pusher := &payloadPusher{}
+	s := eventServer(store, pusher)
+	ctx := authz.WithPrincipal(context.Background(), authz.Principal{UserID: authz.OperatorUserID, Role: authz.RoleAdmin, Via: authz.ViaConnect})
+	s.onConnectorRequested(ctx, connectors.Grant{ID: 35, AgentName: "a35", Connector: "github",
+		Reason: "read `repo_a` **and** issue #12 [docs](x)"})
+	s.WaitForPushes()
+	got := pusher.to(ep("connector-verbatim"))
+	if len(got) != 1 {
+		t.Fatalf("got %d pushes, want 1", len(got))
+	}
+	if want := "github — read `repo_a` **and** issue #12 [docs](x)"; got[0].Body != want {
+		t.Errorf("body = %q, want it verbatim: %q", got[0].Body, want)
+	}
+}
+
+// TestATaskPushBodyIsPlainedExactlyOnce: on an input where the rule is not
+// idempotent — escaped markers — the body is plained once (by taskTitle) and
+// not again at emit: `\*\*x\*\*` reads "**x**", a second pass would read "x".
+func TestATaskPushBodyIsPlainedExactlyOnce(t *testing.T) {
+	store := &memPush{}
+	claim(t, store, 7, ep("review-once"))
+	pusher := &payloadPusher{}
+	s := eventServer(store, pusher)
+	s.notifyTaskDone(notes.Note{ID: 36, OwnerID: 7, Status: notes.StatusReadyForReview, Body: `Done: \*\*x\*\* shipped`})
+	s.WaitForPushes()
+	got := pusher.to(ep("review-once"))
+	if len(got) != 1 {
+		t.Fatalf("got %d pushes, want 1", len(got))
+	}
+	if want := "Done: **x** shipped"; got[0].Body != want {
+		t.Errorf("body = %q, want %q (plained exactly once)", got[0].Body, want)
 	}
 }
