@@ -305,4 +305,56 @@ func TestAStandingGrantUnderOneSourceRetiresTheOther(t *testing.T) {
 	if _, err := s.MatchStandingGrant(ctx, b, "github", connectors.SourceStored, ""); !errors.Is(err, connectors.ErrNotFound) {
 		t.Fatalf("the retired stored-token standing grant still matches: %v", err)
 	}
+
+	// The other way round: a stored-token standing grant retires the App one.
+	stored2, created, err := s.CreateStandingGrant(ctx, "github", connectors.SourceStored, "", ga.ID)
+	if err != nil || !created {
+		t.Fatalf("a new stored-token standing grant: %+v %v %v", stored2, created, err)
+	}
+	if _, err := s.MatchStandingGrant(ctx, b, "github", connectors.SourceApp, "example-org/widget"); !errors.Is(err, connectors.ErrNotFound) {
+		t.Fatalf("the App standing grant still matches after a stored-token approval: %v", err)
+	}
+	if m, err := s.MatchStandingGrant(ctx, b, "github", connectors.SourceStored, ""); err != nil || m.ID != stored2.ID {
+		t.Fatalf("control: the new stored-token standing grant = %+v %v", m, err)
+	}
+}
+
+// TestRetiringIsScopedToTheApprovingOwner: a standing grant created by a
+// scope-all (System) caller — which row-level security lets see every owner's
+// rows — retires only the ORIGIN grant's owner's other-source standing grants:
+// another owner's App standing grant for the same connector stays live (RED
+// with the retire's `owner_id = …` condition dropped).
+func TestRetiringIsScopedToTheApprovingOwner(t *testing.T) {
+	ctx, pool := testPool(t)
+	s := newStore(t, pool, key(1))
+	sys := authz.System(ctx)
+	var two int64
+	if err := pool.QueryRow(sys, `INSERT INTO users (role) VALUES ('member') RETURNING id`).Scan(&two); err != nil {
+		t.Fatal(err)
+	}
+	asTwo := authz.WithPrincipal(ctx, authz.Principal{UserID: two, Role: authz.RoleMember, Via: authz.ViaSession})
+	var theirs int64
+	if err := pool.QueryRow(asTwo, `INSERT INTO agents (name, namespace, hooks_token) VALUES ('retire-two', 'ns-retire-two', 'tok-retire-two-0123456789') RETURNING id`).Scan(&theirs); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := authz.System(context.Background())
+		for _, q := range []string{`DELETE FROM connector_grants WHERE owner_id=$1`, `DELETE FROM connector_standing_grants WHERE owner_id=$1`,
+			`DELETE FROM agents WHERE owner_id=$1`, `DELETE FROM users WHERE id=$1`} {
+			_, _ = pool.Exec(bg, q, two)
+		}
+	})
+	gt := approved(t, asTwo, s, theirs, "github")
+	theirApp, _, err := s.CreateStandingGrant(asTwo, "github", connectors.SourceApp, "example-org/widget", gt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine := seedAgent(t, ctx, pool, "retire-one", "tok-retire-one-0123456789")
+	gm := approved(t, ctx, s, mine, "github")
+	if _, _, err := s.CreateStandingGrant(sys, "github", connectors.SourceStored, "", gm.ID); err != nil {
+		t.Fatal(err)
+	}
+	if live, _ := s.ListStandingGrants(asTwo); len(live) != 1 || live[0].ID != theirApp.ID {
+		t.Fatalf("user 2's App standing grant after user 1's stored-token approval (as System): %+v; want it live", live)
+	}
 }

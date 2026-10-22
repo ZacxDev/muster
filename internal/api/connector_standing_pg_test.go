@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -452,6 +454,17 @@ func TestAPoolWorkerIsNeverApprovedFromAStandingGrant(t *testing.T) {
 		}
 	}
 	_, own := f.ask(t, poolTok, "svc3")
+	// The pool worker's request card says nothing is shared, and its button is
+	// plain Approve (requestShares); the listing over MCP agrees.
+	if card := requestCard(t, f.call(t, http.MethodGet, "/ui/connectors", nil, f.operator()).Body.String(), "svc3"); strings.Contains(card, "data-request-shares") ||
+		strings.Contains(card, "Approve for all agents") {
+		t.Fatalf("a pool worker's request card says its approval is shared:\n%s", card)
+	}
+	for _, r := range f.listedRequests(t, f.ws, focusSID) {
+		if int64(r["id"].(float64)) == own && r["shares"] != nil {
+			t.Fatalf("connector_requests_list says a pool worker's approval is shared: %v", r)
+		}
+	}
 	f.approveOn(t, "tab", own)
 	if g := f.grantRow(t, own); g.status != "approved" {
 		t.Fatalf("the pool worker's svc3 request after the owner approved it: %+v", g)
@@ -463,6 +476,109 @@ func TestAPoolWorkerIsNeverApprovedFromAStandingGrant(t *testing.T) {
 	if st, _ := f.ask(t, f.op2Tok, "svc3"); st != "pending" {
 		t.Fatalf("another agent asking for svc3 after a pool worker's approval is %s; want pending", st)
 	}
+	// CONTROL for the card: an agent in no pool asking for svc3 is told it is shared.
+	if card := requestCard(t, f.call(t, http.MethodGet, "/ui/connectors", nil, f.operator()).Body.String(), "svc3"); !strings.Contains(card, "data-request-shares") ||
+		!strings.Contains(card, "Approve for all agents") {
+		t.Fatalf("control: a non-pool agent's svc3 card does not say it is shared:\n%s", card)
+	}
+}
+
+// requestCard is the request card for connector name on the Connectors page
+// (there must be exactly one pending request for it).
+func requestCard(t *testing.T, page, name string) string {
+	t.Helper()
+	marker := `data-connector-request="` + name + `"`
+	if strings.Count(page, marker) != 1 {
+		t.Fatalf("want exactly one %s request card, found %d", name, strings.Count(page, marker))
+	}
+	card := page[strings.Index(page, marker):]
+	if i := strings.Index(card[len(marker):], "data-connector-request="); i >= 0 {
+		card = card[:len(marker)+i]
+	}
+	return card
+}
+
+// TestAnApprovalOnAnUnreadableRoleIsRefusedAndRetiresNothing: while the
+// owner's role cannot be read (an admin then acts as a member, for whom the
+// GitHub App vanishes), an approval through ANY door is refused with a
+// try-again message — the tab's Approve, connector_request_decide, and the
+// approval that comes with entering a credential — the request stays pending,
+// the App standing grant stays live, and no stored-token standing grant
+// appears. The CONTROL is the same approvals once the role reads: approved,
+// against the App.
+func TestAnApprovalOnAnUnreadableRoleIsRefusedAndRetiresNothing(t *testing.T) {
+	for _, door := range []string{"tab", "mcp", "create"} {
+		t.Run(door, func(t *testing.T) {
+			f := newDecideFixture(t)
+			var fail atomic.Bool
+			f.srv.ext.Users = failingUsers{fail: &fail}
+			p := connectors.GitHubPreset
+			if _, err := f.store.CreateConnector(f.ctx, connectors.NewConnector{Name: "github", Platform: p.Key, Hosts: p.Hosts,
+				Scheme: p.Scheme, Username: p.Username, Secret: connTestSecret}); err != nil {
+				t.Fatal(err)
+			}
+			f.srv.ext.Connectors = connectors.WithVirtual(f.store, fakeApp{}, authz.IsAdmin)
+			sfx := strconv.FormatInt(time.Now().UnixNano(), 36)
+			ta, tb := "ur-a-token-"+sfx, "ur-b-token-"+sfx
+			f.agentWith(t, 1, "ur-a-"+sfx, "example-org/widget", "", ta)
+			f.agentWith(t, 1, "ur-b-"+sfx, "example-org/other", "", tb)
+			_, ga := f.ask(t, ta, "github")
+			f.approveOn(t, "tab", ga)
+			app := f.standingFrom(t, ga)
+			if app.source != connectors.SourceApp {
+				t.Fatalf("control: the first approval's standing grant: %+v", app)
+			}
+			name := "github"
+			if door == "create" {
+				name = "fresh-" + sfx[len(sfx)-6:]
+			}
+			_, gb := f.ask(t, tb, name)
+
+			fail.Store(true)
+			var out string
+			switch door {
+			case "tab":
+				out = f.call(t, http.MethodPost, "/ui/connector-requests/"+strconv.FormatInt(gb, 10)+"/approve", nil, f.operator()).Body.String()
+			case "mcp":
+				out, _ = f.decide(t, f.ws, focusSID, gb, "approve")
+			case "create":
+				body, hdr := form(url.Values{"request_id": {strconv.FormatInt(gb, 10)}, "preset": {"custom"}, "name": {name},
+					"hosts": {"api.example.com"}, "scheme": {"bearer"}, "secret": {connTestSecret}})
+				out = f.call(t, http.MethodPost, "/connectors", body, merge(f.operator(), hdr)).Body.String()
+			}
+			if !strings.Contains(strings.ToLower(out), "role could not be read just now") {
+				t.Fatalf("an approval on an unreadable role was not refused with a try-again message:\n%.600s", out)
+			}
+			if g := f.grantRow(t, gb); g.status != "pending" {
+				t.Fatalf("the request after an approval on an unreadable role: %+v; want pending", g)
+			}
+			var appLive bool
+			var storedLive int
+			if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT
+				(SELECT revoked_at IS NULL FROM connector_standing_grants WHERE id = $1),
+				(SELECT count(*) FROM connector_standing_grants WHERE source = 'stored' AND revoked_at IS NULL)`, app.id).Scan(&appLive, &storedLive); err != nil {
+				t.Fatal(err)
+			}
+			if !appLive || storedLive != 0 {
+				t.Fatalf("after an approval on an unreadable role: App standing grant live=%v, live stored-token standing grants=%d; want true, 0", appLive, storedLive)
+			}
+
+			fail.Store(false) // CONTROL
+			f.approveOn(t, door2tab(door), gb)
+			if g := f.grantRow(t, gb); g.status != "approved" || (door != "create" && g.source != connectors.SourceApp) {
+				t.Fatalf("control: once the role reads the approval lands: %+v", g)
+			}
+		})
+	}
+}
+
+// door2tab is the control's door: the create door's request is approved on
+// the card once its connector exists.
+func door2tab(door string) string {
+	if door == "create" {
+		return "tab"
+	}
+	return door
 }
 
 // TestRemovingTheAppDoesNotReviveTheStoredTokensApproval: the owner shared an

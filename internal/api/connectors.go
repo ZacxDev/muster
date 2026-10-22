@@ -789,8 +789,12 @@ func (s *Server) handleConnectorCreate(w http.ResponseWriter, r *http.Request) {
 			g, shared, err := s.decideConnectorGrant(ctx, f.RequestID, true, connectors.DecisionSource{})
 			if err != nil {
 				s.logger.Printf("connectors: approve %d after create: %v", f.RequestID, err)
-				s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice,
-					Error: "The connector was saved but the request could not be approved; approve it below."})
+				msg := "The connector was saved but the request could not be approved; approve it below."
+				if errors.Is(err, errRoleUncertain) {
+					msg = "The connector was saved, but your role could not be read just now, so the request was " +
+						"not approved; approve it below."
+				}
+				s.renderConnectorsContent(w, r, ui.ConnectorsContent{Notice: notice, Error: msg})
 				s.broadcast(r.Context(), EventConnectorChanged, c.Name)
 				return
 			}
@@ -863,6 +867,17 @@ func (s *Server) handleConnectorDelete(w http.ResponseWriter, r *http.Request) {
 // missing one or another owner's — row-level security reads them the same).
 var errGrantUnreadable = errors.New("the request could not be read")
 
+// errRoleUncertain is decideConnectorGrant's refusal to APPROVE while the
+// deciding owner's role could not be read (authz.Principal.RoleUncertain).
+//
+// 🔴 A FALLBACK ROLE MUST NEVER CHANGE STATE (principalFor). An unreadable
+// admin acts as a member, for whom the GitHub App vanishes: the approval would
+// be recorded against the stored token, and sharing it would retire every App
+// standing grant for the connector and leave a stored-token one that revives
+// when the App is removed. Refused instead — retrying once the role reads
+// works; a denial changes no credential and is not refused.
+var errRoleUncertain = errors.New("your role could not be read just now, so the request was not approved; try again")
+
 // errConnectorMissing is decideConnectorGrant's refusal to approve a request
 // for a connector that does not exist: the operator's answer to that is a
 // credential, entered on the Connectors tab (handleConnectorCreate).
@@ -901,6 +916,9 @@ func (e errConnectorMissing) Error() string {
 func (s *Server) decideConnectorGrant(ctx context.Context, id int64, approve bool, via connectors.DecisionSource) (connectors.Grant, sharedApproval, error) {
 	src := ""
 	if approve {
+		if p, ok := authz.From(ctx); ok && p.RoleUncertain {
+			return connectors.Grant{}, sharedApproval{}, errRoleUncertain
+		}
 		g, err := s.ext.Connectors.GetGrant(ctx, id)
 		if err != nil {
 			return connectors.Grant{}, sharedApproval{}, fmt.Errorf("%w: %w", errGrantUnreadable, err)
@@ -956,6 +974,10 @@ func (s *Server) decideConnectorRequest(w http.ResponseWriter, r *http.Request, 
 	switch {
 	case errors.Is(err, errGrantUnreadable):
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "That request no longer exists."})
+		return
+	case errors.Is(err, errRoleUncertain):
+		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: "Your role could not be read just now, so " +
+			"the request was not approved. Try again."})
 		return
 	case errors.As(err, &poolWorker):
 		s.renderConnectorsContent(w, r, ui.ConnectorsContent{Error: poolWorker.Error() + "."})

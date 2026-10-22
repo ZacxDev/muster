@@ -156,6 +156,11 @@ func (s *Server) shareApproval(ctx context.Context, g connectors.Grant, via conn
 	if s.ext.Agents == nil || !g.Usable() {
 		return out
 	}
+	// Belt and braces for decideConnectorGrant's refusal: never share (and so
+	// never retire another source's standing grants) on a fallback role.
+	if p, ok := authz.From(ctx); ok && p.RoleUncertain {
+		return out
+	}
 	a, err := s.ext.Agents.Get(ctx, g.AgentID)
 	if err != nil {
 		s.logger.Printf("connectors: share approval %d: agent: %v", g.ID, err)
@@ -237,8 +242,9 @@ func shareSentence(connector, source, repo string) string {
 // requestShares is what approving pending request g would share with the
 // owner's other agents (shareSentence), or "" when it shares nothing: no such
 // connector yet (the answer is a credential, and creating it shares the same
-// way — the form says so), an agent that cannot be read, a pool worker's GitHub
-// request (refused), or an App request from an agent with no repository.
+// way — the form says so), an agent that cannot be read, ANY request of a
+// worker-pool member (its approvals are never shared: shareApproval), or an App
+// request from an agent with no repository.
 func (s *Server) requestShares(ctx context.Context, g connectors.Grant) string {
 	if s.ext.Agents == nil {
 		return ""

@@ -104,6 +104,13 @@ Then:
   agent does not hold against that later shared approval — when the denied
   agent asks again, it is approved from it. Only a denial or revocation made
   after the shared approval exists keeps that agent out (below).
+- **Never on an unreadable role.** If your role cannot be read when you
+  approve (a database blip: an admin then acts as a member, for whom the GitHub
+  App is hidden), the approval is refused with *"your role could not be read
+  just now … try again"* on every door — the card, `connector_request_decide`,
+  and entering a credential — so a fallback role can never record a
+  stored-token approval or retire your App approvals. No shared approval is
+  matched on such a role either.
 - **Your own approvals only.** A standing grant is yours (row-level security,
   as for every owned table, plus an explicit owner predicate in the store), so
   it never approves another user's agent.
