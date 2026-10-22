@@ -215,6 +215,35 @@ func TestRouteReplyIsRefusedOnARouteThatIsNotWaiting(t *testing.T) {
 	}
 }
 
+// TestRouteReplyAnswersAnotherOwnersRouteAsNoSuchRoute pins the OWNER filter
+// at this door: a host of ANOTHER owner whose window names the route's own
+// target session — so the session binding would pass — holding a real route id
+// gets exactly what a route id that exists nowhere gets, and the route does not
+// move. The filter is row-level security on the Route() lookup under the
+// request's principal; a lookup under authz.System would answer the route here.
+func TestRouteReplyAnswersAnotherOwnersRouteAsNoSuchRoute(t *testing.T) {
+	f := newRouteFixture(t)
+	f.withRouteReply(t)
+	stranger := f.newMember(t)
+	strangerTok := mirrorTok('s')
+	f.srv.ext.MirrorTokens.(fakeMirrorTokens)[strangerTok] = mirror.Token{ID: 10, OwnerID: stranger, Host: "tower"}
+
+	id := f.route(t, f.deliveredMessage(t, f.owner, f.chief.ID, "route-reply-stranger"))
+	missing := "rt_0000000000000000000000ff"
+	gotReal, errReal := f.routeReplyCall(t, strangerTok, routeSID, map[string]any{"route_id": id, "body": "hijack"})
+	gotMissing, errMissing := f.routeReplyCall(t, strangerTok, routeSID, map[string]any{"route_id": missing, "body": "hijack"})
+	if !errReal || gotReal != toolErr("no such route: %s", id) {
+		t.Errorf("another owner's route: %s (error %v); want %s", gotReal, errReal, toolErr("no such route: %s", id))
+	}
+	// Same shape: the two answers differ only by the id they echo.
+	if !errMissing || strings.ReplaceAll(gotReal, id, "ID") != strings.ReplaceAll(gotMissing, missing, "ID") {
+		t.Errorf("another owner's route and a missing one answer differently:\n  %s\n  %s", gotReal, gotMissing)
+	}
+	if r, _ := f.plugins.Route(f.asOwner, id); r.State != plugins.RouteRouted || r.ReplyBody != "" {
+		t.Fatalf("another owner moved the route: %s %q", r.State, r.ReplyBody)
+	}
+}
+
 // TestRouteReplyIsNotOfferedWithRoutingOff: no Routing, no route_reply on the
 // list, and a call by name is refused before any handler runs.
 func TestRouteReplyIsNotOfferedWithRoutingOff(t *testing.T) {

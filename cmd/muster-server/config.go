@@ -149,8 +149,9 @@ const (
 	envRouteRelayAllow = "MUSTER_ROUTE_RELAY_ALLOW"
 	// How long a routed message waits for its session's answer before it is
 	// handed back to the chief (api.DefaultRouteTimeout, 30m, when unset). A Go
-	// duration between api.MinRouteTimeout and api.MaxRouteTimeout; anything
-	// else refuses to boot.
+	// duration between api.MinRouteTimeout and api.MaxRouteTimeout, and — with
+	// routing on — longer than MUSTER_SEND_QUEUE_IDLE; anything else refuses to
+	// boot.
 	envRouteTimeout = "MUSTER_ROUTE_TIMEOUT"
 	// TASK ROUTING (internal/api/task_routing.go): "1" lets a plugin hand a task
 	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's chief,
@@ -1162,6 +1163,16 @@ func loadConfig(getenv func(string) string) (config, error) {
 				envRouteTimeout, v, api.MinRouteTimeout, api.MaxRouteTimeout)
 		}
 		c.RouteTimeout = d
+	}
+	// 🔴 A ROUTE MUST OUTLAST ITS OWN PASTE. A routed message is pasted only
+	// once the window has been idle for MUSTER_SEND_QUEUE_IDLE, so a deadline
+	// no longer than that wait times the route out before its message can
+	// reach the session — every route would go back to the chief unread.
+	// Checked only with routing on: with it off neither value is about routes,
+	// and a long idle wait alone is a valid setting.
+	if c.SessionRouting && c.RouteTimeout <= c.SendQueueIdle {
+		return config{}, fmt.Errorf("invalid %s %s: it must be longer than %s (%s), the idle wait before a routed message is even pasted",
+			envRouteTimeout, c.RouteTimeout, envSendQueueIdle, c.SendQueueIdle)
 	}
 	if c.RouteRelayAllowRaw != "" {
 		l, err := plugins.ParseRelayAllowlist(c.RouteRelayAllowRaw)

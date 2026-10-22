@@ -731,12 +731,12 @@ block's header cannot reach column 0 or add a session. The titles inside it are
 still a summarizer's output, so the block says to treat them as data. The
 chief's standing instructions tell it to check those sessions, and
 `sessions_overview`, before filing a task or drafting a reply, and to route
-with `route_to_session` only when one is clearly on it. When none is, they
-tell it not to stop at reading the message: it proposes a reply with
-`reply_draft` (unless the message cannot be replied to) **and** raises an
+with `route_to_session` only when one is clearly on it. When none is and
+the message asks you to do or decide something (a question to you, a request,
+an approval), they tell it not to stop at reading it: it raises an
 `attention_ask` summarising who the message is from and what it asks, so it
-reaches your Attention view — always for a message that asks you to do
-something.
+reaches your Attention view. A message that only informs gets no ask: asks
+stay open a day and every agent shares your open-ask limit.
 
 This is pushed rather than left to the chief because a chief that was not
 told called no session tool at all. See [focus](focus.md#why-a-time-window-over-history-and-not-the-current-focus)

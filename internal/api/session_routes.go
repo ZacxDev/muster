@@ -77,10 +77,12 @@ const (
 	// (Routing.Timeout) is unset.
 	DefaultRouteTimeout = 30 * time.Minute
 	// MinRouteTimeout and MaxRouteTimeout bound MUSTER_ROUTE_TIMEOUT. Under a
-	// minute is shorter than the paste itself can take (the send queue waits
-	// MUSTER_SEND_QUEUE_IDLE of idle first, and the sweep runs every
-	// RouteSweepInterval); over a day holds an outside party's message in a
-	// session nobody is watching instead of handing it back.
+	// minute is finer than the sweep that enforces it (RouteSweepInterval); over
+	// a day holds an outside party's message in a session nobody is watching
+	// instead of handing it back. The other floor — longer than the send
+	// queue's idle wait (MUSTER_SEND_QUEUE_IDLE), before which the message
+	// cannot even be pasted — depends on that setting, so cmd/muster-server's
+	// loadConfig enforces it at boot when routing is on.
 	MinRouteTimeout = time.Minute
 	MaxRouteTimeout = 24 * time.Hour
 	// RouteSweepInterval is how often due routes are timed out.

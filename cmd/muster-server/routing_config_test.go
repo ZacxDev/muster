@@ -78,3 +78,44 @@ func TestTheRouteTimeoutDefaultsParsesAndRefusesNonsense(t *testing.T) {
 		}
 	}
 }
+
+// With session routing on, a route deadline that is not LONGER than the send
+// queue's idle wait refuses to boot — whichever variable is the one set too
+// far (route short, or idle long), and at equality — naming both variables. A
+// longer deadline boots, and with routing off a long idle wait alone boots.
+func TestTheRouteTimeoutMustOutlastTheSendQueueIdleWait(t *testing.T) {
+	load := func(routing bool, timeout, idle string) (config, error) {
+		env := map[string]string{envRouteTimeout: timeout, envSendQueueIdle: idle}
+		if routing {
+			env[envSessionRouting] = "1"
+		}
+		return loadConfig(func(n string) string { return env[n] })
+	}
+	for _, c := range []struct {
+		name, timeout, idle string
+	}{
+		{"the route deadline set below the idle wait", "2m", "5m"},
+		{"the idle wait set above the default deadline", "", "45m"},
+		{"equal", "10m", "10m"},
+	} {
+		_, err := load(true, c.timeout, c.idle)
+		if err == nil || !strings.Contains(err.Error(), envRouteTimeout) || !strings.Contains(err.Error(), envSendQueueIdle) ||
+			!strings.Contains(err.Error(), "must be longer than") {
+			t.Errorf("%s (timeout %q, idle %q): booted or refused for another reason: %v", c.name, c.timeout, c.idle, err)
+		}
+	}
+	for _, c := range []struct {
+		name, timeout, idle string
+		routing             bool
+		want                time.Duration
+	}{
+		{"a deadline just past the idle wait", "6m", "5m", true, 6 * time.Minute},
+		{"the defaults", "", "", true, 30 * time.Minute},
+		{"routing off: a long idle wait alone", "", "45m", false, 30 * time.Minute},
+	} {
+		cfg, err := load(c.routing, c.timeout, c.idle)
+		if err != nil || cfg.RouteTimeout != c.want {
+			t.Errorf("%s: %v, %v; want %v", c.name, cfg.RouteTimeout, err, c.want)
+		}
+	}
+}
