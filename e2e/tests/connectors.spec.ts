@@ -146,13 +146,13 @@ test('an agent requests a connector, the operator enters the credential, the pro
   // grant, migration 0043): the connector's card says so, with a thumb-sized
   // "Revoke shared". Revoking it ends the shared approval AND the grant it was
   // created from, so the agent is cut off.
-  const shared = page.locator('[data-connector="fakehub"] [data-shared]');
-  await expect(shared).toHaveCount(1);
-  await expect(shared).toContainText('Shared with all your agents');
-  const rs = (await shared.locator('[data-revoke-shared]').boundingBox())!;
+  const sharedRow = page.locator('[data-connector="fakehub"] [data-shared]');
+  await expect(sharedRow).toHaveCount(1);
+  await expect(sharedRow).toContainText('Shared with all your agents');
+  const rs = (await sharedRow.locator('[data-revoke-shared]').boundingBox())!;
   expect(rs.height, 'Revoke shared is thumb-sized').toBeGreaterThanOrEqual(44);
   page.once('dialog', (d) => d.accept());
-  await shared.locator('[data-revoke-shared]').click();
+  await sharedRow.locator('[data-revoke-shared]').click();
   await expect(page.locator('#connectors-notice')).toContainText('The shared approval of fakehub was revoked, with 1 agent grant(s) it gave.');
   await expect(page.locator('[data-connector="fakehub"] [data-shared]')).toHaveCount(0);
   const cut = await asAgent(proxied);
