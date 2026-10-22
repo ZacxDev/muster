@@ -10,6 +10,8 @@ import (
 	. "maragu.dev/gomponents/html"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // AgentCardView is the per-agent data the card grid renders.
@@ -103,6 +105,12 @@ type AgentCardView struct {
 	// (waitTokens), and the status poll asks for a list refresh when it changes
 	// (cardStatusIcon).
 	AwaitingApproval bool
+	// Work is what the agent's pod last reported it has running — subagents and
+	// background shells — internal/api's AgentWork, already expired when stale.
+	// It draws the same chip a mirrored window's card does (workChip), and the
+	// status poll carries it (StatusPollPath) so a change or an expiry re-renders
+	// the list. Zero: no chip.
+	Work mirror.WindowWork
 }
 
 // lastActive is the card's "active" time: LastActiveAt, or UpdatedAt when the
@@ -302,13 +310,13 @@ func agentRenameForm(a AgentCardView) g.Node {
 // kinds of card cannot drift into two layouts again.
 func agentCard(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)
-	// markdownPlain, exactly as agentTitle on the detail page does. A
+	// textplain.Title, exactly as agentTitle on the detail page does. A
 	// task-derived display name routinely carries `**bold**` and `code`, and
 	// this rendered it RAW while the detail header rendered it as markup — one
 	// string, two answers, from the same click. Stripping on both surfaces is
-	// what makes them agree; see markdownPlain for why stripping was chosen over
+	// what makes them agree; see textplain.Title for why stripping was chosen over
 	// rendering markup here.
-	name := markdownPlain(displayOr(a.DisplayName, a.Name))
+	name := plainOr(a.DisplayName, a.Name)
 	// A name past cardTitleMax is drawn in a title row of its own, clamped,
 	// with a "…" button that opens it whole (cardLongTitle).
 	_, long := clampTitle(name)
@@ -377,6 +385,9 @@ func agentCard(a AgentCardView) g.Node {
 					g.Text(name),
 				)),
 				g.If(a.Repo != "", chip("repo", a.Repo)),
+				// The subagents and background shells its pod has running now:
+				// the mirrored card's chip, from ccd's report (POST /agent/work).
+				workChip(a.Work),
 				// Only a non-default kind is labelled, so a gateway-only deployment's
 				// cards are unchanged. The account is a NAME, never a token.
 				g.If(agents.ResolveKind(a.Kind) == agents.KindClaudeCode,
@@ -812,7 +823,7 @@ func AwaitingApprovalBadge() g.Node {
 // apply to whatever the change moves.
 func cardStatusIcon(a AgentCardView) g.Node {
 	return Span(
-		hx("hx-get", StatusPollPath(a.ID, a.AwaitingApproval)),
+		hx("hx-get", StatusPollPath(a.ID, a.AwaitingApproval, a.Work)),
 		hx("hx-trigger", "load, every 10s"),
 		hx("hx-target", "this"),
 		hx("hx-swap", "innerHTML"),
@@ -821,18 +832,31 @@ func cardStatusIcon(a AgentCardView) g.Node {
 }
 
 // StatusPollPath is an agent card's status poll: GET /ui/agents/{id}/status,
-// with awaiting=1|0 saying whether the card was drawn awaiting approval.
-func StatusPollPath(id int64, awaiting bool) string {
+// with awaiting=1|0 saying whether the card was drawn awaiting approval, and
+// work=WorkPollToken saying which work chip it was drawn with.
+func StatusPollPath(id int64, awaiting bool, work mirror.WindowWork) string {
 	v := "0"
 	if awaiting {
 		v = "1"
 	}
-	return "/ui/agents/" + strconv.FormatInt(id, 10) + "/status?awaiting=" + v
+	return "/ui/agents/" + strconv.FormatInt(id, 10) + "/status?awaiting=" + v + "&work=" + WorkPollToken(work)
 }
 
-// AgentsAwaitingEvent is the HX-Trigger the status poll answers with when an
-// agent's awaiting-approval state differs from what its card was drawn with;
-// the Agents list re-renders on it (agentsListTrigger).
+// WorkPollToken is a work chip's state as the status poll carries it:
+// "<subagents>.<shells>", with a trailing "p" for a lower bound ("1+ shell");
+// "0.0" for no chip. Two reports that draw the same chip have the same token.
+func WorkPollToken(w mirror.WindowWork) string {
+	t := strconv.Itoa(w.Subagents) + "." + strconv.Itoa(w.Shells)
+	if w.ShellsAtLeast {
+		t += "p"
+	}
+	return t
+}
+
+// AgentsAwaitingEvent is the HX-Trigger the status poll answers with when what
+// an agent's card was drawn with is no longer true — its awaiting-approval
+// state, or its work chip (a new report, or one that expired with no POST to
+// announce it); the Agents list re-renders on it (agentsListTrigger).
 const AgentsAwaitingEvent = "agents:awaiting"
 
 // statusLabel is the agent-facing word for a stored agent status.
@@ -1058,6 +1082,8 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 	if modelStatic == "" {
 		modelStatic = defaultModelShortLabel()
 	}
+	// The task's title, as a reader of it sees it (textplain).
+	taskLabel := textplain.Title(v.Label)
 	repoStatic := v.Repo
 	if repoStatic == "" {
 		repoStatic = "none"
@@ -1069,7 +1095,7 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 			Div(
 				Class("min-w-0"),
 				H2(Class("text-base font-semibold text-fg"), g.Text("Dispatch · Task #"+ids)),
-				g.If(v.Label != "", P(Class("mt-0.5 truncate text-xs text-muted"), g.Text(v.Label))),
+				g.If(taskLabel != "", P(Class("mt-0.5 truncate text-xs text-muted"), g.Text(taskLabel))),
 			),
 			Span(Class("flex-1")),
 			dispatchCloseButton(),
@@ -1219,7 +1245,7 @@ func repoOptions(repos []RepoView) []ComboOption {
 func noteOptions(notes []NoteOption) []ComboOption {
 	opts := make([]ComboOption, 0, len(notes))
 	for _, n := range notes {
-		opts = append(opts, ComboOption{Value: strconv.FormatInt(n.ID, 10), Label: n.Label})
+		opts = append(opts, ComboOption{Value: strconv.FormatInt(n.ID, 10), Label: textplain.Title(n.Label)})
 	}
 	return opts
 }
