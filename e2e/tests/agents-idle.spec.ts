@@ -208,3 +208,49 @@ for (const vp of [
     });
   });
 }
+
+// 🔴 A CLAUDE WINDOW IS IDLE BY ITS LAST MESSAGE, NOT BY TMUX. tmux's window
+// activity is reset for every window by a tmux restart (a tmux-resurrect
+// restore), so on a real host every window read "active a minute ago". A
+// second host here lists one Claude window whose tmux activity is a minute old
+// and whose transcript's last message is 30 days old, followed by what a
+// RESUME appends (an attachment and a system row with today's time): the real
+// muster-mirror reads the last message (internal/mirrorhost/lastmsg.go), sends
+// it, and the card is in the Idle section saying "active 30d ago".
+// On the tree before, the card was drawn by tmux's minute: working, "1m".
+test('a Claude window with fresh tmux activity but a 30-day-old last message is idle, and says so', async ({ page }) => {
+  test.setTimeout(120_000);
+  const hostL = rig.host.replace('e2e-idle-', 'e2e-idlel-');
+  const tr = path.join(rig.dir, 'claude-old.jsonl');
+  const old = new Date(Date.now() - 30 * day * 1000 - 5 * 3600 * 1000).toISOString();
+  const fresh = new Date().toISOString();
+  writeFileAtomic(
+    tr,
+    [
+      { type: 'user', timestamp: old, message: { role: 'user', content: 'tidy the notes' } },
+      { type: 'assistant', timestamp: old, message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
+      { type: 'cost-state' },
+      { type: 'attachment', timestamp: fresh, attachment: { type: 'deferred_tools_delta' } },
+      { type: 'system', subtype: 'informational', timestamp: fresh, content: 'resumed' },
+    ].map((r) => JSON.stringify(r)).join('\n') + '\n',
+  );
+  const lwin = path.join(rig.dir, 'windows-l');
+  writeFileAtomic(lwin, `iclaude|@1|1|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}\n`);
+  const stop = rig.extraHost(hostL, { MUSTER_MIRROR_E2E_WINDOWS_FILE: lwin, MUSTER_MIRROR_E2E_REFRESH: '300ms' });
+  try {
+    await rig.login(page);
+    await rig.waitListed(page, 'data-f-session="iclaude"');
+    await page.goto(rig.origin + '/agents');
+    await page.evaluate((k) => localStorage.removeItem(k), OPEN_KEY);
+    await page.goto(rig.origin + '/agents');
+    const c = page.locator(`#agents-list > article[data-f-host="${hostL}"][data-f-session="iclaude"]`);
+    await expect(c, 'the card is in the Idle section').toHaveAttribute('data-idle-section', '');
+    await expect(c, 'collapsed with it').toBeHidden();
+    await tapByScript(page, '#agents-idle-toggle');
+    await expect(c).toBeVisible();
+    await expect(c.locator('[data-card-active]'), 'its card prints the last message').toHaveText(/active\s*30d\s*ago/);
+    await tapByScript(page, '#agents-idle-toggle');
+  } finally {
+    await stop();
+  }
+});

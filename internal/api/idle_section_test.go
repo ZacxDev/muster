@@ -2,6 +2,7 @@ package api
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -72,5 +73,47 @@ func TestTheIdleSectionFollowsTheServersClockAndTheLiveRefresh(t *testing.T) {
 	s.ext.AgentsIdleAfter = 0
 	if ids, head := idleCardIDs(getOwed(t, s, h, "/agents").Body.String()); len(ids) != 0 || head != "" {
 		t.Errorf("threshold 0 drew a section: %v %q", ids, head)
+	}
+}
+
+// TestAClaudeWindowsIdleIsItsLastMessage: a Claude window whose tmux activity
+// is a minute old (a tmux restart) but whose host reports its last message 30
+// days ago is in the Idle section, and its card prints and orders by the last
+// message — one number for all three. Without a reported last message (an
+// older host) the same window is working, by tmux's time.
+func TestAClaudeWindowsIdleIsItsLastMessage(t *testing.T) {
+	s, h, _ := listServer(t)
+	now := time.Date(2026, 10, 21, 15, 0, 0, 0, time.UTC)
+	s.now = func() time.Time { return now }
+	s.ext.AgentsIdleAfter = 14 * 24 * time.Hour
+	fm := s.ext.Mirror.(*fakeMirror)
+	last := now.Add(-30*24*time.Hour - 7*time.Minute)
+	fm.mu.Lock()
+	fm.windows[0].Claude = true
+	fm.windows[0].Activity = now.Add(-time.Minute).Unix()
+	fm.windows[0].LastMessage = last.Unix()
+	fm.mu.Unlock()
+	mainID := "mirror-b0a314c33976"
+	body := getOwed(t, s, h, "/ui/agents").Body.String()
+	card := regexp.MustCompile(`<article id="` + mainID + `"[^>]*>`).FindString(body)
+	if !strings.Contains(card, "data-idle-section") {
+		t.Errorf("a Claude window silent for 30 days (tmux: a minute) is not idle: %s", card)
+	}
+	wantTS := last.Unix() - last.Unix()%60
+	if !strings.Contains(card, `data-active-ts="`+strconv.FormatInt(wantTS*1000, 10)+`"`) {
+		t.Errorf("the card does not carry the last message as its activity (want %d000): %s", wantTS, card)
+	}
+	// Ordered by the last message (30 days) it is the NEWEST idle card — the
+	// rest are months old; by tmux's minute it would not be idle at all.
+	if ids, _ := idleCardIDs(body); len(ids) == 0 || ids[0] != mainID {
+		t.Errorf("ordered by the last message, it is the newest idle card: %v", ids)
+	}
+	// An older host: no last message, tmux's minute — working.
+	fm.mu.Lock()
+	fm.windows[0].LastMessage = 0
+	fm.mu.Unlock()
+	card = regexp.MustCompile(`<article id="` + mainID + `"[^>]*>`).FindString(getOwed(t, s, h, "/ui/agents").Body.String())
+	if strings.Contains(card, "data-idle-section") {
+		t.Errorf("without a last message the window is idle by something else: %s", card)
 	}
 }

@@ -59,9 +59,14 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   one codename), each also carries its tmux address (`mango:1 · <session>:<index>`).
   The card, both view headers and the page title always agree.
 - **Most recently active first.** One flat list across all your hosts AND your
-  dispatched agents, ordered by last activity, newest first. A window's last
-  activity is when its host last saw it active, to the minute; output in a pane
-  counts as activity, not only keystrokes. A dispatched agent's is the newer of
+  dispatched agents, ordered by last activity, newest first. A **Claude Code**
+  window's last activity is its conversation's last message (the newest user or
+  assistant message in its transcript, to the minute — not tmux's activity,
+  which a tmux restart resets for every window, and not the rows a resumed
+  session writes on start); a host from before this reports none, and the
+  window falls back to tmux's. Any other window's is when its host last saw it
+  active, to the minute; output in a pane counts as activity, not only
+  keystrokes. A dispatched agent's is the newer of
   its last chat message and its last change (a status write, a rename). The
   host is not a section: it is the icon on each card. A window whose host did
   not report activity comes last. Ties keep a stable order: agents first, then

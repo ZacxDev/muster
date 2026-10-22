@@ -24,8 +24,15 @@ import (
 // card prints as "active … ago" and the list is ordered by, so the section can
 // never disagree with the card's own label:
 //
-//   - a mirrored window: when its host last saw the window active (tmux's
-//     window activity, reported by muster-mirror, floored to a minute);
+//   - a mirrored Claude Code window: its conversation's LAST MESSAGE — the
+//     newest non-meta user or assistant row in its transcript, read by
+//     muster-mirror (mirrorhost's lastmsg.go) and floored to a minute. Not
+//     tmux's window activity: a tmux restart (a tmux-resurrect restore) resets
+//     that for every window, and measured on one host it put all 67 windows
+//     "active" since the restore, so nothing could ever collapse. A host from
+//     before reports none, and the window falls back to tmux's;
+//   - any other mirrored window: when its host last saw it active (tmux's
+//     window activity, floored to a minute);
 //   - a dispatched agent: agents.LastActivity, the newer of its newest
 //     transcript message and its row's updated_at.
 //
