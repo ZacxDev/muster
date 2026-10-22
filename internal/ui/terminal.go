@@ -932,6 +932,25 @@ func agentTerminalScript() g.Node {
     reconnectBtn.addEventListener('click', wire);
   })();
 
+  // 🟢 OFF SCREEN, NO LIVE KEYS (view_swap.go): a terminal hidden behind the
+  // other view while typing straight into the session drops to read-only —
+  // one re-attach — and takes live keys back only when it is on screen again,
+  // through the same freshness check the switch uses.
+  var rwWhenShown = false;
+  window.addEventListener('muster:view-hidden', function () {
+    if (mode !== 'rw') return;
+    rwWhenShown = true;
+    mode = 'ro';
+    applyMode();
+    connect();
+  });
+  window.addEventListener('muster:view-shown', function () {
+    if (!rwWhenShown) return;
+    rwWhenShown = false;
+    if (confirmPath && !fresh()) { openConfirm(''); return; }
+    goInteractive();
+  });
+
   // Leaving the page ends the stream now rather than when the socket times out.
   window.addEventListener('pagehide', function () { if (ws) { ws.onclose = null; ws.close(); } });
 

@@ -78,6 +78,10 @@ func viewFrameScript() g.Node {
       if (!on && el.hasAttribute('data-view-inert')) { el.inert = false; el.removeAttribute('data-view-inert'); }
     });
   }
+  // tell says to a view's own window that it went off screen or came back
+  // ('muster:view-hidden' / 'muster:view-shown'): the terminal drops live keys
+  // while off screen.
+  function tell(w, what) { try { w.dispatchEvent(new Event('muster:view-' + what)); } catch (e) {} }
   // reveal puts the frame on screen, over the page.
   function reveal(f) {
     f.style.visibility = '';
@@ -90,6 +94,8 @@ func viewFrameScript() g.Node {
     } catch (e) {}
     root.setAttribute('data-view', f.getAttribute(ATTR));
     try { f.contentWindow.focus(); } catch (e) {}
+    tell(window, 'hidden');
+    tell(f.contentWindow, 'shown');
   }
   // home shows the page's own view again: the frame stays, hidden and live.
   function home(f) {
@@ -100,6 +106,8 @@ func viewFrameScript() g.Node {
     history.replaceState(history.state, '', f.getAttribute('data-own-url'));
     document.title = f.getAttribute('data-own-title');
     root.setAttribute('data-view', f.getAttribute('data-own'));
+    tell(f.contentWindow, 'hidden');
+    tell(window, 'shown');
   }
 
   // show puts view name on screen (the top window's half). href is the view's
@@ -122,16 +130,44 @@ func viewFrameScript() g.Node {
     // until then the page under it is what is on screen.
     f.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;border:0;margin:0;padding:0;z-index:2147483000;visibility:hidden';
     f.setAttribute('aria-hidden', 'true');
-    var first = true;
+    f.setAttribute('data-path', want);
+    // 🔴 EVERY LOAD OF THE FRAME IS CHECKED, NOT ONLY ITS FIRST. Its own
+    // document can navigate it: a script setting location (Mark complete), a
+    // reload (the auth gate's, the update toast's), htmx's HX-Redirect (New
+    // chat), a form the browser posts. The framed view's script hands such a
+    // navigation to the top window BEFORE it happens where the browser can say
+    // (the Navigation API, below); this is the net under it. A load that is no
+    // longer this window's other view — or that cannot be read at all, which is
+    // what a page that refuses to be framed (frame-ancestors 'none') leaves:
+    // an error document of another origin, a white screen — takes the TOP
+    // window there instead: to where the frame is, if it can be read; else to
+    // where the framed view said it was going; else to the last address it had.
+    var first = true, last = href;
     f.addEventListener('load', function () {
-      if (!first) return;
-      first = false;
-      var ok = false;
-      try { ok = f.contentWindow.location.pathname === want; } catch (e) {}
-      // Not the view (a sign-in, a redirect elsewhere): the real load decides.
-      if (!ok) { location.assign(href); return; }
-      f.setAttribute('data-loaded', '');
-      reveal(f);
+      var where = null, ok = false;
+      try { where = f.contentWindow.location.href; ok = f.contentWindow.location.pathname === want; } catch (e) {}
+      var intended = f.getAttribute('data-intended');
+      f.removeAttribute('data-intended');
+      if (!ok) {
+        var to = (where && where !== 'about:blank') ? where : (intended || last);
+        inertAll(false, f);
+        f.remove();
+        location.assign(to);
+        return;
+      }
+      last = where;
+      if (first) {
+        first = false;
+        f.setAttribute('data-loaded', '');
+        reveal(f);
+        return;
+      }
+      // The same view again (a reload, New chat's ?session=): on screen, the
+      // address and title follow it.
+      if (!f.style.visibility) {
+        history.replaceState(history.state, '', where);
+        try { document.title = f.contentDocument.title; } catch (e) {}
+      }
     });
     f.src = href;
     document.body.appendChild(f);
@@ -158,6 +194,19 @@ func viewFrameScript() g.Node {
       (a.target && a.target !== '_self') || a.hasAttribute('download'));
   }
 
+  // 🔴 htmx's HISTORY CACHE MUST NOT KEEP THE FRAME. A boosted navigation
+  // away snapshots the body, and Back restores the snapshot — a frame in it
+  // would load its view again, unseen: a new attach nobody asked for. The
+  // frame is taken out before the snapshot (it is leaving with the page
+  // anyway), and the page under it made reachable again.
+  document.addEventListener('htmx:beforeHistorySave', function () {
+    var f = frame();
+    if (!f) return;
+    inertAll(false, f);
+    f.remove();
+    root.removeAttribute('data-view');
+  });
+
   // The switch, in either window.
   document.addEventListener('click', function (e) {
     var a = e.target && e.target.closest ? e.target.closest('a[data-view-swap]') : null;
@@ -182,6 +231,45 @@ func viewFrameScript() g.Node {
     if (href.charAt(0) === '#' || /^javascript:/i.test(href)) return;
     e.preventDefault();
     leave(a.href);
+  });
+  // 🔴 EVERY OTHER NAVIGATION OF THE FRAME, BEFORE IT HAPPENS, where the
+  // browser has the Navigation API: a script setting location, htmx's
+  // HX-Redirect, a reload, a form the browser posts. One to this view's own
+  // path (a reload, ?session=, ?notice=) stays in the frame; one anywhere else
+  // goes to the TOP window, so the frame never loads a page that is not this
+  // view — such a page may refuse to be framed and leave a white screen. A
+  // form post is re-posted by the top window, with its fields. Where the API
+  // is missing, the top window's load check is the net.
+  var navigation = window.navigation;
+  if (navigation && navigation.addEventListener) navigation.addEventListener('navigate', function (e) {
+    if (e.hashChange || e.downloadRequest || e.navigationType === 'traverse' || !e.destination) return;
+    if (e.destination.sameDocument) return;
+    var url = e.destination.url;
+    try { window.frameElement.setAttribute('data-intended', url); } catch (x) {}
+    var path = '';
+    try { path = new URL(url).pathname; } catch (x) {}
+    var own = window.frameElement.getAttribute('data-path');
+    if (!e.formData && path === own) return;
+    if (!e.cancelable) return;
+    e.preventDefault();
+    if (e.formData) {
+      var P = window.parent.document, post = P.createElement('form');
+      post.method = 'post';
+      post.action = url;
+      post.style.display = 'none';
+      e.formData.forEach(function (v, k) {
+        if (typeof v !== 'string') return;
+        var i = P.createElement('input');
+        i.type = 'hidden';
+        i.name = k;
+        i.value = v;
+        post.appendChild(i);
+      });
+      P.body.appendChild(post);
+      HTMLFormElement.prototype.submit.call(post);
+      return;
+    }
+    leave(url);
   });
   // A boosted link (the agent page's): htmx takes the click first, so its
   // request is what is stopped — the TOP window goes there instead.
