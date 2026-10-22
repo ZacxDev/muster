@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "3171a432900d6c12eac3fe4cb3edd68be4e3021be4a58345090cbc080f87b32b",
+			want: "73751c40e92ed1a9e27854500f5cc5fc3788824e034d3b4caec3656c0c1dec69",
 			min:  1000,
 		},
 		{
@@ -370,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "0ef4e2211c58c4180ccc8c4dcaca00abd2898758facaea23949e848935c30fc9",
+			want: "e57a9aaa3fba09908374ef2e08224dcbbf299d5062527518a0dc3381994a770c",
 			min:  1000,
 		},
 	} {
@@ -694,6 +694,7 @@ func TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames(t *testing.T) {
 		"`reply_draft`", "`mcp__muster__reply_draft`",
 		"`sessions_overview`", "`mcp__muster__sessions_overview`",
 		"`route_to_session`", "`mcp__muster__route_to_session`",
+		"`attention_ask`", "`mcp__muster__attention_ask`",
 	).Replace(chiefPluginSection)
 	if derived == chiefPluginSection {
 		t.Fatal("control: the replacer changed nothing, so the comparison below would compare a section to itself")
@@ -731,5 +732,54 @@ func TestTheClaudeCodeSupervisorProseIsTrueInItsImage(t *testing.T) {
 	}
 	if gw := norm(ChiefInstructions(false, true)); !strings.Contains(gw, "The `muster` CLI is on your PATH") || strings.Contains(gw, "mcp__muster__") {
 		t.Error("the gateway prose changed runtime: it must keep the CLI and must not name MCP tools")
+	}
+}
+
+// TestTheChiefDoesNotStopWhenNoSessionIsOnAMessage pins the chief's FALLBACK
+// rule WHOLE, in both runtimes' spelling, against literals typed here: when no
+// session is clearly on a plugin message, the chief proposes a reply_draft (for
+// a message that can be answered) AND raises an attention_ask summarising it —
+// never only a summary in its own conversation, and never for a message that
+// asks the owner to act. The failure it closes: messages asking the owner to act
+// were read and summarised in the chief's own chat only, no session matched,
+// and nothing reached the Attention view.
+//
+// It also pins WHERE the rule sits — straight after the routing paragraph it is
+// the other branch of — and that it ships only with the plugin section.
+func TestTheChiefDoesNotStopWhenNoSessionIsOnAMessage(t *testing.T) {
+	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	rule := func(draft, ask string) string {
+		return "If no session is clearly on the subject, do not stop at reading the message: a summary you write " +
+			"only in this conversation reaches nobody. Do two things. Propose a reply with the " + draft + " tool, " +
+			"unless the message's turn says it cannot be replied to. And call the " + ask + " tool with a short " +
+			"summary of the message — who it is from and what it asks for — so it reaches your owner's Attention " +
+			"view; their answer comes back to you as a new message, so do not wait for it. Never skip the ask when " +
+			"the message asks your owner to do something: answer a question, check something, act on a report."
+	}
+	for _, c := range []struct {
+		name, prompt, off, route, rule string
+	}{
+		{"gateway", ChiefInstructions(false, true), ChiefInstructions(false, false), "`route_to_session`",
+			rule("`reply_draft`", "`attention_ask`")},
+		{"gateway with cairn", ChiefInstructions(true, true), ChiefInstructions(true, false), "`route_to_session`",
+			rule("`reply_draft`", "`attention_ask`")},
+		{"function tools", ChiefInstructionsFunctionTools(true), ChiefInstructionsFunctionTools(false), "`route_to_session`",
+			rule("`reply_draft`", "`attention_ask`")},
+		{"claude-code", ChiefInstructionsClaudeCode(true), ChiefInstructionsClaudeCode(false), "`mcp__muster__route_to_session`",
+			rule("`mcp__muster__reply_draft`", "`mcp__muster__attention_ask`")},
+	} {
+		got := norm(c.prompt)
+		at := strings.Index(got, c.rule)
+		if at < 0 {
+			t.Errorf("%s: the chief prompt does not carry the fallback rule:\n%s", c.name, c.rule)
+			continue
+		}
+		before := "hand the message to it rather than filing a task. "
+		if !strings.HasSuffix(got[:at], c.route+", "+before) {
+			t.Errorf("%s: the fallback rule does not follow the routing paragraph it is the other branch of", c.name)
+		}
+		if strings.Contains(norm(c.off), "If no session is clearly on the subject") {
+			t.Errorf("%s: plugins OFF, but the prompt carries the fallback rule", c.name)
+		}
 	}
 }

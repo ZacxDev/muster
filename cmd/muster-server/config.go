@@ -147,6 +147,11 @@ const (
 	// or owner/*>,…", each matched only on mail that plugin marked sender_verified. Unset: every
 	// routed answer becomes a pending draft the owner approves.
 	envRouteRelayAllow = "MUSTER_ROUTE_RELAY_ALLOW"
+	// How long a routed message waits for its session's answer before it is
+	// handed back to the chief (api.DefaultRouteTimeout, 30m, when unset). A Go
+	// duration between api.MinRouteTimeout and api.MaxRouteTimeout; anything
+	// else refuses to boot.
+	envRouteTimeout = "MUSTER_ROUTE_TIMEOUT"
 	// TASK ROUTING (internal/api/task_routing.go): "1" lets a plugin hand a task
 	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's chief,
 	// which routes it with task_route_attention / task_forward. Needs the plugin
@@ -524,6 +529,9 @@ type config struct {
 	SessionRouting     bool
 	RouteRelayAllowRaw string
 	RouteRelayAllow    plugins.RelayAllowlist
+	// RouteTimeout is MUSTER_ROUTE_TIMEOUT (api.DefaultRouteTimeout when unset):
+	// a route's deadline.
+	RouteTimeout time.Duration
 	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatchOwners
 	// MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig refuses one that does not
 	// parse) — non-empty turns task_dispatch on.
@@ -1145,6 +1153,15 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between 1h and 2160h (e.g. 168h)", envFocusRetention, v)
 		}
 		c.FocusRetention = d
+	}
+	c.RouteTimeout = api.DefaultRouteTimeout
+	if v := strings.TrimSpace(getenv(envRouteTimeout)); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < api.MinRouteTimeout || d > api.MaxRouteTimeout {
+			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between %s and %s (e.g. 30m)",
+				envRouteTimeout, v, api.MinRouteTimeout, api.MaxRouteTimeout)
+		}
+		c.RouteTimeout = d
 	}
 	if c.RouteRelayAllowRaw != "" {
 		l, err := plugins.ParseRelayAllowlist(c.RouteRelayAllowRaw)

@@ -446,6 +446,15 @@ is doing now. A shared word is not proof: only when one of them is clearly on th
 subject, and you have ` + "`route_to_session`" + `, hand the message to it rather than
 filing a task.
 
+If no session is clearly on the subject, do not stop at reading the message: a summary
+you write only in this conversation reaches nobody. Do two things. Propose a reply
+with the ` + "`reply_draft`" + ` tool, unless the message's turn says it cannot be replied
+to. And call the ` + "`attention_ask`" + ` tool with a short summary of the message — who it
+is from and what it asks for — so it reaches your owner's Attention view; their answer
+comes back to you as a new message, so do not wait for it. Never skip the ask when the
+message asks your owner to do something: answer a question, check something, act on a
+report.
+
 When a message calls for work, call the ` + "`task_create_gated`" + ` tool: a title, a body
 in your own words, a short gate_reason, and the message_id. The task is created
 GATED — your owner is notified, and nothing runs until they approve it. That is the
@@ -570,6 +579,15 @@ focus shares words with the message. Check those sessions, and call the
 is doing now. A shared word is not proof: only when one of them is clearly on the
 subject, and you have ` + "`mcp__muster__route_to_session`" + `, hand the message to it rather than
 filing a task.
+
+If no session is clearly on the subject, do not stop at reading the message: a summary
+you write only in this conversation reaches nobody. Do two things. Propose a reply
+with the ` + "`mcp__muster__reply_draft`" + ` tool, unless the message's turn says it cannot be replied
+to. And call the ` + "`mcp__muster__attention_ask`" + ` tool with a short summary of the message — who it
+is from and what it asks for — so it reaches your owner's Attention view; their answer
+comes back to you as a new message, so do not wait for it. Never skip the ask when the
+message asks your owner to do something: answer a question, check something, act on a
+report.
 
 When a message calls for work, call the ` + "`mcp__muster__task_create_gated`" + ` tool: a title, a body
 in your own words, a short gate_reason, and the message_id. The task is created
