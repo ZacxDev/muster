@@ -544,7 +544,8 @@ func (s *Server) attentionChanged(owner int64, key string) {
 
 // attentionNotify pushes one new item to owner's devices, under the
 // `attention` toggle. goNotify keeps it off the router: the router has no
-// attention card, and its notifications are its own.
+// attention card, and its notifications are its own. A tap opens
+// pushTargetFor's page: the item's session, or its place on the queue.
 func (s *Server) attentionNotify(owner int64, it attentionItem) {
 	title := "An agent needs your input"
 	if it.Kind == attentionKindSession {
@@ -553,7 +554,7 @@ func (s *Server) attentionNotify(owner int64, it attentionItem) {
 		title = "A session asks you a question"
 	}
 	s.goNotify(owner, push.EventAttention, RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: title, Body: attentionPushBody(it),
-		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionPath + "#" + it.Key}}, nil)
+		Tag: attentionTag(it.Key), Data: map[string]string{"url": s.pushTargetFor(owner, it)}}, nil)
 }
 
 // attentionPushBody is an item's notification body: WHO and WHERE, never WHAT.
