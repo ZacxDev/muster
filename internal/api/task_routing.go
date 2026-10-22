@@ -22,6 +22,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // ---------------------------------------------------------------------------
@@ -309,11 +310,13 @@ func (s *Server) ownersTask(ctx context.Context, a agents.Agent, id int64) (note
 	return n, true
 }
 
-// taskLabel is a task's title as one bounded line.
+// taskLabel is a task's title as one bounded line of plain text (textplain):
+// it is shown on the attention queue and quoted in the chief's and owner's
+// notices, none of which renders the title's markdown.
 func taskLabel(n notes.Note) string {
-	t := strings.TrimSpace(n.Title)
+	t := textplain.Title(n.Title)
 	if t == "" {
-		t = firstNonEmptyLine(n.Body)
+		t = textplain.Title(firstNonEmptyLine(n.Body))
 	}
 	return mirror.OneLine(t, 120)
 }

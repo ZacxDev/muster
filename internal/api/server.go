@@ -55,6 +55,7 @@ import (
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 	"github.com/ZacxDev/muster/internal/sse"
+	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/web"
 )
@@ -1062,6 +1063,14 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 	if !s.notifiable() || owner <= 0 {
 		return
 	}
+	// 🔴 THE ONE PUSH TITLE SINK. Every notification — the browser payload, the
+	// native device's payload v2 (push.Payload.V2) and the router — leaves
+	// through here, so the title rule is applied HERE, once, at emit time: a
+	// task, agent, window or focus title is markdown more often than not, and no
+	// OS notification renders markup. The callers keep building raw strings;
+	// TestTheTitleSinkLedger (internal/textplain) pins that sendPush and
+	// router.Notify are reached from nowhere else.
+	n.Title, n.Body = textplain.Title(n.Title), textplain.Title(n.Body)
 	// 🔴 THE Add IS ON THE CALLER'S GOROUTINE AND THE Done IS fn's FIRST DEFER,
 	// AND safeGo DOES NOT DISTURB EITHER. safeGo's recover is registered OUTSIDE
 	// fn, so on a panic fn's own defers unwind first — Done runs, then the

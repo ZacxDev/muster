@@ -172,7 +172,13 @@ func emph(m string, n int) *regexp.Regexp {
 	if m == `_` {
 		c, before, after = `_`, `[\s(\[{"'*~]`, `[\s,;:!?)\]}"'*~]`
 	}
-	body := `[^` + c + `\s](?:[^` + c + `]*?[^` + c + `\s])?`
+	// A single marker's content may not hold its own marker; a double or
+	// triple run's may hold single ones ("**2*3**" is bold "2*3").
+	inner := `[^` + c + `]*?`
+	if n > 1 {
+		inner = `.*?`
+	}
+	body := `[^` + c + `\s](?:` + inner + `[^` + c + `\s])?`
 	return regexp.MustCompile(`(^|` + before + `)` + run + `(` + body + `)` + run + `($|` + after + `)`)
 }
 

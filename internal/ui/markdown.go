@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	g "maragu.dev/gomponents"
+
+	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // markdown.go — a small, dependency-free, escape-FIRST markdown renderer used to
@@ -300,45 +302,17 @@ func renderMarkdown(src string) g.Node {
 	return g.Raw(markdownHTML(src))
 }
 
-// mdStripRe removes the most common inline/block markdown markers for a clean
-// plain-text snippet (the collapsed-card preview). It is intentionally lossy: it
-// is NOT a parser, just a cosmetic strip so the one-liner reads as prose.
-var (
-	mdStripFence   = regexp.MustCompile("(?s)```.*?```")
-	mdStripMarkers = regexp.MustCompile("[`*_#>]+")
-	mdStripBullet  = regexp.MustCompile(`(?m)^\s*([-*]|\d+\.)\s+`)
-	mdStripSpace   = regexp.MustCompile(`\s+`)
-)
-
-// markdownPlain strips markdown markers and collapses a body to one line of
-// plain text. Fenced blocks are dropped, list/emphasis/heading markers removed,
-// whitespace collapsed.
-//
-// 🔴 IT IS THE ONE STRIP, AND BOTH ITS CALLERS EXIST BECAUSE A STRING WAS BEING
-// RENDERED TWO WAYS. An agent's display name is derived from its task title, so
-// it routinely carries `**bold**` and `code`. The agents LIST rendered it as
-// plain text (raw `**` and backticks on the card) while the DETAIL header
-// rendered it as inline markdown — one string, two answers, from the same click.
-// Stripping on both is what makes them agree; rendering markup on both was the
-// other option and it was rejected, because the card's title sits inside the
-// card's own <a> and the marked-up path can emit an anchor (see mdLinkify),
-// which is invalid nested HTML that browsers resolve by closing the outer link.
-//
-// It is intentionally lossy and is NOT a parser — just a cosmetic strip so a
-// one-liner reads as prose.
-func markdownPlain(src string) string {
-	s := mdStripFence.ReplaceAllString(src, " ")
-	s = mdStripBullet.ReplaceAllString(s, "")
-	s = mdStripMarkers.ReplaceAllString(s, "")
-	s = mdStripSpace.ReplaceAllString(s, " ")
-	return strings.TrimSpace(s)
-}
-
 // markdownSnippet returns a clean, single-line plain-text preview of a markdown
-// body, truncated to n runes — markdownPlain plus the cap. Returns "" for an
+// body, truncated to n runes — textplain.Title plus the cap. Returns "" for an
 // all-markup/empty body so the caller can omit the snippet line.
+//
+// 🔴 textplain.Title IS THE ONE STRIP. It replaced this file's markdownPlain,
+// which removed every ` * _ # > anywhere (mangling snake_case, "#123", "C#")
+// and left links, strikethrough and HTML tags in. Every title sink in this
+// package calls textplain.Title directly; TestTheTitleSinkLedger
+// (internal/textplain) fails on one that does not.
 func markdownSnippet(src string, n int) string {
-	return truncate(markdownPlain(src), n)
+	return truncate(textplain.Title(src), n)
 }
 
 // --- GFM pipe tables ---------------------------------------------------------

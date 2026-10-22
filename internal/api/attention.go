@@ -21,6 +21,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -884,10 +885,12 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 			offline = ` · <span data-attention-offline>host offline</span>`
 		}
 		b.WriteString(`<li id="` + esc(it.Key) + `" class="` + flowsCardClass + `" data-attention-item data-kind="` + esc(it.Kind) + `">
-<span class="text-xs text-fg2"><span class="font-semibold">` + esc(kind) + `</span> · <span data-attention-source>` + esc(it.Source) + `</span>` + age + offline + `</span>
+<span class="text-xs text-fg2"><span class="font-semibold">` + esc(kind) + `</span> · <span data-attention-source>` + esc(textplain.Title(it.Source)) + `</span>` + age + offline + `</span>
 `)
-		if it.Focus != "" {
-			b.WriteString(`<span class="break-words text-xs font-semibold text-fg2" data-attention-focus>` + esc(it.Focus) + `</span>
+		// Source (an agent's or window's name) and Focus (an LLM summary) are
+		// titles, so they read as their plain text (textplain).
+		if focus := textplain.Title(it.Focus); focus != "" {
+			b.WriteString(`<span class="break-words text-xs font-semibold text-fg2" data-attention-focus>` + esc(focus) + `</span>
 `)
 		}
 		text, detail := esc(it.Text), esc(it.Detail)

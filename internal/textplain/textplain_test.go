@@ -43,6 +43,7 @@ var titleCases = []struct {
 	{"html comment", "<!-- hidden -->visible", "visible"},
 	{"block tag is a break", "line<br>break", "line break"},
 	{"bullet", "* bulleted entry", "bulleted entry"},
+	{"bold holding a star", "**2*3** done", "2*3 done"},
 
 	// --- NOT markdown: must not change ---
 	{"snake_case", "update snake_case_names in config_loader", "update snake_case_names in config_loader"},
