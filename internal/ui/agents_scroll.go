@@ -9,9 +9,12 @@ import (
 // (the document scrolls the Agents list) and the "Recently viewed" strip's
 // (it scrolls sideways inside itself).
 //
-// 🔴 THE LIST: ITS CARDS ARE NOT IN THE FIRST PAINT. #agents-list arrives empty
-// and fills from its own `load` request (the shell reads no instances on its
-// first byte: TestTheAgentsShellReadsNoInstances). So when the page is reloaded,
+// 🔴 THE LIST: ON EVERY TAB BUT AGENTS, ITS CARDS ARE NOT IN THE FIRST PAINT.
+// The Agents tab's own document now server-renders them (agents_list_ssr.go),
+// so its list has its real height on the first frame and nothing below is
+// reserved. Any other tab's #agents-list arrives empty and fills from its own
+// `load` request — and so did the Agents tab's, which is what this was written
+// against: when the page was reloaded,
 // or come back to, the document is one screen tall until that request lands:
 // the browser's own scroll restoration clamps to 0, and appScript's
 // navApplyScroll chases the stored offset for NAV_SCROLL_SETTLE_MS (2s) and

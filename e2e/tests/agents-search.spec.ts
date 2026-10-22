@@ -145,7 +145,9 @@ for (const vp of [
         const list = e.target as Element;
         requestAnimationFrame(() => r([...list.querySelectorAll(':scope > article')].map((c) => c.getAttribute('data-f-session') || '').filter((n) => ns.includes(n))));
       })), names);
-      await page.evaluate(() => (window as any).htmx.trigger(document.body, 'agents:changed'));
+      // The list's version is dropped first, so the server answers with the list
+      // (an unchanged list is a 204 that swaps nothing: internal/ui/agents_list_ssr.go).
+      await page.evaluate(() => { (document.getElementById('agents-list') as HTMLElement).removeAttribute('data-list-v'); (window as any).htmx.trigger(document.body, 'agents:changed'); });
       expect(await firstFrame, 'ranked in the first frame after a refresh').toEqual(['qbase', 'old-qdock', 'mqtail']);
       await expect.poll(domOrder, { message: 'still ranked after a refresh' }).toEqual(['qbase', 'old-qdock', 'mqtail']);
       // Cleared: the list's own order again.

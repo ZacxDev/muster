@@ -185,7 +185,12 @@ for (const vp of [
       await page.locator(`#${id} [aria-label="Agent actions"]`).click();
       const settled = page.waitForResponse('**/ui/agents');
       armed = true;
-      await page.evaluate(() => document.body.dispatchEvent(new CustomEvent('agents:changed', { bubbles: true })));
+      // Its version dropped, so the server answers with the list (an unchanged
+      // list is a 204 that swaps nothing — internal/ui/agents_list_ssr.go).
+      await page.evaluate(() => {
+        (document.getElementById('agents-list') as HTMLElement).removeAttribute('data-list-v');
+        document.body.dispatchEvent(new CustomEvent('agents:changed', { bubbles: true }));
+      });
       await settled;
       // Positive control: the morph really did move the cards. Without it, an
       // unchanged order would make "still beside" trivially true.

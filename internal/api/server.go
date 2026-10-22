@@ -654,49 +654,33 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 // shellData is what the shell draws on its first paint (ui.ShellData): on the
-// Agents tab, the "Recently viewed" strip, so it is not filled in above the list
-// a moment later and push everything below it down. Any other tab draws its
-// Agents panel hidden, where a late strip moves nothing on screen.
+// Agents tab, the LIST — its cards, server-rendered — and the "Recently viewed"
+// strip resolved against them, so nothing is filled in under the reader a moment
+// later. Any other tab draws its Agents panel hidden and empty, where a late
+// list moves nothing on screen, and fills it from the list's own load.
 //
-// 🔴 IT IS NOT THE LIST'S BUILD, AND MUST NOT BE. agentsListCards asks the
-// provisioner for live instances (a Kubernetes read) and reads every agent's
-// last message; the shell's first byte waited on both, and GET /agents then
-// built the whole list a second time for /ui/agents. The strip needs only
-// which agents exist, what they are called and which are pinned — one store
-// read — plus the mirror hub's cards, which are in memory, and their hosts'
-// icons, which are one mirror_tokens read (mirror.Service.HostRanks, uncached;
-// none when the viewer has no hosts). The live status arrives with the list's
-// own load, which MORPHS the strip out of band moments later
-// (ui.recentStrip): an icon swap that moves nothing.
-// TestTheAgentsShellReadsNoInstances counts the provisioner calls.
+// 🔴 IT IS THE LIST'S BUILD — agentsListCards, THE ONE handleAgentsContent
+// SERVES — AND THE TAB'S FIRST PAINT NEEDS NO SECOND. The shell used to draw only
+// the strip (a lighter read) and leave the list to a `load` request, so the
+// document was a filter bar over nothing until that request landed. Now the
+// document reads the provisioner's instances ONCE and the list issues no load
+// of its own (ui.agentsListLiveTrigger); its first live refresh is answered 204
+// while the state it was drawn from is current (handleAgentsContent).
+// TestTheAgentsFirstPaintBuildsTheListOnce counts the provisioner reads.
 //
-// ⚠ A FAILED READ DRAWS THE OLD WAY (an empty strip the list's own load fills),
-// not an error: the list's load reports its own failure.
+// ⚠ A FAILED BUILD DRAWS THE OLD WAY (an empty list its own load fills, an
+// empty strip), not an error: that load reports its own failure.
 func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
 	if tab != "agents" || s.ext.Agents == nil {
 		return ui.ShellData{}
 	}
-	list, err := s.ext.Agents.List(ctx)
+	cards, mirrors, err := s.agentsListCards(ctx)
 	if err != nil {
-		s.logger.Printf("agents: shell recents: %v", err)
+		s.logger.Printf("agents: shell list: %v", err)
 		return ui.ShellData{}
 	}
-	pinned := s.pinSet(ctx)
-	cards := make([]ui.AgentCardView, 0, len(list))
-	notChief := func(agents.Agent) bool { return false }
-	for _, a := range list {
-		// The ONE card composer (cardViewIndexed; TestOneCardComposerFeedsEverySurface)
-		// with a NIL instance index: liveStatusIndexed then answers the STORED
-		// status, with no provisioner read on the document's path
-		// (TestTheAgentsShellReadsNoInstances). The list's own load replaces the
-		// strip with the live one; a stored status that has since moved changes
-		// colour in the same 12px box, which moves nothing. Chief and focus are
-		// left zero: the strip draws neither.
-		cards = append(cards, s.cardViewIndexed(a, nil, time.Time{}, notChief, pinned, nil))
-	}
-	// No focus index: the strip draws no focus (ui/recents.go), and reading it
-	// would be a second store read on the shell's first byte.
-	return ui.ShellData{}.WithRecent(cards, s.mirrorCards(ctx, pinned, nil), s.recentRefs(ctx))
+	refs := s.recentRefs(ctx)
+	return ui.ShellData{}.WithList(cards, mirrors, refs, ui.AgentsListVersion(cards, mirrors, refs))
 }
 
 // tabFromPath maps a request path to a tab key.
