@@ -3,8 +3,6 @@ package ui
 import (
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
-
-	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // THE "RECENTLY VIEWED" STRIP: the entries the viewer last opened (an agent's
@@ -60,7 +58,7 @@ func recentItems(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 			if !ok || a.Pinned {
 				continue
 			}
-			out = append(out, recentItem{Href: "/agents/" + a.Name, Title: textplain.Title(displayOr(a.DisplayName, a.Name)), Status: a.Status,
+			out = append(out, recentItem{Href: "/agents/" + a.Name, Title: plainOr(a.DisplayName, a.Name), Status: a.Status,
 				Host: podHost, HostIcon: clusterIcon.Key})
 			continue
 		}
@@ -69,7 +67,7 @@ func recentItems(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 			continue
 		}
 		out = append(out, recentItem{Href: MirrorCardHref(m), Mirror: true, Status: mirrorFields(m).Status,
-			Title: mirrorQualified(textplain.Title(displayOr(m.Label, displayOr(m.Title, m.Session))), m.Qualifier), Host: m.Host, HostIcon: m.HostIcon})
+			Title: mirrorQualified(plainOr(displayOr(m.Label, m.Title), m.Session), m.Qualifier), Host: m.Host, HostIcon: m.HostIcon})
 	}
 	return out
 }

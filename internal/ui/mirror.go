@@ -10,7 +10,6 @@ import (
 	. "maragu.dev/gomponents/html"
 
 	"github.com/ZacxDev/muster/internal/mirror"
-	"github.com/ZacxDev/muster/internal/textplain"
 )
 
 // MirrorCardView is one MIRRORED entry on the Agents list: a tmux WINDOW (or,
@@ -183,7 +182,7 @@ func mirrorCard(m MirrorCardView) g.Node {
 	// and the raw session name stay beside it, as in mirrorEntryTitle.
 	// The name as a reader sees it (textplain): a Hermes or tmux window title is
 	// often LLM-written and carries markdown.
-	name := textplain.Title(displayOr(m.Label, displayOr(m.Title, m.Session)))
+	name := plainOr(displayOr(m.Label, m.Title), m.Session)
 	_, long := clampTitle(name)
 	reserve := cardReserve(m.Attention)
 	bodyClass := cardBodyClass(m.Focus, reserve)
@@ -363,13 +362,13 @@ func mirrorSessionTitle(label, session, class string) g.Node {
 func mirrorEntryTitle(label, title, session, qualifier, class string) g.Node {
 	q := g.If(qualifier != "", Span(g.Attr("data-mirror-qualifier", ""), g.Text(mirrorQualifierSep+qualifier)))
 	if label == "" || label == session {
-		return Span(Class(class), g.Attr("data-mirror-name", ""), g.Text(textplain.Title(displayOr(title, session))), q)
+		return Span(Class(class), g.Attr("data-mirror-name", ""), g.Text(plainOr(title, session)), q)
 	}
 	return Span(
 		Class(class),
 		g.Attr("data-mirror-name", ""),
 		g.Attr("title", "tmux session "+session),
-		Span(g.Attr("data-mirror-label", ""), g.Text(textplain.Title(label))),
+		Span(g.Attr("data-mirror-label", ""), g.Text(plainOr(label, session))),
 		q,
 		Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(session)),
 	)

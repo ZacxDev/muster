@@ -316,7 +316,7 @@ func agentCard(a AgentCardView) g.Node {
 	// string, two answers, from the same click. Stripping on both surfaces is
 	// what makes them agree; see textplain.Title for why stripping was chosen over
 	// rendering markup here.
-	name := textplain.Title(displayOr(a.DisplayName, a.Name))
+	name := plainOr(a.DisplayName, a.Name)
 	// A name past cardTitleMax is drawn in a title row of its own, clamped,
 	// with a "…" button that opens it whole (cardLongTitle).
 	_, long := clampTitle(name)

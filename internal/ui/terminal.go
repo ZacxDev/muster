@@ -10,7 +10,6 @@ import (
 
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/termsize"
-	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/web"
 )
 
@@ -230,7 +229,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 	// the rule twice, which is not idempotent (`\*\*x\*\*` → "**x**" → "x"),
 	// and the tab and the header disagreed. TestTheTerminalTitleAndHeadingAgree.
 	raw := displayOr(v.DisplayName, v.Name)
-	title := textplain.Title(raw)
+	title := plainOr(v.DisplayName, v.Name)
 	back := v.BackHref
 	if back == "" {
 		back = "/agents/" + url.PathEscape(v.Name)

@@ -149,12 +149,14 @@ func TestFocusHistoryRowsRenderEachPageShape(t *testing.T) {
 			}
 			if c.items > 0 {
 				first := allAttr(doc, "data-focus-history-item")[0]
-				// A title goes through the title rule (internal/textplain), which
-				// removes HTML tags as markup and keeps the rest as text; the
-				// DESCRIPTION is drawn verbatim, as before (checked below as never
-				// written as markup).
+				// The title AND the description go through the title rule
+				// (internal/textplain), which removes HTML tags as markup and keeps
+				// the rest as text; neither is ever written as markup (below).
 				if got := focusNodeText(findAttr(first, "data-focus-history-title")); got != `Kernel "upgrade"` {
 					t.Errorf("title %q (the title's plain text expected)", got)
+				}
+				if got := focusNodeText(findAttr(first, "data-focus-history-description")); got != "Draining first." {
+					t.Errorf("description %q (its plain text expected)", got)
 				}
 				if findAttr(first, "data-ts") == nil {
 					t.Error("an entry has no relative time")

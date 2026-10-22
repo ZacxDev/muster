@@ -44,6 +44,13 @@ var titleCases = []struct {
 	{"block tag is a break", "line<br>break", "line break"},
 	{"bullet", "* bulleted entry", "bulleted entry"},
 	{"bold holding a star", "**2*3** done", "2*3 done"},
+	{"table without outer pipes", "name | count\n---|---\nalpha | 1", "name count alpha 1"},
+	{"a pipe far above a table", "a | b\n\ntext\n\n| x |\n|---|", "a | b text x"},
+	{"link with a title", `see [the guide](https://example.com/g "Guide") now`, "see the guide now"},
+	{"link in parentheses", "(see [notes](https://example.com/n))", "(see notes)"},
+	{"CJK bold", "**太字**テスト", "太字テスト"},
+	{"CJK italic", "これは*強調*です", "これは強調です"},
+	{"code span keeps entities", "`&amp;` and &amp;", "&amp; and &"},
 
 	// --- NOT markdown: must not change ---
 	{"snake_case", "update snake_case_names in config_loader", "update snake_case_names in config_loader"},
@@ -63,6 +70,10 @@ var titleCases = []struct {
 	{"decimal", "3.14 is roughly pi", "3.14 is roughly pi"},
 	{"spaced star", "rate * 2 hours", "rate * 2 hours"},
 	{"windows path", `C:\Users\dev\notes`, `C:\Users\dev\notes`},
+	{"go generics signature", "func Map[K comparable, V any](m map[K]V)", "func Map[K comparable, V any](m map[K]V)"},
+	{"index then call", "call fns[0](arg) once", "call fns[0](arg) once"},
+	{"double index", "read grid[0][1] value", "read grid[0][1] value"},
+	{"type params", "type List[T any](x T) helper", "type List[T any](x T) helper"},
 	{"plain", "Plain words only", "Plain words only"},
 	{"empty", "", ""},
 }
@@ -109,7 +120,7 @@ func TestTitleIsIdempotent(t *testing.T) {
 		// decoded ONCE ("&lt; once"), and a backslash escape becomes the bare
 		// marker ("*not emphasis*").
 		switch c.name {
-		case "entities decoded once", "entity tag stays literal", "escaped chars":
+		case "entities decoded once", "entity tag stays literal", "escaped chars", "code span keeps entities":
 			continue
 		}
 		if twice := Title(once); twice != once {

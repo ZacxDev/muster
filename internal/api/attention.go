@@ -563,16 +563,22 @@ func (s *Server) attentionNotify(owner int64, it attentionItem) {
 // those are on the queue page, behind the sign-in. An ask or a held question:
 // "<asker> is asking". A waiting session: "Waiting: <tool name> · <window> @
 // <host>", or "Waiting: <window> @ <host>" when its host names no tool.
+//
+// The source is a TITLE (a window's or agent's name, often LLM-written), so it
+// reads as the title rule makes it — once, here, before the cut — exactly as
+// the attention page draws it. goNotify plains a notification's title only,
+// never its body, so this is the one application.
 func attentionPushBody(it attentionItem) string {
+	source := textplain.Title(it.Source)
 	var body string
 	switch it.Kind {
 	case attentionKindSession:
-		body = "Waiting: " + it.Source
+		body = "Waiting: " + source
 		if tool := mirror.OneLine(it.tool, mirror.MaxPendingTool); tool != "" {
-			body = "Waiting: " + tool + " · " + it.Source
+			body = "Waiting: " + tool + " · " + source
 		}
 	default:
-		body = it.Source + " is asking"
+		body = source + " is asking"
 	}
 	return truncate(mirror.OneLine(body, attentionPushBodyMax*2), attentionPushBodyMax)
 }

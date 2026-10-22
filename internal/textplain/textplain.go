@@ -55,17 +55,24 @@ var (
 	// A closing ATX sequence: "## Title ##".
 	trailHeading = regexp.MustCompile(`\s+#+\s*$`)
 	// GFM table separator row: cells of dashes with optional alignment colons.
-	tableSep = regexp.MustCompile(`^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$`)
+	tableSep = regexp.MustCompile(`^\s*(?:\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?|\|\s*:?-{1,}:?\s*\|)\s*$`)
 
 	// Inline.
 	// RE2 has no backreferences, so the two common fence widths are separate.
 	codeSpan2   = regexp.MustCompile("``(.+?)``")
 	codeSpan1   = regexp.MustCompile("`([^`]+)`")
 	escapedChar = regexp.MustCompile("\\\\([!-/:-@\\[-`{-~])")
-	image       = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)
-	imageRef    = regexp.MustCompile(`!\[([^\]]*)\]\[[^\]]*\]`)
-	link        = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
-	linkRef     = regexp.MustCompile(`\[([^\]]+)\]\[[^\]]*\]`)
+	// A link or image destination per CommonMark: no whitespace (or one in
+	// <angle brackets>), then an optional quoted title. A bracket followed by a
+	// parenthesis with SPACES in it is code — func Map[K comparable, V any](m
+	// map[K]V) — not a link.
+	image    = regexp.MustCompile(`!\[([^\]]*)\]` + linkDest)
+	imageRef = regexp.MustCompile(`!\[([^\]]*)\]\[[^\]]*\]`)
+	// A link's [ may not touch a letter, digit, _ or ] on its left: fns[0](arg)
+	// and grid[0][1] are indexing, not links. The left character is captured
+	// and put back (RE2 has no lookbehind).
+	link        = regexp.MustCompile(`(^|[^\p{L}\p{N}_\]])\[([^\]]*)\]` + linkDest)
+	linkRef     = regexp.MustCompile(`(^|[^\p{L}\p{N}_\]])\[([^\]]+)\]\[[^\]]*\]`)
 	autolink    = regexp.MustCompile(`<((?i:https?|ftp|mailto):[^\s<>]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})>`)
 	bareURL     = regexp.MustCompile(`(?i)\bhttps?://[^\s<>]+`)
 	footnoteRef = regexp.MustCompile(`\[\^[^\]\s]+\]`)
@@ -85,6 +92,11 @@ var (
 	emphasis = []*regexp.Regexp{emph(`\*`, 3), emph(`_`, 3), emph(`\*`, 2), emph(`_`, 2), emph(`\*`, 1), emph(`_`, 1)}
 	stashRef = regexp.MustCompile(sentinel + `(\d+)` + sentinel)
 )
+
+// linkDest is a link or image destination: "(" then a destination with no
+// whitespace (or <one in angle brackets>), an optional "title" / 'title' /
+// (title), then ")".
+const linkDest = `\(\s*(?:<[^<>\n]*>|[^\s()<>]*(?:\([^\s()]*\)[^\s()<>]*)*)(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)`
 
 // Title returns s as the one-line plain text a reader of its rendered markdown
 // would see: links become their text, images their alt text, emphasis, strike
@@ -119,8 +131,8 @@ func Title(s string) string {
 
 	s = image.ReplaceAllString(s, "$1")
 	s = imageRef.ReplaceAllString(s, "$1")
-	s = link.ReplaceAllString(s, "$1")
-	s = linkRef.ReplaceAllString(s, "$1")
+	s = link.ReplaceAllString(s, "$1$2")
+	s = linkRef.ReplaceAllString(s, "$1$2")
 	s = footnoteRef.ReplaceAllString(s, "")
 	s = autolink.ReplaceAllStringFunc(s, func(m string) string { return stash(m[1 : len(m)-1]) })
 	// A bare URL is shown as written, so emphasis rules must not reach into it
@@ -141,6 +153,12 @@ func Title(s string) string {
 		}
 	}
 
+	// Entities decoded ONCE, so "&lt;b&gt;" reads as the literal <b> the
+	// rendered markdown shows rather than being decoded and then stripped — and
+	// BEFORE the vault is restored, because a code span, an escaped character
+	// and a URL are literal: "`&amp;`" reads "&amp;". (A decoded entity cannot
+	// forge a vault reference: no entity decodes to the NUL sentinel.)
+	s = html.UnescapeString(s)
 	// Restore the vault (a stashed value can itself hold a reference only if a
 	// code span contained a sentinel, which was stripped above; one pass suffices).
 	s = stashRef.ReplaceAllStringFunc(s, func(m string) string {
@@ -150,9 +168,6 @@ func Title(s string) string {
 		}
 		return vault[i]
 	})
-	// Entities decoded ONCE, last, so "&lt;b&gt;" reads as the literal <b> the
-	// rendered markdown shows rather than being decoded and then stripped.
-	s = html.UnescapeString(s)
 	return strings.Join(strings.Fields(s), " ")
 }
 
@@ -161,7 +176,8 @@ func Title(s string) string {
 //
 // The characters allowed immediately OUTSIDE the run are what keep ordinary
 // text intact, and they are stricter than CommonMark on purpose:
-//   - `*` may not touch a letter or digit outside (2*3*4, x**2 + y**2 stay);
+//   - `*` may not touch a letter or digit outside (2*3*4, x**2 + y**2 stay),
+//     except a CJK one (those scripts have no spaces between words);
 //   - `_` may only open after start/space/an opening bracket or quote/another
 //     marker, and only close before end/space/closing punctuation other than
 //     '.' or '/' — which keeps snake_case_names, file_paths/with_underscores
@@ -170,7 +186,11 @@ func Title(s string) string {
 // The outside characters are captured and put back (RE2 has no lookbehind).
 func emph(m string, n int) *regexp.Regexp {
 	run := strings.Repeat(m, n)
-	c, before, after := `*`, `[^\p{L}\p{N}*]`, `[^\p{L}\p{N}*]`
+	// CJK scripts put no spaces between words, so a letter of theirs next to
+	// the run must not block it ("**太字**テスト" is bold); Latin-style letters
+	// and digits still do (2*3*4, x**2 stay).
+	const cjk = `\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}`
+	c, before, after := `*`, `(?:[^\p{L}\p{N}*]|[`+cjk+`])`, `(?:[^\p{L}\p{N}*]|[`+cjk+`])`
 	if m == `_` {
 		c, before, after = `_`, `[\s(\[{"'*~]`, `[\s,;:!?)\]}"'*~]`
 	}
@@ -189,16 +209,26 @@ func emph(m string, n int) *regexp.Regexp {
 // definitions, table separator rows).
 func blocks(s string) string {
 	lines := strings.Split(s, "\n")
-	table := false
-	for _, l := range lines {
-		if strings.Contains(l, "|") && tableSep.MatchString(l) {
-			table = true
-			break
+	// A table is LOCAL, as in GFM: the pipe line right above a separator row is
+	// its header, and the pipe lines right below it are its rows. (It used to
+	// be "any separator anywhere makes every pipe line a row", which also made
+	// a line's reading depend on text far below it — and so a snippet built
+	// from the first lines could disagree with the whole body.)
+	tableRow := make([]bool, len(lines))
+	for i, l := range lines {
+		if !strings.Contains(l, "|") || !tableSep.MatchString(l) {
+			continue
+		}
+		if i > 0 && strings.Contains(lines[i-1], "|") {
+			tableRow[i-1] = true
+		}
+		for j := i + 1; j < len(lines) && strings.Contains(lines[j], "|") && !tableSep.MatchString(lines[j]); j++ {
+			tableRow[j] = true
 		}
 	}
 	out := make([]string, 0, len(lines))
 	inFence := false
-	for _, l := range lines {
+	for i, l := range lines {
 		if fenceLine.MatchString(l) {
 			inFence = !inFence
 			continue
@@ -232,7 +262,7 @@ func blocks(s string) string {
 			l = trailHeading.ReplaceAllString(l, "")
 		}
 		trimmed := strings.TrimSpace(l)
-		if strings.HasPrefix(trimmed, "|") || (table && strings.Contains(l, "|")) {
+		if strings.HasPrefix(trimmed, "|") || tableRow[i] {
 			cells := strings.Split(strings.Trim(trimmed, "|"), "|")
 			for i := range cells {
 				cells[i] = strings.TrimSpace(cells[i])

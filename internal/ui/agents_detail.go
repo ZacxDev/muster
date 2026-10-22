@@ -184,7 +184,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// Stripped too: it is the same string on the same document, and a tab
 				// title reading `**fix** the `+"`chip`"+` row · muster` is the same defect in
 				// a third place.
-				TitleEl(g.Text(textplain.Title(displayOr(v.DisplayName, v.Name))+" · muster")),
+				TitleEl(g.Text(plainOr(v.DisplayName, v.Name)+" · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
 				Script(Src(web.Asset("/static/vendor/sse.js")), Defer()),
@@ -331,7 +331,7 @@ func agentTitle(v AgentDetailView) g.Node {
 	// detail page came to render one name two ways (raw `**` on the card, bold
 	// here, and a backtick that survived on both). Stripping on both is the fix;
 	// see textplain.Title.
-	title := g.Text(textplain.Title(displayOr(v.DisplayName, v.Name)))
+	title := g.Text(plainOr(v.DisplayName, v.Name))
 	if v.NoteID == nil {
 		return H1(Class("mr-auto break-all text-sm font-medium"), title)
 	}

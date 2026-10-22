@@ -21,18 +21,22 @@ import (
 // derives the set of title READS from the source and checks each one:
 //
 //   - internal/ui, every function: a read of a title-bearing name (titleNames)
-//     must sit inside a Title(...) call (or be an argument to one of
-//     plainingHelpers, each of which is itself checked to call Title), or be
-//     in uiExempt with the reason it is not a display of the title.
+//     must sit inside a rule application — textplain.Title(...) or plainOr's
+//     first argument — or be passed, at a name position, to one of
+//     plainingHelpers (each checked to apply the rule to exactly those
+//     arguments and never draw them raw), or be in uiExempt with the reason
+//     it is not a display of the title.
 //   - internal/api, every function that hand-writes HTML (calls
-//     html.EscapeString): the same, against apiExempt. The api package's other
-//     title reads build view models (rendered in internal/ui, checked above),
-//     JSON/MCP data for agents (not a rendered title) or stored records (never
-//     rewritten), so they are out of this ledger by construction.
+//     html.EscapeString) or builds a notification BODY (pushBodyBuilders): the
+//     same, against apiExempt. The api package's other title reads build view
+//     models (rendered in internal/ui, checked above), JSON/MCP data for agents
+//     (not a rendered title) or stored records (never rewritten), so they are
+//     out of this ledger by construction.
 //   - push: every way a notification leaves the server is reached from
-//     pushEmitters only, and goNotify — the one that carries titles — applies
-//     Title (TestGoNotifyPlainsTitleAndBody in internal/api holds the
-//     behaviour; this holds the structure).
+//     pushEmitters only, and goNotify applies Title to the notification's
+//     TITLE, once, and not to its body (TestGoNotifyPlainsTheTitleOnly in
+//     internal/api holds the behaviour; this holds the structure).
+//   - applied once: no value reaches the rule twice on its way to a sink.
 //
 // Both directions fail: a new unledgered read (a new sink, or an old one that
 // stopped calling Title) and a ledger row that no longer matches a read (a
@@ -44,6 +48,9 @@ import (
 var titleNames = map[string]bool{
 	"Title": true, "DisplayName": true, "Label": true, "DisplayTitle": true,
 	"TaskTitle": true,
+	// A focus's description is the summary under its title, drawn as one line
+	// of text: the same rule applies.
+	"Description": true,
 }
 
 // bareAccessors are the title accessors package ui calls unqualified.
@@ -60,6 +67,16 @@ var plainingHelpers = map[string]bool{
 	"mirrorEntryTitle":    true,
 	"mirrorSessionTitle":  true,
 	"mirrorTerminalTitle": true,
+}
+
+// helperNameArgs are, per plaining helper, the argument positions that carry a
+// NAME (and are plained); the others (a raw session name, a qualifier, a CSS
+// class) are drawn as written. checkPlainingHelpers holds each helper to it.
+var helperNameArgs = map[string][]int{
+	"mirrorEntryTitle":    {0, 1}, // label, title
+	"mirrorSessionTitle":  {0},    // label
+	"mirrorTerminalTitle": {0},    // title
+	"plainOr":             {0},    // s (the fallback is drawn as written)
 }
 
 type exemption struct {
@@ -80,6 +97,11 @@ const (
 
 // uiExempt: "file func expr" → exemption.
 var uiExempt = map[string]exemption{
+	"focus.go focusHaystack f.Description":             {1, whyFilter},
+	"mirror_ask.go askForm o.Description":              {2, whyOption},
+	"mirror_ask.go askReadOnly o.Description":          {2, whyOption},
+	"subagent_cards.go subagentCallOf in.Description":  {1, "a subagent call's input, copied into the view model; drawn by subagentSummary"},
+	"subagent_cards.go subagentSummary s.Description":  {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},
 	"terminal.go AgentTerminalPage v.DisplayName":      {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
 	"agents.go agentCard a.DisplayName":                {1, whyFilter},
 	"mirror.go mirrorCard m.Label":                     {4, whyFilter + "; and " + whyPredicate},
@@ -128,7 +150,7 @@ var pushEmitters = map[string]string{
 
 func TestTheTitleSinkLedger(t *testing.T) {
 	t.Run("ui", func(t *testing.T) {
-		checkReads(t, "../ui", titleNames, false, uiExempt)
+		checkReads(t, "../ui", titleNames, nil, uiExempt)
 	})
 	t.Run("api", func(t *testing.T) {
 		names := map[string]bool{}
@@ -138,7 +160,18 @@ func TestTheTitleSinkLedger(t *testing.T) {
 		for k := range apiTitleNames {
 			names[k] = true
 		}
-		checkReads(t, "../api", names, true, apiExempt)
+		_, apiFiles := parseDir(t, "../api")
+		bodies := pushBodyBuilders(apiFiles)
+		// 🔴 POSITIVE CONTROL: the derivation must find the body builders it
+		// exists for, or a clean verdict over them means nothing.
+		for _, must := range []string{"attentionPushBody", "taskTitle", "draftPushBody"} {
+			if !bodies[must] {
+				t.Fatalf("positive control FAILED: %s was not derived as a push-body builder (found %v)", must, bodies)
+			}
+		}
+		checkReads(t, "../api", names, func(fn *ast.FuncDecl) bool {
+			return callsSelector(fn.Body, "html", "EscapeString") || bodies[fn.Name.Name]
+		}, apiExempt)
 	})
 	t.Run("plaining helpers", checkPlainingHelpers)
 	t.Run("applied once", func(t *testing.T) {
@@ -180,7 +213,77 @@ func parseDir(t *testing.T, dir string) (*token.FileSet, map[string]*ast.File) {
 	return fset, out
 }
 
-func checkReads(t *testing.T, dir string, names map[string]bool, htmlOnly bool, exempt map[string]exemption) {
+// pushBodyBuilders derives, from the api package, the functions whose result
+// becomes a notification BODY: every function called in the Body: field of a
+// RouterNotification literal, or in the right-hand side of an assignment to the
+// variable named there. goNotify plains a notification's title only, so a
+// title read inside one of these is a push sink of its own.
+//
+// ⚠ Syntactic: a body carried through a struct field (commentNotificationText's
+// text rides the comment buffer into flushCommentedTasks) is not derived; that
+// one is held by TestATaskPushBodyKeepsSnakeCase and its siblings instead.
+func pushBodyBuilders(files map[string]*ast.File) map[string]bool {
+	out := map[string]bool{}
+	callsIn := func(e ast.Node) {
+		ast.Inspect(e, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok {
+				switch f := c.Fun.(type) {
+				case *ast.Ident:
+					out[f.Name] = true
+				case *ast.SelectorExpr:
+					out[f.Sel.Name] = true
+				}
+			}
+			return true
+		})
+	}
+	for _, f := range files {
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			bodyVars := map[string]bool{}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				cl, ok := n.(*ast.CompositeLit)
+				if !ok {
+					return true
+				}
+				if id, ok := cl.Type.(*ast.Ident); !ok || id.Name != "RouterNotification" {
+					return true
+				}
+				for _, el := range cl.Elts {
+					kv, ok := el.(*ast.KeyValueExpr)
+					if !ok {
+						continue
+					}
+					if k, ok := kv.Key.(*ast.Ident); ok && k.Name == "Body" {
+						callsIn(kv.Value)
+						if v, ok := kv.Value.(*ast.Ident); ok {
+							bodyVars[v.Name] = true
+						}
+					}
+				}
+				return true
+			})
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				as, ok := n.(*ast.AssignStmt)
+				if !ok || len(as.Lhs) != len(as.Rhs) {
+					return true
+				}
+				for i, l := range as.Lhs {
+					if id, ok := l.(*ast.Ident); ok && bodyVars[id.Name] {
+						callsIn(as.Rhs[i])
+					}
+				}
+				return true
+			})
+		}
+	}
+	return out
+}
+
+func checkReads(t *testing.T, dir string, names map[string]bool, include func(*ast.FuncDecl) bool, exempt map[string]exemption) {
 	fset, files := parseDir(t, dir)
 	// 🔴 POSITIVE CONTROL: a walk over nothing reports a clean ledger.
 	if len(files) < 20 {
@@ -188,7 +291,7 @@ func checkReads(t *testing.T, dir string, names map[string]bool, htmlOnly bool, 
 	}
 	var reads []read
 	for name, f := range files {
-		reads = append(reads, titleReads(fset, name, f, names, htmlOnly)...)
+		reads = append(reads, titleReads(fset, name, f, names, include)...)
 	}
 	covered, got := 0, map[string]int{}
 	for _, r := range reads {
@@ -226,14 +329,14 @@ func checkReads(t *testing.T, dir string, names map[string]bool, htmlOnly bool, 
 // titleReads returns every read of a title-bearing name in f's function
 // bodies, and whether each is covered. htmlOnly restricts the walk to
 // functions that hand-write HTML.
-func titleReads(fset *token.FileSet, file string, f *ast.File, names map[string]bool, htmlOnly bool) []read {
+func titleReads(fset *token.FileSet, file string, f *ast.File, names map[string]bool, include func(*ast.FuncDecl) bool) []read {
 	var out []read
 	for _, d := range f.Decls {
 		fn, ok := d.(*ast.FuncDecl)
 		if !ok || fn.Body == nil {
 			continue
 		}
-		if htmlOnly && !callsSelector(fn.Body, "html", "EscapeString") {
+		if include != nil && !include(fn) {
 			continue
 		}
 		where := file + " " + funcName(fn) + " "
@@ -284,22 +387,23 @@ func titleReads(fset *token.FileSet, file string, f *ast.File, names map[string]
 	return out
 }
 
-// coveredBy reports whether the innermost node of stack sits inside a
-// Title(...) call, or is passed straight to a plaining helper.
+// coveredBy reports whether the innermost node of stack sits inside the
+// argument a rule application plains (textplain.Title's, plainOr's first), or
+// is passed straight to a plaining helper at a name position.
 func coveredBy(stack []ast.Node) bool {
 	for i := len(stack) - 2; i >= 0; i-- {
 		c, ok := stack[i].(*ast.CallExpr)
 		if !ok {
 			continue
 		}
-		if isTitleCall(c) {
+		if a := appliedArg(c); a != nil && a == stack[i+1] {
 			return true
 		}
-		// A plaining helper covers only an argument passed STRAIGHT to it:
-		// helper(other(m.Label)) draws whatever other returns.
+		// A plaining helper covers only an argument passed STRAIGHT to it, at
+		// a name position: helper(other(m.Label)) draws whatever other returns.
 		if id, ok := c.Fun.(*ast.Ident); ok && plainingHelpers[id.Name] && i == len(stack)-2 {
-			for _, a := range c.Args {
-				if a == stack[i+1] {
+			for _, pos := range helperNameArgs[id.Name] {
+				if pos < len(c.Args) && c.Args[pos] == stack[i+1] {
 					return true
 				}
 			}
@@ -308,13 +412,26 @@ func coveredBy(stack []ast.Node) bool {
 	return false
 }
 
-func isTitleCall(c *ast.CallExpr) bool {
-	s, ok := c.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
+// isTitleCall reports whether c applies the title rule: textplain.Title, or
+// package ui's plainOr (Title with a raw fallback).
+func isTitleCall(c *ast.CallExpr) bool { return appliedArg(c) != nil }
+
+// appliedArg is the argument c runs the title rule over, or nil.
+func appliedArg(c *ast.CallExpr) ast.Expr {
+	if len(c.Args) == 0 {
+		return nil
 	}
-	id, ok := s.X.(*ast.Ident)
-	return ok && id.Name == "textplain" && s.Sel.Name == "Title"
+	switch f := c.Fun.(type) {
+	case *ast.SelectorExpr:
+		if id, ok := f.X.(*ast.Ident); ok && id.Name == "textplain" && f.Sel.Name == "Title" {
+			return c.Args[0]
+		}
+	case *ast.Ident:
+		if f.Name == "plainOr" {
+			return c.Args[0]
+		}
+	}
+	return nil
 }
 
 func callsSelector(body ast.Node, pkg, sel string) bool {
@@ -400,7 +517,18 @@ func doubleApplications(fset *token.FileSet, file string, f *ast.File) []string 
 			if !isTitleCall(c) && !helper {
 				return true
 			}
-			for _, a := range c.Args {
+			var plainedArgs []ast.Expr
+			if a := appliedArg(c); a != nil {
+				plainedArgs = append(plainedArgs, a)
+			}
+			if helper {
+				for _, pos := range helperNameArgs[c.Fun.(*ast.Ident).Name] {
+					if pos < len(c.Args) {
+						plainedArgs = append(plainedArgs, c.Args[pos])
+					}
+				}
+			}
+			for _, a := range plainedArgs {
 				if carriesPlain(a) {
 					out = append(out, fmt.Sprintf("%s %s at %s", file, funcName(fn), fset.Position(c.Pos())))
 				}
@@ -417,32 +545,97 @@ func checkPlainingHelpers(t *testing.T) {
 	for _, f := range files {
 		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Body == nil || !plainingHelpers[fn.Name.Name] {
+			if !ok || fn.Body == nil {
+				continue
+			}
+			positions, ok := helperNameArgs[fn.Name.Name]
+			if !ok {
 				continue
 			}
 			seen[fn.Name.Name] = true
-			ok = false
-			ast.Inspect(fn.Body, func(n ast.Node) bool {
-				if c, isCall := n.(*ast.CallExpr); isCall {
-					if isTitleCall(c) {
-						ok = true
-					}
-					if id, isID := c.Fun.(*ast.Ident); isID && plainingHelpers[id.Name] && id.Name != fn.Name.Name {
-						ok = true
-					}
-				}
-				return true
-			})
-			if !ok {
-				t.Errorf("plaining helper %s does not call textplain.Title (nor another plaining helper): its arguments would be drawn raw", fn.Name.Name)
+			for _, problem := range helperProblems(fn, positions) {
+				t.Errorf("plaining helper %s: %s", fn.Name.Name, problem)
 			}
 		}
 	}
-	for h := range plainingHelpers {
+	for h := range helperNameArgs {
 		if !seen[h] {
-			t.Errorf("plaining helper %s is not declared in internal/ui — delete it from plainingHelpers", h)
+			t.Errorf("plaining helper %s is not declared in internal/ui — delete it from helperNameArgs", h)
 		}
 	}
+}
+
+// helperProblems holds a helper to "applies the title rule to its name
+// arguments": each name parameter is used inside a rule application's plained
+// argument (or handed, at a name position, to another helper), and NEVER drawn
+// raw — inside g.Text(...) or g.Attr(...) outside a rule application.
+func helperProblems(fn *ast.FuncDecl, positions []int) []string {
+	var params []string
+	for _, fld := range fn.Type.Params.List {
+		for _, n := range fld.Names {
+			params = append(params, n.Name)
+		}
+	}
+	var out []string
+	for _, pos := range positions {
+		if pos >= len(params) {
+			out = append(out, fmt.Sprintf("has no parameter %d", pos))
+			continue
+		}
+		name := params[pos]
+		plained, raw := false, false
+		var stack []ast.Node
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if n == nil {
+				stack = stack[:len(stack)-1]
+				return true
+			}
+			stack = append(stack, n)
+			id, ok := n.(*ast.Ident)
+			if !ok || id.Name != name {
+				return true
+			}
+			inRule, inDraw := false, false
+			for i := len(stack) - 2; i >= 0; i-- {
+				c, ok := stack[i].(*ast.CallExpr)
+				if !ok {
+					continue
+				}
+				if a := appliedArg(c); a != nil && a == stack[i+1] {
+					inRule = true
+					break
+				}
+				if h, ok := c.Fun.(*ast.Ident); ok && plainingHelpers[h.Name] && h.Name != fn.Name.Name {
+					for _, p := range helperNameArgs[h.Name] {
+						if p < len(c.Args) && c.Args[p] == stack[i+1] {
+							inRule = true
+						}
+					}
+					if inRule {
+						break
+					}
+				}
+				if s, ok := c.Fun.(*ast.SelectorExpr); ok {
+					if x, ok := s.X.(*ast.Ident); ok && x.Name == "g" && (s.Sel.Name == "Text" || s.Sel.Name == "Attr") {
+						inDraw = true
+					}
+				}
+			}
+			if inRule {
+				plained = true
+			} else if inDraw {
+				raw = true
+			}
+			return true
+		})
+		if !plained {
+			out = append(out, fmt.Sprintf("never applies the title rule to its name argument %q", name))
+		}
+		if raw {
+			out = append(out, fmt.Sprintf("draws its name argument %q raw (g.Text/g.Attr outside textplain.Title/plainOr)", name))
+		}
+	}
+	return out
 }
 
 // checkPushEmitters: the functions that call a push service or the router are
@@ -567,6 +760,37 @@ func once(v View) Node          { t := textplain.Title(v.Name); _ = t; return mi
 	}
 }
 
+// TestTheHelperCheckSeesARawName is the negative control for the plaining
+// helpers check: a helper that draws a name parameter raw, or never plains it,
+// is reported; one that plains it (directly or through plainOr) is not, and a
+// non-name parameter drawn raw (the session) is allowed.
+func TestTheHelperCheckSeesARawName(t *testing.T) {
+	src := `package ui
+func good(label, title, session string) Node { return Span(g.Text(plainOr(title, session)), g.Text(textplain.Title(label)), g.Text(session)) }
+func rawDraw(label, title, session string) Node { return Span(g.Text(textplain.Title(title)), g.Text(label)) }
+func never(label, title, session string) Node { if label == session { return nil }; return Span(g.Text(textplain.Title(title))) }
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "x.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][]string{}
+	for _, d := range f.Decls {
+		fn := d.(*ast.FuncDecl)
+		got[fn.Name.Name] = helperProblems(fn, []int{0, 1})
+	}
+	if len(got["good"]) != 0 {
+		t.Errorf("good: reported %v, want nothing", got["good"])
+	}
+	if p := strings.Join(got["rawDraw"], "; "); !strings.Contains(p, `draws its name argument "label" raw`) {
+		t.Errorf("rawDraw: reported %q, want the raw draw of label", p)
+	}
+	if p := strings.Join(got["never"], "; "); !strings.Contains(p, `never applies the title rule to its name argument "label"`) {
+		t.Errorf("never: reported %q, want label never plained", p)
+	}
+}
+
 func TestTheLedgerWalkSeesAnUnplainedRead(t *testing.T) {
 	src := `package ui
 func raw(n Note) Node     { return Text(n.Title) }
@@ -581,7 +805,7 @@ func write(v *View)       { v.Title = "x" }
 		t.Fatal(err)
 	}
 	got := map[string]bool{}
-	for _, r := range titleReads(fset, "x.go", f, titleNames, false) {
+	for _, r := range titleReads(fset, "x.go", f, titleNames, nil) {
 		got[r.key] = r.covered
 	}
 	want := map[string]bool{
