@@ -596,18 +596,8 @@ func (s *Server) fillConnectorsContent(ctx context.Context, c *ui.ConnectorsCont
 	}
 	shared := map[string][]ui.ConnectorSharedView{}
 	for _, sg := range standing {
-		sv := ui.ConnectorSharedView{ID: sg.ID, Repo: sg.Repo, CreatedAt: sg.CreatedAt, Agents: uses[sg.ID]}
-		// A shared approval of the OTHER credential source (the GitHub App
-		// configured over a stored token, or removed from under one) approves
-		// nothing now — the key carries the source — but would again if the
-		// source switched back, so it is shown, and says so.
-		if src := connectors.SourceFor(ctx, s.ext.Connectors, sg.Connector); src != sg.Source {
-			sv.Inactive = "approved for the stored credential, which is not in use now"
-			if sg.Source == connectors.SourceApp {
-				sv.Inactive = "approved for the GitHub App, which is not in use now"
-			}
-		}
-		shared[sg.Connector] = append(shared[sg.Connector], sv)
+		shared[sg.Connector] = append(shared[sg.Connector], ui.ConnectorSharedView{ID: sg.ID, Repo: sg.Repo,
+			CreatedAt: sg.CreatedAt, Agents: uses[sg.ID]})
 	}
 	c.Connectors = make([]ui.ConnectorView, 0, len(list))
 	for _, k := range list {

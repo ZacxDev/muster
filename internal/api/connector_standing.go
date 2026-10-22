@@ -14,8 +14,7 @@ import (
 // ---------------------------------------------------------------------------
 // SHARED APPROVALS: STANDING GRANTS (migration 0043, docs/connectors.md).
 //
-// Operator requirement: "i want connectors to be shared, so we only need to
-// approve each connector request once, and it applies to all agents".
+// Approve once; the approval applies to all of the owner's agents.
 //
 // An approval — on the Connectors tab, from a mirrored session
 // (connector_request_decide) or with a credential entered for a request — goes

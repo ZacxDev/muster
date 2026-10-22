@@ -53,8 +53,7 @@ members' stored Claude and OpenRouter credentials.
 
 ## Shared approvals
 
-Operator requirement: *"i want connectors to be shared, so we only need to
-approve each connector request once, and it applies to all agents"*.
+You approve a connector once; the approval applies to all of your agents.
 
 Approving a request — **Approve** on the request card, a credential entered
 for it, or [`connector_request_decide`](#deciding-a-request-from-your-own-session)

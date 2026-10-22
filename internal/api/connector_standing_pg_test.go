@@ -19,8 +19,7 @@ import (
 // over POST /mcp, the proxy's own access check, the Connectors tab's Approve /
 // Deny / Revoke, and a mirrored session's connector_request_decide.
 //
-// Operator requirement: "i want connectors to be shared, so we only need to
-// approve each connector request once, and it applies to all agents".
+// Approve once; the approval applies to all of the owner's agents.
 
 // ask files (or finds) agent token tok's request for connector name over POST
 // /mcp, as an agent does, and returns the grant status the agent is told and
@@ -270,8 +269,8 @@ func TestAnAppApprovalIsSharedOnlyForTheSameRepository(t *testing.T) {
 // TestACredentialSourceChangeAsksAgainThenShares: the owner shared an approval
 // of a STORED `github` token; then the GitHub App is configured. Both agents'
 // grants re-open (0033) and stay pending — the stored-token approval does not
-// approve the App — and the Connectors tab marks that shared approval as not in
-// use. Approving one agent under the App shares THAT approval: the other agent,
+// approve the App, nor does it approve a new agent asking under the App.
+// Approving one agent under the App shares THAT approval: the other agent,
 // on the same repository, is approved in the same step from the new (app)
 // standing grant.
 func TestACredentialSourceChangeAsksAgainThenShares(t *testing.T) {
@@ -303,10 +302,6 @@ func TestACredentialSourceChangeAsksAgainThenShares(t *testing.T) {
 	f.agentWith(t, 1, "src-c-"+sfx, "example-org/widget", "", tc)
 	if st, _ := f.ask(t, tc, "github"); st != "pending" {
 		t.Fatalf("a new agent asking under the App is %s from the stored-token approval; want pending", st)
-	}
-	page := f.call(t, http.MethodGet, "/ui/connectors", nil, f.operator()).Body.String()
-	if !strings.Contains(page, "approved for the stored credential, which is not in use now") {
-		t.Fatalf("the stored-token shared approval is not marked as not in use:\n%s", page)
 	}
 	f.approveOn(t, "tab", ga)
 	app := f.standingFrom(t, ga)
