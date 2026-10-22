@@ -548,7 +548,10 @@ type Window struct {
 	// a MESSAGE — the newest timestamp of a user or assistant row in its
 	// transcript that is not meta (mirrorhost's lastMessageReader) — Unix
 	// seconds, floored to ActivityBucket; 0 when the window is not Claude or the
-	// host did not say. CardActivity prefers it over Activity.
+	// host did not say. While the session is WORKING (a turn running, waiting
+	// on the person, a background shell of its own) it is instead the host's
+	// now: Claude Code writes no row then, and a working window must not read
+	// as idle (mirrorhost's WireWindows). CardActivity prefers it over Activity.
 	//
 	// 🔴 WHY: Activity is tmux's #{window_activity}, which a tmux restart (a
 	// tmux-resurrect restore) resets for EVERY window to the restore — measured:

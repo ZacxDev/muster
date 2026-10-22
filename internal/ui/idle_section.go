@@ -29,8 +29,11 @@ import (
 //     muster-mirror (mirrorhost's lastmsg.go) and floored to a minute. Not
 //     tmux's window activity: a tmux restart (a tmux-resurrect restore) resets
 //     that for every window, and measured on one host it put all 67 windows
-//     "active" since the restore, so nothing could ever collapse. A host from
-//     before reports none, and the window falls back to tmux's;
+//     "active" since the restore, so nothing could ever collapse. While the
+//     session is working (a turn running, waiting on the person, a background
+//     shell) it is the host's now — busy counts as active, so a working window
+//     is never idle. A host from before reports none, and the window falls
+//     back to tmux's;
 //   - any other mirrored window: when its host last saw it active (tmux's
 //     window activity, floored to a minute);
 //   - a dispatched agent: agents.LastActivity, the newer of its newest

@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
@@ -234,8 +235,14 @@ test('a Claude window with fresh tmux activity but a 30-day-old last message is 
       { type: 'system', subtype: 'informational', timestamp: fresh, content: 'resumed' },
     ].map((r) => JSON.stringify(r)).join('\n') + '\n',
   );
+  // The same 30-day-old conversation in a second window whose session is
+  // WORKING (a tool running: Claude Code writes no row meanwhile). Busy counts
+  // as active: that card reads active now, and is not idle.
+  const trBusy = path.join(rig.dir, 'claude-busy.jsonl');
+  fs.copyFileSync(tr, trBusy);
+  writeFileAtomic(trBusy + '.status', JSON.stringify({ status: 'busy', statusUpdatedAt: Date.now() - 40 * 60_000 }));
   const lwin = path.join(rig.dir, 'windows-l');
-  writeFileAtomic(lwin, `iclaude|@1|1|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}\n`);
+  writeFileAtomic(lwin, `iclaude|@1|1|1|claude|${Math.floor(Date.now() / 1000) - 60}|${tr}\nicbusy|@2|1|1|claude|${Math.floor(Date.now() / 1000) - 60}|${trBusy}\n`);
   const stop = rig.extraHost(hostL, { MUSTER_MIRROR_E2E_WINDOWS_FILE: lwin, MUSTER_MIRROR_E2E_REFRESH: '300ms' });
   try {
     await rig.login(page);
@@ -249,6 +256,10 @@ test('a Claude window with fresh tmux activity but a 30-day-old last message is 
     await tapByScript(page, '#agents-idle-toggle');
     await expect(c).toBeVisible();
     await expect(c.locator('[data-card-active]'), 'its card prints the last message').toHaveText(/active\s*30d\s*ago/);
+    const b = page.locator(`#agents-list > article[data-f-host="${hostL}"][data-f-session="icbusy"]`);
+    await expect(b, 'the working window is not idle').not.toHaveAttribute('data-idle-section', '');
+    await expect(b).toBeVisible();
+    await expect(b.locator('[data-card-active]'), 'and reads active now, not 30 days ago').toHaveText(/active\s*(\d+s|[01]m)\s*ago/);
     await tapByScript(page, '#agents-idle-toggle');
   } finally {
     await stop();

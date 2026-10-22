@@ -15,18 +15,23 @@ import (
 // for every window (see the wire field).
 //
 // THE LAST MESSAGE is the newest `timestamp` of a transcript row whose type is
-// "user" or "assistant" and that is not isMeta. Everything else is left out —
-// and it has to be, because RESUMING a session writes to its transcript without
-// anyone saying anything. Measured read-only on 45 real transcripts resumed
-// after a tmux-resurrect restore on one host (each with no message since): a
-// resume appended `attachment` rows and `system`/`informational` rows carrying
-// the RESUME's time, plus untimestamped bookkeeping rows (cost-state,
-// bridge-session, last-prompt, history-suppression, atis-latch, mode,
-// permission-mode, ai-title) — and no user or assistant row at all. The user
-// rows that do follow an assistant reply in real transcripts are things a
-// person did (a prompt, an interrupt, /compact's summary, a background task's
-// notification arriving), and count; the `<local-command-caveat>` rows are
-// isMeta and do not.
+// "user" or "assistant", that is not isMeta, and that is not an assistant row
+// Claude Code wrote ITSELF (message.model "<synthetic>"). Everything else is
+// left out — and it has to be, because RESUMING a session writes to its
+// transcript without anyone saying anything. Measured read-only on real
+// transcripts on one host: a resume appends `attachment` rows and
+// `system`/`informational` rows carrying the RESUME's time, plus untimestamped
+// bookkeeping rows (cost-state, bridge-session, last-prompt,
+// history-suppression, atis-latch, mode, permission-mode, ai-title); and a
+// resume that is continued writes an isMeta user row ("Continue from where you
+// left off") followed by a SYNTHETIC assistant row ("No response requested.",
+// model "<synthetic>") — 14 such rows, 11 right after a meta user row. (The
+// first sample of 45 resumed transcripts had none, and this comment said a
+// resume appends no user or assistant row; review found one that read 18 days
+// late.) The other synthetic rows (a usage limit hit, "Not logged in", an API
+// error: 229 of 243) answer a human prompt, which already counts. The user rows
+// that do follow a reply are things a person did (a prompt, an interrupt,
+// /compact's summary, a background task's notification arriving), and count.
 //
 // 🔴 CHEAP: the transcript is read BACKWARDS from its end in lastMsgChunk
 // pieces, stopping at the first qualifying row, at most lastMsgMaxScan bytes;
@@ -44,7 +49,14 @@ type lastMsgRow struct {
 	Type      string `json:"type"`
 	IsMeta    bool   `json:"isMeta"`
 	Timestamp string `json:"timestamp"`
+	Message   struct {
+		Model string `json:"model"`
+	} `json:"message"`
 }
+
+// syntheticModel is the model Claude Code names on an assistant row it wrote
+// itself rather than received from a model.
+const syntheticModel = "<synthetic>"
 
 // lastMessageOf is the time of the last message in the transcript r of the
 // given size (see the file header), and false when none is found in the last
@@ -90,7 +102,8 @@ func lastMsgLine(line []byte) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	var row lastMsgRow
-	if json.Unmarshal(line, &row) != nil || (row.Type != "user" && row.Type != "assistant") || row.IsMeta || row.Timestamp == "" {
+	if json.Unmarshal(line, &row) != nil || (row.Type != "user" && row.Type != "assistant") || row.IsMeta || row.Timestamp == "" ||
+		row.Message.Model == syntheticModel {
 		return time.Time{}, false
 	}
 	t, err := time.Parse(time.RFC3339Nano, row.Timestamp)

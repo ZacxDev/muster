@@ -25,6 +25,7 @@ const (
 	tsReply   = "2026-09-03T08:16:42.517Z"
 	tsResume  = "2026-10-21T14:53:40.003Z"
 	tsResume2 = "2026-10-21T14:53:41.877Z"
+	tsResume3 = "2026-10-21T14:53:42.410Z"
 )
 
 // resumedTranscript is a conversation whose last message is the assistant's
@@ -33,7 +34,7 @@ const (
 // the resume's time, an isMeta user row, and untimestamped bookkeeping rows.
 func resumedTranscript(t *testing.T) string {
 	return lmRow(t, map[string]any{"type": "user", "timestamp": tsPrompt, "message": map[string]any{"role": "user", "content": "tidy the notes"}}) +
-		lmRow(t, map[string]any{"type": "assistant", "timestamp": tsReply, "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "Done."}}}}) +
+		lmRow(t, map[string]any{"type": "assistant", "timestamp": tsReply, "message": map[string]any{"role": "assistant", "model": "claude-fixture-model", "content": []any{map[string]any{"type": "text", "text": "Done."}}}}) +
 		lmRow(t, map[string]any{"type": "system", "subtype": "stop_hook_summary", "timestamp": "2026-09-03T08:16:43.001Z"}) +
 		lmRow(t, map[string]any{"type": "system", "subtype": "turn_duration", "timestamp": "2026-09-03T08:16:43.002Z", "isMeta": false}) +
 		lmRow(t, map[string]any{"type": "last-prompt", "lastPrompt": "tidy the notes"}) +
@@ -46,7 +47,12 @@ func resumedTranscript(t *testing.T) string {
 		// Rows that SPELL "user" and "assistant" without being messages: the
 		// type, not the word, decides.
 		lmRow(t, map[string]any{"type": "attachment", "timestamp": tsResume2, "attachment": map[string]any{"type": "queued_command", "role": "user"}}) +
-		lmRow(t, map[string]any{"type": "system", "subtype": "informational", "timestamp": tsResume2, "content": "resumed; the last \"assistant\" turn is above"})
+		lmRow(t, map[string]any{"type": "system", "subtype": "informational", "timestamp": tsResume2, "content": "resumed; the last \"assistant\" turn is above"}) +
+		// A resume that is CONTINUED: an isMeta user row, then an assistant row
+		// Claude Code wrote itself (model "<synthetic>") — the shape review
+		// found reading a window 18 days late.
+		lmRow(t, map[string]any{"type": "user", "isMeta": true, "timestamp": tsResume2, "message": map[string]any{"role": "user", "content": "Continue from where you left off."}}) +
+		lmRow(t, map[string]any{"type": "assistant", "timestamp": tsResume3, "message": map[string]any{"role": "assistant", "model": "<synthetic>", "content": []any{map[string]any{"type": "text", "text": "No response requested."}}}})
 }
 
 func mustTime(t *testing.T, s string) time.Time {
