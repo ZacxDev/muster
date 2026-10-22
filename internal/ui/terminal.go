@@ -209,7 +209,9 @@ const AgentSendFromTerminal = "terminal"
 // hx-boost'ed and its chat script tears down and re-creates its socket on
 // every boosted swap; a terminal living inside that lifecycle would be
 // re-attached on every navigation. The links into this page opt out of boost,
-// so it is always a real load with its own scripts.
+// so it is always a real load with its own scripts. The Rendered | Terminal
+// switch keeps that: it opens this page in a FRAME over the agent page — its
+// own document still — rather than in the agent page's body (view_swap.go).
 //
 // ⚠ LIVE KEYS OFF — A READ-ONLY ATTACH — IS THE STATE THE PAGE OPENS IN, AND
 // THE SERVER AGREES INDEPENDENTLY: the socket is opened with mode=ro until the
