@@ -84,6 +84,9 @@ func TestTheAgentPageClampsALongTitleBehindAnEllipsis(t *testing.T) {
 					t.Errorf("%s (task-linked=%v): the ellipsis button lacks %s: %s", name, linked, w, btn)
 				}
 			}
+			if regexp.MustCompile(`\shidden(\s|=|>)`).MatchString(btn) || !strings.Contains(openTag(t, page, "data-agent-title"), "data-title-clamped") {
+				t.Errorf("%s (task-linked=%v): a clamped title's ellipsis starts hidden or the box is not marked clamped: %s", name, linked, btn)
+			}
 			panel := popoverPanel(t, page, agentTitlePopoverID)
 			if !strings.Contains(panel, `popover="auto"`) || !strings.Contains(html.UnescapeString(panel), full) {
 				t.Errorf("%s (task-linked=%v): the popover does not hold the whole title: %s", name, linked, panel)
@@ -122,19 +125,31 @@ func TestTheAgentPageTitleClampIsRuneSafe(t *testing.T) {
 	}
 }
 
-// A title within the budget is drawn whole, with no "…" and no popover.
-func TestTheAgentPageDrawsAShortTitleWholeWithNoEllipsis(t *testing.T) {
+// A title within the budget is drawn whole. Its "…" and popover are still
+// rendered — a phone's header clips a short title too, and the fit script
+// shows the "…" then — but the button starts HIDDEN, and the box is not marked
+// clamped (which would force the button on).
+func TestTheAgentPageDrawsAShortTitleWholeWithAHiddenEllipsis(t *testing.T) {
 	short := "#12 · Fix the login"
 	for _, linked := range []bool{false, true} {
 		page := detailPage(t, short, linked)
 		if got := agentHeaderTitleText(t, page); got != short {
 			t.Errorf("task-linked=%v: header reads %q, want %q", linked, got, short)
 		}
-		if strings.Contains(page, "data-title-more") || strings.Contains(page, `id="`+agentTitlePopoverID+`"`) {
-			t.Errorf("task-linked=%v: a short title has an ellipsis control or popover", linked)
+		if btn := openTag(t, page, "data-title-more"); !regexp.MustCompile(`\shidden(\s|=|>)`).MatchString(btn) {
+			t.Errorf("task-linked=%v: a short title's ellipsis is not hidden at first paint: %s", linked, btn)
+		}
+		if strings.Contains(openTag(t, page, "data-agent-title"), "data-title-clamped") {
+			t.Errorf("task-linked=%v: a short title is marked clamped", linked)
+		}
+		if panel := popoverPanel(t, page, agentTitlePopoverID); !strings.Contains(html.UnescapeString(panel), short) {
+			t.Errorf("task-linked=%v: the popover does not hold the short title: %s", linked, panel)
 		}
 		if !strings.Contains(page, "<title>"+html.EscapeString(short)+" · muster</title>") {
 			t.Errorf("task-linked=%v: a short title's <title> is not the whole title", linked)
+		}
+		if !strings.Contains(page, "__musterAgentTitleFit") {
+			t.Errorf("task-linked=%v: the page does not carry agentTitleFitScript, so a clipped short title never shows its \"…\"", linked)
 		}
 	}
 }
@@ -174,5 +189,30 @@ func TestTheAgentPageTitleBoxIsOneShrinkableLine(t *testing.T) {
 		if i := strings.Index(page, "data-agent-title"); i < 0 || !strings.Contains(openTag(t, page, "data-agent-title"), "min-w-0") {
 			t.Errorf("task-linked=%v: the title's flex box is missing or not min-w-0", linked)
 		}
+	}
+}
+
+// The Recent strip's entry for a long agent name draws at most cardTitleMax
+// runes, cut on a rune boundary and ended with "…", with the whole title in
+// its title= — one line (truncate) and a 44px row as before.
+func TestARecentEntryClampsALongTitleRuneSafely(t *testing.T) {
+	full := "#9 · " + strings.Repeat("界🚀é", 200)
+	out := renderString(t, recentEntry(recentItem{Href: "/agents/x", Title: full, Status: "running"}))
+	tag := openTag(t, out, "data-recent-entry")
+	if !strings.Contains(tag, `title="`+full+`"`) || !strings.Contains(tag, "min-h-[44px]") {
+		t.Errorf("the entry lost its full-title tooltip or its 44px row: %s", tag)
+	}
+	m := regexp.MustCompile(`<span class="[^"]*\btruncate">([^<]*)</span>`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("no one-line (truncate) title span in the entry: %s", out)
+	}
+	text := html.UnescapeString(m[1])
+	want := string([]rune(full)[:cardTitleMax]) + "…"
+	if !utf8.ValidString(text) || text != want {
+		t.Errorf("the entry draws %q (%d runes), want the first %d runes + \"…\" %q", text, utf8.RuneCountInString(text), cardTitleMax, want)
+	}
+	short := renderString(t, recentEntry(recentItem{Href: "/agents/y", Title: "Fix the login", Status: "running"}))
+	if !strings.Contains(short, ">Fix the login</span>") {
+		t.Errorf("a short recent entry is not drawn whole: %s", short)
 	}
 }

@@ -270,6 +270,9 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// and keeps that button's aria-expanded in step — the same script
 				// the shell runs for the cards' popovers.
 				floatingMenuScript(),
+				// Shows that "…" whenever the title is visibly clipped, not only
+				// when the server clamped it (agentTitle).
+				agentTitleFitScript(),
 				// appScript wires the sidebar open/close + the SPA tab router AND the
 				// model combobox (its combobox copy supports the hidden-mode autosave
 				// used by the header model form). It is now the SINGLE combobox
@@ -339,26 +342,33 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 // wrapped into a wall of lines that pushed the header controls and the chat
 // down the screen. Two guards now, because either alone leaves a hole:
 //   - the TEXT is clamped to cardTitleMax runes (clampTitle — the same budget
-//     and the same rune-safe cut the agent cards use), and a clamped title is
-//     followed by the same "…" control and full-title popover the cards have
-//     (titleMoreButton, fullTitlePopover);
+//     and the same rune-safe cut the agent cards use);
 //   - the BOX is one line that can only shrink (min-w-0 on every flex parent,
-//     nowrap + overflow hidden), so even the clamped words cannot widen the row
-//     on a narrow phone. When the server clamped, the "…" button IS the
-//     ellipsis, so the text clips rather than adding a second "…".
+//     nowrap + overflow hidden), so even the clamped words cannot widen the row.
+//
+// 🔴 AND THE "…" FOLLOWS WHAT IS SEEN, NOT ONLY THE RUNE BUDGET. On a 390px
+// phone the header row leaves the title ~10 characters, so a 30-character
+// title is CLIPPED by the box though it is well inside the budget — and with
+// the "…" drawn only for a rune-clamped title, its full text was unreadable on
+// the operator's main device. So the "…" (titleMoreButton) and the full-title
+// popover (fullTitlePopover — the cards' own pair) are ALWAYS rendered; the
+// button starts `hidden` unless the server clamped, and agentTitleFitScript
+// shows it whenever the text is clipped (scrollWidth > clientWidth), re-checked
+// by a ResizeObserver (rotation, resize, a late font). The button sits INSIDE
+// the flex-1 title box, so showing it narrows the title and moves no other
+// header control. The text clips rather than drawing a CSS ellipsis: the "…"
+// button IS the ellipsis.
 //
 // textplain.Title (via plainOr), the SAME treatment agentCard gives this
 // string in the list — see textplain.Title for why it is stripped, not rendered.
 func agentTitle(v AgentDetailView) g.Node {
 	full := plainOr(v.DisplayName, v.Name)
 	short, clamped := clampTitle(full)
-	line := "truncate"
-	if clamped {
-		line = "overflow-hidden text-clip whitespace-nowrap"
-	}
+	const line = "overflow-hidden text-clip whitespace-nowrap"
+	text := g.Attr("data-agent-title-text", "")
 	var heading g.Node
 	if v.NoteID == nil {
-		heading = H1(Class("min-w-0 "+line+" text-sm font-medium"), g.Attr("title", full), g.Text(short))
+		heading = H1(text, Class("min-w-0 "+line+" text-sm font-medium"), g.Attr("title", full), g.Text(short))
 	} else {
 		heading = H1(Class("flex min-w-0"),
 			Button(
@@ -369,7 +379,7 @@ func agentTitle(v AgentDetailView) g.Node {
 				hx("hx-get", "/ui/agents/"+v.Name+"/task"),
 				hx("hx-target", "#task-modal"),
 				hx("hx-swap", "innerHTML"),
-				Span(Class("min-w-0 "+line), g.Text(short)),
+				Span(text, Class("min-w-0 "+line), g.Text(short)),
 				// A subtle chevron hints the title is tappable.
 				g.Raw(`<svg class="h-3.5 w-3.5 shrink-0 text-muted transition group-hover:text-fg2" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>`),
 			),
@@ -377,13 +387,59 @@ func agentTitle(v AgentDetailView) g.Node {
 	}
 	// The "…" sits BESIDE the heading, never inside the task button (a button
 	// inside a button is invalid and its tap would open the task modal).
+	// `[&[hidden]]:hidden`: the button's inline-flex utility would otherwise
+	// beat the UA's [hidden] rule and draw a "hidden" button anyway.
 	return Div(
 		g.Attr("data-agent-title", ""),
+		g.If(clamped, g.Attr("data-title-clamped", "")),
 		Class("mr-auto flex min-w-0 flex-1 items-center gap-0.5"),
 		heading,
-		g.If(clamped, titleMoreButton(agentTitlePopoverID, "items-center text-base")),
-		g.If(clamped, fullTitlePopover(agentTitlePopoverID, full)),
+		titleMoreButton(agentTitlePopoverID, "items-center text-base [&[hidden]]:hidden", g.If(!clamped, g.Attr("hidden", ""))),
+		fullTitlePopover(agentTitlePopoverID, full),
 	)
+}
+
+// agentTitleFitScript shows the header's "…" (agentTitle) exactly while the
+// title is clipped or was clamped by the server, and hides it — closing an
+// open popover — when the title fits again. A ResizeObserver on the title text
+// re-checks on every size change: a resize, a rotation, a late web font.
+//
+// It cannot oscillate: the check runs WITH the button's current state, and
+// showing the button only narrows the text (still clipped), hiding it only
+// widens it (still fits). Bound once per document (__musterAgentTitleFit);
+// each run of this in-body script (htmx re-executes it on a boosted swap)
+// binds the title on the page now.
+func agentTitleFitScript() g.Node {
+	return Script(g.Raw(`(function () {
+  function fit(box) {
+    var t = box.querySelector('[data-agent-title-text]');
+    var b = box.querySelector('[data-title-more]');
+    if (!t || !b) return;
+    var clipped = box.hasAttribute('data-title-clamped') || t.scrollWidth > t.clientWidth + 1;
+    if (clipped) { if (b.hasAttribute('hidden')) b.removeAttribute('hidden'); return; }
+    if (!b.hasAttribute('hidden')) b.setAttribute('hidden', '');
+    var p = document.getElementById(b.getAttribute('popovertarget'));
+    if (p && p.matches(':popover-open')) p.hidePopover();
+  }
+  var w = window.__musterAgentTitleFit;
+  if (!w) {
+    w = window.__musterAgentTitleFit = {
+      ro: typeof ResizeObserver === 'function' ? new ResizeObserver(function (es) {
+        es.forEach(function (e) { var box = e.target.closest('[data-agent-title]'); if (box) fit(box); });
+      }) : null,
+      bind: function () {
+        document.querySelectorAll('[data-agent-title]').forEach(function (box) {
+          fit(box);
+          var t = box.querySelector('[data-agent-title-text]');
+          if (t && w.ro && !t.__musterFit) { t.__musterFit = true; w.ro.observe(t); }
+        });
+      }
+    };
+    window.addEventListener('resize', function () { w.bind(); });
+    document.addEventListener('htmx:load', function () { w.bind(); });
+  }
+  w.bind();
+})();`))
 }
 
 // agentTitlePopoverID is the header's full-title popover. One per document.

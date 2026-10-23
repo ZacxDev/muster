@@ -30,9 +30,16 @@ const wordyPlain =
 const fix = (...args: string[]) =>
   execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
 
+// Inside the 60-character budget, but wider than a 390px header leaves the
+// title (~10 characters), and narrower than a 1280px one.
+const medium = 'Fix the importer retry backoff';
+const short = 'Short';
+
 const agents: { name: string; id: string; title: string; full: string; linked: boolean }[] = [
   { name: 'e2e-long-title-a-' + stamp, id: '', title: unbroken, full: unbroken, linked: false },
   { name: 'e2e-long-title-b-' + stamp, id: '', title: wordy, full: wordyPlain, linked: true },
+  { name: 'e2e-long-title-c-' + stamp, id: '', title: medium, full: medium, linked: false },
+  { name: 'e2e-long-title-d-' + stamp, id: '', title: short, full: short, linked: false },
 ];
 
 test.beforeAll(async ({ api }) => {
@@ -155,5 +162,111 @@ for (const vp of [
         }
       });
     }
+  });
+}
+
+// A title INSIDE the rune budget can still be clipped by the header's width:
+// at 390px the row leaves the title ~10 characters. The "…" follows what is
+// SEEN — it appears whenever the text is clipped, and goes when it fits.
+test.describe('a short-but-clipped title', () => {
+  const more = (page: Page) => page.getByRole('button', { name: 'Show the full title' });
+  // The header's controls other than the title box, as boxes.
+  const controls = (page: Page) =>
+    page.evaluate(() =>
+      Array.from(document.querySelectorAll<HTMLElement>('header button, header a, header input'))
+        .filter((el) => el.offsetParent !== null && !el.closest('[data-agent-title]'))
+        .map((el) => { const r = el.getBoundingClientRect(); return [Math.round(r.x), Math.round(r.y), Math.round(r.width)]; }));
+
+  test.describe('at 390x844', () => {
+    test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+    test('a 30-character title is clipped, shows its "…", and opens whole', async ({ page }) => {
+      // Positive control: a 5-character title fits, so it has no "…".
+      await page.goto('/agents/' + agents[3].name);
+      await expect(page.locator('#chat-input')).toBeVisible();
+      await expect(page.locator('[data-title-more]')).toBeHidden();
+      const fitting = await controls(page);
+      expect(fitting.length, 'positive control: the header has controls to compare').toBeGreaterThan(2);
+
+      await page.goto('/agents/' + agents[2].name);
+      await expect(page.locator('#chat-input')).toBeVisible();
+      const clipped = await page.locator('header h1').evaluate((el) => el.scrollWidth > el.clientWidth);
+      expect(clipped, 'fixture: the 30-character title must be clipped at 390').toBe(true);
+      await expect(more(page)).toBeVisible();
+      const mb = (await more(page).boundingBox())!;
+      expect(mb.x + mb.width).toBeLessThanOrEqual(390);
+      // Showing the "…" moved no other header control.
+      expect(await controls(page)).toEqual(fitting);
+      await assertFits(page, agents[2].name);
+
+      await more(page).click();
+      const pop = page.locator('#agent-title-full');
+      await expect(pop).toBeVisible();
+      await expect(pop).toHaveText(medium);
+      await expect(more(page)).toHaveAttribute('aria-expanded', 'true');
+      await page.keyboard.press('Escape');
+      await expect(pop).toBeHidden();
+    });
+  });
+
+  test.describe('at 1280x800', () => {
+    test.use({ viewport: { width: 1280, height: 800 } });
+
+    test('the same title fits with no "…", and a resize to 390 brings it', async ({ page }) => {
+      await page.goto('/agents/' + agents[2].name);
+      await expect(page.locator('#chat-input')).toBeVisible();
+      await expect(page.locator('header h1')).toHaveText(medium);
+      await expect(page.locator('[data-title-more]')).toBeHidden();
+
+      await page.setViewportSize({ width: 390, height: 844 });
+      await expect(more(page)).toBeVisible();
+      await more(page).click();
+      await expect(page.locator('#agent-title-full')).toHaveText(medium);
+      await page.keyboard.press('Escape');
+
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await expect(page.locator('[data-title-more]')).toBeHidden();
+    });
+  });
+});
+
+// The Recent strip (above the Agents list) lists recently opened agents by
+// name: a long one draws at most 60 characters + "…", one line, its whole
+// title in title=; and neither the page nor the open nav scrolls sideways.
+for (const vp of [
+  { width: 390, height: 844, mobile: true },
+  { width: 1280, height: 800, mobile: false },
+]) {
+  test.describe(`recent entry at ${vp.width}x${vp.height}`, () => {
+    test.use({ viewport: { width: vp.width, height: vp.height }, hasTouch: vp.mobile, isMobile: vp.mobile });
+
+    test('a 600-character recent agent is one clamped line, and the open nav does not overflow', async ({ page }) => {
+      const a = agents[0];
+      await page.goto('/agents/' + a.name); // opening it is what makes it recent
+      await expect(page.locator('#chat-input')).toBeVisible();
+      await page.goto('/agents');
+      const entry = page.locator(`#agents-recent a[data-recent-entry][href="/agents/${a.name}"]`);
+      await expect(entry).toBeVisible();
+      await expect(entry).toHaveAttribute('title', a.full);
+      const text = (await entry.innerText()).trim();
+      expect(text, 'the entry draws past the 60-character budget').toBe(a.full.slice(0, 60) + '…');
+      const box = (await entry.boundingBox())!;
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      expect(box.height, 'the entry wraps').toBeLessThanOrEqual(48);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+      if (vp.mobile) {
+        await page.locator('#sidebar-open').click();
+        await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'true');
+      }
+      await expect(page.locator('#sidebar')).toBeVisible();
+      const nav = await page.evaluate(() => {
+        const s = document.getElementById('sidebar')!;
+        return { doc: document.documentElement.scrollWidth <= document.documentElement.clientWidth, nav: s.scrollWidth <= s.clientWidth, right: s.getBoundingClientRect().right };
+      });
+      expect(nav.doc, 'the page scrolls sideways with the nav open').toBe(true);
+      expect(nav.nav, 'the nav scrolls sideways').toBe(true);
+      expect(nav.right).toBeLessThanOrEqual(vp.width);
+    });
   });
 }

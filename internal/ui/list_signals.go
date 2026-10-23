@@ -437,9 +437,13 @@ func cardTitleRow(slot, pop, full, pad, reserve string, heading func(short strin
 // the cards' (cardTitleRow) and the agent page header's (agentTitle). fit is
 // only how it sits in its row (a card's top-aligned title row vs the header's
 // centred one); the control, its name and its ARIA are the same everywhere.
-func titleMoreButton(pop, fit string) g.Node {
+//
+// extra is appended to the button (the agent header passes `hidden` while its
+// title is not clipped; see agentTitleFitScript).
+func titleMoreButton(pop, fit string, extra ...g.Node) g.Node {
 	return Button(
 		Type("button"),
+		g.Group(extra),
 		g.Attr("data-title-more", ""),
 		g.Attr("popovertarget", pop),
 		g.Attr("aria-haspopup", "dialog"),

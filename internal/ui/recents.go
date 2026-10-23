@@ -117,6 +117,15 @@ func recentEntry(it recentItem) g.Node {
 	if it.Mirror {
 		kind = "mirror"
 	}
+	// The entry draws at most cardTitleMax runes (clampTitle — the agent cards'
+	// and the agent header's budget and rune-safe cut), "…" when cut; the whole
+	// title stays in title=. A task-derived name has no length limit, and the
+	// CSS truncate below only hides the rest — 600 characters of DOM text per
+	// entry was still read out whole and copied whole.
+	text, clamped := clampTitle(it.Title)
+	if clamped {
+		text += "…"
+	}
 	return A(
 		Href(it.Href),
 		hx("hx-boost", "false"),
@@ -126,6 +135,6 @@ func recentEntry(it recentItem) g.Node {
 		statusIcon(it.Status),
 		// Its host's icon — the one its card draws (host_icons.go).
 		hostMark(it.Host, it.HostIcon),
-		Span(Class("truncate"), g.Text(it.Title)),
+		Span(Class("min-w-0 truncate"), g.Text(text)),
 	)
 }
