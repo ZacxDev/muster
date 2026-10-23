@@ -145,14 +145,14 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   "N new ↑". On a phone the strip scrolls sideways.
 - **Host icons.** Every entry draws its host's icon beside its name — on its
   card, its "Recently viewed" entry, its host tab and the badge on its own
-  pages — with the host's name in the icon's tooltip. A card also spells its
-  host in a chip in its body (`host laptop`, `host cluster`). Dispatched pod agents
-  draw the cluster's icon, which no mirrored host ever draws. A host given an
-  icon in `MUSTER_HOST_ICONS` (`laptop=laptop`) draws it, and no other host
-  does. Any other host's icon is picked by when its first mirror token was
-  minted, so your first hosts each draw a different one until the icons left
-  run out, and minting a token for a new host (or a second
-  token for an old one) never changes an existing host's icon.
+  pages — with the host's name in the icon's tooltip. A mirrored window's card
+  also spells its host in a chip in its body (`host laptop`). Dispatched pod
+  agents draw the cluster's icon, which no mirrored host ever draws. A host
+  given an icon in `MUSTER_HOST_ICONS` (`laptop=laptop`) draws it, and no other
+  host does. Any other host's icon is picked by when its first mirror token was
+  minted, so your first hosts usually each draw a different one, and minting a
+  token for a new host (or a second token for an old one) never changes an
+  existing host's icon.
 
 ![The Agents list filtered with the search box](img/agents-filter.png)
 

@@ -23,8 +23,9 @@ import { writeFileAtomic } from '../lib/atomic';
 //    draws the laptop glyph though it was registered AFTER tower (by rank
 //    alone it drew another), `tower` the server glyph, and no other host draws
 //    either. The host tabs lead with the same glyph as the cards.
-// 3. THE HOST IS IN THE CARD'S BODY (hostChip), on a mirrored card and a
-//    dispatched agent's alike, and no longer in the footer.
+// 3. THE HOST IS IN A MIRRORED CARD'S BODY (hostChip), no longer in the
+//    footer; a dispatched agent's card has no host chip (its cluster icon and
+//    the tab say it).
 //
 // 🔴 REGRESSION TESTS: on the commit before, the tabs read All, cluster,
 // e2e-names-mint-…, e2e-names-zeta-…, laptop, tower (the variables did not
@@ -121,9 +122,12 @@ for (const vp of [
       }
     });
 
-    test("every card spells its host in its body, and its footer does not", async ({ page }) => {
+    test("every mirrored card spells its host in its body, and its footer does not; a dispatched agent's card has no host chip", async ({ page }) => {
       await openList(page);
-      for (const h of [...HOSTS, 'cluster']) {
+      // The cluster's cards: its icon, no chip (the icon and the tab say it).
+      await expect(cardsOn(page, 'cluster').locator('[data-card-host]')).toHaveCount(0);
+      await expect(cardsOn(page, 'cluster').first().locator('[data-host-icon="cluster"]')).toBeVisible();
+      for (const h of HOSTS) {
         const c = cardsOn(page, h).first();
         const chip = c.locator('[data-card-slot="header"] [data-card-host]');
         await expect(chip, h).toHaveAttribute('data-card-host', h);

@@ -217,29 +217,18 @@ func TestNoOtherHostDrawsANamedHostsGlyph(t *testing.T) {
 	}
 }
 
-// TestANamedHostSpendsNoRank: the named hosts' ranks are skipped, so the
-// first len(rankedIcons()) OTHER hosts still draw that many different icons
-// when the named ones were minted among them — and a named host minted later
-// changes no earlier host's icon.
-func TestANamedHostSpendsNoRank(t *testing.T) {
-	withHostPrefs(t, operatorPrefs)
-	ranks := map[string]int{"dock": 0, "tower": 1, "laptop": 2}
-	others := []string{"dock"}
-	for i := 0; len(others) < len(rankedIcons()); i++ {
-		h := "other-" + strconv.Itoa(i)
-		ranks[h] = 3 + i
-		others = append(others, h)
+// TestEveryGlyphNamedStillDrawsAnIcon: naming every glyph leaves nothing to
+// keep apart, and an unnamed host still draws an icon of the set (no division
+// by an empty set).
+func TestEveryGlyphNamedStillDrawsAnIcon(t *testing.T) {
+	all := map[string]string{}
+	for i, d := range hostIconSet {
+		all["h"+strconv.Itoa(i)] = d.Key
 	}
-	seen := map[string]string{}
-	for _, h := range others {
-		k := HostIconFor(ranks, h)
-		if o, dup := seen[k]; dup {
-			t.Fatalf("hosts %s and %s both draw %q", o, h, k)
+	withHostPrefs(t, HostPreferences{Icons: all})
+	for _, ranks := range []map[string]int{{"other": 3}, nil} {
+		if k := HostIconFor(ranks, "other"); hostIconDefOf(k, "other").Key != k {
+			t.Errorf("an unnamed host draws %q, not an icon of the set", k)
 		}
-		seen[k] = h
-	}
-	before := HostIconFor(map[string]int{"dock": 0}, "dock")
-	if after := HostIconFor(ranks, "dock"); before != after {
-		t.Errorf("dock drew %q alone and %q once named hosts were minted after it", before, after)
 	}
 }

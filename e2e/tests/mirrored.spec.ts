@@ -472,6 +472,10 @@ test('a host that disconnects reads offline and its terminal says why', async ({
 
   await page.goto(origin + '/agents');
   await expect(card(page, 'main').locator('[data-mirror-offline]')).toContainText('offline');
+  // Beside the "host <name>" chip it does not read as a second host: it is
+  // the card's state (the filter field state:offline).
+  await expect(card(page, 'main').locator('[data-mirror-offline]')).toHaveText(/^\s*state\s*offline\s*$/);
+  await expect(card(page, 'main').locator('[data-card-host]')).toHaveText(new RegExp(`^\\s*host\\s*${host}\\s*$`));
   await noHorizontalScroll(page);
 
   await page.goto(origin + termPath('main'));

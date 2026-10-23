@@ -377,3 +377,39 @@ func TestTheHostTabsAreOrderedByOneListStatedInGo(t *testing.T) {
 		}
 	}
 }
+
+// TestTheRulesTableIsRebuiltForAnotherBuildsVersion: the window-wide rules
+// table is defined when absent OR built from other values (its version is a
+// hash of the fields, chip selectors, ids and aliases), and the bound filter
+// script reads the window's table at each call rather than keeping the one it
+// started with. (The browser case is agents-list-ux.spec.ts.) Red before: the
+// table was defined only when absent, and the script captured it.
+func TestTheRulesTableIsRebuiltForAnotherBuildsVersion(t *testing.T) {
+	v := agentsRulesVersion()
+	if len(v) != 12 {
+		t.Fatalf("version %q", v)
+	}
+	for _, want := range []string{
+		`if (!window.__musterAgentsRules || window.__musterAgentsRules.v !== '` + v + `') (function () {`,
+		`window.__musterAgentsRules = { v: '` + v + `', `,
+	} {
+		if !strings.Contains(agentsRulesJS, want) {
+			t.Errorf("the rules script lacks %q", want)
+		}
+	}
+	script := renderNode(t, agentsFilterScript())
+	if strings.Contains(script, "var R = window.__musterAgentsRules;") ||
+		!strings.Contains(script, "var r = window.__musterAgentsRules; return r[k].apply(r, arguments);") {
+		t.Error("the filter script keeps the table it was bound with")
+	}
+	if !strings.Contains(script, "if (chips === null || chipsV !== v) {") {
+		t.Error("the stored chips are not re-read when the table changes")
+	}
+	// The version moves with what the table is built from.
+	was := chipAliases
+	t.Cleanup(func() { chipAliases = was })
+	chipAliases = map[string]string{"ask": "waiting"}
+	if agentsRulesVersion() == v {
+		t.Error("the version does not change with the aliases")
+	}
+}

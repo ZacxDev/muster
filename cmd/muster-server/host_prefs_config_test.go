@@ -46,6 +46,10 @@ func TestTheHostPreferencesAreReadAndChecked(t *testing.T) {
 		{"", "tower=rocket", `invalid MUSTER_HOST_ORDER / MUSTER_HOST_ICONS: host icons: "rocket" is not an icon`},
 		{"cluster", "", `invalid MUSTER_HOST_ORDER / MUSTER_HOST_ICONS: host order: "cluster" is the dispatched agents' host`},
 		{"tower,tower", "", `invalid MUSTER_HOST_ORDER / MUSTER_HOST_ICONS: host order: "tower" is listed twice`},
+		// A space or another separator where a comma belongs: not a host name.
+		{"tower laptop", "", `invalid MUSTER_HOST_ORDER / MUSTER_HOST_ICONS: host order: "tower laptop" is not a host name`},
+		{"tower;laptop", "", `invalid MUSTER_HOST_ORDER / MUSTER_HOST_ICONS: host order: "tower;laptop" is not a host name`},
+		{"", "my laptop=laptop", `invalid MUSTER_HOST_ORDER / MUSTER_HOST_ICONS: host icons: "my laptop" is not a host name`},
 	} {
 		if _, err := load(c.order, c.icons); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("order %q icons %q: err = %v, want %q", c.order, c.icons, err, c.want)

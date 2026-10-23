@@ -20,15 +20,16 @@ func withHostPrefs(t *testing.T, p HostPreferences) {
 // leaves the installed one as it was.
 func TestHostPreferencesRefuseWhatWouldMislead(t *testing.T) {
 	withHostPrefs(t, HostPreferences{Order: []string{"dock"}})
-	all := map[string]string{}
-	for i, d := range hostIconSet[:len(hostIconSet)-1] {
-		all["h"+string(rune('a'+i))] = d.Key
-	}
 	for name, c := range map[string]struct {
 		p    HostPreferences
 		want string
 	}{
-		"empty order host":   {HostPreferences{Order: []string{"tower", " "}}, "host order: an empty host name"},
+		"empty order host":   {HostPreferences{Order: []string{"tower", " "}}, `host order: "" is not a host name`},
+		"space in a name":    {HostPreferences{Order: []string{"tower laptop"}}, `host order: "tower laptop" is not a host name`},
+		"wrong separator":    {HostPreferences{Order: []string{"tower;laptop"}}, `host order: "tower;laptop" is not a host name`},
+		"leading hyphen":     {HostPreferences{Order: []string{"-tower"}}, `host order: "-tower" is not a host name`},
+		"too long":           {HostPreferences{Order: []string{strings.Repeat("a", 64)}}, `is not a host name`},
+		"icon host not name": {HostPreferences{Icons: map[string]string{"my:laptop": "laptop"}}, `host icons: "my:laptop" is not a host name`},
 		"cluster in order":   {HostPreferences{Order: []string{"Cluster"}}, `host order: "cluster" is the dispatched agents' host`},
 		"rest in order":      {HostPreferences{Order: []string{"*"}}, `host order: "*" is not a host name`},
 		"repeated host":      {HostPreferences{Order: []string{"tower", "TOWER"}}, `host order: "tower" is listed twice`},
@@ -37,7 +38,6 @@ func TestHostPreferencesRefuseWhatWouldMislead(t *testing.T) {
 		"cluster glyph":      {HostPreferences{Icons: map[string]string{"tower": "cluster"}}, `host icons: "cluster" is not an icon`},
 		"one glyph twice":    {HostPreferences{Icons: map[string]string{"tower": "server", "dock": "server"}}, `host icons: "server" is given to both`},
 		"one host two icons": {HostPreferences{Icons: map[string]string{"tower": "server", "Tower": "laptop"}}, `host icons: "tower" is given two icons`},
-		"too many named":     {HostPreferences{Icons: all}, "host icons: 11 named icons leave 1 for every other host; leave at least 2"},
 	} {
 		err := SetHostPreferences(c.p)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
@@ -47,15 +47,13 @@ func TestHostPreferencesRefuseWhatWouldMislead(t *testing.T) {
 			t.Errorf("%s: a refused setting changed the installed one: %+v", name, hostPrefs)
 		}
 	}
-	// Control: the largest accepted naming — ten icons, two left — installs.
-	ten := map[string]string{}
-	for i, d := range hostIconSet[:len(hostIconSet)-2] {
-		ten["h"+string(rune('a'+i))] = d.Key
-	}
-	if err := SetHostPreferences(HostPreferences{Order: []string{" Tower ", "laptop"}, Icons: ten}); err != nil {
+	// Control: names at the pattern's edges install (63 characters, inner
+	// hyphens, digits, case folded).
+	ok := HostPreferences{Order: []string{" Tower ", "laptop", "a", "x-1-y", strings.Repeat("b", 63)}, Icons: map[string]string{"laptop": "laptop"}}
+	if err := SetHostPreferences(ok); err != nil {
 		t.Fatalf("control: a valid setting was refused: %v", err)
 	}
-	if strings.Join(hostPrefs.Order, ",") != "tower,laptop" {
+	if strings.Join(hostPrefs.Order[:2], ",") != "tower,laptop" {
 		t.Errorf("the order is not normalised: %v", hostPrefs.Order)
 	}
 }

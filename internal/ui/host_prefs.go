@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -44,9 +45,9 @@ func SetHostPreferences(p HostPreferences) error {
 // refuses:
 //   - an empty or repeated host, or the cluster's own name (it is always last,
 //     and draws clusterIcon);
+//   - a name that is not a host name (hostNamePattern: no space, no separator);
 //   - an icon that is not one of hostIconSet's keys, or one named for two hosts
-//     (it would no longer say which host it is);
-//   - icons that leave fewer than two for every other host.
+//     (it would no longer say which host it is).
 func (p HostPreferences) Normalized() (HostPreferences, error) {
 	norm := HostPreferences{Icons: map[string]string{}}
 	seen := map[string]bool{}
@@ -83,24 +84,24 @@ func (p HostPreferences) Normalized() (HostPreferences, error) {
 		taken[k] = h
 		norm.Icons[h] = k
 	}
-	if left := len(hostIconSet) - len(taken); left < 2 {
-		return HostPreferences{}, fmt.Errorf("host icons: %d named icons leave %d for every other host; leave at least 2", len(taken), left)
-	}
 	return norm, nil
 }
 
 // checkPrefHost is why h cannot be named in a preference, nil if it can be.
 func checkPrefHost(h string) error {
-	switch h {
-	case "":
-		return fmt.Errorf("an empty host name")
-	case podHost:
+	if h == podHost {
 		return fmt.Errorf("%q is the dispatched agents' host: its tab is always last and its icon its own", podHost)
-	case hostTabRest:
-		return fmt.Errorf("%q is not a host name", h)
+	}
+	if !hostNamePattern.MatchString(h) {
+		return fmt.Errorf("%q is not a host name (lower-case letters, digits and inner hyphens, at most 63)", h)
 	}
 	return nil
 }
+
+// hostNamePattern is what a configured host name must be: a DNS label. It
+// refuses what a mistyped list carries — a space, a ';' or ':' separator, an
+// empty entry — rather than install a name no host has.
+var hostNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // hostIconKeys is hostIconSet's keys, in order.
 func hostIconKeys() []string {

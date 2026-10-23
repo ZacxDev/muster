@@ -1,17 +1,28 @@
 package ui
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 )
 
 // agentsRulesJS defines window.__musterAgentsRules — the filter's grammar, the
-// chips' table and the hide rules — once per window. It is emitted in BOTH the
-// head script and agentsFilterScript, from this one constant: a boosted
-// navigation into the Agents tab from a document without the shell's head (an
-// agent's page) runs the body script with no head script ever having run.
+// chips' table and the hide rules — once per window AND VERSION. It is emitted
+// in BOTH the head script and agentsFilterScript, from this one constant: a
+// boosted navigation into the Agents tab from a document without the shell's
+// head (an agent's page) runs the body script with no head script ever having
+// run.
+//
+// 🔴 VERSIONED (agentsRulesVersion). A window keeps its globals across boosted
+// navigations, including one into a page a NEWER server rendered. A table
+// defined "once per window" then stayed the OLD one: chips the new page drew
+// (data-chip="waiting") looked up nothing in it and filtered nothing, and a
+// stored selection of them was dropped as unknown. The table is rebuilt
+// whenever its version is not this build's.
 var agentsRulesJS = `
-if (!window.__musterAgentsRules) (function () {
+if (!window.__musterAgentsRules || window.__musterAgentsRules.v !== '` + agentsRulesVersion() + `') (function () {
     var FIELDS = ` + cardFieldKeysJSON() + `;
     var CHIP_SEL = ` + chipSelectorsJSON() + `;
     var CHIP_IDS = ` + chipIDsJSON() + `;
@@ -83,9 +94,17 @@ if (!window.__musterAgentsRules) (function () {
       if (cs) r.push('#agents-list > article:not(' + cs + '){display:none !important}');
       return r.join('\n');
     }
-    window.__musterAgentsRules = { tokens: tokens, terms: terms, sel: sel, norm: norm, chipsOf: chipsOf, chipSel: chipSel, rules: rules, CHIP_IDS: CHIP_IDS };
+    window.__musterAgentsRules = { v: '` + agentsRulesVersion() + `', tokens: tokens, terms: terms, sel: sel, norm: norm, chipsOf: chipsOf, chipSel: chipSel, rules: rules, CHIP_IDS: CHIP_IDS };
 })();
 `
+
+// agentsRulesVersion is a hash of everything agentsRulesJS takes from Go — the
+// fields, the chips' selectors, ids and aliases — so a window holding a table
+// built from other values rebuilds it.
+func agentsRulesVersion() string {
+	sum := sha256.Sum256([]byte(cardFieldKeysJSON() + "\x00" + chipSelectorsJSON() + "\x00" + chipIDsJSON() + "\x00" + chipAliasesJSON()))
+	return hex.EncodeToString(sum[:6])
+}
 
 // THE LIST'S FILTER STATE, APPLIED BEFORE THE FIRST PAINT.
 //

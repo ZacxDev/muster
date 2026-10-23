@@ -431,6 +431,84 @@ for (const vp of [
       await expect.poll(() => shown(page)).toEqual(ORDER);
     });
 
+    // 🔴 A WINDOW HOLDING ANOTHER BUILD'S RULES TABLE. window.__musterAgentsRules
+    // (agents_filter_head.go) outlives a boosted navigation, so a window whose
+    // table an OLDER build defined kept it on a page this build drew: "Waiting
+    // on you" (data-chip="waiting") looked up nothing in it and filtered
+    // nothing, and a stored ["waiting"] was dropped as unknown. Here the window
+    // is given an older build's table (ids ask/question, no version), then
+    // makes a boosted navigation out to an agent's page and back to the list:
+    // the table must be this build's again and the chip must filter. Red
+    // before: the table was defined once per window and the bound script kept
+    // the one it started with.
+    test("a window holding an older build's rules table is put right by a boosted navigation: the chip filters", async ({ page }) => {
+      await openList(page);
+      await page.addInitScript(() => {
+        let real: unknown;
+        const w = window as unknown as Record<string, unknown>;
+        w.__keepStale = true;
+        const sel: Record<string, string> = {
+          ask: '[data-wait~="ask"]', question: '[data-wait~="question"]',
+          'idle-15m': '[data-idle~="15m"]', 'idle-1h': '[data-idle~="1h"]', 'idle-1d': '[data-idle~="1d"]',
+        };
+        Object.defineProperty(window, '__musterAgentsRules', {
+          configurable: true,
+          get: () => real,
+          set: (t: Record<string, unknown>) => {
+            if (w.__keepStale) {
+              t = Object.assign({}, t, {
+                v: 'older-build',
+                chipsOf: (raw: string) => {
+                  try { const v = JSON.parse(raw || '[]'); return Array.isArray(v) ? v.filter((c) => c in sel) : []; } catch { return []; }
+                },
+                chipSel: (cs: string[]) => {
+                  const ps = cs.filter((c) => c in sel).map((c) => sel[c]);
+                  return ps.length === 0 ? '' : ps.length === 1 ? ps[0] : ':is(' + ps.join(',') + ')';
+                },
+              });
+            }
+            real = t;
+          },
+        });
+      });
+      await page.evaluate(() => localStorage.setItem('muster:agents:chips', JSON.stringify(['waiting'])));
+      await page.goto(origin + '/agents');
+      const v = () => page.evaluate(() => (window as unknown as { __musterAgentsRules: { v?: string } }).__musterAgentsRules.v);
+      expect(await v(), "control: the window holds the older build's table").toBe('older-build');
+      await page.evaluate(() => {
+        const w = window as unknown as Record<string, unknown>;
+        w.__keepStale = false;
+        w.__sameWindow = 1;
+      });
+      // Out to an agent's page and back to the list, both by boosted links:
+      // one window throughout.
+      // boostedTo follows a link drawn inside the page's boosted region and
+      // processed by htmx, as one the page drew itself would be.
+      const boostedTo = (href: string) =>
+        page.evaluate((h) => {
+          const a = document.createElement('a');
+          a.href = h;
+          a.textContent = 'go';
+          document.querySelector('[hx-boost="true"]')!.prepend(a);
+          (window as unknown as { htmx: { process: (e: Element) => void } }).htmx.process(a);
+          a.click();
+        }, href);
+      const same = () => page.evaluate(() => (window as unknown as { __sameWindow?: number }).__sameWindow);
+      await Promise.all([page.waitForURL((u) => u.pathname === `/agents/${freshAgent}`), boostedTo(`/agents/${freshAgent}`)]);
+      expect(await same(), 'control: boosted out, the same window').toBe(1);
+      await Promise.all([page.waitForURL((u) => u.pathname === '/agents'), boostedTo('/agents')]);
+      expect(await same(), 'control: boosted back, the same window').toBe(1);
+      await expect.poll(v, { message: "the table is this build's again" }).not.toBe('older-build');
+      await expect(chip(page, 'waiting'), 'the stored chip survived').toHaveAttribute('aria-pressed', 'true');
+      await expect.poll(async () => { await takeNew(page); return shown(page); }, { timeout: 20_000 }).toEqual(WAITING);
+      // And a press now goes through this build's table too.
+      await press(chip(page, 'waiting'));
+      await expect.poll(() => shown(page)).toEqual(ORDER);
+      await press(chip(page, 'waiting'));
+      await expect.poll(() => shown(page)).toEqual(WAITING);
+      await press(chip(page, 'waiting'));
+    });
+
     test('Clear turns every chip off, and is shown only while a chip is on', async ({ page }) => {
       await openList(page);
       const clear = page.locator('#agents-chips-clear');

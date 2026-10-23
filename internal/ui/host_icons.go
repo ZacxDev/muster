@@ -85,27 +85,20 @@ func namedIcon(host string) (string, bool) {
 
 // HostIconFor is the icon key of a mirrored host: its named icon
 // (HostPreferences.Icons) when it has one; else by its registration rank in
-// ranks (mirror.RanksByRegistration) among the hosts WITHOUT a named icon — the
-// r-th such host draws rankedIcons()[r mod N] — or, for a host ranks does not
-// hold, by a hash of its name. This is the one rule; every surface that draws
-// a host's icon is handed its result.
-//
-// A named host's rank is skipped rather than spent, so the first N other hosts
-// still draw N different icons; and since a rank is never reused, a host
-// minted later shifts no earlier host's icon.
+// ranks (mirror.RanksByRegistration) — rank r draws rankedIcons()[r mod N] — or,
+// for a host ranks does not hold, by a hash of its name. A glyph named for a
+// host is never drawn for another. This is the one rule; every surface that
+// draws a host's icon is handed its result.
 func HostIconFor(ranks map[string]int, host string) string {
 	if k, ok := namedIcon(host); ok {
 		return k
 	}
 	set := rankedIcons()
+	if len(set) == 0 { // every glyph named: nothing is left to keep apart
+		set = hostIconSet
+	}
 	if r, ok := ranks[host]; ok && r >= 0 {
-		eff := r
-		for h, hr := range ranks {
-			if _, named := namedIcon(h); named && hr >= 0 && hr < r {
-				eff--
-			}
-		}
-		return set[eff%len(set)].Key
+		return set[r%len(set)].Key
 	}
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(host))
@@ -153,22 +146,19 @@ func hostMark(host, key string) g.Node {
 	)
 }
 
-// hostChip is a listed agent's host, SPELLED, in the card's body (header row,
-// beside its name), as a chip like the card's kind and repo: "host laptop".
-// Both card kinds draw it — a dispatched agent's host is "cluster" (podHost) —
-// so every card names the host tab it is filed under in the same place, and a
-// phone (no hover for hostMark's tooltip) can read it. The host is VISIBLE, not
-// only the icon's tooltip: it is what tells two same-named windows apart, and a
-// filter field (host:). It is not in the footer (an operator ask).
-//
-// attr is an extra marker on the value ("" = none): a mirrored card's
-// data-mirror-host, which its tests and e2e locate the host by.
-func hostChip(host, attr string) g.Node {
+// hostChip is a MIRRORED card's host, SPELLED, in the card's body (header row,
+// beside its name), as a chip like the card's kind and repo: "host laptop". A
+// phone has no hover for hostMark's tooltip, and the host is what tells two
+// same-named windows apart and a filter field (host:). It is not in the footer
+// (an operator ask). A dispatched agent's card draws none: its cluster icon and
+// the "cluster" tab already say it. The value carries data-mirror-host, which
+// tests locate the host by.
+func hostChip(host string) g.Node {
 	return Span(
 		g.Attr("data-card-host", host),
 		Class("inline-flex items-center gap-1 rounded-full bg-s2/80 px-2.5 py-1 text-xs font-medium text-fg2 ring-1 ring-inset ring-line"),
 		Span(Class("text-muted"), g.Text("host")),
-		Span(g.If(attr != "", g.Attr(attr, "")), g.Text(host)),
+		Span(g.Attr("data-mirror-host", ""), g.Text(host)),
 	)
 }
 

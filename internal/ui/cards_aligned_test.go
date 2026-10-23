@@ -282,41 +282,60 @@ func slotOf(t *testing.T, markup, slot string) *html.Node {
 	return out
 }
 
-// TestBothCardsSpellTheirHostInTheBodyNotTheFooter: the operator's ask "drop
-// laptop from the bottom part of the card and just include it in the body".
-// A mirrored card's host is a chip in its header row ("host tower"), and its
-// footer no longer names it; a dispatched agent's card spells its host,
-// "cluster", in the same chip in the same slot — so the two kinds stay one
-// layout (TestAgentAndMirrorCardsRenderTheSameSlots). Red before: the
-// mirrored footer said "host tower" and neither header carried a host chip.
-func TestBothCardsSpellTheirHostInTheBodyNotTheFooter(t *testing.T) {
-	for name, c := range map[string]struct {
-		markup, host string
-	}{
-		"mirrored": {renderNode(t, mirrorCard(realisticMirror())), "tower"},
-		"agent":    {renderNode(t, agentCard(realisticAgent())), "cluster"},
-	} {
-		header := slotOf(t, c.markup, "header")
-		var chipEl *html.Node
-		walkNodes(header, func(n *html.Node) bool {
-			if _, ok := nodeAttr(n, "data-card-host"); ok && n.Type == html.ElementNode {
-				chipEl = n
-			}
-			return chipEl == nil
-		})
-		if chipEl == nil {
-			t.Errorf("%s: no host chip in the card's header:\n%s", name, c.markup)
-			continue
+// TestAMirroredCardSpellsItsHostInTheBodyNotTheFooter: the operator's ask
+// "drop laptop from the bottom part of the card and just include it in the
+// body". A mirrored card's host is a chip in its header row ("host tower"),
+// and its footer no longer names it. A dispatched agent's card draws no host
+// chip (its cluster icon and the "cluster" tab say it), and the two kinds keep
+// one layout (TestAgentAndMirrorCardsRenderTheSameSlots). Red before: the
+// mirrored footer said "host tower" and no header carried a host chip.
+func TestAMirroredCardSpellsItsHostInTheBodyNotTheFooter(t *testing.T) {
+	markup := renderNode(t, mirrorCard(realisticMirror()))
+	header := slotOf(t, markup, "header")
+	var chipEl *html.Node
+	walkNodes(header, func(n *html.Node) bool {
+		if _, ok := nodeAttr(n, "data-card-host"); ok && n.Type == html.ElementNode {
+			chipEl = n
 		}
-		if v, _ := nodeAttr(chipEl, "data-card-host"); v != c.host || nodeText(chipEl) != "host"+c.host {
-			t.Errorf("%s: host chip %q / %q, want host %q", name, v, nodeText(chipEl), c.host)
-		}
-		footer := nodeText(slotOf(t, c.markup, "footer"))
-		if strings.Contains(footer, c.host) || strings.Contains(footer, "host") {
-			t.Errorf("%s: the footer still names the host: %q", name, footer)
-		}
-		if !strings.Contains(footer, "active") {
-			t.Errorf("instrument check FAILED: %s: the footer text %q is not the footer", name, footer)
-		}
+		return chipEl == nil
+	})
+	if chipEl == nil {
+		t.Fatalf("no host chip in the mirrored card's header:\n%s", markup)
+	}
+	if v, _ := nodeAttr(chipEl, "data-card-host"); v != "tower" || nodeText(chipEl) != "hosttower" {
+		t.Errorf("host chip %q / %q, want host tower", v, nodeText(chipEl))
+	}
+	footer := nodeText(slotOf(t, markup, "footer"))
+	if strings.Contains(footer, "tower") || strings.Contains(footer, "host") {
+		t.Errorf("the footer still names the host: %q", footer)
+	}
+	if !strings.Contains(footer, "active") {
+		t.Errorf("instrument check FAILED: the footer text %q is not the footer", footer)
+	}
+	// A dispatched agent's card: no host chip, and the cluster's icon.
+	agent := renderNode(t, agentCard(realisticAgent()))
+	if strings.Contains(agent, "data-card-host") || !strings.Contains(agent, `data-host-icon="cluster"`) {
+		t.Errorf("an agent card draws a host chip, or lost its cluster icon:\n%s", agent)
+	}
+}
+
+// TestAnOfflineCardsChipDoesNotReadAsAHost: beside the "host <name>" chip, the
+// offline chip is labelled "state" (the filter field, state:offline), so the
+// card does not read as having two hosts. Red before: chip("host", "offline").
+func TestAnOfflineCardsChipDoesNotReadAsAHost(t *testing.T) {
+	off := realisticMirror()
+	off.Online = false
+	markup := renderNode(t, mirrorCard(off))
+	if !strings.Contains(markup, `data-mirror-offline=""`) {
+		t.Fatalf("instrument check FAILED: no offline chip:\n%s", markup)
+	}
+	if n := strings.Count(markup, `<span class="text-muted">host</span>`); n != 1 {
+		t.Errorf("%d chips labelled host, want 1 (the host's own)", n)
+	}
+	if !strings.Contains(markup, `<span class="text-muted">state</span>offline`) {
+		t.Errorf("the offline chip is not labelled state:\n%s", markup)
+	}
+	if !strings.Contains(markup, `data-f-state="offline"`) {
+		t.Errorf("instrument check FAILED: the label no longer names the filter field")
 	}
 }

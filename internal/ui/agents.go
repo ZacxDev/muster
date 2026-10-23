@@ -395,8 +395,6 @@ func agentCard(a AgentCardView) g.Node {
 					g.If(cardHasFocusTitle(a.Focus), g.Attr("data-card-subtitle", "")),
 					g.Text(name),
 				)),
-				// Its host, spelled, as a mirrored card's (hostChip).
-				hostChip(podHost, ""),
 				g.If(a.Repo != "", chip("repo", a.Repo)),
 				// The subagents and background shells its pod has running now:
 				// the mirrored card's chip, from ccd's report (POST /agent/work).

@@ -368,15 +368,25 @@ func agentsFilterScript() g.Node {
   // them up — and the rules. The head applies the stored filter before the
   // first paint with them; this script keeps it applied. One definition, so
   // the two cannot disagree.
-  var R = window.__musterAgentsRules;
+  // R is the window's table AT EACH CALL, never the one this script was bound
+  // with: a boosted navigation into a newer build's page rebuilds the table
+  // (agentsRulesVersion) while this script stays bound.
+  var R = {};
+  ['terms', 'sel', 'chipsOf', 'chipSel', 'rules'].forEach(function (k) {
+    R[k] = function () { var r = window.__musterAgentsRules; return r[k].apply(r, arguments); };
+  });
   function terms(q) { return R.terms(q); }
   function sel(t) { return R.sel(t); }
   // The chosen chips are remembered per device (localStorage), in try/catch:
   // storage can be unavailable.
   var CHIPS_KEY = '` + agentsChipsStorageKey + `';
-  var chips = null;
+  // chips is the selection as read under table version chipsV: a rebuilt table
+  // re-reads it, so a chip the old table did not know is not lost.
+  var chips = null, chipsV = null;
   function chipsChosen() {
-    if (chips === null) {
+    var v = window.__musterAgentsRules.v;
+    if (chips === null || chipsV !== v) {
+      chipsV = v;
       chips = [];
       try { chips = R.chipsOf(localStorage.getItem(CHIPS_KEY)); } catch (e) { chips = []; }
     }
