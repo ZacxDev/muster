@@ -373,9 +373,9 @@ test('a queued message answers the ask, and its Cancel says the answer stays', a
   await expect(row).toHaveAttribute('data-queue-state', 'cancelled');
 });
 
-// ANSWERED WHERE THE NOTIFICATION LANDS (attention_asker.go): a tap on a
-// mirrored session's ask opens that session's rendered view (pushTargetFor —
-// internal/api's TestAnAskOverEachDoorPushesItsSession pins this URL). The view
+// ANSWERED WHERE THE NOTIFICATION LANDS (attention_asker.go): the
+// notification's URL, /attention/open/<key>, resolves a mirrored session's
+// ask to that session's rendered view when tapped (attention_push_target.go). The view
 // shows the ask with the queue's own form; a second ask arrives live; the
 // operator answers there, lands back on the view, and the session's wait
 // returns the answer. On a phone the block stays above the pinned composer.
@@ -401,8 +401,10 @@ for (const vp of [
       await page.goto(origin + '/login');
       await page.fill('#muster-password', password);
       await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
+      // The notification's URL (the tap route) resolves to the window's view.
       const view = origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
-      await page.goto(view);
+      await page.goto(origin + `/attention/open/ask-${id}`);
+      await page.waitForURL(view);
       const block = page.locator('#asker-asks');
       const item = block.locator(`#ask-${id}`);
       await expect(item.locator('[data-attention-text]')).toHaveText(`Merge on the ${vp.name}?`);

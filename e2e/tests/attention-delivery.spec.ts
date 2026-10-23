@@ -153,9 +153,9 @@ test('the operator answers the chief on /attention and the chief\'s session rece
   await expect(log).toContainText(REPLY);
 });
 
-// ANSWERED ON THE CHIEF'S OWN PAGE (attention_asker.go): a tap on the chief's
-// ask opens /agents/<chief> (pushTargetFor; internal/api's
-// TestAnAskOverEachDoorPushesItsSession pins it). The page shows the ask with
+// ANSWERED ON THE CHIEF'S OWN PAGE (attention_asker.go): the notification's
+// URL, /attention/open/<key>, resolves the chief's ask to /agents/<chief> when
+// tapped (attention_push_target.go). The page shows the ask with
 // the queue's own buttons; the operator taps one there, lands back on the
 // chief's page, the ask leaves it, and the chief's session receives the
 // answer as a turn — once.
@@ -176,7 +176,8 @@ for (const vp of [
       const { id } = JSON.parse(asked.text) as { id: number };
 
       const onChief = (u: URL) => u.pathname === '/agents/' + chiefName;
-      await page.goto(origin + '/agents/' + chiefName);
+      // The notification's URL (the tap route) resolves to the chief's page.
+      await page.goto(origin + `/attention/open/ask-${id}`);
       await page.waitForURL(onChief);
       const item = page.locator(`#asker-asks #ask-${id}`);
       await expect(item.locator('[data-attention-text]')).toHaveText(`Who takes task 43 (${vp.name})?`);

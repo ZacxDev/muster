@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/attention"
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // AN ASKER'S OPEN ASKS ON ITS OWN SESSION PAGE (attention_asker.go), on a real
@@ -61,13 +62,13 @@ func TestAnAgentPageShowsItsOwnOpenAsksWithTheQueuesForm(t *testing.T) {
 		t.Fatal("the agent page draws no asks block")
 	}
 	// Live: re-read on the queue's own SSE event (the event the server sends).
-	for _, want := range []string{`hx-get="/attention/asker?agent=` + url.QueryEscape(f.op.Name) + `"`, `hx-trigger="sse:` + EventAttentionChanged + ` from:body`} {
+	for _, want := range []string{`hx-get="/attention/asker?agent=` + url.QueryEscape(f.op.Name) + `&amp;session=`, `hx-trigger="sse:` + EventAttentionChanged + ` from:body`} {
 		if !strings.Contains(block, want) {
 			t.Errorf("the block lacks %q", want)
 		}
 	}
 	id := strconv.FormatInt(mine, 10)
-	back := `<input type="hidden" name="return" value="/agents/` + f.op.Name + `">`
+	back := `<input type="hidden" name="return" value="/agents/` + f.op.Name + `?session=` // the page's own chat session
 	for _, want := range []string{`id="` + attentionAskKey(mine) + `"`, "Ship the migration tonight?", `value="ship it"`, `value="wait for Monday"`,
 		`action="/attention/asks/` + id + `/answer"`, `action="/attention/asks/` + id + `/cancel"`, back, `name="answer"`, `hx-boost="false"`} {
 		if !strings.Contains(block, want) {
@@ -100,12 +101,23 @@ func TestAnAgentPageShowsItsOwnOpenAsksWithTheQueuesForm(t *testing.T) {
 // run.
 func TestAWindowViewShowsItsSessionsOpenAsksOnly(t *testing.T) {
 	f := newAttnFixture(t)
-	// @2, the same tmux session's other window, runs Claude session secondSID.
+	// Windows that share one part of @1's address each: @2 of the same tmux
+	// session (secondSID); window @1 of ANOTHER tmux session on ws, "side"
+	// (sideSID); and window @1 of session "main" on ANOTHER host, "laptop"
+	// (laptopSID) — so each part of the address is what tells them apart.
+	const sideSID = "2d4e6f80-1a2b-4c3d-8e4f-5a6b7c8d9e0f"
 	f.mirror.mu.Lock()
 	f.mirror.windows[1].ClaudeSession = secondSID
+	f.mirror.windows = append(f.mirror.windows, mirror.Window{Session: "side", ID: "@1", Index: 1, Active: true, Claude: true,
+		ClaudeSession: sideSID, Status: mirror.StatusIdle, StatusSince: attnSince, Activity: 1_700_000_000})
+	f.mirror.others = []mirror.HostView{{Host: "laptop", Online: true, Interactive: true, StatusReport: true, Rendered: true,
+		Windows: mirror.NormalizeWindows([]mirror.Window{{Session: "main", ID: "@1", Index: 1, Active: true, Claude: true, ClaudeSession: laptopSID,
+			Status: mirror.StatusIdle, StatusSince: attnSince, Activity: 1_700_000_000}}, 0)}}
 	f.mirror.mu.Unlock()
 	mine := f.mirrorAsk(t, "Merge the schema change?")
 	sibling := f.askAs(t, attention.Asker{MirrorHost: "ws", MirrorSession: secondSID, Label: "main:2 @ ws"}, "From the other window?")
+	otherSession := f.askAs(t, attention.Asker{MirrorHost: "ws", MirrorSession: sideSID, Label: "side:1 @ ws"}, "From another session's @1?")
+	otherHost := f.askAs(t, attention.Asker{MirrorHost: "laptop", MirrorSession: laptopSID, Label: "main:1 @ laptop"}, "From another host's main @1?")
 	elsewhere := f.askAs(t, attention.Asker{MirrorHost: "ws", MirrorSession: "5f5f5f5f-0000-4000-8000-00000000abcd", Label: "gone @ ws"}, "From a session no window runs?")
 	agentAsk := f.ask(t, f.opTok, "An agent's question?")
 	view := "/mirror/view?host=ws&session=main&window=%401"
@@ -119,7 +131,8 @@ func TestAWindowViewShowsItsSessionsOpenAsksOnly(t *testing.T) {
 			t.Errorf("the block lacks %q:\n%s", want, block)
 		}
 	}
-	for _, not := range []string{attentionAskKey(elsewhere.ID), attentionAskKey(agentAsk), attentionAskKey(sibling.ID)} {
+	for _, not := range []string{attentionAskKey(elsewhere.ID), attentionAskKey(agentAsk), attentionAskKey(sibling.ID),
+		attentionAskKey(otherSession.ID), attentionAskKey(otherHost.ID)} {
 		if strings.Contains(block, not) {
 			t.Errorf("the block shows %s, which is not this window's", not)
 		}
@@ -128,6 +141,15 @@ func TestAWindowViewShowsItsSessionsOpenAsksOnly(t *testing.T) {
 	other := askBlock(f.pageFollow(t, "/mirror/view?host=ws&session=main&window=%402"))
 	if !strings.Contains(other, attentionAskKey(sibling.ID)) || strings.Contains(other, attentionAskKey(mine.ID)) {
 		t.Errorf("@2's block:\n%s", other)
+	}
+	// Each of those windows' own views shows its own ask (the positive side).
+	for view, k := range map[string]string{
+		"/mirror/view?host=ws&session=side&window=%401":     attentionAskKey(otherSession.ID),
+		"/mirror/view?host=laptop&session=main&window=%401": attentionAskKey(otherHost.ID),
+	} {
+		if b := askBlock(f.pageFollow(t, view)); !strings.Contains(b, k) || strings.Contains(b, attentionAskKey(mine.ID)) {
+			t.Errorf("%s's block:\n%s", view, b)
+		}
 	}
 	// The view keeps it live with the queue page's own script.
 	if !strings.Contains(f.pageFollow(t, view), `document.getElementById("asker-asks")`) {
@@ -210,9 +232,74 @@ func TestTheChiefsTaskAskOffersItsActionsOnTheChiefsPage(t *testing.T) {
 	}
 	block := askBlock(w.Body.String())
 	for _, want := range []string{`id="` + attentionAskKey(out.ID) + `"`, `value="task_dispatch: start a new agent on it"`,
-		`action="/attention/asks/` + strconv.FormatInt(out.ID, 10) + `/answer"`, `name="return" value="/agents/` + f.chief.Name + `"`} {
+		`action="/attention/asks/` + strconv.FormatInt(out.ID, 10) + `/answer"`, `name="return" value="/agents/` + f.chief.Name + `?session=`} {
 		if !strings.Contains(block, want) {
 			t.Errorf("the chief's block lacks %q:\n%s", want, block)
+		}
+	}
+}
+
+// TestARefusedAnswerOnASessionPageGoesBackThereSayingWhy: an answer or a
+// dismissal that is not recorded — the ask was answered on another device
+// meanwhile, or the answer is blank — sends the browser back to the page it
+// was given on (its chat session kept) with a notice that page shows, never
+// the queue page in its place (it may be a framed view); a form given on the
+// queue still gets the queue page, as before. And a return address that
+// climbs out of the two page shapes ("..", raw or percent-encoded) is not
+// followed.
+func TestARefusedAnswerOnASessionPageGoesBackThereSayingWhy(t *testing.T) {
+	f := newAttnFixture(t)
+	post := func(id int64, verb string, v url.Values) *httptest.ResponseRecorder {
+		t.Helper()
+		body, hdr := form(v)
+		return f.call(t, http.MethodPost, "/attention/asks/"+strconv.FormatInt(id, 10)+"/"+verb, body, merge(f.operator(), hdr))
+	}
+	// The agent page's own address: its active chat session in the URL.
+	first := f.call(t, http.MethodGet, "/agents/"+f.op.Name, nil, f.operator())
+	agentPage := first.Header().Get("Location")
+	if !strings.HasPrefix(agentPage, "/agents/"+f.op.Name+"?session=") {
+		t.Fatalf("the agent page's address: %d %q", first.Code, agentPage)
+	}
+	view := "/mirror/view?host=ws&session=main&window=%401"
+	closed := f.ask(t, f.opTok, "Answered on the phone already?")
+	if _, err := f.srv.answerAsk(asUser(1), closed, "yes"); err != nil {
+		t.Fatal(err)
+	}
+	open := f.ask(t, f.opTok, "Still open?")
+	for _, c := range []struct {
+		id         int64
+		verb, ret  string
+		answer     string
+		wantLoc    string
+		wantStatus int
+	}{
+		{closed, "answer", agentPage, "x", agentPage + "&notice=" + noticeAskClosed, http.StatusSeeOther},
+		{closed, "cancel", view, "", view + "&notice=" + noticeAskClosed, http.StatusSeeOther},
+		{open, "answer", agentPage, "   ", agentPage + "&notice=" + noticeAskInvalid, http.StatusSeeOther},
+		// Given on the queue: the queue page, with its problem (unchanged).
+		{closed, "answer", "", "x", "", http.StatusConflict},
+	} {
+		v := url.Values{"answer": {c.answer}}
+		if c.ret != "" {
+			v.Set("return", c.ret)
+		}
+		w := post(c.id, c.verb, v)
+		if w.Code != c.wantStatus || w.Header().Get("Location") != c.wantLoc {
+			t.Errorf("%s %d (return %q): %d Location %q; want %d %q", c.verb, c.id, c.ret, w.Code, w.Header().Get("Location"), c.wantStatus, c.wantLoc)
+		}
+	}
+	// The page says it.
+	if p := f.pageFollow(t, agentPage+"&notice="+noticeAskClosed); !strings.Contains(p, composerNotices[noticeAskClosed].text) {
+		t.Error("the agent page does not show the refused answer's notice")
+	}
+	if p := f.pageFollow(t, view+"&notice="+noticeAskClosed); !strings.Contains(p, composerNotices[noticeAskClosed].text) {
+		t.Error("the view does not show the refused answer's notice")
+	}
+	// Dot segments: not followed, raw or encoded.
+	for _, ret := range []string{"/agents/../tasks", "/agents/%2e%2e/tasks", "/agents/%2E%2E/admin", "/mirror/view/../../tasks?x", "/agents/./x"} {
+		id := f.ask(t, f.opTok, "Dots "+ret)
+		if w := post(id, "answer", url.Values{"answer": {"ok"}, "return": {ret}}); w.Header().Get("Location") != "/attention" {
+			t.Errorf("return %q lands on %q, want /attention", ret, w.Header().Get("Location"))
 		}
 	}
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -47,14 +48,21 @@ const attentionAskerPath = attentionPath + "/asker"
 // askerRef names an asker's session page: an agent (by name) or a mirrored
 // window.
 type askerRef struct {
-	agent  string
-	mirror ui.MirrorRef
+	agent string
+	// session is the agent page's chat session (its ?session=), 0 for none:
+	// the page an answer returns to is the one it was given on.
+	session int64
+	mirror  ui.MirrorRef
 }
 
 // page is the session page itself: where an answer returns to.
 func (r askerRef) page() string {
 	if r.agent != "" {
-		return "/agents/" + url.PathEscape(r.agent)
+		p := "/agents/" + url.PathEscape(r.agent)
+		if r.session > 0 {
+			p += "?session=" + strconv.FormatInt(r.session, 10)
+		}
+		return p
 	}
 	return r.mirror.ViewPath()
 }
@@ -62,7 +70,11 @@ func (r askerRef) page() string {
 // src is the block's fragment URL.
 func (r askerRef) src() string {
 	if r.agent != "" {
-		return attentionAskerPath + "?" + url.Values{"agent": {r.agent}}.Encode()
+		v := url.Values{"agent": {r.agent}}
+		if r.session > 0 {
+			v.Set("session", strconv.FormatInt(r.session, 10))
+		}
+		return attentionAskerPath + "?" + v.Encode()
 	}
 	v := url.Values{"host": {r.mirror.Host}, "session": {r.mirror.Session}}
 	if r.mirror.Window != "" {
@@ -163,6 +175,12 @@ func (s *Server) handleAttentionAsker(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	ref := askerRef{agent: q.Get("agent"), mirror: ui.MirrorRef{Host: q.Get("host"), Session: q.Get("session"), Window: q.Get("window")}}
+	if ref.agent != "" {
+		// An agent's ?session= is its chat session's id (the page's), not a
+		// mirrored session's name.
+		ref.mirror = ui.MirrorRef{}
+		ref.session, _ = strconv.ParseInt(q.Get("session"), 10, 64)
+	}
 	if ref.agent == "" && (ref.mirror.Host == "" || ref.mirror.Session == "") {
 		http.Error(w, "name an agent, or a host and session", http.StatusBadRequest)
 		return
@@ -178,12 +196,61 @@ func (s *Server) handleAttentionAsker(w http.ResponseWriter, r *http.Request) {
 // pages that draw the form (an agent's page, a window's rendered view) on this
 // origin (safeReturnTo — never an open redirect); otherwise the queue.
 func attentionReturn(r *http.Request) string {
-	v := r.PostFormValue("return")
-	if v == "" || safeReturnTo(v) != v {
-		return attentionPath
-	}
-	if strings.HasPrefix(v, "/agents/") || strings.HasPrefix(v, "/mirror/view?") {
+	if v, ok := attentionReturnPage(r); ok {
 		return v
 	}
 	return attentionPath
+}
+
+// attentionReturnPage is the form's `return` when it is a session page
+// (attentionReturn's rule), and whether it is.
+func attentionReturnPage(r *http.Request) (string, bool) {
+	v := r.PostFormValue("return")
+	if v == "" || safeReturnTo(v) != v {
+		return "", false
+	}
+	return v, strings.HasPrefix(v, "/agents/") || strings.HasPrefix(v, "/mirror/view?")
+}
+
+// attentionFormFailed answers a refused answer or dismissal: given on a
+// session page, that page again with a notice saying why (it may be a framed
+// view, which must not fill with the queue page); given on the queue, the
+// queue page with its problem, as before.
+func (s *Server) attentionFormFailed(w http.ResponseWriter, r *http.Request, err error, cur attention.Ask) {
+	if page, ok := attentionReturnPage(r); ok {
+		code := noticeAskFailed
+		switch {
+		case errors.Is(err, attention.ErrNotOpen), errors.Is(err, attention.ErrNotFound):
+			code = noticeAskClosed
+		case errors.Is(err, attention.ErrInvalid):
+			code = noticeAskInvalid
+		}
+		http.Redirect(w, r, withNotice(page, code), http.StatusSeeOther)
+		return
+	}
+	s.renderAttentionPage(w, r, attentionErrCode(err), attentionErrText(err, cur))
+}
+
+// An answer or a dismissal given on a session page that was not recorded: the
+// page is shown again with one of these composer notices (composerNotices),
+// saying why.
+const (
+	noticeAskClosed  = "ask-closed"
+	noticeAskInvalid = "ask-invalid"
+	noticeAskFailed  = "ask-failed"
+)
+
+func init() {
+	composerNotices[noticeAskClosed] = struct {
+		text string
+		ok   bool
+	}{"Not recorded: that question is no longer open — it was answered, dismissed or expired elsewhere.", false}
+	composerNotices[noticeAskInvalid] = struct {
+		text string
+		ok   bool
+	}{"Not recorded: an answer is non-blank text, up to 8000 characters, or one of the question's options.", false}
+	composerNotices[noticeAskFailed] = struct {
+		text string
+		ok   bool
+	}{"Not recorded: the answer could not be saved. Try again, or answer on the Asks page.", false}
 }

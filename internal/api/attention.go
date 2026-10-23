@@ -545,7 +545,8 @@ func (s *Server) attentionChanged(owner int64, key string) {
 // attentionNotify pushes one new item to owner's devices, under the
 // `attention` toggle. goNotify keeps it off the router: the router has no
 // attention card, and its notifications are its own. A tap opens
-// pushTargetFor's page: the item's session, or its place on the queue.
+// attentionOpenURL, which resolves the item's session (or its place on the
+// queue) when tapped: nothing is read here.
 func (s *Server) attentionNotify(owner int64, it attentionItem) {
 	title := "An agent needs your input"
 	if it.Kind == attentionKindSession {
@@ -554,7 +555,7 @@ func (s *Server) attentionNotify(owner int64, it attentionItem) {
 		title = "A session asks you a question"
 	}
 	s.goNotify(owner, push.EventAttention, RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: title, Body: attentionPushBody(it),
-		Tag: attentionTag(it.Key), Data: map[string]string{"url": s.pushTargetFor(owner, it)}}, nil)
+		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}}, nil)
 }
 
 // attentionPushBody is an item's notification body: WHO and WHERE, never WHAT.
@@ -771,6 +772,7 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("GET "+attentionPath, s.requireSession(s.handleAttentionPage))
 	mux.HandleFunc("GET "+attentionPath+"/items", s.requireSession(s.handleAttentionItems))
 	mux.HandleFunc("GET "+attentionAskerPath, s.requireSession(s.handleAttentionAsker))
+	mux.HandleFunc("GET "+attentionOpenPath+"{key}", s.requireSession(s.handleAttentionOpen))
 	mux.HandleFunc("GET "+ui.AttentionBadgePath, s.requireSession(s.handleAttentionBadge))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))
@@ -1039,7 +1041,7 @@ func (s *Server) handleAttentionAnswerForm(w http.ResponseWriter, r *http.Reques
 		if attentionErrCode(err) == http.StatusInternalServerError {
 			s.logger.Printf("attention: answer %d: %v", id, err)
 		}
-		s.renderAttentionPage(w, r, attentionErrCode(err), attentionErrText(err, a))
+		s.attentionFormFailed(w, r, err, a)
 		return
 	}
 	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)
@@ -1057,7 +1059,7 @@ func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Reques
 	}
 	a, err := s.cancelAsk(r.Context(), id)
 	if err != nil {
-		s.renderAttentionPage(w, r, attentionErrCode(err), attentionErrText(err, a))
+		s.attentionFormFailed(w, r, err, a)
 		return
 	}
 	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)

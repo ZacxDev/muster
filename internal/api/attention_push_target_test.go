@@ -97,14 +97,13 @@ func windowSession(window string) string {
 	return "main"
 }
 
-// TestEachAttentionPushOpensItsSessionOrItsItem is the rule, per item kind:
-// the URL the `attention` push carries (what a tap opens on either device).
-// A push about something with a session opens that session's page; anything
-// else keeps its item on the queue page.
-func TestEachAttentionPushOpensItsSessionOrItsItem(t *testing.T) {
-	store, pusher := &memPush{}, &payloadPusher{}
-	claim(t, store, 1, ep("pt-table"))
-	s := pushTargetServer(t, store, pusher)
+// TestEachItemOpensItsSessionOrItsItem is the rule, per item kind: where a
+// tap on its notification lands (pushTargetFor, run when tapped). Something
+// with a session opens that session's page; anything else its item on the
+// queue page.
+func TestEachItemOpensItsSessionOrItsItem(t *testing.T) {
+	s := pushTargetServer(t, nil, nil)
+	ctx := s.attentionPrincipal(context.Background(), 1)
 	now := time.Now()
 	ask := func(id int64, asker attention.Asker) attentionItem {
 		return askItem(attention.Ask{ID: id, Owner: 1, Asker: asker, Question: "q", CreatedAt: now})
@@ -134,42 +133,25 @@ func TestEachAttentionPushOpensItsSessionOrItsItem(t *testing.T) {
 		{"a task ask muster raised itself", ask(57, attention.Asker{System: true, Label: attention.SystemAskerLabel}), "/attention#ask-57"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			pusher.mu.Lock()
-			pusher.got = nil
-			pusher.mu.Unlock()
-			s.attentionNotify(1, c.it)
-			s.WaitForPushes()
-			got := pusher.to(ep("pt-table"))
-			if len(got) != 1 {
-				t.Fatalf("got %d pushes, want 1", len(got))
-			}
-			if u := got[0].Data["url"]; u != c.want {
-				t.Fatalf("the push opens %q, want %q", u, c.want)
-			}
-			// Tag and collapse behaviour unchanged: one tag per item.
-			if got[0].Tag != attentionTag(c.it.Key) {
-				t.Fatalf("tag %q, want %q", got[0].Tag, attentionTag(c.it.Key))
+			if got := s.pushTargetFor(ctx, 1, c.it); got != c.want {
+				t.Fatalf("opens %q, want %q", got, c.want)
 			}
 		})
 	}
 }
 
-// TestAnAgentReadFailureLinksTheQueue: an asking agent that cannot be read
-// (a database blip, not a missing row) still pushes, linking its item.
-func TestAnAgentReadFailureLinksTheQueue(t *testing.T) {
-	store, pusher := &memPush{}, &payloadPusher{}
-	claim(t, store, 1, ep("pt-blip"))
-	s := pushTargetServer(t, store, pusher)
+// TestAnAgentReadFailureOpensTheQueue: an asking agent that cannot be read (a
+// database blip, not a missing row) opens its item, and the reason is said.
+func TestAnAgentReadFailureOpensTheQueue(t *testing.T) {
+	s := pushTargetServer(t, nil, nil)
 	var logs strings.Builder
 	s.logger = log.New(&syncWriter{w: &logs}, "", 0)
 	s.ext.Agents = pushTargetAgents{err: errors.New("connection reset")}
-	s.attentionNotify(1, askItem(attention.Ask{ID: 61, Owner: 1, Asker: attention.Asker{AgentID: 7}, Question: "q"}))
-	s.WaitForPushes()
-	if got := pusher.to(ep("pt-blip")); len(got) != 1 || got[0].Data["url"] != "/attention#ask-61" {
-		t.Fatalf("pushes %+v", got)
+	it := askItem(attention.Ask{ID: 61, Owner: 1, Asker: attention.Asker{AgentID: 7}, Question: "q"})
+	if got := s.pushTargetFor(s.attentionPrincipal(context.Background(), 1), 1, it); got != "/attention#ask-61" {
+		t.Fatalf("opens %q", got)
 	}
-	// The read failure is the reason, and it is said (a missing row is not).
-	if !strings.Contains(logs.String(), "the push target of agent 7's ask: connection reset") {
+	if !strings.Contains(logs.String(), "the tap target of agent 7's ask: connection reset") {
 		t.Fatalf("log %q", logs.String())
 	}
 }
@@ -179,12 +161,28 @@ func TestAnAgentReadFailureLinksTheQueue(t *testing.T) {
 // characters only. A target it refuses opens the app's home page instead.
 var androidMusterPath = regexp.MustCompile(`^/[A-Za-z0-9\-._~!$&'()*+,;=:@%/?#]*$`)
 
-// TestASessionPushCarriesItsSessionToBothDevices: the session URL reaches the
-// browser (push.Payload data.url, what sw.js opens) and the paired phone
-// (payload v2's url, what the app opens) alike, as a path the phone accepts —
-// a window name with spaces, ampersands and non-ASCII included; and a
-// no-session item's fallback likewise.
-func TestASessionPushCarriesItsSessionToBothDevices(t *testing.T) {
+// countingAgents counts every read of the agent store (any method but Get
+// panics on the nil Store, which also counts as a read).
+type countingAgents struct {
+	agents.Store
+	mu    sync.Mutex
+	reads int
+}
+
+func (c *countingAgents) Get(context.Context, int64) (agents.Agent, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reads++
+	return agents.Agent{ID: 7, OwnerID: 1, Name: "ptworker-7"}, nil
+}
+
+// TestEveryAttentionPushCarriesItsTapURLToBothDevices: every item's push —
+// whatever its kind — carries GET /attention/open/<key> to the browser
+// (data.url, what sw.js opens) and the paired phone (payload v2's url) alike,
+// a path the phone's rule accepts; and the send reads NOTHING to build it (no
+// agent row, no host list), so attention_ask and a task ask do no inline
+// I/O for the notification.
+func TestEveryAttentionPushCarriesItsTapURLToBothDevices(t *testing.T) {
 	store := &memPush{}
 	web, native := ep("pt-web"), ep("pt-native")
 	claim(t, store, 1, web)
@@ -196,24 +194,20 @@ func TestASessionPushCarriesItsSessionToBothDevices(t *testing.T) {
 	store.mu.Unlock()
 	pusher := &rawPusher{}
 	s := pushTargetServer(t, store, pusher)
+	session := waitingItem(t, s, "@1")
+	reads := &countingAgents{}
+	s.ext.Agents = reads
 	fm := s.ext.Mirror.(*fakeMirror)
-	fm.mu.Lock()
-	fm.windows[0].Session = "my work & café"
-	fm.mu.Unlock()
-
-	it := attentionItem{}
-	for _, x := range s.waitingSessions(s.attentionPrincipal(context.Background(), 1)) {
-		if x.Kind == attentionKindSession && x.hermes == nil {
-			it = x
-		}
-	}
-	const want = "/mirror/view?host=ws&session=my+work+%26+caf%C3%A9&window=%401"
+	hostReads := 0
+	s.ext.Mirror = &hostCounter{fakeMirror: fm, n: &hostReads}
 	for _, c := range []struct {
 		it   attentionItem
 		want string
 	}{
-		{it, want},
-		{askItem(attention.Ask{ID: 71, Owner: 1, Asker: attention.Asker{System: true, Label: attention.SystemAskerLabel}, Question: "q"}), "/attention#ask-71"},
+		{session, "/attention/open/" + session.Key},
+		{askItem(attention.Ask{ID: 71, Owner: 1, Asker: attention.Asker{System: true, Label: attention.SystemAskerLabel}, Question: "q"}), "/attention/open/ask-71"},
+		{askItem(attention.Ask{ID: 72, Owner: 1, Asker: attention.Asker{AgentID: 7, Label: "w"}, Question: "q"}), "/attention/open/ask-72"},
+		{askItem(attention.Ask{ID: 73, Owner: 1, Asker: attention.Asker{MirrorHost: "ws", MirrorSession: focusSID, Label: "s"}, Question: "q"}), "/attention/open/ask-73"},
 	} {
 		pusher.mu.Lock()
 		pusher.got = nil
@@ -224,19 +218,33 @@ func TestASessionPushCarriesItsSessionToBothDevices(t *testing.T) {
 		pusher.one(t, web, &b)
 		var n push.PayloadV2
 		pusher.one(t, native, &n)
-		if b.Data["url"] != c.want || n.URL != c.want || n.V != 2 || n.Tag != attentionTag(c.it.Key) {
-			t.Fatalf("browser url %q, native %+v; want url %q", b.Data["url"], n, c.want)
+		if b.Data["url"] != c.want || n.URL != c.want || n.V != 2 || n.Tag != attentionTag(c.it.Key) || b.Tag != attentionTag(c.it.Key) {
+			t.Fatalf("browser %+v, native %+v; want url %q", b, n, c.want)
 		}
-		if !androidMusterPath.MatchString(n.URL) {
-			t.Fatalf("the phone refuses %q as a tap target", n.URL)
+		if !androidMusterPath.MatchString(n.URL) || !attentionOpenKey.MatchString(strings.TrimPrefix(n.URL, attentionOpenPath)) {
+			t.Fatalf("%q is not a tap target the phone and the route both accept", n.URL)
 		}
 	}
+	if reads.reads != 0 || hostReads != 0 {
+		t.Fatalf("the sends read the agent store %d and the host list %d time(s); want none", reads.reads, hostReads)
+	}
+}
+
+// hostCounter is a mirror whose host list is counted.
+type hostCounter struct {
+	*fakeMirror
+	n *int
+}
+
+func (h *hostCounter) Hosts(ctx context.Context) []mirror.HostView {
+	*h.n++
+	return h.fakeMirror.Hosts(ctx)
 }
 
 // TestTheSessionPushPayloadIsWhatTheWorkerReads pins a SESSION item's
 // notification byte for byte, as TestTheAttentionPayloadsAreWhatTheWorkerReads
 // pins an ask's: e2e/tests/push.spec.ts delivers this SAME document to the real
-// service worker and asserts a tap opens the session.
+// service worker and asserts a tap opens its URL in the open tab.
 func TestTheSessionPushPayloadIsWhatTheWorkerReads(t *testing.T) {
 	store, pusher := &memPush{}, &rawPusher{}
 	claim(t, store, 1, ep("pt-pin"))
@@ -244,11 +252,9 @@ func TestTheSessionPushPayloadIsWhatTheWorkerReads(t *testing.T) {
 	s.attentionNotify(1, attentionItem{Key: "session-0011223344556677", Kind: attentionKindSession, Source: "build @ ws", host: "ws",
 		card: attentionCard{ref: waitingItem(t, s, "@1").card.ref}})
 	s.WaitForPushes()
-	// encoding/json escapes "&" in a string as \u0026 (the browser decodes it).
-	const jsonAmp = "\x5cu0026"
 	var raw json.RawMessage
 	pusher.one(t, ep("pt-pin"), &raw)
-	const want = `{"type":"attention","id":"session-0011223344556677","title":"A session is waiting on you","body":"Waiting: build @ ws","tag":"attention-session-0011223344556677","data":{"url":"/mirror/view?host=ws` + jsonAmp + `session=main` + jsonAmp + `window=%401"}}`
+	const want = `{"type":"attention","id":"session-0011223344556677","title":"A session is waiting on you","body":"Waiting: build @ ws","tag":"attention-session-0011223344556677","data":{"url":"/attention/open/session-0011223344556677"}}`
 	if string(raw) != want {
 		t.Fatalf("payload:\n%s\nwant:\n%s", raw, want)
 	}

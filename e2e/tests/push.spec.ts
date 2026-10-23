@@ -217,22 +217,26 @@ test('an attention notification is shown with its tag and link, and its resolved
   const deliver = (data: string) => cdp.send('ServiceWorker.deliverPushMessage', { origin, registrationId, data });
 
   await deliver(
-    '{"type":"attention","id":"ask-41","title":"An agent needs your input","body":"worker-7: Deploy the importer now?","tag":"attention-ask-41","data":{"url":"/attention#ask-41"}}',
+    '{"type":"attention","id":"ask-41","title":"An agent needs your input","body":"worker-7: Deploy the importer now?","tag":"attention-ask-41","data":{"url":"/attention/open/ask-41"}}',
   );
-  const note = { title: 'An agent needs your input', body: 'worker-7: Deploy the importer now?', tag: 'attention-ask-41', url: '/attention#ask-41' };
+  const note = { title: 'An agent needs your input', body: 'worker-7: Deploy the importer now?', tag: 'attention-ask-41', url: '/attention/open/ask-41' };
   await expect.poll(shown).toEqual([{ ...note, open: true }]);
   await deliver('{"type":"resolved","id":"ask-41","tag":"attention-ask-41"}');
   await expect.poll(shown).toEqual([{ ...note, open: false }]);
 });
 
 // TAPPING an attention notification (operator ask: "go straight to the
-// session"): a session item's notification brings the OPEN muster tab forward
-// and navigates it to that session's page; a no-session item's to its item on
-// /attention. Each payload is delivered to the real worker exactly as the
-// server sends it — the session one is the document internal/api's
-// TestTheSessionPushPayloadIsWhatTheWorkerReads pins (encoding/json writes "&"
-// as &) — and the worker's real notificationclick handler, clients
-// lookup and client.navigate do the rest.
+// session"): the notification brings the OPEN muster tab forward and
+// navigates it to its tap route, GET /attention/open/<key>, which resolves the
+// target when tapped (internal/api attention_push_target.go) — the session's
+// page, or the item on the queue when it has none. Each payload is delivered
+// to the real worker exactly as the server sends it (the session one is the
+// document internal/api's TestTheSessionPushPayloadIsWhatTheWorkerReads pins),
+// and the worker's real notificationclick handler, clients lookup and
+// client.navigate do the rest. This server mirrors no host, so the waiting
+// window it names no longer exists and the tap lands on its queue item — the
+// stale-target case; attention.spec.ts and attention-delivery.spec.ts follow
+// the same route to a live session page.
 //
 // ⚠ STUBBED, AND WHY: headless Chromium shows no notification (see above), so
 // the click is a synthetic notificationclick carrying the notification the
@@ -240,7 +244,7 @@ test('an attention notification is shown with its tag and link, and its resolved
 // TRUSTED notificationclick, so WindowClient.focus is replaced by a counter
 // (what it would have focused is the same client navigate() then moves, which
 // is real) and waitUntil, which refuses an untrusted event, by a collector.
-test('tapping an attention notification opens its session, or its item when it has none, in the open tab', async ({ page, context }) => {
+test('tapping an attention notification follows its tap route in the open tab', async ({ page, context }) => {
   await signIn(page);
   const registered = context.serviceWorkers().length ? Promise.resolve(context.serviceWorkers()[0]) : context.waitForEvent('serviceworker');
   await page.goto(origin + '/tasks');
@@ -293,27 +297,32 @@ test('tapping an attention notification opens its session, or its item when it h
   const click = (tag: string) => worker.evaluate((t) => (self as unknown as { __click: (t: string) => Promise<void> }).__click(t), tag);
   const focused = () => worker.evaluate(() => (self as unknown as { __focused: number }).__focused);
 
-  // A waiting mirrored session: the session's rendered view, query and all.
-  const amp = '\\' + 'u0026';
-  const session = '/mirror/view?host=ws&session=main&window=%401';
+  // The tab follows the tap route; record what it asked for.
+  const opened: string[] = [];
+  page.on('request', (r) => {
+    if (r.isNavigationRequest() && r.frame() === page.mainFrame()) opened.push(new URL(r.url()).pathname);
+  });
+  // A waiting mirrored window's notification. The window is gone by the tap
+  // (this server mirrors no host), so its route lands on its queue item.
   await deliver(
     '{"type":"attention","id":"session-0011223344556677","title":"A session is waiting on you","body":"Waiting: build @ ws",' +
-      '"tag":"attention-session-0011223344556677","data":{"url":"/mirror/view?host=ws' + amp + 'session=main' + amp + 'window=%401"}}',
+      '"tag":"attention-session-0011223344556677","data":{"url":"/attention/open/session-0011223344556677"}}',
   );
   await expect.poll(() => recorded('attention-session-0011223344556677')).toBe(true);
   await click('attention-session-0011223344556677');
-  await page.waitForURL(origin + session);
-  expect(new URL(page.url()).searchParams.get('window'), 'the window survives the query encoding').toBe('@1');
+  await page.waitForURL(origin + '/attention#session-0011223344556677');
+  expect(opened, 'the tab went through the tap route').toContain('/attention/open/session-0011223344556677');
   expect(await focused(), 'the open tab is the one brought forward').toBe(1);
   expect(context.pages(), 'no second tab is opened').toHaveLength(1);
 
   // A question muster raised itself (no session): its item on the queue.
   await deliver(
-    '{"type":"attention","id":"ask-71","title":"An agent needs your input","body":"muster is asking","tag":"attention-ask-71","data":{"url":"/attention#ask-71"}}',
+    '{"type":"attention","id":"ask-71","title":"An agent needs your input","body":"muster is asking","tag":"attention-ask-71","data":{"url":"/attention/open/ask-71"}}',
   );
   await expect.poll(() => recorded('attention-ask-71')).toBe(true);
   await click('attention-ask-71');
   await page.waitForURL(origin + '/attention#ask-71');
+  expect(opened).toContain('/attention/open/ask-71');
   expect(await focused()).toBe(2);
   expect(context.pages()).toHaveLength(1);
 });

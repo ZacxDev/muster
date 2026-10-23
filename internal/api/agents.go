@@ -1443,7 +1443,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
 	// The agent's open attention asks, answerable here (attention_asker.go).
-	view.Asks, view.AsksSrc = s.askerAsksBlock(ctx, askerRef{agent: a.Name})
+	view.Asks, view.AsksSrc = s.askerAsksBlock(ctx, askerRef{agent: a.Name, session: active.ID})
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {

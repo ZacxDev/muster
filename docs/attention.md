@@ -59,7 +59,11 @@ it to anyone holding the phone: `<asker> is asking` for a question, `Waiting:
 <tool name> · <window> @ <host>` for a session (no command, path or URL). The
 question, the command and the message are on the page. Each item has one tag, so a
 notification is replaced, never stacked. **A tap opens the item's session**
-when it has one, on the browser and the paired phone alike: a waiting window or
+when it has one, on the browser and the paired phone alike, decided when you
+tap, not when it was sent (the notification opens `/attention/open/<key>`,
+which resolves it then — a window that closed, an agent that was destroyed or
+an ask answered meanwhile opens its item on `/attention` instead of a dead
+page): a waiting window or
 a held question opens that window's rendered view; a dispatched agent's question
 opens the agent's page (`/agents/<name>`); a mirrored Claude session's question
 opens the window running that session, found when the notification is sent.
