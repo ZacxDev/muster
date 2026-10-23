@@ -206,6 +206,9 @@ export const clsListPort = port + 170;
 // The Agents list's Idle section (agents-idle.spec.ts): its own server (the
 // e2eterm binary, mirror plugin on) and one mirrored host.
 export const agentsIdlePort = port + 175;
+// The side nav on every signed-in page (sidenav.spec.ts): its own server (the
+// e2eterm binary, mirror and plugins on) and one per-window mirrored host.
+export const sidenavPort = port + 185;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

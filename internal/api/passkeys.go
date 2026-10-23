@@ -371,7 +371,7 @@ func (s *Server) renderAccountPasskeys(w http.ResponseWriter, r *http.Request, c
 	if r.URL.Query().Get("welcome") == "1" {
 		skip = `<a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline" id="passkey-skip">Skip for now</a>`
 	}
-	writeAuthDocument(w, code, "Passkeys", `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	s.writeNavDocument(w, r, code, "Passkeys", ui.NavAccount, `<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Passkeys</h1>
 `+b.String()+`
 <p class="text-sm text-fg2" id="passkey-status" role="status" aria-live="polite"></p>

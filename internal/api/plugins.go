@@ -335,7 +335,7 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 	b.WriteString(`<a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
 	b.WriteString(s.draftStepUpHTML(r))
-	writeAuthDocument(w, code, "Plugins", b.String())
+	s.writeNavDocument(w, r, code, "Plugins", "", b.String())
 }
 
 // queuedText is a plugin's undelivered-message count in words.

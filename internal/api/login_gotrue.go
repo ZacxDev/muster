@@ -344,7 +344,7 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("reset") == "1" {
 		resetNote = `<p class="text-sm font-semibold text-fg" role="status">` + ResetDoneNote + `</p>`
 	}
-	writeAuthDocument(w, http.StatusOK, "Account", `<div class="flex flex-col gap-4"><section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
+	s.writeNavDocument(w, r, http.StatusOK, "Account", ui.NavAccount, `<div class="flex flex-col gap-4"><section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line">
 <h1 class="text-balance text-base font-semibold text-fg">Account</h1>
 `+resetNote+`
 <p class="text-sm text-fg2">Signed in as <span class="font-semibold text-fg">`+html.EscapeString(who)+`</span>.</p>

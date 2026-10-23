@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/auth"
 	"github.com/ZacxDev/muster/internal/authz"
+	"github.com/ZacxDev/muster/internal/ui"
 	"github.com/ZacxDev/muster/internal/users"
 )
 
@@ -123,8 +124,9 @@ const (
 	adminQuiet  = `press min-h-[44px] rounded-md bg-bg px-3 py-2 text-sm font-semibold text-fg ring-1 ring-inset ring-edge`
 )
 
-// writeAdminDocument is writeAuthDocument with the admin header.
-func writeAdminDocument(w http.ResponseWriter, code int, title, active, inner string) {
+// writeAdminDocument is writeNavDocument with the admin sub-tabs, which stay
+// inside the page content (the side nav marks Admin; these pick the page).
+func (s *Server) writeAdminDocument(w http.ResponseWriter, r *http.Request, code int, title, active, inner string) {
 	tab := func(href, label string) string {
 		cls := "inline-flex min-h-[44px] items-center rounded-md px-3 text-sm font-medium text-fg2 hover:bg-s2"
 		cur := ""
@@ -134,7 +136,7 @@ func writeAdminDocument(w http.ResponseWriter, code int, title, active, inner st
 		}
 		return `<a href="` + href + `"` + cur + ` class="` + cls + `">` + label + `</a>`
 	}
-	writeAuthDocument(w, code, title, `<nav aria-label="Admin" class="mb-4 flex flex-wrap items-center gap-1">
+	s.writeNavDocument(w, r, code, title, ui.NavAdmin, `<nav aria-label="Admin" class="mb-4 flex flex-wrap items-center gap-1">
 <a href="/" class="inline-flex min-h-[44px] items-center px-2 text-sm text-accent underline">← muster</a>
 `+tab("/admin/users", "Users")+tab("/admin/invites", "Invites")+tab("/account", "Account")+`
 </nav>
@@ -225,7 +227,7 @@ func (s *Server) renderAdminUsers(w http.ResponseWriter, r *http.Request, code i
 		}
 		b.WriteString(`</ul></section>`)
 	}
-	writeAdminDocument(w, code, "Users", "/admin/users", b.String())
+	s.writeAdminDocument(w, r, code, "Users", "/admin/users", b.String())
 }
 
 // adminUserTarget reads {id} and refuses acting on an unknown user.
@@ -415,7 +417,7 @@ func (s *Server) renderAdminInvites(w http.ResponseWriter, r *http.Request, code
 		b.WriteString(`</li>`)
 	}
 	b.WriteString(`</ul></section>`)
-	writeAdminDocument(w, code, "Invites", "/admin/invites", b.String())
+	s.writeAdminDocument(w, r, code, "Invites", "/admin/invites", b.String())
 }
 
 // handleAdminInviteCreate mints an invite: 32 random bytes, only their sha256

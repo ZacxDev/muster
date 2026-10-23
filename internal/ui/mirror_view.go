@@ -89,6 +89,10 @@ type MirrorViewView struct {
 	// (FocusHistoryPath); "" when the host reports no Claude session for the
 	// window, which then has none. The index sheet's second tab.
 	FocusHistory string
+	// Nav is the navigation the page draws: an overlay sidebar (sidebarIn's
+	// overlay — this page is sized to the window) and its hamburger, or, in the
+	// view-swap frame (Nav.Embedded), nothing.
+	Nav NavChrome
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -112,7 +116,10 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		// Pinned to the visible viewport, not in flow at the bottom of the body:
 		// on a phone the body's bottom can be under the browser's chrome, and
 		// this page cannot be scrolled to bring it back (composerPinScript).
-		Pinned: true}
+		Pinned: true,
+		// The side nav's appScript carries the `/` menu's ranker; an embedded
+		// view has no nav, so its menu embeds its own.
+		RankFromApp: !v.Nav.Embedded}
 	working := "Claude is working…"
 	switch {
 	case v.Hermes && !v.HermesSend:
@@ -138,14 +145,19 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				manifestLink(),
 				TitleEl(g.Text(mirrorQualified(plainOr(displayOr(v.Label, v.Title), v.Session), v.Qualifier)+" · Mirrored · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
+				overlayNavHead(v.Nav),
 				faroHead(),
 			),
 			Body(
 				// The app shell (only #mv-log scrolls), sized to the visible
 				// viewport and ending above the pinned composer.
 				Class(pinnedShellClass+" bg-bg text-fg antialiased"),
+				// The navigation: position:fixed, so it takes no room in the
+				// column (nothing below moves), and an overlay at every width.
+				overlayNav(v.Nav, "agents"),
 				Header(
 					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
+					overlayNavButton(v.Nav),
 					A(
 						ID("mv-back"),
 						Href("/agents"),
@@ -208,6 +220,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				chatIndexSheet(v.FocusHistory, "mirror-view:"+ref.query()),
 				chatIndexScript(),
 				mirrorComposerScript(),
+				overlayNavScript(v.Nav),
 				pwaChrome(),
 			),
 		),

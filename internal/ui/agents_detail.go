@@ -73,6 +73,9 @@ const (
 
 // AgentDetailView is the data the agent detail page renders.
 type AgentDetailView struct {
+	// Embedded: this document is the view-swap frame over the agent's
+	// terminal (NavChrome.Embedded) — no sidebar, no hamburger, no rail offset.
+	Embedded    bool
 	ID          int64
 	Name        string
 	DisplayName string
@@ -214,7 +217,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// 'agents', so the server's first paint and the client's show()
 				// agree on which link is current. Marking the section index for a
 				// detail view is standard practice.
-				sidebar("agents", "agents", false, feat),
+				g.If(!v.Embedded, sidebar("agents", "agents", false, feat)),
 				// Content column: offset right of the persistent desktop sidebar (lg+),
 				// mirroring Page's content column. The header and the main column each
 				// carry lg:pl-72 so nothing sits under the sidebar.
@@ -242,7 +245,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// with content and silently hand the scroll back to the window, which is
 				// the failure the Body comment above describes.
 				Div(
-					Class("flex flex-1 flex-col min-h-0 lg:pl-72"),
+					Class("flex flex-1 flex-col min-h-0 "+navOffset(v.Embedded)),
 					Main(
 						// pb-3 (not pb-28): the input bar is an IN-FLOW flex child at the
 						// bottom of the chat pane, so #chat-log fills right down to it — no
@@ -279,7 +282,7 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 	return Header(
 		// lg:pl-72 clears the persistent desktop sidebar (mirrors Page's content
 		// column); on mobile the sidebar is a slide-out overlay so no offset.
-		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur lg:pl-72"),
+		Class("sticky top-0 z-20 border-b border-line bg-bg/80 backdrop-blur "+navOffset(v.Embedded)),
 		Div(
 			// contentWidth() — the SAME helper the <main> below it uses, so the
 			// header's left edge and the chat column's left edge cannot drift apart.
@@ -291,8 +294,9 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 				// Hamburger: opens the shared slide-out sidebar (appScript's initPage
 				// binds #sidebar-open). Replaces the old back-arrow — the sidebar's
 				// boosted tabs are how you leave this page now. Same markup/classes as
-				// the shell header()'s hamburger.
-				sidebarOpenButton(),
+				// the shell header()'s hamburger. None in the view-swap frame, which
+				// has no sidebar to open.
+				g.If(!v.Embedded, sidebarOpenButton()),
 				// Compact title: the DisplayName carries the whole "#<n> · <title>", so a
 				// smaller weight/size keeps the header tight without truncating it. The
 				// title is rendered as INLINE markdown (the task title often carries

@@ -807,7 +807,7 @@ func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, cod
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
 	b.WriteString(attentionPageScript)
-	writeAuthDocument(w, code, "Attention", b.String())
+	s.writeNavDocument(w, r, code, "Attention", ui.NavAttention, b.String())
 }
 
 // attentionPageScript keeps the list live: on the queue's SSE event it

@@ -1444,8 +1444,10 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
+	// Only that page can be framed, so only there can this load be the frame
+	// (and draw no navigation).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {
-		allowSameOriginFrame(w)
+		view.Embedded = frameableView(w, r)
 	}
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

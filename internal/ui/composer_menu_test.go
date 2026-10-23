@@ -116,13 +116,17 @@ func TestTheMenuIsTheRenderedViewsAlone(t *testing.T) {
 }
 
 // TestBothDocumentsRankWithOneFunction: 🔴 a SEAM guard. The Rendered view is
-// its own document, without appScript, so the menu embeds the ranker — and it
-// must be the SAME text appScript carries, not a second copy that drifts from
-// internal/searchrank's table (which e2e holds each document to).
+// its own document: with its side nav it carries appScript, whose ranker the
+// menu uses; in the view-swap frame (no nav, no appScript) the menu embeds the
+// ranker itself. Either way it must be the SAME text appScript carries, exactly
+// once — not a second copy that drifts from internal/searchrank's table (which
+// e2e holds each document to), and not none (the menu would match nothing).
 func TestBothDocumentsRankWithOneFunction(t *testing.T) {
 	view := renderedView(t, nil, true)
+	framed := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Window: "@3", Interactive: true,
+		StepUp: stepUpFixture(), Nav: NavChrome{Embedded: true}}))
 	app := renderString(t, appScript(Features{}))
-	for name, page := range map[string]string{"rendered view": view, "app shell": app} {
+	for name, page := range map[string]string{"rendered view": view, "rendered view in the view-swap frame": framed, "app shell": app} {
 		if n := strings.Count(page, rankJS); n != 1 {
 			t.Errorf("%s carries rankJS %d times, want exactly 1", name, n)
 		}
