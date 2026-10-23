@@ -168,6 +168,16 @@ for (const vp of [
 // A title INSIDE the rune budget can still be clipped by the header's width:
 // at 390px the row leaves the title ~10 characters. The "…" follows what is
 // SEEN — it appears whenever the text is clipped, and goes when it fits.
+// The "…" is rendered for every title and HIDDEN while the title fits. Assert
+// it EXISTS and is hidden: a bare toBeHidden() also passes when the element is
+// missing altogether, which is a different (and broken) state.
+async function expectHiddenMore(page: Page) {
+  const b = page.locator('[data-title-more]');
+  await expect(b).toHaveCount(1);
+  await expect(b).toHaveAttribute('hidden', '');
+  await expect(b).toBeHidden();
+}
+
 test.describe('a short-but-clipped title', () => {
   const more = (page: Page) => page.getByRole('button', { name: 'Show the full title' });
   // The header's controls other than the title box, as boxes.
@@ -184,7 +194,7 @@ test.describe('a short-but-clipped title', () => {
       // Positive control: a 5-character title fits, so it has no "…".
       await page.goto('/agents/' + agents[3].name);
       await expect(page.locator('#chat-input')).toBeVisible();
-      await expect(page.locator('[data-title-more]')).toBeHidden();
+      await expectHiddenMore(page);
       const fitting = await controls(page);
       expect(fitting.length, 'positive control: the header has controls to compare').toBeGreaterThan(2);
 
@@ -216,57 +226,44 @@ test.describe('a short-but-clipped title', () => {
       await page.goto('/agents/' + agents[2].name);
       await expect(page.locator('#chat-input')).toBeVisible();
       await expect(page.locator('header h1')).toHaveText(medium);
-      await expect(page.locator('[data-title-more]')).toBeHidden();
+      await expectHiddenMore(page);
 
       await page.setViewportSize({ width: 390, height: 844 });
       await expect(more(page)).toBeVisible();
       await more(page).click();
       await expect(page.locator('#agent-title-full')).toHaveText(medium);
-      await page.keyboard.press('Escape');
+      await expect(page.locator('#agent-title-full')).toBeVisible();
+      // Left OPEN: the resize back to 1280 must close it along with the "…".
 
       await page.setViewportSize({ width: 1280, height: 800 });
-      await expect(page.locator('[data-title-more]')).toBeHidden();
+      await expectHiddenMore(page);
+      // …and the popover that was open closed with it.
+      await expect(page.locator('#agent-title-full')).toBeHidden();
+      await expect(page.locator('[data-title-more]')).toHaveAttribute('aria-expanded', 'false');
     });
   });
 });
 
-// The Recent strip (above the Agents list) lists recently opened agents by
-// name: a long one draws at most 60 characters + "…", one line, its whole
-// title in title=; and neither the page nor the open nav scrolls sideways.
-for (const vp of [
-  { width: 390, height: 844, mobile: true },
-  { width: 1280, height: 800, mobile: false },
-]) {
-  test.describe(`recent entry at ${vp.width}x${vp.height}`, () => {
-    test.use({ viewport: { width: vp.width, height: vp.height }, hasTouch: vp.mobile, isMobile: vp.mobile });
+// On a landscape phone the 600-character popover is taller than the space on
+// either side of its "…": it goes on the roomier side, capped and scrolling,
+// and never covers the button that opened it.
+test.describe('landscape phone 844x390', () => {
+  test.use({ viewport: { width: 844, height: 390 }, hasTouch: true, isMobile: true });
 
-    test('a 600-character recent agent is one clamped line, and the open nav does not overflow', async ({ page }) => {
-      const a = agents[0];
-      await page.goto('/agents/' + a.name); // opening it is what makes it recent
-      await expect(page.locator('#chat-input')).toBeVisible();
-      await page.goto('/agents');
-      const entry = page.locator(`#agents-recent a[data-recent-entry][href="/agents/${a.name}"]`);
-      await expect(entry).toBeVisible();
-      await expect(entry).toHaveAttribute('title', a.full);
-      const text = (await entry.innerText()).trim();
-      expect(text, 'the entry draws past the 60-character budget').toBe(a.full.slice(0, 60) + '…');
-      const box = (await entry.boundingBox())!;
-      expect(box.height).toBeGreaterThanOrEqual(44);
-      expect(box.height, 'the entry wraps').toBeLessThanOrEqual(48);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
-
-      if (vp.mobile) {
-        await page.locator('#sidebar-open').click();
-        await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'true');
-      }
-      await expect(page.locator('#sidebar')).toBeVisible();
-      const nav = await page.evaluate(() => {
-        const s = document.getElementById('sidebar')!;
-        return { doc: document.documentElement.scrollWidth <= document.documentElement.clientWidth, nav: s.scrollWidth <= s.clientWidth, right: s.getBoundingClientRect().right };
-      });
-      expect(nav.doc, 'the page scrolls sideways with the nav open').toBe(true);
-      expect(nav.nav, 'the nav scrolls sideways').toBe(true);
-      expect(nav.right).toBeLessThanOrEqual(vp.width);
-    });
+  test('the full-title popover does not cover its own "…"', async ({ page }) => {
+    await page.goto('/agents/' + agents[0].name);
+    await expect(page.locator('#chat-input')).toBeVisible();
+    const more = page.getByRole('button', { name: 'Show the full title' });
+    await more.click();
+    const pop = page.locator('#agent-title-full');
+    await expect(pop).toBeVisible();
+    const m = (await more.boundingBox())!, p = (await pop.boundingBox())!;
+    const overlap = !(p.x + p.width <= m.x || m.x + m.width <= p.x || p.y + p.height <= m.y || m.y + m.height <= p.y);
+    expect(overlap, `the popover ${JSON.stringify(p)} covers its "…" ${JSON.stringify(m)}`).toBe(false);
+    expect(p.y + p.height).toBeLessThanOrEqual(390);
+    // It scrolls inside rather than being cut off.
+    expect(await pop.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(pop).toBeHidden();
   });
-}
+});

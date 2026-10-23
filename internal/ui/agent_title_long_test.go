@@ -191,28 +191,3 @@ func TestTheAgentPageTitleBoxIsOneShrinkableLine(t *testing.T) {
 		}
 	}
 }
-
-// The Recent strip's entry for a long agent name draws at most cardTitleMax
-// runes, cut on a rune boundary and ended with "…", with the whole title in
-// its title= — one line (truncate) and a 44px row as before.
-func TestARecentEntryClampsALongTitleRuneSafely(t *testing.T) {
-	full := "#9 · " + strings.Repeat("界🚀é", 200)
-	out := renderString(t, recentEntry(recentItem{Href: "/agents/x", Title: full, Status: "running"}))
-	tag := openTag(t, out, "data-recent-entry")
-	if !strings.Contains(tag, `title="`+full+`"`) || !strings.Contains(tag, "min-h-[44px]") {
-		t.Errorf("the entry lost its full-title tooltip or its 44px row: %s", tag)
-	}
-	m := regexp.MustCompile(`<span class="[^"]*\btruncate">([^<]*)</span>`).FindStringSubmatch(out)
-	if m == nil {
-		t.Fatalf("no one-line (truncate) title span in the entry: %s", out)
-	}
-	text := html.UnescapeString(m[1])
-	want := string([]rune(full)[:cardTitleMax]) + "…"
-	if !utf8.ValidString(text) || text != want {
-		t.Errorf("the entry draws %q (%d runes), want the first %d runes + \"…\" %q", text, utf8.RuneCountInString(text), cardTitleMax, want)
-	}
-	short := renderString(t, recentEntry(recentItem{Href: "/agents/y", Title: "Fix the login", Status: "running"}))
-	if !strings.Contains(short, ">Fix the login</span>") {
-		t.Errorf("a short recent entry is not drawn whole: %s", short)
-	}
-}

@@ -402,13 +402,15 @@ func agentTitle(v AgentDetailView) g.Node {
 // agentTitleFitScript shows the header's "…" (agentTitle) exactly while the
 // title is clipped or was clamped by the server, and hides it — closing an
 // open popover — when the title fits again. A ResizeObserver on the title text
-// re-checks on every size change: a resize, a rotation, a late web font.
+// re-checks on every size change of it: a window resize, a rotation, a late
+// web font. (No separate resize listener: the text's box changes with the
+// window, and every browser with the popover attribute has ResizeObserver.)
 //
 // It cannot oscillate: the check runs WITH the button's current state, and
 // showing the button only narrows the text (still clipped), hiding it only
 // widens it (still fits). Bound once per document (__musterAgentTitleFit);
 // each run of this in-body script (htmx re-executes it on a boosted swap)
-// binds the title on the page now.
+// binds the title on the page now, and a title htmx removes is unobserved.
 func agentTitleFitScript() g.Node {
 	return Script(g.Raw(`(function () {
   function fit(box) {
@@ -424,19 +426,22 @@ func agentTitleFitScript() g.Node {
   var w = window.__musterAgentTitleFit;
   if (!w) {
     w = window.__musterAgentTitleFit = {
-      ro: typeof ResizeObserver === 'function' ? new ResizeObserver(function (es) {
+      ro: new ResizeObserver(function (es) {
         es.forEach(function (e) { var box = e.target.closest('[data-agent-title]'); if (box) fit(box); });
-      }) : null,
+      }),
       bind: function () {
         document.querySelectorAll('[data-agent-title]').forEach(function (box) {
           fit(box);
           var t = box.querySelector('[data-agent-title-text]');
-          if (t && w.ro && !t.__musterFit) { t.__musterFit = true; w.ro.observe(t); }
+          if (t && !t.__musterFit) { t.__musterFit = true; w.ro.observe(t); }
         });
       }
     };
-    window.addEventListener('resize', function () { w.bind(); });
     document.addEventListener('htmx:load', function () { w.bind(); });
+    document.addEventListener('htmx:beforeCleanupElement', function (e) {
+      var el = e.target;
+      if (el && el.__musterFit) { w.ro.unobserve(el); el.__musterFit = false; }
+    });
   }
   w.bind();
 })();`))
