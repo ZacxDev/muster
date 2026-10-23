@@ -428,18 +428,44 @@ func cardTitleRow(slot, pop, full, pad, reserve string, heading func(short strin
 		cardSlot(slot),
 		Class("flex items-start gap-0.5 px-4 "+pad+" "+reserve),
 		heading(short),
-		g.If(clamped, Button(
-			Type("button"),
-			g.Attr("data-title-more", ""),
-			g.Attr("popovertarget", pop),
-			g.Attr("aria-haspopup", "dialog"),
-			g.Attr("aria-controls", pop),
-			g.Attr("aria-expanded", "false"),
-			g.Attr("aria-label", "Show the full title"),
-			Class("press -my-1.5 inline-flex h-11 min-w-[44px] shrink-0 items-start justify-center rounded-lg pt-1.5 text-base font-semibold leading-tight text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2"),
-			g.Text("…"),
-		)),
+		g.If(clamped, titleMoreButton(pop, "-my-1.5 items-start pt-1.5 text-base")),
 		popover,
+	)
+}
+
+// titleMoreButton is THE "…" control that opens a clamped title's popover —
+// the cards' (cardTitleRow) and the agent page header's (agentTitle). fit is
+// only how it sits in its row (a card's top-aligned title row vs the header's
+// centred one); the control, its name and its ARIA are the same everywhere.
+func titleMoreButton(pop, fit string) g.Node {
+	return Button(
+		Type("button"),
+		g.Attr("data-title-more", ""),
+		g.Attr("popovertarget", pop),
+		g.Attr("aria-haspopup", "dialog"),
+		g.Attr("aria-controls", pop),
+		g.Attr("aria-expanded", "false"),
+		g.Attr("aria-label", "Show the full title"),
+		Class("press inline-flex h-11 min-w-[44px] shrink-0 justify-center rounded-lg font-semibold leading-tight text-muted transition hover:bg-s2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus aria-expanded:bg-s2 "+fit),
+		g.Text("…"),
+	)
+}
+
+// fullTitlePopover is THE popover holding a clamped title whole: a native
+// popover="auto" (top layer; an outside tap or Escape closes it) placed by
+// floatingMenuScript ([data-floating-menu]). The text wraps anywhere — a
+// 600-character token with no break opportunity included — and a title too
+// long for the viewport scrolls inside the panel instead of running off it.
+func fullTitlePopover(pop, full string) g.Node {
+	return Div(
+		ID(pop),
+		g.Attr("popover", "auto"),
+		g.Attr("role", "dialog"),
+		g.Attr("aria-label", "Full title"),
+		g.Attr("data-floating-menu", ""),
+		g.Attr("data-title-full", ""),
+		Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] max-h-[60vh] overflow-y-auto overscroll-contain flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
+		Span(Class("[overflow-wrap:anywhere] text-sm font-semibold"), g.Text(full)),
 	)
 }
 
@@ -468,16 +494,7 @@ func cardLongTitle(cardID, href, full string, subtitle bool, reserve string, ext
 				g.Group(extra),
 			)
 		},
-		Div(
-			ID(pop),
-			g.Attr("popover", "auto"),
-			g.Attr("role", "dialog"),
-			g.Attr("aria-label", "Full title"),
-			g.Attr("data-floating-menu", ""),
-			g.Attr("data-title-full", ""),
-			Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
-			Span(Class("break-words text-sm font-semibold"), g.Text(full)),
-		))
+		fullTitlePopover(pop, full))
 }
 
 // titledBodyClass is the nav anchor's box under a title row: like a focus
