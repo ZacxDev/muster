@@ -320,4 +320,46 @@ test.describe('phone header', () => {
     await page.goto(origin + viewOf('@2'));
     await expect(page.locator('#mv-input')).toHaveValue(draft);
   });
+
+  // An expired session while the other view is FRAMED: the frame's badge poll
+  // gets the 401, and the auth gate reloads the TOP window — whose address is
+  // the view on screen — onto sign-in; the frame never loads the refusal. (The
+  // server half, for a framed load that does happen — a browser without the
+  // top-reload, a reload the frame makes itself: a framed load is a document
+  // navigation, TestAFramedLoadWithoutASessionIsSentToSignIn.)
+  test('an expired session while a view is framed: the TOP window reloads onto sign-in; the frame never loads the refusal', async ({ page }) => {
+    await bothWindowsListed(page);
+    await page.goto(origin + viewOf('@1'));
+    await expect(page.locator('#mv-status')).toHaveText('Live');
+    await page.locator('#view-terminal').click();
+    await expect(framed(page).locator('#term-status')).toHaveText('Connected');
+    expect(pathOf(page), 'the top address follows the framed view').toBe('/mirror/terminal');
+    const cookies = await page.context().cookies(origin);
+    const topNavs: string[] = [];
+    const frameNavs: string[] = [];
+    page.on('request', (r) => {
+      if (!r.isNavigationRequest()) return;
+      (r.frame() === page.mainFrame() ? topNavs : frameNavs).push(new URL(r.url()).pathname);
+    });
+    await page.context().clearCookies();
+    const handle = await frameEl(page).elementHandle();
+    const frame = (await handle!.contentFrame())!;
+    const badge = page.waitForResponse((r) => r.url().includes('/attention/badge'));
+    await frame.evaluate(() =>
+      (window as unknown as { htmx: { ajax(m: string, u: string, o: object): void } }).htmx.ajax('GET', '/attention/badge', { target: '#attention-badge-slot', swap: 'innerHTML' }),
+    );
+    expect((await badge).status()).toBe(401);
+    await expect.poll(() => pathOf(page), { message: 'the top window is on sign-in' }).toBe('/login');
+    await expect(page.locator('#muster-password')).toBeVisible();
+    await expect(frameEl(page), 'no frame is left over the sign-in').toHaveCount(0);
+    await expect(page.locator('body')).not.toContainText('not signed in');
+    expect(topNavs[0], 'the TOP window reloaded the view on screen').toBe('/mirror/terminal');
+    // 🔴 THE FRAME NEVER LOADED THE REFUSAL. Measured before the fix: the frame
+    // reloaded itself, got the 401 (whose frame-ancestors 'none' Chromium turns
+    // into an error page), and only view_swap's load check — seeing a frame it
+    // could not read — then sent the top window on. The refusal was on screen
+    // in the frame in between.
+    expect(frameNavs, 'the frame made no load of its own after the 401').toEqual([]);
+    await page.context().addCookies(cookies);
+  });
 });

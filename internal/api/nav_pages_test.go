@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -178,17 +179,26 @@ func TestEverySignedInPageDrawsTheSideNav(t *testing.T) {
 
 	// Each page, and the nav entry it must mark as current (the link's id), or
 	// "" for a page no entry names.
-	pages := []struct{ path, current string }{
-		{"/attention", "sidebar-attention"},
-		{"/account", "sidebar-account"},
-		{"/account/tokens", "sidebar-account"},
-		{ui.CredentialsPath, "sidebar-account"},
-		{"/account/passkeys", "sidebar-account"},
-		{"/plugins", ""},
-		{"/flows", ""},
-		{"/admin/users", "sidebar-admin"},
-		{"/admin/invites", "sidebar-admin"},
+	// faro: whether the page loads the RUM script. A page that shows or takes a
+	// secret loads none (TestEveryNavPageStatesItsTelemetry states why per
+	// writer); this reads it off the served page with a collect URL set.
+	ui.SetFaroConfig(ui.FaroSettings{URL: "https://faro.example.test/collect"})
+	t.Cleanup(func() { ui.SetFaroConfig(ui.FaroSettings{}) })
+	pages := []struct {
+		path, current string
+		faro          bool
+	}{
+		{"/attention", "sidebar-attention", true},
+		{"/account", "sidebar-account", true},
+		{"/account/tokens", "sidebar-account", false},
+		{ui.CredentialsPath, "sidebar-account", false},
+		{"/account/passkeys", "sidebar-account", false},
+		{"/plugins", "", false},
+		{"/flows", "", false},
+		{"/admin/users", "sidebar-admin", false},
+		{"/admin/invites", "sidebar-admin", false},
 	}
+	faroSeen := 0
 	for _, p := range pages {
 		w := do(f.edge, "GET", p.path, nil, withCookies(at, rt), asNavigation)
 		body := w.Body.String()
@@ -201,6 +211,11 @@ func TestEverySignedInPageDrawsTheSideNav(t *testing.T) {
 			continue
 		}
 		assertDocHeaders(t, "GET "+p.path, w.Header())
+		if got := strings.Contains(body, "faro.example.test"); got != p.faro {
+			t.Errorf("GET %s loads the RUM script = %v, want %v", p.path, got, p.faro)
+		} else if got {
+			faroSeen++
+		}
 		// The nav opens no stream: /attention holds exactly the one its own
 		// list script opens, every other page none — as before the nav.
 		if n, want := streamCount(body), map[bool]int{true: 1, false: 0}[p.path == "/attention"]; n != want {
@@ -222,6 +237,11 @@ func TestEverySignedInPageDrawsTheSideNav(t *testing.T) {
 				t.Errorf("GET %s: #%s is not the current entry: %s", p.path, p.current, tag)
 			}
 		}
+	}
+
+	// POSITIVE CONTROL for the RUM needle: it was found where it is loaded.
+	if faroSeen == 0 {
+		t.Error("no page loaded the configured RUM script — the needle is blind")
 	}
 
 	// BARE: the pages a signed-out caller is shown. No nav — and still the
@@ -329,4 +349,116 @@ func TestANoticeHasTheNavOnlyForASignedInReader(t *testing.T) {
 		t.Errorf("the signed-out notice draws %d side nav(s) — it is bare", roots)
 	}
 	assertDocHeaders(t, "the signed-out notice", w.Header())
+}
+
+// apiNavSecret is every writeNavDocument caller's `secret` argument: true for a
+// page that SHOWS a one-time secret (a minted token, a reset or invite link)
+// or TAKES one (an OAuth token or API key typed in, a passkey ceremony) — it
+// then loads no RUM script.
+var apiNavSecret = map[string]bool{
+	"renderAccountTokens":   true,  // shows a minted API token once
+	"renderPluginsPage":     true,  // shows a minted plugin token once
+	"renderFlowsPage":       true,  // shows a minted runner token once
+	"writeAdminDocument":    true,  // shows reset and invite links once
+	"renderCredentials":     true,  // takes a Claude OAuth token / an OpenRouter key
+	"renderAccountPasskeys": true,  // runs passkey ceremonies
+	"handleAccountPage":     false, // sign-out forms only
+	"renderAsksPage":        false, // the queue; the shell beside it has Faro already
+	"renderNotice":          false, // one sentence
+}
+
+// TestEveryNavPageStatesItsTelemetry reads every writeNavDocument call in this
+// package and holds its literal `secret` argument to apiNavSecret — failing
+// for a caller with no entry, an entry with no caller, a value that differs,
+// and an argument that is not a literal (a computed one could not be stated).
+func TestEveryNavPageStatesItsTelemetry(t *testing.T) {
+	got := map[string]string{}
+	fset := token.NewFileSet()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "writeNavDocument" {
+					return true
+				}
+				v := "<not a literal>"
+				if len(call.Args) == 7 {
+					if id, ok := call.Args[5].(*ast.Ident); ok && (id.Name == "true" || id.Name == "false") {
+						v = id.Name
+					}
+				}
+				if prev, dup := got[fd.Name.Name]; dup && prev != v {
+					v = prev + " and " + v
+				}
+				got[fd.Name.Name] = v
+				return true
+			})
+		}
+	}
+	if len(got) < 2 {
+		t.Fatalf("found %d writeNavDocument callers — the scan is not observing this package", len(got))
+	}
+	for fn, v := range got {
+		want, ok := apiNavSecret[fn]
+		switch {
+		case !ok:
+			t.Errorf("%s writes a nav page with secret=%s and apiNavSecret has no entry for it: state whether it "+
+				"shows or takes a secret (no RUM script) or not", fn, v)
+		case v != map[bool]string{true: "true", false: "false"}[want]:
+			t.Errorf("%s passes secret=%s; apiNavSecret says %v", fn, v, want)
+		}
+	}
+	for fn := range apiNavSecret {
+		if _, ok := got[fn]; !ok {
+			t.Errorf("apiNavSecret names %s, which no longer calls writeNavDocument", fn)
+		}
+	}
+}
+
+// TestAFramedLoadWithoutASessionIsSentToSignIn: a load into the view swap's
+// frame (Sec-Fetch-Dest: iframe) with no session is a document navigation —
+// it gets the 303 to sign-in, which the swap's load check hands to the TOP
+// window — never the XHR answer, a JSON error drawn full-screen in the frame.
+// The `document` load is the control: both must answer alike.
+func TestAFramedLoadWithoutASessionIsSentToSignIn(t *testing.T) {
+	_, ts := viewServer(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}})
+	c := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for _, path := range []string{ui.MirrorViewPath("ws", "main"), ui.MirrorTerminalPath("ws", "main")} {
+		for _, dest := range []string{"document", "iframe"} {
+			req, _ := http.NewRequest(http.MethodGet, ts.URL+path, nil)
+			req.Header.Set("Sec-Fetch-Dest", dest)
+			req.Header.Set("Sec-Fetch-Mode", "navigate")
+			resp, err := c.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			want := loginPath + "?next=" + url.QueryEscape(path)
+			if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != want {
+				t.Errorf("GET %s (Sec-Fetch-Dest: %s) signed out = %d Location %q, want 303 %q (body %.120s)",
+					path, dest, resp.StatusCode, resp.Header.Get("Location"), want, raw)
+			}
+		}
+	}
 }

@@ -288,8 +288,10 @@ func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 // a cache), and same-origin referrers (the sign-out and every operator-write
 // form are refused without a same-origin Origin).
 //
-// secret says the page can show a one-time secret (a minted token, a reset or
-// invite link): it then loads no telemetry script (ui.NavDocumentView.Secret).
+// secret says the page shows or takes a secret (a minted token, a reset or
+// invite link; an OAuth token or API key typed in; a passkey ceremony): it then
+// loads no telemetry script (ui.NavDocumentView.Secret). Each caller's value is
+// stated in TestEveryNavPageStatesItsTelemetry.
 func (s *Server) writeNavDocument(w http.ResponseWriter, r *http.Request, code int, title, entry string, secret bool, inner string) {
 	writeDocumentHeaders(w, code)
 	if err := ui.RenderNavDocument(w, ui.NavDocumentView{Title: title, Entry: entry, Feat: s.shellFeatures(r.Context()), Main: inner, Secret: secret}); err != nil {

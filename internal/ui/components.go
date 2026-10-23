@@ -1477,6 +1477,18 @@ func appScript(feat Features) g.Node {
       if (!e.detail || !e.detail.xhr || e.detail.xhr.status !== 401) return;
       e.detail.shouldSwap = false;
       e.detail.isError = false;
+      // 🔴 IN THE VIEW SWAP'S FRAME, THE TOP WINDOW RELOADS. The frame is the
+      // other view laid over the page; reloading only the frame would put the
+      // sign-in (or a refusal) inside it, and the page under it — whose
+      // session expired too — would still be there. The top window's address
+      // is the view on screen (view_swap.go keeps it so), so its reload is
+      // that view, signed out: the sign-in, at the top, with ?next= back.
+      try {
+        if (window.top !== window && window.top.location.origin === window.location.origin) {
+          window.top.location.reload();
+          return;
+        }
+      } catch (x) {}
       window.location.reload();
     });
   }

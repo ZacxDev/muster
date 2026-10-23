@@ -30,9 +30,13 @@ import (
 // screen; the frame's own nav is the only one there is. A link in it leaves
 // the window: the frame's viewFrameScript hands every link that leaves the
 // view (a boosted one included) to the TOP window. The two documents run their
-// own appScript, and that is safe because each one's listeners only ever see
-// its own document's events: input goes to the frame while it is on screen,
-// to the page under it otherwise.
+// own appScript. INPUT is not doubled — keys, clicks and touches reach only
+// the document on screen (the frame while it is shown, the page under it
+// otherwise). What DOES cross documents is same-origin storage and time: a
+// `storage` event fires in the other document (the theme listens for it on
+// purpose, so the page under the frame follows a theme set in it), and each
+// document runs its own timers — the badge's minute refresh runs in both while
+// a frame is open, one extra small request a minute, accepted.
 //
 // 🔴 THE NAV OPENS NO STREAM. The Attention badge refreshes on load and once a
 // minute (attentionBadgeTrigger); it also listens for the queue's SSE event,
@@ -84,9 +88,10 @@ type NavDocumentView struct {
 	// Main is the page's content: TRUSTED markup, built by its caller with
 	// every value escaped there. It is placed as it is.
 	Main string
-	// Secret: the page can show a one-time secret (a minted token, a reset or
-	// invite link). It loads no telemetry script — these pages never did, and a
-	// RUM script on the one page a secret is ever rendered in is a reader of it
+	// Secret: the page shows a one-time secret (a minted token, a reset or
+	// invite link) or takes one (an OAuth token or API key typed in, a passkey
+	// ceremony). It loads no telemetry script — these pages never did, and a
+	// RUM script on the page a secret is rendered or typed in is a reader of it
 	// nobody needs. Every other page keeps the shell's (faroHead).
 	Secret bool
 }
