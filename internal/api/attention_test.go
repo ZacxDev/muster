@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -71,7 +72,7 @@ func TestTheBadgeListensForTheEventTheServerSends(t *testing.T) {
 	if !strings.Contains(page.String(), "sse:"+EventAttentionChanged+" ") {
 		t.Fatalf("the badge does not listen for %q", EventAttentionChanged)
 	}
-	if !strings.Contains(attentionPageScript, "'"+EventAttentionChanged+"'") {
+	if !strings.Contains(attentionPageScript, strconv.Quote(EventAttentionChanged)) {
 		t.Fatal("the page's script does not listen for the queue's event")
 	}
 }

@@ -78,6 +78,7 @@ GET /apple-touch-icon.png
 GET /attention
 GET /attention/badge
 GET /attention/items
+GET /attention/asker
 GET /auth/claim
 GET /auth/reset
 GET /connectors

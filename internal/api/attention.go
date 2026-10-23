@@ -770,6 +770,7 @@ func (s *Server) expireAsks(ctx context.Context) {
 func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("GET "+attentionPath, s.requireSession(s.handleAttentionPage))
 	mux.HandleFunc("GET "+attentionPath+"/items", s.requireSession(s.handleAttentionItems))
+	mux.HandleFunc("GET "+attentionAskerPath, s.requireSession(s.handleAttentionAsker))
 	mux.HandleFunc("GET "+ui.AttentionBadgePath, s.requireSession(s.handleAttentionBadge))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))
@@ -811,38 +812,8 @@ func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, cod
 	writeAuthDocument(w, code, "Attention", b.String())
 }
 
-// attentionPageScript keeps the list live: on the queue's SSE event it
-// re-fetches the items — unless the owner is typing an answer, in which case
-// it waits until they leave the field, so a refresh never eats a half-typed
-// answer.
-const attentionPageScript = `<script>
-(function () {
-  var list = document.getElementById('attention-items');
-  if (!list || !window.EventSource) return;
-  var pending = false;
-  function busy() {
-    var a = document.activeElement;
-    if (a && list.contains(a) && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT')) return true;
-    var fields = list.querySelectorAll('textarea');
-    for (var i = 0; i < fields.length; i++) if (fields[i].value.trim() !== '') return true;
-    return false;
-  }
-  function refresh() {
-    if (busy()) { pending = true; return; }
-    pending = false;
-    fetch('/attention/items', { credentials: 'same-origin' }).then(function (r) {
-      return r.ok ? r.text() : null;
-    }).then(function (html) {
-      if (html !== null && !busy()) list.innerHTML = html; else if (html !== null) pending = true;
-    }).catch(function () {});
-  }
-  list.addEventListener('focusout', function () { if (pending) setTimeout(refresh, 0); });
-  var es;
-  try { es = new EventSource('/events'); } catch (e) { return; }
-  es.addEventListener('` + EventAttentionChanged + `', refresh);
-  setInterval(refresh, 60000);
-})();
-</script>`
+// attentionPageScript keeps the queue's list live (ui.AttentionLiveScript).
+var attentionPageScript = ui.AttentionLiveScript("attention-items", "/attention/items", EventAttentionChanged)
 
 func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Attention == nil {
@@ -875,7 +846,24 @@ func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {
 
 // attentionItemsHTML is the list's <li>s.
 func attentionItemsHTML(items []attentionItem, now time.Time) string {
+	return attentionItemsHTMLTo(items, now, "")
+}
+
+// attentionItemsHTMLTo is attentionItemsHTML whose ask forms send the browser
+// back to returnTo once answered or dismissed ("" = the queue): THE item and
+// answer partial, shared by /attention and the session pages
+// (attention_asker.go). A form on a session page opts out of htmx's boost, so
+// it is a plain POST whose redirect reloads that page.
+func attentionItemsHTMLTo(items []attentionItem, now time.Time, returnTo string) string {
 	esc := html.EscapeString
+	back := ""
+	if returnTo != "" {
+		back = `<input type="hidden" name="return" value="` + esc(returnTo) + `">`
+	}
+	formAttrs := ""
+	if returnTo != "" {
+		formAttrs = ` hx-boost="false"`
+	}
 	if len(items) == 0 {
 		return `<li class="text-sm text-fg2" data-testid="attention-empty">Nothing is waiting on you.</li>`
 	}
@@ -916,8 +904,8 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 		switch it.Kind {
 		case attentionKindAsk:
 			id := strconv.FormatInt(it.AskID, 10)
-			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="flex flex-col gap-2" data-attention-answer>
-`)
+			b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + id + `/answer" class="flex flex-col gap-2" data-attention-answer` + formAttrs + `>
+` + back)
 			if len(it.Options) > 0 {
 				b.WriteString(`<div class="flex flex-wrap gap-2">`)
 				for _, o := range it.Options {
@@ -929,7 +917,7 @@ func attentionItemsHTML(items []attentionItem, now time.Time) string {
 <textarea id="answer-` + id + `" name="answer" rows="2" maxlength="` + strconv.Itoa(attention.MaxAnswerRunes) + `" class="` + flowsInputClass + `"></textarea>
 <button type="submit" class="` + flowsButtonClass + `">Answer</button>
 </form>
-<form method="POST" action="` + attentionPath + `/asks/` + id + `/cancel"><button type="submit" class="` + flowsQuietButton + `">Dismiss without answering</button></form>
+<form method="POST" action="` + attentionPath + `/asks/` + id + `/cancel"` + formAttrs + `>` + back + `<button type="submit" class="` + flowsQuietButton + `">Dismiss without answering</button></form>
 `)
 		case attentionKindSession:
 			b.WriteString(hermesAskHTML(it))
@@ -1054,7 +1042,7 @@ func (s *Server) handleAttentionAnswerForm(w http.ResponseWriter, r *http.Reques
 		s.renderAttentionPage(w, r, attentionErrCode(err), attentionErrText(err, a))
 		return
 	}
-	http.Redirect(w, r, attentionPath, http.StatusSeeOther)
+	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)
 }
 
 func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Request) {
@@ -1072,7 +1060,7 @@ func (s *Server) handleAttentionCancelForm(w http.ResponseWriter, r *http.Reques
 		s.renderAttentionPage(w, r, attentionErrCode(err), attentionErrText(err, a))
 		return
 	}
-	http.Redirect(w, r, attentionPath, http.StatusSeeOther)
+	http.Redirect(w, r, attentionReturn(r), http.StatusSeeOther)
 }
 
 // handleAttentionRedeliverForm is an unconfirmed delivery's Retry: back to

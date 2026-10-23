@@ -118,6 +118,8 @@ var routeVias = map[authz.Via][]string{
 		// The attention queue (0023): the page, its list, the badge and the forms.
 		"GET /attention",
 		"GET /attention/items",
+		// A session page's asks block (attention_asker.go).
+		"GET /attention/asker",
 		"GET /attention/badge",
 		"POST /attention/asks/{id}/answer",
 		"POST /attention/asks/{id}/cancel",
