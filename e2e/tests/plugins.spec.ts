@@ -218,7 +218,7 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Asks');
   await expect(page.getByRole('tab', { name: 'Ask', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('#attention-items #draft-' + draftID), 'the Ask tab does not list the draft').toHaveCount(0);
-  await expect(page.getByTestId('attention-drafts-pointer')).toHaveAttribute('data-count', '1');
+  await expect(page.locator('#attention-items [data-testid="attention-drafts-pointer"]'), 'no drafts line on the Ask tab').toHaveCount(0);
   await expect(card(page, draftID)).toBeHidden();
   await page.getByRole('tab', { name: 'Reply drafts (1)' }).tap();
   await expect(page).toHaveURL(browserURL + '/attention?tab=drafts');
@@ -247,7 +247,7 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
   await options;
   await expect(page.locator('#term-confirm-passkey')).toBeVisible();
   await Promise.all([
-    page.waitForURL((u) => u.pathname === '/attention' && u.search === '?tab=archived' && u.hash === `#draft-${draftID}`),
+    page.waitForURL((u) => u.pathname === '/attention' && u.search === `?tab=archived&draft=${draftID}` && u.hash === `#draft-${draftID}`),
     page.locator('#term-confirm-passkey').tap(),
   ]);
   //    Decided, it leaves Awaiting decision and is in Archived, waiting for the
@@ -341,7 +341,7 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
     const pend = dp.locator('#asks-drafts-pending').locator(`#draft-${rejectID}`);
     await expect(pend).toBeVisible();
     await Promise.all([
-      dp.waitForURL((u) => u.search === '?tab=archived' && u.hash === `#draft-${rejectID}`),
+      dp.waitForURL((u) => u.search === `?tab=archived&draft=${rejectID}` && u.hash === `#draft-${rejectID}`),
       pend.locator('[data-draft-reject]').click(),
     ]);
     const darch = (id: number) => dp.locator('#asks-drafts-archived').locator(`#draft-${id}`);
@@ -361,7 +361,7 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
     await expect(dp.locator('#term-confirm'), 'fresh: no confirm asked').toBeHidden();
     await expect(darch(withdrawID)).toHaveAttribute('data-draft-status', 'approved');
     await Promise.all([
-      dp.waitForURL((u) => u.search === '?tab=archived' && u.hash === `#draft-${withdrawID}`),
+      dp.waitForURL((u) => u.search === `?tab=archived&draft=${withdrawID}` && u.hash === `#draft-${withdrawID}`),
       darch(withdrawID).locator('[data-draft-withdraw]').click(),
     ]);
     await expect(darch(withdrawID)).toHaveAttribute('data-draft-status', 'rejected');
@@ -369,6 +369,48 @@ test('a plugin posts, the chief drafts, the owner approves with a passkey on a s
     expect((await plugin.post('/plugin/v1/drafts/claim', { data: { wait_seconds: 0 } })).status(), 'a withdrawn approval is never claimed').toBe(204);
     const [dsw, dcw] = await dp.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
     expect(dsw, 'no horizontal scroll at 1280px').toBeLessThanOrEqual(dcw);
+
+    // APPROVE WHAT YOU SAW: draft A is on screen under Awaiting decision; the
+    // chief files B for the same message (superseding A) while the page is
+    // open. The event arrives, but A's card STAYS (B is not drawn into its
+    // slot) and the "changed" line appears; tapping A's Approve is refused —
+    // it is superseded — and B is not approved.
+    const ra = await mcpCall('reply_draft', { message_id: m2ID, body: 'Draft A: Friday at three.' });
+    expect(ra.isError, ra.text).toBe(false);
+    const aID = (JSON.parse(ra.text) as { draft_id: number }).draft_id;
+    await dp.goto(browserURL + '/attention?tab=drafts');
+    const pendA = dp.locator('#asks-drafts-pending').locator(`#draft-${aID}`);
+    await expect(pendA.locator('[data-draft-body]')).toHaveText('Draft A: Friday at three.');
+    await expect(dp.getByTestId('drafts-changed')).toBeHidden();
+    const rb = await mcpCall('reply_draft', { message_id: m2ID, body: 'Draft B: Saturday instead.' });
+    expect(rb.isError, rb.text).toBe(false);
+    const bID = (JSON.parse(rb.text) as { draft_id: number }).draft_id;
+    await expect(dp.getByTestId('drafts-changed'), 'the changed line arrives live').toBeVisible({ timeout: 15_000 });
+    await expect(pendA.locator('[data-draft-body]'), 'A stays as it was seen').toHaveText('Draft A: Friday at three.');
+    await expect(dp.locator('#asks-drafts-pending').locator(`#draft-${bID}`), 'B is not drawn into the list').toHaveCount(0);
+    await expect(dp.locator(`#draft-${aID}`), 'one element per draft id').toHaveCount(1);
+    const refused = dp.waitForResponse((r) => r.url().endsWith(`/plugins/drafts/${aID}/approve`) && r.request().method() === 'POST');
+    await pendA.locator('[data-draft-approve]').click();
+    expect((await refused).status(), 'approving the superseded A is refused').toBe(409);
+    await expect(dp.getByRole('alert')).toContainText('no longer awaiting this decision (it is superseded)');
+    // The refusal page leaves no POST-only address behind: it is /attention.
+    await expect(dp).toHaveURL(browserURL + '/attention?tab=archived');
+    await dp.getByRole('tab', { name: 'Awaiting decision' }).click();
+    await expect(dp).toHaveURL(browserURL + '/attention?tab=drafts');
+    const reloaded = await dp.reload();
+    expect(reloaded!.status(), 'a reload of the refusal page is a GET of /attention').toBe(200);
+    const pendB = dp.locator('#asks-drafts-pending').locator(`#draft-${bID}`);
+    await expect(pendB).toHaveAttribute('data-draft-status', 'pending');
+    //    "Show the latest" re-draws the list on request: C supersedes B.
+    const rc = await mcpCall('reply_draft', { message_id: m2ID, body: 'Draft C: Sunday.' });
+    expect(rc.isError, rc.text).toBe(false);
+    const cID = (JSON.parse(rc.text) as { draft_id: number }).draft_id;
+    await expect(dp.getByTestId('drafts-changed')).toBeVisible({ timeout: 15_000 });
+    await expect(pendB).toBeVisible();
+    await dp.locator('[data-drafts-show-latest]').click();
+    await expect(dp.locator('#asks-drafts-pending').locator(`#draft-${cID}`)).toBeVisible();
+    await expect(dp.locator('#asks-drafts-pending').locator(`#draft-${bID}`)).toHaveCount(0);
+    await expect(dp.getByTestId('drafts-changed')).toBeHidden();
 
     // An OLD notification's link (/plugins#draft-N) is sent on to the Asks
     // page and lands on the card — in Archived, since it was decided.

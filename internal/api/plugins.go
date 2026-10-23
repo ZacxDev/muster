@@ -328,7 +328,9 @@ func (s *Server) renderPluginsPage(w http.ResponseWriter, r *http.Request, code 
 	b.WriteString(retryableSectionHTML(retryable, s.retryHasNoChief(r.Context(), retryable)))
 	// Reply drafts moved to the Asks page (asks_drafts.go). A link to one of
 	// them as it was (/plugins#draft-<id>, on a phone's older notification)
-	// follows it there: the fragment never reached this server, so only the
+	// follows it there — REMOVABLE one DraftTTL (7 days) after the deploy
+	// that moved the drafts: no draft notification older than that can still
+	// be pending. The fragment never reached this server, so only the
 	// page can.
 	b.WriteString(`<p class="text-sm text-fg2" data-testid="plugins-drafts-moved">Reply drafts are decided on the <a href="` + attentionPath + `?` +
 		asksTabParam + `=` + asksTabDrafts + `" class="text-accent underline">Asks page</a>, under Reply drafts.</p>

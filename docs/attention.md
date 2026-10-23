@@ -17,7 +17,7 @@ creation), ties broken by the item's key:
 | Session waiting | A mirrored Claude Code **or Hermes** window whose session reports `waiting` (a permission prompt, a question; for Hermes an approval, a clarify question or a sudo password). Shown with **what it waits on** (below), its focus title, its window @ host and its age. | The mirror hub's live window list; nothing is stored. | **Open the session** (the rendered view). A Hermes **approval** on a host with `-hermes-answer` also offers **Allow once** / **Deny**, answered through Hermes's gateway ([mirroring.md](mirroring.md)). It leaves the list when the session stops waiting. |
 | Session question | A mirrored session's `AskUserQuestion`, registered by the `muster-mirror ask` hook and shown in the terminal and the rendered view at once. | The open question (`internal/askq`), live; it leaves the queue once answered in either place, dismissed, replaced by a newer question, or its session is gone. Such a window is this ONE item — its question, or, when it asks several, each one's first line, numbered — never also "Session waiting". | **Answer in the session**: the rendered view, where the question card is. |
 | Task to route | A plugin handed a task to your chief ([task routing](plugins.md#routing-a-task-to-the-chief)) and the chief has not routed it: there is no chief, it is not running or busy, or it took the event and did not act. Shown as the task's number and title. | `plugin_messages` task events with no routing or start recorded for their task at or after the event's latest delivery attempt, or its creation if it has had none (audit rows), whose task is not complete or dismissed; nothing is copied. | **Open the task**. It leaves the list when the chief routes the task or starts an agent on it, or the task is complete or dismissed. No notification of its own: the task's "New task" push already went. |
-| Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | Not on the Ask tab: with [plugins](plugins.md) on, the page has a second tab, **Reply drafts** (below), and the Ask tab only says how many await you there. The draft is still in the badge's count, its push and `attention_list`. |
+| Reply draft | Your chief drafted a reply to a plugin message. Shown as the message's sender and its first 160 characters, and the draft reply's first 160. | `plugin_reply_drafts`, pending ones; nothing is copied. | Not on the Ask tab: with [plugins](plugins.md) on, the page has a second tab, **Reply drafts** (below), whose label carries the count ("Reply drafts (2)"). The draft is still in the badge's count, its push and `attention_list`. |
 
 ### The Reply drafts tab
 
@@ -34,7 +34,17 @@ With plugins on, the page has two tabs, **Ask** (the table above and the
   collected and being sent, sent, failed, unconfirmed, rejected, superseded or
   expired. An approval the plugin has not collected yet keeps **Withdraw the
   approval**. The status follows the plugin's claim and result without a
-  reload. Nothing is stored for "archived": it is simply "not pending".
+  reload. Nothing is stored for "archived": it is simply "not pending". It
+  shows the 50 most recent; a decision lands on its card
+  (`/attention?tab=archived&draft=<id>#draft-<id>`), which is drawn first
+  even when it is older than those.
+
+**What you approve is what you saw.** The Awaiting decision list is never
+re-drawn under you when the set of drafts in it changes (a newer draft
+replaces one, a new one arrives): the cards you are reading stay, and a line
+says *Drafts changed since you opened this list* with **Show the latest**.
+Approving a card that was replaced meanwhile is refused, never turned into an
+approval of its replacement.
 
 The tab is in the URL — `/attention?tab=drafts` and `/attention?tab=archived` —
 so a link, a reload and the draft's notification (`/attention?tab=drafts#draft-<id>`)

@@ -789,12 +789,13 @@ func (s *Server) handleAttentionPage(w http.ResponseWriter, r *http.Request) {
 
 // renderAttentionPage is the Asks page on the tab the request names.
 func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, code int, problem string) {
-	s.renderAsksPage(w, r, code, problem, asksTab(r))
+	s.renderAsksPage(w, r, code, problem, asksTab(r), asksFocus(r))
 }
 
 // renderAsksPage writes the Asks page on tab: with plugins served, the Ask
-// and Reply drafts tabs (asks_drafts.go); without, the Ask list alone.
-func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int, problem, tab string) {
+// and Reply drafts tabs (asks_drafts.go); without, the Ask list alone. focus
+// (0 for none) is a draft drawn whatever the views' cut (readDraftViews).
+func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int, problem, tab string, focus int64) {
 	items, err := s.attentionItems(r.Context())
 	s.withFocus(r.Context(), items)
 	if err != nil {
@@ -816,7 +817,7 @@ func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int
 	if s.ext.Plugins == nil {
 		b.WriteString(askList)
 	} else {
-		pending, archived, ok := s.readDraftViews(r.Context())
+		pending, archived, ok := s.readDraftViews(r.Context(), focus)
 		if !ok && problem == "" {
 			b.WriteString(problemNode("The reply drafts could not be read."))
 		}

@@ -261,13 +261,13 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 	tab := asksTabDrafts
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
-		s.renderAsksPage(w, r, http.StatusNotFound, "No such draft.", tab)
+		s.renderAsksPage(w, r, http.StatusNotFound, "No such draft.", tab, id)
 		return
 	}
 	if how != "reject" && !stepup.Fresh(r.Context(), s.stepUpNow()) {
 		if isDocumentNavigation(r) {
 			w.Header().Set("X-Muster-Step-Up", "required")
-			s.renderAsksPage(w, r, http.StatusForbidden, DraftStepUpRequired, asksTabDrafts)
+			s.renderAsksPage(w, r, http.StatusForbidden, DraftStepUpRequired, asksTabDrafts, id)
 			return
 		}
 		refuseStale(w)
@@ -277,26 +277,26 @@ func (s *Server) decideDraft(w http.ResponseWriter, r *http.Request, how string)
 	switch {
 	case err == nil:
 	case errors.Is(err, plugins.ErrNotFound):
-		s.renderAsksPage(w, r, http.StatusNotFound, "No such draft.", tab)
+		s.renderAsksPage(w, r, http.StatusNotFound, "No such draft.", tab, id)
 		return
 	case how == "reject" && errors.Is(err, plugins.ErrDraftState) && d.Status == plugins.DraftApproved && d.ClaimedAt != nil:
 		tab = asksTabArchived
-		s.renderAsksPage(w, r, http.StatusConflict, "A plugin has already collected that draft, so it can no longer be withdrawn.", tab)
+		s.renderAsksPage(w, r, http.StatusConflict, "A plugin has already collected that draft, so it can no longer be withdrawn.", tab, id)
 		return
 	case errors.Is(err, plugins.ErrDraftState) && (d.Status == plugins.DraftPending || d.Status == plugins.DraftApproved) &&
 		d.ClaimedAt == nil && !d.ExpiresAt.After(time.Now()):
-		s.renderAsksPage(w, r, http.StatusConflict, "That draft has expired: it was not sent within 7 days of being written.", tab)
+		s.renderAsksPage(w, r, http.StatusConflict, "That draft has expired: it was not sent within 7 days of being written.", tab, id)
 		return
 	case errors.Is(err, plugins.ErrDraftState):
-		s.renderAsksPage(w, r, http.StatusConflict, "That draft is no longer awaiting this decision (it is "+string(d.Status)+").", asksTabArchived)
+		s.renderAsksPage(w, r, http.StatusConflict, "That draft is no longer awaiting this decision (it is "+string(d.Status)+").", asksTabArchived, id)
 		return
 	case errors.Is(err, plugins.ErrReplyInFlight):
 		s.renderAsksPage(w, r, http.StatusConflict, "Another reply to that message is already approved and not yet sent. "+
-			"Wait for its result before approving a second one.", asksTabDrafts)
+			"Wait for its result before approving a second one.", asksTabDrafts, id)
 		return
 	default:
 		s.logger.Printf("plugins: draft %d %s: %v", id, how, err)
-		s.renderAsksPage(w, r, http.StatusInternalServerError, "The decision could not be recorded.", tab)
+		s.renderAsksPage(w, r, http.StatusInternalServerError, "The decision could not be recorded.", tab, id)
 		return
 	}
 	if d.Status == plugins.DraftApproved {

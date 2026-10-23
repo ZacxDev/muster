@@ -102,8 +102,8 @@ func TestTheAsksPageSplitsAsksFromReplyDrafts(t *testing.T) {
 	if strings.Contains(al, draft) || strings.Contains(al, `data-kind="plugin"`) {
 		t.Fatalf("the Ask tab still lists the reply draft:\n%s", al)
 	}
-	if !strings.Contains(al, `data-testid="attention-drafts-pointer" data-count="1"`) || !strings.Contains(al, `href="/attention?tab=drafts"`) {
-		t.Fatalf("the Ask tab does not point at the waiting draft:\n%s", al)
+	if strings.Contains(al, "attention-drafts-pointer") || strings.Contains(al, "reply draft") {
+		t.Fatalf("the Ask tab carries a drafts line (the tab's label is the count):\n%s", al)
 	}
 	if pl := pendingList(page); !strings.Contains(pl, draft) || !strings.Contains(pl, "data-draft-approve") {
 		t.Fatalf("the pending draft is not under Awaiting decision with its Approve:\n%s", pl)
@@ -117,8 +117,8 @@ func TestTheAsksPageSplitsAsksFromReplyDrafts(t *testing.T) {
 
 	// The live list's fragment is the Ask tab's list too.
 	items := f.page(t, "/attention/items")
-	if strings.Contains(items, draft) || !strings.Contains(items, ask) || !strings.Contains(items, `data-testid="attention-drafts-pointer"`) {
-		t.Fatalf("/attention/items: want the ask and the pointer, not the draft:\n%s", items)
+	if strings.Contains(items, draft) || !strings.Contains(items, ask) || strings.Contains(items, "attention-drafts-pointer") {
+		t.Fatalf("/attention/items: want the ask, not the draft or a drafts line:\n%s", items)
 	}
 
 	// The badge still counts the draft: ask + session + draft.
@@ -227,7 +227,7 @@ func TestADecidedDraftMovesToArchivedWithItsLiveStatus(t *testing.T) {
 	decide := func(id int64, how string) {
 		t.Helper()
 		rec := d.do("POST", path(id, how), "", d.session(d.a, false, true))
-		if want := "/attention?tab=archived#draft-" + strconv.FormatInt(id, 10); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != want {
+		if want := "/attention?tab=archived&draft=" + strconv.FormatInt(id, 10) + "#draft-" + strconv.FormatInt(id, 10); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != want {
 			t.Fatalf("%s draft %d: %d → %q; want 303 → %q", how, id, rec.Code, rec.Header().Get("Location"), want)
 		}
 	}
@@ -413,18 +413,19 @@ func TestTheDraftsFragmentAndThePluginsMovesAreLive(t *testing.T) {
 	rec := d.do("GET", "/attention/drafts", "", d.session(d.a, false, false))
 	var j struct {
 		Pending, Archived, Label string
-		Count                    int
+		PendingIDs               string `json:"pending_ids"`
+		Count                    *int
 	}
 	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &j) != nil {
 		t.Fatalf("GET /attention/drafts: %d %s", rec.Code, rec.Body.String())
 	}
 	if !strings.Contains(j.Pending, draftAnchor(pend)) || strings.Contains(j.Pending, draftAnchor(done)) ||
 		!strings.Contains(j.Archived, draftAnchor(done)) || strings.Contains(j.Archived, draftAnchor(pend)) ||
-		j.Count != 1 || j.Label != "Reply drafts (1)" {
+		j.PendingIDs != strconv.FormatInt(pend, 10) || j.Count != nil || j.Label != "Reply drafts (1)" {
 		t.Fatalf("the fragment: %+v", j)
 	}
 	rec = d.do("GET", "/attention/drafts", "", d.session(d.b, false, false))
-	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "draft-") || !strings.Contains(rec.Body.String(), `"count":0`) {
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "draft-") || !strings.Contains(rec.Body.String(), `"pending_ids":""`) {
 		t.Fatalf("another member's fragment: %d %s", rec.Code, rec.Body.String())
 	}
 
@@ -466,5 +467,115 @@ func TestTheDraftsFragmentAndThePluginsMovesAreLive(t *testing.T) {
 	case ev := <-bCh:
 		t.Fatalf("another member was told: %+v", ev)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestTheAskTabWithOnlyDraftsWaitingSaysNothingIsWaitingThere: with nothing
+// but a pending reply draft, the Ask tab's list is its empty line ALONE — no
+// "1 reply draft awaits" line contradicting it (the count is the Reply
+// drafts tab's label) — and the draft is under Awaiting decision.
+func TestTheAskTabWithOnlyDraftsWaitingSaysNothingIsWaitingThere(t *testing.T) {
+	d := newDraftSeam(t)
+	tok := d.mint(d.a)
+	chief := d.chief(d.a, "onlychief")
+	d.rt.expect(chief)
+	m := d.post(tok, "only-"+d.suffix, "")
+	id, out := d.replyDraft(chief, m, "Only this.")
+	if id == 0 {
+		t.Fatalf("draft: %s", out)
+	}
+	page := d.do("GET", "/attention", "", d.session(d.a, false, true)).Body.String()
+	want := `<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">` +
+		`<li class="text-sm text-fg2" data-testid="attention-empty">Nothing is waiting on you.</li>`
+	if got := askList(page); got != want {
+		t.Fatalf("the Ask tab's list:\n%s\nwant exactly:\n%s", got, want)
+	}
+	if !strings.Contains(page, ">Reply drafts (1)</button>") || !strings.Contains(pendingList(page), draftAnchor(id)) {
+		t.Fatal("the draft is not counted on its tab or not under Awaiting decision")
+	}
+}
+
+// TestADecisionLandsOnItsCardBeyondTheArchivedCut: a draft decided while 55
+// newer decided drafts fill Archived's 50 is still drawn where the decision
+// lands (?draft=N names it), first in Archived — and only there, once.
+// CONTROL: the same page without ?draft= does not draw it (the cut is real).
+func TestADecisionLandsOnItsCardBeyondTheArchivedCut(t *testing.T) {
+	d := newDraftSeam(t)
+	tok := d.mint(d.a)
+	chief := d.chief(d.a, "cutchief")
+	d.rt.expect(chief)
+	m := d.post(tok, "cut-"+d.suffix, "")
+	old, out := d.replyDraft(chief, m, "The old one.")
+	if old == 0 {
+		t.Fatalf("draft: %s", out)
+	}
+	m2 := d.post(tok, "cut2-"+d.suffix, "")
+	dbtest.OwnerExec(t, d.dsn, `INSERT INTO plugin_reply_drafts (owner_id, message_id, agent_id, agent_name, body, expires_at, status, decided_at)
+		SELECT $1, $2, $3, 'x', 'filler ' || g, now() + interval '1 day', 'rejected', now() FROM generate_series(1, 55) g`, d.a, m2, chief.ID)
+	rec := d.do("POST", "/plugins/drafts/"+strconv.FormatInt(old, 10)+"/reject", "", d.session(d.a, false, true))
+	loc := rec.Header().Get("Location")
+	if want := "/attention?tab=archived&draft=" + strconv.FormatInt(old, 10) + "#draft-" + strconv.FormatInt(old, 10); rec.Code != http.StatusSeeOther || loc != want {
+		t.Fatalf("reject: %d → %q; want 303 → %q", rec.Code, loc, want)
+	}
+	plain := d.do("GET", "/attention?tab=archived", "", d.session(d.a, false, true)).Body.String()
+	if strings.Contains(plain, draftAnchor(old)) || strings.Count(archivedList(plain), `<li id="draft-`) != 50 {
+		t.Fatal("CONTROL: without ?draft= the old draft is drawn, or Archived is not cut at 50")
+	}
+	landed := d.do("GET", strings.SplitN(loc, "#", 2)[0], "", d.session(d.a, false, true)).Body.String()
+	a := archivedList(landed)
+	if first := strings.Index(a, `<li id="draft-`); first < 0 || !strings.HasPrefix(a[first:], `<li id="draft-`+strconv.FormatInt(old, 10)+`"`) ||
+		strings.Count(landed, draftAnchor(old)) != 1 {
+		t.Fatalf("the decided draft is not drawn first in Archived, once:\n%.600s", a)
+	}
+	// The live fragment keeps it too, and another member's ?draft= draws nothing.
+	if f := d.do("GET", "/attention/drafts?draft="+strconv.FormatInt(old, 10), "", d.session(d.a, false, false)).Body.String(); !strings.Contains(f, `draft-`+strconv.FormatInt(old, 10)) {
+		t.Fatal("the live fragment drops the decided draft")
+	}
+	if o := d.do("GET", "/attention?tab=archived&draft="+strconv.FormatInt(old, 10), "", d.session(d.b, false, true)).Body.String(); strings.Contains(o, draftAnchor(old)) {
+		t.Fatal("another member's ?draft= draws this member's draft")
+	}
+}
+
+// TestAPendingListCarriesItsIdentity: the Awaiting decision list carries the
+// ids it was drawn with (data-draft-ids), the live fragment the ids it would
+// draw (pending_ids), and the page's script re-draws the list in place only
+// when the two agree — a superseding draft changes the ids, so the cards on
+// screen stay and the "changed" line is offered (the e2e drives it).
+func TestAPendingListCarriesItsIdentity(t *testing.T) {
+	d := newDraftSeam(t)
+	tok := d.mint(d.a)
+	chief := d.chief(d.a, "idchief")
+	d.rt.expect(chief)
+	m := d.post(tok, "ids-"+d.suffix, "")
+	a, _ := d.replyDraft(chief, m, "A.")
+	page := d.do("GET", "/attention?tab=drafts", "", d.session(d.a, false, true)).Body.String()
+	if !strings.Contains(page, `data-testid="drafts-pending" data-draft-ids="`+strconv.FormatInt(a, 10)+`"`) ||
+		!strings.Contains(page, `id="asks-drafts-changed"`) {
+		t.Fatal("the pending list does not carry its ids, or the page has no changed line")
+	}
+	b, _ := d.replyDraft(chief, m, "B, revised.")
+	f := d.do("GET", "/attention/drafts", "", d.session(d.a, false, false)).Body.String()
+	if !strings.Contains(f, `"pending_ids":"`+strconv.FormatInt(b, 10)+`"`) {
+		t.Fatalf("the fragment's pending_ids after the supersede: %s", f)
+	}
+	for _, want := range []string{"j.pending_ids === (pendingList.getAttribute('data-draft-ids') || '')", "changed.hidden = false"} {
+		if !strings.Contains(asksPageScript, want) {
+			t.Errorf("the page script lacks %q", want)
+		}
+	}
+	if strings.Contains(asksPageScript, "setInterval") {
+		t.Error("the page script runs its own timer (attentionPageScript's backstop already fires asks:changed)")
+	}
+}
+
+// TestARefusalPageLeavesNoPostOnlyAddress: a refusal drawn in answer to a
+// decision's POST is the Asks page, and its script moves the address to
+// /attention (on load and on every tab switch) — never a POST-only
+// /plugins/drafts/N/... for a reload to 405 on. The e2e drives it.
+func TestARefusalPageLeavesNoPostOnlyAddress(t *testing.T) {
+	for _, want := range []string{"u.pathname = '/attention';", "if (window.location.pathname !== '/attention') syncURL();"} {
+		if !strings.Contains(asksPageScript, want) {
+			t.Errorf("the page script lacks %q", want)
+		}
 	}
 }

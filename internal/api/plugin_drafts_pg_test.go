@@ -302,7 +302,7 @@ func TestAReplyDraftGoesFromTheChiefToThePluginOnceThroughTheRealPlane(t *testin
 
 	// 5. Fresh approval → one claim.
 	if rec := d.do("POST", approve, "", d.session(d.a, false, true)); rec.Code != http.StatusSeeOther ||
-		rec.Header().Get("Location") != "/attention?tab=archived#draft-"+strconv.FormatInt(draftID, 10) {
+		rec.Header().Get("Location") != "/attention?tab=archived&draft="+strconv.FormatInt(draftID, 10)+"#draft-"+strconv.FormatInt(draftID, 10) {
 		t.Fatalf("a fresh approval: %d %s; want 303 to the card", rec.Code, rec.Header().Get("Location"))
 	}
 	rec := d.claim(aTok, 0)

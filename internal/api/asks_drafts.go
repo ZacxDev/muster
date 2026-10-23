@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,9 +36,15 @@ import (
 // approval is still unclaimed.
 //
 // THE BADGE STILL COUNTS PENDING DRAFTS: attentionItems is unchanged and still
-// returns them; only the Ask tab's list leaves them out (askTabItems), pointing
-// at the Reply drafts tab instead, so a badge of 1 over an empty Ask list is
-// never unexplained.
+// returns them; only the Ask tab's list leaves them out (askTabItems). The
+// Reply drafts tab's label carries their count ("Reply drafts (2)").
+//
+// 🔴 APPROVE WHAT YOU SAW: the Awaiting decision list is NEVER re-drawn in
+// place when its SET of drafts changed (asksPageScript). A newer draft for the
+// same message supersedes the one on screen; re-drawn under the owner's thumb,
+// "Approve and send" would approve text they never read. Instead the stale
+// cards stay — approving one is refused (409, it is superseded) — and a line
+// offers to show the latest. Same set (an expiry moving): re-drawn in place.
 
 const (
 	asksTabParam    = "tab"
@@ -63,9 +70,23 @@ func draftLink(id int64) string {
 }
 
 // draftDecidedLink is where an approve, reject or withdraw lands: the card,
-// now in Archived.
+// now in Archived — named in ?draft= too, so it is drawn even when it is not
+// among the pluginDraftsShown most recent (readDraftViews).
 func draftDecidedLink(id int64) string {
-	return attentionPath + "?" + asksTabParam + "=" + asksTabArchived + "#" + draftCardAnchor(id)
+	return attentionPath + "?" + asksTabParam + "=" + asksTabArchived + "&" + asksDraftParam + "=" +
+		strconv.FormatInt(id, 10) + "#" + draftCardAnchor(id)
+}
+
+// asksDraftParam names a draft the page must draw whatever the views' cut.
+const asksDraftParam = "draft"
+
+// asksFocus is the draft a request names in ?draft=, 0 for none.
+func asksFocus(r *http.Request) int64 {
+	id, err := strconv.ParseInt(r.URL.Query().Get(asksDraftParam), 10, 64)
+	if err != nil || id <= 0 {
+		return 0
+	}
+	return id
 }
 
 // asksTab is the tab a request names, asksTabAsk for none or an unknown one.
@@ -77,40 +98,22 @@ func asksTab(r *http.Request) string {
 	return asksTabAsk
 }
 
-// askTabItems is items without the reply drafts (the Reply drafts tab's), and
-// how many drafts it left out.
-func askTabItems(items []attentionItem) ([]attentionItem, int) {
+// askTabItems is items without the reply drafts (the Reply drafts tab's).
+func askTabItems(items []attentionItem) []attentionItem {
 	out := make([]attentionItem, 0, len(items))
-	drafts := 0
 	for _, it := range items {
-		if it.Kind == attentionKindPlugin {
-			drafts++
-			continue
+		if it.Kind != attentionKindPlugin {
+			out = append(out, it)
 		}
-		out = append(out, it)
 	}
-	return out, drafts
+	return out
 }
 
-// askTabListHTML is the Ask tab's list: the queue without its reply drafts,
-// then — when drafts are waiting — one line pointing at the Reply drafts tab,
-// then the Answered section.
+// askTabListHTML is the Ask tab's list: the queue without its reply drafts
+// (its empty line then means "nothing on THIS tab"; the drafts' count is the
+// Reply drafts tab's label), then the Answered section.
 func askTabListHTML(items []attentionItem, answered string, now time.Time) string {
-	rest, drafts := askTabItems(items)
-	var b strings.Builder
-	b.WriteString(attentionItemsHTML(rest, now))
-	if drafts > 0 {
-		n := "1 reply draft awaits"
-		if drafts > 1 {
-			n = strconv.Itoa(drafts) + " reply drafts await"
-		}
-		b.WriteString(`<li class="text-sm text-fg2" data-testid="attention-drafts-pointer" data-count="` + strconv.Itoa(drafts) + `">` + n +
-			` your decision under <a href="` + attentionPath + `?` + asksTabParam + `=` + asksTabDrafts +
-			`" class="text-accent underline">Reply drafts</a>.</li>
-`)
-	}
-	b.WriteString(answered)
-	return b.String()
+	return attentionItemsHTML(askTabItems(items), now) + answered
 }
 
 // splitDraftCards is cards as the two views: awaiting a decision (pending and
@@ -158,22 +161,57 @@ func draftsTabLabel(n int) string {
 }
 
 // readDraftViews is ctx's principal's drafts as the two views; ok false when
-// they could not be read (logged).
-func (s *Server) readDraftViews(ctx context.Context) (pending, archived []plugins.DraftCard, ok bool) {
+// they could not be read (logged). focus, when not 0, is a draft that must be
+// drawn (a decision lands on it): when the views' cut left it out it is read
+// on its own and put first in its view. Another owner's, or none, is not drawn.
+func (s *Server) readDraftViews(ctx context.Context, focus int64) (pending, archived []plugins.DraftCard, ok bool) {
 	cards, err := s.ext.Plugins.DraftCards(ctx, asksDraftsRead)
 	if err != nil {
 		s.logger.Printf("asks: reply drafts: %v", err)
 		return nil, nil, false
 	}
-	pending, archived = splitDraftCards(cards, time.Now())
-	return pending, archived, true
+	now := time.Now()
+	pending, archived = splitDraftCards(cards, now)
+	if focus <= 0 {
+		return pending, archived, true
+	}
+	for _, c := range append(append([]plugins.DraftCard{}, pending...), archived...) {
+		if c.Draft.ID == focus {
+			return pending, archived, true
+		}
+	}
+	c, err := s.ext.Plugins.DraftCard(ctx, focus)
+	if err != nil {
+		if !errors.Is(err, plugins.ErrNotFound) {
+			s.logger.Printf("asks: reply draft %d: %v", focus, err)
+		}
+		return pending, archived, true
+	}
+	if p, _ := splitDraftCards([]plugins.DraftCard{c}, now); len(p) == 1 {
+		return append([]plugins.DraftCard{c}, pending...), archived, true
+	}
+	return pending, append([]plugins.DraftCard{c}, archived...), true
+}
+
+// draftIDs is cards' ids, comma-joined in order: the Awaiting decision list's
+// identity, which the page compares before re-drawing it (asksPageScript).
+func draftIDs(cards []plugins.DraftCard) string {
+	ids := make([]string, len(cards))
+	for i, c := range cards {
+		ids[i] = strconv.FormatInt(c.Draft.ID, 10)
+	}
+	return strings.Join(ids, ",")
 }
 
 // draftsPanel is the Reply drafts tab's panel: its own two tabs, Awaiting
 // decision and Archived, the one sub selected.
 func draftsPanel(pending, archived []plugins.DraftCard, sub string) g.Node {
 	pendingList := `<p class="text-xs text-fg2">Your chief drafts replies; nothing is sent until you approve one. The plugin then sends it once.</p>
-<ul id="asks-drafts-pending" class="flex flex-col gap-2" data-testid="drafts-pending">` + draftListHTML(pending, draftsPendingEmpty) + `</ul>`
+<p id="asks-drafts-changed" role="status" class="flex flex-wrap items-center gap-2 rounded-md bg-s2 px-3 py-2 text-sm text-fg ring-1 ring-inset ring-line" data-testid="drafts-changed" hidden>
+<span>Drafts changed since you opened this list. The cards below are as you saw them.</span>
+<button type="button" class="` + flowsQuietButton + `" data-drafts-show-latest>Show the latest</button></p>
+<ul id="asks-drafts-pending" class="flex flex-col gap-2" data-testid="drafts-pending" data-draft-ids="` + draftIDs(pending) + `">` +
+		draftListHTML(pending, draftsPendingEmpty) + `</ul>`
 	archivedList := `<p class="text-xs text-fg2">Drafts you approved or rejected, and those replaced or expired, with what became of each. An approval the plugin has not collected yet can still be withdrawn.</p>
 <ul id="asks-drafts-archived" class="flex flex-col gap-2" data-testid="drafts-archived">` + draftListHTML(archived, draftsArchivedEmpty) + `</ul>`
 	subSel := asksTabDrafts
@@ -207,37 +245,44 @@ func (s *Server) asksTabsHTML(askList string, pending, archived []plugins.DraftC
 	return b.String()
 }
 
-// handleAsksDrafts is GET /attention/drafts: the two lists and the pending
-// count as JSON, for the page's live refresh.
+// handleAsksDrafts is GET /attention/drafts[?draft=N]: the two lists, the
+// pending list's ids and the tab's label as JSON, for the page's live refresh.
 func (s *Server) handleAsksDrafts(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Plugins == nil {
 		http.NotFound(w, r)
 		return
 	}
-	pending, archived, ok := s.readDraftViews(r.Context())
+	pending, archived, ok := s.readDraftViews(r.Context(), asksFocus(r))
 	if !ok {
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "the reply drafts could not be read"})
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"pending":  draftListHTML(pending, draftsPendingEmpty),
-		"archived": draftListHTML(archived, draftsArchivedEmpty),
-		"count":    len(pending),
-		"label":    draftsTabLabel(len(pending)),
+		"pending":     draftListHTML(pending, draftsPendingEmpty),
+		"pending_ids": draftIDs(pending),
+		"archived":    draftListHTML(archived, draftsArchivedEmpty),
+		"label":       draftsTabLabel(len(pending)),
 	})
 }
 
 // asksPageScript is the page's own behaviour around the tabs:
 //
 //   - the tab is kept in the URL (?tab=), replaced not pushed, so a reload or
-//     a shared link opens the same tab;
+//     a shared link opens the same tab. The PATH is always /attention: a
+//     refusal drawn in answer to a decision's POST (/plugins/drafts/N/approve)
+//     must not leave a POST-only address behind for a reload to 405 on;
 //   - a fragment naming a card inside a hidden panel opens that panel's tabs
 //     and scrolls to it (a push opened on ?tab=drafts for a draft that was
 //     decided meanwhile lands on it in Archived);
 //   - the drafts lists follow the queue's event (asks:changed, dispatched by
-//     attentionPageScript) and a 30 s backstop — but never while the confirm
-//     dialog is open, so the form it will submit is still in the page.
+//     attentionPageScript, whose 60 s backstop fires it too) — never while
+//     the confirm dialog is open, so the form it will submit is still in the
+//     page. 🔴 Awaiting decision is re-drawn in place ONLY when its set of
+//     drafts is unchanged (data-draft-ids); otherwise the cards on screen stay
+//     and #asks-drafts-changed offers "Show the latest" (see the file header).
+//     Archived is re-drawn, less any card still drawn in Awaiting decision (an
+//     id names one element).
 const asksPageScript = `<script>
 (function () {
   var root = document.querySelector('[data-asks-tabs]');
@@ -251,10 +296,12 @@ const asksPageScript = `<script>
     var top = selected('asks-tabs'), v = top === 'ask' ? '' : (selected('asks-drafts-tabs') || 'drafts');
     try {
       var u = new URL(window.location.href);
+      u.pathname = '` + attentionPath + `';
       if (v) u.searchParams.set('` + asksTabParam + `', v); else u.searchParams.delete('` + asksTabParam + `');
       if (u.href !== window.location.href) history.replaceState(history.state, '', u.href);
     } catch (e) {}
   }
+  if (window.location.pathname !== '` + attentionPath + `') syncURL();
   root.addEventListener('click', function (e) {
     if (e.target && e.target.closest && e.target.closest('[role="tab"]')) setTimeout(syncURL, 0);
   });
@@ -275,22 +322,41 @@ const asksPageScript = `<script>
   window.addEventListener('hashchange', reveal);
   var pendingList = document.getElementById('asks-drafts-pending');
   var archivedList = document.getElementById('asks-drafts-archived');
+  var changed = document.getElementById('asks-drafts-changed');
   var draftsTab = document.getElementById('asks-tabs-tab-drafts');
   if (!pendingList || !archivedList) return;
-  function refresh() {
+  function apply(j, latest) {
+    if (latest || j.pending_ids === (pendingList.getAttribute('data-draft-ids') || '')) {
+      pendingList.innerHTML = j.pending;
+      pendingList.setAttribute('data-draft-ids', j.pending_ids);
+      if (changed) changed.hidden = true;
+    } else if (changed) {
+      changed.hidden = false;
+    }
+    var t = document.createElement('template');
+    t.innerHTML = j.archived;
+    Array.prototype.forEach.call(t.content.querySelectorAll('li[id]'), function (li) {
+      if (pendingList.querySelector('[id="' + li.id + '"]')) li.remove();
+    });
+    archivedList.replaceChildren(t.content);
+    if (draftsTab) draftsTab.textContent = j.label;
+  }
+  function load(latest) {
     var dlg = document.getElementById('term-confirm');
     if (dlg && dlg.open) return;
-    fetch('` + asksDraftsPath + `', { credentials: 'same-origin' }).then(function (r) {
+    var q = '';
+    try { var d = new URL(window.location.href).searchParams.get('` + asksDraftParam + `'); if (d) q = '?` + asksDraftParam + `=' + encodeURIComponent(d); } catch (e) {}
+    fetch('` + asksDraftsPath + `' + q, { credentials: 'same-origin' }).then(function (r) {
       return r.ok ? r.json() : null;
     }).then(function (j) {
       if (!j || (dlg && dlg.open)) return;
-      pendingList.innerHTML = j.pending;
-      archivedList.innerHTML = j.archived;
-      if (draftsTab) draftsTab.textContent = j.label;
+      apply(j, latest);
     }).catch(function () {});
   }
-  document.addEventListener('asks:changed', refresh);
-  setInterval(refresh, 30000);
+  document.addEventListener('asks:changed', function () { load(false); });
+  if (changed) changed.addEventListener('click', function (e) {
+    if (e.target && e.target.closest && e.target.closest('[data-drafts-show-latest]')) load(true);
+  });
 })();
 </script>`
 
