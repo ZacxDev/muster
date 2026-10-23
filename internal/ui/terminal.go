@@ -65,8 +65,8 @@ type AgentTerminalView struct {
 	DisplayName string
 	// Nav is the navigation the page draws: an overlay sidebar (sidebarIn's
 	// overlay — the terminal's width is the far side's geometry, so no rail
-	// takes from it) and its hamburger, or, in the view-swap frame
-	// (Nav.Embedded), nothing.
+	// takes from it) and its hamburger, framed by the view swap or not
+	// (nav_layout.go says why).
 	Nav NavChrome
 	// Unavailable, when set, is why this deployment cannot attach a terminal;
 	// the page says so instead of opening a socket that would be refused.
@@ -254,7 +254,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				Link(Rel("stylesheet"), Href(xtermCSS)),
 				Script(Src(xtermJS)),
 				Script(Src(xtermFitJS)),
-				overlayNavHead(v.Nav),
+				overlayNavHead(),
 				faroHead(),
 			),
 			Body(
@@ -268,7 +268,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					// on one line, and a header that cannot wrap pushes the
 					// document sideways instead.
 					Class("flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line px-2 py-1.5"),
-					overlayNavButton(v.Nav),
+					overlayNavButton(),
 					A(
 						ID("term-back"),
 						Href(back),

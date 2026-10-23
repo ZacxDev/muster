@@ -536,30 +536,10 @@ test.describe('a claude-code agent', () => {
     expect(chatOpened(agent) - chat0, 'ONE chat socket').toBe(1);
     expect(termAttached(agent) - term0, 'no new terminal attach').toBe(0);
 
-    // A boosted link in the framed chat page navigates the TOP window, and both
-    // connections end. ⚠ The framed chat draws NO side nav any more (the page
-    // under the frame has one — ui.NavChrome.Embedded), and the nav's Agents
-    // link was this test's boosted link. The chat's own markup has none that
-    // leaves the page (its session links stay in the frame), so the spec puts
-    // one there — an ordinary <a> under the page's body-level hx-boost, which
-    // htmx boosts exactly as it boosted the nav's — and clicks it.
-    const handle = await frameEl(page).elementHandle();
-    const chatFrame = await handle!.contentFrame();
-    const boosted = await chatFrame!.evaluate(() => {
-      const a = document.createElement('a');
-      a.id = 'e2e-boosted-leave';
-      a.href = '/agents';
-      a.textContent = 'Agents';
-      document.querySelector('main')!.prepend(a);
-      (window as unknown as { htmx: { process(e: Element): void } }).htmx.process(a);
-      // htmx keeps its state for an element it took over on this property: a
-      // link it did NOT boost would leave by the frame's plain-click handler
-      // instead, and this test would no longer be about a boosted one.
-      return !!(a as unknown as Record<string, unknown>)['htmx-internal-data'];
-    });
-    expect(boosted, 'htmx took the link over (it is a boosted link)').toBe(true);
-    await expect(framed(page).locator('#sidebar-open'), 'the framed chat has no hamburger').toHaveCount(0);
-    await framed(page).locator('#e2e-boosted-leave').click();
+    // A boosted link in the framed chat page (its header's way back to the
+    // list) navigates the TOP window, and both connections end.
+    await framed(page).locator('#sidebar-open').click();
+    await framed(page).locator('#sidebar a[data-tab="agents"]').click();
     await expect.poll(() => pathOf(page)).toBe('/agents');
     await expect(frameEl(page)).toHaveCount(0);
     await expect(page.locator('#agents-list > article').first(), 'the list is drawn on arrival (#225)').toBeVisible();

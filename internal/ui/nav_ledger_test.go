@@ -89,47 +89,84 @@ func TestEveryDocumentIsNavOrNamedBare(t *testing.T) {
 	}
 }
 
-// embeddablePages are the three documents whose nav is switched off in the
-// view-swap frame.
-func embeddablePages(embedded bool) map[string]g.Node {
+// frameablePages are the three documents the view swap opens in its frame.
+// They are the same document framed or not — the frame's nav is the only one
+// reachable while the frame is on screen (nav_layout.go).
+func frameablePages() map[string]g.Node {
 	return map[string]g.Node{
 		"MirrorViewPage": MirrorViewPage(MirrorViewView{Host: "laptop", Session: "work", Interactive: true,
-			Nav: NavChrome{Feat: featuresAllOn, Embedded: embedded}}),
+			Nav: NavChrome{Feat: featuresAllOn}}),
 		"AgentTerminalPage": AgentTerminalPage(AgentTerminalView{Name: "keen-wren", RenderedHref: "/agents/keen-wren",
-			Nav: NavChrome{Feat: featuresAllOn, Embedded: embedded}}),
+			Nav: NavChrome{Feat: featuresAllOn}}),
 		"AgentDetailPage": AgentDetailPage(AgentDetailView{ID: 7, Name: "keen-wren", DisplayName: "keen-wren", Status: "running",
-			Kind: "claude-code", Embedded: embedded}, featuresAllOn),
+			Kind: "claude-code"}, featuresAllOn),
 	}
 }
 
-// TestTheViewSwapFrameDrawsNoNav: the document opened in view_swap's frame over
-// a page that already has the nav draws none of it — no sidebar, no hamburger,
-// no /events stream for its badge, no rail offset — while the same document
-// loaded on its own draws all of it (the control: the assertion can fail).
-func TestTheViewSwapFrameDrawsNoNav(t *testing.T) {
-	for _, embedded := range []bool{false, true} {
-		for name, page := range embeddablePages(embedded) {
-			src := documentSource(t, page)
-			want := 1
-			if embedded {
-				want = 0
+// streamsIn counts the server-sent-event streams a document opens: every htmx
+// sse-connect, and every script that constructs an EventSource. Comments are
+// stripped first (documentSource), so a sentence naming one is not one.
+func streamsIn(t *testing.T, n g.Node) int {
+	t.Helper()
+	src := documentSource(t, n)
+	return strings.Count(src, `sse-connect=`) + strings.Count(src, "new EventSource(")
+}
+
+// documentStreams is how many /events streams each document opens — the
+// numbers it opened before the side nav, measured on main (74a7e059) with the
+// same counter.
+var documentStreams = map[string]int{
+	"PageWith":                  1,
+	"ComposePage":               1,
+	"AgentDetailPage":           2,
+	"TaskDetailPage":            1,
+	"TaskNotFoundPage":          0,
+	"AgentTerminalPage":         0,
+	"MirrorViewPage":            0,
+	"StepUpFormPage":            0,
+	"SendQueueRetryConfirmPage": 0,
+	"NavDocument":               0,
+}
+
+// TestTheNavAddsNoStream: the side nav opens no /events stream of its own — its
+// badge refreshes on load and once a minute — so no document holds more streams
+// than it did before the nav. A stream per tab is a connection per tab against
+// the browser's per-host limit, and the mirrored views and terminals already
+// hold their own socket.
+func TestTheNavAddsNoStream(t *testing.T) {
+	for _, row := range standaloneDocuments {
+		want, ok := documentStreams[row.fn]
+		if !ok {
+			t.Errorf("%s has no entry in documentStreams — measure it", row.fn)
+			continue
+		}
+		for _, d := range documentsFrom([]documentRenderer{row}) {
+			if got := streamsIn(t, d.node); got != want {
+				t.Errorf("%s opens %d /events stream(s), want %d", d.name, got, want)
 			}
-			for _, needle := range []string{`id="sidebar-root"`, `id="sidebar-open"`, `sse-connect="/events"`, "openBtn.addEventListener('click', function () { setOpen(true); })"} {
-				if name == "AgentDetailPage" && needle == `sse-connect="/events"` {
-					// The agent page's chat log keeps its own /events wrapper in
-					// both modes (agentChatPane); its sidebar never had one.
-					continue
-				}
-				if n := strings.Count(src, needle); n != want && !(name == "AgentDetailPage" && needle == "openBtn.addEventListener('click', function () { setOpen(true); })") {
-					t.Errorf("%s (embedded=%v): %q appears %d times, want %d", name, embedded, needle, n, want)
-				}
-			}
-			if name == "AgentDetailPage" {
-				if got := strings.Contains(src, "lg:pl-72"); got == embedded {
-					t.Errorf("AgentDetailPage (embedded=%v): carries the rail offset lg:pl-72 = %v — the frame has no "+
-						"rail beside it, the page on its own does", embedded, got)
-				}
-			}
+		}
+	}
+	// POSITIVE CONTROL: the counter sees a stream where one is.
+	if n := streamsIn(t, Page(defaultTab, featuresAllOn)); n < 1 {
+		t.Fatalf("the shell counts %d streams — the counter is blind", n)
+	}
+}
+
+// TestASecretPageLoadsNoTelemetry: a server-authored page that can show a
+// one-time secret loads no RUM script; one that cannot keeps the shell's.
+func TestASecretPageLoadsNoTelemetry(t *testing.T) {
+	saved := faroConfig
+	t.Cleanup(func() { faroConfig = saved })
+	SetFaroConfig(FaroSettings{URL: "https://faro.example.test/collect"})
+	// POSITIVE CONTROL: with a collect URL set, the shell does load it.
+	shell := renderString(t, Page(defaultTab, featuresAllOn))
+	if !strings.Contains(shell, "faro.example.test") {
+		t.Fatal("the shell does not load the configured RUM script — the needle below proves nothing")
+	}
+	for _, secret := range []bool{false, true} {
+		doc := renderString(t, NavDocument(NavDocumentView{Title: "API tokens", Entry: NavAccount, Secret: secret, Main: "<h1>API tokens</h1>"}))
+		if got := strings.Contains(doc, "faro.example.test"); got == secret {
+			t.Errorf("secret=%v: the page loads the RUM script = %v", secret, got)
 		}
 	}
 }
@@ -138,7 +175,7 @@ func TestTheViewSwapFrameDrawsNoNav(t *testing.T) {
 // the sidebar an overlay on a desktop (their width is the window's), with a
 // hamburger that is not hidden there; every other nav document keeps the rail.
 func TestFullHeightViewsUseAnOverlayNav(t *testing.T) {
-	for name, page := range embeddablePages(false) {
+	for name, page := range frameablePages() {
 		src := documentSource(t, page)
 		overlay := name != "AgentDetailPage"
 		if got := strings.Contains(src, `data-overlay`); got != overlay {

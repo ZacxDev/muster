@@ -90,7 +90,8 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	}
 	v.Notice, v.NoticeOK = composerNotice(r)
 	v.HostIcon = s.mirrorHostIcon(r.Context(), h.Host)
-	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context()), Embedded: frameableView(w, r)}
+	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
+	allowSameOriginFrame(w)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.MirrorViewPage(v).Render(w); err != nil {

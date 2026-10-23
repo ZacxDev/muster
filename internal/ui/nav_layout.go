@@ -15,13 +15,30 @@ import (
 // document a signed-in person reads carries it: the shell, the detail pages,
 // the mirrored views, the terminal — and the server-authored pages internal/api
 // writes as strings (Attention, Account, API tokens, Credentials, Passkeys,
-// Plugins, Browser flows, the admin pages), which reach it through NavDocument
-// below rather than through a second copy of the sidebar.
+// Plugins, Browser flows, the admin pages, a notice shown to someone signed
+// in), which reach it through NavDocument below rather than through a second
+// copy of the sidebar.
 //
 // What stays BARE is enumerated, each with its reason, by the two ledgers that
 // pin this: TestEveryDocumentIsNavOrNamedBare (this package) and
 // TestEveryAPIDocumentIsNavOrNamedBare (internal/api). A document added to
 // either side without a decision fails there.
+//
+// 🔴 A VIEW IN THE VIEW-SWAP FRAME DRAWS ITS NAV TOO. view_swap.go lays the
+// frame over the WHOLE page (position:fixed, inset 0, the top z-index), so the
+// page underneath — and its nav — cannot be reached while the other view is on
+// screen; the frame's own nav is the only one there is. A link in it leaves
+// the window: the frame's viewFrameScript hands every link that leaves the
+// view (a boosted one included) to the TOP window. The two documents run their
+// own appScript, and that is safe because each one's listeners only ever see
+// its own document's events: input goes to the frame while it is on screen,
+// to the page under it otherwise.
+//
+// 🔴 THE NAV OPENS NO STREAM. The Attention badge refreshes on load and once a
+// minute (attentionBadgeTrigger); it also listens for the queue's SSE event,
+// which it hears only on a document that already holds an /events stream for
+// its own reasons (the shell, a task). A document that had no stream before
+// the nav does not get one from it — TestTheNavAddsNoStream.
 
 // The nav entries that are not tabs: each names a sidebar link a document can
 // mark as the one it belongs to (sidebar's activeTab / currentTab).
@@ -32,82 +49,28 @@ const (
 )
 
 // NavChrome is what a page outside the shell needs to draw the navigation:
-// which optional entries exist (Feat) and whether the document is EMBEDDED.
-//
-// 🔴 Embedded IS THE VIEW-SWAP FRAME (view_swap.go). The Rendered | Terminal
-// switch opens the OTHER view in a same-origin <iframe> laid over the whole
-// page; that page already carries the nav, so a nav inside the frame would be
-// a second sidebar, a second hamburger and a second /events stream drawn over
-// the first. A framed view draws none of them — and none of the sidebar's
-// offset either, or its column would start 18rem in on a desktop with no rail
-// beside it. internal/api sets it from the frame's own request (the browser's
-// Sec-Fetch-Dest: iframe), so every load of the frame — the first, a reload, a
-// New chat's ?session= — is embedded without anything carried in its URL.
+// which optional entries exist.
 type NavChrome struct {
-	Feat     Features
-	Embedded bool
-}
-
-// navOffset is the content column's left offset beside the desktop rail:
-// lg:pl-72, or nothing in an embedded document, which has no rail.
-func navOffset(embedded bool) string {
-	if embedded {
-		return ""
-	}
-	return "lg:pl-72"
-}
-
-// navRoot is the sidebar plus the wiring that keeps its Attention badge live:
-// an /events stream on a WRAPPER (the shell's shape — never on <body>, which a
-// boosted swap would strand). The badge also refreshes on load and once a
-// minute without it.
-//
-// overlay keeps the panel a slide-out at EVERY width: see sidebarIn.
-func navRoot(active, current string, feat Features, overlay bool) g.Node {
-	return Div(
-		hx("hx-ext", "sse"),
-		hx("sse-connect", "/events"),
-		sidebarIn(active, current, false, feat, overlay),
-	)
+	Feat Features
 }
 
 // The four pieces a full-height view (the mirrored Rendered view, the
-// terminal) places itself — its layout is its own, so it cannot be wrapped —
-// each nothing in an embedded document. Split by WHERE each goes: the head's
-// scripts (htmx and its SSE extension, for the badge), the sidebar (first in
-// <body>), the hamburger (in the page's own header), and the open/close script
-// (last in <body>).
+// terminal) places itself — its layout is its own, so it cannot be wrapped.
+// Split by WHERE each goes: htmx in the head (the badge's refresh), the
+// sidebar (first in <body>), the hamburger (in the page's own header), and the
+// open/close script (last in <body>).
 
-func overlayNavHead(n NavChrome) g.Node {
-	if n.Embedded {
-		return nil
-	}
-	return g.Group{
-		Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
-		Script(Src(web.Asset("/static/vendor/sse.js")), Defer()),
-	}
+func overlayNavHead() g.Node {
+	return Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer())
 }
 
 func overlayNav(n NavChrome, entry string) g.Node {
-	if n.Embedded {
-		return nil
-	}
-	return navRoot(entry, entry, n.Feat, true)
+	return sidebarIn(entry, entry, false, n.Feat, true)
 }
 
-func overlayNavButton(n NavChrome) g.Node {
-	if n.Embedded {
-		return nil
-	}
-	return overlayOpenButton()
-}
+func overlayNavButton() g.Node { return overlayOpenButton() }
 
-func overlayNavScript(n NavChrome) g.Node {
-	if n.Embedded {
-		return nil
-	}
-	return appScript(n.Feat)
-}
+func overlayNavScript(n NavChrome) g.Node { return appScript(n.Feat) }
 
 // NavDocumentView is a server-authored page drawn inside the navigation.
 type NavDocumentView struct {
@@ -115,12 +78,17 @@ type NavDocumentView struct {
 	Title string
 	// Entry is the nav entry the page belongs to (a tab key, NavAttention,
 	// NavAccount, NavAdmin), or "" for a page with none (Plugins, Browser
-	// flows): no link is then highlighted or marked current.
+	// flows, a notice): no link is then highlighted or marked current.
 	Entry string
 	Feat  Features
 	// Main is the page's content: TRUSTED markup, built by its caller with
 	// every value escaped there. It is placed as it is.
 	Main string
+	// Secret: the page can show a one-time secret (a minted token, a reset or
+	// invite link). It loads no telemetry script — these pages never did, and a
+	// RUM script on the one page a secret is ever rendered in is a reader of it
+	// nobody needs. Every other page keeps the shell's (faroHead).
+	Secret bool
 }
 
 // NavDocument is the document every server-authored signed-in page is: the
@@ -146,14 +114,13 @@ func NavDocument(v NavDocumentView) g.Node {
 				TitleEl(g.Text(v.Title+" · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
-				Script(Src(web.Asset("/static/vendor/sse.js")), Defer()),
-				faroHead(),
+				g.If(!v.Secret, faroHead()),
 			),
 			Body(
 				Class("min-h-dvh bg-bg text-fg antialiased selection:bg-accent/30"),
-				navRoot(v.Entry, v.Entry, v.Feat, false),
+				sidebarIn(v.Entry, v.Entry, false, v.Feat, false),
 				Div(
-					Class(navOffset(false)),
+					Class("lg:pl-72"),
 					// The shell's own header (hamburger + wordmark), without the push
 					// affordances: their script is the shell's, not this page's.
 					header(false),

@@ -86,14 +86,14 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	return s.requireSession(func(w http.ResponseWriter, r *http.Request) {
 		if p, ok := authz.From(r.Context()); !ok || p.Role != authz.RoleAdmin {
 			if isDocumentNavigation(r) {
-				s.renderNotice(w, http.StatusForbidden, "Admins only", "Your account cannot open this page.")
+				s.renderNotice(w, r, http.StatusForbidden, "Admins only", "Your account cannot open this page.")
 				return
 			}
 			s.writeJSON(w, http.StatusForbidden, map[string]any{"error": AdminOnlyRefusal})
 			return
 		}
 		if !s.adminPagesServed() {
-			s.renderNotice(w, http.StatusServiceUnavailable, "Account management is not configured",
+			s.renderNotice(w, r, http.StatusServiceUnavailable, "Account management is not configured",
 				"This server has no GoTrue configured (MUSTER_GOTRUE_URL), so it cannot manage accounts.")
 			return
 		}
@@ -136,7 +136,7 @@ func (s *Server) writeAdminDocument(w http.ResponseWriter, r *http.Request, code
 		}
 		return `<a href="` + href + `"` + cur + ` class="` + cls + `">` + label + `</a>`
 	}
-	s.writeNavDocument(w, r, code, title, ui.NavAdmin, `<nav aria-label="Admin" class="mb-4 flex flex-wrap items-center gap-1">
+	s.writeNavDocument(w, r, code, title, ui.NavAdmin, true, `<nav aria-label="Admin" class="mb-4 flex flex-wrap items-center gap-1">
 <a href="/" class="inline-flex min-h-[44px] items-center px-2 text-sm text-accent underline">← muster</a>
 `+tab("/admin/users", "Users")+tab("/admin/invites", "Invites")+tab("/account", "Account")+`
 </nav>
@@ -165,7 +165,7 @@ func (s *Server) renderAdminUsers(w http.ResponseWriter, r *http.Request, code i
 	list, err := s.gt.Accounts.ListUsers(ctx)
 	if err != nil {
 		s.logger.Printf("admin: list users: %v", err)
-		s.renderNotice(w, http.StatusInternalServerError, "Could not load users", "Try again in a moment.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load users", "Try again in a moment.")
 		return
 	}
 	me := authz.MustFrom(ctx).UserID
@@ -244,7 +244,7 @@ func (s *Server) adminUserTarget(w http.ResponseWriter, r *http.Request) (users.
 	}
 	if err != nil {
 		s.logger.Printf("admin: read user %d: %v", id, err)
-		s.renderNotice(w, http.StatusInternalServerError, "Could not load that user", "Try again in a moment.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load that user", "Try again in a moment.")
 		return users.User{}, false
 	}
 	return u, true
@@ -371,7 +371,7 @@ func (s *Server) renderAdminInvites(w http.ResponseWriter, r *http.Request, code
 	list, err := s.gt.Accounts.ListInvites(ctx)
 	if err != nil {
 		s.logger.Printf("admin: list invites: %v", err)
-		s.renderNotice(w, http.StatusInternalServerError, "Could not load invites", "Try again in a moment.")
+		s.renderNotice(w, r, http.StatusInternalServerError, "Could not load invites", "Try again in a moment.")
 		return
 	}
 	var b strings.Builder

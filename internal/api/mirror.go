@@ -259,7 +259,8 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	if e.CanScroll() {
 		v.ScrollForm = mirrorRef(e).ScrollForm()
 	}
-	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context()), Embedded: frameableView(w, r)}
+	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
+	allowSameOriginFrame(w)
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {

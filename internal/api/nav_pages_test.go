@@ -34,6 +34,7 @@ var apiNavWriters = []string{
 	"renderPluginsPage",     // /plugins
 	"renderFlowsPage",       // /flows
 	"writeAdminDocument",    // /admin/users, /admin/invites
+	"renderNotice",          // a notice, when its reader is signed in (it is in apiBareWriters too)
 }
 
 // apiBareWriters are the functions that write through writeAuthDocument — no
@@ -45,10 +46,10 @@ var apiBareWriters = map[string]string{
 	"handleInvitePage":  "the invite page: its reader has no account yet",
 	"renderInviteForm":  "the create-your-account form an invite opens: no account yet",
 	"renderResetForm":   "the set-a-new-password form a reset link opens: its reader cannot sign in",
-	"renderNotice": "a one-message notice — a refused or expired link, a failed sign-in, \"admins only\". " +
-		"Most are shown to someone signed out or mid-way through signing in, where a nav would offer pages " +
-		"that answer with the sign-in form; the few a signed-in person can see are dead ends with the " +
-		"browser's Back, kept bare rather than split by caller",
+	"renderNotice": "a one-message notice, when its reader has NO browser session — a refused or expired " +
+		"link, a sign-in that is not configured, a sign-out that did not finish (its session is already revoked): " +
+		"every nav link would answer with the sign-in form. A signed-in reader's notice has the nav " +
+		"(TestANoticeHasTheNavOnlyForASignedInReader)",
 }
 
 // TestEveryAPIDocumentIsNavOrNamedBare reads this package's source: every
@@ -200,6 +201,11 @@ func TestEverySignedInPageDrawsTheSideNav(t *testing.T) {
 			continue
 		}
 		assertDocHeaders(t, "GET "+p.path, w.Header())
+		// The nav opens no stream: /attention holds exactly the one its own
+		// list script opens, every other page none — as before the nav.
+		if n, want := streamCount(body), map[bool]int{true: 1, false: 0}[p.path == "/attention"]; n != want {
+			t.Errorf("GET %s opens %d /events stream(s), want %d", p.path, n, want)
+		}
 		nav := body[strings.Index(body, `id="sidebar"`):]
 		nav = nav[:strings.Index(nav, "</nav>")]
 		if n := strings.Count(nav, `aria-current="page"`); n != map[bool]int{true: 1, false: 0}[p.current != ""] {
@@ -234,10 +240,12 @@ func TestEverySignedInPageDrawsTheSideNav(t *testing.T) {
 	}
 }
 
-// TestTheViewSwapFrameIsServedWithoutTheNav: the four frameable views draw the
-// nav when loaded as a page, and NONE when the browser loads them into the
-// view-swap frame (Sec-Fetch-Dest: iframe) — and say they vary on it.
-func TestTheViewSwapFrameIsServedWithoutTheNav(t *testing.T) {
+// TestTheFrameableViewsDrawTheNavFramedOrNot: the views the view swap opens in
+// its frame draw their nav whether the browser loads them as the page or into
+// the frame (Sec-Fetch-Dest says which) — the frame covers the whole page, so
+// its own nav is the only one reachable while it is on screen — and open no
+// /events stream for it.
+func TestTheFrameableViewsDrawTheNavFramedOrNot(t *testing.T) {
 	ms, mts := viewServer(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}})
 	tsrv, tts := terminalServer(t, newFakeTerminal())
 	cases := []struct {
@@ -265,13 +273,60 @@ func TestTheViewSwapFrameIsServedWithoutTheNav(t *testing.T) {
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("%s (%s) = %d: %.300s", c.name, dest, resp.StatusCode, body)
 			}
-			want := map[string]int{"document": 1, "iframe": 0}[dest]
-			if roots, opens := navCount(body); roots != want || opens != want {
-				t.Errorf("%s loaded as %s draws %d side nav(s) and %d hamburger(s), want %d", c.name, dest, roots, opens, want)
+			if roots, opens := navCount(body); roots != 1 || opens != 1 {
+				t.Errorf("%s loaded as %s draws %d side nav(s) and %d hamburger(s), want one of each", c.name, dest, roots, opens)
 			}
-			if !strings.Contains(strings.Join(resp.Header.Values("Vary"), ","), "Sec-Fetch-Dest") {
-				t.Errorf("%s: the response does not say it varies on Sec-Fetch-Dest (Vary: %v)", c.name, resp.Header.Values("Vary"))
+			if n := streamCount(body); n != 0 {
+				t.Errorf("%s loaded as %s opens %d /events stream(s); it opened none before the side nav", c.name, dest, n)
 			}
 		}
 	}
+}
+
+// streamCount counts the /events streams a response's markup opens: an htmx
+// sse-connect attribute, or a script constructing an EventSource on /events.
+// Both are spelled here as the CODE spells them (attribute with its value, the
+// call with its argument), which a comment describing them does not.
+func streamCount(body string) int {
+	return strings.Count(body, `sse-connect="/events"`) + strings.Count(body, `new EventSource('/events')`)
+}
+
+// TestANoticeHasTheNavOnlyForASignedInReader: renderNotice draws the side nav
+// for a reader with a browser session (a member refused an admin page, a
+// passkeys failure) and none for a signed-out one (a link opened at the wrong
+// address) — decided by the request's principal, not by the caller.
+func TestANoticeHasTheNavOnlyForASignedInReader(t *testing.T) {
+	f := newGoTrueFixtureWith(t, nil)
+	f.s.gt.Accounts = &memAccounts{rows: f.store}
+	_ = f.member("admin@example.com", authz.OperatorUserID, authz.RoleAdmin)
+	msub := f.member("member@example.com", 7, authz.RoleMember)
+	at, rt, _ := f.fake.Mint(msub)
+
+	signedIn := []struct{ what, path, says string }{
+		{"a member opening an admin page", "/admin/users", "Admins only"},
+		{"passkeys switched off in GoTrue", "/account/passkeys", "Passkeys are not available"},
+	}
+	for _, c := range signedIn {
+		w := do(f.edge, "GET", c.path, nil, withCookies(at, rt), asNavigation)
+		body := w.Body.String()
+		if !strings.Contains(body, c.says) {
+			t.Fatalf("%s: GET %s = %d, not the notice %q: %.300s", c.what, c.path, w.Code, c.says, body)
+		}
+		if roots, opens := navCount(body); roots != 1 || opens != 1 {
+			t.Errorf("%s (signed in): the notice draws %d side nav(s) and %d hamburger(s), want one of each", c.what, roots, opens)
+		}
+		assertDocHeaders(t, c.what, w.Header())
+	}
+
+	// Signed out: a claim link opened on the machine port is refused with a
+	// notice, and the reader has no session.
+	w := do(f.machine, "GET", ClaimPath, nil, asNavigation)
+	body := w.Body.String()
+	if !strings.Contains(body, "Open this link at the public address") {
+		t.Fatalf("GET %s on the machine port = %d, not the notice: %.300s", ClaimPath, w.Code, body)
+	}
+	if roots, opens := navCount(body); roots != 0 || opens != 0 {
+		t.Errorf("the signed-out notice draws %d side nav(s) — it is bare", roots)
+	}
+	assertDocHeaders(t, "the signed-out notice", w.Header())
 }

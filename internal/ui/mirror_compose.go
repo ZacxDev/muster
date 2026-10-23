@@ -121,11 +121,6 @@ type ComposerView struct {
 	// (composer_draft.go: MirrorDraftKey, AgentTerminalDraftKey); "" keeps no
 	// draft. A disabled composer keeps none either way.
 	DraftKey string
-	// RankFromApp: the document also carries appScript (the side nav's), which
-	// defines window.musterRank — so the `/` menu uses THAT copy of rankJS
-	// rather than embedding a second one (TestBothDocumentsRankWithOneFunction).
-	// The menu reads it only on a keystroke, after both scripts have run.
-	RankFromApp bool
 }
 
 // MirrorComposerView is ComposerView under the name it had while only mirrored
@@ -274,7 +269,7 @@ func mirrorComposer(v ComposerView) g.Node {
 		g.If(v.Queue != nil && !off, sendMenuScript()),
 		dictateScript(dictate),
 		attachScript(upload),
-		composerMenuScript(menu, !v.RankFromApp),
+		composerMenuScript(menu),
 		g.If(v.Pinned, composerPinScript()),
 	)
 }

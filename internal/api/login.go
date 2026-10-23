@@ -287,9 +287,12 @@ func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 // the same two things: no-store (a token shown once must not be restored from
 // a cache), and same-origin referrers (the sign-out and every operator-write
 // form are refused without a same-origin Origin).
-func (s *Server) writeNavDocument(w http.ResponseWriter, r *http.Request, code int, title, entry, inner string) {
+//
+// secret says the page can show a one-time secret (a minted token, a reset or
+// invite link): it then loads no telemetry script (ui.NavDocumentView.Secret).
+func (s *Server) writeNavDocument(w http.ResponseWriter, r *http.Request, code int, title, entry string, secret bool, inner string) {
 	writeDocumentHeaders(w, code)
-	if err := ui.RenderNavDocument(w, ui.NavDocumentView{Title: title, Entry: entry, Feat: s.shellFeatures(r.Context()), Main: inner}); err != nil {
+	if err := ui.RenderNavDocument(w, ui.NavDocumentView{Title: title, Entry: entry, Feat: s.shellFeatures(r.Context()), Main: inner, Secret: secret}); err != nil {
 		s.logger.Printf("render %s: %v", title, err)
 	}
 }

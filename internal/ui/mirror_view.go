@@ -90,8 +90,8 @@ type MirrorViewView struct {
 	// window, which then has none. The index sheet's second tab.
 	FocusHistory string
 	// Nav is the navigation the page draws: an overlay sidebar (sidebarIn's
-	// overlay — this page is sized to the window) and its hamburger, or, in the
-	// view-swap frame (Nav.Embedded), nothing.
+	// overlay — this page is sized to the window) and its hamburger, framed
+	// by the view swap or not (nav_layout.go says why).
 	Nav NavChrome
 }
 
@@ -116,10 +116,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		// Pinned to the visible viewport, not in flow at the bottom of the body:
 		// on a phone the body's bottom can be under the browser's chrome, and
 		// this page cannot be scrolled to bring it back (composerPinScript).
-		Pinned: true,
-		// The side nav's appScript carries the `/` menu's ranker; an embedded
-		// view has no nav, so its menu embeds its own.
-		RankFromApp: !v.Nav.Embedded}
+		Pinned: true}
 	working := "Claude is working…"
 	switch {
 	case v.Hermes && !v.HermesSend:
@@ -145,7 +142,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				manifestLink(),
 				TitleEl(g.Text(mirrorQualified(plainOr(displayOr(v.Label, v.Title), v.Session), v.Qualifier)+" · Mirrored · muster")),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
-				overlayNavHead(v.Nav),
+				overlayNavHead(),
 				faroHead(),
 			),
 			Body(
@@ -157,7 +154,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				overlayNav(v.Nav, "agents"),
 				Header(
 					Class("flex items-center gap-2 border-b border-line px-2 py-1.5"),
-					overlayNavButton(v.Nav),
+					overlayNavButton(),
 					A(
 						ID("mv-back"),
 						Href("/agents"),

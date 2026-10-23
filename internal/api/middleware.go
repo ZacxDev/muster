@@ -133,26 +133,6 @@ func allowSameOriginFrame(w http.ResponseWriter) {
 	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 }
 
-// frameableView is allowSameOriginFrame for one of those four pages, and
-// answers whether THIS load of it is the view-swap frame — the document then
-// draws no navigation (ui.NavChrome.Embedded): the page under the frame
-// already carries it.
-//
-// 🔴 THE SWITCH IS THE BROWSER'S OWN Sec-Fetch-Dest, NOT A QUERY PARAMETER.
-// Every load of the frame says `iframe` — the first, a reload, a New chat's
-// ?session= — and nothing has to be carried in its address. A parameter would:
-// the view swap copies the frame's address onto the TOP window
-// (history.replaceState), so a reload or a shared link would open the page
-// without its navigation. Every browser this app targets sends the header
-// (isDocumentNavigation reads it too); one that does not draws the nav in the
-// frame as well, which is the old behaviour, not a broken page. The response
-// varies on it, and says so.
-func frameableView(w http.ResponseWriter, r *http.Request) (embedded bool) {
-	allowSameOriginFrame(w)
-	w.Header().Add("Vary", "Sec-Fetch-Dest")
-	return r.Header.Get("Sec-Fetch-Dest") == "iframe"
-}
-
 // accessLog logs one line per request (method, path, status, duration). It skips
 // the high-frequency, low-value health + SSE endpoints to keep logs readable.
 func (s *Server) accessLog(next http.Handler) http.Handler {

@@ -338,5 +338,5 @@ func (s *Server) renderAccountTokens(w http.ResponseWriter, r *http.Request, cod
 	b.WriteString(`</ul>
 <a href="` + accountPath + `" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to account</a>
 </section>`)
-	s.writeNavDocument(w, r, code, "API tokens", ui.NavAccount, b.String())
+	s.writeNavDocument(w, r, code, "API tokens", ui.NavAccount, true, b.String())
 }

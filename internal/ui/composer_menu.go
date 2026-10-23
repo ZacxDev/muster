@@ -209,20 +209,13 @@ func composerMenuBox(src string) g.Node {
 // on the form, so an Enter or Tab that picks an item never reaches the
 // composer's own Enter-sends handler; Ctrl/Cmd+Enter is never taken — it sends,
 // menu or not.
-//
-// withRank embeds rankJS; false on a document whose appScript already defines
-// window.musterRank (ComposerView.RankFromApp).
-func composerMenuScript(src string, withRank bool) g.Node {
+func composerMenuScript(src string) g.Node {
 	if src == "" {
 		return nil
 	}
-	rank := ""
-	if withRank {
-		rank = rankJS
-	}
 	return Script(g.Raw(`
 (function () {
-` + rank + `
+` + rankJS + `
   var input = document.getElementById('mv-input');
   var form = document.getElementById('mv-form');
   var box = document.getElementById('mv-complete-box');
