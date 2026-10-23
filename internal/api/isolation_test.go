@@ -444,8 +444,9 @@ var isolationClasses = map[string]routeClass{
 	// The attention queue (0025). The page, its live list and the badge name
 	// no object (each reads the caller's own queue); the answer and dismiss
 	// forms name A's ask by id.
-	"GET /attention":       classList,
-	"GET /attention/items": classList,
+	"GET /attention":                   classList,
+	"GET /attention/items":             classList,
+	"GET /attention/drafts":            classList,
 	// A session page's asks block names its asker by query (?agent=): A's
 	// agent's asks, never B's view of them. The tap route names an item by key.
 	"GET /attention/asker":             classParam,

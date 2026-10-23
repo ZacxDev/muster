@@ -456,7 +456,7 @@ func (s *Server) pendingDraftItems(ctx context.Context) ([]attentionItem, error)
 		}
 		it := attentionItem{Key: draftKey(c.Draft.ID), Kind: attentionKindPlugin, Source: c.PluginLabel,
 			Text: draftInboundText(c.Message), Detail: "Draft reply: " + mirror.OneLine(c.Draft.Body, draftReplyMax),
-			Since: c.Draft.CreatedAt, Link: pluginsPath + "#" + draftCardAnchor(c.Draft.ID)}
+			Since: c.Draft.CreatedAt, Link: draftLink(c.Draft.ID)}
 		// The agent that drafted it (none once that agent is deleted).
 		if c.Draft.AgentID != nil {
 			it.card.agentID = *c.Draft.AgentID
@@ -771,6 +771,7 @@ func (s *Server) expireAsks(ctx context.Context) {
 func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("GET "+attentionPath, s.requireSession(s.handleAttentionPage))
 	mux.HandleFunc("GET "+attentionPath+"/items", s.requireSession(s.handleAttentionItems))
+	mux.HandleFunc("GET "+asksDraftsPath, s.requireSession(s.handleAsksDrafts))
 	mux.HandleFunc("GET "+attentionAskerPath, s.requireSession(s.handleAttentionAsker))
 	mux.HandleFunc("GET "+attentionOpenPath+"{key}", s.requireSession(s.handleAttentionOpen))
 	mux.HandleFunc("GET "+ui.AttentionBadgePath, s.requireSession(s.handleAttentionBadge))
@@ -780,15 +781,25 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("POST "+attentionHermesPath, s.requireOperatorWrite(s.handleAttentionHermesApprove))
 }
 
+// handleAttentionPage is GET /attention, the Asks page (asks_drafts.go):
+// served when the queue or plugins (its Reply drafts tab) is.
 func (s *Server) handleAttentionPage(w http.ResponseWriter, r *http.Request) {
-	if s.ext.Attention == nil {
+	if s.ext.Attention == nil && s.ext.Plugins == nil {
 		http.NotFound(w, r)
 		return
 	}
 	s.renderAttentionPage(w, r, http.StatusOK, "")
 }
 
+// renderAttentionPage is the Asks page on the tab the request names.
 func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, code int, problem string) {
+	s.renderAsksPage(w, r, code, problem, asksTab(r), asksFocus(r))
+}
+
+// renderAsksPage writes the Asks page on tab: with plugins served, the Ask
+// and Reply drafts tabs (asks_drafts.go); without, the Ask list alone. focus
+// (0 for none) is a draft drawn whatever the views' cut (readDraftViews).
+func (s *Server) renderAsksPage(w http.ResponseWriter, r *http.Request, code int, problem, tab string, focus int64) {
 	items, err := s.attentionItems(r.Context())
 	s.withFocus(r.Context(), items)
 	if err != nil {
@@ -799,26 +810,39 @@ func (s *Server) renderAttentionPage(w http.ResponseWriter, r *http.Request, cod
 	}
 	var b strings.Builder
 	b.WriteString(`<section class="flex flex-col gap-4 rounded-2xl border border-line bg-s1/70 px-5 py-6 ring-1 ring-line" data-testid="attention-page">
-<h1 class="text-balance text-base font-semibold text-fg">Attention</h1>
-<p class="text-sm text-fg2">Everything waiting on you: questions your agents asked, sessions waiting at a prompt, and reply drafts awaiting approval.</p>
+<h1 class="text-balance text-base font-semibold text-fg">Asks</h1>
+<p class="text-sm text-fg2">Everything waiting on you: questions your agents asked and sessions waiting at a prompt` + asksIntroDrafts(s.ext.Plugins != nil) + `.</p>
 `)
 	b.WriteString(problemNode(problem))
 	b.WriteString(attentionNotice(r))
-	b.WriteString(`<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">`)
-	b.WriteString(attentionItemsHTML(items, time.Now()))
-	b.WriteString(answeredAsksHTML(s.recentAnswers(r.Context()), time.Now()))
-	b.WriteString(`</ul>
+	now := time.Now()
+	askList := `<ul id="attention-items" class="flex flex-col gap-2" data-testid="attention-items" aria-live="polite">` +
+		askTabListHTML(items, answeredAsksHTML(s.recentAnswers(r.Context()), now), now) + `</ul>`
+	if s.ext.Plugins == nil {
+		b.WriteString(askList)
+	} else {
+		pending, archived, ok := s.readDraftViews(r.Context(), focus)
+		if !ok && problem == "" {
+			b.WriteString(problemNode("The reply drafts could not be read."))
+		}
+		b.WriteString(s.asksTabsHTML(askList, pending, archived, tab))
+	}
+	b.WriteString(`
 <a href="/" class="inline-flex min-h-[44px] items-center text-sm text-accent underline">Back to muster</a>
 </section>`)
 	b.WriteString(attentionPageScript)
-	writeAuthDocument(w, code, "Attention", b.String())
+	if s.ext.Plugins != nil {
+		b.WriteString(asksPageScript)
+		b.WriteString(s.draftStepUpHTML(r))
+	}
+	writeAuthDocument(w, code, "Asks", b.String())
 }
 
 // attentionPageScript keeps the queue's list live (ui.AttentionLiveScript).
 var attentionPageScript = ui.AttentionLiveScript("attention-items", "/attention/items", EventAttentionChanged)
 
 func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
-	if s.ext.Attention == nil {
+	if s.ext.Attention == nil && s.ext.Plugins == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -829,7 +853,8 @@ func (s *Server) handleAttentionItems(w http.ResponseWriter, r *http.Request) {
 	s.withFocus(r.Context(), items)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write([]byte(attentionItemsHTML(items, time.Now()) + answeredAsksHTML(s.recentAnswers(r.Context()), time.Now())))
+	now := time.Now()
+	_, _ = w.Write([]byte(askTabListHTML(items, answeredAsksHTML(s.recentAnswers(r.Context()), now), now)))
 }
 
 func (s *Server) handleAttentionBadge(w http.ResponseWriter, r *http.Request) {

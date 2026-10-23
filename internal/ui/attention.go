@@ -64,7 +64,7 @@ func attentionLink(feat Features) g.Node {
 	}
 	return A(ID("sidebar-attention"), Href("/attention"), hx("hx-boost", "false"),
 		Class("press flex min-h-[44px] w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg"),
-		Span(Class("text-base"), g.Text("🔔")), Span(g.Text("Attention")), attentionBadgeSlot())
+		Span(Class("text-base"), g.Text("🔔")), Span(g.Text("Asks")), attentionBadgeSlot())
 }
 
 // AskerAsksID is the element id of a session page's asks block.
@@ -105,6 +105,8 @@ func AttentionLiveScript(listID, src, event string) string {
   var src = ` + strconv.Quote(src) + `;
   var pending = false;
   function refresh() {
+    // The Asks page's other parts (its tabs' counts) follow the same event.
+    try { document.dispatchEvent(new Event('asks:changed')); } catch (e) {}
     if (busy(list)) { pending = true; return; }
     pending = false;
     fetch(src, { credentials: 'same-origin' }).then(function (r) {
