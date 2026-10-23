@@ -208,9 +208,12 @@ func TestPinnedChipLabelFallbacks(t *testing.T) {
 		{ID: 1, Name: "named-agent", DisplayName: "Pretty agent", Status: "running", Pinned: true, LastActiveAt: time.Now().Add(-10 * time.Minute)},
 		{ID: 2, Name: "bare-agent", Status: "running", Pinned: true, LastActiveAt: time.Now().Add(-11 * time.Minute)},
 		{ID: 3, Name: "long-agent", DisplayName: long, Status: "running", Pinned: true, LastActiveAt: time.Now().Add(-12 * time.Minute)},
+		// The 60-rune cut lands inside a ZWJ family emoji: the clamp (#242's
+		// grapheme-safe clampTitle) moves it back before the whole cluster.
+		{ID: 4, Name: "emoji-agent", DisplayName: strings.Repeat("y", 59) + "\U0001F468\u200d\U0001F469\u200d\U0001F467 tail", Status: "running", Pinned: true, LastActiveAt: time.Now().Add(-13 * time.Minute)},
 	}
 	got := pinnedLabels(t, renderString(t, AgentsCardsWithMirrors(agents, []MirrorCardView{noLabel, sessionLabel})))
-	want := []string{"build:7", "deploy:8", "Pretty agent", "bare-agent", strings.Repeat("x", 60) + "…"}
+	want := []string{"build:7", "deploy:8", "Pretty agent", "bare-agent", strings.Repeat("x", 60) + "…", strings.Repeat("y", 59) + "…"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("chip labels = %q, want %q", got, want)
 	}
