@@ -130,10 +130,16 @@ func TestAPinnedWindowIsALabelOnlyChip(t *testing.T) {
 		t.Errorf("the chip's whole text = %q, want just the codename %q", got, "mango")
 	}
 	for _, k := range []string{"data-card-slot", "data-card-host", "data-card-focus", "data-mirror-card",
-		"data-mirror-repo", "data-mirror-claude", "data-host-icon", "data-pinned-glyph", "data-pin-toggle"} {
+		"data-mirror-repo", "data-mirror-claude", "data-pinned-glyph", "data-pin-toggle"} {
 		if n := pinFind(chip, pinHas(k)); len(n) != 0 {
 			t.Errorf("the chip draws %s, which only a card draws", k)
 		}
+	}
+	// Its host icon is carried for the host tabs, but NOT drawn.
+	if icons := pinFind(chip, pinHas("data-host-icon")); len(icons) != 1 {
+		t.Errorf("the chip carries %d host icons, want 1 (undrawn, for its host's tab)", len(icons))
+	} else if c, _ := pinAttr(icons[0].Parent, "class"); c != "hidden" {
+		t.Errorf("the chip's host icon is drawn (its wrapper's class %q, want hidden)", c)
 	}
 	if strings.Contains(pinText(chip), "Refactoring") {
 		t.Errorf("the chip shows the focus title")
@@ -325,5 +331,126 @@ func TestAPinnedChipCanBeUnpinnedAndMarksWaiting(t *testing.T) {
 	q.Pinned = false
 	if s := renderString(t, AgentsCardsWithMirrors(nil, []MirrorCardView{q})); strings.Contains(s, "agents-pins-edit") {
 		t.Errorf("an unpinned list draws the Edit pins toggle")
+	}
+}
+
+// pinRender renders an html node back to markup.
+func pinRender(t *testing.T, n *html.Node) string {
+	t.Helper()
+	var b strings.Builder
+	if err := html.Render(&b, n); err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}
+
+// TestAPinnedAgentKeepsItsControlsBehindEditPins: a pinned agent's chip carries
+// the card's own rename button and ⋯ menu (Stop for a running agent, Delete) —
+// inside the chip's edit controls, which only "Edit pins" shows — and its ⋯
+// menu does not offer "Pin to top"; outside them the chip is its label alone. A
+// window's chip has only its ×. Red at 5643e772: no edit controls, no menu.
+func TestAPinnedAgentKeepsItsControlsBehindEditPins(t *testing.T) {
+	ag := AgentCardView{ID: 9, Name: "nine", Status: "running", Pinned: true, LastActiveAt: time.Now()}
+	w := pinWin(0, "hosta", "s1", "@1", "mango:1")
+	s := renderString(t, AgentsCardsWithMirrors([]AgentCardView{ag}, []MirrorCardView{w}))
+	arts := pinArticles(t, s)
+
+	edits := pinFind(arts["agent-9"], pinHas("data-pinned-chip-edit"))
+	if len(edits) != 1 {
+		t.Fatalf("the agent chip has %d edit-control groups, want 1:\n%s", len(edits), s)
+	}
+	edit := pinRender(t, edits[0])
+	for _, want := range []string{`aria-label="Agent actions"`, `id="agent-menu-9"`, `hx-post="/agents/9/stop"`, `>Stop<`,
+		`hx-delete="/agents/9"`, `aria-label="Rename agent"`, `action="/agents/pins/delete"`, `aria-label="Unpin nine"`} {
+		if !strings.Contains(edit, want) {
+			t.Errorf("the agent chip's edit controls lack %s:\n%s", want, edit)
+		}
+	}
+	if strings.Contains(edit, "Pin to top") {
+		t.Errorf("a pinned agent's menu offers Pin to top")
+	}
+	// Everything but the label is inside the edit controls.
+	for _, k := range []string{"aria-haspopup", "popover", "hx-post", "hx-delete", "hx-get"} {
+		for _, n := range pinFind(arts["agent-9"], pinHas(k)) {
+			inside := false
+			for p := n; p != nil; p = p.Parent {
+				if _, ok := pinAttr(p, "data-pinned-chip-edit"); ok {
+					inside = true
+				}
+			}
+			if !inside {
+				t.Errorf("the agent chip draws %s outside its edit controls", k)
+			}
+		}
+	}
+	medit := pinFind(arts[mirrorCardID(w)], pinHas("data-pinned-chip-edit"))
+	if len(medit) != 1 || strings.Contains(pinRender(t, medit[0]), "Agent actions") ||
+		!strings.Contains(pinRender(t, medit[0]), `aria-label="Unpin mango"`) {
+		t.Errorf("a window's chip's edit controls should be its × alone")
+	}
+}
+
+// TestAPinnedAgentChipMarksAStoppedOrFailedStatus: an agent in error, or
+// stopped, carries a status dot named for what it is; a running one carries
+// none. Red at 5643e772: no status mark on a chip.
+func TestAPinnedAgentChipMarksAStoppedOrFailedStatus(t *testing.T) {
+	for _, c := range []struct{ status, label string }{{"error", "Agent error"}, {"stopped", "Agent stopped"}, {"running", ""}, {"provisioning", ""}} {
+		ag := AgentCardView{ID: 3, Name: "three", Status: c.status, Pinned: true, LastActiveAt: time.Now()}
+		chip := pinArticles(t, renderString(t, AgentsCardsWithMirrors([]AgentCardView{ag}, nil)))["agent-3"]
+		dots := pinFind(chip, pinHas("data-pinned-chip-status"))
+		if c.label == "" {
+			if len(dots) != 0 {
+				t.Errorf("%s: a status dot on a healthy agent", c.status)
+			}
+			continue
+		}
+		if len(dots) != 1 {
+			t.Errorf("%s: %d status dots, want 1", c.status, len(dots))
+			continue
+		}
+		if l, _ := pinAttr(dots[0], "aria-label"); l != c.label {
+			t.Errorf("%s: dot named %q, want %q", c.status, l, c.label)
+		}
+	}
+}
+
+// TestNoCardDrawsPinnedStateAndAPinnedAgentRendersAsItsChip: a card is only
+// ever drawn for an unpinned entry, so the cards carry no pinned glyph, no
+// data-pinned and no pressed/Unpin toggle — and RenderAgentCard (the rename
+// save/cancel swap of #agent-<id>) draws a PINNED agent as its chip, so a
+// rename can never swap a full card into the pinned row. Red at 5643e772:
+// RenderAgentCard drew the full card, glyph and all.
+func TestNoCardDrawsPinnedStateAndAPinnedAgentRendersAsItsChip(t *testing.T) {
+	ag := AgentCardView{ID: 5, Name: "five", DisplayName: "Five", Status: "running", Pinned: true, LastActiveAt: time.Now()}
+	var b strings.Builder
+	if err := RenderAgentCard(&b, ag); err != nil {
+		t.Fatal(err)
+	}
+	a := pinArticles(t, b.String())["agent-5"]
+	if a == nil {
+		t.Fatalf("no #agent-5 article:\n%s", b.String())
+	}
+	if v, _ := pinAttr(a, "data-pinned-chip"); v != "agent" || len(pinFind(a, pinHas("data-card-slot"))) != 0 {
+		t.Errorf("RenderAgentCard drew a pinned agent as a card:\n%s", b.String())
+	}
+	if got := pinnedLabels(t, b.String()); len(got) != 1 || got[0] != "Five" {
+		t.Errorf("RenderAgentCard's chip label = %q, want [Five]", got)
+	}
+	// Unpinned: the card, with no pinned state anywhere on either kind.
+	ag.Pinned = false
+	w := pinWin(0, "hosta", "s1", "@1", "mango:1")
+	w.Pinned = false
+	b.Reset()
+	if err := RenderAgentCard(&b, ag); err != nil {
+		t.Fatal(err)
+	}
+	cards := b.String() + renderString(t, AgentsCardsWithMirrors(nil, []MirrorCardView{w}))
+	for _, bad := range []string{"data-pinned", "aria-pressed", ">Unpin<", `aria-label="Unpin"`} {
+		if strings.Contains(cards, bad) {
+			t.Errorf("a card draws pinned state %s", bad)
+		}
+	}
+	if !strings.Contains(cards, ">Pin to top<") || !strings.Contains(cards, `aria-label="Pin to top"`) {
+		t.Errorf("instrument check: the unpinned cards should offer Pin to top")
 	}
 }

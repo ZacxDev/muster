@@ -89,9 +89,9 @@ type AgentCardView struct {
 	IsChief bool
 	// Pinned: the viewing user pinned this agent (internal/pins). The list draws
 	// a pinned agent first, as a label-only CHIP instead of its card
-	// (pinned_chips.go: unpinned from the row's "Edit pins" toggle); a card
-	// rendered pinned (RenderAgentCard) still shows a pin glyph and an ⋯ menu
-	// offering Unpin. Composed in cardViewIndexed.
+	// (pinned_chips.go: unpinned, renamed and started/stopped from the chip's
+	// edit controls, behind the row's "Edit pins" toggle); RenderAgentCard draws
+	// that chip too. Composed in cardViewIndexed.
 	Pinned bool
 	// Focus is what the agent is working on (internal/focus), nil for none.
 	// Composed in cardViewIndexed; shown as the footer's focus chip, and found
@@ -245,10 +245,16 @@ func AgentsCards(list []AgentCardView) g.Node {
 	return g.Group(g.Map(list, agentCard))
 }
 
-// RenderAgentCard writes a single agent card (the #agent-{id} <article>). Used
-// to re-render one card after an inline rename (save) or to restore it on
-// cancel, swapped as outerHTML of #agent-{id}.
+// RenderAgentCard writes a single agent's list entry (the #agent-{id}
+// <article>). Used to re-render it after an inline rename (save) or to restore
+// it on cancel, swapped as outerHTML of #agent-{id}. A PINNED agent's entry is
+// its chip (pinned_chips.go), never a card: a rename started from the chip's
+// edit controls, or racing a pin from another tab, must not swap a full card
+// into the pinned row.
 func RenderAgentCard(w io.Writer, a AgentCardView) error {
+	if a.Pinned {
+		return pinnedChips1(listEntry{agent: &a}).Render(w)
+	}
 	return agentCard(a).Render(w)
 }
 
@@ -343,7 +349,6 @@ func agentCard(a AgentCardView) g.Node {
 	}
 	return Article(
 		ID("agent-"+ids),
-		g.If(a.Pinned, g.Attr("data-pinned", "")),
 		g.If(a.Idle, g.Attr("data-idle-section", "")),
 		agentListAttrs(a),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
@@ -378,7 +383,6 @@ func agentCard(a AgentCardView) g.Node {
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
 				cardStatusIcon(a),
-				g.If(a.Pinned, pinnedGlyph()),
 				// The owed-kickoff badge sits OUTSIDE cardStatusIcon's span on
 				// purpose: that span polls /ui/agents/{id}/status every 10s and
 				// swaps its own innerHTML, so anything nested inside it is erased
@@ -598,7 +602,7 @@ func agentMenu(a AgentCardView) g.Node {
 			g.Attr("data-floating-menu", ""),
 			Class("invisible hidden [&:popover-open]:flex m-0 w-44 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
 			lifecycle,
-			agentPinMenuItem(a),
+			g.If(!a.Pinned, agentPinMenuItem(a)),
 			g.If(!a.IsChief, Div(Class("my-0.5 border-t border-line"))),
 			g.If(!a.IsChief, agentDeleteConfirm(ids)),
 		),

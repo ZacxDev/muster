@@ -40,7 +40,9 @@ import (
 //
 // UNPINNING. The chip shows no control of its own. The row starts with ONE
 // "Edit pins" toggle (pinsEditToggle): pressing it reveals a × on every chip
-// (the pin routes' Unpin form, pinForm), pressing it again hides them. It was
+// (the pin routes' Unpin form, pinForm) — and, on an AGENT's chip, the card's
+// own rename button and ⋯ menu (Start/Stop, Delete), so pinning an agent
+// never takes its lifecycle controls away — and pressing it again hides them. It was
 // chosen over a long-press or a context menu because it is a plain 44px button
 // — discoverable, keyboard-operable, and the same on a phone and a desktop —
 // and costs the row one icon-sized slot rather than a control per chip. The
@@ -49,7 +51,9 @@ import (
 // draws every × hidden, so nothing moves on the first paint.
 //
 // WAITING: a chip whose entry waits on you (data-wait, the same token the card
-// carries) shows a small accent dot before its label (pinnedChipWaitDot).
+// carries) shows a small accent dot before its label (pinnedChipWaitDot); an
+// agent that crashed or was stopped, a dot of its status's colour
+// (pinnedChipStatusDot).
 
 // pinnedChipsHeadID is the "Edit pins" toggle row's id.
 const pinnedChipsHeadID = "agents-pins-head"
@@ -126,18 +130,26 @@ func pinnedChipLabels(es []listEntry) []string {
 // pinnedChip is one pinned entry's chip, labelled label (pinnedChipLabels).
 func pinnedChip(e listEntry, label string) g.Node {
 	var id, href, kind string
-	var attrs, unpin g.Node
+	var attrs, icon, unpin, status, edit g.Node
 	wait := ""
 	if e.agent != nil {
 		a := e.agent
-		id, href, kind = "agent-"+strconv.FormatInt(a.ID, 10), "/agents/"+a.Name, "agent"
+		ids := strconv.FormatInt(a.ID, 10)
+		id, href, kind = "agent-"+ids, "/agents/"+a.Name, "agent"
 		attrs = agentListAttrs(*a)
+		icon = clusterMark()
 		wait = waitTokens(a.Attention, a.AwaitingApproval)
-		unpin = pinForm(true, [][2]string{{"kind", "agent"}, {"agent_id", strconv.FormatInt(a.ID, 10)}}, chipUnpinButton(label))
+		status = pinnedChipStatusDot(a.Status)
+		unpin = pinForm(true, [][2]string{{"kind", "agent"}, {"agent_id", ids}}, chipUnpinButton(label))
+		// A pinned agent keeps its card's controls — rename, and the ⋯ menu's
+		// Start/Stop and Delete — behind "Edit pins": the SAME functions the
+		// card draws them with, not copies.
+		edit = g.Group{agentRenameButton(ids), agentMenu(*a)}
 	} else {
 		m := e.mirror
 		id, href, kind = mirrorCardID(*m), MirrorCardHref(*m), "mirror"
 		attrs = mirrorListAttrs(*m)
+		icon = hostMark(m.Host, m.HostIcon)
 		wait = waitTokens(m.Attention, false)
 		unpin = pinForm(true, [][2]string{{"kind", "mirror"}, {"host", m.Host}, {"session", m.Session}, {"window", m.Window}}, chipUnpinButton(label))
 	}
@@ -147,6 +159,10 @@ func pinnedChip(e listEntry, label string) g.Node {
 		g.Attr("data-pinned-chip", kind),
 		attrs,
 		Class("flex min-w-0 max-w-full items-center rounded-full border border-line bg-s1/70 ring-1 ring-line"),
+		// The entry's host icon, NOT drawn: the host tabs take a host's icon
+		// from its first drawn entry (agentsFilterScript syncHosts), and a host
+		// whose every entry is pinned would otherwise get a tab without one.
+		Span(Class("hidden"), g.Attr("aria-hidden", "true"), icon),
 		A(
 			Href(href),
 			// A real navigation, as the card's nav anchor (agentCard): htmx attrs
@@ -157,9 +173,42 @@ func pinnedChip(e listEntry, label string) g.Node {
 			g.Attr("title", label),
 			Class("press inline-flex min-h-[44px] min-w-[44px] max-w-full items-center justify-center gap-1.5 rounded-full px-4 text-sm font-semibold text-fg transition hover:bg-s2"),
 			g.If(wait != "", pinnedChipWaitDot()),
+			status,
 			Span(g.Attr("data-pinned-chip-label", ""), Class("truncate"), g.Text(label)),
 		),
-		unpin,
+		// Shown only while the viewer edits pins (web/css/input.css).
+		Span(g.Attr("data-pinned-chip-edit", ""), Class("-ml-2 flex shrink-0 items-center"), edit, unpin),
+	)
+}
+
+// pinnedChips1 is ONE pinned entry's chip, labelled as the list labels it
+// alone — what RenderAgentCard swaps in for a pinned agent. An agent's label
+// is its name whatever else is pinned (only a window's codename is
+// disambiguated), so it is the label the list draws.
+func pinnedChips1(e listEntry) g.Node {
+	return pinnedChip(e, pinnedChipLabels([]listEntry{e})[0])
+}
+
+// pinnedChipStatusDot is an agent chip's status mark, nil while the agent is
+// healthy: a dot like the waiting one (pinnedChipWaitDot), in its status's
+// colour and named for a screen reader, so a pinned agent that crashed or was
+// stopped is not silent behind a bare label.
+func pinnedChipStatusDot(status string) g.Node {
+	var label, colour string
+	switch status {
+	case "error":
+		label, colour = "Agent error", "bg-st-error-fg"
+	case "stopped":
+		label, colour = "Agent stopped", "bg-muted"
+	default:
+		return nil
+	}
+	return Span(
+		g.Attr("data-pinned-chip-status", status),
+		g.Attr("role", "img"),
+		g.Attr("aria-label", label),
+		g.Attr("title", label),
+		Class("h-2 w-2 shrink-0 rounded-full "+colour),
 	)
 }
 
@@ -175,15 +224,15 @@ func pinnedChipWaitDot() g.Node {
 	)
 }
 
-// chipUnpinButton is a chip's ×: hidden unless the viewer is editing pins
-// (input.css keys it on data-agents-pins-editing).
+// chipUnpinButton is a chip's ×, inside its edit controls (hidden unless the
+// viewer is editing pins).
 func chipUnpinButton(label string) g.Node {
 	return Button(
 		Type("submit"),
 		g.Attr("data-pinned-chip-unpin", ""),
 		g.Attr("aria-label", "Unpin "+label),
 		g.Attr("title", "Unpin "+label),
-		Class("press -ml-2 inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-s2 hover:text-fg"),
+		Class("press inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted transition hover:bg-s2 hover:text-fg"),
 		hx("hx-disabled-elt", "this"),
 		g.Raw(`<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>`),
 	)

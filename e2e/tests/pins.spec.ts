@@ -3,7 +3,7 @@ import path from 'node:path';
 import { BrowserContext, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { password, pinsPort } from '../lib/env';
-import { MirrorRig } from '../lib/mirrorhost';
+import { MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
 
 // PINNED ENTRIES COME FIRST — AS LABEL-ONLY CHIPS — in a real browser, against
@@ -39,11 +39,19 @@ let pinnedAgentID = '';
 
 const now = Math.floor(Date.now() / 1000);
 // session|id|index|active|command|activity|claude-transcript
-const windows = [`pinx|@1|1|1|zsh|${now - 60}|`, `pins|@2|1|1|zsh|${now - 3600}|`, `pinq|@3|1|1|zsh|${now - 7200}|`];
+// pinold has had no activity for 30 days: it is drawn in the collapsed Idle
+// section (MUSTER_AGENTS_IDLE_AFTER defaults to 14 days).
+const windows = [
+  `pinx|@1|1|1|zsh|${now - 60}|`,
+  `pins|@2|1|1|zsh|${now - 3600}|`,
+  `pinq|@3|1|1|zsh|${now - 7200}|`,
+  `pinold|@4|1|1|zsh|${now - 30 * 86400}|`,
+];
 const href = (session: string, id: number) => `/mirror/terminal?host=${host}&session=${session}&window=%40${id}`;
 const unpinnedHref = href('pinx', 1);
 const sableHref = href('pins', 2);
 const quinceHref = href('pinq', 3);
+const oldHref = href('pinold', 4);
 
 test.beforeAll(async () => {
   await rig.start();
@@ -107,6 +115,14 @@ async function order(page: Page): Promise<string[]> {
 const chip = (page: Page, h: string) => page.locator(`#agents-list > article[data-pinned-chip]:has(a[href="${h}"])`);
 const card = (page: Page, h: string) => page.locator(`#agents-list > article[data-mirror-card]:has(a[href="${h}"])`);
 
+// pinVia pins (or unpins) through the route, as ANOTHER tab would: this page
+// hears nothing of it until its list refreshes.
+async function pinVia(page: Page, on: boolean, form: Record<string, string>) {
+  const r = await page.request.post(origin + (on ? '/agents/pins' : '/agents/pins/delete'), { form, headers: { Origin: origin } });
+  expect(r.status(), `${on ? 'pin' : 'unpin'} ${JSON.stringify(form)}`).toBe(200);
+}
+const winForm = (session: string, id: number, h = host) => ({ kind: 'mirror', host: h, session, window: '@' + id });
+
 async function openList(page: Page) {
   await login(page);
   await page.goto(origin + '/agents');
@@ -149,7 +165,6 @@ for (const vp of [
       // …and the two older windows' pin toggles (44px targets).
       for (const h of [quinceHref, sableHref]) {
         const toggle = card(page, h).locator('[data-pin-toggle]');
-        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
         expect((await toggle.boundingBox())!.width, 'the toggle is a 44px target').toBeGreaterThanOrEqual(44);
         await toggle.click();
         await expect(chip(page, h)).toHaveCount(1);
@@ -159,9 +174,10 @@ for (const vp of [
       // — and no card for a pinned entry.
       await expect(chip(page, quinceHref)).toHaveText('quince');
       await expect(chip(page, sableHref)).toHaveText('sable');
-      await expect(page.locator(`#${last}`)).toHaveText(agentName);
+      expect(await page.locator(`#${last}`).innerText(), 'the agent chip shows its name alone').toBe(agentName);
       for (const h of [quinceHref, sableHref]) await expect(card(page, h), 'no card beside the chip').toHaveCount(0);
-      await expect(page.locator('#agents-list > article[data-pinned-chip] :is([data-card-slot], [data-card-host], [data-card-focus], [data-host-icon])')).toHaveCount(0);
+      await expect(page.locator('#agents-list > article[data-pinned-chip] :is([data-card-slot], [data-card-host], [data-card-focus])')).toHaveCount(0);
+      for (const ic of await page.locator('#agents-list > article[data-pinned-chip] [data-host-icon]').all()) await expect(ic, 'a chip draws no host icon').toBeHidden();
 
       // First, by activity among themselves (the agent, seeded this run, is
       // newer than both windows), then the rest in the ONE flat order they had.
@@ -249,6 +265,179 @@ for (const vp of [
       await expect.poll(() => order(page), { message: 'after unpinning all three' }).toEqual(before);
       expect(await page.locator('#agents-list [data-pinned]').count()).toBe(0);
       await expect(page.locator('#agents-pins-edit')).toHaveCount(0);
+    });
+
+    // A pinned AGENT keeps its lifecycle controls (operator review): behind
+    // "Edit pins" its chip has the card's own ⋯ menu, and Stop from it stops
+    // the agent while the chip stays a chip — whose status dot then says so.
+    test('a pinned agent chip: label only, and behind Edit pins its ⋯ menu stops it and it stays pinned', async ({ page }) => {
+      const name = 'e2e-pinag-' + Date.now().toString(36);
+      mkchat(name, [{ role: 'user', content: 'pinned agent' }]);
+      try {
+        await login(page);
+        await page.goto(origin + '/agents');
+        const entry = page.locator(`#agents-list > article:has(a[href="/agents/${name}"])`);
+        await expect(entry).toHaveCount(1, { timeout: 20_000 });
+        const id = (await entry.getAttribute('id'))!.replace('agent-', '');
+        await pinVia(page, true, { kind: 'agent', agent_id: id });
+        // Started (the noop provisioner then reports it live, as
+        // agent-cards.spec.ts relies on), so there is something to Stop.
+        expect((await page.request.post(`${origin}/agents/${id}/start`, { headers: { Origin: origin } })).status()).toBe(200);
+        const chipEl = page.locator(`#agent-${id}[data-pinned-chip="agent"]`);
+        await expect
+          .poll(async () => { await page.reload(); return chipEl.getAttribute('data-f-status'); }, { message: 'the pinned agent runs', timeout: 20_000 })
+          .toBe('running');
+        // Normal mode: the label, and nothing else visible.
+        expect(await chipEl.innerText(), 'label only').toBe(name);
+        await expect(chipEl.locator('[data-pinned-chip-status]'), 'no status dot while it runs').toHaveCount(0);
+        await expect(chipEl.getByRole('button', { name: 'Agent actions' })).toBeHidden();
+        // Edit pins: the ⋯ menu is there, and Stop works.
+        await page.locator('#agents-pins-edit').click();
+        const more = chipEl.getByRole('button', { name: 'Agent actions' });
+        await expect(more).toBeVisible();
+        expect((await more.boundingBox())!.width, 'the ⋯ is a 44px target').toBeGreaterThanOrEqual(44);
+        await noOverflow(page, 'agent chip in edit mode');
+        const menu = page.locator(`#agent-menu-${id}`);
+        await more.click();
+        await expect(menu).toBeVisible();
+        await menu.getByRole('button', { name: 'Stop', exact: true }).click();
+        // The stop lands (the provisioner settles it; a reload reads it), and
+        // the agent is still pinned: a chip, never a card.
+        await expect
+          .poll(async () => { await page.reload(); return chipEl.getAttribute('data-f-status'); }, { message: 'stopped from the chip', timeout: 20_000 })
+          .toBe('stopped');
+        await expect(chipEl).toHaveAttribute('data-pinned-chip', 'agent');
+        await expect(page.locator('#agents-list > article:not([data-pinned-chip])').filter({ has: page.locator(`a[href="/agents/${name}"]`) })).toHaveCount(0);
+        // Out of edit mode (a reload starts out of it): the label again, with
+        // the stopped dot beside it.
+        await expect(page.locator('#agents-pins-edit')).toHaveAttribute('aria-pressed', 'false');
+        await expect(chipEl.getByRole('button', { name: 'Agent actions' })).toBeHidden();
+        await expect(chipEl.getByRole('img', { name: 'Agent stopped' })).toBeVisible();
+        expect(await chipEl.innerText(), 'label only again').toBe(name);
+      } finally {
+        mkchat(name, null);
+      }
+    });
+
+    // 🔴 A HELD REFRESH MUST NOT HIDE A NEW CHIP IN THE IDLE SECTION. Another
+    // tab pins a window this tab draws in the collapsed Idle section; the
+    // background refresh that brings the chip is applied at once, the chip is
+    // in the pinned row and visible, and the cards keep their order. Red at
+    // 5643e772: the hold kept the drawn section on the chip, which the
+    // collapsed section then hid.
+    test('another tab pins a window drawn in Idle: its chip shows in the pinned row, not held, cards keep their order', async ({ page }) => {
+      await openList(page);
+      const old = page.locator(`#agents-list > article:has(a[href="${oldHref}"])`);
+      await expect(old).toHaveAttribute('data-idle-section', '');
+      await expect(old, 'the Idle section is collapsed').toBeHidden();
+      const before = await order(page);
+      try {
+        await pinVia(page, true, winForm('pinold', 4));
+        await page.evaluate(() => (window as any).htmx.trigger(document.body, 'muster:resync'));
+        await expect(chip(page, oldHref), 'the chip is drawn').toBeVisible();
+        await expect(chip(page, oldHref)).toHaveText('pinold:1');
+        await expect(chip(page, oldHref)).not.toHaveAttribute('data-idle-section', '');
+        // Applied, not held: nothing waits behind the "N new" pill.
+        await expect(page.locator('#agents-new-pill'), 'the refresh was not held').toBeHidden();
+        await expect(chip(page, oldHref)).not.toHaveAttribute('data-held', '');
+        const c = (await chip(page, oldHref).boundingBox())!;
+        const firstCard = (await page.locator('#agents-list > article:not([data-pinned-chip])').first().boundingBox())!;
+        expect(c.y + c.height, 'the chip is in the pinned row, above the cards').toBeLessThanOrEqual(firstCard.y);
+        const now_ = (await order(page)).filter((k) => k !== 'win@4');
+        expect(now_, 'no other entry moved').toEqual(before);
+        // The stylesheet's own guard, reached directly: even a chip that DID
+        // carry the Idle section's mark stays drawn, in the pinned row.
+        // (Set, measured and removed in ONE task, so no list refresh can morph
+        // the mark away before it is read.)
+        const marked = await chip(page, oldHref).evaluate((e) => {
+          e.setAttribute('data-idle-section', '');
+          const r = e.getBoundingClientRect(), d = getComputedStyle(e).display;
+          e.removeAttribute('data-idle-section');
+          return { display: d, bottom: r.bottom, height: r.height };
+        });
+        expect(marked.display, 'a marked chip is still drawn').not.toBe('none');
+        expect(marked.height).toBeGreaterThan(0);
+        expect(marked.bottom, 'and still in the pinned row').toBeLessThanOrEqual(firstCard.y);
+      } finally {
+        await pinVia(page, false, winForm('pinold', 4));
+      }
+    });
+
+    // A host whose EVERY entry is pinned still has its icon on its tab: the
+    // chip carries the icon undrawn. Red at 5643e772: no chip had one.
+    test('a host whose every entry is pinned keeps its tab icon', async ({ page }) => {
+      const other = 'e2e-pinb-' + Date.now().toString(36);
+      const otherWindows = path.join(rig.dir, 'windows-' + other);
+      writeFileAtomic(otherWindows, `solo|@1|1|1|zsh|${now - 120}|\n`);
+      const stop = rig.extraHost(other, { MUSTER_MIRROR_E2E_WINDOWS_FILE: otherWindows });
+      try {
+        await login(page);
+        await page.goto(origin + '/agents');
+        const soloHref = `/mirror/terminal?host=${other}&session=solo&window=%401`;
+        await expect(page.locator(`#agents-list > article:has(a[href="${soloHref}"])`)).toHaveCount(1, { timeout: 20_000 });
+        await pinVia(page, true, winForm('solo', 1, other));
+        await page.reload();
+        await expect(chip(page, soloHref)).toBeVisible({ timeout: 20_000 });
+        await expect(page.locator(`#agents-list > article[data-f-host="${other}"]:not([data-pinned-chip])`), 'every entry of the host is a chip').toHaveCount(0);
+        await expect(page.locator(`#agents-hosts [role="tab"][data-host="${other}"] [data-host-icon]`)).toHaveCount(1);
+        await expect(page.locator(`#agents-hosts [role="tab"][data-host="${other}"] [data-host-icon]`)).toBeVisible();
+      } finally {
+        await pinVia(page, false, winForm('solo', 1, other));
+        await stop();
+      }
+    });
+
+    // Unpinning by KEYBOARD keeps focus in the row: the next chip's ×, and when
+    // the last chip goes, the search box — never <body>. Red at 5643e772.
+    test('keyboard unpin moves focus to the next chip, then to the search box', async ({ page }) => {
+      await login(page);
+      await pinVia(page, true, winForm('pins', 2));
+      try {
+        await pinVia(page, true, winForm('pinq', 3));
+        await page.goto(origin + '/agents');
+        await expect(chip(page, sableHref)).toHaveCount(1, { timeout: 20_000 });
+        await page.locator('#agents-pins-edit').focus();
+        await page.keyboard.press('Enter');
+        await expect(page.locator('#agents-pins-edit')).toHaveAttribute('aria-pressed', 'true');
+        const first = page.locator('#agents-list > article[data-pinned-chip]').first();
+        const firstLabel = (await first.locator('[data-pinned-chip-label]').textContent())!.trim();
+        const secondLabel = firstLabel === 'sable' ? 'quince' : 'sable';
+        await first.locator('[data-pinned-chip-unpin]').focus();
+        await page.keyboard.press('Enter');
+        await expect(chip(page, firstLabel === 'sable' ? sableHref : quinceHref)).toHaveCount(0);
+        await expect.poll(() => page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? document.activeElement?.tagName),
+          { message: 'focus is on the next chip\'s ×' }).toBe(`Unpin ${secondLabel}`);
+        await page.keyboard.press('Enter');
+        await expect(page.locator('#agents-list > article[data-pinned-chip]')).toHaveCount(0);
+        await expect.poll(() => page.evaluate(() => document.activeElement?.id || document.activeElement?.tagName),
+          { message: 'focus is on the search box' }).toBe('agents-search');
+      } finally {
+        await pinVia(page, false, winForm('pins', 2));
+        await pinVia(page, false, winForm('pinq', 3));
+      }
+    });
+
+    // A filter that hides every chip leaves no gap above the cards: the line
+    // break after the chips is drawn only while a chip is shown. Red at
+    // 5643e772: a 12px gap (the row gap around the zero-height break).
+    test('a filter hiding every chip leaves no gap above the cards', async ({ page }) => {
+      await login(page);
+      await pinVia(page, true, winForm('pinq', 3));
+      try {
+        await page.goto(origin + '/agents');
+        await expect(chip(page, quinceHref)).toBeVisible({ timeout: 20_000 });
+        // Only the unpinned window: the chip is hidden by the search.
+        await page.fill('#agents-search', 'pinx');
+        await expect(chip(page, quinceHref)).toBeHidden();
+        await expect(card(page, unpinnedHref)).toBeVisible();
+        const list = (await page.locator('#agents-list').boundingBox())!;
+        const c = (await card(page, unpinnedHref).boundingBox())!;
+        expect(c.y - list.y, 'the first shown card starts at the top of the list').toBeLessThan(1);
+        await page.fill('#agents-search', '');
+        await expect(chip(page, quinceHref)).toBeVisible();
+      } finally {
+        await pinVia(page, false, winForm('pinq', 3));
+      }
     });
   });
 }

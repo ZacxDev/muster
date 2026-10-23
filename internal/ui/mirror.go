@@ -62,8 +62,7 @@ type MirrorCardView struct {
 	HermesView bool
 	// Pinned: the viewing user pinned this entry's address (internal/pins). The
 	// list draws a pinned entry first, as a label-only CHIP instead of its card
-	// (pinned_chips.go); the card's pin glyph and pressed toggle are drawn only
-	// by a card rendered pinned outside the list.
+	// (pinned_chips.go); a card is only ever drawn for an unpinned entry.
 	Pinned bool
 	// Focus is what the Claude Code session in the window is working on
 	// (internal/focus, keyed by its Claude session id), nil for none.
@@ -199,7 +198,6 @@ func mirrorCard(m MirrorCardView) g.Node {
 	return Article(
 		ID(id),
 		g.Attr("data-mirror-card", ""),
-		g.If(m.Pinned, g.Attr("data-pinned", "")),
 		g.If(m.Idle, g.Attr("data-idle-section", "")),
 		// The window's tmux identity colour: its border and title (input.css
 		// maps the variants to the theme in force).
@@ -230,7 +228,6 @@ func mirrorCard(m MirrorCardView) g.Node {
 				cardSlot("header"),
 				Class("flex flex-wrap items-center gap-2"),
 				statusIcon(status),
-				g.If(m.Pinned, pinnedGlyph()),
 				// Its host's icon, beside its name (host_icons.go).
 				hostMark(m.Host, m.HostIcon),
 				g.If(!long && !cardHasFocusTitle(m.Focus), mirrorCardTitle(m.Label, m.Title, m.Session, m.Qualifier, cardTitleClass)),
