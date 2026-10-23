@@ -161,7 +161,7 @@ func TestAMirroredCardHasNoInteractiveBadge(t *testing.T) {
 // no longer text in the title row. It is an icon button OUTSIDE the nav anchor
 // (so a tap opens the tooltip rather than the window) whose accessible name
 // and title say it, and whose popover — the tap tooltip — says it too. The
-// host is still VISIBLE, in the footer.
+// host is still VISIBLE, in the body (hostChip).
 func TestTheMirroredMarkIsAnIconWithAnAccessibleTooltip(t *testing.T) {
 	markup := renderNode(t, mirrorCard(realisticMirror()))
 	doc, err := html.Parse(strings.NewReader(markup))
@@ -256,4 +256,67 @@ func nodeText(n *html.Node) string {
 	}
 	walk(n)
 	return b.String()
+}
+
+// slotOf is the element of an article's markup carrying data-card-slot=slot.
+func slotOf(t *testing.T, markup, slot string) *html.Node {
+	t.Helper()
+	doc, err := html.Parse(strings.NewReader(markup))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out *html.Node
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if v, ok := nodeAttr(n, "data-card-slot"); ok && n.Type == html.ElementNode && v == slot && out == nil {
+			out = n
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(doc)
+	if out == nil {
+		t.Fatalf("no %q slot in:\n%s", slot, markup)
+	}
+	return out
+}
+
+// TestBothCardsSpellTheirHostInTheBodyNotTheFooter: the operator's ask "drop
+// laptop from the bottom part of the card and just include it in the body".
+// A mirrored card's host is a chip in its header row ("host tower"), and its
+// footer no longer names it; a dispatched agent's card spells its host,
+// "cluster", in the same chip in the same slot — so the two kinds stay one
+// layout (TestAgentAndMirrorCardsRenderTheSameSlots). Red before: the
+// mirrored footer said "host tower" and neither header carried a host chip.
+func TestBothCardsSpellTheirHostInTheBodyNotTheFooter(t *testing.T) {
+	for name, c := range map[string]struct {
+		markup, host string
+	}{
+		"mirrored": {renderNode(t, mirrorCard(realisticMirror())), "tower"},
+		"agent":    {renderNode(t, agentCard(realisticAgent())), "cluster"},
+	} {
+		header := slotOf(t, c.markup, "header")
+		var chipEl *html.Node
+		walkNodes(header, func(n *html.Node) bool {
+			if _, ok := nodeAttr(n, "data-card-host"); ok && n.Type == html.ElementNode {
+				chipEl = n
+			}
+			return chipEl == nil
+		})
+		if chipEl == nil {
+			t.Errorf("%s: no host chip in the card's header:\n%s", name, c.markup)
+			continue
+		}
+		if v, _ := nodeAttr(chipEl, "data-card-host"); v != c.host || nodeText(chipEl) != "host"+c.host {
+			t.Errorf("%s: host chip %q / %q, want host %q", name, v, nodeText(chipEl), c.host)
+		}
+		footer := nodeText(slotOf(t, c.markup, "footer"))
+		if strings.Contains(footer, c.host) || strings.Contains(footer, "host") {
+			t.Errorf("%s: the footer still names the host: %q", name, footer)
+		}
+		if !strings.Contains(footer, "active") {
+			t.Errorf("instrument check FAILED: %s: the footer text %q is not the footer", name, footer)
+		}
+	}
 }

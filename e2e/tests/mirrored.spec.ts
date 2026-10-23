@@ -151,7 +151,10 @@ test('a labelled session shows its pretty name, follows the active window, and s
     await page.goto(origin + '/agents');
     const main = card(page, 'main');
     await expect(main.locator('[data-mirror-label]')).toHaveText('Mango:1');
-    await expect(main.locator('[data-mirror-session]')).toHaveText('main');
+    // The card draws no raw session name beside the label (its pages do,
+    // below); it stays the name's tooltip.
+    await expect(main.locator('[data-mirror-session]')).toHaveCount(0);
+    await expect(main.locator('[data-mirror-name]')).toHaveText('Mango:1');
     await expect(main.locator('[data-mirror-name]')).toHaveAttribute('title', 'tmux session main');
     // No codename: the raw name, and nothing else.
     const scratch = card(page, 'scratch');
@@ -285,8 +288,10 @@ test('an agent card and a mirrored card share one layout: no preview, the last a
     await page.waitForTimeout(500);
     expect(previews, 'card preview requests').toEqual([]);
 
-    // The footer: the host, visible, and the window's own last activity.
-    await expect(m.locator('[data-mirror-host]')).toHaveText(host);
+    // The host, visible in the body; the footer: the window's own last
+    // activity, and not the host.
+    await expect(m.locator('[data-card-slot="header"] [data-mirror-host]')).toHaveText(host);
+    await expect(m.locator('[data-card-slot="footer"]')).not.toContainText(host);
     await expect(m.locator('[data-card-active] time')).toHaveAttribute('data-ts', String((mainAt - (mainAt % 60)) * 1000));
     await expect(m.locator('[data-card-active]')).toBeVisible();
 

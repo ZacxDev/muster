@@ -342,3 +342,38 @@ func topLevelDeclarations(script string) map[string][]string {
 	}
 	return out
 }
+
+// TestTheHostTabsAreOrderedByOneListStatedInGo: the operator's ask "the host
+// tabs in the order all, <their first host>, laptop, then cluster". The order
+// is ONE list (hostTabOrder) — the hosts the operator named
+// (HostPreferences.Order), every other host, the cluster last — and the
+// script is handed THAT list and sorts by a host's place in it before its
+// label, rather than carrying a copy of its own. With nothing named, the
+// cluster is still last. (Its behaviour in a browser, with hosts registered in
+// another order, is host-names.spec.ts.) Red before: the script sorted the
+// tabs by label alone, so "cluster" came first.
+func TestTheHostTabsAreOrderedByOneListStatedInGo(t *testing.T) {
+	if podHost != "cluster" {
+		t.Fatalf("instrument check FAILED: podHost = %q", podHost)
+	}
+	sortRule := `var rx = hostRank(x.v), ry = hostRank(y.v);
+      if (rx !== ry) return rx - ry;`
+	for name, c := range map[string]struct {
+		prefs HostPreferences
+		order string
+	}{
+		"nothing named": {HostPreferences{}, `["*","cluster"]`},
+		"two named":     {HostPreferences{Order: []string{"Tower", "laptop"}}, `["tower","laptop","*","cluster"]`},
+	} {
+		withHostPrefs(t, c.prefs)
+		script := renderNode(t, agentsFilterScript())
+		for _, want := range []string{`var HOST_ORDER = ` + c.order + `;`, sortRule} {
+			if !strings.Contains(script, want) {
+				t.Errorf("%s: the filter script lacks %q", name, want)
+			}
+		}
+		if c.prefs.Order != nil && strings.Count(script, `"tower"`) != 1 {
+			t.Errorf("%s: the script names tower %d times; the order must be stated once", name, strings.Count(script, `"tower"`))
+		}
+	}
+}

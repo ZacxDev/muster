@@ -15,6 +15,7 @@ if (!window.__musterAgentsRules) (function () {
     var FIELDS = ` + cardFieldKeysJSON() + `;
     var CHIP_SEL = ` + chipSelectorsJSON() + `;
     var CHIP_IDS = ` + chipIDsJSON() + `;
+    var CHIP_ALIASES = ` + chipAliasesJSON() + `;
     function norm(v) { return String(v || '').replace(/\s+/g, ' ').trim(); }
     // tokens is a string in the grammar, term by term and in order: {raw, f, exact,
     // v} each — f a registered field (lower-cased) or null for free text, exact
@@ -53,9 +54,18 @@ if (!window.__musterAgentsRules) (function () {
     // string: [a="v"] for an exact term, [a*="v"] for every other. The rule that
     // hides and the query that counts are both built from it.
     function sel(t) { return '[' + t.attr + (t.exact ? '=' : '*=') + '"' + t.value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"]'; }
-    // chipsOf is a stored chip list, cleaned to the known chips.
+    // chipsOf is a stored chip list, cleaned to the known chips: a retired
+    // id is read as the chip that replaced it (CHIP_ALIASES), once.
     function chipsOf(raw) {
-      try { var v = JSON.parse(raw || '[]'); return Array.isArray(v) ? v.filter(function (c) { return CHIP_IDS.indexOf(c) >= 0; }) : []; } catch (e) { return []; }
+      try {
+        var v = JSON.parse(raw || '[]'), out = [];
+        if (!Array.isArray(v)) return [];
+        v.forEach(function (c) {
+          if (typeof c === 'string' && Object.prototype.hasOwnProperty.call(CHIP_ALIASES, c)) c = CHIP_ALIASES[c];
+          if (CHIP_IDS.indexOf(c) >= 0 && out.indexOf(c) < 0) out.push(c);
+        });
+        return out;
+      } catch (e) { return []; }
     }
     // chipSel is the chips' compound selector for a selection ('' for none).
     function chipSel(cs) { return CHIP_SEL[CHIP_IDS.filter(function (c) { return cs.indexOf(c) >= 0; }).join(',')] || ''; }
