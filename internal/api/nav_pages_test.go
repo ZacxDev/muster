@@ -30,7 +30,7 @@ var apiNavWriters = []string{
 	"renderAccountTokens",   // /account/tokens
 	"renderCredentials",     // /account/credentials
 	"renderAccountPasskeys", // /account/passkeys
-	"renderAttentionPage",   // /attention
+	"renderAsksPage",        // /attention (the Asks page)
 	"renderPluginsPage",     // /plugins
 	"renderFlowsPage",       // /flows
 	"writeAdminDocument",    // /admin/users, /admin/invites
