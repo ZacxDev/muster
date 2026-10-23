@@ -20,7 +20,8 @@ const (
 const pinIcon = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3z"/></svg>`
 
 // pinnedGlyph is the "pinned" mark beside a pinned card's title, on both card
-// kinds.
+// kinds. The Agents list draws a pinned entry as a chip (pinned_chips.go), not
+// a card, so the list itself never shows it.
 func pinnedGlyph() g.Node {
 	return Span(
 		g.Attr("data-pinned-glyph", ""),
@@ -72,7 +73,8 @@ func agentPinMenuItem(a AgentCardView) g.Node {
 
 // mirrorPinToggle is a mirrored card's pin button: a mirrored card has no ⋯
 // menu (there is nothing to start, stop or delete), so the toggle is the
-// card's one control, pressed while pinned.
+// card's one control, pressed while pinned. On the list a pinned window is a
+// chip (pinned_chips.go), unpinned from the chip's own × instead.
 func mirrorPinToggle(m MirrorCardView) g.Node {
 	label := "Pin to top"
 	if m.Pinned {

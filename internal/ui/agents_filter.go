@@ -533,6 +533,25 @@ func agentsFilterScript() g.Node {
       if (focused && focused !== document.activeElement && focused.isConnected) focused.focus({ preventScroll: true });
     }
   }
+  // THE PINNED ROW'S "Edit pins" TOGGLE (pinned_chips.go): pressed, it shows a
+  // × on every chip (the stylesheet keys it on <html>'s
+  // data-agents-pins-editing, so a list refresh keeps it). Not remembered: a
+  // load starts with it off, as the server drew it.
+  function togglePinsEdit() {
+    var r = document.documentElement;
+    r.toggleAttribute('data-agents-pins-editing', !r.hasAttribute('data-agents-pins-editing'));
+  }
+  // syncPinsHead keeps the toggle true after a refresh (which redraws it
+  // unpressed) and hides it while the filter shows no chip.
+  function syncPinsHead(list) {
+    var head = el('` + pinnedChipsHeadID + `');
+    if (!head || head.parentNode !== list) return;
+    var n = list.querySelectorAll(':scope > article[data-pinned-chip]:not([data-held])' + curSel).length;
+    var disp = n ? '' : 'none';
+    if (head.style.display !== disp) head.style.display = disp;
+    var b = el('` + pinsEditToggleID + `'), on = String(document.documentElement.hasAttribute('data-agents-pins-editing'));
+    if (b && b.getAttribute('aria-pressed') !== on) b.setAttribute('aria-pressed', on);
+  }
   // reorder MOVES the cards into rank order for the first free-text term — the
   // DOM itself, so Tab and a screen reader follow the ranking, not only the
   // eye. A card's rank is the best window.musterRank (the pickers' rule,
@@ -576,9 +595,11 @@ func agentsFilterScript() g.Node {
     var keyed = cards.map(function (c) {
       // s: the Idle section's cards after the rest, so the DOM (Tab, a screen
       // reader) follows the sections the stylesheet draws.
-      return { c: c, h: c.hasAttribute('data-held') ? 1 : 0, s: inSect(c) ? 1 : 0, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') };
+      // p: the pinned chips ahead of every card (pinned_chips.go): the
+      // stylesheet draws them first, and the DOM follows.
+      return { c: c, h: c.hasAttribute('data-held') ? 1 : 0, p: c.hasAttribute('data-pinned-chip') ? 0 : 1, s: inSect(c) ? 1 : 0, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') };
     });
-    keyed.sort(function (a, b) { return a.h - b.h || a.s - b.s || a.r - b.r || a.i - b.i; });
+    keyed.sort(function (a, b) { return a.h - b.h || a.p - b.p || a.s - b.s || a.r - b.r || a.i - b.i; });
     arrange(list, cards, keyed.map(function (k) { return k.c; }));
   }
   // arrange puts cards (in DOM order now) into order (the same nodes), and
@@ -684,13 +705,18 @@ func agentsFilterScript() g.Node {
     var seen = Object.create(null), hosts = [], icons = Object.create(null);
     [].forEach.call(drawn, function (a) {
       var v = a.getAttribute('data-f-host');
-      if (!v || seen[v]) return;
-      seen[v] = true;
-      // The host's icon (host_icons.go), as its first drawn card draws it: the
-      // tab leads with the same one.
+      if (!v) return;
+      // The host's icon (host_icons.go), as its first drawn card that draws one
+      // draws it: the tab leads with the same one. A pinned chip draws no icon
+      // and comes first, so the first entry of a host may not have one.
       var ic = a.querySelector('[data-host-icon]');
+      if (seen[v]) {
+        if (!icons[v] && ic) { icons[v] = ic; seen[v].i = ic.getAttribute('data-host-icon'); }
+        return;
+      }
       icons[v] = ic;
-      hosts.push({ v: v, l: a.getAttribute('data-l-host') || v, i: ic ? ic.getAttribute('data-host-icon') : '' });
+      seen[v] = { v: v, l: a.getAttribute('data-l-host') || v, i: ic ? ic.getAttribute('data-host-icon') : '' };
+      hosts.push(seen[v]);
     });
     var h = linkAll ? '' : hostChosen();
     var on = h && seen[h] ? h : '';
@@ -788,6 +814,7 @@ func agentsFilterScript() g.Node {
     // entries); the reader's open/closed choice is left as it was.
     document.documentElement.toggleAttribute('data-agents-searching', ts.length > 0);
     syncIdleHead(list);
+    syncPinsHead(list);
     var style = el('agents-filter-style');
     if (!style) {
       style = document.createElement('style');
@@ -860,7 +887,8 @@ func agentsFilterScript() g.Node {
     var chip = t.closest('#agents-chips [data-chip]');
     if (chip) { toggleChip(chip); apply(); return; }
     if (t.closest('#agents-chips-clear')) { clearChips(); apply(); return; }
-    if (t.closest('#agents-idle-toggle')) { toggleIdleOpen(); apply(); }
+    if (t.closest('#agents-idle-toggle')) { toggleIdleOpen(); apply(); return; }
+    if (t.closest('#` + pinsEditToggleID + `')) { togglePinsEdit(); apply(); }
   });
   // The host tabs' keys, as tabs.go's: Left/Right (wrapping), Home and End
   // move to a tab AND choose it.

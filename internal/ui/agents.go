@@ -88,8 +88,10 @@ type AgentCardView struct {
 	// regardless, so this only keeps the UI from offering what it would refuse.
 	IsChief bool
 	// Pinned: the viewing user pinned this agent (internal/pins). The list draws
-	// pinned entries first (AgentsCardsWithMirrors), the card a pin glyph, and the
-	// ⋯ menu offers Unpin instead of Pin. Composed in cardViewIndexed.
+	// a pinned agent first, as a label-only CHIP instead of its card
+	// (pinned_chips.go: unpinned from the row's "Edit pins" toggle); a card
+	// rendered pinned (RenderAgentCard) still shows a pin glyph and an ⋯ menu
+	// offering Unpin. Composed in cardViewIndexed.
 	Pinned bool
 	// Focus is what the agent is working on (internal/focus), nil for none.
 	// Composed in cardViewIndexed; shown as the footer's focus chip, and found
@@ -190,7 +192,11 @@ func agentsPanel(active bool, recent []recentItem, list *shellList) g.Node {
 		agentsFilterBar(),
 		Div(
 			ID("agents-list"),
-			Class("grid grid-cols-1 gap-3 lg:grid-cols-2"),
+			// A wrapping flex row, not a grid: a card takes the whole row (half
+			// from lg up) and a pinned chip only its own width, so the chips
+			// wrap side by side above the cards (web/css/input.css,
+			// pinned_chips.go).
+			Class("flex flex-wrap gap-3"),
 			// 🔴 SERVER-RENDERED ON THE AGENTS TAB (list != nil): the cards are in
 			// the document, so its first paint is the list and nothing is filled in
 			// under the reader. They are the SAME renderer's output as the
@@ -339,13 +345,7 @@ func agentCard(a AgentCardView) g.Node {
 		ID("agent-"+ids),
 		g.If(a.Pinned, g.Attr("data-pinned", "")),
 		g.If(a.Idle, g.Attr("data-idle-section", "")),
-		// What the list's recency filter chips read (list_signals.go).
-		cardActivityAttrs(time.Now(), a.lastActive()),
-		g.If(waitTokens(a.Attention, a.AwaitingApproval) != "", g.Attr("data-wait", waitTokens(a.Attention, a.AwaitingApproval))),
-		// What the list's filter finds this card by (agents_filter.go).
-		cardFilterAttrs(agentFields(a), append([]string{
-			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"},
-			focusHaystack(a.Focus)...)...),
+		agentListAttrs(a),
 		Class("group relative overflow-hidden rounded-2xl border border-line bg-s1/70 shadow-lg shadow-black/20 ring-1 ring-line"),
 		// The control cluster (rename + ⋯ menu) is positioned over the card's
 		// top-right corner, OUTSIDE the nav anchor, so its clicks don't navigate.
@@ -419,6 +419,21 @@ func agentCard(a AgentCardView) g.Node {
 		// task, a "Task #<id>" badge linking to the Tasks tab.
 		agentCardFooter(a),
 	)
+}
+
+// agentListAttrs is what the list's filter, host tabs and filter chips read
+// off a dispatched agent — on its card AND on its pinned chip
+// (pinned_chips.go), from this ONE function: its recency (list_signals.go),
+// whether it waits on you, and its filter fields and haystack
+// (agents_filter.go).
+func agentListAttrs(a AgentCardView) g.Node {
+	return g.Group{
+		cardActivityAttrs(time.Now(), a.lastActive()),
+		g.If(waitTokens(a.Attention, a.AwaitingApproval) != "", g.Attr("data-wait", waitTokens(a.Attention, a.AwaitingApproval))),
+		cardFilterAttrs(agentFields(a), append([]string{
+			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"},
+			focusHaystack(a.Focus)...)...),
+	}
 }
 
 // agentFields is what an agent card is filtered by: its data-f-* (and data-l-*)
