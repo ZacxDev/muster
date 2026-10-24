@@ -642,6 +642,18 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 				// per-window bound; the list-wide bound (MaxOtherClaude) keeps
 				// the first windows' alone.
 				Others: otherClaudeAtBound(i)})
+			// The last MaxTurnErrorWindows windows are IDLE instead, each
+			// carrying how its last turn failed with every field at its bound
+			// (a TurnError rides only an idle window, never beside a Pending).
+			// A usage limit is the largest kind: its 11 bytes and a reset time
+			// outweigh a 32-byte code with none.
+			if i >= n-mirror.MaxTurnErrorWindows {
+				c := *out[i].Claude
+				c.Status, c.Pending = mirror.StatusIdle, nil
+				c.TurnError = &mirror.TurnError{Kind: mirror.TurnErrorLimit, At: math.MaxInt64, ResetsAt: math.MaxInt64,
+					Rejected: true, Quick: mirror.MaxTurnErrorQuick}
+				out[i].Claude = &c
+			}
 		}
 		return out
 	}
@@ -681,8 +693,20 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 		if pending != mirror.MaxPendingWindows {
 			t.Fatalf("instrument check: %d windows carry what they wait on, want the bound %d", pending, mirror.MaxPendingWindows)
 		}
+		turnErrors := 0
 		for _, w := range l.windows {
-			if w.Label == "" || w.Command == "" || !w.Claude || w.Status != mirror.StatusWaiting || w.StatusSince != math.MaxInt64 || len(w.ClaudeSession) != 64 {
+			if e := w.TurnError; e != nil {
+				if e.Kind != mirror.TurnErrorLimit || e.At != math.MaxInt64 || e.ResetsAt != math.MaxInt64 || !e.Rejected || e.Quick != mirror.MaxTurnErrorQuick {
+					t.Fatalf("instrument check: a turn error field was cut, so this is not the worst case: %+v", e)
+				}
+				turnErrors++
+			}
+		}
+		if turnErrors != mirror.MaxTurnErrorWindows {
+			t.Fatalf("instrument check: %d windows carry a turn error, want the bound %d", turnErrors, mirror.MaxTurnErrorWindows)
+		}
+		for _, w := range l.windows {
+			if w.Label == "" || w.Command == "" || !w.Claude || (w.Status != mirror.StatusWaiting && w.TurnError == nil) || w.StatusSince != math.MaxInt64 || len(w.ClaudeSession) != 64 {
 				t.Fatalf("instrument check: a worst-case field was dropped by normalisation, so this is not the worst case: %+v", w)
 			}
 		}

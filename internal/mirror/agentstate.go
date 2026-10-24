@@ -66,6 +66,10 @@ type AgentState struct {
 	// Pasted is the Since the window held at its latest paste through this
 	// hub (a Send or a queued message), on the host's clock; 0 for none.
 	Pasted int64
+	// TurnError is how the window's latest turn ended, when it ended in an
+	// error Claude Code wrote itself (Window.TurnError); nil otherwise, and
+	// whenever Status is not idle.
+	TurnError *TurnError
 	// Unknown is why Status is unknown; nil when it is known.
 	Unknown error
 }
@@ -110,7 +114,7 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 		case w.StatusSince <= 0:
 			return AgentState{Runtime: runtime, Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatusSince, host, session)}
 		}
-		st := AgentState{Runtime: runtime, Status: w.Status, Since: w.StatusSince}
+		st := AgentState{Runtime: runtime, Status: w.Status, Since: w.StatusSince, TurnError: w.TurnError}
 		t := h.turn(owner, host, session, id)
 		if t.since == w.StatusSince && t.status == w.Status {
 			st.Observed = t.observed

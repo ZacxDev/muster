@@ -297,3 +297,35 @@ func TestAStatusIsKeptOnlyForAClaudeWindowAndOnlyAsOneOfThree(t *testing.T) {
 		}
 	}
 }
+
+// TestTheAgentStateCarriesHowTheLatestTurnFailed is the seam between the host's
+// window list and the send queue's probe: a TurnError a host reports on an idle
+// Claude window reaches AgentState as it was sent (cleaned), and a window the
+// host reports without one carries none.
+func TestTheAgentStateCarriesHowTheLatestTurnFailed(t *testing.T) {
+	r := newRig(t)
+	tok, _ := r.store.mint(t, 1, "ws")
+	ws := statusWindows(mirror.StatusIdle, t1)
+	e := mirror.TurnError{Kind: mirror.TurnErrorLimit, At: t1 - 1, ResetsAt: t3, Rejected: true, Quick: 2}
+	ws[0].TurnError = &e
+	m := winHello("ws", true, ws...)
+	m.StatusReport = true
+	if _, err := r.rawConnect(t, tok, m); err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "ws", "work")
+	st := r.svc.AgentState(asUser(1), "ws", "work", "@1")
+	if st.TurnError == nil || *st.TurnError != e {
+		t.Fatalf("AgentState.TurnError = %+v; want what the host reported, %+v", st.TurnError, e)
+	}
+	tok2, _ := r.store.mint(t, 1, "ws2")
+	m2 := winHello("ws2", true, statusWindows(mirror.StatusIdle, t1)...)
+	m2.StatusReport = true
+	if _, err := r.rawConnect(t, tok2, m2); err != nil {
+		t.Fatal(err)
+	}
+	r.online(t, 1, "ws2", "work")
+	if st := r.svc.AgentState(asUser(1), "ws2", "work", "@1"); st.TurnError != nil || st.Unknown != nil {
+		t.Fatalf("a window reported without one: %+v; want idle, no turn error", st)
+	}
+}
