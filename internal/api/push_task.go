@@ -264,7 +264,12 @@ func (s *Server) notifyAgentRunning(agentName string) {
 	// silently never fire. The row is used here only to decide whether to
 	// notify; nothing read under System is returned to any caller. Listed in
 	// the System ledger (internal/authz/ledger_test.go).
-	a, err := s.ext.Agents.GetByName(authz.System(context.Background()), agentName)
+	//
+	// ⚠ ONE MORE READ RIDES THIS CONTEXT: the tap target's session id
+	// (agentPageHref), which goes into the push sent to the agent's OWN owner
+	// (a.OwnerID below), so it reaches nobody the row does not belong to.
+	ctx := authz.System(context.Background())
+	a, err := s.ext.Agents.GetByName(ctx, agentName)
 	if err != nil {
 		return // unknown agent (or DB blip) — best-effort, skip
 	}
@@ -290,7 +295,7 @@ func (s *Server) notifyAgentRunning(agentName string) {
 		Title: fmt.Sprintf("Task #%d: agent ready", noteID),
 		Body:  "The agent is now working on it.",
 		Tag:   fmt.Sprintf("task-%d-provisioned", noteID),
-		Data:  map[string]string{"url": "/agents/" + a.Name},
+		Data:  map[string]string{"url": s.agentPageHref(ctx, a)},
 	})
 }
 

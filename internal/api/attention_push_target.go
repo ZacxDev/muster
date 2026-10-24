@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -174,5 +173,5 @@ func (s *Server) askingAgentPath(ctx context.Context, owner, id int64) string {
 	if a.OwnerID != owner {
 		return ""
 	}
-	return "/agents/" + url.PathEscape(a.Name)
+	return s.agentPageHref(ctx, a)
 }

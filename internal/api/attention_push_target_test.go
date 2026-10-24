@@ -21,12 +21,24 @@ import (
 	"github.com/ZacxDev/muster/internal/push"
 )
 
-// pushTargetAgents is an agent store holding exactly byID; Get is the one
-// method the push target reads (any other call panics on the nil Store).
+// pushTargetAgents is an agent store holding exactly byID; Get and
+// LatestSessionIDs are the methods the push target reads (any other call panics
+// on the nil Store). Each agent's latest session is its id times ten, a value
+// no agent id or other fixture number here equals.
 type pushTargetAgents struct {
 	agents.Store
 	byID map[int64]agents.Agent
 	err  error
+}
+
+func (p pushTargetAgents) LatestSessionIDs(_ context.Context, ids []int64) (map[int64]int64, error) {
+	out := map[int64]int64{}
+	for _, id := range ids {
+		if _, ok := p.byID[id]; ok {
+			out[id] = id * 10
+		}
+	}
+	return out, nil
 }
 
 func (p pushTargetAgents) Get(_ context.Context, id int64) (agents.Agent, error) {
@@ -127,7 +139,7 @@ func TestEachItemOpensItsSessionOrItsItem(t *testing.T) {
 			"/attention#ask-52"},
 		{"a mirrored session's attention_ask from a host the owner does not have", ask(53, attention.Asker{MirrorHost: "elsewhere", MirrorSession: focusSID, Label: "s"}),
 			"/attention#ask-53"},
-		{"an agent's attention_ask", ask(54, attention.Asker{AgentID: 7, Label: "Worker Seven"}), "/agents/ptworker-7"},
+		{"an agent's attention_ask", ask(54, attention.Asker{AgentID: 7, Label: "Worker Seven"}), "/agents/ptworker-7?session=70"},
 		{"an ask by another owner's agent", ask(55, attention.Asker{AgentID: 8, Label: "x"}), "/attention#ask-55"},
 		{"an ask by an agent that is gone", ask(56, attention.Asker{AgentID: 9, Label: "x"}), "/attention#ask-56"},
 		{"a task ask muster raised itself", ask(57, attention.Asker{System: true, Label: attention.SystemAskerLabel}), "/attention#ask-57"},
@@ -167,6 +179,13 @@ type countingAgents struct {
 	agents.Store
 	mu    sync.Mutex
 	reads int
+}
+
+func (c *countingAgents) LatestSessionIDs(context.Context, []int64) (map[int64]int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reads++
+	return map[int64]int64{}, nil
 }
 
 func (c *countingAgents) Get(context.Context, int64) (agents.Agent, error) {

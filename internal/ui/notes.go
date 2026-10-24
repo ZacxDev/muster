@@ -24,6 +24,10 @@ type AgentBrief struct {
 	Name        string // slug — the /agents/{name} detail/chat link target
 	DisplayName string
 	Status      string // pending|provisioning|running|stopped|error
+	// SessionID is the agent's latest session (agents.Store.LatestSessionIDs), 0
+	// when it has none or the read failed: the "Open chat" link names it
+	// (AgentSessionHref), so a tap skips the bare page's 303.
+	SessionID int64
 }
 
 // TaskCardView carries one task plus its (optional) most-recent linked agent, so
@@ -1079,7 +1083,7 @@ func taskActionTrailing(v TaskCardView) g.Node {
 	return Div(
 		Class("flex shrink-0 items-center gap-2"),
 		agentStatusChip(a.Status),
-		openChatButtonPrimary(a.Name),
+		openChatButtonPrimary(AgentSessionHref(a.Name, a.SessionID)),
 	)
 }
 
@@ -1115,15 +1119,16 @@ func agentTaskChipLabel(status string) string {
 	}
 }
 
-// openChatButton links a task card to its dispatched agent's chat/detail view
-// (GET /agents/{name}, which redirects to the agent's active session). Like the
+// openChatButton links a task card to its dispatched agent's chat/detail view at
+// href — AgentSessionHref, so the agent's latest session directly rather than
+// the bare /agents/{name} and its 303. Like the
 // agent card's nav anchor it sets hx-boost="false": the button lives inside
 // #tasks-list (which carries hx-get/hx-target), and htmx attrs are inherited by
 // descendants, so a boosted click would swap the detail document into #tasks-list
 // (wrong target). Disabling boost makes it a plain navigation to the detail page.
-func openChatButton(name string) g.Node {
+func openChatButton(href string) g.Node {
 	return A(
-		Href("/agents/"+name),
+		Href(href),
 		hx("hx-boost", "false"),
 		g.Attr("aria-label", "Open agent chat"),
 		Class("press inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-accent ring-1 ring-inset ring-accent/30 transition hover:bg-accent/10 hover:text-fg"),
@@ -1138,9 +1143,9 @@ func openChatButton(name string) g.Node {
 // openChatButton (plain nav, boost off), styled up: filled accent bg, taller
 // (h-11), larger semibold text, more padding — clearly the primary CTA, with the
 // agentStatusChip sitting alongside it (chip = state, button = action).
-func openChatButtonPrimary(name string) g.Node {
+func openChatButtonPrimary(href string) g.Node {
 	return A(
-		Href("/agents/"+name),
+		Href(href),
 		hx("hx-boost", "false"),
 		g.Attr("aria-label", "Open agent chat"),
 		Class("press inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full bg-accent px-4 text-sm font-semibold text-on-accent shadow-sm shadow-accent/20 transition hover:bg-accent/90 active:scale-[0.98]"),
