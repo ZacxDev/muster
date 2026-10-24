@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -55,6 +56,52 @@ func TestABoundedInstanceReadThatAnswersIsNeverDroppedAsATimeout(t *testing.T) {
 	}
 	if bytes.Contains([]byte(buf.String()), []byte("no answer within")) {
 		t.Fatalf("an answered read was logged as a timeout:\n%s", firstLines(buf.String(), 3))
+	}
+}
+
+// stuckProv's Instances never answers until release is closed, ignoring ctx,
+// so the only way out of a bounded read is the read's own ctx ending.
+type stuckProv struct {
+	stubProvisioner
+	release chan struct{}
+}
+
+func (p stuckProv) Instances(context.Context) ([]provision.Instance, error) {
+	<-p.release
+	return nil, nil
+}
+
+// TestABoundedInstanceReadNamesWhyItGaveUp: a read whose caller's ctx is
+// cancelled is logged as cancelled, not as "no answer within" the bound (an
+// hour, nowhere near reached). CONTROL: past a 10ms bound, the same stuck read
+// is logged as "no answer within 10ms". Both answer nil (not observed).
+func TestABoundedInstanceReadNamesWhyItGaveUp(t *testing.T) {
+	for name, tc := range map[string]struct {
+		within        time.Duration
+		cancel        bool
+		want, notWant string
+	}{
+		"caller cancelled":        {time.Hour, true, "instance read cancelled (context canceled)", "no answer within"},
+		"control: past the bound": {10 * time.Millisecond, false, "no answer within 10ms", "instance read cancelled"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf lockedBuf
+			p := stuckProv{release: make(chan struct{})}
+			t.Cleanup(func() { close(p.release) })
+			s := &Server{logger: log.New(&buf, "", 0), ext: Extensions{Provisioner: p}}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.cancel {
+				cancel()
+			}
+			if idx := s.instanceIndexWithin(ctx, tc.within); idx != nil {
+				t.Fatalf("a read that never answered returned an index: %v", idx)
+			}
+			logs := buf.String()
+			if !strings.Contains(logs, tc.want) || strings.Contains(logs, tc.notWant) {
+				t.Fatalf("want %q and not %q in the log:\n%s", tc.want, tc.notWant, logs)
+			}
+		})
 	}
 }
 

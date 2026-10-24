@@ -70,7 +70,17 @@ func newReapAPIFixture(t *testing.T) *reapAPIFixture {
 	f := &reapAPIFixture{destroyFixture: newDestroyFixture(t), log: &lockedBuf{}, reaped: make(chan reapDone, 256)}
 	f.srv.logger = log.New(f.log, "", 0)
 	f.srv.SetAgentReapStoppedAfter(14 * 24 * time.Hour)
-	f.srv.agentReapDone = func(id int64, err error) { f.reaped <- reapDone{id, err} }
+	// A teardown finishing after the test stopped reading (one a loop started,
+	// or the shared database's other due agents) must not block its goroutine:
+	// once the test ends, the send gives way.
+	stopped := make(chan struct{})
+	t.Cleanup(func() { close(stopped) })
+	f.srv.agentReapDone = func(id int64, err error) {
+		select {
+		case f.reaped <- reapDone{id, err}:
+		case <-stopped:
+		}
+	}
 	t.Cleanup(func() {
 		if t.Failed() {
 			t.Logf("server log:\n%s", f.log.String())

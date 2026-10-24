@@ -86,7 +86,8 @@ func (s *Server) instanceIndexWithin(ctx context.Context, within time.Duration) 
 	// ready, and select picks one at random — so it could drop a good answer
 	// as "no answer within 30s", logged milliseconds in. Under load that made
 	// the stopped-agent reaper destroy nothing (TestTheReaperIsOffAtZero and
-	// TestAStoppedRowOverALiveInstanceIsNotReaped failing in CI).
+	// TestAStoppedRowOverALiveInstanceIsNotReaped failing in CI). Now ctx ends
+	// only on the deadline or when the caller's ctx is cancelled.
 	ctx, cancel := context.WithTimeout(ctx, within)
 	defer cancel()
 	type answer struct {
@@ -102,7 +103,13 @@ func (s *Server) instanceIndexWithin(ctx context.Context, within time.Duration) 
 	case a := <-done:
 		return s.indexOf(a.insts, a.err)
 	case <-ctx.Done():
-		s.logger.Printf("agents: list instances: no answer within %s; drawing stored status", within)
+		// ctx ends on the deadline OR when the caller's own ctx is cancelled
+		// (a request that went away); only the first is "no answer within".
+		if ctx.Err() == context.DeadlineExceeded {
+			s.logger.Printf("agents: list instances: no answer within %s; drawing stored status", within)
+		} else {
+			s.logger.Printf("agents: list instances: instance read cancelled (%v); drawing stored status", ctx.Err())
+		}
 		return nil
 	}
 }
