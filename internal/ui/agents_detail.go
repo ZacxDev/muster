@@ -224,6 +224,15 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// mirroring Page's content column. The header and the main column each
 				// carry lg:pl-72 so nothing sits under the sidebar.
 				agentDetailHeader(v),
+				// 🔴 BEFORE THE CHAT PANE, NOT AT THE END OF <body>: the pane calls
+				// window.__cgLayoutLog (agentChatScript) right after #chat-log, so
+				// the transcript is converted, clamped and scrolled to its end before
+				// its first paint. The clamp script's MutationObserver must already be
+				// watching when the bubbles are parsed and converted. Neither script
+				// needs anything later in the document:
+				// agentChatScript's start() still waits for DOMContentLoaded.
+				bubbleClampScript(),
+				agentChatScript(v.Name),
 				// The detail page IS the chat: a single full-height chat pane between the
 				// header and the input bar at its bottom (flex-1 + min-h-0 so it fills + scrolls).
 				// 🔴 TWO ELEMENTS, NOT ONE, AND THAT IS THE FIX RATHER THAN A TIDY-UP.
@@ -264,8 +273,6 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// focusHistoryButton opens.
 				g.If(v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
 				g.If(v.FocusHistory != "", focusHistoryScript()),
-				agentChatScript(v.Name),
-				bubbleClampScript(),
 				// Places the header's full-title popover (agentTitle) beside its "…"
 				// and keeps that button's aria-expanded in step — the same script
 				// the shell runs for the cards' popovers.
@@ -761,6 +768,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 			hx("hx-swap", "innerHTML"),
 			chatLogInner(v),
 		),
+		// The transcript's layout, applied before it can be painted (see
+		// window.__cgLayoutLog in agentChatScript). The page surface only: the
+		// chief panel's body arrives by an htmx swap, whose afterSwap hook lays it
+		// out in the same task.
+		g.If(v.Surface == ChatSurfacePage, Script(g.Raw(`window.__cgLayoutLog && window.__cgLayoutLog();`))),
 		Form(
 			ID("chat-form"),
 			// 🔴 hx-boost="false" IS LOAD-BEARING AND IT IS A FIXED DEFECT, NOT A
@@ -2034,6 +2046,55 @@ func agentChatScript(name string) g.Node {
     }
   } catch (e) {}
   } // end start
+
+  // 🔴 THE TRANSCRIPT IS LAID OUT BEFORE ITS FIRST PAINT, NOT AT start().
+  // start() waits for DOMContentLoaded, and DOMContentLoaded waits for the
+  // DEFERRED vendor scripts (htmx, sse.js in <head>). When they arrive after the
+  // document has parsed — a cold cache, a slow network — the browser paints the
+  // transcript in between: raw text (a message's blank lines collapsed),
+  // unclamped, scrolled to the TOP. start() then converts the markdown, the
+  // clamp shrinks the tall bubbles and the log jumps to its end, and every
+  // bubble on screen moves. Measured on a 200-message transcript at 1280px with
+  // 150 ms RTT and a 4x CPU: CLS 0.37 (markdown) and 0.43 (plain text), one
+  // shift each, the bubbles as its sources. A frame log of a cold-browser
+  // open that shifted showed two frames painted with 0 of 200 bubbles
+  // converted and scrollTop 0 before start() ran.
+  //
+  // So agentChatPane emits a call to this directly after #chat-log's last
+  // child, while the parser is still blocked on that inline script: the
+  // markdown and the scroll to the end are applied in the same task that
+  // inserted the bubbles, before anything can paint them, and the clamp
+  // follows at the microtask checkpoint that ends the script (its
+  // MutationObserver sees the conversion), still before the parser goes on.
+  // A clamp that shrinks the log after the scroll leaves it at its end: the
+  // scroll position is clamped to the new height. It needs nothing htmx
+  // provides. start() later runs the same steps again, as no-ops.
+  //
+  // ⚠ THIS SCRIPT AND bubbleClampScript MUST THEREFORE BE PARSED BEFORE
+  // #chat-log (AgentDetailPage emits them ahead of the content column). Emitted
+  // after it, window.__cgLayoutLog is undefined at the call and the transcript
+  // is laid out at DOMContentLoaded again; the clamp script after it would
+  // clamp only when it ran.
+  //
+  // Until start() wires its own ResizeObserver (session.ro), one here keeps a
+  // reader who has not scrolled away at the end while the rest of the page is
+  // parsed: #chat-form below the log arrives after this call and shrinks the
+  // log's box.
+  window.__cgLayoutLog = function () {
+    var log = document.getElementById('chat-log');
+    if (!log) return;
+    mdConvert(log);
+    log.scrollTop = log.scrollHeight;
+    if (typeof ResizeObserver === 'undefined' || window.__cgChat) return;
+    var away = false;
+    var onScroll = function () { away = log.scrollHeight - log.scrollTop - log.clientHeight >= 48; };
+    log.addEventListener('scroll', onScroll, { passive: true });
+    var ro = new ResizeObserver(function () {
+      if (window.__cgChat || !log.isConnected) { ro.disconnect(); log.removeEventListener('scroll', onScroll); return; }
+      if (!away) log.scrollTop = log.scrollHeight;
+    });
+    ro.observe(log);
+  };
 
   // Global, document-lifetime hooks (the <body> survives hx-boost swaps, so
   // these must bind exactly once — guarded). start() reads its target agent from
