@@ -105,8 +105,29 @@ const formShifts = (r: ClsResult) => [...r.shifts, ...r.excludedShifts].filter((
 // origin/main too (measured: present in the same cases' excluded entries there)
 // and its cause is not established; it is under the bar and reported, not
 // fixed, here. Anything else that moves fails these cases.
-const TITLE = 'div.mr-auto.flex.min-w-0';
-const foreignShifts = (r: ClsResult) => [...r.shifts, ...r.excludedShifts].filter((x) => !x.sources.every((n) => n === TITLE));
+//
+// The allowance is STRUCTURAL, not spelled: titleInit records, for each
+// layout-shift entry, whether every one of its source nodes is inside the
+// header's [data-agent-title] box (the box itself, or its chevron <svg>, whose
+// spelled name is the same as the switcher toggle's). foreignShifts keeps
+// every entry that is not.
+const titleInit = `(() => {
+  window.__titleOnly = [];
+  try {
+    new PerformanceObserver((l) => {
+      for (const e of l.getEntries()) {
+        const ns = (e.sources || []).map((x) => x.node).filter(Boolean);
+        if (ns.length && ns.every((n) => n.nodeType === 1 && n.closest('[data-agent-title]'))) window.__titleOnly.push(Math.round(e.startTime));
+      }
+    }).observe({ type: 'layout-shift', buffered: true });
+  } catch (e) {}
+})()`;
+type Moved = ClsResult & { titleOnly: number[] };
+async function readMoved(page: Page): Promise<Moved> {
+  const r = await readCls(page);
+  return { ...r, titleOnly: await page.evaluate(() => (window as any).__titleOnly || []) };
+}
+const foreignShifts = (r: Moved) => [...r.shifts, ...r.excludedShifts].filter((x) => !r.titleOnly.includes(x.at));
 
 // heldOpen opens url with the deferred vendor scripts held unanswered (so
 // DOMContentLoaded and start() wait on them), waits until the document has
@@ -124,6 +145,7 @@ async function heldOpen(browser: Browser, use: object, url: string) {
     await route.continue().catch(() => {});
   });
   await page.addInitScript(clsInit);
+  await page.addInitScript(titleInit);
   await page.goto(url, { waitUntil: 'commit' });
   await expect.poll(() => page.evaluate(() => document.readyState), { message: 'the document parsed' }).toBe('interactive');
   await page.evaluate(() => new Promise<void>((r) => { let n = 0; const f = () => (++n < 10 ? requestAnimationFrame(f) : r()); requestAnimationFrame(f); }));
@@ -145,6 +167,7 @@ async function open(browser: Browser, use: object, p: Profile | null, url: strin
   const page = await ctx.newPage();
   await throttle(page, p);
   await page.addInitScript(clsInit);
+  await page.addInitScript(titleInit);
   if (o.init) await page.addInitScript(o.init);
   await page.goto(origin + url);
   await settle(page);
@@ -176,7 +199,7 @@ test.describe('a 200-message agent transcript', () => {
           for (let i = 0; i < pr.runs; i++) {
             const { ctx, page } = await open(browser, vp.use, pr.p, `/agents/${agents[kind]}`);
             try {
-              const r = await readCls(page);
+              const r = await readMoved(page);
               // What was measured is the drawn transcript, opened at its end.
               await expect(page.locator('#chat-log [data-bubble]')).toHaveCount(CAP);
               await expect(page.locator('#chat-log [data-md-done]'), 'every bubble was converted').toHaveCount(CAP);
@@ -206,9 +229,9 @@ test.describe('a 200-message agent transcript', () => {
         try {
           await expect(page.locator('#chat-log [data-md-done]'), 'every bubble converted before start()').toHaveCount(CAP);
           expect(await atEnd(page, '#chat-log'), 'the log is at its end before start()').toBe(true);
-          const before = await readCls(page);
+          const before = await readMoved(page);
           await started();
-          const after = await readCls(page);
+          const after = await readMoved(page);
           console.log(`[cls-long ${vp.name}] ${kind}, scripts held: ${moved(before)}, after they land: ${moved(after)}`);
           expect(moved(before), report('while the scripts were held', before)).toBeLessThan(BAR);
           expect(foreignShifts(before), report('while the scripts were held', before)).toEqual([]);
@@ -228,7 +251,15 @@ test.describe('a 200-message agent transcript', () => {
     // on a parser-blocking script that answers after 1.2 s: the browser paints
     // the log as it stands. The frames painted in that hold are the positive
     // control (they must show the log's bubbles in the DOM).
-    test(`${vp.name}: a frame painted before the layout call moves nothing`, async ({ browser }) => {
+    // The same hold INSIDE the session switcher (#248), straight after its
+    // <nav> tag: a 1px bar painted before its row, that grew to 45px, read as
+    // a shift of the bar.
+    const stalls = [
+      { label: 'before the layout call', at: (html: string) => html.indexOf('<form id="chat-form"') },
+      { label: 'inside the session switcher', at: (html: string) => { const n = html.indexOf('id="session-switcher"'); return n < 0 ? -1 : html.indexOf('>', n) + 1; } },
+    ];
+    for (const stall of stalls)
+    test(`${vp.name}: a frame painted ${stall.label} moves nothing`, async ({ browser }) => {
       const ctx = await browser.newContext({ ...vp.use, baseURL, storageState: authState });
       try {
         const page = await ctx.newPage();
@@ -236,14 +267,16 @@ test.describe('a 200-message agent transcript', () => {
           if (r.request().resourceType() !== 'document') return r.continue();
           const res = await r.fetch();
           const html = await res.text();
-          const at = html.indexOf('<form id="chat-form"');
-          await r.fulfill({ response: res, body: at < 0 ? html : html.slice(0, at) + '<script src="/__e2e-stall.js"></script>' + html.slice(at) });
+          const at = stall.at(html);
+          if (at <= 0) throw new Error(`no stall point ${stall.label} in the document`);
+          await r.fulfill({ response: res, body: html.slice(0, at) + '<script src="/__e2e-stall.js"></script>' + html.slice(at) });
         });
         await page.route('**/__e2e-stall.js', async (r) => {
           await new Promise((res) => setTimeout(res, 1200));
           await r.fulfill({ contentType: 'text/javascript', body: 'window.__stallEnded = true;' });
         });
         await page.addInitScript(clsInit);
+        await page.addInitScript(titleInit);
         await page.addInitScript(`(() => {
           const tick = () => {
             if (!window.__stallEnded && document.querySelectorAll('#chat-log [data-bubble]').length) window.__heldFrames = (window.__heldFrames || 0) + 1;
@@ -253,17 +286,41 @@ test.describe('a 200-message agent transcript', () => {
         })()`);
         await page.goto(`/agents/${agents.markdown}`);
         await settle(page);
-        const r = await readCls(page);
+        const r = await readMoved(page);
         const held = await page.evaluate(() => (window as any).__heldFrames || 0);
-        console.log(`[cls-long ${vp.name}] stalled before the layout call: ${moved(r)} (${held} frames held)`);
-        expect(held, 'control: frames were painted with the bubbles in the DOM, before the layout call').toBeGreaterThan(0);
+        console.log(`[cls-long ${vp.name}] stalled ${stall.label}: ${moved(r)} (${held} frames held)`);
+        expect(held, `control: frames were painted with the bubbles in the DOM, stalled ${stall.label}`).toBeGreaterThan(0);
         await expect(page.locator('#chat-log [data-md-done]')).toHaveCount(CAP);
         expect(await atEnd(page, '#chat-log'), 'at its end').toBe(true);
-        expect(moved(r), report('stalled before the layout call', r)).toBeLessThan(BAR);
-        expect(foreignShifts(r), report('stalled before the layout call', r)).toEqual([]);
+        expect(moved(r), report(`stalled ${stall.label}`, r)).toBeLessThan(BAR);
+        expect(foreignShifts(r), report(`stalled ${stall.label}`, r)).toEqual([]);
       } finally {
         await ctx.close();
       }
+    });
+
+    // THE WHOLE PAGE: a 200-message transcript AND the session switcher below
+    // the composer (#248: switcher.go, in the room the form reserves), opened
+    // OPENS times. Nothing but the named title-box shift may move.
+    test(`${vp.name}: the 200-message page with the session switcher, ${OPENS}×`, async ({ browser }) => {
+      test.setTimeout(180_000);
+      const seen: number[] = [];
+      const bad: string[] = [];
+      for (let i = 0; i < OPENS; i++) {
+        const { ctx, page } = await open(browser, vp.use, null, `/agents/${agents.markdown}`);
+        try {
+          await expect(page.locator('#session-switcher'), 'the switcher is drawn').toBeVisible();
+          await expect(page.locator('#chat-log [data-md-done]')).toHaveCount(CAP);
+          expect(await atEnd(page, '#chat-log'), 'at its end').toBe(true);
+          const r = await readMoved(page);
+          seen.push(moved(r));
+          if (moved(r) >= BAR || foreignShifts(r).length) bad.push(report(`open ${i + 1}`, r));
+        } finally {
+          await ctx.close();
+        }
+      }
+      console.log(`[cls-long ${vp.name}] with the switcher: ${seen.join(' ')}`);
+      expect(bad).toEqual([]);
     });
 
     // 🔴 A READER WHO SCROLLED UP BEFORE start() STAYS THERE. On a slow network

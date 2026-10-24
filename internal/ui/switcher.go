@@ -213,7 +213,12 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 			// (layout shift 0.0047–0.012 at 1280×800). Reserved by the
 			// container's padding from its first byte, the bar's arrival moves
 			// nothing.
-			Class("absolute inset-x-0 bottom-0 border-t border-line bg-bg"+classIf(pinned, " px-3 pb-[env(safe-area-inset-bottom)]")),
+			//
+			// 🔴 AND ITS HEIGHT IS FIXED TOO, to exactly that room: a frame can
+			// also land with the <nav> parsed and its row not yet, a 1px bar at
+			// the bottom that then grew to 45px and moved up by 44 (measured on a
+			// 200-message agent page under a parser stall inside the bar).
+			Class("absolute inset-x-0 bottom-0 border-t border-line bg-bg "+switcherHeight(pinned)+classIf(pinned, " px-3 pb-[env(safe-area-inset-bottom)]")),
 			Div(
 				Class("flex h-11 min-w-0 items-center gap-2"),
 				Button(
@@ -235,6 +240,15 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 		),
 		switcherScript(),
 	}
+}
+
+// switcherHeight is the bar's own height, the same room switcherRoom
+// reserves (border-box, so the border and the safe-area padding are inside it).
+func switcherHeight(pinned bool) string {
+	if pinned {
+		return "h-[calc(2.8125rem+env(safe-area-inset-bottom))]"
+	}
+	return "h-[2.8125rem]"
 }
 
 // switcherRoom is the bottom padding a container holding the bar reserves
