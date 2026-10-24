@@ -5,23 +5,7 @@ import (
 	"testing"
 )
 
-func TestPromptDigestAgreesAcrossLineEndsAndSurroundingSpace(t *testing.T) {
-	a := PromptDigest("line one\nline two")
-	for _, s := range []string{"line one\r\nline two", "  line one\nline two\n", "\tline one\r\nline two\r\n"} {
-		if got := PromptDigest(s); got != a {
-			t.Errorf("PromptDigest(%q) = %s; want %s (the same text as pasted)", s, got, a)
-		}
-	}
-	if PromptDigest("line one\nline three") == a {
-		t.Fatal("different text, same digest")
-	}
-	if len(a) != 16 {
-		t.Fatalf("digest %q; want 16 hex", a)
-	}
-}
-
 func TestCleanTurnError(t *testing.T) {
-	d := PromptDigest("x")
 	cases := []struct {
 		name string
 		in   *TurnError
@@ -30,10 +14,9 @@ func TestCleanTurnError(t *testing.T) {
 		{"nil", nil, nil},
 		{"a kind the wire does not carry", &TurnError{Kind: "Not Logged In"}, nil},
 		{"no kind", &TurnError{At: 5}, nil},
-		{"a limit keeps its reset", &TurnError{Kind: TurnErrorLimit, At: 5, ResetsAt: 9, Prompt: d, Quick: 2},
-			&TurnError{Kind: TurnErrorLimit, At: 5, ResetsAt: 9, Prompt: d, Quick: 2}},
+		{"a limit keeps its reset", &TurnError{Kind: TurnErrorLimit, At: 5, ResetsAt: 9, Rejected: true, Quick: 2},
+			&TurnError{Kind: TurnErrorLimit, At: 5, ResetsAt: 9, Rejected: true, Quick: 2}},
 		{"another kind has no reset", &TurnError{Kind: "server_error", At: 5, ResetsAt: 9}, &TurnError{Kind: "server_error", At: 5}},
-		{"a digest in another shape is dropped", &TurnError{Kind: "error", Prompt: "not-a-digest"}, &TurnError{Kind: "error"}},
 		{"negative times and counts", &TurnError{Kind: TurnErrorLimit, At: -1, ResetsAt: -1, Quick: -3}, &TurnError{Kind: TurnErrorLimit}},
 		{"quick is capped", &TurnError{Kind: "error", Quick: MaxTurnErrorQuick + 5}, &TurnError{Kind: "error", Quick: MaxTurnErrorQuick}},
 	}

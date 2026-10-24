@@ -651,7 +651,7 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 				c := *out[i].Claude
 				c.Status, c.Pending = mirror.StatusIdle, nil
 				c.TurnError = &mirror.TurnError{Kind: mirror.TurnErrorLimit, At: math.MaxInt64, ResetsAt: math.MaxInt64,
-					Prompt: strings.Repeat("f", 16), Quick: mirror.MaxTurnErrorQuick}
+					Rejected: true, Quick: mirror.MaxTurnErrorQuick}
 				out[i].Claude = &c
 			}
 		}
@@ -696,7 +696,7 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 		turnErrors := 0
 		for _, w := range l.windows {
 			if e := w.TurnError; e != nil {
-				if e.Kind != mirror.TurnErrorLimit || e.At != math.MaxInt64 || e.ResetsAt != math.MaxInt64 || len(e.Prompt) != 16 || e.Quick != mirror.MaxTurnErrorQuick {
+				if e.Kind != mirror.TurnErrorLimit || e.At != math.MaxInt64 || e.ResetsAt != math.MaxInt64 || !e.Rejected || e.Quick != mirror.MaxTurnErrorQuick {
 					t.Fatalf("instrument check: a turn error field was cut, so this is not the worst case: %+v", e)
 				}
 				turnErrors++

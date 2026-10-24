@@ -306,7 +306,7 @@ func TestTheAgentStateCarriesHowTheLatestTurnFailed(t *testing.T) {
 	r := newRig(t)
 	tok, _ := r.store.mint(t, 1, "ws")
 	ws := statusWindows(mirror.StatusIdle, t1)
-	e := mirror.TurnError{Kind: mirror.TurnErrorLimit, At: t1 - 1, ResetsAt: t3, Prompt: mirror.PromptDigest("q"), Quick: 2}
+	e := mirror.TurnError{Kind: mirror.TurnErrorLimit, At: t1 - 1, ResetsAt: t3, Rejected: true, Quick: 2}
 	ws[0].TurnError = &e
 	m := winHello("ws", true, ws...)
 	m.StatusReport = true

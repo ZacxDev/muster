@@ -10,14 +10,15 @@ import (
 )
 
 // THE DISPATCHER AGAINST A SESSION UNDER A USAGE LIMIT, on the real store with
-// a fake clock: the drain the operator reported ("when a session hits its
-// limit, all the queued messages send immediately") is held, the message the
-// limit rejected goes back to the head, and the queue resumes after the reset —
-// each with its own control.
+// a fake clock: the drain (every queued message sent into the limit, one per
+// idle stretch) is held, the one message the limit bounced is marked failed for
+// a Retry by hand, nothing is re-sent on its own, and the queue resumes after
+// the reset — each with its own control.
 
 // cli is a fake Claude Code behind the send path: each message pasted into it
-// ends its turn at once (its status goes idle with a NEWER time, as the real
-// CLI's does), with the turn error reply names — nil for a real answer.
+// ends its turn at once (its status goes idle with a NEWER time, observed by
+// muster now, as the real CLI's does), with the turn error reply names — nil
+// for a real answer.
 type cli struct {
 	*fakeTarget
 	c     *clock
@@ -50,10 +51,10 @@ func limitDispatcher(s *PGStore, l *cli, c *clock) *Dispatcher {
 	return d
 }
 
-// limited is the CLI's usage-limit rejection of body: the limit was its only
-// reply, so the host names the prompt.
+// limited is the CLI's usage-limit refusal of every message: the limit is its
+// only reply.
 func limited(reset time.Time) func(string) *mirror.TurnError {
-	return func(body string) *mirror.TurnError { return limitErr(reset, mirror.PromptDigest(body)) }
+	return func(string) *mirror.TurnError { return limitErr(reset, true) }
 }
 
 func row(t *testing.T, s *PGStore, id int64) Item {
@@ -65,14 +66,24 @@ func row(t *testing.T, s *PGStore, id int64) Item {
 	return it
 }
 
-// TestAUsageLimitHoldsTheQueueReturnsTheRejectedMessageAndResumesAfterTheReset
-// is the operator's report end to end. Three messages queued; the session hits
-// its limit. Before the fix every pass sent the next one (the CONTROL further
+// wantBounced: the row was marked failed for the limit, not delivered, and a
+// Retry is open to it (failed, not yet retried, a person's own).
+func wantBounced(t *testing.T, s *PGStore, id int64) {
+	t.Helper()
+	r := row(t, s, id)
+	if r.State != Failed || r.Detail != RejectedLimitDetail || r.MayHaveDelivered || r.RetriedAs != 0 || r.RouteID != "" {
+		t.Fatalf("the bounced message: %+v; want failed, %q, not delivered, retryable", r, RejectedLimitDetail)
+	}
+}
+
+// TestAUsageLimitHoldsTheQueueAndFailsTheBouncedMessageForARetryByHand is the
+// operator's report end to end. Three messages queued; the session hits its
+// limit. Before the fix every pass sent the next one (the CONTROL further
 // down: the same CLI with no turn error drains). Now: the first is sent, the
-// limit rejects it, it goes back to the head marked returned — not counted as
-// sent — and nothing else is sent until the reset plus the margin; then the
-// first is sent again, answered for real, and the rest follow one per turn.
-func TestAUsageLimitHoldsTheQueueReturnsTheRejectedMessageAndResumesAfterTheReset(t *testing.T) {
+// limit refuses it, it is marked failed "Rejected: usage limit" with its Retry
+// open, and nothing else is sent until the reset plus the margin — and the
+// bounced one is NEVER re-sent on its own, then or after.
+func TestAUsageLimitHoldsTheQueueAndFailsTheBouncedMessageForARetryByHand(t *testing.T) {
 	s, _ := pgStore(t)
 	t0 := time.Now().Truncate(time.Second)
 	c := &clock{t: t0}
@@ -88,18 +99,15 @@ func TestAUsageLimitHoldsTheQueueReturnsTheRejectedMessageAndResumesAfterTheRese
 		tick(t, d)
 	}
 	wantSent(t, l.fakeTarget, "under the limit", "one")
-	got := row(t, s, one.ID)
-	if got.State != Queued || got.Returns != 1 || got.Detail != ReturnedLimitDetail || got.MayHaveDelivered || !got.FinishedAt.IsZero() {
-		t.Fatalf("the rejected message: %+v; want queued again, returned once, not delivered, not finished", got)
-	}
+	wantBounced(t, s, one.ID)
 	for _, id := range []int64{two.ID, three.ID} {
-		if r := row(t, s, id); r.State != Queued || r.Returns != 0 {
-			t.Fatalf("message %d: %s, returns %d; want queued, never sent", id, r.State, r.Returns)
+		if r := row(t, s, id); r.State != Queued {
+			t.Fatalf("message %d: %s; want queued, never sent", id, r.State)
 		}
 	}
 	h, ok, err := s.HeadOf(as(2), win)
-	if err != nil || !ok || h.ID != one.ID {
-		t.Fatalf("head = %+v, %v, %v; want the returned message back at the head", h, ok, err)
+	if err != nil || !ok || h.ID != two.ID {
+		t.Fatalf("head = %+v, %v, %v; want the next message, held", h, ok, err)
 	}
 	if dec := d.Decide(h, l.probe(context.Background(), h)); dec.Send || !dec.Held || !dec.ResumeAt.Equal(reset) {
 		t.Fatalf("Decide = %+v; want held until the reset %s", dec, reset)
@@ -110,18 +118,28 @@ func TestAUsageLimitHoldsTheQueueReturnsTheRejectedMessageAndResumesAfterTheRese
 	tick(t, d)
 	wantSent(t, l.fakeTarget, "inside the margin", "one")
 
-	// Past it: the returned message is sent again — and this time answered.
+	// Past it, the limit lifted: the rest go, one per turn — and the bounced
+	// message is not among them.
 	l.reply = func(string) *mirror.TurnError { return nil }
-	c.set(reset.Add(LimitMargin))
-	tick(t, d)
-	wantSent(t, l.fakeTarget, "after the reset", "one", "one")
-	for i := 1; i <= 6; i++ {
+	for i := 0; i <= 6; i++ {
 		c.set(reset.Add(LimitMargin + time.Duration(i)*idle))
 		tick(t, d)
 	}
-	wantSent(t, l.fakeTarget, "the limit lifted", "one", "one", "two", "three")
-	if r := row(t, s, one.ID); r.State != Sent || r.Returns != 1 {
-		t.Fatalf("the returned message, answered: %s returns %d; want sent, once returned", r.State, r.Returns)
+	wantSent(t, l.fakeTarget, "the limit lifted", "one", "two", "three")
+	wantBounced(t, s, one.ID)
+
+	// Its Retry, by hand, queues it again as a new row, which is sent.
+	again, err := s.Retry(as(2), one.ID, time.Now(), 0)
+	if err != nil {
+		t.Fatalf("Retry of the bounced message: %v", err)
+	}
+	for i := 7; i <= 9; i++ {
+		c.set(reset.Add(LimitMargin + time.Duration(i)*idle))
+		tick(t, d)
+	}
+	wantSent(t, l.fakeTarget, "after a Retry by hand", "one", "two", "three", "one")
+	if r := row(t, s, again.ID); r.State != Sent {
+		t.Fatalf("the retried row: %s; want sent", r.State)
 	}
 }
 
@@ -146,14 +164,14 @@ func TestWithoutATurnErrorTheSameCLIDrainsTheQueue(t *testing.T) {
 	wantSent(t, l.fakeTarget, "no turn error reported", "one", "two", "three")
 }
 
-// TestALimitHitMidTurnHoldsButReturnsNothing: the host names no prompt when the
-// limit came after real work (the message WAS processed). It stays sent — a
-// re-send would run it twice — and the queue still holds.
-func TestALimitHitMidTurnHoldsButReturnsNothing(t *testing.T) {
+// TestALimitHitMidTurnHoldsButFailsNothing: the host does not mark the turn
+// Rejected when the limit came after real work (the message WAS processed). It
+// stays sent — a Retry of it would run it twice — and the queue still holds.
+func TestALimitHitMidTurnHoldsButFailsNothing(t *testing.T) {
 	s, _ := pgStore(t)
 	t0 := time.Now().Truncate(time.Second)
 	c := &clock{t: t0}
-	l := newCLI(c, t0.Add(-time.Hour), func(string) *mirror.TurnError { return limitErr(t0.Add(time.Hour), "") })
+	l := newCLI(c, t0.Add(-time.Hour), func(string) *mirror.TurnError { return limitErr(t0.Add(time.Hour), false) })
 	d := limitDispatcher(s, l, c)
 	one := mustEnqueue(t, s, 2, mirrorItem("one"))
 	mustEnqueue(t, s, 2, mirrorItem("two"))
@@ -162,37 +180,16 @@ func TestALimitHitMidTurnHoldsButReturnsNothing(t *testing.T) {
 		tick(t, d)
 	}
 	wantSent(t, l.fakeTarget, "a limit mid-turn", "one")
-	if r := row(t, s, one.ID); r.State != Sent || r.Returns != 0 {
-		t.Fatalf("the processed message: %s returns %d; want sent, not returned", r.State, r.Returns)
+	if r := row(t, s, one.ID); r.State != Sent {
+		t.Fatalf("the processed message: %s %q; want sent", r.State, r.Detail)
 	}
 }
 
-// TestALimitThatAnsweredAnotherPromptReturnsNothing: a person's own Send got in
-// after the queued message and the limit answered THAT: the latest turn's
-// prompt is not the queued message's text, so the queue cannot tell what
-// became of its message, and leaves it sent.
-func TestALimitThatAnsweredAnotherPromptReturnsNothing(t *testing.T) {
-	s, _ := pgStore(t)
-	t0 := time.Now().Truncate(time.Second)
-	c := &clock{t: t0}
-	l := newCLI(c, t0.Add(-time.Hour), func(string) *mirror.TurnError {
-		return limitErr(t0.Add(time.Hour), mirror.PromptDigest("typed by hand"))
-	})
-	d := limitDispatcher(s, l, c)
-	one := mustEnqueue(t, s, 2, mirrorItem("one"))
-	for i := 1; i <= 4; i++ {
-		c.set(t0.Add(time.Duration(i) * idle))
-		tick(t, d)
-	}
-	if r := row(t, s, one.ID); r.State != Sent || r.Returns != 0 {
-		t.Fatalf("message: %s returns %d; want sent, not returned", r.State, r.Returns)
-	}
-}
-
-// TestARejectedMessageIsReturnedOncePerSend: two dispatchers (two pods during a
-// rolling update) both see the rejection; the row comes back ONCE — Return
-// moves only a row still sent — and is not sent twice.
-func TestARejectedMessageIsReturnedOncePerSend(t *testing.T) {
+// TestAPasteThroughMusterSinceFailsNothing: a person's own Send got in after
+// the queued message (the hub's Pasted moved past it) and the limit answered
+// THAT: the queue cannot tell what became of its own message, and leaves it
+// sent.
+func TestAPasteThroughMusterSinceFailsNothing(t *testing.T) {
 	s, _ := pgStore(t)
 	t0 := time.Now().Truncate(time.Second)
 	c := &clock{t: t0}
@@ -200,34 +197,72 @@ func TestARejectedMessageIsReturnedOncePerSend(t *testing.T) {
 	d := limitDispatcher(s, l, c)
 	one := mustEnqueue(t, s, 2, mirrorItem("one"))
 	c.set(t0.Add(idle))
-	tick(t, d) // sent, rejected
+	// The person's Send lands right after the queued paste: the hub records
+	// the status the window held then.
+	d.Send = func(ctx context.Context, it Item, st AgentState) Outcome {
+		o := l.send(ctx, it, st)
+		l.mu.Lock()
+		l.st.Pasted = l.st.Since
+		l.st.Since += 700
+		l.mu.Unlock()
+		return o
+	}
+	for i := 1; i <= 4; i++ {
+		c.set(t0.Add(time.Duration(i) * idle))
+		tick(t, d)
+	}
+	if r := row(t, s, one.ID); r.State != Sent {
+		t.Fatalf("message: %s %q; want sent", r.State, r.Detail)
+	}
+}
+
+// TestABouncedMessageIsRejectedOncePerSend: two dispatchers (two pods during a
+// rolling update) both see the bounce; the row is failed ONCE — Reject moves
+// only a row still sent — and is not sent again.
+func TestABouncedMessageIsRejectedOncePerSend(t *testing.T) {
+	s, _ := pgStore(t)
+	t0 := time.Now().Truncate(time.Second)
+	c := &clock{t: t0}
+	l := newCLI(c, t0.Add(-time.Hour), limited(t0.Add(time.Hour)))
+	d := limitDispatcher(s, l, c)
+	one := mustEnqueue(t, s, 2, mirrorItem("one"))
+	queued := mustEnqueue(t, s, 2, mirrorItem("queued"))
+	c.set(t0.Add(idle))
+	if _, err := d.Tick(context.Background()); err != nil { // sent, then refused
+		t.Fatal(err)
+	}
 	other := limitDispatcher(s, l, c)
 	other.Instance = "the-other-pod"
 	var wg sync.WaitGroup
 	for _, x := range []*Dispatcher{d, other, d, other} {
 		wg.Add(1)
-		go func(x *Dispatcher) { defer wg.Done(); x.returnRejected(context.Background()) }(x)
+		go func(x *Dispatcher) { defer wg.Done(); x.rejectBounced(context.Background()) }(x)
 	}
 	wg.Wait()
-	if r := row(t, s, one.ID); r.State != Queued || r.Returns != 1 {
-		t.Fatalf("after four concurrent passes: %s returns %d; want queued, returned exactly once", r.State, r.Returns)
+	wantBounced(t, s, one.ID)
+	for _, id := range []int64{one.ID, queued.ID} {
+		if ok, err := s.Reject(context.Background(), id, RejectedLimitDetail); err != nil || ok {
+			t.Fatalf("Reject of a row that is not sent (%d) = %v, %v; want refused", id, ok, err)
+		}
 	}
-	if ok, err := s.Return(context.Background(), one.ID, ReturnedLimitDetail); err != nil || ok {
-		t.Fatalf("Return of a queued row = %v, %v; want refused", ok, err)
+	if r := row(t, s, queued.ID); r.State != Queued {
+		t.Fatalf("the queued row: %s; want untouched", r.State)
 	}
-	wantSent(t, l.fakeTarget, "returned", "one")
+	wantSent(t, l.fakeTarget, "bounced", "one")
 }
 
 // TestARealAnswerLiftsTheLimitAtOnce: the reset is hours away, but a message
 // the person typed by hand was answered for real — the limit has lifted — so
-// the returned message goes at the next idle stretch, not at the reset.
+// the next queued message goes at the next idle stretch, not at the reset; the
+// bounced one stays failed for its Retry.
 func TestARealAnswerLiftsTheLimitAtOnce(t *testing.T) {
 	s, _ := pgStore(t)
 	t0 := time.Now().Truncate(time.Second)
 	c := &clock{t: t0}
 	l := newCLI(c, t0.Add(-time.Hour), limited(t0.Add(5*time.Hour)))
 	d := limitDispatcher(s, l, c)
-	mustEnqueue(t, s, 2, mirrorItem("one"))
+	one := mustEnqueue(t, s, 2, mirrorItem("one"))
+	mustEnqueue(t, s, 2, mirrorItem("two"))
 	for i := 1; i <= 4; i++ {
 		c.set(t0.Add(time.Duration(i) * idle))
 		tick(t, d)
@@ -237,15 +272,18 @@ func TestARealAnswerLiftsTheLimitAtOnce(t *testing.T) {
 	l.answer(nil)
 	c.set(c.now().Add(idle))
 	tick(t, d)
-	wantSent(t, l.fakeTarget, "after a real answer", "one", "one")
+	wantSent(t, l.fakeTarget, "after a real answer", "one", "two")
+	wantBounced(t, s, one.ID)
 }
 
-// TestTheCircuitBreakerStopsAnImmediateFailureLoop: "Not logged in" fails each
-// message at once (the host counts the quick failures in a row). BreakerAfter
-// messages go — the first failure alone is not a loop — and then the queue
-// holds, saying why; those messages are not returned (they were not a limit).
-// Send now still sends exactly ONE.
-func TestTheCircuitBreakerStopsAnImmediateFailureLoop(t *testing.T) {
+// TestTheCircuitBreakerBacksOffAndLiftsByItself: "Not logged in" fails each
+// message at once (the host counts the quick failures in a row). The first
+// failure alone is not a loop; at BreakerAfter the queue holds 1 minute from
+// when muster saw it, then lets ONE through; that one fails too, and it holds
+// 2 minutes, then 5. A real answer resets it: the next goes at once. The
+// failed messages are not marked failed (they were not a limit). Send now
+// still sends exactly one while it holds.
+func TestTheCircuitBreakerBacksOffAndLiftsByItself(t *testing.T) {
 	s, _ := pgStore(t)
 	t0 := time.Now().Truncate(time.Second)
 	c := &clock{t: t0}
@@ -255,48 +293,62 @@ func TestTheCircuitBreakerStopsAnImmediateFailureLoop(t *testing.T) {
 		return &mirror.TurnError{Kind: "authentication_failed", Quick: quick}
 	})
 	d := limitDispatcher(s, l, c)
+	d.IdleFor = time.Second
 	var items []Item
-	for _, b := range []string{"m1", "m2", "m3", "m4", "m5"} {
+	for _, b := range []string{"m1", "m2", "m3", "m4", "m5", "m6", "m7"} {
 		items = append(items, mustEnqueue(t, s, 2, mirrorItem(b)))
 	}
-	for i := 1; i <= 12; i++ {
-		c.set(t0.Add(time.Duration(i) * idle))
-		tick(t, d)
+	at := func(off time.Duration) { c.set(t0.Add(off)); tick(t, d) }
+	at(2 * time.Second) // m1: one quick failure, no hold
+	at(4 * time.Second) // m2: BreakerAfter in a row — held 1 minute from now
+	tripped := t0.Add(4 * time.Second)
+	at(4*time.Second + time.Minute - time.Second)
+	wantSent(t, l.fakeTarget, "inside the first back-off", "m1", "m2")
+	h, _, _ := s.HeadOf(as(2), win)
+	if dec := d.Decide(h, l.probe(context.Background(), h)); !dec.Held || !dec.ResumeAt.Equal(tripped.Add(time.Minute)) ||
+		dec.Why != BreakerHeldText(&mirror.TurnError{Kind: "authentication_failed", Quick: BreakerAfter}) {
+		t.Fatalf("Decide = %+v; want held by the breaker until %s", dec, tripped.Add(time.Minute))
 	}
-	wantSent(t, l.fakeTarget, "the breaker", "m1", "m2")
-	h, ok, err := s.HeadOf(as(2), win)
-	if err != nil || !ok || h.Body != "m3" {
-		t.Fatalf("head = %+v; want m3", h)
-	}
-	dec := d.Decide(h, l.probe(context.Background(), h))
-	if dec.Send || !dec.Held || dec.Why != BreakerHeldText(&mirror.TurnError{Kind: "authentication_failed", Quick: BreakerAfter}) {
-		t.Fatalf("Decide = %+v; want held by the breaker", dec)
-	}
-	for _, it := range items[:2] {
-		if r := row(t, s, it.ID); r.State != Sent || r.Returns != 0 {
-			t.Fatalf("%s: %s returns %d; want sent (an error that is not a limit is not returned)", it.Body, r.State, r.Returns)
-		}
-	}
+	at(4*time.Second + time.Minute) // lifts by itself: m3, which fails too
+	wantSent(t, l.fakeTarget, "after the first back-off", "m1", "m2", "m3")
+	second := t0.Add(4*time.Second + time.Minute)
+	c.set(second.Add(2*time.Minute - time.Second))
+	tick(t, d)
+	wantSent(t, l.fakeTarget, "inside the second back-off (2 min)", "m1", "m2", "m3")
+	c.set(second.Add(2 * time.Minute))
+	tick(t, d)
+	wantSent(t, l.fakeTarget, "after the second back-off", "m1", "m2", "m3", "m4")
+	third := second.Add(2 * time.Minute)
+	c.set(third.Add(5*time.Minute - time.Second))
+	tick(t, d)
+	wantSent(t, l.fakeTarget, "inside the third back-off (5 min)", "m1", "m2", "m3", "m4")
 	// Send now: the one message tapped, and only it.
-	if _, o, err := d.SendNow(as(2), d.AsOwner(context.Background(), 2), items[4].ID, l.probe(context.Background(), h).Since, l.send); err != nil || !o.Sent {
+	if _, o, err := d.SendNow(as(2), d.AsOwner(context.Background(), 2), items[6].ID, l.probe(context.Background(), h).Since, l.send); err != nil || !o.Sent {
 		t.Fatalf("Send now = %+v, %v", o, err)
 	}
-	for i := 13; i <= 16; i++ {
-		c.set(t0.Add(time.Duration(i) * idle))
-		tick(t, d)
+	wantSent(t, l.fakeTarget, "a Send now while held", "m1", "m2", "m3", "m4", "m7")
+	// A real answer resets the breaker: the next goes at once.
+	l.reply = func(string) *mirror.TurnError { return nil }
+	l.answer(nil)
+	c.set(c.now().Add(2 * time.Second))
+	tick(t, d)
+	wantSent(t, l.fakeTarget, "after a real answer", "m1", "m2", "m3", "m4", "m7", "m5")
+	for _, it := range items[:4] {
+		if r := row(t, s, it.ID); r.State != Sent {
+			t.Fatalf("%s: %s; want sent (an error that is not a limit is not marked failed)", it.Body, r.State)
+		}
 	}
-	wantSent(t, l.fakeTarget, "a Send now while held", "m1", "m2", "m5")
 }
 
-// TestSendNowDuringALimitSendsOneAndARejectionComesBack: the override sends the
-// one message tapped, at once, held or not; the limit rejects it; it goes
-// back to the queue like any other rejected send, and nothing else is sent.
-func TestSendNowDuringALimitSendsOneAndARejectionComesBack(t *testing.T) {
+// TestSendNowDuringALimitSendsOneAndItsBounceIsFailed: the override sends the
+// one message tapped, at once; the limit refuses it; it is marked failed like
+// any bounced send, and nothing else is sent.
+func TestSendNowDuringALimitSendsOneAndItsBounceIsFailed(t *testing.T) {
 	s, _ := pgStore(t)
 	t0 := time.Now().Truncate(time.Second)
 	c := &clock{t: t0}
 	l := newCLI(c, t0.Add(-time.Hour), limited(t0.Add(time.Hour)))
-	l.st.TurnError = limitErr(t0.Add(time.Hour), mirror.PromptDigest("earlier, by hand"))
+	l.st.TurnError = limitErr(t0.Add(time.Hour), true) // the session hit its limit already
 	d := limitDispatcher(s, l, c)
 	a := mustEnqueue(t, s, 2, mirrorItem("a"))
 	b := mustEnqueue(t, s, 2, mirrorItem("b"))
@@ -311,16 +363,14 @@ func TestSendNowDuringALimitSendsOneAndARejectionComesBack(t *testing.T) {
 		tick(t, d)
 	}
 	wantSent(t, l.fakeTarget, "one Send now under the limit", "b")
-	if r := row(t, s, b.ID); r.State != Queued || r.Returns != 1 {
-		t.Fatalf("the sent-now message: %s returns %d; want returned to the queue", r.State, r.Returns)
-	}
+	wantBounced(t, s, b.ID)
 	if r := row(t, s, a.ID); r.State != Queued {
 		t.Fatalf("a: %s; want still queued", r.State)
 	}
 }
 
 // TestRecentSentIsEachTargetsLatestClaimOnly: a target whose latest claimed
-// message FAILED has nothing to return, though an older one was sent; a send
+// message FAILED has nothing to check, though an older one was sent; a send
 // older than the window is not read.
 func TestRecentSentIsEachTargetsLatestClaimOnly(t *testing.T) {
 	s, _ := pgStore(t)

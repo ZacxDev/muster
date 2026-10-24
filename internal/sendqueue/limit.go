@@ -23,22 +23,24 @@ import (
 //     shows the limit has lifted (the host then reports no TurnError) or the
 //     owner taps Send now. A real answer lifts it at once, reset or not.
 //
-//   - A MESSAGE THE LIMIT REJECTED GOES BACK TO THE HEAD (returnRejected),
-//     marked returned and not counted as sent — but ONLY when the transcript
-//     shows it was rejected rather than processed: the window's latest turn
-//     ended in the limit, AFTER this paste (a status newer than the one it was
-//     pasted on), and the prompt that turn answered is this message's text
-//     (TurnError.Prompt, set by the host only when the limit was the prompt's
-//     ONLY reply — no tool ran, nothing was written). A limit that hit
-//     mid-turn means the message was processed: it stays sent. Anything the
-//     host cannot show stays sent too. A double send is the worse failure.
+//   - THE ONE MESSAGE THE LIMIT BOUNCED IS MARKED FAILED (rejectBounced), with
+//     RejectedLimitDetail and the row's ordinary Retry — by hand, the
+//     operator's decision; nothing re-sends it on its own. Only when the window
+//     shows it was this send the limit refused: the latest turn ended in the
+//     limit AFTER this paste (a status newer than the one it was pasted on),
+//     nothing was pasted through muster since (Pasted), and the limit was that
+//     turn's ONLY reply (TurnError.Rejected: no tool ran, nothing was written).
+//     A limit that hit mid-turn means the message was processed: it stays
+//     sent. A Retry by hand of a message that was in fact processed would run
+//     it twice, so anything the window cannot show stays sent.
 //
 //   - A CIRCUIT BREAKER HOLDS ANY OTHER IMMEDIATE-FAILURE LOOP: when the
 //     latest BreakerAfter turns each ended within mirror.QuickTurnMS of their
 //     prompt in an error the CLI wrote itself ("Not logged in", an API error),
-//     the queue holds, saying so, until a real answer or a Send now.
-//     Those messages are NOT returned: they were not a limit, and an error
-//     the CLI names may have been processed in part.
+//     the queue holds, saying so, and lifts by itself after a back-off
+//     (BreakerBackoff: 1, 2, 5, then every 15 minutes) counted from when muster
+//     first saw that failure. Each message it lets through that fails at once
+//     too counts one more and backs off further; a real answer resets it.
 //
 // Send now is the override throughout: it bypasses Decide and sends exactly
 // the one message it was tapped on (Dispatcher.SendNow).
@@ -51,45 +53,51 @@ const (
 	// BreakerAfter is how many turns in a row must each fail at once before
 	// the breaker holds the queue.
 	BreakerAfter = 2
-	// ReturnWithin is how long after its claim a sent message may still be
-	// found rejected and returned: a limit's rejection is written within a
-	// second or two, and the host reports it within a refresh.
-	ReturnWithin = 10 * time.Minute
+	// BounceWithin is how long after its claim a sent message may still be
+	// found bounced: a limit's rejection is written within a second or two,
+	// and the host reports it within a refresh.
+	BounceWithin = 10 * time.Minute
 )
 
-// What a held queue says (Decision.Why).
+// BreakerBackoff is how long the breaker holds: the first trip (BreakerAfter
+// quick failures in a row) for the first entry, each further quick failure the
+// next, the last repeating. Counted on muster's clock from when muster first
+// saw the failing turn's status (AgentState.Observed), never the host's.
+var BreakerBackoff = []time.Duration{time.Minute, 2 * time.Minute, 5 * time.Minute, 15 * time.Minute}
+
+// What a held queue says (Decision.Why). The time it resumes, when there is
+// one, is Decision.ResumeAt — drawn after these words in the READER's zone
+// (internal/ui), never in the server's.
 const (
+	// LimitHeldText: a usage limit that names its reset.
+	LimitHeldText = "Held — usage limit, resumes"
 	// LimitHeldNoReset: a usage limit that names no reset time this can place.
 	LimitHeldNoReset = "Held — usage limit; no reset time given. Resumes once Claude Code answers a message, or tap Send now."
-	// ReturnedLimitDetail is the detail of a message returned to the queue
-	// because a usage limit rejected it unprocessed.
-	ReturnedLimitDetail = "returned: usage limit"
+	// RejectedLimitDetail is the detail of a sent message a usage limit
+	// bounced, marked failed (Reject).
+	RejectedLimitDetail = "Rejected: usage limit — Claude Code refused it before working on it. Retry it once the limit resets."
 )
 
-// LimitHeldPrefix is what a queue held by a usage limit that names its reset
-// says before the time (internal/ui draws the same words, the time as a
-// <time> in the reader's own zone).
-const LimitHeldPrefix = "Held — usage limit, resumes "
-
-// LimitHeldText is what a queue held by a usage limit that resets at
-// resume says, in loc's time.
-func LimitHeldText(resume time.Time, loc *time.Location) string {
-	return LimitHeldPrefix + resume.In(loc).Format("3:04 PM")
-}
-
-// BreakerHeldText is what a queue the circuit breaker holds says.
+// BreakerHeldText is what a queue the circuit breaker holds says, before the
+// time it retries.
 func BreakerHeldText(e *mirror.TurnError) string {
-	return fmt.Sprintf("Held — the last %d messages each failed at once (%s). Resumes once Claude Code answers a message, or tap Send now.",
-		e.Quick, strings.ReplaceAll(e.Kind, "_", " "))
+	return fmt.Sprintf("Held — the last %d messages each failed at once (%s); retries at", e.Quick, strings.ReplaceAll(e.Kind, "_", " "))
 }
 
-// holdFor is the hold the target's latest turn error puts on its queue at
-// now: a usage limit until it resets (plus LimitMargin), or until a real
-// answer when it names no reset; the breaker on BreakerAfter quick failures in
-// a row. false: no hold — no error, a limit that has reset, or fewer quick
-// failures. A limit that has reset is NOT then held by the breaker: the limit
-// turns it counted were the limit's.
-func holdFor(e *mirror.TurnError, now time.Time) (Decision, bool) {
+// breakerBackoff is the breaker's hold for quick failures in a row.
+func breakerBackoff(quick int) time.Duration {
+	return BreakerBackoff[min(max(quick-BreakerAfter, 0), len(BreakerBackoff)-1)]
+}
+
+// holdFor is the hold st's latest turn error puts on its queue at now: a
+// usage limit until it resets (plus LimitMargin), or until a real answer when
+// it names no reset; the breaker on BreakerAfter quick failures in a row,
+// until its back-off has run from st.Observed. false: no hold — no error, a
+// limit that has reset, a back-off that has run, or fewer quick failures. A
+// limit that has reset is NOT then held by the breaker: the quick turns it
+// counted were the limit's.
+func holdFor(st AgentState, now time.Time) (Decision, bool) {
+	e := st.TurnError
 	switch {
 	case e == nil:
 		return Decision{}, false
@@ -98,32 +106,34 @@ func holdFor(e *mirror.TurnError, now time.Time) (Decision, bool) {
 	case e.Kind == mirror.TurnErrorLimit:
 		reset := time.UnixMilli(e.ResetsAt)
 		if now.Before(reset.Add(LimitMargin)) {
-			return Decision{Why: LimitHeldText(reset, time.Local), Held: true, ResumeAt: reset}, true
+			return Decision{Why: LimitHeldText, Held: true, ResumeAt: reset}, true
 		}
 		return Decision{}, false
 	case e.Quick >= BreakerAfter:
-		return Decision{Why: BreakerHeldText(e), Held: true}, true
+		retry := st.Observed.Add(breakerBackoff(e.Quick))
+		if now.Before(retry) {
+			return Decision{Why: BreakerHeldText(e), Held: true, ResumeAt: retry}, true
+		}
 	}
 	return Decision{}, false
 }
 
-// Rejected reports whether sent message it was REJECTED unprocessed by a
-// usage limit, as st shows its window now (see the file header): idle, on a
-// status newer than the one it was pasted on, the latest turn ended in a usage
-// limit, and that turn's prompt — the limit its only reply — is it's text.
-func Rejected(it Item, st AgentState) bool {
+// Bounced reports whether sent message it was REFUSED by a usage limit before
+// Claude Code worked on it, as st shows its window now (see the file header):
+// idle, on a status newer than the one it was pasted on, nothing pasted
+// through muster since, and the latest turn ended in a usage limit that was
+// its prompt's only reply.
+func Bounced(it Item, st AgentState) bool {
 	e := st.TurnError
-	// (A digest is never "", so a turn that named no prompt never matches.)
-	return it.State == Sent && st.Idle && st.Since > it.AfterSince && e != nil && e.Kind == mirror.TurnErrorLimit &&
-		e.Prompt == mirror.PromptDigest(it.Body)
+	return it.State == Sent && st.Idle && st.Since > it.AfterSince && st.Pasted <= it.AfterSince &&
+		e != nil && e.Kind == mirror.TurnErrorLimit && e.Rejected
 }
 
-// returnRejected puts back at the head of its queue every message sent in the
-// last ReturnWithin that a usage limit rejected unprocessed (Rejected), as
-// queued, marked returned (ReturnedLimitDetail) and not counted as sent. A
-// row is returned at most once per send: Return moves only a row still sent.
-func (d *Dispatcher) returnRejected(ctx context.Context) {
-	items, err := d.Store.RecentSent(ctx, d.now().Add(-ReturnWithin))
+// rejectBounced marks failed (Reject, RejectedLimitDetail) every message sent
+// in the last BounceWithin that a usage limit bounced (Bounced). A row is
+// rejected at most once: Reject moves only a row still sent.
+func (d *Dispatcher) rejectBounced(ctx context.Context) {
+	items, err := d.Store.RecentSent(ctx, d.now().Add(-BounceWithin))
 	if err != nil {
 		d.logf("sendqueue: %v", err)
 		return
@@ -132,17 +142,16 @@ func (d *Dispatcher) returnRejected(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		st := d.Probe(d.AsOwner(ctx, it.Owner), Head{Item: it})
-		if !Rejected(it, st) {
+		if !Bounced(it, d.Probe(d.AsOwner(ctx, it.Owner), Head{Item: it})) {
 			continue
 		}
-		ok, err := d.Store.Return(ctx, it.ID, ReturnedLimitDetail)
+		ok, err := d.Store.Reject(ctx, it.ID, RejectedLimitDetail)
 		switch {
 		case err != nil:
-			d.logf("sendqueue: return message %d (%s): %v", it.ID, it.Target, err)
+			d.logf("sendqueue: reject message %d (%s): %v", it.ID, it.Target, err)
 		case ok:
-			d.logf("sendqueue: message %d (%d bytes) to %s (owner %d) was rejected by a usage limit before Claude Code processed it; "+
-				"returned to the head of the queue, not counted as sent", it.ID, len(it.Body), it.Target, it.Owner)
+			d.logf("sendqueue: message %d (%d bytes) to %s (owner %d) was refused by a usage limit before Claude Code worked on it; "+
+				"marked failed for a Retry by hand", it.ID, len(it.Body), it.Target, it.Owner)
 		}
 	}
 }

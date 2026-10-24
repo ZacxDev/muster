@@ -64,61 +64,61 @@ func TestTurnEndOf(t *testing.T) {
 		lines []string
 		want  *mirror.TurnError
 	}{
-		{"a prompt rejected at once by a usage limit: the limit, its reset, the prompt, one quick turn",
+		{"a prompt rejected at once by a usage limit: the limit, its reset, rejected, one quick turn",
 			[]string{tePrompt(0, "earlier"), teReply(time.Second, "done"), tePrompt(time.Minute, "  queued one\n"), teLimit(time.Minute + 500*time.Millisecond)},
 			&mirror.TurnError{Kind: mirror.TurnErrorLimit, At: at(time.Minute + 500*time.Millisecond), ResetsAt: reset,
-				Prompt: mirror.PromptDigest("queued one"), Quick: 1}},
+				Rejected: true, Quick: 1}},
 		{"a prompt answered for real: none",
 			[]string{tePrompt(0, "hi"), teLimit(time.Second), tePrompt(time.Minute, "again"), teReply(time.Minute+3*time.Second, "hello")},
 			nil},
 		{"a prompt whose turn has not ended (the newest message is the prompt): none",
 			[]string{tePrompt(0, "hi"), teLimit(time.Second), tePrompt(time.Minute, "again")},
 			nil},
-		{"the limit hit MID-TURN, after a tool ran: the limit, but no prompt — it was processed — and not quick",
+		{"the limit hit MID-TURN, after a tool ran: the limit, not rejected — it was processed — and not quick",
 			[]string{tePrompt(0, "do work"), teToolCall(time.Second), teToolResult(2 * time.Second), teLimit(3 * time.Second)},
 			&mirror.TurnError{Kind: mirror.TurnErrorLimit, At: at(3 * time.Second), ResetsAt: reset}},
-		{"a limit after a real text reply in the same turn: no prompt",
+		{"a limit after a real text reply in the same turn: not rejected",
 			[]string{tePrompt(0, "do work"), teReply(time.Second, "on it"), teLimit(2 * time.Second)},
 			&mirror.TurnError{Kind: mirror.TurnErrorLimit, At: at(2 * time.Second), ResetsAt: reset}},
-		{"three prompts each failed at once by Not logged in: quick 3, the newest prompt",
+		{"three prompts each failed at once by Not logged in: quick 3, rejected",
 			[]string{tePrompt(0, "x"), teReply(time.Second, "ok"),
 				tePrompt(time.Minute, "a"), teError(time.Minute+300*time.Millisecond, "authentication_failed", "Not logged in · Please run /login", ""),
 				tePrompt(2*time.Minute, "b"), teError(2*time.Minute+300*time.Millisecond, "authentication_failed", "Not logged in · Please run /login", ""),
 				tePrompt(3*time.Minute, "c"), teError(3*time.Minute+300*time.Millisecond, "authentication_failed", "Not logged in · Please run /login", "")},
-			&mirror.TurnError{Kind: "authentication_failed", At: at(3*time.Minute + 300*time.Millisecond), Prompt: mirror.PromptDigest("c"), Quick: 3}},
+			&mirror.TurnError{Kind: "authentication_failed", At: at(3*time.Minute + 300*time.Millisecond), Rejected: true, Quick: 3}},
 		{"an error that took longer than QuickTurnMS: named, not quick",
 			[]string{tePrompt(0, "slow"), teError(30*time.Second, "server_error", "API Error: Request timeout", "")},
-			&mirror.TurnError{Kind: "server_error", At: at(30 * time.Second), Prompt: mirror.PromptDigest("slow")}},
+			&mirror.TurnError{Kind: "server_error", At: at(30 * time.Second), Rejected: true}},
 		{"the count stops at the first turn that was not a quick failure (an older quick one is not counted)",
 			[]string{tePrompt(-time.Hour, "z"), teLimit(-time.Hour + time.Second),
 				tePrompt(0, "a"), teError(20*time.Second, "server_error", "API Error", ""),
 				tePrompt(time.Minute, "b"), teLimit(time.Minute + time.Second),
 				tePrompt(2*time.Minute, "c"), teLimit(2*time.Minute + time.Second)},
-			&mirror.TurnError{Kind: mirror.TurnErrorLimit, At: at(2*time.Minute + time.Second), ResetsAt: reset, Prompt: mirror.PromptDigest("c"), Quick: 2}},
+			&mirror.TurnError{Kind: mirror.TurnErrorLimit, At: at(2*time.Minute + time.Second), ResetsAt: reset, Rejected: true, Quick: 2}},
 		{"a resumed session's meta prompt and 'No response requested.' after the limit are passed over",
 			[]string{tePrompt(0, "q"), teLimit(time.Second),
 				`{"type":"user","isMeta":true,"timestamp":"` + stamp(time.Hour) + `","message":{"content":"Continue from where you left off."}}`,
 				teError(time.Hour+time.Second, "", "No response requested.", "")},
-			&mirror.TurnError{Kind: mirror.TurnErrorLimit, At: at(time.Second), ResetsAt: reset, Prompt: mirror.PromptDigest("q"), Quick: 1}},
+			&mirror.TurnError{Kind: mirror.TurnErrorLimit, At: at(time.Second), ResetsAt: reset, Rejected: true, Quick: 1}},
 		{"the count stops at a real reply, even one with no prompt of its own (a resumed session's answer to its meta prompt)",
 			[]string{tePrompt(0, "z"), teLimit(time.Second),
 				`{"type":"user","isMeta":true,"timestamp":"` + stamp(time.Hour) + `","message":{"content":"Continue from where you left off."}}`,
 				teReply(time.Hour+time.Second, "continuing"),
 				tePrompt(2*time.Hour, "q"), teLimit(2*time.Hour + time.Second)},
-			&mirror.TurnError{Kind: mirror.TurnErrorLimit, At: at(2*time.Hour + time.Second), ResetsAt: reset, Prompt: mirror.PromptDigest("q"), Quick: 1}},
+			&mirror.TurnError{Kind: mirror.TurnErrorLimit, At: at(2*time.Hour + time.Second), ResetsAt: reset, Rejected: true, Quick: 1}},
 		{"a subagent's error is not the session's turn",
 			[]string{tePrompt(0, "q"), teReply(time.Second, "fine"),
 				strings.Replace(teLimit(2*time.Second), `{"type":"assistant"`, `{"type":"assistant","isSidechain":true`, 1)},
 			nil},
 		{"the CLI retrying within one turn: still one turn",
 			[]string{tePrompt(0, "q"), teError(time.Second, "server_error", "API Error: 529", ""), teError(2*time.Second, "server_error", "API Error: 529", "")},
-			&mirror.TurnError{Kind: "server_error", At: at(2 * time.Second), Prompt: mirror.PromptDigest("q"), Quick: 1}},
+			&mirror.TurnError{Kind: "server_error", At: at(2 * time.Second), Rejected: true, Quick: 1}},
 		{"a limit record carrying quotaLimits.resetsAt: that reset",
 			[]string{tePrompt(0, "q"), teError(time.Second, "rate_limit", limitMsg, `,"quotaLimits":{"status":"rejected","resetsAt":1792000000}`)},
-			&mirror.TurnError{Kind: mirror.TurnErrorLimit, At: at(time.Second), ResetsAt: 1792000000_000, Prompt: mirror.PromptDigest("q"), Quick: 1}},
+			&mirror.TurnError{Kind: mirror.TurnErrorLimit, At: at(time.Second), ResetsAt: 1792000000_000, Rejected: true, Quick: 1}},
 		{"a 429 that does not say a limit was hit is an error, not a usage limit",
 			[]string{tePrompt(0, "q"), teError(time.Second, "rate_limit", "API Error: Request rate limited", "")},
-			&mirror.TurnError{Kind: "rate_limit", At: at(time.Second), Prompt: mirror.PromptDigest("q"), Quick: 1}},
+			&mirror.TurnError{Kind: "rate_limit", At: at(time.Second), Rejected: true, Quick: 1}},
 		{"no messages at all: none", []string{`{"type":"system","subtype":"turn_duration"}`}, nil},
 	}
 	for _, c := range cases {
@@ -142,8 +142,8 @@ func TestTurnEndOfReadsAcrossChunkBoundaries(t *testing.T) {
 	}
 	lines = append(lines, teLimit(time.Second))
 	got := turnEndOf(t, lines...)
-	if got == nil || got.Prompt != mirror.PromptDigest("far back") || got.Quick != 1 {
-		t.Fatalf("TurnEndOf = %+v; want the limit naming the prompt %d bytes back", got, 3*lastMsgChunk)
+	if got == nil || !got.Rejected || got.Quick != 1 {
+		t.Fatalf("TurnEndOf = %+v; want the limit, rejected, its prompt %d bytes back", got, 3*lastMsgChunk)
 	}
 }
 

@@ -15,7 +15,7 @@ import (
 // read here, on the host, from the session's own transcript: whether it ended
 // in a record Claude Code wrote ITSELF to say it got no answer — a usage
 // limit, "Not logged in", an API error (cctranscript.ErrorEndOf) — and, if so,
-// whether the prompt it answered got no real reply at all (TurnError.Prompt)
+// whether the prompt it answered got no real reply at all (TurnError.Rejected)
 // and how many such turns in a row each failed at once (TurnError.Quick).
 //
 // The turn is read BACKWARDS from the transcript's end, main conversation only
@@ -29,8 +29,8 @@ import (
 //     error, and the window carries none;
 //   - an error record starts the turn; walking back to its prompt, a real
 //     assistant record or a tool result on the way means the turn did work
-//     first (the limit hit mid-turn), so its prompt WAS processed and is not
-//     named;
+//     first (the limit hit mid-turn), so its prompt WAS processed and the
+//     turn is not Rejected;
 //   - a turn whose prompt got only the error, within mirror.QuickTurnMS,
 //     counts toward Quick, and the walk goes on to the turn before it; the
 //     first turn that is not one ends the count.
@@ -107,7 +107,7 @@ func (s *turnScan) line(line []byte) bool {
 		if rec.IsMeta || rec.IsCompactSummary {
 			return true
 		}
-		text, isPrompt := rec.PromptText()
+		_, isPrompt := rec.PromptText()
 		if !isPrompt {
 			if s.inTurn {
 				s.worked = true // a tool ran
@@ -122,7 +122,7 @@ func (s *turnScan) line(line []byte) bool {
 		}
 		s.inTurn = false
 		if !s.counted && !s.worked {
-			s.res.Prompt = mirror.PromptDigest(text)
+			s.res.Rejected = true
 		}
 		s.counted = true
 		at := rec.Time()

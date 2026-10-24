@@ -135,10 +135,6 @@ type SendQueueItem struct {
 	HoldLapsed bool
 	// Edited: its text was changed by a saved edit.
 	Edited bool
-	// Returned: it was sent, a usage limit rejected it before Claude Code
-	// processed it, and it went back to the head of the queue, not counted as
-	// sent (sendqueue.Return).
-	Returned bool
 	// HeldElsewhere: this page asked for the row open, but its hold is not the
 	// one this page's Edit was given — another device took the edit over.
 	HeldElsewhere bool
@@ -152,9 +148,6 @@ type SendQueueItem struct {
 
 // What a held, a lapsed and an edited message say under their preview.
 const (
-	// SendQueueReturnedText is what a message a usage limit rejected, and the
-	// queue took back, says under its preview.
-	SendQueueReturnedText      = "Returned: usage limit — Claude Code rejected it before processing it, so it was not counted as sent. It is sent again when the queue resumes."
 	SendQueueHeldText          = "Being edited: held, and nothing queued for this window is sent until the edit is saved or cancelled."
 	SendQueueHeldElsewhereText = "Being edited on another device: held, and nothing queued for this window is sent until that edit is saved or cancelled. Edit it here to take it over."
 	SendQueueLapsedText        = "An edit was not saved in time, so its hold ran out and the message kept its original text."
@@ -192,9 +185,10 @@ type SendQueueListView struct {
 	// limit, or the circuit breaker (sendqueue.Decision.Held). Waiting says
 	// why; Send now still sends one.
 	Held bool
-	// ResumeAt is a usage limit's reset time, when it names one: drawn in the
-	// reader's own local time (a <time data-clock>, which the list's script
-	// formats; Waiting's server-side time is the fallback without script).
+	// ResumeAt is when a held queue resumes — a usage limit's reset, the
+	// breaker's next retry — zero when it names none. Drawn after Waiting in
+	// the READER's zone (a <time data-clock> the list's script formats); the
+	// server, which does not know that zone, draws it in UTC, saying so.
 	ResumeAt time.Time
 	// Error is why the list could not be read.
 	Error string
@@ -274,8 +268,6 @@ func SendQueueList(v SendQueueListView) g.Node {
 					Class("text-[11px] font-semibold text-st-warning-fg [overflow-wrap:anywhere]"), g.Text(SendQueueHeldElsewhereText))),
 				g.If(it.HoldLapsed && !it.Held, P(g.Attr("data-queue-lapsed", ""), Class("text-[11px] font-semibold text-st-warning-fg [overflow-wrap:anywhere]"),
 					g.Text(SendQueueLapsedText))),
-				g.If(it.Returned, P(g.Attr("data-queue-returned", ""), Class("text-[11px] font-semibold text-st-warning-fg [overflow-wrap:anywhere]"),
-					g.Text(SendQueueReturnedText))),
 				g.If(it.Edited && it.State == "queued" && !it.Held && !it.HoldLapsed,
 					P(g.Attr("data-queue-edited", ""), Class("text-[11px] text-muted"), g.Text(SendQueueEditedText))),
 			),
@@ -312,26 +304,24 @@ func SendQueueList(v SendQueueListView) g.Node {
 // that hit the limit is not the reader's input, so any shift counts against
 // the page (e2e send-queue: "going from working to held … moves nothing").
 //
-// Held, it says so in its own words — "Held — usage limit, resumes 10:30 PM",
-// the time in the reader's local time (a <time data-clock> the list's script
-// formats; the server's rendering is what is shown without script).
+// Held, it says so in the queue's own words (Waiting: "Held — usage limit,
+// resumes") and then the time it resumes, if any, in the READER's zone — "10:30
+// PM" — through a <time data-clock> the list's script formats. Without script
+// the server, which cannot know that zone, draws the time in UTC and says so.
+//
+// The line is drawn only while something is queued (Waiting is set only for a
+// head), so an idle composer with an empty queue reserves nothing.
 func sendQueueWaiting(v SendQueueListView) g.Node {
 	cls := "min-h-[2lh] text-[11px] [overflow-wrap:anywhere]"
-	switch {
-	case v.Held && !v.ResumeAt.IsZero():
-		return P(ID("mv-queue-waiting"), g.Attr("data-queue-hold", "limit"), Class(cls+" font-semibold text-st-warning-fg"),
-			g.Text(SendQueueLimitHeldPrefix),
-			g.El("time", g.Attr("data-clock", strconv.FormatInt(v.ResumeAt.UnixMilli(), 10)),
-				g.Attr("datetime", v.ResumeAt.UTC().Format(time.RFC3339)), g.Text(v.ResumeAt.Format("3:04 PM"))))
-	case v.Held:
-		return P(ID("mv-queue-waiting"), g.Attr("data-queue-hold", ""), Class(cls+" font-semibold text-st-warning-fg"), g.Text(v.Waiting))
+	if !v.Held {
+		return P(ID("mv-queue-waiting"), Class(cls+" text-muted"), g.Text("Next: "+v.Waiting))
 	}
-	return P(ID("mv-queue-waiting"), Class(cls+" text-muted"), g.Text("Next: "+v.Waiting))
+	return P(ID("mv-queue-waiting"), g.Attr("data-queue-hold", ""), Class(cls+" font-semibold text-st-warning-fg"),
+		g.Text(v.Waiting),
+		g.If(!v.ResumeAt.IsZero(), g.Group([]g.Node{g.Text(" "),
+			g.El("time", g.Attr("data-clock", strconv.FormatInt(v.ResumeAt.UnixMilli(), 10)),
+				g.Attr("datetime", v.ResumeAt.UTC().Format(time.RFC3339)), g.Text(v.ResumeAt.UTC().Format("15:04")+" UTC"))})))
 }
-
-// SendQueueLimitHeldPrefix is what a queue held by a usage limit that names
-// its reset says before the time.
-const SendQueueLimitHeldPrefix = "Held — usage limit, resumes "
 
 // The labels of a queued message's ⋯ menu.
 const (

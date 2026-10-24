@@ -1127,16 +1127,16 @@ for (const vp of [
   });
 }
 
-// 🔴 A USAGE LIMIT HOLDS THE QUEUE (internal/sendqueue limit.go). The operator's
-// report: "when a session hits its limit, all the queued messages send
-// immediately". Claude Code under a limit rejects each message at once with a
+// 🔴 A USAGE LIMIT HOLDS THE QUEUE (internal/sendqueue limit.go). The bug: a
+// session hit its usage limit and the queue sent every message it held into
+// that limit. Claude Code under a limit rejects each message at once with a
 // record it writes itself ("You've hit your session limit · resets …", model
 // "<synthetic>") and goes back to its prompt — idle, with a newer time, which is
 // all the queue waited for. The fake CLI below plays exactly that against the
 // real host's transcript reader: every message pasted gets the limit as its
 // only reply and the status goes idle. On origin/main the queue then drains —
 // all three pasted, one per idle stretch — so the first test fails at its
-// holdWindow() assertion.
+// "nothing more is sent into it" assertion.
 test.describe('a usage limit, phone 390×844 touch', () => {
   test.use({ ...phone, storageState: { cookies: [], origins: [] } });
 
@@ -1192,7 +1192,7 @@ test.describe('a usage limit, phone 390×844 touch', () => {
     setStatus('idle');
   }
 
-  test('a usage limit holds the queue instead of draining it, returns the rejected message to the head, and a real answer resumes it', async ({ page }) => {
+  test('a usage limit holds the queue instead of draining it, fails the bounced message for a Retry by hand, and a real answer resumes the rest', async ({ page }) => {
     await busyAndSeen();
     fs.rmSync(tr + '.pasted', { force: true });
     await openView(page, newHost);
@@ -1221,23 +1221,28 @@ test.describe('a usage limit, phone 390×844 touch', () => {
       await holdWindow();
       await holdWindow();
       expect(pasted(), 'nothing else is sent into the limit').toEqual([`${pane} ${a}`]);
-      // The rejected message is back at the head, marked, not counted as sent.
-      await expect(rowIn(page, a, 'queued').locator('[data-queue-returned]'), 'returned: usage limit').toHaveCount(1, { timeout: 20_000 });
-      await expect(rows(page).first()).toContainText(a);
+      // The bounced message is failed, saying why, with a plain Retry (no
+      // "may already have been sent" question: the limit refused it).
+      const bounced = rowIn(page, a, 'failed');
+      await expect(bounced, 'the bounced message is failed').toHaveCount(1, { timeout: 20_000 });
+      await expect(bounced).toContainText('Rejected: usage limit');
+      await expect(bounced.getByRole('button', { name: 'Queue this failed message again' })).toBeVisible();
       await expect(rowIn(page, b, 'queued')).toHaveCount(1);
       await expect(rowIn(page, c, 'queued')).toHaveCount(1);
     } finally {
       stop();
     }
     // A real answer (to a message typed by hand) shows the limit has lifted:
-    // the queue resumes at once, the returned message first, one per turn.
+    // the queue resumes at once, one per turn — and the bounced message is
+    // not among them: only its Retry sends it again.
     answered('the limit has lifted');
-    await expect.poll(pasted, { message: `the returned message is sent again (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${a}`, `${pane} ${a}`]);
-    answered('answered ' + a);
-    await expect.poll(pasted, { timeout: 30_000 }).toEqual([`${pane} ${a}`, `${pane} ${a}`, `${pane} ${b}`]);
+    await expect.poll(pasted, { message: `the next message is sent (log:\n${mirrorLog})`, timeout: 30_000 }).toEqual([`${pane} ${a}`, `${pane} ${b}`]);
     answered('answered ' + b);
-    await expect.poll(pasted, { timeout: 30_000 }).toEqual([`${pane} ${a}`, `${pane} ${a}`, `${pane} ${b}`, `${pane} ${c}`]);
+    await expect.poll(pasted, { timeout: 30_000 }).toEqual([`${pane} ${a}`, `${pane} ${b}`, `${pane} ${c}`]);
     answered('answered ' + c);
+    await holdWindow();
+    expect(pasted(), 'the bounced message is not re-sent on its own').toEqual([`${pane} ${a}`, `${pane} ${b}`, `${pane} ${c}`]);
+    await expect(rowIn(page, a, 'failed')).toHaveCount(1);
     await busyAndSeen();
   });
 

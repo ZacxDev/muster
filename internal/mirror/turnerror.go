@@ -1,11 +1,8 @@
 package mirror
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"regexp"
 	"sort"
-	"strings"
 )
 
 // A TURN THAT ENDED IN AN ERROR (Window.TurnError): the host's reading of an
@@ -20,15 +17,16 @@ import (
 // time — exactly what a turn that was answered looks like. Without this the
 // queue sent the next message into the same wall, and the next, until the
 // queue was empty: every message consumed by a limit and lost
-// (internal/sendqueue's Decide holds on it now).
+// (internal/sendqueue's Decide holds on it now, and marks the one message the
+// limit bounced failed, for a Retry by hand).
 //
 // 🔴 BACKWARD-COMPATIBLE BOTH WAYS, like Pending: an older muster ignores it;
 // an older host never sends it, and its windows' queues behave as they did.
 //
 // ⚠ SIZE: it rides the window list, ONE message within MaxFrame
 // (TestTheLargestWindowListFitsOneFrame). So it carries no text — a kind, two
-// times, a count and a digest, every field a closed alphabet that JSON writes
-// as itself — and at most MaxTurnErrorWindows windows of a list carry one.
+// times, a flag and a count, every field a closed alphabet that JSON writes as
+// itself — and at most MaxTurnErrorWindows windows of a list carry one.
 type TurnError struct {
 	// Kind is TurnErrorLimit for a usage limit, else the record's own error
 	// code ("authentication_failed", "server_error", …: ValidTurnErrorKind),
@@ -41,14 +39,12 @@ type TurnError struct {
 	// limit itself names (cctranscript.LimitReset), compared with muster's
 	// clock. 0 when it names none, and for every other kind.
 	ResetsAt int64 `json:"resetsAt,omitempty"`
-	// Prompt is PromptDigest of the prompt the turn answered, set ONLY when
-	// that prompt got no real answer at all — the error is the turn's only
-	// reply, no tool ran, nothing was written. It is how the queue knows a
-	// message it sent was REJECTED rather than processed, and so may go back
-	// to the queue without being sent twice. "" when any real reply came
-	// first (the limit hit mid-turn: the message was processed) or no prompt
-	// was found.
-	Prompt string `json:"prompt,omitempty"`
+	// Rejected: the prompt this turn answered got NO real reply at all — the
+	// error is the turn's only reply, no tool ran, nothing was written. False
+	// when any real reply came first (the limit hit mid-turn: the prompt was
+	// processed) or no prompt was found. The send queue marks a message it
+	// sent failed ("Rejected: usage limit") only on a turn that says this.
+	Rejected bool `json:"rejected,omitempty"`
 	// Quick counts the latest turns, this one first, that EACH ended in such a
 	// record within QuickTurnMS of their prompt with no real reply between:
 	// the send queue's circuit breaker. 0 when this turn was not one.
@@ -81,22 +77,9 @@ var turnErrorKind = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 // ValidTurnErrorKind reports whether s is a kind the wire carries.
 func ValidTurnErrorKind(s string) bool { return turnErrorKind.MatchString(s) }
 
-var promptDigest = regexp.MustCompile(`^[0-9a-f]{16}$`)
-
-// PromptDigest is what names a prompt's text on the wire (TurnError.Prompt):
-// the first 8 bytes of the SHA-256 of the text with its surrounding
-// whitespace trimmed and CRLF read as LF — the host digests the prompt as the
-// transcript holds it, muster the message it sent, and the two must agree on
-// what was pasted however the terminal carried the line ends.
-func PromptDigest(text string) string {
-	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
-	sum := sha256.Sum256([]byte(text))
-	return hex.EncodeToString(sum[:8])
-}
-
 // CleanTurnError is e as the wire carries it: nil for no kind or one the wire
-// does not carry, no negative time, a reset only on a limit, a digest only in
-// its own shape, Quick within its bound.
+// does not carry, no negative time, a reset only on a limit, Quick within its
+// bound.
 func CleanTurnError(e *TurnError) *TurnError {
 	if e == nil || !ValidTurnErrorKind(e.Kind) {
 		return nil
@@ -105,9 +88,6 @@ func CleanTurnError(e *TurnError) *TurnError {
 	out.At = max(out.At, 0)
 	if out.Kind != TurnErrorLimit || out.ResetsAt < 0 {
 		out.ResetsAt = 0
-	}
-	if !promptDigest.MatchString(out.Prompt) {
-		out.Prompt = ""
 	}
 	out.Quick = min(max(out.Quick, 0), MaxTurnErrorQuick)
 	return &out

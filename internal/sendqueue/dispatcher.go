@@ -35,8 +35,9 @@ import (
 // a record Claude Code wrote itself, and the status moves exactly as after an
 // answer. The host reports how the latest turn ended (AgentState.TurnError),
 // and Decide HOLDS on it: a usage limit until its reset plus LimitMargin (or a
-// real answer), BreakerAfter immediate failures in a row until a real answer.
-// A message a limit rejected unprocessed goes back to the head of its queue.
+// real answer), BreakerAfter immediate failures in a row for a back-off that
+// grows with each further one (BreakerBackoff), or until a real answer. The one
+// message a limit bounced is marked failed, for a Retry by hand.
 //
 // 🔴 TWO CLOCKS, NEVER MIXED. Status times are the HOST's clock and are
 // compared only with each other. IdleFor is measured on MUSTER's clock, from
@@ -127,7 +128,7 @@ func Decide(h Head, st AgentState, now time.Time, idleFor time.Duration) Decisio
 		// turn that paste started has not ended yet.
 		return Decision{Why: "waiting for the previous message's turn to start and finish"}
 	}
-	if d, held := holdFor(st.TurnError, now); held {
+	if d, held := holdFor(st, now); held {
 		return d
 	}
 	if idle := now.Sub(st.Observed); idle < idleFor {
@@ -154,7 +155,7 @@ type DispatchStore interface {
 	Finish(ctx context.Context, id int64, by string, o Outcome, now time.Time) error
 	Prune(ctx context.Context, before time.Time) (int, error)
 	RecentSent(ctx context.Context, after time.Time) ([]Item, error)
-	Return(ctx context.Context, id int64, detail string) (bool, error)
+	Reject(ctx context.Context, id int64, detail string) (bool, error)
 }
 
 // Probe reads one head's target's state now. ctx acts as the head's owner.
@@ -312,10 +313,9 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 	} else if n > 0 {
 		d.logf("sendqueue: %d edit hold(s) ran out unsaved; the message(s) keep their original text", n)
 	}
-	// A message the last pass sent that a usage limit rejected unprocessed
-	// goes back to the head of its queue BEFORE the heads are read, so this
-	// pass holds it rather than sending the next one (returnRejected).
-	d.returnRejected(ctx)
+	// A message a usage limit bounced is marked failed, for a Retry by hand
+	// (rejectBounced); the heads behind it are held below (Decide).
+	d.rejectBounced(ctx)
 	heads, err := d.Store.Heads(ctx)
 	if err != nil {
 		return 0, err

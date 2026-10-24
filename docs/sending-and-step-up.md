@@ -99,10 +99,8 @@ dispatched agents and the chief panel have no Queue.
 - **At most 20** messages can wait per window. Finished ones are shown for a
   while and deleted after 7 days, or sooner with their **Delete** (below).
 - **Never twice.** A message is claimed (`queued` → `sending`) before it is sent
-  and never put back once anything may have reached the window, with one
-  exception: a message the transcript shows a usage limit REJECTED before
-  Claude Code processed it (below). (The other way back to `queued` is the
-  Send-wins case above, where nothing was pasted.) The
+  and never put back once anything may have reached the window. (The one way
+  back to `queued` is the Send-wins case above, where nothing was pasted.) The
   claim is a 30-second lease that the sending muster renews while it sends. If
   that muster stops in the middle of a send, the message is marked failed ("may
   or may not have been delivered") once the lease has run out, and is not sent
@@ -142,25 +140,26 @@ itself (model `<synthetic>` with an error flag), muster is told the kind, the
 reset time when the message names one, and whether the prompt it answered got
 any real reply at all. With that:
 
-- **The queue holds.** It shows **Held — usage limit, resumes 10:30 PM**, in
-  your own local time, until the reset time plus one minute; then it sends
-  again. If the limit names no reset time muster can place (no zone), it holds
+- **The queue holds.** It shows **Held — usage limit, resumes 10:30 PM**, the
+  time in your own local time, until the reset time plus one minute; then it
+  sends again. If the limit names no reset time muster can place, it holds
   until Claude Code gives a real answer (for example to a message you send by
-  hand) or you tap **Send now**. A real answer lifts the hold at once, reset
-  time or not. The reset time is the record's own `quotaLimits.resetsAt` when
-  it has one, else the time its text names, read in the zone it names.
-- **A message the limit rejected goes back.** If a queued message was sent
-  and the very next turn was the limit's rejection of that same text, with no
-  reply before it, the message goes back to the head of the queue, marked
-  *Returned: usage limit*, and is not counted as sent. It is sent again when
-  the queue resumes. If the limit hit after Claude Code had started working on
-  the message (a tool ran, a reply was written), the message was processed: it
-  stays sent, and is not sent again. So does any message the transcript cannot
-  show was rejected.
-- **Other immediate failures trip a breaker.** When the last 2 turns each
-  ended within 10 seconds of their prompt in another error Claude Code wrote
-  itself ("Not logged in", an API error), the queue holds, saying so, until a
-  real answer or a **Send now**. Those messages are not returned.
+  hand) or you tap **Send now**. A real answer lifts the hold at once. The reset
+  time is the record's `quotaLimits.resetsAt` when it has one (newer Claude
+  Code), else the time its text names, read in the zone it names.
+- **The message the limit bounced is failed, for a Retry by hand.** If a queued
+  message was sent and the very next turn was the limit's refusal, with no
+  reply before it and nothing else pasted through muster since, that message
+  is marked failed, *Rejected: usage limit*, with its ordinary **Retry**.
+  Nothing re-sends it on its own. If the limit hit after Claude Code had
+  started working on the message (a tool ran, a reply was written), the
+  message was processed: it stays sent.
+- **Other immediate failures trip a breaker that backs off.** When the last 2
+  turns each ended within 10 seconds of their prompt in another error Claude
+  Code wrote itself ("Not logged in", an API error), the queue holds, saying
+  so and when it retries: 1 minute after muster saw the failure, then 2, then
+  5, then every 15 minutes, one message each time. A real answer resets it.
+  Those messages are not marked failed.
 - **Send now** still works while the queue is held, and sends only the one
   message you tapped.
 - A `muster-mirror` that predates this reports nothing about how a turn ended,
