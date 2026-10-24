@@ -178,32 +178,8 @@ func TestPinnedChipLabelsDropTheIndexUnlessTwoWouldReadTheSame(t *testing.T) {
 			pinWin(1, "hosta", "s1", "@2", "mango:2"),
 			pinWin(2, "hosta", "s2", "@3", "vapor:3"),
 		}, []string{"mango:1", "mango:2", "vapor"}},
-		// Two hosts, two icons: the icon tells them apart, so no suffix.
 		{"one label on two hosts", func() []MirrorCardView {
 			a, b := pinWin(0, "hosta", "s1", "@1", "mango:1"), pinWin(1, "hostb", "s1", "@1", "mango:1")
-			a.HostIcon, b.HostIcon = "laptop", "server"
-			a.Qualifier, b.Qualifier = "hosta", "hostb"
-			return []MirrorCardView{a, b}
-		}(), []string{"mango", "mango"}},
-		// THE RULE (operator ask: "the same pretty name is reused across
-		// multiple hosts"): the same codename on two hosts AND twice on one of
-		// them. Across hosts the icon is the difference; within hosta the two
-		// windows draw one icon, so they keep their ":<index>".
-		{"one label on two hosts and twice on one", func() []MirrorCardView {
-			a1, a2 := pinWin(0, "hosta", "s1", "@1", "mango:1"), pinWin(1, "hosta", "s1", "@2", "mango:2")
-			b := pinWin(2, "hostb", "s1", "@1", "mango:1")
-			a1.HostIcon, a2.HostIcon, b.HostIcon = "laptop", "laptop", "server"
-			// What mirror.qualify gives them: only the two "mango:1" share a
-			// title, so only they carry a qualifier.
-			a1.Qualifier, b.Qualifier = "hosta", "hostb"
-			return []MirrorCardView{a1, a2, b}
-		}(), []string{"mango:1", "mango:2", "mango"}},
-		// ⚠ INVARIANT GUARD (main already did this): two hosts that DRAW THE
-		// SAME ICON are not told apart by it, so they keep the suffix and the
-		// qualifier exactly as before.
-		{"one label on two hosts that share an icon", func() []MirrorCardView {
-			a, b := pinWin(0, "hosta", "s1", "@1", "mango:1"), pinWin(1, "hostb", "s1", "@1", "mango:1")
-			a.HostIcon, b.HostIcon = "laptop", "laptop"
 			a.Qualifier, b.Qualifier = "hosta", "hostb"
 			return []MirrorCardView{a, b}
 		}(), []string{"mango:1 · hosta", "mango:1 · hostb"}},
@@ -481,16 +457,41 @@ func TestNoCardDrawsPinnedStateAndAPinnedAgentRendersAsItsChip(t *testing.T) {
 	}
 }
 
-// TestAPinnedAgentAndAWindowOfOneNameAreToldApartByTheirIcons: an agent named
-// "mango" draws the cluster's icon and a window "mango:1" its host's, so both
-// chips read "mango". Red at main: the window's chip read "mango:1".
-func TestAPinnedAgentAndAWindowOfOneNameAreToldApartByTheirIcons(t *testing.T) {
-	w := pinWin(0, "hosta", "s1", "@1", "mango:1")
-	w.HostIcon = "laptop"
-	agents := []AgentCardView{{ID: 7, Name: "mango", Status: "running", Pinned: true, LastActiveAt: time.Now().Add(-10 * time.Minute)}}
-	got := pinnedLabels(t, renderString(t, AgentsCardsWithMirrors(agents, []MirrorCardView{w})))
-	if strings.Join(got, "|") != "mango|mango" {
-		t.Errorf("chip labels = %q, want [mango mango]", got)
+// TestTheSameCodenameOnTwoHostsKeepsItsTextAndShowsItsIcon: the icon is
+// ADDED, the text is not shortened (operator decision "Icon + keep text"). The
+// same codename on two hosts that draw DIFFERENT icons, plus a second window of
+// it on one host, still reads with its suffix and qualifier exactly as without
+// the icon — the labels a surface reusing pinnedChipLabels (the session
+// switcher) shows — and each chip draws its own host's icon. The labels part is
+// an invariant guard (main read the same); the icon part is red at main (no
+// chip drew its icon inside its link).
+func TestTheSameCodenameOnTwoHostsKeepsItsTextAndShowsItsIcon(t *testing.T) {
+	a1, a2 := pinWin(0, "hosta", "s1", "@1", "mango:1"), pinWin(1, "hosta", "s1", "@2", "mango:2")
+	b := pinWin(2, "hostb", "s1", "@1", "mango:1")
+	a1.HostIcon, a2.HostIcon, b.HostIcon = "laptop", "laptop", "server"
+	a1.Qualifier, b.Qualifier = "hosta", "hostb"
+	wins := []MirrorCardView{a1, a2, b}
+	s := renderString(t, AgentsCardsWithMirrors(nil, wins))
+	if got, want := strings.Join(pinnedLabels(t, s), "|"), "mango:1 · hosta|mango:2|mango:1 · hostb"; got != want {
+		t.Errorf("chip labels = %q, want %q", got, want)
+	}
+	arts := pinArticles(t, s)
+	for _, w := range wins {
+		chip := arts[mirrorCardID(w)]
+		if chip == nil {
+			t.Fatalf("no chip for %s/%s", w.Host, w.Window)
+		}
+		links := pinFind(chip, pinHas("data-pinned-chip-link"))
+		if len(links) != 1 {
+			t.Fatalf("%s/%s: %d chip links", w.Host, w.Window, len(links))
+		}
+		icons := pinFind(links[0], pinHas("data-host-icon"))
+		if len(icons) != 1 {
+			t.Fatalf("%s/%s: %d host icons in the chip link, want 1", w.Host, w.Window, len(icons))
+		}
+		if k, _ := pinAttr(icons[0], "data-host-icon"); k != w.HostIcon {
+			t.Errorf("%s/%s: icon %q, want %q", w.Host, w.Window, k, w.HostIcon)
+		}
 	}
 }
 

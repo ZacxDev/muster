@@ -134,3 +134,52 @@ func TestTheQuickKeyBarShowsUpDownReturnLargeAndTheRestInAMenu(t *testing.T) {
 		})
 	}
 }
+
+// TestNoQuickKeyCanVanishFromBothTheBarAndTheMenu: the ⋯ menu is the
+// complement of the large keys, so WHATEVER the large-key list says — a
+// different choice, an ID no key has, an ID twice, nothing at all — the bar
+// still draws every ledgered key exactly once with its bytes, and the large
+// keys are exactly the listed ones that exist. A second hand-kept list for the
+// menu would fail the "a different pick" and "none" cases.
+func TestNoQuickKeyCanVanishFromBothTheBarAndTheMenu(t *testing.T) {
+	saved := quickKeysPrimaryOrder
+	t.Cleanup(func() { quickKeysPrimaryOrder = saved })
+	for name, c := range map[string]struct {
+		order []string
+		large string
+	}{
+		"as shipped":       {saved, "up=1b5b41 down=1b5b42 enter=0d"},
+		"a different pick": {[]string{"esc", "3"}, "esc=1b 3=33"},
+		"an unknown id":    {[]string{"up", "no-such-key"}, "up=1b5b41"},
+		"an id twice":      {[]string{"down", "down"}, "down=1b5b42"},
+		"none":             {nil, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			quickKeysPrimaryOrder = c.order
+			doc := pinParse(t, renderString(t, AgentTerminalPage(AgentTerminalView{Name: "demo-agent"})))
+			bar := termKeyByID(t, doc, "term-keys")
+			var large []string
+			for ch := bar.FirstChild; ch != nil; ch = ch.NextSibling {
+				if _, ok := pinAttr(ch, "data-key"); ch.Type == html.ElementNode && ok {
+					large = append(large, keysIn(ch)...)
+				}
+			}
+			if got := strings.Join(large, " "); got != c.large {
+				t.Errorf("large keys = %q, want %q", got, c.large)
+			}
+			all := keysIn(bar)
+			seen := map[string]int{}
+			for _, kv := range all {
+				seen[kv]++
+			}
+			for id, hex := range quickKeyLedger {
+				if seen[id+"="+hex] != 1 {
+					t.Errorf("key %s=%s drawn %d times, want 1", id, hex, seen[id+"="+hex])
+				}
+			}
+			if len(all) != len(quickKeyLedger) {
+				t.Errorf("%d keys drawn, want %d: %v", len(all), len(quickKeyLedger), all)
+			}
+		})
+	}
+}

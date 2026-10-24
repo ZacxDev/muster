@@ -38,29 +38,21 @@ type QuickKey struct {
 	Label string
 	Aria  string
 	Seq   string // the bytes sent, as typed by a VT100-style terminal
-	// Primary draws the key as one of the bar's large buttons; every other key
-	// is in the bar's "⋯" menu (quickKeyBar).
-	Primary bool
 }
 
 // QuickKeys is the bar, in display order. The sequences are what xterm itself
 // sends for the same keys in normal cursor mode; tmux parses them either way.
 // The digits answer the TUI's numbered permission prompts, and Shift-Tab
 // cycles its permission mode.
-//
-// ↑, ↓ and Return are Primary (operator ask: "show the up and down arrow keys
-// and the return button. As large key buttons, and then collapse the rest into
-// a three dots button context menu"): they are what moving through and
-// answering a TUI's choices takes.
 var QuickKeys = []QuickKey{
 	{ID: "esc", Label: "Esc", Aria: "Escape", Seq: "\x1b"},
 	{ID: "tab", Label: "Tab", Aria: "Tab", Seq: "\t"},
 	{ID: "stab", Label: "⇧Tab", Aria: "Shift Tab", Seq: "\x1b[Z"},
 	{ID: "ctrlc", Label: "^C", Aria: "Control C", Seq: "\x03"},
-	{ID: "enter", Label: "⏎", Aria: "Enter", Seq: "\r", Primary: true},
+	{ID: "enter", Label: "⏎", Aria: "Enter", Seq: "\r"},
 	{ID: "1", Label: "1", Aria: "1", Seq: "1"},
-	{ID: "up", Label: "↑", Aria: "Up arrow", Seq: "\x1b[A", Primary: true},
-	{ID: "down", Label: "↓", Aria: "Down arrow", Seq: "\x1b[B", Primary: true},
+	{ID: "up", Label: "↑", Aria: "Up arrow", Seq: "\x1b[A"},
+	{ID: "down", Label: "↓", Aria: "Down arrow", Seq: "\x1b[B"},
 	{ID: "left", Label: "←", Aria: "Left arrow", Seq: "\x1b[D"},
 	{ID: "right", Label: "→", Aria: "Right arrow", Seq: "\x1b[C"},
 	{ID: "2", Label: "2", Aria: "2", Seq: "2"},
@@ -400,15 +392,43 @@ func terminalComposer(c *MirrorComposerView) g.Node {
 	return mirrorComposer(*c)
 }
 
-// quickKeysPrimaryOrder is the order the large keys are drawn in, left to
-// right: the two arrows together, then Return. QuickKeys says WHICH keys are
-// large (Primary); this only orders them.
+// quickKeysPrimaryOrder is THE ONE LIST of the bar's large keys, by QuickKey
+// ID, left to right (operator ask: "show the up and down arrow keys and the
+// return button. As large key buttons, and then collapse the rest into a three
+// dots button context menu"): what moving through and answering a TUI's
+// choices takes. Every other QuickKey is in the ⋯ menu (quickKeysSplit).
 var quickKeysPrimaryOrder = []string{"up", "down", "enter"}
+
+// quickKeysSplit is QuickKeys split into the bar's large keys (in
+// quickKeysPrimaryOrder) and the ⋯ menu's (every OTHER key, in QuickKeys'
+// order). 🔴 THE MENU IS THE COMPLEMENT, NOT A SECOND LIST: a key is in the menu
+// unless it is drawn large, so no key can vanish from both. An ID in
+// quickKeysPrimaryOrder that QuickKeys lacks names no key, and so draws
+// nothing and hides nothing.
+func quickKeysSplit() (large, menu []QuickKey) {
+	byID := map[string]QuickKey{}
+	for _, k := range QuickKeys {
+		byID[k.ID] = k
+	}
+	drawn := map[string]bool{}
+	for _, id := range quickKeysPrimaryOrder {
+		if k, ok := byID[id]; ok && !drawn[id] {
+			large = append(large, k)
+			drawn[id] = true
+		}
+	}
+	for _, k := range QuickKeys {
+		if !drawn[k.ID] {
+			menu = append(menu, k)
+		}
+	}
+	return large, menu
+}
 
 // quickKeysMenuID is the "⋯" menu's id (its trigger's popovertarget).
 const quickKeysMenuID = "term-keys-menu"
 
-// quickKeyBar renders the quick keys: the Primary ones (↑ ↓ ⏎) as large
+// quickKeyBar renders the quick keys: quickKeysPrimaryOrder (↑ ↓ ⏎) as large
 // buttons, and a "⋯" button whose floating menu (floatingMenuScript, placed on
 // the roomier side of it) holds every other key, in QuickKeys' order. Every
 // key — large or in the menu — is a [data-key] button carrying its bytes
@@ -416,7 +436,7 @@ const quickKeysMenuID = "term-keys-menu"
 // disables all of them alike. The buttons start DISABLED, and so does the ⋯:
 // the page opens with live keys off.
 //
-// FOCUS IS LEFT AS THE ONE-ROW BAR LEFT IT: a key is a plain button that takes
+// FOCUS IS LEFT AS THE OLD BAR LEFT IT: a key is a plain button that takes
 // the tap (no pointerdown preventDefault), exactly as before; nothing here
 // changes what a tap does to the terminal's focus or a soft keyboard.
 //
@@ -427,18 +447,13 @@ func quickKeyBar(last bool) g.Node {
 	if last {
 		pad = "pb-[max(0.5rem,env(safe-area-inset-bottom))]"
 	}
-	byID := map[string]QuickKey{}
-	var rest []g.Node
-	for _, k := range QuickKeys {
-		byID[k.ID] = k
-		if k.Primary {
-			continue
-		}
-		rest = append(rest, quickKeyButton(k, false))
+	largeKeys, menuKeys := quickKeysSplit()
+	var big, rest []g.Node
+	for _, k := range largeKeys {
+		big = append(big, quickKeyButton(k, true))
 	}
-	big := make([]g.Node, 0, len(quickKeysPrimaryOrder))
-	for _, id := range quickKeysPrimaryOrder {
-		big = append(big, quickKeyButton(byID[id], true))
+	for _, k := range menuKeys {
+		rest = append(rest, quickKeyButton(k, false))
 	}
 	return Nav(
 		ID("term-keys"),
@@ -469,7 +484,7 @@ func quickKeyBar(last bool) g.Node {
 	)
 }
 
-// quickKeyButton is one key: large (a Primary key on the bar) or a cell of the
+// quickKeyButton is one key: large (one of quickKeysPrimaryOrder) or a cell of the
 // ⋯ menu. Both send data-seq, through the same click handler.
 func quickKeyButton(k QuickKey, large bool) g.Node {
 	cls := "press inline-flex min-h-[44px] min-w-0 items-center justify-center rounded-md bg-s2 font-mono text-sm font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 disabled:opacity-40"

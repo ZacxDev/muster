@@ -404,53 +404,20 @@ for (const vp of [
       }
     });
 
-    // 🔴 THE DUPLICATE-LABEL RULE, in a real browser: one codename on two
-    // hosts, and twice on one of them. Each chip leads with its host's icon, so
-    // across hosts the codename alone reads ("quince"); within one host the two
-    // windows draw one icon and keep their ":<index>". Red at main: no chip drew
-    // its icon, and the across-host chip read "quince:1" (plus a qualifier).
-    test('one codename on two hosts: the icon tells them apart, one host keeps its :index', async ({ page }) => {
-      const stamp = Date.now().toString(36);
-      const hx = 'e2e-pdx-' + stamp, hy = 'e2e-pdy-' + stamp;
-      const wx = path.join(rig.dir, 'windows-' + hx), wy = path.join(rig.dir, 'windows-' + hy);
-      const lx = path.join(rig.dir, 'labels-' + hx + '.json'), ly = path.join(rig.dir, 'labels-' + hy + '.json');
-      writeFileAtomic(wx, `dup|@1|1|1|zsh|${now - 200}|\ndup|@2|2|0|zsh|${now - 210}|\n`);
-      writeFileAtomic(wy, `dup|@1|1|1|zsh|${now - 220}|\n`);
-      fs.writeFileSync(lx, JSON.stringify({ dup: 'quince' }));
-      fs.writeFileSync(ly, JSON.stringify({ dup: 'quince' }));
-      const stopX = rig.extraHost(hx, { MUSTER_MIRROR_E2E_WINDOWS_FILE: wx, MUSTER_MIRROR_LABELS_FILE: lx });
-      const stopY = rig.extraHost(hy, { MUSTER_MIRROR_E2E_WINDOWS_FILE: wy, MUSTER_MIRROR_LABELS_FILE: ly });
-      const hrefOf = (h: string, id: number) => `/mirror/terminal?host=${h}&session=dup&window=%40${id}`;
-      const pinned = [[hx, 1], [hx, 2], [hy, 1]] as const;
+    // The chips' host icons arrive in the server's markup (a fixed 16px box),
+    // so a list with pinned chips loads without a layout shift.
+    test('pinned chips with their host icons load with CLS < 0.01', async ({ page }) => {
+      await login(page);
+      await pinVia(page, true, winForm('pins', 2));
       try {
-        await login(page);
+        await pinVia(page, true, winForm('pinq', 3));
         await page.addInitScript(clsInit);
         await page.goto(origin + '/agents');
-        for (const [h, id] of pinned) await expect(page.locator(`#agents-list > article:has(a[href="${hrefOf(h, id)}"])`)).toHaveCount(1, { timeout: 20_000 });
-        for (const [h, id] of pinned) await pinVia(page, true, winForm('dup', id, h));
-        await page.goto(origin + '/agents');
-        for (const [h, id] of pinned) await expect(chip(page, hrefOf(h, id))).toBeVisible({ timeout: 20_000 });
-        await settle(page);
-
-        // The labels first, so the rule is read on its own.
-        const label = (h: string, id: number) => chip(page, hrefOf(h, id)).locator('[data-pinned-chip-label]');
-        await expect(label(hx, 1)).toHaveText('quince:1');
-        await expect(label(hx, 2)).toHaveText('quince:2');
-        await expect(label(hy, 1)).toHaveText('quince');
-
-        const iconOf = (h: string, id: number) => chip(page, hrefOf(h, id)).locator('[data-pinned-chip-link] [data-host-icon]');
-        const ix = await iconOf(hx, 1).getAttribute('data-host-icon');
-        const iy = await iconOf(hy, 1).getAttribute('data-host-icon');
-        expect(ix, 'precondition: the two hosts draw different icons').not.toBe(iy);
-        await expect(iconOf(hx, 2)).toHaveAttribute('data-host-icon', ix!);
-        for (const [h, id] of pinned) await expect(iconOf(h, id)).toBeVisible();
-
-        for (const [h, id] of pinned) {
-          const b = (await chip(page, hrefOf(h, id)).boundingBox())!;
-          expect(b.height, 'a chip is a 44px target').toBeGreaterThanOrEqual(44);
-          expect(b.x + b.width, 'a chip stays inside the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
+        for (const h of [sableHref, quinceHref]) {
+          await expect(chip(page, h).locator('[data-pinned-chip-link] [data-host-icon]')).toBeVisible({ timeout: 20_000 });
         }
-        await noOverflow(page, 'duplicate-label chips');
+        await settle(page);
+        await noOverflow(page, 'chips with icons');
         const r = await readCls(page);
         expect(r.unsupported, 'layout-shift is observable here').toBeUndefined();
         expect(r.total, `shifts: ${JSON.stringify(r.shifts)}`).toBeLessThan(0.01);
@@ -464,9 +431,8 @@ for (const vp of [
         await page.waitForTimeout(300);
         expect((await readCls(page)).total, 'the instrument sees a shift').toBeGreaterThan(0.01);
       } finally {
-        for (const [h, id] of pinned) await pinVia(page, false, winForm('dup', id, h)).catch(() => undefined);
-        await stopX();
-        await stopY();
+        await pinVia(page, false, winForm('pins', 2));
+        await pinVia(page, false, winForm('pinq', 3));
       }
     });
 

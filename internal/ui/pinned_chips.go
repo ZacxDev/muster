@@ -99,56 +99,38 @@ func pinnedChipName(e listEntry) (short, full string) {
 }
 
 // pinnedChipLabels is what each pinned entry's chip says, in the entries'
-// order: its short name, unless another chip OF THE SAME HOST ICON would read
-// the same — then its full name ("mango:2"), and when even that is shared the
-// full name with the window's qualifier ("mango:2 · laptop"), the minimal
+// order: its short name, unless another chip's would read the same — then its
+// full name ("mango:2"), and when even that is shared (one label on two hosts)
+// the full name with the window's qualifier ("mango:2 · laptop"), the minimal
 // difference the list already decided (mirror.SessionView.Qualifier).
 //
-// 🔴 A CHIP LEADS WITH ITS HOST'S ICON (pinnedChipIconKey), SO A NAME IS ONLY
-// AMBIGUOUS AMONG CHIPS THAT DRAW THE SAME ICON. The same codename on two hosts
-// ("mango" on the laptop, "mango" on the server) reads "mango" on both chips:
-// the icon is the difference (operator ask: "the same pretty name is reused
-// across multiple hosts"). Two windows of ONE host draw one icon, so they keep
-// the ":<index>" that tells them apart. Two DIFFERENT hosts that happen to draw
-// the same icon (more hosts than icons) are treated as one host here: their icon
-// tells them apart no better than a name does, so they keep the suffix and, when
-// that is shared too, the qualifier.
+// The chip also draws its host's icon (pinnedChip), but the label does NOT
+// lean on it: the text is disambiguated exactly as it would be without the
+// icon, so a surface that reuses these labels without drawing icons (the
+// session switcher) reads the same.
 func pinnedChipLabels(es []listEntry) []string {
 	out := make([]string, len(es))
 	fulls := make([]string, len(es))
-	icons := make([]string, len(es))
-	n := map[[2]string]int{}
+	n := map[string]int{}
 	for i, e := range es {
 		out[i], fulls[i] = pinnedChipName(e)
-		icons[i] = pinnedChipIconKey(e)
-		n[[2]string{icons[i], out[i]}]++
+		n[out[i]]++
 	}
 	for i := range es {
-		if n[[2]string{icons[i], out[i]}] > 1 {
+		if n[out[i]] > 1 {
 			out[i] = fulls[i]
 		}
 	}
-	n = map[[2]string]int{}
-	for i, l := range out {
-		n[[2]string{icons[i], l}]++
+	n = map[string]int{}
+	for _, l := range out {
+		n[l]++
 	}
 	for i, e := range es {
-		if n[[2]string{icons[i], out[i]}] > 1 && e.mirror != nil && e.mirror.Qualifier != "" {
+		if n[out[i]] > 1 && e.mirror != nil && e.mirror.Qualifier != "" {
 			out[i] = mirrorQualified(out[i], e.mirror.Qualifier)
 		}
 	}
 	return out
-}
-
-// pinnedChipIconKey is the host icon an entry's chip draws: the cluster's for a
-// dispatched agent (clusterMark), its host's for a window (hostMark) — the
-// key hostIconDefOf resolves, so a view built without one gets the same
-// fallback the chip draws.
-func pinnedChipIconKey(e listEntry) string {
-	if e.agent != nil {
-		return clusterIcon.Key
-	}
-	return hostIconDefOf(e.mirror.HostIcon, e.mirror.Host).Key
 }
 
 // pinnedChip is one pinned entry's chip, labelled label (pinnedChipLabels).
