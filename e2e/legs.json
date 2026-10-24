@@ -96,7 +96,8 @@
       "chief-runtimes.spec.ts",
       "tests/agent-cards.spec.ts",
       "tests/agent-cards-work.spec.ts",
-      "tests/agents-list-ux.spec.ts"
+      "tests/agents-list-ux.spec.ts",
+      "tests/mirror-snapshot.spec.ts"
     ],
     "2": [
       "tests/devices.spec.ts",

@@ -213,6 +213,35 @@ running an older `muster-mirror` sends the transcript unredacted. The
 transcript file itself is never sent, and nothing is stored on the server. Limits per host: 8 open
 terminals, 8 rendered views. Limit per server: 64 hosts.
 
+### A rendered view's snapshot, kept on this device
+
+Each rendered view keeps a copy, in this browser (IndexedDB), of what it drew
+and where its stream stood. Opening the window again paints that copy at once
+and resumes the stream from where the copy ends, instead of waiting for the
+host to send the conversation again. Until the stream answers, the status line
+says "Connecting…"; after a second without an answer an **Updating…** chip
+shows, in room the header always keeps for it. If the stream is refused or
+closes before it answers, the copy is removed from the page and from the
+browser, and the view starts again from the beginning.
+
+- **What is kept** is what the page already showed, as the server sent it
+  (redacted on the host as above), plus the stream's position. At most 2 MiB
+  per window and 12 windows; the oldest go first.
+- **For five minutes.** An older copy is ignored and deleted.
+- **Per user and per build.** A copy names the signed-in user and the muster
+  version, and is checked against both before it is shown. Any other user's or
+  version's copy is deleted unread.
+- **Signing out deletes them all.** The sign-in page (and every other page
+  shown signed out) deletes them, and a sign-out ends there.
+- **Warming.** While you are on the Agents list or an agent's page, muster
+  refreshes the copies of up to five windows you are likely to open next
+  (pinned, then recently viewed, then the ones this browser has copies of), one
+  at a time when the browser is idle, every two minutes at most. It reads each
+  through the window's stream, never its page, so a warmed window is not
+  recorded as visited and does not move in **Recent**. It stops on a hidden
+  tab, with Save-Data on, or on a 2G connection, and reads at most 3 MiB per
+  pass.
+
 ### How a pane's transcript is found
 
 The host walks the pane's process tree to the `claude` process. Then it tries
