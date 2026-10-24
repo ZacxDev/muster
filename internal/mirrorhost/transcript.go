@@ -544,8 +544,9 @@ func (h *hostSide) paste(m mirror.Msg) {
 	// on the person. Checked once here, so a refusal touches nothing (not even
 	// this connection's copy-mode), and again immediately before the paste and
 	// before its Enter, inside the keys.
-	check := func(ctx context.Context) error { return h.claudeReady(ctx, cb, m, p.Pane) }
-	if err := check(ctx); err != nil {
+	before := func(ctx context.Context) error { return h.claudeReady(ctx, cb, m, p.Pane, true) }
+	beforeEnter := func(ctx context.Context) error { return h.claudeReady(ctx, cb, m, p.Pane, false) }
+	if err := before(ctx); err != nil {
 		reply(err)
 		return
 	}
@@ -556,7 +557,7 @@ func (h *hostSide) paste(m mirror.Msg) {
 		reply(ErrClaudeUncheckable)
 		return
 	}
-	reply(h.typeInto(ctx, p.Pane, func() error { return cp.PasteChecked(ctx, p, text, check) }))
+	reply(h.typeInto(ctx, p.Pane, func() error { return cp.PasteChecked(ctx, p, text, before, beforeEnter) }))
 }
 
 // leaveCopyModeFor cancels the copy-mode a drag-to-scroll on THIS connection

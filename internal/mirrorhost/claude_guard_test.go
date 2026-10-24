@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/mirror"
@@ -120,8 +121,10 @@ func TestAPasteIntoAClaudePaneWhoseScreenShowsADialogTypesNothing(t *testing.T) 
 	}}}, nil, true)
 	pasted := func() []string { _, _, _, p, _ := b.snapshot(); return p }
 
-	if a := pasteAnswer(t, d, mirror.Msg{ID: 1, Session: "scratch2", Window: "@7", Text: "1"}); a.Error == "" || a.Refusal != "claude-waiting" {
-		t.Fatalf("a paste into a pane showing a permission prompt was answered %+v; want refused as claude-waiting", a)
+	// Refused for the DIALOG, in its words — not for some later check (the
+	// prompt also hides the input box, which is refused on its own).
+	if a := pasteAnswer(t, d, mirror.Msg{ID: 1, Session: "scratch2", Window: "@7", Text: "1"}); a.Refusal != "claude-waiting" || !strings.Contains(a.Error, "shows a dialog") {
+		t.Fatalf("a paste into a pane showing a permission prompt was answered %+v; want refused as claude-waiting for the dialog", a)
 	}
 	screen, screenErr = "", errors.New("capture-pane: no such pane")
 	if a := pasteAnswer(t, d, mirror.Msg{ID: 2, Session: "scratch2", Window: "@7", Text: "1"}); a.Error == "" || a.Refusal != "claude-waiting" {

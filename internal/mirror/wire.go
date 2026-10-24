@@ -1241,6 +1241,11 @@ const (
 	// and its Enter — so the text is in Claude Code's input box and Enter was
 	// withheld. Not to be resent blindly: that would paste it twice.
 	PasteRefusalClaudePasted = "claude-pasted"
+	// PasteRefusalClaudeBox: the Claude prompt guard — Claude Code's input
+	// box already holds text (a message left there unsubmitted, say), which
+	// this one would be pasted after and submitted with as one turn. Nothing
+	// was typed; a queued message is held, as for PasteRefusalClaudeWaiting.
+	PasteRefusalClaudeBox = "claude-box"
 
 	// The gated send into a Hermes pane (Msg.Runtime "hermes"), by how it
 	// ended when it did not end "sent":
@@ -1281,6 +1286,12 @@ const (
 		"answer it first. Nothing was typed into the pane."
 	ClaudeScreenUnreadText = "Not sent: muster-mirror could not read Claude Code's screen, so it could not rule out " +
 		"a permission prompt. Nothing was typed into the pane."
+	// ClaudeBoxText (PasteRefusalClaudeBox): the input box holds text.
+	ClaudeBoxText = "Not sent: Claude's input box already has text — clear or send it first. Nothing was typed into the pane."
+	// ClaudeBoxUnreadText (PasteRefusalClaudeWaiting): the screen shows no
+	// input box muster-mirror can read, so it cannot tell the box is empty.
+	ClaudeBoxUnreadText = "Not sent: muster-mirror could not find Claude Code's input box on its screen, so it could not " +
+		"tell whether it is empty. Nothing was typed into the pane."
 )
 
 // The kinds of answer refusal a host names (Msg.Refusal on answered).

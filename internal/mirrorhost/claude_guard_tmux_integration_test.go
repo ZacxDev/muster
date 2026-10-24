@@ -33,13 +33,14 @@ func TestTmuxACheckedPasteWithholdsTheEnterWhenTheCheckRefuses(t *testing.T) {
 
 	held := paneOf("held")
 	calls := 0
-	err := b.PasteChecked(context.Background(), ClaudePane{Pane: held}, "held-back", func(context.Context) error {
+	check := func(context.Context) error {
 		calls++
 		if calls == 2 {
 			return ErrClaudeWaiting
 		}
 		return nil
-	})
+	}
+	err := b.PasteChecked(context.Background(), ClaudePane{Pane: held}, "held-back", check, check)
 	var pe *ClaudePastedError
 	if !errors.As(err, &pe) || calls != 2 {
 		t.Fatalf("PasteChecked = %v after %d checks; want pasted-not-submitted after 2", err, calls)
@@ -51,7 +52,7 @@ func TestTmuxACheckedPasteWithholdsTheEnterWhenTheCheckRefuses(t *testing.T) {
 	}
 
 	sent := paneOf("sent")
-	if err := b.PasteChecked(context.Background(), ClaudePane{Pane: sent}, "sent-on", func(context.Context) error { return nil }); err != nil {
+	if err := b.PasteChecked(context.Background(), ClaudePane{Pane: sent}, "sent-on", func(context.Context) error { return nil }, func(context.Context) error { return nil }); err != nil {
 		t.Fatalf("PasteChecked admitted: %v", err)
 	}
 	waitFor(t, "the control to be pasted AND submitted", func() bool { return strings.Count(capture(sent), "sent-on") == 2 })

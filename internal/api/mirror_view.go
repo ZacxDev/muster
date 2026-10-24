@@ -562,7 +562,7 @@ func (s *Server) mirrorPaste(ctx context.Context, host, session, window, text, n
 	resolved := window
 	opts = append(opts, mirror.ReportWindow(&resolved))
 	repeat, err = s.mirrorPasteOnce(ctx, host, session, window, text, nonce, target, opts...)
-	if !repeat && (err == nil || errors.Is(err, mirror.ErrPasteUnconfirmed)) {
+	if !repeat && (err == nil || errors.Is(err, mirror.ErrPasteUnconfirmed) || mirror.ClaudePastedRefusal(err)) {
 		s.sendQueueNotePaste(ctx, host, session, resolved)
 	}
 	return repeat, err

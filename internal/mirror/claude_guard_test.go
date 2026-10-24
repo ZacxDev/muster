@@ -110,3 +110,25 @@ func TestAQueuedPasteTheHostRefusesAsWaitingGoesBackToTheQueue(t *testing.T) {
 		t.Fatalf("a refused paste was recorded as a paste (Pasted %d)", st.Pasted)
 	}
 }
+
+// TestAPastedNotSubmittedCountsAsLanded: when the host withheld the Enter
+// (claude-pasted), the text is in Claude Code's input box, and whatever is
+// pasted next would be submitted with it. So the hub records it as a paste
+// that may have landed — the window's Pasted rises — and the queue holds the
+// next message for the turn after it, exactly as after a Send.
+func TestAPastedNotSubmittedCountsAsLanded(t *testing.T) {
+	r := newRig(t)
+	ctx, cancel := context.WithTimeout(asUser(1), 5*time.Second)
+	defer cancel()
+	tok, _ := r.store.mint(t, 1, "on")
+	connectScripted(t, r, tok, claudeGuardHello("on", "idle"), func(mirror.Msg) mirror.Msg {
+		return mirror.Msg{Error: "Pasted, not submitted: …", Refusal: "claude-pasted"}
+	})
+	r.online(t, 1, "on", "work")
+	if err := r.svc.PasteWindow(ctx, "on", "work", "@2", "left in the box", mirror.PasteClaude); err == nil {
+		t.Fatal("a pasted-not-submitted answer was taken as sent")
+	}
+	if st := r.svc.AgentState(asUser(1), "on", "work", "@2"); st.Pasted != 1792000002222 {
+		t.Fatalf("after a pasted-not-submitted the window's Pasted is %d; want 1792000002222 (recorded as landed)", st.Pasted)
+	}
+}

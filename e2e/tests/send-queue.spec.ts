@@ -1188,13 +1188,20 @@ test.describe('Claude Code waiting on a permission prompt, desktop 1280×800', (
     // The refusal is the HOST's, at the moment of typing (muster never heard
     // of the prompt): its own log says so.
     expect(mirrorLog.slice(logFrom), 'the host refused it').toContain(`Claude Code in pane ${pane} is waiting on the person`);
+    const queuedFrom = mirrorLog.length;
     await queue(page, 'raced the prompt', false);
+    // 🔴 HELD WITH THE HOST'S REASON, BACKING OFF — not re-sent at every
+    // 2-second dispatcher pass with nothing said.
+    await expect(page.locator('#mv-queue-waiting'), 'the hold says why').toContainText('Claude is waiting on a permission prompt', { timeout: 20_000 });
     await holdWindow();
     await holdWindow();
     expect(h.typed(), 'nothing was typed into the prompt').toEqual([]);
     await expect(row(page, 'raced the prompt'), 'still queued').toHaveAttribute('data-queue-state', 'queued');
+    const tries = mirrorLog.slice(queuedFrom).split(`Claude Code in pane ${pane} is waiting on the person`).length - 1;
+    expect(tries, 'the host was asked again with a backoff (4 s, 8 s, …), not every pass').toBeGreaterThanOrEqual(1);
+    expect(tries, 'the host was asked again with a backoff (4 s, 8 s, …), not every pass').toBeLessThanOrEqual(3);
     h.status('idle');
-    await expect.poll(h.typed, { message: 'sent once the prompt is answered', timeout: 20_000 }).toEqual([`${pane} raced the prompt`]);
+    await expect.poll(h.typed, { message: 'sent once the prompt is answered', timeout: 40_000 }).toEqual([`${pane} raced the prompt`]);
   });
 
   // The narrowest window: a prompt that opens AS the message lands, between
@@ -1209,7 +1216,28 @@ test.describe('Claude Code waiting on a permission prompt, desktop 1280×800', (
     await page.locator('#mv-input').fill('3');
     await page.locator('#mv-send').click();
     await expect(page.locator('#mv-note')).toContainText('Pasted, not submitted');
-    expect(read(h.t + '.typed').split('\n').filter((l) => l !== ''), 'the text landed in the box').toEqual([`${pane} 3`]);
+    const inBox = () => read(h.t + '.typed').split('\n').filter((l) => l !== '');
+    expect(inBox(), 'the text landed in the box').toEqual([`${pane} 3`]);
     expect(h.typed(), 'no Enter was pressed into the prompt').toEqual([]);
+
+    // 🔴 THE LEFTOVER: the prompt is answered, but "3" is still in the input
+    // box. Nothing more is pasted after it — a queued message or a Send would
+    // be submitted WITH it as one turn — until the box is cleared.
+    fs.rmSync(h.t + '.prompt-on-paste');
+    fs.rmSync(h.t + '.screen');
+    h.status('idle');
+    await seen();
+    await queue(page, 'after the leftover', false);
+    await expect(page.locator('#mv-queue-waiting'), 'held, saying why').toContainText('input box already has text', { timeout: 20_000 });
+    await holdWindow();
+    expect(inBox(), 'nothing was pasted after the leftover').toEqual([`${pane} 3`]);
+    expect(h.typed(), 'and nothing submitted').toEqual([]);
+    await page.locator('#mv-input').fill('4');
+    await page.locator('#mv-send').click();
+    await expect(page.locator('#mv-note')).toContainText("Claude's input box already has text — clear or send it first");
+    expect(inBox(), 'a Send into the full box typed nothing').toEqual([`${pane} 3`]);
+    // The person clears the box: the queued message goes, on its own.
+    fs.rmSync(h.t + '.box');
+    await expect.poll(h.typed, { message: 'sent once the box is clear', timeout: 40_000 }).toEqual([`${pane} after the leftover`]);
   });
 });

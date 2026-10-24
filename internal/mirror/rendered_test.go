@@ -76,9 +76,9 @@ func (b *claudeBackend) ClaudeScreen(context.Context, string) (string, error) {
 	return idleClaudeScreen, nil
 }
 
-func (b *claudeBackend) PasteChecked(ctx context.Context, p mirrorhost.ClaudePane, text string, check func(context.Context) error) error {
+func (b *claudeBackend) PasteChecked(ctx context.Context, p mirrorhost.ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
 	return mirrorhost.CheckedPaste(ctx, func(context.Context) error { return nil },
-		func(ctx context.Context) error { return b.Paste(ctx, p, text) }, check)
+		func(ctx context.Context) error { return b.Paste(ctx, p, text) }, before, beforeEnter)
 }
 
 // idleClaudeScreen is Claude Code at its idle prompt, as the guard's screen

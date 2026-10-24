@@ -46,6 +46,7 @@ func TestTheClaudePromptGuardsRefusalReadsTheSameWithAndWithoutScript(t *testing
 		{mirror.PasteRefusalClaudeWaiting, mirror.ClaudeWaitingText, "claude-waiting", mirror.ClaudeWaitingText},
 		{mirror.PasteRefusalClaudeWaiting, mirror.ClaudeDialogText, "claude-waiting", mirror.ClaudeWaitingText},
 		{mirror.PasteRefusalClaudePasted, pasted, "claude-pasted", "Pasted, not submitted"},
+		{mirror.PasteRefusalClaudeBox, mirror.ClaudeBoxText, "claude-box", mirror.ClaudeBoxText},
 	} {
 		fm.v2.pasteErr = &mirror.PasteRefusedError{Why: c.why, Refusal: c.refusal}
 		code, body, _ := postSend(t, ts.URL, ui.MirrorSendPath, cookie, "", form)

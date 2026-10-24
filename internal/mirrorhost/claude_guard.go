@@ -55,6 +55,10 @@ var (
 	ErrClaudeDialog = errors.New(mirror.ClaudeDialogText)
 	// ErrClaudeScreenUnread: the pane's screen could not be read.
 	ErrClaudeScreenUnread = errors.New(mirror.ClaudeScreenUnreadText)
+	// ErrClaudeBox: Claude Code's input box already holds text.
+	ErrClaudeBox = errors.New(mirror.ClaudeBoxText)
+	// ErrClaudeBoxUnread: no input box could be read on the screen.
+	ErrClaudeBoxUnread = errors.New(mirror.ClaudeBoxUnreadText)
 	// ErrClaudeUncheckable: the backend has no screen read or no checked
 	// paste (ClaudeScreenBackend, ClaudeCheckedPaster), so the guard cannot
 	// run at all. It is no refusal kind: it is not something that clears, so
@@ -70,13 +74,14 @@ type ClaudeScreenBackend interface {
 	ClaudeScreen(ctx context.Context, pane string) (string, error)
 }
 
-// ClaudeCheckedPaster is a ClaudeBackend whose paste runs check immediately
-// before the paste and again immediately before its Enter, and presses Enter
-// only when both pass. The tmux backend implements it; a backend that does not
+// ClaudeCheckedPaster is a ClaudeBackend whose paste runs before immediately
+// before the paste and beforeEnter immediately before its Enter, and presses
+// Enter only when both pass. (Two checks, because the second must not refuse
+// the box for holding the text just pasted.) The tmux backend implements it; a backend that does not
 // is refused every Claude paste (ErrClaudeUncheckable) — a plain Paste's Enter
 // is unchecked.
 type ClaudeCheckedPaster interface {
-	PasteChecked(ctx context.Context, p ClaudePane, text string, check func(context.Context) error) error
+	PasteChecked(ctx context.Context, p ClaudePane, text string, before, beforeEnter func(context.Context) error) error
 }
 
 // ClaudePastedError: the check before the Enter refused, after the text was
@@ -101,7 +106,10 @@ func claudeRefusalOf(err error) string {
 	switch {
 	case errors.As(err, &pe):
 		return mirror.PasteRefusalClaudePasted
-	case errors.Is(err, ErrClaudeWaiting), errors.Is(err, ErrClaudeDialog), errors.Is(err, ErrClaudeScreenUnread):
+	case errors.Is(err, ErrClaudeBox):
+		return mirror.PasteRefusalClaudeBox
+	case errors.Is(err, ErrClaudeWaiting), errors.Is(err, ErrClaudeDialog), errors.Is(err, ErrClaudeScreenUnread),
+		errors.Is(err, ErrClaudeBoxUnread):
 		return mirror.PasteRefusalClaudeWaiting
 	}
 	return ""
@@ -109,8 +117,11 @@ func claudeRefusalOf(err error) string {
 
 // claudeReady is the prompt guard's check of the Claude pane m names, which
 // the paste resolved to pane: nil to type, else the refusal. Every read is
-// made now.
-func (h *hostSide) claudeReady(ctx context.Context, cb ClaudeBackend, m mirror.Msg, pane string) error {
+// made now. With emptyBox (every check before the paste) Claude Code's input
+// box must also be empty: a message pasted after text left there would be
+// submitted with it as one turn, as Hermes's send refuses too. The check
+// before the Enter passes false — the box then holds the text just pasted.
+func (h *hostSide) claudeReady(ctx context.Context, cb ClaudeBackend, m mirror.Msg, pane string, emptyBox bool) error {
 	p, ok := h.claudePaneOf(cb, m)(ctx)
 	if !ok || p.Pane != pane {
 		return errNotClaudeNow
@@ -136,6 +147,17 @@ func (h *hostSide) claudeReady(ctx context.Context, cb ClaudeBackend, m mirror.M
 		h.c.log.Printf("muster-mirror: Claude Code pane %s shows %s; nothing is typed into it", pane, what)
 		return ErrClaudeDialog
 	}
+	if !emptyBox {
+		return nil
+	}
+	switch box, found := ccdialog.InputBox(raw); {
+	case !found:
+		h.c.log.Printf("muster-mirror: no input box could be read on Claude Code pane %s's screen; nothing is typed into it", pane)
+		return ErrClaudeBoxUnread
+	case box != "":
+		h.c.log.Printf("muster-mirror: Claude Code pane %s's input box already holds %d bytes; nothing is typed into it", pane, len(box))
+		return ErrClaudeBox
+	}
 	return nil
 }
 
@@ -147,11 +169,11 @@ type checkedPasteSteps struct {
 	sleep func(ctx context.Context, d time.Duration) error
 }
 
-// runCheckedPaste is check, the paste, enterDelay, check AGAIN, then Enter. A
-// check that refuses before the paste types nothing; one that refuses before
+// runCheckedPaste is before, the paste, enterDelay, beforeEnter, then Enter.
+// A check that refuses before the paste types nothing; one that refuses before
 // the Enter leaves the text pasted and withholds the Enter (ClaudePastedError).
-func runCheckedPaste(ctx context.Context, s checkedPasteSteps, check func(context.Context) error) error {
-	if err := check(ctx); err != nil {
+func runCheckedPaste(ctx context.Context, s checkedPasteSteps, before, beforeEnter func(context.Context) error) error {
+	if err := before(ctx); err != nil {
 		return err
 	}
 	if err := s.paste(ctx); err != nil {
@@ -162,7 +184,7 @@ func runCheckedPaste(ctx context.Context, s checkedPasteSteps, check func(contex
 	}
 	// 🔴 AGAIN BEFORE THE ENTER: a dialog that opened while the paste was
 	// landing would take this Enter as its answer.
-	if err := check(ctx); err != nil {
+	if err := beforeEnter(ctx); err != nil {
 		return &ClaudePastedError{Why: err}
 	}
 	if err := s.enter(ctx); err != nil {
@@ -172,19 +194,19 @@ func runCheckedPaste(ctx context.Context, s checkedPasteSteps, check func(contex
 }
 
 // CheckedPaste is the checked paste for a backend that types by its own means
-// (the tmux backend; a test or e2e fake): check, paste, enterDelay, check
-// again, then enter.
-func CheckedPaste(ctx context.Context, paste, enter, check func(context.Context) error) error {
-	return runCheckedPaste(ctx, checkedPasteSteps{paste: paste, enter: enter, sleep: sleepCtx}, check)
+// (the tmux backend; a test or e2e fake): before, paste, enterDelay,
+// beforeEnter, then enter.
+func CheckedPaste(ctx context.Context, paste, enter, before, beforeEnter func(context.Context) error) error {
+	return runCheckedPaste(ctx, checkedPasteSteps{paste: paste, enter: enter, sleep: sleepCtx}, before, beforeEnter)
 }
 
 // PasteChecked implements ClaudeCheckedPaster: PastePane's paste and Enter,
 // with check run before each.
-func (t Tmux) PasteChecked(ctx context.Context, p ClaudePane, text string, check func(context.Context) error) error {
+func (t Tmux) PasteChecked(ctx context.Context, p ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
 	return CheckedPaste(ctx,
 		func(ctx context.Context) error { return t.pasteBracketed(ctx, p.Pane, text) },
 		func(ctx context.Context) error { return t.pasteEnter(ctx, p.Pane) },
-		check)
+		before, beforeEnter)
 }
 
 // ClaudeScreen implements ClaudeScreenBackend: capture-pane -p -J by the pane's

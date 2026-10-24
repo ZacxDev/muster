@@ -455,11 +455,21 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 		return err
 	}
 	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane, hermes, since)
-	h.endPaste(owner, host, session, windowID, held, err == nil || errors.Is(err, ErrPasteUnconfirmed))
-	if o.Expect != nil && ClaudeWaitingRefusal(err) {
+	// 🔴 A "PASTED, NOT SUBMITTED" LANDED: its text is in the input box, and the
+	// next message would be pasted after it and submitted with it as one turn,
+	// so it is recorded like a paste that may have reached the window.
+	h.endPaste(owner, host, session, windowID, held, err == nil || errors.Is(err, ErrPasteUnconfirmed) || ClaudePastedRefusal(err))
+	if ClaudeWaitingRefusal(err) {
 		// The host's half of the Claude prompt guard refused it: nothing was
-		// typed, so a queued message is decided on again, as above.
-		return &SupersededError{Pasted: h.turn(owner, host, session, windowID).pasted}
+		// typed. The window is held (backing off, guardHold) with the host's
+		// reason, so the queue neither re-sends at every pass nor hides why;
+		// a queued message is decided on again, as above.
+		var pr *PasteRefusedError
+		errors.As(err, &pr)
+		h.guardHold(owner, host, session, windowID, pr.Why)
+		if o.Expect != nil {
+			return &SupersededError{Pasted: h.turn(owner, host, session, windowID).pasted}
+		}
 	}
 	return err
 }
@@ -469,11 +479,21 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 // window waiting on the person. Nothing was sent to the host.
 var ErrClaudeWaiting = errors.New("mirror: muster did not send it: Claude Code is waiting on the person")
 
-// ClaudeWaitingRefusal reports whether err is the Claude prompt guard's refusal
-// — the hub's or the host's (PasteRefusalClaudeWaiting). Nothing was typed.
+// ClaudeWaitingRefusal reports whether err is one of the Claude prompt guard's
+// NOTHING-TYPED refusals — the hub's or the host's (PasteRefusalClaudeWaiting,
+// PasteRefusalClaudeBox): a queued message is held on it, not failed.
 func ClaudeWaitingRefusal(err error) bool {
 	var pr *PasteRefusedError
-	return errors.As(err, &pr) && pr.Refusal == PasteRefusalClaudeWaiting
+	return errors.As(err, &pr) && (pr.Refusal == PasteRefusalClaudeWaiting || pr.Refusal == PasteRefusalClaudeBox)
+}
+
+// ClaudePastedRefusal reports whether err is the Claude prompt guard's
+// "pasted, not submitted" (PasteRefusalClaudePasted): the text is in Claude
+// Code's input box. It counts as landed — what follows it would be pasted
+// after it — so the queue holds behind it and its Retry warns.
+func ClaudePastedRefusal(err error) bool {
+	var pr *PasteRefusedError
+	return errors.As(err, &pr) && pr.Refusal == PasteRefusalClaudePasted
 }
 
 // claudeWaiting reports whether hc lists (session, window id) as a Claude Code

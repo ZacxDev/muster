@@ -285,12 +285,12 @@ func (b *windowsBackend) Paste(_ context.Context, p ClaudePane, text string) err
 func (b *windowsBackend) ClaudeScreen(context.Context, string) (string, error) {
 	return idleClaudeScreen, nil
 }
-func (b *windowsBackend) PasteChecked(ctx context.Context, p ClaudePane, text string, check func(context.Context) error) error {
+func (b *windowsBackend) PasteChecked(ctx context.Context, p ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
 	return runCheckedPaste(ctx, checkedPasteSteps{
 		paste: func(ctx context.Context) error { return b.PastePane(ctx, p.Pane, text) },
 		enter: func(context.Context) error { return nil },
 		sleep: func(context.Context, time.Duration) error { return nil },
-	}, check)
+	}, before, beforeEnter)
 }
 
 // idleClaudeScreen is Claude Code at its idle prompt, as ccdialog reads one:

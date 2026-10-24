@@ -54,7 +54,8 @@ func TestACheckedPasteChecksBeforeThePasteAndAgainBeforeTheEnter(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			s := &scriptedPaste{}
-			err := runCheckedPaste(context.Background(), s.steps(), refuseAt(c.refuse))
+			check := refuseAt(c.refuse)
+			err := runCheckedPaste(context.Background(), s.steps(), check, check)
 			if !slices.Equal(s.did, c.did) {
 				t.Fatalf("did %q, want %q", s.did, c.did)
 			}
@@ -89,7 +90,7 @@ type checkedBackend struct {
 	after []WindowInfo
 }
 
-func (c checkedBackend) PasteChecked(ctx context.Context, p ClaudePane, text string, check func(context.Context) error) error {
+func (c checkedBackend) PasteChecked(ctx context.Context, p ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
 	return runCheckedPaste(ctx, checkedPasteSteps{
 		paste: func(ctx context.Context) error {
 			if err := c.PastePane(ctx, p.Pane, text); err != nil {
@@ -104,7 +105,7 @@ func (c checkedBackend) PasteChecked(ctx context.Context, p ClaudePane, text str
 		},
 		enter: func(context.Context) error { *c.enters = append(*c.enters, p.Pane); return nil },
 		sleep: func(context.Context, time.Duration) error { return nil },
-	}, check)
+	}, before, beforeEnter)
 }
 
 // TestAPermissionPromptThatOpensAsThePasteLandsGetsNoEnter: the host's

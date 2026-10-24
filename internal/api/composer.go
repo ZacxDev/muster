@@ -79,6 +79,7 @@ const (
 	// The Claude prompt guard (mirror.PasteRefusalClaude*).
 	noticeClaudeWaiting = "claude-waiting"
 	noticeClaudePasted  = "claude-pasted"
+	noticeClaudeBox     = "claude-box"
 	// A Hermes window's Send now refusals.
 	noticeHermesWaitingNow = "hermes-waiting-now"
 	noticeHermesBusyNow    = "hermes-busy-now"
@@ -130,6 +131,7 @@ var pasteGuardNotices = map[string]string{
 var claudeGuardNotices = map[string]string{
 	mirror.PasteRefusalClaudeWaiting: noticeClaudeWaiting,
 	mirror.PasteRefusalClaudePasted:  noticeClaudePasted,
+	mirror.PasteRefusalClaudeBox:     noticeClaudeBox,
 }
 
 // hermesNotIdleNotices is the notice for each status the hub's idle gate
@@ -191,6 +193,7 @@ var composerNotices = map[string]struct {
 	noticeSendingAnother:    {SendQueueSendingAnother, false},
 	noticeWaitingNow:        {SendQueueWaitingNow, false},
 	noticeClaudeWaiting:     {mirror.ClaudeWaitingText, false},
+	noticeClaudeBox:         {mirror.ClaudeBoxText, false},
 	noticeClaudePasted:      {"Pasted, not submitted: the text is in Claude Code's input box, and Enter was not pressed, because a dialog opened. Check the terminal.", false},
 	noticeHermesWaitingNow:  {SendQueueHermesWaitingNow, false},
 	noticeHermesBusyNow:     {SendQueueHermesBusyNow, false},

@@ -93,3 +93,46 @@ func OnScreen(capture string) (what string, shown bool) {
 	}
 	return "", false
 }
+
+// InputBox is what Claude Code's input box holds on capture, and whether the
+// box was found at all. The CLI draws the box between the screen's LAST TWO
+// horizontal rules, its first row starting with the prompt mark `❯`; the
+// status line is under the second rule. text is the box's rows with the mark
+// and the padding trimmed, joined by newlines: "" for an empty box.
+//
+// found is false when the bottom of the screen is not that shape — fewer than
+// two rules, nothing between them, or a first row that is not the prompt — and
+// a caller that needs the box empty refuses on it: an unreadable box is not
+// presumed empty. Call OnScreen first: a dialog replaces the box.
+//
+// Read against the real CLI (cmd/ccd/testdata/pane_*_2.1.296.txt): the empty
+// prompt `❯ ` at idle, and `❯ ❯ 1. Yes` / `❯ [Pasted text #1 +4 lines]` with
+// text in the box.
+func InputBox(capture string) (text string, found bool) {
+	lines := strings.Split(strings.ReplaceAll(capture, "\r", ""), "\n")
+	last, prev := -1, -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if !IsRule(lines[i]) {
+			continue
+		}
+		if last < 0 {
+			last = i
+			continue
+		}
+		prev = i
+		break
+	}
+	if prev < 0 || last-prev < 2 {
+		return "", false
+	}
+	box := lines[prev+1 : last]
+	first := strings.TrimSpace(box[0])
+	if !strings.HasPrefix(first, "❯") {
+		return "", false
+	}
+	rows := []string{strings.TrimSpace(strings.TrimPrefix(first, "❯"))}
+	for _, l := range box[1:] {
+		rows = append(rows, strings.TrimSpace(l))
+	}
+	return strings.TrimSpace(strings.Join(rows, "\n")), true
+}

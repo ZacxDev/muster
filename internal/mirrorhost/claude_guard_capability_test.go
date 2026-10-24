@@ -40,12 +40,12 @@ func (withScreen) ClaudeScreen(context.Context, string) (string, error) { return
 // withChecked adds the checked paste, not the screen read.
 type withChecked struct{ claudeOnly }
 
-func (w withChecked) PasteChecked(ctx context.Context, p ClaudePane, text string, check func(context.Context) error) error {
+func (w withChecked) PasteChecked(ctx context.Context, p ClaudePane, text string, before, beforeEnter func(context.Context) error) error {
 	return runCheckedPaste(ctx, checkedPasteSteps{
 		paste: func(ctx context.Context) error { return w.b.PastePane(ctx, p.Pane, text) },
 		enter: func(context.Context) error { return nil },
 		sleep: func(context.Context, time.Duration) error { return nil },
-	}, check)
+	}, before, beforeEnter)
 }
 
 // both has both: the control.
