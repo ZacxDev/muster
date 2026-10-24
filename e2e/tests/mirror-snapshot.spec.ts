@@ -93,7 +93,8 @@ async function snaps(page: Page): Promise<any[] | null> {
           res([]);
           return;
         }
-        const q = db.transaction('mirror', 'readonly').objectStore('mirror').getAll();
+        // The read counter (readsInit) does not count this spec's own reads.
+        const q = ((window as any).__probeGetAll || IDBObjectStore.prototype.getAll).call(db.transaction('mirror', 'readonly').objectStore('mirror'));
         q.onsuccess = () => {
           db.close();
           res(q.result);
@@ -110,17 +111,24 @@ async function snaps(page: Page): Promise<any[] | null> {
 
 const snapOf = async (page: Page, win: string) => ((await snaps(page)) || []).find((r) => r.window === win && r.session === 'work');
 
-// putSnap writes rec into the store (the database must exist: a page that ran
-// the store has made it).
-async function putSnap(page: Page, rec: object): Promise<void> {
+// putSnap writes rec into the store, and its meta record (the database must
+// exist: a page that ran the store has made it). meta overrides fields of the
+// meta written — a meta that disagrees with its record isolates the READ's
+// own check from the load-time sweep, which reads meta only.
+async function putSnap(page: Page, rec: any, meta: object = {}): Promise<void> {
+  // From /tasks: a rendered view left open would save its own snapshot over
+  // this one when it is left (pagehide).
+  await page.goto(origin + '/tasks');
+  const m = { k: rec.k, user: rec.user, build: rec.build, host: rec.host, session: rec.session, window: rec.window, at: rec.at, firstAt: rec.firstAt, bytes: 1, ...meta };
   await page.evaluate(
-    (rec) =>
+    ([rec, m]) =>
       new Promise<void>((res, rej) => {
         const r = indexedDB.open('muster-snap');
         r.onsuccess = () => {
           const db = r.result;
-          const t = db.transaction('mirror', 'readwrite');
+          const t = db.transaction(['mirror', 'meta'], 'readwrite');
           t.objectStore('mirror').put(rec);
+          t.objectStore('meta').put(m);
           t.oncomplete = () => {
             db.close();
             res();
@@ -129,7 +137,7 @@ async function putSnap(page: Page, rec: object): Promise<void> {
         };
         r.onerror = () => rej(r.error);
       }),
-    rec,
+    [rec, m],
   );
 }
 
@@ -171,6 +179,19 @@ const stamps = `(() => {
   new MutationObserver(mark).observe(document, { subtree: true, childList: true, attributes: true });
 })()`;
 const times = (page: Page) => page.evaluate(() => (window as any).__t as { bubble: number | null; snapshot: number | null; chip: number | null });
+
+// readsInit counts the page's reads of SNAPSHOT records (the 'mirror'
+// store's get / getAll / openCursor) — never its keys (getAllKeys) or the
+// 'meta' store. snaps() reads through the original getAll, uncounted.
+const readsInit = `(() => {
+  window.__reads = 0;
+  const P = IDBObjectStore.prototype;
+  window.__probeGetAll = P.getAll;
+  for (const name of ['get', 'getAll', 'openCursor']) {
+    const orig = P[name];
+    P[name] = function (...a) { if (this.name === 'mirror') window.__reads++; return orig.apply(this, a); };
+  }
+})()`;
 
 async function ready(page: Page): Promise<void> {
   await rig.login(page);
@@ -431,6 +452,130 @@ test('a snapshot past its TTL is ignored and deleted; one inside it is painted',
     // The live page stores a fresh one; the next case overwrites it.
     await expect.poll(async () => (await snapOf(page, '@3'))?.batches?.length ?? 0).toBeGreaterThan(0);
   }
+});
+
+test('the TTL is checked on the read itself, not only by the load-time sweep', async ({ page }) => {
+  // 🔴 INVARIANT GUARD: the read checked the TTL before this round too. The
+  // record is expired but its META is fresh, so the sweep (which reads meta
+  // only) keeps it, and only the read's own check can refuse it.
+  await ready(page);
+  await page.goto(origin + '/agents');
+  await openLive(page, '@3');
+  const real = await snapOf(page, '@3');
+  const batches = (text: string) => [{ type: 'batch', reset: true, gen: real.gen, offset: real.offset, ops: [{ op: 'append', html: `<div data-bubble="user">${text}</div>` }] }];
+  for (const c of [
+    { at: Date.now() - 60_000, text: 'READ-FRESH', painted: true },
+    { at: Date.now() - 6 * 60_000, text: 'READ-EXPIRED', painted: false },
+  ]) {
+    await putSnap(page, { ...real, at: c.at, batches: batches(c.text) }, { at: Date.now() });
+    await page.goto(origin + '/agents');
+    const h = await hold(page, '@3');
+    await page.goto(origin + viewOf('@3'));
+    if (c.painted) await expect(page.locator('#mv-log'), 'POSITIVE CONTROL: painted').toContainText(c.text);
+    else {
+      await page.waitForTimeout(1500);
+      await expect(page.locator('#mv-log [data-bubble]'), 'expired on read: not painted').toHaveCount(0);
+    }
+    h.release();
+    await expect(page.locator('#mv-status')).toHaveText('Live');
+    await page.unrouteAll();
+  }
+});
+
+test('a snapshot is aged from its last FULL read: a resume keeps that age, and past 30 minutes it is not painted', async ({ page }) => {
+  await ready(page);
+  await page.goto(origin + '/agents');
+  await openLive(page, '@2');
+  const first = await snapOf(page, '@2');
+  expect(typeof first.firstAt, 'the snapshot records when it was read in full').toBe('number');
+  // Opened again: painted, resumed (not read in full), saved again.
+  await page.goto(origin + '/agents');
+  await page.goto(origin + viewOf('@2'));
+  await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+  fs.appendFileSync(trTwo, cc.reply('Two, once more.'));
+  await expect(page.locator('#mv-log')).toContainText('Two, once more.');
+  await expect.poll(async () => (await snapOf(page, '@2'))?.at ?? 0, { message: 'saved again' }).toBeGreaterThan(first.at);
+  expect((await snapOf(page, '@2')).firstAt, 'a resume does not make the content younger').toBe(first.firstAt);
+
+  const real = await snapOf(page, '@2');
+  const batches = (text: string) => [{ type: 'batch', reset: true, gen: real.gen, offset: real.offset, ops: [{ op: 'append', html: `<div data-bubble="user">${text}</div>` }] }];
+  for (const c of [
+    { min: 29, text: 'FULL-29-MIN', painted: true, meta: {} },
+    { min: 31, text: 'FULL-31-MIN', painted: false, meta: {} },
+    // The meta says young: only the read's own check refuses it.
+    { min: 31, text: 'FULL-31-MIN-READ', painted: false, meta: { firstAt: Date.now() } },
+  ]) {
+    await putSnap(page, { ...real, at: Date.now(), firstAt: Date.now() - c.min * 60_000, batches: batches(c.text) }, c.meta);
+    await page.goto(origin + '/agents');
+    const starts = fromStart('@2');
+    const h = await hold(page, '@2');
+    await page.goto(origin + viewOf('@2'));
+    if (c.painted) await expect(page.locator('#mv-log'), `${c.min} min since the full read: painted`).toContainText(c.text);
+    else {
+      await page.waitForTimeout(1500);
+      await expect(page.locator('#mv-log [data-bubble]'), `${c.text}: not painted`).toHaveCount(0);
+    }
+    h.release();
+    await expect(page.locator('#mv-status')).toHaveText('Live');
+    if (!c.painted) expect(fromStart('@2'), `${c.text}: read from the start again`).toBeGreaterThan(starts);
+    await page.unrouteAll();
+    await expect.poll(async () => (await snapOf(page, '@2'))?.batches?.length ?? 0).toBeGreaterThan(0);
+  }
+});
+
+test('a save reads no snapshot back: eviction works from keys and meta', async ({ page }) => {
+  await ready(page);
+  await page.goto(origin + '/agents');
+  // Two other windows' snapshots in the store, so there is something to read.
+  await openLive(page, '@3');
+  await openLive(page, '@1');
+  await page.goto(origin + '/agents');
+  await page.addInitScript(readsInit);
+  await page.goto(origin + viewOf('@2'));
+  await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+  // The open's own read of @2 and the page's warm pass (1.5 s after load) are
+  // done; count from here.
+  await page.waitForTimeout(3500);
+  await page.evaluate(() => ((window as any).__reads = 0));
+  const before = (await snapOf(page, '@2'))?.at ?? 0;
+  fs.appendFileSync(trTwo, cc.reply('A save to count.'));
+  await expect(page.locator('#mv-log')).toContainText('A save to count.');
+  await expect.poll(async () => (await snapOf(page, '@2'))?.at ?? 0, { message: 'the save landed' }).toBeGreaterThan(before);
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => (window as any).__reads), 'snapshot records read by a save').toBe(0);
+  // POSITIVE CONTROL: the counter sees a read of the store.
+  await page.evaluate(
+    () =>
+      new Promise<void>((res) => {
+        const r = indexedDB.open('muster-snap');
+        r.onsuccess = () => {
+          const q = r.result.transaction('mirror', 'readonly').objectStore('mirror').getAll();
+          q.onsuccess = () => {
+            r.result.close();
+            res();
+          };
+        };
+      }),
+  );
+  expect(await page.evaluate(() => (window as any).__reads), 'the counter counts').toBe(1);
+});
+
+test('a sign-out in another tab turns the store off in this one: it keeps streaming and stores nothing', async ({ page, context }) => {
+  await ready(page);
+  await page.goto(origin + '/agents');
+  await openLive(page, '@2');
+  const other = await context.newPage();
+  await other.goto(origin + '/account');
+  await Promise.all([other.waitForURL(/\/login$/), other.getByRole('button', { name: 'Sign out', exact: true }).click()]);
+  await expect.poll(() => snaps(other), { message: 'the sign-out deleted the database' }).toBeNull();
+  // This tab is still on its window: new messages arrive and are drawn…
+  fs.appendFileSync(trTwo, cc.reply('After the sign-out elsewhere.'));
+  await expect(page.locator('#mv-log')).toContainText('After the sign-out elsewhere.');
+  // …and its save (800 ms after a batch) writes nothing.
+  await page.waitForTimeout(2000);
+  expect(await snaps(other), 'no database re-created by the tab that stayed').toBeNull();
+  expect(await snaps(page)).toBeNull();
+  await other.close();
 });
 
 test('a resume refused before its first batch takes the snapshot off the page and out of storage', async ({ page }) => {

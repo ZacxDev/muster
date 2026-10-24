@@ -39,12 +39,15 @@ func SnapScript(f Features) g.Node {
 // mirrorUpdatingChip is the rendered view's "Updating…": shown only while a
 // page painted from a snapshot has waited over a second for its socket.
 //
-// 🔴 ITS ROOM IS ALWAYS TAKEN. It is `invisible` (visibility: hidden), never
-// `hidden` (display: none), and right-aligned (ml-auto) after the status text,
-// so neither showing it nor the status text changing length moves anything.
+// 🔴 IT TAKES NO LAYOUT AT ALL, AND ITS PLACE IS ALWAYS LAID OUT. It is
+// absolutely positioned at the right of the status row (which is `relative`),
+// so it adds no width to a header that must stay ONE row on a 390px phone
+// (e2e sidenav.spec "the Rendered view header is one row" — an in-flow chip
+// wrapped it). It is `invisible` (visibility: hidden), never `hidden`
+// (display: none), so showing it moves nothing and its box is where it shows.
 func mirrorUpdatingChip() g.Node {
 	return Span(ID("mv-updating"), g.Attr("aria-hidden", "true"),
-		Class("invisible ml-auto shrink-0 rounded-full bg-s2 px-2 py-0.5 text-[11px] text-fg2 ring-1 ring-inset ring-line"),
+		Class("invisible absolute right-0 top-1/2 -translate-y-1/2 whitespace-nowrap rounded-full bg-s2 px-2 py-0.5 text-[11px] text-fg2 ring-1 ring-inset ring-line"),
 		g.Text("Updating…"))
 }
 

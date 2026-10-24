@@ -20,7 +20,7 @@ const core = sandbox.musterSnapCore;
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
 const NOW = 1_000_000_000_000;
-const rec = (o = {}) => ({ user: '7', build: 'b1', at: NOW - 1000, gen: 'g', offset: 10, batches: [{ type: 'batch', reset: true, ops: [] }], ...o });
+const rec = (o = {}) => ({ user: '7', build: 'b1', at: NOW - 1000, firstAt: NOW - 60_000, gen: 'g', offset: 10, batches: [{ type: 'batch', reset: true, ops: [] }], ...o });
 
 test('the core loads without a DOM, and touches none', () => {
   assert.equal(typeof core.usable, 'function');
@@ -86,4 +86,36 @@ test('worth keeps what draws and drops a bare marker', () => {
   assert.equal(core.worth({ type: 'batch', reset: true, ops: [] }), true);
   assert.equal(core.worth({ type: 'batch', index: { items: [] }, ops: [] }), true);
   assert.equal(core.worth({ type: 'batch', context: { label: '1k context' }, ops: [] }), true);
+});
+
+test('a snapshot is refused 30 minutes after its last full read, however recently it was written', () => {
+  assert.equal(core.MAX_AGE_MS, 30 * 60 * 1000);
+  assert.equal(core.usable(rec({ at: NOW, firstAt: NOW - 29 * 60_000 }), '7', 'b1', NOW), 'ok');
+  assert.equal(core.usable(rec({ at: NOW, firstAt: NOW - core.MAX_AGE_MS - 1 }), '7', 'b1', NOW), 'aged');
+  assert.equal(core.usable(rec({ at: NOW, firstAt: undefined }), '7', 'b1', NOW), 'aged', 'a record from before firstAt is not trusted');
+  assert.equal(core.fresh({ user: '7', build: 'b1', at: NOW, firstAt: NOW - 2 * core.MAX_AGE_MS }, '7', 'b1', NOW), 'aged', 'meta is aged the same way');
+});
+
+test('eviction decides from keys and meta alone', () => {
+  const k = (u, b, w) => core.keyOf(u, b, { host: 'h', session: 's', window: w });
+  const meta = (key, o = {}) => ({ k: key, user: '7', build: 'b1', at: NOW - 1000, firstAt: NOW - 60_000, ...o });
+  const keys = [k('7', 'b1', '@1'), k('8', 'b1', '@2'), k('7', 'b0', '@3'), k('7', 'b1', '@4'), k('7', 'b1', '@5'), 'not-a-key'];
+  const metas = [meta(keys[0]), meta(keys[1], { user: '7' }), meta(keys[2]), meta(keys[4], { at: NOW - 10 * 60_000 }), meta(k('7', 'b1', '@9'))];
+  const out = plain(core.evictions(keys, metas, '7', 'b1', NOW)).sort();
+  assert.deepEqual(out, [
+    keys[1], // another user's KEY, whatever its meta says
+    keys[2], // another build's
+    keys[3], // no meta
+    keys[4], // expired meta
+    'not-a-key',
+    k('7', 'b1', '@9'), // meta with no snapshot
+  ].sort());
+  // Past MAX_ENTRIES the least recently written go.
+  const many = Array.from({ length: core.MAX_ENTRIES + 2 }, (_, i) => k('7', 'b1', '@' + i));
+  const ms = many.map((key, i) => meta(key, { at: NOW - i * 1000 }));
+  assert.deepEqual(plain(core.evictions(many, ms, '7', 'b1', NOW)), many.slice(core.MAX_ENTRIES));
+});
+
+test('warming takes at most three windows', () => {
+  assert.equal(core.WARM_MAX, 3);
 });

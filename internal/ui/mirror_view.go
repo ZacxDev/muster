@@ -171,7 +171,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 						H1(Class("truncate text-sm font-semibold"), mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, ""),
 							Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host, v.Host, v.HostIcon))),
 						Div(
-							Class("flex min-w-0 items-center gap-2"),
+							// relative: the Updating… chip is positioned in this row
+							// (mirrorUpdatingChip), taking none of its width.
+							Class("relative flex min-w-0 items-center gap-2"),
 							P(ID("mv-status"), Class("truncate text-xs text-muted"), g.Attr("aria-live", "polite"), g.Text("Connecting…")),
 							// The context readout (TakeContext): hidden until a turn
 							// has reported usage, and again after a reset.
@@ -742,17 +744,22 @@ func mirrorViewScript() g.Node {
   var chip = document.getElementById('mv-updating');
   // opLog is the batches drawn since the last reset (what a snapshot stores);
   // provisional: the page shows a snapshot no socket has confirmed yet.
-  var opLog = [], provisional = false, dirty = false, saveTimer = 0, chipTimer = 0;
+  // opBytes is opLog's size (JSON characters), held to twice the store's
+  // bound in memory; firstAt is when this conversation was last read in full
+  // from the host (a reset), which ages the snapshot (mirror-snap.js).
+  var opLog = [], opBytes = 0, firstAt = 0, provisional = false, dirty = false, saveTimer = 0, chipTimer = 0;
 
   function showChip(on) {
     if (!chip) return;
     chip.classList.toggle('invisible', !on);
     chip.setAttribute('aria-hidden', on ? 'false' : 'true');
   }
-  function remember(m) {
+  function remember(m, size) {
     if (!snapRef) return;
-    if (m.reset) opLog = [];
-    if (snap.worth(m)) opLog.push(m);
+    if (m.reset) { opLog = []; opBytes = 0; firstAt = Date.now(); }
+    if (!firstAt) firstAt = Date.now();
+    if (snap.worth(m)) { opLog.push(m); opBytes += size; }
+    if (opBytes > 2 * snap.maxBytes) { var b = snap.bound(opLog, snap.maxBytes); opLog = b.batches; opBytes = b.bytes; }
     dirty = true;
     clearTimeout(saveTimer);
     saveTimer = setTimeout(save, 800);
@@ -761,7 +768,7 @@ func mirrorViewScript() g.Node {
     clearTimeout(saveTimer);
     if (!snapRef || !dirty || provisional || !gen) return;
     dirty = false;
-    snap.put(snapRef, { gen: gen, offset: offset, batches: opLog });
+    snap.put(snapRef, { gen: gen, offset: offset, batches: opLog, firstAt: firstAt });
   }
   // settled: the socket answered, so what is on the page is current.
   function settled() {
@@ -779,7 +786,7 @@ func mirrorViewScript() g.Node {
     window.muMirrorIndex = null;
     ctxEl.hidden = true; ctxEl.textContent = '';
     document.dispatchEvent(new CustomEvent('muster:chat-index'));
-    gen = ''; offset = 0; opLog = []; dirty = false;
+    gen = ''; offset = 0; opLog = []; opBytes = 0; firstAt = 0; dirty = false;
     if (snap && snapRef) snap.drop(snapRef);
   }
   // paint draws a snapshot through apply() — the path a live batch takes —
@@ -787,7 +794,7 @@ func mirrorViewScript() g.Node {
   function paint(rec) {
     rec.batches.forEach(function (b) { apply(b); });
     gen = rec.gen; offset = rec.offset;
-    opLog = rec.batches.slice();
+    opLog = rec.batches.slice(); opBytes = rec.bytes || 0; firstAt = rec.firstAt;
     // A snapshot's last "busy" is not a claim about now.
     working.hidden = true;
     provisional = true;
@@ -891,7 +898,7 @@ func mirrorViewScript() g.Node {
     sock.onopen = function () { retry = 0; };
     sock.onmessage = function (ev) {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.type === 'batch') { if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m); }
+      if (m.type === 'batch') { if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m, ev.data.length); }
       else if (m.type === 'error') { if (provisional) discard(); showError(m.message || 'The view ended.'); }
       // The window's questions changed (mirror_ask.go): read them now.
       else if (m.type === 'asks') { if (window.musterAskPoll) window.musterAskPoll(); }

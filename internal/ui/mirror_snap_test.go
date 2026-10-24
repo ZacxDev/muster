@@ -41,8 +41,11 @@ func TestTheRenderedViewDrawsTheSnapshotStoreAndAReservedChip(t *testing.T) {
 	if chip == "" {
 		t.Fatal("no Updating… chip")
 	}
-	if !regexp.MustCompile(`class="invisible ml-auto `).MatchString(chip) || strings.Contains(chip, " hidden") {
-		t.Errorf("the chip must hold its room while hidden (invisible, right-aligned, never `hidden`): %s", chip)
+	if !regexp.MustCompile(`class="invisible absolute right-0 `).MatchString(chip) || strings.Contains(chip, " hidden") {
+		t.Errorf("the chip must take no layout and keep its place while hidden (invisible, absolute, never `hidden`): %s", chip)
+	}
+	if !strings.Contains(page, `class="relative flex min-w-0 items-center gap-2"><p id="mv-status"`) {
+		t.Error("the status row is not the chip's positioning box")
 	}
 	if bare := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main"})); strings.Contains(bare, `src="/static/mirror-snap.js`) {
 		t.Error("a view rendered with no user carries the snapshot store")
