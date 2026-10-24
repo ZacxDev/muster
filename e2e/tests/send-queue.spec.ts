@@ -1357,6 +1357,9 @@ test.describe('a usage limit, phone 390×844 touch', () => {
     await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
     answered('the limit has lifted');
     await busyAndSeen();
+  });
+});
+
 // 🔴 THE CLAUDE PROMPT GUARD: a message from muster must never be the keystroke
 // that answers a permission prompt. Each test runs its OWN host and transcript,
 // so it neither reads nor moves the shared one's status.
