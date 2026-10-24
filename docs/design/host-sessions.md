@@ -22,40 +22,38 @@ The design in one line each:
 - **Transport: push, on the WebSocket that already exists.** Each host's
   `muster-mirror` already holds one outbound WebSocket that muster pushes
   pastes, attaches and scrolls down. A new `spawn` message travels the same
-  way, with a request id and a matching `spawned` reply. muster still never
-  connects in to a host, and the host never polls.
+  way, with a matching `spawned` reply. muster still never connects in to a
+  host, and the host never polls.
 - **The host decides what may run.** A new host flag, `-spawn`, plus a
-  host-side file, `spawn.json`, lists the **profiles** (a fixed argv each, such
-  as `claude`), the **directory roots**, the session-name scheme and the
-  limits. muster sends only names it was offered: a profile name, a directory
-  key, an optional model from that profile's own list, and a request id. It
-  never sends argv, a path, or environment.
+  host-side file, `spawn.json`, lists the **profiles** (a fixed argv each:
+  `claude` and `opencode`), the **directory roots**, the session-name pool
+  and one live cap. muster sends only two names it was offered: a profile
+  name and a directory key. It never sends argv, a path, or environment.
 - **What gets created:** a new tmux session on the operator's existing tmux
-  server, started in the chosen repository. It runs one of two profiles,
-  `claude` or `opencode`, each with no extra flags. `claude` offers a choice
-  of model (`opus` or `sonnet`). An `opencode` session is terminal-only in
-  muster. The session is tagged with a tmux user option,
-  `@muster-request <id>`, so its identity lives on the tmux object itself.
+  server, started in the chosen repository. It runs plain `claude` (the
+  model comes from the operator's own settings) or plain `opencode`, which
+  is terminal-only in muster. The host tags the session with a tmux user
+  option, `@muster-spawned`, in the same tmux call that creates it. Kill
+  acts only on sessions that carry the tag.
 - **No discovery race:** the host creates the session, forces a listing with
   the existing `RefreshNow`, and only then sends `spawned`. The socket is
-  ordered, so muster has the new window before it hears that the request
-  succeeded. The listing also carries each window's request id, so muster
-  links the window to the request by id, never by guessing.
+  ordered, so muster has the new window before it hears that the spawn
+  succeeded, and the redirect lands on a window muster already lists.
 - **Security:** treated as remote command execution on the operator's
   workstation. It is off by default on both sides. Only the host's owner may
-  use it, it needs the same fresh sign-in (step-up) as typing into a mirrored
-  session, it is capped and rate-limited on the host, and each spawn and kill
-  writes an `audit_log` row. Revoking the host's mirror token stops it within
-  30 s.
-- **Lifecycle:** **Kill** from muster ends only sessions that carry a muster
-  request id. When the program exits, the pane drops to the user's login
-  shell in the same directory. If the host is offline, the button is disabled
-  and nothing is queued. After a reboot the session is gone, and the row says
-  `lost`.
-- **First slice (Phase 1, about 8.5–10.5 engineer-days):** pick a host, a
-  repository and a profile (`claude` with `opus` or `sonnet`, or
-  `opencode`), start the session, land on its mirrored view, and kill it. No
-  initial prompt, no free paths, no Android.
+  use it, only on a host that runs `-interactive`, and it needs the same
+  fresh sign-in (step-up) as typing into a mirrored session. The host bounds
+  it with its allowlist and a live cap. Revoking the host's mirror token
+  stops it within 30 s.
+- **Lifecycle:** **Kill** from muster ends only tagged sessions. When the
+  program exits, the pane drops to the user's login shell in the same
+  directory. If the host is offline, the button is disabled and nothing is
+  queued. After a reboot the session is gone, like any other tmux session.
+- **First slice (Phase 1, about 6.5–9 engineer-days):** pick a host, a
+  repository and a profile (`claude` or `opencode`), start the session, land
+  on its mirrored window, and kill it. It has no server table, no host
+  ledger, no audit rows, no model picker, no initial prompt, no free paths,
+  and no Android.
 
 ## Goals
 
@@ -73,8 +71,9 @@ The design in one line each:
   windows named after their working directory, Claude Code started as plain
   `claude` and opencode as plain `opencode`, and the repositories in
   `~/workspace`.
-- Every spawn and every kill can be audited: who, which host, which profile,
-  which directory, and when.
+- Slice 1 stays small. Sends, the greater power on these hosts, write no
+  audit rows, and slice 1 adds no table and no audit rows of its own. History
+  and audit are a later phase, if wanted ([phased plan](#phased-plan)).
 
 ## Non-goals
 
@@ -219,7 +218,8 @@ spawn (see [environment](#environment)).
 - **ccd is not reused on the host.** It is a supervisor: it owns the session,
   respawns the CLI, serves a chat gateway and needs a hook socket. The
   operator wants a plain tmux session they own. What carries over is the
-  command shape and the `remain-on-exit` idea.
+  command shape, including the `;`-chained `set-option` in the same tmux
+  call.
 
 ### The operator's habits (read from devrc)
 
@@ -286,16 +286,15 @@ sequenceDiagram
   participant H as muster-mirror (host)
   participant T as tmux server
   U->>M: GET /mirror/hosts/{host}/new (form: dirs, profiles from the host's hello)
-  U->>M: POST /mirror/hosts/{host}/sessions {request_id, profile, dir, model?}
-  M->>M: same-origin, owner, step-up, host advertises spawn, row "requested", audit
-  M->>H: {"type":"spawn","id":n,"request":"<uuid>","profile":"claude","dir":"muster"}
-  H->>H: validate against spawn.json, rate limit, cap, ledger lookup
-  H->>T: new-session -d -s <name> -c <dir> -e … -- <argv>; set-option @muster-request <uuid>
-  H->>H: RefreshNow (the listing with the new window, tagged with its request id)
+  U->>M: POST /mirror/hosts/{host}/sessions {profile, dir}
+  M->>M: same-origin, owner, step-up, host announces spawn and -interactive
+  M->>H: {"type":"spawn","id":n,"profile":"claude","dir":"muster"}
+  H->>H: validate against spawn.json, -interactive, live cap, tmux server up
+  H->>T: new-session -d -s <name> -c <dir> -e PATH=… -- <argv> ; set-option @muster-spawned 1
+  H->>H: RefreshNow (the listing with the new window)
   H-->>M: sessions/windows listing
   H-->>M: {"type":"spawned","id":n,"session":…,"window":"@N","pane":"%N"}
-  M->>M: row "running", audit result
-  M-->>U: redirect to the mirrored view of host/session/@N
+  M-->>U: redirect to the mirrored window host/session/@N
 ```
 
 ### Which hosts are eligible, and choosing one
@@ -304,39 +303,41 @@ A host is offered in **New session** only when all of these hold:
 
 - it is connected now, and its token is owned by the signed-in user (the
   hub's `(owner, host)` key already scopes this);
-- it is on protocol v2 and its hello announces `spawn: true` with at least
-  one profile and one directory;
+- it is on protocol v2, and its hello announces `spawn` with at least one
+  profile and one directory;
+- it runs `-interactive` (the hub already records it,
+  `internal/mirror/hub.go:101-102`). A host that runs `-spawn` without
+  `-interactive` is **refused** ([decision 9](#decisions)). The sheet shows it
+  greyed out with the reason: "this host is read-only; starting sessions
+  needs `-interactive`". The host refuses too (below);
 - the server runs with `MUSTER_HOST_SESSIONS=1`. That is a new variable, off by
   default, with a row in [configuration.md](../configuration.md).
 
 The sheet lists the eligible hosts. It preselects the host this browser used
 last (remembered per browser, like the Interactive choice), else the one
 with the most recent activity. The directory list depends on the host, so
-the host is picked first. An offline or read-only host is shown greyed out,
+the host is picked first. An offline or ineligible host is shown greyed out,
 with the reason.
 
 ### Host configuration: `spawn.json`
 
 `muster-mirror -spawn` (or `MUSTER_MIRROR_SPAWN=1`) turns the feature on. It
 reads `~/.config/muster-mirror/spawn.json` (`-spawn-file` overrides the path).
-If the file is missing or invalid, the host says `spawn: false` in its hello
-and logs why. That is never fatal. On the operator's hosts, Home Manager
-generates the file, like the labels and snippets files
-(`devrc/nix/home.nix:518-519`, `:5456`).
+If the file is missing or invalid, or the host is not `-interactive`, the
+hello announces `spawn: {disabled: "<reason>"}` and the host logs why. That
+is never fatal. On the operator's hosts, Home Manager generates the file,
+like the labels and snippets files (`devrc/nix/home.nix:518-519`, `:5456`).
 
 ```json
 {
   "roots": ["~/workspace"],
   "profiles": {
-    "claude":   {"argv": ["claude"], "models": ["opus", "sonnet"], "modelFlag": "--model",
-                 "label": "Claude Code"},
+    "claude":   {"argv": ["claude"],   "label": "Claude Code"},
     "opencode": {"argv": ["opencode"], "label": "opencode", "terminalOnly": true}
   },
   "sessionPool": ["scratch15", "scratch16", "scratch17", "scratch18", "scratch19", "scratch20"],
   "sessionPrefix": "m-",
-  "maxLive": 6,
-  "maxPerHour": 12,
-  "afterExit": "shell"
+  "maxLive": 6
 }
 ```
 
@@ -346,105 +347,118 @@ generates the file, like the labels and snippets files
   uses). The offer is a list of `{key, label}`, where the key is the child's
   name. A root itself is never offered.
 - **`profiles`:** the only programs that may run. Each one is a fixed argv.
-  An optional `models` list is the only part muster may vary: muster sends a
-  model name, and the host appends `modelFlag <name>` only if the name is in
-  the list. A profile with no `models` takes no model, and the host refuses a
-  request that names one. `terminalOnly` is display only: muster shows that
-  the session has no rendered view, and lands on the terminal.
+  muster chooses a profile by name, and nothing else about it.
+  `terminalOnly` is display only: muster says the session has no rendered
+  view, and lands on the terminal.
 - **Permission-bypass flags are refused** ([decision 7](#decisions)). The host
-  **refuses to load** a profile whose argv contains a bypass flag for its
+  **refuses to load** a profile whose argv holds a bypass flag for its
   program, unless the profile sets `"allowBypass": true`. That is a deliberate,
   greppable opt-in, and the operator's Nix module sets it on no profile. The
-  host keeps the bypass flags in a table keyed by the basename of `argv[0]`.
-  It matches both `--flag value` and `--flag=value`.
+  flags are matched as `--flag value` and as `--flag=value`. Both spellings
+  are one check, and missing the second would let it through.
 
-  | program | bypass flags refused |
+  | program (basename of `argv[0]`) | bypass flags refused |
   |---|---|
   | `claude` | `--dangerously-skip-permissions`; `--permission-mode` with the value `bypassPermissions` |
   | `opencode` | `--auto` ("Auto-approve permissions that are not explicitly denied", `opencode --help`, v2.0.32) |
 
-  A profile whose `argv[0]` is not in the table loads only with
-  `allowBypass: true`, because the host cannot know that program's bypass
-  flags. The table covers flags only. What a program's own config allows is
-  outside it (see [the opencode profile](#the-opencode-profile)).
+  The table covers flags only. What a program's own config allows is outside
+  it (see [the opencode profile](#the-opencode-profile)).
 - **`sessionPool` / `sessionPrefix`:** see [naming](#tmux-naming).
-- **`maxLive`:** how many muster-started sessions may exist at once (counted
-  from tmux, not memory). **`maxPerHour`:** spawns allowed per rolling hour,
-  kept in the ledger, so a restart does not reset it.
-- **`afterExit`:** `shell` (the default) or `remain` (see
-  [lifecycle](#lifecycle)).
+- **`maxLive`:** how many tagged (muster-started) sessions may exist at once.
+  The host counts them from tmux at spawn time, with one `list-sessions` call,
+  so the count holds across a restart without being stored anywhere. Why keep
+  it when everything else was cut: a retried form, a stuck client or a
+  scripted loop could otherwise fill the workstation with agents, each a
+  process tree using real memory and API spend. That would happen by
+  accident, not by attack. Live keys could start more by hand, so the cap is
+  a guard against mistakes, not a security boundary.
 
-The hello carries the profiles' names, labels, model lists and
-`terminalOnly`, and the directory offer, never argv. It is re-sent when the file or the set of repositories
-changes.
+The hello carries the profiles' names, labels and `terminalOnly`, the
+directory offer and `maxLive`, never argv. It is re-sent when the file or the
+set of repositories changes.
 
 ### The wire
 
-Two message types, announced by a hello field. There is no version bump,
-because an older muster ignores an unknown field, as with `Labels`
+Two request/reply pairs, announced by a hello field. There is no version
+bump, because an older muster ignores an unknown field, as with `Labels`
 (`internal/mirror/wire.go:180-189`):
 
-- `hello.spawn`: `{profiles: [{name, label, models, terminalOnly}], dirs: [{key, label}], maxLive}`.
-- `spawn` (muster → host): `{id, request, profile, dir, model?}`. `request`
-  is a UUID that muster mints when it renders the form. `dir` is a key from
-  the host's own offer.
-- `spawned` (host → muster): `{id, request, session, window, pane, reused?}`
-  or `{id, request, error: <code>}`.
-- `kill` (muster → host): `{id, request}`. `killed` is the reply.
-- Each window in a listing gains `request`: the value of its session's
-  `@muster-request` option, if set. An older muster ignores it.
+- `hello.spawn`: `{profiles: [{name, label, terminalOnly}], dirs: [{key, label}], maxLive}`,
+  or `{disabled: "<reason>"}`.
+- `spawn` (muster → host): `{id, profile, dir}`. `dir` is a key from the
+  host's own offer.
+- `spawned` (host → muster): `{id, session, window, pane}` or
+  `{id, error: <code>}`.
+- `kill` (muster → host): `{id, session}`. `killed` is the reply:
+  `{id}` or `{id, error: <code>}`.
+- Each window in a listing gains `spawned: true` when its session carries the
+  `@muster-spawned` tag. muster uses it only to decide where to show
+  **Kill**. An older muster ignores it.
 
 The error codes are fixed strings, so the UI can say why:
-`spawn_disabled`, `unknown_profile`, `unknown_dir`, `unknown_model`,
-`max_live`, `rate_limited`, `no_tmux_server`, `name_taken`, `tmux_failed`,
-`exec_not_found`.
+`spawn_disabled`, `not_interactive`, `unknown_profile`, `unknown_dir`,
+`unknown_field`, `max_live`, `no_tmux_server`, `name_taken`, `tmux_failed`,
+`exec_not_found`; and for `kill`, `no_such_session` and `not_muster_session`.
 
-On the server, `Hub.Spawn` copies `pasteTo`'s request/reply bookkeeping
-(`internal/mirror/transcript.go:648-683`), with a 10 s timeout. A timeout after
-the write is **unconfirmed**: the row says so, and it is settled by the next
-listing that carries the request id.
+On the server, `Hub.Spawn` and `Hub.Kill` copy `pasteTo`'s request/reply
+bookkeeping (`internal/mirror/transcript.go:648-683`), with a 10 s timeout.
+A timeout after the write is **unconfirmed**, as for a paste. The page then
+says "the host did not confirm; the session may have started, so check the
+Agents list" and does not retry by itself. muster keeps no record of spawns,
+so there is nothing to reconcile.
 
 ### What gets created
 
 #### tmux naming
 
 - **Session name:** the first `sessionPool` entry that does not exist as a
-  session, else `<sessionPrefix><6 hex of the request id>`, for example
-  `m-3f9a1c`. A pool fits the operator's habits: a spawned session becomes a
-  scratch slot with its Alt+key toggle and its codename label already wired
+  session, else `<sessionPrefix><6 random hex>`, for example `m-3f9a1c`.
+  **Decided ([1](#decisions)):** the operator's pool is the upper slots,
+  `scratch15`–`scratch20`, falling back to `m-<hex>`. Their Nix module
+  generates the pool from the same slot table as
+  `devrc/scripts/tmux-scratch-slots.sh`. A spawned session becomes a scratch
+  slot, so its Alt+key toggle and codename label are already wired
   (`devrc/nix/programs/tmux/default.nix:31-35`, `devrc/nix/home.nix:518-519`).
-  Without a pool, the `m-` name never matches the bare-number rename hook
-  (`devrc/.tmux.conf:214`). **Decided ([1](#decisions)):** the operator's pool
-  is the upper slots, `scratch15`–`scratch20`, falling back to `m-<hex>`. The
-  operator's Nix module generates the pool from the same slot table as
-  `devrc/scripts/tmux-scratch-slots.sh`.
+  The `m-` name never matches the bare-number rename hook
+  (`devrc/.tmux.conf:214`).
 - **Window name:** none is set. tmux's automatic rename names it after the
   directory and adds ` ●` while `claude` runs, as every other window does
   (`devrc/.tmux.conf:69-71`).
-- **Identity:** `set-option -t =<session> @muster-request <uuid>`. A user
-  option lives on the tmux session itself, so the host can tell muster's
-  sessions from the operator's after its own restart, and muster can link a
-  window to its request without guessing.
+- **Identity: the `@muster-spawned` tag**, set by the host in the same tmux
+  call that creates the session (below). The name alone is not enough: the
+  operator can open `scratch15` with its Alt+key toggle, and that session must
+  never be killable from muster. A tmux user option lives on the session
+  itself, so it survives a `muster-mirror` restart and needs no record on
+  either side.
 
 #### The command
 
 ```sh
 tmux -u new-session -d -P -F '#{session_id}\t#{window_id}\t#{pane_id}' \
   -s <name> -c <resolved dir> -x 200 -y 50 \
-  -e PATH=<tmux global PATH> -e MUSTER_REQUEST=<uuid> \
-  -- <argv…>
-tmux set-option -t =<name> @muster-request <uuid>
+  -e PATH=<tmux global PATH> \
+  -- <login shell> -lc '"$@"; exec "$0" -l' <login shell> <argv…> \
+  \; set-option -t =<name> @muster-spawned 1
 ```
 
-- It is run as an argv, never through a shell string. With `afterExit:
-  "shell"`, the argv becomes
-  `[$SHELL, -lc, '"$@"; exec "$SHELL" -l', muster-session, <argv…>]`: the
-  profile's words are positional parameters, never interpolated.
-- `-x 200 -y 50` is ccd's size (`cmd/ccd/tmux.go:267-270`). The first attached
-  client resizes it.
+- It is run as an argv, never through a shell string built from input. The
+  `-c` script is a constant. The login shell's path (from the user's passwd
+  entry) is its `$0`, and the profile's words are its positional parameters,
+  never interpolated. When the program exits, the pane execs the
+  user's login shell in the same directory ([decision 3](#decisions)).
+- The tag is set in the **same** tmux invocation (`;`-chained, as ccd chains
+  `set-option`, `cmd/ccd/tmux.go:267-270`). A session that exists therefore
+  carries the tag, and a host crash between two calls cannot leave an
+  untagged muster session behind.
+- `-x 200 -y 50` is ccd's size. The first attached client resizes it.
 - The directory is `root/key`, resolved with `filepath.EvalSymlinks`. It must
   still be under a root, be a directory, and hold `.git`. Each check is redone
   at spawn time, not just when the list was built.
+- An existing name is never reused. The host picks only a name that does not
+  exist. If `new-session -s` fails because the name appeared in the meantime,
+  the host tries the next pool entry, then a fresh `m-<hex>`, and gives up
+  with `name_taken`. Spawns on one host are serialised with a mutex.
 
 #### Environment
 
@@ -463,15 +477,10 @@ tmux set-option -t =<name> @muster-request <uuid>
   reaches the muster MCP server through the user's own `mcpServers.muster`
   entry. The operator's entry uses a `headersHelper` that reads the secret
   file on each connection, so that no shell or tool call inherits it (see
-  [the MCP server](#the-mcp-server-for-mirrored-sessions)). An exported
-  secret would undo that choice. A user whose entry uses the documented
-  `${MUSTER_MIRROR_MCP_SECRET:-}` header gets no MCP in spawned sessions until
-  they switch to a helper. The phase 1 docs say so in
-  [attention.md](../attention.md#mirrored-claude-code-sessions). If they want
-  the env form anyway, a profile may set `"exportMcpSecret": true`, which the
-  host honours from its own file, never from muster. The operator's profiles
-  leave it off.
-- **`MUSTER_REQUEST`:** for scripts and hooks. Nothing reads it in slice 1.
+  [the MCP server](#the-mcp-server-for-mirrored-sessions)). A user whose entry
+  uses the documented `${MUSTER_MIRROR_MCP_SECRET:-}` header gets no MCP in
+  spawned sessions until they switch to a helper. The Phase 1 docs say so in
+  [attention.md](../attention.md#mirrored-claude-code-sessions).
 - **Nothing from muster.** No environment value, flag or text comes from the
   request.
 
@@ -496,8 +505,10 @@ profile matches how the operator runs it today:
   provider/model#variant` exists only on `opencode run` (`opencode run
   --help`, v2.0.32). The TUI takes its model from config: the operator's
   default is `openrouter/z-ai/glm-5.3-flash`
-  (`devrc/scripts/opencode/opencode.jsonc:173`). So the profile has no
-  `models` list, and the sheet says "model from opencode's config". The
+  (`devrc/scripts/opencode/opencode.jsonc:173`). In slice 1 neither profile
+  takes a model ([decision 8](#decisions)), so this costs nothing: the sheet
+  says "model from opencode's config" for opencode, and "model from your
+  Claude Code settings" for claude. The
   `flash`, `mimo` and `pro` aliases belong to the `opencode-dispatch` wrapper
   (`devrc/scripts/opencode/opencode-dispatch:127-130`), not to opencode, and
   are not offered. **UNVERIFIED:** whether an environment variable
@@ -542,40 +553,22 @@ profile matches how the operator runs it today:
   (`devrc/scripts/opencode/opencode.jsonc`, no match for `muster`), so the
   attention tools are Claude Code's only.
 
-#### Idempotency, and an existing name
-
-- The **request id** is minted when the form renders. A double submit, a
-  retry after an unconfirmed reply, or a reconnect re-sends the same id.
-- The host keeps a small **ledger** (`~/.local/state/muster-mirror/spawns.jsonl`):
-  request id, session name, time, result. On a known id it answers with the
-  existing session (`reused: true`) **if** a session carrying that id is still
-  there. It never starts a second one.
-- If the chosen name exists **without** our id (the operator made `scratch15`
-  between listing and spawn), the host takes the next pool entry, then
-  `m-<hex>`. If `m-<hex>` itself exists with a different id, it refuses with
-  `name_taken`. It never attaches to, renames or reuses a session muster did
-  not start.
-- On the server, the row's `request_id` is unique. A second POST with the
-  same id returns the first row's result.
-
 ### Mirroring handoff
 
-1. The host runs `new-session` and `set-option`.
+1. The host runs `new-session`, with the tag set in the same call.
 2. The host calls `RefreshNow` (`internal/mirrorhost/client.go:185-205`), which
    reads and sends the listing in the refresh goroutine. The new window is in
-   it, tagged with `request`.
+   it, with `spawned: true`.
 3. Only after `RefreshNow` returns does the host write `spawned`. The
    WebSocket delivers in order, so muster processes the listing first.
-4. muster checks that the listing it holds has a window on `session` with
-   `request == <id>`. If it does not, the row is `failed: not_listed`, a bug
-   to surface, not to paper over. muster then redirects the browser to the
-   mirrored view (`/mirror/…/<host>/<session>/<@N>`). For a `terminalOnly`
-   profile, it redirects to that window's terminal.
-5. For `claude`, the Claude session id arrives on a later refresh, once `claude` writes its
-   sessions file (the existing lookup, `internal/mirrorhost/claude.go:145-153`).
-   Until then the view shows the terminal and the rendered view says
-   "starting". The row stores the Claude session id when it first appears, for
-   relinking after a reboot (Phase 3).
+4. muster redirects the browser to the mirrored window
+   (`/mirror/…/<host>/<session>/<@N>`), or to its terminal for a
+   `terminalOnly` profile. The window is already in muster's list, so the
+   page never shows "no such window".
+5. For `claude`, the Claude session id arrives on a later refresh, once
+   `claude` writes its sessions file (the existing lookup,
+   `internal/mirrorhost/claude.go:145-153`). Until then the view shows the
+   terminal, and the rendered view says "starting".
 
 `tmux attach -t <name>` on the host reaches the same session. muster's viewer
 attaches with `-f read-only,ignore-size` or `attach -r`
@@ -584,27 +577,26 @@ operator's own client keeps its size.
 
 ### Server side
 
-- **Route:** `POST /mirror/hosts/{host}/sessions` (form or JSON), on the
-  session tier. It needs the same-origin check, the host's owner, and step-up
-  (below). There is no `mst_` or machine-token route in slice 1. The form
-  comes from `GET /mirror/hosts/{host}/new`.
-- **Kill:** `POST /mirror/host-sessions/{request_id}/kill`, with step-up.
-- **Table `host_sessions`** (the next free migration when it lands; `0049_…` at the time of writing): `id`,
-  `owner_id` (FORCE row-level security, like `mirror_tokens`), `request_id`
-  (UUID, unique), `host`, `profile`, `dir_key`, `model`, `tmux_session`,
-  `window_id`, `pane_id`, `claude_session`, `status` (`requested`,
-  `running`, `unconfirmed`, `failed`, `exited`, `killed`, `lost`), `error`,
-  `stepup_at`, `created_at`, `ended_at`. Rows that ended more than 30 days
-  ago are swept.
-- **Audit:** `audit_log` rows with `action` `host_session.spawn`,
-  `host_session.kill` and `host_session.refused`. `object` is
-  `host:<host>`, and `detail` holds `{request_id, profile, dir_key, model,
-  result, error}`. The same row is written on the server's refusals (stale
-  step-up, host not eligible) and on the host's.
+- **Spawn route:** `POST /mirror/hosts/{host}/sessions` (form), on the session
+  tier. It requires the same-origin check, the host's owner, an
+  `-interactive` host and step-up ([below](#step-up-compared-with-the-send-gate)).
+  There is no `mst_` or machine-token route. The form comes from
+  `GET /mirror/hosts/{host}/new`. Its **Start** button disables on submit, so a
+  double click sends one request. A second submit that gets through starts a
+  second session, bounded by `maxLive` and removable with Kill. That is
+  accepted rather than reconciled.
+- **Kill route:** `POST /mirror/hosts/{host}/sessions/{session}/kill`, with
+  step-up and a confirm dialog. muster sends `kill` only for a window that its
+  listing marks `spawned`. The host checks the tag again itself.
+- **No table, no rows.** muster stores nothing about spawns. The listing is
+  the state: a spawned session is a mirrored session with `spawned: true`.
+- **Logs:** a server log line per spawn, kill and refusal, as sends have
+  (`internal/api/mirror_view.go:533,537`).
 - **UI:** a **New session** button on the Agents list, next to the mirrored
-  sessions. It opens a sheet with host, repository (searchable), profile and
-  model, and a **Start** button. A spawned session's card has a small
-  "started from muster" mark and a **Kill** action.
+  sessions. It opens a sheet with host, repository (searchable) and profile.
+  Each profile shows where its model comes from, and opencode shows
+  "terminal-only in muster". A spawned session's card has a small "started
+  from muster" mark and a **Kill** action.
 
 ## Security
 
@@ -613,17 +605,19 @@ operator's own client keeps its size.
 **This is remote command execution on the operator's workstation, started from
 a web app.** Its worst case is not "an attacker opens a terminal". It is "an
 attacker starts an agent with tool access in a checkout that holds
-credentials". The design bounds what can be started, where, how often, and by
-whom, and records each one.
+credentials". The design bounds what can be started, where, by whom, and how
+many at once. It is enabled only where a stronger power, Live keys, already
+exists behind the same gate.
 
 ### Who may do it
 
 | layer | check |
 |---|---|
 | server | `MUSTER_HOST_SESSIONS=1`; a signed-in browser session; the same-origin check; the host's token belongs to this user (the hub's `(owner, host)` key) |
+| server | the host announced `-interactive`; otherwise refused with `not_interactive` |
 | server | step-up: a sign-in inside `MUSTER_STEPUP_WINDOW`, re-checked by the mirror service before the message is written, as sends are (`internal/mirror/service.go:307`) |
-| host | `-spawn` is set, and `spawn.json` loaded |
-| host | the profile, directory and model are in its own lists; the live and hourly caps hold |
+| host | `-spawn` and `-interactive` are both set, and `spawn.json` loaded |
+| host | the profile and directory are in its own lists; `maxLive` holds |
 | host | the tmux server already exists |
 
 Members can own hosts too, since tokens carry `owner_id`. Spawning is allowed
@@ -632,65 +626,69 @@ keys on the owner, and nothing here adds an admin path.
 
 ### Step-up, compared with the send gate
 
-| action | gate today or proposed |
+| action | gate |
 |---|---|
-| watch a mirrored session | none |
+| watch a mirrored session | none (today) |
 | send, queue, attach interactively | fresh sign-in, 12 h (today) |
-| **start a host session**, host runs `-interactive` | fresh sign-in, 12 h, the same gate (decided, [4](#decisions)) |
-| **start a host session**, host runs `-spawn` without `-interactive` | a per-spawn passkey confirmation, valid 5 min (decided, [4](#decisions)) |
-| **kill a host session** | fresh sign-in, 12 h (proposed); it destroys running work, so the rule that "refusing is never the risky direction" does not apply |
+| **start a host session** (only on an `-interactive` host) | fresh sign-in, 12 h, the same gate ([decision 9](#decisions)) |
+| start a host session on a host without `-interactive` | **refused** in slice 1 ([decision 9](#decisions)) |
+| **kill a host session** | fresh sign-in, 12 h; it destroys running work, so the rule that "refusing is never the risky direction" does not apply |
 
-Why not a stricter, per-spawn passkey? On a host that runs `-interactive`,
-which both of the operator's hosts do (`devrc/nix/home.nix:459-496`), the
-12-hour gate already admits a shell: open Live keys and type anything.
-A spawn bounded by `spawn.json` is **strictly less** than that. A stricter
-gate on the weaker door would add friction without closing anything. On a
-host that runs `-spawn` **without** `-interactive`, a spawn is new power, so
-**it needs a per-spawn passkey confirmation** ([decision 4](#decisions)), valid
-for 5 minutes, the same age as `CredentialMaxAge`
-(`internal/stepup/stepup.go:64`). The confirmation is used by that one spawn.
-The host already reports `interactive` in its hello
-(`internal/mirror/hub.go:101-102`), so muster knows which gate applies. In
-password mode, where there are no passkeys, the password confirmation
-(`POST /auth/confirm`) stands in for it.
+Why the same gate, and not a stricter one? On a host that runs
+`-interactive`, which both of the operator's hosts do
+(`devrc/nix/home.nix:459-496`), the 12-hour gate already admits a shell: open
+Live keys and type anything. A spawn bounded by `spawn.json` is **strictly
+less** than that. A stricter gate on the weaker door would add friction
+without closing anything.
+
+On a host **without** `-interactive`, a spawn would be new power. So slice 1
+refuses it, on the server and on the host. The per-spawn passkey that would
+make it acceptable (a 5-minute confirmation, the age of `CredentialMaxAge`,
+`internal/stepup/stepup.go:64`) is built only when such a host exists
+([phased plan](#phased-plan), "when needed").
 
 ### The host does not trust muster
 
 - muster sends **names**, and the host maps each to its own value. An unknown
-  name is refused. Unknown JSON fields are refused, not ignored.
+  name is refused, and so is an unknown JSON field.
 - No argv, path, environment or text from muster reaches `exec` or tmux.
 - The directory is re-resolved at spawn time and must stay under a root
   after symlinks.
-- The caps live on the host. `maxPerHour` survives the host's restart through
-  the ledger.
+- The host refuses to spawn unless it runs `-interactive` itself. It does not
+  rely on muster's check.
+- `maxLive` is counted on the host, from tmux.
+- `kill` applies only to a session that carries `@muster-spawned`. The host
+  reads the tag from tmux when the request arrives. A compromised muster
+  cannot kill the operator's own sessions through `kill`, though it could
+  through Live keys, as today.
 - The host logs every spawn, kill and refusal to its own journal (stdout
-  under the systemd unit), with the request id. That record does not depend
-  on muster's database.
-- `kill` applies only to sessions whose `@muster-request` matches. A
-  compromised muster cannot kill the operator's own sessions through it.
+  under the systemd unit). That trace does not depend on muster.
 
 ### What a stolen muster session could do
 
 | attacker holds | can do |
 |---|---|
 | a session cookie **outside** the step-up window | list hosts and sessions; nothing here |
-| a cookie **inside** the window | start up to `maxLive` sessions, at most `maxPerHour`, of the allowed profiles, in the offered repositories, and then type into them. With `-interactive` on, they could already do anything at all. |
-| a `mst_` or machine token | nothing: the route is session-tier only |
+| a cookie **inside** the window | start up to `maxLive` concurrent sessions of the allowed profiles in the offered repositories, type into them, and kill them. With `-interactive` on, which spawning requires, they could already do anything at all through Live keys. |
+| a `mst_` or machine token | nothing: the routes are session-tier only |
 | the host's mirror token | impersonate the host to muster; it cannot make the host spawn anything (spawns are commands *to* the host) |
 | muster's server or database | send any `spawn` the host accepts, and nothing beyond `spawn.json` |
 
 A spawned `claude` keeps the operator's permission mode (`default`), so its
 tool calls still ask for permission through the operator's usual approval
 path. That is a mitigation, not a boundary: an attacker who can type into the
-session can also answer its prompts from muster.
+session can also answer its prompts from muster. For opencode the
+corresponding mitigation is weaker
+([the opencode profile](#the-opencode-profile)).
 
 ### Revocation and kill switches
 
 - **Revoke the mirror token** (`muster-server mirror token revoke <id>`): the
   connection ends within 30 s (`internal/mirror/service.go:22-25`), and with it
   every spawn path.
-- **On the host:** drop `-spawn`, or delete `spawn.json`, and restart the
-  unit. Sessions already created stay. They are ordinary tmux sessions.
+- **On the host:** drop `-spawn` (or `-interactive`), or delete `spawn.json`,
+  and restart the unit. Sessions already created stay. They are ordinary tmux
+  sessions.
 - **On the server:** unset `MUSTER_HOST_SESSIONS`.
 - **Sign out everywhere / disable the account:** ends the browser session
   that would carry the step-up.
@@ -699,75 +697,126 @@ session can also answer its prompts from muster.
 
 | event | what happens |
 |---|---|
-| program exits, `afterExit: shell` | the pane becomes the user's login shell in the same directory; the window stays mirrored; the row stays `running`. This matches how the operator runs `claude` today, inside a shell |
-| program exits, `afterExit: remain` | tmux keeps the dead pane (`remain-on-exit on`); the host reports `pane_dead`; the row becomes `exited` |
-| **Kill** from muster | `kill-session -t =<name>`, after the `@muster-request` check; the row becomes `killed`; an audit row |
-| the operator kills it on the host | the next listing lacks it; the row becomes `exited` |
-| host offline | New session is disabled for it; nothing is queued, because a spawn intent from an hour ago is not an intent now; existing rows keep their state until the host is back |
-| reply never came | `unconfirmed`; settled by the next listing: the request id seen means `running`, not seen means `failed` |
-| `muster-mirror` restarts | sessions are untouched; the next hello re-lists them with their `request` tags |
-| host reboots | the tmux server and its sessions are gone; rows whose session is missing become `lost` once the host reconnects. The operator's restore script may re-create a window and `claude --resume` it (`devrc/scripts/tmux-session-restore.py:542`), but without the `@muster-request` option (**UNVERIFIED**: whether it copies user options). Phase 3 relinks by Claude session id |
-| row cleanup | ended rows are swept after 30 days; muster never kills an idle session on its own |
+| program exits | the pane becomes the user's login shell in the same directory, and the window stays mirrored ([decision 3](#decisions)). This matches how the operator runs `claude` today, inside a shell |
+| **Kill** from muster | `kill-session -t =<name>`, after the tag check; the next listing lacks it |
+| the operator kills it on the host | the next listing lacks it |
+| host offline | New session is disabled for it, and nothing is queued: a spawn intent from an hour ago is not an intent now |
+| reply never came | the page says the spawn is unconfirmed; the Agents list shows whether the session exists |
+| `muster-mirror` restarts | sessions are untouched; the next listing still marks them `spawned`, from the tag |
+| host reboots | the tmux server and its sessions are gone, like any other. The operator's restore script may re-create a window and `claude --resume` it (`devrc/scripts/tmux-session-restore.py:542`); it comes back as an ordinary mirrored window, without the tag (**UNVERIFIED**: whether the script copies user options), so muster offers no Kill for it |
+| cleanup | muster never kills an idle session on its own; there is no muster-side state to clean |
+
+## What slice 1 left out
+
+Round 0 of the PR audit listed deletion candidates D1–D12. The operator cut
+D1–D4, D7 and D8's dependent parts from slice 1, and kept Kill (D5)
+([decision 8](#decisions)). This section records where each one went.
+
+| id | item | disposition | why |
+|---|---|---|---|
+| D1 | the `host_sessions` table, its seven states, the 30-day sweep, `stepup_at` | **moved** to Phase 3, if wanted | the listing already tells muster what exists; a table pays off only for history and relinking after a reboot |
+| D2 | the host ledger (`spawns.jsonl`) and request-id idempotency | **deleted** | the form stops a double submit; a rare duplicate is bounded by `maxLive` and removed with Kill, which is cheaper than reconciling across restarts |
+| D3 | `audit_log` rows for spawn, kill, refused | **moved** to Phase 3, together with rows for mirror sends | sends, the greater power on these hosts, write none today; auditing spawns alone would audit the weaker door |
+| D4 | `maxPerHour` persisted in the ledger; `maxLive` | **`maxPerHour` deleted; `maxLive` kept**, counted from tmux, not stored | a live cap guards against an accidental loop filling the workstation, at the cost of one `list-sessions` call; an hourly rate limit bounds an attacker who has Live keys anyway |
+| D5 | Kill route, action and its check | **kept** ([decision 8](#decisions)) | simplified: the host identifies muster's sessions by the `@muster-spawned` tag, not a request id |
+| D6 | the per-spawn passkey for a host without `-interactive` | **moved** to "when needed"; slice 1 refuses such hosts ([decision 9](#decisions)) | no such host exists |
+| D7 | the claude model picker (`models`, `modelFlag`) | **deleted** | claude starts plain, with the model from the operator's settings ([decision 8](#decisions)) |
+| D8 | the `request` listing field, the `not_listed` check, settling unconfirmed spawns | **deleted**, except a boolean `spawned` listing flag kept for Kill | the request id served D1 and D2; the ordering test pins what `not_listed` guarded; with no rows there is nothing to settle |
+| D9 | bypass-table extensions: unknown `argv[0]` requires `allowBypass`, and `--flag=value` parsing | **`--flag=value` kept; the unknown-program rule deleted** | the `=value` spelling is the same check, and without it `--permission-mode=bypassPermissions` slips through; requiring `allowBypass` for every new program would make the opt-in routine and so meaningless |
+| D10 | `afterExit: remain` | **deleted** | the operator chose the shell ([decision 3](#decisions)); the wrapper is now unconditional |
+| D11 | the `exportMcpSecret` profile opt-in | **deleted** | the operator's MCP entry uses a `headersHelper`; a user of the env form is told to switch |
+| D12 | the `MUSTER_REQUEST` environment variable | **deleted** | nothing read it |
 
 ## Phased plan
 
-Rough engineer-days, including tests and docs.
+### How the estimates were made
+
+Each estimate is built bottom-up from scratch, for this revision. Every phase
+is split into work items, and each item is sized in half-day steps. The
+sizes include the item's own unit tests and are compared with the nearest
+existing code it copies: the paste request/reply in `internal/mirror`, the
+hello capability fields, the step-up-gated mirror routes, and one Playwright
+click path. A range's low end assumes the copied pattern fits as it is. The
+high end allows one surprise per item. Nothing from the previous estimate was
+carried over.
+
+**Phase 1 (first slice): host 3–4, server and UI 3.5–5, total 6.5–9.**
+
+| item | what | days |
+|---|---|---|
+| H1 | `-spawn`, `spawn.json` loading and validation, the bypass refusal in both spellings, the repository offer, the hello field and its disabled reasons | 1 |
+| H2 | the spawn handler: the `-interactive`, profile, directory, `maxLive` and tmux-server checks; pool naming with retry; PATH from tmux's global environment; the `new-session` call with the tag and the login-shell wrapper; `RefreshNow` before the reply | 1–1.5 |
+| H3 | the kill handler with its tag check; the `spawned` listing flag | 0.5 |
+| H4 | host tests against a real tmux server, with stub `claude` and `opencode` programs and the mutation-checked ordering test | 0.5–1 |
+| S1 | wire types, `Hub.Spawn` and `Hub.Kill` (copying `pasteTo`), keeping the hello's spawn offer in host state | 0.5–1 |
+| S2 | the two routes: owner, `-interactive`, step-up, `MUSTER_HOST_SESSIONS` and its configuration row, log lines | 0.5–1 |
+| S3 | UI: the New session button and sheet (host, repository, profile, the terminal-only and ineligible-host notices), the redirect, the Kill action and its confirm | 1–1.5 |
+| S4 | server route tests and the Playwright click path | 1 |
+| S5 | docs: a mirroring.md section, the configuration row, a decisions.md entry | 0.5 |
+
+The devrc Home Manager change that writes `spawn.json`, with the pool
+generated from the scratch-slot table, is separate, in that repository, and
+not counted.
+
+### All phases
 
 | phase | what | host | server + UI | depends on |
 |---|---|---|---|---|
-| **1 (first slice)** | `-spawn`, `spawn.json` (roots, the `claude` and `opencode` profiles, models, the bypass-flag table and `allowBypass`, `terminalOnly`, caps, the `scratch15`–`scratch20` pool, `afterExit`), the directory offer in hello, `spawn`/`spawned`/`kill`/`killed`, the `@muster-request` tag in listings, the ledger, the no-tmux-server refusal, PATH from the tmux global environment (the MCP secret is never exported), `RefreshNow` before the reply. `MUSTER_HOST_SESSIONS`, `host_sessions` and its migration, `Hub.Spawn`/`Kill`, the two routes with step-up, audit rows, the New session sheet (with the terminal-only notice for opencode), the redirect (to the terminal for a `terminalOnly` profile), the Kill action. The devrc Home Manager change that writes `spawn.json`, with the pool generated from the scratch-slot table, is separate, in that repository | 4–5 | 4.5–5.5 | — |
-| 2 | An initial prompt for `claude`, delivered through the existing send queue once the window reports `idle` (its step-up is the spawn's). opencode never reports that status, so it gets none through the queue; whether opencode's `--prompt` submits on launch or only fills the input is **UNVERIFIED**, and is checked before offering it. Recent directories per host; a `muster` CLI command over a `mst_` route, if wanted | 0.5 | 2–3 | 1 |
-| 3 | Lifecycle hardening: relink after a reboot by Claude session id, `exited`/`lost` reconciliation tests, the sweep, a per-host "muster-started" filter | 1 | 1.5–2 | 1 |
+| **1 (first slice)** | the table above | 3–4 | 3.5–5 | — |
+| 2 | An initial prompt for `claude`, delivered through the existing send queue once the window reports `idle`, with the spawn's step-up as the queued row's (1). opencode never reports that status, so it gets none through the queue; whether opencode's `--prompt` submits on launch or only fills the input is **UNVERIFIED**, and is checked before offering it. Recent directories per host (host 0.5, server 0.5–1). A `muster` CLI command over a `mst_` route, if wanted (0.5–1) | 0.5 | 2–3 | 1 |
+| 3, if wanted | History and audit: the `host_sessions` table, migration and row-level security (D1; 1–1.5); `audit_log` rows for spawn, kill **and** mirror sends together (D3; 0.5–1); relinking after a reboot by Claude session id, which needs a request-id tag on the session and in the listing (host 0.5–1, server 0.5) | 0.5–1 | 2–3 | 1 |
 | 4 | Android: a signed device action `host_session_spawn` under `/api/device/actions/`, using the native step-up ([android.md](android.md#which-actions-are-gated)) | — | 1–1.5 (plus app work) | 1, Android Phase 2 |
 | 5, optional | A worktree per session: a profile option to `git worktree add` a fresh branch under the repository before starting | 1–1.5 | 0.5 | 1 |
+| when needed | The per-spawn passkey (5 min) for a host that runs `-spawn` without `-interactive` (D6), which replaces that host's refusal | 0–0.5 | 1–1.5 | 1 |
 
-**First slice: Phase 1, about 8.5–10.5 engineer-days** (host 4–5, server and
-UI 4.5–5.5). Adding the `opencode` profile ([decision 6](#decisions)) costs
-about 1 day over a `claude`-only slice (7.5–9.5): 0.5 on the host for the
-per-program bypass table and its tests, and 0.5 on the server and UI for the
-terminal-only sheet and redirect. It is the smallest slice that is useful by
-itself: start Claude Code or opencode in a chosen repository on a chosen host,
-drive it from the phone, attach to it at the desk, and kill it. All five
-phases total host 6.5–8 and server and UI 9.5–12.5, plus Android app work
-for Phase 4.
+**Totals for Phases 1–5: host 5–7, server and UI 9–13, so 14–20
+engineer-days, plus Android app work for Phase 4.** The "when needed" item
+adds 1–2 if it is ever built. Sums: host 3–4 + 0.5 + 0.5–1 + 0 + 1–1.5;
+server 3.5–5 + 2–3 + 2–3 + 1–1.5 + 0.5.
+
+The first slice is the smallest that is useful by itself: start Claude Code
+or opencode in a chosen repository on a chosen host, drive it from the phone,
+attach to it at the desk, and kill it.
 
 ### Tests the first slice needs
 
 - **Host, against a real tmux server** (the suite already drives tmux for
   mirrorhost):
-  - an unknown profile, directory, model and field are each refused with
-    their code;
-  - a symlink out of a root is refused;
-  - a `..` key is refused;
-  - an existing name without our tag is never reused;
-  - a repeated request id returns the same session;
-  - `maxLive` and `maxPerHour` hold across a host restart;
-  - no tmux server means no server is started;
-  - `kill` refuses a session without the matching tag;
-  - argv words containing `;`, `$(…)` and spaces arrive in the program
-    verbatim;
+  - an unknown profile, directory and JSON field are each refused with their
+    code;
+  - a symlink out of a root, and a `..` key, are refused;
+  - a host without `-interactive` announces spawn as disabled and refuses a
+    `spawn` with `not_interactive`;
+  - no tmux server means `no_tmux_server`, and no server is started;
+  - `maxLive` counts tagged sessions from tmux, so it holds across a host
+    restart;
+  - an existing session name is never reused, and the next pool entry is
+    taken;
+  - every created session carries `@muster-spawned`;
+  - `kill` refuses an untagged session with `not_muster_session`, including
+    an operator-made `scratch15`;
   - **both profiles' argv arrive verbatim.** Stub `claude` and `opencode`
-    programs on the tmux global PATH record their argv. The test expects
-    exactly `opencode` for opencode, and `claude --model sonnet` for claude
-    with `sonnet`;
-  - **opencode is offered and refused like claude.** It appears in the hello's
-    profile list with `terminalOnly` and no models. A request naming a model
-    for it is refused with `unknown_model`, and an unknown profile name with
-    `unknown_profile`;
-  - **the bypass table:** a profile with `--dangerously-skip-permissions`,
-    `--permission-mode bypassPermissions`, `--permission-mode=bypassPermissions`
-    or, for opencode, `--auto` does not load without `allowBypass: true`, and
-    loads with it. A profile whose program is not in the table loads only
-    with it.
+    programs on the tmux global PATH record their argv, and the test expects
+    exactly `claude` and exactly `opencode`. A profile argv word holding `;`,
+    `$(…)` or spaces arrives unchanged;
+  - **opencode is offered and refused like claude.** It is in the hello's
+    profile list with `terminalOnly`, and a misspelled profile is refused
+    with `unknown_profile`;
+  - **the bypass refusal:** a profile with `--dangerously-skip-permissions`,
+    `--permission-mode bypassPermissions`,
+    `--permission-mode=bypassPermissions` or, for opencode, `--auto` does not
+    load without `allowBypass: true`, and loads with it;
+  - when the program exits, the pane is a login shell in the same directory.
 - **Ordering:** a test that `spawned` is written only after the listing that
   contains the window. Mutation-check it: move the reply before
   `RefreshNow`, and the test must go red.
 - **Server:**
-  - stale step-up is refused before any message is written;
+  - stale step-up is refused before any message is written, for spawn and
+    for kill;
   - another owner's host is refused;
-  - an older host (no `spawn` in hello) is not offered;
-  - the audit row is written for success and for each refusal;
-  - a duplicate request id returns the first result;
+  - a host without `-interactive` is refused with `not_interactive`;
+  - an older host (no `spawn` in its hello) is not offered;
+  - Kill is offered only on a `spawned` window;
   - a `terminalOnly` profile redirects to the terminal, and the sheet shows
     the notice.
 - **Browser:** the New session click path ends on the mirrored view of the
@@ -782,12 +831,12 @@ for Phase 4.
   pool in `spawn.json` and `tmux-scratch-slots.sh` drift, a spawned session
   could take a slot whose codename the operator thinks is free. Generating
   both from the one Nix table removes the drift.
-- **The restore script after a reboot** re-creates sessions muster
-  started, without their tag. Until Phase 3 they come back as ordinary
-  mirrored windows, and their rows say `lost`. That is safe, but untidy.
-- **Two spawns in the same instant** both see `scratch15` free. tmux's
-  `new-session -s` fails on a name that exists, so the second takes the next
-  name. The host serialises spawns with a mutex anyway.
+- **The restore script after a reboot** re-creates sessions muster started,
+  without their tag. They come back as ordinary mirrored windows with no Kill
+  in muster. That is safe, but untidy.
+- **An unconfirmed spawn, retried by hand, can start a second session.**
+  There is no idempotency (D2 was deleted). `maxLive` bounds it and Kill
+  removes it.
 - **A single muster replica** (the tunnel is in-process). Not new, but spawn
   inherits it.
 - **Profiles drifting between the two hosts.** Both come from the same Nix
@@ -796,7 +845,7 @@ for Phase 4.
   muster has a rendered view only for Claude Code (and Hermes, whose host
   mirroring stays), so the sheet says so. Also, the operator's opencode config
   already allows nearly everything, so refusing `--auto` bounds little. The
-  bound on an opencode spawn is the directory list, the caps and the
+  bound on an opencode spawn is the directory list, `maxLive` and the
   operator's guard plugin, not the flag table
   ([the opencode profile](#the-opencode-profile)).
 - **opencode's shared service** carries the environment of whichever pane
@@ -807,23 +856,39 @@ for Phase 4.
 ## Decisions
 
 The operator made each of these decisions on 2026-10-24. The rest of this page
-follows them.
+follows them. Where a later decision changed an earlier one, the earlier one
+says so.
 
 1. **Session naming:** a pool of the upper scratch slots, `scratch15`–`scratch20`,
    falling back to `m-<hex>`. The pool is generated from the same Nix table as
    `devrc/scripts/tmux-scratch-slots.sh` ([naming](#tmux-naming)).
 2. **Directories:** repositories directly under `~/workspace` only in slice 1,
    recent directories in Phase 2, never a free path.
-3. **When the program exits:** drop to the login shell (`afterExit: shell`).
-4. **Step-up:** a per-spawn passkey confirmation (5 min) only on a host that
-   runs `-spawn` without `-interactive`. Elsewhere it is the same 12-hour gate
-   as sends ([step-up](#step-up-compared-with-the-send-gate)).
+3. **When the program exits:** drop to the login shell.
+4. **Step-up:** ~~a per-spawn passkey (5 min) on a host that runs `-spawn`
+   without `-interactive`~~ **superseded by decision 9.** On an `-interactive`
+   host it is the same 12-hour gate as sends.
 5. **Initial prompt:** none in slice 1. Phase 2 adds it through the send queue.
-6. **Profiles:** both `claude` and `opencode` in slice 1. `claude` offers the
-   models `opus` and `sonnet`. The New session sheet says that an opencode
-   session is terminal-only in muster ([the opencode profile](#the-opencode-profile)).
-   This differs from the original recommendation, which was `claude` only.
+6. **Profiles:** both `claude` and `opencode` in slice 1. The New session sheet
+   says that an opencode session is terminal-only in muster
+   ([the opencode profile](#the-opencode-profile)). This differs from the
+   original recommendation, which was `claude` only. Its model choice for
+   claude (`opus`, `sonnet`) is **superseded by decision 8**.
 7. **Bypass flags:** the host refuses permission-bypass flags unless a profile
    sets `allowBypass: true`, and the operator's Nix module sets it on no
    profile. This covers opencode's `--auto` as well as Claude Code's flags
    ([the bypass table](#host-configuration-spawnjson)).
+8. **Slice 1 is the minimal cut plus Kill.** Slice 1 contains:
+   - the host allowlist: repositories, the claude and opencode argv, and the
+     bypass refusal;
+   - `spawn`/`spawned`, with `RefreshNow` before the reply;
+   - the step-up-gated route, the New session sheet and the redirect;
+   - a Kill that acts only on sessions muster started.
+
+   Cut from slice 1: the `host_sessions` table, the host ledger and
+   idempotency, `audit_log` rows, persisted caps, the claude model picker
+   (claude starts plain), and whatever of the request-id plumbing only those
+   needed. Their dispositions are in
+   [what slice 1 left out](#what-slice-1-left-out).
+9. **Hosts without `-interactive`:** slice 1 refuses to spawn on them, with a
+   clear reason. The per-spawn passkey is built only when such a host exists.
