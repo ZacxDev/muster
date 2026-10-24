@@ -22,9 +22,10 @@ import (
 // that: each paste ends its turn at once, and the host reports how (a
 // mirror.TurnError: a usage limit, the prompt's only reply).
 //
-// 🔴 RED ON origin/main, where the host's report does not exist: drop the
-// TurnError assignment in onPaste below (the one line main cannot compile) and
-// the queue drains — all three pasted in as many passes.
+// 🔴 RED ON origin/main, where the host's report does not exist: with the
+// TurnError assignment in onPaste dropped and the three sendqueue constants
+// written out (what main cannot compile), the queue drains — all three pasted
+// in as many passes.
 func TestAUsageLimitHoldsTheQueueAndFailsOnlyTheBouncedMessage(t *testing.T) {
 	f := newSQFixture(t)
 	var mu sync.Mutex
