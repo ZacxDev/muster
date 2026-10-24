@@ -169,7 +169,15 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 			}
 		})
 	}
+	// Suggested replies (suggest.go): this socket's turn ends, and only this
+	// socket's, may generate a set; the page fetches it on {"type":"suggest"}.
+	tracker, suggestGate := &suggestTracker{}, make(chan struct{}, 1)
 	err = s.ext.Mirror.WatchWindow(ctx, host, session, window, gen, offset, func(m mirror.Msg) error {
+		if tracker.observe(m) {
+			s.suggestOnTurnEnd(ctx, host, session, window, tracker, suggestGate, func() {
+				_ = terminalWriteJSON(ctx, c, map[string]string{"type": "suggest"})
+			})
+		}
 		if m.Reset {
 			drawn.Reset()
 		}
