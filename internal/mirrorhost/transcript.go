@@ -481,7 +481,19 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 					return false, err
 				}
 			}
-			if err := sendStatus(&busy, &since, np.Busy, np.StatusSince, off, h.nudge, send); err != nil {
+			// 🔴 THE LIST IS NUDGED ONLY TOWARD IDLE: a turn end needs muster's
+			// list to name the turn's own idle soon (suggested replies wait for
+			// it); a busy or WAITING status does not, and nudging those changed
+			// what the send queue sees — muster would hear of a permission prompt
+			// it otherwise learns of only from the host's refusal at the moment
+			// of typing (#255's prompt guard and its backoff,
+			// e2e/tests/send-queue.spec.ts "a prompt that opened after the host
+			// last reported").
+			var nudge func()
+			if np.Status == mirror.StatusIdle {
+				nudge = h.nudge
+			}
+			if err := sendStatus(&busy, &since, np.Busy, np.StatusSince, off, nudge, send); err != nil {
 				return false, err
 			}
 			// The subagents' own files move without the parent's: read them

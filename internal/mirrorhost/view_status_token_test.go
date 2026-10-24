@@ -138,10 +138,19 @@ func TestAViewStreamNamesItsStatusTimeAndNudgesTheList(t *testing.T) {
 		waitUntil(t, "busy again", marker(true, s1b+int64(i)*2+1))
 	}
 
-	// busy(s2): the busy marker names its time too.
+	// busy(s2): the busy marker names its time too — and the list is NOT
+	// nudged (only toward idle; Refresh is an hour, so it stays unsent).
 	b.set(statusClaudeWindow(tr, mirror.StatusBusy, s2))
 	waitUntil(t, "a busy marker naming its time", marker(true, s2))
-	waitUntil(t, "the nudged list naming it", listed(s2))
+	// WAITING (a permission prompt) is not nudged either: muster must keep
+	// learning of a prompt from the host's own refusal (#255).
+	const s3 = s2 + 7
+	b.set(statusClaudeWindow(tr, mirror.StatusWaiting, s3))
+	waitUntil(t, "a waiting marker naming its time", marker(false, s3))
+	time.Sleep(100 * time.Millisecond)
+	if listed(s2)() || listed(s3)() {
+		t.Fatal("the list was nudged toward busy or waiting")
+	}
 
 	// A live batch (the turn's reply) carries the time as well.
 	f, err := os.OpenFile(tr, os.O_APPEND|os.O_WRONLY, 0o600)
@@ -153,7 +162,7 @@ func TestAViewStreamNamesItsStatusTimeAndNudgesTheList(t *testing.T) {
 	waitUntil(t, "the live reply naming the status time", func() bool {
 		for _, m := range events() {
 			if len(m.Events) > 0 && m.Events[0].Text == "working on it" {
-				return m.Busy && m.StatusSince == s2
+				return !m.Busy && m.StatusSince == s3
 			}
 		}
 		return false
