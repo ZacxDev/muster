@@ -26,6 +26,9 @@ import (
 //
 // Every fixture is synthetic.
 
+// TODO(runtime-interface): delete these goldens in the final fix pass after
+// review round 1; until then they are the proof that before equals after.
+
 var updateCharacterization = flag.Bool("update-characterization", false, "rewrite testdata/characterization/*.golden")
 
 // golden compares got to testdata/characterization/<name>.golden.

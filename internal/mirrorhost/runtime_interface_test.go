@@ -7,38 +7,48 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
-// TestTheHostsRuntimesAreTheServersRuntimes: the host's runtimes and the
-// server's runtime table (mirror.Runtimes) are the SAME set, and each reports
-// the same capabilities on both sides — a seam guard over the two halves of
-// the runtime interface, failing when either grows, shrinks or disagrees.
-func TestTheHostsRuntimesAreTheServersRuntimes(t *testing.T) {
-	var host, server []string
+// hostRuntimesBySpec is the host's runtimes by name, failing the test unless
+// every runtime in mirror.Runtimes has a host implementation, and the
+// reverse.
+func hostRuntimesBySpec(t *testing.T) map[string]Runtime {
+	t.Helper()
+	out := map[string]Runtime{}
 	for _, r := range knownRuntimes {
-		host = append(host, r.Name())
-		spec, ok := mirror.LookupRuntime(r.Name())
-		if !ok {
-			t.Errorf("the host's runtime %q is not in the server's table", r.Name())
-			continue
+		if _, ok := mirror.LookupRuntime(r.Name()); !ok {
+			t.Fatalf("the host's runtime %q is not in the server's table", r.Name())
 		}
-		if spec.Caps != r.Capabilities() {
-			t.Errorf("%s: the host reports %+v, the server %+v", r.Name(), r.Capabilities(), spec.Caps)
-		}
-		// A capability the host claims has its implementation here.
-		if _, ok := r.(viewSource); r.Capabilities().View != ok {
-			t.Errorf("%s: View %v, but a view source %v", r.Name(), r.Capabilities().View, ok)
-		}
-		_, gated := r.(gatedSender)
-		if gated != spec.GatedSend {
-			t.Errorf("%s: a gated sender %v, the server's GatedSend %v", r.Name(), gated, spec.GatedSend)
+		out[r.Name()] = r
+	}
+	for _, s := range mirror.Runtimes() {
+		if _, ok := out[s.Name]; !ok {
+			t.Fatalf("the server's runtime %q has no host implementation", s.Name)
 		}
 	}
-	for _, r := range mirror.Runtimes() {
-		server = append(server, r.Name)
+	return out
+}
+
+// TestAHostViewSourceExistsExactlyWhereTheServerSaysAView: a runtime the
+// server gives a rendered view (mirror.RuntimeSpec.Caps.View) has a host view
+// source, and one it does not has none — so muster never asks a host for a
+// view it cannot stream, nor leaves one it can unused.
+func TestAHostViewSourceExistsExactlyWhereTheServerSaysAView(t *testing.T) {
+	for name, r := range hostRuntimesBySpec(t) {
+		spec, _ := mirror.LookupRuntime(name)
+		if _, ok := r.(viewSource); ok != spec.Caps.View {
+			t.Errorf("%s: a host view source %v, the server's View %v", name, ok, spec.Caps.View)
+		}
 	}
-	slices.Sort(host)
-	slices.Sort(server)
-	if !slices.Equal(host, server) {
-		t.Fatalf("host runtimes %q, server runtimes %q", host, server)
+}
+
+// TestAHostGatedSenderExistsExactlyWhereTheServerGatesTheSend: a runtime the
+// server sends to only through the host's gated send (GatedSend) has a host
+// gatedSender — the paste routed by Msg.Runtime — and no other runtime does.
+func TestAHostGatedSenderExistsExactlyWhereTheServerGatesTheSend(t *testing.T) {
+	for name, r := range hostRuntimesBySpec(t) {
+		spec, _ := mirror.LookupRuntime(name)
+		if _, ok := r.(gatedSender); ok != spec.GatedSend {
+			t.Errorf("%s: a host gated sender %v, the server's GatedSend %v", name, ok, spec.GatedSend)
+		}
 	}
 	// The listing's runtimes are the ones that locate panes: Claude Code
 	// first, then Hermes; the opencode stub locates nothing.
@@ -52,16 +62,18 @@ func TestTheHostsRuntimesAreTheServersRuntimes(t *testing.T) {
 }
 
 // TestTheOpenCodeStubReportsNoViewAndNoSend: opencode is a runtime of the
-// interface that can do nothing yet — "view: no, send: no", no prompts —
-// claims no pane even when one runs opencode, has no view source, no gated
-// send and no answerer, and its one behaviour is the paste guard's refusal.
+// interface that can do nothing yet — "view: no, send: no", no prompts, in
+// the server's table — claims no pane even when one runs opencode, has no
+// view source, no gated send and no answerer, and its one behaviour is the
+// paste guard's refusal.
 func TestTheOpenCodeStubReportsNoViewAndNoSend(t *testing.T) {
 	r, ok := runtimeNamed(mirror.RuntimeOpenCode)
 	if !ok {
 		t.Fatal("no opencode runtime")
 	}
-	if caps := r.Capabilities(); caps.View || caps.Send || caps.Prompts {
-		t.Fatalf("the stub reports %+v, want view: no, send: no", caps)
+	spec, ok := mirror.LookupRuntime(mirror.RuntimeOpenCode)
+	if !ok || spec.Caps.View || spec.Caps.Send || spec.Caps.Prompts || spec.OnWire || spec.KeyPrefix != "" || spec.GatedSend {
+		t.Fatalf("the stub's spec does more than report itself: %+v", spec)
 	}
 	if _, ok := r.(viewSource); ok {
 		t.Error("the stub has a view source")

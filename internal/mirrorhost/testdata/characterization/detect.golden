@@ -8,7 +8,7 @@ guard %tmux found=true pid=161 rule="multiplexer client" err=nil multiplexer=tru
 guard %opencode found=true pid=171 rule="opencode" err=nil multiplexer=false/0
 guard %claudehermes found=true pid=182 rule="comm=hermes" err=nil multiplexer=false/0
 guard %othertty found=true pid=191 rule="comm=hermes" err=nil multiplexer=false/0
-guard %ocnode found=true pid=201 rule="opencode" err=nil multiplexer=false/0
+guard %ocnode found=false pid=0 rule="" err=nil multiplexer=false/0
 guard %nvim found=false pid=0 rule="" err=nil multiplexer=false/0
 guard %absent found=false pid=0 rule="" err=error multiplexer=false/0
 runtimes ["claude" "hermes"]

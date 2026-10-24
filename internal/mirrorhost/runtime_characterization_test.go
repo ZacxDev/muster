@@ -20,6 +20,9 @@ import (
 // the same after it (see internal/mirror's runtime_characterization_test.go).
 // A golden that changes is a behaviour change. Every fixture is synthetic.
 
+// TODO(runtime-interface): delete these goldens in the final fix pass after
+// review round 1; until then they are the proof that before equals after.
+
 var updateCharacterization = flag.Bool("update-characterization", false, "rewrite testdata/characterization/*.golden")
 
 func golden(t *testing.T, name, got string) {

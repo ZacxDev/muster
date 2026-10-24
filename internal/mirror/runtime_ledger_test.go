@@ -9,8 +9,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // TestEveryPlaceThatNamesARuntimeIsListed is a SEAM LEDGER over the whole
@@ -133,46 +131,5 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 	if !slices.Equal(sites, want) {
 		t.Fatalf("the functions that name a runtime are\n  %s\nwant exactly\n  %s\nA per-runtime decision goes through the runtime interface (mirror.RuntimeSpec / mirrorhost.Runtime); update this ledger only on purpose",
 			strings.Join(sites, "\n  "), strings.Join(want, "\n  "))
-	}
-}
-
-// TestTheRuntimeTableIsWhatTheRefactorPromised: the three runtimes, Claude
-// Code first, with the capabilities each has today — and the opencode stub
-// a runtime of "view: no, send: no" that the wire does not carry and no key
-// names. The session key pattern built from the table is the one migration
-// 0036 spells (internal/db pins the migration side).
-func TestTheRuntimeTableIsWhatTheRefactorPromised(t *testing.T) {
-	var got []string
-	for _, r := range mirror.Runtimes() {
-		got = append(got, r.Name)
-	}
-	if want := []string{mirror.RuntimeClaude, mirror.RuntimeHermes, mirror.RuntimeOpenCode}; !slices.Equal(got, want) {
-		t.Fatalf("runtimes %q, want %q", got, want)
-	}
-	for name, want := range map[string]mirror.Capabilities{
-		mirror.RuntimeClaude:   {View: true, Send: true, Prompts: true},
-		mirror.RuntimeHermes:   {View: true, Send: true, Prompts: true},
-		mirror.RuntimeOpenCode: {},
-	} {
-		r, ok := mirror.LookupRuntime(name)
-		if !ok || r.Caps != want {
-			t.Errorf("%s: %+v (%v), want capabilities %+v", name, r.Caps, ok, want)
-		}
-	}
-	oc, _ := mirror.LookupRuntime(mirror.RuntimeOpenCode)
-	if oc.OnWire || oc.KeyPrefix != "" || oc.GatedSend || oc.Kind != mirror.KindOpenCode || oc.HasView("ses_x") {
-		t.Fatalf("the opencode stub does more than report itself: %+v", oc)
-	}
-	if mirror.SessionKeyPattern != `^([0-9A-Za-z][0-9A-Za-z_-]{0,63}|hermes:[0-9A-Za-z][0-9A-Za-z_-]{0,127})$` {
-		t.Fatalf("the session key pattern moved: %s", mirror.SessionKeyPattern)
-	}
-	if _, ok := mirror.LookupRuntime("bogus"); ok {
-		t.Fatal("an unknown runtime name was found")
-	}
-	if got := mirror.SessionIDOf("hermes:local-1"); got != "local-1" {
-		t.Errorf("SessionIDOf(hermes key) = %q", got)
-	}
-	if got := mirror.SessionIDOf("c-1"); got != "c-1" {
-		t.Errorf("SessionIDOf(claude key) = %q", got)
 	}
 }

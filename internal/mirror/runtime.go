@@ -20,8 +20,8 @@ import (
 // ClaudeSession (never Window.Runtime), and its questions as askq entries.
 
 // Capabilities is what muster can do with a window of a runtime. The host
-// reports the same three for its own implementation (mirrorhost.Runtime);
-// a test pins that the two halves agree.
+// reads them here (LookupRuntime); tests in internal/mirrorhost pin that its
+// implementations exist where these say.
 type Capabilities struct {
 	// View: muster shows the window's conversation in a rendered view.
 	View bool
@@ -39,9 +39,6 @@ type RuntimeSpec struct {
 	Name string
 	// Kind is what a list names a window of it (SessionView.Kind).
 	Kind string
-	// Commands are the pane commands (#{pane_current_command}) a list names
-	// Kind by when the host reports no runtime: a label, never a claim.
-	Commands []string
 	// Caps is what muster can do with its windows.
 	Caps Capabilities
 	// OnWire: a host names a window of it as Window.Runtime, and
@@ -103,7 +100,7 @@ var runtimes = []RuntimeSpec{
 		PendingNamesAsk: true,
 	},
 	{
-		Name: RuntimeOpenCode, Kind: KindOpenCode, Commands: []string{"opencode"},
+		Name: RuntimeOpenCode, Kind: KindOpenCode,
 		NoStatus: ErrNoStatus,
 	},
 }

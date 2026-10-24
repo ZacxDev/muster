@@ -252,11 +252,8 @@ func (s SessionView) Kind() string {
 	if r, ok := s.Spec(); ok {
 		return r.Kind
 	}
-	for _, r := range runtimes {
-		if slices.Contains(r.Commands, s.Command) {
-			return r.Kind
-		}
-	}
+	// A pane whose command is "opencode" is KindOpenCode by the fall-through
+	// below: the label is the command.
 	if slices.Contains(shells, s.Command) {
 		return KindShell
 	}

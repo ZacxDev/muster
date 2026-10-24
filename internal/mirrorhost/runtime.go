@@ -18,24 +18,23 @@ import (
 //   - DETECTION, SESSION RESOLUTION AND STATUS: LocatePanes (every runtime);
 //   - the RENDERED VIEW SOURCE: viewSource (Claude Code's transcript tail,
 //     Hermes's state.db tail), chosen by the window a watch names;
-//   - the SEND CAPABILITY: Capabilities().Send, and gatedSender for a
-//     runtime whose send is its own (Hermes's), routed by Msg.Runtime;
-//   - the PROMPT CAPABILITY: Capabilities().Prompts, and answerer for a
-//     runtime whose answers are its own (Hermes's approvals, by Msg.Runtime);
+//   - the SEND CAPABILITY: gatedSender, for a runtime whose send is its own
+//     (Hermes's), routed by Msg.Runtime;
+//   - the PROMPT CAPABILITY: answerer, for a runtime whose answers are its
+//     own (Hermes's approvals, by Msg.Runtime);
 //   - the PASTE GUARD: pasteGuard, a runtime whose panes the host's one
 //     typing path (typeInto) refuses (Hermes; opencode).
 //
-// The server's half is mirror.RuntimeSpec; Capabilities is the same struct
-// on both sides, and a test pins that they agree.
+// The server's half is mirror.RuntimeSpec; what muster may do with a
+// runtime's windows is its Caps there (mirror.LookupRuntime), and tests pin
+// that a host view source or gated sender exists exactly where the server's
+// table says one does.
 
 // Runtime is one agent CLI this host knows.
 type Runtime interface {
 	// Name is the runtime's wire name: mirror.RuntimeClaude,
 	// mirror.RuntimeHermes or mirror.RuntimeOpenCode.
 	Name() string
-	// Capabilities is what muster can do with the runtime's windows from
-	// this host (mirror.RuntimeSpec.Caps).
-	Capabilities() mirror.Capabilities
 	// LocatePanes maps each of panes that this runtime CLAIMS — by the
 	// process running in it, never by #{pane_current_command} — to the agent
 	// session in it, keyed by pane id, reading the proc table procs/children
@@ -109,10 +108,6 @@ type claudeRuntime struct{ loc ClaudeLocator }
 
 func (claudeRuntime) Name() string { return mirror.RuntimeClaude }
 
-func (claudeRuntime) Capabilities() mirror.Capabilities {
-	return mirror.Capabilities{View: true, Send: true, Prompts: true}
-}
-
 // viewer is Claude Code's transcript tail, for a window whose pane runs
 // Claude Code NOW (claudePaneOf, re-resolved by the tail itself).
 func (claudeRuntime) viewer(h *hostSide) (func(context.Context, mirror.Msg) bool, func(context.Context, mirror.Msg) error, error, bool) {
@@ -138,10 +133,6 @@ type hermesRuntime struct {
 }
 
 func (hermesRuntime) Name() string { return mirror.RuntimeHermes }
-
-func (hermesRuntime) Capabilities() mirror.Capabilities {
-	return mirror.Capabilities{View: true, Send: true, Prompts: true}
-}
 
 // viewer is the Hermes tail (hermes_stream.go), for a Hermes window whose
 // host names its session, on a backend with a HermesSource and a v2
@@ -181,8 +172,7 @@ func (hermesRuntime) label() string       { return "Hermes" }
 // refusal (openCodeShape). The read-only view is the next phase.
 type openCodeRuntime struct{}
 
-func (openCodeRuntime) Name() string                      { return mirror.RuntimeOpenCode }
-func (openCodeRuntime) Capabilities() mirror.Capabilities { return mirror.Capabilities{} }
+func (openCodeRuntime) Name() string { return mirror.RuntimeOpenCode }
 
 // LocatePanes claims nothing: the stub has no locator yet.
 func (openCodeRuntime) LocatePanes([]pane, map[int]procInfo, map[int][]int) map[string]AgentPane {
