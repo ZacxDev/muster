@@ -334,10 +334,11 @@ func agentRenameForm(a AgentCardView) g.Node {
 // 🔴 ITS SHAPE IS mirrorCard's, SLOT FOR SLOT (cardSlot): controls, body,
 // header, footer. TestAgentAndMirrorCardsRenderTheSameSlots pins it, so the two
 // kinds of card cannot drift into two layouts again.
-// PageHref is the card's link to the agent's page: AgentSessionHref on the
-// agent's latest session, so a tap loads the page directly instead of the bare
-// URL and its 303. The card, its pinned chip and its Recent entry all use it.
-func (a AgentCardView) PageHref() string { return AgentSessionHref(a.Name, a.SessionID) }
+// PageHref is the card's link to the agent's page: AgentListHref on the agent's
+// latest session, so a tap loads the page directly instead of the bare URL and
+// its 303 (and is moved to the latest if it went stale). The card, its pinned
+// chip and its Recent entry all use it.
+func (a AgentCardView) PageHref() string { return AgentListHref(a.Name, a.SessionID) }
 
 func agentCard(a AgentCardView) g.Node {
 	ids := strconv.FormatInt(a.ID, 10)

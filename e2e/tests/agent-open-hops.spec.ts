@@ -78,10 +78,13 @@ async function openList(page: Page) {
 // 🔴 A REGRESSION TEST: on origin/main each tap below made TWO document
 // requests (/agents/<name>, then its 303's target).
 test('a card, a pinned chip and a Recent entry each open the page in ONE document request', async ({ page }) => {
-  const want = await canonical(page);
+  const canon = await canonical(page);
+  // A list link is the 303 target plus the from=list marker (ui.AgentListHref),
+  // which only moves a STALE link to the latest session.
+  const want = canon + '&from=list';
   // A visit puts the agent in the Recent strip.
   await page.goto('/agents/' + name);
-  await page.waitForURL((u) => u.pathname + u.search === want);
+  await page.waitForURL((u) => u.pathname + u.search === canon);
 
   await openList(page);
   const card = page.locator(`#agents-list > article[id^="agent-"]:has(${agentLink(name)})`);
@@ -128,6 +131,10 @@ function chatLogResponses(page: Page): number[] {
 test('opening the page does not download its transcript a second time', async ({ page }) => {
   const want = await canonical(page);
   const statuses = chatLogResponses(page);
+  let streams = 0;
+  page.on('request', (r) => {
+    if (new URL(r.url()).pathname === '/events') streams++;
+  });
   await page.goto(want);
   await expect(page.locator('#chat-log')).toContainText('Synthetic message 199');
   // The refetch still happens (it is what catches a missed broadcast) …
@@ -136,6 +143,40 @@ test('opening the page does not download its transcript a second time', async ({
   expect(statuses.filter((s) => s === 200), `transcript downloads after the render (statuses ${statuses})`).toHaveLength(0);
   expect(statuses.every((s) => s === 204), `every refetch was answered "unchanged" (statuses ${statuses})`).toBe(true);
   await expect(page.locator('#chat-log')).toContainText('Synthetic message 0');
+  // 🔴 ONE /events stream, not two (red at 9e0125c): the second was a raw
+  // EventSource listening for "agent.stream", which nothing publishes.
+  expect(streams, 'event streams the page opened').toBe(1);
+});
+
+// 🔴 A REGRESSION TEST (red at 9e0125c): a WS turn draws bubbles the server
+// never stored when it fails — the user's message and the "[error]" — and the
+// page's version still matches the server's, so the next refetch was a 204 and
+// the made-up bubbles stayed for ever. With local nodes present the refetch
+// asks for the full transcript, which redraws the log without them.
+test('a failed turn’s local bubbles are replaced by the server’s transcript on the next refetch', async ({ page }) => {
+  const want = await canonical(page);
+  // The page's socket talks to this stand-in, which fails every turn and stores
+  // nothing on the server.
+  await page.routeWebSocket(new RegExp(`/agents/${name}/ws`), (ws) => {
+    ws.onMessage(() => ws.send(JSON.stringify({ type: 'error', content: 'synthetic turn failure' })));
+  });
+  const statuses = chatLogResponses(page);
+  await page.goto(want);
+  await expect.poll(() => statuses.length, { message: 'control: the stream-open refetch ran' }).toBeGreaterThan(0);
+  const before = statuses.length;
+  const made = 'Synthetic message the server never stored';
+  await page.locator('#chat-input').fill(made);
+  await page.locator('#chat-send').click();
+  const log = page.locator('#chat-log');
+  await expect(log, 'control: the failed turn drew its bubbles').toContainText('synthetic turn failure');
+  await expect(log).toContainText(made);
+  // The stream (re)opens: the refetch htmx:sseOpen drives.
+  await page.evaluate(() => document.body.dispatchEvent(new Event('htmx:sseOpen')));
+  await expect.poll(() => statuses.length).toBeGreaterThan(before);
+  expect(statuses[statuses.length - 1], `the refetch after a failed turn (statuses ${statuses})`).toBe(200);
+  await expect(log).not.toContainText(made);
+  await expect(log).not.toContainText('synthetic turn failure');
+  await expect(log).toContainText('Synthetic message 199');
 });
 
 // The positive control for the counter above, and the convergence it must not

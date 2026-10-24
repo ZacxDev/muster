@@ -30,8 +30,11 @@ import (
 //     are deliberately NOT counted;
 //  2. every "'/agents/' +" built in inline JavaScript (Go string literals), by
 //     what follows it, for the same reason;
-//  3. every call of ui.AgentSessionHref, ui.AgentPath and
+//  3. every call of ui.AgentSessionHref, ui.AgentListHref, ui.AgentPath and
 //     ui.AgentCardView.PageHref, by file and function.
+//
+// (1) also sees the same page link spelled fmt.Sprintf("/agents/%s"…),
+// path.Join("/agents", name) and "/agents" + "/" + name.
 //
 // 🔴 A PAGE-SHAPED CONCATENATION OUTSIDE ui.AgentPath FAILS OUTRIGHT, naming the
 // helper. Ledgers (2) and (3) fail when their set grows OR shrinks: a new link
@@ -88,8 +91,18 @@ func scanAgentHrefs(t *testing.T) agentHrefScan {
 							return true
 						}
 						ops := flattenAdd(x, inner)
-						if s, ok := stringLit(ops[0]); ok && strings.HasPrefix(s, "/agents/") {
-							if shape := concatShape(s, ops[1:]); shape == "(page)" {
+						// Leading literals are one prefix: "/agents" + "/" + name is
+						// "/agents/" + name.
+						prefix, rest := "", ops
+						for len(rest) > 0 {
+							s, ok := stringLit(rest[0])
+							if !ok {
+								break
+							}
+							prefix, rest = prefix+s, rest[1:]
+						}
+						if strings.HasPrefix(prefix, "/agents/") && len(rest) > 0 {
+							if shape := concatShape(prefix, rest); shape == "(page)" {
 								out.concat[rel+":"+fn+":"+shape]++
 							}
 						}
@@ -106,6 +119,19 @@ func scanAgentHrefs(t *testing.T) agentHrefScan {
 							out.js[rel+":"+fn+":"+suffix]++
 						}
 					case *ast.CallExpr:
+						// fmt.Sprintf("/agents/%s"…) and path.Join("/agents", name):
+						// the same page link, spelled as a call.
+						if sel, ok := x.Fun.(*ast.SelectorExpr); ok && len(x.Args) > 0 {
+							pkg, _ := sel.X.(*ast.Ident)
+							first, isLit := stringLit(x.Args[0])
+							switch {
+							case pkg != nil && pkg.Name == "fmt" && isLit && agentPageFormat.MatchString(first):
+								out.concat[rel+":"+fn+":(page)"]++
+							case pkg != nil && (pkg.Name == "path" || pkg.Name == "filepath") && sel.Sel.Name == "Join" &&
+								isLit && strings.TrimRight(first, "/") == "/agents" && len(x.Args) == 2:
+								out.concat[rel+":"+fn+":(page)"]++
+							}
+						}
 						var name string
 						switch fx := x.Fun.(type) {
 						case *ast.SelectorExpr:
@@ -120,7 +146,7 @@ func scanAgentHrefs(t *testing.T) agentHrefScan {
 							}
 						}
 						switch name {
-						case "AgentSessionHref", "AgentPath", "PageHref":
+						case "AgentSessionHref", "AgentListHref", "AgentPath", "PageHref":
 							out.calls[name+" ← "+rel+":"+fn]++
 						}
 					}
@@ -135,6 +161,10 @@ func scanAgentHrefs(t *testing.T) agentHrefScan {
 	}
 	return out
 }
+
+// agentPageFormat is a format string that builds an agent's PAGE: "/agents/"
+// then one verb and nothing after it but a query.
+var agentPageFormat = regexp.MustCompile(`^/agents/%[a-z](\?.*)?$`)
 
 func recvName(e ast.Expr) string {
 	switch x := e.(type) {
@@ -268,19 +298,22 @@ var agentHrefCallLedger = map[string]int{
 	"AgentSessionHref ← internal/api/agent_href.go:Server.agentPageHref":                  1,
 	"AgentSessionHref ← internal/api/agent_send.go:agentSendBack":                         1,
 	"AgentSessionHref ← internal/api/agents.go:Server.answerSessionOpened":                1,
-	"AgentSessionHref ← internal/api/agents.go:Server.handleAgentDetail":                  1,
+	"AgentSessionHref ← internal/api/agents.go:Server.handleAgentDetail":                  2,
 	"AgentSessionHref ← internal/api/attention_asker.go:askerRef.page":                    1,
 	"AgentSessionHref ← internal/api/session_runtime.go:Server.handleAgentSessionDefault": 1,
 	// The views: a card (and through PageHref its pinned chip and Recent
 	// entry), the session drawer, a task card's Open chat, the notification
 	// panel's two row kinds, the terminal page's back link.
-	"AgentSessionHref ← internal/ui/agents.go:AgentCardView.PageHref": 1,
-	"AgentSessionHref ← internal/ui/agents_detail.go:sessionDrawer":   1,
-	"AgentSessionHref ← internal/ui/notes.go:taskActionTrailing":      1,
-	"AgentSessionHref ← internal/ui/notifications.go:activeRow":       1,
-	"AgentSessionHref ← internal/ui/notifications.go:notifRow":        1,
-	"AgentSessionHref ← internal/ui/terminal.go:AgentTerminalPage":    1,
-	"PageHref ← internal/ui/agents.go:agentCard":                      2,
-	"PageHref ← internal/ui/pinned_chips.go:pinnedChip":               1,
-	"PageHref ← internal/ui/recents.go:recentItems":                   1,
+	// A list's links (card, chip, Recent via PageHref; a task card's Open chat)
+	// carry the from=list marker that moves a stale one to the latest.
+	"AgentSessionHref ← internal/ui/agent_href.go:AgentListHref":    1,
+	"AgentListHref ← internal/ui/agents.go:AgentCardView.PageHref":  1,
+	"AgentListHref ← internal/ui/notes.go:taskActionTrailing":       1,
+	"AgentSessionHref ← internal/ui/agents_detail.go:sessionDrawer": 1,
+	"AgentSessionHref ← internal/ui/notifications.go:activeRow":     1,
+	"AgentSessionHref ← internal/ui/notifications.go:notifRow":      1,
+	"AgentSessionHref ← internal/ui/terminal.go:AgentTerminalPage":  1,
+	"PageHref ← internal/ui/agents.go:agentCard":                    2,
+	"PageHref ← internal/ui/pinned_chips.go:pinnedChip":             1,
+	"PageHref ← internal/ui/recents.go:recentItems":                 1,
 }

@@ -1446,6 +1446,16 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, ui.AgentSessionHref(a.Name, active.ID), http.StatusSeeOther)
 		return
 	}
+	// A LIST link (ui.AgentListHref) names the session that was latest when the
+	// list was drawn. If another session has become the latest since, go there —
+	// what the bare URL would have done at tap time. A link without the marker
+	// (the session drawer) means its session and is never moved.
+	if sessionParam != "" && r.URL.Query().Get(ui.FromListParam) == ui.FromListValue {
+		if latest := s.latestSessionIDs(ctx, []int64{a.ID})[a.ID]; latest != 0 && latest != active.ID {
+			http.Redirect(w, r, ui.AgentSessionHref(a.Name, latest), http.StatusSeeOther)
+			return
+		}
+	}
 	// The viewer opened this agent: its "recently viewed" entry (best-effort).
 	s.recordAgentVisit(ctx, a.ID)
 	// Opening a session clears its unread replies (best-effort).

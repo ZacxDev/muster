@@ -1083,7 +1083,7 @@ func taskActionTrailing(v TaskCardView) g.Node {
 	return Div(
 		Class("flex shrink-0 items-center gap-2"),
 		agentStatusChip(a.Status),
-		openChatButtonPrimary(AgentSessionHref(a.Name, a.SessionID)),
+		openChatButtonPrimary(AgentListHref(a.Name, a.SessionID)),
 	)
 }
 

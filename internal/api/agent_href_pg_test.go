@@ -108,15 +108,17 @@ func TestEveryListLinkToAnAgentNamesItsLatestSession(t *testing.T) {
 		t.Fatalf("instrument check FAILED: opening the page moved op's latest session %q → %q", wantOp, got)
 	}
 	list := f.page(t, "/ui/agents")
-	opCard := `href="` + wantOp + `"`
+	// A LIST link is the 303 target plus the from=list marker (ui.AgentListHref).
+	listOp, listOp2 := wantOp+"&from=list", wantOp2+"&from=list"
+	opCard := `href="` + strings.ReplaceAll(listOp, "&", "&amp;") + `"`
 	if !strings.Contains(list, opCard) {
-		t.Errorf("op's card does not link %s; its links: %v", wantOp, anchorHrefs(list, "/agents/"+f.op.Name))
+		t.Errorf("op's card does not link %s; its links: %v", listOp, anchorHrefs(list, "/agents/"+f.op.Name))
 	}
-	if got := anchorHrefs(list, "data-pinned-chip-link"); len(got) != 1 || got[0] != wantOp2 {
-		t.Errorf("pinned chip links %v, want [%s]", got, wantOp2)
+	if got := anchorHrefs(list, "data-pinned-chip-link"); len(got) != 1 || got[0] != listOp2 {
+		t.Errorf("pinned chip links %v, want [%s]", got, listOp2)
 	}
-	if got := anchorHrefs(list, `data-recent-entry="agent"`); len(got) != 1 || got[0] != wantOp {
-		t.Errorf("Recent entries link %v, want [%s]", got, wantOp)
+	if got := anchorHrefs(list, `data-recent-entry="agent"`); len(got) != 1 || got[0] != listOp {
+		t.Errorf("Recent entries link %v, want [%s]", got, listOp)
 	}
 	// No anchor anywhere on the list links either agent's BARE page.
 	for _, a := range []agents.Agent{f.op, f.op2} {
@@ -143,10 +145,61 @@ func TestEveryListLinkToAnAgentNamesItsLatestSession(t *testing.T) {
 		t.Errorf("instrument check FAILED: no Open chat link on the Tasks list")
 	} else {
 		for _, h := range got {
-			if h != wantOp {
-				t.Errorf("a task card's Open chat links %q, want %q", h, wantOp)
+			if h != listOp {
+				t.Errorf("a task card's Open chat links %q, want %q", h, listOp)
 			}
 		}
+	}
+}
+
+// TestAStaleListLinkLandsOnTheLatestSession: a list link names the session that
+// was latest when the list was DRAWN. The bare URL it replaced resolved the
+// latest at TAP time, so a list left open while another session became the
+// latest must still land there: a list link (from=list) to a session that is no
+// longer the latest 303s to the latest; a fresh one renders at once (one hop);
+// a link WITHOUT the marker — the session drawer's — means its session and
+// renders it. Red before the marker: the stale list link rendered the old
+// session.
+func TestAStaleListLinkLandsOnTheLatestSession(t *testing.T) {
+	f := newAttnFixture(t)
+	first := sessionsFor(t, f.pool, f.op)
+	list := f.page(t, "/ui/agents")
+	links := anchorHrefs(list, `data-card-slot="body"`)
+	var link string
+	for _, h := range links {
+		if strings.HasPrefix(h, "/agents/"+f.op.Name+"?") {
+			link = h
+		}
+	}
+	want := "/agents/" + f.op.Name + "?session=" + strconv.FormatInt(first, 10)
+	if !strings.HasPrefix(link, want) {
+		t.Fatalf("instrument check FAILED: op's card links %q (all: %v), want the session %d", link, links, first)
+	}
+	// Fresh: one hop, the page itself.
+	if w := f.call(t, http.MethodGet, link, nil, f.operator()); w.Code != http.StatusOK {
+		t.Fatalf("a fresh list link = %d (→ %q), want 200", w.Code, w.Header().Get("Location"))
+	}
+	// Another session becomes the latest while the list is still on screen.
+	var other int64
+	if err := f.pool.QueryRow(authz.System(context.Background()),
+		`SELECT id FROM chat_sessions WHERE agent_id = $1 AND id <> $2 ORDER BY id DESC LIMIT 1`, f.op.ID, first).Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.pool.Exec(authz.System(context.Background()),
+		`UPDATE chat_sessions SET updated_at = now() + interval '2 hours' WHERE id = $1`, other); err != nil {
+		t.Fatal(err)
+	}
+	latest := latestSessionPage(t, f.pool, f.op)
+	if latest != "/agents/"+f.op.Name+"?session="+strconv.FormatInt(other, 10) {
+		t.Fatalf("instrument check FAILED: the latest is %q, want session %d", latest, other)
+	}
+	w := f.call(t, http.MethodGet, link, nil, f.operator())
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != latest {
+		t.Fatalf("a STALE list link = %d → %q, want 303 → %q (where the bare URL lands now)", w.Code, w.Header().Get("Location"), latest)
+	}
+	// The drawer's link to the older session (no marker) still opens it.
+	if w := f.call(t, http.MethodGet, want, nil, f.operator()); w.Code != http.StatusOK {
+		t.Fatalf("a session link without the list marker = %d (→ %q), want 200: it means that session", w.Code, w.Header().Get("Location"))
 	}
 }
 

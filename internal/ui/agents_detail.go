@@ -1671,9 +1671,6 @@ func agentChatScript(name string) g.Node {
     if (!c) return;
     c.disposed = true;            // stop the reconnect loop
     try { if (c.ws) { c.ws.onclose = null; c.ws.close(); } } catch (e) {}
-    // Tear down the kickoff-stream EventSource too, so a boosted navigate-away
-    // doesn't leak it (mirrors the WS teardown).
-    try { if (c.es) { c.es.close(); } } catch (e) {}
     try { if (c.ro) { c.ro.disconnect(); } } catch (e) {}
     window.__cgChat = null;
   }
@@ -1717,7 +1714,7 @@ func agentChatScript(name string) g.Node {
   // global htmx:beforeRequest hook reads it to CANCEL a sse:chat.reply #chat-log
   // refresh mid-stream (so it can't clobber the in-flight streamed turn); the
   // trailing chat.reply fired after 'done' then refreshes to canonical state.
-  var session = { ws: null, es: null, disposed: false, streaming: false };
+  var session = { ws: null, disposed: false, streaming: false };
   window.__cgChat = session;
 
   function scheme() { return location.protocol === 'https:' ? 'wss:' : 'ws:'; }
@@ -1773,6 +1770,7 @@ func agentChatScript(name string) g.Node {
     // data-bubble, like chatBubbleOf's: what bubbleClampScript clamps. (The
     // streamed reply's bubble, ensureText, deliberately has none.)
     d.setAttribute('data-bubble', role);
+    d.setAttribute('data-chat-local', ''); // drawn here, not by the server (see configRequest)
     d.className ='max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm ' +
       (mine ? 'bg-accent/15 text-fg self-end ring-1 ring-inset ring-accent/30'
             : 'bg-s2 text-fg self-start');
@@ -1789,6 +1787,7 @@ func agentChatScript(name string) g.Node {
     t.className = 'flex max-w-[92%] flex-col gap-1.5 self-start';
     // Names the streamed turn (tool-groups.spec.ts reads its layout).
     t.setAttribute('data-chat-turn', '');
+    t.setAttribute('data-chat-local', ''); // drawn here, not by the server (see configRequest)
     var w = workingEl();
     logEl.insertBefore(t, (w && w.parentNode === logEl) ? w : null);
     return t;
@@ -1870,12 +1869,15 @@ func agentChatScript(name string) g.Node {
 
   function resetTurn() { turn = null; text = null; think = null; tools = {}; }
 
-  // Shared stream renderer for BOTH the user-turn WebSocket and the server-side
-  // KICKOFF stream (SSE agent.stream): both translate their wire messages into this
-  // same {type, content/id/name/args/ok/output} shape so a delta/thinking/tool_call/
-  // tool_result/user/error/done render IDENTICALLY. This is the single renderer —
-  // the SSE path maps agent.stream fields to this shape (see connectStream) rather
-  // than duplicating the DOM logic.
+  // The stream renderer for the user-turn WebSocket's {type, content/id/name/args/
+  // ok/output} messages: delta/thinking/tool_call/tool_result/user/error/done.
+  //
+  // ⚠ IT USED TO SERVE A SECOND SOURCE TOO, a raw EventSource on /events listening
+  // for "agent.stream" (the server-side kickoff, rendered live). Nothing has
+  // published that event since bcdd60bf (#66) removed EventAgentStream /
+  // BroadcastAgentStream, so that stream was a second /events connection carrying
+  // every event of the owner's bus for a listener that never fired; it is gone. A
+  // kickoff turn shows once it persists, by the chat.reply refetch of #chat-log.
   function renderStreamMsg(msg) {
     switch (msg.type) {
       case 'user': {
@@ -1946,59 +1948,6 @@ func agentChatScript(name string) g.Node {
     }
   }
 
-  // Re-fetch #chat-log to reconcile the streamed (kickoff) bubbles with the
-  // canonical server transcript once the turn persists: this replaces the ephemeral
-  // thinking/tool chips with the persisted user+assistant bubbles and reveals the
-  // completion banner. Deterministic (driven off OUR ordered EventSource, after the
-  // 'done' clears the streaming guard) so the guard can't cancel it. The existing
-  // htmx sse:chat.reply refresh is redundant-but-harmless (idempotent GET).
-  function reconcileChatLog() {
-    if (!window.htmx) return;
-    var el = document.getElementById('chat-log');
-    var url = el && el.getAttribute('hx-get');
-    if (!url) return;
-    try { window.htmx.ajax('GET', url, { target: '#chat-log', swap: 'innerHTML' }); } catch (e) {}
-  }
-
-  // Live-render the server-side KICKOFF stream over the shared /events SSE. The
-  // kickoff runs server-side (NOT over this page's user-turn WS), so without this
-  // the chat jumps from "provisioning" straight to the persisted reply. A raw
-  // EventSource (filtered to THIS agent) keeps agent.stream events strictly ordered
-  // on one connection — his message → thinking → text → done — so the terminal
-  // 'done' reliably clears the streaming guard before we reconcile. Best-effort: any
-  // failure to open it must never break the chat.
-  function connectStream() {
-    if (session.disposed || !window.EventSource) return;
-    var es;
-    try { es = new EventSource('/events'); } catch (e) { return; }
-    session.es = es;
-    es.addEventListener('agent.stream', function (ev) {
-      var d;
-      try { d = JSON.parse(ev.data); } catch (e) { return; }
-      if (!d || d.agent !== agent) return; // only THIS page's agent
-      // First stream event: mark streaming (so the htmx sse:chat.reply refresh is
-      // cancelled mid-stream and can't clobber the live bubbles), drop the
-      // provisioning indicator, and show the animated "working…" row — the kickoff
-      // often runs for a while (thinking / tool loop) BEFORE any text delta arrives,
-      // and without this that gap showed nothing. It's cleared on 'done' (hideWorking
-      // in renderStreamMsg) and stays pinned to the bottom as text streams above it.
-      if (!session.streaming) { session.streaming = true; hideProvisioning(); showWorking(); }
-      switch (d.kind) {
-        case 'user': renderStreamMsg({ type: 'user', content: d.text }); break;
-        case 'text': renderStreamMsg({ type: 'delta', content: d.text }); break;
-        case 'thinking': renderStreamMsg({ type: 'thinking', content: d.text }); break;
-        case 'tool_call': renderStreamMsg({ type: 'tool_call', id: d.toolId, name: d.toolName, args: d.toolArgs }); break;
-        case 'tool_result': renderStreamMsg({ type: 'tool_result', id: d.toolId, name: d.toolName, ok: d.toolOk, output: d.toolOutput }); break;
-        case 'done':
-          renderStreamMsg({ type: 'done' }); // clears session.streaming
-          reconcileChatLog();
-          break;
-      }
-    });
-    // A dropped SSE connection is non-fatal (the trailing chat.reply refresh still
-    // reconciles); let the browser auto-reconnect. No manual retry loop needed.
-  }
-
   function connect() {
     if (session.disposed) return;
     var url = scheme() + '//' + location.host + '/agents/' + agent + '/ws';
@@ -2016,10 +1965,6 @@ func agentChatScript(name string) g.Node {
   // Open scrolled to the latest message: the transcript is converted + laid out
   // by now, so forceScroll() reads the full scrollHeight and pins the log to bottom.
   forceScroll();
-  // Live-render the server-side kickoff stream (agent.stream over /events) with the
-  // same renderer as the WS turn. Opened after the initial scroll so it never races
-  // the open-at-bottom behaviour.
-  connectStream();
 
   // 🔴 NEVER A SILENT SEND. With the socket open the message goes over it and
   // the reply streams back. With it NOT open — still connecting, dropped, or
@@ -2106,10 +2051,18 @@ func agentChatScript(name string) g.Node {
     // Conditional #chat-log refetch (ui.ChatLogBody): send the version this log
     // was last drawn from; the server answers 204 (no swap) when it would draw
     // the same thing. A 200 carries the new version, recorded on afterSwap below.
+    //
+    // 🔴 NOT WHILE THE LOG HOLDS ANYTHING THE SERVER DID NOT DRAW. A WS turn draws
+    // its bubbles here (bubble/newTurn mark them data-chat-local) — the user's own
+    // message, the streamed reply, an "[error]" from a turn that failed. A turn
+    // that failed may have stored nothing, so the server's version is still the
+    // page's and a 204 would keep made-up content on screen for ever. With any
+    // local node present the refetch asks for the full answer, which redraws the
+    // log from what the server really holds.
     document.body.addEventListener('htmx:configRequest', function (e) {
       var elt = e.detail && e.detail.elt;
       var ver = elt && elt.id === 'chat-log' && elt.getAttribute('data-chat-version');
-      if (ver) e.detail.headers['` + ChatLogVersionHeader + `'] = ver;
+      if (ver && !elt.querySelector('[data-chat-local]')) e.detail.headers['` + ChatLogVersionHeader + `'] = ver;
     });
     // After a #chat-log refresh swap: convert the fresh transcript bubbles to
     // markdown and pin to the bottom (the WS client only runs mdConvert/scroll on
