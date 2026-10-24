@@ -447,6 +447,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 	if a.pool != nil {
 		ext.Suggest.Prefs = suggest.NewPGPrefs(a.pool)
+		// The counts and the auto-pause survive a restart (migration 0049).
+		ext.Suggest.Usage = suggest.NewPGUsage(a.pool)
 	}
 	logger.Print(suggestBootLine(cfg))
 	ccPool, err := buildClaudePool(cfg, plane, marks)

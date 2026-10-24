@@ -53,6 +53,25 @@ func TestNoChipRowWithoutASourceOnHermesOrReadOnly(t *testing.T) {
 	}
 }
 
+// TestAPausedComposerSaysSoInOneLine: an auto-paused viewer's composer draws
+// the paused line with the way back on (a 44px link to Account), and no row.
+func TestAPausedComposerSaysSoInOneLine(t *testing.T) {
+	page := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: true, StepUp: stepUpFixture(), SuggestPaused: true}))
+	if !strings.Contains(page, `id="mv-suggest-paused"`) || !strings.Contains(page, SuggestPausedText) ||
+		!strings.Contains(page, `href="/account#suggest" class="inline-flex min-h-[44px]`) || strings.Contains(page, `id="mv-suggest"`) {
+		t.Fatal("the paused line")
+	}
+	for name, v := range map[string]MirrorViewView{
+		"not paused": {Host: "host-a", Session: "main", Interactive: true, StepUp: stepUpFixture()},
+		"read-only":  {Host: "host-a", Session: "main", SuggestPaused: true},
+		"hermes":     {Host: "host-a", Session: "main", Interactive: true, Hermes: true, HermesSend: true, StepUp: stepUpFixture(), SuggestPaused: true},
+	} {
+		if strings.Contains(renderString(t, MirrorViewPage(v)), `id="mv-suggest-paused"`) {
+			t.Fatalf("%s: a paused line", name)
+		}
+	}
+}
+
 // TestATapFillsAndNeverSubmits pins the script's contract by its source: a
 // chip is a type="button" built outside the form (never a submit), a tap
 // fills through insertText on the box (Ctrl+Z restores the draft) below a

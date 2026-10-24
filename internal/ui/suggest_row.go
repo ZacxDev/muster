@@ -32,9 +32,9 @@ import (
 //
 // 🔴 WITHIN SuggestCutoff OF THE TURN END OR NOT AT ALL. The socket says how
 // long ago the turn ended (pending/ready); a set that is not on screen by the
-// cutoff is dropped, and the row with it. (A page opened or reloaded on the
-// same idle turn later is a turn end of its own: it serves that turn's cached
-// set, within the cutoff of the open.)
+// cutoff is dropped, and the row with it. (A page newly opened on an idle
+// turn is a turn end of its own, within the cutoff of the open; a reload
+// resumes its socket and shows no row for the turn it reloaded into.)
 //
 // What it reports (SuggestEventPath): "shown" once per set, "filled" on a tap,
 // "sent" when the box is sent after a tap — with the EDIT DISTANCE between
@@ -87,6 +87,17 @@ func suggestRow(src string) g.Node {
 	)
 }
 
+// SuggestPausedText is the composer's line while the viewer's suggested
+// replies are auto-paused.
+const SuggestPausedText = "Suggested replies are paused: you rarely tapped them."
+
+// suggestPausedNote is that line, with the way back on.
+func suggestPausedNote() g.Node {
+	return P(ID("mv-suggest-paused"), Class("flex flex-wrap items-center gap-x-1 px-3 text-[11px] text-muted"),
+		g.Text(SuggestPausedText+" "),
+		A(Href("/account#suggest"), Class("inline-flex min-h-[44px] items-center text-accent underline"), g.Text("Turn them back on")))
+}
+
 // suggestChipClass is a chip: a 44px tap target around a pill at most 32px
 // tall, its text cut with an ellipsis (the whole text is its title and name).
 const (
@@ -129,9 +140,6 @@ func suggestRowScript() g.Node {
   // drawn, an attention ask (shown or hidden on this device: hidden is not
   // answered).
   function blocked() {
-    // A turn is running (the view's own busy line): nothing is for it.
-    var w = document.getElementById('mv-working');
-    if (w && !w.hidden) return true;
     var q = document.getElementById('mv-asks');
     if (q && !q.hidden && q.querySelector('form, button')) return true;
     var a = document.getElementById('asker-asks');
@@ -144,7 +152,6 @@ func suggestRowScript() g.Node {
       var b = new URLSearchParams(src.split('?')[1] || '');
       b.set('fingerprint', (extra && extra.fp) || fp);
       b.set('event', ev);
-      if (extra && typeof extra.idx === 'number') b.set('idx', String(extra.idx));
       if (extra && typeof extra.dist === 'number') b.set('dist', String(extra.dist));
       fetch(evURL, { method: 'POST', body: b, credentials: 'same-origin',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } }).catch(function () {});
@@ -216,7 +223,7 @@ func suggestRowScript() g.Node {
     input.setSelectionRange(end, end);
     if (window.musterComposerFit) window.musterComposerFit(input);
     fill = { fp: fp, after: input.value };
-    post('filled', { idx: i });
+    post('filled');
   }
   // dist is the edit distance between a and b (Levenshtein, over at most
   // 4000 characters of each): how much was changed after a tap. A number
@@ -253,7 +260,7 @@ func suggestRowScript() g.Node {
   // read).
   if (typeof MutationObserver !== 'undefined') {
     var mo = new MutationObserver(function () { if (state() && blocked()) hide(); });
-    ['mv-asks', 'asker-asks', 'mv-working'].forEach(function (id) {
+    ['mv-asks', 'asker-asks'].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) mo.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
     });

@@ -989,7 +989,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 			}},
 	}
 	// Suggested replies (0048): A's window's set and A's toggle are A's.
-	ext.Suggest = &suggest.Engine{Gen: isoNoSuggestions{}, Prefs: suggest.NewPGPrefs(pool)}
+	ext.Suggest = &suggest.Engine{Gen: isoNoSuggestions{}, Prefs: suggest.NewPGPrefs(pool), Usage: suggest.NewPGUsage(pool)}
 	srv.UseExtensions(ext)
 	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
@@ -1397,7 +1397,7 @@ func (w *isoWorld) snapshot() map[string]string {
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "github_connection", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
 		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",
-		"devices", "device_pairing_codes", "connector_standing_grants", "suggest_preferences"} {
+		"devices", "device_pairing_codes", "connector_standing_grants", "suggest_preferences", "suggest_usage"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions/github_connection have no `id` ordering column in every

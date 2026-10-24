@@ -8,6 +8,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/suggest"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -31,6 +32,18 @@ func (s *Server) suggestPath(ctx context.Context, h mirror.HostView, e mirror.Se
 		q.Set("window", e.Window)
 	}
 	return ui.SuggestPath + "?" + q.Encode()
+}
+
+// suggestPaused reports whether window e of host h would have suggestions
+// but for the viewer's auto-pause: the composer then says so in one line.
+func (s *Server) suggestPaused(ctx context.Context, h mirror.HostView, e mirror.SessionView) bool {
+	if s.ext.Suggest == nil || !h.Interactive || s.ext.Suggest.Off {
+		return false
+	}
+	if !e.Claude || e.ClaudeSession == "" || e.HermesView() || e.Runtime != "" || !e.HasRenderedView() {
+		return false
+	}
+	return s.ext.Suggest.Enabled(ctx, requestOwner(ctx)) == suggest.OutcomePaused
 }
 
 // suggestSocket is one rendered view socket's suggestions: its tracker, the
@@ -57,7 +70,7 @@ func (s *Server) suggestSocket(ctx context.Context, r *http.Request, c *websocke
 		return nil
 	}
 	k := &suggestSocket{s: s, ctx: ctx, c: c, host: host, session: session, window: window, gate: make(chan struct{}, 1)}
-	k.t = &suggestTracker{resumed: resumed, stamp: func() int64 { return s.ext.Mirror.AgentState(ctx, h.Host, e.Session, e.Window).Since }}
+	k.t = &suggestTracker{resumed: resumed}
 	return k
 }
 

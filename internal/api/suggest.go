@@ -43,8 +43,10 @@ import (
 // gives up when it reads a later one. So a socket that is backed up (the turn
 // already over when its busy marker arrives) and two turns back to back with
 // no idle seen between them are each judged by their own token, never by the
-// idle from before them. Only an older host (no token) falls back to the
-// stamp-at-busy rule (suggestTracker.prior).
+// idle from before them. 🔴 A HOST THAT SENDS NO TOKEN (an older
+// muster-mirror) GETS NO CHIPS: without it a turn end cannot be told from the
+// idle before the turn (the hosts get the new muster-mirror in the same
+// rollout).
 //
 // 🔴 WITHIN ui.SuggestCutoff OR NOT AT ALL. Nothing is generated once the
 // cutoff has passed since the turn ended, and the page shows no chip that
@@ -109,38 +111,20 @@ type suggestTracker struct {
 	started bool
 	// resumed: the socket resumed at an offset, so the tracker holds only
 	// what came after it — no backfill, no prompt index. It ends no turn
-	// until a Reset or a prompt index gives it the whole conversation (a
-	// view that saw everything answers the turn; the engine shares its set).
+	// until a prompt, a Reset or a prompt index gives it a whole turn (so a
+	// reloaded page shows no row for the turn it reloaded into).
 	resumed bool
-	// stamp reads the window's status token (AgentState.Since); prior is
-	// what it read when the current turn began, 0 for none seen. A status
-	// list refreshes every few seconds while the transcript streams, so a
-	// short turn can END while the list still shows the idle from BEFORE it —
-	// whose token prior holds.
-	stamp func() int64
-	prior int64
 	// since is the newest status token the STREAM named (Msg.StatusSince;
 	// 0 from an older host), and end what the newest turn end saw.
 	since int64
 	end   suggestEnd
-	// cached: the newest turn end is a resumed socket's first idle marker,
-	// which may only SERVE a set already made for its token (cacheOnly).
-	cached bool
-	// awaitReply: the newest turn end came before any reply of its turn (an
-	// older host can send the idle marker ahead of the reply's lines), so the
-	// reply arriving, still idle, ends that turn after all.
-	awaitReply bool
 }
 
 // suggestEnd is one turn end: the stream's status token at it (0 = the host
-// sends none) and when muster saw it. cacheOnly: the tracker does not hold
-// the whole turn (a resumed socket), so it may serve the set already made for
-// this token — a page reloaded on an idle session shows its chips again — but
-// never generate one from its partial input.
+// sends none: no chips) and when muster saw it.
 type suggestEnd struct {
-	since     int64
-	at        time.Time
-	cacheOnly bool
+	since int64
+	at    time.Time
 }
 
 // lastEnd is the newest turn end observe reported.
@@ -156,7 +140,7 @@ func (t *suggestTracker) lastEnd() suggestEnd {
 func (t *suggestTracker) movedOn(e suggestEnd) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.busy || (e.since != 0 && t.since != e.since)
+	return t.busy || t.since != e.since
 }
 
 // token is the newest status token the stream named, 0 for none.
@@ -166,24 +150,15 @@ func (t *suggestTracker) token() int64 {
 	return t.since
 }
 
-// priorToken is the status token read when the current turn began.
-func (t *suggestTracker) priorToken() int64 {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.prior
-}
-
 // observe folds m in and reports whether it ends a turn: the busy marker fell,
 // the status token moved to a non-busy status, or the backfill of an idle
 // session completed (its prompt index).
 func (t *suggestTracker) observe(m mirror.Msg) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.cached = false
 	ended := t.observeLocked(m)
 	if ended {
-		t.end = suggestEnd{since: t.since, at: time.Now(), cacheOnly: t.cached}
-		t.awaitReply = !t.cached && (len(t.entries) == 0 || t.entries[len(t.entries)-1].Role != suggest.RoleAssistant)
+		t.end = suggestEnd{since: t.since, at: time.Now()}
 	}
 	return ended
 }
@@ -219,8 +194,6 @@ func (t *suggestTracker) observeLocked(m mirror.Msg) bool {
 			// A prompt after the resume point: from here the tail holds whole
 			// turns (asks then come from the tail, as for an older host).
 			t.resumed = false
-			// A new turn: whatever reply comes now is not the last one's.
-			t.awaitReply = false
 		}
 	}
 	if len(t.entries) > suggestTrackEntries {
@@ -244,18 +217,7 @@ func (t *suggestTracker) observeLocked(m mirror.Msg) bool {
 	}
 	wasBusy, started := t.busy, t.started
 	t.busy, t.started = m.Busy, true
-	if m.Busy && (!started || !wasBusy) && t.stamp != nil {
-		// A turn began (or the view opened on one): remember the window's
-		// status token NOW, so its end is not judged by a status that has not
-		// moved since (suggestTurn waits for a token other than this).
-		t.prior = t.stamp()
-	}
 	switch {
-	case t.resumed && !started && !m.Busy && m.StatusSince != 0:
-		// A resumed socket's first word on an idle session (the resume marker):
-		// the turn its page already shows may have a set — serve it, make none.
-		t.cached = true
-		return true
 	case t.resumed:
 		return false
 	case m.PromptIndex && !m.Busy:
@@ -263,9 +225,6 @@ func (t *suggestTracker) observeLocked(m mirror.Msg) bool {
 	case started && wasBusy && !m.Busy:
 		return true
 	case started && moved && !m.Busy:
-		return true
-	case started && t.awaitReply && !m.Busy && len(t.entries) > 0 && t.entries[len(t.entries)-1].Role == suggest.RoleAssistant:
-		// The reply of a turn whose end came first.
 		return true
 	}
 	return false
@@ -423,9 +382,7 @@ func (s *Server) suggestTurnAt(ctx context.Context, host, session, window string
 	defer cancel()
 	in := t.input()
 	reply, _, ok := suggest.FinalReply(in.Tail)
-	// A resumed socket holds no reply of the turn it resumed into: it only
-	// serves a set made for that turn (below), which passed this check then.
-	if !end.cacheOnly && (!ok || !suggest.HandsBack(reply)) {
+	if !ok || !suggest.HandsBack(reply) {
 		return false
 	}
 	h, e, ok := s.suggestWindow(ctx, host, session, window)
@@ -436,23 +393,22 @@ func (s *Server) suggestTurnAt(ctx context.Context, host, session, window string
 	// turn end) for idle, and give up the moment it is anything that blocks
 	// for another reason.
 	deadline := end.at.Add(s.suggestIdleWait())
-	prior := t.priorToken()
 	for {
 		why := s.suggestBlocked(ctx, h, e)
 		st := s.ext.Mirror.AgentState(ctx, h.Host, e.Session, e.Window)
 		switch {
-		case end.since != 0 && st.Since > end.since:
+		case st.Since > end.since:
 			// 🔴 A LATER STATUS THAN THE TURN'S OWN: the window moved on (a new
-			// turn, a prompt). That status's own marker ends its own turn.
+			// turn, a prompt). That status's own marker ends its own turn. 🔴 This
+			// is also NO TOKEN, NO CHIPS: a host that names none (an older
+			// muster-mirror) ends turns at token 0, which every listed status is
+			// later than — its turn's own status cannot be named, so the idle
+			// before the turn could be taken for it (TestNoTokenNoChips).
 			return false
-		case end.since != 0 && st.Since != end.since && (why == "" || why == suggestBlockedNotIdle):
+		case st.Since != end.since && (why == "" || why == suggestBlockedNotIdle):
 			// The list has not caught up with the stream: whatever it reads
 			// (the idle or the busy from BEFORE this turn's end) is not this
 			// turn's status. Wait for the token itself.
-			why = suggestBlockedNotIdle
-		case end.since == 0 && why == "" && prior != 0 && st.Since == prior:
-			// An older host (no token): idle — but the idle from before this
-			// turn, which the list still shows. Wait for the turn's own status.
 			why = suggestBlockedNotIdle
 		}
 		if why == "" {
@@ -462,10 +418,10 @@ func (s *Server) suggestTurnAt(ctx context.Context, host, session, window string
 			return false
 		}
 		// A permission prompt or a question ends the wait at once — its own
-		// (with a token: not one from before the turn ended). Busy and unknown
+		// (not one from before the turn ended). Busy and unknown
 		// are what a lagging status reads (the stream said the turn ended), so
 		// those are waited out until the deadline.
-		if st.Status == mirror.StatusWaiting && (end.since == 0 || st.Since >= end.since) {
+		if st.Status == mirror.StatusWaiting && st.Since >= end.since {
 			return false
 		}
 		select {
@@ -479,19 +435,8 @@ func (s *Server) suggestTurnAt(ctx context.Context, host, session, window string
 	// checks ran would otherwise stamp THIS input's set with the NEXT turn's
 	// token, and GET would serve it as that turn's.
 	turn := s.ext.Mirror.AgentState(ctx, h.Host, e.Session, e.Window).Since
-	if end.since != 0 && turn != end.since {
+	if turn != end.since {
 		return false
-	}
-	if end.cacheOnly {
-		// A resumed socket: serve the set made for this very turn, if any.
-		set, has := s.ext.Suggest.Latest(requestOwner(ctx), suggestSubject(h.Host, e))
-		if !has || set.Turn != turn || len(set.Suggestions) == 0 || time.Since(end.at) >= s.suggestIdleWait() || t.movedOn(end) {
-			return false
-		}
-		if pending != nil {
-			pending(time.Since(end.at))
-		}
-		return true
 	}
 	in = t.input()
 	if reply2, _, ok := suggest.FinalReply(in.Tail); !ok || reply2 != reply {
@@ -641,7 +586,7 @@ func (s *Server) handleMirrorSuggestEvent(w http.ResponseWriter, r *http.Request
 	// so a page that started sending text would fail loudly, not leak quietly.
 	for k := range f {
 		switch k {
-		case "host", "session", "window", "fingerprint", "event", "idx", "dist":
+		case "host", "session", "window", "fingerprint", "event", "dist":
 		default:
 			http.Error(w, "unknown field "+strconv.Quote(k), http.StatusBadRequest)
 			return
@@ -653,17 +598,13 @@ func (s *Server) handleMirrorSuggestEvent(w http.ResponseWriter, r *http.Request
 		return
 	}
 	dist := 0
-	for _, k := range []string{"idx", "dist"} {
-		if v := f.Get(k); v != "" {
-			n, err := strconv.Atoi(v)
-			if err != nil || n < 0 || n > 1_000_000 {
-				http.Error(w, k+" is a number", http.StatusBadRequest)
-				return
-			}
-			if k == "dist" {
-				dist = n
-			}
+	if v := f.Get("dist"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > 1_000_000 {
+			http.Error(w, "dist is a number", http.StatusBadRequest)
+			return
 		}
+		dist = n
 	}
 	switch ev {
 	case suggest.EventShown, suggest.EventFilled, suggest.EventSent:
@@ -671,7 +612,7 @@ func (s *Server) handleMirrorSuggestEvent(w http.ResponseWriter, r *http.Request
 		http.Error(w, "event is shown, filled or sent", http.StatusBadRequest)
 		return
 	}
-	s.ext.Suggest.Record(requestOwner(r.Context()), suggestSubject(h.Host, e), fp, ev, dist)
+	s.ext.Suggest.Record(r.Context(), requestOwner(r.Context()), suggestSubject(h.Host, e), fp, ev, dist)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -725,7 +666,7 @@ func (s *Server) handleAccountSuggest(w http.ResponseWriter, r *http.Request) {
 		// No database: nothing to store — but turning them back ON still
 		// resumes a user the auto-pause paused (in memory).
 		if r.PostFormValue("on") == "1" && requestOwner(r.Context()) > 0 {
-			eng.Resume(requestOwner(r.Context()))
+			eng.Resume(r.Context(), requestOwner(r.Context()))
 			if r.PostFormValue("back") == "account" {
 				http.Redirect(w, r, accountPath+"?suggest=saved#suggest", http.StatusSeeOther)
 				return
@@ -759,7 +700,7 @@ func (s *Server) handleAccountSuggest(w http.ResponseWriter, r *http.Request) {
 		eng.Forget(owner)
 	}
 	// On again (or off): a paused user starts over (suggest.Engine.Resume).
-	eng.Resume(owner)
+	eng.Resume(r.Context(), owner)
 	// The Account page's own form (back=account) comes back to the page.
 	if r.PostFormValue("back") == "account" {
 		http.Redirect(w, r, accountPath+"?suggest=saved#suggest", http.StatusSeeOther)

@@ -22,15 +22,6 @@ import (
 // token (Msg.StatusSince); the cutoff; the chip row's reports and the
 // auto-pause; the toggle's Account form.
 
-// stampOf is a tracker stamp reading the fixture's listed status token.
-func (f *suggestFixture) stampOf() func() int64 {
-	return func() int64 {
-		f.fm.mu.Lock()
-		defer f.fm.mu.Unlock()
-		return f.fm.agentState.Since
-	}
-}
-
 // setList sets what the fixture's window list says: status st at token since.
 func (f *suggestFixture) setList(st string, since int64) {
 	f.fm.mu.Lock()
@@ -117,7 +108,7 @@ func TestABackedUpSocketJudgesTheTurnByItsOwnToken(t *testing.T) {
 	f := newSuggestFixture(t, nil)
 	f.s.suggestIdleWaitFor = 2 * time.Second
 	f.setList(mirror.StatusIdle, tokOwn) // the turn is already over
-	tr := &suggestTracker{stamp: f.stampOf()}
+	tr := &suggestTracker{}
 	for _, m := range suggestBackfill() {
 		m.StatusSince = tokBefore
 		tr.observe(m)
@@ -149,7 +140,7 @@ func TestBackToBackTurnsAreJudgedByTheLastTurnsOwnToken(t *testing.T) {
 	f := newSuggestFixture(t, nil)
 	f.s.suggestIdleWaitFor = 2 * time.Second
 	f.setList(mirror.StatusIdle, tokBefore)
-	tr := &suggestTracker{stamp: f.stampOf()}
+	tr := &suggestTracker{}
 	for _, m := range suggestBackfill() {
 		m.StatusSince = tokBefore
 		tr.observe(m)
@@ -183,7 +174,7 @@ func TestALaterStatusThanTheTurnsOwnEndsTheWaitAtOnce(t *testing.T) {
 	f := newSuggestFixture(t, nil)
 	f.s.suggestIdleWaitFor = 2 * time.Second
 	f.setList(mirror.StatusIdle, tokOwn+5000)
-	tr := &suggestTracker{stamp: f.stampOf()}
+	tr := &suggestTracker{}
 	for _, m := range suggestBackfill() {
 		m.StatusSince = tokOwn
 		tr.observe(m)
@@ -211,7 +202,7 @@ func TestAPromptFromBeforeTheTurnEndIsWaitedOutAndItsOwnIsNot(t *testing.T) {
 			f := newSuggestFixture(t, nil)
 			f.s.suggestIdleWaitFor = 2 * time.Second
 			f.setList(mirror.StatusWaiting, c.since)
-			tr := &suggestTracker{stamp: f.stampOf()}
+			tr := &suggestTracker{}
 			for _, m := range suggestBackfill() {
 				m.StatusSince = tokOwn
 				tr.observe(m)
@@ -272,57 +263,17 @@ func TestNothingIsSpentPastTheCutoff(t *testing.T) {
 	for _, m := range suggestBackfill() {
 		tr.observe(m)
 	}
-	late := suggestEnd{at: time.Now().Add(-ui.SuggestCutoff - time.Second)}
+	late := suggestEnd{since: suggestTok, at: time.Now().Add(-ui.SuggestCutoff - time.Second)}
 	if f.s.suggestTurnAt(operatorCtx(), "ws", "main", "@1", tr, late, func(time.Duration) { t.Error("pending past the cutoff") }) || f.gen.n() != 0 {
 		t.Fatalf("past the cutoff: calls %d", f.gen.n())
 	}
 	var pending time.Duration = -1
-	fresh := suggestEnd{at: time.Now().Add(-time.Second)}
+	fresh := suggestEnd{since: suggestTok, at: time.Now().Add(-time.Second)}
 	if !f.s.suggestTurnAt(operatorCtx(), "ws", "main", "@1", tr, fresh, func(d time.Duration) { pending = d }) || f.gen.n() != 1 {
 		t.Fatalf("fresh: calls %d", f.gen.n())
 	}
 	if pending < time.Second || pending >= ui.SuggestCutoff {
 		t.Fatalf("pending said %v", pending)
-	}
-}
-
-// TestAResumedViewServesItsTurnsSetButMakesNone: a page reloaded on an idle
-// session resumes its socket (no backfill: the tracker holds no reply). Its
-// resume marker serves the set ALREADY made for that very turn — the chips
-// come back — and never generates one; with no set for that token (none, or
-// an older turn's) it offers nothing.
-func TestAResumedViewServesItsTurnsSetButMakesNone(t *testing.T) {
-	f := newSuggestFixture(t, nil)
-	f.setList(mirror.StatusIdle, tokOwn)
-	resumed := func() *suggestTracker {
-		tr := &suggestTracker{resumed: true}
-		if !tr.observe(mirror.Msg{Offset: 4096, StatusSince: tokOwn}) || !tr.lastEnd().cacheOnly {
-			t.Fatal("the resume marker of an idle session is not a (cache-only) turn end")
-		}
-		return tr
-	}
-	if f.s.suggestTurn(operatorCtx(), "ws", "main", "@1", resumed()) || f.gen.n() != 0 {
-		t.Fatalf("no set yet: offered, or generated (%d calls)", f.gen.n())
-	}
-	// The whole view (another tab) made the set for this turn.
-	full := &suggestTracker{}
-	for _, m := range suggestBackfill() {
-		m.StatusSince = tokOwn
-		full.observe(m)
-	}
-	if !f.s.suggestTurn(operatorCtx(), "ws", "main", "@1", full) || f.gen.n() != 1 {
-		t.Fatalf("the whole view: calls %d", f.gen.n())
-	}
-	pending := false
-	if !f.s.suggestTurnAt(operatorCtx(), "ws", "main", "@1", resumed(), resumed().lastEnd(), func(time.Duration) { pending = true }) || !pending || f.gen.n() != 1 {
-		t.Fatalf("the resumed view did not serve the turn's set (pending %v, calls %d)", pending, f.gen.n())
-	}
-	// A later turn: the set is an older turn's — nothing.
-	f.setList(mirror.StatusIdle, tokOwn+7)
-	tr := &suggestTracker{resumed: true}
-	tr.observe(mirror.Msg{Offset: 4096, StatusSince: tokOwn + 7})
-	if f.s.suggestTurn(operatorCtx(), "ws", "main", "@1", tr) || f.gen.n() != 1 {
-		t.Fatalf("an older turn's set was served, or a call made (%d)", f.gen.n())
 	}
 }
 
@@ -335,19 +286,18 @@ func TestNoSetForATurnTheStreamHasMovedPast(t *testing.T) {
 	f.setList(mirror.StatusIdle, tokOwn)
 	// The busy marker arrives before its prompt's record (or a queued message
 	// started the turn): the tail still ends in the reply, so only the
-	// stream's own state says the turn is over. With a token (this host) and
-	// without one (an older host: only busy says it).
-	for _, tok := range []int64{tokOwn, 0} {
+	// stream's own state says the turn is over.
+	// The busy marker with a newer token, and one that names none (only busy
+	// says it).
+	for _, next := range []int64{tokOwn + 10, 0} {
+		tok := next
 		tr := &suggestTracker{}
 		for _, m := range suggestBackfill() {
-			m.StatusSince = tok
+			m.StatusSince = tokOwn
 			tr.observe(m)
 		}
 		end := tr.lastEnd()
-		busy := mirror.Msg{Busy: true}
-		if tok != 0 {
-			busy.StatusSince = tok + 10
-		}
+		busy := mirror.Msg{Busy: true, StatusSince: next}
 		tr.observe(busy)
 		if f.s.suggestTurnAt(operatorCtx(), "ws", "main", "@1", tr, end, func(time.Duration) { t.Errorf("token %d: pending for a turn that is over", tok) }) || f.gen.n() != 0 {
 			t.Fatalf("token %d: calls %d", tok, f.gen.n())
@@ -374,7 +324,7 @@ func TestWithNoDatabaseTurningThemOnStillResumesAPause(t *testing.T) {
 		sub := "sub-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
 		b, _ := suggest.Build(suggest.Input{Tail: []suggest.Entry{{Role: suggest.RoleAssistant, Text: suggestReply + " " + sub}}})
 		set, _, _ := f.eng.Suggest(context.Background(), 1, sub, b, int64(i+1))
-		f.eng.Record(1, sub, set.Fingerprint, suggest.EventShown, 0)
+		f.eng.Record(operatorCtx(), 1, sub, set.Fingerprint, suggest.EventShown, 0)
 	}
 	r, _ := http.NewRequestWithContext(operatorCtx(), http.MethodGet, "/account", nil)
 	if html := f.s.accountSuggestSection(r); !strings.Contains(html, `data-state="paused"`) || !strings.Contains(html, `name="on" value="1"`) {
@@ -389,47 +339,61 @@ func TestWithNoDatabaseTurningThemOnStillResumesAPause(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent || f.eng.Stats(1).Paused {
-		t.Fatalf("on=1 with no database: %d, paused %v", resp.StatusCode, f.eng.Stats(1).Paused)
+	if resp.StatusCode != http.StatusNoContent || suggestStats(t, f.eng).Paused {
+		t.Fatalf("on=1 with no database: %d, paused %v", resp.StatusCode, suggestStats(t, f.eng).Paused)
 	}
 }
 
-// TestAReplyAfterItsTurnEndStillEndsTheTurn (delta audit, found by the browser
-// suite): the idle marker reached the tracker BEFORE the turn's reply (an
-// older host's re-resolve sent it ahead of the poll). That turn end has no
-// reply to answer, so the reply arriving — still idle — ends the turn after
-// all, once; a reply during a NEW (busy) turn does not.
-func TestAReplyAfterItsTurnEndStillEndsTheTurn(t *testing.T) {
+// TestNoTokenNoChips: a host that names no status token on the stream (an
+// older muster-mirror) gets no set at all — its turn end cannot be told from
+// the idle before the turn — and no call is made; the same view with the
+// token (positive control) gets one.
+func TestNoTokenNoChips(t *testing.T) {
+	f := newSuggestFixture(t, nil)
 	tr := &suggestTracker{}
-	prompt := mirror.Msg{Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "go with (a)"}}}
-	reply := mirror.Msg{Events: []cctranscript.Event{{Kind: cctranscript.KindText, Text: p2Reply}}}
-	steps := []struct {
-		m    mirror.Msg
-		ends bool
-	}{
-		{mirror.Msg{Reset: true, Busy: true, Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "go"}}}, false},
-		{mirror.Msg{Busy: false}, true}, // the marker, ahead of the reply
-		{reply, true},                   // the reply: the turn ends after all
-		{reply, false},                  // and only once
-		{prompt, false},
-		{mirror.Msg{Busy: true}, false},
-		{mirror.Msg{Busy: false}, true}, // ahead of its reply again
-		{mirror.Msg{Busy: true}, false}, // a new turn: that one is over
-		{mirror.Msg{Busy: true, Events: reply.Events}, false},
-		{mirror.Msg{Busy: false}, true}, // its busy marker fell: a turn end (its reply came while busy)
-		// (delta audit, MED) armed again, then the next prompt arrives under
-		// a stale idle flag, then its first text: NOT the old turn's reply.
-		{prompt, false},
-		{mirror.Msg{Busy: true}, false},
-		{mirror.Msg{Busy: false, Events: []cctranscript.Event{{Kind: cctranscript.KindToolCall, Tool: "Edit"}}}, true},
-		{prompt, false},
-		{reply, false},
+	ended := false
+	for _, m := range suggestBackfill() {
+		m.StatusSince = 0
+		ended = tr.observe(m) || ended
 	}
-	for i, st := range steps {
-		if got := tr.observe(st.m); got != st.ends {
-			t.Fatalf("step %d: ends=%v, want %v", i, got, st.ends)
-		}
+	if !ended {
+		t.Fatal("the backfill of an idle session must still end a turn")
 	}
+	f.s.suggestIdleWaitFor = 2 * time.Second
+	start := time.Now()
+	if f.s.suggestTurn(operatorCtx(), "ws", "main", "@1", tr) || f.gen.n() != 0 {
+		t.Fatalf("no token: offered, calls %d", f.gen.n())
+	}
+	if d := time.Since(start); d > 500*time.Millisecond {
+		t.Fatalf("no token: waited %v for a status it can never name", d)
+	}
+	if !f.turnEnd(t) || f.gen.n() != 1 {
+		t.Fatalf("control: calls %d", f.gen.n())
+	}
+}
+
+// TestAResumedViewOffersNothingForTheTurnItResumedInto: a reloaded page
+// resumes its socket (no backfill, no prompt index); its resume marker on an
+// idle session ends no turn, so the row stays away for that turn — even when
+// a set for it exists — until a whole new turn.
+func TestAResumedViewOffersNothingForTheTurnItResumedInto(t *testing.T) {
+	tr := &suggestTracker{resumed: true}
+	if tr.observe(mirror.Msg{Offset: 4096, StatusSince: tokOwn}) {
+		t.Fatal("the resume marker ended a turn")
+	}
+	if tr.observe(mirror.Msg{Events: []cctranscript.Event{{Kind: cctranscript.KindText, Text: p2Reply}}}) {
+		t.Fatal("a reply of the resumed turn ended it")
+	}
+}
+
+// suggestStats is eng's counts for the operator (user 1).
+func suggestStats(t *testing.T, eng *suggest.Engine) suggest.Tally {
+	t.Helper()
+	st, err := eng.Stats(operatorCtx(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
 }
 
 // keylessGen is a model the owner has no key for.
@@ -447,7 +411,7 @@ func TestAnOwnerWithNoKeyIsNeverToldPending(t *testing.T) {
 	for _, m := range suggestBackfill() {
 		tr.observe(m)
 	}
-	if f.s.suggestTurnAt(operatorCtx(), "ws", "main", "@1", tr, suggestEnd{at: time.Now()}, func(time.Duration) { t.Error("pending with no key") }) || g.n() != 0 {
+	if f.s.suggestTurnAt(operatorCtx(), "ws", "main", "@1", tr, suggestEnd{since: suggestTok, at: time.Now()}, func(time.Duration) { t.Error("pending with no key") }) || g.n() != 0 {
 		t.Fatalf("calls %d", g.n())
 	}
 }
@@ -491,7 +455,8 @@ func TestTheChipRowsReportsCountAndCarryNoText(t *testing.T) {
 	}{
 		{with("event", "shown"), http.StatusNoContent},
 		{with("event", "shown"), http.StatusNoContent}, // counted once
-		{with("event", "filled", "idx", "0"), http.StatusNoContent},
+		{with("event", "filled"), http.StatusNoContent},
+		{with("event", "filled", "idx", "0"), http.StatusBadRequest}, // no chip index is reported any more
 		{with("event", "sent", "dist", "4"), http.StatusNoContent},
 		{with("event", "sent", "dist", "4", "text", "Go with (a)"), http.StatusBadRequest},
 		{with("event", "typed"), http.StatusBadRequest},
@@ -503,7 +468,7 @@ func TestTheChipRowsReportsCountAndCarryNoText(t *testing.T) {
 			t.Fatalf("%v: %d, want %d", c.form, code, c.code)
 		}
 	}
-	if st := f.eng.Stats(1); st != (suggest.Tally{Shown: 1, Filled: 1, Sent: 1, EditSum: 4}) {
+	if st := suggestStats(t, f.eng); st != (suggest.Tally{Shown: 1, Filled: 1, Sent: 1, EditSum: 4}) {
 		t.Fatalf("tally %+v", st)
 	}
 }
@@ -521,12 +486,27 @@ func TestAPausedUserIsToldSoAndTheToggleResumesThem(t *testing.T) {
 		sub := "sub-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
 		b, _ := suggest.Build(suggest.Input{Tail: []suggest.Entry{{Role: suggest.RoleAssistant, Text: suggestReply + " " + sub}}})
 		set, _, err := f.eng.Suggest(context.Background(), 1, sub, b, int64(i+1))
-		if err != nil || !f.eng.Record(1, sub, set.Fingerprint, suggest.EventShown, 0) {
+		if err != nil || !f.eng.Record(operatorCtx(), 1, sub, set.Fingerprint, suggest.EventShown, 0) {
 			t.Fatalf("set %d: %v", i, err)
 		}
 	}
 	if v := f.get(t); len(v.Suggestions) != 0 || v.Reason != suggestBlockedPaused {
 		t.Fatalf("paused: %+v", v)
+	}
+	// The composer says so in one line (and draws no chip row); Account shows
+	// the readout of the counts that paused it.
+	_, page := mirrorGet(t, f.s, f.ts, ui.MirrorRef{Host: "ws", Session: "main", Window: "@1"}.ViewPath())
+	if !strings.Contains(page, `id="mv-suggest-paused"`) || !strings.Contains(page, ui.SuggestPausedText) || strings.Contains(page, `id="mv-suggest"`) {
+		t.Fatal("the paused composer line (and no row)")
+	}
+	r, _ := http.NewRequestWithContext(operatorCtx(), http.MethodGet, "/account", nil)
+	html := f.s.accountSuggestSection(r)
+	for _, want := range []string{`data-state="paused"`, `id="suggest-usage-shown" class="tabular-nums text-fg">200<`,
+		`id="suggest-usage-filled" class="tabular-nums text-fg">0<`, `id="suggest-usage-rate" class="tabular-nums text-fg">0.0%<`,
+		`id="suggest-usage-paused" class="tabular-nums text-fg">yes<`, "fewer than 5% of them were tapped"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("Account lacks %s:\n%s", want, html)
+		}
 	}
 	if f.turnEnd(t) {
 		t.Fatal("a paused user's turn end generated")
@@ -544,7 +524,7 @@ func TestAPausedUserIsToldSoAndTheToggleResumesThem(t *testing.T) {
 	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/account?suggest=saved#suggest" {
 		t.Fatalf("back to Account: %d %q", resp.StatusCode, resp.Header.Get("Location"))
 	}
-	if f.eng.Stats(1).Paused || f.eng.Enabled(context.Background(), 1) != "" {
+	if suggestStats(t, f.eng).Paused || f.eng.Enabled(context.Background(), 1) != "" {
 		t.Fatal("turning suggestions back on did not resume")
 	}
 }
@@ -612,6 +592,9 @@ func TestOnlyAClaudeWindowOnAnInteractiveHostGetsTheRow(t *testing.T) {
 				t.Fatalf("suggestPath gives a URL: %v, want %v", got, c.want)
 			}
 			_, body := mirrorGet(t, f.s, f.ts, ui.MirrorRef{Host: "ws", Session: "main", Window: "@1"}.ViewPath())
+			if strings.Contains(body, `id="mv-suggest-paused"`) {
+				t.Fatal("a paused line for a user who is not paused")
+			}
 			if got := strings.Contains(body, `id="mv-suggest"`); got != c.want {
 				t.Fatalf("row drawn %v, want %v", got, c.want)
 			}

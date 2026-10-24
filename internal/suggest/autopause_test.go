@@ -6,6 +6,16 @@ import (
 	"testing"
 )
 
+// stats is e.Stats for owner, failing the test on an error.
+func stats(t *testing.T, e *Engine, owner int64) Tally {
+	t.Helper()
+	st, err := e.Stats(context.Background(), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
 // served has e generate n distinct sets for owner 1 (subject "s<i>"), and
 // returns each set's fingerprint.
 func served(t *testing.T, e *Engine, n int) []string {
@@ -33,7 +43,7 @@ func TestTheAutoPauseIsUnderFivePercentFilledAfterTwoHundredShown(t *testing.T) 
 		fps := served(t, e, shown)
 		fills := 0
 		for i, fp := range fps {
-			if !e.Record(1, "s"+strconv.Itoa(i), fp, EventShown, 0) {
+			if !e.Record(context.Background(), 1, "s"+strconv.Itoa(i), fp, EventShown, 0) {
 				t.Fatalf("shown %d did not count", i)
 			}
 			if everyNth > 0 && i%everyNth == 0 {
@@ -41,7 +51,7 @@ func TestTheAutoPauseIsUnderFivePercentFilledAfterTwoHundredShown(t *testing.T) 
 				if fills <= skipFills {
 					continue
 				}
-				if !e.Record(1, "s"+strconv.Itoa(i), fp, EventFilled, 0) {
+				if !e.Record(context.Background(), 1, "s"+strconv.Itoa(i), fp, EventFilled, 0) {
 					t.Fatalf("filled %d did not count", i)
 				}
 			}
@@ -50,14 +60,14 @@ func TestTheAutoPauseIsUnderFivePercentFilledAfterTwoHundredShown(t *testing.T) 
 	}
 	ctx := context.Background()
 
-	if e, _ := run(199, 0, 0); e.Enabled(ctx, 1) != "" || e.Stats(1).Paused {
-		t.Fatalf("199 shown, none filled: judged too early: %+v", e.Stats(1))
+	if e, _ := run(199, 0, 0); e.Enabled(ctx, 1) != "" || stats(t, e, 1).Paused {
+		t.Fatalf("199 shown, none filled: judged too early: %+v", stats(t, e, 1))
 	}
-	if e, _ := run(200, 20, 0); e.Enabled(ctx, 1) != "" || e.Stats(1).Filled != 10 {
-		t.Fatalf("200 shown, 10 filled (5%%): paused: %+v", e.Stats(1))
+	if e, _ := run(200, 20, 0); e.Enabled(ctx, 1) != "" || stats(t, e, 1).Filled != 10 {
+		t.Fatalf("200 shown, 10 filled (5%%): paused: %+v", stats(t, e, 1))
 	}
 	e, g := run(200, 20, 1) // 9 filled: 4.5 %
-	if st := e.Stats(1); !st.Paused || st.Shown != 200 || st.Filled != 9 {
+	if st := stats(t, e, 1); !st.Paused || st.Shown != 200 || st.Filled != 9 {
 		t.Fatalf("200 shown, 9 filled: %+v", st)
 	}
 	if o := e.Enabled(ctx, 1); o != OutcomePaused {
@@ -71,9 +81,9 @@ func TestTheAutoPauseIsUnderFivePercentFilledAfterTwoHundredShown(t *testing.T) 
 	if o := e.Enabled(ctx, 2); o != "" {
 		t.Fatalf("owner 2: %q", o)
 	}
-	e.Resume(1)
-	if o := e.Enabled(ctx, 1); o != "" || e.Stats(1) != (Tally{}) {
-		t.Fatalf("resumed: %q %+v", o, e.Stats(1))
+	e.Resume(ctx, 1)
+	if o := e.Enabled(ctx, 1); o != "" || stats(t, e, 1) != (Tally{}) {
+		t.Fatalf("resumed: %q %+v", o, stats(t, e, 1))
 	}
 }
 
@@ -105,11 +115,11 @@ func TestASetCountsOnceAndOnlyWhenItWasServed(t *testing.T) {
 		{1, "s0", fp, EventSent, 7, false},
 	}
 	for i, c := range cases {
-		if got := e.Record(c.owner, c.subject, c.fp, c.ev, c.dist); got != c.wantCounts {
+		if got := e.Record(context.Background(), c.owner, c.subject, c.fp, c.ev, c.dist); got != c.wantCounts {
 			t.Fatalf("case %d %+v: counted=%v", i, c, got)
 		}
 	}
-	if st := e.Stats(1); st != (Tally{Shown: 1, Filled: 1, Sent: 1, EditSum: 7}) {
+	if st := stats(t, e, 1); st != (Tally{Shown: 1, Filled: 1, Sent: 1, EditSum: 7}) {
 		t.Fatalf("tally %+v", st)
 	}
 }

@@ -26,13 +26,15 @@ Mirrored tmux sessions only (a dispatched agent's chat page has no chips yet).
   already holds a draft gets it **on a new line below** the draft, never over
   it. It is an edit (Ctrl+Z gives the draft back), the box is focused with the
   caret at the end, and you press Send.
-- **×** hides the row for that turn, on this device (the set stays hidden
-  after a reload); the next turn brings new chips.
+- **×** hides the row for that turn, on this device; the next turn brings new
+  chips.
 - **Within 8 s or not at all.** The row takes its room when a set is being
   made (`pending`) and gives it back if no chip is on screen 8 s after the
   turn ended (`ui.SuggestCutoff`); the server does not even call the model
-  once that time has passed. A page opened or reloaded later on the same idle
-  turn shows that turn's set again (from the cache, within 8 s of the open).
+  once that time has passed. A page newly opened on an idle turn that has a
+  set shows it (its open reads the whole conversation: a turn end of its own,
+  within 8 s of the open). A **reload** resumes its socket and shows **no row**
+  for the turn it reloaded into; the next turn brings chips.
 - **Gone when the turn is.** A new turn (busy, a new status), a question card
   or an attention ask appearing, or your own Send takes the row away.
 - **No layout shift.** The row is out of flow (placed against the pinned
@@ -90,9 +92,9 @@ bounded by the 8 s cutoff. A permission prompt or a question **of this turn**
 ends it at once (one older than the turn's token is the list lagging, and is
 waited out).
 
-⚠ An older muster-mirror sends no token; with it the turn end falls back to
-P1's rule (the idle read when the busy marker rose), which keeps both of the
-problems above. Upgrade muster-mirror on a host to get the fix.
+🔴 **An older muster-mirror sends no token, and gets no chips at all**:
+without the token a turn end cannot be told from the idle before the turn.
+The hosts get the new muster-mirror in the same rollout.
 
 ## What is sent to the model
 
@@ -159,10 +161,9 @@ A set is cached **in memory only**, by the fingerprint of the exact input
 (its focus times aside, which move with the clock) and by the turn it answers:
 the same input, or the same turn, never calls the model twice, and a new turn
 calls it exactly once. Two views of the same turn share one call, even when
-one of them resumed mid-conversation and saw less (a resumed view never
-generates from the partial turn it resumed into — it only SERVES the set
-already made for that very turn, so a reloaded page shows its chips again —
-and it generates from the first whole turn after it). A set's text is dropped after an hour (only its fingerprint is
+one of them resumed mid-conversation and saw less (a resumed view offers
+nothing for the partial turn it resumed into, and generates from the first
+whole turn after it). A set's text is dropped after an hour (only its fingerprint is
 kept, so an unchanged session is not paid for again). **No suggestion text is
 ever written to the database.**
 
@@ -181,17 +182,25 @@ history moved in between, the model is asked again for the same reply.
 ## What the chip row reports, and the auto-pause
 
 The row reports, to `POST /mirror/view/suggest/event`, **numbers only**: the
-set's fingerprint and `shown` (once per set), `filled` (a tap, with its chip's
-index) and `sent` (the box was sent after a tap) with the **edit distance**
-between what the tap left in the box and what was sent, computed in the
-browser. The route refuses any other field, so a page that started sending
-text would fail, not leak. Nothing is written to the database.
+set's fingerprint and `shown` (once per set), `filled` (a tap) and `sent` (the
+box was sent after a tap) with the **edit distance** between what the tap left
+in the box and what was sent, computed in the browser. The route refuses any
+other field, so a page that started sending text would fail, not leak.
+
+**The counts are persisted, numbers only**: `suggest_usage` (migration `0049`)
+holds each user's shown, filled and sent counts, the edit-distance sum and the
+pause, under forced row-level security. No column can hold text, a session or
+any of the conversation; the fingerprints that make a set count once stay in
+memory. **Account → Suggested replies** shows them: sets shown, tapped, sent
+after a tap, the tap rate, the mean edit before sending, and whether you are
+paused.
 
 **Auto-pause:** once 200 sets have been shown to a user, if fewer than 5% of
 them were tapped, suggestions pause for that user — nothing is generated or
-shown, and Account says so. The tallies are in memory (a restart un-pauses
-everyone). Turning suggestions back on in Account resumes and starts the count
-over.
+shown, the composer says so in one line (with a link to Account), and Account
+says why. The pause is persisted, so it survives a restart or a deploy.
+Turning suggestions back on in Account resumes and starts the count over (a
+user who was not paused keeps their counts).
 
 ## Turning it off
 
@@ -208,7 +217,7 @@ over.
 | route | what |
 |---|---|
 | `GET /mirror/view/suggest?host=&session=[&window=]` | the window's current set as JSON: `{"ai": true, "label": "AI-suggested replies", "suggestions": [{"text", "kind"}], "fingerprint", "reason"}`. It never generates. `reason` says, in fixed words, why there are none |
-| `POST /mirror/view/suggest/event` | the chip row's report: `host`, `session`, `window`, `fingerprint`, `event=shown\|filled\|sent`, `idx`, `dist` — nothing else is accepted |
+| `POST /mirror/view/suggest/event` | the chip row's report: `host`, `session`, `window`, `fingerprint`, `event=shown\|filled\|sent`, `dist` — nothing else is accepted |
 | `POST /account/suggest` | `on=1\|0`: the caller's own toggle (`back=account` returns to the Account page) |
 
 The rendered view's socket also tells the page `{"type":"suggest","state":"pending"|"ready"|"none","ms"}`

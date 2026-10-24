@@ -103,6 +103,9 @@ type MirrorViewView struct {
 	// Suggest is the suggested replies' URL (ComposerView.Suggest); "" for
 	// none — a Hermes window, a host with suggestions not wired.
 	Suggest string
+	// SuggestPaused: the viewer's suggestions are auto-paused here
+	// (ComposerView.SuggestPaused).
+	SuggestPaused bool
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -128,7 +131,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		// this page cannot be scrolled to bring it back (composerPinScript).
 		Pinned: true, Switcher: v.Switcher}
 	if !v.Hermes {
-		composer.Suggest = v.Suggest
+		composer.Suggest, composer.SuggestPaused = v.Suggest, v.SuggestPaused
 	}
 	shell := pinnedShellClass
 	if v.Switcher != nil {

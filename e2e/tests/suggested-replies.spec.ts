@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import http from 'node:http';
-import { Page, Request } from '@playwright/test';
+import { Browser, Page, Request } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { suggestFakePort, suggestPort } from '../lib/env';
 import { clsInit, readCls, resetCls } from '../lib/cls';
@@ -20,7 +20,8 @@ import { writeFileAtomic } from '../lib/atomic';
 //      — the positive control is Send itself, which does reach the host; the
 //      report that follows carries numbers, never the text.
 //   3. A tap below a draft appends on a new line.
-//   4. × hides the row for that turn (and the set stays hidden on a reload).
+//   4. × hides the row for that turn; a reload (a resumed socket) shows no
+//      row for the turn it reloaded into.
 //   5. No chips while the session is busy, nor at a permission prompt — and
 //      the fake model is not even asked.
 //   6. CLS < 0.01 while the row is reserved and filled, at 390×844 and
@@ -165,12 +166,12 @@ test.describe.serial('phone 390×844', () => {
     expect(evs.map((e) => e.get('event'))).toEqual(['shown', 'filled', 'sent']);
     expect(evs[2].get('dist'), 'the edit distance of ", and keep it a flag"').toBe(String(', and keep it a flag'.length));
     for (const e of evs) {
-      expect([...e.keys()].sort().filter((k) => !['host', 'session', 'window', 'fingerprint', 'event', 'idx', 'dist'].includes(k)), 'no other field').toEqual([]);
+      expect([...e.keys()].sort().filter((k) => !['host', 'session', 'window', 'fingerprint', 'event', 'dist'].includes(k)), 'no other field').toEqual([]);
       for (const v of e.values()) expect(v.includes('checkpoint'), 'no text in a report').toBe(false);
     }
   });
 
-  test('a tap below a draft appends on a new line; × hides the row for the turn, also after a reload', async ({ page }) => {
+  test('a tap below a draft appends on a new line; × hides the row for the turn; a reload shows none', async ({ page }) => {
     await openView(page);
     await turn(page, reply + ' ');
     await expect(chips(page).first()).toBeVisible({ timeout: 8_000 });
@@ -179,16 +180,20 @@ test.describe.serial('phone 390×844', () => {
     await expect(page.locator('#mv-input')).toHaveValue('my draft so far\n' + chipB);
     await page.locator('#mv-input').fill('');
 
+    await page.waitForTimeout(1500); // the snapshot is saved (the reload below resumes)
     await page.locator('#mv-suggest-x').tap();
     await expect(row(page)).toBeHidden();
     await page.waitForTimeout(1500);
     await expect(row(page), 'still hidden').toBeHidden();
-    // A reload re-reads the same set (no call) and keeps it hidden.
+    // A reload RESUMES its socket (the snapshot, saved within a second): it
+    // shows no row for the turn it reloaded into, and calls nothing.
     const before = calls.length;
+    const resumedWS = page.waitForEvent('websocket', (ws) => ws.url().includes('/mirror/view/ws'));
     await page.reload();
+    expect((await resumedWS).url(), 'the reloaded view resumed its socket').toContain('&gen=');
     await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
     await page.waitForTimeout(2500);
-    await expect(row(page), 'the dismissed set stays hidden on this device').toBeHidden();
+    await expect(row(page), 'no row for the turn a reload resumed into').toBeHidden();
     expect(calls.length, 'a reload of the same turn calls nothing').toBe(before);
   });
 
@@ -212,10 +217,22 @@ test.describe.serial('phone 390×844', () => {
   });
 });
 
-// measureTurn measures CLS from just before a turn's status flip until its
-// chips are shown and settled; inFlow forces the row into the composer's flow
-// (the positive control).
-async function measureTurn(page: Page, inFlow: boolean, salt: string) {
+// measureTurn measures CLS on a FRESH page (its own context: no snapshot, so
+// its socket reads the whole conversation): first the open of a view on an
+// idle session whose last turn has a set (the chips come with the page), then
+// a turn's status flip until its chips are shown and settled. A turn of its
+// own runs first on another page, so the open has a set to show. inFlow
+// forces the row into the composer's flow (the positive control).
+async function measureTurn(browser: Browser, use: object, inFlow: boolean, salt: string) {
+  const prepCtx = await browser.newContext({ ...use, storageState: { cookies: [], origins: [] } });
+  const prep = await prepCtx.newPage();
+  await openView(prep);
+  await turn(prep, reply + salt + ' (before the open)');
+  await expect(chips(prep).first()).toBeVisible({ timeout: 8_000 });
+  await prepCtx.close();
+
+  const ctx = await browser.newContext({ ...use, storageState: { cookies: [], origins: [] } });
+  const page = await ctx.newPage();
   await page.addInitScript(clsInit);
   if (inFlow) await page.addInitScript(() => {
     document.addEventListener('DOMContentLoaded', () => {
@@ -225,20 +242,6 @@ async function measureTurn(page: Page, inFlow: boolean, salt: string) {
     });
   });
   await openView(page);
-  // A turn of its own first, so the measured open has a set to show (the
-  // test does not depend on another test's turn).
-  await turn(page, reply + salt + ' (before the open)');
-  await expect(chips(page).first()).toBeVisible({ timeout: 8_000 });
-  // The open of a view on an idle session whose last turn has a set: the
-  // chips come with the page (the open is a turn end too, from the cache).
-  // 🔴 A RELOAD RESUMES (the snapshot, saved within a second): the socket has
-  // no backfill and only SERVES the turn's cached set — asserted, so this
-  // measures that path and not, by the luck of the save's timing, a fresh one.
-  await page.waitForTimeout(1500);
-  const resumedWS = page.waitForEvent('websocket', (ws) => ws.url().includes('/mirror/view/ws'));
-  await page.reload();
-  expect((await resumedWS).url(), 'the reloaded view resumed its socket').toContain('&gen=');
-  await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
   await expect(chips(page).first(), 'the last turn\'s chips at the open').toBeVisible({ timeout: 8_000 });
   await page.waitForTimeout(1000);
   const atOpen = await readCls(page);
@@ -248,6 +251,7 @@ async function measureTurn(page: Page, inFlow: boolean, salt: string) {
   await page.waitForTimeout(1500);
   const r = await readCls(page);
   expect(r.unsupported, 'layout-shift entries are observable here').toBeUndefined();
+  await ctx.close();
   return { open: atOpen, turn: r };
 }
 
@@ -257,15 +261,12 @@ for (const vp of [
 ]) {
   test.describe(`layout shift, ${vp.name}`, () => {
     test.use(vp.use);
-    test('the row coming and filling shifts nothing (< 0.01), and the instrument sees the in-flow control', async ({ page, browser }) => {
-      const { open, turn: r } = await measureTurn(page, false, ' [' + vp.name + ']');
+    test('the row coming and filling shifts nothing (< 0.01), and the instrument sees the in-flow control', async ({ browser }) => {
+      const { open, turn: r } = await measureTurn(browser, vp.use, false, ' [' + vp.name + ']');
       console.log(`CLS ${vp.name}: open with chips ${open.total} ${JSON.stringify(open.shifts)}; turn end → chips ${r.total} ${JSON.stringify(r.shifts)}`);
-      // The positive control, on a fresh page: the same flow, the row in flow.
-      const ctx = await browser.newContext({ ...vp.use, storageState: { cookies: [], origins: [] } });
-      const p2 = await ctx.newPage();
-      const c = await measureTurn(p2, true, ' [' + vp.name + ' control]');
+      // The positive control: the same flow, the row in flow.
+      const c = await measureTurn(browser, vp.use, true, ' [' + vp.name + ' control]');
       console.log(`CLS ${vp.name}: positive control (row in flow): open ${c.open.total} ${JSON.stringify(c.open.shifts)}; turn ${c.turn.total} ${JSON.stringify(c.turn.shifts)}`);
-      await ctx.close();
       expect(c.turn.total, 'the positive control: the instrument sees the in-flow row shift the composer').toBeGreaterThan(0);
       expect(open.total, `CLS of the open with chips (${JSON.stringify(open.shifts)})`).toBeLessThan(0.01);
       expect(r.total, `CLS of the turn end (${JSON.stringify(r.shifts)})`).toBeLessThan(0.01);

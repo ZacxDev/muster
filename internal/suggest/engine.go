@@ -112,6 +112,9 @@ type Engine struct {
 	// served.
 	Off   bool
 	Prefs Prefs
+	// Usage keeps each user's counts and pause (autopause.go); nil keeps them
+	// in memory.
+	Usage UsageStore
 	Now   func() time.Time
 	// RecheckTimeout bounds the toggle re-check after a paid call (0 =
 	// DefaultRecheckTimeout).
@@ -182,7 +185,7 @@ func (e *Engine) Enabled(ctx context.Context, owner int64) Outcome {
 			return OutcomeUserOff
 		}
 	}
-	if e.paused(owner) {
+	if e.paused(ctx, owner) {
 		return OutcomePaused
 	}
 	return ""

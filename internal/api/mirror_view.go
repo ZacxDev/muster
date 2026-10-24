@@ -92,6 +92,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	// The suggested replies' row (suggest.go): a Claude Code window on an
 	// interactive host, while the server has suggestions wired at all.
 	v.Suggest = s.suggestPath(r.Context(), h, e)
+	v.SuggestPaused = v.Suggest == "" && s.suggestPaused(r.Context(), h, e)
 	v.HostIcon = s.mirrorHostIcon(r.Context(), h.Host)
 	// The window's sessions' open attention asks, answerable here
 	// (attention_asker.go).

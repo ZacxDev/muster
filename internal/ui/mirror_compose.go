@@ -130,6 +130,10 @@ type ComposerView struct {
 	// Rendered view on an interactive host sets it — never a Terminal view,
 	// never Hermes. A disabled composer draws none either way.
 	Suggest string
+	// SuggestPaused draws one line saying the viewer's suggested replies are
+	// paused (the auto-pause), with the way back on (Account). Drawn with the
+	// page, so it moves nothing.
+	SuggestPaused bool
 }
 
 // MirrorComposerView is ComposerView under the name it had while only mirrored
@@ -235,8 +239,9 @@ func mirrorComposer(v ComposerView) g.Node {
 		ID("mv-compose"),
 		Class(place+" border-t border-line bg-bg"),
 		// The suggested replies (suggest_row.go): above the composer, out of
-		// flow, drawn hidden.
+		// flow, drawn hidden — or, auto-paused, one line saying so.
 		suggestRow(suggest),
+		g.If(v.SuggestPaused && !off && suggest == "", suggestPausedNote()),
 		// The send's outcome, inline: why it was not sent, or that there was
 		// nothing to send. Empty and hidden otherwise — unless the page was
 		// reached by the redirect that answers a send the browser submitted,
