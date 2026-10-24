@@ -190,6 +190,9 @@ type SendQueueListView struct {
 	// the READER's zone (a <time data-clock> the list's script formats); the
 	// server, which does not know that zone, draws it in UTC, saying so.
 	ResumeAt time.Time
+	// Now is the server's clock when the view was drawn: whether ResumeAt is
+	// today decides whether its date is drawn (utcClock).
+	Now time.Time
 	// Error is why the list could not be read.
 	Error string
 }
@@ -312,15 +315,35 @@ func SendQueueList(v SendQueueListView) g.Node {
 // The line is drawn only while something is queued (Waiting is set only for a
 // head), so an idle composer with an empty queue reserves nothing.
 func sendQueueWaiting(v SendQueueListView) g.Node {
-	cls := "min-h-[2lh] text-[11px] [overflow-wrap:anywhere]"
+	// At most two lines, whatever the width (a 320px phone included): the
+	// line is clamped, and its whole text is its title.
+	cls := "min-h-[2lh] line-clamp-2 text-[11px] [overflow-wrap:anywhere]"
 	if !v.Held {
-		return P(ID("mv-queue-waiting"), Class(cls+" text-muted"), g.Text("Next: "+v.Waiting))
+		text := "Next: " + v.Waiting
+		return P(ID("mv-queue-waiting"), g.Attr("title", text), Class(cls+" text-muted"), g.Text(text))
 	}
-	return P(ID("mv-queue-waiting"), g.Attr("data-queue-hold", ""), Class(cls+" font-semibold text-st-warning-fg"),
+	text := v.Waiting
+	if !v.ResumeAt.IsZero() {
+		text += " " + utcClock(v.ResumeAt, v.Now)
+	}
+	return P(ID("mv-queue-waiting"), g.Attr("data-queue-hold", ""), g.Attr("title", text), Class(cls+" font-semibold text-st-warning-fg"),
 		g.Text(v.Waiting),
 		g.If(!v.ResumeAt.IsZero(), g.Group([]g.Node{g.Text(" "),
 			g.El("time", g.Attr("data-clock", strconv.FormatInt(v.ResumeAt.UnixMilli(), 10)),
-				g.Attr("datetime", v.ResumeAt.UTC().Format(time.RFC3339)), g.Text(v.ResumeAt.UTC().Format("15:04")+" UTC"))})))
+				g.Attr("datetime", v.ResumeAt.UTC().Format(time.RFC3339)), g.Text(utcClock(v.ResumeAt, v.Now)))})))
+}
+
+// utcClock is t as the server draws it for a reader whose zone it does not
+// know: in UTC, saying so — "22:30 UTC" when it falls on now's UTC date,
+// "Oct 27 22:30 UTC" when not (a weekly limit's reset is days away), and
+// with the date whenever now is unknown. The list's script redraws it in the
+// reader's own zone, the same way.
+func utcClock(t, now time.Time) string {
+	t = t.UTC()
+	if !now.IsZero() && t.Format("2006-01-02") == now.UTC().Format("2006-01-02") {
+		return t.Format("15:04") + " UTC"
+	}
+	return t.Format("Jan 2 15:04") + " UTC"
 }
 
 // The labels of a queued message's ⋯ menu.
@@ -607,11 +630,21 @@ func sendQueueScript() g.Node {
   }
   // clocks draws each <time data-clock> (a held queue's "resumes 10:30 PM")
   // in the reader's own local time; the server's text stays if it cannot.
+  // A time that is not today carries its date ("Oct 27, 10:00 PM": a weekly
+  // limit's reset is days away). The line's title follows what it now says.
   function clocks() {
     var ts = box.querySelectorAll('time[data-clock]');
     for (var i = 0; i < ts.length; i++) {
       var ms = parseInt(ts[i].getAttribute('data-clock'), 10);
-      try { if (ms) ts[i].textContent = new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (e) {}
+      try {
+        if (!ms) continue;
+        var d = new Date(ms);
+        ts[i].textContent = d.toDateString() === new Date().toDateString()
+          ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+          : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        var p = ts[i].closest('[title]');
+        if (p) p.setAttribute('title', p.textContent);
+      } catch (e) {}
     }
   }
   // drawn is what follows every draw of the list.

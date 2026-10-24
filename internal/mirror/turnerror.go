@@ -1,8 +1,11 @@
 package mirror
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // A TURN THAT ENDED IN AN ERROR (Window.TurnError): the host's reading of an
@@ -25,8 +28,10 @@ import (
 //
 // ⚠ SIZE: it rides the window list, ONE message within MaxFrame
 // (TestTheLargestWindowListFitsOneFrame). So it carries no text — a kind, two
-// times, a flag and a count, every field a closed alphabet that JSON writes as
-// itself — and at most MaxTurnErrorWindows windows of a list carry one.
+// times, a flag, a count and a 16-hex digest, every field a closed alphabet
+// that JSON writes as itself — and at most MaxTurnErrorWindows windows of a list
+// carry one. (The digest and PrevAt cost ~45 bytes a window, ~720 at the
+// bound: what it takes for the queue to know WHICH prompt was refused.)
 type TurnError struct {
 	// Kind is TurnErrorLimit for a usage limit, else the record's own error
 	// code ("authentication_failed", "server_error", …: ValidTurnErrorKind),
@@ -45,6 +50,15 @@ type TurnError struct {
 	// processed) or no prompt was found. The send queue marks a message it
 	// sent failed ("Rejected: usage limit") only on a turn that says this.
 	Rejected bool `json:"rejected,omitempty"`
+	// Prompt is PromptDigest of the prompt a Rejected turn answered; "" when
+	// the turn is not Rejected. Never the text itself.
+	Prompt string `json:"prompt,omitempty"`
+	// PrevAt is the time of the newest message record (user or assistant,
+	// any) BEFORE a Rejected turn's prompt — when the turn before it ended —
+	// Unix ms on the host's clock (the CLI's, like Window.StatusSince). 0 when
+	// the transcript has none before it. A Rejected turn whose host could not
+	// read back that far is reported not Rejected.
+	PrevAt int64 `json:"prevAt,omitempty"`
 	// Quick counts the latest turns, this one first, that EACH ended in such a
 	// record within QuickTurnMS of their prompt with no real reply between:
 	// the send queue's circuit breaker. 0 when this turn was not one.
@@ -74,12 +88,26 @@ const (
 
 var turnErrorKind = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 
+var promptDigest = regexp.MustCompile(`^[0-9a-f]{16}$`)
+
+// PromptDigest is what names a prompt's text on the wire (TurnError.Prompt):
+// the first 8 bytes of the SHA-256 of the text with its surrounding
+// whitespace trimmed and CRLF read as LF — the host digests the prompt as the
+// transcript holds it, muster the message it sent, and the two agree however
+// the terminal carried the line ends. Nothing stores it.
+func PromptDigest(text string) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:8])
+}
+
 // ValidTurnErrorKind reports whether s is a kind the wire carries.
 func ValidTurnErrorKind(s string) bool { return turnErrorKind.MatchString(s) }
 
 // CleanTurnError is e as the wire carries it: nil for no kind or one the wire
-// does not carry, no negative time, a reset only on a limit, Quick within its
-// bound.
+// does not carry, no negative time, a reset only on a limit, a digest and a
+// PrevAt only on a Rejected turn (and a Rejected turn only with a digest),
+// Quick within its bound.
 func CleanTurnError(e *TurnError) *TurnError {
 	if e == nil || !ValidTurnErrorKind(e.Kind) {
 		return nil
@@ -90,6 +118,9 @@ func CleanTurnError(e *TurnError) *TurnError {
 		out.ResetsAt = 0
 	}
 	out.Quick = min(max(out.Quick, 0), MaxTurnErrorQuick)
+	if !out.Rejected || !promptDigest.MatchString(out.Prompt) || out.PrevAt < 0 {
+		out.Rejected, out.Prompt, out.PrevAt = false, "", 0
+	}
 	return &out
 }
 
@@ -115,6 +146,29 @@ func boundTurnError(out []Window) {
 	for _, i := range with[MaxTurnErrorWindows:] {
 		out[i].TurnError = nil
 	}
+}
+
+// HostLimit is a usage limit a host reports for all its Claude Code windows
+// (Msg.HostLimit): the newest limit record across them, and the reset it
+// names — taken by the host from EVERY idle Claude window's transcript, before
+// the window list's MaxTurnErrorWindows bound, and not reported once any of
+// its Claude windows got a real answer after it (the limit has lifted).
+type HostLimit struct {
+	// At is that limit record's time, Unix ms on the host's clock.
+	At int64 `json:"at"`
+	// ResetsAt is the reset it names, Unix ms (absolute); 0 for none.
+	ResetsAt int64 `json:"resetsAt,omitempty"`
+}
+
+// CleanHostLimit is l as muster keeps it: nil for none or no time, no
+// negative reset.
+func CleanHostLimit(l *HostLimit) *HostLimit {
+	if l == nil || l.At <= 0 {
+		return nil
+	}
+	out := *l
+	out.ResetsAt = max(out.ResetsAt, 0)
+	return &out
 }
 
 func turnErrorEqual(a, b *TurnError) bool {

@@ -1216,7 +1216,12 @@ test.describe('a usage limit, phone 390×844 touch', () => {
       expect(pasted(), 'the limit rejected the first: nothing more is sent into it').toEqual([`${pane} ${a}`]);
       await expect(waiting, `held on the limit (log:\n${mirrorLog})`).toContainText('Held — usage limit, resumes', { timeout: 20_000 });
       await expect(waiting.locator('time[data-clock]')).toHaveAttribute('data-clock', String(reset.getTime()));
-      const local = await page.evaluate((ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), reset.getTime());
+      const local = await page.evaluate((ms) => {
+        const d = new Date(ms);
+        return d.toDateString() === new Date().toDateString()
+          ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+          : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      }, reset.getTime());
       await expect(waiting.locator('time[data-clock]'), 'the reset in the reader\'s local time').toHaveText(local);
       await holdWindow();
       await holdWindow();
@@ -1243,6 +1248,32 @@ test.describe('a usage limit, phone 390×844 touch', () => {
     await holdWindow();
     expect(pasted(), 'the bounced message is not re-sent on its own').toEqual([`${pane} ${a}`, `${pane} ${b}`, `${pane} ${c}`]);
     await expect(rowIn(page, a, 'failed')).toHaveCount(1);
+    await busyAndSeen();
+  });
+
+  // A WEEKLY LIMIT resets days away: the held line says the date, not only a
+  // time (which would read as today's).
+  test('a limit that resets on another day shows its date', async ({ page }) => {
+    await busyAndSeen();
+    fs.rmSync(tr + '.pasted', { force: true });
+    await openView(page, newHost);
+    const text = 'weekly ' + stamp;
+    await queue(page, text, true);
+    await expect(page.locator('#mv-queue-waiting')).toContainText('working', { timeout: 20_000 });
+    const reset = new Date(Date.now() + 3 * 24 * 3600_000);
+    reset.setUTCSeconds(0, 0);
+    fs.appendFileSync(tr, promptRow('typed by hand ' + stamp) + limitRow(reset));
+    setStatus('idle');
+    const clock = page.locator('#mv-queue-waiting time[data-clock]');
+    await expect(clock, `held (log:\n${mirrorLog})`).toHaveAttribute('data-clock', String(reset.getTime()), { timeout: 20_000 });
+    const want = await page.evaluate((ms) => new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }), reset.getTime());
+    const month = await page.evaluate((ms) => new Date(ms).toLocaleString([], { month: 'short' }), reset.getTime());
+    await expect(clock).toHaveText(want);
+    await expect(clock).toContainText(month);
+    expect(pasted(), 'held: nothing is sent').toEqual([]);
+    await cancelRow(rowIn(page, text, 'queued'), true);
+    await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);
+    answered('the limit has lifted');
     await busyAndSeen();
   });
 
@@ -1311,6 +1342,16 @@ test.describe('a usage limit, phone 390×844 touch', () => {
     const control = await page.evaluate(() => (window as unknown as { __shift: number }).__shift);
     test.info().annotations.push({ type: 'layout-shift', description: `control: ${control}` });
     expect(control, 'CONTROL: the same observer sees an inserted block shift the queue').toBeGreaterThan(shift);
+    // At 320px the held line still takes at most its two reserved lines —
+    // clamped, the whole text in its title.
+    await page.setViewportSize({ width: 320, height: 640 });
+    const at320 = await waiting.evaluate((el) => ({
+      lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)),
+      title: el.getAttribute('title') ?? '',
+    }));
+    expect(at320.lines, 'two lines at 320px').toBeLessThanOrEqual(2);
+    expect(at320.title).toContain('Held — usage limit; no reset time given');
+    await page.setViewportSize({ width: 390, height: 844 });
     // Tidy: cancel it, and leave the session answered for the specs after.
     await cancelRow(rowIn(page, text, 'queued'), true);
     await expect(rowIn(page, text, 'cancelled')).toHaveCount(1);

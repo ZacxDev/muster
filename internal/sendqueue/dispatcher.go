@@ -88,6 +88,10 @@ type AgentState struct {
 	// error (mirror.TurnError, read on the host from the transcript); nil when
 	// it ended in a real answer, or the host does not say. Set when Idle.
 	TurnError *mirror.TurnError
+	// HostLimit is a usage limit the target's host reports for all its Claude
+	// windows (mirror.HostLimit): the account's limit, which holds this window
+	// too. nil for none. Set when Idle.
+	HostLimit *mirror.HostLimit
 }
 
 // Decision is what Decide made of one head.

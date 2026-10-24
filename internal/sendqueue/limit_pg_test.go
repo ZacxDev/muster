@@ -33,7 +33,13 @@ func (l *cli) send(ctx context.Context, it Item, st AgentState) Outcome {
 	o := l.fakeTarget.send(ctx, it, st)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.st = AgentState{Idle: true, Since: l.st.Since + 700, Observed: l.c.now(), TurnError: l.reply(it.Body)}
+	e := l.reply(it.Body)
+	if e != nil && e.Rejected && e.Prompt == "" {
+		// The host names the refused prompt, and the newest record before it:
+		// the previous turn's end, no later than the status it was pasted on.
+		e.Prompt, e.PrevAt = mirror.PromptDigest(it.Body), st.Since
+	}
+	l.st = AgentState{Idle: true, Since: l.st.Since + 700, Observed: l.c.now(), TurnError: e}
 	return o
 }
 
@@ -280,9 +286,11 @@ func TestARealAnswerLiftsTheLimitAtOnce(t *testing.T) {
 // message at once (the host counts the quick failures in a row). The first
 // failure alone is not a loop; at BreakerAfter the queue holds 1 minute from
 // when muster saw it, then lets ONE through; that one fails too, and it holds
-// 2 minutes, then 5. A real answer resets it: the next goes at once. The
-// failed messages are not marked failed (they were not a limit). Send now
-// still sends exactly one while it holds.
+// 2 minutes, then 5. A real answer resets it: the next goes at once. Each
+// message the CLI refused (its only reply the error, nothing between its
+// paste and the refusal) is marked failed with the reason and its Retry —
+// the breaker's probes included. Send now still sends exactly one while it
+// holds.
 func TestTheCircuitBreakerBacksOffAndLiftsByItself(t *testing.T) {
 	s, _ := pgStore(t)
 	t0 := time.Now().Truncate(time.Second)
@@ -290,7 +298,7 @@ func TestTheCircuitBreakerBacksOffAndLiftsByItself(t *testing.T) {
 	quick := 0
 	l := newCLI(c, t0.Add(-time.Hour), func(string) *mirror.TurnError {
 		quick++
-		return &mirror.TurnError{Kind: "authentication_failed", Quick: quick}
+		return &mirror.TurnError{Kind: "authentication_failed", Rejected: true, Quick: quick}
 	})
 	d := limitDispatcher(s, l, c)
 	d.IdleFor = time.Second
@@ -327,15 +335,17 @@ func TestTheCircuitBreakerBacksOffAndLiftsByItself(t *testing.T) {
 		t.Fatalf("Send now = %+v, %v", o, err)
 	}
 	wantSent(t, l.fakeTarget, "a Send now while held", "m1", "m2", "m3", "m4", "m7")
+	tick(t, d) // the refusal of m7 seen; still held
+	wantSent(t, l.fakeTarget, "still held after the Send now", "m1", "m2", "m3", "m4", "m7")
 	// A real answer resets the breaker: the next goes at once.
 	l.reply = func(string) *mirror.TurnError { return nil }
 	l.answer(nil)
 	c.set(c.now().Add(2 * time.Second))
 	tick(t, d)
 	wantSent(t, l.fakeTarget, "after a real answer", "m1", "m2", "m3", "m4", "m7", "m5")
-	for _, it := range items[:4] {
-		if r := row(t, s, it.ID); r.State != Sent {
-			t.Fatalf("%s: %s; want sent (an error that is not a limit is not marked failed)", it.Body, r.State)
+	for _, it := range append(items[:4:4], items[6]) {
+		if r := row(t, s, it.ID); r.State != Failed || r.Detail != RejectedDetail("authentication_failed") || r.MayHaveDelivered || r.RetriedAs != 0 {
+			t.Fatalf("%s: %+v; want failed, %q, retryable", it.Body, r, RejectedDetail("authentication_failed"))
 		}
 	}
 }
@@ -405,5 +415,87 @@ func TestRecentSentIsEachTargetsLatestClaimOnly(t *testing.T) {
 	}
 	if got, err := s.RecentSent(context.Background(), now.Add(time.Minute)); err != nil || len(got) != 0 {
 		t.Fatalf("RecentSent after the window = %v, %v; want none", bodies(got), err)
+	}
+}
+
+// TestABreakerProbeThatWasNotRefusedOnItsOwnStaysSent: the same "Not logged
+// in" loop, but the host does not report the turn Rejected (a reply came
+// first): the messages stay sent, and only the hold applies.
+func TestABreakerProbeThatWasNotRefusedOnItsOwnStaysSent(t *testing.T) {
+	s, _ := pgStore(t)
+	t0 := time.Now().Truncate(time.Second)
+	c := &clock{t: t0}
+	quick := 0
+	l := newCLI(c, t0.Add(-time.Hour), func(string) *mirror.TurnError {
+		quick++
+		return &mirror.TurnError{Kind: "authentication_failed", Quick: quick}
+	})
+	d := limitDispatcher(s, l, c)
+	d.IdleFor = time.Second
+	m1 := mustEnqueue(t, s, 2, mirrorItem("m1"))
+	m2 := mustEnqueue(t, s, 2, mirrorItem("m2"))
+	mustEnqueue(t, s, 2, mirrorItem("m3"))
+	for _, off := range []time.Duration{2 * time.Second, 4 * time.Second, 30 * time.Second} {
+		c.set(t0.Add(off))
+		tick(t, d)
+	}
+	wantSent(t, l.fakeTarget, "held by the breaker", "m1", "m2")
+	for _, it := range []Item{m1, m2} {
+		if r := row(t, s, it.ID); r.State != Sent {
+			t.Fatalf("%s: %s %q; want sent", it.Body, r.State, r.Detail)
+		}
+	}
+}
+
+// TestAMessageClaudeAnsweredStaysSentWhenALaterTerminalPromptHitsTheLimit is
+// the round-1 audit's case through the dispatcher: the queue sends M, Claude
+// ANSWERS it, then a prompt typed in the terminal (not through muster: the
+// hub's Pasted never moves) hits the limit. The host reports that turn
+// Rejected — its only reply was the limit — but for the OTHER prompt, and
+// with the newest record before it (M's answer) written after M's paste. M
+// stays sent. Its twin with muster restarted in between (Pasted forgotten)
+// is the same state, and stays sent too; the control is a true refusal.
+func TestAMessageClaudeAnsweredStaysSentWhenALaterTerminalPromptHitsTheLimit(t *testing.T) {
+	for _, restarted := range []bool{false, true} {
+		s, _ := pgStore(t)
+		t0 := time.Now().Truncate(time.Second)
+		c := &clock{t: t0}
+		l := newCLI(c, t0.Add(-time.Hour), func(string) *mirror.TurnError { return nil }) // M is answered
+		d := limitDispatcher(s, l, c)
+		m := mustEnqueue(t, s, 2, mirrorItem("M"))
+		mustEnqueue(t, s, 2, mirrorItem("next"))
+		c.set(t0.Add(idle))
+		tick(t, d)
+		wantSent(t, l.fakeTarget, "M", "M")
+		pastedOn := row(t, s, m.ID).AfterSince
+		// Then X, typed in the terminal, hits the limit. The host: Rejected, X's
+		// digest, PrevAt = M's answer, after M's paste.
+		l.mu.Lock()
+		answer := l.st.Since
+		l.st = AgentState{Idle: true, Since: answer + 60_000, Observed: c.now(), TurnError: &mirror.TurnError{
+			Kind: mirror.TurnErrorLimit, Rejected: true, Prompt: mirror.PromptDigest("X"), PrevAt: answer, ResetsAt: t0.Add(time.Hour).UnixMilli()}}
+		if restarted {
+			l.st.Pasted = 0
+		}
+		l.mu.Unlock()
+		if d2 := limitDispatcher(s, l, c); restarted {
+			d = d2 // a new process
+		}
+		c.set(t0.Add(3 * idle))
+		tick(t, d)
+		if r := row(t, s, m.ID); r.State != Sent {
+			t.Fatalf("restarted %t: M (pasted on %d) = %s %q; want sent — Claude answered it", restarted, pastedOn, r.State, r.Detail)
+		}
+		// The prompt digest alone would not save it: the same text typed again
+		// is still not M's refusal while M's answer lies between.
+		l.mu.Lock()
+		l.st.TurnError.Prompt = mirror.PromptDigest("M")
+		l.mu.Unlock()
+		c.set(t0.Add(4 * idle))
+		tick(t, d)
+		if r := row(t, s, m.ID); r.State != Sent {
+			t.Fatalf("restarted %t: M = %s; want sent — its answer was written after its paste", restarted, r.State)
+		}
+		wantSent(t, l.fakeTarget, "held on the limit", "M")
 	}
 }

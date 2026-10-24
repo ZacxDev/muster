@@ -29,20 +29,27 @@ import (
 func TestAUsageLimitHoldsTheQueueAndFailsOnlyTheBouncedMessage(t *testing.T) {
 	f := newSQFixture(t)
 	var mu sync.Mutex
-	now := time.Now()
+	// A fixed clock (the queue's: sendQueueClock), so the held line's time is
+	// a literal: a reset on the same UTC day reads "14:00 UTC".
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
 	f.srv.sendQueueClock = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
 	reset := now.Add(2 * time.Hour)
 	limited := true
-	f.mirror.agentState = &mirror.AgentState{Status: mirror.StatusIdle, Since: now.Add(-time.Hour).UnixMilli(), Observed: now.Add(-time.Hour)}
+	f.mirror.agentState = &mirror.AgentState{Status: mirror.StatusIdle, Since: time.Now().Add(-time.Hour).UnixMilli(), Observed: now.Add(-time.Hour)}
 	first := f.enqueue(t, "the first, queued", time.Minute, 0)
 	second := f.enqueue(t, "the second, queued", time.Minute, 0)
 	third := f.enqueue(t, "the third, queued", time.Minute, 0)
 	// onPaste runs under f.mirror.mu after the paste was recorded.
 	f.mirror.onPaste = func() {
 		prev := f.mirror.agentState.Since
-		st := mirror.AgentState{Status: mirror.StatusIdle, Since: prev + 700, Observed: time.Now().Add(-time.Hour), Pasted: prev}
+		st := mirror.AgentState{Status: mirror.StatusIdle, Since: prev + 700, Observed: f.srv.sendQueueClock().Add(-time.Hour), Pasted: prev}
 		if limited {
-			st.TurnError = &mirror.TurnError{Kind: mirror.TurnErrorLimit, At: time.Now().UnixMilli(), ResetsAt: reset.UnixMilli(), Rejected: true, Quick: 1}
+			// The host names the refused prompt (the paste just recorded: v2's
+			// lock is held by this same paste) and the record before it, the
+			// previous turn's end, no later than the status it was pasted on.
+			ps := f.mirror.v2.pastes
+			st.TurnError = &mirror.TurnError{Kind: mirror.TurnErrorLimit, At: time.Now().UnixMilli(), ResetsAt: reset.UnixMilli(), Rejected: true,
+				Prompt: mirror.PromptDigest(ps[len(ps)-1].text), PrevAt: prev, Quick: 1}
 		}
 		f.mirror.agentState = &st
 	}
@@ -65,8 +72,8 @@ func TestAUsageLimitHoldsTheQueueAndFailsOnlyTheBouncedMessage(t *testing.T) {
 	// zone, the server's own rendering in UTC); the bounced row with its
 	// reason and a plain Retry.
 	_, page := mirrorGet(t, f.srv, f.ts, ui.SendQueuePath+"?"+url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}}.Encode())
-	for _, want := range []string{`data-queue-hold`, sendqueue.LimitHeldText, `data-clock="` + strconv.FormatInt(reset.UnixMilli(), 10) + `"`,
-		reset.UTC().Format("15:04") + " UTC", sendqueue.RejectedLimitDetail, `action="` + ui.SendQueueRetryPath(first.ID) + `"`} {
+	for _, want := range []string{`data-queue-hold`, `title="` + sendqueue.LimitHeldText + ` 14:00 UTC"`, `data-clock="` + strconv.FormatInt(reset.UnixMilli(), 10) + `"`,
+		`>14:00 UTC</time>`, sendqueue.RejectedLimitDetail, `action="` + ui.SendQueueRetryPath(first.ID) + `"`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("the queue's list does not contain %q:\n%s", want, page)
 		}
@@ -90,5 +97,35 @@ func TestAUsageLimitHoldsTheQueueAndFailsOnlyTheBouncedMessage(t *testing.T) {
 	}
 	if r := f.row(t, first.ID); r.State != sendqueue.Failed {
 		t.Fatalf("the bounced message after the reset: %s; want still failed, waiting for a Retry by hand", r.State)
+	}
+}
+
+// TestTheHostsLimitHoldsAWindowThroughTheProbe: the window's own latest turn
+// says nothing, but its host reports the account's limit (Msg.HostLimit): the
+// queue holds it, saying until when, and sends once the host stops reporting it.
+func TestTheHostsLimitHoldsAWindowThroughTheProbe(t *testing.T) {
+	f := newSQFixture(t)
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	f.srv.sendQueueClock = func() time.Time { return now }
+	limited := &mirror.AgentState{Status: mirror.StatusIdle, Since: time.Now().Add(-time.Hour).UnixMilli(), Observed: now.Add(-time.Hour),
+		HostLimit: &mirror.HostLimit{At: 1, ResetsAt: now.Add(time.Hour).UnixMilli()}}
+	f.mirror.agentState = limited
+	it := f.enqueue(t, "held by the host's limit", time.Minute, 0)
+	for i := 0; i < 3; i++ {
+		f.tick(t)
+	}
+	if got := f.pasted(); len(got) != 0 {
+		t.Fatalf("pasted %q on a limited host; want nothing", got)
+	}
+	_, page := mirrorGet(t, f.srv, f.ts, ui.SendQueuePath+"?"+url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}}.Encode())
+	if !strings.Contains(page, `title="`+sendqueue.LimitHeldText+` 13:00 UTC"`) {
+		t.Fatalf("the list does not say it is held until 13:00 UTC:\n%s", page)
+	}
+	cleared := *limited
+	cleared.HostLimit = nil
+	f.mirror.agentState = &cleared
+	f.tick(t)
+	if got := f.pasted(); len(got) != 1 || got[0] != it.Body {
+		t.Fatalf("CONTROL, the limit lifted: pasted %q; want the message", got)
 	}
 }

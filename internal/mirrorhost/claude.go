@@ -127,6 +127,10 @@ type ClaudePane struct {
 	// wrote itself (turnend.go: read from the transcript's tail by the host's
 	// listing, for an idle window only); nil otherwise.
 	TurnError *mirror.TurnError
+	// ReplyAt is, for an idle window whose latest turn ended in a real answer,
+	// that answer's time (Unix ms, host clock; turnend.go); 0 otherwise. Not
+	// on the wire: the host's limit reads it (hostLimitOf).
+	ReplyAt int64
 	// Source says how Transcript was found: SourcePaneMap, SourceSessions or
 	// SourceGuessed (see ClaudeLocator) — for a Hermes pane, SourceBreadcrumb
 	// or SourceProcess.

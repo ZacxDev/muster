@@ -21,18 +21,17 @@ import (
 //   - A USAGE LIMIT HOLDS THE QUEUE (holdFor). Until the reset time it names
 //     plus LimitMargin; with no reset time it can place, until a real answer
 //     shows the limit has lifted (the host then reports no TurnError) or the
-//     owner taps Send now. A real answer lifts it at once, reset or not.
+//     owner taps Send now. A real answer lifts it at once, reset or not. The
+//     limit is the ACCOUNT's, so a limit the window's host reports for all its
+//     Claude windows (AgentState.HostLimit) holds a window whose own latest
+//     turn says nothing.
 //
-//   - THE ONE MESSAGE THE LIMIT BOUNCED IS MARKED FAILED (rejectBounced), with
-//     RejectedLimitDetail and the row's ordinary Retry — by hand, the
-//     operator's decision; nothing re-sends it on its own. Only when the window
-//     shows it was this send the limit refused: the latest turn ended in the
-//     limit AFTER this paste (a status newer than the one it was pasted on),
-//     nothing was pasted through muster since (Pasted), and the limit was that
-//     turn's ONLY reply (TurnError.Rejected: no tool ran, nothing was written).
-//     A limit that hit mid-turn means the message was processed: it stays
-//     sent. A Retry by hand of a message that was in fact processed would run
-//     it twice, so anything the window cannot show stays sent.
+//   - A MESSAGE CLAUDE CODE REFUSED IS MARKED FAILED (rejectBounced), with its
+//     reason and the row's ordinary Retry — by hand, the operator's decision;
+//     nothing re-sends it on its own. ONLY when the transcript shows it was
+//     THIS message that was refused, and nothing happened between its paste
+//     and the refusal (Bounced). A Retry of a message that was in fact
+//     answered would run it twice, so in any doubt the row stays sent.
 //
 //   - A CIRCUIT BREAKER HOLDS ANY OTHER IMMEDIATE-FAILURE LOOP: when the
 //     latest BreakerAfter turns each ended within mirror.QuickTurnMS of their
@@ -54,8 +53,8 @@ const (
 	// the breaker holds the queue.
 	BreakerAfter = 2
 	// BounceWithin is how long after its claim a sent message may still be
-	// found bounced: a limit's rejection is written within a second or two,
-	// and the host reports it within a refresh.
+	// found refused: a refusal is written within a second or two, and the
+	// host reports it within a refresh.
 	BounceWithin = 10 * time.Minute
 )
 
@@ -74,14 +73,29 @@ const (
 	// LimitHeldNoReset: a usage limit that names no reset time this can place.
 	LimitHeldNoReset = "Held — usage limit; no reset time given. Resumes once Claude Code answers a message, or tap Send now."
 	// RejectedLimitDetail is the detail of a sent message a usage limit
-	// bounced, marked failed (Reject).
+	// refused, marked failed (Reject).
 	RejectedLimitDetail = "Rejected: usage limit — Claude Code refused it before working on it. Retry it once the limit resets."
 )
+
+// RejectedDetail is the detail of a sent message Claude Code refused with a
+// turn error of kind (Reject): RejectedLimitDetail for a usage limit.
+func RejectedDetail(kind string) string {
+	switch kind {
+	case mirror.TurnErrorLimit:
+		return RejectedLimitDetail
+	case "authentication_failed":
+		return "Rejected: not logged in — Claude Code refused it before working on it. Retry it once it is logged in."
+	}
+	return "Rejected: " + kindText(kind) + " — Claude Code refused it before working on it. Retry it once that is fixed."
+}
+
+// kindText is a turn error's kind as words ("server_error" → "server error").
+func kindText(kind string) string { return strings.ReplaceAll(kind, "_", " ") }
 
 // BreakerHeldText is what a queue the circuit breaker holds says, before the
 // time it retries.
 func BreakerHeldText(e *mirror.TurnError) string {
-	return fmt.Sprintf("Held — the last %d messages each failed at once (%s); retries at", e.Quick, strings.ReplaceAll(e.Kind, "_", " "))
+	return fmt.Sprintf("Held — the last %d messages each failed at once (%s); retries at", e.Quick, kindText(e.Kind))
 }
 
 // breakerBackoff is the breaker's hold for quick failures in a row.
@@ -89,15 +103,21 @@ func breakerBackoff(quick int) time.Duration {
 	return BreakerBackoff[min(max(quick-BreakerAfter, 0), len(BreakerBackoff)-1)]
 }
 
-// holdFor is the hold st's latest turn error puts on its queue at now: a
-// usage limit until it resets (plus LimitMargin), or until a real answer when
-// it names no reset; the breaker on BreakerAfter quick failures in a row,
-// until its back-off has run from st.Observed. false: no hold — no error, a
-// limit that has reset, a back-off that has run, or fewer quick failures. A
-// limit that has reset is NOT then held by the breaker: the quick turns it
-// counted were the limit's.
+// holdFor is the hold st's latest turn error — or its host's limit — puts on
+// its queue at now: a usage limit until it resets (plus LimitMargin), or until
+// a real answer when it names no reset; the breaker on BreakerAfter quick
+// failures in a row, until its back-off has run from st.Observed. false: no
+// hold — no error, a limit that has reset, a back-off that has run, or fewer
+// quick failures. A limit that has reset is NOT then held by the breaker: the
+// quick turns it counted were the limit's.
 func holdFor(st AgentState, now time.Time) (Decision, bool) {
 	e := st.TurnError
+	if l := st.HostLimit; l != nil && (e == nil || e.Kind != mirror.TurnErrorLimit) {
+		// The account is limited though this window's own latest turn does not
+		// say so (another window hit it, or this one's report was cut by the
+		// window list's bound): held as if it did.
+		e = &mirror.TurnError{Kind: mirror.TurnErrorLimit, At: l.At, ResetsAt: l.ResetsAt}
+	}
 	switch {
 	case e == nil:
 		return Decision{}, false
@@ -118,20 +138,32 @@ func holdFor(st AgentState, now time.Time) (Decision, bool) {
 	return Decision{}, false
 }
 
-// Bounced reports whether sent message it was REFUSED by a usage limit before
-// Claude Code worked on it, as st shows its window now (see the file header):
-// idle, on a status newer than the one it was pasted on, nothing pasted
-// through muster since, and the latest turn ended in a usage limit that was
-// its prompt's only reply.
+// Bounced reports whether sent message it was REFUSED by Claude Code before it
+// worked on it, as st shows its window now — every one of these, or the row
+// stays sent:
+//
+//   - the window is idle, on a status newer than the one it was pasted on
+//     (it.AfterSince: the turn after the paste has ended);
+//   - the latest turn ended in an error the CLI wrote itself that was its
+//     prompt's ONLY reply (TurnError.Rejected: no tool ran, nothing written);
+//   - that prompt's text is this message's (TurnError.Prompt, a digest);
+//   - 🔴 NOTHING CAME BETWEEN this paste and that prompt: the newest record
+//     before the refused prompt (TurnError.PrevAt) is no newer than the status
+//     the message was pasted on. Both are the CLI's own times, on the host's
+//     clock. A message that was ANSWERED, followed by another prompt typed in
+//     the terminal that hit the limit, has its answer there — after its paste
+//     — and stays sent, restart or not (the hub's Pasted, checked as well,
+//     lives in memory and a restart forgets it).
 func Bounced(it Item, st AgentState) bool {
 	e := st.TurnError
 	return it.State == Sent && st.Idle && st.Since > it.AfterSince && st.Pasted <= it.AfterSince &&
-		e != nil && e.Kind == mirror.TurnErrorLimit && e.Rejected
+		e != nil && e.Rejected && e.Prompt == mirror.PromptDigest(it.Body) && e.PrevAt <= it.AfterSince
 }
 
-// rejectBounced marks failed (Reject, RejectedLimitDetail) every message sent
-// in the last BounceWithin that a usage limit bounced (Bounced). A row is
-// rejected at most once: Reject moves only a row still sent.
+// rejectBounced marks failed (Reject, with RejectedDetail of the error's kind)
+// every message sent in the last BounceWithin that Claude Code refused
+// (Bounced). A row is rejected at most once: Reject moves only a row still
+// sent.
 func (d *Dispatcher) rejectBounced(ctx context.Context) {
 	items, err := d.Store.RecentSent(ctx, d.now().Add(-BounceWithin))
 	if err != nil {
@@ -142,16 +174,17 @@ func (d *Dispatcher) rejectBounced(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if !Bounced(it, d.Probe(d.AsOwner(ctx, it.Owner), Head{Item: it})) {
+		st := d.Probe(d.AsOwner(ctx, it.Owner), Head{Item: it})
+		if !Bounced(it, st) {
 			continue
 		}
-		ok, err := d.Store.Reject(ctx, it.ID, RejectedLimitDetail)
+		ok, err := d.Store.Reject(ctx, it.ID, RejectedDetail(st.TurnError.Kind))
 		switch {
 		case err != nil:
 			d.logf("sendqueue: reject message %d (%s): %v", it.ID, it.Target, err)
 		case ok:
-			d.logf("sendqueue: message %d (%d bytes) to %s (owner %d) was refused by a usage limit before Claude Code worked on it; "+
-				"marked failed for a Retry by hand", it.ID, len(it.Body), it.Target, it.Owner)
+			d.logf("sendqueue: message %d (%d bytes) to %s (owner %d) was refused (%s) before Claude Code worked on it; "+
+				"marked failed for a Retry by hand", it.ID, len(it.Body), it.Target, it.Owner, st.TurnError.Kind)
 		}
 	}
 }

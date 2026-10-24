@@ -417,6 +417,12 @@ type Msg struct {
 	// per-session view of a per-window host from Windows — never from the
 	// host's Sessions, so the two cannot disagree.
 	Windows []Window `json:"windows,omitempty"`
+	// HostLimit (hello, sessions) is a usage limit the host's Claude Code
+	// sessions are under right now, across ALL its Claude windows — the limit
+	// is the account's, not a window's, and Windows carries a TurnError on at
+	// most MaxTurnErrorWindows of them. nil when none (turnerror.go).
+	// Backward-compatible both ways, like Windows' TurnError.
+	HostLimit *HostLimit `json:"hostLimit,omitempty"`
 	// Window (open, watch, paste) is the tmux window id (Window.ID) the request
 	// is for, within Session. Empty — every request before this field existed,
 	// and every request to a per-session host — is the session's ACTIVE window.

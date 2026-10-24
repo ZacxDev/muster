@@ -162,9 +162,18 @@ func TestTheHoldComesAfterTheTurnChecks(t *testing.T) {
 // that passes.
 func TestBounced(t *testing.T) {
 	ok := Item{State: Sent, Body: "please run the migration", AfterSince: 1000}
-	okSt := AgentState{Idle: true, Since: 2000, Pasted: 1000, TurnError: limitErr(time.Time{}, true)}
+	refused := limitErr(time.Time{}, true)
+	refused.Prompt, refused.PrevAt = mirror.PromptDigest(ok.Body), 1000
+	okSt := AgentState{Idle: true, Since: 2000, Pasted: 1000, TurnError: refused}
 	if !Bounced(ok, okSt) {
 		t.Fatal("CONTROL: the bounced case is not Bounced")
+	}
+	// Any kind the CLI refuses with counts, not only a limit (the breaker's
+	// probes: "Not logged in", an API error).
+	other := *refused
+	other.Kind = "authentication_failed"
+	if !Bounced(ok, AgentState{Idle: true, Since: 2000, Pasted: 1000, TurnError: &other}) {
+		t.Fatal("CONTROL: a refusal of another kind is not Bounced")
 	}
 	for name, f := range map[string]func(*Item, *AgentState){
 		"not sent (failed)":              func(it *Item, _ *AgentState) { it.State = Failed },
@@ -172,8 +181,9 @@ func TestBounced(t *testing.T) {
 		"no status newer than its paste": func(_ *Item, st *AgentState) { st.Since = 1000 },
 		"a paste through muster since":   func(_ *Item, st *AgentState) { st.Pasted = 1500 },
 		"no turn error (a real answer)":  func(_ *Item, st *AgentState) { st.TurnError = nil },
-		"not a usage limit":              func(_ *Item, st *AgentState) { st.TurnError.Kind = "authentication_failed" },
 		"processed first (mid-turn)":     func(_ *Item, st *AgentState) { st.TurnError.Rejected = false },
+		"another prompt was refused":     func(_ *Item, st *AgentState) { st.TurnError.Prompt = mirror.PromptDigest("typed in the terminal") },
+		"a record after its paste":       func(_ *Item, st *AgentState) { st.TurnError.PrevAt = 1001 },
 	} {
 		it, st := ok, okSt
 		e := *okSt.TurnError
@@ -182,5 +192,36 @@ func TestBounced(t *testing.T) {
 		if Bounced(it, st) {
 			t.Errorf("%s: Bounced; want not", name)
 		}
+	}
+}
+
+// TestTheHostsLimitHoldsAWindowWhoseOwnTurnSaysNothing: a usage limit is the
+// account's. A window whose own latest turn carries no TurnError (another
+// window hit the limit, or this one's report was cut by the list's bound) is
+// held on its host's limit, until its reset plus the margin; with no reset,
+// until the host stops reporting it. A window's own non-limit error does not
+// hide the host's limit. CONTROL: no host limit, the same window sends.
+func TestTheHostsLimitHoldsAWindowWhoseOwnTurnSaysNothing(t *testing.T) {
+	now := time.Date(2026, 10, 12, 21, 0, 0, 0, time.UTC)
+	reset := now.Add(time.Hour)
+	h := Head{Item: Item{State: Queued}}
+	st := idleSince(now.Add(-time.Hour))
+	if d := Decide(h, st, now, idle); !d.Send {
+		t.Fatalf("CONTROL, no host limit: %+v", d)
+	}
+	st.HostLimit = &mirror.HostLimit{At: 1, ResetsAt: reset.UnixMilli()}
+	if d := Decide(h, st, now, idle); d.Send || !d.Held || d.Why != LimitHeldText || !d.ResumeAt.Equal(reset) {
+		t.Fatalf("on a limited host: %+v; want held until %s", d, reset)
+	}
+	if d := Decide(h, st, reset.Add(LimitMargin), idle); !d.Send {
+		t.Fatalf("past its reset: %+v; want send", d)
+	}
+	st.TurnError = &mirror.TurnError{Kind: "server_error"}
+	if d := Decide(h, st, now, idle); d.Send || d.Why != LimitHeldText {
+		t.Fatalf("its own error another kind: %+v; want held on the host's limit", d)
+	}
+	st.TurnError, st.HostLimit = nil, &mirror.HostLimit{At: 1}
+	if d := Decide(h, st, now.Add(48*time.Hour), idle); d.Send || d.Why != LimitHeldNoReset {
+		t.Fatalf("a host limit with no reset: %+v; want held", d)
 	}
 }

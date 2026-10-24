@@ -178,19 +178,29 @@ any real reply at all. With that:
   hand) or you tap **Send now**. A real answer lifts the hold at once. The reset
   time is the record's `quotaLimits.resetsAt` when it has one (newer Claude
   Code), else the time its text names, read in the zone it names.
-- **The message the limit bounced is failed, for a Retry by hand.** If a queued
-  message was sent and the very next turn was the limit's refusal, with no
-  reply before it and nothing else pasted through muster since, that message
-  is marked failed, *Rejected: usage limit*, with its ordinary **Retry**.
-  Nothing re-sends it on its own. If the limit hit after Claude Code had
-  started working on the message (a tool ran, a reply was written), the
-  message was processed: it stays sent.
+- **A message Claude Code refused is failed, for a Retry by hand.** If a
+  queued message was sent and Claude Code refused it before working on it — a
+  usage limit, "Not logged in", an API error, as its only reply — that message
+  is marked failed, *Rejected: …*, with its ordinary **Retry**. Nothing
+  re-sends it on its own. muster marks it only when the transcript shows it
+  was THAT message (the refused prompt's text matches) and nothing came
+  between its paste and the refusal (the newest record before the refused
+  prompt is no later than the status it was pasted on). A message Claude
+  answered, followed by another prompt typed in the terminal that hit the
+  limit, stays sent; so does any message the transcript cannot show was
+  refused. A Retry of a message that was in fact answered would run it twice.
+- **The limit is the account's.** When any Claude Code window on a host hits
+  it, `muster-mirror` also reports it for the whole host, and every Claude
+  Code window there holds — until the reset, or until any of its windows gets
+  a real answer.
 - **Other immediate failures trip a breaker that backs off.** When the last 2
   turns each ended within 10 seconds of their prompt in another error Claude
   Code wrote itself ("Not logged in", an API error), the queue holds, saying
   so and when it retries: 1 minute after muster saw the failure, then 2, then
   5, then every 15 minutes, one message each time. A real answer resets it.
-  Those messages are not marked failed.
+- **When.** The time a held queue resumes is shown in your local time, with
+  its date when it is not today (a weekly limit). The line takes at most two
+  lines; hover or long-press it for the whole text.
 - **Send now** still works while the queue is held, and sends only the one
   message you tapped.
 - A `muster-mirror` that predates this reports nothing about how a turn ended,

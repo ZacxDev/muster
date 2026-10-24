@@ -70,6 +70,10 @@ type AgentState struct {
 	// error Claude Code wrote itself (Window.TurnError); nil otherwise, and
 	// whenever Status is not idle.
 	TurnError *TurnError
+	// HostLimit is a usage limit the window's HOST reports for all its Claude
+	// windows (Msg.HostLimit), set on a Claude window whenever the host
+	// reports one; nil otherwise.
+	HostLimit *HostLimit
 	// Unknown is why Status is unknown; nil when it is known.
 	Unknown error
 
@@ -120,6 +124,9 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 			return AgentState{Runtime: runtime, Unknown: fmt.Errorf("%w (host %q, session %q)", ErrNoStatusSince, host, session)}
 		}
 		st := AgentState{Runtime: runtime, Status: w.Status, Since: w.StatusSince, TurnError: w.TurnError}
+		if runtime == RuntimeClaude {
+			st.HostLimit = hc.hostLimit
+		}
 		t := h.turn(owner, host, session, id)
 		if t.since == w.StatusSince && t.status == w.Status {
 			st.Observed = t.observed

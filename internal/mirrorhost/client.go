@@ -545,17 +545,30 @@ type listing struct {
 	// (mirror/work.go).
 	work   map[string]mirror.WindowWork
 	colors map[string]string
+	// hostLimit is the usage limit across all the host's Claude windows
+	// (turnend.go's hostLimitOf); nil for none. It rides the hello and
+	// sessions messages beside the windows.
+	hostLimit *mirror.HostLimit
 }
 
 func (l listing) equal(o listing) bool {
 	return slices.Equal(l.sessions, o.sessions) && slices.Equal(l.claude, o.claude) &&
 		maps.Equal(l.labels, o.labels) && maps.Equal(l.activity, o.activity) &&
-		(l.windows == nil) == (o.windows == nil) && slices.EqualFunc(l.windows, o.windows, mirror.Window.Equal)
+		(l.windows == nil) == (o.windows == nil) && slices.EqualFunc(l.windows, o.windows, mirror.Window.Equal) &&
+		hostLimitEqual(l.hostLimit, o.hostLimit)
 }
 
 // msg is the listing as a hello or sessions message.
 func (l listing) msg(typ string) mirror.Msg {
-	return mirror.Msg{Type: typ, Sessions: l.sessions, Claude: l.claude, Labels: l.labels, Activity: l.activity, Windows: l.windows}
+	return mirror.Msg{Type: typ, Sessions: l.sessions, Claude: l.claude, Labels: l.labels, Activity: l.activity, Windows: l.windows,
+		HostLimit: l.hostLimit}
+}
+
+func hostLimitEqual(a, b *mirror.HostLimit) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // read is the host's listing now. ok is false when a per-window read failed:
@@ -589,6 +602,9 @@ func (h *hostSide) read() (listing, bool) {
 	}
 	windows := WireWindows(raw, h.c.cfg.Codenames, h.version >= 2, time.Now())
 	l := listing{windows: windows}
+	if h.version >= 2 {
+		l.hostLimit = hostLimitOf(raw)
+	}
 	if h.sendsRepos() {
 		l.repos = mirror.NormalizeRepos(h.c.repoNamer().windowRepos(raw), windows)
 		if !h.c.cfg.NoWork {

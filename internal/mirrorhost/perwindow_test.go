@@ -672,7 +672,7 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 				c := *out[i].Claude
 				c.Status, c.Pending = mirror.StatusIdle, nil
 				c.TurnError = &mirror.TurnError{Kind: mirror.TurnErrorLimit, At: math.MaxInt64, ResetsAt: math.MaxInt64,
-					Rejected: true, Quick: mirror.MaxTurnErrorQuick}
+					Rejected: true, Prompt: strings.Repeat("f", 16), PrevAt: math.MaxInt64, Quick: mirror.MaxTurnErrorQuick}
 				out[i].Claude = &c
 			}
 		}
@@ -717,7 +717,7 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 		turnErrors := 0
 		for _, w := range l.windows {
 			if e := w.TurnError; e != nil {
-				if e.Kind != mirror.TurnErrorLimit || e.At != math.MaxInt64 || e.ResetsAt != math.MaxInt64 || !e.Rejected || e.Quick != mirror.MaxTurnErrorQuick {
+				if e.Kind != mirror.TurnErrorLimit || e.At != math.MaxInt64 || e.ResetsAt != math.MaxInt64 || !e.Rejected || len(e.Prompt) != 16 || e.PrevAt != math.MaxInt64 || e.Quick != mirror.MaxTurnErrorQuick {
 					t.Fatalf("instrument check: a turn error field was cut, so this is not the worst case: %+v", e)
 				}
 				turnErrors++
@@ -732,6 +732,8 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 			}
 		}
 		m := l.msg(mirror.TypeHello)
+		// And the host's limit at its largest.
+		m.HostLimit = &mirror.HostLimit{At: math.MaxInt64, ResetsAt: math.MaxInt64}
 		m.Version, m.Host, m.Interactive, m.PanePaste, m.StatusReport = mirror.ProtocolVersion, strings.Repeat("h", 63), true, true, true
 		b, err := json.Marshal(m)
 		if err != nil {
