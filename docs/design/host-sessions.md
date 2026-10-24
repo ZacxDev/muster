@@ -181,13 +181,16 @@ Claude session and forwards it with the mirror token to `POST /mirror/mcp`
 (`internal/mirrorhost/mcpproxy.go:44-58`). The operator configures
 `mcpServers.muster` by hand in `~/.claude.json`, with
 `Authorization: Bearer ${MUSTER_MIRROR_MCP_SECRET:-}` and the pane headers
-([attention.md](../attention.md#mirrored-claude-code-sessions)). The shell that
-starts Claude Code must export the secret. On the operator's host the unit
-listens on `127.0.0.1:17823` (`devrc/nix/home.nix:548-549`), and
-`~/.claude.json` names that port. How the operator's shell exports
-`MUSTER_MIRROR_MCP_SECRET` was not found: **UNVERIFIED**. A spawned session
-gets the secret explicitly (see [environment](#environment)), so it does not
-depend on that.
+([attention.md](../attention.md#mirrored-claude-code-sessions)). That
+spelling needs the shell that starts Claude Code to export the secret. The
+operator does **not** do that. Their `~/.claude.json` entry uses a
+`headersHelper` (`~/.claude.json:9096`, `devrc/scripts/muster-mcp/muster-mcp-headers.py:1-30`).
+The helper reads the 0600 secret file on every connection and prints the
+`Authorization` and pane headers. Its docstring says why: an exported secret
+would be inherited by every Bash tool call the session makes. The unit listens
+on `127.0.0.1:17823` (`devrc/nix/home.nix:548-549`). A spawned `claude` gets
+the MCP tools from that same user-scope entry, with nothing added by the
+spawn (see [environment](#environment)).
 
 ### The claude-code agent kind: what carries over
 
@@ -401,8 +404,7 @@ listing that carries the request id.
 ```sh
 tmux -u new-session -d -P -F '#{session_id}\t#{window_id}\t#{pane_id}' \
   -s <name> -c <resolved dir> -x 200 -y 50 \
-  -e PATH=<tmux global PATH> -e MUSTER_MIRROR_MCP_SECRET=<secret> \
-  -e MUSTER_REQUEST=<uuid> \
+  -e PATH=<tmux global PATH> -e MUSTER_REQUEST=<uuid> \
   -- <argv…>
 tmux set-option -t =<name> @muster-request <uuid>
 ```
@@ -430,11 +432,18 @@ tmux set-option -t =<name> @muster-request <uuid>
   does (`devrc/scripts/tmux-reply-agent:622-655`), so `claude` resolves as it
   does in the operator's shells. `argv[0]` is resolved against that PATH at
   spawn time, and `exec_not_found` is returned if it is missing.
-- **`MUSTER_MIRROR_MCP_SECRET`** is read from `-mcp-secret-file`, which the
-  host already holds (`internal/mirrorhost/mcpproxy.go:358`). So the spawned
-  `claude` reaches the muster MCP server through the operator's existing
-  `~/.claude.json` entry, whether or not their shell exports the secret. If
-  `-mcp-listen` is off, it is not set.
+- **The MCP secret is never put in the environment.** A spawned `claude`
+  reaches the muster MCP server through the user's own `mcpServers.muster`
+  entry. The operator's entry uses a `headersHelper` that reads the secret
+  file on each connection, so that no shell or tool call inherits it (see
+  [the MCP server](#the-mcp-server-for-mirrored-sessions)). An exported
+  secret would undo that choice. A user whose entry uses the documented
+  `${MUSTER_MIRROR_MCP_SECRET:-}` header gets no MCP in spawned sessions until
+  they switch to a helper. The phase 1 docs say so in
+  [attention.md](../attention.md#mirrored-claude-code-sessions). If they want
+  the env form anyway, a profile may set `"exportMcpSecret": true`, which the
+  host honours from its own file, never from muster. The operator's profiles
+  leave it off.
 - **`MUSTER_REQUEST`:** for scripts and hooks. Nothing reads it in slice 1.
 - **Nothing from muster.** No environment value, flag or text comes from the
   request.
@@ -607,7 +616,7 @@ Rough engineer-days, including tests and docs.
 
 | phase | what | host | server + UI | depends on |
 |---|---|---|---|---|
-| **1 (first slice)** | `-spawn`, `spawn.json` (roots, profiles, models, caps, pool, `afterExit`), the directory offer in hello, `spawn`/`spawned`/`kill`/`killed`, the `@muster-request` tag in listings, the ledger, the no-tmux-server refusal, PATH and MCP secret in the environment, `RefreshNow` before the reply. `MUSTER_HOST_SESSIONS`, `host_sessions` and its migration, `Hub.Spawn`/`Kill`, the two routes with step-up, audit rows, the New session sheet, the redirect, the Kill action. The devrc Home Manager change that writes `spawn.json` is separate, in that repository | 3.5–4.5 | 4–5 | — |
+| **1 (first slice)** | `-spawn`, `spawn.json` (roots, profiles, models, caps, pool, `afterExit`), the directory offer in hello, `spawn`/`spawned`/`kill`/`killed`, the `@muster-request` tag in listings, the ledger, the no-tmux-server refusal, PATH from the tmux global environment (the MCP secret is never exported), `RefreshNow` before the reply. `MUSTER_HOST_SESSIONS`, `host_sessions` and its migration, `Hub.Spawn`/`Kill`, the two routes with step-up, audit rows, the New session sheet, the redirect, the Kill action. The devrc Home Manager change that writes `spawn.json` is separate, in that repository | 3.5–4.5 | 4–5 | — |
 | 2 | An initial prompt, delivered through the existing send queue once the window reports `idle` (its step-up is the spawn's); recent directories per host; a `muster` CLI command over a `mst_` route, if wanted | 0.5 | 2–3 | 1 |
 | 3 | Lifecycle hardening: relink after a reboot by Claude session id, `exited`/`lost` reconciliation tests, the sweep, a per-host "muster-started" filter | 1 | 1.5–2 | 1 |
 | 4 | Android: a signed device action `host_session_spawn` under `/api/device/actions/`, using the native step-up ([android.md](android.md#which-actions-are-gated)) | — | 1–1.5 (plus app work) | 1, Android Phase 2 |
