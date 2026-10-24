@@ -122,6 +122,9 @@ type AgentDetailView struct {
 	// is that block's fragment URL, "" when the queue is not served (no block).
 	Asks    string
 	AsksSrc string
+	// Switcher is the session switcher below the chat form (switcher.go), on
+	// the page surface only; nil for none.
+	Switcher *Switcher
 }
 
 // SessionView is one chat session in the switcher.
@@ -864,6 +867,11 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// restored draft is in the box, sized, before the pane is painted.
 		composerFitScript(),
 		composerDraftScript(),
+		// The session switcher, below the input (switcher.go): the page's
+		// only — the chief panel is a pane inside another page. After the
+		// draft's script, which must size a restored draft before anything
+		// below the form is parsed.
+		g.If(v.Surface == ChatSurfacePage, switcherBar(v.Switcher, false)),
 		// The microphone's script travels WITH the pane, so the chief panel —
 		// which renders this pane into another page — gets it too. It is built
 		// to run again on every swap (dictate.go).

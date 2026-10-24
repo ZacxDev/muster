@@ -121,6 +121,9 @@ type ComposerView struct {
 	// (composer_draft.go: MirrorDraftKey, AgentTerminalDraftKey); "" keeps no
 	// draft. A disabled composer keeps none either way.
 	DraftKey string
+	// Switcher, when set, draws the session switcher below the input row
+	// (switcher.go); nil draws none. Only the Rendered view sets it.
+	Switcher *Switcher
 }
 
 // MirrorComposerView is ComposerView under the name it had while only mirrored
@@ -206,6 +209,10 @@ func mirrorComposer(v ComposerView) g.Node {
 	if v.Pinned {
 		place = "fixed inset-x-0 bottom-0 z-20"
 	}
+	formPad := "pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+	if v.Switcher != nil {
+		formPad = "pb-2"
+	}
 	return Div(
 		ID("mv-compose"),
 		Class(place+" border-t border-line bg-bg"),
@@ -238,22 +245,26 @@ func mirrorComposer(v ComposerView) g.Node {
 			// The page may be hx-boost'ed (an agent's): a boosted form would be
 			// submitted by htmx as well as by the script.
 			hx("hx-boost", "false"),
-			Class("flex items-end gap-2 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2"),
+			// The safe-area inset is the LAST row's: the switcher's when it is
+			// drawn below (switcherBar), this row's otherwise.
+			Class("flex items-end gap-2 px-3 pt-2 "+formPad),
 			g.Group(hidden),
 			g.If(v.Nonce != "", Input(ID("mv-nonce"), Type("hidden"), Name("nonce"), Value(v.Nonce))),
-			attachControl(upload),
-			Textarea(
-				ID("mv-input"),
-				Name("text"),
-				Rows("1"),
-				g.Attr("aria-label", v.Aria),
-				g.Attr("enterkeyhint", "send"),
-				g.If(off, g.Attr("disabled", "")),
-				g.If(off, g.Attr("title", v.Disabled)),
-				g.If(!off, draftAttrs(v.DraftKey, "mv-note")),
-				Placeholder(placeholder),
-				Class(composerInputClass),
-			),
+			// The paperclip sits INSIDE the input, on its left (attach.go).
+			attachField(upload, func(pad string) g.Node {
+				return Textarea(
+					ID("mv-input"),
+					Name("text"),
+					Rows("1"),
+					g.Attr("aria-label", v.Aria),
+					g.Attr("enterkeyhint", "send"),
+					g.If(off, g.Attr("disabled", "")),
+					g.If(off, g.Attr("title", v.Disabled)),
+					g.If(!off, draftAttrs(v.DraftKey, "mv-note")),
+					Placeholder(placeholder),
+					Class(composerInputClass+pad),
+				)
+			}),
 			dictateControl(dictate, "mv-input", "mv-dictate-note", "mv-dictate"),
 			sendSplit(v.Queue, off),
 		),
@@ -265,6 +276,11 @@ func mirrorComposer(v ComposerView) g.Node {
 		// puts a restored text in the box before anything else measures it.
 		composerFitScript(),
 		g.If(v.DraftKey != "" && !off, composerDraftScript()),
+		// The session switcher, below the input row (switcher.go): drawn with
+		// the page, at its fixed height, so nothing moves when it is filled. It
+		// comes AFTER the draft's script (its own script is the first after it),
+		// so a restored draft has sized the box before anything below is parsed.
+		switcherBar(v.Switcher, true),
 		g.If(v.Queue != nil && !off, sendQueueScript()),
 		g.If(v.Queue != nil && !off, sendMenuScript()),
 		dictateScript(dictate),
@@ -281,6 +297,12 @@ func mirrorComposer(v ComposerView) g.Node {
 // composer's height (4.5rem — one input row — until measured), so the
 // column's last child ends exactly where the composer starts.
 const pinnedShellClass = "flex h-[var(--mv-vh,100dvh)] flex-col overflow-hidden pb-[var(--mv-compose-h,4.5rem)]"
+
+// pinnedShellSwitcherClass is pinnedShellClass for a pinned composer with the
+// session switcher below it: the same shell, its unmeasured room one input row
+// AND the switcher's 44px row (7rem), so a paint before composerPinScript has
+// measured still ends the column at about the composer's top.
+const pinnedShellSwitcherClass = "flex h-[var(--mv-vh,100dvh)] flex-col overflow-hidden pb-[var(--mv-compose-h,7rem)]"
 
 // composerPinScript keeps a Pinned composer at the bottom of what is on
 // screen, and the page's column sized to end above it.
