@@ -78,7 +78,7 @@ func pasteRefusalOf(err error) string {
 			return g.refusalKind()
 		}
 	}
-	return ""
+	return claudeRefusalOf(err)
 }
 
 // HermesProc is the process in a pane's tree that made the guard refuse.

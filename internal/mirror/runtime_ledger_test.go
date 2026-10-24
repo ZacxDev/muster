@@ -194,6 +194,7 @@ func TestEveryPlaceThatNamesARuntimeIsListed(t *testing.T) {
 		"internal/mirror/runtime.go (declarations) ×9",
 		"internal/mirror/runtime.go HostView.GatedSendOn ×4",
 		"internal/mirror/transcript.go PasteGuardRefusal ×1",
+		"internal/mirror/transcript.go hostConn.claudeWaiting ×1",
 		"internal/mirror/transcript.go hostConn.pasted ×2",
 		"internal/mirror/wire.go (declarations) ×9",
 		"internal/mirror/wire.go Window.AgentRuntime ×1",
