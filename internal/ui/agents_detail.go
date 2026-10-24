@@ -719,6 +719,7 @@ func chatLogSurfaceQuery(s ChatSurface) string {
 }
 
 func agentChatPane(v AgentDetailView) g.Node {
+	withSwitcher := v.Surface == ChatSurfacePage && v.Switcher != nil
 	return Section(
 		// hx-ext="sse" + sse-connect establishes the /events EventSource on the
 		// detail page (the home shell connects on its own wrapper; the standalone
@@ -727,7 +728,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// (from:body) catches them.
 		hx("hx-ext", "sse"),
 		hx("sse-connect", "/events"),
-		Class("flex flex-1 flex-col gap-2 min-h-0"),
+		// relative: the session switcher is placed at its bottom, in the room
+		// the chat form reserves (switcherRoom).
+		Class("flex flex-1 flex-col gap-2 min-h-0"+classIf(withSwitcher, " relative")),
 		// 🔴 THE DRAWER IS OMITTED ON THE PANEL SURFACE AND THAT IS NOT A TIDY-UP.
 		// sessionDrawer is `fixed inset-y-0 right-0`, and ChiefPanel's
 		// `translate-x-full` makes the panel the containing block for every fixed
@@ -829,7 +832,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// mobile keyboard (the shell shrinks, keeping the input visible). It sits
 			// inside Main (already contentWidth() inside the lg:pl-72 column), so no
 			// width/offset classes here.
-			Class("flex-none border-t border-line pt-3"),
+			Class("flex-none border-t border-line pt-3"+classIf(withSwitcher, " "+switcherRoom(false))),
 			// The outcome of a send the browser submitted (see above), drawn by the
 			// server on the page its redirect lands on.
 			g.If(v.SendNotice != "", P(ID("chat-note"), g.Attr("role", "status"),
@@ -871,7 +874,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 		// only — the chief panel is a pane inside another page. After the
 		// draft's script, which must size a restored draft before anything
 		// below the form is parsed.
-		g.If(v.Surface == ChatSurfacePage, switcherBar(v.Switcher, false)),
+		g.If(withSwitcher, switcherBar(v.Switcher, false)),
 		// The microphone's script travels WITH the pane, so the chief panel —
 		// which renders this pane into another page — gets it too. It is built
 		// to run again on every swap (dictate.go).

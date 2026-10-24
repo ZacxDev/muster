@@ -197,7 +197,14 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 			// A sideways swipe here is the bar's, not the sidebar edge-swipe's
 			// (appScript's ownsSideways), as on the Recent strip.
 			g.Attr("data-own-swipe", ""),
-			Class("flex-none border-t border-line bg-bg"+classIf(pinned, " px-3 pb-[env(safe-area-inset-bottom)]")),
+			// 🔴 ABSOLUTE, ON ROOM ITS CONTAINER RESERVED (switcherRoom): the
+			// bar's markup comes after the form, and a browser may paint the
+			// page with the form parsed and the bar not yet — measured, the
+			// Rendered view's composer then grew 61→106px under the reader
+			// (layout shift 0.0047–0.012 at 1280×800). Reserved by the
+			// container's padding from its first byte, the bar's arrival moves
+			// nothing.
+			Class("absolute inset-x-0 bottom-0 border-t border-line bg-bg"+classIf(pinned, " px-3 pb-[env(safe-area-inset-bottom)]")),
 			Div(
 				Class("flex h-11 min-w-0 items-center gap-2"),
 				Button(
@@ -219,6 +226,16 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 		),
 		switcherScript(),
 	}
+}
+
+// switcherRoom is the bottom padding a container holding the bar reserves
+// for it: its 44px row and 1px border (2.8125rem), plus the safe-area inset
+// when pinned. The bar is absolutely placed in that padding (switcherBar).
+func switcherRoom(pinned bool) string {
+	if pinned {
+		return "pb-[calc(2.8125rem+env(safe-area-inset-bottom))]"
+	}
+	return "pb-[2.8125rem]"
 }
 
 // classIf is s when ok, "" otherwise: an optional class suffix.

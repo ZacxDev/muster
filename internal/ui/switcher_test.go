@@ -202,8 +202,8 @@ func TestTheSwitcherBarIsServerRenderedAtAFixedHeight(t *testing.T) {
 		strings.Contains(all, `href="/agents/ag-four"`) {
 		t.Error("the page's own entry is not drawn as current, or is a link")
 	}
-	if !strings.Contains(all, `data-own-swipe="" class="flex-none border-t border-line bg-bg">`) {
-		t.Error("an in-flow bar pads for the safe area, or insets itself inside its pane")
+	if !strings.Contains(all, `data-own-swipe="" class="absolute inset-x-0 bottom-0 border-t border-line bg-bg">`) {
+		t.Error("the agent page's bar is not absolutely placed, or pads for the safe area / insets itself inside its pane")
 	}
 	if switcherBar(nil, true) != nil {
 		t.Error("a nil switcher draws a bar")
@@ -237,6 +237,14 @@ func TestTheSwitcherIsBelowTheInputOnBothPages(t *testing.T) {
 	if !strings.Contains(formTag, "pb-2") || strings.Contains(formTag, "safe-area-inset-bottom") {
 		t.Errorf("with the bar below, the input row still pads for the safe area: %s", formTag)
 	}
+	// 🔴 THE ROOM IS RESERVED BY THE CONTAINER, THE BAR IS ABSOLUTE IN IT: a
+	// paint with the form parsed and the bar not yet must not grow the
+	// composer (measured 61→106px, a 0.0047–0.012 shift at 1280×800).
+	composeTag := view[compose:]
+	composeTag = composeTag[:strings.Index(composeTag, ">")]
+	if !strings.Contains(composeTag, switcherRoom(true)) || !strings.Contains(view, `class="absolute inset-x-0 bottom-0 border-t border-line bg-bg px-3 pb-[env(safe-area-inset-bottom)]"`) {
+		t.Errorf("the composer does not reserve the bar's room, or the bar is not absolute in it: %s", composeTag)
+	}
 	if !strings.Contains(view, `<body class="`+pinnedShellSwitcherClass) {
 		t.Error("the body does not reserve the composer-with-switcher's fallback height")
 	}
@@ -252,6 +260,18 @@ func TestTheSwitcherIsBelowTheInputOnBothPages(t *testing.T) {
 	}
 	if d, b := strings.Index(pane, "window.musterDraft = {"), strings.Index(pane, `id="`+SwitcherID+`"`); d < 0 || d > b {
 		t.Errorf("the agent page's bar is drawn before the draft's script (draft %d, bar %d)", d, b)
+	}
+	if form := pane[strings.Index(pane, `id="chat-form"`):]; !strings.Contains(form[:strings.Index(form, ">")], " "+switcherRoom(false)) {
+		t.Error("the chat form does not reserve the bar's room")
+	}
+	if !strings.Contains(pane, `class="absolute inset-x-0 bottom-0 border-t border-line bg-bg"`) {
+		t.Error("the agent page's bar is not absolute")
+	}
+	if !strings.Contains(pane, `class="flex flex-1 flex-col gap-2 min-h-0 relative"`) {
+		t.Error("the agent pane is not relative (the bar's containing block)")
+	}
+	if strings.Contains(renderString(t, agentChatPane(AgentDetailView{Name: "a", Status: "running", ActiveSessionID: 1})), switcherRoom(false)) {
+		t.Error("CONTROL: a pane with no switcher reserves its room")
 	}
 	if !strings.Contains(pane, `href="/agents/ag-nine"`) {
 		t.Error("the agent page's bar does not link the other agent")

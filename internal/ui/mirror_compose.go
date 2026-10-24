@@ -214,6 +214,8 @@ func mirrorComposer(v ComposerView) g.Node {
 	formPad := "pb-[max(0.75rem,env(safe-area-inset-bottom))]"
 	if v.Switcher != nil {
 		formPad = "pb-2"
+		// The switcher's room, reserved before the bar is parsed (switcherRoom).
+		place += " " + switcherRoom(true)
 	}
 	return Div(
 		ID("mv-compose"),
