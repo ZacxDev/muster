@@ -3,6 +3,7 @@ package suggest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -266,7 +267,9 @@ func (g *ctxGen) Generate(ctx context.Context, _ int64, _ string) (Generation, e
 	g.calls++
 	if g.calls == 1 {
 		<-ctx.Done()
-		return Generation{}, ctx.Err()
+		// As the OpenRouter generator does: the cancel wrapped in its own
+		// error, not a bare ctx error.
+		return Generation{}, fmt.Errorf("%w: %v", ErrUnreachable, ctx.Err())
 	}
 	return Generation{Raw: []Raw{{Text: "Go with (a), checkpoint every 500 rows", Kind: KindPick, Cites: []string{"R"}, Quote: "(a) checkpoint every 500 rows"}}}, nil
 }

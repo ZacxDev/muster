@@ -2,7 +2,6 @@ package suggest
 
 import (
 	"context"
-	"errors"
 	"log"
 	"sort"
 	"strconv"
@@ -103,10 +102,13 @@ type cached struct {
 }
 
 type flight struct {
-	done chan struct{}
-	set  Set
-	out  Outcome
-	err  error
+	// cancelled: the call ended because its creator's ctx did (the view that
+	// asked closed), so a waiter still open asks again.
+	cancelled bool
+	done      chan struct{}
+	set       Set
+	out       Outcome
+	err       error
 }
 
 type tally struct{ shown, filled int }
@@ -227,10 +229,8 @@ func (e *Engine) Suggest(ctx context.Context, owner int64, subject string, b Bui
 			}
 			// The asker whose call this was went away (its view closed); this
 			// one has not, so it asks again rather than inherit that cancel.
-			if errors.Is(f.err, context.Canceled) || errors.Is(f.err, context.DeadlineExceeded) {
-				if ctx.Err() == nil {
-					return e.Suggest(ctx, owner, subject, b, turn)
-				}
+			if f.cancelled && ctx.Err() == nil {
+				return e.Suggest(ctx, owner, subject, b, turn)
 			}
 			return f.set, f.out, f.err
 		case <-ctx.Done():
@@ -258,6 +258,9 @@ func (e *Engine) Suggest(ctx context.Context, owner int64, subject string, b Bui
 
 	set, out, err := e.generate(ctx, owner, b, turn)
 	f.set, f.out, f.err = set, out, err
+	// Judged by the creator's ctx, not the error's type: the provider wraps a
+	// cancelled request in its own error (ErrUnreachable).
+	f.cancelled = out == OutcomeFailed && ctx.Err() != nil
 	// A refused call (no key, the cap, a cancelled wait) caches nothing: the
 	// next turn end (or view) may try again. A call that was MADE (set.At is
 	// stamped only after one) caches its answer, empty, failed or not, so the
