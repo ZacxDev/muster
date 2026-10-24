@@ -402,3 +402,72 @@ for (const vp of [
     });
   });
 }
+
+// 🔴 NO POPOVER API (iOS Safari < 17): the ⋯ must still open its menu, or the
+// nine menu keys — ^C among them — are unreachable. The API is stubbed away
+// before the page's scripts run; the ⋯ then toggles the menu itself, placed by
+// the floating-menu rule, closed by a pick, a tap outside, or Escape. Red
+// before the fallback: the ⋯ was a bare popovertarget, which (once the page
+// stops relying on the native attribute) opens nothing.
+test.describe('without the Popover API (390×844 touch)', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test('the ⋯ still opens the menu and a menu key sends its bytes', async ({ page }) => {
+    await login(page);
+    const name = await saveAgent(page, 'claude-code', 'e2e terminal: no popover');
+    const sent = recordSent(page);
+    await page.addInitScript(() => {
+      const p = HTMLElement.prototype as any;
+      delete p.togglePopover;
+      delete p.showPopover;
+      delete p.hidePopover;
+    });
+    await page.goto(origin + '/agents/' + name + '/terminal');
+    expect(await page.evaluate(() => typeof (HTMLElement.prototype as any).togglePopover), 'the API is stubbed away').toBe('undefined');
+    await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+    await page.locator('#term-mode').click();
+    await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
+
+    const more = page.locator('#term-keys-more');
+    const menu = page.locator('#term-keys-menu');
+    // The fallback is engaged: no native popover wiring left to do the work.
+    await expect(more).not.toHaveAttribute('popovertarget', /.*/);
+    await expect(menu).toBeHidden();
+    await more.click();
+    await expect(menu).toBeVisible();
+    await expect(more).toHaveAttribute('aria-expanded', 'true');
+    await expect(menu.getByRole('menuitem')).toHaveCount(9);
+    const mb = (await more.boundingBox())!;
+    const box = (await menu.boundingBox())!;
+    expect(box.x, 'menu left edge').toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width, 'menu right edge').toBeLessThanOrEqual(390);
+    expect(box.y + box.height, 'placed above its ⋯, not over it').toBeLessThanOrEqual(mb.y + 0.5);
+    await noHorizontalScroll(page);
+
+    // ^C, picked from the menu: exactly 0x03, and the menu closes.
+    let before = sent.length;
+    await menu.getByRole('menuitem', { name: 'Control C', exact: true }).click();
+    await expect.poll(() => sent.slice(before), { message: '^C frame' }).toEqual(['03']);
+    await expect(screen(page)).toContainText('in=03');
+    await expect(menu).toBeHidden();
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
+
+    // A tap outside closes it; so does Escape; so does the ⋯ again.
+    await more.click();
+    await expect(menu).toBeVisible();
+    await page.locator('#term-status').click();
+    await expect(menu, 'a tap outside closes it').toBeHidden();
+    await more.click();
+    await expect(menu).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(menu, 'Escape closes it').toBeHidden();
+    await more.click();
+    await expect(menu).toBeVisible();
+    await more.click();
+    await expect(menu, 'the ⋯ again closes it').toBeHidden();
+
+    // A large key still sends its bytes in this mode.
+    before = sent.length;
+    await page.locator('#term-keys [data-key="up"]').click();
+    await expect.poll(() => sent.slice(before), { message: 'up frame' }).toEqual(['1B5B41']);
+  });
+});

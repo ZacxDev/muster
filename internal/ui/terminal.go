@@ -546,8 +546,50 @@ func agentTerminalScript() g.Node {
   var keys = document.querySelectorAll('#term-keys [data-key]');
   var moreBtn = document.getElementById('term-keys-more');
   var keysMenu = document.getElementById('` + quickKeysMenuID + `');
+  // 🔴 NO POPOVER API (iOS Safari < 17): the ⋯'s popovertarget does nothing
+  // there, and the nine menu keys — ^C among them — would be unreachable. So
+  // without HTMLElement.prototype.togglePopover the ⋯ toggles the menu itself:
+  // shown by class, marked data-menu-open so floatingMenuScript places it by
+  // the same rule (its trigger is data-menu-trigger), above the page by
+  // z-index (there is no top layer), closed by a tap outside it or Escape.
+  var noPopover = !!keysMenu && typeof HTMLElement.prototype.togglePopover !== 'function';
+  function fallbackOpen() { return !!keysMenu && keysMenu.hasAttribute('data-menu-open'); }
+  function setFallback(open) {
+    if (open) {
+      // Out of the flow BEFORE it is shown: in the bar's flex row it would
+      // push the ⋯ aside, and place() measures the ⋯ where it is then.
+      keysMenu.style.position = 'fixed';
+      keysMenu.style.top = '0';
+      keysMenu.style.left = '0';
+      keysMenu.setAttribute('data-menu-open', '');
+      keysMenu.classList.remove('hidden');
+      keysMenu.classList.add('grid');
+      if (window.__musterPlaceMenu) window.__musterPlaceMenu(keysMenu);
+      else keysMenu.style.visibility = 'visible';
+      keysMenu.style.zIndex = '60';
+    } else {
+      keysMenu.removeAttribute('data-menu-open');
+      keysMenu.classList.add('hidden');
+      keysMenu.classList.remove('grid');
+      keysMenu.removeAttribute('style');
+    }
+    moreBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  if (noPopover) {
+    moreBtn.removeAttribute('popovertarget');
+    keysMenu.removeAttribute('popover');
+    moreBtn.setAttribute('data-menu-trigger', keysMenu.id);
+    moreBtn.addEventListener('click', function () { setFallback(!fallbackOpen()); });
+    document.addEventListener('pointerdown', function (ev) {
+      if (fallbackOpen() && !keysMenu.contains(ev.target) && !moreBtn.contains(ev.target)) setFallback(false);
+    }, true);
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Escape' && fallbackOpen()) setFallback(false);
+    });
+  }
   function closeKeysMenu() {
     if (!keysMenu) return;
+    if (noPopover) { if (fallbackOpen()) setFallback(false); return; }
     try { if (keysMenu.matches(':popover-open')) keysMenu.hidePopover(); } catch (e) {}
   }
 

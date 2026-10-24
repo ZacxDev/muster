@@ -557,3 +557,77 @@ func TestAPinnedChipDrawsItsHostIconBeforeItsLabel(t *testing.T) {
 		}
 	}
 }
+
+// pinAccName approximates a link's accessible name as a screen reader builds
+// it: text, an element's aria-label in place of its content, and nothing from
+// an aria-hidden subtree.
+func pinAccName(n *html.Node) string {
+	var b strings.Builder
+	var walk func(*html.Node)
+	walk = func(x *html.Node) {
+		if x.Type == html.TextNode {
+			b.WriteString(x.Data)
+			return
+		}
+		if x.Type == html.ElementNode {
+			if v, _ := pinAttr(x, "aria-hidden"); v == "true" {
+				return
+			}
+			if x != n {
+				if l, ok := pinAttr(x, "aria-label"); ok {
+					b.WriteString(" " + l + " ")
+					return
+				}
+			}
+		}
+		for c := x.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
+		}
+	}
+	walk(n)
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// TestAChipLinkNamesItsHostOnce: a screen reader hears a chip's host exactly
+// once. A chip whose label is unique names it through the icon ("Host: hosta");
+// a chip whose label already carries the host ("mango:1 · hosta") gets an
+// aria-hidden icon (its tooltip kept), so the host is not read twice. Red at
+// main: the icon was outside the link, so the unique chip named no host.
+func TestAChipLinkNamesItsHostOnce(t *testing.T) {
+	a, b := pinWin(0, "hosta", "s1", "@1", "mango:1"), pinWin(1, "hostb", "s1", "@1", "mango:1")
+	a.HostIcon, b.HostIcon = "laptop", "server"
+	a.Qualifier, b.Qualifier = "hosta", "hostb"
+	solo := pinWin(2, "hostc", "s9", "@1", "vapor:1")
+	solo.HostIcon = "globe"
+	s := renderString(t, AgentsCardsWithMirrors(nil, []MirrorCardView{a, b, solo}))
+	arts := pinArticles(t, s)
+	for _, c := range []struct {
+		w     MirrorCardView
+		label string
+		named bool // the label itself spells the host
+	}{{a, "mango:1 · hosta", true}, {b, "mango:1 · hostb", true}, {solo, "vapor", false}} {
+		chip := arts[mirrorCardID(c.w)]
+		links := pinFind(chip, pinHas("data-pinned-chip-link"))
+		if len(links) != 1 {
+			t.Fatalf("%s: %d chip links", c.w.Host, len(links))
+		}
+		name := pinAccName(links[0])
+		if got := strings.Count(name, c.w.Host); got != 1 {
+			t.Errorf("%s: accessible name %q names the host %d times, want 1", c.w.Host, name, got)
+		}
+		if !strings.Contains(name, c.label) {
+			t.Errorf("%s: accessible name %q lacks the label %q", c.w.Host, name, c.label)
+		}
+		icons := pinFind(links[0], pinHas("data-host-icon"))
+		if len(icons) != 1 {
+			t.Fatalf("%s: %d icons", c.w.Host, len(icons))
+		}
+		hidden, _ := pinAttr(icons[0], "aria-hidden")
+		if (hidden == "true") != c.named {
+			t.Errorf("%s: icon aria-hidden=%q, want hidden=%v", c.w.Host, hidden, c.named)
+		}
+		if title, _ := pinAttr(icons[0], "title"); title != "Host: "+c.w.Host {
+			t.Errorf("%s: icon title %q, want the host kept as a tooltip", c.w.Host, title)
+		}
+	}
+}

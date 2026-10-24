@@ -3,6 +3,7 @@ package ui
 import (
 	"regexp"
 	"strconv"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -155,7 +156,13 @@ func pinnedChip(e listEntry, label string) g.Node {
 		m := e.mirror
 		id, href, kind = mirrorCardID(*m), MirrorCardHref(*m), "mirror"
 		attrs = mirrorListAttrs(*m)
-		icon = hostMark(m.Host, m.HostIcon)
+		if pinnedChipLabelNamesHost(*m, label) {
+			// The label already says the host ("mango:1 · hosta"): a screen
+			// reader would hear it twice, so the icon is decorative here.
+			icon = hostMarkDecorative(m.Host, m.HostIcon)
+		} else {
+			icon = hostMark(m.Host, m.HostIcon)
+		}
 		wait = waitTokens(m.Attention, false)
 		unpin = pinForm(true, [][2]string{{"kind", "mirror"}, {"host", m.Host}, {"session", m.Session}, {"window", m.Window}}, chipUnpinButton(label))
 	}
@@ -188,6 +195,19 @@ func pinnedChip(e listEntry, label string) g.Node {
 		// Shown only while the viewer edits pins (web/css/input.css).
 		Span(g.Attr("data-pinned-chip-edit", ""), Class("-ml-2 flex shrink-0 items-center"), edit, unpin),
 	)
+}
+
+// pinnedChipLabelNamesHost is whether a window chip's label already spells its
+// host: the label carries the window's qualifier (pinnedChipLabels appended it)
+// and the qualifier leads with the host — the cross-host form, mirror.qualify's
+// first part ("mango:1 · hosta", "Gold:1 · hosta · scratch3:1"). A one-host
+// qualifier ("Gold:1 · scratch3:1") names no host.
+func pinnedChipLabelNamesHost(m MirrorCardView, label string) bool {
+	if m.Qualifier == "" || !strings.HasSuffix(label, mirrorQualifierSep+m.Qualifier) {
+		return false
+	}
+	first, _, _ := strings.Cut(m.Qualifier, mirrorQualifierSep)
+	return first == m.Host
 }
 
 // pinnedChips1 is ONE pinned entry's chip, labelled as the list labels it

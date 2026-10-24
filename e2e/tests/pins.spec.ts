@@ -191,6 +191,10 @@ for (const vp of [
         const [ib, lb] = [(await ic.boundingBox())!, (await chip(page, h).locator('[data-pinned-chip-label]').boundingBox())!];
         expect(ib.x + ib.width, 'the icon is before the label').toBeLessThanOrEqual(lb.x + 0.5);
         expect(ib.width, 'the icon is its fixed 16px box').toBeCloseTo(16, 0);
+        // A screen reader hears the host once (through the icon: the label is
+        // unique, so it does not spell the host).
+        const esc = host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        await expect(chip(page, h).locator('[data-pinned-chip-link]')).toHaveAccessibleName(new RegExp(`^(?!.*${esc}.*${esc}).*${esc}`));
       }
       const agentIcon = page.locator(`#${last} [data-pinned-chip-link] [data-host-icon]`);
       await expect(agentIcon).toBeVisible();
