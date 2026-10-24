@@ -225,7 +225,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// carry lg:pl-72 so nothing sits under the sidebar.
 				agentDetailHeader(v),
 				// 🔴 BEFORE THE CHAT PANE, NOT AT THE END OF <body>: the pane calls
-				// window.__cgLayoutLog (agentChatScript) right after #chat-log, so
+				// window.__cgLayoutLog (agentChatScript) right after #chat-form, so
 				// the transcript is converted, clamped and scrolled to its end before
 				// its first paint. The clamp script's MutationObserver must already be
 				// watching when the bubbles are parsed and converted. Neither script
@@ -768,11 +768,6 @@ func agentChatPane(v AgentDetailView) g.Node {
 			hx("hx-swap", "innerHTML"),
 			chatLogInner(v),
 		),
-		// The transcript's layout, applied before it can be painted (see
-		// window.__cgLayoutLog in agentChatScript). The page surface only: the
-		// chief panel's body arrives by an htmx swap, whose afterSwap hook lays it
-		// out in the same task.
-		g.If(v.Surface == ChatSurfacePage, Script(g.Raw(`window.__cgLayoutLog && window.__cgLayoutLog();`))),
 		Form(
 			ID("chat-form"),
 			// 🔴 hx-boost="false" IS LOAD-BEARING AND IT IS A FIXED DEFECT, NOT A
@@ -869,6 +864,14 @@ func agentChatPane(v AgentDetailView) g.Node {
 					g.Text("Send"),
 				),
 			),
+			// The transcript's layout, applied before it can be painted (see
+			// window.__cgLayoutLog in agentChatScript): the form's LAST child, so
+			// a frame the parser yields after this long script paints a whole
+			// form, and nothing between the log and it is a script the parser
+			// could yield after. The page surface only: the chief panel's body
+			// arrives by an htmx swap, whose afterSwap hook lays it out in the
+			// same task.
+			g.If(v.Surface == ChatSurfacePage, Script(g.Raw(`window.__cgLayoutLog && window.__cgLayoutLog();`))),
 		),
 		// The box grows with its text (composer_fit.go), the same one script as
 		// the mirrored composer's — it travels with the pane for the chief panel.
@@ -1982,9 +1985,18 @@ func agentChatScript(name string) g.Node {
     ws.onclose = function () { if (!session.disposed) setTimeout(connect, 2000); };
   }
   connect();
+  // The interim observer of window.__cgLayoutLog, when it ran for THIS log:
+  // torn down, and a reader who scrolled away meanwhile stays where they are.
+  var pre = window.__cgLayout;
+  window.__cgLayout = null;
+  if (pre) {
+    if (pre.ro) pre.ro.disconnect();
+    pre.log.removeEventListener('scroll', pre.onScroll);
+    if (pre.log !== logEl) pre = null;
+  }
   // Open scrolled to the latest message: the transcript is converted + laid out
   // by now, so forceScroll() reads the full scrollHeight and pins the log to bottom.
-  forceScroll();
+  if (pre && pre.away) session.stick = false; else forceScroll();
   // Live-render the server-side kickoff stream (agent.stream over /events) with the
   // same renderer as the WS turn. Opened after the initial scroll so it never races
   // the open-at-bottom behaviour.
@@ -2060,10 +2072,10 @@ func agentChatScript(name string) g.Node {
   // open that shifted showed two frames painted with 0 of 200 bubbles
   // converted and scrollTop 0 before start() ran.
   //
-  // So agentChatPane emits a call to this directly after #chat-log's last
-  // child, while the parser is still blocked on that inline script: the
-  // markdown and the scroll to the end are applied in the same task that
-  // inserted the bubbles, before anything can paint them, and the clamp
+  // So agentChatPane emits a call to this right after #chat-form and the
+  // composer's fit and draft scripts, while the parser is still blocked on that
+  // inline script: the markdown and the scroll to the end are applied in the
+  // same task that inserted the bubbles, before anything can paint them, and the clamp
   // follows at the microtask checkpoint that ends the script (its
   // MutationObserver sees the conversion), still before the parser goes on.
   // A clamp that shrinks the log after the scroll leaves it at its end: the
@@ -2076,24 +2088,31 @@ func agentChatScript(name string) g.Node {
   // is laid out at DOMContentLoaded again; the clamp script after it would
   // clamp only when it ran.
   //
-  // Until start() wires its own ResizeObserver (session.ro), one here keeps a
-  // reader who has not scrolled away at the end while the rest of the page is
-  // parsed: #chat-form below the log arrives after this call and shrinks the
-  // log's box.
+  // 🔴 AFTER THE FORM, NOT BETWEEN THE LOG AND THE FORM. The call is a long
+  // script, and the parser may yield after one: placed straight after
+  // #chat-log, a frame then painted #chat-form before #chat-input was parsed
+  // (13px tall, then 57px) — a shift of the form on every size, in about half
+  // of the opens of a seven-message agent, where main read 0.
+  //
+  // Until start() runs, an observer here keeps a reader who has not scrolled
+  // away at the end (the header, say, may still change the log's box), and
+  // records whether they HAVE scrolled away: start() reads that (pre.away)
+  // instead of pinning to the end, so a reader who scrolled up while the
+  // deferred scripts were loading is not pulled back down, and then tears the
+  // observer and its listener down.
   window.__cgLayoutLog = function () {
     var log = document.getElementById('chat-log');
     if (!log) return;
     mdConvert(log);
     log.scrollTop = log.scrollHeight;
-    if (typeof ResizeObserver === 'undefined' || window.__cgChat) return;
-    var away = false;
-    var onScroll = function () { away = log.scrollHeight - log.scrollTop - log.clientHeight >= 48; };
-    log.addEventListener('scroll', onScroll, { passive: true });
-    var ro = new ResizeObserver(function () {
-      if (window.__cgChat || !log.isConnected) { ro.disconnect(); log.removeEventListener('scroll', onScroll); return; }
-      if (!away) log.scrollTop = log.scrollHeight;
-    });
-    ro.observe(log);
+    var pre = { log: log, away: false, ro: null };
+    pre.onScroll = function () { pre.away = log.scrollHeight - log.scrollTop - log.clientHeight >= 48; };
+    log.addEventListener('scroll', pre.onScroll, { passive: true });
+    if (typeof ResizeObserver !== 'undefined') {
+      pre.ro = new ResizeObserver(function () { if (!pre.away) log.scrollTop = log.scrollHeight; });
+      pre.ro.observe(log);
+    }
+    window.__cgLayout = pre;
   };
 
   // Global, document-lifetime hooks (the <body> survives hx-boost swaps, so
@@ -2121,6 +2140,18 @@ func agentChatScript(name string) g.Node {
         e.preventDefault();
       }
     });
+    // 🔴 A READER WHO HAS SCROLLED UP KEEPS THEIR PLACE ACROSS THE REFRESH.
+    // The swap puts the RAW transcript in (shorter: blank lines collapsed, no
+    // clamp), and a layout read during the swap clamps scrollTop to that
+    // shorter log; the converted, clamped one then put the reader thousands of
+    // pixels from where they were (measured: 3000px up became 5242 and 18947).
+    // So the position is taken before the swap and put back once the clamp has
+    // run (its MutationObserver's microtask was queued by the insertion, so it
+    // runs before this one, and both before the next paint).
+    document.body.addEventListener('htmx:beforeSwap', function (e) {
+      var t = e.detail && e.detail.target;
+      if (t && t.id === 'chat-log') t.__cgTop = t.scrollTop;
+    });
     // After a #chat-log refresh swap: convert the fresh transcript bubbles to
     // markdown and pin to the bottom (the WS client only runs mdConvert/scroll on
     // its own events, so a server-driven refresh needs this).
@@ -2130,7 +2161,10 @@ func agentChatScript(name string) g.Node {
         mdConvert(t);
         // Respect sticky scroll: only pin to bottom if the user hasn't scrolled up
         // (stick !== false). Default to pinning when there's no live chat session.
+        var top = t.__cgTop;
+        t.__cgTop = null;
         if (!window.__cgChat || window.__cgChat.stick !== false) t.scrollTop = t.scrollHeight;
+        else if (top != null) queueMicrotask(function () { t.scrollTop = top; });
       }
     });
   }
