@@ -382,7 +382,8 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, edit
 			Detail: it.Detail, Cancellable: it.State == sendqueue.Queued, Answered: answered[it.ID],
 			Retryable: sendQueueRetryable(it), Deletable: it.State.Finished(), MayHaveDelivered: it.MayHaveDelivered,
 			Editable: it.State == sendqueue.Queued && it.RouteID == "", Held: it.State == sendqueue.Queued && it.Held,
-			HoldLapsed: it.State == sendqueue.Queued && it.HoldLapsed, Edited: !it.EditedAt.IsZero()}
+			HoldLapsed: it.State == sendqueue.Queued && it.HoldLapsed, Edited: !it.EditedAt.IsZero(),
+			Returned: it.State == sendqueue.Queued && it.Returns > 0}
 		if row.Held && it.ID == editing.id {
 			if editing.hold != "" && subtle.ConstantTimeCompare([]byte(editing.hold), []byte(it.HoldToken)) == 1 {
 				row.Editing, row.HoldToken = true, it.HoldToken
@@ -395,7 +396,7 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, edit
 	}
 	if h, ok, err := s.ext.SendQueue.HeadOf(ctx, t); err == nil && ok {
 		if d := s.sendQueueDecide(h, s.sendQueueProbe(ctx, h)); !d.Send {
-			v.Waiting = d.Why
+			v.Waiting, v.Held, v.ResumeAt = d.Why, d.Held, d.ResumeAt
 		} else {
 			v.Waiting = "sending shortly"
 		}
@@ -770,7 +771,7 @@ func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue
 	case st.Unknown != nil:
 		return sendqueue.AgentState{Why: unprefixed(st.Unknown)}
 	case st.Status == mirror.StatusIdle:
-		return sendqueue.AgentState{Idle: true, Since: st.Since, Observed: st.Observed, Pasted: st.Pasted}
+		return sendqueue.AgentState{Idle: true, Since: st.Since, Observed: st.Observed, Pasted: st.Pasted, TurnError: st.TurnError}
 	case st.Runtime == mirror.RuntimeHermes && st.Status == mirror.StatusWaiting:
 		return sendqueue.AgentState{Why: "Hermes is waiting for you (an approval or a question)."}
 	case st.Runtime == mirror.RuntimeHermes:
@@ -782,10 +783,19 @@ func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue
 }
 
 // sendQueueNonce is the nonce a queued message is delivered with: one per
-// row, so a delivery the send path has already seen is never made twice. It
-// must match sendNoncePattern (16+ characters), or the send path would treat
-// it as no nonce at all and claim nothing.
-func sendQueueNonce(id int64) string { return fmt.Sprintf("send-queue-%020d", id) }
+// row and ATTEMPT, so a delivery the send path has already seen is never made
+// twice. The attempt is the row's Returns — how many times a usage limit
+// rejected it unprocessed and it went back to the queue (sendqueue.Return) —
+// so a re-send of a returned row is a new delivery, not taken for the one the
+// limit refused; a row never returned keeps the nonce it always had. It must
+// match sendNoncePattern (16–64 of [A-Za-z0-9_-]), or the send path would
+// treat it as no nonce at all and claim nothing.
+func sendQueueNonce(it sendqueue.Item) string {
+	if it.Returns > 0 {
+		return fmt.Sprintf("send-queue-%020d-r%d", it.ID, it.Returns)
+	}
+	return fmt.Sprintf("send-queue-%020d", it.ID)
+}
 
 // sendQueueSend delivers one claimed message: mirrorSend's gates, then
 // mirrorPaste into the window's Claude Code pane. ctx acts as the message's
@@ -858,7 +868,7 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 	if !stepup.Fresh(ctx, s.stepUpNow()) {
 		return sendQueueStale()
 	}
-	repeat, err := s.mirrorPaste(ctx, it.Target.Host, it.Target.Session, it.Target.Window, it.Body, sendQueueNonce(it.ID), mirror.PasteClaude,
+	repeat, err := s.mirrorPaste(ctx, it.Target.Host, it.Target.Session, it.Target.Window, it.Body, sendQueueNonce(it), mirror.PasteClaude,
 		opts...)
 	var sup *mirror.SupersededError
 	switch {

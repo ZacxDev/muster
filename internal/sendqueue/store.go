@@ -15,15 +15,21 @@
 // delivery, which acts as that row's owner.
 //
 // 🔴 A MESSAGE IS CLAIMED ONCE AND NEVER RETRIED AFTER ANYTHING REACHED THE
-// HOST. Claim moves a row from queued to sending in one conditional UPDATE: a
-// send that fails is failed, and a process that dies mid-send leaves a row that
-// Recover marks failed (may have been delivered) once its claim's lease has
-// expired. The ONE way back to queued is a send the hub refused as superseded
+// HOST — BUT ONE IT REACHED THAT CLAUDE CODE PROVABLY REJECTED. Claim moves a
+// row from queued to sending in one conditional UPDATE: a send that fails is
+// failed, and a process that dies mid-send leaves a row that Recover marks
+// failed (may have been delivered) once its claim's lease has expired. There
+// are TWO ways back to queued: a send the hub refused as superseded
 // (Outcome.Superseded: another paste got into the window between the decision
-// and the paste), which by construction wrote nothing to the host. A message is
-// never pasted twice by the queue on its own: a failed row stays failed, and a
-// person's Retry (PGStore.Retry) queues its text again as a NEW row — its own
-// id, so its own delivery nonce — once per failed row.
+// and the paste), which by construction wrote nothing to the host; and a SENT
+// row whose paste a usage limit rejected before Claude Code processed it, as
+// the transcript shows (Return; limit.go's Rejected: the latest turn ended in
+// the limit after this paste, and the limit was the only reply to this very
+// text). Its next send is a new delivery attempt (Returns; the delivery's
+// nonce names it). A message is never pasted twice by the queue otherwise: a
+// failed row stays failed, a sent row the transcript cannot show was rejected
+// stays sent, and a person's Retry (PGStore.Retry) queues its text again as a
+// NEW row — its own id, so its own delivery nonce — once per failed row.
 //
 // 🔴 A CLAIM IS A LEASE, HELD BY ONE INSTANCE. Claim records the claiming
 // dispatcher (claimed_by) and lease_until, Renew extends it while the send
@@ -172,6 +178,12 @@ type Item struct {
 	// delivery checks EditStepUpAt as it checks StepUpAt.
 	EditedAt     time.Time
 	EditStepUpAt time.Time
+	// Returns is how many times the message was sent and then RETURNED to the
+	// queue because a usage limit rejected it before Claude Code processed it
+	// (Return; limit.go). 0 for one never returned. A queued message with
+	// Returns > 0 is drawn "returned: usage limit", and each send of it is a
+	// new delivery: its nonce names the attempt (internal/api sendQueueNonce).
+	Returns int
 }
 
 // AuthorizedFor is how long a person's queued message stays authorized by the
@@ -237,14 +249,14 @@ const cols = `id, owner_id, mirror_host, mirror_session, mirror_window, body, st
 	after_since, coalesce(claimed_by, ''), coalesce(lease_until, 'epoch'::timestamptz), claim_since, coalesce(route_id, ''),
 	coalesce(retried_as, 0), coalesce(held_until, 'epoch'::timestamptz), coalesce(held_until > now(), false),
 	(hold_lapsed_at IS NOT NULL OR coalesce(held_until <= now(), false)), coalesce(hold_token, ''), coalesce(edited_at, 'epoch'::timestamptz),
-	coalesce(edit_stepup_at, 'epoch'::timestamptz)`
+	coalesce(edit_stepup_at, 'epoch'::timestamptz), returns`
 
 // itemDests is where cols scan into it, with its state into state.
 func itemDests(it *Item, state *string) []any {
 	return []any{&it.ID, &it.Owner, &it.Target.Host, &it.Target.Session, &it.Target.Window,
 		&it.Body, &it.StepUpAt, state, &it.Detail, &it.MayHaveDelivered, &it.CreatedAt, &it.ClaimedAt, &it.FinishedAt,
 		&it.AfterSince, &it.ClaimedBy, &it.LeaseUntil, &it.ClaimSince, &it.RouteID, &it.RetriedAs,
-		&it.HeldUntil, &it.Held, &it.HoldLapsed, &it.HoldToken, &it.EditedAt, &it.EditStepUpAt}
+		&it.HeldUntil, &it.Held, &it.HoldLapsed, &it.HoldToken, &it.EditedAt, &it.EditStepUpAt, &it.Returns}
 }
 
 // settle finishes a scanned item: its state, and the epoch placeholders back to
@@ -778,6 +790,49 @@ func (s *PGStore) Finish(ctx context.Context, id int64, by string, o Outcome, no
 		return fmt.Errorf("sendqueue: finish: %w", err)
 	}
 	return nil
+}
+
+// RecentSent is, for every target of every owner whose most recently CLAIMED
+// message was claimed after `after`, that message — when it is sent. What
+// the dispatcher checks for a usage limit's rejection (returnRejected): only a
+// target's latest send can be the one its latest turn answered.
+func (s *PGStore) RecentSent(ctx context.Context, after time.Time) ([]Item, error) {
+	rows, err := s.pool.Query(sys(ctx), `SELECT `+cols+` FROM (
+			SELECT DISTINCT ON (owner_id, mirror_host, mirror_session, mirror_window) *
+			FROM send_queue WHERE claimed_at > $1
+			ORDER BY owner_id, mirror_host, mirror_session, mirror_window, claimed_at DESC, id DESC
+		) latest WHERE state = 'sent' ORDER BY id`, after)
+	if err != nil {
+		return nil, fmt.Errorf("sendqueue: recent sent: %w", err)
+	}
+	defer rows.Close()
+	var out []Item
+	for rows.Next() {
+		var it Item
+		var state string
+		if err := rows.Scan(itemDests(&it, &state)...); err != nil {
+			return nil, fmt.Errorf("sendqueue: recent sent: %w", err)
+		}
+		settle(&it, state)
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// Return puts SENT message id back to queued because a usage limit rejected
+// it unprocessed (limit.go): not finished, not delivered, its claim cleared,
+// Returns counted up, detail saying why. It keeps its id, so it is again the
+// head of its target's queue (heads go oldest first), and its after_since —
+// the status time it was pasted on — so it waits for a newer one. false when
+// the row is no longer sent: one Return per send, whoever else tries.
+func (s *PGStore) Return(ctx context.Context, id int64, detail string) (bool, error) {
+	tag, err := s.pool.Exec(sys(ctx), `UPDATE send_queue SET state = 'queued', detail = $2, may_have_delivered = false,
+		finished_at = NULL, claimed_by = NULL, lease_until = NULL, claim_since = 0, returns = returns + 1
+		WHERE id = $1 AND state = 'sent'`, id, clampDetail(detail))
+	if err != nil {
+		return false, fmt.Errorf("sendqueue: return: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // Retention is how long a finished message is kept (its outcome is shown

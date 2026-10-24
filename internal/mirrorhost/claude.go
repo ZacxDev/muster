@@ -123,6 +123,10 @@ type ClaudePane struct {
 	// (lastmsg.go: read from its tail by the host's listing, not by the
 	// locator); 0 when unknown.
 	LastMessage int64
+	// TurnError is how the latest turn ended when it ended in an error the CLI
+	// wrote itself (turnend.go: read from the transcript's tail by the host's
+	// listing, for an idle window only); nil otherwise.
+	TurnError *mirror.TurnError
 	// Source says how Transcript was found: SourcePaneMap, SourceSessions or
 	// SourceGuessed (see ClaudeLocator) — for a Hermes pane, SourceBreadcrumb
 	// or SourceProcess.

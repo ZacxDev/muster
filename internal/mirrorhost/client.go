@@ -508,6 +508,8 @@ type hostSide struct {
 	pending pendingReader
 	// lastMsg reads each Claude window's last message time (lastmsg.go).
 	lastMsg lastMessageReader
+	// turnEnd reads how each idle Claude window's latest turn ended (turnend.go).
+	turnEnd turnEndReader
 	// hermes is what each waiting Hermes window waits on, and the gateway
 	// viewers that answer its approvals (hermes_asks.go); nil in a test that
 	// builds a hostSide without one.
@@ -581,6 +583,7 @@ func (h *hostSide) read() (listing, bool) {
 	}
 	h.pending.attachPending(raw)
 	h.lastMsg.attach(raw)
+	h.turnEnd.attach(raw)
 	if h.hermes != nil {
 		h.hermes.attachPending(raw)
 	}

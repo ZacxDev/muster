@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strconv"
+	"time"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -134,6 +135,10 @@ type SendQueueItem struct {
 	HoldLapsed bool
 	// Edited: its text was changed by a saved edit.
 	Edited bool
+	// Returned: it was sent, a usage limit rejected it before Claude Code
+	// processed it, and it went back to the head of the queue, not counted as
+	// sent (sendqueue.Return).
+	Returned bool
 	// HeldElsewhere: this page asked for the row open, but its hold is not the
 	// one this page's Edit was given — another device took the edit over.
 	HeldElsewhere bool
@@ -147,6 +152,9 @@ type SendQueueItem struct {
 
 // What a held, a lapsed and an edited message say under their preview.
 const (
+	// SendQueueReturnedText is what a message a usage limit rejected, and the
+	// queue took back, says under its preview.
+	SendQueueReturnedText      = "Returned: usage limit — Claude Code rejected it before processing it, so it was not counted as sent. It is sent again when the queue resumes."
 	SendQueueHeldText          = "Being edited: held, and nothing queued for this window is sent until the edit is saved or cancelled."
 	SendQueueHeldElsewhereText = "Being edited on another device: held, and nothing queued for this window is sent until that edit is saved or cancelled. Edit it here to take it over."
 	SendQueueLapsedText        = "An edit was not saved in time, so its hold ran out and the message kept its original text."
@@ -180,6 +188,14 @@ type SendQueueListView struct {
 	// Waiting is what the next message is waiting for (sendqueue.Decide's
 	// reason), "" when nothing is queued or it is about to send.
 	Waiting string
+	// Held: the queue is held on how the window's latest turn failed — a usage
+	// limit, or the circuit breaker (sendqueue.Decision.Held). Waiting says
+	// why; Send now still sends one.
+	Held bool
+	// ResumeAt is a usage limit's reset time, when it names one: drawn in the
+	// reader's own local time (a <time data-clock>, which the list's script
+	// formats; Waiting's server-side time is the fallback without script).
+	ResumeAt time.Time
 	// Error is why the list could not be read.
 	Error string
 }
@@ -258,6 +274,8 @@ func SendQueueList(v SendQueueListView) g.Node {
 					Class("text-[11px] font-semibold text-st-warning-fg [overflow-wrap:anywhere]"), g.Text(SendQueueHeldElsewhereText))),
 				g.If(it.HoldLapsed && !it.Held, P(g.Attr("data-queue-lapsed", ""), Class("text-[11px] font-semibold text-st-warning-fg [overflow-wrap:anywhere]"),
 					g.Text(SendQueueLapsedText))),
+				g.If(it.Returned, P(g.Attr("data-queue-returned", ""), Class("text-[11px] font-semibold text-st-warning-fg [overflow-wrap:anywhere]"),
+					g.Text(SendQueueReturnedText))),
 				g.If(it.Edited && it.State == "queued" && !it.Held && !it.HoldLapsed,
 					P(g.Attr("data-queue-edited", ""), Class("text-[11px] text-muted"), g.Text(SendQueueEditedText))),
 			),
@@ -281,11 +299,39 @@ func SendQueueList(v SendQueueListView) g.Node {
 		Class("px-3 pt-2"),
 		g.If(open > 0, P(ID("mv-queue-head"), Class("text-[11px] font-semibold text-fg2"),
 			g.Text("Queued: "+strconv.Itoa(open)+" — sends one at a time, each when Claude Code has been idle a while"))),
-		g.If(v.Waiting != "", P(ID("mv-queue-waiting"), Class("text-[11px] text-muted [overflow-wrap:anywhere]"),
-			g.Text("Next: "+v.Waiting))),
+		g.If(v.Waiting != "", sendQueueWaiting(v)),
 		Ul(Class("max-h-40 overflow-y-auto"), g.Group(rows)),
 	)
 }
+
+// sendQueueWaiting is the line saying what the next message waits for. It
+// RESERVES two lines whatever it says, so the queue going from "working" (one
+// line) to held on a usage limit (two, at a phone's width) does not grow the
+// composer — which is anchored to the bottom, so a line more moved its top: a
+// layout shift of 0.005–0.006 measured without the reservation (two runs), 0 with it. The turn
+// that hit the limit is not the reader's input, so any shift counts against
+// the page (e2e send-queue: "going from working to held … moves nothing").
+//
+// Held, it says so in its own words — "Held — usage limit, resumes 10:30 PM",
+// the time in the reader's local time (a <time data-clock> the list's script
+// formats; the server's rendering is what is shown without script).
+func sendQueueWaiting(v SendQueueListView) g.Node {
+	cls := "min-h-[2lh] text-[11px] [overflow-wrap:anywhere]"
+	switch {
+	case v.Held && !v.ResumeAt.IsZero():
+		return P(ID("mv-queue-waiting"), g.Attr("data-queue-hold", "limit"), Class(cls+" font-semibold text-st-warning-fg"),
+			g.Text(SendQueueLimitHeldPrefix),
+			g.El("time", g.Attr("data-clock", strconv.FormatInt(v.ResumeAt.UnixMilli(), 10)),
+				g.Attr("datetime", v.ResumeAt.UTC().Format(time.RFC3339)), g.Text(v.ResumeAt.Format("3:04 PM"))))
+	case v.Held:
+		return P(ID("mv-queue-waiting"), g.Attr("data-queue-hold", ""), Class(cls+" font-semibold text-st-warning-fg"), g.Text(v.Waiting))
+	}
+	return P(ID("mv-queue-waiting"), Class(cls+" text-muted"), g.Text("Next: "+v.Waiting))
+}
+
+// SendQueueLimitHeldPrefix is what a queue held by a usage limit that names
+// its reset says before the time.
+const SendQueueLimitHeldPrefix = "Held — usage limit, resumes "
 
 // The labels of a queued message's ⋯ menu.
 const (
@@ -569,6 +615,17 @@ func sendQueueScript() g.Node {
     var cs = box.querySelectorAll('[data-queue-copy]');
     for (var i = 0; i < cs.length; i++) cs[i].hidden = false;
   }
+  // clocks draws each <time data-clock> (a held queue's "resumes 10:30 PM")
+  // in the reader's own local time; the server's text stays if it cannot.
+  function clocks() {
+    var ts = box.querySelectorAll('time[data-clock]');
+    for (var i = 0; i < ts.length; i++) {
+      var ms = parseInt(ts[i].getAttribute('data-clock'), 10);
+      try { if (ms) ts[i].textContent = new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (e) {}
+    }
+  }
+  // drawn is what follows every draw of the list.
+  function drawn() { copyable(); clocks(); }
   // editing: a row is open for editing (sendQueueEditRow). The list is not
   // redrawn under it either — that would throw away what is being typed; the
   // edit's own Save, Cancel or running out redraws it (show).
@@ -584,7 +641,7 @@ func sendQueueScript() g.Node {
       .then(function (t) {
         loading = false;
         if (g !== gen) { load(); return; }
-        if (t !== null && !menuOpen() && !editing()) { box.innerHTML = t; copyable(); }
+        if (t !== null && !menuOpen() && !editing()) { box.innerHTML = t; drawn(); }
         schedule();
       }, function () { loading = false; schedule(); });
   }
@@ -602,7 +659,7 @@ func sendQueueScript() g.Node {
       .then(function (t) {
         if (t === null) return;
         box.innerHTML = t;
-        copyable();
+        drawn();
         armHold();
         var ta = id ? box.querySelector('[data-queue-edit-form] textarea') : null;
         if (ta) { ta.focus(); try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) {} }
@@ -928,7 +985,7 @@ func sendQueueScript() g.Node {
   });
   document.addEventListener('mv-queued', load);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) load(); });
-  copyable();
+  drawn();
   // A page drawn with a row open for editing (a no-script Edit came back here,
   // and script runs after all): count its hold down too.
   armHold();

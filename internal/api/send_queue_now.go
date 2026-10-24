@@ -20,8 +20,14 @@ import (
 // 🔴 NEVER TWICE: the row is CLAIMED (queued → sending) before anything is
 // pasted, by the dispatcher's own Claim (sendqueue.Dispatcher.SendNow), so the
 // dispatcher can never also send it — whichever claims first sends, and the
-// other finds it no longer queued. It ends sent, or failed with the reason; it
-// is never put back to queued.
+// other finds it no longer queued. It ends sent, or failed with the reason; the
+// one way it comes back to queued is the dispatcher's, for any sent message: a
+// usage limit that the transcript shows rejected it unprocessed
+// (sendqueue.Rejected).
+//
+// 🔴 IT IS THE OVERRIDE OF A HELD QUEUE: a usage limit or the circuit breaker
+// holds the dispatcher (sendqueue.Decide), never this. It sends the ONE
+// message it was tapped on; the rest stay held.
 //
 // 🔴 THE NEXT MESSAGE STILL WAITS FOR THIS ONE'S TURN: the paste is recorded
 // like a Send's (mirrorPaste notes it, in the hub and on the open rows), and the

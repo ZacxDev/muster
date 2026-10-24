@@ -10,6 +10,8 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // THE DISPATCHER: once a target has been continuously idle for IdleFor, it
@@ -27,6 +29,14 @@ import (
 // moves when the turn a paste started ends, however short that turn and
 // whether or not anybody saw it busy. There is no time-based fallback: a
 // target that never reports a newer status holds its queue.
+//
+// 🔴 A TURN THAT FAILED AT ONCE DID NOT END THE WAY A TURN ENDS (limit.go). A
+// usage limit, "Not logged in" or an API error ends the turn in a second with
+// a record Claude Code wrote itself, and the status moves exactly as after an
+// answer. The host reports how the latest turn ended (AgentState.TurnError),
+// and Decide HOLDS on it: a usage limit until its reset plus LimitMargin (or a
+// real answer), BreakerAfter immediate failures in a row until a real answer.
+// A message a limit rejected unprocessed goes back to the head of its queue.
 //
 // 🔴 TWO CLOCKS, NEVER MIXED. Status times are the HOST's clock and are
 // compared only with each other. IdleFor is measured on MUSTER's clock, from
@@ -72,6 +82,11 @@ type AgentState struct {
 	// Why says, when not Idle, why the target is not sendable now — busy, or
 	// unknown and why. Shown to the owner.
 	Why string
+	// TurnError is how the target's latest turn ended when it ended in an
+	// error Claude Code wrote itself — a usage limit, "Not logged in", an API
+	// error (mirror.TurnError, read on the host from the transcript); nil when
+	// it ended in a real answer, or the host does not say. Set when Idle.
+	TurnError *mirror.TurnError
 }
 
 // Decision is what Decide made of one head.
@@ -79,6 +94,12 @@ type Decision struct {
 	Send bool
 	// Why says, when not Send, what the head is waiting for.
 	Why string
+	// Held: the queue is HELD on how the latest turn failed (holdFor): a
+	// usage limit, or the circuit breaker. Only Send now sends while it is.
+	Held bool
+	// ResumeAt is, for a usage limit that names its reset, the reset time:
+	// the queue sends again LimitMargin after it. Zero otherwise.
+	ResumeAt time.Time
 }
 
 // Decide is the dispatcher's whole rule for one head, given the target's state
@@ -106,6 +127,9 @@ func Decide(h Head, st AgentState, now time.Time, idleFor time.Duration) Decisio
 		// turn that paste started has not ended yet.
 		return Decision{Why: "waiting for the previous message's turn to start and finish"}
 	}
+	if d, held := holdFor(st.TurnError, now); held {
+		return d
+	}
 	if idle := now.Sub(st.Observed); idle < idleFor {
 		return Decision{Why: fmt.Sprintf("idle for %s; sends after %s idle", roundSecond(idle), roundSecond(idleFor))}
 	}
@@ -129,6 +153,8 @@ type DispatchStore interface {
 	Renew(ctx context.Context, id int64, by string, lease time.Duration) (bool, error)
 	Finish(ctx context.Context, id int64, by string, o Outcome, now time.Time) error
 	Prune(ctx context.Context, before time.Time) (int, error)
+	RecentSent(ctx context.Context, after time.Time) ([]Item, error)
+	Return(ctx context.Context, id int64, detail string) (bool, error)
 }
 
 // Probe reads one head's target's state now. ctx acts as the head's owner.
@@ -286,6 +312,10 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 	} else if n > 0 {
 		d.logf("sendqueue: %d edit hold(s) ran out unsaved; the message(s) keep their original text", n)
 	}
+	// A message the last pass sent that a usage limit rejected unprocessed
+	// goes back to the head of its queue BEFORE the heads are read, so this
+	// pass holds it rather than sending the next one (returnRejected).
+	d.returnRejected(ctx)
 	heads, err := d.Store.Heads(ctx)
 	if err != nil {
 		return 0, err
