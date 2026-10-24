@@ -202,11 +202,6 @@ func TestEachExclusionMakesNoCall(t *testing.T) {
 				t.Fatal(err)
 			}
 		}},
-		{"auto-paused", nil, func(f *suggestFixture) {
-			for i := 0; i < suggest.AutoPauseMinShown; i++ {
-				f.eng.Record(1, suggest.EventShown)
-			}
-		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -289,37 +284,9 @@ func TestASetIsServedOnlyForItsOwnTurnAndOnlyWhileIdle(t *testing.T) {
 	}
 }
 
-// TestTheViewSocketTellsThePageWhenASetIsReady: end to end through the real
-// socket — the backfill of an idle session makes ONE call and the page gets
-// {"type":"suggest"}.
-func TestTheViewSocketTellsThePageWhenASetIsReady(t *testing.T) {
-	f := newSuggestFixture(t, nil)
-	c, _, err := dialTerm(t, f.s, f.ts, "/mirror/view/ws?host=ws&session=main&window=%401")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.CloseNow()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	for {
-		_, data, err := c.Read(ctx)
-		if err != nil {
-			t.Fatalf("no suggest message: %v", err)
-		}
-		var m map[string]any
-		if json.Unmarshal(data, &m) == nil && m["type"] == "suggest" {
-			break
-		}
-	}
-	if f.gen.n() != 1 {
-		t.Fatalf("calls %d", f.gen.n())
-	}
-}
-
-// TestTheToggleAndTheEventRoutes: the per-user toggle off stops generation and
-// drops the cached set; on again resumes; the event route counts and refuses
-// anything but shown/filled.
-func TestTheToggleAndTheEventRoutes(t *testing.T) {
+// TestTheToggleRoute: the per-user toggle off stops generation and drops the
+// cached set; on again is on; anything but 1/0 is refused.
+func TestTheToggleRoute(t *testing.T) {
 	prefs := &suggestPrefs{}
 	f := newSuggestFixture(t, func(_ *fakeMirror, ext *Extensions) { ext.Suggest.Prefs = prefs })
 	post := func(path string, form url.Values) int {
@@ -349,24 +316,6 @@ func TestTheToggleAndTheEventRoutes(t *testing.T) {
 	}
 	if code := post("/account/suggest", url.Values{"on": {"maybe"}}); code != http.StatusBadRequest {
 		t.Fatalf("bad value: %d", code)
-	}
-	addr := url.Values{"host": {"ws"}, "session": {"main"}, "window": {"@1"}}
-	for _, ev := range []string{"shown", "filled"} {
-		form := url.Values{"event": {ev}}
-		for k, v := range addr {
-			form[k] = v
-		}
-		if code := post("/mirror/view/suggest/event", form); code != http.StatusNoContent {
-			t.Fatalf("%s: %d", ev, code)
-		}
-	}
-	form := url.Values{"event": {"text"}, "host": {"ws"}, "session": {"main"}, "window": {"@1"}}
-	if code := post("/mirror/view/suggest/event", form); code != http.StatusBadRequest {
-		t.Fatalf("an unknown event: %d", code)
-	}
-	form = url.Values{"event": {"shown"}, "host": {"other"}, "session": {"main"}}
-	if code := post("/mirror/view/suggest/event", form); code != http.StatusNotFound {
-		t.Fatalf("another host: %d", code)
 	}
 }
 
@@ -487,5 +436,35 @@ func TestAShortTurnIsNotJudgedByTheIdleFromBeforeIt(t *testing.T) {
 	}
 	if v := f.get(t); len(v.Suggestions) != 1 || !strings.Contains(f.gen.prompts[1], "Should I open the PR?") {
 		t.Fatalf("turn 2's set: %+v", v)
+	}
+}
+
+// historyFocus is a focus store holding a session's focus history.
+type historyFocus struct {
+	memFocus
+	page focus.HistoryPage
+}
+
+func (h *historyFocus) History(context.Context, focus.Subject, string, int) (focus.HistoryPage, error) {
+	return h.page, nil
+}
+
+// TestTheFocusHistoryReachesTheInputOldestFirst: the session's focus history
+// (newest first from the store) is sent oldest first, marked untrusted.
+func TestTheFocusHistoryReachesTheInputOldestFirst(t *testing.T) {
+	now := time.Now()
+	f := newSuggestFixture(t, func(_ *fakeMirror, ext *Extensions) {
+		ext.Focus = &historyFocus{memFocus: memFocus{rows: map[focus.Subject]focus.Focus{}}, page: focus.HistoryPage{Entries: []focus.HistoryEntry{
+			{ID: 2, Title: "Making the export resumable", Description: "Choosing checkpoints or re-runs.", CreatedAt: now.Add(-5 * time.Minute)},
+			{ID: 1, Title: "Reading the export job", CreatedAt: now.Add(-2 * time.Hour)},
+		}}}
+	})
+	if !f.turnEnd(t) || f.gen.n() != 1 {
+		t.Fatalf("calls %d", f.gen.n())
+	}
+	p := f.gen.prompts[0]
+	i, j := strings.Index(p, "Title: Reading the export job"), strings.Index(p, "Title: Making the export resumable")
+	if i < 0 || j < i || !strings.Contains(p, `<session_focus_history trust="untrusted"`) || !strings.Contains(p, "[2h ago]") {
+		t.Fatalf("focus history in the input:\n%s", p)
 	}
 }

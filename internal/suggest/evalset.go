@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
@@ -26,11 +27,14 @@ import (
 
 // Fixture is one synthetic conversation and what a good set for it must do.
 type Fixture struct {
-	Name  string `yaml:"name"`
-	Focus struct {
+	Name string `yaml:"name"`
+	// FocusHistory is the session's focus over time, oldest first, each
+	// written AgoMinutes before the fixture's fixed now.
+	FocusHistory []struct {
 		Title       string `yaml:"title"`
 		Description string `yaml:"description"`
-	} `yaml:"focus"`
+		AgoMinutes  int    `yaml:"ago_minutes"`
+	} `yaml:"focus_history"`
 	Asks []string       `yaml:"asks"`
 	Tail []FixtureEntry `yaml:"tail"`
 	// HandsBack is the pre-gate's expected verdict on the final reply; a
@@ -82,10 +86,17 @@ func LoadFixtures(path string) ([]Fixture, error) {
 	return fs, nil
 }
 
+// fixtureNow is the fixtures' fixed clock (a year-2000 date: synthetic).
+var fixtureNow = time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)
+
 // Input is the fixture as the server would hand it to Build: a tool call
 // reduced by focus.ToolLine (name and file path), its output dropped.
 func (f Fixture) Input() Input {
-	in := Input{FocusTitle: f.Focus.Title, FocusDescription: f.Focus.Description, Asks: f.Asks}
+	in := Input{Asks: f.Asks, Now: fixtureNow}
+	for _, h := range f.FocusHistory {
+		in.Focus = append(in.Focus, FocusEntry{Title: h.Title, Description: h.Description,
+			At: fixtureNow.Add(-time.Duration(h.AgoMinutes) * time.Minute)})
+	}
 	for _, e := range f.Tail {
 		switch e.Role {
 		case RoleTool:
@@ -203,8 +214,7 @@ func Score(f Fixture, b Built, raw []Raw) Result {
 	// are checked here so a filter regression shows in the eval too).
 	shape := true
 	for _, s := range kept {
-		if startsSlashOrBang(s.Text) || strings.ContainsAny(s.Text, "\r\n") || isStock(s.Text) ||
-			(s.Kind == KindDecide && !hasCondition(s.Text)) {
+		if startsSlashOrBang(s.Text) || strings.ContainsAny(s.Text, "\r\n") || isStock(s.Text) {
 			shape = false
 		}
 	}

@@ -40,11 +40,12 @@ import (
 //     not a term, and is not checked);
 //   - DropEmpty, DropTooLong; DropDuplicate.
 //
-// The HEURISTICS — prose rules, flagged as such; the citation check is the
-// structural guard and these only back it up:
-//   - DropStock: a stock phrase ("continue", "looks good", "ok"…) is dropped;
-//   - DropNoCondition: a decide must carry its reason or condition (a word
-//     like "but", "if", "only", "first", "without", "because").
+// The HEURISTIC BACKSTOP — a prose rule, flagged as such, NOT a grounding
+// guard (the citation checks above are):
+//   - DropStock: a stock phrase ("continue", "looks good", "ok"…) is dropped.
+//
+// (A decide's "reason or condition" is asked of the model, not checked here:
+// a word list for it matched almost any sentence.)
 
 // Drop is why Filter dropped a suggestion.
 type Drop string
@@ -64,7 +65,6 @@ const (
 	DropDecideNotR  Drop = "decide-not-r"
 	DropGapNoAsk    Drop = "gap-no-ask"
 	DropStock       Drop = "stock-phrase"
-	DropNoCondition Drop = "decide-no-condition"
 	DropUnrelated   Drop = "unrelated-to-quote"
 	DropUnknownTerm Drop = "unknown-term"
 	DropDuplicate   Drop = "duplicate"
@@ -172,9 +172,6 @@ func check(r Raw, text string, b Built) Drop {
 		if !citesR(r) || !quoted(r.Quote, []string{ReplyID}, sources) {
 			return DropDecideNotR
 		}
-		if !hasCondition(text) {
-			return DropNoCondition
-		}
 	case KindGap:
 		if !citesAsk(r) {
 			return DropGapNoAsk
@@ -255,12 +252,6 @@ func citesAsk(r Raw) bool {
 
 // foldSpace collapses every run of whitespace to one space and trims.
 func foldSpace(s string) string { return strings.Join(strings.Fields(s), " ") }
-
-// conditionWords are what make a decide carry its reason or condition.
-// ⚠ HEURISTIC (prose), see the file comment.
-var conditionWords = regexp.MustCompile(`(?i)\b(but|if|unless|only|after|once|first|without|until|because|since|so that|provided|as long as|instead|then|except|before|keep|skip|not|don't|do not|no)\b`)
-
-func hasCondition(text string) bool { return conditionWords.MatchString(text) }
 
 // stockPhrases are generic replies that fit any conversation.
 // ⚠ HEURISTIC (prose), see the file comment.

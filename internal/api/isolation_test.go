@@ -441,11 +441,9 @@ var isolationClasses = map[string]routeClass{
 	// the agent id.
 	"GET /mirror/view/subagent": classMirror,
 	// Suggested replies (suggest.go): the window's set (address in the query)
-	// and the composer's shown/filled count (address in the form) — B naming
-	// A's window must 404; the toggle is the caller's own row (list).
-	"GET /mirror/view/suggest":        classMirror,
-	"POST /mirror/view/suggest/event": classMirror,
-	"POST /account/suggest":           classList,
+	// — B naming A's window must 404; the toggle is the caller's own row (list).
+	"GET /mirror/view/suggest": classMirror,
+	"POST /account/suggest":    classList,
 	// A message to an agent as a form post, and the GET it can come back as.
 	"POST /agents/{name}/send": classParam,
 	"GET /agents/{name}/send":  classParam,
@@ -1480,7 +1478,6 @@ func namesObject(route string) bool {
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
 		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/hermes/approve" ||
-		route == "POST /mirror/view/suggest/event" ||
 		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
 		// Focus history (0022) names its session in the query (?subject=agent:<id>),
 		// so it is held to the object routes' rules: B's answer about A's agent

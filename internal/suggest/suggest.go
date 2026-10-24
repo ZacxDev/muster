@@ -11,20 +11,21 @@
 //
 //   - HandsBack: the cheap deterministic pre-gate. A final reply that does not
 //     ask a question, offer options or say "should I" gets no model call.
-//   - Build: the model's input — the session focus (labelled untrusted), the
-//     operator's asks numbered A<n> from the prompt index, the recent context
-//     and the final reply R whole up to MaxReplyBytes (its END kept). Every
+//   - Build: the model's input, exactly three parts — the operator's own
+//     messages (numbered A<n> from the prompt index, newest first), the
+//     session's focus history (labelled untrusted), and the transcript tail
+//     (the final reply R, its END kept, and the few entries before it). Every
 //     field goes through redact.Secrets first; a tool call is its name and file
 //     path only; tool output and thinking never enter it.
 //   - Generator (OpenRouter): one chat call, strict JSON out.
 //   - Filter: the deterministic post-filter. A suggestion survives only when
 //     its citations exist, its quote is verbatim in a cited source, and it
 //     passes the shape rules (no leading / or !, one line, no URL, no code
-//     fence, no secret, a decide carries a condition). Zero survivors means no
+//     fence, no secret). Zero survivors means no
 //     chips, which is a correct outcome.
 //   - Engine: the cache (by input fingerprint: a new turn regenerates, the same
-//     input never calls again), the rate cap, the kill switch, the per-user
-//     toggle and the auto-pause.
+//     input never calls again), the rate cap, the kill switch and the
+//     per-user toggle.
 //
 // 🔴 SUGGESTION TEXT IS NEVER STORED. It lives in the Engine's in-memory cache
 // for at most CacheTTL and is then dropped (Engine.Sweep); only the input's

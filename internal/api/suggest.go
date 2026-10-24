@@ -18,9 +18,14 @@ import (
 // SUGGESTED REPLIES' server half (internal/suggest): when a set is generated,
 // for which sessions, and the routes the composer reads.
 //
-// 🔴 ONLY WHILE A RENDERED VIEW IS OPEN. The trigger lives in the rendered
-// view's own socket (handleMirrorViewWS feeds a suggestTracker every batch it
-// relays): a session nobody is looking at never generates. The socket already
+// 🔴 DARK UNTIL THE CHIP ROW SHIPS (operator decision). Nothing calls
+// suggestOnTurnEnd yet: P2 wires it into the rendered view's socket together
+// with the chips, so no set is generated — and nothing is spent — while no
+// composer can show one. The routes and the toggle are live.
+//
+// 🔴 ONLY WHILE A RENDERED VIEW IS OPEN, once wired. The trigger lives in the
+// rendered view's own socket (handleMirrorViewWS will feed a suggestTracker
+// every batch it relays): a session nobody is looking at never generates. The socket already
 // carries the transcript, so a generation reads nothing from the host that the
 // view did not already ask for.
 //
@@ -34,7 +39,7 @@ import (
 // 🔴 THE EXCLUSIONS (suggestBlocked), checked at generation AND again whenever
 // the composer reads the set — so a set made while idle is not served once the
 // session is busy or waiting again:
-//   - MUSTER_SUGGEST=off, the owner's toggle, the auto-pause;
+//   - MUSTER_SUGGEST=off, the owner's toggle;
 //   - a window that is not a Claude Code pane with a session id: Hermes, a
 //     plain terminal (the Terminal view has no tracker at all);
 //   - a host that is offline, has no rendered view, or is not -interactive
@@ -54,8 +59,9 @@ const (
 	// suggestTrackEntries is how many conversation entries a tracker keeps
 	// (suggest.Build reads only the newest few, and R).
 	suggestTrackEntries = 64
-	// suggestTrackAsks is how many prompt-index asks a tracker keeps.
-	suggestTrackAsks = suggest.MaxAsks
+	// suggestTrackAsks is how many of the operator's messages a tracker keeps
+	// (suggest.Build then keeps the newest within suggest.MaxAsksBytes).
+	suggestTrackAsks = 200
 	// suggestIdleWait bounds how long a turn end waits for the window's status
 	// to read idle: the transcript's busy marker and the window list are two
 	// channels from the host and need not land together. The host re-reads
@@ -215,7 +221,6 @@ func promptAsk(s string) string {
 const (
 	suggestBlockedOff        = "suggestions are off"
 	suggestBlockedUserOff    = "you turned suggestions off"
-	suggestBlockedPaused     = "suggestions are paused: few were used"
 	suggestBlockedNotClaude  = "not a Claude Code session"
 	suggestBlockedNoView     = "no rendered view"
 	suggestBlockedReadOnly   = "the host is read-only"
@@ -235,8 +240,6 @@ func (s *Server) suggestBlocked(ctx context.Context, h mirror.HostView, e mirror
 		return suggestBlockedOff
 	case suggest.OutcomeUserOff:
 		return suggestBlockedUserOff
-	case suggest.OutcomePaused:
-		return suggestBlockedPaused
 	}
 	if !e.Claude || e.ClaudeSession == "" || e.HermesView() || e.Runtime != "" {
 		return suggestBlockedNotClaude
@@ -325,11 +328,7 @@ func (s *Server) suggestTurn(ctx context.Context, host, session, window string, 
 	if reply2, _, ok := suggest.FinalReply(in.Tail); !ok || reply2 != reply {
 		return false
 	}
-	if s.ext.Focus != nil {
-		if f, has, err := s.ext.Focus.Get(ctx, focus.MirrorSubject(e.ClaudeSession)); err == nil && has {
-			in.FocusTitle, in.FocusDescription = f.Title, f.Description
-		}
-	}
+	in.Focus, in.Now = s.suggestFocusHistory(ctx, e.ClaudeSession), time.Now()
 	b, ok := suggest.Build(in)
 	if !ok {
 		return false
@@ -403,12 +402,11 @@ type suggestView struct {
 
 const suggestLabel = "AI-suggested replies"
 
-// registerSuggestRoutes registers the composer's three routes. Each answers
+// registerSuggestRoutes registers the composer's two routes. Each answers
 // 404 when the server has no engine (no OpenRouter wiring at all);
 // MUSTER_SUGGEST=off keeps the engine and answers "off".
 func (s *Server) registerSuggestRoutes(mux Mux) {
 	mux.HandleFunc("GET /mirror/view/suggest", s.requireSession(s.handleMirrorSuggest))
-	mux.HandleFunc("POST /mirror/view/suggest/event", s.requireOperatorWrite(s.handleMirrorSuggestEvent))
 	mux.HandleFunc("POST /account/suggest", s.requireOperatorWrite(s.handleAccountSuggest))
 }
 
@@ -447,29 +445,8 @@ func (s *Server) handleMirrorSuggest(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, v)
 }
 
-// handleMirrorSuggestEvent is POST /mirror/view/suggest/event (host, session,
-// window, event=shown|filled): the composer's count of a set it showed or a
-// chip it filled — the auto-pause's input. Counts only: no text is accepted.
-func (s *Server) handleMirrorSuggestEvent(w http.ResponseWriter, r *http.Request) {
-	if s.ext.Suggest == nil {
-		http.NotFound(w, r)
-		return
-	}
-	if _, _, listed, _, ok := s.mirrorEntry(r, r.PostFormValue("host"), r.PostFormValue("session"), r.PostFormValue("window")); !ok || !listed {
-		http.NotFound(w, r)
-		return
-	}
-	ev := suggest.Event(r.PostFormValue("event"))
-	if ev != suggest.EventShown && ev != suggest.EventFilled {
-		http.Error(w, "event is shown or filled", http.StatusBadRequest)
-		return
-	}
-	s.ext.Suggest.Record(requestOwner(r.Context()), ev)
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // handleAccountSuggest is POST /account/suggest (on=1|0): the caller's own
-// toggle. Off also drops their cached sets; on also clears an auto-pause.
+// toggle. Off also drops their cached sets.
 func (s *Server) handleAccountSuggest(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Suggest == nil {
 		http.NotFound(w, r)
@@ -501,8 +478,6 @@ func (s *Server) handleAccountSuggest(w http.ResponseWriter, r *http.Request) {
 	}
 	if disabled {
 		eng.Forget(owner)
-	} else {
-		eng.Resume(owner)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -514,4 +489,31 @@ func (s *Server) RunSuggestSweep(ctx context.Context) {
 		return
 	}
 	s.ext.Suggest.Run(ctx)
+}
+
+// suggestFocusHistory is the session's focus over time, oldest first: the
+// newest suggest.MaxFocusEntries rows of its focus history (internal/focus,
+// read under the caller's row-level security), or its current focus alone
+// when there is no history; nil with no focus store or on a read error.
+func (s *Server) suggestFocusHistory(ctx context.Context, sid string) []suggest.FocusEntry {
+	if s.ext.Focus == nil {
+		return nil
+	}
+	sub := focus.MirrorSubject(sid)
+	page, err := s.ext.Focus.History(ctx, sub, "", suggest.MaxFocusEntries)
+	if err != nil {
+		s.logger.Printf("suggest: read the focus history: %v", err)
+		return nil
+	}
+	var out []suggest.FocusEntry
+	for i := len(page.Entries) - 1; i >= 0; i-- { // the page is newest first
+		h := page.Entries[i]
+		out = append(out, suggest.FocusEntry{Title: h.Title, Description: h.Description, At: h.CreatedAt})
+	}
+	if len(out) == 0 {
+		if f, has, err := s.ext.Focus.Get(ctx, sub); err == nil && f.Has() && has {
+			out = append(out, suggest.FocusEntry{Title: f.Title, Description: f.Description, At: f.UpdatedAt})
+		}
+	}
+	return out
 }

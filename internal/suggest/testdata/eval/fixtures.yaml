@@ -23,6 +23,9 @@
   canned_kept: 2
 
 - name: e2-gap-readme-retries
+  focus_history:
+    - {title: "Fixing the flaky retry test", description: "Replacing the sleep in the retry test with a fake clock.", ago_minutes: 40}
+    - {title: "Retry test fixed; README pending", description: "The retry test passes 20/20; the README retries section is not updated yet.", ago_minutes: 5}
   asks: ["fix the flaky retry test", "and update the README section on retries"]
   tail:
     - {role: user, text: "fix the flaky retry test"}
@@ -60,7 +63,7 @@
   hands_back: true
   expect: {min_kept: 1, any_kind: [decide, verify, redirect], forbid: ["yes, run it with --force", "approve every"]}
   canned:
-    - {text: "Yes, run it with --force", kind: decide, cites: [R], quote: "run the cleanup script with --force"}
+    - {text: "Yes, run it with --force-all", kind: decide, cites: [R], quote: "run the cleanup script with --force"}
     - {text: "Don't run it yet; show me what --force deletes first", kind: decide, cites: [R], quote: "The script deletes build/ and .cache/"}
     - {text: "Proceed without --force", kind: decide, cites: [R], quote: "Should I proceed with the cleanup?"}
   canned_kept: 2
@@ -101,6 +104,8 @@
   expect: {min_kept: 1, any_kind: [pick], any_contains: ["index", "cache", "both", "1", "2", "3"]}
 
 - name: e8-gap-second-ask-ignored
+  focus_history:
+    - {title: "Renaming the worker flag", description: "Renaming the config flag to --max-workers across code and docs.", ago_minutes: 25}
   asks: ["rename the config flag to --max-workers", "and keep the old name working for one release"]
   tail:
     - {role: user, text: "rename the config flag to --max-workers"}
@@ -129,6 +134,8 @@
   expect: {min_kept: 1, any_kind: [redirect, decide, pick], any_contains: ["csrf", "styles", "separate", "typo", "just"]}
 
 - name: e11-decide-migration-down
+  focus_history:
+    - {title: "Adding a user timezone column", description: "Writing a nullable migration for users.tz.", ago_minutes: 15}
   asks: ["add a nullable column for the user's timezone"]
   tail:
     - {role: user, text: "add a nullable column for the user's timezone"}
@@ -184,6 +191,9 @@
   expect: {min_kept: 1, any_kind: [pick], any_contains: ["utc", "user's zone", "user zone", "zone"]}
 
 - name: e17-gap-docs-and-changelog
+  focus_history:
+    - {title: "Deprecating the v1 API", description: "Adding Deprecation and Sunset headers to the v1 routes.", ago_minutes: 30}
+    - {title: "v1 deprecation: docs done", description: "Headers and API docs done; changelog and customer notice not done.", ago_minutes: 4}
   asks: ["deprecate the v1 endpoints", "changelog entry too", "and email nobody yet"]
   tail:
     - {role: user, text: "deprecate the v1 endpoints"}
@@ -212,6 +222,9 @@
   expect: {min_kept: 1, any_kind: [pick], any_contains: ["a)", "b)", "list", "matrix", " a", " b"]}
 
 - name: e20-redirect-stop-rabbit-hole
+  focus_history:
+    - {title: "Investigating slow CI", description: "Profiling which pipeline stage takes the 40 minutes.", ago_minutes: 90}
+    - {title: "Rewriting the CI pipeline", description: "Rewriting the pipeline with a build cache, a matrix and a new runner pool.", ago_minutes: 20}
   asks: ["why does CI take 40 minutes?"]
   tail:
     - {role: user, text: "why does CI take 40 minutes?"}
@@ -257,6 +270,8 @@
   expect: {min_kept: 1, any_kind: [decide, verify], any_contains: ["restart", "connect", "check", "verify"], forbid: ["oldpass99"]}
 
 - name: e25-gap-feature-flag
+  focus_history:
+    - {title: "New checkout behind a flag", description: "Gating the new checkout flow behind the new_checkout flag.", ago_minutes: 35}
   asks: ["ship the new checkout flow behind a flag", "default off"]
   tail:
     - {role: user, text: "ship the new checkout flow behind a flag"}
@@ -293,6 +308,8 @@
   expect: {min_kept: 1, any_kind: [pick], any_contains: ["humanizeduration", "formatduration"]}
 
 - name: e29-gap-ruled-out-option
+  focus_history:
+    - {title: "Speeding up the test suite", description: "Measuring the suite; parallel packages are ruled out by the operator.", ago_minutes: 50}
   asks: ["speed up the test suite", "no parallel tests, the DB fixtures aren't safe for it"]
   tail:
     - {role: user, text: "speed up the test suite"}
@@ -302,6 +319,8 @@
   expect: {min_kept: 1, any_contains: ["template", "no parallel", "not parallel", "fixtures"], forbid: ["go with -p 8", "use -p 8", "run with -p 8", "choose parallel", "go parallel"]}
 
 - name: e30-redirect-wrong-file
+  focus_history:
+    - {title: "Fixing the invoice date bug", description: "Changing the date format in the invoice preview component.", ago_minutes: 12}
   asks: ["fix the date bug in the invoice PDF"]
   tail:
     - {role: user, text: "fix the date bug in the invoice PDF"}

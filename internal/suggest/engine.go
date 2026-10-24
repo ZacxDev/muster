@@ -14,8 +14,9 @@ import (
 //
 // One Suggest call, in order:
 //  1. the KILL SWITCH (Off, MUSTER_SUGGEST=off) refuses before anything;
-//  2. the owner's TOGGLE (Prefs) and AUTO-PAUSE refuse an owner who turned it
-//     off or whose fill rate fell under AutoPauseFillRate;
+//  2. the owner's TOGGLE (Prefs) refuses an owner who turned it off (the
+//     auto-pause on a low fill rate comes with the composer that reports
+//     fills, P2/P3);
 //  3. 🔴 THE FINGERPRINT SKIP: a subject whose cached set was built from the
 //     SAME input — or for the SAME turn — gets that set back and NO call is made — and that holds after
 //     the set's text expired (only the fingerprint is kept), so an unchanged
@@ -46,11 +47,6 @@ const (
 	// MaxCached bounds the subjects the cache holds; the least recently
 	// generated is evicted past it.
 	MaxCached = 2000
-	// AutoPauseMinShown and AutoPauseFillRate: an owner shown at least
-	// AutoPauseMinShown sets of whom fewer than AutoPauseFillRate were filled
-	// is paused (operator decision: under 5%).
-	AutoPauseMinShown = 200
-	AutoPauseFillRate = 0.05
 )
 
 // Outcome is what one Suggest did.
@@ -62,7 +58,6 @@ const (
 	OutcomeExpired   Outcome = "expired" // the fingerprint skip, text gone: no call
 	OutcomeOff       Outcome = "off"     // MUSTER_SUGGEST=off
 	OutcomeUserOff   Outcome = "user-off"
-	OutcomePaused    Outcome = "paused"
 	OutcomeFailed    Outcome = "failed"
 )
 
@@ -111,8 +106,6 @@ type flight struct {
 	err       error
 }
 
-type tally struct{ shown, filled int }
-
 // Engine generates and caches suggestion sets.
 type Engine struct {
 	Gen Generator
@@ -121,6 +114,9 @@ type Engine struct {
 	Off   bool
 	Prefs Prefs
 	Now   func() time.Time
+	// RecheckTimeout bounds the toggle re-check after a paid call (0 =
+	// DefaultRecheckTimeout).
+	RecheckTimeout time.Duration
 	// PerOwner and Global override the hourly caps (0 = the constants).
 	PerOwner, Global int
 	Logger           *log.Logger
@@ -130,13 +126,21 @@ type Engine struct {
 	inflight map[cacheKey]map[string]*flight
 	calls    map[int64][]time.Time
 	global   []time.Time
-	tallies  map[int64]*tally
 	epochs   map[int64]int // bumped by Forget
-	paused   map[int64]bool
 	sem      chan struct{}
 	semOnce  sync.Once
 	// Calls counts model calls made (a test reads it).
 	Calls int
+}
+
+// DefaultRecheckTimeout bounds the toggle re-check after a paid call.
+const DefaultRecheckTimeout = 5 * time.Second
+
+func (e *Engine) recheckTimeout() time.Duration {
+	if e.RecheckTimeout > 0 {
+		return e.RecheckTimeout
+	}
+	return DefaultRecheckTimeout
 }
 
 func (e *Engine) now() time.Time {
@@ -157,14 +161,12 @@ func (e *Engine) init() {
 		e.cache = map[cacheKey]*cached{}
 		e.inflight = map[cacheKey]map[string]*flight{}
 		e.calls = map[int64][]time.Time{}
-		e.tallies = map[int64]*tally{}
 		e.epochs = map[int64]int{}
-		e.paused = map[int64]bool{}
 	}
 }
 
 // Enabled is nil when owner may get suggestions now, or the Outcome that says
-// why not (Off, UserOff, Paused). A Prefs read error fails CLOSED (UserOff).
+// why not (Off, UserOff). A Prefs read error fails CLOSED (UserOff).
 func (e *Engine) Enabled(ctx context.Context, owner int64) Outcome {
 	if e == nil || e.Off {
 		return OutcomeOff
@@ -178,12 +180,6 @@ func (e *Engine) Enabled(ctx context.Context, owner int64) Outcome {
 		if off {
 			return OutcomeUserOff
 		}
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.init()
-	if e.paused[owner] {
-		return OutcomePaused
 	}
 	return ""
 }
@@ -268,11 +264,16 @@ func (e *Engine) Suggest(ctx context.Context, owner int64, subject string, b Bui
 	// suggestions off while it ran (Forget has already emptied their cache).
 	//
 	// The re-check reads the toggle on a ctx that outlives the asker's
-	// deadline (a call that was paid for is not dropped for a timeout), and
+	// deadline (a call that was paid for is not dropped for a timeout) but has
+	// its OWN, RecheckTimeout: a hung read fails closed (off) instead of
+	// holding the flight, and every view waiting on it, open. And
 	// Forget's epoch, compared under the lock at the insert, closes the window
 	// between that read and the insert.
 	if out == OutcomeGenerated || (out == OutcomeFailed && !set.At.IsZero()) {
-		if o := e.Enabled(context.WithoutCancel(ctx), owner); o != "" {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), e.recheckTimeout())
+		o := e.Enabled(rctx, owner)
+		cancel()
+		if o != "" {
 			f.set, f.out, f.err = Set{}, o, nil
 			return Set{}, o, nil
 		}
@@ -428,68 +429,6 @@ func (e *Engine) Run(ctx context.Context) {
 			e.Sweep()
 		}
 	}
-}
-
-// Event is what the composer reports about a shown set (counts only, never
-// text).
-type Event string
-
-const (
-	EventShown  Event = "shown"
-	EventFilled Event = "filled"
-)
-
-// Record counts ev for owner and applies the auto-pause: shown at least
-// AutoPauseMinShown sets, fewer than AutoPauseFillRate of them filled, and the
-// owner is paused until they turn suggestions back on (Resume).
-//
-// ⚠ IN MEMORY: a restart forgets the tallies and the pause (P3 persists them).
-func (e *Engine) Record(owner int64, ev Event) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.init()
-	t := e.tallies[owner]
-	if t == nil {
-		t = &tally{}
-		e.tallies[owner] = t
-	}
-	switch ev {
-	case EventShown:
-		t.shown++
-	case EventFilled:
-		t.filled++
-	default:
-		return
-	}
-	if p := t.pausing(); p && !e.paused[owner] {
-		e.logf("suggest: owner %d paused: %d of %d shown sets filled", owner, t.filled, t.shown)
-	}
-	e.paused[owner] = t.pausing()
-}
-
-// pausing is the auto-pause rule over t. It is a STATE, not a latch: it is
-// read from the tallies each time, so a fill that is counted after the show
-// that crossed AutoPauseMinShown is not overruled by it. (Once paused, no set
-// is shown, so nothing moves it until Resume.)
-func (t *tally) pausing() bool {
-	return t.shown >= AutoPauseMinShown && float64(t.filled) < AutoPauseFillRate*float64(t.shown)
-}
-
-// Paused reports whether owner is auto-paused.
-func (e *Engine) Paused(owner int64) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.init()
-	return e.paused[owner]
-}
-
-// Resume clears owner's pause and tallies (the toggle turned back on).
-func (e *Engine) Resume(owner int64) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.init()
-	delete(e.paused, owner)
-	delete(e.tallies, owner)
 }
 
 // Forget drops owner's cached sets (the toggle turned off: nothing of theirs

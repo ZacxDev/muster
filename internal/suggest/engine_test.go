@@ -168,38 +168,6 @@ func TestTheKillSwitchAndTheToggleMakeNoCall(t *testing.T) {
 	}
 }
 
-// TestTheAutoPauseStopsAnOwnerUnderFivePercent: 200 shown, 9 filled (4.5%)
-// pauses; 10 filled (5%) does not; Resume clears it.
-func TestTheAutoPauseStopsAnOwnerUnderFivePercent(t *testing.T) {
-	g := &countingGen{}
-	e := &Engine{Gen: g}
-	for owner, filled := range map[int64]int{1: 9, 2: 10} {
-		for i := 0; i < AutoPauseMinShown; i++ {
-			e.Record(owner, EventShown)
-		}
-		for i := 0; i < filled; i++ {
-			e.Record(owner, EventFilled)
-		}
-	}
-	if !e.Paused(1) || e.Paused(2) {
-		t.Fatalf("paused: 1=%v 2=%v", e.Paused(1), e.Paused(2))
-	}
-	if _, out, _ := e.Suggest(context.Background(), 1, "s", turnInput(t, turn1), 1); out != OutcomePaused || g.n() != 0 {
-		t.Fatalf("a paused owner: %v calls %d", out, g.n())
-	}
-	e.Resume(1)
-	if _, out, _ := e.Suggest(context.Background(), 1, "s", turnInput(t, turn1), 1); out != OutcomeGenerated {
-		t.Fatalf("after Resume: %v", out)
-	}
-	// 199 shown with none filled is not yet enough to judge.
-	for i := 0; i < AutoPauseMinShown-1; i++ {
-		e.Record(3, EventShown)
-	}
-	if e.Paused(3) {
-		t.Fatal("paused before AutoPauseMinShown sets were shown")
-	}
-}
-
 // TestTwoViewsOfOneTurnMakeOneCall: concurrent asks for the same input share
 // one call.
 func TestTwoViewsOfOneTurnMakeOneCall(t *testing.T) {
@@ -389,5 +357,52 @@ func TestForgetDuringACallCachesNothing(t *testing.T) {
 	<-done
 	if _, ok := e.Latest(1, "s"); ok {
 		t.Fatal("an answer that finished after Forget was cached")
+	}
+}
+
+// hangingPrefs answers the first read (the gate before the call) and hangs
+// every later one until its ctx ends — a database that stopped answering.
+type hangingPrefs struct {
+	mu    sync.Mutex
+	reads int
+}
+
+func (h *hangingPrefs) Disabled(ctx context.Context, _ int64) (bool, error) {
+	h.mu.Lock()
+	h.reads++
+	n := h.reads
+	h.mu.Unlock()
+	if n == 1 {
+		return false, nil
+	}
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+func (h *hangingPrefs) SetDisabled(context.Context, int64, bool) error { return nil }
+
+// TestAHungToggleReadAfterAPaidCallFailsClosedInTime: the re-check after the
+// call has its own deadline even though the asker's ctx has none; it fails
+// closed (off, nothing cached) instead of holding the flight open.
+func TestAHungToggleReadAfterAPaidCallFailsClosedInTime(t *testing.T) {
+	g := &countingGen{}
+	e := &Engine{Gen: g, Prefs: &hangingPrefs{}, RecheckTimeout: 50 * time.Millisecond}
+	done := make(chan Outcome, 1)
+	go func() {
+		_, out, _ := e.Suggest(context.Background(), 1, "s", turnInput(t, turn1), 9)
+		done <- out
+	}()
+	select {
+	case out := <-done:
+		if out != OutcomeUserOff || g.n() != 1 {
+			t.Fatalf("outcome %v, calls %d", out, g.n())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the re-check hung the call past its deadline")
+	}
+	e.mu.Lock()
+	n := len(e.cache) + len(e.inflight)
+	e.mu.Unlock()
+	if n != 0 {
+		t.Fatal("a call whose re-check failed was cached, or its flight stayed open")
 	}
 }

@@ -73,9 +73,6 @@ func TestEachFilterRuleDropsWithItsOwnReason(t *testing.T) {
 		{"decide not citing R", func() Raw {
 			return Raw{Text: "Approve making the export job resumable, but only after tests", Kind: KindDecide, Cites: []string{"A1"}, Quote: "make the export job resumable"}
 		}, DropDecideNotR},
-		{"decide with no condition", func() Raw {
-			return Raw{Text: "Yes, run the cleanup script", Kind: KindDecide, Cites: []string{"R"}, Quote: "run the cleanup script with --dry-run first"}
-		}, DropNoCondition},
 		{"gap citing only R", func() Raw {
 			return Raw{Text: "The batch id re-run reads the source again", Kind: KindGap, Cites: []string{"R"}, Quote: "idempotent re-run keyed on batch id"}
 		}, DropGapNoAsk},
