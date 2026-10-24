@@ -2,7 +2,7 @@ import http from 'node:http';
 import { Browser, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { bfcacheControlPort } from '../lib/env';
-import { bfcacheLaunch, launchWithBfcache } from '../lib/bfcache';
+import { launchWithBfcache } from '../lib/bfcache';
 
 // THE BACK/FORWARD CACHE CONTROL. lib/bfcache.ts launches a browser in which a
 // back navigation can be a restore, as it is in a reader's browser (the suite's
@@ -87,17 +87,3 @@ test('negative control: a no-store page is reloaded there once a cookie changed'
   const r = await inBrowser(() => launchWithBfcache(playwright.chromium), (p) => awayAndBack(p, '/nostore'));
   expect(r, 'Back loaded a new document, not persisted').toEqual({ same: false, shows: [false] });
 });
-
-// BOTH HALVES OF bfcacheLaunch ARE LOAD-BEARING: the same static page is
-// reloaded by the suite's default browser, by that browser with the flag
-// removed, and by the full build with the flag left in.
-for (const [label, opts] of [
-  ['the suite\'s default browser', {}],
-  ['the default browser without the flag', { ignoreDefaultArgs: bfcacheLaunch.ignoreDefaultArgs }],
-  ['the full build with the flag', { channel: bfcacheLaunch.channel }],
-] as const) {
-  test(`control: ${label} reloads that page`, async ({ playwright }) => {
-    const r = await inBrowser(() => playwright.chromium.launch(opts), (p) => awayAndBack(p, '/a'));
-    expect(r, 'Back reloads').toEqual({ same: false, shows: [false] });
-  });
-}

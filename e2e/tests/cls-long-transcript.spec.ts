@@ -24,8 +24,11 @@ import { Profile, THROTTLED, throttle } from '../lib/throttle';
 // vendor scripts; whenever they landed after the document had parsed, the raw
 // transcript was painted first, scrolled to the top, and then every bubble on
 // screen moved (agentChatScript's window.__cgLayoutLog says how). Unthrottled
-// that is a race this harness usually wins; the throttled profile loses it
-// every time, so the throttled cases are the deterministic red.
+// at 1280px that is a race this harness usually wins (measured on main: 0.37,
+// 0, 0 markdown; 0, 0, 0 plain), so the desktop is opened throttled only, where
+// the race is lost every time (0.37 and 0.43, three of three each). The phone
+// read red unthrottled every time (0.48 / 0.47, three of three), so it is
+// opened both ways. The scripts-held cases below are the race-free red.
 //
 // 🔴 THE PHONE'S NUMBER IS total + excluded, NOT total. Under Playwright's
 // mobile emulation (isMobile + hasTouch) Chromium reports a shift in the first
@@ -39,9 +42,12 @@ import { Profile, THROTTLED, throttle } from '../lib/throttle';
 // Every message is invented fixture data.
 const BAR = 0.01;
 const CAP = 200;
-// Each case is opened RUNS times, each in a fresh context (a cold HTTP cache),
-// because the defect is a race with the first paint.
-const RUNS = 3;
+// How many times a case is opened, each in a fresh context (a cold HTTP
+// cache): the unthrottled phone case three times, because the defect is a race
+// with the first paint; a throttled case once, because throttled it loses that
+// race every time (measured: three of three on main, every case).
+const RUNS_UNTHROTTLED = 3;
+const RUNS_THROTTLED = 1;
 const stamp = Date.now().toString(36);
 type Kind = 'markdown' | 'plain';
 const agents: Record<Kind, string> = { markdown: `cls-long-md-${stamp}`, plain: `cls-long-plain-${stamp}` };
@@ -74,6 +80,11 @@ const profiles: { name: string; p: Profile | null }[] = [
   { name: 'unthrottled', p: null },
   { name: THROTTLED.name, p: THROTTLED },
 ];
+// The opening cases: the desktop throttled only (see the header).
+const openCases = (vp: (typeof viewports)[number]) =>
+  profiles
+    .filter((pr) => pr.p || vp.use.isMobile)
+    .map((pr) => ({ ...pr, runs: pr.p ? RUNS_THROTTLED : RUNS_UNTHROTTLED }));
 
 // moved is every shift measured, input-excluded or not (see the header).
 const moved = (r: ClsResult) => +(r.total + r.excluded).toFixed(5);
@@ -109,13 +120,13 @@ test.describe('a 200-message agent transcript', () => {
   });
 
   for (const vp of viewports) {
-    for (const pr of profiles) {
+    for (const pr of openCases(vp)) {
       for (const kind of ['markdown', 'plain'] as const) {
-        test(`${vp.name}, ${pr.name}, ${kind}: opening the agent shifts less than ${BAR}, ${RUNS} times`, async ({ browser }) => {
+        test(`${vp.name}, ${pr.name}, ${kind}: opening the agent shifts less than ${BAR}, ${pr.runs}×`, async ({ browser }) => {
           test.setTimeout(120_000);
           const seen: number[] = [];
           const bad: string[] = [];
-          for (let i = 0; i < RUNS; i++) {
+          for (let i = 0; i < pr.runs; i++) {
             const { ctx, page } = await open(browser, vp.use, pr.p, `/agents/${agents[kind]}`);
             try {
               const r = await readCls(page);
@@ -206,6 +217,12 @@ test.describe('a 200-message agent transcript', () => {
 // host after load (mirror_view.go), as server-rendered markdown. One fake host,
 // whose `main` session is a Claude Code pane over CAP records — the markdown
 // variant's prompts and replies.
+//
+// 🔴 INVARIANT GUARDS, NOT REGRESSION TESTS. These read 0 on origin/main and 0
+// with the agent-page fix: the defect above never reached this view (its
+// transcript is drawn by WS ops into a page already laid out). They pin that
+// zero for the changes coming to this view (client snapshots: PR #250), with a
+// positive control per size so the zero is a measurement.
 const rig = new MirrorRig(clsLongMirrorPort, 'e2e-clslong');
 const view = () => `/mirror/view?host=${encodeURIComponent(rig.host)}&session=main`;
 

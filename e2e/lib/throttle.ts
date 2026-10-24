@@ -23,9 +23,7 @@
 // in a case that passed on the next two runs. A hold in page.route is the same
 // delay with nothing of the browser's in between.
 //
-// Specs that want it unconditionally call throttle(page, THROTTLED). A timing
-// spec that should run either way calls throttle(page, profileFromEnv()), which
-// is THROTTLED when MUSTER_E2E_THROTTLE=1 and nothing otherwise.
+// A spec applies it with throttle(page, THROTTLED).
 import { Page } from '@playwright/test';
 
 export interface Profile {
@@ -38,10 +36,6 @@ export interface Profile {
 
 // A phone on a mobile network, roughly: 150 ms on every request, a 4x CPU.
 export const THROTTLED: Profile = { name: 'throttled (150 ms per request, 4x CPU)', latencyMs: 150, cpuRate: 4 };
-
-export function profileFromEnv(): Profile | null {
-  return process.env.MUSTER_E2E_THROTTLE === '1' ? THROTTLED : null;
-}
 
 // throttle applies p to page (and nothing, for null). It lasts for the page's
 // life, across its navigations. A WebSocket is not held (page.route does not
