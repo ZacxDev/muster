@@ -1143,7 +1143,7 @@ test.describe('Claude Code waiting on a permission prompt, desktop 1280×800', (
     status('idle');
     startMirror(host, t, extra);
     const typed = () => read(t + '.pasted').split('\n').filter((l) => l !== '');
-    return { host, status, typed };
+    return { host, t, status, typed };
   }
   // connected waits until host's muster-mirror says it is connected: a view
   // opened before that is a page with no composer, which does not recover.
@@ -1195,5 +1195,21 @@ test.describe('Claude Code waiting on a permission prompt, desktop 1280×800', (
     await expect(row(page, 'raced the prompt'), 'still queued').toHaveAttribute('data-queue-state', 'queued');
     h.status('idle');
     await expect.poll(h.typed, { message: 'sent once the prompt is answered', timeout: 20_000 }).toEqual([`${pane} raced the prompt`]);
+  });
+
+  // The narrowest window: a prompt that opens AS the message lands, between
+  // the paste and its Enter. The host's checked paste reads the pane again
+  // before the Enter, sees the prompt, and withholds the Enter: the text sits
+  // in the input box, unsubmitted, and the reply says so.
+  test('a prompt that opens as the message lands gets no Enter, and the reply says pasted, not submitted', async ({ page }) => {
+    const h = ownHost('enter', {});
+    await connected(h.host);
+    await openView(page, h.host);
+    fs.writeFileSync(h.t + '.prompt-on-paste', '');
+    await page.locator('#mv-input').fill('3');
+    await page.locator('#mv-send').click();
+    await expect(page.locator('#mv-note')).toContainText('Pasted, not submitted');
+    expect(read(h.t + '.typed').split('\n').filter((l) => l !== ''), 'the text landed in the box').toEqual([`${pane} 3`]);
+    expect(h.typed(), 'no Enter was pressed into the prompt').toEqual([]);
   });
 });

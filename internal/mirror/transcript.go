@@ -431,9 +431,11 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	// tool call with nobody watching. A person's Send is refused in words; a
 	// QUEUED paste (ExpectTurn) is superseded, so it goes back to queued and the
 	// queue holds it (its probe reads waiting as not idle) until the prompt
-	// clears. The host checks again at the moment it types (mirrorhost's
-	// claudeReady), which is what covers a prompt that opened after the host's
-	// last report; this half only saves the round trip. The Terminal view's
+	// clears. A current muster-mirror checks again at the moment it types
+	// (mirrorhost's claudeReady), which is what covers a prompt that opened
+	// after the host's last report. 🔴 KEEP THIS HALF: for a host still on an
+	// older muster-mirror, which has no check of its own, it is the ONLY
+	// protection there is. The Terminal view's
 	// composer (AnyPane) is the person typing into the pane they see, and is
 	// not gated here.
 	if !anyPane && hc.claudeWaiting(session, windowID) {

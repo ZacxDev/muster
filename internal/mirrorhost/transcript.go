@@ -549,17 +549,14 @@ func (h *hostSide) paste(m mirror.Msg) {
 		reply(err)
 		return
 	}
-	reply(h.typeInto(ctx, p.Pane, func() error {
-		// The backend's checked paste (before the paste and before its Enter),
-		// or — a backend without one — the check, then the plain paste.
-		if cp, ok := capabilityOf[ClaudeCheckedPaster](h.c.cfg.Backend); ok {
-			return cp.PasteChecked(ctx, p, text, check)
-		}
-		if err := check(ctx); err != nil {
-			return err
-		}
-		return cb.Paste(ctx, p, text)
-	}))
+	// 🔴 ONLY A CHECKED PASTE: a backend without one is refused — a plain
+	// Paste presses an Enter nothing checked.
+	cp, ok := capabilityOf[ClaudeCheckedPaster](h.c.cfg.Backend)
+	if !ok {
+		reply(ErrClaudeUncheckable)
+		return
+	}
+	reply(h.typeInto(ctx, p.Pane, func() error { return cp.PasteChecked(ctx, p, text, check) }))
 }
 
 // leaveCopyModeFor cancels the copy-mode a drag-to-scroll on THIS connection
