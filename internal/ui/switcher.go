@@ -102,6 +102,12 @@ type SwitcherItem struct {
 	Current bool
 	// Waiting: the entry waits on the viewer (its card's data-wait).
 	Waiting bool
+	// Host and HostIcon are the entry's host and its icon key — the pinned
+	// chip's (pinnedChip): the cluster for an agent, the window's host's
+	// otherwise. HostNamed: the label already spells the host
+	// (pinnedChipLabelNamesHost), so the icon is decorative.
+	Host, HostIcon string
+	HostNamed      bool
 }
 
 // NewSwitcher resolves the bar against the entries the Agents list draws
@@ -154,9 +160,12 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 		if e.agent != nil {
 			it.Href, it.Kind = e.agent.PageHref(), "agent"
 			it.Waiting = waitTokens(e.agent.Attention, e.agent.AwaitingApproval) != ""
+			it.Host, it.HostIcon = podHost, clusterIcon.Key
 		} else {
 			it.Href, it.Kind = MirrorCardHref(*e.mirror), "mirror"
 			it.Waiting = waitTokens(e.mirror.Attention, false) != ""
+			it.Host, it.HostIcon = e.mirror.Host, e.mirror.HostIcon
+			it.HostNamed = pinnedChipLabelNamesHost(*e.mirror, labels[i])
 		}
 		out[i] = it
 	}
@@ -280,9 +289,17 @@ func switcherEntry(it SwitcherItem) g.Node {
 	// measures it), and only the pill inside it is drawn.
 	const pill = "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full px-3 text-xs font-semibold ring-1 ring-inset "
 	const box = "inline-flex h-11 max-w-[10rem] shrink-0 items-center"
+	// The host's icon, as the pinned chip draws it (#252): hostMark's fixed
+	// 16px box, server-rendered, so it moves nothing; decorative when the
+	// label already names the host.
+	icon := hostMark(it.Host, it.HostIcon)
+	if it.HostNamed {
+		icon = hostMarkDecorative(it.Host, it.HostIcon)
+	}
 	inner := g.Group{
 		g.If(it.Waiting, Span(g.Attr("data-switcher-wait", ""), g.Attr("role", "img"), g.Attr("aria-label", "Waiting on you"),
 			Class("h-2 w-2 shrink-0 rounded-full bg-accent"))),
+		g.If(it.Host != "", icon),
 		Span(Class("truncate"), g.Text(it.Label)),
 	}
 	if it.Current {

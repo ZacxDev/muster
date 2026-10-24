@@ -26,7 +26,7 @@ func switcherFixture() ([]AgentCardView, []MirrorCardView) {
 	return list, mirrors
 }
 
-var switcherEntryRE = regexp.MustCompile(`<(a|span) (?:href="([^"]*)" hx-boost="false" (?:data-snap-warm="" )?)?data-switcher-entry="(agent|mirror)"[^>]*><span class="[^"]*">(?:<span data-switcher-wait[^>]*></span>)?<span class="truncate">([^<]*)</span>`)
+var switcherEntryRE = regexp.MustCompile(`<(a|span) (?:href="([^"]*)" hx-boost="false" (?:data-snap-warm="" )?)?data-switcher-entry="(agent|mirror)"[^>]*><span class="[^"]*">(?:<span data-switcher-wait[^>]*></span>)?(?:<span data-host-icon.*?</svg></span>)?<span class="truncate">([^<]*)</span>`)
 
 // switcherRowEntries is the entries the row of view key draws: for each, "label"
 // for a link to href, or "label (current)" for the page's own.
@@ -103,6 +103,35 @@ func TestTheSwitcherResolvesEachView(t *testing.T) {
 	}
 	if !strings.Contains(page, `<a href="`+amp(term)+`" hx-boost="false" data-switcher-entry="mirror"`) {
 		t.Error("the terminal link is not drawn plain (without data-snap-warm)")
+	}
+
+	// Every entry draws its host's icon, as its pinned chip does (#252): the
+	// window's host for a window, the cluster for an agent — before the label.
+	if !regexp.MustCompile(`data-switcher-entry="mirror"[^>]*><span class="[^"]*"><span data-host-icon="[^"]*" role="img" aria-label="Host: tower"`).MatchString(page) {
+		t.Error("a window's entry does not draw its host's icon")
+	}
+	if !regexp.MustCompile(`href="/agents/ag-three"[^>]*><span class="[^"]*"><span data-switcher-wait[^>]*></span><span data-host-icon="` + clusterIcon.Key + `" role="img"`).MatchString(page) {
+		t.Error("an agent's entry does not draw the cluster's icon after its waiting dot")
+	}
+	// A label that already names the host: the icon is decorative.
+	named := renderString(t, switcherEntry(SwitcherItem{Href: "/x", Label: "mango:1 · tower", Kind: "mirror", Host: "tower", HostNamed: true}))
+	if !strings.Contains(named, `<span data-host-icon="`) || !strings.Contains(named, `aria-hidden="true" title="Host: tower"`) || strings.Contains(named, `aria-label="Host: tower"`) {
+		t.Errorf("a host-naming label's icon is not decorative:\n%s", named)
+	}
+
+	// …and NewSwitcher says so for a codename shared across two hosts, whose
+	// labels carry the host-leading qualifier (pinnedChipLabelNamesHost).
+	twins := NewSwitcher(nil, []MirrorCardView{
+		{Host: "tower", Session: "w", Window: "@1", Label: "mango:1", Qualifier: "tower", Online: true},
+		{Host: "other", Session: "w", Window: "@1", Label: "mango:1", Qualifier: "other", Online: true},
+	}, nil, SwitcherCurrent{})
+	for _, it := range twins.All {
+		if !it.HostNamed || !strings.Contains(it.Label, it.Host) {
+			t.Errorf("a host-qualified label is not marked as naming its host: %+v", it)
+		}
+	}
+	if solo := NewSwitcher(nil, mirrors[:1], nil, SwitcherCurrent{}); solo.All[0].HostNamed {
+		t.Error("CONTROL: a lone window's label is marked as naming its host")
 	}
 
 	// The waiting entry carries its dot.
