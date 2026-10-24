@@ -80,14 +80,21 @@ func (s *Server) instanceIndexWithin(ctx context.Context, within time.Duration) 
 	// The provisioner is read HERE, not in the goroutine: a read left running
 	// past the bound must not touch the Server after this call returns.
 	p := s.ext.Provisioner
+	// 🔴 cancel IS THE CALLER'S, NEVER THE READ'S. It used to be deferred inside
+	// the goroutine, so a read that ANSWERED also cancelled ctx a moment later;
+	// a caller reaching the select after both had happened found both cases
+	// ready, and select picks one at random — so it could drop a good answer
+	// as "no answer within 30s", logged milliseconds in. Under load that made
+	// the stopped-agent reaper destroy nothing (TestTheReaperIsOffAtZero and
+	// TestAStoppedRowOverALiveInstanceIsNotReaped failing in CI).
 	ctx, cancel := context.WithTimeout(ctx, within)
+	defer cancel()
 	type answer struct {
 		insts []provision.Instance
 		err   error
 	}
 	done := make(chan answer, 1)
 	safeGo(s.logger, "agents: bounded instance read", func() {
-		defer cancel()
 		insts, err := p.Instances(ctx)
 		done <- answer{insts, err}
 	})
