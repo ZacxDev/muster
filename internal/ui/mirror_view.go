@@ -130,9 +130,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		// on a phone the body's bottom can be under the browser's chrome, and
 		// this page cannot be scrolled to bring it back (composerPinScript).
 		Pinned: true, Switcher: v.Switcher}
-	if !v.Hermes {
-		composer.Suggest, composer.SuggestPaused = v.Suggest, v.SuggestPaused
-	}
+	composer.Suggest, composer.SuggestPaused = v.Suggest, v.SuggestPaused
 	shell := pinnedShellClass
 	if v.Switcher != nil {
 		shell = pinnedShellSwitcherClass
@@ -143,9 +141,12 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		working = "Hermes is working…"
 		composer.Placeholder, composer.Aria = "Message Hermes…", "Message Hermes in this session"
 		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = MirrorHermesNoSendNote, "Sending to Hermes is not available", nil
+		// No suggested replies on a Hermes window (Claude Code only).
+		composer.Suggest, composer.SuggestPaused = "", false
 	case v.Hermes:
 		working = "Hermes is working…"
 		composer.Placeholder, composer.Aria = "Message Hermes…", "Message Hermes in this session"
+		composer.Suggest, composer.SuggestPaused = "", false
 		if !v.Interactive {
 			composer.Disabled = MirrorReadOnlyNote
 		}

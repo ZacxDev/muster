@@ -24,8 +24,10 @@ Mirrored tmux sessions only (a dispatched agent's chat page has no chips yet).
   (the whole text is its title).
 - **A tap fills, never sends.** An empty box takes the chip's text; a box that
   already holds a draft gets it **on a new line below** the draft, never over
-  it. It is an edit (Ctrl+Z gives the draft back), the box is focused with the
-  caret at the end, and you press Send.
+  it. It is an edit (Ctrl+Z gives the draft back), and you press Send. A tap
+  focuses the box with the caret at the end; a chip chosen from the keyboard
+  (Enter, Space) keeps the focus, so a held Enter fills once and sends nothing.
+  A held Enter in the box sends once, not once per key repeat.
 - **×** hides the row for that turn, on this device; the next turn brings new
   chips.
 - **Within 8 s or not at all.** The row takes its room when a set is being
@@ -61,7 +63,8 @@ served — the same checks run again whenever the composer asks):
   composer is enabled);
 - the window's own status is **idle** — not busy, not **waiting** (a permission
   prompt or a question: text pasted there would answer the prompt), not
-  unknown;
+  unknown — and not held by the Claude prompt guard (a dialog or text on the
+  screen that the status does not show);
 - no question card (AskUserQuestion) is open for the session;
 - no attention ask raised by the session is open — including one you hid on
   this device with "Hide until next ask": hidden is not answered;
@@ -182,9 +185,13 @@ history moved in between, the model is asked again for the same reply.
 ## What the chip row reports, and the auto-pause
 
 The row reports, to `POST /mirror/view/suggest/event`, **numbers only**: the
-set's fingerprint and `shown` (once per set), `filled` (a tap) and `sent` (the
-box was sent after a tap) with the **edit distance** between what the tap left
-in the box and what was sent, computed in the browser. The route refuses any
+set's fingerprint and `shown` (once per set, and only once it was **seen**: the
+page visible and the row in the viewport — a hidden tab or a row off screen is
+not an impression), `filled` (a tap) and `sent` (the box was sent after a tap) with the **edit distance** between what the tap left
+in the box and what was sent, computed in the browser. A set made for the
+**open** of a view on an idle session (not a turn that ended while it was
+open) is shown but reported not at all — neither shown nor tapped — so opening
+a session to read it never counts toward the auto-pause. The route refuses any
 other field, so a page that started sending text would fail, not leak.
 
 **The counts are persisted, numbers only**: `suggest_usage` (migration `0049`)

@@ -594,6 +594,9 @@ func mirrorComposerScript() g.Node {
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
+      // 🔴 A HELD ENTER SENDS ONCE: its auto-repeats are not more sends (a
+      // focus that moved into the box mid-hold must not send what it holds).
+      if (e.repeat) return;
       // requestSubmit is missing from older Safari; a click on Send is the same
       // submit, through the same handler.
       if (form.requestSubmit) form.requestSubmit(); else send.click();

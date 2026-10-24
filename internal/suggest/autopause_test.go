@@ -3,6 +3,7 @@ package suggest
 import (
 	"context"
 	"strconv"
+	"sync"
 	"testing"
 )
 
@@ -87,6 +88,75 @@ func TestTheAutoPauseIsUnderFivePercentFilledAfterTwoHundredShown(t *testing.T) 
 	}
 }
 
+// gateUsage is a UsageStore that is paused until Reset, whose Get can be
+// held open (hold) to race a Resume.
+type gateUsage struct {
+	mu     sync.Mutex
+	paused bool
+	hold   chan struct{} // non-nil: the next Get reads, then waits on it
+	read   chan struct{} // closed when that Get has read
+}
+
+func (g *gateUsage) Get(context.Context, int64) (Tally, error) {
+	g.mu.Lock()
+	t := Tally{Shown: AutoPauseMinShown, Paused: g.paused}
+	hold, read := g.hold, g.read
+	g.hold = nil
+	g.mu.Unlock()
+	if hold != nil {
+		close(read)
+		<-hold
+	}
+	return t, nil
+}
+func (g *gateUsage) Add(context.Context, int64, int64, int64, int64, int64) (Tally, error) {
+	return Tally{}, nil
+}
+func (g *gateUsage) SetPaused(_ context.Context, _ int64, p bool) error {
+	g.mu.Lock()
+	g.paused = p
+	g.mu.Unlock()
+	return nil
+}
+func (g *gateUsage) Reset(context.Context, int64) error {
+	g.mu.Lock()
+	g.paused = false
+	g.mu.Unlock()
+	return nil
+}
+
+// TestAResumeIsNotUndoneByAReadThatRacedIt (final pass): a paused() read the
+// store BEFORE a Resume reset it, and lands after Resume cleared memory. That
+// stale "paused" must not be cached — the user would stay paused until a
+// restart. After the race, the user is not paused.
+func TestAResumeIsNotUndoneByAReadThatRacedIt(t *testing.T) {
+	ctx := context.Background()
+	g := &gateUsage{paused: true}
+	e := &Engine{Gen: &countingGen{}, Usage: g}
+	if o := e.Enabled(ctx, 1); o != OutcomePaused {
+		t.Fatalf("setup: %q", o)
+	}
+	// Forget what Enabled cached, so the next paused() reads the store.
+	e.mu.Lock()
+	delete(e.tallies, 1)
+	e.mu.Unlock()
+	hold, read := make(chan struct{}), make(chan struct{})
+	g.mu.Lock()
+	g.hold, g.read = hold, read
+	g.mu.Unlock()
+	done := make(chan struct{})
+	go func() { e.Enabled(ctx, 1); close(done) }() // reads paused=true, then waits
+	<-read
+	// Resume: its own paused() check reads the store (not held) — paused —
+	// then resets it and clears memory, while the first read is still out.
+	e.Resume(ctx, 1)
+	close(hold)
+	<-done
+	if o := e.Enabled(ctx, 1); o != "" {
+		t.Fatalf("the stale read stuck: %q", o)
+	}
+}
+
 // TestASetCountsOnceAndOnlyWhenItWasServed: a repeated event counts once; a
 // fill or a send of a set never counted as shown does not count; a "shown" of
 // a fingerprint this engine did not serve that owner for that subject does
@@ -101,8 +171,8 @@ func TestASetCountsOnceAndOnlyWhenItWasServed(t *testing.T) {
 		dist       int
 		wantCounts bool
 	}{
-		{1, "s0", fp, EventFilled, 0, false},  // filled before shown
-		{1, "s0", fp, EventSent, 3, false},    // sent before shown
+		{1, "s0", fp, EventFilled, 0, false}, // filled before shown
+		{1, "s0", fp, EventSent, 3, false},   // sent before shown
 		{1, "s0", "f-not-served", EventShown, 0, false},
 		{1, "other", fp, EventShown, 0, false}, // served for s0, not other
 		{2, "s0", fp, EventShown, 0, false},    // another owner's

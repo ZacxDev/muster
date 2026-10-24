@@ -184,6 +184,7 @@ func (e *Engine) Record(ctx context.Context, owner int64, subject, fp, ev string
 		}
 		return true
 	}
+	epoch := e.usageEpochs[owner]
 	e.mu.Unlock()
 	tot, err := e.Usage.Add(ctx, owner, d.Shown, d.Filled, d.Sent, d.EditSum)
 	if err != nil {
@@ -199,8 +200,10 @@ func (e *Engine) Record(ctx context.Context, owner int64, subject, fp, ev string
 		}
 	}
 	e.mu.Lock()
-	t = e.tallyLocked(owner)
-	t.counts.Paused, t.loaded = tot.Paused, true
+	if e.usageEpochs[owner] == epoch {
+		t = e.tallyLocked(owner)
+		t.counts.Paused, t.loaded = tot.Paused, true
+	}
 	e.mu.Unlock()
 	return true
 }
@@ -234,14 +237,21 @@ func (e *Engine) Resume(ctx context.Context, owner int64) {
 	if !e.paused(ctx, owner) {
 		return
 	}
-	e.mu.Lock()
-	delete(e.tallies, owner)
-	e.mu.Unlock()
+	// 🔴 THE STORE FIRST, THEN MEMORY, AND AN EPOCH: a paused() that read the
+	// store BEFORE the reset (paused) must not cache that read after the
+	// memory was cleared — it would stick until a restart. Resume bumps the
+	// owner's epoch; paused() caches only a read whose epoch is unchanged.
 	if e.Usage != nil {
 		if err := e.Usage.Reset(ctx, owner); err != nil {
 			e.logf("suggest: owner %d: resume: %v", owner, err)
+			return
 		}
 	}
+	e.mu.Lock()
+	e.init()
+	delete(e.tallies, owner)
+	e.usageEpochs[owner]++
+	e.mu.Unlock()
 }
 
 // paused reports whether the auto-pause paused owner: persisted (read once,
@@ -255,6 +265,8 @@ func (e *Engine) paused(ctx context.Context, owner int64) bool {
 		e.mu.Unlock()
 		return p
 	}
+	e.init()
+	epoch := e.usageEpochs[owner]
 	e.mu.Unlock()
 	got, err := e.Usage.Get(ctx, owner)
 	if err != nil {
@@ -262,8 +274,12 @@ func (e *Engine) paused(ctx context.Context, owner int64) bool {
 		return false
 	}
 	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.usageEpochs[owner] != epoch {
+		// A Resume ran while this read was out: it is stale; cache nothing.
+		return false
+	}
 	t = e.tallyLocked(owner)
 	t.counts.Paused, t.loaded = got.Paused, true
-	e.mu.Unlock()
 	return got.Paused
 }

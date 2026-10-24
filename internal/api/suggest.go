@@ -118,6 +118,9 @@ type suggestTracker struct {
 	// 0 from an older host), and end what the newest turn end saw.
 	since int64
 	end   suggestEnd
+	// opened: the newest turn end is the backfill of a view opened on an
+	// idle session (suggestEnd.open).
+	opened bool
 }
 
 // suggestEnd is one turn end: the stream's status token at it (0 = the host
@@ -125,6 +128,11 @@ type suggestTracker struct {
 type suggestEnd struct {
 	since int64
 	at    time.Time
+	// open: the turn end is the backfill of a view OPENED on an idle session,
+	// not a turn that ended while the view was open. Its set is served, but
+	// the page does not count it in the auto-pause's tally (suggestSocketMsg.Open):
+	// opening a session to read it is not a decision to ignore its chips.
+	open bool
 }
 
 // lastEnd is the newest turn end observe reported.
@@ -156,9 +164,10 @@ func (t *suggestTracker) token() int64 {
 func (t *suggestTracker) observe(m mirror.Msg) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.opened = false
 	ended := t.observeLocked(m)
 	if ended {
-		t.end = suggestEnd{since: t.since, at: time.Now()}
+		t.end = suggestEnd{since: t.since, at: time.Now(), open: t.opened}
 	}
 	return ended
 }
@@ -221,6 +230,7 @@ func (t *suggestTracker) observeLocked(m mirror.Msg) bool {
 	case t.resumed:
 		return false
 	case m.PromptIndex && !m.Busy:
+		t.opened = true
 		return true
 	case started && wasBusy && !m.Busy:
 		return true
@@ -310,6 +320,7 @@ const (
 	suggestBlockedNoView     = "no rendered view"
 	suggestBlockedReadOnly   = "the host is read-only"
 	suggestBlockedNotIdle    = "the session is not idle"
+	suggestBlockedGuardHeld  = "the prompt guard is holding the session"
 	suggestBlockedQuestion   = "a question is open"
 	suggestBlockedAttention  = "an attention ask is open"
 	suggestBlockedNoSuggests = ""
@@ -337,8 +348,15 @@ func (s *Server) suggestBlocked(ctx context.Context, h mirror.HostView, e mirror
 	if !h.Interactive {
 		return suggestBlockedReadOnly
 	}
-	if st := s.ext.Mirror.AgentState(ctx, h.Host, e.Session, e.Window); st.Unknown != nil || st.Status != mirror.StatusIdle {
+	st := s.ext.Mirror.AgentState(ctx, h.Host, e.Session, e.Window)
+	if st.Unknown != nil || st.Status != mirror.StatusIdle {
 		return suggestBlockedNotIdle
+	}
+	// The Claude prompt guard (#255) is holding the window: what is on its
+	// screen is not the idle prompt the status says (a dialog, text in the
+	// box), so nothing is offered to type there.
+	if st.GuardHeld != "" {
+		return suggestBlockedGuardHeld
 	}
 	if s.asks != nil && len(s.asks.OpenIn(requestOwner(ctx), askSourceMirror, h.Host, e.ClaudeSession)) > 0 {
 		return suggestBlockedQuestion
@@ -509,6 +527,9 @@ type suggestSocketMsg struct {
 	Type  string `json:"type"` // "suggest"
 	State string `json:"state"`
 	MS    int64  `json:"ms,omitempty"`
+	// Open: the set answers a view's OPEN on an idle session (suggestEnd.open),
+	// which the page shows but does not report for the auto-pause.
+	Open bool `json:"open,omitempty"`
 }
 
 // suggestOnTurnEnd runs suggestTurnAt for a view socket's turn end and tells
@@ -525,13 +546,15 @@ func (s *Server) suggestOnTurnEnd(ctx context.Context, host, session, window str
 			return
 		}
 		defer func() { <-gate }()
-		pending := func(d time.Duration) { tell(suggestSocketMsg{Type: "suggest", State: "pending", MS: d.Milliseconds()}) }
+		pending := func(d time.Duration) {
+			tell(suggestSocketMsg{Type: "suggest", State: "pending", MS: d.Milliseconds(), Open: end.open})
+		}
 		ok := s.suggestTurnAt(ctx, host, session, window, t, end, pending)
 		if ctx.Err() != nil {
 			return
 		}
 		if ok {
-			tell(suggestSocketMsg{Type: "suggest", State: "ready", MS: time.Since(end.at).Milliseconds()})
+			tell(suggestSocketMsg{Type: "suggest", State: "ready", MS: time.Since(end.at).Milliseconds(), Open: end.open})
 			return
 		}
 		tell(suggestSocketMsg{Type: "suggest", State: "none"})

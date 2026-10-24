@@ -121,6 +121,14 @@ func suggestRowScript() g.Node {
   // gen invalidates whatever an earlier state started (a fetch, a timer);
   // fp is the set on screen; fill what the last tap left in the box.
   var gen = 0, deadline = 0, timer = 0, fp = '', fill = null;
+  // countable: the set answers a turn that ENDED while this view was open (an
+  // open on an idle session is shown but not reported); seen: "shown" was
+  // reported for the set on screen; inView: the row is in the viewport.
+  var countable = false, seen = false, inView = false;
+  var io = typeof IntersectionObserver !== 'undefined' ? new IntersectionObserver(function (es) {
+    es.forEach(function (en) { inView = en.isIntersecting && en.intersectionRatio > 0; });
+    seenNow();
+  }, { threshold: [0, 0.5] }) : null;
   var DKEY = 'mv-suggest-dismissed';
   function dismissedSet(f) { try { return !!f && localStorage.getItem(DKEY) === f; } catch (e) { return false; } }
   function dismiss(f) { try { localStorage.setItem(DKEY, f); } catch (e) {} }
@@ -130,6 +138,8 @@ func suggestRowScript() g.Node {
     gen++;
     clearTimeout(timer);
     deadline = 0; fp = '';
+    if (io) io.unobserve(row);
+    inView = false;
     if (row.hidden && !state()) return;
     row.hidden = true;
     row.removeAttribute('data-state');
@@ -159,8 +169,9 @@ func suggestRowScript() g.Node {
   }
   // reserve: a set is being made for a turn that ended ms ago. The row takes
   // its room now (empty, inert) and gives it back at the cutoff.
-  function reserve(ms) {
+  function reserve(ms, open) {
     hide();
+    countable = !open;
     if (blocked()) return;
     deadline = Date.now() + cutoff - (ms || 0);
     if (deadline <= Date.now()) { deadline = 0; return; }
@@ -198,16 +209,31 @@ func suggestRowScript() g.Node {
       p.className = '` + suggestPillClass + `';
       p.textContent = s.text;
       b.appendChild(p);
-      b.addEventListener('click', function () { take(s.text, i); });
+      // detail 0: a keyboard activation (Enter, Space) — the focus stays on
+      // the chip, so a held Enter cannot go on to send the box.
+      b.addEventListener('click', function (e) { take(s.text, e.detail === 0 ? b : null); });
+      // A held Enter or Space fills ONCE (a button repeats its activation).
+      b.addEventListener('keydown', function (e) { if (e.repeat && (e.key === 'Enter' || e.key === ' ')) e.preventDefault(); });
       chips.appendChild(b);
     });
     row.setAttribute('data-state', 'shown');
     row.hidden = false;
     measure();
+    seen = false;
+    if (io) io.observe(row); else { inView = true; seenNow(); }
+  }
+  // seenNow reports "shown" once per set, and only when it was really seen:
+  // the page visible AND the row in the viewport (a hidden tab, a row off
+  // screen, are not an impression the auto-pause may count).
+  function seenNow() {
+    if (!countable || seen || !fp || state() !== 'shown' || !inView || document.visibilityState !== 'visible') return;
+    seen = true;
     post('shown');
   }
+  document.addEventListener('visibilitychange', seenNow);
   // take fills the box with text — below a draft, never over it — as an edit.
-  function take(text, i) {
+  // keyEl: the chip a keyboard activated, which gets the focus back.
+  function take(text, keyEl) {
     var cur = input.value;
     var draft = cur.trim() !== '';
     var add = draft ? (/\n$/.test(cur) ? '' : '\n') + text : text;
@@ -222,8 +248,13 @@ func suggestRowScript() g.Node {
     var end = input.value.length;
     input.setSelectionRange(end, end);
     if (window.musterComposerFit) window.musterComposerFit(input);
-    fill = { fp: fp, after: input.value };
-    post('filled');
+    if (keyEl) keyEl.focus();
+    fill = { fp: fp, after: input.value, countable: countable };
+    if (countable) {
+      // A tap is seen by definition.
+      if (!seen) { seen = true; post('shown'); }
+      post('filled');
+    }
   }
   // dist is the edit distance between a and b (Levenshtein, over at most
   // 4000 characters of each): how much was changed after a tap. A number
@@ -251,7 +282,7 @@ func suggestRowScript() g.Node {
   // and a tap before it is reported with how much it was edited.
   document.addEventListener('mv-sent', function (e) {
     var sent = e.detail && typeof e.detail.text === 'string' ? e.detail.text : null;
-    if (fill && sent !== null) post('sent', { fp: fill.fp, dist: dist(fill.after, sent) });
+    if (fill && fill.countable && sent !== null) post('sent', { fp: fill.fp, dist: dist(fill.after, sent) });
     fill = null;
     hide();
   });
@@ -267,7 +298,7 @@ func suggestRowScript() g.Node {
   }
   window.musterSuggest = function (m) {
     if (!m) return;
-    if (m.state === 'pending') reserve(m.ms);
+    if (m.state === 'pending') reserve(m.ms, m.open);
     else if (m.state === 'ready') load();
     else hide();
   };

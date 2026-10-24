@@ -130,8 +130,10 @@ type Engine struct {
 	global   []time.Time
 	epochs   map[int64]int // bumped by Forget
 	tallies  map[int64]*tally
-	sem      chan struct{}
-	semOnce  sync.Once
+	// usageEpochs is bumped per owner by Resume (autopause.go).
+	usageEpochs map[int64]int
+	sem         chan struct{}
+	semOnce     sync.Once
 	// Calls counts model calls made (a test reads it).
 	Calls int
 }
@@ -166,6 +168,7 @@ func (e *Engine) init() {
 		e.calls = map[int64][]time.Time{}
 		e.epochs = map[int64]int{}
 		e.tallies = map[int64]*tally{}
+		e.usageEpochs = map[int64]int{}
 	}
 }
 

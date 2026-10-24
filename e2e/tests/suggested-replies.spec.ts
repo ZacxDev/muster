@@ -217,6 +217,98 @@ test.describe.serial('phone 390×844', () => {
   });
 });
 
+test.describe.serial('phone 390×844: keys and what counts', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  // 🔴 A REGRESSION TEST (final pass): holding Enter on a focused chip filled
+  // the box, moved the focus into it, and the key's auto-repeats then hit the
+  // composer's Enter-to-send. Now: the chip keeps the focus, fills once, and
+  // nothing is sent; a single Enter in the box still sends (the control).
+  test('holding Enter on a focused chip fills once and sends nothing; one Enter in the box sends', async ({ page }) => {
+    const sends = sendRequests(page);
+    await openView(page);
+    await turn(page, reply + ' (keys)');
+    await expect(chips(page).first()).toBeVisible({ timeout: 8_000 });
+    const pastedBefore = pasted();
+    await chips(page).first().focus();
+    const cdp = await page.context().newCDPSession(page);
+    const key = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: '\r', unmodifiedText: '\r' };
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', ...key });
+    for (let i = 0; i < 8; i++) await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', autoRepeat: true, ...key });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await expect(page.locator('#mv-input')).toHaveValue(chipA);
+    await expect(chips(page).first(), 'the focus stays on the chip').toBeFocused();
+    await page.waitForTimeout(1500);
+    expect(sends, 'a held Enter on a chip sent nothing').toEqual([]);
+    expect(pasted(), 'nothing reached the pane').toBe(pastedBefore);
+    // The control: one Enter in the box sends, once.
+    await page.locator('#mv-input').focus();
+    await page.keyboard.press('Enter');
+    await expect.poll(() => sends.length, { timeout: 10_000 }).toBe(1);
+    await expect.poll(() => pasted().length > pastedBefore.length, { timeout: 10_000 }).toBe(true);
+    // A held Enter IN THE BOX sends once, not once per auto-repeat.
+    await page.waitForTimeout(1000);
+    const sendsBefore = sends.length;
+    await page.locator('#mv-input').fill('held enter in the box');
+    await page.locator('#mv-input').focus();
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', ...key });
+    for (let i = 0; i < 8; i++) await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', autoRepeat: true, ...key });
+    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+    await page.waitForTimeout(2000);
+    expect(sends.length - sendsBefore, 'a held Enter in the box sends once').toBe(1);
+  });
+
+  // 🔴 "SHOWN" IS AN IMPRESSION: a set on a hidden tab, or in a row off the
+  // screen, is not reported until it is seen; a set that answers the OPEN of a
+  // view (not a turn that ended while it was open) is not reported at all.
+  test('a hidden tab, an off-screen row and an open do not count as shown', async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
+    const page = await ctx.newPage();
+    const shown: string[] = [];
+    page.on('request', (r) => {
+      if (new URL(r.url()).pathname === '/mirror/view/suggest/event' && new URLSearchParams(r.postData() || '').get('event') === 'shown') shown.push(r.url());
+    });
+    // The tab's visibility, played by the spec (headless pages are always
+    // visible): document.visibilityState reads window.__vis.
+    await page.addInitScript(() => {
+      (window as any).__vis = 'visible';
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (window as any).__vis });
+    });
+    const setVis = (v: string) => page.evaluate((v) => { (window as any).__vis = v; document.dispatchEvent(new Event('visibilitychange')); }, v);
+
+    // The open of the view on an idle session with a set: shown, NOT counted.
+    // (A turn that ran while no view was open: nothing generated it yet.)
+    fs.appendFileSync(tr, cc.prompt('while nobody looked'));
+    setStatus('busy');
+    fs.appendFileSync(tr, cc.reply(reply + ' (before the open)'));
+    setStatus('idle');
+    await openView(page);
+    await expect(chips(page).first(), 'the set is shown at the open').toBeVisible({ timeout: 8_000 });
+    await page.waitForTimeout(1500);
+    expect(shown, 'an open is not an impression').toEqual([]);
+
+    // A hidden tab: the turn's chips are drawn, and not counted until seen.
+    await setVis('hidden');
+    await turn(page, reply + ' (hidden)');
+    await expect(chips(page).first()).toBeVisible({ timeout: 8_000 });
+    await page.waitForTimeout(1500);
+    expect(shown, 'a hidden tab does not count').toEqual([]);
+    await setVis('visible');
+    await expect.poll(() => shown.length, { message: 'seen once visible' }).toBe(1);
+
+    // An off-screen row: not counted until it scrolls into view.
+    await page.addStyleTag({ content: '#mv-suggest{transform:translateY(3000px)}' });
+    await turn(page, reply + ' (off screen)');
+    await expect(chips(page).first()).toHaveCount(1);
+    await expect(page.locator('#mv-suggest')).toHaveAttribute('data-state', 'shown', { timeout: 8_000 });
+    await page.waitForTimeout(1500);
+    expect(shown.length, 'an off-screen row does not count').toBe(1);
+    await page.addStyleTag({ content: '#mv-suggest{transform:none!important}' });
+    await expect.poll(() => shown.length, { message: 'seen once on screen' }).toBe(2);
+    await ctx.close();
+  });
+});
+
 // measureTurn measures CLS on a FRESH page (its own context: no snapshot, so
 // its socket reads the whole conversation): first the open of a view on an
 // idle session whose last turn has a set (the chips come with the page), then

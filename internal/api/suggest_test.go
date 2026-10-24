@@ -190,6 +190,11 @@ func TestEachExclusionMakesNoCall(t *testing.T) {
 		{"busy", func(fm *fakeMirror, _ *Extensions) { fm.agentState.Status = mirror.StatusBusy }, nil},
 		{"waiting at a permission prompt", func(fm *fakeMirror, _ *Extensions) { fm.agentState.Status = mirror.StatusWaiting }, nil},
 		{"status unknown", func(fm *fakeMirror, _ *Extensions) { fm.agentState = nil }, nil},
+		// The #255 prompt guard holds the window (idle by status, but a dialog
+		// or text is on its screen).
+		{"prompt guard holding", func(fm *fakeMirror, _ *Extensions) {
+			fm.agentState.GuardHeld = "Held: muster-mirror refused it at the moment of typing — Claude's input box already has text."
+		}, nil},
 		{"read-only host", func(fm *fakeMirror, _ *Extensions) { fm.interactive = false }, nil},
 		{"no rendered view (Terminal only)", func(fm *fakeMirror, _ *Extensions) { fm.v2 = nil }, nil},
 		{"Hermes window", func(fm *fakeMirror, _ *Extensions) {
