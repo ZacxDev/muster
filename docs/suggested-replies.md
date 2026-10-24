@@ -157,8 +157,9 @@ A set is cached **in memory only**, by the fingerprint of the exact input
 the same input, or the same turn, never calls the model twice, and a new turn
 calls it exactly once. Two views of the same turn share one call, even when
 one of them resumed mid-conversation and saw less (a resumed view never
-generates from the partial turn it resumed into; it does from the first whole
-turn after it). A set's text is dropped after an hour (only its fingerprint is
+generates from the partial turn it resumed into — it only SERVES the set
+already made for that very turn, so a reloaded page shows its chips again —
+and it generates from the first whole turn after it). A set's text is dropped after an hour (only its fingerprint is
 kept, so an unchanged session is not paid for again). **No suggestion text is
 ever written to the database.**
 

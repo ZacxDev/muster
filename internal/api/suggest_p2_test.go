@@ -206,7 +206,7 @@ func TestAPromptFromBeforeTheTurnEndIsWaitedOutAndItsOwnIsNot(t *testing.T) {
 		name  string
 		since int64
 		want  bool
-	}{{"stale prompt", tokBusy1, true}, {"its own prompt", tokOwn + 1, false}} {
+	}{{"stale prompt", tokBusy1, true}, {"its own prompt (the turn ended AT it)", tokOwn, false}} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newSuggestFixture(t, nil)
 			f.s.suggestIdleWaitFor = 2 * time.Second
@@ -222,8 +222,12 @@ func TestAPromptFromBeforeTheTurnEndIsWaitedOutAndItsOwnIsNot(t *testing.T) {
 					f.setList(mirror.StatusIdle, tokOwn)
 				}()
 			}
+			start := time.Now()
 			if got := f.s.suggestTurn(operatorCtx(), "ws", "main", "@1", tr); got != c.want || f.gen.n() != map[bool]int{true: 1}[c.want] {
 				t.Fatalf("offered %v, calls %d", got, f.gen.n())
+			}
+			if d := time.Since(start); !c.want && d > 500*time.Millisecond {
+				t.Fatalf("its own prompt was waited out (%v), not taken at once", d)
 			}
 		})
 	}
@@ -279,6 +283,46 @@ func TestNothingIsSpentPastTheCutoff(t *testing.T) {
 	}
 	if pending < time.Second || pending >= ui.SuggestCutoff {
 		t.Fatalf("pending said %v", pending)
+	}
+}
+
+// TestAResumedViewServesItsTurnsSetButMakesNone: a page reloaded on an idle
+// session resumes its socket (no backfill: the tracker holds no reply). Its
+// resume marker serves the set ALREADY made for that very turn — the chips
+// come back — and never generates one; with no set for that token (none, or
+// an older turn's) it offers nothing.
+func TestAResumedViewServesItsTurnsSetButMakesNone(t *testing.T) {
+	f := newSuggestFixture(t, nil)
+	f.setList(mirror.StatusIdle, tokOwn)
+	resumed := func() *suggestTracker {
+		tr := &suggestTracker{resumed: true}
+		if !tr.observe(mirror.Msg{Offset: 4096, StatusSince: tokOwn}) || !tr.lastEnd().cacheOnly {
+			t.Fatal("the resume marker of an idle session is not a (cache-only) turn end")
+		}
+		return tr
+	}
+	if f.s.suggestTurn(operatorCtx(), "ws", "main", "@1", resumed()) || f.gen.n() != 0 {
+		t.Fatalf("no set yet: offered, or generated (%d calls)", f.gen.n())
+	}
+	// The whole view (another tab) made the set for this turn.
+	full := &suggestTracker{}
+	for _, m := range suggestBackfill() {
+		m.StatusSince = tokOwn
+		full.observe(m)
+	}
+	if !f.s.suggestTurn(operatorCtx(), "ws", "main", "@1", full) || f.gen.n() != 1 {
+		t.Fatalf("the whole view: calls %d", f.gen.n())
+	}
+	pending := false
+	if !f.s.suggestTurnAt(operatorCtx(), "ws", "main", "@1", resumed(), resumed().lastEnd(), func(time.Duration) { pending = true }) || !pending || f.gen.n() != 1 {
+		t.Fatalf("the resumed view did not serve the turn's set (pending %v, calls %d)", pending, f.gen.n())
+	}
+	// A later turn: the set is an older turn's — nothing.
+	f.setList(mirror.StatusIdle, tokOwn+7)
+	tr := &suggestTracker{resumed: true}
+	tr.observe(mirror.Msg{Offset: 4096, StatusSince: tokOwn + 7})
+	if f.s.suggestTurn(operatorCtx(), "ws", "main", "@1", tr) || f.gen.n() != 1 {
+		t.Fatalf("an older turn's set was served, or a call made (%d)", f.gen.n())
 	}
 }
 
@@ -451,6 +495,16 @@ func TestOnlyAClaudeWindowOnAnInteractiveHostGetsTheRow(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			f := newSuggestFixture(t, c.mutate)
+			// What the socket's tracker is opened on, directly: the page's
+			// composer also drops the row for a read-only host or Hermes, so the
+			// page alone cannot see this gate.
+			h, e, ok := f.s.suggestWindow(operatorCtx(), "ws", "main", "@1")
+			if !ok {
+				t.Fatal("the window is not listed")
+			}
+			if got := f.s.suggestPath(operatorCtx(), h, e) != ""; got != c.want {
+				t.Fatalf("suggestPath gives a URL: %v, want %v", got, c.want)
+			}
 			_, body := mirrorGet(t, f.s, f.ts, ui.MirrorRef{Host: "ws", Session: "main", Window: "@1"}.ViewPath())
 			if got := strings.Contains(body, `id="mv-suggest"`); got != c.want {
 				t.Fatalf("row drawn %v, want %v", got, c.want)

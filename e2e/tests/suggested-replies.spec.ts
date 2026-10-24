@@ -87,9 +87,11 @@ async function openView(page: Page) {
   await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
 }
 
-// turn runs one turn on the open view: busy, the reply, then idle — and
+// turn runs one turn on the open view: a prompt, busy, the reply, then idle — and
 // returns when the status flip was written.
 async function turn(page: Page, text = reply) {
+  // The operator's message starts it (as the CLI writes one received).
+  fs.appendFileSync(tr, cc.prompt('next step please'));
   setStatus('busy');
   await page.waitForTimeout(1200); // the host's re-resolve (3 × 300 ms) sees busy
   fs.appendFileSync(tr, cc.reply(text));
@@ -134,9 +136,13 @@ test.describe.serial('phone 390×844', () => {
     for (const b of await chips(page).all()) {
       expect((await b.boundingBox())!.height, 'a chip is a 44px target').toBeGreaterThanOrEqual(44);
     }
-    // The row sits directly above the composer.
+    // The row sits directly above the composer, and the conversation ends
+    // above the row (its room is reserved: it covers nothing).
     const rb = (await row(page).boundingBox())!, cb = (await page.locator('#mv-compose').boundingBox())!;
     expect(Math.abs(rb.y + rb.height - cb.y), 'the row ends where the composer starts').toBeLessThanOrEqual(1);
+    await expect
+      .poll(async () => { const lb = (await page.locator('#mv-log').boundingBox())!; return lb.y + lb.height - rb.y; }, { message: 'the conversation ends above the row' })
+      .toBeLessThanOrEqual(1);
 
     // A tap fills — and sends nothing.
     await chips(page).first().tap();
@@ -218,9 +224,15 @@ async function measureTurn(page: Page, inFlow: boolean, salt: string) {
     });
   });
   await openView(page);
-  // The view opens on an idle session whose last turn has a set: the chips
-  // come with the page (the open is a turn end too, served from the cache).
-  await expect(chips(page).first(), 'the previous turn\'s chips at the open').toBeVisible({ timeout: 8_000 });
+  // A turn of its own first, so the measured open has a set to show (the
+  // test does not depend on another test's turn).
+  await turn(page, reply + salt + ' (before the open)');
+  await expect(chips(page).first()).toBeVisible({ timeout: 8_000 });
+  // The open of a view on an idle session whose last turn has a set: the
+  // chips come with the page (the open is a turn end too, from the cache).
+  await page.reload();
+  await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+  await expect(chips(page).first(), 'the last turn\'s chips at the open').toBeVisible({ timeout: 8_000 });
   await page.waitForTimeout(1000);
   const atOpen = await readCls(page);
   await resetCls(page);

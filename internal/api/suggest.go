@@ -123,13 +123,20 @@ type suggestTracker struct {
 	// 0 from an older host), and end what the newest turn end saw.
 	since int64
 	end   suggestEnd
+	// cached: the newest turn end is a resumed socket's first idle marker,
+	// which may only SERVE a set already made for its token (cacheOnly).
+	cached bool
 }
 
 // suggestEnd is one turn end: the stream's status token at it (0 = the host
-// sends none) and when muster saw it.
+// sends none) and when muster saw it. cacheOnly: the tracker does not hold
+// the whole turn (a resumed socket), so it may serve the set already made for
+// this token — a page reloaded on an idle session shows its chips again — but
+// never generate one from its partial input.
 type suggestEnd struct {
-	since int64
-	at    time.Time
+	since     int64
+	at        time.Time
+	cacheOnly bool
 }
 
 // lastEnd is the newest turn end observe reported.
@@ -159,9 +166,10 @@ func (t *suggestTracker) priorToken() int64 {
 func (t *suggestTracker) observe(m mirror.Msg) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.cached = false
 	ended := t.observeLocked(m)
 	if ended {
-		t.end = suggestEnd{since: t.since, at: time.Now()}
+		t.end = suggestEnd{since: t.since, at: time.Now(), cacheOnly: t.cached}
 	}
 	return ended
 }
@@ -227,6 +235,11 @@ func (t *suggestTracker) observeLocked(m mirror.Msg) bool {
 		t.prior = t.stamp()
 	}
 	switch {
+	case t.resumed && !started && !m.Busy && m.StatusSince != 0:
+		// A resumed socket's first word on an idle session (the resume marker):
+		// the turn its page already shows may have a set — serve it, make none.
+		t.cached = true
+		return true
 	case t.resumed:
 		return false
 	case m.PromptIndex && !m.Busy:
@@ -391,7 +404,9 @@ func (s *Server) suggestTurnAt(ctx context.Context, host, session, window string
 	defer cancel()
 	in := t.input()
 	reply, _, ok := suggest.FinalReply(in.Tail)
-	if !ok || !suggest.HandsBack(reply) {
+	// A resumed socket holds no reply of the turn it resumed into: it only
+	// serves a set made for that turn (below), which passed this check then.
+	if !end.cacheOnly && (!ok || !suggest.HandsBack(reply)) {
 		return false
 	}
 	h, e, ok := s.suggestWindow(ctx, host, session, window)
@@ -447,6 +462,17 @@ func (s *Server) suggestTurnAt(ctx context.Context, host, session, window string
 	turn := s.ext.Mirror.AgentState(ctx, h.Host, e.Session, e.Window).Since
 	if end.since != 0 && turn != end.since {
 		return false
+	}
+	if end.cacheOnly {
+		// A resumed socket: serve the set made for this very turn, if any.
+		set, has := s.ext.Suggest.Latest(requestOwner(ctx), suggestSubject(h.Host, e))
+		if !has || set.Turn != turn || len(set.Suggestions) == 0 || time.Since(end.at) >= s.suggestIdleWait() {
+			return false
+		}
+		if pending != nil {
+			pending(time.Since(end.at))
+		}
+		return true
 	}
 	in = t.input()
 	if reply2, _, ok := suggest.FinalReply(in.Tail); !ok || reply2 != reply {

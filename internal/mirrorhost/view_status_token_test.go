@@ -99,4 +99,20 @@ func TestAViewStreamNamesItsStatusTimeAndNudgesTheList(t *testing.T) {
 	b.set(statusClaudeWindow(tr, mirror.StatusBusy, s2))
 	waitUntil(t, "a busy marker naming its time", marker(true, s2))
 	waitUntil(t, "the nudged list naming it", listed(s2))
+
+	// A live batch (the turn's reply) carries the time as well.
+	f, err := os.OpenFile(tr, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(`{"type":"assistant","message":{"content":[{"type":"text","text":"working on it"}]}}` + "\n")
+	_ = f.Close()
+	waitUntil(t, "the live reply naming the status time", func() bool {
+		for _, m := range events() {
+			if len(m.Events) > 0 && m.Events[0].Text == "working on it" {
+				return m.Busy && m.StatusSince == s2
+			}
+		}
+		return false
+	})
 }
