@@ -286,3 +286,48 @@ func TestACallCancelledByTheViewClosingIsNotCached(t *testing.T) {
 		t.Fatalf("after a cancelled call: %v, calls %d", out, g.calls)
 	}
 }
+
+// TestOneTurnIsOneCallWhateverInputTheViewSaw: two views of the SAME turn
+// with different inputs (a resumed socket saw less) share one call; the next
+// turn calls again.
+func TestOneTurnIsOneCallWhateverInputTheViewSaw(t *testing.T) {
+	g := &countingGen{}
+	e := &Engine{Gen: g}
+	full, partial := turnInput(t, turn1), turnInput(t, turn1+" ")
+	partial.Fingerprint = "a-different-input"
+	if _, out, _ := e.Suggest(context.Background(), 1, "s", full, 42); out != OutcomeGenerated {
+		t.Fatal(out)
+	}
+	if set, out, _ := e.Suggest(context.Background(), 1, "s", partial, 42); out != OutcomeCached || g.n() != 1 || set.Turn != 42 {
+		t.Fatalf("a second view of turn 42: %v, calls %d", out, g.n())
+	}
+	if _, out, _ := e.Suggest(context.Background(), 1, "s", partial, 43); out != OutcomeGenerated || g.n() != 2 {
+		t.Fatalf("turn 43: %v, calls %d", out, g.n())
+	}
+}
+
+// TestTurningOffDuringACallCachesNothing: the owner turned suggestions off
+// (and Forget emptied their cache) while a call ran: its answer is not kept.
+func TestTurningOffDuringACallCachesNothing(t *testing.T) {
+	g := &countingGen{block: make(chan struct{})}
+	prefs := &memPrefs{off: map[int64]bool{}}
+	e := &Engine{Gen: g, Prefs: prefs}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = e.Suggest(context.Background(), 1, "s", turnInput(t, turn1), 7)
+	}()
+	for g.n() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	prefs.SetDisabled(context.Background(), 1, true)
+	e.Forget(1)
+	close(g.block)
+	<-done
+	e.mu.Lock()
+	n := len(e.cache)
+	e.mu.Unlock()
+	if n != 0 {
+		t.Fatal("an answer for an owner who turned suggestions off was cached")
+	}
+}

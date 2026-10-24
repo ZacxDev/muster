@@ -2,6 +2,7 @@ package suggest
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log"
 	"testing"
@@ -55,9 +56,13 @@ func TestTheToggleIsOnByDefaultAndPerUser(t *testing.T) {
 	if off, _ := p.Disabled(asUser(3), 3); off {
 		t.Fatal("user 2's toggle reached user 3")
 	}
-	// User 3 reading user 2's row sees nothing (RLS): it reads as the default.
-	if off, err := p.Disabled(asUser(3), 2); err != nil || off {
-		t.Fatalf("user 3 read user 2's toggle: off=%v err=%v", off, err)
+	// User 3 reading user 2's row is refused before the query (RLS would hide
+	// the row, which would read as ON): the engine reads the error as off.
+	if _, err := p.Disabled(asUser(3), 2); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("user 3 read user 2's toggle: err=%v", err)
+	}
+	if _, err := p.Disabled(context.Background(), 2); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("a principal-less read: err=%v", err)
 	}
 	// User 3 writing user 2's row is refused.
 	if err := p.SetDisabled(asUser(3), 2, false); err == nil {

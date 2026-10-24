@@ -49,6 +49,8 @@ func TestEachFilterRuleDropsWithItsOwnReason(t *testing.T) {
 		{"bang", func() Raw { r := good(); r.Text = "!rm checkpoint every 500 rows"; return r }, DropSlashBang},
 		{"slash after space", func() Raw { r := good(); r.Text = "  /compact checkpoint every 500 rows"; return r }, DropSlashBang},
 		{"slash after zero-width", func() Raw { r := good(); r.Text = "​/model checkpoint every 500 rows"; return r }, DropSlashBang},
+		{"hash (memory note)", func() Raw { r := good(); r.Text = "# checkpoint every 500 rows"; return r }, DropSlashBang},
+		{"line separator", func() Raw { r := good(); r.Text = "Go with (a)\u2028checkpoint every 500 rows"; return r }, DropMultiline},
 		{"full-width bang", func() Raw { r := good(); r.Text = "！ls checkpoint every 500 rows"; return r }, DropSlashBang},
 		{"multiline", func() Raw { r := good(); r.Text = "Go with (a)\ncheckpoint every 500 rows"; return r }, DropMultiline},
 		{"url", func() Raw { r := good(); r.Text = "Go with (a), see https://example.test/checkpoint"; return r }, DropURL},

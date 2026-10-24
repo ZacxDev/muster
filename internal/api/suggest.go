@@ -81,6 +81,11 @@ type suggestTracker struct {
 	// started: the tracker has seen a batch (so a busy marker it sees after
 	// is a transition, not the stream's first word).
 	started bool
+	// resumed: the socket resumed at an offset, so the tracker holds only
+	// what came after it — no backfill, no prompt index. It ends no turn
+	// until a Reset or a prompt index gives it the whole conversation (a
+	// view that saw everything answers the turn; the engine shares its set).
+	resumed bool
 }
 
 // observe folds m in and reports whether it ends a turn: the busy marker fell,
@@ -89,7 +94,7 @@ func (t *suggestTracker) observe(m mirror.Msg) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if m.Reset {
-		t.entries, t.asks, t.askBase, t.indexed = nil, nil, 0, false
+		t.entries, t.asks, t.askBase, t.indexed, t.resumed = nil, nil, 0, false, false
 	}
 	for _, ev := range m.Events {
 		en, ok := suggestEntryOf(ev)
@@ -117,9 +122,14 @@ func (t *suggestTracker) observe(m mirror.Msg) bool {
 		t.askBase += drop
 		t.asks = append([]string(nil), t.asks[drop:]...)
 	}
+	if m.PromptIndex {
+		t.resumed = false
+	}
 	wasBusy, started := t.busy, t.started
 	t.busy, t.started = m.Busy, true
 	switch {
+	case t.resumed:
+		return false
 	case m.PromptIndex && !m.Busy:
 		return true
 	case started && wasBusy && !m.Busy:
@@ -261,7 +271,10 @@ func (s *Server) suggestTurn(ctx context.Context, host, session, window string, 
 		if why != suggestBlockedNotIdle || time.Now().After(deadline) {
 			return false
 		}
-		if st := s.ext.Mirror.AgentState(ctx, h.Host, e.Session, e.Window); st.Status == mirror.StatusWaiting || st.Status == mirror.StatusBusy {
+		// A permission prompt or a question ends the wait at once. Busy and
+		// unknown are what a lagging status reads (the stream said the turn
+		// ended), so those are waited out until the deadline.
+		if st := s.ext.Mirror.AgentState(ctx, h.Host, e.Session, e.Window); st.Status == mirror.StatusWaiting {
 			return false
 		}
 		select {
@@ -269,6 +282,15 @@ func (s *Server) suggestTurn(ctx context.Context, host, session, window string, 
 			return false
 		case <-time.After(suggestIdlePoll):
 		}
+	}
+	// 🔴 THE TURN TOKEN IS READ WITH THE INPUT, and checked again just before
+	// the engine is asked: a turn that started (and even ended) while the
+	// checks ran would otherwise stamp THIS input's set with the NEXT turn's
+	// token, and GET would serve it as that turn's.
+	turn := s.ext.Mirror.AgentState(ctx, h.Host, e.Session, e.Window).Since
+	in = t.input()
+	if reply2, _, ok := suggest.FinalReply(in.Tail); !ok || reply2 != reply {
+		return false
 	}
 	if s.ext.Focus != nil {
 		if f, has, err := s.ext.Focus.Get(ctx, focus.MirrorSubject(e.ClaudeSession)); err == nil && has {
@@ -279,14 +301,16 @@ func (s *Server) suggestTurn(ctx context.Context, host, session, window string, 
 	if !ok {
 		return false
 	}
-	turn := s.ext.Mirror.AgentState(ctx, h.Host, e.Session, e.Window).Since
+	if turn == 0 || s.ext.Mirror.AgentState(ctx, h.Host, e.Session, e.Window).Since != turn {
+		return false
+	}
 	set, out, err := s.ext.Suggest.Suggest(ctx, requestOwner(ctx), suggestSubject(h.Host, e), b, turn)
 	if err != nil && !errors.Is(err, suggest.ErrCapped) {
 		s.logger.Printf("suggest: %s@%s %s: %s", e.Session, h.Host, e.Window, suggest.Reason(err))
 	}
 	switch out {
 	case suggest.OutcomeGenerated, suggest.OutcomeCached:
-		return len(set.Suggestions) > 0
+		return len(set.Suggestions) > 0 && set.Turn == turn
 	}
 	return false
 }

@@ -23,9 +23,9 @@ import (
 //     it — an option or a proposed action must be the AGENT'S OWN, which is
 //     what stops text quoted from elsewhere steering an approval;
 //   - DropGapNoAsk: a gap cites an operator ask;
-//   - DropSlashBang: the text does not start with "/" or "!" (in Claude Code a
-//     leading "/" is a command and "!" is bash mode; a paste passes both as
-//     typed);
+//   - DropSlashBang: the text does not start with "/", "!" or "#" (in Claude
+//     Code a leading "/" is a command, "!" is bash mode and "#" a memory
+//     note; a paste passes each as typed);
 //   - DropMultiline, DropURL, DropFence: one line, no URL, no code fence;
 //   - DropSecret: redact.Secrets leaves the text (and quote) unchanged;
 //   - DropUnrelated: the text shares a content word with what it cites (its
@@ -134,7 +134,7 @@ func check(r Raw, text string, b Built) Drop {
 	if startsSlashOrBang(text) {
 		return DropSlashBang
 	}
-	if strings.ContainsAny(text, "\n\r") || hasControl(text) {
+	if strings.ContainsAny(text, "\n\r\u2028\u2029\u0085") || hasControl(text) {
 		return DropMultiline
 	}
 	if reURL.MatchString(text) {
@@ -187,7 +187,8 @@ func check(r Raw, text string, b Built) Drop {
 }
 
 // startsSlashOrBang reports whether text, past any leading space or invisible
-// character, starts with "/" or "!" — or a full-width look-alike of either.
+// character, starts with "/", "!" or "#" (Claude Code's command, bash-mode and
+// memory prefixes) — or a full-width look-alike of one.
 func startsSlashOrBang(text string) bool {
 	t := strings.TrimLeftFunc(text, func(r rune) bool {
 		return unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) || unicode.IsControl(r)
@@ -197,7 +198,7 @@ func startsSlashOrBang(text string) bool {
 	}
 	r, _ := utf8.DecodeRuneInString(t)
 	switch r {
-	case '/', '!', '／', '！':
+	case '/', '!', '#', '／', '！', '＃':
 		return true
 	}
 	return false

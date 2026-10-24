@@ -41,7 +41,10 @@ served — the same checks run again whenever the composer asks):
   decides whether a call is worth making.
 
 A set is served only for the turn it was made for: once the window's status
-changes, the old set is no longer offered.
+changes, the old set is no longer offered. The window's status can trail the
+transcript by a moment, so a turn end waits up to 5 s for it to read idle (a
+permission prompt or a question ends the wait at once), and a turn that moves
+on while the checks run generates nothing.
 
 ## What is sent to the model
 
@@ -80,8 +83,8 @@ Every item then passes a deterministic filter, and is dropped unless:
 - the text shares a word with what it cites, and every identifier-like term in
   it (a `--flag`, a path, a number) appears in the input — a term from
   nowhere, or from text that was never sent (tool output), is dropped;
-- it does not start with `/` or `!` (a command, or bash mode, in Claude Code),
-  spans one line, holds no URL and no code fence, and the redactor leaves it
+- it does not start with `/`, `!` or `#` (a command, bash mode or a memory
+  note in Claude Code), spans one line, holds no URL and no code fence, and the redactor leaves it
   unchanged;
 - (heuristics, flagged as such) it is not a stock phrase ("continue", "looks
   good", "ok"…), and a `decide` carries its condition ("but", "only if",
@@ -97,9 +100,12 @@ read before sending.
 
 ## Cost and caching
 
-A set is cached **in memory only**, by the fingerprint of the exact input: the
-same input never calls the model twice, and a new turn (a new input) calls it
-exactly once. Two views of the same turn share one call. A set's text is
+A set is cached **in memory only**, by the fingerprint of the exact input and
+by the turn it answers: the same input, or the same turn, never calls the
+model twice, and a new turn calls it exactly once. Two views of the same turn
+share one call, even when one of them resumed mid-conversation and saw less
+(a resumed view never generates from its partial tail; it waits for a view
+that has the whole conversation). A set's text is
 dropped after an hour (only its fingerprint is kept, so an unchanged session
 is not paid for again). **No suggestion text is ever written to the
 database.**
@@ -123,7 +129,8 @@ on. The tallies are in memory, so a restart clears them.
 - `MUSTER_SUGGEST=off` stops everything ([configuration](configuration.md)).
 - Each user's own toggle: `POST /account/suggest` with `on=0` or `on=1`
   (stored in `suggest_preferences`, migration `0047`; on is the default). Off
-  also drops that user's cached sets.
+  also drops that user's cached sets, and a call already running is not
+  kept. A toggle that cannot be read as its owner reads as off.
 
 ## Routes
 

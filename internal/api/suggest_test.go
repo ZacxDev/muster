@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/cctranscript"
+	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/suggest"
 )
@@ -366,5 +367,67 @@ func TestTheToggleAndTheEventRoutes(t *testing.T) {
 	form = url.Values{"event": {"shown"}, "host": {"other"}, "session": {"main"}}
 	if code := post("/mirror/view/suggest/event", form); code != http.StatusNotFound {
 		t.Fatalf("another host: %d", code)
+	}
+}
+
+// TestABusyStatusThatLagsTheStreamIsWaitedOut: the stream said the turn
+// ended but the window list still reads busy; once it reads idle (within the
+// wait) the set is made. A status that turns WAITING instead ends the wait
+// with no call.
+func TestABusyStatusThatLagsTheStreamIsWaitedOut(t *testing.T) {
+	for _, then := range []string{mirror.StatusIdle, mirror.StatusWaiting} {
+		f := newSuggestFixture(t, func(fm *fakeMirror, _ *Extensions) { fm.agentState.Status = mirror.StatusBusy })
+		f.s.suggestIdleWaitFor = 2 * time.Second
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			f.fm.mu.Lock()
+			f.fm.agentState.Status = then
+			f.fm.mu.Unlock()
+		}()
+		got := f.turnEnd(t)
+		if want := then == mirror.StatusIdle; got != want || f.gen.n() != map[bool]int{true: 1, false: 0}[want] {
+			t.Fatalf("busy, then %s: offered %v, calls %d", then, got, f.gen.n())
+		}
+	}
+}
+
+// bumpingFocus is a focus store whose read moves the window to a NEW turn —
+// standing in for a turn that started and ended while the checks ran.
+type bumpingFocus struct {
+	memFocus
+	fm *fakeMirror
+}
+
+func (b *bumpingFocus) Get(ctx context.Context, s focus.Subject) (focus.Focus, bool, error) {
+	b.fm.mu.Lock()
+	b.fm.agentState.Since += 1000
+	b.fm.mu.Unlock()
+	return b.memFocus.Get(ctx, s)
+}
+
+// TestASetIsNeverStampedWithALaterTurn: the turn moved between reading the
+// input and asking the engine: nothing is generated for the stale input.
+func TestASetIsNeverStampedWithALaterTurn(t *testing.T) {
+	f := newSuggestFixture(t, func(fm *fakeMirror, ext *Extensions) {
+		ext.Focus = &bumpingFocus{memFocus: memFocus{rows: map[focus.Subject]focus.Focus{}}, fm: fm}
+	})
+	if f.turnEnd(t) || f.gen.n() != 0 {
+		t.Fatalf("a set was made across a turn change: calls %d", f.gen.n())
+	}
+	if v := f.get(t); len(v.Suggestions) != 0 {
+		t.Fatalf("served %+v", v)
+	}
+}
+
+// TestAResumedViewEndsNoTurnUntilItHasTheWholeConversation: a socket that
+// resumed at an offset sees no backfill and no prompt index; it does not
+// generate from that partial tail, until a prompt index (or a Reset) arrives.
+func TestAResumedViewEndsNoTurnUntilItHasTheWholeConversation(t *testing.T) {
+	tr := &suggestTracker{resumed: true}
+	if tr.observe(mirror.Msg{Busy: true}) || tr.observe(mirror.Msg{Busy: false, Events: []cctranscript.Event{{Kind: cctranscript.KindText, Text: "Done. Should I?"}}}) {
+		t.Fatal("a resumed tracker ended a turn from a partial tail")
+	}
+	if !tr.observe(mirror.Msg{PromptIndex: true, Prompts: []cctranscript.PromptRef{{Line: 1, Text: "go"}}}) {
+		t.Fatal("positive control: the prompt index on an idle session ends the turn")
 	}
 }

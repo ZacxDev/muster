@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -16,12 +17,12 @@ import (
 //  2. the owner's TOGGLE (Prefs) and AUTO-PAUSE refuse an owner who turned it
 //     off or whose fill rate fell under AutoPauseFillRate;
 //  3. 🔴 THE FINGERPRINT SKIP: a subject whose cached set was built from the
-//     SAME input gets that set back and NO call is made — and that holds after
+//     SAME input — or for the SAME turn — gets that set back and NO call is made — and that holds after
 //     the set's text expired (only the fingerprint is kept), so an unchanged
 //     session is never paid for twice. A new turn is a new input, so a new
 //     fingerprint, so exactly one call;
-//  4. one call per (subject, fingerprint) at a time: a second view asking for
-//     the same input waits for the first's answer;
+//  4. one call per (subject, turn) at a time: a second view asking for the
+//     same turn waits for the first's answer;
 //  5. the per-owner and global RATE CAPS, then the concurrency bound;
 //  6. the call; its answer through Filter; the survivors cached.
 //
@@ -190,9 +191,23 @@ func (e *Engine) Suggest(ctx context.Context, owner int64, subject string, b Bui
 		return Set{}, o, nil
 	}
 	k := cacheKey{owner, subject}
+	// 🔴 ONE CALL PER TURN, NOT JUST PER INPUT. Two views of one turn can hold
+	// different inputs (a resumed socket has no backfill), so the input's
+	// fingerprint alone would pay twice; the turn token (the window's
+	// StatusSince) names the turn whatever the view saw. turn 0 (unknown)
+	// falls back to the fingerprint.
+	flightKey := "f:" + b.Fingerprint
+	if turn != 0 {
+		flightKey = "t:" + strconv.FormatInt(turn, 10)
+	}
 	e.mu.Lock()
 	e.init()
-	if c, ok := e.cache[k]; ok && c.set.Fingerprint == b.Fingerprint {
+	if c, ok := e.cache[k]; ok && (c.set.Fingerprint == b.Fingerprint || (turn != 0 && c.set.Turn == turn)) {
+		if turn != 0 && c.set.Fingerprint == b.Fingerprint {
+			// The same input under a new token (a resumed CLI rewrote its
+			// status): the set still answers it.
+			c.set.Turn = turn
+		}
 		set, expired := c.set, c.expired || e.now().Sub(c.set.At) > CacheTTL
 		e.mu.Unlock()
 		if expired {
@@ -200,7 +215,7 @@ func (e *Engine) Suggest(ctx context.Context, owner int64, subject string, b Bui
 		}
 		return set, OutcomeCached, nil
 	}
-	if f, ok := e.inflight[k][b.Fingerprint]; ok {
+	if f, ok := e.inflight[k][flightKey]; ok {
 		e.mu.Unlock()
 		select {
 		case <-f.done:
@@ -212,31 +227,40 @@ func (e *Engine) Suggest(ctx context.Context, owner int64, subject string, b Bui
 			return Set{}, OutcomeFailed, ctx.Err()
 		}
 	}
-	f := &flight{done: make(chan struct{})}
+	f := &flight{done: make(chan struct{}), out: OutcomeFailed}
 	if e.inflight[k] == nil {
 		e.inflight[k] = map[string]*flight{}
 	}
-	e.inflight[k][b.Fingerprint] = f
+	e.inflight[k][flightKey] = f
 	e.mu.Unlock()
+	// Whatever happens below — a panic included — the flight ends, so a later
+	// turn end never waits on a call nobody is making.
+	defer func() {
+		e.mu.Lock()
+		delete(e.inflight[k], flightKey)
+		if len(e.inflight[k]) == 0 {
+			delete(e.inflight, k)
+		}
+		e.mu.Unlock()
+		close(f.done)
+	}()
 
 	set, out, err := e.generate(ctx, owner, b, turn)
 	f.set, f.out, f.err = set, out, err
-
-	e.mu.Lock()
-	delete(e.inflight[k], b.Fingerprint)
-	if len(e.inflight[k]) == 0 {
-		delete(e.inflight, k)
-	}
 	// A refused call (no key, the cap, a cancelled wait) caches nothing: the
 	// next turn end (or view) may try again. A call that was MADE (set.At is
 	// stamped only after one) caches its answer, empty, failed or not, so the
-	// same input is never paid for twice.
+	// same input is never paid for twice — unless the owner turned
+	// suggestions off while it ran (Forget has already emptied their cache).
 	if out == OutcomeGenerated || (out == OutcomeFailed && !set.At.IsZero()) {
+		if o := e.Enabled(ctx, owner); o != "" {
+			return Set{}, o, nil
+		}
+		e.mu.Lock()
 		e.cache[k] = &cached{set: set}
 		e.evictLocked()
+		e.mu.Unlock()
 	}
-	e.mu.Unlock()
-	close(f.done)
 	return set, out, err
 }
 
