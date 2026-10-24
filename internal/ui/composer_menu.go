@@ -53,8 +53,8 @@ import (
 
 // composerSendSplitClass is Send's look as the left half of the split button.
 // Its side padding is px-2.5 (operator ask: "reduce the padding on the send
-// button"), down from the plain Send's px-4: the caret beside it already makes
-// the control wide, and the room goes to the input. It is still 44px tall, and
+// button"), the same as the plain Send's (composerSendClass): the room goes
+// to the input. It is still 44px tall, and
 // the caret keeps its 44px square (it has no padding to cut: it is the glyph
 // centred in its tap target).
 const composerSendSplitClass = "press min-h-[44px] shrink-0 rounded-l-xl rounded-r-none bg-accent px-2.5 text-sm font-semibold text-on-accent transition disabled:opacity-40"
