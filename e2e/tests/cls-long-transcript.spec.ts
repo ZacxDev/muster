@@ -5,8 +5,9 @@ import { clsInit, readCls, settle, ClsResult } from '../lib/cls';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { Profile, THROTTLED, throttle } from '../lib/throttle';
 
-// A LONG TRANSCRIPT SHIFTS LESS THAN 0.01, at a phone and a desktop, on an
-// unthrottled loopback AND under the throttled profile (lib/throttle.ts).
+// A LONG TRANSCRIPT OPENS WITH ITS BUBBLES AND ITS COMPOSER STILL — no shift
+// sourced to either, and under 0.01 in all — at a phone and a desktop, on an
+// unthrottled loopback and under the throttled profile (lib/throttle.ts).
 //
 // cls.spec.ts measures every page, but its agent page is the seeded
 // docs-sweeper: seven messages, which fit on one screen. An operator's agent
@@ -98,6 +99,14 @@ const report = (label: string, r: ClsResult) =>
 // and #chat-form let a frame paint the form before its box was parsed (13px,
 // then 57px) — under the bar, but a shift main did not have.
 const formShifts = (r: ClsResult) => [...r.shifts, ...r.excludedShifts].filter((x) => x.sources.some((n) => n.startsWith('form#chat-form')));
+// ⚠ ONE SHIFT IS NOT THIS PAGE'S TRANSCRIPT OR COMPOSER, AND IS ALLOWED HERE:
+// the header's title box (agentTitle, `div.mr-auto.flex.min-w-0`) moving by
+// 0.00026 at 390px on some opens of an agent whose name is clipped. It is on
+// origin/main too (measured: present in the same cases' excluded entries there)
+// and its cause is not established; it is under the bar and reported, not
+// fixed, here. Anything else that moves fails these cases.
+const TITLE = 'div.mr-auto.flex.min-w-0';
+const foreignShifts = (r: ClsResult) => [...r.shifts, ...r.excludedShifts].filter((x) => !x.sources.every((n) => n === TITLE));
 
 // heldOpen opens url with the deferred vendor scripts held unanswered (so
 // DOMContentLoaded and start() wait on them), waits until the document has
@@ -160,7 +169,7 @@ test.describe('a 200-message agent transcript', () => {
   for (const vp of viewports) {
     for (const pr of openCases(vp)) {
       for (const kind of ['markdown', 'plain'] as const) {
-        test(`${vp.name}, ${pr.name}, ${kind}: opening the agent shifts less than ${BAR}, ${pr.runs}×`, async ({ browser }) => {
+        test(`${vp.name}, ${pr.name}, ${kind}: opening the agent moves neither the transcript nor the composer, ${pr.runs}×`, async ({ browser }) => {
           test.setTimeout(120_000);
           const seen: number[] = [];
           const bad: string[] = [];
@@ -173,7 +182,7 @@ test.describe('a 200-message agent transcript', () => {
               await expect(page.locator('#chat-log [data-md-done]'), 'every bubble was converted').toHaveCount(CAP);
               expect(await atEnd(page, '#chat-log'), 'the log opened at its end').toBe(true);
               seen.push(moved(r));
-              if (moved(r) >= BAR || formShifts(r).length) bad.push(report(`run ${i + 1}`, r));
+              if (moved(r) >= BAR || foreignShifts(r).length) bad.push(report(`run ${i + 1}`, r));
             } finally {
               await ctx.close();
             }
@@ -202,7 +211,9 @@ test.describe('a 200-message agent transcript', () => {
           const after = await readCls(page);
           console.log(`[cls-long ${vp.name}] ${kind}, scripts held: ${moved(before)}, after they land: ${moved(after)}`);
           expect(moved(before), report('while the scripts were held', before)).toBeLessThan(BAR);
+          expect(foreignShifts(before), report('while the scripts were held', before)).toEqual([]);
           expect(moved(after), report('the whole open', after)).toBeLessThan(BAR);
+          expect(foreignShifts(after), report('the whole open', after)).toEqual([]);
           expect(formShifts(after), report('the composer moved', after)).toEqual([]);
           expect(await atEnd(page, '#chat-log'), 'still at its end').toBe(true);
         } finally {
@@ -210,6 +221,50 @@ test.describe('a 200-message agent transcript', () => {
         }
       });
     }
+
+    // 🔴 A PAINT BETWEEN THE LOG AND THE LAYOUT CALL MOVES NOTHING. The parser
+    // can yield anywhere (under load it did, mid-form: 0.50 at 390px), so the
+    // document is held here, straight after #chat-log and before #chat-form,
+    // on a parser-blocking script that answers after 1.2 s: the browser paints
+    // the log as it stands. The frames painted in that hold are the positive
+    // control (they must show the log's bubbles in the DOM).
+    test(`${vp.name}: a frame painted before the layout call moves nothing`, async ({ browser }) => {
+      const ctx = await browser.newContext({ ...vp.use, baseURL, storageState: authState });
+      try {
+        const page = await ctx.newPage();
+        await page.route(/\/agents\/[^/?]+(\?.*)?$/, async (r) => {
+          if (r.request().resourceType() !== 'document') return r.continue();
+          const res = await r.fetch();
+          const html = await res.text();
+          const at = html.indexOf('<form id="chat-form"');
+          await r.fulfill({ response: res, body: at < 0 ? html : html.slice(0, at) + '<script src="/__e2e-stall.js"></script>' + html.slice(at) });
+        });
+        await page.route('**/__e2e-stall.js', async (r) => {
+          await new Promise((res) => setTimeout(res, 1200));
+          await r.fulfill({ contentType: 'text/javascript', body: 'window.__stallEnded = true;' });
+        });
+        await page.addInitScript(clsInit);
+        await page.addInitScript(`(() => {
+          const tick = () => {
+            if (!window.__stallEnded && document.querySelectorAll('#chat-log [data-bubble]').length) window.__heldFrames = (window.__heldFrames || 0) + 1;
+            if (document.readyState !== 'complete') requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        })()`);
+        await page.goto(`/agents/${agents.markdown}`);
+        await settle(page);
+        const r = await readCls(page);
+        const held = await page.evaluate(() => (window as any).__heldFrames || 0);
+        console.log(`[cls-long ${vp.name}] stalled before the layout call: ${moved(r)} (${held} frames held)`);
+        expect(held, 'control: frames were painted with the bubbles in the DOM, before the layout call').toBeGreaterThan(0);
+        await expect(page.locator('#chat-log [data-md-done]')).toHaveCount(CAP);
+        expect(await atEnd(page, '#chat-log'), 'at its end').toBe(true);
+        expect(moved(r), report('stalled before the layout call', r)).toBeLessThan(BAR);
+        expect(foreignShifts(r), report('stalled before the layout call', r)).toEqual([]);
+      } finally {
+        await ctx.close();
+      }
+    });
 
     // 🔴 A READER WHO SCROLLED UP BEFORE start() STAYS THERE. On a slow network
     // the transcript is readable (laid out, at its end) for as long as the

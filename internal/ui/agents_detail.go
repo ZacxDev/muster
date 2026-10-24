@@ -747,7 +747,16 @@ func agentChatPane(v AgentDetailView) g.Node {
 		g.If(v.Surface == ChatSurfacePage && v.AsksSrc != "", AskerAsksBlock(v.Asks, v.AsksSrc, true)),
 		Div(
 			ID("chat-log"),
-			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-s1/40 p-3 ring-1 ring-inset ring-line min-h-0"),
+			Class("flex flex-1 flex-col gap-2 overflow-auto rounded-xl bg-s1/40 p-3 ring-1 ring-inset ring-line min-h-0 [&[data-cg-unlaid]>*]:invisible"),
+			// 🔴 THE TRANSCRIPT IS NOT PAINTABLE UNTIL IT IS LAID OUT. The parser
+			// can paint mid-document — under load, between any two tags — and a
+			// frame of this log before window.__cgLayoutLog runs shows it raw and
+			// scrolled to the top, then everything moves (measured: 0.50 at 390px,
+			// one open in three, with the host at load 64). Its children are
+			// invisible (still laid out, so the clamp can measure them) until the
+			// layout call, or start(), removes this; content that becomes visible
+			// is not a layout shift. A <noscript> rule shows them without script.
+			g.If(v.Surface == ChatSurfacePage, g.Attr("data-cg-unlaid", "")),
 			// Live-refresh the transcript from the canonical server state when a chat
 			// reply is persisted (chat.reply). This is what makes a KICKOFF turn — which
 			// streams server-side, NOT over this page's WS — appear live without a
@@ -879,6 +888,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// same task.
 			g.If(v.Surface == ChatSurfacePage, Script(g.Raw(`window.__cgLayoutLog && window.__cgLayoutLog();`))),
 		),
+		// Without script nothing removes #chat-log's data-cg-unlaid: show the
+		// transcript anyway.
+		g.If(v.Surface == ChatSurfacePage, NoScript(StyleEl(g.Raw(`#chat-log > * { visibility: visible !important; }`)))),
 		// The box grows with its text (composer_fit.go), the same one script as
 		// the mirrored composer's — it travels with the pane for the chief panel.
 		// First after the form, with the draft's (composer_draft.go), so a
@@ -1709,6 +1721,8 @@ func agentChatScript(name string) g.Node {
   if (!form || !input || !logEl) return;
   // Render any server-rendered transcript bubbles as markdown (idempotent).
   mdConvert(logEl);
+  // Laid out now, if window.__cgLayoutLog did not run (see #chat-log's data-cg-unlaid).
+  logEl.removeAttribute('data-cg-unlaid');
   // Already wired for this exact form (e.g. DOMContentLoaded + htmx:load both
   // fired for the same body): don't double-bind.
   if (form.hasAttribute('data-cg-chat')) return;
@@ -1979,16 +1993,19 @@ func agentChatScript(name string) g.Node {
   connect();
   // The interim observer of window.__cgLayoutLog, when it ran for THIS log:
   // torn down, and a reader who scrolled away meanwhile stays where they are.
-  var pre = window.__cgLayout;
+  // ⚠ NOT NAMED pre: start() already has a function pre() (the tool chip's
+  // <pre> blocks), and a var of that name, hoisted, replaced it — every tool
+  // result then threw.
+  var interim = window.__cgLayout;
   window.__cgLayout = null;
-  if (pre) {
-    if (pre.ro) pre.ro.disconnect();
-    pre.log.removeEventListener('scroll', pre.onScroll);
-    if (pre.log !== logEl) pre = null;
+  if (interim) {
+    if (interim.ro) interim.ro.disconnect();
+    interim.log.removeEventListener('scroll', interim.onScroll);
+    if (interim.log !== logEl) interim = null;
   }
   // Open scrolled to the latest message: the transcript is converted + laid out
   // by now, so forceScroll() reads the full scrollHeight and pins the log to bottom.
-  if (pre && pre.away) session.stick = false; else forceScroll();
+  if (interim && interim.away) session.stick = false; else forceScroll();
 
   // 🔴 NEVER A SILENT SEND. With the socket open the message goes over it and
   // the reply streams back. With it NOT open — still connecting, dropped, or
@@ -2084,7 +2101,7 @@ func agentChatScript(name string) g.Node {
   //
   // Until start() runs, an observer here keeps a reader who has not scrolled
   // away at the end (the header, say, may still change the log's box), and
-  // records whether they HAVE scrolled away: start() reads that (pre.away)
+  // records whether they HAVE scrolled away: start() reads that (.away)
   // instead of pinning to the end, so a reader who scrolled up while the
   // deferred scripts were loading is not pulled back down, and then tears the
   // observer and its listener down.
@@ -2093,6 +2110,7 @@ func agentChatScript(name string) g.Node {
     if (!log) return;
     mdConvert(log);
     log.scrollTop = log.scrollHeight;
+    log.removeAttribute('data-cg-unlaid');
     var pre = { log: log, away: false, ro: null };
     pre.onScroll = function () { pre.away = log.scrollHeight - log.scrollTop - log.clientHeight >= 48; };
     log.addEventListener('scroll', pre.onScroll, { passive: true });
@@ -2128,18 +2146,6 @@ func agentChatScript(name string) g.Node {
         e.preventDefault();
       }
     });
-    // 🔴 A READER WHO HAS SCROLLED UP KEEPS THEIR PLACE ACROSS THE REFRESH.
-    // The swap puts the RAW transcript in (shorter: blank lines collapsed, no
-    // clamp), and a layout read during the swap clamps scrollTop to that
-    // shorter log; the converted, clamped one then put the reader thousands of
-    // pixels from where they were (measured: 3000px up became 5242 and 18947).
-    // So the position is taken before the swap and put back once the clamp has
-    // run (its MutationObserver's microtask was queued by the insertion, so it
-    // runs before this one, and both before the next paint).
-    document.body.addEventListener('htmx:beforeSwap', function (e) {
-      var t = e.detail && e.detail.target;
-      if (t && t.id === 'chat-log') t.__cgTop = t.scrollTop;
-    });
     // Conditional #chat-log refetch (ui.ChatLogBody): send the version this log
     // was last drawn from; the server answers 204 (no swap) when it would draw
     // the same thing. A 200 carries the new version, recorded on afterSwap below.
@@ -2168,10 +2174,7 @@ func agentChatScript(name string) g.Node {
         mdConvert(t);
         // Respect sticky scroll: only pin to bottom if the user hasn't scrolled up
         // (stick !== false). Default to pinning when there's no live chat session.
-        var top = t.__cgTop;
-        t.__cgTop = null;
         if (!window.__cgChat || window.__cgChat.stick !== false) t.scrollTop = t.scrollHeight;
-        else if (top != null) queueMicrotask(function () { t.scrollTop = top; });
       }
     });
   }
