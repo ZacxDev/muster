@@ -398,7 +398,7 @@ func (s *Server) sendQueueListView(ctx context.Context, t sendqueue.Target, edit
 	}
 	if h, ok, err := s.ext.SendQueue.HeadOf(ctx, t); err == nil && ok {
 		if d := s.sendQueueDecide(h, s.sendQueueProbe(ctx, h)); !d.Send {
-			v.Waiting = d.Why
+			v.Waiting, v.Held, v.ResumeAt, v.Now = d.Why, d.Held, d.ResumeAt, s.sendQueueNow()
 		} else {
 			v.Waiting = "sending shortly"
 		}
@@ -777,7 +777,8 @@ func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue
 	case st.Unknown != nil:
 		return sendqueue.AgentState{Why: unprefixed(st.Unknown)}
 	case st.Status == mirror.StatusIdle:
-		return sendqueue.AgentState{Idle: true, Since: st.Since, Observed: st.Observed, Pasted: st.Pasted}
+		return sendqueue.AgentState{Idle: true, Since: st.Since, Observed: st.Observed, Pasted: st.Pasted, TurnError: st.TurnError,
+			HostLimit: st.HostLimit, Session: st.Session}
 	case st.Status == mirror.StatusWaiting:
 		return sendqueue.AgentState{Why: queueWordsOf(st.Runtime).waiting}
 	}
