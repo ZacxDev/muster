@@ -192,6 +192,9 @@ func TestTheSwitcherBarIsServerRenderedAtAFixedHeight(t *testing.T) {
 	if !strings.Contains(page, `localStorage.getItem(KEY)`) || !strings.Contains(page, `'`+switcherViewKey+`'`) {
 		t.Error("the script does not apply the stored view")
 	}
+	if !strings.Contains(page, "bar.__musterSwitcherBound") || strings.Contains(page, "data-switcher-bound") {
+		t.Error("the switcher's bind guard is not a JS property (an htmx history snapshot carries an attribute)")
+	}
 	// The page's own entry: a span with aria-current, never a link.
 	list, mirrors := switcherFixture()
 	all := renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{AgentID: 4}), false))

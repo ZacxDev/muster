@@ -308,8 +308,10 @@ func switcherScript() g.Node {
 	return Script(g.Raw(`
 (function () {
   var bar = document.getElementById('` + SwitcherID + `');
-  if (!bar || bar.hasAttribute('data-switcher-bound')) return;
-  bar.setAttribute('data-switcher-bound', '');
+  // A property, not an attribute: htmx's history snapshot carries attributes,
+  // and after Back an attribute guard left the restored toggle unbound.
+  if (!bar || bar.__musterSwitcherBound) return;
+  bar.__musterSwitcherBound = true;
   var VIEWS = ` + views + `], LABELS = ` + labels + `}, NAMES = ` + names + `};
   var KEY = '` + switcherViewKey + `';
   var btn = document.getElementById('switcher-toggle');

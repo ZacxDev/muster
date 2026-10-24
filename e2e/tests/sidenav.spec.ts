@@ -286,7 +286,10 @@ for (const size of [
 // border, less the 4px the input row gives back (its bottom padding is pb-2
 // rather than max(0.75rem, safe area) once the bar below carries the inset).
 // Measured 681 at 390×844. The header (still one row) and the terminal (which
-// draws no switcher: still 105px, 37 rows) are unchanged.
+// draws no switcher: still 105px, 37 rows) are unchanged. ⚠ ON A PHONE WITH A
+// SAFE-AREA INSET THE COST IS LARGER: the inset moves to the bar, so the input
+// row drops to pb-2 and keeps none of it — with a 34px inset the conversation
+// loses 53px, not 41 (here, in emulation, the inset is 0).
 test.describe('phone header', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   test('adding the hamburger wraps no header and takes no height from the log or the terminal', async ({ page }) => {

@@ -125,6 +125,92 @@ test('"Hide until next ask" hides the asks here without sending anything; a new 
   expect(sent.filter((s) => !s.startsWith('GET ')), 'nothing but page loads and the block\'s own refreshes').toEqual([]);
 });
 
+// 🔴 A REGRESSION TEST: AFTER BACK, EVERYTHING STILL WORKS. htmx's history
+// snapshot of the page carries the DOM as it was — so a double-bind guard
+// written as an ATTRIBUTE came back already "bound", the re-run scripts bailed,
+// and the Hide button, the chip and the view toggle were all dead. The guards
+// are JS properties now (a snapshot does not carry them).
+test('after a boosted navigation and Back, the chip, Hide, a new ask and the view toggle all still work', async ({ page }) => {
+  const q1 = fix('ask', '1', 'docs-sweeper', 'Back-button probe?');
+  asks.push(q1);
+  await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} }).catch(() => undefined);
+  await openAgent(page, 'docs-sweeper');
+  await block(page).getByRole('button', { name: 'Hide until next ask' }).click();
+  await expect(chip(page)).toHaveText('1 waiting');
+  // A boosted navigation (the sidebar's own link), then Back.
+  await page.evaluate(() => (document.querySelector('.sidebar-tab[data-tab="tasks"]') as HTMLElement).click());
+  await expect.poll(() => new URL(page.url()).pathname).toBe('/tasks');
+  await page.goBack();
+  await expect.poll(() => new URL(page.url()).pathname).toBe('/agents/docs-sweeper');
+  await expect(bar(page)).toBeVisible();
+
+  // The toggle cycles.
+  const toggle = page.locator('#switcher-toggle');
+  await expect(toggle).toHaveText('Recent');
+  await toggle.click();
+  await expect(toggle).toHaveText('Pins');
+  await expect(row(page, 'pins')).toBeVisible();
+  await toggle.click();
+  await toggle.click();
+  await expect(toggle).toHaveText('Recent');
+  // The chip reopens; Hide hides again.
+  await expect(chip(page)).toHaveText('1 waiting');
+  await chip(page).click();
+  await expect(block(page)).toBeVisible();
+  await expect(chip(page)).toBeHidden();
+  await block(page).getByRole('button', { name: 'Hide until next ask' }).click();
+  await expect(block(page)).toBeHidden();
+  await expect(chip(page)).toHaveText('1 waiting');
+  // A new ask, arriving by the block's own refresh, brings it back.
+  const q2 = fix('ask', '1', 'docs-sweeper', 'And after Back?');
+  asks.push(q2);
+  await page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:attention_queue.changed'));
+  await expect(block(page).locator(`#ask-${q2}`)).toBeVisible();
+  await expect(chip(page)).toBeHidden();
+});
+
+// 🔴 A REGRESSION TEST: two tabs each hiding asks must not overwrite each
+// other's hidden ids — a write merges with what is stored NOW, not with a copy
+// read earlier — and a hide in one tab applies in the other at once (the
+// `storage` event).
+test('hidden asks merge across tabs, and a hide in one tab applies in the other', async ({ page }) => {
+  const q1 = fix('ask', '1', 'docs-sweeper', 'Tab probe one?');
+  asks.push(q1);
+  await openAgent(page, 'docs-sweeper');
+  await page.evaluate(() => localStorage.removeItem('muster.asks.hidden.v1'));
+  const other = await page.context().newPage();
+  try {
+    // Tab B on the same page; tab A hides — B follows at once.
+    await other.goto('/agents/docs-sweeper');
+    await page.reload();
+    await expect(block(other).locator(`#ask-${q1}`)).toBeVisible();
+    await block(page).getByRole('button', { name: 'Hide until next ask' }).click();
+    await expect(chip(page)).toHaveText('1 waiting');
+    await expect(block(other), 'the hide applied in the other tab (storage event)').toBeHidden();
+    await expect(chip(other)).toHaveText('1 waiting');
+
+    // Tab B moves to ANOTHER agent and hides its ask there; tab A, which
+    // already read the list, then hides a new ask of its own. A's write must
+    // keep B's id.
+    const qb = fix('ask', '1', 'release-helper', 'Tab probe, the other agent?');
+    asks.push(qb);
+    await other.goto('/agents/release-helper');
+    await expect(block(other).locator(`#ask-${qb}`)).toBeVisible();
+    await block(other).getByRole('button', { name: 'Hide until next ask' }).click();
+    await expect(chip(other)).toBeVisible();
+    const q2 = fix('ask', '1', 'docs-sweeper', 'Tab probe two?');
+    asks.push(q2);
+    await page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:attention_queue.changed'));
+    await expect(block(page).locator(`#ask-${q2}`)).toBeVisible();
+    await block(page).getByRole('button', { name: 'Hide until next ask' }).click();
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('muster.asks.hidden.v1') || '[]'));
+    expect(stored, 'every tab\'s hidden ids are kept').toEqual(expect.arrayContaining([`ask-${q1}`, `ask-${qb}`, `ask-${q2}`]));
+  } finally {
+    await other.close();
+    await page.evaluate(() => localStorage.removeItem('muster.asks.hidden.v1'));
+  }
+});
+
 // 🔴 A REGRESSION TEST: at the base there is no #session-switcher.
 test('the switcher below the input: Recent without this page, Pins, All with it marked; the choice is kept; a tap navigates', async ({ page }) => {
   await openAgent(page, 'notes-tidy');

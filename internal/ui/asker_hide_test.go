@@ -41,6 +41,11 @@ func TestTheAsksHeadingCarriesAHideThatSendsNothing(t *testing.T) {
 			t.Errorf("viaHTMX=%v: the chip is not a hidden plain button: %s", viaHTMX, chipTag)
 		}
 		js := page[script:]
+		// A guard an htmx history snapshot carries (an attribute) leaves a
+		// restored block unbound after Back.
+		if strings.Contains(js, "-bound") {
+			t.Errorf("viaHTMX=%v: the hide script guards its binding with an attribute", viaHTMX)
+		}
 		for _, banned := range []string{"fetch(", "XMLHttpRequest", "htmx.ajax", "sendBeacon", ".submit(", "requestSubmit"} {
 			if strings.Contains(js, banned) {
 				t.Errorf("viaHTMX=%v: the hide script makes a request (%s)", viaHTMX, banned)
@@ -49,7 +54,8 @@ func TestTheAsksHeadingCarriesAHideThatSendsNothing(t *testing.T) {
 		// Per ask id: the hidden set is the items' ids, and the block is hidden
 		// only while every one of them is in it.
 		for _, want := range []string{`'` + askerAsksHiddenKey + `'`, `querySelectorAll('[data-attention-item][id]')`, `if (d.indexOf(k[i]) < 0) hide = false;`,
-			`new MutationObserver(apply).observe(block, { childList: true })`, `' waiting'`} {
+			`new MutationObserver(apply).observe(block, { childList: true })`, `' waiting'`, `block.__musterHideBound`,
+			`window.addEventListener('storage'`} {
 			if !strings.Contains(js, want) {
 				t.Errorf("viaHTMX=%v: the script lacks %q", viaHTMX, want)
 			}

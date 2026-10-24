@@ -172,7 +172,9 @@ func AskerAsksBlock(inner, src string, viaHTMX bool) g.Node {
 // is one of those. A refresh that adds an ask with an id not hidden shows the
 // block again on its own; one that only drops answered asks keeps it hidden.
 // Reopening by the chip forgets the ids it shows, so the next load shows it too.
-// Storage that throws keeps the hide for this page only.
+// Storage that throws keeps the hide for this page only. Every write re-reads
+// the stored list first (another tab's hides are merged, never overwritten),
+// and a write in another tab applies here at once (the storage event).
 //
 // 🔴 APPLIED BEFORE THE BLOCK IS PAINTED. The script runs as the block is
 // parsed (it follows it) and again on every refresh of its content (a
@@ -218,16 +220,23 @@ func askerAsksHideScript() g.Node {
 (function () {
   var block = document.getElementById('` + AskerAsksID + `');
   var chip = document.getElementById('` + AskerAsksID + `-chip');
-  if (!block || !chip || block.hasAttribute('data-hide-bound')) return;
-  block.setAttribute('data-hide-bound', '');
+  // 🔴 THE GUARD IS A PROPERTY, NOT AN ATTRIBUTE: htmx's history snapshot
+  // carries attributes, so after Back an attribute guard made this script
+  // bail on a block it had never bound — the Hide, the chip and the refresh
+  // all dead. A restored block is a new element, without the property.
+  if (!block || !chip || block.__musterHideBound) return;
+  block.__musterHideBound = true;
   var KEY = '` + askerAsksHiddenKey + `';
-  var mem = null;
+  // mem is only the fallback for storage that throws (this page's own hides).
+  var mem = [];
+  // 🔴 READ AT EVERY USE, NEVER CACHED: another tab may have written since,
+  // and a write built on a stale copy dropped its hides.
   function load() {
-    if (mem) return mem;
-    var a = [];
-    try { a = JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) {}
-    mem = Array.isArray(a) ? a : [];
-    return mem;
+    try {
+      var a = JSON.parse(localStorage.getItem(KEY) || '[]');
+      if (Array.isArray(a)) { mem = a; return a.slice(); }
+    } catch (e) {}
+    return mem.slice();
   }
   // The newest 200 are kept: an id is never reused, so older ones only weigh.
   function save(a) { mem = a.slice(-200); try { localStorage.setItem(KEY, JSON.stringify(mem)); } catch (e) {} }
@@ -247,7 +256,7 @@ func askerAsksHideScript() g.Node {
     var b = e.target && e.target.closest ? e.target.closest('[data-asker-asks-hide]') : null;
     if (!b) return;
     e.preventDefault();
-    var d = load().slice(), k = keys();
+    var d = load(), k = keys();
     for (var i = 0; i < k.length; i++) if (d.indexOf(k[i]) < 0) d.push(k[i]);
     save(d);
     apply();
@@ -261,6 +270,8 @@ func askerAsksHideScript() g.Node {
     if (b) try { b.focus(); } catch (err) {}
   });
   if (typeof MutationObserver !== 'undefined') new MutationObserver(apply).observe(block, { childList: true });
+  // A hide (or a reopen) in another tab applies here at once.
+  window.addEventListener('storage', function (e) { if (e.key === KEY && block.isConnected) apply(); });
   apply();
 })();
 `))
