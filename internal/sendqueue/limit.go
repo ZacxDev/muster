@@ -112,10 +112,12 @@ func breakerBackoff(quick int) time.Duration {
 // quick turns it counted were the limit's.
 func holdFor(st AgentState, now time.Time) (Decision, bool) {
 	e := st.TurnError
-	if l := st.HostLimit; l != nil && (e == nil || e.Kind != mirror.TurnErrorLimit) {
-		// The account is limited though this window's own latest turn does not
-		// say so (another window hit it, or this one's report was cut by the
-		// window list's bound): held as if it did.
+	if l := st.HostLimit; l != nil && (e == nil || e.Kind != mirror.TurnErrorLimit || l.At > e.At) {
+		// The account is limited and this window's own latest turn does not
+		// say so — it says nothing, another error, or an OLDER limit (one that
+		// may have passed): the newer limit, by its record's time, is the one
+		// that holds (another window hit it, or this one's report was cut by
+		// the window list's bound).
 		e = &mirror.TurnError{Kind: mirror.TurnErrorLimit, At: l.At, ResetsAt: l.ResetsAt}
 	}
 	switch {
@@ -138,10 +140,15 @@ func holdFor(st AgentState, now time.Time) (Decision, bool) {
 	return Decision{}, false
 }
 
-// Bounced reports whether sent message it was REFUSED by Claude Code before it
-// worked on it, as st shows its window now — every one of these, or the row
-// stays sent:
+// Bounced reports whether sent message it — pasted into Claude Code session
+// pastedIn — was REFUSED by Claude Code before it worked on it, as st shows
+// its window now. Every one of these, or the row stays sent:
 //
+//   - the refused turn is in the SAME Claude Code session the message was
+//     pasted into (st.Session == pastedIn, both known): a fresh `claude` in
+//     the same pane, whose first prompt happens to be the message's text,
+//     has nothing before it in ITS transcript (PrevAt 0), and is not the
+//     message's refusal;
 //   - the window is idle, on a status newer than the one it was pasted on
 //     (it.AfterSince: the turn after the paste has ended);
 //   - the latest turn ended in an error the CLI wrote itself that was its
@@ -154,9 +161,10 @@ func holdFor(st AgentState, now time.Time) (Decision, bool) {
 //     the terminal that hit the limit, has its answer there — after its paste
 //     — and stays sent, restart or not (the hub's Pasted, checked as well,
 //     lives in memory and a restart forgets it).
-func Bounced(it Item, st AgentState) bool {
+func Bounced(it Item, pastedIn string, st AgentState) bool {
 	e := st.TurnError
-	return it.State == Sent && st.Idle && st.Since > it.AfterSince && st.Pasted <= it.AfterSince &&
+	return pastedIn != "" && st.Session == pastedIn &&
+		it.State == Sent && st.Idle && st.Since > it.AfterSince && st.Pasted <= it.AfterSince &&
 		e != nil && e.Rejected && e.Prompt == mirror.PromptDigest(it.Body) && e.PrevAt <= it.AfterSince
 }
 
@@ -165,6 +173,7 @@ func Bounced(it Item, st AgentState) bool {
 // (Bounced). A row is rejected at most once: Reject moves only a row still
 // sent.
 func (d *Dispatcher) rejectBounced(ctx context.Context) {
+	d.forgetPastes()
 	items, err := d.Store.RecentSent(ctx, d.now().Add(-BounceWithin))
 	if err != nil {
 		d.logf("sendqueue: %v", err)
@@ -174,8 +183,12 @@ func (d *Dispatcher) rejectBounced(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		pastedIn := d.pastedSession(it.ID)
+		if pastedIn == "" {
+			continue // not this dispatcher's send, or its record is gone: sent
+		}
 		st := d.Probe(d.AsOwner(ctx, it.Owner), Head{Item: it})
-		if !Bounced(it, st) {
+		if !Bounced(it, pastedIn, st) {
 			continue
 		}
 		ok, err := d.Store.Reject(ctx, it.ID, RejectedDetail(st.TurnError.Kind))
@@ -185,6 +198,47 @@ func (d *Dispatcher) rejectBounced(ctx context.Context) {
 		case ok:
 			d.logf("sendqueue: message %d (%d bytes) to %s (owner %d) was refused (%s) before Claude Code worked on it; "+
 				"marked failed for a Retry by hand", it.ID, len(it.Body), it.Target, it.Owner, st.TurnError.Kind)
+		}
+	}
+}
+
+// pasteRecord is what rememberPaste keeps of one send.
+type pasteRecord struct {
+	session string
+	at      time.Time
+}
+
+// rememberPaste records, for a send that may have reached the window, the
+// Claude session it was pasted into ("" for unknown, which Bounced never
+// matches).
+func (d *Dispatcher) rememberPaste(id int64, session string, o Outcome) {
+	if !o.Sent && !o.MayHaveDelivered {
+		return
+	}
+	d.pasteMu.Lock()
+	defer d.pasteMu.Unlock()
+	if d.pastedIn == nil {
+		d.pastedIn = map[int64]pasteRecord{}
+	}
+	d.pastedIn[id] = pasteRecord{session: session, at: d.now()}
+}
+
+// pastedSession is the Claude session message id was pasted into by this
+// dispatcher, "" when it does not know.
+func (d *Dispatcher) pastedSession(id int64) string {
+	d.pasteMu.Lock()
+	defer d.pasteMu.Unlock()
+	return d.pastedIn[id].session
+}
+
+// forgetPastes drops the records older than BounceWithin: past it no send is
+// checked again.
+func (d *Dispatcher) forgetPastes() {
+	d.pasteMu.Lock()
+	defer d.pasteMu.Unlock()
+	for id, r := range d.pastedIn {
+		if d.now().Sub(r.at) > BounceWithin {
+			delete(d.pastedIn, id)
 		}
 	}
 }

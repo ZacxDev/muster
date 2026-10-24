@@ -183,16 +183,23 @@ any real reply at all. With that:
   usage limit, "Not logged in", an API error, as its only reply — that message
   is marked failed, *Rejected: …*, with its ordinary **Retry**. Nothing
   re-sends it on its own. muster marks it only when the transcript shows it
-  was THAT message (the refused prompt's text matches) and nothing came
+  was THAT message (the refused prompt's text matches, in the same Claude
+  Code session it was pasted into — muster remembers that in memory, so after
+  a restart it marks nothing) and nothing came
   between its paste and the refusal (the newest record before the refused
   prompt is no later than the status it was pasted on). A message Claude
   answered, followed by another prompt typed in the terminal that hit the
-  limit, stays sent; so does any message the transcript cannot show was
-  refused. A Retry of a message that was in fact answered would run it twice.
-- **The limit is the account's.** When any Claude Code window on a host hits
-  it, `muster-mirror` also reports it for the whole host, and every Claude
-  Code window there holds — until the reset, or until any of its windows gets
-  a real answer.
+  limit, stays sent; so does one whose text a fresh `claude` in the same
+  pane happens to start with; so does any message the transcript cannot show
+  was refused. A Retry of a message that was in fact answered would run it twice.
+- **The limit is the account's — and muster assumes ONE account per host.**
+  When any Claude Code window on a host hits it, `muster-mirror` also reports
+  it for the whole host, and every Claude Code window there holds — until the
+  reset, or until any of its windows gets a real answer (which lifts it for
+  all of them). A window on that host signed in to another account, or using
+  another provider, is held too, until the reset, unless you tap **Send now**.
+  If the newer of a window's own limit and its host's is the host's, that one
+  holds.
 - **Other immediate failures trip a breaker that backs off.** When the last 2
   turns each ended within 10 seconds of their prompt in another error Claude
   Code wrote itself ("Not logged in", an API error), the queue holds, saying
@@ -200,7 +207,7 @@ any real reply at all. With that:
   5, then every 15 minutes, one message each time. A real answer resets it.
 - **When.** The time a held queue resumes is shown in your local time, with
   its date when it is not today (a weekly limit). The line takes at most two
-  lines; hover or long-press it for the whole text.
+  lines; tap it (or press Enter on it) for the whole text.
 - **Send now** still works while the queue is held, and sends only the one
   message you tapped.
 - A `muster-mirror` that predates this reports nothing about how a turn ended,

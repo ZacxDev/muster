@@ -308,6 +308,7 @@ func TestTheAgentStateCarriesHowTheLatestTurnFailed(t *testing.T) {
 	ws := statusWindows(mirror.StatusIdle, t1)
 	e := mirror.TurnError{Kind: mirror.TurnErrorLimit, At: t1 - 1, ResetsAt: t3, Rejected: true, Prompt: mirror.PromptDigest("q"), PrevAt: t1 - 2, Quick: 2}
 	ws[0].TurnError = &e
+	ws[0].ClaudeSession = "sess-1"
 	m := winHello("ws", true, ws...)
 	m.StatusReport = true
 	if _, err := r.rawConnect(t, tok, m); err != nil {
@@ -317,6 +318,9 @@ func TestTheAgentStateCarriesHowTheLatestTurnFailed(t *testing.T) {
 	st := r.svc.AgentState(asUser(1), "ws", "work", "@1")
 	if st.TurnError == nil || *st.TurnError != e {
 		t.Fatalf("AgentState.TurnError = %+v; want what the host reported, %+v", st.TurnError, e)
+	}
+	if st.Session != "sess-1" {
+		t.Fatalf("AgentState.Session = %q; want the window's Claude session", st.Session)
 	}
 	tok2, _ := r.store.mint(t, 1, "ws2")
 	m2 := winHello("ws2", true, statusWindows(mirror.StatusIdle, t1)...)

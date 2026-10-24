@@ -657,6 +657,9 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 				// JSON writes six-fold; the list-wide bound (MaxPendingWindows)
 				// keeps the first windows' alone.
 				Claude: &ClaudePane{Status: mirror.StatusWaiting, StatusSince: math.MaxInt64, Gen: strings.Repeat("f", 64),
+					// And the last message at its largest: muster keeps it at most
+					// at now (a WAITING window's is the host's now anyway).
+					LastMessage: math.MaxInt64,
 					Pending: &mirror.Pending{Summary: strings.Repeat("<", mirror.MaxPendingSummary), Tool: strings.Repeat("&", mirror.MaxPendingTool),
 						Last: strings.Repeat(">", mirror.MaxPendingLast)}},
 				// Every window with its other panes' Claude sessions at their
@@ -727,7 +730,8 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 			t.Fatalf("instrument check: %d windows carry a turn error, want the bound %d", turnErrors, mirror.MaxTurnErrorWindows)
 		}
 		for _, w := range l.windows {
-			if w.Label == "" || w.Command == "" || !w.Claude || (w.Status != mirror.StatusWaiting && w.TurnError == nil) || w.StatusSince != math.MaxInt64 || len(w.ClaudeSession) != 64 {
+			if w.Label == "" || w.Command == "" || !w.Claude || (w.Status != mirror.StatusWaiting && w.TurnError == nil) || w.StatusSince != math.MaxInt64 || len(w.ClaudeSession) != 64 ||
+				w.LastMessage < time.Now().Unix()-2*mirror.ActivityBucket {
 				t.Fatalf("instrument check: a worst-case field was dropped by normalisation, so this is not the worst case: %+v", w)
 			}
 		}

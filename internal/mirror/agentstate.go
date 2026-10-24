@@ -74,6 +74,9 @@ type AgentState struct {
 	// windows (Msg.HostLimit), set on a Claude window whenever the host
 	// reports one; nil otherwise.
 	HostLimit *HostLimit
+	// Session is the Claude Code session id of the conversation in the window
+	// (Window.ClaudeSession), "" when the host does not say.
+	Session string
 	// Unknown is why Status is unknown; nil when it is known.
 	Unknown error
 
@@ -125,7 +128,7 @@ func (h *Hub) AgentState(owner int64, host, session, window string) AgentState {
 		}
 		st := AgentState{Runtime: runtime, Status: w.Status, Since: w.StatusSince, TurnError: w.TurnError}
 		if runtime == RuntimeClaude {
-			st.HostLimit = hc.hostLimit
+			st.HostLimit, st.Session = hc.hostLimit, w.ClaudeSession
 		}
 		t := h.turn(owner, host, session, id)
 		if t.since == w.StatusSince && t.status == w.Status {

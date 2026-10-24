@@ -25,8 +25,13 @@ type cli struct {
 	reply func(body string) *mirror.TurnError
 }
 
+// cliSession is the fake CLI's Claude Code session id (the window's).
+const cliSession = "sess-1"
+
 func newCLI(c *clock, start time.Time, reply func(string) *mirror.TurnError) *cli {
-	return &cli{fakeTarget: &fakeTarget{st: idleSince(start)}, c: c, reply: reply}
+	st := idleSince(start)
+	st.Session = cliSession
+	return &cli{fakeTarget: &fakeTarget{st: st}, c: c, reply: reply}
 }
 
 func (l *cli) send(ctx context.Context, it Item, st AgentState) Outcome {
@@ -39,7 +44,7 @@ func (l *cli) send(ctx context.Context, it Item, st AgentState) Outcome {
 		// the previous turn's end, no later than the status it was pasted on.
 		e.Prompt, e.PrevAt = mirror.PromptDigest(it.Body), st.Since
 	}
-	l.st = AgentState{Idle: true, Since: l.st.Since + 700, Observed: l.c.now(), TurnError: e}
+	l.st = AgentState{Idle: true, Since: l.st.Since + 700, Observed: l.c.now(), TurnError: e, Session: l.st.Session}
 	return o
 }
 
@@ -48,7 +53,7 @@ func (l *cli) send(ctx context.Context, it Item, st AgentState) Outcome {
 func (l *cli) answer(e *mirror.TurnError) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.st = AgentState{Idle: true, Since: l.st.Since + 5000, Observed: l.c.now(), TurnError: e}
+	l.st = AgentState{Idle: true, Since: l.st.Since + 5000, Observed: l.c.now(), TurnError: e, Session: l.st.Session}
 }
 
 func limitDispatcher(s *PGStore, l *cli, c *clock) *Dispatcher {
@@ -472,7 +477,7 @@ func TestAMessageClaudeAnsweredStaysSentWhenALaterTerminalPromptHitsTheLimit(t *
 		// digest, PrevAt = M's answer, after M's paste.
 		l.mu.Lock()
 		answer := l.st.Since
-		l.st = AgentState{Idle: true, Since: answer + 60_000, Observed: c.now(), TurnError: &mirror.TurnError{
+		l.st = AgentState{Idle: true, Since: answer + 60_000, Observed: c.now(), Session: cliSession, TurnError: &mirror.TurnError{
 			Kind: mirror.TurnErrorLimit, Rejected: true, Prompt: mirror.PromptDigest("X"), PrevAt: answer, ResetsAt: t0.Add(time.Hour).UnixMilli()}}
 		if restarted {
 			l.st.Pasted = 0
@@ -497,5 +502,80 @@ func TestAMessageClaudeAnsweredStaysSentWhenALaterTerminalPromptHitsTheLimit(t *
 			t.Fatalf("restarted %t: M = %s; want sent — its answer was written after its paste", restarted, r.State)
 		}
 		wantSent(t, l.fakeTarget, "held on the limit", "M")
+	}
+}
+
+// TestAFreshClaudeInTheSamePaneNeverFailsAnAnsweredMessage (F1): the queue
+// sends M into session sess-1, and Claude answers it. Then a fresh `claude`
+// starts in the same pane (a new session) and its FIRST prompt — M's exact
+// text — hits the limit: nothing before it in that transcript (PrevAt 0), its
+// digest M's. It is not M's refusal: M stays sent. A dispatcher that does not
+// know which session M was pasted into (restarted) leaves even a true refusal
+// sent. CONTROL: the same refusal in the session M was pasted into fails it.
+func TestAFreshClaudeInTheSamePaneNeverFailsAnAnsweredMessage(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		session   string
+		restarted bool
+		fails     bool
+	}{
+		{"a new session, its first prompt M's text", "sess-2", false, false},
+		{"the same session, but muster restarted (no record)", cliSession, true, false},
+		{"CONTROL: the same session, a true refusal", cliSession, false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, _ := pgStore(t)
+			t0 := time.Now().Truncate(time.Second)
+			clk := &clock{t: t0}
+			l := newCLI(clk, t0.Add(-time.Hour), func(string) *mirror.TurnError { return nil })
+			d := limitDispatcher(s, l, clk)
+			m := mustEnqueue(t, s, 2, mirrorItem("M"))
+			clk.set(t0.Add(idle))
+			tick(t, d)
+			wantSent(t, l.fakeTarget, "M", "M")
+			pastedOn := row(t, s, m.ID).AfterSince
+			l.mu.Lock()
+			l.st = AgentState{Idle: true, Since: l.st.Since + 60_000, Observed: clk.now(), Session: c.session, TurnError: &mirror.TurnError{
+				Kind: mirror.TurnErrorLimit, Rejected: true, Prompt: mirror.PromptDigest("M"), PrevAt: 0, ResetsAt: t0.Add(time.Hour).UnixMilli()}}
+			if c.fails {
+				l.st.TurnError.PrevAt = pastedOn
+			}
+			l.mu.Unlock()
+			if c.restarted {
+				d = limitDispatcher(s, l, clk)
+			}
+			clk.set(t0.Add(2 * idle))
+			tick(t, d)
+			if r := row(t, s, m.ID); (r.State == Failed) != c.fails {
+				t.Fatalf("M = %s %q; want failed %t", r.State, r.Detail, c.fails)
+			}
+		})
+	}
+}
+
+// TestThePasteRecordsAreForgottenAfterBounceWithin: the in-memory record of
+// which session a message was pasted into is dropped once no send that old is
+// checked again (RecentSent's window), so it does not grow without bound.
+func TestThePasteRecordsAreForgottenAfterBounceWithin(t *testing.T) {
+	s, _ := pgStore(t)
+	t0 := time.Now().Truncate(time.Second)
+	c := &clock{t: t0}
+	l := newCLI(c, t0.Add(-time.Hour), func(string) *mirror.TurnError { return nil })
+	d := limitDispatcher(s, l, c)
+	m := mustEnqueue(t, s, 2, mirrorItem("M"))
+	c.set(t0.Add(idle))
+	tick(t, d)
+	if d.pastedSession(m.ID) != cliSession {
+		t.Fatalf("the record = %q; want %q", d.pastedSession(m.ID), cliSession)
+	}
+	c.set(t0.Add(idle + BounceWithin - time.Second))
+	tick(t, d)
+	if d.pastedSession(m.ID) != cliSession {
+		t.Fatal("forgotten inside BounceWithin")
+	}
+	c.set(t0.Add(idle + BounceWithin + time.Second))
+	tick(t, d)
+	if got := d.pastedSession(m.ID); got != "" {
+		t.Fatalf("the record past BounceWithin = %q; want forgotten", got)
 	}
 }

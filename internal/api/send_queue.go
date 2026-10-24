@@ -775,7 +775,7 @@ func (s *Server) sendQueueProbe(ctx context.Context, h sendqueue.Head) sendqueue
 		return sendqueue.AgentState{Why: unprefixed(st.Unknown)}
 	case st.Status == mirror.StatusIdle:
 		return sendqueue.AgentState{Idle: true, Since: st.Since, Observed: st.Observed, Pasted: st.Pasted, TurnError: st.TurnError,
-			HostLimit: st.HostLimit}
+			HostLimit: st.HostLimit, Session: st.Session}
 	case st.Runtime == mirror.RuntimeHermes && st.Status == mirror.StatusWaiting:
 		return sendqueue.AgentState{Why: "Hermes is waiting for you (an approval or a question)."}
 	case st.Runtime == mirror.RuntimeHermes:

@@ -92,6 +92,10 @@ type AgentState struct {
 	// windows (mirror.HostLimit): the account's limit, which holds this window
 	// too. nil for none. Set when Idle.
 	HostLimit *mirror.HostLimit
+	// Session is the Claude Code session id of the conversation in the target
+	// (mirror.Window.ClaudeSession) — the one its TurnError was read from — ""
+	// when the host does not say.
+	Session string
 }
 
 // Decision is what Decide made of one head.
@@ -207,7 +211,14 @@ type Dispatcher struct {
 	Lease      time.Duration
 	RenewEvery time.Duration
 
-	kick     chan struct{}
+	kick chan struct{}
+	// pastedIn is, per message this dispatcher sent, the Claude session the
+	// window held when it was pasted (rememberPaste): what Bounced matches the
+	// refused turn's session against. In memory only — no migration — so a
+	// message whose record is gone (a restart, another pod's send) is never
+	// found Bounced: it stays sent.
+	pasteMu  sync.Mutex
+	pastedIn map[int64]pasteRecord
 	instOnce sync.Once
 }
 
@@ -343,6 +354,7 @@ func (d *Dispatcher) Tick(ctx context.Context) (int, error) {
 			continue
 		}
 		o := d.sendRenewing(ctx, octx, it, st, d.Send)
+		d.rememberPaste(it.ID, st.Session, o)
 		if o.Sent {
 			o.MayHaveDelivered = true
 		}
@@ -430,7 +442,14 @@ func (d *Dispatcher) SendNow(ctx, octx context.Context, id int64, since int64, s
 	// that would spend its one Retry on a message that was on its way.
 	// WithoutCancel keeps ctx's values (the principal, the sign-in time).
 	ctx, octx = context.WithoutCancel(ctx), context.WithoutCancel(octx)
-	o := d.sendRenewing(ctx, octx, it, AgentState{Since: since}, send)
+	// The window's session as it is pasted into, for Bounced: Send now is
+	// handed no state of its own, so it reads it.
+	var session string
+	if d.Probe != nil {
+		session = d.Probe(octx, Head{Item: it}).Session
+	}
+	o := d.sendRenewing(ctx, octx, it, AgentState{Since: since, Session: session}, send)
+	d.rememberPaste(it.ID, session, o)
 	if o.Sent {
 		o.MayHaveDelivered = true
 	}

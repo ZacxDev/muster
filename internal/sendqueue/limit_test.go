@@ -164,15 +164,23 @@ func TestBounced(t *testing.T) {
 	ok := Item{State: Sent, Body: "please run the migration", AfterSince: 1000}
 	refused := limitErr(time.Time{}, true)
 	refused.Prompt, refused.PrevAt = mirror.PromptDigest(ok.Body), 1000
-	okSt := AgentState{Idle: true, Since: 2000, Pasted: 1000, TurnError: refused}
-	if !Bounced(ok, okSt) {
+	okSt := AgentState{Idle: true, Since: 2000, Pasted: 1000, TurnError: refused, Session: "s1"}
+	if !Bounced(ok, "s1", okSt) {
 		t.Fatal("CONTROL: the bounced case is not Bounced")
+	}
+	if Bounced(ok, "", okSt) {
+		t.Fatal("Bounced with no record of the session it was pasted into")
+	}
+	unknown := okSt
+	unknown.Session = ""
+	if Bounced(ok, "", unknown) {
+		t.Fatal("Bounced with neither session known: unknown is never a match")
 	}
 	// Any kind the CLI refuses with counts, not only a limit (the breaker's
 	// probes: "Not logged in", an API error).
 	other := *refused
 	other.Kind = "authentication_failed"
-	if !Bounced(ok, AgentState{Idle: true, Since: 2000, Pasted: 1000, TurnError: &other}) {
+	if !Bounced(ok, "s1", AgentState{Idle: true, Since: 2000, Pasted: 1000, TurnError: &other, Session: "s1"}) {
 		t.Fatal("CONTROL: a refusal of another kind is not Bounced")
 	}
 	for name, f := range map[string]func(*Item, *AgentState){
@@ -184,12 +192,14 @@ func TestBounced(t *testing.T) {
 		"processed first (mid-turn)":     func(_ *Item, st *AgentState) { st.TurnError.Rejected = false },
 		"another prompt was refused":     func(_ *Item, st *AgentState) { st.TurnError.Prompt = mirror.PromptDigest("typed in the terminal") },
 		"a record after its paste":       func(_ *Item, st *AgentState) { st.TurnError.PrevAt = 1001 },
+		"another Claude session":         func(_ *Item, st *AgentState) { st.Session = "s2" },
+		"the window's session unknown":   func(_ *Item, st *AgentState) { st.Session = "" },
 	} {
 		it, st := ok, okSt
 		e := *okSt.TurnError
 		st.TurnError = &e
 		f(&it, &st)
-		if Bounced(it, st) {
+		if Bounced(it, "s1", st) {
 			t.Errorf("%s: Bounced; want not", name)
 		}
 	}
@@ -223,5 +233,29 @@ func TestTheHostsLimitHoldsAWindowWhoseOwnTurnSaysNothing(t *testing.T) {
 	st.TurnError, st.HostLimit = nil, &mirror.HostLimit{At: 1}
 	if d := Decide(h, st, now.Add(48*time.Hour), idle); d.Send || d.Why != LimitHeldNoReset {
 		t.Fatalf("a host limit with no reset: %+v; want held", d)
+	}
+}
+
+// TestTheNewerLimitHolds (F2): window A's own latest turn is YESTERDAY's
+// limit, long reset, while its host reports a live limit another window hit
+// just now: the newer limit, by its record's time, holds A. CONTROL: with the
+// host's limit older than A's own, A's own (reset) decides, and it sends.
+func TestTheNewerLimitHolds(t *testing.T) {
+	now := time.Date(2026, 10, 12, 21, 0, 0, 0, time.UTC)
+	yesterday := now.Add(-24 * time.Hour)
+	h := Head{Item: Item{State: Queued}}
+	st := idleSince(now.Add(-time.Hour))
+	st.TurnError = &mirror.TurnError{Kind: mirror.TurnErrorLimit, At: yesterday.UnixMilli(), ResetsAt: yesterday.Add(time.Hour).UnixMilli()}
+	if d := Decide(h, st, now, idle); !d.Send {
+		t.Fatalf("CONTROL, A's own limit reset yesterday, no host limit: %+v; want send", d)
+	}
+	reset := now.Add(time.Hour)
+	st.HostLimit = &mirror.HostLimit{At: now.Add(-time.Minute).UnixMilli(), ResetsAt: reset.UnixMilli()}
+	if d := Decide(h, st, now, idle); d.Send || !d.Held || !d.ResumeAt.Equal(reset) {
+		t.Fatalf("A with yesterday's limit, the host's live: %+v; want held until %s", d, reset)
+	}
+	st.HostLimit.At = yesterday.Add(-time.Hour).UnixMilli()
+	if d := Decide(h, st, now, idle); !d.Send {
+		t.Fatalf("CONTROL, the host's limit older than A's own: %+v; want A's own (reset) to decide", d)
 	}
 }

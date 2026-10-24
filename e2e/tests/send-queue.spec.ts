@@ -1351,6 +1351,19 @@ test.describe('a usage limit, phone 390×844 touch', () => {
     }));
     expect(at320.lines, 'two lines at 320px').toBeLessThanOrEqual(2);
     expect(at320.title).toContain('Held — usage limit; no reset time given');
+    // A tap shows the whole line in a popover — the clamped end ("…or tap
+    // Send now.") included — and moves nothing on the page.
+    const before320 = await page.evaluate(() => (window as unknown as { __shift: number }).__shift);
+    const rowBefore = await rowIn(page, text, 'queued').boundingBox();
+    await waiting.tap();
+    const full = page.locator('#mv-queue-waiting-full');
+    await expect(full).toBeVisible();
+    await expect(full).toContainText('Send now');
+    await page.evaluate(() => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res()))));
+    expect(await page.evaluate(() => (window as unknown as { __shift: number }).__shift), 'opening the whole line shifts nothing').toBe(before320);
+    expect(await rowIn(page, text, 'queued').boundingBox(), 'the queued row did not move').toEqual(rowBefore);
+    await page.keyboard.press('Escape');
+    await expect(full).toBeHidden();
     await page.setViewportSize({ width: 390, height: 844 });
     // Tidy: cancel it, and leave the session answered for the specs after.
     await cancelRow(rowIn(page, text, 'queued'), true);

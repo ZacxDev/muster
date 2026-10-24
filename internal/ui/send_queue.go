@@ -295,6 +295,7 @@ func SendQueueList(v SendQueueListView) g.Node {
 		g.If(open > 0, P(ID("mv-queue-head"), Class("text-[11px] font-semibold text-fg2"),
 			g.Text("Queued: "+strconv.Itoa(open)+" — sends one at a time, each when Claude Code has been idle a while"))),
 		g.If(v.Waiting != "", sendQueueWaiting(v)),
+		g.If(v.Waiting != "", sendQueueWaitingFull()),
 		Ul(Class("max-h-40 overflow-y-auto"), g.Group(rows)),
 	)
 }
@@ -318,19 +319,35 @@ func sendQueueWaiting(v SendQueueListView) g.Node {
 	// At most two lines, whatever the width (a 320px phone included): the
 	// line is clamped, and its whole text is its title.
 	cls := "min-h-[2lh] line-clamp-2 text-[11px] [overflow-wrap:anywhere]"
+	// A tap (or Enter) shows the whole line in a popover (sendQueueWaitingFull):
+	// it opens in the top layer, so nothing on the page moves.
+	tap := g.Group([]g.Node{g.Attr("tabindex", "0"), g.Attr("role", "button"), g.Attr("aria-controls", SendQueueWaitingFullID),
+		g.Attr("aria-label", "Show the whole line")})
 	if !v.Held {
 		text := "Next: " + v.Waiting
-		return P(ID("mv-queue-waiting"), g.Attr("title", text), Class(cls+" text-muted"), g.Text(text))
+		return P(ID("mv-queue-waiting"), g.Attr("title", text), tap, Class(cls+" cursor-pointer text-muted"), g.Text(text))
 	}
 	text := v.Waiting
 	if !v.ResumeAt.IsZero() {
 		text += " " + utcClock(v.ResumeAt, v.Now)
 	}
-	return P(ID("mv-queue-waiting"), g.Attr("data-queue-hold", ""), g.Attr("title", text), Class(cls+" font-semibold text-st-warning-fg"),
+	return P(ID("mv-queue-waiting"), g.Attr("data-queue-hold", ""), g.Attr("title", text), tap, Class(cls+" cursor-pointer font-semibold text-st-warning-fg"),
 		g.Text(v.Waiting),
 		g.If(!v.ResumeAt.IsZero(), g.Group([]g.Node{g.Text(" "),
 			g.El("time", g.Attr("data-clock", strconv.FormatInt(v.ResumeAt.UnixMilli(), 10)),
 				g.Attr("datetime", v.ResumeAt.UTC().Format(time.RFC3339)), g.Text(utcClock(v.ResumeAt, v.Now)))})))
+}
+
+// SendQueueWaitingFullID is the popover that shows the waiting line whole.
+const SendQueueWaitingFullID = "mv-queue-waiting-full"
+
+// sendQueueWaitingFull is the waiting line's popover: empty until the list's
+// script fills it with the line's whole text, as drawn (its time in the
+// reader's zone), and opens it. A popover is in the top layer: opening it
+// moves nothing on the page — the line itself stays clamped to two lines.
+func sendQueueWaitingFull() g.Node {
+	return Div(ID(SendQueueWaitingFullID), g.Attr("popover", ""), g.Attr("role", "status"),
+		Class("m-auto max-w-[min(90vw,28rem)] rounded-xl border-0 bg-s1 p-3 text-xs text-fg shadow-lg ring-1 ring-line [overflow-wrap:anywhere]"))
 }
 
 // utcClock is t as the server draws it for a reader whose zone it does not
@@ -616,7 +633,7 @@ func sendQueueScript() g.Node {
   // redraw would close it, and drop the focus inside it); the next load after
   // it closes catches up.
   function menuOpen() {
-    var ms = box.querySelectorAll('[data-queue-menu] [popover]');
+    var ms = box.querySelectorAll('[data-queue-menu] [popover], #mv-queue-waiting-full');
     for (var i = 0; i < ms.length; i++) {
       try { if (ms[i].matches(':popover-open')) return true; } catch (e) { return false; }
     }
@@ -770,6 +787,21 @@ func sendQueueScript() g.Node {
   box.addEventListener('click', function (e) {
     var b = e.target && e.target.closest ? e.target.closest('[aria-haspopup=menu]') : null;
     if (b) focusFirst = true;
+    var w = e.target && e.target.closest ? e.target.closest('#mv-queue-waiting') : null;
+    if (w) showWaiting(w);
+  });
+  // showWaiting opens the waiting line, whole, in its popover.
+  function showWaiting(w) {
+    var full = document.getElementById('mv-queue-waiting-full');
+    if (!full || typeof full.showPopover !== 'function') return;
+    full.textContent = w.textContent;
+    try { full.showPopover(); } catch (e) {}
+  }
+  box.addEventListener('keydown', function (e) {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.id === 'mv-queue-waiting') {
+      e.preventDefault();
+      showWaiting(e.target);
+    }
   });
   box.addEventListener('keydown', function (e) {
     var t = e.target;

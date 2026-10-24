@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/url"
 	"strconv"
 	"strings"
@@ -28,6 +29,15 @@ import (
 // in as many passes.
 func TestAUsageLimitHoldsTheQueueAndFailsOnlyTheBouncedMessage(t *testing.T) {
 	f := newSQFixture(t)
+	// ONE dispatcher for the whole run, as RunSendQueue keeps: it remembers
+	// which Claude session each message was pasted into.
+	d := f.srv.newSendQueueDispatcher()
+	tick := func() {
+		t.Helper()
+		if _, err := d.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var mu sync.Mutex
 	// A fixed clock (the queue's: sendQueueClock), so the held line's time is
 	// a literal: a reset on the same UTC day reads "14:00 UTC".
@@ -35,14 +45,16 @@ func TestAUsageLimitHoldsTheQueueAndFailsOnlyTheBouncedMessage(t *testing.T) {
 	f.srv.sendQueueClock = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
 	reset := now.Add(2 * time.Hour)
 	limited := true
-	f.mirror.agentState = &mirror.AgentState{Status: mirror.StatusIdle, Since: time.Now().Add(-time.Hour).UnixMilli(), Observed: now.Add(-time.Hour)}
+	f.mirror.agentState = &mirror.AgentState{Status: mirror.StatusIdle, Since: time.Now().Add(-time.Hour).UnixMilli(), Observed: now.Add(-time.Hour),
+		Session: "sess-1"}
 	first := f.enqueue(t, "the first, queued", time.Minute, 0)
 	second := f.enqueue(t, "the second, queued", time.Minute, 0)
 	third := f.enqueue(t, "the third, queued", time.Minute, 0)
 	// onPaste runs under f.mirror.mu after the paste was recorded.
 	f.mirror.onPaste = func() {
 		prev := f.mirror.agentState.Since
-		st := mirror.AgentState{Status: mirror.StatusIdle, Since: prev + 700, Observed: f.srv.sendQueueClock().Add(-time.Hour), Pasted: prev}
+		st := mirror.AgentState{Status: mirror.StatusIdle, Since: prev + 700, Observed: f.srv.sendQueueClock().Add(-time.Hour), Pasted: prev,
+			Session: f.mirror.agentState.Session}
 		if limited {
 			// The host names the refused prompt (the paste just recorded: v2's
 			// lock is held by this same paste) and the record before it, the
@@ -55,7 +67,7 @@ func TestAUsageLimitHoldsTheQueueAndFailsOnlyTheBouncedMessage(t *testing.T) {
 	}
 
 	for i := 0; i < 6; i++ {
-		f.tick(t)
+		tick()
 	}
 	if got := f.pasted(); len(got) != 1 || got[0] != first.Body {
 		t.Fatalf("pasted %q into a session under a usage limit; want the first message only", got)
@@ -89,7 +101,7 @@ func TestAUsageLimitHoldsTheQueueAndFailsOnlyTheBouncedMessage(t *testing.T) {
 	now = reset.Add(sendqueue.LimitMargin)
 	mu.Unlock()
 	for i := 0; i < 6; i++ {
-		f.tick(t)
+		tick()
 	}
 	want := []string{first.Body, second.Body, third.Body}
 	if got := f.pasted(); strings.Join(got, "|") != strings.Join(want, "|") {
