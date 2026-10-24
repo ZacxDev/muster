@@ -1,7 +1,7 @@
 # Design: start a tmux-backed session on a host from muster
 
-**Status: proposed; the design's decisions are made** (by the operator,
-2026-10-24; see [decisions](#decisions)). **Nothing here is implemented.**
+**Status: proposed; the design's decisions are made** (by the operator; see
+[decisions](#decisions)). **Nothing here is implemented.**
 Every other section is the recommended design. This page proposes letting
 the operator start a **new** session on one of their own machines from muster
 (the web UI and the PWA now, the Android shell later). The session is a real
@@ -198,11 +198,12 @@ Claude session and forwards it with the mirror token to `POST /mirror/mcp`
 ([attention.md](../attention.md#mirrored-claude-code-sessions)). That
 spelling needs the shell that starts Claude Code to export the secret. The
 operator does **not** do that. Their `~/.claude.json` entry uses a
-`headersHelper` (`~/.claude.json`, line 9089 when read on 2026-10-24, `devrc/scripts/muster-mcp/muster-mcp-headers.py:1-30`).
+`headersHelper` (in `~/.claude.json`; the helper is
+`devrc/scripts/muster-mcp/muster-mcp-headers.py:1-30`).
 The helper reads the 0600 secret file on every connection and prints the
 `Authorization` and pane headers. Its docstring says why: an exported secret
 would be inherited by every Bash tool call the session makes. The unit listens
-on `127.0.0.1:17823` (`devrc/nix/home.nix:548-549`). A spawned `claude` gets
+on a loopback port (`devrc/nix/home.nix:548-549`). A spawned `claude` gets
 the MCP tools from that same user-scope entry, with nothing added by the
 spawn (see [environment](#environment)).
 
@@ -229,8 +230,9 @@ spawn (see [environment](#environment)).
 
 ### The operator's habits (read from devrc)
 
-- **Hosts:** two, `workbench` and `laptop`. `MUSTER_MIRROR_HOST` is chosen by
-  `isLaptop` (`devrc/nix/home.nix:511`, `:636`). Both run
+- **Hosts:** two, called host A and host B here. `MUSTER_MIRROR_HOST` is
+  chosen per host by a Nix condition (`devrc/nix/home.nix:511`, `:636`). Both
+  run
   `muster-mirror` as a systemd user unit with `MUSTER_MIRROR_INTERACTIVE=1`
   (`devrc/nix/muster-mirror.nix:129-148`, `devrc/nix/home.nix:459-496`). The
   unit's PATH holds only tmux (`devrc/nix/home.nix:506`), and
@@ -253,8 +255,9 @@ spawn (see [environment](#environment)).
   permission mode is `default`.
 - **After a reboot** `devrc/scripts/tmux-session-restore.py` re-creates
   windows and runs `claude --resume <id>` (`:7`, `:542`, `:2350`).
-- **An existing launcher:** the clawgate reply agent's `new-session` write
-  kind runs `new-window -c <cwd>` and types the caller's text
+- **An existing launcher:** the operator's permission-router reply agent has a
+  `new-session` write kind that runs `new-window -c <cwd>` and types the
+  caller's text
   (`devrc/scripts/tmux-reply-agent:613-619`, `:658-733`). Before that it
   validates the cwd (`:571-595`). The cwd must be absolute, with no
   non-printable character, no `..` segment, no trailing `;` or whitespace
@@ -277,7 +280,7 @@ spawn (see [environment](#environment)).
 | The host polls a muster route | the host GETs pending requests | up to the poll interval | a new route and a pending-request queue | ✓ | ✗ the socket already exists; a queue keeps stale intent alive |
 | muster SSHes to the host | `ssh host tmux new-session …` | one connection | an SSH key in muster that reaches the workstation | ✗ | ✗ |
 | Type it through Live keys | muster opens an interactive attach and types `tmux new-session …` | seconds, screen-dependent | none new, but no allowlist at all | ✓ | ✗ unbounded, racy, and screen-scraped |
-| The reply agent's `new-session` (devrc) | clawgate → `tmux-reply-agent` | — | types arbitrary caller text; lives outside muster | — | ✗ no allowlist, wrong repository |
+| The reply agent's `new-session` (devrc) | the operator's permission router → `tmux-reply-agent` | — | types arbitrary caller text; lives outside muster | — | ✗ no allowlist, wrong repository |
 
 ### What runs the session on the host
 
@@ -609,7 +612,7 @@ profile matches how the operator runs it today:
 
 - **The argv is bare `opencode`.** The operator's live opencode panes run
   exactly that, with no arguments, each started in its project directory
-  (read from `ps` on 2026-10-24). The directory comes from tmux's `-c`, so
+  (read from `ps` on host A while this page was written). The directory comes from tmux's `-c`, so
   the optional `[<directory>]` argument (`opencode --help`) is not passed. A
   session is resumed with `opencode --session <id>`
   (`devrc/scripts/find-session.py:744`), which slice 1 does not offer. The
@@ -623,7 +626,7 @@ profile matches how the operator runs it today:
   takes a model ([decision 8](#decisions)), so this costs nothing: the sheet
   says "model from opencode's config" for opencode, and "model from your
   Claude Code settings" for claude. The
-  `flash`, `mimo` and `pro` aliases belong to the `opencode-dispatch` wrapper
+  `flash`, `mimo` and `pro` aliases belong to the operator's dispatch wrapper
   (`devrc/scripts/opencode/opencode-dispatch:127-130`), not to opencode, and
   are not offered. **UNVERIFIED:** whether an environment variable
   (a config-dir override such as `OPENCODE_CONFIG_DIR`,
@@ -1035,7 +1038,7 @@ attach to it at the desk, and kill it.
 
 ## Decisions
 
-The operator made each of these decisions on 2026-10-24. The rest of this page
+The operator made each of these decisions. The rest of this page
 follows them. Where a later decision changed an earlier one, the earlier one
 says so.
 
