@@ -42,9 +42,10 @@ served — the same checks run again whenever the composer asks):
 
 A set is served only for the turn it was made for: once the window's status
 changes, the old set is no longer offered. The window's status can trail the
-transcript by a moment, so a turn end waits up to 5 s for it to read idle (a
-permission prompt or a question ends the wait at once), and a turn that moves
-on while the checks run generates nothing.
+transcript by a few seconds, so a turn end waits up to 12 s (two of the host's
+window-list refreshes) for the turn's own idle status — not the idle from
+before the turn. A permission prompt or a question ends the wait at once, and
+a turn that moves on while the checks run generates nothing.
 
 ## What is sent to the model
 
@@ -104,8 +105,8 @@ A set is cached **in memory only**, by the fingerprint of the exact input and
 by the turn it answers: the same input, or the same turn, never calls the
 model twice, and a new turn calls it exactly once. Two views of the same turn
 share one call, even when one of them resumed mid-conversation and saw less
-(a resumed view never generates from its partial tail; it waits for a view
-that has the whole conversation). A set's text is
+(a resumed view never generates from the partial turn it resumed into; it
+does from the first whole turn after it). A set's text is
 dropped after an hour (only its fingerprint is kept, so an unchanged session
 is not paid for again). **No suggestion text is ever written to the
 database.**

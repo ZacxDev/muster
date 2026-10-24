@@ -320,8 +320,8 @@ func TestTurningOffDuringACallCachesNothing(t *testing.T) {
 	for g.n() == 0 {
 		time.Sleep(time.Millisecond)
 	}
+	// The toggle alone (no Forget): the re-check is what keeps it out.
 	prefs.SetDisabled(context.Background(), 1, true)
-	e.Forget(1)
 	close(g.block)
 	<-done
 	e.mu.Lock()
@@ -329,5 +329,62 @@ func TestTurningOffDuringACallCachesNothing(t *testing.T) {
 	e.mu.Unlock()
 	if n != 0 {
 		t.Fatal("an answer for an owner who turned suggestions off was cached")
+	}
+}
+
+// TestAWaiterDoesNotInheritTheCreatorsCancel: the view that started a call
+// closed; another view of the same turn, still open, asks again and gets a set.
+func TestAWaiterDoesNotInheritTheCreatorsCancel(t *testing.T) {
+	g := &ctxGen{}
+	e := &Engine{Gen: g}
+	b := turnInput(t, turn1)
+	ctx, cancel := context.WithCancel(context.Background())
+	created := make(chan struct{})
+	go func() {
+		close(created)
+		_, _, _ = e.Suggest(ctx, 1, "s", b, 5)
+	}()
+	<-created
+	for {
+		e.mu.Lock()
+		n := len(e.inflight)
+		e.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	res := make(chan Outcome, 1)
+	go func() {
+		_, out, _ := e.Suggest(context.Background(), 1, "s", b, 5)
+		res <- out
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if out := <-res; out != OutcomeGenerated {
+		t.Fatalf("the open view got %v", out)
+	}
+}
+
+// TestForgetDuringACallCachesNothing: Forget (the toggle turned off) landed
+// after the call began but before its answer was cached, and the toggle read
+// still said on (the race between the re-check and the insert): the epoch
+// keeps the answer out.
+func TestForgetDuringACallCachesNothing(t *testing.T) {
+	g := &countingGen{block: make(chan struct{})}
+	e := &Engine{Gen: g}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = e.Suggest(context.Background(), 1, "s", turnInput(t, turn1), 7)
+	}()
+	for g.n() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	e.Forget(1)
+	close(g.block)
+	<-done
+	if _, ok := e.Latest(1, "s"); ok {
+		t.Fatal("an answer that finished after Forget was cached")
 	}
 }

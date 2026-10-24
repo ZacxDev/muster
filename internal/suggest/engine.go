@@ -2,6 +2,7 @@ package suggest
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sort"
 	"strconv"
@@ -128,6 +129,7 @@ type Engine struct {
 	calls    map[int64][]time.Time
 	global   []time.Time
 	tallies  map[int64]*tally
+	epochs   map[int64]int // bumped by Forget
 	paused   map[int64]bool
 	sem      chan struct{}
 	semOnce  sync.Once
@@ -154,6 +156,7 @@ func (e *Engine) init() {
 		e.inflight = map[cacheKey]map[string]*flight{}
 		e.calls = map[int64][]time.Time{}
 		e.tallies = map[int64]*tally{}
+		e.epochs = map[int64]int{}
 		e.paused = map[int64]bool{}
 	}
 }
@@ -222,6 +225,13 @@ func (e *Engine) Suggest(ctx context.Context, owner int64, subject string, b Bui
 			if f.out == OutcomeGenerated {
 				return f.set, OutcomeCached, nil
 			}
+			// The asker whose call this was went away (its view closed); this
+			// one has not, so it asks again rather than inherit that cancel.
+			if errors.Is(f.err, context.Canceled) || errors.Is(f.err, context.DeadlineExceeded) {
+				if ctx.Err() == nil {
+					return e.Suggest(ctx, owner, subject, b, turn)
+				}
+			}
 			return f.set, f.out, f.err
 		case <-ctx.Done():
 			return Set{}, OutcomeFailed, ctx.Err()
@@ -232,6 +242,7 @@ func (e *Engine) Suggest(ctx context.Context, owner int64, subject string, b Bui
 		e.inflight[k] = map[string]*flight{}
 	}
 	e.inflight[k][flightKey] = f
+	epoch := e.epochs[owner]
 	e.mu.Unlock()
 	// Whatever happens below — a panic included — the flight ends, so a later
 	// turn end never waits on a call nobody is making.
@@ -252,11 +263,22 @@ func (e *Engine) Suggest(ctx context.Context, owner int64, subject string, b Bui
 	// stamped only after one) caches its answer, empty, failed or not, so the
 	// same input is never paid for twice — unless the owner turned
 	// suggestions off while it ran (Forget has already emptied their cache).
+	//
+	// The re-check reads the toggle on a ctx that outlives the asker's
+	// deadline (a call that was paid for is not dropped for a timeout), and
+	// Forget's epoch, compared under the lock at the insert, closes the window
+	// between that read and the insert.
 	if out == OutcomeGenerated || (out == OutcomeFailed && !set.At.IsZero()) {
-		if o := e.Enabled(ctx, owner); o != "" {
+		if o := e.Enabled(context.WithoutCancel(ctx), owner); o != "" {
+			f.set, f.out, f.err = Set{}, o, nil
 			return Set{}, o, nil
 		}
 		e.mu.Lock()
+		if e.epochs[owner] != epoch {
+			e.mu.Unlock()
+			f.set, f.out, f.err = Set{}, OutcomeUserOff, nil
+			return Set{}, OutcomeUserOff, nil
+		}
 		e.cache[k] = &cached{set: set}
 		e.evictLocked()
 		e.mu.Unlock()
@@ -478,4 +500,6 @@ func (e *Engine) Forget(owner int64) {
 			delete(e.cache, k)
 		}
 	}
+	// A call already running for owner caches nothing (Suggest compares it).
+	e.epochs[owner]++
 }

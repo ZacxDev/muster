@@ -58,8 +58,10 @@ const (
 	suggestTrackAsks = suggest.MaxAsks
 	// suggestIdleWait bounds how long a turn end waits for the window's status
 	// to read idle: the transcript's busy marker and the window list are two
-	// channels from the host and need not land together.
-	suggestIdleWait = 5 * time.Second
+	// channels from the host and need not land together. The host re-reads
+	// its window list every 5 s (mirrorhost's Refresh) while it polls the
+	// transcript far faster, so the wait covers two refreshes.
+	suggestIdleWait = 12 * time.Second
 	// suggestIdlePoll is how often it looks.
 	suggestIdlePoll = 250 * time.Millisecond
 	// suggestTimeout bounds one generation end to end.
@@ -86,6 +88,20 @@ type suggestTracker struct {
 	// until a Reset or a prompt index gives it the whole conversation (a
 	// view that saw everything answers the turn; the engine shares its set).
 	resumed bool
+	// stamp reads the window's status token (AgentState.Since); prior is
+	// what it read when the current turn began, 0 for none seen. A status
+	// list refreshes every few seconds while the transcript streams, so a
+	// short turn can END while the list still shows the idle from BEFORE it —
+	// whose token prior holds.
+	stamp func() int64
+	prior int64
+}
+
+// priorToken is the status token read when the current turn began.
+func (t *suggestTracker) priorToken() int64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.prior
 }
 
 // observe folds m in and reports whether it ends a turn: the busy marker fell,
@@ -102,8 +118,13 @@ func (t *suggestTracker) observe(m mirror.Msg) bool {
 			continue
 		}
 		t.entries = append(t.entries, en)
-		if en.Role == suggest.RoleUser && t.indexed {
-			t.asks = append(t.asks, promptAsk(en.Text))
+		if en.Role == suggest.RoleUser {
+			if t.indexed {
+				t.asks = append(t.asks, promptAsk(en.Text))
+			}
+			// A prompt after the resume point: from here the tail holds whole
+			// turns (asks then come from the tail, as for an older host).
+			t.resumed = false
 		}
 	}
 	if len(t.entries) > suggestTrackEntries {
@@ -127,6 +148,12 @@ func (t *suggestTracker) observe(m mirror.Msg) bool {
 	}
 	wasBusy, started := t.busy, t.started
 	t.busy, t.started = m.Busy, true
+	if m.Busy && (!started || !wasBusy) && t.stamp != nil {
+		// A turn began (or the view opened on one): remember the window's
+		// status token NOW, so its end is not judged by a status that has not
+		// moved since (suggestTurn waits for a token other than this).
+		t.prior = t.stamp()
+	}
 	switch {
 	case t.resumed:
 		return false
@@ -263,8 +290,14 @@ func (s *Server) suggestTurn(ctx context.Context, host, session, window string, 
 	// The status may trail the stream's busy marker: wait (bounded) for idle,
 	// and give up the moment it is anything that blocks for another reason.
 	deadline := time.Now().Add(s.suggestIdleWait())
+	prior := t.priorToken()
 	for {
 		why := s.suggestBlocked(ctx, h, e)
+		if why == "" && prior != 0 && s.ext.Mirror.AgentState(ctx, h.Host, e.Session, e.Window).Since == prior {
+			// Idle — but the idle from before this turn: the list has not
+			// caught up. Wait for the turn's own status.
+			why = suggestBlockedNotIdle
+		}
 		if why == "" {
 			break
 		}

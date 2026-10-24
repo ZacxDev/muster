@@ -419,15 +419,73 @@ func TestASetIsNeverStampedWithALaterTurn(t *testing.T) {
 	}
 }
 
-// TestAResumedViewEndsNoTurnUntilItHasTheWholeConversation: a socket that
-// resumed at an offset sees no backfill and no prompt index; it does not
-// generate from that partial tail, until a prompt index (or a Reset) arrives.
-func TestAResumedViewEndsNoTurnUntilItHasTheWholeConversation(t *testing.T) {
+// TestAResumedViewEndsNoTurnUntilItHasAWholeTurn: a socket that resumed at
+// an offset gets the host's real resume shape — a {Offset, Busy} marker, then
+// live events, and NO Reset or prompt index. It does not generate from the
+// partial tail it resumed into, and it does from the first whole turn after.
+func TestAResumedViewEndsNoTurnUntilItHasAWholeTurn(t *testing.T) {
 	tr := &suggestTracker{resumed: true}
-	if tr.observe(mirror.Msg{Busy: true}) || tr.observe(mirror.Msg{Busy: false, Events: []cctranscript.Event{{Kind: cctranscript.KindText, Text: "Done. Should I?"}}}) {
-		t.Fatal("a resumed tracker ended a turn from a partial tail")
+	steps := []struct {
+		m    mirror.Msg
+		ends bool
+	}{
+		{mirror.Msg{Offset: 4096, Busy: true}, false}, // the resume marker, mid-turn
+		{mirror.Msg{Busy: true, Events: []cctranscript.Event{{Kind: cctranscript.KindText, Text: "half a turn"}}}, false},
+		{mirror.Msg{Busy: false, Events: []cctranscript.Event{{Kind: cctranscript.KindText, Text: "Done. Should I?"}}}, false}, // partial: no
+		{mirror.Msg{Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "yes, and add a test"}}}, false},
+		{mirror.Msg{Busy: true}, false},
+		{mirror.Msg{Busy: false, Events: []cctranscript.Event{{Kind: cctranscript.KindText, Text: "Added. Want me to push?"}}}, true}, // a whole turn
 	}
-	if !tr.observe(mirror.Msg{PromptIndex: true, Prompts: []cctranscript.PromptRef{{Line: 1, Text: "go"}}}) {
-		t.Fatal("positive control: the prompt index on an idle session ends the turn")
+	for i, st := range steps {
+		if got := tr.observe(st.m); got != st.ends {
+			t.Fatalf("step %d: ends=%v, want %v", i, got, st.ends)
+		}
+	}
+	if in := tr.input(); len(in.Asks) != 1 || in.Asks[0] != "yes, and add a test" {
+		t.Fatalf("asks from the tail: %v", in.Asks)
+	}
+}
+
+// TestAShortTurnIsNotJudgedByTheIdleFromBeforeIt: the list still shows the
+// idle (token S0) that preceded a short turn when its busy marker falls. The
+// turn end must not take S0 as its own — that would serve the previous turn's
+// set — but wait for the turn's own idle (S2), then generate once.
+func TestAShortTurnIsNotJudgedByTheIdleFromBeforeIt(t *testing.T) {
+	f := newSuggestFixture(t, nil)
+	f.s.suggestIdleWaitFor = 2 * time.Second
+	if !f.turnEnd(t) || f.gen.n() != 1 {
+		t.Fatalf("turn 1: calls %d", f.gen.n())
+	}
+	s0 := f.fm.agentState.Since
+	tr := &suggestTracker{stamp: func() int64 {
+		f.fm.mu.Lock()
+		defer f.fm.mu.Unlock()
+		return f.fm.agentState.Since
+	}}
+	for _, m := range suggestBackfill() {
+		tr.observe(m)
+	}
+	// Turn 2, short: the list never showed it busy, and still reads idle(S0).
+	tr.observe(mirror.Msg{Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "go with (a)"}}})
+	tr.observe(mirror.Msg{Busy: true})
+	if !tr.observe(mirror.Msg{Busy: false, Events: []cctranscript.Event{{Kind: cctranscript.KindText,
+		Text: "Done: (a) checkpoint every 500 rows is in. Should I open the PR?"}}}) {
+		t.Fatal("turn 2 did not end")
+	}
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		f.fm.mu.Lock()
+		f.fm.agentState.Since = s0 + 9000 // the turn's own idle lands
+		f.fm.mu.Unlock()
+	}()
+	start := time.Now()
+	if !f.s.suggestTurn(operatorCtx(), "ws", "main", "@1", tr) || f.gen.n() != 2 {
+		t.Fatalf("turn 2: calls %d (want a second, fresh call)", f.gen.n())
+	}
+	if time.Since(start) < 100*time.Millisecond {
+		t.Fatal("turn 2 was judged by the stale idle")
+	}
+	if v := f.get(t); len(v.Suggestions) != 1 || !strings.Contains(f.gen.prompts[1], "Should I open the PR?") {
+		t.Fatalf("turn 2's set: %+v", v)
 	}
 }
