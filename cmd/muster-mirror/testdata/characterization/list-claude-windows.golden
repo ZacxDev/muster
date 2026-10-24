@@ -1,0 +1,18 @@
+$ -list
+0
+infra-work
+scratch13
+scratch2
+stderr: 
+rc 0
+$ -list -windows
+scratch13	@46	1	active	claude	claude	%46	busy	sess-b	/p/sess-b.jsonl	pane-map
+scratch13	@47	2	-	claude	claude	%47	idle	sess-c	/p/sess-c.jsonl	sessions
+scratch13	@48	3	-	zsh
+stderr: 
+rc 0
+$ -list -claude
+scratch13	@46	1	claude	%46	busy	sess-b	/p/sess-b.jsonl	pane-map
+scratch13	@47	2	claude	%47	idle	sess-c	/p/sess-c.jsonl	sessions
+stderr: 
+rc 0

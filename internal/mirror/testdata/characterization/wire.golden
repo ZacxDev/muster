@@ -1,0 +1,48 @@
+{"session":"work","id":"@1","index":1,"active":true,"claude":true,"command":"claude","status":"idle","statusSince":1001,"claudeSession":"c-1"}
+  runtime="claude" key="c-1" valid=true
+{"session":"work","id":"@2","index":2,"claude":true,"command":"claude","status":"busy","statusSince":1002,"claudeSession":"c-2"}
+  runtime="claude" key="c-2" valid=true
+{"session":"work","id":"@3","index":3,"claude":true,"command":"claude","status":"waiting","statusSince":1003,"claudeSession":"c-3","pending":{"summary":"Edit a file","tool":"Edit","last":"about to edit"}}
+  runtime="claude" key="c-3" valid=true
+{"session":"work","id":"@4","index":4,"claude":true,"command":"claude","claudeSession":"c-4"}
+  runtime="claude" key="c-4" valid=true
+{"session":"work","id":"@5","index":5,"command":"python3.14","status":"idle","statusSince":1005,"runtime":"hermes","agentSession":"local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab"}
+  runtime="hermes" key="hermes:local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab" valid=true
+{"session":"work","id":"@6","index":6,"command":"python3.14","status":"busy","statusSince":1006,"runtime":"hermes","agentSession":"local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab"}
+  runtime="hermes" key="hermes:local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab" valid=true
+{"session":"work","id":"@7","index":7,"command":"python3.14","status":"waiting","statusSince":1007,"pending":{"summary":"run ls","tool":"terminal","kind":"approval","detail":"ls -la"},"runtime":"hermes","agentSession":"local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab"}
+  runtime="hermes" key="hermes:local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab" valid=true
+{"session":"work","id":"@8","index":8,"command":"python3.14","runtime":"hermes"}
+  runtime="hermes" key="" valid=false
+{"session":"work","id":"@9","index":9,"command":"python3.14","status":"idle","statusSince":1009,"runtime":"hermes","agentSession":"local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab"}
+  runtime="hermes" key="hermes:local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab" valid=true
+{"session":"work","id":"@10","index":10,"command":"opencode"}
+  runtime="" key="" valid=false
+{"session":"work","id":"@11","index":11,"command":"zz"}
+  runtime="" key="" valid=false
+{"session":"work","id":"@12","index":12,"command":"zsh"}
+  runtime="" key="" valid=false
+{"session":"work","id":"@13","index":13,"command":"opencode"}
+  runtime="" key="" valid=false
+{"session":"work","id":"@14","index":14,"command":"python3.14","status":"waiting","statusSince":1014,"runtime":"hermes","agentSession":"local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab"}
+  runtime="hermes" key="hermes:local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab" valid=true
+{"session":"work","id":"@15","index":15,"command":"python3.14","status":"idle","statusSince":1015,"runtime":"hermes"}
+  runtime="hermes" key="" valid=false
+{"session":"work","id":"@16","index":16,"command":"python3.14","status":"idle","runtime":"hermes","agentSession":"local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab"}
+  runtime="hermes" key="hermes:local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab" valid=true
+{"session":"work","id":"@17","index":17,"claude":true,"command":"claude","status":"idle","claudeSession":"c-17"}
+  runtime="claude" key="c-17" valid=true
+key "c-1" valid=true
+key "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" valid=true
+key "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" valid=false
+key "hermes:local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab" valid=true
+key "hermes:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" valid=true
+key "hermes:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" valid=false
+key "hermes:" valid=false
+key "opencode:ses_abc" valid=false
+key "claude:c-1" valid=false
+key "bogus:x" valid=false
+key "local-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab" valid=false
+key "" valid=false
+SessionKeyPattern ^([0-9A-Za-z][0-9A-Za-z_-]{0,63}|hermes:[0-9A-Za-z][0-9A-Za-z_-]{0,127})$
+HermesKeyPrefix "hermes:"
