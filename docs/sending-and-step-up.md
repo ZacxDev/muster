@@ -29,6 +29,22 @@ box also keeps what you type as a draft on this device; see
   is pasted — except the rendered view's send to a Hermes window on a host
   started with `-hermes-send`, which goes through Hermes's gated send
   ([mirroring.md](mirroring.md#muster-pastes-into-hermes-only-through-its-gated-send)).
+- 🔴 **Never into a Claude Code prompt.** The Rendered view's Send, Send now and
+  a queued or routed message are refused while the window's Claude Code is
+  waiting on you (a permission prompt, a question, a menu): the paste's Enter
+  would answer it, for example approve a tool call. muster refuses a window its
+  host reports `waiting`, and the host checks again at the moment it types —
+  Claude Code's own session status and the pane's screen (ccd's dialog reading,
+  [`internal/ccdialog`](../internal/ccdialog/ccdialog.go)), before the paste and
+  again before its Enter — so a prompt that opened after the host's last report
+  is caught too. The refusal says "Claude is waiting on a permission prompt —
+  answer it first", and nothing is typed. If a prompt opens between the paste and
+  its Enter, the Enter is withheld and the reply says "Pasted, not submitted".
+  A queued message is held (it is not failed) and sent once the prompt is
+  answered. The Terminal view's box is not gated: it is you typing into the
+  pane you are looking at. It is a check before each key, not a lock: a prompt
+  that opens in the milliseconds between the last check and a key is not
+  caught.
 - Only newline and tab are accepted as control characters. Several lines arrive
   as one bracketed paste, and the single Enter runs them in order. A program that
   did not ask for bracketed paste gets the text as typed, so each newline is an

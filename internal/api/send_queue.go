@@ -888,6 +888,11 @@ func sendQueueFailure(err error) sendqueue.Outcome {
 			// The host's gated send says it in full ("May have been
 			// submitted: …", "Pasted, not submitted: …", "Not sent: …").
 			return sendqueue.Outcome{MayHaveDelivered: may, Pasted: pr.Refusal == mirror.PasteRefusalHermesPasted, Detail: pr.Why}
+		case mirror.PasteRefusalClaudeWaiting, mirror.PasteRefusalClaudePasted:
+			// The Claude prompt guard, in its own words. A queued message never
+			// gets here waiting (the hub supersedes it, and it is held); a
+			// Send now does.
+			return sendqueue.Outcome{Pasted: pr.Refusal == mirror.PasteRefusalClaudePasted, Detail: pr.Why}
 		}
 	}
 	if may {

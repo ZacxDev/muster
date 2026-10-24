@@ -501,6 +501,11 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 			status, notice, msg = http.StatusConflict, hermesSendNotices[pr.Refusal], pr.Why
 		case errors.Is(err, mirror.ErrPasteUnconfirmed):
 			status, notice, msg = http.StatusBadGateway, noticeUnconfirmed, MirrorSendUnconfirmed
+		case errors.As(err, &pr) && claudeGuardNotices[pr.Refusal] != "":
+			// The Claude prompt guard (the hub's or the host's): its own words.
+			// Waiting is "nothing was typed"; pasted-not-submitted is said as
+			// such, never as "not sent".
+			status, notice, msg = http.StatusConflict, claudeGuardNotices[pr.Refusal], pr.Why
 		case mirror.PasteGuardRefusal(err) != "":
 			// The host's Hermes paste guard: its own words, without this
 			// side's "the host refused the message:" in front, and a notice

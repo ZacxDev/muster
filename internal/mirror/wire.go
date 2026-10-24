@@ -1229,6 +1229,18 @@ const (
 	// PasteRefusalUnchecked: the host could not read the pane's processes, so
 	// it could not rule Hermes out. Nothing was typed.
 	PasteRefusalUnchecked = "unchecked"
+	// PasteRefusalClaudeWaiting: the Claude prompt guard — the Claude Code
+	// pane is waiting on the person (its session status is waiting, or its
+	// screen shows a permission prompt, a picker or a select menu), or the host
+	// could not read its screen to rule that out. Enter there would ANSWER the
+	// dialog. Nothing was typed, so a queued message is decided on again
+	// (Hub.PasteWindow turns it into ErrSuperseded) and held until it clears.
+	PasteRefusalClaudeWaiting = "claude-waiting"
+	// PasteRefusalClaudePasted: the Claude prompt guard's check before the
+	// Enter refused — a dialog opened (or the pane changed) between the paste
+	// and its Enter — so the text is in Claude Code's input box and Enter was
+	// withheld. Not to be resent blindly: that would paste it twice.
+	PasteRefusalClaudePasted = "claude-pasted"
 
 	// The gated send into a Hermes pane (Msg.Runtime "hermes"), by how it
 	// ended when it did not end "sent":
@@ -1260,6 +1272,15 @@ const (
 		"abduco or zellij), so muster cannot see whether Hermes runs inside it. Type it in the terminal."
 	PasteRefusedUncheckedText = "Not sent: muster-mirror could not check whether Hermes runs in this pane. " +
 		"Type it in the terminal."
+	// The Claude prompt guard's refusals (PasteRefusalClaudeWaiting): its
+	// session says it is waiting on the person; its screen shows a dialog; its
+	// screen could not be read.
+	ClaudeWaitingText = "Not sent: Claude is waiting on a permission prompt — answer it first. " +
+		"Nothing was typed into the pane."
+	ClaudeDialogText = "Not sent: Claude Code's pane shows a dialog (a permission prompt, a question or a menu) — " +
+		"answer it first. Nothing was typed into the pane."
+	ClaudeScreenUnreadText = "Not sent: muster-mirror could not read Claude Code's screen, so it could not rule out " +
+		"a permission prompt. Nothing was typed into the pane."
 )
 
 // The kinds of answer refusal a host names (Msg.Refusal on answered).

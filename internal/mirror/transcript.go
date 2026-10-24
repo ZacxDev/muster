@@ -425,6 +425,23 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 			hermes, since = true, s
 		}
 	}
+	// 🔴 THE CLAUDE PROMPT GUARD, SERVER HALF: a Claude Code window the host
+	// REPORTS as waiting on the person (a permission prompt, a question) takes
+	// no rendered-view paste. Enter there would answer the dialog — approve a
+	// tool call with nobody watching. A person's Send is refused in words; a
+	// QUEUED paste (ExpectTurn) is superseded, so it goes back to queued and the
+	// queue holds it (its probe reads waiting as not idle) until the prompt
+	// clears. The host checks again at the moment it types (mirrorhost's
+	// claudeReady), which is what covers a prompt that opened after the host's
+	// last report; this half only saves the round trip. The Terminal view's
+	// composer (AnyPane) is the person typing into the pane they see, and is
+	// not gated here.
+	if !anyPane && hc.claudeWaiting(session, windowID) {
+		if o.Expect != nil {
+			return &SupersededError{Pasted: h.turn(owner, host, session, windowID).pasted}
+		}
+		return &PasteRefusedError{Why: ClaudeWaitingText, Refusal: PasteRefusalClaudeWaiting, Cause: ErrClaudeWaiting}
+	}
 	if o.Window != nil {
 		*o.Window = windowID
 	}
@@ -437,7 +454,38 @@ func (h *Hub) PasteWindow(ctx context.Context, owner int64, host, session, windo
 	}
 	err = h.pasteTo(ctx, hc, session, windowID, text, anyPane, hermes, since)
 	h.endPaste(owner, host, session, windowID, held, err == nil || errors.Is(err, ErrPasteUnconfirmed))
+	if o.Expect != nil && ClaudeWaitingRefusal(err) {
+		// The host's half of the Claude prompt guard refused it: nothing was
+		// typed, so a queued message is decided on again, as above.
+		return &SupersededError{Pasted: h.turn(owner, host, session, windowID).pasted}
+	}
 	return err
+}
+
+// ErrClaudeWaiting is the cause of the hub's own Claude prompt guard refusal
+// (a *PasteRefusedError with PasteRefusalClaudeWaiting): the host reports the
+// window waiting on the person. Nothing was sent to the host.
+var ErrClaudeWaiting = errors.New("mirror: muster did not send it: Claude Code is waiting on the person")
+
+// ClaudeWaitingRefusal reports whether err is the Claude prompt guard's refusal
+// — the hub's or the host's (PasteRefusalClaudeWaiting). Nothing was typed.
+func ClaudeWaitingRefusal(err error) bool {
+	var pr *PasteRefusedError
+	return errors.As(err, &pr) && pr.Refusal == PasteRefusalClaudeWaiting
+}
+
+// claudeWaiting reports whether hc lists (session, window id) as a Claude Code
+// window whose status is StatusWaiting. A window the host does not list with
+// a status answers false: the host's half of the guard is then all there is.
+func (hc *hostConn) claudeWaiting(session, id string) bool {
+	hc.mu.Lock()
+	defer hc.mu.Unlock()
+	for _, w := range hc.windows {
+		if w.Session == session && w.ID == id && w.AgentRuntime() == RuntimeClaude {
+			return w.Status == StatusWaiting
+		}
+	}
+	return false
 }
 
 // PasteOption is an option of PasteWindow.
