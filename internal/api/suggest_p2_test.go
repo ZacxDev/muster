@@ -416,6 +416,14 @@ func TestAReplyAfterItsTurnEndStillEndsTheTurn(t *testing.T) {
 		{mirror.Msg{Busy: false}, true}, // ahead of its reply again
 		{mirror.Msg{Busy: true}, false}, // a new turn: that one is over
 		{mirror.Msg{Busy: true, Events: reply.Events}, false},
+		{mirror.Msg{Busy: false}, true}, // its busy marker fell: a turn end (its reply came while busy)
+		// (delta audit, MED) armed again, then the next prompt arrives under
+		// a stale idle flag, then its first text: NOT the old turn's reply.
+		{prompt, false},
+		{mirror.Msg{Busy: true}, false},
+		{mirror.Msg{Busy: false, Events: []cctranscript.Event{{Kind: cctranscript.KindToolCall, Tool: "Edit"}}}, true},
+		{prompt, false},
+		{reply, false},
 	}
 	for i, st := range steps {
 		if got := tr.observe(st.m); got != st.ends {

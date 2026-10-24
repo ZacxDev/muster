@@ -219,6 +219,8 @@ func (t *suggestTracker) observeLocked(m mirror.Msg) bool {
 			// A prompt after the resume point: from here the tail holds whole
 			// turns (asks then come from the tail, as for an older host).
 			t.resumed = false
+			// A new turn: whatever reply comes now is not the last one's.
+			t.awaitReply = false
 		}
 	}
 	if len(t.entries) > suggestTrackEntries {

@@ -443,13 +443,15 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 				p, busy, since = np, np.Busy, np.StatusSince
 				return true, start("", 0)
 			}
-			if np.Busy != busy || np.StatusSince != since {
+			if !np.Busy && (np.Busy != busy || np.StatusSince != since) {
 				// 🔴 THE LINES BEFORE THE STATUS: whatever the transcript holds now
 				// is sent before the marker, so a turn's last reply — in the file
 				// by the time its idle status is — never reaches muster after the
 				// turn end it belongs to (suggested replies read it there). Without
 				// this a re-resolve tick sent the marker first and the poll the
-				// reply after it (seen in the browser suite).
+				// reply after it (seen in the browser suite). Only on the way to a
+				// non-busy status: on the way to busy, lines read now belong to the
+				// new turn and must not go out labelled with the old idle.
 				if err := poll(); err != nil {
 					return false, err
 				}
