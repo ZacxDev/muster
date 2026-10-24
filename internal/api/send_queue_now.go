@@ -214,14 +214,15 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 //     plugin refuses a Hermes window anyway until its host opts in; this rule
 //     is what holds once it has.)
 func sendNowRefusal(st mirror.AgentState) (msg, notice string) {
-	if st.Runtime == mirror.RuntimeHermes {
+	if rt, ok := mirror.LookupRuntime(st.Runtime); ok && rt.GatedSend {
+		w := gatedSendNowWords[rt.Name]
 		switch {
 		case st.Unknown != nil:
-			return SendQueueHermesUnknownNow, noticeHermesUnknownNow
+			return w.unknown, w.unknownNotice
 		case st.Status == mirror.StatusWaiting:
-			return SendQueueHermesWaitingNow, noticeHermesWaitingNow
+			return w.waiting, w.waitingNotice
 		case st.Status != mirror.StatusIdle:
-			return SendQueueHermesBusyNow, noticeHermesBusyNow
+			return w.busy, w.busyNotice
 		}
 		return "", ""
 	}
@@ -229,6 +230,13 @@ func sendNowRefusal(st mirror.AgentState) (msg, notice string) {
 		return SendQueueWaitingNow, noticeWaitingNow
 	}
 	return "", ""
+}
+
+// gatedSendNowWords is what Send now says, and its notice, for a window of a
+// runtime with a gated send (only idle is sent to) that is not idle.
+var gatedSendNowWords = map[string]struct{ unknown, unknownNotice, waiting, waitingNotice, busy, busyNotice string }{
+	mirror.RuntimeHermes: {SendQueueHermesUnknownNow, noticeHermesUnknownNow, SendQueueHermesWaitingNow, noticeHermesWaitingNow,
+		SendQueueHermesBusyNow, noticeHermesBusyNow},
 }
 
 // sendQueueDispatcher is the dispatcher a Send now claims through: the running

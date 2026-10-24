@@ -105,6 +105,9 @@ The design, in one line each:
   grants.
 - The Claude-specific code paths become one runtime interface, sized for the
   two runtimes it serves: Claude Code and Hermes.
+  (As built later: `mirror.RuntimeSpec` on the server and
+  `mirrorhost.Runtime` on the host, `internal/mirror/runtime.go` and
+  `internal/mirrorhost/runtime.go`, with opencode as a third, stub runtime.)
 
 ## Non-goals
 

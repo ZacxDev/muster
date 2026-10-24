@@ -1,0 +1,62 @@
+hermesSend=false list "data-f-kind=\"standard\""
+hermesSend=false list "data-f-kind=\"claude code\""
+hermesSend=false list "href=\"/mirror/view?host=ws&amp;session=main&amp;window=%401\""
+hermesSend=false list "data-f-kind=\"claude code\""
+hermesSend=false list "href=\"/mirror/view?host=ws&amp;session=main&amp;window=%402\""
+hermesSend=false list "data-f-kind=\"hermes\""
+hermesSend=false list "href=\"/mirror/view?host=ws&amp;session=main&amp;window=%403\""
+hermesSend=false list "data-mirror-kind=\"\""
+hermesSend=false list "data-f-kind=\"hermes\""
+hermesSend=false list "href=\"/mirror/view?host=ws&amp;session=main&amp;window=%404\""
+hermesSend=false list "data-mirror-kind=\"\""
+hermesSend=false list "data-f-kind=\"hermes\""
+hermesSend=false list "href=\"/mirror/terminal?host=ws&amp;session=main&amp;window=%405\""
+hermesSend=false list "data-mirror-kind=\"\""
+hermesSend=false list "data-f-kind=\"opencode\""
+hermesSend=false list "href=\"/mirror/terminal?host=ws&amp;session=main&amp;window=%406\""
+hermesSend=false list "data-mirror-kind=\"\""
+hermesSend=false list "data-f-kind=\"shell\""
+hermesSend=false list "href=\"/mirror/terminal?host=ws&amp;session=main&amp;window=%407\""
+hermesSend=false list "data-mirror-kind=\"\""
+hermesSend=false list "data-f-kind=\"hermes\""
+hermesSend=false list "href=\"/mirror/view?host=ws&amp;session=main&amp;window=%408\""
+hermesSend=false list "data-mirror-kind=\"\""
+hermesSend=false view @1 status=200 location="" input=<textarea id="mv-input" name="text" rows="1" aria-label="Message Claude in this session" enterkeyhint="send" data-draft-key="muster.draft.v2:[1,&#34;mirror&#34;,&#34;view&#34;,&#34;ws&#34;,&#34;main&#34;,&#34;@1&#34;]" data-draft-note="mv-note" placeholder="Message Claude…" class="composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"> features=["Claude is working" "id=\"mv-log\"" "data-ws="]
+hermesSend=false view @2 status=200 location="" input=<textarea id="mv-input" name="text" rows="1" aria-label="Message Claude in this session" enterkeyhint="send" data-draft-key="muster.draft.v2:[1,&#34;mirror&#34;,&#34;view&#34;,&#34;ws&#34;,&#34;main&#34;,&#34;@2&#34;]" data-draft-note="mv-note" placeholder="Message Claude…" class="composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"> features=["Claude is working" "id=\"mv-log\"" "data-ws="]
+hermesSend=false view @3 status=200 location="" input=<textarea id="mv-input" name="text" rows="1" aria-label="Message Hermes in this session" enterkeyhint="send" disabled="" title="This host does not send to Hermes: its muster-mirror runs without -hermes-send, because Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal." placeholder="Sending to Hermes is not available" class="composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"> features=["Hermes is working…" "This host does not send to Hermes: its muster-mirror runs without -hermes-send, because Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal." "id=\"mv-log\"" "data-ws=" "Sending to Hermes is not available"]
+hermesSend=false view @4 status=200 location="" input=<textarea id="mv-input" name="text" rows="1" aria-label="Message Hermes in this session" enterkeyhint="send" disabled="" title="This host does not send to Hermes: its muster-mirror runs without -hermes-send, because Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal." placeholder="Sending to Hermes is not available" class="composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"> features=["Hermes is working…" "This host does not send to Hermes: its muster-mirror runs without -hermes-send, because Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal." "id=\"mv-log\"" "data-ws=" "Sending to Hermes is not available"]
+hermesSend=false view @5 status=303 location="/mirror/terminal?host=ws&session=main&window=%405" input= features=[]
+hermesSend=false view @6 status=303 location="/mirror/terminal?host=ws&session=main&window=%406" input= features=[]
+hermesSend=false view @7 status=303 location="/mirror/terminal?host=ws&session=main&window=%407" input= features=[]
+hermesSend=false view @8 status=200 location="" input=<textarea id="mv-input" name="text" rows="1" aria-label="Message Hermes in this session" enterkeyhint="send" disabled="" title="This host does not send to Hermes: its muster-mirror runs without -hermes-send, because Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal." placeholder="Sending to Hermes is not available" class="composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"> features=["Hermes is working…" "This host does not send to Hermes: its muster-mirror runs without -hermes-send, because Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal." "id=\"mv-log\"" "data-ws=" "Sending to Hermes is not available"]
+hermesSend=true list "data-f-kind=\"standard\""
+hermesSend=true list "data-f-kind=\"claude code\""
+hermesSend=true list "href=\"/mirror/view?host=ws&amp;session=main&amp;window=%401\""
+hermesSend=true list "data-f-kind=\"claude code\""
+hermesSend=true list "href=\"/mirror/view?host=ws&amp;session=main&amp;window=%402\""
+hermesSend=true list "data-f-kind=\"hermes\""
+hermesSend=true list "href=\"/mirror/view?host=ws&amp;session=main&amp;window=%403\""
+hermesSend=true list "data-mirror-kind=\"\""
+hermesSend=true list "data-f-kind=\"hermes\""
+hermesSend=true list "href=\"/mirror/view?host=ws&amp;session=main&amp;window=%404\""
+hermesSend=true list "data-mirror-kind=\"\""
+hermesSend=true list "data-f-kind=\"hermes\""
+hermesSend=true list "href=\"/mirror/terminal?host=ws&amp;session=main&amp;window=%405\""
+hermesSend=true list "data-mirror-kind=\"\""
+hermesSend=true list "data-f-kind=\"opencode\""
+hermesSend=true list "href=\"/mirror/terminal?host=ws&amp;session=main&amp;window=%406\""
+hermesSend=true list "data-mirror-kind=\"\""
+hermesSend=true list "data-f-kind=\"shell\""
+hermesSend=true list "href=\"/mirror/terminal?host=ws&amp;session=main&amp;window=%407\""
+hermesSend=true list "data-mirror-kind=\"\""
+hermesSend=true list "data-f-kind=\"hermes\""
+hermesSend=true list "href=\"/mirror/view?host=ws&amp;session=main&amp;window=%408\""
+hermesSend=true list "data-mirror-kind=\"\""
+hermesSend=true view @1 status=200 location="" input=<textarea id="mv-input" name="text" rows="1" aria-label="Message Claude in this session" enterkeyhint="send" data-draft-key="muster.draft.v2:[1,&#34;mirror&#34;,&#34;view&#34;,&#34;ws&#34;,&#34;main&#34;,&#34;@1&#34;]" data-draft-note="mv-note" placeholder="Message Claude…" class="composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"> features=["Claude is working" "id=\"mv-log\"" "data-ws="]
+hermesSend=true view @2 status=200 location="" input=<textarea id="mv-input" name="text" rows="1" aria-label="Message Claude in this session" enterkeyhint="send" data-draft-key="muster.draft.v2:[1,&#34;mirror&#34;,&#34;view&#34;,&#34;ws&#34;,&#34;main&#34;,&#34;@2&#34;]" data-draft-note="mv-note" placeholder="Message Claude…" class="composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"> features=["Claude is working" "id=\"mv-log\"" "data-ws="]
+hermesSend=true view @3 status=200 location="" input=<textarea id="mv-input" name="text" rows="1" aria-label="Message Hermes in this session" enterkeyhint="send" data-draft-key="muster.draft.v2:[1,&#34;mirror&#34;,&#34;view&#34;,&#34;ws&#34;,&#34;main&#34;,&#34;@3&#34;]" data-draft-note="mv-note" placeholder="Message Hermes…" class="composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"> features=["Hermes is working…" "Message Hermes…" "id=\"mv-log\"" "data-ws="]
+hermesSend=true view @4 status=200 location="" input=<textarea id="mv-input" name="text" rows="1" aria-label="Message Hermes in this session" enterkeyhint="send" data-draft-key="muster.draft.v2:[1,&#34;mirror&#34;,&#34;view&#34;,&#34;ws&#34;,&#34;main&#34;,&#34;@4&#34;]" data-draft-note="mv-note" placeholder="Message Hermes…" class="composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"> features=["Hermes is working…" "Message Hermes…" "id=\"mv-log\"" "data-ws="]
+hermesSend=true view @5 status=303 location="/mirror/terminal?host=ws&session=main&window=%405" input= features=[]
+hermesSend=true view @6 status=303 location="/mirror/terminal?host=ws&session=main&window=%406" input= features=[]
+hermesSend=true view @7 status=303 location="/mirror/terminal?host=ws&session=main&window=%407" input= features=[]
+hermesSend=true view @8 status=200 location="" input=<textarea id="mv-input" name="text" rows="1" aria-label="Message Hermes in this session" enterkeyhint="send" data-draft-key="muster.draft.v2:[1,&#34;mirror&#34;,&#34;view&#34;,&#34;ws&#34;,&#34;main&#34;,&#34;@8&#34;]" data-draft-note="mv-note" placeholder="Message Hermes…" class="composer-fit min-h-[44px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-s2 px-3 py-2.5 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-50"> features=["Hermes is working…" "Message Hermes…" "id=\"mv-log\"" "data-ws="]
