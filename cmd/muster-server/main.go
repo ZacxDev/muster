@@ -439,6 +439,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// per-user toggle needs the database (no database: everyone is on).
 	ext.Suggest = &suggest.Engine{Off: cfg.SuggestOff, Logger: logger,
 		Gen: &suggest.OpenRouter{Key: plane.OpenRouterKey, Missing: credentials.IsNoCredential, Model: cfg.SuggestModel}}
+	if e2eSuggestGen != nil {
+		// 🔴 ONLY A `-tags e2eterm` BUILD: the browser suite's fake model.
+		if g := e2eSuggestGen(cfg.SuggestModel); g != nil {
+			ext.Suggest.Gen = g
+		}
+	}
 	if a.pool != nil {
 		ext.Suggest.Prefs = suggest.NewPGPrefs(a.pool)
 	}
@@ -1778,12 +1784,11 @@ func connectStaticGitHub(ctx context.Context, store github.Store, token string, 
 }
 
 // suggestBootLine is the boot banner's suggested-replies line: off, or on
-// with its model — and, until the chip row ships (P2), that nothing triggers
-// a generation yet.
+// with its model and when a set is generated.
 func suggestBootLine(cfg config) string {
 	if cfg.SuggestOff {
 		return "suggest: suggested replies are OFF (MUSTER_SUGGEST=off): nothing is generated or shown"
 	}
-	return "suggest: suggested replies are on with " + cfg.SuggestModel + ", but NOT GENERATED YET: no turn end triggers them " +
-		"until the composer's chip row ships (P2); the read route and the per-user toggle are live"
+	return "suggest: suggested replies are ON with " + cfg.SuggestModel + ": generated at a mirrored Claude Code turn end while " +
+		"its Rendered view is open, on the owner's OpenRouter key; each user can turn them off in Account (MUSTER_SUGGEST=off for everyone)"
 }

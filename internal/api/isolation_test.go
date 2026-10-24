@@ -444,6 +444,9 @@ var isolationClasses = map[string]routeClass{
 	// — B naming A's window must 404; the toggle is the caller's own row (list).
 	"GET /mirror/view/suggest": classMirror,
 	"POST /account/suggest":    classList,
+	// The chip row's reports (numbers only): the window's address in the
+	// form — B naming A's window must 404.
+	"POST /mirror/view/suggest/event": classMirror,
 	// A message to an agent as a form post, and the GET it can come back as.
 	"POST /agents/{name}/send": classParam,
 	"GET /agents/{name}/send":  classParam,
@@ -1477,7 +1480,7 @@ func namesObject(route string) bool {
 	return paramRE.MatchString(route) || route == "POST /agents" || route == "POST /tasks/merge" ||
 		strings.HasPrefix(route, "GET /mirror/terminal") || strings.HasPrefix(route, "GET /mirror/view") ||
 		route == "POST /mirror/view/send" || route == "POST /mirror/terminal/send" || route == "POST /mirror/confirm-send" ||
-		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/hermes/approve" ||
+		route == "POST /mirror/terminal/scroll" || route == "POST /mirror/view/ask" || route == "POST /mirror/view/suggest/event" || route == "POST /mirror/view/ask/cancel" || route == "POST /attention/hermes/approve" ||
 		route == "GET /send-queue" || route == "POST /send-queue" || route == "POST /send-queue/confirm" ||
 		// Focus history (0022) names its session in the query (?subject=agent:<id>),
 		// so it is held to the object routes' rules: B's answer about A's agent

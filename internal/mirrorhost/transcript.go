@@ -257,6 +257,23 @@ func sendBusy(busy *bool, nb bool, off int64, send func([]mirror.Msg) error) err
 	return send([]mirror.Msg{{Offset: off, Busy: nb}})
 }
 
+// sendStatus is sendBusy for a Claude Code view, which also carries the
+// status's time (Msg.StatusSince): a marker at off when the busy flag OR the
+// time moved — a turn that started and ended between two re-resolves moves
+// only the time. nudge, when set, is called first: the host's window list
+// (which muster checks the status against) is then re-sent now, not at the
+// next Refresh, so the list and the stream name the same status together.
+func sendStatus(busy *bool, since *int64, nb bool, ns int64, off int64, nudge func(), send func([]mirror.Msg) error) error {
+	if nb == *busy && ns == *since {
+		return nil
+	}
+	*busy, *since = nb, ns
+	if nudge != nil {
+		nudge()
+	}
+	return send([]mirror.Msg{{Offset: off, Busy: nb, StatusSince: ns}})
+}
+
 // errNotClaudeNow ends a view whose pane no longer runs Claude Code.
 var errNotClaudeNow = errors.New("Claude Code is not running in this session's active pane")
 
@@ -272,6 +289,8 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		f    *os.File
 		off  int64
 		busy = p.Busy
+		// since is the time of the status busy was read from (Msg.StatusSince).
+		since = p.StatusSince
 		// subs is the view's subagents (subagents.go); nil on a host that
 		// does not report them.
 		subs     *subagentTracker
@@ -294,7 +313,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		if !ok {
 			return nil
 		}
-		return send([]mirror.Msg{{Offset: off, Busy: busy, SubagentList: true, Subagents: list}})
+		return send([]mirror.Msg{{Offset: off, Busy: busy, StatusSince: since, SubagentList: true, Subagents: list}})
 	}
 	// start (re)opens p's transcript and sends a Reset backfill — or, when the
 	// resume names this very transcript at an offset it still has, nothing but
@@ -330,7 +349,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		}
 		if resume {
 			off = resumeOff
-			if err := send([]mirror.Msg{{Offset: off, Busy: busy, SubagentList: withSubs}}); err != nil {
+			if err := send([]mirror.Msg{{Offset: off, Busy: busy, StatusSince: since, SubagentList: withSubs}}); err != nil {
 				return err
 			}
 			return sendSubs()
@@ -350,6 +369,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		// follows as its own message.
 		batches[0].SubagentList = withSubs
 		batches[len(batches)-1].Busy = busy
+		batches[len(batches)-1].StatusSince = since
 		if err := send(batches); err != nil {
 			return err
 		}
@@ -369,7 +389,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		}
 		redactPrompts(refs)
 		refs, more := mirror.BoundPrompts(refs)
-		return send([]mirror.Msg{{Offset: off, Busy: busy, PromptIndex: true, Prompts: refs, PromptsMore: more}})
+		return send([]mirror.Msg{{Offset: off, Busy: busy, StatusSince: since, PromptIndex: true, Prompts: refs, PromptsMore: more}})
 	}
 	return h.runView(ctx, renderedView{
 		start: func() error { return start(m.Gen, m.Offset) },
@@ -380,10 +400,10 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			}
 			if np.Gen != p.Gen || np.Transcript != p.Transcript {
 				// /clear, a restart, a resumed session: a different transcript.
-				p, busy = np, np.Busy
+				p, busy, since = np, np.Busy, np.StatusSince
 				return true, start("", 0)
 			}
-			if err := sendBusy(&busy, np.Busy, off, send); err != nil {
+			if err := sendStatus(&busy, &since, np.Busy, np.StatusSince, off, h.nudge, send); err != nil {
 				return false, err
 			}
 			// The subagents' own files move without the parent's: read them
@@ -421,7 +441,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 				// including trailing ones that drew nothing.
 				batches[len(batches)-1].Offset = off
 				for i := range batches {
-					batches[i].Busy = busy
+					batches[i].Busy, batches[i].StatusSince = busy, since
 				}
 				if err := send(batches); err != nil {
 					return err

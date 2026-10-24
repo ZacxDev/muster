@@ -14,9 +14,8 @@ import (
 //
 // One Suggest call, in order:
 //  1. the KILL SWITCH (Off, MUSTER_SUGGEST=off) refuses before anything;
-//  2. the owner's TOGGLE (Prefs) refuses an owner who turned it off (the
-//     auto-pause on a low fill rate comes with the composer that reports
-//     fills, P2/P3);
+//  2. the owner's TOGGLE (Prefs) refuses an owner who turned it off, and the
+//     AUTO-PAUSE (autopause.go) one who rarely taps a chip;
 //  3. 🔴 THE FINGERPRINT SKIP: a subject whose cached set was built from the
 //     SAME input — or for the SAME turn — gets that set back and NO call is made — and that holds after
 //     the set's text expired (only the fingerprint is kept), so an unchanged
@@ -127,6 +126,7 @@ type Engine struct {
 	calls    map[int64][]time.Time
 	global   []time.Time
 	epochs   map[int64]int // bumped by Forget
+	tallies  map[int64]*tally
 	sem      chan struct{}
 	semOnce  sync.Once
 	// Calls counts model calls made (a test reads it).
@@ -162,11 +162,12 @@ func (e *Engine) init() {
 		e.inflight = map[cacheKey]map[string]*flight{}
 		e.calls = map[int64][]time.Time{}
 		e.epochs = map[int64]int{}
+		e.tallies = map[int64]*tally{}
 	}
 }
 
-// Enabled is nil when owner may get suggestions now, or the Outcome that says
-// why not (Off, UserOff). A Prefs read error fails CLOSED (UserOff).
+// Enabled is "" when owner may get suggestions now, or the Outcome that says
+// why not (Off, UserOff, Paused). A Prefs read error fails CLOSED (UserOff).
 func (e *Engine) Enabled(ctx context.Context, owner int64) Outcome {
 	if e == nil || e.Off {
 		return OutcomeOff
@@ -180,6 +181,9 @@ func (e *Engine) Enabled(ctx context.Context, owner int64) Outcome {
 		if off {
 			return OutcomeUserOff
 		}
+	}
+	if e.paused(owner) {
+		return OutcomePaused
 	}
 	return ""
 }

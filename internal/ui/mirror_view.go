@@ -100,6 +100,9 @@ type MirrorViewView struct {
 	// Switcher is the session switcher below the composer (switcher.go); nil
 	// for none.
 	Switcher *Switcher
+	// Suggest is the suggested replies' URL (ComposerView.Suggest); "" for
+	// none — a Hermes window, a host with suggestions not wired.
+	Suggest string
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -124,6 +127,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 		// on a phone the body's bottom can be under the browser's chrome, and
 		// this page cannot be scrolled to bring it back (composerPinScript).
 		Pinned: true, Switcher: v.Switcher}
+	if !v.Hermes {
+		composer.Suggest = v.Suggest
+	}
 	shell := pinnedShellClass
 	if v.Switcher != nil {
 		shell = pinnedShellSwitcherClass
@@ -886,6 +892,8 @@ func mirrorViewScript() g.Node {
     if (m.gen) gen = m.gen;
     if (typeof m.offset === 'number') offset = m.offset;
     working.hidden = !m.busy;
+    // A turn is running: no suggestion is for it (suggest_row.go).
+    if (m.busy && window.musterSuggest) window.musterSuggest({ state: 'busy' });
     if (!log.firstElementChild) {
       log.innerHTML = '<p data-mirror-empty class="m-auto text-sm text-muted">No conversation yet.</p>';
     } else {
@@ -909,6 +917,8 @@ func mirrorViewScript() g.Node {
       else if (m.type === 'error') { if (provisional) discard(); showError(m.message || 'The view ended.'); }
       // The window's questions changed (mirror_ask.go): read them now.
       else if (m.type === 'asks') { if (window.musterAskPoll) window.musterAskPoll(); }
+      // Suggested replies (suggest_row.go): pending, ready or none.
+      else if (m.type === 'suggest') { if (window.musterSuggest) window.musterSuggest(m); }
     };
     sock.onclose = function () {
       statusEl.textContent = 'Disconnected — reconnecting…';

@@ -101,7 +101,8 @@
       "tests/agent-cards-work.spec.ts",
       "tests/agents-list-ux.spec.ts",
       "tests/mirror-snapshot.spec.ts",
-      "tests/agent-open-hops.spec.ts"
+      "tests/agent-open-hops.spec.ts",
+      "tests/suggested-replies.spec.ts"
     ],
     "2": [
       "tests/devices.spec.ts",
