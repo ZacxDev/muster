@@ -32,8 +32,10 @@ const block = (page: Page) => page.locator('#asker-asks');
 const chip = (page: Page) => page.locator('#asker-asks-chip');
 const bar = (page: Page) => page.locator('#session-switcher');
 const row = (page: Page, view: string) => bar(page).locator(`[data-switcher-list="${view}"]`);
+// An agent's entry links its page with the session the list saw (ui.AgentListHref:
+// /agents/<name>?session=<id>&from=list), so entries are compared by path.
 const hrefs = (page: Page, view: string) =>
-  row(page, view).locator('a[data-switcher-entry]').evaluateAll((els) => els.map((e) => e.getAttribute('href')));
+  row(page, view).locator('a[data-switcher-entry]').evaluateAll((els) => els.map((e) => new URL(e.getAttribute('href')!, location.href).pathname));
 
 async function openAgent(page: Page, name: string) {
   await page.goto('/agents/' + name);
@@ -272,7 +274,7 @@ test('the switcher below the input: Recent without this page, Pins, All with it 
   await expect(toggle).toHaveText('Recent');
 
   // A tap is a navigation to that session.
-  await Promise.all([page.waitForURL((u) => u.pathname === '/agents/release-helper'), row(page, 'recent').locator('a[href="/agents/release-helper"]').click()]);
+  await Promise.all([page.waitForURL((u) => u.pathname === '/agents/release-helper'), row(page, 'recent').locator('a[href^="/agents/release-helper?"], a[href="/agents/release-helper"]').first().click()]);
 });
 
 // Many long names: the bar scrolls sideways inside itself; the page does not.

@@ -152,7 +152,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 	for i, e := range es {
 		it := SwitcherItem{Label: labels[i], Current: cur.is(e)}
 		if e.agent != nil {
-			it.Href, it.Kind = "/agents/"+e.agent.Name, "agent"
+			it.Href, it.Kind = e.agent.PageHref(), "agent"
 			it.Waiting = waitTokens(e.agent.Attention, e.agent.AwaitingApproval) != ""
 		} else {
 			it.Href, it.Kind = MirrorCardHref(*e.mirror), "mirror"
