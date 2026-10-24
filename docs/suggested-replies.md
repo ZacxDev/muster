@@ -56,14 +56,16 @@ session owner's OpenRouter key:
 
 | part | what | caps |
 |---|---|---|
-| your messages | every prompt you sent in the session, from its prompt index, **newest first**, numbered `A<n>` by their place in the whole conversation; these are the asks a suggestion cites | 500 bytes each, 6 KiB in all (the newest kept) |
+| your messages | every prompt you sent in the session, **whole, with its lines**, as the view read its record from the transcript (a prompt older than what the view loaded falls back to the prompt index's first line), **newest first**, numbered `A<n>` by their place in the whole conversation; these are the asks a suggestion cites. Slash-command output and bash-mode (`!cmd`) records are not your messages and are left out | 500 bytes each, 6 KiB in all (the newest kept) |
 | the session's focus over time | its [focus history](focus.md#focus-history): each focus's title and description, **oldest first**, with how long ago it was written, in a block marked **untrusted** (a summarizer wrote it) | the last 10 entries, 1 KiB each |
 | the transcript tail | the agent's **final reply** (the options or the question), and the 3 entries before it | the final reply 4 KiB, keeping its **end**; the others 1 KiB each |
 
 In the tail, a tool call is its **name** plus the file path when the call
 names one. Tool arguments, tool output, thinking and errors are never sent.
 Every field goes through the secret redactor (`internal/redact`) on the server
-before it leaves, whatever the host already did.
+before it leaves, whatever the host already did. A section tag spelled inside
+any of it (a message that types `</operator_messages>`) is neutralised, so
+content cannot close its section or open another.
 
 ## How a suggestion stays grounded
 
@@ -80,8 +82,12 @@ Every item then passes a deterministic filter, and is dropped unless:
 - every cited id exists in the input, and the quote is verbatim (whitespace
   aside) in a cited source and at least 6 bytes long;
 - a `pick` and a `decide` cite `R` and quote it — an option or an action must
-  be the **agent's own**, so text quoted from elsewhere cannot steer an
-  approval; a `gap` cites one of your asks;
+  be the **agent's own**; a `gap` cites one of your asks;
+- **whatever its kind**, a suggestion whose text approves or acts (approve,
+  deploy, push, merge, delete, force, run, ship, release, proceed, yes…) cites
+  `R` and quotes it. The kind is the model's label and is not trusted to say
+  what a suggestion does, so a "redirect" or "verify" that deploys is held to
+  the same rule;
 - the text shares a word with what it cites, and every identifier-like term in
   it (a `--flag`, a path, a number) appears in the input — a term from
   nowhere, or from text that was never sent (tool output), is dropped;

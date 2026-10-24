@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -80,8 +79,11 @@ const (
 type suggestTracker struct {
 	mu      sync.Mutex
 	entries []suggest.Entry
-	asks    []string
+	asks    []askRef
 	askBase int
+	// full is the whole text of every prompt the tracker has read a user
+	// record of, by its line (askRef.line).
+	full map[int64]string
 	// indexed: the host sent a prompt index, so asks come from it; without
 	// one (an older host) the tail's own prompts stand in.
 	indexed bool
@@ -116,7 +118,7 @@ func (t *suggestTracker) observe(m mirror.Msg) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if m.Reset {
-		t.entries, t.asks, t.askBase, t.indexed, t.resumed = nil, nil, 0, false, false
+		t.entries, t.asks, t.askBase, t.indexed, t.resumed, t.full = nil, nil, 0, false, false, nil
 	}
 	for _, ev := range m.Events {
 		en, ok := suggestEntryOf(ev)
@@ -125,8 +127,13 @@ func (t *suggestTracker) observe(m mirror.Msg) bool {
 		}
 		t.entries = append(t.entries, en)
 		if en.Role == suggest.RoleUser {
+			// The prompt WHOLE, as its user record has it: what the asks are
+			// built from, wherever the index names the same prompt by Line.
+			if ev.Line > 0 {
+				t.rememberFull(ev.Line, ev.Text)
+			}
 			if t.indexed {
-				t.asks = append(t.asks, promptAsk(en.Text))
+				t.asks = append(t.asks, askRef{line: ev.Line, text: ev.Text})
 			}
 			// A prompt after the resume point: from here the tail holds whole
 			// turns (asks then come from the tail, as for an older host).
@@ -140,14 +147,14 @@ func (t *suggestTracker) observe(m mirror.Msg) bool {
 		t.indexed = true
 		t.asks = t.asks[:0]
 		for _, p := range m.Prompts {
-			t.asks = append(t.asks, p.Text)
+			t.asks = append(t.asks, askRef{line: p.Line, text: p.Text})
 		}
 		t.askBase = m.PromptsMore
 	}
 	if len(t.asks) > suggestTrackAsks {
 		drop := len(t.asks) - suggestTrackAsks
 		t.askBase += drop
-		t.asks = append([]string(nil), t.asks[drop:]...)
+		t.asks = append([]askRef(nil), t.asks[drop:]...)
 	}
 	if m.PromptIndex {
 		t.resumed = false
@@ -171,18 +178,54 @@ func (t *suggestTracker) observe(m mirror.Msg) bool {
 	return false
 }
 
-// input is the tracker's state as a suggest.Input (focus not filled).
+// askRef is one of the operator's messages: where it is in the transcript
+// (cctranscript Event.Line / PromptRef.Line, 0 unknown) and its text as the
+// tracker first had it (the index's first line, or the whole prompt).
+type askRef struct {
+	line int64
+	text string
+}
+
+// rememberFull keeps a prompt's whole text by its line, at most
+// suggestTrackAsks of them (the oldest forgotten first).
+func (t *suggestTracker) rememberFull(line int64, text string) {
+	if t.full == nil {
+		t.full = map[int64]string{}
+	}
+	t.full[line] = text
+	for len(t.full) > suggestTrackAsks {
+		oldest := int64(-1)
+		for l := range t.full {
+			if oldest < 0 || l < oldest {
+				oldest = l
+			}
+		}
+		delete(t.full, oldest)
+	}
+}
+
+// input is the tracker's state as a suggest.Input (focus not filled). Each
+// ask is the prompt WHOLE when the tracker read its user record (the view's
+// backfill and everything since), and the prompt index's first line only for
+// a prompt older than that.
 func (t *suggestTracker) input() suggest.Input {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	in := suggest.Input{Tail: append([]suggest.Entry(nil), t.entries...)}
 	if t.indexed {
-		in.Asks, in.AskBase = append([]string(nil), t.asks...), t.askBase
+		in.AskBase = t.askBase
+		for _, a := range t.asks {
+			text := a.text
+			if full, ok := t.full[a.line]; ok && a.line > 0 {
+				text = full
+			}
+			in.Asks = append(in.Asks, text)
+		}
 		return in
 	}
 	for _, e := range t.entries {
 		if e.Role == suggest.RoleUser {
-			in.Asks = append(in.Asks, promptAsk(e.Text))
+			in.Asks = append(in.Asks, e.Text)
 		}
 	}
 	return in
@@ -203,17 +246,6 @@ func suggestEntryOf(ev cctranscript.Event) (suggest.Entry, bool) {
 		return suggest.Entry{Role: suggest.RoleTool, Text: focus.ToolLine(ev.Tool, ev.Input)}, true
 	}
 	return suggest.Entry{}, false
-}
-
-// promptAsk is a prompt as an ask: its first non-blank line (the prompt
-// index's rule, cctranscript.Prompts).
-func promptAsk(s string) string {
-	for _, l := range strings.Split(s, "\n") {
-		if l = strings.TrimSpace(l); l != "" {
-			return l
-		}
-	}
-	return ""
 }
 
 // The exclusion reasons (suggestBlocked). Fixed words: they reach the

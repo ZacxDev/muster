@@ -442,12 +442,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	if a.pool != nil {
 		ext.Suggest.Prefs = suggest.NewPGPrefs(a.pool)
 	}
-	if cfg.SuggestOff {
-		logger.Printf("suggest: suggested replies are OFF (MUSTER_SUGGEST=off): nothing is generated or shown")
-	} else {
-		logger.Printf("suggest: suggested replies are on with %s: at a rendered view's turn end only, at most %d per user per hour; "+
-			"text is kept in memory for %s, never stored", cfg.SuggestModel, suggest.PerOwnerPerHour, suggest.CacheTTL)
-	}
+	logger.Print(suggestBootLine(cfg))
 	ccPool, err := buildClaudePool(cfg, plane, marks)
 	if err != nil {
 		a.Close()
@@ -1780,4 +1775,15 @@ func connectStaticGitHub(ctx context.Context, store github.Store, token string, 
 		return
 	}
 	logger.Printf("github: connected as %q from %s", login, envGitHubToken)
+}
+
+// suggestBootLine is the boot banner's suggested-replies line: off, or on
+// with its model — and, until the chip row ships (P2), that nothing triggers
+// a generation yet.
+func suggestBootLine(cfg config) string {
+	if cfg.SuggestOff {
+		return "suggest: suggested replies are OFF (MUSTER_SUGGEST=off): nothing is generated or shown"
+	}
+	return "suggest: suggested replies are on with " + cfg.SuggestModel + ", but NOT GENERATED YET: no turn end triggers them " +
+		"until the composer's chip row ships (P2); the read route and the per-user toggle are live"
 }

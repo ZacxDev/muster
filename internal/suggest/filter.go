@@ -23,6 +23,11 @@ import (
 //     it — an option or a proposed action must be the AGENT'S OWN, which is
 //     what stops text quoted from elsewhere steering an approval;
 //   - DropGapNoAsk: a gap cites an operator ask;
+//   - DropActNotR: whatever its kind, a suggestion whose TEXT approves or
+//     acts (approve, deploy, push, merge, delete, force, run, ship, release,
+//     publish, execute, install, rollback, reset, rebase, go ahead, proceed,
+//     yes…) cites R and quotes it — the model's label is not trusted to say
+//     what a suggestion does;
 //   - DropSlashBang: the text does not start with "/", "!" or "#" (in Claude
 //     Code a leading "/" is a command, "!" is bash mode and "#" a memory
 //     note; a paste passes each as typed);
@@ -64,6 +69,7 @@ const (
 	DropPickNotR    Drop = "pick-not-r"
 	DropDecideNotR  Drop = "decide-not-r"
 	DropGapNoAsk    Drop = "gap-no-ask"
+	DropActNotR     Drop = "act-not-r"
 	DropStock       Drop = "stock-phrase"
 	DropUnrelated   Drop = "unrelated-to-quote"
 	DropUnknownTerm Drop = "unknown-term"
@@ -162,6 +168,13 @@ func check(r Raw, text string, b Built) Drop {
 	}
 	if t := unknownTerm(text, b.Prompt); t {
 		return DropUnknownTerm
+	}
+	// 🔴 BY CONTENT, WHATEVER THE LABEL: a suggestion that approves or does
+	// something — deploys, pushes, merges, deletes, forces, runs — must rest
+	// on the agent's own words. The kind is the model's claim; a "redirect"
+	// or "verify" that says "deploy it now" is an approval all the same.
+	if actShaped(text) && (!citesR(r) || !quoted(r.Quote, []string{ReplyID}, sources)) {
+		return DropActNotR
 	}
 	switch r.Kind {
 	case KindPick:
@@ -396,3 +409,9 @@ func relatedToCited(text string, r Raw, sources map[string]string) bool {
 	}
 	return false
 }
+
+// reAct is an approving or acting word: what makes a suggestion act-shaped.
+var reAct = regexp.MustCompile(`(?i)\b(approv\w*|deploy\w*|push\w*|merg\w*|delet\w*|remov\w*|drop|forc\w*|run|runs|running|rerun|execut\w*|ship\w*|releas\w*|publish\w*|install\w*|uninstall\w*|rollback|roll\s+back|reset|rebase|apply|wipe|purge|truncat\w*|kill|restart\w*|send|sign\s+up|pay|yes|proceed|go\s+ahead|do\s+it)\b|--force`)
+
+// actShaped reports whether text approves or acts (reAct).
+func actShaped(text string) bool { return reAct.MatchString(text) }

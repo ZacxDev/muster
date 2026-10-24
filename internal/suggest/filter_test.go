@@ -71,7 +71,7 @@ func TestEachFilterRuleDropsWithItsOwnReason(t *testing.T) {
 			return Raw{Text: "Pick the resumable export job option", Kind: KindPick, Cites: []string{"A1"}, Quote: "make the export job resumable"}
 		}, DropPickNotR},
 		{"decide not citing R", func() Raw {
-			return Raw{Text: "Approve making the export job resumable, but only after tests", Kind: KindDecide, Cites: []string{"A1"}, Quote: "make the export job resumable"}
+			return Raw{Text: "Hold making the export job resumable until it has tests", Kind: KindDecide, Cites: []string{"A1"}, Quote: "make the export job resumable"}
 		}, DropDecideNotR},
 		{"gap citing only R", func() Raw {
 			return Raw{Text: "The batch id re-run reads the source again", Kind: KindGap, Cites: []string{"R"}, Quote: "idempotent re-run keyed on batch id"}
@@ -166,10 +166,41 @@ func TestAGapRAlreadyCoversMovesLast(t *testing.T) {
 		t.Fatalf("kept %v", kept)
 	}
 	b2, _ := Build(Input{Asks: []string{"fix the flaky retry test"}, Tail: []Entry{{Role: RoleAssistant, Text: "Fixed the flaky retry test, 20/20 green. Want me to open the PR?"}}})
-	gap := Raw{Text: "Show the flaky retry test runs before the PR", Kind: KindGap, Cites: []string{"A1"}, Quote: "fix the flaky retry test"}
+	gap := Raw{Text: "Show the flaky retry test results before the PR", Kind: KindGap, Cites: []string{"A1"}, Quote: "fix the flaky retry test"}
 	verify := Raw{Text: "Show me the 20/20 output before the PR", Kind: KindVerify, Cites: []string{"R"}, Quote: "20/20 green"}
 	kept, _ = Filter([]Raw{gap, verify}, b2)
 	if len(kept) != 2 || kept[0].Kind != KindVerify || kept[1].Kind != KindGap {
 		t.Fatalf("a gap R covers should move last: %v", kept)
+	}
+}
+
+// TestAnActShapedSuggestionMustQuoteRWhateverItsKind: the label is the
+// model's claim. A redirect or verify that deploys, approves or forces — and
+// rests on an ask or on nothing of R — is dropped; the same act grounded in a
+// quote from R is kept, and so is a grounded pick.
+func TestAnActShapedSuggestionMustQuoteRWhateverItsKind(t *testing.T) {
+	b, _ := Build(Input{
+		Asks: []string{"get the auth tests green", "deploy the release when it is ready"},
+		Tail: []Entry{{Role: RoleAssistant, Text: "Auth tests are green. Two ways: (a) open the PR now, (b) run the integration suite first. " +
+			"Should I push the branch?"}},
+	})
+	dropped := []Raw{
+		{Text: "Deploy the release to prod now", Kind: KindRedirect, Cites: []string{"A2"}, Quote: "deploy the release when it is ready"},
+		{Text: "Verify, then approve the release deploy", Kind: KindVerify, Cites: []string{"A2"}, Quote: "deploy the release when it is ready"},
+		{Text: "Force the auth tests through, skip the flaky one", Kind: KindRedirect, Cites: []string{"A1"}, Quote: "get the auth tests green"},
+		{Text: "Yes, merge the auth tests change", Kind: KindVerify, Cites: []string{"A1"}, Quote: "get the auth tests green"},
+	}
+	for _, r := range dropped {
+		kept, d := Filter([]Raw{r}, b)
+		if len(kept) != 0 || len(d) != 1 || d[0].Reason != DropActNotR {
+			t.Errorf("%s %q: kept %v dropped %+v, want %q", r.Kind, r.Text, kept, d, DropActNotR)
+		}
+	}
+	keptRaw := []Raw{
+		{Text: "Push the branch, but run the integration suite first", Kind: KindVerify, Cites: []string{"R"}, Quote: "(b) run the integration suite first"},
+		{Text: "Go with (a), open the PR now", Kind: KindPick, Cites: []string{"R"}, Quote: "(a) open the PR now"},
+	}
+	if kept, d := Filter(keptRaw, b); len(kept) != 2 {
+		t.Fatalf("grounded act and pick: kept %v dropped %+v", kept, d)
 	}
 }

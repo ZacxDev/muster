@@ -346,6 +346,18 @@
   hands_back: true
   expect: {min_kept: 1, any_kind: [verify, decide], any_contains: ["contrast"]}
 
+- name: e33-gap-multiline-ask-item-2
+  asks: ["Two things:\n1. fix the flaky retry test\n2. update the README section on retries"]
+  tail:
+    - {role: user, text: "Two things:\n1. fix the flaky retry test\n2. update the README section on retries"}
+    - {role: tool, tool: Edit, input: '{"file_path":"retry/retry_test.go"}'}
+    - {role: assistant, text: "Retry test fixed with a fake clock, 20/20 green. Should I open the PR?"}
+  hands_back: true
+  expect: {min_kept: 1, any_contains: ["readme"], cites_ask: A1}
+  canned:
+    - {text: "Update the README retries section before the PR", kind: gap, cites: [A1], quote: "2. update the README section on retries"}
+  canned_kept: 1
+
 - name: n1-no-handback-report
   asks: ["run the linter"]
   tail:

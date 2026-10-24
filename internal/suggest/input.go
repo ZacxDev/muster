@@ -3,6 +3,7 @@ package suggest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -15,9 +16,11 @@ import (
 // THE MODEL'S INPUT — exactly three parts (operator decision: not the
 // session's transcript, which does not give good results):
 //
-//  1. THE OPERATOR'S OWN MESSAGES: every prompt in the session's prompt index,
-//     newest first, each cut to MaxAskBytes, at most MaxAsksBytes together
-//     (the newest kept). Each is numbered A<n> by its place in the whole
+//  1. THE OPERATOR'S OWN MESSAGES: every prompt in the session, WHOLE (lines
+//     kept) as its user record in the transcript has it — the prompt index's
+//     first line only for a prompt older than what the view loaded — newest
+//     first, each cut to MaxAskBytes, at most MaxAsksBytes together (the
+//     newest kept). Each is numbered A<n> by its place in the whole
 //     conversation; these are the asks a suggestion cites.
 //  2. THE SESSION'S FOCUS OVER TIME: its focus history (internal/focus,
 //     title and description, oldest to newest, with how long ago each was
@@ -30,7 +33,9 @@ import (
 //     thinking and errors never enter it.
 //
 // Every field goes through redact.Secrets HERE, server-side, whatever the
-// host already did. The fingerprint the cache keys on is the hash of the
+// host already did, and then neutralize: a section tag spelled inside
+// content (an ask that types "</operator_messages>") cannot close or open a
+// section. The fingerprint the cache keys on is the hash of the
 // rendered input WITHOUT the relative times (which move with the clock), so
 // "the input changed" and "the cache misses" stay one fact.
 
@@ -145,7 +150,7 @@ func Build(in Input) (Built, bool) {
 	if !ok {
 		return Built{}, false
 	}
-	reply = keepTail(clean(redact.Secrets(reply)), MaxReplyBytes)
+	reply = keepTail(neutralize(clean(redact.Secrets(reply))), MaxReplyBytes)
 	if reply == "" {
 		return Built{}, false
 	}
@@ -155,12 +160,14 @@ func Build(in Input) (Built, bool) {
 	var asks []string
 	size := 0
 	for i := len(in.Asks) - 1; i >= 0; i-- {
-		t := cutBytes(oneLine(redact.Secrets(in.Asks[i])), MaxAskBytes)
+		t := cutBytes(neutralize(clean(redact.Secrets(in.Asks[i]))), MaxAskBytes)
 		if t == "" {
 			continue
 		}
 		id := "A" + strconv.Itoa(in.AskBase+i+1)
-		line := id + ": " + t
+		// A message's own lines are kept, each continuation indented, so a
+		// line it holds can never read as another message's "A<n>:".
+		line := id + ": " + strings.ReplaceAll(t, "\n", "\n    ")
 		if size+len(line)+1 > MaxAsksBytes {
 			break
 		}
@@ -177,12 +184,12 @@ func Build(in Input) (Built, bool) {
 	type fline struct{ when, text string }
 	var flines []fline
 	for _, f := range focus {
-		t := oneLine(redact.Secrets(f.Title))
+		t := neutralize(oneLine(redact.Secrets(f.Title)))
 		if t == "" {
 			continue
 		}
 		text := "Title: " + t
-		if d := oneLine(redact.Secrets(f.Description)); d != "" {
+		if d := neutralize(oneLine(redact.Secrets(f.Description))); d != "" {
 			text += " | Description: " + d
 		}
 		flines = append(flines, fline{when: ago(in.Now, f.At), text: cutBytes(text, MaxFocusEntryBytes)})
@@ -197,7 +204,7 @@ func Build(in Input) (Built, bool) {
 		default:
 			continue
 		}
-		t := oneLine(redact.Secrets(e.Text))
+		t := neutralize(oneLine(redact.Secrets(e.Text)))
 		if t == "" {
 			continue
 		}
@@ -317,4 +324,14 @@ func oneLine(s string) string {
 		}
 	}
 	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// reSectionTag is an opening or closing tag of one of the input's sections,
+// however spaced or cased.
+var reSectionTag = regexp.MustCompile(`(?i)<(\s*/?\s*(?:operator_messages|session_focus_history|transcript_tail|final_reply)\b)`)
+
+// neutralize is s with every section tag's "<" replaced by "‹" (U+2039), so
+// content can spell a section's name but never delimit one.
+func neutralize(s string) string {
+	return reSectionTag.ReplaceAllString(s, "‹$1")
 }

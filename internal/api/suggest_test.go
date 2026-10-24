@@ -468,3 +468,30 @@ func TestTheFocusHistoryReachesTheInputOldestFirst(t *testing.T) {
 		t.Fatalf("focus history in the input:\n%s", p)
 	}
 }
+
+// TestTheAsksAreTheWholePromptsNotTheIndexFirstLines: a prompt the view read
+// a user record of is sent WHOLE, every line of it; a prompt older than the
+// view's backfill (known only to the prompt index) is sent as the index's
+// first line.
+func TestTheAsksAreTheWholePromptsNotTheIndexFirstLines(t *testing.T) {
+	f := newSuggestFixture(t, nil)
+	tr := &suggestTracker{}
+	tr.observe(mirror.Msg{Gen: suggestSID, Reset: true, Events: []cctranscript.Event{
+		{Kind: cctranscript.KindPrompt, Line: 900, Text: "Two things:\n1. make the export job resumable\n2. keep the batch size configurable"},
+		{Kind: cctranscript.KindText, Text: suggestReply},
+	}})
+	if !tr.observe(mirror.Msg{Gen: suggestSID, PromptIndex: true, Prompts: []cctranscript.PromptRef{
+		{Line: 100, Text: "an older prompt, first line only"},
+		{Line: 900, Text: "Two things:"},
+	}}) {
+		t.Fatal("no turn end")
+	}
+	if !f.s.suggestTurn(operatorCtx(), "ws", "main", "@1", tr) || f.gen.n() != 1 {
+		t.Fatalf("calls %d", f.gen.n())
+	}
+	p := f.gen.prompts[0]
+	if !strings.Contains(p, "A2: Two things:\n    1. make the export job resumable\n    2. keep the batch size configurable\n") ||
+		!strings.Contains(p, "A1: an older prompt, first line only\n") {
+		t.Fatalf("asks:\n%s", p)
+	}
+}
