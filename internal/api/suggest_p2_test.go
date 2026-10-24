@@ -326,6 +326,104 @@ func TestAResumedViewServesItsTurnsSetButMakesNone(t *testing.T) {
 	}
 }
 
+// TestNoSetForATurnTheStreamHasMovedPast (audit round 1, MED): the operator
+// sent the next message within the list's refresh lag — the STREAM is busy
+// again while the list still reads the ended turn's idle. Nothing is
+// generated for the turn that is over, and the page is not told pending.
+func TestNoSetForATurnTheStreamHasMovedPast(t *testing.T) {
+	f := newSuggestFixture(t, nil)
+	f.setList(mirror.StatusIdle, tokOwn)
+	// The busy marker arrives before its prompt's record (or a queued message
+	// started the turn): the tail still ends in the reply, so only the
+	// stream's own state says the turn is over. With a token (this host) and
+	// without one (an older host: only busy says it).
+	for _, tok := range []int64{tokOwn, 0} {
+		tr := &suggestTracker{}
+		for _, m := range suggestBackfill() {
+			m.StatusSince = tok
+			tr.observe(m)
+		}
+		end := tr.lastEnd()
+		busy := mirror.Msg{Busy: true}
+		if tok != 0 {
+			busy.StatusSince = tok + 10
+		}
+		tr.observe(busy)
+		if f.s.suggestTurnAt(operatorCtx(), "ws", "main", "@1", tr, end, func(time.Duration) { t.Errorf("token %d: pending for a turn that is over", tok) }) || f.gen.n() != 0 {
+			t.Fatalf("token %d: calls %d", tok, f.gen.n())
+		}
+	}
+	// Positive control: the same, the stream still at the turn's end.
+	tr2 := &suggestTracker{}
+	for _, m := range suggestBackfill() {
+		m.StatusSince = tokOwn
+		tr2.observe(m)
+	}
+	if !f.s.suggestTurnAt(operatorCtx(), "ws", "main", "@1", tr2, tr2.lastEnd(), nil) || f.gen.n() != 1 {
+		t.Fatalf("control: calls %d", f.gen.n())
+	}
+}
+
+// TestWithNoDatabaseTurningThemOnStillResumesAPause (audit round 1, LOW):
+// no Prefs, so the toggle cannot be stored — but on=1 still clears an
+// auto-pause, and Account offers the form while paused.
+func TestWithNoDatabaseTurningThemOnStillResumesAPause(t *testing.T) {
+	f := newSuggestFixture(t, nil)
+	f.eng.PerOwner, f.eng.Global = 10_000, 10_000
+	for i := 0; i < suggest.AutoPauseMinShown; i++ {
+		sub := "sub-" + string(rune('a'+i%26)) + string(rune('a'+i/26))
+		b, _ := suggest.Build(suggest.Input{Tail: []suggest.Entry{{Role: suggest.RoleAssistant, Text: suggestReply + " " + sub}}})
+		set, _, _ := f.eng.Suggest(context.Background(), 1, sub, b, int64(i+1))
+		f.eng.Record(1, sub, set.Fingerprint, suggest.EventShown, 0)
+	}
+	r, _ := http.NewRequestWithContext(operatorCtx(), http.MethodGet, "/account", nil)
+	if html := f.s.accountSuggestSection(r); !strings.Contains(html, `data-state="paused"`) || !strings.Contains(html, `name="on" value="1"`) {
+		t.Fatalf("paused, no database: %s", html)
+	}
+	req, _ := http.NewRequest(http.MethodPost, f.ts.URL+"/account/suggest", strings.NewReader("on=1"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Cookie", sessionCookieFor(f.s))
+	req.Header.Set("Origin", f.ts.URL)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent || f.eng.Stats(1).Paused {
+		t.Fatalf("on=1 with no database: %d, paused %v", resp.StatusCode, f.eng.Stats(1).Paused)
+	}
+}
+
+// TestAReplyAfterItsTurnEndStillEndsTheTurn (delta audit, found by the browser
+// suite): the idle marker reached the tracker BEFORE the turn's reply (an
+// older host's re-resolve sent it ahead of the poll). That turn end has no
+// reply to answer, so the reply arriving — still idle — ends the turn after
+// all, once; a reply during a NEW (busy) turn does not.
+func TestAReplyAfterItsTurnEndStillEndsTheTurn(t *testing.T) {
+	tr := &suggestTracker{}
+	prompt := mirror.Msg{Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "go with (a)"}}}
+	reply := mirror.Msg{Events: []cctranscript.Event{{Kind: cctranscript.KindText, Text: p2Reply}}}
+	steps := []struct {
+		m    mirror.Msg
+		ends bool
+	}{
+		{mirror.Msg{Reset: true, Busy: true, Events: []cctranscript.Event{{Kind: cctranscript.KindPrompt, Text: "go"}}}, false},
+		{mirror.Msg{Busy: false}, true}, // the marker, ahead of the reply
+		{reply, true},                   // the reply: the turn ends after all
+		{reply, false},                  // and only once
+		{prompt, false},
+		{mirror.Msg{Busy: true}, false},
+		{mirror.Msg{Busy: false}, true}, // ahead of its reply again
+		{mirror.Msg{Busy: true}, false}, // a new turn: that one is over
+		{mirror.Msg{Busy: true, Events: reply.Events}, false},
+	}
+	for i, st := range steps {
+		if got := tr.observe(st.m); got != st.ends {
+			t.Fatalf("step %d: ends=%v, want %v", i, got, st.ends)
+		}
+	}
+}
+
 // keylessGen is a model the owner has no key for.
 type keylessGen struct{ recordingGen }
 

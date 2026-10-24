@@ -32,7 +32,9 @@ import (
 //
 // 🔴 WITHIN SuggestCutoff OF THE TURN END OR NOT AT ALL. The socket says how
 // long ago the turn ended (pending/ready); a set that is not on screen by the
-// cutoff is dropped, and the row with it.
+// cutoff is dropped, and the row with it. (A page opened or reloaded on the
+// same idle turn later is a turn end of its own: it serves that turn's cached
+// set, within the cutoff of the open.)
 //
 // What it reports (SuggestEventPath): "shown" once per set, "filled" on a tap,
 // "sent" when the box is sent after a tap — with the EDIT DISTANCE between
@@ -127,6 +129,9 @@ func suggestRowScript() g.Node {
   // drawn, an attention ask (shown or hidden on this device: hidden is not
   // answered).
   function blocked() {
+    // A turn is running (the view's own busy line): nothing is for it.
+    var w = document.getElementById('mv-working');
+    if (w && !w.hidden) return true;
     var q = document.getElementById('mv-asks');
     if (q && !q.hidden && q.querySelector('form, button')) return true;
     var a = document.getElementById('asker-asks');
@@ -166,7 +171,7 @@ func suggestRowScript() g.Node {
       .then(function (v) {
         if (g !== gen) return;
         var list = v && v.suggestions ? v.suggestions.slice(0, 3) : [];
-        if (!list.length || Date.now() > deadline || dismissedSet(v.fingerprint) || blocked()) { hide(); return; }
+        if (!list.length || Date.now() > deadline || blocked() || dismissedSet(v.fingerprint)) { hide(); return; }
         show(v.fingerprint, list);
       }, function () { if (g === gen) hide(); });
   }
@@ -243,6 +248,16 @@ func suggestRowScript() g.Node {
     fill = null;
     hide();
   });
+  // A question card or an attention ask that arrives while chips are up
+  // takes them away (the server's exclusions run only when a set is made or
+  // read).
+  if (typeof MutationObserver !== 'undefined') {
+    var mo = new MutationObserver(function () { if (state() && blocked()) hide(); });
+    ['mv-asks', 'asker-asks', 'mv-working'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) mo.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] });
+    });
+  }
   window.musterSuggest = function (m) {
     if (!m) return;
     if (m.state === 'pending') reserve(m.ms);

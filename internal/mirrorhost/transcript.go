@@ -391,6 +391,46 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		refs, more := mirror.BoundPrompts(refs)
 		return send([]mirror.Msg{{Offset: off, Busy: busy, StatusSince: since, PromptIndex: true, Prompts: refs, PromptsMore: more}})
 	}
+	// poll reads and sends what is new in the transcript.
+	poll := func() error {
+		st, err := f.Stat()
+		if err != nil {
+			return fmt.Errorf("stat the transcript: %w", err)
+		}
+		if st.Size() < off {
+			// Truncated or replaced in place: start over.
+			return start("", 0)
+		}
+		for off < st.Size() {
+			lines, next, err := cctranscript.ReadLines(f, off, st.Size(), readChunk)
+			if err != nil {
+				return fmt.Errorf("read the transcript: %w", err)
+			}
+			if next == off {
+				break // a partial line: the rest arrives on a later poll
+			}
+			if subs != nil {
+				subs.observe(cctranscript.Flatten(lines))
+			}
+			// 🔴 Redacted before it is framed (redact_stream.go).
+			redactLines(lines)
+			batches := mirror.BatchLines(lines, off)
+			off = next
+			if len(batches) == 0 {
+				continue // lines with nothing to draw (attachments, hook records)
+			}
+			// The last batch's resume point is past every consumed line,
+			// including trailing ones that drew nothing.
+			batches[len(batches)-1].Offset = off
+			for i := range batches {
+				batches[i].Busy, batches[i].StatusSince = busy, since
+			}
+			if err := send(batches); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	return h.runView(ctx, renderedView{
 		start: func() error { return start(m.Gen, m.Offset) },
 		reresolve: func(ctx context.Context) (bool, error) {
@@ -403,6 +443,17 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 				p, busy, since = np, np.Busy, np.StatusSince
 				return true, start("", 0)
 			}
+			if np.Busy != busy || np.StatusSince != since {
+				// 🔴 THE LINES BEFORE THE STATUS: whatever the transcript holds now
+				// is sent before the marker, so a turn's last reply — in the file
+				// by the time its idle status is — never reaches muster after the
+				// turn end it belongs to (suggested replies read it there). Without
+				// this a re-resolve tick sent the marker first and the poll the
+				// reply after it (seen in the browser suite).
+				if err := poll(); err != nil {
+					return false, err
+				}
+			}
 			if err := sendStatus(&busy, &since, np.Busy, np.StatusSince, off, h.nudge, send); err != nil {
 				return false, err
 			}
@@ -410,45 +461,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			// on the re-resolve cadence.
 			return false, sendSubs()
 		},
-		poll: func() error {
-			st, err := f.Stat()
-			if err != nil {
-				return fmt.Errorf("stat the transcript: %w", err)
-			}
-			if st.Size() < off {
-				// Truncated or replaced in place: start over.
-				return start("", 0)
-			}
-			for off < st.Size() {
-				lines, next, err := cctranscript.ReadLines(f, off, st.Size(), readChunk)
-				if err != nil {
-					return fmt.Errorf("read the transcript: %w", err)
-				}
-				if next == off {
-					break // a partial line: the rest arrives on a later poll
-				}
-				if subs != nil {
-					subs.observe(cctranscript.Flatten(lines))
-				}
-				// 🔴 Redacted before it is framed (redact_stream.go).
-				redactLines(lines)
-				batches := mirror.BatchLines(lines, off)
-				off = next
-				if len(batches) == 0 {
-					continue // lines with nothing to draw (attachments, hook records)
-				}
-				// The last batch's resume point is past every consumed line,
-				// including trailing ones that drew nothing.
-				batches[len(batches)-1].Offset = off
-				for i := range batches {
-					batches[i].Busy, batches[i].StatusSince = busy, since
-				}
-				if err := send(batches); err != nil {
-					return err
-				}
-			}
-			return nil
-		},
+		poll: poll,
 	})
 }
 

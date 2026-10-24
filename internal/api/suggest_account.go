@@ -40,10 +40,11 @@ func (s *Server) accountSuggestSection(r *http.Request) string {
 	if eng.Off {
 		return head + state("server-off", "Off for everyone on this server (MUSTER_SUGGEST=off).") + `</section>`
 	}
-	if eng.Prefs == nil {
+	outcome := eng.Enabled(r.Context(), requestOwner(r.Context()))
+	if eng.Prefs == nil && outcome != suggest.OutcomePaused {
 		return head + state("on", "On. (This server has no database, so it cannot be turned off per user here.)") + `</section>`
 	}
-	switch eng.Enabled(r.Context(), requestOwner(r.Context())) {
+	switch outcome {
 	case suggest.OutcomeUserOff:
 		return head + saved + state("off", "Off.") + form(true, "Turn suggested replies on") + `</section>`
 	case suggest.OutcomePaused:

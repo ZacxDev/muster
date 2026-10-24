@@ -6,11 +6,25 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/mirror"
 )
+
+// appendLine appends one transcript record.
+func appendLine(t *testing.T, path, line string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(line + "\n"); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // statusWindows is windowsBackend whose Claude windows report a status.
 type statusWindows struct{ *windowsBackend }
@@ -94,6 +108,35 @@ func TestAViewStreamNamesItsStatusTimeAndNudgesTheList(t *testing.T) {
 	b.set(statusClaudeWindow(tr, mirror.StatusIdle, s1))
 	waitUntil(t, "an idle marker naming the new time", marker(false, s1))
 	waitUntil(t, "the nudged window list naming it (Refresh is an hour)", listed(s1))
+
+	// The reply written, THEN the idle status — read on the same re-resolve:
+	// the reply's lines reach muster before the marker that ends its turn.
+	const s1b = s1 + 50
+	b.set(statusClaudeWindow(tr, mirror.StatusBusy, s1+10))
+	waitUntil(t, "busy", marker(true, s1+10))
+	for i := 0; i < 20; i++ { // many rounds: the tick it lands on must not matter
+		// Each round lands at another phase of the poll / re-resolve cadence
+		// (the busy marker below was sent ON a re-resolve tick; re-resolves are
+		// every reresolveEvery ViewPolls).
+		time.Sleep(time.Duration(i%reresolveEvery)*5*time.Millisecond + 2*time.Millisecond)
+		appendLine(t, tr, `{"type":"assistant","message":{"content":[{"type":"text","text":"reply `+strconv.Itoa(i)+`"}]}}`)
+		b.set(statusClaudeWindow(tr, mirror.StatusIdle, s1b+int64(i)*2))
+		waitUntil(t, "the idle marker", marker(false, s1b+int64(i)*2))
+		replyAt, markerAt := -1, -1
+		for k, m := range events() {
+			if len(m.Events) > 0 && m.Events[len(m.Events)-1].Text == "reply "+strconv.Itoa(i) {
+				replyAt = k
+			}
+			if len(m.Events) == 0 && !m.PromptIndex && !m.Busy && m.StatusSince == s1b+int64(i)*2 {
+				markerAt = k
+			}
+		}
+		if replyAt < 0 || replyAt > markerAt {
+			t.Fatalf("round %d: the reply (message %d) did not precede its turn end (message %d)", i, replyAt, markerAt)
+		}
+		b.set(statusClaudeWindow(tr, mirror.StatusBusy, s1b+int64(i)*2+1))
+		waitUntil(t, "busy again", marker(true, s1b+int64(i)*2+1))
+	}
 
 	// busy(s2): the busy marker names its time too.
 	b.set(statusClaudeWindow(tr, mirror.StatusBusy, s2))

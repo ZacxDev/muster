@@ -31,7 +31,10 @@ Mirrored tmux sessions only (a dispatched agent's chat page has no chips yet).
 - **Within 8 s or not at all.** The row takes its room when a set is being
   made (`pending`) and gives it back if no chip is on screen 8 s after the
   turn ended (`ui.SuggestCutoff`); the server does not even call the model
-  once that time has passed.
+  once that time has passed. A page opened or reloaded later on the same idle
+  turn shows that turn's set again (from the cache, within 8 s of the open).
+- **Gone when the turn is.** A new turn (busy, a new status), a question card
+  or an attention ask appearing, or your own Send takes the row away.
 - **No layout shift.** The row is out of flow (placed against the pinned
   composer's top), and its 44px are added to the room the page keeps for the
   composer only while a set is pending or shown — so nothing on screen moves
@@ -169,6 +172,11 @@ separately from focus.
 Measured on the synthetic eval set (below) with `openai/gpt-6-luna` at
 reasoning effort `low`, 64 calls: about 840 tokens in and 160 out per
 generation, **$0.00016 per generation**, latency **p50 3.1 s, p95 5.3 s**.
+
+⚠ **Known limit.** A status rewrite while Claude Code stays idle (its
+`statusUpdatedAt` moving, for example when a background shell starts or ends —
+not measured) counts as a turn end: the chips are redrawn, and if the focus
+history moved in between, the model is asked again for the same reply.
 
 ## What the chip row reports, and the auto-pause
 

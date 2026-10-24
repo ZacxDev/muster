@@ -126,6 +126,10 @@ type suggestTracker struct {
 	// cached: the newest turn end is a resumed socket's first idle marker,
 	// which may only SERVE a set already made for its token (cacheOnly).
 	cached bool
+	// awaitReply: the newest turn end came before any reply of its turn (an
+	// older host can send the idle marker ahead of the reply's lines), so the
+	// reply arriving, still idle, ends that turn after all.
+	awaitReply bool
 }
 
 // suggestEnd is one turn end: the stream's status token at it (0 = the host
@@ -144,6 +148,15 @@ func (t *suggestTracker) lastEnd() suggestEnd {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.end
+}
+
+// movedOn reports whether the STREAM has moved past turn end e: a newer
+// status token, or a turn running (busy). The window list can lag the stream
+// by a refresh, so the list alone cannot say a set is still for "now".
+func (t *suggestTracker) movedOn(e suggestEnd) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.busy || (e.since != 0 && t.since != e.since)
 }
 
 // token is the newest status token the stream named, 0 for none.
@@ -170,6 +183,7 @@ func (t *suggestTracker) observe(m mirror.Msg) bool {
 	ended := t.observeLocked(m)
 	if ended {
 		t.end = suggestEnd{since: t.since, at: time.Now(), cacheOnly: t.cached}
+		t.awaitReply = !t.cached && (len(t.entries) == 0 || t.entries[len(t.entries)-1].Role != suggest.RoleAssistant)
 	}
 	return ended
 }
@@ -247,6 +261,9 @@ func (t *suggestTracker) observeLocked(m mirror.Msg) bool {
 	case started && wasBusy && !m.Busy:
 		return true
 	case started && moved && !m.Busy:
+		return true
+	case started && t.awaitReply && !m.Busy && len(t.entries) > 0 && t.entries[len(t.entries)-1].Role == suggest.RoleAssistant:
+		// The reply of a turn whose end came first.
 		return true
 	}
 	return false
@@ -466,7 +483,7 @@ func (s *Server) suggestTurnAt(ctx context.Context, host, session, window string
 	if end.cacheOnly {
 		// A resumed socket: serve the set made for this very turn, if any.
 		set, has := s.ext.Suggest.Latest(requestOwner(ctx), suggestSubject(h.Host, e))
-		if !has || set.Turn != turn || len(set.Suggestions) == 0 || time.Since(end.at) >= s.suggestIdleWait() {
+		if !has || set.Turn != turn || len(set.Suggestions) == 0 || time.Since(end.at) >= s.suggestIdleWait() || t.movedOn(end) {
 			return false
 		}
 		if pending != nil {
@@ -496,6 +513,11 @@ func (s *Server) suggestTurnAt(ctx context.Context, host, session, window string
 	if kc, ok := s.ext.Suggest.Gen.(suggest.KeyChecker); ok && kc.CanGenerate(ctx, requestOwner(ctx)) != nil {
 		return false
 	}
+	// 🔴 THE STREAM MOVED ON (a new prompt, busy again) while the list still
+	// read this turn's idle: nothing for a turn that is over.
+	if t.movedOn(end) {
+		return false
+	}
 	if pending != nil {
 		pending(since)
 	}
@@ -505,7 +527,7 @@ func (s *Server) suggestTurnAt(ctx context.Context, host, session, window string
 	}
 	switch out {
 	case suggest.OutcomeGenerated, suggest.OutcomeCached:
-		return len(set.Suggestions) > 0 && set.Turn == turn
+		return len(set.Suggestions) > 0 && set.Turn == turn && !t.movedOn(end)
 	}
 	return false
 }
@@ -698,6 +720,17 @@ func (s *Server) handleAccountSuggest(w http.ResponseWriter, r *http.Request) {
 	}
 	eng := s.ext.Suggest
 	if eng.Prefs == nil {
+		// No database: nothing to store — but turning them back ON still
+		// resumes a user the auto-pause paused (in memory).
+		if r.PostFormValue("on") == "1" && requestOwner(r.Context()) > 0 {
+			eng.Resume(requestOwner(r.Context()))
+			if r.PostFormValue("back") == "account" {
+				http.Redirect(w, r, accountPath+"?suggest=saved#suggest", http.StatusSeeOther)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		http.Error(w, "suggestion preferences need a database", http.StatusServiceUnavailable)
 		return
 	}

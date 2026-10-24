@@ -94,8 +94,9 @@ async function turn(page: Page, text = reply) {
   fs.appendFileSync(tr, cc.prompt('next step please'));
   setStatus('busy');
   await page.waitForTimeout(1200); // the host's re-resolve (3 × 300 ms) sees busy
+  // The reply, then at once the idle status — as the CLI writes them: the
+  // host must deliver the reply before the turn end it belongs to.
   fs.appendFileSync(tr, cc.reply(text));
-  await expect(page.locator('#mv-log [data-bubble="assistant"]').last()).toContainText(text.slice(0, 20));
   setStatus('idle');
   return Date.now();
 }
@@ -230,7 +231,13 @@ async function measureTurn(page: Page, inFlow: boolean, salt: string) {
   await expect(chips(page).first()).toBeVisible({ timeout: 8_000 });
   // The open of a view on an idle session whose last turn has a set: the
   // chips come with the page (the open is a turn end too, from the cache).
+  // 🔴 A RELOAD RESUMES (the snapshot, saved within a second): the socket has
+  // no backfill and only SERVES the turn's cached set — asserted, so this
+  // measures that path and not, by the luck of the save's timing, a fresh one.
+  await page.waitForTimeout(1500);
+  const resumedWS = page.waitForEvent('websocket', (ws) => ws.url().includes('/mirror/view/ws'));
   await page.reload();
+  expect((await resumedWS).url(), 'the reloaded view resumed its socket').toContain('&gen=');
   await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
   await expect(chips(page).first(), 'the last turn\'s chips at the open').toBeVisible({ timeout: 8_000 });
   await page.waitForTimeout(1000);
