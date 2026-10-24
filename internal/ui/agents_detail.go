@@ -758,6 +758,7 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// invisible (still laid out, so the clamp can measure them) until the
 			// layout call, or start(), removes this; content that becomes visible
 			// is not a layout shift. A <noscript> rule shows them without script.
+			// #chat-form carries the same marker (see there).
 			g.If(v.Surface == ChatSurfacePage, g.Attr("data-cg-unlaid", "")),
 			// Live-refresh the transcript from the canonical server state when a chat
 			// reply is persisted (chat.reply). This is what makes a KICKOFF turn — which
@@ -850,7 +851,15 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// mobile keyboard (the shell shrinks, keeping the input visible). It sits
 			// inside Main (already contentWidth() inside the lg:pl-72 column), so no
 			// width/offset classes here.
-			Class("flex-none border-t border-line pt-3"+classIf(withSwitcher, " "+switcherRoom(false))),
+			Class("flex-none border-t border-line pt-3 [&[data-cg-unlaid]]:invisible"+classIf(withSwitcher, " "+switcherRoom(false))),
+			// 🔴 INVISIBLE UNTIL THE TRANSCRIPT IS LAID OUT, LIKE #chat-log's
+			// children. The parser can stop mid-form (measured: a frame with only
+			// its first hidden <input> parsed, the form 58px tall, then 102px when
+			// its row arrived — a 0.00578 shift of the form at 390px, 3 opens in
+			// 25 on two loaded cores, throttled). The layout call, the form's last
+			// child, removes the marker from both; a hidden form growing moves
+			// nothing a reader sees.
+			g.If(v.Surface == ChatSurfacePage, g.Attr("data-cg-unlaid", "")),
 			// The outcome of a send the browser submitted (see above), drawn by the
 			// server on the page its redirect lands on.
 			g.If(v.SendNotice != "", P(ID("chat-note"), g.Attr("role", "status"),
@@ -890,9 +899,9 @@ func agentChatPane(v AgentDetailView) g.Node {
 			// same task.
 			g.If(v.Surface == ChatSurfacePage, Script(g.Raw(`window.__cgLayoutLog && window.__cgLayoutLog();`))),
 		),
-		// Without script nothing removes #chat-log's data-cg-unlaid: show the
-		// transcript anyway.
-		g.If(v.Surface == ChatSurfacePage, NoScript(StyleEl(g.Raw(`#chat-log > * { visibility: visible !important; }`)))),
+		// Without script nothing removes data-cg-unlaid: show the transcript
+		// and the form anyway.
+		g.If(v.Surface == ChatSurfacePage, NoScript(StyleEl(g.Raw(`#chat-form, #chat-log > * { visibility: visible !important; }`)))),
 		// The box grows with its text (composer_fit.go), the same one script as
 		// the mirrored composer's — it travels with the pane for the chief panel.
 		// First after the form, with the draft's (composer_draft.go), so a
@@ -1730,6 +1739,7 @@ func agentChatScript(name string) g.Node {
   mdConvert(logEl);
   // Laid out now, if window.__cgLayoutLog did not run (see #chat-log's data-cg-unlaid).
   logEl.removeAttribute('data-cg-unlaid');
+  form.removeAttribute('data-cg-unlaid');
   // Already wired for this exact form (e.g. DOMContentLoaded + htmx:load both
   // fired for the same body): don't double-bind.
   if (form.hasAttribute('data-cg-chat')) return;
@@ -2118,6 +2128,8 @@ func agentChatScript(name string) g.Node {
     mdConvert(log);
     log.scrollTop = log.scrollHeight;
     log.removeAttribute('data-cg-unlaid');
+    var cf = document.getElementById('chat-form');
+    if (cf) cf.removeAttribute('data-cg-unlaid');
     var pre = { log: log, away: false, ro: null };
     pre.onScroll = function () { pre.away = log.scrollHeight - log.scrollTop - log.clientHeight >= 48; };
     log.addEventListener('scroll', pre.onScroll, { passive: true });

@@ -92,8 +92,8 @@ const openCases = (vp: (typeof viewports)[number]) =>
 
 // moved is every shift measured, input-excluded or not (see the header).
 const moved = (r: ClsResult) => +(r.total + r.excluded).toFixed(5);
-const report = (label: string, r: ClsResult) =>
-  `${label}: ${moved(r)} (total ${r.total}, excluded ${r.excluded}) — ${JSON.stringify(r.shifts)} excluded: ${JSON.stringify(r.excludedShifts)}`;
+const report = (label: string, r: ClsResult & { where?: string[] }) =>
+  `${label}: ${moved(r)} (total ${r.total}, excluded ${r.excluded}) — ${JSON.stringify(r.shifts)} excluded: ${JSON.stringify(r.excludedShifts)}${r.where ? ' where: ' + JSON.stringify(r.where) : ''}`;
 // formShifts are the shifts, counted or excluded, that moved the composer.
 // 🔴 The composer must never move at all: a layout call placed between the log
 // and #chat-form let a frame paint the form before its box was parsed (13px,
@@ -113,19 +113,23 @@ const formShifts = (r: ClsResult) => [...r.shifts, ...r.excludedShifts].filter((
 // every entry that is not.
 const titleInit = `(() => {
   window.__titleOnly = [];
+  // where: for each entry, each source's place — 'title' inside the header's
+  // title box, else the id of its nearest ancestor that has one (diagnostic).
+  window.__where = [];
   try {
     new PerformanceObserver((l) => {
       for (const e of l.getEntries()) {
         const ns = (e.sources || []).map((x) => x.node).filter(Boolean);
         if (ns.length && ns.every((n) => n.nodeType === 1 && n.closest('[data-agent-title]'))) window.__titleOnly.push(Math.round(e.startTime));
+        window.__where.push(Math.round(e.startTime) + ':' + ns.map((n) => (n.nodeType === 1 && n.closest('[data-agent-title]')) ? 'title' : ((n.nodeType === 1 && n.closest('[id]')) || { id: '?' }).id).join(','));
       }
     }).observe({ type: 'layout-shift', buffered: true });
   } catch (e) {}
 })()`;
-type Moved = ClsResult & { titleOnly: number[] };
+type Moved = ClsResult & { titleOnly: number[]; where?: string[] };
 async function readMoved(page: Page): Promise<Moved> {
   const r = await readCls(page);
-  return { ...r, titleOnly: await page.evaluate(() => (window as any).__titleOnly || []) };
+  return { ...r, titleOnly: await page.evaluate(() => (window as any).__titleOnly || []), where: await page.evaluate(() => (window as any).__where || []) };
 }
 const foreignShifts = (r: Moved) => [...r.shifts, ...r.excludedShifts].filter((x) => !r.titleOnly.includes(x.at));
 
@@ -257,6 +261,14 @@ test.describe('a 200-message agent transcript', () => {
     const stalls = [
       { label: 'before the layout call', at: (html: string) => html.indexOf('<form id="chat-form"') },
       { label: 'inside the session switcher', at: (html: string) => { const n = html.indexOf('id="session-switcher"'); return n < 0 ? -1 : html.indexOf('>', n) + 1; } },
+      // Inside the switcher's toggle, between its icon and its label.
+      { label: "inside the switcher's toggle", at: (html: string) => html.indexOf('<span data-switcher-label') },
+      // Inside #chat-form, straight after its opening tag: CI's frame (the
+      // form 58px with only its first <input>, then 102px) made deterministic.
+      { label: 'inside the composer', at: (html: string) => { const n = html.indexOf('<form id="chat-form"'); return n < 0 ? -1 : html.indexOf('>', n) + 1; } },
+      // Straight after #chat-form: the composer is parsed, the scripts that
+      // size its box (composer_fit.go, composer_draft.go) not yet.
+      { label: 'after the composer, before its sizing scripts', at: (html: string) => { const n = html.indexOf('id="chat-form"'); return n < 0 ? -1 : html.indexOf('</form>', n) + '</form>'.length; } },
     ];
     for (const stall of stalls)
     test(`${vp.name}: a frame painted ${stall.label} moves nothing`, async ({ browser }) => {
