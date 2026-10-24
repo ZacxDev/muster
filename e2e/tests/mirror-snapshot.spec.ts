@@ -681,6 +681,38 @@ test('warming from the Agents list stores the recent windows without opening the
   await expect(page.locator('#mv-status')).toHaveText('Live');
 });
 
+test("the session switcher's Rendered-view entries feed warming, at most three a pass", async ({ page }) => {
+  await ready(page);
+  // Visits, so the switcher's Recent row lists the other windows.
+  for (const w of ['@3', '@2']) {
+    await page.goto(origin + viewOf(w));
+    await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+  }
+  // Nothing stored: on a rendered view the only other source is this
+  // browser's own snapshots, so whatever is warmed came from the page's links.
+  await wipe(page);
+  const warmSockets: string[] = [];
+  page.on('websocket', (ws) => {
+    if (ws.url().includes('warm=1')) warmSockets.push(new URL(ws.url()).searchParams.get('window') || '');
+  });
+  await page.goto(origin + viewOf('@1'));
+  await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+  const linked = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-switcher-entry] , a[data-snap-warm]')]
+      .filter((a) => a.hasAttribute('data-snap-warm'))
+      .map((a) => new URL(a.getAttribute('href')!, location.href).searchParams.get('window')),
+  );
+  expect(await page.locator('a[data-snap-warm][data-switcher-entry]').count(), 'POSITIVE CONTROL: the switcher draws warmable entries').toBeGreaterThan(0);
+  await expect
+    .poll(async () => ((await snaps(page)) || []).filter((r) => r.window !== '@1').length, { message: 'a switcher entry was warmed', timeout: 20_000 })
+    .toBeGreaterThan(0);
+  await page.waitForTimeout(3000);
+  const warmed = ((await snaps(page)) || []).map((r) => r.window).filter((w) => w !== '@1');
+  for (const w of warmed) expect(linked, `${w} was warmed from a data-snap-warm link`).toContain(w);
+  expect(new Set(warmSockets).size, `at most three windows warmed (${warmSockets.join(',')})`).toBeLessThanOrEqual(3);
+  expect(warmSockets, 'the window on screen is never warmed').not.toContain('@1');
+});
+
 test('the "Updating…" chip shows only after a second of catching up, in room it always had', async ({ page }) => {
   await ready(page);
   await page.goto(origin + '/agents');
