@@ -101,7 +101,7 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - jobs (0037, the machine job API's jobs).
 //   - devices, device_pairing_codes (0039, the Android app's paired phones).
 //   - connector_standing_grants (0043, an owner's shared connector approvals).
-//   - suggest_preferences (0047, suggested replies' per-user toggle).
+//   - suggest_preferences (0048, suggested replies' per-user toggle).
 var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "connector_standing_grants", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_routes", "suggest_preferences", "uploads", "user_credentials"}

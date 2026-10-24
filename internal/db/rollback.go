@@ -115,10 +115,10 @@ const devicesMigrationVersion = 39
 // security; same treatment again.
 const standingGrantsMigrationVersion = 43
 
-// suggestPreferencesMigrationVersion is 0047: suggest_preferences (suggested
+// suggestPreferencesMigrationVersion is 0048: suggest_preferences (suggested
 // replies' per-user toggle), owned and under the same row-level security;
 // same treatment again.
-const suggestPreferencesMigrationVersion = 47
+const suggestPreferencesMigrationVersion = 48
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the

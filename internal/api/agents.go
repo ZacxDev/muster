@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/cctranscript"
@@ -242,8 +241,14 @@ func (s *Server) agentsListCardsWithin(ctx context.Context, instancesWithin time
 	isChief := chiefPredicate(list)
 	// The viewer's session focus (internal/focus), read once for every card.
 	focused := s.focusIndex(ctx)
+	// Each agent's latest session, read once for every card (ui.AgentSessionHref).
+	ids := make([]int64, 0, len(list))
 	for _, a := range list {
-		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID], isChief, pinned, focused))
+		ids = append(ids, a.ID)
+	}
+	latest := s.latestSessionIDs(ctx, ids)
+	for _, a := range list {
+		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID], latest[a.ID], isChief, pinned, focused))
 	}
 	// The viewer's mirrored sessions (internal/mirror), from the plugin's
 	// in-memory hub, scoped to this request's principal. The list interleaves
@@ -572,10 +577,12 @@ func (s *Server) handleSessionRead(w http.ResponseWriter, r *http.Request) {
 // The status is reconciled against live instances through liveStatusIndexed, so
 // callers in a loop pass an index they fetched once; cardViewFor is the
 // single-agent spelling.
-func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance, lastMsg time.Time, isChief func(agents.Agent) bool, pinned pins.Set, focused focusIndex) ui.AgentCardView {
+func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance, lastMsg time.Time, sessionID int64, isChief func(agents.Agent) bool, pinned pins.Set, focused focusIndex) ui.AgentCardView {
 	status := liveStatusIndexed(a, idx)
 	return ui.AgentCardView{
-		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName,
+		// SessionID: the latest session, read once per render by the caller — what
+		// every link to this agent names (ui.AgentCardView.PageHref).
+		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, SessionID: sessionID,
 		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount, WorkerPool: a.WorkerPool,
 		Repo: a.Repo, Status: status, KickedOff: a.KickedOff, Model: a.Model,
 		// 🔴 THE BOOLEAN, NEVER a.PendingNote. agents.KickoffOwed reads the note to
@@ -626,7 +633,7 @@ func (s *Server) cardViewFor(ctx context.Context, a agents.Agent) ui.AgentCardVi
 		s.logger.Printf("agents: card %d: list for chief check: %v", a.ID, err)
 		list = nil
 	}
-	v := s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], chiefPredicate(list), s.pinSet(ctx), s.focusIndex(ctx))
+	v := s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], s.latestSessionIDs(ctx, []int64{a.ID})[a.ID], chiefPredicate(list), s.pinSet(ctx), s.focusIndex(ctx))
 	// The same badge the list draws, so a re-rendered card keeps it.
 	one := []ui.AgentCardView{v}
 	s.withCardAttention(ctx, one, nil)
@@ -943,21 +950,6 @@ type dispatchParams struct {
 // claudeCodeNoModel is the one sentence both model writes refuse with.
 const claudeCodeNoModel = "a claude-code agent has no per-agent model (the CLI's own settings choose it); leave the model unset"
 
-// hermesModelRefusal applies agentspec.HermesModelID — the rule a hermes pod's
-// spec is built by — to a model a dispatch or a model change names for a
-// hermes agent, so a model the pod cannot run is refused before anything is
-// created or stored. An empty model (the deployment's default) is left to the
-// build. Any other kind: nil.
-func hermesModelRefusal(kind, model string) error {
-	if agents.ResolveKind(kind) != agents.KindHermes || model == "" {
-		return nil
-	}
-	if _, err := agentspec.HermesModelID(model); err != nil {
-		return fmt.Errorf("%w: a %s agent: %v", ErrDispatchRefused, agents.KindHermes, err)
-	}
-	return nil
-}
-
 // ErrDispatchRefused marks a dispatch refused before anything was created: a
 // kind this deployment does not enable, an account pin for a kind that has none,
 // or a claude-code pool with no usable account.
@@ -1002,9 +994,6 @@ func (s *Server) resolveKindAccount(ctx context.Context, p dispatchParams) (kind
 	if kind != agents.KindClaudeCode {
 		if p.CCAccount != "" {
 			return "", "", fmt.Errorf("%w: a Claude account can only be pinned for a %s agent", ErrDispatchRefused, agents.KindClaudeCode)
-		}
-		if err := hermesModelRefusal(kind, p.Model); err != nil {
-			return "", "", err
 		}
 		return kind, "", nil
 	}
@@ -1090,8 +1079,6 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	// (hooks, env) runs beside the subscription token. One predicate,
 	// connectedRepo, the same task_dispatch applies to every kind before it
 	// reserves. Before the row, so a refusal creates nothing.
-	// The same holds for a hermes agent: hermesd checks the repository out and
-	// Hermes runs in it, loading its AGENTS.md (agents.RunsPodSupervisor).
 	if agents.RunsPodSupervisor(kind) && p.Repo != "" {
 		if why := s.connectedRepo(ctx, p.Repo); why != "" {
 			return agents.Agent{}, fmt.Errorf("%w: %s", ErrDispatchRefused, why)
@@ -1248,12 +1235,6 @@ func (s *Server) handleAgentModel(w http.ResponseWriter, r *http.Request) {
 		s.logger.Printf("agents: set model %d: read kind: %v", id, gerr)
 		http.Error(w, "could not update model", http.StatusInternalServerError)
 		return
-	}
-	if gerr == nil {
-		if err := hermesModelRefusal(cur.Kind, model); err != nil {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
 	}
 	if gerr == nil && agents.ResolveKind(cur.Kind) == agents.KindClaudeCode {
 		http.Error(w, ErrDispatchRefused.Error()+": "+claudeCodeNoModel, http.StatusConflict)
@@ -1433,8 +1414,20 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// page deep-links + the WS/mark-read paths agree on the session. Only redirect
 	// when the param is absent (no redirect loop once it's present).
 	if sessionParam == "" && active.ID != 0 {
-		http.Redirect(w, r, "/agents/"+a.Name+"?session="+strconv.FormatInt(active.ID, 10), http.StatusSeeOther)
+		// ui.AgentSessionHref is ALSO what every in-app link names, so a link and
+		// this redirect name the same URL by construction.
+		http.Redirect(w, r, ui.AgentSessionHref(a.Name, active.ID), http.StatusSeeOther)
 		return
+	}
+	// A LIST link (ui.AgentListHref) names the session that was latest when the
+	// list was drawn. If another session has become the latest since, go there —
+	// what the bare URL would have done at tap time. A link without the marker
+	// (the session drawer) means its session and is never moved.
+	if sessionParam != "" && r.URL.Query().Get(ui.FromListParam) == ui.FromListValue {
+		if latest := s.latestSessionIDs(ctx, []int64{a.ID})[a.ID]; latest != 0 && latest != active.ID {
+			http.Redirect(w, r, ui.AgentSessionHref(a.Name, latest), http.StatusSeeOther)
+			return
+		}
 	}
 	// The viewer opened this agent: its "recently viewed" entry (best-effort).
 	s.recordAgentVisit(ctx, a.ID)
@@ -1518,8 +1511,7 @@ func (s *Server) handleAgentChatLog(w http.ResponseWriter, r *http.Request) {
 		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
 	}
 	noteID, taskStatus := s.agentTaskStatus(ctx, a)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentChatLog(w, ui.AgentDetailView{
+	body, version, err := ui.ChatLogBody(ui.AgentDetailView{
 		Name: a.Name, Status: status, Messages: lines, ActiveSessionID: active.ID,
 		NoteID: noteID, TaskStatus: taskStatus,
 		// The surface the refetch is FOR. #chat-log inside the chief panel asks with
@@ -1528,9 +1520,25 @@ func (s *Server) handleAgentChatLog(w http.ResponseWriter, r *http.Request) {
 		// moment the thread has content, on the server's own count. An unknown or
 		// absent value is the page surface, i.e. every existing caller is unchanged.
 		Surface: chatSurfaceFromRequest(r),
-	}); err != nil {
+	})
+	if err != nil {
 		s.logger.Printf("agents: render chat-log: %v", err)
+		http.Error(w, "could not render the transcript", http.StatusInternalServerError)
+		return
 	}
+	// 🔴 CONDITIONAL: the page sends the version it last drew (ui.ChatLogBody,
+	// ui.ChatLogVersionHeader). Unchanged → 204, which htmx does not swap, so an
+	// open no longer downloads its transcript a second time the moment its event
+	// stream connects. no-store keeps the browser's own cache out of it: the only
+	// conditional request is the page's, and a 204 is never replayed from a cache.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set(ui.ChatLogVersionHeader, version)
+	if r.Header.Get(ui.ChatLogVersionHeader) == version {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(body)
 }
 
 // resolveSessions picks the active chat session for a request and builds the
@@ -1736,7 +1744,7 @@ func (s *Server) answerSessionOpened(ctx context.Context, w http.ResponseWriter,
 	// deleted the route that could re-provision such an agent, so `operator` is now
 	// an unmintable name — but if a row of that name ever existed it would render at
 	// /agents/operator like any other.
-	target := "/agents/" + a.Name + "?session=" + strconv.FormatInt(sess.ID, 10)
+	target := ui.AgentSessionHref(a.Name, sess.ID)
 	w.Header().Set("HX-Redirect", target)
 	w.WriteHeader(http.StatusOK)
 }

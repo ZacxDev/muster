@@ -129,7 +129,7 @@ on. The tallies are in memory, so a restart clears them.
 
 - `MUSTER_SUGGEST=off` stops everything ([configuration](configuration.md)).
 - Each user's own toggle: `POST /account/suggest` with `on=0` or `on=1`
-  (stored in `suggest_preferences`, migration `0047`; on is the default). Off
+  (stored in `suggest_preferences`, migration `0048`; on is the default). Off
   also drops that user's cached sets, and a call already running is not
   kept. A toggle that cannot be read as its owner reads as off.
 

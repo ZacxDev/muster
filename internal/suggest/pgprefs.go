@@ -10,7 +10,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 )
 
-// PGPrefs is Prefs on suggest_preferences (migration 0047), under row-level
+// PGPrefs is Prefs on suggest_preferences (migration 0048), under row-level
 // security: ctx must act as the owner it names (a request's, or the rendered
 // view socket's, principal), and a row of another owner's is invisible.
 type PGPrefs struct{ pool *pgxpool.Pool }

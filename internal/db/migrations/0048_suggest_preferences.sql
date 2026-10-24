@@ -1,4 +1,4 @@
--- muster 0047 — SUGGESTED REPLIES' PER-USER TOGGLE (internal/suggest).
+-- muster 0048 — SUGGESTED REPLIES' PER-USER TOGGLE (internal/suggest).
 --
 -- One row per owner who has turned suggested replies OFF (or back on after
 -- turning them off). Suggestions are ON by default (operator decision), so a

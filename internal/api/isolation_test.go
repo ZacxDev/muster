@@ -985,7 +985,7 @@ func newIsoWorld(t *testing.T) *isoWorld {
 				return nil, fmt.Errorf("no such host %s", host)
 			}},
 	}
-	// Suggested replies (0047): A's window's set and A's toggle are A's.
+	// Suggested replies (0048): A's window's set and A's toggle are A's.
 	ext.Suggest = &suggest.Engine{Gen: isoNoSuggestions{}, Prefs: suggest.NewPGPrefs(pool)}
 	srv.UseExtensions(ext)
 	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
