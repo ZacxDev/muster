@@ -26,7 +26,7 @@ func switcherFixture() ([]AgentCardView, []MirrorCardView) {
 	return list, mirrors
 }
 
-var switcherEntryRE = regexp.MustCompile(`<(a|span) (?:href="([^"]*)" hx-boost="false" )?data-switcher-entry="(agent|mirror)"[^>]*><span class="[^"]*">(?:<span data-switcher-wait[^>]*></span>)?<span class="truncate">([^<]*)</span>`)
+var switcherEntryRE = regexp.MustCompile(`<(a|span) (?:href="([^"]*)" hx-boost="false" (?:data-snap-warm="" )?)?data-switcher-entry="(agent|mirror)"[^>]*><span class="[^"]*">(?:<span data-switcher-wait[^>]*></span>)?<span class="truncate">([^<]*)</span>`)
 
 // switcherRowEntries is the entries the row of view key draws: for each, "label"
 // for a link to href, or "label (current)" for the page's own.
@@ -90,6 +90,21 @@ func TestTheSwitcherResolvesEachView(t *testing.T) {
 	if got := switcherRowEntries(t, solo, SwitcherPins); len(got) != 1 || !strings.HasPrefix(got[0], "mango ") {
 		t.Errorf("a lone codename is not shortened: %v", got)
 	}
+	// A link to a window's Rendered view is a snapshot warming source
+	// (a[data-snap-warm]); a terminal link and an agent's are not.
+	warm := regexp.MustCompile(`<a href="([^"]*)" hx-boost="false" data-snap-warm=""`).FindAllStringSubmatch(page, -1)
+	if len(warm) == 0 {
+		t.Error("no Rendered-view link carries data-snap-warm")
+	}
+	for _, m := range warm {
+		if !strings.HasPrefix(m[1], "/mirror/view?") {
+			t.Errorf("data-snap-warm on a link that is not a Rendered view: %s", m[1])
+		}
+	}
+	if !strings.Contains(page, `<a href="`+amp(term)+`" hx-boost="false" data-switcher-entry="mirror"`) {
+		t.Error("the terminal link is not drawn plain (without data-snap-warm)")
+	}
+
 	// The waiting entry carries its dot.
 	if !regexp.MustCompile(`href="/agents/ag-three"[^>]*><span class="[^"]*"><span data-switcher-wait`).MatchString(page) {
 		t.Error("ag-three waits on the viewer, and its entry has no waiting dot")

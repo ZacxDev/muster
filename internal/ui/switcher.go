@@ -2,6 +2,7 @@ package ui
 
 import (
 	"strconv"
+	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
@@ -29,7 +30,7 @@ import (
 //
 // Every entry is labelled as its pinned chip is (pinnedChipLabels: the
 // window's codename, an agent's name — disambiguated only against the other
-// entries of the same view), and opens what its card opens (MirrorCardHref,
+// entries of the same view; plained through textplain.Title there, once), and opens what its card opens (MirrorCardHref,
 // "/agents/<name>") with a real load.
 //
 // 🔴 SERVER-RENDERED, ALL THREE VIEWS, AT A FIXED HEIGHT — THAT IS THE
@@ -280,6 +281,9 @@ func switcherEntry(it SwitcherItem) g.Node {
 	return A(
 		Href(it.Href),
 		hx("hx-boost", "false"),
+		// A link to a window's Rendered view is a warming source for the view
+		// snapshots (a[data-snap-warm]); inert until something reads it.
+		g.If(strings.HasPrefix(it.Href, "/mirror/view?"), g.Attr("data-snap-warm", "")),
 		g.Attr("data-switcher-entry", it.Kind),
 		g.Attr("title", it.Label),
 		Class("press group "+box),
