@@ -38,21 +38,29 @@ type QuickKey struct {
 	Label string
 	Aria  string
 	Seq   string // the bytes sent, as typed by a VT100-style terminal
+	// Primary draws the key as one of the bar's large buttons; every other key
+	// is in the bar's "⋯" menu (quickKeyBar).
+	Primary bool
 }
 
 // QuickKeys is the bar, in display order. The sequences are what xterm itself
 // sends for the same keys in normal cursor mode; tmux parses them either way.
 // The digits answer the TUI's numbered permission prompts, and Shift-Tab
 // cycles its permission mode.
+//
+// ↑, ↓ and Return are Primary (operator ask: "show the up and down arrow keys
+// and the return button. As large key buttons, and then collapse the rest into
+// a three dots button context menu"): they are what moving through and
+// answering a TUI's choices takes.
 var QuickKeys = []QuickKey{
 	{ID: "esc", Label: "Esc", Aria: "Escape", Seq: "\x1b"},
 	{ID: "tab", Label: "Tab", Aria: "Tab", Seq: "\t"},
 	{ID: "stab", Label: "⇧Tab", Aria: "Shift Tab", Seq: "\x1b[Z"},
 	{ID: "ctrlc", Label: "^C", Aria: "Control C", Seq: "\x03"},
-	{ID: "enter", Label: "⏎", Aria: "Enter", Seq: "\r"},
+	{ID: "enter", Label: "⏎", Aria: "Enter", Seq: "\r", Primary: true},
 	{ID: "1", Label: "1", Aria: "1", Seq: "1"},
-	{ID: "up", Label: "↑", Aria: "Up arrow", Seq: "\x1b[A"},
-	{ID: "down", Label: "↓", Aria: "Down arrow", Seq: "\x1b[B"},
+	{ID: "up", Label: "↑", Aria: "Up arrow", Seq: "\x1b[A", Primary: true},
+	{ID: "down", Label: "↓", Aria: "Down arrow", Seq: "\x1b[B", Primary: true},
 	{ID: "left", Label: "←", Aria: "Left arrow", Seq: "\x1b[D"},
 	{ID: "right", Label: "→", Aria: "Right arrow", Seq: "\x1b[C"},
 	{ID: "2", Label: "2", Aria: "2", Seq: "2"},
@@ -371,6 +379,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					)),
 				),
 				quickKeyBar(v.Composer == nil),
+				floatingMenuScript(),
 				terminalComposer(v.Composer),
 				confirmDialog(v.StepUp),
 				g.If(v.StepUp != nil, stepUpScript()),
@@ -391,9 +400,25 @@ func terminalComposer(c *MirrorComposerView) g.Node {
 	return mirrorComposer(*c)
 }
 
-// quickKeyBar renders QuickKeys as a two-row grid that fits a phone's width
-// without scrolling. The buttons start DISABLED: the page opens with live keys
-// off.
+// quickKeysPrimaryOrder is the order the large keys are drawn in, left to
+// right: the two arrows together, then Return. QuickKeys says WHICH keys are
+// large (Primary); this only orders them.
+var quickKeysPrimaryOrder = []string{"up", "down", "enter"}
+
+// quickKeysMenuID is the "⋯" menu's id (its trigger's popovertarget).
+const quickKeysMenuID = "term-keys-menu"
+
+// quickKeyBar renders the quick keys: the Primary ones (↑ ↓ ⏎) as large
+// buttons, and a "⋯" button whose floating menu (floatingMenuScript, placed on
+// the roomier side of it) holds every other key, in QuickKeys' order. Every
+// key — large or in the menu — is a [data-key] button carrying its bytes
+// (data-seq) inside #term-keys, so the page's script wires, enables and
+// disables all of them alike. The buttons start DISABLED, and so does the ⋯:
+// the page opens with live keys off.
+//
+// FOCUS IS LEFT AS THE ONE-ROW BAR LEFT IT: a key is a plain button that takes
+// the tap (no pointerdown preventDefault), exactly as before; nothing here
+// changes what a tap does to the terminal's focus or a soft keyboard.
 //
 // last says the bar is the bottom of the page, and so carries the safe-area
 // inset; when a composer follows, the composer carries it instead.
@@ -402,23 +427,65 @@ func quickKeyBar(last bool) g.Node {
 	if last {
 		pad = "pb-[max(0.5rem,env(safe-area-inset-bottom))]"
 	}
-	keys := make([]g.Node, 0, len(QuickKeys))
+	byID := map[string]QuickKey{}
+	var rest []g.Node
 	for _, k := range QuickKeys {
-		keys = append(keys, Button(
-			Type("button"),
-			g.Attr("data-key", k.ID),
-			g.Attr("data-seq", hex.EncodeToString([]byte(k.Seq))),
-			g.Attr("aria-label", k.Aria),
-			g.Attr("disabled", ""),
-			Class("press inline-flex min-h-[44px] min-w-0 items-center justify-center rounded-md bg-s2 font-mono text-sm font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 disabled:opacity-40"),
-			g.Text(k.Label),
-		))
+		byID[k.ID] = k
+		if k.Primary {
+			continue
+		}
+		rest = append(rest, quickKeyButton(k, false))
+	}
+	big := make([]g.Node, 0, len(quickKeysPrimaryOrder))
+	for _, id := range quickKeysPrimaryOrder {
+		big = append(big, quickKeyButton(byID[id], true))
 	}
 	return Nav(
 		ID("term-keys"),
 		g.Attr("aria-label", "Terminal keys"),
-		Class("grid grid-cols-6 gap-1 border-t border-line bg-bg px-2 pt-2 "+pad),
-		g.Group(keys),
+		Class("flex items-stretch gap-2 border-t border-line bg-bg px-2 pt-2 "+pad),
+		g.Group(big),
+		Button(
+			Type("button"),
+			ID("term-keys-more"),
+			g.Attr("aria-label", "More keys"),
+			g.Attr("title", "More keys"),
+			g.Attr("aria-haspopup", "menu"),
+			g.Attr("aria-expanded", "false"),
+			g.Attr("popovertarget", quickKeysMenuID),
+			g.Attr("disabled", ""),
+			Class("press inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-s2 text-fg ring-1 ring-inset ring-line transition hover:bg-s3 aria-expanded:bg-s3 disabled:opacity-40"),
+			g.Raw(`<svg class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="4" cy="10" r="1.6"/><circle cx="10" cy="10" r="1.6"/><circle cx="16" cy="10" r="1.6"/></svg>`),
+		),
+		Div(
+			ID(quickKeysMenuID),
+			g.Attr("popover", "auto"),
+			g.Attr("role", "menu"),
+			g.Attr("aria-label", "More keys"),
+			g.Attr("data-floating-menu", ""),
+			Class("invisible hidden [&:popover-open]:grid m-0 w-64 grid-cols-3 gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
+			g.Group(rest),
+		),
+	)
+}
+
+// quickKeyButton is one key: large (a Primary key on the bar) or a cell of the
+// ⋯ menu. Both send data-seq, through the same click handler.
+func quickKeyButton(k QuickKey, large bool) g.Node {
+	cls := "press inline-flex min-h-[44px] min-w-0 items-center justify-center rounded-md bg-s2 font-mono text-sm font-semibold text-fg ring-1 ring-inset ring-line transition hover:bg-s3 disabled:opacity-40"
+	if large {
+		cls = "press inline-flex h-14 min-w-[44px] flex-1 items-center justify-center rounded-lg bg-accent/15 font-mono text-2xl font-bold text-fg ring-1 ring-inset ring-accent/50 transition hover:bg-accent/25 disabled:opacity-40"
+	}
+	return Button(
+		Type("button"),
+		g.Attr("data-key", k.ID),
+		g.Attr("data-seq", hex.EncodeToString([]byte(k.Seq))),
+		g.Attr("aria-label", k.Aria),
+		g.Attr("title", k.Aria),
+		g.If(!large, g.Attr("role", "menuitem")),
+		g.Attr("disabled", ""),
+		Class(cls),
+		g.Text(k.Label),
 	)
 }
 
@@ -462,6 +529,12 @@ func agentTerminalScript() g.Node {
   var modeLabel = document.getElementById('term-mode-label');
   var fitwBtn = document.getElementById('term-fitw');
   var keys = document.querySelectorAll('#term-keys [data-key]');
+  var moreBtn = document.getElementById('term-keys-more');
+  var keysMenu = document.getElementById('` + quickKeysMenuID + `');
+  function closeKeysMenu() {
+    if (!keysMenu) return;
+    try { if (keysMenu.matches(':popover-open')) keysMenu.hidePopover(); } catch (e) {}
+  }
 
   var term = new Terminal({
     fontSize: 13,
@@ -605,6 +678,8 @@ func agentTerminalScript() g.Node {
     modeLabel.textContent = rw ? '` + LiveKeysOn + `' : '` + LiveKeysOff + `';
     term.options.disableStdin = !rw;
     for (var i = 0; i < keys.length; i++) { keys[i].disabled = !rw; }
+    if (moreBtn) moreBtn.disabled = !rw;
+    if (!rw) closeKeysMenu();
   }
   function send(data) {
     // The page's half of read-only; the server drops input to a read-only
@@ -696,7 +771,10 @@ func agentTerminalScript() g.Node {
   });
   for (var i = 0; i < keys.length; i++) {
     keys[i].addEventListener('click', function (ev) {
-      send(hexBytes(ev.currentTarget.getAttribute('data-seq')));
+      var b = ev.currentTarget;
+      send(hexBytes(b.getAttribute('data-seq')));
+      // A key picked from the ⋯ menu closes it, as a context menu does.
+      if (keysMenu && keysMenu.contains(b)) closeKeysMenu();
     });
   }
   modeBtn.addEventListener('click', function () {

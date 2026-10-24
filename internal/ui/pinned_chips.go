@@ -14,9 +14,10 @@ import (
 //
 // A pinned entry — a mirrored window or a dispatched agent (internal/pins) — is
 // drawn at the top of the Agents list as a compact chip whose ONLY content is
-// its name (pinnedChipLabels): the window's codename ("mango", from the host's
-// "mango:1") or the agent's name. No focus title, no host chip, no kind or repo
-// chip, no footer. Tapping it opens what the card's nav anchor opens
+// its host's icon and its name (pinnedChipLabels): the window's codename
+// ("mango", from the host's "mango:1") or the agent's name, after the icon its
+// card draws (hostMark; the cluster's for an agent). No focus title, no host
+// chip, no kind or repo chip, no footer. Tapping it opens what the card's nav anchor opens
 // (MirrorCardHref, "/agents/<name>"). The pinned entry is NOT also drawn as a
 // card: the chip replaces it.
 //
@@ -98,33 +99,56 @@ func pinnedChipName(e listEntry) (short, full string) {
 }
 
 // pinnedChipLabels is what each pinned entry's chip says, in the entries'
-// order: its short name, unless another chip's would read the same — then its
-// full name ("mango:2"), and when even that is shared (one label on two hosts)
-// the full name with the window's qualifier ("mango:2 · laptop"), the minimal
+// order: its short name, unless another chip OF THE SAME HOST ICON would read
+// the same — then its full name ("mango:2"), and when even that is shared the
+// full name with the window's qualifier ("mango:2 · laptop"), the minimal
 // difference the list already decided (mirror.SessionView.Qualifier).
+//
+// 🔴 A CHIP LEADS WITH ITS HOST'S ICON (pinnedChipIconKey), SO A NAME IS ONLY
+// AMBIGUOUS AMONG CHIPS THAT DRAW THE SAME ICON. The same codename on two hosts
+// ("mango" on the laptop, "mango" on the server) reads "mango" on both chips:
+// the icon is the difference (operator ask: "the same pretty name is reused
+// across multiple hosts"). Two windows of ONE host draw one icon, so they keep
+// the ":<index>" that tells them apart. Two DIFFERENT hosts that happen to draw
+// the same icon (more hosts than icons) are treated as one host here: their icon
+// tells them apart no better than a name does, so they keep the suffix and, when
+// that is shared too, the qualifier.
 func pinnedChipLabels(es []listEntry) []string {
 	out := make([]string, len(es))
 	fulls := make([]string, len(es))
-	n := map[string]int{}
+	icons := make([]string, len(es))
+	n := map[[2]string]int{}
 	for i, e := range es {
 		out[i], fulls[i] = pinnedChipName(e)
-		n[out[i]]++
+		icons[i] = pinnedChipIconKey(e)
+		n[[2]string{icons[i], out[i]}]++
 	}
 	for i := range es {
-		if n[out[i]] > 1 {
+		if n[[2]string{icons[i], out[i]}] > 1 {
 			out[i] = fulls[i]
 		}
 	}
-	n = map[string]int{}
-	for _, l := range out {
-		n[l]++
+	n = map[[2]string]int{}
+	for i, l := range out {
+		n[[2]string{icons[i], l}]++
 	}
 	for i, e := range es {
-		if n[out[i]] > 1 && e.mirror != nil && e.mirror.Qualifier != "" {
+		if n[[2]string{icons[i], out[i]}] > 1 && e.mirror != nil && e.mirror.Qualifier != "" {
 			out[i] = mirrorQualified(out[i], e.mirror.Qualifier)
 		}
 	}
 	return out
+}
+
+// pinnedChipIconKey is the host icon an entry's chip draws: the cluster's for a
+// dispatched agent (clusterMark), its host's for a window (hostMark) — the
+// key hostIconDefOf resolves, so a view built without one gets the same
+// fallback the chip draws.
+func pinnedChipIconKey(e listEntry) string {
+	if e.agent != nil {
+		return clusterIcon.Key
+	}
+	return hostIconDefOf(e.mirror.HostIcon, e.mirror.Host).Key
 }
 
 // pinnedChip is one pinned entry's chip, labelled label (pinnedChipLabels).
@@ -159,10 +183,6 @@ func pinnedChip(e listEntry, label string) g.Node {
 		g.Attr("data-pinned-chip", kind),
 		attrs,
 		Class("flex min-w-0 max-w-full items-center rounded-full border border-line bg-s1/70 ring-1 ring-line"),
-		// The entry's host icon, NOT drawn: the host tabs take a host's icon
-		// from its first drawn entry (agentsFilterScript syncHosts), and a host
-		// whose every entry is pinned would otherwise get a tab without one.
-		Span(Class("hidden"), g.Attr("aria-hidden", "true"), icon),
 		A(
 			Href(href),
 			// A real navigation, as the card's nav anchor (agentCard): htmx attrs
@@ -172,6 +192,13 @@ func pinnedChip(e listEntry, label string) g.Node {
 			g.Attr("data-pinned-chip-link", ""),
 			g.Attr("title", label),
 			Class("press inline-flex min-h-[44px] min-w-[44px] max-w-full items-center justify-center gap-1.5 rounded-full px-4 text-sm font-semibold text-fg transition hover:bg-s2"),
+			// The host's icon, drawn before the label (operator ask: "Pinned
+			// agents should also show the host icon since the same pretty name
+			// is reused across multiple hosts"): hostMark's fixed 16px box, in
+			// the server's markup, so it moves nothing on arrival. It is also
+			// what the host tabs take a host's icon from (agentsFilterScript
+			// syncHosts) when every entry of that host is pinned.
+			icon,
 			g.If(wait != "", pinnedChipWaitDot()),
 			status,
 			Span(g.Attr("data-pinned-chip-label", ""), Class("truncate"), g.Text(label)),

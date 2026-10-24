@@ -5,6 +5,7 @@ import { test, expect } from '../lib/fixtures';
 import { password, pinsPort } from '../lib/env';
 import { MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
+import { clsInit, readCls, settle } from '../lib/cls';
 
 // PINNED ENTRIES COME FIRST — AS LABEL-ONLY CHIPS — in a real browser, against
 // a real muster-server (MUSTER_MIRROR=1, its own port) and a real muster-mirror
@@ -177,7 +178,23 @@ for (const vp of [
       expect(await page.locator(`#${last}`).innerText(), 'the agent chip shows its name alone').toBe(agentName);
       for (const h of [quinceHref, sableHref]) await expect(card(page, h), 'no card beside the chip').toHaveCount(0);
       await expect(page.locator('#agents-list > article[data-pinned-chip] :is([data-card-slot], [data-card-host], [data-card-focus])')).toHaveCount(0);
-      for (const ic of await page.locator('#agents-list > article[data-pinned-chip] [data-host-icon]').all()) await expect(ic, 'a chip draws no host icon').toBeHidden();
+      // THE HOST ICON (operator ask: "Pinned agents should also show the host
+      // icon"): every chip draws one, visible, before its label — a window its
+      // host's (the SAME icon this host's unpinned card draws, read off that
+      // card rather than spelled here), the agent the cluster's.
+      const hostIcon = await card(page, unpinnedHref).locator('[data-host-icon]').first().getAttribute('data-host-icon');
+      expect(hostIcon, 'the unpinned card draws a host icon').toBeTruthy();
+      for (const [h, want] of [[quinceHref, hostIcon], [sableHref, hostIcon]] as const) {
+        const ic = chip(page, h).locator('[data-pinned-chip-link] [data-host-icon]');
+        await expect(ic, 'the chip draws its host icon').toBeVisible();
+        await expect(ic).toHaveAttribute('data-host-icon', want!);
+        const [ib, lb] = [(await ic.boundingBox())!, (await chip(page, h).locator('[data-pinned-chip-label]').boundingBox())!];
+        expect(ib.x + ib.width, 'the icon is before the label').toBeLessThanOrEqual(lb.x + 0.5);
+        expect(ib.width, 'the icon is its fixed 16px box').toBeCloseTo(16, 0);
+      }
+      const agentIcon = page.locator(`#${last} [data-pinned-chip-link] [data-host-icon]`);
+      await expect(agentIcon).toBeVisible();
+      await expect(agentIcon).toHaveAttribute('data-host-icon', 'cluster');
 
       // First, by activity among themselves (the agent, seeded this run, is
       // newer than both windows), then the rest in the ONE flat order they had.
@@ -384,6 +401,72 @@ for (const vp of [
       } finally {
         await pinVia(page, false, winForm('solo', 1, other));
         await stop();
+      }
+    });
+
+    // 🔴 THE DUPLICATE-LABEL RULE, in a real browser: one codename on two
+    // hosts, and twice on one of them. Each chip leads with its host's icon, so
+    // across hosts the codename alone reads ("quince"); within one host the two
+    // windows draw one icon and keep their ":<index>". Red at main: no chip drew
+    // its icon, and the across-host chip read "quince:1" (plus a qualifier).
+    test('one codename on two hosts: the icon tells them apart, one host keeps its :index', async ({ page }) => {
+      const stamp = Date.now().toString(36);
+      const hx = 'e2e-pdx-' + stamp, hy = 'e2e-pdy-' + stamp;
+      const wx = path.join(rig.dir, 'windows-' + hx), wy = path.join(rig.dir, 'windows-' + hy);
+      const lx = path.join(rig.dir, 'labels-' + hx + '.json'), ly = path.join(rig.dir, 'labels-' + hy + '.json');
+      writeFileAtomic(wx, `dup|@1|1|1|zsh|${now - 200}|\ndup|@2|2|0|zsh|${now - 210}|\n`);
+      writeFileAtomic(wy, `dup|@1|1|1|zsh|${now - 220}|\n`);
+      fs.writeFileSync(lx, JSON.stringify({ dup: 'quince' }));
+      fs.writeFileSync(ly, JSON.stringify({ dup: 'quince' }));
+      const stopX = rig.extraHost(hx, { MUSTER_MIRROR_E2E_WINDOWS_FILE: wx, MUSTER_MIRROR_LABELS_FILE: lx });
+      const stopY = rig.extraHost(hy, { MUSTER_MIRROR_E2E_WINDOWS_FILE: wy, MUSTER_MIRROR_LABELS_FILE: ly });
+      const hrefOf = (h: string, id: number) => `/mirror/terminal?host=${h}&session=dup&window=%40${id}`;
+      const pinned = [[hx, 1], [hx, 2], [hy, 1]] as const;
+      try {
+        await login(page);
+        await page.addInitScript(clsInit);
+        await page.goto(origin + '/agents');
+        for (const [h, id] of pinned) await expect(page.locator(`#agents-list > article:has(a[href="${hrefOf(h, id)}"])`)).toHaveCount(1, { timeout: 20_000 });
+        for (const [h, id] of pinned) await pinVia(page, true, winForm('dup', id, h));
+        await page.goto(origin + '/agents');
+        for (const [h, id] of pinned) await expect(chip(page, hrefOf(h, id))).toBeVisible({ timeout: 20_000 });
+        await settle(page);
+
+        // The labels first, so the rule is read on its own.
+        const label = (h: string, id: number) => chip(page, hrefOf(h, id)).locator('[data-pinned-chip-label]');
+        await expect(label(hx, 1)).toHaveText('quince:1');
+        await expect(label(hx, 2)).toHaveText('quince:2');
+        await expect(label(hy, 1)).toHaveText('quince');
+
+        const iconOf = (h: string, id: number) => chip(page, hrefOf(h, id)).locator('[data-pinned-chip-link] [data-host-icon]');
+        const ix = await iconOf(hx, 1).getAttribute('data-host-icon');
+        const iy = await iconOf(hy, 1).getAttribute('data-host-icon');
+        expect(ix, 'precondition: the two hosts draw different icons').not.toBe(iy);
+        await expect(iconOf(hx, 2)).toHaveAttribute('data-host-icon', ix!);
+        for (const [h, id] of pinned) await expect(iconOf(h, id)).toBeVisible();
+
+        for (const [h, id] of pinned) {
+          const b = (await chip(page, hrefOf(h, id)).boundingBox())!;
+          expect(b.height, 'a chip is a 44px target').toBeGreaterThanOrEqual(44);
+          expect(b.x + b.width, 'a chip stays inside the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
+        }
+        await noOverflow(page, 'duplicate-label chips');
+        const r = await readCls(page);
+        expect(r.unsupported, 'layout-shift is observable here').toBeUndefined();
+        expect(r.total, `shifts: ${JSON.stringify(r.shifts)}`).toBeLessThan(0.01);
+        // The positive control: a shift the page did not ask for IS counted.
+        await page.waitForTimeout(600);
+        await page.evaluate(() => {
+          const d = document.createElement('div');
+          d.style.cssText = 'height:150px;flex:none';
+          document.body.prepend(d);
+        });
+        await page.waitForTimeout(300);
+        expect((await readCls(page)).total, 'the instrument sees a shift').toBeGreaterThan(0.01);
+      } finally {
+        for (const [h, id] of pinned) await pinVia(page, false, winForm('dup', id, h)).catch(() => undefined);
+        await stopX();
+        await stopY();
       }
     });
 
