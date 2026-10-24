@@ -22,22 +22,22 @@ import (
 // ui.AgentSessionHref, and this test is what keeps it one: it walks every
 // non-test Go file under internal/ and cmd/ and ledgers
 //
-//  1. every string concatenation that STARTS with the literal "/agents/" (and
-//     every "/agents/%…" format string), by file, function and the path that
-//     follows the name. A concatenation with nothing after the name, or only a
-//     query, is a PAGE link, and the only function allowed to build one is
-//     ui.AgentPath, which ui.AgentSessionHref calls;
+//  1. every string concatenation that STARTS with the literal "/agents/", by
+//     the path that follows the name. A concatenation with nothing after the
+//     name, or only a query, is a PAGE link, and the only function allowed to
+//     build one is ui.AgentPath, which ui.AgentSessionHref calls. Concatenations
+//     to a sub-path (/send, /terminal, /stop, …) are not links to the page and
+//     are deliberately NOT counted;
 //  2. every "'/agents/' +" built in inline JavaScript (Go string literals), by
 //     what follows it, for the same reason;
 //  3. every call of ui.AgentSessionHref, ui.AgentPath and
 //     ui.AgentCardView.PageHref, by file and function.
 //
-// 🔴 EACH LEDGER FAILS WHEN ITS SET GROWS *OR* SHRINKS. A new link that builds
-// "/agents/"+name itself is a new entry in (1) — and a PAGE-shaped one fails
-// outright, naming the helper. A new link through the helper is a new entry in
-// (3) and must be added here, which is the review point: does it name the
-// session it knows? A removed site fails too, so the ledger never claims a
-// caller that is gone.
+// 🔴 A PAGE-SHAPED CONCATENATION OUTSIDE ui.AgentPath FAILS OUTRIGHT, naming the
+// helper. Ledgers (2) and (3) fail when their set grows OR shrinks: a new link
+// through the helper is a new entry in (3) and must be added here, which is the
+// review point — does it name the session it knows? A removed site fails too,
+// so the ledger never claims a caller that is gone.
 //
 // ⚠ IT SEES GO SOURCE ONLY. web/static/*.js holds no link to an agent page
 // today (sw.js opens whatever URL a push carries, and the pushes are ledgered
@@ -89,15 +89,14 @@ func scanAgentHrefs(t *testing.T) agentHrefScan {
 						}
 						ops := flattenAdd(x, inner)
 						if s, ok := stringLit(ops[0]); ok && strings.HasPrefix(s, "/agents/") {
-							out.concat[rel+":"+fn+":"+concatShape(s, ops[1:])]++
+							if shape := concatShape(s, ops[1:]); shape == "(page)" {
+								out.concat[rel+":"+fn+":"+shape]++
+							}
 						}
 					case *ast.BasicLit:
 						s, ok := stringLit(x)
 						if !ok {
 							return true
-						}
-						if strings.Contains(s, "/agents/%") {
-							out.concat[rel+":"+fn+":format"]++
 						}
 						for _, m := range jsRe.FindAllStringSubmatch(s, -1) {
 							suffix := "(page)"
@@ -189,21 +188,23 @@ func concatShape(first string, rest []ast.Expr) string {
 
 // TestEveryAgentPageLinkGoesThroughAgentSessionHref pins the three ledgers
 // described above. Red before the helper: the card, pinned chip, Recent strip,
-// task card, push target, ask target, drawer, terminal back link and
+// task card, ask return, drawer, terminal back link, push targets and
 // redirects each built "/agents/"+name themselves — (page)-shaped entries
 // outside ui.AgentPath.
 func TestEveryAgentPageLinkGoesThroughAgentSessionHref(t *testing.T) {
 	got := scanAgentHrefs(t)
 
-	// (1) Every "/agents/"… concatenation. Only ui.AgentPath may build the page
-	// (and the card menu's DELETE, which names the agent by id for a verb, not a
-	// link).
+	// (1) Only ui.AgentPath may build the page (and the card menu's DELETE, which
+	// names the agent by id for a verb, not a link). Positive control: the scan
+	// must at least find AgentPath itself, or it is matching nothing.
+	if got.concat["internal/ui/terminal.go:AgentPath:(page)"] != 1 {
+		t.Errorf("instrument check FAILED: the scan did not find ui.AgentPath's own concatenation: %v", got.concat)
+	}
 	for k, n := range got.concat {
-		if strings.HasSuffix(k, ":(page)") && !agentPageBuilders[k] {
+		if !agentPageBuilders[k] {
 			t.Errorf("%s builds a link to an agent's PAGE itself (%d×): use ui.AgentSessionHref, which names the session and skips the bare URL's 303", k, n)
 		}
 	}
-	assertHrefLedger(t, "concatenations starting \"/agents/\"", got.concat, agentConcatLedger)
 	assertHrefLedger(t, "inline-JS \"'/agents/' +\"", got.js, agentJSLedger)
 	assertHrefLedger(t, "calls of the agent-page helpers", got.calls, agentHrefCallLedger)
 }
@@ -246,21 +247,6 @@ var agentPageBuilders = map[string]bool{
 	"internal/ui/agents.go:agentDeleteConfirm:(page)": true,
 }
 
-// agentConcatLedger: every "/agents/"… concatenation, by what follows the name.
-var agentConcatLedger = map[string]int{
-	"internal/api/chief_replace.go:Server.replaceChief:format":       1, // an error message naming POST /agents/%d/model
-	"internal/api/session_runtime.go:Server.sessionViews:/sessions/": 1,
-	"internal/ui/agents.go:agentDeleteConfirm:(page)":                1,
-	"internal/ui/agents.go:agentMenu:/start":                         1,
-	"internal/ui/agents.go:agentMenu:/stop":                          1,
-	"internal/ui/agents.go:agentRenameForm:/name":                    1,
-	"internal/ui/agents_detail.go:agentModelControl:/model":          1,
-	"internal/ui/agents_detail.go:agentSessionsPath:/sessions":       1,
-	"internal/ui/terminal.go:AgentPath:(page)":                       1,
-	"internal/ui/terminal.go:AgentSendPath:/send":                    1,
-	"internal/ui/terminal.go:AgentTerminalPath:/terminal":            1,
-}
-
 // agentJSLedger: every "'/agents/' +" in inline JavaScript — sockets, not links.
 var agentJSLedger = map[string]int{
 	"internal/ui/agents_detail.go:agentChatScript:/ws":          1,
@@ -271,8 +257,12 @@ var agentJSLedger = map[string]int{
 // an agent's page (and the redirects that must agree with them).
 var agentHrefCallLedger = map[string]int{
 	"AgentPath ← internal/ui/agent_href.go:AgentSessionHref": 2,
-	// The server's own targets: a tap on an ask's push, the agent-ready push,
-	// the terminal's Rendered switch (agentPageHref reads the latest session);
+	// Push-tap targets stay BARE on purpose (#237): a notification is resolved
+	// when TAPPED, and the bare URL picks the latest session at that moment.
+	"AgentPath ← internal/api/attention_push_target.go:Server.askingAgentPath": 1,
+	"AgentPath ← internal/api/push_task.go:Server.notifyAgentRunning":          1,
+	// The server's own targets: the terminal's Rendered switch (agentPageHref
+	// reads the latest session);
 	// the 303 itself; HX-Redirects after opening or defaulting a session; the
 	// no-JS send's way back; an answered ask's return.
 	"AgentSessionHref ← internal/api/agent_href.go:Server.agentPageHref":                  1,

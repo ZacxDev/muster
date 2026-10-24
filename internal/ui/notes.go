@@ -735,7 +735,7 @@ func noteCard(v TaskCardView) g.Node {
 			// htmx attributes are INHERITED by descendants — a boosted click would
 			// swap the whole /tasks/{id} DOCUMENT into #tasks-list. That is a silent
 			// visual break, not an error: same trap already documented on
-			// openChatButton and the session rows below.
+			// openChatButtonPrimary and the session rows below.
 			hx("hx-boost", "false"),
 			g.Attr("data-task-link", ids),
 			// card-link is the hook the merge-selection CSS suppresses (see
@@ -1119,29 +1119,14 @@ func agentTaskChipLabel(status string) string {
 	}
 }
 
-// openChatButton links a task card to its dispatched agent's chat/detail view at
-// href — AgentSessionHref, so the agent's latest session directly rather than
-// the bare /agents/{name} and its 303. Like the
-// agent card's nav anchor it sets hx-boost="false": the button lives inside
-// #tasks-list (which carries hx-get/hx-target), and htmx attrs are inherited by
-// descendants, so a boosted click would swap the detail document into #tasks-list
-// (wrong target). Disabling boost makes it a plain navigation to the detail page.
-func openChatButton(href string) g.Node {
-	return A(
-		Href(href),
-		hx("hx-boost", "false"),
-		g.Attr("aria-label", "Open agent chat"),
-		Class("press inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-full px-3 text-xs font-semibold text-accent ring-1 ring-inset ring-accent/30 transition hover:bg-accent/10 hover:text-fg"),
-		g.Raw(`<svg class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4h12v9H7l-3 3z"/></svg>`),
-		g.Text("Open chat"),
-	)
-}
-
 // openChatButtonPrimary is the LARGE, filled-accent "Open chat" CTA a task card
 // shows once it has an active linked agent (provisioning/running) — the card's
-// main action while work is in flight. It's the same link/target/a11y as the small
-// openChatButton (plain nav, boost off), styled up: filled accent bg, taller
-// (h-11), larger semibold text, more padding — clearly the primary CTA, with the
+// main action while work is in flight. href is AgentSessionHref — the agent's
+// latest session directly, not the bare /agents/{name} and its 303. It is a plain
+// navigation (hx-boost="false"): the card lives inside #tasks-list, which carries
+// hx-get/hx-target, and htmx attrs are inherited by descendants, so a boosted
+// click would swap the detail document into #tasks-list (wrong target). Filled
+// accent bg, h-11, semibold text — clearly the primary CTA, with the
 // agentStatusChip sitting alongside it (chip = state, button = action).
 func openChatButtonPrimary(href string) g.Node {
 	return A(
@@ -1391,7 +1376,7 @@ func taskSessionRow(l notes.SessionLink) g.Node {
 		Href("/suggestions/"+url.PathEscape(l.SessionID)),
 		// The card lives inside #tasks-list, which carries hx-get/hx-target, and htmx
 		// attributes are INHERITED by descendants — a boosted click would swap the
-		// session page into #tasks-list. Same reasoning as openChatButton.
+		// session page into #tasks-list. Same reasoning as openChatButtonPrimary.
 		hx("hx-boost", "false"),
 		g.Attr("aria-label", "Open session "+l.SessionID),
 		Class(rowClass+" transition hover:bg-s1/80"),

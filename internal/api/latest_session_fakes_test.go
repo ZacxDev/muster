@@ -6,14 +6,11 @@ import "context"
 // method they do not define panics). Each answers "no session" (an empty map):
 // what Server.latestSessionIDs also gives on a failed read, so every link these
 // fixtures render is the bare /agents/{name} — the behaviour they were written
-// against. The tests of the session-naming links use stores that DO answer
-// (pushTargetAgents, and the Postgres-backed agent_href_pg_test.go).
+// against. The tests of the session-naming links use the Postgres-backed store
+// (agent_href_pg_test.go).
 //
 // stubAgentsStore (registration_test.go) covers every fake built on it
 // (sendAgents, jobAgents, mirrorAgents, termAgents, …).
-//
-// countingAgents is not here: its own method counts the read
-// (attention_push_target_test.go).
 
 func (*namespaceCapturingStore) LatestSessionIDs(context.Context, []int64) (map[int64]int64, error) {
 	return map[int64]int64{}, nil

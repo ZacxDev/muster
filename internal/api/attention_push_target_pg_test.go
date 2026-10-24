@@ -49,7 +49,7 @@ func TestAnAskOverEachDoorPushesItsSession(t *testing.T) {
 	if loc, want := f.tap(t, mirrored), "/mirror/view?host=ws&session=side&window=%403"; loc != want {
 		t.Errorf("a tap on the mirrored ask opens %q, want %q", loc, want)
 	}
-	if loc, want := f.tap(t, chiefAsk), latestSessionPage(t, f.pool, f.chief); loc != want {
+	if loc, want := f.tap(t, chiefAsk), "/agents/"+f.chief.Name; loc != want {
 		t.Errorf("a tap on the chief's ask opens %q, want %q", loc, want)
 	}
 	// ws's @1 starts waiting at a prompt after the host's first observation
@@ -82,7 +82,7 @@ func TestATapResolvesWhenTappedNotWhenSent(t *testing.T) {
 	if loc := f.tap(t, mirrored); !strings.HasPrefix(loc, "/mirror/view?") {
 		t.Fatalf("control: %s opens %q", mirrored, loc)
 	}
-	if loc := f.tap(t, chiefAsk); loc != latestSessionPage(t, f.pool, f.chief) {
+	if loc := f.tap(t, chiefAsk); loc != "/agents/"+f.chief.Name {
 		t.Fatalf("control: %s opens %q", chiefAsk, loc)
 	}
 	// ws's @1 starts waiting; the window list it is read from no longer has

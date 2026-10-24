@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/textplain"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // Task-lifecycle Web Push notifications. Each hangs off an existing
@@ -264,12 +265,7 @@ func (s *Server) notifyAgentRunning(agentName string) {
 	// silently never fire. The row is used here only to decide whether to
 	// notify; nothing read under System is returned to any caller. Listed in
 	// the System ledger (internal/authz/ledger_test.go).
-	//
-	// ⚠ ONE MORE READ RIDES THIS CONTEXT: the tap target's session id
-	// (agentPageHref), which goes into the push sent to the agent's OWN owner
-	// (a.OwnerID below), so it reaches nobody the row does not belong to.
-	ctx := authz.System(context.Background())
-	a, err := s.ext.Agents.GetByName(ctx, agentName)
+	a, err := s.ext.Agents.GetByName(authz.System(context.Background()), agentName)
 	if err != nil {
 		return // unknown agent (or DB blip) — best-effort, skip
 	}
@@ -295,7 +291,9 @@ func (s *Server) notifyAgentRunning(agentName string) {
 		Title: fmt.Sprintf("Task #%d: agent ready", noteID),
 		Body:  "The agent is now working on it.",
 		Tag:   fmt.Sprintf("task-%d-provisioned", noteID),
-		Data:  map[string]string{"url": s.agentPageHref(ctx, a)},
+		// The BARE page, on purpose (#237): it resolves the agent's latest session
+		// at TAP time, which is what a notification opened later must land on.
+		Data: map[string]string{"url": ui.AgentPath(a.Name)},
 	})
 }
 
