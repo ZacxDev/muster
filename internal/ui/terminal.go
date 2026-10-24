@@ -1022,8 +1022,10 @@ func agentTerminalScript() g.Node {
     // so its touchmoves never passed scrollEl's capture listener and the REST
     // OF THE DRAG WAS LOST (measured: a drag that began as a re-attach redrew
     // asked for nothing). So the touch's own target is listened on too. A move
-    // that also passed through scrollEl is not counted twice: the first call
-    // moved lastY to it, so the second finds nothing left to add.
+    // on a target still in the page is not counted twice: scrollEl's capture
+    // listener sees it first and, once the axis is 'y', stops it there, so it
+    // never reaches the target. One it lets through (under the slop, or
+    // sideways) adds no lines either way.
     var start = null, axis = '', lastY = 0, held = null;
     function release() {
       if (!held) return;
@@ -1034,7 +1036,7 @@ func agentTerminalScript() g.Node {
     }
     function hold(el) {
       release();
-      if (!el || !el.addEventListener || el === scrollEl) return;
+      if (!el || el === scrollEl) return;
       held = el;
       el.addEventListener('touchmove', onMove, { passive: true });
       el.addEventListener('touchend', onEnd, { passive: true });
@@ -1084,7 +1086,6 @@ func agentTerminalScript() g.Node {
       scrollEl.removeEventListener('touchcancel', onEnd, true);
       scrollEl.removeEventListener('wheel', onWheel, true);
       release();
-      start = null;
       touchTargets.forEach(function (el) { if (el) el.style.touchAction = ''; });
       host.removeAttribute('data-scroll-on');
       showNote('');
