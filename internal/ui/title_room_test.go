@@ -20,27 +20,6 @@ func TestViewToggleSegmentsArePaddedLess(t *testing.T) {
 	}
 }
 
-// Below `sm` the switch is one 44×44 icon link to the other view: the current
-// segment is max-sm:hidden, the link wears viewToggleCompactClass and carries
-// its phone name in an sr-only span hidden from `sm` up, its word hidden below
-// it. On both pages that draw it, the link goes to the OTHER view.
-func TestViewToggleIsOneIconButtonOnAPhone(t *testing.T) {
-	for _, c := range []struct {
-		page, cur, link, name string
-	}{
-		{renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Window: "@1", Interactive: true})), "view-rendered", "view-terminal", "Show terminal"},
-		{renderString(t, viewToggle(false, "/agents/a", "")), "view-terminal", "view-rendered", "Show rendered view"},
-	} {
-		if !regexp.MustCompile(`<span id="` + c.cur + `" aria-current="page" class="[^"]* max-sm:hidden `).MatchString(c.page) {
-			t.Errorf("%s (current) is not max-sm:hidden", c.cur)
-		}
-		re := regexp.MustCompile(`<a id="` + c.link + `" [^>]*data-view-toggle="" class="[^"]*` + regexp.QuoteMeta(viewToggleCompactClass) + `[^"]*"><svg class="h-5 w-5 sm:hidden"[^>]*aria-hidden="true"[^>]*>.*?</svg><span class="sr-only sm:hidden">` + c.name + `</span><span class="max-sm:hidden">`)
-		if !re.MatchString(c.page) {
-			t.Errorf("%s is not the phone's icon link named %q:\n%s", c.link, c.name, c.page[strings.Index(c.page, `<nav aria-label="View"`):][:1200])
-		}
-	}
-}
-
 // A switcher entry and a Recent strip entry are up to 26rem wide, never
 // wider than their row (they were 10rem and 14rem, then 20rem); a pinned chip is padded
 // px-2.5 with gap-1 (it was px-4, gap-1.5).

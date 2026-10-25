@@ -33,7 +33,7 @@ const origin = rig.origin;
 
 // The windows: session, window id. A window with no label is titled
 // "<session>:<index>" (every index here is 1). Lengths 23, 27, 34, 36, 42,
-// 49, 52 and 84.
+// 49 and 84.
 const WINDOWS: [string, string][] = [
   ['release-notes-drafter', '@1'],
   ['billing-reconcile-nightly', '@2'],
@@ -41,7 +41,6 @@ const WINDOWS: [string, string][] = [
   ['customer-onboarding-email-sequence', '@4'],
   ['warehouse-inventory-sync-backfill-job-v2', '@5'],
   ['quarterly-revenue-forecast-reconciliation-batch', '@9'],
-  ['marketplace-seller-payout-dispute-resolution-queue', '@10'],
   ['enterprise-customer-data-warehouse-schema-migration-validation-and-audit-report-v3', '@11'],
 ];
 // Windows that are NOT pinned, so the Agents list's Recent strip shows them
@@ -155,9 +154,6 @@ async function openAgent(page: Page, view: string) {
 //
 // 🔴 THE 49-CHARACTER TITLE IS THE 26rem ASK: at 20rem a switcher label got
 // 274px and it needs 337 (red there); a 26rem entry gives 370. The
-// 52-character window measures 368 — it fits too, with 2px to spare on the
-// machine that measured it, so it is in the measurement and NOT asserted (a
-// system font stack makes 2px a host property, not a contract). The
 // 84-character one (605px) still clips at 1280: the cap is a cap.
 const FITS_NOW = ['release-notes-drafter', 'billing-reconcile-nightly'];
 const FITS_DESKTOP = ['payments-ledger-migration-review', 'customer-onboarding-email-sequence', 'quarterly-revenue-forecast-reconciliation-batch'];

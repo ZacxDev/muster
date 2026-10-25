@@ -317,8 +317,8 @@ func switcherRow(key, empty string, items []SwitcherItem, hidden bool) g.Node {
 // 20rem still clipped ~50-character task titles in the switcher, so it is
 // 26rem. Measured (e2e/tests/title-room.spec.ts) at 1280: a switcher label
 // gets the entry less 46px — 274px at 20rem, 370px at 26rem — and a
-// 49-character title needs 337px, a 52-character one 368px (both fit now;
-// both clipped at 20rem). An 84-character title (605px) still clips.
+// 49-character title needs 337px (clipped at 20rem, fits now). An
+// 84-character title (605px) still clips.
 //
 // 🔴 min(…, 100%): never wider than the row it scrolls in. At 390px the
 // switcher's row is 286px; an entry wider than its own scroller cannot be
