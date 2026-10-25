@@ -20,7 +20,7 @@ import (
 	"github.com/ZacxDev/muster/internal/sendqueue"
 )
 
-// A ROUTE CARRYING A TASK (migration 0052), through the real server against a
+// A ROUTE CARRYING A TASK (migration 0053), through the real server against a
 // real Postgres: route_to_session{task_id}, the paste after the send queue's
 // idle wait, route_reply → a comment on the task, the deadline's hand-back, and
 // the refusals (exactly one of message_id | task_id, another owner's task, a
@@ -254,7 +254,7 @@ func TestRouteToSessionTakesExactlyOneOfMessageAndTask(t *testing.T) {
 }
 
 // TestATaskRouteRefusesAnotherOwnersTask: through the chief's tool another
-// owner's task is task_not_found; and the store refuses it on its own (0052's
+// owner's task is task_not_found; and the store refuses it on its own (0053's
 // trigger), so a caller that skipped the tool's check still cannot route it.
 func TestATaskRouteRefusesAnotherOwnersTask(t *testing.T) {
 	f := newRouteFixture(t)
@@ -308,32 +308,5 @@ func TestATaskRouteToAClosedTaskGoesBackToTheChief(t *testing.T) {
 	}
 	if note := f.chiefDefaultSessionText(t); !strings.Contains(note, "is no longer open") || !strings.Contains(note, "the task is back with you") {
 		t.Fatalf("the chief's default session: %q", note)
-	}
-}
-
-// TestAMessageRelayAndATaskRelayDoNotCross: a task route is never filed as a
-// draft (RelayRoute refuses it), a message route is never ended as a task's
-// (FinishTaskRoute refuses it), and an unanswered task route is not ended.
-func TestAMessageRelayAndATaskRelayDoNotCross(t *testing.T) {
-	f := newRouteFixture(t)
-	tid := f.routeTask(t, f.newTask(t, f.owner, "Not a draft"))
-	mid := f.route(t, f.deliveredMessage(t, f.owner, f.chief.ID, "route-not-a-task"))
-	if _, err := f.plugins.FinishTaskRoute(f.asOwner, tid); !errors.Is(err, plugins.ErrRouteNotAnswered) {
-		t.Fatalf("ending an unanswered task route: %v, want ErrRouteNotAnswered", err)
-	}
-	if _, _, err := f.plugins.AnswerRoute(f.asOwner, tid, "an answer"); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := f.plugins.RelayRoute(f.asOwner, tid, "chief", true); !errors.Is(err, plugins.ErrNotATaskRoute) {
-		t.Fatalf("a task route relayed as a draft: %v, want ErrNotATaskRoute", err)
-	}
-	if _, _, err := f.plugins.AnswerRoute(f.asOwner, mid, "an answer"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.plugins.FinishTaskRoute(f.asOwner, mid); !errors.Is(err, plugins.ErrNotATaskRoute) {
-		t.Fatalf("a message route ended as a task's: %v, want ErrNotATaskRoute", err)
-	}
-	if r := f.routeState(t, mid); r.State != plugins.RouteAnswered {
-		t.Fatalf("the message route moved to %s", r.State)
 	}
 }

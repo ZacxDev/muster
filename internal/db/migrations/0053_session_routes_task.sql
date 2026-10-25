@@ -1,4 +1,4 @@
--- muster 0052 — A ROUTE CAN CARRY A TASK (internal/plugins/routes.go): the
+-- muster 0053 — A ROUTE CAN CARRY A TASK (internal/plugins/routes.go): the
 -- chief's route_to_session hands a mirrored session either a plugin message
 -- (as since 0021) or one of the owner's tasks. A task route's answer becomes a
 -- comment on the task; everything else (the paste, route_reply, the deadline,
@@ -24,7 +24,7 @@
 --   DROP FUNCTION IF EXISTS session_routes_task_is_owners();
 --   ALTER TABLE session_routes DROP COLUMN IF EXISTS task_id;
 --   ALTER TABLE session_routes ALTER COLUMN plugin_message_id SET NOT NULL;
---   DELETE FROM schema_migrations WHERE version = 52;
+--   DELETE FROM schema_migrations WHERE version = 53;
 
 SET LOCAL lock_timeout = '3s';
 

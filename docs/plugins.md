@@ -970,7 +970,7 @@ for a verified, allowlisted sender that screen is the only check before it goes.
 The chief can hand one of your **tasks** to a mirrored session the same way:
 `route_to_session {task_id, subject}`, with exactly one of `message_id` and
 `task_id` (both, or neither, is refused as `bad_arguments`). It is the same
-route (`session_routes.task_id`, migration `0052`) and the same path after it:
+route (`session_routes.task_id`, migration `0053`) and the same path after it:
 the same target checks, the paste through the window's send queue after the
 idle wait, `route_reply` bound to the target session, the 30-minute deadline,
 the hand-back, and the `session_route.*` audit rows. What differs:
@@ -992,9 +992,6 @@ the hand-back, and the `session_route.*` audit rows. What differs:
   route times out or fails.
 - **The task leaves "Task to route"**: routing it records `task.chief_routed`
   with `tool: route_to_session`, like the other task tools.
-
-A session asking the chief about a task route uses `chief_ask` without
-`route_id`: a `route_id` must name a message route.
 
 ### Routing a message from your own session
 

@@ -26,7 +26,7 @@ import (
 // SESSION ROUTING (internal/plugins/routes.go, migration 0021): the chief hands
 // a plugin message to the session best placed to answer it, and the session's
 // answer goes back to the sender. A route can carry one of the owner's TASKS
-// instead (route_to_session's task_id, migration 0052): the same path end to
+// instead (route_to_session's task_id, migration 0053): the same path end to
 // end, except that the answer becomes a comment on the task (relayRoute).
 //
 //	route_to_session (chief) ──▶ a route, and the message INJECTED into the

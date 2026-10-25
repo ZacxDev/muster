@@ -156,9 +156,6 @@ func (s *Server) chiefAskRoute(ctx context.Context, routeID string) (routedAbout
 		// Another owner's route reads exactly as a missing one (row-level security).
 		return routedAbout{}, toolErr("no such route: %s", routeID)
 	}
-	if r.IsTask() {
-		return routedAbout{}, toolErr("route %s carries task #%d, not a plugin message: name the task in your question and leave route_id out", r.RouteID, r.TaskID)
-	}
 	m, err := s.ext.Plugins.Message(ctx, r.MessageID)
 	if err != nil {
 		return routedAbout{}, toolErr("the message of route %s could not be read", r.RouteID)

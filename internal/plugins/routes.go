@@ -24,7 +24,7 @@ import (
 // approves otherwise. The plugin claims and sends it through the existing
 // claim/result path, unchanged.
 //
-// A route carries a TASK instead (task_id, migration 0052): the same row,
+// A route carries a TASK instead (task_id, migration 0053): the same row,
 // states, deadline and hand-back; its relay is a comment on the task
 // (internal/api's relayRoute writes it, then FinishTaskRoute ends the route
 // relayed), never a draft.
@@ -95,7 +95,7 @@ type Route struct {
 	RouteID string
 	OwnerID int64
 	// MessageID is the plugin message a route carries, TaskID the task: exactly
-	// one is set (0052's session_routes_one_item_check), the other 0.
+	// one is set (0053's session_routes_one_item_check), the other 0.
 	MessageID   int64
 	TaskID      int64
 	AgentID     *int64
@@ -136,9 +136,6 @@ func (r Route) SentToMirrorSession(sid string) bool {
 var (
 	// ErrAlreadyRouted: the message (or task) already has an open route.
 	ErrAlreadyRouted = errors.New("plugins: this message is already routed to a session and not yet answered")
-	// ErrNotATaskRoute: FinishTaskRoute of a message route, or RelayRoute of a
-	// task route.
-	ErrNotATaskRoute = errors.New("plugins: a message route is relayed as a draft, a task route as a comment")
 	// ErrRouteNotFound: no such route for this principal (another owner's is the same).
 	ErrRouteNotFound = errors.New("plugins: no such route")
 	// ErrRouteClosed: the route is no longer waiting for an answer (timed out,
@@ -257,14 +254,11 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 }
 
 // CreateTaskRouteFrom: see RouteStore. The task must be one ownerID can see
-// (row-level security) and owns (0052's session_routes_task_is_owners); a
+// (row-level security) and owns (0053's session_routes_task_is_owners); a
 // task that is neither is ErrNotFound, one already routed ErrAlreadyRouted.
 // The caller (internal/api's route_to_session) checks the chief's owner owns
 // it first, as every chief task tool does (ownersTask).
 func (s *PGStore) CreateTaskRouteFrom(ctx context.Context, chiefID, ownerID, taskID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
-	if chiefID <= 0 || ownerID <= 0 {
-		return Route{}, invalid("the agent has no owner")
-	}
 	var r Route
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var err error
@@ -317,8 +311,6 @@ func (s *PGStore) FinishTaskRoute(ctx context.Context, routeID string) (Route, e
 		}
 		r = cur
 		switch {
-		case !cur.IsTask():
-			return ErrNotATaskRoute
 		case cur.State == RouteRelayed:
 			return nil
 		case cur.State != RouteAnswered:
@@ -496,17 +488,13 @@ func (s *PGStore) RelayRoute(ctx context.Context, routeID, agentName string, app
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		// The MESSAGE lock first, as every draft write takes it (lockMessage),
 		// then the route.
-		var mid *int64
-		if err := tx.QueryRow(ctx, `SELECT plugin_message_id FROM session_routes WHERE route_id = $1`, routeID).Scan(&mid); err != nil {
+		var messageID int64
+		if err := tx.QueryRow(ctx, `SELECT plugin_message_id FROM session_routes WHERE route_id = $1`, routeID).Scan(&messageID); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrRouteNotFound
 			}
 			return err
 		}
-		if mid == nil {
-			return ErrNotATaskRoute
-		}
-		messageID := *mid
 		m, inFlight := lockMessage(ctx, tx, messageID, 0)
 		if inFlight != nil && !errors.Is(inFlight, ErrReplyInFlight) {
 			return inFlight

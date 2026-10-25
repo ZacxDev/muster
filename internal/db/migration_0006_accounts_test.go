@@ -207,7 +207,7 @@ var wantForeignKeys = []string{
 	"session_routes|session_routes_draft_id_fkey|FOREIGN KEY (draft_id) REFERENCES plugin_reply_drafts(id) ON DELETE SET NULL",
 	"session_routes|session_routes_message_owner_fkey|FOREIGN KEY (plugin_message_id, owner_id) REFERENCES plugin_messages(id, owner_id) ON DELETE CASCADE",
 	"session_routes|session_routes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
-	// 0052: 0027's shape, its owner checked by session_routes_task_is_owners.
+	// 0053: 0027's shape, its owner checked by session_routes_task_is_owners.
 	"session_routes|session_routes_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE CASCADE",
 	"send_queue|send_queue_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"task_sessions|task_sessions_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
