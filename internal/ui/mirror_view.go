@@ -286,13 +286,33 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 // viewFrameScript opens that view in a frame over this one and keeps both, so
 // neither view's socket is torn down by a switch (view_swap.go). It stays a
 // real link — what a switch falls back to — and so does it without script.
+//
+// 🔴 BELOW `sm` (640px, the app's own phone/desktop breakpoint) THE SWITCH IS
+// ONE 44×44 ICON BUTTON: the link to the OTHER view. An operator ask: at 393px
+// the header row held three 44px buttons and this 147px switch, leaving the
+// rendered view's title 70px. The current view's segment is `max-sm:hidden`
+// (display:none — no width, not in the accessibility tree) and the link drops
+// its word for an icon, its name ("Show terminal" / "Show rendered view")
+// carried by an sr-only span that is itself display:none at `sm` and up, so a
+// desktop reads exactly the two segments it did. It is CSS only: one element
+// per action at every width, the same ids and the same data-view-swap link,
+// no script deciding the layout.
 func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 	seg := func(id, view, label, href string, current bool) g.Node {
 		cls := viewToggleSegClass
 		if current {
-			return Span(ID(id), g.Attr("aria-current", "page"), Class(cls+"bg-accent text-on-accent"), g.Text(label))
+			return Span(ID(id), g.Attr("aria-current", "page"), Class(cls+"max-sm:hidden bg-accent text-on-accent"), g.Text(label))
 		}
-		return A(ID(id), Href(href), hx("hx-boost", "false"), g.Attr("data-view-swap", view), Class(cls+"text-fg2 hover:bg-s3"), g.Text(label))
+		icon, name := viewIconTerminal, "Show terminal"
+		if view == ViewRendered {
+			icon, name = viewIconRendered, "Show rendered view"
+		}
+		return A(ID(id), Href(href), hx("hx-boost", "false"), g.Attr("data-view-swap", view), g.Attr("data-view-toggle", ""),
+			Class(cls+viewToggleCompactClass+" text-fg2 hover:bg-s3"),
+			g.Raw(icon),
+			Span(Class("sr-only sm:hidden"), g.Text(name)),
+			Span(Class("max-sm:hidden"), g.Text(label)),
+		)
 	}
 	return Nav(
 		g.Attr("aria-label", "View"),
@@ -397,6 +417,18 @@ const (
 // segments' padding was the cheapest room to give it (16px across the two;
 // each segment is still well over 44px wide).
 const viewToggleSegClass = "press inline-flex min-h-[44px] items-center px-1.5 text-xs font-semibold transition "
+
+// viewToggleCompactClass makes the switch's link a 44×44 icon button below
+// `sm` (viewToggle); from `sm` up it adds nothing.
+const viewToggleCompactClass = "max-sm:h-11 max-sm:w-11 max-sm:justify-center max-sm:px-0"
+
+// The switch's phone icons (viewToggle): a prompt for the terminal, a speech
+// bubble for the rendered conversation. Decorative; the link's name is its
+// sr-only text.
+const (
+	viewIconTerminal = `<svg class="h-5 w-5 sm:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg>`
+	viewIconRendered = `<svg class="h-5 w-5 sm:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`
+)
 
 // The two views' names, as data-view-swap and the view frame spell them.
 const (
