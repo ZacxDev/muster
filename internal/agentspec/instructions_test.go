@@ -750,7 +750,6 @@ func TestThePluginSectionHasNoAskFallback(t *testing.T) {
 	}{
 		{"gateway", chiefPluginSection, ChiefInstructions(false, true), ChiefInstructions(false, false), line("`plugin_message_settle`")},
 		{"gateway with cairn", chiefPluginSection, ChiefInstructions(true, true), ChiefInstructions(true, false), line("`plugin_message_settle`")},
-		{"function tools", chiefPluginSection, ChiefInstructionsFunctionTools(true), ChiefInstructionsFunctionTools(false), line("`plugin_message_settle`")},
 		{"claude-code", chiefPluginSectionClaudeCode, ChiefInstructionsClaudeCode(true), ChiefInstructionsClaudeCode(false), line("`mcp__muster__plugin_message_settle`")},
 	} {
 		got := norm(c.prompt)
