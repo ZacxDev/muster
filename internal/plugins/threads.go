@@ -3,21 +3,12 @@ package plugins
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
-// THREADS A SESSION STARTED (plugin_threads, migration 0054): when one of the
-// owner's mirrored Claude Code sessions sends agent mail that starts a thread,
-// its PostToolUse hook reports the thread (POST /api/plugin-threads), and a
-// later inbound message on that thread is routed straight back to that session
-// (internal/api's routeByThread) — the chief's route, without the chief's
-// decision. docs/plugins.md#a-reply-on-a-thread-a-session-started.
-//
-// 🔴 THE FIRST REPORT WINS. A thread is bound to the session that STARTED it;
-// the primary key (owner_id, thread) and INSERT … ON CONFLICT DO NOTHING make a
-// second report — another session's, or the same one's — change nothing.
+// Threads a session started (plugin_threads, migration 0054):
+// docs/plugins.md#a-reply-on-a-thread-a-session-started.
 
 // AgentMailPlugin is the one plugin, by name, whose threads a session can be
 // bound to: agent mail (operator decision), the same plugin the unrouted
@@ -28,54 +19,30 @@ const AgentMailPlugin = UnroutedAskPlugin
 // message is a reply on a thread the target session started.
 const RouteViaThread = "thread"
 
-// ThreadBinding is one row of plugin_threads.
-type ThreadBinding struct {
-	Thread        string
-	Host          string
-	ClaudeSession string
-	CreatedAt     time.Time
-}
-
-// BindThread binds thread to the mirrored Claude Code session claudeSession on
-// host, for the principal. created is false — and the stored binding is
-// returned unchanged — when the thread was already bound.
-func (s *PGStore) BindThread(ctx context.Context, thread, host, claudeSession string) (ThreadBinding, bool, error) {
-	if !ValidThread(thread) {
-		return ThreadBinding{}, false, invalid("thread is 1-%d bytes with no spaces, control or invisible characters", MaxThreadLen)
-	}
-	var b ThreadBinding
+// BindThread binds thread to the mirrored Claude Code session claudeSession,
+// for the principal. created is false, and nothing changes, when the thread was
+// already bound: the first report wins.
+func (s *PGStore) BindThread(ctx context.Context, thread, claudeSession string) (bool, error) {
 	created := false
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
-		err := tx.QueryRow(ctx, `INSERT INTO plugin_threads (thread, host, claude_session) VALUES ($1, $2, $3)
-			ON CONFLICT (owner_id, thread) DO NOTHING RETURNING thread, host, claude_session, created_at`,
-			thread, cutRunes(host, 200), claudeSession).Scan(&b.Thread, &b.Host, &b.ClaudeSession, &b.CreatedAt)
-		if errors.Is(err, pgx.ErrNoRows) {
-			b, err = boundThread(ctx, tx, thread)
-			return err
-		}
-		if err != nil {
+		tag, err := tx.Exec(ctx, `INSERT INTO plugin_threads (thread, claude_session) VALUES ($1, $2)
+			ON CONFLICT (owner_id, thread) DO NOTHING`, thread, claudeSession)
+		if err != nil || tag.RowsAffected() == 0 {
 			return err
 		}
 		created = true
-		return audit(ctx, tx, "plugin.thread.bound", "plugin_thread:"+thread, map[string]any{
-			"host": b.Host, "claude_session": b.ClaudeSession})
+		return audit(ctx, tx, "plugin.thread.bound", "plugin_thread:"+thread, map[string]any{"claude_session": claudeSession})
 	})
-	return b, created, err
+	return created, err
 }
 
-// BoundThread is the principal's binding for thread, or ErrNotFound.
-func (s *PGStore) BoundThread(ctx context.Context, thread string) (ThreadBinding, error) {
-	return boundThread(ctx, s.pool, thread)
-}
-
-func boundThread(ctx context.Context, q interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, thread string) (ThreadBinding, error) {
-	var b ThreadBinding
-	err := q.QueryRow(ctx, `SELECT thread, host, claude_session, created_at FROM plugin_threads WHERE thread = $1`, thread).
-		Scan(&b.Thread, &b.Host, &b.ClaudeSession, &b.CreatedAt)
+// BoundThread is the Claude session the principal's thread is bound to, or
+// ErrNotFound.
+func (s *PGStore) BoundThread(ctx context.Context, thread string) (string, error) {
+	var sess string
+	err := s.pool.QueryRow(ctx, `SELECT claude_session FROM plugin_threads WHERE thread = $1`, thread).Scan(&sess)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ThreadBinding{}, ErrNotFound
+		return "", ErrNotFound
 	}
-	return b, err
+	return sess, err
 }

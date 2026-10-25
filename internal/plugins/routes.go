@@ -74,8 +74,8 @@ type RouteStore interface {
 	TimeOutRoute(ctx context.Context, routeID string) (Route, bool, error)
 	ExpiredRoutes(ctx context.Context) ([]DueRoute, error)
 	// BindThread and BoundThread are the threads sessions started (threads.go).
-	BindThread(ctx context.Context, thread, host, claudeSession string) (ThreadBinding, bool, error)
-	BoundThread(ctx context.Context, thread string) (ThreadBinding, error)
+	BindThread(ctx context.Context, thread, claudeSession string) (bool, error)
+	BoundThread(ctx context.Context, thread string) (string, error)
 }
 
 var _ RouteStore = (*PGStore)(nil)
@@ -160,21 +160,20 @@ const RouteViaMCP = "mcp"
 // agent_id names it), RouteViaMCP the owner over the mirror MCP door, from
 // Host (proven by its mirror token) and Session (the Claude session the
 // caller's pane names: a claim), RouteViaThread muster itself, because the
-// message is a reply on Thread, which the session Host/Session started
-// (threads.go).
+// message is a reply on Thread, which Session started (threads.go).
 type RouteOrigin struct {
 	Via, Host, Session, Thread string
 }
 
 // String is the origin as the audit row's routed_via spells it:
-// "mcp from <host>/<session>", "thread <thread> started by <host>/<session>";
+// "mcp from <host>/<session>", "thread <thread> started by <session>";
 // "" for the chief.
 func (o RouteOrigin) String() string {
 	switch o.Via {
 	case RouteViaMCP:
 		return o.Via + " from " + o.Host + "/" + o.Session
 	case RouteViaThread:
-		return o.Via + " " + o.Thread + " started by " + o.Host + "/" + o.Session
+		return o.Via + " " + o.Thread + " started by " + o.Session
 	}
 	return o.Via
 }
@@ -237,12 +236,8 @@ func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID i
 // agent_id, so the relay files its draft as that chief's and a hand-back goes
 // to that chief — whoever made the route.
 //
-// 🔴 A ROUTE BY THREAD (RouteViaThread) TAKES A QUEUED MESSAGE: it hands the
-// message to the chief WITHOUT A TURN (delivered, to chiefID, audited
-// plugin.delivered with "routed": true) in the SAME transaction as the route,
-// so either both happen or neither does and the message stays queued for an
-// ordinary delivery. A message not queued (a delivery already took it) is
-// ErrNotFound, and nothing changes.
+// A route by thread (RouteViaThread) takes a queued message, handing it to the
+// chief in the same transaction: docs/plugins.md#a-reply-on-a-thread-a-session-started.
 func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
 	if chiefID <= 0 || ownerID <= 0 {
 		return Route{}, invalid("the agent has no owner")

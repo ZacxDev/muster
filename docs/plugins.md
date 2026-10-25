@@ -975,16 +975,14 @@ the chief's route (`routeItem`), made by muster, with no chief decision.
 1. **The binding.** The session's PostToolUse hook (outside muster) reports a
    send that started a thread: `POST /api/plugin-threads {thread,
    claude_session}`, with route reply's credential (a personal token or the
-   hook token). muster takes the host from the mirror — the online window that
-   shows that Claude session — never from the caller. `201`: bound. `200`: the
-   thread was already bound; **the first report wins** and the binding is
-   returned unchanged. `409`: no online mirrored window shows the session, so
-   nothing is bound. `404` with routing off. Stored in `plugin_threads`
-   (migration `0054`).
+   hook token). `201`: bound. `200`: the thread was already bound; **the first
+   report wins** and the binding is unchanged. `409`: no online mirrored window
+   shows the session, so nothing is bound. `404` with routing off. No response
+   body on success. Stored in `plugin_threads` (migration `0054`).
 2. **The route.** A NEW message from the plugin named `agent-mail` — only that
    plugin; a Discord DM never is — that carries a bound `thread` and is not
    `no_reply` is routed to the bound session, when an online mirrored window
-   shows that session **on the host it was bound from** and you have a chief.
+   shows that session and you have a chief.
    The message is handed to the chief **without a turn**, in the same
    transaction as the route (`plugin.delivered` with `"routed": true`), and is
    recorded in the chief's conversation as its delivery turn would have shown
@@ -992,9 +990,9 @@ the chief's route (`routeItem`), made by muster, with no chief decision.
    paste after the idle wait, `route_reply`, the relay, the deadline and the
    hand-back to the chief (which holds the message). The routed block says it
    was routed by muster; the `session_route.routed` audit row carries
-   `routed_via: "thread <thread> started by <host>/<session>"`.
+   `routed_via: "thread <thread> started by <session>"`.
 3. **Otherwise, the ordinary delivery.** An unbound thread, a session no online
-   window shows (or one on another host), no chief, or a route that could not
+   window shows, no chief, or a route that could not
    be made: the message goes to your chief exactly as any other. A route made
    but not pasted (the window's queue refused it) fails and is handed back.
 4. A routed message is a live route, so it never also becomes an

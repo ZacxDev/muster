@@ -1,18 +1,8 @@
--- muster 0054 — A REPLY ON A THREAD A SESSION STARTED GOES BACK TO THAT SESSION
--- (internal/plugins/threads.go). docs/plugins.md#a-reply-on-a-thread-a-session-started.
+-- muster 0054 — plugin_messages.thread, and plugin_threads: (owner, thread) →
+-- the mirrored Claude Code session that started it. docs/plugins.md#a-reply-on-a-thread-a-session-started.
 --
---   plugin_messages.thread   the upstream's thread id the plugin reported; NULL: none.
---   plugin_threads           (owner, thread) → the mirrored Claude Code session
---                            (and its host) that STARTED the thread, reported by
---                            that session's PostToolUse hook. The first report
---                            wins: a later one for the same thread changes
---                            nothing (the primary key; INSERT … ON CONFLICT DO
---                            NOTHING).
---
--- 🔴 OWNED AND UNDER FORCED ROW-LEVEL SECURITY, in 0048's shape: one owner can
--- neither read nor bind another's threads. rollback/rls_off.sql turns it off
--- with the rest, and --rls-on re-applies this file (db.RLSOn), so every
--- statement is idempotent.
+-- Owned and under forced row-level security in 0048's shape; re-applied by
+-- db.RLSOn, so every statement is idempotent.
 --
 -- ROLLBACK (after rolling the image back; an older image never reads these):
 --   DROP TABLE IF EXISTS plugin_threads;
@@ -31,9 +21,7 @@ CREATE TABLE IF NOT EXISTS public.plugin_threads (
                     DEFAULT nullif(current_setting('muster.uid', true), '')::bigint
                     REFERENCES public.users (id),
     thread          TEXT        NOT NULL CHECK (char_length(thread) BETWEEN 1 AND 200),
-    host            TEXT        NOT NULL CHECK (char_length(host) BETWEEN 1 AND 200),
     claude_session  TEXT        NOT NULL CHECK (char_length(claude_session) BETWEEN 1 AND 200),
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (owner_id, thread)
 );
 

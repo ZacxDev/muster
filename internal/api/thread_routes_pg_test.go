@@ -104,17 +104,16 @@ func (f *threadFixture) post(t *testing.T, tok, external, thread string) (int, p
 	return w.Code, m
 }
 
-// bind is the hook's report, with the owner's personal token unless tok is set.
-func (f *threadFixture) bind(t *testing.T, tok, thread, sid string) (int, map[string]any) {
+// bind is the hook's report, with the owner's personal token unless tok is
+// set: the status and the response body.
+func (f *threadFixture) bind(t *testing.T, tok, thread, sid string) (int, string) {
 	t.Helper()
 	if tok == "" {
 		tok = f.token
 	}
 	b, _ := json.Marshal(map[string]string{"thread": thread, "claude_session": sid})
 	w := f.call(t, "POST", pluginThreadsPath, strings.NewReader(string(b)), map[string]string{"Authorization": "Bearer " + tok})
-	var out map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &out)
-	return w.Code, out
+	return w.Code, w.Body.String()
 }
 
 // routesOf is every route of message m.
@@ -160,22 +159,19 @@ func TestAPluginMessageStoresItsThread(t *testing.T) {
 
 func TestAHookReportBindsTheThreadOnceAndNeverRebinds(t *testing.T) {
 	f := newThreadFixture(t)
-	code, out := f.bind(t, "", "4242", routeSID)
-	if code != 201 || out["bound"] != true || out["host"] != "tower" || out["claude_session"] != routeSID {
-		t.Fatalf("first report: %d %v", code, out)
+	if code, body := f.bind(t, "", "4242", routeSID); code != 201 || body != "" {
+		t.Fatalf("first report: %d %q; want 201 and no body", code, body)
 	}
 	const other = "5e55a1d0-0000-4000-8000-00000000beef"
 	f.mirror.set(func(m *routeMirror) { m.otherSession = other })
-	code, out = f.bind(t, "", "4242", other)
-	if code != 200 || out["bound"] != false || out["claude_session"] != routeSID {
-		t.Fatalf("a second session's report: %d %v; want 200 and the first binding unchanged", code, out)
+	if code, body := f.bind(t, "", "4242", other); code != 200 || body != "" {
+		t.Fatalf("a second session's report: %d %q; want 200 and no body", code, body)
 	}
 	if n := f.bindings(t, "4242"); n != 1 {
 		t.Fatalf("%d bindings for the thread, want 1", n)
 	}
-	b, err := f.plugins.BoundThread(f.asOwner, "4242")
-	if err != nil || b.ClaudeSession != routeSID || b.Host != "tower" {
-		t.Fatalf("the stored binding: %+v %v", b, err)
+	if sess, err := f.plugins.BoundThread(f.asOwner, "4242"); err != nil || sess != routeSID {
+		t.Fatalf("the stored binding: %q %v; want the first report's session", sess, err)
 	}
 	// A session no online window shows binds nothing.
 	if code, _ := f.bind(t, "", "5151", "5e55a1d0-0000-4000-8000-0000000dead0"); code != 409 || f.bindings(t, "5151") != 0 {
@@ -233,7 +229,7 @@ func TestAReplyOnABoundThreadIsRoutedToItsSession(t *testing.T) {
 	var via string
 	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT detail->>'routed_via' FROM audit_log
 		WHERE action = 'session_route.routed' AND object = $1`, plugins.RouteObject(rs[0].RouteID)).Scan(&via); err != nil ||
-		via != "thread 4242 started by tower/"+routeSID {
+		via != "thread 4242 started by "+routeSID {
 		t.Fatalf("routed_via %q (%v)", via, err)
 	}
 	// The same message again (a repeat POST, and a second attempt) routes nothing twice.
@@ -259,15 +255,6 @@ func TestABoundSessionThatIsGoneFallsBackToTheChief(t *testing.T) {
 	_, m := f.post(t, f.mailTok, "thr-gone-1", "4242")
 	if rs := f.routesOf(t, m); len(rs) != 0 || f.turns.count() != 1 || len(f.queued(t)) != 0 {
 		t.Fatalf("%d routes, %d chief turns, %d queued; want 0, 1, 0", len(rs), f.turns.count(), len(f.queued(t)))
-	}
-	// The session online, but on another host than the one it was bound from.
-	f.mirror.set(func(m *routeMirror) { m.claudeSession = "" })
-	if _, _, err := f.plugins.BindThread(f.asOwner, "7373", "elsewhere", routeSID); err != nil {
-		t.Fatal(err)
-	}
-	_, m = f.post(t, f.mailTok, "thr-gone-2", "7373")
-	if rs := f.routesOf(t, m); len(rs) != 0 || f.turns.count() != 2 {
-		t.Fatalf("another host: %d routes, %d chief turns; want 0, 2", len(rs), f.turns.count())
 	}
 }
 
@@ -302,7 +289,7 @@ func TestAnotherOwnersThreadIsInvisible(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM plugin_threads WHERE owner_id = $1`, other)
 	})
-	if _, created, err := f.plugins.BindThread(f.as(other), "4242", "tower", routeSID); err != nil || !created {
+	if created, err := f.plugins.BindThread(f.as(other), "4242", routeSID); err != nil || !created {
 		t.Fatalf("the other owner's bind: %v %v", created, err)
 	}
 	if _, err := f.plugins.BoundThread(f.asOwner, "4242"); err != plugins.ErrNotFound {
