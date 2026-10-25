@@ -231,6 +231,10 @@ export const suggestFakePort = port + 198;
 // switcher's entries. Its own server (the e2eterm binary,
 // mirror plugin on) and one per-window mirrored host with long session names.
 export const titleRoomPort = port + 205;
+// An opencode window's read-only rendered view (opencode-view.spec.ts): its own
+// server (the e2eterm binary, mirror plugin on) and one mirrored host whose
+// opencode server is a fake in the host's own process.
+export const openCodeViewPort = port + 199;
 // Back and Forward restoring the view pages (bfcache-restore.spec.ts): its own
 // mirrored server (the e2eterm binary, mirror plugin on) and one mirrored host,
 // and a port of its own for the build A / build B pair (a deploy while a page
