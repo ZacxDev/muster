@@ -340,11 +340,13 @@ it. The flow:
    status, gate, the agents already working it, and two fields from outside
    (the task's title and the change line) on fenced lines. muster's preface
    names the three tools below and says the block is data.
-5. The chief calls **one** of them:
+5. The chief calls **one** of them, or, with session routing on, hands the
+   task to a mirrored session already on it
+   ([routing a task to a session](#routing-a-task-to-a-session)):
 
 | tool | does | refused when |
 |---|---|---|
-| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `task_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent), returned to the chief as `actions_offered`. `route_to_session` is never offered: a task event is no_reply, so it refuses one. `task_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
+| `task_route_attention {task_id, note}` | Puts the task in front of you: an ask on `/attention` and a notification, with the chief's note — and, as its buttons, the actions the chief can take on the task right now (`task_forward` when a running agent works it; `task_dispatch` when the tool would start an agent: you opted in, the deployment can start one, and the task is open, ungated and has no live agent), returned to the chief as `actions_offered`. `route_to_session` is not among them: the chief routes a task to a session itself, with `route_to_session {task_id, subject}` ([routing a task to a session](#routing-a-task-to-a-session)). `task_dispatch` is also withheld while the chief's [dispatch budget](#the-chiefs-dispatch-budget) is full, and the result carries that `budget` when you opted in. The offer and each tool's gate are the same predicate (`internal/api/task_actions.go`). Your answer is [delivered to the chief](attention.md#delivery) as a new message in its default session. | the task is not yours |
 | `task_forward {task_id, note}` | Sends the agent already working the task (the newest running one) a message from muster naming the task, with the chief's note fenced as data. The agent re-reads the task itself. | the task is not yours; no running agent works it |
 | `task_dispatch {task_id, repo?, kind?, instructions?}` | Starts a new agent on the task. `kind` is `claude-code` (the default when the deployment enables it, else `gateway`) or `gateway`. Either kind gets the task's repository and branch; a task with no repository (a plugin's task has none) can be given one with `repo`, which must be one of your connected GitHub repositories; without one the agent cannot open a pull request. A claude-code agent runs on an account from your Claude account pool, with no per-agent model, and its Claude Code session starts inside a checkout of the repository, so the repository's `CLAUDE.md` and project skills (`.claude/skills`) load ([provisioner.md](provisioner.md#a-claude-code-agents-repository)). A gateway agent also gets the task's model. `instructions` (optional, at most 1 KiB) opens the agent's first message, and is accepted **only** when it is, verbatim, your answer to an attention ask about this task (see guard 5). Offered only when `MUSTER_CHIEF_DISPATCH_OWNERS` lists at least one user. | see below |
 
@@ -356,8 +358,9 @@ to the chief never starts anything by itself: only `task_dispatch` does.
 unreachable (the event stays queued and is retried at each plugin claim), and
 also when the chief took the event and did not act on it (its turn failed, it
 called no tool, or its call was refused). It leaves the list once the chief
-routes the task (`task_route_attention`, `task_forward`, or a `task_dispatch`
-answered `already_dispatched` while an agent is running on the task,
+routes the task (`task_route_attention`, `task_forward`, `route_to_session`
+with its `task_id`, or a `task_dispatch` answered `already_dispatched` while an
+agent is running on the task,
 recorded as a `task.chief_routed` audit row) or starts an agent on it, or once the task is
 complete or dismissed. "Routes" is measured per event, from the event's latest
 delivery attempt, successful or not, or from when it was stored if it has had
@@ -961,6 +964,34 @@ that text, and Enter sends both. The idle delay is the only protection.
 ⚠ **An answer is sent as written.** It is screened like any reply draft (no
 hidden characters, addresses, credentials or the deployment's own names), and
 for a verified, allowlisted sender that screen is the only check before it goes.
+
+### Routing a task to a session
+
+The chief can hand one of your **tasks** to a mirrored session the same way:
+`route_to_session {task_id, subject}`, with exactly one of `message_id` and
+`task_id` (both, or neither, is refused as `bad_arguments`). It is the same
+route (`session_routes.task_id`, migration `0053`) and the same path after it:
+the same target checks, the paste through the window's send queue after the
+idle wait, `route_reply` bound to the target session, the 30-minute deadline,
+the hand-back, and the `session_route.*` audit rows. What differs:
+
+- **The task must be yours.** Another owner's task is refused as
+  `task_not_found`, by the tool and again by the database (a trigger checks
+  the route's owner owns the task). A task already routed and not yet answered
+  is `already_routed`; once that route has ended, it can be routed again.
+- **What is pasted** is the task as stored: its id, status, title and body,
+  fenced as data, with the `route_id` and how to answer.
+- **The answer becomes a comment on the task.** `route_reply` records it
+  (`answered`), adds it to the task once as a comment by
+  `mirror:<claude session id> via <route_id>`, and ends the route `relayed`;
+  no draft is filed and no allowlist applies. A task that is no longer open
+  (completed or dismissed meanwhile) takes no comment: the route fails and
+  the task is handed back.
+- **The chief hears about it in its default session**, where its task
+  deliveries go: the note when the answer is added, and the hand-back when the
+  route times out or fails.
+- **The task leaves "Task to route"**: routing it records `task.chief_routed`
+  with `tool: route_to_session`, like the other task tools.
 
 ### Routing a message from your own session
 

@@ -47,9 +47,10 @@ const routeReplyToolName = "route_reply"
 
 func routeReplyToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: routeReplyToolName,
-		Description: "Answer a plugin message your owner's chief ROUTED to this session (the pasted block names its route_id). " +
-			"body is your reply to the outside sender, exactly as it should be sent — it goes back as the message's reply: " +
-			"at once when your owner allowlisted the sender, otherwise after your owner approves it. Only the session the " +
+		Description: "Answer a plugin message or a task your owner's chief ROUTED to this session (the pasted block names its route_id). " +
+			"For a message, body is your reply to the outside sender, exactly as it should be sent — it goes back as the message's reply: " +
+			"at once when your owner allowlisted the sender, otherwise after your owner approves it. For a task, body is your " +
+			"answer, added to the task as a comment. Only the session the " +
 			"route was sent to may answer it, only once, and only while the route is still waiting (not after it timed out " +
 			"back to the chief). Never put credentials in it.",
 		Parameters: objSchema(map[string]any{

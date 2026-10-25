@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/sendqueue"
@@ -44,6 +45,9 @@ type routeMirror struct {
 	// host running that conversation: one of the owner's sessions that is NOT
 	// a route's target.
 	otherSession string
+	// state, when set, is the window's Claude Code status (AgentState);
+	// otherwise idle since an unknown time.
+	state *mirror.AgentState
 }
 
 func (m *routeMirror) Hosts(context.Context) []mirror.HostView {
@@ -66,6 +70,11 @@ func (m *routeMirror) Hosts(context.Context) []mirror.HostView {
 	return []mirror.HostView{h}
 }
 func (m *routeMirror) AgentState(context.Context, string, string, string) mirror.AgentState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state != nil {
+		return *m.state
+	}
 	return mirror.AgentState{Status: mirror.StatusIdle}
 }
 func (m *routeMirror) ServeConnect(http.ResponseWriter, *http.Request) {}
@@ -116,6 +125,8 @@ func newRouteFixture(t *testing.T) *routeFixture {
 		ext.Plugins, ext.Routes, ext.Routing = g.plugins, g.plugins, f.routing
 		ext.Mirror, ext.SendQueue = f.mirror, f.queue
 		ext.APITokens = apitokens.NewPG(pool)
+		g.notes = notes.NewPG(pool)
+		ext.Notes = g.notes
 	})
 	g.owner = g.newMember(t)
 	g.asOwner = g.as(g.owner)
