@@ -61,6 +61,8 @@ var noStoreLiterals = map[string]string{
 	"handleDevicePairCode":     "a pairing code",
 	"handlePushKey":            "the VAPID public key",
 	"renderConnectorsContent":  "the connectors list",
+	"staticCacheControl":       "another build's /static/ bytes, or a page script's bare path (a CDN rewrites no-cache)",
+	"staticHandler":            "a missing /static/ file (an edge must not keep a script's 404)",
 	"handleAgentChatLog":       "the chat-log partial",
 	"handleAsksDrafts":         "an ask's draft answers",
 	"handleAttentionAsker":     "a page's open asks",

@@ -2,7 +2,6 @@ package ui
 
 import (
 	g "maragu.dev/gomponents"
-	. "maragu.dev/gomponents/html"
 )
 
 // THE AGENTS TAB KEEPS ITS SCROLL POSITIONS ACROSS HYDRATION: the page's own
@@ -35,17 +34,19 @@ import (
 // (sessionStorage).
 const recentScrollKey = "muster.agents.recent.x"
 
-func agentsScrollScript() g.Node {
-	return Script(g.Raw(`
+func agentsScrollScript() g.Node { return staticScript(agentsScrollScriptSrc) }
+
+// agentsScrollScriptSrc is the path agentsScrollScript's code is served at, /static/js/agents-scroll.js (static_script.go).
+var agentsScrollScriptSrc = staticJS("agents-scroll", `
 (function () {
   if (window.__musterAgentsScroll) return;
   window.__musterAgentsScroll = true;
-  var STRIP_KEY = '` + recentScrollKey + `';
+  var STRIP_KEY = '`+recentScrollKey+`';
   function ssGet(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
   function ssSet(k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} }
 
   // --- the strip's sideways offset -----------------------------------------
-  function scroller() { return document.querySelector('#` + recentStripID + ` > div'); }
+  function scroller() { return document.querySelector('#`+recentStripID+` > div'); }
   // Kept on every scroll of the strip (scroll does not bubble: captured).
   document.addEventListener('scroll', function (e) {
     var s = scroller();
@@ -66,5 +67,4 @@ func agentsScrollScript() g.Node {
   document.addEventListener('htmx:afterSettle', put);
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', put);
 })();
-`))
-}
+`)

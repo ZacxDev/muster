@@ -39,6 +39,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -611,16 +612,32 @@ func handleNoContent(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// staticHandler serves the embedded web/static directory under /static/.
+// staticHandler serves web.Files under /static/: the embedded web/static
+// directory and the generated files (the pages' scripts, web/generated.go).
 func staticHandler() http.Handler {
-	sub, err := fs.Sub(web.Static, "static")
+	sub, err := fs.Sub(web.Files, "static")
 	if err != nil {
-		// web.Static always contains "static"; an error here is a programming
+		// web.Files always contains "static"; an error here is a programming
 		// bug, not a runtime condition.
 		panic("api: embedded static fs missing 'static' dir: " + err.Error())
 	}
 	files := http.StripPrefix("/static/", http.FileServerFS(sub))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 🔴 A MISSING FILE IS no-store, ANSWERED HERE. Go's file server drops
+		// the handler's Cache-Control on its error path, so its 404 carried
+		// none — and an edge that kept a script's 404 for minutes would turn
+		// the seconds two builds overlap in a rollout into a page with no
+		// code. A directory (the bare /static/ listing) goes to the file
+		// server as before.
+		rel := strings.TrimPrefix(strings.TrimPrefix(path.Clean(r.URL.Path), "/static"), "/")
+		if rel == "" {
+			rel = "."
+		}
+		if _, err := fs.Stat(sub, rel); err != nil {
+			w.Header().Set("Cache-Control", "no-store")
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Cache-Control", staticCacheControl(r.URL.Path, r.URL.Query().Get("v")))
 		files.ServeHTTP(w, r)
 	})
@@ -630,13 +647,33 @@ func staticHandler() http.Handler {
 //
 // 🔴 ONLY A URL CARRYING THE FILE'S CURRENT HASH IS CACHED FOR LONG. Pages link
 // web.Asset's /static/<file>?v=<content hash>: that URL names these exact
-// bytes, so it is immutable. Anything else — the bare path, or a ?v= from an
-// older build — is "no-cache" (stored, but revalidated): with no header at
-// all, the edge applied its own max-age=14400 and served 0.43.0 the previous
-// release's app.css for hours.
+// bytes, so it is immutable. The bare path of a stylesheet, icon or vendored
+// script is "no-cache" (stored, but revalidated): with no header at all, the
+// edge applied its own max-age=14400 and served 0.43.0 the previous release's
+// app.css for hours.
+//
+// 🔴 ANOTHER BUILD'S ?v= IS no-store, AND SO IS A PAGE SCRIPT'S BARE PATH. In a
+// rollout a page rendered by one build can ask a pod of the other for its
+// files, and this pod answers with ITS bytes (200) — deliberately: refusing
+// would leave that page with no code at all, where the neighbouring build's
+// script leaves it working. But those bytes are not the ones the URL names,
+// so nothing may keep them under it, and no-cache did not ensure that: the
+// CDN in front rewrites an origin no-cache into max-age=14400 on what the
+// browser gets (measured), which left the wrong bytes in the HTTP cache for
+// four hours — read by every load without the service worker and by the
+// worker's own network fallback. no-store survives the CDN (measured). A
+// /static/js/ path with no ?v= is linked by no page, so it is no-store too;
+// the bare paths of the other files keep no-cache, which older cached
+// documents link. The service worker also refuses such bytes on its own: it
+// stores a script only when its body hashes to its ?v= (sw.js namesItsBytes;
+// e2e/sw-install.test.mjs).
 func staticCacheControl(path, v string) string {
-	if h := web.AssetHash(path); h != "" && v == h {
+	h := web.AssetHash(path)
+	switch {
+	case h != "" && v == h:
 		return "public, max-age=31536000, immutable"
+	case v != "", strings.HasPrefix(path, "/static/js/"):
+		return "no-store"
 	}
 	return "no-cache"
 }

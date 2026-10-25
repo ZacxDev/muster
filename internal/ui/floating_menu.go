@@ -2,7 +2,6 @@ package ui
 
 import (
 	g "maragu.dev/gomponents"
-	. "maragu.dev/gomponents/html"
 )
 
 // floatingMenuScript places every [data-floating-menu] popover next to the
@@ -89,8 +88,10 @@ import (
 //
 // Bound once per document (__musterFloatingMenu), like every other script here:
 // htmx re-executes in-body <script> tags on each boosted swap.
-func floatingMenuScript() g.Node {
-	return Script(g.Raw(`
+func floatingMenuScript() g.Node { return staticScript(floatingMenuScriptSrc) }
+
+// floatingMenuScriptSrc is the path floatingMenuScript's code is served at, /static/js/floating-menu.js (static_script.go).
+var floatingMenuScriptSrc = staticJS("floating-menu", `
 (function () {
   if (window.__musterFloatingMenu) return;
   window.__musterFloatingMenu = true;
@@ -191,5 +192,4 @@ func floatingMenuScript() g.Node {
     if (m && isOpen(m)) { try { m.hidePopover(); } catch (err) {} }
   });
 })();
-`))
-}
+`)

@@ -495,10 +495,9 @@ func TestTheBrowserScriptsTabRegistryMatchesGos(t *testing.T) {
 			// document: jsSource needs a bare <script> node (its own doc says why —
 			// the closing tag desyncs the comment stripper), and the panels above
 			// already supply the independent reference this comparison needs.
-			js := mustStripJSComments(t, jsSource(t, appScript(shape.feat)))
-
-			tabsJS := jsValueAfter(t, js, "var TABS =")
-			headingsJS := jsValueAfter(t, js, "var HEADINGS =")
+			// The values travel on appScript's tag now (its code is a static
+			// file); appNavValues also checks the code takes them from there.
+			tabsJS, headingsJS, _ := appNavValues(t, shape.feat)
 
 			// POSITIVE CONTROL: the extractor must have found real content, or every
 			// assertion below is a comparison against an empty string.
