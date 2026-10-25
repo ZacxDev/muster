@@ -428,6 +428,12 @@ func agentTitle(v AgentDetailView) g.Node {
 // widens it (still fits). Bound once per document (__musterAgentTitleFit);
 // each run of this in-body script (htmx re-executes it on a boosted swap)
 // binds the title on the page now, and a title htmx removes is unobserved.
+//
+// ONE RULE FOR EVERY TITLE THAT CLIPS INTO A POPOVER: the rendered view's
+// header (mirrorViewTitle) uses this script too. Its box carries
+// data-title-fit="disable" because its trigger is the title itself — the
+// button is disabled while the title fits, not hidden. Enabling or disabling
+// it changes no size, so that mode cannot oscillate either.
 func agentTitleFitScript() g.Node {
 	return Script(g.Raw(`(function () {
   function fit(box) {
@@ -435,8 +441,16 @@ func agentTitleFitScript() g.Node {
     var b = box.querySelector('[data-title-more]');
     if (!t || !b) return;
     var clipped = box.hasAttribute('data-title-clamped') || t.scrollWidth > t.clientWidth + 1;
-    if (clipped) { if (b.hasAttribute('hidden')) b.removeAttribute('hidden'); return; }
-    if (!b.hasAttribute('hidden')) b.setAttribute('hidden', '');
+    // data-title-fit="disable": the trigger IS the title (the rendered view's,
+    // mirrorViewTitle), so it is disabled while the title fits, never hidden.
+    var disable = box.getAttribute('data-title-fit') === 'disable';
+    if (clipped) {
+      if (disable) b.disabled = false;
+      else if (b.hasAttribute('hidden')) b.removeAttribute('hidden');
+      return;
+    }
+    if (disable) b.disabled = true;
+    else if (!b.hasAttribute('hidden')) b.setAttribute('hidden', '');
     var p = document.getElementById(b.getAttribute('popovertarget'));
     if (p && p.matches(':popover-open')) p.hidePopover();
   }

@@ -20,11 +20,7 @@ func mergeCards(n int) []TaskCardView {
 
 func renderMergeScript(t *testing.T) string {
 	t.Helper()
-	var b bytes.Buffer
-	if err := taskMergeScript().Render(&b); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	return b.String()
+	return renderString(t, taskMergeScript())
 }
 
 // TestMergeAffordanceHiddenBelowTwoTasks: merging needs two tasks, so offering

@@ -94,7 +94,7 @@ func emittedStaticPaths(t *testing.T) []string {
 func TestEveryStaticPathTheUIEmitsResolves(t *testing.T) {
 	wantEmbedded := emittedStaticPaths(t)
 
-	sub, err := fs.Sub(web.Static, "static")
+	sub, err := fs.Sub(web.Files, "static")
 	if err != nil {
 		t.Fatalf("the embedded filesystem has no 'static' directory: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestStaticRouteServesTheEmbeddedFiles(t *testing.T) {
 
 func mustSub(t *testing.T) fs.FS {
 	t.Helper()
-	sub, err := fs.Sub(web.Static, "static")
+	sub, err := fs.Sub(web.Files, "static")
 	if err != nil {
 		t.Fatalf("fs.Sub: %v", err)
 	}

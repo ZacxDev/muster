@@ -55,10 +55,12 @@ type TaskCardView struct {
 
 // NotesPanel is the static shell for the Tasks tab. The + FAB (body-level, in
 // Page) is the sole task-create path; only the inner #tasks-list refreshes.
-// It lazy-loads /ui/tasks on first load, on tasks:changed (a local create/edit),
-// on sse:task.changed (an agent mutated a task out-of-band), and on
-// sse:agent.changed (a linked agent's status moved — so the card's status chip
-// stays live without a reload).
+// It refreshes from /ui/tasks on tasks:changed (a local create/edit), on
+// sse:task.changed (an agent mutated a task out-of-band), on sse:agent.changed
+// (a linked agent's status moved — so the card's status chip stays live without
+// a reload) and on muster:resync. Its FIRST content is drawn (non-nil drawn: the
+// Tasks tab's own document carries the board, tasks_list_ssr.go) or, on any
+// other tab, the skeleton its own `load` request replaces.
 // 🔴 IT TAKES NO PENDING COUNT, AND THE SEGMENTED CONTROL IS GONE WITH IT.
 // Upstream rendered a [Requests | Tasks] segmented toggle at the top of this
 // panel, carrying a live count of pending permission requests on the Requests
@@ -66,7 +68,7 @@ type TaskCardView struct {
 // two-position switch with one position — and the count would be a badge
 // permanently reading zero, which reads as "no requests" rather than "not a
 // thing this service does".
-func NotesPanel(active bool) g.Node {
+func NotesPanel(active bool, drawn *shellTasks) g.Node {
 	return Div(
 		ID(panelID("tasks")),
 		g.Attr("role", "tabpanel"),
@@ -78,10 +80,15 @@ func NotesPanel(active bool) g.Node {
 		// noteDeleteButton's confirm carries `hx-swap: outerHTML swap:200ms`
 		// targeting `#task-<id>`, which IS inside this panel. See panelClass.
 		Class(panelClass(active, true)+" min-h-[calc(100dvh-6rem)]"),
+		// Before #tasks-list, deliberately: see tasksRefilterGuard.
+		g.If(drawn != nil, tasksRefilterGuard()),
 		Div(
 			ID("tasks-list"),
 			Class("mt-4"),
 			hx("hx-get", "/ui/tasks"),
+			// A drawn board (tasks_list_ssr.go): its marks for the refilter guard
+			// and for the first SSE open.
+			tasksDrawnAttrs(drawn),
 			// 🔴 `muster:resync` IS WHY resyncScript EXISTS, AND THE BOARD WAS NOT
 			// LISTENING FOR IT. That script dispatches the event on focus, on
 			// visibility regain and on SSE reconnect, precisely because a connection
@@ -94,7 +101,8 @@ func NotesPanel(active bool) g.Node {
 			// happened to fire. The task DETAIL card has carried this trigger all
 			// along, which is what made the gap invisible — the feature demonstrably
 			// worked, on the other document.
-			hx("hx-trigger", "load, tasks:changed from:body, sse:task.changed from:body, sse:agent.changed from:body, muster:resync from:body"),
+			// No `load` when the document drew the board (tasksTrigger).
+			hx("hx-trigger", tasksTrigger(drawn)),
 			hx("hx-target", "#tasks-list"),
 			hx("hx-swap", "morph:innerHTML"),
 			// 🔴 A FAILED load must not read as "still loading". htmx does not swap a
@@ -137,7 +145,9 @@ func NotesPanel(active bool) g.Node {
 			// and the swap replaces like with like. ONE wrapper element (not N
 			// siblings) so idiomorph maps it 1:1 onto NotesCards' single root <div>
 			// instead of structurally morphing several loose placeholders.
-			tasksListSkeleton(),
+			// A document that drew the board carries the board instead
+			// (tasksListBody).
+			tasksListBody(drawn),
 		),
 	)
 }
@@ -223,8 +233,10 @@ func tasksListSkeleton() g.Node {
 // no once-only guard to get wrong. The Retry button's handler is bound to that
 // one element with addEventListener (not an inline onclick), which also keeps it
 // inside the app's CSP.
-func tasksListScript() g.Node {
-	return Script(g.Raw(`
+func tasksListScript() g.Node { return staticScript(tasksListScriptSrc) }
+
+// tasksListScriptSrc is the path tasksListScript's code is served at, /static/js/tasks-list.js (static_script.go).
+var tasksListScriptSrc = staticJS("tasks-list", `
 (function () {
   window.cgTasksListFailed = function (el) {
     var host = el || document.getElementById('tasks-list');
@@ -302,8 +314,7 @@ func tasksListScript() g.Node {
     } catch (e) {}
   };
 })();
-`))
-}
+`)
 
 // TasksView is everything the /ui/tasks partial renders: the task cards, the tag
 // vocabulary behind the filter chip row, and the ACTIVE filters. Every active

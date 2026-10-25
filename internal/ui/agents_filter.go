@@ -355,11 +355,25 @@ func agentsFilterBar() g.Node {
 // agentsFilterScript applies the filter. Bound once per document, like every
 // other shell script (htmx re-executes in-body scripts on a boosted swap), and
 // it looks its elements up at use time because a boosted swap replaces them.
+//
+// Its one per-process input, the host tab order (hostTabOrder, from the
+// operator's MUSTER_HOST_ORDER at start-up), is the tag's agentsHostOrderAttr:
+// the static code is built at init, before that is set, and must not vary
+// with it anyway (static_script.go).
 func agentsFilterScript() g.Node {
-	return Script(g.Raw(agentsRulesJS + `
+	return staticScript(agentsFilterScriptSrc, g.Attr(agentsHostOrderAttr, hostTabOrderJSON()))
+}
+
+// agentsHostOrderAttr is the agents filter tag's attribute carrying
+// hostTabOrderJSON.
+const agentsHostOrderAttr = "data-host-order"
+
+// agentsFilterScriptSrc is the path agentsFilterScript's code is served at, /static/js/agents-filter.js (static_script.go).
+var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
 (function () {
   if (window.__musterAgentsFilter) return;
   window.__musterAgentsFilter = true;
+  var TAG = document.currentScript;
   var KEY = '` + agentsFilterStorageKey + `';
   // THE GRAMMAR, THE CHIPS' TABLE AND THE HIDE RULES ARE agentsRulesJS's
   // (agents_filter_head.go; emitted just above this IIFE and in the shell's
@@ -708,7 +722,8 @@ func agentsFilterScript() g.Node {
   // HOST_ORDER is hostTabOrder (Go): the operator's named hosts' places, '*'
   // the place of every other host, the cluster's last. hostRank is a host's
   // place in it.
-  var HOST_ORDER = ` + hostTabOrderJSON() + `;
+  // It is read from the tag that loaded this script (agentsHostOrderAttr).
+  var HOST_ORDER = JSON.parse(TAG.getAttribute('` + agentsHostOrderAttr + `'));
   function hostRank(v) {
     var i = HOST_ORDER.indexOf(v);
     return i >= 0 ? i : HOST_ORDER.indexOf('` + hostTabRest + `');
@@ -1288,5 +1303,4 @@ func agentsFilterScript() g.Node {
   setInterval(function () { if (el('agents-list') && el('agents-search')) apply(swapHeld); }, 30000);
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();
-`))
-}
+`)

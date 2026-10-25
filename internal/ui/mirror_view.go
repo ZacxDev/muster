@@ -176,7 +176,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
 				manifestLink(),
-				TitleEl(g.Text(mirrorQualified(plainOr(displayOr(v.Label, v.Title), v.Session), v.Qualifier)+" · Mirrored · muster")),
+				TitleEl(g.Text(mirrorViewName(v)+" · Mirrored · muster")),
 				UserMarker(v.Nav.Feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				overlayNavHead(),
@@ -200,9 +200,10 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 						g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`),
 					),
 					Div(
-						Class("min-w-0 flex-1"),
-						H1(Class("truncate text-sm font-semibold"), mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, ""),
-							Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host, v.Host, v.HostIcon))),
+						// relative: the title button's 44px hit area
+						// (mirrorTitleHitClass) is placed on this column.
+						Class("relative min-w-0 flex-1"),
+						mirrorViewTitle(v),
 						Div(
 							// relative: the Updating… chip is positioned in this row
 							// (mirrorUpdatingChip), taking none of its width.
@@ -252,6 +253,11 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				// which is when mirrorViewScript reads it).
 				SnapScript(v.Nav.Feat),
 				mirrorViewScript(),
+				// Places the header's full-title popover (mirrorViewTitle) by its
+				// title and keeps the title's aria-expanded in step.
+				floatingMenuScript(),
+				// Enables the title while it is clipped (mirrorViewTitle).
+				agentTitleFitScript(),
 				// The question cards' poll and submit (mirror_ask.go).
 				askScript(),
 				// The attention asks block's live refresh.
@@ -280,14 +286,36 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 // viewFrameScript opens that view in a frame over this one and keeps both, so
 // neither view's socket is torn down by a switch (view_swap.go). It stays a
 // real link — what a switch falls back to — and so does it without script.
+//
+// 🔴 BELOW `sm` (640px, the app's own phone/desktop breakpoint) THE SWITCH IS
+// ONE 44×44 ICON BUTTON: the link to the OTHER view. An operator ask: at 393px
+// the header row held three 44px buttons and this 147px switch, leaving the
+// rendered view's title 70px. The current view's segment is `max-sm:hidden`
+// (display:none — no width, not in the accessibility tree) and the link drops
+// its word for an icon, its name ("Show terminal" / "Show rendered view")
+// carried by an sr-only span that is itself display:none at `sm` and up, so a
+// desktop reads exactly the two segments it did. It is CSS only: one element
+// per action at every width, the same ids and the same data-view-swap link,
+// no script deciding the layout.
 func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 	seg := func(id, view, label, href string, current bool) g.Node {
-		// 44px: a thumb target, like every other control in these headers.
-		cls := "press inline-flex min-h-[44px] items-center px-2.5 text-xs font-semibold transition "
+		cls := viewToggleSegClass
 		if current {
-			return Span(ID(id), g.Attr("aria-current", "page"), Class(cls+"bg-accent text-on-accent"), g.Text(label))
+			return Span(ID(id), g.Attr("aria-current", "page"), Class(cls+"max-sm:hidden bg-accent text-on-accent"), g.Text(label))
 		}
-		return A(ID(id), Href(href), hx("hx-boost", "false"), g.Attr("data-view-swap", view), Class(cls+"text-fg2 hover:bg-s3"), g.Text(label))
+		icon, name := viewIconTerminal, "Show terminal"
+		if view == ViewRendered {
+			icon, name = viewIconRendered, "Show rendered view"
+		}
+		return A(ID(id), Href(href), hx("hx-boost", "false"), g.Attr("data-view-swap", view), g.Attr("data-view-toggle", ""),
+			// The icon's tooltip for a mouse below `sm` (a 480–639px window).
+			// The name stays the link's text: "Terminal" from `sm` up.
+			g.Attr("title", name),
+			Class(cls+viewToggleCompactClass+" text-fg2 hover:bg-s3"),
+			g.Raw(icon),
+			Span(Class("sr-only sm:hidden"), g.Text(name)),
+			Span(Class("max-sm:hidden"), g.Text(label)),
+		)
 	}
 	return Nav(
 		g.Attr("aria-label", "View"),
@@ -298,6 +326,112 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 		viewFrameScript(),
 	)
 }
+
+// mirrorViewTitle is the rendered view's header title: the window's name (its
+// label, qualifier and session, drawn as its card draws them) and its
+// "Mirrored · <host>" badge, on ONE line that clips with an ellipsis.
+//
+// 🔴 THE TITLE IS A BUTTON THAT OPENS THE WHOLE TITLE IN A POPOVER (an
+// operator ask: "allow clicking on the ellipses to see the full title"). At
+// 390px the header leaves the title 67px (measured; 51px before the switch's
+// padding was cut) — a handful of characters — so a realistic title is
+// clipped on the operator's main device whatever the header's padding. The
+// popover is fullTitlePopover, the agent header's own: popover="auto" (top
+// layer; a tap outside it or Escape closes it), placed by floatingMenuScript
+// beside its trigger.
+//
+// The button is the line itself, not a "…" beside it (the agent header's
+// titleMoreButton): a separate 44px "…" would take back more room than the
+// switch's padding gave (viewToggleSegClass). It is block and truncating, so
+// it draws exactly the box the <h1> drew before (no new height, no shift).
+//
+// Whether it is clipped is decided by agentTitleFitScript — the agent
+// header's rule, not a copy of it: the <h1> is its [data-agent-title] box and
+// the button both its [data-agent-title-text] and its [data-title-more].
+// data-title-fit="disable" makes that script DISABLE the button while the
+// title fits (a tap on a whole title opens nothing) rather than hide it, as
+// it hides the agent header's "…". Without script the button stays enabled
+// and the popover works natively.
+//
+// The popover is OUTSIDE the <h1>, so the heading's text is still only the
+// title (specs read `header h1` and its [data-mirror-name]).
+func mirrorViewTitle(v MirrorViewView) g.Node {
+	return g.Group{
+		H1(
+			g.Attr("data-agent-title", ""),
+			g.Attr("data-title-fit", "disable"),
+			Class("min-w-0 text-sm font-semibold"),
+			Button(
+				ID(mirrorTitleID),
+				Type("button"),
+				g.Attr("data-mv-title", ""),
+				g.Attr("data-agent-title-text", ""),
+				g.Attr("data-title-more", ""),
+				g.Attr("popovertarget", mirrorTitlePopoverID),
+				g.Attr("aria-haspopup", "dialog"),
+				g.Attr("aria-controls", mirrorTitlePopoverID),
+				g.Attr("aria-expanded", "false"),
+				Class("block w-full min-w-0 truncate rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+mirrorTitleHitClass),
+				mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, ""),
+				Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host, v.Host, v.HostIcon)),
+			),
+		),
+		fullTitlePopover(mirrorTitlePopoverID, mirrorViewHeading(v)),
+	}
+}
+
+// mirrorViewName is the window's name as the rendered view's header and
+// <title> call it: mirrorDisplayName — entryTitle's rule, not a copy — and its
+// qualifier.
+func mirrorViewName(v MirrorViewView) string {
+	name, _ := mirrorDisplayName(v.Label, v.Title, v.Session)
+	return mirrorQualified(name, v.Qualifier)
+}
+
+// mirrorViewHeading is the header line as text: the name, then its badge's
+// "Mirrored · <host>". The full-title popover shows exactly this, so when only
+// the badge is clipped the popover still says what the header did not.
+func mirrorViewHeading(v MirrorViewView) string {
+	return mirrorViewName(v) + " · Mirrored · " + v.Host
+}
+
+// mirrorTitleHitClass gives the title button a 44px-tall hit area (a thumb
+// target, like every other control in the header) WITHOUT changing the
+// header's layout: the button's line is 20px, so its ::after — positioned on
+// the title column (the button itself is not positioned, and its truncating
+// overflow does not clip a box whose containing block is outside it) — spans
+// the column's width and is 44px tall, centred on the title and status rows.
+// z-10 puts it over the status row (itself positioned, so later in paint
+// order). Not while the button is disabled (the title fits): the rows below
+// keep their own hover and selection then.
+const mirrorTitleHitClass = "after:absolute after:inset-x-0 after:top-1/2 after:z-10 after:h-11 after:-translate-y-1/2 disabled:after:hidden"
+
+// The rendered view's header title (mirrorViewTitle) and its popover. One of
+// each per document.
+const (
+	mirrorTitleID        = "mv-title"
+	mirrorTitlePopoverID = "mv-title-full"
+)
+
+// viewToggleSegClass is each Rendered | Terminal segment's class, before its
+// state's colours. 44px tall: a thumb target, like every other control in
+// these headers. px-1.5 (6px a side), not the px-2.5 it was: an operator ask —
+// the header's title was clipped too tightly beside the switch, and the
+// segments' padding was the cheapest room to give it (16px across the two;
+// each segment is still well over 44px wide).
+const viewToggleSegClass = "press inline-flex min-h-[44px] items-center px-1.5 text-xs font-semibold transition "
+
+// viewToggleCompactClass makes the switch's link a 44×44 icon button below
+// `sm` (viewToggle); from `sm` up it adds nothing.
+const viewToggleCompactClass = "max-sm:h-11 max-sm:w-11 max-sm:justify-center max-sm:px-0"
+
+// The switch's phone icons (viewToggle): a prompt for the terminal, a speech
+// bubble for the rendered conversation. Decorative; the link's name is its
+// sr-only text.
+const (
+	viewIconTerminal = `<svg class="h-5 w-5 sm:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 17l6-5-6-5"/><path d="M12 19h8"/></svg>`
+	viewIconRendered = `<svg class="h-5 w-5 sm:hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`
+)
 
 // The two views' names, as data-view-swap and the view frame spell them.
 const (

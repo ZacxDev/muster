@@ -32,9 +32,11 @@ func manifestLink() g.Node {
 
 // pwaChrome is the per-document PWA furniture: the update toast and the
 // script that owns the worker. Every document renders it, so an update is
-// offered and the badge stays true wherever the operator happens to be.
+// offered and the badge stays true wherever the operator happens to be. It
+// also carries swapInlineScript, so every boosted document runs a swap's
+// scripts inside the swap (swap_inline.go).
 func pwaChrome() g.Node {
-	return g.Group{updateToast(), pwaScript()}
+	return g.Group{updateToast(), pwaScript(), swapInlineScript()}
 }
 
 // updateToast is the "new version" prompt. Hidden until pwaScript sees a
@@ -42,7 +44,7 @@ func pwaChrome() g.Node {
 //
 // 🔴 THE NEW WORKER WAITS FOR THIS BUTTON. sw.js no longer calls skipWaiting()
 // at install, so an open page is never silently switched to a worker whose
-// inline scripts it does not have. Reload is the operator's decision.
+// scripts it does not have. Reload is the operator's decision.
 //
 // 🔴 IT IS A COMPACT PILL IN THE TOP-RIGHT CORNER — NOT A BAR AT THE BOTTOM. It used to float 5.5rem above the bottom edge, which
 // on a phone is exactly where the composer, Send, the FAB and the chat button
@@ -112,8 +114,10 @@ const AppBridgeName = "musterApp"
 //
 // ⚠ ORDER: it publishes window.musterSWReady, which pushScript consumes, so it
 // renders before pushScript on the shell.
-func pwaScript() g.Node {
-	return Script(g.Raw(`
+func pwaScript() g.Node { return staticScript(pwaScriptSrc) }
+
+// pwaScriptSrc is the path pwaScript's code is served at, /static/js/pwa.js (static_script.go).
+var pwaScriptSrc = staticJS("pwa", `
 (function () {
   if (window.__musterPWA) return;
   window.__musterPWA = true;
@@ -358,8 +362,7 @@ func pwaScript() g.Node {
     document.addEventListener('sse:task.changed', soon);
   }
 })();
-`))
-}
+`)
 
 // ---------------------------------------------------------------------------
 // THE COMPOSER, OPENED BY A URL.
@@ -416,7 +419,12 @@ func RenderComposePage(w io.Writer, feat Features, body string) error {
 func composeOnLoad(body string) g.Node {
 	return g.Group{
 		Div(ID("compose-on-load"), g.Attr("hidden", ""), g.Attr("data-compose-url", ComposeURL(body))),
-		Script(g.Raw(`
+		staticScript(composeOnLoadSrc),
+	}
+}
+
+// composeOnLoadSrc is the path composeOnLoad's code is served at, /static/js/compose-on-load.js.
+var composeOnLoadSrc = staticJS("compose-on-load", `
 (function () {
   var tries = 0;
   function go() {
@@ -439,6 +447,4 @@ func composeOnLoad(body string) g.Node {
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
 })();
-`)),
-	}
-}
+`)

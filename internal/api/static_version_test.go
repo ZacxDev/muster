@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +34,7 @@ import (
 // wantHash is the first 12 hex digits of the SHA-256 of web/static/<rest>.
 func wantHash(t *testing.T, path string) string {
 	t.Helper()
-	b, err := web.Static.ReadFile("static/" + strings.TrimPrefix(path, "/static/"))
+	b, err := fs.ReadFile(web.Files, "static/"+strings.TrimPrefix(path, "/static/"))
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
@@ -93,10 +94,21 @@ func TestEveryStaticLinkCarriesItsContentHash(t *testing.T) {
 func TestOnlyACurrentlyVersionedStaticURLIsImmutable(t *testing.T) {
 	h := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(io.Discard, "", 0)).Handler()
 	cur := wantHash(t, "/static/app.css")
+	js := wantHash(t, "/static/js/app.js")
 	for _, tc := range []struct{ url, want string }{
 		{"/static/app.css?v=" + cur, "public, max-age=31536000, immutable"},
 		{"/static/app.css", "no-cache"},
-		{"/static/app.css?v=000000000000", "no-cache"},
+		// 🔴 ANOTHER BUILD'S ?v= IS no-store, NOT no-cache. In a rollout this
+		// pod answers the other build's URL with its own bytes, and the CDN in
+		// front rewrites no-cache into max-age=14400 (measured): no-cache left
+		// those bytes in the browser's HTTP cache under that URL for four
+		// hours. no-store survives the CDN.
+		{"/static/app.css?v=000000000000", "no-store"},
+		{"/static/js/app.js?v=" + js, "public, max-age=31536000, immutable"},
+		{"/static/js/app.js?v=000000000000", "no-store"},
+		// A page script with no ?v= is linked by no page: no-store, so the
+		// same rewrite cannot keep an unversioned copy of one either.
+		{"/static/js/app.js", "no-store"},
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tc.url, nil))

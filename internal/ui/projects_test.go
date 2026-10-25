@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 
@@ -218,11 +217,7 @@ func TestProjectChipStylingIsDistinctFromRouting(t *testing.T) {
 // renderTagScript renders tagScript() so the embedded JS rules can be asserted.
 func renderTagScript(t *testing.T) string {
 	t.Helper()
-	var b bytes.Buffer
-	if err := tagScript().Render(&b); err != nil {
-		t.Fatalf("render tagScript: %v", err)
-	}
-	return b.String()
+	return renderString(t, tagScript())
 }
 
 // TestProjectChipsDeclareTheExclusiveGroup pins that every project chip carries
