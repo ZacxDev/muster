@@ -63,7 +63,7 @@ func TestAHostGatedSenderExistsExactlyWhereTheServerGatesTheSend(t *testing.T) {
 
 // TestOpenCodeIsViewOnly: opencode is a runtime of the interface that
 // muster VIEWS and nothing more — "view: yes, send: no, prompts: no" in the
-// server's table, on the wire with its own key prefix ("opencode:", 0050) and
+// server's table, on the wire with its own key prefix ("opencode:", 0051) and
 // a view only once its host names the session — and on the host it has a view
 // source, no gated send and no answerer, claims a pane whose terminal runs the
 // TUI, and keeps the paste guard's refusal.

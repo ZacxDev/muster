@@ -6,16 +6,16 @@ import (
 	"testing"
 )
 
-// TestMigration0050AdmitsARuntimeQualifiedOpenCodeKey: at version 49 an
+// TestMigration0051AdmitsARuntimeQualifiedOpenCodeKey: at version 50 an
 // opencode session's key — "opencode:ses_<id>" — is refused by each of the
 // four session-key CHECKs (the control: 0036's pattern has no opencode
-// branch, in every table); after 0050 it is stored in all four, and so are a
+// branch, in every table); after 0051 it is stored in all four, and so are a
 // Claude Code id and a Hermes key exactly as before. What it must STILL refuse
 // is checked in every table too: an empty or over-long opencode id, a bad
 // first character, a prefix spelled differently, two prefixes, and junk.
-func TestMigration0050AdmitsARuntimeQualifiedOpenCodeKey(t *testing.T) {
+func TestMigration0051AdmitsARuntimeQualifiedOpenCodeKey(t *testing.T) {
 	ctx := ctx0006(t)
-	pool := freshAt(ctx, t, "ms_0050_session_key", 49)
+	pool := freshAt(ctx, t, "ms_0051_session_key", 50)
 	agent := scanID(ctx, t, pool, `INSERT INTO agents (owner_id, name, namespace) VALUES (1, 'key-agent', 'ns-key') RETURNING id`)
 	plugin := scanID(ctx, t, pool, `INSERT INTO plugins (owner_id, name, label, token_hash, data_scope)
 		VALUES (1, 'plugin-key', 'Example inbox', 'pluginhash-key', 'example') RETURNING id`)
@@ -58,14 +58,14 @@ func TestMigration0050AdmitsARuntimeQualifiedOpenCodeKey(t *testing.T) {
 	}
 	for name := range tables {
 		if err := stored(name, opencode); !refusedBy(err, name) {
-			t.Fatalf("control: at version 49 %s stored an opencode key (or refused it for another reason): %v", name, err)
+			t.Fatalf("control: at version 50 %s stored an opencode key (or refused it for another reason): %v", name, err)
 		}
 		if err := stored(name, claude); err != nil {
-			t.Fatalf("control: at version 49 %s refused a Claude Code id: %v", name, err)
+			t.Fatalf("control: at version 50 %s refused a Claude Code id: %v", name, err)
 		}
 	}
 
-	applyThroughFrom(ctx, t, pool, 50)
+	applyThroughFrom(ctx, t, pool, 51)
 
 	admitted := []string{
 		opencode,
@@ -88,12 +88,12 @@ func TestMigration0050AdmitsARuntimeQualifiedOpenCodeKey(t *testing.T) {
 	for name := range tables {
 		for _, key := range admitted {
 			if err := stored(name, key); err != nil {
-				t.Errorf("after 0050, %s refused %q (%d chars): %v", name, key, len(key), err)
+				t.Errorf("after 0051, %s refused %q (%d chars): %v", name, key, len(key), err)
 			}
 		}
 		for _, key := range refused {
 			if err := stored(name, key); !refusedBy(err, name) {
-				t.Errorf("after 0050, %s did not refuse %q (%d chars) by its key CHECK: %v", name, key, len(key), err)
+				t.Errorf("after 0051, %s did not refuse %q (%d chars) by its key CHECK: %v", name, key, len(key), err)
 			}
 		}
 	}

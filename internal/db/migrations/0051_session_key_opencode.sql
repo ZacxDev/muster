@@ -1,4 +1,4 @@
--- muster 0050 — A STORED SESSION KEY MAY NAME AN OPENCODE SESSION
+-- muster 0051 — A STORED SESSION KEY MAY NAME AN OPENCODE SESSION
 -- (docs/design/opencode.md; 0036 is the template).
 --
 -- An opencode window with a rendered view names its session (Window.
