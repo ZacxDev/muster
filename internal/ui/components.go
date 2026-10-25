@@ -1129,8 +1129,11 @@ func sidebarTab(tab, label, icon string, active, current, hasPanels bool) g.Node
 // routing (each tab is a real path via history.pushState; back/forward + deep
 // links work), the per-tab floating action buttons, and the header badge's
 // quick-manage popover. No framework — minimal vanilla JS.
-// navRegistryJS emits the JavaScript values the SPA router needs — the ordered
-// tab list, the tab→heading map and the default tab — from musterTabs.
+// navRegistryJS emits the values the SPA router needs — the ordered tab list,
+// the tab→heading map and the default tab — from musterTabs, as the JSON
+// appScript's tag carries in appNavAttr (its code is a static file, the same
+// for every document; appNavJS reads them back as TABS, HEADINGS and
+// DEFAULT_TAB).
 //
 // 🔴 THIS IS THE FOURTH CONSUMER OF THE REGISTRY, AND UPSTREAM'S HAND-WRITTEN
 // VERSION OF IT IS THE ONE THAT ROTS SILENTLY. A Go-side tab missing from the
@@ -1166,13 +1169,36 @@ func navRegistryJS(feat Features) string {
 		keys = append(keys, t.Key)
 		headingMap[t.Key] = t.Heading
 	}
-	keysJSON, _ := json.Marshal(keys)
-	headings, _ := json.Marshal(headingMap)
-	def, _ := json.Marshal(defaultVisibleTab(feat))
-	return "  var TABS = " + string(keysJSON) + ";\n" +
-		"  var HEADINGS = " + string(headings) + ";\n" +
-		"  var DEFAULT_TAB = " + string(def) + ";\n"
+	nav, _ := json.Marshal(struct {
+		Tabs     []string          `json:"tabs"`
+		Headings map[string]string `json:"headings"`
+		Default  string            `json:"default"`
+	}{keys, headingMap, defaultVisibleTab(feat)})
+	return string(nav)
 }
+
+// appNavAttr and appBuildAttr are the <script> attributes appScript's static
+// code reads its per-document inputs from (static_script.go): the visible tab
+// registry (navRegistryJS) and the build the page was rendered by (restoreJS).
+const (
+	appNavAttr   = "data-nav"
+	appBuildAttr = "data-build"
+)
+
+// appNavJS is the head of appScript's IIFE: the router's values, read from
+// the tag that loaded the script. document.currentScript is the tag while the
+// script's top level runs — on a full load and on a boosted swap's re-run
+// alike, so a re-run reads the NEW document's tabs, as the inline copy did.
+//
+// ⚠ NO try/catch AROUND THE PARSE. A tag without the attribute is a renderer
+// bug; throwing here kills the script as loudly as the syntax error a broken
+// inline literal used to, instead of booting a router that refuses every tab.
+const appNavJS = `  var APP_TAG = document.currentScript;
+  var NAV = JSON.parse(APP_TAG.getAttribute('` + appNavAttr + `'));
+  var TABS = NAV.tabs;
+  var HEADINGS = NAV.headings;
+  var DEFAULT_TAB = NAV.default;
+`
 
 // panelID is the DOM id of a tab's tabpanel. It is a FUNCTION rather than a
 // convention spelled at each call site because both halves of the app depend on
@@ -1183,9 +1209,16 @@ func navRegistryJS(feat Features) string {
 func panelID(key string) string { return "panel-" + key }
 
 func appScript(feat Features) g.Node {
-	return Script(g.Raw(`
+	return staticScript(appScriptSrc,
+		g.Attr(appNavAttr, navRegistryJS(feat)),
+		g.Attr(appBuildAttr, feat.SnapBuild))
+}
+
+// appScriptSrc is the path appScript's code is served at, /static/js/app.js
+// (static_script.go). Its per-document inputs are the tag's attributes.
+var appScriptSrc = staticJS("app", `
 (function () {
-` + navRegistryJS(feat) + restoreJS(feat) + `
+` + appNavJS + restoreJS + `
 
   // --- Navigation state persistence ----------------------------------------
   // Persist the active tab + its scroll offset so the PWA reopens where the
@@ -2292,8 +2325,7 @@ func appScript(feat Features) g.Node {
     document.body.addEventListener('htmx:load', init);
   }
 })();
-`))
-}
+`)
 
 // resyncScript keeps the task list fresh after the app is backgrounded and
 // reopened. The htmx SSE extension auto-reconnects, but a dropped connection can
@@ -2319,7 +2351,8 @@ func appScript(feat Features) g.Node {
 // every document. (The other listeners here still bind per run, as before.)
 //
 // This rationale is in Go rather than in the script because every byte inside
-// the script ships with every shell document.
+// the script ships to every browser (a static file now, static_script.go, so
+// once per build rather than once per document — but still once per browser).
 //
 // 🔴 WHO LISTENS IS THE HALF THAT MATTERS, AND THIS DOC NAMED A PANEL THAT DOES
 // NOT EXIST HERE. It said "the requests panel listens for (see Page's
@@ -2328,8 +2361,10 @@ func appScript(feat Features) g.Node {
 // task detail document (task_detail.go); a document carrying this script and
 // neither of those receives an event nobody is waiting for, which is what the
 // shell did.
-func resyncScript() g.Node {
-	return Script(g.Raw(`
+func resyncScript() g.Node { return staticScript(resyncScriptSrc) }
+
+// resyncScriptSrc is the path resyncScript's code is served at, /static/js/resync.js (static_script.go).
+var resyncScriptSrc = staticJS("resync", `
 (function () {
   function resync() {
     try {
@@ -2496,15 +2531,16 @@ func resyncScript() g.Node {
   }
   document.body.addEventListener('htmx:beforeSwap', musterRefuseStaleCardSwap);
 })();
-`))
-}
+`)
 
 // relTimeScript keeps the cards' relative timestamps fresh (the list only
 // refetches on SSE events, so a server-rendered string would otherwise freeze).
 // It reformats every <time data-ts> on load, every 15s, and after each htmx
 // swap (new/replaced cards). The format mirrors relTimeString.
-func relTimeScript() g.Node {
-	return Script(g.Raw(`
+func relTimeScript() g.Node { return staticScript(relTimeScriptSrc) }
+
+// relTimeScriptSrc is the path relTimeScript's code is served at, /static/js/rel-time.js (static_script.go).
+var relTimeScriptSrc = staticJS("rel-time", `
 (function () {
   function fmt(ms) {
     var s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
@@ -2523,8 +2559,7 @@ func relTimeScript() g.Node {
   setInterval(tick, 15000);
   document.body.addEventListener('htmx:afterSettle', tick);
 })();
-`))
-}
+`)
 
 // taskModalScript owns BOTH bottom sheets' DISMISS semantics (cgModalDismiss /
 // cgModalClose / cgModalDirty, keyed by modal id) and the task sheet's save
@@ -2553,8 +2588,10 @@ func relTimeScript() g.Node {
 // NOT in the closure — a later re-execution gets a FRESH closure while the
 // once-bound listener still writes into the FIRST one, so a closure variable
 // would be written by one run and read by another.
-func taskModalScript() g.Node {
-	return Script(g.Raw(`
+func taskModalScript() g.Node { return staticScript(taskModalScriptSrc) }
+
+// taskModalScriptSrc is the path taskModalScript's code is served at, /static/js/task-modal.js (static_script.go).
+var taskModalScriptSrc = staticJS("task-modal", `
 (function () {
   var firstRun = !window.__cgTaskModalInit;
   window.__cgTaskModalInit = true;
@@ -2796,8 +2833,7 @@ func taskModalScript() g.Node {
   }
   if (firstRun) document.body.addEventListener('htmx:load', bindFocusObserver);
 })();
-`))
-}
+`)
 
 // tagNormalizeJS is the chip editor's tag normalizer, embedded from its own file
 // rather than written inline, because the SAME bytes are read by
@@ -2839,8 +2875,10 @@ var filterToggleJS string
 //
 // Telemetry is COUNTS + namespaces only — never tag values, which can carry
 // repo/project names (see metrics.RoutingTags for the same rule server-side).
-func tagScript() g.Node {
-	return Script(g.Raw(`
+func tagScript() g.Node { return staticScript(tagScriptSrc) }
+
+// tagScriptSrc is the path tagScript's code is served at, /static/js/tags.js (static_script.go).
+var tagScriptSrc = staticJS("tags", `
 (function () {
   var KEY = '` + tasksTagFilterKey + `';
 ` + filterToggleJS + `
@@ -3092,8 +3130,7 @@ func tagScript() g.Node {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
   else boot();
 })();
-`))
-}
+`)
 
 // taskHashScript UPGRADES a legacy `/tasks#task-<id>` fragment to the real page.
 //
@@ -3130,8 +3167,10 @@ func tagScript() g.Node {
 //   - THE LISTENER BINDS ONCE (__cgTaskHashInit) even though the body of the
 //     script re-runs: htmx re-executes in-body <script> tags on every hx-boost
 //     swap, and a stacked hashchange listener would fire N redirects.
-func taskHashScript() g.Node {
-	return Script(g.Raw(`
+func taskHashScript() g.Node { return staticScript(taskHashScriptSrc) }
+
+// taskHashScriptSrc is the path taskHashScript's code is served at, /static/js/task-hash.js (static_script.go).
+var taskHashScriptSrc = staticJS("task-hash", `
 (function () {
   var firstRun = !window.__cgTaskHashInit;
   window.__cgTaskHashInit = true;
@@ -3146,8 +3185,7 @@ func taskHashScript() g.Node {
 
   go();
 })();
-`))
-}
+`)
 
 // cardMetaNavScript gives the board card's metadata chips back the card's click.
 //
@@ -3214,8 +3252,10 @@ func taskHashScript() g.Node {
 // Delegated on the document and bound once (__cgCardMetaNavInit), like every
 // other script here: the cards are re-rendered by every list swap, and htmx
 // re-executes in-body <script> tags on each hx-boost swap.
-func cardMetaNavScript() g.Node {
-	return Script(g.Raw(`
+func cardMetaNavScript() g.Node { return staticScript(cardMetaNavScriptSrc) }
+
+// cardMetaNavScriptSrc is the path cardMetaNavScript's code is served at, /static/js/card-meta-nav.js (static_script.go).
+var cardMetaNavScriptSrc = staticJS("card-meta-nav", `
 (function () {
   if (window.__cgCardMetaNavInit) return;
   window.__cgCardMetaNavInit = true;
@@ -3266,8 +3306,7 @@ func cardMetaNavScript() g.Node {
     route(e);
   });
 })();
-`))
-}
+`)
 
 // pushScript drives the Web Push subscription flow. It is fully
 // feature-detected: on a browser without serviceWorker / PushManager /
@@ -3280,8 +3319,10 @@ func cardMetaNavScript() g.Node {
 // update and share all depend on the worker, and none of them should depend on
 // the script whose job is notifications. pwaScript must therefore render BEFORE
 // this one, which TestPWAScriptRegistersBeforeThePushScript pins.
-func pushScript() g.Node {
-	return Script(g.Raw(`
+func pushScript() g.Node { return staticScript(pushScriptSrc) }
+
+// pushScriptSrc is the path pushScript's code is served at, /static/js/push.js (static_script.go).
+var pushScriptSrc = staticJS("push", `
 (function () {
   var enableBtn = document.getElementById('enable-push');
   var onPill = document.getElementById('push-on');
@@ -3483,5 +3524,4 @@ func pushScript() g.Node {
     status('Service worker failed to register; notifications are unavailable.', 'error');
   });
 })();
-`))
-}
+`)

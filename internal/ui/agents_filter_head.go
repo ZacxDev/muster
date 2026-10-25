@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 
 	g "maragu.dev/gomponents"
-	. "maragu.dev/gomponents/html"
 )
 
 // agentsRulesJS defines window.__musterAgentsRules — the filter's grammar, the
@@ -141,8 +140,10 @@ func agentsRulesVersion() string {
 // ⚠ NOT APPLIED BEFORE PAINT: the search's RANKING (the cards moved best match
 // first, agentsFilterScript's reorder) — it moves DOM nodes, which need the
 // list. It runs when the body script boots.
-func agentsFilterHead() g.Node {
-	return Script(g.Raw(agentsRulesJS + `
+func agentsFilterHead() g.Node { return staticScript(agentsFilterHeadSrc) }
+
+// agentsFilterHeadSrc is the path agentsFilterHead's code is served at, /static/js/agents-filter-head.js (static_script.go).
+var agentsFilterHeadSrc = staticJS("agents-filter-head", agentsRulesJS+`
 (function () {
   var R = window.__musterAgentsRules;
 
@@ -152,18 +153,18 @@ func agentsFilterHead() g.Node {
     var urlQ = null;
     if (onAgents) { try { urlQ = new URL(location.href).searchParams.get('q'); } catch (e) {} }
     var mine = null;
-    try { mine = sessionStorage.getItem('` + agentsFilterStorageKey + `'); } catch (e) {}
+    try { mine = sessionStorage.getItem('`+agentsFilterStorageKey+`'); } catch (e) {}
     var q = urlQ !== null ? urlQ : (mine || '');
     // A link carrying its own ?q= starts on All (boot's linkAll).
     var host = '';
-    if (!(urlQ && urlQ !== mine)) { try { host = localStorage.getItem('` + agentsHostTabsStorageKey + `') || ''; } catch (e) {} }
+    if (!(urlQ && urlQ !== mine)) { try { host = localStorage.getItem('`+agentsHostTabsStorageKey+`') || ''; } catch (e) {} }
     var cs = '';
-    try { cs = R.chipSel(R.chipsOf(localStorage.getItem('` + agentsChipsStorageKey + `'))); } catch (e) {}
+    try { cs = R.chipSel(R.chipsOf(localStorage.getItem('`+agentsChipsStorageKey+`'))); } catch (e) {}
     var ts = R.terms(q);
     // The Idle section (idle_section.go): open only if this viewer opened it,
     // and drawn open while the box has a term, so a search finds idle entries.
     var open = false;
-    try { open = localStorage.getItem('` + agentsIdleOpenKey + `') === '1'; } catch (e) {}
+    try { open = localStorage.getItem('`+agentsIdleOpenKey+`') === '1'; } catch (e) {}
     document.documentElement.toggleAttribute('data-agents-idle-open', open);
     document.documentElement.toggleAttribute('data-agents-searching', ts.length > 0);
     var css = R.rules(ts, host, cs, true);
@@ -173,5 +174,4 @@ func agentsFilterHead() g.Node {
     document.head.appendChild(st);
   } catch (e) {}
 })();
-`))
-}
+`)

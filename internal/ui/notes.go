@@ -233,8 +233,10 @@ func tasksListSkeleton() g.Node {
 // no once-only guard to get wrong. The Retry button's handler is bound to that
 // one element with addEventListener (not an inline onclick), which also keeps it
 // inside the app's CSP.
-func tasksListScript() g.Node {
-	return Script(g.Raw(`
+func tasksListScript() g.Node { return staticScript(tasksListScriptSrc) }
+
+// tasksListScriptSrc is the path tasksListScript's code is served at, /static/js/tasks-list.js (static_script.go).
+var tasksListScriptSrc = staticJS("tasks-list", `
 (function () {
   window.cgTasksListFailed = function (el) {
     var host = el || document.getElementById('tasks-list');
@@ -312,8 +314,7 @@ func tasksListScript() g.Node {
     } catch (e) {}
   };
 })();
-`))
-}
+`)
 
 // TasksView is everything the /ui/tasks partial renders: the task cards, the tag
 // vocabulary behind the filter chip row, and the ACTIVE filters. Every active

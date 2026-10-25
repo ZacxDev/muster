@@ -823,8 +823,10 @@ func chiefThreadList(p ChiefPanelView) g.Node {
 // re-BINDING; it must not suppress re-APPLYING. A boosted navigation re-executes
 // this script against a fresh DOM, and that fresh panel starts shut at the
 // default width until restore() puts the stored state back.
-func chiefPanelScript() g.Node {
-	return Script(g.Raw(`
+func chiefPanelScript() g.Node { return staticScript(chiefPanelScriptSrc) }
+
+// chiefPanelScriptSrc is the path chiefPanelScript's code is served at, /static/js/chief-panel.js (static_script.go).
+var chiefPanelScriptSrc = staticJS("chief-panel", `
 (function () {
   var PANEL_ID = '` + chiefPanelID + `';
   // 🔴 THE KEYS ARE BUILT FROM THE ELEMENT ID — A STABLE REFERENCE. Rank 11
@@ -1261,5 +1263,4 @@ func chiefPanelScript() g.Node {
     restore();
   }
 })();
-`))
-}
+`)

@@ -219,6 +219,12 @@ jobs:
       - name: mirror-snap.js keys, checks and bounds its snapshots
         if: ${{ !cancelled() }}
         run: node --test e2e/mirror-snap.test.mjs
+      # The service worker stores a page script only when its bytes are the
+      # ones its ?v= names (web/static/sw.js namesItsBytes): a rollout's other
+      # pod must not seed the cache-first store. Node only, < 1 s.
+      - name: sw.js stores only scripts whose bytes match their URL
+        if: ${{ !cancelled() }}
+        run: node --test e2e/sw-install.test.mjs
 
   # Local: make leakscan
   #

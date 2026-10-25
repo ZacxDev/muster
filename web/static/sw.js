@@ -15,7 +15,7 @@
  *   3. Handle notification clicks: focus/open the app at the relevant card.
  *   4. Wait to be told. A new worker does NOT take over at install; it waits
  *      until the page's "Reload" (pwaScript) posts SKIP_WAITING, so an open
- *      page is never switched under its own inline scripts.
+ *      page is never switched under its own scripts.
  *
  * 🔴 THIS IS NOT THE UPSTREAM WORKER, AND ONE BRANCH IS DELIBERATELY ABSENT.
  * Upstream this file also decides permission requests, by POSTing to the
@@ -51,10 +51,17 @@ const CACHE = CACHE_PREFIX + BUILD;
 // for — the bare /static/app.css could come back from an edge cache that still
 // holds the last release's copy.
 const APP_CSS = "__MUSTER_APP_CSS__";
-// The minimal shell: the document and the compiled CSS. Vendored JS is fetched
-// fresh (it is small and benefits from normal HTTP caching) to avoid serving a
-// stale htmx during development.
-const SHELL = ['/', APP_CSS, '/manifest.webmanifest'];
+// The pages' own scripts as the pages link them — every /static/js/<name>.js
+// ?v=<content hash> (internal/ui static_script.go) — replaced by the server
+// with a JSON array, exactly once. 🔴 THE OFFLINE SHELL NEEDS THEM: the
+// document's code is no longer inside the document, so a shell precached
+// without them would open offline styled and inert (no sidebar, no tabs, no
+// theme).
+const SHELL_JS = "__MUSTER_SHELL_JS__";
+// The minimal shell: the document, the compiled CSS and the pages' scripts.
+// Vendored JS is fetched fresh (it is small and benefits from normal HTTP
+// caching) to avoid serving a stale htmx during development.
+const SHELL = ['/', APP_CSS, '/manifest.webmanifest'].concat(SHELL_JS);
 // 🔴 "/" IS FETCHED AS THE BOARD-LESS SHELL AND STORED UNDER "/". The real "/"
 // draws the signed-in user's task board, and this cache outlives the session
 // that filled it (sign-out's Clear-Site-Data: "cache" does not empty Cache
@@ -79,6 +86,33 @@ function usable(res) {
   return !!res && res.status === 200 && res.type === 'basic' && !res.redirected;
 }
 
+// namesItsBytes reports whether a response may be stored under path as far as
+// its BYTES go: anything but a page script passes; a page script
+// (/static/js/<name>.js?v=<hash>) passes only when the SHA-256 of its body
+// starts with the ?v= it is stored under.
+//
+// 🔴 A 200 FOR A SCRIPT URL IS NOT THAT URL'S BYTES. The server reads ?v= only
+// to choose the Cache-Control: during a rollout a worker installing for the
+// new build can reach a pod still serving the old one, which answers the new
+// URL with ITS bytes. Stored, they would be served cache-first (below) under
+// the new URL until the next deploy, and no reload would fix it. Refused, the
+// entry is simply missing: the page fetches it from the network, and the next
+// install stores it.
+async function namesItsBytes(path, res) {
+  const u = new URL(path, self.location.origin);
+  if (!u.pathname.startsWith('/static/js/')) return true;
+  const v = u.searchParams.get('v') || '';
+  if (!/^[0-9a-f]{12}$/.test(v)) return false;
+  try {
+    const sum = new Uint8Array(await crypto.subtle.digest('SHA-256', await res.clone().arrayBuffer()));
+    let hex = '';
+    for (const b of sum.slice(0, 6)) hex += (b < 16 ? '0' : '') + b.toString(16);
+    return hex === v;
+  } catch (e) {
+    return false;
+  }
+}
+
 self.addEventListener('install', (event) => {
   // Each entry is fetched and judged on its own: one refused entry costs that
   // entry, not the others, and never fails the install (push keeps working).
@@ -87,7 +121,9 @@ self.addEventListener('install', (event) => {
       Promise.all(
         SHELL.map((path) =>
           fetch(SHELL_FETCH[path] || path, { redirect: 'manual' })
-            .then(async (res) => (usable(res) && (await boardless(path, res)) ? cache.put(path, res) : undefined))
+            .then(async (res) =>
+              usable(res) && (await boardless(path, res)) && (await namesItsBytes(path, res)) ? cache.put(path, res) : undefined
+            )
             .catch(() => undefined)
         )
       )
@@ -114,11 +150,12 @@ self.addEventListener('message', (event) => {
 // fetch "/", so this build's cache has no shell document. Deleting the older
 // caches at that point used to leave the device with NO offline shell at all.
 // Each SHELL entry this build lacks is copied from an older shell cache that
-// holds a usable one (in reverse caches.keys() order) — and so is the
-// stylesheet the shell document it ends up with LINKS (shellStylesheet): a
-// carried "/" from an older build links that build's /static/app.css?v=<old
-// hash> (or the bare path, from before the hash), which is not this build's
-// APP_CSS. Only then are the older shell caches deleted.
+// holds a usable one (in reverse caches.keys() order) — and so is every asset
+// the shell document it ends up with LINKS (shellAssets): a carried "/" from an
+// older build links that build's /static/app.css?v=<old hash> (or the bare
+// path, from before the hash) and its /static/js/…?v=<old hash> scripts, which
+// are not this build's APP_CSS and SHELL_JS. Only then are the older shell
+// caches deleted.
 //
 // ⚠ WHY CARRY THE OLD STYLESHEET, NOT MATCH ANY (ignoreSearch). Offline, the
 // fallback below matches the EXACT URL the document asks for, so an older
@@ -126,13 +163,17 @@ self.addEventListener('message', (event) => {
 // would hand it whichever app.css the cache holds — this build's, newer than
 // the document — and a class the older markup uses but the newer build no
 // longer emits would silently go unstyled.
-// shellStylesheet is the /static/app.css URL (with its ?v=, if any) that the
-// cached shell document in cache links, or null.
-async function shellStylesheet(cache) {
+// shellAssets is every /static/app.css and /static/js/ URL (with its ?v=, if
+// any) that the cached shell document in cache links.
+async function shellAssets(cache) {
   const doc = await cache.match('/');
-  if (!usable(doc)) return null;
-  const m = (await doc.clone().text()).match(/href="(\/static\/app\.css[^"]*)"/);
-  return m ? m[1].replace(/&amp;/g, '&') : null;
+  if (!usable(doc)) return [];
+  const text = await doc.clone().text();
+  const out = [];
+  for (const m of text.matchAll(/(?:href|src)="(\/static\/(?:app\.css|js\/)[^"]*)"/g)) {
+    out.push(m[1].replace(/&amp;/g, '&'));
+  }
+  return out;
 }
 
 self.addEventListener('activate', (event) => {
@@ -144,18 +185,18 @@ self.addEventListener('activate', (event) => {
         if (usable(await cache.match(path))) continue;
         for (const k of older) {
           const res = await (await caches.open(k)).match(path);
-          if (usable(res) && (await boardless(path, res))) {
+          if (usable(res) && (await boardless(path, res)) && (await namesItsBytes(path, res))) {
             await cache.put(path, res);
             break;
           }
         }
       }
-      const css = await shellStylesheet(cache);
-      if (css && !usable(await cache.match(css))) {
+      for (const asset of await shellAssets(cache)) {
+        if (usable(await cache.match(asset))) continue;
         for (const k of older) {
-          const res = await (await caches.open(k)).match(css);
-          if (usable(res)) {
-            await cache.put(css, res);
+          const res = await (await caches.open(k)).match(asset);
+          if (usable(res) && (await namesItsBytes(asset, res))) {
+            await cache.put(asset, res);
             break;
           }
         }
@@ -167,7 +208,7 @@ self.addEventListener('activate', (event) => {
 });
 
 // Navigations are handled by the BROWSER unless the device is known to be
-// offline (see below). app.css is network-first (with a cache fallback + cache
+// offline (see below). The pages' scripts are cache-first (below). app.css is network-first (with a cache fallback + cache
 // refresh) — it must never be served stale, because each UI change ships a
 // freshly-compiled Tailwind app.css with new classes; a cache-first strategy
 // here silently breaks every new feature's styling for returning users. Other
@@ -213,6 +254,17 @@ self.addEventListener('fetch', (event) => {
     // app (broken). Fail in the cheap direction.
     if (navigator.onLine !== false) return;
     event.respondWith(caches.match('/').then((r) => r || fetch(req)));
+    return;
+  }
+
+  // The pages' scripts: the cached copy first. Their URL names their bytes
+  // (?v=<content hash>), and only bytes that hash to it are ever stored
+  // (namesItsBytes), so the exact-URL match — never ignoreSearch — can only be
+  // the right file; it is what makes the offline shell run. A URL the
+  // cache does not hold goes to the network (and the HTTP cache, which keeps it
+  // a year: the server marks it immutable).
+  if (url.pathname.startsWith('/static/js/')) {
+    event.respondWith(caches.match(req).then((r) => r || fetch(req)));
     return;
   }
 
