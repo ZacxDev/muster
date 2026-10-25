@@ -115,3 +115,28 @@ func callersOf(t *testing.T, dir, fn string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestTheGoTrueSignOutClearsTheCaches: GoTrue's sign-out, through the handler
+// chain, sends Clear-Site-Data: "cache" — this browser's and everywhere's.
+func TestTheGoTrueSignOutClearsTheCaches(t *testing.T) {
+	f := newGoTrueFixture(t)
+	f.member("m@example.com", 7, authz.RoleMember)
+	for _, scope := range []string{"", "global"} {
+		in := do(f.edge, "POST", "/login", url.Values{"email": {"m@example.com"}, "password": {"correct horse battery"}})
+		ck := setCookies(in)
+		if in.Code != http.StatusSeeOther || ck[accessCookieName] == nil || ck[refreshCookieName] == nil {
+			t.Fatalf("fixture: sign-in = %d", in.Code)
+		}
+		form := url.Values{}
+		if scope != "" {
+			form.Set("scope", scope)
+		}
+		w := do(f.edge, "POST", "/logout", form, withCookies(ck[accessCookieName].Value, ck[refreshCookieName].Value))
+		if w.Code != http.StatusSeeOther {
+			t.Fatalf("sign-out (scope %q) = %d", scope, w.Code)
+		}
+		if got := w.Header().Get("Clear-Site-Data"); got != `"cache"` {
+			t.Errorf("GoTrue sign-out (scope %q): Clear-Site-Data = %q, want \"cache\"", scope, got)
+		}
+	}
+}
