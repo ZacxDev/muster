@@ -77,7 +77,7 @@
     "tests/title-room.spec.ts": 24.1,
     "tests/opencode-view.spec.ts": 20.0,
     "tests/board-first-paint.spec.ts": 20.0,
-    "tests/telemetry.spec.ts": 30.0
+    "tests/telemetry.spec.ts": 75.0
   },
   "legs": {
     "1": [

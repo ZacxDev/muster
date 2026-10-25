@@ -1,8 +1,6 @@
 package ui
 
 import (
-	"encoding/json"
-
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
@@ -63,7 +61,15 @@ func faroHead() g.Node {
 	if faroConfig.Tracing {
 		nodes = append(nodes, Script(Src(web.Asset("/static/vendor/faro-web-tracing.iife.js"))))
 	}
-	nodes = append(nodes, faroInitScript())
+	tracing, relay := "0", "0"
+	if faroConfig.Tracing {
+		tracing = "1"
+	}
+	if faroConfig.Relay {
+		relay = "1"
+	}
+	nodes = append(nodes, staticScript(faroInitSrc, Data("faro-url", faroConfig.URL), Data("faro-key", faroConfig.Key),
+		Data("faro-version", faroConfig.Version), Data("faro-tracing", tracing), Data("faro-relay", relay)))
 	return g.Group(nodes)
 }
 
@@ -79,29 +85,28 @@ func faroHead() g.Node {
 // repository reads it back. The browser suite's layout-shift gate,
 // e2e/tests/cls.spec.ts, is a separate and stricter number: the sum of every
 // shift, not web-vitals' worst session window.
-func faroInitScript() g.Node {
-	cfg := struct {
-		URL     string `json:"url"`
-		Key     string `json:"key"`
-		Version string `json:"version"`
-		Tracing bool   `json:"tracing"`
-		Relay   bool   `json:"relay"`
-	}{
-		URL:     faroConfig.URL,
-		Key:     faroConfig.Key,
-		Version: faroConfig.Version,
-		Tracing: faroConfig.Tracing,
-		Relay:   faroConfig.Relay,
-	}
-	// Marshal can only fail on unsupported types; these are all strings/bool.
-	b, _ := json.Marshal(cfg)
-	return Script(g.Raw(`
+// faroInitSrc is the initializer, a STATIC script (static_script.go): its
+// bytes are the same for every page and every deployment, and what differs —
+// the collect URL, the key, the version, tracing and relay — rides on its tag
+// as data-faro-* attributes (faroHead), read through document.currentScript.
+// It initializes Faro with the standard web instrumentations minus the console
+// and CSP reports, optionally registers the tracing instrumentation, and
+// exposes window.cgTrack — a guarded helper that forwards custom events to
+// faro.api.pushEvent — and window.musterOpen (musterOpenJS).
+var faroInitSrc = staticJS("faro-init", faroInitJS)
+
+const faroInitJS = `
 (function () {
+  // Once per window: a head script, but a boosted swap must never initialise
+  // Faro twice.
+  if (window.__musterFaroInit) return;
+  window.__musterFaroInit = true;
   // cgTrack is always defined (no-op until/unless Faro initializes) so call sites
   // never have to guard. It forwards a named custom event + attributes to Faro.
   window.cgTrack = function () {};
   try {
-    var C = ` + string(b) + `;
+    var me = document.currentScript, d = (me && me.dataset) || {};
+    var C = { url: d.faroUrl || '', key: d.faroKey || '', version: d.faroVersion || '', tracing: d.faroTracing === '1', relay: d.faroRelay === '1' };
     var SDK = window.GrafanaFaroWebSdk;
     if (!SDK || !SDK.initializeFaro || !C.url) return;
     // 🔴 NO QUERY STRING LEAVES THE PAGE. A muster URL's query names a
@@ -137,6 +142,15 @@ func faroInitScript() g.Node {
       url: url,
       app: { name: 'muster', version: C.version || 'dev' },
       instrumentations: instrumentations,
+      // 🔴 FEWER, FULLER BATCHES: Faro's default sends every 250 ms, which a
+      // page's polls turned into a post every few seconds per tab. Five
+      // seconds (or 50 items, whichever comes first) keeps one open view
+      // well under the relay's per-tab rate.
+      batching: { enabled: true, sendTimeout: 5000, itemLimit: 50 },
+      // The polls are not opens: no fetch span and no resource entry for the
+      // rendered view's ask poll (every 3 s), the send queue's and the asker's
+      // polls, the badge count, or the relay itself.
+      ignoreUrls: [/\/mirror\/view\/asks(\?|$)/, /\/ui\/send-queue/, /\/attention\/asker/, /\/ui\/tasks\/review-count/, /\/telemetry\/faro$/],
       beforeSend: function (item) {
         try {
           // A log item can only come from the console, which is not captured:
@@ -180,8 +194,7 @@ func faroInitScript() g.Node {
 
   ` + musterOpenJS + `
 })();
-`))
-}
+`
 
 // musterOpenJS defines musterOpenAPI(faro): window.musterOpen, the page's
 // measure of OPENING a session (docs/telemetry.md). A view's script asks it for
@@ -227,6 +240,28 @@ const musterOpenJS = `
     function epoch(perfMs) { return performance.timeOrigin + perfMs; }
     function words(o) { var a = {}; for (var k in (o || {})) { if (Object.prototype.hasOwnProperty.call(o, k)) a[k] = String(o[k]); } return a; }
     var pageOpened = false;
+    // 🔴 A BOOSTED SWAP IS AN OPEN OF ITS OWN. htmx replaces the body without a
+    // navigation, so the navigation entry above is the FIRST document's —
+    // an open after a swap measured from it would read the minutes the board
+    // was open, in the board's trace. The swap's request start and the
+    // Server-Timing of ITS response (the swap's server span, and its phases)
+    // are kept here, and the next begin() measures from them.
+    var swap = null, swapStart = 0;
+    document.addEventListener('htmx:beforeRequest', function (e) {
+      if (e.detail && e.detail.boosted) swapStart = performance.now();
+    });
+    document.addEventListener('htmx:afterRequest', function (e) {
+      try {
+        if (!e.detail || !e.detail.boosted || !e.detail.xhr) return;
+        var st = { tp: '', server: {}, t0: swapStart || performance.now() };
+        (e.detail.xhr.getResponseHeader('Server-Timing') || '').split(',').forEach(function (part) {
+          var m = /^\s*([\w-]+)\s*(?:;\s*dur=([\d.]+))?(?:\s*;\s*desc="([^"]*)")?/.exec(part);
+          if (!m) return;
+          if (m[1] === 'traceparent') st.tp = m[3] || ''; else if (m[2]) st.server[m[1]] = parseFloat(m[2]);
+        });
+        swap = st;
+      } catch (err) {}
+    });
     function disconnectedFrom(parentSpan, view, reason, extra) {
       var a = words(extra); a.view = view; a.reason = reason || 'unknown';
       try { faro.api.pushEvent('muster.session_disconnected', a); } catch (e) {}
@@ -242,18 +277,22 @@ const musterOpenJS = `
     }
     return {
       begin: function (view, attrs) {
-        // The page's first open began at the navigation; a reconnect, now.
-        var reopen = pageOpened;
+        // The page's first open began at the navigation, one after a boosted
+        // swap at the swap's request; a reconnect, now.
+        var fromSwap = swap;
+        swap = null;
+        var reopen = pageOpened && !fromSwap;
         pageOpened = true;
-        var t0 = reopen ? performance.now() : 0;
+        var t0 = fromSwap ? fromSwap.t0 : (reopen ? performance.now() : 0);
+        var openTP = fromSwap ? fromSwap.tp : docTP, openServer = fromSwap ? fromSwap.server : server;
         var span = null;
         if (tracer) {
           try {
             var parent = otel.context.active();
-            var p = reopen ? null : parse(docTP);
+            var p = reopen ? null : parse(openTP);
             if (p) parent = otel.trace.setSpanContext(parent, p);
-            var a = { 'muster.view': view, 'muster.reopen': reopen };
-            if (!reopen) { for (var k in server) a['muster.server.' + k + '_ms'] = server[k]; }
+            var a = { 'muster.view': view, 'muster.reopen': reopen, 'muster.swap': !!fromSwap };
+            if (!reopen) { for (var k in openServer) a['muster.server.' + k + '_ms'] = openServer[k]; }
             for (var k2 in attrs || {}) a['muster.' + k2] = attrs[k2];
             span = tracer.startSpan('open ' + view, { startTime: epoch(t0), attributes: a }, parent);
           } catch (e) { span = null; }

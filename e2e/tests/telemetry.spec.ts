@@ -130,11 +130,50 @@ test('the document names its server trace, and the open is one trace from the pa
   expect(exportedBy('muster-server').some((b) => b.includes(id)), "the server exported a span in the document's trace").toBe(true);
 
   // 🔴 NO QUERY STRING LEFT THE PAGE: the view's URL names its host and
-  // session in the query, and no Faro batch carries it.
+  // session in the query, and no Faro batch carries it. POSITIVE CONTROL: a
+  // fetch WITH a query does arrive — as a fetch span and as a resource entry
+  // — each with its URL cut at the '?'. Without that, "no query anywhere" is
+  // also what a page that sent no URLs at all would show.
+  await page.evaluate(() => fetch('/ui/agents?q=querysecret7'));
+  await expect
+    .poll(() => urlsSent().filter((u) => /\/ui\/agents$/.test(u.url)).map((u) => u.kind).sort().join(','), {
+      message: 'a fetch span and a resource entry for /ui/agents arrived, query cut',
+      timeout: 20_000,
+    })
+    .toMatch(/resource.*span|span.*resource/);
   for (const p of faro.posts) {
-    expect(p.body.toString('utf8')).not.toContain('session=main');
+    const body = p.body.toString('utf8');
+    expect(body).not.toContain('session=main');
+    expect(body).not.toContain('querysecret7');
   }
 });
+
+// urlsSent is every URL a delivered batch carried: each trace span's http.url /
+// url.full, and each resource event's name — with which kind it came as.
+function urlsSent(): { kind: string; url: string }[] {
+  const out: { kind: string; url: string }[] = [];
+  for (const p of faro.posts) {
+    let b: any;
+    try {
+      b = JSON.parse(p.body.toString('utf8'));
+    } catch {
+      continue;
+    }
+    for (const rs of b.traces?.resourceSpans ?? []) {
+      for (const ss of rs.scopeSpans ?? []) {
+        for (const sp of ss.spans ?? []) {
+          for (const a of sp.attributes ?? []) {
+            if (a.key === 'http.url' || a.key === 'url.full') out.push({ kind: 'span', url: a.value?.stringValue ?? '' });
+          }
+        }
+      }
+    }
+    for (const e of b.events ?? []) {
+      if (e.name === 'faro.performance.resource' && e.attributes?.name) out.push({ kind: 'resource', url: e.attributes.name });
+    }
+  }
+  return out;
+}
 
 test('a disconnect is reported with its reason, by the page and by the server', async ({ page }) => {
   await startHost();
@@ -213,4 +252,58 @@ test('a console line or a thrown error never carries its text to the receiver', 
   for (const ex of faroItems('exceptions').slice(exceptionsBefore)) {
     expect(ex.value).toBe('[scrubbed]');
   }
+});
+
+// 🔴 A BOOSTED SWAP INTO AN AGENT IS AN OPEN OF ITS OWN: measured from the
+// swap's request, in the swap's trace — not from the board's navigation, in
+// the board's. The board stays open a while first, so an open measured from
+// the navigation would read seconds.
+test('an open after a boosted swap is measured from the swap, in its own trace', async ({ page }) => {
+  await rig.login(page);
+  const resp = await page.goto(rig.origin + '/');
+  const boardTrace = /traceparent;desc="00-([0-9a-f]{32})-/.exec((await resp!.headerValue('server-timing')) ?? '')![1];
+  await page.waitForTimeout(3000);
+  const before = faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'agent').length;
+  // A boosted link in the shell's body, as a notification row is: htmx swaps
+  // the agent's page in without a navigation.
+  await page.evaluate(() => {
+    const a = document.createElement('a');
+    a.href = '/agents/docs-sweeper';
+    a.id = 'e2e-boosted';
+    a.textContent = 'open';
+    document.body.appendChild(a);
+    (window as any).htmx.process(a);
+  });
+  await page.click('#e2e-boosted');
+  await page.waitForURL((u) => u.pathname === '/agents/docs-sweeper');
+  await expect
+    .poll(() => faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'agent').length, {
+      message: "the agent page's open reached the receiver",
+      timeout: 20_000,
+    })
+    .toBeGreaterThan(before);
+  const open = faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'agent')[before];
+  expect(open.values.total_ms, 'measured from the swap, not from the board opened 3 s before').toBeLessThan(2500);
+  expect(open.context.trace_id, "the swap's own trace").toMatch(/^[0-9a-f]{32}$/);
+  expect(open.context.trace_id, "not the board's trace").not.toBe(boardTrace);
+  expect(open.context.reopen).toBe('false');
+});
+
+// The page's telemetry stays well under the relay's per-tab window (120 a
+// minute): one open view, idle, for 30 s. The rate is logged (batches a
+// minute). The polls are what filled it: a view polls its asks every 3 s.
+test('one open view sends a few batches a minute', async ({ page }) => {
+  await startHost();
+  await rig.login(page);
+  await rig.waitListed(page, 'main');
+  await page.goto(rig.origin + rig.viewPath('main'));
+  await expect(page.locator('#mv-log')).toContainText('Synthetic answer: it is sunny.');
+  await page.waitForTimeout(2000);
+  const start = faro.posts.length;
+  await page.waitForTimeout(30_000);
+  const perMinute = (faro.posts.length - start) * 2;
+  console.log(`telemetry: one idle open view sent ${perMinute} batch(es)/min through the relay`);
+  // Measured: 40/min before (Faro's 250 ms batching, the 3 s ask poll
+  // captured), 12/min with only the batching changed, 2/min now.
+  expect(perMinute, 'batches a minute from one view').toBeLessThanOrEqual(6);
 });

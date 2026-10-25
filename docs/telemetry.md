@@ -23,9 +23,9 @@ histograms below, plus the server's phase timings in the document's
 | 1 | browser | The tap navigates to `/mirror/view?host=…&session=…&window=…` (a full document load; a switcher entry or a Rendered/Terminal swap may load it in a frame). | the page's `open mirror_view` span starts at the navigation (`performance.timeOrigin`) |
 | 2 | server | `GET /mirror/view`: the session, then `mirrorEntry` (the in-memory hub's host list), `recordMirrorVisit` (a database write), the composer's send queue (database), suggested replies, the host icon (database: mirror tokens), the window's attention asks (database), the navigation features, the session switcher (database and hub), then rendering. | span `GET /mirror/view` with one `open.<phase>` child per step and a `db …` span per query; log line `open view=mirror_view part=document`; `Server-Timing` entries per phase; `muster_open_phase_seconds{phase="document"}` |
 | 3 | browser | Parse, the vendored scripts (htmx, the Faro SDK when on), then the view script: it reads this window's snapshot from IndexedDB (`mirror-snap.js`, waiting at most `readWaitMs`) and paints it if one is fresh. | `snapshot_painted` mark |
-| 4 | browser → server | The transcript socket `GET /mirror/view/ws` (resuming at the snapshot's `gen`/`offset` when there is one), carrying the open span's trace context as `?tp=`. | `stream_connected` mark; span `GET /mirror/view/ws` (a child of the page's open) |
+| 4 | browser → server | The transcript socket `GET /mirror/view/ws` (resuming at the snapshot's `gen`/`offset` when there is one), carrying the open span's trace context as `?tp=`. | `stream_connected` mark; span `GET /mirror/view/ws` (a child of the page's open; it ends when the open does, at the first batch) |
 | 5 | server | The socket handler: `mirrorEntry` again, the WebSocket upgrade, the attention-ask subscription and the suggested-replies tracker, then the hub's watch. | `open.entry`, `open.accept`, `open.subscribe`, `open.watch` |
-| 6 | server → host | The hub writes a `watch` frame on the host's one tunnel WebSocket (shared by every view and terminal on that host). | span `mirror.watch` (the stream's whole life and why it ended) and its child `mirror.watch.first_batch` (frame written → first batch read); `muster_mirror_hub_roundtrip_seconds{op="watch"}` |
+| 6 | server → host | The hub writes a `watch` frame on the host's one tunnel WebSocket (shared by every view and terminal on that host). | span `mirror.watch` (to the first batch, or why it never came) and its child `mirror.watch.first_batch` (frame written → first batch read); `muster_mirror_hub_roundtrip_seconds{op="watch"}` |
 | 7 | host | The host's read loop takes the frame; the watch runs in its own goroutine. It resolves the window's pane (a tmux listing of every window, then the pane's process tree, the pane map or the CLI's sessions file), opens and stats the transcript, reads and parses the last 4 MiB (`cctranscript.Backfill`, at most 300 events), redacts it, cuts it into batches and writes them back on the tunnel. Then the prompt index (a scan of the whole file). An opencode window instead asks the local opencode server for its messages. | span `host.watch` (a child of `mirror.watch.first_batch`) with children `host.resolve`, `host.open`, `host.backfill`, `host.redact`, `host.frame`, `host.prompt_index`, and `opencode GET` for opencode. Per-phase aggregates come from these spans (a span-metrics generator such as Tempo's), not from anything on the wire |
 | 8 | server → browser | The hub hands the first batch to the socket handler, which renders its events to HTML (`MirrorTranscript.Ops`) and writes it to the browser. | `open.render`, `open.write`; log line `open view=mirror_view part=stream` (with the hub's round trip); `muster_open_phase_seconds{phase="first_batch"}` |
 | 9 | browser | The batch is applied to the log; the composer is already there. | `first_paint`, `usable` marks; the page's open span ends; a Faro `muster_open` measurement |
@@ -79,7 +79,9 @@ Every path that ends a view's stream, server side (each is a `reason` on the
 | `host_offline`, `session_gone`, `window_gone`, `not_agent`, `no_rendered_view`, `too_many` | Refused at open: no tunnel; not listed; no rendered view there; the host already has 8 views or 8 terminals open. |
 | `step_up` | An interactive terminal without a fresh sign-in (a refused upgrade, which the page sees as a close before open). |
 | `ended` | The far side ended cleanly (a terminal whose tmux client exited). |
-| `client_left` | The browser went first (navigation, a closed tab, Back), or muster shut down. |
+| `shutdown` | muster ended it: a deploy or a restart (`EndTerminals` cancels every stream with `ErrShuttingDown`). The page is sent an error frame with this reason before the socket closes as going away. |
+| `client_left` | The browser went first (navigation, a closed tab, Back). |
+| `not_found`, `refused` | Refused before the upgrade: a host that is not the viewer's, or a failed upgrade. Counted like any other end. |
 
 And one the server cannot see: **the rendered view's socket has no keepalive.**
 The terminal's socket is pinged every 25 s; the transcript socket is not, and a
@@ -96,10 +98,19 @@ in the open's trace.
 
 ## Reading it
 
-- **One trace per open.** With browser tracing on, the page's `open <view>`
-  span is a child of the document's server span, the socket's server span is a
-  child of the open, and the hub's and the host's spans follow. Find it by the
-  `trace_id` in the log line, or the Faro measurement's context.
+- **One trace per open, and it ENDS.** With browser tracing on, the page's
+  `open <view>` span is a child of the document's server span, the socket's
+  server span is a child of the open, and the hub's and the host's spans
+  follow. The socket's span is muster's own, and it ends when the open does
+  (a view's first batch, a terminal's first output, a chat's accept), so a
+  view left open for hours is not a trace growing for hours: what the socket
+  does after that runs outside it. Its END is a span of its own,
+  `<route> closed`, a root LINKED to the open, carrying the reason and how long
+  the socket lived. Find the open by the `trace_id` in the log line, or the
+  Faro measurement's context.
+- **An open after a boosted swap** (htmx replaces the body, no navigation) is
+  measured from the swap's request and parented on the swap response's
+  `Server-Timing` traceparent — not on the first document's.
 - **One log line per request of an open**, on the server:
   `open view=mirror_view part=stream outcome=ok trace_id=… total_ms=… entry_ms=… accept_ms=… subscribe_ms=… watch_ms=… render_ms=… write_ms=… hub_rtt_ms=… ops=… reset=… host=… session=… window=…`.
   `watch_ms` minus `hub_rtt_ms` is the server's own time before the frame;
@@ -115,11 +126,14 @@ in the open's trace.
 Every request that opens a session — the GET of `/mirror/view`,
 `/mirror/terminal` or `/agents/{name}`, and each of their sockets — is always
 traced, and so is everything under it (the hub's requests, the host's spans, the
-queries). A request that arrives with a sampled `traceparent` (a page fetch
-inside its open's trace) follows it. Every other request — the Agents list's
-refreshes, the event stream, the badge poll — starts a trace at
-`MUSTER_TRACE_SAMPLE_RATIO` (default 5%), so a busy page does not bury the opens.
-The browser's own spans are Faro's to sample.
+queries) — in-process children follow their parent, and so do a host's spans,
+whose parent is muster's own. Every other server request — the Agents list's
+refreshes, the event stream, the badge and ask polls — is kept at
+`MUSTER_TRACE_SAMPLE_RATIO` (default 5%), **even when it carries the browser's
+sampled `traceparent`**: Faro samples every page, so following it would trace
+every poll in full. Such a request, when kept, is still the browser span's
+child. A socket's close span is kept exactly when its open was. The browser's
+own spans are Faro's to sample.
 
 ## Clock skew
 
@@ -136,13 +150,17 @@ muster's spans describe private sessions, so a span carries ids, sizes,
 counts, durations and closed reason codes — never message or transcript text,
 pane contents, a window title or label, a prompt, a token, a cookie, or an
 error's prose (an error can quote a path). Server spans are named by route
-pattern, never the path; `url.path` is recorded but the query is not, and the
-paths that carry a credential (`/auth/claim/`, `/invite/`, `/auth/reset/`) are
-not traced at all. SQL statements are recorded with every literal replaced by
-`?`. The page cuts every URL it sends at its `?`.
+pattern, and `url.path` IS the pattern (`/agents/{name}`, never the name; none
+for a path no route matched); no query is recorded; the caller's address, port
+and user agent are cut at export; and the paths that carry a credential
+(`/auth/claim/`, `/invite/`, `/auth/reset/`) are not traced at all. SQL
+statements are recorded, for kept spans only, with every literal replaced by
+`?`, cut on a character boundary. The page cuts every URL it sends at its `?`.
 
 `TestNoExportedSpanCarriesPrivateContent` (internal/api) opens a view whose
-transcript, label and session name all carry a sentinel string, checks the
+transcript, label, session name, terminal screen and a sent message all carry
+a sentinel string (the view's open, the terminal's open and a hub send; not an
+agent's page), checks the
 sentinel reached the browser, and checks it is in no exported span, attribute,
 event, status or resource.
 
@@ -184,14 +202,23 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://<otlp-receiver>:4318   # reachable from the h
 It names itself `service.name=muster-mirror` with a `host` attribute (its
 mirror host name). A host with tracing off still reports its phases to the
 server; it just exports no spans. Either binary can be upgraded first: the
-trace context and the phase timing are optional fields on the tunnel that an
-older peer ignores (`TestAnOlderHostIgnoresTheTraceContext`).
+trace context is an optional field on the tunnel that an older peer
+ignores (`TestAnOlderHostIgnoresTheTraceContext`).
 
 **The browser relay.** With `MUSTER_FARO_UPSTREAM` set, the page posts its
 telemetry to `POST /telemetry/faro` on muster's own origin, and muster forwards
 each batch: signed-in sessions only, same-origin only, 256 KiB per batch, 120
-batches a minute per user, the receiver's key added server-side, no browser
-header forwarded. The browser never addresses the receiver.
+batches a minute per TAB (a user's Faro session) and 600 across a user's tabs,
+then 429 with a `Retry-After` of 5 seconds; the receiver's key added
+server-side, no browser header forwarded; a failing receiver logged at most
+once a minute. The browser never addresses the receiver. The page batches every
+5 s and does not capture its own polls (the ask poll, the send queue, the
+badge, the relay), so one open view sends about 2 batches a minute when idle
+(measured; 40 a minute before, which tripped the old per-user limit in three
+minutes).
+
+The page's initializer (`/static/js/faro-init.js`) is a static file like the
+shell's other scripts: its configuration rides on its tag as `data-faro-*`.
 
 ⚠ Turning `MUSTER_FARO_TRACING` on loads the Faro tracing bundle (about 80 KiB)
 on every page, synchronously in the head, beside the SDK.
