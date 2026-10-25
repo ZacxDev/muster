@@ -239,7 +239,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				// Places the header's full-title popover (mirrorViewTitle) by its
 				// title and keeps the title's aria-expanded in step.
 				floatingMenuScript(),
-				mirrorTitleScript(),
+				// Enables the title while it is clipped (mirrorViewTitle).
+				agentTitleFitScript(),
 				// The question cards' poll and submit (mirror_ask.go).
 				askScript(),
 				// The attention asks block's live refresh.
@@ -293,32 +294,43 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 // 🔴 THE TITLE IS A BUTTON THAT OPENS THE WHOLE TITLE IN A POPOVER (an
 // operator ask: "allow clicking on the ellipses to see the full title"). At
 // 390px the header leaves the title 67px (measured; 51px before the switch's
-// padding was cut) — a handful of characters — so
-// a realistic title is clipped on the operator's main device whatever the
-// header's padding. The popover is fullTitlePopover, the agent header's own:
-// popover="auto" (top layer; a tap outside it or Escape closes it), placed by
-// floatingMenuScript beside its trigger.
+// padding was cut) — a handful of characters — so a realistic title is
+// clipped on the operator's main device whatever the header's padding. The
+// popover is fullTitlePopover, the agent header's own: popover="auto" (top
+// layer; a tap outside it or Escape closes it), placed by floatingMenuScript
+// beside its trigger.
 //
-// The button is the line itself, not a "…" beside it: a separate 44px "…"
-// would take back more room than the switch's padding gave (viewToggleSegClass).
-// It is block and truncating, so it draws exactly the box the <h1> drew before
-// (no new height, no shift). mirrorTitleScript DISABLES it while the title
-// fits — a tap on a whole title opens nothing — and enables it while it is
-// clipped; without script it stays enabled and the popover works natively.
+// The button is the line itself, not a "…" beside it (the agent header's
+// titleMoreButton): a separate 44px "…" would take back more room than the
+// switch's padding gave (viewToggleSegClass). It is block and truncating, so
+// it draws exactly the box the <h1> drew before (no new height, no shift).
+//
+// Whether it is clipped is decided by agentTitleFitScript — the agent
+// header's rule, not a copy of it: the <h1> is its [data-agent-title] box and
+// the button both its [data-agent-title-text] and its [data-title-more].
+// data-title-fit="disable" makes that script DISABLE the button while the
+// title fits (a tap on a whole title opens nothing) rather than hide it, as
+// it hides the agent header's "…". Without script the button stays enabled
+// and the popover works natively.
 //
 // The popover is OUTSIDE the <h1>, so the heading's text is still only the
 // title (specs read `header h1` and its [data-mirror-name]).
 func mirrorViewTitle(v MirrorViewView) g.Node {
-	name, session := plainOr(v.Title, v.Session), ""
+	name := plainOr(v.Title, v.Session)
 	if v.Label != "" && v.Label != v.Session {
-		name, session = plainOr(v.Label, v.Session), v.Session
+		name = plainOr(v.Label, v.Session)
 	}
 	return g.Group{
-		H1(Class("min-w-0 text-sm font-semibold"),
+		H1(
+			g.Attr("data-agent-title", ""),
+			g.Attr("data-title-fit", "disable"),
+			Class("min-w-0 text-sm font-semibold"),
 			Button(
 				ID(mirrorTitleID),
 				Type("button"),
 				g.Attr("data-mv-title", ""),
+				g.Attr("data-agent-title-text", ""),
+				g.Attr("data-title-more", ""),
 				g.Attr("popovertarget", mirrorTitlePopoverID),
 				g.Attr("aria-haspopup", "dialog"),
 				g.Attr("aria-controls", mirrorTitlePopoverID),
@@ -328,8 +340,7 @@ func mirrorViewTitle(v MirrorViewView) g.Node {
 				Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host, v.Host, v.HostIcon)),
 			),
 		),
-		fullTitlePopover(mirrorTitlePopoverID, mirrorQualified(name, v.Qualifier),
-			g.If(session != "", Span(g.Attr("data-title-full-session", ""), Class("text-xs text-muted [overflow-wrap:anywhere]"), g.Text("tmux session "+session)))),
+		fullTitlePopover(mirrorTitlePopoverID, mirrorQualified(name, v.Qualifier)),
 	}
 }
 
@@ -339,75 +350,6 @@ const (
 	mirrorTitleID        = "mv-title"
 	mirrorTitlePopoverID = "mv-title-full"
 )
-
-// mirrorTitleScript keeps the header title's button (mirrorViewTitle)
-// interactive exactly while the title is clipped (scrollWidth > clientWidth),
-// re-checked by a ResizeObserver on the button (a resize, a rotation, a late
-// font), and closes an open popover when the title fits again.
-//
-// 🔴 NO POPOVER API (iOS Safari < 17): popovertarget does nothing there, and
-// the full title would be unreachable. So, as quickKeyBar's ⋯ does, without
-// HTMLElement.prototype.togglePopover the button toggles the panel itself:
-// shown by class, marked data-menu-open so floatingMenuScript places it by the
-// same rule (its trigger is data-menu-trigger), above the page by z-index
-// (there is no top layer), closed by a tap outside it or Escape.
-func mirrorTitleScript() g.Node {
-	return Script(g.Raw(`(function () {
-  var b = document.getElementById('` + mirrorTitleID + `');
-  var p = document.getElementById('` + mirrorTitlePopoverID + `');
-  if (!b || !p || b.__musterTitle) return;
-  b.__musterTitle = true;
-  var noPopover = typeof HTMLElement.prototype.togglePopover !== 'function';
-  function isOpen() {
-    if (noPopover) return p.hasAttribute('data-menu-open');
-    try { return p.matches(':popover-open'); } catch (e) { return false; }
-  }
-  function setFallback(open) {
-    if (open) {
-      p.style.position = 'fixed';
-      p.style.top = '0';
-      p.style.left = '0';
-      p.setAttribute('data-menu-open', '');
-      p.classList.remove('hidden');
-      p.classList.add('flex');
-      if (window.__musterPlaceMenu) window.__musterPlaceMenu(p);
-      else p.style.visibility = 'visible';
-      p.style.zIndex = '60';
-    } else {
-      p.removeAttribute('data-menu-open');
-      p.classList.add('hidden');
-      p.classList.remove('flex');
-      p.removeAttribute('style');
-    }
-    b.setAttribute('aria-expanded', open ? 'true' : 'false');
-  }
-  function close() {
-    if (!isOpen()) return;
-    if (noPopover) setFallback(false);
-    else try { p.hidePopover(); } catch (e) {}
-  }
-  function fit() {
-    var clipped = b.scrollWidth > b.clientWidth + 1;
-    if (b.disabled === !clipped) return;
-    b.disabled = !clipped;
-    if (!clipped) close();
-  }
-  if (noPopover) {
-    b.removeAttribute('popovertarget');
-    p.removeAttribute('popover');
-    b.setAttribute('data-menu-trigger', p.id);
-    b.addEventListener('click', function () { setFallback(!isOpen()); });
-    document.addEventListener('pointerdown', function (ev) {
-      if (isOpen() && !p.contains(ev.target) && !b.contains(ev.target)) setFallback(false);
-    }, true);
-    document.addEventListener('keydown', function (ev) {
-      if (ev.key === 'Escape' && isOpen()) { setFallback(false); b.focus(); }
-    });
-  }
-  if (typeof ResizeObserver === 'function') new ResizeObserver(fit).observe(b);
-  fit();
-})();`))
-}
 
 // viewToggleSegClass is each Rendered | Terminal segment's class, before its
 // state's colours. 44px tall: a thumb target, like every other control in

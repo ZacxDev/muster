@@ -51,11 +51,12 @@ func TestTitleEntriesAreWider(t *testing.T) {
 }
 
 // The rendered view's header title is a button inside the <h1> that targets
-// the full-title popover; the popover is OUTSIDE the <h1> and holds the whole
-// title (name + qualifier) and, for a labelled window, its tmux session.
+// the full-title popover, wired to agentTitleFitScript (the one clipping rule)
+// in its disable mode; the popover is OUTSIDE the <h1> and holds the whole
+// title (name + qualifier) and nothing else.
 func TestMirrorViewTitleOpensTheFullTitle(t *testing.T) {
 	page := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "scratch2", Window: "@1", Label: "billing-reconcile-nightly:1", Qualifier: "host-a", Interactive: true}))
-	h1 := regexp.MustCompile(`(?s)<h1 class="min-w-0 text-sm font-semibold"><button id="mv-title" type="button" data-mv-title="" popovertarget="mv-title-full" aria-haspopup="dialog" aria-controls="mv-title-full" aria-expanded="false" class="block w-full min-w-0 truncate[^"]*">(.*?)</button></h1>`).FindStringSubmatch(page)
+	h1 := regexp.MustCompile(`(?s)<h1 data-agent-title="" data-title-fit="disable" class="min-w-0 text-sm font-semibold"><button id="mv-title" type="button" data-mv-title="" data-agent-title-text="" data-title-more="" popovertarget="mv-title-full" aria-haspopup="dialog" aria-controls="mv-title-full" aria-expanded="false" class="block w-full min-w-0 truncate[^"]*">(.*?)</button></h1>`).FindStringSubmatch(page)
 	if h1 == nil {
 		t.Fatalf("no title button in the header's h1:\n%s", page[strings.Index(page, "<header"):][:2000])
 	}
@@ -69,15 +70,14 @@ func TestMirrorViewTitleOpensTheFullTitle(t *testing.T) {
 	if pop == nil {
 		t.Fatal("no full-title popover")
 	}
-	if !strings.Contains(pop[1], ">billing-reconcile-nightly:1 · host-a</span>") || !strings.Contains(pop[1], ">tmux session scratch2</span>") {
-		t.Errorf("the popover does not hold the whole title and its session:\n%s", pop[1])
+	if pop[1] != `<span class="[overflow-wrap:anywhere] text-sm font-semibold">billing-reconcile-nightly:1 · host-a</span>` {
+		t.Errorf("the popover is not exactly the whole title:\n%s", pop[1])
 	}
-	if !strings.Contains(page, "window.__musterFloatingMenu") || !strings.Contains(page, "document.getElementById('mv-title')") {
-		t.Error("the page does not carry the popover's placement and fit scripts")
+	if !strings.Contains(page, "window.__musterFloatingMenu") || !strings.Contains(page, "window.__musterAgentTitleFit") || !strings.Contains(page, "data-title-fit') === 'disable'") {
+		t.Error("the page does not carry the popover's placement script and the shared fit script")
 	}
-	// An unlabelled window: its title, and no session line (the title is it).
 	plain := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Window: "@1", Title: "main:1", Interactive: true}))
-	if !strings.Contains(plain, `data-title-full=""`) || !strings.Contains(plain, ">main:1</span></div>") || strings.Contains(plain, "data-title-full-session") {
+	if !strings.Contains(plain, `<span class="[overflow-wrap:anywhere] text-sm font-semibold">main:1</span></div>`) {
 		t.Error("an unlabelled window's popover is not just its title")
 	}
 }

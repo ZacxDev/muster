@@ -11,8 +11,7 @@ import { cc, MirrorRig } from '../lib/mirrorhost';
 //   1. the Rendered | Terminal switch (viewToggle) is narrower: its segments'
 //      side padding is 6px, not 10px, so the header's title gets the room;
 //   2. a header title that is still clipped opens a popover with the WHOLE
-//      title on a tap (mirrorViewTitle) — with and without the Popover API —
-//      and a title that fits opens none;
+//      title on a tap (mirrorViewTitle) — and a title that fits opens none;
 //   3. the session switcher's entries — the bar below the message input,
 //      whose Recent/All rows the rendered view draws and whose Pins row is
 //      the agent page's pinned list — and the Agents list's Recent strip are
@@ -265,26 +264,6 @@ for (const vp of [
         expect(await overflowX(page), 'no sideways scroll at 390px').toBe(0);
         const cls = await readCls(page);
         expect(cls.total, `layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
-      });
-
-      // Without the Popover API (iOS Safari < 17) the title opens and closes
-      // the panel itself — the ⋯ terminal menu's fallback.
-      test('without the Popover API the title still opens the whole title; Escape and a tap outside close it', async ({ page }) => {
-        await ready(page);
-        await page.addInitScript(() => { delete (HTMLElement.prototype as any).togglePopover; });
-        await openView(page, LONG);
-        await settle(page);
-        expect(await title(page).getAttribute('popovertarget'), 'the native trigger is removed').toBeNull();
-        await title(page).click();
-        await expect(pop(page)).toBeVisible();
-        await expect(pop(page)).toHaveAttribute('data-menu-open', '');
-        await expect(pop(page)).toHaveText(titleOf(LONG));
-        await page.keyboard.press('Escape');
-        await expect(pop(page)).toBeHidden();
-        await title(page).click();
-        await expect(pop(page)).toBeVisible();
-        await page.mouse.click(195, 500);
-        await expect(pop(page)).toBeHidden();
       });
     } else {
       // The same 42-character title fits a desktop header: the title is not
