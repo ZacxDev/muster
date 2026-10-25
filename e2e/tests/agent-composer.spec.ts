@@ -143,7 +143,10 @@ for (const vp of [
       // The switch: Rendered is where we are, Terminal one tap away, thumb-sized.
       await expect(page.locator('#view-rendered')).toHaveAttribute('aria-current', 'page');
       const toTerm = page.locator('#view-terminal');
-      await expect(toTerm).toHaveText('Terminal');
+      // Below `sm` the switch is one icon named "Show terminal"; from `sm` up
+      // it is the word (viewToggle). The accessible name, not textContent:
+      // the link holds both spellings and CSS shows one.
+      await expect(toTerm).toHaveAccessibleName(vp.use.viewport.width < 640 ? 'Show terminal' : 'Terminal');
       const tb = (await toTerm.boundingBox())!;
       expect(tb.height, 'a 44px target').toBeGreaterThanOrEqual(44);
       expect(tb.x + tb.width, 'the switch fits the viewport').toBeLessThanOrEqual(vp.use.viewport.width);
