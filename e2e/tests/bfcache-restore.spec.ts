@@ -114,6 +114,7 @@ async function settled(page: Page): Promise<void> {
 // away leaves the page for path (a real navigation, so the page goes into the
 // back/forward cache), changes a cookie there, runs during(), and goes Back.
 async function awayAndBack(page: Page, path: string, during: () => Promise<void> = async () => {}): Promise<void> {
+  await workerSettled(page);
   await page.goto(path);
   if (path !== away) await page.evaluate(() => (document.cookie = 'e2e-away=' + Date.now() + '; path=/'));
   await during();
@@ -130,6 +131,23 @@ async function back(page: Page): Promise<void> {
   await page.goBack({ waitUntil: 'commit', timeout: 10_000 }).catch((e: Error) => {
     if (!/ERR_ABORTED|frame was detached|Timeout/.test(e.message)) throw e;
   });
+}
+
+// workerSettled waits until the service worker controls the page. 🔴 A FIRST
+// VISIT'S WORKER CLAIMS ITS CLIENTS WHEN IT ACTIVATES, and a page claimed while
+// it sits in the back/forward cache is evicted (measured: CDP
+// ServiceWorkerClaim, 1 in 10 restores in a fresh context). A reader's app
+// has its worker long since; a test's fresh context must wait for it.
+async function workerSettled(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    if (!navigator.serviceWorker) return;
+    await navigator.serviceWorker.ready;
+    if (navigator.serviceWorker.controller) return;
+    await new Promise((r) => {
+      navigator.serviceWorker.addEventListener('controllerchange', r, { once: true });
+      setTimeout(r, 3000);
+    });
+  }).catch(() => {});
 }
 
 // backShow is the pageshow Back landed on: the first one recorded after `since`
