@@ -250,6 +250,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				ThemeHead(),
 				manifestLink(),
 				TitleEl(g.Text("Terminal · "+mirrorQualified(title, v.TitleQualifier)+" · muster")),
+				UserMarker(v.Nav.Feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Link(Rel("stylesheet"), Href(xtermCSS)),
 				Script(Src(xtermJS)),

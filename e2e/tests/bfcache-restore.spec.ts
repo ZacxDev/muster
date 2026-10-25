@@ -884,6 +884,33 @@ test.describe('mirrored', () => {
     }
   });
 
+  // 🔴 ANOTHER PERSON SIGNED IN SINCE: a restored view page re-requests itself
+  // and, if the answer is drawn for a different user than the page was (the
+  // user marker, ui.UserMarker), reloads rather than keep the old user's page
+  // on screen — the check that holds where Clear-Site-Data is not honoured (a
+  // plain-HTTP origin). One user is all password mode has, so the page is made
+  // to have been drawn for another one (its marker rewritten) before it leaves.
+  test('a terminal restored after another user signed in reloads', async () => {
+    const { ctx, page } = await mirrorPage();
+    try {
+      await page.goto(rig.origin + term());
+      await expect(page.locator('.xterm-rows')).toContainText('FAKE-MIRROR', { timeout: 15_000 });
+      const mine = await page.locator('meta[name="muster-user"]').getAttribute('content');
+      expect(mine, 'the page names its user').toBeTruthy();
+      await page.evaluate(() => document.querySelector('meta[name="muster-user"]')!.setAttribute('content', '999999'));
+      const doc = await docOf(page);
+      const t0 = Date.now();
+      await awayAndBack(page, rig.origin + '/tasks');
+      await expectRestored(page, await backShow(page, '/mirror/terminal', t0), doc);
+      await expect.poll(async () => (await shows(page).catch(() => [])).filter((s) => s.at >= t0 && s.doc !== doc).length, {
+        message: 'and then reloaded: the answer was another user\'s page',
+      }).toBeGreaterThan(0);
+      await expect(page.locator('meta[name="muster-user"]')).toHaveAttribute('content', mine!);
+    } finally {
+      await ctx.close();
+    }
+  });
+
   test('a terminal restored after its session ended reloads to the sign-in', async () => {
     const { ctx, page } = await mirrorPage();
     try {

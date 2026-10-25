@@ -80,6 +80,23 @@ const RestoreRefreshAttr = "data-restore-refresh"
 // one is a VIEW page, and a restore re-requests it.
 const UpdatingChipAttr = "data-updating-chip"
 
+// UserMarkerName is the <meta> every VIEW page carries naming its signed-in
+// user (UserMarker).
+const UserMarkerName = "muster-user"
+
+// UserMarker names the page's signed-in user in its head, so a restored page
+// that re-requests itself can tell an answer drawn for ANOTHER user (one
+// device, another person signed in since) and reload rather than redraw any of
+// it — the check that holds where Clear-Site-Data is not honoured (a plain-HTTP
+// origin). Every view page draws it: the agent page, the Rendered view and
+// both terminals. Nothing when there is no user.
+func UserMarker(f Features) g.Node {
+	if f.SnapUser == 0 {
+		return nil
+	}
+	return Meta(Name(UserMarkerName), Content(strconv.FormatInt(f.SnapUser, 10)))
+}
+
 // restoreJoinJS is the line a page's script uses to join: p is its participant.
 func restoreJoinJS(p string) string {
 	return "(window." + RestoreParticipantsVar + " = window." + RestoreParticipantsVar + " || []).push(" + p + ");"
@@ -192,8 +209,9 @@ func restoreJS(feat Features) string {
               // Another person's page now (one device, a sign-in in between
               // that this browser did not purge for): never redraw theirs
               // into this one — load it.
-              var mine = document.querySelector('script[data-snap-user]'), now = doc.querySelector('script[data-snap-user]');
-              if (mine && now && mine.getAttribute('data-snap-user') !== now.getAttribute('data-snap-user')) { reload('user'); return; }
+              // A page drawn for nobody (no marker) is not this user's either.
+              var mine = document.querySelector('meta[name="` + UserMarkerName + `"]'), now = doc.querySelector('meta[name="` + UserMarkerName + `"]');
+              if (mine && (!now || mine.getAttribute('content') !== now.getAttribute('content'))) { reload('user'); return; }
               document.querySelectorAll('[` + RestoreRefreshAttr + `]').forEach(function (el) {
                 var k = el.getAttribute('` + RestoreRefreshAttr + `');
                 var fresh = doc.querySelector('[` + RestoreRefreshAttr + `="' + (window.CSS && CSS.escape ? CSS.escape(k) : k) + '"]');

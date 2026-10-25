@@ -196,6 +196,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// title reading `**fix** the `+"`chip`"+` row · muster` is the same defect in
 				// a third place.
 				TitleEl(g.Text(agentDocTitle(v))),
+				UserMarker(feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
 				Script(Src(web.Asset("/static/vendor/sse.js")), Defer()),

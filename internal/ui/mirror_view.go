@@ -162,6 +162,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				ThemeHead(),
 				manifestLink(),
 				TitleEl(g.Text(mirrorQualified(plainOr(displayOr(v.Label, v.Title), v.Session), v.Qualifier)+" · Mirrored · muster")),
+				UserMarker(v.Nav.Feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				overlayNavHead(),
 				faroHead(),
