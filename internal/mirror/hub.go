@@ -1115,14 +1115,22 @@ func writeJSON(ctx context.Context, ws *websocket.Conn, m Msg) error {
 // it reconnected. TestAPerSessionHostIsListedAndAddressedExactlyAsBefore timed
 // out "waiting for: the paste" in CI that way: it cancels its attach the
 // instant the host has read the open, and if the open's Write has not returned
-// yet the hub drops the host and the paste finds it offline. A 20ms pause
-// injected into coder/websocket between its flush and its return reproduced
-// exactly that failure 20 times in 20, and none in 200 with this fix
-// (TestACallerLeavingMidWriteDoesNotHangUpTheHost holds a write in progress
-// without an injection). So the write runs
-// on context.WithoutCancel(ctx): what ctx carries is kept, its cancellation is
-// not. writeTimeout still bounds it, and a write that hits it still closes the
-// connection, as before — that is a host that stopped reading.
+// yet the hub drops the host and the paste finds it offline.
+// TestACallerLeavingMidWriteDoesNotHangUpTheHost and
+// TestATerminalClosedMidKeystrokeDoesNotHangUpTheHost hold a write in progress
+// and end its caller. So the write runs on context.WithoutCancel(ctx): what
+// ctx carries is kept, its cancellation is not. writeTimeout still bounds it,
+// and a write that hits it still closes the connection, as before — that is a
+// host that stopped reading.
+//
+// ⚠ THE PRICE: A CALLER THAT LEAVES DOES NOT TAKE BACK ITS FRAME. Only a caller
+// already gone when writeFrame is entered sends nothing. One that leaves while
+// its write is queued behind another (the socket is one writer at a time) or
+// in progress still has its frame written once the socket frees — up to
+// writeTimeout (10s) after it left. Its callers already say so rather than
+// "not sent": a paste whose caller left after this point is unconfirmed
+// (ErrPasteUnconfirmed — it may have landed), so a retry of it can land twice,
+// as for any paste whose answer never came.
 func writeFrame(ctx context.Context, ws *websocket.Conn, typ websocket.MessageType, p []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
