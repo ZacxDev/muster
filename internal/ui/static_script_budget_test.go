@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"encoding/json"
 	"html"
 	"io"
 	"io/fs"
@@ -158,6 +159,40 @@ func TestStaticScriptsAreTheSameForEveryone(t *testing.T) {
 			if bytes.Contains(body, []byte(own)) {
 				t.Errorf("%s carries %q, a value of one request", p, own)
 			}
+		}
+	}
+}
+
+// TestTheSwapInlinerKnowsEveryPageScript: a boosted swap can run a script
+// inside the swap only if the window holds its text (swap_inline.go), so the
+// inliner's list must be every other page script, at its current URL — and
+// every text must be inlinable (no closing script tag inside it).
+func TestTheSwapInlinerKnowsEveryPageScript(t *testing.T) {
+	body, err := fs.ReadFile(web.Files, strings.TrimPrefix(swapInlineSrc, "/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`var URLS = (\[[^\]]*\]);`).FindSubmatch(body)
+	if m == nil {
+		t.Fatal("swap-inline.js has no URLS list")
+	}
+	var urls []string
+	if err := json.Unmarshal(m[1], &urls); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{}
+	for _, p := range web.Generated() {
+		if p != swapInlineSrc {
+			want = append(want, web.Asset(p))
+		}
+	}
+	if strings.Join(urls, " ") != strings.Join(want, " ") {
+		t.Errorf("the inliner knows\n  %v\nwant every other page script\n  %v", urls, want)
+	}
+	for _, p := range web.Generated() {
+		b, _ := fs.ReadFile(web.Files, strings.TrimPrefix(p, "/"))
+		if bytes.Contains(bytes.ToLower(b), []byte("</script")) {
+			t.Errorf("%s spells a closing script tag, so it cannot be inlined into a swap", p)
 		}
 	}
 }

@@ -32,9 +32,11 @@ func manifestLink() g.Node {
 
 // pwaChrome is the per-document PWA furniture: the update toast and the
 // script that owns the worker. Every document renders it, so an update is
-// offered and the badge stays true wherever the operator happens to be.
+// offered and the badge stays true wherever the operator happens to be. It
+// also carries swapInlineScript, so every boosted document runs a swap's
+// scripts inside the swap (swap_inline.go).
 func pwaChrome() g.Node {
-	return g.Group{updateToast(), pwaScript()}
+	return g.Group{updateToast(), pwaScript(), swapInlineScript()}
 }
 
 // updateToast is the "new version" prompt. Hidden until pwaScript sees a
