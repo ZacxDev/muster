@@ -17,10 +17,10 @@ import (
 // turn, so a tool joining it, or one it was relieved of coming back, is a
 // decision to make here and not a side effect.
 var chiefMCPToolList = []string{
-	"connectors_list", "task_create_gated", "reply_draft", "fleet_list", "focus_search", "sessions_overview",
+	"connectors_list", "task_create_gated", "reply_draft", "plugin_message_settle", "fleet_list", "focus_search", "sessions_overview",
 	"route_to_session", "task_route_attention", "task_forward", "task_dispatch",
 	"attention_ask", "attention_wait", "attention_cancel", "tasks_list", "task_get", "task_comment", "task_set_status",
-	"attention_list",
+	"attention_list", "answer_session_question",
 }
 
 // notChiefToolList are the registry's notChief tools: offered to every agent
