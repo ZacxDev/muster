@@ -67,6 +67,10 @@ import (
 // of another owner gets a tool error and the tool does not run, so one host
 // cannot ask, wait or read as another host's session. initialize and
 // tools/list need only the token: they say nothing session-specific.
+//
+// With session routing on, plugin_messages_list and plugin_message_route
+// (plugin_message_route_tools.go) widen what an mmt_ reaches: docs/auth.md
+// ("Mirror tokens and session routing").
 // ---------------------------------------------------------------------------
 
 // mirrorSessionHeader carries the calling Claude Code session's id.
@@ -212,6 +216,12 @@ func (s *Server) mirrorTools() []agents.ToolDef {
 	if routingOn(s.ext) {
 		out = append(out, routeReplyToolDef())
 	}
+	// plugin_messages_list / plugin_message_route — the owner routing a plugin
+	// message from their own session (plugin_message_route_tools.go) — with
+	// session routing on.
+	if s.pluginMessageRouteToolsOn() {
+		out = append(out, pluginMessageRouteToolDefs()...)
+	}
 	return out
 }
 
@@ -246,6 +256,10 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			// which a gateway agent reaches naming any tool.
 			if name == routeReplyToolName {
 				return s.toolRouteReply(r.Context(), c, args)
+			}
+			// So are plugin_messages_list / plugin_message_route.
+			if text, ok := s.dispatchPluginMessageRouteTool(r.Context(), c, name, args); ok {
+				return text
 			}
 			if text, ok := s.dispatchCallerTool(r.Context(), c, name, args); ok {
 				return text
