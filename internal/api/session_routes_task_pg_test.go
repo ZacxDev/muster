@@ -18,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/sendqueue"
+	"github.com/ZacxDev/muster/internal/sse"
 )
 
 // A ROUTE CARRYING A TASK (migration 0053), through the real server against a
@@ -98,6 +99,10 @@ func TestATaskRoutedToASessionIsPastedAfterTheIdleWaitAndAnsweredAsAComment(t *t
 		m.state = &mirror.AgentState{Status: mirror.StatusIdle, Since: 1000, Observed: now.Add(-10 * time.Second)}
 	})
 
+	bus := sse.New(512)
+	f.srv.bus = bus
+	_, events := bus.Subscribe(f.owner)
+
 	id := f.routeTask(t, n)
 	r := f.routeState(t, id)
 	if r.TaskID != n.ID || r.MessageID != 0 || !r.IsTask() || r.State != plugins.RouteRouted {
@@ -154,6 +159,21 @@ func TestATaskRoutedToASessionIsPastedAfterTheIdleWaitAndAnsweredAsAComment(t *t
 	if len(got.Comments) != 1 || got.Comments[0].Body != "The build fails on the lint step; fixed in my branch." ||
 		got.Comments[0].Author != "mirror:"+routeSID+" via "+id {
 		t.Fatalf("the task's comments: %+v", got.Comments)
+	}
+	// The comment reached the owner's open views: task-changed for this task.
+	changed := 0
+	for drained := false; !drained; {
+		select {
+		case ev := <-events:
+			if ev.Name == EventTaskChanged && ev.Data == `{"id":"`+strconv.FormatInt(n.ID, 10)+`"}` {
+				changed++
+			}
+		default:
+			drained = true
+		}
+	}
+	if changed != 1 {
+		t.Fatalf("%d %s event(s) for task %d after the comment, want 1", changed, EventTaskChanged, n.ID)
 	}
 	if r := f.routeState(t, id); r.State != plugins.RouteRelayed || r.FinishedAt == nil || r.DraftID != nil {
 		t.Fatalf("the answered task route: %+v", r)
