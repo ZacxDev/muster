@@ -161,7 +161,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				Meta(Name("color-scheme"), Content("dark light")),
 				ThemeHead(),
 				manifestLink(),
-				TitleEl(g.Text(mirrorQualified(plainOr(displayOr(v.Label, v.Title), v.Session), v.Qualifier)+" · Mirrored · muster")),
+				TitleEl(g.Text(mirrorViewName(v)+" · Mirrored · muster")),
 				UserMarker(v.Nav.Feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				overlayNavHead(),
@@ -185,7 +185,9 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 						g.Raw(`<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>`),
 					),
 					Div(
-						Class("min-w-0 flex-1"),
+						// relative: the title button's 44px hit area
+						// (mirrorTitleHitClass) is placed on this column.
+						Class("relative min-w-0 flex-1"),
 						mirrorViewTitle(v),
 						Div(
 							// relative: the Updating… chip is positioned in this row
@@ -316,10 +318,6 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 // The popover is OUTSIDE the <h1>, so the heading's text is still only the
 // title (specs read `header h1` and its [data-mirror-name]).
 func mirrorViewTitle(v MirrorViewView) g.Node {
-	name := plainOr(v.Title, v.Session)
-	if v.Label != "" && v.Label != v.Session {
-		name = plainOr(v.Label, v.Session)
-	}
 	return g.Group{
 		H1(
 			g.Attr("data-agent-title", ""),
@@ -335,14 +333,40 @@ func mirrorViewTitle(v MirrorViewView) g.Node {
 				g.Attr("aria-haspopup", "dialog"),
 				g.Attr("aria-controls", mirrorTitlePopoverID),
 				g.Attr("aria-expanded", "false"),
-				Class("block w-full min-w-0 truncate rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus"),
+				Class("block w-full min-w-0 truncate rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus "+mirrorTitleHitClass),
 				mirrorEntryTitle(v.Label, v.Title, v.Session, v.Qualifier, ""),
 				Span(g.Attr("data-term-badge", ""), Class("ml-2"), mirrorBadge("Mirrored · "+v.Host, v.Host, v.HostIcon)),
 			),
 		),
-		fullTitlePopover(mirrorTitlePopoverID, mirrorQualified(name, v.Qualifier)),
+		fullTitlePopover(mirrorTitlePopoverID, mirrorViewHeading(v)),
 	}
 }
+
+// mirrorViewName is the window's name as the rendered view's header and
+// <title> call it: mirrorDisplayName — entryTitle's rule, not a copy — and its
+// qualifier.
+func mirrorViewName(v MirrorViewView) string {
+	name, _ := mirrorDisplayName(v.Label, v.Title, v.Session)
+	return mirrorQualified(name, v.Qualifier)
+}
+
+// mirrorViewHeading is the header line as text: the name, then its badge's
+// "Mirrored · <host>". The full-title popover shows exactly this, so when only
+// the badge is clipped the popover still says what the header did not.
+func mirrorViewHeading(v MirrorViewView) string {
+	return mirrorViewName(v) + " · Mirrored · " + v.Host
+}
+
+// mirrorTitleHitClass gives the title button a 44px-tall hit area (a thumb
+// target, like every other control in the header) WITHOUT changing the
+// header's layout: the button's line is 20px, so its ::after — positioned on
+// the title column (the button itself is not positioned, and its truncating
+// overflow does not clip a box whose containing block is outside it) — spans
+// the column's width and is 44px tall, centred on the title and status rows.
+// z-10 puts it over the status row (itself positioned, so later in paint
+// order). Not while the button is disabled (the title fits): the rows below
+// keep their own hover and selection then.
+const mirrorTitleHitClass = "after:absolute after:inset-x-0 after:top-1/2 after:z-10 after:h-11 after:-translate-y-1/2 disabled:after:hidden"
 
 // The rendered view's header title (mirrorViewTitle) and its popover. One of
 // each per document.

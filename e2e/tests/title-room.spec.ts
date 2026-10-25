@@ -244,9 +244,21 @@ for (const vp of [
         expect((await headerFit(page)).clipped, 'the 42-character title is clipped at 390px').toBe(true);
         await expect(title(page)).toBeEnabled();
         await expect(pop(page)).toBeHidden();
+        // 🔴 A 44px TARGET (red at 9ec9ee40, a 20px line): the points 21px
+        // above and below the title's middle — over the header's padding and
+        // the status row — are the button's, and the header did not grow.
+        const hit = await title(page).evaluate((b) => {
+          const r = b.getBoundingClientRect();
+          const col = b.closest('header > div')!.getBoundingClientRect();
+          const x = r.left + Math.min(r.width, 40) / 2, mid = col.top + col.height / 2;
+          const at = (y: number) => b.contains(document.elementFromPoint(x, y));
+          return { up: at(mid - 21), down: at(mid + 21), header: document.querySelector('header')!.getBoundingClientRect().height };
+        });
+        expect(hit, 'the title is a 44px target and the header is its old 57px').toEqual({ up: true, down: true, header: 57 });
         await title(page).click();
         await expect(pop(page)).toBeVisible();
-        await expect(pop(page)).toHaveText(titleOf(LONG));
+        // The whole header line, the badge's host included.
+        await expect(pop(page)).toHaveText(`${titleOf(LONG)} · Mirrored · ${rig.host}`);
         await expect(title(page)).toHaveAttribute('aria-expanded', 'true');
         const box = (await pop(page).boundingBox())!;
         expect(box.x, 'the popover starts inside the screen').toBeGreaterThanOrEqual(0);

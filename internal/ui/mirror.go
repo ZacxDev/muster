@@ -424,17 +424,30 @@ func mirrorCardTitle(label, title, session, qualifier, class string) g.Node {
 // label only when withSession is set.
 func entryTitle(label, title, session, qualifier, class string, withSession bool) g.Node {
 	q := g.If(qualifier != "", Span(g.Attr("data-mirror-qualifier", ""), g.Text(mirrorQualifierSep+qualifier)))
-	if label == "" || label == session {
-		return Span(Class(class), g.Attr("data-mirror-name", ""), g.Text(plainOr(title, session)), q)
+	name, labelled := mirrorDisplayName(label, title, session)
+	if !labelled {
+		return Span(Class(class), g.Attr("data-mirror-name", ""), g.Text(name), q)
 	}
 	return Span(
 		Class(class),
 		g.Attr("data-mirror-name", ""),
 		g.Attr("title", "tmux session "+session),
-		Span(g.Attr("data-mirror-label", ""), g.Text(plainOr(label, session))),
+		Span(g.Attr("data-mirror-label", ""), g.Text(name)),
 		q,
 		g.If(withSession, Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(session))),
 	)
+}
+
+// mirrorDisplayName is THE rule for what a mirrored entry is called, plained:
+// its label when it has one that is not just the session's name (labelled),
+// else its title, else its session. entryTitle draws it; the rendered view's
+// <title> and its full-title popover (mirrorViewTitle) spell it from here too,
+// so the three cannot drift apart.
+func mirrorDisplayName(label, title, session string) (name string, labelled bool) {
+	if label == "" || label == session {
+		return plainOr(title, session), false
+	}
+	return plainOr(label, session), true
 }
 
 // mirrorQualifierSep joins a mirrored entry's name and its qualifier — the

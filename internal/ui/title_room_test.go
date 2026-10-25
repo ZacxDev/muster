@@ -52,10 +52,11 @@ func TestTitleEntriesAreWider(t *testing.T) {
 
 // The rendered view's header title is a button inside the <h1> that targets
 // the full-title popover, wired to agentTitleFitScript (the one clipping rule)
-// in its disable mode; the popover is OUTSIDE the <h1> and holds the whole
-// title (name + qualifier) and nothing else.
+// in its disable mode; the popover is OUTSIDE the <h1> and holds the header
+// line whole (name, qualifier, "Mirrored · <host>") and nothing else; the
+// <title> is the same name (mirrorViewName).
 func TestMirrorViewTitleOpensTheFullTitle(t *testing.T) {
-	page := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "scratch2", Window: "@1", Label: "billing-reconcile-nightly:1", Qualifier: "host-a", Interactive: true}))
+	page := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "scratch2", Window: "@1", Label: "billing-reconcile-nightly:1", Qualifier: "tower", Interactive: true}))
 	h1 := regexp.MustCompile(`(?s)<h1 data-agent-title="" data-title-fit="disable" class="min-w-0 text-sm font-semibold"><button id="mv-title" type="button" data-mv-title="" data-agent-title-text="" data-title-more="" popovertarget="mv-title-full" aria-haspopup="dialog" aria-controls="mv-title-full" aria-expanded="false" class="block w-full min-w-0 truncate[^"]*">(.*?)</button></h1>`).FindStringSubmatch(page)
 	if h1 == nil {
 		t.Fatalf("no title button in the header's h1:\n%s", page[strings.Index(page, "<header"):][:2000])
@@ -70,14 +71,17 @@ func TestMirrorViewTitleOpensTheFullTitle(t *testing.T) {
 	if pop == nil {
 		t.Fatal("no full-title popover")
 	}
-	if pop[1] != `<span class="[overflow-wrap:anywhere] text-sm font-semibold">billing-reconcile-nightly:1 · host-a</span>` {
+	if pop[1] != `<span class="[overflow-wrap:anywhere] text-sm font-semibold">billing-reconcile-nightly:1 · tower · Mirrored · host-a</span>` {
 		t.Errorf("the popover is not exactly the whole title:\n%s", pop[1])
+	}
+	if !strings.Contains(page, "<title>billing-reconcile-nightly:1 · tower · Mirrored · muster</title>") {
+		t.Error("the <title> is not the header's name")
 	}
 	if !strings.Contains(page, "window.__musterFloatingMenu") || !strings.Contains(page, "window.__musterAgentTitleFit") || !strings.Contains(page, "data-title-fit') === 'disable'") {
 		t.Error("the page does not carry the popover's placement script and the shared fit script")
 	}
 	plain := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Window: "@1", Title: "main:1", Interactive: true}))
-	if !strings.Contains(plain, `<span class="[overflow-wrap:anywhere] text-sm font-semibold">main:1</span></div>`) {
-		t.Error("an unlabelled window's popover is not just its title")
+	if !strings.Contains(plain, `<span class="[overflow-wrap:anywhere] text-sm font-semibold">main:1 · Mirrored · host-a</span></div>`) {
+		t.Error("an unlabelled window's popover is not its header line")
 	}
 }
