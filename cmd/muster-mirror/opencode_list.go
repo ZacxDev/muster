@@ -26,7 +26,7 @@ func printOpenCode(ctx context.Context, backend mirrorhost.Backend, creds *openc
 		fmt.Fprintf(stdout, "token\tnone\t%s\n", why)
 	default:
 		left := time.Until(creds.Expires()).Round(time.Hour)
-		fmt.Fprintf(stdout, "token\t%s\t%s\texpires=%s\tin=%s\n", orDash(creds.Path), opencodehost.Fingerprint(creds.Token()),
+		fmt.Fprintf(stdout, "token\t%s\t%s\texpires=%s\tin=%s\n", orDash(creds.Path), creds.Fingerprint(),
 			creds.Expires().UTC().Format(time.RFC3339), left)
 		// The same line the opencode window's rendered view shows.
 		if h := creds.Health(time.Now()); h != "" {
