@@ -163,8 +163,10 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	offset, _ := strconv.ParseInt(q.Get("offset"), 10, 64)
 	op := s.openPhases(r, openViewMirror, openPartStream, "host", host, "session", session, "window", window,
 		"resume", strconv.FormatBool(gen != "" && offset > 0))
+	since := time.Now()
 	if _, _, _, _, ok := s.mirrorEntry(r.WithContext(op.begin("entry")), host, session, window); !ok {
 		op.finish("not_found")
+		viewEnded(r, openViewMirror, "not_found", since)
 		http.NotFound(w, r)
 		return
 	}
@@ -173,19 +175,29 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: s.wsAllowedOrigins(r)})
 	if err != nil {
 		op.finish("refused")
+		viewEnded(r, openViewMirror, "refused", since)
 		s.logger.Printf("mirror: view ws accept: %v", err)
 		return
 	}
 	defer c.CloseNow()
-	ctx, done, ok := s.terminals.add(r.Context())
+	// The browser sends nothing; CloseRead ends its context when it goes away.
+	// 🔴 IT WRAPS THE REQUEST'S CONTEXT, AND THE SHUTDOWN'S IS A CHILD OF IT:
+	// CloseRead's reader closes the socket when ITS context ends, so a
+	// shutdown that ended that context would close the socket before the page
+	// could be told why (shutdownFrame).
+	ctx, done, ok := s.terminals.add(c.CloseRead(r.Context()))
 	if !ok {
-		op.finish("shutdown")
-		_ = c.Close(websocket.StatusGoingAway, "muster is shutting down")
+		op.finish(telemetry.ReasonShutdown)
+		viewEnded(r, openViewMirror, telemetry.ReasonShutdown, since)
+		shutdownFrame(c)
 		return
 	}
 	defer done()
-	// The browser sends nothing; CloseRead ends ctx when it goes away.
-	ctx = c.CloseRead(ctx)
+	// 🔴 EVERYTHING AFTER THE OPEN RUNS DETACHED from the open's trace: the
+	// asks relay, the suggested replies' turn work (database reads, a model
+	// call) and every later batch's write. Only the watch itself runs under
+	// the open's span, and its spans end at the first batch.
+	live := telemetry.Detached(ctx)
 
 	var drawn ui.MirrorTranscript
 	// A reconnect that resumes (gen + offset) draws onto a page that already
@@ -204,7 +216,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 				case <-ctx.Done():
 					return
 				case <-changed:
-					_ = terminalWriteJSON(ctx, c, map[string]string{"type": "asks"})
+					_ = terminalWriteJSON(live, c, map[string]string{"type": "asks"})
 				}
 			}
 		})
@@ -212,7 +224,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// Suggested replies (suggest.go): this socket's tracker — nil when the
 	// window cannot have any — fed every batch, and the page told what its
 	// turn ends make of them.
-	sg := s.suggestSocket(ctx, r, c, host, session, window, drawn.Resumed)
+	sg := s.suggestSocket(live, r.WithContext(telemetry.Detached(r.Context())), c, host, session, window, drawn.Resumed)
 	// What the hub measures of the open (the round trip to the host, the
 	// host's own phases) lands here before the first batch is handed on.
 	var stats mirror.OpenStats
@@ -248,18 +260,24 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 			b.Index = ui.NewMirrorIndex(refs, m.PromptsMore+dropped)
 		}
 		if !first {
-			return terminalWriteJSON(ctx, c, b)
+			return terminalWriteJSON(live, c, b)
 		}
 		first = false
 		op.begin("write")
-		werr := terminalWriteJSON(ctx, c, b)
-		op.finish(map[bool]string{true: telemetry.ReasonOK, false: telemetry.ReasonClientLeft}[werr == nil],
-			append(hubFields(&stats), "ops", strconv.Itoa(len(b.Ops)), "reset", strconv.FormatBool(m.Reset))...)
+		werr := terminalWriteJSON(live, c, b)
+		outcome := map[bool]string{true: telemetry.ReasonOK, false: telemetry.ReasonClientLeft}[werr == nil]
+		op.finish(outcome, append(hubFields(&stats), "ops", strconv.Itoa(len(b.Ops)), "reset", strconv.FormatBool(m.Reset))...)
+		// The open is over: its span ends here, whatever the socket does next.
+		telemetry.OpenDone(r, outcome)
 		return werr
 	})
 	reason := streamEndReason(ctx, err)
-	viewEnded(r, openViewMirror, reason)
+	viewEnded(r, openViewMirror, reason, since)
 	op.finish(reason, hubFields(&stats)...)
+	if reason == telemetry.ReasonShutdown {
+		shutdownFrame(c)
+		return
+	}
 	if ctx.Err() != nil {
 		return
 	}

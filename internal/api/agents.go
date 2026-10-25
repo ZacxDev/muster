@@ -1884,7 +1884,12 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
-	ctx := r.Context()
+	// The chat is usable once its socket is open: that is the open's end
+	// (telemetry.OpenDone), and every turn after it runs DETACHED from the
+	// open's trace — a chat open for a day would otherwise be one trace with
+	// every turn's queries and gateway calls in it.
+	telemetry.OpenDone(r, telemetry.ReasonOK)
+	ctx := telemetry.Detached(r.Context())
 	// The socket's open and end, like a terminal's attached/detached: how many
 	// chat sockets a page really holds (the browser suite counts them).
 	s.logger.Printf("agents: chat %s connected", a.Name)

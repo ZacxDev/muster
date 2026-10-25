@@ -254,8 +254,16 @@ func (h *Hub) Watch(ctx context.Context, owner int64, host, session, gen string,
 // watch with a Reset backfill.
 func (h *Hub) WatchWindow(ctx context.Context, owner int64, host, session, window, gen string, offset int64, out func(Msg) error) (err error) {
 	// The view's whole stream, and why it ended (trace.go).
+	// The watch's OPEN, and why it failed if it did: the span ends at the
+	// first batch (firstAnswer), so a view open for hours grows no trace. How
+	// the stream ENDED is the socket's own close span (internal/api).
 	ctx, life := telemetry.Start(ctx, "mirror.watch", attribute.Bool("mirror.resume", gen != "" && offset > 0))
-	defer func() { telemetry.End(life, streamReason(ctx, err)) }()
+	lifeEnded := false
+	defer func() {
+		if !lifeEnded {
+			telemetry.End(life, streamReason(ctx, err))
+		}
+	}()
 	hc, windowID, err := h.lookupRendered(owner, host, session, window)
 	if err != nil {
 		return err
@@ -287,6 +295,8 @@ func (h *Hub) WatchWindow(ctx context.Context, owner int64, host, session, windo
 		if !gotFirst {
 			gotFirst = true
 			firstAnswer(first, "watch", openStatsOf(ctx), sent)
+			telemetry.End(life, telemetry.ReasonOK)
+			lifeEnded = true
 		}
 		return out(m)
 	}

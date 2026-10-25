@@ -17,9 +17,13 @@
 // public: no attribute, event or status may carry a message, a transcript
 // line, pane contents, a window title or label, a prompt, a token, a cookie or
 // an error's prose (an error string can quote a path or a value). Errors are
-// recorded as a closed reason code (Reason) and nothing else. The open path is
-// guarded by a test that fills every fixture with a sentinel string and
-// asserts it reaches no exported span (internal/api's sentinel test).
+// recorded as a closed reason code (Reason) and nothing else. What otelhttp
+// adds on its own is cut at export (scrubExporter): no caller address, port or
+// user agent, and url.path is the route PATTERN, never the raw path. The
+// mirrored view's and terminal's opens and a hub send are guarded by a test
+// that fills every fixture with a sentinel string and asserts it reaches no
+// exported span (internal/api's TestNoExportedSpanCarriesPrivateContent); an
+// agent's page is not in that test.
 package telemetry
 
 import (
@@ -117,7 +121,7 @@ func Setup(ctx context.Context, getenv func(string) string, o Options) (func(con
 	if err != nil && !errors.Is(err, resource.ErrPartialResource) {
 		return noop, fmt.Errorf("telemetry: the resource: %w", err)
 	}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res), sdktrace.WithSampler(Sampler(ratio)))
+	tp := NewProvider(exp, ratio, false, sdktrace.WithResource(res))
 	install(tp)
 	if o.Logger != nil {
 		o.Logger.Printf("telemetry: tracing on (service %s), exporting OTLP/HTTP; opens always sampled, other requests at %g", res.Set().Encoded(attribute.DefaultEncoder()), ratio)
@@ -205,9 +209,29 @@ func SetReason(span trace.Span, reason string) {
 const (
 	ReasonOK         = "ok"
 	ReasonClientLeft = "client_left"
-	ReasonTimeout    = "timeout"
-	ReasonError      = "error"
+	// ReasonShutdown: muster itself ended the stream because it is shutting
+	// down (a deploy): ErrShuttingDown is the cause. An error status, unlike
+	// client_left — a deploy that cuts every view is a disconnect the person
+	// sees, not one they chose.
+	ReasonShutdown = "shutdown"
+	ReasonTimeout  = "timeout"
+	ReasonError    = "error"
 )
+
+// ErrShuttingDown is the cause muster cancels a live stream with when it shuts
+// down. A stream whose context ends with it is reported as ReasonShutdown —
+// never as the browser leaving.
+var ErrShuttingDown = errors.New("muster is shutting down")
+
+// EndedBy is the reason a stream whose context ended (and whose own error is
+// nil or the context's) ended: ReasonShutdown when ctx was cancelled with
+// ErrShuttingDown, else ReasonClientLeft.
+func EndedBy(ctx context.Context) string {
+	if errors.Is(context.Cause(ctx), ErrShuttingDown) {
+		return ReasonShutdown
+	}
+	return ReasonClientLeft
+}
 
 // Traceparent is ctx's span context as a W3C traceparent value, "" when ctx
 // has no valid span (always, while tracing is off).

@@ -43,6 +43,10 @@ type openTrace struct {
 // stream's first reply (viewSend) to find — or, when this host does not trace
 // or m names no server span to join, does nothing and returns nil. (A root
 // span per open here would be a trace with no server half.)
+//
+// 🔴 A DUPLICATE STREAM ID NEVER REPLACES THE OPEN THAT HOLDS IT: that would
+// orphan the first open's span (nothing could end it). The duplicate gets a
+// span of its own, NOT registered, which its refusal ends (endOpen).
 func (h *hostSide) beginOpen(m mirror.Msg, name string) *openTrace {
 	if !telemetry.Enabled() || m.Traceparent == "" {
 		return nil
@@ -50,7 +54,7 @@ func (h *hostSide) beginOpen(m mirror.Msg, name string) *openTrace {
 	o := &openTrace{last: time.Now()}
 	o.ctx, o.span = telemetry.Start(telemetry.WithTraceparent(context.Background(), m.Traceparent), name, attribute.Int64("mirror.stream", int64(m.ID)),
 		attribute.Bool("mirror.window", m.Window != ""), attribute.Bool("mirror.resume", m.Gen != "" && m.Offset > 0))
-	h.opens.Store(m.ID, o)
+	h.opens.LoadOrStore(m.ID, o)
 	return o
 }
 
@@ -125,15 +129,15 @@ func (h *hostSide) reply(id uint32) {
 	}
 }
 
-// finish ends stream id's open with err's reason if it never replied (a
+// endOpen ends open o of stream id with err's reason if it never replied (a
 // watch refused or failed before its first batch, a terminal that never
-// produced output), and forgets it either way.
-func (h *hostSide) finish(id uint32, err error) {
-	o := h.openOf(id)
+// produced output, a duplicate stream id), and unregisters it — only if it is
+// the open registered under id. Safe on nil.
+func (h *hostSide) endOpen(o *openTrace, id uint32, err error) {
 	if o == nil {
 		return
 	}
-	h.opens.Delete(id)
+	h.opens.CompareAndDelete(id, o)
 	o.mu.Lock()
 	already := o.done
 	o.done = true

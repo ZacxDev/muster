@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -241,4 +245,121 @@ func TestReasonSpeaksOnlyItsVocabulary(t *testing.T) {
 	if mirror.Reason(mirror.ErrHostDisconnected) != "host_disconnected" || mirror.Reason(io.EOF) != telemetry.ReasonError {
 		t.Error("a reason moved")
 	}
+}
+
+// TestADuplicateStreamIDEndsBothOpens: a second watch with an id already open
+// is refused — and its open span ends with the refusal, while the FIRST
+// open's span is still the one its first batch ends. (A duplicate that
+// replaced the registered open orphaned the first span: nothing ended it.)
+func TestADuplicateStreamIDEndsBothOpens(t *testing.T) {
+	exp := traceRecorder(t)
+	tr := newTranscript(t, promptLine("q"), textLine("a"))
+	inner := newClaudeBackend("main")
+	inner.setPane("main", mirrorhost.ClaudePane{Pane: "%1", Transcript: tr.path, Gen: "g1"})
+	// The first watch's pane resolution is HELD until the duplicate has been
+	// refused: the first open is still unreplied when the duplicate arrives —
+	// the overlap the bug needs, made deterministic.
+	b := &gatedClaude{claudeBackend: inner, release: make(chan struct{})}
+	const tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+	replies := make(chan mirror.Msg, 16)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.CloseNow()
+		ctx, cancel := context.WithTimeout(r.Context(), 4*time.Second)
+		defer cancel()
+		if _, _, err := ws.Read(ctx); err != nil {
+			return
+		}
+		write := func(m mirror.Msg) { bb, _ := json.Marshal(m); _ = ws.Write(ctx, websocket.MessageText, bb) }
+		write(mirror.Msg{Type: mirror.TypeWelcome, Version: 2, Host: "laptop"})
+		b.hold.Store(true)
+		watch := mirror.Msg{Type: mirror.TypeWatch, ID: 9, Session: "main", Traceparent: tp}
+		write(watch)
+		write(watch)
+		for {
+			typ, data, err := ws.Read(ctx)
+			if err != nil {
+				return
+			}
+			var m mirror.Msg
+			if typ == websocket.MessageText && json.Unmarshal(data, &m) == nil && m.ID == 9 {
+				replies <- m
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c, err := mirrorhost.New(mirrorhost.Config{URL: srv.URL, Token: mirror.TokenPrefix + "x", Host: "laptop",
+		Backend: b, AllowHTTP: true, ViewPoll: 20 * time.Millisecond, Logger: log.New(io.Discard, "", 0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = c.RunOnce(ctx) }()
+	refused, batched := false, false
+	deadline := time.After(5 * time.Second)
+	for !refused || !batched {
+		select {
+		case m := <-replies:
+			if m.Type == mirror.TypeClosed && m.Error != "" && !refused {
+				refused = true
+				close(b.release)
+			}
+			batched = batched || m.Type == mirror.TypeEvents
+		case <-deadline:
+			t.Fatalf("refused %v, batched %v: the host did not answer both watches", refused, batched)
+		}
+	}
+	// Both spans end NOW — the first at its first batch, the duplicate at its
+	// refusal — not when the connection ends (the server above hangs up at
+	// 4 s, which would end an orphaned span too, late and wrongly).
+	var watches []tracetest.SpanStub
+	until := time.Now().Add(1500 * time.Millisecond)
+	for {
+		watches = nil
+		for _, s := range exp.GetSpans() {
+			if s.Name == "host.watch" {
+				watches = append(watches, s)
+			}
+		}
+		if len(watches) == 2 || time.Now().After(until) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(watches) != 2 {
+		t.Fatalf("%d host.watch span(s) ended with the first batch sent and the duplicate refused, want 2", len(watches))
+	}
+	reasons := map[string]bool{}
+	for _, s := range watches {
+		for _, a := range s.Attributes {
+			if a.Key == "muster.reason" {
+				reasons[a.Value.AsString()] = true
+			}
+		}
+	}
+	if !reasons[telemetry.ReasonOK] || len(reasons) != 2 {
+		t.Errorf("the two opens ended with %v: want the first ok and the duplicate refused", reasons)
+	}
+}
+
+// gatedClaude is a claudeBackend whose pane resolution, once hold is set,
+// waits for release.
+type gatedClaude struct {
+	*claudeBackend
+	hold    atomic.Bool
+	release chan struct{}
+}
+
+func (g *gatedClaude) ClaudePanes(ctx context.Context, sessions []string) map[string]mirrorhost.ClaudePane {
+	if g.hold.Load() {
+		select {
+		case <-g.release:
+		case <-ctx.Done():
+		}
+	}
+	return g.claudeBackend.ClaudePanes(ctx, sessions)
 }

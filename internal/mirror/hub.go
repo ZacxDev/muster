@@ -1180,9 +1180,16 @@ func (h *Hub) Attach(ctx context.Context, owner int64, host, session string, rea
 // never through the operator's session, so neither viewing nor typing into a
 // window moves what the operator is looking at.
 func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, window string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) (err error) {
-	// The terminal's whole life, and why it ended (trace.go).
+	// The terminal's OPEN, and why it failed if it did: the span ends at the
+	// first output (firstOutput), so a terminal open for hours grows no
+	// trace. How it ENDED is the socket's own close span (internal/api).
 	ctx, life := telemetry.Start(ctx, "mirror.attach", attribute.Bool("mirror.read_only", readOnly))
-	defer func() { telemetry.End(life, streamReason(ctx, err)) }()
+	lifeEnded := false
+	defer func() {
+		if !lifeEnded {
+			telemetry.End(life, streamReason(ctx, err))
+		}
+	}()
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]
 	h.mu.Unlock()
@@ -1227,6 +1234,8 @@ func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, wind
 		if !gotFirst {
 			gotFirst = true
 			firstAnswer(first, "attach", openStatsOf(ctx), sent)
+			telemetry.End(life, telemetry.ReasonOK)
+			lifeEnded = true
 		}
 	}
 	defer func() {

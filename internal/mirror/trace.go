@@ -34,6 +34,8 @@ func Reason(err error) string {
 	switch {
 	case err == nil:
 		return telemetry.ReasonOK
+	case errors.Is(err, telemetry.ErrShuttingDown):
+		return telemetry.ReasonShutdown
 	case errors.Is(err, context.Canceled):
 		return telemetry.ReasonClientLeft
 	case errors.Is(err, context.DeadlineExceeded):
@@ -81,7 +83,7 @@ func Reason(err error) string {
 
 // Reasons is Reason's whole vocabulary: a test pins that Reason never says
 // anything else, so a reason can be a metric label.
-var Reasons = []string{telemetry.ReasonOK, telemetry.ReasonClientLeft, telemetry.ReasonTimeout, telemetry.ReasonError,
+var Reasons = []string{telemetry.ReasonOK, telemetry.ReasonClientLeft, telemetry.ReasonShutdown, telemetry.ReasonTimeout, telemetry.ReasonError,
 	"host_disconnected", "host_offline", "session_gone", "window_gone", "not_agent", "no_rendered_view", "too_many",
 	"overrun", "read_only", "step_up", "no_principal", "unconfirmed", "host_ended", "superseded", "refused", "unsupported"}
 
@@ -148,8 +150,8 @@ func requestCarriesTrace(typ string) bool {
 // client_left when it ended without one because the caller's context did (the
 // browser went away) — the stream functions return nil for that.
 func streamReason(ctx context.Context, err error) string {
-	if err == nil && ctx.Err() != nil {
-		return telemetry.ReasonClientLeft
+	if (err == nil || errors.Is(err, context.Canceled)) && ctx.Err() != nil {
+		return telemetry.EndedBy(ctx)
 	}
 	return Reason(err)
 }

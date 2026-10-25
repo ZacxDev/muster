@@ -5,6 +5,7 @@ import (
 	"errors"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -46,8 +47,12 @@ func (pgxTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.Trac
 	}
 	op := operation(data.SQL)
 	ctx, span := Tracer().Start(ctx, "db "+op, trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(
-		semconv.DBSystemNamePostgreSQL, semconv.DBOperationName(op), semconv.DBQueryText(NormalizeSQL(data.SQL)),
-		attribute.Int("db.query.args", len(data.Args))))
+		semconv.DBSystemNamePostgreSQL, semconv.DBOperationName(op), attribute.Int("db.query.args", len(data.Args))))
+	// The statement is normalised only for a span that is kept: three regexp
+	// passes per query are not paid for one the sampler dropped.
+	if span.IsRecording() {
+		span.SetAttributes(semconv.DBQueryText(normalize(data.SQL)))
+	}
 	return context.WithValue(ctx, spanKey{}, span)
 }
 
@@ -101,17 +106,25 @@ var (
 	sqlSpace   = regexp.MustCompile(`\s+`)
 )
 
+// normalize is NormalizeSQL; a test counts its calls.
+var normalize = NormalizeSQL
+
 // maxQueryText bounds a recorded statement.
 const maxQueryText = 512
 
 // NormalizeSQL is sql as a span records it: literals replaced with `?`,
-// whitespace collapsed, cut to maxQueryText bytes.
+// whitespace collapsed, cut to at most maxQueryText bytes on a rune boundary
+// (a cut through a multi-byte character would export invalid UTF-8).
 func NormalizeSQL(sql string) string {
 	s := sqlStrings.ReplaceAllString(sql, "?")
 	s = sqlNumbers.ReplaceAllString(s, "?")
 	s = strings.TrimSpace(sqlSpace.ReplaceAllString(s, " "))
 	if len(s) > maxQueryText {
-		s = s[:maxQueryText]
+		cut := maxQueryText
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut]
 	}
 	return s
 }

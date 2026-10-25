@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ZacxDev/muster/internal/metrics"
@@ -160,12 +159,13 @@ func hubFields(st *mirror.OpenStats) []string {
 }
 
 // streamEndReason is why a view's socket ended, as metrics.ViewDisconnects
-// counts it: client_left when the browser (or a shutdown) went first, ended
-// for a stream the far side ended cleanly, else mirror.Reason.
+// counts it: shutdown when muster ended it for a deploy (terminalSet.endAll's
+// cause), client_left when the browser went first, ended for a stream the far
+// side ended cleanly, else mirror.Reason.
 func streamEndReason(ctx context.Context, err error) string {
 	switch {
 	case ctx.Err() != nil:
-		return telemetry.ReasonClientLeft
+		return telemetry.EndedBy(ctx)
 	case err == nil:
 		return "ended"
 	}
@@ -173,9 +173,17 @@ func streamEndReason(ctx context.Context, err error) string {
 }
 
 // viewEnded counts a view's socket ending, and says why on its span.
-func viewEnded(r *http.Request, view, reason string) {
+//
+// The socket's open span ends here with the reason if its open never finished
+// (a refusal, a stream that ended before its first batch), and the END is a
+// span of its own: a root linked to the open (telemetry.StreamClosed), so a
+// view open for hours never grows one trace. It is counted for a refusal
+// before the upgrade too (not_found, refused, shutdown, step_up), with the
+// reason it was refused for.
+func viewEnded(r *http.Request, view, reason string, since time.Time) {
 	metrics.ViewDisconnects.WithLabelValues(view, reason).Inc()
-	telemetry.Annotate(r, attribute.String("muster.close_reason", reason))
+	telemetry.OpenDone(r, reason)
+	telemetry.StreamClosed(r, reason, time.Since(since))
 }
 
 // firstWriter calls first once, before its first write.

@@ -24,17 +24,24 @@ const DefaultSampleRatio = 0.05
 //
 //  1. a request that OPENS a session — the GET of a mirrored view, a mirrored
 //     terminal or an agent's page, and each of their sockets (OpenRoute) — is
-//     ALWAYS sampled, whatever its parent says;
-//  2. anything with a parent follows it (parent-based): a span under a sampled
-//     server span is sampled, so a hub request or a host span is kept exactly
-//     when its open is, and a page fetch that arrives with a sampled
-//     traceparent joins its trace;
-//  3. any other root is kept at ratio (trace-id based, so the decision is the
+//     ALWAYS sampled, whatever its parent says (a socket's ?tp= parent is
+//     still its parent: sampling never changes the trace a span is in);
+//  2. any OTHER server span whose parent is REMOTE — a page's fetch, XHR or
+//     poll carrying the browser's traceparent — is kept at ratio, NOT because
+//     the browser sampled it: Faro samples every page at 1, so following it
+//     would trace every ask poll, list refresh and badge poll in full;
+//  3. anything else with a parent follows it (parent-based): an in-process
+//     child of a sampled span is sampled, so a hub request, a query or a host
+//     span (whose remote parent is muster's own span, never a server span of
+//     the host's) is kept exactly when its open is;
+//  4. a root with a sampled LINK follows it: a socket's close (StreamClosed)
+//     is kept exactly when its open was;
+//  5. any other root is kept at ratio (trace-id based, so the decision is the
 //     same on every process that sees the trace).
 //
-// The route is read off the server span's START attributes (otelhttp sets the
-// method and url.path there), since the span's name is only the method until
-// the mux has matched.
+// The route is read off the server span's START attributes (otelhttp and
+// serveSocket set the method and url.path there), since the span's name is
+// only the method until the mux has matched.
 func Sampler(ratio float64) sdktrace.Sampler {
 	return openSampler{ratio: sdktrace.TraceIDRatioBased(ratio), desc: fmt.Sprintf("MusterOpenSampler{ratio=%g}", ratio)}
 }
@@ -47,14 +54,23 @@ type openSampler struct {
 func (s openSampler) ShouldSample(p sdktrace.SamplingParameters) sdktrace.SamplingResult {
 	psc := trace.SpanContextFromContext(p.ParentContext)
 	ts := psc.TraceState()
+	keep := sdktrace.SamplingResult{Decision: sdktrace.RecordAndSample, Tracestate: ts}
 	if openRequest(p.Attributes) {
-		return sdktrace.SamplingResult{Decision: sdktrace.RecordAndSample, Tracestate: ts}
+		return keep
 	}
 	if psc.IsValid() {
+		if psc.IsRemote() && p.Kind == trace.SpanKindServer {
+			return s.ratio.ShouldSample(p)
+		}
 		if psc.IsSampled() {
-			return sdktrace.SamplingResult{Decision: sdktrace.RecordAndSample, Tracestate: ts}
+			return keep
 		}
 		return sdktrace.SamplingResult{Decision: sdktrace.Drop, Tracestate: ts}
+	}
+	for _, l := range p.Links {
+		if l.SpanContext.IsSampled() {
+			return keep
+		}
 	}
 	return s.ratio.ShouldSample(p)
 }

@@ -316,8 +316,10 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 	// The open's stream, phase by phase up to the first output (open_trace.go).
 	op := s.openPhases(r, openViewTerminal, openPartStream, "host", host, "session", session, "window", window,
 		"read_only", strconv.FormatBool(readOnly))
+	since := time.Now()
 	if _, _, _, _, ok := s.mirrorEntry(r.WithContext(op.begin("entry")), host, session, window); !ok {
 		op.finish("not_found")
+		viewEnded(r, openViewTerminal, "not_found", since)
 		http.NotFound(w, r)
 		return
 	}
@@ -328,7 +330,7 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 	// context again, independently.
 	if !readOnly && !stepup.Fresh(r.Context(), s.stepUpNow()) {
 		op.finish("step_up")
-		viewEnded(r, openViewTerminal, "step_up")
+		viewEnded(r, openViewTerminal, "step_up", since)
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": stepup.ErrStale.Error()})
 		return
 	}
@@ -338,14 +340,16 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: s.wsAllowedOrigins(r)})
 	if err != nil {
 		op.finish("refused")
+		viewEnded(r, openViewTerminal, "refused", since)
 		s.logger.Printf("mirror: terminal ws accept: %v", err)
 		return
 	}
 	defer c.CloseNow()
 	ctx, done, ok := s.terminals.add(r.Context())
 	if !ok {
-		op.finish("shutdown")
-		_ = c.Close(websocket.StatusGoingAway, "muster is shutting down")
+		op.finish(telemetry.ReasonShutdown)
+		viewEnded(r, openViewTerminal, telemetry.ReasonShutdown, since)
+		shutdownFrame(c)
 		return
 	}
 	defer done()
@@ -354,7 +358,9 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 	op.begin("attach")
 	var stats mirror.OpenStats
 	ctx = mirror.WithOpenStats(ctx, &stats)
-	browserLeft := false
+	// browserLeft is the reason the bridge's own context ended, when that is
+	// what ended the attach: client_left or shutdown.
+	browserLeft := ""
 
 	mode := terminalModeInteractive
 	if readOnly {
@@ -366,17 +372,24 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 			// window == "" is the session's active window, resolved by the plugin
 			// to an explicit window id on a per-window host (mirror.Hub.AttachWindow).
 			aerr := s.ext.Mirror.AttachWindow(ctx, host, session, window, readOnly, stdin,
-				&firstWriter{w: stdout, first: func() { op.finish(telemetry.ReasonOK, hubFields(&stats)...) }}, resize)
-			// The bridge's context ends when the BROWSER goes: an attach that
-			// returns cleanly then was left, not ended by the host.
-			browserLeft = aerr == nil && ctx.Err() != nil
+				&firstWriter{w: stdout, first: func() {
+					op.finish(telemetry.ReasonOK, hubFields(&stats)...)
+					// The open is over: its span ends at the first output.
+					telemetry.OpenDone(r, telemetry.ReasonOK)
+				}}, resize)
+			// The bridge's context ends when the BROWSER goes — or muster
+			// shuts down (its cause says which): an attach that returns
+			// cleanly then was left or cut, not ended by the host.
+			if aerr == nil && ctx.Err() != nil {
+				browserLeft = telemetry.EndedBy(ctx)
+			}
 			return aerr
 		})
 	reason := streamEndReason(ctx, err)
-	if browserLeft {
-		reason = telemetry.ReasonClientLeft
+	if browserLeft != "" {
+		reason = browserLeft
 	}
-	viewEnded(r, openViewTerminal, reason)
+	viewEnded(r, openViewTerminal, reason, since)
 	op.finish(reason, hubFields(&stats)...)
 	s.logger.Printf("mirror: terminal %s/%s%s detached: %v", host, session, window, errOrNone(err))
 }

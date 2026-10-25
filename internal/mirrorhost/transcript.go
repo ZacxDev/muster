@@ -129,9 +129,9 @@ func (h *hostSide) watch(m mirror.Msg) {
 	// The open, measured from here to its first batch (trace.go): what this
 	// host spent on it, reported on that batch and traced under the server's
 	// span when both sides trace.
-	h.beginOpen(m, "host.watch")
+	o := h.beginOpen(m, "host.watch")
 	fail := func(err error) {
-		h.finish(m.ID, err)
+		h.endOpen(o, m.ID, err)
 		h.c.log.Printf("muster-mirror: watch %q: %v", m.Session, err)
 		_ = h.send(mirror.Msg{Type: mirror.TypeClosed, ID: m.ID, Error: err.Error()})
 	}
@@ -206,7 +206,7 @@ func (h *hostSide) watch(m mirror.Msg) {
 	h.c.log.Printf("muster-mirror: watching %q%s (%s, stream %d)", m.Session, windowSuffix(m.Window), from, m.ID)
 	go func() {
 		err := serve(ctx)
-		h.finish(m.ID, err)
+		h.endOpen(o, m.ID, err)
 		h.unwatch(m.ID)
 		h.c.log.Printf("muster-mirror: unwatched %q%s (stream %d)", m.Session, windowSuffix(m.Window), m.ID)
 		msg := ""
@@ -359,7 +359,12 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 	// start (re)opens p's transcript and sends a Reset backfill — or, when the
 	// resume names this very transcript at an offset it still has, nothing but
 	// a marker that the resume was accepted.
+	// opening: this start is the view's open (the first), the only one whose
+	// prompt index is traced — a /clear or a restart hours later must not add
+	// a span to the open's long-finished trace.
+	opening := true
 	start := func(resumeGen string, resumeOff int64) error {
+		defer func() { opening = false }()
 		if f != nil {
 			_ = f.Close()
 		}
@@ -428,7 +433,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		// ⚠ A FAILED SCAN COSTS THE INDEX, NOT THE VIEW: the view then lists
 		// the prompts it has, as it does for a host that predates the index.
 		var pspan trace.Span
-		if o != nil {
+		if o != nil && opening {
 			_, pspan = telemetry.Start(o.ctx, "host.prompt_index")
 		}
 		refs, err := cctranscript.Prompts(f, next)

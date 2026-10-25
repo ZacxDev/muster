@@ -755,7 +755,7 @@ func (h *hostSide) open(m mirror.Msg) {
 	// The attach, traced from here to its first output (trace.go).
 	o := h.beginOpen(m, "host.attach")
 	fail := func(err error) {
-		h.finish(m.ID, err)
+		h.endOpen(o, m.ID, err)
 		h.c.log.Printf("muster-mirror: open %q: %v", m.Session, err)
 		_ = h.send(mirror.Msg{Type: mirror.TypeClosed, ID: m.ID, Error: err.Error()})
 	}
@@ -812,7 +812,7 @@ func (h *hostSide) open(m mirror.Msg) {
 	go func() {
 		defer func() {
 			// An attach that never produced output ends its open here.
-			h.finish(m.ID, nil)
+			h.endOpen(o, m.ID, nil)
 			_ = term.Close()
 			h.mu.Lock()
 			delete(h.streams, m.ID)

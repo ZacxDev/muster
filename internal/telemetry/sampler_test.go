@@ -2,19 +2,23 @@ package telemetry_test
 
 import (
 	"context"
+	"crypto/rand"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // sampled sends n GETs of each path through the real middleware with
 // sampler installed and returns how many server spans were exported per path.
-func sampled(t *testing.T, sampler sdktrace.Sampler, n int, header http.Header, paths ...string) map[string]int {
+func sampled(t *testing.T, sampler sdktrace.Sampler, n int, header func() http.Header, paths ...string) map[string]int {
 	t.Helper()
 	exp := tracetest.NewInMemoryExporter()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp), sdktrace.WithSampler(sampler))
@@ -30,8 +34,10 @@ func sampled(t *testing.T, sampler sdktrace.Sampler, n int, header http.Header, 
 	for _, p := range paths {
 		for i := 0; i < n; i++ {
 			req, _ := http.NewRequest(http.MethodGet, srv.URL+p, nil)
-			for k, v := range header {
-				req.Header[k] = v
+			if header != nil {
+				for k, v := range header() {
+					req.Header[k] = v
+				}
 			}
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -40,15 +46,33 @@ func sampled(t *testing.T, sampler sdktrace.Sampler, n int, header http.Header, 
 			_ = resp.Body.Close()
 		}
 	}
+	// Counted by the route the mux matched (a span's url.path is replaced
+	// by it, so it names no agent): /agents/some-agent is /agents/{name}.
 	got := map[string]int{}
 	for _, s := range exp.GetSpans() {
 		for _, a := range s.Attributes {
-			if a.Key == "url.path" {
+			if a.Key == "http.route" {
 				got[a.Value.AsString()]++
 			}
 		}
 	}
+	for _, p := range paths {
+		if r := routeOf(p); r != p {
+			got[p] = got[r]
+		}
+	}
 	return got
+}
+
+// routeOf is the mux pattern a test path matches.
+func routeOf(p string) string {
+	switch p {
+	case "/agents/some-agent":
+		return "/agents/{name}"
+	case "/agents/some-agent/ws":
+		return "/agents/{name}/ws"
+	}
+	return p
 }
 
 var (
@@ -102,19 +126,116 @@ func TestPollingIsMostlyUnsampledAndOpensAlwaysAre(t *testing.T) {
 	t.Logf("kept of %d: %v", n, got)
 }
 
-// TestASampledParentIsAlwaysFollowed: a polling request that arrives with a
-// SAMPLED traceparent (a page fetch inside its open's trace) is kept; with an
-// unsampled one it is not.
-func TestASampledParentIsAlwaysFollowed(t *testing.T) {
-	const n = 50
-	on := http.Header{"Traceparent": {"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"}}
-	off := http.Header{"Traceparent": {"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-00"}}
-	s := telemetry.Sampler(telemetry.DefaultSampleRatio)
-	if got := sampled(t, s, n, on, "/ui/agents")["/ui/agents"]; got != n {
-		t.Errorf("a sampled parent was followed %d of %d times", got, n)
+// browserParent is a traceparent as the page's Faro sends it on a fetch:
+// SAMPLED (its default sampling rate is 1), in a trace of its own — each
+// request a fresh trace id, so a ratio decision (made on the trace id) is a
+// real draw per request, not one draw repeated.
+func browserParent() http.Header {
+	var b [24]byte
+	_, _ = rand.Read(b[:])
+	return http.Header{"Traceparent": {fmt.Sprintf("00-%x-%x-01", b[:16], b[16:])}}
+}
+
+const fixedParent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+// TestABrowserParentDoesNotForcePolls: a polling request carrying the
+// browser's SAMPLED traceparent is kept at the ratio, not because the page
+// sampled it — Faro samples every page, so following it would trace every
+// ask poll, list refresh and badge poll in full.
+//
+// 🔴 THE RED CASE IS RUN: the same requests under the SDK's parent-based
+// sampler (which follows any sampled parent) keep every one, beyond the bound.
+func TestABrowserParentDoesNotForcePolls(t *testing.T) {
+	const n, bound = 200, 40
+	control := sampled(t, sdktrace.ParentBased(sdktrace.TraceIDRatioBased(telemetry.DefaultSampleRatio)), n, browserParent, pollingPaths...)
+	for _, p := range pollingPaths {
+		if control[p] <= bound {
+			t.Fatalf("CONTROL: a parent-based sampler kept only %d of %d for %s under a sampled browser parent", control[p], n, p)
+		}
 	}
-	if got := sampled(t, s, n, off, "/ui/agents")["/ui/agents"]; got != 0 {
-		t.Errorf("an unsampled parent's child was kept %d times", got)
+	got := sampled(t, telemetry.Sampler(telemetry.DefaultSampleRatio), n, browserParent, pollingPaths...)
+	total := 0
+	for _, p := range pollingPaths {
+		total += got[p]
+		if got[p] > bound {
+			t.Errorf("%s kept %d of %d under a sampled browser parent; it must be kept at the ratio", p, got[p], n)
+		}
+	}
+	if total == 0 {
+		t.Errorf("POSITIVE CONTROL: nothing kept at ratio %g across %d draws — the draw is not per request", telemetry.DefaultSampleRatio, n*len(pollingPaths))
+	}
+	t.Logf("browser parent, kept of %d: muster %v, parent-based %v", n, got, control)
+}
+
+// TestAnOpenRouteJoinsItsBrowserParent: an open route — its page GET and its
+// socket UPGRADE (the ?tp= path, muster's own socket span) — is sampled under
+// a browser parent and is that parent's child, in its trace.
+func TestAnOpenRouteJoinsItsBrowserParent(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := telemetry.NewProvider(exp, telemetry.DefaultSampleRatio, true)
+	restore := telemetry.Use(tp)
+	defer func() { restore(); _ = tp.Shutdown(context.Background()) }()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /mirror/view", func(http.ResponseWriter, *http.Request) {})
+	mux.HandleFunc("GET /mirror/view/ws", func(http.ResponseWriter, *http.Request) {})
+	srv := httptest.NewServer(telemetry.Middleware(mux))
+	defer srv.Close()
+	for _, c := range []struct {
+		path    string
+		upgrade bool
+	}{{"/mirror/view?host=h", false}, {"/mirror/view/ws?host=h&tp=00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01", true}} {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+c.path, nil)
+		if c.upgrade {
+			req.Header.Set("Upgrade", "websocket")
+			req.Header.Set("Connection", "Upgrade")
+		} else {
+			req.Header.Set("Traceparent", fixedParent)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+	spans := exp.GetSpans()
+	if len(spans) != 2 {
+		t.Fatalf("%d span(s) kept, want both opens", len(spans))
+	}
+	for _, s := range spans {
+		if s.Parent.TraceID().String() != "0af7651916cd43dd8448eb211c80319c" || s.Parent.SpanID().String() != "b7ad6b7169203331" {
+			t.Errorf("%q is not the browser span's child (parent %s/%s)", s.Name, s.Parent.TraceID(), s.Parent.SpanID())
+		}
+	}
+}
+
+// TestInProcessChildrenAndClosesFollowTheirOpen: a child of a sampled
+// in-process span is sampled (a hub request under its open), and a ROOT
+// linked to a sampled span (a socket's close) is sampled — at a ratio of 0,
+// so nothing but the rule can keep them.
+func TestInProcessChildrenAndClosesFollowTheirOpen(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := telemetry.NewProvider(exp, 0, true)
+	restore := telemetry.Use(tp)
+	defer func() { restore(); _ = tp.Shutdown(context.Background()) }()
+	tr := tp.Tracer("t")
+	// An open, kept by its route.
+	ctx, open := tr.Start(context.Background(), "GET", trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(attribute.String("http.request.method", "GET"), attribute.String("url.path", "/mirror/view")))
+	_, child := tr.Start(ctx, "mirror.watch")
+	child.End()
+	open.End()
+	_, closed := tr.Start(context.Background(), "closed", trace.WithNewRoot(), trace.WithLinks(trace.Link{SpanContext: open.SpanContext()}))
+	closed.End()
+	// A poll's root at ratio 0: dropped (the control that 0 means 0).
+	_, poll := tr.Start(context.Background(), "GET", trace.WithSpanKind(trace.SpanKindServer),
+		trace.WithAttributes(attribute.String("http.request.method", "GET"), attribute.String("url.path", "/ui/agents")))
+	poll.End()
+	names := map[string]bool{}
+	for _, s := range exp.GetSpans() {
+		names[s.Name] = true
+	}
+	if !names["mirror.watch"] || !names["closed"] || len(names) != 3 {
+		t.Errorf("kept %v: want the open, its child and its close, and not the poll", names)
 	}
 }
 

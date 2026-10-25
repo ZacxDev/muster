@@ -204,3 +204,50 @@ func TestTheQueryTracerTracesOnlyInsideATrace(t *testing.T) {
 		t.Errorf("NormalizeSQL = %q", got)
 	}
 }
+
+// TestAnExportedSpanNamesNoPersonOrPath: what a deployment exports (the
+// provider Setup builds, NewProvider) carries no caller address, port or user
+// agent, and its url.path is the ROUTE PATTERN — never the agent name or the
+// raw path. A path no route matched exports no url.path at all.
+func TestAnExportedSpanNamesNoPersonOrPath(t *testing.T) {
+	exp := tracetest.NewInMemoryExporter()
+	tp := telemetry.NewProvider(exp, 1, true)
+	restore := telemetry.Use(tp)
+	defer func() { restore(); _ = tp.Shutdown(context.Background()) }()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /agents/{name}", func(http.ResponseWriter, *http.Request) {})
+	srv := httptest.NewServer(telemetry.Middleware(mux))
+	defer srv.Close()
+	for _, p := range []string{"/agents/private-agent-name", "/no-such-page-private-tag"} {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+p, nil)
+		req.Header.Set("User-Agent", "UA-SENTINEL-browser")
+		req.Header.Set("X-Forwarded-For", "203.0.113.7")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+	spans := exp.GetSpans()
+	if len(spans) != 2 {
+		t.Fatalf("POSITIVE CONTROL: %d span(s) exported, want 2", len(spans))
+	}
+	paths := map[string]string{}
+	for _, s := range spans {
+		for _, a := range s.Attributes {
+			v := a.Value.Emit()
+			switch {
+			case a.Key == "client.address" || a.Key == "client.port" || a.Key == "network.peer.address" ||
+				a.Key == "network.peer.port" || a.Key == "user_agent.original":
+				t.Errorf("%s exports %s=%q", s.Name, a.Key, v)
+			case strings.Contains(v, "private") || strings.Contains(v, "UA-SENTINEL") || strings.Contains(v, "203.0.113.7"):
+				t.Errorf("%s exports %s=%q", s.Name, a.Key, v)
+			case a.Key == "url.path":
+				paths[s.Name] = v
+			}
+		}
+	}
+	if paths["GET /agents/{name}"] != "/agents/{name}" || len(paths) != 1 {
+		t.Errorf("url.path by span: %v — want the pattern for the matched route and none for the unmatched", paths)
+	}
+}
