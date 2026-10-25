@@ -88,6 +88,29 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 The two shared secrets may not start with `mst_`, `mpl_` or `mdv_`. The server
 refuses to boot if one does.
 
+### Mirror tokens and session routing
+
+With [session routing](plugins.md#routing-a-message-from-your-own-session) on,
+`POST /mirror/mcp` also offers `plugin_messages_list` and `plugin_message_route`.
+Through them a mirror token **reads its owner's 30 most recent routable inbound
+plugin messages** (the sender with its `UNVERIFIED` mark, the subject, the first
+280 characters of the body, the route state) and **routes any of them into any
+of its owner's mirrored Claude Code sessions that can take one**. The text
+pasted is always the stored message, fenced as untrusted, never words the
+caller writes, and the `session_route.routed` audit row names the host and
+session the route came from.
+
+🔴 **Accepted risk: a mirrored session can route a message to itself and
+answer it.** Any of the owner's mirrored sessions — or anyone holding a leaked
+mirror token — can route any of the owner's recent repliable messages **to
+itself** and answer it with `route_reply`. When the sender is verified and on
+the owner's allowlist for that plugin (`MUSTER_ROUTE_RELAY_ALLOW`), that answer
+is **sent with no human review**. For any other sender it becomes a pending
+reply draft for the owner — and **if this muster has the `plugin_draft_decide`
+tool**, the same session can approve that draft, its own reply, over the same
+door, so that reply too reaches the outside sender with no other review.
+Revoke a token you suspect.
+
 ## Paired devices
 
 The native Android app gets its own credential, the **device credential**

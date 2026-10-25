@@ -217,3 +217,93 @@ func TestARelayThatCannotBeMadeFailsTheRoute(t *testing.T) {
 		t.Fatalf("audit = %v", got)
 	}
 }
+
+// TestCreateRouteFromRecordsWhoRoutedIt: an MCP origin's route is the same row
+// and audit action as the chief's, with routed_via "mcp from <host>/<session>".
+// CONTROL: the chief's (zero) origin records no routed_via.
+func TestCreateRouteFromRecordsWhoRoutedIt(t *testing.T) {
+	w := newDraftWorld(t)
+	const sid = "0b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b"
+	via := func(r Route) string {
+		var v string
+		if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT coalesce(detail->>'routed_via', '') FROM audit_log
+			WHERE object = $1 AND action = 'session_route.routed'`, RouteObject(r.RouteID)).Scan(&v); err != nil {
+			t.Fatalf("the routed audit row of %s: %v", r.RouteID, err)
+		}
+		return v
+	}
+	r, err := w.s.CreateRouteFrom(session(2), w.chief.ID, 2, w.m.ID, target, time.Hour, RouteOrigin{Via: RouteViaMCP, Host: "tower", Session: sid})
+	if err != nil || r.State != RouteRouted || r.AgentID == nil || *r.AgentID != w.chief.ID {
+		t.Fatalf("an MCP route: %+v %v", r, err)
+	}
+	if got := via(r); got != "mcp from tower/"+sid {
+		t.Fatalf("the MCP route's routed_via = %q", got)
+	}
+	if got := via(w.route(t, w.delivered(t, "m-chief", false))); got != "" {
+		t.Fatalf("control, the chief's route: routed_via = %q", got)
+	}
+}
+
+// TestRoutableMessagesIsTheOwnersDeliveredRepliableMessages: newest first, only
+// messages delivered to a chief that may be replied to, each with its LATEST
+// route — not a queued one, not a no_reply one, not another owner's.
+func TestRoutableMessagesIsTheOwnersDeliveredRepliableMessages(t *testing.T) {
+	w := newDraftWorld(t)
+	noReply := w.delivered(t, "m-noreply", true)
+	queued, _, err := w.s.Submit(plugin(2), w.p.ID, msg("m-queued"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := w.delivered(t, "m-later", false)
+	// A message whose chief was deleted since (agent_id goes NULL): no chief
+	// to file the reply as, so not routable.
+	gone := mustAgent(t, w.dsn, 2, "plg-gone-chief")
+	orphan, _, err := w.s.Submit(plugin(2), w.p.ID, msg("m-orphan"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := w.s.BeginDelivery(plugin(2), orphan.ID, gone.ID); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if ok, err := w.s.RecordDelivery(plugin(2), orphan.ID, gone.ID, StatusDelivered); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	dbtest.OwnerExec(t, w.dsn, `DELETE FROM agents WHERE id = $1`, gone.ID)
+	_, p3 := mustCreate(t, w.s, 3, "example-inbox")
+	chief3 := mustAgent(t, w.dsn, 3, "plg-chief-3")
+	theirs, _, err := w.s.Submit(plugin(3), p3.ID, msg("m-theirs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := w.s.BeginDelivery(plugin(3), theirs.ID, chief3.ID); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	first := w.route(t, w.m)
+	if _, err := w.s.FailRoute(session(2), first.RouteID, "test", ""); err != nil {
+		t.Fatal(err)
+	}
+	second := w.route(t, w.m)
+
+	got, err := w.s.RoutableMessages(session(2), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := w.s.Message(session(2), orphan.ID); m.AgentID != nil || m.Status != StatusDelivered {
+		t.Fatalf("precondition: the orphan is %+v", m)
+	}
+	if len(got) != 2 || got[0].Message.ID != later.ID || got[1].Message.ID != w.m.ID {
+		t.Fatalf("RoutableMessages = %+v; want exactly [%d %d] (no_reply %d, queued %d, chief-less %d, another owner's %d left out)",
+			got, later.ID, w.m.ID, noReply.ID, queued.ID, orphan.ID, theirs.ID)
+	}
+	if got[0].Route.RouteID != "" || got[1].Route.RouteID != second.RouteID || got[1].Route.State != RouteRouted ||
+		got[1].Route.TargetKey != target.Key || got[1].PluginLabel != w.p.Label {
+		t.Fatalf("the routes: %+v / %+v", got[0].Route, got[1].Route)
+	}
+	if one, err := w.s.RoutableMessages(session(2), 1); err != nil || len(one) != 1 || one[0].Message.ID != later.ID {
+		t.Fatalf("limit 1: %+v %v", one, err)
+	}
+	// Another owner's view is theirs alone.
+	if g3, err := w.s.RoutableMessages(session(3), 10); err != nil || len(g3) != 1 || g3[0].Message.ID != theirs.ID {
+		t.Fatalf("owner 3's RoutableMessages = %+v %v", g3, err)
+	}
+}
