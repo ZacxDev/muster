@@ -1094,14 +1094,50 @@ func truncate(s string) string {
 	return s
 }
 
+// writeJSON writes m to a host's connection. See writeFrame.
 func writeJSON(ctx context.Context, ws *websocket.Conn, m Msg) error {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
-	wctx, cancel := context.WithTimeout(ctx, writeTimeout)
+	return writeFrame(ctx, ws, websocket.MessageText, b)
+}
+
+// writeFrame writes one message to a host's connection on ctx's behalf: not at
+// all when ctx has already ended, else bounded by writeTimeout.
+//
+// 🔴 THE CALLER'S CANCEL NEVER REACHES THE SOCKET. coder/websocket CLOSES THE
+// CONNECTION when the context of a Write ends while that Write holds it — and
+// that includes the moment after the frame is on the wire and before Write has
+// returned. Every request on a host (an attach, a paste, a watch…) shares ONE
+// socket, so a browser leaving at that moment hung up the whole host: every
+// other terminal, watch and paste on it ended, and the host was offline until
+// it reconnected. TestAPerSessionHostIsListedAndAddressedExactlyAsBefore timed
+// out "waiting for: the paste" in CI that way: it cancels its attach the
+// instant the host has read the open, and if the open's Write has not returned
+// yet the hub drops the host and the paste finds it offline.
+// TestACallerLeavingMidWriteDoesNotHangUpTheHost and
+// TestATerminalClosedMidKeystrokeDoesNotHangUpTheHost hold a write in progress
+// and end its caller. So the write runs on context.WithoutCancel(ctx): what
+// ctx carries is kept, its cancellation is not. writeTimeout still bounds it,
+// and a write that hits it still closes the connection, as before — that is a
+// host that stopped reading.
+//
+// ⚠ THE PRICE: A CALLER THAT LEAVES DOES NOT TAKE BACK ITS FRAME. Only a caller
+// already gone when writeFrame is entered sends nothing. One that leaves while
+// its write is queued behind another (the socket is one writer at a time) or
+// in progress still has its frame written once the socket frees — up to
+// writeTimeout (10s) after it left. Its callers already say so rather than
+// "not sent": a paste whose caller left after this point is unconfirmed
+// (ErrPasteUnconfirmed — it may have landed), so a retry of it can land twice,
+// as for any paste whose answer never came.
+func writeFrame(ctx context.Context, ws *websocket.Conn, typ websocket.MessageType, p []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), writeTimeout)
 	defer cancel()
-	return ws.Write(wctx, websocket.MessageText, b)
+	return ws.Write(wctx, typ, p)
 }
 
 // Attach opens a terminal on owner's host's session and runs it until ctx ends,
@@ -1186,10 +1222,7 @@ func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, wind
 		for {
 			n, err := stdin.Read(buf)
 			if n > 0 && !readOnly {
-				wctx, wcancel := context.WithTimeout(actx, writeTimeout)
-				werr := hc.ws.Write(wctx, websocket.MessageBinary, EncodeData(id, buf[:n]))
-				wcancel()
-				if werr != nil {
+				if werr := writeFrame(actx, hc.ws, websocket.MessageBinary, EncodeData(id, buf[:n])); werr != nil {
 					cancel()
 					return
 				}
