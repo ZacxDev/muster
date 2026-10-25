@@ -693,6 +693,31 @@ Each draft is a card on the Asks page's Reply drafts tab (`/attention?tab=drafts
 - If an earlier reply to the same message is unconfirmed, a pending card says
   the sender may get both.
 
+### Deciding a draft from your own session
+
+One of your own **mirrored** Claude Code sessions can decide a draft for you,
+over the mirror MCP door ([attention.md](attention.md#mirrored-claude-code-sessions)),
+with two tools no dispatched agent (the chief included) is offered:
+
+| tool | what it does |
+|---|---|
+| `plugin_drafts_list` | Your **pending** drafts, newest first, at most 50 (past 50 the oldest are left out; `total` and `truncated` say so): id, plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject and text of the message it answers, the exact reply, its `body_sha256`, when it was written and expires, and the session route it came from, if any. Read-only. |
+| `plugin_draft_decide {id, decision, body_sha256}` | `decision` is `approve` (it is sent: the plugin's next claim collects it) or `reject`. It is the card's own decision — the same refusals, claim wake-up and notification clearing — **without** the card's fresh sign-in (by operator decision; the mirror token is the credential). Refused: a `body_sha256` that is not the SHA-256 of the draft's text (decide on exactly what you read), a draft that is no longer pending (a withdrawal stays on the card), and another owner's draft or a missing id (both *"No such draft."*). |
+
+Every decision's `plugin.draft.*` audit row records where it was made
+(`decided_via`): `browser` for the card, `mcp from <host>/<session>` for
+`plugin_draft_decide`.
+
+🔴 **Accepted risk: a mirror token can send a reply.** An approval over MCP
+sends text to an outside party in your name with no fresh sign-in. **Any** of
+your mirrored sessions can approve any of your pending drafts — including the
+session a message was routed to, which can approve the reply it wrote itself.
+That is the accepted cost of no step-up. A leaked mirror token, or a mirrored
+session talked into it, can therefore read every pending draft (the sender,
+subject and full text of the message it answers, and the reply) and approve
+any of them (never edit one: the text is fixed when it is written, and the
+hash must match it). Revoke a token you suspect.
+
 ### What happens to a draft
 
 | state | meaning |

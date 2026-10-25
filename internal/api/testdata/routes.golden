@@ -41,6 +41,7 @@ DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
 GET /account
 GET /account/credentials
+GET /account/devices/live
 GET /account/passkeys
 GET /account/tokens
 GET /admin/invites
@@ -229,6 +230,7 @@ POST /mirror/terminal/send
 POST /mirror/view/ask
 POST /mirror/view/ask/cancel
 POST /mirror/view/send
+POST /mirror/view/suggest/event
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/messages
