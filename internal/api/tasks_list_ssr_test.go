@@ -287,27 +287,17 @@ func (e eventDuringList) ListPage(ctx context.Context, f notes.ListFilter) (note
 	return e.Store.ListPage(ctx, f)
 }
 
-// TestTheOfflineShellURLIsBoardless pins both ends of the offline shell: the
-// URL the service worker fetches its "/" from is one this server answers with
-// NO board — no fixture title, the skeleton and its own load, no mark — and the
-// drawn-board marker the worker refuses to store is the one a drawn "/"
-// actually carries. Red at the base of this fix: sw.js fetched "/" itself, which
-// draws the board, and stored it with the session cookie for any later
-// offline open — a signed-out one included.
+// TestTheOfflineShellURLIsBoardless is the SERVER half of the offline shell:
+// "/?shell=1" is answered with NO board — no fixture title, the skeleton and
+// its own load, no mark. The WORKER half (that sw.js fetches this URL, and
+// refuses any "/" carrying data-tasks-drawn at install and carry-forward) is
+// pinned by behaviour, not by its source text: e2e/tests/board-first-paint.spec.ts
+// (the offline shell holds no task) and e2e/tests/update.spec.ts (a board copy
+// is neither installed nor carried forward).
 func TestTheOfflineShellURLIsBoardless(t *testing.T) {
 	f := newBoardFixture(t)
-	sw, err := ServiceWorkerSource()
-	if err != nil {
-		t.Fatal(err)
-	}
 	shellURL := "/?" + offlineShellParam + "=1"
-	if !strings.Contains(string(sw), `'/': '`+shellURL+`'`) {
-		t.Fatalf("sw.js does not fetch its offline \"/\" from %s (SHELL_FETCH)", shellURL)
-	}
 	const drawn = "data-tasks-drawn"
-	if !strings.Contains(string(sw), drawn) {
-		t.Errorf("sw.js does not refuse a \"/\" carrying %s", drawn)
-	}
 	// Control: the real "/" draws the board and carries the marker the worker
 	// looks for, so its absence below is a property of the URL.
 	full := f.get(t, "/")
