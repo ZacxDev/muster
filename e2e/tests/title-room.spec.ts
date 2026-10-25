@@ -1,4 +1,4 @@
-import { Page } from '@playwright/test';
+import { FrameLocator, Locator, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { titleRoomPort } from '../lib/env';
 import { clsInit, readCls, settle } from '../lib/cls';
@@ -15,7 +15,8 @@ import { cc, MirrorRig } from '../lib/mirrorhost';
 //   3. the session switcher's entries — the bar below the message input,
 //      whose Recent/All rows the rendered view draws and whose Pins row is
 //      the agent page's pinned list — and the Agents list's Recent strip are
-//      up to 20rem wide (were 10rem and 14rem), never wider than their row;
+//      up to 26rem wide (were 10rem and 14rem, then 20rem), never wider than
+//      their row;
 //   4. the Agents list's pinned chips are padded 10px a side with a 4px gap
 //      (were 16px and 6px): they have no max-width, but at 390px a chip runs
 //      to the row's edge, and that padding is what clipped a 36-character
@@ -31,13 +32,16 @@ const rig = new MirrorRig(titleRoomPort, 'e2e-title');
 const origin = rig.origin;
 
 // The windows: session, window id. A window with no label is titled
-// "<session>:<index>" (every index here is 1). Lengths 23, 27, 34, 36, 42.
+// "<session>:<index>" (every index here is 1). Lengths 23, 27, 34, 36, 42,
+// 49 and 84.
 const WINDOWS: [string, string][] = [
   ['release-notes-drafter', '@1'],
   ['billing-reconcile-nightly', '@2'],
   ['payments-ledger-migration-review', '@3'],
   ['customer-onboarding-email-sequence', '@4'],
   ['warehouse-inventory-sync-backfill-job-v2', '@5'],
+  ['quarterly-revenue-forecast-reconciliation-batch', '@9'],
+  ['enterprise-customer-data-warehouse-schema-migration-validation-and-audit-report-v3', '@11'],
 ];
 // Windows that are NOT pinned, so the Agents list's Recent strip shows them
 // once visited (a pinned entry is never in the strip). Lengths 27, 34, 36.
@@ -109,7 +113,7 @@ const recentLabel = (page: Page, title: string) => page.locator(`#agents-recent 
 async function visitUnpinned(page: Page) {
   for (const [s, w] of UNPINNED) {
     await page.goto(viewOf(s, w));
-    await expect(page.locator('#view-rendered')).toBeVisible();
+    await expect(page.locator('nav[aria-label="View"]')).toBeVisible();
   }
 }
 // The header's truncating title box: the <h1> at the base, the button in it here.
@@ -131,7 +135,7 @@ async function openView(page: Page, session: string, view = 'all') {
   await setView(page, view);
   await page.addInitScript(clsInit);
   await page.goto(viewOf(session, winOf(session)));
-  await expect(page.locator('#view-rendered')).toBeVisible();
+  await expect(page.locator('nav[aria-label="View"]')).toBeVisible();
   await expect(page.locator('#session-switcher')).toBeVisible();
 }
 
@@ -144,13 +148,19 @@ async function openAgent(page: Page, view: string) {
 }
 
 // The titles the width assertions use. In the switcher (a 114px label at the
-// base, so every one was clipped) the 23- and 27-character titles fit at both
-// sizes; at 1280 the 34- and 36-character ones fit too (a 20rem entry: a 274px
-// label), while at 390 the bar's own row (286px) is the cap. The 42-character
-// one still clips at 1280: the cap is a cap.
+// first base, so every one was clipped) the 23- and 27-character titles fit at
+// both sizes; at 1280 the 34-, 36- and 49-character ones fit too, while at 390
+// the bar's own row (286px) is the cap.
+//
+// 🔴 THE 49-CHARACTER TITLE IS THE 26rem ASK: at 20rem a switcher label got
+// 274px and it needs 337 (red there); a 26rem entry gives 370. The
+// 84-character one (605px) still clips at 1280: the cap is a cap.
 const FITS_NOW = ['release-notes-drafter', 'billing-reconcile-nightly'];
-const FITS_DESKTOP = ['payments-ledger-migration-review', 'customer-onboarding-email-sequence'];
+const FITS_DESKTOP = ['payments-ledger-migration-review', 'customer-onboarding-email-sequence', 'quarterly-revenue-forecast-reconciliation-batch'];
 const STILL_CLIPS = 'payments-ledger-migration-review';
+const VERY_LONG = 'enterprise-customer-data-warehouse-schema-migration-validation-and-audit-report-v3';
+// The cap, in px: 26rem.
+const CAP_PX = 416;
 // The pinned chip (Agents list) a 390px row clipped at the base: 315px of
 // label in 302px. And the Recent strip's: 27 and 34 characters (a 156px
 // label at the base, a 252px one here).
@@ -216,10 +226,19 @@ for (const vp of [
       console.log('TITLE-ROOM ' + JSON.stringify(out));
     });
 
-    // 1. 🔴 RED AT THE BASE: each segment's side padding was 10px.
-    test('the Rendered | Terminal segments are padded 6px a side, still 44px tall', async ({ page }) => {
+    // 1. 🔴 RED AT THE BASE: each segment's side padding was 10px. Desktop
+    // only: below `sm` the switch is one icon (the 393 describe below).
+    if (vp.w !== 390) test('the Rendered | Terminal segments are padded 6px a side, still 44px tall', async ({ page }) => {
       await ready(page);
       await openView(page, LONG);
+      // 🔴 RED AT fade163f (no phone icon exists): at 1280 BOTH word segments
+      // are displayed, and the phone's icon and its sr-only name are not.
+      await expect(page.locator('#view-rendered')).toBeVisible();
+      await expect(page.locator('#view-terminal')).toBeVisible();
+      await expect(page.locator('#view-terminal[data-view-toggle] svg')).toHaveCount(1);
+      await expect(page.locator('#view-terminal[data-view-toggle] svg')).toBeHidden();
+      await expect(page.locator('#view-terminal .sr-only')).toHaveCSS('display', 'none');
+      await expect(page.locator('#view-terminal')).toHaveAccessibleName('Terminal');
       for (const id of ['view-rendered', 'view-terminal']) {
         const m = await page.locator('#' + id).evaluate((el) => {
           const cs = getComputedStyle(el);
@@ -306,14 +325,19 @@ for (const vp of [
         const f = await switcherLabel(page, titleOf(s)).evaluate(fitOf);
         expect(f.clipped, `rendered view, All: ${titleOf(s)} fits (${JSON.stringify(f)})`).toBe(false);
       }
-      // The cap: at most 20rem, and never wider than the row it scrolls in.
+      // The cap: at most 26rem, and never wider than the row it scrolls in.
       const b = await entryBox(page, titleOf(STILL_CLIPS), 'all');
-      expect(b.box, `an entry is at most 20rem (${JSON.stringify(b)})`).toBeLessThanOrEqual(320);
+      expect(b.box, `an entry is at most 26rem (${JSON.stringify(b)})`).toBeLessThanOrEqual(CAP_PX);
       expect(b.box, `an entry is never wider than its row (${JSON.stringify(b)})`).toBeLessThanOrEqual(b.row);
       if (vp.w === 390) {
         expect(b.clipped, 'at 390 the row is the cap: a 34-character title clips').toBe(true);
         expect(await overflowX(page), 'no sideways scroll at 390px').toBe(0);
       }
+      // An 84-character title still clips at both sizes, its entry AT the cap
+      // (26rem at 1280, the row at 390): the cap still exists.
+      const v = await entryBox(page, titleOf(VERY_LONG), 'all');
+      expect(v.clipped, `an 84-character title still clips (${JSON.stringify(v)})`).toBe(true);
+      expect(Math.abs(v.box - Math.min(CAP_PX, v.row)), `its entry is exactly the cap (${JSON.stringify(v)})`).toBeLessThan(1);
       let cls = await readCls(page);
       expect(cls.total, `rendered view layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
 
@@ -323,9 +347,9 @@ for (const vp of [
         const f = await switcherLabel(page, titleOf(s), 'pins').evaluate(fitOf);
         expect(f.clipped, `agent page, Pins: ${titleOf(s)} fits (${JSON.stringify(f)})`).toBe(false);
       }
-      const l = await entryBox(page, titleOf(LONG), 'pins');
-      expect(l.clipped, `a 42-character title still clips (the cap is a cap) (${JSON.stringify(l)})`).toBe(true);
-      expect(l.box, `never wider than its row (${JSON.stringify(l)})`).toBeLessThanOrEqual(Math.min(320, l.row));
+      const l = await entryBox(page, titleOf(VERY_LONG), 'pins');
+      expect(l.clipped, `an 84-character title still clips (the cap is a cap) (${JSON.stringify(l)})`).toBe(true);
+      expect(l.box, `never wider than its row (${JSON.stringify(l)})`).toBeLessThanOrEqual(Math.min(CAP_PX, l.row));
       if (vp.w === 390) expect(await overflowX(page), 'no sideways scroll at 390px').toBe(0);
       cls = await readCls(page);
       expect(cls.total, `agent page layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
@@ -368,3 +392,110 @@ for (const vp of [
     });
   });
 }
+
+// A REAL TAP on a phone. At 393px the header row holds three 44px icon
+// buttons and the Rendered | Terminal nav, which leaves a title about 70px:
+// the tap is how a phone reads a title at all. The viewport, touch and mobile
+// flags are set HERE, not inherited from a project default, so this case
+// cannot silently become a desktop click. `.tap()` dispatches touch events;
+// `.click()` or a scripted showPopover() would prove the mouse path instead.
+test.describe('phone 393×852, a real tap', () => {
+  test.use({ viewport: { width: 393, height: 852 }, isMobile: true, hasTouch: true });
+
+  const TAPPED = 'customer-onboarding-email-sequence'; // 36 characters
+  const W = 393;
+  const toggleBox = (loc: Locator) =>
+    loc.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return { w: r.width, h: r.height, display: getComputedStyle(el).display };
+    });
+  // The switch's displayed children (its script excluded): what a reader sees.
+  const shownSegments = (root: Page | FrameLocator) =>
+    root.locator('nav[aria-label="View"]').evaluate((nav) =>
+      Array.from(nav.children).filter((c) => c.tagName !== 'SCRIPT' && getComputedStyle(c).display !== 'none').map((c) => c.id),
+    );
+
+  // 🔴 RED AT fade163f: the two-segment switch (147px) left the title 70px.
+  test('the switch is ONE 44×44 icon button to the other view; the title gets the room; a tap goes there and back', async ({ page }) => {
+    await ready(page);
+    await openView(page, TAPPED);
+    await settle(page);
+    expect(page.viewportSize(), 'the pinned phone viewport').toEqual({ width: W, height: 852 });
+    const fit = await headerFit(page);
+    const navW = await page.locator('nav[aria-label="View"]').evaluate((n) => n.getBoundingClientRect().width);
+    console.log('TITLE-ROOM-393 ' + JSON.stringify({ title: fit, nav: navW }));
+    expect(fit.client, `the title box is at least 150px (${JSON.stringify(fit)})`).toBeGreaterThanOrEqual(150);
+    // One displayed control in the switch: the link to the terminal. The
+    // current segment takes no width (display:none), not merely invisible.
+    expect(await shownSegments(page), 'the switch shows only its link').toEqual(['view-terminal']);
+    await expect(page.locator('#view-rendered')).toHaveCSS('display', 'none');
+    const toggle = page.getByRole('link', { name: 'Show terminal', exact: true });
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute('data-view-toggle', '');
+    await expect(toggle, 'a mouse gets the name as a tooltip').toHaveAttribute('title', 'Show terminal');
+    await expect(toggle.locator('svg')).toBeVisible();
+    const box = await toggleBox(page.locator('#view-terminal'));
+    expect(box.w, `the toggle is at least 44px wide (${JSON.stringify(box)})`).toBeGreaterThanOrEqual(44);
+    expect(box.h, `the toggle is at least 44px tall (${JSON.stringify(box)})`).toBeGreaterThanOrEqual(44);
+    // Keyboard order: Tab from the chat-index button reaches the toggle, never
+    // the hidden segment.
+    await page.locator('#view-terminal').focus();
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Tab');
+    expect(await page.evaluate(() => document.activeElement && document.activeElement.id), 'Tab lands on the toggle').toBe('view-terminal');
+    expect(await overflowX(page), 'no sideways scroll on the rendered view at 393px').toBe(0);
+
+    // A real tap: the terminal opens (in the view frame) and its own switch
+    // is the one icon back.
+    await toggle.tap();
+    const frame = page.frameLocator('iframe[data-muster-view]');
+    await expect(page.locator('iframe[data-muster-view]')).toBeVisible();
+    await expect(frame.locator('#view-terminal')).toHaveAttribute('aria-current', 'page');
+    await expect.poll(() => new URL(page.url()).pathname).toBe('/mirror/terminal');
+    expect(await shownSegments(frame), 'the terminal\'s switch shows only its link').toEqual(['view-rendered']);
+    await expect(frame.locator('#view-terminal')).toHaveCSS('display', 'none');
+    const back = frame.getByRole('link', { name: 'Show rendered view', exact: true });
+    await expect(back).toBeVisible();
+    await expect(back).toHaveAttribute('title', 'Show rendered view');
+    const tb = await toggleBox(frame.locator('#view-rendered'));
+    expect(Math.min(tb.w, tb.h), `the terminal's toggle is at least 44×44 (${JSON.stringify(tb)})`).toBeGreaterThanOrEqual(44);
+    // The terminal view's header does not scroll sideways at 393px either.
+    const termOverflow = await frame.locator('html').evaluate((h) => ({ page: h.scrollWidth - h.clientWidth, header: (document.querySelector('header') as HTMLElement).scrollWidth - (document.querySelector('header') as HTMLElement).clientWidth }));
+    expect(termOverflow, 'no sideways scroll on the terminal view or its header at 393px').toEqual({ page: 0, header: 0 });
+    expect(await overflowX(page), 'no sideways scroll at 393px').toBe(0);
+
+    await back.tap();
+    await expect(page.locator('iframe[data-muster-view]')).toBeHidden();
+    await expect.poll(() => new URL(page.url()).pathname).toBe('/mirror/view');
+    await expect(page.getByRole('link', { name: 'Show terminal', exact: true })).toBeVisible();
+  });
+
+  test('a tap on a clipped header title opens the whole title inside the screen; Escape closes it', async ({ page }) => {
+    await ready(page);
+    await openView(page, TAPPED);
+    await settle(page);
+    expect(page.viewportSize(), 'the pinned phone viewport').toEqual({ width: 393, height: 852 });
+    const fit = await headerFit(page);
+    expect(fit.clipped, `the 36-character title is clipped at 393px (${JSON.stringify(fit)})`).toBe(true);
+    const trigger = page.locator('[data-title-fit=disable] [data-title-more]');
+    await expect(trigger).toHaveCount(1);
+    await expect(trigger).toBeEnabled();
+    await expect(pop(page)).toBeHidden();
+
+    await trigger.tap();
+    await expect.poll(() => pop(page).evaluate((el) => el.matches(':popover-open')), { message: '#mv-title-full is :popover-open after a tap' }).toBe(true);
+    await expect(pop(page)).toContainText(titleOf(TAPPED));
+    const r = await pop(page).evaluate((el) => {
+      const b = el.getBoundingClientRect();
+      return { left: b.left, right: b.right };
+    });
+    expect(r.left, `the popover starts inside the screen (${JSON.stringify(r)})`).toBeGreaterThanOrEqual(0);
+    expect(r.right, `the popover ends inside the screen (${JSON.stringify(r)})`).toBeLessThanOrEqual(393);
+    expect(await overflowX(page), 'no sideways scroll at 393px').toBe(0);
+
+    await page.keyboard.press('Escape');
+    await expect.poll(() => pop(page).evaluate((el) => el.matches(':popover-open')), { message: '#mv-title-full is closed after Escape' }).toBe(false);
+    await expect(pop(page)).toBeHidden();
+    expect(await overflowX(page), 'no sideways scroll at 393px').toBe(0);
+  });
+});
