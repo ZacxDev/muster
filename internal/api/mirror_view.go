@@ -254,12 +254,12 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		op.begin("write")
 		werr := terminalWriteJSON(ctx, c, b)
 		op.finish(map[bool]string{true: telemetry.ReasonOK, false: telemetry.ReasonClientLeft}[werr == nil],
-			append(hubFields(r, &stats), "ops", strconv.Itoa(len(b.Ops)), "reset", strconv.FormatBool(m.Reset))...)
+			append(hubFields(&stats), "ops", strconv.Itoa(len(b.Ops)), "reset", strconv.FormatBool(m.Reset))...)
 		return werr
 	})
 	reason := streamEndReason(ctx, err)
 	viewEnded(r, openViewMirror, reason)
-	op.finish(reason, hubFields(r, &stats)...)
+	op.finish(reason, hubFields(&stats)...)
 	if ctx.Err() != nil {
 		return
 	}

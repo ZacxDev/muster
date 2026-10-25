@@ -257,7 +257,7 @@ var (
 //
 // 🔴 CARDINALITY RULE, AGAIN: `view`, `phase`, `op` and `reason` are each a
 // closed vocabulary compiled into this module (the constants beside each
-// Observe* below and mirror.HostPhases / mirror.Reason). A host, a session, a
+// Observe* below and mirror.Reason). A host, a session, a
 // window, an agent name or a trace id must NEVER become a label — the per-open
 // log line (`open view=…`) carries those, with the trace id that finds the
 // trace.
@@ -283,15 +283,6 @@ var (
 		Help:    "A request to a mirror host, frame written to answer read, by op and reason.",
 		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 40},
 	}, []string{"op", "reason"})
-
-	// MirrorHostPhase is what a host REPORTED it spent on a watch's open
-	// (mirror.HostTiming), by phase (mirror.HostPhases): durations on the
-	// host's own clock, so no clock skew is in them.
-	MirrorHostPhase = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "muster_mirror_host_phase_seconds",
-		Help:    "Host-reported phases of a rendered view's open (resolve|open|backfill|redact|frame).",
-		Buckets: []float64{0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10},
-	}, []string{"phase"})
 
 	// ViewDisconnects counts a session view's socket ENDING, by view and
 	// reason (mirror.Reason's vocabulary, plus client_left when the browser

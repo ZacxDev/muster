@@ -280,14 +280,13 @@ func (h *Hub) WatchWindow(ctx context.Context, owner int64, host, session, windo
 	}()
 
 	// The open's round trip: the watch written to the first batch read. The
-	// host's spans for the watch are this span's children (writeJSON), and its
-	// own measure of the open arrives on that first batch (Msg.Timing).
+	// host's spans for the watch are this span's children (writeJSON).
 	fctx, first := telemetry.Start(ctx, "mirror.watch.first_batch")
 	sent, gotFirst := time.Now(), false
 	deliver := func(m Msg) error {
 		if !gotFirst {
 			gotFirst = true
-			firstAnswer(first, "watch", openStatsOf(ctx), sent, m.Timing)
+			firstAnswer(first, "watch", openStatsOf(ctx), sent)
 		}
 		return out(m)
 	}

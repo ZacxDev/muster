@@ -99,21 +99,14 @@ func hubOp(ctx context.Context, op string) (context.Context, func(error)) {
 	}
 }
 
-// OpenStats is what the hub measured opening one watch or terminal: the
-// caller's log line and metrics read it (WithOpenStats). Every time is
-// muster's own clock except Host's, whose phases are durations on the host's.
+// OpenStats is what the hub measured opening one watch or terminal, on
+// muster's own clock: the caller's log line reads it (WithOpenStats). What the
+// host spent inside that round trip is its own spans' (host.*), not a field
+// here.
 type OpenStats struct {
 	// Sent is when the request frame was written to the host; First when the
 	// first batch (watch) or the first output (terminal) was read from it.
 	Sent, First time.Time
-	// Host is what the host reported of the open (a watch only; nil from an
-	// older host, and for a terminal).
-	Host *HostTiming
-	// Offset is the estimated amount the host's clock is AHEAD of muster's,
-	// and Delay the network round trip that estimate rests on (ClockOffset);
-	// OffsetOK says the host gave both its instants.
-	Offset, Delay time.Duration
-	OffsetOK      bool
 }
 
 type openStatsKey struct{}
@@ -129,38 +122,14 @@ func openStatsOf(ctx context.Context) *OpenStats {
 	return st
 }
 
-// firstAnswer records the first answer of an open on its span and in st: the
-// round trip, and — when the host reported it — its phases and the clock
-// offset they imply.
-func firstAnswer(span trace.Span, op string, st *OpenStats, sent time.Time, host *HostTiming) {
+// firstAnswer records the first answer of an open: its round trip, in st and
+// the histogram, and the end of its span.
+func firstAnswer(span trace.Span, op string, st *OpenStats, sent time.Time) {
 	now := time.Now()
-	host = CleanTiming(host)
 	metrics.MirrorHubRoundTrip.WithLabelValues(op, telemetry.ReasonOK).Observe(now.Sub(sent).Seconds())
-	var offset, delay time.Duration
-	var ok bool
-	if host != nil {
-		for p, us := range host.Phases {
-			metrics.MirrorHostPhase.WithLabelValues(p).Observe(float64(us) / 1e6)
-		}
-		offset, delay, ok = ClockOffset(sent, now, host)
-	}
 	if st != nil {
-		st.Sent, st.First, st.Host, st.Offset, st.Delay, st.OffsetOK = sent, now, host, offset, delay, ok
+		st.Sent, st.First = sent, now
 	}
-	if !telemetry.Enabled() {
-		return
-	}
-	attrs := []attribute.KeyValue{attribute.Bool("mirror.host_timing", host != nil)}
-	if host != nil {
-		for p, us := range host.Phases {
-			attrs = append(attrs, attribute.Int64("mirror.host."+p+"_us", us))
-		}
-	}
-	if ok {
-		attrs = append(attrs, attribute.Int64("mirror.host_clock_offset_us", offset.Microseconds()),
-			attribute.Int64("mirror.host_clock_delay_us", delay.Microseconds()))
-	}
-	span.SetAttributes(attrs...)
 	telemetry.End(span, telemetry.ReasonOK)
 }
 

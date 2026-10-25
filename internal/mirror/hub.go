@@ -1226,7 +1226,7 @@ func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, wind
 	firstOutput := func() {
 		if !gotFirst {
 			gotFirst = true
-			firstAnswer(first, "attach", openStatsOf(ctx), sent, nil)
+			firstAnswer(first, "attach", openStatsOf(ctx), sent)
 		}
 	}
 	defer func() {

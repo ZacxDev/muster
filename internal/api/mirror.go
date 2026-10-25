@@ -366,7 +366,7 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 			// window == "" is the session's active window, resolved by the plugin
 			// to an explicit window id on a per-window host (mirror.Hub.AttachWindow).
 			aerr := s.ext.Mirror.AttachWindow(ctx, host, session, window, readOnly, stdin,
-				&firstWriter{w: stdout, first: func() { op.finish(telemetry.ReasonOK, hubFields(r, &stats)...) }}, resize)
+				&firstWriter{w: stdout, first: func() { op.finish(telemetry.ReasonOK, hubFields(&stats)...) }}, resize)
 			// The bridge's context ends when the BROWSER goes: an attach that
 			// returns cleanly then was left, not ended by the host.
 			browserLeft = aerr == nil && ctx.Err() != nil
@@ -377,6 +377,6 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 		reason = telemetry.ReasonClientLeft
 	}
 	viewEnded(r, openViewTerminal, reason)
-	op.finish(reason, hubFields(r, &stats)...)
+	op.finish(reason, hubFields(&stats)...)
 	s.logger.Printf("mirror: terminal %s/%s%s detached: %v", host, session, window, errOrNone(err))
 }

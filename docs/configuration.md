@@ -183,14 +183,18 @@ Both binaries export OpenTelemetry traces over OTLP/HTTP when an endpoint is set
 and do nothing at all when none is. These are the
 variables muster reads to decide that; the exporter and the SDK also read the
 standard `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`,
-`OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TIMEOUT` and
-`OTEL_TRACES_SAMPLER` themselves.
+`OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT` themselves.
+`OTEL_TRACES_SAMPLER` is not read: muster's own sampler always keeps opening a
+session (a mirrored view or terminal, an agent's page, and their sockets) and
+anything under a sampled parent, and keeps every other request at
+`MUSTER_TRACE_SAMPLE_RATIO`.
 
 | variable | default | required | what it does |
 |---|---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | none (off) | no | The OTLP/HTTP endpoint, e.g. `http://tempo:4318` (`/v1/traces` is appended). Setting it turns tracing on. Unset, the process installs no tracer, wraps no handler and adds no header. |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none | no | The full traces URL, instead of the endpoint above. Setting either turns tracing on. |
 | `OTEL_SDK_DISABLED` | `false` | no | `true` keeps tracing off whatever endpoint is set. |
+| `MUSTER_TRACE_SAMPLE_RATIO` | `0.05` | no | The share of traces kept for requests that do not open a session (list refreshes, the event stream, polls), from `0` to `1`. Opens and their sockets are always kept. A value outside `0`–`1` keeps tracing off and logs why. |
 
 ## muster-mirror (host agent)
 

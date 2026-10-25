@@ -825,7 +825,7 @@ func (h *hostSide) open(m mirror.Msg) {
 			if n > 0 {
 				// The first output ends the open (its timing is not framed: a
 				// terminal's bytes travel raw).
-				_ = h.reply(m.ID)
+				h.reply(m.ID)
 				wctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
 				werr := h.ws.Write(wctx, websocket.MessageBinary, mirror.EncodeData(m.ID, buf[:n]))
 				cancel()

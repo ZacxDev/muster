@@ -19,43 +19,37 @@ import (
 // sent it (mirror.Msg.Traceparent); the host's spans for that request are its
 // children, so one trace runs from the browser's open to this host's
 // transcript read. While this process's tracing is off — or the server's, so
-// the frame carries no context — nothing here starts a span; a watch still
-// MEASURES its phases and reports them on its first batch (mirror.HostTiming),
-// which costs a few clock reads.
+// the frame carries no context — nothing here does anything: no span, no
+// registered open, every mark a no-op on nil. Per-phase aggregates come from
+// these spans (a span-metrics generator), not from anything on the wire.
 //
 // 🔴 A HOST SPAN CARRIES IDS, SIZES, COUNTS AND DURATIONS. Never a session or
 // window title, a path, a line of the transcript, pane contents, or an
 // error's prose — this host's errors quote paths on it.
 
-// openTrace is one request's open on this host: its span, and the phases it
-// has measured so far (mark), until its first reply is sent (reply).
+// openTrace is one TRACED request's open on this host: its span and the end
+// of its last phase (mark), until its first reply is sent (reply).
 type openTrace struct {
-	recv time.Time
 	ctx  context.Context
 	span trace.Span
-	// traced: the open has a span of its own — this host traces, AND the
-	// request named the server's span to join. A request from a server that
-	// does not trace (or an older one) starts no span here: a root span per
-	// open on this host would be a trace with no server half.
-	traced bool
 
-	mu     sync.Mutex
-	last   time.Time
-	phases map[string]int64
-	done   bool
+	mu   sync.Mutex
+	last time.Time
+	done bool
 }
 
 // beginOpen starts the open of request m, named name ("host.watch"), under
 // the trace context m carries, and registers it under m's stream id for the
-// stream's first reply (viewSend) to find.
+// stream's first reply (viewSend) to find — or, when this host does not trace
+// or m names no server span to join, does nothing and returns nil. (A root
+// span per open here would be a trace with no server half.)
 func (h *hostSide) beginOpen(m mirror.Msg, name string) *openTrace {
-	now := time.Now()
-	o := &openTrace{recv: now, last: now, ctx: context.Background()}
-	if telemetry.Enabled() && m.Traceparent != "" {
-		o.ctx, o.span = telemetry.Start(telemetry.WithTraceparent(o.ctx, m.Traceparent), name, attribute.Int64("mirror.stream", int64(m.ID)),
-			attribute.Bool("mirror.window", m.Window != ""), attribute.Bool("mirror.resume", m.Gen != "" && m.Offset > 0))
-		o.traced = true
+	if !telemetry.Enabled() || m.Traceparent == "" {
+		return nil
 	}
+	o := &openTrace{last: time.Now()}
+	o.ctx, o.span = telemetry.Start(telemetry.WithTraceparent(context.Background(), m.Traceparent), name, attribute.Int64("mirror.stream", int64(m.ID)),
+		attribute.Bool("mirror.window", m.Window != ""), attribute.Bool("mirror.resume", m.Gen != "" && m.Offset > 0))
 	h.opens.Store(m.ID, o)
 	return o
 }
@@ -69,8 +63,8 @@ func (h *hostSide) openOf(id uint32) *openTrace {
 	return v.(*openTrace)
 }
 
-// mark ends phase name: its duration is since the previous mark (or the
-// request's arrival), recorded for the reply and as a child span. A mark
+// mark ends phase name, a child span from the previous mark (or the request's
+// arrival) to now. A mark
 // after the reply is ignored — a restart of the view later on is not part of
 // its open. Safe on nil.
 func (o *openTrace) mark(name string, attrs ...attribute.KeyValue) {
@@ -85,22 +79,16 @@ func (o *openTrace) mark(name string, attrs ...attribute.KeyValue) {
 	}
 	from := o.last
 	o.last = now
-	if o.phases == nil {
-		o.phases = map[string]int64{}
-	}
-	o.phases[name] += now.Sub(from).Microseconds()
 	o.mu.Unlock()
-	if o.traced {
-		_, span := telemetry.StartAt(o.ctx, "host."+name, from, attrs...)
-		span.End(trace.WithTimestamp(now))
-	}
+	_, span := telemetry.StartAt(o.ctx, "host."+name, from, attrs...)
+	span.End(trace.WithTimestamp(now))
 }
 
 // within is ctx carrying the open's span while the open lasts — so a request
 // made for it (opencode's) is its child — and ctx itself otherwise. Safe on
 // nil.
 func (o *openTrace) within(ctx context.Context) context.Context {
-	if o == nil || !o.traced {
+	if o == nil {
 		return ctx
 	}
 	o.mu.Lock()
@@ -114,32 +102,27 @@ func (o *openTrace) within(ctx context.Context) context.Context {
 
 // annotate adds attrs to the open's span. Safe on nil.
 func (o *openTrace) annotate(attrs ...attribute.KeyValue) {
-	if o == nil || !o.traced {
+	if o == nil {
 		return
 	}
 	o.span.SetAttributes(attrs...)
 }
 
-// reply is the timing the open's FIRST reply carries, taken as it is sent,
-// and ends the open's span: the open is over. nil after the first.
-func (h *hostSide) reply(id uint32) *mirror.HostTiming {
+// reply ends stream id's open as its FIRST reply is sent: the open is over.
+// A no-op for an untraced stream, and after the first.
+func (h *hostSide) reply(id uint32) {
 	o := h.openOf(id)
 	if o == nil {
-		return nil
+		return
 	}
 	h.opens.Delete(id)
 	o.mu.Lock()
-	if o.done {
-		o.mu.Unlock()
-		return nil
-	}
+	already := o.done
 	o.done = true
-	t := &mirror.HostTiming{Recv: o.recv.UnixMicro(), Sent: time.Now().UnixMicro(), Phases: o.phases}
 	o.mu.Unlock()
-	if o.traced {
+	if !already {
 		telemetry.End(o.span, telemetry.ReasonOK)
 	}
-	return t
 }
 
 // finish ends stream id's open with err's reason if it never replied (a
@@ -155,7 +138,7 @@ func (h *hostSide) finish(id uint32, err error) {
 	already := o.done
 	o.done = true
 	o.mu.Unlock()
-	if !already && o.traced {
+	if !already {
 		telemetry.End(o.span, hostReason(err))
 	}
 }

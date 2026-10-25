@@ -1893,10 +1893,7 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	for {
 		_, data, err := c.Read(ctx)
 		if err != nil {
-			// Client closed or context done: counted, by reason
-			// (open_trace.go), like a mirrored view's end.
-			viewEnded(r, openViewChat, socketCloseReason(ctx, err))
-			return
+			return // client closed or context done
 		}
 		var in struct {
 			Type string `json:"type"`

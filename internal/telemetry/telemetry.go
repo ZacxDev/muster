@@ -44,7 +44,7 @@ import (
 
 // The variables Setup reads by name. Everything else the OTLP exporter and
 // the SDK read for themselves (OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES,
-// OTEL_EXPORTER_OTLP_HEADERS, OTEL_TRACES_SAMPLER, …): see
+// OTEL_EXPORTER_OTLP_HEADERS, …): see
 // docs/telemetry.md.
 const (
 	EnvEndpoint       = "OTEL_EXPORTER_OTLP_ENDPOINT"
@@ -89,13 +89,19 @@ func Configured(getenv func(string) string) bool {
 // shutdown that does nothing.
 //
 // The exporter is OTLP over HTTP/protobuf; it reads the standard OTEL_EXPORTER_OTLP_*
-// variables itself (endpoint, headers, timeout). The sampler is the SDK's
-// default — parent-based, always on — unless OTEL_TRACES_SAMPLER says
-// otherwise, so a browser trace that arrives sampled stays sampled.
+// variables itself (endpoint, headers, timeout). The sampler is muster's own
+// (Sampler): every open always, a sampled parent's children always, any other
+// root at MUSTER_TRACE_SAMPLE_RATIO. It replaces OTEL_TRACES_SAMPLER, which is
+// not read. A ratio that is not a number in [0, 1] keeps tracing off and says
+// why, rather than guessing.
 func Setup(ctx context.Context, getenv func(string) string, o Options) (func(context.Context) error, error) {
 	noop := func(context.Context) error { return nil }
 	if !Configured(getenv) {
 		return noop, nil
+	}
+	ratio, err := sampleRatio(getenv)
+	if err != nil {
+		return noop, err
 	}
 	exp, err := otlptracehttp.New(ctx)
 	if err != nil {
@@ -111,10 +117,10 @@ func Setup(ctx context.Context, getenv func(string) string, o Options) (func(con
 	if err != nil && !errors.Is(err, resource.ErrPartialResource) {
 		return noop, fmt.Errorf("telemetry: the resource: %w", err)
 	}
-	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res))
+	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp), sdktrace.WithResource(res), sdktrace.WithSampler(Sampler(ratio)))
 	install(tp)
 	if o.Logger != nil {
-		o.Logger.Printf("telemetry: tracing on (service %s), exporting OTLP/HTTP", res.Set().Encoded(attribute.DefaultEncoder()))
+		o.Logger.Printf("telemetry: tracing on (service %s), exporting OTLP/HTTP; opens always sampled, other requests at %g", res.Set().Encoded(attribute.DefaultEncoder()), ratio)
 	}
 	return func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)

@@ -270,9 +270,8 @@ func (h *hostSide) viewSend(m mirror.Msg, gen func() string) func([]mirror.Msg) 
 	return func(msgs []mirror.Msg) error {
 		for _, b := range msgs {
 			b.Type, b.ID, b.Gen = mirror.TypeEvents, m.ID, gen()
-			// The open's first reply carries what this host spent on it
-			// (trace.go); nil on every later message.
-			b.Timing = h.reply(m.ID)
+			// The open's first reply ends its span (trace.go).
+			h.reply(m.ID)
 			if h.c.cfg.NoPromptIndex {
 				for i := range b.Events {
 					b.Events[i].Line = 0 // an older host names no prompt's place
@@ -429,7 +428,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		// ⚠ A FAILED SCAN COSTS THE INDEX, NOT THE VIEW: the view then lists
 		// the prompts it has, as it does for a host that predates the index.
 		var pspan trace.Span
-		if o != nil && o.traced {
+		if o != nil {
 			_, pspan = telemetry.Start(o.ctx, "host.prompt_index")
 		}
 		refs, err := cctranscript.Prompts(f, next)

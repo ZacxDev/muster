@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coder/websocket"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
@@ -47,7 +46,6 @@ const (
 	openViewMirror   = "mirror_view"
 	openViewTerminal = "mirror_terminal"
 	openViewAgent    = "agent"
-	openViewChat     = "agent_chat"
 )
 
 // The parts of an open, and the phase each part's total is observed as.
@@ -151,28 +149,14 @@ func (o *openPhases) finish(outcome string, extra ...string) {
 	o.s.logger.Print(b.String())
 }
 
-// hubFields is what the hub measured of a stream's open (mirror.OpenStats), as
-// log fields, and recorded on the request's span.
-func hubFields(r *http.Request, st *mirror.OpenStats) []string {
-	if st == nil || st.Sent.IsZero() {
+// hubFields is what the hub measured of a stream's open (mirror.OpenStats) as
+// log fields: the round trip to the host. What the host spent inside it is
+// its spans' (host.*).
+func hubFields(st *mirror.OpenStats) []string {
+	if st == nil || st.Sent.IsZero() || st.First.IsZero() {
 		return nil
 	}
-	out := []string{"hub_rtt_ms", ms(st.First.Sub(st.Sent))}
-	if st.Host != nil {
-		var host time.Duration
-		for _, p := range mirror.HostPhases {
-			if us, ok := st.Host.Phases[p]; ok {
-				out = append(out, "host_"+p+"_ms", ms(time.Duration(us)*time.Microsecond))
-				host += time.Duration(us) * time.Microsecond
-			}
-		}
-		out = append(out, "host_ms", ms(host))
-	}
-	if st.OffsetOK {
-		out = append(out, "host_clock_offset_ms", ms(st.Offset), "host_clock_delay_ms", ms(st.Delay))
-		telemetry.Annotate(r, attribute.Int64("mirror.host_clock_offset_us", st.Offset.Microseconds()))
-	}
-	return out
+	return []string{"hub_rtt_ms", ms(st.First.Sub(st.Sent))}
 }
 
 // streamEndReason is why a view's socket ended, as metrics.ViewDisconnects
@@ -186,19 +170,6 @@ func streamEndReason(ctx context.Context, err error) string {
 		return "ended"
 	}
 	return mirror.Reason(err)
-}
-
-// socketCloseReason is a plain socket's end (the agent chat): client_left for
-// a close the browser asked for or a context that ended, else error.
-func socketCloseReason(ctx context.Context, err error) string {
-	switch websocket.CloseStatus(err) {
-	case websocket.StatusNormalClosure, websocket.StatusGoingAway, websocket.StatusNoStatusRcvd:
-		return telemetry.ReasonClientLeft
-	}
-	if ctx.Err() != nil {
-		return telemetry.ReasonClientLeft
-	}
-	return telemetry.ReasonError
 }
 
 // viewEnded counts a view's socket ending, and says why on its span.

@@ -32,6 +32,10 @@ func traceRecorder(t *testing.T) *tracetest.InMemoryExporter {
 	return exp
 }
 
+// hostPhases is every phase span a Claude Code watch's open has on the host,
+// in order (mirrorhost's tail).
+var hostPhases = []string{"resolve", "open", "backfill", "redact", "frame"}
+
 func spanNamed(spans tracetest.SpanStubs, name string) (tracetest.SpanStub, bool) {
 	for _, s := range spans {
 		if s.Name == name {
@@ -82,24 +86,9 @@ func TestOneOpenIsOneTraceFromServerToHost(t *testing.T) {
 	<-done
 	telemetry.End(root, "")
 
-	// The host's phases arrived on the first batch, every one of them.
-	if stats.Host == nil {
-		t.Fatal("the first batch carried no host timing")
+	if stats.Sent.IsZero() || stats.First.Before(stats.Sent) {
+		t.Fatalf("the hub measured no round trip: %+v", stats)
 	}
-	for _, p := range mirror.HostPhases {
-		if _, ok := stats.Host.Phases[p]; !ok {
-			t.Errorf("the host did not report phase %q (got %v)", p, stats.Host.Phases)
-		}
-	}
-	if !stats.OffsetOK {
-		t.Fatal("no clock offset estimate from the host's instants")
-	}
-	// Same process, same clock: the estimate must be within its own error
-	// bound (half the round trip) of zero, plus a millisecond of rounding.
-	if bound := stats.Delay/2 + time.Millisecond; stats.Offset > bound || stats.Offset < -bound {
-		t.Errorf("clock offset %s on ONE clock, beyond the estimate's own bound ±%s", stats.Offset, bound)
-	}
-	t.Logf("one clock: offset %s, delay %s, round trip %s", stats.Offset, stats.Delay, stats.First.Sub(stats.Sent))
 
 	// Every span closes in time for the read below except the host's, which
 	// end on their own goroutine.
@@ -130,7 +119,7 @@ func TestOneOpenIsOneTraceFromServerToHost(t *testing.T) {
 		}
 	}
 	hostWatch, _ := spanNamed(spans, "host.watch")
-	for _, p := range mirror.HostPhases {
+	for _, p := range hostPhases {
 		s, ok := spanNamed(spans, "host."+p)
 		if !ok {
 			t.Errorf("no host.%s span", p)
@@ -145,12 +134,12 @@ func TestOneOpenIsOneTraceFromServerToHost(t *testing.T) {
 // TestAnOlderHostIgnoresTheTraceContext: the two mixed-version directions.
 //
 //   - A NEW muster and an OLDER host: the watch frame carries a traceparent
-//     the host never reads (a raw host here answers as one that predates the
-//     field: no timing), and the view works — the batch arrives, the round
-//     trip is measured, the host's half is simply absent.
+//     the host never reads (a raw host here decodes it as one that predates
+//     the field), and the view works — the batch arrives, the round trip is
+//     measured, the host's spans are simply absent.
 //   - An OLDER muster and a NEW host: a watch with no traceparent is served
-//     as before, the host starts no span of its own (no trace to join), and
-//     its reply's timing is a field an older muster ignores.
+//     as before, and the host starts no span of its own (no trace to join):
+//     its reply is exactly what an older muster always read.
 func TestAnOlderHostIgnoresTheTraceContext(t *testing.T) {
 	exp := traceRecorder(t)
 
@@ -209,8 +198,8 @@ func TestAnOlderHostIgnoresTheTraceContext(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("an older host's batch never reached the view")
 		}
-		if stats.First.IsZero() || stats.Host != nil || stats.OffsetOK {
-			t.Errorf("stats = %+v: want a round trip, and no host half", stats)
+		if stats.First.IsZero() {
+			t.Errorf("stats = %+v: want a round trip", stats)
 		}
 		cancel()
 		telemetry.End(root, "")
@@ -226,9 +215,6 @@ func TestAnOlderHostIgnoresTheTraceContext(t *testing.T) {
 		if reply.Type != mirror.TypeEvents || !reply.Reset {
 			t.Fatalf("the host answered %+v, want its backfill", reply)
 		}
-		if reply.Timing == nil || len(reply.Timing.Phases) == 0 {
-			t.Error("the host's first batch carried no timing (an older muster ignores it; this one reads it)")
-		}
 		time.Sleep(50 * time.Millisecond)
 		for _, s := range exp.GetSpans() {
 			if strings.HasPrefix(s.Name, "host.") {
@@ -236,22 +222,6 @@ func TestAnOlderHostIgnoresTheTraceContext(t *testing.T) {
 			}
 		}
 	})
-}
-
-// TestClockOffsetIsNTPs: the estimate from a known skew and known legs.
-func TestClockOffsetIsNTPs(t *testing.T) {
-	t0 := time.Unix(1000, 0)
-	// The host's clock is 2s ahead; each leg takes 30ms; the host works 100ms.
-	recv := t0.Add(30*time.Millisecond + 2*time.Second)
-	sent := recv.Add(100 * time.Millisecond)
-	t3 := t0.Add(160 * time.Millisecond)
-	off, delay, ok := mirror.ClockOffset(t0, t3, &mirror.HostTiming{Recv: recv.UnixMicro(), Sent: sent.UnixMicro()})
-	if !ok || off != 2*time.Second || delay != 60*time.Millisecond {
-		t.Fatalf("offset %s delay %s ok %v, want 2s 60ms", off, delay, ok)
-	}
-	if _, _, ok := mirror.ClockOffset(t0, t3, &mirror.HostTiming{Recv: 1}); ok {
-		t.Fatal("an estimate from one host instant")
-	}
 }
 
 // TestReasonSpeaksOnlyItsVocabulary: every error the plugin names maps to a
