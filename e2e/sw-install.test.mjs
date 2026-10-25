@@ -101,6 +101,17 @@ test('a script URL with no ?v= hash is never stored', async () => {
   assert.equal(caches.get('muster-shell-build-c').has(bare), false);
 });
 
+test("activate carries forward this build's own SHELL scripts only when the older entry's bytes match", async () => {
+  // This build's cache is empty (every install fetch failed), and an older
+  // cache already holds this build's script URLs — one of them with the
+  // wrong bytes. No "/" anywhere, so only the SHELL loop can carry them.
+  const { handlers, caches } = load([changed, unchanged], { 'muster-shell-build-b': { [changed]: OLD, [unchanged]: SAME } }, {});
+  await fire(handlers, 'activate');
+  const shell = caches.get('muster-shell-build-c');
+  assert.ok(shell.has(unchanged), 'control: a matching SHELL entry is carried');
+  assert.equal(shell.has(changed), false, 'a mismatched SHELL entry is not carried');
+});
+
 test('activate carries forward only script entries whose bytes match their URL', async () => {
   // An older cache holds a "/" that links two scripts; one entry holds the
   // wrong bytes for its URL. The new build's own cache is empty (installed

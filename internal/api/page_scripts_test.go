@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -43,6 +45,11 @@ func TestThePagesScriptsAreServedImmutableUnderTheirContentHash(t *testing.T) {
 			t.Errorf("GET %s?v=%s → %d (%d bytes)", path, v, rec.Code, rec.Body.Len())
 			continue
 		}
+		// The SERVED body, hashed here: what the worker's namesItsBytes checks
+		// (checkVersioned hashes web.Files, not the response).
+		if sum := sha256.Sum256(rec.Body.Bytes()); hex.EncodeToString(sum[:])[:12] != v {
+			t.Errorf("%s is linked at ?v=%s but the served bytes hash to %x", path, v, sum[:6])
+		}
 		if cc := rec.Header().Get("Cache-Control"); cc != immutableCache {
 			t.Errorf("GET %s?v=%s: Cache-Control %q, want %q", path, v, cc, immutableCache)
 		}
@@ -76,10 +83,12 @@ func TestAMissingStaticFileIsNeverCached(t *testing.T) {
 			t.Errorf("GET %s → 404 with Cache-Control %q, want no-store", p, cc)
 		}
 	}
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/app.css", nil))
-	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" {
-		t.Errorf("CONTROL: GET /static/app.css → %d, %q", rec.Code, rec.Header().Get("Cache-Control"))
+	for _, p := range []string{"/static/app.css", "/static/"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" {
+			t.Errorf("CONTROL: GET %s → %d, %q, want 200 no-cache", p, rec.Code, rec.Header().Get("Cache-Control"))
+		}
 	}
 }
 
