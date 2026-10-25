@@ -33,6 +33,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -42,6 +43,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/users"
 )
 
 // Status is where an ask is.
@@ -61,8 +63,14 @@ const (
 
 // ByOperator is who answers an ask: the operator — on the attention view, or
 // (migration 0034) through one of their own mirrored Claude Code sessions'
-// attention_answer. No dispatched agent answers one — not even the chief.
+// attention_answer. No dispatched agent answers one — not even the chief —
+// except a question a mirrored session addressed TO the chief (ByChief).
 const ByOperator = "operator"
+
+// ByChief is answered_by for the chief's answer to a question a mirrored
+// session put to it with chief_ask (New.ToChief, migration 0050): the only ask
+// an agent answers (AnswerByChief).
+const ByChief = "chief"
 
 // ViaMCP is answered_via for an answer given through attention_answer, from a
 // mirrored session (migration 0034). An answer given on the attention view has
@@ -200,6 +208,12 @@ type Ask struct {
 	// attention view (migration 0034): the zero value for the view (and for
 	// every answer recorded before 0034).
 	AnsweredVia AnswerSource `json:"-"`
+	// ToChief: a mirrored session's question to its owner's chief (chief_ask,
+	// migration 0050) — the chief may answer it (AnswerByChief), and the owner's
+	// Attention queue does not list it.
+	ToChief bool `json:"-"`
+	// RouteID is a question's routed message (New.RouteID), "" for none.
+	RouteID string `json:"-"`
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -242,9 +256,20 @@ type New struct {
 	// agent's arguments: task_dispatch trusts it as the provenance of the
 	// owner's answer.
 	TaskID int64
+	// PluginMessageID links the ask to the plugin message it was raised for
+	// (0: none; migration 0051). Set ONLY by muster's unrouted-message sweep
+	// (internal/api unrouted.go; docs/plugins.md#a-message-the-chief-does-not-act-on).
+	PluginMessageID int64
 	// Timeout is how long the ask waits; 0 is DefaultTimeout, and anything
 	// else is clamped to [MinTimeout, MaxTimeout].
 	Timeout time.Duration
+	// ToChief addresses the ask to the owner's chief: set only by the mirrored
+	// sessions' chief_ask, and it writes an audit row with the ask
+	// (chief_question.asked). RouteID, when set, is the routed message the
+	// question is about, stored with it (a retried turn quotes it again) and
+	// on that row.
+	ToChief bool
+	RouteID string
 }
 
 // Clean validates and normalises n: the question and options trimmed, blank
@@ -324,6 +349,15 @@ type Store interface {
 	// Answer records the operator's answer to an open ask, given on the
 	// attention view.
 	Answer(ctx context.Context, id int64, answer string) (Ask, error)
+	// AnswerByChief records the chief's answer to an open question a mirrored
+	// session addressed to it (ToChief); ErrNotFound for any other ask.
+	AnswerByChief(ctx context.Context, id int64, answer string) (Ask, error)
+	// QuestionsDue is every owner's open questions to the chief not yet put to
+	// it (system scope); MarkQuestionTurn takes one's turn, once;
+	// UnmarkQuestionTurn gives it back.
+	QuestionsDue(ctx context.Context, limit int) ([]Ask, error)
+	MarkQuestionTurn(ctx context.Context, id int64) (bool, error)
+	UnmarkQuestionTurn(ctx context.Context, id int64) error
 	// AnswerFromSession records the operator's answer to an open ask, given
 	// through attention_answer by their mirrored Claude Code session (host,
 	// session): the same transition as Answer, plus its provenance (ViaMCP).
@@ -418,7 +452,8 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(answer, ''), coalesce(answered_by, ''), created_at, expires_at, resolved_at,
 	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0), delivery_queued_at,
 	coalesce(task_id, 0),
-	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, '')`
+	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
+	to_chief, coalesce(route_id, '')`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
@@ -428,7 +463,7 @@ func scan(row pgx.Row) (Ask, error) {
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
-		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session); err != nil {
+		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -505,17 +540,44 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 	if open >= MaxOpenPerOwner {
 		return Ask{}, ErrTooMany
 	}
-	var task any
+	var task, message any
 	if n.TaskID > 0 {
 		task = n.TaskID
 	}
-	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9)
-		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task))
+	if n.PluginMessageID > 0 {
+		message = n.PluginMessageID
+	}
+	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
+			to_chief, route_id, plugin_message_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12)
+		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
+		n.ToChief, nullable(n.RouteID), message))
 	if err != nil {
 		return Ask{}, err
 	}
+	if n.ToChief {
+		detail := map[string]any{"host": n.Asker.MirrorHost, "session": n.Asker.MirrorSession, "expires_at": a.ExpiresAt.UTC().Format(time.RFC3339)}
+		if n.RouteID != "" {
+			detail["route_id"] = n.RouteID
+		}
+		if err := auditAsk(ctx, tx, "chief_question.asked", a.ID, detail); err != nil {
+			return Ask{}, err
+		}
+	}
 	return a, tx.Commit(ctx)
+}
+
+// AskObject is the audit_log `object` naming an ask.
+func AskObject(id int64) string { return "attention_ask:" + strconv.FormatInt(id, 10) }
+
+// auditAsk appends one audit_log row about ask id as ctx's principal (0009's
+// self_append), in tx.
+func auditAsk(ctx context.Context, tx pgx.Tx, action string, id int64, detail map[string]any) error {
+	p, ok := authz.From(ctx)
+	if !ok || p.UserID <= 0 {
+		return errors.New("attention: an audited write needs a user principal")
+	}
+	return users.AuditTx(ctx, tx, users.Actor{UserID: p.UserID, Via: p.Via}, action, AskObject(id), detail)
 }
 
 func (s *PGStore) Get(ctx context.Context, id int64) (Ask, error) {
@@ -615,6 +677,80 @@ func (s *PGStore) AnswerFromSession(ctx context.Context, id int64, answer, host,
 		return a, ErrSameHost
 	}
 	return a, err
+}
+
+// AnswerByChief records the chief's answer to question id — an open question a
+// mirrored session addressed to the chief (ToChief) — as answered_by ByChief,
+// left for the session's attention_wait (pull), with its audit row. Any other
+// ask, another owner's (row-level security) and a missing one are ErrNotFound
+// alike: the chief answers no ask but one put to it.
+func (s *PGStore) AnswerByChief(ctx context.Context, id int64, answer string) (Ask, error) {
+	answer, err := CleanAnswer(answer)
+	if err != nil {
+		return Ask{}, err
+	}
+	var a Ask
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		a, err = scan(tx.QueryRow(ctx, `UPDATE attention_asks SET status = 'answered', answer = $2, answered_by = $3, resolved_at = now(),
+			  delivery = 'pull'
+			WHERE id = $1 AND to_chief AND status = 'open' AND expires_at > now() RETURNING `+cols, id, answer, ByChief))
+		if err != nil {
+			return err
+		}
+		return auditAsk(ctx, tx, "chief_question.answered", id, map[string]any{"by": ByChief})
+	})
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return a, err
+	}
+	cur, gerr := s.Get(ctx, id)
+	if gerr != nil {
+		return Ask{}, gerr
+	}
+	if !cur.ToChief {
+		return Ask{}, ErrNotFound
+	}
+	return cur, ErrNotOpen
+}
+
+// QuestionsDue is every owner's open questions to the chief whose turn has not
+// started (chief_turn_at NULL: the chief was busy or stopped), oldest first,
+// at most limit (system scope: the attention sweep retries each as its owner).
+func (s *PGStore) QuestionsDue(ctx context.Context, limit int) ([]Ask, error) {
+	return collect(s.pool.Query(sys(ctx), `SELECT `+cols+` FROM attention_asks
+		WHERE to_chief AND status = 'open' AND expires_at > now() AND chief_turn_at IS NULL ORDER BY id LIMIT $1`, limit))
+}
+
+// MarkQuestionTurn takes question id's turn: one conditional UPDATE on its turn
+// not having started, so of two callers exactly one gets true and puts it to
+// the chief. False for a question no longer open.
+func (s *PGStore) MarkQuestionTurn(ctx context.Context, id int64) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `UPDATE attention_asks SET chief_turn_at = now()
+		WHERE id = $1 AND to_chief AND status = 'open' AND expires_at > now() AND chief_turn_at IS NULL`, id)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// UnmarkQuestionTurn gives question id's turn back (its runtime provably took
+// nothing), for the sweep to retry.
+func (s *PGStore) UnmarkQuestionTurn(ctx context.Context, id int64) error {
+	_, err := s.pool.Exec(ctx, `UPDATE attention_asks SET chief_turn_at = NULL WHERE id = $1 AND to_chief`, id)
+	return err
+}
+
+// inTx runs fn in one transaction under ctx's principal.
+func (s *PGStore) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // cutDetail bounds a delivery detail (0031's CHECK).

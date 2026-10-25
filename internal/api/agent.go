@@ -347,6 +347,10 @@ func (s *Server) agentTools() []agentTool {
 		// owner must approve before the plugin sends it. MCP and chief-only for
 		// task_create_gated's reasons.
 		tools = append(tools, agentTool{def: replyDraftToolDef(), mcp: true, chiefOnly: true})
+		// plugin_message_settle (unrouted.go): the chief records that a message
+		// needs nothing more, so muster raises no ask for it. MCP and chief-only
+		// for reply_draft's reasons.
+		tools = append(tools, agentTool{def: pluginMessageSettleToolDef(), mcp: true, chiefOnly: true})
 	}
 	// Session focus (focus_tools.go): the chief lists and searches its owner's
 	// sessions' focus. MCP too, so a claude-code chief reaches them. Both are
@@ -392,6 +396,9 @@ func (s *Server) agentTools() []agentTool {
 		for _, d := range chiefAttentionToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
 		}
+		// A mirrored session's question to the chief (chief_ask_tool.go): the
+		// chief answers it. Chief-only, on MCP.
+		tools = append(tools, agentTool{def: answerSessionQuestionToolDef(), mcp: true, chiefOnly: true})
 	}
 	return tools
 }
@@ -637,6 +644,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolTaskCreateGated(ctx, a, arguments)
 	case replyDraftToolName:
 		return s.toolReplyDraft(ctx, a, arguments)
+	case pluginMessageSettleToolName:
+		return s.toolPluginMessageSettle(ctx, a, arguments)
 	case fleetListToolName:
 		return s.toolFleetList(ctx)
 	case focusSearchToolName:
@@ -645,6 +654,12 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolSessionsOverview(ctx, a, arguments)
 	case routeToSessionToolName:
 		return s.toolRouteToSession(ctx, a, arguments)
+	case answerSessionQuestionTool:
+		// Registered only with the attention store (agentTools).
+		if !s.attentionToolsOn() {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolAnswerSessionQuestion(ctx, a, arguments)
 	case "connector_status":
 		var in struct {
 			Name        string `json:"name"`

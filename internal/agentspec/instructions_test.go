@@ -358,7 +358,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSection",
 			text: chiefPluginSection,
-			want: "463fbbf8cdf0f3dd23b6b925c125aaaf8f9db6a06bf17337608b29529a058182",
+			want: "312db52b633a43577dde787ee6fedae8f5bd7d3d1bd0bd408e250c19b2957f99",
 			min:  1000,
 		},
 		{
@@ -370,7 +370,7 @@ func TestNoTextReachesTheSupervisorPromptWithoutAPin(t *testing.T) {
 		{
 			name: "chiefPluginSectionClaudeCode",
 			text: chiefPluginSectionClaudeCode,
-			want: "49ffcb30800052f16f3395c316dafad5c10f91c61c5dcee957bedd68964eb570",
+			want: "e92e6cc5f08b31b0f1fafef8f597eec524f5e26515f129ce6dd8a42b980a7c6a",
 			min:  1000,
 		},
 	} {
@@ -694,7 +694,7 @@ func TestTheClaudeCodePluginSectionIsTheGatewaysWithMCPNames(t *testing.T) {
 		"`reply_draft`", "`mcp__muster__reply_draft`",
 		"`sessions_overview`", "`mcp__muster__sessions_overview`",
 		"`route_to_session`", "`mcp__muster__route_to_session`",
-		"`attention_ask`", "`mcp__muster__attention_ask`",
+		"`plugin_message_settle`", "`mcp__muster__plugin_message_settle`",
 	).Replace(chiefPluginSection)
 	if derived == chiefPluginSection {
 		t.Fatal("control: the replacer changed nothing, so the comparison below would compare a section to itself")
@@ -735,51 +735,32 @@ func TestTheClaudeCodeSupervisorProseIsTrueInItsImage(t *testing.T) {
 	}
 }
 
-// TestTheChiefDoesNotStopWhenNoSessionIsOnAMessage pins the chief's FALLBACK
-// rule WHOLE, in both runtimes' spelling, against literals typed here: when no
-// session is clearly on a plugin message that asks the owner to do or decide
-// something, the chief raises an attention_ask summarising it — never only a
-// summary in its own conversation. A message that only informs gets NO ask:
-// asks stay open a day and the owner's open-ask cap is shared by every agent,
-// so an ask per FYI would fill it and refuse every worker's ask. The failure it closes: messages asking the owner to act
-// were read and summarised in the chief's own chat only, no session matched,
-// and nothing reached the Attention view.
-//
-// It also pins WHERE the rule sits — straight after the routing paragraph it is
-// the other branch of — and that it ships only with the plugin section.
-func TestTheChiefDoesNotStopWhenNoSessionIsOnAMessage(t *testing.T) {
+// TestThePluginSectionHasNoAskFallback: the old PROSE FALLBACK — raise an
+// attention_ask for a message no session is on — is gone from every variant's
+// plugin section (muster raises that ask itself: internal/api unrouted.go), and
+// the one-line pointer to plugin_message_settle is there, in each runtime's
+// spelling, and only with plugins on.
+func TestThePluginSectionHasNoAskFallback(t *testing.T) {
 	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
-	rule := func(ask string) string {
-		return "If no session is clearly on the subject and the message asks your owner to do or decide something " +
-			"— a question to them, a request, an approval — do not stop at reading it: a summary you write only in " +
-			"this conversation reaches nobody. Call the " + ask + " tool with a short summary of the message — who " +
-			"it is from and what it asks your owner to do or decide — so it reaches your owner's Attention view; " +
-			"their answer comes back to you as a new message, so do not wait for it. A message that only informs " +
-			"(a notice, a status update, a newsletter) gets no ask: your owner's open asks are limited, and every " +
-			"agent shares them."
+	line := func(settle string) string {
+		return "When a message needs nothing more, call " + settle + " with its message_id and why."
 	}
 	for _, c := range []struct {
-		name, prompt, off, route, rule string
+		name, section, prompt, off, line string
 	}{
-		{"gateway", ChiefInstructions(false, true), ChiefInstructions(false, false), "`route_to_session`",
-			rule("`attention_ask`")},
-		{"gateway with cairn", ChiefInstructions(true, true), ChiefInstructions(true, false), "`route_to_session`",
-			rule("`attention_ask`")},
-		{"claude-code", ChiefInstructionsClaudeCode(true), ChiefInstructionsClaudeCode(false), "`mcp__muster__route_to_session`",
-			rule("`mcp__muster__attention_ask`")},
+		{"gateway", chiefPluginSection, ChiefInstructions(false, true), ChiefInstructions(false, false), line("`plugin_message_settle`")},
+		{"gateway with cairn", chiefPluginSection, ChiefInstructions(true, true), ChiefInstructions(true, false), line("`plugin_message_settle`")},
+		{"claude-code", chiefPluginSectionClaudeCode, ChiefInstructionsClaudeCode(true), ChiefInstructionsClaudeCode(false), line("`mcp__muster__plugin_message_settle`")},
 	} {
 		got := norm(c.prompt)
-		at := strings.Index(got, c.rule)
-		if at < 0 {
-			t.Errorf("%s: the chief prompt does not carry the fallback rule:\n%s", c.name, c.rule)
-			continue
+		if !strings.Contains(got, c.line) {
+			t.Errorf("%s: the chief prompt does not carry the settle pointer:\n%s", c.name, c.line)
 		}
-		before := "hand the message to it rather than filing a task. "
-		if !strings.HasSuffix(got[:at], c.route+", "+before) {
-			t.Errorf("%s: the fallback rule does not follow the routing paragraph it is the other branch of", c.name)
+		if strings.Contains(norm(c.off), "plugin_message_settle") {
+			t.Errorf("%s: plugins OFF, but the prompt names plugin_message_settle", c.name)
 		}
-		if strings.Contains(norm(c.off), "If no session is clearly on the subject and the message asks") {
-			t.Errorf("%s: plugins OFF, but the prompt carries the fallback rule", c.name)
+		if strings.Contains(c.section, "attention_ask") || strings.Contains(got, "If no session is clearly on the subject") {
+			t.Errorf("%s: the plugin section still carries the prose fallback (an attention_ask for an unrouted message)", c.name)
 		}
 	}
 }

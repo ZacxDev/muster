@@ -693,6 +693,31 @@ Each draft is a card on the Asks page's Reply drafts tab (`/attention?tab=drafts
 - If an earlier reply to the same message is unconfirmed, a pending card says
   the sender may get both.
 
+### Deciding a draft from your own session
+
+One of your own **mirrored** Claude Code sessions can decide a draft for you,
+over the mirror MCP door ([attention.md](attention.md#mirrored-claude-code-sessions)),
+with two tools no dispatched agent (the chief included) is offered:
+
+| tool | what it does |
+|---|---|
+| `plugin_drafts_list` | Your **pending** drafts, newest first, at most 50 (past 50 the oldest are left out; `total` and `truncated` say so): id, plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject and text of the message it answers, the exact reply, its `body_sha256`, when it was written and expires, and the session route it came from, if any. Read-only. |
+| `plugin_draft_decide {id, decision, body_sha256}` | `decision` is `approve` (it is sent: the plugin's next claim collects it) or `reject`. It is the card's own decision — the same refusals, claim wake-up and notification clearing — **without** the card's fresh sign-in (by operator decision; the mirror token is the credential). Refused: a `body_sha256` that is not the SHA-256 of the draft's text (decide on exactly what you read), a draft that is no longer pending (a withdrawal stays on the card), and another owner's draft or a missing id (both *"No such draft."*). |
+
+Every decision's `plugin.draft.*` audit row records where it was made
+(`decided_via`): `browser` for the card, `mcp from <host>/<session>` for
+`plugin_draft_decide`.
+
+🔴 **Accepted risk: a mirror token can send a reply.** An approval over MCP
+sends text to an outside party in your name with no fresh sign-in. **Any** of
+your mirrored sessions can approve any of your pending drafts — including the
+session a message was routed to, which can approve the reply it wrote itself.
+That is the accepted cost of no step-up. A leaked mirror token, or a mirrored
+session talked into it, can therefore read every pending draft (the sender,
+subject and full text of the message it answers, and the reply) and approve
+any of them (never edit one: the text is fixed when it is written, and the
+hash must match it). Revoke a token you suspect.
+
 ### What happens to a draft
 
 | state | meaning |
@@ -736,16 +761,72 @@ block's header cannot reach column 0 or add a session. The titles inside it are
 still a summarizer's output, so the block says to treat them as data. The
 chief's standing instructions tell it to check those sessions, and
 `sessions_overview`, before filing a task or drafting a reply, and to route
-with `route_to_session` only when one is clearly on it. When none is and
-the message asks you to do or decide something (a question to you, a request,
-an approval), they tell it not to stop at reading it: it raises an
-`attention_ask` summarising who the message is from and what it asks, so it
-reaches your Attention view. A message that only informs gets no ask: asks
-stay open a day and every agent shares your open-ask limit.
+with `route_to_session` only when one is clearly on it. A message it acts on
+in none of those ways is not left to its judgement: muster puts it in front of
+you itself ([below](#a-message-the-chief-does-not-act-on)).
 
 This is pushed rather than left to the chief because a chief that was not
 told called no session tool at all. See [focus](focus.md#why-a-time-window-over-history-and-not-the-current-focus)
 for why the lookup reads a time window of history.
+
+## A message the chief does not act on
+
+A message that can be replied to (not `no_reply`) and was delivered to your
+chief **awaits a disposition**. It is dispositioned once it is settled, or once
+the chief **acted on it**:
+
+- a **live** reply draft: pending, approved, sent or unconfirmed;
+- a **live** route to a session: routed, answered or relayed;
+- a gated task filed citing it (`task_create_gated` with its `message_id`).
+
+That "acted on it" rule is the same one that keeps a message off the
+[retry list](#retrying-an-unconfirmed-message) (`chiefActed`, one predicate
+for both). Live, not any state: a draft rejected, superseded, expired or
+failed, and a route timed out or failed, ended without an answer, so the
+message is back where it started.
+
+A **settle** is the chief's `plugin_message_settle {message_id, reason}`: its
+judgement that the message needs nothing more (a notice, a status update, a
+newsletter, or one dealt with some other way), with why. The reason is stored
+on the message (`settle_reason`, at most 2000 characters) and in the
+`plugin.message.settled` audit row, and travels with the message
+(`settleReason`). A second settle keeps the first reason. Only the chief is
+offered the tool, and only for a message delivered to it: another owner's
+message, or one still queued, is *"not a plugin message delivered to you"*.
+
+An **agent-mail** message — one from the plugin named `agent-mail`
+(`plugins.UnroutedAskPlugin`; plugins are named this way everywhere, as in the
+route allowlist) — still awaiting a disposition **15 minutes** after its
+delivery is put in front of you by muster: the attention sweep (every 30 s)
+raises an [ask](attention.md), asked by `muster`, showing the sender (with the
+**UNVERIFIED** mark unless the plugin verified the sender), the subject, the
+plugin and id, and the first 600 characters. Messages from every other plugin
+never raise one: Discord DMs, for one, you already read in Discord, and a
+chief that answers few of them would otherwise turn each into an ask. An
+unconfirmed delivery (its turn was cut off) is not judged either: it waits on
+the [retry list](#retrying-an-unconfirmed-message).
+
+- **One ask per message, ever.** `attention_asks.plugin_message_id` is unique,
+  so a sweep run again, two processes sweeping at once or a retry after a
+  crash cannot raise a second; whatever the ask's fate, the message is not
+  asked about again. A disposition that races the raise is caught by the next
+  sweep's close.
+- **Answer it** — **No action needed**, or anything you type — and the message
+  is settled with your answer as the reason. Nothing is sent and the chief is
+  not told: to reply, ask your chief for a draft.
+- **A later disposition closes it**: the next sweep cancels the ask and clears
+  its notification.
+- **Dismiss without answering** withdraws it and leaves the message unsettled.
+- **Capped like any ask.** They count toward your limit of open asks (50,
+  shared with your agents) and expire after a day. At the limit the sweep
+  raises none and tries again on the next one (one log line per sweep).
+- **Muster's, not the chief's**, so the chief cannot `attention_cancel` one:
+  only a disposition closes it.
+
+**Nothing fires at the deploy.** Migration `0051` settles every message already
+awaiting a disposition, from any plugin, with the reason `pre-existing`, using
+the sweep's own predicate (`awaitsDisposition`). A message still queued then is
+judged when it is delivered.
 
 ## Routing a message to a session
 
@@ -793,6 +874,12 @@ turn for each message says when to do this.
    addresses. It no longer asks the session to leave out infrastructure names:
    the reply screen below still refuses the deployment's own names, with an
    error the session can act on.
+
+   A session that needs to know something before it answers can ask the
+   chief: `chief_ask {question, route_id}` ([attention.md](attention.md#asking-the-chief)).
+   The chief gets the question with the message quoted; its answer comes back
+   through the session's `attention_wait`. The route keeps its own deadline
+   meanwhile.
 4. **Back to the sender**, exactly once, as the message's reply draft:
    - when the message's sender is on your allowlist (`MUSTER_ROUTE_RELAY_ALLOW`)
      **for the plugin that delivered it**, and that plugin marked the sender
@@ -874,3 +961,40 @@ that text, and Enter sends both. The idle delay is the only protection.
 ⚠ **An answer is sent as written.** It is screened like any reply draft (no
 hidden characters, addresses, credentials or the deployment's own names), and
 for a verified, allowlisted sender that screen is the only check before it goes.
+
+### Routing a message from your own session
+
+You can make the same route yourself, in one step, from one of your own
+**mirrored** Claude Code sessions, over the mirror MCP door
+([attention.md](attention.md#mirrored-claude-code-sessions)) — instead of
+asking the chief to. Two tools, offered only there, only with routing on, and
+to no dispatched agent (the chief included):
+
+| tool | what it does |
+|---|---|
+| `plugin_messages_list` | Your **30 most recent** routable inbound messages, **newest first by arrival** (past 30 the older ones are left out; `truncated` says so). Routable means: delivered (or being delivered) to your chief, and not `no_reply` (so never a task event or a notice muster routed itself: those always are). Each: `message_id`, the plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject, the first 280 characters of the body, when it was received, and its route: `none`, `pending` (routed, not yet answered — with its deadline), `relayed` (answered: sent, or a draft awaiting you) or `handed_back` (timed out or failed: back with the chief). Read-only. |
+| `plugin_message_route {message_id, subject?}` | Routes that message. **With no `subject` it goes to the calling session** — pasted once that session has been idle for `MUSTER_SEND_QUEUE_IDLE`, so the session ends its turn to receive it, then answers with `route_reply`. `subject` names another session, exactly as `mirror:<claude session id>` (the chief's form). Any other value — a bare id, an empty id, a window title — or a session no online window shows is refused `subject_not_found`, listing the online sessions as `candidates`: the way to find a subject on this door. |
+
+It is **the chief's route**, not a copy (`routeMessage`): the same target
+check, the same `session_routes` row, the same send-queue injection and
+step-up exemption, the same `route_reply` answer and relay, the same deadline
+and hand-back. The route's agent is still the chief the message was delivered
+to — the reply draft is filed as the chief's, and a timed-out route goes back
+to the chief. Two things differ: the pasted block says it was routed by you,
+and the `session_route.routed` audit row is yours (via `mirror-host`) and
+carries `routed_via: "mcp from <host>/<session>"`.
+
+Refused, saying why (`refused` is a code a session can branch on): a message
+that already has a route waiting for an answer (`already_routed`, the route
+store's own one-open-route check); a message not yet delivered to your chief
+(`not_delivered` — route it once the chief has it); a subject that is not
+`mirror:<claude session id>` of an online session (`subject_not_found`, with the
+`candidates`); another owner's message and a
+missing id (both *"no such plugin message: N"*); and everything the chief's
+route refuses — a `no_reply` message (every task event is one), a message with
+a reply already on its way, and a target that cannot take one now (an offline
+or read-only host, a window that does not report Claude Code's status — the
+session must be the active pane of its window).
+
+⚠ What a mirror token can read and do with these tools, and the accepted risk
+of a session routing a message to itself: [auth.md](auth.md#mirror-tokens-and-session-routing).

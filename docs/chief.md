@@ -44,10 +44,11 @@ The chief is offered these tools, and no other agent is:
 
 | tool | needs |
 |---|---|
-| `task_create_gated`, `reply_draft` | plugins on |
+| `task_create_gated`, `reply_draft`, `plugin_message_settle` | plugins on |
 | `fleet_list`, `focus_search`, `sessions_overview` | session focus |
 | `route_to_session` | session routing |
 | `attention_list` | the attention queue |
+| `answer_session_question` | the attention queue: a mirrored session's [`chief_ask`](attention.md#asking-the-chief) |
 | `task_route_attention`, `task_forward` | task routing (`MUSTER_TASK_ROUTING`) |
 | `task_dispatch` | task routing, and you opted in (`MUSTER_CHIEF_DISPATCH_OWNERS`) |
 
