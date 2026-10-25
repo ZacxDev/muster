@@ -177,6 +177,21 @@ configuration:
 For example, in a `jq` filter that reads `MUSTER_CONFIG` as `$mc`:
 `| if ($mc[0].workspace // null) then .agents.defaults.workspace = $mc[0].workspace else . end`.
 
+## Tracing (muster-server and muster-mirror)
+
+Both binaries export OpenTelemetry traces over OTLP/HTTP when an endpoint is set,
+and do nothing at all when none is. These are the
+variables muster reads to decide that; the exporter and the SDK also read the
+standard `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`,
+`OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TIMEOUT` and
+`OTEL_TRACES_SAMPLER` themselves.
+
+| variable | default | required | what it does |
+|---|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | none (off) | no | The OTLP/HTTP endpoint, e.g. `http://tempo:4318` (`/v1/traces` is appended). Setting it turns tracing on. Unset, the process installs no tracer, wraps no handler and adds no header. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none | no | The full traces URL, instead of the endpoint above. Setting either turns tracing on. |
+| `OTEL_SDK_DISABLED` | `false` | no | `true` keeps tracing off whatever endpoint is set. |
+
 ## muster-mirror (host agent)
 
 Each setting is also a flag (`-url`, `-token-file`, …). See

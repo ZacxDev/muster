@@ -7,7 +7,11 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // THE RENDERED VIEW's server half (tunnel v2): a transcript stream per open
@@ -248,7 +252,10 @@ func (h *Hub) Watch(ctx context.Context, owner int64, host, session, gen string,
 // A Hermes window's view (Phase 2) is the same stream: Gen is its
 // conversation's id and the offset a messages.id; its host always answers a
 // watch with a Reset backfill.
-func (h *Hub) WatchWindow(ctx context.Context, owner int64, host, session, window, gen string, offset int64, out func(Msg) error) error {
+func (h *Hub) WatchWindow(ctx context.Context, owner int64, host, session, window, gen string, offset int64, out func(Msg) error) (err error) {
+	// The view's whole stream, and why it ended (trace.go).
+	ctx, life := telemetry.Start(ctx, "mirror.watch", attribute.Bool("mirror.resume", gen != "" && offset > 0))
+	defer func() { telemetry.End(life, streamReason(ctx, err)) }()
 	hc, windowID, err := h.lookupRendered(owner, host, session, window)
 	if err != nil {
 		return err
@@ -272,7 +279,26 @@ func (h *Hub) WatchWindow(ctx context.Context, owner int64, host, session, windo
 		hc.mu.Unlock()
 	}()
 
-	if err := writeJSON(ctx, hc.ws, Msg{Type: TypeWatch, ID: id, Session: session, Window: windowID, Gen: gen, Offset: offset}); err != nil {
+	// The open's round trip: the watch written to the first batch read. The
+	// host's spans for the watch are this span's children (writeJSON), and its
+	// own measure of the open arrives on that first batch (Msg.Timing).
+	fctx, first := telemetry.Start(ctx, "mirror.watch.first_batch")
+	sent, gotFirst := time.Now(), false
+	deliver := func(m Msg) error {
+		if !gotFirst {
+			gotFirst = true
+			firstAnswer(first, "watch", openStatsOf(ctx), sent, m.Timing)
+		}
+		return out(m)
+	}
+	defer func() {
+		if !gotFirst {
+			reason := streamReason(ctx, err)
+			metrics.MirrorHubRoundTrip.WithLabelValues("watch", reason).Observe(time.Since(sent).Seconds())
+			telemetry.End(first, reason)
+		}
+	}()
+	if err := writeJSON(fctx, hc.ws, Msg{Type: TypeWatch, ID: id, Session: session, Window: windowID, Gen: gen, Offset: offset}); err != nil {
 		return fmt.Errorf("mirror: ask the host to stream the transcript: %w", err)
 	}
 	defer func() { _ = writeJSON(hc.ctx, hc.ws, Msg{Type: TypeClose, ID: id}) }()
@@ -286,7 +312,7 @@ func (h *Hub) WatchWindow(ctx context.Context, owner int64, host, session, windo
 			for {
 				select {
 				case m := <-w.out:
-					if err := out(m); err != nil {
+					if err := deliver(m); err != nil {
 						return err
 					}
 				default:
@@ -294,7 +320,7 @@ func (h *Hub) WatchWindow(ctx context.Context, owner int64, host, session, windo
 				}
 			}
 		case m := <-w.out:
-			if err := out(m); err != nil {
+			if err := deliver(m); err != nil {
 				return err
 			}
 		}
@@ -649,7 +675,9 @@ func (hc *hostConn) statusSince(session, id string) int64 {
 }
 
 // pasteTo hands text to hc for (session, window id) and waits for the answer.
-func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text string, anyPane bool, gated string, since int64) error {
+func (h *Hub) pasteTo(ctx context.Context, hc *hostConn, session, windowID, text string, anyPane bool, gated string, since int64) (err error) {
+	ctx, done := hubOp(ctx, "paste")
+	defer func() { done(err) }()
 	hc.mu.Lock()
 	hc.next++
 	id := hc.next

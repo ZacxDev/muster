@@ -59,7 +59,9 @@ const scrollTimeout = 5 * time.Second
 // ScrollWindow scrolls the active pane of one WINDOW of owner's host's session
 // (its tmux window id; "" = the session's active window) through its history by
 // lines (Msg.Lines: positive is back), and waits for the host's answer.
-func (h *Hub) ScrollWindow(ctx context.Context, owner int64, host, session, window string, lines int) error {
+func (h *Hub) ScrollWindow(ctx context.Context, owner int64, host, session, window string, lines int) (err error) {
+	ctx, done := hubOp(ctx, "scroll")
+	defer func() { done(err) }()
 	lines, ok := ClampScroll(lines)
 	if !ok {
 		return ErrBadScroll

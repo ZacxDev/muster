@@ -34,6 +34,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/ccsubagents"
@@ -448,6 +449,91 @@ type Msg struct {
 	// Colors (colors) is, per window id, the window's tmux identity colour as
 	// lowercase #rrggbb — the WHOLE map each time (work.go).
 	Colors map[string]string `json:"colors,omitempty"`
+
+	// ---- tracing (internal/telemetry) ----
+
+	// Traceparent (every request muster sends a host: open, watch, paste,
+	// scroll, catalog, answer, cancel-ask, subagent-tail) is the W3C trace
+	// context of the server span that sent it, so the host's spans for the
+	// request are children of it — one trace from the browser to the host's
+	// transcript read. "" while the server's tracing is off.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an older host's JSON
+	// decode ignores the field (its spans simply do not exist); a host whose
+	// tracing is off ignores it too; an older muster never sends it.
+	// TestAnOlderHostIgnoresTheTraceContext drives both directions.
+	Traceparent string `json:"traceparent,omitempty"`
+	// Timing (events: the FIRST message of a watch; open's first output is
+	// not framed, so a terminal reports none) is what the host measured
+	// serving the request (HostTiming). An older host sends none; an older
+	// muster ignores it.
+	Timing *HostTiming `json:"timing,omitempty"`
+}
+
+// HostTiming is what a host measured serving one request: when it read the
+// request and when it sent this reply, on ITS clock, and how long each of its
+// phases took. muster reads the phases as durations (no clock is compared)
+// and the two instants only to estimate the host's clock offset the way NTP
+// does (ClockOffset).
+type HostTiming struct {
+	// Recv and Sent are the host's wall clock, Unix microseconds.
+	Recv int64 `json:"recv,omitempty"`
+	Sent int64 `json:"sent,omitempty"`
+	// Phases is microseconds per phase. The names are a closed set
+	// (HostPhases); muster drops any other before it counts them.
+	Phases map[string]int64 `json:"phases,omitempty"`
+}
+
+// HostPhases is every phase a host reports in HostTiming, in the order a
+// watch runs them:
+//
+//   - resolve: finding the window's pane and its transcript (a tmux listing,
+//     the process tree, the sessions file);
+//   - open: opening the transcript and stat-ing it;
+//   - backfill: reading and parsing the backfill window (cctranscript);
+//   - redact: the secret redaction over it;
+//   - frame: cutting it into batches (BatchLines).
+//
+// Writing the first batch is not a phase: the reply carries the timing, so it
+// cannot carry its own write. That write is inside the round trip muster
+// measures (and ClockOffset's delay). The prompt index is read after the
+// first batch is sent, so it is no phase of the open either.
+var HostPhases = []string{"resolve", "open", "backfill", "redact", "frame"}
+
+// CleanTiming is t restricted to HostPhases, with negative or absurd (over an
+// hour) durations dropped; nil for nil.
+func CleanTiming(t *HostTiming) *HostTiming {
+	if t == nil {
+		return nil
+	}
+	out := &HostTiming{Recv: t.Recv, Sent: t.Sent}
+	for _, p := range HostPhases {
+		if v, ok := t.Phases[p]; ok && v >= 0 && v <= 3600e6 {
+			if out.Phases == nil {
+				out.Phases = map[string]int64{}
+			}
+			out.Phases[p] = v
+		}
+	}
+	return out
+}
+
+// ClockOffset estimates how far the host's clock is AHEAD of muster's from
+// one request/reply: sent and recv are muster's clock when it wrote the
+// request and read the reply, t the host's two instants. It is NTP's offset,
+// ((t1-t0) + (t2-t3)) / 2, and delay is the round trip minus the host's own
+// time. ok is false without both host instants.
+//
+// ⚠ IT ASSUMES THE TWO LEGS TAKE EQUALLY LONG. The error is at most half the
+// difference between them, and always within ±delay/2.
+func ClockOffset(sent, recv time.Time, t *HostTiming) (offset, delay time.Duration, ok bool) {
+	if t == nil || t.Recv <= 0 || t.Sent <= 0 || t.Sent < t.Recv {
+		return 0, 0, false
+	}
+	t0, t3 := sent.UnixMicro(), recv.UnixMicro()
+	offset = time.Duration(((t.Recv-t0)+(t.Sent-t3))/2) * time.Microsecond
+	delay = time.Duration((t3-t0)-(t.Sent-t.Recv)) * time.Microsecond
+	return offset, delay, true
 }
 
 // Window is one tmux window of a host (Msg.Windows).

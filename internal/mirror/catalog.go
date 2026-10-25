@@ -388,7 +388,9 @@ type catalogAnswer struct {
 // 🔴 owner IS THE VIEWING PRINCIPAL'S USER: the lookup is keyed by (owner,
 // host), so another owner's host answers ErrHostOffline exactly as one that
 // does not exist — and nothing is ever asked of it.
-func (h *Hub) CatalogWindow(ctx context.Context, owner int64, host, session, window string) (Catalog, error) {
+func (h *Hub) CatalogWindow(ctx context.Context, owner int64, host, session, window string) (_ Catalog, err error) {
+	ctx, done := hubOp(ctx, "catalog")
+	defer func() { done(err) }()
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]
 	h.mu.Unlock()

@@ -109,7 +109,9 @@ const askAnswerTimeout = 60 * time.Second
 // = the session's active window), and waits for the host's outcome. prior is
 // what an earlier answer is known to have left in that picker (nil: nothing);
 // a refusal carries how many keys the picker has received (AskKeys).
-func (h *Hub) AnswerWindow(ctx context.Context, owner int64, host, session, window string, qs []askq.Question, choices []askq.Choice, prior *askq.Progress) error {
+func (h *Hub) AnswerWindow(ctx context.Context, owner int64, host, session, window string, qs []askq.Question, choices []askq.Choice, prior *askq.Progress) (err error) {
+	ctx, done := hubOp(ctx, "answer")
+	defer func() { done(err) }()
 	ch, id, hc, m, err := h.prepareAnswer(ctx, owner, host, session, window, qs, choices)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrAskNotSent, err)

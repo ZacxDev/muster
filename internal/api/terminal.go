@@ -364,7 +364,9 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 	// The last word, unless the browser is already gone.
 	if ctx.Err() == nil {
 		if err != nil {
-			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": terminalErrorText(err)})
+			// reason is the closed word the page reports a disconnect by
+			// (mirror.Reason; open_trace.go), beside the words it shows.
+			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": terminalErrorText(err), "reason": mirror.Reason(err)})
 			_ = c.Close(websocket.StatusInternalError, "terminal refused")
 		} else {
 			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "exit", "message": "the terminal's session client exited"})

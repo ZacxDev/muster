@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/provision"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -182,17 +184,24 @@ func mirrorRef(e mirror.SessionView) ui.MirrorRef {
 // terminal page, pointed at the mirror socket.
 func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	h, e, _, redirect, ok := s.mirrorEntry(r, q.Get("host"), q.Get("session"), q.Get("window"))
+	// The open's document, phase by phase (open_trace.go).
+	op := s.openPhases(r, openViewTerminal, openPartDocument, "host", q.Get("host"), "session", q.Get("session"), "window", q.Get("window"))
+	outcome := telemetry.ReasonOK
+	defer func() { op.finish(outcome) }()
+	h, e, _, redirect, ok := s.mirrorEntry(r.WithContext(op.begin("entry")), q.Get("host"), q.Get("session"), q.Get("window"))
 	if !ok {
+		outcome = "not_found"
 		http.NotFound(w, r)
 		return
 	}
 	if redirect {
+		outcome = "redirect"
 		http.Redirect(w, r, keepNotice(r, mirrorRef(e).TerminalPath()), http.StatusSeeOther)
 		return
 	}
 	// The viewer opened this window (best-effort).
-	s.recordMirrorVisit(r.Context(), h.Host, e.Session, e.Window)
+	s.recordMirrorVisit(op.begin("visit"), h.Host, e.Session, e.Window)
+	op.begin("view")
 	session := e.Session
 	rawName := ""
 	if e.Label != "" && e.Label != session {
@@ -259,11 +268,14 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	if e.CanScroll() {
 		v.ScrollForm = mirrorRef(e).ScrollForm()
 	}
-	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
+	v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
 	allowSameOriginFrame(w)
 	viewDocument(w)
+	op.serverTiming(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	op.begin("render")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {
+		outcome = telemetry.ReasonError
 		s.logger.Printf("mirror: render terminal page: %v", err)
 	}
 }
@@ -300,34 +312,49 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 	}
 	q := r.URL.Query()
 	host, session, window := q.Get("host"), q.Get("session"), q.Get("window")
-	if _, _, _, _, ok := s.mirrorEntry(r, host, session, window); !ok {
+	readOnly := q.Get("mode") != terminalModeInteractive
+	// The open's stream, phase by phase up to the first output (open_trace.go).
+	op := s.openPhases(r, openViewTerminal, openPartStream, "host", host, "session", session, "window", window,
+		"read_only", strconv.FormatBool(readOnly))
+	if _, _, _, _, ok := s.mirrorEntry(r.WithContext(op.begin("entry")), host, session, window); !ok {
+		op.finish("not_found")
 		http.NotFound(w, r)
 		return
 	}
-	readOnly := q.Get("mode") != terminalModeInteractive
 	// 🔴 STEP-UP, BEFORE THE UPGRADE: an interactive attach needs a sign-in
 	// from the last stepup.Window, whatever the page decided. 403 rather than an
 	// in-socket error, so nothing is attached and the refusal has a status a
 	// test (or a proxy log) can read. internal/mirror's Attach checks the same
 	// context again, independently.
 	if !readOnly && !stepup.Fresh(r.Context(), s.stepUpNow()) {
+		op.finish("step_up")
+		viewEnded(r, openViewTerminal, "step_up")
 		s.writeJSON(w, http.StatusForbidden, map[string]any{"error": stepup.ErrStale.Error()})
 		return
 	}
 	initial, hasInitial := terminalSize(q.Get("cols"), q.Get("rows"))
 
+	op.begin("accept")
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: s.wsAllowedOrigins(r)})
 	if err != nil {
+		op.finish("refused")
 		s.logger.Printf("mirror: terminal ws accept: %v", err)
 		return
 	}
 	defer c.CloseNow()
 	ctx, done, ok := s.terminals.add(r.Context())
 	if !ok {
+		op.finish("shutdown")
 		_ = c.Close(websocket.StatusGoingAway, "muster is shutting down")
 		return
 	}
 	defer done()
+	// "attach" is the phase from here to the first output; the hub's spans
+	// (mirror.attach, its first_output child, the host's) say where in it.
+	op.begin("attach")
+	var stats mirror.OpenStats
+	ctx = mirror.WithOpenStats(ctx, &stats)
+	browserLeft := false
 
 	mode := terminalModeInteractive
 	if readOnly {
@@ -338,7 +365,18 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 		func(ctx context.Context, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
 			// window == "" is the session's active window, resolved by the plugin
 			// to an explicit window id on a per-window host (mirror.Hub.AttachWindow).
-			return s.ext.Mirror.AttachWindow(ctx, host, session, window, readOnly, stdin, stdout, resize)
+			aerr := s.ext.Mirror.AttachWindow(ctx, host, session, window, readOnly, stdin,
+				&firstWriter{w: stdout, first: func() { op.finish(telemetry.ReasonOK, hubFields(r, &stats)...) }}, resize)
+			// The bridge's context ends when the BROWSER goes: an attach that
+			// returns cleanly then was left, not ended by the host.
+			browserLeft = aerr == nil && ctx.Err() != nil
+			return aerr
 		})
+	reason := streamEndReason(ctx, err)
+	if browserLeft {
+		reason = telemetry.ReasonClientLeft
+	}
+	viewEnded(r, openViewTerminal, reason)
+	op.finish(reason, hubFields(r, &stats)...)
 	s.logger.Printf("mirror: terminal %s/%s%s detached: %v", host, session, window, errOrNone(err))
 }

@@ -35,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/users"
 	"log"
 	"net"
@@ -151,6 +152,16 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Tracing (internal/telemetry): on only when an OTLP endpoint is set.
+	// BEFORE buildApp: the pool's query tracer and the handler's server spans
+	// are decided when they are built.
+	flushTraces, err := telemetry.Setup(ctx, osGetenv, telemetry.Options{Service: "muster-server", Version: api.BuildVersion, Logger: logger})
+	if err != nil {
+		logger.Printf("telemetry: tracing stays off: %v", err)
+	}
+	defer func() { _ = flushTraces(context.Background()) }()
+	db.SetQueryTracer(telemetry.QueryTracer())
 
 	app, err := buildApp(ctx, cfg, logger)
 	if err != nil {
