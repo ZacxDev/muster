@@ -20,18 +20,18 @@ func TestViewToggleSegmentsArePaddedLess(t *testing.T) {
 	}
 }
 
-// A switcher entry and a Recent strip entry are up to 20rem wide, never
-// wider than their row (they were 10rem and 14rem); a pinned chip is padded
+// A switcher entry and a Recent strip entry are up to 26rem wide, never
+// wider than their row (they were 10rem and 14rem, then 20rem); a pinned chip is padded
 // px-2.5 with gap-1 (it was px-4, gap-1.5).
 func TestTitleEntriesAreWider(t *testing.T) {
-	if titleEntryMaxW != "max-w-[min(20rem,100%)]" {
+	if titleEntryMaxW != "max-w-[min(26rem,100%)]" {
 		t.Errorf("titleEntryMaxW = %q", titleEntryMaxW)
 	}
-	if !strings.Contains(switcherEntryBoxClass, " "+titleEntryMaxW+" ") || strings.Contains(switcherEntryBoxClass, "10rem") {
+	if !strings.Contains(switcherEntryBoxClass, " "+titleEntryMaxW+" ") || strings.Contains(switcherEntryBoxClass, "10rem") || strings.Contains(switcherEntryBoxClass, "20rem") {
 		t.Errorf("switcherEntryBoxClass = %q", switcherEntryBoxClass)
 	}
 	recent := renderString(t, recentEntry(recentItem{Href: "/agents/a", Title: "cache-warmup-orchestrator:1"}))
-	if !strings.Contains(recent, " "+titleEntryMaxW+" ") || strings.Contains(recent, "14rem") {
+	if !strings.Contains(recent, " "+titleEntryMaxW+" ") || strings.Contains(recent, "14rem") || strings.Contains(recent, "20rem") {
 		t.Errorf("a Recent entry is not up to titleEntryMaxW:\n%s", recent)
 	}
 	for _, want := range []string{" px-2.5 ", " gap-1 ", "min-h-[44px]"} {
