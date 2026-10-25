@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import { test, expect } from '../lib/fixtures';
-import type { Page } from '@playwright/test';
+import type { BrowserContext, CDPSession, Page, Worker } from '@playwright/test';
 import { dsn, password, pushPort, repoRoot, versionA } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { waitControlled } from '../lib/sw';
 
 // muster-native Web Push, the browser half: the Enable flow subscribes with the
 // SERVER's VAPID key and the device lands on /account; a subscription made
@@ -312,68 +313,52 @@ test('an attention notification is shown with its tag and link, and its resolved
   await expect.poll(shown).toEqual([{ ...note, open: false }]);
 });
 
+
 // TAPPING an attention notification (operator ask: "go straight to the
-// session"): the notification brings the OPEN muster tab forward and
-// navigates it to its tap route, GET /attention/open/<key>, which resolves the
-// target when tapped (internal/api attention_push_target.go) — the session's
-// page, or the item on the queue when it has none. Each payload is delivered
-// to the real worker exactly as the server sends it (the session one is the
-// document internal/api's TestTheSessionPushPayloadIsWhatTheWorkerReads pins),
-// and the worker's real notificationclick handler, clients lookup and
-// client.navigate do the rest. This server mirrors no host, so the waiting
-// window it names no longer exists and the tap lands on its queue item — the
-// stale-target case; attention.spec.ts and attention-delivery.spec.ts follow
-// the same route to a live session page.
+// session"): the notification brings the OPEN muster tab forward and moves it
+// to its tap route, GET /attention/open/<key>, which redirects to wherever the
+// item opens now (internal/api attention_push_target.go). Each payload reaches
+// the real worker exactly as the server sends it (internal/api's
+// TestTheSessionPushPayloadIsWhatTheWorkerReads pins the session one), and the
+// worker's real notificationclick handler and clients lookup do the rest.
+//
+// ⚠ WHAT THIS DOES NOT COVER: the session-page branch of the tap route.
+// This server mirrors no host and raised no ask, so both keys resolve to
+// openTarget's not-found fallback (the item on the queue, /attention#<key>),
+// and pushTargetFor never runs. Its rule is guarded by the Go tests in
+// internal/api (attention_push_target_test.go, _pg_test.go); attention.spec.ts
+// and attention-delivery.spec.ts follow the route to a live session page.
 //
 // ⚠ STUBBED, AND WHY: headless Chromium shows no notification (see above), so
 // the click is a synthetic notificationclick carrying the notification the
-// worker recorded; and the browser only lets a worker focus a window inside a
-// TRUSTED notificationclick, so WindowClient.focus is replaced by a counter
-// (what it would have focused is the same client navigate() then moves, which
-// is real) and waitUntil, which refuses an untrusted event, by a collector.
-test('tapping an attention notification follows its tap route in the open tab', async ({ page, context }) => {
-  await signIn(page);
-  const registered = context.serviceWorkers().length ? Promise.resolve(context.serviceWorkers()[0]) : context.waitForEvent('serviceworker');
-  await page.goto(origin + '/tasks');
-  const worker = await registered;
-  // 🔴 THE TAB MUST BE CONTROLLED, AND WAITING FOR controllerchange CANNOT
-  // PROMISE THAT. This used to await `ready` and then, if the page had no
-  // controller, wait for a controllerchange. That event never came whenever the
-  // /tasks navigation began while the first worker was still installing: by
-  // the time `ready` resolved the worker was already `activated` (its
-  // clients.claim() had run), yet the page was uncontrolled, listed by
-  // clients.matchAll only with includeUncontrolled. Nothing was left to claim
-  // it, and the test hung to its 60 s timeout (measured with the worker pinned to 2
-  // loaded CPUs: 9 of 20 runs at 0374a081, 8 of 20 at bff73e82; #278's heavier
-  // install widened the window). So, once a worker is active, a document that is
-  // still uncontrolled is RELOADED. A navigation that starts after a worker is
-  // active is always handled by that worker (fetch waits for `activated`), so
-  // the second document is controlled. The assertion below fails at once if it
-  // is not, instead of hanging.
-  const controlled = () =>
-    page.evaluate(async () => {
-      await navigator.serviceWorker.ready;
-      return !!navigator.serviceWorker.controller;
-    });
-  if (!(await controlled())) await page.reload();
-  expect(await controlled(), 'the open tab is controlled by the worker').toBe(true);
+// worker recorded. The browser lets a worker focus a window or open one only
+// inside a TRUSTED notificationclick, so WindowClient.focus is replaced by a
+// counter and Clients.openWindow by a recorder, and waitUntil (which refuses an
+// untrusted event) by a collector. The navigation that moves the tab is real.
+async function tapHarness(page: Page, context: BrowserContext, worker: Worker) {
   await worker.evaluate(() => {
     type Note = { title: string; tag: string; data: Record<string, string> };
     const scope = self as unknown as {
       __notes: Note[];
       __focused: number;
+      __windows: string[];
       __click: (tag: string) => Promise<void>;
       registration: ServiceWorkerRegistration;
       dispatchEvent: (e: Event) => boolean;
     };
     scope.__notes = [];
     scope.__focused = 0;
+    scope.__windows = [];
     scope.registration.showNotification = async (title: string, o?: NotificationOptions) => {
       scope.__notes.push({ title, tag: o?.tag ?? '', data: (o?.data || {}) as Record<string, string> });
     };
     (WindowClient.prototype as unknown as { focus: () => Promise<WindowClient> }).focus = async function (this: WindowClient) {
       scope.__focused++;
       return this;
+    };
+    (Clients.prototype as unknown as { openWindow: (u: string) => Promise<null> }).openWindow = async (u: string) => {
+      scope.__windows.push(new URL(u, self.location.origin).pathname);
+      return null;
     };
     scope.__click = async (tag: string) => {
       const n = scope.__notes.find((x) => x.tag === tag);
@@ -394,37 +379,153 @@ test('tapping an attention notification follows its tap route in the open tab', 
   await expect.poll(() => regs.find((r) => r.scopeURL === origin + '/' && !r.isDeleted)?.registrationId ?? '').not.toBe('');
   const registrationId = regs.find((r) => r.scopeURL === origin + '/' && !r.isDeleted)!.registrationId;
   const deliver = (data: string) => cdp.send('ServiceWorker.deliverPushMessage', { origin, registrationId, data });
-  const recorded = (tag: string) =>
-    worker.evaluate((t) => (self as unknown as { __notes: { tag: string }[] }).__notes.some((n) => n.tag === t), tag);
-  const click = (tag: string) => worker.evaluate((t) => (self as unknown as { __click: (t: string) => Promise<void> }).__click(t), tag);
-  const focused = () => worker.evaluate(() => (self as unknown as { __focused: number }).__focused);
-
   // The tab follows the tap route; record what it asked for.
   const opened: string[] = [];
   page.on('request', (r) => {
     if (r.isNavigationRequest() && r.frame() === page.mainFrame()) opened.push(new URL(r.url()).pathname);
   });
+  return {
+    cdp,
+    opened,
+    // deliverAndTap pushes key's notification (payload, the server's exact
+    // document, or a minimal one) and taps it once the worker has shown it.
+    deliverAndTap: async (key: string, payload?: string) => {
+      await deliver(
+        payload ??
+          JSON.stringify({ type: 'attention', id: key, title: 'An agent needs your input', body: 'muster is asking', tag: 'attention-' + key, data: { url: '/attention/open/' + key } }),
+      );
+      await expect
+        .poll(() => worker.evaluate((t) => (self as unknown as { __notes: { tag: string }[] }).__notes.some((n) => n.tag === t), 'attention-' + key))
+        .toBe(true);
+      await worker.evaluate((t) => (self as unknown as { __click: (t: string) => Promise<void> }).__click(t), 'attention-' + key);
+    },
+    focused: () => worker.evaluate(() => (self as unknown as { __focused: number }).__focused),
+    windows: () => worker.evaluate(() => (self as unknown as { __windows: string[] }).__windows),
+    // controlledURLs / allURLs: the window clients the worker controls, and all
+    // of them including the uncontrolled ones.
+    controlledURLs: () => worker.evaluate(async () => (await (self as unknown as { clients: Clients }).clients.matchAll({ type: 'window' })).map((c) => new URL(c.url).pathname)),
+    allURLs: () =>
+      worker.evaluate(async () =>
+        (await (self as unknown as { clients: Clients }).clients.matchAll({ type: 'window', includeUncontrolled: true })).map((c) => new URL(c.url).pathname),
+      ),
+  };
+}
+
+// signedInWorker signs in, opens /tasks and returns the origin's worker once it
+// controls the tab.
+async function signedInWorker(page: Page, context: BrowserContext): Promise<Worker> {
+  await signIn(page);
+  const registered = context.serviceWorkers().length ? Promise.resolve(context.serviceWorkers()[0]) : context.waitForEvent('serviceworker');
+  await page.goto(origin + '/tasks');
+  const worker = await registered;
+  await waitControlled(page);
+  return worker;
+}
+
+// hardReload reloads the tab the way shift-reload does. 🔴 A HARD RELOAD
+// BYPASSES THE SERVICE WORKER, so the new document is UNCONTROLLED, and it
+// stays so: hx-boost moves the tab without another full navigation, and
+// nothing claims it later. This is the state a tap must still work in.
+async function hardReload(page: Page, cdp: CDPSession): Promise<void> {
+  const loaded = page.waitForEvent('load');
+  await cdp.send('Page.reload', { ignoreCache: true });
+  await loaded;
+}
+
+test('tapping an attention notification follows its tap route in the open tab', async ({ page, context }) => {
+  const worker = await signedInWorker(page, context);
+  const tap = await tapHarness(page, context, worker);
+
   // A waiting mirrored window's notification. The window is gone by the tap
   // (this server mirrors no host), so its route lands on its queue item.
-  await deliver(
+  await tap.deliverAndTap(
+    'session-0011223344556677',
     '{"type":"attention","id":"session-0011223344556677","title":"A session is waiting on you","body":"Waiting: build @ ws",' +
       '"tag":"attention-session-0011223344556677","data":{"url":"/attention/open/session-0011223344556677"}}',
   );
-  await expect.poll(() => recorded('attention-session-0011223344556677')).toBe(true);
-  await click('attention-session-0011223344556677');
   await page.waitForURL(origin + '/attention#session-0011223344556677');
-  expect(opened, 'the tab went through the tap route').toContain('/attention/open/session-0011223344556677');
-  expect(await focused(), 'the open tab is the one brought forward').toBe(1);
+  expect(tap.opened, 'the tab went through the tap route').toContain('/attention/open/session-0011223344556677');
+  expect(await tap.focused(), 'the open tab is the one brought forward').toBe(1);
   expect(context.pages(), 'no second tab is opened').toHaveLength(1);
 
   // A question muster raised itself (no session): its item on the queue.
-  await deliver(
+  await tap.deliverAndTap(
+    'ask-71',
     '{"type":"attention","id":"ask-71","title":"An agent needs your input","body":"muster is asking","tag":"attention-ask-71","data":{"url":"/attention/open/ask-71"}}',
   );
-  await expect.poll(() => recorded('attention-ask-71')).toBe(true);
-  await click('attention-ask-71');
   await page.waitForURL(origin + '/attention#ask-71');
-  expect(opened).toContain('/attention/open/ask-71');
-  expect(await focused()).toBe(2);
+  expect(tap.opened).toContain('/attention/open/ask-71');
+  expect(await tap.focused()).toBe(2);
   expect(context.pages()).toHaveLength(1);
+  expect(await tap.windows(), 'no window is opened').toEqual([]);
 });
+
+// 🔴 AN UNCONTROLLED TAB STILL FOLLOWS THE TAP. client.navigate() rejects for
+// a client the worker does not control ("This service worker is not the
+// client's active service worker"), and focusOrOpen used to swallow that: the
+// tab came forward and stayed where it was, on every tap, until a full
+// reload. Now the worker asks the page itself to go (sw.js askPageToOpen, the
+// NAVIGATE message pwa.js answers).
+test('tapping an attention notification moves an UNCONTROLLED open tab to its tap route', async ({ page, context }) => {
+  const worker = await signedInWorker(page, context);
+  const tap = await tapHarness(page, context, worker);
+  await hardReload(page, tap.cdp);
+  expect(await page.evaluate(() => navigator.serviceWorker.controller), 'CONTROL: the hard reload left the tab uncontrolled').toBeNull();
+  expect(await tap.controlledURLs(), 'CONTROL: the worker controls no tab').toEqual([]);
+  expect(await tap.allURLs(), 'CONTROL: the worker still sees the tab').toEqual(['/tasks']);
+
+  await tap.deliverAndTap('ask-71');
+  await expect(page, 'the same tab moved to the tap target').toHaveURL(origin + '/attention#ask-71');
+  expect(tap.opened, 'the tab went through the tap route').toContain('/attention/open/ask-71');
+  expect(await tap.focused(), 'the tab was brought forward').toBe(1);
+  expect(await tap.windows(), 'no window is opened').toEqual([]);
+  expect(context.pages(), 'no second tab is opened').toHaveLength(1);
+});
+
+// When neither navigate() nor the page will take the route (here the page's
+// NAVIGATE message is dropped before pwa.js sees it), the tap opens the route
+// in a new window rather than doing nothing.
+test('a tap the open tab will not take opens its tap route in a new window', async ({ page, context }) => {
+  const worker = await signedInWorker(page, context);
+  const tap = await tapHarness(page, context, worker);
+  await page.addInitScript(() => {
+    (window as unknown as { __dropped: number }).__dropped = 0;
+    navigator.serviceWorker?.addEventListener('message', (e) => {
+      if ((e.data || {}).type !== 'NAVIGATE') return;
+      (window as unknown as { __dropped: number }).__dropped++;
+      e.stopImmediatePropagation();
+    });
+  });
+  await hardReload(page, tap.cdp);
+  expect(await page.evaluate(() => navigator.serviceWorker.controller), 'CONTROL: the hard reload left the tab uncontrolled').toBeNull();
+
+  await tap.deliverAndTap('ask-71');
+  expect(await page.evaluate(() => (window as unknown as { __dropped: number }).__dropped), 'CONTROL: the worker did ask the page').toBe(1);
+  expect(await tap.windows(), 'the route opened in a new window').toEqual(['/attention/open/ask-71']);
+  expect(new URL(page.url()).pathname, 'the tab did not move').toBe('/tasks');
+});
+
+// With two tabs open, one controlled and one not, the tap moves the
+// CONTROLLED one: it is the tab navigate() can move. Both orders, so neither
+// "first tab" nor "last tab" passes by luck of the clients list's order.
+for (const uncontrolled of ['first', 'second'] as const) {
+  test(`with a controlled and an uncontrolled tab open, the tap moves the controlled one (${uncontrolled} tab uncontrolled)`, async ({ page, context }) => {
+    const worker = await signedInWorker(page, context);
+    const tap = await tapHarness(page, context, worker);
+    const other = await context.newPage();
+    await other.goto(origin + '/agents');
+    await waitControlled(other);
+    const [stale, live] = uncontrolled === 'first' ? [page, other] : [other, page];
+    await hardReload(stale, await context.newCDPSession(stale));
+    expect(await stale.evaluate(() => navigator.serviceWorker.controller), 'CONTROL: one tab is uncontrolled').toBeNull();
+    const livePath = new URL(live.url()).pathname;
+    const stalePath = new URL(stale.url()).pathname;
+    expect(await tap.controlledURLs(), 'CONTROL: the worker controls the other tab only').toEqual([livePath]);
+    expect((await tap.allURLs()).sort(), 'CONTROL: the worker sees both tabs').toEqual(['/agents', '/tasks']);
+
+    await tap.deliverAndTap('ask-71');
+    await expect(live, 'the controlled tab moved').toHaveURL(origin + '/attention#ask-71');
+    expect(new URL(stale.url()).pathname, 'the uncontrolled tab stayed').toBe(stalePath);
+    expect(await tap.windows(), 'no window is opened').toEqual([]);
+  });
+}

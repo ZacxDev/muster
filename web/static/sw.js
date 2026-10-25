@@ -373,23 +373,67 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil(focusOrOpen(target));
 });
 
+// focusOrOpen brings an open muster tab forward and moves it to target, or
+// opens target in a new window when no tab will take it.
+//
+// 🔴 A TAB THIS WORKER DOES NOT CONTROL CANNOT BE navigate()d. It rejects
+// ("This service worker is not the client's active service worker"), and a
+// tab gets into that state easily: a hard reload bypasses the worker, and
+// hx-boost then moves the tab without the full navigation that would put it
+// under control. This used to swallow that rejection, so the tap brought the
+// tab forward and left it where it was, on every tap. So: a controlled tab is
+// preferred; when navigate() is refused, the page itself is asked to go
+// (askPageToOpen, answered by pwa.js); and when the page does not answer,
+// target opens in a new window. Every refusal is logged.
 async function focusOrOpen(target) {
-  const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  for (const client of all) {
-    // Reuse any open tab.
-    if ('focus' in client) {
+  const dest = target || '/';
+  const controlled = new Set((await self.clients.matchAll({ type: 'window' })).map((c) => c.id));
+  const tabs = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true })).filter((c) => 'focus' in c);
+  const client = tabs.find((c) => controlled.has(c.id)) || tabs[0];
+  if (client) {
+    try {
       await client.focus();
-      if ('navigate' in client && target) {
-        try {
-          await client.navigate(target);
-        } catch (e) {
-          /* cross-origin or not allowed; focus is enough */
-        }
-      }
-      return;
+    } catch (e) {
+      console.warn('muster sw: could not focus the open tab', e);
     }
+    try {
+      await client.navigate(dest);
+      return;
+    } catch (e) {
+      console.warn('muster sw: navigate() refused for the open tab; asking the page to go to ' + dest, e);
+    }
+    if (await askPageToOpen(client, dest)) return;
+    console.warn('muster sw: the open tab did not take ' + dest + '; opening a window');
   }
-  if (self.clients.openWindow) {
-    await self.clients.openWindow(target || '/');
+  if (!self.clients.openWindow) return;
+  try {
+    await self.clients.openWindow(dest);
+  } catch (e) {
+    console.warn('muster sw: could not open a window for ' + dest, e);
   }
+}
+
+// PAGE_OPEN_ACK_MS is how long askPageToOpen waits for the page's answer.
+// The page answers synchronously on receipt, so this only matters for a tab
+// that never answers (a page without pwa.js, or a frozen one).
+const PAGE_OPEN_ACK_MS = 3000;
+
+// askPageToOpen asks client's page to go to url itself (pwa.js listens for the
+// NAVIGATE message and does location.assign). True once the page confirms.
+function askPageToOpen(client, url) {
+  return new Promise((resolve) => {
+    const ch = new MessageChannel();
+    const timer = setTimeout(() => resolve(false), PAGE_OPEN_ACK_MS);
+    ch.port1.onmessage = (e) => {
+      clearTimeout(timer);
+      resolve(!!(e.data && e.data.ok));
+    };
+    try {
+      client.postMessage({ type: 'NAVIGATE', url }, [ch.port2]);
+    } catch (e) {
+      clearTimeout(timer);
+      console.warn('muster sw: could not message the open tab', e);
+      resolve(false);
+    }
+  });
 }

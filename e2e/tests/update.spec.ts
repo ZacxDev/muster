@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, updatePort, versionA, versionB, versionC } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { waitControlled } from '../lib/sw';
 
 // A deploy, end to end: build A serves the page, build B replaces it on the
 // same origin, and the open page offers the update without taking it.
@@ -45,15 +46,6 @@ const shellCaches = `(async () => {
   return out;
 })()`;
 const goodShell = { status: 200, type: 'basic', redirected: false, shell: true };
-
-async function waitControlled(page: Page): Promise<void> {
-  await page.evaluate(async () => {
-    await navigator.serviceWorker.ready;
-    if (!navigator.serviceWorker.controller) {
-      await new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', r, { once: true }));
-    }
-  });
-}
 
 // A deploy: the same origin starts answering with build B.
 async function deployB(): Promise<void> {
@@ -121,12 +113,7 @@ test('a new build is offered, waits for Reload, and Reload takes it exactly once
     sessionStorage.setItem('loads', String(Number(sessionStorage.getItem('loads') || '0') + 1));
   });
   await page.goto(origin + '/tasks');
-  await page.evaluate(async () => {
-    await navigator.serviceWorker.ready;
-    if (!navigator.serviceWorker.controller) {
-      await new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', r, { once: true }));
-    }
-  });
+  await waitControlled(page);
   expect(await page.evaluate(controllerBuild)).toBe(versionA);
   // A first install offers nothing.
   await expect(page.locator('#sw-update-toast')).toBeHidden();
