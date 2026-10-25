@@ -233,3 +233,152 @@ func noStoreScan(t *testing.T, dir string) (writers, literals, views []string) {
 	}
 	return keys(w), keys(l), keys(v)
 }
+
+// THE OTHER HALF OF THE LEDGER: every handler that writes text/html, and what
+// it tells caches. The no-store ledger above only sees a function that MENTIONS
+// no-store; a page that sets no Cache-Control at all would be invisible to it.
+// So every function that sets Content-Type to text/html is enumerated here and
+// must be one of: no-store (it, or a helper it calls, says so), one of the four
+// views (viewDocument), or named below with why it may be kept by a cache.
+
+// htmlFragment is the reason an htmx partial is allowed no Cache-Control: it
+// is fetched by script, never navigated to, so neither Back nor the HTTP
+// cache's history path ever shows it as a page; it carries no validator, so
+// the HTTP cache never serves it fresh; and no secret is in it.
+const htmlFragment = "an htmx fragment: fetched by script, never a document; no validator, so never served fresh; no secret"
+
+var htmlWithoutNoStore = map[string]string{
+	"handleIndex": "the shell (/, /agents, /tasks, …): restorable before this change, no secret on it; its appScript " +
+		"carries restoreJS, so a restore or a history load from the HTTP cache gets the build and refusal checks",
+	"handleTaskDetail":   "a task's page: no secret on it; its appScript carries restoreJS (as the shell's)",
+	"renderTaskNotFound": "a task's not-found page: nothing on it but the id the reader typed",
+
+	"handleAgentsContent":       htmlFragment,
+	"handleAgentNewModal":       htmlFragment,
+	"handleAgentRepoOptions":    htmlFragment,
+	"handleAgentNoteOptions":    htmlFragment,
+	"handleAgentStatusIcon":     htmlFragment,
+	"handleNotifications":       htmlFragment,
+	"handleAgentRenameForm":     htmlFragment,
+	"handleAgentCard":           htmlFragment,
+	"handleAgentName":           htmlFragment,
+	"handleAgentDelete":         htmlFragment,
+	"handleAgentTaskModal":      htmlFragment,
+	"writeChiefPanelBody":       htmlFragment,
+	"writeChiefPanelBodyFor":    htmlFragment,
+	"handleConnectorRequests":   htmlFragment,
+	"handleConnectorNewForm":    htmlFragment + " (the form a secret is typed INTO; it holds none)",
+	"handleConnectorRotateForm": htmlFragment + " (the form a secret is typed INTO; it holds none)",
+	"handleChiefThreadSearch":   htmlFragment,
+	"handleReposContent":        htmlFragment,
+	"handleGitHubDisconnect":    htmlFragment,
+	"handleNotesContent":        htmlFragment,
+	"handleNoteNewModal":        htmlFragment,
+	"handleNoteDelete":          htmlFragment,
+	"handleNoteEditModal":       htmlFragment,
+	"renderNoteCard":            htmlFragment,
+	"handleUITagVocabulary":     htmlFragment,
+}
+
+// TestEveryHTMLWriterIsClassified enumerates the functions that set
+// Content-Type: text/html and fails when one is neither no-store, a view, nor
+// named in htmlWithoutNoStore — and when that map names a function that no
+// longer needs it (gone, or now no-store or a view).
+func TestEveryHTMLWriterIsClassified(t *testing.T) {
+	html := htmlWriters(t, ".")
+	writers, literals, views := noStoreScan(t, ".")
+	if len(html) < 20 {
+		t.Fatalf("the scan found %d text/html writers — it is not observing this package", len(html))
+	}
+	in := func(xs []string, x string) bool {
+		for _, y := range xs {
+			if y == x {
+				return true
+			}
+		}
+		return false
+	}
+	var unclassified, stale []string
+	seen := map[string]bool{}
+	for _, fn := range html {
+		seen[fn] = true
+		classified := in(writers, fn) || in(literals, fn) || in(views, fn)
+		_, allowed := htmlWithoutNoStore[fn]
+		switch {
+		case !classified && !allowed:
+			unclassified = append(unclassified, fn)
+		case classified && allowed:
+			stale = append(stale, fn+" (now no-store or a view)")
+		}
+	}
+	for fn := range htmlWithoutNoStore {
+		if !seen[fn] {
+			stale = append(stale, fn+" (writes no text/html any more)")
+		}
+	}
+	sort.Strings(unclassified)
+	sort.Strings(stale)
+	if len(unclassified) > 0 {
+		t.Errorf("text/html writers that say nothing to caches and are not named in htmlWithoutNoStore: %v.\n"+
+			"🔴 A page that shows or takes a secret must be no-store; one that may be kept goes in the map with why.", unclassified)
+	}
+	if len(stale) > 0 {
+		t.Errorf("htmlWithoutNoStore names functions it should not: %v", stale)
+	}
+	// The four views are text/html writers too: the enumeration sees them.
+	for _, v := range viewDocumentCallers {
+		if !in(html, v) {
+			t.Errorf("%s is a view but the text/html scan does not see it — the scan is narrower than the views", v)
+		}
+	}
+}
+
+// htmlWriters is every function in dir's non-test files with a call
+// `….Set("Content-Type", "<…text/html…>")`, sorted.
+func htmlWriters(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	set := map[string]bool{}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				c, ok := n.(*ast.CallExpr)
+				if !ok || len(c.Args) != 2 {
+					return true
+				}
+				sel, ok := c.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "Set" {
+					return true
+				}
+				k, ok1 := c.Args[0].(*ast.BasicLit)
+				v, ok2 := c.Args[1].(*ast.BasicLit)
+				if ok1 && ok2 && k.Value == `"Content-Type"` && strings.Contains(v.Value, "text/html") {
+					set[fd.Name.Name] = true
+				}
+				return true
+			})
+		}
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
