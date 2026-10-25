@@ -67,6 +67,7 @@ var plainingHelpers = map[string]bool{
 	"mirrorEntryTitle":    true,
 	"mirrorCardTitle":     true,
 	"entryTitle":          true,
+	"mirrorDisplayName":   true,
 	"mirrorSessionTitle":  true,
 	"mirrorTerminalTitle": true,
 }
@@ -78,6 +79,7 @@ var helperNameArgs = map[string][]int{
 	"mirrorEntryTitle":    {0, 1}, // label, title
 	"mirrorCardTitle":     {0, 1}, // label, title
 	"entryTitle":          {0, 1}, // label, title
+	"mirrorDisplayName":   {0, 1}, // label, title
 	"mirrorSessionTitle":  {0},    // label
 	"mirrorTerminalTitle": {0},    // title
 	"plainOr":             {0},    // s (the fallback is drawn as written)

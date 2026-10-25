@@ -122,7 +122,7 @@ func recentEntry(it recentItem) g.Node {
 		hx("hx-boost", "false"),
 		g.Attr("data-recent-entry", kind),
 		g.Attr("title", it.Title),
-		Class("press inline-flex min-h-[44px] max-w-[14rem] shrink-0 items-center gap-2 rounded-xl bg-s1/70 px-3 text-sm font-medium text-fg ring-1 ring-inset ring-line transition hover:bg-s2"),
+		Class("press inline-flex min-h-[44px] "+titleEntryMaxW+" shrink-0 items-center gap-2 rounded-xl bg-s1/70 px-3 text-sm font-medium text-fg ring-1 ring-inset ring-line transition hover:bg-s2"),
 		statusIcon(it.Status),
 		// Its host's icon — the one its card draws (host_icons.go).
 		hostMark(it.Host, it.HostIcon),

@@ -226,6 +226,11 @@ export const clsLongMirrorPort = port + 196;
 // and that fake chat-completions endpoint.
 export const suggestPort = port + 197;
 export const suggestFakePort = port + 198;
+// Room for a title (title-room.spec.ts): the Rendered | Terminal switch's
+// padding, the rendered view's full-title popover, and the width of the
+// switcher's entries. Its own server (the e2eterm binary,
+// mirror plugin on) and one per-window mirrored host with long session names.
+export const titleRoomPort = port + 205;
 // An opencode window's read-only rendered view (opencode-view.spec.ts): its own
 // server (the e2eterm binary, mirror plugin on) and one mirrored host whose
 // opencode server is a fake in the host's own process.
