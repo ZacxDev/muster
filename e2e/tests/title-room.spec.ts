@@ -15,7 +15,8 @@ import { cc, MirrorRig } from '../lib/mirrorhost';
 //   3. the session switcher's entries — the bar below the message input,
 //      whose Recent/All rows the rendered view draws and whose Pins row is
 //      the agent page's pinned list — and the Agents list's Recent strip are
-//      up to 20rem wide (were 10rem and 14rem), never wider than their row;
+//      up to 26rem wide (were 10rem and 14rem, then 20rem), never wider than
+//      their row;
 //   4. the Agents list's pinned chips are padded 10px a side with a 4px gap
 //      (were 16px and 6px): they have no max-width, but at 390px a chip runs
 //      to the row's edge, and that padding is what clipped a 36-character
@@ -31,13 +32,17 @@ const rig = new MirrorRig(titleRoomPort, 'e2e-title');
 const origin = rig.origin;
 
 // The windows: session, window id. A window with no label is titled
-// "<session>:<index>" (every index here is 1). Lengths 23, 27, 34, 36, 42.
+// "<session>:<index>" (every index here is 1). Lengths 23, 27, 34, 36, 42,
+// 49, 52 and 84.
 const WINDOWS: [string, string][] = [
   ['release-notes-drafter', '@1'],
   ['billing-reconcile-nightly', '@2'],
   ['payments-ledger-migration-review', '@3'],
   ['customer-onboarding-email-sequence', '@4'],
   ['warehouse-inventory-sync-backfill-job-v2', '@5'],
+  ['quarterly-revenue-forecast-reconciliation-batch', '@9'],
+  ['marketplace-seller-payout-dispute-resolution-queue', '@10'],
+  ['enterprise-customer-data-warehouse-schema-migration-validation-and-audit-report-v3', '@11'],
 ];
 // Windows that are NOT pinned, so the Agents list's Recent strip shows them
 // once visited (a pinned entry is never in the strip). Lengths 27, 34, 36.
@@ -144,13 +149,22 @@ async function openAgent(page: Page, view: string) {
 }
 
 // The titles the width assertions use. In the switcher (a 114px label at the
-// base, so every one was clipped) the 23- and 27-character titles fit at both
-// sizes; at 1280 the 34- and 36-character ones fit too (a 20rem entry: a 274px
-// label), while at 390 the bar's own row (286px) is the cap. The 42-character
-// one still clips at 1280: the cap is a cap.
+// first base, so every one was clipped) the 23- and 27-character titles fit at
+// both sizes; at 1280 the 34-, 36- and 49-character ones fit too, while at 390
+// the bar's own row (286px) is the cap.
+//
+// 🔴 THE 49-CHARACTER TITLE IS THE 26rem ASK: at 20rem a switcher label got
+// 274px and it needs 337 (red there); a 26rem entry gives 370. The
+// 52-character window measures 368 — it fits too, with 2px to spare on the
+// machine that measured it, so it is in the measurement and NOT asserted (a
+// system font stack makes 2px a host property, not a contract). The
+// 84-character one (605px) still clips at 1280: the cap is a cap.
 const FITS_NOW = ['release-notes-drafter', 'billing-reconcile-nightly'];
-const FITS_DESKTOP = ['payments-ledger-migration-review', 'customer-onboarding-email-sequence'];
+const FITS_DESKTOP = ['payments-ledger-migration-review', 'customer-onboarding-email-sequence', 'quarterly-revenue-forecast-reconciliation-batch'];
 const STILL_CLIPS = 'payments-ledger-migration-review';
+const VERY_LONG = 'enterprise-customer-data-warehouse-schema-migration-validation-and-audit-report-v3';
+// The cap, in px: 26rem.
+const CAP_PX = 416;
 // The pinned chip (Agents list) a 390px row clipped at the base: 315px of
 // label in 302px. And the Recent strip's: 27 and 34 characters (a 156px
 // label at the base, a 252px one here).
@@ -306,14 +320,19 @@ for (const vp of [
         const f = await switcherLabel(page, titleOf(s)).evaluate(fitOf);
         expect(f.clipped, `rendered view, All: ${titleOf(s)} fits (${JSON.stringify(f)})`).toBe(false);
       }
-      // The cap: at most 20rem, and never wider than the row it scrolls in.
+      // The cap: at most 26rem, and never wider than the row it scrolls in.
       const b = await entryBox(page, titleOf(STILL_CLIPS), 'all');
-      expect(b.box, `an entry is at most 20rem (${JSON.stringify(b)})`).toBeLessThanOrEqual(320);
+      expect(b.box, `an entry is at most 26rem (${JSON.stringify(b)})`).toBeLessThanOrEqual(CAP_PX);
       expect(b.box, `an entry is never wider than its row (${JSON.stringify(b)})`).toBeLessThanOrEqual(b.row);
       if (vp.w === 390) {
         expect(b.clipped, 'at 390 the row is the cap: a 34-character title clips').toBe(true);
         expect(await overflowX(page), 'no sideways scroll at 390px').toBe(0);
       }
+      // An 84-character title still clips at both sizes, its entry AT the cap
+      // (26rem at 1280, the row at 390): the cap still exists.
+      const v = await entryBox(page, titleOf(VERY_LONG), 'all');
+      expect(v.clipped, `an 84-character title still clips (${JSON.stringify(v)})`).toBe(true);
+      expect(Math.abs(v.box - Math.min(CAP_PX, v.row)), `its entry is exactly the cap (${JSON.stringify(v)})`).toBeLessThan(1);
       let cls = await readCls(page);
       expect(cls.total, `rendered view layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
 
@@ -323,9 +342,9 @@ for (const vp of [
         const f = await switcherLabel(page, titleOf(s), 'pins').evaluate(fitOf);
         expect(f.clipped, `agent page, Pins: ${titleOf(s)} fits (${JSON.stringify(f)})`).toBe(false);
       }
-      const l = await entryBox(page, titleOf(LONG), 'pins');
-      expect(l.clipped, `a 42-character title still clips (the cap is a cap) (${JSON.stringify(l)})`).toBe(true);
-      expect(l.box, `never wider than its row (${JSON.stringify(l)})`).toBeLessThanOrEqual(Math.min(320, l.row));
+      const l = await entryBox(page, titleOf(VERY_LONG), 'pins');
+      expect(l.clipped, `an 84-character title still clips (the cap is a cap) (${JSON.stringify(l)})`).toBe(true);
+      expect(l.box, `never wider than its row (${JSON.stringify(l)})`).toBeLessThanOrEqual(Math.min(CAP_PX, l.row));
       if (vp.w === 390) expect(await overflowX(page), 'no sideways scroll at 390px').toBe(0);
       cls = await readCls(page);
       expect(cls.total, `agent page layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
