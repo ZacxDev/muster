@@ -44,6 +44,12 @@ import (
 // method acts as ctx's principal except ExpiredRoutes (see there).
 type RouteStore interface {
 	CreateRoute(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration) (Route, error)
+	// CreateRouteFrom is CreateRoute recording who routed it (origin) on the
+	// session_route.routed audit row: the one body both run.
+	CreateRouteFrom(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error)
+	// RoutableMessages is the principal's newest inbound messages a route can
+	// take, each with its latest route (RoutableMessage), at most limit.
+	RoutableMessages(ctx context.Context, limit int) ([]RoutableMessage, error)
 	Route(ctx context.Context, routeID string) (Route, error)
 	SetRouteQueued(ctx context.Context, routeID string, sendQueueID int64) error
 	// FailRoute ends an open route as failed; handBack, when not "", is the
@@ -99,6 +105,16 @@ type RouteTarget struct {
 	Kind, Key, Label string
 }
 
+// RouteTargetMirror is RouteTarget.Kind for a mirrored Claude Code session
+// (focus.KindMirror's value; internal/api pins the two equal).
+const RouteTargetMirror = "mirror"
+
+// SentToMirrorSession reports whether r was routed to the mirrored Claude Code
+// session sid: route_reply's binding of an answer to the route's target.
+func (r Route) SentToMirrorSession(sid string) bool {
+	return sid != "" && r.TargetKind == RouteTargetMirror && r.TargetKey == sid
+}
+
 // The route errors.
 var (
 	// ErrAlreadyRouted: the message already has an open route.
@@ -114,6 +130,37 @@ var (
 
 // MaxRouteError bounds a route's recorded error (0021's cap).
 const MaxRouteError = 1024
+
+// RouteViaMCP is RouteOrigin.Via for a route the OWNER made from one of their
+// mirrored Claude Code sessions (internal/api/plugin_message_route_tools.go).
+const RouteViaMCP = "mcp"
+
+// RouteOrigin is who made a route, as its session_route.routed audit row
+// records it: the zero value is the chief (route_to_session; the row's
+// agent_id names it), RouteViaMCP the owner over the mirror MCP door, from
+// Host (proven by its mirror token) and Session (the Claude session the
+// caller's pane names: a claim).
+type RouteOrigin struct {
+	Via, Host, Session string
+}
+
+// String is the origin as the audit row's routed_via spells it:
+// "mcp from <host>/<session>"; "" for the chief.
+func (o RouteOrigin) String() string {
+	if o.Via == RouteViaMCP {
+		return o.Via + " from " + o.Host + "/" + o.Session
+	}
+	return o.Via
+}
+
+// RoutableMessage is one inbound message a route can take, as
+// RoutableMessages reads it: the message, its plugin's label, and its LATEST
+// route (Route.RouteID "" for none).
+type RoutableMessage struct {
+	Message     Message
+	PluginLabel string
+	Route       Route
+}
 
 var routeIDPattern = regexp.MustCompile(`^rt_[0-9a-f]{24}$`)
 
@@ -155,6 +202,15 @@ func clampRouteError(msg string) string {
 // marked no_reply, with no reply already approved and in flight, and not
 // already routed (ErrAlreadyRouted).
 func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration) (Route, error) {
+	return s.CreateRouteFrom(ctx, chiefID, ownerID, messageID, target, timeout, RouteOrigin{})
+}
+
+// CreateRouteFrom is CreateRoute made by origin: the same checks, row and
+// audit, with routed_via on the audit row when origin is the owner over MCP.
+// chiefID is still the chief the message was delivered to — the route's
+// agent_id, so the relay files its draft as that chief's and a hand-back goes
+// to that chief — whoever made the route.
+func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
 	if chiefID <= 0 || ownerID <= 0 {
 		return Route{}, invalid("the agent has no owner")
 	}
@@ -185,11 +241,61 @@ func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID i
 		if err != nil {
 			return err
 		}
-		return audit(ctx, tx, "session_route.routed", RouteObject(r.RouteID), map[string]any{
+		detail := map[string]any{
 			"message_id": messageID, "agent_id": chiefID, "target": target.Kind + ":" + target.Key,
-			"timeout_at": r.TimeoutAt.UTC().Format(time.RFC3339)})
+			"timeout_at": r.TimeoutAt.UTC().Format(time.RFC3339)}
+		if origin.Via != "" {
+			detail["routed_via"] = origin.String()
+		}
+		return audit(ctx, tx, "session_route.routed", RouteObject(r.RouteID), detail)
 	})
 	return r, err
+}
+
+// RoutableMessages is the principal's newest inbound plugin messages that a
+// route can take — handed to a chief that still exists (agent_id set, which
+// 0015 allows only on a delivering, delivered or unconfirmed row) and not
+// no_reply (which every task event and notice muster routed itself is: their
+// writers refuse one that is not) — newest first (by id), at most limit, each
+// with its plugin's label and its LATEST route, if any. Row-level security
+// scopes it to the principal.
+func (s *PGStore) RoutableMessages(ctx context.Context, limit int) ([]RoutableMessage, error) {
+	if limit <= 0 {
+		return []RoutableMessage{}, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("m", messageCols)+`, p.label,
+		       coalesce(r.route_id, ''), coalesce(r.state, ''), coalesce(r.target_kind, ''), coalesce(r.target_key, ''),
+		       coalesce(r.target_label, ''), r.timeout_at
+		  FROM plugin_messages m
+		  JOIN plugins p ON p.id = m.plugin_id
+		  LEFT JOIN LATERAL (SELECT route_id, state, target_kind, target_key, target_label, timeout_at
+		                       FROM session_routes WHERE plugin_message_id = m.id ORDER BY id DESC LIMIT 1) r ON true
+		 WHERE NOT m.no_reply AND m.agent_id IS NOT NULL
+		 ORDER BY m.id DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []RoutableMessage{}
+	for rows.Next() {
+		var rm RoutableMessage
+		var mst, rst string
+		var timeout *time.Time
+		dest := append(messageDest(&rm.Message, &mst), &rm.PluginLabel, &rm.Route.RouteID, &rst,
+			&rm.Route.TargetKind, &rm.Route.TargetKey, &rm.Route.TargetLabel, &timeout)
+		if err := rows.Scan(dest...); err != nil {
+			return nil, err
+		}
+		rm.Message.Status, rm.Route.State = Status(mst), RouteState(rst)
+		if timeout != nil {
+			rm.Route.TimeoutAt = *timeout
+		}
+		if rm.Route.RouteID != "" {
+			rm.Route.MessageID = rm.Message.ID
+		}
+		out = append(out, rm)
+	}
+	return out, rows.Err()
 }
 
 // Route reads one of the principal's routes.

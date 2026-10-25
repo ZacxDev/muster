@@ -164,6 +164,7 @@ their host's `muster-mirror` — [below](#mirrored-claude-code-sessions)):
 | `agent_destroy {name \| id}` | Destroys one of the owner's agents through the Agents page's own teardown ([provisioner.md](provisioner.md#destroying-an-agent)), named by **exactly one** of `name` (its slug) or `id`. The pod and the row go in the background; its open asks go with the row; a running turn is cut off. **The task is kept**: once the agent is gone, a task still `in_progress` with no other live agent is back to `open`, so the chief can `task_dispatch` it — and if the chief started the destroyed agent, the chief may start **one** new agent on the task again (see [chief.md](chief.md); the browser's Delete releases it too). **No audit row** is written: where the call came from (the host the token proves, the session the caller named) is in muster's server log only. Find a name with `muster agent ls`. Refused: the chief (*"the chief agent cannot be deleted…; to replace the chief use `muster chief replace`"*), and another owner's agent, an unknown name or a missing id (all *"no such agent: X"*). Operator decision ("Build agent_destroy MCP": mirrored owner sessions only). |
 | `chief_ask {question, options?, route_id?, timeout_seconds?}` | Asks the owner's **chief** a question instead of the owner ([below](#asking-the-chief)). Returns `{id, status: "pending", expires_at, next}`. The session then calls `attention_wait {id}`, which ends `answered` with `answered_by` `chief` or `operator`, or `expired` once `timeout_seconds` pass (30 minutes when omitted; 60 s to 7 days, as for `attention_ask`). `route_id` names one of the owner's routes the question is about (another owner's route or a missing one: *"no such route: X"*). Refused when the owner has no chief. Not offered, and unknown, to every dispatched agent, the chief included. |
 | `route_reply {route_id, body}` | With [session routing](plugins.md#routing-a-message-to-a-session) on: answers a plugin message the chief routed to **this** session, through the same path as `muster route reply` (screened, relayed once — sent at once to a verified, allowlisted sender, otherwise a draft the owner approves). Refused: a route sent to another session (*"route X was not routed to this session…"* — whatever the caller holds, including the route id), a route no longer waiting (*"route X is no longer waiting for an answer (it is …)"* — answered, timed out back to the chief or failed; the same body again is refused too), and another owner's route or a missing id (both *"no such route: X"*). Not offered, and refused, to every dispatched agent, the chief included. |
+| `plugin_messages_list`, `plugin_message_route {message_id, subject?}` | With [session routing](plugins.md#routing-a-message-from-your-own-session) on: the operator lists their 30 most recent routable inbound plugin messages (newest first, with each one's route state) and routes one to a mirrored session — **to this session when no `subject` is named** — through the chief's own route (the same `session_routes` row, send-queue paste, `route_reply` answer and hand-back). The `session_route.routed` audit row carries `routed_via: "mcp from <host>/<session>"`. Refused: a message with a route still waiting (naming it), one not yet delivered to the chief, a subject that is not `mirror:<claude session id>` of an online session (listing the `candidates`), and another owner's message or a missing id (both *"no such plugin message: N"*). Not offered, and refused, to every dispatched agent, the chief included. Risk: [auth.md](auth.md#mirror-tokens-and-session-routing). |
 
 🔴 **Who can answer, and how that is enforced.** `attention_answer` is listed
 only on `POST /mirror/mcp`; no dispatched agent's tool list (gateway or `POST
@@ -253,7 +254,10 @@ too, through its host's `muster-mirror`:
    `chief_ask` (a question to the owner's chief — [below](#asking-the-chief)) and,
    with a connector store, `connector_requests_list` / `connector_request_decide`
    (the operator deciding a connector request through this session —
-   [connectors.md](connectors.md#deciding-a-request-from-your-own-session)); the
+   [connectors.md](connectors.md#deciding-a-request-from-your-own-session)) and,
+   with the plugin store, `plugin_drafts_list` / `plugin_draft_decide` (the
+   operator approving or rejecting a reply draft —
+   [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)); the
    chief's tools are not on it. The token is checked on every call (a revoked
    one is refused at its next call, `initialize` included). After 10 failed checks of one token from
    one address within a minute, that token from that address is answered 429 —
@@ -283,6 +287,11 @@ and, through `connector_request_decide`, **an approval as the operator of any
 of the owner's agents' pending connector requests** (recorded and shown as via
 MCP from that host; the accepted risk is in
 [connectors.md](connectors.md#deciding-a-request-from-your-own-session)) — and,
+through `plugin_drafts_list` / `plugin_draft_decide`, **a read of every one of
+the owner's pending reply drafts and an approval as the operator of any of
+them**, which sends that text to an outside party
+(recorded as via MCP from that host; the accepted risk is in
+[plugins.md](plugins.md#deciding-a-draft-from-your-own-session)) — and,
 through `agent_destroy`, it can **destroy any of the owner's agents but the
 chief** — with no audit row: the only record of which host did it is muster's
 server log.
@@ -298,6 +307,9 @@ and the chief is refused, but there is **no per-destroy audit trail** (operator
 decision): which host did it is in muster's server log only, and nothing
 restores a destroyed agent. A destroy of an agent the chief started also frees
 the chief to start one new agent on that task. Revoke a token you suspect (below).
+
+With session routing on, a mirror token can also read and route plugin
+messages: see [auth.md](auth.md#mirror-tokens-and-session-routing).
 
 🔴 **Accepted risk: an MCP answer can become a dispatched agent's
 instructions.** The operator decided this explicitly after being told the risk
