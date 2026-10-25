@@ -184,6 +184,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clearSiteCaches(w)
 	s.setPasswordSessionCookie(w)
 	s.logger.Printf("login: a browser session was issued")
 	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
@@ -221,6 +222,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if s.hasValidSession(r) {
 		s.forgetPushDevice(w, r, s.sessionUserID(r))
 	}
+	clearSiteCaches(w)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
@@ -231,6 +233,34 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 	})
 	http.Redirect(w, r, loginPath, http.StatusSeeOther)
+}
+
+// clearSiteCaches asks the browser to drop everything it CACHED for this
+// origin — the HTTP cache and the back/forward cache — on the response that
+// ends a session or starts one. The agent page, the Rendered view and the
+// terminals are cacheable (viewDocument), so without it Back after a sign-out
+// could show one of them from a cache to whoever holds the device next, and
+// Back after the next person signs in could show them the last one's.
+//
+// 🔴 "cache" ONLY, NEVER "storage". "storage" also unregisters the service
+// worker (and with it this device's push subscription) and empties IndexedDB,
+// where the Rendered view's snapshots live — and those have their own purge
+// (ui.SnapPurgeHTML, on the sign-in page every sign-out lands on). Asked for
+// the caches only, the next person's device keeps its app.
+//
+// ⚠ IT IS A BEST EFFORT, AND NOT THE GUARD THAT MUST HOLD. Browsers honour
+// Clear-Site-Data only on a secure origin (HTTPS, or localhost), so on a
+// plain-HTTP deployment it does nothing at all. What holds everywhere is the
+// restore's own check (ui restoreJS): a restored view page re-requests itself
+// and reloads when that is refused, when the answer is another user's page
+// (the user marker every view page carries, ui.UserMarker), or when what it
+// showed is gone. Until that answer lands — one round trip — the restored
+// page's content IS on screen; this header is what keeps it from being
+// restored at all where it is honoured.
+//
+// Its callers are ledgered (TestEverySignInAndSignOutClearsTheCaches).
+func clearSiteCaches(w http.ResponseWriter) {
+	w.Header().Set("Clear-Site-Data", `"cache"`)
 }
 
 // renderLoginPage writes the whole document. Hand-written rather than composed,

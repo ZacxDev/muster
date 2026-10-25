@@ -177,6 +177,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				ThemeHead(),
 				manifestLink(),
 				TitleEl(g.Text(mirrorQualified(plainOr(displayOr(v.Label, v.Title), v.Session), v.Qualifier)+" · Mirrored · muster")),
+				UserMarker(v.Nav.Feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				overlayNavHead(),
 				faroHead(),
@@ -934,8 +935,8 @@ func mirrorViewScript() g.Node {
     sock.onopen = function () { retry = 0; };
     sock.onmessage = function (ev) {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.type === 'batch') { if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m, ev.data.length); }
-      else if (m.type === 'error') { if (provisional) discard(); showError(m.message || 'The view ended.'); }
+      if (m.type === 'batch') { if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m, ev.data.length); caughtUp(); }
+      else if (m.type === 'error') { if (provisional) discard(); showError(m.message || 'The view ended.'); caughtUp(); }
       // The window's questions changed (mirror_ask.go): read them now.
       else if (m.type === 'asks') { if (window.musterAskPoll) window.musterAskPoll(); }
       // Suggested replies (suggest_row.go): pending, ready or none.
@@ -960,8 +961,37 @@ func mirrorViewScript() g.Node {
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(function () { if (atEnd) log.scrollTop = log.scrollHeight; }).observe(log);
   }
-  window.addEventListener('pagehide', function () { closed = true; save(); if (sock) sock.close(); });
-  document.addEventListener('visibilitychange', function () { if (document.hidden) save(); });
+  // 🔴 NO STORAGE WRITE MAY BE IN FLIGHT AS THE PAGE GOES INTO THE BACK/FORWARD
+  // CACHE. A save is a chain of storage transactions, and one still running
+  // when the page is frozen there evicts it (measured, Chromium 153: Back
+  // reloaded the view, CDP reason IgnoreEventAndEvict, whenever the page was
+  // left within the save delay of a batch; with the store's put stubbed out it
+  // was restored). So a page that MAY be kept (pagehide persisted) saves
+  // nothing as it goes; one that is going for good saves, as before. Skipping
+  // it costs only freshness: the stored snapshot is the last one saved, whole
+  // at its own offset, and a later open resumes from there.
+  var leaving = false;
+  window.addEventListener('pagehide', function (e) { closed = true; leaving = !!e.persisted; if (!e.persisted) save(); if (sock) sock.close(); });
+  // Back and Forward (restore.go): the pagehide above closed the socket; a
+  // restore opens it again, resuming from the offset the page already drew,
+  // so nothing is painted twice. Caught up is the socket's first answer.
+  var restoring = null;
+  function caughtUp() { if (restoring) { var r = restoring; restoring = null; r(); } }
+  ` + restoreJoinJS(`{
+    show: function () {
+      closed = false; leaving = false; retry = 0;
+      return new Promise(function (resolve) {
+        restoring = resolve;
+        if (!sock || sock.readyState > 1) connect();
+      });
+    }
+  }`) + `
+  // Leaving fires visibilitychange BEFORE pagehide, so the hidden save waits
+  // a quarter second and is skipped once pagehide has said the page may be kept:
+  // a tab that was only switched away gets no pagehide and saves then.
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) setTimeout(function () { if (!leaving) save(); }, 250);
+  });
   // Open: paint this window's snapshot, if there is one this user may see,
   // then connect — resuming from its offset. Storage that is slow or absent
   // costs at most readWaitMs, then the socket opens without it. Run once the

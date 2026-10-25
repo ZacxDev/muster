@@ -5,6 +5,7 @@ import { test, expect } from '../lib/fixtures';
 import { hermesViewPort } from '../lib/env';
 import { MirrorRig } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
+import { launchWithBfcache } from '../lib/bfcache';
 
 // A HERMES WINDOW, ON A REAL SERVER (the e2eterm binary, mirror plugin on) AND
 // A REAL muster-mirror whose only fake is tmux (docs/design/hermes.md,
@@ -235,6 +236,58 @@ test('a send that may have been submitted offers Send again, and the same nonce 
   await expect(page.locator('#mv-log [data-bubble="user"]').last()).toContainText(text, { timeout: 20_000 });
   const written = fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8');
   expect(written.split(text).length - 1).toBe(1);
+});
+
+// 🔴 …AND NOT BY A BACK EITHER. A page restored from the back/forward cache
+// renews its send nonces (restore.go renewNonces), so a message sent from it
+// is not taken for the one sent before it left — except the nonce a composer
+// HOLDS while it offers "Send again": renewed, a plain Send would deliver the
+// may-have-landed message a second time (audit #270 round 2). In lib/
+// bfcache.ts's browser, the only one here that can restore a page.
+test('a send that may have been submitted is still refused after Back restores the page', async ({ playwright }) => {
+  const browser = await launchWithBfcache(playwright.chromium);
+  try {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    await ctx.addInitScript(`addEventListener('pageshow', (e) => { if (e.persisted) window.__restored = (window.__restored || 0) + 1; })`);
+    const page = await ctx.newPage();
+    await rig.login(page);
+    await expect
+      .poll(async () => {
+        await page.goto(rig.origin + viewOf('@2'));
+        return page.locator('#mv-input').isEnabled();
+      }, { message: `the Hermes view (mirror log:\n${rig.log})`, timeout: 30_000 })
+      .toBe(true);
+    writeFileAtomic(path.join(rig.dir, 'hermes-windows'), `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+    const input = page.locator('#mv-input');
+    const text = 'after a restore, UNCONFIRMED-ONCE ' + Date.now().toString(36);
+    let first = '';
+    for (let i = 0; i < 30; i++) {
+      await input.fill(text);
+      const [resp] = await Promise.all([
+        page.waitForResponse((r) => new URL(r.url()).pathname === '/mirror/view/send'),
+        page.locator('#mv-send').click(),
+      ]);
+      first = await resp.text();
+      if (!first.includes('Hermes is working')) break;
+      await page.waitForTimeout(200);
+    }
+    expect(first).toContain('May have been submitted');
+    await expect(page.locator('#mv-send-again')).toBeVisible();
+
+    // Away and Back: restored, the same document, still offering Send again.
+    await page.goto(rig.origin + '/tasks');
+    await page.goBack({ waitUntil: 'commit' });
+    await expect.poll(() => page.evaluate(() => (window as any).__restored || 0).catch(() => 0), { message: 'Back restored the view' }).toBe(1);
+    await expect(page.locator('#mv-send-again')).toBeVisible();
+    await expect(input).toHaveValue(text);
+
+    // A plain Send of it: still refused, still nothing delivered.
+    await page.locator('#mv-send').click();
+    await expect(page.locator('#mv-note')).toContainText('Not sent again: the first try may already have been submitted');
+    expect(fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8')).not.toContain(text);
+  } finally {
+    await browser.close();
+  }
 });
 
 // HERMES PHASE 4: a waiting Hermes window in the attention queue. On a host

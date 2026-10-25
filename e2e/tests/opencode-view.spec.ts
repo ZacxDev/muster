@@ -6,6 +6,7 @@ import { openCodeViewPort } from '../lib/env';
 import { MirrorRig } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
 import { clsInit, readCls, settle, ClsResult } from '../lib/cls';
+import { launchWithBfcache } from '../lib/bfcache';
 
 // AN OPENCODE WINDOW, ON A REAL SERVER (the e2eterm binary, mirror plugin on)
 // AND A REAL muster-mirror whose fakes are tmux and the opencode server
@@ -203,6 +204,73 @@ for (const vp of viewports) {
     }
   });
 }
+
+// BACK AND FORWARD (internal/ui restore.go, #270): an opencode view left for
+// another page and brought back by Back is RESTORED from the back/forward
+// cache — the same document — reconnects its stream, draws a message that came
+// while it was away exactly once (the host starts every opencode view over with
+// a Reset, so a resume never paints twice), and keeps its read-only composer.
+// Run in lib/bfcache.ts's browser: the suite's own cannot restore a page.
+test('back to an opencode view restores it, reconnects, draws a message that came meanwhile once, and stays read-only', async ({ playwright }) => {
+  test.setTimeout(90_000);
+  const browser = await launchWithBfcache(playwright.chromium);
+  try {
+    const ctx = await browser.newContext({ baseURL: rig.origin, storageState: state as never, viewport: { width: 390, height: 844 } });
+    await ctx.addInitScript(`(() => {
+      window.__e2eDoc = Math.random().toString(36).slice(2);
+      addEventListener('pageshow', (e) => { try {
+        const a = JSON.parse(sessionStorage.getItem('__e2eShows') || '[]');
+        a.push({ doc: window.__e2eDoc, path: location.pathname, persisted: e.persisted, at: Date.now() });
+        sessionStorage.setItem('__e2eShows', JSON.stringify(a)); } catch (x) {} });
+    })()`);
+    const page = await ctx.newPage();
+    const why: string[] = [];
+    const cdp = await ctx.newCDPSession(page);
+    await cdp.send('Page.enable');
+    cdp.on('Page.backForwardCacheNotUsed', (e: any) => why.push(JSON.stringify((e.notRestoredExplanations || []).map((x: any) => x.reason))));
+    await page.goto(rig.origin + viewOf('@2'));
+    // The service worker claims its clients when it activates; a page claimed
+    // while in the cache is evicted (bfcache-restore.spec.ts), so wait for it.
+    await page.evaluate(async () => {
+      if (!navigator.serviceWorker) return;
+      await navigator.serviceWorker.ready;
+      if (navigator.serviceWorker.controller) return;
+      await new Promise((r) => { navigator.serviceWorker.addEventListener('controllerchange', r, { once: true }); setTimeout(r, 3000); });
+    }).catch(() => {});
+    const log = page.locator('#mv-log');
+    await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 20_000 });
+    await expect(log).toContainText('Second reply, also live.');
+    await page.waitForTimeout(1500); // past the snapshot's save delay
+    const before = await log.locator('[data-bubble]').count();
+    const doc = await page.evaluate(() => (window as any).__e2eDoc);
+    const t0 = Date.now();
+    const marker = 'an opencode prompt sent while the view was away ' + Date.now();
+    await page.goto(rig.origin + '/tasks');
+    await page.evaluate(() => (document.cookie = 'e2e-away=' + Date.now() + '; path=/'));
+    op({ op: 'message', session: sid, message: user('msg_0e2e05', 1700000000005, marker) });
+    await page.goBack({ waitUntil: 'commit', timeout: 10_000 }).catch((e: Error) => {
+      if (!/ERR_ABORTED|frame was detached|Timeout/.test(e.message)) throw e;
+    });
+    await expect
+      .poll(async () => {
+        const shows = await page.evaluate(() => JSON.parse(sessionStorage.getItem('__e2eShows') || '[]')).catch(() => []);
+        return shows.find((x: any) => x.path === '/mirror/view' && x.at >= t0) || null;
+      }, { message: `Back showed the view (not restored because: ${why.join(' ')})` })
+      .toMatchObject({ doc, persisted: true });
+    await expect(log.locator('[data-bubble="user"]').last()).toContainText(marker, { timeout: 15_000 });
+    await expect(page.locator('#mv-status')).toHaveText('Live');
+    expect(await log.getByText(marker).count(), 'the new message, once').toBe(1);
+    expect(await log.locator('[data-bubble]').count(), 'nothing painted twice').toBe(before + 1);
+    expect(await log.getByText('Second reply, also live.').count()).toBe(1);
+    // Still read-only after the restore.
+    await expect(page.locator('#mv-input')).toBeDisabled();
+    await expect(page.locator('#mv-readonly')).toContainText("Sending to opencode isn't supported yet");
+    await expect(page.locator('#mv-queue, #mv-queue-send')).toHaveCount(0);
+    await ctx.close();
+  } finally {
+    await browser.close();
+  }
+});
 
 // LAST, because it breaks the fake server for good: the server's password is
 // rotated, which revokes the host's token. The window keeps its card, as an
