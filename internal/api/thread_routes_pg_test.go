@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -135,6 +136,19 @@ func (f *threadFixture) routesOf(t *testing.T, m plugins.Message) []plugins.Rout
 	return out
 }
 
+// dispatch is the plugin handler's hand-on of stored message m
+// (dispatchPluginMessage) on a request with the owner's principal, waited for.
+func (f *threadFixture) dispatch(t *testing.T, m plugins.Message) {
+	t.Helper()
+	p, err := f.plugins.Plugin(f.asOwner, m.PluginID)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	f.srv.dispatchPluginMessage(httptest.NewRequest("POST", "/plugin/v1/messages", nil).WithContext(f.asOwner), p, m)
+	f.srv.WaitForPluginDeliveries()
+}
+
 func (f *threadFixture) bindings(t *testing.T, thread string) int {
 	t.Helper()
 	var n int
@@ -236,12 +250,12 @@ func TestAReplyOnABoundThreadIsRoutedToItsSession(t *testing.T) {
 	if code, _ := f.post(t, f.mailTok, "thr-route-1", "4242"); code != 200 {
 		t.Fatalf("a repeat: %d", code)
 	}
-	p, _ := f.plugins.Plugin(f.asOwner, m.PluginID)
-	if !f.srv.routeByThread(f.asOwner, p, m) {
-		t.Fatal("a second attempt on a routed message must leave it with its route")
-	}
+	f.dispatch(t, m)
 	if rs := f.routesOf(t, m); len(rs) != 1 || len(f.queued(t)) != 1 || f.turns.count() != 0 {
 		t.Fatalf("after a repeat: %d routes, %d queued, %d turns; want 1, 1, 0", len(rs), len(f.queued(t)), f.turns.count())
+	}
+	if m, _ = f.plugins.Message(f.asOwner, m.ID); m.Status != plugins.StatusDelivered {
+		t.Fatalf("after a repeat the message is %s, want delivered", m.Status)
 	}
 }
 
@@ -413,13 +427,62 @@ func TestAMessageTheChiefAlreadyHasIsNotRoutedByThread(t *testing.T) {
 		t.Fatal("bind")
 	}
 	m, _ = f.plugins.Message(f.asOwner, m.ID)
-	p, _ := f.plugins.Plugin(f.asOwner, m.PluginID)
-	if !f.srv.routeByThread(f.asOwner, p, m) {
-		t.Fatal("a message the chief holds must stay the chief's, not go out again")
+	f.dispatch(t, m) // a message the chief holds stays the chief's, and is not given it again
+	if rs := f.routesOf(t, m); len(rs) != 0 || len(f.queued(t)) != 0 || f.turns.count() != 1 {
+		t.Fatalf("%d routes, %d queued, %d chief turns; want 0, 0, 1", len(rs), len(f.queued(t)), f.turns.count())
 	}
-	if rs := f.routesOf(t, m); len(rs) != 0 || len(f.queued(t)) != 0 {
-		t.Fatalf("%d routes, %d queued; want none", len(rs), len(f.queued(t)))
+	if m, _ = f.plugins.Message(f.asOwner, m.ID); m.Status != plugins.StatusDelivered {
+		t.Fatalf("the message is %s, want delivered", m.Status)
 	}
+}
+
+// TestARouteByThreadAndAChiefDeliveryRacingHaveOneOwner: a queued reply on a
+// bound thread handed on (dispatchPluginMessage) while a delivery to the chief
+// (a retry, the sweep) runs is the session's XOR the chief's, never both, and
+// ends delivered. The stagger only varies the interleaving; nothing waits on it.
+func TestARouteByThreadAndAChiefDeliveryRacingHaveOneOwner(t *testing.T) {
+	f := newThreadFixture(t)
+	if code, _ := f.bind(t, "", "4242", routeSID); code != 201 {
+		t.Fatal("bind")
+	}
+	routed, turned := 0, 0
+	for i := 0; i < 40; i++ {
+		m, created, err := f.plugins.Submit(f.asOwner, f.agentMail.ID, plugins.MessageIn{ExternalID: "thr-race-" + strconv.Itoa(i),
+			Sender: "someone/agent", Subject: "re: the build", Body: "is it green yet?", Thread: "4242"})
+		if err != nil || !created || m.Status != plugins.StatusQueued {
+			t.Fatalf("submit %d: %v %v %s", i, created, err, m.Status)
+		}
+		before := f.turns.count()
+		stagger := time.Duration(i%5) * 500 * time.Microsecond
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			if i%2 == 0 {
+				time.Sleep(stagger)
+			}
+			f.dispatch(t, m)
+		}()
+		go func() {
+			defer wg.Done()
+			if i%2 == 1 {
+				time.Sleep(stagger)
+			}
+			f.srv.pluginDeliverer.Deliver(f.asOwner, f.agentMail.ID, m.ID, f.chief)
+		}()
+		wg.Wait()
+		f.srv.WaitForPluginDeliveries()
+		routes, turns := len(f.routesOf(t, m)), f.turns.count()-before
+		if routes+turns != 1 {
+			t.Fatalf("iteration %d: %d route(s) and %d chief turn(s); want exactly one owner", i, routes, turns)
+		}
+		if got, _ := f.plugins.Message(f.asOwner, m.ID); got.Status != plugins.StatusDelivered {
+			t.Fatalf("iteration %d: the message is %s, want delivered", i, got.Status)
+		}
+		routed += routes
+		turned += turns
+	}
+	t.Logf("40 races: %d routed, %d delivered to the chief", routed, turned)
 }
 
 func TestThePluginThreadsRouteIsOffWithRoutingOff(t *testing.T) {
@@ -439,5 +502,50 @@ func TestWithNoDelivererNothingIsRoutedByThread(t *testing.T) {
 	_, m := f.post(t, f.mailTok, "thr-nodeliverer-1", "4242")
 	if rs := f.routesOf(t, m); len(rs) != 0 || m.Status != plugins.StatusQueued {
 		t.Fatalf("%d routes, status %s; want none and queued", len(rs), m.Status)
+	}
+}
+
+// cancelAfterRoute is a route store that cancels the request's context the
+// moment a route has been made: the client hanging up just after the route
+// took the message.
+type cancelAfterRoute struct {
+	plugins.RouteStore
+	cancel context.CancelFunc
+}
+
+func (c cancelAfterRoute) CreateRouteFrom(ctx context.Context, chiefID, ownerID, messageID int64, target plugins.RouteTarget, timeout time.Duration, origin plugins.RouteOrigin) (plugins.Route, error) {
+	r, err := c.RouteStore.CreateRouteFrom(ctx, chiefID, ownerID, messageID, target, timeout, origin)
+	if err == nil {
+		c.cancel()
+	}
+	return r, err
+}
+
+func TestAPluginClientThatHangsUpAfterTheRouteStillGetsItInjected(t *testing.T) {
+	f := newThreadFixture(t)
+	if code, _ := f.bind(t, "", "4242", routeSID); code != 201 {
+		t.Fatal("bind")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.srv.ext.Routes = cancelAfterRoute{RouteStore: f.srv.ext.Routes, cancel: cancel}
+	b, _ := json.Marshal(map[string]any{"external_id": "thr-hangup-1", "sender": "someone/agent", "subject": "re: the build",
+		"body": "is it green yet?", "thread": "4242"})
+	r := httptest.NewRequest("POST", "/plugin/v1/messages", strings.NewReader(string(b))).WithContext(ctx)
+	r.Header.Set("Authorization", "Bearer "+f.mailTok)
+	w := httptest.NewRecorder()
+	f.h.ServeHTTP(w, r)
+	f.srv.WaitForPluginDeliveries()
+	var out struct{ ID int64 }
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	if w.Code != 202 || ctx.Err() == nil {
+		t.Fatalf("post: %d, the request context %v; want 202 and cancelled (the route was made)", w.Code, ctx.Err())
+	}
+	rs := f.routesOf(t, plugins.Message{ID: out.ID})
+	if len(rs) != 1 || rs[0].State != plugins.RouteRouted || len(f.queued(t)) != 1 || f.turns.count() != 0 {
+		t.Fatalf("routes %+v, %d queued, %d chief turns; want one routed route, one queued, no turn", rs, len(f.queued(t)), f.turns.count())
+	}
+	if note := f.chiefDefaultSessionText(t); !strings.Contains(note, "is it green yet?") || !strings.Contains(note, "started thread 4242") {
+		t.Fatalf("the chief's conversation does not hold the routed message: %q", note)
 	}
 }

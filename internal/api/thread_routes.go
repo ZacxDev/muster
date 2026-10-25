@@ -55,10 +55,11 @@ func (s *Server) handlePluginThreadBind(w http.ResponseWriter, r *http.Request) 
 // routeByThread routes a NEW message m of plugin p — agent mail, on a thread
 // one of the owner's sessions started — to that session: the chief's
 // route (routeItem), made by muster, so the chief decides nothing. It reports
-// whether m is taken care of; false leaves m queued for the ordinary delivery
-// to the chief, as for any message — which is what happens when the route
-// cannot be made (no online mirrored window shows the session, say), or there
-// is no chief to own the route.
+// whether m is taken care of; false leaves m to the ordinary delivery to the
+// chief, as for any message — which is what happens when the route cannot be
+// made (no online mirrored window shows the session, say), when there is no
+// chief to own the route, or when another delivery took m first (that delivery
+// then finds m no longer queued and leaves it as it is).
 func (s *Server) routeByThread(ctx context.Context, p plugins.Plugin, m plugins.Message) bool {
 	if !routingOn(s.ext) || s.pluginDeliverer == nil || p.Name != plugins.AgentMailPlugin || m.Thread == nil {
 		return false
@@ -88,11 +89,9 @@ func (s *Server) routeByThread(ctx context.Context, p plugins.Plugin, m plugins.
 		// chief its hand-back.
 		note = "[muster] " + item + ", a reply on thread " + thread + ", could not be put into the session that started the thread; it comes back to you."
 	default:
-		cur, err := s.ext.Plugins.Message(ctx, m.ID)
-		if err == nil && cur.Status != plugins.StatusQueued {
-			// Another delivery took it meanwhile: it is the chief's already.
-			return true
-		}
+		// Not routed — including when another delivery took m meanwhile, which
+		// the chief's delivery then finds settled (Deliver re-reads it under the
+		// chief's claim, and BeginDelivery takes only a queued message).
 		s.logger.Printf("threads: message %d: not routed (%s); delivering it to the chief", m.ID, refused)
 		return false
 	}
