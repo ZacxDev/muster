@@ -55,7 +55,7 @@ import (
 // with none, a page that was not eligible, or an entry evicted (600 s, or past
 // the cache's size; measured: CDP CacheLimit, then navigation type
 // back_forward, transferSize 0). A message that may have landed has no "Send
-// again" offer and no held nonce there. That protection is the SERVER's
+// again" offer there. That protection is the SERVER's
 // (internal/api sendNonces.hold: the same text is refused under any nonce
 // until the person says Send again), not this script's.
 //
@@ -99,10 +99,6 @@ const RestoreRefreshAttr = "data-restore-refresh"
 // UpdatingChipAttr marks a page's Updating… chip (updatingChip). A page with
 // one is a VIEW page, and a restore re-requests it.
 const UpdatingChipAttr = "data-updating-chip"
-
-// NonceHeldAttr marks a message box whose send nonce must NOT be renewed when
-// the page is shown again (renewNonces): it is offering "Send again".
-const NonceHeldAttr = "data-nonce-held"
 
 // UserMarkerName is the <meta> every VIEW page carries naming its signed-in
 // user (UserMarker).
@@ -182,18 +178,15 @@ func restoreJS(feat Features) string {
       // renew does after a send; with no way to mint one the field is emptied
       // (no nonce is no protection; a reused one swallows the message).
       //
-      // ⚠ EXCEPT A HELD ONE. A composer offering "Send again" (a send that may
-      // have landed; mirror_compose.go) keeps its nonce on purpose: the server
-      // refuses a plain re-Send under it, and only the explicit Send again
-      // mints a new one. Renewed here, a plain Send delivered the same message
-      // a second time (audit #270 round 2). The server now also refuses that
-      // send by its text (internal/api sendNonces.hold), which is what covers
-      // a copy from the HTTP cache; the held nonce keeps the restored page's
-      // own answer the one its live page gave. Such a form carries
-      // NonceHeldAttr while the offer stands.
+      // 🔴 RENEWING IS SAFE FOR A MESSAGE THAT MAY HAVE LANDED TOO. A
+      // composer offering "Send again" (mirror_compose.go) used to keep its
+      // nonce out of this renewal, because renewed, a plain Send delivered
+      // the same message a second time (audit #270 round 2). The server now
+      // refuses that send by its TEXT under any nonce (internal/api
+      // sendNonces.hold) until the person presses Send again, so every nonce
+      // is renewed.
       function renewNonces() {
         document.querySelectorAll('input[name="nonce"]').forEach(function (n) {
-          if (n.closest('[` + NonceHeldAttr + `]')) return;
           var v = '';
           try {
             var b = new Uint8Array(16);

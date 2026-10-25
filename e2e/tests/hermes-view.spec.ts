@@ -1,6 +1,4 @@
 import fs from 'node:fs';
-import http from 'node:http';
-import { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
@@ -242,11 +240,13 @@ test('a send that may have been submitted offers Send again, and the same nonce 
 
 // 🔴 …AND NOT BY A BACK EITHER. A page restored from the back/forward cache
 // renews its send nonces (restore.go renewNonces), so a message sent from it
-// is not taken for the one sent before it left — except the nonce a composer
-// HOLDS while it offers "Send again": renewed, a plain Send delivered the
-// may-have-landed message a second time (audit #270 round 2; the server's hold
-// by text, below, now refuses that too). In lib/
-// bfcache.ts's browser, the only one here that can restore a page.
+// is not taken for the one sent before it left. That includes the nonce of a
+// composer offering "Send again": renewed, a plain Send once delivered the
+// may-have-landed message a second time (audit #270 round 2), and the
+// composer kept that nonce out of the renewal. The server's hold by text
+// (internal/api sendNonces.hold) now refuses the send under the renewed nonce;
+// this case is what shows the restored page needs nothing more. In
+// lib/bfcache.ts's browser, the only one here that can restore a page.
 test('a send that may have been submitted is still refused after Back restores the page', async ({ playwright }) => {
   const browser = await launchWithBfcache(playwright.chromium);
   try {
@@ -309,10 +309,9 @@ test('a send that may have been submitted is still refused after Back restores t
 // been submitted" (the row came late), so every delivery is a row: the count
 // below is the number of times the message reached the conversation.
 //
-// Two ways the back/forward cache does not serve a Back, both measured here:
-// a browser with none (the suite's own: lib/bfcache.ts), and one WITH it whose
-// entry was evicted — eight pages later, past Chromium's cache size (CDP
-// reason CacheLimit), which history.go(-8) then reaches.
+// The suite's own browser has no back/forward cache (lib/bfcache.ts), so its
+// Back is that path. (One WITH the cache whose entry was evicted — CDP
+// CacheLimit — takes the same server path; measured at de28bbc2, not kept.)
 const deliveries = (text: string) =>
   fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8').split('\n').filter((l) => l && JSON.parse(l).content === text).length;
 
@@ -377,31 +376,6 @@ test('a send that may have landed is not delivered again from the HTTP cache\'s 
   await page.goto(rig.origin + '/tasks');
   await page.goBack();
   await fromTheCopy(page, text);
-});
-
-test('…nor from the HTTP cache\'s copy when the back/forward cache evicted the page', async ({ playwright }) => {
-  const away = http.createServer((_q, res) => res.writeHead(200, { 'Content-Type': 'text/html' }).end('<!doctype html><title>away</title><p>away</p>'));
-  await new Promise<void>((r) => away.listen(0, '127.0.0.1', r));
-  const browser = await launchWithBfcache(playwright.chromium);
-  try {
-    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
-    const page = await ctx.newPage();
-    const why: string[] = [];
-    const cdp = await ctx.newCDPSession(page);
-    await cdp.send('Page.enable');
-    cdp.on('Page.backForwardCacheNotUsed', (e: any) => why.push(...(e.notRestoredExplanations || []).map((x: any) => x.reason)));
-    const text = 'after an eviction, UNCONFIRMED-LANDED ' + Date.now().toString(36);
-    await sendMayHaveLanded(page, text);
-    const port = (away.address() as AddressInfo).port;
-    for (let i = 0; i < 8; i++) await page.goto(`http://127.0.0.1:${port}/away/${i}`);
-    // The evaluate's own context is the one the navigation destroys.
-    await Promise.all([page.waitForURL(/\/mirror\/view/), page.evaluate(() => history.go(-8)).catch(() => {})]);
-    await expect.poll(() => why, { message: 'the instrument: the back/forward cache did not serve it, and says why' }).toContain('CacheLimit');
-    await fromTheCopy(page, text);
-  } finally {
-    await browser.close();
-    await new Promise<void>((r) => away.close(() => r()));
-  }
 });
 
 // HERMES PHASE 4: a waiting Hermes window in the attention queue. On a host

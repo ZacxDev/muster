@@ -479,8 +479,10 @@ func mirrorComposerScript() g.Node {
   // 🔴 "SEND AGAIN" IS THE ONLY RETRY OF A SEND THAT MAY HAVE LANDED. When the
   // host never confirmed a send (the answer carries X-Muster-Send-Again), the
   // server keeps its nonce: the same message re-sent with it is refused,
-  // because it may be in the conversation already. This button is the
-  // person's explicit retry: it mints a NEW nonce, then sends.
+  // because it may be in the conversation already — and so is the same text
+  // under any other nonce (internal/api sendNonces.hold). This button is the
+  // person's explicit retry: it mints a NEW nonce and says it is Send again
+  // (againField), then sends.
   var againBtn = null;
   function offerAgain(sub) {
     if (!againBtn) {
@@ -492,13 +494,13 @@ func mirrorComposerScript() g.Node {
       note.parentNode.insertBefore(againBtn, note.nextSibling);
     }
     againBtn.hidden = false;
-    // The nonce is HELD while Send again is offered: a page shown again from
-    // a cache renews every other nonce (restore.go renewNonces) but not this
-    // one, so a plain Send of the message is still refused.
-    form.setAttribute('` + NonceHeldAttr + `', '');
-    againBtn.onclick = function () { againBtn.hidden = true; form.removeAttribute('` + NonceHeldAttr + `'); renew(); say(''); againField(true); post(sub); };
+    // A plain Send of the message stays refused while this is offered — on
+    // this page, and on any copy of it (a restore renews the nonce, a Back
+    // from the HTTP cache shows the page as first served): the server holds
+    // the message by its text (internal/api sendNonces.hold).
+    againBtn.onclick = function () { againBtn.hidden = true; renew(); say(''); againField(true); post(sub); };
   }
-  function dropAgain() { if (againBtn) againBtn.hidden = true; form.removeAttribute('` + NonceHeldAttr + `'); }
+  function dropAgain() { if (againBtn) againBtn.hidden = true; }
   // againField: the field (again=1) that tells the server this send IS the
   // person's Send again. 🔴 The server holds a message that may have landed by
   // its TEXT, under any nonce (internal/api sendNonces.hold), so a plain Send
