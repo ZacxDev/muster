@@ -108,7 +108,7 @@ func (s *Server) mirrorCards(ctx context.Context, pinned pins.Set, focused focus
 	ranks := s.ext.Mirror.HostRanks(ctx)
 	for _, m := range mirror.Ordered(hosts) {
 		out = append(out, ui.MirrorCardView{Host: m.Host, Session: m.Session, Window: m.Window, Title: mirrorTitle(m), Label: m.Label,
-			Qualifier: m.Qualifier, Kind: m.Kind(), Online: m.Online, Interactive: m.Interactive, Claude: m.Claude, AgentView: m.AgentView(),
+			Qualifier: m.Qualifier, Kind: m.Kind(), Note: m.AgentNote, Online: m.Online, Interactive: m.Interactive, Claude: m.Claude, AgentView: m.AgentView(),
 			ActiveAt: m.ActiveAt(), Focus: focused.mirrorFocus(m.SessionKey()), Repo: m.Repo, Work: m.Work, Color: m.Color,
 			Pinned:   pinned.Mirror(pins.MirrorKey{Host: m.Host, Session: m.Session, Window: m.Window}),
 			HostIcon: ui.HostIconFor(ranks, m.Host)})
@@ -261,7 +261,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	}
 	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
 	allowSameOriginFrame(w)
-	formDocument(w)
+	viewDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.AgentTerminalPage(v).Render(w); err != nil {
 		s.logger.Printf("mirror: render terminal page: %v", err)

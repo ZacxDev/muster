@@ -492,9 +492,13 @@ func mirrorComposerScript() g.Node {
       note.parentNode.insertBefore(againBtn, note.nextSibling);
     }
     againBtn.hidden = false;
-    againBtn.onclick = function () { againBtn.hidden = true; renew(); say(''); post(sub); };
+    // The nonce is HELD while Send again is offered: a page shown again from
+    // a cache renews every other nonce (restore.go renewNonces) but not this
+    // one, so a plain Send of the message is still refused.
+    form.setAttribute('` + NonceHeldAttr + `', '');
+    againBtn.onclick = function () { againBtn.hidden = true; form.removeAttribute('` + NonceHeldAttr + `'); renew(); say(''); post(sub); };
   }
-  function dropAgain() { if (againBtn) againBtn.hidden = true; }
+  function dropAgain() { if (againBtn) againBtn.hidden = true; form.removeAttribute('` + NonceHeldAttr + `'); }
   // The Queue button (send_queue.go), when the composer has one: a submit
   // whose formaction is the queue route.
   var queueBtn = document.getElementById('mv-queue-send');

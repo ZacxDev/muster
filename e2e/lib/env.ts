@@ -226,6 +226,19 @@ export const clsLongMirrorPort = port + 196;
 // and that fake chat-completions endpoint.
 export const suggestPort = port + 197;
 export const suggestFakePort = port + 198;
+// An opencode window's read-only rendered view (opencode-view.spec.ts): its own
+// server (the e2eterm binary, mirror plugin on) and one mirrored host whose
+// opencode server is a fake in the host's own process.
+export const openCodeViewPort = port + 199;
+// Back and Forward restoring the view pages (bfcache-restore.spec.ts): its own
+// mirrored server (the e2eterm binary, mirror plugin on) and one mirrored host,
+// and a port of its own for the build A / build B pair (a deploy while a page
+// sits in the back/forward cache).
+export const bfcacheRestorePort = port + 150;
+export const bfcacheBuildPort = port + 151;
+// …and a static page of its own on another origin, to leave a page for when
+// the muster page left behind must not answer anything meanwhile.
+export const bfcacheAwayPort = port + 152;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

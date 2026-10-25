@@ -71,6 +71,10 @@ type MirrorViewView struct {
 	Hermes bool
 	// HermesSend: a Hermes window whose host sends to Hermes.
 	HermesSend bool
+	// ViewOnly is the Kind of a runtime muster VIEWS but never sends to
+	// (opencode); "" otherwise. Its composer is drawn disabled saying why
+	// (MirrorViewOnlyNote), with no queue.
+	ViewOnly string
 	// StepUp is the "Confirm it's you" wiring (stepup_confirm.go): a send
 	// refused as stale asks there — passkey or password — and retries. Unused
 	// (no dialog is drawn) on a read-only host, which cannot be sent to at all.
@@ -116,6 +120,12 @@ const MirrorReadOnlyNote = "This host is read-only — its muster-mirror was not
 // disabled on a host that does not send to Hermes (docs/design/hermes.md).
 const MirrorHermesNoSendNote = "This host does not send to Hermes: its muster-mirror runs without -hermes-send, because Enter there can answer a prompt Hermes is showing, such as a command approval. Type in the terminal."
 
+// MirrorViewOnlyNote is the disabled composer of a window of kind, a runtime
+// muster only views (opencode, docs/design/opencode.md).
+func MirrorViewOnlyNote(kind string) string {
+	return "Sending to " + kind + " isn't supported yet: muster shows this session read-only. Type in the terminal."
+}
+
 // MirrorViewPage is the rendered view's document.
 //
 // ⚠ ITS OWN DOCUMENT, like the terminal page: a real load (the links into it
@@ -137,6 +147,11 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 	}
 	working := "Claude is working…"
 	switch {
+	case v.ViewOnly != "":
+		working = v.ViewOnly + " is working…"
+		composer.Placeholder, composer.Aria = "Message "+v.ViewOnly+"…", "Message "+v.ViewOnly+" in this session"
+		composer.Disabled, composer.DisabledPlaceholder, composer.Queue = MirrorViewOnlyNote(v.ViewOnly), "Sending to "+v.ViewOnly+" is not available", nil
+		composer.Suggest, composer.SuggestPaused = "", false
 	case v.Hermes && !v.HermesSend:
 		working = "Hermes is working…"
 		composer.Placeholder, composer.Aria = "Message Hermes…", "Message Hermes in this session"
@@ -162,6 +177,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				ThemeHead(),
 				manifestLink(),
 				TitleEl(g.Text(mirrorQualified(plainOr(displayOr(v.Label, v.Title), v.Session), v.Qualifier)+" · Mirrored · muster")),
+				UserMarker(v.Nav.Feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				overlayNavHead(),
 				faroHead(),
@@ -230,8 +246,8 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					Span(Class("animate-pulse"), g.Text(working)),
 				),
 				mirrorComposer(composer),
-				g.If(v.Interactive && (!v.Hermes || v.HermesSend), confirmDialog(v.StepUp)),
-				g.If(v.Interactive && (!v.Hermes || v.HermesSend), stepUpScript()),
+				g.If(v.Interactive && (!v.Hermes || v.HermesSend) && v.ViewOnly == "", confirmDialog(v.StepUp)),
+				g.If(v.Interactive && (!v.Hermes || v.HermesSend) && v.ViewOnly == "", stepUpScript()),
 				// The snapshot store (deferred: it runs before DOMContentLoaded,
 				// which is when mirrorViewScript reads it).
 				SnapScript(v.Nav.Feat),
@@ -703,6 +719,8 @@ func noticeRow(ev cctranscript.Event) g.Node {
 		icon, label = "▸", "output"
 	case cctranscript.NoticeHermes:
 		icon, label = "☤", "hermes"
+	case cctranscript.NoticeOpenCode:
+		icon, label = "◇", "opencode"
 	}
 	// The status as the harness wrote it, drawn the tool rows' way: a known
 	// good one ✓, a known bad one ✗, anything else by name.
@@ -917,8 +935,8 @@ func mirrorViewScript() g.Node {
     sock.onopen = function () { retry = 0; };
     sock.onmessage = function (ev) {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.type === 'batch') { if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m, ev.data.length); }
-      else if (m.type === 'error') { if (provisional) discard(); showError(m.message || 'The view ended.'); }
+      if (m.type === 'batch') { if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m, ev.data.length); caughtUp(); }
+      else if (m.type === 'error') { if (provisional) discard(); showError(m.message || 'The view ended.'); caughtUp(); }
       // The window's questions changed (mirror_ask.go): read them now.
       else if (m.type === 'asks') { if (window.musterAskPoll) window.musterAskPoll(); }
       // Suggested replies (suggest_row.go): pending, ready or none.
@@ -943,8 +961,37 @@ func mirrorViewScript() g.Node {
   if (typeof ResizeObserver !== 'undefined') {
     new ResizeObserver(function () { if (atEnd) log.scrollTop = log.scrollHeight; }).observe(log);
   }
-  window.addEventListener('pagehide', function () { closed = true; save(); if (sock) sock.close(); });
-  document.addEventListener('visibilitychange', function () { if (document.hidden) save(); });
+  // 🔴 NO STORAGE WRITE MAY BE IN FLIGHT AS THE PAGE GOES INTO THE BACK/FORWARD
+  // CACHE. A save is a chain of storage transactions, and one still running
+  // when the page is frozen there evicts it (measured, Chromium 153: Back
+  // reloaded the view, CDP reason IgnoreEventAndEvict, whenever the page was
+  // left within the save delay of a batch; with the store's put stubbed out it
+  // was restored). So a page that MAY be kept (pagehide persisted) saves
+  // nothing as it goes; one that is going for good saves, as before. Skipping
+  // it costs only freshness: the stored snapshot is the last one saved, whole
+  // at its own offset, and a later open resumes from there.
+  var leaving = false;
+  window.addEventListener('pagehide', function (e) { closed = true; leaving = !!e.persisted; if (!e.persisted) save(); if (sock) sock.close(); });
+  // Back and Forward (restore.go): the pagehide above closed the socket; a
+  // restore opens it again, resuming from the offset the page already drew,
+  // so nothing is painted twice. Caught up is the socket's first answer.
+  var restoring = null;
+  function caughtUp() { if (restoring) { var r = restoring; restoring = null; r(); } }
+  ` + restoreJoinJS(`{
+    show: function () {
+      closed = false; leaving = false; retry = 0;
+      return new Promise(function (resolve) {
+        restoring = resolve;
+        if (!sock || sock.readyState > 1) connect();
+      });
+    }
+  }`) + `
+  // Leaving fires visibilitychange BEFORE pagehide, so the hidden save waits
+  // a quarter second and is skipped once pagehide has said the page may be kept:
+  // a tab that was only switched away gets no pagehide and saves then.
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) setTimeout(function () { if (!leaving) save(); }, 250);
+  });
   // Open: paint this window's snapshot, if there is one this user may see,
   // then connect — resuming from its offset. Storage that is slow or absent
   // costs at most readWaitMs, then the socket opens without it. Run once the
