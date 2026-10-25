@@ -26,8 +26,8 @@ histograms below, plus the server's phase timings in the document's
 | 4 | browser → server | The transcript socket `GET /mirror/view/ws` (resuming at the snapshot's `gen`/`offset` when there is one), carrying the open span's trace context as `?tp=`. | `stream_connected` mark; span `GET /mirror/view/ws` (a child of the page's open) |
 | 5 | server | The socket handler: `mirrorEntry` again, the WebSocket upgrade, the attention-ask subscription and the suggested-replies tracker, then the hub's watch. | `open.entry`, `open.accept`, `open.subscribe`, `open.watch` |
 | 6 | server → host | The hub writes a `watch` frame on the host's one tunnel WebSocket (shared by every view and terminal on that host). | span `mirror.watch` (the stream's whole life and why it ended) and its child `mirror.watch.first_batch` (frame written → first batch read); `muster_mirror_hub_roundtrip_seconds{op="watch"}` |
-| 7 | host | The host's read loop takes the frame; the watch runs in its own goroutine. It resolves the window's pane (a tmux listing of every window, then the pane's process tree, the pane map or the CLI's sessions file), opens and stats the transcript, reads and parses the last 4 MiB (`cctranscript.Backfill`, at most 300 events), redacts it, cuts it into batches and writes them back on the tunnel. Then the prompt index (a scan of the whole file). An opencode window instead asks the local opencode server for its messages. | span `host.watch` (a child of `mirror.watch.first_batch`) with children `host.resolve`, `host.open`, `host.backfill`, `host.redact`, `host.frame`, `host.prompt_index`, and `opencode GET` for opencode; the same phases ride back on the first batch (`Msg.Timing`) into `muster_mirror_host_phase_seconds{phase}` |
-| 8 | server → browser | The hub hands the first batch to the socket handler, which renders its events to HTML (`MirrorTranscript.Ops`) and writes it to the browser. | `open.render`, `open.write`; log line `open view=mirror_view part=stream` (with the hub's round trip, the host's phases and the clock offset); `muster_open_phase_seconds{phase="first_batch"}` |
+| 7 | host | The host's read loop takes the frame; the watch runs in its own goroutine. It resolves the window's pane (a tmux listing of every window, then the pane's process tree, the pane map or the CLI's sessions file), opens and stats the transcript, reads and parses the last 4 MiB (`cctranscript.Backfill`, at most 300 events), redacts it, cuts it into batches and writes them back on the tunnel. Then the prompt index (a scan of the whole file). An opencode window instead asks the local opencode server for its messages. | span `host.watch` (a child of `mirror.watch.first_batch`) with children `host.resolve`, `host.open`, `host.backfill`, `host.redact`, `host.frame`, `host.prompt_index`, and `opencode GET` for opencode. Per-phase aggregates come from these spans (a span-metrics generator such as Tempo's), not from anything on the wire |
+| 8 | server → browser | The hub hands the first batch to the socket handler, which renders its events to HTML (`MirrorTranscript.Ops`) and writes it to the browser. | `open.render`, `open.write`; log line `open view=mirror_view part=stream` (with the hub's round trip); `muster_open_phase_seconds{phase="first_batch"}` |
 | 9 | browser | The batch is applied to the log; the composer is already there. | `first_paint`, `usable` marks; the page's open span ends; a Faro `muster_open` measurement |
 
 ### A terminal (`/mirror/terminal`)
@@ -64,7 +64,8 @@ No string says exactly that; it is what the person reads off one of these:
   terminal for a rendered view too.
 - **The terminal's "Disconnected"** with *"The terminal connection closed."*,
   or the server's error text.
-- An agent chat's socket closing (it reconnects silently after 2 s).
+- An agent chat's socket closing (it reconnects silently after 2 s; the page
+  reports it, the server does not count it).
 
 Every path that ends a view's stream, server side (each is a `reason` on the
 `GET …/ws` span, on `mirror.watch`/`mirror.attach`, in
@@ -100,33 +101,34 @@ in the open's trace.
   child of the open, and the hub's and the host's spans follow. Find it by the
   `trace_id` in the log line, or the Faro measurement's context.
 - **One log line per request of an open**, on the server:
-  `open view=mirror_view part=stream outcome=ok trace_id=… total_ms=… entry_ms=… accept_ms=… subscribe_ms=… watch_ms=… render_ms=… write_ms=… hub_rtt_ms=… host_resolve_ms=… host_open_ms=… host_backfill_ms=… host_redact_ms=… host_frame_ms=… host_ms=… host_clock_offset_ms=… host_clock_delay_ms=… ops=… reset=… host=… session=… window=…`.
+  `open view=mirror_view part=stream outcome=ok trace_id=… total_ms=… entry_ms=… accept_ms=… subscribe_ms=… watch_ms=… render_ms=… write_ms=… hub_rtt_ms=… ops=… reset=… host=… session=… window=…`.
   `watch_ms` minus `hub_rtt_ms` is the server's own time before the frame;
-  `hub_rtt_ms` minus `host_ms` is the network and the two read loops.
+  where the round trip went on the host is the trace's `host.*` spans.
 - **Metrics:** `muster_open_phase_seconds{view,phase}`,
   `muster_mirror_hub_roundtrip_seconds{op,reason}`,
-  `muster_mirror_host_phase_seconds{phase}`,
   `muster_view_disconnects_total{view,reason}`, beside
   `muster_http_request_duration_seconds{route}`. Every label is a closed
   vocabulary; no host, session, window or trace id is a label.
+
+## Sampling
+
+Every request that opens a session — the GET of `/mirror/view`,
+`/mirror/terminal` or `/agents/{name}`, and each of their sockets — is always
+traced, and so is everything under it (the hub's requests, the host's spans, the
+queries). A request that arrives with a sampled `traceparent` (a page fetch
+inside its open's trace) follows it. Every other request — the Agents list's
+refreshes, the event stream, the badge poll — starts a trace at
+`MUSTER_TRACE_SAMPLE_RATIO` (default 5%), so a busy page does not bury the opens.
+The browser's own spans are Faro's to sample.
 
 ## Clock skew
 
 The host's spans carry the HOST's wall clock, so in a trace they sit where the
 host's clock put them; a host whose clock is off by more than the round trip
 draws its spans outside their parent. Durations are never affected: each span's
-length is measured on one clock, and the host's phases in the metrics and the
-log line are durations.
-
-muster measures the offset on every rendered-view open, the way NTP does, from
-four instants: the watch written (server), read (host), the first batch written
-(host), read (server). `host_clock_offset_ms` is how far the host's clock is
-ahead; its error is at most half the difference between the two network legs,
-always within ± `host_clock_delay_ms`/2. On one machine (the test suite's
-`TestOneOpenIsOneTraceFromServerToHost`, server and host in one process) the
-estimate came out between a few and about a hundred microseconds, with a delay under a
-millisecond — the instrument's own floor. Between two machines it is whatever
-their time sync leaves; read it off the log line rather than assuming it.
+length is measured on one clock. muster does not estimate the offset; compare
+`hub_rtt_ms` in the log line with the host span's duration when the placement
+looks wrong.
 
 ## Privacy
 
@@ -143,6 +145,22 @@ not traced at all. SQL statements are recorded with every literal replaced by
 transcript, label and session name all carry a sentinel string, checks the
 sentinel reached the browser, and checks it is in no exported span, attribute,
 event, status or resource.
+
+The page's telemetry holds to the same rule:
+
+- the console is not captured (and a console item that appears anyway is
+  dropped before it is sent);
+- the CSP-violation reports, which carry a sample of the violating text, are
+  off;
+- an exception is sent as its type (when that is a plain identifier) and its
+  stack frames (file cut at the query, function name when it is an identifier,
+  line and column) — its message is replaced with `[scrubbed]` and its context
+  dropped.
+
+`e2e/tests/telemetry.spec.ts` logs a sentinel at every console level, throws
+it, and rejects with it on a live view, and checks it reaches the receiver in
+no batch — with controls that the relay delivered the page's events and that
+the thrown error did arrive, scrubbed.
 
 ## Setting it up
 

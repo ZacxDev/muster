@@ -119,7 +119,10 @@ func faroInitScript() g.Node {
       try { if (span && span.attributes) { ['http.url', 'url.full'].forEach(function (k) { if (span.attributes[k]) span.setAttribute(k, noQuery(span.attributes[k])); }); } } catch (e) {}
     };
     var url = C.relay ? location.origin + C.url : C.url;
-    var instrumentations = SDK.getWebInstrumentations();
+    // 🔴 NO CONSOLE CAPTURE AND NO CSP-VIOLATION REPORTS: a console line can
+    // print anything the page holds (pane text, a prompt, a title), and a CSP
+    // report carries a sample of the violating text. Neither is collected.
+    var instrumentations = SDK.getWebInstrumentations({ captureConsole: false, enableContentSecurityPolicyInstrumentation: false });
     if (C.tracing && window.GrafanaFaroWebTracing && window.GrafanaFaroWebTracing.TracingInstrumentation) {
       instrumentations = instrumentations.concat([new window.GrafanaFaroWebTracing.TracingInstrumentation({
         // Same-origin fetches and XHRs carry a traceparent by default (the
@@ -136,9 +139,30 @@ func faroInitScript() g.Node {
       instrumentations: instrumentations,
       beforeSend: function (item) {
         try {
+          // A log item can only come from the console, which is not captured:
+          // one that appears anyway is dropped, not scrubbed.
+          if (item.type === 'log') return null;
           if (item.meta && item.meta.page) { item.meta.page.url = noQuery(item.meta.page.url); }
+          // 🔴 AN EXCEPTION KEEPS ITS SHAPE, NEVER ITS TEXT: an error's
+          // message can quote whatever the page held (a thrown string, a
+          // value interpolated into a message). What is kept is the error's
+          // type when it is a plain identifier, and each stack frame's file
+          // (cut at its query), function name (when it is an identifier),
+          // line and column. Its context goes.
+          if (item.type === 'exception' && item.payload) {
+            var ex = item.payload;
+            ex.type = /^[A-Za-z_$][\w$]{0,63}$/.test(ex.type || '') ? ex.type : 'Error';
+            ex.value = '[scrubbed]';
+            delete ex.context;
+            if (ex.stacktrace && ex.stacktrace.frames) {
+              ex.stacktrace.frames = ex.stacktrace.frames.slice(0, 50).map(function (f) {
+                return { filename: noQuery(String(f.filename || '')), 'function': /^[\w$.<>]{1,128}$/.test(f['function'] || '') ? f['function'] : '?', lineno: f.lineno, colno: f.colno };
+              });
+            }
+            return item;
+          }
           if (item.payload) { scrub(item.payload); scrub(item.payload.attributes); scrub(item.payload.context); }
-        } catch (e) {}
+        } catch (e) { return null; }
         return item;
       },
     };

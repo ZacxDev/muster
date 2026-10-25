@@ -65,7 +65,7 @@ async function startHost(): Promise<void> {
 
 // faroItems is every item of a kind (events, measurements) the relay
 // delivered to the fake Faro receiver.
-function faroItems(kind: 'events' | 'measurements'): Record<string, any>[] {
+function faroItems(kind: 'events' | 'measurements' | 'exceptions' | 'logs'): Record<string, any>[] {
   const out: Record<string, any>[] = [];
   for (const p of faro.posts) {
     try {
@@ -162,4 +162,55 @@ test('a disconnect is reported with its reason, by the page and by the server', 
   // The server counted the same end, by the same closed word.
   const metrics = await (await page.request.get(rig.origin + '/metrics')).text();
   expect(metrics).toMatch(/muster_view_disconnects_total\{reason="host_disconnected",view="mirror_view"\} [1-9]/);
+});
+
+// 🔴 NO FREE TEXT REACHES THE RECEIVER. A console line and a thrown error can
+// carry anything the page holds (pane text, a prompt, a title), so the
+// console is not captured and an exception keeps its shape, never its text.
+// The sentinel is logged at every console level, thrown, and rejected, on a
+// live view; it is in no batch the relay delivered.
+//
+// The positive controls: the relay DID deliver this page's events (a marker
+// pushed after the sentinel), and the thrown error DID arrive as an exception
+// — so a sentinel-free receiver is the scrub working, not a dead pipe.
+test('a console line or a thrown error never carries its text to the receiver', async ({ page }) => {
+  const sentinel = 'SENTINEL' + 'faro9d2';
+  await startHost();
+  await rig.login(page);
+  await rig.waitListed(page, 'main');
+  await page.goto(rig.origin + rig.viewPath('main'));
+  await expect(page.locator('#mv-log')).toContainText('Synthetic answer: it is sunny.');
+  const exceptionsBefore = faroItems('exceptions').length;
+
+  await page.evaluate((s) => {
+    console.log('pane text: ' + s);
+    console.info('prompt: ' + s);
+    console.warn('title: ' + s);
+    console.error('error: ' + s);
+    setTimeout(() => {
+      throw new Error('thrown with ' + s);
+    }, 0);
+    void Promise.reject(new Error('rejected with ' + s));
+  }, sentinel);
+  // The marker, after the sentinel's every source has fired.
+  await page.waitForTimeout(300);
+  await page.evaluate(() => (window as any).cgTrack('muster.e2e_marker', { step: 'after' }));
+
+  await expect
+    .poll(() => faroItems('events').some((e) => e.name === 'muster.e2e_marker'), {
+      message: 'POSITIVE CONTROL: the relay delivered the marker event',
+      timeout: 15_000,
+    })
+    .toBe(true);
+  await expect
+    .poll(() => faroItems('exceptions').length, { message: 'POSITIVE CONTROL: the thrown error arrived as an exception', timeout: 15_000 })
+    .toBeGreaterThan(exceptionsBefore);
+
+  for (const p of faro.posts) {
+    expect(p.body.toString('utf8'), 'a batch the relay delivered').not.toContain(sentinel);
+  }
+  expect(faroItems('logs'), 'no console line was sent').toHaveLength(0);
+  for (const ex of faroItems('exceptions').slice(exceptionsBefore)) {
+    expect(ex.value).toBe('[scrubbed]');
+  }
 });
