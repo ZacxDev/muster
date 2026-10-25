@@ -737,8 +737,10 @@ func (s *Server) recheckOfflineHosts() {
 // 30s): each is cleared from its owner's devices and views, and its waiters
 // woken. It also delivers every owed answer (deliverDueAnswers: after a
 // restart, a busy agent, a retry). It also clears the notification of a reply draft that expired
-// (expireDraftNotes). Started by cmd/muster-server beside the other background loops; it
-// does nothing without a store.
+// (expireDraftNotes), and puts in front of the owner every plugin message the
+// chief has not acted on (sweepUnroutedMessages, unrouted.go). Started by
+// cmd/muster-server beside the other background loops; it does nothing without
+// a store.
 func (s *Server) RunAttentionSweep(ctx context.Context, interval time.Duration) {
 	if s.ext.Attention == nil {
 		return
@@ -754,6 +756,7 @@ func (s *Server) RunAttentionSweep(ctx context.Context, interval time.Duration) 
 		s.putDueQuestions(ctx)
 		s.expireDraftNotes(ctx)
 		s.recheckOfflineHosts()
+		s.sweepUnroutedMessages(ctx)
 		select {
 		case <-ctx.Done():
 			return
@@ -1016,6 +1019,11 @@ func (s *Server) answerAskFrom(ctx context.Context, id int64, answer string, src
 		if a.Delivery == attention.DeliveryQueued {
 			s.startAnswerDelivery(a.Owner, a.ID, s.deliveryGrace()+500*time.Millisecond)
 		}
+	}
+	if err == nil {
+		// An ask raised for a plugin message the chief did not act on
+		// (unrouted.go): the answer settles that message.
+		s.settleAnsweredMessage(ctx, a)
 	}
 	return a, err
 }

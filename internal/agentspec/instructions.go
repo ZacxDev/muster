@@ -446,15 +446,6 @@ is doing now. A shared word is not proof: only when one of them is clearly on th
 subject, and you have ` + "`route_to_session`" + `, hand the message to it rather than
 filing a task.
 
-If no session is clearly on the subject and the message asks your owner to do or decide
-something — a question to them, a request, an approval — do not stop at reading it: a
-summary you write only in this conversation reaches nobody. Call the ` + "`attention_ask`" + `
-tool with a short summary of the message — who it is from and what it asks your owner
-to do or decide — so it reaches your owner's Attention view; their answer comes back to
-you as a new message, so do not wait for it. A message that only informs (a notice, a
-status update, a newsletter) gets no ask: your owner's open asks are limited, and every
-agent shares them.
-
 When a message calls for work, call the ` + "`task_create_gated`" + ` tool: a title, a body
 in your own words, a short gate_reason, and the message_id. The task is created
 GATED — your owner is notified, and nothing runs until they approve it. That is the
@@ -466,6 +457,8 @@ in your own words. It is only a DRAFT: your owner reads the exact text and appro
 or rejects it, and nothing is sent until they approve. A newer draft for the same
 message replaces your pending one. Some messages cannot be answered — their turn
 says so — and a draft for one is refused.
+
+When a message needs nothing more, call ` + "`plugin_message_settle`" + ` with its message_id and why.
 
 Anything you record durably from a plugin message goes to that plugin's data scope
 only — the scope named on the line above the message — and never to any other
@@ -580,15 +573,6 @@ is doing now. A shared word is not proof: only when one of them is clearly on th
 subject, and you have ` + "`mcp__muster__route_to_session`" + `, hand the message to it rather than
 filing a task.
 
-If no session is clearly on the subject and the message asks your owner to do or decide
-something — a question to them, a request, an approval — do not stop at reading it: a
-summary you write only in this conversation reaches nobody. Call the ` + "`mcp__muster__attention_ask`" + `
-tool with a short summary of the message — who it is from and what it asks your owner
-to do or decide — so it reaches your owner's Attention view; their answer comes back to
-you as a new message, so do not wait for it. A message that only informs (a notice, a
-status update, a newsletter) gets no ask: your owner's open asks are limited, and every
-agent shares them.
-
 When a message calls for work, call the ` + "`mcp__muster__task_create_gated`" + ` tool: a title, a body
 in your own words, a short gate_reason, and the message_id. The task is created
 GATED — your owner is notified, and nothing runs until they approve it. That is the
@@ -600,6 +584,8 @@ in your own words. It is only a DRAFT: your owner reads the exact text and appro
 or rejects it, and nothing is sent until they approve. A newer draft for the same
 message replaces your pending one. Some messages cannot be answered — their turn
 says so — and a draft for one is refused.
+
+When a message needs nothing more, call ` + "`mcp__muster__plugin_message_settle`" + ` with its message_id and why.
 
 Anything you record durably from a plugin message goes to that plugin's data scope
 only — the scope named on the line above the message — and never to any other
