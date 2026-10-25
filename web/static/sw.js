@@ -86,6 +86,33 @@ function usable(res) {
   return !!res && res.status === 200 && res.type === 'basic' && !res.redirected;
 }
 
+// namesItsBytes reports whether a response may be stored under path as far as
+// its BYTES go: anything but a page script passes; a page script
+// (/static/js/<name>.js?v=<hash>) passes only when the SHA-256 of its body
+// starts with the ?v= it is stored under.
+//
+// 🔴 A 200 FOR A SCRIPT URL IS NOT THAT URL'S BYTES. The server reads ?v= only
+// to choose the Cache-Control: during a rollout a worker installing for the
+// new build can reach a pod still serving the old one, which answers the new
+// URL with ITS bytes. Stored, they would be served cache-first (below) under
+// the new URL until the next deploy, and no reload would fix it. Refused, the
+// entry is simply missing: the page fetches it from the network, and the next
+// install stores it.
+async function namesItsBytes(path, res) {
+  const u = new URL(path, self.location.origin);
+  if (!u.pathname.startsWith('/static/js/')) return true;
+  const v = u.searchParams.get('v') || '';
+  if (!/^[0-9a-f]{12}$/.test(v)) return false;
+  try {
+    const sum = new Uint8Array(await crypto.subtle.digest('SHA-256', await res.clone().arrayBuffer()));
+    let hex = '';
+    for (const b of sum.slice(0, 6)) hex += (b < 16 ? '0' : '') + b.toString(16);
+    return hex === v;
+  } catch (e) {
+    return false;
+  }
+}
+
 self.addEventListener('install', (event) => {
   // Each entry is fetched and judged on its own: one refused entry costs that
   // entry, not the others, and never fails the install (push keeps working).
@@ -94,7 +121,9 @@ self.addEventListener('install', (event) => {
       Promise.all(
         SHELL.map((path) =>
           fetch(SHELL_FETCH[path] || path, { redirect: 'manual' })
-            .then(async (res) => (usable(res) && (await boardless(path, res)) ? cache.put(path, res) : undefined))
+            .then(async (res) =>
+              usable(res) && (await boardless(path, res)) && (await namesItsBytes(path, res)) ? cache.put(path, res) : undefined
+            )
             .catch(() => undefined)
         )
       )
@@ -156,7 +185,7 @@ self.addEventListener('activate', (event) => {
         if (usable(await cache.match(path))) continue;
         for (const k of older) {
           const res = await (await caches.open(k)).match(path);
-          if (usable(res) && (await boardless(path, res))) {
+          if (usable(res) && (await boardless(path, res)) && (await namesItsBytes(path, res))) {
             await cache.put(path, res);
             break;
           }
@@ -166,7 +195,7 @@ self.addEventListener('activate', (event) => {
         if (usable(await cache.match(asset))) continue;
         for (const k of older) {
           const res = await (await caches.open(k)).match(asset);
-          if (usable(res)) {
+          if (usable(res) && (await namesItsBytes(asset, res))) {
             await cache.put(asset, res);
             break;
           }
@@ -229,8 +258,9 @@ self.addEventListener('fetch', (event) => {
   }
 
   // The pages' scripts: the cached copy first. Their URL names their bytes
-  // (?v=<content hash>), so the exact-URL match — never ignoreSearch — can
-  // only be the right file; it is what makes the offline shell run. A URL the
+  // (?v=<content hash>), and only bytes that hash to it are ever stored
+  // (namesItsBytes), so the exact-URL match — never ignoreSearch — can only be
+  // the right file; it is what makes the offline shell run. A URL the
   // cache does not hold goes to the network (and the HTTP cache, which keeps it
   // a year: the server marks it immutable).
   if (url.pathname.startsWith('/static/js/')) {

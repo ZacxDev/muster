@@ -53,13 +53,20 @@ func init() {
   window.__musterSwapInline = true;
   var URLS = `+string(list)+`;
   var texts = {};
+  // warm fetches each text the window does not hold and is not fetching. A
+  // failed fetch forgets its URL, so the next boosted swap asks again.
+  //
+  // Only a response the server marks immutable is kept: it says so only for
+  // the URL naming its current bytes, so in a rollout a pod of the other
+  // build answering this URL with its own bytes (200, no-cache) is not
+  // inlined under it.
   function warm() {
     URLS.forEach(function (u) {
       if (texts[u] !== undefined) return;
       texts[u] = null;
       try {
         fetch(u, { credentials: 'same-origin' })
-          .then(function (r) { return r.ok ? r.text() : null; })
+          .then(function (r) { return r.ok && /immutable/.test(r.headers.get('Cache-Control') || '') ? r.text() : null; })
           .then(function (t) { if (typeof t === 'string') texts[u] = t; else delete texts[u]; })
           .catch(function () { delete texts[u]; });
       } catch (e) { delete texts[u]; }
@@ -72,6 +79,7 @@ func init() {
   document.addEventListener('htmx:beforeSwap', function (e) {
     var d = e.detail;
     if (!d || !d.shouldSwap || d.target !== document.body || typeof d.serverResponse !== 'string') return;
+    warm();
     d.serverResponse = d.serverResponse.replace(TAG, function (all, u, attrs) {
       var t = texts[u];
       if (typeof t !== 'string' || t.toLowerCase().indexOf('<\/script') >= 0) return all;

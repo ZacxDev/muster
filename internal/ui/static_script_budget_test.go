@@ -93,6 +93,12 @@ func TestTheShellCarriesNoInlineScriptOverTheBudget(t *testing.T) {
 // tag's attributes do. Two deliberately different worlds are rendered; every
 // script both link must be the same URL (so the same bytes), and no
 // registered file may contain either world's own values.
+//
+// ⚠ ITS URL/BYTES HALF IS AN INVARIANT GUARD, AND LABELLED AS ONE: the files
+// are registered once at init, keyed by path, so no request CAN change them —
+// that half cannot go red unless registration becomes lazy. What it can catch
+// is its CONTROLS' half: a per-document input that stops reaching the tag
+// (measured: dropping the build from appScript's tag turns it red).
 func TestStaticScriptsAreTheSameForEveryone(t *testing.T) {
 	a := Features{SnapUser: 1, SnapBuild: "build-alpha-1111"}
 	b := Features{GitHub: true, Connectors: true, Admin: true, Push: true, Attention: true, SnapUser: 2, SnapBuild: "build-omega-9999"}
@@ -206,10 +212,7 @@ func TestEveryGeneratedScriptIsLinkedAndEveryLinkIsGenerated(t *testing.T) {
 	linked := map[string]bool{}
 	for _, doc := range scriptedDocuments(t, f) {
 		for _, m := range staticScriptTag.FindAllStringSubmatch(doc, -1) {
-			linked[m[1]] = true
-			if web.AssetHash(m[1]) != m[2] {
-				t.Errorf("%s is linked at ?v=%s, not at its content hash %q", m[1], m[2], web.AssetHash(m[1]))
-			}
+			linked[m[1]] = true // ?v= is checked by expandStaticScripts / internal/api checkVersioned
 		}
 	}
 	gen := web.Generated()

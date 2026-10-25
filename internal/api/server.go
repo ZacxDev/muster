@@ -39,6 +39,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -622,6 +623,21 @@ func staticHandler() http.Handler {
 	}
 	files := http.StripPrefix("/static/", http.FileServerFS(sub))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 🔴 A MISSING FILE IS no-store, ANSWERED HERE. Go's file server drops
+		// the handler's Cache-Control on its error path, so its 404 carried
+		// none — and an edge that kept a script's 404 for minutes would turn
+		// the seconds two builds overlap in a rollout into a page with no
+		// code. A directory (the bare /static/ listing) goes to the file
+		// server as before.
+		rel := strings.TrimPrefix(strings.TrimPrefix(path.Clean(r.URL.Path), "/static"), "/")
+		if rel == "" {
+			rel = "."
+		}
+		if _, err := fs.Stat(sub, rel); err != nil {
+			w.Header().Set("Cache-Control", "no-store")
+			http.NotFound(w, r)
+			return
+		}
 		w.Header().Set("Cache-Control", staticCacheControl(r.URL.Path, r.URL.Query().Get("v")))
 		files.ServeHTTP(w, r)
 	})
@@ -635,6 +651,15 @@ func staticHandler() http.Handler {
 // older build — is "no-cache" (stored, but revalidated): with no header at
 // all, the edge applied its own max-age=14400 and served 0.43.0 the previous
 // release's app.css for hours.
+//
+// ⚠ A ?v= THIS BUILD DOES NOT HAVE STILL GETS THIS BUILD'S BYTES (200,
+// no-cache), DELIBERATELY. In a rollout a page rendered by one build can ask
+// a pod of the other for its scripts; refusing would leave that page with no
+// code at all, where serving the neighbouring build's script leaves it
+// working, and no-cache keeps any cache from holding those bytes under that
+// URL. What must never keep them is the service worker's cache-first store,
+// and that is refused there: sw.js stores a script only when its body hashes
+// to its ?v= (namesItsBytes; e2e/sw-install.test.mjs).
 func staticCacheControl(path, v string) string {
 	if h := web.AssetHash(path); h != "" && v == h {
 		return "public, max-age=31536000, immutable"

@@ -1,8 +1,6 @@
 package api
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -14,61 +12,18 @@ import (
 // static_script.go): GET / is small, and each script it runs is a URL the
 // browser keeps for a year.
 
-// shellInlineScriptBudget is the most one inline <script> in a served shell
-// document may hold; shellInlineScriptTotal, all of them together. What is
-// still inline must run inside a boosted swap's own task (tasksRefilterGuard,
-// about half a kilobyte); anything larger is code re-sent with every
-// navigation.
-const (
-	shellInlineScriptBudget = 1024
-	shellInlineScriptTotal  = 2048
-)
+// The inline-script budget is internal/ui's TestTheShellCarriesNoInlineScriptOverTheBudget
+// (it renders the board-drawn shell, the case that still carries inline code);
+// every link's ?v= is checked against its file by TestEveryStaticLinkCarriesItsContentHash.
 
 var (
-	servedScript   = regexp.MustCompile(`(?s)<script([^>]*)>(.*?)</script>`)
 	pageScriptSrc  = regexp.MustCompile(`src="(/static/js/[^"?]+)\?v=([0-9a-f]+)"`)
 	immutableCache = "public, max-age=31536000, immutable"
 )
 
-// TestServedShellDocumentsCarryNoInlineScriptOverTheBudget drives the real
-// handler. Red before the scripts moved: GET / carried ~230 KB of inline
-// JavaScript in 17 scripts, the largest ~72 KB.
-func TestServedShellDocumentsCarryNoInlineScriptOverTheBudget(t *testing.T) {
-	s, h := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, &memPins{})
-	for _, path := range []string{"/", "/agents", "/tasks?new=1"} {
-		doc := getOwed(t, s, h, path).Body.String()
-		total, linked := 0, 0
-		for _, m := range servedScript.FindAllStringSubmatch(doc, -1) {
-			if strings.Contains(m[1], " src=") {
-				if strings.Contains(m[1], `src="/static/js/`) {
-					linked++
-				}
-				continue
-			}
-			n := len(m[2])
-			total += n
-			if n > shellInlineScriptBudget {
-				head := strings.TrimSpace(m[2])
-				if len(head) > 60 {
-					head = head[:60]
-				}
-				t.Errorf("GET %s: an inline <script> of %d bytes (budget %d): %q…", path, n, shellInlineScriptBudget, head)
-			}
-		}
-		if total > shellInlineScriptTotal {
-			t.Errorf("GET %s: %d bytes of inline JavaScript (budget %d)", path, total, shellInlineScriptTotal)
-		}
-		// POSITIVE CONTROL: the code moved, it did not vanish.
-		if linked < 10 {
-			t.Errorf("GET %s links %d page scripts; a document that runs nothing meets any budget", path, linked)
-		}
-		t.Logf("GET %s: %d bytes, %d bytes inline JS, %d page scripts", path, len(doc), total, linked)
-	}
-}
-
 // TestThePagesScriptsAreServedImmutableUnderTheirContentHash: every script
-// GET / links is served, its ?v= is the SHA-256 of the bytes served (computed
-// here, not asked of web.Asset), and only that URL is cached for a year.
+// GET / links is served as JavaScript, and only the URL GET / links it at is
+// cached for a year.
 func TestThePagesScriptsAreServedImmutableUnderTheirContentHash(t *testing.T) {
 	s, h := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, &memPins{})
 	doc := getOwed(t, s, h, "/").Body.String()
@@ -88,10 +43,6 @@ func TestThePagesScriptsAreServedImmutableUnderTheirContentHash(t *testing.T) {
 			t.Errorf("GET %s?v=%s → %d (%d bytes)", path, v, rec.Code, rec.Body.Len())
 			continue
 		}
-		sum := sha256.Sum256(rec.Body.Bytes())
-		if got := hex.EncodeToString(sum[:])[:12]; got != v {
-			t.Errorf("%s is linked at ?v=%s but the served bytes hash to %s", path, v, got)
-		}
 		if cc := rec.Header().Get("Cache-Control"); cc != immutableCache {
 			t.Errorf("GET %s?v=%s: Cache-Control %q, want %q", path, v, cc, immutableCache)
 		}
@@ -104,6 +55,31 @@ func TestThePagesScriptsAreServedImmutableUnderTheirContentHash(t *testing.T) {
 				t.Errorf("GET %s is immutable too; only the URL naming the current bytes may be", other)
 			}
 		}
+	}
+}
+
+// TestAMissingStaticFileIsNeverCached: a 404 under /static/ says no-store. A
+// cache in front (an edge) that kept a script's 404 for minutes would stretch
+// the seconds two builds overlap in a rollout into an app with no code.
+// Without an explicit header Go's file server sends none (it drops the
+// handler's on its error path). The present file and the directory listing
+// are the controls: neither may come back no-store.
+func TestAMissingStaticFileIsNeverCached(t *testing.T) {
+	_, h := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, &memPins{})
+	for _, p := range []string{"/static/js/definitely-not-here.js", "/static/js/definitely-not-here.js?v=0123456789ab", "/static/nope.css"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s → %d, want 404", p, rec.Code)
+		}
+		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("GET %s → 404 with Cache-Control %q, want no-store", p, cc)
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/static/app.css", nil))
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" {
+		t.Errorf("CONTROL: GET /static/app.css → %d, %q", rec.Code, rec.Header().Get("Cache-Control"))
 	}
 }
 
