@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -97,13 +99,19 @@ func TestACallerLeavingMidWriteDoesNotHangUpTheHost(t *testing.T) {
 // It must end the terminal only — the host's connection stays, and the next
 // caller (another attach) still reaches it.
 //
-// Held deterministically, as above: the host does not read, the browser
-// "types" far more than the loopback socket buffers hold, so one stdin frame
-// is stuck in progress; then the attach's context ends. AttachWindow returns
-// and cancels the keystroke write's context while it is stuck.
+// 🔴 "IN PROGRESS" IS A SIGNAL HERE, NEVER A WAIT. The hub's side of the
+// socket is a gatedConn: armed once the host has read the terminal's open, the
+// next write the hub makes — the keystroke frame, there being no other writer
+// — reports that it has entered the socket and then blocks there. Only after
+// that report does the browser leave, so the keystroke write is in progress
+// when its context is cancelled on every run, whatever the load. (The first
+// version waited 300ms for the write to get stuck behind a full socket; on a
+// loaded two-core runner no keystroke had been written by then, and its own
+// instrument check failed. Its sleep is gone with it.)
 func TestATerminalClosedMidKeystrokeDoesNotHangUpTheHost(t *testing.T) {
 	h := NewHub(log.New(io.Discard, "", 0))
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	gate := newWriteGate()
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := websocket.Accept(w, r, nil)
 		if err != nil {
 			return
@@ -111,7 +119,10 @@ func TestATerminalClosedMidKeystrokeDoesNotHangUpTheHost(t *testing.T) {
 		defer ws.CloseNow()
 		_ = h.ServeConn(r.Context(), 1, "alpha", ws)
 	}))
+	srv.Listener = gatedListener{srv.Listener, gate}
+	srv.Start()
 	t.Cleanup(srv.Close)
+	t.Cleanup(gate.open)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	host, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
@@ -119,7 +130,6 @@ func TestATerminalClosedMidKeystrokeDoesNotHangUpTheHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { host.CloseNow() })
-	host.SetReadLimit(1 << 20)
 	hello, _ := json.Marshal(Msg{Type: TypeHello, Version: ProtocolVersion, Host: "alpha", Sessions: []string{"main"}, Interactive: true})
 	if err := host.Write(ctx, websocket.MessageText, hello); err != nil {
 		t.Fatal(err)
@@ -129,50 +139,52 @@ func TestATerminalClosedMidKeystrokeDoesNotHangUpTheHost(t *testing.T) {
 	}
 	eventuallyInternal(t, "the host online", func() bool { return h.Online(1, "alpha", "main") })
 
-	// The browser types 64MB into an interactive terminal; the host reads none.
-	const typed = 64 << 20
+	// An interactive terminal; the host reads its open.
 	pr, pw := io.Pipe()
 	t.Cleanup(func() { _ = pw.Close(); _ = pr.Close() })
-	typing := make(chan struct{})
-	go func() {
-		defer close(typing)
-		_, _ = pw.Write(bytes.Repeat([]byte("k"), typed))
-	}()
 	actx, leave := context.WithCancel(ctx)
 	attached := make(chan error, 1)
 	go func() { attached <- h.AttachWindow(actx, 1, "alpha", "main", "", false, pr, io.Discard, nil) }()
+	if m := readText(ctx, t, host); m.Type != TypeOpen {
+		t.Fatalf("instrument: the host's first message after the welcome is %q, want the terminal's open", m.Type)
+	}
+
+	// The browser types a key; its frame enters the hub's socket and is held
+	// there. Then the browser leaves, then the socket lets the frame through.
+	gate.arm()
+	go func() { _, _ = pw.Write([]byte("k")) }()
 	select {
-	case <-typing:
-		t.Fatal("instrument: 64MB of keystrokes went through to a host that is not reading; no write was ever stuck")
+	case <-gate.entered:
 	case err := <-attached:
-		t.Fatalf("instrument: the attach ended before the browser left: %v", err)
-	case <-time.After(300 * time.Millisecond):
+		t.Fatalf("instrument: the attach ended before its keystroke reached the socket: %v", err)
+	case <-ctx.Done():
+		t.Fatal("instrument: the keystroke never reached the hub's socket")
 	}
 	leave() // the browser closes the terminal mid-keystroke
-	time.Sleep(100 * time.Millisecond)
+	gate.open()
 
-	// The host reads what it was sent: its open, keystrokes, and the terminal's
-	// close — on a connection that is still there.
-	var got int
+	// The host reads the keystroke and the terminal's close, on a connection
+	// that is still there.
+	var got []byte
 	for closed := false; !closed; {
 		typ, data, err := host.Read(ctx)
 		if err != nil {
-			t.Fatalf("the host lost its connection when a terminal closed mid-keystroke (after %d typed bytes): %v", got, err)
+			t.Fatalf("the host lost its connection when a terminal closed mid-keystroke (after %q): %v", got, err)
 		}
 		if typ == websocket.MessageBinary {
 			_, p, derr := DecodeData(data)
 			if derr != nil {
 				t.Fatal(derr)
 			}
-			got += len(p)
+			got = append(got, p...)
 			continue
 		}
 		var m Msg
 		_ = json.Unmarshal(data, &m)
 		closed = m.Type == TypeClose
 	}
-	if got == 0 {
-		t.Fatal("instrument: the host read no keystroke at all")
+	if string(got) != "k" {
+		t.Fatalf("instrument: the host read keystrokes %q, want the one held mid-write (\"k\")", got)
 	}
 	if err := <-attached; err != nil {
 		t.Fatalf("the attach = %v, want nil (the browser left)", err)
@@ -186,13 +198,107 @@ func TestATerminalClosedMidKeystrokeDoesNotHangUpTheHost(t *testing.T) {
 	defer ncancel()
 	go func() { _ = h.AttachWindow(nctx, 1, "alpha", "main", "", true, strings.NewReader(""), io.Discard, nil) }()
 	for {
-		_, data, err := host.Read(ctx)
+		m, err := readMsg(ctx, host)
 		if err != nil {
 			t.Fatalf("the next attach never reached the host: %v", err)
 		}
-		var m Msg
-		if json.Unmarshal(data, &m) == nil && m.Type == TypeOpen {
+		if m.Type == TypeOpen {
 			break
 		}
 	}
+	if gate.wasClosed() {
+		t.Fatal("the hub closed the host's socket when a terminal closed mid-keystroke")
+	}
+}
+
+// readMsg reads the host's next text message (binary frames are skipped).
+func readMsg(ctx context.Context, ws *websocket.Conn) (Msg, error) {
+	for {
+		typ, data, err := ws.Read(ctx)
+		if err != nil {
+			return Msg{}, err
+		}
+		if typ != websocket.MessageText {
+			continue
+		}
+		var m Msg
+		_ = json.Unmarshal(data, &m)
+		return m, nil
+	}
+}
+
+func readText(ctx context.Context, t *testing.T, ws *websocket.Conn) Msg {
+	t.Helper()
+	m, err := readMsg(ctx, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// writeGate holds the hub's next socket write once armed: entered is closed
+// when that write reaches the socket, which then blocks until open — or until
+// the socket is closed, as a real one stuck mid-write would be.
+type writeGate struct {
+	mu       sync.Mutex
+	armed    bool
+	entered  chan struct{}
+	release  chan struct{}
+	closed   chan struct{}
+	opened   sync.Once
+	shutDown sync.Once
+}
+
+func newWriteGate() *writeGate {
+	return &writeGate{entered: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{})}
+}
+
+func (g *writeGate) arm()  { g.mu.Lock(); g.armed = true; g.mu.Unlock() }
+func (g *writeGate) open() { g.opened.Do(func() { close(g.release) }) }
+func (g *writeGate) wasClosed() bool {
+	select {
+	case <-g.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+type gatedListener struct {
+	net.Listener
+	g *writeGate
+}
+
+func (l gatedListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &gatedConn{Conn: c, g: l.g}, nil
+}
+
+type gatedConn struct {
+	net.Conn
+	g *writeGate
+}
+
+func (c *gatedConn) Write(p []byte) (int, error) {
+	c.g.mu.Lock()
+	held := c.g.armed
+	c.g.armed = false
+	c.g.mu.Unlock()
+	if held {
+		close(c.g.entered)
+		select {
+		case <-c.g.release:
+		case <-c.g.closed:
+			return 0, net.ErrClosed
+		}
+	}
+	return c.Conn.Write(p)
+}
+
+func (c *gatedConn) Close() error {
+	c.g.shutDown.Do(func() { close(c.g.closed) })
+	return c.Conn.Close()
 }
