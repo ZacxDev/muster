@@ -827,6 +827,36 @@ test.describe('mirrored', () => {
   // Agents list warms snapshots of the windows it links (web/static/
   // mirror-snap.js), and stored what a warm had read the moment it was hidden —
   // so leaving the list mid-warm made Back reload it.
+  // 🟢 ONE SOCKET AFTER A RESTORE, NOT TWO. The socket closed as the page was
+  // hidden could report its close only after the restore, and its handler
+  // would then open a second one beside the restore's (audit #270 round 1).
+  // ⚠ AN INVARIANT GUARD: measured 3 of 3 with one socket, so the close is
+  // reported before the page is frozen (the handler then sees closed=true);
+  // the code is unchanged. Positive control: a second connect() added to the
+  // restore makes this read 2.
+  test('the Rendered view restored opens exactly one new socket', async () => {
+    const { ctx, page } = await mirrorPage(390, [streamLog]);
+    try {
+      await page.goto(rig.origin + view());
+      await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+      await page.waitForTimeout(1500);
+      const doc = await docOf(page);
+      const t0 = Date.now();
+      await awayAndBack(page, rig.origin + '/tasks');
+      await expectRestored(page, await backShow(page, '/mirror/view', t0), doc);
+      await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 10_000 });
+      // Past the view's first retry delay (500 ms) and then some.
+      await page.waitForTimeout(3000);
+      const opened = await page.evaluate(() => {
+        const w = window as any;
+        return w.__socks.filter((s: any) => s.kind === 'ws' && s.url.includes('/mirror/view/ws') && !s.url.includes('warm=1') && s.at >= w.__restoredAt).length;
+      });
+      expect(opened, 'sockets the view opened after the restore').toBe(1);
+    } finally {
+      await ctx.close();
+    }
+  });
+
   test('the Agents list left in the middle of warming a snapshot is still restored', async () => {
     const { ctx, page } = await mirrorPage();
     try {
