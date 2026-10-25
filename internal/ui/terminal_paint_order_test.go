@@ -7,28 +7,46 @@ import (
 	"golang.org/x/net/html"
 )
 
-// TestTheTerminalPaintsWholeBeforeAnyScript: 🔴 in the terminal page, no
-// <script src> stands inside the column it lays out — from #term down to the
-// end of the key bar and, on a mirrored window, of the composer under it.
+// TestTheViewPagesPaintWholeBeforeAnyScript: 🔴 on each of the three view
+// pages — the terminal, the mirrored Rendered view and an agent's chat — no
+// <script src> stands in the <body> before the end of what the page lays out:
+// its header, its log or terminal, its key bar and its composer.
 //
 // A <script src> is parser-blocking: while its file is fetched (a first visit,
-// a fresh browser) Chromium may paint the document parsed so far. The key bar
-// sits above the composer, and the terminal takes the rest of the column, so a
-// paint before the composer exists draws the bar at the bottom, and the
-// composer's arrival then moves it up by the composer's height. Measured: a
-// 0.01259 layout shift of nav#term-keys opening the terminal in its frame at
-// 390px (cls.spec "repos, connectors, the mirrored views and an agent
-// terminal"), after the floating menu's script became a static file (#278)
-// while it stood between the bar and the composer.
+// a fresh browser) Chromium may paint the document parsed so far, and what is
+// parsed after it then arrives in a painted page. MEASURED on the terminal: the
+// floating menu's script, made a static file by #278, stood between the key
+// bar and the composer; a paint while it loaded drew the bar at the bottom and
+// the composer then pushed it up — a 0.01259 layout shift of nav#term-keys
+// opening the terminal in its frame at 390px (cls.spec "repos, connectors, the
+// mirrored views and an agent terminal").
 //
-// Script BEFORE the column (in the head, at the top of the body) is not this:
-// nothing of the column is painted yet, so nothing of it can move.
-func TestTheTerminalPaintsWholeBeforeAnyScript(t *testing.T) {
-	for name, v := range termKeysPages() {
+// ⚠ ON THE RENDERED VIEW AND THE AGENT PAGE THIS IS AN INVARIANT GUARD: neither
+// had a script there (checked when the terminal's was found), so no shift of
+// theirs is explained by it. It keeps the next static script from landing in
+// front of their composers the way the floating menu's did on the terminal.
+//
+// Script in the head is not this: nothing of the body is painted yet. Inline
+// script is not either: it needs no fetch to run.
+func TestTheViewPagesPaintWholeBeforeAnyScript(t *testing.T) {
+	agent := sampleAgentDetailView()
+	agent.Name, agent.Kind = "keen-wren", "claude-code"
+	pages := map[string]struct {
+		doc  string
+		last []string // the page's laid-out blocks; the latest end is where scripts may start
+	}{
+		"terminal, agent":    {renderRaw(t, AgentTerminalPage(termKeysPages()["agent"])), []string{"term", "term-keys"}},
+		"terminal, mirrored": {renderRaw(t, AgentTerminalPage(termKeysPages()["mirror"])), []string{"term", "term-keys", "mv-compose"}},
+		"rendered view": {renderRaw(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: true,
+			StepUp: stepUpFixture(), Nonce: "0123456789abcdef"})), []string{"mv-log", "mv-compose"}},
+		"agent page": {renderRaw(t, AgentDetailPage(agent, featuresAllOn)), []string{"chat-log", "chat-form"}},
+	}
+	for name, p := range pages {
 		t.Run(name, func(t *testing.T) {
-			// renderRaw, NOT renderString: renderString inlines the static scripts
-			// (expandStaticScripts), and an inline script is exactly what this is not about.
-			doc, err := html.Parse(strings.NewReader(renderRaw(t, AgentTerminalPage(v))))
+			// renderRaw, NOT renderString: renderString inlines the static
+			// scripts (expandStaticScripts), and an inline script is exactly
+			// what this is not about.
+			doc, err := html.Parse(strings.NewReader(p.doc))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -48,31 +66,30 @@ func TestTheTerminalPaintsWholeBeforeAnyScript(t *testing.T) {
 				}
 			}
 			walk(doc)
-			at := func(id string) (int, *html.Node) {
-				for i, n := range order {
-					if v, _ := pinAttr(n, "id"); v == id {
-						return i, n
+			body, last := -1, -1
+			for i, n := range order {
+				if n.Data == "body" && body < 0 {
+					body = i
+				}
+				id, _ := pinAttr(n, "id")
+				for _, want := range p.last {
+					if id == want && end[n] > last {
+						last = end[n]
 					}
 				}
-				return -1, nil
 			}
-			from, _ := at("term")
-			last := -1
-			for _, id := range []string{"term-keys", "mv-compose"} {
-				if i, n := at(id); i >= 0 && end[n] > last {
-					last = end[n]
+			if body < 0 || last < 0 {
+				t.Fatalf("the page is not there: <body> at %d, its last block ends at %d", body, last)
+			}
+			for _, id := range p.last {
+				if !strings.Contains(p.doc, `id="`+id+`"`) {
+					t.Fatalf("#%s is not drawn: the guard would measure a page it does not describe", id)
 				}
 			}
-			if from < 0 || last < 0 {
-				t.Fatalf("the column is not there: #term at %d, its end at %d", from, last)
-			}
-			if _, c := at("mv-compose"); (v.Composer != nil) != (c != nil) {
-				t.Fatalf("composer drawn %t; the view has one: %t", c != nil, v.Composer != nil)
-			}
-			for i := from; i <= last; i++ {
+			for i := body; i <= last; i++ {
 				if n := order[i]; n.Data == "script" {
 					if src, ok := pinAttr(n, "src"); ok {
-						t.Errorf("a parser-blocking <script src=%q> inside the terminal's column (element %d of %d..%d): a paint while it loads moves the key bar when the rest arrives", src, i, from, last)
+						t.Errorf("a parser-blocking <script src=%q> in the body before the page's last laid-out block ends (element %d of %d..%d): a paint while it loads moves what is parsed after it", src, i, body, last)
 					}
 				}
 			}

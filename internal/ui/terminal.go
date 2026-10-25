@@ -383,7 +383,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				// the composer, the bar at the bottom, and the composer then
 				// pushes it up — measured as a 0.01259 shift of #term-keys
 				// opening the terminal in its frame at 390px (cls.spec).
-				// TestTheTerminalPaintsWholeBeforeAnyScript pins the order.
+				// TestTheViewPagesPaintWholeBeforeAnyScript pins the order.
 				terminalComposer(v.Composer),
 				floatingMenuScript(),
 				confirmDialog(v.StepUp),
