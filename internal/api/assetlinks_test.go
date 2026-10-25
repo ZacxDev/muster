@@ -18,7 +18,7 @@ const (
 )
 
 // alWant is the exact body for package app.example.passkeys with both certs.
-const alWant = `[{"relation":["delegate_permission/common.handle_all_urls","delegate_permission/common.get_login_creds"],` +
+const alWant = `[{"relation":["delegate_permission/common.get_login_creds"],` +
 	`"target":{"namespace":"android_app","package_name":"app.example.passkeys","sha256_cert_fingerprints":[` +
 	`"01:23:45:67:89:AB:CD:EF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:0F:1E:2D:3C:4B:5A:69:78",` +
 	`"F0:E1:D2:C3:B4:A5:96:87:78:69:5A:4B:3C:2D:1E:0F:FE:DC:BA:98:76:54:32:10:01:23:45:67:89:AB:CD:EF"]}}]`
@@ -94,6 +94,9 @@ func TestAssetLinksIsServedOpenAsJSON(t *testing.T) {
 			}
 			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 				t.Errorf("%s Content-Type = %q, want application/json", label, ct)
+			}
+			if cc := rec.Header().Get("Cache-Control"); cc != "public, max-age=300" {
+				t.Errorf("%s Cache-Control = %q, want public, max-age=300", label, cc)
 			}
 			if sc := rec.Header().Values("Set-Cookie"); len(sc) > 0 {
 				t.Errorf("%s sets a cookie: %v", label, sc)

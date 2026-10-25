@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/api"
 )
 
 const alTestCert = "0123456789abcdef00112233445566778899aabbccddeeff0f1e2d3c4b5a6978"
@@ -96,5 +98,32 @@ func TestTheServerServesAssetLinksFromItsConfiguration(t *testing.T) {
 	resp, body = fetch(startServer(t, testConfig()))
 	if resp.StatusCode != http.StatusNotFound || strings.Contains(body, "android_app") {
 		t.Fatalf("unset: status %d body %q, want 404 and no statement", resp.StatusCode, body)
+	}
+}
+
+// TestTheAndroidPasskeysBannerLineMatchesWhatIsServed: the line follows the
+// wired statement — serving with it, OFF without it — so an inverted branch
+// fails here, not only as "the two renders differ".
+func TestTheAndroidPasskeysBannerLineMatchesWhatIsServed(t *testing.T) {
+	line := func(out string) string {
+		for _, l := range strings.Split(out, "\n") {
+			if strings.HasPrefix(l, "android passkeys:") {
+				return l
+			}
+		}
+		t.Fatalf("no \"android passkeys:\" line:\n%s", out)
+		return ""
+	}
+	on := config{AndroidPackage: "app.example.passkeys", AndroidCertSHA256: alTestCert}
+	body, err := on.assetLinks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := line(renderBanner(t, on, api.Extensions{AssetLinks: body})); !strings.Contains(l, " serves ") ||
+		strings.Contains(l, "OFF") || !strings.Contains(l, "app.example.passkeys") {
+		t.Errorf("configured: %q", l)
+	}
+	if l := line(renderBanner(t, config{}, api.Extensions{})); !strings.Contains(l, "OFF") || strings.Contains(l, " serves ") {
+		t.Errorf("unset: %q", l)
 	}
 }

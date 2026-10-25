@@ -80,8 +80,9 @@ The [Android app](design/android.md)'s WebView runs WebAuthn as the app
 
 - Android runs the ceremony only if the site lists the app.
   `MUSTER_ANDROID_PACKAGE` and `MUSTER_ANDROID_CERT_SHA256` make muster serve
-  `/.well-known/assetlinks.json` with the `get_login_creds` and
-  `handle_all_urls` relations ([configuration.md](configuration.md)). It is
+  `/.well-known/assetlinks.json` with the `get_login_creds` relation only
+  ([configuration.md](configuration.md)): not `handle_all_urls`, since the app
+  handles no links. It is
   open, `application/json`, and your edge must serve it with no redirect.
 - The assertion's `clientDataJSON.origin` is
   `android:apk-key-hash:<the signing certificate's SHA-256, unpadded base64url>`,

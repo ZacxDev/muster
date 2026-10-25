@@ -750,7 +750,7 @@ free ones when each phase lands.
 **Public routes (later, optional: Phase 7)**
 
 20. `GET /.well-known/assetlinks.json`: `delegate_permission/common.get_login_creds`
-    and `delegate_permission/common.handle_all_urls` for the configured
+    only (the app handles no links, so no `handle_all_urls`) for the configured
     package and fingerprints; HTTP 200, `application/json`, no redirect. The
     deployment's edge must serve it without a redirect too.
 

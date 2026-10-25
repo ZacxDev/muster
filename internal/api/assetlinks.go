@@ -12,17 +12,17 @@ import (
 // AssetLinksPath is where Android looks for a site's Digital Asset Links.
 const AssetLinksPath = "/.well-known/assetlinks.json"
 
-// assetLinkRelations are the relations the statement grants the app.
+// assetLinkRelations are the relations the statement grants the app: only
+// get_login_creds, which Android's credential manager checks before it runs a
+// passkey ceremony for an app against this site's RP id (the app's WebView
+// runs WebAuthn as the app, so the assertion's origin is
+// android:apk-key-hash:…, not this site).
 //
-//   - get_login_creds is what Android's credential manager checks before it
-//     runs a passkey ceremony for an app against this site's RP id. It is the
-//     one the Android app's passkeys need (its WebView runs WebAuthn as the app,
-//     so the assertion's origin is android:apk-key-hash:…, not this site).
-//   - handle_all_urls is the App Links relation. Android's own passkey
-//     documentation lists both in its example statement; on its own it
-//     changes nothing for an app that declares no auto-verified intent filter.
+// ⚠ NOT handle_all_urls, though Android's passkey documentation shows it in
+// its example. That is the App Links relation: the app declares no
+// auto-verified intent filter, so it would only pre-grant this site's links to
+// a future version of the app nobody decided to make a link handler.
 var assetLinkRelations = []string{
-	"delegate_permission/common.handle_all_urls",
 	"delegate_permission/common.get_login_creds",
 }
 
