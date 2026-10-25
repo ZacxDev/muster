@@ -308,6 +308,9 @@ func viewToggle(rendered bool, renderedHref, terminalHref string) g.Node {
 			icon, name = viewIconRendered, "Show rendered view"
 		}
 		return A(ID(id), Href(href), hx("hx-boost", "false"), g.Attr("data-view-swap", view), g.Attr("data-view-toggle", ""),
+			// The icon's tooltip for a mouse below `sm` (a 480–639px window).
+			// The name stays the link's text: "Terminal" from `sm` up.
+			g.Attr("title", name),
 			Class(cls+viewToggleCompactClass+" text-fg2 hover:bg-s3"),
 			g.Raw(icon),
 			Span(Class("sr-only sm:hidden"), g.Text(name)),

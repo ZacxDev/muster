@@ -432,6 +432,7 @@ test.describe('phone 393×852, a real tap', () => {
     const toggle = page.getByRole('link', { name: 'Show terminal', exact: true });
     await expect(toggle).toBeVisible();
     await expect(toggle).toHaveAttribute('data-view-toggle', '');
+    await expect(toggle, 'a mouse gets the name as a tooltip').toHaveAttribute('title', 'Show terminal');
     await expect(toggle.locator('svg')).toBeVisible();
     const box = await toggleBox(page.locator('#view-terminal'));
     expect(box.w, `the toggle is at least 44px wide (${JSON.stringify(box)})`).toBeGreaterThanOrEqual(44);
@@ -455,6 +456,7 @@ test.describe('phone 393×852, a real tap', () => {
     await expect(frame.locator('#view-terminal')).toHaveCSS('display', 'none');
     const back = frame.getByRole('link', { name: 'Show rendered view', exact: true });
     await expect(back).toBeVisible();
+    await expect(back).toHaveAttribute('title', 'Show rendered view');
     const tb = await toggleBox(frame.locator('#view-rendered'));
     expect(Math.min(tb.w, tb.h), `the terminal's toggle is at least 44×44 (${JSON.stringify(tb)})`).toBeGreaterThanOrEqual(44);
     // The terminal view's header does not scroll sideways at 393px either.
