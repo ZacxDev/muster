@@ -375,8 +375,17 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					)),
 				),
 				quickKeyBar(v.Composer == nil),
-				floatingMenuScript(),
+				// 🔴 NO SCRIPT TAG BEFORE THE COMPOSER. The key bar sits above
+				// the composer in a column whose terminal takes the rest, so
+				// the composer's arrival moves the bar up by its height. A
+				// <script src> between them is parser-blocking: while its file
+				// is fetched (a first visit) Chromium paints the page without
+				// the composer, the bar at the bottom, and the composer then
+				// pushes it up — measured as a 0.01259 shift of #term-keys
+				// opening the terminal in its frame at 390px (cls.spec).
+				// TestTheTerminalPaintsWholeBeforeAnyScript pins the order.
 				terminalComposer(v.Composer),
+				floatingMenuScript(),
 				confirmDialog(v.StepUp),
 				g.If(v.StepUp != nil, stepUpScript()),
 				agentTerminalScript(),
