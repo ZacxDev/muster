@@ -37,7 +37,8 @@ func LoadCredentials(path string) (*Credentials, error) {
 }
 
 // EnvCredentials is a fixed token for the server at base (CheckLocal), never
-// renewed. 🔴 FOR TESTS ONLY: the daemon
+// renewed. 🔴 FOR TESTS AND THE BROWSER SUITE'S FAKE HOST (cmd/muster-mirror's
+// e2emirror build) ONLY: the daemon
 // takes its token from the token file alone, because a token it cannot renew
 // stops working, silently, 30 days on.
 func EnvCredentials(base, token string) (*Credentials, error) {
