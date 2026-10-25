@@ -240,6 +240,7 @@ func (s *Server) handlePasskeySignInVerify(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	outcome = outcomeSucceeded
+	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
 	s.logger.Printf("login: user %d signed in with a passkey", u.ID)
 	s.writeJSON(w, http.StatusOK, map[string]any{"redirect": safeReturnTo(body.Next)})

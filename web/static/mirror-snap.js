@@ -413,7 +413,20 @@
         resolve(bytes);
       }
       try { sock = new WebSocket(wsURL(ref, prev)); } catch (e) { resolve(0); return; }
-      current = { stop: function () { finish(n > 0); } };
+      current = {
+        stop: function () { finish(n > 0); },
+        // abort: closed with nothing stored (the page is going into the
+        // back/forward cache — see the pagehide wiring below).
+        abort: function () {
+          if (done) return;
+          done = true;
+          current = null;
+          clearTimeout(quiet);
+          clearTimeout(cap);
+          try { sock.onclose = null; sock.close(); } catch (e) {}
+          resolve(bytes);
+        },
+      };
       cap = setTimeout(function () { finish(n > 0); }, WARM_CAP_MS);
       sock.onmessage = function (ev) {
         bytes += (ev.data && ev.data.length) || 0;
@@ -474,6 +487,13 @@
       if (document.hidden) { if (current) current.stop(); return; }
       if (Date.now() - lastWarm >= WARM_EVERY_MS) setTimeout(function () { idle(warmPass); }, 500);
     });
+    // 🔴 A WARM STILL OPEN AS THE PAGE GOES INTO THE BACK/FORWARD CACHE EVICTS
+    // IT: measured (Chromium 153), the Agents list left mid-warm was reloaded
+    // by Back 3 times in 3 (CDP: IgnoreEventAndEvict) — leaving does not
+    // reliably fire visibilitychange first, so the stop above may not run. A
+    // page that may be kept aborts its warm here, storing nothing; the next
+    // pass warms it again.
+    root.addEventListener('pagehide', function (e) { if (e.persisted && current) current.abort(); });
   }
 
   root.musterSnap = {
