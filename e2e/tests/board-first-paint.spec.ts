@@ -1,5 +1,7 @@
 import { test, expect } from '../lib/fixtures';
-import type { Page } from '@playwright/test';
+import type { Browser, Page } from '@playwright/test';
+import { authState, baseURL } from '../lib/env';
+import { launchWithBfcache } from '../lib/bfcache';
 
 // THE BOARD IS IN THE `/` DOCUMENT, AND THE FIRST SSE OPEN DOES NOT FETCH IT
 // AGAIN (internal/ui/tasks_list_ssr.go).
@@ -127,4 +129,78 @@ test('a stored tag filter hides the drawn board until the filtered one lands', a
   release();
   await expect(card(page, seededDocs)).toBeVisible({ timeout: 10_000 });
   await expect(card(page, seeded), 'the filtered board does not hold the unfiltered card').toHaveCount(0);
+});
+
+// --- Back and Forward (restore.go) -------------------------------------------
+//
+// A board shown again by Back is a document drawn in the past. Two ways:
+//   - RESTORED from the back/forward cache: the same live document; restoreJS
+//     reopens its streams, and that open is not the first (the mark was consumed
+//     when the page first opened its stream), so it resyncs;
+//   - re-run from the HTTP CACHE: the document as first served, its scripts run
+//     afresh, carrying the OLD data-sse-mark into a FIRST open. Only the mark
+//     comparison stands between that board and a skipped refetch.
+// In both, a task created while away must be on the board after Back.
+
+// backShown records, in the document, whether its last pageshow was a restore.
+const pageshowRecorder = `addEventListener('pageshow', (e) => { window.__persisted = e.persisted; });`;
+
+test.describe('Back', () => {
+  let bfBrowser: Browser;
+  test.beforeAll(async ({ playwright }) => {
+    bfBrowser = await launchWithBfcache(playwright.chromium);
+  });
+  test.afterAll(async () => {
+    await bfBrowser?.close();
+  });
+
+  test('a board restored from the back/forward cache shows a task created while it was away', async ({ api }) => {
+    const ctx = await bfBrowser.newContext({ baseURL, storageState: authState, viewport: { width: 390, height: 844 } });
+    await ctx.addInitScript(pageshowRecorder);
+    await ctx.addInitScript((k) => localStorage.removeItem(k), tagFilterKey);
+    const page = await ctx.newPage();
+    try {
+      await page.goto('/');
+      await firstOpenSettled(page);
+      // The first worker claims its clients on activation, which evicts a cached
+      // page (bfcache-restore.spec.ts, workerSettled): wait for it first.
+      await page.evaluate(async () => {
+        if (navigator.serviceWorker) await navigator.serviceWorker.ready;
+      });
+      const doc = await page.evaluate(() => ((window as any).__doc = Math.random().toString(36)));
+      await page.goto('/agents');
+      const title = `Created while the board was away ${Date.now()}`;
+      await api.createTask(title, 'Created by board-first-paint.spec.');
+      await page.goBack({ waitUntil: 'commit' });
+      await expect.poll(() => page.evaluate(() => (window as any).__persisted), { message: 'Back restored the board' }).toBe(true);
+      expect(await page.evaluate(() => (window as any).__doc), 'the same document').toBe(doc);
+      await expect(card(page, title), 'the restored board caught up').toBeVisible({ timeout: 10_000 });
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  test('a board re-run from the HTTP cache carries its old mark, and still shows a task created while it was away', async ({ browser, api }) => {
+    const ctx = await browser.newContext({ baseURL, storageState: authState, viewport: { width: 390, height: 844 } });
+    await ctx.addInitScript((k) => localStorage.removeItem(k), tagFilterKey);
+    const page = await ctx.newPage();
+    try {
+      await page.goto('/');
+      await firstOpenSettled(page);
+      await page.goto('/agents');
+      const title = `Created before the cached board ran ${Date.now()}`;
+      await api.createTask(title, 'Created by board-first-paint.spec.');
+      await page.goBack();
+      const nav = await page.evaluate(() => {
+        const n = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
+        return { type: n.type, fromCache: n.transferSize === 0 };
+      });
+      // Control: this IS the stored copy (an old document with an old mark), not
+      // a fresh one the server drew after the task existed.
+      expect(nav, 'Back took / from the HTTP cache').toEqual({ type: 'back_forward', fromCache: true });
+      await expect(card(page, title), 'the cached board re-fetched on its first open').toBeVisible({ timeout: 10_000 });
+    } finally {
+      await ctx.close();
+    }
+  });
 });
