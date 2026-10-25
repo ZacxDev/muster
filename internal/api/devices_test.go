@@ -101,12 +101,12 @@ func TestADeviceCredentialIsRefusedOutsideTheDeviceTier(t *testing.T) {
 		})
 	}
 	// Only an unarmed HOOK route is excused from the session-and-hook floor (the
-	// four requireArmedHookToken routes); an unarmed service route was never in
+	// five requireArmedHookToken routes); an unarmed service route was never in
 	// it, and at most the service tier's own routes may answer that way.
 	if want := len(routeVias[authz.ViaSession]) + len(routeVias[authz.ViaHook]) - unarmedHook; shapeRefused < want || driven < 200 ||
-		unarmedHook > 4 || unarmed-unarmedHook > len(routeVias[authz.ViaService]) {
+		unarmedHook > 5 || unarmed-unarmedHook > len(routeVias[authz.ViaService]) {
 		t.Fatalf("CONTROL: the shape refusal answered %d of %d routes; want at least the %d session and hook routes "+
-			"(unarmed: %d hook, %d other; at most 4 and %d)",
+			"(unarmed: %d hook, %d other; at most 5 and %d)",
 			shapeRefused, driven, want, unarmedHook, unarmed-unarmedHook, len(routeVias[authz.ViaService]))
 	}
 	// Positive control: the device tier admits it, as user 1 through ViaDevice.
