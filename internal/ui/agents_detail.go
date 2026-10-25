@@ -196,6 +196,7 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// title reading `**fix** the `+"`chip`"+` row · muster` is the same defect in
 				// a third place.
 				TitleEl(g.Text(agentDocTitle(v))),
+				UserMarker(feat),
 				Link(Rel("stylesheet"), Href(web.Asset("/static/app.css"))),
 				Script(Src(web.Asset("/static/vendor/htmx.min.js")), Defer()),
 				Script(Src(web.Asset("/static/vendor/sse.js")), Defer()),
@@ -342,6 +343,10 @@ func agentDetailHeader(v AgentDetailView) g.Node {
 					g.If(v.WorkerPool != "", workerPoolChip(v.WorkerPool)),
 					Div(Class("ml-auto"), viewToggle(true, "", AgentTerminalPath(v.Name))))),
 		),
+		// A restore's "Updating…" (restore.go): hung just below the header (a
+		// sticky box, so it is the chip's containing block), over the top of
+		// the transcript, taking no room in either.
+		updatingChip("agent-updating", "right-3 top-full mt-1"),
 	)
 }
 
@@ -938,6 +943,8 @@ func agentChatPane(v AgentDetailView) g.Node {
 //     it was reconnecting) never arrives, and the page showed "working" for
 //     ever. Re-fetching when the stream opens catches up on whatever it missed
 //     (e2e agent-composer: "a reply stored before the event stream connects").
+//     A page restored from the back/forward cache reopens its stream
+//     (restore.go), so this arm is also how the restored transcript catches up.
 //
 // 🔴 THE agent.changed ARM IS WHAT CLEARS "Provisioning agent…" WHEN NO MESSAGE
 // EVER ARRIVES. The provisioning row and the empty state are both decided
@@ -2011,6 +2018,25 @@ func agentChatScript(name string) g.Node {
     ws.onclose = function () { if (!session.disposed) setTimeout(connect, 2000); };
   }
   connect();
+  // Back and Forward (restore.go): the socket is closed as the page is hidden
+  // and opened again, at once, when it is restored. Caught up is the chat
+  // log's refetch, which the restore's reopened event stream starts
+  // (chatLogTrigger's htmx:sseOpen arm).
+  ` + restoreJoinJS(`{
+    alive: function () { return !session.disposed; },
+    hide: function () { try { if (ws) { ws.onclose = null; ws.close(); } } catch (e) {} ws = null; session.ws = null; },
+    show: function () {
+      if (!ws || ws.readyState > 1) connect();
+      return new Promise(function (resolve) {
+        function done(e) {
+          if (!e.detail || !e.detail.elt || e.detail.elt.id !== 'chat-log') return;
+          document.body.removeEventListener('htmx:afterRequest', done);
+          resolve();
+        }
+        document.body.addEventListener('htmx:afterRequest', done);
+      });
+    }
+  }`) + `
   // The interim observer of window.__cgLayoutLog, when it ran for THIS log:
   // torn down, and a reader who scrolled away meanwhile stays where they are.
   // ⚠ NOT NAMED pre: start() already has a function pre() (the tool chip's
