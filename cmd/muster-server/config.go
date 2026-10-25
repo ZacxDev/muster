@@ -126,7 +126,7 @@ const (
 	envSendQueueIdle = "MUSTER_SEND_QUEUE_IDLE"
 	// Session focus (internal/focus): how often the server recomputes each
 	// session's focus. A Go duration, 15m when unset, "0" turns the periodic
-	// pass off (focus_refresh still works), refused outside 1m–24h otherwise.
+	// pass off (and so every refresh), refused outside 1m–24h otherwise.
 	envFocusInterval = "MUSTER_FOCUS_INTERVAL"
 	// How long a mirrored session's focus is kept after a pass last saw the
 	// session on any host. A Go duration, 168h when unset, refused outside
@@ -164,12 +164,6 @@ const (
 	// or owner/*>,…", each matched only on mail that plugin marked sender_verified. Unset: every
 	// routed answer becomes a pending draft the owner approves.
 	envRouteRelayAllow = "MUSTER_ROUTE_RELAY_ALLOW"
-	// How long a routed message waits for its session's answer before it is
-	// handed back to the chief (api.DefaultRouteTimeout, 30m, when unset). A Go
-	// duration between api.MinRouteTimeout and api.MaxRouteTimeout, and — with
-	// routing on — longer than MUSTER_SEND_QUEUE_IDLE; anything else refuses to
-	// boot.
-	envRouteTimeout = "MUSTER_ROUTE_TIMEOUT"
 	// TASK ROUTING (internal/api/task_routing.go): "1" lets a plugin hand a task
 	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's chief,
 	// which routes it with task_route_attention / task_forward. Needs the plugin
@@ -180,11 +174,15 @@ const (
 	// task_dispatch, for the listed owners only; empty, it is not offered.
 	envChiefDispatchOwners = "MUSTER_CHIEF_DISPATCH_OWNERS"
 	// CHIEF SESSION RUNTIMES (internal/api/session_runtime.go): the runtimes a
-	// chief chat session may be started on, comma-separated — claude-code (a CLI
+	// chief chat session may be started on, comma-separated. claude-code (a CLI
 	// of its own in ccd, with a chosen Claude model; needs a claude-code chief on
-	// a ccd that runs one CLI per session) and gateway (an OpenRouter model, on
-	// the gateway runtime — in a claude-code chief, the one beside ccd). Unset is
-	// OFF: no picker, and a session is the chief's own kind as before.
+	// a ccd that runs one CLI per session) is the only one. Unset is OFF: no
+	// picker, and a session is the chief's own kind as before.
+	//
+	// ⚠ `gateway` WAS THE OTHER ENTRY, AND IS IGNORED WITH ONE WARNING (its
+	// runtime, run beside a claude-code chief's ccd, was removed), so a
+	// deployment still naming it boots on this image unchanged. Any other
+	// unknown entry still refuses to boot.
 	envChiefSessionRuntimes = "MUSTER_CHIEF_SESSION_RUNTIMES"
 	// How long a sign-in stays fresh enough to TYPE into a mirrored session
 	// (internal/stepup): a Go duration, 12h when unset, refused outside
@@ -566,9 +564,6 @@ type config struct {
 	SessionRouting     bool
 	RouteRelayAllowRaw string
 	RouteRelayAllow    plugins.RelayAllowlist
-	// RouteTimeout is MUSTER_ROUTE_TIMEOUT (api.DefaultRouteTimeout when unset):
-	// a route's deadline.
-	RouteTimeout time.Duration
 	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatchOwners
 	// MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig refuses one that does not
 	// parse) — non-empty turns task_dispatch on.
@@ -576,8 +571,11 @@ type config struct {
 	ChiefDispatchOwnersRaw string
 	ChiefDispatchOwners    map[int64]bool
 	// ChiefSessionRuntimes is MUSTER_CHIEF_SESSION_RUNTIMES, split on commas
-	// (validateSessionRuntimes refuses an unknown or repeated entry).
-	ChiefSessionRuntimes []string
+	// (validateSessionRuntimes refuses an unknown or repeated entry), without
+	// the retired `gateway`; ChiefSessionRuntimeGatewayIgnored is whether it
+	// named it (the banner's warning).
+	ChiefSessionRuntimes              []string
+	ChiefSessionRuntimeGatewayIgnored bool
 	// StepUpWindow is internal/stepup's freshness window (MUSTER_STEPUP_WINDOW;
 	// stepup.DefaultWindow when unset). loadConfig refuses an out-of-bounds one.
 	StepUpWindow time.Duration
@@ -1217,24 +1215,15 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if c.SuggestModel == "" {
 		c.SuggestModel = suggest.DefaultModel
 	}
-	c.RouteTimeout = api.DefaultRouteTimeout
-	if v := strings.TrimSpace(getenv(envRouteTimeout)); v != "" {
-		d, err := time.ParseDuration(v)
-		if err != nil || d < api.MinRouteTimeout || d > api.MaxRouteTimeout {
-			return config{}, fmt.Errorf("invalid %s %q: want a Go duration between %s and %s (e.g. 30m)",
-				envRouteTimeout, v, api.MinRouteTimeout, api.MaxRouteTimeout)
-		}
-		c.RouteTimeout = d
-	}
 	// 🔴 A ROUTE MUST OUTLAST ITS OWN PASTE. A routed message is pasted only
 	// once the window has been idle for MUSTER_SEND_QUEUE_IDLE, so a deadline
 	// no longer than that wait times the route out before its message can
 	// reach the session — every route would go back to the chief unread.
 	// Checked only with routing on: with it off neither value is about routes,
 	// and a long idle wait alone is a valid setting.
-	if c.SessionRouting && c.RouteTimeout <= c.SendQueueIdle {
-		return config{}, fmt.Errorf("invalid %s %s: it must be longer than %s (%s), the idle wait before a routed message is even pasted",
-			envRouteTimeout, c.RouteTimeout, envSendQueueIdle, c.SendQueueIdle)
+	if c.SessionRouting && api.RouteTimeout <= c.SendQueueIdle {
+		return config{}, fmt.Errorf("invalid %s %s: with %s=1 it must be shorter than a route's deadline (%s), or every route would time out before its message is even pasted",
+			envSendQueueIdle, c.SendQueueIdle, envSessionRouting, api.RouteTimeout)
 	}
 	if c.RouteRelayAllowRaw != "" {
 		l, err := plugins.ParseRelayAllowlist(c.RouteRelayAllowRaw)
@@ -1250,7 +1239,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %v (want user ids, comma-separated)", envChiefDispatchOwners, err)
 	}
 	c.ChiefDispatchOwners = owners
-	c.ChiefSessionRuntimes = splitList(getenv(envChiefSessionRuntimes))
+	c.ChiefSessionRuntimes, c.ChiefSessionRuntimeGatewayIgnored = withoutRetiredSessionRuntime(splitList(getenv(envChiefSessionRuntimes)))
 
 	icons, err := parseHostIcons(getenv(envHostIcons))
 	if err != nil {
@@ -1857,6 +1846,25 @@ func (c config) validateProvisioner() error {
 	return nil
 }
 
+// retiredSessionRuntime is the MUSTER_CHIEF_SESSION_RUNTIMES entry this binary
+// ignores rather than refuses: the gateway runtime that ran beside a
+// claude-code chief's ccd, removed.
+const retiredSessionRuntime = "gateway"
+
+// withoutRetiredSessionRuntime is list without retiredSessionRuntime, and
+// whether it held it.
+func withoutRetiredSessionRuntime(list []string) ([]string, bool) {
+	out, dropped := list[:0:0], false
+	for _, rt := range list {
+		if rt == retiredSessionRuntime {
+			dropped = true
+			continue
+		}
+		out = append(out, rt)
+	}
+	return out, dropped
+}
+
 // validateKinds refuses an agent-kinds configuration that could only fail at a
 // dispatch.
 //
@@ -1878,15 +1886,6 @@ func (c config) validateSessionRuntimes() error {
 			return fmt.Errorf("invalid %s: %q is listed twice", envChiefSessionRuntimes, rt)
 		}
 		seen[rt] = true
-	}
-	// A claude-code chief's gateway sessions run on the gateway runtime BESIDE
-	// ccd, built from the same runtime bundle as a gateway-kind agent: without
-	// it, the chief's next Start would fail to build its spec.
-	if seen[agents.SessionRuntimeGateway] && c.claudeCodeEnabled() && c.agentGateway() == gatewayNone {
-		return fmt.Errorf("invalid %s: it names %s and %s enables %s, so a %s chief runs the gateway runtime beside "+
-			"ccd — and %s is %s, so there is no runtime bundle to build it from",
-			envChiefSessionRuntimes, agents.SessionRuntimeGateway, envAgentKinds, agents.KindClaudeCode,
-			agents.KindClaudeCode, envAgentGateway, gatewayNone)
 	}
 	if seen[agents.SessionRuntimeClaudeCode] && !c.claudeCodeEnabled() {
 		return fmt.Errorf("invalid %s: it names %s, but %s does not enable that kind, so no chief could run such a session",
