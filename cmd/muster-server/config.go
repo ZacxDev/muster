@@ -108,6 +108,9 @@ const (
 	envFaroURL     = "MUSTER_FARO_URL"
 	envFaroKey     = "MUSTER_FARO_API_KEY"
 	envFaroTracing = "MUSTER_FARO_TRACING"
+	// The Faro receiver muster RELAYS the browser's telemetry to
+	// (api.FaroRelayPath): the page posts same-origin and never learns it.
+	envFaroUpstream = "MUSTER_FARO_UPSTREAM"
 
 	// The operator's own hosts (ui.HostPreferences): the host tabs named
 	// first, in order, and a host's icon by its name.
@@ -525,6 +528,9 @@ type config struct {
 	FaroURL     string
 	FaroKey     string
 	FaroTracing bool
+	// FaroUpstream is MUSTER_FARO_UPSTREAM: the Faro receiver the relay
+	// forwards to. Set, it takes precedence over FaroURL.
+	FaroUpstream string
 
 	// HostPrefs is MUSTER_HOST_ORDER and MUSTER_HOST_ICONS, checked
 	// (ui.HostPreferences.Normalized); the zero value names no host.
@@ -1000,6 +1006,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		FaroURL:              strings.TrimSpace(getenv(envFaroURL)),
 		FaroKey:              strings.TrimSpace(getenv(envFaroKey)),
 		FaroTracing:          envFlag(getenv, envFaroTracing),
+		FaroUpstream:         strings.TrimSpace(getenv(envFaroUpstream)),
 		TagAutoDispatch:      envFlag(getenv, envTagAutoDispatch),
 		Mirror:               envFlag(getenv, envMirror),
 		Plugins:              envFlag(getenv, envPlugins),
@@ -1605,7 +1612,25 @@ func (c config) validate() error {
 	if err := notes.ValidatePluginTaskNamespaces(c.PluginTaskNamespaces); err != nil {
 		return fmt.Errorf("%s: %w", envPluginTaskNamespaces, err)
 	}
+	if c.FaroUpstream != "" {
+		if u, err := url.Parse(c.FaroUpstream); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("%s=%q is not an http(s) URL: the browser telemetry relay would forward every "+
+				"post to nowhere. Set the Faro receiver's collect URL (http://<alloy>:<port>/collect) or unset it", envFaroUpstream, c.FaroUpstream)
+		}
+	}
 	return c.validateProvisioner()
+}
+
+// faroSettings is the page's Faro configuration: with a relay upstream the
+// page posts to muster's own relay route, same-origin; without one, to
+// MUSTER_FARO_URL directly (the older, cross-origin arrangement).
+func (c config) faroSettings(version string) ui.FaroSettings {
+	f := ui.FaroSettings{URL: c.FaroURL, Key: c.FaroKey, Version: version, Tracing: c.FaroTracing}
+	if c.FaroUpstream != "" {
+		// The key never reaches the page: the relay adds it upstream.
+		f.URL, f.Key, f.Relay = api.FaroRelayPath, "", true
+	}
+	return f
 }
 
 // pushConfigured reports whether the VAPID triple is set (validate has

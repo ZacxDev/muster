@@ -917,6 +917,11 @@ func mirrorViewScript() g.Node {
   // bound in memory; firstAt is when this conversation was last read in full
   // from the host (a reset), which ages the snapshot (mirror-snap.js).
   var opLog = [], opBytes = 0, firstAt = 0, provisional = false, dirty = false, saveTimer = 0, chipTimer = 0;
+  // The open, measured (faro.go's musterOpen; absent while telemetry is off):
+  // opening is the socket's open until its first batch, lastOpen the one a
+  // later disconnect belongs to, and endReason the closed word the server
+  // gave for ending the stream, if it gave one.
+  var opening = null, lastOpen = null, endReason = '';
 
   function showChip(on) {
     if (!chip) return;
@@ -962,6 +967,7 @@ func mirrorViewScript() g.Node {
   // and leaves the page provisional until the socket speaks.
   function paint(rec) {
     rec.batches.forEach(function (b) { apply(b); });
+    if (opening) opening.mark('snapshot_painted');
     gen = rec.gen; offset = rec.offset;
     opLog = rec.batches.slice(); opBytes = rec.bytes || 0; firstAt = rec.firstAt;
     // A snapshot's last "busy" is not a claim about now.
@@ -1062,24 +1068,40 @@ func mirrorViewScript() g.Node {
     // Left (pagehide): a pending retry opens nothing.
     if (closed) return;
     var base = log.getAttribute('data-ws');
+    if (!opening && window.musterOpen) opening = window.musterOpen.begin('mirror_view', { resume: !!gen });
+    var tp = opening ? opening.tp() : '';
+    endReason = '';
     var url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + base +
-      (gen ? '&gen=' + encodeURIComponent(gen) + '&offset=' + offset : '');
+      (gen ? '&gen=' + encodeURIComponent(gen) + '&offset=' + offset : '') + (tp ? '&tp=' + encodeURIComponent(tp) : '');
     statusEl.textContent = 'Connecting…';
     sock = new WebSocket(url);
-    sock.onopen = function () { retry = 0; };
+    sock.onopen = function () { retry = 0; if (opening) opening.mark('stream_connected'); };
     sock.onmessage = function (ev) {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-      if (m.type === 'batch') { if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m, ev.data.length); caughtUp(); }
-      else if (m.type === 'error') { if (provisional) discard(); showError(m.message || 'The view ended.'); caughtUp(); }
+      if (m.type === 'batch') {
+        if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m, ev.data.length); caughtUp();
+        if (opening) { opening.mark('first_paint'); opening.mark('usable'); opening.end('ok'); lastOpen = opening; opening = null; }
+      }
+      else if (m.type === 'error') {
+        endReason = m.reason || 'error';
+        if (provisional) discard(); showError(m.message || 'The view ended.'); caughtUp();
+      }
       // The window's questions changed (mirror_ask.go): read them now.
       else if (m.type === 'asks') { if (window.musterAskPoll) window.musterAskPoll(); }
       // Suggested replies (suggest_row.go): pending, ready or none.
       else if (m.type === 'suggest') { if (window.musterSuggest) window.musterSuggest(m); }
     };
-    sock.onclose = function () {
+    sock.onclose = function (ev) {
       statusEl.textContent = 'Disconnected — reconnecting…';
       working.hidden = true;
       if (closed) return;
+      // Why, reported (faro.go): the server's closed word when it said one,
+      // else the socket's close code; and whether it happened before the view
+      // had drawn anything (opening) or while it was live.
+      var o = opening || lastOpen, why = endReason || ('closed_' + (ev && ev.code));
+      if (opening) opening.end(why);
+      if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code, retry: retry });
+      opening = null;
       // Closed before its first batch (refused, signed out, gone): the
       // snapshot is not shown as current.
       if (provisional) discard();

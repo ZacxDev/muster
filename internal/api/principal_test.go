@@ -221,6 +221,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/openrouter/models",
 		"GET /connectors",
 		"GET /events",
+		// The browser telemetry relay (faro_relay.go): a session, same-origin.
+		"POST /telemetry/faro",
 		"GET /github/callback",
 		"GET /github/connect",
 		"GET /repos",

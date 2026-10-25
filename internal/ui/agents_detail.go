@@ -2018,18 +2018,33 @@ func agentChatScript(name string) g.Node {
     }
   }
 
+  // The open, measured (faro.go's musterOpen; absent while telemetry is off).
+  // The transcript is in the document, so it is painted by the time this
+  // runs; the chat is usable once its socket is open.
+  var opening = null, live = null;
   function connect() {
     if (session.disposed) return;
     var url = scheme() + '//' + location.host + '/agents/' + agent + '/ws';
     if (sessionId) url += '?session=' + encodeURIComponent(sessionId);
+    if (window.musterOpen) { opening = window.musterOpen.begin('agent'); opening.mark('first_paint'); }
+    var tp = opening ? opening.tp() : '';
+    if (tp) url += (url.indexOf('?') < 0 ? '?' : '&') + 'tp=' + encodeURIComponent(tp);
     ws = new WebSocket(url);
     session.ws = ws;
+    ws.onopen = function () { if (opening) { opening.mark('stream_connected'); opening.mark('usable'); opening.end('ok'); live = opening; opening = null; } };
     ws.onmessage = function (ev) {
       var msg;
       try { msg = JSON.parse(ev.data); } catch (e) { return; }
       renderStreamMsg(msg);
     };
-    ws.onclose = function () { if (!session.disposed) setTimeout(connect, 2000); };
+    ws.onclose = function (ev) {
+      if (session.disposed) return;
+      var o = opening || live, why = 'closed_' + (ev && ev.code);
+      if (opening) opening.end(why);
+      if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code });
+      opening = null; live = null;
+      setTimeout(connect, 2000);
+    };
   }
   connect();
   // Back and Forward (restore.go): the socket is closed as the page is hidden

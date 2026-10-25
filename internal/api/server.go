@@ -179,6 +179,8 @@ type Server struct {
 
 	// loginRate throttles password attempts on the human tier.
 	loginRate rateLimiter
+	// faro is the browser telemetry relay (faro_relay.go); nil = off.
+	faro *faroRelay
 	// scrollRate throttles the Terminal view's drag-to-scroll, per user
 	// (mirror_scroll.go).
 	scrollRate keyedRate
@@ -541,6 +543,9 @@ func (s *Server) registerAll(mux Mux) {
 		mux.HandleFunc("GET /"+tab, s.requireSession(s.handleIndex))
 	}
 	mux.HandleFunc("GET /events", s.requireSession(s.handleEvents))
+	// The browser telemetry relay (faro_relay.go): a signed-in page's Faro
+	// batches, forwarded to MUSTER_FARO_UPSTREAM; 404 while it is unset.
+	mux.HandleFunc("POST "+FaroRelayPath, s.requireOperatorWrite(s.handleFaroRelay))
 	// The manifest's share_target. Session-gated like the shell it renders; a
 	// GET, so a share that meets the login page survives the round trip in
 	// ?next=. It writes nothing — see handleShare.

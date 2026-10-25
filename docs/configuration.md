@@ -110,7 +110,8 @@ See [auth.md](auth.md).
 | `GITHUB_CLIENT_SECRET` | none | no | The GitHub OAuth app's client secret. |
 | `MUSTER_FARO_URL` | none | no | A Grafana Faro collector URL. Setting it turns on front-end real-user monitoring. |
 | `MUSTER_FARO_API_KEY` | none | no | The Faro API key. It is sent to the browser, so it is public. |
-| `MUSTER_FARO_TRACING` | off | no | Turns on Faro tracing as well. |
+| `MUSTER_FARO_TRACING` | off | no | Turns on Faro tracing as well: the page's same-origin requests carry a `traceparent`, and each session open is a span joined to the server's trace ([telemetry.md](telemetry.md)). |
+| `MUSTER_FARO_UPSTREAM` | none | no | The Faro receiver's collect URL (for example an Alloy `faro.receiver`). Setting it turns front-end monitoring on through muster's own relay: the page posts to `POST /telemetry/faro` on muster's origin, and muster forwards each batch here, adding `MUSTER_FARO_API_KEY` itself. Signed-in users only, 256 KiB per batch, 120 batches a minute per user. It takes precedence over `MUSTER_FARO_URL`. Not an `http(s)` URL refuses to boot. See [telemetry.md](telemetry.md). |
 | `MUSTER_HOST_ORDER` | none | no | Comma-separated mirrored host names whose tabs come first on the Agents list, after **All**, in this order (e.g. `tower,laptop`). Every other host follows A–Z; **cluster** is always last. Names match case-insensitively. A name that is not a host name (lower-case letters, digits and inner hyphens, so no spaces or other separators), `cluster`, or a host listed twice refuses to boot. |
 | `MUSTER_HOST_ICONS` | none | no | Comma-separated `<host>=<icon>` entries giving a mirrored host its icon by name, whatever order its token was minted in (e.g. `laptop=laptop,tower=server`). The icons: `laptop`, `server`, `terminal`, `chip`, `phone`, `home`, `globe`, `box`, `bolt`, `star`, `moon`, `drive`. No other host draws an icon named here. A name that is not a host name (lower-case letters, digits and inner hyphens), `cluster`, an unknown icon, or one icon for two hosts refuses to boot. |
 
@@ -180,7 +181,7 @@ For example, in a `jq` filter that reads `MUSTER_CONFIG` as `$mc`:
 ## Tracing (muster-server and muster-mirror)
 
 Both binaries export OpenTelemetry traces over OTLP/HTTP when an endpoint is set,
-and do nothing at all when none is. These are the
+and do nothing at all when none is ([telemetry.md](telemetry.md)). These are the
 variables muster reads to decide that; the exporter and the SDK also read the
 standard `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`,
 `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT` themselves.

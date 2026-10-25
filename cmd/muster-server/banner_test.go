@@ -492,6 +492,9 @@ var bannerExempt = map[string]string{
 	envFaroTracing: "browser RUM: a tracing toggle on the page agent, handed to " +
 		"ui.SetFaroConfig with the URL and the key. It changes what the BROWSER emits, and " +
 		"nothing about what this process will or will not do at boot",
+	envFaroUpstream: "browser RUM: where the same-origin relay route forwards the page's Faro posts " +
+		"(api.SetFaroRelay); like MUSTER_FARO_URL it changes what the BROWSER emits and where it lands, not " +
+		"this server's auth or dependency posture, and a value it refuses stops the boot in validate",
 	envHostOrder: "display only: the order of the Agents list's host tabs, handed to " +
 		"ui.SetHostPreferences. No server posture changes with it, and a value it refuses " +
 		"stops the boot in loadConfig, so there is no silent refusing state to announce",
