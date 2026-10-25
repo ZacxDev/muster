@@ -180,6 +180,7 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 		return
 	}
 	text := r.PostFormValue("text")
+	again := r.PostFormValue(ui.SendAgainField) == "1"
 	nav := confirmed || isDocumentNavigation(r)
 	refuse := func(status int, msg, notice string) {
 		if nav {
@@ -197,7 +198,7 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 		case !g.stale:
 			refuse(g.status, g.msg, g.notice)
 		case nav:
-			s.sendQueueStepUpPage(w, sendQueueConfirmPath, sendQueueAddFields(q, text), q.back, "")
+			s.sendQueueStepUpPage(w, sendQueueConfirmPath, sendQueueAddFields(q, text, again), q.back, "")
 		default:
 			refuseStale(w)
 		}
@@ -205,6 +206,13 @@ func (s *Server) sendQueueAdd(w http.ResponseWriter, r *http.Request, ctx contex
 	}
 	if _, err := mirror.SanitizePaste(text); err != nil {
 		refuse(http.StatusBadRequest, err.Error(), noticeBadText)
+		return
+	}
+	// 🔴 A message a Send may already have delivered is not queued again
+	// without the person's Send again (isHeldFor): queued, it would be pasted
+	// a second time when the window goes idle.
+	if s.isHeldFor(ctx, q.t.Host, q.t.Session, q.t.Window, mirror.PasteClaude, text, again) {
+		s.heldRefusal(w, nav, ui.SendQueuePath, sendQueueAddFields(q, text, false), text, "Queue it anyway", q.back)
 		return
 	}
 	it := sendqueue.Item{Target: q.t, Body: text}
@@ -263,13 +271,18 @@ func (s *Server) sendQueueGate(ctx context.Context, q sendQueueTarget) sendQueue
 	return sendQueueGateResult{}
 }
 
-// sendQueueAddFields is a queue post's message, as the confirm page carries it.
-func sendQueueAddFields(q sendQueueTarget, text string) []ui.ComposerField {
+// sendQueueAddFields is a queue post's message, as the confirm page carries it,
+// and whether it is a Send again (ui.SendAgainField).
+func sendQueueAddFields(q sendQueueTarget, text string, again bool) []ui.ComposerField {
 	fields := []ui.ComposerField{{Name: "host", Value: q.h.Host}, {Name: "session", Value: q.e.Session}}
 	if q.e.Window != "" {
 		fields = append(fields, ui.ComposerField{Name: "window", Value: q.e.Window})
 	}
-	return append(fields, ui.ComposerField{Name: "text", Value: text})
+	fields = append(fields, ui.ComposerField{Name: "text", Value: text})
+	if again {
+		fields = append(fields, ui.ComposerField{Name: ui.SendAgainField, Value: "1"})
+	}
+	return fields
 }
 
 // sendQueueStepUpPage answers a browser-submitted queue (or Retry) whose
@@ -310,7 +323,7 @@ func (s *Server) handleSendQueueConfirm(w http.ResponseWriter, r *http.Request) 
 	// PostForm, never Form: a password in the URL would be in the access log.
 	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
 	if o.Error != "" {
-		s.sendQueueStepUpPage(w, sendQueueConfirmPath, sendQueueAddFields(q, r.PostFormValue("text")), q.back, o.Error)
+		s.sendQueueStepUpPage(w, sendQueueConfirmPath, sendQueueAddFields(q, r.PostFormValue("text"), r.PostFormValue(ui.SendAgainField) == "1"), q.back, o.Error)
 		return
 	}
 	s.sendQueueAdd(w, r, stepup.WithAuthTime(r.Context(), o.At), true)
@@ -882,6 +895,9 @@ func (s *Server) sendQueueDeliver(ctx context.Context, it sendqueue.Item, opts .
 	}
 	repeat, err := s.mirrorPaste(ctx, it.Target.Host, it.Target.Session, it.Target.Window, it.Body, sendQueueNonce(it.ID), mirror.PasteClaude,
 		opts...)
+	if !repeat {
+		s.settleHeld(ctx, it.Target.Host, it.Target.Session, it.Target.Window, mirror.PasteClaude, it.Body, err)
+	}
 	var sup *mirror.SupersededError
 	switch {
 	case repeat:

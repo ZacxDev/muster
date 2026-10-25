@@ -351,12 +351,16 @@ the first answer was lost, it is delivered once. Delivered nonces are remembered
 in memory for 15 minutes, up to 4096 of them, keyed by owner, nonce and text. A
 server restart forgets them.
 
-A mirrored send that **may have been delivered** (the host never confirmed it)
-offers **Send again**. Until you press it, or a send of the same text is
-confirmed, muster refuses a plain Send of the same text to the same window,
-whatever its nonce. That covers a page shown again without the offer: a Back
-that the browser answers from its HTTP cache shows the page as first served.
-Send again posts `again=1`. Like the nonces, this is in memory for 15 minutes.
+A mirrored send that **may have been delivered** (the host never confirmed it,
+whether it was your Send, a queued message's delivery, or Send now) offers
+**Send again**. Until you press it, or a delivery of the same text is
+confirmed, muster refuses the same text to the same window and pane by any of
+the three ways you send: Send, Queue, and a queued message's Send now. That
+holds whatever the nonce, so it covers a page shown again without the offer: a
+Back that the browser answers from its HTTP cache shows the page as first
+served. Send again posts `again=1`. Without JavaScript the refusal is a page
+with a Send again button of its own; on the queue list, Send now asks once.
+Like the nonces, this is in memory for 15 minutes.
 
 Pages that carry such a form are served with `Referrer-Policy: same-origin`. The
 rest of the app uses `no-referrer`. Under that policy, a browser sends

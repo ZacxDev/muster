@@ -509,8 +509,8 @@ func mirrorComposerScript() g.Node {
   // than a flag in body(): the browser's own submit (native) carries it too.
   // It goes once the send has its answer (other than a step-up's).
   function againField(on) {
-    var f = form.querySelector('input[name="again"]');
-    if (on && !f) { f = document.createElement('input'); f.type = 'hidden'; f.name = 'again'; f.value = '1'; form.appendChild(f); }
+    var f = form.querySelector('input[name="` + SendAgainField + `"]');
+    if (on && !f) { f = document.createElement('input'); f.type = 'hidden'; f.name = '` + SendAgainField + `'; f.value = '1'; form.appendChild(f); }
     if (!on && f) f.parentNode.removeChild(f);
   }
   // The Queue button (send_queue.go), when the composer has one: a submit
