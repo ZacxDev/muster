@@ -2,6 +2,8 @@ package plugins
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
@@ -98,6 +100,9 @@ type Draft struct {
 	FinishedAt  *time.Time  `json:"finishedAt,omitempty"`
 	ExternalRef string      `json:"externalRef,omitempty"`
 	Detail      string      `json:"detail,omitempty"`
+	// RouteID is the session route this draft was relayed from (0021), when
+	// it is one: a routed session's answer that fell back to the owner.
+	RouteID *string `json:"-"`
 }
 
 // Claim is what the claim route hands a plugin: an approved draft to send.
@@ -124,6 +129,9 @@ type DraftCard struct {
 	// EarlierUnconfirmed: another draft for the same message is unconfirmed —
 	// it may already have reached the sender. The card says so.
 	EarlierUnconfirmed bool
+	// Route is the session route the draft came from (Draft.RouteID's row), or
+	// the zero RouteTarget for a draft the chief filed itself.
+	Route RouteTarget
 }
 
 var (
@@ -138,7 +146,55 @@ var (
 	ErrReplyInFlight = errors.New("plugins: another reply to this message is already approved and on its way")
 	// ErrResultConflict: the draft already settled with the OTHER result (409).
 	ErrResultConflict = errors.New("plugins: the draft already settled with a different result")
+	// ErrDraftBodyMismatch: the decision named a body_sha256 that is not the
+	// draft's body (DraftDecision.BodySHA256).
+	ErrDraftBodyMismatch = errors.New("plugins: the draft's body is not the one the decision names")
 )
+
+// Where an owner's decision on a draft was made: the decided_via its
+// plugin.draft.* audit row records.
+const (
+	// DraftViaBrowser: the Asks page's Reply drafts tab.
+	DraftViaBrowser = "browser"
+	// DraftViaMCP: plugin_draft_decide, from one of the owner's mirrored Claude
+	// Code sessions (internal/api/plugin_draft_tools.go).
+	DraftViaMCP = "mcp"
+)
+
+// DraftDecisionSource is where a decision was made: Via (DraftViaBrowser,
+// DraftViaMCP, or "" for none recorded) and, for DraftViaMCP, the mirror host
+// (proven by its token) and the Claude session the caller named (a claim).
+type DraftDecisionSource struct {
+	Via, Host, Session string
+}
+
+// String is the source as the audit row names it: "mcp from ws/<session>".
+func (src DraftDecisionSource) String() string {
+	if src.Via == DraftViaMCP {
+		return src.Via + " from " + src.Host + "/" + src.Session
+	}
+	return src.Via
+}
+
+// DraftDecision is one owner decision on a draft (DecideDraftFrom).
+type DraftDecision struct {
+	// Approve sends it; otherwise it is rejected (or, on the Asks page, an
+	// unclaimed approval withdrawn).
+	Approve bool
+	// Via is where the decision was made, recorded on its audit row.
+	Via DraftDecisionSource
+	// BodySHA256, when set, must be the lowercase hex SHA-256 of the draft's
+	// stored body (ErrDraftBodyMismatch): the decision is on exactly the text
+	// the decider read. Required for DraftViaMCP.
+	BodySHA256 string
+}
+
+// DraftBodySHA256 is the lowercase hex SHA-256 of a draft body: what
+// DraftDecision.BodySHA256 must equal.
+func DraftBodySHA256(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
 
 // DraftObject is the audit_log `object` naming a reply draft.
 func DraftObject(id int64) string { return "plugin_draft:" + strconv.FormatInt(id, 10) }
@@ -194,11 +250,11 @@ func (s *PGStore) WithAgentDenyWords(words []string) *PGStore {
 }
 
 const draftCols = `id, owner_id, message_id, agent_id, agent_name, body, status, created_at, expires_at, decided_at,
-	approved_at, claimed_at, lease_until, finished_at, external_ref, detail`
+	approved_at, claimed_at, lease_until, finished_at, external_ref, detail, route_id`
 
 func draftDest(d *Draft, st *string) []any {
 	return []any{&d.ID, &d.OwnerID, &d.MessageID, &d.AgentID, &d.AgentName, &d.Body, st, &d.CreatedAt, &d.ExpiresAt,
-		&d.DecidedAt, &d.ApprovedAt, &d.ClaimedAt, &d.LeaseUntil, &d.FinishedAt, &d.ExternalRef, &d.Detail}
+		&d.DecidedAt, &d.ApprovedAt, &d.ClaimedAt, &d.LeaseUntil, &d.FinishedAt, &d.ExternalRef, &d.Detail, &d.RouteID}
 }
 
 func scanDraft(row pgx.Row) (Draft, error) {
@@ -404,10 +460,12 @@ func (s *PGStore) draftCards(ctx context.Context, tail string, arg any) ([]Draft
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("d", draftCols)+`, `+prefixed("m", messageCols)+`, p.name, p.label,
 		       EXISTS (SELECT 1 FROM plugin_reply_drafts o
-		                WHERE o.message_id = d.message_id AND o.id <> d.id AND o.status = 'unconfirmed')
+		                WHERE o.message_id = d.message_id AND o.id <> d.id AND o.status = 'unconfirmed'),
+		       coalesce(r.target_kind, ''), coalesce(r.target_key, ''), coalesce(r.target_label, '')
 		  FROM plugin_reply_drafts d
 		  JOIN plugin_messages m ON m.id = d.message_id
 		  JOIN plugins p ON p.id = m.plugin_id
+		  LEFT JOIN session_routes r ON r.route_id = d.route_id
 		 `+tail, arg)
 	if err != nil {
 		return nil, err
@@ -420,7 +478,7 @@ func (s *PGStore) draftCards(ctx context.Context, tail string, arg any) ([]Draft
 		dest := draftDest(&c.Draft, &dst)
 		m := &c.Message
 		dest = append(dest, messageDest(m, &mst)...)
-		dest = append(dest, &c.PluginName, &c.PluginLabel, &c.EarlierUnconfirmed)
+		dest = append(dest, &c.PluginName, &c.PluginLabel, &c.EarlierUnconfirmed, &c.Route.Kind, &c.Route.Key, &c.Route.Label)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}
@@ -455,37 +513,74 @@ func lockedDraft(ctx context.Context, tx pgx.Tx, id int64) (Draft, error) {
 	return cur, inFlight
 }
 
-// DecideDraft approves or rejects one of the principal's PENDING, unexpired
-// drafts (ErrDraftState otherwise). An approved draft is what the plugin's next
-// claim may hand out. Approving while another reply to the same message is in
-// flight is ErrReplyInFlight; rejecting is always allowed.
+// DecideDraftFrom approves or rejects one of the principal's PENDING, unexpired
+// drafts (ErrDraftState otherwise), recording where the decision was made
+// (dec.Via) on its audit row. An approved draft is what the plugin's next claim
+// may hand out. Approving while another reply to the same message is in flight
+// is ErrReplyInFlight; rejecting is always allowed.
 //
 // Rejecting an APPROVED draft that no plugin has claimed yet WITHDRAWS the
 // approval (rejected, its approval time cleared — the audit row keeps it): an
 // owner who spots a mistake, or whose plugin is offline, is not left with a
 // reply that blocks the message for its whole 7 days. A claimed draft cannot be
-// withdrawn: the plugin may already be sending it.
-func (s *PGStore) DecideDraft(ctx context.Context, id int64, approve bool) (Draft, error) {
+// withdrawn: the plugin may already be sending it. A withdrawal is the Asks
+// page's alone: an MCP decision acts only on a PENDING draft, the one
+// plugin_drafts_list showed it.
+//
+// 🔴 A BodySHA256 THAT IS NOT THE STORED BODY'S IS REFUSED HERE, under the row
+// lock beside the state (ErrDraftBodyMismatch), so every door gets it; an MCP
+// decision must carry one. The body is immutable (0016's trigger), so the hash
+// names one text for the draft's whole life.
+func (s *PGStore) DecideDraftFrom(ctx context.Context, id int64, dec DraftDecision) (Draft, error) {
+	switch dec.Via.Via {
+	case "", DraftViaBrowser:
+		if dec.Via.Host != "" || dec.Via.Session != "" {
+			return Draft{}, invalid("only an MCP decision names a host and session")
+		}
+	case DraftViaMCP:
+		if dec.Via.Host == "" || dec.Via.Session == "" {
+			return Draft{}, invalid("an MCP decision names its host and session")
+		}
+		if dec.BodySHA256 == "" {
+			return Draft{}, invalid("an MCP decision names the body_sha256 of the text it decides")
+		}
+	default:
+		return Draft{}, invalid("unknown decision source %q", dec.Via.Via)
+	}
 	if err := s.sweep(ctx); err != nil {
 		return Draft{}, err
 	}
+	approve := dec.Approve
 	var d Draft
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		cur, err := lockedDraft(ctx, tx, id)
 		if errors.Is(err, ErrReplyInFlight) && (!approve || cur.Status != DraftPending) {
 			err = nil
 		}
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrReplyInFlight) {
 			d = cur
 			return err
 		}
-		if !approve && cur.Status == DraftApproved && cur.ClaimedAt == nil {
+		inFlight := err
+		if dec.BodySHA256 != "" && dec.BodySHA256 != DraftBodySHA256(cur.Body) {
+			d = cur
+			return ErrDraftBodyMismatch
+		}
+		if inFlight != nil {
+			d = cur
+			return inFlight
+		}
+		detail := map[string]any{}
+		if dec.Via.Via != "" {
+			detail["decided_via"] = dec.Via.String()
+		}
+		if !approve && cur.Status == DraftApproved && cur.ClaimedAt == nil && dec.Via.Via != DraftViaMCP {
 			if d, err = scanDraft(tx.QueryRow(ctx, `UPDATE plugin_reply_drafts
 				SET status = 'rejected', decided_at = now(), approved_at = NULL WHERE id = $1 RETURNING `+draftCols, id)); err != nil {
 				return err
 			}
-			return audit(ctx, tx, "plugin.draft.withdrawn", DraftObject(id), map[string]any{
-				"message_id": d.MessageID, "approved_at": cur.ApprovedAt.UTC().Format(time.RFC3339)})
+			detail["message_id"], detail["approved_at"] = d.MessageID, cur.ApprovedAt.UTC().Format(time.RFC3339)
+			return audit(ctx, tx, "plugin.draft.withdrawn", DraftObject(id), detail)
 		}
 		if cur.Status != DraftPending {
 			d = cur
@@ -498,7 +593,8 @@ func (s *PGStore) DecideDraft(ctx context.Context, id int64, approve bool) (Draf
 		if d, err = scanDraft(tx.QueryRow(ctx, q, id)); err != nil {
 			return err
 		}
-		return audit(ctx, tx, action, DraftObject(id), map[string]any{"message_id": d.MessageID})
+		detail["message_id"] = d.MessageID
+		return audit(ctx, tx, action, DraftObject(id), detail)
 	})
 	return d, err
 }

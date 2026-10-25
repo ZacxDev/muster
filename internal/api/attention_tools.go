@@ -341,6 +341,9 @@ func askView(a attention.Ask) map[string]any {
 	if a.Status == attention.Answered || a.Status == attention.AnsweredInSession {
 		out["answer"] = a.Answer
 	}
+	if a.ToChief && a.Status == attention.Answered {
+		out["answered_by"] = a.AnsweredBy
+	}
 	if a.Status == attention.AnsweredInSession {
 		out["note"] = answeredInSessionNote
 	}
@@ -364,6 +367,11 @@ func (s *Server) dispatchCallerTool(ctx context.Context, c toolCaller, name, arg
 	// they need the connector store, and their handlers refuse every caller
 	// that is not a mirrored session (connector_decide_tools.go).
 	if text, ok := s.dispatchConnectorDecideTool(ctx, c, name, arguments); ok {
+		return text, true
+	}
+	// The reply-draft decision tools likewise: the plugin store, mirrored
+	// sessions only (plugin_draft_tools.go).
+	if text, ok := s.dispatchPluginDraftTool(ctx, c, name, arguments); ok {
 		return text, true
 	}
 	if !s.attentionToolsOn() {

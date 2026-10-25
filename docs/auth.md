@@ -80,7 +80,7 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 | Personal API token (`mst_…`) | you: your user id and role | Minted only in the browser at `/account/tokens`, and shown once. Only its sha256 is stored. A token cannot mint another token. Revoking one refuses it on the next request. Disabling a user revokes all of their tokens, and re-enabling them brings none back. |
 | `MUSTER_HOOK_TOKEN` | user 1, admin | A shared secret, enforced only when set; while unset, the hook routes are open. gotrue mode requires it. |
 | `MUSTER_SERVICE_TOKEN` | user 1 | It also requires an `X-Muster-Actor` header. It fails closed (503 while unset) and must be at least 32 characters. |
-| Mirror token (`mmt_…`) | the host it was minted for | Opens `GET /mirror/connect`, the `AskUserQuestion` hook's `/mirror/ask` routes and `POST /mirror/mcp`. Through `/mirror/mcp` a leaked one reaches, beyond the host's tunnel and its questions, the attention asks of that host's own Claude Code sessions (file, wait, cancel), the tasks those sessions created, and — through `attention_answer` — an answer as the operator to any of its owner's open asks not raised by a mirrored session on that host (recorded as via MCP from that host; accepted like any of your answers, **including as `task_dispatch` instructions** — the accepted risk in [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `connector_request_decide`, an approval as the operator of any of its owner's agents' pending connector requests (recorded and shown as via MCP from that host; the accepted risk in [connectors.md](connectors.md#deciding-a-request-from-your-own-session)), and — through `agent_destroy` — the **teardown of any of its owner's agents but the chief** (the tasks are kept; **no audit row**: the host is named only in muster's server log; also an accepted risk, by operator decision — [attention.md](attention.md#mirrored-claude-code-sessions)) — never another task, another host's session, another owner's ask or request, a secret, or a chief tool. See [mirroring.md](mirroring.md) and [attention.md](attention.md#mirrored-claude-code-sessions). |
+| Mirror token (`mmt_…`) | the host it was minted for | Opens `GET /mirror/connect`, the `AskUserQuestion` hook's `/mirror/ask` routes and `POST /mirror/mcp`. Through `/mirror/mcp` a leaked one reaches, beyond the host's tunnel and its questions, the attention asks of that host's own Claude Code sessions (file, wait, cancel), the tasks those sessions created, and — through `attention_answer` — an answer as the operator to any of its owner's open asks not raised by a mirrored session on that host (recorded as via MCP from that host; accepted like any of your answers, **including as `task_dispatch` instructions** — the accepted risk in [attention.md](attention.md#mirrored-claude-code-sessions)) — and, through `connector_request_decide`, an approval as the operator of any of its owner's agents' pending connector requests (recorded and shown as via MCP from that host; the accepted risk in [connectors.md](connectors.md#deciding-a-request-from-your-own-session)), and — through `plugin_drafts_list` — a READ of every one of its owner's pending plugin reply drafts (the inbound message's sender, subject and full text, and the reply), and through `plugin_draft_decide` an approval as the operator of any of them, which sends that text to an outside party with no fresh sign-in (recorded on the audit row as via MCP from that host; any of the owner's mirrored sessions may approve, the one a message was routed to included; the accepted risk in [plugins.md](plugins.md#deciding-a-draft-from-your-own-session)), and — through `agent_destroy` — the **teardown of any of its owner's agents but the chief** (the tasks are kept; **no audit row**: the host is named only in muster's server log; also an accepted risk, by operator decision — [attention.md](attention.md#mirrored-claude-code-sessions)) — never another task, another host's session, another owner's ask or request, a secret, or a chief tool. See [mirroring.md](mirroring.md) and [attention.md](attention.md#mirrored-claude-code-sessions). |
 | Flow runner token (`mfr_…`) | its owner, confined to one host | See [browser-flows.md](browser-flows.md). |
 | Plugin token (`mpl_…`) | its owner, on `/plugin/v1/*` only | Minted at `/plugins` and shown once. Every other route refuses it. See [plugins.md](plugins.md). |
 | Device credential (`mdv_…`) | its owner, on `/api/device/*` only | A phone paired with the [Android app](design/android.md). See [Paired devices](#paired-devices). Every other route refuses it. |
@@ -88,15 +88,47 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 The two shared secrets may not start with `mst_`, `mpl_` or `mdv_`. The server
 refuses to boot if one does.
 
+### Mirror tokens and session routing
+
+With [session routing](plugins.md#routing-a-message-from-your-own-session) on,
+`POST /mirror/mcp` also offers `plugin_messages_list` and `plugin_message_route`.
+Through them a mirror token **reads its owner's 30 most recent routable inbound
+plugin messages** (the sender with its `UNVERIFIED` mark, the subject, the first
+280 characters of the body, the route state) and **routes any of them into any
+of its owner's mirrored Claude Code sessions that can take one**. The text
+pasted is always the stored message, fenced as untrusted, never words the
+caller writes, and the `session_route.routed` audit row names the host and
+session the route came from.
+
+🔴 **Accepted risk: a mirrored session can route a message to itself and
+answer it.** Any of the owner's mirrored sessions — or anyone holding a leaked
+mirror token — can route any of the owner's recent repliable messages **to
+itself** and answer it with `route_reply`. When the sender is verified and on
+the owner's allowlist for that plugin (`MUSTER_ROUTE_RELAY_ALLOW`), that answer
+is **sent with no human review**. For any other sender it becomes a pending
+reply draft for the owner — and **if this muster has the `plugin_draft_decide`
+tool**, the same session can approve that draft, its own reply, over the same
+door, so that reply too reaches the outside sender with no other review.
+Revoke a token you suspect.
+
 ## Paired devices
 
 The native Android app gets its own credential, the **device credential**
 (`mdv_…`), one per paired phone. It opens `/api/device/*` and nothing else.
 
 **Pairing.** A signed-in page inside the app asks for a one-time pairing code
-(`POST /account/devices/pair`). That needs a sign-in from the last five minutes,
-as adding a passkey does, because the credential outlives the session. The code
-is single use and expires after 60 seconds. The app redeems it at
+(`POST /account/devices/pair`). Any valid signed-in browser session may ask,
+however long ago it signed in: there is no recent-sign-in window, unlike adding
+a passkey (an operator decision). The session must still be valid, and what
+that means depends on the mode. In gotrue mode a session that is expired,
+signed out, or from before Sign out everywhere or the session cutoff is
+refused, and the session's sign-in time is stored with the phone, so those
+revocations still reach it. In password mode the session is a stateless cookie
+valid for 30 days: Sign out only clears that browser's cookie and there is no
+Sign out everywhere, so a copy of the cookie can still pair a phone until it
+expires, and such a phone is cut off only by Remove on Account → Devices. A
+machine token, the hook token or a device credential cannot ask for
+a code. The code is single use and expires after 60 seconds. The app redeems it at
 `POST /api/device/pair` with the phone's name, its app version and its step-up
 key: an EC P-256 public key the app generates in the Android Keystore at
 pairing, its type, and the Keystore security level the app reports. The
@@ -185,3 +217,21 @@ Two endpoints help with personal tokens:
 
 From the CLI these are `muster whoami`, `muster token ls` and
 `muster token revoke <id>` ([cli.md](cli.md)).
+
+### Mirror tokens and the chief
+
+`POST /mirror/mcp` also offers `chief_ask` ([attention.md](attention.md#asking-the-chief)).
+Through it a mirror token **puts a question — fenced as the session's words —
+into a turn of its owner's chief** and **reads the chief's answer**; with
+`route_id` (any of the owner's routes) the chief is also shown that routed
+message's sender, subject and body. Every question and answer writes a
+`chief_question.*` audit row; the question's row names the host and
+session it came from.
+
+🔴 **Accepted risk: a mirror token can start chief turns and read the chief's
+answers.** Any of the owner's mirrored sessions may ask, by operator decision —
+so may a leaked mirror token, or a session fed outside text. The chief is told
+the question is data, not instructions; that is a prompt, not a boundary. The
+chief holds the fleet tools (`session_transcript`, `sessions_overview`, …), so
+a question can ask it to read another session, and the answer goes back to
+whoever asked. The chief answers no ask but one put to it. Revoke a token you suspect.

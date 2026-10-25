@@ -481,6 +481,11 @@ func (s *Server) attentionItems(ctx context.Context) ([]attentionItem, error) {
 			errs = append(errs, fmt.Errorf("asks: %w", err))
 		}
 		for _, a := range asks {
+			// A question to the chief is the chief's (chief_ask_tool.go), not
+			// the owner's: the chief asks the owner with attention_ask if it must.
+			if a.ToChief {
+				continue
+			}
 			out = append(out, askItem(a))
 		}
 	}
@@ -748,6 +753,7 @@ func (s *Server) RunAttentionSweep(ctx context.Context, interval time.Duration) 
 	for {
 		s.expireAsks(ctx)
 		s.deliverDueAnswers(ctx)
+		s.putDueQuestions(ctx)
 		s.expireDraftNotes(ctx)
 		s.recheckOfflineHosts()
 		s.sweepUnroutedMessages(ctx)
@@ -1178,6 +1184,15 @@ func answerDeliveryText(a attention.Ask) (string, bool) {
 
 // answeredAsksHTML is the "Answered" part of the list: each recent answer and
 // where it went, with Retry on a failed delivery.
+// answerLabel names who gave an answer on the Answered list: the owner, or —
+// for a session's question to the chief (chief_ask_tool.go) — the chief.
+func answerLabel(a attention.Ask) string {
+	if a.AnsweredBy == attention.ByChief {
+		return "Your chief's answer: "
+	}
+	return "Your answer: "
+}
+
 func answeredAsksHTML(asks []attention.Ask, now time.Time) string {
 	if len(asks) == 0 {
 		return ""
@@ -1195,7 +1210,7 @@ func answeredAsksHTML(asks []attention.Ask, now time.Time) string {
 		b.WriteString(`<li id="answered-` + id + `" class="` + flowsCardClass + `" data-attention-answered data-ask-id="` + id + `" data-delivery="` + esc(firstNonBlank(string(a.Delivery), "none")) + `">
 <span class="text-xs text-fg2"><span class="font-semibold">Answered</span> · <span data-attention-source>` + esc(askerLabel(a)) + `</span>` + age + `</span>
 <p class="break-words text-sm text-fg2" data-attention-text>` + esc(mirror.OneLine(a.Question, 200)) + `</p>
-<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>Your answer: ` + esc(a.Answer) + `</p>
+<p class="whitespace-pre-wrap break-words text-sm text-fg" data-attention-answer-text>` + answerLabel(a) + esc(a.Answer) + `</p>
 ` + answeredViaHTML(a) + `<p class="break-words text-sm text-fg" data-attention-delivery>` + esc(text) + `</p>
 `)
 		if retry {
