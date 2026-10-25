@@ -514,7 +514,8 @@ func titleMoreButton(pop, fit string, extra ...g.Node) g.Node {
 // 600-character token with no break opportunity included — and a title too
 // long for the viewport scrolls inside the panel instead of running off it
 // (floatingMenuScript's place() sets the height cap, from the viewport).
-func fullTitlePopover(pop, full string) g.Node {
+// extra is drawn after the title (the rendered view's tmux session line).
+func fullTitlePopover(pop, full string, extra ...g.Node) g.Node {
 	return Div(
 		ID(pop),
 		g.Attr("popover", "auto"),
@@ -524,6 +525,7 @@ func fullTitlePopover(pop, full string) g.Node {
 		g.Attr("data-title-full", ""),
 		Class("invisible hidden [&:popover-open]:flex m-0 w-72 max-w-[calc(100vw-16px)] overflow-y-auto overscroll-contain flex-col gap-1.5 rounded-xl border border-line bg-s1 p-3 text-fg shadow-2xl ring-1 ring-black/20"),
 		Span(Class("[overflow-wrap:anywhere] text-sm font-semibold"), g.Text(full)),
+		g.Group(extra),
 	)
 }
 

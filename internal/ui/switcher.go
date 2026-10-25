@@ -303,6 +303,15 @@ func switcherRow(key, empty string, items []SwitcherItem, hidden bool) g.Node {
 	)
 }
 
+// switcherEntryBoxClass is an entry's 44px box. Up to 16rem wide, not the
+// 10rem it was (an operator ask: agents' titles were cut off in the bar). At
+// 10rem a pill left its label 114px — about 17 characters, so a 23-character
+// title was clipped; 16rem leaves it 210px (a 27-character title fits,
+// measured in e2e/tests/title-room.spec.ts). Still narrower than the bar's
+// scrolling row at 390px (286px), so no entry is wider than the row it
+// scrolls in.
+const switcherEntryBoxClass = "inline-flex h-11 max-w-[16rem] shrink-0 items-center"
+
 // switcherEntry is one entry: a real-load link (hx-boost="false", like a
 // card's), or — the page's own session — the same chip, not a link.
 func switcherEntry(it SwitcherItem) g.Node {
@@ -310,7 +319,7 @@ func switcherEntry(it SwitcherItem) g.Node {
 	// row (every control in the app is a 44px target; e2e/tests/layout.spec.ts
 	// measures it), and only the pill inside it is drawn.
 	const pill = "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-full px-3 text-xs font-semibold ring-1 ring-inset "
-	const box = "inline-flex h-11 max-w-[10rem] shrink-0 items-center"
+	const box = switcherEntryBoxClass
 	// The host's icon, as the pinned chip draws it (#252): hostMark's fixed
 	// 16px box, server-rendered, so it moves nothing; decorative when the
 	// label already names the host.

@@ -110,6 +110,7 @@ var uiExempt = map[string]exemption{
 	"mirror.go mirrorListAttrs m.Label":                {2, whyFilter},
 	"mirror.go mirrorListAttrs m.Title":                {2, whyFilter},
 	"pinned_chips.go pinnedChipName m.Label":           {2, "a presence/equality test (is there a codename that is not the session name?); the label the chip draws goes through plainOr"},
+	"mirror_view.go mirrorViewTitle v.Label":           {2, "a presence/equality test (is there a label that is not the session name?), entryTitle's own; the label the popover draws goes through plainOr"},
 	"agents.go agentFields a.DisplayName":              {2, whyFilter},
 	"agents.go agentRenameForm a.DisplayName":          {1, whyForm},
 	"agents.go comboOption o.Label":                    {2, whyStatic},
