@@ -54,8 +54,18 @@ let filesAB = '';
 const writeTo = (f: string, lines: string[]) => {
   writeFileAtomic(f, lines.length ? lines.join('\n') + '\n' : '');
 };
+// 🔴 HOST A'S "alpha" WINDOW IS NAMED FOR THIS RUN, because a search for it is
+// asserted against the WHOLE list. That list is the shared e2e database's: every
+// spec's agents are cards on it too (host "cluster"), and the box finds a card
+// by any text on it — its claude-code account included, and other specs put
+// agents on the account "alpha" (e2e/heldfix's row; kinds.spec.ts saves some).
+// Searched as a plain "alpha", each such agent still on the database is one
+// more visible card: two of them make the 3-where-1-is-wanted a full run once
+// counted, and seeding two reproduces it every time. No other spec can spell
+// this run's tag.
+const alpha = 'alpha' + rig.host.slice(rig.host.lastIndexOf('-') + 1);
 // Each of A and B has a window called "zebrafish", which the search finds on both.
-const windowsA = () => [line('alpha', '@1', 100), line('zebrafish', '@2', 200)];
+const windowsA = () => [line(alpha, '@1', 100), line('zebrafish', '@2', 200)];
 const windowsB = () => [line('beta', '@1', 150), line('zebrafish', '@2', 250)];
 
 test.beforeAll(async () => {
@@ -108,7 +118,7 @@ const stored = (page: Page) => page.evaluate(() => localStorage.getItem('muster:
 async function openList(page: Page) {
   await rig.login(page);
   await rig.waitListed(page, 'beta');
-  await rig.waitListed(page, 'alpha');
+  await rig.waitListed(page, alpha);
   await page.goto(rig.origin + '/agents');
   await expect
     .poll(async () => {
@@ -388,7 +398,7 @@ test.describe('desktop 1280×800, behaviour', () => {
     // tab stays All, alpha stays, and the pill offers the change.
     const box = page.locator('#agents-search');
     const pill = page.locator('#agents-new-pill');
-    await box.fill('alpha');
+    await box.fill(alpha);
     await expect(page.locator('#agents-list > article').filter({ visible: true })).toHaveCount(1);
     writeTo(filesB, windowsB());
     await expect(cardsOn(page, hostB), `host B's windows are back (log:\n${rig.log})`).toHaveCount(2, { timeout: 30_000 });
