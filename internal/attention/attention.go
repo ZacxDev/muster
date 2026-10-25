@@ -256,6 +256,10 @@ type New struct {
 	// agent's arguments: task_dispatch trusts it as the provenance of the
 	// owner's answer.
 	TaskID int64
+	// PluginMessageID links the ask to the plugin message it was raised for
+	// (0: none; migration 0051). Set ONLY by muster's unrouted-message sweep
+	// (internal/api unrouted.go; docs/plugins.md#a-message-the-chief-does-not-act-on).
+	PluginMessageID int64
 	// Timeout is how long the ask waits; 0 is DefaultTimeout, and anything
 	// else is clamped to [MinTimeout, MaxTimeout].
 	Timeout time.Duration
@@ -536,15 +540,18 @@ func (s *PGStore) Create(ctx context.Context, n New) (Ask, error) {
 	if open >= MaxOpenPerOwner {
 		return Ask{}, ErrTooMany
 	}
-	var task any
+	var task, message any
 	if n.TaskID > 0 {
 		task = n.TaskID
 	}
+	if n.PluginMessageID > 0 {
+		message = n.PluginMessageID
+	}
 	a, err := scan(tx.QueryRow(ctx, `INSERT INTO attention_asks (agent_id, mirror_host, mirror_session, system_asker, asker_label, question, options, expires_at, task_id,
-			to_chief, route_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11)
+			to_chief, route_id, plugin_message_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8), $9, $10, $11, $12)
 		RETURNING `+cols, agent, nullable(n.Asker.MirrorHost), nullable(n.Asker.MirrorSession), n.Asker.System, n.Asker.Label, n.Question, opts, n.Timeout.Seconds(), task,
-		n.ToChief, nullable(n.RouteID)))
+		n.ToChief, nullable(n.RouteID), message))
 	if err != nil {
 		return Ask{}, err
 	}

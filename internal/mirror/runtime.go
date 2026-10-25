@@ -196,7 +196,7 @@ var sessionKeyPattern = regexp.MustCompile(SessionKeyPattern)
 // agent_focus_history.subject_key, session_routes.target_key and
 // attention_asks.mirror_session carry the same expression — the migration
 // that last wrote them is read by a test in internal/db that fails
-// when the two differ (0051 since opencode's prefix). A runtime that adds a
+// when the two differ (0052 since opencode's prefix). A runtime that adds a
 // KeyPrefix changes this pattern, so it fails that test until a NEW migration
 // writes the wider CHECKs.
 var SessionKeyPattern = buildSessionKeyPattern()

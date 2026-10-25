@@ -98,7 +98,7 @@ Issuing a token takes two HTTP calls. This is what `opencode pair` does
 
 - **Capabilities**: view yes, send no, prompts no (`mirror.RuntimeSpec`). An
   opencode window is on the wire (`Window.Runtime`), keyed `opencode:<id>`
-  (migration 0051 widens the four session-key CHECKs).
+  (migration 0052 widens the four session-key CHECKs).
 - **Pane to session**: the pane title, `OC | <title>` (a cut title ends in
   `…` and is a prefix match), against the server's ROOT sessions
   (`GET /api/session?parentID=null`); exactly one match or none. View-only: a
