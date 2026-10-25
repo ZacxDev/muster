@@ -675,7 +675,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tab := tabFromPath(r.URL.Path)
-	if err := ui.RenderPageWith(w, tab, s.shellFeatures(r.Context()), s.shellData(r.Context(), tab)); err != nil {
+	feat := s.shellFeatures(r.Context())
+	if err := ui.RenderPageWith(w, tab, feat, s.shellData(r.Context(), tab, feat)); err != nil {
 		s.logger.Printf("error rendering index page: %v", err)
 	}
 }
@@ -684,7 +685,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 // Agents tab, the LIST — its cards, server-rendered — and the "Recently viewed"
 // strip resolved against them, so nothing is filled in under the reader a moment
 // later. Any other tab draws its Agents panel hidden and empty, where a late
-// list moves nothing on screen, and fills it from the list's own load.
+// list moves nothing on screen, and fills it from the list's own load. On the
+// Tasks tab (`/`, /tasks) it is the task BOARD instead (tasksShellData).
 //
 // 🔴 IT IS THE LIST'S BUILD — agentsListCards, THE ONE handleAgentsContent
 // SERVES — AND THE TAB'S FIRST PAINT NEEDS NO SECOND. The shell used to draw only
@@ -707,7 +709,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 //
 // ⚠ A FAILED BUILD DRAWS THE OLD WAY (an empty list its own load fills, an
 // empty strip), not an error: that load reports its own failure.
-func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
+func (s *Server) shellData(ctx context.Context, tab string, feat ui.Features) ui.ShellData {
+	if ui.ShellTab(tab, feat) == "tasks" {
+		return s.tasksShellData(ctx)
+	}
 	if tab != "agents" || s.ext.Agents == nil {
 		return ui.ShellData{}
 	}
@@ -718,6 +723,34 @@ func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
 	}
 	refs := s.recentRefs(ctx)
 	return ui.ShellData{}.WithList(cards, mirrors, refs, s.ext.AgentsIdleAfter)
+}
+
+// tasksShellData is the Tasks tab's first paint: the board for the default
+// query (no filter, first page), built by tasksView — the one build GET
+// /ui/tasks serves — and the event mark it was built at (ui/tasks_list_ssr.go).
+//
+// 🔴 THE MARK IS READ BEFORE THE BOARD, AND THAT ORDER IS THE CONTRACT. An
+// event published after the mark read makes the stream's hello differ, so the
+// shell re-fetches; read after the board, an event landing between the two
+// reads would be missing from the board AND match the hello — a stale board
+// with nothing to correct it until the next event.
+//
+// ⚠ A FAILED BUILD DRAWS THE OLD WAY (the skeleton its own load fills), not an
+// error: that load reports its own failure (cgTasksListFailed).
+func (s *Server) tasksShellData(ctx context.Context) ui.ShellData {
+	if s.ext.Notes == nil {
+		return ui.ShellData{}
+	}
+	mark := ""
+	if s.bus != nil {
+		mark = s.bus.Mark(requestOwner(ctx))
+	}
+	v, err := s.tasksView(ctx, nil)
+	if err != nil {
+		s.logger.Printf("notes: shell board: %v", err)
+		return ui.ShellData{}
+	}
+	return ui.ShellData{}.WithTasks(v, mark)
 }
 
 // shellInstancesWithin bounds the Agents document's instance read (shellData):
@@ -813,11 +846,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// only the events its user owns. A principal-less or scope-all request
 	// cannot reach here (requireSession admits a user), and would subscribe as
 	// nobody (0) if it did.
-	id, ch := s.bus.Subscribe(requestOwner(r.Context()))
+	owner := requestOwner(r.Context())
+	id, ch := s.bus.Subscribe(owner)
 	defer s.bus.Unsubscribe(id)
 
 	// Initial comment so clients know the stream is open and proxies flush.
 	fmt.Fprint(w, ": connected\n\n")
+	// muster.hello: this stream's event mark, read AFTER Subscribe — every event
+	// published after it is on this stream. A shell that drew its board at the
+	// same mark skips its first-open resync (ui/tasks_list_ssr.go); see
+	// sse.Broadcaster.Mark for why the order of the two reads is the guarantee.
+	hello, _ := json.Marshal(map[string]string{"mark": s.bus.Mark(owner)})
+	fmt.Fprintf(w, "event: muster.hello\ndata: %s\n\n", hello)
 	flusher.Flush()
 
 	ctx, cancel := s.streamContext(r.Context())

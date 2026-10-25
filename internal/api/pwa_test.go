@@ -61,6 +61,14 @@ func (n *pwaNotes) CountByStatus(_ context.Context, status string) (int, error) 
 	return n.count, nil
 }
 
+// ListPage and TagVocabulary answer the board the shell draws on GET /tasks
+// (tasksShellData): an empty one — no PWA path here is about the board.
+func (n *pwaNotes) ListPage(context.Context, notes.ListFilter) (notes.Page, error) {
+	return notes.Page{}, nil
+}
+
+func (n *pwaNotes) TagVocabulary(context.Context) ([]notes.TagCount, error) { return nil, nil }
+
 func (n *pwaNotes) writeCount() int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
