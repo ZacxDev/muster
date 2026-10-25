@@ -80,6 +80,10 @@ const RestoreRefreshAttr = "data-restore-refresh"
 // one is a VIEW page, and a restore re-requests it.
 const UpdatingChipAttr = "data-updating-chip"
 
+// NonceHeldAttr marks a message box whose send nonce must NOT be renewed when
+// the page is shown again (renewNonces): it is offering "Send again".
+const NonceHeldAttr = "data-nonce-held"
+
 // UserMarkerName is the <meta> every VIEW page carries naming its signed-in
 // user (UserMarker).
 const UserMarkerName = "muster-user"
@@ -157,8 +161,16 @@ func restoreJS(feat Features) string {
       // is a new message, so it gets a new nonce, as the composers' own
       // renew does after a send; with no way to mint one the field is emptied
       // (no nonce is no protection; a reused one swallows the message).
+      //
+      // ⚠ EXCEPT A HELD ONE. A composer offering "Send again" (a send that may
+      // have landed; mirror_compose.go) keeps its nonce on purpose: the server
+      // refuses a plain re-Send under it, and only the explicit Send again
+      // mints a new one. Renewing it here would make a plain Send deliver the
+      // same message a second time (audit #270 round 2). Such a form carries
+      // NonceHeldAttr while the offer stands.
       function renewNonces() {
         document.querySelectorAll('input[name="nonce"]').forEach(function (n) {
+          if (n.closest('[` + NonceHeldAttr + `]')) return;
           var v = '';
           try {
             var b = new Uint8Array(16);
