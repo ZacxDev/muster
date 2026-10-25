@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -33,7 +34,7 @@ import (
 // wantHash is the first 12 hex digits of the SHA-256 of web/static/<rest>.
 func wantHash(t *testing.T, path string) string {
 	t.Helper()
-	b, err := web.Static.ReadFile("static/" + strings.TrimPrefix(path, "/static/"))
+	b, err := fs.ReadFile(web.Files, "static/"+strings.TrimPrefix(path, "/static/"))
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}

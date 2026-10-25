@@ -611,11 +611,12 @@ func handleNoContent(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// staticHandler serves the embedded web/static directory under /static/.
+// staticHandler serves web.Files under /static/: the embedded web/static
+// directory and the generated files (the pages' scripts, web/generated.go).
 func staticHandler() http.Handler {
-	sub, err := fs.Sub(web.Static, "static")
+	sub, err := fs.Sub(web.Files, "static")
 	if err != nil {
-		// web.Static always contains "static"; an error here is a programming
+		// web.Files always contains "static"; an error here is a programming
 		// bug, not a runtime condition.
 		panic("api: embedded static fs missing 'static' dir: " + err.Error())
 	}

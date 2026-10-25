@@ -74,8 +74,7 @@ func TestTheScriptsDefaultTabIsTheTabTheShellShowsAtRoot(t *testing.T) {
 				t.Fatal("CONTROL: the shell for / rendered no hidden panel, so `one shown` says nothing about a default")
 			}
 
-			js := mustStripJSComments(t, jsSource(t, appScript(shape.feat)))
-			raw := jsValueAfter(t, js, "var DEFAULT_TAB =")
+			tabsRaw, _, raw := appNavValues(t, shape.feat)
 			var def string
 			if err := json.Unmarshal([]byte(raw), &def); err != nil {
 				t.Fatalf("the script's DEFAULT_TAB is %q, not a JSON string (%v) — the script has no "+
@@ -86,7 +85,7 @@ func TestTheScriptsDefaultTabIsTheTabTheShellShowsAtRoot(t *testing.T) {
 					"re-toggle the panels on load and hide the one the server drew", def, panelID(shown[0]))
 			}
 			var tabs []string
-			if err := json.Unmarshal([]byte(jsValueAfter(t, js, "var TABS =")), &tabs); err != nil {
+			if err := json.Unmarshal([]byte(tabsRaw), &tabs); err != nil {
 				t.Fatalf("TABS is not a JSON array: %v", err)
 			}
 			inTabs := false
@@ -110,7 +109,11 @@ func TestTheScriptsDefaultTabIsTheTabTheShellShowsAtRoot(t *testing.T) {
 // no stray literal exists. The behavioural claim — `/` is never blank — is
 // e2e/tests/landing.spec.ts, in a real browser.
 func TestTheScriptSpellsNoTabKeyTheShellDoesNotHave(t *testing.T) {
-	js := mustStripJSComments(t, jsSource(t, appScript(Features{GitHub: true, Connectors: true, Admin: true})))
+	// What the browser runs is the static code AND the registry its tag hands
+	// it (appNavAttr); a stray key in either is the defect, so both are scanned.
+	feat := Features{GitHub: true, Connectors: true, Admin: true}
+	tabs, headings, def := appNavValues(t, feat)
+	js := mustStripJSComments(t, jsSource(t, appScript(feat))) + "\n" + tabs + "\n" + headings + "\n" + def
 	// CONTROL: the scan can see a quoted key at all.
 	if !strings.Contains(js, `"tasks"`) {
 		t.Fatal(`CONTROL: the stripped script does not contain "tasks", so a scan of it for quoted keys proves nothing`)

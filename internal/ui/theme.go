@@ -52,8 +52,11 @@ const themeStorageKey = "muster-theme"
 // script — only which one applies changes — so the values stay greppable and
 // TestEveryDocumentCarriesBothThemeColorMetas can pin them literally.
 //
-// ⚠ THE SCRIPT IS INLINE AND SYNCHRONOUS ON PURPOSE. Applied from a deferred
-// script, a light opt-in would flash the dark page first on every full load.
+// ⚠ THE SCRIPT IS SYNCHRONOUS ON PURPOSE. Applied from a deferred script, a
+// light opt-in would flash the dark page first on every full load. It is a
+// parser-blocking <script src> in the head (static_script.go), so it still
+// runs before the body is parsed; the sign-in page carries it inline
+// (ThemeHeadHTML).
 // It touches only the class and the two metas, and every storage access is in a
 // try/catch: a private window or blocked storage must render the default, not
 // throw before the page has a body.
@@ -61,9 +64,12 @@ func ThemeHead() g.Node {
 	return g.Group{
 		Meta(Name("theme-color"), Content(ThemeColorDark), g.Attr("media", "all"), g.Attr("data-theme-color", "dark")),
 		Meta(Name("theme-color"), Content(ThemeColorLight), g.Attr("media", "not all"), g.Attr("data-theme-color", "light")),
-		Script(g.Raw(themeHeadScript)),
+		staticScript(themeHeadSrc),
 	}
 }
+
+// themeHeadSrc is the path themeHeadScript is served at, /static/js/theme-head.js.
+var themeHeadSrc = staticJS("theme-head", themeHeadScript)
 
 // themeHeadScript defines window.musterSetTheme and applies the stored choice.
 // It is exported to internal/api's sign-in page through ThemeHeadHTML so the one

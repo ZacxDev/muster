@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"encoding/json"
 	"strconv"
 
 	g "maragu.dev/gomponents"
@@ -123,14 +122,14 @@ func updatingChip(id, pos string) g.Node {
 
 // restoreJS is the restore handler (see the top of this file), as a part of
 // appScript's IIFE. It binds once per window: appScript re-runs on a boosted
-// swap, and the document it serves is still the same one.
-func restoreJS(feat Features) string {
-	build, _ := json.Marshal(feat.SnapBuild) // a JSON string is a valid JS string literal
-	return `
+// swap, and the document it serves is still the same one. BUILD, the build the
+// page was rendered by, is the tag's appBuildAttr, read through
+// appNavJS's APP_TAG.
+var restoreJS = `
   // --- Back/forward restore (restore.go) ------------------------------------
   if (!window.__musterRestore) {
     window.__musterRestore = (function () {
-      var BUILD = ` + string(build) + `;
+      var BUILD = APP_TAG.getAttribute('` + appBuildAttr + `') || '';
       var MAX_AWAY = ` + strconv.Itoa(RestoreMaxAwayMs) + `;
       var CHIP_DELAY = ` + strconv.Itoa(RestoreChipDelayMs) + `;
       var TOP = window.top === window;
@@ -291,4 +290,3 @@ func restoreJS(feat Features) string {
     })();
   }
 `
-}

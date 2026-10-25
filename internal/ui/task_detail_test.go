@@ -15,7 +15,7 @@ func renderTaskDetail(t *testing.T, v TaskCardView) string {
 	if err := RenderTaskDetail(&b, v, featuresAllOn); err != nil {
 		t.Fatalf("render task detail: %v", err)
 	}
-	return b.String()
+	return expandStaticScripts(t, b.String())
 }
 
 func detailFixture() TaskCardView {

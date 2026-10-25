@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"html"
 	"regexp"
 	"strings"
 	"testing"
@@ -271,11 +272,7 @@ func TestEveryFieldIsARegisteredSafeIdentifier(t *testing.T) {
 // `var pending` broke ?q= links. Names declared inside a nested function are
 // local and not checked here.
 func TestTheFilterScriptDeclaresEachNameOnce(t *testing.T) {
-	var b strings.Builder
-	if err := agentsFilterScript().Render(&b); err != nil {
-		t.Fatal(err)
-	}
-	decls := topLevelDeclarations(b.String())
+	decls := topLevelDeclarations(renderString(t, agentsFilterScript()))
 	// Positive control: names the parse must find, including a SECOND name of
 	// a comma list and both kinds.
 	for _, want := range []string{"function place", "var chosenHost", "var heldOrder", "var liveOrder", "function arrange"} {
@@ -366,8 +363,12 @@ func TestTheHostTabsAreOrderedByOneListStatedInGo(t *testing.T) {
 		"two named":     {HostPreferences{Order: []string{"Tower", "laptop"}}, `["tower","laptop","*","cluster"]`},
 	} {
 		withHostPrefs(t, c.prefs)
-		script := renderNode(t, agentsFilterScript())
-		for _, want := range []string{`var HOST_ORDER = ` + c.order + `;`, sortRule} {
+		// The list travels on the script's tag (agentsHostOrderAttr); the
+		// static code reads it from there. Both halves are asserted: the tag
+		// carries THIS order, and the code takes HOST_ORDER from the tag.
+		script := html.UnescapeString(renderNode(t, agentsFilterScript()))
+		for _, want := range []string{agentsHostOrderAttr + `="` + c.order + `"`,
+			`var HOST_ORDER = JSON.parse(TAG.getAttribute('` + agentsHostOrderAttr + `'));`, sortRule} {
 			if !strings.Contains(script, want) {
 				t.Errorf("%s: the filter script lacks %q", name, want)
 			}
