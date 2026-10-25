@@ -247,8 +247,10 @@ func taskSelectControl(n notes.Note) g.Node {
 // Selection mode itself is NOT persisted. A list refresh re-renders the toolbar
 // in its default (off) state and clears the checkboxes, which is deliberate —
 // see the file header.
-func taskMergeScript() g.Node {
-	return Script(g.Raw(`
+func taskMergeScript() g.Node { return staticScript(taskMergeScriptSrc) }
+
+// taskMergeScriptSrc is the path taskMergeScript's code is served at, /static/js/task-merge.js (static_script.go).
+var taskMergeScriptSrc = staticJS("task-merge", `
 (function () {
   if (window.__cgMergeInit) return;
   window.__cgMergeInit = true;
@@ -382,5 +384,4 @@ func taskMergeScript() g.Node {
     if (e.target && e.target.id === 'tasks-list' && !selectionOn()) setMode(false);
   });
 })();
-`))
-}
+`)

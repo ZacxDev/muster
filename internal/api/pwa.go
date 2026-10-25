@@ -175,10 +175,32 @@ func ServiceWorkerSource() ([]byte, error) {
 	if bytes.Count(data, []byte(swAppCSSPlaceholder)) != 1 {
 		return nil, errSWPlaceholder
 	}
+	if bytes.Count(data, []byte(swShellJSPlaceholder)) != 1 {
+		return nil, errSWPlaceholder
+	}
 	v, _ := json.Marshal(BuildVersion) // a JSON string is a valid JS string literal
 	css, _ := json.Marshal(web.Asset("/static/app.css"))
+	js, _ := json.Marshal(shellScriptURLs()) // a JSON array is a valid JS array literal
 	data = bytes.Replace(data, []byte(swBuildPlaceholder), v, 1)
+	data = bytes.Replace(data, []byte(swShellJSPlaceholder), js, 1)
 	return bytes.Replace(data, []byte(swAppCSSPlaceholder), css, 1), nil
+}
+
+// swShellJSPlaceholder is the literal sw.js carries where the pages' scripts'
+// versioned URLs go: the offline shell precaches the code its document links.
+const swShellJSPlaceholder = `"__MUSTER_SHELL_JS__"`
+
+// shellScriptURLs is every generated page script (web.Generated), as pages
+// link it (web.Asset). All of them, not only the ones the offline "/" links:
+// the list is a few hundred bytes, and a precache of exactly the shell's set
+// would be a second copy of which scripts the shell carries.
+func shellScriptURLs() []string {
+	paths := web.Generated()
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		out = append(out, web.Asset(p))
+	}
+	return out
 }
 
 // swAppCSSPlaceholder is the literal sw.js carries where the stylesheet's
@@ -188,7 +210,7 @@ const swAppCSSPlaceholder = `"__MUSTER_APP_CSS__"`
 type swPlaceholderError struct{}
 
 func (swPlaceholderError) Error() string {
-	return "web/static/sw.js must contain each placeholder (build, app.css) exactly once"
+	return "web/static/sw.js must contain each placeholder (build, app.css, shell js) exactly once"
 }
 
 var errSWPlaceholder error = swPlaceholderError{}

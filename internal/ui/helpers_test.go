@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"regexp"
@@ -27,14 +26,13 @@ import (
 // Keeping them here means "which file owns the helper" is answerable by looking
 // at the name, and a future carve takes one obvious file with it.
 
-// renderString renders a node to its HTML/JS source text.
+// renderString renders a node to its HTML/JS source text, with every static
+// script's tag expanded to the code it loads (expandStaticScripts) — so a test
+// reads the JavaScript the document runs, where it runs, as it did when the
+// scripts were inline. renderRaw is the document as sent.
 func renderString(t *testing.T, n g.Node) string {
 	t.Helper()
-	var b bytes.Buffer
-	if err := n.Render(&b); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	return b.String()
+	return expandStaticScripts(t, renderRaw(t, n))
 }
 
 // renderNode is renderString under the name some tests call it by.

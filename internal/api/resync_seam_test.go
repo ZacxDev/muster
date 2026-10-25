@@ -52,7 +52,7 @@ func TestEveryHTMXAjaxCallInTheShellNamesARouteAndATargetThatExist(t *testing.T)
 	if err := ui.RenderPage(&buf, "tasks", ui.Features{GitHub: true}); err != nil {
 		t.Fatalf("rendering the shell: %v", err)
 	}
-	shell := buf.String()
+	shell := expandStaticScripts(t, buf.String())
 
 	calls := htmxAjaxCall.FindAllStringSubmatch(shell, -1)
 	// 🔴 POSITIVE CONTROL. Zero matches is what this test reports for a shell that

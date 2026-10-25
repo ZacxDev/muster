@@ -391,7 +391,7 @@ owner's mirrored sessions may ask (no allowlist, by operator decision).
    (`chief_turn_at`, taken by one conditional update) or the question closes.
    The turn names
    the question's id and the asking session's host and Claude session id
-   (`mirror:<id>`, for `session_transcript`), and quotes, fenced as data, the
+   (`mirror:<id>`, the subject `sessions_overview` and `focus_search` name), and quotes, fenced as data, the
    window's title, the question, its options and — with a route — the routed
    message's sender, subject and body.
 3. **The answer.** The chief answers it with `answer_session_question {id,
