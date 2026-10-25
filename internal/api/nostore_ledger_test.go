@@ -46,6 +46,7 @@ var noStoreWriters = map[string]string{
 	"formDocument":        "the helper the no-script confirm pages share",
 	"mirrorStepUpPage":    "the Rendered view's no-script step-up confirm, carrying the message",
 	"sendQueueStepUpPage": "the send queue's no-script step-up confirm, carrying the message",
+	"sendAgainPage":       "the no-script Send again for a message that may already have been delivered, carrying the message",
 	"sendQueueRetry":      "the send queue's Retry confirm page",
 	"sendQueueEdit":       "the send queue's edit form, the queued message in it",
 	"handleSendQueueList": "the send queue: the queued messages",

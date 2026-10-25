@@ -163,6 +163,20 @@ var standaloneDocuments = []documentRenderer{
 		},
 	},
 	{
+		// A send refused because the same message may already have been
+		// delivered, answered with no script: its Send again, as a form. The
+		// message rides in a hidden field and is shown, both inert.
+		fn: "SendAgainPage", label: "the Send again page (a held message, no script)",
+		render: func(w io.Writer) error {
+			return SendAgainPage(SendAgainView{Action: "/mirror/view/send", Why: "Not sent again.", Text: "<b>run</b> \"it\" & </textarea>",
+				Button: "Send again", BackHref: "/mirror/view?host=laptop&session=main",
+				Fields: []ComposerField{{Name: "host", Value: "laptop"}, {Name: "text", Value: "<b>run</b> \"it\" & </textarea>"}}}).Render(w)
+		},
+		renderEmpty: func(w io.Writer) error {
+			return SendAgainPage(SendAgainView{Action: "/send-queue/7/send-now", Button: "Send it now anyway", BackHref: "/agents"}).Render(w)
+		},
+	},
+	{
 		// A real document a reader can LAND on — a legacy deeplink to a dismissed
 		// task arrives here — so it owes the same contract as any other page.
 		fn: "TaskNotFoundPage", label: "the task 404 page (/tasks/<id>, dismissed)",

@@ -165,7 +165,7 @@ func hermesWindowsE2E(context.Context) []mirrorhost.WindowInfo {
 	return out
 }
 
-// e2eUnconfirmedSeen is the UNCONFIRMED-ONCE messages already answered
+// e2eUnconfirmedSeen is the UNCONFIRMED-ONCE and UNCONFIRMED-LANDED messages already answered
 // "may have been submitted" (under e2eHermes.mu).
 var e2eUnconfirmedSeen = map[string]bool{}
 
@@ -207,6 +207,19 @@ func (w windowFake) SendHermes(ctx context.Context, req mirrorhost.HermesSendReq
 	}
 	defer f.Close()
 	_, _ = f.Write(append(b, '\n'))
+	// A message holding UNCONFIRMED-LANDED plays the other side of "may have
+	// been submitted": the row IS written, but late — after the host stopped
+	// waiting — the first time it is sent. So every delivery is a row, and a
+	// second one is a message delivered twice.
+	if strings.Contains(req.Text, "UNCONFIRMED-LANDED") {
+		e2eHermes.mu.Lock()
+		first := !e2eUnconfirmedSeen[req.Text]
+		e2eUnconfirmedSeen[req.Text] = true
+		e2eHermes.mu.Unlock()
+		if first {
+			return &mirrorhost.HermesSendError{Kind: mirrorhost.HermesUnconfirmed, Why: "Hermes recorded no new message within 8s of the Enter"}
+		}
+	}
 	return nil
 }
 

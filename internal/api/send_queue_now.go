@@ -88,10 +88,19 @@ func (s *Server) handleSendQueueSendNowConfirm(w http.ResponseWriter, r *http.Re
 	// PostForm, never Form: a password in the URL would be in the access log.
 	o := s.stepUpWithPassword(w, r, r.PostForm.Get("password"))
 	if o.Error != "" {
-		s.sendQueueStepUpPage(w, sendQueueSendNowConfirmPath(id), nil, q.back, o.Error)
+		s.sendQueueStepUpPage(w, sendQueueSendNowConfirmPath(id), sendNowAgainFields(r), q.back, o.Error)
 		return
 	}
 	s.sendQueueSendNow(w, r, stepup.WithAuthTime(r.Context(), o.At), true)
+}
+
+// sendNowAgainFields carries a Send now's Send again (ui.SendAgainField)
+// through its confirm page; nothing otherwise.
+func sendNowAgainFields(r *http.Request) []ui.ComposerField {
+	if r.PostFormValue(ui.SendAgainField) != "1" {
+		return nil
+	}
+	return []ui.ComposerField{{Name: ui.SendAgainField, Value: "1"}}
 }
 
 func sendQueueSendNowConfirmPath(id int64) string { return ui.SendQueueSendNowPath(id) + "/confirm" }
@@ -147,13 +156,20 @@ func (s *Server) sendQueueSendNow(w http.ResponseWriter, r *http.Request, ctx co
 		return
 	case !stepup.Fresh(ctx, s.stepUpNow()):
 		if nav {
-			s.sendQueueStepUpPage(w, sendQueueSendNowConfirmPath(id), nil, q.back, "")
+			s.sendQueueStepUpPage(w, sendQueueSendNowConfirmPath(id), sendNowAgainFields(r), q.back, "")
 		} else {
 			refuseStale(w)
 		}
 		return
 	case !q.listed:
 		refuse(http.StatusConflict, mirror.ErrWindowGone.Error(), noticeWindowGone)
+		return
+	}
+	// 🔴 A message a Send may already have delivered is not sent now without
+	// the person's Send again (isHeldFor), like a Send of it: the row stays
+	// queued.
+	if s.isHeldFor(ctx, q.t.Host, q.t.Session, q.t.Window, mirror.PasteClaude, it.Body, r.PostFormValue(ui.SendAgainField) == "1") {
+		s.heldRefusal(w, nav, ui.SendQueueSendNowPath(id), nil, it.Body, "Send it now anyway", q.back)
 		return
 	}
 	// The window's status now, read BEFORE the claim so a refusal leaves the
