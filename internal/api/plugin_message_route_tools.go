@@ -29,7 +29,7 @@ import (
 // every caller that is not a mirrored session too (toolCaller.mirroredSession).
 //
 // 🔴 ONE ROUTE, TWO DOORS. plugin_message_route makes the route the chief's
-// route_to_session makes (routeMessage): the same target check
+// route_to_session makes (routeItem): the same target check
 // (resolveRouteTarget), the same session_routes row, the same injection through
 // the window's send queue (the idle wait, the routed gate), the same relay of
 // the answer (route_reply, or the CLI) and the same hand-back on a timeout. The
@@ -239,7 +239,7 @@ func (s *Server) toolPluginMessageRoute(ctx context.Context, c toolCaller, argum
 		}
 		self = sub.Key == c.asker.MirrorSession
 	}
-	r, t, refused := s.routeMessage(ctx, *m.AgentID, owner, m, sub, origin)
+	r, t, refused := s.routeItem(ctx, *m.AgentID, owner, routedItem{msg: m}, sub, origin)
 	if refused != "" {
 		return refused
 	}

@@ -232,6 +232,6 @@ session it came from.
 answers.** Any of the owner's mirrored sessions may ask, by operator decision —
 so may a leaked mirror token, or a session fed outside text. The chief is told
 the question is data, not instructions; that is a prompt, not a boundary. The
-chief holds the fleet tools (`session_transcript`, `sessions_overview`, …), so
+chief holds the fleet tools (`sessions_overview`, `focus_search`, `fleet_list`), so
 a question can ask it to read another session, and the answer goes back to
 whoever asked. The chief answers no ask but one put to it. Revoke a token you suspect.
