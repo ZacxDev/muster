@@ -3,6 +3,8 @@ package opencodehost
 import (
 	"fmt"
 	"strings"
+
+	"github.com/ZacxDev/muster/internal/redact"
 )
 
 // PANE TO SESSION, BY TITLE (docs/design/opencode.md): an opencode TUI names
@@ -69,13 +71,18 @@ func MatchTitle(paneTitle string, sessions []Session) Match {
 			hits = append(hits, s.ID)
 		}
 	}
+	// 🔴 A reason quotes the title REDACTED (redact.Secrets): it reaches the
+	// window's card (mirror.Window.AgentNote), and a title is whatever the
+	// person, or the model naming the session, wrote — a pasted token
+	// included. Only the title: the reason's own words are fixed.
+	quoted := redact.Secrets(body)
 	switch len(hits) {
 	case 1:
 		m.Session = hits[0]
 	case 0:
-		m.Why = fmt.Sprintf("no opencode session is titled %q", body)
+		m.Why = fmt.Sprintf("no opencode session is titled %q", quoted)
 	default:
-		m.Why = fmt.Sprintf("%d opencode sessions match the title %q: ambiguous, so none is shown", len(hits), body)
+		m.Why = fmt.Sprintf("%d opencode sessions match the title %q: ambiguous, so none is shown", len(hits), quoted)
 	}
 	return m
 }

@@ -1258,7 +1258,7 @@ func (w Window) Equal(o Window) bool {
 		w.Activity == o.Activity && w.Claude == o.Claude && w.Command == o.Command && w.Status == o.Status &&
 		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude) &&
 		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession &&
-		w.LastMessage == o.LastMessage && turnErrorEqual(w.TurnError, o.TurnError)
+		w.AgentNote == o.AgentNote && w.LastMessage == o.LastMessage && turnErrorEqual(w.TurnError, o.TurnError)
 }
 
 // AskTyping is an answer to type into an AskUserQuestion picker (Msg.Ask):

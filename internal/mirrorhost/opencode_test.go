@@ -4,7 +4,11 @@ import (
 	"context"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,6 +38,8 @@ func TestOpenCodeTUIIsTheTUIOnTheSharedServer(t *testing.T) {
 		{".opencode-wrapp", []string{"opencode", "--standalone"}, true, false},
 		{".opencode-wrapp", []string{"opencode", "--server", "http://127.0.0.1:4096"}, true, false},
 		{".opencode-wrapp", []string{"opencode", "--server=http://127.0.0.1:4096", "/srv"}, true, false},
+		{".opencode-wrapp", []string{"opencode", "--model", "run", "/srv"}, true, true}, // a model named "run"
+		{".opencode-wrapp", []string{"opencode", "--agent", "serve"}, true, true},
 		{".opencode-wrapp", []string{"opencode", "serve", "--service"}, false, false},
 		{".opencode-wrapp", []string{"opencode", "run", "hello"}, false, false},
 		{".opencode-wrapp", []string{"opencode", "--print-logs", "pair"}, false, false},
@@ -471,4 +477,107 @@ func TestTheHostSendsAnOpenCodeWindowsNote(t *testing.T) {
 	if len(got) != 1 || got[0].AgentNote != "opencode is not paired on this host: run muster-mirror opencode-pair" || got[0].Runtime != mirror.RuntimeOpenCode {
 		t.Fatalf("%+v", got)
 	}
+}
+
+// TestAHungOpenCodeServerCostsTheListingOneTimeoutNotOnePerPane: a server
+// that accepts and never answers costs the first pane one read timeout; the
+// other panes, and the next listing, reuse that failure (sessionsMaxAge) —
+// so N opencode panes do not cost N×3 s on every refresh. Each pane still
+// says why it has no view.
+func TestAHungOpenCodeServerCostsTheListingOneTimeoutNotOnePerPane(t *testing.T) {
+	release := make(chan struct{})
+	hung := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(func() { close(release); hung.Close() })
+	creds, err := opencodehost.EnvCredentials(hung.URL, "1893456000.c2lnbmF0dXJlLWZpeHR1cmU")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	src := NewOpenCodeSource(ctx, creds, "", log.New(io.Discard, "", 0))
+	start := time.Now()
+	for i := 0; i < 4; i++ {
+		ap := ResolveOpenCodePane(src, "%"+strconv.Itoa(i), 70+i, "OC | Fix the flaky fixture")
+		if ap.Gen != "" || ap.OpenCode == nil || !strings.Contains(ap.OpenCode.NoView, "cannot be read") {
+			t.Fatalf("pane %d: %+v (%+v)", i, ap, ap.OpenCode)
+		}
+	}
+	first := time.Since(start)
+	// The next listing: all cached.
+	start = time.Now()
+	for i := 0; i < 4; i++ {
+		ResolveOpenCodePane(src, "%"+strconv.Itoa(i), 70+i, "OC | Fix the flaky fixture")
+	}
+	if again := time.Since(start); first > 5*time.Second || again > time.Second {
+		t.Fatalf("4 panes against a hung server took %v, and the next listing %v: want one 3 s timeout in all", first, again)
+	}
+}
+
+// TestAnOpenCodeNoteIsRedactedBeforeItLeavesTheHost: a reason quotes the
+// pane's title, and a title can hold a secret someone pasted; the note on the
+// wire carries none of it (redact.Secrets), while the local diagnosis keeps
+// the reason's shape.
+func TestAnOpenCodeNoteIsRedactedBeforeItLeavesTheHost(t *testing.T) {
+	secret := "ghp_" + strings.Repeat("Z", 36)
+	title := "deploy with " + secret
+	_, src := ocServer(t, map[string]string{"ses_fixtureA": title, "ses_fixtureB": title})
+	ap := ResolveOpenCodePane(src, "%1", 11, "OC | "+title)
+	if ap.Gen != "" || !strings.Contains(ap.OpenCode.NoView, "ambiguous") {
+		t.Fatalf("instrument check: not the ambiguous case: %+v", ap.OpenCode)
+	}
+	if strings.Contains(ap.Note, secret) || !strings.Contains(ap.Note, "ambiguous, so none is shown") {
+		t.Fatalf("the note on the wire: %q", ap.Note)
+	}
+	got := WireWindows([]WindowInfo{{Session: "o", ID: "@7", Pane: "%1", PanePID: 9, Command: "opencode", Agent: &ap}}, nil, true, time.Now())
+	if strings.Contains(got[0].AgentNote, secret) || got[0].AgentNote == "" {
+		t.Fatalf("the wire window's note: %q", got[0].AgentNote)
+	}
+}
+
+// TestTheViewRedrawsOnTheTokensStateNotItsCountdown: a view showing "expires
+// in 2 days" does not start over when the clock moves it to "1 day" (the same
+// state), and does when the state changes (the token is refused).
+func TestTheViewRedrawsOnTheTokensStateNotItsCountdown(t *testing.T) {
+	const sid = "ses_fixtureA"
+	srv := opencodetest.New(ocFixturePassword)
+	t.Cleanup(srv.Close)
+	srv.PutSession(sid, "Fix the flaky fixture", "")
+	srv.PutMessage(sid, ocUser("msg_01", 1700000000001, "a prompt"))
+	creds, _ := opencodehost.EnvCredentials(srv.URL, srv.IssueAt(time.Now().Add(2*24*time.Hour+time.Hour)))
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	src := NewOpenCodeSource(ctx, creds, "", log.New(io.Discard, "", 0))
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	src.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	wb := &windowsBackend{windows: []WindowInfo{ocWindowInfo(src, "OC | Fix the flaky fixture")}}
+	d := newDrivenMuster(t)
+	d.run(t, NoShrink(ocBackend{wb, src}), nil, true)
+	d.send(t, mirror.Msg{Type: mirror.TypeWatch, ID: 5, Session: "o", Window: "@7"})
+	waitUntil(t, "the backfill", func() bool { evs, _, _ := watchEvents(d, 5); return len(evs) >= 2 })
+	if evs, _, _ := watchEvents(d, 5); evs[0].Text != "opencode token expires in 2 days and has not been renewed" {
+		t.Fatalf("the first row: %+v", evs[0])
+	}
+	clock.Add(int64(24 * time.Hour))    // now "1 day": the same state
+	time.Sleep(1500 * time.Millisecond) // several polls
+	if _, resets, _ := watchEvents(d, 5); resets != 1 {
+		t.Fatalf("the countdown alone started the view over (%d resets)", resets)
+	}
+	// The state changes: the server refuses the token on the view's next read.
+	srv.Rotate("rotated-fixture-password")
+	srv.PutMessage(sid, ocUser("msg_02", 1700000000002, "a second prompt"))
+	waitUntil(t, "the view to end on the refusal", func() bool {
+		for _, m := range d.of(mirror.TypeClosed) {
+			if m.ID == 5 {
+				return true
+			}
+		}
+		_, resets, _ := watchEvents(d, 5)
+		return resets > 1
+	})
 }

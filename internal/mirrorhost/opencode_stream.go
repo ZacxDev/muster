@@ -127,8 +127,10 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		pos   map[string]int
 		seen  uint64
 		polls int
-		// health is the token line the view shows now (src.tokenHealth).
-		health string
+		// healthState is the state of the token line the view shows now
+		// (src.tokenHealthState): it redraws when the state changes, never
+		// for the countdown alone.
+		healthState string
 	)
 	send := h.viewSend(m, func() string { return id })
 	read := func(limit int) ([]opencodehost.Message, error) {
@@ -173,7 +175,8 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		var lines []cctranscript.Line
 		// What the token needs comes first (Credentials.Health): a failing
 		// renewal must be seen where the person reads the session.
-		if health = src.tokenHealth(); health != "" {
+		healthState = src.tokenHealthState()
+		if health := src.tokenHealth(); health != "" {
 			lines = append(lines, line([]cctranscript.Event{openCodeTokenNotice(health)}))
 		}
 		lines = append(lines, line([]cctranscript.Event{openCodeMatchedNotice(p)}))
@@ -231,8 +234,8 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		},
 		poll: func() error {
 			polls++
-			if src.tokenHealth() != health {
-				return start() // the token's line appeared, changed or cleared
+			if src.tokenHealthState() != healthState {
+				return start() // the token's line appeared, changed state or cleared
 			}
 			st, _ := src.status(id)
 			if c := src.changed(id); c == seen && polls%openCodeRecheck != 0 {

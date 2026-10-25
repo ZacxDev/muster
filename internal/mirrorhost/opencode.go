@@ -51,7 +51,10 @@ var openCodeSubcommands = map[string]bool{
 }
 
 // openCodeValueFlags are the TUI's flags that take a value.
-var openCodeValueFlags = map[string]bool{"--server": true, "-s": true, "--session": true, "--prompt": true}
+// --model/-m and --agent are not root flags at 6ec5682 but are in other
+// opencode versions; a value taken for a flag is never read as a subcommand.
+var openCodeValueFlags = map[string]bool{"--server": true, "-s": true, "--session": true, "--prompt": true,
+	"--model": true, "-m": true, "--agent": true}
 
 // openCodeTUI reports whether p is the opencode TUI by its own identity —
 // openCodeShape (comm or argv[0] opencode) and no subcommand — and whether it
@@ -198,7 +201,15 @@ type OpenCodeSource struct {
 	// changed them since.
 	sessions   []opencodehost.Session
 	sessionsAt time.Time
-	stale      bool
+	// sessionsErr is why the last read of them failed, at sessionsErrAt: a
+	// failure is remembered for sessionsMaxAge, so a server that hangs costs
+	// the listing ONE read timeout, not one per pane per refresh.
+	sessionsErr   error
+	sessionsErrAt time.Time
+	// readMu makes the read single-flight: concurrent listings and views wait
+	// for one read rather than each making their own.
+	readMu sync.Mutex
+	stale  bool
 	// busy and since are each session's status from the stream (since: when
 	// it last changed, Unix ms; the host's clock).
 	busy  map[string]bool
@@ -302,7 +313,7 @@ func (s *OpenCodeSource) connect(cl *opencodehost.Client) {
 	if s.down != "" {
 		s.logger.Printf("muster-mirror: opencode: reading %s again", cl.URL())
 	}
-	s.connected, s.down, s.stale = true, "", true
+	s.connected, s.down, s.stale, s.sessionsErr = true, "", true, nil
 	for id := range s.changes {
 		s.changes[id]++ // anything may have happened while the stream was closed
 	}
@@ -349,20 +360,45 @@ func (s *OpenCodeSource) state() string {
 // rootSessions is the root session list, re-read when stale or older than
 // sessionsMaxAge.
 func (s *OpenCodeSource) rootSessions() ([]opencodehost.Session, error) {
-	s.mu.Lock()
-	fresh := !s.stale && !s.sessionsAt.IsZero() && s.now().Sub(s.sessionsAt) < sessionsMaxAge
-	list := s.sessions
-	s.mu.Unlock()
-	if fresh {
-		return list, nil
+	cached := func() ([]opencodehost.Session, error, bool) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.sessionsErr != nil && s.now().Sub(s.sessionsErrAt) < sessionsMaxAge {
+			return nil, s.sessionsErr, true
+		}
+		if !s.stale && !s.sessionsAt.IsZero() && s.now().Sub(s.sessionsAt) < sessionsMaxAge {
+			return s.sessions, nil, true
+		}
+		return nil, nil, false
 	}
+	if list, err, ok := cached(); ok {
+		return list, err
+	}
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+	if list, err, ok := cached(); ok {
+		return list, err // another caller read them while this one waited
+	}
+	list, err := s.readSessions()
+	s.mu.Lock()
+	if err != nil {
+		s.sessionsErr, s.sessionsErrAt = err, s.now()
+	} else {
+		s.sessions, s.sessionsAt, s.stale, s.sessionsErr = list, s.now(), false, nil
+	}
+	s.mu.Unlock()
+	return list, err
+}
+
+// readSessions reads the root sessions once, within 3 s.
+func (s *OpenCodeSource) readSessions() ([]opencodehost.Session, error) {
 	cl, err := s.creds.Client()
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
 	defer cancel()
-	list, err = cl.Sessions(ctx)
+	list, err := cl.Sessions(ctx)
 	if err != nil {
 		if errors.Is(err, opencodehost.ErrUnauthorized) {
 			s.mu.Lock()
@@ -371,9 +407,6 @@ func (s *OpenCodeSource) rootSessions() ([]opencodehost.Session, error) {
 		}
 		return nil, err
 	}
-	s.mu.Lock()
-	s.sessions, s.sessionsAt, s.stale = list, s.now(), false
-	s.mu.Unlock()
 	return list, nil
 }
 
@@ -471,6 +504,15 @@ func (s *OpenCodeSource) tokenHealth() string {
 		return ""
 	}
 	return s.creds.Health(s.now())
+}
+
+// tokenHealthState is tokenHealth's state without its countdown
+// (Credentials.HealthState): what a view redraws on.
+func (s *OpenCodeSource) tokenHealthState() string {
+	if s.creds == nil {
+		return ""
+	}
+	return s.creds.HealthState(s.now())
 }
 
 // refusedWhy is a refused token's reason: the token's own health when it says
