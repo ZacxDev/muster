@@ -661,8 +661,9 @@ Neither the step-up nor sign-in depends on passkeys:
 
 - **Step-up** uses the Keystore device key above. A passkey assertion made by
   a native app presents an `android:apk-key-hash:<hash of the signing
-  certificate>` origin, not `https://…`, and whether GoTrue accepts that origin
-  is UNVERIFIED.
+  certificate>` origin, not `https://…`. GoTrue v2.197.0 accepts it when that
+  exact string is in `GOTRUE_WEBAUTHN_RP_ORIGINS` (read from its source, S1;
+  see [auth.md](../auth.md#passkeys-in-the-android-app)).
 - **Sign-in in the shell** uses muster's sign-in page with the password, which
   stays mandatory in muster anyway.
 
@@ -680,9 +681,10 @@ free ones when each phase lands.
 
 1. `MUSTER_PUSH_EXTRA_HOSTS`: operator push hosts (exact names, `https`,
    default port).
-2. *Later, optional (Phase 7):* `MUSTER_ANDROID_APP`: the package name and the
-   SHA-256 fingerprints of the signing certificates, for asset links. Unset
-   means no asset-links file. Pairing does not depend on it.
+2. *Phase 7:* `MUSTER_ANDROID_PACKAGE` and `MUSTER_ANDROID_CERT_SHA256`: the
+   package name and the SHA-256 fingerprints of the signing certificates, for
+   asset links. Unset means no asset-links file (404). Pairing does not depend
+   on them.
 3. `MUSTER_ANDROID_UPDATE_URL` (optional): the update channel's manifest URL,
    which paired devices read from `/api/device/config`.
 4. Rows for each variable in [configuration.md](../configuration.md), which a
@@ -1050,8 +1052,8 @@ the app's settings.
   `apksigner` (zipalign first; v2 and v3 schemes) and publishes it
   ([release pipeline](#release-pipeline)).
 - Record the certificate's SHA-256 fingerprint. It goes into the developer
-  verification registration, and into `MUSTER_ANDROID_APP` if the optional
-  asset links are built (Phase 7).
+  verification registration, and into `MUSTER_ANDROID_CERT_SHA256` for the
+  asset links (Phase 7).
 - Key rotation, if ever needed, uses `apksigner rotate` and a signing lineage.
 
 ### 🔴 Android developer verification
@@ -1192,7 +1194,7 @@ app is wanted.
 
 | id | question | decides |
 |---|---|---|
-| S1 | Does GoTrue accept an `android:apk-key-hash:` entry among its allowed WebAuthn origins? | whether native passkeys are ever an option |
+| S1 | Does GoTrue accept an `android:apk-key-hash:` entry among its allowed WebAuthn origins? | whether native passkeys are ever an option. Answered from source: yes, as an exact string in `GOTRUE_WEBAUTHN_RP_ORIGINS` (GoTrue v2.197.0 passes the list to go-webauthn v0.16.5, whose `IsOriginInHaystack` compares a non-`http(s)` origin by string equality). Not yet observed end to end. |
 | S2 | Which origin does a WebView in `WEB_AUTHENTICATION_SUPPORT_FOR_APP` mode put in clientDataJSON, and from which WebView version does it work? | whether passkey sign-in works in the shell with no GoTrue change |
 
 Also not verified, and not blocking: the Android 17 release date; whether

@@ -492,8 +492,8 @@ func (s *Server) registerAll(mux Mux) {
 	// in front of it asks either. A deployment that relies on muster's own
 	// sign-in (per-user accounts, invites) has no forward-auth gate: its edge may
 	// refuse /metrics, /readyz, /mcp, /agent/ and /connect/ and rate-limit the
-	// sign-in routes, but /health, /static/, /manifest.webmanifest and /sw.js
-	// are then reachable by anyone. Keep every one of them free of anything
+	// sign-in routes, but /health, /static/, /manifest.webmanifest, /sw.js and
+	// /.well-known/assetlinks.json are then reachable by anyone. Keep every one of them free of anything
 	// per-user (pwa.go).
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleReady)
@@ -503,6 +503,9 @@ func (s *Server) registerAll(mux Mux) {
 	// manifest resolves relative to the document root.
 	mux.HandleFunc("GET /sw.js", s.handleServiceWorker)
 	mux.HandleFunc("GET /manifest.webmanifest", s.handleManifest)
+	// Digital Asset Links for the Android app's passkeys (assetlinks.go):
+	// fetched by Android with no session; 404 when not configured.
+	mux.HandleFunc("GET "+AssetLinksPath, s.handleAssetLinks)
 	// Browser/PWA auto-fetches we do not serve an asset for: answer 204 (open,
 	// no auth) so they stop generating 404 noise.
 	mux.HandleFunc("GET /favicon.ico", handleNoContent)
