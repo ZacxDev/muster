@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { test, expect } from '../lib/fixtures';
-import type { BrowserContext, CDPSession, Page, Worker } from '@playwright/test';
+import type { BrowserContext, CDPSession, Cookie, Page, Worker } from '@playwright/test';
 import { dsn, password, pushPort, repoRoot, versionA } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { waitControlled } from '../lib/sw';
@@ -413,8 +413,20 @@ async function tapHarness(page: Page, context: BrowserContext, worker: Worker) {
 
 // signedInWorker signs in, opens /tasks and returns the origin's worker once it
 // controls the tab.
+//
+// 🔴 ONE SIGN-IN FOR ALL THE TAP TESTS. Password-mode sign-in is throttled
+// server-wide (internal/api login.go: loginRateBurst per loginRateWindow, 10 a
+// minute), and this file runs in seconds. When each tap test signed in on its
+// own, the file made 11 sign-ins and the 11th got a 429 ("Too many attempts").
+// So the first test signs in and the rest reuse its session cookie.
+let tapSession: Cookie[] | undefined;
 async function signedInWorker(page: Page, context: BrowserContext): Promise<Worker> {
-  await signIn(page);
+  if (tapSession) {
+    await context.addCookies(tapSession);
+  } else {
+    await signIn(page);
+    tapSession = await context.cookies();
+  }
   const registered = context.serviceWorkers().length ? Promise.resolve(context.serviceWorkers()[0]) : context.waitForEvent('serviceworker');
   await page.goto(origin + '/tasks');
   const worker = await registered;
