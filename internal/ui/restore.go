@@ -46,8 +46,9 @@ import (
 // document is also kept in the HTTP cache, and Chromium takes it from there for
 // a Back that is not a restore WITHOUT asking the server (measured: navigation
 // type back_forward, transferSize 0, no request). That document's scripts run
-// afresh, so its streams open by themselves; what it lacks is the build check
-// and the refusal check, which it gets here.
+// afresh, so its streams open by themselves; what it lacks is the build check,
+// the refusal check and a fresh send nonce, which it gets here — on every
+// back_forward load, whether or not it came from the cache.
 //
 // ⚠ ONLY THE TOP WINDOW CHECKS. The view swap draws the other view in a frame
 // (view_swap.go); the frame is restored with the page and reconnects its own
@@ -248,7 +249,11 @@ func restoreJS(feat Features) string {
         var whenParsed = function (fn) { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fn); else fn(); };
         // Any history load, from the cache or not (a fresh nonce costs nothing).
         if (nav && nav.type === 'back_forward') whenParsed(renewNonces);
-        if (TOP && nav && nav.type === 'back_forward' && nav.transferSize === 0 && nav.decodedBodySize > 0) {
+        // 🟢 THE TRIGGER IS THE NAVIGATION'S TYPE, NOT transferSize. A browser
+        // that does not report transferSize (or reports 0 for every load)
+        // would otherwise skip the checks silently; one that reports a network
+        // load costs a /health and a re-request of a document just fetched.
+        if (TOP && nav && nav.type === 'back_forward') {
           whenParsed(function () { catchUp('http-cache'); });
         }
       } catch (e) {}

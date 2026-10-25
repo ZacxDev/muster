@@ -627,13 +627,19 @@ test('a restore after a deploy reloads into the new build', async () => {
 // transferSize 0. That is a fresh run of the OLD build's script. The suite's
 // own browser has no back/forward cache (lib/bfcache.ts), so its Back is
 // exactly that path.
-test('a Back answered from the HTTP cache after a deploy reloads into the new build', async ({ browser: plain }) => {
+// noTransferSize: a browser that reports no transferSize (the check must not
+// depend on it; the trigger is the navigation's type).
+const noTransferSize = `Object.defineProperty(PerformanceResourceTiming.prototype, 'transferSize', { configurable: true, get() { return undefined; } })`;
+
+for (const blind of [false, true]) {
+test(`a Back answered from the HTTP cache after a deploy reloads into the new build${blind ? ' (a browser reporting no transferSize)' : ''}`, async ({ browser: plain }) => {
   const origin = `http://localhost:${bfcacheBuildPort}`;
   let server: Running | undefined = await startServer(versionA, bfcacheBuildPort);
   // Signed in by the suite's saved state: its session cookie is for the host,
   // whatever the port, and every server here shares one database.
   const ctx = await plain.newContext({ baseURL: origin, storageState: authState, viewport: { width: 390, height: 844 } });
   await ctx.addInitScript(recorder);
+  if (blind) await ctx.addInitScript(noTransferSize);
   const page = await ctx.newPage();
   try {
     const url = await openAgent(page);
@@ -652,13 +658,14 @@ test('a Back answered from the HTTP cache after a deploy reloads into the new bu
       const n = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
       return { type: n.type, fromCache: n.transferSize === 0 };
     });
-    expect(nav, 'the build-B document came from the network').toEqual({ type: 'reload', fromCache: false });
+    if (!blind) expect(nav, 'the build-B document came from the network').toEqual({ type: 'reload', fromCache: false });
   } finally {
     // The server first: a context that cannot close must not leak it.
     await server?.stop();
     await ctx.close().catch(() => {});
   }
 });
+}
 
 // --- the mirrored Rendered view and its terminal ---------------------------------
 
