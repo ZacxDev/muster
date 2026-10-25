@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/sendqueue"
 )
 
 // A REPLY ON A THREAD A SESSION STARTED (migration 0054), through the real
@@ -367,5 +369,88 @@ func TestAThreadRouteTimesOutBackToTheChiefThatHoldsTheMessage(t *testing.T) {
 	note := f.chiefDefaultSessionText(t)
 	if !strings.Contains(note, "is it green yet?") || !strings.Contains(note, "so the message is back with you") {
 		t.Fatalf("the chief's conversation: %q", note)
+	}
+}
+
+// refusingQueue refuses every enqueue: a window whose queue cannot take the
+// routed message.
+type refusingQueue struct{ SendQueue }
+
+func (refusingQueue) Enqueue(context.Context, sendqueue.Item) (sendqueue.Item, error) {
+	return sendqueue.Item{}, errors.New("refusingQueue: no")
+}
+
+func TestAThreadRouteThatCannotBeQueuedGoesBackToTheChief(t *testing.T) {
+	f := newThreadFixture(t)
+	if code, _ := f.bind(t, "", "4242", routeSID); code != 201 {
+		t.Fatal("bind")
+	}
+	f.srv.ext.SendQueue = refusingQueue{f.srv.ext.SendQueue}
+	_, m := f.post(t, f.mailTok, "thr-noqueue-1", "4242")
+	rs := f.routesOf(t, m)
+	if len(rs) != 1 || rs[0].State != plugins.RouteFailed || f.turns.count() != 0 {
+		t.Fatalf("routes %+v, %d chief turns; want one failed route and no turn", rs, f.turns.count())
+	}
+	if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	note := f.chiefDefaultSessionText(t)
+	if !strings.Contains(note, "is it green yet?") || !strings.Contains(note, "could not be put into the session") ||
+		!strings.Contains(note, "so the message is back with you") {
+		t.Fatalf("the chief's conversation: %q", note)
+	}
+}
+
+func TestANoReplyMessageOnABoundThreadGoesToTheChief(t *testing.T) {
+	f := newThreadFixture(t)
+	if code, _ := f.bind(t, "", "4242", routeSID); code != 201 {
+		t.Fatal("bind")
+	}
+	b, _ := json.Marshal(map[string]any{"external_id": "thr-noreply-1", "body": "status: done", "thread": "4242", "no_reply": true})
+	w := f.call(t, "POST", "/plugin/v1/messages", strings.NewReader(string(b)), map[string]string{"Authorization": "Bearer " + f.mailTok})
+	f.srv.WaitForPluginDeliveries()
+	var out struct{ ID int64 }
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	if rs := f.routesOf(t, plugins.Message{ID: out.ID}); w.Code != 202 || len(rs) != 0 || f.turns.count() != 1 {
+		t.Fatalf("%d, %d routes, %d chief turns; want 202, 0, 1", w.Code, len(rs), f.turns.count())
+	}
+}
+
+func TestAMessageTheChiefAlreadyHasIsNotRoutedByThread(t *testing.T) {
+	f := newThreadFixture(t)
+	_, m := f.post(t, f.mailTok, "thr-had-1", "4242") // unbound: delivered to the chief
+	if f.turns.count() != 1 {
+		t.Fatalf("%d chief turns", f.turns.count())
+	}
+	if code, _ := f.bind(t, "", "4242", routeSID); code != 201 {
+		t.Fatal("bind")
+	}
+	m, _ = f.plugins.Message(f.asOwner, m.ID)
+	p, _ := f.plugins.Plugin(f.asOwner, m.PluginID)
+	if !f.srv.routeByThread(f.asOwner, p, m) {
+		t.Fatal("a message the chief holds must stay the chief's, not go out again")
+	}
+	if rs := f.routesOf(t, m); len(rs) != 0 || len(f.queued(t)) != 0 {
+		t.Fatalf("%d routes, %d queued; want none", len(rs), len(f.queued(t)))
+	}
+}
+
+func TestThePluginThreadsRouteIsOffWithRoutingOff(t *testing.T) {
+	f := newThreadFixture(t)
+	f.srv.ext.Routing = nil
+	if code, _ := f.bind(t, "", "4242", routeSID); code != 404 || f.bindings(t, "4242") != 0 {
+		t.Fatalf("routing off: %d, %d bindings; want 404 and none", code, f.bindings(t, "4242"))
+	}
+}
+
+func TestWithNoDelivererNothingIsRoutedByThread(t *testing.T) {
+	f := newThreadFixture(t)
+	if code, _ := f.bind(t, "", "4242", routeSID); code != 201 {
+		t.Fatal("bind")
+	}
+	f.srv.pluginDeliverer = nil // no gateway: nothing could record it for the chief, nor hand it back
+	_, m := f.post(t, f.mailTok, "thr-nodeliverer-1", "4242")
+	if rs := f.routesOf(t, m); len(rs) != 0 || m.Status != plugins.StatusQueued {
+		t.Fatalf("%d routes, status %s; want none and queued", len(rs), m.Status)
 	}
 }

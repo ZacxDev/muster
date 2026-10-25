@@ -72,15 +72,15 @@ func (s *Server) handlePluginThreadBind(w http.ResponseWriter, r *http.Request) 
 		"created_at": b.CreatedAt.UTC().Format(time.RFC3339), "bound": created})
 }
 
-// routeByThread routes a NEW message m of plugin p — agent mail, replyable, on
-// a thread one of the owner's sessions started — to that session: the chief's
+// routeByThread routes a NEW message m of plugin p — agent mail, on a thread
+// one of the owner's sessions started — to that session: the chief's
 // route (routeItem), made by muster, so the chief decides nothing. It reports
 // whether m is taken care of; false leaves m queued for the ordinary delivery
 // to the chief, as for any message — which is what happens when no online
 // mirrored window shows the session on the host it was bound from, or there is
 // no chief to own the route.
 func (s *Server) routeByThread(ctx context.Context, p plugins.Plugin, m plugins.Message) bool {
-	if !routingOn(s.ext) || s.pluginDeliverer == nil || p.Name != plugins.AgentMailPlugin || m.Thread == nil || m.NoReply {
+	if !routingOn(s.ext) || s.pluginDeliverer == nil || p.Name != plugins.AgentMailPlugin || m.Thread == nil {
 		return false
 	}
 	b, err := s.ext.Routes.BoundThread(ctx, *m.Thread)
