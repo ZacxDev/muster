@@ -383,6 +383,9 @@ func (s *Server) agentTools() []agentTool {
 		for _, d := range chiefAttentionToolDefs() {
 			tools = append(tools, agentTool{def: d, mcp: true, chiefOnly: true})
 		}
+		// A mirrored session's question to the chief (chief_ask_tool.go): the
+		// chief answers it. Chief-only, on MCP.
+		tools = append(tools, agentTool{def: answerSessionQuestionToolDef(), mcp: true, chiefOnly: true})
 	}
 	return tools
 }
@@ -635,6 +638,12 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return s.toolSessionsOverview(ctx, a, arguments)
 	case routeToSessionToolName:
 		return s.toolRouteToSession(ctx, a, arguments)
+	case answerSessionQuestionTool:
+		// Registered only with the attention store (agentTools).
+		if !s.attentionToolsOn() {
+			return toolErr("unknown tool %q", name)
+		}
+		return s.toolAnswerSessionQuestion(ctx, a, arguments)
 	case "connector_status":
 		var in struct {
 			Name        string `json:"name"`

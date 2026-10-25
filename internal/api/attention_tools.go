@@ -341,6 +341,9 @@ func askView(a attention.Ask) map[string]any {
 	if a.Status == attention.Answered || a.Status == attention.AnsweredInSession {
 		out["answer"] = a.Answer
 	}
+	if a.ToChief && a.Status == attention.Answered {
+		out["answered_by"] = a.AnsweredBy
+	}
 	if a.Status == attention.AnsweredInSession {
 		out["note"] = answeredInSessionNote
 	}
