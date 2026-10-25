@@ -900,3 +900,40 @@ that text, and Enter sends both. The idle delay is the only protection.
 ⚠ **An answer is sent as written.** It is screened like any reply draft (no
 hidden characters, addresses, credentials or the deployment's own names), and
 for a verified, allowlisted sender that screen is the only check before it goes.
+
+### Routing a message from your own session
+
+You can make the same route yourself, in one step, from one of your own
+**mirrored** Claude Code sessions, over the mirror MCP door
+([attention.md](attention.md#mirrored-claude-code-sessions)) — instead of
+asking the chief to. Two tools, offered only there, only with routing on, and
+to no dispatched agent (the chief included):
+
+| tool | what it does |
+|---|---|
+| `plugin_messages_list` | Your **30 most recent** routable inbound messages, **newest first by arrival** (past 30 the older ones are left out; `truncated` says so). Routable means: delivered (or being delivered) to your chief, and not `no_reply` (so never a task event or a notice muster routed itself: those always are). Each: `message_id`, the plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject, the first 280 characters of the body, when it was received, and its route: `none`, `pending` (routed, not yet answered — with its deadline), `relayed` (answered: sent, or a draft awaiting you) or `handed_back` (timed out or failed: back with the chief). Read-only. |
+| `plugin_message_route {message_id, subject?}` | Routes that message. **With no `subject` it goes to the calling session** — pasted once that session has been idle for `MUSTER_SEND_QUEUE_IDLE`, so the session ends its turn to receive it, then answers with `route_reply`. `subject` names another session, exactly as `mirror:<claude session id>` (the chief's form). Any other value — a bare id, an empty id, a window title — or a session no online window shows is refused `subject_not_found`, listing the online sessions as `candidates`: the way to find a subject on this door. |
+
+It is **the chief's route**, not a copy (`routeMessage`): the same target
+check, the same `session_routes` row, the same send-queue injection and
+step-up exemption, the same `route_reply` answer and relay, the same deadline
+and hand-back. The route's agent is still the chief the message was delivered
+to — the reply draft is filed as the chief's, and a timed-out route goes back
+to the chief. Two things differ: the pasted block says it was routed by you,
+and the `session_route.routed` audit row is yours (via `mirror-host`) and
+carries `routed_via: "mcp from <host>/<session>"`.
+
+Refused, saying why (`refused` is a code a session can branch on): a message
+that already has a route waiting for an answer (`already_routed`, the route
+store's own one-open-route check); a message not yet delivered to your chief
+(`not_delivered` — route it once the chief has it); a subject that is not
+`mirror:<claude session id>` of an online session (`subject_not_found`, with the
+`candidates`); another owner's message and a
+missing id (both *"no such plugin message: N"*); and everything the chief's
+route refuses — a `no_reply` message (every task event is one), a message with
+a reply already on its way, and a target that cannot take one now (an offline
+or read-only host, a window that does not report Claude Code's status — the
+session must be the active pane of its window).
+
+⚠ What a mirror token can read and do with these tools, and the accepted risk
+of a session routing a message to itself: [auth.md](auth.md#mirror-tokens-and-session-routing).
