@@ -179,30 +179,42 @@ const maxAttachmentBytes = 10 << 20 // 10 MiB
 // htmx:configRequest listener landed (internal/ui/components.go) a
 // trigger-driven refetch of #tasks-list carried nothing at all.
 func (s *Server) handleNotesContent(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	filter := queryTags(q)
-	status := queryStatus(q)
-	limit := queryTaskLimit(q)
-	// 🔴 ALL THREE NARROW TOGETHER. They are one ListFilter and therefore one
-	// query — a tag filter, a project (which IS a tag) and a status compose by
-	// construction rather than by each combination being remembered.
-	page, err := s.ext.Notes.ListPage(r.Context(), notes.ListFilter{
-		Tags:     filter,
-		Statuses: statusPredicate(status),
-		Limit:    limit,
-	})
+	v, err := s.tasksView(r.Context(), r.URL.Query())
 	if err != nil {
 		s.logger.Printf("notes: list: %v", err)
 		http.Error(w, "could not load notes", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := ui.RenderNotesCards(w, v); err != nil {
+		s.logger.Printf("notes: render: %v", err)
+	}
+}
+
+// tasksView builds the board for one query (?tag=, ?status=, ?limit=) — the
+// ONE build behind both the /ui/tasks partial and the board the shell draws on
+// its first paint (shellData), so the two cannot disagree.
+func (s *Server) tasksView(ctx context.Context, q url.Values) (ui.TasksView, error) {
+	filter := queryTags(q)
+	status := queryStatus(q)
+	limit := queryTaskLimit(q)
+	// 🔴 ALL THREE NARROW TOGETHER. They are one ListFilter and therefore one
+	// query — a tag filter, a project (which IS a tag) and a status compose by
+	// construction rather than by each combination being remembered.
+	page, err := s.ext.Notes.ListPage(ctx, notes.ListFilter{
+		Tags:     filter,
+		Statuses: statusPredicate(status),
+		Limit:    limit,
+	})
+	if err != nil {
+		return ui.TasksView{}, err
+	}
 	// One vocabulary read serves BOTH filter rows — the project row is derived from
 	// the same tag counts, so the two can never disagree (and it costs no extra
 	// query). Best-effort like the tag row: a failure degrades to no chips, not a 500.
-	vocab := s.tagVocabulary(r.Context())
-	if err := ui.RenderNotesCards(w, ui.TasksView{
-		Cards:        s.taskCardViews(r.Context(), page.Notes),
+	vocab := s.tagVocabulary(ctx)
+	return ui.TasksView{
+		Cards:        s.taskCardViews(ctx, page.Notes),
 		Vocabulary:   vocab,
 		ActiveTags:   filter,
 		Projects:     notes.ProjectsFromVocabulary(vocab),
@@ -222,9 +234,7 @@ func (s *Server) handleNotesContent(w http.ResponseWriter, r *http.Request) {
 		// trigger-driven refetch carried it, and the tag filter had been silently
 		// resetting on the same channel since it shipped.
 		NextLimit: nextTaskLimit(limit),
-	}); err != nil {
-		s.logger.Printf("notes: render: %v", err)
-	}
+	}, nil
 }
 
 // directorySeed reads the picker's SEED set — the most recently used working

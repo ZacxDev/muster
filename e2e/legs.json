@@ -75,7 +75,8 @@
     "tests/sidenav.spec.ts": 35.0,
     "tests/suggested-replies.spec.ts": 72.0,
     "tests/title-room.spec.ts": 24.1,
-    "tests/opencode-view.spec.ts": 20.0
+    "tests/opencode-view.spec.ts": 20.0,
+    "tests/board-first-paint.spec.ts": 20.0
   },
   "legs": {
     "1": [
@@ -153,7 +154,8 @@
       "tests/view-swap.spec.ts",
       "tests/agents-idle.spec.ts",
       "tests/sidenav.spec.ts",
-      "tests/title-room.spec.ts"
+      "tests/title-room.spec.ts",
+      "tests/board-first-paint.spec.ts"
     ]
   }
 }

@@ -55,6 +55,18 @@ const APP_CSS = "__MUSTER_APP_CSS__";
 // fresh (it is small and benefits from normal HTTP caching) to avoid serving a
 // stale htmx during development.
 const SHELL = ['/', APP_CSS, '/manifest.webmanifest'];
+// 🔴 "/" IS FETCHED AS THE BOARD-LESS SHELL AND STORED UNDER "/". The real "/"
+// draws the signed-in user's task board, and this cache outlives the session
+// that filled it (sign-out's Clear-Site-Data: "cache" does not empty Cache
+// Storage, and activate carries entries forward): an offline open after a
+// sign-out would show the previous user's tasks. internal/api's
+// offlineShellParam is the server half; a drawn board carries
+// data-tasks-drawn, and boardless() refuses any "/" that does.
+const SHELL_FETCH = { '/': '/?shell=1' };
+async function boardless(path, res) {
+  if (path !== '/') return true;
+  return !(await res.clone().text()).includes('data-tasks-drawn');
+}
 
 // usable reports whether a response may be stored as (or kept as) a shell
 // entry: a same-origin 200 that was not reached through a redirect. A signed-out
@@ -74,8 +86,8 @@ self.addEventListener('install', (event) => {
     caches.open(CACHE).then((cache) =>
       Promise.all(
         SHELL.map((path) =>
-          fetch(path, { redirect: 'manual' })
-            .then((res) => (usable(res) ? cache.put(path, res) : undefined))
+          fetch(SHELL_FETCH[path] || path, { redirect: 'manual' })
+            .then(async (res) => (usable(res) && (await boardless(path, res)) ? cache.put(path, res) : undefined))
             .catch(() => undefined)
         )
       )
@@ -132,7 +144,7 @@ self.addEventListener('activate', (event) => {
         if (usable(await cache.match(path))) continue;
         for (const k of older) {
           const res = await (await caches.open(k)).match(path);
-          if (usable(res)) {
+          if (usable(res) && (await boardless(path, res))) {
             await cache.put(path, res);
             break;
           }

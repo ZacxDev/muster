@@ -238,7 +238,9 @@ test('an update installed while signed out keeps the offline shell styled', asyn
   const origin = `http://localhost:${updatePort}`;
   const oldCSS = '/static/app.css?v=0ld0ld0ld0ld';
   let routed = 0;
-  await context.route(origin + '/', async (route) => {
+  // The worker fetches its shell as "/?shell=1" (sw.js SHELL_FETCH): match "/" by path.
+  const root = (u: URL) => u.origin === origin && u.pathname === '/';
+  await context.route(root, async (route) => {
     if (!route.request().serviceWorker()) return route.continue();
     const res = await route.fetch();
     const html = await res.text();
@@ -249,7 +251,7 @@ test('an update installed while signed out keeps the offline shell styled', asyn
   await waitControlled(page);
   await expect.poll(() => page.evaluate(shellCaches)).toEqual({ ['muster-shell-' + versionA]: goodShell });
   expect(routed, "control: the worker's precache of / was the routed one").toBeGreaterThan(0);
-  await context.unroute(origin + '/');
+  await context.unroute(root);
   // A's shell links the old stylesheet, and A's cache holds it under that URL.
   const links = await page.evaluate(async ([build, old]) => {
     await fetch(old);
@@ -301,6 +303,88 @@ test('an update installed while signed out keeps the offline shell styled', asyn
   await context.setOffline(false);
 });
 
+// 🔴 A BOARD-DRAWN "/" NEVER BECOMES THE NEW SHELL (sw.js boardless(), #273).
+// The real "/" draws the signed-in user's board. During a rolling deploy an
+// OLDER worker (one that fetched "/" itself) can store that copy from a new
+// pod; the new worker's activate would then carry it forward into a shell that
+// outlives sign-out. And a new worker whose own shell fetch were ever answered
+// with the board must not store it either. Both cases need the worker's own
+// check: the server half (?shell=1) cannot see them.
+const seededTitle = 'Rotate the staging webhook secret'; // e2e/seed
+const shellOf = (build: string) => `(async () => {
+  const r = await (await caches.open('muster-shell-${build}')).match('/');
+  if (!r) return null;
+  const h = await r.text();
+  return { drawn: h.includes('data-tasks-drawn'), seeded: h.includes(${JSON.stringify(seededTitle)}), shell: h.includes('id="sw-update-toast"') };
+})()`;
+
+test('a board-drawn "/" an older worker stored is not carried into the new shell', async ({ page, context }) => {
+  server = await startServer(versionA, updatePort);
+  const origin = `http://localhost:${updatePort}`;
+  await page.goto(origin + '/tasks');
+  await waitControlled(page);
+  await expect.poll(() => page.evaluate(shellCaches)).toEqual({ ['muster-shell-' + versionA]: goodShell });
+  // The older worker's cache now holds the BOARD copy of "/": the page's own
+  // same-origin fetch (type basic, 200, the session cookie), as a pre-#273
+  // worker's install fetch would have stored it.
+  const poisoned = await page.evaluate(async ([build, title]) => {
+    const res = await fetch('/', { credentials: 'same-origin' });
+    const html = await res.clone().text();
+    await (await caches.open('muster-shell-' + build)).put('/', res);
+    return { type: res.type, status: res.status, drawn: html.includes('data-tasks-drawn'), seeded: html.includes(title) };
+  }, [versionA, seededTitle]);
+  expect(poisoned, "control: the older cache holds the board copy").toEqual({ type: 'basic', status: 200, drawn: true, seeded: true });
+  // The new worker's own shell fetch fails, so "/" can only come from the
+  // older cache: activate's carry-forward is the path under test.
+  let refused = 0;
+  await context.route((u) => u.origin === origin && u.pathname === '/', (route) => {
+    if (!route.request().serviceWorker()) return route.continue();
+    refused++;
+    return route.fulfill({ status: 503, body: 'unavailable' });
+  });
+  await deployB();
+  await page.evaluate(checkForUpdate);
+  await expect(page.locator('#sw-update-toast')).toBeVisible();
+  expect(refused, "control: the new worker's own shell fetch was the refused one").toBeGreaterThan(0);
+  await page.locator('[data-sw-reload]').click();
+  await expect
+    .poll(() => page.evaluate(controllerBuild).catch(() => null), { timeout: 15_000 })
+    .toBe(versionB);
+  // Activate has run: the older cache is gone, and with it the only source.
+  await expect.poll(() => page.evaluate(() => caches.keys()).catch(() => null)).toEqual(['muster-shell-' + versionB]);
+  expect(await page.evaluate(shellOf(versionB)), 'the new shell carried the board copy forward').toBeNull();
+});
+
+test('a board-drawn answer to the new worker\'s shell fetch is not installed', async ({ page, context }) => {
+  server = await startServer(versionA, updatePort);
+  const origin = `http://localhost:${updatePort}`;
+  await page.goto(origin + '/tasks');
+  await waitControlled(page);
+  await expect.poll(() => page.evaluate(shellCaches)).toEqual({ ['muster-shell-' + versionA]: goodShell });
+  // The new worker asks for its shell and is answered with the BOARD copy of
+  // "/" (the real document, fetched with the request's own cookie).
+  let boarded = 0;
+  await context.route((u) => u.origin === origin && u.pathname === '/', async (route) => {
+    if (!route.request().serviceWorker()) return route.continue();
+    const res = await route.fetch({ url: origin + '/' });
+    const html = await res.text();
+    if (html.includes('data-tasks-drawn')) boarded++;
+    return route.fulfill({ response: res, body: html });
+  });
+  await deployB();
+  await page.evaluate(checkForUpdate);
+  await expect(page.locator('#sw-update-toast')).toBeVisible();
+  expect(boarded, "control: the new worker's shell fetch was answered with the board").toBeGreaterThan(0);
+  await page.locator('[data-sw-reload]').click();
+  await expect
+    .poll(() => page.evaluate(controllerBuild).catch(() => null), { timeout: 15_000 })
+    .toBe(versionB);
+  await expect.poll(() => page.evaluate(() => caches.keys()).catch(() => null)).toEqual(['muster-shell-' + versionB]);
+  // The board answer was refused; "/" is the older build's board-less shell,
+  // carried forward.
+  expect(await page.evaluate(shellOf(versionB)), 'the new shell is the board copy').toEqual({ drawn: false, seeded: false, shell: true });
+});
+
 // F2, the edge's shape: behind a forward-auth edge an expired session's "/" is
 // a REDIRECT to a login page that answers 200. A followed redirect must not be
 // cached as the shell. The route answers only the WORKER's fetch of "/", so the
@@ -321,7 +405,8 @@ test('a redirected "/" is never cached as the shell', async ({ page, context }) 
   await expect.poll(() => page.evaluate(shellCaches)).toEqual({ ['muster-shell-' + versionA]: goodShell });
 
   let redirected = 0;
-  await context.route(origin + '/', (route) => {
+  // The worker fetches its shell as "/?shell=1" (sw.js SHELL_FETCH): match "/" by path.
+  await context.route((u) => u.origin === origin && u.pathname === '/', (route) => {
     if (!route.request().serviceWorker()) return route.continue();
     redirected++;
     return route.fulfill({ status: 302, headers: { location: origin + '/manifest.webmanifest' } });

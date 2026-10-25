@@ -226,6 +226,9 @@ func PageWith(activeTab string, feat Features, data ShellData) g.Node {
 type ShellData struct {
 	recent []recentItem
 	list   *shellList
+	// tasks is the Tasks tab's board, drawn into #tasks-list (WithTasks,
+	// tasks_list_ssr.go); nil draws the skeleton its own load replaces.
+	tasks *shellTasks
 }
 
 // WithRecent resolves the strip's entries the way RenderAgentsList does —
@@ -338,7 +341,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 							// repositories. Mounting it only when there is a store behind
 							// it is what makes the tab's absence honest instead of making
 							// its presence noisy.
-							NotesPanel(activeTab == "tasks"),
+							NotesPanel(activeTab == "tasks", data.tasks),
 							agentsPanel(activeTab == "agents", data.recent, data.list),
 							g.If(feat.GitHub, ReposPanel(activeTab == "repos")),
 							g.If(feat.Connectors, ConnectorsPanel(activeTab == "connectors")),
@@ -2295,8 +2298,28 @@ func appScript(feat Features) g.Node {
 // resyncScript keeps the task list fresh after the app is backgrounded and
 // reopened. The htmx SSE extension auto-reconnects, but a dropped connection can
 // miss events while hidden; so we also refetch on focus, on visibility regain,
-// and on SSE (re)connect. It fires a body-level "muster:resync" event, and is
-// fully feature-detected/guarded.
+// and on SSE (re)connect — except the first open of a document whose drawn
+// board is provably current (musterSSEOpen, below). It fires a body-level
+// "muster:resync" event, and is fully feature-detected/guarded.
+//
+// 🔴 THE FIRST OPEN OF A DOCUMENT THAT DREW ITS BOARD AT THE STREAM'S OWN MARK
+// DOES NOT RESYNC (musterSSEOpen; tasks_list_ssr.go). #tasks-list's
+// data-sse-mark is the event mark the server read before it built the drawn
+// board; the stream's first event, muster.hello, is the mark it read after
+// subscribing. Equal: no event for this user was published in between, so
+// nothing was missed and the resync would only re-fetch the board just drawn.
+// Not equal, no hello within 3s, or no source: resync, as every open did
+// before. The mark is CONSUMED on that first open, so every later open — a
+// reconnect, after which events may have been missed — always resyncs.
+//
+// ⚠ THE OPEN HANDLER IS BOUND ONCE PER WINDOW (__musterSSEOpenBound). htmx
+// re-runs this script on every boosted body swap while <body> and its listeners
+// survive, so an unguarded bind stacks one more handler per navigation; the
+// handler reads #tasks-list at the moment of the open, so one binding serves
+// every document. (The other listeners here still bind per run, as before.)
+//
+// This rationale is in Go rather than in the script because every byte inside
+// the script ships with every shell document.
 //
 // 🔴 WHO LISTENS IS THE HALF THAT MATTERS, AND THIS DOC NAMED A PANEL THAT DOES
 // NOT EXIST HERE. It said "the requests panel listens for (see Page's
@@ -2340,7 +2363,33 @@ func resyncScript() g.Node {
   });
   window.addEventListener('focus', resync);
   // SSE (re)connect: the htmx sse extension dispatches htmx:sseOpen on (re)open.
-  document.body.addEventListener('htmx:sseOpen', resync);
+  // A drawn board's first open skips it when the hello matches (see the Go doc).
+  function musterSSEOpen(e) {
+    var list = document.getElementById('tasks-list');
+    var mark = list && list.getAttribute('data-sse-mark');
+    var src = e && e.detail && e.detail.source;
+    if (!mark || !src || !src.addEventListener) { resync(); return; }
+    list.removeAttribute('data-sse-mark');
+    var settled = false, timer = null;
+    function settle(fresh) {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try { src.removeEventListener('muster.hello', onHello); } catch (e2) {}
+      if (!fresh) resync();
+    }
+    function onHello(ev) {
+      var m = '';
+      try { m = JSON.parse(ev.data).mark || ''; } catch (e3) {}
+      settle(m === mark);
+    }
+    src.addEventListener('muster.hello', onHello);
+    timer = setTimeout(function () { settle(false); }, 3000);
+  }
+  if (!window.__musterSSEOpenBound) {
+    window.__musterSSEOpenBound = true;
+    document.body.addEventListener('htmx:sseOpen', musterSSEOpen);
+  }
 
   // Surface htmx failures. htmx does NOT swap non-2xx responses, so without this
   // every failed form/mutation (dispatch, note, status, comment)
@@ -2793,7 +2842,7 @@ var filterToggleJS string
 func tagScript() g.Node {
 	return Script(g.Raw(`
 (function () {
-  var KEY = 'muster.tasks.tagfilter';
+  var KEY = '` + tasksTagFilterKey + `';
 ` + filterToggleJS + `
 
   // 🔴 Bind the delegated document listeners EXACTLY ONCE. htmx re-executes

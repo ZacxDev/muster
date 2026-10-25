@@ -244,6 +244,9 @@ type Server struct {
 
 	// taskReapAfter is the idle window the stale-task reaper uses.
 	taskReapAfter time.Duration
+	// boardWithinOverride overrides the Tasks document's board-build bound
+	// (shellBoardWithin, the const) when positive — for tests.
+	boardWithinOverride time.Duration
 	// agentReapStoppedAfter is how long an agent may stay stopped before the
 	// stopped-agent reaper destroys it (agent_reap.go); <= 0 is off.
 	agentReapStoppedAfter time.Duration
@@ -674,17 +677,49 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// A shell document carries this user's board (and list) now: private keeps
+	// every shared cache (an edge, a proxy) out of it, no-cache makes every
+	// ordinary navigation ask again. NOT no-store, deliberately: that would also
+	// take the document out of the back/forward cache and the HTTP-cache Back
+	// that restoreJS catches up (viewDocumentCacheControl has the measurement);
+	// sign-out's Clear-Site-Data: "cache" drops both copies.
+	w.Header().Set("Cache-Control", shellDocumentCacheControl)
 	tab := tabFromPath(r.URL.Path)
-	if err := ui.RenderPageWith(w, tab, s.shellFeatures(r.Context()), s.shellData(r.Context(), tab)); err != nil {
+	feat := s.shellFeatures(r.Context())
+	data := ui.ShellData{}
+	if r.URL.Query().Get(offlineShellParam) != "1" {
+		data = s.shellData(r.Context(), tab, feat)
+	}
+	if err := ui.RenderPageWith(w, tab, feat, data); err != nil {
 		s.logger.Printf("error rendering index page: %v", err)
 	}
 }
+
+// shellDocumentCacheControl is what a shell document (handleIndex) says to
+// caches. The same statement as a view document's, for the same reasons.
+const shellDocumentCacheControl = viewDocumentCacheControl
+
+// offlineShellParam, set to "1", asks for the shell WITHOUT its first-paint
+// data: no board, no list — what the service worker stores as its offline "/"
+// (web/static/sw.js, SHELL_FETCH).
+//
+// 🔴 THE OFFLINE SHELL OUTLIVES THE SESSION THAT FETCHED IT. The worker caches
+// "/" at install, with the session cookie, and serves it to any offline
+// navigation — after a sign-out too: Clear-Site-Data: "cache" does not empty
+// Cache Storage, and activate carries the entry forward across deploys. A "/"
+// carrying the board would show one user's tasks to whoever opens the app
+// offline next. So the worker asks for this board-less copy by URL — a request
+// it makes explicitly, not a header a browser or a proxy might omit — and
+// stores it under "/". TestTheOfflineShellURLIsBoardless and
+// e2e/tests/board-first-paint.spec.ts pin both ends.
+const offlineShellParam = "shell"
 
 // shellData is what the shell draws on its first paint (ui.ShellData): on the
 // Agents tab, the LIST — its cards, server-rendered — and the "Recently viewed"
 // strip resolved against them, so nothing is filled in under the reader a moment
 // later. Any other tab draws its Agents panel hidden and empty, where a late
-// list moves nothing on screen, and fills it from the list's own load.
+// list moves nothing on screen, and fills it from the list's own load. On the
+// Tasks tab (`/`, /tasks) it is the task BOARD instead (tasksShellData).
 //
 // 🔴 IT IS THE LIST'S BUILD — agentsListCards, THE ONE handleAgentsContent
 // SERVES — AND THE TAB'S FIRST PAINT NEEDS NO SECOND. The shell used to draw only
@@ -707,7 +742,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 //
 // ⚠ A FAILED BUILD DRAWS THE OLD WAY (an empty list its own load fills, an
 // empty strip), not an error: that load reports its own failure.
-func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
+func (s *Server) shellData(ctx context.Context, tab string, feat ui.Features) ui.ShellData {
+	if ui.ShellTab(tab, feat) == "tasks" {
+		return s.tasksShellData(ctx)
+	}
 	if tab != "agents" || s.ext.Agents == nil {
 		return ui.ShellData{}
 	}
@@ -719,6 +757,68 @@ func (s *Server) shellData(ctx context.Context, tab string) ui.ShellData {
 	refs := s.recentRefs(ctx)
 	return ui.ShellData{}.WithList(cards, mirrors, refs, s.ext.AgentsIdleAfter)
 }
+
+// tasksShellData is the Tasks tab's first paint: the board for the default
+// query (no filter, first page), built by tasksView — the one build GET
+// /ui/tasks serves — and the event mark it was built at (ui/tasks_list_ssr.go).
+//
+// 🔴 THE MARK IS READ BEFORE THE BOARD, AND THAT ORDER IS THE CONTRACT. An
+// event published after the mark read makes the stream's hello differ, so the
+// shell re-fetches; read after the board, an event landing between the two
+// reads would be missing from the board AND match the hello — a stale board
+// with nothing to correct it until the next event.
+//
+// ⚠ A FAILED BUILD DRAWS THE OLD WAY (the skeleton its own load fills), not an
+// error: that load reports its own failure (cgTasksListFailed).
+//
+// 🔴 THE DOCUMENT'S FIRST BYTE WAITS ON THE BOARD AT MOST shellBoardWithin. A
+// stalled database would otherwise hold the whole page — the shell, its
+// scripts, every other tab — for as long as it stalls. Past the bound the
+// build's context is cancelled and the document draws the skeleton, whose own
+// load (GET /ui/tasks) waits for the board as it always did. The wait is a
+// select, not only the context, so a store that does not honour cancellation
+// cannot hold the page either.
+func (s *Server) tasksShellData(ctx context.Context) ui.ShellData {
+	if s.ext.Notes == nil {
+		return ui.ShellData{}
+	}
+	mark := ""
+	if s.bus != nil {
+		mark = s.bus.Mark(requestOwner(ctx))
+	}
+	within := s.boardWithinOverride
+	if within <= 0 {
+		within = shellBoardWithin
+	}
+	bctx, cancel := context.WithTimeout(ctx, within)
+	defer cancel()
+	type built struct {
+		v   ui.TasksView
+		err error
+	}
+	done := make(chan built, 1)
+	// safeGo: a panic in the build is recovered and logged; the select below
+	// then falls back at the bound.
+	safeGo(s.logger, "shell board", func() {
+		v, err := s.tasksView(bctx, nil)
+		done <- built{v, err}
+	})
+	var b built
+	select {
+	case b = <-done:
+	case <-bctx.Done():
+		b.err = bctx.Err()
+	}
+	if b.err != nil {
+		s.logger.Printf("notes: shell board: %v (drawing the skeleton)", b.err)
+		return ui.ShellData{}
+	}
+	return ui.ShellData{}.WithTasks(b.v, mark)
+}
+
+// shellBoardWithin bounds the Tasks document's board build (tasksShellData),
+// as shellInstancesWithin bounds the Agents document's instance read.
+const shellBoardWithin = 1500 * time.Millisecond
 
 // shellInstancesWithin bounds the Agents document's instance read (shellData):
 // long enough for a healthy apiserver's two list calls, short enough that a
@@ -813,11 +913,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// only the events its user owns. A principal-less or scope-all request
 	// cannot reach here (requireSession admits a user), and would subscribe as
 	// nobody (0) if it did.
-	id, ch := s.bus.Subscribe(requestOwner(r.Context()))
+	owner := requestOwner(r.Context())
+	id, ch := s.bus.Subscribe(owner)
 	defer s.bus.Unsubscribe(id)
 
 	// Initial comment so clients know the stream is open and proxies flush.
 	fmt.Fprint(w, ": connected\n\n")
+	// muster.hello: this stream's event mark, read AFTER Subscribe — every event
+	// published after it is on this stream. A shell that drew its board at the
+	// same mark skips its first-open resync (ui/tasks_list_ssr.go); see
+	// sse.Broadcaster.Mark for why the order of the two reads is the guarantee.
+	hello, _ := json.Marshal(map[string]string{"mark": s.bus.Mark(owner)})
+	fmt.Fprintf(w, "event: muster.hello\ndata: %s\n\n", hello)
 	flusher.Flush()
 
 	ctx, cancel := s.streamContext(r.Context())
