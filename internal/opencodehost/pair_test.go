@@ -173,7 +173,7 @@ func TestRenewReplacesTheTokenBeforeItExpiresAndKeepsItInTheSameFile0600(t *test
 	defer srv.Close()
 	c, tokFile := pairedCredentials(t, srv)
 	before := len(srv.Requests())
-	old, oldExp := c.Token(), c.Expires()
+	old, oldExp := c.token(), c.Expires()
 	if renewed, err := c.Renew(context.Background(), time.Now()); renewed || err != nil {
 		t.Fatalf("a fresh token renewed: %v %v", renewed, err)
 	}
@@ -190,12 +190,12 @@ func TestRenewReplacesTheTokenBeforeItExpiresAndKeepsItInTheSameFile0600(t *test
 	if !renewed || err != nil {
 		t.Fatalf("renew: %v %v", renewed, err)
 	}
-	if c.Token() == old || !c.Expires().After(oldExp) {
+	if c.token() == old || !c.Expires().After(oldExp) {
 		t.Fatalf("the token did not move: %s → %s", oldExp, c.Expires())
 	}
 	fi, _ := os.Stat(tokFile)
 	tf, err := ReadTokenFile(tokFile)
-	if err != nil || tf.Token != c.Token() || fi.Mode().Perm() != 0o600 {
+	if err != nil || tf.Token != c.token() || fi.Mode().Perm() != 0o600 {
 		t.Fatalf("file %+v mode %v %v", tf, fi.Mode(), err)
 	}
 	// The renewal was the mint and nothing else, authenticated by the OLD
@@ -250,7 +250,7 @@ func TestKeepRenewedLogsByFingerprintOnly(t *testing.T) {
 	srv := opencodetest.New(fixturePassword)
 	defer srv.Close()
 	c, _ := pairedCredentials(t, srv)
-	old := c.Token()
+	old := c.token()
 	later := time.Now().Add(25 * 24 * time.Hour)
 	srv.SetNow(func() time.Time { return later })
 	var buf syncBuf
@@ -259,16 +259,16 @@ func TestKeepRenewedLogsByFingerprintOnly(t *testing.T) {
 	done := make(chan struct{})
 	go func() { KeepRenewed(ctx, c, logger, time.Hour, func() time.Time { return later }); close(done) }()
 	deadline := time.Now().Add(5 * time.Second)
-	for c.Token() == old && time.Now().Before(deadline) {
+	for c.token() == old && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
 	<-done
 	out := buf.String()
-	if c.Token() == old || !strings.Contains(out, "renewed the opencode token: "+Fingerprint(old)+" → "+Fingerprint(c.Token())) {
+	if c.token() == old || !strings.Contains(out, "renewed the opencode token: "+Fingerprint(old)+" → "+Fingerprint(c.token())) {
 		t.Fatalf("log %q", out)
 	}
-	for _, secret := range []string{old, c.Token(), fixturePassword, strings.SplitN(c.Token(), ".", 2)[1]} {
+	for _, secret := range []string{old, c.token(), fixturePassword, strings.SplitN(c.token(), ".", 2)[1]} {
 		if strings.Contains(out, secret) {
 			t.Fatalf("the log carries a secret: %q", out)
 		}
@@ -285,7 +285,7 @@ func TestKeepRenewedLogsByFingerprintOnly(t *testing.T) {
 	}
 	cancel2()
 	<-done2
-	if out := buf.String(); !strings.Contains(out, Fingerprint(c.Token())) || strings.Contains(out, c.Token()) {
+	if out := buf.String(); !strings.Contains(out, Fingerprint(c.token())) || strings.Contains(out, c.token()) {
 		t.Fatalf("failure log %q", out)
 	}
 }
@@ -320,28 +320,128 @@ func TestHealthSaysWhenTheTokenNeedsThePerson(t *testing.T) {
 	if h := c.Health(exp.Add(-5 * time.Hour)); h != "opencode token expires in 5 hours and has not been renewed" {
 		t.Fatalf("five hours left: %q", h)
 	}
-	// Renewal failing (the password rotated): said, with the reason, even
-	// with days to spare.
-	srv.Rotate("rotated-fixture-password")
+	// Renewal failing (the code it mints cannot be redeemed; the token still
+	// reads): said, with the reason, even with days to spare.
+	srv.RefuseRedeem(true)
 	at := exp.Add(-6 * 24 * time.Hour)
 	if _, err := c.Renew(context.Background(), at); err == nil {
 		t.Fatal("the renewal did not fail")
 	}
-	want := "opencode token expires in 6 days — renewal failing: renew the opencode token: " + ErrUnauthorized.Error()
-	if h := c.Health(at); h != want {
+	want := "opencode token expires in 6 days — renewal failing: renew the opencode token: opencode refused to redeem the pairing code it had just issued"
+	if h := c.Health(at); h != want || c.HealthState(at) != "failing: renew the opencode token: opencode refused to redeem the pairing code it had just issued" {
 		t.Fatalf("failing:\n got %q\nwant %q", h, want)
 	}
+	// The countdown moves the line, never the state.
+	if c.HealthState(at.Add(-24*time.Hour)) != c.HealthState(at) || c.Health(at.Add(-24*time.Hour)) == c.Health(at) {
+		t.Fatal("the state moved with the countdown, or the line did not")
+	}
+	srv.RefuseRedeem(false)
 	// Expired.
 	if h := c.Health(exp.Add(time.Second)); h != "the opencode token expired "+exp.UTC().Format(time.RFC3339)+": pair this host again with `muster-mirror opencode-pair`" {
 		t.Fatalf("expired: %q", h)
 	}
 	// A renewal that succeeds clears the failure.
-	srv.Rotate(fixturePassword)
 	srv.SetNow(func() time.Time { return at })
 	if ok, err := c.Renew(context.Background(), at); !ok || err != nil {
 		t.Fatalf("renew: %v %v", ok, err)
 	}
 	if h := c.Health(at); h != "" {
 		t.Fatalf("after a renewal: %q", h)
+	}
+}
+
+// TestHealthSaysTheServerRefusedTheToken: a 401 from ANY authenticated read
+// (here, listing sessions) makes Health say the token is refused, before
+// anything renewal knows; a transport failure says the server cannot be
+// reached; the next answered read clears either. A redeem's anonymous 401 is
+// not about the token, and is not counted.
+func TestHealthSaysTheServerRefusedTheToken(t *testing.T) {
+	srv := opencodetest.New(fixturePassword)
+	defer srv.Close()
+	c, _ := pairedCredentials(t, srv)
+	cl, err := c.Client()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if _, err := cl.Sessions(context.Background()); err != nil || c.Health(now) != "" {
+		t.Fatalf("a fresh token: %v %q", err, c.Health(now))
+	}
+	srv.Rotate("rotated-fixture-password")
+	if _, err := cl.Sessions(context.Background()); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("the read was not refused: %v", err)
+	}
+	if h := c.Health(now); h != "opencode refused the token: pair this host again with `muster-mirror opencode-pair`" || c.HealthState(now) != "refused" {
+		t.Fatalf("refused: %q", h)
+	}
+	srv.Rotate(fixturePassword)
+	if _, err := cl.Running(context.Background()); err != nil || c.Health(now) != "" {
+		t.Fatalf("an answered read did not clear it: %v %q", err, c.Health(now))
+	}
+	// Unreachable: the server gone.
+	srv.Close()
+	if _, err := cl.Running(context.Background()); err == nil {
+		t.Fatal("instrument check: a read of a closed server succeeded")
+	}
+	if h := c.Health(now); !strings.HasPrefix(h, "the opencode server cannot be reached: ") {
+		t.Fatalf("unreachable: %q", h)
+	}
+}
+
+// TestHealthWarnsAtExactlyThreeDays: the warning starts AT WarnBefore, not
+// after it.
+func TestHealthWarnsAtExactlyThreeDays(t *testing.T) {
+	srv := opencodetest.New(fixturePassword)
+	defer srv.Close()
+	c, _ := pairedCredentials(t, srv)
+	exp := c.Expires()
+	if h := c.Health(exp.Add(-WarnBefore)); h != "opencode token expires in 3 days and has not been renewed" {
+		t.Fatalf("at the boundary: %q", h)
+	}
+	if h := c.Health(exp.Add(-WarnBefore - time.Second)); h != "" {
+		t.Fatalf("a second before it: %q", h)
+	}
+}
+
+// TestRenewKeepsTheOldTokenWhenTheFileCannotBeWritten: a renewal whose token
+// file cannot be written errors, and the daemon keeps using the token in the
+// file — never one it could not keep.
+func TestRenewKeepsTheOldTokenWhenTheFileCannotBeWritten(t *testing.T) {
+	srv := opencodetest.New(fixturePassword)
+	defer srv.Close()
+	c, tokFile := pairedCredentials(t, srv)
+	old := c.token()
+	dir := filepath.Dir(tokFile)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	later := time.Now().Add(25 * 24 * time.Hour)
+	srv.SetNow(func() time.Time { return later })
+	renewed, err := c.Renew(context.Background(), later)
+	if renewed || err == nil || !strings.Contains(err.Error(), "write "+tokFile) {
+		t.Fatalf("renew into a read-only directory: %v %v", renewed, err)
+	}
+	if c.token() != old {
+		t.Fatal("the daemon switched to a token it could not keep")
+	}
+}
+
+// TestRenewRefusesATokenThatDoesNotOutliveTheOld: a server whose clock is
+// behind issues a token that expires before the current one; it is refused,
+// and neither the file nor the token changes.
+func TestRenewRefusesATokenThatDoesNotOutliveTheOld(t *testing.T) {
+	srv := opencodetest.New(fixturePassword)
+	defer srv.Close()
+	c, tokFile := pairedCredentials(t, srv)
+	old, orig := c.token(), mustRead(t, tokFile)
+	srv.SetNow(func() time.Time { return time.Now().Add(-48 * time.Hour) })
+	later := time.Now().Add(25 * 24 * time.Hour)
+	renewed, err := c.Renew(context.Background(), later)
+	if renewed || err == nil || !strings.Contains(err.Error(), "does not outlive the old one") {
+		t.Fatalf("a shorter token: %v %v", renewed, err)
+	}
+	if c.token() != old || !bytes.Equal(mustRead(t, tokFile), orig) {
+		t.Fatal("the shorter token was kept")
 	}
 }

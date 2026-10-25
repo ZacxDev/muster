@@ -107,7 +107,7 @@ func startOpenCode(ctx context.Context, path string, logger *log.Logger) *openco
 		logger.Printf("muster-mirror: opencode: %s", why)
 		return nil
 	}
-	logger.Printf("muster-mirror: opencode: token %s for %s, expires %s", opencodehost.Fingerprint(c.Token()), c.URL(), c.Expires().UTC().Format(time.RFC3339))
+	logger.Printf("muster-mirror: opencode: token %s for %s, expires %s", c.Fingerprint(), c.URL(), c.Expires().UTC().Format(time.RFC3339))
 	go opencodehost.KeepRenewed(ctx, c, logger, opencodehost.RenewEvery, time.Now)
 	return c
 }

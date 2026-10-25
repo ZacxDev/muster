@@ -64,7 +64,10 @@ Issuing a token takes two HTTP calls. This is what `opencode pair` does
   "opencode token expires in <n> — renewal failing: <reason>", "opencode token
   expires in <n> and has not been renewed", and "the opencode token expired
   <time>: pair this host again with `muster-mirror opencode-pair`"
-  (`Credentials.Health`).
+  (`Credentials.Health`). A 401 from any authenticated read says "opencode
+  refused the token: pair this host again with `muster-mirror opencode-pair`",
+  a transport failure "the opencode server cannot be reached: <why>"; the next
+  answered read clears either.
 - Per-client revocation or a scoped token would need an upstream change. None
   exists at `6ec5682`.
 
@@ -85,5 +88,8 @@ Issuing a token takes two HTTP calls. This is what `opencode pair` does
   shown in the view and in `-list -opencode` (above).
 - The token file is the daemon's only source of a token: a token handed over
   any other way could not be renewed.
-- `internal/opencodehost` makes only GETs, except that renewal (a test reads
-  the source and pins the set of requests it can send).
+- `internal/opencodehost` sends only GETs, except the token mint that pairing
+  and renewal make (`POST /api/pair`, then `GET /auth/connect/{code}`). A
+  test reads the package's source and pins the set of requests it can send.
+  That is a claim about this package: other packages get the token only
+  through `Credentials.Client()`, never the token itself.

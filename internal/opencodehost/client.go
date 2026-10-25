@@ -57,6 +57,26 @@ type Client struct {
 	base   string
 	secret func() string
 	http   *http.Client
+	// report, when set (Credentials.Client), hears what each AUTHENTICATED
+	// request said about the credential: ErrUnauthorized, a transport error,
+	// or nil for an answer.
+	report func(error)
+}
+
+// observed reports one authenticated request's outcome (report): resp nil
+// with err a transport failure, else the response.
+func (c *Client) observed(req *http.Request, resp *http.Response, err error) {
+	if c.report == nil || req.Header.Get("Authorization") == "" || errors.Is(err, context.Canceled) {
+		return
+	}
+	switch {
+	case err != nil:
+		c.report(err)
+	case resp.StatusCode == http.StatusUnauthorized:
+		c.report(ErrUnauthorized)
+	default:
+		c.report(nil)
+	}
 }
 
 // NewClient is a client of the server at base (CheckLocal), authenticating
@@ -99,6 +119,7 @@ func (c *Client) request(ctx context.Context, method, path string, q url.Values,
 // do sends req and decodes a 200's JSON body into out.
 func (c *Client) do(req *http.Request, out any) error {
 	resp, err := c.http.Do(req)
+	c.observed(req, resp, err)
 	if err != nil {
 		return err
 	}
@@ -284,6 +305,7 @@ func (c *Client) Events(ctx context.Context, connected func(), fn func(Event)) e
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := c.http.Do(req)
+	c.observed(req, resp, err)
 	if err != nil {
 		return err
 	}
