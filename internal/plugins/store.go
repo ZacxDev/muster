@@ -148,7 +148,7 @@ func scanPlugin(row pgx.Row) (Plugin, error) {
 }
 
 const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body, received_at, created_at, status,
-	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id, routed_to, routed_done_at, settle_reason`
+	attempts, last_attempt_at, delivered_at, agent_id, no_reply, sender_verified, task_id, routed_to, routed_done_at, settle_reason, thread`
 
 // messageDest is the scan destinations for messageCols, in its order, with the
 // status into *st. THE ONE COPY: every reader of messageCols scans through it,
@@ -157,7 +157,7 @@ const messageCols = `id, owner_id, plugin_id, external_id, sender, subject, body
 func messageDest(m *Message, st *string) []any {
 	return []any{&m.ID, &m.OwnerID, &m.PluginID, &m.ExternalID, &m.Sender, &m.Subject, &m.Body, &m.ReceivedAt,
 		&m.CreatedAt, st, &m.Attempts, &m.LastAttemptAt, &m.DeliveredAt, &m.AgentID, &m.NoReply, &m.SenderVerified, &m.TaskID, &m.RoutedTo, &m.RoutedDoneAt,
-		&m.SettleReason}
+		&m.SettleReason, &m.Thread}
 }
 
 func scanMessage(row pgx.Row) (Message, error) {
@@ -363,11 +363,11 @@ func (s *PGStore) submit(ctx context.Context, pluginID int64, in MessageIn, task
 		}
 		m, err = scanMessage(tx.QueryRow(ctx, `
 			INSERT INTO plugin_messages (plugin_id, external_id, sender, subject, body, received_at, no_reply, sender_verified, task_id,
-			                             routed_to, status, delivered_at)
+			                             routed_to, status, delivered_at, thread)
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::text,
 			        CASE WHEN $10::text IS NULL THEN 'queued' ELSE 'delivered' END,
-			        CASE WHEN $10::text IS NULL THEN NULL ELSE now() END) RETURNING `+messageCols,
-			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply, in.SenderVerified, taskID, routed))
+			        CASE WHEN $10::text IS NULL THEN NULL ELSE now() END, nullif($11, '')) RETURNING `+messageCols,
+			pluginID, in.ExternalID, in.Sender, in.Subject, in.Body, in.ReceivedAt, in.NoReply, in.SenderVerified, taskID, routed, in.Thread))
 		if err != nil {
 			return err
 		}

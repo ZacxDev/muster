@@ -51,6 +51,10 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// teardown's WithoutCancel copy of the mirror request's, so its principal
 		// is the mirror token's owner, who owns the task.
 		"(*Server).reopenTaskAfterDestroy → broadcast(ctx)",
+		// A task route's answer, added as a comment (session_routes.go): ctx is
+		// the route's owner (route_reply's mirror principal, or the sweep's
+		// routePrincipal), who owns the task.
+		"(*Server).relayTaskRoute → broadcast(ctx)",
 		"(*Server).handleAPITaskComment → broadcast(r.Context())",
 		// The machine-path task create (moved out of handleAPITaskCreate so a
 		// second door cannot skip a side effect); ctx is the request's. Its

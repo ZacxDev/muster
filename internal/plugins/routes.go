@@ -24,6 +24,11 @@ import (
 // approves otherwise. The plugin claims and sends it through the existing
 // claim/result path, unchanged.
 //
+// A route carries a TASK instead (task_id, migration 0053): the same row,
+// states, deadline and hand-back; its relay is a comment on the task
+// (internal/api's relayRoute writes it, then FinishTaskRoute ends the route
+// relayed), never a draft.
+//
 //	routed ──answer──▶ answered ──relay──▶ relayed  (approved draft)
 //	   │                      └──────────▶ fallback (pending draft)
 //	   ├─ deadline ─▶ timed_out
@@ -47,6 +52,12 @@ type RouteStore interface {
 	// CreateRouteFrom is CreateRoute recording who routed it (origin) on the
 	// session_route.routed audit row: the one body both run.
 	CreateRouteFrom(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error)
+	// CreateTaskRouteFrom opens a route carrying task taskID instead of a
+	// message: the same row, audit and one-open-route rule.
+	CreateTaskRouteFrom(ctx context.Context, chiefID, ownerID, taskID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error)
+	// FinishTaskRoute ends an answered task route relayed, once its answer is
+	// on the task as a comment.
+	FinishTaskRoute(ctx context.Context, routeID string) (Route, error)
 	// RoutableMessages is the principal's newest inbound messages a route can
 	// take, each with its latest route (RoutableMessage), at most limit.
 	RoutableMessages(ctx context.Context, limit int) ([]RoutableMessage, error)
@@ -62,6 +73,9 @@ type RouteStore interface {
 	RelayRoute(ctx context.Context, routeID, agentName string, approve bool) (Route, Draft, error)
 	TimeOutRoute(ctx context.Context, routeID string) (Route, bool, error)
 	ExpiredRoutes(ctx context.Context) ([]DueRoute, error)
+	// BindThread and BoundThread are the threads sessions started (threads.go).
+	BindThread(ctx context.Context, thread, claudeSession string) (bool, error)
+	BoundThread(ctx context.Context, thread string) (string, error)
 }
 
 var _ RouteStore = (*PGStore)(nil)
@@ -80,10 +94,13 @@ const (
 
 // Route is one row of session_routes.
 type Route struct {
-	ID          int64
-	RouteID     string
-	OwnerID     int64
+	ID      int64
+	RouteID string
+	OwnerID int64
+	// MessageID is the plugin message a route carries, TaskID the task: exactly
+	// one is set (0053's session_routes_one_item_check), the other 0.
 	MessageID   int64
+	TaskID      int64
 	AgentID     *int64
 	TargetKind  string
 	TargetKey   string
@@ -109,6 +126,9 @@ type RouteTarget struct {
 // (focus.KindMirror's value; internal/api pins the two equal).
 const RouteTargetMirror = "mirror"
 
+// IsTask reports whether r carries a task rather than a plugin message.
+func (r Route) IsTask() bool { return r.TaskID != 0 }
+
 // SentToMirrorSession reports whether r was routed to the mirrored Claude Code
 // session sid: route_reply's binding of an answer to the route's target.
 func (r Route) SentToMirrorSession(sid string) bool {
@@ -117,7 +137,7 @@ func (r Route) SentToMirrorSession(sid string) bool {
 
 // The route errors.
 var (
-	// ErrAlreadyRouted: the message already has an open route.
+	// ErrAlreadyRouted: the message (or task) already has an open route.
 	ErrAlreadyRouted = errors.New("plugins: this message is already routed to a session and not yet answered")
 	// ErrRouteNotFound: no such route for this principal (another owner's is the same).
 	ErrRouteNotFound = errors.New("plugins: no such route")
@@ -139,16 +159,21 @@ const RouteViaMCP = "mcp"
 // records it: the zero value is the chief (route_to_session; the row's
 // agent_id names it), RouteViaMCP the owner over the mirror MCP door, from
 // Host (proven by its mirror token) and Session (the Claude session the
-// caller's pane names: a claim).
+// caller's pane names: a claim), RouteViaThread muster itself, because the
+// message is a reply on Thread, which Session started (threads.go).
 type RouteOrigin struct {
-	Via, Host, Session string
+	Via, Host, Session, Thread string
 }
 
 // String is the origin as the audit row's routed_via spells it:
-// "mcp from <host>/<session>"; "" for the chief.
+// "mcp from <host>/<session>", "thread <thread> started by <session>";
+// "" for the chief.
 func (o RouteOrigin) String() string {
-	if o.Via == RouteViaMCP {
+	switch o.Via {
+	case RouteViaMCP:
 		return o.Via + " from " + o.Host + "/" + o.Session
+	case RouteViaThread:
+		return o.Via + " " + o.Thread + " started by " + o.Session
 	}
 	return o.Via
 }
@@ -177,13 +202,13 @@ func NewRouteID() string {
 // RouteObject is the audit_log `object` naming a route.
 func RouteObject(routeID string) string { return "session_route:" + routeID }
 
-const routeCols = `id, route_id, owner_id, plugin_message_id, agent_id, target_kind, target_key, target_label, send_queue_id,
+const routeCols = `id, route_id, owner_id, coalesce(plugin_message_id, 0), coalesce(task_id, 0), agent_id, target_kind, target_key, target_label, send_queue_id,
 	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error`
 
 func scanRoute(row pgx.Row) (Route, error) {
 	var r Route
 	var st string
-	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
+	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.TaskID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
 		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error)
 	r.State = RouteState(st)
 	return r, err
@@ -206,10 +231,13 @@ func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID i
 }
 
 // CreateRouteFrom is CreateRoute made by origin: the same checks, row and
-// audit, with routed_via on the audit row when origin is the owner over MCP.
+// audit, with routed_via on the audit row when origin is not the chief.
 // chiefID is still the chief the message was delivered to — the route's
 // agent_id, so the relay files its draft as that chief's and a hand-back goes
 // to that chief — whoever made the route.
+//
+// A route by thread (RouteViaThread) takes a queued message, handing it to the
+// chief in the same transaction: docs/plugins.md#a-reply-on-a-thread-a-session-started.
 func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
 	if chiefID <= 0 || ownerID <= 0 {
 		return Route{}, invalid("the agent has no owner")
@@ -219,6 +247,21 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 		m, inFlight := lockMessage(ctx, tx, messageID, 0)
 		if inFlight != nil && !errors.Is(inFlight, ErrReplyInFlight) {
 			return inFlight
+		}
+		if origin.Via == RouteViaThread {
+			if m.Status != StatusQueued {
+				return ErrNotFound
+			}
+			var err error
+			if m, err = scanMessage(tx.QueryRow(ctx, `UPDATE plugin_messages SET status = 'delivered', agent_id = $2,
+				delivered_at = now(), attempts = attempts + 1, last_attempt_at = now()
+				WHERE id = $1 RETURNING `+messageCols, messageID, chiefID)); err != nil {
+				return err
+			}
+			if err := audit(ctx, tx, "plugin.delivered", MessageObject(messageID), map[string]any{
+				"plugin_id": m.PluginID, "agent_id": chiefID, "outcome": string(StatusDelivered), "routed": true}); err != nil {
+				return err
+			}
 		}
 		if !DeliveredTo(m, chiefID, ownerID) {
 			return ErrNotFound
@@ -230,24 +273,80 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 			return inFlight
 		}
 		var err error
-		r, err = scanRoute(tx.QueryRow(ctx, `INSERT INTO session_routes (owner_id, route_id, plugin_message_id, agent_id,
-				target_kind, target_key, target_label, timeout_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8)) RETURNING `+routeCols,
-			ownerID, NewRouteID(), messageID, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds()))
+		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "plugin_message_id", "message_id", messageID, target, timeout, origin)
+		return err
+	})
+	return r, err
+}
+
+// CreateTaskRouteFrom: see RouteStore. The task must be one ownerID can see
+// (row-level security) and owns (0053's session_routes_task_is_owners); a
+// task that is neither is ErrNotFound, one already routed ErrAlreadyRouted.
+// The caller (internal/api's route_to_session) checks the chief's owner owns
+// it first, as every chief task tool does (ownersTask).
+func (s *PGStore) CreateTaskRouteFrom(ctx context.Context, chiefID, ownerID, taskID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
+	var r Route
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		r, err = insertRouteTx(ctx, tx, chiefID, ownerID, "task_id", "task_id", taskID, target, timeout, origin)
 		var pg *pgconn.PgError
-		if errors.As(err, &pg) && pg.Code == "23505" && pg.ConstraintName == "session_routes_one_open" {
-			return ErrAlreadyRouted
+		// Another owner's task (the trigger) and a missing one (the key) alike.
+		if errors.As(err, &pg) && ((pg.Code == "23514" && strings.HasPrefix(pg.Message, "session_routes: owner")) ||
+			(pg.Code == "23503" && pg.ConstraintName == "session_routes_task_id_fkey")) {
+			return ErrNotFound
 		}
+		return err
+	})
+	return r, err
+}
+
+// insertRouteTx writes one route carrying id in column col (plugin_message_id
+// or task_id) and its session_route.routed audit row (the id under key), the
+// ONE writer of a route row for both kinds.
+func insertRouteTx(ctx context.Context, tx pgx.Tx, chiefID, ownerID int64, col, key string, id int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
+	r, err := scanRoute(tx.QueryRow(ctx, `INSERT INTO session_routes (owner_id, route_id, `+col+`, agent_id,
+			target_kind, target_key, target_label, timeout_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8)) RETURNING `+routeCols,
+		ownerID, NewRouteID(), id, chiefID, target.Kind, target.Key, cutRunes(target.Label, 200), timeout.Seconds()))
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && pg.Code == "23505" && (pg.ConstraintName == "session_routes_one_open" || pg.ConstraintName == "session_routes_one_open_task") {
+		return Route{}, ErrAlreadyRouted
+	}
+	if err != nil {
+		return Route{}, err
+	}
+	detail := map[string]any{
+		key: id, "agent_id": chiefID, "target": target.Kind + ":" + target.Key,
+		"timeout_at": r.TimeoutAt.UTC().Format(time.RFC3339)}
+	if origin.Via != "" {
+		detail["routed_via"] = origin.String()
+	}
+	return r, audit(ctx, tx, "session_route.routed", RouteObject(r.RouteID), detail)
+}
+
+// FinishTaskRoute: see RouteStore. internal/api's relayRoute calls it once the
+// answer is on the task (notes.Store.AddCommentOnce: a retried relay finds the
+// comment there and writes none). A route already relayed is returned as it
+// is; one not answered is ErrRouteNotAnswered.
+func (s *PGStore) FinishTaskRoute(ctx context.Context, routeID string) (Route, error) {
+	var r Route
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		cur, err := lockRoute(ctx, tx, routeID)
 		if err != nil {
 			return err
 		}
-		detail := map[string]any{
-			"message_id": messageID, "agent_id": chiefID, "target": target.Kind + ":" + target.Key,
-			"timeout_at": r.TimeoutAt.UTC().Format(time.RFC3339)}
-		if origin.Via != "" {
-			detail["routed_via"] = origin.String()
+		r = cur
+		switch {
+		case cur.State == RouteRelayed:
+			return nil
+		case cur.State != RouteAnswered:
+			return ErrRouteNotAnswered
 		}
-		return audit(ctx, tx, "session_route.routed", RouteObject(r.RouteID), detail)
+		if r, err = scanRoute(tx.QueryRow(ctx, `UPDATE session_routes SET state = 'relayed', finished_at = now()
+			WHERE route_id = $1 RETURNING `+routeCols, routeID)); err != nil {
+			return err
+		}
+		return audit(ctx, tx, "session_route.relayed", RouteObject(routeID), map[string]any{"task_id": cur.TaskID})
 	})
 	return r, err
 }

@@ -103,8 +103,9 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - connector_standing_grants (0043, an owner's shared connector approvals).
 //   - suggest_preferences (0048, suggested replies' per-user toggle).
 //   - suggest_usage (0049, suggested replies' per-user counts).
+//   - plugin_threads (0054, the threads a mirrored session started).
 var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "connector_standing_grants", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
-	"jobs", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugins", "push_preferences",
+	"jobs", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_routes", "suggest_preferences", "suggest_usage", "uploads", "user_credentials"}
 
 // rlsTables is every owned table today: ownedTables plus ownedAfter0006.
@@ -154,6 +155,7 @@ var wantForeignKeys = []string{
 	"connectors|connectors_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"suggest_preferences|suggest_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"suggest_usage|suggest_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"plugin_threads|plugin_threads_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"github_connection|github_connection_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"invites|invites_claim_user_id_fkey|FOREIGN KEY (claim_user_id) REFERENCES users(id)",
 	"invites|invites_created_by_fkey|FOREIGN KEY (created_by) REFERENCES users(id)",
@@ -207,6 +209,8 @@ var wantForeignKeys = []string{
 	"session_routes|session_routes_draft_id_fkey|FOREIGN KEY (draft_id) REFERENCES plugin_reply_drafts(id) ON DELETE SET NULL",
 	"session_routes|session_routes_message_owner_fkey|FOREIGN KEY (plugin_message_id, owner_id) REFERENCES plugin_messages(id, owner_id) ON DELETE CASCADE",
 	"session_routes|session_routes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0053: 0027's shape, its owner checked by session_routes_task_is_owners.
+	"session_routes|session_routes_task_id_fkey|FOREIGN KEY (task_id) REFERENCES notes(id) ON DELETE CASCADE",
 	"send_queue|send_queue_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"task_sessions|task_sessions_note_owner_fkey|FOREIGN KEY (note_id, owner_id) REFERENCES notes(id, owner_id) ON DELETE CASCADE",
 	"task_sessions|task_sessions_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
