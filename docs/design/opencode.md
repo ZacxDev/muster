@@ -56,7 +56,40 @@ Issuing a token takes two HTTP calls. This is what `opencode pair` does
   It belongs in a mode-600 file referenced by path, never in this repository.
 - "Revoke muster's access" means "rotate the opencode service password". Say
   so in the operator docs; there is no narrower switch.
-- Renew before the 30 days run out, and alarm when renewal fails. A token that
-  silently expires is an unknown status, and unknown fails closed.
+- Renew before the 30 days run out, and show the person when it is not
+  working. muster-mirror renews within 10 days of expiry. When a renewal has
+  failed, when the token is within 3 days of expiry, or when it has expired,
+  the opencode window's rendered view shows the reason as its first notice
+  row, and `muster-mirror -list -opencode` prints the same line. The lines are
+  "opencode token expires in <n> — renewal failing: <reason>", "opencode token
+  expires in <n> and has not been renewed", and "the opencode token expired
+  <time>: pair this host again with `muster-mirror opencode-pair`"
+  (`Credentials.Health`). A 401 from any authenticated read says "opencode
+  refused the token: pair this host again with `muster-mirror opencode-pair`",
+  a transport failure "the opencode server cannot be reached: <why>"; the next
+  answered read clears either.
 - Per-client revocation or a scoped token would need an upstream change. None
   exists at `6ec5682`.
+
+### As built: pairing and renewal
+
+- `muster-mirror opencode-pair` mints the host's first token. It reads the url
+  and password from the service's registration file (`<state>/opencode/service-<channel>.json`,
+  `{id, version, url, pid, password}`, mode 0600; `packages/client/src/effect/service.ts`
+  calls it "the complete discovery contract"), refuses a url that is not
+  loopback, and makes the two calls above. It writes `{url, token}` to
+  `~/.muster/opencode-token`, 0600, and prints the token's fingerprint and
+  expiry only.
+- The daemon never reads the registration file: the server's url comes from
+  the token file.
+- The daemon renews the token within 10 days of its 30-day expiry, with the
+  token itself, and writes the new one to the same file before using it. A
+  failing renewal, a token within 3 days of expiry, and an expired token are
+  shown in the view and in `-list -opencode` (above).
+- The token file is the daemon's only source of a token: a token handed over
+  any other way could not be renewed.
+- `internal/opencodehost` sends only GETs, except the token mint that pairing
+  and renewal make (`POST /api/pair`, then `GET /auth/connect/{code}`). A
+  test reads the package's source and pins the set of requests it can send.
+  That is a claim about this package: other packages get the token only
+  through `Credentials.Client()`, never the token itself.
