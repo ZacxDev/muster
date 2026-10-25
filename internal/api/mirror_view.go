@@ -373,6 +373,9 @@ type mirrorPending struct {
 	target mirror.PasteTarget
 	// nav: the BROWSER submitted the form (see composer.go).
 	nav bool
+	// again: the person's explicit "Send again" (form field again=1) of a
+	// message that may have landed (sendNonces.hold).
+	again bool
 }
 
 // refuse answers a send that is not delivered: to the composer's script the
@@ -389,17 +392,33 @@ func (s *Server) mirrorRefuse(w http.ResponseWriter, r *http.Request, p mirrorPe
 // mirrorStepUpPage answers a browser-submitted send whose sign-in is stale: the
 // plain confirm page, carrying the send in hidden fields.
 func (s *Server) mirrorStepUpPage(w http.ResponseWriter, p mirrorPending, problem string) {
-	fields := []ui.ComposerField{{Name: "kind", Value: mirrorSendKind(p.target)}, {Name: "host", Value: p.e.Host}, {Name: "session", Value: p.e.Session}}
-	if p.window != "" {
-		fields = append(fields, ui.ComposerField{Name: "window", Value: p.window})
+	fields := append([]ui.ComposerField{{Name: "kind", Value: mirrorSendKind(p.target)}}, mirrorSendFields(p, p.nonce)...)
+	if p.again {
+		fields = append(fields, ui.ComposerField{Name: ui.SendAgainField, Value: "1"})
 	}
-	fields = append(fields, ui.ComposerField{Name: "text", Value: p.text}, ui.ComposerField{Name: "nonce", Value: p.nonce})
 	formDocument(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := ui.StepUpFormPage(ui.StepUpFormView{Action: mirrorConfirmSendPath, Fields: fields,
 		BackHref: mirrorSendPage(p.e, p.target), Window: stepup.WindowText(), Error: problem}).Render(w); err != nil {
 		s.logger.Printf("mirror: render confirm page: %v", err)
 	}
+}
+
+// mirrorSendFields is a send's address, text and nonce, as a form carries them.
+func mirrorSendFields(p mirrorPending, nonce string) []ui.ComposerField {
+	fields := []ui.ComposerField{{Name: "host", Value: p.e.Host}, {Name: "session", Value: p.e.Session}}
+	if p.window != "" {
+		fields = append(fields, ui.ComposerField{Name: "window", Value: p.window})
+	}
+	return append(fields, ui.ComposerField{Name: "text", Value: p.text}, ui.ComposerField{Name: "nonce", Value: nonce})
+}
+
+// mirrorSendPath is the send route of a target's composer.
+func mirrorSendPath(target mirror.PasteTarget) string {
+	if target == mirror.PasteActivePane {
+		return ui.MirrorTerminalSendPath
+	}
+	return ui.MirrorSendPath
 }
 
 // mirrorSendForm reads a send's form: its address, resolved against the
@@ -423,7 +442,7 @@ func (s *Server) mirrorSendForm(w http.ResponseWriter, r *http.Request, target m
 		return h, p, false
 	}
 	return h, mirrorPending{e: e, window: window, text: r.PostFormValue("text"), nonce: r.PostFormValue("nonce"),
-		target: target, nav: isDocumentNavigation(r)}, true
+		target: target, nav: isDocumentNavigation(r), again: r.PostFormValue(ui.SendAgainField) == "1"}, true
 }
 
 // mirrorSend is BOTH send routes: paste the text into a pane of the window and
@@ -551,7 +570,7 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
-	repeat, err := s.mirrorPaste(ctx, host, session, p.window, p.text, p.nonce, p.target)
+	repeat, err := s.mirrorSendHeld(ctx, p)
 	if repeat {
 		s.logger.Printf("mirror: a repeat of a message to %s/%s%s was not sent again", host, session, p.window)
 		sent()
@@ -566,6 +585,10 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 				return
 			}
 			refuseStale(w)
+			return
+		}
+		if errors.Is(err, errUnconfirmedRepeat) && p.nav {
+			s.heldRefusal(w, true, mirrorSendPath(p.target), mirrorSendFields(p, newSendNonce()), p.text, "Send again", mirrorSendPage(p.e, p.target))
 			return
 		}
 		status, notice, msg := http.StatusBadGateway, noticeFailed, err.Error()
@@ -624,6 +647,78 @@ func (s *Server) mirrorDeliver(ctx context.Context, w http.ResponseWriter, r *ht
 	// The operator wrote to the session: its open asks are answered here.
 	s.mirrorAddressed(ctx, host, p.e, p.target, p.text, 0)
 	sent()
+}
+
+// heldDestKey names where a message goes, for sendNonces.hold: the host, the
+// session, the window (as resolved: a queued message's Target.Window, a
+// Send's entry) and the pane it is pasted into.
+func heldDestKey(host, session, window string, target mirror.PasteTarget) string {
+	return strconv.Quote(host) + "|" + strconv.Quote(session) + "|" + strconv.Quote(window) + "|" + strconv.Itoa(int(target))
+}
+
+// isHeldFor reports whether text to that destination, by ctx's owner, may
+// already have landed and is not this request's explicit "Send again" (again).
+// 🔴 EVERY WAY A PERSON SENDS ASKS THIS: Send (mirrorSendHeld), Queue
+// (sendQueueAdd) and a queued row's Send now (sendQueueSendNow). Any one of
+// them left out is a second delivery from a copy of the page that never saw
+// the offer (audit #275 round 1, Y1: Queue and Send now).
+func (s *Server) isHeldFor(ctx context.Context, host, session, window string, target mirror.PasteTarget, text string, again bool) bool {
+	return !again && s.sends.isHeld(requestOwner(ctx), heldDestKey(host, session, window, target), text)
+}
+
+// settleHeld records how a delivery of text ended for the hold: one that may
+// have landed is held, a confirmed one releases it. Every delivery passes
+// here — a Send's, a Send now's and the dispatcher's (sendQueueDeliver) — so a
+// may-have-landed queued message is held like a Send's.
+func (s *Server) settleHeld(ctx context.Context, host, session, window string, target mirror.PasteTarget, text string, err error) {
+	owner, dest := requestOwner(ctx), heldDestKey(host, session, window, target)
+	switch {
+	case err == nil:
+		s.sends.release(owner, dest, text)
+	case errors.Is(err, mirror.ErrPasteUnconfirmed):
+		s.sends.hold(owner, dest, text)
+	}
+}
+
+// sendAgainPage answers a browser-submitted send (no script ran) that was
+// refused because the same message may already have been delivered: 409 and
+// a page whose one form is the "Send again" the composer's script would have
+// drawn (ui.SendAgainPage). no-store: it carries the message.
+func (s *Server) sendAgainPage(w http.ResponseWriter, v ui.SendAgainView) {
+	formDocument(w)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusConflict)
+	if err := ui.SendAgainPage(v).Render(w); err != nil {
+		s.logger.Printf("send again: render page: %v", err)
+	}
+}
+
+// heldRefusal answers a send refused by the hold (isHeldFor): to the script
+// 409, the reason and SendAgainHeader (it offers Send again); to a form the
+// browser submitted, sendAgainPage posting the same to action with fields.
+func (s *Server) heldRefusal(w http.ResponseWriter, nav bool, action string, fields []ui.ComposerField, text, button, back string) {
+	if nav {
+		s.sendAgainPage(w, ui.SendAgainView{Action: action, Fields: fields, Why: MirrorSendUnconfirmedRepeat, Text: text, Button: button, BackHref: back})
+		return
+	}
+	w.Header().Set(SendAgainHeader, "1")
+	http.Error(w, MirrorSendUnconfirmedRepeat, http.StatusConflict)
+}
+
+// mirrorSendHeld is a person's send (mirrorDeliver) through mirrorPaste, with
+// the hold on a message that may have landed (sendNonces.hold): a plain send
+// of the SAME text to the same place is refused like a repeat of its nonce
+// (errUnconfirmedRepeat, which offers "Send again"), under any nonce, until
+// the person sends it again explicitly or a send of it is confirmed.
+func (s *Server) mirrorSendHeld(ctx context.Context, p mirrorPending) (repeat bool, err error) {
+	if s.isHeldFor(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, p.again) {
+		return false, errUnconfirmedRepeat
+	}
+	repeat, err = s.mirrorPaste(ctx, p.e.Host, p.e.Session, p.window, p.text, p.nonce, p.target)
+	if !repeat {
+		s.settleHeld(ctx, p.e.Host, p.e.Session, p.e.Window, p.target, p.text, err)
+	}
+	return repeat, err
 }
 
 // mirrorPaste is the DELIVERY itself — what a person's Send (mirrorDeliver) and

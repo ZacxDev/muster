@@ -479,8 +479,10 @@ func mirrorComposerScript() g.Node {
   // 🔴 "SEND AGAIN" IS THE ONLY RETRY OF A SEND THAT MAY HAVE LANDED. When the
   // host never confirmed a send (the answer carries X-Muster-Send-Again), the
   // server keeps its nonce: the same message re-sent with it is refused,
-  // because it may be in the conversation already. This button is the
-  // person's explicit retry: it mints a NEW nonce, then sends.
+  // because it may be in the conversation already — and so is the same text
+  // under any other nonce (internal/api sendNonces.hold). This button is the
+  // person's explicit retry: it mints a NEW nonce and says it is Send again
+  // (againField), then sends.
   var againBtn = null;
   function offerAgain(sub) {
     if (!againBtn) {
@@ -492,13 +494,25 @@ func mirrorComposerScript() g.Node {
       note.parentNode.insertBefore(againBtn, note.nextSibling);
     }
     againBtn.hidden = false;
-    // The nonce is HELD while Send again is offered: a page shown again from
-    // a cache renews every other nonce (restore.go renewNonces) but not this
-    // one, so a plain Send of the message is still refused.
-    form.setAttribute('` + NonceHeldAttr + `', '');
-    againBtn.onclick = function () { againBtn.hidden = true; form.removeAttribute('` + NonceHeldAttr + `'); renew(); say(''); post(sub); };
+    // A plain Send of the message stays refused while this is offered — on
+    // this page, and on any copy of it (a restore renews the nonce, a Back
+    // from the HTTP cache shows the page as first served): the server holds
+    // the message by its text (internal/api sendNonces.hold).
+    againBtn.onclick = function () { againBtn.hidden = true; renew(); say(''); againField(true); post(sub); };
   }
-  function dropAgain() { if (againBtn) againBtn.hidden = true; form.removeAttribute('` + NonceHeldAttr + `'); }
+  function dropAgain() { if (againBtn) againBtn.hidden = true; }
+  // againField: the field (again=1) that tells the server this send IS the
+  // person's Send again. 🔴 The server holds a message that may have landed by
+  // its TEXT, under any nonce (internal/api sendNonces.hold), so a plain Send
+  // of it from a copy of this page that never saw the offer (a Back answered
+  // from the HTTP cache) is refused and offers Send again here. A field rather
+  // than a flag in body(): the browser's own submit (native) carries it too.
+  // It goes once the send has its answer (other than a step-up's).
+  function againField(on) {
+    var f = form.querySelector('input[name="` + SendAgainField + `"]');
+    if (on && !f) { f = document.createElement('input'); f.type = 'hidden'; f.name = '` + SendAgainField + `'; f.value = '1'; form.appendChild(f); }
+    if (!on && f) f.parentNode.removeChild(f);
+  }
   // The Queue button (send_queue.go), when the composer has one: a submit
   // whose formaction is the queue route.
   var queueBtn = document.getElementById('mv-queue-send');
@@ -549,6 +563,9 @@ func mirrorComposerScript() g.Node {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } });
     } catch (e) { native(sub); return; }
     return req.then(function (r) {
+        // A step-up keeps it: the send it confirms (post again) is still the
+        // Send again.
+        if (!(r.status === 403 && r.headers.get('X-Muster-Step-Up'))) againField(false);
         if (r.ok) {
           dropAgain();
           if (input.value === sent) { input.value = ''; if (window.musterComposerFit) window.musterComposerFit(input); }
@@ -590,6 +607,7 @@ func mirrorComposerScript() g.Node {
     if (typeof fetch !== 'function' || typeof URLSearchParams !== 'function') return;
     e.preventDefault();
     say('');
+    againField(false);
     var sub = ('submitter' in e) ? e.submitter : clicked;
     clicked = null;
     try { post(sub); } catch (err) { native(sub); }

@@ -406,6 +406,9 @@ const (
 type sendNonces struct {
 	mu   sync.Mutex
 	seen map[string]sendNonce
+	// held: a message that MAY have landed, by its owner, its destination
+	// and its text — WHATEVER its nonce (hold).
+	held map[string]time.Time
 	now  func() time.Time
 }
 
@@ -506,6 +509,65 @@ func (n *sendNonces) begin(owner int64, nonce, text string) (repeat bool, finish
 			fin(nonceFailed)
 		}
 	}
+}
+
+// 🔴 A MESSAGE THAT MAY HAVE LANDED IS HELD BY ITS TEXT, NOT ONLY BY ITS
+// NONCE. claim refuses a repeat of an unconfirmed send under the SAME nonce,
+// and the composer keeps that nonce while it offers "Send again". But a page
+// can be shown again WITHOUT the composer's state: a Back answered from the
+// HTTP cache runs the document as first served (no offer, and restore.go
+// renews its nonce, because a page shown again must not have a delivered
+// message's nonce swallow the next one). A plain Send of the same words from
+// that copy carried a fresh nonce and was delivered a second time (audit #270,
+// round 2's residual). So the server, which is the one party that knows the
+// first try may have landed, refuses a plain send of the same text to the same
+// destination by the same owner — under any nonce — until the person says
+// "Send again" (again), or a send of it is confirmed.
+//
+// dest names where the message goes (mirrorDestKey). Kept as long as a nonce
+// is (sendNonceTTL), and bounded the same way.
+func sendHeldKey(owner int64, dest, text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return strconv.FormatInt(owner, 10) + "|" + dest + "|" + hex.EncodeToString(sum[:])
+}
+
+// isHeld reports whether text to dest may already have landed (hold).
+func (n *sendNonces) isHeld(owner int64, dest, text string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	at, ok := n.held[sendHeldKey(owner, dest, text)]
+	return ok && n.clock().Sub(at) < sendNonceTTL
+}
+
+// hold records that text to dest may have landed; release forgets it (a send
+// of it was confirmed).
+func (n *sendNonces) hold(owner int64, dest, text string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	now := n.clock()
+	if n.held == nil {
+		n.held = map[string]time.Time{}
+	}
+	if len(n.held) >= sendNonceMax {
+		oldest, oldestAt := "", now
+		for k, at := range n.held {
+			if now.Sub(at) >= sendNonceTTL {
+				delete(n.held, k)
+			} else if !at.After(oldestAt) {
+				oldest, oldestAt = k, at
+			}
+		}
+		if len(n.held) >= sendNonceMax && oldest != "" {
+			delete(n.held, oldest)
+		}
+	}
+	n.held[sendHeldKey(owner, dest, text)] = now
+}
+
+func (n *sendNonces) release(owner int64, dest, text string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	delete(n.held, sendHeldKey(owner, dest, text))
 }
 
 // evict makes room for one more claim: expired ones go, and at the cap the

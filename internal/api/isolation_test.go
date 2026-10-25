@@ -139,6 +139,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /health":                           classPublic,
 	"GET /login":                            classPublic,
 	"GET /manifest.webmanifest":             classPublic,
+	"GET /.well-known/assetlinks.json":      classPublic,
 	"GET /metrics":                          classPublic,
 	"GET /readyz":                           classPublic,
 	"GET /static/":                          classPublic,

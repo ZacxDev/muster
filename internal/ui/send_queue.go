@@ -866,21 +866,29 @@ func sendQueueScript() g.Node {
   });
 
   // Send now: sends a queued message at once, under this session's sign-in; a
-  // stale one asks "Confirm it's you" and sends.
-  function sendNow(f) {
+  // stale one asks "Confirm it's you" and sends. A message a Send may already
+  // have delivered is refused (its answer carries the Send-again header):
+  // asked once, like a Retry's, and sent again only on a yes (again=1).
+  function sendNow(f, again) {
     var b = f.querySelector('button');
     if (b) b.disabled = true;
-    return fetch(f.getAttribute('action'), { method: 'POST', credentials: 'same-origin',
-      headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    var body = new URLSearchParams();
+    if (again) body.append('` + SendAgainField + `', '1');
+    return fetch(f.getAttribute('action'), { method: 'POST', body: body, credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } })
       .then(function (r) {
         if (r.ok) { noteOK('Sent.'); return; }
         if (r.status === 403 && r.headers.get('X-Muster-Step-Up') && window.musterStepUp) {
           window.musterStepUp.stale();
-          window.musterStepUp.ask('', function () { return sendNow(f); });
+          window.musterStepUp.ask('', function () { return sendNow(f, again); });
           return;
         }
         if (b) b.disabled = false;
-        return r.text().then(function (t) { note(t.trim() || ('Not sent (HTTP ' + r.status + ')')); });
+        var held = !again && r.status === 409 && r.headers.get('` + SendAgainHeader + `');
+        return r.text().then(function (t) {
+          if (held && window.confirm(t.trim() + ' Send it now anyway?')) return sendNow(f, true);
+          note(t.trim() || ('Not sent (HTTP ' + r.status + ')'));
+        });
       })
       .then(load, load);
   }

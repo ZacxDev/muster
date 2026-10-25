@@ -497,6 +497,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// The runtimes a chief session may be started on (MUSTER_CHIEF_SESSION_RUNTIMES;
 	// internal/api/session_runtime.go). Empty: the picker is not drawn.
 	ext.SessionRuntimes = cfg.ChiefSessionRuntimes
+	// The Android app's Digital Asset Links (MUSTER_ANDROID_PACKAGE and
+	// MUSTER_ANDROID_CERT_SHA256): nil, /.well-known/assetlinks.json is 404.
+	// No database needed: it is configuration, not data. validate has already
+	// refused a bad pair.
+	assetLinks, err := cfg.assetLinks()
+	if err != nil {
+		return nil, err
+	}
+	ext.AssetLinks = assetLinks
 	ext.SessionLiveness = buildSessionLiveness(cfg, port, logger)
 	// 🔴 THE ZERO POLICY IS PRODUCTION'S. Only a binary built with the e2e tag
 	// sets this hook (e2econnect.go), so a deployable binary cannot be configured
@@ -1200,6 +1209,15 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	} else {
 		l.Printf("android pairing: %s is unset, so a phone with no strong biometric pairs read-only "+
 			"(a biometric-or-PIN step-up key is refused)", envAndroidAllowPINKeys)
+	}
+	// The Android app's passkeys, in both directions: off, the app's
+	// sign-in and "Confirm it's you" can offer a passkey that Android refuses.
+	if len(ext.AssetLinks) > 0 {
+		l.Printf("android passkeys: %s serves %s=%s with certificate(s) %s=%s",
+			api.AssetLinksPath, envAndroidPackage, a.cfg.AndroidPackage, envAndroidCertSHA256, a.cfg.AndroidCertSHA256)
+	} else {
+		l.Printf("android passkeys: OFF — %s and %s are unset, so %s is 404 and Android refuses the app's passkeys for this site",
+			envAndroidPackage, envAndroidCertSHA256, api.AssetLinksPath)
 	}
 
 	if ext.Connectors != nil {

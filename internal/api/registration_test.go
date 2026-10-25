@@ -113,6 +113,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		Push:            stubPush{},
 		Devices:         principalDevices{},
 		AllowPINKeys:    true,
+		AssetLinks:      []byte(`[]`),
 		Transcriber:     stubTranscriber{},
 		Jobs:            stubJobs{},
 		JobWorkspace:    stubJobWorkspace{},

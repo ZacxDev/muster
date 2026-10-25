@@ -25,6 +25,8 @@ var navBare = map[string]string{
 		"whose only exits are its form and its Back link — a nav there invites leaving with the send unconfirmed",
 	"SendQueueRetryConfirmPage": "the no-script \"send it again?\" confirm for a queued message: the same " +
 		"one-question interstitial shape as StepUpFormPage",
+	"SendAgainPage": "the no-script \"Send it again?\" for a message that may already have been delivered: " +
+		"the same one-question interstitial shape as StepUpFormPage",
 }
 
 // navLedgerNav is every document that draws the nav.
@@ -128,6 +130,7 @@ var documentStreams = map[string]int{
 	"MirrorViewPage":            0,
 	"StepUpFormPage":            0,
 	"SendQueueRetryConfirmPage": 0,
+	"SendAgainPage":             0,
 	"NavDocument":               0,
 }
 

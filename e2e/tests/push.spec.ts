@@ -336,12 +336,27 @@ test('tapping an attention notification follows its tap route in the open tab', 
   const registered = context.serviceWorkers().length ? Promise.resolve(context.serviceWorkers()[0]) : context.waitForEvent('serviceworker');
   await page.goto(origin + '/tasks');
   const worker = await registered;
-  await page.evaluate(async () => {
-    await navigator.serviceWorker.ready;
-    if (!navigator.serviceWorker.controller) {
-      await new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', r, { once: true }));
-    }
-  });
+  // 🔴 THE TAB MUST BE CONTROLLED, AND WAITING FOR controllerchange CANNOT
+  // PROMISE THAT. This used to await `ready` and then, if the page had no
+  // controller, wait for a controllerchange. That event never came whenever the
+  // /tasks navigation began while the first worker was still installing: by
+  // the time `ready` resolved the worker was already `activated` (its
+  // clients.claim() had run), yet the page was uncontrolled, listed by
+  // clients.matchAll only with includeUncontrolled. Nothing was left to claim
+  // it, and the test hung to its 60 s timeout (measured with the worker pinned to 2
+  // loaded CPUs: 9 of 20 runs at 0374a081, 8 of 20 at bff73e82; #278's heavier
+  // install widened the window). So, once a worker is active, a document that is
+  // still uncontrolled is RELOADED. A navigation that starts after a worker is
+  // active is always handled by that worker (fetch waits for `activated`), so
+  // the second document is controlled. The assertion below fails at once if it
+  // is not, instead of hanging.
+  const controlled = () =>
+    page.evaluate(async () => {
+      await navigator.serviceWorker.ready;
+      return !!navigator.serviceWorker.controller;
+    });
+  if (!(await controlled())) await page.reload();
+  expect(await controlled(), 'the open tab is controlled by the worker').toBe(true);
   await worker.evaluate(() => {
     type Note = { title: string; tag: string; data: Record<string, string> };
     const scope = self as unknown as {

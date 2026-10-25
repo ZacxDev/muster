@@ -39,6 +39,7 @@ DELETE /connectors/{name}
 DELETE /tasks/{id}
 DELETE /tasks/{id}/comments/{cid}
 DELETE /tasks/{id}/tags/{tag}
+GET /.well-known/assetlinks.json
 GET /account
 GET /account/credentials
 GET /account/devices/live

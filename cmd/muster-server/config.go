@@ -253,6 +253,13 @@ const (
 	// key"): set, a phone with no strong biometric may pair with a
 	// biometric-or-PIN step-up key; unset, it pairs read-only.
 	envAndroidAllowPINKeys = "MUSTER_ANDROID_ALLOW_PIN_KEYS"
+	// The Android app's Digital Asset Links (internal/api/assetlinks.go): its
+	// package name and the SHA-256 fingerprints of its signing certificates
+	// (comma-separated). Both set, /.well-known/assetlinks.json lets the app's
+	// WebView use this site's passkeys; both unset, that path is 404. One
+	// without the other refuses boot.
+	envAndroidPackage    = "MUSTER_ANDROID_PACKAGE"
+	envAndroidCertSHA256 = "MUSTER_ANDROID_CERT_SHA256"
 
 	// --- agent provisioning (see provisioner.go) ---
 	envAgentProvisioner  = "MUSTER_AGENT_PROVISIONER"
@@ -659,6 +666,11 @@ type config struct {
 	PushExtraHosts string
 	// AndroidAllowPINKeys is MUSTER_ANDROID_ALLOW_PIN_KEYS.
 	AndroidAllowPINKeys bool
+	// AndroidPackage / AndroidCertSHA256 are MUSTER_ANDROID_PACKAGE and
+	// MUSTER_ANDROID_CERT_SHA256 as read; validate builds them
+	// (api.BuildAssetLinks) and assetLinks returns the body.
+	AndroidPackage    string
+	AndroidCertSHA256 string
 
 	// AgentProvisioner names the provisioning backend: one of
 	// provisionerChoices. Default provisionerNone, which leaves
@@ -1038,6 +1050,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		VAPIDSubject:         strings.TrimSpace(getenv(envVAPIDSubject)),
 		PushExtraHosts:       strings.TrimSpace(getenv(envPushExtraHosts)),
 		AndroidAllowPINKeys:  envFlag(getenv, envAndroidAllowPINKeys),
+		AndroidPackage:       strings.TrimSpace(getenv(envAndroidPackage)),
+		AndroidCertSHA256:    strings.TrimSpace(getenv(envAndroidCertSHA256)),
 
 		AgentProvisioner:  strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
 		AgentGateway:      strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),
@@ -1600,6 +1614,9 @@ func (c config) validate() error {
 	if _, err := push.ParseExtraHosts(c.PushExtraHosts); err != nil {
 		return fmt.Errorf("%s: %v", envPushExtraHosts, err)
 	}
+	if _, err := c.assetLinks(); err != nil {
+		return err
+	}
 	if err := c.validateSTT(); err != nil {
 		return err
 	}
@@ -1650,6 +1667,16 @@ func (c config) vapid() push.VAPIDConfig {
 func (c config) pushAllowlist() push.Allowlist {
 	hosts, _ := push.ParseExtraHosts(c.PushExtraHosts)
 	return push.NewAllowlist(hosts)
+}
+
+// assetLinks is the body of /.well-known/assetlinks.json, nil when neither
+// MUSTER_ANDROID_PACKAGE nor MUSTER_ANDROID_CERT_SHA256 is set.
+func (c config) assetLinks() ([]byte, error) {
+	body, err := api.BuildAssetLinks(c.AndroidPackage, c.AndroidCertSHA256)
+	if err != nil {
+		return nil, fmt.Errorf("%s / %s: %v", envAndroidPackage, envAndroidCertSHA256, err)
+	}
+	return body, nil
 }
 
 // validateVAPID refuses a partial VAPID triple, and a complete one that is not
