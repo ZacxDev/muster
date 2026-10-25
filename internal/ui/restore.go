@@ -50,14 +50,34 @@ import (
 // the refusal check and a fresh send nonce, which it gets here — on every
 // back_forward load, whether or not it came from the cache.
 //
+// 🔴 WHAT SUCH A COPY CANNOT HAVE IS ITS COMPOSER'S STATE. Chromium serves a
+// Back from the HTTP cache whenever the back/forward cache does not: a browser
+// with none, a page that was not eligible, or an entry evicted (600 s, or past
+// the cache's size; measured: CDP CacheLimit, then navigation type
+// back_forward, transferSize 0). A message that may have landed has no "Send
+// again" offer and no held nonce there. That protection is the SERVER's
+// (internal/api sendNonces.hold: the same text is refused under any nonce
+// until the person says Send again), not this script's.
+//
 // ⚠ ONLY THE TOP WINDOW CHECKS. The view swap draws the other view in a frame
 // (view_swap.go); the frame is restored with the page and reconnects its own
 // streams, but the build, the age and the refusal are decided once, by the
 // page, whose reload takes the frame with it.
 
 // RestoreMaxAwayMs is how long a page may sit in the back/forward cache and
-// still be shown as it was: past it, a restore reloads. Chromium itself keeps
-// an entry about this long; the bound is muster's, so it holds in any browser.
+// still be shown as it was: past it, a restore reloads.
+//
+// ⚠ IN CHROMIUM THIS RULE ALMOST NEVER FIRES; IT IS KEPT FOR THE OTHERS.
+// Chromium drops a cached page at 600 s by itself
+// (kDefaultTimeToLiveInBackForwardCacheInSeconds; measured in Chromium 153: a
+// static page 590 s away was restored, 610 s away it was not, and Back loaded
+// it from the HTTP cache), so a Chromium restore is already under this bound.
+// WebKit keeps an entry for 30 min (Settings.yaml
+// BackForwardCacheExpirationInterval) and Firefox for 30 min
+// (browser.sessionhistory.contentViewerTimeout): there a page away for 10 to
+// 30 minutes IS restored, and this is what reloads it. That covers Safari and
+// every browser on iOS. Not measured here: the WebKit and Firefox builds
+// Playwright drives have their back/forward caches turned off.
 const RestoreMaxAwayMs = 10 * 60 * 1000
 
 // RestoreChipDelayMs is how long a restore catches up before its Updating…
@@ -165,8 +185,11 @@ func restoreJS(feat Features) string {
       // ⚠ EXCEPT A HELD ONE. A composer offering "Send again" (a send that may
       // have landed; mirror_compose.go) keeps its nonce on purpose: the server
       // refuses a plain re-Send under it, and only the explicit Send again
-      // mints a new one. Renewing it here would make a plain Send deliver the
-      // same message a second time (audit #270 round 2). Such a form carries
+      // mints a new one. Renewed here, a plain Send delivered the same message
+      // a second time (audit #270 round 2). The server now also refuses that
+      // send by its text (internal/api sendNonces.hold), which is what covers
+      // a copy from the HTTP cache; the held nonce keeps the restored page's
+      // own answer the one its live page gave. Such a form carries
       // NonceHeldAttr while the offer stands.
       function renewNonces() {
         document.querySelectorAll('input[name="nonce"]').forEach(function (n) {

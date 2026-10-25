@@ -496,9 +496,21 @@ func mirrorComposerScript() g.Node {
     // a cache renews every other nonce (restore.go renewNonces) but not this
     // one, so a plain Send of the message is still refused.
     form.setAttribute('` + NonceHeldAttr + `', '');
-    againBtn.onclick = function () { againBtn.hidden = true; form.removeAttribute('` + NonceHeldAttr + `'); renew(); say(''); post(sub); };
+    againBtn.onclick = function () { againBtn.hidden = true; form.removeAttribute('` + NonceHeldAttr + `'); renew(); say(''); againField(true); post(sub); };
   }
   function dropAgain() { if (againBtn) againBtn.hidden = true; form.removeAttribute('` + NonceHeldAttr + `'); }
+  // againField: the field (again=1) that tells the server this send IS the
+  // person's Send again. 🔴 The server holds a message that may have landed by
+  // its TEXT, under any nonce (internal/api sendNonces.hold), so a plain Send
+  // of it from a copy of this page that never saw the offer (a Back answered
+  // from the HTTP cache) is refused and offers Send again here. A field rather
+  // than a flag in body(): the browser's own submit (native) carries it too.
+  // It goes once the send has its answer (other than a step-up's).
+  function againField(on) {
+    var f = form.querySelector('input[name="again"]');
+    if (on && !f) { f = document.createElement('input'); f.type = 'hidden'; f.name = 'again'; f.value = '1'; form.appendChild(f); }
+    if (!on && f) f.parentNode.removeChild(f);
+  }
   // The Queue button (send_queue.go), when the composer has one: a submit
   // whose formaction is the queue route.
   var queueBtn = document.getElementById('mv-queue-send');
@@ -549,6 +561,9 @@ func mirrorComposerScript() g.Node {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Requested-With': 'XMLHttpRequest' } });
     } catch (e) { native(sub); return; }
     return req.then(function (r) {
+        // A step-up keeps it: the send it confirms (post again) is still the
+        // Send again.
+        if (!(r.status === 403 && r.headers.get('X-Muster-Step-Up'))) againField(false);
         if (r.ok) {
           dropAgain();
           if (input.value === sent) { input.value = ''; if (window.musterComposerFit) window.musterComposerFit(input); }
@@ -590,6 +605,7 @@ func mirrorComposerScript() g.Node {
     if (typeof fetch !== 'function' || typeof URLSearchParams !== 'function') return;
     e.preventDefault();
     say('');
+    againField(false);
     var sub = ('submitter' in e) ? e.submitter : clicked;
     clicked = null;
     try { post(sub); } catch (err) { native(sub); }

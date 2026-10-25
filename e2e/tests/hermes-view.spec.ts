@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import http from 'node:http';
+import { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
@@ -241,8 +243,9 @@ test('a send that may have been submitted offers Send again, and the same nonce 
 // 🔴 …AND NOT BY A BACK EITHER. A page restored from the back/forward cache
 // renews its send nonces (restore.go renewNonces), so a message sent from it
 // is not taken for the one sent before it left — except the nonce a composer
-// HOLDS while it offers "Send again": renewed, a plain Send would deliver the
-// may-have-landed message a second time (audit #270 round 2). In lib/
+// HOLDS while it offers "Send again": renewed, a plain Send delivered the
+// may-have-landed message a second time (audit #270 round 2; the server's hold
+// by text, below, now refuses that too). In lib/
 // bfcache.ts's browser, the only one here that can restore a page.
 test('a send that may have been submitted is still refused after Back restores the page', async ({ playwright }) => {
   const browser = await launchWithBfcache(playwright.chromium);
@@ -287,6 +290,117 @@ test('a send that may have been submitted is still refused after Back restores t
     expect(fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8')).not.toContain(text);
   } finally {
     await browser.close();
+  }
+});
+
+// 🔴 …AND NOT FROM A COPY THE HTTP CACHE HANDS BACK EITHER (audit #270, round
+// 2's residual). The view documents are `private, no-cache` (internal/api
+// viewDocument), and Chromium answers a history navigation from the HTTP cache
+// WITHOUT revalidating whenever the back/forward cache cannot serve it
+// (measured: navigation type back_forward, transferSize 0, no request). That
+// copy is the document AS FIRST SERVED: no "Send again" offer, and a nonce
+// restore.go renews (a page shown again must not have a delivered message's
+// nonce swallow the next one). A plain Send of the may-have-landed message
+// from it used to be delivered a second time, silently. The server now holds
+// such a message by its TEXT (internal/api sendNonces.hold): the plain Send is
+// refused and offers Send again.
+//
+// The fake host's UNCONFIRMED-LANDED writes the row and THEN answers "may have
+// been submitted" (the row came late), so every delivery is a row: the count
+// below is the number of times the message reached the conversation.
+//
+// Two ways the back/forward cache does not serve a Back, both measured here:
+// a browser with none (the suite's own: lib/bfcache.ts), and one WITH it whose
+// entry was evicted — eight pages later, past Chromium's cache size (CDP
+// reason CacheLimit), which history.go(-8) then reaches.
+const deliveries = (text: string) =>
+  fs.readFileSync(path.join(home, 'rows.jsonl'), 'utf8').split('\n').filter((l) => l && JSON.parse(l).content === text).length;
+
+async function sendMayHaveLanded(page: Page, text: string): Promise<void> {
+  // Idle FIRST: a case before this one that failed part-way may have left
+  // the window reported busy, and the view's box stays disabled until idle.
+  writeFileAtomic(path.join(rig.dir, 'hermes-windows'), `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+  await rig.login(page);
+  await expect
+    .poll(async () => {
+      await page.goto(rig.origin + viewOf('@2'));
+      return page.locator('#mv-input').isEnabled();
+    }, { message: `the Hermes view (mirror log:\n${rig.log})`, timeout: 30_000 })
+    .toBe(true);
+  writeFileAtomic(path.join(rig.dir, 'hermes-windows'), `herm|@2|0|1|${t0 - 10}|${sid}|idle\nherm|@3|1|0|${t0 - 20}||\n`);
+  let first = '';
+  for (let i = 0; i < 30; i++) {
+    await page.locator('#mv-input').fill(text);
+    const [resp] = await Promise.all([
+      page.waitForResponse((r) => new URL(r.url()).pathname === '/mirror/view/send'),
+      page.locator('#mv-send').click(),
+    ]);
+    first = await resp.text();
+    if (!first.includes('Hermes is working')) break;
+    await page.waitForTimeout(200);
+  }
+  expect(first).toContain('May have been submitted');
+  await expect(page.locator('#mv-send-again')).toBeVisible();
+  expect(deliveries(text), 'the first try DID land (late)').toBe(1);
+}
+
+// fromTheCopy: on the copy Back showed, a plain Send of the same text is
+// refused and delivers nothing; the explicit Send again delivers it.
+async function fromTheCopy(page: Page, text: string): Promise<void> {
+  await expect(page).toHaveURL(/\/mirror\/view/);
+  const nav = await page.evaluate(() => {
+    const n = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
+    return { type: n.type, fromCache: n.transferSize === 0 };
+  });
+  expect(nav, 'Back showed the HTTP cache\'s copy, as first served').toEqual({ type: 'back_forward', fromCache: true });
+  await expect(page.locator('#mv-send-again'), 'a copy as first served offers nothing').toHaveCount(0);
+  await expect(page.locator('#mv-input')).toBeEnabled({ timeout: 15_000 });
+  await page.locator('#mv-input').fill(text);
+  const [resp] = await Promise.all([
+    page.waitForResponse((r) => new URL(r.url()).pathname === '/mirror/view/send'),
+    page.locator('#mv-send').click(),
+  ]);
+  // The fake writes its row before the host answers, so the count is final
+  // once the send has its answer.
+  expect(deliveries(text), `🔴 a plain Send from the copy delivered the message again (answer ${resp.status()})`).toBe(1);
+  expect(resp.status()).toBe(409);
+  await expect(page.locator('#mv-note')).toContainText('Not sent again: the first try may already have been submitted');
+  // The same offer as on the live page, and it works.
+  await page.locator('#mv-send-again').click();
+  await expect(page.locator('#mv-input')).toHaveValue('', { timeout: 20_000 });
+  await expect.poll(() => deliveries(text), { message: 'Send again delivered it, once' }).toBe(2);
+}
+
+test('a send that may have landed is not delivered again from the HTTP cache\'s copy after Back', async ({ page }) => {
+  const text = 'from the HTTP cache, UNCONFIRMED-LANDED ' + Date.now().toString(36);
+  await sendMayHaveLanded(page, text);
+  await page.goto(rig.origin + '/tasks');
+  await page.goBack();
+  await fromTheCopy(page, text);
+});
+
+test('…nor from the HTTP cache\'s copy when the back/forward cache evicted the page', async ({ playwright }) => {
+  const away = http.createServer((_q, res) => res.writeHead(200, { 'Content-Type': 'text/html' }).end('<!doctype html><title>away</title><p>away</p>'));
+  await new Promise<void>((r) => away.listen(0, '127.0.0.1', r));
+  const browser = await launchWithBfcache(playwright.chromium);
+  try {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const page = await ctx.newPage();
+    const why: string[] = [];
+    const cdp = await ctx.newCDPSession(page);
+    await cdp.send('Page.enable');
+    cdp.on('Page.backForwardCacheNotUsed', (e: any) => why.push(...(e.notRestoredExplanations || []).map((x: any) => x.reason)));
+    const text = 'after an eviction, UNCONFIRMED-LANDED ' + Date.now().toString(36);
+    await sendMayHaveLanded(page, text);
+    const port = (away.address() as AddressInfo).port;
+    for (let i = 0; i < 8; i++) await page.goto(`http://127.0.0.1:${port}/away/${i}`);
+    // The evaluate's own context is the one the navigation destroys.
+    await Promise.all([page.waitForURL(/\/mirror\/view/), page.evaluate(() => history.go(-8)).catch(() => {})]);
+    await expect.poll(() => why, { message: 'the instrument: the back/forward cache did not serve it, and says why' }).toContain('CacheLimit');
+    await fromTheCopy(page, text);
+  } finally {
+    await browser.close();
+    await new Promise<void>((r) => away.close(() => r()));
   }
 });
 

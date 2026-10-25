@@ -67,6 +67,7 @@ func TestAnUnconfirmedSendIsNeverRepeatedByItsNonce(t *testing.T) {
 				t.Fatalf("🔴 pasted %d times; the repeat must not paste", len(ps))
 			}
 			form.Set("nonce", "nonce-fedcba9876543210") // what "Send again" mints
+			form.Set("again", "1")                      // and says it is Send again
 			if code, body, _ = postSendNonce(t, ts.URL, cookie, form); code != http.StatusNoContent {
 				t.Fatalf("Send again with a new nonce: %d %q", code, body)
 			}
@@ -74,6 +75,73 @@ func TestAnUnconfirmedSendIsNeverRepeatedByItsNonce(t *testing.T) {
 				t.Fatalf("pasted %d times; want 2 (the explicit Send again)", len(ps))
 			}
 		})
+	}
+}
+
+// TestAnUnconfirmedSendIsHeldByItsTextUnderAnyNonce: 🔴 a message that may
+// have landed is refused when posted again under a NEW nonce too, unless the
+// post says it is the person's "Send again" (again=1). A copy of the view
+// that never saw the offer — a Back answered from the HTTP cache, which runs
+// the document as first served and renews its nonce (ui restore.go) — posts
+// exactly that: the same text, a fresh nonce, no again. Before this hold it
+// was pasted a second time (audit #270, round 2's residual).
+//
+// And the hold is no wider than that: another text, another window, and the
+// same text once a send of it was CONFIRMED (round 1: "yes" twice is two
+// messages) are all delivered.
+func TestAnUnconfirmedSendIsHeldByItsTextUnderAnyNonce(t *testing.T) {
+	fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}, statusReport: true, windows: []mirror.Window{
+		{Session: "main", ID: "@1", Index: 0, Active: true, Claude: true, ClaudeSession: "c1"},
+		{Session: "main", ID: "@2", Index: 1, Claude: true, ClaudeSession: "c2"},
+	}}
+	s, ts := viewServer(t, fm)
+	cookie := sessionCookieFor(s)
+	send := func(window, text, nonce string, again bool) (int, string, bool) {
+		f := url.Values{"host": {"ws"}, "session": {"main"}, "window": {window}, "text": {text}, "nonce": {nonce}}
+		if again {
+			f.Set("again", "1")
+		}
+		return postSendNonce(t, ts.URL, cookie, f)
+	}
+	pasted := func() int { _, ps := fm.v2.snapshot(); return len(ps) }
+
+	// The first try: handed over, never confirmed.
+	fm.v2.pasteErr = fmt.Errorf("mirror: the host did not answer: %w", mirror.ErrPasteUnconfirmed)
+	if code, _, again := send("@1", "yes", "nonce-aaaaaaaaaaaaaaaa", false); code < 400 || !again {
+		t.Fatalf("the unconfirmed send: %d, Send again offered %t", code, again)
+	}
+	fm.v2.pasteErr = nil
+	if pasted() != 1 {
+		t.Fatalf("pasted %d, want 1", pasted())
+	}
+
+	// 🔴 The HTTP-cache copy's plain Send: the same text, a NEW nonce.
+	code, body, again := send("@1", "yes", "nonce-bbbbbbbbbbbbbbbb", false)
+	if code != http.StatusConflict || body != MirrorSendUnconfirmedRepeat || !again {
+		t.Fatalf("the same text under a new nonce: %d %q (Send again %t); want 409 %q offering Send again", code, body, again, MirrorSendUnconfirmedRepeat)
+	}
+	if pasted() != 1 {
+		t.Fatalf("🔴 pasted %d times; a plain re-send of a message that may have landed must not paste", pasted())
+	}
+
+	// Not held: another text, and the same text to another window.
+	if code, body, _ := send("@1", "no", "nonce-cccccccccccccccc", false); code != http.StatusNoContent {
+		t.Fatalf("another text: %d %q", code, body)
+	}
+	if code, body, _ := send("@2", "yes", "nonce-dddddddddddddddd", false); code != http.StatusNoContent {
+		t.Fatalf("the same text to another window: %d %q", code, body)
+	}
+
+	// The explicit Send again is delivered, and a confirmed send releases the
+	// hold: "yes" once more is a new message.
+	if code, body, _ := send("@1", "yes", "nonce-eeeeeeeeeeeeeeee", true); code != http.StatusNoContent {
+		t.Fatalf("Send again: %d %q", code, body)
+	}
+	if code, body, _ := send("@1", "yes", "nonce-ffffffffffffffff", false); code != http.StatusNoContent {
+		t.Fatalf("the same text after a confirmed send: %d %q", code, body)
+	}
+	if pasted() != 5 {
+		t.Fatalf("pasted %d, want 5 (first try, other text, other window, Send again, the last)", pasted())
 	}
 }
 
