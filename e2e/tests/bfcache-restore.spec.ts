@@ -315,24 +315,34 @@ test('an agent page restored after its agent was deleted reloads', async () => {
   }
 });
 
+// awayFor leaves an agent page for `minutes` of FAKE time and goes Back.
+//
+// 🔴 THE PAGE'S OWN CLOCK IS MOVED, AS IT IS HIDDEN, BECAUSE NOTHING CAN MOVE
+// IT WHILE IT IS AWAY. A document frozen in the back/forward cache runs no
+// script, and Playwright's clock (context.clock) is applied to live frames
+// only: measured, a fastForward of 11 minutes while the page was away left the
+// restored page's Date.now() where it was, and it was not reloaded. So the
+// page's Date.now is replaced before it leaves with one that jumps `minutes`
+// ahead once the page has been hidden: the restore handler records the hide
+// instant with the real clock (its pagehide listener is the earlier one), and
+// reads the jumped one when it is shown again.
+async function awayFor(page: Page, minutes: number): Promise<void> {
+  await page.evaluate((ms) => {
+    const real = Date.now.bind(Date);
+    let skew = 0;
+    Date.now = () => real() + skew;
+    addEventListener('pagehide', () => (skew = ms));
+  }, minutes * 60 * 1000);
+  await awayAndBack(page, '/tasks');
+}
+
 test('a restore after more than ten minutes away reloads', async () => {
   const { ctx, page } = await newContext();
   try {
     const url = await openAgent(page);
     const doc = await docOf(page);
     const t0 = Date.now();
-    // 🔴 THE CLOCK IS MOVED IN THE RECORD, NOT IN THE PAGE: a document frozen in
-    // the back/forward cache runs no script, so no fake clock can be advanced
-    // inside it while it is away. The page records the instant it was hidden
-    // (sessionStorage, ui.RestoreHiddenKey); the test moves that instant eleven
-    // minutes back, which is the same as having been away for eleven minutes.
-    await awayAndBack(page, '/tasks', async () => {
-      await page.evaluate(() => {
-        const m = JSON.parse(sessionStorage.getItem('muster.restore.hidden') || '{}');
-        for (const k of Object.keys(m)) m[k] -= 11 * 60 * 1000;
-        sessionStorage.setItem('muster.restore.hidden', JSON.stringify(m));
-      });
-    });
+    await awayFor(page, 11);
     const path = new URL(url, baseURL).pathname;
     await expectRestored(page, await backShow(page, path, t0), doc);
     await expect.poll(async () => (await shows(page)).filter((s) => s.path === path && s.at >= t0 && s.doc !== doc).length, {
@@ -351,13 +361,7 @@ test('a restore after nine minutes away is kept', async () => {
     const url = await openAgent(page);
     const doc = await docOf(page);
     const t0 = Date.now();
-    await awayAndBack(page, '/tasks', async () => {
-      await page.evaluate(() => {
-        const m = JSON.parse(sessionStorage.getItem('muster.restore.hidden') || '{}');
-        for (const k of Object.keys(m)) m[k] -= 9 * 60 * 1000;
-        sessionStorage.setItem('muster.restore.hidden', JSON.stringify(m));
-      });
-    });
+    await awayFor(page, 9);
     const path = new URL(url, baseURL).pathname;
     await expectRestored(page, await backShow(page, path, t0), doc);
     await page.waitForTimeout(1500);

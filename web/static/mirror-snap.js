@@ -483,20 +483,17 @@
       setInterval(function () { if (Date.now() - lastWarm >= WARM_EVERY_MS) idle(warmPass); }, 30000);
     };
     if (document.readyState === 'complete') arm(); else root.addEventListener('load', arm);
-    // 🔴 NO WRITE MAY BE IN FLIGHT AS THE PAGE GOES INTO THE BACK/FORWARD
-    // CACHE: a storage transaction still running when the page is frozen
-    // evicts it (Chromium: IgnoreEventAndEvict), so Back reloads the page.
-    // Leaving fires visibilitychange BEFORE pagehide, so the hidden stop (which
-    // stores what the warm read) waits a quarter second, and pagehide aborts the
-    // warm without storing anything. A tab only switched away gets no pagehide;
-    // its stop runs then and stores as before.
-    var leaving = false;
     document.addEventListener('visibilitychange', function () {
-      if (document.hidden) { setTimeout(function () { if (current && !leaving) current.stop(); }, 250); return; }
+      if (document.hidden) { if (current) current.stop(); return; }
       if (Date.now() - lastWarm >= WARM_EVERY_MS) setTimeout(function () { idle(warmPass); }, 500);
     });
-    root.addEventListener('pagehide', function (e) { leaving = !!e.persisted; if (e.persisted && current) current.abort(); });
-    root.addEventListener('pageshow', function (e) { if (e.persisted) leaving = false; });
+    // 🔴 A WARM STILL OPEN AS THE PAGE GOES INTO THE BACK/FORWARD CACHE EVICTS
+    // IT: measured (Chromium 153), the Agents list left mid-warm was reloaded
+    // by Back 3 times in 3 (CDP: IgnoreEventAndEvict) — leaving does not
+    // reliably fire visibilitychange first, so the stop above may not run. A
+    // page that may be kept aborts its warm here, storing nothing; the next
+    // pass warms it again.
+    root.addEventListener('pagehide', function (e) { if (e.persisted && current) current.abort(); });
   }
 
   root.musterSnap = {

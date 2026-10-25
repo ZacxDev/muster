@@ -20,9 +20,12 @@ import (
 // rendered by may no longer be the one serving. restoreJS is the page's answer,
 // and it runs on EVERY signed-in document (it is part of appScript):
 //
-//   - on pagehide, every stream the page holds is closed — the htmx event
-//     streams here, the page's own sockets through its participants — so the
-//     page is eligible for the cache and the server is not left holding them;
+//   - on pagehide, the time is noted (in memory: the document keeps it while
+//     it sits in the cache), and each participant closes its own socket. The
+//     htmx event streams are NOT closed here: measured (Chromium 153), a page
+//     left with them open was restored as often as one that closed them (65
+//     of 66 restores each way), and the restore below closes each before it
+//     reopens it;
 //   - on a restore (pageshow, persisted), a page hidden for longer than
 //     RestoreMaxAwayMs reloads; otherwise it asks /health which build is
 //     serving and reloads when that is not the page's own; it reopens every
@@ -59,12 +62,6 @@ const RestoreMaxAwayMs = 10 * 60 * 1000
 // RestoreChipDelayMs is how long a restore catches up before its Updating…
 // chip shows.
 const RestoreChipDelayMs = 1000
-
-// RestoreHiddenKey is the sessionStorage entry a page records the moment it
-// was hidden in, by document: {"<doc id>": <ms>}. The restored page reads its
-// own and deletes it. A page that cannot reach storage keeps the time in
-// memory, which is the same number.
-const RestoreHiddenKey = "muster.restore.hidden"
 
 // RestoreParticipantsVar is the window property a page's own script pushes its
 // participant onto: {hide(event), show() → optional Promise (caught up),
@@ -114,8 +111,6 @@ func restoreJS(feat Features) string {
       var BUILD = ` + string(build) + `;
       var MAX_AWAY = ` + strconv.Itoa(RestoreMaxAwayMs) + `;
       var CHIP_DELAY = ` + strconv.Itoa(RestoreChipDelayMs) + `;
-      var KEY = '` + RestoreHiddenKey + `';
-      var DOC = Math.random().toString(36).slice(2) + Date.now().toString(36);
       var TOP = window.top === window;
       var hiddenAt = 0;
       // The htmx event streams this page opened, each with the element that
@@ -129,21 +124,6 @@ func restoreJS(feat Features) string {
         return (window.` + RestoreParticipantsVar + ` || []).filter(function (p) {
           try { return !p.alive || p.alive(); } catch (e) { return false; }
         });
-      }
-      function store() { try { return window.sessionStorage; } catch (e) { return null; } }
-      function readHidden() {
-        var s = store(), m = {};
-        if (!s) return m;
-        try { m = JSON.parse(s.getItem(KEY) || '{}') || {}; } catch (e) { m = {}; }
-        return m;
-      }
-      function writeHidden(m) {
-        var s = store();
-        if (!s) return;
-        // Twenty documents at most: the oldest go first.
-        var ids = Object.keys(m).sort(function (a, b) { return m[a] - m[b]; });
-        while (ids.length > 20) delete m[ids.shift()];
-        try { s.setItem(KEY, JSON.stringify(m)); } catch (e) {}
       }
       function chips(on) {
         document.querySelectorAll('[` + UpdatingChipAttr + `]').forEach(function (c) {
@@ -199,7 +179,9 @@ func restoreJS(feat Features) string {
       }
       // reopen: every htmx event stream, by the extension's own reconnect
       // (its onerror on a closed source opens a new one and re-registers the
-      // element's listeners), so the stream is the extension's as before.
+      // element's listeners), so the stream is the extension's as before. Its
+      // reopen fires htmx:sseOpen, which is what the chat log's conditional
+      // refetch catches up on (chatLogTrigger).
       function reopen() {
         var was = streams; streams = [];
         was.forEach(function (s) {
@@ -216,9 +198,6 @@ func restoreJS(feat Features) string {
         if (TOP && document.querySelector('[` + UpdatingChipAttr + `]')) waits.push(self());
         if (how === 'restore') {
           reopen();
-          // Whatever catches up on an event stream's (re)open catches up now
-          // too, without waiting for the stream (the chat log's refetch).
-          try { document.body.dispatchEvent(new CustomEvent('muster:restored')); } catch (e) {}
           parts().forEach(function (p) { try { if (p.show) waits.push(p.show()); } catch (e) {} });
         }
         return Promise.all(waits.map(function (w) { return within(w, 15000); })).then(function () {
@@ -229,15 +208,11 @@ func restoreJS(feat Features) string {
       }
       window.addEventListener('pagehide', function (e) {
         hiddenAt = Date.now();
-        var m = readHidden(); m[DOC] = hiddenAt; writeHidden(m);
-        streams.forEach(function (s) { try { s.src.close(); } catch (x) {} });
         parts().forEach(function (p) { try { if (p.hide) p.hide(e); } catch (x) {} });
       });
       window.addEventListener('pageshow', function (e) {
         if (!e.persisted) return;
-        var m = readHidden(), at = m[DOC] || hiddenAt;
-        delete m[DOC]; writeHidden(m);
-        if (TOP && at && Date.now() - at > MAX_AWAY) { reload('away'); return; }
+        if (TOP && hiddenAt && Date.now() - hiddenAt > MAX_AWAY) { reload('away'); return; }
         catchUp('restore');
       });
       // A Back that was not a restore, answered by the HTTP cache: the
@@ -249,7 +224,7 @@ func restoreJS(feat Features) string {
           if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
         }
       } catch (e) {}
-      return { doc: DOC };
+      return {};
     })();
   }
 `
