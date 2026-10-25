@@ -400,6 +400,7 @@ func (s *Server) signInNewLogin(w http.ResponseWriter, r *http.Request, ip, emai
 		s.renderNotice(w, r, code, "Your account is ready, but sign-in failed", problem)
 		return
 	}
+	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
 	http.Redirect(w, r, safeReturnTo(dest), http.StatusSeeOther)
 }
@@ -589,6 +590,7 @@ func (s *Server) signInAfterCutoff(w http.ResponseWriter, r *http.Request, ip, e
 			s.renderNotice(w, r, code, "Your password is set, but sign-in failed", problem+" "+resetTokensRevoked)
 			return
 		}
+		clearSiteCaches(w)
 		s.setGoTrueCookies(w, sess)
 		// To /account, which says the reset revoked the user's API tokens
 		// (accounts PR 6), rather than straight to the board.

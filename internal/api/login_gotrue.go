@@ -248,6 +248,7 @@ func (s *Server) handleGoTrueLoginSubmit(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	outcome = outcomeSucceeded
+	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
 	s.logger.Printf("login: user %d signed in", u.ID)
 	http.Redirect(w, r, safeReturnTo(next), http.StatusSeeOther)
@@ -318,6 +319,7 @@ func (s *Server) handleGoTrueLogout(w http.ResponseWriter, r *http.Request) {
 			s.logger.Printf("logout: user %d signed out (%s)", sess.user.ID, scope)
 		}
 	}
+	clearSiteCaches(w)
 	s.clearGoTrueCookies(w)
 	if failed != "" {
 		s.renderNotice(w, r, http.StatusInternalServerError, "Sign out everywhere did not finish", failed)
@@ -554,6 +556,7 @@ func (s *Server) handleClaimSubmit(w http.ResponseWriter, r *http.Request) {
 		s.renderNotice(w, r, code, "Claimed, but sign-in failed", problem)
 		return
 	}
+	clearSiteCaches(w)
 	s.setGoTrueCookies(w, sess)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
