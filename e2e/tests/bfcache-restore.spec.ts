@@ -265,6 +265,29 @@ test('back to an agent page restores it, and it then shows a message stored whil
 // itself, as a reload would have — which records the visit and marks the
 // session read — and redraws the switcher's rows from the answer, so Recent
 // and Pins name what is current now.
+// The agent page's fallback form (a send its socket cannot carry) carries a
+// nonce too: a Back from the HTTP cache must not hand it back.
+test('an agent page shown again from the HTTP cache has a new send nonce', async ({ browser: plain }) => {
+  const ctx = await plain.newContext({ baseURL, storageState: authState, viewport: { width: 390, height: 844 } });
+  const page = await ctx.newPage();
+  try {
+    await openAgent(page);
+    const first = await page.locator('#chat-nonce').inputValue();
+    expect(first).not.toBe('');
+    await page.goto('/tasks');
+    await back(page);
+    await expect(page.locator('#chat-log [data-msg-id]').first()).toBeVisible();
+    const nav = await page.evaluate(() => {
+      const n = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
+      return { type: n.type, fromCache: n.transferSize === 0 };
+    });
+    expect(nav, 'the stored copy, as first served').toEqual({ type: 'back_forward', fromCache: true });
+    await expect.poll(() => page.locator('#chat-nonce').inputValue()).not.toBe(first);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('a restored agent page redraws its switcher: an agent opened meanwhile is in Recent', async () => {
   const other = 'e2e-bfc-other-' + Date.now().toString(36);
   mkchat(other, [{ role: 'user', content: 'The other agent.' }]);
@@ -648,7 +671,9 @@ test.describe('mirrored', () => {
     trPath = rig.transcript(cc.prompt('the prompt of the restored window') + cc.reply('The first answer.'), 'restore');
     const now = Math.floor(Date.now() / 1000);
     const windows = rig.transcript(`work|@1|1|1|claude|${now - 60}|${trPath}\n`, 'windows');
-    await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windows, MUSTER_MIRROR_E2E_REFRESH: '300ms' });
+    // Interactive, so the Rendered view's composer can send: a send is pasted
+    // into the window and recorded in <transcript>.pasted.
+    await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windows, MUSTER_MIRROR_E2E_REFRESH: '300ms', MUSTER_MIRROR_INTERACTIVE: '1' });
   });
   test.afterAll(async () => {
     await rig.stop();
@@ -690,6 +715,75 @@ test.describe('mirrored', () => {
       // Nothing painted twice: the earlier bubbles once each, plus the reply.
       expect(await page.locator('#mv-log [data-bubble]').count()).toBe(before + 1);
       expect(await page.locator('#mv-log').getByText(first).count()).toBe(1);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  // 🔴 THE SAME TEXT SENT TWICE ACROSS A BACK IS TWO MESSAGES. The server
+  // delivers a (nonce, text) pair once and answers a repeat "sent" without
+  // delivering it. A page shown again from a cache used to carry the nonce of
+  // the message already sent from it, so the second "yes" cleared the box and
+  // reached nothing (audit #270 round 1). Delivery is counted where it lands:
+  // the window's pasted record.
+  const pane = '%e2e-work-@1';
+  const delivered = (text: string) => (fs.existsSync(trPath + '.pasted') ? fs.readFileSync(trPath + '.pasted', 'utf8') : '').split('\n').filter((l) => l === `${pane} ${text}`).length;
+
+  async function sendFromView(page: Page, text: string): Promise<void> {
+    await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+    await page.locator('#mv-input').fill(text);
+    await page.locator('#mv-send').click();
+    await expect(page.locator('#mv-input')).toHaveValue('', { timeout: 10_000 });
+  }
+
+  test('the same text sent again after a Back answered from the HTTP cache is delivered again', async ({ browser: plain }) => {
+    // Signed out to begin with (the suite's saved state would otherwise apply):
+    // rig.login signs in to this server.
+    const ctx = await plain.newContext({ baseURL: rig.origin, storageState: { cookies: [], origins: [] }, viewport: { width: 390, height: 844 } });
+    const page = await ctx.newPage();
+    try {
+      await rig.login(page);
+      const text = 'yes ' + Date.now().toString(36);
+      await page.goto(rig.origin + view());
+      const first = await page.locator('#mv-nonce').inputValue();
+      expect(first, 'the page carries a nonce').not.toBe('');
+      await sendFromView(page, text);
+      await expect.poll(() => delivered(text), { message: 'the first send was delivered' }).toBe(1);
+      await page.goto(rig.origin + '/tasks');
+      await back(page);
+      await expect(page).toHaveURL(new RegExp('/mirror/view'));
+      // The instrument: this Back was the HTTP cache's stored copy (the suite's
+      // own browser has no back/forward cache) — the document as first served.
+      const nav = await page.evaluate(() => {
+        const n = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
+        return { type: n.type, fromCache: n.transferSize === 0 };
+      });
+      expect(nav).toEqual({ type: 'back_forward', fromCache: true });
+      // Soft: the delivery below is the symptom; this names the cause.
+      await expect.soft(page.locator('#mv-nonce'), 'the stored copy\'s nonce was renewed').not.toHaveValue(first);
+      await sendFromView(page, text);
+      await expect.poll(() => delivered(text), { message: 'the same text sent again was delivered again', timeout: 10_000 }).toBe(2);
+    } finally {
+      await ctx.close();
+    }
+  });
+
+  // The same, across a back/forward-cache restore. ⚠ AN INVARIANT GUARD on the
+  // code before this fix: the live page renews its nonce after each send, so a
+  // restored page already held a fresh one. Kept for the restore's own path.
+  test('the same text sent again after a restore is delivered again', async () => {
+    const { ctx, page } = await mirrorPage();
+    try {
+      const text = 'yes ' + Date.now().toString(36);
+      await page.goto(rig.origin + view());
+      await sendFromView(page, text);
+      await expect.poll(() => delivered(text)).toBe(1);
+      const doc = await docOf(page);
+      const t0 = Date.now();
+      await awayAndBack(page, rig.origin + '/tasks');
+      await expectRestored(page, await backShow(page, '/mirror/view', t0), doc);
+      await sendFromView(page, text);
+      await expect.poll(() => delivered(text), { message: 'delivered again', timeout: 10_000 }).toBe(2);
     } finally {
       await ctx.close();
     }

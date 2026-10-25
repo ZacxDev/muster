@@ -125,6 +125,31 @@ func restoreJS(feat Features) string {
           try { return !p.alive || p.alive(); } catch (e) { return false; }
         });
       }
+      // renewNonces gives every message box on the page a NEW send nonce.
+      //
+      // 🔴 A PAGE SHOWN AGAIN FROM A CACHE CARRIES THE NONCE OF A MESSAGE THAT
+      // MAY HAVE GONE ALREADY. The server delivers a (nonce, text) pair once
+      // and answers a repeat "sent" without delivering it (composer.go), so
+      // that a browser re-posting a form is not a second message. A Back
+      // answered from the HTTP cache shows the document as first served — its
+      // ORIGINAL nonce, which the message sent from it used — so the same text
+      // typed and sent again ("yes") was swallowed: the box cleared and
+      // nothing reached the session (audit #270 round 1, measured). A
+      // restored page may hold a used one too. A send from a page shown again
+      // is a new message, so it gets a new nonce, as the composers' own
+      // renew does after a send; with no way to mint one the field is emptied
+      // (no nonce is no protection; a reused one swallows the message).
+      function renewNonces() {
+        document.querySelectorAll('input[name="nonce"]').forEach(function (n) {
+          var v = '';
+          try {
+            var b = new Uint8Array(16);
+            crypto.getRandomValues(b);
+            for (var i = 0; i < b.length; i++) v += (b[i] < 16 ? '0' : '') + b[i].toString(16);
+          } catch (e) { v = ''; }
+          n.value = v;
+        });
+      }
       function chips(on) {
         document.querySelectorAll('[` + UpdatingChipAttr + `]').forEach(function (c) {
           c.classList.toggle('invisible', !on);
@@ -212,6 +237,7 @@ func restoreJS(feat Features) string {
       });
       window.addEventListener('pageshow', function (e) {
         if (!e.persisted) return;
+        renewNonces();
         if (TOP && hiddenAt && Date.now() - hiddenAt > MAX_AWAY) { reload('away'); return; }
         catchUp('restore');
       });
@@ -219,9 +245,11 @@ func restoreJS(feat Features) string {
       // document is as old as its first load. Checked once it is parsed.
       try {
         var nav = performance.getEntriesByType('navigation')[0];
+        var whenParsed = function (fn) { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fn); else fn(); };
+        // Any history load, from the cache or not (a fresh nonce costs nothing).
+        if (nav && nav.type === 'back_forward') whenParsed(renewNonces);
         if (TOP && nav && nav.type === 'back_forward' && nav.transferSize === 0 && nav.decodedBodySize > 0) {
-          var go = function () { catchUp('http-cache'); };
-          if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
+          whenParsed(function () { catchUp('http-cache'); });
         }
       } catch (e) {}
       return {};
