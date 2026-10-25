@@ -42,15 +42,18 @@ import (
 //     exactly as the inline one did, in document order. Each script's own
 //     once-per-window guards (window.__cg…Init, __musterSSEOpenBound) are in
 //     its text, so they hold unchanged.
-//   - ⚠ WHAT DOES CHANGE ON A SWAP: an inline script ran synchronously inside
-//     the swap; a re-created <script src> runs once its bytes are read (from
-//     the HTTP cache), a task or so later — after the swap, possibly after
-//     htmx's settle. Every script here does its per-swap work from listeners
-//     it bound once per window (htmx:load, htmx:afterSettle, …), which fire
-//     from the code already loaded, so the re-run only re-binds idempotently.
-//     The one script that MUST act inside the swap's own task — before the
-//     browser can paint the new body — stays inline: tasksRefilterGuard,
-//     which hides a drawn board a stored tag filter is about to replace.
+//   - 🔴 BUT A <script src> RE-CREATED BY htmx RUNS LATER THAN AN INLINE ONE
+//     DID: once its bytes are read, a task or more after the swap. That is
+//     harmless for a script this window already ran (its once-per-window
+//     listeners do the swap's work) and visible for one it never ran — a
+//     boosted navigation into /agents from a page without the Agents filter
+//     painted the unfiltered list (a layout shift of 0.48). swap_inline.go
+//     closes it: on a boosted body swap the incoming tags are rewritten into
+//     the inline scripts they stand for, from texts the window already holds,
+//     so the swap runs them inside itself exactly as before.
+//   - The one script that must act inside the swap's own task even before any
+//     text is held stays inline: tasksRefilterGuard, which hides a drawn board
+//     a stored tag filter is about to replace.
 
 // ⚠ THE CSP IS UNCHANGED, AND COULD NOT TIGHTEN HERE. script-src 'self'
 // (internal/api contentSecurityPolicy) covers these files; it still needs
