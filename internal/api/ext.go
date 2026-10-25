@@ -67,6 +67,10 @@ type Extensions struct {
 	// biometric may pair with a biometric-or-PIN step-up key. False (the
 	// default): such a phone pairs read-only.
 	AllowPINKeys bool
+	// AssetLinks is the body of /.well-known/assetlinks.json (BuildAssetLinks,
+	// from MUSTER_ANDROID_PACKAGE and MUSTER_ANDROID_CERT_SHA256): the
+	// Android app's claim on this site's passkeys. Nil: the route answers 404.
+	AssetLinks []byte
 
 	// AgentNamespacePrefix is the prefix [Extensions.AgentNamespace] builds a new
 	// agent's stored namespace from. It is the DEPLOYMENT's prefix — the same

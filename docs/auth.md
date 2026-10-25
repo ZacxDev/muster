@@ -73,6 +73,27 @@ offered only in gotrue mode, and only when GoTrue reports `passkeys_enabled`.
 - Passkeys can also confirm a step-up; see
   [sending-and-step-up.md](sending-and-step-up.md).
 
+### Passkeys in the Android app
+
+The [Android app](design/android.md)'s WebView runs WebAuthn as the app
+(`WEB_AUTHENTICATION_SUPPORT_FOR_APP`). Two things differ from a browser:
+
+- Android runs the ceremony only if the site lists the app.
+  `MUSTER_ANDROID_PACKAGE` and `MUSTER_ANDROID_CERT_SHA256` make muster serve
+  `/.well-known/assetlinks.json` with the `get_login_creds` relation only
+  ([configuration.md](configuration.md)): not `handle_all_urls`, since the app
+  handles no links. It is
+  open, `application/json`, and your edge must serve it with no redirect.
+- The assertion's `clientDataJSON.origin` is
+  `android:apk-key-hash:<the signing certificate's SHA-256, unpadded base64url>`,
+  not `https://…`. muster does not read that origin; GoTrue checks it against
+  `GOTRUE_WEBAUTHN_RP_ORIGINS`. In GoTrue v2.197.0 (go-webauthn v0.16.5), an
+  origin that does not start with `http://` or `https://` is compared as an
+  exact string, so add that value to the list. The RP id stays the site's host.
+
+Passkey autofill (conditional mediation) is not available in a WebView; the
+buttons are.
+
 ## Machine credentials
 
 | credential | acts as | notes |

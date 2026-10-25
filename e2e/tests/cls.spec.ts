@@ -58,6 +58,7 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   'GET /admin/users': { where: 'signed-in', url: '/admin/users', ready: '[data-user-email]' },
 };
 const NOT_A_PAGE: Record<string, string> = {
+  'GET /.well-known/assetlinks.json': 'JSON (Digital Asset Links)',
   'GET /agent/approvals/{id}': 'agent API (JSON)',
   'GET /agent/connectors': 'agent API (JSON)',
   'GET /agent/connectors/{name}': 'agent API (JSON)',

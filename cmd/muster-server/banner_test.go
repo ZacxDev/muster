@@ -325,6 +325,10 @@ var bannerLedger = []string{
 	envPushExtraHosts,
 	// The Android pairing policy: a line in both directions (set / unset).
 	envAndroidAllowPINKeys,
+	// The Android app's Digital Asset Links (its passkeys): a line in both
+	// directions — serving (the package and certificates) / OFF (the path is 404).
+	envAndroidPackage,
+	envAndroidCertSHA256,
 	envGitHubEncKey,
 	envAgentProvisioner,
 	// The chat tier is its own axis with its own two lines — the fully-off arm names
@@ -765,8 +769,17 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// The Agents list's Idle section, at a value that is not the default.
 		AgentsIdleAfter:    72 * time.Hour,
 		AgentsIdleAfterRaw: "3d",
+		// Android passkeys: the banner branches on ext.AssetLinks (below), built
+		// by the real config.assetLinks over these values.
+		AndroidPackage:    "app.example.passkeys",
+		AndroidCertSHA256: "0123456789abcdef00112233445566778899aabbccddeeff0f1e2d3c4b5a6978",
+	}
+	assetLinks, err := on.assetLinks()
+	if err != nil || assetLinks == nil {
+		t.Fatalf("banner fixture: assetLinks = %q, %v", assetLinks, err)
 	}
 	onOut = renderBannerWithPool(t, on, api.Extensions{
+		AssetLinks:  assetLinks,
 		GitHubApp:   bannerStubGitHubApp{},
 		Mirror:      mirror.NewService(nil, nil),
 		Push:        push.NewService(nil, nil, on.vapid(), nil),
