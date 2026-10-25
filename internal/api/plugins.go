@@ -74,6 +74,9 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// token, or the armed hook token). 404 with routing off. Fail-closed on an
 	// unarmed hook tier: it steers what an outside party is sent.
 	mux.HandleFunc("POST /api/routes/{id}/reply", s.requireArmedHookToken(s.handleRouteReply))
+	// A thread a mirrored session started (thread_routes.go): its PostToolUse
+	// hook, with route reply's credential. 404 with routing off.
+	mux.HandleFunc("POST "+pluginThreadsPath, s.requireArmedHookToken(s.handlePluginThreadBind))
 }
 
 // requirePluginsOn answers 404 for a plugin route on a server with plugins off,
@@ -150,8 +153,9 @@ func (s *Server) refusePluginTokenElsewhere(w http.ResponseWriter, r *http.Reque
 
 // handlePluginMessage is POST /plugin/v1/messages: store one inbound message
 // (202 {id, status:"queued"}), or answer a repeat of its external_id with the
-// stored row (200 {id, status}). A NEW message is then handed to the owner's
-// chief in the background; the response does not wait for the turn.
+// stored row (200 {id, status}). A NEW message is then routed to the session
+// that started its thread (routeByThread) or, as any other, handed to the
+// owner's chief in the background; the response does not wait for the turn.
 func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 	var in plugins.MessageIn
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, plugins.MaxRequestBytes))
@@ -184,7 +188,9 @@ func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, map[string]any{"id": m.ID, "status": string(m.Status)})
 		return
 	}
-	s.deliverPluginMessage(r, p, m)
+	if !s.routeByThread(r.Context(), p, m) {
+		s.deliverPluginMessage(r, p, m)
+	}
 	s.writeJSON(w, http.StatusAccepted, map[string]any{"id": m.ID, "status": string(m.Status)})
 }
 

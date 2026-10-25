@@ -192,6 +192,12 @@ BEGIN
         ALTER TABLE public.suggest_usage DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.suggest_usage ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0054 (plugin_threads), when this schema has it; same reason as 0011.
+    IF to_regclass('public.plugin_threads') IS NOT NULL THEN
+        ALTER TABLE public.plugin_threads NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_threads DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.plugin_threads ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

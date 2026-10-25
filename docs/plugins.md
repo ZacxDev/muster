@@ -67,6 +67,7 @@ JSON. On every route:
 | `received_at` | no | RFC 3339 |
 | `no_reply` | no | `true` marks a message nobody may answer (see below). Default `false`. |
 | `sender_verified` | no | `true` asserts that YOU authenticated `sender` (see below). Default `false`. |
+| `thread` | no | The upstream's thread id: 1 to 200 bytes, no spaces or control characters, matched exactly. A reply on a thread one of your mirrored sessions started goes to that session ([below](#a-reply-on-a-thread-a-session-started)). |
 
 | answer | meaning |
 |---|---|
@@ -964,6 +965,43 @@ that text, and Enter sends both. The idle delay is the only protection.
 ⚠ **An answer is sent as written.** It is screened like any reply draft (no
 hidden characters, addresses, credentials or the deployment's own names), and
 for a verified, allowlisted sender that screen is the only check before it goes.
+
+### A reply on a thread a session started
+
+When one of your mirrored Claude Code sessions sends **agent mail** that starts
+a thread, a later reply on that thread goes **straight back to that session**:
+the chief's route (`routeItem`), made by muster, with no chief decision.
+
+1. **The binding.** The session's PostToolUse hook (outside muster) reports a
+   send that started a thread: `POST /api/plugin-threads {thread,
+   claude_session}`, with route reply's credential (a personal token or the
+   hook token). muster takes the host from the mirror — the online window that
+   shows that Claude session — never from the caller. `201`: bound. `200`: the
+   thread was already bound; **the first report wins** and the binding is
+   returned unchanged. `409`: no online mirrored window shows the session, so
+   nothing is bound. `404` with routing off. Stored in `plugin_threads`
+   (migration `0054`).
+2. **The route.** A NEW message from the plugin named `agent-mail` — only that
+   plugin; a Discord DM never is — that carries a bound `thread` and is not
+   `no_reply` is routed to the bound session, when an online mirrored window
+   shows that session **on the host it was bound from** and you have a chief.
+   The message is handed to the chief **without a turn**, in the same
+   transaction as the route (`plugin.delivered` with `"routed": true`), and is
+   recorded in the chief's conversation as its delivery turn would have shown
+   it, with a line naming the route. Then everything is the chief's route: the
+   paste after the idle wait, `route_reply`, the relay, the deadline and the
+   hand-back to the chief (which holds the message). The routed block says it
+   was routed by muster; the `session_route.routed` audit row carries
+   `routed_via: "thread <thread> started by <host>/<session>"`.
+3. **Otherwise, the ordinary delivery.** An unbound thread, a session no online
+   window shows (or one on another host), no chief, or a route that could not
+   be made: the message goes to your chief exactly as any other. A route made
+   but not pasted (the window's queue refused it) fails and is handed back.
+4. A routed message is a live route, so it never also becomes an
+   [unrouted ask](#a-message-the-chief-does-not-act-on); a repeat of its
+   `external_id` routes nothing again.
+
+The accepted risk: [auth.md](auth.md#threads-a-session-started).
 
 ### Routing a task to a session
 

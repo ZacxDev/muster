@@ -73,6 +73,9 @@ type RouteStore interface {
 	RelayRoute(ctx context.Context, routeID, agentName string, approve bool) (Route, Draft, error)
 	TimeOutRoute(ctx context.Context, routeID string) (Route, bool, error)
 	ExpiredRoutes(ctx context.Context) ([]DueRoute, error)
+	// BindThread and BoundThread are the threads sessions started (threads.go).
+	BindThread(ctx context.Context, thread, host, claudeSession string) (ThreadBinding, bool, error)
+	BoundThread(ctx context.Context, thread string) (ThreadBinding, error)
 }
 
 var _ RouteStore = (*PGStore)(nil)
@@ -156,16 +159,22 @@ const RouteViaMCP = "mcp"
 // records it: the zero value is the chief (route_to_session; the row's
 // agent_id names it), RouteViaMCP the owner over the mirror MCP door, from
 // Host (proven by its mirror token) and Session (the Claude session the
-// caller's pane names: a claim).
+// caller's pane names: a claim), RouteViaThread muster itself, because the
+// message is a reply on Thread, which the session Host/Session started
+// (threads.go).
 type RouteOrigin struct {
-	Via, Host, Session string
+	Via, Host, Session, Thread string
 }
 
 // String is the origin as the audit row's routed_via spells it:
-// "mcp from <host>/<session>"; "" for the chief.
+// "mcp from <host>/<session>", "thread <thread> started by <host>/<session>";
+// "" for the chief.
 func (o RouteOrigin) String() string {
-	if o.Via == RouteViaMCP {
+	switch o.Via {
+	case RouteViaMCP:
 		return o.Via + " from " + o.Host + "/" + o.Session
+	case RouteViaThread:
+		return o.Via + " " + o.Thread + " started by " + o.Host + "/" + o.Session
 	}
 	return o.Via
 }
@@ -223,10 +232,17 @@ func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID i
 }
 
 // CreateRouteFrom is CreateRoute made by origin: the same checks, row and
-// audit, with routed_via on the audit row when origin is the owner over MCP.
+// audit, with routed_via on the audit row when origin is not the chief.
 // chiefID is still the chief the message was delivered to — the route's
 // agent_id, so the relay files its draft as that chief's and a hand-back goes
 // to that chief — whoever made the route.
+//
+// 🔴 A ROUTE BY THREAD (RouteViaThread) TAKES A QUEUED MESSAGE: it hands the
+// message to the chief WITHOUT A TURN (delivered, to chiefID, audited
+// plugin.delivered with "routed": true) in the SAME transaction as the route,
+// so either both happen or neither does and the message stays queued for an
+// ordinary delivery. A message not queued (a delivery already took it) is
+// ErrNotFound, and nothing changes.
 func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
 	if chiefID <= 0 || ownerID <= 0 {
 		return Route{}, invalid("the agent has no owner")
@@ -236,6 +252,21 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 		m, inFlight := lockMessage(ctx, tx, messageID, 0)
 		if inFlight != nil && !errors.Is(inFlight, ErrReplyInFlight) {
 			return inFlight
+		}
+		if origin.Via == RouteViaThread {
+			if m.Status != StatusQueued {
+				return ErrNotFound
+			}
+			var err error
+			if m, err = scanMessage(tx.QueryRow(ctx, `UPDATE plugin_messages SET status = 'delivered', agent_id = $2,
+				delivered_at = now(), attempts = attempts + 1, last_attempt_at = now()
+				WHERE id = $1 RETURNING `+messageCols, messageID, chiefID)); err != nil {
+				return err
+			}
+			if err := audit(ctx, tx, "plugin.delivered", MessageObject(messageID), map[string]any{
+				"plugin_id": m.PluginID, "agent_id": chiefID, "outcome": string(StatusDelivered), "routed": true}); err != nil {
+				return err
+			}
 		}
 		if !DeliveredTo(m, chiefID, ownerID) {
 			return ErrNotFound

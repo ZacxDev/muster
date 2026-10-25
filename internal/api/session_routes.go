@@ -288,13 +288,23 @@ func (s *Server) routeItem(ctx context.Context, chiefID, ownerID int64, it route
 		return plugins.Route{}, t, toolErr("the route could not be made")
 	}
 	by := "agent " + strconv.FormatInt(chiefID, 10)
-	if origin.Via != "" {
+	switch origin.Via {
+	case "":
+	case plugins.RouteViaThread:
+		by = "muster via " + origin.String()
+	default:
 		by = "the owner via " + origin.String()
 	}
 	s.logger.Printf("routes: %s: %s routed by %s to %s (%s), timeout %s", r.RouteID, what, by, sub, t.label, r.TimeoutAt.UTC().Format(time.RFC3339))
 	if why := s.injectRoute(ctx, r, p, it, t, origin); why != "" {
-		// No hand-back: the router is told now, by its tool's own answer.
-		if _, ferr := s.ext.Routes.FailRoute(context.WithoutCancel(ctx), r.RouteID, why, ""); ferr != nil {
+		// No hand-back: the router is told now, by its tool's own answer —
+		// except a route by thread, whose router is muster: its message goes
+		// back to the chief (routeByThread wakes the sweep that delivers it).
+		handBack := ""
+		if origin.Via == plugins.RouteViaThread {
+			handBack = "it could not be put into the session (" + why + ")"
+		}
+		if _, ferr := s.ext.Routes.FailRoute(context.WithoutCancel(ctx), r.RouteID, why, handBack); ferr != nil {
 			s.logger.Printf("routes: %s: record the failed injection: %v", r.RouteID, ferr)
 		}
 		s.logger.Printf("routes: %s: failed: %s", r.RouteID, why)
@@ -306,7 +316,11 @@ func (s *Server) routeItem(ctx context.Context, chiefID, ownerID int64, it route
 // injectRoute puts r's item into its session, or says why it could not.
 func (s *Server) injectRoute(ctx context.Context, r plugins.Route, p plugins.Plugin, item routedItem, t routeTarget, origin plugins.RouteOrigin) string {
 	by := routedByChief
-	if origin.Via != "" {
+	switch origin.Via {
+	case "":
+	case plugins.RouteViaThread:
+		by = routedByThread
+	default:
 		by = routedByOwner
 	}
 	var text string
@@ -352,6 +366,8 @@ func renderRoutedMessage(r plugins.Route, p plugins.Plugin, m plugins.Message, n
 const (
 	routedByChief = "your owner's chief"
 	routedByOwner = "your owner, from one of their mirrored sessions"
+	// routedByThread: a route by thread (routeByThread).
+	routedByThread = "muster, because it is a reply on an agent-mail thread this session started"
 )
 
 // renderRoutedMessageBy is renderRoutedMessage naming who routed it (by: one of
