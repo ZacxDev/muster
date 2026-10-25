@@ -180,7 +180,7 @@ func pinnedChip(e listEntry, label string) g.Node {
 			hx("hx-boost", "false"),
 			g.Attr("data-pinned-chip-link", ""),
 			g.Attr("title", label),
-			Class("press inline-flex min-h-[44px] min-w-[44px] max-w-full items-center justify-center gap-1.5 rounded-full px-4 text-sm font-semibold text-fg transition hover:bg-s2"),
+			Class(pinnedChipLinkClass),
 			// The host's icon, drawn before the label (operator ask: "Pinned
 			// agents should also show the host icon since the same pretty name
 			// is reused across multiple hosts"): hostMark's fixed 16px box, in
@@ -196,6 +196,15 @@ func pinnedChip(e listEntry, label string) g.Node {
 		Span(g.Attr("data-pinned-chip-edit", ""), Class("-ml-2 flex shrink-0 items-center"), edit, unpin),
 	)
 }
+
+// pinnedChipLinkClass is a pinned chip's link: its 44px target and its face.
+// px-2.5 and gap-1 (10px a side, 4px between the marks and the label), not the
+// px-4 and gap-1.5 they were: an operator ask — at 390px a chip runs to the
+// row's edge, and its label was clipped a few characters short (a 36-character
+// title: 315px of text in 302px). The 12px of padding and 2px of gap given
+// back are what make it fit, with 1px to spare
+// (e2e/tests/title-room.spec.ts measures it).
+const pinnedChipLinkClass = "press inline-flex min-h-[44px] min-w-[44px] max-w-full items-center justify-center gap-1 rounded-full px-2.5 text-sm font-semibold text-fg transition hover:bg-s2"
 
 // pinnedChipLabelNamesHost is whether a window chip's label already spells its
 // host: the label carries the window's qualifier (pinnedChipLabels appended it)

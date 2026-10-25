@@ -20,10 +20,29 @@ func TestViewToggleSegmentsArePaddedLess(t *testing.T) {
 	}
 }
 
-// A switcher entry is up to 16rem wide (it was 10rem).
-func TestSwitcherEntryIsUpTo16rem(t *testing.T) {
-	if !strings.Contains(switcherEntryBoxClass, "max-w-[16rem]") || strings.Contains(switcherEntryBoxClass, "max-w-[10rem]") {
+// A switcher entry and a Recent strip entry are up to 20rem wide, never
+// wider than their row (they were 10rem and 14rem); a pinned chip is padded
+// px-2.5 with gap-1 (it was px-4, gap-1.5).
+func TestTitleEntriesAreWider(t *testing.T) {
+	if titleEntryMaxW != "max-w-[min(20rem,100%)]" {
+		t.Errorf("titleEntryMaxW = %q", titleEntryMaxW)
+	}
+	if !strings.Contains(switcherEntryBoxClass, " "+titleEntryMaxW+" ") || strings.Contains(switcherEntryBoxClass, "10rem") {
 		t.Errorf("switcherEntryBoxClass = %q", switcherEntryBoxClass)
+	}
+	recent := renderString(t, recentEntry(recentItem{Href: "/agents/a", Title: "cache-warmup-orchestrator:1"}))
+	if !strings.Contains(recent, " "+titleEntryMaxW+" ") || strings.Contains(recent, "14rem") {
+		t.Errorf("a Recent entry is not up to titleEntryMaxW:\n%s", recent)
+	}
+	for _, want := range []string{" px-2.5 ", " gap-1 ", "min-h-[44px]"} {
+		if !strings.Contains(pinnedChipLinkClass+" ", want) {
+			t.Errorf("pinnedChipLinkClass lacks %q: %s", want, pinnedChipLinkClass)
+		}
+	}
+	for _, banned := range []string{"px-4", "gap-1.5"} {
+		if strings.Contains(pinnedChipLinkClass, banned) {
+			t.Errorf("pinnedChipLinkClass still carries %s", banned)
+		}
 	}
 	got := renderString(t, switcherEntry(SwitcherItem{Href: "/agents/a", Label: "billing-reconcile-nightly:1", Kind: "agent"}))
 	if !strings.Contains(got, switcherEntryBoxClass+`"`) {

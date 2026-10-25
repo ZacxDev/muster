@@ -303,14 +303,24 @@ func switcherRow(key, empty string, items []SwitcherItem, hidden bool) g.Node {
 	)
 }
 
-// switcherEntryBoxClass is an entry's 44px box. Up to 16rem wide, not the
-// 10rem it was (an operator ask: agents' titles were cut off in the bar). At
-// 10rem a pill left its label 114px — about 17 characters, so a 23-character
-// title was clipped; 16rem leaves it 210px (a 27-character title fits,
-// measured in e2e/tests/title-room.spec.ts). Still narrower than the bar's
-// scrolling row at 390px (286px), so no entry is wider than the row it
-// scrolls in.
-const switcherEntryBoxClass = "inline-flex h-11 max-w-[16rem] shrink-0 items-center"
+// titleEntryMaxW is how wide a one-line title entry may grow in the two
+// sideways-scrolling rows of them: the session switcher below the message
+// input (switcherEntryBoxClass) and the Agents list's Recent strip
+// (recentEntry). ONE value for both, so the same title reads the same in each.
+//
+// An operator ask: agents' titles were cut off in both (the switcher was
+// 10rem, a 114px label — a 23-character title clipped; the strip 14rem).
+// 20rem, measured (e2e/tests/title-room.spec.ts) at 1280: a switcher label
+// gets 274px (a 36-character title fits; 18rem left 242px and clipped a
+// 34-character one), a strip label 252px (a 34-character title fits).
+//
+// 🔴 min(…, 100%): never wider than the row it scrolls in. At 390px the
+// switcher's row is 286px; an entry wider than its own scroller cannot be
+// seen whole however it is scrolled.
+const titleEntryMaxW = "max-w-[min(20rem,100%)]"
+
+// switcherEntryBoxClass is an entry's 44px box, up to titleEntryMaxW wide.
+const switcherEntryBoxClass = "inline-flex h-11 " + titleEntryMaxW + " shrink-0 items-center"
 
 // switcherEntry is one entry: a real-load link (hx-boost="false", like a
 // card's), or — the page's own session — the same chip, not a link.
