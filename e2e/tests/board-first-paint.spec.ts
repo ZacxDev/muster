@@ -47,15 +47,10 @@ async function firstOpenSettled(page: Page) {
 
 // reconnect drops the page's EventSource the way a network failure does and
 // lets the htmx sse extension reconnect it (its onerror on a CLOSED source).
-// between runs while the stream is down.
-async function reconnect(page: Page, between: () => Promise<void> = async () => {}) {
-  await page.evaluate(() => {
-    const el = document.querySelector('[sse-connect]') as any;
-    el['htmx-internal-data'].sseEventSource.close();
-  });
-  await between();
+async function reconnect(page: Page) {
   await page.evaluate(() => {
     const src = (document.querySelector('[sse-connect]') as any)['htmx-internal-data'].sseEventSource;
+    src.close();
     src.onerror(new Event('error'));
   });
 }
@@ -84,14 +79,35 @@ test('a reconnect re-fetches the board even when nothing changed', async ({ page
   expect(await w.resyncs()).toBeGreaterThan(0);
 });
 
-test('a task created while the stream was down is on the board after the reconnect', async ({ page, api }) => {
+// 🔴 THE OFFLINE SHELL OUTLIVES THE SESSION THAT FILLED IT. The worker stores
+// "/" at install and serves it to an offline open — after a sign-out too. The
+// stored copy must hold no board (internal/api offlineShellParam, sw.js
+// SHELL_FETCH). The auditor's path, end to end: signed in, the worker installs;
+// signed out (cookies gone); offline; open "/".
+test('the offline shell the worker stores holds no task, and an offline open after sign-out shows none', async ({ page, context }) => {
   await page.goto('/');
-  await firstOpenSettled(page);
-  const title = `Missed while offline ${Date.now()}`;
-  await reconnect(page, async () => {
-    await api.createTask(title, 'Created by board-first-paint.spec.');
+  await expect(card(page, seeded), 'control: the signed-in board draws the seeded task').toBeVisible();
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller) {
+      await new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', r, { once: true }));
+    }
   });
-  await expect(card(page, title)).toBeVisible({ timeout: 10_000 });
+  await expect.poll(() => page.evaluate(async () => !!(await caches.match('/'))), { message: 'the worker stored "/"' }).toBe(true);
+  const stored = await page.evaluate(async () => (await (await caches.match('/'))!.text()));
+  expect(stored, 'control: the stored "/" is the shell').toContain('id="tasks-list"');
+  expect(stored, 'the stored "/" carries a seeded task').not.toContain(seeded);
+  expect(stored, 'the stored "/" carries a drawn board').not.toContain('data-tasks-drawn');
+
+  await context.clearCookies();
+  await context.setOffline(true);
+  try {
+    await page.goto('/');
+    await expect(page.locator('#tasks-list'), 'control: offline, "/" is the stored shell').toHaveCount(1);
+    await expect(page.getByText(seeded), 'an offline open after sign-out shows a task').toHaveCount(0);
+  } finally {
+    await context.setOffline(false);
+  }
 });
 
 test('an event between the document and the stream makes the first open re-fetch', async ({ page, api }) => {

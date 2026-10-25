@@ -238,7 +238,9 @@ test('an update installed while signed out keeps the offline shell styled', asyn
   const origin = `http://localhost:${updatePort}`;
   const oldCSS = '/static/app.css?v=0ld0ld0ld0ld';
   let routed = 0;
-  await context.route(origin + '/', async (route) => {
+  // The worker fetches its shell as "/?shell=1" (sw.js SHELL_FETCH): match "/" by path.
+  const root = (u: URL) => u.origin === origin && u.pathname === '/';
+  await context.route(root, async (route) => {
     if (!route.request().serviceWorker()) return route.continue();
     const res = await route.fetch();
     const html = await res.text();
@@ -249,7 +251,7 @@ test('an update installed while signed out keeps the offline shell styled', asyn
   await waitControlled(page);
   await expect.poll(() => page.evaluate(shellCaches)).toEqual({ ['muster-shell-' + versionA]: goodShell });
   expect(routed, "control: the worker's precache of / was the routed one").toBeGreaterThan(0);
-  await context.unroute(origin + '/');
+  await context.unroute(root);
   // A's shell links the old stylesheet, and A's cache holds it under that URL.
   const links = await page.evaluate(async ([build, old]) => {
     await fetch(old);
@@ -321,7 +323,8 @@ test('a redirected "/" is never cached as the shell', async ({ page, context }) 
   await expect.poll(() => page.evaluate(shellCaches)).toEqual({ ['muster-shell-' + versionA]: goodShell });
 
   let redirected = 0;
-  await context.route(origin + '/', (route) => {
+  // The worker fetches its shell as "/?shell=1" (sw.js SHELL_FETCH): match "/" by path.
+  await context.route((u) => u.origin === origin && u.pathname === '/', (route) => {
     if (!route.request().serviceWorker()) return route.continue();
     redirected++;
     return route.fulfill({ status: 302, headers: { location: origin + '/manifest.webmanifest' } });

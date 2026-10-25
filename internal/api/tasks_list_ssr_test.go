@@ -287,6 +287,116 @@ func (e eventDuringList) ListPage(ctx context.Context, f notes.ListFilter) (note
 	return e.Store.ListPage(ctx, f)
 }
 
+// TestTheOfflineShellURLIsBoardless pins both ends of the offline shell: the
+// URL the service worker fetches its "/" from is one this server answers with
+// NO board — no fixture title, the skeleton and its own load, no mark — and the
+// drawn-board marker the worker refuses to store is the one a drawn "/"
+// actually carries. Red at the base of this fix: sw.js fetched "/" itself, which
+// draws the board, and stored it with the session cookie for any later
+// offline open — a signed-out one included.
+func TestTheOfflineShellURLIsBoardless(t *testing.T) {
+	f := newBoardFixture(t)
+	sw, err := ServiceWorkerSource()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shellURL := "/?" + offlineShellParam + "=1"
+	if !strings.Contains(string(sw), `'/': '`+shellURL+`'`) {
+		t.Fatalf("sw.js does not fetch its offline \"/\" from %s (SHELL_FETCH)", shellURL)
+	}
+	const drawn = "data-tasks-drawn"
+	if !strings.Contains(string(sw), drawn) {
+		t.Errorf("sw.js does not refuse a \"/\" carrying %s", drawn)
+	}
+	// Control: the real "/" draws the board and carries the marker the worker
+	// looks for, so its absence below is a property of the URL.
+	full := f.get(t, "/")
+	if !strings.Contains(full, boardTitles[0]) || !strings.Contains(full, drawn) {
+		t.Fatalf("control: GET / did not draw the board with %s", drawn)
+	}
+	shell := f.get(t, shellURL)
+	for _, title := range boardTitles {
+		if strings.Contains(shell, title) {
+			t.Errorf("GET %s carries the task %q: the offline shell would keep this user's board", shellURL, title)
+		}
+	}
+	open, rest := listOf(t, shell)
+	if strings.Contains(shell, drawn) || strings.Contains(open, "data-sse-mark") {
+		t.Errorf("GET %s draws a board's marks: %s", shellURL, open)
+	}
+	if !strings.Contains(open, `hx-trigger="load, `) || !strings.HasPrefix(rest, `<div id="tasks-list-skeleton"`) {
+		t.Errorf("GET %s is not the skeleton that loads itself: %s %.120s", shellURL, open, rest)
+	}
+}
+
+// TestTheShellDocumentIsPrivateAndRevalidated: a shell document carries this
+// user's board, so no shared cache may keep it and every ordinary navigation
+// asks again — but it is not no-store, which would take it out of the
+// back/forward cache (restore.go). Red before: "/" sent no Cache-Control.
+func TestTheShellDocumentIsPrivateAndRevalidated(t *testing.T) {
+	f := newBoardFixture(t)
+	for _, path := range []string{"/", "/tasks", "/agents"} {
+		r := httptest.NewRequest(http.MethodGet, path, nil).WithContext(f.ctx)
+		r.Header.Set("Cookie", sessionCookieFor(f.srv))
+		r.Header.Set(boardUserHeader, strconv.FormatInt(f.user, 10))
+		rec := httptest.NewRecorder()
+		f.h.ServeHTTP(rec, r)
+		if got := rec.Header().Get("Cache-Control"); got != "private, no-cache" {
+			t.Errorf("GET %s: Cache-Control = %q, want \"private, no-cache\"", path, got)
+		}
+	}
+}
+
+// stalledList is a notes store whose board read never answers — not even to
+// its context — until release is closed (a stalled database).
+type stalledList struct {
+	notes.Store
+	release chan struct{}
+}
+
+func (s stalledList) ListPage(context.Context, notes.ListFilter) (notes.Page, error) {
+	<-s.release
+	return notes.Page{}, nil
+}
+
+// TestAStalledBoardDoesNotHoldTheDocument: past the board-build bound the
+// document is served anyway, drawn the old way — the skeleton and its own
+// `load` — so a stalled database costs the board a moment, not the page.
+// Red without the bound: GET / waits on the read for as long as it stalls.
+func TestAStalledBoardDoesNotHoldTheDocument(t *testing.T) {
+	f := newBoardFixture(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	f.srv.ext.Notes = stalledList{Store: f.store, release: release}
+	f.srv.boardWithinOverride = 50 * time.Millisecond
+	got := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		r := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(f.ctx)
+		r.Header.Set("Cookie", sessionCookieFor(f.srv))
+		r.Header.Set(boardUserHeader, strconv.FormatInt(f.user, 10))
+		rec := httptest.NewRecorder()
+		f.h.ServeHTTP(rec, r)
+		got <- rec
+	}()
+	var doc string
+	select {
+	case rec := <-got:
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET / = %d: %s", rec.Code, rec.Body.String())
+		}
+		doc = rec.Body.String()
+	case <-time.After(5 * time.Second):
+		t.Fatal("GET / was still waiting on a stalled board read after 5s (the bound is 50ms)")
+	}
+	open, rest := listOf(t, doc)
+	if !strings.Contains(open, `hx-trigger="load, `) || !strings.HasPrefix(rest, `<div id="tasks-list-skeleton"`) {
+		t.Errorf("a stalled board did not fall back to the skeleton that loads itself: %s %.120s", open, rest)
+	}
+	if strings.Contains(open, "data-tasks-drawn") || strings.Contains(open, "data-sse-mark") {
+		t.Errorf("the fallback carries a drawn board's marks: %s", open)
+	}
+}
+
 // TestTheDocumentReadsItsMarkBeforeItsBoard: an event published while the
 // board is being read must leave the document's mark BEHIND the stream's, so
 // the first open re-fetches. A mark read after the board would already

@@ -40,13 +40,34 @@ func TestAMarkMovesExactlyWhenItsOwnersEventIsPublished(t *testing.T) {
 	}
 }
 
-// seqOf is the count half of a mark (<epoch>-<count>).
+// TestTwoOwnersAtEqualCountsHaveDifferentMarks: the owner is in the mark, so
+// user B's stream can never say hello at user A's page mark. Both owners are
+// brought to the SAME count (0, then 2) on one Broadcaster — a mark of epoch
+// and count alone would be equal at both points.
+func TestTwoOwnersAtEqualCountsHaveDifferentMarks(t *testing.T) {
+	b := New(4)
+	if a, c := b.Mark(1), b.Mark(2); a == c {
+		t.Errorf("owners 1 and 2 at count 0 share the mark %q", a)
+	}
+	for i := 0; i < 2; i++ {
+		b.Broadcast(Event{Name: "task.changed", OwnerID: 1})
+		b.Broadcast(Event{Name: "task.changed", OwnerID: 2})
+	}
+	if seqOf(t, b.Mark(1)) != 2 || seqOf(t, b.Mark(2)) != 2 {
+		t.Fatalf("control: the counts are not both 2 (%q, %q)", b.Mark(1), b.Mark(2))
+	}
+	if a, c := b.Mark(1), b.Mark(2); a == c {
+		t.Errorf("owners 1 and 2 at count 2 share the mark %q", a)
+	}
+}
+
+// seqOf is the count part of a mark (<epoch>-<owner>-<count>).
 func seqOf(t *testing.T, m string) int {
 	t.Helper()
 	i := strings.LastIndexByte(m, '-')
 	n, err := strconv.Atoi(m[i+1:])
 	if i < 0 || err != nil {
-		t.Fatalf("mark %q is not <epoch>-<count>", m)
+		t.Fatalf("mark %q does not end in -<count>", m)
 	}
 	return n
 }

@@ -122,10 +122,13 @@ func New(buffer int) *Broadcaster {
 	}
 }
 
-// Mark names how far owner's events have got: this Broadcaster's epoch and the
-// number of events Broadcast has accepted for owner. Two equal marks mean NO
-// event for owner was broadcast between the two reads, on this process; a mark
-// read from another process (or a restarted one) never equals.
+// Mark names how far owner's events have got: <epoch>-<owner>-<count>, this
+// Broadcaster's epoch, the owner, and the number of events Broadcast has
+// accepted for owner. Two equal marks mean NO event for owner was broadcast
+// between the two reads, on this process; a mark read from another process (or
+// a restarted one), or for another owner, never equals — so another user's
+// stream (one browser, a sign-in in between) can never vouch for this user's
+// board, even at an equal count.
 //
 // 🔴 WHAT IT IS FOR: a document that drew a list at mark M, whose event stream
 // then opened at mark M too, has missed nothing — so its first connect need not
@@ -143,7 +146,7 @@ func (b *Broadcaster) Mark(owner int64) string {
 	b.seqMu.Lock()
 	n := b.seq[owner]
 	b.seqMu.Unlock()
-	return b.epoch + "-" + strconv.FormatUint(n, 10)
+	return b.epoch + "-" + strconv.FormatInt(owner, 10) + "-" + strconv.FormatUint(n, 10)
 }
 
 // Subscribe registers a new subscriber streaming for user owner and returns
