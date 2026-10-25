@@ -320,6 +320,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/tasks/{id}/comments",
 		"GET /api/whoami",
 		"POST /api/routes/{id}/reply",
+		"POST /api/plugin-threads",
 		"POST /api/plugins/messages/{id}/retry",
 	},
 	authz.ViaService: {
@@ -353,6 +354,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
 		"POST /api/routes/{id}/reply",
+		"POST /api/plugin-threads",
 		"POST /api/plugins/messages/{id}/retry",
 		// Browser flows (0012): a personal token ONLY — the hook and service
 		// tiers are absent above on purpose (requireAPIToken).
@@ -671,6 +673,7 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 	// The fail-closed (requireArmedHookToken) routes: the agent-steering write,
 	// and session routing's answer (it decides what an outside party is sent).
 	armed := map[string]bool{"POST /api/agents/{name}/messages": true, "POST /api/routes/{id}/reply": true,
+		"POST /api/plugin-threads":              true,
 		"POST /api/plugins/messages/{id}/retry": true,
 		"POST /api/chief/replace":               true}
 	for _, pattern := range routeVias[authz.ViaHook] {

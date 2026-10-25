@@ -132,6 +132,10 @@ type MessageIn struct {
 	// equivalent). Only with it can a routed answer be auto-approved
 	// (RelayAllowlist). Optional; false when absent. Immutable once stored.
 	SenderVerified bool `json:"sender_verified"`
+	// Thread is the upstream's thread id, when the plugin knows one (migration
+	// 0054): a reply on a thread one of the owner's mirrored sessions started is
+	// routed straight to that session (threads.go). Optional; "" when absent.
+	Thread string `json:"thread"`
 }
 
 // Message is one row of plugin_messages.
@@ -167,6 +171,8 @@ type Message struct {
 	// unrouted.go): the chief's plugin_message_settle reason, the owner's
 	// answer to the ask raised for it, or "pre-existing". nil: not settled.
 	SettleReason *string `json:"settleReason,omitempty"`
+	// Thread is MessageIn.Thread as stored; nil when the plugin sent none.
+	Thread *string `json:"thread,omitempty"`
 }
 
 // Errors the API maps to status codes.
@@ -281,5 +287,26 @@ func (in MessageIn) Validate() error {
 			return invalid("external_id may not carry spaces, control or invisible characters")
 		}
 	}
+	if in.Thread != "" && !ValidThread(in.Thread) {
+		return invalid("thread is 1-%d bytes with no spaces, control or invisible characters", MaxThreadLen)
+	}
 	return nil
+}
+
+// MaxThreadLen bounds a thread id (0054's checks).
+const MaxThreadLen = 200
+
+// ValidThread reports whether t is a thread id: external_id's rule — 1 to
+// MaxThreadLen bytes of UTF-8 with no NUL, space, control or invisible
+// character — because it is matched exactly, never normalised.
+func ValidThread(t string) bool {
+	if t == "" || len(t) > MaxThreadLen || !utf8.ValidString(t) {
+		return false
+	}
+	for _, r := range t {
+		if r == 0 || r == ' ' || fence.Unsafe(r) {
+			return false
+		}
+	}
+	return true
 }

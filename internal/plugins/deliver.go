@@ -290,6 +290,21 @@ func (d *Deliverer) Deliver(parent context.Context, pluginID, messageID int64, c
 	return Result{Outcome: Outcome(outcome)}
 }
 
+// Handed records message m — handed to chief WITHOUT a turn, by a route by
+// thread (RouteViaThread, CreateRouteFrom) — in the chief's conversation for
+// p, rendered as its delivery turn would have shown it and followed by note.
+// It costs the chief no turn: the chief holds the message for its next one,
+// so a hand-back or a relay note names a message it has.
+func (d *Deliverer) Handed(ctx context.Context, p Plugin, chief agents.Agent, m Message, note string) error {
+	sess, err := d.session(ctx, p, chief)
+	if err != nil {
+		return err
+	}
+	_, err = d.agents.AddChatMessage(ctx, agents.ChatMessage{AgentID: chief.ID, SessionID: sess.ID, Role: "user",
+		Content: RenderMessage(p, m, d.routing, Hints{}, Retry{Now: time.Now()}) + "\n\n" + note})
+	return err
+}
+
 // attempted counts a pending attempt on the message and returns it.
 func (d *Deliverer) attempted(parent context.Context, messageID int64, reason string) Result {
 	bctx, bcancel := context.WithTimeout(context.WithoutCancel(parent), bookkeepingTimeout)

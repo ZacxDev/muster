@@ -132,6 +132,19 @@ tool**, the same session can approve that draft, its own reply, over the same
 door, so that reply too reaches the outside sender with no other review.
 Revoke a token you suspect.
 
+### Threads a session started
+
+`POST /api/plugin-threads` ([plugins.md](plugins.md#a-reply-on-a-thread-a-session-started))
+takes route reply's credential: a personal API token, or the hook token. 🔴
+**Accepted risk: whoever holds it can bind any agent-mail thread id of its
+owner to any of the owner's online mirrored sessions** — the first report for a
+thread wins — and every later reply on that thread is then pasted into that
+session **with no chief and no owner in between**, fenced as untrusted like
+every routed message, and answered through the ordinary relay (approved
+automatically only for a verified, allowlisted sender). The thread id is not
+checked against the upstream: muster cannot know who started a thread. A
+binding is never replaced; to undo one, delete its `plugin_threads` row.
+
 ## Paired devices
 
 The native Android app gets its own credential, the **device credential**

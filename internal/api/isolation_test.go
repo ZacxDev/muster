@@ -311,6 +311,9 @@ var isolationClasses = map[string]routeClass{
 	// Session routing (0021): a mirrored session's answer, on the hook tier
 	// (requireArmedHookToken), acting as the route's owner.
 	"POST /api/routes/{id}/reply": classAdmin,
+	// A thread a mirrored session started (thread_routes.go): route reply's
+	// door, acting as the owner.
+	"POST /api/plugin-threads": classAdmin,
 	// Retrying an unconfirmed plugin message (plugin_retry.go), hook tier, as its owner.
 	"POST /api/plugins/messages/{id}/retry": classAdmin,
 	"POST /api/tasks/{id}/comments":         classAdmin,
