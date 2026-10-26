@@ -186,15 +186,69 @@ The reasons for the shell:
   `addJavascriptInterface`, and a bridge only through
   `WebViewCompat.addWebMessageListener` with `allowedOriginRules` naming the
   exact origin, never `*`.
-- **The bridge carries four messages:** the pairing code (below), "open the
-  app's notification settings", "request POST_NOTIFICATIONS", and the theme. It
-  never carries a credential from the app to the page. The listener's JavaScript
-  object is named `musterApp` (`ui.AppBridgeName` in muster), and each message
+- **The bridge carries four design messages, plus the app's own
+  `touch-start`:** the pairing code (below), "open the app's notification
+  settings", "request POST_NOTIFICATIONS", and the theme; then `touch-start`,
+  which the app's pull-to-refresh script sends (next item). It never carries
+  a credential from the app to the page. The listener's JavaScript object is
+  named `musterApp` (`ui.AppBridgeName` in muster), and each message
   is a JSON string. The server's pages send two today, from Account → Devices:
   `{"type":"pair","code":…,"expires_at":…}` and
   `{"type":"open-notification-settings"}`. The object's presence is also how a
   page knows it is in the shell, to hide **Enable notifications** and
   **Install**.
+- **`touch-start`: pull to refresh (muster-android #9).** This fifth message
+  arrives on the same bridge, but muster's pages do not send it. The app's own
+  document-start script (`PullProbeScript`) sends it. The app installs that
+  script with `WebViewCompat.addDocumentStartJavaScript`, with
+  `allowedOriginRules` set to the paired origin exactly, and it runs in the main
+  frame only. At every one-finger `touchstart` it posts:
+
+  ```json
+  {"type":"touch-start","doc":"k3x9q2","seq":3,"doc_top":0,"inner_top":null,"owner":"page","editing":false}
+  ```
+
+  - `doc` is a random id for this document, `[0-9a-z]{1,16}`.
+  - `seq` counts the gestures that started in this document, from 1. A
+    gesture starts at a `touchstart` with no finger already down.
+  - `doc_top` is the document's scroll offset plus `visualViewport.offsetTop`,
+    in whole CSS px, rounded up.
+  - `inner_top` is the largest `scrollTop` among the vertical scrollers between
+    the touch target and the document. A vertical scroller here is an element
+    whose `overflow-y` scrolls and whose content is taller than it is. The
+    value is `null` when there are none.
+  - `owner` is `overlay` when the finger is inside a fixed-position element or
+    a dialog (`dialog[open]`, `[role=dialog]`, `[role=alertdialog]`,
+    `[aria-modal=true]`), or when a modal `<dialog>` is open. It is `gestures`
+    when an element on the way up takes its own vertical drags: a
+    `touch-action` other than `auto` or `manipulation` that lacks `pan-y`, or
+    an `.xterm`. Otherwise it is `page`.
+  - `editing` is true when the focused element is a non-empty text field. The
+    script reads the field's text to take its length, but only the boolean is
+    sent: the text never leaves the page.
+
+  The message carries geometry, a count and one boolean. It carries no text,
+  no URL and nothing typed, and the app sends nothing back. `BridgeMessage`
+  re-checks the origin and the main frame, and refuses a message whose fields
+  do not have exactly these types. How the app uses it (matching a message to
+  its gesture, when a pull reloads the page, the spinner) is documented in
+  muster-android: the "Pull to refresh" entry in its README, and `PullGate` /
+  `ShellRefreshLayout` in `feature/shell`.
+
+  **What this couples to in muster:**
+  - the route paths where a pull never refreshes, which the app matches on the
+    URL: `/agents/{name}/terminal`, `/mirror/terminal` and `/mirror/view`;
+  - the `xterm` class on the terminal;
+  - inner scrollers (such as `#chat-log`, `overflow-auto`) that scroll with
+    `overflow-y`;
+  - overlays (sheets, menus, the open sidebar) that are fixed-position, and
+    dialogs that use `<dialog>` or one of the dialog roles above;
+  - `touch-action: manipulation` on `.press` (`web/css/input.css`), which the
+    script treats as the page's own scrolling.
+
+  If a route, the terminal's markup, or an overlay's positioning or role is
+  changed, pull to refresh can fire on a page or an overlay that owns its
+  drags. No muster test pins this coupling.
 - **No Web Push in the WebView.** WebView has no PushManager, so the page must
   not offer **Enable notifications** inside the shell. The page feature-detects
   PushManager, and in the shell it points to the app's own settings instead.
