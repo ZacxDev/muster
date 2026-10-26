@@ -160,14 +160,42 @@ export class MirrorRig {
   }
 
   // waitListed waits until the host's sessions are on the Agents list (the
-  // tunnel is up and has reported), with the host's log in the failure.
+  // tunnel is up and has reported), with the host's log in the failure: until
+  // `needle` is in the markup of a mirrored entry (a card or a pinned chip)
+  // that is ONLINE.
+  //
+  // 🔴 A MATCH ANYWHERE ON THE LIST IS NOT READINESS. The server keeps a
+  // stopped host's last list, drawn offline (mirror.Hub's offlineRetention),
+  // so after a host RESTART — startHost stops the previous one — the old
+  // host's offline card already carries every session name and
+  // data-mirror-claude. A bare `includes(needle)` passed on it before the new
+  // host had connected, and the view the spec opened next redirected to the
+  // terminal (handleMirrorViewPage: an offline entry has no rendered view):
+  // telemetry.spec's "#mv-log not found".
+  //
+  // The list is parsed here, not in the page: a page mid-navigation throws
+  // from evaluate, and expect.poll does not retry a throw.
   async waitListed(page: Page, needle: string): Promise<void> {
+    let last = '';
     await expect
-      .poll(async () => (await (await page.request.get(this.origin + '/ui/agents')).text()).includes(needle), {
-        message: `the host's sessions are listed (muster-mirror log:\n${this.log})`,
-        timeout: 20_000,
-      })
-      .toBe(true);
+      .poll(
+        async () => {
+          const html = await (await page.request.get(this.origin + '/ui/agents')).text();
+          const states = mirroredEntries(html)
+            .filter((e) => e.markup.includes(needle))
+            .map((e) => e.state);
+          last = states.length ? `entries holding it: ${states.join(', ')}` : 'no mirrored entry holds it';
+          return states.includes('online');
+        },
+        {
+          message: `an ONLINE mirrored entry holds ${JSON.stringify(needle)}`,
+          timeout: 20_000,
+        },
+      )
+      .toBe(true)
+      .catch((e) => {
+        throw new Error(`${e.message}\nlast poll: ${last}\nmuster-mirror log:\n${this.log}`);
+      });
   }
 
   viewPath(session: string): string {
@@ -177,6 +205,33 @@ export class MirrorRig {
   terminalPath(session: string): string {
     return `/mirror/terminal?host=${encodeURIComponent(this.host)}&session=${encodeURIComponent(session)}`;
   }
+}
+
+// mirroredEntries is every mirrored entry (a card or a pinned chip: an element
+// carrying data-f-type="mirrored") in the Agents list's markup — the element
+// whole, from its opening tag to its matching close — with its state:
+// "offline" when its data-f-state says so, else "online". The server writes
+// attribute values escaped, so a '>' inside a tag is never one.
+export function mirroredEntries(html: string): { state: string; markup: string }[] {
+  const out: { state: string; markup: string }[] = [];
+  const open = /<([a-zA-Z][\w-]*)\b[^>]*\bdata-f-type="mirrored"[^>]*>/g;
+  for (let m = open.exec(html); m; m = open.exec(html)) {
+    const name = m[1].toLowerCase();
+    const tag = new RegExp(`<(/?)${name}\\b[^>]*>`, 'gi');
+    tag.lastIndex = m.index + m[0].length;
+    let depth = 1;
+    let end = html.length;
+    for (let t = tag.exec(html); t; t = tag.exec(html)) {
+      depth += t[1] ? -1 : 1;
+      if (depth === 0) {
+        end = t.index + t[0].length;
+        break;
+      }
+    }
+    const state = /\bdata-f-state="([^"]*)"/.exec(m[0])?.[1] || 'online';
+    out.push({ state, markup: html.slice(m.index, end) });
+  }
+  return out;
 }
 
 // mkchat runs e2e/mkchat: an agent of the caller's own with a persisted chat
