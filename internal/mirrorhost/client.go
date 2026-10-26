@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -175,6 +176,12 @@ type Client struct {
 	work   *workCounter
 	workMu sync.Mutex
 
+	// tunnel and tunnelTr are the one HTTP client and transport every connect
+	// dials with (wire.go); wire is the current connect's byte counter.
+	tunnel   *http.Client
+	tunnelTr *http.Transport
+	wire     atomic.Pointer[wireCounter]
+
 	// cur is the live connection (nil between connections): what RefreshNow
 	// asks for an immediate listing.
 	curMu sync.Mutex
@@ -240,7 +247,10 @@ func New(cfg Config) (*Client, error) {
 	if cat == nil {
 		cat = &CatalogScanner{SnippetsFile: cfg.SnippetsFile}
 	}
-	return &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}}, nil
+	c := &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}}
+	c.tunnelTr = tunnelTransport(&c.wire)
+	c.tunnel = &http.Client{Transport: c.tunnelTr}
+	return c, nil
 }
 
 // Run connects, and reconnects with jittered exponential backoff (1s → 60s),
@@ -296,9 +306,15 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+c.cfg.Token)
 	dctx, dcancel := context.WithTimeout(ctx, 20*time.Second)
-	ws, resp, err := websocket.Dial(dctx, c.url, &websocket.DialOptions{HTTPHeader: hdr})
+	// This connect's wire counter: what the transport's next dial counts into.
+	wire := &wireCounter{}
+	c.wire.Store(wire)
+	ws, resp, err := websocket.Dial(dctx, c.url, &websocket.DialOptions{HTTPHeader: hdr, HTTPClient: c.tunnel})
 	dcancel()
 	if err != nil {
+		// A refused upgrade (401, 404, …) can leave its connection idle in
+		// the pool, counting into this connect's counter: never reused.
+		c.tunnelTr.CloseIdleConnections()
 		if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
 			return fmt.Errorf("%w (HTTP %d)", ErrUnauthorized, resp.StatusCode)
 		}
@@ -312,7 +328,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	conn := &hostSide{c: c, ws: ws, ctx: ctx, version: version, streams: map[uint32]*hostStream{},
+	conn := &hostSide{c: c, ws: ws, ctx: ctx, version: version, wire: wire, streams: map[uint32]*hostStream{},
 		listed: map[string]bool{}, listedWindows: map[windowKey]bool{}, watches: map[uint32]context.CancelFunc{},
 		kick: make(chan chan struct{})}
 	conn.hermes = newHermesAsks(ctx, conn.hermesAttacher(), conn.nudge, c.log.Printf)
@@ -481,6 +497,9 @@ type hostSide struct {
 	ctx context.Context
 	// version is the tunnel version this connection speaks.
 	version int
+	// wire counts what the connection wrote to its socket (wire.go): read
+	// only for a traced open's first batch.
+	wire *wireCounter
 
 	mu      sync.Mutex
 	streams map[uint32]*hostStream
@@ -520,6 +539,9 @@ type hostSide struct {
 	// opens is each stream's open until its first reply (trace.go), by
 	// stream id: *openTrace.
 	opens sync.Map
+	// resolving is each watch's shared window read until its first reply
+	// (openresolve.go), by stream id: *openResolve.
+	resolving sync.Map
 }
 
 // windowKey addresses one window: its session and its tmux window id.
@@ -722,13 +744,30 @@ type hostStream struct {
 }
 
 func (h *hostSide) send(m mirror.Msg) error {
+	_, _, err := h.sendSized(m)
+	return err
+}
+
+// sendSized is send, and what the message cost: its encoded size, and the
+// bytes the connection wrote to its socket while it was written (framed,
+// TLS records and all — and anything another goroutine wrote in that moment, so an
+// upper bound; 0 for a connection that does not count, a test's).
+func (h *hostSide) sendSized(m mirror.Msg) (encoded int, wire int64, err error) {
 	b, err := json.Marshal(m)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	wctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
 	defer cancel()
-	return h.ws.Write(wctx, websocket.MessageText, b)
+	var before int64
+	if h.wire != nil {
+		before = h.wire.written.Load()
+	}
+	err = h.ws.Write(wctx, websocket.MessageText, b)
+	if h.wire != nil {
+		wire = h.wire.written.Load() - before
+	}
+	return len(b), wire, err
 }
 
 func (h *hostSide) get(id uint32) *hostStream {
