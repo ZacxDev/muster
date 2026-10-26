@@ -280,7 +280,10 @@ func (r *tracedMirrorRig) spans(t *testing.T) tracetest.SpanStubs {
 		for _, s := range spans {
 			names[s.Name] = true
 		}
-		if names["host.frame"] && names["GET /mirror/view/ws"] && names["mirror.watch"] && names["GET /mirror/view/ws closed"] {
+		// host.watch, not an earlier host phase: it ends last, after the
+		// first batch's write returns on the host (host.send) — which can be
+		// after muster has read the batch and every server span has ended.
+		if names["host.watch"] && names["GET /mirror/view/ws"] && names["mirror.watch"] && names["GET /mirror/view/ws closed"] {
 			return spans
 		}
 		if time.Now().After(deadline) {
