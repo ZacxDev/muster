@@ -68,7 +68,7 @@ func TestAWriteToAClosedPageIsTheBrowserLeaving(t *testing.T) {
 	if !errors.Is(err, errPageGone) {
 		t.Fatalf("writeToPage's failure is not marked as the page gone: %v", err)
 	}
-	if got := streamEndReason(live, err); got != telemetry.ReasonClientLeft {
+	if got := streamEndReason(live, c, err); got != telemetry.ReasonClientLeft {
 		t.Errorf("a write to a closed page, context live, ended as %q, want %q", got, telemetry.ReasonClientLeft)
 	}
 	// CONTROL: unmarked, the very same failure is what read as a fault.
@@ -76,13 +76,13 @@ func TestAWriteToAClosedPageIsTheBrowserLeaving(t *testing.T) {
 	if raw == nil {
 		t.Fatal("CONTROL: a second write to the closed page succeeded")
 	}
-	if got := streamEndReason(live, raw); got == telemetry.ReasonClientLeft {
+	if got := streamEndReason(live, c, raw); got == telemetry.ReasonClientLeft {
 		t.Errorf("CONTROL: the raw write error already classifies as %q; this test would pass without the mark", got)
 	}
 	// A deploy that cut the stream is still a deploy.
 	ctx, cancel := context.WithCancelCause(context.Background())
 	cancel(telemetry.ErrShuttingDown)
-	if got := streamEndReason(ctx, err); got != telemetry.ReasonShutdown {
+	if got := streamEndReason(ctx, c, err); got != telemetry.ReasonShutdown {
 		t.Errorf("a failed write during a shutdown ended as %q, want %q", got, telemetry.ReasonShutdown)
 	}
 	// And the terminal's writer marks its failures the same way.
@@ -93,4 +93,6 @@ func TestAWriteToAClosedPageIsTheBrowserLeaving(t *testing.T) {
 
 type failingWriter struct{}
 
-func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("use of closed network connection") }
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("use of closed network connection")
+}

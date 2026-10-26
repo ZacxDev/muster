@@ -146,6 +146,11 @@ type mirrorViewBatch struct {
 	Context *ui.ContextView `json:"context,omitempty"`
 }
 
+// viewCloseRead is the view socket's close detection: c.CloseRead, whose
+// context ends when the page goes. A test replaces it to hold the window in
+// which the page has gone and the context has not ended yet (streamEndReason).
+var viewCloseRead = func(c *websocket.Conn, ctx context.Context) context.Context { return c.CloseRead(ctx) }
+
 // handleMirrorViewWS is the view's socket: ?gen=&offset= resume.
 //
 // Its open is measured phase by phase up to the first batch written to the
@@ -180,12 +185,13 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
+	defer forgetPage(c)
 	// The browser sends nothing; CloseRead ends its context when it goes away.
 	// 🔴 IT WRAPS THE REQUEST'S CONTEXT, AND THE SHUTDOWN'S IS A CHILD OF IT:
 	// CloseRead's reader closes the socket when ITS context ends, so a
 	// shutdown that ended that context would close the socket before the page
 	// could be told why (shutdownFrame).
-	ctx, done, ok := s.terminals.add(c.CloseRead(r.Context()))
+	ctx, done, ok := s.terminals.add(viewCloseRead(c, r.Context()))
 	if !ok {
 		op.finish(telemetry.ReasonShutdown)
 		viewEnded(r, openViewMirror, telemetry.ReasonShutdown, since)
@@ -271,14 +277,26 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		telemetry.OpenDone(r, outcome)
 		return werr
 	})
-	reason := streamEndReason(ctx, err)
+	reason := streamEndReason(ctx, c, err)
 	viewEnded(r, openViewMirror, reason, since)
 	op.finish(reason, hubFields(&stats)...)
-	if reason == telemetry.ReasonShutdown {
+	switch reason {
+	case telemetry.ReasonShutdown:
 		shutdownFrame(c)
 		return
+	case telemetry.ReasonTimeout:
+		// A page alive and not reading: the connection is closed already
+		// (the timed-out write closed it), so it is told nothing — but the
+		// log says so, whatever the context says by now.
+		s.logger.Printf("mirror: view %s/%s: the page stopped reading (a write to it timed out): %v", host, session, err)
+		return
+	case telemetry.ReasonClientLeft:
+		// The page left (its own close, or a write that found it gone): no
+		// frame to a page that is not there, and no error line for a browser
+		// leaving.
+		return
 	}
-	if ctx.Err() != nil || errors.Is(err, errPageGone) {
+	if ctx.Err() != nil {
 		return
 	}
 	msg := "the rendered view ended"

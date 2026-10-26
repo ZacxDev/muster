@@ -345,6 +345,7 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer c.CloseNow()
+	defer forgetPage(c)
 	ctx, done, ok := s.terminals.add(r.Context())
 	if !ok {
 		op.finish(telemetry.ReasonShutdown)
@@ -385,8 +386,11 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 			}
 			return aerr
 		})
-	reason := streamEndReason(ctx, err)
-	if browserLeft != "" {
+	reason := streamEndReason(ctx, c, err)
+	// The bridge's context ending is the browser leaving — unless a write or
+	// a ping to the page timed out first, which ended it: a page there and
+	// not answering is a timeout (streamEndReason), and stays one.
+	if browserLeft != "" && reason != telemetry.ReasonTimeout && reason != telemetry.ReasonShutdown {
 		reason = browserLeft
 	}
 	viewEnded(r, openViewTerminal, reason, since)
