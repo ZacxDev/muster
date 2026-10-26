@@ -80,7 +80,21 @@ var shapeCorpus = []string{
 // redacted.
 func TestTheFilterNeverChangesWhatIsRedacted(t *testing.T) {
 	corpus := append([]string(nil), shapeCorpus...)
-	frag := append(append([]string(nil), corpus...), "the quick brown fox", "x=1", "a@b", "://", "--", "-p", "key", "Token", "=", " ", "\n")
+	frag := append(append([]string(nil), corpus...), "the quick brown fox", "x=1", "a@b", "://", "--", "-p", "key", "Token", "=", " ", "\n",
+		// The sharper tests' edges (redact.go's afterAny, hasFlag,
+		// hasDiscordRun): each separator the patterns allow between the word
+		// and what follows it, quotes, a flag at the start and after each kind
+		// of space, and token runs either side of 24 before a dot.
+		"\t", "\r", "\f", "\v", ":", "'", `"`, "?", "&", ";", ".", "-", "_", "PASSWORD", "api_key", "apiKey", "Signature",
+		"--TOKEN", "-U", "--pass", "\t-p", "\n--secret", "M"+strings.Repeat("a", 22), "N"+strings.Repeat("b0", 12), "O"+strings.Repeat("Z", 27),
+		strings.Repeat("x", 6), strings.Repeat("y", 30),
+		// reAssignSp with each kind of space either side of the "=".
+		"TOKEN =\t'v4l'", "api_key=\n\"v9\"", "pwd\f=\r'x1'", "secret\t= \"s3\"",
+		// reYAMLSecret with spaces and tabs before its ":".
+		"password \t: FAKE1", "apikey\t:x2", "token  :'t3'",
+		// reDiscord at its shortest (a 24-byte run before the first dot) and
+		// at its longest (28), whole.
+		"M"+strings.Repeat("q", 23)+".FAKE00."+strings.Repeat("w", 27), "O"+strings.Repeat("Q", 27)+".FAKE001."+strings.Repeat("W", 40))
 	r := rand.New(rand.NewSource(1))
 	for i := 0; i < 20000; i++ {
 		var b strings.Builder
@@ -106,5 +120,40 @@ func TestTheFilterNeverChangesWhatIsRedacted(t *testing.T) {
 	// CONTROL: the corpus exercises redaction, not just prose.
 	if differ < 1000 {
 		t.Fatalf("only %d of %d inputs had anything redacted", differ, len(corpus))
+	}
+}
+
+// TestEveryAlternativeOfTheSharedWordListsIsRedacted spells, from a LITERAL
+// list here (not the slices in redact.go, which it is checking), a secret in
+// every form each word list builds — spaced assignment, YAML, flag, query
+// parameter — and pins the whole redacted output. Deleting a word from
+// redact.go's list removes it from the pattern and its filter alike
+// (alternatives), and this test is what then goes red.
+func TestEveryAlternativeOfTheSharedWordListsIsRedacted(t *testing.T) {
+	var cases []struct{ in, want string }
+	add := func(in, want string) { cases = append(cases, struct{ in, want string }{in, want}) }
+	for _, w := range []string{"key", "token", "secret", "password", "passwd", "pwd"} {
+		add("set DB_"+strings.ToUpper(w)+` = "hunter2" now`, "set DB_"+strings.ToUpper(w)+" = «redacted» now")
+		add("db_"+w+" = 'hunter2'", "db_"+w+" = «redacted»")
+	}
+	for _, w := range []string{"password", "passwd", "token", "secret", "api_key", "apikey"} {
+		add("db:\n  x_"+w+": hunter2\n  host: h", "db:\n  x_"+w+": «redacted»\n  host: h")
+	}
+	for _, w := range []string{"--password", "--passwd", "--pass", "--token", "--access-token", "--auth-token", "--api-key", "--apikey",
+		"--secret", "--client-secret"} {
+		add("tool "+w+" abc123 next", "tool "+w+" «redacted» next")
+		add("tool "+w+"=abc123", "tool "+w+"=«redacted»")
+	}
+	add("mysql -p abc123", "mysql -p «redacted»")
+	add("curl -u admin:abc123 x", "curl -u «redacted» x")
+	for _, w := range []string{"token", "key", "secret", "sig", "signature", "password", "passwd", "pass", "auth"} {
+		add("https://h.example.test/p?a=1&x"+w+"=abc123&b=2", "https://h.example.test/p?a=1&x"+w+"=«redacted»&b=2")
+		// The word INSIDE the name (?tokenx=), which only reQuery reads.
+		add("https://h.example.test/p?a=1&"+w+"x-y=abc123", "https://h.example.test/p?a=1&"+w+"x-y=«redacted»")
+	}
+	for _, c := range cases {
+		if got := Secrets(c.in); got != c.want {
+			t.Errorf("redact(%q)\n got %q\nwant %q", c.in, got, c.want)
+		}
 	}
 }

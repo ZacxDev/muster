@@ -38,7 +38,7 @@ func traceRecorder(t *testing.T) *tracetest.InMemoryExporter {
 
 // hostPhases is every phase span a Claude Code watch's open has on the host,
 // in order (mirrorhost's tail).
-var hostPhases = []string{"resolve", "open", "backfill", "redact", "frame"}
+var hostPhases = []string{"resolve", "open", "backfill", "redact", "frame", "send"}
 
 func spanNamed(spans tracetest.SpanStubs, name string) (tracetest.SpanStub, bool) {
 	for _, s := range spans {
@@ -95,11 +95,16 @@ func TestOneOpenIsOneTraceFromServerToHost(t *testing.T) {
 	}
 
 	// Every span closes in time for the read below except the host's, which
-	// end on their own goroutine.
+	// end on their own goroutine. host.watch ends after every phase span but
+	// host.prompt_index (which runs after the first batch is sent): its last
+	// phase, host.send, is the first batch's write, which returns on the host
+	// only after muster may already have read the batch. So the wait is for
+	// host.watch itself to have ENDED (an exported span is an ended one),
+	// never for an earlier phase.
 	var spans tracetest.SpanStubs
-	eventually(t, "the host's spans", func() bool {
+	eventually(t, "the host's watch span to end", func() bool {
 		spans = exp.GetSpans()
-		_, ok := spanNamed(spans, "host.frame")
+		_, ok := spanNamed(spans, "host.watch")
 		return ok
 	})
 	if len(spans) < 8 {

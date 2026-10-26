@@ -18,6 +18,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -267,26 +268,16 @@ func (r *tracedMirrorRig) waitFor(t *testing.T, names ...string) tracetest.SpanS
 	}
 }
 
-// spansOf waits for the open's spans — the host's end on their own goroutine,
+// spans waits for the open's spans — the host's end on their own goroutine,
 // the socket's when its handler returns — and returns them.
+//
+// host.watch, not an earlier host phase: it ends after every phase span but
+// host.prompt_index, once the first batch's write returns on the host
+// (host.send) — which can be after muster has read the batch and every
+// server span has ended.
 func (r *tracedMirrorRig) spans(t *testing.T) tracetest.SpanStubs {
 	t.Helper()
-	var spans tracetest.SpanStubs
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		spans = r.exp.GetSpans()
-		names := map[string]bool{}
-		for _, s := range spans {
-			names[s.Name] = true
-		}
-		if names["host.frame"] && names["GET /mirror/view/ws"] && names["mirror.watch"] && names["GET /mirror/view/ws closed"] {
-			return spans
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the open's spans never all ended: %v", names)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	return r.waitFor(t, "host.watch", "GET /mirror/view/ws", "mirror.watch", "GET /mirror/view/ws closed")
 }
 
 func stub(spans tracetest.SpanStubs, name string) (tracetest.SpanStub, bool) {
@@ -535,6 +526,56 @@ func TestNoExportedSpanCarriesPrivateContent(t *testing.T) {
 		for _, p := range parts {
 			if strings.Contains(p, sentinel) {
 				t.Errorf("span %q exports the sentinel: %q", s.Name, p)
+			}
+		}
+	}
+}
+
+// TestTheOpenCostAttributesAreSizesAndCountsOnly extends the sentinel test
+// above to what an open's spans say its first batch COST (mirror.watch and
+// host.watch: its size as JSON and on the host's socket, its event count, the
+// link's round trip). The sentinel test proves no attribute spells private
+// content; this pins that each of these is a number — a shape no transcript,
+// title or path can take — and that they are there at all (POSITIVE CONTROL: an export without them would pass the type check).
+func TestTheOpenCostAttributesAreSizesAndCountsOnly(t *testing.T) {
+	r := newTracedMirrorRigAt(t, 1)
+	_, batch := r.open(t)
+	if !strings.Contains(batch, sentinel) {
+		t.Fatalf("POSITIVE CONTROL: the batch does not carry the sentinel: %.300s", batch)
+	}
+	spans := r.waitFor(t, "mirror.watch", "host.watch")
+	want := map[string]map[string]attribute.Type{
+		"mirror.watch": {"mirror.first_batch_bytes": attribute.INT64, "mirror.first_batch_events": attribute.INT64},
+		"host.watch": {"mirror.first_batch_bytes": attribute.INT64, "mirror.first_batch_events": attribute.INT64,
+			"mirror.first_batch_wire_bytes": attribute.INT64},
+	}
+	for name, keys := range want {
+		s, ok := stub(spans, name)
+		if !ok {
+			t.Fatalf("no %q span", name)
+		}
+		got := map[string]attribute.Value{}
+		for _, a := range s.Attributes {
+			got[string(a.Key)] = a.Value
+		}
+		for k, typ := range keys {
+			v, ok := got[k]
+			if !ok {
+				t.Errorf("%s carries no %s", name, k)
+				continue
+			}
+			if v.Type() != typ {
+				t.Errorf("%s's %s is a %s, want %s", name, k, v.Type(), typ)
+			}
+		}
+		// Every first_batch / link attribute is typed, whoever adds the next.
+		for k, v := range got {
+			if strings.HasPrefix(k, "mirror.first_batch_") || k == "mirror.host_rtt_ms" {
+				switch v.Type() {
+				case attribute.INT64, attribute.FLOAT64, attribute.BOOL:
+				default:
+					t.Errorf("%s's %s is a %s: an open's cost is numbers and booleans only", name, k, v.Type())
+				}
 			}
 		}
 	}

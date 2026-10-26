@@ -345,6 +345,7 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer c.CloseNow()
+	defer forgetPage(c)
 	ctx, done, ok := s.terminals.add(r.Context())
 	if !ok {
 		op.finish(telemetry.ReasonShutdown)
@@ -372,7 +373,7 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 			// window == "" is the session's active window, resolved by the plugin
 			// to an explicit window id on a per-window host (mirror.Hub.AttachWindow).
 			aerr := s.ext.Mirror.AttachWindow(ctx, host, session, window, readOnly, stdin,
-				&firstWriter{w: stdout, first: func() {
+				&firstWriter{w: pageWriter{stdout}, first: func() {
 					op.finish(telemetry.ReasonOK, hubFields(&stats)...)
 					// The open is over: its span ends at the first output.
 					telemetry.OpenDone(r, telemetry.ReasonOK)
@@ -385,8 +386,11 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 			}
 			return aerr
 		})
-	reason := streamEndReason(ctx, err)
-	if browserLeft != "" {
+	reason := streamEndReason(ctx, c, err)
+	// The bridge's context ending is the browser leaving — unless a write or
+	// a ping to the page timed out first, which ended it: a page there and
+	// not answering is a timeout (streamEndReason), and stays one.
+	if browserLeft != "" && reason != telemetry.ReasonTimeout && reason != telemetry.ReasonShutdown {
 		reason = browserLeft
 	}
 	viewEnded(r, openViewTerminal, reason, since)

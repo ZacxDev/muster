@@ -1,4 +1,5 @@
 import { test, expect } from '../lib/fixtures';
+import { waitControlled } from '../lib/sw';
 
 // The worker registers from the page, at scope "/", and takes control.
 test('the service worker registers at scope / and controls the page', async ({ page, context }) => {
@@ -31,12 +32,7 @@ test('the service worker registers at scope / and controls the page', async ({ p
 // instead of a cached document that looks signed in.
 test('the offline shell is served only while offline', async ({ page, context }) => {
   await page.goto('/tasks');
-  await page.evaluate(async () => {
-    await navigator.serviceWorker.ready;
-    if (!navigator.serviceWorker.controller) {
-      await new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', r, { once: true }));
-    }
-  });
+  await waitControlled(page);
   await expect.poll(() => page.evaluate(async () => !!(await caches.match('/')))).toBe(true);
 
   await context.setOffline(true);

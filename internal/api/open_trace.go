@@ -2,12 +2,14 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/coder/websocket"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ZacxDev/muster/internal/metrics"
@@ -162,9 +164,29 @@ func hubFields(st *mirror.OpenStats) []string {
 // counts it: shutdown when muster ended it for a deploy (terminalSet.endAll's
 // cause), client_left when the browser went first, ended for a stream the far
 // side ended cleanly, else mirror.Reason.
-func streamEndReason(ctx context.Context, err error) string {
+//
+// 🔴 A FAILED WRITE TO THE PAGE'S OWN SOCKET IS THE BROWSER LEAVING
+// (errPageGone), whatever the context says yet. When the page closes, the
+// socket's reader (CloseRead) answers the close, closes the connection and
+// only THEN cancels the context — so a batch written in between fails with
+// "use of closed network connection" while ctx.Err() is still nil. Read off
+// the error alone, that end was counted as "error": a browser leaving,
+// recorded as a fault (measured: ~1 in 150 opens closed right after the first
+// batch, with 4 CPUs).
+//
+// 🔴 BUT A PAGE THAT IS ALIVE AND NOT READING IS A TIMEOUT, NEVER "GONE": a
+// write to it that hits terminalWriteTimeout closes the connection, and a
+// write that then fails on the closed connection — this one, or the next
+// writer's — would read as the page leaving. A stalled page is a prime
+// suspect for a "the session disconnected" report, so it must stay visible:
+// a write timeout on c, by ANY writer (pageStalled), is "timeout".
+func streamEndReason(ctx context.Context, c *websocket.Conn, err error) string {
 	switch {
-	case ctx.Err() != nil:
+	case errors.Is(context.Cause(ctx), telemetry.ErrShuttingDown):
+		return telemetry.ReasonShutdown
+	case pageStalled(c), errors.Is(err, context.DeadlineExceeded):
+		return telemetry.ReasonTimeout
+	case ctx.Err() != nil, errors.Is(err, errPageGone):
 		return telemetry.EndedBy(ctx)
 	case err == nil:
 		return "ended"
@@ -184,6 +206,38 @@ func viewEnded(r *http.Request, view, reason string, since time.Time) {
 	metrics.ViewDisconnects.WithLabelValues(view, reason).Inc()
 	telemetry.OpenDone(r, reason)
 	telemetry.StreamClosed(r, reason, time.Since(since))
+}
+
+// errPageGone wraps a failed write to the page's own socket (writeToPage,
+// pageWriter): the page has gone, and that is why the stream ended. A write
+// that TIMED OUT is not marked (markPageGone): that page was there and not
+// reading, which is a timeout.
+var errPageGone = errors.New("the page's socket is closed")
+
+// markPageGone is err marked errPageGone — unless it is a timeout, returned
+// as it is.
+func markPageGone(err error) error {
+	if err == nil || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", errPageGone, err)
+}
+
+// writeToPage is terminalWriteJSON to the page's socket, a failure other than
+// a timeout marked errPageGone.
+func writeToPage(ctx context.Context, c *websocket.Conn, v any) error {
+	return markPageGone(terminalWriteJSON(ctx, c, v))
+}
+
+// pageWriter is w — the page's socket, as a terminal's output writer — its
+// failures marked errPageGone.
+type pageWriter struct {
+	w interface{ Write([]byte) (int, error) }
+}
+
+func (p pageWriter) Write(b []byte) (int, error) {
+	n, err := p.w.Write(b)
+	return n, markPageGone(err)
 }
 
 // firstWriter calls first once, before its first write.

@@ -31,9 +31,24 @@ func SnapScript(f Features) g.Node {
 	if f.SnapUser == 0 || f.SnapBuild == "" {
 		return nil
 	}
-	return Script(Src(web.Asset("/static/mirror-snap.js")), Defer(),
-		g.Attr("data-snap-user", strconv.FormatInt(f.SnapUser, 10)),
-		g.Attr("data-snap-build", f.SnapBuild))
+	return snapScript(f, Defer())
+}
+
+// SnapScriptNow is the same tag WITHOUT defer, for the rendered view: placed
+// before mirrorViewScript, it has run when that script is parsed, so the view
+// reads its snapshot (and opens its socket) while the rest of the document is
+// still loading, instead of at DOMContentLoaded. The file is immutable and
+// small, and a parser-blocking script is fetched as early as the deferred one
+// was (the preload scanner finds both).
+func SnapScriptNow(f Features) g.Node { return snapScript(f) }
+
+func snapScript(f Features, extra ...g.Node) g.Node {
+	if f.SnapUser == 0 || f.SnapBuild == "" {
+		return nil
+	}
+	nodes := append([]g.Node{Src(web.Asset("/static/mirror-snap.js"))}, extra...)
+	return Script(append(nodes, g.Attr("data-snap-user", strconv.FormatInt(f.SnapUser, 10)),
+		g.Attr("data-snap-build", f.SnapBuild))...)
 }
 
 // mirrorUpdatingChip is the rendered view's "Updating…": shown only while a

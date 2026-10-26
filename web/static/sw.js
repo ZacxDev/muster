@@ -373,23 +373,84 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil(focusOrOpen(target));
 });
 
+// focusOrOpen moves an open muster tab to target and brings it forward, or
+// opens target in a new window when no tab will take it.
+//
+// 🔴 A TAB THIS WORKER DOES NOT CONTROL CANNOT BE navigate()d. It rejects
+// ("This service worker is not the client's active service worker"), and a
+// tab gets into that state easily: a hard reload bypasses the worker, and
+// hx-boost then moves the tab without the full navigation that would put it
+// under control. This used to swallow that rejection, so the tap brought the
+// tab forward and left it where it was, on every tap. So: a controlled tab is
+// preferred; when navigate() is refused, the page itself is asked to go
+// (askPageToOpen, answered by pwa.js); and when the page does not answer,
+// target opens in a new window. Every refusal is logged.
+//
+// 🔴 focus() COMES LAST, AND NEVER BEFORE openWindow(). A trusted
+// notificationclick grants ONE window-interaction token. Chromium's
+// WindowClient.focus() consumes it, and Clients.openWindow() checks it and
+// rejects ("Not allowed to open a window"). So the tab is focused only once it
+// has taken the route (navigate() resolved, or the page answered), and the
+// fallback opens its window with the token unspent. The token lasts about 10 s
+// in Chromium; PAGE_OPEN_ACK_MS keeps the refused path well inside that.
+// ⚠ FIREFOX, UNVERIFIED: its window-interaction allowance
+// (dom.serviceWorkers.disable_open_click_delay) defaults to 1000 ms, shorter
+// than PAGE_OPEN_ACK_MS, so there the openWindow fallback after a page that
+// never answers may still be refused.
 async function focusOrOpen(target) {
-  const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  for (const client of all) {
-    // Reuse any open tab.
-    if ('focus' in client) {
-      await client.focus();
-      if ('navigate' in client && target) {
-        try {
-          await client.navigate(target);
-        } catch (e) {
-          /* cross-origin or not allowed; focus is enough */
-        }
+  const dest = target || '/';
+  const controlled = new Set((await self.clients.matchAll({ type: 'window' })).map((c) => c.id));
+  const tabs = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true })).filter((c) => 'focus' in c);
+  const client = tabs.find((c) => controlled.has(c.id)) || tabs[0];
+  if (client) {
+    let moved = null;
+    try {
+      // navigate() resolves with the tab's new client, or null when the result
+      // is not one this worker may see; either way the tab took the route.
+      moved = (await client.navigate(dest)) || client;
+    } catch (e) {
+      console.warn('muster sw: navigate() refused for the open tab; asking the page to go to ' + dest, e);
+      if (await askPageToOpen(client, dest)) moved = client;
+    }
+    if (moved) {
+      try {
+        await moved.focus();
+      } catch (e) {
+        console.warn('muster sw: could not focus the open tab', e);
       }
       return;
     }
+    console.warn('muster sw: the open tab did not take ' + dest + '; opening a window');
   }
-  if (self.clients.openWindow) {
-    await self.clients.openWindow(target || '/');
+  if (!self.clients.openWindow) return;
+  try {
+    await self.clients.openWindow(dest);
+  } catch (e) {
+    console.warn('muster sw: could not open a window for ' + dest, e);
   }
+}
+
+// PAGE_OPEN_ACK_MS is how long askPageToOpen waits for the page's answer.
+// The page answers synchronously on receipt, so this only matters for a tab
+// that never answers (a page without pwa.js, or a frozen one).
+const PAGE_OPEN_ACK_MS = 3000;
+
+// askPageToOpen asks client's page to go to url itself (pwa.js listens for the
+// NAVIGATE message and does location.assign). True once the page confirms.
+function askPageToOpen(client, url) {
+  return new Promise((resolve) => {
+    const ch = new MessageChannel();
+    const timer = setTimeout(() => resolve(false), PAGE_OPEN_ACK_MS);
+    ch.port1.onmessage = (e) => {
+      clearTimeout(timer);
+      resolve(!!(e.data && e.data.ok));
+    };
+    try {
+      client.postMessage({ type: 'NAVIGATE', url }, [ch.port2]);
+    } catch (e) {
+      clearTimeout(timer);
+      console.warn('muster sw: could not message the open tab', e);
+      resolve(false);
+    }
+  });
 }
