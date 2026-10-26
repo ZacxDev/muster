@@ -216,42 +216,37 @@ The reasons for the shell:
     whose `overflow-y` scrolls and whose content is taller than it is. The
     value is `null` when there are none.
   - `owner` is `overlay` when the finger is inside a fixed-position element or
-    a dialog, or when a modal `<dialog>` is open. It is `gestures` when an
-    element on the way up takes its own vertical drags (a `touch-action`
-    without `pan-y`, or an `.xterm`). Otherwise it is `page`.
+    a dialog (`dialog[open]`, `[role=dialog]`, `[role=alertdialog]`,
+    `[aria-modal=true]`), or when a modal `<dialog>` is open. It is `gestures`
+    when an element on the way up takes its own vertical drags: a
+    `touch-action` other than `auto` or `manipulation` that lacks `pan-y`, or
+    an `.xterm`. Otherwise it is `page`.
   - `editing` is true when the focused element is a non-empty text field. The
-    script reads the field's length, never its text.
+    script reads the field's text to take its length, but only the boolean is
+    sent: the text never leaves the page.
 
   The message carries geometry, a count and one boolean. It carries no text,
   no URL and nothing typed, and the app sends nothing back. `BridgeMessage`
   re-checks the origin and the main frame, and refuses a message whose fields
-  do not have exactly these types. `ShellRefreshLayout` wraps the WebView in
-  a `SwipeRefreshLayout` and hands each message to `PullGate`. `PullGate`
-  keeps a message only if its `doc` and `seq` line up with the DOWN the
-  layout counted for the gesture in progress. A late or drifted message is
-  dropped, and then that gesture cannot refresh.
+  do not have exactly these types. How the app uses it (matching a message to
+  its gesture, when a pull reloads the page, the spinner) is documented in
+  muster-android: the "Pull to refresh" entry in its README, and `PullGate` /
+  `ShellRefreshLayout` in `feature/shell`.
 
-  A downward pull reloads the page (`WebView.reload()`) only when all of these
-  hold:
-  - this gesture's message arrived;
-  - `doc_top` and `inner_top` are both at 0;
-  - `owner` is `page`;
-  - `editing` is false;
-  - the gesture is one finger, and its first movement was more vertical than
-    sideways;
-  - the page is not a terminal or a mirrored session. The app decides this
-    from the URL path: `/agents/{name}/terminal`, `/mirror/terminal` and
-    `/mirror/view` never refresh.
+  **What this couples to in muster:**
+  - the route paths where a pull never refreshes, which the app matches on the
+    URL: `/agents/{name}/terminal`, `/mirror/terminal` and `/mirror/view`;
+  - the `xterm` class on the terminal;
+  - inner scrollers (such as `#chat-log`, `overflow-auto`) that scroll with
+    `overflow-y`;
+  - overlays (sheets, menus, the open sidebar) that are fixed-position, and
+    dialogs that use `<dialog>` or one of the dialog roles above;
+  - `touch-action: manipulation` on `.press` (`web/css/input.css`), which the
+    script treats as the page's own scrolling.
 
-  The spinner stops on `onPageFinished`, or after 15 s at most. A reload is
-  used because muster has no page-wide htmx refresh: only the task list, the
-  agent list and a task's detail card listen for `muster:resync`.
-
-  **What this couples to in muster:** the three route paths above, the
-  `xterm` class, and the fact that a page's own scrollers (such as
-  `#chat-log`, `overflow-auto`) use `overflow-y`. If a route or the terminal's
-  markup is renamed, pull to refresh can fire on a page that owns its drags.
-  No muster test pins this coupling.
+  If a route, the terminal's markup, or an overlay's positioning or role is
+  changed, pull to refresh can fire on a page or an overlay that owns its
+  drags. No muster test pins this coupling.
 - **No Web Push in the WebView.** WebView has no PushManager, so the page must
   not offer **Enable notifications** inside the shell. The page feature-detects
   PushManager, and in the shell it points to the app's own settings instead.
