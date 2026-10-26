@@ -83,8 +83,8 @@
   // that must be left of it to open another socket.
   var WARM_PASS_BYTES = 3 * 1024 * 1024;
   var WARM_MIN_LEFT = 256 * 1024;
-  // On a rendered view, how long eviction and warming wait for the view's own
-  // open at most.
+  // On a rendered view, how long warming waits for the view's own open at
+  // most.
   var VIEW_WAIT_MS = 15000;
 
   // refOf is the mirrored window a rendered view's page or socket path names
@@ -486,13 +486,14 @@
       setTimeout(function () { idle(warmPass); }, WARM_DELAY_MS);
       setInterval(function () { if (Date.now() - lastWarm >= WARM_EVERY_MS) idle(warmPass); }, 30000);
     };
-    // 🔴 ON A RENDERED VIEW, NOTHING STARTS UNTIL ITS OWN OPEN IS OVER. A warm
-    // socket is another watch on a host and its batches are parsed and stored
-    // on this page's main thread, and eviction is a storage transaction beside
-    // the view's own read: started at load, both ran while the view was still
-    // waiting for its first batch. So on a view page they wait for the view's
-    // 'muster:view-usable' (mirror_view.go), or VIEW_WAIT_MS at most; on any
-    // other page eviction runs at once and warming is armed at load, as before.
+    // 🔴 ON A RENDERED VIEW, WARMING WAITS FOR ITS OWN OPEN TO BE OVER. A warm
+    // socket is another watch on a host, and its batches are parsed and stored
+    // on this page's main thread: armed at load, a pass could start while the
+    // view was still waiting for its first batch. So on a view page it waits
+    // for the view's 'muster:view-usable' (mirror_view.go), or VIEW_WAIT_MS at
+    // most; on any other page it is armed at load, as before.
+    // Eviction is NOT delayed anywhere: it is what deletes another user's
+    // records, and it reads only keys and meta.
     var view = !!document.getElementById('mv-log');
     var later = function (fn) {
       var done = false, once = function () { if (!done) { done = true; fn(); } };
@@ -500,7 +501,7 @@
       setTimeout(once, VIEW_WAIT_MS);
     };
     // Another user's, another build's and expired snapshots go at every load.
-    if (view) later(function () { evict(); }); else setTimeout(function () { evict(); }, 0);
+    setTimeout(function () { evict(); }, 0);
     if (view) later(arm); else if (document.readyState === 'complete') arm(); else root.addEventListener('load', arm);
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) { if (current) current.stop(); return; }
