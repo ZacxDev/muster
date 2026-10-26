@@ -2,6 +2,7 @@ import { test, expect } from '../lib/fixtures';
 import type { Browser, Page } from '@playwright/test';
 import { authState, baseURL } from '../lib/env';
 import { launchWithBfcache } from '../lib/bfcache';
+import { waitControlled } from '../lib/sw';
 
 // THE BOARD IS IN THE `/` DOCUMENT, AND THE FIRST SSE OPEN DOES NOT FETCH IT
 // AGAIN (internal/ui/tasks_list_ssr.go).
@@ -87,12 +88,7 @@ test('a reconnect re-fetches the board even when nothing changed', async ({ page
 test('the offline shell the worker stores holds no task, and an offline open after sign-out shows none', async ({ page, context }) => {
   await page.goto('/');
   await expect(card(page, seeded), 'control: the signed-in board draws the seeded task').toBeVisible();
-  await page.evaluate(async () => {
-    await navigator.serviceWorker.ready;
-    if (!navigator.serviceWorker.controller) {
-      await new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', r, { once: true }));
-    }
-  });
+  await waitControlled(page);
   await expect.poll(() => page.evaluate(async () => !!(await caches.match('/'))), { message: 'the worker stored "/"' }).toBe(true);
   const stored = await page.evaluate(async () => (await (await caches.match('/'))!.text()));
   expect(stored, 'control: the stored "/" is the shell').toContain('id="tasks-list"');
