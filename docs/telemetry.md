@@ -38,6 +38,16 @@ is usually negative: the socket is created before load); `socket_created_ms`→
 `batch_insert_start_ms` is the page busy or still parsing when the batch came;
 `batch_insert_start_ms`→`batch_insert_end_ms` is the DOM work, and
 `batch_insert_end_ms`→`first_paint_ms` is style, layout and paint.
+`warm_overlap` counts the snapshot store's warm passes that started or were
+running between the open's start and its end: each is another watch on a
+host's tunnel. On a view page warming waits for the view's open to be usable
+(at most 15 s), so a non-zero value is an open that took longer than that, or a
+reconnect during a pass.
+
+⚠ `first_paint` and `usable` were, before this measurement was broken down,
+marked the moment the batch was inserted; they are now after the browser
+painted. A `usable_ms` series spanning that deploy grows by the paint because
+its meaning changed, not because opens got slower.
 
 🔴 The Faro SDK is not loaded until the open is over. `faro-init.js` (in the
 head) defines `musterOpen` at once and records each open in memory; once the
@@ -112,7 +122,8 @@ is what the page's `reason` is for.
 The page reports each disconnect as a Faro event `muster.session_disconnected`
 `{view, reason, phase, code}` — `reason` is the server's closed word when it
 sent one, else `closed_<WebSocket close code>`; `phase` is `opening` (before
-the first batch) or `live` — and, with tracing on, a `disconnected <view>` span
+the open ended: for the rendered view, before its first batch was painted — a
+frame after it was drawn) or `live` — and, with tracing on, a `disconnected <view>` span
 in the open's trace.
 
 ## Reading it

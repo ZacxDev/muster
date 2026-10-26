@@ -124,7 +124,7 @@ test('the document names its server trace, and the open is one trace from the pa
   expect(Object.keys(open.values).sort()).toEqual(
     [
       'batch_insert_end_ms', 'batch_insert_start_ms', 'dom_content_loaded_ms', 'first_batch_ops', 'first_frame_ms', 'first_paint_ms', 'load_ms',
-      'snapshot_read_end_ms', 'snapshot_read_start_ms', 'socket_created_ms', 'stream_connected_ms', 'total_ms', 'usable_ms',
+      'snapshot_read_end_ms', 'snapshot_read_start_ms', 'socket_created_ms', 'stream_connected_ms', 'total_ms', 'usable_ms', 'warm_overlap',
     ].sort(),
   );
   for (const [k, v] of Object.entries(open.values)) expect(typeof v, `${k} is a number`).toBe('number');
@@ -134,6 +134,9 @@ test('the document names its server trace, and the open is one trace from the pa
   expect(v.batch_insert_end_ms).toBeGreaterThanOrEqual(v.batch_insert_start_ms);
   expect(v.first_paint_ms, 'first_paint is after the batch was inserted').toBeGreaterThanOrEqual(v.batch_insert_end_ms);
   expect(v.first_batch_ops, 'the first batch drew the conversation').toBeGreaterThan(0);
+  // No warm pass ran during this open (on a view page warming waits for the
+  // open); the forced case below reads ≥ 1 through the same field.
+  expect(v.warm_overlap, 'no warm pass overlapped a plain open').toBe(0);
   expect(Object.keys(open.context).sort()).toEqual(['outcome', 'reopen', 'snapshot', 'trace_id', 'view']);
   expect(open.context.snapshot).toBe('miss');
   for (const [k, c] of Object.entries(open.context)) if (k !== 'trace_id') expect(c, `context ${k} is a closed word`).toMatch(/^[a-z_]{1,32}$/);
@@ -142,6 +145,7 @@ test('the document names its server trace, and the open is one trace from the pa
   await expect.poll(() => spansNamed('open mirror_view').some((sp) => sp.traceId === traceId), { message: "the page's open span arrived, in the document's trace", timeout: 15_000 }).toBe(true);
   const span = spansNamed('open mirror_view').find((sp) => sp.traceId === traceId);
   const evNames = (span.events ?? []).map((e: any) => e.name);
+  expect((span.attributes ?? []).find((a: any) => a.key === 'muster.warm_overlap')?.value?.intValue ?? (span.attributes ?? []).find((a: any) => a.key === 'muster.warm_overlap')?.value?.doubleValue, 'the span carries warm_overlap').toBeDefined();
   for (const n of ['snapshot_read_start', 'socket_created', 'first_frame', 'batch_insert_start', 'batch_insert_end', 'first_paint', 'usable']) {
     expect(evNames, `the open span has the ${n} event`).toContain(n);
   }
@@ -239,6 +243,11 @@ test('a disconnect is reported with its reason, by the page and by the server', 
   await page.goto(rig.origin + rig.viewPath('main'));
   await expect(page.locator('#mv-log')).toContainText('Synthetic answer: it is sunny.');
   const before = faroItems('events').filter((e) => e.name === 'muster.session_disconnected').length;
+  // The open ends when the drawn batch has been PAINTED (a frame after it is
+  // in the document): until then a disconnect is the open's ('opening').
+  // Measured: stopping the host the moment the text was in the DOM read
+  // 'opening' 3 times in 4. One frame later the view is live.
+  await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 0))));
 
   // The host goes away while the view is live: the server ends the stream
   // with its reason, and the page reports why it disconnected.
@@ -309,6 +318,44 @@ test('a console line or a thrown error never carries its text to the receiver', 
   for (const ex of faroItems('exceptions').slice(exceptionsBefore)) {
     expect(ex.value).toBe('[scrubbed]');
   }
+});
+
+// A WARM PASS DURING AN OPEN IS COUNTED ON IT. On a view page warming waits
+// for the open to be usable — or VIEW_WAIT_MS (15 s, mirror-snap.js) at most.
+// Here the view's socket is held past that, so the snapshot store's own
+// warming starts while the open is still waiting for its first batch; once
+// the socket is let through, the open reports muster.warm_overlap ≥ 1.
+test('a warm pass that starts during an open is counted on it', async ({ page }) => {
+  test.setTimeout(90_000);
+  await startHost();
+  await rig.login(page);
+  await rig.waitListed(page, 'main');
+  const before = faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'mirror_view').length;
+  let held = true;
+  const queue: { ws: any; m: string | Buffer }[] = [];
+  await page.routeWebSocket(
+    (u) => u.pathname === '/mirror/view/ws' && !u.search.includes('warm=1'),
+    (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((m) => (held ? queue.push({ ws, m }) : ws.send(m)));
+      ws.onMessage((m) => server.send(m));
+    },
+  );
+  await page.goto(rig.origin + rig.viewPath('main'));
+  // Started: the store's own counter, read in the page.
+  await expect
+    .poll(() => page.evaluate(() => (window as any).musterSnap.warmState().starts), { message: 'a warm pass started while the open waited', timeout: 30_000 })
+    .toBeGreaterThanOrEqual(1);
+  expect(await page.locator('#mv-log [data-bubble]').count(), 'the open is still waiting').toBe(0);
+  held = false;
+  for (const q of queue.splice(0)) q.ws.send(q.m);
+  await expect(page.locator('#mv-log')).toContainText('Synthetic answer: it is sunny.');
+  await expect
+    .poll(() => faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'mirror_view').length, { timeout: 20_000 })
+    .toBeGreaterThan(before);
+  const open = faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'mirror_view')[before];
+  expect(open.context.outcome).toBe('ok');
+  expect(open.values.warm_overlap, 'the overlapping warm pass was counted').toBeGreaterThanOrEqual(1);
 });
 
 // 🔴 A BOOSTED SWAP INTO AN AGENT IS AN OPEN OF ITS OWN: measured from the

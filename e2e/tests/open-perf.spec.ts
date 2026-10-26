@@ -182,10 +182,14 @@ const viewports = [
   { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
 ];
 
+// Throttled only: the unthrottled loopback asserted nothing (an unthrottled
+// warm gap 2 read 37–42 ms on main and 4–6 ms with this change, inside any
+// bound loose enough not to flake) and cost a leg four minutes.
 for (const vp of viewports) {
-  for (const p of [null, THROTTLED] as (Profile | null)[]) {
-    const pname = p ? 'throttled' : 'unthrottled';
-    test(`${vp.name}, ${pname}: a warm open creates its socket ${p ? `at most ${GAP2_BOUND_MS} ms after load` : 'soon after load (reported only)'}`, async ({ browser }) => {
+  {
+    const p: Profile = THROTTLED;
+    const pname = 'throttled';
+    test(`${vp.name}, ${pname}: a warm open creates its socket at most ${GAP2_BOUND_MS} ms after load`, async ({ browser }) => {
       test.setTimeout(240_000);
       const tr = rig.transcript(conversation());
       await rig.startHost({ MUSTER_MIRROR_E2E_SESSIONS: 'main', MUSTER_MIRROR_E2E_CLAUDE: 'main=' + tr });
@@ -234,7 +238,7 @@ for (const vp of viewports) {
         console.log(
           `[open-perf ${vp.name}, ${pname}] warm medians: gap2 ${g2} · socket ${median(warm.map((o) => o.ws))} · visible ${median(warm.map((o) => o.visible))} · first batch ${median(warm.map((o) => o.frame))}`,
         );
-        if (p) expect(g2, `median load→socket over ${WARM_OPENS} warm opens`).toBeLessThanOrEqual(GAP2_BOUND_MS);
+        expect(g2, `median load→socket over ${WARM_OPENS} warm opens`).toBeLessThanOrEqual(GAP2_BOUND_MS);
       } finally {
         await ctx.close();
       }

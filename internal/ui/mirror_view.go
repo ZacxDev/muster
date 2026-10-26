@@ -936,6 +936,17 @@ func mirrorViewScript() g.Node {
   var opening = null, lastOpen = null, endReason = '';
   // drawnFor is the open whose first batch has been drawn.
   var drawnFor = null;
+  // The snapshot store's warming (mirror-snap.js) as the current open began:
+  // a warm pass is another watch on a host, and the open reports how many
+  // started or were running between its start and usable (warm_overlap).
+  // The store's script ran before this one, so it can be read at once.
+  var warmFrom = null;
+  function warmNow() { var s = window.musterSnap; return s && s.warmState ? s.warmState() : null; }
+  function warmOverlap() {
+    var w = warmNow();
+    if (!w || !warmFrom) return 0;
+    return (w.starts - warmFrom.starts) + (warmFrom.inFlight ? 1 : 0);
+  }
 
   function showChip(on) {
     if (!chip) return;
@@ -1111,7 +1122,7 @@ func mirrorViewScript() g.Node {
     if (closed) return;
     var base = log.getAttribute('data-ws');
     // A reconnect is an open of its own (the page's first began in start()).
-    if (!opening && window.musterOpen) opening = window.musterOpen.begin('mirror_view', { resume: !!gen });
+    if (!opening && window.musterOpen) { opening = window.musterOpen.begin('mirror_view', { resume: !!gen }); warmFrom = warmNow(); }
     var tp = opening ? opening.tp() : '';
     endReason = '';
     var url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + base +
@@ -1140,7 +1151,7 @@ func mirrorViewScript() g.Node {
         // inserted come after, and on a long conversation they are a large
         // part of it. A disconnect before then ends it with its reason.
         if (o || !usableSent) painted(function () {
-          if (o && opening === o) { o.mark('first_paint'); o.mark('usable'); o.end('ok'); opening = null; }
+          if (o && opening === o) { o.mark('first_paint'); o.mark('usable'); o.count('warm_overlap', warmOverlap()); o.end('ok'); opening = null; }
           viewUsable();
         });
       }
@@ -1161,7 +1172,7 @@ func mirrorViewScript() g.Node {
       // else the socket's close code; and whether it happened before the view
       // had drawn anything (opening) or while it was live.
       var o = opening || lastOpen, why = endReason || ('closed_' + (ev && ev.code));
-      if (opening) opening.end(why);
+      if (opening) { opening.count('warm_overlap', warmOverlap()); opening.end(why); }
       if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code, retry: retry });
       opening = null;
       // Closed before its first batch (refused, signed out, gone): the
@@ -1229,6 +1240,7 @@ func mirrorViewScript() g.Node {
     // open begun only when the read had ended could be missed by that.
     if (window.musterOpen) {
       var o = opening = window.musterOpen.begin('mirror_view');
+      warmFrom = warmNow();
       // The document's milestones, as they come.
       var nav = function () {
         try {
