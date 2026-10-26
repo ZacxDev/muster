@@ -259,6 +259,22 @@ var pwaScriptSrc = staticJS("pwa", `
     location.reload();
   }
   navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
+
+  // --- a notification tap the worker cannot navigate --------------------------
+  // sw.js focusOrOpen cannot navigate() a tab it does not control (after a
+  // hard reload, say), so it asks the page to go: {type:'NAVIGATE', url} with
+  // a port the page answers on. Only a same-origin url is followed. The answer
+  // tells the worker not to open a window instead.
+  navigator.serviceWorker.addEventListener('message', function (e) {
+    var m = e.data || {};
+    if (m.type !== 'NAVIGATE' || typeof m.url !== 'string') return;
+    var u;
+    try { u = new URL(m.url, location.href); } catch (err) { return; }
+    if (u.origin !== location.origin) return;
+    if (e.ports && e.ports[0]) e.ports[0].postMessage({ ok: true });
+    location.assign(u.href);
+  });
+  navigator.serviceWorker.startMessages();
   // 🔴 RELOAD ASKS THE REGISTRATION WHAT IS WAITING *NOW*, AND ALWAYS RELOADS.
   // This used to post SKIP_WAITING to the worker captured when the toast was
   // shown, and then wait for a controllerchange. When ANOTHER client — a second
