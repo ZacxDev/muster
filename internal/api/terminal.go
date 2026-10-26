@@ -56,15 +56,6 @@ const (
 	terminalModeReadOnly    = "ro"
 	terminalModeInteractive = "rw"
 
-	// terminalPingInterval keeps an idle terminal's socket alive through
-	// proxies that close quiet connections (a read-only view of an idle TUI
-	// can send nothing for minutes), and detects a peer that vanished without
-	// a close frame — a phone that lost signal — so its exec does not stay
-	// attached until TCP gives up.
-	terminalPingInterval = 25 * time.Second
-	// terminalWriteTimeout bounds one write to the browser. A stalled browser
-	// ends the exec rather than backing the pod's output up into muster.
-	terminalWriteTimeout = 10 * time.Second
 	// terminalMaxDim clamps a client-sent size; tmux has its own limits and a
 	// browser has no business sending more.
 	terminalMaxDim = 1000
@@ -140,6 +131,7 @@ func (s *Server) handleAgentTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
+	defer forgetPage(c)
 
 	// Registered so a shutdown can end it: a hijacked connection is outside
 	// http.Server.Shutdown's reach, and a process that exits with a terminal
@@ -356,6 +348,7 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 			case <-t.C:
 				pctx, pcancel := context.WithTimeout(sockCtx, terminalWriteTimeout)
 				err := c.Ping(pctx)
+				notePageWrite(c, err)
 				pcancel()
 				if err != nil {
 					cancel()
@@ -415,6 +408,18 @@ func shutdownFrame(c *websocket.Conn) {
 	_ = c.Close(websocket.StatusGoingAway, "muster is shutting down")
 }
 
+// terminalPingInterval keeps an idle terminal's socket alive through proxies
+// that close quiet connections (a read-only view of an idle TUI can send
+// nothing for minutes), and detects a peer that vanished without a close
+// frame — a phone that lost signal — so its exec does not stay attached until
+// TCP gives up. A variable so a test can ping in less than 25 seconds.
+var terminalPingInterval = 25 * time.Second
+
+// terminalWriteTimeout bounds one write to the browser. A stalled browser
+// ends the exec rather than backing the pod's output up into muster. A
+// variable so a test can stall a page in less than ten seconds.
+var terminalWriteTimeout = 10 * time.Second
+
 func terminalWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -422,8 +427,37 @@ func terminalWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {
 	}
 	wctx, cancel := context.WithTimeout(ctx, terminalWriteTimeout)
 	defer cancel()
-	return c.Write(wctx, websocket.MessageText, b)
+	err = c.Write(wctx, websocket.MessageText, b)
+	notePageWrite(c, err)
+	return err
 }
+
+// stalledPages is every page socket a write to which has TIMED OUT — a page
+// alive but not reading. coder/websocket closes the connection itself then, so
+// the NEXT write by anyone else (a batch after the asks relay's or the
+// suggestions' write stalled) fails as if the page had left; this is how the
+// end is still told apart (pageStalled). Only a stalled socket is stored, and
+// its handler forgets it (forgetPage) when it returns.
+var stalledPages sync.Map // *websocket.Conn → struct{}
+
+// notePageWrite records that a write to c timed out, when err says so.
+func notePageWrite(c *websocket.Conn, err error) {
+	if err != nil && errors.Is(err, context.DeadlineExceeded) {
+		stalledPages.Store(c, struct{}{})
+	}
+}
+
+// pageStalled reports whether a write to c has timed out.
+func pageStalled(c *websocket.Conn) bool {
+	if c == nil {
+		return false
+	}
+	_, ok := stalledPages.Load(c)
+	return ok
+}
+
+// forgetPage drops c from stalledPages: its handler is done with it.
+func forgetPage(c *websocket.Conn) { stalledPages.Delete(c) }
 
 // terminalWriter sends the terminal's output to the browser as binary frames.
 //
