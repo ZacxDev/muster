@@ -9,8 +9,12 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // THE RENDERED VIEW's host half (tunnel v2): which sessions run Claude Code,
@@ -122,7 +126,12 @@ func (h *hostSide) unwatch(id uint32) {
 // Code NOW — the same allowlist a terminal open passes. A watch is read-only:
 // it reads one file and writes nothing anywhere.
 func (h *hostSide) watch(m mirror.Msg) {
+	// The open, measured from here to its first batch (trace.go): what this
+	// host spent on it, reported on that batch and traced under the server's
+	// span when both sides trace.
+	o := h.beginOpen(m, "host.watch")
 	fail := func(err error) {
+		h.endOpen(o, m.ID, err)
 		h.c.log.Printf("muster-mirror: watch %q: %v", m.Session, err)
 		_ = h.send(mirror.Msg{Type: mirror.TypeClosed, ID: m.ID, Error: err.Error()})
 	}
@@ -197,6 +206,7 @@ func (h *hostSide) watch(m mirror.Msg) {
 	h.c.log.Printf("muster-mirror: watching %q%s (%s, stream %d)", m.Session, windowSuffix(m.Window), from, m.ID)
 	go func() {
 		err := serve(ctx)
+		h.endOpen(o, m.ID, err)
 		h.unwatch(m.ID)
 		h.c.log.Printf("muster-mirror: unwatched %q%s (stream %d)", m.Session, windowSuffix(m.Window), m.ID)
 		msg := ""
@@ -260,6 +270,8 @@ func (h *hostSide) viewSend(m mirror.Msg, gen func() string) func([]mirror.Msg) 
 	return func(msgs []mirror.Msg) error {
 		for _, b := range msgs {
 			b.Type, b.ID, b.Gen = mirror.TypeEvents, m.ID, gen()
+			// The open's first reply ends its span (trace.go).
+			h.reply(m.ID)
 			if h.c.cfg.NoPromptIndex {
 				for i := range b.Events {
 					b.Events[i].Line = 0 // an older host names no prompt's place
@@ -306,10 +318,14 @@ var errNotClaudeNow = errors.New("Claude Code is not running in this session's a
 // returns when ctx ends (nil after cancel), or with the reason the view cannot
 // continue.
 func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudePane, bool), m mirror.Msg) error {
+	// The open's phases (trace.go): nil once it has replied, and then every
+	// mark below is a no-op (a restart later on is not part of the open).
+	o := h.openOf(m.ID)
 	p, ok := pane(ctx)
 	if !ok {
 		return errNotClaudeNow
 	}
+	o.mark("resolve")
 	var (
 		f    *os.File
 		off  int64
@@ -343,7 +359,12 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 	// start (re)opens p's transcript and sends a Reset backfill — or, when the
 	// resume names this very transcript at an offset it still has, nothing but
 	// a marker that the resume was accepted.
+	// opening: this start is the view's open (the first), the only one whose
+	// prompt index is traced — a /clear or a restart hours later must not add
+	// a span to the open's long-finished trace.
+	opening := true
 	start := func(resumeGen string, resumeOff int64) error {
+		defer func() { opening = false }()
 		if f != nil {
 			_ = f.Close()
 		}
@@ -355,6 +376,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		if err != nil {
 			return err
 		}
+		o.mark("open", attribute.Int64("mirror.transcript_bytes", st.Size()))
 		resume := resumeGen != "" && resumeGen == p.Gen && resumeOff >= 0 && resumeOff <= st.Size()
 		var (
 			lines []cctranscript.Line
@@ -364,6 +386,7 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 			if lines, next, err = cctranscript.Backfill(f, st.Size(), mirror.BackfillWindow, mirror.MaxBackfillEvents); err != nil {
 				return err
 			}
+			o.mark("backfill", attribute.Int("mirror.lines", len(lines)), attribute.Int64("mirror.backfill_bytes", min(st.Size(), int64(mirror.BackfillWindow))))
 		}
 		if withSubs {
 			// The subagents' parent signals come from the same window the
@@ -382,7 +405,9 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		off = next
 		// 🔴 Redacted before it is framed (redact_stream.go).
 		redactLines(lines)
+		o.mark("redact")
 		batches := mirror.BatchLines(lines, next)
+		o.mark("frame", attribute.Int("mirror.batches", len(batches)))
 		if len(batches) == 0 {
 			batches = []mirror.Msg{{Offset: off}}
 		}
@@ -407,7 +432,15 @@ func (h *hostSide) tail(ctx context.Context, pane func(context.Context) (ClaudeP
 		//
 		// ⚠ A FAILED SCAN COSTS THE INDEX, NOT THE VIEW: the view then lists
 		// the prompts it has, as it does for a host that predates the index.
+		var pspan trace.Span
+		if o != nil && opening {
+			_, pspan = telemetry.Start(o.ctx, "host.prompt_index")
+		}
 		refs, err := cctranscript.Prompts(f, next)
+		if pspan != nil {
+			pspan.SetAttributes(attribute.Int("mirror.prompts", len(refs)))
+			telemetry.End(pspan, hostReason(err))
+		}
 		if err != nil {
 			h.c.log.Printf("muster-mirror: watch %q: index the prompts: %v", m.Session, err)
 			return nil

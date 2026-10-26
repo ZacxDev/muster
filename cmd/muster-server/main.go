@@ -35,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/users"
 	"log"
 	"net"
@@ -152,6 +153,16 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Tracing (internal/telemetry): on only when an OTLP endpoint is set.
+	// BEFORE buildApp: the pool's query tracer and the handler's server spans
+	// are decided when they are built.
+	flushTraces, err := telemetry.Setup(ctx, osGetenv, telemetry.Options{Service: "muster-server", Version: api.BuildVersion, Logger: logger})
+	if err != nil {
+		logger.Printf("telemetry: tracing stays off: %v", err)
+	}
+	defer func() { _ = flushTraces(context.Background()) }()
+	db.SetQueryTracer(telemetry.QueryTracer())
+
 	app, err := buildApp(ctx, cfg, logger)
 	if err != nil {
 		logger.Fatalf("startup: %v", err)
@@ -217,20 +228,22 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// Frontend RUM. An empty MUSTER_FARO_URL disables it entirely (no script
 	// tags rendered), which is the local and test default. The API key is
 	// client-public by design — it gates the public Faro collect endpoint only.
-	ui.SetFaroConfig(ui.FaroSettings{
-		URL:     cfg.FaroURL,
-		Key:     cfg.FaroKey,
-		Version: api.BuildVersion,
-		Tracing: cfg.FaroTracing,
-	})
+	//
+	// With MUSTER_FARO_UPSTREAM the page posts to muster's own relay route
+	// (same-origin; api.FaroRelayPath) and the relay forwards to the receiver,
+	// so no LAN address and no key reach the browser.
+	ui.SetFaroConfig(cfg.faroSettings(api.BuildVersion))
 	// The operator's own hosts: the host tabs' order and icons by name. Checked
 	// by loadConfig; installed here, before any page is rendered.
 	if err := ui.SetHostPreferences(cfg.HostPrefs); err != nil {
 		return nil, fmt.Errorf("host preferences: %w", err)
 	}
 	// Without this the page's connect-src stays 'self' and every telemetry send
-	// is blocked by CSP, silently, in the browser only.
-	api.SetTelemetryConnectSrc(cfg.FaroURL)
+	// is blocked by CSP, silently, in the browser only. The relay is 'self'
+	// already, so it needs none.
+	if cfg.FaroUpstream == "" {
+		api.SetTelemetryConnectSrc(cfg.FaroURL)
+	}
 
 	metrics.BuildInfo.WithLabelValues(api.BuildVersion).Set(1)
 
@@ -602,6 +615,8 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		srv.SetTaskReapAfter(cfg.TaskReapAfter)
 	}
 	srv.SetAgentReapStoppedAfter(cfg.AgentReapStoppedAfter)
+	// The browser telemetry relay (faro_relay.go): off (404) without an upstream.
+	srv.SetFaroRelay(cfg.FaroUpstream, cfg.FaroKey)
 	if a.pool != nil {
 		// Readiness pings the database, so a pod whose Postgres is unreachable is
 		// pulled from rotation rather than serving 500s. It runs AFTER the wiring

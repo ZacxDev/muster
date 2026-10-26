@@ -23,6 +23,7 @@ import (
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -1406,22 +1407,29 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 
 // handleAgentDetail renders the full detail page (logs + chat).
 func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+	// The open's document, phase by phase (open_trace.go).
+	op := s.openPhases(r, openViewAgent, openPartDocument, "agent", r.PathValue("name"))
+	outcome := telemetry.ReasonOK
+	defer func() { op.finish(outcome) }()
+	ctx := op.begin("agent")
 	a, err := s.ext.Agents.GetByName(ctx, r.PathValue("name"))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
+			outcome = "not_found"
 			http.NotFound(w, r)
 			return
 		}
+		outcome = telemetry.ReasonError
 		s.logger.Printf("agents: get %q: %v", r.PathValue("name"), err)
 		http.Error(w, "could not load agent", http.StatusInternalServerError)
 		return
 	}
-	status := s.liveStatus(ctx, a)
+	status := s.liveStatus(op.begin("status"), a)
 	sessionParam := r.URL.Query().Get("session")
 	// ⚠ THE LIST-READ FAILURE IS DISCARDED HERE, AND THAT IS THE PAGE'S EXISTING
 	// BEHAVIOUR RATHER THAN AN OVERSIGHT: sessionDrawer renders no failure state, so
 	// there is nothing to hand it. resolveSessions logs the read for every caller.
+	ctx = op.begin("sessions")
 	active, sessions, _ := s.resolveSessions(ctx, a, sessionParam)
 	// On a bare open (no ?session=) put the resolved session in the URL so the
 	// page deep-links + the WS/mark-read paths agree on the session. Only redirect
@@ -1429,6 +1437,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	if sessionParam == "" && active.ID != 0 {
 		// ui.AgentSessionHref is ALSO what every in-app link names, so a link and
 		// this redirect name the same URL by construction.
+		outcome = "redirect"
 		http.Redirect(w, r, ui.AgentSessionHref(a.Name, active.ID), http.StatusSeeOther)
 		return
 	}
@@ -1438,22 +1447,27 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	// (the session drawer) means its session and is never moved.
 	if sessionParam != "" && r.URL.Query().Get(ui.FromListParam) == ui.FromListValue {
 		if latest := s.latestSessionIDs(ctx, []int64{a.ID})[a.ID]; latest != 0 && latest != active.ID {
+			outcome = "redirect"
 			http.Redirect(w, r, ui.AgentSessionHref(a.Name, latest), http.StatusSeeOther)
 			return
 		}
 	}
 	// The viewer opened this agent: its "recently viewed" entry (best-effort).
+	ctx = op.begin("visit")
 	s.recordAgentVisit(ctx, a.ID)
 	// Opening a session clears its unread replies (best-effort).
 	if err := s.ext.Agents.MarkSessionRead(ctx, active.ID); err != nil {
 		s.logger.Printf("agents: mark session %d read on detail: %v", active.ID, err)
 	}
+	ctx = op.begin("messages")
 	msgs, _ := s.ext.Agents.ListRecentChatMessages(ctx, active.ID, chatHistoryCap)
+	op.set("messages", strconv.Itoa(len(msgs)))
 	lines := make([]ui.ChatLine, 0, len(msgs))
 	for _, m := range msgs {
 		lines = append(lines, ui.ChatLine{Role: m.Role, Content: m.Content, Kind: m.Kind, ToolID: m.ToolID, ToolName: m.ToolName, ToolOK: m.ToolOK, ID: m.ID})
 	}
-	noteID, taskStatus := s.agentTaskStatus(ctx, a)
+	noteID, taskStatus := s.agentTaskStatus(op.begin("task"), a)
+	ctx = op.begin("view")
 	view := ui.AgentDetailView{
 		ID: a.ID, Name: a.Name, DisplayName: a.DisplayName, Status: status, Repo: a.Repo, Model: a.Model,
 		Kind: agents.ResolveKind(a.Kind), CCAccount: a.CCAccount, WorkerPool: a.WorkerPool,
@@ -1469,17 +1483,21 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	view.SendNotice, view.SendNoticeOK = composerNotice(r)
 	// The agent's open attention asks, answerable here (attention_asker.go).
-	view.Asks, view.AsksSrc = s.askerAsksBlock(ctx, askerRef{agent: a.Name, session: active.ID})
+	view.Asks, view.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{agent: a.Name, session: active.ID})
 	// The session switcher below the chat form (ui/switcher.go).
-	view.Switcher = s.switcher(ctx, ui.SwitcherCurrent{AgentID: a.ID})
+	view.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{AgentID: a.ID})
 	// A claude-code agent's chat is the Rendered half of its Rendered |
 	// Terminal switch, which its terminal opens in a frame (ui/view_swap.go).
 	if agents.ResolveKind(view.Kind) == agents.KindClaudeCode {
 		allowSameOriginFrame(w)
 	}
+	feat := s.shellFeatures(op.begin("nav"))
 	viewDocument(w)
+	op.serverTiming(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderAgentDetail(w, view, s.shellFeatures(r.Context())); err != nil {
+	op.begin("render")
+	if err := ui.RenderAgentDetail(w, view, feat); err != nil {
+		outcome = telemetry.ReasonError
 		s.logger.Printf("agents: render detail: %v", err)
 	}
 }
@@ -1866,7 +1884,12 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer c.CloseNow()
-	ctx := r.Context()
+	// The chat is usable once its socket is open: that is the open's end
+	// (telemetry.OpenDone), and every turn after it runs DETACHED from the
+	// open's trace — a chat open for a day would otherwise be one trace with
+	// every turn's queries and gateway calls in it.
+	telemetry.OpenDone(r, telemetry.ReasonOK)
+	ctx := telemetry.Detached(r.Context())
 	// The socket's open and end, like a terminal's attached/detached: how many
 	// chat sockets a page really holds (the browser suite counts them).
 	s.logger.Printf("agents: chat %s connected", a.Name)

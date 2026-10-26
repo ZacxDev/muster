@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/stepup"
+	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -60,24 +61,32 @@ func (s *Server) registerMirrorViewRoutes(mux Mux) {
 // it cannot.
 func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	h, e, _, redirect, ok := s.mirrorEntry(r, q.Get("host"), q.Get("session"), q.Get("window"))
+	// The open's document, phase by phase (open_trace.go).
+	op := s.openPhases(r, openViewMirror, openPartDocument, "host", q.Get("host"), "session", q.Get("session"), "window", q.Get("window"))
+	outcome := telemetry.ReasonOK
+	defer func() { op.finish(outcome) }()
+	h, e, _, redirect, ok := s.mirrorEntry(r.WithContext(op.begin("entry")), q.Get("host"), q.Get("session"), q.Get("window"))
 	if !ok {
+		outcome = "not_found"
 		http.NotFound(w, r)
 		return
 	}
 	if !e.HasRenderedView() {
+		outcome = "redirect"
 		http.Redirect(w, r, keepNotice(r, mirrorRef(e).TerminalPath()), http.StatusSeeOther)
 		return
 	}
 	if redirect {
+		outcome = "redirect"
 		http.Redirect(w, r, keepNotice(r, mirrorRef(e).ViewPath()), http.StatusSeeOther)
 		return
 	}
 	// The viewer opened this window (best-effort).
-	s.recordMirrorVisit(r.Context(), h.Host, e.Session, e.Window)
+	s.recordMirrorVisit(op.begin("visit"), h.Host, e.Session, e.Window)
+	ctx := op.begin("view")
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
 		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
-		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(r.Context())}
+		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(ctx)}
 	// 🔴 A WINDOW OF A RUNTIME WITH A GATED SEND (Hermes) SENDS ONLY WHEN
 	// ITS HOST ADVERTISED IT (Phase 3): otherwise its composer is drawn
 	// disabled, with no queue, and every send is refused again at the hub
@@ -95,24 +104,28 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 		v.ViewOnly = rt.Kind
 	}
 	if (!v.Hermes || v.HermesSend) && v.ViewOnly == "" {
-		v.Queue = s.mirrorComposerQueue(r.Context(), h, e, sendQueueEditing(r))
+		v.Queue = s.mirrorComposerQueue(op.begin("queue"), h, e, sendQueueEditing(r))
 	}
 	v.Notice, v.NoticeOK = composerNotice(r)
 	// The suggested replies' row (suggest.go): a Claude Code window on an
 	// interactive host, while the server has suggestions wired at all.
-	v.Suggest = s.suggestPath(r.Context(), h, e)
-	v.SuggestPaused = v.Suggest == "" && s.suggestPaused(r.Context(), h, e)
-	v.HostIcon = s.mirrorHostIcon(r.Context(), h.Host)
+	ctx = op.begin("suggest")
+	v.Suggest = s.suggestPath(ctx, h, e)
+	v.SuggestPaused = v.Suggest == "" && s.suggestPaused(ctx, h, e)
+	v.HostIcon = s.mirrorHostIcon(op.begin("host_icon"), h.Host)
 	// The window's sessions' open attention asks, answerable here
 	// (attention_asker.go).
-	v.Asks, v.AsksSrc = s.askerAsksBlock(r.Context(), askerRef{mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
-	v.Nav = ui.NavChrome{Feat: s.shellFeatures(r.Context())}
+	v.Asks, v.AsksSrc = s.askerAsksBlock(op.begin("asks"), askerRef{mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
+	v.Nav = ui.NavChrome{Feat: s.shellFeatures(op.begin("nav"))}
 	// The session switcher below the composer (ui/switcher.go).
-	v.Switcher = s.switcher(r.Context(), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
+	v.Switcher = s.switcher(op.begin("switcher"), ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: h.Host, Session: e.Session, Window: e.Window}})
 	allowSameOriginFrame(w)
 	viewDocument(w)
+	op.serverTiming(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	op.begin("render")
 	if err := ui.MirrorViewPage(v).Render(w); err != nil {
+		outcome = telemetry.ReasonError
 		s.logger.Printf("mirror: render view page: %v", err)
 	}
 }
@@ -134,6 +147,11 @@ type mirrorViewBatch struct {
 }
 
 // handleMirrorViewWS is the view's socket: ?gen=&offset= resume.
+//
+// Its open is measured phase by phase up to the first batch written to the
+// browser (open_trace.go), and its end is counted by reason
+// (metrics.ViewDisconnects) and told to the page as a closed `reason` beside
+// the human `message`, so the page can report why it disconnected.
 func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	if s.ext.Mirror == nil {
 		http.NotFound(w, r)
@@ -141,27 +159,45 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	host, session, window := q.Get("host"), q.Get("session"), q.Get("window")
-	if _, _, _, _, ok := s.mirrorEntry(r, host, session, window); !ok {
+	gen := q.Get("gen")
+	offset, _ := strconv.ParseInt(q.Get("offset"), 10, 64)
+	op := s.openPhases(r, openViewMirror, openPartStream, "host", host, "session", session, "window", window,
+		"resume", strconv.FormatBool(gen != "" && offset > 0))
+	since := time.Now()
+	if _, _, _, _, ok := s.mirrorEntry(r.WithContext(op.begin("entry")), host, session, window); !ok {
+		op.finish("not_found")
+		viewEnded(r, openViewMirror, "not_found", since)
 		http.NotFound(w, r)
 		return
 	}
-	gen := q.Get("gen")
-	offset, _ := strconv.ParseInt(q.Get("offset"), 10, 64)
 
+	op.begin("accept")
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: s.wsAllowedOrigins(r)})
 	if err != nil {
+		op.finish("refused")
+		viewEnded(r, openViewMirror, "refused", since)
 		s.logger.Printf("mirror: view ws accept: %v", err)
 		return
 	}
 	defer c.CloseNow()
-	ctx, done, ok := s.terminals.add(r.Context())
+	// The browser sends nothing; CloseRead ends its context when it goes away.
+	// 🔴 IT WRAPS THE REQUEST'S CONTEXT, AND THE SHUTDOWN'S IS A CHILD OF IT:
+	// CloseRead's reader closes the socket when ITS context ends, so a
+	// shutdown that ended that context would close the socket before the page
+	// could be told why (shutdownFrame).
+	ctx, done, ok := s.terminals.add(c.CloseRead(r.Context()))
 	if !ok {
-		_ = c.Close(websocket.StatusGoingAway, "muster is shutting down")
+		op.finish(telemetry.ReasonShutdown)
+		viewEnded(r, openViewMirror, telemetry.ReasonShutdown, since)
+		shutdownFrame(c)
 		return
 	}
 	defer done()
-	// The browser sends nothing; CloseRead ends ctx when it goes away.
-	ctx = c.CloseRead(ctx)
+	// 🔴 EVERYTHING AFTER THE OPEN RUNS DETACHED from the open's trace: the
+	// asks relay, the suggested replies' turn work (database reads, a model
+	// call) and every later batch's write. Only the watch itself runs under
+	// the open's span, and its spans end at the first batch.
+	live := telemetry.Detached(ctx)
 
 	var drawn ui.MirrorTranscript
 	// A reconnect that resumes (gen + offset) draws onto a page that already
@@ -170,7 +206,8 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// The window's questions changed (mirror_ask.go): tell the page at once,
 	// so a question shows here the moment its hook registers it. The page's
 	// own poll is the fallback.
-	if h, e, _, _, ok := s.mirrorEntry(r, host, session, window); ok && e.ClaudeSession != "" {
+	sctx := op.begin("subscribe")
+	if h, e, _, _, ok := s.mirrorEntry(r.WithContext(sctx), host, session, window); ok && e.ClaudeSession != "" {
 		changed, stop := s.askSubscribe(askWatchKey{requestOwner(r.Context()), h.Host, e.ClaudeSession})
 		defer stop()
 		safeGo(s.logger, "mirror: tell a rendered view its questions changed", func() {
@@ -179,7 +216,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 				case <-ctx.Done():
 					return
 				case <-changed:
-					_ = terminalWriteJSON(ctx, c, map[string]string{"type": "asks"})
+					_ = terminalWriteJSON(live, c, map[string]string{"type": "asks"})
 				}
 			}
 		})
@@ -187,14 +224,26 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// Suggested replies (suggest.go): this socket's tracker — nil when the
 	// window cannot have any — fed every batch, and the page told what its
 	// turn ends make of them.
-	sg := s.suggestSocket(ctx, r, c, host, session, window, drawn.Resumed)
-	err = s.ext.Mirror.WatchWindow(ctx, host, session, window, gen, offset, func(m mirror.Msg) error {
+	sg := s.suggestSocket(live, r.WithContext(telemetry.Detached(r.Context())), c, host, session, window, drawn.Resumed)
+	// What the hub measures of the open (the round trip to the host, the
+	// host's own phases) lands here before the first batch is handed on.
+	var stats mirror.OpenStats
+	// "watch" is the open's phase from here to the first batch: the hub's
+	// own spans (mirror.watch and its first_batch child) say where inside it
+	// the time went.
+	op.begin("watch")
+	wctx := mirror.WithOpenStats(ctx, &stats)
+	first := true
+	err = s.ext.Mirror.WatchWindow(wctx, host, session, window, gen, offset, func(m mirror.Msg) error {
 		if m.Reset {
 			drawn.Reset()
 		}
 		// After the batch is written: the page has drawn the reply its
 		// suggestions answer before it hears of them.
 		defer sg.observe(m)
+		if first {
+			op.begin("render")
+		}
 		// A host that reports subagents says so before it draws an Agent call
 		// (the Reset batch, a resume's marker): those calls are then cards.
 		if m.SubagentList {
@@ -210,8 +259,25 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 			refs, dropped := mirror.BoundPrompts(m.Prompts)
 			b.Index = ui.NewMirrorIndex(refs, m.PromptsMore+dropped)
 		}
-		return terminalWriteJSON(ctx, c, b)
+		if !first {
+			return terminalWriteJSON(live, c, b)
+		}
+		first = false
+		op.begin("write")
+		werr := terminalWriteJSON(live, c, b)
+		outcome := map[bool]string{true: telemetry.ReasonOK, false: telemetry.ReasonClientLeft}[werr == nil]
+		op.finish(outcome, append(hubFields(&stats), "ops", strconv.Itoa(len(b.Ops)), "reset", strconv.FormatBool(m.Reset))...)
+		// The open is over: its span ends here, whatever the socket does next.
+		telemetry.OpenDone(r, outcome)
+		return werr
 	})
+	reason := streamEndReason(ctx, err)
+	viewEnded(r, openViewMirror, reason, since)
+	op.finish(reason, hubFields(&stats)...)
+	if reason == telemetry.ReasonShutdown {
+		shutdownFrame(c)
+		return
+	}
 	if ctx.Err() != nil {
 		return
 	}
@@ -223,7 +289,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		msg = "the rendered view ended with an error: " + err.Error()
 		s.logger.Printf("mirror: view %s/%s: %v", host, session, err)
 	}
-	_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": msg})
+	_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": msg, "reason": reason})
 	_ = c.Close(websocket.StatusNormalClosure, "view ended")
 }
 

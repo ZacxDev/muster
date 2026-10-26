@@ -778,24 +778,33 @@ func agentTerminalScript() g.Node {
       : '/agents/' + encodeURIComponent(agent) + '/terminal/ws?';
     var url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host +
       base + 'mode=' + mode + '&cols=' + term.cols + '&rows=' + term.rows;
+    // The open, measured (faro.go's musterOpen; absent while telemetry is
+    // off): its socket carries the open's trace context as ?tp=.
+    var view = wsPath ? 'mirror_terminal' : 'agent_terminal';
+    var opening = window.musterOpen ? window.musterOpen.begin(view, { mode: mode }) : null, live = null, endReason = '';
+    var tp = opening ? opening.tp() : '';
+    if (tp) url += '&tp=' + encodeURIComponent(tp);
     setStatus('Connecting…');
     var sock = new WebSocket(url);
     sock.binaryType = 'arraybuffer';
     var refused = false, opened = false;
-    sock.onopen = function () { opened = true; };
+    sock.onopen = function () { opened = true; if (opening) opening.mark('stream_connected'); };
     sock.onmessage = function (ev) {
       if (typeof ev.data === 'string') {
         var m;
         try { m = JSON.parse(ev.data); } catch (e) { return; }
         if (m.type === 'ready') {
+          if (opening) { opening.mark('first_output'); opening.mark('usable'); opening.end('ok'); live = opening; opening = null; }
           caughtUp();
           justConfirmed = false;
           setStatus(m.mode === 'rw' ? '` + StatusLiveKeys + `' : '` + StatusConnected + `');
         } else if (m.type === 'error') {
+          endReason = m.reason || 'error';
           refused = true;
           caughtUp();
           showError(m.message, true);
         } else if (m.type === 'exit') {
+          endReason = 'exited';
           refused = true;
           caughtUp();
           showError(m.message, true);
@@ -805,9 +814,15 @@ func agentTerminalScript() g.Node {
       var bytes = readReport(new Uint8Array(ev.data));
       if (bytes.length) { caughtUp(); term.write(bytes); }
     };
-    sock.onclose = function () {
+    sock.onclose = function (ev) {
       if (ws !== sock) return;
       setStatus('Disconnected');
+      // Why, reported (faro.go): the server's closed word, else the close
+      // code; before the first output (opening) or while live.
+      var o = opening || live, why = endReason || (!opened ? 'not_opened' : 'closed_' + (ev && ev.code));
+      if (opening) opening.end(why);
+      if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code, mode: mode });
+      opening = null;
       // 🔴 A STEP-UP REFUSAL ARRIVES AS A REFUSED UPGRADE (403), which a
       // browser socket cannot read. An interactive mirrored attach that never
       // opened is therefore taken as "not fresh any more": back to keys off,

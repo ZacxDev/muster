@@ -13,6 +13,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // THE CLIENT of one opencode v2 server (the shapes are upstream's
@@ -117,8 +122,29 @@ func (c *Client) request(ctx context.Context, method, path string, q url.Values,
 }
 
 // do sends req and decodes a 200's JSON body into out.
-func (c *Client) do(req *http.Request, out any) error {
-	resp, err := c.http.Do(req)
+func (c *Client) do(req *http.Request, out any) (err error) {
+	// A span per request, inside a trace (a view's open): the method and the
+	// status, never the URL (a session id is in its path, the token in its
+	// header) — internal/telemetry.
+	var resp *http.Response
+	if telemetry.Enabled() && trace.SpanContextFromContext(req.Context()).IsValid() {
+		ctx, span := telemetry.Start(req.Context(), "opencode "+req.Method, attribute.String("http.request.method", req.Method))
+		req = req.WithContext(ctx)
+		defer func() {
+			if resp != nil {
+				span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
+			}
+			reason := telemetry.ReasonOK
+			if err != nil {
+				reason = telemetry.ReasonError
+				if errors.Is(err, ErrUnauthorized) {
+					reason = "unauthorized"
+				}
+			}
+			telemetry.End(span, reason)
+		}()
+	}
+	resp, err = c.http.Do(req)
 	c.observed(req, resp, err)
 	if err != nil {
 		return err

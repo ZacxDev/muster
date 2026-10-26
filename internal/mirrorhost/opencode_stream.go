@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/opencodehost"
@@ -112,10 +114,12 @@ func openCodeMatchedNotice(p AgentPane) cctranscript.Event {
 // openCodeTail serves one watch of an opencode window until ctx ends (nil) or
 // the view cannot continue.
 func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirror.Msg) error {
+	o := h.openOf(m.ID) // the open's phases (trace.go)
 	p, ok := h.openCodeWindow(ctx, m)
 	if !ok {
 		return h.openCodeGone(ctx, m)
 	}
+	o.mark("resolve")
 	var (
 		id     = p.Gen
 		busy   = p.Busy
@@ -138,7 +142,9 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		if err != nil {
 			return nil, err
 		}
-		msgs, err := cl.Messages(ctx, id, limit)
+		// Under the open's span while the open lasts: the opencode request is
+		// one of its phases.
+		msgs, err := cl.Messages(o.within(ctx), id, limit)
 		if errors.Is(err, opencodehost.ErrUnauthorized) {
 			return nil, errOpenCodeRefused
 		}
@@ -171,6 +177,7 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		if err != nil {
 			return err
 		}
+		o.mark("backfill", attribute.Int("mirror.messages", len(msgs)))
 		drawn, order, pos, offset = map[string]map[string]string{}, nil, map[string]int{}, 0
 		var lines []cctranscript.Line
 		// What the token needs comes first (Credentials.Health): a failing
@@ -197,7 +204,9 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 		lines = lastEvents(lines, mirror.MaxBackfillEvents)
 		// 🔴 Redacted before it is framed (redact_stream.go).
 		redactLines(lines)
+		o.mark("redact")
 		batches := mirror.BatchLines(lines, 0)
+		o.mark("frame", attribute.Int("mirror.batches", len(batches)))
 		if len(batches) == 0 {
 			batches = []mirror.Msg{{}}
 		}

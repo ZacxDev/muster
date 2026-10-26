@@ -14,8 +14,11 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/ZacxDev/muster/internal/metrics"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // The attach refusals. Each carries its own remedy, so internal/api passes the
@@ -913,7 +916,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 			case TypeClosed:
 				var why error
 				if m.Error != "" {
-					why = fmt.Errorf("mirror: the host ended the terminal: %s", m.Error)
+					why = fmt.Errorf("%w: %s", ErrHostEnded, m.Error)
 				}
 				hc.finish(m.ID, why)
 			}
@@ -1096,6 +1099,11 @@ func truncate(s string) string {
 
 // writeJSON writes m to a host's connection. See writeFrame.
 func writeJSON(ctx context.Context, ws *websocket.Conn, m Msg) error {
+	// The trace context of the span the request is sent under (trace.go): the
+	// host's spans for it are its children. "" while tracing is off.
+	if m.Traceparent == "" && requestCarriesTrace(m.Type) {
+		m.Traceparent = telemetry.Traceparent(ctx)
+	}
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
@@ -1171,7 +1179,17 @@ func (h *Hub) Attach(ctx context.Context, owner int64, host, session string, rea
 // that window through a viewer session of its own (internal/mirrorhost) and
 // never through the operator's session, so neither viewing nor typing into a
 // window moves what the operator is looking at.
-func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, window string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
+func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, window string, readOnly bool, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) (err error) {
+	// The terminal's OPEN, and why it failed if it did: the span ends at the
+	// first output (firstOutput), so a terminal open for hours grows no
+	// trace. How it ENDED is the socket's own close span (internal/api).
+	ctx, life := telemetry.Start(ctx, "mirror.attach", attribute.Bool("mirror.read_only", readOnly))
+	lifeEnded := false
+	defer func() {
+		if !lifeEnded {
+			telemetry.End(life, streamReason(ctx, err))
+		}
+	}()
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]
 	h.mu.Unlock()
@@ -1208,7 +1226,26 @@ func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, wind
 		open.Cols, open.Rows = sz.Cols, sz.Rows
 	default:
 	}
-	if err := writeJSON(ctx, hc.ws, open); err != nil {
+	// The open's round trip: the frame written to the first output read. The
+	// host's spans for the attach are this span's children (writeJSON).
+	fctx, first := telemetry.Start(ctx, "mirror.attach.first_output")
+	sent, gotFirst := time.Now(), false
+	firstOutput := func() {
+		if !gotFirst {
+			gotFirst = true
+			firstAnswer(first, "attach", openStatsOf(ctx), sent)
+			telemetry.End(life, telemetry.ReasonOK)
+			lifeEnded = true
+		}
+	}
+	defer func() {
+		if !gotFirst {
+			reason := streamReason(ctx, err)
+			metrics.MirrorHubRoundTrip.WithLabelValues("attach", reason).Observe(time.Since(sent).Seconds())
+			telemetry.End(first, reason)
+		}
+	}()
+	if err := writeJSON(fctx, hc.ws, open); err != nil {
 		return fmt.Errorf("mirror: ask the host to open the terminal: %w", err)
 	}
 	// Tell the host to end the stream whatever ends it here. On the host's own
@@ -1242,6 +1279,7 @@ func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, wind
 			for {
 				select {
 				case p := <-st.out:
+					firstOutput()
 					if _, err := stdout.Write(p); err != nil {
 						return err
 					}
@@ -1250,6 +1288,7 @@ func (h *Hub) AttachWindow(ctx context.Context, owner int64, host, session, wind
 				}
 			}
 		case p := <-st.out:
+			firstOutput()
 			if _, err := stdout.Write(p); err != nil {
 				return err
 			}

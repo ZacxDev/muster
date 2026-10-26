@@ -56,7 +56,14 @@ func scriptedDocuments(t *testing.T, f Features) map[string]string {
 func TestTheShellCarriesNoInlineScriptOverTheBudget(t *testing.T) {
 	f := Features{GitHub: true, Connectors: true, Admin: true, Push: true, Attention: true, SnapUser: 7, SnapBuild: "b1"}
 	docs := scriptedDocuments(t, f)
-	for _, name := range []string{"shell tasks", "shell agents", "compose"} {
+	// And with the browser telemetry ON (faro.go), whose initializer is a
+	// static file too: the budget holds with it.
+	restore := withFaro(t)
+	for name, doc := range scriptedDocuments(t, f) {
+		docs[name+" +faro"] = doc
+	}
+	restore()
+	for _, name := range []string{"shell tasks", "shell agents", "compose", "shell tasks +faro", "shell agents +faro", "compose +faro"} {
 		doc := docs[name]
 		total, linked := 0, 0
 		for _, m := range anyScript.FindAllStringSubmatch(doc, -1) {
@@ -210,7 +217,13 @@ func TestTheSwapInlinerKnowsEveryPageScript(t *testing.T) {
 func TestEveryGeneratedScriptIsLinkedAndEveryLinkIsGenerated(t *testing.T) {
 	f := Features{GitHub: true, Connectors: true, Admin: true, Push: true, Attention: true, SnapUser: 7, SnapBuild: "b1"}
 	linked := map[string]bool{}
-	for _, doc := range scriptedDocuments(t, f) {
+	docs := scriptedDocuments(t, f)
+	restore := withFaro(t) // faro-init.js is linked only with the telemetry on
+	for name, doc := range scriptedDocuments(t, f) {
+		docs[name+" +faro"] = doc
+	}
+	restore()
+	for _, doc := range docs {
 		for _, m := range staticScriptTag.FindAllStringSubmatch(doc, -1) {
 			linked[m[1]] = true // ?v= is checked by expandStaticScripts / internal/api checkVersioned
 		}
@@ -232,5 +245,45 @@ func TestEveryGeneratedScriptIsLinkedAndEveryLinkIsGenerated(t *testing.T) {
 	}
 	if len(gen) < 15 {
 		t.Fatalf("CONTROL: only %d generated files", len(gen))
+	}
+}
+
+// withFaro turns the browser telemetry on (relay mode, tracing) for the
+// documents rendered until the returned restore runs.
+func withFaro(t *testing.T) (restore func()) {
+	t.Helper()
+	saved := faroConfig
+	SetFaroConfig(FaroSettings{URL: "/telemetry/faro", Relay: true, Tracing: true, Version: "v1"})
+	return func() { faroConfig = saved }
+}
+
+// TestNoDocumentCarriesTheFaroInitInline: with the telemetry ON, no document
+// that loads Faro — the shell's, the agent page's, the mirrored view's and
+// terminal's — carries the initializer (or musterOpen) inline; each links the
+// static file, with its configuration on the tag. Red before this change: the
+// ~10 KB init was inline in every one of them.
+func TestNoDocumentCarriesTheFaroInitInline(t *testing.T) {
+	restore := withFaro(t)
+	defer restore()
+	f := Features{SnapUser: 7, SnapBuild: "b1"}
+	docs := scriptedDocuments(t, f)
+	docs["mirror view"] = renderRaw(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Window: "@3", StepUp: stepUpFixture()}))
+	docs["terminal"] = renderRaw(t, AgentTerminalPage(AgentTerminalView{Name: "main", StepUp: stepUpFixture()}))
+	for name, doc := range docs {
+		linked := false
+		for _, m := range anyScript.FindAllStringSubmatch(doc, -1) {
+			if strings.Contains(m[1], `src="/static/js/faro-init.js`) {
+				linked = true
+				if !strings.Contains(m[1], `data-faro-url="/telemetry/faro"`) || !strings.Contains(m[1], `data-faro-relay="1"`) {
+					t.Errorf("%s: the init's tag does not carry its configuration: %s", name, m[1])
+				}
+			}
+			if !strings.Contains(m[1], " src=") && (strings.Contains(m[2], "initializeFaro") || strings.Contains(m[2], "musterOpenAPI")) {
+				t.Errorf("%s: an inline script carries the Faro init (%d bytes)", name, len(m[2]))
+			}
+		}
+		if !linked {
+			t.Errorf("%s: loads no faro-init.js", name)
+		}
 	}
 }

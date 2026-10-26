@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/metrics"
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // BuildVersion is the running build version, set from main via -ldflags
@@ -36,9 +37,10 @@ func SetTelemetryConnectSrc(rawURL string) {
 
 // withMiddleware wraps the mux with the cross-cutting middleware chain, outermost
 // first: panic recovery (so a handler panic can never crash the single-replica
-// process), security headers, then access logging.
+// process), security headers, the request's server span (internal/telemetry;
+// none while tracing is off), then access logging.
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
-	return s.recoverMiddleware(securityHeaders(s.accessLog(next)))
+	return s.recoverMiddleware(securityHeaders(telemetry.Middleware(s.accessLog(next))))
 }
 
 // recoverMiddleware turns a panic in any handler into a logged 500 instead of a

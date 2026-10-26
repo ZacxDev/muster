@@ -73,7 +73,9 @@ const hermesAnswerTimeout = 40 * time.Second
 // AnswerHermesApproval answers the Hermes approval promptID in one WINDOW of
 // owner's host's session with choice, through the host's gateway viewer, and
 // waits for the host's outcome. nil means Hermes took the answer.
-func (h *Hub) AnswerHermesApproval(ctx context.Context, owner int64, host, session, window, promptID, choice string) error {
+func (h *Hub) AnswerHermesApproval(ctx context.Context, owner int64, host, session, window, promptID, choice string) (err error) {
+	ctx, done := hubOp(ctx, "hermes_answer")
+	defer func() { done(err) }()
 	if !slices.Contains(HermesApprovalChoices, choice) {
 		return fmt.Errorf("%w: muster answers a Hermes approval with once or deny only", ErrAskNotSent)
 	}

@@ -448,6 +448,20 @@ type Msg struct {
 	// Colors (colors) is, per window id, the window's tmux identity colour as
 	// lowercase #rrggbb — the WHOLE map each time (work.go).
 	Colors map[string]string `json:"colors,omitempty"`
+
+	// ---- tracing (internal/telemetry) ----
+
+	// Traceparent (every request muster sends a host: open, watch, paste,
+	// scroll, catalog, answer, cancel-ask, subagent-tail) is the W3C trace
+	// context of the server span that sent it, so the host's spans for the
+	// request are children of it — one trace from the browser to the host's
+	// transcript read. "" while the server's tracing is off.
+	//
+	// 🔴 NO VERSION BUMP, BACKWARD-COMPATIBLE BOTH WAYS: an older host's JSON
+	// decode ignores the field (its spans simply do not exist); a host whose
+	// tracing is off ignores it too; an older muster never sends it.
+	// TestAnOlderHostIgnoresTheTraceContext drives both directions.
+	Traceparent string `json:"traceparent,omitempty"`
 }
 
 // Window is one tmux window of a host (Msg.Windows).

@@ -244,6 +244,10 @@ export const bfcacheBuildPort = port + 151;
 // …and a static page of its own on another origin, to leave a page for when
 // the muster page left behind must not answer anything meanwhile.
 export const bfcacheAwayPort = port + 152;
+// Telemetry (telemetry.spec.ts): its own server (the e2eterm binary, mirror
+// plugin on) with tracing and the Faro relay pointed at the spec's own fake
+// receivers, which listen on ports the OS picks.
+export const telemetryPort = port + 210;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

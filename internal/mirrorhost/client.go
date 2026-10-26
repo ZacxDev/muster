@@ -430,27 +430,27 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 				}
 			case mirror.TypePaste:
 				if conn.version >= 2 {
-					go conn.paste(m)
+					go traced(m, conn.paste)
 				}
 			case mirror.TypeScroll:
 				if conn.version >= 2 {
-					go conn.scroll(m)
+					go traced(m, conn.scroll)
 				}
 			case mirror.TypeAnswer:
 				if conn.version >= 2 {
-					go conn.answer(m)
+					go traced(m, conn.answer)
 				}
 			case mirror.TypeCancelAsk:
 				if conn.version >= 2 {
-					go conn.cancelAsk(m)
+					go traced(m, conn.cancelAsk)
 				}
 			case mirror.TypeCatalog:
 				if conn.version >= 2 && !c.cfg.NoCatalog {
-					go conn.catalog(m)
+					go traced(m, conn.catalog)
 				}
 			case mirror.TypeSubagentTail:
 				if conn.subagentReport() {
-					go conn.subagentTail(m)
+					go traced(m, conn.subagentTail)
 				}
 			}
 		}
@@ -517,6 +517,9 @@ type hostSide struct {
 	// kick asks the refresh goroutine for a read-and-send now
 	// (Client.RefreshNow); it closes the channel it receives when done.
 	kick chan chan struct{}
+	// opens is each stream's open until its first reply (trace.go), by
+	// stream id: *openTrace.
+	opens sync.Map
 }
 
 // windowKey addresses one window: its session and its tmux window id.
@@ -749,7 +752,10 @@ func (h *hostSide) input(id uint32, p []byte) {
 
 func (h *hostSide) open(m mirror.Msg) {
 	readOnly := m.ReadOnly
+	// The attach, traced from here to its first output (trace.go).
+	o := h.beginOpen(m, "host.attach")
 	fail := func(err error) {
+		h.endOpen(o, m.ID, err)
 		h.c.log.Printf("muster-mirror: open %q: %v", m.Session, err)
 		_ = h.send(mirror.Msg{Type: mirror.TypeClosed, ID: m.ID, Error: err.Error()})
 	}
@@ -793,6 +799,7 @@ func (h *hostSide) open(m mirror.Msg) {
 		fail(err)
 		return
 	}
+	o.mark("tmux_attach")
 	st := &hostStream{term: term, readOnly: readOnly, session: m.Session, window: m.Window}
 	h.mu.Lock()
 	h.streams[m.ID] = st
@@ -804,6 +811,8 @@ func (h *hostSide) open(m mirror.Msg) {
 	h.c.log.Printf("muster-mirror: attached %q%s (%s, stream %d)", m.Session, windowSuffix(m.Window), mode, m.ID)
 	go func() {
 		defer func() {
+			// An attach that never produced output ends its open here.
+			h.endOpen(o, m.ID, nil)
 			_ = term.Close()
 			h.mu.Lock()
 			delete(h.streams, m.ID)
@@ -814,6 +823,9 @@ func (h *hostSide) open(m mirror.Msg) {
 		for {
 			n, err := term.Read(buf)
 			if n > 0 {
+				// The first output ends the open (its timing is not framed: a
+				// terminal's bytes travel raw).
+				h.reply(m.ID)
 				wctx, cancel := context.WithTimeout(h.ctx, 10*time.Second)
 				werr := h.ws.Write(wctx, websocket.MessageBinary, mirror.EncodeData(m.ID, buf[:n]))
 				cancel()

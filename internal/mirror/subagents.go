@@ -232,7 +232,9 @@ type tailAnswer struct {
 // host), so another owner's host answers ErrHostOffline exactly as one that
 // does not exist. The host resolves the window's Claude pane NOW and reads only
 // that session's own subagents directory.
-func (h *Hub) SubagentTail(ctx context.Context, owner int64, host, session, window, agent string) (SubagentTail, error) {
+func (h *Hub) SubagentTail(ctx context.Context, owner int64, host, session, window, agent string) (_ SubagentTail, err error) {
+	ctx, done := hubOp(ctx, "subagent_tail")
+	defer func() { done(err) }()
 	if !ValidSubagentID(agent) {
 		return SubagentTail{}, ErrBadSubagent
 	}

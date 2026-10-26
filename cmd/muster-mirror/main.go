@@ -42,10 +42,13 @@ import (
 	// at the reset.
 	_ "time/tzdata"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/mirrorhost"
 	"github.com/ZacxDev/muster/internal/opencodehost"
+	"github.com/ZacxDev/muster/internal/telemetry"
 )
 
 // e2eBackend replaces the tmux backend in a browser-test build (e2emirror.go,
@@ -402,6 +405,15 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if e2eBackend == nil {
 		startOpenCode(ctx, ocCreds, ocWhy, logger)
 	}
+	// Tracing (internal/telemetry): on only when an OTLP endpoint is set, as
+	// service muster-mirror with this host's name, so a view's open can be
+	// followed from the browser into this host's transcript read.
+	flushTraces, terr := telemetry.Setup(ctx, getenv, telemetry.Options{Service: "muster-mirror", Version: buildRevision,
+		Attributes: []attribute.KeyValue{attribute.String("host", *host)}, Logger: logger})
+	if terr != nil {
+		logger.Printf("muster-mirror: tracing stays off: %v", terr)
+	}
+	defer func() { _ = flushTraces(context.Background()) }()
 	err = c.Run(ctx)
 	// Give the MCP setup a moment to settle (and say why it is off) before
 	// exiting; it never holds the exit longer than that.

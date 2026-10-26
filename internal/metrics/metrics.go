@@ -253,6 +253,48 @@ var (
 	}, []string{"result"})
 )
 
+// ---- opening a session (docs/telemetry.md) --------------------------------
+//
+// 🔴 CARDINALITY RULE, AGAIN: `view`, `phase`, `op` and `reason` are each a
+// closed vocabulary compiled into this module (the constants beside each
+// Observe* below and mirror.Reason). A host, a session, a
+// window, an agent name or a trace id must NEVER become a label — the per-open
+// log line (`open view=…`) carries those, with the trace id that finds the
+// trace.
+var (
+	// OpenPhase is the server's half of opening a session, by view
+	// (mirror_view | mirror_terminal | agent) and phase:
+	//   document     — the page's handler, request in to body written
+	//   first_batch  — a rendered view's socket, upgrade to its first batch
+	//                  written to the browser (resume or backfill)
+	//   first_output — a terminal's socket, upgrade to its first bytes written
+	OpenPhase = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "muster_open_phase_seconds",
+		Help:    "Server-side phases of opening a session, by view and phase (closed vocabularies).",
+		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 40},
+	}, []string{"view", "phase"})
+
+	// MirrorHubRoundTrip is one request to a mirror host, frame written to
+	// answer read, by op (watch: to the first batch; attach: to the first
+	// output; paste, scroll, catalog, answer, cancel_ask, hermes_answer,
+	// subagent_tail: to the host's answer) and reason (mirror.Reason).
+	MirrorHubRoundTrip = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "muster_mirror_hub_roundtrip_seconds",
+		Help:    "A request to a mirror host, frame written to answer read, by op and reason.",
+		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 40},
+	}, []string{"op", "reason"})
+
+	// ViewDisconnects counts a session view's socket ENDING, by view and
+	// reason (mirror.Reason's vocabulary, plus client_left when the browser
+	// went away first). It is the server's half of "the session
+	// disconnected"; the page reports its own half through the browser
+	// telemetry.
+	ViewDisconnects = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "muster_view_disconnects_total",
+		Help: "Session view sockets ended, by view and reason (closed vocabularies).",
+	}, []string{"view", "reason"})
+)
+
 // ObserveHTTP records one HTTP request's matched route pattern, method, status,
 // and duration.
 //

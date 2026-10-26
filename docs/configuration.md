@@ -112,7 +112,8 @@ See [auth.md](auth.md).
 | `GITHUB_CLIENT_SECRET` | none | no | The GitHub OAuth app's client secret. |
 | `MUSTER_FARO_URL` | none | no | A Grafana Faro collector URL. Setting it turns on front-end real-user monitoring. |
 | `MUSTER_FARO_API_KEY` | none | no | The Faro API key. It is sent to the browser, so it is public. |
-| `MUSTER_FARO_TRACING` | off | no | Turns on Faro tracing as well. |
+| `MUSTER_FARO_TRACING` | off | no | Turns on Faro tracing as well: the page's same-origin requests carry a `traceparent`, and each session open is a span joined to the server's trace ([telemetry.md](telemetry.md)). |
+| `MUSTER_FARO_UPSTREAM` | none | no | The Faro receiver's collect URL (for example an Alloy `faro.receiver`). Setting it turns front-end monitoring on through muster's own relay: the page posts to `POST /telemetry/faro` on muster's origin, and muster forwards each batch here, adding `MUSTER_FARO_API_KEY` itself. Signed-in users only, 256 KiB per batch, 120 batches a minute per browser tab and 600 per user, `Retry-After: 5` past that. It takes precedence over `MUSTER_FARO_URL`. Not an `http(s)` URL refuses to boot. See [telemetry.md](telemetry.md). |
 | `MUSTER_HOST_ORDER` | none | no | Comma-separated mirrored host names whose tabs come first on the Agents list, after **All**, in this order (e.g. `tower,laptop`). Every other host follows A–Z; **cluster** is always last. Names match case-insensitively. A name that is not a host name (lower-case letters, digits and inner hyphens, so no spaces or other separators), `cluster`, or a host listed twice refuses to boot. |
 | `MUSTER_HOST_ICONS` | none | no | Comma-separated `<host>=<icon>` entries giving a mirrored host its icon by name, whatever order its token was minted in (e.g. `laptop=laptop,tower=server`). The icons: `laptop`, `server`, `terminal`, `chip`, `phone`, `home`, `globe`, `box`, `bolt`, `star`, `moon`, `drive`. No other host draws an icon named here. A name that is not a host name (lower-case letters, digits and inner hyphens), `cluster`, an unknown icon, or one icon for two hosts refuses to boot. |
 
@@ -178,6 +179,26 @@ configuration:
 
 For example, in a `jq` filter that reads `MUSTER_CONFIG` as `$mc`:
 `| if ($mc[0].workspace // null) then .agents.defaults.workspace = $mc[0].workspace else . end`.
+
+## Tracing (muster-server and muster-mirror)
+
+Both binaries export OpenTelemetry traces over OTLP/HTTP when an endpoint is set,
+and do nothing at all when none is ([telemetry.md](telemetry.md)). These are the
+variables muster reads to decide that; the exporter and the SDK also read the
+standard `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`,
+`OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_TIMEOUT` themselves.
+`OTEL_TRACES_SAMPLER` is not read: muster's own sampler always keeps opening a
+session (a mirrored view or terminal, an agent's page, and their sockets) and
+anything under a sampled parent in the same process (or muster's own, on a
+host), and keeps every other request — a page's poll carrying the browser's
+trace context included — at `MUSTER_TRACE_SAMPLE_RATIO`.
+
+| variable | default | required | what it does |
+|---|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | none (off) | no | The OTLP/HTTP endpoint, e.g. `http://tempo:4318` (`/v1/traces` is appended). Setting it turns tracing on. Unset, the process installs no tracer, wraps no handler and adds no header. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none | no | The full traces URL, instead of the endpoint above. Setting either turns tracing on. |
+| `OTEL_SDK_DISABLED` | `false` | no | `true` keeps tracing off whatever endpoint is set. |
+| `MUSTER_TRACE_SAMPLE_RATIO` | `0.05` | no | The share of traces kept for requests that do not open a session (list refreshes, the event stream, polls), from `0` to `1`. Opens and their sockets are always kept; a page's other requests are kept at this ratio even when they carry the browser's (sampled) trace context. A value outside `0`–`1` keeps tracing off and logs why. |
 
 ## muster-mirror (host agent)
 

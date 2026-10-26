@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/provision"
+	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -157,7 +158,9 @@ func (s *Server) handleAgentTerminalWS(w http.ResponseWriter, r *http.Request) {
 	s.logger.Printf("agents: terminal %s attached (%s)", a.Name, mode)
 	err = bridgeTerminal(ctx, s.logger, c, readOnly, initial, hasInitial,
 		func(ctx context.Context, stdin io.Reader, stdout io.Writer, resize <-chan provision.TermSize) error {
-			return s.ext.Provisioner.AttachTerminal(ctx, a, readOnly, stdin, stdout, resize)
+			// The open ends at the first output (telemetry.OpenDone).
+			return s.ext.Provisioner.AttachTerminal(ctx, a, readOnly, stdin,
+				&firstWriter{w: stdout, first: func() { telemetry.OpenDone(r, telemetry.ReasonOK) }}, resize)
 		})
 	s.logger.Printf("agents: terminal %s detached: %v", a.Name, errOrNone(err))
 }
@@ -180,7 +183,7 @@ type terminalSet struct {
 	mu      sync.Mutex
 	closed  bool
 	next    uint64
-	cancels map[uint64]context.CancelFunc
+	cancels map[uint64]context.CancelCauseFunc
 	wg      sync.WaitGroup
 }
 
@@ -194,9 +197,9 @@ func (t *terminalSet) add(parent context.Context) (ctx context.Context, done fun
 		return nil, nil, false
 	}
 	if t.cancels == nil {
-		t.cancels = map[uint64]context.CancelFunc{}
+		t.cancels = map[uint64]context.CancelCauseFunc{}
 	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancelCause(parent)
 	id := t.next
 	t.next++
 	t.cancels[id] = cancel
@@ -205,7 +208,7 @@ func (t *terminalSet) add(parent context.Context) (ctx context.Context, done fun
 		t.mu.Lock()
 		delete(t.cancels, id)
 		t.mu.Unlock()
-		cancel()
+		cancel(nil)
 		t.wg.Done()
 	}, true
 }
@@ -220,8 +223,10 @@ func (t *terminalSet) add(parent context.Context) (ctx context.Context, done fun
 func (t *terminalSet) endAll(logger *log.Logger, giveUp <-chan time.Time) bool {
 	t.mu.Lock()
 	t.closed = true
+	// 🔴 WITH A CAUSE: a stream ended here is a DEPLOY, not the browser
+	// leaving (telemetry.EndedBy), and its page is told so (shutdownFrame).
 	for _, cancel := range t.cancels {
-		cancel()
+		cancel(telemetry.ErrShuttingDown)
 	}
 	t.mu.Unlock()
 	finished := make(chan struct{})
@@ -276,6 +281,12 @@ type attachFunc func(ctx context.Context, stdin io.Reader, stdout io.Writer, res
 func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Conn, readOnly bool, initial provision.TermSize, hasInitial bool, attach attachFunc) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+	// sockCtx is what the SOCKET's own reads and pings run on: ended with the
+	// bridge, but NOT by parent. coder/websocket closes the connection when a
+	// read's context ends, and a shutdown ends parent — which would close the
+	// socket before the page could be told why (shutdownFrame).
+	sockCtx, sockCancel := context.WithCancel(context.WithoutCancel(parent))
+	defer sockCancel()
 
 	stdinR, stdinW := io.Pipe()
 	resize := make(chan provision.TermSize, 8)
@@ -289,7 +300,7 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 		defer cancel()
 		defer stdinW.Close()
 		for {
-			typ, data, err := c.Read(ctx)
+			typ, data, err := c.Read(sockCtx)
 			if err != nil {
 				return
 			}
@@ -343,7 +354,7 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				pctx, pcancel := context.WithTimeout(ctx, terminalWriteTimeout)
+				pctx, pcancel := context.WithTimeout(sockCtx, terminalWriteTimeout)
 				err := c.Ping(pctx)
 				pcancel()
 				if err != nil {
@@ -361,10 +372,15 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 	err := attach(ctx, stdinR, &terminalWriter{ctx: ctx, c: c, mode: mode}, resize)
 	_ = stdinR.Close()
 
-	// The last word, unless the browser is already gone.
-	if ctx.Err() == nil {
+	// The last word, unless the browser is already gone — or muster is
+	// shutting down, which the page is told in a closed word it reports.
+	if errors.Is(context.Cause(parent), telemetry.ErrShuttingDown) {
+		shutdownFrame(c)
+	} else if ctx.Err() == nil {
 		if err != nil {
-			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": terminalErrorText(err)})
+			// reason is the closed word the page reports a disconnect by
+			// (mirror.Reason; open_trace.go), beside the words it shows.
+			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": terminalErrorText(err), "reason": mirror.Reason(err)})
 			_ = c.Close(websocket.StatusInternalError, "terminal refused")
 		} else {
 			_ = terminalWriteJSON(ctx, c, map[string]string{"type": "exit", "message": "the terminal's session client exited"})
@@ -387,6 +403,16 @@ func terminalErrorText(err error) string {
 		return err.Error()
 	}
 	return "the terminal ended with an error: " + err.Error()
+}
+
+// shutdownFrame tells a socket's page that muster is shutting down — an error
+// frame with reason "shutdown" — and closes it as going away. The stream's own
+// context has ended by then, so it writes on a short context of its own.
+func shutdownFrame(c *websocket.Conn) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = terminalWriteJSON(ctx, c, map[string]string{"type": "error", "message": "muster is restarting; reconnecting", "reason": telemetry.ReasonShutdown})
+	_ = c.Close(websocket.StatusGoingAway, "muster is shutting down")
 }
 
 func terminalWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {

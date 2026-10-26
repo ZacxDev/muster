@@ -58,6 +58,8 @@ const askCancelTimeout = 20 * time.Second
 // ErrAskUnrecognised, ErrAskBusy, ErrAskUnsupported, ErrAskRefused); one from
 // before the host was asked wraps ErrAskNotSent.
 func (h *Hub) CancelAsk(ctx context.Context, owner int64, host, session, window string) (note string, err error) {
+	ctx, done := hubOp(ctx, "cancel_ask")
+	defer func() { done(err) }()
 	h.mu.Lock()
 	hc := h.hosts[hostKey{owner, host}]
 	h.mu.Unlock()

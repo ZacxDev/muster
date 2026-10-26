@@ -26,6 +26,7 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 
 - [architecture.md](architecture.md) — binaries, listeners, packages, trust
 - [configuration.md](configuration.md) — every environment variable, checked by a test
+- [telemetry.md](telemetry.md) — tracing an open from the browser to the host: the hops, the spans, the metrics, the log line, and what to set
 - [auth.md](auth.md) — password or GoTrue sign-in, passkeys, invites, API tokens
 - [cli.md](cli.md) — the `muster` CLI and the other binaries
 - [schema.md](schema.md) — tables, migrations, row-level security, restore and rollback
