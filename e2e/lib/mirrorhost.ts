@@ -171,23 +171,21 @@ export class MirrorRig {
   // data-mirror-claude. A bare `includes(needle)` passed on it before the new
   // host had connected, and the view the spec opened next redirected to the
   // terminal (handleMirrorViewPage: an offline entry has no rendered view):
-  // telemetry.spec's "#mv-log not found" (measured on two loaded CPUs: red 8
-  // in 80 before, 0 in 240 after, with the offline-only case met 75 times).
+  // telemetry.spec's "#mv-log not found".
+  //
+  // The list is parsed here, not in the page: a page mid-navigation throws
+  // from evaluate, and expect.poll does not retry a throw.
   async waitListed(page: Page, needle: string): Promise<void> {
     let last = '';
     await expect
       .poll(
         async () => {
           const html = await (await page.request.get(this.origin + '/ui/agents')).text();
-          const entries = await page.evaluate(
-            ([h, n]) =>
-              [...new DOMParser().parseFromString(h, 'text/html').querySelectorAll('[data-f-type="mirrored"]')]
-                .filter((el) => el.outerHTML.includes(n))
-                .map((el) => el.getAttribute('data-f-state') ?? 'online'),
-            [html, needle] as const,
-          );
-          last = entries.length ? `entries holding it: ${entries.join(', ')}` : 'no mirrored entry holds it';
-          return entries.includes('online');
+          const states = mirroredEntries(html)
+            .filter((e) => e.markup.includes(needle))
+            .map((e) => e.state);
+          last = states.length ? `entries holding it: ${states.join(', ')}` : 'no mirrored entry holds it';
+          return states.includes('online');
         },
         {
           message: `an ONLINE mirrored entry holds ${JSON.stringify(needle)}`,
@@ -207,6 +205,33 @@ export class MirrorRig {
   terminalPath(session: string): string {
     return `/mirror/terminal?host=${encodeURIComponent(this.host)}&session=${encodeURIComponent(session)}`;
   }
+}
+
+// mirroredEntries is every mirrored entry (a card or a pinned chip: an element
+// carrying data-f-type="mirrored") in the Agents list's markup — the element
+// whole, from its opening tag to its matching close — with its state:
+// "offline" when its data-f-state says so, else "online". The server writes
+// attribute values escaped, so a '>' inside a tag is never one.
+export function mirroredEntries(html: string): { state: string; markup: string }[] {
+  const out: { state: string; markup: string }[] = [];
+  const open = /<([a-zA-Z][\w-]*)\b[^>]*\bdata-f-type="mirrored"[^>]*>/g;
+  for (let m = open.exec(html); m; m = open.exec(html)) {
+    const name = m[1].toLowerCase();
+    const tag = new RegExp(`<(/?)${name}\\b[^>]*>`, 'gi');
+    tag.lastIndex = m.index + m[0].length;
+    let depth = 1;
+    let end = html.length;
+    for (let t = tag.exec(html); t; t = tag.exec(html)) {
+      depth += t[1] ? -1 : 1;
+      if (depth === 0) {
+        end = t.index + t[0].length;
+        break;
+      }
+    }
+    const state = /\bdata-f-state="([^"]*)"/.exec(m[0])?.[1] || 'online';
+    out.push({ state, markup: html.slice(m.index, end) });
+  }
+  return out;
 }
 
 // mkchat runs e2e/mkchat: an agent of the caller's own with a persisted chat
