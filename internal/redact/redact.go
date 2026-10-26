@@ -128,7 +128,7 @@ func secrets(s string, filter bool) string {
 			return sub[1] + " " + Mark
 		}))
 	}
-	if may("-p", "-u", "--") {
+	if !filter || hasFlag(lower) {
 		set(reFlag.ReplaceAllStringFunc(s, func(m string) string {
 			sub := reFlag.FindStringSubmatch(m)
 			if strings.EqualFold(sub[2], "-u") && !strings.Contains(sub[4], ":") {
@@ -146,7 +146,8 @@ func secrets(s string, filter bool) string {
 	if may("://") && strings.Contains(s, "@") {
 		set(reUserinfo.ReplaceAllString(s, "${1}"+Mark+"@"))
 	}
-	if may("token", "key", "secret", "sig", "pass", "auth") && strings.Contains(s, "=") {
+	if may("token", "key", "secret", "sig", "pass", "auth") && strings.Contains(s, "=") && (!filter ||
+		afterAny(lower, queryWords, func(r string) bool { return strings.HasPrefix(strings.TrimLeft(r, nameBytes), "=") })) {
 		set(reQuery.ReplaceAllString(s, "${1}"+Mark))
 	}
 	// Case-sensitive, as the pattern is.
@@ -169,10 +170,12 @@ func secrets(s string, filter bool) string {
 	if may(`key"`, `token"`, `secret"`, `password"`, `passwd"`) {
 		set(reJSONSecret.ReplaceAllString(s, `${1}"`+Mark+`"`))
 	}
-	if may("password", "passwd", "token", "secret", "key") && strings.Contains(s, ":") {
+	if may("password", "passwd", "token", "secret", "key") && strings.Contains(s, ":") && (!filter ||
+		afterAny(lower, yamlWords, func(r string) bool { return strings.HasPrefix(strings.TrimLeft(r, " \t"), ":") })) {
 		set(reYAMLSecret.ReplaceAllString(s, "${1}"+Mark))
 	}
-	if may("key", "token", "secret", "password", "passwd", "pwd") && strings.Contains(s, "=") {
+	if may("key", "token", "secret", "password", "passwd", "pwd") && strings.Contains(s, "=") && (!filter ||
+		afterAny(lower, assignWords, quotedAssignment)) {
 		set(reAssignSp.ReplaceAllString(s, "${1}"+Mark))
 	}
 	if may("password", "passphrase", "passwd", "secret") {
@@ -184,7 +187,7 @@ func secrets(s string, filter bool) string {
 	if may("aiza") {
 		set(reGoogle.ReplaceAllString(s, Mark))
 	}
-	if may(".") {
+	if may(".") && (!filter || hasDiscordRun(s)) {
 		set(reDiscord.ReplaceAllString(s, Mark))
 	}
 	if may("hf_") {
@@ -196,7 +199,15 @@ func secrets(s string, filter bool) string {
 	// An AWS secret access key: exactly 40 base64 characters, mixed case with
 	// a digit, in text that says aws or secret (a lowercase git sha is 40
 	// characters too, and is left alone).
-	if may("aws", "secret") {
+	//
+	// ⚠ "SAYS aws OR secret" IS PART OF THE RULE, NOT THE FILTER, so it holds
+	// with the filter off too: any 40-character mixed-case run (a build hash,
+	// a base64 blob) would otherwise be one. It went through may() until the
+	// filter-equivalence test's corpus grew a long run without either word
+	// and found the two redactors disagreeing on it — the unfiltered one,
+	// which is only that test's reference, had been redacting what the
+	// shipped one never did.
+	if containsAny(lower, "aws", "secret") {
 		set(reAWSSecret.ReplaceAllStringFunc(s, func(m string) string {
 			if len(m) != 40 || !hasUpperLowerDigit(m) {
 				return m
@@ -242,6 +253,97 @@ func containsAny(s string, subs ...string) bool {
 	for _, sub := range subs {
 		if strings.Contains(s, sub) {
 			return true
+		}
+	}
+	return false
+}
+
+// THE FILTER'S SHARPER TESTS. The literals above decide most patterns, but a
+// few needed literals that ordinary prose and code are full of — "key" with an
+// "=" and a ":" anywhere, a ".", a "--" — so their patterns ran over nearly
+// every text (MEASURED at `a8fc65c3` on a synthetic view backfill of 1,200
+// fields, 431 KB: 17 ms on a fast CPU, most of it reQuery, reFlag,
+// reYAMLSecret, reAssignSp and reDiscord running on text they could not match;
+// 5.5 ms with these tests). Each test below is a condition its pattern CANNOT match without —
+// the credential word directly followed by what the pattern needs after it —
+// read off the pattern, and TestTheFilterNeverChangesWhatIsRedacted checks
+// the filtered and unfiltered redactors agree. Like the literals, each runs on
+// the folded text (fold) for a pattern that ignores case.
+
+// ws is what the patterns' \s matches (RE2: [\t\n\f\r ]).
+const ws = "\t\n\f\r "
+
+// nameBytes is what reQuery's [a-z0-9_.-] matches in folded text.
+const nameBytes = "abcdefghijklmnopqrstuvwxyz0123456789_.-"
+
+var (
+	queryWords  = []string{"token", "key", "secret", "sig", "pass", "auth"}
+	yamlWords   = []string{"password", "passwd", "token", "secret", "api_key", "apikey"}
+	assignWords = []string{"key", "token", "secret", "password", "passwd", "pwd"}
+	flagWords   = []string{"-p", "-u", "--password", "--passwd", "--pass", "--token", "--access-token", "--auth-token", "--api-key",
+		"--apikey", "--secret", "--client-secret"}
+)
+
+// afterAny reports whether, at some occurrence in s of a word of words, f
+// holds of the text right after it.
+func afterAny(s string, words []string, f func(rest string) bool) bool {
+	for _, w := range words {
+		for i := 0; i <= len(s)-len(w); {
+			j := strings.Index(s[i:], w)
+			if j < 0 {
+				break
+			}
+			if f(s[i+j+len(w):]) {
+				return true
+			}
+			i += j + 1
+		}
+	}
+	return false
+}
+
+// quotedAssignment: reAssignSp's \s*=\s* then a quote.
+func quotedAssignment(r string) bool {
+	r = strings.TrimLeft(r, ws)
+	if !strings.HasPrefix(r, "=") {
+		return false
+	}
+	r = strings.TrimLeft(r[1:], ws)
+	return r != "" && (r[0] == '"' || r[0] == '\'')
+}
+
+// hasFlag: reFlag's (^|\s) before one of its flags, and = or \s after it.
+func hasFlag(lower string) bool {
+	for _, w := range flagWords {
+		for i := 0; i <= len(lower)-len(w); {
+			j := strings.Index(lower[i:], w)
+			if j < 0 {
+				break
+			}
+			at := i + j
+			before := at == 0 || strings.IndexByte(ws, lower[at-1]) >= 0
+			if end := at + len(w); before && end < len(lower) && (lower[end] == '=' || strings.IndexByte(ws, lower[end]) >= 0) {
+				return true
+			}
+			i = at + 1
+		}
+	}
+	return false
+}
+
+// hasDiscordRun: reDiscord's [MNO][A-Za-z0-9_-]{23,27} directly before a
+// '.' — a run of at least 24 such bytes ending at a '.'.
+func hasDiscordRun(s string) bool {
+	run := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+			run++
+		case c == '.' && run >= 24:
+			return true
+		default:
+			run = 0
 		}
 	}
 	return false
