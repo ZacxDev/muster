@@ -134,7 +134,7 @@ func TestTheMicrophoneSitsBesideSend(t *testing.T) {
 // script carries both and picks between them on the bridge.
 func TestTheDeniedNoteNamesTheRightSettings(t *testing.T) {
 	const browser = "Microphone access was blocked. Allow it for this site in the browser's settings, then tap the mic again."
-	const app = "Microphone access is off for the muster app. Allow it in Android's Settings for muster, under Permissions, then Microphone, then tap the mic again."
+	const app = "Microphone access is off for the muster app. Allow it in Android's Settings for muster, under Permissions, then Microphone, then tap the mic again. If Microphone isn't listed, update the muster app."
 	if DictateDenied != browser {
 		t.Errorf("DictateDenied = %q; want %q", DictateDenied, browser)
 	}

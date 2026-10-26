@@ -56,8 +56,10 @@ const (
 	// (window[AppBridgeName] exists). There the block is Android's RECORD_AUDIO
 	// permission for the app, not a site setting, and the WebView has no
 	// browser settings to point at; the app's own "Open settings" dialog
-	// names the same path.
-	DictateDeniedApp   = "Microphone access is off for the muster app. Allow it in Android's Settings for muster, under Permissions, then Microphone, then tap the mic again."
+	// names the same path. App versions 0.1.0 and 0.1.1 inject the bridge
+	// but declare no RECORD_AUDIO, so they have no Microphone row; the page
+	// cannot see the app's version, so the sentence says to update the app.
+	DictateDeniedApp   = "Microphone access is off for the muster app. Allow it in Android's Settings for muster, under Permissions, then Microphone, then tap the mic again. If Microphone isn't listed, update the muster app."
 	DictateNoMic       = "No microphone was found."
 	DictateMicBusy     = "The microphone is in use by another app."
 	DictateNothing     = "Nothing was heard in that recording. Try again, closer to the mic."

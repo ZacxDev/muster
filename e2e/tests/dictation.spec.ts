@@ -366,7 +366,7 @@ test.describe('failures, said inline', () => {
       'permission denied inside the Android app',
       'NotAllowedError',
       true,
-      "Microphone access is off for the muster app. Allow it in Android's Settings for muster, under Permissions, then Microphone, then tap the mic again.",
+      "Microphone access is off for the muster app. Allow it in Android's Settings for muster, under Permissions, then Microphone, then tap the mic again. If Microphone isn't listed, update the muster app.",
     ],
     ['no microphone', 'NotFoundError', false, 'No microphone was found.'],
   ] as const) {
