@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -93,8 +94,26 @@ func (l *lockedLog) Write(p []byte) (int, error) {
 }
 func (l *lockedLog) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
 
+// smallSocket is the kernel buffer size, each way, of the sockets between the
+// handler and the page: small, so a page that stops reading stalls the
+// handler's next write at once, rather than after the kernel has taken
+// megabytes of loopback buffering (which, rendered under -race on a loaded
+// runner, took longer than the test was willing to wait).
+const smallSocket = 4 << 10
+
+type smallListener struct{ net.Listener }
+
+func (l smallListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if tc, ok := c.(*net.TCPConn); ok {
+		_ = tc.SetWriteBuffer(smallSocket)
+		_ = tc.SetReadBuffer(smallSocket)
+	}
+	return c, err
+}
+
 // streamServer is a server over m whose log the test reads, with the page
-// write timeout shortened to 300 ms.
+// write timeout shortened to 300 ms and small socket buffers.
 func streamServer(t *testing.T, m Mirror) (*Server, *httptest.Server, *lockedLog) {
 	t.Helper()
 	saved := terminalWriteTimeout
@@ -103,7 +122,9 @@ func streamServer(t *testing.T, m Mirror) (*Server, *httptest.Server, *lockedLog
 	lg := &lockedLog{}
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(lg, "", 0))
 	s.UseExtensions(Extensions{Notes: stubNotesStore{}, Agents: mirrorAgents{}, SessionLiveness: stubLiveness{}, Mirror: m})
-	ts := httptest.NewServer(s.Handler())
+	ts := httptest.NewUnstartedServer(s.Handler())
+	ts.Listener = smallListener{ts.Listener}
+	ts.Start()
 	t.Cleanup(ts.Close)
 	return s, ts, lg
 }
@@ -115,7 +136,16 @@ func dialPage(t *testing.T, s *Server, ts *httptest.Server, path string) *websoc
 	h.Set("Origin", ts.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+path, &websocket.DialOptions{HTTPHeader: h})
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.SetReadBuffer(smallSocket)
+			_ = tc.SetWriteBuffer(smallSocket)
+		}
+		return c, err
+	}
+	client := &http.Client{Transport: &http.Transport{DialContext: dial}}
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+path, &websocket.DialOptions{HTTPHeader: h, HTTPClient: client})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,9 +160,10 @@ const (
 )
 
 // waitCount waits until the counter for (view, reason) has moved from before.
+// The ceiling is generous: it is reached only when the counter never moves.
 func waitCount(t *testing.T, view, reason string, before float64) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for testutil.ToFloat64(metrics.ViewDisconnects.WithLabelValues(view, reason)) == before {
 		if time.Now().After(deadline) {
 			t.Fatalf("muster_view_disconnects_total{view=%q,reason=%q} never moved", view, reason)
@@ -156,7 +187,7 @@ func disconnects(view string) map[string]float64 {
 func TestAPageThatStopsReadingIsATimeout(t *testing.T) {
 	for _, c := range []struct{ view, path string }{{openViewMirror, viewSock}, {openViewTerminal, terminalSock}} {
 		t.Run(c.view, func(t *testing.T) {
-			m := &streamMirror{fakeMirror: &fakeMirror{online: true, v2: &fakeMirrorV2{}}, chunk: 1 << 20}
+			m := &streamMirror{fakeMirror: &fakeMirror{online: true, v2: &fakeMirrorV2{}}, chunk: 64 << 10}
 			s, ts, lg := streamServer(t, m)
 			before := disconnects(c.view)
 			_ = dialPage(t, s, ts, c.path) // and never read
