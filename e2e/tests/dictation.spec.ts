@@ -357,20 +357,33 @@ test.describe('failures, said inline', () => {
     await expect(page.locator('#mv-dictate')).toBeVisible({ timeout: 20_000 });
   }
 
-  for (const [name, err, want] of [
-    ['permission denied', 'NotAllowedError', 'Microphone access was blocked'],
-    ['no microphone', 'NotFoundError', 'No microphone was found'],
+  // `inApp` plays the Android app's WebView: the app injects window.musterApp
+  // (ui.AppBridgeName), and there a refusal is the app's Android permission, so
+  // the note points at Android's settings rather than the browser's.
+  for (const [name, err, inApp, want] of [
+    ['permission denied', 'NotAllowedError', false, "Microphone access was blocked. Allow it for this site in the browser's settings, then tap the mic again."],
+    [
+      'permission denied inside the Android app',
+      'NotAllowedError',
+      true,
+      "Microphone access is off for the muster app. Allow it in Android's Settings for muster, under Permissions, then Microphone, then tap the mic again.",
+    ],
+    ['no microphone', 'NotFoundError', false, 'No microphone was found.'],
   ] as const) {
     test(`${name}: the reason is shown and nothing is posted`, async ({ page }) => {
       // The browser's own refusal, as getUserMedia reports it.
-      await page.addInitScript((name) => {
-        navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('e2e', name));
-      }, err);
+      await page.addInitScript(
+        ([name, inApp]) => {
+          navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException('e2e', name));
+          if (inApp) (window as unknown as { musterApp: { postMessage(m: string): void } }).musterApp = { postMessage: () => {} };
+        },
+        [err, inApp] as const,
+      );
       await openRendered(page);
       const calls = sttCalls.length;
       await page.locator('#mv-input').fill('kept');
       await page.locator('#mv-dictate').click();
-      await expect(page.locator('#mv-dictate-note')).toContainText(want);
+      await expect(page.locator('#mv-dictate-note')).toHaveText(want);
       await expect(page.locator('#mv-dictate')).toHaveAttribute('data-state', 'idle');
       await expect(page.locator('#mv-input')).toHaveValue('kept');
       expect(sttCalls.length, 'nothing reached the service').toBe(calls);

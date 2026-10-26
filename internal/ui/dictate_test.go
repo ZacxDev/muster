@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -121,6 +122,37 @@ func TestTheMicrophoneSitsBesideSend(t *testing.T) {
 		i, m, s := strings.Index(page, `id="`+input+`"`), strings.Index(page, `id="`+mic+`"`), strings.Index(page, `id="`+send+`"`)
 		if !(i >= 0 && i < m && m < s) {
 			t.Errorf("%s: order textarea(%d) < mic(%d) < send(%d) does not hold", name, i, m, s)
+		}
+	}
+}
+
+// TestTheDeniedNoteNamesTheRightSettings: a refused microphone says where to
+// allow it. In a browser that is the site's setting in the browser; inside the
+// Android app's WebView (the bridge object AppBridgeName exists) it is the
+// app's Android permission, which the WebView's page cannot reach through any
+// browser settings. Both sentences are pinned whole, and every surface's
+// script carries both and picks between them on the bridge.
+func TestTheDeniedNoteNamesTheRightSettings(t *testing.T) {
+	const browser = "Microphone access was blocked. Allow it for this site in the browser's settings, then tap the mic again."
+	const app = "Microphone access is off for the muster app. Allow it in Android's Settings for muster, under Permissions, then Microphone, then tap the mic again."
+	if DictateDenied != browser {
+		t.Errorf("DictateDenied = %q; want %q", DictateDenied, browser)
+	}
+	if DictateDeniedApp != app {
+		t.Errorf("DictateDeniedApp = %q; want %q", DictateDeniedApp, app)
+	}
+	if AppBridgeName != "musterApp" {
+		t.Fatalf("AppBridgeName = %q; the app injects window.musterApp", AppBridgeName)
+	}
+	for name, page := range dictateSurfaces(t, TranscribePath) {
+		for _, want := range []string{
+			`"denied":` + strconv.Quote(browser),
+			`"deniedapp":` + strconv.Quote(app),
+			`n === 'SecurityError' ? (window.musterApp ? M.deniedapp : M.denied)`,
+		} {
+			if !strings.Contains(page, want) {
+				t.Errorf("%s: the mic's script lacks %s", name, want)
+			}
 		}
 	}
 }
