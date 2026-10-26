@@ -342,6 +342,7 @@ async function tapHarness(page: Page, context: BrowserContext, worker: Worker) {
       __notes: Note[];
       __focused: number;
       __windows: string[];
+      __calls: string[];
       __click: (tag: string) => Promise<void>;
       registration: ServiceWorkerRegistration;
       dispatchEvent: (e: Event) => boolean;
@@ -349,15 +350,18 @@ async function tapHarness(page: Page, context: BrowserContext, worker: Worker) {
     scope.__notes = [];
     scope.__focused = 0;
     scope.__windows = [];
+    scope.__calls = [];
     scope.registration.showNotification = async (title: string, o?: NotificationOptions) => {
       scope.__notes.push({ title, tag: o?.tag ?? '', data: (o?.data || {}) as Record<string, string> });
     };
     (WindowClient.prototype as unknown as { focus: () => Promise<WindowClient> }).focus = async function (this: WindowClient) {
       scope.__focused++;
+      scope.__calls.push('focus');
       return this;
     };
     (Clients.prototype as unknown as { openWindow: (u: string) => Promise<null> }).openWindow = async (u: string) => {
       scope.__windows.push(new URL(u, self.location.origin).pathname);
+      scope.__calls.push('openWindow');
       return null;
     };
     scope.__click = async (tag: string) => {
@@ -401,6 +405,8 @@ async function tapHarness(page: Page, context: BrowserContext, worker: Worker) {
     },
     focused: () => worker.evaluate(() => (self as unknown as { __focused: number }).__focused),
     windows: () => worker.evaluate(() => (self as unknown as { __windows: string[] }).__windows),
+    // calls: focus() and openWindow() in the order the worker made them.
+    calls: () => worker.evaluate(() => (self as unknown as { __calls: string[] }).__calls),
     // controlledURLs / allURLs: the window clients the worker controls, and all
     // of them including the uncontrolled ones.
     controlledURLs: () => worker.evaluate(async () => (await (self as unknown as { clients: Clients }).clients.matchAll({ type: 'window' })).map((c) => new URL(c.url).pathname)),
@@ -514,12 +520,21 @@ test('a tap the open tab will not take opens its tap route in a new window', asy
   await tap.deliverAndTap('ask-71');
   expect(await page.evaluate(() => (window as unknown as { __dropped: number }).__dropped), 'CONTROL: the worker did ask the page').toBe(1);
   expect(await tap.windows(), 'the route opened in a new window').toEqual(['/attention/open/ask-71']);
+  // 🔴 A trusted notificationclick grants ONE window-interaction token, and
+  // Chromium's WindowClient.focus() consumes it, so an openWindow() after a
+  // focus() is refused ("Not allowed to open a window"). The stubs cannot see
+  // the token, so the order is what is asserted: no focus before the window.
+  expect(await tap.calls(), 'openWindow is not preceded by a focus that would spend the click').toEqual(['openWindow']);
   expect(new URL(page.url()).pathname, 'the tab did not move').toBe('/tasks');
 });
 
 // With two tabs open, one controlled and one not, the tap moves the
 // CONTROLLED one: it is the tab navigate() can move. Both orders, so neither
 // "first tab" nor "last tab" passes by luck of the clients list's order.
+// ⚠ "second tab uncontrolled" is the REGRESSION case: the old code took the
+// first client Chromium lists (most recently focused first), the uncontrolled
+// second tab, and failed it. "first tab uncontrolled" PASSES ON THE OLD CODE
+// too; it is an INVARIANT GUARD, there to catch a "last client" choice.
 for (const uncontrolled of ['first', 'second'] as const) {
   test(`with a controlled and an uncontrolled tab open, the tap moves the controlled one (${uncontrolled} tab uncontrolled)`, async ({ page, context }) => {
     const worker = await signedInWorker(page, context);
@@ -541,3 +556,37 @@ for (const uncontrolled of ['first', 'second'] as const) {
     expect(await tap.windows(), 'no window is opened').toEqual([]);
   });
 }
+
+// The page follows a NAVIGATE only to its OWN origin (pwa.js). The messages
+// are posted from the real worker exactly as focusOrOpen posts them, each with
+// a reply port. A cross-origin and a javascript: url are refused (no reply, no
+// navigation, no script). Then a same-origin, same-document url is followed
+// (the positive control). Messages to one client arrive in order, so once
+// that control's reply is in, the two before it have been handled, and their
+// missing replies are an answer, not a wait that ran short.
+test('the page follows a NAVIGATE only to its own origin', async ({ page, context }) => {
+  const worker = await signedInWorker(page, context);
+  const elsewhere: string[] = [];
+  await page.route('https://elsewhere.example/**', (r) => {
+    elsewhere.push(r.request().url());
+    return r.abort();
+  });
+  await worker.evaluate(async (base) => {
+    const scope = self as unknown as { __acks: string[]; clients: Clients };
+    scope.__acks = [];
+    const [tab] = await scope.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const send = (name: string, url: string) => {
+      const ch = new MessageChannel();
+      ch.port1.onmessage = () => scope.__acks.push(name);
+      tab.postMessage({ type: 'NAVIGATE', url }, [ch.port2]);
+    };
+    send('javascript', 'javascript:void(window.__pwned = 1)');
+    send('cross-origin', 'https://elsewhere.example/attention');
+    send('same-origin', base + '/tasks#followed');
+  }, origin);
+  await expect.poll(() => worker.evaluate(() => (self as unknown as { __acks: string[] }).__acks), { message: 'CONTROL: the same-origin url is followed' }).toContain('same-origin');
+  await expect(page).toHaveURL(origin + '/tasks#followed');
+  expect(await worker.evaluate(() => (self as unknown as { __acks: string[] }).__acks), 'only the same-origin url is answered').toEqual(['same-origin']);
+  expect(await page.evaluate(() => (window as unknown as { __pwned?: number }).__pwned), 'the javascript: url ran nothing').toBeUndefined();
+  expect(elsewhere, 'no request left for the other origin').toEqual([]);
+});

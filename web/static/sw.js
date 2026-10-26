@@ -373,7 +373,7 @@ self.addEventListener('notificationclick', (event) => {
   event.waitUntil(focusOrOpen(target));
 });
 
-// focusOrOpen brings an open muster tab forward and moves it to target, or
+// focusOrOpen moves an open muster tab to target and brings it forward, or
 // opens target in a new window when no tab will take it.
 //
 // 🔴 A TAB THIS WORKER DOES NOT CONTROL CANNOT BE navigate()d. It rejects
@@ -385,24 +385,41 @@ self.addEventListener('notificationclick', (event) => {
 // preferred; when navigate() is refused, the page itself is asked to go
 // (askPageToOpen, answered by pwa.js); and when the page does not answer,
 // target opens in a new window. Every refusal is logged.
+//
+// 🔴 focus() COMES LAST, AND NEVER BEFORE openWindow(). A trusted
+// notificationclick grants ONE window-interaction token. Chromium's
+// WindowClient.focus() consumes it, and Clients.openWindow() checks it and
+// rejects ("Not allowed to open a window"). So the tab is focused only once it
+// has taken the route (navigate() resolved, or the page answered), and the
+// fallback opens its window with the token unspent. The token lasts about 10 s
+// in Chromium; PAGE_OPEN_ACK_MS keeps the refused path well inside that.
+// ⚠ FIREFOX, UNVERIFIED: its window-interaction allowance
+// (dom.serviceWorkers.disable_open_click_delay) defaults to 1000 ms, shorter
+// than PAGE_OPEN_ACK_MS, so there the openWindow fallback after a page that
+// never answers may still be refused.
 async function focusOrOpen(target) {
   const dest = target || '/';
   const controlled = new Set((await self.clients.matchAll({ type: 'window' })).map((c) => c.id));
   const tabs = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true })).filter((c) => 'focus' in c);
   const client = tabs.find((c) => controlled.has(c.id)) || tabs[0];
   if (client) {
+    let moved = null;
     try {
-      await client.focus();
-    } catch (e) {
-      console.warn('muster sw: could not focus the open tab', e);
-    }
-    try {
-      await client.navigate(dest);
-      return;
+      // navigate() resolves with the tab's new client, or null when the result
+      // is not one this worker may see; either way the tab took the route.
+      moved = (await client.navigate(dest)) || client;
     } catch (e) {
       console.warn('muster sw: navigate() refused for the open tab; asking the page to go to ' + dest, e);
+      if (await askPageToOpen(client, dest)) moved = client;
     }
-    if (await askPageToOpen(client, dest)) return;
+    if (moved) {
+      try {
+        await moved.focus();
+      } catch (e) {
+        console.warn('muster sw: could not focus the open tab', e);
+      }
+      return;
+    }
     console.warn('muster sw: the open tab did not take ' + dest + '; opening a window');
   }
   if (!self.clients.openWindow) return;
