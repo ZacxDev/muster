@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -324,6 +325,12 @@ func (h *Hub) changed(owner int64) {
 
 type hostConn struct {
 	key hostKey
+	// rtt is the last keepalive ping's round trip, in nanoseconds (0 until
+	// the first pong): the LINK an open's batches cross, on its span beside
+	// the batch's size, so a slow open reads as latency or as bandwidth.
+	// ⚠ It INCLUDES THE SERVER READ LOOP'S DELAY: Ping returns when that loop
+	// reads the pong, so a busy loop reads as a slower link.
+	rtt atomic.Int64
 	// arrival orders this connection's join among its host's (Hub.arrivals):
 	// a later arrival is a NEWER connection, whichever welcome finishes first.
 	arrival     uint64
@@ -765,26 +772,58 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	}
 	h.changed(owner)
 
+	// firstHandled closes once the read loop has handled the host's first
+	// message after the welcome (its repos, work or a sessions update): the
+	// burst a host sends on joining is then behind it, and the first RTT
+	// sample is not one taken while that burst queued ahead of the pong.
+	firstHandled := make(chan struct{})
 	go func() {
 		t := time.NewTicker(pingInterval)
 		defer t.Stop()
+		// The keepalive is also the link's round trip (hostConn.rtt): Ping
+		// returns when the host's pong is READ BY THIS CONNECTION'S READ LOOP,
+		// so a sample includes that loop's delay in reaching it, not only the
+		// network's. The first is sent once the host's first message after
+		// the welcome is handled (or at the first tick), so an open soon after
+		// a connect already knows the link.
+		ping := func() bool {
+			pctx, pcancel := context.WithTimeout(ctx, writeTimeout)
+			start := time.Now()
+			err := ws.Ping(pctx)
+			pcancel()
+			if err != nil {
+				cancel(fmt.Errorf("mirror: keepalive: %w", err))
+				return false
+			}
+			hc.rtt.Store(int64(time.Since(start)))
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-firstHandled:
+		case <-t.C:
+		}
+		if !ping() {
+			return
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				pctx, pcancel := context.WithTimeout(ctx, writeTimeout)
-				err := ws.Ping(pctx)
-				pcancel()
-				if err != nil {
-					cancel(fmt.Errorf("mirror: keepalive: %w", err))
+				if !ping() {
 					return
 				}
 			}
 		}
 	}()
 
+	reads := 0
 	for {
+		if reads == 1 {
+			close(firstHandled) // the first message has been handled (above)
+		}
 		typ, data, err := ws.Read(ctx)
 		if err != nil {
 			if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
@@ -793,6 +832,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 			_ = ws.Close(websocket.StatusGoingAway, truncate(err.Error()))
 			return err
 		}
+		reads++
 		switch typ {
 		case websocket.MessageBinary:
 			id, p, err := DecodeData(data)
@@ -887,7 +927,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				}
 			case TypeEvents:
 				if hc.version >= 2 {
-					hc.deliverEvents(m)
+					hc.deliverEvents(m, len(data))
 				}
 			case TypePasted:
 				if hc.version >= 2 {

@@ -38,7 +38,7 @@ func traceRecorder(t *testing.T) *tracetest.InMemoryExporter {
 
 // hostPhases is every phase span a Claude Code watch's open has on the host,
 // in order (mirrorhost's tail).
-var hostPhases = []string{"resolve", "open", "backfill", "redact", "frame"}
+var hostPhases = []string{"resolve", "open", "backfill", "redact", "frame", "send"}
 
 func spanNamed(spans tracetest.SpanStubs, name string) (tracetest.SpanStub, bool) {
 	for _, s := range spans {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -69,6 +70,10 @@ type watch struct {
 	done chan struct{}
 	once sync.Once
 	err  error
+	// firstBytes is the first batch's size as it was read off the tunnel: its
+	// open span's
+	// mirror.first_batch_bytes.
+	firstBytes atomic.Int64
 }
 
 func (w *watch) finish(err error) {
@@ -81,13 +86,14 @@ func (w *watch) finish(err error) {
 // deliverEvents hands one events message to its watch, or ends the watch with
 // ErrViewOverrun when the browser has fallen streamBuffer batches behind — never
 // blocking the host's read loop, which serves every stream on the host.
-func (hc *hostConn) deliverEvents(m Msg) {
+func (hc *hostConn) deliverEvents(m Msg, size int) {
 	hc.mu.Lock()
 	defer hc.mu.Unlock()
 	w := hc.watches[m.ID]
 	if w == nil {
 		return
 	}
+	w.firstBytes.CompareAndSwap(0, int64(size))
 	select {
 	case w.out <- m:
 	default:
@@ -294,6 +300,18 @@ func (h *Hub) WatchWindow(ctx context.Context, owner int64, host, session, windo
 	deliver := func(m Msg) error {
 		if !gotFirst {
 			gotFirst = true
+			// What the first batch cost to bring here, and over what link:
+			// sizes, counts and the link's round trip — never its text.
+			attrs := []attribute.KeyValue{attribute.Int64("mirror.first_batch_bytes", w.firstBytes.Load()),
+				attribute.Int("mirror.first_batch_events", len(m.Events))}
+			// mirror.host_rtt_ms is the last keepalive round trip, which
+			// includes the server read loop's delay in reading the pong
+			// (hostConn.rtt) — an upper bound on the network's.
+			if rtt := hc.rtt.Load(); rtt > 0 {
+				attrs = append(attrs, attribute.Float64("mirror.host_rtt_ms", float64(rtt)/float64(time.Millisecond)))
+			}
+			first.SetAttributes(attrs...)
+			life.SetAttributes(attrs...)
 			firstAnswer(first, "watch", openStatsOf(ctx), sent)
 			telemetry.End(life, telemetry.ReasonOK)
 			lifeEnded = true

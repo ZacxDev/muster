@@ -72,26 +72,6 @@ func (h *hostSide) pane(ctx context.Context, cb ClaudeBackend, session string) (
 	return p, ok
 }
 
-// window re-reads ONE window now: where a request that names a window finds
-// its pane. A fresh read, at the moment of acting — never the list this host
-// last sent, in which the window's pane may since have changed (a pane split,
-// Claude Code exiting).
-func (h *hostSide) window(ctx context.Context, session, window string) (WindowInfo, error) {
-	wl, ok := WindowListerOf(h.c.cfg.Backend)
-	if !ok {
-		return WindowInfo{}, errors.New("this host does not list windows")
-	}
-	all, err := wl.Windows(ctx)
-	if err != nil {
-		return WindowInfo{}, err
-	}
-	w, ok := FindWindow(all, session, window)
-	if !ok {
-		return WindowInfo{}, fmt.Errorf("window %s of session %q is gone", window, session)
-	}
-	return w, nil
-}
-
 // claudePaneOf is how a watch or a paste finds the Claude Code pane of what m
 // names: THAT WINDOW's active pane when m names a window — so two Claude Code
 // windows of one session each stream their own transcript — else the session's
@@ -194,6 +174,9 @@ func (h *hostSide) watch(m mirror.Msg) {
 	}
 	h.watches[m.ID] = cancel
 	h.mu.Unlock()
+	// The open's runtimes share ONE read of its window (openresolve.go),
+	// spent by its first reply.
+	ctx, _ = h.beginResolve(ctx, m.ID)
 	// The watch's open and end, like a terminal's attached/detached: how many
 	// transcript streams a viewer really opened (the browser suite counts them),
 	// and what it asked for — the transcript from the start, or a resume from an
@@ -206,6 +189,7 @@ func (h *hostSide) watch(m mirror.Msg) {
 	h.c.log.Printf("muster-mirror: watching %q%s (%s, stream %d)", m.Session, windowSuffix(m.Window), from, m.ID)
 	go func() {
 		err := serve(ctx)
+		h.endResolve(m.ID)
 		h.endOpen(o, m.ID, err)
 		h.unwatch(m.ID)
 		h.c.log.Printf("muster-mirror: unwatched %q%s (stream %d)", m.Session, windowSuffix(m.Window), m.ID)
@@ -270,14 +254,27 @@ func (h *hostSide) viewSend(m mirror.Msg, gen func() string) func([]mirror.Msg) 
 	return func(msgs []mirror.Msg) error {
 		for _, b := range msgs {
 			b.Type, b.ID, b.Gen = mirror.TypeEvents, m.ID, gen()
-			// The open's first reply ends its span (trace.go).
-			h.reply(m.ID)
 			if h.c.cfg.NoPromptIndex {
 				for i := range b.Events {
 					b.Events[i].Line = 0 // an older host names no prompt's place
 				}
 			}
-			if err := h.send(b); err != nil {
+			// The open's first reply ends its span (trace.go), once it is
+			// written: its write is the open's last phase ("send"), and what
+			// it cost is on the span — sizes and counts, never its text.
+			o := h.openOf(m.ID)
+			encoded, wire, err := h.sendSized(b)
+			if o != nil {
+				attrs := []attribute.KeyValue{attribute.Int("mirror.first_batch_bytes", encoded),
+					attribute.Int("mirror.first_batch_events", len(b.Events))}
+				if h.wire != nil {
+					attrs = append(attrs, attribute.Int64("mirror.first_batch_wire_bytes", wire))
+				}
+				o.mark("send", attrs...)
+				o.annotate(attrs...)
+			}
+			h.reply(m.ID)
+			if err != nil {
 				return err
 			}
 		}
