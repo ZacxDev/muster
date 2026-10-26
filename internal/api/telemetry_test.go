@@ -268,29 +268,16 @@ func (r *tracedMirrorRig) waitFor(t *testing.T, names ...string) tracetest.SpanS
 	}
 }
 
-// spansOf waits for the open's spans — the host's end on their own goroutine,
+// spans waits for the open's spans — the host's end on their own goroutine,
 // the socket's when its handler returns — and returns them.
+//
+// host.watch, not an earlier host phase: it ends after every phase span but
+// host.prompt_index, once the first batch's write returns on the host
+// (host.send) — which can be after muster has read the batch and every
+// server span has ended.
 func (r *tracedMirrorRig) spans(t *testing.T) tracetest.SpanStubs {
 	t.Helper()
-	var spans tracetest.SpanStubs
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		spans = r.exp.GetSpans()
-		names := map[string]bool{}
-		for _, s := range spans {
-			names[s.Name] = true
-		}
-		// host.watch, not an earlier host phase: it ends last, after the
-		// first batch's write returns on the host (host.send) — which can be
-		// after muster has read the batch and every server span has ended.
-		if names["host.watch"] && names["GET /mirror/view/ws"] && names["mirror.watch"] && names["GET /mirror/view/ws closed"] {
-			return spans
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the open's spans never all ended: %v", names)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	return r.waitFor(t, "host.watch", "GET /mirror/view/ws", "mirror.watch", "GET /mirror/view/ws closed")
 }
 
 func stub(spans tracetest.SpanStubs, name string) (tracetest.SpanStub, bool) {

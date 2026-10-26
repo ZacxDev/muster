@@ -95,9 +95,10 @@ func TestOneOpenIsOneTraceFromServerToHost(t *testing.T) {
 	}
 
 	// Every span closes in time for the read below except the host's, which
-	// end on their own goroutine — and host.watch LAST: its final phase,
-	// host.send, is the first batch's write, which returns on the host only
-	// after muster may already have read the batch. So the wait is for
+	// end on their own goroutine. host.watch ends after every phase span but
+	// host.prompt_index (which runs after the first batch is sent): its last
+	// phase, host.send, is the first batch's write, which returns on the host
+	// only after muster may already have read the batch. So the wait is for
 	// host.watch itself to have ENDED (an exported span is an ended one),
 	// never for an earlier phase.
 	var spans tracetest.SpanStubs
