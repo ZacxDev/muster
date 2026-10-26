@@ -249,9 +249,11 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 				mirrorComposer(composer),
 				g.If(v.Interactive && (!v.Hermes || v.HermesSend) && v.ViewOnly == "", confirmDialog(v.StepUp)),
 				g.If(v.Interactive && (!v.Hermes || v.HermesSend) && v.ViewOnly == "", stepUpScript()),
-				// The snapshot store (deferred: it runs before DOMContentLoaded,
-				// which is when mirrorViewScript reads it).
-				SnapScript(v.Nav.Feat),
+				// The snapshot store, PARSER-BLOCKING here (SnapScriptNow): it runs
+				// just before mirrorViewScript, which starts reading this window's
+				// snapshot — and opens the socket — while the rest of the document
+				// is still loading.
+				SnapScriptNow(v.Nav.Feat),
 				mirrorViewScript(),
 				// Places the header's full-title popover (mirrorViewTitle) by its
 				// title and keeps the title's aria-expanded in step.
@@ -907,9 +909,19 @@ func mirrorViewScript() g.Node {
   var gen = '', offset = 0, retry = 0, closed = false, sock = null;
   // The snapshot (web/static/mirror-snap.js): what this window's view drew,
   // replayed at open, then resumed from its offset. snapRef stays null — no
-  // snapshot is read or written — when the store is unavailable. Both are set
-  // in begin(): the store's script is deferred, so it has not run yet here.
+  // snapshot is read or written — when the store is unavailable. Set in
+  // start(); the store's script ran just before this one (SnapScriptNow).
   var snap = null, snapRef = null;
+  // 🔴 THE SOCKET OPENS BEFORE THE DOCUMENT HAS FINISHED LOADING; WHAT IT SENDS
+  // IS DRAWN ONLY ONCE IT HAS. The open used to wait for DOMContentLoaded (the
+  // deferred scripts), then for the snapshot read, then for the snapshot's
+  // paint, and only then create the socket — so the host's whole round trip
+  // started after all of it. Now start() runs as this script is parsed: the
+  // snapshot is read at once, the socket is created the moment its resume
+  // point is known, and the paint and every socket event wait for parsed
+  // (DOMContentLoaded), queued in order, so every script that decorates the
+  // conversation is still listening before anything is drawn.
+  var parsed = document.readyState !== 'loading', queued = [];
   var chip = document.getElementById('mv-updating');
   // opLog is the batches drawn since the last reset (what a snapshot stores);
   // provisional: the page shows a snapshot no socket has confirmed yet.
@@ -922,6 +934,9 @@ func mirrorViewScript() g.Node {
   // later disconnect belongs to, and endReason the closed word the server
   // gave for ending the stream, if it gave one.
   var opening = null, lastOpen = null, endReason = '';
+  // The FIRST open's snapshot read: its outcome (hit, miss, timeout, off) and
+  // the marks of the read, set on the open once connect() has begun it.
+  var snapRead = null, drawnFor = null;
 
   function showChip(on) {
     if (!chip) return;
@@ -966,7 +981,17 @@ func mirrorViewScript() g.Node {
   // paint draws a snapshot through apply() — the path a live batch takes —
   // and leaves the page provisional until the socket speaks.
   function paint(rec) {
-    rec.batches.forEach(function (b) { apply(b); });
+    if (opening) { opening.mark('snapshot_paint_start'); opening.count('snapshot_batches', rec.batches.length); }
+    // 🔴 ONE LAYOUT FOR THE WHOLE SNAPSHOT, NOT ONE PER BATCH. apply() reads
+    // the log's scroll position before a batch and writes it after, which
+    // forces a layout of everything drawn so far; a snapshot is tens of
+    // batches, so that was a layout per batch over a growing conversation
+    // (measured: 170–200 ms of a throttled open for 50 batches). A snapshot
+    // opens at its end, so the batches are drawn without reading, and the log
+    // is scrolled once.
+    bulk = true;
+    try { rec.batches.forEach(function (b) { apply(b); }); } finally { bulk = false; }
+    log.scrollTop = log.scrollHeight;
     if (opening) opening.mark('snapshot_painted');
     gen = rec.gen; offset = rec.offset;
     opLog = rec.batches.slice(); opBytes = rec.bytes || 0; firstAt = rec.firstAt;
@@ -983,8 +1008,9 @@ func mirrorViewScript() g.Node {
   function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
   function frag(html) { var t = document.createElement('template'); t.innerHTML = html; return t.content; }
 
+  var bulk = false;
   function apply(m) {
-    var stick = nearBottom() || m.reset;
+    var stick = bulk ? false : (nearBottom() || m.reset);
     // The prompt index (chatIndexScript reads it): a Reset starts a transcript
     // over, so its index is gone until the host sends the new one — and a host
     // that predates it never does.
@@ -1064,23 +1090,78 @@ func mirrorViewScript() g.Node {
     if (stick) log.scrollTop = log.scrollHeight;
   }
 
+  // painted calls fn once the browser has painted what was just drawn: the
+  // next animation frame, then a task after it (the frame's paint runs
+  // between the two).
+  function nextTask(fn) {
+    if (typeof MessageChannel === 'undefined') { setTimeout(fn, 0); return; }
+    var ch = new MessageChannel();
+    ch.port1.onmessage = function () { fn(); };
+    ch.port2.postMessage(0);
+  }
+  function painted(fn) { requestAnimationFrame(function () { nextTask(fn); }); }
+  // A socket's events, in order: as they come once the document is parsed,
+  // queued until then. An event of a socket that has since been replaced is
+  // dropped.
+  function deliver(s, fn) {
+    if (parsed) { fn(); return; }
+    queued.push(function () { if (s === sock) fn(); });
+  }
   function connect() {
     // Left (pagehide): a pending retry opens nothing.
     if (closed) return;
     var base = log.getAttribute('data-ws');
-    if (!opening && window.musterOpen) opening = window.musterOpen.begin('mirror_view', { resume: !!gen });
+    if (!opening && window.musterOpen) {
+      opening = window.musterOpen.begin('mirror_view', { resume: !!gen });
+      if (snapRead) {
+        // The first open: the document's milestones (when they come) and the
+        // snapshot read, which happened before the open had a handle.
+        opening.attr('snapshot', snapRead.outcome);
+        if (snapRead.start !== undefined) { opening.markAt('snapshot_read_start', snapRead.start); opening.markAt('snapshot_read_end', snapRead.end); }
+        snapRead = null;
+        var o = opening;
+        var nav = function () {
+          try {
+            var n = performance.getEntriesByType('navigation')[0];
+            if (n && n.domContentLoadedEventStart > 0) o.markAt('dom_content_loaded', n.domContentLoadedEventStart);
+            if (n && n.loadEventStart > 0) o.markAt('load', n.loadEventStart);
+          } catch (e) {}
+        };
+        if (document.readyState === 'complete') nav(); else window.addEventListener('load', nav);
+        document.addEventListener('DOMContentLoaded', nav);
+      }
+    }
     var tp = opening ? opening.tp() : '';
     endReason = '';
     var url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + base +
       (gen ? '&gen=' + encodeURIComponent(gen) + '&offset=' + offset : '') + (tp ? '&tp=' + encodeURIComponent(tp) : '');
     statusEl.textContent = 'Connecting…';
-    sock = new WebSocket(url);
-    sock.onopen = function () { retry = 0; if (opening) opening.mark('stream_connected'); };
-    sock.onmessage = function (ev) {
+    var s = sock = new WebSocket(url);
+    if (opening) opening.mark('socket_created');
+    var first = true;
+    s.onopen = function () { retry = 0; if (opening) opening.mark('stream_connected'); };
+    s.onmessage = function (ev) {
+      if (first && opening) { first = false; opening.mark('first_frame'); }
+      deliver(s, function () { onMessage(ev); });
+    };
+    s.onclose = function (ev) { deliver(s, function () { onClose(ev); }); };
+  }
+  function onMessage(ev) {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
       if (m.type === 'batch') {
+        // The open's FIRST batch (a later one before the paint below is not).
+        var o = opening && opening !== drawnFor ? (drawnFor = opening) : null;
+        if (o) { o.mark('batch_insert_start'); o.count('first_batch_ops', (m.ops || []).length); }
         if (provisional) settled(); clearError(); statusEl.textContent = 'Live'; apply(m); remember(m, ev.data.length); caughtUp();
-        if (opening) { opening.mark('first_paint'); opening.mark('usable'); opening.end('ok'); lastOpen = opening; opening = null; }
+        if (o) { o.mark('batch_insert_end'); lastOpen = o; }
+        // The open ends when the browser has PAINTED the batch, not when the
+        // script has inserted it: style, layout and paint of what was
+        // inserted come after, and on a long conversation they are a large
+        // part of it. A disconnect before then ends it with its reason.
+        if (o || !usableSent) painted(function () {
+          if (o && opening === o) { o.mark('first_paint'); o.mark('usable'); o.end('ok'); opening = null; }
+          viewUsable();
+        });
       }
       else if (m.type === 'error') {
         endReason = m.reason || 'error';
@@ -1090,8 +1171,8 @@ func mirrorViewScript() g.Node {
       else if (m.type === 'asks') { if (window.musterAskPoll) window.musterAskPoll(); }
       // Suggested replies (suggest_row.go): pending, ready or none.
       else if (m.type === 'suggest') { if (window.musterSuggest) window.musterSuggest(m); }
-    };
-    sock.onclose = function (ev) {
+  }
+  function onClose(ev) {
       statusEl.textContent = 'Disconnected — reconnecting…';
       working.hidden = true;
       if (closed) return;
@@ -1107,7 +1188,14 @@ func mirrorViewScript() g.Node {
       if (provisional) discard();
       retry = Math.min(retry + 1, 6);
       setTimeout(connect, 500 * Math.pow(2, retry - 1));
-    };
+  }
+  // viewUsable tells the page's other scripts that the open is over (the
+  // snapshot store's warming waits for it on this page: mirror-snap.js).
+  var usableSent = false;
+  function viewUsable() {
+    if (usableSent) return;
+    usableSent = true;
+    document.dispatchEvent(new CustomEvent('muster:view-usable'));
   }
   // The log's box shrinks when the keyboard opens or the composer grows: a
   // reader at the end stays at the end, rather than the last message sliding
@@ -1148,26 +1236,50 @@ func mirrorViewScript() g.Node {
   document.addEventListener('visibilitychange', function () {
     if (document.hidden) setTimeout(function () { if (!leaving) save(); }, 250);
   });
-  // Open: paint this window's snapshot, if there is one this user may see,
-  // then connect — resuming from its offset. Storage that is slow or absent
-  // costs at most readWaitMs, then the socket opens without it. Run once the
-  // document is parsed, so every script that decorates the conversation is
-  // listening before the snapshot is drawn.
-  function begin() {
+  // Open: read this window's snapshot, if there is one this user may see,
+  // and connect — resuming from its offset — as soon as the read is done.
+  // Storage that is slow or absent costs at most readWaitMs, then the socket
+  // opens without it. The snapshot is painted once the document is parsed
+  // (whenParsed), before any socket event is applied.
+  var toPaint = null;
+  function start() {
     snap = window.musterSnap && window.musterSnap.enabled ? window.musterSnap : null;
     snapRef = snap ? snap.refOf(log.getAttribute('data-ws')) : null;
-    if (!snapRef) { connect(); return; }
-    var started = false;
-    function go(rec) {
+    if (!snapRef) { snapRead = { outcome: 'off' }; connect(); return; }
+    var started = false, t0 = performance.now();
+    function go(rec, outcome) {
       if (started) return;
       started = true;
-      if (rec) { try { paint(rec); } catch (e) { discard(); } }
+      snapRead = { outcome: outcome, start: t0, end: performance.now() };
+      // The resume point is known: the socket opens now, and the snapshot is
+      // painted in this same task when the document is parsed (no socket
+      // event can come in between), else once it is.
+      if (rec) { gen = rec.gen; offset = rec.offset; }
+      connect();
+      if (rec) { if (parsed) paintSnapshot(rec); else toPaint = rec; }
+    }
+    var wait = setTimeout(function () { go(null, 'timeout'); }, snap.readWaitMs);
+    snap.get(snapRef).then(function (rec) { clearTimeout(wait); go(rec, rec ? 'hit' : 'miss'); }, function () { clearTimeout(wait); go(null, 'miss'); });
+  }
+  // paintSnapshot paints rec, which the socket is already resuming from. A
+  // snapshot that cannot be painted is discarded, and the socket replaced by
+  // one from the beginning.
+  function paintSnapshot(rec) {
+    try { paint(rec); } catch (e) {
+      discard();
+      var old = sock;
+      sock = null;
+      if (old) { old.onclose = null; old.onmessage = null; try { old.close(); } catch (x) {} }
       connect();
     }
-    var wait = setTimeout(function () { go(null); }, snap.readWaitMs);
-    snap.get(snapRef).then(function (rec) { clearTimeout(wait); go(rec); }, function () { clearTimeout(wait); go(null); });
   }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', begin); else begin();
+  function whenParsed() {
+    if (toPaint) { var rec = toPaint; toPaint = null; paintSnapshot(rec); }
+    parsed = true;
+    queued.splice(0).forEach(function (fn) { fn(); });
+  }
+  start();
+  if (parsed) whenParsed(); else document.addEventListener('DOMContentLoaded', whenParsed);
 
 })();
 `))

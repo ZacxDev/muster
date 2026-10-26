@@ -83,6 +83,9 @@
   // that must be left of it to open another socket.
   var WARM_PASS_BYTES = 3 * 1024 * 1024;
   var WARM_MIN_LEFT = 256 * 1024;
+  // On a rendered view, how long eviction and warming wait for the view's own
+  // open at most.
+  var VIEW_WAIT_MS = 15000;
 
   // refOf is the mirrored window a rendered view's page or socket path names
   // ({host, session, window}), or null for any other path. Decoded rather than
@@ -476,13 +479,29 @@
   // --- wiring ---------------------------------------------------------------
 
   if (enabled) {
-    // Another user's, another build's and expired snapshots go at every load.
-    setTimeout(function () { evict(); }, 0);
+    var armed = false;
     var arm = function () {
+      if (armed) return;
+      armed = true;
       setTimeout(function () { idle(warmPass); }, WARM_DELAY_MS);
       setInterval(function () { if (Date.now() - lastWarm >= WARM_EVERY_MS) idle(warmPass); }, 30000);
     };
-    if (document.readyState === 'complete') arm(); else root.addEventListener('load', arm);
+    // 🔴 ON A RENDERED VIEW, NOTHING STARTS UNTIL ITS OWN OPEN IS OVER. A warm
+    // socket is another watch on a host and its batches are parsed and stored
+    // on this page's main thread, and eviction is a storage transaction beside
+    // the view's own read: started at load, both ran while the view was still
+    // waiting for its first batch. So on a view page they wait for the view's
+    // 'muster:view-usable' (mirror_view.go), or VIEW_WAIT_MS at most; on any
+    // other page eviction runs at once and warming is armed at load, as before.
+    var view = !!document.getElementById('mv-log');
+    var later = function (fn) {
+      var done = false, once = function () { if (!done) { done = true; fn(); } };
+      document.addEventListener('muster:view-usable', once);
+      setTimeout(once, VIEW_WAIT_MS);
+    };
+    // Another user's, another build's and expired snapshots go at every load.
+    if (view) later(function () { evict(); }); else setTimeout(function () { evict(); }, 0);
+    if (view) later(arm); else if (document.readyState === 'complete') arm(); else root.addEventListener('load', arm);
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) { if (current) current.stop(); return; }
       if (Date.now() - lastWarm >= WARM_EVERY_MS) setTimeout(function () { idle(warmPass); }, 500);
