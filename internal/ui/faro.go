@@ -398,6 +398,13 @@ const musterOpenJS = `
             o.attrs[name] = String(word);
             if (o.span) { try { o.span.setAttribute('muster.' + name, String(word)); } catch (e) {} }
           },
+          // flag is a yes/no attribute of the open's span (not a word: it is
+          // not in the measurement's context).
+          flag: function (name, on) {
+            if (o.ended) return;
+            o.attrs[name] = !!on;
+            if (o.span) { try { o.span.setAttribute('muster.' + name, !!on); } catch (e) {} }
+          },
           count: function (name, n) {
             if (o.ended || typeof n !== 'number' || !isFinite(n)) return;
             o.counts[name] = n;

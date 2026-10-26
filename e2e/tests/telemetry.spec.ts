@@ -116,6 +116,48 @@ test('the document names its server trace, and the open is one trace from the pa
   for (const k of ['stream_connected_ms', 'first_paint_ms', 'usable_ms', 'total_ms']) {
     expect(typeof open.values[k], `the open measured ${k}`).toBe('number');
   }
+  // 🔴 THE OPEN'S BREAKDOWN IS A CLOSED LEDGER: numbers under the names the
+  // view marks (mirror_view.go), and context values that are closed words.
+  // This first open of a fresh browser has no snapshot (a miss) and draws its
+  // first batch. A name added, dropped or renamed fails here until the
+  // ledger — and docs/telemetry.md — say so.
+  expect(Object.keys(open.values).sort()).toEqual(
+    [
+      'batch_insert_end_ms', 'batch_insert_start_ms', 'dom_content_loaded_ms', 'first_batch_ops', 'first_frame_ms', 'first_paint_ms', 'load_ms',
+      'snapshot_read_end_ms', 'snapshot_read_start_ms', 'socket_created_ms', 'stream_connected_ms', 'total_ms', 'usable_ms',
+    ].sort(),
+  );
+  for (const [k, v] of Object.entries(open.values)) expect(typeof v, `${k} is a number`).toBe('number');
+  const v = open.values as Record<string, number>;
+  expect(v.socket_created_ms, 'the socket was created once the snapshot read ended').toBeGreaterThanOrEqual(v.snapshot_read_end_ms);
+  expect(v.first_frame_ms).toBeGreaterThanOrEqual(v.socket_created_ms);
+  expect(v.batch_insert_end_ms).toBeGreaterThanOrEqual(v.batch_insert_start_ms);
+  expect(v.first_paint_ms, 'first_paint is after the batch was inserted').toBeGreaterThanOrEqual(v.batch_insert_end_ms);
+  expect(v.first_batch_ops, 'the first batch drew the conversation').toBeGreaterThan(0);
+  expect(Object.keys(open.context).sort()).toEqual(['outcome', 'reopen', 'snapshot', 'trace_id', 'view']);
+  expect(open.context.snapshot).toBe('miss');
+  for (const [k, c] of Object.entries(open.context)) if (k !== 'trace_id') expect(c, `context ${k} is a closed word`).toMatch(/^[a-z_]{1,32}$/);
+  // The span carries the same moments as events, and only muster.* words
+  // beside the ids Faro itself stamps on every span.
+  await expect.poll(() => spansNamed('open mirror_view').some((sp) => sp.traceId === traceId), { message: "the page's open span arrived, in the document's trace", timeout: 15_000 }).toBe(true);
+  const span = spansNamed('open mirror_view').find((sp) => sp.traceId === traceId);
+  const evNames = (span.events ?? []).map((e: any) => e.name);
+  for (const n of ['snapshot_read_start', 'socket_created', 'first_frame', 'batch_insert_start', 'batch_insert_end', 'first_paint', 'usable']) {
+    expect(evNames, `the open span has the ${n} event`).toContain(n);
+  }
+  // Faro's own: the session id, under both of its spellings (measured).
+  const FARO_OWN = ['session.id', 'session_id'];
+  for (const a of span.attributes ?? []) if (!FARO_OWN.includes(a.key)) expect(a.key, 'a span attribute is muster-named').toMatch(/^muster\./);
+  expect((span.attributes ?? []).find((a: any) => a.key === 'muster.snapshot')?.value?.stringValue).toBe('miss');
+  // 🔴 THE FARO BUNDLES LOADED AFTER THE OPEN, not in the head: their
+  // resource entries start after the open was usable.
+  const bundles = await page.evaluate(() =>
+    performance.getEntriesByType('resource').filter((e) => /\/static\/vendor\/faro-/.test(e.name)).map((e) => e.startTime),
+  );
+  expect(bundles, 'both Faro bundles were loaded').toHaveLength(2);
+  for (const t of bundles) expect(t, 'a Faro bundle was requested after the open was usable').toBeGreaterThanOrEqual(v.usable_ms);
+  // No transcript text reached the receiver (the page drew it: above).
+  for (const p of faro.posts) expect(p.body.toString('utf8')).not.toContain('Synthetic answer');
 
   // Both binaries exported spans of THAT trace: the server's, and the
   // host's — the host learned the trace only from the watch frame, which
@@ -147,6 +189,21 @@ test('the document names its server trace, and the open is one trace from the pa
     expect(body).not.toContain('querysecret7');
   }
 });
+
+// spansNamed is every span of that name a delivered batch carried.
+function spansNamed(name: string): any[] {
+  const out: any[] = [];
+  for (const p of faro.posts) {
+    let b: any;
+    try {
+      b = JSON.parse(p.body.toString('utf8'));
+    } catch {
+      continue;
+    }
+    for (const rs of b.traces?.resourceSpans ?? []) for (const ss of rs.scopeSpans ?? []) for (const sp of ss.spans ?? []) if (sp.name === name) out.push(sp);
+  }
+  return out;
+}
 
 // urlsSent is every URL a delivered batch carried: each trace span's http.url /
 // url.full, and each resource event's name — with which kind it came as.

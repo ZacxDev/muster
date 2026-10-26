@@ -934,9 +934,8 @@ func mirrorViewScript() g.Node {
   // later disconnect belongs to, and endReason the closed word the server
   // gave for ending the stream, if it gave one.
   var opening = null, lastOpen = null, endReason = '';
-  // The FIRST open's snapshot read: its outcome (hit, miss, timeout, off) and
-  // the marks of the read, set on the open once connect() has begun it.
-  var snapRead = null, drawnFor = null;
+  // drawnFor is the open whose first batch has been drawn.
+  var drawnFor = null;
 
   function showChip(on) {
     if (!chip) return;
@@ -1111,26 +1110,8 @@ func mirrorViewScript() g.Node {
     // Left (pagehide): a pending retry opens nothing.
     if (closed) return;
     var base = log.getAttribute('data-ws');
-    if (!opening && window.musterOpen) {
-      opening = window.musterOpen.begin('mirror_view', { resume: !!gen });
-      if (snapRead) {
-        // The first open: the document's milestones (when they come) and the
-        // snapshot read, which happened before the open had a handle.
-        opening.attr('snapshot', snapRead.outcome);
-        if (snapRead.start !== undefined) { opening.markAt('snapshot_read_start', snapRead.start); opening.markAt('snapshot_read_end', snapRead.end); }
-        snapRead = null;
-        var o = opening;
-        var nav = function () {
-          try {
-            var n = performance.getEntriesByType('navigation')[0];
-            if (n && n.domContentLoadedEventStart > 0) o.markAt('dom_content_loaded', n.domContentLoadedEventStart);
-            if (n && n.loadEventStart > 0) o.markAt('load', n.loadEventStart);
-          } catch (e) {}
-        };
-        if (document.readyState === 'complete') nav(); else window.addEventListener('load', nav);
-        document.addEventListener('DOMContentLoaded', nav);
-      }
-    }
+    // A reconnect is an open of its own (the page's first began in start()).
+    if (!opening && window.musterOpen) opening = window.musterOpen.begin('mirror_view', { resume: !!gen });
     var tp = opening ? opening.tp() : '';
     endReason = '';
     var url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + base +
@@ -1243,14 +1224,32 @@ func mirrorViewScript() g.Node {
   // (whenParsed), before any socket event is applied.
   var toPaint = null;
   function start() {
+    // The page's first open begins HERE, before the snapshot read: faro-init
+    // loads the telemetry once no open is running (musterOpen.quiet), and an
+    // open begun only when the read had ended could be missed by that.
+    if (window.musterOpen) {
+      var o = opening = window.musterOpen.begin('mirror_view');
+      // The document's milestones, as they come.
+      var nav = function () {
+        try {
+          var n = performance.getEntriesByType('navigation')[0];
+          if (n && n.domContentLoadedEventStart > 0) o.markAt('dom_content_loaded', n.domContentLoadedEventStart);
+          if (n && n.loadEventStart > 0) o.markAt('load', n.loadEventStart);
+        } catch (e) {}
+      };
+      if (document.readyState === 'complete') nav(); else window.addEventListener('load', nav);
+      document.addEventListener('DOMContentLoaded', nav);
+    }
     snap = window.musterSnap && window.musterSnap.enabled ? window.musterSnap : null;
     snapRef = snap ? snap.refOf(log.getAttribute('data-ws')) : null;
-    if (!snapRef) { snapRead = { outcome: 'off' }; connect(); return; }
-    var started = false, t0 = performance.now();
+    if (!snapRef) { if (opening) { opening.attr('snapshot', 'off'); opening.flag('resume', false); } connect(); return; }
+    var started = false;
+    if (opening) opening.mark('snapshot_read_start');
     function go(rec, outcome) {
       if (started) return;
       started = true;
-      snapRead = { outcome: outcome, start: t0, end: performance.now() };
+      // The read's outcome: hit, miss or timeout (a closed word).
+      if (opening) { opening.mark('snapshot_read_end'); opening.attr('snapshot', outcome); opening.flag('resume', !!rec); }
       // The resume point is known: the socket opens now, and the snapshot is
       // painted in this same task when the document is parsed (no socket
       // event can come in between), else once it is.
