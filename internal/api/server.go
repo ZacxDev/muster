@@ -127,7 +127,14 @@ type Server struct {
 	// pluginInFlight registers every plugin message delivery started by the
 	// message route (plugins.go), so shutdown waits for each to record its
 	// outcome; pluginDeliverer is built by UseExtensions (nil: none wired).
-	pluginInFlight  sync.WaitGroup
+	pluginInFlight sync.WaitGroup
+	// destroyInFlight registers every background agent teardown destroyAgent
+	// starts — the provisioner's Destroy AND its after-steps (the chief-start
+	// release, the broadcasts, a door's done hook such as the MCP door's task
+	// reopen). Add happens on the CALLER's goroutine, Done when the last
+	// after-step has returned. Tests wait on it (waitDestroys) instead of
+	// sleeping past the row's deletion.
+	destroyInFlight sync.WaitGroup
 	pluginDeliverer *plugins.Deliverer
 	// taskForwardTurn starts the turn a task_forward hands an agent
 	// (task_routing.go); built by UseExtensions only when a gateway is wired

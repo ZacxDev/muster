@@ -1383,7 +1383,12 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 	// A destroyed pod cannot post its own clear: forget its work report now.
 	s.clearAgentWork(id)
 	opCtx := context.WithoutCancel(ctx) // keeps the principal; see Provisioner
+	// Registered HERE, before the goroutine exists, so a waiter that runs after
+	// destroyAgent returns cannot miss it (sync.WaitGroup: an Add from zero must
+	// happen before the Wait).
+	s.destroyInFlight.Add(1)
 	safeGo(s.logger, "destroy", func() {
+		defer s.destroyInFlight.Done()
 		if err := destroy(opCtx, id); err != nil {
 			s.logger.Printf("agents: destroy %d: %v", id, err)
 			return

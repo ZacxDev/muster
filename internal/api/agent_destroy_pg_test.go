@@ -193,31 +193,48 @@ func (f *destroyFixture) exists(t *testing.T, id int64) bool {
 	return n == 1
 }
 
-// waitGone waits up to 5s for agent id's row to go, then 200ms more for the
-// teardown goroutine's after-steps (release, broadcasts, reopen).
-func (f *destroyFixture) waitGone(t *testing.T, id int64) {
+// waitDestroys waits for every teardown destroyAgent has started on this
+// server to have finished — Destroy AND its after-steps (the release, the
+// broadcasts, the MCP door's reopen) — through the server's destroyInFlight.
+//
+// 🔴 A SYNC POINT, NOT A SLEEP. These helpers used to poll for the row's
+// deletion and then sleep 200ms "for the after-steps"; the reopen runs AFTER
+// the row is gone, so on a loaded runner it had not landed yet and
+// TestDestroyingAnAgentTheChiefDidNotStartReleasesNothing's last task_dispatch
+// read the task still in_progress ("task N is not open (in_progress)"). The
+// 30s bound only turns a hung teardown into a failure instead of a hung test.
+func (f *destroyFixture) waitDestroys(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for f.exists(t, id) {
-		if time.Now().After(deadline) {
-			t.Fatalf("agent %d was never destroyed (destroyed: %v)", id, f.prov.destroyedIDs())
-		}
-		time.Sleep(10 * time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		f.srv.destroyInFlight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("a background teardown never finished (destroyed: %v)", f.prov.destroyedIDs())
 	}
-	time.Sleep(200 * time.Millisecond)
 }
 
-// waitDestroyCalled waits up to 3s for Destroy to have run n times, then 200ms.
+// waitGone waits for the teardowns to finish (waitDestroys), then requires
+// agent id's row to be gone.
+func (f *destroyFixture) waitGone(t *testing.T, id int64) {
+	t.Helper()
+	f.waitDestroys(t)
+	if f.exists(t, id) {
+		t.Fatalf("agent %d was never destroyed (destroyed: %v)", id, f.prov.destroyedIDs())
+	}
+}
+
+// waitDestroyCalled waits for the teardowns to finish (waitDestroys), then
+// requires Destroy to have run exactly n times.
 func (f *destroyFixture) waitDestroyCalled(t *testing.T, n int) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for len(f.prov.destroyedIDs()) < n && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	f.waitDestroys(t)
 	if got := f.prov.destroyedIDs(); len(got) != n {
 		t.Fatalf("Destroy ran %v, want %d call(s)", got, n)
 	}
-	time.Sleep(200 * time.Millisecond)
 }
 
 // status is task id's status now.
