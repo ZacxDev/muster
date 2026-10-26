@@ -160,14 +160,44 @@ export class MirrorRig {
   }
 
   // waitListed waits until the host's sessions are on the Agents list (the
-  // tunnel is up and has reported), with the host's log in the failure.
+  // tunnel is up and has reported), with the host's log in the failure: until
+  // `needle` is in the markup of a mirrored entry (a card or a pinned chip)
+  // that is ONLINE.
+  //
+  // 🔴 A MATCH ANYWHERE ON THE LIST IS NOT READINESS. The server keeps a
+  // stopped host's last list, drawn offline (mirror.Hub's offlineRetention),
+  // so after a host RESTART — startHost stops the previous one — the old
+  // host's offline card already carries every session name and
+  // data-mirror-claude. A bare `includes(needle)` passed on it before the new
+  // host had connected, and the view the spec opened next redirected to the
+  // terminal (handleMirrorViewPage: an offline entry has no rendered view):
+  // telemetry.spec's "#mv-log not found" (measured on two loaded CPUs: red 8
+  // in 80 before, 0 in 240 after, with the offline-only case met 75 times).
   async waitListed(page: Page, needle: string): Promise<void> {
+    let last = '';
     await expect
-      .poll(async () => (await (await page.request.get(this.origin + '/ui/agents')).text()).includes(needle), {
-        message: `the host's sessions are listed (muster-mirror log:\n${this.log})`,
-        timeout: 20_000,
-      })
-      .toBe(true);
+      .poll(
+        async () => {
+          const html = await (await page.request.get(this.origin + '/ui/agents')).text();
+          const entries = await page.evaluate(
+            ([h, n]) =>
+              [...new DOMParser().parseFromString(h, 'text/html').querySelectorAll('[data-f-type="mirrored"]')]
+                .filter((el) => el.outerHTML.includes(n))
+                .map((el) => el.getAttribute('data-f-state') ?? 'online'),
+            [html, needle] as const,
+          );
+          last = entries.length ? `entries holding it: ${entries.join(', ')}` : 'no mirrored entry holds it';
+          return entries.includes('online');
+        },
+        {
+          message: `an ONLINE mirrored entry holds ${JSON.stringify(needle)}`,
+          timeout: 20_000,
+        },
+      )
+      .toBe(true)
+      .catch((e) => {
+        throw new Error(`${e.message}\nlast poll: ${last}\nmuster-mirror log:\n${this.log}`);
+      });
   }
 
   viewPath(session: string): string {
