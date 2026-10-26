@@ -186,16 +186,18 @@ The reasons for the shell:
   `addJavascriptInterface`, and a bridge only through
   `WebViewCompat.addWebMessageListener` with `allowedOriginRules` naming the
   exact origin, never `*`.
-- **The bridge carries four messages:** the pairing code (below), "open the
-  app's notification settings", "request POST_NOTIFICATIONS", and the theme. It
-  never carries a credential from the app to the page. The listener's JavaScript
-  object is named `musterApp` (`ui.AppBridgeName` in muster), and each message
+- **The bridge carries four design messages, plus the app's own
+  `touch-start`:** the pairing code (below), "open the app's notification
+  settings", "request POST_NOTIFICATIONS", and the theme; then `touch-start`,
+  which the app's pull-to-refresh script sends (next item). It never carries
+  a credential from the app to the page. The listener's JavaScript object is
+  named `musterApp` (`ui.AppBridgeName` in muster), and each message
   is a JSON string. The server's pages send two today, from Account → Devices:
   `{"type":"pair","code":…,"expires_at":…}` and
   `{"type":"open-notification-settings"}`. The object's presence is also how a
   page knows it is in the shell, to hide **Enable notifications** and
   **Install**.
-- **`touch-start`: pull to refresh (muster-android #9).** Another message
+- **`touch-start`: pull to refresh (muster-android #9).** This fifth message
   arrives on the same bridge, but muster's pages do not send it. The app's own
   document-start script (`PullProbeScript`) sends it. The app installs that
   script with `WebViewCompat.addDocumentStartJavaScript`, with
