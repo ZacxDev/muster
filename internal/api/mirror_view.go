@@ -260,11 +260,11 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 			b.Index = ui.NewMirrorIndex(refs, m.PromptsMore+dropped)
 		}
 		if !first {
-			return terminalWriteJSON(live, c, b)
+			return writeToPage(live, c, b)
 		}
 		first = false
 		op.begin("write")
-		werr := terminalWriteJSON(live, c, b)
+		werr := writeToPage(live, c, b)
 		outcome := map[bool]string{true: telemetry.ReasonOK, false: telemetry.ReasonClientLeft}[werr == nil]
 		op.finish(outcome, append(hubFields(&stats), "ops", strconv.Itoa(len(b.Ops)), "reset", strconv.FormatBool(m.Reset))...)
 		// The open is over: its span ends here, whatever the socket does next.
@@ -278,7 +278,7 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		shutdownFrame(c)
 		return
 	}
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || errors.Is(err, errPageGone) {
 		return
 	}
 	msg := "the rendered view ended"

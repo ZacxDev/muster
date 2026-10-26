@@ -372,7 +372,7 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 			// window == "" is the session's active window, resolved by the plugin
 			// to an explicit window id on a per-window host (mirror.Hub.AttachWindow).
 			aerr := s.ext.Mirror.AttachWindow(ctx, host, session, window, readOnly, stdin,
-				&firstWriter{w: stdout, first: func() {
+				&firstWriter{w: pageWriter{stdout}, first: func() {
 					op.finish(telemetry.ReasonOK, hubFields(&stats)...)
 					// The open is over: its span ends at the first output.
 					telemetry.OpenDone(r, telemetry.ReasonOK)
