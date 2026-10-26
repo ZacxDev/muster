@@ -32,7 +32,9 @@ func snapServer(t *testing.T) (*Server, *httptest.Server, *fakeMirror, *memRecen
 // principal and the running build (shellFeatures). Red before: none did.
 func TestThePagesThatReadOrWarmSnapshotsCarryThePrincipalAndBuild(t *testing.T) {
 	s, ts, _, _ := snapServer(t)
-	tag := regexp.MustCompile(`<script src="/static/mirror-snap\.js\?v=[0-9a-f]+" defer(?:="")? data-snap-user="([0-9]+)" data-snap-build="([^"]*)"`)
+	// Deferred everywhere but the rendered view, where it is parser-blocking
+	// (ui.SnapScriptNow).
+	tag := regexp.MustCompile(`<script src="/static/mirror-snap\.js\?v=[0-9a-f]+"(?: defer(?:="")?)? data-snap-user="([0-9]+)" data-snap-build="([^"]*)"`)
 	pages := map[string]string{}
 	for _, path := range []string{ref("scratch2", "@9").ViewPath(), "/agents/keen-wren?session=41"} {
 		resp, body := mirrorGet(t, s, ts, path)

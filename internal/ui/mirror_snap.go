@@ -46,9 +46,9 @@ func snapScript(f Features, extra ...g.Node) g.Node {
 	if f.SnapUser == 0 || f.SnapBuild == "" {
 		return nil
 	}
-	return Script(append([]g.Node{Src(web.Asset("/static/mirror-snap.js")),
-		g.Attr("data-snap-user", strconv.FormatInt(f.SnapUser, 10)),
-		g.Attr("data-snap-build", f.SnapBuild)}, extra...)...)
+	nodes := append([]g.Node{Src(web.Asset("/static/mirror-snap.js"))}, extra...)
+	return Script(append(nodes, g.Attr("data-snap-user", strconv.FormatInt(f.SnapUser, 10)),
+		g.Attr("data-snap-build", f.SnapBuild))...)
 }
 
 // mirrorUpdatingChip is the rendered view's "Updating…": shown only while a
