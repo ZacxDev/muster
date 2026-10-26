@@ -203,6 +203,11 @@ func (f *destroyFixture) exists(t *testing.T, id int64) bool {
 // TestDestroyingAnAgentTheChiefDidNotStartReleasesNothing's last task_dispatch
 // read the task still in_progress ("task N is not open (in_progress)"). The
 // 30s bound only turns a hung teardown into a failure instead of a hung test.
+//
+// It is also the NEGATIVE observation's wait ("a refused call reached no
+// Destroy"): destroyAgent registers a teardown before it returns, so a refused
+// call that had started one would be waited for here, not missed by a sleep.
+// The stopped-agent reaper's tests (agent_reap_pg_test.go) wait here too.
 func (f *destroyFixture) waitDestroys(t *testing.T) {
 	t.Helper()
 	done := make(chan struct{})
@@ -574,7 +579,7 @@ func TestAgentDestroyRefusesTheChiefOthersAgentsAndBadNames(t *testing.T) {
 	if text, _ := f.destroy(t, f.ws, focusSID, map[string]any{}); !strings.Contains(text, "exactly one of name") {
 		t.Errorf("neither: %s", text)
 	}
-	time.Sleep(100 * time.Millisecond)
+	f.waitDestroys(t)
 	if got := f.prov.destroyedIDs(); len(got) != 0 {
 		t.Fatalf("refused calls reached Destroy for %v", got)
 	}
@@ -642,7 +647,7 @@ func TestOnlyAMirroredSessionCanDestroyAnAgent(t *testing.T) {
 	if text, isErr := f.destroy(t, f.members, focusSID, map[string]any{"id": target.ID}); !isErr || !strings.Contains(text, "lists no window running Claude session") {
 		t.Errorf("the member's mirror token: %s", text)
 	}
-	time.Sleep(100 * time.Millisecond)
+	f.waitDestroys(t)
 	if got := f.prov.destroyedIDs(); len(got) != 0 || !f.exists(t, target.ID) {
 		t.Fatalf("a refused caller destroyed %v", got)
 	}
@@ -680,7 +685,7 @@ func TestAgentDestroyKeepsToTheOwnersAgentsWithRLSOff(t *testing.T) {
 			t.Errorf("another owner's agent %v with RLS off: %s\nwant %s", args, text, want)
 		}
 	}
-	time.Sleep(100 * time.Millisecond)
+	f.waitDestroys(t)
 	if got := f.prov.destroyedIDs(); len(got) != 0 || !f.exists(t, f.worker.ID) {
 		t.Fatalf("with RLS off another owner's agent was destroyed: %v", got)
 	}
