@@ -1,9 +1,8 @@
 package api
 
 import (
-	"bytes"
 	"context"
-	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,102 +25,47 @@ import (
 // 🔴 FIXTURE AGES OVERSHOOT AND UNDERSHOOT THE 14-DAY WINDOW (15 and 13 days),
 // never sit on it.
 
-// lockedBuf is a log sink safe for the teardown goroutine to write while the
-// test reads it.
-type lockedBuf struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (l *lockedBuf) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.Write(p)
-}
-
-func (l *lockedBuf) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.String()
-}
-
-// 🔴 NO WAIT HERE IS ON WALL TIME. A pass's return value is the number of
-// teardowns it started (each counted as it starts, before the pass returns),
-// so "nothing was started" needs no wait at all; and each teardown it did
-// start is awaited through the server's agentReapDone signal, which fires once
-// Destroy and the after-steps have finished. The one deadline left
-// (reapHangGuard) is a hang guard that only a stuck teardown reaches.
-const reapHangGuard = time.Minute
-
-// reapDone is one finished reaper teardown, as agentReapDone signals it.
-type reapDone struct {
-	id  int64
-	err error
-}
+// 🔴 THE WAITS HERE ARE ON EVENTS, NOT ON WALL TIME — WITH ONE POLL. A pass's
+// return value is the number of teardowns it started (each counted as it
+// starts, before the pass returns), so "nothing was started" needs no wait at
+// all; and each teardown it did start is awaited through the server's
+// destroyInFlight (waitDestroys), which destroyAgent registers before the pass
+// returns and releases once Destroy and the after-steps have finished (or
+// panicked: waitDestroys fails on safeGo's PANIC line). The reaper runs its
+// PRODUCTION destroy and hooks: nothing here swaps them for a signalling copy.
+//
+// Deadlines: waitDestroys' bound is a hang guard only a stuck teardown
+// reaches. The exception is TestRunTaskReapAlsoReapsStoppedAgents, whose loop
+// starts passes on its own ticks: it POLLS for the row to go (every 10ms, up
+// to a minute — a hang guard too, not a race), because a WaitGroup Wait must
+// not race the loop's next Add; it then stops the loop and waits on
+// destroyInFlight like every other test.
 
 type reapAPIFixture struct {
 	*destroyFixture
-	log    *lockedBuf
-	reaped chan reapDone
 }
 
 func newReapAPIFixture(t *testing.T) *reapAPIFixture {
 	t.Helper()
-	f := &reapAPIFixture{destroyFixture: newDestroyFixture(t), log: &lockedBuf{}, reaped: make(chan reapDone, 256)}
-	f.srv.logger = log.New(f.log, "", 0)
+	f := &reapAPIFixture{destroyFixture: newDestroyFixture(t)}
 	f.srv.SetAgentReapStoppedAfter(14 * 24 * time.Hour)
-	// A teardown finishing after the test stopped reading (one a loop started,
-	// or the shared database's other due agents) must not block its goroutine:
-	// once the test ends, the send gives way.
-	stopped := make(chan struct{})
-	t.Cleanup(func() { close(stopped) })
-	f.srv.agentReapDone = func(id int64, err error) {
-		select {
-		case f.reaped <- reapDone{id, err}:
-		case <-stopped:
-		}
-	}
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("server log:\n%s", f.log.String())
-		}
-	})
 	return f
 }
 
-// awaitTeardowns waits for n reaper teardowns to finish, failing on one whose
-// Destroy failed.
-func (f *reapAPIFixture) awaitTeardowns(t *testing.T, n int) {
-	t.Helper()
-	for i := 0; i < n; i++ {
-		select {
-		case d := <-f.reaped:
-			if d.err != nil {
-				t.Fatalf("the teardown of agent %d failed: %v", d.id, d.err)
-			}
-		case <-time.After(reapHangGuard):
-			t.Fatalf("%d of %d teardown(s) never finished", n-i, n)
-		}
-	}
-}
+// destroyFailed is destroyAgent's log line for a failed Destroy.
+var destroyFailed = regexp.MustCompile(`agents: destroy \d+: `)
 
-// awaitTeardownOf waits for the teardown of agent id to finish, skipping
-// others' (a loop's pass reaps whatever in the shared database is due).
-func (f *reapAPIFixture) awaitTeardownOf(t *testing.T, id int64) {
+// awaitTeardowns waits for every teardown this server started to finish
+// (waitDestroys, which also fails on a panicked teardown), failing when any
+// Destroy failed (destroyAgent logs it).
+//
+// ⚠ CALL IT ONLY ONCE NOTHING CAN START ANOTHER TEARDOWN (no reaper loop
+// running): sync.WaitGroup forbids an Add from zero racing a Wait.
+func (f *reapAPIFixture) awaitTeardowns(t *testing.T) {
 	t.Helper()
-	for {
-		select {
-		case d := <-f.reaped:
-			if d.id != id {
-				continue
-			}
-			if d.err != nil {
-				t.Fatalf("the teardown of agent %d failed: %v", d.id, d.err)
-			}
-			return
-		case <-time.After(reapHangGuard):
-			t.Fatalf("agent %d's teardown never finished", id)
-		}
+	f.waitDestroys(t)
+	if m := destroyFailed.FindString(f.log.String()); m != "" {
+		t.Fatalf("a teardown failed:\n%s", f.log.String())
 	}
 }
 
@@ -186,7 +130,7 @@ func (f *reapAPIFixture) setAgentStatus(t *testing.T, id int64, status string) {
 func (f *reapAPIFixture) reap(t *testing.T) int {
 	t.Helper()
 	n := f.srv.reapStoppedAgents(authz.System(context.Background()))
-	f.awaitTeardowns(t, n)
+	f.awaitTeardowns(t)
 	return n
 }
 
@@ -396,9 +340,9 @@ func TestTwoPassesAtOnceDestroyAnAgentOnce(t *testing.T) {
 	}
 	passes.Wait()
 	close(gate)
-	// Every teardown either pass started is awaited — the count is the passes'
-	// own, so a second teardown, had one been started, is waited for too.
-	f.awaitTeardowns(t, started[0]+started[1])
+	// Every teardown either pass started is awaited (destroyInFlight counts
+	// them all), so a second teardown, had one been started, is waited for too.
+	f.awaitTeardowns(t)
 	f.mustBeGone(t, a.ID)
 	if started[0]+started[1] != 1 {
 		t.Errorf("the two passes started %d and %d teardown(s); want one between them", started[0], started[1])
@@ -439,8 +383,20 @@ func TestRunTaskReapAlsoReapsStoppedAgents(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); f.srv.RunTaskReap(ctx, 20*time.Millisecond) }()
-	t.Cleanup(func() { cancel(); <-done })
-	f.awaitTeardownOf(t, a.ID)
+	stop := sync.OnceFunc(func() { cancel(); <-done })
+	t.Cleanup(stop)
+	// The loop's ticks are its own, so the row going is the one event to wait
+	// for; then the loop is stopped (no pass can start another teardown) and
+	// every teardown it started is awaited to its last after-step.
+	deadline := time.Now().Add(time.Minute)
+	for f.exists(t, a.ID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the loop never reaped agent %d (destroyed: %v)", a.ID, f.prov.destroyedIDs())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	stop()
+	f.awaitTeardowns(t)
 	f.mustBeGone(t, a.ID)
 	if logs := f.log.String(); !strings.Contains(logs, "agent reaper: sweeping every 20ms for agents stopped for >336h0m0s") {
 		t.Errorf("the loop did not announce the agent reaper:\n%s", logs)

@@ -66,14 +66,21 @@ func (s *Server) recoverMiddleware(next http.Handler) http.Handler {
 // external data (k8s objects, gateway responses, the DB).
 func safeGo(logger *log.Logger, what string, fn func()) {
 	go func() {
-		defer func() {
-			if rec := recover(); rec != nil {
-				metrics.Panics.WithLabelValues("goroutine").Inc()
-				logger.Printf("PANIC in goroutine %s: %v\n%s", what, rec, debug.Stack())
-			}
-		}()
+		defer recoverGoroutine(logger, what)
 		fn()
 	}()
+}
+
+// recoverGoroutine is safeGo's recover: deferred DIRECTLY (recover only works
+// in the deferred function itself), it counts and logs a panic of the
+// goroutine named what. safeGo defers it outside fn; a goroutine that needs a
+// defer of its own to run AFTER the panic is logged defers it inside fn, below
+// that defer (destroyAgent: destroyInFlight's Done).
+func recoverGoroutine(logger *log.Logger, what string) {
+	if rec := recover(); rec != nil {
+		metrics.Panics.WithLabelValues("goroutine").Inc()
+		logger.Printf("PANIC in goroutine %s: %v\n%s", what, rec, debug.Stack())
+	}
 }
 
 // permissionsPolicy is the Permissions-Policy every response carries.

@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -86,16 +89,25 @@ type destroyFixture struct {
 	ownChiefTok         string
 	ws, laptop, members string
 	stream              <-chan sse.Event
+	// log is the server's log: waitDestroys reads it for a panicked teardown,
+	// and a failed test prints it.
+	log *lockedBuf
 }
 
 func newDestroyFixture(t *testing.T) *destroyFixture {
 	t.Helper()
-	f := &destroyFixture{prov: &destroyProv{}}
+	f := &destroyFixture{prov: &destroyProv{}, log: &lockedBuf{}}
 	f.attnFixture = newAttnFixture(t, func(ext *Extensions, pool *pgxpool.Pool) {
 		f.prov.pool = pool
 		ext.Provisioner = f.prov
 		ext.TaskRouting = &TaskRouting{DispatchOwners: map[int64]bool{1: true}}
 		ext.ChiefDispatch = plugins.NewPG(pool)
+	})
+	f.srv.logger = log.New(f.log, "", 0)
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server log:\n%s", f.log.String())
+		}
 	})
 	bus := sse.New(512)
 	f.srv.bus = bus
@@ -193,31 +205,82 @@ func (f *destroyFixture) exists(t *testing.T, id int64) bool {
 	return n == 1
 }
 
-// waitGone waits up to 5s for agent id's row to go, then 200ms more for the
-// teardown goroutine's after-steps (release, broadcasts, reopen).
-func (f *destroyFixture) waitGone(t *testing.T, id int64) {
+// waitDestroys waits for every teardown destroyAgent has started on this
+// server to have finished — Destroy AND its after-steps (the release, the
+// broadcasts, the MCP door's reopen) — through the server's destroyInFlight.
+//
+// 🔴 A SYNC POINT, NOT A SLEEP. These helpers used to poll for the row's
+// deletion and then sleep 200ms "for the after-steps"; the reopen runs AFTER
+// the row is gone, so on a loaded runner it had not landed yet and
+// TestDestroyingAnAgentTheChiefDidNotStartReleasesNothing's last task_dispatch
+// read the task still in_progress ("task N is not open (in_progress)"). The
+// 30s bound only turns a hung teardown into a failure instead of a hung test.
+//
+// It is also the NEGATIVE observation's wait ("a refused call reached no
+// Destroy"): destroyAgent registers a teardown before it returns, so a refused
+// call that had started one would be waited for here, not missed by a sleep.
+// The stopped-agent reaper's tests (agent_reap_pg_test.go) wait here too.
+func (f *destroyFixture) waitDestroys(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for f.exists(t, id) {
-		if time.Now().After(deadline) {
-			t.Fatalf("agent %d was never destroyed (destroyed: %v)", id, f.prov.destroyedIDs())
-		}
-		time.Sleep(10 * time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		f.srv.destroyInFlight.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("a background teardown never finished (destroyed: %v)", f.prov.destroyedIDs())
 	}
-	time.Sleep(200 * time.Millisecond)
+	// destroyInFlight's Done is deferred, so it fires on a PANIC too: a
+	// teardown whose after-steps panicked would otherwise read as finished.
+	// destroyAgent logs the panic BEFORE its Done (recoverGoroutine deferred
+	// below Done), so the line is already written when Wait returns.
+	if m := destroyPanicked.FindString(f.log.String()); m != "" {
+		t.Fatalf("a background teardown panicked (%q):\n%s", m, f.log.String())
+	}
 }
 
-// waitDestroyCalled waits up to 3s for Destroy to have run n times, then 200ms.
+// destroyPanicked is safeGo's log line for a panic in destroyAgent's teardown.
+var destroyPanicked = regexp.MustCompile(`PANIC in goroutine destroy: [^\n]*`)
+
+// lockedBuf is a log sink safe for the teardown goroutine to write while the
+// test reads it.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuf) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// waitGone waits for the teardowns to finish (waitDestroys), then requires
+// agent id's row to be gone.
+func (f *destroyFixture) waitGone(t *testing.T, id int64) {
+	t.Helper()
+	f.waitDestroys(t)
+	if f.exists(t, id) {
+		t.Fatalf("agent %d was never destroyed (destroyed: %v)", id, f.prov.destroyedIDs())
+	}
+}
+
+// waitDestroyCalled waits for the teardowns to finish (waitDestroys), then
+// requires Destroy to have run exactly n times.
 func (f *destroyFixture) waitDestroyCalled(t *testing.T, n int) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for len(f.prov.destroyedIDs()) < n && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	f.waitDestroys(t)
 	if got := f.prov.destroyedIDs(); len(got) != n {
 		t.Fatalf("Destroy ran %v, want %d call(s)", got, n)
 	}
-	time.Sleep(200 * time.Millisecond)
 }
 
 // status is task id's status now.
@@ -557,7 +620,7 @@ func TestAgentDestroyRefusesTheChiefOthersAgentsAndBadNames(t *testing.T) {
 	if text, _ := f.destroy(t, f.ws, focusSID, map[string]any{}); !strings.Contains(text, "exactly one of name") {
 		t.Errorf("neither: %s", text)
 	}
-	time.Sleep(100 * time.Millisecond)
+	f.waitDestroys(t)
 	if got := f.prov.destroyedIDs(); len(got) != 0 {
 		t.Fatalf("refused calls reached Destroy for %v", got)
 	}
@@ -625,7 +688,7 @@ func TestOnlyAMirroredSessionCanDestroyAnAgent(t *testing.T) {
 	if text, isErr := f.destroy(t, f.members, focusSID, map[string]any{"id": target.ID}); !isErr || !strings.Contains(text, "lists no window running Claude session") {
 		t.Errorf("the member's mirror token: %s", text)
 	}
-	time.Sleep(100 * time.Millisecond)
+	f.waitDestroys(t)
 	if got := f.prov.destroyedIDs(); len(got) != 0 || !f.exists(t, target.ID) {
 		t.Fatalf("a refused caller destroyed %v", got)
 	}
@@ -663,7 +726,7 @@ func TestAgentDestroyKeepsToTheOwnersAgentsWithRLSOff(t *testing.T) {
 			t.Errorf("another owner's agent %v with RLS off: %s\nwant %s", args, text, want)
 		}
 	}
-	time.Sleep(100 * time.Millisecond)
+	f.waitDestroys(t)
 	if got := f.prov.destroyedIDs(); len(got) != 0 || !f.exists(t, f.worker.ID) {
 		t.Fatalf("with RLS off another owner's agent was destroyed: %v", got)
 	}
