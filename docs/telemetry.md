@@ -38,9 +38,10 @@ is usually negative: the socket is created before load); `socket_created_ms`→
 `batch_insert_start_ms` is the page busy or still parsing when the batch came;
 `batch_insert_start_ms`→`batch_insert_end_ms` is the DOM work, and
 `batch_insert_end_ms`→`first_paint_ms` is style, layout and paint.
-`warm_overlap` counts the snapshot store's warm passes that started or were
-running between the open's start and its end: each is another watch on a
-host's tunnel. On a view page warming waits for the view's open to be usable
+`warm_overlap` counts the snapshot store's warm passes that OPENED A WATCH (a
+warm socket) — started, or with a warm socket open, between the open's start
+and its end; a pass that found nothing to warm is not counted. Each is another
+watch on a host's tunnel. On a view page warming waits for the view's open to be usable
 (at most 15 s), so a non-zero value is an open that took longer than that, or a
 reconnect during a pass.
 
@@ -48,6 +49,12 @@ reconnect during a pass.
 marked the moment the batch was inserted; they are now after the browser
 painted. A `usable_ms` series spanning that deploy grows by the paint because
 its meaning changed, not because opens got slower.
+
+In a hidden tab, which runs no animation frames until it is shown, the open
+ends when its first batch is inserted (no `first_paint`) and its span carries
+`muster.hidden=true`; a visible tab's open that gets no frame within 100 ms
+ends then, without `first_paint`, too. Filter on `muster.hidden` to keep
+background opens out of a latency series.
 
 🔴 The Faro SDK is not loaded until the open is over. `faro-init.js` (in the
 head) defines `musterOpen` at once and records each open in memory; once the
@@ -58,6 +65,19 @@ has a span: its `?tp=` is the DOCUMENT's traceparent, and the socket's server
 span is a child of the document's server span, beside the page's open span in
 the same trace rather than under it. An uncaught error before the SDK is up is
 kept and sent once it is (at most 20).
+
+What loading late costs, deliberately:
+
+- **A page left before the SDK loaded reports nothing** — its opens, its
+  disconnects and its errors were in memory only. That is a page left within
+  about a second of its open ending (or, for an open still running, of the
+  10 s cap).
+- **Only `Error` objects thrown before the SDK loads are kept.** A throw of
+  anything else (a string, an object) and a rejection with a non-Error reason
+  are dropped.
+- **Fetches and XHRs made before the SDK loads carry no `traceparent`**, so
+  their server spans are roots of their own (sampled at the ratio), not the
+  page's children.
 
 ### A terminal (`/mirror/terminal`)
 

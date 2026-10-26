@@ -195,10 +195,20 @@ for (const vp of viewports) {
       await rig.startHost({ MUSTER_MIRROR_E2E_SESSIONS: 'main', MUSTER_MIRROR_E2E_CLAUDE: 'main=' + tr });
       // How many bubbles the whole conversation is, read in a throwaway
       // context (its snapshot store is its own).
+      //
+      // 🔴 THE RESTARTED HOST MUST HAVE CONNECTED FIRST. The Agents list still
+      // lists the host being replaced, so waiting on the listing alone raced
+      // the restart (measured once: the view landed on "the host's connection
+      // ended"). startHost resets the host's log; its "connected to" line is
+      // the NEW host's. And the view is read only once it is live.
+      await expect.poll(() => rig.log.includes('muster-mirror: connected to '), { message: `the restarted host connected (log:\n${rig.log})`, timeout: 20_000 }).toBe(true);
       const probeCtx = await browser.newContext({ storageState: state as never });
       const pp = await probeCtx.newPage();
       await rig.waitListed(pp, 'data-mirror-claude');
-      await pp.goto(rig.origin + rig.viewPath('main'));
+      await expect(async () => {
+        await pp.goto(rig.origin + rig.viewPath('main'));
+        await expect(pp.locator('#mv-status')).toHaveText('Live', { timeout: 5_000 });
+      }, 'the view of the restarted host is live').toPass({ timeout: 30_000 });
       const coldCount = await settledCount(pp);
       await probeCtx.close();
 

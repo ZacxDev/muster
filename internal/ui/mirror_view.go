@@ -1109,7 +1109,24 @@ func mirrorViewScript() g.Node {
     ch.port1.onmessage = function () { fn(); };
     ch.port2.postMessage(0);
   }
-  function painted(fn) { requestAnimationFrame(function () { nextTask(fn); }); }
+  // 🔴 painted calls fn(true) once the browser has painted what was just drawn
+  // — the next animation frame, then a task (the frame's paint runs between)
+  // — or fn(false) after PAINT_WAIT_MS if no frame came (a page the browser is
+  // not rendering), and fn(false) at once in a hidden tab, whose frames do not
+  // run until it is shown: an open there ends at its insertion, flagged
+  // hidden, instead of counting the whole time the tab was in the background
+  // (and being reported as failed if its socket closed meanwhile). At most one
+  // is pending: later batches before it fired add nothing.
+  var PAINT_WAIT_MS = 100, paintPending = false;
+  function painted(fn) {
+    if (document.hidden) { fn(false); return; }
+    if (paintPending) return;
+    paintPending = true;
+    var done = false;
+    var go = function (p) { if (done) return; done = true; paintPending = false; fn(p); };
+    requestAnimationFrame(function () { nextTask(function () { go(true); }); });
+    setTimeout(function () { go(false); }, PAINT_WAIT_MS);
+  }
   // A socket's events, in order: as they come once the document is parsed,
   // queued until then. An event of a socket that has since been replaced is
   // dropped.
@@ -1150,8 +1167,15 @@ func mirrorViewScript() g.Node {
         // script has inserted it: style, layout and paint of what was
         // inserted come after, and on a long conversation they are a large
         // part of it. A disconnect before then ends it with its reason.
-        if (o || !usableSent) painted(function () {
-          if (o && opening === o) { o.mark('first_paint'); o.mark('usable'); o.count('warm_overlap', warmOverlap()); o.end('ok'); opening = null; }
+        if (o || !usableSent) painted(function (didPaint) {
+          if (o && opening === o) {
+            if (didPaint) o.mark('first_paint');
+            o.mark('usable');
+            o.flag('hidden', !!document.hidden);
+            o.count('warm_overlap', warmOverlap());
+            o.end('ok');
+            opening = null;
+          }
           viewUsable();
         });
       }
@@ -1172,7 +1196,7 @@ func mirrorViewScript() g.Node {
       // else the socket's close code; and whether it happened before the view
       // had drawn anything (opening) or while it was live.
       var o = opening || lastOpen, why = endReason || ('closed_' + (ev && ev.code));
-      if (opening) { opening.count('warm_overlap', warmOverlap()); opening.end(why); }
+      if (opening) { opening.flag('hidden', !!document.hidden); opening.count('warm_overlap', warmOverlap()); opening.end(why); }
       if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code, retry: retry });
       opening = null;
       // Closed before its first batch (refused, signed out, gone): the

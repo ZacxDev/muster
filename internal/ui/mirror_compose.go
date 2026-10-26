@@ -219,7 +219,9 @@ func mirrorComposer(v ComposerView) g.Node {
 		place += " relative"
 	}
 	if v.Pinned {
-		place = "fixed inset-x-0 bottom-0 z-20"
+		// 🔴 INVISIBLE UNTIL IT IS WHOLE (composePending): composerPinScript, its
+		// last child, shows it.
+		place = "fixed inset-x-0 bottom-0 z-20 [&[data-compose-pending]]:invisible"
 	}
 	suggest := v.Suggest
 	if off {
@@ -238,6 +240,16 @@ func mirrorComposer(v ComposerView) g.Node {
 	return Div(
 		ID("mv-compose"),
 		Class(place+" border-t border-line bg-bg"),
+		// 🔴 A PINNED COMPOSER IS NOT SHOWN HALF-PARSED. It is fixed to the
+		// bottom, so whatever of it a frame paints mid-parse is moved UP by
+		// every row parsed after — and the parser yields anywhere under load,
+		// not only at a script: measured at 390×844, throttled, the composer
+		// moved 34–80px (layout shift 0.010–0.027, about 1 open in 20, on main
+		// too) and once its Send button widened 20→104px mid-row. Invisible
+		// (visibility, so its box is laid out) until its last child, the pin
+		// script, runs; a <noscript> rule shows it without script.
+		g.If(v.Pinned, g.Attr("data-compose-pending", "")),
+		g.If(v.Pinned, NoScript(StyleEl(g.Raw(`#mv-compose { visibility: visible !important; }`)))),
 		// The suggested replies (suggest_row.go): above the composer, out of
 		// flow, drawn hidden — or, auto-paused, one line saying so.
 		suggestRow(suggest),
@@ -366,6 +378,8 @@ func composerPinScript() g.Node {
 (function () {
   var box = document.getElementById('mv-compose');
   if (!box) return;
+  // The last child of the composer: it is whole now (mirrorComposer).
+  box.removeAttribute('data-compose-pending');
   var root = document.documentElement;
   // 🔴 IN THE SWITCH'S FRAME (view_swap.go) THE KEYBOARD IS THE TOP WINDOW'S.
   // The frame is laid over the whole viewport, so its height is the top

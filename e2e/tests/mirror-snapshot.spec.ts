@@ -737,3 +737,64 @@ test('the "Updating…" chip shows only after a second of catching up, in room i
   await expect(chip).toBeHidden();
   expect(await chip.boundingBox(), 'hidden where it was').toEqual(box0);
 });
+
+// 🔴 A FRAME THAT ARRIVES WHILE THE DOCUMENT IS STILL PARSING WAITS FOR THE
+// SNAPSHOT'S PAINT. The view creates its socket as it is parsed and paints the
+// snapshot at DOMContentLoaded; every socket event in between is queued and
+// applied after the paint, in order. Applied at once instead, the resumed
+// socket's new messages were drawn first and then painted over: the snapshot
+// paint resets the page's offset and drawn batches, and they were lost.
+//
+// The parse is held open by delaying the page's LAST body script (pwa.js) by
+// 3 s — with the service worker blocked, which would otherwise answer that
+// request without page.route seeing it. POSITIVE CONTROL: a frame of the
+// view's socket arrived while document.readyState was still 'loading'.
+test.describe('a resume whose frames arrive during the parse', () => {
+  test.use({ serviceWorkers: 'block' });
+  test('draws the snapshot, then the new messages, once each and in order', async ({ page }) => {
+    await ready(page);
+    await page.goto(origin + '/agents');
+    await openLive(page, '@3');
+    const drawn = await page.locator('#mv-log [data-bubble]').allTextContents();
+    await page.goto(origin + '/agents');
+    fs.appendFileSync(trThree, cc.prompt('a PARSE-TIME prompt for three') + cc.reply('A parse-time answer from three.'));
+    await page.addInitScript(() => {
+      (window as any).__whileParsing = 0;
+      const WS = window.WebSocket;
+      const W: any = function (url: string, p?: any) {
+        const s = p === undefined ? new WS(url) : new WS(url, p);
+        if (String(url).includes('/mirror/view/ws') && !String(url).includes('warm=1')) {
+          s.addEventListener('message', () => {
+            if (document.readyState === 'loading') (window as any).__whileParsing++;
+          });
+        }
+        return s;
+      };
+      W.prototype = WS.prototype;
+      W.CONNECTING = 0;
+      W.OPEN = 1;
+      W.CLOSING = 2;
+      W.CLOSED = 3;
+      (window as any).WebSocket = W;
+    });
+    await page.route('**/static/js/pwa.js*', async (route) => {
+      await new Promise((r) => setTimeout(r, 3000));
+      await route.continue().catch(() => {});
+    });
+    const resumedBefore = resuming('@3');
+    await page.goto(origin + viewOf('@3'), { waitUntil: 'commit' });
+    const bubbles = page.locator('#mv-log [data-bubble]');
+    await expect(bubbles).toHaveCount(drawn.length + 2, { timeout: 15_000 });
+    await expect(page.locator('#mv-status')).toHaveText('Live');
+    expect(await page.evaluate(() => (window as any).__whileParsing), 'POSITIVE CONTROL: a frame arrived while the document was parsing').toBeGreaterThanOrEqual(1);
+    expect(resuming('@3'), 'the socket resumed from the snapshot').toBeGreaterThan(resumedBefore);
+    expect(await bubbles.allTextContents(), 'the snapshot, then the two new messages').toEqual([...drawn, 'a PARSE-TIME prompt for three', 'A parse-time answer from three.']);
+    const dupes = await page.evaluate(() => {
+      const seen: Record<string, number> = {};
+      document.querySelectorAll('#mv-log [id]').forEach((e) => (seen[e.id] = (seen[e.id] || 0) + 1));
+      return Object.keys(seen).filter((k) => seen[k] > 1);
+    });
+    expect(dupes, 'no element id is drawn twice').toEqual([]);
+    await page.unrouteAll();
+  });
+});

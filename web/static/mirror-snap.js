@@ -332,8 +332,10 @@
 
   // --- warming --------------------------------------------------------------
 
-  // warmStarts counts the passes this page has started: the rendered view
-  // reports how many overlapped its open (warmState, muster.warm_overlap).
+  // warmStarts counts the passes this page has started that OPENED A WATCH
+  // (a warm socket) — a pass that found nothing to warm opens none and is not
+  // counted: the rendered view reports how many overlapped its open
+  // (warmState, muster.warm_overlap).
   var warming = false, lastWarm = 0, current = null, warmStarts = 0;
 
   function frugal() {
@@ -455,7 +457,7 @@
   function warmPass() {
     if (warming || !warmable()) return Promise.resolve();
     warming = true;
-    warmStarts++;
+    var opened = false;
     lastWarm = Date.now();
     var left = WARM_PASS_BYTES;
     return candidates().then(function (list) {
@@ -467,6 +469,7 @@
         var c = list[i++], ref = c.ref;
         if (c.at && Date.now() - c.at < WARM_FRESH_MS) return next();
         return get(ref).then(function (prev) {
+          if (!opened) { opened = true; warmStarts++; }
           return warmOne(ref, prev, left).then(function (used) { left -= used; return next(); });
         });
       }
@@ -522,8 +525,8 @@
   root.musterSnap = {
     enabled: enabled, refOf: refOf, get: get, put: put, drop: drop,
     worth: worth, bound: bound, maxBytes: MAX_BYTES, readWaitMs: READ_WAIT_MS,
-    // warmState is how many warm passes this page has started, and whether
-    // one is running now.
-    warmState: function () { return { starts: warmStarts, inFlight: warming }; },
+    // warmState is how many warm passes this page has started that opened a
+    // warm socket, and whether a warm socket is open now.
+    warmState: function () { return { starts: warmStarts, inFlight: !!current }; },
   };
 })(typeof window !== 'undefined' ? window : globalThis);
