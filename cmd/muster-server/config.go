@@ -151,6 +151,9 @@ const (
 	// The optional MIRRORED-sessions plugin (internal/mirror): "1" turns it on.
 	// Off, GET /mirror/connect answers 404 and nothing mirrored is listed.
 	envMirror = "MUSTER_MIRROR"
+	// "0" refuses permessage-deflate on mirror host tunnels (it is negotiated
+	// and on by default; internal/mirror's SetTunnelCompression).
+	envMirrorCompression = "MUSTER_MIRROR_TUNNEL_COMPRESSION"
 	// The optional PLUGIN interface (internal/plugins): "1" turns it on, with a
 	// database. Off, every /plugin/* route and /plugins answer 404.
 	envPlugins = "MUSTER_PLUGINS"
@@ -568,6 +571,8 @@ type config struct {
 
 	// Mirror turns the mirrored-sessions plugin on (MUSTER_MIRROR=1).
 	Mirror bool
+	// MirrorNoCompression: MUSTER_MIRROR_TUNNEL_COMPRESSION=0.
+	MirrorNoCompression bool
 	// Plugins turns the plugin interface on (MUSTER_PLUGINS=1).
 	Plugins bool
 	// PluginTaskNamespaces is MUSTER_PLUGIN_TASK_NAMESPACES, split on commas.
@@ -1021,6 +1026,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		FaroUpstream:         strings.TrimSpace(getenv(envFaroUpstream)),
 		TagAutoDispatch:      envFlag(getenv, envTagAutoDispatch),
 		Mirror:               envFlag(getenv, envMirror),
+		MirrorNoCompression:  getenv(envMirrorCompression) == "0",
 		Plugins:              envFlag(getenv, envPlugins),
 		PluginTaskNamespaces: splitList(getenv(envPluginTaskNamespaces)),
 		SessionRouting:       envFlag(getenv, envSessionRouting),

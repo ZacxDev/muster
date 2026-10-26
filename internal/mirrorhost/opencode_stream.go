@@ -119,7 +119,7 @@ func (h *hostSide) openCodeTail(ctx context.Context, src *OpenCodeSource, m mirr
 	if !ok {
 		return h.openCodeGone(ctx, m)
 	}
-	o.mark("resolve")
+	o.mark("resolve", resolveAttrs(ctx)...)
 	var (
 		id     = p.Gen
 		busy   = p.Busy

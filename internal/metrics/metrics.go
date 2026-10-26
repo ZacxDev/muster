@@ -284,6 +284,16 @@ var (
 		Buckets: []float64{0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 40},
 	}, []string{"op", "reason"})
 
+	// MirrorHostRTT is a mirror host's link round trip: each keepalive ping,
+	// written to its pong read. No label — a host must never become one; an
+	// open's span carries its own host's last round trip
+	// (mirror.host_rtt_ms) beside the trace that names the host.
+	MirrorHostRTT = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "muster_mirror_host_rtt_seconds",
+		Help:    "Mirror host link round trip (keepalive ping to pong), all hosts.",
+		Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5},
+	})
+
 	// ViewDisconnects counts a session view's socket ENDING, by view and
 	// reason (mirror.Reason's vocabulary, plus client_left when the browser
 	// went away first). It is the server's half of "the session

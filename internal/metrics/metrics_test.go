@@ -49,6 +49,7 @@ var wantMetrics = map[string][]string{
 	"muster_push_delivery_total":              {"result"},
 	"muster_push_suppressed_total":            {"reason"},
 	"muster_agent_provision_duration_seconds": {},
+	"muster_mirror_host_rtt_seconds":          {},
 	"muster_agent_kickoff_resend_total":       {"result"},
 	"muster_agent_kickoff_claim_total":        {"result"},
 	"muster_tasks_created_total":              {"source"},

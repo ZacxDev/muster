@@ -101,11 +101,14 @@ const (
 	envHermesSend  = "MUSTER_MIRROR_HERMES_SEND"
 	envHermesAns   = "MUSTER_MIRROR_HERMES_ANSWER"
 	envAllowHTTP   = "MUSTER_MIRROR_ALLOW_HTTP"
-	envLabelsFile  = "MUSTER_MIRROR_LABELS_FILE"
-	envPaneMapDir  = "MUSTER_MIRROR_PANE_MAP_DIR"
-	envSnippets    = "MUSTER_MIRROR_SNIPPETS_FILE"
-	envMCPListen   = "MUSTER_MIRROR_MCP_LISTEN"
-	envMCPSecret   = "MUSTER_MIRROR_MCP_SECRET_FILE"
+	// envNoCompression stops the host offering permessage-deflate on its
+	// tunnel (mirrorhost/tunnel.go): the rollback for the compressed tunnel.
+	envNoCompression = "MUSTER_MIRROR_NO_TUNNEL_COMPRESSION"
+	envLabelsFile    = "MUSTER_MIRROR_LABELS_FILE"
+	envPaneMapDir    = "MUSTER_MIRROR_PANE_MAP_DIR"
+	envSnippets      = "MUSTER_MIRROR_SNIPPETS_FILE"
+	envMCPListen     = "MUSTER_MIRROR_MCP_LISTEN"
+	envMCPSecret     = "MUSTER_MIRROR_MCP_SECRET_FILE"
 	// envWriteHookConfig: record this daemon's URL and token file for
 	// `muster-mirror ask` (hookconfig.go). Set by the managed service only.
 	envWriteHookConfig = "MUSTER_MIRROR_WRITE_HOOK_CONFIG"
@@ -171,6 +174,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	socket := fs.String("tmux-socket", getenv(envSocket), "tmux -L socket name; empty = the default server ("+envSocket+")")
 	socketPath := fs.String("tmux-socket-path", getenv(envSocketPath), "tmux -S socket path ("+envSocketPath+")")
 	interactive := fs.Bool("interactive", envBool(envInteractive), "let muster open INTERACTIVE terminals on this host — effectively a SHELL here: an interactive tmux client can switch to any session or open a new window (default: read-only; muster then offers no Interactive switch) ("+envInteractive+")")
+	noCompression := fs.Bool("no-tunnel-compression", envBool(envNoCompression), "do not offer permessage-deflate on the tunnel to muster: every message is sent uncompressed, as before muster-mirror compressed it (compression is negotiated, so an older muster gets the plain tunnel either way) ("+envNoCompression+")")
 	allowHTTP := fs.Bool("allow-http", envBool(envAllowHTTP), "TESTS AND LOCAL DEVELOPMENT ONLY: permit a plain http:// muster URL, which sends the token in cleartext ("+envAllowHTTP+")")
 	labelsFile := fs.String("labels-file", getenv(envLabelsFile), "JSON object {\"<session>\": \"<codename>\"}: muster shows such a session as <codename>:<active window index> instead of its name; unreadable or invalid = no labels, logged, never fatal ("+envLabelsFile+")")
 	paneMapDir := fs.String("pane-map-dir", getenv(envPaneMapDir), "directory of per-pane Claude Code records (claude-p<N>.json for pane %N, written by a hook on every event) that the rendered view resolves a pane's transcript from FIRST, each validated against the process in the pane; empty = not consulted ("+envPaneMapDir+")")
@@ -318,7 +322,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 
 	c, err := mirrorhost.New(mirrorhost.Config{
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
-		Interactive: *interactive, AllowHTTP: *allowHTTP, Logger: logger, HermesSend: *hermesSend, HermesAnswer: *hermesAnswer,
+		Interactive: *interactive, AllowHTTP: *allowHTTP, NoCompression: *noCompression, Logger: logger, HermesSend: *hermesSend, HermesAnswer: *hermesAnswer,
 		NoPromptIndex: e2eNoPromptIndex != nil && e2eNoPromptIndex(),
 		NoCatalog:     e2eNoCatalog != nil && e2eNoCatalog(),
 		NoSubagents:   e2eNoSubagents != nil && e2eNoSubagents(),

@@ -60,7 +60,17 @@ type Service struct {
 	recheck time.Duration
 
 	limiter *failLimiter
+
+	// noCompression refuses permessage-deflate on host connects
+	// (SetTunnelCompression).
+	noCompression bool
 }
+
+// SetTunnelCompression turns permessage-deflate on host connects on (the
+// default) or off. It is NEGOTIATED: a host that offers it gets it, one that
+// does not (an older muster-mirror) gets the plain tunnel it always had, and
+// with it off every host does. Call it before serving.
+func (s *Service) SetTunnelCompression(on bool) { s.noCompression = !on }
 
 // NewService builds the plugin over store.
 func NewService(store Store, logger *log.Logger) *Service {
@@ -164,17 +174,27 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	// No OriginPatterns: a host sends no Origin, and a browser page cannot set
 	// the Authorization header on a WebSocket, so a cross-site page never gets
 	// this far. Accept still refuses a cross-origin Origin if one is sent.
-	ws, err := websocket.Accept(w, r, nil)
+	//
+	// 🔴 COMPRESSION IS THE HOST'S OFFER ACCEPTED, NEVER IMPOSED: Accept
+	// answers with permessage-deflate only when the host's handshake asked for
+	// it (an older host never does), so a host that predates it is served the
+	// plain tunnel. The read limit (MaxFrame) applies to the inflated message.
+	mode := websocket.CompressionContextTakeover
+	if s.noCompression {
+		mode = websocket.CompressionDisabled
+	}
+	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{CompressionMode: mode})
 	if err != nil {
 		s.logger.Printf("mirror: accept %s: %v", tok.Host, err)
 		return
 	}
 	defer ws.CloseNow()
+	compressed := mode != websocket.CompressionDisabled && offersDeflate(r.Header)
 
 	// A hijacked connection's request context does not end with the TCP
 	// connection, and nothing else ends this one on revocation, so its life is
 	// its own context: cancelled by the token check below or by the read loop.
-	ctx, cancel := context.WithCancelCause(context.WithoutCancel(r.Context()))
+	ctx, cancel := context.WithCancelCause(withTunnelCompressed(context.WithoutCancel(r.Context()), compressed))
 	defer cancel(nil)
 	go s.watchToken(ctx, cancel, tok)
 	err = s.hub.ServeConn(ctx, tok.OwnerID, tok.Host, ws)
@@ -432,4 +452,28 @@ func (l *failLimiter) fail(addr string) {
 	}
 	w.n++
 	l.by[addr] = w
+}
+
+// offersDeflate reports whether a connect's handshake offered
+// permessage-deflate (what Accept, configured for it, then accepts).
+func offersDeflate(h http.Header) bool {
+	for _, v := range h.Values("Sec-WebSocket-Extensions") {
+		if strings.Contains(strings.ToLower(v), "permessage-deflate") {
+			return true
+		}
+	}
+	return false
+}
+
+type tunnelCompressedKey struct{}
+
+// withTunnelCompressed is ctx saying whether the host connection served under
+// it negotiated compression (ServeConn reads it for the open's span).
+func withTunnelCompressed(ctx context.Context, on bool) context.Context {
+	return context.WithValue(ctx, tunnelCompressedKey{}, on)
+}
+
+func tunnelCompressed(ctx context.Context) bool {
+	on, _ := ctx.Value(tunnelCompressedKey{}).(bool)
+	return on
 }

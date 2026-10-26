@@ -279,31 +279,41 @@ func readProcTable(root string) (map[int]procInfo, map[int][]int, error) {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		dir := filepath.Join(root, e.Name())
-		stat, err := os.ReadFile(filepath.Join(dir, "stat"))
-		if err != nil {
-			continue
-		}
-		st, ok := procstat.Parse(stat)
+		info, ok := readProc(filepath.Join(root, e.Name()))
 		if !ok {
 			continue
 		}
-		ppid := st.PPID
-		info := procInfo{ppid: ppid, comm: st.Comm, state: st.State, start: st.Start, tty: st.TTY}
-		if cmd, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
-			for _, a := range bytes.Split(bytes.TrimRight(cmd, "\x00"), []byte{0}) {
-				info.argv = append(info.argv, string(a))
-			}
-		} else {
-			info.argvUnread = true
-		}
 		procs[pid] = info
-		children[ppid] = append(children[ppid], pid)
+		children[info.ppid] = append(children[info.ppid], pid)
 	}
 	for _, c := range children {
 		sort.Ints(c)
 	}
 	return procs, children, nil
+}
+
+// readProc is the process whose /proc directory is dir: its stat (parent,
+// name, state, start time, tty) and argv. ok is false when its stat cannot be
+// read or parsed — it vanished, or is hidden — which every caller treats as
+// the process not being there (readProcTable's rule).
+func readProc(dir string) (procInfo, bool) {
+	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+	if err != nil {
+		return procInfo{}, false
+	}
+	st, ok := procstat.Parse(stat)
+	if !ok {
+		return procInfo{}, false
+	}
+	info := procInfo{ppid: st.PPID, comm: st.Comm, state: st.State, start: st.Start, tty: st.TTY}
+	if cmd, err := os.ReadFile(filepath.Join(dir, "cmdline")); err == nil {
+		for _, a := range bytes.Split(bytes.TrimRight(cmd, "\x00"), []byte{0}) {
+			info.argv = append(info.argv, string(a))
+		}
+	} else {
+		info.argvUnread = true
+	}
+	return info, true
 }
 
 // isClaude reports whether a process is the Claude Code CLI: its name (the CLI

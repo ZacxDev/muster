@@ -18,6 +18,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
@@ -535,6 +536,67 @@ func TestNoExportedSpanCarriesPrivateContent(t *testing.T) {
 		for _, p := range parts {
 			if strings.Contains(p, sentinel) {
 				t.Errorf("span %q exports the sentinel: %q", s.Name, p)
+			}
+		}
+	}
+}
+
+// TestTheOpenCostAttributesAreSizesAndCountsOnly extends the sentinel test
+// above to what an open's spans say its first batch COST (mirror.watch and
+// host.watch: its size as JSON and on the host's socket, its event count, the
+// link's round trip and compression, how the host resolved its window). The
+// sentinel test proves no attribute spells private content; this pins that
+// each of these is a number, a boolean, or a word from a closed vocabulary —
+// a shape no transcript, title or path can take — and that they are there at
+// all (POSITIVE CONTROL: an export without them would pass the type check).
+func TestTheOpenCostAttributesAreSizesAndCountsOnly(t *testing.T) {
+	r := newTracedMirrorRigAt(t, 1)
+	_, batch := r.open(t)
+	if !strings.Contains(batch, sentinel) {
+		t.Fatalf("POSITIVE CONTROL: the batch does not carry the sentinel: %.300s", batch)
+	}
+	spans := r.waitFor(t, "mirror.watch", "host.watch")
+	want := map[string]map[string]attribute.Type{
+		"mirror.watch": {"mirror.first_batch_bytes": attribute.INT64, "mirror.first_batch_events": attribute.INT64,
+			"mirror.tunnel_compressed": attribute.BOOL},
+		"host.watch": {"mirror.first_batch_bytes": attribute.INT64, "mirror.first_batch_events": attribute.INT64,
+			"mirror.first_batch_wire_bytes": attribute.INT64, "mirror.tunnel_compressed": attribute.BOOL},
+	}
+	for name, keys := range want {
+		s, ok := stub(spans, name)
+		if !ok {
+			t.Fatalf("no %q span", name)
+		}
+		got := map[string]attribute.Value{}
+		for _, a := range s.Attributes {
+			got[string(a.Key)] = a.Value
+		}
+		for k, typ := range keys {
+			v, ok := got[k]
+			if !ok {
+				t.Errorf("%s carries no %s", name, k)
+				continue
+			}
+			if v.Type() != typ {
+				t.Errorf("%s's %s is a %s, want %s", name, k, v.Type(), typ)
+			}
+		}
+		// Every first_batch / link attribute is typed, whoever adds the next.
+		for k, v := range got {
+			if strings.HasPrefix(k, "mirror.first_batch_") || k == "mirror.host_rtt_ms" || k == "mirror.tunnel_compressed" {
+				switch v.Type() {
+				case attribute.INT64, attribute.FLOAT64, attribute.BOOL:
+				default:
+					t.Errorf("%s's %s is a %s: an open's cost is numbers and booleans only", name, k, v.Type())
+				}
+			}
+		}
+	}
+	// The resolve span's one string is a word from a closed set.
+	for _, s := range spans {
+		for _, a := range s.Attributes {
+			if a.Key == "mirror.resolve" && a.Value.AsString() != "revalidated" && a.Value.AsString() != "fresh" {
+				t.Errorf("%s's mirror.resolve is %q, which is not in its vocabulary", s.Name, a.Value.AsString())
 			}
 		}
 	}

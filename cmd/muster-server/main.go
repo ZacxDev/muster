@@ -561,6 +561,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	var mirrorSvc *mirror.Service
 	if cfg.Mirror && a.pool != nil {
 		mirrorSvc = mirror.NewService(mirror.NewPG(a.pool), logger)
+		mirrorSvc.SetTunnelCompression(!cfg.MirrorNoCompression)
 		ext.Mirror = mirrorSvc
 		// The mirrored sessions' MCP door (POST /mirror/mcp) checks the same tokens.
 		ext.MirrorTokens = mirror.NewPG(a.pool)
@@ -1240,8 +1241,9 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("mirrored sessions: ENABLED (%s=1) — hosts running muster-mirror dial GET %s with a "+
 			"per-host mirror token (mint one with `muster-server mirror token create <host>`), and their "+
 			"tmux sessions are shown (in memory, to the token owner only) as Mirrored cards whose terminal attaches through that tunnel. "+
-			"Typing into one needs a sign-in from the last %s in that same browser session (%s)",
-			envMirror, mirror.ConnectPath, stepup.WindowText(), envStepUpWindow)
+			"Typing into one needs a sign-in from the last %s in that same browser session (%s). "+
+			"Tunnel compression: %s (%s)",
+			envMirror, mirror.ConnectPath, stepup.WindowText(), envStepUpWindow, mirrorCompressionText(a.cfg.MirrorNoCompression), envMirrorCompression)
 	} else {
 		l.Printf("mirrored sessions: OFF — %s is unset (or there is no database), so GET %s answers 404, "+
 			"no mirrored session is listed and the plugin's UI is not drawn", envMirror, mirror.ConnectPath)
@@ -1830,4 +1832,12 @@ func suggestBootLine(cfg config) string {
 	}
 	return "suggest: suggested replies are ON with " + cfg.SuggestModel + ": generated at a mirrored Claude Code turn end while " +
 		"its Rendered view is open, on the owner's OpenRouter key; each user can turn them off in Account (MUSTER_SUGGEST=off for everyone)"
+}
+
+// mirrorCompressionText is the mirror banner's tunnel-compression state.
+func mirrorCompressionText(off bool) string {
+	if off {
+		return "OFF — every host tunnel is uncompressed"
+	}
+	return "ON — permessage-deflate for every host that offers it"
 }

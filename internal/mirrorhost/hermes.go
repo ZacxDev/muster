@@ -280,8 +280,11 @@ func (h HermesIdentity) fd0(pid int) string {
 // kernelChildren is pid's children as the kernel lists them, per thread
 // (/proc/<pid>/task/<tid>/children); none when the lists cannot be read (a
 // kernel without them, a fixture that writes none).
-func (h HermesIdentity) kernelChildren(pid int) []int {
-	files, _ := filepath.Glob(filepath.Join(h.proc(), strconv.Itoa(pid), "task", "*", "children"))
+func (h HermesIdentity) kernelChildren(pid int) []int { return kernelChildren(h.proc(), pid) }
+
+// kernelChildren is HermesIdentity.kernelChildren under proc root proc.
+func kernelChildren(proc string, pid int) []int {
+	files, _ := filepath.Glob(filepath.Join(proc, strconv.Itoa(pid), "task", "*", "children"))
 	var out []int
 	for _, f := range files {
 		b, err := os.ReadFile(f)

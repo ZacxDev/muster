@@ -425,6 +425,8 @@ var bannerLedger = []string{
 // GITHUB_CLIENT_ID and MUSTER_GITHUB_TOKEN and neither of the other two, so the
 // entries say what is actually true of them.
 var bannerExempt = map[string]string{
+	envMirrorCompression: "printed with its state on the `mirrored sessions: ENABLED` line (ON or OFF); with the " +
+		"plugin off nothing reads it",
 	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +
 		"when empty, and on a `chief dispatch: INERT` line when set with task routing off",
 	envStepUpWindow: "printed with its VALUE on the `mirrored sessions: ENABLED` line, the one plugin whose " +

@@ -115,6 +115,8 @@ func (o *openTrace) annotate(attrs ...attribute.KeyValue) {
 // reply ends stream id's open as its FIRST reply is sent: the open is over.
 // A no-op for an untraced stream, and after the first.
 func (h *hostSide) reply(id uint32) {
+	// The open's shared window read is spent (openresolve.go).
+	h.endResolve(id)
 	o := h.openOf(id)
 	if o == nil {
 		return

@@ -71,6 +71,7 @@ See [auth.md](auth.md).
 | variable | default | required | what it does |
 |---|---|---|---|
 | `MUSTER_MIRROR` | off | no | Turns on [mirrored sessions](mirroring.md). |
+| `MUSTER_MIRROR_TUNNEL_COMPRESSION` | on | no | `0` refuses permessage-deflate on host tunnels. It is negotiated: a host that offers it (muster-mirror does, unless `MUSTER_MIRROR_NO_TUNNEL_COMPRESSION`) gets a compressed tunnel, an older one the plain tunnel it always had. |
 | `MUSTER_PLUGINS` | off | no | Turns on [plugins](plugins.md): owners mint plugin tokens on `/plugins`, and plugins post messages that reach the owner's chief agent. Needs a database. Off, every `/plugin/*` route and `/plugins` answer 404. |
 | `MUSTER_PLUGIN_TASK_NAMESPACES` | none | no | Comma-separated tag namespaces a plugin may file tasks by, through [`POST /plugin/v1/tasks`](plugins.md#post-pluginv1tasks-one-task-per-upstream-record). Unset, that route answers 503. A namespace muster already uses (`gate`, `auto`, `initiative`, `project`, `superseded-by`) refuses to boot. |
 | `MUSTER_SESSION_ROUTING` | off | no | `1` turns on [session routing](plugins.md#routing-a-message-to-a-session): the chief may hand a plugin message to one of its owner's sessions, and the session's answer becomes the reply. Needs `MUSTER_PLUGINS=1`. |
@@ -223,6 +224,7 @@ Each setting is also a flag (`-url`, `-token-file`, …). See
 | `MUSTER_MIRROR_MCP_SECRET_FILE` | `$XDG_CONFIG_HOME/muster-mirror/mcp-secret` | no | The local MCP endpoint's secret, which every call must present. Created (0600, in a 0700 directory) when missing; a file readable by others is refused. |
 | `XDG_CONFIG_HOME` | `~/.config` | no | Where the default snippets file is looked for. |
 | `MUSTER_MIRROR_ALLOW_HTTP` | off | no | Allows a plain-`http` muster URL. Use it for tests only. |
+| `MUSTER_MIRROR_NO_TUNNEL_COMPRESSION` | off | no | Stops this host offering permessage-deflate on its tunnel, so every message travels uncompressed. Compression is negotiated, so a muster that predates it gets the plain tunnel either way. |
 | `MUSTER_MIRROR_WRITE_HOOK_CONFIG` | off | no | Set it on the host's managed `muster-mirror` service only (or pass `-write-hook-config`). It makes the daemon record its URL and token file path for `muster-mirror ask` when it starts. |
 | `MUSTER_MIRROR_HOOK_CONFIG` | `~/.muster/mirror-hook.json` | no | Where `muster-mirror` records its URL and token file path (never the token) for `muster-mirror ask`, and where the hook reads them. |
 | `MUSTER_MIRROR_HERMES_HOME` | `$HERMES_HOME`, else `~/.hermes` | no | The Hermes home a Hermes window's session is resolved from, read-only: only `state.db`, `terminal-sessions/tty-*` and `shell-hooks-allowlist.json`. Also where `muster-mirror hermes-allowlist` writes. See [mirroring.md](mirroring.md#hermes-windows). |

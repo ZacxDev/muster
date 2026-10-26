@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -324,6 +325,12 @@ func (h *Hub) changed(owner int64) {
 
 type hostConn struct {
 	key hostKey
+	// rtt is the last keepalive ping's round trip, in nanoseconds (0 until
+	// the first pong); compressed is whether the connection negotiated
+	// permessage-deflate. Both describe the LINK an open's batches cross, so
+	// its span can tell latency from bandwidth.
+	rtt        atomic.Int64
+	compressed bool
 	// arrival orders this connection's join among its host's (Hub.arrivals):
 	// a later arrival is a NEWER connection, whichever welcome finishes first.
 	arrival     uint64
@@ -661,7 +668,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	}
 
 	key := hostKey{owner, host}
-	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
+	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version, compressed: tunnelCompressed(ctx),
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{},
 		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
@@ -768,16 +775,32 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	go func() {
 		t := time.NewTicker(pingInterval)
 		defer t.Stop()
+		// The keepalive is also the link's round trip (hostConn.rtt): Ping
+		// returns when the host's pong is read. The first is sent at once, so
+		// an open right after a connect already knows the link.
+		ping := func() bool {
+			pctx, pcancel := context.WithTimeout(ctx, writeTimeout)
+			start := time.Now()
+			err := ws.Ping(pctx)
+			pcancel()
+			if err != nil {
+				cancel(fmt.Errorf("mirror: keepalive: %w", err))
+				return false
+			}
+			rtt := time.Since(start)
+			hc.rtt.Store(int64(rtt))
+			metrics.MirrorHostRTT.Observe(rtt.Seconds())
+			return true
+		}
+		if !ping() {
+			return
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				pctx, pcancel := context.WithTimeout(ctx, writeTimeout)
-				err := ws.Ping(pctx)
-				pcancel()
-				if err != nil {
-					cancel(fmt.Errorf("mirror: keepalive: %w", err))
+				if !ping() {
 					return
 				}
 			}
@@ -887,7 +910,7 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				}
 			case TypeEvents:
 				if hc.version >= 2 {
-					hc.deliverEvents(m)
+					hc.deliverEvents(m, len(data))
 				}
 			case TypePasted:
 				if hc.version >= 2 {
