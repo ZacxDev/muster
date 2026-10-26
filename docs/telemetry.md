@@ -22,13 +22,62 @@ histograms below, plus the server's phase timings in the document's
 |---|---|---|---|
 | 1 | browser | The tap navigates to `/mirror/view?host=…&session=…&window=…` (a full document load; a switcher entry or a Rendered/Terminal swap may load it in a frame). | the page's `open mirror_view` span starts at the navigation (`performance.timeOrigin`) |
 | 2 | server | `GET /mirror/view`: the session, then `mirrorEntry` (the in-memory hub's host list), `recordMirrorVisit` (a database write), the composer's send queue (database), suggested replies, the host icon (database: mirror tokens), the window's attention asks (database), the navigation features, the session switcher (database and hub), then rendering. | span `GET /mirror/view` with one `open.<phase>` child per step and a `db …` span per query; log line `open view=mirror_view part=document`; `Server-Timing` entries per phase; `muster_open_phase_seconds{phase="document"}` |
-| 3 | browser | Parse, the vendored scripts (htmx, the Faro SDK when on), then the view script: it reads this window's snapshot from IndexedDB (`mirror-snap.js`, waiting at most `readWaitMs`) and paints it if one is fresh. | `snapshot_painted` mark |
-| 4 | browser → server | The transcript socket `GET /mirror/view/ws` (resuming at the snapshot's `gen`/`offset` when there is one), carrying the open span's trace context as `?tp=`. | `stream_connected` mark; span `GET /mirror/view/ws` (a child of the page's open; it ends when the open does, at the first batch) |
+| 3 | browser | Parse. The view script runs as it is parsed (the snapshot store, `mirror-snap.js`, is parser-blocking on this page and runs just before it): it begins the open and reads this window's snapshot from IndexedDB, waiting at most `readWaitMs`. | `snapshot_read_start`, `snapshot_read_end`; the `snapshot` word (`hit`, `miss`, `timeout`, or `off` without a store) |
+| 4 | browser → server | As soon as the read is done — before the document has finished loading — the transcript socket `GET /mirror/view/ws` is created (resuming at the snapshot's `gen`/`offset` when there is one), carrying a trace context as `?tp=`. At DOMContentLoaded the snapshot is painted (one layout for all its batches), and the socket's events, queued until then, are applied in order. | `socket_created`, `dom_content_loaded`, `snapshot_paint_start`, `snapshot_painted` (with the `snapshot_batches` count), `stream_connected`, `load`; span `GET /mirror/view/ws` (in the page's trace; it ends when the open does, at the first batch) |
 | 5 | server | The socket handler: `mirrorEntry` again, the WebSocket upgrade, the attention-ask subscription and the suggested-replies tracker, then the hub's watch. | `open.entry`, `open.accept`, `open.subscribe`, `open.watch` |
 | 6 | server → host | The hub writes a `watch` frame on the host's one tunnel WebSocket (shared by every view and terminal on that host). | span `mirror.watch` (to the first batch, or why it never came) and its child `mirror.watch.first_batch` (frame written → first batch read), both carrying what that batch cost: `mirror.first_batch_bytes` (its JSON as read), `mirror.first_batch_events` and `mirror.host_rtt_ms` (the host's last keepalive round trip — pinged once the host's first message after the welcome is handled, then every 25 s; it includes the server read loop's delay in reading the pong, so it is an upper bound on the network's — so a slow open reads as latency or as bytes over bandwidth); `muster_mirror_hub_roundtrip_seconds{op="watch"}` |
 | 7 | host | The host's read loop takes the frame; the watch runs in its own goroutine. It resolves the window's pane — ONE tmux listing of every window, then the pane's process tree, the pane map or the CLI's sessions file, shared by every runtime the open asks (opencode, Hermes, Claude Code) — opens and stats the transcript, reads the last 4 MiB and decodes it from the end until it has 300 events (`cctranscript.Backfill`), redacts them, cuts them into batches and writes them back on the tunnel. Then the prompt index (a scan of the whole file). An opencode window instead asks the local opencode server for its messages. | span `host.watch` (a child of `mirror.watch.first_batch`) with children `host.resolve`, `host.open`, `host.backfill`, `host.redact`, `host.frame`, `host.send` (the first batch's write), `host.prompt_index`, and `opencode GET` for opencode; `host.watch` carries `mirror.first_batch_bytes`, `mirror.first_batch_events`, and `mirror.first_batch_wire_bytes` (what the socket carried for it). Per-phase aggregates come from these spans (a span-metrics generator such as Tempo's), not from anything on the wire |
 | 8 | server → browser | The hub hands the first batch to the socket handler, which renders its events to HTML (`MirrorTranscript.Ops`) and writes it to the browser. | `open.render`, `open.write`; log line `open view=mirror_view part=stream` (with the hub's round trip); `muster_open_phase_seconds{phase="first_batch"}` |
-| 9 | browser | The batch is applied to the log; the composer is already there. | `first_paint`, `usable` marks; the page's open span ends; a Faro `muster_open` measurement |
+| 9 | browser | The batch is received, inserted into the log (the composer is already there), and painted. | `first_frame` (received), `batch_insert_start` / `batch_insert_end` (with the `first_batch_ops` count), then `first_paint` and `usable` at the first animation frame after the insertion (and a task after it, so the frame's paint is in); the page's open span ends; a Faro `muster_open` measurement |
+
+Each mark is a span event of `open mirror_view` and, in the measurement, the
+milliseconds from the open's start (the navigation) as `<mark>_ms`. Gap by gap:
+`load_ms`→`socket_created_ms` is how long the socket waited for the page (it
+is usually negative: the socket is created before load); `socket_created_ms`→
+`first_frame_ms` is the server and host (step 4–8 spans); `first_frame_ms`→
+`batch_insert_start_ms` is the page busy or still parsing when the batch came;
+`batch_insert_start_ms`→`batch_insert_end_ms` is the DOM work, and
+`batch_insert_end_ms`→`first_paint_ms` is style, layout and paint.
+`warm_overlap` counts the snapshot store's warm passes that OPENED A WATCH (a
+warm socket) — started, or with a warm socket open, between the open's start
+and its end; a pass that found nothing to warm is not counted. Each is another
+watch on a host's tunnel. On a view page warming waits for the view's open to be usable
+(at most 15 s), so a non-zero value is an open that took longer than that, or a
+reconnect during a pass.
+
+⚠ `first_paint` and `usable` were, before this measurement was broken down,
+marked the moment the batch was inserted; they are now after the browser
+painted. A `usable_ms` series spanning that deploy grows by the paint because
+its meaning changed, not because opens got slower.
+
+In a hidden tab, which runs no animation frames until it is shown, the open
+ends when its first batch is inserted (no `first_paint`) and its span carries
+`muster.hidden=true`; a visible tab's open that gets no frame within 100 ms
+ends then, without `first_paint`, too. Filter on `muster.hidden` to keep
+background opens out of a latency series.
+
+🔴 The Faro SDK is not loaded until the open is over. `faro-init.js` (in the
+head) defines `musterOpen` at once and records each open in memory; once the
+page has loaded and no open is running (at most 10 s), in idle time, it loads
+the SDK and the tracing bundle, and the recorded opens become their spans and
+measurements, at their recorded times. So the socket is created before the open
+has a span: its `?tp=` is the DOCUMENT's traceparent, and the socket's server
+span is a child of the document's server span, beside the page's open span in
+the same trace rather than under it. An uncaught error before the SDK is up is
+kept and sent once it is (at most 20).
+
+What loading late costs, deliberately:
+
+- **A page left before the SDK loaded reports nothing** — its opens, its
+  disconnects and its errors were in memory only. That is a page left within
+  about a second of its open ending (or, for an open still running, of the
+  10 s cap).
+- **Only `Error` objects thrown before the SDK loads are kept.** A throw of
+  anything else (a string, an object) and a rejection with a non-Error reason
+  are dropped.
+- **Fetches and XHRs made before the SDK loads carry no `traceparent`**, so
+  their server spans are roots of their own (sampled at the ratio), not the
+  page's children.
 
 ### A terminal (`/mirror/terminal`)
 
@@ -93,15 +142,19 @@ is what the page's `reason` is for.
 The page reports each disconnect as a Faro event `muster.session_disconnected`
 `{view, reason, phase, code}` — `reason` is the server's closed word when it
 sent one, else `closed_<WebSocket close code>`; `phase` is `opening` (before
-the first batch) or `live` — and, with tracing on, a `disconnected <view>` span
+the open ended: for the rendered view, before its first batch was painted — a
+frame after it was drawn) or `live` — and, with tracing on, a `disconnected <view>` span
 in the open's trace.
 
 ## Reading it
 
 - **One trace per open, and it ENDS.** With browser tracing on, the page's
-  `open <view>` span is a child of the document's server span, the socket's
-  server span is a child of the open, and the hub's and the host's spans
-  follow. The socket's span is muster's own, and it ends when the open does
+  `open <view>` span is a child of the document's server span; the socket's
+  server span is the document span's child too for the page's first open
+  (the open's span does not exist yet when the socket is created: see the
+  table above), the open's own child for a reconnect once the SDK is up (none
+  before); and the hub's and the
+  host's spans follow. The socket's span is muster's own, and it ends when the open does
   (a view's first batch, a terminal's first output, a chat's accept), so a
   view left open for hours is not a trace growing for hours: what the socket
   does after that runs outside it. Its END is a span of its own,
@@ -221,4 +274,7 @@ The page's initializer (`/static/js/faro-init.js`) is a static file like the
 shell's other scripts: its configuration rides on its tag as `data-faro-*`.
 
 ⚠ Turning `MUSTER_FARO_TRACING` on loads the Faro tracing bundle (about 80 KiB)
-on every page, synchronously in the head, beside the SDK.
+on every page beside the SDK (about 90 KiB). Neither is in the head: the
+initializer loads both after the page's open (above). Measured
+(`e2e/tests/open-perf.spec.ts`, throttled): with them parser-blocking in the
+head, DOMContentLoaded came about 150 ms later.

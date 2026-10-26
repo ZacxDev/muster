@@ -116,6 +116,53 @@ test('the document names its server trace, and the open is one trace from the pa
   for (const k of ['stream_connected_ms', 'first_paint_ms', 'usable_ms', 'total_ms']) {
     expect(typeof open.values[k], `the open measured ${k}`).toBe('number');
   }
+  // 🔴 THE OPEN'S BREAKDOWN IS A CLOSED LEDGER: numbers under the names the
+  // view marks (mirror_view.go), and context values that are closed words.
+  // This first open of a fresh browser has no snapshot (a miss) and draws its
+  // first batch. A name added, dropped or renamed fails here until the
+  // ledger — and docs/telemetry.md — say so.
+  expect(Object.keys(open.values).sort()).toEqual(
+    [
+      'batch_insert_end_ms', 'batch_insert_start_ms', 'dom_content_loaded_ms', 'first_batch_ops', 'first_frame_ms', 'first_paint_ms', 'load_ms',
+      'snapshot_read_end_ms', 'snapshot_read_start_ms', 'socket_created_ms', 'stream_connected_ms', 'total_ms', 'usable_ms', 'warm_overlap',
+    ].sort(),
+  );
+  for (const [k, v] of Object.entries(open.values)) expect(typeof v, `${k} is a number`).toBe('number');
+  const v = open.values as Record<string, number>;
+  expect(v.socket_created_ms, 'the socket was created once the snapshot read ended').toBeGreaterThanOrEqual(v.snapshot_read_end_ms);
+  expect(v.first_frame_ms).toBeGreaterThanOrEqual(v.socket_created_ms);
+  expect(v.batch_insert_end_ms).toBeGreaterThanOrEqual(v.batch_insert_start_ms);
+  expect(v.first_paint_ms, 'first_paint is after the batch was inserted').toBeGreaterThanOrEqual(v.batch_insert_end_ms);
+  expect(v.first_batch_ops, 'the first batch drew the conversation').toBeGreaterThan(0);
+  // No warm pass ran during this open (on a view page warming waits for the
+  // open); the forced case below reads ≥ 1 through the same field.
+  expect(v.warm_overlap, 'no warm pass overlapped a plain open').toBe(0);
+  expect(Object.keys(open.context).sort()).toEqual(['outcome', 'reopen', 'snapshot', 'trace_id', 'view']);
+  expect(open.context.snapshot).toBe('miss');
+  for (const [k, c] of Object.entries(open.context)) if (k !== 'trace_id') expect(c, `context ${k} is a closed word`).toMatch(/^[a-z_]{1,32}$/);
+  // The span carries the same moments as events, and only muster.* words
+  // beside the ids Faro itself stamps on every span.
+  await expect.poll(() => spansNamed('open mirror_view').some((sp) => sp.traceId === traceId), { message: "the page's open span arrived, in the document's trace", timeout: 15_000 }).toBe(true);
+  const span = spansNamed('open mirror_view').find((sp) => sp.traceId === traceId);
+  const evNames = (span.events ?? []).map((e: any) => e.name);
+  expect((span.attributes ?? []).find((a: any) => a.key === 'muster.warm_overlap')?.value?.intValue ?? (span.attributes ?? []).find((a: any) => a.key === 'muster.warm_overlap')?.value?.doubleValue, 'the span carries warm_overlap').toBeDefined();
+  for (const n of ['snapshot_read_start', 'socket_created', 'first_frame', 'batch_insert_start', 'batch_insert_end', 'first_paint', 'usable']) {
+    expect(evNames, `the open span has the ${n} event`).toContain(n);
+  }
+  // Faro's own: the session id, under both of its spellings (measured).
+  const FARO_OWN = ['session.id', 'session_id'];
+  for (const a of span.attributes ?? []) if (!FARO_OWN.includes(a.key)) expect(a.key, 'a span attribute is muster-named').toMatch(/^muster\./);
+  expect((span.attributes ?? []).find((a: any) => a.key === 'muster.snapshot')?.value?.stringValue).toBe('miss');
+  expect((span.attributes ?? []).find((a: any) => a.key === 'muster.hidden')?.value?.boolValue, 'a visible open is not flagged hidden').toBe(false);
+  // 🔴 THE FARO BUNDLES LOADED AFTER THE OPEN, not in the head: their
+  // resource entries start after the open was usable.
+  const bundles = await page.evaluate(() =>
+    performance.getEntriesByType('resource').filter((e) => /\/static\/vendor\/faro-/.test(e.name)).map((e) => e.startTime),
+  );
+  expect(bundles, 'both Faro bundles were loaded').toHaveLength(2);
+  for (const t of bundles) expect(t, 'a Faro bundle was requested after the open was usable').toBeGreaterThanOrEqual(v.usable_ms);
+  // No transcript text reached the receiver (the page drew it: above).
+  for (const p of faro.posts) expect(p.body.toString('utf8')).not.toContain('Synthetic answer');
 
   // Both binaries exported spans of THAT trace: the server's, and the
   // host's — the host learned the trace only from the watch frame, which
@@ -147,6 +194,21 @@ test('the document names its server trace, and the open is one trace from the pa
     expect(body).not.toContain('querysecret7');
   }
 });
+
+// spansNamed is every span of that name a delivered batch carried.
+function spansNamed(name: string): any[] {
+  const out: any[] = [];
+  for (const p of faro.posts) {
+    let b: any;
+    try {
+      b = JSON.parse(p.body.toString('utf8'));
+    } catch {
+      continue;
+    }
+    for (const rs of b.traces?.resourceSpans ?? []) for (const ss of rs.scopeSpans ?? []) for (const sp of ss.spans ?? []) if (sp.name === name) out.push(sp);
+  }
+  return out;
+}
 
 // urlsSent is every URL a delivered batch carried: each trace span's http.url /
 // url.full, and each resource event's name — with which kind it came as.
@@ -182,6 +244,11 @@ test('a disconnect is reported with its reason, by the page and by the server', 
   await page.goto(rig.origin + rig.viewPath('main'));
   await expect(page.locator('#mv-log')).toContainText('Synthetic answer: it is sunny.');
   const before = faroItems('events').filter((e) => e.name === 'muster.session_disconnected').length;
+  // The open ends when the drawn batch has been PAINTED (a frame after it is
+  // in the document): until then a disconnect is the open's ('opening').
+  // Measured: stopping the host the moment the text was in the DOM read
+  // 'opening' 3 times in 4. One frame later the view is live.
+  await page.evaluate(() => new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 0))));
 
   // The host goes away while the view is live: the server ends the stream
   // with its reason, and the page reports why it disconnected.
@@ -252,6 +319,90 @@ test('a console line or a thrown error never carries its text to the receiver', 
   for (const ex of faroItems('exceptions').slice(exceptionsBefore)) {
     expect(ex.value).toBe('[scrubbed]');
   }
+});
+
+// A WARM PASS DURING AN OPEN IS COUNTED ON IT — one that OPENED A WATCH. On a
+// view page warming waits for the open to be usable, or VIEW_WAIT_MS (15 s,
+// mirror-snap.js) at most. Here the view's socket is held past that, on a
+// per-window host with a second Claude window the switcher lists (a warming
+// candidate with no snapshot), so the store's warming opens a warm socket for
+// it while the open still waits for its first batch; once the socket is let
+// through, the open reports muster.warm_overlap ≥ 1. The warm socket itself
+// is the positive control: seen by the browser, not inferred.
+test('a warm pass that opens a watch during an open is counted on it', async ({ page }) => {
+  test.setTimeout(90_000);
+  const now = Math.floor(Date.now() / 1000);
+  const one = rig.transcript(cc.prompt('Synthetic question one.') + cc.reply('Synthetic answer one.'), 'one');
+  const two = rig.transcript(cc.prompt('Synthetic question two.') + cc.reply('Synthetic answer two.'), 'two');
+  const windows = rig.transcript([`work|@1|1|1|claude|${now - 60}|${one}`, `work|@2|2|0|claude|${now - 120}|${two}`].join('\n') + '\n', 'windows');
+  await rig.startHost({ MUSTER_MIRROR_E2E_WINDOWS_FILE: windows, MUSTER_MIRROR_E2E_REFRESH: '300ms', OTEL_EXPORTER_OTLP_ENDPOINT: otlp.url });
+  await expect.poll(() => rig.log.includes('muster-mirror: connected to '), { message: `the host connected (log:\n${rig.log})`, timeout: 20_000 }).toBe(true);
+  await rig.login(page);
+  await expect
+    .poll(async () => ((await (await page.request.get(rig.origin + '/ui/agents')).text()).match(/data-mirror-claude/g) || []).length, { timeout: 20_000 })
+    .toBe(2);
+  const warmSockets: string[] = [];
+  page.on('websocket', (ws) => { if (ws.url().includes('warm=1')) warmSockets.push(ws.url()); });
+  const before = faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'mirror_view').length;
+  let held = true;
+  const queue: { ws: any; m: string | Buffer }[] = [];
+  await page.routeWebSocket(
+    (u) => u.pathname === '/mirror/view/ws' && !u.search.includes('warm=1'),
+    (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((m) => (held ? queue.push({ ws, m }) : ws.send(m)));
+      ws.onMessage((m) => server.send(m));
+    },
+  );
+  await page.goto(rig.origin + `/mirror/view?host=${encodeURIComponent(rig.host)}&session=work&window=${encodeURIComponent('@1')}`);
+  await expect.poll(() => warmSockets.length, { message: 'POSITIVE CONTROL: a warm socket opened while the open waited', timeout: 30_000 }).toBeGreaterThanOrEqual(1);
+  expect(await page.evaluate(() => (window as any).musterSnap.warmState().starts), 'the store counted the pass that opened it').toBeGreaterThanOrEqual(1);
+  expect(await page.locator('#mv-log [data-bubble]').count(), 'the open is still waiting').toBe(0);
+  held = false;
+  for (const q of queue.splice(0)) q.ws.send(q.m);
+  await expect(page.locator('#mv-log')).toContainText('Synthetic answer one.');
+  await expect
+    .poll(() => faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'mirror_view').length, { timeout: 20_000 })
+    .toBeGreaterThan(before);
+  const open = faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'mirror_view')[before];
+  expect(open.context.outcome).toBe('ok');
+  expect(open.values.warm_overlap, 'the overlapping warm pass was counted').toBeGreaterThanOrEqual(1);
+});
+
+// 🔴 AN OPEN IN A HIDDEN TAB ENDS WHEN ITS BATCH IS DRAWN, FLAGGED hidden. A
+// hidden tab runs no animation frames until it is shown, so an open that
+// waited for the paint counted the whole background time (and was reported
+// failed if its socket closed meanwhile). The tab is hidden by an init script:
+// document.hidden / visibilityState read hidden and requestAnimationFrame
+// never calls back, as in a background tab.
+test('an open in a hidden tab ends ok at its insertion, flagged hidden', async ({ page }) => {
+  await startHost();
+  await rig.login(page);
+  await rig.waitListed(page, 'main');
+  await page.addInitScript(() => {
+    Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get: () => true });
+    Object.defineProperty(Document.prototype, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    window.requestAnimationFrame = () => 0;
+  });
+  const before = faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'mirror_view').length;
+  await page.goto(rig.origin + rig.viewPath('main'));
+  await expect(page.locator('#mv-log')).toContainText('Synthetic answer: it is sunny.');
+  await expect
+    .poll(() => faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'mirror_view').length, {
+      message: 'the hidden open ended and was reported',
+      timeout: 25_000,
+    })
+    .toBeGreaterThan(before);
+  const open = faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'mirror_view')[before];
+  expect(open.context.outcome).toBe('ok');
+  expect(typeof open.values.usable_ms).toBe('number');
+  expect(open.values.first_paint_ms, 'nothing was painted').toBeUndefined();
+  expect(open.values.usable_ms, 'it ended at the insertion').toBeGreaterThanOrEqual(open.values.batch_insert_end_ms);
+  await expect
+    .poll(() => spansNamed('open mirror_view').some((sp) => sp.traceId === open.context.trace_id), { timeout: 15_000 })
+    .toBe(true);
+  const span = spansNamed('open mirror_view').find((sp) => sp.traceId === open.context.trace_id);
+  expect((span.attributes ?? []).find((a: any) => a.key === 'muster.hidden')?.value?.boolValue, 'the span says it was hidden').toBe(true);
 });
 
 // 🔴 A BOOSTED SWAP INTO AN AGENT IS AN OPEN OF ITS OWN: measured from the

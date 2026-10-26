@@ -83,6 +83,9 @@
   // that must be left of it to open another socket.
   var WARM_PASS_BYTES = 3 * 1024 * 1024;
   var WARM_MIN_LEFT = 256 * 1024;
+  // On a rendered view, how long warming waits for the view's own open at
+  // most.
+  var VIEW_WAIT_MS = 15000;
 
   // refOf is the mirrored window a rendered view's page or socket path names
   // ({host, session, window}), or null for any other path. Decoded rather than
@@ -329,7 +332,11 @@
 
   // --- warming --------------------------------------------------------------
 
-  var warming = false, lastWarm = 0, current = null;
+  // warmStarts counts the passes this page has started that OPENED A WATCH
+  // (a warm socket) — a pass that found nothing to warm opens none and is not
+  // counted: the rendered view reports how many overlapped its open
+  // (warmState, muster.warm_overlap).
+  var warming = false, lastWarm = 0, current = null, warmStarts = 0;
 
   function frugal() {
     try {
@@ -450,6 +457,7 @@
   function warmPass() {
     if (warming || !warmable()) return Promise.resolve();
     warming = true;
+    var opened = false;
     lastWarm = Date.now();
     var left = WARM_PASS_BYTES;
     return candidates().then(function (list) {
@@ -461,6 +469,7 @@
         var c = list[i++], ref = c.ref;
         if (c.at && Date.now() - c.at < WARM_FRESH_MS) return next();
         return get(ref).then(function (prev) {
+          if (!opened) { opened = true; warmStarts++; }
           return warmOne(ref, prev, left).then(function (used) { left -= used; return next(); });
         });
       }
@@ -476,13 +485,30 @@
   // --- wiring ---------------------------------------------------------------
 
   if (enabled) {
-    // Another user's, another build's and expired snapshots go at every load.
-    setTimeout(function () { evict(); }, 0);
+    var armed = false;
     var arm = function () {
+      if (armed) return;
+      armed = true;
       setTimeout(function () { idle(warmPass); }, WARM_DELAY_MS);
       setInterval(function () { if (Date.now() - lastWarm >= WARM_EVERY_MS) idle(warmPass); }, 30000);
     };
-    if (document.readyState === 'complete') arm(); else root.addEventListener('load', arm);
+    // 🔴 ON A RENDERED VIEW, WARMING WAITS FOR ITS OWN OPEN TO BE OVER. A warm
+    // socket is another watch on a host, and its batches are parsed and stored
+    // on this page's main thread: armed at load, a pass could start while the
+    // view was still waiting for its first batch. So on a view page it waits
+    // for the view's 'muster:view-usable' (mirror_view.go), or VIEW_WAIT_MS at
+    // most; on any other page it is armed at load, as before.
+    // Eviction is NOT delayed anywhere: it is what deletes another user's
+    // records, and it reads only keys and meta.
+    var view = !!document.getElementById('mv-log');
+    var later = function (fn) {
+      var done = false, once = function () { if (!done) { done = true; fn(); } };
+      document.addEventListener('muster:view-usable', once);
+      setTimeout(once, VIEW_WAIT_MS);
+    };
+    // Another user's, another build's and expired snapshots go at every load.
+    setTimeout(function () { evict(); }, 0);
+    if (view) later(arm); else if (document.readyState === 'complete') arm(); else root.addEventListener('load', arm);
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) { if (current) current.stop(); return; }
       if (Date.now() - lastWarm >= WARM_EVERY_MS) setTimeout(function () { idle(warmPass); }, 500);
@@ -499,5 +525,8 @@
   root.musterSnap = {
     enabled: enabled, refOf: refOf, get: get, put: put, drop: drop,
     worth: worth, bound: bound, maxBytes: MAX_BYTES, readWaitMs: READ_WAIT_MS,
+    // warmState is how many warm passes this page has started that opened a
+    // warm socket, and whether a warm socket is open now.
+    warmState: function () { return { starts: warmStarts, inFlight: !!current }; },
   };
 })(typeof window !== 'undefined' ? window : globalThis);
