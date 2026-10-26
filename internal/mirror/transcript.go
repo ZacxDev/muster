@@ -304,6 +304,9 @@ func (h *Hub) WatchWindow(ctx context.Context, owner int64, host, session, windo
 			// sizes, counts and the link's round trip — never its text.
 			attrs := []attribute.KeyValue{attribute.Int64("mirror.first_batch_bytes", w.firstBytes.Load()),
 				attribute.Int("mirror.first_batch_events", len(m.Events))}
+			// mirror.host_rtt_ms is the last keepalive round trip, which
+			// includes the server read loop's delay in reading the pong
+			// (hostConn.rtt) — an upper bound on the network's.
 			if rtt := hc.rtt.Load(); rtt > 0 {
 				attrs = append(attrs, attribute.Float64("mirror.host_rtt_ms", float64(rtt)/float64(time.Millisecond)))
 			}

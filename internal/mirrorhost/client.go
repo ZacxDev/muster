@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -175,6 +176,12 @@ type Client struct {
 	work   *workCounter
 	workMu sync.Mutex
 
+	// tunnel and tunnelTr are the one HTTP client and transport every connect
+	// dials with (wire.go); wire is the current connect's byte counter.
+	tunnel   *http.Client
+	tunnelTr *http.Transport
+	wire     atomic.Pointer[wireCounter]
+
 	// cur is the live connection (nil between connections): what RefreshNow
 	// asks for an immediate listing.
 	curMu sync.Mutex
@@ -240,7 +247,10 @@ func New(cfg Config) (*Client, error) {
 	if cat == nil {
 		cat = &CatalogScanner{SnippetsFile: cfg.SnippetsFile}
 	}
-	return &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}}, nil
+	c := &Client{cfg: cfg, url: u, log: cfg.Logger, catalog: cat, repos: &repoNamer{}}
+	c.tunnelTr = tunnelTransport(&c.wire)
+	c.tunnel = &http.Client{Transport: c.tunnelTr}
+	return c, nil
 }
 
 // Run connects, and reconnects with jittered exponential backoff (1s → 60s),
@@ -296,10 +306,15 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hdr := http.Header{}
 	hdr.Set("Authorization", "Bearer "+c.cfg.Token)
 	dctx, dcancel := context.WithTimeout(ctx, 20*time.Second)
+	// This connect's wire counter: what the transport's next dial counts into.
 	wire := &wireCounter{}
-	ws, resp, err := websocket.Dial(dctx, c.url, &websocket.DialOptions{HTTPHeader: hdr, HTTPClient: dialClient(wire)})
+	c.wire.Store(wire)
+	ws, resp, err := websocket.Dial(dctx, c.url, &websocket.DialOptions{HTTPHeader: hdr, HTTPClient: c.tunnel})
 	dcancel()
 	if err != nil {
+		// A refused upgrade (401, 404, …) can leave its connection idle in
+		// the pool, counting into this connect's counter: never reused.
+		c.tunnelTr.CloseIdleConnections()
 		if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
 			return fmt.Errorf("%w (HTTP %d)", ErrUnauthorized, resp.StatusCode)
 		}

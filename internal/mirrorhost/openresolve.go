@@ -32,7 +32,6 @@ type openResolve struct {
 	have bool
 	key  windowKey
 	w    WindowInfo
-	err  error
 }
 
 type openResolveKey struct{}
@@ -58,8 +57,10 @@ func (or *openResolve) finish() {
 }
 
 // window is hostSide.window during an open: the memo when it has (session,
-// window), else read (and remembered) — or, once the open has answered,
-// read every time.
+// window), else read — and remembered only when the read SUCCEEDED, so a
+// failed listing (a tmux hiccup) is retried by the open's next runtime
+// rather than handed to it — or, once the open has answered, read every
+// time.
 func (or *openResolve) window(key windowKey, read func() (WindowInfo, error)) (WindowInfo, error) {
 	or.mu.Lock()
 	defer or.mu.Unlock()
@@ -67,10 +68,12 @@ func (or *openResolve) window(key windowKey, read func() (WindowInfo, error)) (W
 		return read()
 	}
 	if or.have && or.key == key {
-		return or.w, or.err
+		return or.w, nil
 	}
 	w, err := read()
-	or.have, or.key, or.w, or.err = true, key, w, err
+	if err == nil {
+		or.have, or.key, or.w = true, key, w
+	}
 	return w, err
 }
 

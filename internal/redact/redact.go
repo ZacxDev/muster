@@ -54,10 +54,10 @@ const Mark = "«redacted»"
 var (
 	reAuthHeader = regexp.MustCompile(`(?i)\b((?:proxy-)?authorization\s*[:=]\s*)(?:(?:bearer|basic|token|digest)\s+)?("[^"]*"|'[^']*'|[^\s'"]+)`)
 	reBearer     = regexp.MustCompile(`(?i)\b(bearer|basic)\s+([A-Za-z0-9._~+/-]{6,}=*)`)
-	reFlag       = regexp.MustCompile(`(?i)(^|\s)(-p|-u|--password|--passwd|--pass|--token|--access-token|--auth-token|--api-key|--apikey|--secret|--client-secret)(=|\s+)("[^"]*"|'[^']*'|[^\s'"]+)`)
+	reFlag       = regexp.MustCompile(`(?i)(^|\s)(` + alternatives(flagWords) + `)(=|\s+)("[^"]*"|'[^']*'|[^\s'"]+)`)
 	reAssign     = regexp.MustCompile(`(?i)\b([a-z0-9_]*(?:key|token|secret|password|passwd|pwd))=("[^"]*"|'[^']*'|[^\s'"&]+)`)
 	reUserinfo   = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@'"]+@`)
-	reQuery      = regexp.MustCompile(`(?i)([?&;][a-z0-9_.-]*(?:token|key|secret|sig|signature|password|passwd|pass|auth)[a-z0-9_.-]*=)[^&\s#'"]+`)
+	reQuery      = regexp.MustCompile(`(?i)([?&;][a-z0-9_.-]*(?:` + alternatives(queryWords) + `)[a-z0-9_.-]*=)[^&\s#'"]+`)
 	rePrefix     = regexp.MustCompile(`\b(?:gh[pousr]_|github_pat_|glpat-|xox[abposr]-|sk-|mst_|mmt_|mpl_)[A-Za-z0-9_-]{6,}|\bAKIA[A-Z0-9]{12,}`)
 
 	// The second batch (secrets, after rePrefix).
@@ -65,8 +65,8 @@ var (
 	reStripe     = regexp.MustCompile(`\b[sr]k_(?:live|test)_[A-Za-z0-9]{6,}`)
 	reJWT        = regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}`)
 	reJSONSecret = regexp.MustCompile(`(?i)("[a-z0-9_-]*(?:api_?key|apikey|token|secret|password|passwd)"\s*:\s*)"[^"]*"`)
-	reYAMLSecret = regexp.MustCompile(`(?im)^(\s*-?\s*[a-z0-9_.-]*(?:password|passwd|token|secret|api_?key|apikey)[ \t]*:[ \t]*)("[^"]*"|'[^']*'|[^\s"'].*)$`)
-	reAssignSp   = regexp.MustCompile(`(?i)\b([a-z0-9_]*(?:key|token|secret|password|passwd|pwd)\s*=\s*)("[^"]+"|'[^']+')`)
+	reYAMLSecret = regexp.MustCompile(`(?im)^(\s*-?\s*[a-z0-9_.-]*(?:` + alternatives(yamlWords) + `)[ \t]*:[ \t]*)("[^"]*"|'[^']*'|[^\s"'].*)$`)
+	reAssignSp   = regexp.MustCompile(`(?i)\b([a-z0-9_]*(?:` + alternatives(assignWords) + `)\s*=\s*)("[^"]+"|'[^']+')`)
 	reSaid       = regexp.MustCompile(`(?i)\b((?:password|passphrase|passwd|secret)\s+(?:is|was)\s*:?\s*)("[^"]+"|'[^']+'|[^\s,;.]+)`)
 	// Spelled in two parts so the leak gate's credential rule (which matches
 	// the literal prefix followed by key characters) does not read the
@@ -276,13 +276,29 @@ const ws = "\t\n\f\r "
 // nameBytes is what reQuery's [a-z0-9_.-] matches in folded text.
 const nameBytes = "abcdefghijklmnopqrstuvwxyz0123456789_.-"
 
+// 🔴 ONE LIST PER PATTERN, AND IT BUILDS BOTH THE PATTERN AND ITS TEST. Each
+// of these is its pattern's alternatives, in the pattern's order (alternatives
+// joins them into it), and the same slice is what afterAny / hasFlag look
+// for. They were once a second copy beside the pattern: deleting a word from
+// that copy alone made the filter skip a text the pattern would have
+// redacted ("--passwd hunter2" passed whole) with every test green. Shared,
+// a word is in both or in neither.
 var (
-	queryWords  = []string{"token", "key", "secret", "sig", "pass", "auth"}
+	queryWords  = []string{"token", "key", "secret", "sig", "signature", "password", "passwd", "pass", "auth"}
 	yamlWords   = []string{"password", "passwd", "token", "secret", "api_key", "apikey"}
 	assignWords = []string{"key", "token", "secret", "password", "passwd", "pwd"}
 	flagWords   = []string{"-p", "-u", "--password", "--passwd", "--pass", "--token", "--access-token", "--auth-token", "--api-key",
 		"--apikey", "--secret", "--client-secret"}
 )
+
+// alternatives is words as a regexp alternation, each quoted.
+func alternatives(words []string) string {
+	q := make([]string, len(words))
+	for i, w := range words {
+		q[i] = regexp.QuoteMeta(w)
+	}
+	return strings.Join(q, "|")
+}
 
 // afterAny reports whether, at some occurrence in s of a word of words, f
 // holds of the text right after it.

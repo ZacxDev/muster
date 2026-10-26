@@ -3,6 +3,7 @@ package mirrorhost
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,4 +82,38 @@ func TestAViewStillFollowsAClearAfterItsOpen(t *testing.T) {
 		evs, resets, _ := watchEvents(d, 5)
 		return resets >= 2 && strings.Contains(evText(evs), "marker-after")
 	})
+}
+
+// flakyWindows is a windowsBackend whose first listing fails.
+type flakyWindows struct {
+	*windowsBackend
+	failed bool
+}
+
+func (f *flakyWindows) Windows(ctx context.Context) ([]WindowInfo, error) {
+	if !f.failed {
+		f.failed = true
+		f.reads++
+		return nil, errors.New("tmux list-panes: server exited unexpectedly")
+	}
+	return f.windowsBackend.Windows(ctx)
+}
+
+// TestAFailedReadIsNotSharedWithTheOpensNextRuntime: the memo keeps only a
+// read that succeeded. A listing that failed for the open's first runtime is
+// read again by the next, which then finds the window.
+func TestAFailedReadIsNotSharedWithTheOpensNextRuntime(t *testing.T) {
+	b := &flakyWindows{windowsBackend: &windowsBackend{windows: []WindowInfo{openWindowFixture}}}
+	h := hostOf(b)
+	ctx, _ := h.beginResolve(context.Background(), 1)
+	if _, err := h.window(ctx, "main", "@3"); err == nil {
+		t.Fatal("CONTROL: the first listing did not fail")
+	}
+	w, err := h.window(ctx, "main", "@3")
+	if err != nil || w.Pane != "%3" {
+		t.Fatalf("the next runtime got %+v, %v: the failed read was shared", w, err)
+	}
+	if _, err := h.window(ctx, "main", "@3"); err != nil || b.reads != 2 {
+		t.Fatalf("%d listings for a failure, a success and a memo hit, want 2 (err %v)", b.reads, err)
+	}
 }
