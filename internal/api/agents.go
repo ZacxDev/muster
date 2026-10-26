@@ -1386,9 +1386,16 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 	// Registered HERE, before the goroutine exists, so a waiter that runs after
 	// destroyAgent returns cannot miss it (sync.WaitGroup: an Add from zero must
 	// happen before the Wait).
+	//
+	// 🔴 Done RUNS AFTER A PANIC IS LOGGED, NOT BEFORE. Under safeGo alone fn's
+	// own defers unwind before safeGo's recover, so a waiter released by Done
+	// could look for the "PANIC in goroutine destroy" line before it was
+	// written and read a panicked teardown as finished. The recover is deferred
+	// here, below Done, so it runs first (safeGo's own then finds nothing).
 	s.destroyInFlight.Add(1)
 	safeGo(s.logger, "destroy", func() {
 		defer s.destroyInFlight.Done()
+		defer recoverGoroutine(s.logger, "destroy")
 		if err := destroy(opCtx, id); err != nil {
 			s.logger.Printf("agents: destroy %d: %v", id, err)
 			return

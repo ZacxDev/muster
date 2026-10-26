@@ -1,9 +1,7 @@
 package api
 
 import (
-	"bytes"
 	"context"
-	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -27,49 +25,30 @@ import (
 // 🔴 FIXTURE AGES OVERSHOOT AND UNDERSHOOT THE 14-DAY WINDOW (15 and 13 days),
 // never sit on it.
 
-// lockedBuf is a log sink safe for the teardown goroutine to write while the
-// test reads it.
-type lockedBuf struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (l *lockedBuf) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.Write(p)
-}
-
-func (l *lockedBuf) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.String()
-}
-
-// 🔴 NO WAIT HERE IS ON WALL TIME. A pass's return value is the number of
-// teardowns it started (each counted as it starts, before the pass returns),
-// so "nothing was started" needs no wait at all; and each teardown it did
-// start is awaited through the server's destroyInFlight (waitDestroys), which
-// destroyAgent registers before the pass returns and releases once Destroy and
-// the after-steps have finished. The reaper runs its PRODUCTION destroy and
-// hooks: nothing here swaps them for a signalling copy. The one deadline left
-// (waitDestroys' bound) is a hang guard that only a stuck teardown reaches.
+// 🔴 THE WAITS HERE ARE ON EVENTS, NOT ON WALL TIME — WITH ONE POLL. A pass's
+// return value is the number of teardowns it started (each counted as it
+// starts, before the pass returns), so "nothing was started" needs no wait at
+// all; and each teardown it did start is awaited through the server's
+// destroyInFlight (waitDestroys), which destroyAgent registers before the pass
+// returns and releases once Destroy and the after-steps have finished (or
+// panicked: waitDestroys fails on safeGo's PANIC line). The reaper runs its
+// PRODUCTION destroy and hooks: nothing here swaps them for a signalling copy.
+//
+// Deadlines: waitDestroys' bound is a hang guard only a stuck teardown
+// reaches. The exception is TestRunTaskReapAlsoReapsStoppedAgents, whose loop
+// starts passes on its own ticks: it POLLS for the row to go (every 10ms, up
+// to a minute — a hang guard too, not a race), because a WaitGroup Wait must
+// not race the loop's next Add; it then stops the loop and waits on
+// destroyInFlight like every other test.
 
 type reapAPIFixture struct {
 	*destroyFixture
-	log *lockedBuf
 }
 
 func newReapAPIFixture(t *testing.T) *reapAPIFixture {
 	t.Helper()
-	f := &reapAPIFixture{destroyFixture: newDestroyFixture(t), log: &lockedBuf{}}
-	f.srv.logger = log.New(f.log, "", 0)
+	f := &reapAPIFixture{destroyFixture: newDestroyFixture(t)}
 	f.srv.SetAgentReapStoppedAfter(14 * 24 * time.Hour)
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("server log:\n%s", f.log.String())
-		}
-	})
 	return f
 }
 
@@ -77,7 +56,8 @@ func newReapAPIFixture(t *testing.T) *reapAPIFixture {
 var destroyFailed = regexp.MustCompile(`agents: destroy \d+: `)
 
 // awaitTeardowns waits for every teardown this server started to finish
-// (waitDestroys), failing when any Destroy failed (destroyAgent logs it).
+// (waitDestroys, which also fails on a panicked teardown), failing when any
+// Destroy failed (destroyAgent logs it).
 //
 // ⚠ CALL IT ONLY ONCE NOTHING CAN START ANOTHER TEARDOWN (no reaper loop
 // running): sync.WaitGroup forbids an Add from zero racing a Wait.
