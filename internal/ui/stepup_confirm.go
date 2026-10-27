@@ -318,6 +318,14 @@ function mpkFresh(p) { return p && (Date.now() - p.at) < mpkMaxAge; }
 //	ask(why, done) open the dialog; done() runs after a successful confirm —
 //	               the pending action (attach, or send the text again)
 //
+// 🔴 IN THE VIEW SWITCH'S FRAME, ask OPENS THE TOP WINDOW'S DIALOG, not the
+// frame's own (view_swap.go opens the other view in a same-origin frame over
+// the page). Every caller — the Interactive switch, the composer's send, the
+// send queue, an attention answer — goes through ask, so all of them follow.
+// The top window's done receives the server's fresh_for, and the frame sets its
+// own freshness from it: freshness is the cookie's, which both documents share.
+// A top page with no dialog (no step-up on it) leaves the frame its own.
+//
 // 🔴 THE PASSKEY OPTIONS ARE FETCHED WHEN THE DIALOG OPENS, NOT ON PAGE LOAD.
 // The sign-in page prefetches on load because signing in is what that page is
 // for; these pages are opened all day by someone already fresh, and a challenge
@@ -377,14 +385,61 @@ window.musterStepUp = (function () {
     pw.value = '';
     var cb = done; done = null;
     dlg.close();
-    if (cb) cb();
+    // The duration, not an instant: a framed view that handed its ask here
+    // (topStepUp) keeps its own clock (performance.now() is per document).
+    if (cb) cb(+freshFor || 0);
+  }
+  // topStepUp is the TOP window's musterStepUp when this page is the view in
+  // the Rendered | Terminal switch's frame (view_swap.go), else null.
+  function topStepUp() {
+    try {
+      var fe = window.frameElement;
+      if (!fe || !fe.hasAttribute('` + ViewFrameAttr + `')) return null;
+      var t = window.parent.musterStepUp;
+      return t && t !== window.musterStepUp && typeof t.ask === 'function' ? t : null;
+    } catch (e) { return null; }
+  }
+  // The view swap makes the page under a revealed frame inert (every child of
+  // the body, so maybe the dialog itself), and a dialog that is or is inside an
+  // inert element cannot be used, modal or not: that inert is lifted while it
+  // is open, and put back on close unless the swap took its own inert away
+  // meanwhile (the frame went home).
+  var lifted = [];
+  function lift() {
+    for (var el = dlg; el; el = el.parentElement) {
+      if (el.inert) { el.inert = false; lifted.push({ el: el, swap: el.hasAttribute('data-view-inert') }); }
+    }
+  }
+  function unlift() {
+    lifted.forEach(function (l) { if (!l.swap || l.el.hasAttribute('data-view-inert')) l.el.inert = true; });
+    lifted = [];
   }
   function ask(why, cb) {
+    // 🔴 A FRAMED VIEW ASKS IN THE TOP WINDOW'S DIALOG. Reported from the
+    // Android app (a WebView, WebAuthn as the app): the passkey was offered on
+    // the rendered view loaded on its own, and the terminal opened in the
+    // switch's frame asked for the password only — its dialog never requested
+    // the passkey options, so the frame judged a passkey unusable there. WHY is
+    // not measured: an emulator's WebView (133 and 145) gives a same-origin
+    // frame WebAuthn as it gives the top document. The top window's dialog is
+    // the one seen to offer and complete the passkey, so the frame's own
+    // answer no longer matters. The server's answer re-signs the session's
+    // cookies, which this frame shares, and this page's own belief in
+    // freshness is set from the same answer.
+    var t = topStepUp();
+    if (t) {
+      done = null;
+      t.ask(why, function (ff) {
+        if (ff !== undefined) freshUntil = performance.now() + (+ff || 0);
+        if (cb) cb();
+      });
+      return;
+    }
     done = cb || null;
     fail(why);
     pw.value = '';
     offer(false);
-    if (!dlg.open) dlg.showModal();
+    if (!dlg.open) { lift(); dlg.showModal(); }
     pw.focus();
     if (!pkBase || !mpkSupported()) return;
     prefetch().then(function (ok) {
@@ -395,7 +450,7 @@ window.musterStepUp = (function () {
   }
 
   document.getElementById('term-confirm-cancel').addEventListener('click', function () { done = null; dlg.close(); });
-  dlg.addEventListener('close', function () { pre = null; });
+  dlg.addEventListener('close', function () { pre = null; unlift(); });
   form.addEventListener('submit', function (ev) {
     ev.preventDefault();
     submit.disabled = true;

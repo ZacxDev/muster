@@ -716,6 +716,109 @@ test.describe('the passkey confirm at a desktop width (1280px)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// THE TERMINAL OPENED THROUGH THE RENDERED | TERMINAL SWITCH, on a phone: it
+// is a same-origin frame over the rendered view (view_swap.go). The operator's
+// report, in the Android app: a passkey was offered on the rendered view, and
+// on the terminal opened from it only the password (no options call at all) —
+// the frame's dialog judged a passkey unusable there, for a reason that is not
+// measured (stepup_confirm.go).
+//
+// The frame here is made to lack WebAuthn (PublicKeyCredential deleted in
+// every subframe, never in the top document): one way to make the frame's
+// answer to "can a passkey be used here?" NO, which reproduces the report's
+// signature (password only, no options call) on the code before the fix.
+//
+// 🔴 A REGRESSION TEST: before the framed view handed its ask to the top
+// window, the frame opened its OWN dialog, password-only — this fails at the
+// top window's dialog being visible.
+// ---------------------------------------------------------------------------
+test.describe('the terminal in the view switch’s frame, with no WebAuthn in the frame (390×844)', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test('the Interactive switch and a composer send in the framed terminal are confirmed with a PASSKEY in the top window’s dialog (real GoTrue, virtual authenticator)', async ({ page, context }) => {
+    test.setTimeout(180_000);
+    await authenticator(page);
+    await signIn(page);
+    await addPasskey(page);
+    await page.addInitScript(() => {
+      if (window.top !== window) delete (window as { PublicKeyCredential?: unknown }).PublicKeyCredential;
+    });
+    const options: string[] = [];
+    page.on('request', (r) => {
+      if (new URL(r.url()).pathname === '/auth/confirm/passkey/options') options.push(r.frame() === page.mainFrame() ? 'top' : 'frame');
+    });
+
+    await makeStale(context);
+    await openView(page);
+    await page.locator('#view-terminal').tap();
+    const frameEl = page.locator('iframe[data-muster-view]');
+    await expect(frameEl).toBeVisible();
+    const t = page.frameLocator('iframe[data-muster-view]');
+    await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=main mode=ro');
+    // CONTROL: the frame has no WebAuthn; the top document has it.
+    const frame = (await (await frameEl.elementHandle())!.contentFrame())!;
+    expect(await frame.evaluate(() => typeof window.PublicKeyCredential), 'no WebAuthn in the frame').toBe('undefined');
+    expect(await page.evaluate(() => typeof window.PublicKeyCredential), 'WebAuthn in the top document').toBe('function');
+
+    // 1. The Interactive switch: stale → asked → in the TOP window's dialog,
+    //    with the passkey offered → confirmed → the frame attaches rw.
+    await t.locator('#term-mode').tap();
+    await expect(dialog(page), 'asked in the top window').toBeVisible();
+    await expect(t.locator('#term-confirm'), 'not in the frame’s own dialog').toBeHidden();
+    await expect(passkeyBtn(page), 'the passkey is offered').toBeVisible();
+    await expect(passkeyBtn(page)).toBeFocused();
+    const box = (await dialog(page).boundingBox())!;
+    expect(box.x + box.width, 'the dialog fits 390px').toBeLessThanOrEqual(390);
+    await passkeyBtn(page).tap();
+    await expect(dialog(page)).toBeHidden();
+    await expect(t.locator('#term .xterm-rows')).toContainText('mode=rw');
+    await expect(t.locator('#term-status')).toHaveText('Connected · live keys');
+    let token = await accessToken(context);
+    expect(Math.abs(Date.now() / 1000 - amrOf(token)), 'the passkey confirm signed in just now').toBeLessThan(60);
+    expect(options, 'the passkey options were asked for by the top window').toEqual(['top']);
+
+    //    The FRAME's own freshness followed the top window's confirm: off and
+    //    on again attaches without asking.
+    await t.locator('#term-mode').tap();
+    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+    await t.locator('#term-mode').tap();
+    await expect(t.locator('#term-status')).toHaveText('Connected · live keys');
+    await expect(dialog(page)).toBeHidden();
+
+    // 2. The framed terminal's composer: stale → Send → 403 → the top window's
+    //    dialog, passkey → the same text is delivered once.
+    await t.locator('#term-mode').tap();
+    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+    const sends: number[] = [];
+    page.on('response', (r) => {
+      if (new URL(r.url()).pathname === '/mirror/terminal/send') sends.push(r.status());
+    });
+    const before = pasted();
+    await makeStale(context);
+    await t.locator('#mv-input').fill('from the framed terminal');
+    await t.locator('#mv-send').tap();
+    await expect(dialog(page)).toBeVisible();
+    expect(sends).toEqual([403]);
+    await expect(passkeyBtn(page)).toBeVisible();
+    await passkeyBtn(page).tap();
+    await expect(dialog(page)).toBeHidden();
+    await expect.poll(pasted).toBe(before + '%9 from the framed terminal\n');
+    await expect(t.locator('#mv-input')).toHaveValue('');
+    expect(sends).toEqual([403, 204]);
+    expect(options).toEqual(['top', 'top']);
+    token = await accessToken(context);
+    expect(Math.abs(Date.now() / 1000 - amrOf(token))).toBeLessThan(60);
+
+    // The dialog was made usable (the swap had made it inert with the rest of
+    // the page under the frame); closed, it is out of reach again, and the frame
+    // is still the view on screen.
+    expect(await page.evaluate(() => document.documentElement.getAttribute('data-view'))).toBe('terminal');
+    expect(await dialog(page).evaluate((el) => !!el.closest('[inert]')), 'the closed dialog is inert again').toBe(true);
+    expect(await page.locator('#mv-log').evaluate((el) => !!el.closest('[inert]')), 'the rendered view under the frame is inert').toBe(true);
+  });
+});
+
 // THE STEP-UP WITH NO SCRIPT. A browser context with JavaScript off has no
 // confirm dialog: a stale send, submitted by the browser itself, is answered
 // with a plain page — the password, and the message that was waiting — and

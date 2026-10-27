@@ -302,9 +302,11 @@ test.describe('a mirrored window', () => {
     expect(attached('@1', 'interactive')).toBe(2);
   });
 
-  // The framed view is a document of its own: its composer, its step-up dialog
-  // and its focus are its own, and the page's are the page's.
-  test('each view sends from its own composer, and a stale send in the framed view asks in the frame’s own dialog', async ({ page }) => {
+  // The framed view is a document of its own: its composer and its focus are
+  // its own, and the page's are the page's. Its "Confirm it's you" is NOT: it
+  // is asked in the TOP window's dialog (stepup_confirm.go says why), and the
+  // frame's send then goes on.
+  test('each view sends from its own composer, and a stale send in the framed view asks in the TOP window’s dialog', async ({ page }) => {
     await ready(page);
     const pasted = () => (fs.existsSync(trOne + '.pasted') ? fs.readFileSync(trOne + '.pasted', 'utf8') : '');
     await page.goto(origin + termOf('@1'));
@@ -326,10 +328,12 @@ test.describe('a mirrored window', () => {
     });
     await v.locator('#mv-input').fill('from the rendered view');
     await v.locator('#mv-send').click();
-    await expect(v.locator('#term-confirm'), 'asked in the frame on screen').toBeVisible();
-    await v.locator('#term-confirm-password').fill(password);
-    await v.locator('#term-confirm-submit').click();
-    await expect(v.locator('#term-confirm')).toBeHidden();
+    await expect(page.locator('#term-confirm'), 'asked in the top window’s dialog').toBeVisible();
+    await expect(v.locator('#term-confirm'), 'not in the frame’s own').toBeHidden();
+    await expect(page.locator('#term-confirm-password'), 'the password field takes focus').toBeFocused();
+    await page.locator('#term-confirm-password').fill(password);
+    await page.locator('#term-confirm-submit').click();
+    await expect(page.locator('#term-confirm')).toBeHidden();
     await expect.poll(pasted).toContain('from the rendered view\n');
     await expect(v.locator('#mv-input')).toHaveValue('');
     expect(refused, 'the send was retried once after the confirm').toBe(2);
