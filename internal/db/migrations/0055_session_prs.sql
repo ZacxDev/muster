@@ -1,8 +1,8 @@
--- muster 0055 — session_prs: which of an owner's mirrored Claude Code sessions
--- AUTHORED which pull request (a `gh pr create` naming it) or pushed which
--- branch (a `git push` naming the repository and branch), read from the
--- session's own transcript. A pull-request review mail is routed to the most
--- recent such session. docs/plugins.md#a-pull-request-review-mail.
+-- muster 0055 — session_prs: which of an owner's Claude Code sessions AUTHORED
+-- which pull request (a `gh pr create` naming it) or pushed which branch (a
+-- `git push` naming the repository and branch), as the host's PostToolUse hook
+-- reports it (POST /api/pr-sessions). A pull-request review mail is routed to
+-- the most recent such session. docs/plugins.md#a-pull-request-review-mail.
 --
 -- Owned and under forced row-level security in 0048's shape; re-applied by
 -- db.RLSOn, so every statement is idempotent.
@@ -24,13 +24,15 @@ CREATE TABLE IF NOT EXISTS public.session_prs (
     pr              BIGINT      CHECK (pr > 0),
     head_ref        TEXT        CHECK (char_length(head_ref) BETWEEN 1 AND 255),
     claude_session  TEXT        NOT NULL CHECK (char_length(claude_session) BETWEEN 1 AND 200),
-    host            TEXT        NOT NULL CHECK (char_length(host) BETWEEN 1 AND 200),
+    -- The mirror host whose window showed the session when it was reported;
+    -- NULL when none did (the report is stored regardless).
+    host            TEXT        CHECK (char_length(host) BETWEEN 1 AND 200),
     first_seen      TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_seen       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- A created pull request names its number and no branch; a push its
-    -- branch and no number.
+    -- A created pull request names its number (and its head branch when the
+    -- create named one); a push its branch and no number.
     CONSTRAINT session_prs_kind_shape CHECK (
-        (kind = 'gh-pr-create' AND pr IS NOT NULL AND head_ref IS NULL) OR
+        (kind = 'gh-pr-create' AND pr IS NOT NULL) OR
         (kind = 'git-push' AND head_ref IS NOT NULL AND pr IS NULL))
 );
 

@@ -913,8 +913,6 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	go a.srv.RunFocusRetention(ctx)
 	// Session routing's deadline: due routes are timed out and handed back.
 	go a.srv.RunRouteTimeouts(ctx, api.RouteSweepInterval)
-	// Pull-request routing's transcript scan (nothing with it off).
-	go a.srv.RunPRScan(ctx, api.PRScanInterval)
 	// The attention queue: lapsed asks expire and leave the owner's devices.
 	go a.srv.RunAttentionSweep(ctx, 0)
 }
@@ -1287,13 +1285,13 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	switch {
 	case ext.PRMail != nil:
 		l.Printf("pull-request routing: ON (%s) — %d agent-mail sender(s) whose VERIFIED review mail goes to the mirrored "+
-			"session that created or pushed its pull request; every online Claude Code session's transcript is scanned every %s",
-			envPRMailSenders, len(ext.PRMail.Senders), api.PRScanInterval)
+			"session that created or pushed its pull request, as its host's hook reported it (POST /api/pr-sessions)",
+			envPRMailSenders, len(ext.PRMail.Senders))
 	case len(a.cfg.PRMailSenders) > 0:
 		l.Printf("pull-request routing: INERT — %s is set but session routing (%s=1, with the plugin interface) is off, so "+
-			"nothing is scanned or routed", envPRMailSenders, envSessionRouting)
+			"POST /api/pr-sessions answers 404 and nothing is routed", envPRMailSenders, envSessionRouting)
 	default:
-		l.Printf("pull-request routing: OFF — %s is unset, so no session transcript is scanned for pull requests", envPRMailSenders)
+		l.Printf("pull-request routing: OFF — %s is unset, so POST /api/pr-sessions answers 404 and review mail goes to the chief", envPRMailSenders)
 	}
 	switch {
 	case ext.TaskRouting != nil && len(ext.TaskRouting.DispatchOwners) > 0:

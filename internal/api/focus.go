@@ -46,10 +46,7 @@ const (
 // focusPrincipal is ctx acting as owner, through authz.ViaFocus: how the
 // refresher reads one owner's sessions and writes their focus. Its callers
 // are the refresher and the retention sweep (their AsOwner), which learned the
-// owner ids from focus.PGStore.Owners, and the pull-request scan (PRScanPass,
-// pr_routes.go: the same act — reading one owner's mirrored transcripts),
-// which learned them from plugins.PGStore.PRSessionOwners; internal/authz's
-// withPrincipalLedger lists it.
+// owner ids from focus.PGStore.Owners; internal/authz's withPrincipalLedger lists it.
 func (s *Server) focusPrincipal(ctx context.Context, owner int64) context.Context {
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaFocus))
 }

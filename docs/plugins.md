@@ -1009,15 +1009,22 @@ the same way a reply on a thread does. Off unless `MUSTER_PR_MAIL_SENDERS` lists
 the gate's agent-mail address ([configuration](configuration.md)) and session
 routing is on.
 
-1. **Who authored what.** muster scans every online mirrored Claude Code
-   session's transcript each minute, through the host's own transcript stream,
-   resuming where the previous scan of that session stopped. It records
-   (`session_prs`, migration `0055`, owned, under row-level security) only
-   **authorship**: a Bash call that runs `gh pr create` and whose successful
-   output names the new pull request's URL (repo and number), or one that runs
-   `git push` and whose output names a GitHub remote and the branch it updated
-   (repo and branch). A session that views, lists, reads or mentions a pull
-   request records nothing. Rows unseen for 30 days are deleted.
+1. **Who authored what.** A PostToolUse hook on your host (outside muster:
+   devrc's `pr-session-bind-hook.py`) reports a successful `gh pr create` or
+   `git push` that the session ran: `POST /api/pr-sessions {repo, pr,
+   head_ref, claude_session, kind}`, with route reply's credential (a personal
+   token or the hook token). `kind` is `gh-pr-create` (with `pr`, and
+   `head_ref` when the create named its head) or `git-push` (with `head_ref`
+   and no `pr`). `201`: recorded; `200`: the same authorship again, now the
+   most recent; `400`: not a well-formed report; `404` with this feature off.
+   No response body on success. Stored in `session_prs` (migration `0055`,
+   owned, under row-level security) **whether or not a mirrored window shows
+   the session** — unlike a thread bind — because the row is also what names
+   the author to the chief when its window is gone (step 4); the window's host
+   is recorded when one does. A report also deletes the owner's rows unseen
+   for 30 days. A hook fired for a Bash call inside a **subagent** carries the
+   parent session's `session_id`, so a subagent's pull request is the parent
+   session's.
 2. **The mail.** Only a NEW message from the `agent-mail` plugin whose sender
    is on the list **and** that the plugin marked `sender_verified`. muster reads
    the body's **last** fenced block whose info string is `json` (a fence of
@@ -1046,12 +1053,10 @@ routing is on.
 5. **No author recorded**, or not a review muster reads: the ordinary
    delivery, unchanged.
 
-What the scan cannot see is listed in `internal/api/pr_routes.go`: a session's
-first scan (and every scan after a restart) reads only the host's bounded
-backfill; a `gh pr create` or `git push` run inside a **subagent** is not
-recorded (its transcript is not in the parent's stream, and the subagent tail a
-host sends carries no command output); and a push whose hooks print more than
-4 KiB before git's own `To` line is not read.
+What is not reported: a pull request created or a branch pushed by anything
+but a Bash `gh pr create` / `git push` (the web UI, the GitHub MCP tools, a
+command behind a wrapper the hook does not read), and anything from a host
+without the hook.
 
 ### Routing a task to a session
 

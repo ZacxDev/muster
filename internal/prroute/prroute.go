@@ -1,9 +1,9 @@
 // Package prroute is deterministic PULL-REQUEST → SESSION routing's pure half:
-// reading which pull request a review mail is about (ParseMail), and reading,
-// from a mirrored Claude Code session's transcript events, which pull requests
-// and branches that session AUTHORED (Extractor). It holds no store and makes
-// no network call: internal/plugins persists what the extractor finds, and
-// internal/api routes a mail by it. docs/plugins.md#a-pull-request-review-mail.
+// which pull request a review mail is about (ParseMail), and the shape of an
+// authorship report (Signal) — which pull request a session created, or which
+// branch it pushed — as a host's PostToolUse hook sends it to POST
+// /api/pr-sessions (internal/api/pr_routes.go). It holds no store and makes no
+// network call. docs/plugins.md#a-pull-request-review-mail.
 package prroute
 
 import (
@@ -35,6 +35,46 @@ var (
 	// spaces of indent), its length and info string.
 	fenceOpen = regexp.MustCompile("^ {0,3}(`{3,})([^`]*)$")
 )
+
+// Kind is how a session authored a pull request.
+type Kind string
+
+const (
+	// KindPRCreate: the session ran `gh pr create`, which printed the new pull
+	// request's URL.
+	KindPRCreate Kind = "gh-pr-create"
+	// KindPush: the session ran `git push`, which named the remote repository
+	// and a branch it updated.
+	KindPush Kind = "git-push"
+)
+
+// Signal is one authorship report: Repo and PR for KindPRCreate (HeadRef too
+// when the create named its head branch), Repo and HeadRef for KindPush.
+type Signal struct {
+	Kind    Kind
+	Repo    string
+	PR      int64
+	HeadRef string
+}
+
+// Valid reports whether s is a well-formed report: a known kind, a repo, a
+// positive PR for a create (none for a push), a branch for a push (optional
+// for a create), each in this package's grammar.
+func (s Signal) Valid() bool {
+	if !RepoPattern.MatchString(s.Repo) || (s.HeadRef != "" && !ValidRef(s.HeadRef)) {
+		return false
+	}
+	switch s.Kind {
+	case KindPRCreate:
+		return s.PR > 0
+	case KindPush:
+		return s.PR == 0 && s.HeadRef != ""
+	}
+	return false
+}
+
+// ValidRef reports whether s is a branch name this feature stores.
+func ValidRef(s string) bool { return validRef(s) }
 
 // validRef is a stored branch name: refPattern, and no "..", leading "-" or
 // trailing "/" (none of which git accepts as a branch).
@@ -129,6 +169,3 @@ func closesFence(line string, width int) bool {
 	t = t[indent:]
 	return len(t) >= width && strings.Trim(t, "`") == ""
 }
-
-// Valid reports whether s is a well-formed report. (Stub: the tests come first.)
-func (s Signal) Valid() bool { return false }

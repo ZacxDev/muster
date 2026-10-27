@@ -156,8 +156,12 @@ sender proves its owner; its handle is that owner's gateway's claim), and the
 `repo`/`pr`/`head_ref` its body names. 🔴 **Accepted risk: a listed sender can
 put a message into whichever of your sessions created, or pushed the branch
 of, a pull request it names** — never another owner's session, and never one
-that only viewed or mentioned it. The authorship rows come from your own
-sessions' transcripts, read server-side; nothing a mail says can write one.
+that only viewed or mentioned it. The authorship rows come only from `POST /api/pr-sessions`, with route
+reply's credential (a personal API token or the hook token); nothing a mail
+says can write one. 🔴 **Accepted risk: whoever holds that credential can
+record any of the owner's Claude session ids as the author of any pull
+request or branch**, and the next review of it is then pasted into that
+session — the thread bind's risk, for review mail.
 
 ## Paired devices
 

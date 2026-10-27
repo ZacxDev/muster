@@ -221,7 +221,11 @@ func renderAuthor(a *AuthorHint, nonce string) string {
 	if a.Name != "" {
 		head += " — " + fence.Sanitize(fence.Cut(a.Name, maxHintNameRunes))
 	}
-	head += " @ " + fence.Sanitize(fence.Cut(a.Host, maxHintNameRunes))
+	if a.Host != "" {
+		head += " @ " + fence.Sanitize(fence.Cut(a.Host, maxHintNameRunes))
+	} else {
+		head += " (host unknown: no mirrored window showed it when it was reported)"
+	}
 	return "\n" + fence.Block{Preface: preface, Marker: authorMarker, Count: 1,
 		Lines: []string{head, "  " + fence.Sanitize(seen), "  window: " + window}}.Render(nonce)
 }

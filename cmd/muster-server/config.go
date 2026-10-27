@@ -169,9 +169,10 @@ const (
 	envRouteRelayAllow = "MUSTER_ROUTE_RELAY_ALLOW"
 	// PULL-REQUEST → SESSION ROUTING (internal/api/pr_routes.go): the agent-mail
 	// senders ("<owner>/<handle>,…") whose VERIFIED mail is read as a review of
-	// a pull request and routed to the mirrored session that authored it.
-	// Needs session routing on. Unset (the default): off — no transcript is
-	// scanned and every message is handed on as before.
+	// a pull request and routed to the mirrored session that authored it (as
+	// its host's hook reported to POST /api/pr-sessions). Needs session routing
+	// on. Unset (the default): off — the route answers 404 and every message is
+	// handed on as before.
 	envPRMailSenders = "MUSTER_PR_MAIL_SENDERS"
 	// TASK ROUTING (internal/api/task_routing.go): "1" lets a plugin hand a task
 	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's chief,

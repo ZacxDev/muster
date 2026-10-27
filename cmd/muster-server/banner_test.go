@@ -395,8 +395,8 @@ var bannerLedger = []string{
 	envSessionRouting,
 	envRouteRelayAllow,
 	// 🔴 PULL-REQUEST ROUTING IS LEDGERED: ON, a listed sender's mail decides
-	// which of the owner's sessions it is pasted into, and every online
-	// session's transcript is scanned, so the log must say which state this is.
+	// which of the owner's sessions it is pasted into, so the log must say
+	// which state this is.
 	envPRMailSenders,
 	// 🔴 TASK ROUTING IS LEDGERED: ON, an outside system's task notice reaches
 	// the chief, and with dispatch the chief can start agents on the owner's
