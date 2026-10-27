@@ -118,7 +118,12 @@ func dictateNote(path, noteID, class string) g.Node {
 // microphone is held from the first tap to the second; a navigation away (a
 // boosted swap of the body, or the page being hidden) stops the recorder and
 // the tracks and throws the audio away, so the browser's "recording"
-// indicator never outlives the box it was for.
+// indicator never outlives the box it was for. The Rendered|Terminal switch
+// taking a view off screen also stops the recorder and releases the tracks at
+// once, but TRANSCRIBES what was recorded into that view's box, which is
+// still there (only hidden). The microphone is per DOCUMENT (each view of the
+// switch is its own), so it is that switch rule, not `active`, that keeps two
+// views from recording at once.
 func dictateScript(path string) g.Node {
 	if path == "" {
 		return nil
@@ -308,6 +313,24 @@ func dictateScript(path string) g.Node {
   });
   document.addEventListener('htmx:load', function (e) { reveal(e.target); });
   window.addEventListener('pagehide', abandon);
+  // The Rendered|Terminal switch (view_swap.go) does not unload the view it
+  // takes off screen: it tells that view's window 'muster:view-hidden' — the
+  // top page when the frame is revealed, the frame when it is hidden again.
+  // Unlike pagehide, the view's box is still there (only off screen), so its
+  // recording is FINISHED, not thrown away: the recorder is stopped as a second
+  // tap would stop it, the tracks are released at once, and the audio goes
+  // through the ordinary upload into THAT view's own box — what was said is
+  // not lost, and is there when the view is shown again. A microphone request
+  // still opening has no audio yet and is only released (abandon). Without
+  // this the hidden view kept the microphone, and the view on screen could
+  // start a second recording beside it.
+  window.addEventListener('muster:view-hidden', function () {
+    var s = active;
+    if (!s) return;
+    if (s.opening || !s.rec || s.rec.state === 'inactive') { abandon(); return; }
+    try { s.rec.stop(); } catch (e) { abandon(); return; }
+    release(s);
+  });
 })();
 `))
 }
