@@ -348,6 +348,76 @@ for (const vp of [
   });
 }
 
+// 🔴 THE RENDERED|TERMINAL SWITCH DOES NOT UNLOAD THE VIEW IT HIDES
+// (internal/ui/view_swap.go): each view is its own document, with its own
+// dictation script, so pagehide never fires there. The switch tells the hidden
+// view's window 'muster:view-hidden' — the TOP page when the frame is revealed,
+// the FRAME when the top page is shown again — and a recording in that view is
+// abandoned as on pagehide: the audio is thrown away (nothing is posted) and
+// its microphone tracks are stopped. Both directions are driven, since a
+// different document receives the event in each.
+test.describe('the view switch takes the recording with the view', () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+
+  // Every document (top and frame) records the streams getUserMedia hands it,
+  // so the test can read each track's readyState — the browser's own answer to
+  // "is this stream still holding the microphone".
+  async function tracks(f: { evaluate: Page['evaluate'] }): Promise<string[]> {
+    return f.evaluate(() =>
+      ((window as unknown as { __streams?: MediaStream[] }).__streams ?? []).flatMap((s) => s.getTracks().map((t) => t.readyState)),
+    );
+  }
+
+  test('a recording in the hidden view stops, its tracks are released, and nothing is posted', async ({ page }) => {
+    await page.addInitScript(() => {
+      const w = window as unknown as { __streams: MediaStream[] };
+      w.__streams = [];
+      const gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = (c) =>
+        gum(c).then((s) => {
+          w.__streams.push(s);
+          return s;
+        });
+    });
+    const posts: string[] = [];
+    page.on('request', (r) => {
+      if (new URL(r.url()).pathname === '/transcribe') posts.push(r.url());
+    });
+    await login(page);
+    await page.goto(origin + '/mirror/view?' + q(claudeWin));
+    const topMic = page.locator('#mv-dictate');
+    await expect(topMic).toBeVisible({ timeout: 20_000 });
+
+    // 1. The TOP view records, then the switch reveals the frame over it.
+    await topMic.click();
+    await expect(topMic).toHaveAttribute('data-state', 'recording');
+    // Positive control: the instrument sees a held microphone as `live`.
+    expect(await tracks(page), 'top: the recording holds a live track').toEqual(['live']);
+    await page.locator('a[data-view-swap]:visible').first().click();
+    const fr = page.frameLocator('iframe[data-muster-view]');
+    const frameMic = fr.locator('#mv-dictate');
+    await expect(frameMic).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('iframe[data-muster-view]')).toHaveCSS('visibility', 'visible');
+    await expect(topMic, 'the hidden top view stopped recording').toHaveAttribute('data-state', 'idle');
+    await expect.poll(() => tracks(page), { message: 'the hidden top view released its microphone' }).toEqual(['ended']);
+    await expect(page.locator('#mv-dictate-note')).toBeHidden();
+
+    // 2. The FRAME records, then the switch hides it again.
+    await frameMic.click();
+    await expect(frameMic).toHaveAttribute('data-state', 'recording');
+    const frame = page.frames().find((f) => f !== page.mainFrame())!;
+    expect(await tracks(frame), 'frame: the recording holds a live track').toEqual(['live']);
+    await fr.locator('a[data-view-swap]:visible').first().click();
+    await expect(page.locator('iframe[data-muster-view]')).toHaveCSS('visibility', 'hidden');
+    await expect(frameMic, 'the hidden frame stopped recording').toHaveAttribute('data-state', 'idle');
+    await expect.poll(() => tracks(frame), { message: 'the hidden frame released its microphone' }).toEqual(['ended']);
+
+    // An abandoned recording is thrown away, as on pagehide: nothing transcribed.
+    await page.waitForTimeout(500);
+    expect(posts, 'neither abandoned recording was posted').toEqual([]);
+  });
+});
+
 test.describe('failures, said inline', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 

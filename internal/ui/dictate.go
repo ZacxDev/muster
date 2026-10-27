@@ -116,9 +116,12 @@ func dictateNote(path, noteID, class string) g.Node {
 //
 // 🔴 ONE RECORDING AT A TIME, AND IT IS RELEASED WHEN ITS PAGE GOES. The
 // microphone is held from the first tap to the second; a navigation away (a
-// boosted swap of the body, or the page being hidden) stops the recorder and
-// the tracks and throws the audio away, so the browser's "recording"
-// indicator never outlives the box it was for.
+// boosted swap of the body, the page being hidden, or the Rendered|Terminal
+// switch taking its view off screen) stops the recorder and the tracks and
+// throws the audio away, so the browser's "recording" indicator never
+// outlives the box it was for. The microphone is per DOCUMENT (each view of
+// the switch is its own), so it is that last rule, not `active`, that keeps
+// two views from recording at once.
 func dictateScript(path string) g.Node {
 	if path == "" {
 		return nil
@@ -308,6 +311,15 @@ func dictateScript(path string) g.Node {
   });
   document.addEventListener('htmx:load', function (e) { reveal(e.target); });
   window.addEventListener('pagehide', abandon);
+  // The Rendered|Terminal switch (view_swap.go) does not unload the view it
+  // takes off screen: it tells that view's window 'muster:view-hidden' — the
+  // top page when the frame is revealed, the frame when it is hidden again.
+  // A view off screen is a page gone for this purpose, so the recording (or a
+  // microphone request still opening) is abandoned exactly as on pagehide:
+  // the audio is thrown away and the tracks are stopped. Without this the
+  // hidden view kept the microphone, and the view on screen could start a
+  // second recording beside it.
+  window.addEventListener('muster:view-hidden', abandon);
 })();
 `))
 }
