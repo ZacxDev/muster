@@ -260,7 +260,7 @@ for (const size of [
       await rig.login(page);
       const a = await ccAgent(page);
       await page.goto(origin + `/agents/${a}/terminal`);
-      await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+      await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
       await openByToggle(page);
       await page.locator('#view-rendered').click();
       await expect(framed(page).locator('#view-rendered')).toHaveAttribute('aria-current', 'page');

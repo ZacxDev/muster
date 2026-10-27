@@ -164,7 +164,7 @@ for (const vp of [
       await toTerm.click();
       await page.waitForURL(origin + '/agents/' + agent.name + '/terminal');
       const term = page.frameLocator('iframe[data-muster-view]');
-      await expect(term.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+      await expect(term.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
       await expect(term.locator('#view-terminal')).toHaveAttribute('aria-current', 'page');
       await expect(term.locator('#view-rendered')).toHaveAttribute('href', agentPageRe(agent.name));
       const input = term.locator('#mv-input');
@@ -200,7 +200,7 @@ for (const vp of [
       await expect.poll(() => storedStatus(agent.name), { timeout: 45_000 }).toBe('running');
 
       await page.goto(`${origin}/agents/${agent.name}/terminal`);
-      await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+      await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
       const input = page.locator('#mv-input');
       await expect(input).toBeEnabled();
       const sends: number[] = [];
