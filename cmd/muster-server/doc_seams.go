@@ -9,8 +9,8 @@ package main
 // things that separate a work item from an object nobody can close.
 //
 // 🔴 THE DISTINCTION api.Extensions.defects DRAWS GOVERNS EVERY ENTRY HERE:
-// "degrades visibly" versus "lies silently". A nil GitHub store leaves the Repos
-// tab undrawn, which is TRUE — this server has no GitHub connection. A notes
+// "degrades visibly" versus "lies silently". A nil connector store leaves the
+// Connectors tab undrawn, which is TRUE — this server has no connectors. A notes
 // store with no session-liveness probe renders "no transcript recorded" over
 // transcripts that may be alive, with nothing logged and nothing 404ing. The
 // first is a configuration; the second is a page that states a falsehood, and
@@ -546,11 +546,11 @@ package main
 // ---------------------------------------------------------------------------
 // 6. NOT A SEAM: WHAT IS NIL HERE ON PURPOSE AND CLOSES NOTHING.
 //
-//   - api.Extensions.GitHub is nil without MUSTER_GITHUB_ENCRYPTION_KEY. There
-//     is deliberately no generate-a-key-if-unset branch: an ephemeral key makes
-//     every stored token undecryptable after a restart, which presents as "the
-//     Repos tab forgot my account" with nothing in the log. Unset means the
-//     store is not built, which the Repos tab says on screen.
+//   - api.Extensions.Connectors is nil without MUSTER_CONNECTOR_ENCRYPTION_KEY.
+//     There is deliberately no generate-a-key-if-unset branch: an ephemeral key
+//     makes every stored secret undecryptable after a restart, with nothing in
+//     the log. Unset means the store is not built, which the missing Connectors
+//     tab says on screen.
 //   - api.RouterPort and api.GatePort are nil without a router. That IS a
 //     supported deployment — see RouterPort's own doc — and the four features
 //     that depend on it each degrade where a human can see it. The one bit that

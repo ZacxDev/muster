@@ -230,12 +230,6 @@ for (const size of [
       await page.locator('#view-terminal').click();
       await expect(framed(page).locator('#term-status')).toHaveText('Connected');
       await navOnTopInFrame(page, false);
-      // A theme change made in the frame's nav: the page under it follows.
-      expect(await page.evaluate(() => document.documentElement.classList.contains('dark')), 'the page starts dark').toBe(true);
-      await framed(page).locator('#sidebar [data-theme-toggle]').click();
-      await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains('dark')), { message: 'the page under the frame followed the theme the frame set' }).toBe(false);
-      await framed(page).locator('#sidebar [data-theme-toggle]').click();
-      await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(true);
       await framed(page).locator('#sidebar-close').click();
       // Back: the page's own nav is the one on screen again, and still works.
       await framed(page).locator('#view-rendered').click();

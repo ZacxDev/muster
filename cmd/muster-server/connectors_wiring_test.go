@@ -38,7 +38,6 @@ func TestConnectorConfigurationIsRefusedAtBootWhenIncoherent(t *testing.T) {
 		want string
 	}{
 		"short key":        {map[string]string{envConnectorEncKey: base64.StdEncoding.EncodeToString([]byte("short"))}, envConnectorEncKey},
-		"key shared":       {map[string]string{envConnectorEncKey: connectorKey(2), envGitHubEncKey: connectorKey(2)}, "same key"},
 		"port without key": {map[string]string{envConnectPort: "18191"}, envConnectPort},
 		"port is main port": {map[string]string{envConnectorEncKey: connectorKey(1), envConnectPort: "8105",
 			envAgentConnectURL: "http://muster.example.test:8105"}, "same as the main port"},

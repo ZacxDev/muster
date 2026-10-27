@@ -26,6 +26,11 @@ var removedMarkers = []string{
 	`Grant privileges`, `Privilege requests`, `Privilege profiles`,
 	`>Privileges<`, `Edit Privileges`,
 	`sse:privilege.created`,
+	// The Repos tab and the GitHub OAuth connection it showed (the GitHub App
+	// replaced both), and the light-theme toggle (dark is the only theme).
+	`/ui/repos`, `href="/repos"`, `data-tab="repos"`, `id="panel-repos"`,
+	`/github/connect`, `/github/disconnect`,
+	`data-theme-toggle`, `musterSetTheme`,
 }
 
 func assertNoRemovedMarkers(t *testing.T, what, doc string) {
@@ -35,7 +40,7 @@ func assertNoRemovedMarkers(t *testing.T, what, doc string) {
 	}
 	for _, m := range removedMarkers {
 		if strings.Contains(doc, m) {
-			t.Errorf("%s still renders %q — a removed privilege/runbook surface", what, m)
+			t.Errorf("%s still renders %q — a removed surface", what, m)
 		}
 	}
 }
@@ -48,7 +53,7 @@ func TestNoTabForPrivilegesOrRunbooks(t *testing.T) {
 		t.Fatal("TabKeys is empty; the check below would pass over nothing")
 	}
 	for _, k := range keys {
-		if k == "runbooks" || k == "privileges" {
+		if k == "runbooks" || k == "privileges" || k == "repos" {
 			t.Errorf("tab %q is still registered", k)
 		}
 	}
@@ -57,7 +62,7 @@ func TestNoTabForPrivilegesOrRunbooks(t *testing.T) {
 // TestNoShellDocumentRendersARemovedSurface renders EVERY visible tab under
 // every feature shape (the shell is one document; any tab's panel is in it).
 func TestNoShellDocumentRendersARemovedSurface(t *testing.T) {
-	for _, feat := range []Features{{}, {GitHub: true, Connectors: true}} {
+	for _, feat := range []Features{{}, {Connectors: true}} {
 		for _, tab := range visibleTabs(feat) {
 			doc := renderString(t, Page(tab.Key, feat))
 			// Positive control: the shell does mount the agents list, so an empty

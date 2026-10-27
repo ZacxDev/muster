@@ -698,19 +698,12 @@ func (s *Server) listAgentPullRequests(ctx context.Context, a agents.Agent, argu
 	}
 	var prs []github.PullRequest
 	var err error
-	if app := s.githubApp(ctx); app != nil {
-		// The App's token for THIS agent's repository (githubapp.App.ListPullRequests).
-		prs, err = app.ListPullRequests(ctx, a.ID, a.Repo, state)
-	} else {
-		token, terr := s.githubOAuthToken(ctx)
-		if errors.Is(terr, errNoGitHub) {
-			return toolErr("no GitHub connection")
-		}
-		if terr != nil {
-			return toolErr("could not load GitHub connection: %v", terr)
-		}
-		prs, err = s.listPullRequests(ctx, token, a.Repo, state)
+	app := s.githubApp(ctx)
+	if app == nil {
+		return toolErr("no GitHub connection")
 	}
+	// The App's token for THIS agent's repository (githubapp.App.ListPullRequests).
+	prs, err = app.ListPullRequests(ctx, a.ID, a.Repo, state)
 	if err != nil {
 		return toolErr("could not list pull requests: %v", err)
 	}

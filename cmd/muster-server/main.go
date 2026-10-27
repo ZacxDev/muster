@@ -66,7 +66,6 @@ import (
 	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/internal/jobs"
@@ -277,11 +276,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// this line is ever dropped, because an empty prefix beside a wired
 		// Provisioner reproduces that defect exactly.
 		AgentNamespacePrefix: cfg.AgentNamespacePrefix,
-		GitHubOAuth: api.GitHubOAuthConfig{
-			ClientID:     cfg.GitHubClientID,
-			ClientSecret: cfg.GitHubClientSecret,
-			BaseURL:      cfg.PublicURL,
-		},
+		PublicURL:            cfg.PublicURL,
 	}
 
 	if cfg.Database != "" {
@@ -343,9 +338,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			ext.Connectors = cs
 		}
 
-		// The GitHub App, when configured, is muster's GitHub identity: the Repos
-		// tab and every connected-repository check read its installation
-		// repositories (api/github_source.go), and it backs the `github`
+		// The GitHub App, when configured, is muster's GitHub identity: every
+		// connected-repository check reads its installation repositories
+		// (api/github_source.go), and it backs the `github`
 		// connector — presented through the SAME connector store, so the agent's
 		// status route, the request card, the approve route and the proxy all see
 		// one connector (connectors.WithVirtual). validateConnectors refuses an App
@@ -362,31 +357,10 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 				// Admins only: the App is the deployment's (connectors.WithVirtual).
 				ext.Connectors = connectors.WithVirtual(ext.Connectors, gapp, authz.IsAdmin)
 			}
-			// Backgrounded, like connectStaticGitHub: a boot that blocks on a third
-			// party is a boot that party's outage can stop. Its outcome is logged and
+			// Backgrounded: a boot that blocks on a third party is a boot that
+			// party's outage can stop. Its outcome is logged and
 			// recorded as the App's problem (the request and agent cards show it).
 			go checkGitHubApp(ctx, gapp, logger)
-		}
-
-		if len(cfg.GitHubEncKey) > 0 {
-			gh, err := github.NewPG(pool, cfg.GitHubEncKey)
-			if err != nil {
-				a.Close()
-				return nil, fmt.Errorf("github store: %w", err)
-			}
-			ext.GitHub = gh
-			// The OAuth state's MAC key, derived from the same secret under its
-			// own label (github.OAuthStateKey) — never from the UI password.
-			if ext.GitHubOAuth.StateKey, err = github.OAuthStateKey(cfg.GitHubEncKey); err != nil {
-				a.Close()
-				return nil, fmt.Errorf("github oauth state key: %w", err)
-			}
-			if cfg.GitHubToken != "" {
-				// Backgrounded: it is one network round trip to github.com and a
-				// boot that blocks on a third party is a boot that a third party's
-				// outage can stop.
-				go connectStaticGitHub(ctx, gh, cfg.GitHubToken, logger)
-			}
 		}
 	}
 
@@ -1368,13 +1342,13 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			agentsSee = "NO connector store, so agents cannot use it"
 		}
 		l.Printf("github app: ON — %s=%d (its JWT signed with the key in %s) is the admins' GitHub identity (their "+
-			"Repos tab and connected-repository checks list its installation repositories; members keep their "+
-			"OAuth connection, deprecated); only installations on %s=%s are used; %s",
+			"connected-repository checks list its installation repositories; members have none); only "+
+			"installations on %s=%s are used; %s",
 			envGitHubAppID, a.cfg.GitHubAppID, envGitHubAppKey, envGitHubAppAccounts,
 			githubAppAccountList(a.cfg.GitHubAppAccounts), agentsSee)
 	} else {
-		l.Printf("github app: OFF — %s/%s/%s are unset, so muster's GitHub identity is the OAuth connection "+
-			"(deprecated) and a `github` connector needs a stored token", envGitHubAppID, envGitHubAppKey,
+		l.Printf("github app: OFF — %s/%s/%s are unset, so muster has no GitHub identity (no repository is "+
+			"connected for dispatch) and a `github` connector needs a stored token", envGitHubAppID, envGitHubAppKey,
 			envGitHubAppAccounts)
 	}
 	if a.cfg.CheckoutWaitTimeout > 0 {
@@ -1385,12 +1359,11 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"repository checkout (the github approval) before the agent is marked error (%s unset)",
 			agents.DefaultCheckoutWaitTimeout, envCheckoutWaitTimeout)
 	}
-	if ext.GitHub != nil {
-		l.Printf("github connection: ENCRYPTED AT REST (%s set). %s",
-			envGitHubEncKey, githubAuthPosture(a.cfg))
-	} else {
-		l.Printf("github connection: DISABLED — %s is unset, so there is nowhere to store a "+
-			"token encrypted and the Repos tab has no account to connect", envGitHubEncKey)
+	// The GitHub OAuth connection was removed; a deployment may still set its
+	// variables, and booting on them is deliberate (ignoredGitHubOAuthEnv).
+	if len(a.cfg.IgnoredGitHubOAuth) > 0 {
+		l.Printf("github oauth: REMOVED — set and IGNORED: %s (the GitHub App is muster's GitHub identity); "+
+			"drop them from the deployment", strings.Join(a.cfg.IgnoredGitHubOAuth, ", "))
 	}
 
 	// 🔴 THE SEAM, ANNOUNCED ON EVERY BOOT. See doc_seams.go.
@@ -1734,23 +1707,6 @@ func missingRouterCredential(c config) string {
 	}
 }
 
-// githubAuthPosture names which of the two ways into a GitHub account is armed.
-// Both may be: the static token connects at boot, the OAuth App lets an operator
-// connect a different account from the Repos tab.
-func githubAuthPosture(c config) string {
-	switch {
-	case c.GitHubToken != "" && c.GitHubClientID != "":
-		return fmt.Sprintf("both %s and the OAuth App (%s) are configured", envGitHubToken, envGitHubClientID)
-	case c.GitHubToken != "":
-		return fmt.Sprintf("%s is configured; no OAuth App", envGitHubToken)
-	case c.GitHubClientID != "":
-		return fmt.Sprintf("the OAuth App (%s) is configured; no static token", envGitHubClientID)
-	default:
-		return fmt.Sprintf("no credential: neither %s nor %s is set, so no account can be connected",
-			envGitHubToken, envGitHubClientID)
-	}
-}
-
 // authConfig is the ONE place this binary's config becomes an api.AuthConfig.
 //
 // 🔴 A SECOND CONSTRUCTION SITE IS HOW THE BOOT BANNER STOPS DESCRIBING THE
@@ -1786,9 +1742,6 @@ func (c config) browserAuthRefusal() string { return c.authConfig().BrowserAuthR
 // serviceWriteRefusal reports why the service-to-service tier will refuse, or "".
 func (c config) serviceWriteRefusal() string { return c.authConfig().ServiceWriteRefusal() }
 
-// connectStaticGitHub resolves the static token's login and stores it encrypted,
-// so the Repos tab and agent dispatch work WITHOUT an OAuth App.
-//
 // checkGitHubApp lists the App's installations once at boot and logs the
 // outcome. A failure (a 401 from a wrong key or a skewed clock) is also recorded
 // as the App's problem, which the connector request card and the agent cards
@@ -1821,30 +1774,6 @@ func githubAppAccountList(accs []githubapp.Account) string {
 		parts = append(parts, a.Login+":"+strconv.FormatInt(a.ID, 10))
 	}
 	return strings.Join(parts, ",")
-}
-
-// 🔴 A FAILURE HERE IS LOGGED, NOT FATAL. The token may be expired or the
-// network may be down at boot, and neither is a reason to refuse to serve a task
-// board. The Repos tab shows "not connected", which is what is true.
-//
-// 🔴 IT ACTS AS THE OPERATOR (authz.Operator), BECAUSE THE STATIC TOKEN IS THE
-// OPERATOR'S. There is no request to take a principal from, and row-level
-// security (accounts PR 3a) scopes the write to whoever the context names: with
-// none it would write nothing. NOT authz.System — that names no user, and this
-// is one user's connection, not a sweep over everyone's.
-func connectStaticGitHub(ctx context.Context, store github.Store, token string, logger *log.Logger) {
-	ctx = authz.Operator(ctx)
-	login, err := github.FetchLogin(ctx, token)
-	if err != nil {
-		logger.Printf("github: %s is set but its login could not be resolved (%v); no account connected",
-			envGitHubToken, err)
-		return
-	}
-	if err := store.Save(ctx, login, "", token); err != nil {
-		logger.Printf("github: could not store the connection for %q: %v", login, err)
-		return
-	}
-	logger.Printf("github: connected as %q from %s", login, envGitHubToken)
 }
 
 // suggestBootLine is the boot banner's suggested-replies line: off, or on

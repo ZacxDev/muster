@@ -34,7 +34,6 @@ import (
 	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -229,9 +228,6 @@ var isolationClasses = map[string]routeClass{
 	// The browser telemetry relay (faro_relay.go): names no object; it
 	// forwards the caller's own batch, rate-limited per user.
 	"POST /telemetry/faro":         classList,
-	"GET /github/callback":         classList,
-	"GET /github/connect":          classList,
-	"GET /repos":                   classList,
 	"GET /share":                   classList,
 	"GET /tasks":                   classList,
 	"GET /ui/agents":               classList,
@@ -244,7 +240,6 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/connectors":           classList,
 	"GET /ui/connectors/new":       classList,
 	"GET /ui/notifications":        classList,
-	"GET /ui/repos":                classList,
 	"GET /ui/tags":                 classList,
 	"GET /ui/tasks":                classList,
 	"GET /ui/tasks/new":            classList,
@@ -252,7 +247,6 @@ var isolationClasses = map[string]routeClass{
 	"POST /agents":                 classList, // the form names A's task as note_id
 	"POST /chief/provision":        classList,
 	"POST /connectors":             classList,
-	"POST /github/disconnect":      classList,
 	"POST /tasks":                  classList,
 	"POST /tasks/merge":            classList, // the form names A's task as the loser
 
@@ -495,7 +489,7 @@ var isolationClasses = map[string]routeClass{
 // the same route is a fact about B.
 var wantCanaryForA = []string{
 	"GET /ui/agents", "GET /ui/agents/notes", "GET /ui/connector-requests", "GET /ui/connectors",
-	"GET /ui/repos", "GET /ui/tasks", "GET /ui/chief/panel",
+	"GET /ui/tasks", "GET /ui/chief/panel",
 	// The AGGREGATES — vocabularies, suggestion lists, unread rolls — read
 	// across rows rather than by id, which is exactly where a missing scope
 	// hides (plan §Recon 4). A's tag and project are identities, its unread
@@ -692,10 +686,6 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gh, err := github.NewPG(pool, bytes.Repeat([]byte{4}, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
 	as2 := func(u isoUser) context.Context {
 		role := authz.RoleMember
 		if u.uid == authz.OperatorUserID {
@@ -792,7 +782,6 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a canary-named connector")
 	must(cs.Audit(ua, connectors.AuditEntry{Kind: "proxy", AgentID: w.a.agent.ID, AgentName: w.a.agent.Name,
 		Connector: w.aConnName, Method: "GET", Host: w.upHost, Path: "/", Status: 200, Detail: w.canary + " audit"}), "a audit")
-	must(gh.Save(ua, w.canary+"-login", "repo", "gho_"+w.canary), "a github")
 
 	// Personal tokens: one credential each for A and B, and A's second token
 	// (canary-named) as the object. Minted through the real store as each
@@ -969,9 +958,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "account pool")
 	ext := Extensions{
 		Kinds: isoKinds{pool: ccp, plane: plane}, Credentials: isoCredPage{PGStore: w.creds, plane: plane},
-		Notes: ns, Agents: as, GitHub: gh, Users: users.NewPG(pool), APITokens: apitokens.NewPG(pool),
-		GitHubOAuth: GitHubOAuthConfig{ClientID: "iso-client", ClientSecret: "iso-secret", BaseURL: "http://muster.test",
-			StateKey: []byte("iso-walk-oauth-state-key-0123456789")},
+		Notes: ns, Agents: as, Users: users.NewPG(pool), APITokens: apitokens.NewPG(pool),
+		PublicURL:   "http://muster.test",
 		Provisioner: w.prov, Gateway: w.prov, Connectors: cs,
 		Mirror: &isoMirror{owner: w.a.uid, host: w.canary + "-host"},
 		Flows:  flows.NewPG(pool),
@@ -1337,9 +1325,6 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		path += "?" + url.Values{"subject": {"agent:" + strconv.FormatInt(o.agent, 10)}}.Encode()
 	}
 	if method == http.MethodGet || method == http.MethodDelete {
-		if strings.HasPrefix(path, "/github/callback") {
-			path += "?state=x&code=y"
-		}
 		return method, path, ""
 	}
 	if strings.HasPrefix(path, "/plugin/") {

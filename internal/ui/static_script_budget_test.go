@@ -54,7 +54,7 @@ func scriptedDocuments(t *testing.T, f Features) map[string]string {
 // their code by reference, not inline. Red before this change: the Tasks
 // shell carried ~230 KB of inline JavaScript, appScript alone ~72 KB.
 func TestTheShellCarriesNoInlineScriptOverTheBudget(t *testing.T) {
-	f := Features{GitHub: true, Connectors: true, Admin: true, Push: true, Attention: true, SnapUser: 7, SnapBuild: "b1"}
+	f := Features{Connectors: true, Admin: true, Push: true, Attention: true, SnapUser: 7, SnapBuild: "b1"}
 	docs := scriptedDocuments(t, f)
 	// And with the browser telemetry ON (faro.go), whose initializer is a
 	// static file too: the budget holds with it.
@@ -108,7 +108,7 @@ func TestTheShellCarriesNoInlineScriptOverTheBudget(t *testing.T) {
 // (measured: dropping the build from appScript's tag turns it red).
 func TestStaticScriptsAreTheSameForEveryone(t *testing.T) {
 	a := Features{SnapUser: 1, SnapBuild: "build-alpha-1111"}
-	b := Features{GitHub: true, Connectors: true, Admin: true, Push: true, Attention: true, SnapUser: 2, SnapBuild: "build-omega-9999"}
+	b := Features{Connectors: true, Admin: true, Push: true, Attention: true, SnapUser: 2, SnapBuild: "build-omega-9999"}
 
 	withHostPrefs(t, HostPreferences{})
 	docsA := scriptedDocuments(t, a)
@@ -151,7 +151,7 @@ func TestStaticScriptsAreTheSameForEveryone(t *testing.T) {
 	appA, appB := html.UnescapeString(docsA["shell tasks"]), html.UnescapeString(docsB["shell tasks"])
 	for _, c := range []struct{ doc, want string }{
 		{appA, `data-build="build-alpha-1111"`}, {appB, `data-build="build-omega-9999"`},
-		{appB, `"repos"`}, {appB, `["hostzulu","hostyankee","*","cluster"]`},
+		{appB, `"agents","connectors"]`}, {appB, `["hostzulu","hostyankee","*","cluster"]`},
 	} {
 		if !strings.Contains(c.doc, c.want) {
 			t.Errorf("CONTROL: the per-document input %s is not on the page's tags", c.want)
@@ -215,7 +215,7 @@ func TestTheSwapInlinerKnowsEveryPageScript(t *testing.T) {
 // worker's precache, and a linked path nothing registered is a 404 (which
 // expandStaticScripts also refuses).
 func TestEveryGeneratedScriptIsLinkedAndEveryLinkIsGenerated(t *testing.T) {
-	f := Features{GitHub: true, Connectors: true, Admin: true, Push: true, Attention: true, SnapUser: 7, SnapBuild: "b1"}
+	f := Features{Connectors: true, Admin: true, Push: true, Attention: true, SnapUser: 7, SnapBuild: "b1"}
 	linked := map[string]bool{}
 	docs := scriptedDocuments(t, f)
 	restore := withFaro(t) // faro-init.js is linked only with the telemetry on

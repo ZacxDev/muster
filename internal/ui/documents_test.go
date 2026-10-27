@@ -269,10 +269,10 @@ func allDocumentsFrom(rows []documentRenderer) []namedDoc {
 // featuresAllOn is the widest shell: every optional subsystem wired.
 //
 // 🔴 IT IS NAMED RATHER THAN SPELLED AT EACH CALL SITE SO A NEW Features FIELD
-// REACHES EVERY SWEEP AT ONCE. A field added with `Features{GitHub: true}`
+// REACHES EVERY SWEEP AT ONCE. A field added with `Features{Connectors: true}`
 // written out eight times would default to false at all eight, silently removing
 // whatever it gates from every document-level guard in this package.
-var featuresAllOn = Features{GitHub: true}
+var featuresAllOn = Features{Connectors: true}
 
 // listFragments is every LIST/CARD partial the shell lazy-loads over htmx rather
 // than rendering inline. They are unreachable from Page() at ANY fixture — every
@@ -282,7 +282,6 @@ func listFragments() []namedDoc {
 	return []namedDoc{
 		{"tasks-list", NotesCards(sampleTasksView())},
 		{"agents-cards", AgentsCards(sampleAgentCards())},
-		{"repos-connected", ReposConnected("octo-owner", sampleRepos())},
 		{"notes-edit-modal", NotesEditModalBody(sampleNoteEditView())},
 	}
 }

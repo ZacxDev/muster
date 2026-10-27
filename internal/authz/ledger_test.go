@@ -59,10 +59,7 @@ var (
 	// systemLedger: the background loops, which act for every user.
 	//
 	// ⚠ NOT LISTED, BECAUSE THERE IS NO LOOP TO LIST: ccpool (selection runs
-	// inside a dispatch request), a GitHub mirror (none exists;
-	// cmd/muster-server's connectStaticGitHub is a one-shot boot write of the
-	// OPERATOR'S connection, which runs under authz.Operator (operatorLedger), not
-	// System), and a reconciler (agents/reconcile.go is a pure decision table
+	// inside a dispatch request), a GitHub mirror (none exists), and a reconciler (agents/reconcile.go is a pure decision table
 	// that agentstatus drives).
 	//
 	// Accounts PR 3a added the two non-loop sites, each reading ONE row with
@@ -193,7 +190,6 @@ var (
 	// it is safe only because no non-test file imports dbtest
 	// (TestOnlyTestFilesImportDBTest).
 	operatorLedger = []string{
-		"cmd/muster-server.connectStaticGitHub",
 		// `muster-server mirror token create|ls|revoke`: the operator's tokens.
 		"cmd/muster-server.runMirrorCLI",
 		"e2e/seed.run",

@@ -118,6 +118,9 @@ export const agentsHoldPort = port + 47;
 // OpenRouter's model list, a permission router) on one loopback port.
 export const pickersPort = port + 48;
 export const pickersFakePort = port + 49;
+// …and its connect listener: the GitHub App the repo picker reads needs the
+// connector store, which refuses to boot without one.
+export const pickersConnectPort = port + 247;
 // The send queue: its own server (the e2eterm binary, mirror plugin on, a short
 // MUSTER_SEND_QUEUE_IDLE) and its two mirrored hosts — one that reports Claude
 // Code's status and one that plays an older muster-mirror.

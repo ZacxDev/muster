@@ -16,7 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ZacxDev/muster/internal/db"
-	"github.com/ZacxDev/muster/internal/github"
 )
 
 // applyThroughFrom applies every on-disk migration NEWER than the database's
@@ -551,56 +550,6 @@ func TestConnectorNamesAreUniquePerOwner(t *testing.T) {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23505" || pgErr.ConstraintName != "connectors_owner_name_key" {
 		t.Fatalf("the same owner's duplicate name: got %v, want 23505 from connectors_owner_name_key", err)
-	}
-}
-
-// TestGitHubConnectionStoreKeepsItsSingleUserBehaviourAfter0006 drives the real
-// internal/github.PGStore against the re-keyed table: Get on empty, Save, Get,
-// upsert, Clear — all as owner 1, with one row — and shows the store is keyed by
-// owner rather than "the only row": another owner's row is neither read nor
-// cleared.
-func TestGitHubConnectionStoreKeepsItsSingleUserBehaviourAfter0006(t *testing.T) {
-	ctx := ctx0006(t)
-	pool := freshMigrated(ctx, t, "ms_0006_github")
-	st, err := github.NewPG(pool, []byte("0123456789abcdef0123456789abcdef"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The store acts for the PRINCIPAL's user since accounts PR 3b (it was the
-	// constant 1); the operator's principal keeps this test's single-user
-	// claims. The connection itself is still the migrator's.
-	op := asUser(ctx, 1)
-	if _, ok, err := st.Get(op); err != nil || ok {
-		t.Fatalf("Get on an empty table: ok=%v err=%v, want false/nil", ok, err)
-	}
-	if err := st.Save(op, "octo", "repo", "gho_first"); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	if err := st.Save(op, "octo2", "repo,read:org", "gho_second"); err != nil {
-		t.Fatalf("second Save (upsert): %v", err)
-	}
-	c, ok, err := st.Get(op)
-	if err != nil || !ok || c.Login != "octo2" || c.Scopes != "repo,read:org" || c.Token != "gho_second" {
-		t.Fatalf("Get after upsert: %+v ok=%v err=%v", c, ok, err)
-	}
-	var owner int64
-	if err := pool.QueryRow(ctx, `SELECT owner_id FROM github_connection`).Scan(&owner); err != nil || owner != 1 {
-		t.Fatalf("the store wrote owner %d (%v); want exactly one row, owner 1", owner, err)
-	}
-
-	two := scanID(ctx, t, pool, `INSERT INTO users (role) VALUES ('member') RETURNING id`)
-	mustExec(ctx, t, pool, `INSERT INTO github_connection (owner_id, login, token_ciphertext) VALUES ($1, 'someone-else', '\x00')`, two)
-	if c, _, err := st.Get(op); err != nil || c.Login != "octo2" {
-		t.Fatalf("Get with a second owner's row present: %+v %v", c, err)
-	}
-	if err := st.Clear(op); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := st.Get(op); ok {
-		t.Fatal("Clear left owner 1's connection")
-	}
-	if n := countRows(ctx, t, pool, "github_connection"); n != 1 {
-		t.Fatalf("Clear removed %d rows of another owner; want that row kept", 1-n)
 	}
 }
 

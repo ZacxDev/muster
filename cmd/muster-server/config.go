@@ -78,15 +78,19 @@ const (
 	envGoTrueSecret = "MUSTER_GOTRUE_JWT_SECRET"
 	envBrowserPort  = "MUSTER_BROWSER_PORT"
 
+	envPublicURL = "MUSTER_PUBLIC_URL"
+
+	// The REMOVED GitHub OAuth connection's variables. Nothing configures from
+	// them any more; they are still read, only so a deployment that sets them
+	// boots (a value that once had to parse no longer has to) and the banner
+	// says each one is ignored (ignoredGitHubOAuthEnv).
 	envGitHubToken     = "MUSTER_GITHUB_TOKEN"
 	envGitHubEncKey    = "MUSTER_GITHUB_ENCRYPTION_KEY"
-	envPublicURL       = "MUSTER_PUBLIC_URL"
 	envGitHubClientID  = "GITHUB_CLIENT_ID"
 	envGitHubClientSec = "GITHUB_CLIENT_SECRET"
 
-	// The GitHub App (internal/githubapp): muster's GitHub identity (for admins)
-	// when set, taking precedence over the OAuth connection above (deprecated).
-	// The ID and the key are a pair, and the account allowlist is REQUIRED with
+	// The GitHub App (internal/githubapp): muster's GitHub identity (for
+	// admins), and the only one. The ID and the key are a pair, and the account allowlist is REQUIRED with
 	// them: the App is public, so anyone can install it.
 	envGitHubAppID       = "MUSTER_GITHUB_APP_ID"
 	envGitHubAppKey      = "MUSTER_GITHUB_APP_PRIVATE_KEY"
@@ -516,11 +520,11 @@ type config struct {
 	// only personal mst_ tokens on the /api/ tier (refuseSharedTokenOnBrowserListener).
 	BrowserPort int
 
-	GitHubToken        string
-	GitHubEncKey       []byte
-	PublicURL          string
-	GitHubClientID     string
-	GitHubClientSecret string
+	PublicURL string
+	// IgnoredGitHubOAuth names the removed GitHub OAuth connection's variables
+	// that are set (ignoredGitHubOAuthEnv), for the boot banner. Nothing else
+	// reads them.
+	IgnoredGitHubOAuth []string
 
 	// GitHubAppID / GitHubAppKey configure the GitHub App (both or neither;
 	// loadConfig refuses half, and a key that does not parse).
@@ -1029,10 +1033,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AuthMode:             strings.ToLower(strings.TrimSpace(getenv(envAuthMode))),
 		GoTrueURL:            strings.TrimRight(strings.TrimSpace(getenv(envGoTrueURL)), "/"),
 		GoTrueSecret:         strings.TrimSpace(getenv(envGoTrueSecret)),
-		GitHubToken:          strings.TrimSpace(getenv(envGitHubToken)),
 		PublicURL:            strings.TrimSpace(getenv(envPublicURL)),
-		GitHubClientID:       strings.TrimSpace(getenv(envGitHubClientID)),
-		GitHubClientSecret:   strings.TrimSpace(getenv(envGitHubClientSec)),
+		IgnoredGitHubOAuth:   ignoredGitHubOAuthEnv(getenv),
 		FaroURL:              strings.TrimSpace(getenv(envFaroURL)),
 		FaroKey:              strings.TrimSpace(getenv(envFaroKey)),
 		FaroTracing:          envFlag(getenv, envFaroTracing),
@@ -1299,14 +1301,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s / %s: %v", envHostOrder, envHostIcons, err)
 	}
 
-	if v := strings.TrimSpace(getenv(envGitHubEncKey)); v != "" {
-		key, err := decodeEncryptionKey(v)
-		if err != nil {
-			return config{}, fmt.Errorf("invalid %s: %w", envGitHubEncKey, err)
-		}
-		c.GitHubEncKey = key
-	}
-
 	if err := c.loadGitHubApp(getenv); err != nil {
 		return config{}, err
 	}
@@ -1460,9 +1454,6 @@ func (c config) validateConnectors() error {
 			"connector proxy, whose grants live in the connector store. Set %s too", envGitHubAppID,
 			envConnectorEncKey, envConnectorEncKey)
 	}
-	if len(c.ConnectorEncKey) > 0 && len(c.GitHubEncKey) > 0 && string(c.ConnectorEncKey) == string(c.GitHubEncKey) {
-		return fmt.Errorf("%s is the same key as %s: generate a separate key for each store", envConnectorEncKey, envGitHubEncKey)
-	}
 	if c.ConnectPort != 0 && len(c.ConnectorEncKey) == 0 {
 		return fmt.Errorf("%s is set but %s is not: the connect listener would serve only refusals", envConnectPort, envConnectorEncKey)
 	}
@@ -1561,14 +1552,35 @@ func (c *config) loadGitHubApp(getenv func(string) string) error {
 	return nil
 }
 
-// decodeEncryptionKey decodes the 32-byte AES key the GitHub token is encrypted
-// at rest with. Standard or raw base64, padded or not.
+// ignoredGitHubOAuthEnv names, in a fixed order, the removed GitHub OAuth
+// connection's variables that are set to anything but whitespace.
+//
+// 🔴 IT NEVER REFUSES, AND THAT IS THE POINT OF READING THEM AT ALL. A
+// deployment that configured the OAuth connection still sets these (among them
+// an encryption key that used to have to decode to 32 bytes); this build must
+// boot on that environment unchanged. Each one set is named on the boot banner
+// as ignored, so the operator can see what to drop.
+func ignoredGitHubOAuthEnv(getenv func(string) string) []string {
+	var out []string
+	add := func(name, value string) {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, name)
+		}
+	}
+	add(envGitHubEncKey, getenv(envGitHubEncKey))
+	add(envGitHubToken, getenv(envGitHubToken))
+	add(envGitHubClientID, getenv(envGitHubClientID))
+	add(envGitHubClientSec, getenv(envGitHubClientSec))
+	return out
+}
+
+// decodeEncryptionKey decodes a 32-byte AES key (the connector store's).
+// Standard or raw base64, padded or not.
 //
 // 🔴 THERE IS NO "GENERATE ONE IF UNSET" BRANCH, AND ITS ABSENCE IS THE POINT.
-// An ephemeral key would make every previously stored GitHub token undecryptable
-// on the next restart, which presents as "the Repos tab forgot my account" with
-// nothing in the log — the failure is a DATA loss dressed as a UI bug. Unset
-// means the GitHub store is not built at all, which is visible on screen.
+// An ephemeral key would make every previously stored secret undecryptable on
+// the next restart — a DATA loss dressed as a UI bug. Unset means the store is
+// not built at all, which is visible on screen.
 func decodeEncryptionKey(v string) ([]byte, error) {
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.RawStdEncoding,

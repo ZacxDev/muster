@@ -1273,6 +1273,14 @@ func seededComboOption(o ComboOption) g.Node {
 	)
 }
 
+// RepoView is the minimal repo shape the dispatch dialog's repository picker
+// renders (decoupled from the GitHub API client type).
+type RepoView struct {
+	FullName string // owner/name
+	Private  bool
+	HTMLURL  string
+}
+
 // RenderRepoOptions / RenderNoteOptions write the lazy-loaded combobox option
 // lists (swapped in over the skeleton).
 func RenderRepoOptions(w io.Writer, repos []RepoView) error {
