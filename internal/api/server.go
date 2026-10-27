@@ -226,6 +226,8 @@ type Server struct {
 	// first use, from the extensions.
 	focusOnce      sync.Once
 	focusRefresher *focus.Refresher
+	// prScan is the pull-request scan's per-session cursors (pr_routes.go).
+	prScan prScanState
 
 	// suggestIdleWaitFor overrides suggestIdleWait (a test's; 0 = the
 	// constant).

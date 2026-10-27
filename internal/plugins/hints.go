@@ -61,6 +61,31 @@ const HintHeader = "Sessions that may already be on this"
 type Hints struct {
 	Window   time.Duration
 	Sessions []SessionHint
+	// Author, when set, is the session muster recorded authoring the pull
+	// request a review mail is about (pr_sessions.go), which the message did
+	// not reach: its own block (renderAuthor).
+	Author *AuthorHint
+}
+
+// AuthorHeader begins the author block's preface.
+const AuthorHeader = "Session that authored this pull request"
+
+// AuthorHint is the session muster recorded authoring a review mail's pull
+// request (PRSessionStore.ResolvePRSession), as the chief's turn names it.
+type AuthorHint struct {
+	// ID is the session as the chief's tools name it ("mirror:<sid>").
+	ID string
+	// Name is its focus title or window title ("" for none); Host its host.
+	Name, Host string
+	// Kind, Repo, PR and HeadRef are what muster saw it do.
+	Kind    string
+	Repo    string
+	PR      int64
+	HeadRef string
+	// LastSeen is when muster last saw it do so.
+	LastSeen time.Time
+	// Online: an online mirrored window shows the session now.
+	Online bool
 }
 
 // SessionHint is one session that may already be on the message's subject.
@@ -164,3 +189,6 @@ func renderHints(h Hints, nonce string, routing bool) string {
 	}
 	return ""
 }
+
+// renderAuthor is the author block, preceded by a blank line, or "" for none.
+func renderAuthor(a *AuthorHint, nonce string) string { return "" }
