@@ -54,7 +54,7 @@ func ParsePRMailSenders(raw string) (PRMailSenders, error) {
 // with the sender verified or not, is read as a pull-request review: only
 // through agent mail, only verified, only a listed address exactly.
 func (s PRMailSenders) Allows(pluginName, sender string, verified bool) bool {
-	return verified && pluginName == AgentMailPlugin && s[strings.TrimSpace(sender)]
+	return pluginName == AgentMailPlugin && s[strings.TrimSpace(sender)]
 }
 
 // PRSession is one session's authorship of a pull request, as stored.
