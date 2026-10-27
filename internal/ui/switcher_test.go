@@ -375,10 +375,13 @@ func TestTheSwitcherViewButtonOpensAMenu(t *testing.T) {
 	if menuAt < 0 || menuAt < lastRow {
 		t.Fatalf("no popover menu after the rows (menu %d, last row %d)", menuAt, lastRow)
 	}
-	items := regexp.MustCompile(`<button type="button" role="menuitemradio" aria-checked="(true|false)" data-switcher-pick="([a-z]+)"[^>]*>.*?<span class="flex-1">([^<]+)</span><span class="text-xs tabular-nums text-muted" aria-label="(\d+) sessions">\d+</span></button>`).FindAllStringSubmatch(nav[menuAt:], -1)
+	items := regexp.MustCompile(`<button type="button" role="menuitemradio" aria-checked="(true|false)" data-switcher-pick="([a-z]+)"[^>]*>.*?<span class="flex-1">([^<]+)</span><span class="text-xs tabular-nums text-muted" data-switcher-count="([a-z]+)" data-restore-refresh="switcher-count-([a-z]+)">(\d+)</span></button>`).FindAllStringSubmatch(nav[menuAt:], -1)
 	got := []string{}
 	for _, m := range items {
-		got = append(got, m[2]+"="+m[3]+"/"+m[4]+"/"+m[1])
+		if m[4] != m[2] || m[5] != m[2] {
+			t.Errorf("%s's count is marked for %q / restore-refreshed as %q", m[2], m[4], m[5])
+		}
+		got = append(got, m[2]+"="+m[3]+"/"+m[6]+"/"+m[1])
 	}
 	// Recent: ag-three; Pins: mango:2, Two; All: all six (the page's own included).
 	if want := "recent=Recent/1/true pins=Pins/2/false all=All/6/false"; strings.Join(got, " ") != want {

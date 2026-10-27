@@ -337,7 +337,8 @@ const (
 const searchIconSVG = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd"/></svg>`
 
 // switcherViewMenu is the menu the view button opens: one radio item per view,
-// the shown one checked, each with how many entries it holds. A popover (top
+// the shown one checked, each with how many entries it holds (refreshed with
+// the rows on a restore: RestoreRefreshAttr). A popover (top
 // layer, out of flow): it opens upward from the button, placed by the script
 // before it is shown, and its open and close are animated in CSS
 // (web/css/input.css, #switcher-views) — at once under prefers-reduced-motion.
@@ -352,7 +353,10 @@ func switcherViewMenu(s *Switcher) g.Node {
 			Class("group flex min-h-[44px] w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-medium text-fg outline-none transition hover:bg-s2 focus-visible:bg-s2 aria-checked:text-accent"),
 			g.Raw(`<svg class="h-4 w-4 shrink-0 invisible group-aria-checked:visible" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>`),
 			Span(Class("flex-1"), g.Text(v.label)),
-			Span(Class("text-xs tabular-nums text-muted"), g.Attr("aria-label", strconv.Itoa(len(s.view(v.key)))+" sessions"), g.Text(strconv.Itoa(len(s.view(v.key))))),
+			// The count is redrawn with the rows on a back/forward-cache restore
+			// (restore.go), from the same fresh copy, so it never disagrees with
+			// the row it counts.
+			Span(Class("text-xs tabular-nums text-muted"), g.Attr("data-switcher-count", v.key), g.Attr(RestoreRefreshAttr, "switcher-count-"+v.key), g.Text(strconv.Itoa(len(s.view(v.key))))),
 		))
 	}
 	return Div(
@@ -754,6 +758,14 @@ func switcherScript() g.Node {
     if (e.key === 'ArrowDown') { e.preventDefault(); if (n) { active = (active + 1) % n; mark(); } }
     else if (e.key === 'ArrowUp') { e.preventDefault(); if (n) { active = (active - 1 + n) % n; mark(); } }
     else if (e.key === 'Enter') { e.preventDefault(); go(active); }
+  });
+  // 🔴 THE OPEN PALETTE KEEPS FOCUS AND OWNS ESCAPE, whatever in it has focus:
+  // Tab stays on the input (nothing else in it takes focus; the options are
+  // reached by the arrows), and Escape closes the palette ONLY — stopped here,
+  // so it never also reaches a document handler (the message index's sheet,
+  // the chief panel) in the same keypress.
+  pal.addEventListener('keydown', function (e) {
+    if (e.key === 'Tab') { e.preventDefault(); input.focus(); }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); hide(pal); }
   });
   // A tap opens the option; the mousedown is kept from moving focus, so a

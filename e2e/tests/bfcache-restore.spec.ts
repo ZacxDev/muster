@@ -288,7 +288,7 @@ test('an agent page shown again from the HTTP cache has a new send nonce', async
   }
 });
 
-test('a restored agent page redraws its switcher: an agent opened meanwhile is in Recent', async () => {
+test('a restored agent page redraws its switcher: an agent opened meanwhile is in Recent, and the view menu counts it', async () => {
   const other = 'e2e-bfc-other-' + Date.now().toString(36);
   mkchat(other, [{ role: 'user', content: 'The other agent.' }]);
   const { ctx, page } = await newContext();
@@ -307,6 +307,10 @@ test('a restored agent page redraws its switcher: an agent opened meanwhile is i
     await expectRestored(page, await backShow(page, new URL(url, baseURL).pathname, t0), doc);
     await expect(recent.locator(`a[href^="/agents/${other}"]`), 'Recent was redrawn with it').toHaveCount(1, { timeout: 5000 });
     expect(await docOf(page), 'without a reload').toBe(doc);
+    // 🔴 The view menu's count for Recent is redrawn with the row (it was
+    // drawn when the page was, and stayed one short after Back).
+    const rows = await recent.locator('[data-switcher-entry]').count();
+    await expect(page.locator('#switcher-views [data-switcher-pick="recent"] span.tabular-nums'), 'the menu counts what the row holds').toHaveText(String(rows), { timeout: 5000 });
   } finally {
     await ctx.close();
     mkchat(other, null);

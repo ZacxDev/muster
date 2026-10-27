@@ -335,6 +335,39 @@ for (const vp of [
       ]);
     });
 
+    // 🔴 THE OPEN PALETTE OWNS TAB AND ESCAPE: at acfcd699 a Tab took focus out
+    // of it, and the Escape that then closed it ALSO reached the document and
+    // closed the message index's sheet underneath in the same keypress.
+    test('with the message index open: Tab stays in the palette, and Escape closes the palette only', async ({ page }) => {
+      test.setTimeout(90_000);
+      await ready(page);
+      await openView(page);
+      const sheet = page.locator('#chat-index');
+      await page.locator('#chat-index-open').click();
+      await expect(sheet).toBeVisible();
+      // Focus is on the sheet's close button (not a text field): "/" opens the search.
+      await page.keyboard.press('/');
+      await expect(pal(page)).toBeVisible();
+      await expect(input(page)).toBeFocused();
+      await page.keyboard.press('Tab');
+      await page.keyboard.press('Escape');
+      await expect(pal(page)).toBeHidden();
+      await expect(sheet, 'after a Tab, Escape closed the palette and left the sheet underneath open').toBeVisible();
+      // And focus never left it.
+      await page.keyboard.press('/');
+      await expect(input(page)).toBeFocused();
+      await page.keyboard.press('Tab');
+      await expect(input(page), 'Tab stays in the open palette').toBeFocused();
+      await page.keyboard.press('Shift+Tab');
+      await expect(input(page), 'and so does Shift+Tab').toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(pal(page)).toBeHidden();
+      await expect(sheet).toBeVisible();
+      // CONTROL: the next Escape is the sheet's, and closes it.
+      await page.keyboard.press('Escape');
+      await expect(sheet).toBeHidden();
+    });
+
     test('on an agent\'s chat page: "/" finds a window by codename and Enter opens it; nothing moves', async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
