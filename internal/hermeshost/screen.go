@@ -58,14 +58,16 @@ import (
 // It reads no word Hermes localises except the vi label: the prefixes are
 // the skin's glyphs, the placeholder is matched by its italic style.
 
-// Cell is one character of a captured screen, whether it is italic, and
-// whether it has a background colour (Bg). A draft typed in Hermes's input
+// Cell is one character of a captured screen, whether it is italic, whether
+// it is dim (faint, SGR 2: Claude Code draws its ghost prompt suggestion so —
+// ccdialog.InputBox reads it), and whether it has a background colour (Bg). A draft typed in Hermes's input
 // box is drawn in the input's style, which has none at the pin (and an escape
 // sequence typed or pasted into the box is drawn as text, `^[`, never
 // obeyed), so a background is something a draft cannot draw.
 type Cell struct {
 	R      rune
 	Italic bool
+	Dim    bool
 	Bg     bool
 }
 
@@ -76,7 +78,7 @@ type Screen struct {
 }
 
 // ParseScreen reads a `capture-pane -p -e` capture. Of SGR only italic (3
-// on; 23, 0 or an empty SGR off) and whether a background colour is set (40-47,
+// on; 23, 0 or an empty SGR off), dim (2 on; 22, 0 or an empty SGR off) and whether a background colour is set (40-47,
 // 100-107, 48;…; 49, 0 or an empty SGR off) are kept; every other escape
 // sequence is dropped. A sequence it cannot read ends at the next letter,
 // never later.
@@ -96,7 +98,7 @@ func ParseScreen(capture string) Screen {
 }
 
 // style is the SGR state ParseScreen keeps.
-type style struct{ italic, bg bool }
+type style struct{ italic, dim, bg bool }
 
 // parseRow is one captured line's cells, starting with st and returning the
 // style it ends with.
@@ -109,7 +111,7 @@ func parseRow(line string, st style) ([]Cell, style) {
 			if r == '\t' {
 				r = ' '
 			}
-			row = append(row, Cell{R: r, Italic: st.italic, Bg: st.bg})
+			row = append(row, Cell{R: r, Italic: st.italic, Dim: st.dim, Bg: st.bg})
 			continue
 		}
 		if i+1 >= len(rs) {
@@ -160,6 +162,10 @@ func sgrStyle(params string, st style) style {
 			st.italic = false
 		case n == 3:
 			st.italic = true
+		case n == 22:
+			st.dim = false
+		case n == 2:
+			st.dim = true
 		case n == 49:
 			st.bg = false
 		case n >= 40 && n <= 47, n >= 100 && n <= 107:
