@@ -423,7 +423,7 @@ window.musterStepUp = (function () {
       var fe = window.frameElement;
       if (!fe || !fe.hasAttribute('` + ViewFrameAttr + `')) return null;
       var t = window.parent.musterStepUp;
-      return t && t !== window.musterStepUp && typeof t.ask === 'function' ? t : null;
+      return t && t !== window.musterStepUp && t.framedAsk === true && typeof t.ask === 'function' ? t : null;
     } catch (e) { return null; }
   }
   // The view swap makes the page under a revealed frame inert (every child of
@@ -437,9 +437,13 @@ window.musterStepUp = (function () {
       if (el.inert) { el.inert = false; lifted.push({ el: el, swap: el.hasAttribute('data-view-inert') }); }
     }
   }
+  // On close every element the swap marked (data-view-inert) is inert again —
+  // also one the swap marked but left usable because this dialog was open in
+  // it (view_swap.go's inertAll, a frame revealed while the dialog was open).
   function unlift() {
-    lifted.forEach(function (l) { if (!l.swap || l.el.hasAttribute('data-view-inert')) l.el.inert = true; });
+    lifted.forEach(function (l) { if (!l.swap) l.el.inert = true; });
     lifted = [];
+    for (var el = dlg; el; el = el.parentElement) { if (el.hasAttribute('data-view-inert')) el.inert = true; }
   }
   function ask(why, cb) {
     // 🔴 A FRAMED VIEW ASKS IN THE TOP WINDOW'S DIALOG. Reported from the
@@ -542,7 +546,12 @@ window.musterStepUp = (function () {
     // A margin, so an action is not tried in the last seconds of freshness.
     fresh: function () { return performance.now() < freshUntil - 10000; },
     stale: function () { freshUntil = 0; },
-    ask: ask
+    ask: ask,
+    // framedAsk: this window's dialog can be asked from the view switch's
+    // frame — it lifts the swap's inert while it is open (lift). A top page
+    // without it (one loaded before this) would open its dialog inert,
+    // unusable, over a blocked frame; topStepUp leaves such a frame its own.
+    framedAsk: true
   };
 })();
 `))
