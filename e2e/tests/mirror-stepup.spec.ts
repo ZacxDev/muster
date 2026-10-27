@@ -420,6 +420,9 @@ test.describe('the rendered view on a phone (390×844)', () => {
 const viewPath = `/mirror/view?host=${encodeURIComponent(host)}&session=main`;
 const pasted = () => (fs.existsSync(transcript + '.pasted') ? fs.readFileSync(transcript + '.pasted', 'utf8') : '');
 const passkeyBtn = (page: Page) => page.locator('#term-confirm-passkey');
+// Why the dialog did NOT offer a passkey (stepUpScript's unavailable): the
+// dialog's data-passkey-unavailable, and the muted line that shows it.
+const passkeyNote = (page: Page) => page.locator('#term-confirm-passkey-note');
 const subOf = (token: string) => String(b64urlJSON(token.split('.')[1]).sub);
 
 async function signIn(page: Page, email = adminEmail, pw = adminPW) {
@@ -516,6 +519,10 @@ test.describe('the window and the passkey confirm on a phone (390×844)', () => 
     await options.catch(() => undefined);
     await expect(passkeyBtn(page)).toBeHidden();
     await expect(page.locator('#term-confirm-submit')).toHaveText('Confirm');
+    // Recorded as the account having none — and, that being the ordinary
+    // password-only case, nothing about it on screen.
+    await expect(dialog(page)).toHaveAttribute('data-passkey-unavailable', 'not-available');
+    await expect(passkeyNote(page)).toBeHidden();
     await page.fill('#term-confirm-password', adminPW);
     await page.locator('#term-confirm-submit').tap();
     await expect(dialog(page)).toBeHidden();
@@ -678,6 +685,9 @@ test.describe('the passkey confirm at a desktop width (1280px)', () => {
     await expect(dialog(page)).toContainText('needs a sign-in from the last 12 hours.');
     await expect(passkeyBtn(page)).toBeVisible();
     await expect(passkeyBtn(page)).toBeFocused();
+    // Offered: no reason recorded, none shown.
+    await expect(dialog(page)).not.toHaveAttribute('data-passkey-unavailable', /.*/);
+    await expect(passkeyNote(page)).toBeHidden();
     await passkeyBtn(page).click();
     await expect(dialog(page)).toBeHidden();
     await expect(screen(page)).toContainText('mode=rw');
@@ -768,6 +778,8 @@ test.describe('the terminal in the view switch’s frame, with no WebAuthn in th
     await expect(t.locator('#term-confirm'), 'not in the frame’s own dialog').toBeHidden();
     await expect(passkeyBtn(page), 'the passkey is offered').toBeVisible();
     await expect(passkeyBtn(page)).toBeFocused();
+    await expect(dialog(page), 'offered: no reason recorded').not.toHaveAttribute('data-passkey-unavailable', /.*/);
+    await expect(passkeyNote(page), 'and none shown').toBeHidden();
     const box = (await dialog(page).boundingBox())!;
     expect(box.x + box.width, 'the dialog fits 390px').toBeLessThanOrEqual(390);
     await passkeyBtn(page).tap();
@@ -816,6 +828,26 @@ test.describe('the terminal in the view switch’s frame, with no WebAuthn in th
     expect(await page.evaluate(() => document.documentElement.getAttribute('data-view'))).toBe('terminal');
     expect(await dialog(page).evaluate((el) => !!el.closest('[inert]')), 'the closed dialog is inert again').toBe(true);
     expect(await page.locator('#mv-log').evaluate((el) => !!el.closest('[inert]')), 'the rendered view under the frame is inert').toBe(true);
+
+    // 3. When the dialog that ASKS (the top window's) has no WebAuthn either,
+    //    it says why it offers the password only: on the dialog, and in one
+    //    muted line on screen. The password still confirms, and both are gone
+    //    once it closes.
+    await page.evaluate(() => { delete (window as { PublicKeyCredential?: unknown }).PublicKeyCredential; });
+    await makeStale(context);
+    await t.locator('#term-mode').tap();
+    await expect(dialog(page)).toBeVisible();
+    await expect(dialog(page)).toHaveAttribute('data-passkey-unavailable', 'no-publickeycredential');
+    await expect(passkeyNote(page)).toBeVisible();
+    await expect(passkeyNote(page)).toHaveText('Passkey unavailable here (no-publickeycredential)');
+    await expect(passkeyBtn(page)).toBeHidden();
+    expect(options, 'no options asked for where no ceremony can run').toEqual(['top', 'top']);
+    await page.fill('#term-confirm-password', adminPW);
+    await page.locator('#term-confirm-submit').click();
+    await expect(dialog(page)).toBeHidden();
+    await expect(t.locator('#term-status')).toHaveText('Connected · live keys');
+    await expect(dialog(page)).not.toHaveAttribute('data-passkey-unavailable', /.*/);
+    await expect(passkeyNote(page)).toBeHidden();
   });
 });
 

@@ -136,6 +136,9 @@ func confirmDialog(s *StepUpView) g.Node {
 					g.Text("Confirm with passkey")),
 				P(Class("text-center text-xs text-muted"), g.Text("or use your password")),
 			),
+			// Why no passkey is offered, when one should have been (stepUpScript's
+			// unavailable): one muted line, hidden otherwise.
+			P(ID("term-confirm-passkey-note"), g.Attr("hidden", ""), Class("text-xs text-muted")),
 			Label(For("term-confirm-password"), Class("text-sm font-medium text-fg"), g.Text("Password")),
 			Input(
 				ID("term-confirm-password"),
@@ -288,9 +291,15 @@ async function mpkPost(path, body) {
   try { data = await res.json(); } catch (e) {}
   return { ok: res.ok, status: res.status, data: data };
 }
-function mpkSupported() {
-  return !!(window.PublicKeyCredential && navigator.credentials && window.isSecureContext);
+// mpkMissing is why this document cannot run a WebAuthn ceremony, '' when it
+// can: the first of no-publickeycredential, no-credentials, insecure-context.
+function mpkMissing() {
+  if (!window.PublicKeyCredential) return 'no-publickeycredential';
+  if (!navigator.credentials) return 'no-credentials';
+  if (!window.isSecureContext) return 'insecure-context';
+  return '';
 }
+function mpkSupported() { return !mpkMissing(); }
 function mpkSay(el, msg) { if (el) { el.textContent = msg; } }
 function mpkCancelled(e) { return e && (e.name === 'NotAllowedError' || e.name === 'AbortError'); }
 `
@@ -352,6 +361,7 @@ window.musterStepUp = (function () {
   var how = document.getElementById('term-confirm-how');
   var pkBox = document.getElementById('term-confirm-passkey-box');
   var pkBtn = document.getElementById('term-confirm-passkey');
+  var pkNote = document.getElementById('term-confirm-passkey-note');
   var done = null, pre = null, freshUntil = 0;
   var ff = +dlg.getAttribute('data-fresh-for') || 0;
   if (ff > 0) freshUntil = performance.now() + ff;
@@ -364,6 +374,7 @@ window.musterStepUp = (function () {
   // offer shows (or hides) the passkey as the PRIMARY action; the password
   // button steps down to secondary beside it and back up without it.
   function offer(on) {
+    if (on) unavailable('');
     pkBox.hidden = !on;
     dlg.setAttribute('data-passkey-offered', on ? '1' : '0');
     how.textContent = dlg.getAttribute(on ? 'data-how-passkey' : 'data-how-password');
@@ -371,14 +382,30 @@ window.musterStepUp = (function () {
     if (on) { swap(submit, pri, sec); submit.textContent = 'Use password'; }
     else { swap(submit, sec, pri); submit.textContent = 'Confirm'; }
   }
+  // prefetch resolves to '' when a passkey can be offered, else the reason it
+  // cannot (an UNAVAILABLE value), or null when a newer prefetch replaced it.
   function prefetch() {
     var mine = pre = mpkPrefetch(pkBase + '/options');
     return mine.promise.then(function (o) {
-      if (pre !== mine) return false;
-      var ok = !!(o.ok && o.data && o.data.available && o.data.challenge_id);
-      if (!ok) pre = null;
-      return ok;
-    }, function () { if (pre === mine) pre = null; return false; });
+      if (pre !== mine) return null;
+      var d = o.data || {};
+      var why = !o.ok ? 'options-failed:' + o.status : !d.available ? 'not-available' : !d.challenge_id ? 'no-challenge' : '';
+      if (why) pre = null;
+      return why;
+    }, function () { if (pre !== mine) return null; pre = null; return 'options-failed:network'; });
+  }
+  // unavailable records why the passkey is NOT offered, on the dialog
+  // (data-passkey-unavailable), so a dialog that offers only the password says
+  // why in the page itself — and, as a muted line, on screen (a screenshot
+  // carries it) — except where nothing is the right thing to show: no passkey
+  // route on this server (no-path), or an account with no passkey
+  // (not-available). '' clears both.
+  function unavailable(why) {
+    if (why) dlg.setAttribute('data-passkey-unavailable', why);
+    else dlg.removeAttribute('data-passkey-unavailable');
+    var shown = !!why && why !== 'no-path' && why !== 'not-available';
+    pkNote.textContent = shown ? 'Passkey unavailable here (' + why + ')' : '';
+    pkNote.hidden = !shown;
   }
   function finish(freshFor) {
     freshUntil = performance.now() + (+freshFor || 0);
@@ -439,18 +466,21 @@ window.musterStepUp = (function () {
     fail(why);
     pw.value = '';
     offer(false);
+    unavailable('');
     if (!dlg.open) { lift(); dlg.showModal(); }
     pw.focus();
-    if (!pkBase || !mpkSupported()) return;
-    prefetch().then(function (ok) {
-      if (!ok || !dlg.open) return;
+    var missing = !pkBase ? 'no-path' : mpkMissing();
+    if (missing) { unavailable(missing); return; }
+    prefetch().then(function (r) {
+      if (r === null || !dlg.open) return;
+      if (r) { unavailable(r); return; }
       offer(true);
       pkBtn.focus();
     });
   }
 
   document.getElementById('term-confirm-cancel').addEventListener('click', function () { done = null; dlg.close(); });
-  dlg.addEventListener('close', function () { pre = null; unlift(); });
+  dlg.addEventListener('close', function () { pre = null; unlift(); unavailable(''); });
   form.addEventListener('submit', function (ev) {
     ev.preventDefault();
     submit.disabled = true;
@@ -503,7 +533,7 @@ window.musterStepUp = (function () {
       // The challenge is single-use: a failed attempt needs a new one before
       // the next tap (fetched now, so that tap still has its gesture).
       if (spent && dlg.open && !pkBox.hidden) {
-        prefetch().then(function (ok) { if (!ok && dlg.open) offer(false); });
+        prefetch().then(function (r) { if (r && dlg.open) { offer(false); unavailable(r); } });
       }
     }
   });
