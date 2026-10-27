@@ -84,9 +84,11 @@ const RestoreMaxAwayMs = 10 * 60 * 1000
 const RestoreChipDelayMs = 1000
 
 // RestoreParticipantsVar is the window property a page's own script pushes its
-// participant onto: {hide(event), show() → optional Promise (caught up),
-// alive() → false once the page's script has torn itself down}. A list rather
-// than a call, so a script that runs before appScript joins all the same.
+// participant onto: {hide(event), show(reason) → optional Promise (caught up),
+// wake(reason, staleMs) — reconnect if its socket is closed, or open but
+// silent for over staleMs since its last heartbeat (live.go), alive() → false
+// once the page's script has torn itself down}. A list rather than a call, so
+// a script that runs before appScript joins all the same.
 const RestoreParticipantsVar = "__musterRestoreParts"
 
 // RestoreRefreshAttr marks a region a restore redraws from the page's own
@@ -150,13 +152,119 @@ var restoreJS = `
       var CHIP_DELAY = ` + strconv.Itoa(RestoreChipDelayMs) + `;
       var TOP = window.top === window;
       var hiddenAt = 0;
-      // The htmx event streams this page opened, each with the element that
-      // owns it: the sse extension names both on htmx:sseOpen.
-      var streams = [];
-      document.addEventListener('htmx:sseOpen', function (e) {
-        var src = e.detail && e.detail.source;
-        if (src && streams.every(function (s) { return s.src !== src; })) streams.push({ elt: e.target, src: src });
-      });
+      // The live heartbeat (live.go): how often every live stream's server
+      // speaks, and the silences that make a stream stale — at a wake, and at
+      // the watchdog's tick.
+      var HB = parseInt(APP_TAG.getAttribute('` + LiveHeartbeatAttr + `'), 10) || ` + strconv.FormatInt(DefaultLiveHeartbeat.Milliseconds(), 10) + `;
+      var MARGIN = Math.min(Math.round(HB / 3), 5000);
+      var STALE = 2 * HB + MARGIN, WAKE_STALE = HB + MARGIN;
+      // --- The htmx event streams (/events) ------------------------------
+      // Each is found where the sse extension keeps it: on its sse-connect
+      // element's htmx data. lastAt is when each last spoke; one that has
+      // spoken a heartbeat (muster.ping) can be judged stale.
+      var esSeen = typeof WeakMap === 'function' ? new WeakMap() : null;
+      function esWatch(src) {
+        if (!esSeen || !src || esSeen.has(src)) return;
+        var st = { lastAt: Date.now(), beat: false };
+        esSeen.set(src, st);
+        var hear = function () { st.lastAt = Date.now(); };
+        try {
+          src.addEventListener('open', hear);
+          src.addEventListener('muster.hello', hear);
+          src.addEventListener('` + LivePingEvent + `', function () { st.beat = true; hear(); });
+        } catch (e) {}
+      }
+      function sseElts() {
+        var out = [];
+        document.querySelectorAll('[sse-connect],[data-sse-connect]').forEach(function (el) {
+          var d = el['htmx-internal-data'];
+          if (d && d.sseEventSource) out.push({ elt: el, src: d.sseEventSource });
+        });
+        return out;
+      }
+      // restartStream replaces an element's stream NOW, by the extension's
+      // own path — the element processed again, and every element under it
+      // that listens to the stream re-registered on the new one (what the
+      // extension's own retry does on its reopen) — rather than through its
+      // onerror, whose retry waits up to a minute after a run of failures.
+      // Its open fires htmx:sseOpen, which each listener catches up on (the
+      // board's resync, the chat log's conditional refetch).
+      //
+      // 🔴 ONLY THIS STREAM'S OWN LISTENERS. An element under a NESTED
+      // sse-connect (the chief panel's chat pane inside the shell's wrapper)
+      // listens to that nested stream, which is not being restarted:
+      // re-registering it added a second listener on the nested source, and
+      // every event there then fired twice (audit #299). So a descendant is
+      // re-registered only when its nearest sse-connect is this element.
+      //
+      // The source the restart makes is kept as the element's (keep): the
+      // extension's own retry timer, still pending from before, would
+      // otherwise replace it with yet another when it fires (wrapES's sweep
+      // hands the element back the kept one and closes the late one).
+      var SSE_CONNECT = '[sse-connect],[data-sse-connect]';
+      function restartStream(s) {
+        if (!window.htmx || !document.body.contains(s.elt)) return;
+        try { s.src.close(); } catch (e) {}
+        try {
+          htmx.trigger(s.elt, 'htmx:afterProcessNode');
+          s.elt.querySelectorAll('[sse-swap],[data-sse-swap],[hx-trigger],[data-hx-trigger]').forEach(function (c) {
+            if (c.closest(SSE_CONNECT) === s.elt) htmx.trigger(c, 'htmx:afterProcessNode');
+          });
+          var d = s.elt['htmx-internal-data'];
+          if (d && d.sseEventSource && d.sseEventSource !== s.src) s.elt.__musterKeep = d.sseEventSource;
+        } catch (e) {}
+      }
+      // 🔴 ONE STREAM PER ELEMENT. The extension's own retry is a timer that
+      // creates a source whenever it fires, over whatever the element holds
+      // by then — after a restart above, a second stream. So every source
+      // made is noted, and once the extension has handed it to its element,
+      // any source no element holds any more is closed.
+      function wrapES() {
+        if (!window.htmx || typeof htmx.createEventSource !== 'function' || htmx.createEventSource.__muster) return;
+        var make = htmx.createEventSource, made = [];
+        var sweep = function () {
+          // A late source over a restart's (restartStream's keep) that is
+          // still alive: the element gets the restart's back, and the late
+          // one is closed before it opens — so no second open, and no second
+          // catch-up.
+          sseElts().forEach(function (s) {
+            var k = s.elt.__musterKeep;
+            if (!k) return;
+            if (k.readyState === 2) { s.elt.__musterKeep = null; return; }
+            if (k !== s.src) { s.elt['htmx-internal-data'].sseEventSource = k; try { s.src.close(); } catch (e) {} }
+          });
+          var held = sseElts().map(function (s) { return s.src; });
+          made = made.filter(function (src) {
+            if (src.readyState === 2) return false;
+            if (held.indexOf(src) < 0) { try { src.close(); } catch (e) {} return false; }
+            return true;
+          });
+        };
+        var f = function (url) {
+          var src = make(url);
+          made.push(src);
+          esWatch(src);
+          setTimeout(sweep, 0);
+          return src;
+        };
+        f.__muster = true;
+        htmx.createEventSource = f;
+      }
+      wrapES();
+      // The extension is deferred: it is defined by the time the document is
+      // parsed, and this listener runs before htmx's own, which processes
+      // the page (it was added while the document was still parsing).
+      document.addEventListener('DOMContentLoaded', wrapES);
+      // wakeStreams: a closed stream is replaced at any wake; an open one
+      // that has gone silent past its bound, at any wake or tick.
+      function wakeStreams(reason, limit) {
+        sseElts().forEach(function (s) {
+          esWatch(s.src);
+          var st = esSeen && esSeen.get(s.src);
+          if (s.src.readyState === 2) { if (reason !== 'tick') restartStream(s); return; }
+          if (s.src.readyState === 1 && st && st.beat && Date.now() - st.lastAt > limit) restartStream(s);
+        });
+      }
       function parts() {
         return (window.` + RestoreParticipantsVar + ` || []).filter(function (p) {
           try { return !p.alive || p.alive(); } catch (e) { return false; }
@@ -253,14 +361,7 @@ var restoreJS = `
       // element's listeners), so the stream is the extension's as before. Its
       // reopen fires htmx:sseOpen, which is what the chat log's conditional
       // refetch catches up on (chatLogTrigger).
-      function reopen() {
-        var was = streams; streams = [];
-        was.forEach(function (s) {
-          if (!document.body.contains(s.elt)) return;
-          try { s.src.close(); } catch (e) {}
-          try { if (s.src.onerror) s.src.onerror(new Event('error')); } catch (e) {}
-        });
-      }
+      function reopen() { sseElts().forEach(restartStream); }
       function catchUp(how) {
         var done = false;
         var t = setTimeout(function () { if (!done) chips(true); }, CHIP_DELAY);
@@ -269,7 +370,7 @@ var restoreJS = `
         if (TOP && document.querySelector('[` + UpdatingChipAttr + `]')) waits.push(self());
         if (how === 'restore') {
           reopen();
-          parts().forEach(function (p) { try { if (p.show) waits.push(p.show()); } catch (e) {} });
+          parts().forEach(function (p) { try { if (p.show) waits.push(p.show('pageshow')); } catch (e) {} });
         }
         return Promise.all(waits.map(function (w) { return within(w, 15000); })).then(function () {
           done = true;
@@ -287,6 +388,28 @@ var restoreJS = `
         if (TOP && hiddenAt && Date.now() - hiddenAt > MAX_AWAY) { reload('away'); return; }
         catchUp('restore');
       });
+      // --- Wake: reconnect what the page was away from (live.go) ------------
+      // The triggers of one moment (a phone unlocked fires visibilitychange
+      // and focus; a reconnect, online too) are one wake, by the strongest
+      // reason. A hidden page does nothing: its showing is the next wake.
+      var WAKE_RANK = { tick: 0, focus: 1, visibility: 2, online: 3 };
+      var wakeReason = '', wakeTimer = 0;
+      function wake(reason) {
+        if (!wakeReason || WAKE_RANK[reason] > WAKE_RANK[wakeReason]) wakeReason = reason;
+        if (wakeTimer) return;
+        wakeTimer = setTimeout(function () {
+          var r = wakeReason;
+          wakeReason = ''; wakeTimer = 0;
+          if (document.hidden) return;
+          var limit = r === 'tick' ? STALE : WAKE_STALE;
+          wakeStreams(r, limit);
+          parts().forEach(function (p) { try { if (p.wake) p.wake(r, limit); } catch (e) {} });
+        }, 0);
+      }
+      document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') wake('visibility'); });
+      window.addEventListener('online', function () { wake('online'); });
+      window.addEventListener('focus', function () { wake('focus'); });
+      setInterval(function () { if (!document.hidden) wake('tick'); }, ` + strconv.Itoa(LiveTickMs) + `);
       // A Back that was not a restore, answered by the HTTP cache: the
       // document is as old as its first load. Checked once it is parsed.
       try {
@@ -302,7 +425,9 @@ var restoreJS = `
           whenParsed(function () { catchUp('http-cache'); });
         }
       } catch (e) {}
-      return {};
+      // The bounds, for a participant deciding at its own moment (a chat's
+      // send) whether its socket can still be trusted.
+      return { staleMs: STALE, wakeStaleMs: WAKE_STALE };
     })();
   }
 `

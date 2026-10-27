@@ -300,8 +300,9 @@ ending in how its transcript was resolved: `pane-map`, `sessions` or `guessed`.
 
 ## Read-only, interactive, and sending
 
-`muster-mirror` is **read-only by default**. muster then offers no Live keys
-switch and refuses an interactive attach. Read-only is enforced in three places:
+`muster-mirror` is **read-only by default**. muster then draws the Terminal
+view's keys disabled and refuses an interactive attach. Read-only is enforced
+in three places:
 
 - muster refuses it;
 - the host refuses it, and drops keystrokes on a read-only stream;
@@ -312,8 +313,11 @@ The host opens only windows it listed itself.
 
 🔴 **`-interactive` is a shell on the host.** An interactive tmux client can
 switch to any session on that tmux server, or open a new window. So anyone who
-can use muster's Live keys switch for the host can run commands there, as the
-user `muster-mirror` runs as. The "only listed windows" rule limits what a
+can type into the host's Terminal view in muster can run commands there, as the
+user `muster-mirror` runs as. Live keys are **always on** in that view — there
+is no switch — but they still need a recent sign-in: with a stale one the
+terminal attaches without them, and the first key you press asks you to
+confirm it's you (see [sending-and-step-up.md](sending-and-step-up.md)). The "only listed windows" rule limits what a
 read-only viewer can see. It does not limit an attached interactive client.
 
 With `-interactive`, both views get a message box. Typing into one requires a
@@ -329,8 +333,8 @@ command**, whatever the message says. This covers every other way muster types
 into a pane: the Terminal view's message box, a Claude Code send, and an
 answer typed into Claude Code's question picker. Nothing reaches the pane, and
 the page says why, whether or not script ran: "Not sent: Hermes runs in this
-pane…". Type into Hermes in the terminal itself (Live keys, or the terminal on
-the host), or send from its window's rendered view on a host that runs with
+pane…". Type into Hermes in the terminal itself (muster's Terminal view, or the
+terminal on the host), or send from its window's rendered view on a host that runs with
 `-hermes-send`.
 
 The host decides this itself, by what runs in the pane at the moment it

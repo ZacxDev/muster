@@ -118,9 +118,30 @@ func AttentionLiveScript(listID, src, event string) string {
     }).catch(function () {});
   }
   list.addEventListener('focusout', function () { if (pending) setTimeout(refresh, 0); });
-  var es;
-  try { es = new EventSource('/events'); } catch (e) { return; }
-  es.addEventListener(` + strconv.Quote(event) + `, refresh);
+  // The stream, reconnected by the page's wake (restore.go, live.go): a
+  // closed one at once, an open one silent past its heartbeat bound too. A
+  // reconnect catches up with one refresh — what changed meanwhile was not
+  // heard.
+  var es = null, lastAt = 0, beat = false, gone = false;
+  function open() {
+    if (es) { try { es.close(); } catch (e) {} }
+    try { es = new EventSource('/events'); } catch (e) { es = null; return; }
+    lastAt = Date.now(); beat = false;
+    var hear = function () { lastAt = Date.now(); };
+    es.addEventListener('open', hear);
+    es.addEventListener(` + strconv.Quote(LivePingEvent) + `, function () { beat = true; hear(); });
+    es.addEventListener(` + strconv.Quote(event) + `, function () { hear(); refresh(); });
+  }
+  open();
+  if (!es) return;
+  ` + restoreJoinJS(`{
+    hide: function () { gone = true; if (es) { try { es.close(); } catch (e) {} } },
+    show: function () { gone = false; open(); refresh(); },
+    wake: function (why, staleMs) {
+      if (gone || !es) return;
+      if (es.readyState === 2 ? why !== 'tick' : (es.readyState === 1 && beat && Date.now() - lastAt > staleMs)) { open(); refresh(); }
+    }
+  }`) + `
   setInterval(refresh, 60000);
 })();
 </script>`

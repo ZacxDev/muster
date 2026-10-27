@@ -1906,6 +1906,9 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	// chat sockets a page really holds (the browser suite counts them).
 	s.logger.Printf("agents: chat %s connected", a.Name)
 	defer s.logger.Printf("agents: chat %s disconnected", a.Name)
+	// The page judges the socket alive by hearing from it (ui/live.go); an
+	// idle chat says nothing, so it beats.
+	defer socketHeartbeat(ctx, s.logger, c)()
 
 	for {
 		_, data, err := c.Read(ctx)

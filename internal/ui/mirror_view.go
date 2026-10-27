@@ -901,12 +901,20 @@ func mirrorViewScript() g.Node {
 (function () {
   var log = document.getElementById('mv-log');
   if (!log) return;
+` + liveRetryJS + `
   var statusEl = document.getElementById('mv-status');
   var errEl = document.getElementById('mv-error');
   var errText = document.getElementById('mv-error-text');
   var working = document.getElementById('mv-working');
   var ctxEl = document.getElementById('mv-context');
   var gen = '', offset = 0, retry = 0, closed = false, sock = null;
+  // Liveness (live.go): when the socket last heard anything, whether it has
+  // heard a heartbeat (only then can it be judged stale), when it was made,
+  // and the pending retry of a closed one.
+  var lastAt = 0, beat = false, madeAt = 0, retryTimer = 0;
+  // begun: the page's first connect() has run. Until then the open is still
+  // reading its snapshot (start()), and no socket is not a closed socket.
+  var begun = false;
   // The snapshot (web/static/mirror-snap.js): what this window's view drew,
   // replayed at open, then resumed from its offset. snapRef stays null — no
   // snapshot is read or written — when the store is unavailable. Set in
@@ -1134,22 +1142,44 @@ func mirrorViewScript() g.Node {
     if (parsed) { fn(); return; }
     queued.push(function () { if (s === sock) fn(); });
   }
-  function connect() {
+  // drop detaches the current socket and closes it: what it says from now
+  // on is nobody's, and its close is not a disconnect to recover from.
+  function drop() {
+    var old = sock;
+    sock = null;
+    if (!old) return;
+    old.onopen = null; old.onmessage = null; old.onclose = null;
+    try { old.close(); } catch (e) {}
+  }
+  // connect opens the socket; why is the reconnect's reason (live.go) —
+  // nothing for the page's first open.
+  function connect(why) {
+    clearTimeout(retryTimer); retryTimer = 0;
     // Left (pagehide): a pending retry opens nothing.
     if (closed) return;
+    begun = true;
+    // 🔴 ONE SOCKET: one still open or opening is closed before another is made.
+    if (sock && sock.readyState < 2) drop();
     var base = log.getAttribute('data-ws');
     // A reconnect is an open of its own (the page's first began in start()).
-    if (!opening && window.musterOpen) { opening = window.musterOpen.begin('mirror_view', { resume: !!gen }); warmFrom = warmNow(); }
+    if (!opening && window.musterOpen) {
+      opening = window.musterOpen.begin('mirror_view', { resume: !!gen, reconnect: true, reconnect_reason: why || 'retry' });
+      warmFrom = warmNow();
+    }
     var tp = opening ? opening.tp() : '';
     endReason = '';
     var url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + base +
       (gen ? '&gen=' + encodeURIComponent(gen) + '&offset=' + offset : '') + (tp ? '&tp=' + encodeURIComponent(tp) : '');
     statusEl.textContent = 'Connecting…';
     var s = sock = new WebSocket(url);
+    madeAt = lastAt = Date.now(); beat = false;
     if (opening) opening.mark('socket_created');
     var first = true;
-    s.onopen = function () { retry = 0; if (opening) opening.mark('stream_connected'); };
+    s.onopen = function () { lastAt = Date.now(); if (opening) opening.mark('stream_connected'); };
     s.onmessage = function (ev) {
+      lastAt = Date.now();
+      // A heartbeat says only that the socket is alive.
+      if (ev.data === ` + strconv.Quote(LivePingFrame) + `) { beat = true; return; }
       if (first && opening) { first = false; opening.mark('first_frame'); }
       deliver(s, function () { onMessage(ev); });
     };
@@ -1158,6 +1188,8 @@ func mirrorViewScript() g.Node {
   function onMessage(ev) {
       var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
       if (m.type === 'batch') {
+        // A batch is the stream working: the backoff starts over.
+        retry = 0;
         // The open's FIRST batch (a later one before the paint below is not).
         var o = opening && opening !== drawnFor ? (drawnFor = opening) : null;
         if (o) { o.mark('batch_insert_start'); o.count('first_batch_ops', (m.ops || []).length); }
@@ -1202,8 +1234,39 @@ func mirrorViewScript() g.Node {
       // Closed before its first batch (refused, signed out, gone): the
       // snapshot is not shown as current.
       if (provisional) discard();
-      retry = Math.min(retry + 1, 6);
-      setTimeout(connect, 500 * Math.pow(2, retry - 1));
+      sock = null;
+      retry++;
+      // A hidden or offline page waits for its wake (live.go).
+      if (liveCanRetry()) retryTimer = setTimeout(function () { connect('retry'); }, liveDelay(retry));
+  }
+  // wake (restore.go): a closed socket reconnects at once; an open one that
+  // has heard no heartbeat for staleMs is replaced; one still opening is left
+  // to finish, unless it has been opening for longer than that too.
+  function wake(why, staleMs) {
+    // 🔴 NOT BEFORE THE FIRST OPEN: a wake during the snapshot read (a tick,
+    // the frame's focus) would open a from-the-start socket that the open
+    // then replaces — a second host stream for every view opened.
+    if (closed || !begun) return;
+    var now = Date.now();
+    if (!sock || sock.readyState > 1) {
+      if (!liveCanRetry() || (why === 'tick' && retryTimer)) return;
+      retry = 0;
+      connect(why === 'tick' ? 'retry' : why);
+      return;
+    }
+    if (sock.readyState === 0) { if (now - madeAt > staleMs) { replace(why); } return; }
+    if (beat && now - lastAt > staleMs) replace(why);
+  }
+  // replace swaps a socket that looks open but is dead for a new one,
+  // resuming from what the page drew; its open says why.
+  function replace(why) {
+    var o = opening || lastOpen;
+    if (o) o.disconnected('stale', { phase: opening ? 'opening' : 'live', retry: retry });
+    if (opening) { opening.end('stale'); opening = null; }
+    if (provisional) discard();
+    drop();
+    retry = 0;
+    connect(why === 'tick' ? 'stale' : why);
   }
   // viewUsable tells the page's other scripts that the open is over (the
   // snapshot store's warming waits for it on this page: mirror-snap.js).
@@ -1231,20 +1294,21 @@ func mirrorViewScript() g.Node {
   // it costs only freshness: the stored snapshot is the last one saved, whole
   // at its own offset, and a later open resumes from there.
   var leaving = false;
-  window.addEventListener('pagehide', function (e) { closed = true; leaving = !!e.persisted; if (!e.persisted) save(); if (sock) sock.close(); });
+  window.addEventListener('pagehide', function (e) { closed = true; clearTimeout(retryTimer); leaving = !!e.persisted; if (!e.persisted) save(); if (sock) sock.close(); });
   // Back and Forward (restore.go): the pagehide above closed the socket; a
   // restore opens it again, resuming from the offset the page already drew,
   // so nothing is painted twice. Caught up is the socket's first answer.
   var restoring = null;
   function caughtUp() { if (restoring) { var r = restoring; restoring = null; r(); } }
   ` + restoreJoinJS(`{
-    show: function () {
+    show: function (why) {
       closed = false; leaving = false; retry = 0;
       return new Promise(function (resolve) {
         restoring = resolve;
-        if (!sock || sock.readyState > 1) connect();
+        if (!sock || sock.readyState > 1) connect(why || 'pageshow');
       });
-    }
+    },
+    wake: wake
   }`) + `
   // Leaving fires visibilitychange BEFORE pagehide, so the hidden save waits
   // a quarter second and is skipped once pagehide has said the page may be kept:
@@ -1302,9 +1366,7 @@ func mirrorViewScript() g.Node {
   function paintSnapshot(rec) {
     try { paint(rec); } catch (e) {
       discard();
-      var old = sock;
-      sock = null;
-      if (old) { old.onclose = null; old.onmessage = null; try { old.close(); } catch (x) {} }
+      drop();
       connect();
     }
   }

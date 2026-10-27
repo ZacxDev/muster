@@ -8,7 +8,8 @@ import { openDispatchSheet } from '../lib/dispatch';
 // THE RENDERED ↔ TERMINAL SWITCH KEEPS BOTH VIEWS' CONNECTIONS
 // (internal/ui/view_swap.go) — a mirrored window's and a claude-code agent's —
 // against a REAL muster-server (the e2eterm build: its noop driver plays an
-// agent pod's terminal, `FAKE-TUI mode=ro|rw`) and a REAL muster-mirror built
+// agent pod's terminal, `FAKE-TUI mode=ro|rw`; live keys are always on, so
+// every attach here is rw) and a REAL muster-mirror built
 // with `-tags e2emirror`: a per-window host whose two windows, work:1 (@1) and
 // work:2 (@2), each run Claude Code over a transcript this spec writes.
 //
@@ -59,11 +60,11 @@ const serverCount = (re: RegExp) => lines(rig.server!.log(), re);
 const watchedFromStart = (win: string) => hostCount(new RegExp(`watching "work" window ${win} \\(from the start,`));
 const watchedResuming = (win: string) => hostCount(new RegExp(`watching "work" window ${win} \\(resuming at \\d+,`));
 const unwatched = (win: string) => hostCount(new RegExp(`unwatched "work" window ${win} \\(`));
-const attached = (win: string, mode = 'read-only') => hostCount(new RegExp(`attached "work" window ${win} \\(${mode},`));
+const attached = (win: string, mode = 'interactive') => hostCount(new RegExp(`attached "work" window ${win} \\(${mode},`));
 const detached = (win: string) => hostCount(new RegExp(`detached "work" window ${win} \\(`));
 const chatOpened = (a: string) => serverCount(new RegExp(`agents: chat ${a} connected$`));
 const chatClosed = (a: string) => serverCount(new RegExp(`agents: chat ${a} disconnected$`));
-const termAttached = (a: string, mode = 'ro') => serverCount(new RegExp(`agents: terminal ${a} attached \\(${mode}\\)`));
+const termAttached = (a: string, mode = 'rw') => serverCount(new RegExp(`agents: terminal ${a} attached \\(${mode}\\)`));
 const termDetached = (a: string) => serverCount(new RegExp(`agents: terminal ${a} detached`));
 
 // settled waits until both logs have stopped growing: every open or close the
@@ -137,7 +138,7 @@ test.describe('a mirrored window', () => {
     // title follow it; the host attaches once.
     await page.locator('#view-terminal').click();
     await expect(frameEl(page)).toBeVisible();
-    await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=ro');
+    await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=rw');
     await expect(framed(page).locator('#term-status')).toHaveText('Connected');
     expect(pathOf(page)).toBe('/mirror/terminal');
     expect(new URL(page.url()).searchParams.get('window')).toBe('@1');
@@ -166,7 +167,7 @@ test.describe('a mirrored window', () => {
     await page.locator('#view-terminal').click();
     await expect(frameEl(page)).toBeVisible();
     expect(pathOf(page)).toBe('/mirror/terminal');
-    await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=ro');
+    await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=rw');
     await framed(page).locator('#view-rendered').click();
     await expect(frameEl(page)).toBeHidden();
     await page.locator('#view-terminal').click();
@@ -183,7 +184,7 @@ test.describe('a mirrored window', () => {
     // itself — and it is a real load: a NEW attach, the positive control that
     // the counter sees one. The old document's two streams both end.
     await page.reload();
-    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=ro');
+    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=rw');
     await expect(frameEl(page), 'the reloaded page is the terminal itself').toHaveCount(0);
     await settled();
     expect(attached('@1'), `a reload attaches again (log:\n${rig.log})`).toBe(2);
@@ -213,7 +214,7 @@ test.describe('a mirrored window', () => {
   test('starting on the terminal: the rendered view opens in the frame, and both streams are kept across round trips', async ({ page }) => {
     await ready(page);
     await page.goto(origin + termOf('@1'));
-    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=ro');
+    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=rw');
     for (let i = 0; i < 3; i++) {
       await page.locator('#view-rendered').click();
       await expect(frameEl(page)).toBeVisible();
@@ -233,7 +234,7 @@ test.describe('a mirrored window', () => {
   test('switching to a different window closes the old window’s streams', async ({ page }) => {
     await openRendered(page, '@1');
     await page.locator('#view-terminal').click();
-    await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=ro');
+    await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=rw');
     await settled();
     expect(watchedFromStart('@1')).toBe(1);
     expect(attached('@1')).toBe(1);
@@ -260,47 +261,34 @@ test.describe('a mirrored window', () => {
     expect(detached('@1'), "the frame's attach ended").toBe(1);
   });
 
-  test('live keys re-attach (a mode change needs one); off screen they drop to read-only and come back on screen; a read-only terminal is kept', async ({ page }) => {
+  test('live keys are on from the start, and hiding or showing the terminal behind the other view re-attaches nothing', async ({ page }) => {
     await openRendered(page);
     await page.locator('#view-terminal').click();
     const t = framed(page);
-    await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=ro');
-    await settled();
-    expect(attached('@1', 'read-only')).toBe(1);
-
-    // Signed in just now, so the sign-in is fresh: live keys attach at once.
-    await t.locator('#term-mode').click();
-    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
+    // Signed in just now, so the sign-in is fresh: the attach has live keys.
     await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=work window=@1 mode=rw');
+    await expect(t.locator('#term-mode'), 'no Live keys switch').toHaveCount(0);
+    await expect(t.locator('#term-status')).toHaveText('Connected');
     await settled();
-    expect(attached('@1', 'interactive'), `live keys re-attached (log:\n${rig.log})`).toBe(1);
-    expect(detached('@1'), 'the read-only attach ended').toBe(1);
+    expect(attached('@1', 'interactive'), `one interactive attach (log:\n${rig.log})`).toBe(1);
+    expect(attached('@1', 'read-only'), 'never a read-only one').toBe(0);
 
-    // 🟢 Off screen it drops live keys (one read-only re-attach), and takes
-    // them back when it is shown again — the sign-in is still fresh.
-    await t.locator('#view-rendered').click();
-    await expect(frameEl(page)).toBeHidden();
-    await expect.poll(() => attached('@1', 'read-only'), { message: `hidden: back to read-only (log:\n${rig.log})` }).toBe(2);
-    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-    await page.locator('#view-terminal').click();
-    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
-    await expect(t.locator('#term-status')).toHaveText('Connected · live keys');
+    // Off screen and back, twice: the attach is kept exactly as it is — still
+    // interactive, nothing ended, nothing new.
+    for (let i = 0; i < 2; i++) {
+      await t.locator('#view-rendered').click();
+      await expect(frameEl(page)).toBeHidden();
+      await page.locator('#view-terminal').click();
+      await expect(frameEl(page)).toBeVisible();
+    }
+    await expect(t.locator('#term-status')).toHaveText('Connected');
     await settled();
-    expect(attached('@1', 'interactive'), `live keys again on screen (log:\n${rig.log})`).toBe(2);
-    expect(attached('@1', 'read-only')).toBe(2);
-    expect(detached('@1'), 'each mode change ended the attach before it').toBe(3);
-    // A switch while read-only is still no attach at all.
-    await t.locator('#term-mode').click();
-    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-    await settled();
-    const ro = attached('@1', 'read-only');
-    await t.locator('#view-rendered').click();
-    await expect(frameEl(page)).toBeHidden();
-    await page.locator('#view-terminal').click();
-    await expect(frameEl(page)).toBeVisible();
-    await settled();
-    expect(attached('@1', 'read-only'), 'a read-only terminal is kept as it is').toBe(ro);
-    expect(attached('@1', 'interactive')).toBe(2);
+    expect(attached('@1', 'interactive'), `still ONE interactive attach (log:\n${rig.log})`).toBe(1);
+    expect(attached('@1', 'read-only'), 'no read-only re-attach while hidden').toBe(0);
+    expect(detached('@1'), 'none ended').toBe(0);
+    // And the kept attach still takes keys.
+    await t.locator('#term-keys [data-key="up"]').click();
+    await expect(t.locator('#term .xterm-rows')).toContainText('in=1B5B41');
   });
 
   // The framed view is a document of its own: its composer and its focus are
@@ -574,7 +562,7 @@ test.describe('a claude-code agent', () => {
     for (let i = 0; i < 3; i++) {
       await page.locator('#view-terminal').click();
       await expect(frameEl(page)).toBeVisible();
-      await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+      await expect(framed(page).locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
       expect(pathOf(page)).toBe(`/agents/${agent}/terminal`);
       await framed(page).locator('#view-rendered').click();
       await expect(frameEl(page)).toBeHidden();
@@ -592,7 +580,7 @@ test.describe('a claude-code agent', () => {
     await page.locator('#view-terminal').click();
     await expect(frameEl(page)).toBeVisible();
     await page.reload();
-    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
     await expect(frameEl(page)).toHaveCount(0);
     await settled();
     expect(termAttached(agent) - term0, `a reload attaches again (server log:\n${rig.server!.log()})`).toBe(2);
@@ -603,7 +591,7 @@ test.describe('a claude-code agent', () => {
   test('starting on the terminal: the chat opens in the frame and is kept; a boosted link in it navigates the TOP window, ending both connections', async ({ page }) => {
     await signedIn(page);
     await page.goto(origin + `/agents/${agent}/terminal`);
-    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+    await expect(page.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
     await settled();
     const term0 = termAttached(agent);
     const chat0 = chatOpened(agent);
@@ -648,28 +636,29 @@ test.describe('a claude-code agent', () => {
     expect(chatOpened(agent) - chat0, `no new chat socket (server log:\n${rig.server!.log()})`).toBe(0);
   });
 
-  test('live keys re-attach the agent terminal; off screen it drops to read-only, and takes them back on screen', async ({ page }) => {
+  test('the agent terminal has live keys from the start, and hiding or showing it behind the chat re-attaches nothing', async ({ page }) => {
     await openChat(page);
     await settled();
     const rw0 = termAttached(agent, 'rw');
     const ro0 = termAttached(agent, 'ro');
+    const d0 = termDetached(agent);
     await page.locator('#view-terminal').click();
     const t = framed(page);
-    await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
-    await t.locator('#term-mode').click();
     await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
+    await expect(t.locator('#term-mode'), 'no Live keys switch').toHaveCount(0);
     await settled();
-    expect(termAttached(agent, 'rw') - rw0, 'live keys re-attached').toBe(1);
-    // 🟢 Off screen it drops live keys; on screen again it takes them back.
-    await t.locator('#view-rendered').click();
-    await expect(frameEl(page)).toBeHidden();
-    await expect.poll(() => termAttached(agent, 'ro') - ro0, { message: 'hidden: back to read-only' }).toBe(2);
-    await page.locator('#view-terminal').click();
-    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
-    await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
+    expect(termAttached(agent, 'rw') - rw0, 'one attach, with live keys').toBe(1);
+    for (let i = 0; i < 2; i++) {
+      await t.locator('#view-rendered').click();
+      await expect(frameEl(page)).toBeHidden();
+      await page.locator('#view-terminal').click();
+      await expect(frameEl(page)).toBeVisible();
+    }
+    await expect(t.locator('#term-status')).toHaveText('Connected');
     await settled();
-    expect(termAttached(agent, 'rw') - rw0, 'live keys again on screen').toBe(2);
-    expect(termAttached(agent, 'ro') - ro0).toBe(2);
+    expect(termAttached(agent, 'rw') - rw0, 'still ONE attach after hiding and showing').toBe(1);
+    expect(termAttached(agent, 'ro') - ro0, 'no read-only re-attach while hidden').toBe(0);
+    expect(termDetached(agent) - d0, 'none ended').toBe(0);
   });
 
   // 🟡 THE FRAMED VIEW NAVIGATING ITSELF. Every load of the frame is the top

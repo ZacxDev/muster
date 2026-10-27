@@ -318,25 +318,30 @@ func TestAMirroredSessionIsACardOfItsOwnNotAnAgent(t *testing.T) {
 	}
 }
 
-// TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt.
+// TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt: live keys
+// are always on (no switch), EXCEPT on a host that did not advertise
+// -interactive, whose terminal has its keys off (data-keys-off) — and either
+// way the page says what live keys reach.
 func TestTheTerminalPageOffersInteractiveOnlyWhenTheHostAdvertisedIt(t *testing.T) {
 	for _, interactive := range []bool{false, true} {
 		s, ts := mirrorServer(t, &fakeMirror{online: true, interactive: interactive}, newFakeTerminal())
 		_, page := mirrorGet(t, s, ts, mainPage)
-		i := strings.Index(page, `id="term-mode"`)
-		if i < 0 {
-			t.Fatalf("no switch element:\n%s", page)
+		if strings.Contains(page, `id="term-mode"`) {
+			t.Errorf("host interactive=%v: the page still draws the Live keys switch", interactive)
 		}
-		tag := page[strings.LastIndex(page[:i], "<"):]
-		tag = tag[:strings.Index(tag, ">")]
-		// The CLASS decides (an author display utility beats the [hidden]
-		// attribute), so the class is what is asserted.
-		offered := !strings.Contains(tag, `class="hidden `)
-		if offered != interactive {
-			t.Errorf("host interactive=%v: the Interactive switch is offered = %v (%s)", interactive, offered, tag)
+		term := tagOf(page, "term")
+		if term == "" {
+			t.Fatalf("no terminal element:\n%s", page)
 		}
-		if !strings.Contains(tag, `title="Live keys type into a tmux client on ws: from it you can switch to any tmux session there or open a shell on the host."`) {
-			t.Errorf("the switch does not say that live keys are a shell on the host: %s", tag)
+		keysOff := strings.Contains(term, ` data-keys-off`)
+		if keysOff == interactive {
+			t.Errorf("host interactive=%v: the terminal's keys are off = %v (%s)", interactive, keysOff, term)
+		}
+		const note = `Live keys type into a tmux client on ws: from it you can switch to any tmux session there or open a shell on the host.`
+		for _, id := range []string{"term-status", "term-keys"} {
+			if tag := tagOf(page, id); !strings.Contains(tag, `title="`+note+`"`) {
+				t.Errorf("#%s does not say that live keys are a shell on the host: %s", id, tag)
+			}
 		}
 		wantWS := strings.ReplaceAll(ui.MirrorTerminalWSPath("ws", "main"), "&", "&amp;")
 		if !strings.Contains(page, `data-ws="`+wantWS+`"`) || !strings.Contains(page, `href="/agents"`) {

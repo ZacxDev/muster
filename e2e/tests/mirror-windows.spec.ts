@@ -242,7 +242,7 @@ for (const vp of [
       await page.locator('#view-terminal').click();
       await page.waitForURL((u) => u.pathname === '/mirror/terminal');
       expect(new URL(page.url()).searchParams.get('window')).toBe('@9');
-      await expect(page.frameLocator('iframe[data-muster-view]').locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=scratch2 window=@9 mode=ro');
+      await expect(page.frameLocator('iframe[data-muster-view]').locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=scratch2 window=@9 mode=rw');
       await noHorizontalScroll(page);
     });
 
@@ -250,7 +250,7 @@ for (const vp of [
       await openList(page, 4);
       await cardOf(page, termPath(shellWin)).locator('a').first().click();
       await page.waitForURL((u) => u.pathname === '/mirror/terminal');
-      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@4 mode=ro');
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@4 mode=rw');
       await expect(page.locator('#term-status')).toHaveText('Connected');
       await expect(page.locator('header h1')).toContainText('Gold:1');
       await expect(page.locator('#view-rendered'), 'a shell has no rendered view').toHaveCount(0);
@@ -548,7 +548,7 @@ for (const vp of [
       await expect(page.locator('#mv-log [data-bubble="user"]').first()).toContainText('the prompt of window EIGHT');
       await page.goto(origin + '/mirror/terminal?' + old);
       await page.waitForURL((u) => u.pathname === '/mirror/terminal' && u.searchParams.get('window') === '@7');
-      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@7 mode=ro');
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@7 mode=rw');
     });
   });
 }

@@ -81,8 +81,9 @@ func viewFrameScript() g.Node {
     });
   }
   // tell says to a view's own window that it went off screen or came back
-  // ('muster:view-hidden' / 'muster:view-shown'): the terminal drops live keys
-  // while off screen.
+  // ('muster:view-hidden' / 'muster:view-shown'): dictation stops a recording
+  // in the view it hides (dictate.go). The terminal keeps its attach as it is
+  // (terminal.go: an inert frame takes no keys).
   function tell(w, what) { try { w.dispatchEvent(new Event('muster:view-' + what)); } catch (e) {} }
   // reveal puts the frame on screen, over the page.
   function reveal(f) {
