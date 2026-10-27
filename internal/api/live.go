@@ -21,11 +21,13 @@ var liveHeartbeatEvery = ui.LiveHeartbeat
 // that is alive from one that only LOOKS open (ui/live.go): every socket a page
 // watches for staleness gets one.
 //
-// 🔴 A FAILED BEAT ENDS ONLY THE BEAT, NEVER THE STREAM. Why a stream ended is
-// classified by its own handler (streamEndReason: shutdown, timeout,
-// client_left), and a heartbeat that cancelled it would put a reason of its own
-// in that place. A beat that TIMED OUT is noted like any write to the page
-// (notePageWrite), so a page alive and not reading is still a timeout.
+// 🔴 A BEAT NEVER CANCELS THE STREAM AND NEVER NAMES ITS END. Why a stream
+// ended is classified by its own handler (streamEndReason: shutdown, timeout,
+// client_left). A beat that FAILS (the page gone) just stops beating. A beat
+// not written within its bound — the page alive and not reading, or the
+// socket's write lock held that long by another writer — is a stalled page:
+// writePing notes it (notePageWrite) and THEN closes the connection, so the
+// handler sees its page end and finds the note, and calls it a timeout.
 //
 // 🔴 A BEAT IS NEVER WRITTEN ON THE STREAM'S CONTEXT. coder/websocket closes
 // the connection when a write's context ends mid-write, and a shutdown ends the
@@ -34,13 +36,15 @@ var liveHeartbeatEvery = ui.LiveHeartbeat
 // context of its own (the stream's values, its own timeout), and ctx only says
 // when to stop beating.
 //
-// 🔴 STOP OWNS THE FORGET. A timed-out beat leaves c in the process-wide
+// 🔴 STOP OWNS THE FORGET. A stalled beat leaves c in the process-wide
 // stalledPages, and only forgetPage removes it; a handler that never forgot a
 // page (the agent chat's) leaked one entry per such socket (audit #299). So
-// stop() — and nothing earlier — forgets c, once the beat has finished (a beat
-// in flight could note c again after an earlier forget). It must therefore run
-// AFTER the handler has classified its end (streamEndReason reads the note):
-// defer it in the HANDLER, where it runs after the handler's body.
+// the beat's goroutine forgets c when it ends, but not before stop() has been
+// called: the note must outlive the handler's classification (streamEndReason
+// reads it), so stop is deferred in the HANDLER, where it runs after the
+// handler's body. Nothing can note c after that forget: the goroutine's last
+// beat has returned, and writePing returns only once a fired stall timer's
+// callback has finished noting.
 func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn) (stop func()) {
 	ctx, cancel := context.WithCancel(ctx)
 	stopped := make(chan struct{})
@@ -86,13 +90,23 @@ func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn)
 func writePing(ctx context.Context, c *websocket.Conn, bound time.Duration) error {
 	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bound+pingWriteGrace)
 	defer cancel()
+	fired := make(chan struct{})
 	stall := time.AfterFunc(bound, func() {
+		defer close(fired)
+		stallFiring()
 		notePageWrite(c, context.DeadlineExceeded)
 		_ = c.CloseNow()
 	})
+	beatWriting()
 	err := c.Write(wctx, websocket.MessageText, []byte(ui.LivePingFrame))
 	if !stall.Stop() {
-		// The timer fired: noted and closed already. The beat ends.
+		// The timer fired, so its callback has STARTED — not necessarily
+		// finished. It is waited for: a beat returning before the note
+		// landed could be forgotten first (stop's forgetPage) and the note
+		// left in stalledPages for good, or land after the handler had
+		// classified the end (audit #299 round 3). Noted and closed now; the
+		// beat ends.
+		<-fired
 		if err == nil {
 			err = context.DeadlineExceeded
 		}
@@ -105,3 +119,11 @@ func writePing(ctx context.Context, c *websocket.Conn, bound time.Duration) erro
 // pingWriteGrace is how much longer than its bound a beat's write may run, so
 // that the bound's own timer — not the write's context — ends a stalled one.
 const pingWriteGrace = time.Second
+
+// Test seams around a beat's stall timer, no-ops in production: stallFiring
+// runs as the timer's callback begins, beatWriting just before the beat's
+// write. A test holds them to put the callback and the write in a chosen order.
+var (
+	stallFiring = func() {}
+	beatWriting = func() {}
+)

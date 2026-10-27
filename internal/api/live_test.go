@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -325,5 +326,66 @@ func TestAHealthyBeatIsNotSlowedAndLeavesNothingBehind(t *testing.T) {
 			t.Fatalf("%d goroutines after the socket ended, %d before it opened", runtime.NumGoroutine(), g0)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestAStallCallbackFinishesBeforeTheBeatReturns: when a beat's stall timer
+// has FIRED (Stop reports false), its callback has started — not necessarily
+// finished. A beat that returned then could be forgotten (stop's forgetPage)
+// before the callback's note landed, leaving the socket in stalledPages for
+// good, or noting a stall after the handler classified its end (audit #299
+// round 3, 🟡1). So writePing waits for the callback. The order is forced:
+// the write starts only once the callback has begun, and the callback is held
+// before it notes; the beat must not return until it is let go, and the note
+// is there when it does.
+func TestAStallCallbackFinishesBeforeTheBeatReturns(t *testing.T) {
+	got := make(chan *websocket.Conn, 1)
+	hold := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		got <- c
+		<-hold
+	}))
+	t.Cleanup(func() { close(hold); srv.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.CloseNow()
+	go func() { // a page that reads: the write itself succeeds
+		for {
+			if _, _, err := page.Read(context.Background()); err != nil {
+				return
+			}
+		}
+	}()
+	c := <-got
+	defer forgetPage(c)
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	savedF, savedW := stallFiring, beatWriting
+	stallFiring = func() { close(entered); <-release }
+	beatWriting = func() { <-entered } // the timer has fired before the write
+	t.Cleanup(func() { stallFiring, beatWriting = savedF, savedW })
+
+	done := make(chan error, 1)
+	go func() { done <- writePing(context.Background(), c, time.Nanosecond) }()
+	select {
+	case <-done:
+		close(release)
+		t.Fatal("the beat returned while its stall callback had not yet noted the stall")
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	if err := <-done; err == nil {
+		t.Error("a beat whose stall timer fired reported success")
+	}
+	if !pageStalled(c) {
+		t.Error("the beat returned without its stall noted")
 	}
 }
