@@ -166,7 +166,7 @@ from the question and its options, grounded in them by the same filter:
   its auto-pause), and no OpenRouter key for you each mean no call and no chips,
   and the page stops showing stored chips while they are off. The engine's rate
   caps apply; one call per question.
-- **Stored with the question** (`attention_asks.suggestions`, migration 0056),
+- **Stored with the question** (`attention_asks.suggestions`, migration 0057),
   at most three, each one line and at most 140 characters, none repeating an
   option — the one place suggestion text is stored, because the re-push and the
   page (on any replica) need it. Written once, and **only while the question is

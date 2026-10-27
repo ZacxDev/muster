@@ -60,7 +60,7 @@ func ReadLines(r io.ReaderAt, off, size int64, maxBytes int) ([]Line, int64, err
 	for _, line := range bytes.Split(buf[:last], []byte{'\n'}) {
 		pos += int64(len(line)) + 1
 		if rec, ok := DecodeLine(line); ok {
-			if evs := Events(rec); len(evs) > 0 {
+			if evs := lineEvents(rec); len(evs) > 0 {
 				for i := range evs {
 					if evs[i].Kind == KindPrompt {
 						evs[i].Line = pos // what Prompts names it by
@@ -71,6 +71,17 @@ func ReadLines(r io.ReaderAt, off, size int64, maxBytes int) ([]Line, int64, err
 		}
 	}
 	return out, off + int64(last) + 1, nil
+}
+
+// lineEvents is a record's events as the mirrored view reads them: Events, plus
+// one KindInjected for a record the CLI wrote to inject context into the next
+// request (an attachment record), which Events drops and the tool-context
+// ledger (toolctx.go) must see.
+func lineEvents(rec Record) []Event {
+	if rec.Type == "attachment" && !rec.IsSidechain {
+		return []Event{{Kind: KindInjected}}
+	}
+	return Events(rec)
 }
 
 // ReadEvents is ReadLines' events, flattened.
@@ -171,7 +182,7 @@ func Backfill(r io.ReaderAt, size int64, window, maxEvents int) ([]Line, int64, 
 		j := bytes.LastIndexByte(buf[:i], '\n') // the newline before this line, or -1
 		line := buf[j+1 : i]
 		if rec, ok := DecodeLine(line); ok {
-			if evs := Events(rec); len(evs) > 0 {
+			if evs := lineEvents(rec); len(evs) > 0 {
 				for k := range evs {
 					if evs[k].Kind == KindPrompt {
 						evs[k].Line = end

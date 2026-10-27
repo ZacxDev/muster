@@ -262,12 +262,15 @@ export const agentsSwitcherPort = port + 225;
 // tests/reconnect.spec.ts: a mirror rig whose server beats every 500 ms
 // (MUSTER_LIVE_HEARTBEAT), so a silent socket is judged stale in about a second.
 export const reconnectPort = port + 230;
+// The tool rows' context badges on the mirrored view (tool-context.spec.ts):
+// its own server (the e2eterm binary, mirror plugin on) and one mirrored host.
+export const toolContextPort = port + 235;
 // tests/ask-page.spec.ts: the ask page a notification opens — its own server
 // (the e2eterm binary, its suggestion model pointed at a FAKE this spec runs),
 // the agent connect door its asker uses, and that fake.
-export const askPagePort = port + 235;
-export const askPageConnectPort = port + 236;
-export const askPageFakePort = port + 237;
+export const askPagePort = port + 240;
+export const askPageConnectPort = port + 241;
+export const askPageFakePort = port + 242;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

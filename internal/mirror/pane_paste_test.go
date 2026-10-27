@@ -332,6 +332,13 @@ func TestAReadOnlyHostClaimingPanePasteIsNotBelieved(t *testing.T) {
 // by a hand-driven muster.
 func helloOf(t *testing.T, interactive bool, b mirrorhost.Backend) mirror.Msg {
 	t.Helper()
+	return helloOfConfig(t, mirrorhost.Config{Backend: b, Interactive: interactive})
+}
+
+// helloOfConfig is helloOf for a whole configuration: its connection fields
+// (URL, token, host, http, logger) are filled in here.
+func helloOfConfig(t *testing.T, cfg mirrorhost.Config) mirror.Msg {
+	t.Helper()
 	got := make(chan mirror.Msg, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ws, err := websocket.Accept(w, r, nil)
@@ -350,8 +357,8 @@ func helloOf(t *testing.T, interactive bool, b mirrorhost.Backend) mirror.Msg {
 		got <- m
 	}))
 	t.Cleanup(srv.Close)
-	c, err := mirrorhost.New(mirrorhost.Config{URL: srv.URL, Token: mirror.TokenPrefix + "x", Host: "laptop",
-		Backend: b, Interactive: interactive, AllowHTTP: true, Logger: log.New(io.Discard, "", 0)})
+	cfg.URL, cfg.Token, cfg.Host, cfg.AllowHTTP, cfg.Logger = srv.URL, mirror.TokenPrefix+"x", "laptop", true, log.New(io.Discard, "", 0)
+	c, err := mirrorhost.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

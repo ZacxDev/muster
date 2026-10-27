@@ -1059,6 +1059,56 @@ but a Bash `gh pr create` / `git push` (the web UI, the GitHub MCP tools, a
 command behind a wrapper the hook does not read), and anything from a host
 without the hook.
 
+### Resuming an ended session
+
+When agent mail would be routed by muster itself — a [reply on a thread a
+session started](#a-reply-on-a-thread-a-session-started) or a [pull-request
+review](#a-pull-request-review-mail) — but **no window shows that session any
+more**, muster can ask the session's host to **resume it** and then route the
+message there. Off unless `MUSTER_MAIL_RESUME_ALLOW` lists the sender
+([configuration](configuration.md)); it needs session routing too.
+
+1. **The gate.** All of these, or the message goes to your chief exactly as
+   before (step 4 of the section above):
+   - the plugin, sender and owner are on `MUSTER_MAIL_RESUME_ALLOW` (the
+     [relay allowlist's](#routing-a-message-to-a-session) grammar), and the
+     plugin marked the sender `sender_verified`;
+   - `MUSTER_MAIL_RESUME_OFF` is not `1` (the kill switch);
+   - no host lists a window running the session — online, or offline but
+     still remembered, in its active pane or another;
+   - a host offers resumes: it runs `muster-mirror -interactive -resume-spawn`.
+     A pull-request author's recorded host is the only one asked; for a thread,
+     each online host that offers resumes is asked in turn until one holds the
+     transcript;
+   - the message has not resumed a session before (one row per message in
+     `mail_resumes`, migration `0056`), the session was resumed fewer than
+     **2** times in the last hour, and the host started fewer than **6**
+     windows in the last hour.
+2. **On the host.** muster sends the session id and nothing else. The host
+   refuses unless it holds exactly one transcript
+   `~/.claude/projects/*/<id>.jsonl`, that transcript records a working
+   directory whose project slug is the directory it is filed under, the
+   directory still exists, no Claude Code process or tmux pane on the host runs
+   the session, and its own limits allow it (one resume per session per 10
+   minutes, 6 an hour). Then it starts a **detached** tmux window named
+   `resume-<first 8 of the id>` in the tmux session `muster-resume`
+   (`-resume-session`), running `claude --resume <id>` (`-resume-claude`)
+   directly, with no shell, in that directory — and lists its windows at once.
+   A window started there is mirrored like any other.
+3. **The route.** muster waits up to **90 s** for that window to be able to
+   take a route (online, `-interactive`, reporting Claude Code's status), then
+   makes the thread's or pull request's ordinary route: the send queue's idle
+   wait, the fenced block, `route_reply`, the deadline and the hand-back. **The
+   message never travels on the host's command line**; it is pasted as data
+   once the window is up.
+4. **Otherwise, the chief.** A refusal at any step, or no window in time,
+   records why on the `mail_resumes` row and hands the message to your chief
+   as before. A window the host did start is left running.
+
+A second message for a session being resumed right now waits for that window
+instead of starting another. Every resume is logged with the message id,
+sender and session.
+
 ### Routing a task to a session
 
 The chief can hand one of your **tasks** to a mirrored session the same way:

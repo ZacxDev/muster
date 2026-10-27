@@ -199,7 +199,7 @@ type attentionItem struct {
 	// on, and the approval muster can answer; nil for any other item.
 	hermes *hermesAsk
 	// suggestions are an ask's stored suggested replies (attention.Ask's,
-	// migration 0056), "" none: what its notification and its page draw as
+	// migration 0057), "" none: what its notification and its page draw as
 	// chips. Not in the item's JSON (attention_list), which predates them.
 	suggestions []string
 }

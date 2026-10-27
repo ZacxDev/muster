@@ -215,7 +215,7 @@ type Ask struct {
 	// RouteID is a question's routed message (New.RouteID), "" for none.
 	RouteID string `json:"-"`
 	// Suggestions are the suggested replies generated for the ask while it was
-	// open (migration 0056, SetSuggestions), at most MaxSuggestions; empty for
+	// open (migration 0057, SetSuggestions), at most MaxSuggestions; empty for
 	// none.
 	Suggestions []string `json:"-"`
 }
@@ -322,7 +322,7 @@ func Clean(n New) (New, error) {
 }
 
 // MaxSuggestions and MaxSuggestionRunes bound an ask's stored suggested
-// replies (0056's CHECK holds the count).
+// replies (0057's CHECK holds the count).
 const (
 	MaxSuggestions     = 3
 	MaxSuggestionRunes = 140
@@ -418,7 +418,7 @@ type Store interface {
 	// them (system scope).
 	ExpireDue(ctx context.Context) ([]Ask, error)
 	// SetSuggestions stores the suggested replies of the caller's ask id
-	// (migration 0056) and returns the ask — ONLY while it is open and
+	// (migration 0057) and returns the ask — ONLY while it is open and
 	// unexpired, and only once (an ask that already has some keeps them): ok is
 	// false, with nothing written, for an ask that is settled, lapsed, already
 	// suggested, or left with no suggestion once cleaned (CleanSuggestions);

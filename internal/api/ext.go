@@ -268,6 +268,13 @@ type Extensions struct {
 	PRMail     *PRMail
 	PRSessions plugins.PRSessionStore
 
+	// MailResume is the mail resume's configuration (MUSTER_MAIL_RESUME_ALLOW,
+	// MUSTER_MAIL_RESUME_OFF; mail_resume.go) and MailResumes its durable
+	// record (migration 0056). nil — the allowlist unset — is OFF: mail for a
+	// session no window shows goes to the chief, as before.
+	MailResume  *MailResume
+	MailResumes plugins.MailResumeStore
+
 	// Attention is the attention queue's explicit asks (internal/attention,
 	// migration 0025). nil (no database): the attention tools are not offered,
 	// /attention answers 404, and no link is drawn.

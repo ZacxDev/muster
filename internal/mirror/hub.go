@@ -132,6 +132,11 @@ type HostView struct {
 	// picker with one Escape (Msg.AskCancel) and is -interactive. False for an
 	// older or read-only muster-mirror and for an offline host.
 	AskCancel bool
+	// ResumeSpawn: the host advertised that it resumes an ended Claude Code
+	// session in a new window (Msg.ResumeSpawn) and is -interactive. False for
+	// an older or read-only muster-mirror, one without -resume-spawn, and an
+	// offline host.
+	ResumeSpawn bool
 	// Repos is the short repo name per WINDOW ID the host last sent
 	// (TypeRepos, repos.go), restricted to its windows when it arrived; nil when
 	// it sent none (an older muster-mirror, a per-session host). Display and
@@ -362,6 +367,9 @@ type hostConn struct {
 	// askCancel: the host advertised Msg.AskCancel, speaks v2 and is
 	// -interactive.
 	askCancel bool
+	// resumeSpawn: the host advertised Msg.ResumeSpawn, speaks v2 and is
+	// -interactive.
+	resumeSpawn bool
 	// gatedSends and gatedAnswers: per runtime with a gated send (RuntimeSpec.
 	// Advertises), whether the host advertised that it sends to it (Hermes:
 	// Msg.HermesSend — the server half of the gated-send switch, PasteWindow)
@@ -398,6 +406,9 @@ type hostConn struct {
 	// answers are the AskUserQuestion answers waiting for the host's
 	// answered, by id (the same id space).
 	answers map[uint32]chan error
+	// resumes are the spawn-resume requests waiting for the host's
+	// resume-spawned, by id (the same id space; resume.go).
+	resumes map[uint32]chan resumeAnswer
 	next    uint32
 }
 
@@ -427,7 +438,7 @@ func (h *Hub) Hosts(owner int64) []HostView {
 		hc.mu.Lock()
 		out = append(out, HostView{Host: k.host, Sessions: append([]string(nil), hc.sessions...), Windows: slices.Clone(hc.windows),
 			Claude: append([]string(nil), hc.claude...), Labels: maps.Clone(hc.labels), Activity: maps.Clone(hc.activity), Repos: maps.Clone(hc.repos), Work: maps.Clone(hc.work), Colors: maps.Clone(hc.colors), Rendered: hc.version >= 2, Online: true, Interactive: hc.interactive, PanePaste: hc.panePaste, PaneScroll: hc.paneScroll,
-			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, HermesSend: hc.gatedSends[RuntimeHermes], HermesAnswer: hc.gatedAnswers[RuntimeHermes]})
+			StatusReport: hc.statusReport, AskAnswer: hc.askAnswer, AskCancel: hc.askCancel, ResumeSpawn: hc.resumeSpawn, HermesSend: hc.gatedSends[RuntimeHermes], HermesAnswer: hc.gatedAnswers[RuntimeHermes]})
 		hc.mu.Unlock()
 	}
 	now := h.now()
@@ -670,7 +681,8 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 	key := hostKey{owner, host}
 	hc := &hostConn{key: key, ws: ws, ctx: ctx, cancel: cancel, interactive: hello.Interactive, version: hello.Version,
 		streams: map[uint32]*stream{}, watches: map[uint32]*watch{}, pastes: map[uint32]chan error{}, scrolls: map[uint32]chan error{},
-		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{}}
+		catalogs: map[uint32]chan catalogAnswer{}, answers: map[uint32]chan error{}, tails: map[uint32]chan tailAnswer{},
+		resumes: map[uint32]chan resumeAnswer{}}
 	hc.sessions, hc.windows, hc.claude, hc.labels, hc.activity = hc.list(hello, h.now().Unix())
 	hc.hostLimit = CleanHostLimit(hello.HostLimit)
 	h.observe(owner, host, hc.windows, h.now())
@@ -692,6 +704,9 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 		hc.askAnswer = hello.AskAnswer && hello.Interactive
 		// So is the Escape that dismisses a picker.
 		hc.askCancel = hello.AskCancel && hello.Interactive
+		// Starting a process on the host is more than a write into a pane:
+		// -interactive hosts only, and only those that opted in (resume.go).
+		hc.resumeSpawn = hello.ResumeSpawn && hello.Interactive
 		// Each runtime's gated-send switch: a send into its window is a write
 		// into the pane like any other, and answering its approval is a write
 		// into the session (it can let a command run): -interactive hosts
@@ -953,6 +968,10 @@ func (h *Hub) ServeConn(ctx context.Context, owner int64, host string, ws *webso
 				if hc.version >= 2 {
 					hc.cancelled(m.ID, m.Error, m.Refusal, m.Text)
 				}
+			case TypeResumeSpawned:
+				if hc.version >= 2 {
+					hc.resumeSpawned(m)
+				}
 			case TypeClosed:
 				var why error
 				if m.Error != "" {
@@ -1059,6 +1078,10 @@ func (h *Hub) drop(hc *hostConn) {
 	for id, ch := range hc.tails {
 		ch <- tailAnswer{err: ErrHostDisconnected}
 		delete(hc.tails, id)
+	}
+	for id, ch := range hc.resumes {
+		ch <- resumeAnswer{err: ErrHostDisconnected}
+		delete(hc.resumes, id)
 	}
 	hc.mu.Unlock()
 	if current {
