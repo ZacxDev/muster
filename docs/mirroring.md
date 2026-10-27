@@ -190,6 +190,19 @@ When a window's active pane runs Claude Code, its card opens a **rendered** view
 by default. Prompts and replies appear as chat bubbles, and each tool call as one
 collapsed row showing the tool, its target, and whether it succeeded, failed or
 is still running. It updates live while a turn runs. Thinking is never shown.
+
+Each tool row also shows how much conversation context the call and its result
+added, such as `+3.3k ctx`. The number is measured from the transcript's own
+token usage: the context of the turn after the call, minus the context of the
+turn that made it. That difference also includes any text the calling turn
+wrote. When one turn made several calls, the measured total is split between
+them by the size of each call and result. Each share is marked `~`, and the
+row's tooltip gives the total. When nothing can be measured, the number is an
+estimate from the result's size, also marked `~`. That happens when the
+runtime records no usage (Hermes), when a prompt arrived before the next turn,
+or when the context shrank. A call whose next turn has not started yet shows no
+number. opencode rows show none either: muster reads neither their usage nor
+their output.
 Every window has its own view: two Claude Code windows in the same directory each
 show their own conversation.
 

@@ -1514,8 +1514,9 @@ func chatBubbleOf(role string, body ...g.Node) g.Node {
 func chatToolChip(call ChatLine, result *ChatLine) g.Node { return toolChip(call, result, "") }
 
 // toolChip is chatToolChip with an element id (the mirrored view replaces a
-// running row in place when its result arrives).
-func toolChip(call ChatLine, result *ChatLine, id string) g.Node {
+// running row in place when its result arrives) and, from the mirrored view,
+// extra nodes drawn just before the status (its context badge).
+func toolChip(call ChatLine, result *ChatLine, id string, extra ...g.Node) g.Node {
 	name := call.ToolName
 	if name == "" && result != nil {
 		name = result.ToolName
@@ -1554,6 +1555,7 @@ func toolChip(call ChatLine, result *ChatLine, id string) g.Node {
 			Span(Class("shrink-0"), g.Text("🔧")),
 			Span(Class("shrink-0 font-mono text-st-review-fg"), g.Text(name)),
 			g.If(target != "", Span(g.Attr("data-tool-target", ""), Class("min-w-0 truncate font-mono text-muted"), g.Text(target))),
+			g.Group(extra),
 			Span(Class(statusClass), g.Attr("aria-label", "status: "+state), g.Text(status)),
 		),
 		Div(Class("flex flex-col gap-1 px-3 pb-2 pt-0"), g.Group(body)),

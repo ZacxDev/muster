@@ -259,6 +259,9 @@ export const switcherSearchPort = port + 220;
 // The session switcher docked on the Agents list (agents-switcher.spec.ts): its
 // own server (the e2eterm binary, mirror plugin on) and one mirrored host.
 export const agentsSwitcherPort = port + 225;
+// The tool rows' context badges on the mirrored view (tool-context.spec.ts):
+// its own server (the e2eterm binary, mirror plugin on) and one mirrored host.
+export const toolContextPort = port + 230;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

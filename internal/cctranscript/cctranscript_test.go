@@ -87,8 +87,8 @@ func TestEventsFromARealToolTurn(t *testing.T) {
 		{Kind: KindText, Text: "AN EARLIER REPLY that is not this turn", Usage: &Usage{Tokens: 248773}},
 		{Kind: KindPrompt, Text: "list the workspace"},
 		{Kind: KindText, Text: "First segment: I will list the workspace.", Usage: &Usage{Tokens: 248773}},
-		{Kind: KindToolCall, ToolID: "toolu_fixture1", Tool: "Bash", Target: "ls", Input: `{"command":"ls","description":"List files"}`, Usage: &Usage{Tokens: 248773}},
-		{Kind: KindToolResult, ToolID: "toolu_fixture1", OK: true, Output: "file-a\nfile-b", At: 946684811000},
+		{Kind: KindToolCall, ToolID: "toolu_fixture1", Tool: "Bash", Target: "ls", Input: `{"command":"ls","description":"List files"}`, Bytes: 43, Usage: &Usage{Tokens: 248773}},
+		{Kind: KindToolResult, ToolID: "toolu_fixture1", OK: true, Output: "file-a\nfile-b", Bytes: 13, At: 946684811000},
 		{Kind: KindText, Text: "Second segment: the workspace holds file-a and file-b.", Usage: &Usage{Tokens: 249972}},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -125,10 +125,10 @@ func TestEventsRecordShapes(t *testing.T) {
 	}{
 		{"errored tool result is not ok",
 			`{"type":"user","promptId":"p","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"boom","is_error":true}]}}`,
-			[]Event{{Kind: KindToolResult, ToolID: "t1", OK: false, Output: "boom"}}},
+			[]Event{{Kind: KindToolResult, ToolID: "t1", OK: false, Output: "boom", Bytes: 4}}},
 		{"block-array result content",
 			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":[{"type":"text","text":"a"},{"type":"image"},{"type":"text","text":"b"}]}]}}`,
-			[]Event{{Kind: KindToolResult, ToolID: "t2", OK: true, Output: "a\n[image]\nb"}}},
+			[]Event{{Kind: KindToolResult, ToolID: "t2", OK: true, Output: "a\n[image]\nb", Bytes: 11}}},
 		{"injected context is dropped",
 			`{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"Base directory for this skill"}]}}`, nil},
 		{"a subagent's records are dropped",
