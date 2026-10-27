@@ -955,6 +955,22 @@ nothing. Its page wires no gesture, and touch pans the terminal as before.
 An agent pod's Terminal view has no drag-to-scroll in this release. Only
 mirrored windows do.
 
+## Resuming an ended session (`-resume-spawn`)
+
+A host started with `-interactive` **and** `-resume-spawn`
+(`MUSTER_MIRROR_RESUME_SPAWN`) lets muster resume an ended Claude Code session
+when agent mail arrives for it ([plugins](plugins.md#resuming-an-ended-session)).
+It is off by default, because it starts a process on the host.
+
+muster's request names the session id and nothing else. The host finds the
+transcript in its own `~/.claude/projects`, takes the working directory the
+transcript records, and refuses unless that directory still exists and no Claude
+Code process or pane on the host runs the session. Then it starts a detached
+window in the tmux session `muster-resume` (`-resume-session`), running
+`claude --resume <id>` (`-resume-claude`) with no shell. The window is mirrored
+like any other. A host resumes one session at most once per 10 minutes, and at
+most 6 sessions an hour.
+
 ## Tokens, revocation, rate limits
 
 - muster re-checks each host's token every 30 seconds. A **revoked** token ends
@@ -974,7 +990,7 @@ side can be upgraded first.
 
 Newer capabilities are announced in the host's hello, without a version bump:
 pasting into non-Claude panes, per-window registration, scrolling a pane's
-history, and reporting each
+history, resuming an ended session, and reporting each
 Claude Code window's status (`busy`, `idle`, `waiting`) with the time Claude
 Code wrote it (`statusSince`, from its sessions file's `statusUpdatedAt`), which
 the [send queue](sending-and-step-up.md#queue-send-when-claude-code-is-idle)

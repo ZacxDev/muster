@@ -204,6 +204,12 @@ BEGIN
         ALTER TABLE public.session_prs DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.session_prs ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0056 (mail_resumes), when this schema has it; same reason as 0011.
+    IF to_regclass('public.mail_resumes') IS NOT NULL THEN
+        ALTER TABLE public.mail_resumes NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.mail_resumes DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.mail_resumes ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

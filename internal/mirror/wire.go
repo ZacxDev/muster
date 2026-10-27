@@ -392,6 +392,12 @@ type Msg struct {
 	// HermesApprovalChoices. An older host, which never advertised
 	// HermesAnswer, is never sent one.
 	HermesApproval *HermesApprovalAnswer `json:"hermesApproval,omitempty"`
+	// ResumeSpawn (hello) is the host ADVERTISING that it resumes an ended
+	// Claude Code session in a new window (TypeSpawnResume, resume.go): an
+	// -interactive v2 host started with -resume-spawn. 🔴 NO VERSION BUMP,
+	// BACKWARD-COMPATIBLE BOTH WAYS, like PaneScroll: an older muster ignores
+	// it; an older host never sets it, so muster never asks it to resume.
+	ResumeSpawn bool `json:"resumeSpawn,omitempty"`
 
 	// ---- subagent cards (subagents.go) ----
 

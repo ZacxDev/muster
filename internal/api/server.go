@@ -128,6 +128,8 @@ type Server struct {
 	// message route (plugins.go), so shutdown waits for each to record its
 	// outcome; pluginDeliverer is built by UseExtensions (nil: none wired).
 	pluginInFlight sync.WaitGroup
+	// mailResumeState is the mail resume's in-flight sessions (mail_resume.go).
+	mailResumeState
 	// destroyInFlight registers every background agent teardown destroyAgent
 	// starts — the provisioner's Destroy AND its after-steps (the chief-start
 	// release, the broadcasts, a door's done hook such as the MCP door's task

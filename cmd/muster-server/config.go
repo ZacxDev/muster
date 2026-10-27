@@ -174,6 +174,16 @@ const (
 	// on. Unset (the default): off — the route answers 404 and every message is
 	// handed on as before.
 	envPRMailSenders = "MUSTER_PR_MAIL_SENDERS"
+	// RESUMING AN ENDED SESSION FOR ITS MAIL (internal/api/mail_resume.go): the
+	// senders, per owner and plugin, VERIFIED only, in MUSTER_ROUTE_RELAY_ALLOW's
+	// grammar, whose mail for a session muster would route itself (by thread,
+	// by pull request) but that no window shows may have muster ask the
+	// session's host to resume it in a new tmux window. Needs session routing
+	// on. Unset (the default): off — such mail goes to the chief, as before.
+	envMailResumeAllow = "MUSTER_MAIL_RESUME_ALLOW"
+	// The mail resume's kill switch: "1" turns it off whatever the allowlist
+	// says.
+	envMailResumeOff = "MUSTER_MAIL_RESUME_OFF"
 	// TASK ROUTING (internal/api/task_routing.go): "1" lets a plugin hand a task
 	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's chief,
 	// which routes it with task_route_attention / task_forward. Needs the plugin
@@ -588,6 +598,12 @@ type config struct {
 	// that does not parse); empty is pull-request routing off.
 	PRMailSendersRaw string
 	PRMailSenders    plugins.PRMailSenders
+	// MailResumeAllow is MUSTER_MAIL_RESUME_ALLOW, parsed (loadConfig refuses
+	// one that does not parse); empty is the mail resume off. MailResumeOff is
+	// MUSTER_MAIL_RESUME_OFF=1, its kill switch.
+	MailResumeAllowRaw string
+	MailResumeAllow    plugins.RelayAllowlist
+	MailResumeOff      bool
 	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatchOwners
 	// MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig refuses one that does not
 	// parse) — non-empty turns task_dispatch on.
@@ -1269,6 +1285,15 @@ func loadConfig(getenv func(string) string) (config, error) {
 			return config{}, fmt.Errorf("invalid %s: %v (want <user id>:<plugin>:<ASCII address, *@domain, agent-mail owner/handle or owner/*>, comma-separated)", envRouteRelayAllow, err)
 		}
 		c.RouteRelayAllow = l
+	}
+	c.MailResumeOff = envFlag(getenv, envMailResumeOff)
+	c.MailResumeAllowRaw = strings.TrimSpace(getenv(envMailResumeAllow))
+	if c.MailResumeAllowRaw != "" {
+		l, err := plugins.ParseRelayAllowlist(c.MailResumeAllowRaw)
+		if err != nil {
+			return config{}, fmt.Errorf("invalid %s: %v (want <user id>:<plugin>:<ASCII address, *@domain, agent-mail owner/handle or owner/*>, comma-separated)", envMailResumeAllow, err)
+		}
+		c.MailResumeAllow = l
 	}
 	c.TaskRouting = envFlag(getenv, envTaskRouting)
 	c.ChiefDispatchOwnersRaw = strings.TrimSpace(getenv(envChiefDispatchOwners))

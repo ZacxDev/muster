@@ -546,6 +546,13 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 				ext.PRMail = &api.PRMail{Senders: cfg.PRMailSenders}
 				ext.PRSessions = pluginStore
 			}
+			// Resuming an ended session for its mail (MUSTER_MAIL_RESUME_ALLOW):
+			// off unless senders are listed; the kill switch is read by the
+			// feature itself, so the banner can say it is set.
+			if cfg.MailResumeAllow.Owners() > 0 {
+				ext.MailResume = &api.MailResume{Allow: cfg.MailResumeAllow, Off: cfg.MailResumeOff}
+				ext.MailResumes = pluginStore
+			}
 		}
 		// Task routing (MUSTER_TASK_ROUTING=1): a plugin may hand a task it files
 		// to the chief; a non-empty MUSTER_CHIEF_DISPATCH_OWNERS also lets the chief
@@ -1292,6 +1299,21 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"POST /api/pr-sessions answers 404 and nothing is routed", envPRMailSenders, envSessionRouting)
 	default:
 		l.Printf("pull-request routing: OFF — %s is unset, so POST /api/pr-sessions answers 404 and review mail goes to the chief", envPRMailSenders)
+	}
+	switch {
+	case ext.MailResume != nil && ext.MailResume.Off:
+		l.Printf("mail resume: OFF by its kill switch (%s=1) — %s lists %d owner(s), but mail for a session no window shows goes to the chief",
+			envMailResumeOff, envMailResumeAllow, ext.MailResume.Allow.Owners())
+	case ext.MailResume != nil:
+		l.Printf("mail resume: ON (%s) — for %d owner(s), VERIFIED mail from a listed sender for a session no window shows asks "+
+			"that session's host to resume it (claude --resume, a host with -resume-spawn only), at most %d per session and %d per host an hour, "+
+			"then routes it there; %s=1 turns it off", envMailResumeAllow, ext.MailResume.Allow.Owners(),
+			api.MailResumePerSessionPerHour, api.MailResumePerHostPerHour, envMailResumeOff)
+	case a.cfg.MailResumeAllow.Owners() > 0:
+		l.Printf("mail resume: INERT — %s is set but session routing (%s=1, with the plugin interface) is off, so nothing is resumed (%s is not read)",
+			envMailResumeAllow, envSessionRouting, envMailResumeOff)
+	default:
+		l.Printf("mail resume: OFF — %s is unset, so mail for a session no window shows goes to the chief (%s is not read)", envMailResumeAllow, envMailResumeOff)
 	}
 	switch {
 	case ext.TaskRouting != nil && len(ext.TaskRouting.DispatchOwners) > 0:

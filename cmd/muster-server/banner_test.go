@@ -398,6 +398,11 @@ var bannerLedger = []string{
 	// which of the owner's sessions it is pasted into, so the log must say
 	// which state this is.
 	envPRMailSenders,
+	// 🔴 THE MAIL RESUME IS LEDGERED: ON, a listed sender's mail can make a
+	// host START A PROCESS (claude --resume), so the log must say which state
+	// this is — and whether the kill switch holds it off.
+	envMailResumeAllow,
+	envMailResumeOff,
 	// 🔴 TASK ROUTING IS LEDGERED: ON, an outside system's task notice reaches
 	// the chief, and with dispatch the chief can start agents on the owner's
 	// credentials, so the log must say which state this is.
@@ -765,6 +770,9 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// Pull-request routing: the banner branches on ext.PRMail (below).
 		PRMailSendersRaw: "review-gate/pr-check",
 		PRMailSenders:    plugins.PRMailSenders{"review-gate/pr-check": true},
+		// The mail resume: the banner branches on ext.MailResume (below).
+		MailResumeAllowRaw: "1:agent-mail:review-gate/pr-check",
+		MailResumeAllow:    bannerResumeAllowlist(t),
 		// Task routing: the banner branches on ext.TaskRouting (below).
 		TaskRouting:            true,
 		ChiefDispatchOwnersRaw: "1",
@@ -805,11 +813,31 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Routes:          bannerStubRoutes{},
 		Routing:         &api.Routing{Allow: bannerAllowlist(t)},
 		PRMail:          &api.PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
+		MailResume:      &api.MailResume{Allow: bannerResumeAllowlist(t)},
 		TaskRouting:     &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		SessionRuntimes: []string{"claude-code"},
 	}, &pgxpool.Pool{})
 	offOut = renderBannerWithPool(t, config{}, api.Extensions{}, nil)
 	return onOut, offOut
+}
+
+func bannerResumeAllowlist(t *testing.T) plugins.RelayAllowlist {
+	t.Helper()
+	l, err := plugins.ParseRelayAllowlist("1:agent-mail:review-gate/pr-check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+// The mail resume's kill switch has its own banner line: with the allowlist
+// set and MUSTER_MAIL_RESUME_OFF=1 the log must say it is OFF, never ON.
+func TestTheBannerSaysTheMailResumeKillSwitchHoldsItOff(t *testing.T) {
+	cfg := config{MailResumeAllowRaw: "1:agent-mail:review-gate/pr-check", MailResumeAllow: bannerResumeAllowlist(t), MailResumeOff: true}
+	out := renderBannerWithPool(t, cfg, api.Extensions{MailResume: &api.MailResume{Allow: bannerResumeAllowlist(t), Off: true}}, nil)
+	if !strings.Contains(out, "mail resume: OFF by its kill switch ("+envMailResumeOff+"=1)") || strings.Contains(out, "mail resume: ON") {
+		t.Fatalf("the kill switch's line is missing or the banner says ON:\n%s", out)
+	}
 }
 
 func bannerAllowlist(t *testing.T) plugins.RelayAllowlist {
