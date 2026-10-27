@@ -178,7 +178,7 @@ func (s *Server) handlePRSessionBind(w http.ResponseWriter, r *http.Request) {
 	// A Claude session id, exactly as the thread bind takes one — and never a
 	// runtime-qualified key ("hermes:<id>"): only a Claude Code hook reports.
 	sub, err := focus.ParseSubject(string(focus.KindMirror) + ":" + in.ClaudeSession)
-	if err != nil || strings.Contains(sub.Key, ":") || !sig.Valid() {
+	if err != nil || strings.Contains(sub.Key, "\x00") || !sig.Valid() {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": prSessionBadRequest})
 		return
 	}
