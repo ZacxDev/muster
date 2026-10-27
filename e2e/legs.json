@@ -120,6 +120,7 @@
       "tests/agent-open-hops.spec.ts",
       "tests/suggested-replies.spec.ts",
       "tests/opencode-view.spec.ts",
+      "tests/tool-context.spec.ts",
       "tests/agent-sidebar.spec.ts"
     ],
     "2": [

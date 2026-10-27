@@ -23,6 +23,14 @@ const (
 	// notice.go. Notice names its source, Status a task's status, Text its
 	// one-line summary and Output the detail shown when the row is expanded.
 	KindNotice = "notice"
+	// KindInjected marks a record the CLI wrote to inject context into the next
+	// request — an attachment record (a message typed while a tool ran,
+	// diagnostics, an edited file, a skill listing, a hook's added context…).
+	// It carries nothing and draws nothing: it exists so the tool-context ledger
+	// (toolctx.go) knows the growth before the next turn is not the tool
+	// calls' alone. Only ReadLines (the mirrored view's reader) emits it;
+	// Events, which every other reader uses, does not.
+	KindInjected = "injected"
 )
 
 // The size caps. An Event never carries a field past these, so a batch of
@@ -73,6 +81,10 @@ type Event struct {
 	OK bool `json:"ok,omitempty"`
 	// Output is a result's text, capped at MaxOutput (and a notice's detail).
 	Output string `json:"output,omitempty"`
+	// Bytes is the UNCAPPED size of a tool_call's input or a tool_result's
+	// text: what a context estimate (toolctx.go) is sized by when there is no
+	// usage to measure with. 0 from a host that predates it.
+	Bytes int `json:"bytes,omitempty"`
 	// Notice is a notice's source (NoticeTask, NoticeCommandOutput); Status a
 	// task notice's status as the harness wrote it ("completed", "failed",
 	// "killed"…), "" when it gave none.
@@ -169,7 +181,7 @@ func Events(r Record) []Event {
 		var out []Event
 		for _, b := range r.Blocks() {
 			if b.Type == "tool_result" && b.ToolUseID != "" {
-				out = append(out, Event{Kind: KindToolResult, ToolID: b.ToolUseID, OK: !b.IsError, Output: Cap(b.ResultText(), MaxOutput)})
+				out = append(out, Event{Kind: KindToolResult, ToolID: b.ToolUseID, OK: !b.IsError, Output: Cap(b.ResultText(), MaxOutput), Bytes: b.ResultBytes()})
 			}
 		}
 		// The record's toolUseResult is ITS call's: believed only when the
@@ -207,7 +219,7 @@ func Events(r Record) []Event {
 				}
 			case "tool_use":
 				ev := Event{Kind: KindToolCall, ToolID: b.ID, Tool: b.Name,
-					Target: ToolTarget(b.Name, string(b.Input)), Input: CapInput(string(b.Input))}
+					Target: ToolTarget(b.Name, string(b.Input)), Input: CapInput(string(b.Input)), Bytes: len(b.Input)}
 				if b.Name == askq.ToolName {
 					if qs, err := askq.ParseInput(b.Input); err == nil {
 						ev.Ask = &Ask{Questions: qs}
