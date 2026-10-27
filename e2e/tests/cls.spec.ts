@@ -11,6 +11,7 @@ import { serverBinary, startServer, Running } from '../lib/server';
 import { clsInit, readCls, resetCls, settle, ClsResult } from '../lib/cls';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // LAYOUT SHIFT UNDER 0.01 ON EVERY PAGE, at a phone (390×844, touch) and a
 // desktop (1280×800): each page is loaded, its async htmx loads are let land
@@ -31,7 +32,7 @@ type Where = 'shared' | 'login' | 'full' | 'public' | 'signed-in';
 const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   'GET /{$}': { where: 'shared', url: '/', ready: '#tasks-list article' },
   'GET /tasks': { where: 'shared', url: '/tasks', ready: '#tasks-list article' },
-  'GET /agents': { where: 'shared', url: '/agents', ready: '#agents-recent a[data-recent-entry]' },
+  'GET /agents': { where: 'shared', url: '/agents', ready: '#session-switcher [data-switcher-list="recent"] a[data-switcher-entry]' },
   // The shared server builds neither store, so its /repos and /connectors fall
   // back to the board; the full server below builds both and draws the real tabs.
   'GET /repos': { where: 'full', url: '/repos', ready: '#panel-repos :is(p, li, button)' },
@@ -193,8 +194,9 @@ for (const vp of viewports) {
       test.setTimeout(240_000);
       const bad: string[] = [];
       const seen: string[] = [];
-      // An agent opened first, so the Agents tab's "Recently viewed" strip has
-      // an entry — the state a returning operator sees, and the one that shifted.
+      // An agent opened first, so the Agents tab's session switcher has a
+      // Recent entry — the state a returning operator sees. (Its "Recently
+      // viewed" strip, which once shifted the list, is gone.)
       await page.goto('/agents/docs-sweeper');
       await settle(page);
       for (const [route, p] of Object.entries(PAGES)) {
@@ -439,7 +441,7 @@ test.describe('the full server', () => {
     const names = async () => new Set(((await (await page.request.get(morigin + '/ui/agents')).text()).match(/href="\/agents\/([^"/?]+)"/g) || []).map((h) => h.slice(14, -1)));
     const before = await names();
     await page.goto(morigin + '/agents');
-    await page.click('#fab-agents');
+    await openDispatchSheet(page);
     const sheet = page.locator('#agent-modal form');
     await sheet.locator('[data-kind-option="claude-code"]').click();
     await sheet.locator('textarea[name="note_text"]').fill('e2e cls terminal');

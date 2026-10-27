@@ -10,7 +10,8 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// THE FILTER'S CONTROLS: host tabs built from the cards, and the search box.
+// THE FILTER'S CONTROLS: host tabs built from the cards (the search box is
+// gone: the session switcher's palette superseded it).
 // ---------------------------------------------------------------------------
 
 // facetFixture is a list whose every field value is pairwise distinct across
@@ -71,14 +72,14 @@ func TestTheCardsCarryTheirHostLabel(t *testing.T) {
 			t.Errorf("a card carries %s, which nothing reads:\n%s", f, cards)
 		}
 	}
-	// The list's partial is the cards and the recent strip, and nothing else
-	// (no out-of-band tabs: the script builds them from the cards).
+	// The list's partial is the cards and the session switcher's rows, and
+	// nothing else (no out-of-band tabs: the script builds them from the cards).
 	var b strings.Builder
 	if err := RenderAgentsList(&b, list, mirrors, nil, 0); err != nil {
 		t.Fatal(err)
 	}
-	if b.String() != cards+renderNode(t, recentStrip(recentItems(list, mirrors, nil), true)) {
-		t.Error("the /ui/agents partial is not exactly the cards and the strip")
+	if b.String() != cards+renderNode(t, switcherRefresh(agentsSwitcher(list, mirrors, nil))) {
+		t.Error("the /ui/agents partial is not exactly the cards and the switcher's rows")
 	}
 }
 
@@ -112,8 +113,7 @@ func TestEveryLabelledFieldIsARegisteredField(t *testing.T) {
 }
 
 // TestTheBarHasHostTabsAndNoDropdowns: the four facet <select>s are gone; in
-// their place, ABOVE the box and OUTSIDE #agents-list (a refresh never touches
-// it), is a tablist whose one server-drawn tab is "All" — selected, in the
+// their place, OUTSIDE #agents-list (a refresh never touches it), is a tablist whose one server-drawn tab is "All" — selected, in the
 // roving tabindex, controlling the list, and drawn with the app's tab look
 // (tabClass, which the script's clones inherit). The strip scrolls sideways
 // inside itself and is one 44px row however many tabs it holds.
@@ -131,7 +131,7 @@ func TestTheBarHasHostTabsAndNoDropdowns(t *testing.T) {
 		start := strings.LastIndex(panel[:i], "<")
 		return panel[start : i+strings.Index(panel[i:], ">")]
 	}
-	for _, gone := range []string{"<select", `id="agents-f-`, "agents-filter-controls", "agents-filter-clear", "data-filter-field"} {
+	for _, gone := range []string{"<select", `id="agents-f-`, "agents-filter-controls", "agents-filter-clear", "data-filter-field", `id="agents-search"`} {
 		if strings.Contains(panel, gone) {
 			t.Errorf("the Agents panel still has %q", gone)
 		}
@@ -148,9 +148,6 @@ func TestTheBarHasHostTabsAndNoDropdowns(t *testing.T) {
 			t.Errorf("the All tab lacks %q: %s", want, all)
 		}
 	}
-	if strings.Index(panel, `id="agents-hosts"`) > strings.Index(panel, `id="agents-search"`) {
-		t.Error("the host tabs are below the search box, not above it")
-	}
 	i := strings.Index(panel, `id="agents-host-all"`)
 	rest := panel[i:]
 	rest = rest[:strings.Index(rest, "</button>")]
@@ -163,16 +160,15 @@ func TestTheBarHasHostTabsAndNoDropdowns(t *testing.T) {
 	}
 }
 
-// TestTheHostTabIsAnExactTermAndedWithTheBox pins the shape of the script's
+// TestTheHostTabIsAnExactTermAndedWithTheChips pins the shape of the script's
 // host filter, so a rewrite cannot quietly make the tab a substring match (a
 // host "mac" showing "macbook"), a filter of its own instead of one more ANDed
-// term, part of ?q=, or built from held arrivals. Behaviour: e2e/tests/host-tabs.spec.ts.
-func TestTheHostTabIsAnExactTermAndedWithTheBox(t *testing.T) {
+// term, or built from held arrivals. Behaviour: e2e/tests/host-tabs.spec.ts.
+func TestTheHostTabIsAnExactTermAndedWithTheChips(t *testing.T) {
 	script := scriptWith(t, renderString(t, Page("agents", featuresAllOn)), "__musterAgentsFilter")
 	for name, want := range map[string]string{
-		"the tab is one more EXACT term, ANDed":      "var all_ = host ? ts.concat([{ attr: 'data-f-host', value: host, exact: true }]) : ts;",
-		"every term hides (the head's one rule set)": "var text = R.rules(ts, host, cs, false);",
-		"the box alone is ?q= and the session":       "var q = input.value;",
+		"the tab is one more EXACT term, ANDed":      "curSel = (host ? sel({ attr: 'data-f-host', value: host, exact: true }) : '') + cs;",
+		"every term hides (the head's one rule set)": "var text = R.rules(host, cs, false);",
 		"tabs come from the DRAWN cards":             "var drawn = list.querySelectorAll(':scope > article:not([data-held])');",
 		"the choice is stored under tabs' prefix":    "var HOST_KEY = 'muster:tabs:agents-host';",
 		"an absent host SHOWS All":                   "var on = h && seen[h] ? h : '';",
@@ -182,7 +178,11 @@ func TestTheHostTabIsAnExactTermAndedWithTheBox(t *testing.T) {
 			t.Errorf("%s: the filter script no longer contains %q", name, want)
 		}
 	}
-	if strings.Contains(script, "syncURL(q + ") || strings.Contains(script, "host=' + ") {
-		t.Error("the host tab is written into ?q=")
+	// Nothing of the removed search box is left to read a stale filter back:
+	// no ?q=, no sessionStorage text, no box.
+	for _, gone := range []string{"searchParams", "sessionStorage", "agents-search", retiredFilterStorageKey} {
+		if strings.Contains(script, gone) {
+			t.Errorf("the filter script still reads %q, the removed search box's state", gone)
+		}
 	}
 }

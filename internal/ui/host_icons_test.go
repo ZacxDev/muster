@@ -137,10 +137,13 @@ func TestEveryListedEntryDrawsItsHostsIconBesideItsName(t *testing.T) {
 		[]RecentRef{{AgentID: 4}, {Mirror: MirrorRef{Host: "tower", Session: "main"}}}, 0); err != nil {
 		t.Fatal(err)
 	}
-	strip := b.String()[strings.Index(b.String(), `id="agents-recent"`):]
-	marks := hostMarkRe.FindAllStringSubmatch(strip, -1)
+	// The switcher's Recent row (switcherRefresh), which replaced the
+	// "Recently viewed" strip: its entries draw the marks their cards draw.
+	recent := b.String()[strings.Index(b.String(), `id="`+switcherRowID(SwitcherRecent)+`"`):]
+	recent = recent[:strings.Index(recent, `id="`+switcherCountID(SwitcherRecent)+`"`)]
+	marks := hostMarkRe.FindAllStringSubmatch(recent, -1)
 	if len(marks) != 2 || marks[0][1] != "cluster" || marks[1][1] != hostIconSet[1].Key || marks[1][2] != "tower" {
-		t.Errorf("strip entries' marks %v; want the agent's cluster mark, then tower's %q", marks, hostIconSet[1].Key)
+		t.Errorf("Recent entries' marks %v; want the agent's cluster mark, then tower's %q", marks, hostIconSet[1].Key)
 	}
 }
 

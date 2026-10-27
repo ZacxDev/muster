@@ -23,15 +23,6 @@ type FocusView struct {
 	ProblemAt time.Time
 }
 
-// focusHaystack is what the list's filter finds a card by through its focus:
-// the title and the description (agents_filter.go's data-filter).
-func focusHaystack(f *FocusView) []string {
-	if f == nil {
-		return nil
-	}
-	return []string{f.Title, f.Description}
-}
-
 // THE FOCUS IS THE CARD'S TITLE (operator ask): a session with a focus is
 // headed by what it is working on (cardFocusTitle), and what the card was
 // called before — the agent's name, the mirrored window's title with its muted
@@ -44,11 +35,6 @@ func focusHaystack(f *FocusView) []string {
 // navigation, so the focus row sits above the anchor, beside the control
 // cluster (it reserves the same pr-28): a tap on the title opens the popover
 // and never the card; the rest of the card is the anchor, as before.
-//
-// 🔴 THE FILTER'S RANKING IS UNTOUCHED BY THIS. agents_filter.go ranks on
-// data-rank-title (cardFields.Titles: the names), never on the visible
-// heading, so a typed name still ranks its card first while the card is
-// headed by its focus; the focus text stays in data-filter, as before.
 
 // cardHasFocusTitle reports whether a card is headed by its focus.
 //

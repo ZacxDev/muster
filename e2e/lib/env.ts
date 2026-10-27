@@ -109,11 +109,11 @@ export const clsSignedMainPort = port + 51;
 export const clsSignedBrowserPort = port + 52;
 export const clsSignedGotruePort = Number(process.env.MUSTER_E2E_CLS_GOTRUE_PORT ?? port + 53);
 export const clsSignedConnectPort = port + 54;
-// The composer-autosize, tool-group and agents-search specs' own servers (each
+// The composer-autosize, tool-group and agents-hold specs' own servers (each
 // the e2eterm binary with the mirror plugin on and a fake mirrored host).
 export const composerFitPort = port + 38;
 export const toolGroupsPort = port + 39;
-export const agentsSearchPort = port + 47;
+export const agentsHoldPort = port + 47;
 // The pickers spec's own e2eterm server, and its fake upstreams (GitHub,
 // OpenRouter's model list, a permission router) on one loopback port.
 export const pickersPort = port + 48;
@@ -256,6 +256,9 @@ export const openPerfPort = port + 215;
 // its own server (the e2eterm binary, mirror plugin on) and one mirrored host
 // whose windows carry codenames.
 export const switcherSearchPort = port + 220;
+// The session switcher docked on the Agents list (agents-switcher.spec.ts): its
+// own server (the e2eterm binary, mirror plugin on) and one mirrored host.
+export const agentsSwitcherPort = port + 225;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

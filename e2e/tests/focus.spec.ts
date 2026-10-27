@@ -254,24 +254,9 @@ for (const vp of [
       await expect(chip).toHaveAttribute('aria-expanded', 'false');
     });
 
-    // 🔴 A DISCRIMINATING PAIR: "reconciling" is the START of the agent's FOCUS
-    // TITLE and the start of a shell window's NAME ("reconciling:1"). Ranked by
-    // names (data-rank-title), the window ranks first; were the visible heading
-    // — the focus title — ranked, the agent would tie it at the top and keep
-    // its list place, ahead. Both stay listed: the filter matches focus text.
-    test("typing a card's NAME still ranks it first, though another card is headed by that word", async ({ page }) => {
-      await openList(page);
-      const named = page.locator(`#agents-list article[data-mirror-card]:has(a[href*="host=${host}"][href*="session=reconciling"])`);
-      await expect(named).toHaveCount(1);
-      const before = await page.locator('#agents-list > article').evaluateAll((as) => as.map((a) => a.id));
-      expect(before.indexOf(await agentCard(page).getAttribute('id') as string), 'control: unfiltered, the agent is listed before the window')
-        .toBeLessThan(before.indexOf(await named.getAttribute('id') as string));
-      await page.locator('#agents-search').fill('reconciling');
-      await expect(agentCard(page)).toBeVisible();
-      await expect(named).toBeVisible();
-      const ids = await page.locator('#agents-list > article:visible').evaluateAll((as) => as.map((a) => a.id));
-      expect(ids[0], `ranked ${ids}`).toBe(await named.getAttribute('id'));
-    });
+    // (A test here pinned that the list's search box ranked a card by its NAME,
+    // not by the focus title heading it. The box and its rank are gone: the
+    // session switcher's palette superseded them.)
 
     test('a session whose refresh failed says why it has no focus', async ({ page }) => {
       await openList(page);
@@ -291,18 +276,22 @@ for (const vp of [
       expect(pb.x + pb.width).toBeLessThanOrEqual(vp.use.viewport.width);
     });
 
-    test('a window whose host reports no Claude session has no chip, and the filter finds cards by their focus', async ({ page }) => {
+    test('a window whose host reports no Claude session has no chip, and the session switcher finds a session by its focus', async ({ page }) => {
       await openList(page);
       await expect(shellCard(page)).toHaveCount(1);
       await expect(shellCard(page).locator('[data-card-focus]')).toHaveCount(0);
-      const search = page.locator('#agents-search');
-      await search.fill('quarterly ledgers');
-      await expect(agentCard(page)).toBeVisible();
-      await expect(claudeCard(page)).toBeHidden();
-      await search.fill('flaky tunnel');
-      await expect(claudeCard(page)).toBeVisible();
-      await expect(agentCard(page)).toBeHidden();
-      await expect(shellCard(page)).toBeHidden();
+      // The switcher docked on the list (its search replaced the list's box)
+      // finds an entry by its focus title: one option, whose second line is it.
+      await page.locator('#switcher-search-open').click();
+      const input = page.locator('#switcher-search-input');
+      const options = page.locator('#switcher-search-results [role="option"]');
+      await input.fill('quarterly ledgers');
+      await expect(options).toHaveCount(1);
+      await expect(options.first()).toContainText('Reconciling the quarterly ledgers');
+      await input.fill('flaky tunnel');
+      await expect(options).toHaveCount(1);
+      await expect(options.first()).toContainText('Bisecting the flaky tunnel test');
+      await page.keyboard.press('Escape');
     });
 
     test('the rendered view\'s sheet tabs "Your messages" with "Focus history", by arrow keys, and keeps the choice', async ({ page }) => {

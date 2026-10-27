@@ -147,9 +147,6 @@ func TestAQualifiedMirrorTitleIsPartOfTheTitleEverywhere(t *testing.T) {
 	if !strings.Contains(labelled, `<span data-mirror-label="">mango:1</span>`+q+`</span>`) {
 		t.Errorf("a labelled card's qualifier does not follow its label inside its name:\n%s", labelled)
 	}
-	if !strings.Contains(labelled, `data-filter="mango:1 mango:1 · tower mango tower `) {
-		t.Errorf("the filter does not carry the qualified title:\n%s", labelled)
-	}
 	unlabelled := renderNode(t, mirrorCard(MirrorCardView{Host: "tower", Session: "solo", Window: "@2", Title: "solo:3", Qualifier: "tower", Online: true}))
 	if !strings.Contains(unlabelled, `data-mirror-name="">solo:3`+q+`</span>`) {
 		t.Errorf("an unlabelled card's qualifier is not part of its name:\n%s", unlabelled)

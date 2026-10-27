@@ -76,8 +76,8 @@ func TestTheAttentionBadgeIsAControlThatOpensTheQueueItem(t *testing.T) {
 	}
 }
 
-// TestAMirroredCardShowsAndIsFoundByItsRepo: the repo chip, the `repo:` field
-// and the free-text haystack — and none of them for a host that did not say
+// TestAMirroredCardShowsAndIsFoundByItsRepo: the repo chip and the `repo`
+// field — and neither of them for a host that did not say
 // (an older muster-mirror). The card's NAME is unchanged by it.
 func TestAMirroredCardShowsAndIsFoundByItsRepo(t *testing.T) {
 	m := MirrorCardView{Host: "lapbox", Session: "fleet", Window: "@5", Title: "fleet:5", Claude: true, Online: true, Repo: "Fixture-Repo"}
@@ -87,9 +87,6 @@ func TestAMirroredCardShowsAndIsFoundByItsRepo(t *testing.T) {
 	}
 	if got := fieldsOf(t, card)["repo"]; got != "fixture-repo" {
 		t.Errorf("data-f-repo = %q, want fixture-repo", got)
-	}
-	if hs := haystackOf(t, card); !strings.Contains(hs, "fixture-repo") {
-		t.Errorf("the haystack %q lacks the repo", hs)
 	}
 	if !strings.Contains(card, `data-mirror-name="">fleet:5</span>`) {
 		t.Errorf("the card's name changed:\n%s", card)

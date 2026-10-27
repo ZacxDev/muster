@@ -58,7 +58,7 @@ func switcherRowEntries(t *testing.T, page, key string) []string {
 // still there — pinned ones included, the page's own, gone ones and repeats
 // left out — capped at switcherRecentMax; Pins is the pinned entries in the
 // list's order; All is every entry in the list's order with the page's own
-// drawn as current. Labels are the pinned chips' (a codename without its
+// drawn as current. Labels are sessionSwitcherLabels' (a codename without its
 // index, unless another entry of the SAME view shares it).
 func TestTheSwitcherResolvesEachView(t *testing.T) {
 	list, mirrors := switcherFixture()
@@ -209,7 +209,7 @@ func TestTheSwitcherBarIsServerRenderedAtAFixedHeight(t *testing.T) {
 		t.Error("the bar's row is not a fixed h-11")
 	}
 	for _, v := range switcherViews {
-		row := regexp.MustCompile(`<div data-switcher-list="` + v.key + `" data-restore-refresh="switcher-` + v.key + `"( hidden="")? class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto"><p data-switcher-empty="" class="truncate text-xs text-muted">` + v.empty + `</p></div>`).FindStringSubmatch(nav)
+		row := regexp.MustCompile(`<div id="` + switcherRowID(v.key) + `" data-switcher-list="` + v.key + `" data-restore-refresh="switcher-` + v.key + `"( hidden="")? class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto"><p data-switcher-empty="" class="truncate text-xs text-muted">` + v.empty + `</p></div>`).FindStringSubmatch(nav)
 		if row == nil {
 			t.Errorf("%s: no empty row saying %q in:\n%s", v.key, v.empty, nav)
 			continue
@@ -375,7 +375,7 @@ func TestTheSwitcherViewButtonOpensAMenu(t *testing.T) {
 	if menuAt < 0 || menuAt < lastRow {
 		t.Fatalf("no popover menu after the rows (menu %d, last row %d)", menuAt, lastRow)
 	}
-	items := regexp.MustCompile(`<button type="button" role="menuitemradio" aria-checked="(true|false)" data-switcher-pick="([a-z]+)"[^>]*>.*?<span class="flex-1">([^<]+)</span><span class="text-xs tabular-nums text-muted" data-switcher-count="([a-z]+)" data-restore-refresh="switcher-count-([a-z]+)">(\d+)</span></button>`).FindAllStringSubmatch(nav[menuAt:], -1)
+	items := regexp.MustCompile(`<button type="button" role="menuitemradio" aria-checked="(true|false)" data-switcher-pick="([a-z]+)"[^>]*>.*?<span class="flex-1">([^<]+)</span><span id="switcher-count-[a-z]+" class="text-xs tabular-nums text-muted" data-switcher-count="([a-z]+)" data-restore-refresh="switcher-count-([a-z]+)">(\d+)</span></button>`).FindAllStringSubmatch(nav[menuAt:], -1)
 	got := []string{}
 	for _, m := range items {
 		if m[4] != m[2] || m[5] != m[2] {
@@ -435,8 +435,8 @@ func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 }
 
 // TestTheSwitcherNeverClampsALabel: an agent's long display name is drawn
-// whole in the switcher (no "…"), while its pinned chip on the Agents list
-// still clamps it to cardTitleMax — the CONTROL, so the fixture is long enough
+// whole in the switcher (no "…"), while its card's title clamp (clampTitle)
+// still cuts it to cardTitleMax — the CONTROL, so the fixture is long enough
 // to be clamped at all.
 func TestTheSwitcherNeverClampsALabel(t *testing.T) {
 	long := "enterprise-customer-data-warehouse-schema-migration-validation-and-audit-report-v3"
@@ -453,7 +453,7 @@ func TestTheSwitcherNeverClampsALabel(t *testing.T) {
 	if !strings.Contains(rows, `<span class="whitespace-nowrap">`+long+`</span>`) || strings.Contains(rows, "…") {
 		t.Error("the switcher does not draw the whole name")
 	}
-	if chip := pinnedChipLabels(orderList(list, nil)); !strings.HasSuffix(chip[0], "…") || len([]rune(chip[0])) != cardTitleMax+1 {
-		t.Errorf("CONTROL: the pinned chip's label is not clamped: %q", chip[0])
+	if short, clamped := clampTitle(long); !clamped || len([]rune(short)) != cardTitleMax {
+		t.Errorf("CONTROL: the card's title clamp does not clamp the fixture: %q", short)
 	}
 }

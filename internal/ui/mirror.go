@@ -267,21 +267,16 @@ func mirrorCard(m MirrorCardView) g.Node {
 	)
 }
 
-// mirrorListAttrs is what the list's filter, host tabs and filter chips read
-// off a mirrored entry — on its card AND on its pinned chip (pinned_chips.go),
-// from this ONE function, so a chip is found, counted and hidden exactly as
-// its card would be: its recency (list_signals.go), whether it waits on you,
-// and its filter fields and haystack (agents_filter.go) — its title ("Gold:8"),
-// the title as shown, with its qualifier ("Gold:8 · laptop"), its raw tmux
-// session name, its host, and what runs in it.
+// mirrorListAttrs is what the list's host tabs and filter chips read off a
+// mirrored entry's card, from this ONE function: its recency
+// (list_signals.go), whether it waits on you, whether the viewer pinned it, and
+// its filter fields (agents_filter.go).
 func mirrorListAttrs(m MirrorCardView) g.Node {
-	f := mirrorFields(m)
 	return g.Group{
 		cardActivityAttrs(time.Now(), m.ActiveAt),
 		g.If(waitTokens(m.Attention, false) != "", g.Attr("data-wait", waitTokens(m.Attention, false))),
-		cardFilterAttrs(f, append([]string{
-			m.Label, m.Title, mirrorQualified(displayOr(m.Label, displayOr(m.Title, m.Session)), m.Qualifier),
-			m.Session, m.Host, f.Kind, m.Repo, "mirrored", f.Mode, f.State}, focusHaystack(m.Focus)...)...),
+		g.If(m.Pinned, g.Attr("data-pinned", "")),
+		cardFilterAttrs(mirrorFields(m)),
 	}
 }
 
@@ -289,7 +284,7 @@ func mirrorListAttrs(m MirrorCardView) g.Node {
 // data-l-*) attributes, which the filter's options are read from.
 func mirrorFields(m MirrorCardView) cardFields {
 	f := cardFields{Host: m.Host, Type: "Mirrored", Name: displayOr(m.Label, displayOr(m.Title, m.Session)),
-		Session: m.Session, Status: "running", Kind: m.Kind, Repo: m.Repo, Titles: []string{m.Label, m.Title, m.Session}}
+		Session: m.Session, Status: "running", Kind: m.Kind, Repo: m.Repo}
 	if !m.Online {
 		f.Status, f.State = "stopped", "offline"
 	}
@@ -339,9 +334,8 @@ func mirroredMark(cardID, host string) g.Node {
 const mirroredIcon = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>`
 
 // AgentsCardsWithMirrors is the Agents list: ONE flat list of agent cards and
-// mirrored entries — the viewer's PINNED entries first, as compact chips
-// (pinned_chips.go), then the rest as cards, each group most recently active
-// first (orderList, which states the whole rule).
+// mirrored entries — the viewer's PINNED entries first, then the rest, each
+// group most recently active first (orderList, which states the whole rule).
 // The empty state shows only when there are neither.
 //
 // 🔴 THE PER-KIND ORDERS ARE INPUTS, NOT RE-DECIDED. agents.SortByLastActivity
@@ -350,9 +344,8 @@ const mirroredIcon = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 24 24" fill="no
 // their own kind; orderList only interleaves them by activity and lifts pins.
 // Every card stays a direct <article> child of #agents-list — no wrapper, no
 // divider article — so the filter's `#agents-list > article` rule and its count
-// still see each one (agents_filter.go): a pinned chip that does not match is
-// hidden like any card. (The pinned row's "Edit pins" toggle is the one
-// non-article child besides the Idle header; the filter's rules never see it.)
+// still see each one (agents_filter.go). (The Idle header is the one
+// non-article child; the filter's rules never see it.)
 //
 // Entries marked Idle (MarkIdle) are drawn after the rest, under the Idle
 // section's header (idle_section.go); this form, with no threshold to name,
@@ -367,21 +360,17 @@ func agentsListNodes(list []AgentCardView, mirrors []MirrorCardView, after time.
 	if len(list) == 0 && len(mirrors) == 0 {
 		return AgentsCards(nil)
 	}
-	var pinned, working, idle []listEntry
+	// A pinned entry is never idle (InIdleSection), so it leads the working
+	// entries (orderList) and is never in the Idle section.
+	var working, idle []listEntry
 	for _, e := range orderList(list, mirrors) {
-		switch {
-		case e.pinned():
-			// A chip, not a card (pinned_chips.go). A pinned entry is never
-			// idle (InIdleSection), so it is never in the Idle section either.
-			pinned = append(pinned, e)
-		case e.idle():
+		if e.idle() {
 			idle = append(idle, e)
-		default:
+		} else {
 			working = append(working, e)
 		}
 	}
-	out := g.Group{pinnedChips(pinned)}
-	out = append(out, g.Map(working, listCard)...)
+	out := g.Group(g.Map(working, listCard))
 	if len(idle) > 0 {
 		out = append(out, idleHead(len(idle), after))
 		out = append(out, g.Map(idle, listCard)...)
@@ -420,8 +409,9 @@ func mirrorEntryTitle(label, title, session, qualifier, class string) g.Node {
 // Nothing that tells two cards apart is lost with it: two entries
 // sharing a label on one host carry their tmux address in the qualifier
 // (mirror.qualify), and an entry with no label is titled "<session>:<index>".
-// The session is still the name's tooltip and a search term (cardFilterAttrs);
-// the window's own pages, opened from the card, still show it.
+// The session is still the name's tooltip and the card's data-f-session
+// (cardFilterAttrs); the window's own pages, opened from the card, still show
+// it.
 func mirrorCardTitle(label, title, session, qualifier, class string) g.Node {
 	return entryTitle(label, title, session, qualifier, class, false)
 }

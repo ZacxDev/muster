@@ -155,15 +155,15 @@ for (const vp of [
       await settle(page);
       await expect(card(page, 'iz2')).toBeHidden();
 
-      // 4. A search finds an idle window while the section is collapsed.
-      await page.locator('#agents-search').fill('iz2');
-      await expect(card(page, 'iz2'), 'the search finds the idle window').toBeVisible();
-      await expect(head(page).locator('[data-idle-count]'), 'the count is what the search shows').toHaveText('(1)');
-      await expect(card(page, 'ia1')).toBeHidden();
-      await page.locator('#agents-search').fill('');
-      await expect(card(page, 'iz2'), 'cleared: collapsed again').toBeHidden();
+      // 4. (A search box that drew the section open while it held a term is
+      //    gone: the session switcher's palette finds an idle entry instead,
+      //    from its All view, without opening the section.)
+      await page.locator('#switcher-search-open').click();
+      await page.locator('#switcher-search-input').fill('iz2');
+      await expect(page.locator('#switcher-search-results [role="option"]'), 'the palette finds the idle window').toHaveCount(1);
+      await page.keyboard.press('Escape');
+      await expect(card(page, 'iz2'), 'the section stays collapsed').toBeHidden();
       await expect(head(page).locator('[data-idle-count]')).toHaveText('(3)');
-      expect(await page.evaluate((k) => localStorage.getItem(k), OPEN_KEY), 'the search left the choice as it was').toBeNull();
 
       console.log(`[idle ${vp.name}] ` + Object.entries(results).map(([k, r]) => `${k} ${r.total}`).join(' | '));
       const bad = Object.entries(results).filter(([, r]) => r.total >= BAR).map(([k, r]) => `${k}: ${r.total} ${JSON.stringify(r.shifts)}`);

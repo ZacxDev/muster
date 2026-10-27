@@ -1,5 +1,6 @@
 import { test, expect } from '../lib/fixtures';
 import { Page } from '@playwright/test';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // Phone-width layout at the narrowest common Android width (360px).
 test.use({ viewport: { width: 360, height: 740 }, hasTouch: true, isMobile: true });
@@ -62,7 +63,7 @@ test('every visible control is a 44px target and every field is 16px text', asyn
   await check('new-task sheet');
   await page.goto('/agents');
   await settle(page);
-  await page.click('#fab-agents');
+  await openDispatchSheet(page);
   await expect(page.locator('#agent-modal form')).toBeVisible();
   await check('dispatch sheet');
   expect(measured, 'the audit measured real controls').toBeGreaterThan(100);
@@ -70,10 +71,15 @@ test('every visible control is a 44px target and every field is 16px text', asyn
 
 test('a sheet keeps its primary action on screen with Advanced open', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 640 });
-  for (const [path, fab, label] of [['/tasks', '#fab-tasks', 'Save task'], ['/agents', '#fab-agents', 'Dispatch']] as const) {
+  // The Agents tab has no FAB any more: its sheet is opened as the FAB did
+  // (openDispatchSheet).
+  for (const [path, open, label] of [
+    ['/tasks', (p: typeof page) => p.click('#fab-tasks'), 'Save task'],
+    ['/agents', openDispatchSheet, 'Dispatch'],
+  ] as const) {
     await page.goto(path);
     await settle(page);
-    await page.click(fab);
+    await open(page);
     const sheet = page.locator('.fixed:not(.hidden) form').first();
     await expect(sheet).toBeVisible();
     await sheet.locator('summary').first().click();

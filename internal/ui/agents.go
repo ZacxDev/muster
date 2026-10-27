@@ -155,15 +155,26 @@ type ComboOption struct {
 // the FAB and dispatch modal live in the shell (Page) so the 4s status refresh
 // never rebuilds them. The card list uses morph swaps so live updates patch in
 // place (no scroll jump, no teardown of hover/expanded state).
-func AgentsPanel(active bool) g.Node { return agentsPanel(active, nil, nil) }
+func AgentsPanel(active bool) g.Node { return agentsPanel(active, nil) }
 
-// agentsPanel is AgentsPanel with the "Recently viewed" strip's entries — and,
-// on the Agents tab's own document, the list's cards (list, nil for none) —
-// drawn on the first paint (ShellData).
-func agentsPanel(active bool, recent []recentItem, list *shellList) g.Node {
+// agentsPanel is AgentsPanel with, on the Agents tab's own document, the list's
+// cards and its session switcher (list, nil for none) drawn on the first paint
+// (ShellData). Without them the switcher is drawn pending (switcherPending) and
+// the list's first load fills both.
+func agentsPanel(active bool, list *shellList) g.Node {
+	sw := switcherPending()
+	if list != nil && list.switcher != nil {
+		sw = list.switcher
+	}
 	return Div(
 		ID(panelID("agents")),
 		g.Attr("role", "tabpanel"),
+		// The room the switcher dock covers at the bottom of the viewport
+		// (switcherDock), reserved by the panel itself so the last card scrolls
+		// clear of the bar. While this panel is shown the content column drops
+		// the room it keeps for the other tabs' FABs (web/css/input.css): this
+		// tab draws none.
+		g.Attr("data-switcher-room", ""),
 		// destructiveSwap=true — AND THE PANEL'S OWN hx-target IS NOT WHY. This
 		// element is never its own target (the inner #agents-list morphs
 		// itself). What destroys nodes inside it is wired
@@ -175,7 +186,7 @@ func agentsPanel(active bool, recent []recentItem, list *shellList) g.Node {
 		//
 		// The first is a TIMER, one instance per agent card, so this panel discards
 		// nodes inside itself every 10 seconds with nobody touching it. See panelClass.
-		Class(panelClass(active, true)),
+		Class(panelClass(active, true)+" "+switcherRoom(true)),
 		// ⚠ THE OPERATOR FAB THAT USED TO SIT ON THIS TAB IS GONE (task #633): there
 		// is no operator chat page to open. The tab leads with the running-agents
 		// list. (The pending privilege-request queue that used to sit above it was
@@ -185,13 +196,11 @@ func agentsPanel(active bool, recent []recentItem, list *shellList) g.Node {
 			Class("mb-2 flex items-center gap-2"),
 			H2(Class("text-xs font-medium uppercase tracking-wide text-muted"), g.Text("Agents")),
 		),
-		// Recently viewed (recents.go): above the filter and OUTSIDE #agents-list —
-		// the filter's `#agents-list > article` rule assumes every child is a card,
-		// and the strip is navigation, not something to filter. Drawn with its
-		// entries when the shell has them (ShellData — so its arrival moves nothing
-		// below it), and replaced out of band by every list render.
-		recentStrip(recent, false),
-		// The filter: a search box that narrows the cards as you type. OUTSIDE
+		// ⚠ THE "RECENTLY VIEWED" STRIP AND THE SEARCH BOX THAT SAT HERE ARE GONE
+		// (operator ask): the session switcher docked at the bottom supersedes
+		// both — its Recent view and its search palette (switcher.go).
+		//
+		// The filter: the host tabs and the quick-filter chips. OUTSIDE
 		// #agents-list, so the list's own refresh never touches it (agents_filter.go).
 		agentsFilterBar(),
 		Div(
@@ -228,9 +237,12 @@ func agentsPanel(active bool, recent []recentItem, list *shellList) g.Node {
 		// ⚠ AN "ADVANCED" DISCLOSURE USED TO SIT HERE, mounting the runbook and
 		// privilege-profile registries a second time. Both subsystems are removed.
 		//
-		// FAB + modal are rendered at the body level by Page (shellFAB +
-		// agentModalShell) so fixed positioning is reliable and they survive the
-		// 4s list refresh.
+		// The dispatch modal is rendered at the body level by Page
+		// (agentModalShell): the Tasks tab's cards open it. This tab draws no FAB
+		// (operator ask: the session switcher's bar is its bottom edge).
+		//
+		// The session switcher, docked at the bottom of the viewport (switcher.go).
+		switcherDock(sw),
 	)
 }
 
@@ -243,7 +255,7 @@ func AgentsCards(list []AgentCardView) g.Node {
 			Class("col-span-full mt-16 flex flex-col items-center justify-center gap-2 text-center"),
 			Div(Class("text-4xl"), g.Text("🧩")),
 			P(Class("text-lg font-medium text-fg2"), g.Text("No agents yet")),
-			P(Class("text-sm text-muted"), g.Text("Tap + to dispatch an agent for a repo.")),
+			P(Class("text-sm text-muted"), g.Text("Dispatch one from a task on the Tasks tab.")),
 		)
 	}
 	return g.Group(g.Map(list, agentCard))
@@ -251,14 +263,9 @@ func AgentsCards(list []AgentCardView) g.Node {
 
 // RenderAgentCard writes a single agent's list entry (the #agent-{id}
 // <article>). Used to re-render it after an inline rename (save) or to restore
-// it on cancel, swapped as outerHTML of #agent-{id}. A PINNED agent's entry is
-// its chip (pinned_chips.go), never a card: a rename started from the chip's
-// edit controls, or racing a pin from another tab, must not swap a full card
-// into the pinned row.
+// it on cancel, swapped as outerHTML of #agent-{id}. A pinned agent's entry is
+// its card too (pins.go).
 func RenderAgentCard(w io.Writer, a AgentCardView) error {
-	if a.Pinned {
-		return pinnedChips1(listEntry{agent: &a}).Render(w)
-	}
 	return agentCard(a).Render(w)
 }
 
@@ -434,18 +441,16 @@ func agentCard(a AgentCardView) g.Node {
 	)
 }
 
-// agentListAttrs is what the list's filter, host tabs and filter chips read
-// off a dispatched agent — on its card AND on its pinned chip
-// (pinned_chips.go), from this ONE function: its recency (list_signals.go),
-// whether it waits on you, and its filter fields and haystack
-// (agents_filter.go).
+// agentListAttrs is what the list's host tabs and filter chips read off a
+// dispatched agent's card, from this ONE function: its recency
+// (list_signals.go), whether it waits on you, whether the viewer pinned it, and
+// its filter fields (agents_filter.go).
 func agentListAttrs(a AgentCardView) g.Node {
 	return g.Group{
 		cardActivityAttrs(time.Now(), a.lastActive()),
 		g.If(waitTokens(a.Attention, a.AwaitingApproval) != "", g.Attr("data-wait", waitTokens(a.Attention, a.AwaitingApproval))),
-		cardFilterAttrs(agentFields(a), append([]string{
-			displayOr(a.DisplayName, a.Name), a.Name, a.Repo, agents.KindLabel(a.Kind), a.CCAccount, a.Status, "agent"},
-			focusHaystack(a.Focus)...)...),
+		g.If(a.Pinned, g.Attr("data-pinned", "")),
+		cardFilterAttrs(agentFields(a)),
 	}
 }
 
@@ -453,8 +458,7 @@ func agentListAttrs(a AgentCardView) g.Node {
 // attributes, which the filter's options are read from.
 func agentFields(a AgentCardView) cardFields {
 	return cardFields{Host: podHost, Type: "Agent", Name: filterHaystack(a.DisplayName, a.Name),
-		Status: a.Status, Kind: agents.KindLabel(a.Kind), Repo: a.Repo, Account: a.CCAccount, NS: a.Namespace,
-		Titles: []string{a.DisplayName, a.Name}}
+		Status: a.Status, Kind: agents.KindLabel(a.Kind), Repo: a.Repo, Account: a.CCAccount, NS: a.Namespace}
 }
 
 // agentCardFooter renders the card's bottom meta row: age (CreatedAt) + last
@@ -611,7 +615,7 @@ func agentMenu(a AgentCardView) g.Node {
 			g.Attr("data-floating-menu", ""),
 			Class("invisible hidden [&:popover-open]:flex m-0 w-44 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
 			lifecycle,
-			g.If(!a.Pinned, agentPinMenuItem(a)),
+			agentPinMenuItem(a),
 			g.If(!a.IsChief, Div(Class("my-0.5 border-t border-line"))),
 			g.If(!a.IsChief, agentDeleteConfirm(ids)),
 		),
