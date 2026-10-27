@@ -114,7 +114,7 @@ func Render(r Row) []cctranscript.Event {
 				args := c.arguments()
 				out = append(out, cctranscript.Event{Kind: cctranscript.KindToolCall, ToolID: cctranscript.Cap(c.ID, 128),
 					Tool: cctranscript.Cap(c.Function.Name, 128), Target: cctranscript.ToolTarget(c.Function.Name, args),
-					Input: cctranscript.CapInput(args)})
+					Input: cctranscript.CapInput(args), Bytes: len(args)})
 			}
 		}
 		return out
@@ -123,7 +123,7 @@ func Render(r Row) []cctranscript.Event {
 			return nil
 		}
 		return []cctranscript.Event{{Kind: cctranscript.KindToolResult, ToolID: cctranscript.Cap(r.ToolCallID, 128),
-			OK: toolOK(r.Content), Output: cctranscript.Cap(r.Content, cctranscript.MaxOutput)}}
+			OK: toolOK(r.Content), Output: cctranscript.Cap(r.Content, cctranscript.MaxOutput), Bytes: len(r.Content)}}
 	}
 	return nil
 }
