@@ -526,6 +526,14 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 			return nil, err
 		}
 	}
+	// The live heartbeat (internal/ui/live.go) is process-wide too: every
+	// stream's server beats at it and every page derives its staleness bounds
+	// from it. Zero keeps the default.
+	if cfg.LiveHeartbeat != 0 {
+		if err := ui.SetLiveHeartbeat(cfg.LiveHeartbeat); err != nil {
+			return nil, err
+		}
+	}
 	// The plugin interface: only with MUSTER_PLUGINS=1 AND a database (its
 	// tokens and messages are rows). A message is handed to the owner's chief
 	// through the agent gateway; with none, messages are stored and stay queued.

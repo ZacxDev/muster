@@ -336,6 +336,11 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 		}
 	})
 
+	// The page judges the socket alive by hearing from it (ui/live.go); a
+	// protocol ping is answered by the browser itself and never reaches the
+	// page's script, and an idle TUI prints nothing, so it beats too.
+	defer socketHeartbeat(sockCtx, logger, c)()
+
 	pingDone := make(chan struct{})
 	safeGo(logger, "terminal keepalive", func() {
 		defer close(pingDone)

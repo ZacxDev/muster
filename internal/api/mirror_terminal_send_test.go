@@ -117,9 +117,10 @@ func TestTheTerminalViewHasAComposerForASessionThatIsNotClaude(t *testing.T) {
 	if !hasText16px.MatchString(input) {
 		t.Errorf("the input is not 16px (text-base); iOS would zoom the page on focus: %s", input)
 	}
-	// The page opens read-only and the composer is there regardless.
-	if mode := tagOf(page, "term-mode"); !strings.Contains(mode, `aria-checked="false"`) {
-		t.Errorf("the page does not open read-only: %s", mode)
+	// Live keys are always on: there is no switch, and the composer is there
+	// beside the keys.
+	if mode := tagOf(page, "term-mode"); mode != "" {
+		t.Errorf("the page still draws the Live keys switch: %s", mode)
 	}
 	// A send refused as stale needs the dialog to ask through.
 	if !strings.Contains(page, `<dialog id="term-confirm"`) {

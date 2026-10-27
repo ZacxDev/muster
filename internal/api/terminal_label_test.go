@@ -2,6 +2,7 @@ package api
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -19,10 +20,14 @@ import (
 //
 // Red at origin/main 5252925 (the switch's label and both status strings carry
 // "read-only"); green at HEAD.
+//
+// LIVE KEYS ARE NOW ALWAYS ON and the switch is gone (ui.AgentTerminalPage):
+// the status line names the state instead — Connected, "confirm it's you to
+// type", "this host takes no keys" — and none of it says read-only either.
 
 var (
 	scriptBlock = regexp.MustCompile(`(?s)<script\b[^>]*>.*?</script>`)
-	jsLiteral   = regexp.MustCompile(`'[^'\n]*'`)
+	jsLiteral   = regexp.MustCompile(`'[^'\n]*'|"[^"\n]*"`)
 	anyTag      = regexp.MustCompile(`(?s)<[^>]*>`)
 	readOnlyRe  = regexp.MustCompile(`(?i)read[- ]only`)
 )
@@ -54,17 +59,18 @@ func readOnlyWording(page string) []string {
 	return out
 }
 
-// theSwitchSaysLiveKeys asserts the switch and the status line name live keys.
-func theSwitchSaysLiveKeys(t *testing.T, what, page string) {
+// theStatusSaysLiveKeys asserts the page has no Live keys switch and its
+// script draws the status line from the exported words.
+func theStatusSaysLiveKeys(t *testing.T, what, page string) {
 	t.Helper()
-	label := page[strings.Index(page, `id="term-mode-label"`):]
-	label = label[strings.Index(label, ">")+1 : strings.Index(label, "</span>")]
-	if label != ui.LiveKeysOff {
-		t.Errorf("%s: the switch opens labelled %q, want %q", what, label, ui.LiveKeysOff)
+	for _, id := range []string{`id="term-mode"`, `id="term-mode-label"`} {
+		if strings.Contains(page, id) {
+			t.Errorf("%s: the page still draws the Live keys switch (%s)", what, id)
+		}
 	}
-	for _, lit := range []string{"'" + ui.LiveKeysOn + "'", "'" + ui.LiveKeysOff + "'", "'" + ui.StatusConnected + "'", "'" + ui.StatusLiveKeys + "'"} {
-		if !strings.Contains(page, lit) {
-			t.Errorf("%s: the page's script does not use %s", what, lit)
+	for _, lit := range []string{ui.StatusConnected, ui.StatusConfirmToType, ui.StatusNoKeys, ui.StatusReconnecting} {
+		if !strings.Contains(page, strconv.Quote(lit)) {
+			t.Errorf("%s: the page's script does not use %q", what, lit)
 		}
 	}
 }
@@ -81,7 +87,7 @@ func TestAnInteractiveHostsTerminalPageSaysNothingIsReadOnly(t *testing.T) {
 		if got := readOnlyWording(page); len(got) != 0 {
 			t.Errorf("%s: a page whose composer can send says read-only:\n  %s", path, strings.Join(got, "\n  "))
 		}
-		theSwitchSaysLiveKeys(t, path, page)
+		theStatusSaysLiveKeys(t, path, page)
 	}
 }
 
@@ -94,9 +100,10 @@ func TestAReadOnlyHostsOnlyExplanationIsItsComposersNote(t *testing.T) {
 	if !strings.Contains(page, `<p id="mv-readonly"`) || !strings.Contains(page, ui.MirrorReadOnlyNote) {
 		t.Fatal("a read-only host's page does not carry its composer's note")
 	}
-	if mode := tagOf(page, "term-mode"); !strings.Contains(mode, ` hidden`) {
-		t.Errorf("a read-only host's page offers the Live keys switch: %s", mode)
+	if term := tagOf(page, "term"); !strings.Contains(term, ` data-keys-off`) {
+		t.Errorf("a read-only host's terminal does not turn its keys off: %s", term)
 	}
+	theStatusSaysLiveKeys(t, "a read-only host", page)
 	// Remove the composer's own words (its note, which it also carries as a
 	// tooltip, and its placeholder): nothing else may say it.
 	if got := readOnlyWording(page); len(got) == 0 {
@@ -110,7 +117,7 @@ func TestAReadOnlyHostsOnlyExplanationIsItsComposersNote(t *testing.T) {
 }
 
 // TestAnAgentsTerminalPageSaysNothingIsReadOnly: an agent pod's terminal page
-// has the same switch and a composer that sends.
+// has the same status line and a composer that sends.
 func TestAnAgentsTerminalPageSaysNothingIsReadOnly(t *testing.T) {
 	var b strings.Builder
 	c := ui.ComposerView{SendPath: ui.AgentSendPath("keen-wren"), Placeholder: "Message…", Aria: "Send a message"}
@@ -120,5 +127,5 @@ func TestAnAgentsTerminalPageSaysNothingIsReadOnly(t *testing.T) {
 	if got := readOnlyWording(b.String()); len(got) != 0 {
 		t.Errorf("an agent's terminal page says read-only:\n  %s", strings.Join(got, "\n  "))
 	}
-	theSwitchSaysLiveKeys(t, "an agent's terminal", b.String())
+	theStatusSaysLiveKeys(t, "an agent's terminal", b.String())
 }

@@ -256,6 +256,9 @@ export const openPerfPort = port + 215;
 // its own server (the e2eterm binary, mirror plugin on) and one mirrored host
 // whose windows carry codenames.
 export const switcherSearchPort = port + 220;
+// tests/reconnect.spec.ts: a mirror rig whose server beats every 500 ms
+// (MUSTER_LIVE_HEARTBEAT), so a silent socket is judged stale in about a second.
+export const reconnectPort = port + 230;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
