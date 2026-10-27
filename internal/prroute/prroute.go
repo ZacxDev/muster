@@ -127,11 +127,11 @@ func ParseMail(body string) (Ref, bool) {
 }
 
 // lastJSONBlock is the content of body's last CLOSED fenced block whose info
-// string is "json".
+// string is "json" — false unless only whitespace follows that block.
 func lastJSONBlock(body string) (string, bool) {
 	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
 	var last string
-	found := false
+	found, lastEnd := false, -1
 	for i := 0; i < len(lines); i++ {
 		m := fenceOpen.FindStringSubmatch(lines[i])
 		if m == nil {
@@ -151,9 +151,16 @@ func lastJSONBlock(body string) (string, bool) {
 			break
 		}
 		if info == "json" {
-			last, found = strings.Join(lines[i+1:end], "\n"), true
+			last, found, lastEnd = strings.Join(lines[i+1:end], "\n"), true, end
 		}
 		i = end
+	}
+	// 🔴 THE BLOCK MUST END THE BODY: only whitespace may follow its closing
+	// fence (the gate writes "\n{fence}\n" last). Otherwise a block forged in
+	// the prose above — closed, then followed by an unclosed longer fence that
+	// swallows the gate's own block — would be the last CLOSED json block.
+	if found && strings.TrimSpace(strings.Join(lines[lastEnd+1:], "\n")) != "" {
+		return "", false
 	}
 	return last, found
 }

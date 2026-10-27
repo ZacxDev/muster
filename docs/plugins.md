@@ -1028,7 +1028,8 @@ routing is on.
 2. **The mail.** Only a NEW message from the `agent-mail` plugin whose sender
    is on the list **and** that the plugin marked `sender_verified`. muster reads
    the body's **last** fenced block whose info string is `json` (a fence of
-   three or more backticks, closed by a run at least as long):
+   three or more backticks, closed by a run at least as long), and that block
+   must end the body — only whitespace may follow its closing fence:
 
    ```json
    {"repo": "<owner>/<repo>", "pr": 123, "head_sha": "<40 hex>", "head_ref": "<branch>"}
@@ -1047,7 +1048,7 @@ routing is on.
    owner's session is never chosen.
 4. **No online window for that session.** The message goes to your chief as
    any other, and its turn ends with a block headed "Session that authored
-   this pull request": the session's id, title, host, what muster saw it do
+   this pull request": the session's id, title, host, what its host's hook reported it did
    and when, and that no window shows it — so the chief can raise an ask with
    a resume pointer instead of guessing.
 5. **No author recorded**, or not a review muster reads: the ordinary

@@ -123,7 +123,8 @@ func (s *PGStore) RecordPRSession(ctx context.Context, claudeSession, host strin
 }
 
 // ResolvePRSession: see PRSessionStore. The most recent row by last_seen wins
-// (the id breaks a tie: the later insert).
+// (the id breaks a tie: the later insert); a row past PRSessionRetention never
+// does, even before a report prunes it.
 func (s *PGStore) ResolvePRSession(ctx context.Context, ref prroute.Ref) (PRSession, bool, error) {
 	var p PRSession
 	var kind string
@@ -131,7 +132,8 @@ func (s *PGStore) ResolvePRSession(ctx context.Context, ref prroute.Ref) (PRSess
 	var head, host *string
 	err := s.pool.QueryRow(ctx, `SELECT claude_session, host, kind, repo, pr, head_ref, last_seen FROM session_prs
 		WHERE repo = $1 AND ((kind = 'gh-pr-create' AND pr = $2) OR ($3 <> '' AND head_ref = $3))
-		ORDER BY last_seen DESC, id DESC LIMIT 1`, strings.ToLower(ref.Repo), ref.PR, ref.HeadRef).
+			AND last_seen > now() - make_interval(secs => $4)
+		ORDER BY last_seen DESC, id DESC LIMIT 1`, strings.ToLower(ref.Repo), ref.PR, ref.HeadRef, PRSessionRetention.Seconds()).
 		Scan(&p.ClaudeSession, &host, &kind, &p.Repo, &pr, &head, &p.LastSeen)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return PRSession{}, false, nil

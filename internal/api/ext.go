@@ -262,8 +262,9 @@ type Extensions struct {
 
 	// PRMail is pull-request → session routing's configuration
 	// (MUSTER_PR_MAIL_SENDERS, pr_routes.go) and PRSessions its store
-	// (migration 0055). PRMail nil — the variable unset — is OFF: no session's
-	// transcript is scanned and every message is handed on as before.
+	// (migration 0055), which the host's hook fills through POST
+	// /api/pr-sessions. PRMail nil — the variable unset — is OFF: that route
+	// answers 404 and every message is handed on as before.
 	PRMail     *PRMail
 	PRSessions plugins.PRSessionStore
 
