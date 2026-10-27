@@ -34,7 +34,10 @@ var liveHeartbeatEvery = ui.LiveHeartbeat
 // when to stop beating.
 func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn) (stop func()) {
 	ctx, cancel := context.WithCancel(ctx)
-	every := liveHeartbeatEvery()
+	// Both read here, on the handler's goroutine: the beat may outlive the
+	// handler by a moment (stop does not wait for it), and must not read them
+	// then.
+	every, bound := liveHeartbeatEvery(), terminalWriteTimeout
 	safeGo(logger, "live heartbeat", func() {
 		t := time.NewTicker(every)
 		defer t.Stop()
@@ -43,7 +46,7 @@ func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn)
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if err := writePing(ctx, c); err != nil {
+				if err := writePing(ctx, c, bound); err != nil {
 					return
 				}
 			}
@@ -52,10 +55,10 @@ func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn)
 	return cancel
 }
 
-// writePing writes one heartbeat to c, noting a timed-out write
+// writePing writes one heartbeat to c within bound, noting a timed-out write
 // (notePageWrite), on a context that ctx's end does not cancel.
-func writePing(ctx context.Context, c *websocket.Conn) error {
-	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalWriteTimeout)
+func writePing(ctx context.Context, c *websocket.Conn, bound time.Duration) error {
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bound)
 	defer cancel()
 	err := c.Write(wctx, websocket.MessageText, []byte(ui.LivePingFrame))
 	notePageWrite(c, err)

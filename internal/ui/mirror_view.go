@@ -912,6 +912,9 @@ func mirrorViewScript() g.Node {
   // heard a heartbeat (only then can it be judged stale), when it was made,
   // and the pending retry of a closed one.
   var lastAt = 0, beat = false, madeAt = 0, retryTimer = 0;
+  // begun: the page's first connect() has run. Until then the open is still
+  // reading its snapshot (start()), and no socket is not a closed socket.
+  var begun = false;
   // The snapshot (web/static/mirror-snap.js): what this window's view drew,
   // replayed at open, then resumed from its offset. snapRef stays null — no
   // snapshot is read or written — when the store is unavailable. Set in
@@ -1154,6 +1157,7 @@ func mirrorViewScript() g.Node {
     clearTimeout(retryTimer); retryTimer = 0;
     // Left (pagehide): a pending retry opens nothing.
     if (closed) return;
+    begun = true;
     // 🔴 ONE SOCKET: one still open or opening is closed before another is made.
     if (sock && sock.readyState < 2) drop();
     var base = log.getAttribute('data-ws');
@@ -1239,7 +1243,10 @@ func mirrorViewScript() g.Node {
   // has heard no heartbeat for staleMs is replaced; one still opening is left
   // to finish, unless it has been opening for longer than that too.
   function wake(why, staleMs) {
-    if (closed) return;
+    // 🔴 NOT BEFORE THE FIRST OPEN: a wake during the snapshot read (a tick,
+    // the frame's focus) would open a from-the-start socket that the open
+    // then replaces — a second host stream for every view opened.
+    if (closed || !begun) return;
     var now = Date.now();
     if (!sock || sock.readyState > 1) {
       if (!liveCanRetry() || (why === 'tick' && retryTimer)) return;

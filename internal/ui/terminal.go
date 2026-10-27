@@ -209,9 +209,11 @@ const AgentSendFromTerminal = "terminal"
 //     pressed asks "Confirm it's you" (passkey or password). The server
 //     refuses an interactive attach on a stale sign-in whatever the page does;
 //   - a host that did not advertise -interactive takes no keys: they are drawn
-//     disabled (ReadOnlyOnly), and the hub refuses an interactive attach to it;
-//   - a terminal hidden behind the other view drops its live keys (one
-//     re-attach) and takes them back when shown (view_swap.go).
+//     disabled (ReadOnlyOnly), and the hub refuses an interactive attach to it.
+//
+// A terminal hidden behind the other view (view_swap.go) keeps its attach as
+// it is — its frame is inert there, so nothing can type into it — rather than
+// re-attaching twice on every swap.
 //
 // 🔴 THE PAGE NEVER CALLS ITSELF "READ-ONLY" — the composer under the terminal
 // sends whatever the keys can do. A host that genuinely cannot be sent to says
@@ -751,16 +753,17 @@ func agentTerminalScript() g.Node {
   }
   function clearError() { errEl.hidden = true; reconnectBtn.hidden = true; }
   // applyMode: the keys are on wherever the host takes keys (live keys are
-  // always on); what an attach without them does with a key is send()'s.
+  // always on) and there is a terminal to type into; what an attach without
+  // them does with a key is send()'s.
   function applyMode() {
-    var on = !keysOff;
+    var on = !keysOff && !unavailable;
     term.options.disableStdin = !on;
     for (var i = 0; i < keys.length; i++) { keys[i].disabled = !on; }
     if (moreBtn) moreBtn.disabled = !on;
     if (!on) closeKeysMenu();
   }
   function send(data) {
-    if (keysOff) return;
+    if (keysOff || unavailable) return;
     if (mode === 'rw') {
       if (ws && ws.readyState === 1) ws.send(typeof data === 'string' ? enc.encode(data) : data);
       return;
@@ -1206,25 +1209,12 @@ func agentTerminalScript() g.Node {
     reconnectBtn.addEventListener('click', wire);
   })();
 
-  // 🟢 OFF SCREEN, NO LIVE KEYS (view_swap.go): a terminal hidden behind the
-  // other view while typing straight into the session drops to read-only —
-  // one re-attach — and takes live keys back only when it is on screen again,
-  // through the same freshness check every live attach takes: a sign-in no
-  // longer fresh stays without them, and its next key pressed asks.
-  var rwWhenShown = false;
-  window.addEventListener('muster:view-hidden', function () {
-    if (mode !== 'rw') return;
-    rwWhenShown = true;
-    mode = 'ro';
-    applyMode();
-    connect();
-  });
-  window.addEventListener('muster:view-shown', function () {
-    if (!rwWhenShown) return;
-    rwWhenShown = false;
-    if (!canType()) { if (ws && ws.readyState === 1) setStatus(statusFor('ro')); return; }
-    goInteractive();
-  });
+  // ⚠ OFF SCREEN, THE ATTACH IS KEPT AS IT IS (view_swap.go: ONE stream per
+  // view for as long as the person stays on the window). A terminal behind
+  // the other view used to drop live keys — one re-attach going, one coming
+  // back — which, with live keys always on, would be two re-attaches on EVERY
+  // swap. Nothing can type into it there: the hidden frame is inert, so it
+  // takes no key, no tap and no focus until it is shown again.
 
   // Leaving the page ends the stream now rather than when the socket times out.
   window.addEventListener('pagehide', function () { left = true; clearTimeout(retryTimer); drop(); });
@@ -1237,7 +1227,7 @@ func agentTerminalScript() g.Node {
     show: function (why) {
       if (unavailable) return null;
       left = false; retry = 0;
-      if (mode === 'ro' && canType() && !rwWhenShown) mode = 'rw';
+      if (mode === 'ro' && canType()) mode = 'rw';
       return new Promise(function (resolve) { restoring = resolve; connect(why || 'pageshow'); });
     },
     wake: wake

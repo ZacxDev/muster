@@ -105,16 +105,30 @@ No string says exactly that; it is what the person reads off one of these:
 
 - **The rendered view's status line, "Disconnected — reconnecting…"**, on any
   close of the transcript socket the page did not ask for. It reconnects with
-  backoff (0.5 s doubling to 16 s), resuming from its offset.
+  backoff and jitter (0.5 s doubling to 15 s, each wait between half and all
+  of that) while the page is shown and online, resuming from its offset.
 - **The rendered view's error banner**, when the server ended the stream and
   said why (`{"type":"error","message":…,"reason":…}`). The usual one is
   *"mirror: the host's connection ended while the terminal was attached"*
   (`ErrHostDisconnected`, reason `host_disconnected`) — the text names a
   terminal for a rendered view too.
-- **The terminal's "Disconnected"** with *"The terminal connection closed."*,
-  or the server's error text.
-- An agent chat's socket closing (it reconnects silently after 2 s; the page
-  reports it, the server does not count it).
+- **The terminal's "Disconnected · reconnecting…"**: it reconnects by itself
+  like the rendered view, and offers Reconnect only after three failures in a
+  row, or when the far side refused or ended the attach (its error text).
+- An agent chat's socket closing (it reconnects silently, with the same
+  backoff; the page reports it, the server does not count it).
+
+Every one of them also reconnects **by itself when the page comes back** —
+shown again after being hidden (a phone unlocked, a tab switched to), restored
+by Back, the network back (`online`), the window focused — and replaces a
+socket that still looks open but has heard nothing for about two heartbeats
+(every live socket and the `/events` stream send one every
+`MUSTER_LIVE_HEARTBEAT`, 15 s by default; see `internal/ui/live.go`). Each
+such reconnect is an open of its own, and its span and measurement say so:
+`muster.reconnect=true` and `muster.reconnect_reason` — `visibility`,
+`pageshow`, `online`, `focus`, `stale` (the watchdog), `retry` (a closed
+socket's backoff), `step_up` or `manual` — so a reconnect is never read as a
+first open.
 
 Every path that ends a view's stream, server side (each is a `reason` on the
 `GET …/ws` span, on `mirror.watch`/`mirror.attach`, in

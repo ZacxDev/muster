@@ -19,11 +19,15 @@ box also keeps what you type as a draft on this device; see
 - On the Rendered view, it goes only into a pane that is **still** running Claude
   Code, never into a shell left behind after Claude exits. A leading `/` or `!`
   is passed through as typed.
-- On the Terminal view, the box does not need the Live keys switch. That switch
-  is a live keyboard; the box is one gated paste per Send. So the page never
-  calls itself "read-only" while its box can send: with live keys off the status
-  reads just "Connected". A read-only host says so once, in the box's disabled
-  note.
+- On the Terminal view, **live keys are always on** (there is no switch): your
+  keystrokes and the quick keys go straight into the session, behind the same
+  gate as a send. With a recent sign-in the terminal attaches with them at
+  once; with a stale one it attaches without them, the status reads
+  "Connected · confirm it's you to type", and the first key you press asks you
+  to confirm it's you. The box is one gated paste per Send either way. The page
+  never calls itself "read-only" while its box can send. A read-only host says
+  so once, in the box's disabled note (its status reads "Connected · this host
+  takes no keys").
 - On either view, the host refuses a message into a pane that runs Hermes
   (or a nested terminal multiplexer, or processes it cannot read), and nothing
   is pasted — except the rendered view's send to a Hermes window on a host
