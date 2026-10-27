@@ -61,8 +61,8 @@ import (
 // right. The collapse is a stylesheet rule on the <html> element's
 // data-agents-idle-open, which the head script sets from localStorage BEFORE
 // the first paint: collapsed by default, and never drawn open and then shut.
-// While the search box has a term (data-agents-searching) the section is drawn
-// open, so a search finds idle entries; the reader's choice is left as it was.
+// (The list's search box, whose term once drew the section open, is gone: the
+// session switcher's search finds an idle entry without opening it.)
 
 // DefaultIdleSectionAfter is how long an entry must be idle to be drawn in the
 // section when MUSTER_AGENTS_IDLE_AFTER is unset.

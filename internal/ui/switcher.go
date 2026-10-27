@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"regexp"
 	"strconv"
 	"strings"
@@ -786,6 +788,55 @@ func switcherStaticScript() g.Node { return staticScript(switcherScriptSrc) }
 // switcherScriptSrc is the path switcherJS is served at, /static/js/switcher.js.
 var switcherScriptSrc = staticJS("switcher", switcherJS)
 
+// switcherOOBHandler takes the Agents list's out-of-band copies of the bar's
+// rows and counts (switcherRefresh) and swaps them ITSELF, not htmx: the
+// copy's CHILDREN go into the element of its id, which keeps the row itself
+// (its hidden, the view), and a copy that says what is drawn already is not
+// swapped at all.
+//
+// 🔴 NOT htmx's own innerHTML swap: htmx 2.0.4 inserted the copy ELEMENT into
+// the row (two elements of one id, the row's entries one level down),
+// measured in e2e/tests/host-icons.spec.ts. What it hands over here is the
+// copy, or a fragment holding it; either way its children are used.
+//
+// 🔴 A SWAP KEEPS THE READER'S PLACE: a pill that had focus has it again
+// after the swap (the pill of the same href, wherever the new order put it),
+// and the row keeps its sideways scroll.
+const switcherOOBHandler = `function (e) {
+      var d = e.detail, t = d && d.target;
+      if (!t || !t.closest || !t.closest('#` + SwitcherID + `') || !d.fragment) return;
+      d.shouldSwap = false;
+      var src = d.fragment;
+      if (src.nodeType === 11 && src.childNodes.length === 1 && src.firstChild.nodeType === 1 && src.firstChild.id === t.id) src = src.firstChild;
+      var box = document.createElement('div');
+      for (var c = src.firstChild; c; c = c.nextSibling) box.appendChild(c.cloneNode(true));
+      if (box.innerHTML === t.innerHTML) return;
+      var a = document.activeElement, href = a && t.contains(a) && a.closest('a[data-switcher-entry]') ? a.closest('a[data-switcher-entry]').getAttribute('href') : null;
+      var x = t.scrollLeft;
+      t.replaceChildren.apply(t, Array.prototype.slice.call(box.childNodes));
+      if (window.htmx) window.htmx.process(t);
+      t.scrollLeft = x;
+      if (href !== null) {
+        var es = t.querySelectorAll('a[data-switcher-entry]');
+        for (var i = 0; i < es.length; i++) if (es[i].getAttribute('href') === href) { es[i].focus({ preventScroll: true }); break; }
+      }
+    }`
+
+// switcherOOBVersion is a hash of switcherOOBHandler: a window holding an
+// older handler (or none, under an older build's "/" flag) rebinds.
+func switcherOOBVersion() string {
+	sum := sha256.Sum256([]byte(switcherOOBHandler))
+	return hex.EncodeToString(sum[:6])
+}
+
+// switcherOOBJS binds switcherOOBHandler once per window and version,
+// replacing an older version's.
+var switcherOOBJS = `if (!window.__musterSwitcherOOB || window.__musterSwitcherOOB.v !== '` + switcherOOBVersion() + `') {
+    if (window.__musterSwitcherOOB) document.removeEventListener('htmx:oobBeforeSwap', window.__musterSwitcherOOB.fn);
+    window.__musterSwitcherOOB = { v: '` + switcherOOBVersion() + `', fn: ` + switcherOOBHandler + ` };
+    document.addEventListener('htmx:oobBeforeSwap', window.__musterSwitcherOOB.fn);
+  }`
+
 // switcherJS is the bar's script (switcherScript).
 var switcherJS = func() string {
 	views, labels, names := "[", "{", "{"
@@ -1015,34 +1066,17 @@ var switcherJS = func() string {
   });
   window.addEventListener('resize', function () { if (isOpen(menu)) placeMenu(); });
 
+  // The Agents list's refresh rows (switcherOOBJS): bound per window AND
+  // VERSION, not under the "/" key's flag below — a window still running an
+  // older build's switcher has that flag set, and would never bind this.
+  ` + switcherOOBJS + `
+
   // "/" opens the search when focus is not in a text field (nor in a
   // terminal, xterm, where it is the shell's), once per document: the
   // listener finds the page's bar when the key is pressed (htmx swaps the
   // page, and with it the bar). No Ctrl/Cmd+K: that is the browser's own.
   if (!window.__musterSwitcherKeys) {
     window.__musterSwitcherKeys = true;
-    // The Agents list's refresh carries the rows and counts out of band
-    // (switcherRefresh). THIS swaps them, not htmx: the copy's CHILDREN go into
-    // the element of its id, which keeps the row itself (its hidden, the view)
-    // — and a copy that says what is drawn already is not swapped at all, as
-    // replacing a row's children drops a focused pill's focus and resets its
-    // sideways scroll on every background refresh.
-    // 🔴 NOT htmx's own innerHTML swap: htmx 2.0.4 inserted the copy ELEMENT
-    // into the row (two elements of one id, the row's entries one level
-    // down), measured in e2e/tests/host-icons.spec.ts. What it hands over here
-    // is the copy, or a fragment holding it; either way its children are used.
-    document.addEventListener('htmx:oobBeforeSwap', function (e) {
-      var d = e.detail, t = d && d.target;
-      if (!t || !t.closest || !t.closest('#` + SwitcherID + `') || !d.fragment) return;
-      d.shouldSwap = false;
-      var src = d.fragment;
-      if (src.nodeType === 11 && src.childNodes.length === 1 && src.firstChild.nodeType === 1 && src.firstChild.id === t.id) src = src.firstChild;
-      var box = document.createElement('div');
-      for (var c = src.firstChild; c; c = c.nextSibling) box.appendChild(c.cloneNode(true));
-      if (box.innerHTML === t.innerHTML) return;
-      t.replaceChildren.apply(t, Array.prototype.slice.call(box.childNodes));
-      if (window.htmx) window.htmx.process(t);
-    });
     document.addEventListener('keydown', function (e) {
       if (e.key !== '/' || e.defaultPrevented || e.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
       var b = document.getElementById('` + SwitcherID + `');

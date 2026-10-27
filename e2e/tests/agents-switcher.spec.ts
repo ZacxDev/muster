@@ -341,6 +341,45 @@ for (const vp of [
       await expect(page.locator('#switcher-deploy')).toHaveCount(0);
     });
 
+    // 🔴 THE ROW SWAP IS BOUND PER VERSION, NOT UNDER THE "/" FLAG. A window
+    // that ran #294's switcher has window.__musterSwitcherKeys set; a boosted
+    // swap into /agents then ran this script with that flag already true, and
+    // the row swap it guarded was never bound — htmx's own out-of-band swap
+    // nested a copy of each row in it. Simulated by setting the flag first.
+    // And a swap that reorders the row keeps a focused pill focused.
+    test('a window with an older switcher\'s flag still swaps the rows cleanly; a focused pill keeps focus through a reorder', async ({ page }) => {
+      test.setTimeout(90_000);
+      await ready(page);
+      await page.addInitScript(() => { (window as any).__musterSwitcherKeys = true; try { localStorage.setItem('muster.switcher.view', 'all'); } catch (e) {} });
+      await openAgents(page);
+      await unpinAll(page);
+      await expect(row(page, 'all')).toBeVisible();
+      const marble = row(page, 'all').locator('a[data-switcher-entry]', { hasText: 'marble:1' });
+      const href = await marble.getAttribute('href');
+      const before = await row(page, 'all').locator('a[data-switcher-entry]').evaluateAll((els) => els.map((e) => e.getAttribute('href')));
+      await marble.focus();
+      await expect(marble).toBeFocused();
+      // Pinned elsewhere, then the list refreshes: marble moves to the front
+      // of All (pins lead it), and Pins gains it.
+      const form = { kind: 'mirror', host: rig.host, session: 'marble', window: '@10' };
+      expect((await page.request.post(origin + '/agents/pins', { form, headers: { Origin: origin } })).status()).toBe(200);
+      try {
+        await page.evaluate(() => (window as any).htmx.trigger(document.body, 'agents:changed'));
+        await expect.poll(() => row(page, 'all').locator('a[data-switcher-entry]').first().getAttribute('href'), { message: 'the refresh reordered All' }).toBe(href);
+        expect(before[0], 'control: marble was not first before').not.toBe(href);
+        // No nesting, no duplicate ids.
+        for (const id of ['switcher-list-recent', 'switcher-list-pins', 'switcher-list-all', 'switcher-count-pins']) {
+          await expect(page.locator(`[id="${id}"]`), `one #${id}`).toHaveCount(1);
+        }
+        await expect(row(page, 'pins').locator(':scope > a[data-switcher-entry]')).toHaveCount(1);
+        await expect(row(page, 'all').locator('[data-switcher-list], [id^="switcher-list-"]')).toHaveCount(0);
+        // Focus is on the same session's pill, in its new place.
+        expect(await page.evaluate(() => (document.activeElement as HTMLElement | null)?.closest('#session-switcher a[data-switcher-entry]')?.getAttribute('href') ?? null), 'focus kept on the pill').toBe(href);
+      } finally {
+        await page.request.post(origin + '/agents/pins/delete', { form, headers: { Origin: origin } });
+      }
+    });
+
     test('a filter text stored for the removed search box, or a ?q=, hides no card', async ({ page }) => {
       await ready(page);
       await page.addInitScript(() => {

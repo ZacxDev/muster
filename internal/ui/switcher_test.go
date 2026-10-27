@@ -530,3 +530,18 @@ func TestOnlyTheAgentsListBarHasADeployButton(t *testing.T) {
 		}
 	}
 }
+
+// TestTheRowSwapIsBoundPerVersionNotUnderTheSlashFlag: the Agents list's row
+// swap (switcherOOBJS) is bound under its own versioned flag, ahead of the "/"
+// key's once-per-window flag — a window that ran an older switcher has that
+// flag set and would skip anything under it. Behaviour: agents-switcher.spec.ts.
+func TestTheRowSwapIsBoundPerVersionNotUnderTheSlashFlag(t *testing.T) {
+	at, keys := strings.Index(switcherJS, switcherOOBJS), strings.Index(switcherJS, "if (!window.__musterSwitcherKeys) {")
+	if at < 0 || keys < 0 || at > keys {
+		t.Fatalf("the row swap is not bound before (outside) the \"/\" flag's block (at %d, flag at %d)", at, keys)
+	}
+	if !strings.Contains(switcherOOBJS, "window.__musterSwitcherOOB.v !== '"+switcherOOBVersion()+"'") ||
+		!strings.Contains(switcherOOBJS, "document.removeEventListener('htmx:oobBeforeSwap', window.__musterSwitcherOOB.fn)") {
+		t.Error("the row swap's binding is not versioned, or does not replace an older one")
+	}
+}
