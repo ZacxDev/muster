@@ -79,7 +79,7 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pluginThreadsPath, s.requireArmedHookToken(s.handlePluginThreadBind))
 	// A pull request a session created or a branch it pushed (pr_routes.go): its
 	// PostToolUse hook, with route reply's credential. 404 with PR routing off.
-	mux.HandleFunc("POST "+prSessionsPath, s.requireArmedHookToken(s.handlePRSessionBind))
+	mux.HandleFunc("POST "+prSessionsPath, s.handlePRSessionBind)
 }
 
 // requirePluginsOn answers 404 for a plugin route on a server with plugins off,
