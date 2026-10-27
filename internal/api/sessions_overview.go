@@ -167,10 +167,11 @@ func liveOf(sessions []liveSession) focus.Live {
 
 // pluginSessionHints is plugins.HintFunc: the live sessions (not the chief)
 // whose focus history over the last focus.HistoryWindow shares at least
-// hintMinTerms words with message m's subject and body, best first. Any
-// failure is no hint — logged, never a failed delivery.
+// hintMinTerms words with message m's subject and body, best first — and, for
+// a pull-request review muster could not route, the session that authored it
+// (prAuthorHint). Any failure is no hint — logged, never a failed delivery.
 func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m plugins.Message) plugins.Hints {
-	h := plugins.Hints{Window: focus.HistoryWindow}
+	h := plugins.Hints{Window: focus.HistoryWindow, Author: s.prAuthorHint(ctx, m)}
 	if s.ext.Focus == nil {
 		return h
 	}
@@ -202,9 +203,10 @@ func (s *Server) pluginSessionHints(ctx context.Context, chief agents.Agent, m p
 	return h
 }
 
-// pluginHints is the deliverer's HintFunc for ext: nil without a focus store.
+// pluginHints is the deliverer's HintFunc for ext: nil without a focus store
+// and without pull-request routing's store.
 func (s *Server) pluginHints(ext Extensions) plugins.HintFunc {
-	if ext.Focus == nil {
+	if ext.Focus == nil && ext.PRSessions == nil {
 		return nil
 	}
 	return s.pluginSessionHints

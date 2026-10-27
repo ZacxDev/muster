@@ -145,6 +145,24 @@ automatically only for a verified, allowlisted sender). The thread id is not
 checked against the upstream: muster cannot know who started a thread. A
 binding is never replaced; to undo one, delete its `plugin_threads` row.
 
+### Pull-request review mail
+
+A pull-request review ([plugins.md](plugins.md#a-pull-request-review-mail)) is
+pasted into the session that authored the pull request **with no chief and no
+owner in between**, fenced as untrusted like every routed message. Two things
+decide it: the mail's sender, which must be on `MUSTER_PR_MAIL_SENDERS` **and**
+marked `sender_verified` by the agent-mail plugin (a verified agent-mail
+sender proves its owner; its handle is that owner's gateway's claim), and the
+`repo`/`pr`/`head_ref` its body names. 🔴 **Accepted risk: a listed sender can
+put a message into whichever of your sessions created, or pushed the branch
+of, a pull request it names** — never another owner's session, and never one
+that only viewed or mentioned it. The authorship rows come only from `POST /api/pr-sessions`, with route
+reply's credential (a personal API token or the hook token); nothing a mail
+says can write one. 🔴 **Accepted risk: whoever holds that credential can
+record any of the owner's Claude session ids as the author of any pull
+request or branch**, and the next review of it is then pasted into that
+session — the thread bind's risk, for review mail.
+
 ## Paired devices
 
 The native Android app gets its own credential, the **device credential**

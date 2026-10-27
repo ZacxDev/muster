@@ -77,6 +77,9 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	// A thread a mirrored session started (thread_routes.go): its PostToolUse
 	// hook, with route reply's credential. 404 with routing off.
 	mux.HandleFunc("POST "+pluginThreadsPath, s.requireArmedHookToken(s.handlePluginThreadBind))
+	// A pull request a session created or a branch it pushed (pr_routes.go): its
+	// PostToolUse hook, with route reply's credential. 404 with PR routing off.
+	mux.HandleFunc("POST "+prSessionsPath, s.requireArmedHookToken(s.handlePRSessionBind))
 }
 
 // requirePluginsOn answers 404 for a plugin route on a server with plugins off,
@@ -193,13 +196,15 @@ func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 // dispatchPluginMessage hands a NEW message m on: to the session that started
-// its thread (routeByThread), or else to the owner's chief. The route is made
-// detached from the request, as the chief's delivery is: a client that hangs
-// up once the route has taken the message must not cut off its injection or
-// its record in the chief's conversation, or the message is the chief's while
-// the chief never sees it.
+// its thread (routeByThread), else to the session that authored the pull
+// request it reviews (routeByPR), or else to the owner's chief. A route is
+// made detached from the request, as the chief's delivery is: a client that
+// hangs up once the route has taken the message must not cut off its
+// injection or its record in the chief's conversation, or the message is the
+// chief's while the chief never sees it.
 func (s *Server) dispatchPluginMessage(r *http.Request, p plugins.Plugin, m plugins.Message) {
-	if !s.routeByThread(context.WithoutCancel(r.Context()), p, m) {
+	ctx := context.WithoutCancel(r.Context())
+	if !s.routeByThread(ctx, p, m) && !s.routeByPR(ctx, p, m) {
 		s.deliverPluginMessage(r, p, m)
 	}
 }

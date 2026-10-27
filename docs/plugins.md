@@ -1001,6 +1001,64 @@ the chief's route (`routeItem`), made by muster, with no chief decision.
 
 The accepted risk: [auth.md](auth.md#threads-a-session-started).
 
+### A pull-request review mail
+
+A review of a pull request — mail from a hosted review gate — goes **straight
+to the mirrored session that created that pull request or pushed its branch**,
+the same way a reply on a thread does. Off unless `MUSTER_PR_MAIL_SENDERS` lists
+the gate's agent-mail address ([configuration](configuration.md)) and session
+routing is on.
+
+1. **Who authored what.** A PostToolUse hook on your host (outside muster:
+   devrc's `pr-session-bind-hook.py`) reports a successful `gh pr create` or
+   `git push` that the session ran: `POST /api/pr-sessions {repo, pr,
+   head_ref, claude_session, kind}`, with route reply's credential (a personal
+   token or the hook token). `kind` is `gh-pr-create` (with `pr`, and
+   `head_ref` when the create named its head) or `git-push` (with `head_ref`
+   and no `pr`). `201`: recorded; `200`: the same authorship again, now the
+   most recent; `400`: not a well-formed report; `404` with this feature off.
+   No response body on success. Stored in `session_prs` (migration `0055`,
+   owned, under row-level security) **whether or not a mirrored window shows
+   the session** — unlike a thread bind — because the row is also what names
+   the author to the chief when its window is gone (step 4); the window's host
+   is recorded when one does. A report also deletes the owner's rows unseen
+   for 30 days. A hook fired for a Bash call inside a **subagent** carries the
+   parent session's `session_id`, so a subagent's pull request is the parent
+   session's.
+2. **The mail.** Only a NEW message from the `agent-mail` plugin whose sender
+   is on the list **and** that the plugin marked `sender_verified`. muster reads
+   the body's **last** fenced block whose info string is `json` (a fence of
+   three or more backticks, closed by a run at least as long), and that block
+   must end the body — only whitespace may follow its closing fence:
+
+   ```json
+   {"repo": "<owner>/<repo>", "pr": 123, "head_sha": "<40 hex>", "head_ref": "<branch>"}
+   ```
+
+   `repo` (`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`, compared case-insensitively),
+   `pr` (a positive integer) and `head_sha` (40 lower-case hex) are required;
+   `head_ref` is optional and matches a pushed branch. Anything else in the
+   body is ignored; a block that is missing or malformed routes nothing.
+3. **The route.** The owner's session that most recently created that pull
+   request (repo and number) or pushed its head branch (repo and `head_ref`)
+   gets it through the thread route's path: handed to the chief without a
+   turn, pasted after the idle wait, answered with `route_reply`, with the
+   deadline and hand-back. The audit row carries
+   `routed_via: "pr <owner>/<repo>#<n> authored by <session>"`. Another
+   owner's session is never chosen.
+4. **No online window for that session.** The message goes to your chief as
+   any other, and its turn ends with a block headed "Session that authored
+   this pull request": the session's id, title, host, what its host's hook reported it did
+   and when, and that no window shows it — so the chief can raise an ask with
+   a resume pointer instead of guessing.
+5. **No author recorded**, or not a review muster reads: the ordinary
+   delivery, unchanged.
+
+What is not reported: a pull request created or a branch pushed by anything
+but a Bash `gh pr create` / `git push` (the web UI, the GitHub MCP tools, a
+command behind a wrapper the hook does not read), and anything from a host
+without the hook.
+
 ### Routing a task to a session
 
 The chief can hand one of your **tasks** to a mirrored session the same way:
