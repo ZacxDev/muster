@@ -3,6 +3,7 @@ import { test, expect, expectAgentsDestroyed } from '../lib/fixtures';
 import { agentComposerPort, hookToken, password, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { agentLink, agentPageRe } from '../lib/agent-link';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // A DISPATCHED AGENT'S TWO VIEWS, in a real browser against a REAL muster-server
 // (the e2eterm build: the noop driver, whose terminal is played by
@@ -98,7 +99,7 @@ async function login(page: Page) {
 async function saveAgent(page: Page, kind: 'gateway' | 'claude-code'): Promise<AgentRow> {
   const before = new Set((await agentRows()).map((a) => a.name));
   await page.goto(origin + '/agents');
-  await page.click('#fab-agents');
+  await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
   await sheet.locator(`[data-kind-option="${kind}"]`).click();

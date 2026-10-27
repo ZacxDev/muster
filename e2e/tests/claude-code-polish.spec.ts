@@ -2,6 +2,7 @@ import { request as pwRequest, Page } from '@playwright/test';
 import { test, expect, takeNew } from '../lib/fixtures';
 import { hookToken, password, polishPort, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // Four operator reports, driven through the real UI against a REAL muster-server
 // with both agent kinds enabled over the noop driver (which reports a created
@@ -68,7 +69,7 @@ async function login(page: Page) {
 // it returns the ONE row that appeared.
 async function saveAgent(page: Page, note: string, kind: 'gateway' | 'claude-code' = 'gateway'): Promise<AgentRow> {
   await page.goto(origin + '/agents');
-  await page.click('#fab-agents');
+  await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
   if (kind === 'claude-code') await sheet.locator('[data-kind-option="claude-code"]').click();
@@ -100,7 +101,7 @@ for (const vp of [
     test('1a. picking Claude Code removes the model selector and the OpenRouter options from the dispatch form', async ({ page }) => {
       await login(page);
       await page.goto(origin + '/agents');
-      await page.click('#fab-agents');
+      await openDispatchSheet(page);
       const sheet = page.locator('#agent-modal form');
       await expect(sheet.locator('input[name="kind"][value="gateway"]')).toBeChecked();
       // Standard: open Advanced, the model selector is there.

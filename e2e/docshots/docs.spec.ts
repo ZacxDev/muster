@@ -178,12 +178,13 @@ test('tasks.png — the task board', async ({ page }) => {
   await shoot(page, 'tasks.png');
 });
 
-test('agents-filter.png — mirrored windows and a dispatched agent, filtered', async ({ page }) => {
+test('agents-filter.png — mirrored windows and a dispatched agent, the session switcher searching them', async ({ page }) => {
   await signIn(page);
   await page.goto(browserURL + '/agents');
   await expect(page.locator('#agents-list article[data-mirror-card]').first()).toBeVisible({ timeout: 20_000 });
-  await page.locator('#agents-search').fill('api');
-  await expect(page.locator('#agents-count')).toContainText('of');
+  await page.locator('#switcher-search-open').click();
+  await page.locator('#switcher-search-input').fill('api');
+  await expect(page.locator('#switcher-search-results [role="option"]').first()).toBeVisible();
   await shoot(page, 'agents-filter.png');
 });
 

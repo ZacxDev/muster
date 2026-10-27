@@ -16,13 +16,11 @@ import { cc, MirrorRig } from '../lib/mirrorhost';
 //      whose Recent/All rows the rendered view draws and whose Pins row is
 //      the agent page's pinned list — show their WHOLE title, however long
 //      (were 10rem, 20rem, then 26rem and still "often cut off"): the pill is
-//      as wide as its label and the row scrolls sideways, never the page. The
-//      Agents list's Recent strip is up to 26rem wide (was 14rem, then 20rem),
-//      never wider than its row;
-//   4. the Agents list's pinned chips are padded 10px a side with a 4px gap
-//      (were 16px and 6px): they have no max-width, but at 390px a chip runs
-//      to the row's edge, and that padding is what clipped a 36-character
-//      title.
+//      as wide as its label and the row scrolls sideways, never the page;
+//   4. on the Agents list the same switcher, docked at the bottom, draws the
+//      Pins and Recent views whole too. (It replaced the list's pinned chips,
+//      which a 36-character title once clipped at 390px, and its "Recently
+//      viewed" strip, whose entries were capped at 26rem.)
 //
 // Each width assertion is a title that was clipped at the base (red there) and
 // fits here; the title lengths are pairwise distinct so no assertion can pass
@@ -45,8 +43,8 @@ const WINDOWS: [string, string][] = [
   ['quarterly-revenue-forecast-reconciliation-batch', '@9'],
   ['enterprise-customer-data-warehouse-schema-migration-validation-and-audit-report-v3', '@11'],
 ];
-// Windows that are NOT pinned, so the Agents list's Recent strip shows them
-// once visited (a pinned entry is never in the strip). Lengths 27, 34, 36.
+// Windows that are NOT pinned, visited so the Agents list's switcher shows
+// them in Recent. Lengths 27, 34, 36.
 const UNPINNED: [string, string][] = [
   ['cache-warmup-orchestrator', '@6'],
   ['inventory-forecast-model-refresh', '@7'],
@@ -78,8 +76,7 @@ test.afterAll(async () => {
   await rig.stop();
 });
 
-// Once per rig: the windows are listed (as cards: once pinned they are chips,
-// which carry no data-mirror-claude), then every one is pinned.
+// Once per rig: the windows are listed, then every one of WINDOWS is pinned.
 let pinned = false;
 async function ready(page: Page) {
   await rig.login(page);
@@ -109,11 +106,12 @@ const fitOf = (el: Element): Fit => {
 // this tree's whole one are the same element).
 const switcherLabel = (page: Page, title: string, view = 'all') =>
   page.locator(`#session-switcher [data-switcher-list="${view}"] [data-switcher-entry] > span > span:last-child`, { hasText: title }).first();
-const chipLabel = (page: Page, title: string) => page.locator(`#agents-list [data-pinned-chip-label]`, { hasText: title }).first();
-const recentLabel = (page: Page, title: string) => page.locator(`#agents-recent a[data-recent-entry] span.truncate`, { hasText: title }).first();
+// On the Agents list: the docked switcher's Pins and Recent labels.
+const chipLabel = (page: Page, title: string) => switcherLabel(page, title, 'pins');
+const recentLabel = (page: Page, title: string) => switcherLabel(page, title, 'recent');
 
 // visitUnpinned opens each unpinned window's rendered view once, so the
-// Recent strip lists them.
+// switcher's Recent view lists them.
 async function visitUnpinned(page: Page) {
   for (const [s, w] of UNPINNED) {
     await page.goto(viewOf(s, w));
@@ -154,9 +152,9 @@ async function openAgent(page: Page, view: string) {
 // The switcher's titles (WINDOWS) are 23 to 84 characters; every one must be
 // drawn whole (the 26rem cap clipped the 84-character one at both sizes, and
 // everything from 34 characters at 390).
-// The pinned chip (Agents list) a 390px row clipped at the base: 315px of
-// label in 302px. And the Recent strip's: 27 and 34 characters (a 156px
-// label at the base, a 252px one here).
+// The titles the Agents list's pinned chips and Recent strip once clipped (a
+// 36-character one at 390px; 27 and 34 characters in a 14rem entry), drawn
+// whole by its switcher now.
 const CHIP_FITS = 'customer-onboarding-email-sequence';
 const RECENT_FITS = ['cache-warmup-orchestrator', 'inventory-forecast-model-refresh'];
 
@@ -194,19 +192,21 @@ for (const vp of [
       const pins: Record<string, Fit> = {};
       for (const [s] of WINDOWS) pins[titleOf(s)] = await switcherLabel(page, titleOf(s), 'pins').evaluate(fitOf);
       out.switcherAgentPagePins = pins;
+      await setView(page, 'pins');
       await page.goto(origin + '/agents');
       await expect(chipLabel(page, titleOf(WINDOWS[0][0]))).toBeVisible();
       const chips: Record<string, Fit> = {};
       for (const [s] of WINDOWS) chips[titleOf(s)] = await chipLabel(page, titleOf(s)).evaluate(fitOf);
-      out.agentsListChips = chips;
+      out.agentsListPins = chips;
       await visitUnpinned(page);
+      await setView(page, 'recent');
       await page.goto(origin + '/agents');
       const recent: Record<string, Fit> = {};
       for (const [s] of UNPINNED) {
         await expect(recentLabel(page, titleOf(s))).toBeVisible();
         recent[titleOf(s)] = await recentLabel(page, titleOf(s)).evaluate(fitOf);
       }
-      out.agentsRecentStrip = recent;
+      out.agentsListRecent = recent;
       out.overflowX = await overflowX(page);
       console.log('TITLE-ROOM ' + JSON.stringify(out));
     });
@@ -344,10 +344,12 @@ for (const vp of [
       expect(cls.total, `agent page layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
     });
 
-    // 🔴 RED AT THE BASE: a 14rem entry left the Recent strip's label 156px.
-    test('the Agents list\'s Recent strip fits a 27- and a 34-character title; no shift', async ({ page }) => {
+    // A 14rem entry once left the Recent strip's label 156px; the switcher
+    // that replaced it draws the title whole.
+    test('the Agents list\'s Recent view draws a 27- and a 34-character title whole; no shift', async ({ page }) => {
       await ready(page);
       await visitUnpinned(page);
+      await setView(page, 'recent');
       await page.addInitScript(clsInit);
       await page.goto(origin + '/agents');
       await settle(page);
@@ -361,20 +363,17 @@ for (const vp of [
       expect(cls.total, `layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
     });
 
-    // 🔴 RED AT THE BASE (at 390): the chip runs to the row's edge, and its
-    // 16px padding and 6px gap left a 36-character title 302px of its 315.
-    test('a pinned chip on the Agents list fits a 36-character title; no sideways scroll; no shift', async ({ page }) => {
+    // At 390 a pinned chip once left a 36-character title 302px of its 315;
+    // the switcher's Pins view that replaced the chips draws it whole.
+    test('the Agents list\'s Pins view draws a 36-character title whole; no sideways scroll; no shift', async ({ page }) => {
       await ready(page);
+      await setView(page, 'pins');
       await page.addInitScript(clsInit);
       await page.goto(origin + '/agents');
       await settle(page);
+      await expect(chipLabel(page, titleOf(CHIP_FITS))).toBeVisible();
       const f = await chipLabel(page, titleOf(CHIP_FITS)).evaluate(fitOf);
       expect(f.clipped, `${titleOf(CHIP_FITS)} fits (${JSON.stringify(f)})`).toBe(false);
-      const chip = await page.locator('#agents-list [data-pinned-chip-link]', { hasText: titleOf(CHIP_FITS) }).first().evaluate((el) => {
-        const cs = getComputedStyle(el);
-        return { pl: cs.paddingLeft, pr: cs.paddingRight, gap: cs.columnGap, h: el.getBoundingClientRect().height };
-      });
-      expect(chip, 'the chip is padded 10px a side with a 4px gap, still a 44px target').toEqual({ pl: '10px', pr: '10px', gap: '4px', h: 44 });
       if (vp.w === 390) expect(await overflowX(page), 'no sideways scroll at 390px').toBe(0);
       const cls = await readCls(page);
       expect(cls.total, `layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);

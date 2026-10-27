@@ -4,6 +4,7 @@ import path from 'node:path';
 import { test, expect } from '../lib/fixtures';
 import { dsn, e2eRoot, gotrueSecret, port, repoRoot, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // Bring-your-own credentials, end to end at 412 px against the REAL GoTrue
 // (e2e/gotrue/compose.yml) and a gotrue-mode muster with the claude-code kind
@@ -115,7 +116,7 @@ test('a member brings their own Claude token; the dispatch form offers only it, 
   const sheet = page.locator('#agent-modal form');
   const open = async () => {
     await page.goto(browserURL + '/agents');
-    await page.click('#fab-agents');
+    await openDispatchSheet(page);
     await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
   };
 

@@ -2,6 +2,7 @@ import { FrameLocator, Page, request as pwRequest } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, sidenavPort } from '../lib/env';
 import { cc, MirrorRig } from '../lib/mirrorhost';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // THE SIDE NAV ON EVERY SIGNED-IN PAGE (internal/ui/nav_layout.go), opened by
 // its own toggle in a real browser, at a phone's size and a desktop's:
@@ -162,7 +163,7 @@ async function ccAgent(page: Page): Promise<string> {
   };
   const before = await names();
   await page.goto(origin + '/agents');
-  await page.click('#fab-agents');
+  await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await sheet.locator('[data-kind-option="claude-code"]').click();
   await sheet.locator('textarea[name="note_text"]').fill('e2e side nav');

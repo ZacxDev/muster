@@ -652,8 +652,12 @@ test('warming from the Agents list stores the recent windows without opening the
   await page.goto(origin + viewOf('@2'));
   await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
   const recent = async () => {
+    // The session switcher's Recent row, which the list's partial carries out
+    // of band (it replaced the "Recently viewed" strip).
     const html = await (await page.request.get(origin + '/ui/agents')).text();
-    return [...html.matchAll(/<a href="([^"]+)"[^>]*data-recent-entry="mirror"/g)].map((m) => decodeURIComponent(m[1].replace(/&amp;/g, '&')).replace(/.*window=/, ''));
+    const at = html.indexOf('id="switcher-list-recent"');
+    const row = at < 0 ? '' : html.slice(at, html.indexOf('</div>', at));
+    return [...row.matchAll(/<a href="([^"]+)"[^>]*data-switcher-entry="mirror"/g)].map((m) => decodeURIComponent(m[1].replace(/&amp;/g, '&')).replace(/.*window=/, ''));
   };
   // …and nothing is stored.
   await wipe(page);

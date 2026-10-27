@@ -1,11 +1,16 @@
 package ui
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"regexp"
 	"strconv"
 	"strings"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/agents"
 )
 
 // THE SESSION SWITCHER: a bar BELOW the message input of a session's page — a
@@ -29,10 +34,9 @@ import (
 // In Pins and All the page's own session is drawn as "current" (aria-current,
 // not a link), so the bar says where the viewer is.
 //
-// Every entry is labelled as its pinned chip is (pinnedChipLabels: the
-// window's codename, an agent's name — disambiguated only against the other
-// entries of the same view; plained through textplain.Title there, once) —
-// except that an agent's name is never clamped here (sessionSwitcherLabels) —
+// Every entry is labelled by its short name (sessionSwitcherLabels: the
+// window's codename, an agent's whole name — disambiguated only against the
+// other entries of the same view; plained through textplain.Title there, once)
 // and opens what its card opens (MirrorCardHref, "/agents/<name>") with a real
 // load.
 //
@@ -43,8 +47,18 @@ import (
 //
 // A SEARCH (the magnifier on the bar's right, or "/" outside a text field) opens a
 // command-palette-style box over the page that finds any session the All view
-// holds by its tmux codename ("wheat", "mango:2") or its title, as it is typed
-// (switcherSearchBox). It reads the All row's own entries — no request.
+// holds, as it is typed (switcherSearchBox): by its tmux codename ("wheat",
+// "mango:2") or its title — and, ranked AFTER every codename and title match,
+// by its repository, its kind ("Claude Code", "opencode", "shell") and a
+// window's raw tmux SESSION name ("scratch11"), each a plain word (operator
+// ask: "Teach the palette repo+kind"; no field tokens). It reads the All row's
+// own entries — no request: data-switcher-code, -title and -words, attribute
+// values the server escapes, read with getAttribute and drawn with
+// textContent.
+//
+// ON THE AGENTS LIST THE BAR ALSO HAS A "+" (switcherDeployButton), beside the
+// search: the task-less dispatch sheet the list's old FAB opened (operator
+// ask: deploy "In the bottom bar"). A session's page draws no "+".
 //
 // 🔴 THE MENU AND THE PALETTE ARE POPOVERS (the top layer), so opening either
 // moves nothing on the page: no layout shift, and no clipping by the
@@ -60,6 +74,13 @@ import (
 //
 // 🔴 IT SCROLLS SIDEWAYS INSIDE ITSELF (each row is overflow-x-auto, min-w-0),
 // so thirty long names never widen the page.
+//
+// THE AGENTS LIST DRAWS IT TOO (operator ask: "Include the bottom bar on the
+// main agent list page as well"), docked to the bottom of the viewport
+// (switcherDock). There is no page session there: nothing is current and
+// nothing is left out (SwitcherCurrent{}). The bar replaced the list's own
+// search box, its "Recently viewed" strip and its pinned chips. Its rows follow
+// the list: every list render carries them out of band (switcherRefresh).
 
 // SwitcherID is the bar's element id.
 const SwitcherID = "session-switcher"
@@ -108,7 +129,16 @@ func (c SwitcherCurrent) is(e listEntry) bool {
 // Switcher is the bar's content, resolved on the server: one list per view.
 type Switcher struct {
 	Recent, Pins, All []SwitcherItem
+	// unknown: the entries are not known yet (switcherPending) — the rows
+	// and counts are drawn blank, not as "Nothing pinned", until the list's
+	// first render fills them out of band.
+	unknown bool
 }
+
+// switcherPending is the bar of a document that does not build the list: the
+// Agents panel of another tab's document, shown by a client-side tab switch.
+// Its rows are filled by the list's own first load (switcherRefresh).
+func switcherPending() *Switcher { return &Switcher{unknown: true} }
 
 // SwitcherItem is one entry of a view.
 type SwitcherItem struct {
@@ -119,10 +149,10 @@ type SwitcherItem struct {
 	Current bool
 	// Waiting: the entry waits on the viewer (its card's data-wait).
 	Waiting bool
-	// Host and HostIcon are the entry's host and its icon key — the pinned
-	// chip's (pinnedChip): the cluster for an agent, the window's host's
-	// otherwise. HostNamed: the label already spells the host
-	// (pinnedChipLabelNamesHost), so the icon is decorative.
+	// Host and HostIcon are the entry's host and its icon key — its card's:
+	// the cluster for an agent, the window's host's otherwise. HostNamed: the
+	// label already spells the host (labelNamesHost), so the icon is
+	// decorative.
 	Host, HostIcon string
 	HostNamed      bool
 	// Code and Title are what the search finds the entry by (switcherSearchBox):
@@ -130,6 +160,91 @@ type SwitcherItem struct {
 	// title when the host named none — or its name for an agent; Title what it
 	// is called beyond that (its display name, its focus), "" for nothing more.
 	Code, Title string
+	// Words are what the search finds the entry by AFTER its codename and
+	// title, as plain words: its repository, its kind and — a window's — its
+	// raw tmux session name; "" for none. Space-separated, lower-cased.
+	Words string
+}
+
+// windowIndexSuffix is the ":<index>" a host appends to a window's codename
+// ("mango:1" — mirrorhost.WireWindows).
+var windowIndexSuffix = regexp.MustCompile(`:[0-9]+$`)
+
+// switcherName is an entry's two names: short, what its pill shows when no
+// other entry of its view shows the same; full, what it shows when one does.
+//
+//   - a window with a codename (Label, unless it only repeats the session): full
+//     is the label as shown ("mango:1"), short is it without its ":<index>"
+//     ("mango");
+//   - a window with none: its "<session>:<window index>" title (or the session
+//     name, for a per-session host) — both;
+//   - an agent: its display name (or name), WHOLE — both. A pill is as wide as
+//     its label (operator ask: "ensure that it's always wide enough to show the
+//     full title"), so there is no "…" to add.
+func switcherName(e listEntry) (short, full string) {
+	if e.agent != nil {
+		name := plainOr(e.agent.DisplayName, e.agent.Name)
+		return name, name
+	}
+	m := e.mirror
+	if m.Label != "" && m.Label != m.Session {
+		full = plainOr(m.Label, m.Session)
+		short = windowIndexSuffix.ReplaceAllString(full, "")
+		if short == "" {
+			short = full
+		}
+		return short, full
+	}
+	full = plainOr(m.Title, m.Session)
+	return full, full
+}
+
+// sessionSwitcherLabels is what each entry of one view says, in the entries'
+// order: its short name, unless another entry's would read the same — then
+// its full name ("mango:2"), and when even that is shared (one label on two
+// hosts) the full name with the window's qualifier ("mango:2 · laptop"), the
+// minimal difference the list already decided (mirror.SessionView.Qualifier).
+//
+// The pill also draws its host's icon (switcherEntry), but the label does NOT
+// lean on it: the text is disambiguated exactly as it would be without the
+// icon, so the search palette, which draws no icons, reads the same.
+func sessionSwitcherLabels(es []listEntry) []string {
+	out := make([]string, len(es))
+	fulls := make([]string, len(es))
+	n := map[string]int{}
+	for i, e := range es {
+		out[i], fulls[i] = switcherName(e)
+		n[out[i]]++
+	}
+	for i := range es {
+		if n[out[i]] > 1 {
+			out[i] = fulls[i]
+		}
+	}
+	n = map[string]int{}
+	for _, l := range out {
+		n[l]++
+	}
+	for i, e := range es {
+		if n[out[i]] > 1 && e.mirror != nil && e.mirror.Qualifier != "" {
+			out[i] = mirrorQualified(out[i], e.mirror.Qualifier)
+		}
+	}
+	return out
+}
+
+// labelNamesHost is whether a window's label already spells its host: the
+// label carries the window's qualifier (sessionSwitcherLabels appended it) and
+// the qualifier leads with the host — the cross-host form, mirror.qualify's
+// first part ("mango:1 · hosta", "Gold:1 · hosta · scratch3:1"). A one-host
+// qualifier ("Gold:1 · scratch3:1") names no host. Then the pill's host icon is
+// decorative: a screen reader would hear the host twice.
+func labelNamesHost(m MirrorCardView, label string) bool {
+	if m.Qualifier == "" || !strings.HasSuffix(label, mirrorQualifierSep+m.Qualifier) {
+		return false
+	}
+	first, _, _ := strings.Cut(m.Qualifier, mirrorQualifierSep)
+	return first == m.Host
 }
 
 // NewSwitcher resolves the bar against the entries the Agents list draws
@@ -186,14 +301,17 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			it.Host, it.HostIcon = podHost, clusterIcon.Key
 			it.Code = a.Name
 			it.Title = switcherSearchTitle(a.Name, plainOr(a.DisplayName, ""), focusTitle(a.Focus))
+			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind))
 		} else {
 			m := e.mirror
 			it.Href, it.Kind = MirrorCardHref(*m), "mirror"
 			it.Waiting = waitTokens(m.Attention, false) != ""
 			it.Host, it.HostIcon = m.Host, m.HostIcon
-			it.HostNamed = pinnedChipLabelNamesHost(*m, labels[i])
-			_, it.Code = pinnedChipName(e, true)
+			it.HostNamed = labelNamesHost(*m, labels[i])
+			_, it.Code = switcherName(e)
 			it.Title = switcherSearchTitle(it.Code, focusTitle(m.Focus))
+			f := mirrorFields(*m)
+			it.Words = switcherSearchWords(f.Repo, f.Kind, m.Session)
 		}
 		out[i] = it
 	}
@@ -222,6 +340,18 @@ func switcherSearchTitle(code string, names ...string) string {
 	return strings.Join(out, " · ")
 }
 
+// switcherSearchWords is the non-empty parts, lower-cased and joined by
+// spaces: an entry's data-switcher-words.
+func switcherSearchWords(parts ...string) string {
+	var out []string
+	for _, p := range parts {
+		if p = strings.ToLower(strings.Join(strings.Fields(p), " ")); p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 // view is the items of view key.
 func (s *Switcher) view(key string) []SwitcherItem {
 	switch key {
@@ -241,13 +371,18 @@ func (s *Switcher) view(key string) []SwitcherItem {
 // inset, being the last thing above the screen's edge; otherwise (the agent
 // page, inside its already-inset pane) it lines up with the form above it.
 // Nothing when s is nil.
-func switcherBar(s *Switcher, pinned bool) g.Node {
+func switcherBar(s *Switcher, pinned bool) g.Node { return switcherBarWith(s, pinned, switcherScript(), nil) }
+
+// switcherBarWith is switcherBar with its script tag (switcherScript, or the
+// shell's switcherStaticScript) and, last on its row, extra (the Agents list's
+// "+", switcherDeployButton; nil for none).
+func switcherBarWith(s *Switcher, pinned bool, script, extra g.Node) g.Node {
 	if s == nil {
 		return nil
 	}
 	rows := make([]g.Node, 0, len(switcherViews))
 	for _, v := range switcherViews {
-		rows = append(rows, switcherRow(v.key, v.empty, s.view(v.key), v.key != SwitcherRecent))
+		rows = append(rows, switcherRow(s, v.key, v.empty, v.key != SwitcherRecent))
 	}
 	return g.Group{
 		Nav(
@@ -315,11 +450,12 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 						g.Raw(searchIconSVG),
 					),
 				),
+				extra,
 			),
 			switcherViewMenu(s),
 			switcherSearchBox(),
 		),
-		switcherScript(),
+		script,
 		NoScript(StyleEl(g.Raw(`#`+SwitcherID+` { visibility: visible !important; }`))),
 	}
 }
@@ -356,7 +492,7 @@ func switcherViewMenu(s *Switcher) g.Node {
 			// The count is redrawn with the rows on a back/forward-cache restore
 			// (restore.go), from the same fresh copy, so it never disagrees with
 			// the row it counts.
-			Span(Class("text-xs tabular-nums text-muted"), g.Attr("data-switcher-count", v.key), g.Attr(RestoreRefreshAttr, "switcher-count-"+v.key), g.Text(strconv.Itoa(len(s.view(v.key))))),
+			Span(ID(switcherCountID(v.key)), Class("text-xs tabular-nums text-muted"), g.Attr("data-switcher-count", v.key), g.Attr(RestoreRefreshAttr, "switcher-count-"+v.key), switcherCountText(s, v.key)),
 		))
 	}
 	return Div(
@@ -372,8 +508,9 @@ func switcherViewMenu(s *Switcher) g.Node {
 // switcherSearchBox is the search palette: a box over the page, near its top
 // (a phone's keyboard takes the bottom), with an input and the list of what it
 // finds, filled by the script as the operator types — from the All row's
-// entries (their data-switcher-code and data-switcher-title). Ranked: the
-// codename starts with what is typed, then contains it, then the title does;
+// entries (their data-switcher-code, -title and -words). Ranked: the
+// codename starts with what is typed, then contains it, then the title does,
+// then the words (repository, kind, tmux session) do;
 // case-folded; each tier in the All view's order. Arrows move, Enter opens,
 // Escape closes.
 func switcherSearchBox() g.Node {
@@ -452,14 +589,39 @@ func switcherToggleLabel(key string) string {
 	return ""
 }
 
+// switcherRowID and switcherCountID are a view's row and its count in the
+// menu: the ids the list's out-of-band refresh swaps into (switcherRefresh).
+func switcherRowID(key string) string   { return "switcher-list-" + key }
+func switcherCountID(key string) string { return "switcher-count-" + key }
+
+// switcherCountText is how many entries view key holds; nothing while they
+// are not known (switcherPending).
+func switcherCountText(s *Switcher, key string) g.Node {
+	if s.unknown {
+		return nil
+	}
+	return g.Text(strconv.Itoa(len(s.view(key))))
+}
+
+// switcherRowBody is what a view's row holds: its entries, or the line saying
+// it holds none — nothing while they are not known (switcherPending).
+func switcherRowBody(s *Switcher, key, empty string) g.Node {
+	if s.unknown {
+		return nil
+	}
+	items := s.view(key)
+	if len(items) == 0 {
+		return P(g.Attr("data-switcher-empty", ""), Class("truncate text-xs text-muted"), g.Text(empty))
+	}
+	return g.Group(g.Map(items, switcherEntry))
+}
+
 // switcherRow is one view's row: its entries, scrolling sideways, or the
 // line saying it holds none.
-func switcherRow(key, empty string, items []SwitcherItem, hidden bool) g.Node {
-	body := g.Group(g.Map(items, switcherEntry))
-	if len(items) == 0 {
-		body = g.Group{P(g.Attr("data-switcher-empty", ""), Class("truncate text-xs text-muted"), g.Text(empty))}
-	}
+func switcherRow(s *Switcher, key, empty string, hidden bool) g.Node {
+	body := switcherRowBody(s, key, empty)
 	return Div(
+		ID(switcherRowID(key)),
 		g.Attr("data-switcher-list", key),
 		// A page restored from the back/forward cache redraws its rows from
 		// its own fresh copy (restore.go), so Pins and Recent are current —
@@ -471,20 +633,79 @@ func switcherRow(key, empty string, items []SwitcherItem, hidden bool) g.Node {
 	)
 }
 
-// titleEntryMaxW is how wide an entry of the Agents list's Recent strip
-// (recentEntry) may grow.
+// SwitcherDockID is the Agents list's dock: the fixed box at the bottom of the
+// viewport that holds its bar (switcherDock).
+const SwitcherDockID = "agents-switcher-dock"
+
+// switcherDock is the bar as the Agents list draws it: FIXED to the bottom of
+// the viewport (the list is the document's own scroll, so a bar in flow would
+// sit under the last card), offset right of the desktop sidebar as the content
+// column is, and as wide as that column (contentMaxW). The bar is the pinned
+// form (switcherBar): inset, and padded by the safe-area inset, being the last
+// thing above the screen's edge.
 //
-// An operator ask: agents' titles were cut off (the strip was 14rem); 20rem
-// still clipped ~50-character task titles, so it is 26rem. An 84-character
-// title (605px) still clips there.
-//
-// ⚠ THE SESSION SWITCHER NO LONGER SHARES IT. Its pills were "often cut off"
-// even at 26rem, and the operator asked that they be "always wide enough to
-// show the full title": a switcher pill has no cap at all
-// (switcherEntryBoxClass) and its row scrolls sideways instead.
-//
-// 🔴 min(…, 100%): never wider than the row it scrolls in.
-const titleEntryMaxW = "max-w-[min(26rem,100%)]"
+// 🔴 OUT OF FLOW, SO ITS ARRIVAL MOVES NOTHING; THE LIST'S ROOM FOR IT IS THE
+// PANEL'S OWN PADDING (agentsPanel, switcherRoom), in the panel's first byte,
+// so the last card scrolls clear of the bar and nothing shifts when it paints.
+// Inside the Agents panel, so it shows only while the panel does (a hidden
+// panel is display:none, and so is everything in it).
+func switcherDock(s *Switcher) g.Node {
+	if s == nil {
+		return nil
+	}
+	return Div(
+		ID(SwitcherDockID),
+		Class("fixed inset-x-0 bottom-0 z-20 bg-bg lg:left-72"),
+		Div(
+			Class("relative "+contentMaxW()+" "+switcherRoom(true)),
+			switcherBarWith(s, true, switcherStaticScript(), switcherDeployButton()),
+		),
+	)
+}
+
+// SwitcherDeployID is the Agents list bar's "+" (switcherDeployButton).
+const SwitcherDeployID = "switcher-deploy"
+
+// switcherDeployButton is the Agents list bar's "+": it opens the task-less
+// dispatch sheet (GET /ui/agents/new, DispatchModalBody) exactly as the list's
+// FAB did — load the body into the always-present sheet, reveal it
+// (modalOpenClick). A 44px target around a 32px face, like the search button
+// beside it, in the bar's fixed h-11 row, so it moves nothing.
+func switcherDeployButton() g.Node {
+	return Button(
+		ID(SwitcherDeployID),
+		Type("button"),
+		g.Attr("aria-label", "Deploy agent"),
+		g.Attr("title", "Deploy agent"),
+		g.Attr("aria-haspopup", "dialog"),
+		Class("press group inline-flex h-11 w-11 shrink-0 items-center justify-center"),
+		hx("hx-get", "/ui/agents/new"),
+		hx("hx-target", "#agent-modal-body"),
+		hx("hx-swap", "innerHTML"),
+		hx("hx-on:click", modalOpenClick("agent-modal")),
+		Span(
+			Class("inline-flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-on-accent transition group-hover:bg-accent/90"),
+			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>`),
+		),
+	)
+}
+
+// switcherRefresh is the bar's rows and counts as a list render carries them,
+// out of band (RenderAgentsList): each swaps its CHILDREN into the element of
+// its id, so the shown row (a `hidden` the script set) and the view stay as
+// the viewer left them. The script skips a copy identical to what is drawn
+// (switcherScript), so a refresh that changes nothing leaves focus and the
+// row's sideways scroll alone.
+func switcherRefresh(s *Switcher) g.Node {
+	out := make(g.Group, 0, 2*len(switcherViews))
+	for _, v := range switcherViews {
+		out = append(out,
+			Div(ID(switcherRowID(v.key)), hx("hx-swap-oob", "innerHTML"), switcherRowBody(s, v.key, v.empty)),
+			Span(ID(switcherCountID(v.key)), hx("hx-swap-oob", "innerHTML"), switcherCountText(s, v.key)),
+		)
+	}
+	return out
+}
 
 // switcherEntryBoxClass is an entry's 44px box: as wide as its pill, with NO
 // cap — shrink-0, so the row's flex layout never squeezes it either. A label
@@ -503,7 +724,7 @@ func switcherEntry(it SwitcherItem) g.Node {
 	// measures it), and only the pill inside it is drawn.
 	const pill = "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-semibold ring-1 ring-inset "
 	const box = switcherEntryBoxClass
-	// The host's icon, as the pinned chip draws it (#252): hostMark's fixed
+	// The host's icon, as its card draws it (#252): hostMark's fixed
 	// 16px box, server-rendered, so it moves nothing; decorative when the
 	// label already names the host.
 	icon := hostMark(it.Host, it.HostIcon)
@@ -520,6 +741,7 @@ func switcherEntry(it SwitcherItem) g.Node {
 	search := g.Group{
 		g.If(it.Code != "", g.Attr("data-switcher-code", it.Code)),
 		g.If(it.Title != "", g.Attr("data-switcher-title", it.Title)),
+		g.If(it.Words != "", g.Attr("data-switcher-words", it.Words)),
 	}
 	if it.Current {
 		return Span(
@@ -551,7 +773,72 @@ func switcherEntry(it SwitcherItem) g.Node {
 // is parsed, before it is painted), and wires the view menu and the search
 // palette. Storage that throws (a private window, blocked site data) leaves
 // Recent, and the menu still works for the page.
-func switcherScript() g.Node {
+//
+// INLINE on a session's page (the agent page, the Rendered view), as it was
+// measured there. The app shell — whose Agents panel docks the bar — carries
+// it as the static file switcherStaticScript names instead: the shell's
+// documents send their code by reference (static_script.go, held to a budget by
+// TestTheShellCarriesNoInlineScriptOverTheBudget), and a boosted swap runs it
+// inline from the text the window holds (swap_inline.go). One text, switcherJS.
+func switcherScript() g.Node { return Script(g.Raw(switcherJS)) }
+
+// switcherStaticScript is switcherScript as the app shell's static file.
+func switcherStaticScript() g.Node { return staticScript(switcherScriptSrc) }
+
+// switcherScriptSrc is the path switcherJS is served at, /static/js/switcher.js.
+var switcherScriptSrc = staticJS("switcher", switcherJS)
+
+// switcherOOBHandler takes the Agents list's out-of-band copies of the bar's
+// rows and counts (switcherRefresh) and swaps them ITSELF, not htmx: the
+// copy's CHILDREN go into the element of its id, which keeps the row itself
+// (its hidden, the view), and a copy that says what is drawn already is not
+// swapped at all.
+//
+// 🔴 NOT htmx's own innerHTML swap: htmx 2.0.4 inserted the copy ELEMENT into
+// the row (two elements of one id, the row's entries one level down),
+// measured in e2e/tests/host-icons.spec.ts. What it hands over here is the
+// copy, or a fragment holding it; either way its children are used.
+//
+// 🔴 A SWAP KEEPS THE READER'S PLACE: a pill that had focus has it again
+// after the swap (the pill of the same href, wherever the new order put it),
+// and the row keeps its sideways scroll.
+const switcherOOBHandler = `function (e) {
+      var d = e.detail, t = d && d.target;
+      if (!t || !t.closest || !t.closest('#` + SwitcherID + `') || !d.fragment) return;
+      d.shouldSwap = false;
+      var src = d.fragment;
+      if (src.nodeType === 11 && src.childNodes.length === 1 && src.firstChild.nodeType === 1 && src.firstChild.id === t.id) src = src.firstChild;
+      var box = document.createElement('div');
+      for (var c = src.firstChild; c; c = c.nextSibling) box.appendChild(c.cloneNode(true));
+      if (box.innerHTML === t.innerHTML) return;
+      var a = document.activeElement, href = a && t.contains(a) && a.closest('a[data-switcher-entry]') ? a.closest('a[data-switcher-entry]').getAttribute('href') : null;
+      var x = t.scrollLeft;
+      t.replaceChildren.apply(t, Array.prototype.slice.call(box.childNodes));
+      if (window.htmx) window.htmx.process(t);
+      t.scrollLeft = x;
+      if (href !== null) {
+        var es = t.querySelectorAll('a[data-switcher-entry]');
+        for (var i = 0; i < es.length; i++) if (es[i].getAttribute('href') === href) { es[i].focus({ preventScroll: true }); break; }
+      }
+    }`
+
+// switcherOOBVersion is a hash of switcherOOBHandler: a window holding an
+// older handler (or none, under an older build's "/" flag) rebinds.
+func switcherOOBVersion() string {
+	sum := sha256.Sum256([]byte(switcherOOBHandler))
+	return hex.EncodeToString(sum[:6])
+}
+
+// switcherOOBJS binds switcherOOBHandler once per window and version,
+// replacing an older version's.
+var switcherOOBJS = `if (!window.__musterSwitcherOOB || window.__musterSwitcherOOB.v !== '` + switcherOOBVersion() + `') {
+    if (window.__musterSwitcherOOB) document.removeEventListener('htmx:oobBeforeSwap', window.__musterSwitcherOOB.fn);
+    window.__musterSwitcherOOB = { v: '` + switcherOOBVersion() + `', fn: ` + switcherOOBHandler + ` };
+    document.addEventListener('htmx:oobBeforeSwap', window.__musterSwitcherOOB.fn);
+  }`
+
+// switcherJS is the bar's script (switcherScript).
+var switcherJS = func() string {
 	views, labels, names := "[", "{", "{"
 	for i, v := range switcherViews {
 		if i > 0 {
@@ -561,7 +848,7 @@ func switcherScript() g.Node {
 		labels += strconv.Quote(v.key) + ":" + strconv.Quote(v.label)
 		names += strconv.Quote(v.key) + ":" + strconv.Quote(switcherToggleLabel(v.key))
 	}
-	return Script(g.Raw(`
+	return `
 (function () {
   var bar = document.getElementById('` + SwitcherID + `');
   if (bar) bar.removeAttribute('data-switcher-pending'); // whole now (see switcherBar)
@@ -673,7 +960,8 @@ func switcherScript() g.Node {
       var a = es[i];
       var label = a.getAttribute('title') || a.textContent;
       out.push({ href: a.getAttribute('href'), label: label, code: a.getAttribute('data-switcher-code') || label,
-        title: a.getAttribute('data-switcher-title') || '', kind: a.getAttribute('data-switcher-entry'), n: i });
+        title: a.getAttribute('data-switcher-title') || '', words: a.getAttribute('data-switcher-words') || '',
+        kind: a.getAttribute('data-switcher-entry'), n: i });
     }
     return out;
   }
@@ -685,6 +973,7 @@ func switcherScript() g.Node {
     if (c.indexOf(q) === 0) return 0;
     if (c.indexOf(q) > 0) return 1;
     if (fold(e.title).indexOf(q) >= 0) return 2;
+    if (fold(e.words).indexOf(q) >= 0) return 3;
     return -1;
   }
   function el(tag, cls, text) { var x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; }
@@ -777,6 +1066,11 @@ func switcherScript() g.Node {
   });
   window.addEventListener('resize', function () { if (isOpen(menu)) placeMenu(); });
 
+  // The Agents list's refresh rows (switcherOOBJS): bound per window AND
+  // VERSION, not under the "/" key's flag below — a window still running an
+  // older build's switcher has that flag set, and would never bind this.
+  ` + switcherOOBJS + `
+
   // "/" opens the search when focus is not in a text field (nor in a
   // terminal, xterm, where it is the shell's), once per document: the
   // listener finds the page's bar when the key is pressed (htmx swaps the
@@ -795,5 +1089,5 @@ func switcherScript() g.Node {
     });
   }
 })();
-`))
-}
+`
+}()

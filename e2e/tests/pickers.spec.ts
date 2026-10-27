@@ -5,6 +5,7 @@ import { Locator, Page, request as pwRequest } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, password, pickersFakePort, pickersPort, repoRoot, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // EVERY SEARCH PICKER RANKS BY ONE RULE (internal/searchrank; window.musterRank
 // in the browser): the label STARTS with the query, then a WORD in it does, then
@@ -130,7 +131,7 @@ test("the browser's rank agrees with the Go rank on the shared table", async ({ 
 test('the dispatch dialog ranks its task, repo and model pickers', async ({ page }) => {
   await signIn(page);
   await page.goto(origin + '/agents');
-  await page.click('#fab-agents');
+  await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await expect(sheet).toBeVisible();
   const task = sheet.locator('[data-combobox]:has(input[name="note_id"])');

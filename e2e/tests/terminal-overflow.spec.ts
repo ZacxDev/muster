@@ -2,6 +2,7 @@ import { request as pwRequest, CDPSession, Page, WebSocket as PWWebSocket } from
 import { test, expect } from '../lib/fixtures';
 import { hookToken, overflowPort, password, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // A terminal whose far side is WIDER than the page (internal/termsize): the
 // session keeps its size, the page renders it in a scrolling, pinch-zoomable
@@ -60,7 +61,7 @@ async function agentNames(): Promise<Set<string>> {
 async function newAgent(page: Page, note: string): Promise<string> {
   const before = await agentNames();
   await page.goto(origin + '/agents');
-  await page.click('#fab-agents');
+  await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await sheet.locator('[data-kind-option="claude-code"]').click();
   await sheet.locator('textarea[name="note_text"]').fill(note);

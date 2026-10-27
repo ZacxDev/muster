@@ -1,30 +1,28 @@
 import fs from 'node:fs';
 import { Page } from '@playwright/test';
 import { test, expect, takeNew } from '../lib/fixtures';
-import { agentsSearchPort, baseURL, password } from '../lib/env';
-import { MirrorRig, mkchat } from '../lib/mirrorhost';
+import { agentsHoldPort } from '../lib/env';
+import { MirrorRig } from '../lib/mirrorhost';
 import { clsInit, readCls, resetCls } from '../lib/cls';
 import { writeFileAtomic } from '../lib/atomic';
 
-// THE AGENTS FILTER RANKS WHILE TYPING (internal/ui/agents_filter.go rankAttrs):
-// a one-letter query already filters, and the cards it shows are REORDERED —
-// a title starting with it, then a title with a word starting with it, then any
-// other match — keeping the list's own order within a rank. Clearing the box
-// restores the list's order. `field:value` tokens, several words (all must
-// match) and pins keep working.
+// THE AGENTS LIST HOLDS A BACKGROUND REFRESH BEHIND "N new ↑"
+// (internal/ui/agents_filter.go): a refresh that would move a card the reader
+// can see waits for a tap, and nothing it changes in place moves a card,
+// closes a popover or blurs the focused element.
 //
-// The cards are three mirrored sessions of this spec's own host, named so each
-// is in exactly one rank for "q" — and none of the seeded agents (or the host's
-// name, which is decimal digits) contains a q:
+// ⚠ THIS SPEC ALSO TESTED THE LIST'S SEARCH BOX, which ranked the cards as you
+// typed. The box is gone (operator ask: "Hide the existing search input
+// because the new command palette UX supersedes it"): its ranking tests, and
+// the hold tests that only existed because of the rank (a typed filter
+// re-ranking a held refresh), are removed; the session switcher's palette is
+// agents-switcher.spec.ts and switcher-search.spec.ts.
 //
-//   qbase      a title that STARTS with q       rank 0
-//   old-qdock  a WORD in the title starts with q  rank 1
-//   mqtail     q inside a word                   rank 2
-//
-// They are listed in the OPPOSITE order (the host reports mqtail most recently
-// active), so a rank can only come out right by being applied.
+// The cards are three mirrored sessions of this spec's own host (qbase,
+// old-qdock, mqtail), listed most recently active first: mqtail, old-qdock,
+// qbase.
 
-const rig = new MirrorRig(agentsSearchPort, 'e2e-search', {}, { decimalHost: true });
+const rig = new MirrorRig(agentsHoldPort, 'e2e-search', {}, { decimalHost: true });
 
 test.use({ storageState: { cookies: [], origins: [] } });
 
@@ -66,175 +64,10 @@ async function shown(page: Page): Promise<string[]> {
   }, names);
 }
 
-async function type(page: Page, q: string) {
-  await page.locator('#agents-search').fill(q);
-}
-
-for (const vp of [
-  { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
-  { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
-]) {
-  test.describe(vp.name, () => {
-    test.use(vp.use);
-
-    test('one letter filters and ranks prefix, word start, substring; clearing restores the order', async ({ page }) => {
-      await rig.login(page);
-      await rig.waitListed(page, 'mqtail');
-      await page.goto(rig.origin + '/agents');
-      await expect.poll(() => shown(page), { message: 'the three sessions, most recently active first' }).toEqual(['mqtail', 'old-qdock', 'qbase']);
-
-      await type(page, 'q');
-      await expect.poll(() => shown(page), { message: 'q: prefix, then word start, then substring' }).toEqual(['qbase', 'old-qdock', 'mqtail']);
-      // Only the q cards are shown — the seeded agents carry no q.
-      const cards = await page.locator('#agents-list > article').count();
-      await expect(page.locator('#agents-count')).toHaveText(`3 of ${cards}`);
-
-      // Upper case is the same query; a longer one narrows, still ranked.
-      await type(page, 'Q');
-      await expect.poll(() => shown(page)).toEqual(['qbase', 'old-qdock', 'mqtail']);
-      await type(page, 'qd');
-      await expect.poll(() => shown(page)).toEqual(['old-qdock']);
-
-      // Several words: ALL must match; the FIRST ranks.
-      await type(page, 'q tail');
-      await expect.poll(() => shown(page)).toEqual(['mqtail']);
-      // A field token filters and leaves the rank to the free word.
-      await type(page, `host:${rig.host} q`);
-      await expect.poll(() => shown(page)).toEqual(['qbase', 'old-qdock', 'mqtail']);
-      await type(page, `session=mqtail q`);
-      await expect.poll(() => shown(page)).toEqual(['mqtail']);
-
-      // Cleared: the list's own order, everything shown.
-      await page.locator('#agents-search-clear').click();
-      await expect.poll(() => shown(page)).toEqual(['mqtail', 'old-qdock', 'qbase']);
-      await expect(page.locator('#agents-count')).toHaveText(`${cards} of ${cards}`);
-    });
-
-    // 🔴 THE DOM ITSELF IS REORDERED, not only the boxes: Tab and a screen
-    // reader walk the cards in ranked order. Typing never takes focus from the
-    // box, and clearing it puts the cards back in the list's own order.
-    test('typing reorders the cards in the DOM: Tab follows the ranking, focus stays in the box, clearing restores', async ({ page }) => {
-      await rig.login(page);
-      await rig.waitListed(page, 'mqtail');
-      await page.goto(rig.origin + '/agents');
-      const domOrder = () =>
-        page.locator('#agents-list > article').evaluateAll((els, ns) =>
-          els.map((e) => e.getAttribute('data-f-session') || '').filter((n) => (ns as string[]).includes(n)), names);
-      await expect.poll(domOrder).toEqual(['mqtail', 'old-qdock', 'qbase']);
-      await page.locator('#agents-search').focus();
-      await page.keyboard.type('q');
-      await expect.poll(domOrder, { message: 'the DOM order is the ranked order' }).toEqual(['qbase', 'old-qdock', 'mqtail']);
-      expect(await page.evaluate(() => document.activeElement && document.activeElement.id), 'focus stayed in the box').toBe('agents-search');
-      // Tab from the box into the list: the cards' controls come in ranked order.
-      const reached: string[] = [];
-      for (let i = 0; i < 80 && reached.length < 3; i++) {
-        await page.keyboard.press('Tab');
-        const s = await page.evaluate(() => {
-          const a = document.activeElement && document.activeElement.closest('#agents-list > article');
-          return a ? a.getAttribute('data-f-session') || '' : '';
-        });
-        if (s && names.includes(s) && !reached.includes(s)) reached.push(s);
-      }
-      expect(reached, 'Tab reaches the cards best match first').toEqual(['qbase', 'old-qdock', 'mqtail']);
-      // A refresh morphs the list back into the server's order; it is ranked
-      // again before anything is drawn.
-      // The order is read at the FIRST frame after the swap, before htmx settles:
-      // ranked there means no frame showed the server's order.
-      const firstFrame = page.evaluate((ns) => new Promise<string[]>((r) => document.addEventListener('htmx:afterSwap', (e) => {
-        if ((e.target as Element).id !== 'agents-list') return;
-        const list = e.target as Element;
-        requestAnimationFrame(() => r([...list.querySelectorAll(':scope > article')].map((c) => c.getAttribute('data-f-session') || '').filter((n) => ns.includes(n))));
-      })), names);
-      await page.evaluate(() => (window as any).htmx.trigger(document.body, 'agents:changed'));
-      expect(await firstFrame, 'ranked in the first frame after a refresh').toEqual(['qbase', 'old-qdock', 'mqtail']);
-      await expect.poll(domOrder, { message: 'still ranked after a refresh' }).toEqual(['qbase', 'old-qdock', 'mqtail']);
-      // Cleared: the list's own order again.
-      await page.locator('#agents-search').fill('');
-      await expect.poll(domOrder, { message: 'clearing restores the order' }).toEqual(['mqtail', 'old-qdock', 'qbase']);
-    });
-
-    // PINNED ENTRIES ARE CHIPS (internal/ui/pinned_chips.go), drawn in a row
-    // above every card: the rank orders the chips among themselves and the
-    // cards among themselves, and never moves a card above a chip — in the
-    // boxes AND in the DOM (Tab meets the chips first, where the eye does).
-    test('pinned chips rank among themselves, ahead of every card, in the boxes and the DOM', async ({ page }) => {
-      await rig.login(page);
-      await rig.waitListed(page, 'mqtail');
-      await page.goto(rig.origin + '/agents');
-      const entry = (s: string) => page.locator(`#agents-list > article[data-f-session="${s}"]`);
-      const domOrder = () =>
-        page.locator('#agents-list > article').evaluateAll((els, ns) =>
-          els.map((e) => e.getAttribute('data-f-session') || '').filter((n) => (ns as string[]).includes(n)), names);
-      const pin = async (s: string, on: boolean) => {
-        const r = await page.request.post(rig.origin + (on ? '/agents/pins' : '/agents/pins/delete'), {
-          form: { kind: 'mirror', host: rig.host, session: s, window: '@' + (names.indexOf(s) + 1) },
-          headers: { Origin: rig.origin },
-        });
-        expect(r.status(), `${on ? 'pin' : 'unpin'} ${s}`).toBe(200);
-      };
-      try {
-        // "a" is on every one of the three (the host's name is e2e-search-…), in
-        // no title as a start: ONE rank, so the list's own order decides.
-        await type(page, 'a');
-        await expect.poll(() => shown(page), { message: 'a tie keeps the list order' }).toEqual(['mqtail', 'old-qdock', 'qbase']);
-        // Pin the substring match and the oldest: they become the chips…
-        await pin('mqtail', true);
-        await pin('qbase', true);
-        await page.reload();
-        await type(page, '');
-        await expect(entry('mqtail')).toHaveAttribute('data-pinned-chip', 'mirror');
-        await expect(entry('qbase')).toHaveAttribute('data-pinned-chip', 'mirror');
-        await expect.poll(() => shown(page), { message: 'the chips first' }).toEqual(['mqtail', 'qbase', 'old-qdock']);
-        // …a tie keeps their pinned order…
-        await type(page, 'a');
-        await expect.poll(() => shown(page), { message: 'a tie keeps the pinned order' }).toEqual(['mqtail', 'qbase', 'old-qdock']);
-        // …and "q" ranks the chips among themselves (qbase a prefix, mqtail a
-        // substring) while the card, a better match than mqtail, stays a card
-        // below them.
-        await type(page, 'q');
-        await expect.poll(() => shown(page), { message: 'chips ranked, then the cards' }).toEqual(['qbase', 'mqtail', 'old-qdock']);
-        await expect.poll(domOrder, { message: 'the DOM follows the boxes' }).toEqual(['qbase', 'mqtail', 'old-qdock']);
-      } finally {
-        await type(page, '');
-        await pin('mqtail', false);
-        await pin('qbase', false);
-      }
-    });
-  });
-}
-
-// The seeded agents on the shared server: one letter is a filter too, and the
-// rank works on agent cards (display name / name), not only mirrored ones.
-test('agent cards: one letter ranks a name prefix above a word start', async ({ page }) => {
-  await page.goto(baseURL + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  await page.goto(baseURL + '/agents');
-  const order = () =>
-    page.locator('#agents-list > article').evaluateAll((els) =>
-      els
-        .map((e) => ({ n: e.getAttribute('data-f-name') || '', r: e.getBoundingClientRect() }))
-        .filter(({ r }) => r.height > 0)
-        .sort((a, b) => a.r.top - b.r.top || a.r.left - b.r.left)
-        .map(({ n }) => n)
-        .filter((n) => ['docs-sweeper', 'release-helper', 'notes-tidy'].includes(n)),
-    );
-  await expect.poll(order).toHaveLength(3);
-  // "s": no name starts with s; "sweeper" is a word start (rank 1); "notes-tidy"
-  // and "release-helper" carry an s inside a word (rank 2), in list order.
-  const before = await order();
-  await page.locator('#agents-search').fill('s');
-  await expect.poll(order).toEqual(['docs-sweeper', ...before.filter((n) => n !== 'docs-sweeper')]);
-  // "r": release-helper STARTS with r (rank 0); docs-sweeper only contains one.
-  await page.locator('#agents-search').fill('r');
-  await expect.poll(async () => (await order())[0]).toBe('release-helper');
-});
-
 // HELD, NOT MOVED (Zach's call; tap-only, even at the top, confirmed): a
-// background refresh of the open list — an activity change, an arrival — moves no card. The new order waits behind an
-// "N new ↑" pill, a tap applies it, and a filter's ranking still orders what is
-// shown. A card's own content still updates in place. Runs LAST: it rewrites
-// the host's windows.
+// background refresh of the open list — an activity change, an arrival — moves
+// no card. The new order waits behind an "N new ↑" pill and a tap applies it. A
+// card's own content still updates in place. It rewrites the host's windows.
 test.describe('held behind the pill', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
@@ -269,13 +102,6 @@ test.describe('held behind the pill', () => {
     expect(await domOrder()).toEqual(['mqtail', 'old-qdock', 'qbase']);
     const held = await readCls(page);
     expect(held.total, `nothing moved while held: ${JSON.stringify(held.shifts)}`).toBeLessThan(0.01);
-
-    // With a filter: the ranking orders what is shown, and the pill still waits.
-    await page.locator('#agents-search').fill('q');
-    await expect.poll(domOrder).toEqual(['qbase', 'old-qdock', 'mqtail']);
-    await expect(pill).toHaveText('2 new ↑');
-    await page.locator('#agents-search').fill('');
-    await expect.poll(domOrder).toEqual(['mqtail', 'old-qdock', 'qbase']);
 
     // A tap applies the live order, arrival included, and the pill goes.
     await pill.tap();
@@ -314,8 +140,8 @@ for (const leg of [
 
     // 🔴 A REGRESSION TEST (round-2 audit): reorder() re-appended EVERY card, so
     // a card holding focus was detached and focus fell to <body>. A refresh that
-    // lands while a card is focused — with a filter typed — and the pill's tap
-    // that moves that very card must both leave focus where it was.
+    // lands while a card is focused, and the pill's tap that moves that very
+    // card, must both leave focus where it was.
     test('a focused card keeps focus through a held refresh and through the pill tap that moves it', async ({ page }) => {
       test.setTimeout(120_000);
       // Without Element.moveBefore (Firefox and Safari today) the hand-back must
@@ -323,10 +149,12 @@ for (const leg of [
       if (leg.strip) await page.addInitScript(() => { delete (Element.prototype as unknown as { moveBefore?: unknown }).moveBefore; });
       await freshList(page, [windowLine('qbase', '@1', 'zsh', 3000), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)], ['mqtail', 'old-qdock', 'qbase']);
       expect(await page.evaluate(() => typeof (Element.prototype as unknown as { moveBefore?: unknown }).moveBefore), 'the leg runs the mover it names').toBe(leg.strip ? 'undefined' : 'function');
-      const box = page.locator('#agents-search');
+      // Tab starts from the host tabs' All tab (above the list; the search box
+      // that was the start is gone).
+      const box = page.locator('#agents-host-all');
       const pill = page.locator('#agents-new-pill');
 
-      // Tab from the box into a card; mark the element and count its blurs.
+      // Tab from the All tab into a card; mark the element and count its blurs.
       const tabInto = async (session: string) => {
         await box.focus();
         for (let i = 0; i < 60; i++) {
@@ -348,10 +176,8 @@ for (const leg of [
           return { same: document.activeElement === w.__f, connected: !!w.__f?.isConnected, blurs: w.__blurs, now: document.activeElement?.outerHTML.slice(0, 80) };
         });
 
-      // 1. A filter typed, focus in the last-ranked card, and a refresh that
-      //    re-orders the list (qbase becomes the newest, its command changes).
-      await box.fill('q');
-      await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'old-qdock', 'mqtail']);
+      // 1. Focus in a card, and a refresh that re-orders the list (qbase
+      //    becomes the newest, its command changes).
       await tabInto('mqtail');
       writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'vim', 0), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
       await expect(page.locator('#agents-list > article[data-f-session="qbase"]'), 'the refresh landed').toHaveAttribute('data-f-kind', 'vim', { timeout: 30_000 });
@@ -362,9 +188,8 @@ for (const leg of [
       await expect(pill).toBeHidden();
       expect(await stillFocused(), 'focus survived the pill tap').toMatchObject({ same: true, connected: true });
 
-      // 2. No filter, focus in the LAST card, and a refresh that makes it the
-      //    newest: the pill's tap moves the focused card itself to the top.
-      await box.fill('');
+      // 2. Focus in the LAST card, and a refresh that makes it the newest: the
+      //    pill's tap moves the focused card itself to the top.
       await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'mqtail', 'old-qdock']);
       await tabInto('old-qdock');
       writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'vim', 600), windowLine('old-qdock', '@2', 'zsh', 0), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
@@ -563,23 +388,23 @@ for (const leg of [
       await expect(pill).toHaveText('1 new ↑');
     });
 
-    // 🔴 A REGRESSION TEST (round-2 audit 🟡): with a FREE-TEXT filter typed,
-    // the rank sorted a held (hidden) arrival that matches the filter above
-    // worse-ranked drawn cards, so arrange re-appended every card — without
-    // moveBefore that closed an open popover (audit: 7 nodes removed, filter
-    // "q"). A held arrival is sorted last, so nothing drawn moves.
-    test('with a filter typed, a held matching arrival moves no card and an open popover stays open', async ({ page }) => {
+    // 🔴 A REGRESSION TEST (round-2 audit 🟡): a held (hidden) arrival sorted
+    // above drawn cards made arrange re-append every card — without moveBefore
+    // that closed an open popover (audit: 7 nodes removed). A held arrival is
+    // sorted last, so nothing drawn moves. (The audit's case was a typed
+    // filter's rank; the box is gone, and the newest arrival is the same
+    // hazard: the list's own order puts it first.)
+    test('a held arrival moves no card and an open popover stays open', async ({ page }) => {
       test.setTimeout(120_000);
       if (leg.strip) await page.addInitScript(() => { delete (Element.prototype as unknown as { moveBefore?: unknown }).moveBefore; });
       await freshList(page, [windowLine('qbase', '@1', 'zsh', 3000), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)], ['mqtail', 'old-qdock', 'qbase']);
       const pill = page.locator('#agents-new-pill');
       const card = (s: string) => page.locator(`#agents-list > article[data-f-session="${s}"]`);
-      // A held state first (qbase becomes the newest), then the filter.
+      // A held state first (qbase becomes the newest).
       writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'zsh', 10), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000)].join('\n') + '\n');
       await expect(pill).toHaveText('1 new ↑', { timeout: 30_000 });
-      await page.locator('#agents-search').fill('q');
-      await expect.poll(() => sessionsOrder(page)).toEqual(['qbase', 'old-qdock', 'mqtail']);
-      // A popover open on the worst-ranked card, and every card removal counted.
+      await expect.poll(() => sessionsOrder(page)).toEqual(['mqtail', 'old-qdock', 'qbase']);
+      // A popover open on a drawn card, and every card removal counted.
       await card('mqtail').locator('[popovertarget]').first().click();
       const open = () => card('mqtail').locator(':popover-open').count();
       expect(await open(), 'control: the popover opened').toBe(1);
@@ -589,7 +414,7 @@ for (const leg of [
         new MutationObserver((ms) => ms.forEach((m) => m.removedNodes.forEach((n) => { if ((n as Element).tagName === 'ARTICLE') w.__removed++; })))
           .observe(document.getElementById('agents-list')!, { childList: true });
       });
-      // The arrival: "qzest" STARTS with q, the best rank there is — held.
+      // The arrival: the newest of all, so the live order puts it first — held.
       writeFileAtomic(windowsFile, [windowLine('qbase', '@1', 'zsh', 10), windowLine('old-qdock', '@2', 'zsh', 2000), windowLine('mqtail', '@3', 'zsh', 1000), windowLine('qzest', '@4', 'zsh', 0)].join('\n') + '\n');
       await expect(card('qzest'), 'the arrival reached the list').toHaveCount(1, { timeout: 30_000 });
       await expect(card('qzest'), 'held').toBeHidden();
@@ -597,74 +422,7 @@ for (const leg of [
       const removed = await page.evaluate(() => (window as unknown as { __removed: number }).__removed);
       expect(await open(), 'the popover survived the held arrival').toBe(1);
       expect(removed, 'no card was removed and re-added').toBe(0);
-      expect(await sessionsOrder(page), 'the drawn cards did not move').toEqual(['qbase', 'old-qdock', 'mqtail']);
+      expect(await sessionsOrder(page), 'the drawn cards did not move').toEqual(['mqtail', 'old-qdock', 'qbase']);
     });
   });
 }
-
-// 🔴 A REGRESSION TEST (#124 round-2 audit 🟡): a held background refresh can
-// still change a DRAWN card's rank — another client renames an agent while a
-// filter is typed — and the filter's re-rank then moved every card (arrange
-// re-appends). A held refresh does not re-rank: the drawn cards keep their
-// place, and the tap applies the new rank with the rest.
-test.describe('held behind the pill: a rename elsewhere', () => {
-  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false });
-
-  test('with a filter typed, a rename that changes a drawn card’s rank moves no card until the tap', async ({ page }) => {
-    test.setTimeout(180_000);
-    const stamp = Date.now().toString(36).replace(/w/g, 'x');
-    // Each is in exactly one rank for "wren": a prefix, a word start, inside a word.
-    const [first, second, third] = [`wren-one-${stamp}`, `big-wren-${stamp}`, `awrenx-${stamp}`];
-    // The arrival MATCHES the filter: an arrival the filter hides moves nothing
-    // in view, so it is applied at once and holds nothing (agents_filter.go
-    // decide) — the hold this test needs is one the reader can see.
-    const arrival = `zzwrenheld-${stamp}`;
-    for (const n of [first, second, third]) mkchat(n, [{ role: 'user', content: 'a wren card' }]);
-    try {
-      await rig.login(page);
-      await page.goto(rig.origin + '/agents');
-      const card = (n: string) => page.locator(`#agents-list > article[data-f-name="${n}"]`);
-      await expect(card(third)).toHaveCount(1, { timeout: 30_000 });
-      await takeNew(page);
-      // By card id: the rename changes the card's name, not its id.
-      const ids = await Promise.all([first, second, third].map(async (n) => (await card(n).getAttribute('id'))!));
-      const [idFirst, idSecond, idThird] = ids;
-      const shown = () =>
-        page.locator('#agents-list > article:not([data-held])').evaluateAll((els, want) =>
-          els.filter((e) => (e as HTMLElement).offsetHeight > 0).map((e) => e.id).filter((i) => (want as string[]).includes(i)), ids);
-      await page.locator('#agents-search').fill('wren');
-      await expect.poll(shown).toEqual([idFirst, idSecond, idThird]);
-      await page.evaluate(() => {
-        const w = window as unknown as { __removed: number };
-        w.__removed = 0;
-        new MutationObserver((ms) => ms.forEach((m) => m.removedNodes.forEach((n) => { if ((n as Element).tagName === 'ARTICLE') w.__removed++; })))
-          .observe(document.getElementById('agents-list')!, { childList: true });
-      });
-
-      // The list is HELD: an agent arrives (newest, so above every card).
-      mkchat(arrival, [{ role: 'user', content: 'arrived' }]);
-      await page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:agent.changed'));
-      await expect(page.locator('#agents-new-pill'), 'held').toBeVisible({ timeout: 30_000 });
-      await page.evaluate(() => { (window as unknown as { __removed: number }).__removed = 0; });
-
-      // Another client renames the worst-ranked card to a PREFIX match (and so
-      // perhaps the most recently active), then this tab's list refreshes in
-      // the background.
-      const id = idThird.replace('agent-', '');
-      const r = await page.request.post(`${rig.origin}/agents/${id}/name`, { form: { name: 'wren renamed' }, headers: { Origin: rig.origin } });
-      expect(r.status(), await r.text()).toBe(200);
-      await page.evaluate(() => (window as any).htmx.trigger(document.body, 'sse:agent.changed'));
-      await expect(page.locator(`#${idThird}`), 'the refresh brought the new name').toHaveAttribute('data-rank-title', /wren renamed/, { timeout: 30_000 });
-      await expect(page.locator('#agents-new-pill'), 'the change waits').toBeVisible();
-      const removed = await page.evaluate(() => (window as unknown as { __removed: number }).__removed);
-      expect(removed, 'no card was removed and re-added').toBe(0);
-      expect(await shown(), 'the drawn cards kept their place').toEqual([idFirst, idSecond, idThird]);
-
-      // The tap applies it: the renamed card now ranks with the prefix match.
-      await page.locator('#agents-new-pill').click();
-      await expect.poll(async () => { const a = await shown(); return a.indexOf(idThird) < a.indexOf(idSecond); }, { message: 'the tap applied the new rank: the renamed card above the word-start match' }).toBe(true);
-    } finally {
-      for (const n of [first, second, third, arrival]) mkchat(n, null);
-    }
-  });
-});

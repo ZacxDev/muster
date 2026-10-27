@@ -64,9 +64,8 @@ func TestEveryTitleSinkShowsThePlainTitle(t *testing.T) {
 		{"notification row", "Agent ten done", func() g.Node {
 			return notifRow(NotificationRow{Name: "a10", DisplayName: "Agent `ten` **done**", Count: 1})
 		}},
-		{"recent strip", "Eleven builds", func() g.Node {
-			items := recentItems([]AgentCardView{{ID: 11, Name: "a11", DisplayName: "<i>Eleven</i> builds"}}, nil, []RecentRef{{AgentID: 11}})
-			return recentStrip(items, false)
+		{"switcher Recent view", "Eleven builds", func() g.Node {
+			return switcherRefresh(agentsSwitcher([]AgentCardView{{ID: 11, Name: "a11", DisplayName: "<i>Eleven</i> builds"}}, nil, []RecentRef{{AgentID: 11}}))
 		}},
 		{"dispatch picker option", "Twelve tasks", func() g.Node {
 			return g.Text(noteOptions([]NoteOption{{ID: 12, Label: "1. **Twelve** tasks"}})[0].Label)

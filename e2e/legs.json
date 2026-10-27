@@ -51,7 +51,7 @@
     "tests/cls.spec.ts": 88.9,
     "tests/composer-autosize.spec.ts": 8.2,
     "tests/tool-groups.spec.ts": 4.4,
-    "tests/agents-search.spec.ts": 5.9,
+    "tests/agents-hold.spec.ts": 5.9,
     "tests/host-tabs.spec.ts": 25.0,
     "tests/chief-thread-search.spec.ts": 2.4,
     "tests/pickers.spec.ts": 2.6,
@@ -77,6 +77,7 @@
     "tests/title-room.spec.ts": 24.1,
     "tests/switcher-search.spec.ts": 30.0,
     "tests/reconnect.spec.ts": 60.0,
+    "tests/agents-switcher.spec.ts": 30.0,
     "tests/opencode-view.spec.ts": 20.0,
     "tests/board-first-paint.spec.ts": 20.0,
     "tests/telemetry.spec.ts": 95.0,
@@ -84,6 +85,7 @@
   },
   "legs": {
     "1": [
+      "tests/agents-switcher.spec.ts",
       "tests/composer-switcher.spec.ts",
       "tests/host-names.spec.ts",
       "tests/cls-long-transcript.spec.ts",
@@ -142,7 +144,7 @@
       "tests/send-queue.spec.ts",
       "tests/composer-autosize.spec.ts",
       "tests/tool-groups.spec.ts",
-      "tests/agents-search.spec.ts",
+      "tests/agents-hold.spec.ts",
       "tests/pickers.spec.ts",
       "tests/dictation.spec.ts",
       "tests/terminal.spec.ts",

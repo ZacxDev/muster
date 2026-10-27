@@ -8,7 +8,7 @@ import (
 
 // The focus on BOTH card kinds: the card's title when there is one — a
 // popover trigger with the ⋯ menu's native-popover pattern, in its own slot
-// OUTSIDE the nav anchor — absent without, and found by the filter.
+// OUTSIDE the nav anchor — absent without.
 
 func TestBothCardKindsShowTheirFocusInAPopover(t *testing.T) {
 	f := &FocusView{Title: "Reconciling invoices", Description: "Matching payouts to the ledger.", UpdatedAt: time.Now().Add(-3 * time.Minute)}
@@ -38,10 +38,6 @@ func TestBothCardKindsShowTheirFocusInAPopover(t *testing.T) {
 			}
 			if footer := html[strings.Index(html, `data-card-slot="footer"`):]; strings.Contains(footer, "data-card-focus") {
 				t.Error("a card headed by its focus still draws the footer chip")
-			}
-			// The filter finds the card by its focus.
-			if !strings.Contains(html, "reconciling invoices") || !strings.Contains(html, "matching payouts to the ledger.") {
-				t.Error("data-filter does not carry the focus text")
 			}
 		})
 	}
@@ -131,7 +127,11 @@ func TestFocusTextIsEscapedInTheCardAndPopover(t *testing.T) {
 				t.Fatalf("unescaped %q in:\n%s", raw, html)
 			}
 		}
-		for _, want := range []string{"&lt;script&gt;alert(1)&lt;/script&gt; &#34;t&#34;", "&lt;img src=x onerror=&#34;x()&#34;&gt; &#34;d&#34;"} {
+		// (The description's raw markup was also carried, escaped, in the card's
+		// search haystack; the haystack is gone with the search box, and the
+		// popover draws the description plained — the no-raw checks above hold
+		// for it.)
+		for _, want := range []string{"&lt;script&gt;alert(1)&lt;/script&gt; &#34;t&#34;"} {
 			if !strings.Contains(html, want) {
 				t.Fatalf("missing escaped %q in:\n%s", want, html)
 			}

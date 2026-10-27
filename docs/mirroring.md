@@ -92,25 +92,31 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   listed as `offline` for a day. The database holds `mirror_tokens`, as sha256
   hashes, and your pins (below), both under row-level security.
 - **Pins.** The pin button on a card (and **Pin to top** in an agent card's ⋯
-  menu) puts that entry first in your list, on every device you sign in on.
+  menu) puts that entry first in your list, on every device you sign in on. A
+  pinned entry is still its card; the same button (or **Unpin** in the ⋯ menu)
+  unpins it. Your pins are also the session switcher's **Pins** view (below).
   Pinned entries keep their own most-recently-active order, ahead of the rest.
   A mirrored pin is the window's address — host, session and tmux window id —
   so it survives renumbering, a list refresh and a muster restart. A pin whose
   window is gone is kept and shown nothing; it comes back with the window. A
   tmux-server restart (a reboot) reissues window ids, so after one a pin names
   whichever window now has that id in a same-named session, or nothing — re-pin.
-  The filter still hides a pinned card that does not match.
-- **A filter.** One box above the cards narrows dispatched agents and mirrored
-  windows together. It is case-insensitive, and every word must match. It shows
-  an "N of M" count and runs entirely in the page. A `field:value` term looks
-  at one field only, as a substring: `host:<name>` (a dispatched pod agent's
-  host is `cluster`), `status:`, `kind:`, `repo:`, `name:`, `account:`,
-  `session:`, `ns:`, `mode:`, `state:`, `type:` (`agent` or `mirrored`). Quote a
-  value with a space in it: `kind:"claude code"`. A term whose prefix is not one
-  of those fields is plain text, so `gold:8` still finds a window called
-  `Gold:8`. `field=value` matches the whole field instead of a substring. The
-  filter is kept in the page's `?q=`, so a link reproduces it.
-- **Quick filters.** Under the box, four chips:
+  The host tab and the quick filters still hide a pinned card that does not
+  match.
+- **The session switcher.** A bar docked at the bottom of the list, the same
+  one that sits under the message box of a window's Rendered view and an
+  agent's chat page. Its left button opens a menu of three views: **Recent**
+  (the entries you last opened, on any device), **Pins** and **All** (every
+  entry, in the list's order). The magnifier on its right, or `/` outside a
+  text field, opens a search that finds any entry by its tmux codename
+  (`mango`, `wheat:2`) or its title as you type — and, after those, by its
+  repository, its kind (`opencode`, `shell`) or a window's raw tmux session
+  name (`scratch11`); the arrows move and Enter opens it. On the list the bar
+  ends in a **+**, which opens the dispatch form. The list has no search box of
+  its own, no "Recently viewed" strip and no row of pinned chips: the switcher
+  replaced all three. It has no floating buttons either: the **+** is in the
+  bar, and agent replies are the 💬 button on the other tabs.
+- **Quick filters.** Above the cards, four chips:
   - **Waiting on you**: something on the card asked you to decide. Either an
     agent or a Claude Code session called `attention_ask` and waits for your
     answer, or a mirrored Claude Code session is stopped at a prompt (a
@@ -125,26 +131,26 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
 
   The chips combine with OR: a card is shown when it matches ANY chosen chip
   (waiting on you, or idle that long). Only one idle chip
-  is on at a time. The chips together, the box and the host tab must all match.
+  is on at a time. The chips together and the host tab must both match.
   A reply draft does not count as waiting on you. The chosen chips are remembered
   on this device, and a list refresh never resets them; **Clear**, shown while
   any chip is on, turns them all off. A card that crosses an idle threshold
   while the list is open is not shown or hidden by itself — that would move
   the cards around it — it waits behind the **N new ↑** pill like an arrival,
   and is applied on the tap.
-- **Host tabs.** Above the box: **All**, then one tab per host on the list
-  (dispatched pod agents under **cluster**), each counting its cards that match
-  the box. The hosts named in `MUSTER_HOST_ORDER` come first, in that order,
+- **Host tabs.** Above the chips: **All**, then one tab per host on the list
+  (dispatched pod agents under **cluster**), each counting its cards that the
+  chips show. The hosts named in `MUSTER_HOST_ORDER` come first, in that order,
   then every other host alphabetically, then **cluster** last
-  ([configuration](configuration.md)). A tab narrows the list to that host exactly, together with the box.
-  The chosen tab is remembered by the browser (not in `?q=`). While its host is
-  not listed (a restart, a laptop asleep) the list shows **All**, and goes back
-  to that host when it returns; only picking another tab changes the choice. A
-  shared link carrying its own `?q=` opens on **All**. A refresh that changes
-  only cards the current tab and search hide is applied at once, with no
-  "N new ↑". On a phone the strip scrolls sideways.
+  ([configuration](configuration.md)). A tab narrows the list to that host
+  exactly, together with the chips. The chosen tab is remembered by the
+  browser. While its host is not listed (a restart, a laptop asleep) the list
+  shows **All**, and goes back to that host when it returns; only picking
+  another tab changes the choice. A refresh that changes only cards the current
+  tab and chips hide is applied at once, with no "N new ↑". On a phone the
+  strip scrolls sideways.
 - **Host icons.** Every entry draws its host's icon beside its name — on its
-  card, its "Recently viewed" entry, its host tab and the badge on its own
+  card, its session-switcher entry, its host tab and the badge on its own
   pages — with the host's name in the icon's tooltip. A mirrored window's card
   also spells its host in a chip in its body (`host laptop`). Dispatched pod
   agents draw the cluster's icon, which no mirrored host ever draws. A host
@@ -154,7 +160,7 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   token for a new host (or a second token for an old one) never changes an
   existing host's icon.
 
-![The Agents list filtered with the search box](img/agents-filter.png)
+![The Agents list with the session switcher's search open](img/agents-filter.png)
 
 ## Viewing never moves your terminal
 

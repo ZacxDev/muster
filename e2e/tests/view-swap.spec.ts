@@ -3,6 +3,7 @@ import { request as pwRequest, Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, password, viewSwapPort } from '../lib/env';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // THE RENDERED ↔ TERMINAL SWITCH KEEPS BOTH VIEWS' CONNECTIONS
 // (internal/ui/view_swap.go) — a mirrored window's and a claude-code agent's —
@@ -533,7 +534,7 @@ test.describe('a claude-code agent', () => {
     if (agent) return;
     const before = await agentNames();
     await page.goto(origin + '/agents');
-    await page.click('#fab-agents');
+    await openDispatchSheet(page);
     const sheet = page.locator('#agent-modal form');
     await sheet.locator('[data-kind-option="claude-code"]').click();
     await sheet.locator('textarea[name="note_text"]').fill('e2e view swap');

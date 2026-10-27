@@ -40,9 +40,9 @@ func (s *Server) recordMirrorVisit(ctx context.Context, host, session, window st
 }
 
 // recentRefs is the viewer's recently opened entries, newest first, for the
-// strip; ui.recentItems drops those that are gone or pinned and keeps
-// ui.RecentMax. Every stored entry is read so that dropping cannot leave the
-// strip short while older entries exist. No store, or a failed read (logged),
+// session switcher's Recent view; ui.NewSwitcher drops those that are gone and
+// keeps its cap. Every stored entry is read so that dropping cannot leave the
+// view short while older entries exist. No store, or a failed read (logged),
 // is "nothing recent".
 func (s *Server) recentRefs(ctx context.Context) []ui.RecentRef {
 	if s.ext.Recents == nil {

@@ -188,7 +188,10 @@ test('each card shows its attention badge, live, and tapping it opens the item i
   await expect(page.locator(`#ask-${first}`)).toBeVisible();
 });
 
-test('typing the repo name in the filter finds the mirrored card, which shows it as a chip', async ({ page }) => {
+// (The list's search box found these cards by their repo; the box is gone —
+// the session switcher's palette superseded it — so what is pinned is the chip
+// and the card's repo field.)
+test('the mirrored card shows its repo as a chip, and carries it as its repo field', async ({ page }) => {
   test.setTimeout(60_000);
   await signIn(page);
   await page.goto(origin + '/agents');
@@ -196,18 +199,10 @@ test('typing the repo name in the filter finds the mirrored card, which shows it
   await expect(card.locator('[data-mirror-repo]'), mirrorLog).toHaveText(new RegExp(`repo\\s*${repoName}`), { timeout: 30_000 });
   // The card's name is unchanged: its window, not its repo.
   await expect(card.locator('[data-mirror-name]')).toHaveText('fleet:5');
-  const search = page.locator('#agents-search');
-  await search.fill(repoName.slice(0, 6));
-  await expect(card).toBeVisible();
-  await expect(page.locator('#agents-list > article').filter({ hasText: agentName })).toBeHidden();
-  await expect(page.locator('#agents-count')).toHaveText(/^1 of \d+$/);
-  // The field token finds it too.
-  await search.fill(`repo:${repoName}`);
-  await expect(card).toBeVisible();
-  await expect(page.locator('#agents-count')).toHaveText(/^1 of \d+$/);
+  await expect(card).toHaveAttribute('data-f-repo', repoName.toLowerCase());
 });
 
-test('a plain shell window shows its repo as a chip too, and the filter finds it by it', async ({ page }) => {
+test('a plain shell window shows its repo as a chip too, and carries it as its repo field', async ({ page }) => {
   test.setTimeout(60_000);
   await signIn(page);
   await page.goto(origin + '/agents');
@@ -218,10 +213,7 @@ test('a plain shell window shows its repo as a chip too, and the filter finds it
   await expect(shell.locator('[data-mirror-repo]')).toHaveText(new RegExp(`repo\\s*${shellRepo}`), { timeout: 30_000 });
   // The editor's pane has no working directory the host could read: no chip.
   await expect(page.locator('#agents-list > article[data-mirror-card]').filter({ hasText: 'notes:0' }).locator('[data-mirror-repo]')).toHaveCount(0);
-  await page.locator('#agents-search').fill(shellRepo.slice(0, 6));
-  await expect(shell).toBeVisible();
-  await expect(mirrorCard(page)).toBeHidden();
-  await expect(page.locator('#agents-count')).toHaveText(/^1 of \d+$/);
+  await expect(shell).toHaveAttribute('data-f-repo', shellRepo.toLowerCase());
 });
 
 // LIVE WORK COUNTS ON A DISPATCHED AGENT'S CARD (docs/design/agent-cards.md
