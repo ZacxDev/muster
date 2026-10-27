@@ -74,7 +74,9 @@ func viewFrameScript() g.Node {
   function inertAll(on, f) {
     Array.prototype.forEach.call(document.body.children, function (el) {
       if (el === f) return;
-      if (on && !el.inert) { el.inert = true; el.setAttribute('data-view-inert', ''); }
+      // An open "Confirm it's you" (stepup_confirm.go) is marked but left
+      // usable; its close makes the marked element inert.
+      if (on && !el.inert) { el.setAttribute('data-view-inert', ''); el.inert = !(el.matches('#term-confirm[open]') || el.querySelector('#term-confirm[open]')); }
       if (!on && el.hasAttribute('data-view-inert')) { el.inert = false; el.removeAttribute('data-view-inert'); }
     });
   }

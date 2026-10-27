@@ -136,6 +136,9 @@ func confirmDialog(s *StepUpView) g.Node {
 					g.Text("Confirm with passkey")),
 				P(Class("text-center text-xs text-muted"), g.Text("or use your password")),
 			),
+			// Why no passkey is offered, when one should have been (stepUpScript's
+			// unavailable): one muted line, hidden otherwise.
+			P(ID("term-confirm-passkey-note"), g.Attr("hidden", ""), Class("text-xs text-muted")),
 			Label(For("term-confirm-password"), Class("text-sm font-medium text-fg"), g.Text("Password")),
 			Input(
 				ID("term-confirm-password"),
@@ -288,9 +291,15 @@ async function mpkPost(path, body) {
   try { data = await res.json(); } catch (e) {}
   return { ok: res.ok, status: res.status, data: data };
 }
-function mpkSupported() {
-  return !!(window.PublicKeyCredential && navigator.credentials && window.isSecureContext);
+// mpkMissing is why this document cannot run a WebAuthn ceremony, '' when it
+// can: the first of no-publickeycredential, no-credentials, insecure-context.
+function mpkMissing() {
+  if (!window.PublicKeyCredential) return 'no-publickeycredential';
+  if (!navigator.credentials) return 'no-credentials';
+  if (!window.isSecureContext) return 'insecure-context';
+  return '';
 }
+function mpkSupported() { return !mpkMissing(); }
 function mpkSay(el, msg) { if (el) { el.textContent = msg; } }
 function mpkCancelled(e) { return e && (e.name === 'NotAllowedError' || e.name === 'AbortError'); }
 `
@@ -318,6 +327,14 @@ function mpkFresh(p) { return p && (Date.now() - p.at) < mpkMaxAge; }
 //	ask(why, done) open the dialog; done() runs after a successful confirm —
 //	               the pending action (attach, or send the text again)
 //
+// 🔴 IN THE VIEW SWITCH'S FRAME, ask OPENS THE TOP WINDOW'S DIALOG, not the
+// frame's own (view_swap.go opens the other view in a same-origin frame over
+// the page). Every caller — the Interactive switch, the composer's send, the
+// send queue, an attention answer — goes through ask, so all of them follow.
+// The top window's done receives the server's fresh_for, and the frame sets its
+// own freshness from it: freshness is the cookie's, which both documents share.
+// A top page with no dialog (no step-up on it) leaves the frame its own.
+//
 // 🔴 THE PASSKEY OPTIONS ARE FETCHED WHEN THE DIALOG OPENS, NOT ON PAGE LOAD.
 // The sign-in page prefetches on load because signing in is what that page is
 // for; these pages are opened all day by someone already fresh, and a challenge
@@ -344,6 +361,7 @@ window.musterStepUp = (function () {
   var how = document.getElementById('term-confirm-how');
   var pkBox = document.getElementById('term-confirm-passkey-box');
   var pkBtn = document.getElementById('term-confirm-passkey');
+  var pkNote = document.getElementById('term-confirm-passkey-note');
   var done = null, pre = null, freshUntil = 0;
   var ff = +dlg.getAttribute('data-fresh-for') || 0;
   if (ff > 0) freshUntil = performance.now() + ff;
@@ -356,6 +374,7 @@ window.musterStepUp = (function () {
   // offer shows (or hides) the passkey as the PRIMARY action; the password
   // button steps down to secondary beside it and back up without it.
   function offer(on) {
+    if (on) unavailable('');
     pkBox.hidden = !on;
     dlg.setAttribute('data-passkey-offered', on ? '1' : '0');
     how.textContent = dlg.getAttribute(on ? 'data-how-passkey' : 'data-how-password');
@@ -363,39 +382,109 @@ window.musterStepUp = (function () {
     if (on) { swap(submit, pri, sec); submit.textContent = 'Use password'; }
     else { swap(submit, sec, pri); submit.textContent = 'Confirm'; }
   }
+  // prefetch resolves to '' when a passkey can be offered, else the reason it
+  // cannot (an UNAVAILABLE value), or null when a newer prefetch replaced it.
   function prefetch() {
     var mine = pre = mpkPrefetch(pkBase + '/options');
     return mine.promise.then(function (o) {
-      if (pre !== mine) return false;
-      var ok = !!(o.ok && o.data && o.data.available && o.data.challenge_id);
-      if (!ok) pre = null;
-      return ok;
-    }, function () { if (pre === mine) pre = null; return false; });
+      if (pre !== mine) return null;
+      var d = o.data || {};
+      var why = !o.ok ? 'options-failed:' + o.status : !d.available ? 'not-available' : !d.challenge_id ? 'no-challenge' : '';
+      if (why) pre = null;
+      return why;
+    }, function () { if (pre !== mine) return null; pre = null; return 'options-failed:network'; });
+  }
+  // unavailable records why the passkey is NOT offered, on the dialog
+  // (data-passkey-unavailable), so a dialog that offers only the password says
+  // why in the page itself — and, as a muted line, on screen (a screenshot
+  // carries it) — except where nothing is the right thing to show: no passkey
+  // route on this server (no-path), or an account with no passkey
+  // (not-available). '' clears both.
+  function unavailable(why) {
+    if (why) dlg.setAttribute('data-passkey-unavailable', why);
+    else dlg.removeAttribute('data-passkey-unavailable');
+    var shown = !!why && why !== 'no-path' && why !== 'not-available';
+    pkNote.textContent = shown ? 'Passkey unavailable here (' + why + ')' : '';
+    pkNote.hidden = !shown;
   }
   function finish(freshFor) {
     freshUntil = performance.now() + (+freshFor || 0);
     pw.value = '';
     var cb = done; done = null;
     dlg.close();
-    if (cb) cb();
+    // The duration, not an instant: a framed view that handed its ask here
+    // (topStepUp) keeps its own clock (performance.now() is per document).
+    if (cb) cb(+freshFor || 0);
+  }
+  // topStepUp is the TOP window's musterStepUp when this page is the view in
+  // the Rendered | Terminal switch's frame (view_swap.go), else null.
+  function topStepUp() {
+    try {
+      var fe = window.frameElement;
+      if (!fe || !fe.hasAttribute('` + ViewFrameAttr + `')) return null;
+      var t = window.parent.musterStepUp;
+      return t && t !== window.musterStepUp && t.framedAsk === true && typeof t.ask === 'function' ? t : null;
+    } catch (e) { return null; }
+  }
+  // The view swap makes the page under a revealed frame inert (every child of
+  // the body, so maybe the dialog itself), and a dialog that is or is inside an
+  // inert element cannot be used, modal or not: that inert is lifted while it
+  // is open, and put back on close unless the swap took its own inert away
+  // meanwhile (the frame went home).
+  var lifted = [];
+  function lift() {
+    for (var el = dlg; el; el = el.parentElement) {
+      if (el.inert) { el.inert = false; lifted.push({ el: el, swap: el.hasAttribute('data-view-inert') }); }
+    }
+  }
+  // On close every element the swap marked (data-view-inert) is inert again —
+  // also one the swap marked but left usable because this dialog was open in
+  // it (view_swap.go's inertAll, a frame revealed while the dialog was open).
+  function unlift() {
+    lifted.forEach(function (l) { if (!l.swap) l.el.inert = true; });
+    lifted = [];
+    for (var el = dlg; el; el = el.parentElement) { if (el.hasAttribute('data-view-inert')) el.inert = true; }
   }
   function ask(why, cb) {
+    // 🔴 A FRAMED VIEW ASKS IN THE TOP WINDOW'S DIALOG. Reported from the
+    // Android app (a WebView, WebAuthn as the app): the passkey was offered on
+    // the rendered view loaded on its own, and the terminal opened in the
+    // switch's frame asked for the password only — its dialog never requested
+    // the passkey options, so the frame judged a passkey unusable there. WHY is
+    // not measured: an emulator's WebView (133 and 145) gives a same-origin
+    // frame WebAuthn as it gives the top document. The top window's dialog is
+    // the one seen to offer and complete the passkey, so the frame's own
+    // answer no longer matters. The server's answer re-signs the session's
+    // cookies, which this frame shares, and this page's own belief in
+    // freshness is set from the same answer.
+    var t = topStepUp();
+    if (t) {
+      done = null;
+      t.ask(why, function (ff) {
+        if (ff !== undefined) freshUntil = performance.now() + (+ff || 0);
+        if (cb) cb();
+      });
+      return;
+    }
     done = cb || null;
     fail(why);
     pw.value = '';
     offer(false);
-    if (!dlg.open) dlg.showModal();
+    unavailable('');
+    if (!dlg.open) { lift(); dlg.showModal(); }
     pw.focus();
-    if (!pkBase || !mpkSupported()) return;
-    prefetch().then(function (ok) {
-      if (!ok || !dlg.open) return;
+    var missing = !pkBase ? 'no-path' : mpkMissing();
+    if (missing) { unavailable(missing); return; }
+    prefetch().then(function (r) {
+      if (r === null || !dlg.open) return;
+      if (r) { unavailable(r); return; }
       offer(true);
       pkBtn.focus();
     });
   }
 
   document.getElementById('term-confirm-cancel').addEventListener('click', function () { done = null; dlg.close(); });
-  dlg.addEventListener('close', function () { pre = null; });
+  dlg.addEventListener('close', function () { pre = null; unlift(); unavailable(''); });
   form.addEventListener('submit', function (ev) {
     ev.preventDefault();
     submit.disabled = true;
@@ -448,7 +537,7 @@ window.musterStepUp = (function () {
       // The challenge is single-use: a failed attempt needs a new one before
       // the next tap (fetched now, so that tap still has its gesture).
       if (spent && dlg.open && !pkBox.hidden) {
-        prefetch().then(function (ok) { if (!ok && dlg.open) offer(false); });
+        prefetch().then(function (r) { if (r && dlg.open) { offer(false); unavailable(r); } });
       }
     }
   });
@@ -457,7 +546,12 @@ window.musterStepUp = (function () {
     // A margin, so an action is not tried in the last seconds of freshness.
     fresh: function () { return performance.now() < freshUntil - 10000; },
     stale: function () { freshUntil = 0; },
-    ask: ask
+    ask: ask,
+    // framedAsk: this window's dialog can be asked from the view switch's
+    // frame — it lifts the swap's inert while it is open (lift). A top page
+    // without it (one loaded before this) would open its dialog inert,
+    // unusable, over a blocked frame; topStepUp leaves such a frame its own.
+    framedAsk: true
   };
 })();
 `))

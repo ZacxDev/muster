@@ -302,9 +302,11 @@ test.describe('a mirrored window', () => {
     expect(attached('@1', 'interactive')).toBe(2);
   });
 
-  // The framed view is a document of its own: its composer, its step-up dialog
-  // and its focus are its own, and the page's are the page's.
-  test('each view sends from its own composer, and a stale send in the framed view asks in the frame’s own dialog', async ({ page }) => {
+  // The framed view is a document of its own: its composer and its focus are
+  // its own, and the page's are the page's. Its "Confirm it's you" is NOT: it
+  // is asked in the TOP window's dialog (stepup_confirm.go says why), and the
+  // frame's send then goes on.
+  test('each view sends from its own composer, and a stale send in the framed view asks in the TOP window’s dialog', async ({ page }) => {
     await ready(page);
     const pasted = () => (fs.existsSync(trOne + '.pasted') ? fs.readFileSync(trOne + '.pasted', 'utf8') : '');
     await page.goto(origin + termOf('@1'));
@@ -326,10 +328,12 @@ test.describe('a mirrored window', () => {
     });
     await v.locator('#mv-input').fill('from the rendered view');
     await v.locator('#mv-send').click();
-    await expect(v.locator('#term-confirm'), 'asked in the frame on screen').toBeVisible();
-    await v.locator('#term-confirm-password').fill(password);
-    await v.locator('#term-confirm-submit').click();
-    await expect(v.locator('#term-confirm')).toBeHidden();
+    await expect(page.locator('#term-confirm'), 'asked in the top window’s dialog').toBeVisible();
+    await expect(v.locator('#term-confirm'), 'not in the frame’s own').toBeHidden();
+    await expect(page.locator('#term-confirm-password'), 'the password field takes focus').toBeFocused();
+    await page.locator('#term-confirm-password').fill(password);
+    await page.locator('#term-confirm-submit').click();
+    await expect(page.locator('#term-confirm')).toBeHidden();
     await expect.poll(pasted).toContain('from the rendered view\n');
     await expect(v.locator('#mv-input')).toHaveValue('');
     expect(refused, 'the send was retried once after the confirm').toBe(2);
@@ -342,6 +346,85 @@ test.describe('a mirrored window', () => {
     await expect(page.locator('#mv-input')).toHaveValue('');
     await expect.poll(pasted).toContain('a terminal draft\n');
     expect(pasted().split('\n').filter(Boolean).map((l) => l.replace(/^\S+ /, '')), 'each sent once, in order').toEqual(['from the rendered view', 'a terminal draft']);
+  });
+
+  // 🔴 A TOP PAGE THAT CANNOT TAKE A FRAMED ASK (one loaded before the framed
+  // view handed its asks to the top: its musterStepUp has no framedAsk) would
+  // open its dialog inside the swap's inert page — unusable, over a blocked
+  // frame. The frame asks in its own dialog instead, as it always did.
+  test('a top page whose dialog cannot take a framed ask leaves the framed view its own dialog', async ({ page }) => {
+    await ready(page);
+    const pasted = () => (fs.existsSync(trOne + '.pasted') ? fs.readFileSync(trOne + '.pasted', 'utf8') : '');
+    await page.goto(origin + termOf('@1'));
+    await expect(page.locator('#term-status')).toHaveText('Connected');
+    await page.locator('#view-rendered').click();
+    const v = framed(page);
+    await expect(v.locator('#mv-input')).toBeVisible();
+    // The top page as an older one is: ask, and no framedAsk.
+    const [had, ask] = await page.evaluate(() => { const su = (window as { musterStepUp?: Record<string, unknown> }).musterStepUp!; const was = su.framedAsk; delete su.framedAsk; return [was, typeof su.ask]; });
+    expect(ask, 'the top page can still be asked').toBe('function');
+    let refused = 0;
+    await page.route('**/mirror/view/send?*', async (route) => {
+      if (refused++ === 0) {
+        await route.fulfill({ status: 403, headers: { 'X-Muster-Step-Up': 'required', 'Content-Type': 'text/plain' }, body: "confirm it's you" });
+        return;
+      }
+      await route.continue();
+    });
+    await v.locator('#mv-input').fill('asked in the frame');
+    await v.locator('#mv-send').click();
+    await expect(v.locator('#term-confirm'), 'asked in the frame’s own dialog').toBeVisible();
+    await expect(page.locator('#term-confirm'), 'not in the top page’s').toBeHidden();
+    await v.locator('#term-confirm-password').fill(password);
+    await v.locator('#term-confirm-submit').click();
+    await expect(v.locator('#term-confirm')).toBeHidden();
+    await expect.poll(pasted).toContain('asked in the frame\n');
+    expect(refused).toBe(2);
+    expect(had, 'CONTROL: the flag this test took away was there').toBe(true);
+    await page.unroute('**/mirror/view/send?*');
+  });
+
+  // 🟡 THE FRAME REVEALED WHILE THE TOP PAGE'S DIALOG IS OPEN (the frame was
+  // still loading when the page's own send asked): the reveal makes the page
+  // under the frame inert, but not the open dialog — it stays usable, and is
+  // made inert with the rest once it closes.
+  test('the frame finishing its load while the top page’s dialog is open leaves the dialog usable', async ({ page }) => {
+    await ready(page);
+    const pasted = () => (fs.existsSync(trOne + '.pasted') ? fs.readFileSync(trOne + '.pasted', 'utf8') : '');
+    await page.goto(origin + termOf('@1'));
+    await expect(page.locator('#term-status')).toHaveText('Connected');
+    // The rendered view's document is held until the dialog is open.
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => (release = r));
+    await page.route('**/mirror/view?*', async (route) => {
+      if (route.request().resourceType() === 'document') await held;
+      await route.continue();
+    });
+    let refused = 0;
+    await page.route('**/mirror/terminal/send*', async (route) => {
+      if (refused++ === 0) {
+        await route.fulfill({ status: 403, headers: { 'X-Muster-Step-Up': 'required', 'Content-Type': 'text/plain' }, body: "confirm it's you" });
+        return;
+      }
+      await route.continue();
+    });
+    await page.locator('#view-rendered').click();
+    await expect(frameEl(page)).toHaveCount(1);
+    await page.locator('#mv-input').fill('sent while the frame loaded');
+    await page.locator('#mv-send').click();
+    await expect(page.locator('#term-confirm')).toBeVisible();
+    expect(await page.locator('html').getAttribute('data-view'), 'the frame is not on screen yet').not.toBe('rendered');
+    release();
+    await expect(page.locator('html')).toHaveAttribute('data-view', 'rendered');
+    expect(await page.locator('#term-confirm').evaluate((el) => !!el.closest('[inert]')), 'the open dialog is not made inert by the reveal').toBe(false);
+    await page.locator('#term-confirm-password').fill(password);
+    await page.locator('#term-confirm-submit').click();
+    await expect(page.locator('#term-confirm')).toBeHidden();
+    await expect.poll(pasted).toContain('sent while the frame loaded\n');
+    expect(refused, 'refused once, then sent after the confirm').toBe(2);
+    expect(await page.locator('#term-confirm').evaluate((el) => !!el.closest('[inert]')), 'closed, it is inert with the page under the frame').toBe(true);
+    await page.unroute('**/mirror/terminal/send*');
+    await page.unroute('**/mirror/view?*');
   });
 
   // 🟡 A FORM THE BROWSER POSTS FROM THE FRAMED VIEW (the composer's own way

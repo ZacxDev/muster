@@ -420,6 +420,9 @@ test.describe('the rendered view on a phone (390×844)', () => {
 const viewPath = `/mirror/view?host=${encodeURIComponent(host)}&session=main`;
 const pasted = () => (fs.existsSync(transcript + '.pasted') ? fs.readFileSync(transcript + '.pasted', 'utf8') : '');
 const passkeyBtn = (page: Page) => page.locator('#term-confirm-passkey');
+// Why the dialog did NOT offer a passkey (stepUpScript's unavailable): the
+// dialog's data-passkey-unavailable, and the muted line that shows it.
+const passkeyNote = (page: Page) => page.locator('#term-confirm-passkey-note');
 const subOf = (token: string) => String(b64urlJSON(token.split('.')[1]).sub);
 
 async function signIn(page: Page, email = adminEmail, pw = adminPW) {
@@ -516,6 +519,10 @@ test.describe('the window and the passkey confirm on a phone (390×844)', () => 
     await options.catch(() => undefined);
     await expect(passkeyBtn(page)).toBeHidden();
     await expect(page.locator('#term-confirm-submit')).toHaveText('Confirm');
+    // Recorded as the account having none — and, that being the ordinary
+    // password-only case, nothing about it on screen.
+    await expect(dialog(page)).toHaveAttribute('data-passkey-unavailable', 'not-available');
+    await expect(passkeyNote(page)).toBeHidden();
     await page.fill('#term-confirm-password', adminPW);
     await page.locator('#term-confirm-submit').tap();
     await expect(dialog(page)).toBeHidden();
@@ -678,6 +685,9 @@ test.describe('the passkey confirm at a desktop width (1280px)', () => {
     await expect(dialog(page)).toContainText('needs a sign-in from the last 12 hours.');
     await expect(passkeyBtn(page)).toBeVisible();
     await expect(passkeyBtn(page)).toBeFocused();
+    // Offered: no reason recorded, none shown.
+    await expect(dialog(page)).not.toHaveAttribute('data-passkey-unavailable', /.*/);
+    await expect(passkeyNote(page)).toBeHidden();
     await passkeyBtn(page).click();
     await expect(dialog(page)).toBeHidden();
     await expect(screen(page)).toContainText('mode=rw');
@@ -713,6 +723,131 @@ test.describe('the passkey confirm at a desktop width (1280px)', () => {
     await expect(page.locator('#term-mode'), 'the send did not flip the switch').toHaveAttribute('aria-checked', 'false');
     token = await accessToken(context);
     expect(Math.abs(Date.now() / 1000 - amrOf(token))).toBeLessThan(60);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE TERMINAL OPENED THROUGH THE RENDERED | TERMINAL SWITCH, on a phone: it
+// is a same-origin frame over the rendered view (view_swap.go). The operator's
+// report, in the Android app: a passkey was offered on the rendered view, and
+// on the terminal opened from it only the password (no options call at all) —
+// the frame's dialog judged a passkey unusable there, for a reason that is not
+// measured (stepup_confirm.go).
+//
+// The frame here is made to lack WebAuthn (PublicKeyCredential deleted in
+// every subframe, never in the top document): one way to make the frame's
+// answer to "can a passkey be used here?" NO, which reproduces the report's
+// signature (password only, no options call) on the code before the fix.
+//
+// 🔴 A REGRESSION TEST: before the framed view handed its ask to the top
+// window, the frame opened its OWN dialog, password-only — this fails at the
+// top window's dialog being visible.
+// ---------------------------------------------------------------------------
+test.describe('the terminal in the view switch’s frame, with no WebAuthn in the frame (390×844)', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test('the Interactive switch and a composer send in the framed terminal are confirmed with a PASSKEY in the top window’s dialog (real GoTrue, virtual authenticator)', async ({ page, context }) => {
+    test.setTimeout(180_000);
+    await authenticator(page);
+    await signIn(page);
+    await addPasskey(page);
+    await page.addInitScript(() => {
+      if (window.top !== window) delete (window as { PublicKeyCredential?: unknown }).PublicKeyCredential;
+    });
+    const options: string[] = [];
+    page.on('request', (r) => {
+      if (new URL(r.url()).pathname === '/auth/confirm/passkey/options') options.push(r.frame() === page.mainFrame() ? 'top' : 'frame');
+    });
+
+    await makeStale(context);
+    await openView(page);
+    await page.locator('#view-terminal').tap();
+    const frameEl = page.locator('iframe[data-muster-view]');
+    await expect(frameEl).toBeVisible();
+    const t = page.frameLocator('iframe[data-muster-view]');
+    await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=main mode=ro');
+    // CONTROL: the frame has no WebAuthn; the top document has it.
+    const frame = (await (await frameEl.elementHandle())!.contentFrame())!;
+    expect(await frame.evaluate(() => typeof window.PublicKeyCredential), 'no WebAuthn in the frame').toBe('undefined');
+    expect(await page.evaluate(() => typeof window.PublicKeyCredential), 'WebAuthn in the top document').toBe('function');
+
+    // 1. The Interactive switch: stale → asked → in the TOP window's dialog,
+    //    with the passkey offered → confirmed → the frame attaches rw.
+    await t.locator('#term-mode').tap();
+    await expect(dialog(page), 'asked in the top window').toBeVisible();
+    await expect(t.locator('#term-confirm'), 'not in the frame’s own dialog').toBeHidden();
+    await expect(passkeyBtn(page), 'the passkey is offered').toBeVisible();
+    await expect(passkeyBtn(page)).toBeFocused();
+    await expect(dialog(page), 'offered: no reason recorded').not.toHaveAttribute('data-passkey-unavailable', /.*/);
+    await expect(passkeyNote(page), 'and none shown').toBeHidden();
+    const box = (await dialog(page).boundingBox())!;
+    expect(box.x + box.width, 'the dialog fits 390px').toBeLessThanOrEqual(390);
+    await passkeyBtn(page).tap();
+    await expect(dialog(page)).toBeHidden();
+    await expect(t.locator('#term .xterm-rows')).toContainText('mode=rw');
+    await expect(t.locator('#term-status')).toHaveText('Connected · live keys');
+    let token = await accessToken(context);
+    expect(Math.abs(Date.now() / 1000 - amrOf(token)), 'the passkey confirm signed in just now').toBeLessThan(60);
+    expect(options, 'the passkey options were asked for by the top window').toEqual(['top']);
+
+    //    The FRAME's own freshness followed the top window's confirm: off and
+    //    on again attaches without asking.
+    await t.locator('#term-mode').tap();
+    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+    await t.locator('#term-mode').tap();
+    await expect(t.locator('#term-status')).toHaveText('Connected · live keys');
+    await expect(dialog(page)).toBeHidden();
+
+    // 2. The framed terminal's composer: stale → Send → 403 → the top window's
+    //    dialog, passkey → the same text is delivered once.
+    await t.locator('#term-mode').tap();
+    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+    const sends: number[] = [];
+    page.on('response', (r) => {
+      if (new URL(r.url()).pathname === '/mirror/terminal/send') sends.push(r.status());
+    });
+    const before = pasted();
+    await makeStale(context);
+    await t.locator('#mv-input').fill('from the framed terminal');
+    await t.locator('#mv-send').tap();
+    await expect(dialog(page)).toBeVisible();
+    expect(sends).toEqual([403]);
+    await expect(passkeyBtn(page)).toBeVisible();
+    await passkeyBtn(page).tap();
+    await expect(dialog(page)).toBeHidden();
+    await expect.poll(pasted).toBe(before + '%9 from the framed terminal\n');
+    await expect(t.locator('#mv-input')).toHaveValue('');
+    expect(sends).toEqual([403, 204]);
+    expect(options).toEqual(['top', 'top']);
+    token = await accessToken(context);
+    expect(Math.abs(Date.now() / 1000 - amrOf(token))).toBeLessThan(60);
+
+    // The dialog was made usable (the swap had made it inert with the rest of
+    // the page under the frame); closed, it is out of reach again, and the frame
+    // is still the view on screen.
+    expect(await page.evaluate(() => document.documentElement.getAttribute('data-view'))).toBe('terminal');
+    expect(await dialog(page).evaluate((el) => !!el.closest('[inert]')), 'the closed dialog is inert again').toBe(true);
+    expect(await page.locator('#mv-log').evaluate((el) => !!el.closest('[inert]')), 'the rendered view under the frame is inert').toBe(true);
+
+    // 3. When the dialog that ASKS (the top window's) has no WebAuthn either,
+    //    it says why it offers the password only: on the dialog, and in one
+    //    muted line on screen. The password still confirms, and both are gone
+    //    once it closes.
+    await page.evaluate(() => { delete (window as { PublicKeyCredential?: unknown }).PublicKeyCredential; });
+    await makeStale(context);
+    await t.locator('#term-mode').tap();
+    await expect(dialog(page)).toBeVisible();
+    await expect(dialog(page)).toHaveAttribute('data-passkey-unavailable', 'no-publickeycredential');
+    await expect(passkeyNote(page)).toBeVisible();
+    await expect(passkeyNote(page)).toHaveText('Passkey unavailable here (no-publickeycredential)');
+    await expect(passkeyBtn(page)).toBeHidden();
+    expect(options, 'no options asked for where no ceremony can run').toEqual(['top', 'top']);
+    await page.fill('#term-confirm-password', adminPW);
+    await page.locator('#term-confirm-submit').click();
+    await expect(dialog(page)).toBeHidden();
+    await expect(t.locator('#term-status')).toHaveText('Connected · live keys');
+    await expect(dialog(page)).not.toHaveAttribute('data-passkey-unavailable', /.*/);
+    await expect(passkeyNote(page)).toBeHidden();
   });
 });
 
