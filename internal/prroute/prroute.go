@@ -79,7 +79,7 @@ func ValidRef(s string) bool { return validRef(s) }
 // validRef is a stored branch name: refPattern, and no "..", leading "-" or
 // trailing "/" (none of which git accepts as a branch).
 func validRef(s string) bool {
-	return refPattern.MatchString(s) && !strings.Contains(s, "..") && !strings.HasPrefix(s, "-") && !strings.HasSuffix(s, "/")
+	return refPattern.MatchString(s) && !strings.HasPrefix(s, "-") && !strings.HasSuffix(s, "/")
 }
 
 // ParseMail is the pull request mail body names, read from the LAST fenced
