@@ -1022,7 +1022,7 @@ for (const size of [
         await expect(dialog(page), 'focusing the terminal asks nothing').not.toBeVisible();
         await page.keyboard.type('x');
         await expect(dialog(page), 'a letter typed asks').toBeVisible();
-        await page.keyboard.press('Escape');
+        await page.locator('#term-confirm-cancel').click();
         await expect(dialog(page)).not.toBeVisible();
 
         // 2. The view switch: Rendered, then Terminal in its frame.
