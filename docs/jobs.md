@@ -179,8 +179,8 @@ while some agent carries its name (1-63 of `[a-z0-9-]`, not starting with `-`).
 
 ### Creating a pool worker
 
-1. Open the dispatch form: a task's **Dispatch** on **Tasks**. (The Agents
-   tab's **+** that opened it without a task is gone.)
+1. Open the dispatch form (the **+** on the Agents list's bottom bar, or a
+   task's **Dispatch**).
 2. Pick **Claude Code** as the agent kind. The **Worker pool** field appears
    under the Claude account; it is not shown for any other kind.
 3. Enter the pool's name, for example `reviewers`.

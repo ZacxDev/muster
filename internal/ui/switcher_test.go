@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"html"
 	"regexp"
 	"strings"
 	"testing"
@@ -412,9 +413,9 @@ func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 	all := nav[strings.Index(nav, `data-switcher-list="all"`):strings.Index(nav, `id="switcher-views"`)]
 	for _, want := range []string{
 		`data-switcher-entry="mirror" title="mango:1" data-switcher-code="mango:1" data-switcher-title="Migrate the billing ledger"`,
-		`data-switcher-entry="mirror" title="mango:2" data-switcher-code="mango:2" class=`,
+		`data-switcher-entry="mirror" title="mango:2" data-switcher-code="mango:2" data-switcher-words="w" class=`,
 		`data-switcher-entry="agent" title="Release tidy" data-switcher-code="ag-three" data-switcher-title="Release tidy · Tidy the release notes"`,
-		`data-switcher-entry="agent" title="ag-four" data-switcher-code="ag-four" class=`,
+		`data-switcher-entry="agent" title="ag-four" data-switcher-code="ag-four" data-switcher-words="standard" class=`,
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("the All row lacks %s in:\n%s", want, all)
@@ -455,5 +456,77 @@ func TestTheSwitcherNeverClampsALabel(t *testing.T) {
 	}
 	if short, clamped := clampTitle(long); !clamped || len([]rune(short)) != cardTitleMax {
 		t.Errorf("CONTROL: the card's title clamp does not clamp the fixture: %q", short)
+	}
+}
+
+// TestTheSwitcherSearchFindsByRepoKindAndSession: operator ask "Teach the
+// palette repo+kind". Each entry carries data-switcher-words — its repository,
+// its kind and (a window's) raw tmux session name, lower-cased — escaped like
+// every other attribute; and the palette's rank reads them as a FOURTH tier,
+// after codename prefix, codename substring and title. Values pairwise
+// distinct, so a field filled from another fails by name. Red at origin/main:
+// no words attribute, no tier.
+func TestTheSwitcherSearchFindsByRepoKindAndSession(t *testing.T) {
+	list := []AgentCardView{{ID: 1, Name: "ag-x", Status: "running", Repo: "Acme/Ledger", Kind: "claude-code"}}
+	mirrors := []MirrorCardView{
+		{Host: "tower", Session: "scratch11", Window: "@1", Label: "mango:1", Online: true, Kind: "opencode", Repo: "Fixture-Repo"},
+		{Host: "tower", Session: "scratch12", Window: "@2", Label: "<b>&quot;q</b>", Online: true, Claude: true, Repo: `a"b<c`},
+	}
+	s := NewSwitcher(list, mirrors, nil, SwitcherCurrent{})
+	got := map[string]string{}
+	for _, it := range s.All {
+		got[it.Code] = it.Words
+	}
+	if w := got["ag-x"]; w != "acme/ledger claude code" {
+		t.Errorf("agent words = %q", w)
+	}
+	if w := got["mango:1"]; w != "fixture-repo opencode scratch11" {
+		t.Errorf("window words = %q", w)
+	}
+	page := renderString(t, switcherBar(s, true))
+	if !strings.Contains(page, `data-switcher-words="a&#34;b&lt;c claude code scratch12"`) {
+		t.Errorf("the words are not an escaped attribute:\n%s", page)
+	}
+	for _, want := range []string{
+		"words: a.getAttribute('data-switcher-words') || ''",
+		"if (fold(e.title).indexOf(q) >= 0) return 2;\n    if (fold(e.words).indexOf(q) >= 0) return 3;\n    return -1;",
+	} {
+		if !strings.Contains(switcherJS, want) {
+			t.Errorf("the palette's script lacks %q", want)
+		}
+	}
+	// Drawn by textContent only: the script never writes markup it was given.
+	if regexp.MustCompile(`innerHTML\s*=[^=]`).MatchString(switcherJS) {
+		t.Error("the palette writes innerHTML")
+	}
+}
+
+// TestOnlyTheAgentsListBarHasADeployButton: operator ask (deploy "In the bottom
+// bar"): the Agents list's docked bar ends in a "+" that opens the task-less
+// dispatch sheet as the old FAB did; a session page's bar has none. Red at
+// origin/main: no "+" anywhere on the bar.
+func TestOnlyTheAgentsListBarHasADeployButton(t *testing.T) {
+	list, mirrors := switcherFixture()
+	dock := renderString(t, switcherDock(NewSwitcher(list, mirrors, nil, SwitcherCurrent{})))
+	b := regexp.MustCompile(`<button id="` + SwitcherDeployID + `"[^>]*>`).FindString(dock)
+	for _, want := range []string{`type="button"`, `aria-label="Deploy agent"`, `hx-get="/ui/agents/new"`, `hx-target="#agent-modal-body"`, `hx-swap="innerHTML"`, `h-11 w-11`} {
+		if !strings.Contains(b, want) {
+			t.Errorf("the + lacks %s: %s", want, b)
+		}
+	}
+	if !strings.Contains(b, html.EscapeString(modalOpenClick("agent-modal"))) && !strings.Contains(b, modalOpenClick("agent-modal")) {
+		t.Errorf("the + does not open the dispatch sheet: %s", b)
+	}
+	// After the search button, in the bar's one fixed row.
+	if strings.Index(dock, `id="`+SwitcherDeployID+`"`) < strings.Index(dock, `id="switcher-search-open"`) {
+		t.Error("the + is not beside (after) the search button")
+	}
+	for _, page := range []string{
+		renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{AgentID: 1}), false)),
+		renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{Mirror: MirrorRef{Host: "tower", Session: "w", Window: "@1"}}), true)),
+	} {
+		if strings.Contains(page, SwitcherDeployID) || strings.Contains(page, "Deploy agent") {
+			t.Error("a session page's bar draws the +")
+		}
 	}
 }

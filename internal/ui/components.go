@@ -396,8 +396,9 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				// ⚠ THE AGENTS TAB DRAWS NO FAB (operator ask: "hide the agent
 				// replies FAB and deploy agent FAB on agent list page"). Its bottom
 				// edge is the session switcher's bar (switcher.go, switcherDock).
-				// The dispatch sheet (agentModalShell, below) stays: a task card's
-				// Dispatch button on the Tasks tab opens it.
+				// The dispatch sheet (agentModalShell, below) stays: the "+" on the
+				// Agents tab's switcher bar opens it (switcherDeployButton), and a
+				// task card's Dispatch button on the Tasks tab.
 				noteModalShell(),
 				agentModalShell(),
 				// Transient error toasts for failed background (optimistic) actions.

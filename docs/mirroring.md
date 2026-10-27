@@ -109,11 +109,13 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   (the entries you last opened, on any device), **Pins** and **All** (every
   entry, in the list's order). The magnifier on its right, or `/` outside a
   text field, opens a search that finds any entry by its tmux codename
-  (`mango`, `wheat:2`) or its title as you type; the arrows move and Enter
-  opens it. The list has no search box of its own, no "Recently viewed" strip
-  and no row of pinned chips: the switcher replaced all three. It has no
-  floating buttons either: dispatch an agent from a task on **Tasks**, and see
-  agent replies from the 💬 button there.
+  (`mango`, `wheat:2`) or its title as you type — and, after those, by its
+  repository, its kind (`opencode`, `shell`) or a window's raw tmux session
+  name (`scratch11`); the arrows move and Enter opens it. On the list the bar
+  ends in a **+**, which opens the dispatch form. The list has no search box of
+  its own, no "Recently viewed" strip and no row of pinned chips: the switcher
+  replaced all three. It has no floating buttons either: the **+** is in the
+  bar, and agent replies are the 💬 button on the other tabs.
 - **Quick filters.** Above the cards, four chips:
   - **Waiting on you**: something on the card asked you to decide. Either an
     agent or a Claude Code session called `attention_ask` and waits for your

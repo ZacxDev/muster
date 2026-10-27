@@ -7,6 +7,8 @@ import (
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
+
+	"github.com/ZacxDev/muster/internal/agents"
 )
 
 // THE SESSION SWITCHER: a bar BELOW the message input of a session's page — a
@@ -43,8 +45,18 @@ import (
 //
 // A SEARCH (the magnifier on the bar's right, or "/" outside a text field) opens a
 // command-palette-style box over the page that finds any session the All view
-// holds by its tmux codename ("wheat", "mango:2") or its title, as it is typed
-// (switcherSearchBox). It reads the All row's own entries — no request.
+// holds, as it is typed (switcherSearchBox): by its tmux codename ("wheat",
+// "mango:2") or its title — and, ranked AFTER every codename and title match,
+// by its repository, its kind ("Claude Code", "opencode", "shell") and a
+// window's raw tmux SESSION name ("scratch11"), each a plain word (operator
+// ask: "Teach the palette repo+kind"; no field tokens). It reads the All row's
+// own entries — no request: data-switcher-code, -title and -words, attribute
+// values the server escapes, read with getAttribute and drawn with
+// textContent.
+//
+// ON THE AGENTS LIST THE BAR ALSO HAS A "+" (switcherDeployButton), beside the
+// search: the task-less dispatch sheet the list's old FAB opened (operator
+// ask: deploy "In the bottom bar"). A session's page draws no "+".
 //
 // 🔴 THE MENU AND THE PALETTE ARE POPOVERS (the top layer), so opening either
 // moves nothing on the page: no layout shift, and no clipping by the
@@ -146,6 +158,10 @@ type SwitcherItem struct {
 	// title when the host named none — or its name for an agent; Title what it
 	// is called beyond that (its display name, its focus), "" for nothing more.
 	Code, Title string
+	// Words are what the search finds the entry by AFTER its codename and
+	// title, as plain words: its repository, its kind and — a window's — its
+	// raw tmux session name; "" for none. Space-separated, lower-cased.
+	Words string
 }
 
 // windowIndexSuffix is the ":<index>" a host appends to a window's codename
@@ -283,6 +299,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			it.Host, it.HostIcon = podHost, clusterIcon.Key
 			it.Code = a.Name
 			it.Title = switcherSearchTitle(a.Name, plainOr(a.DisplayName, ""), focusTitle(a.Focus))
+			it.Words = switcherSearchWords(a.Repo, agents.KindLabel(a.Kind))
 		} else {
 			m := e.mirror
 			it.Href, it.Kind = MirrorCardHref(*m), "mirror"
@@ -291,6 +308,8 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			it.HostNamed = labelNamesHost(*m, labels[i])
 			_, it.Code = switcherName(e)
 			it.Title = switcherSearchTitle(it.Code, focusTitle(m.Focus))
+			f := mirrorFields(*m)
+			it.Words = switcherSearchWords(f.Repo, f.Kind, m.Session)
 		}
 		out[i] = it
 	}
@@ -319,6 +338,18 @@ func switcherSearchTitle(code string, names ...string) string {
 	return strings.Join(out, " · ")
 }
 
+// switcherSearchWords is the non-empty parts, lower-cased and joined by
+// spaces: an entry's data-switcher-words.
+func switcherSearchWords(parts ...string) string {
+	var out []string
+	for _, p := range parts {
+		if p = strings.ToLower(strings.Join(strings.Fields(p), " ")); p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 // view is the items of view key.
 func (s *Switcher) view(key string) []SwitcherItem {
 	switch key {
@@ -338,11 +369,12 @@ func (s *Switcher) view(key string) []SwitcherItem {
 // inset, being the last thing above the screen's edge; otherwise (the agent
 // page, inside its already-inset pane) it lines up with the form above it.
 // Nothing when s is nil.
-func switcherBar(s *Switcher, pinned bool) g.Node { return switcherBarWith(s, pinned, switcherScript()) }
+func switcherBar(s *Switcher, pinned bool) g.Node { return switcherBarWith(s, pinned, switcherScript(), nil) }
 
 // switcherBarWith is switcherBar with its script tag (switcherScript, or the
-// shell's switcherStaticScript).
-func switcherBarWith(s *Switcher, pinned bool, script g.Node) g.Node {
+// shell's switcherStaticScript) and, last on its row, extra (the Agents list's
+// "+", switcherDeployButton; nil for none).
+func switcherBarWith(s *Switcher, pinned bool, script, extra g.Node) g.Node {
 	if s == nil {
 		return nil
 	}
@@ -416,6 +448,7 @@ func switcherBarWith(s *Switcher, pinned bool, script g.Node) g.Node {
 						g.Raw(searchIconSVG),
 					),
 				),
+				extra,
 			),
 			switcherViewMenu(s),
 			switcherSearchBox(),
@@ -473,8 +506,9 @@ func switcherViewMenu(s *Switcher) g.Node {
 // switcherSearchBox is the search palette: a box over the page, near its top
 // (a phone's keyboard takes the bottom), with an input and the list of what it
 // finds, filled by the script as the operator types — from the All row's
-// entries (their data-switcher-code and data-switcher-title). Ranked: the
-// codename starts with what is typed, then contains it, then the title does;
+// entries (their data-switcher-code, -title and -words). Ranked: the
+// codename starts with what is typed, then contains it, then the title does,
+// then the words (repository, kind, tmux session) do;
 // case-folded; each tier in the All view's order. Arrows move, Enter opens,
 // Escape closes.
 func switcherSearchBox() g.Node {
@@ -622,7 +656,34 @@ func switcherDock(s *Switcher) g.Node {
 		Class("fixed inset-x-0 bottom-0 z-20 bg-bg lg:left-72"),
 		Div(
 			Class("relative "+contentMaxW()+" "+switcherRoom(true)),
-			switcherBarWith(s, true, switcherStaticScript()),
+			switcherBarWith(s, true, switcherStaticScript(), switcherDeployButton()),
+		),
+	)
+}
+
+// SwitcherDeployID is the Agents list bar's "+" (switcherDeployButton).
+const SwitcherDeployID = "switcher-deploy"
+
+// switcherDeployButton is the Agents list bar's "+": it opens the task-less
+// dispatch sheet (GET /ui/agents/new, DispatchModalBody) exactly as the list's
+// FAB did — load the body into the always-present sheet, reveal it
+// (modalOpenClick). A 44px target around a 32px face, like the search button
+// beside it, in the bar's fixed h-11 row, so it moves nothing.
+func switcherDeployButton() g.Node {
+	return Button(
+		ID(SwitcherDeployID),
+		Type("button"),
+		g.Attr("aria-label", "Deploy agent"),
+		g.Attr("title", "Deploy agent"),
+		g.Attr("aria-haspopup", "dialog"),
+		Class("press group inline-flex h-11 w-11 shrink-0 items-center justify-center"),
+		hx("hx-get", "/ui/agents/new"),
+		hx("hx-target", "#agent-modal-body"),
+		hx("hx-swap", "innerHTML"),
+		hx("hx-on:click", modalOpenClick("agent-modal")),
+		Span(
+			Class("inline-flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-on-accent transition group-hover:bg-accent/90"),
+			g.Raw(`<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M10 4v12M4 10h12"/></svg>`),
 		),
 	)
 }
@@ -678,6 +739,7 @@ func switcherEntry(it SwitcherItem) g.Node {
 	search := g.Group{
 		g.If(it.Code != "", g.Attr("data-switcher-code", it.Code)),
 		g.If(it.Title != "", g.Attr("data-switcher-title", it.Title)),
+		g.If(it.Words != "", g.Attr("data-switcher-words", it.Words)),
 	}
 	if it.Current {
 		return Span(
@@ -847,7 +909,8 @@ var switcherJS = func() string {
       var a = es[i];
       var label = a.getAttribute('title') || a.textContent;
       out.push({ href: a.getAttribute('href'), label: label, code: a.getAttribute('data-switcher-code') || label,
-        title: a.getAttribute('data-switcher-title') || '', kind: a.getAttribute('data-switcher-entry'), n: i });
+        title: a.getAttribute('data-switcher-title') || '', words: a.getAttribute('data-switcher-words') || '',
+        kind: a.getAttribute('data-switcher-entry'), n: i });
     }
     return out;
   }
@@ -859,6 +922,7 @@ var switcherJS = func() string {
     if (c.indexOf(q) === 0) return 0;
     if (c.indexOf(q) > 0) return 1;
     if (fold(e.title).indexOf(q) >= 0) return 2;
+    if (fold(e.words).indexOf(q) >= 0) return 3;
     return -1;
   }
   function el(tag, cls, text) { var x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; }

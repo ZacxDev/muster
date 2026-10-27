@@ -238,8 +238,10 @@ func agentsPanel(active bool, list *shellList) g.Node {
 		// privilege-profile registries a second time. Both subsystems are removed.
 		//
 		// The dispatch modal is rendered at the body level by Page
-		// (agentModalShell): the Tasks tab's cards open it. This tab draws no FAB
-		// (operator ask: the session switcher's bar is its bottom edge).
+		// (agentModalShell): the "+" on this tab's switcher bar opens it with no
+		// task (switcherDeployButton), a Tasks card's Dispatch with one. This tab
+		// draws no FAB (operator ask: the session switcher's bar is its bottom
+		// edge, and the "+" moved into it).
 		//
 		// The session switcher, docked at the bottom of the viewport (switcher.go).
 		switcherDock(sw),
@@ -255,7 +257,7 @@ func AgentsCards(list []AgentCardView) g.Node {
 			Class("col-span-full mt-16 flex flex-col items-center justify-center gap-2 text-center"),
 			Div(Class("text-4xl"), g.Text("🧩")),
 			P(Class("text-lg font-medium text-fg2"), g.Text("No agents yet")),
-			P(Class("text-sm text-muted"), g.Text("Dispatch one from a task on the Tasks tab.")),
+			P(Class("text-sm text-muted"), g.Text("Tap + in the bar below to dispatch an agent.")),
 		)
 	}
 	return g.Group(g.Map(list, agentCard))

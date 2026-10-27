@@ -1,6 +1,6 @@
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
-import { agentsSwitcherPort } from '../lib/env';
+import { agentsSwitcherPort, hookToken } from '../lib/env';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 
@@ -29,7 +29,13 @@ import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 //   5. a filter text a browser stored for the removed search box (or a ?q=)
 //      hides no card;
 //   6. the FABs are still on the Tasks tab, and a client-side switch to Agents
-//      hides the replies FAB and fills the bar.
+//      hides the replies FAB and fills the bar;
+//   7. the bar's "+" (operator: deploy "In the bottom bar") opens the
+//      task-less dispatch sheet the old FAB opened, and a dispatch from it
+//      creates an agent; a session page's bar has no "+";
+//   8. the palette also finds an entry by its repository, its kind and a
+//      window's raw tmux session name — after every codename and title match
+//      (operator: "Teach the palette repo+kind").
 //
 // 🔴 REGRESSION TESTS: at origin/main (baf851ac) /agents has no bar, draws the
 // search box, the strip and the chips, and both FABs.
@@ -40,6 +46,12 @@ const origin = rig.origin;
 const stamp = Date.now().toString(36);
 const AGENT = `e2e-asw-ledger-${stamp}`;
 const AGENT_TITLE = 'Rotate the ledger';
+// Its repository: found by the palette's words, ranked after "wheat"'s codename.
+const AGENT_REPO = 'acme/wheatfield';
+// Two more windows: one whose codename is NOT its tmux session (a labels file
+// names session scratch11 "orchid"), one running opencode (its kind).
+const SCRATCH = 'scratch11';
+const NIMBUS = 'nimbus';
 
 // Enough windows that the list scrolls at both sizes, so "the last card is
 // clear of the bar" is measured with the list scrolled to its end.
@@ -64,8 +76,10 @@ test.beforeAll(async () => {
     const tr = rig.transcript(cc.prompt(`the prompt of ${s}`) + cc.reply(`Answered in ${s}.`), 'w' + i);
     return `${s}|${w}|1|1|claude|${now - 60 * (i + 1)}|${tr}`;
   });
-  await rig.startHost({ MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_E2E_WINDOWS_FILE: rig.transcript(lines.join('\n') + '\n', 'windows'), MUSTER_MIRROR_E2E_REFRESH: '300ms' });
-  mkchat(AGENT, [{ role: 'user', content: 'hello' }], { MUSTER_E2E_DISPLAY_NAME: AGENT_TITLE });
+  lines.push(`${SCRATCH}|@11|1|1|zsh|${now - 60 * 20}|`, `${NIMBUS}|@12|1|1|opencode|${now - 60 * 21}|`);
+  const labels = rig.transcript(JSON.stringify({ [SCRATCH]: 'orchid' }), 'labels.json');
+  await rig.startHost({ MUSTER_MIRROR_INTERACTIVE: '1', MUSTER_MIRROR_E2E_WINDOWS_FILE: rig.transcript(lines.join('\n') + '\n', 'windows'), MUSTER_MIRROR_LABELS_FILE: labels, MUSTER_MIRROR_E2E_REFRESH: '300ms' });
+  mkchat(AGENT, [{ role: 'user', content: 'hello' }], { MUSTER_E2E_DISPLAY_NAME: AGENT_TITLE, MUSTER_E2E_REPO: AGENT_REPO });
 });
 
 test.afterAll(async () => {
@@ -86,7 +100,7 @@ const cards = (page: Page) => page.locator('#agents-list > article');
 // the seeded fixture's own agents (e2e/seed) — every one a card, and every one
 // an entry of the switcher's All view.
 async function listed(page: Page): Promise<number> {
-  await expect.poll(() => cards(page).count(), { timeout: 15_000 }).toBeGreaterThanOrEqual(WINDOWS.length + 1);
+  await expect.poll(() => cards(page).count(), { timeout: 15_000 }).toBeGreaterThanOrEqual(WINDOWS.length + 3);
   return cards(page).count();
 }
 
@@ -213,7 +227,7 @@ for (const vp of [
       await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('0');
       // Pin wheat from its card: the list's own refresh carries the bar's rows
       // (switcherRefresh), so the Pins view shows it — still the shown view.
-      const wheat = page.locator('#agents-list > article', { hasText: 'wheat' }).first();
+      const wheat = page.locator('#agents-list > article[data-mirror-card][data-f-session="wheat"]');
       await wheat.locator('[data-pin-toggle]').click();
       await expect(page.locator('#agents-list > article[data-pinned]')).toHaveCount(1);
       await expect(row(page, 'pins').locator('a[data-switcher-entry]')).toHaveText(['wheat:1']);
@@ -257,6 +271,74 @@ for (const vp of [
         page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('session') === 'saffron'),
         page.keyboard.press('Enter'),
       ]);
+    });
+
+    test('the palette finds an entry by its repository, its kind and its tmux session, after every codename match', async ({ page }) => {
+      test.setTimeout(90_000);
+      await ready(page);
+      await openAgents(page);
+      await page.locator('#switcher-search-open').click();
+      const labels = () => options(page).evaluateAll((els) => els.map((e) => (e.firstElementChild as HTMLElement).textContent));
+      // The tmux session name: the window called "orchid".
+      await input(page).fill(SCRATCH);
+      await expect.poll(labels).toEqual(['orchid']);
+      // The kind.
+      await input(page).fill('opencode');
+      await expect.poll(labels).toEqual([`${NIMBUS}:1`]);
+      // The repository — and a codename match ranks first: "wheat" is the
+      // window's codename prefix, and only a word of the agent's repository.
+      await input(page).fill('wheatfield');
+      await expect.poll(labels).toEqual([AGENT_TITLE]);
+      await input(page).fill('wheat');
+      await expect.poll(labels).toEqual(['wheat:1', AGENT_TITLE]);
+      // Enter opens the top one: the codename match.
+      await Promise.all([
+        page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('session') === 'wheat'),
+        page.keyboard.press('Enter'),
+      ]);
+    });
+
+    test('the bar\'s "+" opens the dispatch sheet and a dispatch from it creates an agent; a session page has no "+"', async ({ page }) => {
+      test.setTimeout(90_000);
+      await ready(page);
+      await openAgents(page);
+      const plus = page.locator('#switcher-deploy');
+      await expect(plus).toBeVisible();
+      await expect(plus).toHaveAccessibleName('Deploy agent');
+      const pb = (await plus.boundingBox())!;
+      const bb = (await bar(page).boundingBox())!;
+      expect([Math.round(pb.width), Math.round(pb.height)], 'a 44px target').toEqual([44, 44]);
+      expect(pb.y >= bb.y && pb.y + pb.height <= bb.y + bb.height + 0.5, 'inside the bar').toBe(true);
+      // The pills' row keeps room (measured; printed for the PR).
+      const rowW = await row(page, 'recent').evaluate((e) => e.getBoundingClientRect().width);
+      console.log(`[agents-switcher ${vp.name}] pill row width ${rowW}`);
+      expect(rowW, 'the pill row keeps usable room').toBeGreaterThan(150);
+      await expectNoSidewaysScroll(page);
+      // Keyboard: focus it and press Enter.
+      await plus.focus();
+      await page.keyboard.press('Enter');
+      const sheet = page.locator('#agent-modal form');
+      await expect(sheet).toBeVisible();
+      await expect(sheet.locator('textarea[name="note_text"]'), 'the task-less form: an ad-hoc task box').toBeVisible();
+      await expect(sheet.locator('[data-combobox]:has(input[name="note_id"])'), 'the task-less form: an existing-task picker, not a fixed task').toHaveCount(1);
+      // A dispatch from it creates exactly one agent.
+      const names = async () => {
+        const r = await page.request.get(origin + '/api/agents', { headers: { Authorization: `Bearer ${hookToken}` } });
+        expect(r.status()).toBe(200);
+        return (await r.json()) as { id: number; name: string }[];
+      };
+      const before = new Set((await names()).map((a) => a.name));
+      await sheet.locator('textarea[name="note_text"]').fill('e2e agents-switcher deploy');
+      const resp = page.waitForResponse((r) => r.url().endsWith('/agents') && r.request().method() === 'POST');
+      await sheet.locator('button[value="save"]').click();
+      expect((await resp).status()).toBe(200);
+      const created = (await names()).filter((a) => !before.has(a.name));
+      expect(created.length, 'exactly one agent created').toBe(1);
+      await page.request.delete(`${origin}/agents/${created[0].id}`, { headers: { Origin: origin } });
+      // A session page's bar: the same switcher, no "+".
+      await page.goto(origin + rig.viewPath('mango') + '&window=' + encodeURIComponent('@1'));
+      await expect(bar(page)).toBeVisible();
+      await expect(page.locator('#switcher-deploy')).toHaveCount(0);
     });
 
     test('a filter text stored for the removed search box, or a ?q=, hides no card', async ({ page }) => {
