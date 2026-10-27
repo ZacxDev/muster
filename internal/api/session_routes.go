@@ -288,9 +288,9 @@ func (s *Server) routeItem(ctx context.Context, chiefID, ownerID int64, it route
 		return plugins.Route{}, t, toolErr("the route could not be made")
 	}
 	by := "agent " + strconv.FormatInt(chiefID, 10)
-	switch origin.Via {
-	case "":
-	case plugins.RouteViaThread:
+	switch {
+	case origin.Via == "":
+	case origin.ByMuster():
 		by = "muster via " + origin.String()
 	default:
 		by = "the owner via " + origin.String()
@@ -298,10 +298,10 @@ func (s *Server) routeItem(ctx context.Context, chiefID, ownerID int64, it route
 	s.logger.Printf("routes: %s: %s routed by %s to %s (%s), timeout %s", r.RouteID, what, by, sub, t.label, r.TimeoutAt.UTC().Format(time.RFC3339))
 	if why := s.injectRoute(ctx, r, p, it, t, origin); why != "" {
 		// No hand-back: the router is told now, by its tool's own answer —
-		// except a route by thread, whose router is muster: its message goes
-		// back to the chief (routeByThread wakes the sweep that delivers it).
+		// except a route muster made (by thread, by pull request): its message
+		// goes back to the chief (routeByMuster wakes the sweep that delivers it).
 		handBack := ""
-		if origin.Via == plugins.RouteViaThread {
+		if origin.ByMuster() {
 			handBack = "it could not be put into the session (" + why + ")"
 		}
 		if _, ferr := s.ext.Routes.FailRoute(context.WithoutCancel(ctx), r.RouteID, why, handBack); ferr != nil {
@@ -320,6 +320,8 @@ func (s *Server) injectRoute(ctx context.Context, r plugins.Route, p plugins.Plu
 	case "":
 	case plugins.RouteViaThread:
 		by = routedByThread
+	case plugins.RouteViaPR:
+		by = routedByPR
 	default:
 		by = routedByOwner
 	}

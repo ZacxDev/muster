@@ -128,7 +128,8 @@ const NoReplySentence = "This message cannot be replied to: do not draft a reply
 // route_to_session), which adds RoutingSentence to the preface. hints, when it
 // names any session, appends the session-hint block (renderHints) AFTER the
 // message's fence, under its own nonce; its routing line is left out for a
-// no_reply message, which route_to_session refuses.
+// no_reply message, which route_to_session refuses. hints.Author, when set,
+// appends the author block (renderAuthor) after it, under a nonce of its own.
 //
 // A TASK EVENT (m.TaskID set, task_events.go) is rendered as one: muster's
 // structured event, never as mail — and WITHOUT a session hint. The event
@@ -140,7 +141,8 @@ func RenderMessage(p Plugin, m Message, routing bool, hints Hints, retry Retry) 
 	if IsTaskEvent(m) {
 		return renderTaskEvent(p, m, fence.NewNonce(), retry)
 	}
-	return renderMessage(p, m, fence.NewNonce(), routing, retry) + renderHints(hints, fence.NewNonce(), routing && !m.NoReply)
+	return renderMessage(p, m, fence.NewNonce(), routing, retry) + renderHints(hints, fence.NewNonce(), routing && !m.NoReply) +
+		renderAuthor(hints.Author, fence.NewNonce())
 }
 
 func renderMessage(p Plugin, m Message, nonce string, routing bool, retry Retry) string {
