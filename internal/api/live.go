@@ -69,12 +69,39 @@ func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn)
 	return func() { once.Do(func() { cancel(); close(stopped) }) }
 }
 
-// writePing writes one heartbeat to c within bound, noting a timed-out write
-// (notePageWrite), on a context that ctx's end does not cancel.
+// writePing writes one heartbeat to c within bound, on a context that ctx's
+// end does not cancel. A beat that has not been written by then is a stalled
+// page: it is noted (notePageWrite) and the connection closed, IN THAT ORDER.
+//
+// 🔴 THE NOTE MUST COME BEFORE THE CLOSE. coder/websocket closes the
+// connection itself when a write's context expires — from a goroutine of its
+// own, before Write returns — and the handler, seeing its page gone, may
+// classify the end before a note written after Write returned: an idle page
+// that stopped reading (the beat its only writer) was counted client_left, not
+// timeout (audit #299 round 2: 1 in 60 single sockets, most runs of 12). So the
+// beat keeps the deadline itself: a timer at bound notes the stall and then
+// closes the connection, and the write's own context runs pingWriteGrace
+// longer, so it is never the one to close it first. A write that lands in time
+// stops the timer.
 func writePing(ctx context.Context, c *websocket.Conn, bound time.Duration) error {
-	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bound)
+	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bound+pingWriteGrace)
 	defer cancel()
+	stall := time.AfterFunc(bound, func() {
+		notePageWrite(c, context.DeadlineExceeded)
+		_ = c.CloseNow()
+	})
 	err := c.Write(wctx, websocket.MessageText, []byte(ui.LivePingFrame))
+	if !stall.Stop() {
+		// The timer fired: noted and closed already. The beat ends.
+		if err == nil {
+			err = context.DeadlineExceeded
+		}
+		return err
+	}
 	notePageWrite(c, err)
 	return err
 }
+
+// pingWriteGrace is how much longer than its bound a beat's write may run, so
+// that the bound's own timer — not the write's context — ends a stalled one.
+const pingWriteGrace = time.Second

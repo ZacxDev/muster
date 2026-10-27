@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -198,6 +200,129 @@ func TestATimedOutBeatIsForgottenWhenItsSocketEnds(t *testing.T) {
 	for stalledCount() > base {
 		if time.Now().After(deadline) {
 			t.Fatalf("the chat socket's stalled note outlived its handler: %d entries, want %d", stalledCount(), base)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestAnIdlePageThatStopsReadingIsATimeoutWhenOnlyTheBeatWrites: an idle
+// Rendered view (a quiet conversation) or terminal (a TUI printing nothing)
+// whose page is there but not reading has ONE writer — the heartbeat. Its
+// timed-out write notes the socket and ends it, and the handler must still
+// count that end as a timeout (#288), not the page leaving. That holds only
+// while the note outlives the handler's classification: the beat's stop
+// forgets it, and is deferred in the HANDLER (audit #299 round 2, 🟡1).
+//
+// The terminal's own keepalive ping is pushed out of the test's time, so the
+// beat is the only writer. A single socket races the handler against the
+// note's forget under a broken ordering (not every time), so SOCKETS of each
+// kind are opened at once and EVERY end must be a timeout.
+//
+// ⚠ The agent pod's terminal is not covered: its handler classifies no end.
+func TestAnIdlePageThatStopsReadingIsATimeoutWhenOnlyTheBeatWrites(t *testing.T) {
+	const sockets = 64
+	saved := liveHeartbeatEvery
+	liveHeartbeatEvery = func() time.Duration { return time.Millisecond }
+	t.Cleanup(func() { liveHeartbeatEvery = saved })
+	savedPing := terminalPingInterval
+	terminalPingInterval = time.Hour
+	t.Cleanup(func() { terminalPingInterval = savedPing })
+	for _, c := range []struct {
+		view, path string
+		m      Mirror
+	}{
+		{openViewMirror, viewSock, &fakeMirror{online: true, v2: &fakeMirrorV2{}}},
+		{openViewTerminal, terminalSock, &streamMirror{fakeMirror: &fakeMirror{online: true}, chunk: 16, idle: true}},
+	} {
+		t.Run(c.view, func(t *testing.T) {
+			var noted atomic.Int64
+			savedHook := pageStallNoted
+			pageStallNoted = func() { noted.Add(1) }
+			t.Cleanup(func() { pageStallNoted = savedHook })
+			s, ts, _ := streamServer(t, c.m)
+			before := disconnects(c.view)
+			for i := 0; i < sockets; i++ {
+				_ = dialPage(t, s, ts, c.path) // and never reads
+			}
+			deadline := time.Now().Add(20 * time.Second)
+			for {
+				after := disconnects(c.view)
+				ended := 0.0
+				for r := range after {
+					ended += after[r] - before[r]
+				}
+				if ended >= sockets {
+					if got := after[telemetry.ReasonTimeout] - before[telemetry.ReasonTimeout]; got != sockets {
+						t.Errorf("%v of %d idle sockets whose page stopped reading ended as a timeout; the rest: client_left %v, error %v",
+							got, sockets, after[telemetry.ReasonClientLeft]-before[telemetry.ReasonClientLeft], after[telemetry.ReasonError]-before[telemetry.ReasonError])
+					}
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("only %v of %d sockets ended (beats that timed out: %d)", ended, sockets, noted.Load())
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			// Control: it was the BEAT that timed out (the only writer).
+			if noted.Load() == 0 {
+				t.Error("control: no beat ever timed out")
+			}
+		})
+	}
+}
+
+// TestAHealthyBeatIsNotSlowedAndLeavesNothingBehind: the beat's stall timer
+// (writePing) must cost a page that IS reading nothing. Over a second of beats
+// every 5 ms — more than three times the 300 ms stall bound — each beat is
+// written on time, no stall is ever noted (a timer left running would fire at
+// its bound, note a stall and close the socket), the socket stays open, and
+// once it ends every goroutine it started is gone.
+func TestAHealthyBeatIsNotSlowedAndLeavesNothingBehind(t *testing.T) {
+	saved := liveHeartbeatEvery
+	liveHeartbeatEvery = func() time.Duration { return 5 * time.Millisecond }
+	t.Cleanup(func() { liveHeartbeatEvery = saved })
+	var noted atomic.Int64
+	savedHook := pageStallNoted
+	pageStallNoted = func() { noted.Add(1) }
+	t.Cleanup(func() { pageStallNoted = savedHook })
+	s, ts, _ := streamServer(t, &fakeMirror{online: true, v2: &fakeMirrorV2{}})
+	time.Sleep(100 * time.Millisecond)
+	g0 := runtime.NumGoroutine()
+	c := dialPage(t, s, ts, viewSock)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	beats := 0
+	var worst time.Duration
+	last := start
+	for time.Since(start) < time.Second {
+		typ, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("the socket ended after %d beats: %v", beats, err)
+		}
+		if typ == websocket.MessageText && string(data) == ui.LivePingFrame {
+			now := time.Now()
+			if gap := now.Sub(last); gap > worst {
+				worst = gap
+			}
+			last = now
+			beats++
+		}
+	}
+	if beats < 50 {
+		t.Errorf("%d beats in a second at one per 5 ms: the beat is slowed", beats)
+	}
+	if worst > 250*time.Millisecond {
+		t.Errorf("a %v gap between beats: a healthy beat waited on something", worst)
+	}
+	if n := noted.Load(); n != 0 {
+		t.Errorf("%d stalls noted on a page that reads every beat: a stall timer outlived its write", n)
+	}
+	_ = c.CloseNow()
+	deadline := time.Now().Add(5 * time.Second)
+	for runtime.NumGoroutine() > g0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d goroutines after the socket ended, %d before it opened", runtime.NumGoroutine(), g0)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
