@@ -540,6 +540,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		if cfg.SessionRouting {
 			ext.Routes = pluginStore
 			ext.Routing = sessionRouting(cfg)
+			// Pull-request routing (MUSTER_PR_MAIL_SENDERS): a review mail from a
+			// listed, verified sender goes to the session that authored its PR.
+			if len(cfg.PRMailSenders) > 0 {
+				ext.PRMail = &api.PRMail{Senders: cfg.PRMailSenders}
+				ext.PRSessions = pluginStore
+			}
 		}
 		// Task routing (MUSTER_TASK_ROUTING=1): a plugin may hand a task it files
 		// to the chief; a non-empty MUSTER_CHIEF_DISPATCH_OWNERS also lets the chief
@@ -907,6 +913,8 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	go a.srv.RunFocusRetention(ctx)
 	// Session routing's deadline: due routes are timed out and handed back.
 	go a.srv.RunRouteTimeouts(ctx, api.RouteSweepInterval)
+	// Pull-request routing's transcript scan (nothing with it off).
+	go a.srv.RunPRScan(ctx, api.PRScanInterval)
 	// The attention queue: lapsed asks expire and leave the owner's devices.
 	go a.srv.RunAttentionSweep(ctx, 0)
 }
@@ -1275,6 +1283,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	default:
 		l.Printf("session routing: OFF — %s is unset, so the chief has no route_to_session and POST /api/routes/{id}/reply "+
 			"answers 404 (%s is not read)", envSessionRouting, envRouteRelayAllow)
+	}
+	switch {
+	case ext.PRMail != nil:
+		l.Printf("pull-request routing: ON (%s) — %d agent-mail sender(s) whose VERIFIED review mail goes to the mirrored "+
+			"session that created or pushed its pull request; every online Claude Code session's transcript is scanned every %s",
+			envPRMailSenders, len(ext.PRMail.Senders), api.PRScanInterval)
+	case len(a.cfg.PRMailSenders) > 0:
+		l.Printf("pull-request routing: INERT — %s is set but session routing (%s=1, with the plugin interface) is off, so "+
+			"nothing is scanned or routed", envPRMailSenders, envSessionRouting)
+	default:
+		l.Printf("pull-request routing: OFF — %s is unset, so no session transcript is scanned for pull requests", envPRMailSenders)
 	}
 	switch {
 	case ext.TaskRouting != nil && len(ext.TaskRouting.DispatchOwners) > 0:

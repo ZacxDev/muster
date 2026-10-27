@@ -48,6 +48,14 @@ func newPRFixture(t *testing.T) *prFixture {
 	}
 	f.srv.ext.PRMail = &PRMail{Senders: senders}
 	f.srv.ext.PRSessions = f.plugins
+	// The chief's turn carries the hints production wires (UseExtensions:
+	// pluginHints), which is where the author block comes from.
+	d, err := plugins.NewDeliverer(plugins.DelivererConfig{Store: f.plugins, Agents: f.srv.ext.Agents, Gateway: f.turns,
+		Turn: f.turns.turn, Routing: true, Hints: f.srv.pluginHints(f.srv.ext)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.srv.pluginDeliverer = d
 	t.Cleanup(func() {
 		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM session_prs WHERE owner_id = $1`, f.owner)
 	})

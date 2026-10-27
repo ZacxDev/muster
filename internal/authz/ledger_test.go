@@ -179,6 +179,9 @@ var (
 		// row handed back with its owner, then raised or cancelled as THAT owner.
 		"internal/plugins.(*PGStore).UnroutedDue",
 		"internal/plugins.(*PGStore).UnroutedAsksToClose",
+		// Pull-request routing's scan (migration 0055): the enabled users' ids,
+		// each then scanned as itself through focusPrincipal.
+		"internal/plugins.(*PGStore).PRSessionOwners",
 		// The machine job API (migration 0037): the reaper that fails every
 		// owner's job left queued or running past its own deadline
 		// (jobs.PGStore.ReapOverdue — one UPDATE that returns only a count).
@@ -218,7 +221,9 @@ var (
 		"internal/api.(*Server).queuedPrincipal",
 		// The session focus refresher (internal/focus): each owner's sessions
 		// are read and their focus written as that owner, through
-		// authz.ViaFocus, after focus.PGStore.Owners read the owner ids.
+		// authz.ViaFocus, after focus.PGStore.Owners read the owner ids. The
+		// pull-request scan (pr_routes.go) reads each owner's mirrored
+		// transcripts the same way, after plugins.PGStore.PRSessionOwners.
 		"internal/api.(*Server).focusPrincipal",
 		// Session routing's timeout sweep: each due route is timed out, its
 		// queued injection cancelled and its message handed back to the chief as

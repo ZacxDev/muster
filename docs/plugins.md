@@ -1001,6 +1001,58 @@ the chief's route (`routeItem`), made by muster, with no chief decision.
 
 The accepted risk: [auth.md](auth.md#threads-a-session-started).
 
+### A pull-request review mail
+
+A review of a pull request — mail from a hosted review gate — goes **straight
+to the mirrored session that created that pull request or pushed its branch**,
+the same way a reply on a thread does. Off unless `MUSTER_PR_MAIL_SENDERS` lists
+the gate's agent-mail address ([configuration](configuration.md)) and session
+routing is on.
+
+1. **Who authored what.** muster scans every online mirrored Claude Code
+   session's transcript each minute, through the host's own transcript stream,
+   resuming where the previous scan of that session stopped. It records
+   (`session_prs`, migration `0055`, owned, under row-level security) only
+   **authorship**: a Bash call that runs `gh pr create` and whose successful
+   output names the new pull request's URL (repo and number), or one that runs
+   `git push` and whose output names a GitHub remote and the branch it updated
+   (repo and branch). A session that views, lists, reads or mentions a pull
+   request records nothing. Rows unseen for 30 days are deleted.
+2. **The mail.** Only a NEW message from the `agent-mail` plugin whose sender
+   is on the list **and** that the plugin marked `sender_verified`. muster reads
+   the body's **last** fenced block whose info string is `json` (a fence of
+   three or more backticks, closed by a run at least as long):
+
+   ```json
+   {"repo": "<owner>/<repo>", "pr": 123, "head_sha": "<40 hex>", "head_ref": "<branch>"}
+   ```
+
+   `repo` (`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`, compared case-insensitively),
+   `pr` (a positive integer) and `head_sha` (40 lower-case hex) are required;
+   `head_ref` is optional and matches a pushed branch. Anything else in the
+   body is ignored; a block that is missing or malformed routes nothing.
+3. **The route.** The owner's session that most recently created that pull
+   request (repo and number) or pushed its head branch (repo and `head_ref`)
+   gets it through the thread route's path: handed to the chief without a
+   turn, pasted after the idle wait, answered with `route_reply`, with the
+   deadline and hand-back. The audit row carries
+   `routed_via: "pr <owner>/<repo>#<n> authored by <session>"`. Another
+   owner's session is never chosen.
+4. **No online window for that session.** The message goes to your chief as
+   any other, and its turn ends with a block headed "Session that authored
+   this pull request": the session's id, title, host, what muster saw it do
+   and when, and that no window shows it — so the chief can raise an ask with
+   a resume pointer instead of guessing.
+5. **No author recorded**, or not a review muster reads: the ordinary
+   delivery, unchanged.
+
+What the scan cannot see is listed in `internal/api/pr_routes.go`: a session's
+first scan (and every scan after a restart) reads only the host's bounded
+backfill; a `gh pr create` or `git push` run inside a **subagent** is not
+recorded (its transcript is not in the parent's stream, and the subagent tail a
+host sends carries no command output); and a push whose hooks print more than
+4 KiB before git's own `To` line is not read.
+
 ### Routing a task to a session
 
 The chief can hand one of your **tasks** to a mirrored session the same way:

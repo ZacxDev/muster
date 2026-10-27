@@ -7,12 +7,14 @@
 package prroute
 
 import (
-	"github.com/ZacxDev/muster/internal/cctranscript"
+	"encoding/json"
+	"regexp"
+	"strings"
 )
 
 // Ref is the pull request a review mail names.
 type Ref struct {
-	// Repo is "<owner>/<repo>", lower-cased.
+	// Repo is "<owner>/<repo>", lower-cased (GitHub's names are case-insensitive).
 	Repo string
 	// PR is the pull request's number.
 	PR int64
@@ -22,39 +24,108 @@ type Ref struct {
 	HeadRef string
 }
 
-// ParseMail is the pull request mail body names, read from the LAST fenced
-// ```json block of the body. ok is false for anything malformed.
-func ParseMail(body string) (Ref, bool) {
-	return Ref{}, false
-}
-
-// Kind is how a session authored a pull request.
-type Kind string
-
-const (
-	// KindPRCreate: a `gh pr create` the session ran, whose output named the
-	// new pull request's URL.
-	KindPRCreate Kind = "gh-pr-create"
-	// KindPush: a `git push` the session ran, whose output named the remote
-	// repository and a branch it updated.
-	KindPush Kind = "git-push"
+var (
+	// RepoPattern is a repository as the mail and a transcript name it.
+	RepoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	shaPattern  = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	// refPattern is a branch name this feature stores: git's own grammar is
+	// wider, and a name outside this simply matches nothing.
+	refPattern = regexp.MustCompile(`^[A-Za-z0-9._/+-]{1,255}$`)
+	// fenceOpen is a backtick fence's opening line (CommonMark: at most three
+	// spaces of indent), its length and info string.
+	fenceOpen = regexp.MustCompile("^ {0,3}(`{3,})([^`]*)$")
 )
 
-// Signal is one authorship the extractor saw: (Repo, PR) for KindPRCreate,
-// (Repo, HeadRef) for KindPush.
-type Signal struct {
-	Kind    Kind
-	Repo    string
-	PR      int64
-	HeadRef string
+// validRef is a stored branch name: refPattern, and no "..", leading "-" or
+// trailing "/" (none of which git accepts as a branch).
+func validRef(s string) bool {
+	return refPattern.MatchString(s) && !strings.Contains(s, "..") && !strings.HasPrefix(s, "-") && !strings.HasSuffix(s, "/")
 }
 
-// Extractor reads one session's transcript events, in order, across as many
-// Feed calls as it takes.
-type Extractor struct{}
+// ParseMail is the pull request mail body names, read from the LAST fenced
+// ```json block of the body. ok is false for anything malformed — no such
+// block, invalid JSON, a missing or invalid repo, pr or head_sha, or a
+// head_ref that is present and not a branch name — and the caller then routes
+// nothing by it.
+//
+// 🔴 THE LAST BLOCK DECIDES, AND AN EARLIER ONE IS NEVER A FALLBACK: the gate
+// writes its machine-readable block last, and a body may quote other JSON
+// before it (a finding's excerpt). A fence is matched as CommonMark matches
+// it — closed only by a backtick run at least as long as the one that opened
+// it — so a block the gate fenced with more backticks than any run inside it
+// is read whole, and a fenced block of another kind hides what is inside it.
+func ParseMail(body string) (Ref, bool) {
+	raw, ok := lastJSONBlock(body)
+	if !ok {
+		return Ref{}, false
+	}
+	var in struct {
+		Repo    *string          `json:"repo"`
+		PR      *json.RawMessage `json:"pr"`
+		HeadSHA *string          `json:"head_sha"`
+		HeadRef *string          `json:"head_ref"`
+	}
+	if json.Unmarshal([]byte(raw), &in) != nil || in.Repo == nil || in.PR == nil || in.HeadSHA == nil {
+		return Ref{}, false
+	}
+	var pr int64
+	// A JSON integer only: "4817" (a string) and 4817.5 are refused.
+	if json.Unmarshal(*in.PR, &pr) != nil || pr <= 0 || strings.ContainsAny(string(*in.PR), ".eE\"") {
+		return Ref{}, false
+	}
+	if !RepoPattern.MatchString(*in.Repo) || !shaPattern.MatchString(*in.HeadSHA) {
+		return Ref{}, false
+	}
+	ref := Ref{Repo: strings.ToLower(*in.Repo), PR: pr, HeadSHA: *in.HeadSHA}
+	if in.HeadRef != nil {
+		if !validRef(*in.HeadRef) {
+			return Ref{}, false
+		}
+		ref.HeadRef = *in.HeadRef
+	}
+	return ref, true
+}
 
-// Feed reads evs and returns the authorship signals they complete.
-func (x *Extractor) Feed(evs []cctranscript.Event) []Signal { return nil }
+// lastJSONBlock is the content of body's last CLOSED fenced block whose info
+// string is "json".
+func lastJSONBlock(body string) (string, bool) {
+	lines := strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n")
+	var last string
+	found := false
+	for i := 0; i < len(lines); i++ {
+		m := fenceOpen.FindStringSubmatch(lines[i])
+		if m == nil {
+			continue
+		}
+		width, info := len(m[1]), strings.TrimSpace(m[2])
+		end := -1
+		for j := i + 1; j < len(lines); j++ {
+			if closesFence(lines[j], width) {
+				end = j
+				break
+			}
+		}
+		if end < 0 {
+			// Never closed: CommonMark runs it to the end of the document, so
+			// nothing after it is a block either.
+			break
+		}
+		if info == "json" {
+			last, found = strings.Join(lines[i+1:end], "\n"), true
+		}
+		i = end
+	}
+	return last, found
+}
 
-// Reset forgets the calls still waiting for their result.
-func (x *Extractor) Reset() {}
+// closesFence reports whether line closes a fence of width backticks: at most
+// three spaces, then a run of at least width backticks, then only spaces.
+func closesFence(line string, width int) bool {
+	t := strings.TrimRight(line, " \t")
+	indent := len(t) - len(strings.TrimLeft(t, " "))
+	if indent > 3 {
+		return false
+	}
+	t = t[indent:]
+	return len(t) >= width && strings.Trim(t, "`") == ""
+}

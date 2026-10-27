@@ -57,7 +57,7 @@ func TestNoAuthorIsNoBlockAndAnAuthorFollowsTheMessage(t *testing.T) {
 		t.Fatalf("no author rendered %q", got)
 	}
 	p := Plugin{Label: "L", DataScope: "d"}
-	m := Message{ID: 5, Sender: "civitai-deploy/pr-review", Subject: "review", Body: "findings"}
+	m := Message{ID: 5, Sender: "review-gate/pr-check", Subject: "review", Body: "findings"}
 	if got := RenderMessage(p, m, true, Hints{}, Retry{}); strings.Contains(got, AuthorHeader) || strings.Contains(got, "pr-author") {
 		t.Fatalf("a turn with no author carries the block:\n%s", got)
 	}

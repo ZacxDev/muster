@@ -160,20 +160,30 @@ const RouteViaMCP = "mcp"
 // agent_id names it), RouteViaMCP the owner over the mirror MCP door, from
 // Host (proven by its mirror token) and Session (the Claude session the
 // caller's pane names: a claim), RouteViaThread muster itself, because the
-// message is a reply on Thread, which Session started (threads.go).
+// message is a reply on Thread, which Session started (threads.go), and
+// RouteViaPR muster itself, because the message is a review of pull request
+// PR ("<owner>/<repo>#<n>"), which Session authored (pr_sessions.go).
 type RouteOrigin struct {
-	Via, Host, Session, Thread string
+	Via, Host, Session, Thread, PR string
 }
 
+// ByMuster reports whether muster itself made the route (RouteViaThread,
+// RouteViaPR): the route takes a QUEUED message, handing it to the chief in
+// its own transaction (CreateRouteFrom), and a route that cannot be injected
+// owes the chief its hand-back.
+func (o RouteOrigin) ByMuster() bool { return o.Via == RouteViaThread || o.Via == RouteViaPR }
+
 // String is the origin as the audit row's routed_via spells it:
-// "mcp from <host>/<session>", "thread <thread> started by <session>";
-// "" for the chief.
+// "mcp from <host>/<session>", "thread <thread> started by <session>",
+// "pr <owner>/<repo>#<n> authored by <session>"; "" for the chief.
 func (o RouteOrigin) String() string {
 	switch o.Via {
 	case RouteViaMCP:
 		return o.Via + " from " + o.Host + "/" + o.Session
 	case RouteViaThread:
 		return o.Via + " " + o.Thread + " started by " + o.Session
+	case RouteViaPR:
+		return o.Via + " " + o.PR + " authored by " + o.Session
 	}
 	return o.Via
 }
@@ -236,8 +246,9 @@ func (s *PGStore) CreateRoute(ctx context.Context, chiefID, ownerID, messageID i
 // agent_id, so the relay files its draft as that chief's and a hand-back goes
 // to that chief — whoever made the route.
 //
-// A route by thread (RouteViaThread) takes a queued message, handing it to the
-// chief in the same transaction: docs/plugins.md#a-reply-on-a-thread-a-session-started.
+// A route muster makes (RouteOrigin.ByMuster: by thread or by pull request)
+// takes a queued message, handing it to the chief in the same transaction:
+// docs/plugins.md#a-reply-on-a-thread-a-session-started.
 func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, messageID int64, target RouteTarget, timeout time.Duration, origin RouteOrigin) (Route, error) {
 	if chiefID <= 0 || ownerID <= 0 {
 		return Route{}, invalid("the agent has no owner")
@@ -248,7 +259,7 @@ func (s *PGStore) CreateRouteFrom(ctx context.Context, chiefID, ownerID, message
 		if inFlight != nil && !errors.Is(inFlight, ErrReplyInFlight) {
 			return inFlight
 		}
-		if origin.Via == RouteViaThread {
+		if origin.ByMuster() {
 			if m.Status != StatusQueued {
 				return ErrNotFound
 			}

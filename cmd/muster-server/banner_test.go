@@ -394,6 +394,10 @@ var bannerLedger = []string{
 	// and how many owners have an allowlist.
 	envSessionRouting,
 	envRouteRelayAllow,
+	// 🔴 PULL-REQUEST ROUTING IS LEDGERED: ON, a listed sender's mail decides
+	// which of the owner's sessions it is pasted into, and every online
+	// session's transcript is scanned, so the log must say which state this is.
+	envPRMailSenders,
 	// 🔴 TASK ROUTING IS LEDGERED: ON, an outside system's task notice reaches
 	// the chief, and with dispatch the chief can start agents on the owner's
 	// credentials, so the log must say which state this is.
@@ -758,6 +762,9 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// Session routing: the banner branches on ext.Routing (below).
 		SessionRouting:     true,
 		RouteRelayAllowRaw: "1:example-inbox:someone@example.invalid",
+		// Pull-request routing: the banner branches on ext.PRMail (below).
+		PRMailSendersRaw: "review-gate/pr-check",
+		PRMailSenders:    plugins.PRMailSenders{"review-gate/pr-check": true},
 		// Task routing: the banner branches on ext.TaskRouting (below).
 		TaskRouting:            true,
 		ChiefDispatchOwnersRaw: "1",
@@ -797,6 +804,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		PluginGateway:   bannerStubPluginGateway{},
 		Routes:          bannerStubRoutes{},
 		Routing:         &api.Routing{Allow: bannerAllowlist(t)},
+		PRMail:          &api.PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
 		TaskRouting:     &api.TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		SessionRuntimes: []string{"claude-code"},
 	}, &pgxpool.Pool{})
