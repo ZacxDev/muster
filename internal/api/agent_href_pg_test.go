@@ -71,7 +71,7 @@ func anchorHrefs(body, marker string) []string {
 
 // TestEveryListLinkToAnAgentNamesItsLatestSession: on a real Postgres, every
 // link the Agents list and the Tasks list draw to an agent — the card (its nav
-// anchor and its long-title link), a pinned chip, a Recent entry, a task
+// anchor and its long-title link), a switcher Pins or Recent entry, a task
 // card's "Open chat" — is the canonical /agents/{name}?session=<latest>, the
 // SAME URL the bare /agents/{name} 303s to. Red before ui.AgentSessionHref:
 // every one of them was the bare URL, and each open paid the 303's round trip.
@@ -95,8 +95,8 @@ func TestEveryListLinkToAnAgentNamesItsLatestSession(t *testing.T) {
 			t.Fatalf("bare GET /agents/%s = %d → %q, want 303 → %q", c.a.Name, w.Code, w.Header().Get("Location"), c.want)
 		}
 	}
-	// A visit puts op in the Recent strip; op2 is pinned (a chip, and so NOT a
-	// Recent entry).
+	// A visit puts op in the switcher's Recent view; op2 is pinned (its card,
+	// and the switcher's Pins view).
 	if w := f.call(t, http.MethodGet, wantOp, nil, f.operator()); w.Code != http.StatusOK {
 		t.Fatalf("GET %s = %d", wantOp, w.Code)
 	}
@@ -114,10 +114,24 @@ func TestEveryListLinkToAnAgentNamesItsLatestSession(t *testing.T) {
 	if !strings.Contains(list, opCard) {
 		t.Errorf("op's card does not link %s; its links: %v", listOp, anchorHrefs(list, "/agents/"+f.op.Name))
 	}
-	if got := anchorHrefs(list, "data-pinned-chip-link"); len(got) != 1 || got[0] != listOp2 {
-		t.Errorf("pinned chip links %v, want [%s]", got, listOp2)
+	opCard2 := `href="` + strings.ReplaceAll(listOp2, "&", "&amp;") + `"`
+	if !strings.Contains(list, opCard2) {
+		t.Errorf("op2's (pinned) card does not link %s; its links: %v", listOp2, anchorHrefs(list, "/agents/"+f.op2.Name))
 	}
-	if got := anchorHrefs(list, `data-recent-entry="agent"`); len(got) != 1 || got[0] != listOp {
+	// The session switcher's rows, carried out of band by the list: a Pins
+	// entry and a Recent entry link the same canonical URL.
+	row := func(id string) string {
+		at := strings.Index(list, `id="`+id+`"`)
+		if at < 0 {
+			t.Fatalf("no #%s in the list partial", id)
+		}
+		r := list[at:]
+		return r[:strings.Index(r, "</div>")]
+	}
+	if got := anchorHrefs(row("switcher-list-pins"), `data-switcher-entry="agent"`); len(got) != 1 || got[0] != listOp2 {
+		t.Errorf("Pins entries link %v, want [%s]", got, listOp2)
+	}
+	if got := anchorHrefs(row("switcher-list-recent"), `data-switcher-entry="agent"`); len(got) != 1 || got[0] != listOp {
 		t.Errorf("Recent entries link %v, want [%s]", got, listOp)
 	}
 	// No anchor anywhere on the list links either agent's BARE page.

@@ -84,11 +84,14 @@ const shellStateJS = `(() => {
 })()`;
 
 // expectShellShows asserts the shell is showing exactly ONE tab, and that the
-// panel, the FAB, the heading and aria-current all name the same one.
+// panel, the FAB, the heading and aria-current all name the same one — the FAB
+// only for a tab that has one: the Agents tab draws none (its bottom edge is
+// the session switcher's bar), so there NO FAB is shown at all.
+const tabsWithoutFAB = ['agents'];
 export async function expectShellShows(page: Page, tab: string, heading: string, why: string): Promise<void> {
   await expect
     .poll(() => page.evaluate(shellStateJS), { message: why })
-    .toMatchObject({ panels: [tab], fabs: [tab], heading, current: [tab] });
+    .toMatchObject({ panels: [tab], fabs: tabsWithoutFAB.includes(tab) ? [] : [tab], heading, current: [tab] });
   const drawn = ((await page.evaluate(shellStateJS)) as { drawn: number }).drawn;
   expect(drawn, `${why}: CONTROL — the shell drew more than one panel, so "exactly one shown" hid the rest`).toBeGreaterThan(1);
 }

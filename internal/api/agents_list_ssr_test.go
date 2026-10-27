@@ -33,8 +33,8 @@ func listServer(t *testing.T) (*Server, http.Handler, *countingInstances) {
 
 // 🔴 ONE RULE, ONE RENDERER: the /agents document's #agents-list holds EXACTLY
 // the /ui/agents partial's cards — byte for byte — for one state. The partial
-// is that same body followed by the out-of-band "Recently viewed" strip, so the
-// document's list is a prefix of it that ends where the strip begins.
+// is that same body followed by the session switcher's out-of-band rows, so
+// the document's list is a prefix of it that ends where those begin.
 //
 // The fixture's times are fixed and months old, so the relative "active … ago"
 // both requests print cannot tick between them.
@@ -43,9 +43,9 @@ func TestTheAgentsDocumentDrawsTheListPartial(t *testing.T) {
 	doc := getOwed(t, s, h, "/agents").Body.String()
 	part := getOwed(t, s, h, "/ui/agents").Body.String()
 
-	strip := strings.Index(part, `<nav id="agents-recent"`)
+	strip := strings.Index(part, `<div id="switcher-list-recent" hx-swap-oob="innerHTML">`)
 	if strip < 0 {
-		t.Fatalf("control: the partial carries no out-of-band strip:\n%s", part)
+		t.Fatalf("control: the partial carries no out-of-band switcher rows:\n%s", part)
 	}
 	cards := part[:strip]
 	if n := strings.Count(cards, "<article "); n != 5 {

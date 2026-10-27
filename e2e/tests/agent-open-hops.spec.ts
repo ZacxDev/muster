@@ -96,7 +96,9 @@ test('a card, a pinned chip and a Recent entry each open the page in ONE documen
   expect(docs, 'the card: one document, the session URL').toEqual([want]);
 
   await openList(page);
-  const recent = page.locator('#agents-recent a[data-recent-entry="agent"]').and(page.locator(agentLink(name)));
+  // The Agents list's session switcher (it replaced the Recent strip and the
+  // pinned chips): its Recent view, then its Pins view.
+  const recent = page.locator('#session-switcher [data-switcher-list="recent"] a[data-switcher-entry="agent"]').and(page.locator(agentLink(name)));
   await expect(recent).toHaveCount(1);
   docs = documents(page);
   await Promise.all([page.waitForURL((u) => u.pathname === '/agents/' + name), recent.tap()]);
@@ -105,14 +107,16 @@ test('a card, a pinned chip and a Recent entry each open the page in ONE documen
 
   await pin(page, true);
   try {
+    await page.evaluate(() => localStorage.setItem('muster.switcher.view', 'pins'));
     await openList(page);
-    const chip = page.locator('#agents-list a[data-pinned-chip-link]').and(page.locator(agentLink(name)));
+    const chip = page.locator('#session-switcher [data-switcher-list="pins"] a[data-switcher-entry="agent"]').and(page.locator(agentLink(name)));
     await expect(chip).toHaveCount(1);
     docs = documents(page);
     await Promise.all([page.waitForURL((u) => u.pathname === '/agents/' + name), chip.tap()]);
     await page.waitForLoadState('domcontentloaded');
-    expect(docs, 'the pinned chip: one document, the session URL').toEqual([want]);
+    expect(docs, 'the Pins entry: one document, the session URL').toEqual([want]);
   } finally {
+    await page.evaluate(() => localStorage.removeItem('muster.switcher.view')).catch(() => undefined);
     await pin(page, false);
   }
 });

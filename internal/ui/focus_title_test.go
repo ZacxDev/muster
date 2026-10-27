@@ -226,30 +226,3 @@ func TestAStaleFocusTitleSaysSoOnTheCard(t *testing.T) {
 	}
 }
 
-// TestRankingStillUsesTheNameUnderAFocusTitle: the filter ranks on
-// data-rank-title (agents_filter.go), which must stay the card's NAMES — the
-// focus title is a heading, not a name a reader types.
-func TestRankingStillUsesTheNameUnderAFocusTitle(t *testing.T) {
-	f := &FocusView{Title: "Zebra migration", Description: "Moving zebras."}
-	for name, pair := range map[string][2]string{
-		"agent": {renderNode(t, agentCard(realisticAgent())), renderNode(t, agentCard(func() AgentCardView { a := realisticAgent(); a.Focus = f; return a }()))},
-		"mirror": {renderNode(t, mirrorCard(realisticMirror())),
-			renderNode(t, mirrorCard(func() MirrorCardView { m := realisticMirror(); m.Focus = f; return m }()))},
-	} {
-		without, _ := nodeAttr(parseArticle(t, pair[0]), "data-rank-title")
-		with, _ := nodeAttr(parseArticle(t, pair[1]), "data-rank-title")
-		if without == "" {
-			t.Fatalf("%s: instrument check FAILED: no data-rank-title", name)
-		}
-		if with != without {
-			t.Errorf("%s: data-rank-title %q with a focus, %q without: the focus changed what ranks", name, with, without)
-		}
-		if strings.Contains(strings.ToLower(with), "zebra") {
-			t.Errorf("%s: the focus title is ranked as a name: %q", name, with)
-		}
-		filter, _ := nodeAttr(parseArticle(t, pair[1]), "data-filter")
-		if !strings.Contains(filter, "zebra migration") {
-			t.Errorf("%s: the filter no longer matches the focus text: %q", name, filter)
-		}
-	}
-}

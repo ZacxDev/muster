@@ -213,29 +213,16 @@ func PageWith(activeTab string, feat Features, data ShellData) g.Node {
 // ShellData is state a shell draws on its FIRST PAINT, rather than after the
 // panel's own load, because drawing it later would move what is below it.
 //
-// 🔴 IT EXISTS FOR LAYOUT SHIFT, AND ITS ONE FIELD IS THE MEASURED CASE. The
-// Agents tab's "Recently viewed" strip is drawn empty and hidden by the shell
-// and filled out of band by the list's first load — and when it appeared it
-// pushed the filter bar and every card down: 0.011 at 1280×800 on its own,
-// measured by e2e/tests/cls.spec.ts. Drawn here, the strip is already where it
-// will be when the list lands, and the out-of-band copy replaces it in place.
-// The zero value draws what the shell always drew (an empty, hidden strip).
-//
-// The Agents tab's own document also draws the LIST (WithList): its cards are
-// the first paint, not a request's answer (agents_list_ssr.go).
+// The Agents tab's own document draws the LIST (WithList): its cards and its
+// session switcher are the first paint, not a request's answer
+// (agents_list_ssr.go). (A "Recently viewed" strip drawn here for the same
+// reason — it measured 0.011 of layout shift when it arrived late — is gone:
+// the switcher replaced it.)
 type ShellData struct {
-	recent []recentItem
-	list   *shellList
+	list *shellList
 	// tasks is the Tasks tab's board, drawn into #tasks-list (WithTasks,
 	// tasks_list_ssr.go); nil draws the skeleton its own load replaces.
 	tasks *shellTasks
-}
-
-// WithRecent resolves the strip's entries the way RenderAgentsList does —
-// against the same cards, so "exists" and "pinned" agree with the list.
-func (d ShellData) WithRecent(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef) ShellData {
-	d.recent = recentItems(list, mirrors, refs)
-	return d
 }
 
 // shell is the <html> element of every shell document, with one extra
@@ -342,7 +329,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 							// it is what makes the tab's absence honest instead of making
 							// its presence noisy.
 							NotesPanel(activeTab == "tasks", data.tasks),
-							agentsPanel(activeTab == "agents", data.recent, data.list),
+							agentsPanel(activeTab == "agents", data.list),
 							g.If(feat.GitHub, ReposPanel(activeTab == "repos")),
 							g.If(feat.Connectors, ConnectorsPanel(activeTab == "connectors")),
 						),
@@ -377,11 +364,8 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 					cardMetaNavScript(),
 					// Places the agent cards' ⋯ popover menus (floating_menu.go).
 					floatingMenuScript(),
-					// The Agents list's search box (agents_filter.go).
+					// The Agents list's host tabs and filter chips (agents_filter.go).
 					agentsFilterScript(),
-					// …and the "Recently viewed" strip's sideways offset across
-					// hydration (agents_scroll.go).
-					agentsScrollScript(),
 					// Refetch the list on focus / visibility / SSE reconnect so a
 					// closed-and-reopened app is never stale.
 					resyncScript(),
@@ -409,19 +393,20 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 				// containing-block surprises) and they're not touched by panel
 				// swaps. Only the active tab's FAB is shown; the router toggles them.
 				shellFAB("fab-tasks", "tasks", "New task", "/ui/tasks/new", "task-modal", "bottom-[calc(1.5rem+env(safe-area-inset-bottom))]", activeTab == "tasks"),
-				// Agents tab: dispatch is the only FAB. (Upstream briefly stacked a
-				// second one above it linking to a page that was later deleted; a FAB
-				// whose whole job is to open a 404 is worse than no FAB, so dispatch
-				// takes the primary position rather than floating above a gap.)
-				shellFAB("fab-agents", "agents", "Dispatch agent", "/ui/agents/new", "agent-modal", "bottom-[calc(1.5rem+env(safe-area-inset-bottom))]", activeTab == "agents"),
+				// ⚠ THE AGENTS TAB DRAWS NO FAB (operator ask: "hide the agent
+				// replies FAB and deploy agent FAB on agent list page"). Its bottom
+				// edge is the session switcher's bar (switcher.go, switcherDock).
+				// The dispatch sheet (agentModalShell, below) stays: the "+" on the
+				// Agents tab's switcher bar opens it (switcherDeployButton), and a
+				// task card's Dispatch button on the Tasks tab.
 				noteModalShell(),
 				agentModalShell(),
 				// Transient error toasts for failed background (optimistic) actions.
 				actionToasts(),
 				// Persistent notification FAB (bottom-LEFT) — the launcher for recent
-				// agent replies. Always visible (not per-tab); only the count badge
-				// hides at zero. Its panel lazy-loads /ui/notifications.
-				notifFAB(),
+				// agent replies. On every tab but Agents (fabHiddenOnTab); only the
+				// count badge hides at zero. Its panel lazy-loads /ui/notifications.
+				notifFAB(activeTab),
 				// The chief slide-out. Body level for the same reason as badgePopover
 				// and the FABs — and for one stronger one: it holds a LIVE WebSocket
 				// and whatever the operator has half-typed, so a panel inside <main>
@@ -534,18 +519,30 @@ func panelClass(active, destructiveSwap bool) string {
 // chat (and, when no operator agent existed, its provision CTA). The page it
 // opened is gone, so the control could only ever navigate to a 404.
 
+// notifFabHiddenOn is the tab the replies launcher (notifFAB) is not drawn on:
+// the Agents list, whose bottom edge is the session switcher's bar (operator
+// ask: "hide the agent replies FAB and deploy agent FAB on agent list page").
+// The router hides it there on a client-side switch too (fabHiddenOnTabAttr).
+const notifFabHiddenOn = "agents"
+
+// fabHiddenOnTabAttr marks a body-level launcher hidden while one tab is shown
+// (its value): appScript's show() toggles it, as it toggles the per-tab FABs
+// (data-fab).
+const fabHiddenOnTabAttr = "data-hidden-on-tab"
+
 // notifFAB renders the persistent notification launcher: a round bottom-LEFT FAB
-// (so it never collides with the right-side dispatch/operator/task FABs) carrying
-// an overlaid unread-count badge, plus a slide/scale+fade panel anchored above it
-// listing recent agent replies. The FAB is ALWAYS visible (it's the launcher for
-// recent chats); only the badge hides at zero. The list lazy-loads
+// (so it never collides with the right-side task FAB) carrying an overlaid
+// unread-count badge, plus a slide/scale+fade panel anchored above it listing
+// recent agent replies. The FAB is visible on every tab but the Agents list
+// (notifFabHiddenOn — drawn hidden there, and hidden by the router on a switch
+// to it); only the badge hides at zero. The list lazy-loads
 // /ui/notifications on load and refreshes on the chat.reply SSE event + a 30s
 // poll. The badge (#notif-badge) is updated by the backend via an hx-swap-oob
 // span in the /ui/notifications response, so it stays live without extra wiring.
 // Open/close is owned by appScript (boost-safe, idempotent) mirroring the sidebar
 // setOpen pattern: a backdrop + Esc close it; rows are boosted SPA links so
 // tapping one body-swaps to the chat (panel close is moot once we navigate).
-func notifFAB() g.Node {
+func notifFAB(activeTab string) g.Node {
 	return g.Group{
 		// Backdrop: closes the panel on outside tap. Hidden until open.
 		Div(
@@ -581,7 +578,8 @@ func notifFAB() g.Node {
 			Type("button"),
 			g.Attr("aria-label", "Agent replies"),
 			g.Attr("title", "Agent replies"),
-			Class("press fixed bottom-[calc(1.5rem+env(safe-area-inset-bottom))] left-[calc(1.5rem+env(safe-area-inset-left))] z-30 inline-flex h-14 w-14 items-center justify-center rounded-full bg-s2 text-2xl text-fg shadow-xl shadow-black/40 ring-1 ring-inset ring-edge transition hover:bg-s3 active:scale-95"),
+			g.Attr(fabHiddenOnTabAttr, notifFabHiddenOn),
+			Class("press fixed bottom-[calc(1.5rem+env(safe-area-inset-bottom))] left-[calc(1.5rem+env(safe-area-inset-left))] z-30 inline-flex h-14 w-14 items-center justify-center rounded-full bg-s2 text-2xl text-fg shadow-xl shadow-black/40 ring-1 ring-inset ring-edge transition hover:bg-s3 active:scale-95"+classIf(activeTab == notifFabHiddenOn, " hidden")),
 			g.Text("💬"),
 			// Unread badge overlay. Hidden at zero; the backend's hx-swap-oob span
 			// (id=notif-badge) replaces it in place with the live count.
@@ -681,7 +679,13 @@ func truncate(s string, n int) string {
 // ./internal/ui/**/*.go (tailwind.config.js `content`). If this string is ever
 // built somewhere Tailwind does not scan, the classes silently will not exist.
 func contentWidth() string {
-	return "mx-auto w-full max-w-xl px-4 lg:max-w-5xl xl:max-w-6xl 2xl:max-w-[110rem] min-[2560px]:max-w-[150rem]"
+	return contentMaxW() + " px-4"
+}
+
+// contentMaxW is contentWidth's ladder without its gutter: the column's box,
+// for a box that pads itself (the Agents list's switcher dock, switcherDock).
+func contentMaxW() string {
+	return "mx-auto w-full max-w-xl lg:max-w-5xl xl:max-w-6xl 2xl:max-w-[110rem] min-[2560px]:max-w-[150rem]"
 }
 
 // proseWidth caps a block of SENTENCES at a readable measure, independently of
@@ -1721,6 +1725,14 @@ var appScriptSrc = staticJS("app", `
     document.querySelectorAll('[data-fab]').forEach(function (f) {
       f.classList.toggle('hidden', f.getAttribute('data-fab') !== tab);
     });
+    // A launcher drawn on every tab but one (notifFAB): hidden on that one —
+    // and its panel closed, so nothing it opened stays up without it.
+    document.querySelectorAll('[` + fabHiddenOnTabAttr + `]').forEach(function (f) {
+      var off = f.getAttribute('` + fabHiddenOnTabAttr + `') === tab;
+      f.classList.toggle('hidden', off);
+      // (notifOpen lives in initGlobal's scope, not this one: it is asked.)
+      if (off && f.id === 'notif-fab') document.dispatchEvent(new CustomEvent('muster:notif-close'));
+    });
     // Segmented [Requests | Tasks] control: reflect the active tab (aria-selected
     // drives the pill styling). All seg buttons across both panels stay in sync.
     document.querySelectorAll('[data-seg-tab]').forEach(function (s) {
@@ -1814,6 +1826,9 @@ var appScriptSrc = staticJS("app", `
     var p = document.getElementById('notif-panel');
     return p && !p.classList.contains('hidden');
   }
+  // The router hides the launcher on the Agents tab (show); it closes the
+  // panel with it, so nothing it opened stays up without it.
+  document.addEventListener('muster:notif-close', function () { if (notifIsOpen()) notifOpen(false); });
   document.addEventListener('click', function (e) {
     var fab = e.target.closest && e.target.closest('#notif-fab');
     if (fab) { e.preventDefault(); notifOpen(!notifIsOpen()); return; }

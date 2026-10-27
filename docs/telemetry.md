@@ -1,7 +1,7 @@
 # Telemetry: tracing an open
 
-Opening an agent session (a card on **Agents**, a switcher entry, a Recent
-entry) is several requests on three machines: the browser, `muster-server` and
+Opening an agent session (a card on **Agents**, or an entry of the session
+switcher) is several requests on three machines: the browser, `muster-server` and
 the host's `muster-mirror`. When one is slow, or the view says it disconnected,
 this page is how to find which hop did it, from one trace, one log line or a
 metric.

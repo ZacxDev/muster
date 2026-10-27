@@ -363,8 +363,9 @@
   }
 
   // candidates is the likely-next windows, in order: pinned, then recently
-  // viewed (as the page lists them), then any entry a page marks
-  // data-snap-warm, then this browser's own recent snapshots; at most WARM_MAX,
+  // viewed (the session switcher's Pins and Recent rows, as the page draws
+  // them), then any other entry a page marks data-snap-warm (the switcher's
+  // All row), then this browser's own recent snapshots; at most WARM_MAX,
   // never the window on screen.
   function candidates() {
     var seen = {}, out = [], self = here();
@@ -377,8 +378,8 @@
       out.push(ref);
     }
     try {
-      document.querySelectorAll('a[data-pinned-chip-link], a[data-recent-entry="mirror"], a[data-snap-warm]').forEach(function (a) {
-        add(refOf(a.getAttribute('href')));
+      ['[data-switcher-list="pins"] a[data-snap-warm]', '[data-switcher-list="recent"] a[data-snap-warm]', 'a[data-snap-warm]'].forEach(function (sel) {
+        document.querySelectorAll(sel).forEach(function (a) { add(refOf(a.getAttribute('href'))); });
       });
     } catch (e) {}
     return recent().then(function (rs) {

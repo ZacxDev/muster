@@ -120,14 +120,36 @@ func eqStrings(a, b []string) bool {
 	return true
 }
 
-var recentEntryHref = regexp.MustCompile(`<a href="([^"]+)" hx-boost="false" data-recent-entry="(agent|mirror)"`)
+var switcherEntryHref = regexp.MustCompile(`<a href="([^"]+)" hx-boost="false" (?:data-snap-warm="" )?data-switcher-entry="(agent|mirror)"`)
 
-// TestTheListDrawsTheRecentStrip: GET /ui/agents sends the strip OUT OF BAND,
-// resolved against the cards it renders: newest first, pinned entries and
-// entries that are gone skipped. Fixture: agents 5, 6, 7 and windows main@1,
-// chief@2 (pinWindows); agent 6 and chief@2 are pinned; agent 99 and window
-// main@9 do not exist.
-func TestTheListDrawsTheRecentStrip(t *testing.T) {
+// switcherRow is the markup of the session switcher's row id in body (its
+// opening tag to the row's close).
+func switcherRow(t *testing.T, body, id string) string {
+	t.Helper()
+	at := strings.Index(body, `id="`+id+`"`)
+	if at < 0 {
+		t.Fatalf("no #%s in:\n%s", id, body)
+	}
+	r := body[at:]
+	return r[:strings.Index(r, "</div>")]
+}
+
+func rowHrefs(row string) []string {
+	var got []string
+	for _, m := range switcherEntryHref.FindAllStringSubmatch(row, -1) {
+		got = append(got, m[1])
+	}
+	return got
+}
+
+// TestTheListRefreshesTheSwitchersRows: GET /ui/agents sends the session
+// switcher's rows OUT OF BAND (they replaced the "Recently viewed" strip),
+// resolved against the cards it renders: Recent is the visits newest first,
+// pinned ones INCLUDED (Pins is a view of its own there), gone ones skipped;
+// Pins the pinned entries. Fixture: agents 5, 6, 7 and windows main@1, chief@2
+// (pinWindows); agent 6 and chief@2 are pinned; agent 99 and window main@9 do
+// not exist.
+func TestTheListRefreshesTheSwitchersRows(t *testing.T) {
 	mem := &memRecents{}
 	for _, v := range []recents.Entry{
 		{AgentID: 5},
@@ -147,69 +169,52 @@ func TestTheListDrawsTheRecentStrip(t *testing.T) {
 	mp.pinFor(1).Mirrors[pins.MirrorKey{Host: "ws", Session: "chief", Window: "@2"}] = true
 
 	body := getOwed(t, s, h, "/ui/agents").Body.String()
-	if !regexp.MustCompile(`<nav id="agents-recent" aria-label="Recently viewed" hx-swap-oob="morph"`).MatchString(body) {
-		t.Fatalf("no out-of-band strip in the list:\n%s", body)
+	if strings.Contains(body, "agents-recent") {
+		t.Error("the list still sends the Recently viewed strip")
 	}
-	var got []string
-	for _, m := range recentEntryHref.FindAllStringSubmatch(body, -1) {
-		got = append(got, m[1])
+	if !strings.Contains(body, `<div id="switcher-list-recent" hx-swap-oob="innerHTML">`) {
+		t.Fatalf("no out-of-band Recent row in the list:\n%s", body)
 	}
-	want := []string{"/agents/idle-newest", amp(ref("main", "@1").TerminalPath()), "/agents/chatting-oldest"}
-	if !eqStrings(got, want) {
-		t.Errorf("strip = %v, want %v (newest first, without the pinned 6 / chief@2 and the gone 99 / main@9)", got, want)
-	}
-	// Control: with nothing pinned the pinned two are drawn, in their places.
-	mp.pinFor(1).Agents[6] = false
-	delete(mp.pinFor(1).Mirrors, pins.MirrorKey{Host: "ws", Session: "chief", Window: "@2"})
-	body = getOwed(t, s, h, "/ui/agents").Body.String()
-	got = nil
-	for _, m := range recentEntryHref.FindAllStringSubmatch(body, -1) {
-		got = append(got, m[1])
-	}
-	want = []string{"/agents/idle-newest", "/agents/status-moved", amp(ref("main", "@1").TerminalPath()),
+	got := rowHrefs(switcherRow(t, body, "switcher-list-recent"))
+	want := []string{"/agents/idle-newest", "/agents/status-moved", amp(ref("main", "@1").TerminalPath()),
 		amp(ref("chief", "@2").TerminalPath()), "/agents/chatting-oldest"}
 	if !eqStrings(got, want) {
-		t.Errorf("unpinned strip = %v, want %v", got, want)
+		t.Errorf("Recent = %v, want %v (newest first, pinned included, the gone 99 / main@9 left out)", got, want)
+	}
+	if got, want := rowHrefs(switcherRow(t, body, "switcher-list-pins")), []string{"/agents/status-moved", amp(ref("chief", "@2").TerminalPath())}; !eqStrings(got, want) {
+		t.Errorf("Pins = %v, want %v", got, want)
 	}
 }
 
-// TestTheAgentsShellDrawsTheStripOnFirstPaint: GET /agents draws the strip WITH
-// its entries in the document itself (ui.ShellData), so the list's first load
-// replaces it in place instead of filling an empty, hidden one above the list —
-// which pushed the filter and every card down (a layout shift, e2e/tests/
-// cls.spec.ts). Same resolution as the list's out-of-band copy. Any other tab
-// draws the old empty target: its Agents panel is hidden, where nothing moves.
-func TestTheAgentsShellDrawsTheStripOnFirstPaint(t *testing.T) {
+// TestTheAgentsShellDrawsTheSwitcherOnFirstPaint: GET /agents draws the
+// switcher's rows WITH their entries in the document itself (ui.ShellData), so
+// the bar paints whole with the page; the list's first load refreshes them in
+// place. Same resolution as the list's out-of-band copy. Any other tab draws
+// the bar pending — no entries and no "nothing here" line — its Agents panel
+// hidden until a switch to it, whose list load fills the rows.
+func TestTheAgentsShellDrawsTheSwitcherOnFirstPaint(t *testing.T) {
 	mem := &memRecents{}
 	mem.put(recents.Entry{AgentID: 5})
-	mem.put(recents.Entry{AgentID: 6}) // pinned: left out
+	mem.put(recents.Entry{AgentID: 6}) // pinned: still a Recent entry
 	mem.put(recents.Entry{AgentID: 7})
 	mp := &memPins{}
 	s, h := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, mp)
 	s.ext.Recents = mem
 	mp.pinFor(1).Agents[6] = true
 
-	strip := regexp.MustCompile(`(?s)<nav id="agents-recent"[^>]*>.*?</nav>`)
 	body := getOwed(t, s, h, "/agents").Body.String()
-	nav := strip.FindString(body)
-	if nav == "" {
-		t.Fatalf("no strip in the /agents document:\n%s", body)
+	if want := []string{"/agents/idle-newest", "/agents/status-moved", "/agents/chatting-oldest"}; !eqStrings(rowHrefs(switcherRow(t, body, "switcher-list-recent")), want) { // 7, 6, 5
+		t.Errorf("first-paint Recent = %v, want %v", rowHrefs(switcherRow(t, body, "switcher-list-recent")), want)
 	}
-	if strings.Contains(nav[:strings.Index(nav, ">")], "hidden") {
-		t.Errorf("the /agents shell's strip is drawn hidden, to be filled later: %s", nav[:strings.Index(nav, ">")+1])
-	}
-	var got []string
-	for _, m := range recentEntryHref.FindAllStringSubmatch(nav, -1) {
-		got = append(got, m[1])
-	}
-	if want := []string{"/agents/idle-newest", "/agents/chatting-oldest"}; !eqStrings(got, want) { // 7, then 5
-		t.Errorf("first-paint strip = %v, want %v (newest first, the pinned 6 left out)", got, want)
+	if strings.Contains(body, "data-switcher-current") {
+		t.Error("an entry is drawn current on the Agents list")
 	}
 
-	// Control: the board draws the old empty, hidden target.
-	nav = strip.FindString(getOwed(t, s, h, "/tasks").Body.String())
-	if nav == "" || !strings.Contains(nav[:strings.Index(nav, ">")], `hidden`) || recentEntryHref.MatchString(nav) {
-		t.Errorf("the /tasks shell's strip should be the empty hidden target, got: %s", nav)
+	// Control: the board's Agents panel draws the bar pending.
+	tasks := getOwed(t, s, h, "/tasks").Body.String()
+	row := switcherRow(t, tasks, "switcher-list-recent")
+	if switcherEntryHref.MatchString(row) || strings.Contains(row, "No other recent sessions") {
+		t.Errorf("the /tasks shell's Recent row should be pending (empty), got: %s", row)
 	}
 }
 
@@ -223,33 +228,4 @@ type countingInstances struct {
 func (c *countingInstances) Instances(ctx context.Context) ([]provision.Instance, error) {
 	c.n++
 	return c.Provisioner.Instances(ctx)
-}
-
-// 🔴 A REGRESSION TEST: the shell's first paint built the strip's cards with NO
-// Status, so statusLabel("") drew every agent "pending" until the list's load
-// replaced the strip. It must draw the status the LIST's cards are drawn with:
-// the document server-renders the list (agents_list_ssr.go) and resolves the
-// strip against those same cards — the live status, read from the provisioner
-// (the stored one only when that read does not answer in time:
-// TestTheAgentsDocumentDoesNotWaitOnAStalledInstanceRead). This fixture's
-// provisioner reports no instance, and the live rule (agents.ComputeStatus)
-// leaves these two at running and stopped — two different answers, neither
-// "pending".
-func TestTheShellStripDrawsTheListsStatusOnFirstPaint(t *testing.T) {
-	mem := &memRecents{}
-	mem.put(recents.Entry{AgentID: 5})
-	mem.put(recents.Entry{AgentID: 7})
-	s, _ := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, &memPins{})
-	s.ext.Recents = mem
-	s.ext.Provisioner = &countingInstances{Provisioner: newFakeTerminal()}
-	body := getOwed(t, s, s.Handler(), "/agents").Body.String()
-	for name, want := range map[string]string{"chatting-oldest": "running", "idle-newest": "stopped"} {
-		m := regexp.MustCompile(`<a href="/agents/` + name + `"[^>]*data-recent-entry="agent"[\s\S]*?</a>`).FindString(body)
-		if m == "" {
-			t.Fatalf("control: no strip entry for %s on first paint:\n%s", name, body)
-		}
-		if !strings.Contains(m, `aria-label="Status: `+want+`"`) {
-			t.Errorf("strip entry %s on first paint does not draw its stored status %q:\n%s", name, want, m)
-		}
-	}
 }

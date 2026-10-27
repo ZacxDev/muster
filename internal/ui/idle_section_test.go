@@ -139,7 +139,7 @@ func TestTheIdleSectionStartsCollapsed(t *testing.T) {
 		t.Error("the server draws the Idle section open")
 	}
 	head := scriptWith(t, page, "__musterAgentsRules =")
-	for _, want := range []string{"'" + agentsIdleOpenKey + "'", "toggleAttribute('data-agents-idle-open'", "toggleAttribute('data-agents-searching'"} {
+	for _, want := range []string{"'" + agentsIdleOpenKey + "'", "toggleAttribute('data-agents-idle-open'"} {
 		if !strings.Contains(head, want) {
 			t.Errorf("the head script does not set the section's state before the first paint: missing %s", want)
 		}

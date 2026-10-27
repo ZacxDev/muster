@@ -182,19 +182,13 @@ test('two hosts with the same label: two distinct titles, live, and each page is
   const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
   expect(sw, 'no sideways scroll').toBeLessThanOrEqual(cw);
 
-  // The filter still matches on the label, the host, and the title as shown.
-  const box = page.locator('#agents-search');
-  const visible = (h: string) => cardsOf(page, h).filter({ visible: true });
-  await box.fill('mango:1');
-  await expect(visible(hostA)).toHaveCount(1);
-  await expect(visible(hostB)).toHaveCount(1);
-  await box.fill(hostB);
-  await expect(visible(hostA)).toHaveCount(0);
-  await expect(visible(hostB)).toHaveCount(1);
-  await box.fill(`mango:1 · ${hostA}`);
-  await expect(visible(hostA)).toHaveCount(1);
-  await expect(visible(hostB)).toHaveCount(0);
-  await page.locator('#agents-search-clear').click();
+  // The session switcher's search (which replaced the list's search box)
+  // finds both by their codename, each titled apart by its host.
+  await page.locator('#switcher-search-open').click();
+  await page.locator('#switcher-search-input').fill('mango');
+  const found = await page.locator('#switcher-search-results [role="option"] > span:first-child').allTextContents();
+  expect(found, 'two mango windows, told apart by their hosts').toEqual(expect.arrayContaining([`mango:1 · ${hostA}`, `mango:1 · ${hostB}`]));
+  await page.keyboard.press('Escape');
 
   // Each card opens a page titled EXACTLY as the card: A's (Claude Code) the
   // rendered view, B's (a shell) the terminal.
@@ -225,14 +219,13 @@ test('two hosts with the same label: two distinct titles, live, and each page is
 
 // A HOST TAB MATCHES EXACTLY. Host C's name contains host A's ("…book"), so a
 // substring match on host A shows C's window too — which is how choosing host
-// "mac" once showed "macbook". The tab filters on the whole host field; a TYPED
-// host:<value> stays a substring.
+// "mac" once showed "macbook". The tab filters on the whole host field.
 //
 // 🔴 A REGRESSION TEST (ported from the host dropdown the tabs replaced): with
 // the tab's term made a substring (internal/ui/agents_filter.go, `exact: true`
 // dropped), C's card stays visible under A's tab.
 const hostTab = (page: Page, h: string) => page.locator(`#agents-hosts [role="tab"][data-host="${h}"]`);
-test('a host tab matches exactly; a typed host: is still a substring', async ({ page }) => {
+test('a host tab matches exactly', async ({ page }) => {
   await page.goto(origin + '/login');
   await page.fill('#muster-password', password);
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
@@ -254,13 +247,6 @@ test('a host tab matches exactly; a typed host: is still a substring', async ({ 
   await hostTab(page, hostC).tap();
   await expect(visible(hostC)).toHaveCount(1);
   await expect(visible(hostA)).toHaveCount(0);
-
-  // Typed on All: a substring, as it always was — both hosts.
-  await hostTab(page, '').tap();
-  await page.locator('#agents-search').fill(`host:${hostA}`);
-  await expect(visible(hostA)).toHaveCount(2);
-  await expect(visible(hostC)).toHaveCount(1);
-  await page.locator('#agents-search-clear').tap();
 
   // The chosen tab survives a reload, still exact.
   await hostTab(page, hostA).tap();
@@ -285,168 +271,35 @@ function startCOnce() {
   startHost(hostC, tokenC);
 }
 
-// A LIST REFRESH NEVER MOVES WHAT IS BEING TYPED, AND NEVER UNDOES A CHOSEN
-// TAB. ?q= follows every keystroke, so re-reading it on a refresh would rewrite
-// the box mid-word (the caret jumps, and the next keystroke lands in another
-// string); and the tabs are rebuilt on every refresh, which must not reset the
-// chosen one.
-//
-// 🔴 REGRESSION TESTS: at b58779b the first refresh took a typed host=<A> out
-// of the box (into the dropdown that was there then).
+// A LIST REFRESH NEVER UNDOES A CHOSEN TAB: the tabs are rebuilt on every
+// refresh, which must not reset the chosen one. (Its sibling — a refresh never
+// moves what is being typed in the search box — went with the box.)
 async function openRefreshable(page: Page) {
   await signIn(page);
   startCOnce();
   await page.goto(origin + '/agents');
   await expect(cardsOf(page, hostC), `host C's card (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
   await takeNew(page);
-  const box = page.locator('#agents-search');
   const visible = (h: string) => cardsOf(page, h).filter({ visible: true });
-  const qOf = () => new URL(page.url()).searchParams.get('q');
   await expect(hostTab(page, hostC)).toHaveCount(1, { timeout: 20_000 });
   const kiwiTitle = () => shownTitle(cardsOf(page, hostA).filter({ hasNot: page.locator('[data-mirror-label]') }));
   await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
-  return { box, visible, qOf, kiwiTitle };
+  return { visible, kiwiTitle };
 }
 
-test('a refresh leaves a typed exact token in the box, caret and all', async ({ page }) => {
-  const { box, visible, qOf, kiwiTitle } = await openRefreshable(page);
-  // Typed by hand, focused, the caret mid-token.
-  await box.tap();
-  await box.pressSequentially(`host=${hostA}`);
-  await box.evaluate((e: HTMLInputElement) => e.setSelectionRange(3, 3));
-  expect(qOf()).toBe(`host=${hostA}`);
-  await expect(visible(hostA)).toHaveCount(2);
-  await expect(visible(hostC), 'typed host= is exact too').toHaveCount(0);
-  // The list refreshes: host A's kiwi window is renumbered.
-  writeWindows(hostA, [aMango, { ...aKiwi, index: 4 }]);
-  await expect.poll(kiwiTitle, { message: `the list refreshed (log:\n${mirrorLog})`, timeout: 20_000 }).toBe('kiwi:4');
-  // The positive control that this settle ran the script: the count follows it.
-  await expect(page.locator('#agents-count')).toHaveText(/^2 of \d+$/);
-  await expect(box, 'the typed token stayed in the box').toHaveValue(`host=${hostA}`);
-  await expect(hostTab(page, ''), 'and chose no tab').toHaveAttribute('aria-selected', 'true');
-  await expect(box).toBeFocused();
-  expect(await box.evaluate((e: HTMLInputElement) => [e.selectionStart, e.selectionEnd]), 'the caret did not move').toEqual([3, 3]);
-  // Typing on lands where the caret is, in the same string.
-  await page.keyboard.press('End');
-  await page.keyboard.type(' mango');
-  await expect(box).toHaveValue(`host=${hostA} mango`);
-  await expect(visible(hostA)).toHaveCount(1);
-  await page.locator('#agents-search-clear').tap();
-  writeWindows(hostA, [aMango, aKiwi]);
-});
-
-test('a refresh never undoes a chosen tab; a link fills the box', async ({ page }) => {
-  const { box, visible, qOf, kiwiTitle } = await openRefreshable(page);
-  // A chosen host, and ANOTHER exact host typed (blurred, so it is the refresh
-  // and not the focus that must leave it alone): nothing matches both, and a
-  // refresh must keep both exactly as they are.
+test('a refresh never undoes a chosen tab', async ({ page }) => {
+  const { visible, kiwiTitle } = await openRefreshable(page);
   await hostTab(page, hostA).tap();
-  await box.fill(`host=${hostC}`);
-  await box.blur();
-  expect(qOf()).toBe(`host=${hostC}`);
-  await expect(visible(hostA)).toHaveCount(0);
+  await expect(visible(hostA)).toHaveCount(2);
   await expect(visible(hostC)).toHaveCount(0);
   writeWindows(hostA, [aMango, { ...aKiwi, index: 5 }]);
   await expect.poll(kiwiTitle, { message: `the list refreshed (log:\n${mirrorLog})`, timeout: 20_000 }).toBe('kiwi:5');
   await expect(hostTab(page, hostA), 'the refresh did not undo the tab').toHaveAttribute('aria-selected', 'true');
-  await expect(box).toHaveValue(`host=${hostC}`);
-  expect(qOf()).toBe(`host=${hostC}`);
-  await expect(visible(hostC)).toHaveCount(0);
-  expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
-
-  // A link's token lands in the box and filters (on All).
-  await hostTab(page, '').tap();
-  await page.goto(origin + '/agents?q=' + encodeURIComponent(`host=${hostC}`));
-  await expect(box).toHaveValue(`host=${hostC}`);
-  await expect(visible(hostC)).toHaveCount(1, { timeout: 20_000 });
-  await expect(visible(hostA)).toHaveCount(0);
-  await page.locator('#agents-search-clear').tap();
-  writeWindows(hostA, [aMango, aKiwi]);
-});
-
-// A VALUE WITH A DOUBLE QUOTE (AND A BACKSLASH) CAN BE TYPED AND MATCHES. A
-// mirrored window's kind is its pane's command when muster has no name for it,
-// so it can hold any printable character; a quoted exact token reads `\"` and
-// `\\` back, so the value round-trips through ?q=.
-//
-// 🔴 A REGRESSION TEST (ported from the kind dropdown): at b58779b the quote was
-// dropped (kind=odd\cmd), which no card carries, so the filter hid everything.
-test('a kind holding a double quote and a backslash, typed as a quoted token, matches its card and round-trips ?q=', async ({ page }) => {
-  const odd = 'odd\\"cmd'; // odd\"cmd
-  const plum: Win = { session: 'plum', id: '@8', index: 3, active: true, command: odd, activity: now - 30 };
-  writeWindows(hostA, [aMango, aKiwi, plum]);
-  await signIn(page);
-  await page.goto(origin + '/agents');
-  const plumCard = cardsOf(page, hostA).filter({ has: page.locator('[data-mirror-name]', { hasText: 'plum:3' }) });
-  await expect(plumCard, `the plum window (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
-  // It may have registered after the first paint, and wait behind the pill.
-  await takeNew(page);
-  const shown = page.locator('#agents-list > article').filter({ visible: true });
-  const token = 'kind="odd\\\\\\"cmd"'; // kind="odd\\\"cmd"
-  const box = page.locator('#agents-search');
-
-  await box.fill(token);
-  await expect(plumCard, 'the typed kind matches its card').toBeVisible();
-  await expect(shown, 'only the plum window').toHaveCount(1);
-  expect(new URL(page.url()).searchParams.get('q')).toBe(token);
-  // A reload reads the token back into the same filter.
-  await page.reload();
-  await expect(box).toHaveValue(token);
-  await expect(plumCard).toBeVisible({ timeout: 20_000 });
-  await expect(shown).toHaveCount(1);
-
-  // The window closes: the token stays in the box, still applied, and says so.
-  writeWindows(hostA, [aMango, aKiwi]);
-  await expect(plumCard, `the plum window closed (log:\n${mirrorLog})`).toHaveCount(0, { timeout: 20_000 });
-  await expect(box).toHaveValue(token);
-  await expect(page.locator('#agents-nomatch')).toBeVisible();
-  await page.locator('#agents-search-clear').tap();
-});
-
-// BACK/FORWARD RESTORES THE FILTER EACH /agents ENTRY HAD. The box is changed
-// on a newer entry; going back onto the older entry puts back ITS text, not
-// the newer one, and forward again puts the newer one back. (The host tab is
-// the browser's choice, not a history entry's.)
-//
-// 🔴 MUTATION-PINNED: with the popstate handler no longer placing the entry's
-// ?q= (internal/ui/agents_filter.go), the box keeps the newer filter and writes
-// it over the older entry's URL, so "the older entry keeps its own ?q=" fails.
-test('back and forward restore the filter each /agents entry had', async ({ page }) => {
-  await signIn(page);
-  startCOnce();
-  await page.goto(origin + '/agents');
-  await expect(cardsOf(page, hostC), `host C's card (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
-  await takeNew(page);
-  const box = page.locator('#agents-search');
-  const visible = (h: string) => cardsOf(page, h).filter({ visible: true });
-  const qOf = () => new URL(page.url()).searchParams.get('q');
-  await box.fill(`host=${hostA}`);
-  expect(qOf()).toBe(`host=${hostA}`);
-  const tab = (t: string) => page.evaluate((t) => (document.querySelector(`#sidebar a[data-tab="${t}"]`) as HTMLElement).click(), t);
-  await tab('tasks');
-  await page.waitForURL((u) => u.pathname === '/tasks');
-  await tab('agents');
-  await page.waitForURL((u) => u.pathname === '/agents' && u.searchParams.get('q') === `host=${hostA}`);
-  // The newer entry: another host and a word.
-  await box.fill(`host=${hostC} fig`);
-  expect(qOf()).toBe(`host=${hostC} fig`);
-
-  await page.goBack();
-  await page.waitForURL((u) => u.pathname === '/tasks');
-  await page.goBack();
-  await page.waitForURL((u) => u.pathname === '/agents');
-  expect(qOf(), 'the older entry keeps its own ?q= (the newer box is not written over it)').toBe(`host=${hostA}`);
-  await expect(box, 'the older entry restores its box').toHaveValue(`host=${hostA}`);
   await expect(visible(hostA)).toHaveCount(2);
   await expect(visible(hostC)).toHaveCount(0);
-
-  await page.goForward();
-  await page.goForward();
-  await page.waitForURL((u) => u.pathname === '/agents' && u.searchParams.get('q') === `host=${hostC} fig`);
-  await expect(box, 'forward restores the newer box').toHaveValue(`host=${hostC} fig`);
-  await expect(visible(hostC)).toHaveCount(1);
-  await expect(visible(hostA)).toHaveCount(0);
-  await page.locator('#agents-search-clear').tap();
+  expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
+  await hostTab(page, '').tap();
+  writeWindows(hostA, [aMango, aKiwi]);
 });
 
 // ONE HOST, ONE CODENAME, TWO SESSIONS — and no raw session name on the card.

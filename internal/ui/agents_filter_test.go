@@ -5,70 +5,47 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
 )
 
-var dataFilter = regexp.MustCompile(` data-filter="([^"]*)"`)
-
-func haystackOf(t *testing.T, card string) string {
-	t.Helper()
-	m := dataFilter.FindStringSubmatch(card)
-	if m == nil {
-		t.Fatalf("the card carries no data-filter:\n%s", card)
-	}
-	return m[1]
-}
-
-// TestEveryCardCanBeFoundByWhatItIs: each card carries, lower-cased, what the
-// filter matches it by. A mirrored window: its label ("Gold:8"), its raw tmux
-// session name, its host, what runs in it, and "mirrored". An agent: its
-// display name, its slug, its repository, its kind, its account, its status.
-// The values are pairwise distinct, so a card found by the wrong field fails.
-func TestEveryCardCanBeFoundByWhatItIs(t *testing.T) {
-	win := haystackOf(t, renderNode(t, mirrorCard(MirrorCardView{Host: "Tower", Session: "Scratch2", Window: "@7", Label: "Gold:8",
-		Kind: "opencode", Online: true, Interactive: true})))
-	for _, want := range []string{"gold:8", "scratch2", "tower", "opencode", "mirrored", "interactive"} {
-		if !strings.Contains(win, want) {
-			t.Errorf("a mirrored window's haystack %q lacks %q", win, want)
+// TestNoCardCarriesTheRemovedSearchBoxsAttributes: the search box is gone
+// (the session switcher's palette superseded it), and with it the two
+// attributes only it read — the free-text `data-filter` haystack and the
+// `data-rank-title` its rank read — on both card kinds, focus and all. The
+// fields the host tabs read stay (the control). Red at origin/main: every card
+// carried both.
+func TestNoCardCarriesTheRemovedSearchBoxsAttributes(t *testing.T) {
+	focus := &FocusView{Title: "Refactoring the widget pipeline", Description: "slow", UpdatedAt: time.Now()}
+	cards := renderNode(t, AgentsCardsWithMirrors(
+		[]AgentCardView{{ID: 7, Name: "keen-wren", DisplayName: "Fix The Chip", Status: "running", Focus: focus}},
+		[]MirrorCardView{{Host: "Tower", Session: "Scratch2", Window: "@7", Label: "Gold:8", Online: true, Focus: focus}}))
+	for _, gone := range []string{" data-filter=", " data-rank-title="} {
+		if strings.Contains(cards, gone) {
+			t.Errorf("a card still carries%s, which only the removed search box read", gone)
 		}
 	}
-	if win != strings.ToLower(win) || strings.Contains(win, "offline") {
-		t.Errorf("the haystack is not lower-case, or calls an online card offline: %q", win)
-	}
-	// A Claude Code window is found by "claude code" whatever its command is, an
-	// offline one by "offline", and a window with no codename by "<session>:<index>".
-	cc := haystackOf(t, renderNode(t, mirrorCard(MirrorCardView{Host: "tower", Session: "solo", Window: "@2", Title: "solo:3", Kind: "node", Claude: true})))
-	for _, want := range []string{"claude code", "solo:3", "offline"} {
-		if !strings.Contains(cc, want) {
-			t.Errorf("the haystack %q lacks %q", cc, want)
-		}
-	}
-	if strings.Contains(cc, "node") {
-		t.Errorf("a Claude Code window is filed under its command: %q", cc)
-	}
-
-	agent := haystackOf(t, renderNode(t, agentCard(AgentCardView{ID: 7, Name: "keen-wren", DisplayName: "#12 · Fix The Chip", Repo: "Acme/Widgets",
-		Kind: agents.KindClaudeCode, CCAccount: "Alpha", Status: "running"})))
-	for _, want := range []string{"#12 · fix the chip", "keen-wren", "acme/widgets", "claude code", "alpha", "running", "agent"} {
-		if !strings.Contains(agent, want) {
-			t.Errorf("an agent's haystack %q lacks %q", agent, want)
-		}
-	}
-	if strings.Contains(agent, "mirrored") {
-		t.Errorf("an agent is filed as mirrored: %q", agent)
+	if strings.Count(cards, ` data-f-host="`) != 2 {
+		t.Errorf("control: both cards should still carry data-f-host:\n%s", cards)
 	}
 }
 
-// TestTheFilterBoxIsOutsideTheListItFilters: the search box, its clear button
-// and its count are in the Agents panel but NOT inside #agents-list — the list
-// re-renders itself (an htmx morph) on every nudge, and an input inside it
-// would lose its focus and caret each time. And the box is phone-shaped: a 16px
-// input (iOS zooms the page on focusing a smaller one) and 44px targets.
-func TestTheFilterBoxIsOutsideTheListItFilters(t *testing.T) {
+// TestTheFilterBarHasNoSearchBox: the Agents panel draws no search input and
+// no clear button (operator ask: "Hide the existing search input because the
+// new command palette UX supersedes it"); the count and the "Nothing matches"
+// line the host tabs and chips still use are in the panel, OUTSIDE
+// #agents-list (a refresh never touches them). Red at origin/main: the box was
+// drawn.
+func TestTheFilterBarHasNoSearchBox(t *testing.T) {
 	panel := renderNode(t, AgentsPanel(true))
+	for _, gone := range []string{`id="agents-search"`, `id="agents-search-clear"`, `role="searchbox"`, "Search by name"} {
+		if strings.Contains(panel, gone) {
+			t.Errorf("the Agents panel still draws %s", gone)
+		}
+	}
 	list := strings.Index(panel, `id="agents-list"`)
-	for _, id := range []string{"agents-search", "agents-search-clear", "agents-count", "agents-nomatch"} {
+	for _, id := range []string{"agents-hosts", "agents-chips", "agents-count", "agents-nomatch"} {
 		i := strings.Index(panel, `id="`+id+`"`)
 		if i < 0 {
 			t.Fatalf("the Agents panel has no #%s", id)
@@ -77,55 +54,25 @@ func TestTheFilterBoxIsOutsideTheListItFilters(t *testing.T) {
 			t.Errorf("#%s is drawn after #agents-list opens — inside or below what a refresh re-renders", id)
 		}
 	}
-	tag := func(id string) string {
-		i := strings.Index(panel, `id="`+id+`"`)
-		start := strings.LastIndex(panel[:i], "<")
-		return panel[start : i+strings.Index(panel[i:], ">")]
-	}
-	input := tag("agents-search")
-	for _, want := range []string{" text-base ", "min-h-[44px]", `aria-controls="agents-list"`, `type="text"`} {
-		if !strings.Contains(input, want) {
-			t.Errorf("the filter input lacks %q: %s", want, input)
-		}
-	}
-	if strings.Contains(input, "text-sm") || strings.Contains(input, "text-xs") {
-		t.Errorf("the filter input is smaller than 16px: %s", input)
-	}
-	// The clear button is hidden by ATTRIBUTE until there is something to
-	// clear, so it must carry no display utility that would beat it.
-	clear := tag("agents-search-clear")
-	if !strings.Contains(clear, ` hidden=""`) {
-		t.Errorf("the clear button is not hidden while the box is empty: %s", clear)
-	}
-	for _, display := range []string{"inline-flex", " flex ", " grid ", " block "} {
-		if strings.Contains(clear, display) {
-			t.Errorf("the clear button carries %q, which beats its hidden attribute: %s", display, clear)
-		}
-	}
-	if !strings.Contains(clear, "h-11") || !strings.Contains(clear, "w-11") {
-		t.Errorf("the clear button is not a 44px target: %s", clear)
-	}
 }
 
-// TestTheFilterHidesWithOneRulePerWordAndCountsWithTheSameSelector pins the two
-// decisions the script is written around, where a rewrite would lose them:
-// the hiding is a stylesheet rule over data-filter (so the list's own refresh
-// cannot undo it), and the count is taken with the SAME selector fragment (so
+// TestTheFilterHidesWithStylesheetRulesAndCountsWithTheSameSelector pins the
+// two decisions the script is written around, where a rewrite would lose them:
+// the hiding is a stylesheet rule over the cards' attributes (so the list's own
+// refresh cannot undo it), and the count is taken with the SAME selector (so
 // what is counted is what is shown).
-func TestTheFilterHidesWithOneRulePerWordAndCountsWithTheSameSelector(t *testing.T) {
+func TestTheFilterHidesWithStylesheetRulesAndCountsWithTheSameSelector(t *testing.T) {
 	page := renderString(t, Page("agents", featuresAllOn))
-	// The rules and the grammar are the head script's (agents_filter_head.go),
-	// which the body script uses: the two are read as one.
+	// The rules are the head script's (agents_filter_head.go), which the body
+	// script uses: the two are read as one.
 	script := scriptWith(t, page, "__musterAgentsRules =") + scriptWith(t, page, "__musterAgentsFilter")
 	for name, want := range map[string]string{
-		"the rule hides a card lacking the term":  `r.push('#agents-list > article:not(' + sel(t) + '){display:none !important}')`,
-		"the count uses the same selector":        `list.querySelectorAll(':scope > article:not([data-held])' + curSel)`,
-		"the selector is the terms and the chips": `curSel = all_.map(sel).join('') + cs;`,
-		"a held arrival is hidden and uncounted":  `'#agents-list > article[data-held]{display:none !important}'`,
-		"the terms are lower-cased and parsed":    `tokens(String(q || '').toLowerCase()).forEach(`,
-		"typing replaces the URL, never pushes":   `history.replaceState(history.state, '', next)`,
-		"it re-counts when the list settles":      `if (e.target && e.target.id === 'agents-list') settled();`,
-		"it remembers the text for the session":   `sessionStorage.setItem(KEY, q)`,
+		"the host rule hides a card of another host": `' > article:not(' + h + '){display:none !important}'`,
+		"the chips' rule hides what they do not ask": `r.push('#agents-list > article:not(' + cs + '){display:none !important}')`,
+		"the count uses the same selector":           `list.querySelectorAll(':scope > article:not([data-held])' + curSel)`,
+		"the selector is the tab and the chips":      `curSel = (host ? sel({ attr: 'data-f-host', value: host, exact: true }) : '') + cs;`,
+		"a held arrival is hidden and uncounted":     `'#agents-list > article[data-held]{display:none !important}'`,
+		"it re-counts when the list settles":         `if (e.target && e.target.id === 'agents-list') settled();`,
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("%s: the filter script no longer contains %s", name, want)
@@ -173,11 +120,10 @@ func sameFields(t *testing.T, what string, got, want map[string]string) {
 	}
 }
 
-// TestEveryCardCarriesEachFieldInItsOwnAttribute: besides the free-text
-// haystack, a card carries ONE attribute per field, so `host:tower` can ask
-// about the host alone. Every fixture value is pairwise distinct (and none is
-// the literal "cluster"), so a field filled from another field — or from the
-// whole haystack — fails here by name.
+// TestEveryCardCarriesEachFieldInItsOwnAttribute: a card carries ONE
+// attribute per field, so the host tab can ask about the host alone. Every
+// fixture value is pairwise distinct (and none is the literal "cluster"), so a
+// field filled from another field fails here by name.
 //
 // 🔴 A DISPATCHED POD AGENT'S HOST IS THE LITERAL "cluster": muster has no
 // cluster name to put there, and naming it after a machine would merge "my
@@ -205,20 +151,11 @@ func TestEveryCardCarriesEachFieldInItsOwnAttribute(t *testing.T) {
 		"host": "dock", "type": "mirrored", "name": "solo:3", "session": "solo", "status": "stopped",
 		"kind": "claude code", "state": "offline",
 	})
-
-	// The free-text haystack is untouched by the fields: still exactly today's.
-	if got, want := haystackOf(t, agent), "#12 · fix the chip keen-wren acme/widgets claude code alpha running agent"; got != want {
-		t.Errorf("the agent's free-text haystack changed:\n got %q\nwant %q", got, want)
-	}
-	if got, want := haystackOf(t, win), "gold:8 ignored:8 gold:8 scratch2 tower opencode mirrored interactive"; got != want {
-		t.Errorf("the mirrored window's free-text haystack changed:\n got %q\nwant %q", got, want)
-	}
 }
 
 // TestEveryFieldIsARegisteredSafeIdentifier: the attribute NAME in a selector
 // is built from the field name, so the set is closed (the registry) and every
-// name is a plain lower-case identifier; and the script is handed exactly that
-// set, so a field the cards carry is a field the box understands.
+// name is a plain lower-case identifier.
 func TestEveryFieldIsARegisteredSafeIdentifier(t *testing.T) {
 	ident := regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 	seen := map[string]bool{}
@@ -235,11 +172,6 @@ func TestEveryFieldIsARegisteredSafeIdentifier(t *testing.T) {
 		if !seen[want] {
 			t.Errorf("field %q is not registered", want)
 		}
-	}
-	page := renderString(t, Page("agents", featuresAllOn))
-	script := scriptWith(t, page, "__musterAgentsRules =")
-	if !strings.Contains(script, "var FIELDS = "+cardFieldKeysJSON()+";") {
-		t.Errorf("the filter script is not handed the registry's field set %s", cardFieldKeysJSON())
 	}
 	// Both card kinds carry the fields every card has, whatever optional ones
 	// (repo, account, kind…) are empty. (An agent row always has a status.)
@@ -275,7 +207,7 @@ func TestTheFilterScriptDeclaresEachNameOnce(t *testing.T) {
 	decls := topLevelDeclarations(renderString(t, agentsFilterScript()))
 	// Positive control: names the parse must find, including a SECOND name of
 	// a comma list and both kinds.
-	for _, want := range []string{"function place", "var chosenHost", "var heldOrder", "var liveOrder", "function arrange"} {
+	for _, want := range []string{"function apply", "var chosenHost", "var heldOrder", "var liveOrder", "function arrange"} {
 		kind, name, _ := strings.Cut(want, " ")
 		found := false
 		for _, k := range decls[name] {
@@ -381,7 +313,7 @@ func TestTheHostTabsAreOrderedByOneListStatedInGo(t *testing.T) {
 
 // TestTheRulesTableIsRebuiltForAnotherBuildsVersion: the window-wide rules
 // table is defined when absent OR built from other values (its version is a
-// hash of the fields, chip selectors, ids and aliases), and the bound filter
+// hash of the table's shape, chip selectors, ids and aliases), and the bound filter
 // script reads the window's table at each call rather than keeping the one it
 // started with. (The browser case is agents-list-ux.spec.ts.) Red before: the
 // table was defined only when absent, and the script captured it.

@@ -8,93 +8,66 @@ import (
 	. "maragu.dev/gomponents/html"
 )
 
-// THE AGENTS LIST'S FILTER: a search box above the cards that narrows them as
-// you type. With every tmux window a card of its own the list runs past a
-// hundred entries; finding "Gold:8" should not mean scrolling for it.
+// THE AGENTS LIST'S FILTER: the host tabs and the quick-filter chips above
+// the cards.
 //
-// Each card carries what it can be found by in `data-filter` (filterHaystack):
-// its title, its raw session name, its host, what runs in it, and — for an
-// agent — its name, repository, kind and status. The box matches
-// case-insensitive substrings; several words must ALL match.
+// ⚠ THE SEARCH BOX THAT SAT HERE IS GONE (operator ask: "Hide the existing
+// search input because the new command palette UX supersedes it"). The session
+// switcher docked at the bottom of the list finds any entry by its codename or
+// title (switcher.go's search palette, also on "/"). With it went everything
+// that only served the box: its token grammar, the free-text `data-filter`
+// haystack and `data-rank-title` on each card, the rank reorder, the `?q=` in
+// the URL and the text kept in sessionStorage. A text a browser still holds
+// there from before is never read (and the head script deletes it), so a stale
+// filter cannot hide a card behind a box that is no longer drawn.
 //
 // 🔴 THE HIDING IS A STYLESHEET RULE, NOT AN ATTRIBUTE ON EACH CARD — and that
 // is what makes it survive the list's live refresh. #agents-list re-renders
 // itself (an htmx morph) whenever a host nudges it, which with many windows is
 // often. A filter that marked cards `hidden` would have its marks morphed away
 // with each refresh and every card would flash back until a script re-applied
-// them. Instead the script writes ONE rule per word,
-//
-//	#agents-list > article:not([data-filter*="word"]) { display: none }
-//
-// into a <style> in the document head. A refreshed card is hidden by the same
-// rule the moment it exists; nothing has to notice the refresh, the input is
-// outside the list and is never touched by it, and there is no per-card work
-// at all. Only the "N of M" count is recomputed when the list settles — with
-// the SAME attribute selector (agentsFilterScript's `sel`), so what is counted
-// is what is shown.
-//
-// FIELD TOKENS. Besides the free-text haystack each card carries ONE attribute
-// per field, `data-f-<field>` (cardFilterAttrs, over cardFieldRegistry), and the
-// box understands a typed token for each:
-//
-//	word            [data-filter*="word"]       anywhere on the card (as before)
-//	"two words"     [data-filter*="two words"]  a phrase
-//	host:tower      [data-f-host*="tower"]      that field only, as a substring
-//	host=tower      [data-f-host="tower"]       that field only, EXACTLY
-//	kind:"claude code"                          a quoted value may hold spaces
-//
-// Terms are whitespace-separated and ALL must match. A `field:value` matches as
-// a case-insensitive SUBSTRING of that field — the same rule as a free word, so
-// `host:tow` behaves like typing `tow`, only narrower. A `field=value` matches
-// the whole field, so `host=mac` does not also show host "macbook" (the host
-// TABS below match the same way). A token whose prefix is
-// NOT a registered field is free text, colon and all: a window called
-// "Gold:8" is found by typing `gold:8`, and that must keep working. A known
-// field with nothing after the colon (`host:` mid-typing) is no term yet, so the
-// list does not blank while the value is being typed. The rule per term is
-//
-//	#agents-list > article:not([data-f-host*="tower"]) { display: none }
-//
-// so a field token survives a refresh for the same reason a word does. The
-// field NAME in a selector comes only from the registry (a closed set of plain
-// identifiers, pinned by a test); the VALUE is escaped.
-//
-// The filter's text is also the page's `?q=` (history.replaceState, so typing
-// adds no history entries). On load a `?q=` wins over the session's remembered
-// copy, so a shared link reproduces the filter.
-//
-// HOST TABS. Above the box, one tab per host the list holds — "All", then
-// each host's name (dispatched pod agents are the host "cluster", podHost), in
-// hostTabOrder's order (the operator's named hosts, the rest A–Z, the cluster
-// last) — each with how many of its cards match the box. A tab is a FILTER OVER THE ONE
-// LIST, not a panel of its own: choosing one adds one more hide rule,
+// them. Instead the script writes the rules — one per filter in force — into a
+// <style> in the document head, e.g. for the host tab "tower":
 //
 //	#agents-list > article:not([data-f-host="tower"]) { display: none }
 //
-// EXACT (a host "mac" never shows "macbook"), ANDed with the box's terms the
-// same way the box's terms AND with each other, so it survives a refresh for
-// the same reason they do. The tabs are built by the script from the cards the
-// list DRAWS now (an arrival held behind the "N new ↑" pill offers no tab until
-// it is drawn) and rebuilt whenever the list re-renders, so a host that
-// connects gets a tab and one that leaves loses it.
+// A refreshed card is hidden by the same rule the moment it exists; nothing has
+// to notice the refresh, and there is no per-card work at all. Only the "N of
+// M" count is recomputed when the list settles — with the SAME attribute
+// selector (agentsFilterScript's `sel`), so what is counted is what is shown.
 //
-// The choice is the browser's, not the link's: it is kept in localStorage
-// ("muster:tabs:agents-host", the prefix tabs.go uses) and is NOT part of ?q=.
-// While the remembered host is not on the list (a restart, a laptop asleep)
-// the list SHOWS All and keeps the choice, and is filtered to that host again
-// when it is back; only the reader's own pick changes it. A link carrying its
-// own ?q= opens on All. The "N new ↑" hold counts only cards the filter (tab
-// AND box) shows, so a refresh that changes only hidden ones is applied at
-// once and the other hosts' tabs and counts stay live.
+// FIELDS. Each card carries ONE attribute per field, `data-f-<field>`
+// (cardFilterAttrs, over cardFieldRegistry): the host tabs read data-f-host
+// (and its spelling, data-l-host); the rest name a card's kind, status,
+// session and so on for every reader of the list's markup.
+//
+// HOST TABS. Above the chips, one tab per host the list holds — "All", then
+// each host's name (dispatched pod agents are the host "cluster", podHost), in
+// hostTabOrder's order (the operator's named hosts, the rest A–Z, the cluster
+// last) — each with how many of its cards the chips show. A tab is a FILTER
+// OVER THE ONE LIST, not a panel of its own: choosing one adds one more hide
+// rule, EXACT (a host "mac" never shows "macbook"), ANDed with the chips, so it
+// survives a refresh for the same reason they do. The tabs are built by the
+// script from the cards the list DRAWS now (an arrival held behind the "N new
+// ↑" pill offers no tab until it is drawn) and rebuilt whenever the list
+// re-renders, so a host that connects gets a tab and one that leaves loses it.
+//
+// The choice is the browser's: it is kept in localStorage
+// ("muster:tabs:agents-host", the prefix tabs.go uses). While the remembered
+// host is not on the list (a restart, a laptop asleep) the list SHOWS All and
+// keeps the choice, and is filtered to that host again when it is back; only
+// the reader's own pick changes it. The "N new ↑" hold counts only cards the
+// filter (tab AND chips) shows, so a refresh that changes only hidden ones is
+// applied at once and the other hosts' tabs and counts stay live.
 //
 // The tabs are tabs.go's WAI-ARIA tabs in markup, look (tabClass) and keys —
 // role=tablist/tab, aria-selected on exactly one, a roving tabindex, Left/Right
 // and Home/End move AND select — but NOT its script: tabs.go hides the panel
 // each tab aria-controls, and every host tab controls the same list.
 //
-// The box keeps the whole token grammar above (`host:tow`, `kind=shell`, …);
-// the four dropdowns (host, type, status, kind) that once wrote it for you are
-// gone — the host is the tab, and the rest are a typed token.
+// KEPT WITHOUT THE BOX, AND WHY: the host tabs and the chips (waiting / idle)
+// each narrow the list on their own — neither needs a typed word — and the
+// "N of M" count and the "Nothing matches" line say what they hid.
 
 // cardFields is what a card can be filtered by, one value per field. Empty
 // fields write no attribute.
@@ -105,10 +78,6 @@ import (
 // exists to make. `ns:` is the finer cut for pods.
 type cardFields struct {
 	Host, Type, Name, Status, Kind, Repo, Account, Session, NS, Mode, State string
-	// Titles are what the card is CALLED — an agent's display name and name, a
-	// window's label, title and session — in the order the card shows them. They
-	// rank a match (rankAttrs); they filter nothing.
-	Titles []string
 }
 
 // podHost is a dispatched agent's host field.
@@ -140,28 +109,17 @@ var cardFieldRegistry = []cardField{
 	{"type", func(f cardFields) string { return f.Type }},
 }
 
-// cardFieldKeysJSON is the registry's field names as a JS array literal.
-func cardFieldKeysJSON() string {
-	keys := make([]string, 0, len(cardFieldRegistry))
-	for _, f := range cardFieldRegistry {
-		keys = append(keys, f.Key)
-	}
-	b, _ := json.Marshal(keys)
-	return string(b)
-}
-
 // fieldValue is a field as written into its attribute: lower-cased, its
 // whitespace collapsed to single spaces — what the script does to a typed value.
 func fieldValue(v string) string { return strings.Join(strings.Fields(strings.ToLower(v)), " ") }
 
 // cardFilterAttrs is EVERY filter attribute of a card, for both card kinds:
-// the free-text `data-filter` haystack (exactly filterHaystack of the parts),
 // one `data-f-<field>` per non-empty field and, for a labelled field
 // (labelledFields) whose value lower-casing changed, `data-l-<field>`: the
 // value as the card spells it, which is what its host tab says ("Tower", not
 // "tower").
-func cardFilterAttrs(f cardFields, haystack ...string) g.Node {
-	attrs := g.Group{g.Attr("data-filter", filterHaystack(haystack...))}
+func cardFilterAttrs(f cardFields) g.Node {
+	var attrs g.Group
 	for _, fd := range cardFieldRegistry {
 		raw := strings.Join(strings.Fields(fd.Of(f)), " ")
 		v := fieldValue(raw)
@@ -173,53 +131,15 @@ func cardFilterAttrs(f cardFields, haystack ...string) g.Node {
 			attrs = append(attrs, g.Attr("data-l-"+fd.Key, raw))
 		}
 	}
-	return append(attrs, rankAttrs(f.Titles)...)
+	return attrs
 }
 
-// RANKING. While a free-text word is typed the shown cards are REORDERED, best
-// match first:
-//
-//	0  a title STARTS with the word                 ("gold" → "Gold:8")
-//	1  a WORD in a title starts with it             ("sweep" → "docs-sweeper")
-//	2  the word is anywhere else on the card        (the match that shows it)
-//
-// and cards of one rank keep the list's own order (pins first, then activity),
-// which is what clearing the box restores. Tiers 0 and 1 are window.musterRank
-// over the card's titles — the rule every search picker uses
-// (internal/searchrank), held to its shared table.
-//
-// 🔴 THE CARDS THEMSELVES MOVE (agentsFilterScript's reorder), so Tab and a
-// screen reader follow the ranking. An earlier version reordered with CSS
-// `order` rules, which survive a refresh but move only the boxes: the ranking
-// was visual only. The list's refresh morphs it back into the server's order;
-// the script re-ranks on htmx:afterSwap, in the same task, so no frame shows
-// the unranked order.
-//
-// rankAttrs is the attribute the script ranks by: every title, newline-led
-// (a newline cannot be typed into the box).
-func rankAttrs(titles []string) []g.Node {
-	var heads []string
-	seen := map[string]bool{}
-	for _, t := range titles {
-		v := strings.Join(strings.Fields(t), " ")
-		if v == "" || seen[v] {
-			continue
-		}
-		seen[v] = true
-		heads = append(heads, v)
-	}
-	if len(heads) == 0 {
-		return nil
-	}
-	return []g.Node{g.Attr("data-rank-title", "\n"+strings.Join(heads, "\n"))}
-}
+// retiredFilterStorageKey is where the removed search box kept its text
+// (sessionStorage). Nothing reads it; the head script deletes it.
+const retiredFilterStorageKey = "muster.agents.filter"
 
-// agentsFilterStorageKey is where the filter's text is kept for the browser
-// session, so it is still there after a visit to another tab or a card.
-const agentsFilterStorageKey = "muster.agents.filter"
-
-// filterHaystack is a card's `data-filter`: every non-empty part, lower-cased,
-// joined by spaces.
+// filterHaystack is every non-empty part, lower-cased, joined by spaces: an
+// agent's data-f-name (agentFields).
 func filterHaystack(parts ...string) string {
 	var b []string
 	for _, p := range parts {
@@ -295,48 +215,17 @@ func agentsHostTabs() g.Node {
 	)
 }
 
-// agentsFilterBar is the filter: the host tabs, a plain search box (and its
-// clear button), and the "N of M" count. It sits in the Agents panel ABOVE
-// #agents-list, outside what a refresh re-renders.
+// agentsFilterBar is the filter: the host tabs, the quick-filter chips and the
+// "N of M" count. It sits in the Agents panel ABOVE #agents-list, outside what
+// a refresh re-renders.
 func agentsFilterBar() g.Node {
 	return g.Group{
 		Div(
 			ID("agents-filter"),
 			Class("mb-3 flex min-w-0 flex-col gap-2"),
 			agentsHostTabs(),
-			Div(
-				Class("relative min-w-0"),
-				Input(
-					ID("agents-search"),
-					// text, not search: a search input draws the browser's own
-					// clear control beside ours.
-					Type("text"),
-					g.Attr("role", "searchbox"),
-					g.Attr("inputmode", "search"),
-					g.Attr("enterkeyhint", "search"),
-					g.Attr("autocomplete", "off"),
-					g.Attr("autocapitalize", "off"),
-					g.Attr("autocorrect", "off"),
-					g.Attr("spellcheck", "false"),
-					g.Attr("aria-label", "Search agents and sessions by name"),
-					g.Attr("aria-controls", "agents-list"),
-					Placeholder("Search by name"),
-					// text-base: 16px. iOS zooms the page on focusing a smaller input.
-					Class("min-h-[44px] w-full rounded-xl border-0 bg-s2 py-2.5 pl-3 pr-12 text-base text-fg ring-1 ring-inset ring-line placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-focus"),
-				),
-				// ⚠ No display utility on this button: it is shown and hidden with
-				// the `hidden` ATTRIBUTE, which an author display class would beat.
-				Button(
-					ID("agents-search-clear"),
-					Type("button"),
-					g.Attr("hidden", ""),
-					g.Attr("aria-label", "Clear the search"),
-					Class("press absolute right-0 top-0 h-11 w-11 rounded-xl text-xl leading-none text-muted transition hover:text-fg"),
-					g.Text("×"),
-				),
-			),
 			// The preset chips (list_signals.go): waiting on an ask / a question,
-			// idle past a threshold. Drawn here, with the box, so their row is
+			// idle past a threshold. Drawn here, with the tabs, so their row is
 			// part of the first paint and never shifts the list.
 			agentsFilterChips(),
 			Div(
@@ -374,22 +263,20 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   if (window.__musterAgentsFilter) return;
   window.__musterAgentsFilter = true;
   var TAG = document.currentScript;
-  var KEY = '` + agentsFilterStorageKey + `';
-  // THE GRAMMAR, THE CHIPS' TABLE AND THE HIDE RULES ARE agentsRulesJS's
+  // THE CHIPS' TABLE AND THE HIDE RULES ARE agentsRulesJS's
   // (agents_filter_head.go; emitted just above this IIFE and in the shell's
-  // head, defined once per window): the parser (tokens, terms, sel), the
-  // chips' selectors — computed in Go (chipSelectorsJSON), so this only looks
-  // them up — and the rules. The head applies the stored filter before the
+  // head, defined once per window): the selector builder (sel), the chips'
+  // selectors — computed in Go (chipSelectorsJSON), so this only looks them
+  // up — and the rules. The head applies the stored filter before the
   // first paint with them; this script keeps it applied. One definition, so
   // the two cannot disagree.
   // R is the window's table AT EACH CALL, never the one this script was bound
   // with: a boosted navigation into a newer build's page rebuilds the table
   // (agentsRulesVersion) while this script stays bound.
   var R = {};
-  ['terms', 'sel', 'chipsOf', 'chipSel', 'rules'].forEach(function (k) {
+  ['sel', 'chipsOf', 'chipSel', 'rules'].forEach(function (k) {
     R[k] = function () { var r = window.__musterAgentsRules; return r[k].apply(r, arguments); };
   });
-  function terms(q) { return R.terms(q); }
   function sel(t) { return R.sel(t); }
   // The chosen chips are remembered per device (localStorage), in try/catch:
   // storage can be unavailable.
@@ -442,7 +329,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   //
   // 🔴 TIME IS NOT INPUT. A card crossing an idle threshold while an idle chip
   // (or any filter) is on would appear or vanish by itself and move every card
-  // below it. So unless the restamp is the reader's own (live: typing, a tap,
+  // below it. So unless the restamp is the reader's own (live: a tap, a load,
   // the pill), a card whose VISIBILITY its new data-idle would change keeps its
   // old one: it is put in pendingIdle, counted on the "N new ↑" pill
   // (recountPill), and applied on the tap (applyLive). A change that shows or
@@ -501,22 +388,17 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   // THE IDLE SECTION (idle_section.go). Which section a card is in is the
   // server's data-idle-section; where the section is drawn, and whether it is
   // collapsed, is the stylesheet's (web/css/input.css) — keyed on <html>'s
-  // data-agents-idle-open (this viewer's choice, localStorage) and
-  // data-agents-searching (a term in the box draws it open).
+  // data-agents-idle-open (this viewer's choice, localStorage).
   var IDLE_OPEN_KEY = '` + agentsIdleOpenKey + `';
   // pendingSect: id -> the section the server says, for a card kept in its
   // drawn section because moving it would move what the reader sees.
   var pendingSect = {};
   function inSect(a) { return a.hasAttribute('data-idle-section'); }
-  function sectOpen() {
-    var r = document.documentElement;
-    return r.hasAttribute('data-agents-idle-open') || r.hasAttribute('data-agents-searching');
-  }
+  function sectOpen() { return document.documentElement.hasAttribute('data-agents-idle-open'); }
   // sectWouldMove: whether giving drawn card d the section of c (the refresh's
   // copy) would move anything in view — d has a box now (it would leave its
   // place), or c would get one (it would appear in its new place).
   function sectWouldMove(d, c) {
-    if (c.hasAttribute('data-pinned-chip')) return false;
     if (d.getClientRects().length) return true;
     if (curSel && !c.matches(curSel)) return false;
     return !inSect(c) || sectOpen();
@@ -529,7 +411,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   // syncIdleHead keeps the header true: its count is the section's cards the
   // filter shows (drawn ones; a held arrival is not), it is not drawn while
   // that is none, aria-expanded is the state in force, and it sits right
-  // before the section's first card in the DOM (a refresh or a rank can leave
+  // before the section's first card in the DOM (a refresh or a reorder can leave
   // it elsewhere; the stylesheet draws it in place regardless).
   function syncIdleHead(list) {
     var head = el('agents-idle-head');
@@ -548,94 +430,21 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
       if (focused && focused !== document.activeElement && focused.isConnected) focused.focus({ preventScroll: true });
     }
   }
-  // THE PINNED ROW'S "Edit pins" TOGGLE (pinned_chips.go): pressed, it shows a
-  // × on every chip (the stylesheet keys it on <html>'s
-  // data-agents-pins-editing, so a list refresh keeps it). Not remembered: a
-  // load starts with it off, as the server drew it.
-  function togglePinsEdit() {
-    var r = document.documentElement;
-    r.toggleAttribute('data-agents-pins-editing', !r.hasAttribute('data-agents-pins-editing'));
-  }
-  // syncPinsHead keeps the toggle true after a refresh (which redraws it
-  // unpressed) and marks it data-pins-empty while the filter shows no chip —
-  // which hides it, and the line break after the chips (web/css/input.css).
-  function syncPinsHead(list) {
-    var head = el('` + pinnedChipsHeadID + `');
-    if (!head || head.parentNode !== list) return;
-    var n = list.querySelectorAll(':scope > article[data-pinned-chip]:not([data-held])' + curSel).length;
-    if (head.hasAttribute('data-pins-empty') !== !n) head.toggleAttribute('data-pins-empty', !n);
-    var b = el('` + pinsEditToggleID + `'), on = String(document.documentElement.hasAttribute('data-agents-pins-editing'));
-    if (b && b.getAttribute('aria-pressed') !== on) b.setAttribute('aria-pressed', on);
-  }
-  // UNPIN FOCUS. A chip's × is removed with its chip when the list re-renders
-  // (the entry becomes a card again), which leaves focus on <body> — a
-  // keyboard reader would start over from the top. So the × remembers where
-  // focus should go next: the next shown chip's ×, else the previous one's,
-  // else the "Edit pins" toggle, else the search box; refocusAfterUnpin
-  // moves it there once the list has settled, only if focus was lost.
-  var unpinFocus = null;
-  function noteUnpin(btn) {
-    var chip = btn.closest('#agents-list > article[data-pinned-chip]');
-    if (!chip) return;
-    var list = chip.parentNode;
-    var chips = [].slice.call(list.querySelectorAll(':scope > article[data-pinned-chip]')).filter(function (c) {
-      return c !== chip && c.getClientRects().length;
-    });
-    var all = [].slice.call(list.querySelectorAll(':scope > article[data-pinned-chip]'));
-    var i = all.indexOf(chip);
-    var after = chips.filter(function (c) { return all.indexOf(c) > i; });
-    var before = chips.filter(function (c) { return all.indexOf(c) < i; });
-    unpinFocus = { from: chip.id, ids: after.map(function (c) { return c.id; }).concat(before.reverse().map(function (c) { return c.id; })) };
-  }
-  // Only the swap that took the chip away answers it: a background refresh
-  // that settles first (an SSE nudge) leaves the chip — and the wait — as is.
-  function refocusAfterUnpin() {
-    if (!unpinFocus) return;
-    var from = document.getElementById(unpinFocus.from);
-    if (from && from.hasAttribute('data-pinned-chip')) return;
-    var ids = unpinFocus.ids;
-    unpinFocus = null;
-    var a = document.activeElement;
-    if (a && a !== document.body && a.isConnected) return;
-    for (var i = 0; i < ids.length; i++) {
-      var c = document.getElementById(ids[i]);
-      var x = c && c.hasAttribute('data-pinned-chip') && c.querySelector('[data-pinned-chip-unpin]');
-      if (x && x.getClientRects().length) { x.focus({ preventScroll: true }); return; }
-    }
-    var t = el('` + pinsEditToggleID + `');
-    if (t && t.getClientRects().length) { t.focus({ preventScroll: true }); return; }
-    var box = el('agents-search');
-    if (box) box.focus({ preventScroll: true });
-  }
-  // reorder MOVES the cards into rank order for the first free-text term — the
-  // DOM itself, so Tab and a screen reader follow the ranking, not only the
-  // eye. A card's rank is the best window.musterRank (the pickers' rule,
-  // internal/searchrank) over its titles (data-rank-title): 0 a title starts
-  // with the word, 1 a word in one does, else 2 — the card is shown, so it
-  // matches the word somewhere. Equal ranks keep the list's own order
-  // (data-list-i, taken from the server's order), and with no free-text term
-  // that order comes back.
+  // reorder puts the cards in the DOM in the order the stylesheet draws them:
+  // a HELD arrival last (it is hidden, and drawn above a drawn card it would
+  // move every card behind it), the Idle section's cards after the rest (so
+  // Tab and a screen reader follow the sections), and otherwise the list's own
+  // order (data-list-i, taken from the server's order).
   //
   // 🔴 IT RUNS ON htmx:afterSwap TOO, BEFORE THE BROWSER PAINTS. A refresh
   // morphs the list back into the server's order (and drops data-list-i, which
-  // the server does not send, so it is retaken from that fresh order); re-ranking
-  // in the same task means no frame ever shows the unranked order. It moves
-  // nothing outside #agents-list and calls no focus(), so typing in the box is
-  // never interrupted.
-  function rankWord(ts) {
-    for (var i = 0; i < ts.length; i++) if (ts[i].attr === 'data-filter') return ts[i].value;
-    return '';
-  }
-  function cardRank(card, w) {
-    var best = 2;
-    (card.getAttribute('data-rank-title') || '').split('\n').forEach(function (t) {
-      if (!t || !window.musterRank) return;
-      var r = window.musterRank(t, w);
-      if (r === 0 || r === 1) best = Math.min(best, r);
-    });
-    return best;
-  }
-  function reorder(ts) {
+  // the server does not send, so it is retaken from that fresh order). It
+  // moves nothing outside #agents-list and calls no focus().
+  //
+  // ⚠ IT ALSO RANKED THE CARDS BY THE SEARCH BOX'S FIRST WORD, best match
+  // first. The box is gone (the session switcher's palette ranks its own
+  // results), and so is the rank.
+  function reorder() {
     var list = el('agents-list');
     if (!list) return;
     var cards = [].slice.call(list.querySelectorAll(':scope > article'));
@@ -643,18 +452,10 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
       // Fresh from the server (first load or a morph): this IS its order.
       cards.forEach(function (c, i) { c.setAttribute('data-list-i', String(i)); });
     }
-    var w = rankWord(ts);
-    // A HELD arrival sorts LAST, whatever its rank: it is hidden, and ranking
-    // it above a drawn card would move every drawn card behind it (with a
-    // filter typed, a held arrival that matches it best did exactly that).
     var keyed = cards.map(function (c) {
-      // s: the Idle section's cards after the rest, so the DOM (Tab, a screen
-      // reader) follows the sections the stylesheet draws.
-      // p: the pinned chips ahead of every card (pinned_chips.go): the
-      // stylesheet draws them first, and the DOM follows.
-      return { c: c, h: c.hasAttribute('data-held') ? 1 : 0, p: c.hasAttribute('data-pinned-chip') ? 0 : 1, s: inSect(c) ? 1 : 0, r: w ? cardRank(c, w) : 0, i: +c.getAttribute('data-list-i') };
+      return { c: c, h: c.hasAttribute('data-held') ? 1 : 0, s: inSect(c) ? 1 : 0, i: +c.getAttribute('data-list-i') };
     });
-    keyed.sort(function (a, b) { return a.h - b.h || a.p - b.p || a.s - b.s || a.r - b.r || a.i - b.i; });
+    keyed.sort(function (a, b) { return a.h - b.h || a.s - b.s || a.i - b.i; });
     arrange(list, cards, keyed.map(function (k) { return k.c; }));
   }
   // arrange puts cards (in DOM order now) into order (the same nodes), and
@@ -664,12 +465,9 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   // DETACHES each card, so a focused one blurs (it is handed focus back below)
   // and an open popover inside one closes. A held background refresh does not
   // come here: its markup is put in the drawn order before the morph
-  // (keepDrawnOrder), and a held swap is not re-ranked (apply(held), so a
-  // rename elsewhere that changes a drawn card's rank moves nothing until the
-  // tap). When reorder does run — the reader typing, the tap — held arrivals
-  // sort last, so they move nothing. ⚠ What a held refresh CAN still change in
-  // view: a drawn card whose new text stops (or starts) matching the typed
-  // filter is hidden (or shown) at once — content, not order, and still open.
+  // (keepDrawnOrder), and a held swap is not re-ordered (apply(held)). When
+  // reorder does run — a tap, a load — held arrivals sort last, so they move
+  // nothing.
   function arrange(list, cards, order) {
     if (!order.some(function (c, i) { return cards[i] !== c; })) return;
     var focused = document.activeElement;
@@ -681,34 +479,17 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
       focused.focus({ preventScroll: true });
     }
   }
-  function onAgents() { return location.pathname === '/agents'; }
-  // syncURL writes the text into ?q= — replaceState, so typing is not history.
-  function syncURL(v) {
-    if (!onAgents()) return;
-    var u = new URL(location.href);
-    if (v.trim()) u.searchParams.set('q', v); else u.searchParams.delete('q');
-    var next = u.pathname + u.search + u.hash;
-    if (next !== location.pathname + location.search + location.hash) history.replaceState(history.state, '', next);
-  }
-  function urlQ() {
-    if (!onAgents()) return null;
-    try { return new URL(location.href).searchParams.get('q'); } catch (e) { return null; }
-  }
   // THE HOST TABS (agentsHostTabs). chosenHost is the tab the reader chose:
   // read from localStorage once, written ONLY when the reader picks a tab, ''
-  // for All. shownHost is the host the list is filtered to now. linkAll is set
-  // for a page opened from a link carrying its own ?q= (boot): that load starts
-  // on All, so the link shows what it was shared to show, and the stored
-  // choice is left as it is.
+  // for All. shownHost is the host the list is filtered to now.
   var HOST_KEY = '` + agentsHostTabsStorageKey + `';
-  var chosenHost = null, shownHost = '', linkAll = false;
+  var chosenHost = null, shownHost = '';
   function hostChosen() {
     if (chosenHost === null) { try { chosenHost = localStorage.getItem(HOST_KEY) || ''; } catch (e) { chosenHost = ''; } }
     return chosenHost;
   }
   function chooseHost(h) {
     chosenHost = h;
-    linkAll = false;
     try { if (h) localStorage.setItem(HOST_KEY, h); else localStorage.removeItem(HOST_KEY); } catch (e) {}
   }
   function hostTabs(s) { return [].slice.call(s.querySelectorAll('[role="tab"]')); }
@@ -733,8 +514,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   // so it offers no tab yet), labelled by its data-l-host, in HOST_ORDER (and
   // by label among the hosts it does not name) —
   // and returns the host the list is filtered to ('' = All). Each tab's count
-  // is how many drawn cards of that host the box's terms (ts) show; All's is
-  // all of them.
+  // is how many drawn cards of that host the chips show; All's is all of them.
   //
   // A tab that stays is the SAME node (reused by its data-host); when the
   // order changes they are put in order by arrange — moveBefore where the
@@ -753,7 +533,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   // remembered host coming back arrives as held cards, which are not drawn, so
   // it is restored only when the refresh is applied (the tap, or the next
   // applied one).
-  function syncHosts(list, ts) {
+  function syncHosts(list) {
     var s = el('agents-hosts');
     if (!s) return '';
     var all = s.querySelector('[data-host=""]');
@@ -769,7 +549,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
       icons[v] = ic;
       hosts.push({ v: v, l: a.getAttribute('data-l-host') || v, i: ic ? ic.getAttribute('data-host-icon') : '' });
     });
-    var h = linkAll ? '' : hostChosen();
+    var h = hostChosen();
     var on = h && seen[h] ? h : '';
     hosts.sort(function (x, y) {
       var rx = hostRank(x.v), ry = hostRank(y.v);
@@ -816,7 +596,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
       s.setAttribute('data-hosts-of', sig);
     }
     var n = Object.create(null), total = 0;
-    [].forEach.call(list.querySelectorAll(':scope > article:not([data-held])' + ts.map(sel).join('') + chipSel()), function (a) {
+    [].forEach.call(list.querySelectorAll(':scope > article:not([data-held])' + chipSel()), function (a) {
       var v = a.getAttribute('data-f-host') || '';
       n[v] = (n[v] || 0) + 1;
       total++;
@@ -834,114 +614,68 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
     shownHost = on;
     return on;
   }
-  // curSel is the selector of everything the filter asks (tab AND box), as of
+  // curSel is the selector of everything the filter asks (tab AND chips), as of
   // the last apply: what the hold reads to tell a change the reader can see
   // from one they cannot (shows).
   var curSel = '';
   function shows(el_) { return !!el_ && (!curSel || el_.matches(curSel)); }
-  // apply(held): held is true for a background refresh the hold kept back.
-  // That refresh is NOT re-ranked: its markup came in the drawn order
-  // (keepDrawnOrder), and re-ranking it would move a drawn card whose rank
-  // the refresh changed (another client renamed it while a filter is typed).
-  // The rank is applied with everything else on the tap (applyLive), and on
-  // the reader's own typing.
-  // apply(held): held is undefined for the READER's own change (typing, a
-  // tap, a load) — which applies everything, held recency included — and a
-  // boolean for a refresh or the clock (see restamp).
+  // apply(held): held is undefined for the READER's own change (a tap, a
+  // load) — which applies everything, held recency included — and a boolean
+  // for a refresh or the clock (see restamp). A refresh the hold kept back
+  // (held true) is not re-ordered: its markup came in the drawn order
+  // (keepDrawnOrder).
   function apply(held) {
-    var input = el('agents-search'), list = el('agents-list');
-    if (!input || !list) return;
-    var q = input.value;
-    var ts = terms(q);
+    var list = el('agents-list');
+    if (!list) return;
     restamp(list, held === undefined);
     syncChips();
-    // The chips are one more compound term, ANDed with the box's.
+    // The chips are one compound term.
     var cs = chipSel();
-    // The host tab is one more EXACT term, ANDed with the box's.
-    var host = syncHosts(list, ts);
-    var all_ = host ? ts.concat([{ attr: 'data-f-host', value: host, exact: true }]) : ts;
-    curSel = all_.map(sel).join('') + cs;
-    // A term in the box draws the Idle section open (a search finds its
-    // entries); the reader's open/closed choice is left as it was.
-    document.documentElement.toggleAttribute('data-agents-searching', ts.length > 0);
+    // The host tab is one more EXACT term, ANDed with the chips.
+    var host = syncHosts(list);
+    curSel = (host ? sel({ attr: 'data-f-host', value: host, exact: true }) : '') + cs;
     syncIdleHead(list);
-    syncPinsHead(list);
     var style = el('agents-filter-style');
     if (!style) {
       style = document.createElement('style');
       style.id = 'agents-filter-style';
       document.head.appendChild(style);
     }
-    // One rule per term: a card lacking ANY of them is hidden, so the terms AND
-    // (R.rules — the head script's, which wrote this element's first copy).
-    // Then the rank (reorder): by the FIRST free-text word, best match first.
-    var text = R.rules(ts, host, cs, false);
+    // One rule per filter in force (R.rules — the head script's, which wrote
+    // this element's first copy).
+    var text = R.rules(host, cs, false);
     if (style.textContent !== text) style.textContent = text;
-    if (!held) reorder(ts);
+    if (!held) reorder();
     var all = list.querySelectorAll(':scope > article:not([data-held])');
     var shown = curSel ? list.querySelectorAll(':scope > article:not([data-held])' + curSel) : all;
-    var count = el('agents-count'), clear = el('agents-search-clear'), none = el('agents-nomatch');
+    var count = el('agents-count'), none = el('agents-nomatch');
     if (count) count.textContent = all.length ? shown.length + ' of ' + all.length : '';
-    if (clear) clear.hidden = !input.value;
     if (none) none.hidden = !(curSel && all.length && !shown.length);
-    try { sessionStorage.setItem(KEY, q); } catch (e) {}
-    syncURL(q);
     recountPill();
   }
-  // place puts a filter in the box: a link's ?q=, the session's copy, or a
-  // history entry's. A list refresh never calls it — ?q= follows every
-  // keystroke, so re-reading it on a refresh would rewrite what is being typed.
-  function place(q) {
-    var input = el('agents-search');
-    if (input && input.value !== q) input.value = q;
-  }
-  // boot: a bar not seen before (or one a swap emptied while a filter is
-  // remembered) is given its filter — a ?q= wins (a shared link), else the
-  // session's copy. Any other call is a no-op.
+  // boot: a filter bar not seen before is applied. Any other call is a no-op.
   function boot() {
-    var input = el('agents-search');
-    if (!input) return;
+    var bar = el('agents-filter');
+    if (!bar) return;
     adopt();
-    var q = urlQ(), mine = null;
-    try { mine = sessionStorage.getItem(KEY); } catch (e) {}
-    if (q === null) q = mine || '';
-    if (input.__musterFilterBar && (input.value || !q)) return;
-    input.__musterFilterBar = true;
-    // A ?q= this tab did not write (a shared link: this session's copy says
-    // otherwise) starts on All. A reload of this tab's own filter is not a link.
-    linkAll = !!urlQ() && urlQ() !== mine;
-    place(q);
+    if (bar.__musterFilterBar) return;
+    bar.__musterFilterBar = true;
     apply();
   }
-  // settled: the list rendered. The tabs and the counts follow it; nothing in
-  // the box is touched.
+  // settled: the list rendered. The tabs and the counts follow it.
   function settled() {
     boot();
     apply(swapHeld);
   }
-  document.addEventListener('input', function (e) {
-    if (e.target && e.target.id === 'agents-search') apply();
-  });
   document.addEventListener('click', function (e) {
     var t = e.target && e.target.closest ? e.target : null;
     if (!t) return;
-    var input = el('agents-search');
-    if (t.closest('#agents-search-clear')) {
-      if (!input) return;
-      input.value = '';
-      apply();
-      input.focus();
-      return;
-    }
     var tab = t.closest('#agents-hosts [role="tab"]');
     if (tab) { chooseHost(tab.getAttribute('data-host') || ''); apply(); return; }
     var chip = t.closest('#agents-chips [data-chip]');
     if (chip) { toggleChip(chip); apply(); return; }
     if (t.closest('#agents-chips-clear')) { clearChips(); apply(); return; }
     if (t.closest('#agents-idle-toggle')) { toggleIdleOpen(); apply(); return; }
-    if (t.closest('#` + pinsEditToggleID + `')) { togglePinsEdit(); apply(); return; }
-    var x = t.closest('#agents-list [data-pinned-chip-unpin]');
-    if (x) noteUnpin(x);
   });
   // The host tabs' keys, as tabs.go's: Left/Right (wrapping), Home and End
   // move to a tab AND choose it.
@@ -963,7 +697,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   });
   // The list re-renders itself; the rule above already hides what should be
   // hidden, so all that is left is the count and the host tabs.
-  // A refresh morphed the list into the server's order: rank it again before
+  // A refresh morphed the list into the server's order: order it again before
   // anything is painted (see reorder).
   // HOLD, AND SHOW "N new ↑" (Zach's call; applying ONLY on a tap, even at the
   // top, was this change's own resolution, since confirmed by him). A list that
@@ -986,8 +720,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   // below the screen, a list on a hidden tab) is applied at once.
   //
   // A refresh the reader caused (agents:changed, after their own rename or pin)
-  // and the first load apply at once. A filter's rank still orders the cards;
-  // ties fall back to the HELD order (data-list-i), so the two never fight.
+  // and the first load apply at once.
   var heldOrder = null, liveOrder = null;
   function cardsOf(list) { return [].slice.call(list.querySelectorAll(':scope > article')); }
   function background(e) {
@@ -1014,8 +747,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
     return p;
   }
   function onPill(e) { return e.target && e.target.closest && e.target.closest('#agents-new-pill'); }
-  // A tap must not take focus: the box keeps its caret (and the phone its
-  // keyboard), a focused card stays focused.
+  // A tap must not take focus: a focused card stays focused.
   document.addEventListener('mousedown', function (e) { if (onPill(e)) e.preventDefault(); });
   document.addEventListener('click', function (e) { if (onPill(e)) applyLive(); });
   // The pill is fixed on <body>, so it would float over whatever tab is shown:
@@ -1090,7 +822,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   // it is applied at once (true) or held.
   //
   // 🔴 ONLY WHAT THE FILTER SHOWS COUNTS. byId maps a live card's id to its
-  // element in the refresh (shows reads the filter — tab AND box — off it). A
+  // element in the refresh (shows reads the filter — tab AND chips — off it). A
   // card the filter hides is neither in view nor about to be: an arrival on
   // another host's tab, or a re-order among hidden cards, moves nothing the
   // reader can see, so a refresh that changes only those is applied at once —
@@ -1101,8 +833,8 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   // 🔴 A REFRESH THAT WOULD SWITCH THE SHOWN TAB IS HELD, wherever its cards
   // land. The remembered host coming back (wouldShow) turns All into that
   // host's tab: every card the reader was looking at but that host's would go,
-  // with no input — even when its own cards land off screen or under the
-  // search, which the order check below cannot see. Held, its cards are
+  // with no input — even when its own cards land off screen, which the order
+  // check below cannot see. Held, its cards are
   // arrivals (not drawn, so the tab stays All), the pill offers it
   // (recountPill), and the tap applies it.
   function decide(e, live, byId) {
@@ -1128,7 +860,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   // they leave the screen whichever way the refresh goes (see decide), and the
   // list shows All.
   function wouldShow(live, byId) {
-    var h = linkAll ? '' : hostChosen();
+    var h = hostChosen();
     if (!h) return '';
     return live.some(function (id) { var c = byId(id); return !!c && c.getAttribute('data-f-host') === h; }) ? h : '';
   }
@@ -1136,7 +868,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   // (live) order and the decision.
   var swapPlan = null;
   // swapHeld: whether the list's last swap was held — settled() re-applies the
-  // filter after it and must not re-rank it either (see apply).
+  // filter after it and must not re-order it either (see apply).
   var swapHeld = false;
   function hold(e) {
     var list = e.target;
@@ -1164,7 +896,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
     return true;
   }
   // recountPill is what WAITS for the reader, against the filter as it is
-  // NOW — so changing the tab or the search during a hold recounts it: each
+  // NOW — so changing the tab or a chip during a hold recounts it: each
   // held arrival, and each card the live order puts HIGHER than it is drawn
   // (one card overtaking three is one change, not four), of the cards the
   // filter SHOWS only (decide); what it hides is not waiting. A held switch of
@@ -1241,19 +973,11 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
     // card that would ENTER or LEAVE the section while it is drawn — or would
     // become drawn — keeps the drawn section and the move waits for the tap
     // (pendingSect): moving it would move every card between its two places.
-    // A card that becomes a chip (or a chip a card) — pinned or unpinned,
-    // here or in another tab — is applied at once, never held: a held chip
-    // would keep its card's drawn place and section while the stylesheet draws
-    // it in the pinned row (pinned_chips.go).
-    var kindChange = false;
     if (background(e)) {
       var changed = false;
       arts.forEach(function (c) {
         var d = document.getElementById(c.id);
         if (!d || d.parentNode !== e.target) { delete pendingSect[c.id]; return; }
-        if (d.hasAttribute('data-pinned-chip') !== c.hasAttribute('data-pinned-chip')) kindChange = true;
-        // A chip is never in the Idle section: nothing about one is held.
-        if (c.hasAttribute('data-pinned-chip')) { delete pendingSect[c.id]; delete pendingIdle[c.id]; return; }
         var drawnIdle = d.getAttribute('data-idle') || '', srv = c.getAttribute('data-idle') || '';
         if (curSel && drawnIdle !== srv) {
           setIdle(c, drawnIdle);
@@ -1268,7 +992,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
       // The reader's own refresh applies everything, the section included.
       pendingSect = {};
     }
-    swapPlan = { live: live, apply: kindChange || decide(e, live, function (id) { return byId[id]; }) };
+    swapPlan = { live: live, apply: decide(e, live, function (id) { return byId[id]; }) };
     if (!swapPlan.apply) keepDrawnOrder(e, drawn.map(function (c) { return c.id; }));
   });
   document.addEventListener('htmx:afterSwap', function (e) {
@@ -1277,30 +1001,16 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   document.addEventListener('htmx:afterSettle', function (e) {
     if (e.target && e.target.id === 'agents-list') settled();
   });
-  document.addEventListener('htmx:afterSettle', function (e) {
-    if (e.target && e.target.id === 'agents-list') refocusAfterUnpin();
-  });
   document.addEventListener('htmx:load', boot);
-  // Back on the Agents tab (switchTab pushed a bare /agents): put the filter's
-  // ?q= back on it at once — a replace, so the switch is still one entry.
-  document.addEventListener('muster:tabshown', function (e) {
-    syncPill();
-    var input = el('agents-search');
-    if (input && e.detail && e.detail.tab === 'agents') syncURL(input.value);
-  });
-  // Back/forward onto an /agents entry: its ?q= is the filter it had.
-  // (An entry with no ?q= leaves the bar as it is, and apply writes it back.)
-  window.addEventListener('popstate', function () {
-    // The shell's own popstate handler shows the tab; after it, the pill follows.
-    setTimeout(syncPill, 0);
-    var q = urlQ();
-    if (q !== null) place(q);
-    apply();
-  });
+  // Back on the Agents tab: the pill follows the panel.
+  document.addEventListener('muster:tabshown', syncPill);
+  // Back/forward: the shell's own popstate handler shows the tab; after it,
+  // the pill follows.
+  window.addEventListener('popstate', function () { setTimeout(syncPill, 0); });
   // Time passes with nothing re-rendered: re-derive the idle tokens and the
   // dots, and the filter with them (a card can cross "idle >15m" while the
-  // list sits open). A held list is not re-ranked (apply(swapHeld)).
-  setInterval(function () { if (el('agents-list') && el('agents-search')) apply(swapHeld); }, 30000);
+  // list sits open). A held list is not re-ordered (apply(swapHeld)).
+  setInterval(function () { if (el('agents-list') && el('agents-filter')) apply(swapHeld); }, 30000);
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })();
 `)

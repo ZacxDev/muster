@@ -69,8 +69,6 @@ func TestASharedLabelIsQualifiedByItsHostOnEverySurface(t *testing.T) {
 		`<span data-mirror-label="">mango:1</span><span data-mirror-qualifier=""> · tower</span>`,
 		// Unqualified, and (on a card) with no raw session name beside it.
 		`<span data-mirror-label="">solo</span></span>`,
-		// The filter finds it by the title as shown, too.
-		`data-filter="mango:1 mango:1 · ws main ws `,
 	} {
 		if !strings.Contains(list, want) {
 			t.Errorf("the Agents list lacks %q", want)

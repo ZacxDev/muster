@@ -283,8 +283,9 @@ func createThreads(ctx context.Context, pool *pgxpool.Pool, name, display string
 		}
 		// MUSTER_E2E_KIND / MUSTER_E2E_CC_ACCOUNT make it a claude-code agent (the
 		// chief-runtimes spec's chief); unset, the default kind as before.
+		// MUSTER_E2E_REPO gives it a repository ("owner/name"; unset, none).
 		a, err := as.Create(ctx, agents.Agent{Name: name, DisplayName: display, Namespace: "agents", Status: "running", KickedOff: true,
-			Kind: os.Getenv("MUSTER_E2E_KIND"), CCAccount: os.Getenv("MUSTER_E2E_CC_ACCOUNT"), NoteID: noteID})
+			Kind: os.Getenv("MUSTER_E2E_KIND"), CCAccount: os.Getenv("MUSTER_E2E_CC_ACCOUNT"), Repo: os.Getenv("MUSTER_E2E_REPO"), NoteID: noteID})
 		if err != nil {
 			return fmt.Errorf("create agent: %w", err)
 		}

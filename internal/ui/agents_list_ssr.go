@@ -30,20 +30,29 @@ import (
 // the hash anyway, and a header every refresh spec had to work around. The
 // morph's shift is what e2e/tests/cls.spec.ts measures.
 
-// shellList is the list a document draws on its first paint.
+// shellList is the list a document draws on its first paint, and its session
+// switcher (switcher.go), resolved against the same cards.
 type shellList struct {
 	cards     []AgentCardView
 	mirrors   []MirrorCardView
 	idleAfter time.Duration
+	switcher  *Switcher
 }
 
-// WithList is WithRecent plus the list's own cards, drawn into #agents-list on
-// the first paint; idleAfter is the Idle section's threshold, for its header's
-// hint.
+// WithList is the list's own cards, drawn into #agents-list on the first
+// paint, and the session switcher docked below it, resolved against those
+// cards and the viewer's recently opened refs (newest first) — as
+// RenderAgentsList resolves both, so the first paint and every refresh agree.
+// idleAfter is the Idle section's threshold, for its header's hint.
 func (d ShellData) WithList(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef, idleAfter time.Duration) ShellData {
-	d = d.WithRecent(list, mirrors, refs)
-	d.list = &shellList{cards: list, mirrors: mirrors, idleAfter: idleAfter}
+	d.list = &shellList{cards: list, mirrors: mirrors, idleAfter: idleAfter, switcher: agentsSwitcher(list, mirrors, refs)}
 	return d
+}
+
+// agentsSwitcher is the Agents list's switcher: the page has no session of its
+// own, so nothing is current and nothing is left out.
+func agentsSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRef) *Switcher {
+	return NewSwitcher(list, mirrors, refs, SwitcherCurrent{})
 }
 
 // agentsListBody is what #agents-list holds: the one list, by activity, pins

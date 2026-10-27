@@ -314,8 +314,6 @@ var agentHrefCallLedger = map[string]int{
 	"AgentSessionHref ← internal/ui/notifications.go:notifRow":      1,
 	"AgentSessionHref ← internal/ui/terminal.go:AgentTerminalPage":  1,
 	"PageHref ← internal/ui/agents.go:agentCard":                    2,
-	"PageHref ← internal/ui/pinned_chips.go:pinnedChip":             1,
-	"PageHref ← internal/ui/recents.go:recentItems":                 1,
 	// The session switcher under a session page's composer: a list too.
 	"PageHref ← internal/ui/switcher.go:switcherItems": 1,
 }

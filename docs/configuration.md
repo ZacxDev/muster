@@ -360,6 +360,7 @@ build tag, which the Playwright suite uses. The shipped binaries do not read the
 | `MUSTER_E2E_THREADS` | off | no | (`e2e/mkchat`) `1` reads several threads (title, age, messages) from stdin instead of one message list. |
 | `MUSTER_E2E_APPEND` | off | no | (`e2e/mkchat`) `1` appends stdin's messages to the latest session of the EXISTING agent instead of creating one (a message stored while a page is open). |
 | `MUSTER_E2E_KIND` | the default kind | no | (`e2e/mkchat`) The agent's kind, e.g. `claude-code`. |
+| `MUSTER_E2E_REPO` | none | no | (`e2e/mkchat`) The agent's repository, `owner/name`. |
 | `MUSTER_E2E_CC_ACCOUNT` | none | no | (`e2e/mkchat`) The Claude account a `claude-code` agent names. Only a name: nothing is provisioned. |
 | `MUSTER_E2E_HOLD_READY_DIR` | none | no | (`e2eterm`) Holds fake instances not-ready until a file named after each instance appears in this directory. |
 | `MUSTER_E2E_TERM_WINDOW` | none | no | (`e2eterm`) The `CxR` window size the fake agent pod reports. |

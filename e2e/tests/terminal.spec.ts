@@ -4,6 +4,7 @@ import { hookToken, password, termPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { touchDrag } from '../lib/touch';
 import { clsInit, readCls, settle } from '../lib/cls';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // A claude-code agent's live terminal, at a phone's width (412×915), against a
 // REAL muster-server built with `-tags e2eterm`: the page, the socket, the
@@ -58,7 +59,7 @@ async function login(page: Page) {
 async function saveAgent(page: Page, kind: 'gateway' | 'claude-code', note: string): Promise<string> {
   const before = await agentNames();
   await page.goto(origin + '/agents');
-  await page.click('#fab-agents');
+  await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
   await sheet.locator(`[data-kind-option="${kind}"]`).click();

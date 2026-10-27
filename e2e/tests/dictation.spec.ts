@@ -8,6 +8,7 @@ import { test, expect, expectAgentsDestroyed } from '../lib/fixtures';
 import { authState, baseURL, binDir, dictationPort, dsn, fakeSttPort, hookToken, password, repoRoot, sttToken, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // DICTATION: the microphone on every message box, in a real Chromium with its
 // FAKE microphone (--use-fake-device-for-media-stream, which records a tone),
@@ -195,7 +196,7 @@ async function runningAgent(page: Page): Promise<AgentRow> {
   if (agent) return agent;
   const before = new Set((await agentRows()).map((a) => a.name));
   await page.goto(origin + '/agents');
-  await page.click('#fab-agents');
+  await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
   await sheet.locator('[data-kind-option="claude-code"]').click();

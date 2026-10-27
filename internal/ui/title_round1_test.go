@@ -19,7 +19,7 @@ func TestATitleThatIsAllMarkupFallsBack(t *testing.T) {
 		{"agent detail <h1>", ">agent_19</h1>", renderString(t, agentTitle(AgentDetailView{Name: "agent_19", Status: "running", DisplayName: "<i> </i>"}))},
 		{"terminal <title>", "<title>Terminal · agent_20 · muster</title>", renderString(t, AgentTerminalPage(AgentTerminalView{Name: "agent_20", DisplayName: "<b></b>"}))},
 		{"mirror card", ">_s21_<", renderString(t, mirrorCard(MirrorCardView{Host: "h", Session: "_s21_", Label: "<b></b>", Online: true}))},
-		{"recents", ">agent_22<", renderString(t, recentStrip(recentItems([]AgentCardView{{ID: 22, Name: "agent_22", DisplayName: "<b></b>"}}, nil, []RecentRef{{AgentID: 22}}), false))},
+		{"switcher Recent view", ">agent_22<", renderString(t, switcherRefresh(agentsSwitcher([]AgentCardView{{ID: 22, Name: "agent_22", DisplayName: "<b></b>"}}, nil, []RecentRef{{AgentID: 22}})))},
 	} {
 		if n := strings.Count(c.out, c.want); n < 1 {
 			t.Errorf("%s: %q drawn %d time(s), want ≥1 (the fallback, as written)", c.name, c.want, n)

@@ -41,32 +41,57 @@ func pinForm(pinned bool, fields [][2]string, button g.Node) g.Node {
 	return Form(append(nodes, button)...)
 }
 
-// agentPinMenuItem is the ⋯ menu's "Pin to top". A pinned agent is drawn as a
-// chip, not a card (pinned_chips.go), and is unpinned from the chip's × — so
-// the menu offers this item only for an unpinned agent (agentMenu).
+// agentPinFields and mirrorPinFields are the subject fields an entry's pin
+// form posts.
+func agentPinFields(a AgentCardView) [][2]string {
+	return [][2]string{{"kind", "agent"}, {"agent_id", strconv.FormatInt(a.ID, 10)}}
+}
+
+func mirrorPinFields(m MirrorCardView) [][2]string {
+	return [][2]string{{"kind", "mirror"}, {"host", m.Host}, {"session", m.Session}, {"window", m.Window}}
+}
+
+// pinLabel is what a pin toggle says: "Pin to top", or "Unpin" for a pinned
+// entry.
+func pinLabel(pinned bool) string {
+	if pinned {
+		return "Unpin"
+	}
+	return "Pin to top"
+}
+
+// ⚠ PINNED ENTRIES ARE CARDS AGAIN, AND THEIR OWN TOGGLE UNPINS THEM. A pinned
+// entry used to be drawn as a chip in a row above the cards, unpinned from the
+// chip's ×; that row is gone (operator ask: the session switcher's Pins view
+// supersedes it). A pinned entry is now its card, still drawn first
+// (orderList), and the card's pin toggle — the ⋯ menu's item on an agent, the
+// pin button on a mirrored window — pins or unpins it.
+
+// agentPinMenuItem is the ⋯ menu's "Pin to top" — "Unpin" on a pinned agent.
 func agentPinMenuItem(a AgentCardView) g.Node {
-	return pinForm(false, [][2]string{{"kind", "agent"}, {"agent_id", strconv.FormatInt(a.ID, 10)}},
+	return pinForm(a.Pinned, agentPinFields(a),
 		Button(
 			Type("submit"),
 			g.Attr("data-pin-toggle", ""),
 			Class("press flex min-h-[44px] w-full items-center rounded-lg px-3 text-sm font-medium transition hover:bg-s2 disabled:opacity-60 text-fg"),
 			hx("hx-disabled-elt", "this"),
-			g.Text("Pin to top"),
+			g.Text(pinLabel(a.Pinned)),
 		))
 }
 
 // mirrorPinToggle is a mirrored card's pin button: a mirrored card has no ⋯
 // menu (there is nothing to start, stop or delete), so the toggle is the
-// card's one control. It only ever PINS: a pinned window is drawn as a chip,
-// not a card (pinned_chips.go), and is unpinned from the chip's ×.
+// card's one control. Pressed (aria-pressed, the accent) on a pinned window,
+// where it unpins.
 func mirrorPinToggle(m MirrorCardView) g.Node {
-	return pinForm(false, [][2]string{{"kind", "mirror"}, {"host", m.Host}, {"session", m.Session}, {"window", m.Window}},
+	return pinForm(m.Pinned, mirrorPinFields(m),
 		Button(
 			Type("submit"),
 			g.Attr("data-pin-toggle", ""),
-			g.Attr("aria-label", "Pin to top"),
-			g.Attr("title", "Pin to top"),
-			Class("press inline-flex h-11 w-11 items-center justify-center rounded-xl text-muted transition hover:bg-s2 hover:text-fg"),
+			g.Attr("aria-pressed", strconv.FormatBool(m.Pinned)),
+			g.Attr("aria-label", pinLabel(m.Pinned)),
+			g.Attr("title", pinLabel(m.Pinned)),
+			Class("press inline-flex h-11 w-11 items-center justify-center rounded-xl text-muted transition hover:bg-s2 hover:text-fg aria-pressed:text-accent"),
 			hx("hx-disabled-elt", "this"),
 			g.Raw(pinIcon),
 		))

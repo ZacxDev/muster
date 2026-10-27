@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"html"
 	"regexp"
 	"strings"
 	"testing"
@@ -58,7 +59,7 @@ func switcherRowEntries(t *testing.T, page, key string) []string {
 // still there — pinned ones included, the page's own, gone ones and repeats
 // left out — capped at switcherRecentMax; Pins is the pinned entries in the
 // list's order; All is every entry in the list's order with the page's own
-// drawn as current. Labels are the pinned chips' (a codename without its
+// drawn as current. Labels are sessionSwitcherLabels' (a codename without its
 // index, unless another entry of the SAME view shares it).
 func TestTheSwitcherResolvesEachView(t *testing.T) {
 	list, mirrors := switcherFixture()
@@ -209,7 +210,7 @@ func TestTheSwitcherBarIsServerRenderedAtAFixedHeight(t *testing.T) {
 		t.Error("the bar's row is not a fixed h-11")
 	}
 	for _, v := range switcherViews {
-		row := regexp.MustCompile(`<div data-switcher-list="` + v.key + `" data-restore-refresh="switcher-` + v.key + `"( hidden="")? class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto"><p data-switcher-empty="" class="truncate text-xs text-muted">` + v.empty + `</p></div>`).FindStringSubmatch(nav)
+		row := regexp.MustCompile(`<div id="` + switcherRowID(v.key) + `" data-switcher-list="` + v.key + `" data-restore-refresh="switcher-` + v.key + `"( hidden="")? class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto"><p data-switcher-empty="" class="truncate text-xs text-muted">` + v.empty + `</p></div>`).FindStringSubmatch(nav)
 		if row == nil {
 			t.Errorf("%s: no empty row saying %q in:\n%s", v.key, v.empty, nav)
 			continue
@@ -375,7 +376,7 @@ func TestTheSwitcherViewButtonOpensAMenu(t *testing.T) {
 	if menuAt < 0 || menuAt < lastRow {
 		t.Fatalf("no popover menu after the rows (menu %d, last row %d)", menuAt, lastRow)
 	}
-	items := regexp.MustCompile(`<button type="button" role="menuitemradio" aria-checked="(true|false)" data-switcher-pick="([a-z]+)"[^>]*>.*?<span class="flex-1">([^<]+)</span><span class="text-xs tabular-nums text-muted" data-switcher-count="([a-z]+)" data-restore-refresh="switcher-count-([a-z]+)">(\d+)</span></button>`).FindAllStringSubmatch(nav[menuAt:], -1)
+	items := regexp.MustCompile(`<button type="button" role="menuitemradio" aria-checked="(true|false)" data-switcher-pick="([a-z]+)"[^>]*>.*?<span class="flex-1">([^<]+)</span><span id="switcher-count-[a-z]+" class="text-xs tabular-nums text-muted" data-switcher-count="([a-z]+)" data-restore-refresh="switcher-count-([a-z]+)">(\d+)</span></button>`).FindAllStringSubmatch(nav[menuAt:], -1)
 	got := []string{}
 	for _, m := range items {
 		if m[4] != m[2] || m[5] != m[2] {
@@ -412,9 +413,9 @@ func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 	all := nav[strings.Index(nav, `data-switcher-list="all"`):strings.Index(nav, `id="switcher-views"`)]
 	for _, want := range []string{
 		`data-switcher-entry="mirror" title="mango:1" data-switcher-code="mango:1" data-switcher-title="Migrate the billing ledger"`,
-		`data-switcher-entry="mirror" title="mango:2" data-switcher-code="mango:2" class=`,
+		`data-switcher-entry="mirror" title="mango:2" data-switcher-code="mango:2" data-switcher-words="w" class=`,
 		`data-switcher-entry="agent" title="Release tidy" data-switcher-code="ag-three" data-switcher-title="Release tidy · Tidy the release notes"`,
-		`data-switcher-entry="agent" title="ag-four" data-switcher-code="ag-four" class=`,
+		`data-switcher-entry="agent" title="ag-four" data-switcher-code="ag-four" data-switcher-words="standard" class=`,
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("the All row lacks %s in:\n%s", want, all)
@@ -435,8 +436,8 @@ func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 }
 
 // TestTheSwitcherNeverClampsALabel: an agent's long display name is drawn
-// whole in the switcher (no "…"), while its pinned chip on the Agents list
-// still clamps it to cardTitleMax — the CONTROL, so the fixture is long enough
+// whole in the switcher (no "…"), while its card's title clamp (clampTitle)
+// still cuts it to cardTitleMax — the CONTROL, so the fixture is long enough
 // to be clamped at all.
 func TestTheSwitcherNeverClampsALabel(t *testing.T) {
 	long := "enterprise-customer-data-warehouse-schema-migration-validation-and-audit-report-v3"
@@ -453,7 +454,94 @@ func TestTheSwitcherNeverClampsALabel(t *testing.T) {
 	if !strings.Contains(rows, `<span class="whitespace-nowrap">`+long+`</span>`) || strings.Contains(rows, "…") {
 		t.Error("the switcher does not draw the whole name")
 	}
-	if chip := pinnedChipLabels(orderList(list, nil)); !strings.HasSuffix(chip[0], "…") || len([]rune(chip[0])) != cardTitleMax+1 {
-		t.Errorf("CONTROL: the pinned chip's label is not clamped: %q", chip[0])
+	if short, clamped := clampTitle(long); !clamped || len([]rune(short)) != cardTitleMax {
+		t.Errorf("CONTROL: the card's title clamp does not clamp the fixture: %q", short)
+	}
+}
+
+// TestTheSwitcherSearchFindsByRepoKindAndSession: operator ask "Teach the
+// palette repo+kind". Each entry carries data-switcher-words — its repository,
+// its kind and (a window's) raw tmux session name, lower-cased — escaped like
+// every other attribute; and the palette's rank reads them as a FOURTH tier,
+// after codename prefix, codename substring and title. Values pairwise
+// distinct, so a field filled from another fails by name. Red at origin/main:
+// no words attribute, no tier.
+func TestTheSwitcherSearchFindsByRepoKindAndSession(t *testing.T) {
+	list := []AgentCardView{{ID: 1, Name: "ag-x", Status: "running", Repo: "Acme/Ledger", Kind: "claude-code"}}
+	mirrors := []MirrorCardView{
+		{Host: "tower", Session: "scratch11", Window: "@1", Label: "mango:1", Online: true, Kind: "opencode", Repo: "Fixture-Repo"},
+		{Host: "tower", Session: "scratch12", Window: "@2", Label: "<b>&quot;q</b>", Online: true, Claude: true, Repo: `a"b<c`},
+	}
+	s := NewSwitcher(list, mirrors, nil, SwitcherCurrent{})
+	got := map[string]string{}
+	for _, it := range s.All {
+		got[it.Code] = it.Words
+	}
+	if w := got["ag-x"]; w != "acme/ledger claude code" {
+		t.Errorf("agent words = %q", w)
+	}
+	if w := got["mango:1"]; w != "fixture-repo opencode scratch11" {
+		t.Errorf("window words = %q", w)
+	}
+	page := renderString(t, switcherBar(s, true))
+	if !strings.Contains(page, `data-switcher-words="a&#34;b&lt;c claude code scratch12"`) {
+		t.Errorf("the words are not an escaped attribute:\n%s", page)
+	}
+	for _, want := range []string{
+		"words: a.getAttribute('data-switcher-words') || ''",
+		"if (fold(e.title).indexOf(q) >= 0) return 2;\n    if (fold(e.words).indexOf(q) >= 0) return 3;\n    return -1;",
+	} {
+		if !strings.Contains(switcherJS, want) {
+			t.Errorf("the palette's script lacks %q", want)
+		}
+	}
+	// Drawn by textContent only: the script never writes markup it was given.
+	if regexp.MustCompile(`innerHTML\s*=[^=]`).MatchString(switcherJS) {
+		t.Error("the palette writes innerHTML")
+	}
+}
+
+// TestOnlyTheAgentsListBarHasADeployButton: operator ask (deploy "In the bottom
+// bar"): the Agents list's docked bar ends in a "+" that opens the task-less
+// dispatch sheet as the old FAB did; a session page's bar has none. Red at
+// origin/main: no "+" anywhere on the bar.
+func TestOnlyTheAgentsListBarHasADeployButton(t *testing.T) {
+	list, mirrors := switcherFixture()
+	dock := renderString(t, switcherDock(NewSwitcher(list, mirrors, nil, SwitcherCurrent{})))
+	b := regexp.MustCompile(`<button id="` + SwitcherDeployID + `"[^>]*>`).FindString(dock)
+	for _, want := range []string{`type="button"`, `aria-label="Deploy agent"`, `hx-get="/ui/agents/new"`, `hx-target="#agent-modal-body"`, `hx-swap="innerHTML"`, `h-11 w-11`} {
+		if !strings.Contains(b, want) {
+			t.Errorf("the + lacks %s: %s", want, b)
+		}
+	}
+	if !strings.Contains(b, html.EscapeString(modalOpenClick("agent-modal"))) && !strings.Contains(b, modalOpenClick("agent-modal")) {
+		t.Errorf("the + does not open the dispatch sheet: %s", b)
+	}
+	// After the search button, in the bar's one fixed row.
+	if strings.Index(dock, `id="`+SwitcherDeployID+`"`) < strings.Index(dock, `id="switcher-search-open"`) {
+		t.Error("the + is not beside (after) the search button")
+	}
+	for _, page := range []string{
+		renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{AgentID: 1}), false)),
+		renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{Mirror: MirrorRef{Host: "tower", Session: "w", Window: "@1"}}), true)),
+	} {
+		if strings.Contains(page, SwitcherDeployID) || strings.Contains(page, "Deploy agent") {
+			t.Error("a session page's bar draws the +")
+		}
+	}
+}
+
+// TestTheRowSwapIsBoundPerVersionNotUnderTheSlashFlag: the Agents list's row
+// swap (switcherOOBJS) is bound under its own versioned flag, ahead of the "/"
+// key's once-per-window flag — a window that ran an older switcher has that
+// flag set and would skip anything under it. Behaviour: agents-switcher.spec.ts.
+func TestTheRowSwapIsBoundPerVersionNotUnderTheSlashFlag(t *testing.T) {
+	at, keys := strings.Index(switcherJS, switcherOOBJS), strings.Index(switcherJS, "if (!window.__musterSwitcherKeys) {")
+	if at < 0 || keys < 0 || at > keys {
+		t.Fatalf("the row swap is not bound before (outside) the \"/\" flag's block (at %d, flag at %d)", at, keys)
+	}
+	if !strings.Contains(switcherOOBJS, "window.__musterSwitcherOOB.v !== '"+switcherOOBVersion()+"'") ||
+		!strings.Contains(switcherOOBJS, "document.removeEventListener('htmx:oobBeforeSwap', window.__musterSwitcherOOB.fn)") {
+		t.Error("the row swap's binding is not versioned, or does not replace an older one")
 	}
 }

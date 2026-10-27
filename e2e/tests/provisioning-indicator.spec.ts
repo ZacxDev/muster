@@ -5,6 +5,7 @@ import path from 'node:path';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, password, provPort, versionTerm } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // "Provisioning agent…" must leave an OPEN agent page when the agent comes up
 // without sending a message — and "No messages yet" must take its place — with
@@ -75,7 +76,7 @@ async function login(page: Page) {
 async function saveAgent(page: Page, kind: 'gateway' | 'claude-code'): Promise<AgentRow> {
   const before = new Set((await agentRows()).map((a) => a.name));
   await page.goto(origin + '/agents');
-  await page.click('#fab-agents');
+  await openDispatchSheet(page);
   const sheet = page.locator('#agent-modal form');
   await expect(sheet.locator('[data-kind-picker]')).toBeVisible();
   await sheet.locator(`[data-kind-option="${kind}"]`).click();

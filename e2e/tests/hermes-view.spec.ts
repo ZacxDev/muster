@@ -76,16 +76,14 @@ test('a Hermes window opens a read-only rendered view of its conversation, live'
   // The card with a session opens the rendered view; the stale one, the Terminal.
   await expect(card(page, '@2').locator('a[href*="/mirror/view?"]')).toHaveCount(1);
   await expect(card(page, '@3').locator('a[href*="/mirror/terminal?"]')).toHaveCount(1);
-  // Both are Hermes cards — the kind chip, never the pane's command — and the
-  // filter finds them by kind.
+  // Both are Hermes cards — the kind chip, never the pane's command — and
+  // carry it as their kind field.
   // This host lists exactly three windows: the plain shell and the two Hermes.
   const hostCards = page.locator(`#agents-list > article[data-mirror-card][data-f-host="${rig.host}"]`);
   await expect(hostCards).toHaveCount(3);
   await expect(card(page, '@1').locator('[data-mirror-kind]')).toContainText('shell');
   for (const w of ['@2', '@3']) await expect(card(page, w).locator('[data-mirror-kind]')).toContainText('Hermes');
-  await page.locator('#agents-search').fill('kind:hermes');
-  await expect(page.locator(`#agents-list > article[data-mirror-card][data-f-host="${rig.host}"]:visible`)).toHaveCount(2);
-  await page.locator('#agents-search').fill('');
+  await expect(page.locator(`#agents-list > article[data-mirror-card][data-f-host="${rig.host}"][data-f-kind="hermes"]`)).toHaveCount(2);
 
   await page.goto(rig.origin + viewOf('@2'));
   await expect(page).toHaveURL(/\/mirror\/view\?/);

@@ -2,6 +2,7 @@ import { request as pwRequest } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { hookToken, kindsPort, password, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
+import { openDispatchSheet } from '../lib/dispatch';
 
 // The dispatch form's agent-kind picker and the Claude account pin, at a phone
 // width (412×915), against a REAL muster-server with the claude-code kind
@@ -53,7 +54,7 @@ test('the kind picker dispatches a Claude Code agent onto a pinned or pooled acc
 
   const open = async () => {
     await page.goto(origin + '/agents');
-    await page.click('#fab-agents');
+    await openDispatchSheet(page);
     await expect(page.locator('#agent-modal [data-kind-picker]')).toBeVisible();
   };
   const sheet = page.locator('#agent-modal form');

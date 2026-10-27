@@ -91,7 +91,7 @@ type exemption struct {
 }
 
 const (
-	whyFilter   = "filter haystack / rank key: matched against what the user types, never drawn"
+	whyFilter   = "a filter field (data-f-*): an attribute the list's script reads, never drawn"
 	whyForm     = "edit form value: the raw stored title, edited as written"
 	whyStatic   = "a fixed UI label (tab, status, preset, model, runtime, quick key, chip), never author text"
 	whyAccessor = "the accessor itself; every display caller applies Title to its result"
@@ -102,17 +102,13 @@ const (
 
 // uiExempt: "file func expr" → exemption.
 var uiExempt = map[string]exemption{
-	"focus.go focusHaystack f.Description":             {1, whyFilter},
 	"mirror_ask.go askForm o.Description":              {2, whyOption},
 	"mirror_ask.go askReadOnly o.Description":          {2, whyOption},
 	"subagent_cards.go subagentCallOf in.Description":  {1, "a subagent call's input, copied into the view model; drawn by subagentSummary"},
 	"subagent_cards.go subagentSummary s.Description":  {2, "a subagent's tool-call description, shown as Claude Code wrote it, like the transcript row it summarises"},
 	"terminal.go AgentTerminalPage v.DisplayName":      {1, "the raw name, plained once into the <title> and once (inside the plaining helper mirrorTerminalTitle) into the header — never twice (\"applied once\")"},
-	"agents.go agentListAttrs a.DisplayName":           {1, whyFilter},
-	"mirror.go mirrorListAttrs m.Label":                {2, whyFilter},
-	"mirror.go mirrorListAttrs m.Title":                {2, whyFilter},
-	"pinned_chips.go pinnedChipName m.Label":           {2, "a presence/equality test (is there a codename that is not the session name?); the label the chip draws goes through plainOr"},
-	"agents.go agentFields a.DisplayName":              {2, whyFilter},
+	"switcher.go switcherName m.Label":                 {2, "a presence/equality test (is there a codename that is not the session name?); the label the pill draws goes through plainOr"},
+	"agents.go agentFields a.DisplayName":              {1, whyFilter},
 	"agents.go agentRenameForm a.DisplayName":          {1, whyForm},
 	"agents.go comboOption o.Label":                    {2, whyStatic},
 	"agents.go seededComboOption o.Label":              {2, whyStatic},
@@ -122,11 +118,10 @@ var uiExempt = map[string]exemption{
 	"nav_layout.go NavDocument v.Title":                {1, "a server-authored page's fixed name (\"Attention\", \"Account\"), chosen by internal/api, never author text"},
 	"connectors.go ConnectorForm p.Label":              {1, whyStatic},
 	"list_signals.go agentsFilterChips c.Label":        {1, whyStatic},
-	"recents.go recentEntry it.Title":                  {2, "recentItem.Title is built through Title by recentItems"},
-	"switcher.go switcherEntry it.Label":               {3, "SwitcherItem.Label is built through Title by switcherItems (sessionSwitcherLabels: pinnedChipName's plainOr), the pinned chips' own labels; plaining it again here would apply Title twice"},
+	"switcher.go switcherEntry it.Label":               {3, "SwitcherItem.Label is built through Title by switcherItems (sessionSwitcherLabels: switcherName's plainOr); plaining it again here would apply Title twice"},
 	"switcher.go switcherEntry it.Title":               {2, "SwitcherItem.Title is built through Title by switcherItems (plainOr of the display name, focusTitle's plainOr of the focus); it is the search's data-switcher-title, and plaining it again here would apply Title twice"},
-	"mirror.go mirrorFields m.Label":                   {2, whyFilter},
-	"mirror.go mirrorFields m.Title":                   {2, whyFilter},
+	"mirror.go mirrorFields m.Label":                   {1, whyFilter},
+	"mirror.go mirrorFields m.Title":                   {1, whyFilter},
 	"mirror_ask.go askForm o.Label":                    {2, whyOption},
 	"mirror_ask.go askReadOnly o.Label":                {1, whyOption},
 	"mirror_ask.go askRetryForm q.Options[p].Label":    {1, whyOption},
@@ -137,7 +132,6 @@ var uiExempt = map[string]exemption{
 	"tabs.go TabsSelected t.Label":                     {1, whyStatic},
 	"tags.go tasksFilteredEmpty taskstatus.Label":      {1, whyStatic},
 	"terminal.go quickKeyButton k.Label":               {1, whyStatic},
-	"focus.go focusHaystack f.Title":                   {1, whyFilter},
 }
 
 // apiExempt: the same, for api's hand-written HTML.

@@ -57,12 +57,13 @@ type documentRenderer struct {
 var standaloneDocuments = []documentRenderer{
 	{
 		// PageWith is where the shell's Doctype is (Page calls it with no
-		// ShellData). The full render is the Agents tab with a "Recently viewed"
-		// strip drawn on first paint, so the strip's entries are in the sweep.
+		// ShellData). The full render is the Agents tab with its list and its
+		// session switcher drawn on first paint, so the cards and the switcher's
+		// entries are in the sweep.
 		fn: "PageWith", label: "the app shell (/)",
 		render: func(w io.Writer) error {
 			list := []AgentCardView{{ID: 1, Name: "keen-wren", DisplayName: "#12 · **fix** the `chip` row", Status: "running"}}
-			return RenderPageWith(w, "agents", featuresAllOn, ShellData{}.WithRecent(list, nil, []RecentRef{{AgentID: 1}}))
+			return RenderPageWith(w, "agents", featuresAllOn, ShellData{}.WithList(list, nil, []RecentRef{{AgentID: 1}}, 0))
 		},
 		renderEmpty: func(w io.Writer) error { return RenderPage(w, "", featuresAllOn) },
 	},
