@@ -89,7 +89,7 @@ async function waitForCards(page: Page, online: boolean) {
     .toBe(true);
 }
 
-test('a read-only host’s sessions appear as Mirrored cards and open the shared terminal with no Interactive switch', async ({ page }) => {
+test('a read-only host’s sessions appear as Mirrored cards and open the shared terminal with its keys off', async ({ page }) => {
   await startMirror(false);
   await login(page);
   await waitForCards(page, true);
@@ -113,11 +113,15 @@ test('a read-only host’s sessions appear as Mirrored cards and open the shared
   await main.locator('a').first().click();
   await page.waitForURL((u) => u.pathname === '/mirror/terminal');
   await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
-  await expect(page.locator('#term-status')).toHaveText('Connected');
+  await expect(page.locator('#term-status')).toHaveText('Connected · this host takes no keys');
   await expect(page.locator('[data-term-badge]')).toContainText(`Mirrored · ${host}`);
   await expect(page.locator('#term-back')).toHaveAttribute('href', '/agents');
-  // The host did not advertise -interactive: no switch is offered.
-  await expect(page.locator('#term-mode')).toBeHidden();
+  // The host did not advertise -interactive: its keys are off, and there is no
+  // switch to turn them on.
+  await expect(page.locator('#term')).toHaveAttribute('data-keys-off', '');
+  await expect(page.locator('#term-keys [data-key="up"]')).toBeDisabled();
+  await expect(page.locator('#term-keys-more')).toBeDisabled();
+  await expect(page.locator('#term-mode')).toHaveCount(0);
   await noHorizontalScroll(page);
 
   await page.locator('#term').click();
@@ -125,10 +129,27 @@ test('a read-only host’s sessions appear as Mirrored cards and open the shared
   await page.waitForTimeout(300);
   await expect(screen(page)).not.toContainText('in=');
 
-  // Asking for rw anyway is refused by muster with the plugin's own reason.
+  // Asking for rw anyway — a socket opened by hand with mode=rw, since the page
+  // never asks — is refused by muster with the plugin's own reason.
   await page.goto(origin + termPath('main'));
-  await page.evaluate(() => (document.getElementById('term-mode') as HTMLButtonElement).click());
-  await expect(page.locator('#term-error-text')).toContainText('this host is read-only');
+  const refusal = await page.evaluate(
+    () =>
+      new Promise<string>((resolve) => {
+        const ws = (document.getElementById('term') as HTMLElement).getAttribute('data-ws')!;
+        const s = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + ws + '&mode=rw&cols=80&rows=24');
+        const t = setTimeout(() => resolve('no answer'), 10_000);
+        s.onmessage = (ev) => {
+          if (typeof ev.data !== 'string') return;
+          try {
+            const m = JSON.parse(ev.data);
+            if (m.type === 'error' || m.type === 'ready') { clearTimeout(t); resolve(m.type + ': ' + (m.message || m.mode)); s.close(); }
+          } catch (e) {}
+        };
+        s.onclose = () => { clearTimeout(t); resolve('closed'); };
+      }),
+  );
+  expect(refusal, 'an interactive attach to a read-only host is refused').toContain('this host is read-only');
+  expect(refusal).toMatch(/^error: /);
   await stopMirror();
 });
 
@@ -378,16 +399,14 @@ test('at 390 px a long title wraps before the card controls, on both card kinds'
   }
 });
 
-test('an -interactive host offers the switch and types into the session', async ({ page }) => {
+test('an -interactive host types into the session with live keys from the start', async ({ page }) => {
   await startMirror(true);
   await login(page);
   await waitForCards(page, true);
   await page.goto(origin + termPath('main'));
-  await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
-  await expect(page.locator('#term-mode')).toBeVisible();
-  await page.locator('#term-mode').click();
   await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=rw');
-  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
+  await expect(page.locator('#term-mode'), 'no Live keys switch').toHaveCount(0);
+  await expect(page.locator('#term-status')).toHaveText('Connected');
   // A mirrored window's raw view has the same bar: ↑ ↓ ⏎ large, the rest
   // behind the ⋯.
   await page.locator('#term-keys > [data-key="up"]').click();
@@ -437,21 +456,12 @@ test('the terminal never says read-only where its composer can send; a read-only
   await waitForCards(page, true);
   for (const session of ['main', 'scratch']) {
     await page.goto(origin + termPath(session));
-    await expect(screen(page)).toContainText(`FAKE-MIRROR session=${session} mode=ro`);
+    await expect(screen(page)).toContainText(`FAKE-MIRROR session=${session} mode=rw`);
     await expect(page.locator('#mv-input'), `${session}: the composer can send`).toBeEnabled();
     await expect(page.locator('#term-status')).toHaveText('Connected');
-    await expect(page.locator('#term-mode')).toBeVisible();
-    await expect(page.locator('#term-mode-label')).toHaveText('Live keys off');
+    await expect(page.locator('#term-mode'), 'no Live keys switch').toHaveCount(0);
     expect(await readOnlyShown(page), `${session}: nothing on a page that can send says read-only`).toEqual([]);
   }
-  // Live keys on and off again: still never "read-only".
-  await page.locator('#term-mode').click();
-  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
-  await expect(page.locator('#term-mode-label')).toHaveText('Live keys on');
-  await page.locator('#term-mode').click();
-  await expect(page.locator('#term-status')).toHaveText('Connected');
-  await expect(page.locator('#term-mode-label')).toHaveText('Live keys off');
-  expect(await readOnlyShown(page), 'after a round trip of the switch').toEqual([]);
 
   // A host that genuinely cannot be sent to: no switch, and the composer's own
   // disabled note is the ONE place the page says so.
@@ -460,8 +470,10 @@ test('the terminal never says read-only where its composer can send; a read-only
   await waitForCards(page, true);
   await page.goto(origin + termPath('scratch'));
   await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
-  await expect(page.locator('#term-status')).toHaveText('Connected');
-  await expect(page.locator('#term-mode')).toBeHidden();
+  // Its status says the keys are off — never "read-only" (that is the
+  // composer's note alone).
+  await expect(page.locator('#term-status')).toHaveText('Connected · this host takes no keys');
+  await expect(page.locator('#term-mode')).toHaveCount(0);
   await expect(page.locator('#mv-input')).toBeDisabled();
   await expect(page.locator('#mv-readonly')).toContainText('This host is read-only');
   expect((await readOnlyShown(page)).length, 'control: the note itself is seen').toBeGreaterThan(0);
@@ -858,7 +870,7 @@ for (const size of [
   test.describe(`the Terminal composer on ${size.name}`, () => {
     test.use({ viewport: size.viewport, hasTouch: size.touch, isMobile: size.touch });
 
-    test('a non-Claude session is sent a message from its Terminal view, without the Interactive switch', async ({ page }) => {
+    test('a non-Claude session is sent a message from its Terminal view, by the composer and not the terminal', async ({ page }) => {
       await stopMirror();
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'muster-e2e-panes-'));
       const pasteFile = path.join(dir, 'pasted');
@@ -884,17 +896,17 @@ for (const size of [
         await expect(scratch).toBeVisible();
         await expect(scratch.locator('[data-mirror-claude]')).toHaveCount(0);
         await Promise.all([page.waitForURL((u) => u.pathname === '/mirror/terminal'), act(scratch.locator('a').first())]);
-        await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+        await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=rw');
         await expect(page.locator('#view-rendered'), 'scratch has no rendered view').toHaveCount(0);
 
-        // The composer is THERE, enabled, on screen, phone-shaped — and the
-        // terminal is still read-only.
+        // The composer is THERE, enabled, on screen, phone-shaped, beside the
+        // terminal's live keys (one interactive attach, made at load).
         const input = page.locator('#mv-input');
         const send = page.locator('#mv-send');
         await expect(input).toBeEnabled();
         await expect(send).toBeEnabled();
         await expect(input).toHaveAttribute('placeholder', 'Message…');
-        await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+        expect(rw.length, 'the terminal attached with live keys once, at load').toBe(1);
         for (const el of [input, send]) {
           const b = (await el.boundingBox())!;
           expect(b.y + b.height, 'the composer is above the bottom of the screen').toBeLessThanOrEqual(size.viewport.height);
@@ -914,8 +926,10 @@ for (const size of [
         await expect(input).toHaveValue('');
         await expect(page.locator('#mv-note')).toBeHidden();
         expect(sends, 'one send, accepted').toEqual([204]);
-        expect(rw, 'no interactive terminal was opened to do it').toEqual([]);
-        await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+        // The send went by the composer's route, not the terminal: no new
+        // attach was made for it, and nothing was typed over the socket.
+        expect(rw.length, 'no interactive terminal was opened to do it').toBe(1);
+        await expect(screen(page)).not.toContainText('in=');
         await expect(page.locator('#term-confirm')).toBeHidden();
 
         // Enter sends too; Shift+Enter is a newline, and several lines go as ONE
@@ -1103,7 +1117,7 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
       await login(page);
       await waitForCards(page, true);
       await page.goto(origin + termPath('scratch'));
-      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=rw');
       const term = page.locator('#term');
       await expect(term, 'the gesture is wired for a host that can scroll').toHaveAttribute('data-scroll-on', '1');
       await expect(term, 'fixture: the far side is wider than the phone').toHaveAttribute('data-overflow', '1');
@@ -1131,8 +1145,7 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
       await expect(term).toHaveAttribute('data-scroll-sent', String(back));
       expect(posts.every((s) => s === 204), `every scroll answered 204: ${posts}`).toBe(true);
       expect(await page.locator('#term-scroll').evaluate((el) => el.scrollLeft), 'a vertical drag did not pan sideways').toBe(left0);
-      // Live keys stayed off and nothing was typed into the session.
-      await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+      // A drag is a scroll: nothing was typed into the session.
       await expect(screen(page)).not.toContainText('in=');
 
       // Finger UP past where it started: forward again, out of copy-mode at
@@ -1175,7 +1188,7 @@ test.describe('drag-to-scroll on a phone (412×915, touch)', () => {
       await startMirror(true, undefined, { MUSTER_MIRROR_E2E_WINDOW: '200x20' });
       await waitForCards(page, true);
       await page.goto(origin + termPath('scratch'));
-      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=rw');
       await expect(term).not.toHaveAttribute('data-scroll', /.*/);
       await expect(term).not.toHaveAttribute('data-scroll-on', /.*/);
       const postsBefore = posts.length;
@@ -1228,7 +1241,7 @@ test.describe('drag-to-scroll when scrolls fail (412×915, touch)', () => {
         return route.continue();
       });
       await page.goto(origin + termPath('scratch'));
-      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=rw');
       const term = page.locator('#term');
       await expect(term).toHaveAttribute('data-scroll-on', '1');
       const note = page.locator('#term-scroll-note');
@@ -1304,7 +1317,7 @@ test.describe('drag-to-scroll when the host refuses (412×915, touch)', () => {
         return route.continue();
       });
       await page.goto(origin + termPath('scratch'));
-      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=rw');
       const term = page.locator('#term');
       const note = page.locator('#term-scroll-note');
       await expect(term).toHaveAttribute('data-scroll-on', '1');
@@ -1367,7 +1380,7 @@ test.describe('drag-to-scroll when the host refuses (412×915, touch)', () => {
       await waitForCards(page, true);
       await page.locator('#term-reconnect').click();
       await reattached();
-      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=ro');
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch mode=rw');
       await lands('after the host came back');
 
       // 4. ONLY "this host cannot scroll" unwires the gesture; a drag then posts
@@ -1427,7 +1440,7 @@ test.describe('drag-to-scroll on a desktop (1280×900, mouse)', () => {
       await login(page);
       await waitForCards(page, true);
       await page.goto(origin + termPath('main'));
-      await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=rw');
       await expect(page.locator('#term')).toHaveAttribute('data-scroll-on', '1');
       const box = (await page.locator('#term-scroll').boundingBox())!;
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);

@@ -6,7 +6,7 @@ import (
 )
 
 func stepUpFixture() *StepUpView {
-	return &StepUpView{ConfirmPath: "/auth/confirm", PasskeyPath: "/auth/confirm/passkey", FreshFor: 0, RememberKey: "mirror:host-a", Window: "12 hours"}
+	return &StepUpView{ConfirmPath: "/auth/confirm", PasskeyPath: "/auth/confirm/passkey", FreshFor: 0, Window: "12 hours"}
 }
 
 // script is the body of the page's inline <script> that contains marker.

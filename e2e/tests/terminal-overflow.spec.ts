@@ -135,7 +135,7 @@ test.describe('at a phone’s width (412px)', () => {
     const name = await newAgent(page, 'e2e overflow: phone');
     const resizes = recordResizes(page);
     await page.goto(origin + '/agents/' + name + '/terminal');
-    await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+    await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
 
     // The far side kept its window and told the page; the exec got 120x30,
     // not the phone's ~52 columns.
@@ -201,9 +201,9 @@ test.describe('at a phone’s width (412px)', () => {
     const name = await newAgent(page, 'e2e overflow: phone rw');
     const resizes = recordResizes(page);
     await page.goto(origin + '/agents/' + name + '/terminal');
-    await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
-    await page.locator('#term-mode').click();
+    // Live keys are always on: the page attaches interactively at once.
     await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
+    await expect(page.locator('#term-mode'), 'no Live keys switch').toHaveCount(0);
     await expect(page.locator('#term')).toHaveAttribute('data-remote', `${WIN.cols}x${WIN.rows}`);
     await expect.poll(() => sizeLines(page)).toEqual([`${WIN.cols}x${WIN.rows}`]);
     await page.waitForTimeout(300);
@@ -219,7 +219,7 @@ test.describe('at a desktop width (1280px)', () => {
     const name = await newAgent(page, 'e2e overflow: desktop');
     const resizes = recordResizes(page);
     await page.goto(origin + '/agents/' + name + '/terminal');
-    await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+    await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
 
     // The page covers 120x30, so it asks for its own fit and gets it.
     await expect.poll(async () => (await page.locator('#term').getAttribute('data-remote')) ?? '').not.toBe('');

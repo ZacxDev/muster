@@ -1215,7 +1215,8 @@ func panelID(key string) string { return "panel-" + key }
 func appScript(feat Features) g.Node {
 	return staticScript(appScriptSrc,
 		g.Attr(appNavAttr, navRegistryJS(feat)),
-		g.Attr(appBuildAttr, feat.SnapBuild))
+		g.Attr(appBuildAttr, feat.SnapBuild),
+		g.Attr(LiveHeartbeatAttr, strconv.FormatInt(LiveHeartbeat().Milliseconds(), 10)))
 }
 
 // appScriptSrc is the path appScript's code is served at, /static/js/app.js

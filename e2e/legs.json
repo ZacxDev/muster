@@ -76,6 +76,7 @@
     "tests/suggested-replies.spec.ts": 72.0,
     "tests/title-room.spec.ts": 24.1,
     "tests/switcher-search.spec.ts": 30.0,
+    "tests/reconnect.spec.ts": 60.0,
     "tests/agents-switcher.spec.ts": 30.0,
     "tests/opencode-view.spec.ts": 20.0,
     "tests/board-first-paint.spec.ts": 20.0,
@@ -164,7 +165,8 @@
       "tests/switcher-search.spec.ts",
       "tests/board-first-paint.spec.ts",
       "tests/telemetry.spec.ts",
-      "tests/open-perf.spec.ts"
+      "tests/open-perf.spec.ts",
+      "tests/reconnect.spec.ts"
     ]
   }
 }

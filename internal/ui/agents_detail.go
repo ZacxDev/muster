@@ -1791,6 +1791,17 @@ func agentChatScript(name string) g.Node {
 
   function scheme() { return location.protocol === 'https:' ? 'wss:' : 'ws:'; }
   var ws = null;
+` + liveRetryJS + `
+  // Liveness and reconnection (live.go): when the socket last spoke, whether
+  // it has sent a heartbeat (only then can it be judged stale), when it was
+  // made, the failed attempts in a row and the pending retry.
+  var lastAt = 0, beat = false, madeAt = 0, retry = 0, retryTimer = 0;
+  // silent: the socket has gone a heartbeat and a margin without a word —
+  // a send over it could be lost, so the form takes the message instead.
+  function silent() {
+    var lim = (window.__musterRestore && window.__musterRestore.wakeStaleMs) || 0;
+    return !!lim && beat && Date.now() - lastAt > lim;
+  }
   // Per-turn render state. turn = the container div for the active assistant turn;
   // text = the current text bubble (created lazily on first delta after any
   // chip/thinking); think = the thinking <details>'s body; tools = id->chip map.
@@ -2024,29 +2035,73 @@ func agentChatScript(name string) g.Node {
   // The transcript is in the document, so it is painted by the time this
   // runs; the chat is usable once its socket is open.
   var opening = null, live = null;
-  function connect() {
+  // drop detaches the current socket and closes it: its close is nobody's.
+  function drop() {
+    var old = ws;
+    ws = null; session.ws = null;
+    if (!old) return;
+    old.onopen = null; old.onmessage = null; old.onclose = null;
+    try { old.close(); } catch (e) {}
+  }
+  // connect opens the chat's socket; why is the reconnect's reason
+  // (live.go), nothing for the page's first open.
+  function connect(why) {
+    clearTimeout(retryTimer); retryTimer = 0;
     if (session.disposed) return;
+    // 🔴 ONE SOCKET: the one before is detached and closed first.
+    drop();
     var url = scheme() + '//' + location.host + '/agents/' + agent + '/ws';
     if (sessionId) url += '?session=' + encodeURIComponent(sessionId);
-    if (window.musterOpen) { opening = window.musterOpen.begin('agent'); opening.mark('first_paint'); }
+    if (window.musterOpen) {
+      opening = window.musterOpen.begin('agent', why ? { reconnect: true, reconnect_reason: why } : undefined);
+      opening.mark('first_paint');
+    }
     var tp = opening ? opening.tp() : '';
     if (tp) url += (url.indexOf('?') < 0 ? '?' : '&') + 'tp=' + encodeURIComponent(tp);
-    ws = new WebSocket(url);
+    var sock = ws = new WebSocket(url);
     session.ws = ws;
-    ws.onopen = function () { if (opening) { opening.mark('stream_connected'); opening.mark('usable'); opening.end('ok'); live = opening; opening = null; } };
-    ws.onmessage = function (ev) {
+    madeAt = lastAt = Date.now(); beat = false;
+    sock.onopen = function () {
+      retry = 0; lastAt = Date.now();
+      if (opening) { opening.mark('stream_connected'); opening.mark('usable'); opening.end('ok'); live = opening; opening = null; }
+    };
+    sock.onmessage = function (ev) {
+      lastAt = Date.now();
+      // A heartbeat says only that the socket is alive.
+      if (ev.data === ` + strconv.Quote(LivePingFrame) + `) { beat = true; return; }
       var msg;
       try { msg = JSON.parse(ev.data); } catch (e) { return; }
       renderStreamMsg(msg);
     };
-    ws.onclose = function (ev) {
-      if (session.disposed) return;
+    sock.onclose = function (ev) {
+      if (session.disposed || ws !== sock) return;
+      ws = null; session.ws = null;
       var o = opening || live, why = 'closed_' + (ev && ev.code);
       if (opening) opening.end(why);
       if (o) o.disconnected(why, { phase: opening ? 'opening' : 'live', code: ev && ev.code });
       opening = null; live = null;
-      setTimeout(connect, 2000);
+      // A turn streaming over it is over as far as this socket goes: the
+      // chat log's refetch draws what was stored.
+      if (session.streaming) { session.streaming = false; sendBtn.disabled = false; hideWorking(); resetTurn(); }
+      retry++;
+      // A hidden or offline page waits for its wake (live.go).
+      if (liveCanRetry()) retryTimer = setTimeout(function () { connect('retry'); }, liveDelay(retry));
     };
+  }
+  // wake (restore.go): a closed socket reconnects at once; an open one that
+  // has heard no heartbeat for staleMs is replaced; one still opening is left
+  // to finish unless it has been opening for that long too.
+  function wake(why, staleMs) {
+    if (session.disposed) return;
+    var now = Date.now();
+    if (!ws || ws.readyState > 1) {
+      if (!liveCanRetry() || (why === 'tick' && retryTimer)) return;
+      retry = 0;
+      connect(why === 'tick' ? 'retry' : why);
+      return;
+    }
+    if (ws.readyState === 0) { if (now - madeAt > staleMs) connect(why === 'tick' ? 'stale' : why); return; }
+    if (beat && now - lastAt > staleMs) connect(why === 'tick' ? 'stale' : why);
   }
   connect();
   // Back and Forward (restore.go): the socket is closed as the page is hidden
@@ -2055,9 +2110,11 @@ func agentChatScript(name string) g.Node {
   // (chatLogTrigger's htmx:sseOpen arm).
   ` + restoreJoinJS(`{
     alive: function () { return !session.disposed; },
-    hide: function () { try { if (ws) { ws.onclose = null; ws.close(); } } catch (e) {} ws = null; session.ws = null; },
-    show: function () {
-      if (!ws || ws.readyState > 1) connect();
+    hide: function () { clearTimeout(retryTimer); retryTimer = 0; drop(); },
+    wake: wake,
+    show: function (why) {
+      retry = 0;
+      if (!ws || ws.readyState > 1) connect(why || 'pageshow');
       return new Promise(function (resolve) {
         function done(e) {
           if (!e.detail || !e.detail.elt || e.detail.elt.id !== 'chat-log') return;
@@ -2109,7 +2166,7 @@ func agentChatScript(name string) g.Node {
   function send() {
     var t = input.value.trim();
     if (!t) return;
-    if (!ws || ws.readyState !== 1) { nativeSend(); return; }
+    if (!ws || ws.readyState !== 1 || silent()) { nativeSend(); return; }
     var ub = bubble('user'); ub.innerHTML = mdRender(t);
     forceScroll(); // his own send always brings the latest into view
     ws.send(JSON.stringify({ type: 'message', text: t }));

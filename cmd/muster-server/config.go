@@ -191,6 +191,10 @@ const (
 	// (internal/stepup): a Go duration, 12h when unset, refused outside
 	// 1m–24h. Freshness is per browser session, never per user.
 	envStepUpWindow = "MUSTER_STEPUP_WINDOW"
+	// How often every live socket and event stream a page holds sends a
+	// heartbeat (internal/ui/live.go): a Go duration, 15s when unset, refused
+	// outside 250ms–5m. A page replaces a stream silent for about two of them.
+	envLiveHeartbeat = "MUSTER_LIVE_HEARTBEAT"
 
 	// Browser flows: the deployment's own infrastructure names (comma-separated)
 	// that an AGENT's browser-flow text may not carry (internal/flows
@@ -592,6 +596,9 @@ type config struct {
 	// StepUpWindow is internal/stepup's freshness window (MUSTER_STEPUP_WINDOW;
 	// stepup.DefaultWindow when unset). loadConfig refuses an out-of-bounds one.
 	StepUpWindow time.Duration
+	// LiveHeartbeat is MUSTER_LIVE_HEARTBEAT (0 when unset: ui's default).
+	// loadConfig refuses an out-of-bounds one.
+	LiveHeartbeat time.Duration
 
 	// FlowAgentDenyWords is MUSTER_FLOW_AGENT_DENY_WORDS, split on commas.
 	FlowAgentDenyWords []string
@@ -1179,6 +1186,11 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s: %w", envStepUpWindow, err)
 	}
 	c.StepUpWindow = w
+	hb, err := ui.ParseLiveHeartbeat(strings.TrimSpace(getenv(envLiveHeartbeat)))
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %w", envLiveHeartbeat, err)
+	}
+	c.LiveHeartbeat = hb
 	if v := strings.TrimSpace(getenv(envTaskReapAfter)); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {

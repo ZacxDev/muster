@@ -231,8 +231,10 @@ func TestTheChatFormCanBeSentWithoutItsSocket(t *testing.T) {
 	// The script's half: a socket that is not open hands over to the browser,
 	// it does not return.
 	script := scriptWith(t, page, "function nativeSend()")
-	if !strings.Contains(script, "if (!ws || ws.readyState !== 1) { nativeSend(); return; }") {
-		t.Error("the chat script no longer hands a message to the browser when its socket is not open")
+	// A socket that has gone silent past its heartbeat bound (ui/live.go) is
+	// not trusted with a message either.
+	if !strings.Contains(script, "if (!ws || ws.readyState !== 1 || silent()) { nativeSend(); return; }") {
+		t.Error("the chat script no longer hands a message to the browser when its socket is not open (or silent)")
 	}
 	if strings.Contains(script, "if (!t || !ws || ws.readyState !== 1) return;") {
 		t.Error("the chat script still returns silently when its socket is not open")

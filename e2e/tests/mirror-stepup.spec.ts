@@ -179,8 +179,20 @@ async function makeStale(ctx: BrowserContext, ago = STALE_SECONDS) {
   await ctx.addCookies([{ name: 'muster_at', value: sign(claims), url: browserURL, httpOnly: true, secure: true, sameSite: 'Lax' }]);
 }
 
-test('the Interactive switch on a mirrored session needs a fresh sign-in, and asks for the password when it is stale (real GoTrue, 412px)', async ({ page, context }) => {
+test('live keys on a mirrored session need a fresh sign-in, and a key pressed on a stale one asks for the password (real GoTrue, 412px)', async ({ page, context }) => {
   test.setTimeout(180_000);
+  // The page's own sockets, to close one as a dropped network would (part 3).
+  await page.addInitScript(() => {
+    const C = window.WebSocket;
+    const socks: WebSocket[] = ((window as any).__socks = []);
+    const N = function (this: unknown, url: string | URL, p?: string | string[]) {
+      const o = p === undefined ? new C(url) : new C(url, p);
+      socks.push(o);
+      return o;
+    } as unknown as typeof WebSocket;
+    N.prototype = C.prototype;
+    (window as any).WebSocket = N;
+  });
   await claimAndSignIn(page);
   mirrorProc = startMirror();
   // Every terminal socket the page OPENS, by mode — so "the page asked before
@@ -201,32 +213,34 @@ test('the Interactive switch on a mirrored session needs a fresh sign-in, and as
   await expect(card).toHaveAttribute('data-f-mode', 'interactive');
   await expect(card.locator('[data-mirror-interactive]')).toHaveCount(0);
 
-  // 1. FRESH (just signed in): the switch attaches rw with no prompt, at the
-  // session's own size (a phone does not shrink it).
+  // 1. FRESH (just signed in): the page attaches rw at once — live keys are
+  // always on, there is no switch — at the session's own size (a phone does
+  // not shrink it).
   await page.goto(browserURL + termPath);
-  await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro size=' + WIN);
+  await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=rw size=' + WIN);
   await expect(page.locator('#term')).toHaveAttribute('data-remote', WIN);
   expect(Number(await page.locator('#term').getAttribute('data-fresh-for'))).toBeGreaterThan(200_000);
-  await page.locator('#term-mode').click();
-  await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=rw size=' + WIN);
-  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
+  await expect(page.locator('#term-mode'), 'no Live keys switch').toHaveCount(0);
+  await expect(page.locator('#term-status')).toHaveText('Connected');
   await expect(dialog(page)).toBeHidden();
 
-  // Remembered for this host, within the window: a reload comes back rw.
+  // Within the window: a reload comes back rw, without asking.
   await page.reload();
   await expect(screen(page)).toContainText('mode=rw');
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('#term-status')).toHaveText('Connected');
   await expect(dialog(page)).toBeHidden();
 
-  // 2. STALE: the page loads read-only even though rw is remembered, and
-  // flipping the switch asks first.
+  // 2. STALE: the page loads read-only and says what a key will do; the key
+  // pressed asks first, before any rw attach.
   await makeStale(context);
   const rwBeforeStale = rwOpened.length;
   await page.reload();
   await expect(screen(page)).toContainText('mode=ro');
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+  await expect(page.locator('#term-status')).toHaveText("Connected · confirm it's you to type");
   expect(await page.locator('#term').getAttribute('data-fresh-for')).toBe('0');
-  await page.locator('#term-mode').click();
+  expect(rwOpened.length, 'a stale page opens no rw socket at load').toBe(rwBeforeStale);
+  await expect(page.locator('#term-keys [data-key="up"]'), 'the keys are on all the same').toBeEnabled();
+  await page.locator('#term-keys [data-key="up"]').click();
   await expect(dialog(page)).toBeVisible();
   expect(rwOpened.length, 'a stale page asks BEFORE trying rw (no rw socket opened)').toBe(rwBeforeStale);
   await expect(page.getByRole('heading', { name: "Confirm it's you" })).toBeVisible();
@@ -237,7 +251,7 @@ test('the Interactive switch on a mirrored session needs a fresh sign-in, and as
   await page.fill('#term-confirm-password', 'not the password');
   await page.click('#term-confirm-submit');
   await expect(page.locator('#term-confirm-error')).toHaveText('That password is not right.');
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+  expect(rwOpened.length, 'a refused password attached nothing').toBe(rwBeforeStale);
   const staleToken = await accessToken(context);
   expect(Date.now() / 1000 - amrOf(staleToken), 'still the stale session').toBeGreaterThan(STALE_SECONDS - 100);
 
@@ -246,33 +260,35 @@ test('the Interactive switch on a mirrored session needs a fresh sign-in, and as
   await page.click('#term-confirm-submit');
   await expect(dialog(page)).toBeHidden();
   await expect(screen(page)).toContainText('mode=rw size=' + WIN);
-  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
+  await expect(page.locator('#term-status')).toHaveText('Connected');
+  // The key that asked was typed at a terminal that could not take it: it is
+  // not replayed into the session.
+  await expect(screen(page)).not.toContainText('in=');
   const freshToken = await accessToken(context);
   expect(freshToken).not.toBe(staleToken);
   expect(Math.abs(Date.now() / 1000 - amrOf(freshToken)), 'the confirm signed in just now').toBeLessThan(60);
 
-  //    Within the window: off and on again does not ask.
-  await page.locator('#term-mode').click();
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-  await page.locator('#term-mode').click();
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
-  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
-  await expect(dialog(page)).toBeHidden();
-
-  // 3. THE SERVER DECIDES, NOT THE PAGE: the page was rendered fresh, the
-  // cookie goes stale under it, and the switch's rw attach is refused (403)
-  // — the page falls back to read-only and asks.
-  await page.locator('#term-mode').click(); // back to ro
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+  // 3. THE SERVER DECIDES, NOT THE PAGE: the page was rendered fresh and is
+  // attached rw; the cookie goes stale under it, and the socket drops (as a
+  // network would). The page reconnects by itself, believing it fresh: its rw
+  // attach is refused (403), it attaches read-only, tries rw once more (the
+  // first refusal could have been the network) and, refused again, stays
+  // read-only and says a key will ask — no dialog it was not asked for.
   await page.reload();
-  await expect(screen(page)).toContainText('mode=ro');
+  await expect(screen(page)).toContainText('mode=rw');
   expect(Number(await page.locator('#term').getAttribute('data-fresh-for'))).toBeGreaterThan(0);
   await makeStale(context);
   const rwBeforeRefusal = rwOpened.length;
-  await page.locator('#term-mode').click();
-  await expect(dialog(page), 'the server refused the stale rw attach and the page asked').toBeVisible();
-  expect(rwOpened.length, 'the page (believing it fresh) DID try rw once').toBe(rwBeforeRefusal + 1);
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+  await page.evaluate(() => {
+    const live = (window as any).__socks.filter((s: WebSocket) => s.url.includes('/mirror/terminal/ws') && s.readyState === 1);
+    live.forEach((s: WebSocket) => s.close());
+  });
+  await expect(page.locator('#term-status'), 'the refused page settles read-only and says why').toHaveText("Connected · confirm it's you to type", { timeout: 15_000 });
+  await expect(screen(page)).toContainText('mode=ro');
+  expect(rwOpened.length - rwBeforeRefusal, 'the page (believing it fresh) DID try rw — twice, the second after a read-only attach proved the network').toBe(2);
+  await expect(dialog(page), 'no dialog it was not asked for').toBeHidden();
+  await page.locator('#term-keys [data-key="up"]').click();
+  await expect(dialog(page), 'the next key asks').toBeVisible();
   const status = await page.evaluate(async (u) => {
     const r = await fetch(u + '&mode=rw');
     return r.status;
@@ -283,7 +299,7 @@ test('the Interactive switch on a mirrored session needs a fresh sign-in, and as
 test.describe('at a desktop width (1280px)', () => {
   test.use({ viewport: { width: 1280, height: 900 }, hasTouch: false, isMobile: false });
 
-  test('a stale desktop session is asked to confirm before the switch attaches rw (real GoTrue)', async ({ page, context }) => {
+  test('a stale desktop session is asked to confirm at its first key before it attaches rw (real GoTrue)', async ({ page, context }) => {
     test.setTimeout(120_000);
     // Signed in through /login this time (the 412px test claimed the account).
     await page.goto(browserURL + '/login');
@@ -297,13 +313,16 @@ test.describe('at a desktop width (1280px)', () => {
     await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
     // 1280px covers the 120x30 session: the desktop fits as before.
     await expect(page.locator('#term')).toHaveAttribute('data-overflow', '0');
-    await page.locator('#term-mode').click();
+    await expect(page.locator('#term-status')).toHaveText("Connected · confirm it's you to type");
+    await page.locator('#term').click();
+    await page.keyboard.type('x');
     await expect(dialog(page)).toBeVisible();
     await page.fill('#term-confirm-password', adminPW);
     await page.click('#term-confirm-submit');
     await expect(dialog(page)).toBeHidden();
     await expect(screen(page)).toContainText('mode=rw');
-    await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
+    await expect(page.locator('#term-status')).toHaveText('Connected');
+    await expect(screen(page), 'the key that asked is not replayed').not.toContainText('in=78');
     // Typing reaches the host.
     await page.locator('#term').click();
     await page.keyboard.type('ok');
@@ -669,18 +688,22 @@ test.describe('the window and the passkey confirm on a phone (390×844)', () => 
 test.describe('the passkey confirm at a desktop width (1280px)', () => {
   test.use({ viewport: { width: 1280, height: 900 }, hasTouch: false, isMobile: false });
 
-  test('the Interactive switch, and a send from the Terminal composer, are confirmed with a passkey (real GoTrue, virtual authenticator)', async ({ page, context }) => {
+  test('live keys, and a send from the Terminal composer, are confirmed with a passkey (real GoTrue, virtual authenticator)', async ({ page, context }) => {
     test.setTimeout(180_000);
     await authenticator(page);
     await signIn(page);
     await addPasskey(page); // this browser's own passkey for the admin
     const adminSub = subOf(await accessToken(context));
 
-    // The Interactive attach: stale → the switch asks → passkey → rw.
+    // The interactive attach: stale → a key asks → passkey → rw.
+    const termSockets: string[] = [];
+    page.on('websocket', (ws) => {
+      if (ws.url().includes('/mirror/terminal/ws')) termSockets.push(ws.url());
+    });
     await makeStale(context);
     await page.goto(browserURL + termPath);
     await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
-    await page.locator('#term-mode').click();
+    await page.locator('#term-keys [data-key="up"]').click();
     await expect(dialog(page)).toBeVisible();
     await expect(dialog(page)).toContainText('needs a sign-in from the last 12 hours.');
     await expect(passkeyBtn(page)).toBeVisible();
@@ -691,8 +714,7 @@ test.describe('the passkey confirm at a desktop width (1280px)', () => {
     await passkeyBtn(page).click();
     await expect(dialog(page)).toBeHidden();
     await expect(screen(page)).toContainText('mode=rw');
-    await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
-    await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('#term-status')).toHaveText('Connected');
     let token = await accessToken(context);
     expect(subOf(token)).toBe(adminSub);
     expect(Math.abs(Date.now() / 1000 - amrOf(token)), 'the passkey confirm signed in just now').toBeLessThan(60);
@@ -702,8 +724,7 @@ test.describe('the passkey confirm at a desktop width (1280px)', () => {
 
     // The Terminal view's composer (main's active pane is its Claude pane, %9):
     // stale → Send → passkey → the same text is delivered.
-    await page.locator('#term-mode').click(); // back to read-only: the composer does not need the switch
-    await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
+    const socketsBeforeSend = termSockets.length;
     const sends: number[] = [];
     page.on('response', (r) => {
       if (new URL(r.url()).pathname === '/mirror/terminal/send') sends.push(r.status());
@@ -720,7 +741,10 @@ test.describe('the passkey confirm at a desktop width (1280px)', () => {
     await expect.poll(pasted).toBe(before + '%9 from the desktop terminal\n');
     await expect(page.locator('#mv-input')).toHaveValue('');
     expect(sends).toEqual([403, 204]);
-    await expect(page.locator('#term-mode'), 'the send did not flip the switch').toHaveAttribute('aria-checked', 'false');
+    // The send went by the composer's route: the terminal's attach is the one
+    // it was, untouched by it.
+    expect(termSockets.length, 'the send opened no terminal socket').toBe(socketsBeforeSend);
+    await expect(page.locator('#term-status')).toHaveText('Connected');
     token = await accessToken(context);
     expect(Math.abs(Date.now() / 1000 - amrOf(token))).toBeLessThan(60);
   });
@@ -746,7 +770,7 @@ test.describe('the passkey confirm at a desktop width (1280px)', () => {
 test.describe('the terminal in the view switch’s frame, with no WebAuthn in the frame (390×844)', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
-  test('the Interactive switch and a composer send in the framed terminal are confirmed with a PASSKEY in the top window’s dialog (real GoTrue, virtual authenticator)', async ({ page, context }) => {
+  test('a key and a composer send in the framed terminal are confirmed with a PASSKEY in the top window’s dialog (real GoTrue, virtual authenticator)', async ({ page, context }) => {
     test.setTimeout(180_000);
     await authenticator(page);
     await signIn(page);
@@ -771,9 +795,9 @@ test.describe('the terminal in the view switch’s frame, with no WebAuthn in th
     expect(await frame.evaluate(() => typeof window.PublicKeyCredential), 'no WebAuthn in the frame').toBe('undefined');
     expect(await page.evaluate(() => typeof window.PublicKeyCredential), 'WebAuthn in the top document').toBe('function');
 
-    // 1. The Interactive switch: stale → asked → in the TOP window's dialog,
-    //    with the passkey offered → confirmed → the frame attaches rw.
-    await t.locator('#term-mode').tap();
+    // 1. A key: stale → asked → in the TOP window's dialog, with the passkey
+    //    offered → confirmed → the frame attaches rw.
+    await t.locator('#term-keys [data-key="up"]').tap();
     await expect(dialog(page), 'asked in the top window').toBeVisible();
     await expect(t.locator('#term-confirm'), 'not in the frame’s own dialog').toBeHidden();
     await expect(passkeyBtn(page), 'the passkey is offered').toBeVisible();
@@ -785,23 +809,32 @@ test.describe('the terminal in the view switch’s frame, with no WebAuthn in th
     await passkeyBtn(page).tap();
     await expect(dialog(page)).toBeHidden();
     await expect(t.locator('#term .xterm-rows')).toContainText('mode=rw');
-    await expect(t.locator('#term-status')).toHaveText('Connected · live keys');
+    await expect(t.locator('#term-status')).toHaveText('Connected');
     let token = await accessToken(context);
     expect(Math.abs(Date.now() / 1000 - amrOf(token)), 'the passkey confirm signed in just now').toBeLessThan(60);
     expect(options, 'the passkey options were asked for by the top window').toEqual(['top']);
 
-    //    The FRAME's own freshness followed the top window's confirm: off and
-    //    on again attaches without asking.
-    await t.locator('#term-mode').tap();
-    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-    await t.locator('#term-mode').tap();
-    await expect(t.locator('#term-status')).toHaveText('Connected · live keys');
+    //    Hidden behind the rendered view and shown again, the frame keeps its
+    //    one rw attach exactly as it is: no new socket, no dialog.
+    const rwLines = async () => ((await t.locator('#term .xterm-rows').innerText()).match(/mode=rw/g) || []).length;
+    const rwBefore = await rwLines();
+    const termWS: string[] = [];
+    page.on('websocket', (ws) => {
+      if (ws.url().includes('/mirror/terminal/ws')) termWS.push(ws.url());
+    });
+    await t.locator('#view-rendered').tap();
+    await expect(frameEl).toBeHidden();
+    await page.locator('#view-terminal').tap();
+    await expect(frameEl).toBeVisible();
+    await page.waitForTimeout(1000);
+    await expect(t.locator('#term-status')).toHaveText('Connected');
+    expect(termWS, 'hiding and showing opened no terminal socket').toEqual([]);
+    expect(await rwLines(), 'still the one rw attach: nothing re-attached').toBe(rwBefore);
+    await expect(t.locator('#term .xterm-rows')).toContainText('mode=rw');
     await expect(dialog(page)).toBeHidden();
 
     // 2. The framed terminal's composer: stale → Send → 403 → the top window's
     //    dialog, passkey → the same text is delivered once.
-    await t.locator('#term-mode').tap();
-    await expect(t.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
     const sends: number[] = [];
     page.on('response', (r) => {
       if (new URL(r.url()).pathname === '/mirror/terminal/send') sends.push(r.status());
@@ -833,9 +866,13 @@ test.describe('the terminal in the view switch’s frame, with no WebAuthn in th
     //    it says why it offers the password only: on the dialog, and in one
     //    muted line on screen. The password still confirms, and both are gone
     //    once it closes.
+    //    (Asked by a send: the frame's terminal still believes its sign-in
+    //    fresh — it is, by the page's measure — so a key would just type.)
     await page.evaluate(() => { delete (window as { PublicKeyCredential?: unknown }).PublicKeyCredential; });
     await makeStale(context);
-    await t.locator('#term-mode').tap();
+    const before3 = pasted();
+    await t.locator('#mv-input').fill('third from the framed terminal');
+    await t.locator('#mv-send').tap();
     await expect(dialog(page)).toBeVisible();
     await expect(dialog(page)).toHaveAttribute('data-passkey-unavailable', 'no-publickeycredential');
     await expect(passkeyNote(page)).toBeVisible();
@@ -845,7 +882,7 @@ test.describe('the terminal in the view switch’s frame, with no WebAuthn in th
     await page.fill('#term-confirm-password', adminPW);
     await page.locator('#term-confirm-submit').click();
     await expect(dialog(page)).toBeHidden();
-    await expect(t.locator('#term-status')).toHaveText('Connected · live keys');
+    await expect.poll(pasted).toBe(before3 + '%9 third from the framed terminal\n');
     await expect(dialog(page)).not.toHaveAttribute('data-passkey-unavailable', /.*/);
     await expect(passkeyNote(page)).toBeHidden();
   });
