@@ -156,9 +156,9 @@ func RenderNavAgents(w io.Writer, list []AgentCardView, mirrors []MirrorCardView
 //
 // 🔴 THE CURRENT ROW SAYS aria-current="true", NOT "page". The page's own nav
 // entry (the Agents link, for a session page — sidebar's currentTab) already
-// claims "page", and one document has one current page
-// (TestSidebarMarksExactlyOneCurrentPage); the row is the current item of the
-// agents set, which is what "true" means. It is drawn as the active row
+// claims "page", and one document has one current page; the row is the
+// current item of the agents set, which is what "true" means
+// (TestTheRowOfThePageIsCurrent refuses a row that claims "page"). It is drawn as the active row
 // (navRowTone) — never the accent highlight, which marks the nav entry.
 func navAgentRow(e listEntry, label string, current bool, now time.Time) g.Node {
 	var href, kind, color, host, icon string
