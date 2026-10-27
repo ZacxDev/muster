@@ -185,7 +185,7 @@ func (s *Server) routeByPR(ctx context.Context, p plugins.Plugin, m plugins.Mess
 		return true
 	}
 	s.logger.Printf("prroute: message %d: %s's author %s cannot take it now; to the chief, naming it", m.ID, prName(ref), hit.ClaudeSession)
-	return false
+	return true
 }
 
 // prAuthorHint is the author block for message m, delivered to the chief —
