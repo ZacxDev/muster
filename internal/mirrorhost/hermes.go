@@ -13,6 +13,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/termscreen"
 )
 
 // Hermes process identity, and the host paste guard built on it
@@ -527,7 +528,7 @@ func (t Tmux) PaneHermes(ctx context.Context, paneID string) (HermesProc, bool, 
 	// docker exec). ⚠ Best effort, and it FAILS OPEN: a capture that fails,
 	// a resized pane (its chrome hidden for 0.35 s), a narrow pane's compact
 	// chrome or a turned-off status bar are not seen.
-	if raw, cerr := t.capturePane(ctx, paneID); cerr == nil && hermeshost.LooksLikeHermes(hermeshost.ParseScreen(raw)) {
+	if raw, cerr := t.capturePane(ctx, paneID); cerr == nil && hermeshost.LooksLikeHermes(termscreen.ParseScreen(raw)) {
 		return HermesProc{PID: pid, Rule: hermesRuleChrome}, true, nil
 	}
 	return HermesProc{}, false, nil

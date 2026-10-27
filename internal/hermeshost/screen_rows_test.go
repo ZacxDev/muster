@@ -5,24 +5,26 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/termscreen"
 )
 
 // withRowAfterPrompt is fixture name's raw capture with row inserted after
 // its input area's first row.
-func withRowAfterPrompt(t *testing.T, name, row string) Screen {
+func withRowAfterPrompt(t *testing.T, name, row string) termscreen.Screen {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "screens", name+".ansi"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := frameOf(ParseScreen(string(b)))
+	f, err := frameOf(termscreen.ParseScreen(string(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
 	at := f.top + 2
 	lines = append(lines[:at], append([]string{row}, lines[at:]...)...)
-	return ParseScreen(strings.Join(lines, "\n"))
+	return termscreen.ParseScreen(strings.Join(lines, "\n"))
 }
 
 // TestEveryInputRowIsChecked: an idle prompt row with text on a LATER input

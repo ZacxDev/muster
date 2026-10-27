@@ -89,3 +89,32 @@ func TestTmuxClaudeScreenReadsWhatThePaneShows(t *testing.T) {
 		t.Fatal("a session name was accepted as a pane id")
 	}
 }
+
+// TestTmuxClaudeScreenSeesAGhostSuggestionAsDim: real tmux drawing Claude
+// Code's dim ghost suggestion — ClaudeScreen keeps the style, so the box reads
+// empty; the same words drawn plain (typed) read as text. Without -e on the
+// capture the suggestion reads as text and every paste is refused.
+func TestTmuxClaudeScreenSeesAGhostSuggestionAsDim(t *testing.T) {
+	r := newTmuxRig(t)
+	b := Tmux{Socket: r.sock}
+	for _, c := range []struct{ name, fixture, want string }{
+		{"ghost", "pane_idle_ghost_2.1.289.ansi", ""},
+		{"words", "pane_idle_ghost_wordruns_2.1.289.ansi", ""},
+		{"typed", "pane_idle_typed_2.1.289.ansi", "run the tests again"},
+	} {
+		path, err := filepath.Abs("../ccdialog/testdata/" + c.fixture)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.run("new-session", "-d", "-s", c.name, "-x", "250", "-y", "60", "sh", "-c", "cat '"+path+"'; exec sleep 600")
+		pane := strings.TrimSpace(r.run("display-message", "-p", "-t", "="+c.name+":", "#{pane_id}"))
+		var got string
+		waitFor(t, c.fixture+" on screen", func() bool {
+			got, err = b.ClaudeScreen(context.Background(), pane)
+			return err == nil && strings.Contains(got, "manual")
+		})
+		if text, found := ccdialog.InputBox(got); !found || text != c.want {
+			t.Fatalf("%s: InputBox = %q, %t; want %q, true:\n%q", c.fixture, text, found, c.want, got)
+		}
+	}
+}

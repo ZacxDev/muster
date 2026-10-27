@@ -9,6 +9,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/termscreen"
 )
 
 // THE GATED SEND INTO A HERMES PANE (docs/design/hermes.md, "The send path",
@@ -188,7 +189,7 @@ func runHermesSend(ctx context.Context, s hermesSendSteps, since int64, text str
 		s.logf("muster-mirror: capture a Hermes pane: %v", err)
 		return notSubmitted("muster-mirror could not read the pane's screen")
 	}
-	scr := hermeshost.ParseScreen(raw)
+	scr := termscreen.ParseScreen(raw)
 	if err := hermeshost.CheckIdle(scr); err != nil {
 		return notSubmitted(err.Error())
 	}
@@ -210,7 +211,7 @@ func runHermesSend(ctx context.Context, s hermesSendSteps, since int64, text str
 		s.logf("muster-mirror: capture a Hermes pane: %v", err)
 		return notSubmitted("muster-mirror could not read the pane's screen")
 	}
-	if err := hermeshost.CheckIdle(hermeshost.ParseScreen(raw)); err != nil {
+	if err := hermeshost.CheckIdle(termscreen.ParseScreen(raw)); err != nil {
 		return notSubmitted("after the Escape, " + err.Error())
 	}
 	// Step 5: the status again, then the paste.
@@ -244,7 +245,7 @@ func runHermesSend(ctx context.Context, s hermesSendSteps, since int64, text str
 		s.logf("muster-mirror: capture a Hermes pane: %v", err)
 		return &HermesSendError{Kind: HermesPasted, Why: "muster-mirror could not read the screen after the paste"}
 	}
-	if err := hermeshost.CheckPasted(hermeshost.ParseScreen(raw), text); err != nil {
+	if err := hermeshost.CheckPasted(termscreen.ParseScreen(raw), text); err != nil {
 		return &HermesSendError{Kind: HermesPasted, Why: err.Error()}
 	}
 	// Step 7: Enter.
