@@ -66,7 +66,7 @@ type Extractor struct {
 const commandStart = `(?m)(?:^|[;&|({]|\$\()\s*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)*`
 
 var (
-	ghPRCreate = regexp.MustCompile(commandStart + `gh\s+pr\s+create(?:\s|$)`)
+	ghPRCreate = regexp.MustCompile(commandStart + `gh\s+pr\s+[a-z]+(?:\s|$)`)
 	// git push, past git's global options (-C <path>, -c <k=v>, --flags).
 	gitPush = regexp.MustCompile(commandStart + `git(?:\s+-[Cc]\s+\S+|\s+--\S+)*\s+push(?:\s|$)`)
 
