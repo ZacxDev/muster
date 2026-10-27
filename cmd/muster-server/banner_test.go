@@ -439,6 +439,9 @@ var bannerExempt = map[string]string{
 	envStepUpWindow: "printed with its VALUE on the `mirrored sessions: ENABLED` line, the one plugin whose " +
 		"writes it gates; it has no OFF state (unset is the 12h default, an out-of-bounds value refuses to " +
 		"boot in loadConfig), and with the plugin off nothing reads it",
+	envLiveHeartbeat: "a tuning interval with no OFF state: unset is ui.DefaultLiveHeartbeat (15s), an " +
+		"out-of-bounds value refuses to boot in loadConfig, and it turns no feature on or off — it sets how " +
+		"often live streams beat and so how soon a page notices a dead one",
 	envAgentKinds: "announced on the `agent kinds:` line in both arms (gateway-only and claude-code " +
 		"enabled); the claude-code arm cannot be rendered by bannerBothDirections' fixture, whose " +
 		"provisioner is built without an account pool. TestTheKindsBannerLineNamesAccountsNeverTokens " +

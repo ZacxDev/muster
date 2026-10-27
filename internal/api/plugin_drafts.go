@@ -469,7 +469,7 @@ const draftPageScript = `<script>
 
 // draftStepUpHTML is the confirm dialog, its script and the page's own, as HTML.
 func (s *Server) draftStepUpHTML(r *http.Request) string {
-	v := s.stepUpView(r, "")
+	v := s.stepUpView(r)
 	v.Why = DraftStepUpWhy()
 	var b strings.Builder
 	if err := ui.StepUpDialog(v).Render(&b); err != nil {

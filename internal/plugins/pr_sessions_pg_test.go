@@ -175,8 +175,10 @@ func TestAReportPrunesOnlyTheCallersOldRows(t *testing.T) {
 	if err := s.pool.QueryRow(session(2), `SELECT count(*) FROM session_prs WHERE claude_session = $1`, prSessA).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("owner 2's 40-day-old row: %d (%v); want pruned", n, err)
 	}
-	if _, ok := resolve(t, s, 3, refPR); !ok {
-		t.Fatal("owner 3's old row was pruned by owner 2's report")
+	// Counted, not resolved: a row past retention no longer resolves at all
+	// (TestAStaleAuthorIsNeverResolved), so only the row itself can show it survived.
+	if err := s.pool.QueryRow(session(3), `SELECT count(*) FROM session_prs WHERE claude_session = $1`, prSessC).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("owner 3's old row: %d (%v); want it kept — owner 2's report must not prune it", n, err)
 	}
 }
 

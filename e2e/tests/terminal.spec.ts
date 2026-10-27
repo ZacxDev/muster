@@ -96,7 +96,7 @@ function recordSent(page: Page): string[] {
 
 const screen = (page: Page) => page.locator('#term .xterm-rows');
 
-test('a claude-code agent opens its live terminal read-only at phone width', async ({ page }) => {
+test('a claude-code agent opens its live terminal with live keys at phone width', async ({ page }) => {
   await login(page);
   const name = await saveAgent(page, 'claude-code', 'e2e terminal: open');
   const sent = recordSent(page);
@@ -118,19 +118,20 @@ test('a claude-code agent opens its live terminal read-only at phone width', asy
   // the checks below measure at phone width.
   await open.click();
   await page.waitForURL(origin + '/agents/' + name + '/terminal');
-  await expect(page.frameLocator('iframe[data-muster-view]').locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=ro');
+  await expect(page.frameLocator('iframe[data-muster-view]').locator('#term .xterm-rows')).toContainText('FAKE-TUI mode=rw');
   await page.goto(origin + '/agents/' + name + '/terminal');
-  await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+  // 🔴 LIVE KEYS ARE ALWAYS ON: the attach is interactive from the start and
+  // there is no switch (ui.AgentTerminalPage).
+  await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
   await expect(screen(page)).toContainText('agent=' + name);
   await expect(page.locator('#term-status')).toHaveText('Connected');
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-  await expect(page.locator('#term-mode-label')).toHaveText('Live keys off');
+  await expect(page.locator('#term-mode'), 'no Live keys switch').toHaveCount(0);
 
-  // The bar has every key a phone keyboard lacks, all disabled while read-only.
+  // The bar has every key a phone keyboard lacks, all enabled.
   const keys = page.locator('#term-keys [data-key]');
   await expect(keys).toHaveCount(12);
   for (const k of ['esc', 'tab', 'stab', 'ctrlc', 'enter', 'up', 'down', 'left', 'right', '1', '2', '3']) {
-    await expect(page.locator(`#term-keys [data-key="${k}"]`)).toBeDisabled();
+    await expect(page.locator(`#term-keys [data-key="${k}"]`)).toBeEnabled();
   }
 
   // Fits: the terminal, the header and the bar are inside 412px, nothing scrolls
@@ -146,7 +147,7 @@ test('a claude-code agent opens its live terminal read-only at phone width', asy
     const b = (await page.locator(`#term-keys ${sel}`).boundingBox())!;
     expect(b.height, `${sel} key height`).toBeGreaterThanOrEqual(44);
   }
-  await expect(page.locator('#term-keys-more'), 'the ⋯ is disabled while read-only too').toBeDisabled();
+  await expect(page.locator('#term-keys-more'), 'the ⋯ is enabled too').toBeEnabled();
   // The bar is one row (↑ ↓ ⏎ ⋯), and the terminal gets the rest of the screen —
   // measured failing when the stylesheet lacked the layout: the bar stacked and
   // squeezed the terminal to 18 rows.
@@ -167,27 +168,20 @@ test('a claude-code agent opens its live terminal read-only at phone width', asy
   });
   expect(cellWidth, 'the rendered grid fits its box').toBeLessThanOrEqual(termWidth);
 
-  // Typing into a read-only terminal sends nothing.
+  // Typing goes straight into the session, with nothing to switch on first.
   await page.locator('#term').click();
   await page.keyboard.type('zz');
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(300);
-  expect(sent, 'binary frames sent while read-only').toEqual([]);
-  await expect(screen(page)).not.toContainText('in=');
+  await expect.poll(() => sent.join(''), { message: 'the typed bytes were sent' }).toContain('7A');
+  await expect(screen(page)).toContainText(/in=7A7A|in=7A/);
 });
 
-test('the switch makes it interactive and the quick-key bar types the right bytes', async ({ page }) => {
+test('the quick-key bar types the right bytes, straight away', async ({ page }) => {
   await login(page);
   const name = await saveAgent(page, 'claude-code', 'e2e terminal: keys');
   const sent = recordSent(page);
   await page.goto(origin + '/agents/' + name + '/terminal');
-  await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
-
-  await page.locator('#term-mode').click();
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'true');
-  await expect(page.locator('#term-mode-label')).toHaveText('Live keys on');
   await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
-  await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
+  await expect(page.locator('#term-status')).toHaveText('Connected');
 
   // Literal expected bytes, NOT read from the page's data attributes.
   const want: [string, string][] = [
@@ -220,16 +214,10 @@ test('the switch makes it interactive and the quick-key bar types the right byte
     await expect(screen(page)).toContainText('in=' + hex);
   }
 
-  // Typed text goes through too once interactive.
+  // Typed text goes through too.
   await page.locator('#term').click();
   await page.keyboard.type('ok');
   await expect(screen(page)).toContainText(/in=6F6B|in=6F/);
-
-  // And back: read-only again, keys disabled, a fresh read-only attach.
-  await page.locator('#term-mode').click();
-  await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-  await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
-  await expect(page.locator('#term-keys [data-key="esc"]')).toBeDisabled();
   await noHorizontalScroll(page);
 });
 
@@ -237,7 +225,7 @@ test('the terminal follows the viewport: keyboard-height and rotation', async ({
   await login(page);
   const name = await saveAgent(page, 'claude-code', 'e2e terminal: resize');
   await page.goto(origin + '/agents/' + name + '/terminal');
-  await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+  await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
   const sizes = async () =>
     [...(await screen(page).innerText()).matchAll(/size=(\d+)x(\d+)/g)].map((m) => [Number(m[1]), Number(m[2])]);
   await expect.poll(async () => (await sizes()).length).toBeGreaterThan(0);
@@ -269,7 +257,7 @@ test('an agent pod’s terminal wires no drag-to-scroll', async ({ page }) => {
     if (new URL(r.url()).pathname.endsWith('/scroll')) posts.push(r.url());
   });
   await page.goto(origin + '/agents/' + name + '/terminal');
-  await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
+  await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
   const term = page.locator('#term');
   await expect(term).not.toHaveAttribute('data-scroll', /.*/);
   await expect(term).not.toHaveAttribute('data-scroll-on', /.*/);
@@ -321,10 +309,8 @@ for (const vp of [
       const sent = recordSent(page);
       await page.addInitScript(clsInit);
       await page.goto(origin + '/agents/' + name + '/terminal');
-      await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
-      await page.locator('#term-mode').click();
-      await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
       await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
+      await expect(page.locator('#term-status')).toHaveText('Connected');
 
       // The bar: exactly ↑ ↓ ⏎ as its own keys, then the ⋯ — in that order.
       const barKeys = await page.locator('#term-keys > [data-key]').evaluateAll((els) => els.map((e) => e.getAttribute('data-key')));
@@ -381,12 +367,6 @@ for (const vp of [
       }
       await noHorizontalScroll(page);
 
-      // Live keys off: the ⋯ and every key are disabled again.
-      await page.locator('#term-mode').click();
-      await expect(page.locator('#term-mode')).toHaveAttribute('aria-checked', 'false');
-      await expect(menuBtn).toBeDisabled();
-      await expect(page.locator('#term-keys [data-key="up"]')).toBeDisabled();
-
       await settle(page);
       const r = await readCls(page);
       expect(r.unsupported, 'layout-shift is observable here').toBeUndefined();
@@ -424,9 +404,8 @@ test.describe('without the Popover API (390×844 touch)', () => {
     });
     await page.goto(origin + '/agents/' + name + '/terminal');
     expect(await page.evaluate(() => typeof (HTMLElement.prototype as any).togglePopover), 'the API is stubbed away').toBe('undefined');
-    await expect(screen(page)).toContainText('FAKE-TUI mode=ro');
-    await page.locator('#term-mode').click();
-    await expect(page.locator('#term-status')).toHaveText('Connected · live keys');
+    await expect(screen(page)).toContainText('FAKE-TUI mode=rw');
+    await expect(page.locator('#term-status')).toHaveText('Connected');
 
     const more = page.locator('#term-keys-more');
     const menu = page.locator('#term-keys-menu');
