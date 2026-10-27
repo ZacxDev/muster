@@ -128,6 +128,19 @@ type Config struct {
 	// message. FOR THE OLDER-HOST TESTS ONLY (cmd/muster-mirror's e2emirror
 	// build); no flag sets it.
 	NoWork bool
+	// ResumeSpawn lets muster ask this host to RESUME an ended Claude Code
+	// session in a new tmux window (muster-mirror's -resume-spawn,
+	// MUSTER_MIRROR_RESUME_SPAWN; resume.go): with -interactive, the host
+	// advertises Msg.ResumeSpawn. OFF by default: it starts a process here.
+	ResumeSpawn bool
+	// ResumeSession is the tmux session resumed windows start in (""
+	// = DefaultResumeSession); ResumeClaude the Claude Code binary they run
+	// ("" = DefaultResumeClaude, found on the tmux server's PATH).
+	ResumeSession string
+	ResumeClaude  string
+	// ResumeLocator is where a resume finds transcripts (its Home) and live
+	// Claude Code processes (its Proc); the zero value is ~/.claude and /proc.
+	ResumeLocator ClaudeLocator
 }
 
 // ErrUnauthorized: muster refused the token (unknown, revoked, or not a mirror
@@ -181,6 +194,10 @@ type Client struct {
 	tunnel   *http.Client
 	tunnelTr *http.Transport
 	wire     atomic.Pointer[wireCounter]
+
+	// resumes is this host's own record of the sessions it resumed
+	// (resume.go): it outlives each connection.
+	resumes resumeLimits
 
 	// cur is the live connection (nil between connections): what RefreshNow
 	// asks for an immediate listing.
@@ -358,6 +375,7 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 	hello.SubagentReport = conn.subagentReport()
 	hello.HermesSend = conn.hermesSend()
 	hello.HermesAnswer = conn.hermesAnswer()
+	hello.ResumeSpawn = conn.resumeSpawn()
 	if err := conn.send(hello); err != nil {
 		return err
 	}
@@ -467,6 +485,10 @@ func (c *Client) runOnce(ctx context.Context, version int) error {
 			case mirror.TypeSubagentTail:
 				if conn.subagentReport() {
 					go traced(m, conn.subagentTail)
+				}
+			case mirror.TypeSpawnResume:
+				if conn.version >= 2 {
+					go traced(m, conn.spawnResume)
 				}
 			}
 		}
