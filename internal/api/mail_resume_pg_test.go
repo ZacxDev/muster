@@ -279,6 +279,30 @@ func TestAHostsRefusalFallsBackToTheChief(t *testing.T) {
 	}
 }
 
+// TestAResumeTheHostMayHaveStartedStillCounts: no answer in time (or the host
+// dropped) is NOT "started nothing" — the window may be up — so the
+// reservation is kept and counts toward both limits; only a refusal the host
+// itself answered releases it.
+func TestAResumeTheHostMayHaveStartedStillCounts(t *testing.T) {
+	for name, err := range map[string]error{
+		"no answer in time":     mirror.ErrResumeTimeout,
+		"the host disconnected": mirror.ErrHostDisconnected,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newResumeFixture(t)
+			f.rm.setR(func(m *resumeMirror) { m.refuse = err })
+			m := f.reply(t, "resume-unknown-"+strings.ReplaceAll(name, " ", "-"), resumeSender, true)
+			rows := f.resumeRows(t, m)
+			if len(rows) != 1 || rows[0].state != plugins.ResumeRefused || rows[0].host != "tower" || !rows[0].spawned {
+				t.Fatalf("mail_resumes: %+v; want refused, still reserved on tower", rows)
+			}
+			if rs := f.routesOf(t, m); len(rs) != 0 || f.turns.count() != 1 {
+				t.Fatalf("%d routes, %d chief turns; want 0, 1", len(rs), f.turns.count())
+			}
+		})
+	}
+}
+
 // TestAResumedWindowThatNeverComesUpFallsBackToTheChief: the bounded wait.
 func TestAResumedWindowThatNeverComesUpFallsBackToTheChief(t *testing.T) {
 	f := newResumeFixture(t)

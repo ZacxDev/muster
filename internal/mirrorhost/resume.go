@@ -202,7 +202,13 @@ func cleanAbsPath(p string) bool {
 // resumeLive reports whether sid runs on this host now (check 4): a live
 // Claude Code process whose sessions file names it, or a pane this host lists.
 func resumeLive(ctx context.Context, loc ClaudeLocator, b Backend, sid string) (bool, error) {
-	procs, _ := loc.table()
+	// Unknown is not "not live" here either: a proc root that cannot be read
+	// would leave every sessions file unmatched, so the session would read as
+	// ended while its CLI runs.
+	procs, _, err := readProcTable(loc.proc())
+	if err != nil {
+		return false, err
+	}
 	if _, ok := loc.liveSessions(procs).byID[sid]; ok {
 		return true, nil
 	}

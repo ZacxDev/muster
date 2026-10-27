@@ -55,8 +55,9 @@ type MailResumeStore interface {
 	// perHostPerHour in the last hour. A reserved row counts toward both
 	// limits.
 	ReserveMailResumeHost(ctx context.Context, id int64, host string, perHostPerHour int) error
-	// ReleaseMailResumeHost undoes a reservation whose host started nothing
-	// (it does not hold the transcript), so it counts toward no limit.
+	// ReleaseMailResumeHost undoes a reservation whose host certainly started
+	// nothing (it answered a refusal, or was never asked), so it counts toward
+	// no limit. A request with no answer keeps its reservation.
 	ReleaseMailResumeHost(ctx context.Context, id int64) error
 	// FinishMailResume records how row id ended: its state, the window it
 	// started ("" for none) and why (cut to fit).

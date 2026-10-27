@@ -1,10 +1,36 @@
 package mirrorhost
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// noWindowLister is a Backend with no window lister: resumeLive's process-table
+// check is then the only one that can see a live session.
+type noWindowLister struct{}
+
+func (noWindowLister) List(context.Context) ([]string, error) { return nil, nil }
+func (noWindowLister) Attach(context.Context, string, bool, uint16, uint16) (Terminal, error) {
+	return nil, nil
+}
+
+// TestAnUnreadableProcessTableIsNotANotLiveSession: whether the session runs
+// here cannot be read when the proc root cannot — and unknown is refused, never
+// read as "not live" (a second CLI on one conversation).
+func TestAnUnreadableProcessTableIsNotANotLiveSession(t *testing.T) {
+	loc := ClaudeLocator{Home: t.TempDir(), Proc: filepath.Join(t.TempDir(), "no-proc-here")}
+	live, err := resumeLive(context.Background(), loc, noWindowLister{}, "0b5e55ed-0000-4000-8000-00000000c0de")
+	if err == nil {
+		t.Fatalf("resumeLive = %v, nil; want an error for an unreadable process table", live)
+	}
+	// Control: a readable (empty) proc root with no session file is "not live".
+	loc.Proc = t.TempDir()
+	if live, err := resumeLive(context.Background(), loc, noWindowLister{}, "0b5e55ed-0000-4000-8000-00000000c0de"); live || err != nil {
+		t.Fatalf("control: resumeLive = %v, %v; want false, nil", live, err)
+	}
+}
 
 // The resume's own path checks, reached directly: over the wire the slug
 // match and the directory's existence each refuse first, so a fixture there

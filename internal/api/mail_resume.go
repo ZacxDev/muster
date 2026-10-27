@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -250,8 +251,16 @@ func (s *Server) spawnResume(ctx context.Context, sid string, id int64, hosts []
 			s.logger.Printf("mail resume: %s: host %s started tmux %s:%s", who, h, w.Session, w.Window)
 			return w, nil
 		}
-		if rerr := s.ext.MailResumes.ReleaseMailResumeHost(context.WithoutCancel(ctx), id); rerr != nil {
-			s.logger.Printf("mail resume: %s: release host %s: %v", who, h, rerr)
+		// Release only what certainly started nothing: a refusal the host
+		// classified (it ran its checks and stopped), or a request that never
+		// left (offline, not offered). No answer in time, a dropped host or an
+		// unclassified failure may have a window up, so the reservation stays
+		// and counts toward both limits.
+		if k := mirror.ResumeRefusal(err); (k != "" && k != "refused") ||
+			errors.Is(err, mirror.ErrHostOffline) || errors.Is(err, mirror.ErrResumeUnsupported) {
+			if rerr := s.ext.MailResumes.ReleaseMailResumeHost(context.WithoutCancel(ctx), id); rerr != nil {
+				s.logger.Printf("mail resume: %s: release host %s: %v", who, h, rerr)
+			}
 		}
 		if mirror.ResumeRefusal(err) != mirror.ResumeRefusalNotHere {
 			return mirror.ResumedWindow{}, fmt.Errorf("host %s: %w", h, err)
