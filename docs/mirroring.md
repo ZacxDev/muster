@@ -198,9 +198,14 @@ turn that made it. That difference also includes any text the calling turn
 wrote. When one turn made several calls, the measured total is split between
 them by the size of each call and result. Each share is marked `~`, and the
 row's tooltip gives the total. When nothing can be measured, the number is an
-estimate from the result's size, also marked `~`. That happens when the
-runtime records no usage (Hermes), when a prompt arrived before the next turn,
-or when the context shrank. A call whose next turn has not started yet shows no
+estimate from the size of the call and result, also marked `~`. That happens
+when the runtime records no usage (Hermes), when something else entered the
+context before the next turn, or when the context shrank. Something else means
+a prompt, a notice, or context Claude Code injected, such as a message typed
+while the tool ran or a diagnostics report. The tooltip says which case it was.
+An estimate counts only the call and result, so it tends to read lower than a
+measured number. An image is sized by its pixels: about width × height / 750
+tokens, at most about 1600. A call whose next turn has not started yet shows no
 number. opencode rows show none either: muster reads neither their usage nor
 their output.
 Every window has its own view: two Claude Code windows in the same directory each

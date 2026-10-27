@@ -1553,7 +1553,9 @@ func toolChip(call ChatLine, result *ChatLine, id string, extra ...g.Node) g.Nod
 			// every visible summary).
 			Class("flex min-h-[44px] min-w-0 cursor-pointer select-none items-center gap-2 px-3 py-2 font-medium text-fg2 hover:text-fg"),
 			Span(Class("shrink-0"), g.Text("🔧")),
-			Span(Class("shrink-0 font-mono text-st-review-fg"), g.Text(name)),
+			// The name truncates past half the row (a long MCP tool name), so the
+			// context badge and the status always fit beside it at a phone's width.
+			Span(g.Attr("data-tool-name", ""), Class("min-w-0 max-w-[50%] shrink-0 truncate font-mono text-st-review-fg"), g.Text(name)),
 			g.If(target != "", Span(g.Attr("data-tool-target", ""), Class("min-w-0 truncate font-mono text-muted"), g.Text(target))),
 			g.Group(extra),
 			Span(Class(statusClass), g.Attr("aria-label", "status: "+state), g.Text(status)),

@@ -64,11 +64,18 @@ func (t *MirrorTranscript) ctxBadge(toolID string) g.Node {
 	case cctranscript.CostSplit:
 		text = "~" + text
 		title = "About " + groupDigits(c.Tokens) + " tokens: a share of " + groupDigits(c.GroupTokens) +
-			" measured for " + strconv.Itoa(c.GroupSize) + " parallel calls, split by the size of each call and result"
+			" measured for " + strconv.Itoa(c.GroupSize) + " parallel calls, split by the size of each call and result (an image by its pixels)"
 	default:
 		text = "~" + text
+		why := "no usage was recorded to measure it by"
+		switch c.Why {
+		case cctranscript.WhyInterrupted:
+			why = "something else entered the context before the next turn (a message, a notice, or context the CLI injected), so the growth is not this call's alone"
+		case cctranscript.WhyShrank:
+			why = "the context shrank before the next turn (a compaction), so the growth cannot be measured"
+		}
 		title = "Estimated from the call and result size (about " + strconv.Itoa(cctranscript.EstimateBytesPerToken) +
-			" bytes per token): no usage was recorded to measure it by"
+			" bytes per token; an image by its pixels): " + why + ". It counts only the call and result, so it tends to read lower than a measured figure"
 	}
 	return Span(ID(id),
 		g.Attr("data-tool-ctx", c.Kind),

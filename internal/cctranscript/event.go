@@ -23,6 +23,14 @@ const (
 	// notice.go. Notice names its source, Status a task's status, Text its
 	// one-line summary and Output the detail shown when the row is expanded.
 	KindNotice = "notice"
+	// KindInjected marks a record the CLI wrote to inject context into the next
+	// request — an attachment record (a message typed while a tool ran,
+	// diagnostics, an edited file, a skill listing, a hook's added context…).
+	// It carries nothing and draws nothing: it exists so the tool-context ledger
+	// (toolctx.go) knows the growth before the next turn is not the tool
+	// calls' alone. Only ReadLines (the mirrored view's reader) emits it;
+	// Events, which every other reader uses, does not.
+	KindInjected = "injected"
 )
 
 // The size caps. An Event never carries a field past these, so a batch of
@@ -173,8 +181,7 @@ func Events(r Record) []Event {
 		var out []Event
 		for _, b := range r.Blocks() {
 			if b.Type == "tool_result" && b.ToolUseID != "" {
-				txt := b.ResultText()
-				out = append(out, Event{Kind: KindToolResult, ToolID: b.ToolUseID, OK: !b.IsError, Output: Cap(txt, MaxOutput), Bytes: len(txt)})
+				out = append(out, Event{Kind: KindToolResult, ToolID: b.ToolUseID, OK: !b.IsError, Output: Cap(b.ResultText(), MaxOutput), Bytes: b.ResultBytes()})
 			}
 		}
 		// The record's toolUseResult is ITS call's: believed only when the

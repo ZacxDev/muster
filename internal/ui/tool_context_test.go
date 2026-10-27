@@ -104,3 +104,22 @@ func TestCtxCount(t *testing.T) {
 		t.Errorf("groupDigits = %q", got)
 	}
 }
+
+// An estimate's tooltip says WHY it is one: the reason the ledger gave.
+func TestAnEstimatesTitleSaysWhy(t *testing.T) {
+	var tr MirrorTranscript
+	tr.Ops([]cctranscript.Event{
+		{Kind: cctranscript.KindToolCall, ToolID: "toolu_w", Tool: "Bash", Input: `{"command":"date"}`, Bytes: 18, Usage: &cctranscript.Usage{Tokens: 45641}},
+		{Kind: cctranscript.KindToolResult, ToolID: "toolu_w", OK: true, Bytes: 81},
+		{Kind: cctranscript.KindInjected},
+	})
+	html := opsHTML(tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "Noted.", Usage: &cctranscript.Usage{Tokens: 48401}}}))
+	for _, want := range []string{`>~+25 ctx</span>`, `data-tool-ctx="estimate"`, "context the CLI injected", "tends to read lower than a measured figure"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the badge lacks %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, "no usage was recorded") {
+		t.Errorf("an interrupted estimate claims there was no usage:\n%s", html)
+	}
+}

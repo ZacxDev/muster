@@ -41,7 +41,12 @@ func placedEvents(b []byte) []Event {
 	for _, line := range bytes.Split(b, []byte{'\n'}) {
 		pos += int64(len(line)) + 1
 		if r, ok := DecodeLine(line); ok {
-			for _, ev := range Events(r) {
+			evs := Events(r)
+			if r.Type == "attachment" && !r.IsSidechain {
+				// The mirrored view's readers mark context the CLI injected.
+				evs = []Event{{Kind: KindInjected}}
+			}
+			for _, ev := range evs {
 				if ev.Kind == KindPrompt {
 					ev.Line = pos
 				}
@@ -128,7 +133,7 @@ func TestEventsRecordShapes(t *testing.T) {
 			[]Event{{Kind: KindToolResult, ToolID: "t1", OK: false, Output: "boom", Bytes: 4}}},
 		{"block-array result content",
 			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":[{"type":"text","text":"a"},{"type":"image"},{"type":"text","text":"b"}]}]}}`,
-			[]Event{{Kind: KindToolResult, ToolID: "t2", OK: true, Output: "a\n[image]\nb", Bytes: 11}}},
+			[]Event{{Kind: KindToolResult, ToolID: "t2", OK: true, Output: "a\n[image]\nb", Bytes: 1 + 1 + 6400}}},
 		{"injected context is dropped",
 			`{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"Base directory for this skill"}]}}`, nil},
 		{"a subagent's records are dropped",

@@ -14,6 +14,8 @@ import { clsInit, readCls, resetCls } from '../lib/cls';
 //     "~+4.5k ctx", marked approximate;
 //   - a call whose next turn came after a prompt: not attributable, so an
 //     estimate from size — "~+181 ctx";
+//   - a call with a long MCP-style tool name: the name truncates, and the badge
+//     and the status stay inside the row at a phone's width;
 //   - a call whose next turn has not happened: no badge at all.
 //
 // The badges of the parallel pair arrive LIVE (the next turn is appended while
@@ -32,7 +34,10 @@ const usage = (input: number, create: number, read: number) => ({
   output_tokens: 97,
 });
 const asst = (block: object, u: ReturnType<typeof usage>) => rec({ type: 'assistant', message: { model: 'claude-fixture', content: [block], usage: u } });
-const use = (id: string, command: string) => ({ type: 'tool_use', id, name: 'Bash', input: { command } });
+const use = (id: string, command: string, name = 'Bash') => ({ type: 'tool_use', id, name, input: { command } });
+// A long MCP-style tool name (synthetic): at a phone's width the name must give
+// way, not push the badge and the status out of the row.
+const LONG = 'mcp__example_server__a_very_long_tool_name_here';
 const text = (t: string) => ({ type: 'text', text: t });
 
 // The page's first read: a call measured by the parallel pair's turn, and the
@@ -53,8 +58,11 @@ const LATER =
   asst(use('te', 'sleep'), usage(11, 1083, 35030)) + // 36124
   cc.toolResult('te', 'e'.repeat(702)) +
   cc.prompt('stop there') +
-  asst(text('Stopped.'), usage(5, 1777, 36124)) + // after a prompt: te is estimated
-  asst(use('tz', 'make'), usage(3, 2309, 37906)) +
+  asst(text('Stopped.'), usage(5, 1777, 36124)) + // 37906; after a prompt: te is estimated
+  asst(use('tl', 'lookup', LONG), usage(3, 2309, 37906)) + // 40218
+  cc.toolResult('tl', 'l'.repeat(900)) +
+  asst(text('Next.'), usage(13, 1489, 40218)) + // 41720: tl grew 1502
+  asst(use('tz', 'make'), usage(3, 2311, 41720)) +
   cc.toolResult('tz', 'z'.repeat(4409));
 
 const SIZES = [
@@ -133,6 +141,10 @@ for (const s of SIZES) {
       const te = row(page, 'sleep').locator('[data-tool-ctx]');
       await expect(te).toHaveText('~+181 ctx');
       await expect(te).toHaveAttribute('data-tool-ctx', 'estimate');
+      // The long-named call: measured, 41720 − 40218 = 1502.
+      const tl = row(page, 'lookup').locator('[data-tool-ctx]');
+      await expect(tl).toHaveText('+1.5k ctx');
+      await expect(tl).toHaveAttribute('data-tool-ctx', 'measured');
       // The last call's next turn has not happened: no badge.
       await expect(row(page, 'make')).toBeVisible();
       await expect(row(page, 'make').locator('[data-tool-ctx]')).toBeHidden();
@@ -145,7 +157,7 @@ for (const s of SIZES) {
 
       // Every badge sits inside its row, beside the status, and the page does
       // not scroll sideways.
-      for (const t of ['cat notes.txt', 'ls -la', 'pwd -P', 'sleep']) {
+      for (const t of ['cat notes.txt', 'ls -la', 'pwd -P', 'sleep', 'lookup']) {
         const r = (await row(page, t).boundingBox())!;
         const b = (await row(page, t).locator('[data-tool-ctx]').boundingBox())!;
         const st = (await row(page, t).locator('summary [aria-label^="status:"]').boundingBox())!;
@@ -153,6 +165,8 @@ for (const s of SIZES) {
         expect(b.x + b.width, `${t}: the badge sits before the status`).toBeLessThanOrEqual(st.x);
         expect(st.x - (b.x + b.width), `${t}: the status sits beside the badge`).toBeLessThan(16);
         expect(r.x + r.width, `${t}: the row fits the viewport`).toBeLessThanOrEqual(s.viewport.width);
+        expect(st.x + st.width, `${t}: the status stays inside its row`).toBeLessThanOrEqual(r.x + r.width);
+        expect(b.x, `${t}: the badge starts inside its row`).toBeGreaterThanOrEqual(r.x);
       }
       const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
       expect(sw, 'no horizontal scroll').toBeLessThanOrEqual(cw);

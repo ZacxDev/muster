@@ -1,7 +1,11 @@
 package cctranscript
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
+	"image"
+	"image/png"
 	"reflect"
 	"strings"
 	"testing"
@@ -36,26 +40,43 @@ func result(id string, size int) string {
 
 func prompt(s string) string { return `{"type":"user","message":{"content":"` + s + `"}}` }
 
-// ledgerRun feeds lines to a fresh ledger and returns every cost it settled, in
-// order, and the ledger.
-func ledgerRun(t *testing.T, lines ...string) ([]ToolCost, *ToolContext) {
+// ledgerRun feeds lines to a fresh ledger the way the mirrored view does — the
+// file read by ReadLines, whose events go to Observe in order — and returns
+// every cost it settled, in order.
+func ledgerRun(t *testing.T, lines ...string) []ToolCost {
 	t.Helper()
-	var c ToolContext
-	var got []ToolCost
 	for i, l := range lines {
-		r, ok := DecodeLine([]byte(l))
-		if !ok {
+		if _, ok := DecodeLine([]byte(l)); !ok {
 			t.Fatalf("fixture line %d does not decode: %s", i, l)
 		}
-		for _, ev := range Events(r) {
-			got = append(got, c.Observe(ev)...)
+	}
+	file := strings.Join(lines, "\n") + "\n"
+	evs, _, err := ReadEvents(strings.NewReader(file), 0, int64(len(file)), 1<<22)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c ToolContext
+	var got []ToolCost
+	for _, ev := range evs {
+		got = append(got, c.Observe(ev)...)
+	}
+	return got
+}
+
+// measuredSum is the tokens of the measured costs (a split's shares included,
+// which add up to their measured total); an estimate is never in it.
+func measuredSum(costs []ToolCost) int64 {
+	var n int64
+	for _, c := range costs {
+		if c.Kind != CostEstimate {
+			n += c.Tokens
 		}
 	}
-	return got, &c
+	return n
 }
 
 func TestToolContextSingleCallIsMeasured(t *testing.T) {
-	got, c := ledgerRun(t,
+	got := ledgerRun(t,
 		prompt("list it"),
 		// The FIRST turn of the transcript issues the call: context 1203 + 4511 + 20017 = 25731.
 		asst(textBlock("Looking."), 1203, 4511, 20017),
@@ -68,13 +89,13 @@ func TestToolContextSingleCallIsMeasured(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 	}
-	if c.Measured() != 3299 {
-		t.Fatalf("measured total %d, want 3299", c.Measured())
+	if measuredSum(got) != 3299 {
+		t.Fatalf("measured total %d, want 3299", measuredSum(got))
 	}
 }
 
 func TestToolContextParallelCallsSplitTheMeasuredGrowth(t *testing.T) {
-	got, c := ledgerRun(t,
+	got := ledgerRun(t,
 		prompt("two at once"),
 		// One message, two tool_use records, the same usage: 311 + 1789 + 40126 = 42226.
 		asst(toolUse("toolu_p", `{"command":"ls -la"}`), 311, 1789, 40126),
@@ -93,13 +114,13 @@ func TestToolContextParallelCallsSplitTheMeasuredGrowth(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 	}
-	if c.Measured() != 6000 {
-		t.Fatalf("measured total %d, want 6000", c.Measured())
+	if measuredSum(got) != 6000 {
+		t.Fatalf("measured total %d, want 6000", measuredSum(got))
 	}
 }
 
 func TestToolContextSplitRemainderGoesToTheLastCall(t *testing.T) {
-	got, _ := ledgerRun(t,
+	got := ledgerRun(t,
 		asst(toolUse("toolu_r", `{"command":"ls -la"}`), 13, 2207, 50331), // 52551
 		asst(toolUse("toolu_s", `{"command":"pwd -P"}`), 13, 2207, 50331),
 		asst(toolUse("toolu_t", `{"command":"id -un"}`), 13, 2207, 50331),
@@ -117,26 +138,29 @@ func TestToolContextSplitRemainderGoesToTheLastCall(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 	}
+	if measuredSum(got) != 1030 {
+		t.Fatalf("the shares add up to %d, want the measured 1030", measuredSum(got))
+	}
 }
 
 func TestToolContextWithoutUsageEstimatesFromSize(t *testing.T) {
-	got, c := ledgerRun(t,
+	got := ledgerRun(t,
 		prompt("no usage here"),
 		asst(toolUse("toolu_e", `{"command":"cat a"}`), 0, 0, 0), // input 19 bytes
 		result("toolu_e", 1238),
 	)
 	// (19 + 1238) / 4 = 314.25 → rounded up: 315.
-	want := []ToolCost{{ToolID: "toolu_e", Tokens: 315, Kind: CostEstimate}}
+	want := []ToolCost{{ToolID: "toolu_e", Tokens: 315, Kind: CostEstimate, Why: WhyNoUsage}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 	}
-	if c.Measured() != 0 {
-		t.Fatalf("an estimate counted as measured: %d", c.Measured())
+	if measuredSum(got) != 0 {
+		t.Fatalf("an estimate counted as measured: %d", measuredSum(got))
 	}
 }
 
 func TestToolContextAPromptBeforeTheNextTurnIsNotMeasured(t *testing.T) {
-	got, c := ledgerRun(t,
+	got := ledgerRun(t,
 		asst(toolUse("toolu_i", `{"command":"sleep"}`), 401, 977, 30210), // 31588
 		result("toolu_i", 702),
 		// The human typed before the model answered: the growth includes the prompt.
@@ -144,30 +168,30 @@ func TestToolContextAPromptBeforeTheNextTurnIsNotMeasured(t *testing.T) {
 		asst(textBlock("OK."), 5, 1777, 31588), // 33370
 	)
 	// (19 + 702) / 4 = 180.25 → 181, an estimate.
-	want := []ToolCost{{ToolID: "toolu_i", Tokens: 181, Kind: CostEstimate}}
+	want := []ToolCost{{ToolID: "toolu_i", Tokens: 181, Kind: CostEstimate, Why: WhyInterrupted}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 	}
-	if c.Measured() != 0 {
-		t.Fatalf("measured total %d, want 0", c.Measured())
+	if measuredSum(got) != 0 {
+		t.Fatalf("measured total %d, want 0", measuredSum(got))
 	}
 }
 
 func TestToolContextAShrinkingContextIsNotMeasured(t *testing.T) {
-	got, _ := ledgerRun(t,
+	got := ledgerRun(t,
 		asst(toolUse("toolu_k", `{"command":"echo"}`), 211, 3001, 90233), // 93445
 		result("toolu_k", 66),
 		asst(textBlock("After a compaction."), 3, 4403, 12007), // 16413: smaller
 	)
 	// (18 + 66) / 4 = 21, an estimate.
-	want := []ToolCost{{ToolID: "toolu_k", Tokens: 21, Kind: CostEstimate}}
+	want := []ToolCost{{ToolID: "toolu_k", Tokens: 21, Kind: CostEstimate, Why: WhyShrank}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 	}
 }
 
 func TestToolContextNothingUntilTheNextTurn(t *testing.T) {
-	got, _ := ledgerRun(t,
+	got := ledgerRun(t,
 		asst(toolUse("toolu_w", `{"command":"make"}`), 37, 821, 15013),
 		result("toolu_w", 4409),
 	)
@@ -180,7 +204,7 @@ func TestToolContextAResultInsideTheIssuingMessage(t *testing.T) {
 	// A CLI that runs a call while its message streams can write the result
 	// between two of the message's records; both calls still belong to one
 	// turn and are measured together.
-	got, _ := ledgerRun(t,
+	got := ledgerRun(t,
 		asst(toolUse("toolu_m", `{"command":"ls -la"}`), 23, 1409, 70111), // 71543
 		result("toolu_m", 380),
 		asst(toolUse("toolu_n", `{"command":"pwd -P"}`), 23, 1409, 70111),
@@ -198,7 +222,7 @@ func TestToolContextAResultInsideTheIssuingMessage(t *testing.T) {
 }
 
 func TestToolContextConsecutiveTurnsEachMeasureTheirOwn(t *testing.T) {
-	got, c := ledgerRun(t,
+	got := ledgerRun(t,
 		asst(toolUse("toolu_1", `{"command":"ls -la"}`), 19, 2003, 10111), // 12133
 		result("toolu_1", 500),
 		asst(toolUse("toolu_2", `{"command":"pwd -P"}`), 29, 917, 12133), // 13079 → toolu_1: 946
@@ -212,15 +236,15 @@ func TestToolContextConsecutiveTurnsEachMeasureTheirOwn(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 	}
-	if c.Measured() != 946+1652 {
-		t.Fatalf("measured total %d, want %d", c.Measured(), 946+1652)
+	if measuredSum(got) != 946+1652 {
+		t.Fatalf("measured total %d, want %d", measuredSum(got), 946+1652)
 	}
 }
 
 func TestToolContextAnUnansweredCallGetsNoCost(t *testing.T) {
 	// Two calls, one result: the growth is the answered call's alone, and the
 	// call with no result gets nothing (not a share, not an estimate).
-	got, _ := ledgerRun(t,
+	got := ledgerRun(t,
 		asst(toolUse("toolu_y", `{"command":"ls -la"}`), 43, 1301, 60127), // 61471
 		asst(toolUse("toolu_x", `{"command":"pwd -P"}`), 43, 1301, 60127),
 		result("toolu_y", 777),
@@ -241,5 +265,98 @@ func TestToolContextNoSizeAndNoUsageIsNoCost(t *testing.T) {
 	got = append(got, c.Observe(Event{Kind: KindToolResult, ToolID: "oc_1", OK: true})...)
 	if len(got) != 0 {
 		t.Fatalf("a call of unknown size got a cost: %+v", got)
+	}
+}
+
+// attachment is a record the CLI writes to inject context into the next
+// request (a message typed while a tool ran, diagnostics, a skill listing…).
+func attachment(typ string) string {
+	return `{"type":"attachment","attachment":{"type":"` + typ + `","content":"synthetic injected context"}}`
+}
+
+func TestToolContextInjectedContextBeforeTheNextTurnIsNotMeasured(t *testing.T) {
+	for _, typ := range []string{"queued_command", "diagnostics", "edited_text_file", "skill_listing",
+		"hook_additional_context", "deferred_tools_record"} {
+		t.Run(typ, func(t *testing.T) {
+			got := ledgerRun(t,
+				asst(toolUse("toolu_j", `{"command":"date"}`), 503, 1117, 44021), // 45641
+				result("toolu_j", 81),
+				// The CLI injected context before the next request: the growth is
+				// not the call's alone.
+				attachment(typ),
+				asst(textBlock("Noted."), 19, 2741, 45641), // 48401
+			)
+			// (18 + 81) / 4 = 24.75 → 25, an estimate, and why.
+			want := []ToolCost{{ToolID: "toolu_j", Tokens: 25, Kind: CostEstimate, Why: WhyInterrupted}}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
+			}
+		})
+	}
+}
+
+// pngBase64 is a blank synthetic w×h PNG, base64.
+func pngBase64(t *testing.T, w, h int) string {
+	t.Helper()
+	var b bytes.Buffer
+	if err := png.Encode(&b, image.NewGray(image.Rect(0, 0, w, h))); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(b.Bytes())
+}
+
+func imageResult(id, data string) string {
+	return `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"` + id +
+		`","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + data + `"}}],"is_error":false}]}}`
+}
+
+func TestToolContextAnImageResultIsSizedByItsPixels(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want int64
+	}{
+		// 300×200 = 60000 px / 750 = 80 tokens = 320 bytes; (19 + 320) / 4 = 84.75 → 85.
+		{"small", pngBase64(t, 300, 200), 85},
+		// 2000×1500 = 4000 tokens, past the ~1600 an image is scaled down to:
+		// 1600 tokens = 6400 bytes; (19 + 6400) / 4 = 1604.75 → 1605.
+		{"scaled down", pngBase64(t, 2000, 1500), 1605},
+		// Not an image the header can be read from: the nominal 1600 → 1605.
+		{"unreadable", "QUJD", 1605},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ledgerRun(t,
+				asst(toolUse("toolu_v", `{"command":"cat a"}`), 0, 0, 0),
+				imageResult("toolu_v", c.data),
+			)
+			want := []ToolCost{{ToolID: "toolu_v", Tokens: c.want, Kind: CostEstimate, Why: WhyNoUsage}}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestToolContextASplitWeighsAnImageByItsPixels(t *testing.T) {
+	got := ledgerRun(t,
+		asst(toolUse("toolu_img", `{"command":"ls -la"}`), 29, 1931, 52117), // 54077
+		asst(toolUse("toolu_txt", `{"command":"pwd -P"}`), 29, 1931, 52117),
+		// 1000×750 = 750000 px / 750 = 1000 tokens = 4000 bytes.
+		imageResult("toolu_img", pngBase64(t, 1000, 750)),
+		result("toolu_txt", 400),
+		asst(textBlock("Seen."), 31, 2189, 54077), // 56297 → growth 2220
+	)
+	// Weights: img 20 + 4000 = 4020, txt 20 + 400 = 420; total 4440.
+	// img = 2220 × 4020 / 4440 = 2010; txt = 2220 − 2010 = 210.
+	want := []ToolCost{
+		{ToolID: "toolu_img", Tokens: 2010, Kind: CostSplit, GroupTokens: 2220, GroupSize: 2},
+		{ToolID: "toolu_txt", Tokens: 210, Kind: CostSplit, GroupTokens: 2220, GroupSize: 2},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
+	}
+	if measuredSum(got) != 2220 {
+		t.Fatalf("the shares add up to %d, want 2220", measuredSum(got))
 	}
 }

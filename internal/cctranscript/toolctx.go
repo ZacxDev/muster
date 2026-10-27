@@ -17,10 +17,17 @@ package cctranscript
 //     apportioned by the bytes of its call and result. The SHARE is not
 //     measured, so it is marked approximate; the group total it came from is.
 //   - CostEstimate: no usage to measure by — a runtime that records none
-//     (Hermes), a host that predates Usage, or a sequence the growth cannot be
-//     attributed to the calls alone (a prompt or a notice arrived before the
-//     next turn; the context SHRANK, a compaction). Estimated from the call's
-//     and result's size at EstimateBytesPerToken.
+//     (Hermes), a host that predates Usage (WhyNoUsage) — or a gap the growth
+//     cannot be put down to the calls alone: a prompt, a notice, an error or
+//     context the CLI INJECTED (an attachment record: a message typed while
+//     the tool ran, diagnostics, a skill listing…) arrived before the next turn
+//     (WhyInterrupted), or the context SHRANK, a compaction (WhyShrank).
+//     Estimated from the call's and result's size (Event.Bytes, where an image
+//     counts by its pixels: record.go's ResultBytes) at EstimateBytesPerToken.
+//     ⚠ An estimate counts the call and result only, never the rest of the
+//     turn's output, so it tends to read LOWER than a measured figure for the
+//     same call. Not calibrated against measured values: there is no clean,
+//     documented rate to calibrate with, so it is left a plain rule of thumb.
 //
 // A call whose result never arrives, whose next turn has not happened yet, or
 // whose size is unknown and usage absent (opencode) gets no cost at all: an
@@ -49,7 +56,16 @@ type ToolCost struct {
 	// from and how many calls it covers (0 for the other kinds).
 	GroupTokens int64
 	GroupSize   int
+	// Why is a CostEstimate's reason (WhyNoUsage, WhyInterrupted, WhyShrank).
+	Why string
 }
+
+// Why an estimate is one.
+const (
+	WhyNoUsage     = "no-usage"
+	WhyInterrupted = "interrupted"
+	WhyShrank      = "shrank"
+)
 
 // ToolContext attributes context growth to tool calls, fed every event of a
 // transcript in order (Observe). In memory and bounded: it holds only the
@@ -60,12 +76,10 @@ type ToolContext struct {
 	// pend is the calls issued since base, in order.
 	pend []pendingCall
 	// results says a result for one of pend arrived since base; clean that
-	// nothing else (a prompt, a notice, an error) did.
+	// nothing else (a prompt, a notice, an error, context the CLI injected)
+	// did.
 	results bool
 	clean   bool
-	// measured is the sum of every measured cost settled so far (shares
-	// included: they add up to their measured total).
-	measured int64
 }
 
 type pendingCall struct {
@@ -73,10 +87,6 @@ type pendingCall struct {
 	in, out   int64
 	hasResult bool
 }
-
-// Measured is the total context the tool calls settled so far were measured
-// to add (CostMeasured and CostSplit; never an estimate).
-func (c *ToolContext) Measured() int64 { return c.measured }
 
 // Observe records ev and returns the costs it settled, if any.
 func (c *ToolContext) Observe(ev Event) []ToolCost {
@@ -122,13 +132,13 @@ func (c *ToolContext) Observe(ev Event) []ToolCost {
 			// No usage to wait for: estimate now.
 			p := c.pend[i]
 			c.pend = append(c.pend[:i:i], c.pend[i+1:]...)
-			if e, ok := estimate(p); ok {
+			if e, ok := estimate(p, WhyNoUsage); ok {
 				out = append(out, e)
 			}
 			break
 		}
 		c.results = true
-	case KindPrompt, KindNotice, KindError:
+	case KindPrompt, KindNotice, KindError, KindInjected:
 		c.clean = false
 	}
 	return out
@@ -158,14 +168,17 @@ func (c *ToolContext) settle(next int64) []ToolCost {
 	out := make([]ToolCost, 0, len(done))
 	delta := next - c.base
 	if !c.clean || delta <= 0 {
+		why := WhyInterrupted
+		if c.clean {
+			why = WhyShrank
+		}
 		for _, p := range done {
-			if e, ok := estimate(p); ok {
+			if e, ok := estimate(p, why); ok {
 				out = append(out, e)
 			}
 		}
 		return out
 	}
-	c.measured += delta
 	if len(done) == 1 {
 		return append(out, ToolCost{ToolID: done[0].id, Tokens: delta, Kind: CostMeasured})
 	}
@@ -193,12 +206,12 @@ func (c *ToolContext) settle(next int64) []ToolCost {
 // estimate is p's cost from its size — none when its size is not known at
 // all (an opencode call: muster reads neither its input text nor its output),
 // since "~+0" would claim the call cost nothing.
-func estimate(p pendingCall) (ToolCost, bool) {
+func estimate(p pendingCall, why string) (ToolCost, bool) {
 	if p.in+p.out == 0 {
 		return ToolCost{}, false
 	}
 	n := (p.in + p.out + EstimateBytesPerToken - 1) / EstimateBytesPerToken
-	return ToolCost{ToolID: p.id, Tokens: n, Kind: CostEstimate}, true
+	return ToolCost{ToolID: p.id, Tokens: n, Kind: CostEstimate, Why: why}, true
 }
 
 // eventBytes is an event's uncapped size (Event.Bytes), or the capped text's
