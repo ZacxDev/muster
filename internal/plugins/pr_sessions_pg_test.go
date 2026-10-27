@@ -1,8 +1,7 @@
 package plugins
 
 import (
-	"context"
-	"slices"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,8 +9,9 @@ import (
 	"github.com/ZacxDev/muster/internal/prroute"
 )
 
-// session_prs (migration 0055) against a real Postgres: which session most
-// recently authored a pull request, for the principal only.
+// session_prs (migration 0055) against a real Postgres: a host hook's report
+// stored, and which session most recently authored a pull request, for the
+// principal only.
 
 const (
 	prSessA = "7d1e5b2a-0000-4000-8000-0000000000a1"
@@ -32,11 +32,13 @@ var (
 	refPR     = prroute.Ref{Repo: "acme-labs/widget-api", PR: 4817, HeadSHA: "3f2a9c0e7b14d6a85c3e9f01b2d47a6e8c5f1b09"}
 )
 
-func record(t *testing.T, s *PGStore, uid int64, sess, host string, bump bool, sigs ...prroute.Signal) {
+func record(t *testing.T, s *PGStore, uid int64, sess, host string, sig prroute.Signal) bool {
 	t.Helper()
-	if err := s.RecordPRSessions(session(uid), sess, host, sigs, bump); err != nil {
+	created, err := s.RecordPRSession(session(uid), sess, host, sig)
+	if err != nil {
 		t.Fatalf("record %s for %d: %v", sess, uid, err)
 	}
+	return created
 }
 
 // age sets every row of sess to have been last seen ago.
@@ -56,8 +58,10 @@ func resolve(t *testing.T, s *PGStore, uid int64, ref prroute.Ref) (PRSession, b
 
 func TestThePRsMostRecentAuthorIsResolved(t *testing.T) {
 	s, dsn := prStore(t)
-	record(t, s, 2, prSessA, "lab-box-9", true, createSig)
-	record(t, s, 2, prSessB, "desk-box-4", true, createSig)
+	if !record(t, s, 2, prSessA, "lab-box-9", createSig) {
+		t.Fatal("a first report was not created")
+	}
+	record(t, s, 2, prSessB, "desk-box-4", createSig)
 	age(t, dsn, prSessA, 2*time.Hour)
 	age(t, dsn, prSessB, time.Hour)
 	got, ok := resolve(t, s, 2, refPR)
@@ -65,38 +69,35 @@ func TestThePRsMostRecentAuthorIsResolved(t *testing.T) {
 		got.Repo != "acme-labs/widget-api" || got.PR != 4817 {
 		t.Fatalf("resolved %+v, %v; want B, the more recent", got, ok)
 	}
-	// A seen again (bump) is now the most recent.
-	record(t, s, 2, prSessA, "lab-box-9", true, createSig)
+	// A reported again is now the most recent, and its row is the same row.
+	if record(t, s, 2, prSessA, "lab-box-9", createSig) {
+		t.Fatal("a repeat report created a second row")
+	}
 	if got, _ := resolve(t, s, 2, refPR); got.ClaudeSession != prSessA {
-		t.Fatalf("after A was seen again: %+v", got)
+		t.Fatalf("after A was reported again: %+v", got)
 	}
 	var n int
 	if err := s.pool.QueryRow(session(2), `SELECT count(*) FROM session_prs`).Scan(&n); err != nil || n != 2 {
-		t.Fatalf("%d rows (%v); want 2 — seeing a signal again updates its row", n, err)
+		t.Fatalf("%d rows (%v); want 2", n, err)
 	}
 }
 
-func TestARecordWithoutBumpKeepsLastSeen(t *testing.T) {
-	s, dsn := prStore(t)
-	record(t, s, 2, prSessA, "lab-box-9", true, createSig)
-	record(t, s, 2, prSessB, "desk-box-4", true, createSig)
-	age(t, dsn, prSessA, 2*time.Hour)
-	age(t, dsn, prSessB, time.Hour)
-	// A backfill re-reading A's old signal must not make it the newest.
-	record(t, s, 2, prSessA, "lab-box-9", false, createSig)
-	if got, _ := resolve(t, s, 2, refPR); got.ClaudeSession != prSessB {
-		t.Fatalf("a re-read without bump moved A ahead: %+v", got)
+func TestAReportWithNoHostKeepsAndLacksOne(t *testing.T) {
+	s, _ := prStore(t)
+	record(t, s, 2, prSessA, "", createSig)
+	if got, ok := resolve(t, s, 2, refPR); !ok || got.Host != "" {
+		t.Fatalf("no host: %+v, %v", got, ok)
 	}
-	// Control: the same record WITH bump does move it.
-	record(t, s, 2, prSessA, "lab-box-9", true, createSig)
-	if got, _ := resolve(t, s, 2, refPR); got.ClaudeSession != prSessA {
-		t.Fatalf("control: a bump did not move A ahead: %+v", got)
+	record(t, s, 2, prSessA, "lab-box-9", createSig)
+	record(t, s, 2, prSessA, "", createSig) // a later report with no window keeps the known host
+	if got, _ := resolve(t, s, 2, refPR); got.Host != "lab-box-9" {
+		t.Fatalf("host %q; want the last known one kept", got.Host)
 	}
 }
 
 func TestAPushResolvesByItsHeadRefOnly(t *testing.T) {
 	s, _ := prStore(t)
-	record(t, s, 2, prSessC, "lab-box-9", true, pushSig)
+	record(t, s, 2, prSessC, "lab-box-9", pushSig)
 	withRef := refPR
 	withRef.HeadRef = "feat/gizmo-route"
 	if got, ok := resolve(t, s, 2, withRef); !ok || got.ClaudeSession != prSessC || got.Kind != prroute.KindPush || got.HeadRef != "feat/gizmo-route" {
@@ -106,24 +107,50 @@ func TestAPushResolvesByItsHeadRefOnly(t *testing.T) {
 	if got, ok := resolve(t, s, 2, refPR); ok {
 		t.Fatalf("a mail with no head_ref resolved a push: %+v", got)
 	}
-	// Another branch, or the same branch on another repo, is not it.
 	for _, r := range []prroute.Ref{{Repo: "acme-labs/widget-api", PR: 4817, HeadRef: "feat/other-branch"},
 		{Repo: "acme-labs/gadget-api", PR: 4817, HeadRef: "feat/gizmo-route"}} {
 		if got, ok := resolve(t, s, 2, r); ok {
 			t.Fatalf("%+v resolved %+v", r, got)
 		}
 	}
-	// A pull request number on another repo is not it either.
-	record(t, s, 2, prSessA, "lab-box-9", true, createSig)
+	record(t, s, 2, prSessA, "lab-box-9", createSig)
 	if got, ok := resolve(t, s, 2, prroute.Ref{Repo: "acme-labs/gadget-api", PR: 4817}); ok {
 		t.Fatalf("another repo's #4817 resolved %+v", got)
 	}
 }
 
+func TestACreateNamingItsHeadMatchesByEither(t *testing.T) {
+	s, _ := prStore(t)
+	sig := createSig
+	sig.HeadRef = "feat/headed-create"
+	record(t, s, 2, prSessB, "lab-box-9", sig)
+	if got, ok := resolve(t, s, 2, prroute.Ref{Repo: "acme-labs/widget-api", PR: 9999, HeadRef: "feat/headed-create"}); !ok || got.ClaudeSession != prSessB {
+		t.Fatalf("by its head branch: %+v, %v", got, ok)
+	}
+	if got, ok := resolve(t, s, 2, refPR); !ok || got.ClaudeSession != prSessB {
+		t.Fatalf("by its number: %+v, %v", got, ok)
+	}
+}
+
+func TestAMalformedReportIsRefused(t *testing.T) {
+	s, _ := prStore(t)
+	for _, sig := range []prroute.Signal{
+		{Kind: prroute.KindPRCreate, Repo: "acme-labs/widget-api"},
+		{Kind: prroute.KindPush, Repo: "acme-labs/widget-api", PR: 4817, HeadRef: "feat/x"},
+		{Kind: prroute.KindPush, Repo: "acme-labs/widget-api"},
+		{Kind: "git-fetch", Repo: "acme-labs/widget-api", PR: 4817},
+		{Kind: prroute.KindPRCreate, Repo: "widget-api", PR: 4817},
+	} {
+		if _, err := s.RecordPRSession(session(2), prSessA, "", sig); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%+v: %v; want ErrInvalid", sig, err)
+		}
+	}
+}
+
 func TestAnotherOwnersSessionIsNeverResolved(t *testing.T) {
 	s, dsn := prStore(t)
-	record(t, s, 2, prSessA, "lab-box-9", true, createSig)
-	record(t, s, 3, prSessB, "desk-box-4", true, createSig)
+	record(t, s, 2, prSessA, "lab-box-9", createSig)
+	record(t, s, 3, prSessB, "desk-box-4", createSig)
 	age(t, dsn, prSessA, 2*time.Hour) // the other owner's row is the newer one
 	if got, ok := resolve(t, s, 2, refPR); !ok || got.ClaudeSession != prSessA {
 		t.Fatalf("owner 2 resolved %+v, %v; want its own A", got, ok)
@@ -137,29 +164,18 @@ func TestAnotherOwnersSessionIsNeverResolved(t *testing.T) {
 	}
 }
 
-func TestPrunePRSessionsDeletesOnlyTheCallersOldRows(t *testing.T) {
+func TestAReportPrunesOnlyTheCallersOldRows(t *testing.T) {
 	s, dsn := prStore(t)
-	record(t, s, 2, prSessA, "lab-box-9", true, createSig)
-	record(t, s, 2, prSessB, "lab-box-9", true, pushSig)
-	record(t, s, 3, prSessC, "desk-box-4", true, createSig)
+	record(t, s, 2, prSessA, "lab-box-9", createSig)
+	record(t, s, 3, prSessC, "desk-box-4", createSig)
 	age(t, dsn, prSessA, 40*24*time.Hour)
 	age(t, dsn, prSessC, 40*24*time.Hour)
-	n, err := s.PrunePRSessions(session(2), time.Now().Add(-30*24*time.Hour))
-	if err != nil || n != 1 {
-		t.Fatalf("pruned %d (%v); want 1 (owner 2's old row only)", n, err)
+	record(t, s, 2, prSessB, "lab-box-9", pushSig)
+	var n int
+	if err := s.pool.QueryRow(session(2), `SELECT count(*) FROM session_prs WHERE claude_session = $1`, prSessA).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("owner 2's 40-day-old row: %d (%v); want pruned", n, err)
 	}
 	if _, ok := resolve(t, s, 3, refPR); !ok {
-		t.Fatal("owner 3's old row was pruned by owner 2")
-	}
-}
-
-func TestPRSessionOwnersAreTheEnabledUsers(t *testing.T) {
-	s, _ := prStore(t)
-	owners, err := s.PRSessionOwners(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(owners, 2) || !slices.Contains(owners, 3) || slices.Contains(owners, 4) {
-		t.Fatalf("owners %v; want 2 and 3, not the disabled 4", owners)
+		t.Fatal("owner 3's old row was pruned by owner 2's report")
 	}
 }

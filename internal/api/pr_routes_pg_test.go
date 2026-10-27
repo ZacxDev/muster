@@ -2,16 +2,14 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/cctranscript"
 	"github.com/ZacxDev/muster/internal/dbtest"
-	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/prroute"
 )
@@ -88,7 +86,7 @@ func (f *prFixture) review(t *testing.T, external, sender string, verified bool,
 // branch), for owner.
 func (f *prFixture) authored(t *testing.T, ctx context.Context, sess string, sig prroute.Signal) {
 	t.Helper()
-	if err := f.plugins.RecordPRSessions(ctx, sess, "tower", []prroute.Signal{sig}, true); err != nil {
+	if _, err := f.plugins.RecordPRSession(ctx, sess, "tower", sig); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -259,112 +257,188 @@ func TestAReviewMusterDoesNotRouteGoesToTheChiefUnchanged(t *testing.T) {
 	}
 }
 
-// --- the scan -----------------------------------------------------------------
+// --- the hook's report (POST /api/pr-sessions) ---------------------------------
 
-// scanMirror is routeMirror whose window's transcript stream serves a
-// backfill and, on a resume at its end, the events after it.
-type scanMirror struct {
-	*routeMirror
-	mu sync.Mutex
-	// gen names the stream's conversation (routeSID unless set).
-	gen string
-	// backfill and next are the events before and after offset 100.
-	backfill, next []cctranscript.Event
-	// asked is every (gen, offset) a watch asked for.
-	asked []string
-}
-
-func (m *scanMirror) WatchWindow(ctx context.Context, host, session, window, gen string, offset int64, out func(mirror.Msg) error) error {
-	m.mu.Lock()
-	m.asked = append(m.asked, gen+"@"+strconv.FormatInt(offset, 10))
-	g := m.gen
-	if g == "" {
-		g = routeSID
+// report POSTs body to the report route with token tok (the owner's personal
+// token when ""): the status and the response body.
+func (f *prFixture) report(t *testing.T, tok, body string) (int, string) {
+	t.Helper()
+	if tok == "" {
+		tok = f.token
 	}
-	backfill, next := m.backfill, m.next
-	m.mu.Unlock()
-	var msgs []mirror.Msg
-	switch {
-	case gen == g && offset == 100:
-		msgs = []mirror.Msg{{Gen: g, Offset: 100}, {Gen: g, Offset: 250, Events: next}}
-	case gen == g && offset == 250:
-		msgs = []mirror.Msg{{Gen: g, Offset: 250}}
-	default:
-		msgs = []mirror.Msg{{Gen: g, Reset: true, Offset: 100, Events: backfill}, {Gen: g, Offset: 100, PromptIndex: true}}
+	w := f.call(t, "POST", prSessionsPath, strings.NewReader(body), map[string]string{"Authorization": "Bearer " + tok})
+	return w.Code, w.Body.String()
+}
+
+func reportBody(fields map[string]any) string {
+	b, _ := json.Marshal(fields)
+	return string(b)
+}
+
+func createReport(sess string) map[string]any {
+	return map[string]any{"repo": prRepo, "pr": prNumber, "head_ref": nil, "claude_session": sess, "kind": "gh-pr-create"}
+}
+
+// rowsFor is how many session_prs rows of any owner name sess.
+func (f *prFixture) rowsFor(t *testing.T, sess string) int {
+	t.Helper()
+	var n int
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM session_prs WHERE claude_session = $1`, sess).Scan(&n); err != nil {
+		t.Fatal(err)
 	}
-	for _, msg := range msgs {
-		if err := out(msg); err != nil {
-			return err
-		}
-	}
-	<-ctx.Done()
-	return nil
+	return n
 }
 
-func scanBash(id, command string) cctranscript.Event {
-	return cctranscript.Event{Kind: cctranscript.KindToolCall, ToolID: id, Tool: "Bash", Target: command,
-		Input: `{"command":` + strconv.Quote(command) + `}`}
-}
-
-func scanResult(id, output string) cctranscript.Event {
-	return cctranscript.Event{Kind: cctranscript.KindToolResult, ToolID: id, OK: true, Output: output}
-}
-
-func TestTheScanRecordsWhatASessionAuthoredAndResumesWhereItStopped(t *testing.T) {
+func TestAHookReportIsStoredForTheTokensOwnerAndRoutesTheReview(t *testing.T) {
 	f := newPRFixture(t)
-	sm := &scanMirror{routeMirror: f.mirror,
-		backfill: []cctranscript.Event{
-			scanBash("toolu_s1view", "gh pr view 7001"), scanResult("toolu_s1view", "https://github.com/acme-labs/widget-api/pull/7001"),
-			scanBash("toolu_s1create", "gh pr create --fill"), scanResult("toolu_s1create", "https://github.com/"+prRepo+"/pull/"+strconv.Itoa(prNumber)+"\n"),
-		},
-		next: []cctranscript.Event{
-			scanBash("toolu_s2push", "git push -u origin "+prBranch),
-			scanResult("toolu_s2push", "To github.com:"+prRepo+".git\n * [new branch]      "+prBranch+" -> "+prBranch+"\n"),
-		}}
-	f.srv.ext.Mirror = sm
-	clock := time.Now()
-	f.srv.prScan.now = func() time.Time { return clock }
-
-	f.srv.prScanOwner(f.asOwner, f.owner)
+	if code, body := f.report(t, "", reportBody(createReport(routeSID))); code != 201 || body != "" {
+		t.Fatalf("first report: %d %q; want 201 and no body", code, body)
+	}
+	if code, body := f.report(t, "", reportBody(createReport(routeSID))); code != 200 || body != "" {
+		t.Fatalf("the same report again: %d %q; want 200 and no body", code, body)
+	}
 	got, ok, err := f.plugins.ResolvePRSession(f.asOwner, prroute.Ref{Repo: prRepo, PR: prNumber, HeadSHA: prSHA})
 	if err != nil || !ok || got.ClaudeSession != routeSID || got.Host != "tower" || got.Kind != prroute.KindPRCreate {
-		t.Fatalf("after the first scan: %+v, %v, %v", got, ok, err)
+		t.Fatalf("stored: %+v, %v, %v; want the owner's row, host from the online window", got, ok, err)
 	}
-	if _, ok, _ := f.plugins.ResolvePRSession(f.asOwner, prroute.Ref{Repo: prRepo, PR: 7001, HeadSHA: prSHA}); ok {
-		t.Fatal("a gh pr view was recorded as authorship")
+	var owner int64
+	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT owner_id FROM session_prs WHERE claude_session = $1`, routeSID).Scan(&owner); err != nil || owner != f.owner {
+		t.Fatalf("row owner %d (%v); want the token's owner %d", owner, err, f.owner)
 	}
-	// The next scan resumes at the backfill's end and reads the push after it.
-	clock = clock.Add(time.Hour)
-	f.srv.prScanOwner(f.asOwner, f.owner)
-	got, ok, err = f.plugins.ResolvePRSession(f.asOwner, prroute.Ref{Repo: prRepo, PR: 1, HeadSHA: prSHA, HeadRef: prBranch})
-	if err != nil || !ok || got.Kind != prroute.KindPush {
-		t.Fatalf("after the resumed scan: %+v, %v, %v", got, ok, err)
-	}
-	sm.mu.Lock()
-	asked := append([]string(nil), sm.asked...)
-	sm.mu.Unlock()
-	if len(asked) != 2 || asked[0] != "@0" || asked[1] != routeSID+"@100" {
-		t.Fatalf("watches asked %q; want a fresh one, then a resume at the first one's end", asked)
+	// End to end: the review of that pull request now goes to that session.
+	m := f.review(t, "pr-hook-e2e-1", prSender, true, reviewBody(fullFields()))
+	if rs := f.routesOf(t, m); len(rs) != 1 || rs[0].TargetKey != routeSID || f.turns.count() != 0 {
+		t.Fatalf("routes %+v, %d chief turns; want one route to the reporting session", rs, f.turns.count())
 	}
 }
 
-func TestTheScanStoresNothingFromAnotherConversation(t *testing.T) {
+// 🔴 Stored with no window (unlike a thread bind's 409): the offline path
+// names this session to the chief, which a window check would have dropped.
+func TestAReportForASessionNoWindowShowsIsStoredAndNamedOffline(t *testing.T) {
 	f := newPRFixture(t)
-	sm := &scanMirror{routeMirror: f.mirror, gen: "5e55a1d0-0000-4000-8000-00000000d1ff",
-		backfill: []cctranscript.Event{scanBash("toolu_s3create", "gh pr create --fill"),
-			scanResult("toolu_s3create", "https://github.com/"+prRepo+"/pull/"+strconv.Itoa(prNumber))}}
-	f.srv.ext.Mirror = sm
-	f.srv.prScanOwner(f.asOwner, f.owner)
-	if got, ok, _ := f.plugins.ResolvePRSession(f.asOwner, prroute.Ref{Repo: prRepo, PR: prNumber, HeadSHA: prSHA}); ok {
-		t.Fatalf("a stream of another conversation was recorded as %s's: %+v", routeSID, got)
+	const offline = "5e55a1d0-0000-4000-8000-0000000d0d0d"
+	if code, _ := f.report(t, "", reportBody(createReport(offline))); code != 201 {
+		t.Fatalf("an offline session's report: %d, want 201", code)
 	}
-	// Control: the same stream naming the window's conversation is recorded.
-	sm.mu.Lock()
-	sm.gen = ""
-	sm.mu.Unlock()
-	f.srv.prScan.now = func() time.Time { return time.Now().Add(time.Hour) }
-	f.srv.prScanOwner(f.asOwner, f.owner)
-	if _, ok, _ := f.plugins.ResolvePRSession(f.asOwner, prroute.Ref{Repo: prRepo, PR: prNumber, HeadSHA: prSHA}); !ok {
-		t.Fatal("control: the window's own conversation was not recorded")
+	got, ok, _ := f.plugins.ResolvePRSession(f.asOwner, prroute.Ref{Repo: prRepo, PR: prNumber, HeadSHA: prSHA})
+	if !ok || got.ClaudeSession != offline || got.Host != "" {
+		t.Fatalf("stored %+v, %v; want the session with no host", got, ok)
+	}
+	f.review(t, "pr-hook-offline-1", prSender, true, reviewBody(fullFields()))
+	if f.turns.count() != 1 || !strings.Contains(f.lastTurn(), "| mirror:"+offline+" (host unknown") || !strings.Contains(f.lastTurn(), "window: offline") {
+		t.Fatalf("%d chief turns; the turn does not name the offline author:\n%s", f.turns.count(), f.lastTurn())
+	}
+}
+
+func TestAPushReportNamesItsBranch(t *testing.T) {
+	f := newPRFixture(t)
+	body := reportBody(map[string]any{"repo": prRepo, "pr": nil, "head_ref": prBranch, "claude_session": routeSID, "kind": "git-push"})
+	if code, _ := f.report(t, "", body); code != 201 {
+		t.Fatalf("push report: %d", code)
+	}
+	if got, ok, _ := f.plugins.ResolvePRSession(f.asOwner, prroute.Ref{Repo: prRepo, PR: prNumber, HeadSHA: prSHA, HeadRef: prBranch}); !ok || got.Kind != prroute.KindPush {
+		t.Fatalf("stored %+v, %v", got, ok)
+	}
+}
+
+func TestAMalformedReportIsRefusedAndStoresNothing(t *testing.T) {
+	f := newPRFixture(t)
+	with := func(k string, v any) string {
+		m := createReport(routeSID)
+		if v == "<drop>" {
+			delete(m, k)
+		} else {
+			m[k] = v
+		}
+		return reportBody(m)
+	}
+	// Control: the base report is accepted, so every refusal below is the field's.
+	if code, _ := f.report(t, "", with("kind", "gh-pr-create")); code != 201 {
+		t.Fatalf("control: %d", code)
+	}
+	dbtest.OwnerExec(t, dbtest.DSN(t), `DELETE FROM session_prs WHERE claude_session = $1`, routeSID)
+	cases := map[string]string{
+		"not json":                    "{",
+		"repo with a space":           with("repo", "acme labs/widget-api"),
+		"repo with three parts":       with("repo", "acme-labs/widget-api/x"),
+		"no repo":                     with("repo", "<drop>"),
+		"pr zero":                     with("pr", 0),
+		"pr negative":                 with("pr", -4817),
+		"pr as a string":              with("pr", "4817"),
+		"pr fractional":               with("pr", 4817.5),
+		"create with no pr":           with("pr", nil),
+		"a push with a pr":            with("kind", "git-push"),
+		"an unknown kind":             with("kind", "git-fetch"),
+		"no kind":                     with("kind", "<drop>"),
+		"head_ref empty":              with("head_ref", ""),
+		"head_ref with a space":       with("head_ref", "feat/gizmo route"),
+		"head_ref with ..":            with("head_ref", "feat/../main"),
+		"no session":                  with("claude_session", "<drop>"),
+		"a session with a slash":      with("claude_session", "../../etc"),
+		"a runtime-qualified session": with("claude_session", "hermes:20000101_000000_abcdef"),
+	}
+	for name, body := range cases {
+		if code, _ := f.report(t, "", body); code != 400 {
+			t.Errorf("%s: %d, want 400", name, code)
+		}
+	}
+	push := reportBody(map[string]any{"repo": prRepo, "head_ref": nil, "claude_session": routeSID, "kind": "git-push"})
+	if code, _ := f.report(t, "", push); code != 400 {
+		t.Errorf("a push with no head_ref: %d, want 400", code)
+	}
+	if n := f.rowsFor(t, routeSID); n != 0 {
+		t.Fatalf("%d rows after refused reports", n)
+	}
+}
+
+func TestTheReportRouteRefusesAnyOtherCredential(t *testing.T) {
+	f := newPRFixture(t)
+	body := reportBody(createReport(routeSID))
+	if code, _ := f.report(t, "mst_not-a-real-token-at-all-000000000000", body); code != 401 {
+		t.Fatalf("a bad token: %d, want 401", code)
+	}
+	if code, _ := f.report(t, f.mailTok, body); code != 401 {
+		t.Fatalf("a plugin token: %d, want 401", code)
+	}
+	if n := f.rowsFor(t, routeSID); n != 0 {
+		t.Fatalf("%d rows after refused credentials", n)
+	}
+	// Positive control: the owner's own token is accepted.
+	if code, _ := f.report(t, "", body); code != 201 {
+		t.Fatalf("control: %d", code)
+	}
+}
+
+func TestTheReportRouteIsOffWithPRRoutingOff(t *testing.T) {
+	for _, off := range []string{"no senders", "routing off"} {
+		t.Run(off, func(t *testing.T) {
+			f := newPRFixture(t)
+			if off == "no senders" {
+				f.srv.ext.PRMail = &PRMail{}
+			} else {
+				f.srv.ext.Routing = nil
+			}
+			if code, _ := f.report(t, "", reportBody(createReport(routeSID))); code != 404 || f.rowsFor(t, routeSID) != 0 {
+				t.Fatalf("%s: %d, %d rows; want 404 and none", off, code, f.rowsFor(t, routeSID))
+			}
+		})
+	}
+}
+
+func TestAnotherOwnersReportIsInvisible(t *testing.T) {
+	f := newPRFixture(t)
+	other := f.newMember(t)
+	t.Cleanup(func() {
+		_, _ = f.pool.Exec(authz.System(context.Background()), `DELETE FROM session_prs WHERE owner_id = $1`, other)
+	})
+	if _, err := f.plugins.RecordPRSession(f.as(other), routeSID, "tower", prCreated()); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, _ := f.plugins.ResolvePRSession(f.asOwner, prroute.Ref{Repo: prRepo, PR: prNumber, HeadSHA: prSHA}); ok {
+		t.Fatalf("the owner resolved another owner's report: %+v", got)
+	}
+	m := f.review(t, "pr-hook-other-1", prSender, true, reviewBody(fullFields()))
+	if rs := f.routesOf(t, m); len(rs) != 0 || f.turns.count() != 1 {
+		t.Fatalf("%d routes, %d chief turns; want 0 and 1", len(rs), f.turns.count())
 	}
 }

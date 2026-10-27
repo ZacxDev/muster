@@ -168,3 +168,8 @@ func (s *PGStore) PrunePRSessions(ctx context.Context, before time.Time) (int, e
 	}
 	return int(tag.RowsAffected()), nil
 }
+
+// RecordPRSession records one hook report. (Stub: the tests come first.)
+func (s *PGStore) RecordPRSession(ctx context.Context, claudeSession, host string, sig prroute.Signal) (bool, error) {
+	return false, nil
+}

@@ -129,3 +129,6 @@ func closesFence(line string, width int) bool {
 	t = t[indent:]
 	return len(t) >= width && strings.Trim(t, "`") == ""
 }
+
+// Valid reports whether s is a well-formed report. (Stub: the tests come first.)
+func (s Signal) Valid() bool { return false }

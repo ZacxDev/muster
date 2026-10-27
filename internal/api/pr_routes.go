@@ -53,6 +53,9 @@ import (
 //     wrapped commands).
 // ---------------------------------------------------------------------------
 
+// prSessionsPath is the hook's report route. (Stub: not registered yet.)
+const prSessionsPath = "/api/pr-sessions"
+
 // PRMail is pull-request → session routing's configuration.
 type PRMail struct {
 	// Senders is MUSTER_PR_MAIL_SENDERS: whose verified agent mail is read as

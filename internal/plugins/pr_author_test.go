@@ -52,6 +52,16 @@ func TestAPushAuthorAndAnOnlineOneAreWordedSo(t *testing.T) {
 	}
 }
 
+func TestAnAuthorWithNoHostSaysSo(t *testing.T) {
+	a := &AuthorHint{ID: "mirror:7d1e5b2a-0000-4000-8000-0000000d0d0d", Kind: "gh-pr-create",
+		Repo: "acme-labs/widget-api", PR: 4817, LastSeen: authorSeen}
+	got := renderAuthor(a, hintNonce)
+	if !strings.Contains(got, "| mirror:7d1e5b2a-0000-4000-8000-0000000d0d0d (host unknown: no mirrored window showed it when it was reported)\n") ||
+		strings.Contains(got, " @ ") {
+		t.Fatalf("no host:\n%s", got)
+	}
+}
+
 func TestNoAuthorIsNoBlockAndAnAuthorFollowsTheMessage(t *testing.T) {
 	if got := renderAuthor(nil, hintNonce); got != "" {
 		t.Fatalf("no author rendered %q", got)
