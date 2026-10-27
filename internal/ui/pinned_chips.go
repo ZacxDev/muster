@@ -77,12 +77,16 @@ var windowIndexSuffix = regexp.MustCompile(`:[0-9]+$`)
 //   - a window with none: its "<session>:<window index>" title (or the session
 //     name, for a per-session host) — both;
 //   - an agent: its display name (or name), clamped to cardTitleMax runes with a
-//     "…" as its card's is — both.
-func pinnedChipName(e listEntry) (short, full string) {
+//     "…" as its card's is — both. Unless whole: then never clamped (the
+//     session switcher's pills show the whole title — sessionSwitcherLabels).
+func pinnedChipName(e listEntry, whole bool) (short, full string) {
 	if e.agent != nil {
-		name, clamped := clampTitle(plainOr(e.agent.DisplayName, e.agent.Name))
-		if clamped {
-			name += "…"
+		name := plainOr(e.agent.DisplayName, e.agent.Name)
+		if !whole {
+			var clamped bool
+			if name, clamped = clampTitle(name); clamped {
+				name += "…"
+			}
 		}
 		return name, name
 	}
@@ -109,12 +113,21 @@ func pinnedChipName(e listEntry) (short, full string) {
 // lean on it: the text is disambiguated exactly as it would be without the
 // icon, so a surface that reuses these labels without drawing icons (the
 // session switcher) reads the same.
-func pinnedChipLabels(es []listEntry) []string {
+func pinnedChipLabels(es []listEntry) []string { return chipLabels(es, false) }
+
+// sessionSwitcherLabels is pinnedChipLabels with every agent's name WHOLE, never
+// clamped: the switcher's pills are as wide as their label (operator ask: "ensure
+// that it's always wide enough to show the full title"), so there is no "…" to
+// add.
+func sessionSwitcherLabels(es []listEntry) []string { return chipLabels(es, true) }
+
+// chipLabels is pinnedChipLabels, its agents' names clamped unless whole.
+func chipLabels(es []listEntry, whole bool) []string {
 	out := make([]string, len(es))
 	fulls := make([]string, len(es))
 	n := map[string]int{}
 	for i, e := range es {
-		out[i], fulls[i] = pinnedChipName(e)
+		out[i], fulls[i] = pinnedChipName(e, whole)
 		n[out[i]]++
 	}
 	for i := range es {

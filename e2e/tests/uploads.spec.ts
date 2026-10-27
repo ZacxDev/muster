@@ -396,9 +396,10 @@ for (const vp of [
       expect(log.y + log.height, 'the conversation ends above the composer').toBeLessThanOrEqual(compose.y + 1);
       const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
       expect(sw, 'no page-level horizontal overflow').toBeLessThanOrEqual(cw);
-      // This window is current in All (and not a link).
+      // This window is current in All (and not a link). All is picked from the
+      // view menu the bar's left button opens.
       await page.locator('#switcher-toggle').click();
-      await page.locator('#switcher-toggle').click();
+      await page.locator('#switcher-views [data-switcher-pick="all"]').click();
       await expect(page.locator('#switcher-toggle')).toHaveText('All');
       await expect(bar.locator('[data-switcher-list="all"] [data-switcher-current]')).toHaveAttribute('data-switcher-entry', 'mirror');
     } finally {

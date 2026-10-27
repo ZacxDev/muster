@@ -14,7 +14,7 @@ import { mkchat } from '../lib/mirrorhost';
 //      on /attention. A "N waiting" chip reopens it. A NEW ask brings it back by
 //      itself; one that only leaves keeps it hidden; the hide survives a reload.
 //   2. The session switcher below the input (ui/switcher.go): server-rendered
-//      with the page, Recent / Pins / All cycled by the button on its left, the
+//      with the page, Recent / Pins / All picked from the menu the button on its left opens, the
 //      choice kept across loads, each entry a real navigation, the page's own
 //      session left out of Recent and marked in All, and never wider than the
 //      page at 390px.
@@ -36,6 +36,14 @@ const row = (page: Page, view: string) => bar(page).locator(`[data-switcher-list
 // /agents/<name>?session=<id>&from=list), so entries are compared by path.
 const hrefs = (page: Page, view: string) =>
   row(page, view).locator('a[data-switcher-entry]').evaluateAll((els) => els.map((e) => new URL(e.getAttribute('href')!, location.href).pathname));
+
+// pickView opens the view menu (the bar's left button) and picks a view.
+async function pickView(page: Page, view: string) {
+  await page.locator('#switcher-toggle').click();
+  await expect(page.locator('#switcher-views')).toBeVisible();
+  await page.locator(`#switcher-views [data-switcher-pick="${view}"]`).click();
+  await expect(page.locator('#switcher-views')).toBeHidden();
+}
 
 async function openAgent(page: Page, name: string) {
   await page.goto('/agents/' + name);
@@ -146,14 +154,13 @@ test('after a boosted navigation and Back, the chip, Hide, a new ask and the vie
   await expect.poll(() => new URL(page.url()).pathname).toBe('/agents/docs-sweeper');
   await expect(bar(page)).toBeVisible();
 
-  // The toggle cycles.
+  // The view menu still works.
   const toggle = page.locator('#switcher-toggle');
   await expect(toggle).toHaveText('Recent');
-  await toggle.click();
+  await pickView(page, 'pins');
   await expect(toggle).toHaveText('Pins');
   await expect(row(page, 'pins')).toBeVisible();
-  await toggle.click();
-  await toggle.click();
+  await pickView(page, 'recent');
   await expect(toggle).toHaveText('Recent');
   // The chip reopens; Hide hides again.
   await expect(chip(page)).toHaveText('1 waiting');
@@ -248,14 +255,14 @@ test('the switcher below the input: Recent without this page, Pins, All with it 
   expect(recent, 'not the page itself').not.toContain('/agents/docs-sweeper');
 
   // Pins.
-  await toggle.click();
+  await pickView(page, 'pins');
   await expect(toggle).toHaveText('Pins');
   await expect(row(page, 'recent')).toBeHidden();
   await expect(row(page, 'pins')).toBeVisible();
   expect(await hrefs(page, 'pins')).toEqual(['/agents/release-helper']);
 
   // All: every agent, this one drawn as current (not a link).
-  await toggle.click();
+  await pickView(page, 'all');
   await expect(toggle).toHaveText('All');
   const all = row(page, 'all');
   await expect(all).toBeVisible();
@@ -269,8 +276,8 @@ test('the switcher below the input: Recent without this page, Pins, All with it 
   await expect(toggle).toHaveText('All');
   await expect(row(page, 'all')).toBeVisible();
   await expect(row(page, 'recent')).toBeHidden();
-  // Cycles: All → Recent.
-  await toggle.click();
+  // Back to Recent from the menu.
+  await pickView(page, 'recent');
   await expect(toggle).toHaveText('Recent');
 
   // A tap is a navigation to that session.

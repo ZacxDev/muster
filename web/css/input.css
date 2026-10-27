@@ -526,6 +526,54 @@
 }
 
 /*
+ * The session switcher's view menu and search palette (internal/ui/
+ * switcher.go). Both are popovers (top layer, out of flow), so their opening
+ * moves nothing on the page. They ANIMATE open and closed: the menu grows up
+ * out of the view button (the bar is at the screen's bottom), the palette
+ * drops in from above. display and overlay transition discretely, so the
+ * close plays before the box leaves the top layer; @starting-style is where an
+ * opening starts. Reduced motion: at once, both ways.
+ */
+#switcher-views,
+#switcher-search {
+  opacity: 0;
+  transition:
+    opacity 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    overlay 160ms allow-discrete,
+    display 160ms allow-discrete;
+}
+#switcher-views {
+  transform: translateY(8px) scale(0.96);
+  transform-origin: bottom left;
+}
+#switcher-search {
+  transform: translateY(-8px) scale(0.98);
+  transform-origin: top center;
+}
+#switcher-views:popover-open,
+#switcher-search:popover-open {
+  opacity: 1;
+  transform: none;
+}
+@starting-style {
+  #switcher-views:popover-open {
+    opacity: 0;
+    transform: translateY(8px) scale(0.96);
+  }
+  #switcher-search:popover-open {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.98);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #switcher-views,
+  #switcher-search {
+    transition: none;
+  }
+}
+
+/*
  * The Agents list's layout (internal/ui/agents.go, pinned_chips.go). The list
  * is a wrapping flex row: every child takes the whole row — a card, the Idle
  * header, the empty state — and from lg up a card takes half of it (the two

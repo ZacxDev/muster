@@ -14,9 +14,11 @@ import { cc, MirrorRig } from '../lib/mirrorhost';
 //      title on a tap (mirrorViewTitle) — and a title that fits opens none;
 //   3. the session switcher's entries — the bar below the message input,
 //      whose Recent/All rows the rendered view draws and whose Pins row is
-//      the agent page's pinned list — and the Agents list's Recent strip are
-//      up to 26rem wide (were 10rem and 14rem, then 20rem), never wider than
-//      their row;
+//      the agent page's pinned list — show their WHOLE title, however long
+//      (were 10rem, 20rem, then 26rem and still "often cut off"): the pill is
+//      as wide as its label and the row scrolls sideways, never the page. The
+//      Agents list's Recent strip is up to 26rem wide (was 14rem, then 20rem),
+//      never wider than its row;
 //   4. the Agents list's pinned chips are padded 10px a side with a 4px gap
 //      (were 16px and 6px): they have no max-width, but at 390px a chip runs
 //      to the row's edge, and that padding is what clipped a 36-character
@@ -102,9 +104,11 @@ const fitOf = (el: Element): Fit => {
   return { text: (h.textContent || '').trim(), scroll: h.scrollWidth, client: h.clientWidth, clipped: h.scrollWidth > h.clientWidth + 1 };
 };
 
-// The switcher's entry label for a window in a view (the truncating span).
+// The switcher's entry label for a window in a view: the pill's last span
+// (spelled by structure, not by its class, so the base's truncating span and
+// this tree's whole one are the same element).
 const switcherLabel = (page: Page, title: string, view = 'all') =>
-  page.locator(`#session-switcher [data-switcher-list="${view}"] [data-switcher-entry] span.truncate`, { hasText: title }).first();
+  page.locator(`#session-switcher [data-switcher-list="${view}"] [data-switcher-entry] > span > span:last-child`, { hasText: title }).first();
 const chipLabel = (page: Page, title: string) => page.locator(`#agents-list [data-pinned-chip-label]`, { hasText: title }).first();
 const recentLabel = (page: Page, title: string) => page.locator(`#agents-recent a[data-recent-entry] span.truncate`, { hasText: title }).first();
 
@@ -147,33 +151,14 @@ async function openAgent(page: Page, view: string) {
   await expect(page.locator('#session-switcher')).toBeVisible();
 }
 
-// The titles the width assertions use. In the switcher (a 114px label at the
-// first base, so every one was clipped) the 23- and 27-character titles fit at
-// both sizes; at 1280 the 34-, 36- and 49-character ones fit too, while at 390
-// the bar's own row (286px) is the cap.
-//
-// 🔴 THE 49-CHARACTER TITLE IS THE 26rem ASK: at 20rem a switcher label got
-// 274px and it needs 337 (red there); a 26rem entry gives 370. The
-// 84-character one (605px) still clips at 1280: the cap is a cap.
-const FITS_NOW = ['release-notes-drafter', 'billing-reconcile-nightly'];
-const FITS_DESKTOP = ['payments-ledger-migration-review', 'customer-onboarding-email-sequence', 'quarterly-revenue-forecast-reconciliation-batch'];
-const STILL_CLIPS = 'payments-ledger-migration-review';
-const VERY_LONG = 'enterprise-customer-data-warehouse-schema-migration-validation-and-audit-report-v3';
-// The cap, in px: 26rem.
-const CAP_PX = 416;
+// The switcher's titles (WINDOWS) are 23 to 84 characters; every one must be
+// drawn whole (the 26rem cap clipped the 84-character one at both sizes, and
+// everything from 34 characters at 390).
 // The pinned chip (Agents list) a 390px row clipped at the base: 315px of
 // label in 302px. And the Recent strip's: 27 and 34 characters (a 156px
 // label at the base, a 252px one here).
 const CHIP_FITS = 'customer-onboarding-email-sequence';
 const RECENT_FITS = ['cache-warmup-orchestrator', 'inventory-forecast-model-refresh'];
-
-// entryBox is a switcher entry's width beside its scrolling row's.
-const entryBox = (page: Page, title: string, view: string) =>
-  switcherLabel(page, title, view).evaluate((el) => ({
-    clipped: (el as HTMLElement).scrollWidth > (el as HTMLElement).clientWidth + 1,
-    box: el.closest('[data-switcher-entry]')!.getBoundingClientRect().width,
-    row: (el.closest('[data-switcher-list]') as HTMLElement).clientWidth,
-  }));
 
 for (const vp of [
   { name: 'phone 390×844', w: 390, use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
@@ -313,44 +298,48 @@ for (const vp of [
       });
     }
 
-    // 3 and 4. 🔴 RED AT THE BASE: an entry's label had 114px, so every title
-    // was clipped — in the rendered view's bar (All) and in the agent page's
-    // pinned list (Pins).
-    test('the switcher fits realistic titles, below the rendered view and in the agent page\'s pins; never wider than its row; no shift', async ({ page }) => {
+    // 3. 🔴 RED AT THE BASE (b613a382, 26rem): the 84-character title was
+    // CLIPPED at both sizes, and at 390 so were the 34-character and longer
+    // ones. Operator ask: the pills must be "always wide enough to show the full
+    // title". Every window's title is now drawn whole — in the rendered view's
+    // All row and in the agent page's Pins row — its pill as wide as its label,
+    // the row scrolling sideways (the positive control: at 390 there IS more
+    // than fits), the page never.
+    test('the switcher shows every title whole, below the rendered view and in the agent page\'s pins; the row scrolls, the page does not; no shift', async ({ page }) => {
       await ready(page);
       await openView(page, LONG);
       await settle(page);
-      const fits = vp.w === 390 ? FITS_NOW : [...FITS_NOW, ...FITS_DESKTOP];
-      for (const s of fits) {
-        const f = await switcherLabel(page, titleOf(s)).evaluate(fitOf);
-        expect(f.clipped, `rendered view, All: ${titleOf(s)} fits (${JSON.stringify(f)})`).toBe(false);
-      }
-      // The cap: at most 26rem, and never wider than the row it scrolls in.
-      const b = await entryBox(page, titleOf(STILL_CLIPS), 'all');
-      expect(b.box, `an entry is at most 26rem (${JSON.stringify(b)})`).toBeLessThanOrEqual(CAP_PX);
-      expect(b.box, `an entry is never wider than its row (${JSON.stringify(b)})`).toBeLessThanOrEqual(b.row);
-      if (vp.w === 390) {
-        expect(b.clipped, 'at 390 the row is the cap: a 34-character title clips').toBe(true);
-        expect(await overflowX(page), 'no sideways scroll at 390px').toBe(0);
-      }
-      // An 84-character title still clips at both sizes, its entry AT the cap
-      // (26rem at 1280, the row at 390): the cap still exists.
-      const v = await entryBox(page, titleOf(VERY_LONG), 'all');
-      expect(v.clipped, `an 84-character title still clips (${JSON.stringify(v)})`).toBe(true);
-      expect(Math.abs(v.box - Math.min(CAP_PX, v.row)), `its entry is exactly the cap (${JSON.stringify(v)})`).toBeLessThan(1);
+      const whole = async (view: string, skip?: string) => {
+        const out: string[] = [];
+        for (const [s] of WINDOWS) {
+          if (s === skip) continue; // the page's own entry is the "current" chip
+          const label = switcherLabel(page, titleOf(s), view);
+          const f = await label.evaluate((el) => {
+            const h = el as HTMLElement;
+            const pill = h.parentElement!, entry = pill.parentElement!;
+            const lr = h.getBoundingClientRect(), pr = pill.getBoundingClientRect();
+            return {
+              text: (h.textContent || '').trim(),
+              clipped: h.scrollWidth > h.clientWidth + 1,
+              // The label inside its pill, and the pill inside its entry.
+              outside: lr.right > pr.right + 0.5 || pr.right > entry.getBoundingClientRect().right + 0.5 || pill.scrollWidth > pill.clientWidth + 1,
+            };
+          });
+          if (f.text !== titleOf(s) || f.clipped || f.outside) out.push(`${view}: ${titleOf(s)} ${JSON.stringify(f)}`);
+        }
+        return out;
+      };
+      expect(await whole('all', LONG), 'every title in the rendered view\'s All row is whole').toEqual([]);
+      const rowScroll = await page.locator('#session-switcher [data-switcher-list="all"]').evaluate((el) => [el.scrollWidth, el.clientWidth]);
+      expect(rowScroll[0], `the row itself scrolls sideways (there is more than fits): ${rowScroll}`).toBeGreaterThan(rowScroll[1]);
+      expect(await overflowX(page), 'the page never scrolls sideways').toBe(0);
       let cls = await readCls(page);
       expect(cls.total, `rendered view layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
 
       await openAgent(page, 'pins');
       await settle(page);
-      for (const s of fits) {
-        const f = await switcherLabel(page, titleOf(s), 'pins').evaluate(fitOf);
-        expect(f.clipped, `agent page, Pins: ${titleOf(s)} fits (${JSON.stringify(f)})`).toBe(false);
-      }
-      const l = await entryBox(page, titleOf(VERY_LONG), 'pins');
-      expect(l.clipped, `an 84-character title still clips (the cap is a cap) (${JSON.stringify(l)})`).toBe(true);
-      expect(l.box, `never wider than its row (${JSON.stringify(l)})`).toBeLessThanOrEqual(Math.min(CAP_PX, l.row));
-      if (vp.w === 390) expect(await overflowX(page), 'no sideways scroll at 390px').toBe(0);
+      expect(await whole('pins'), 'every title in the agent page\'s Pins row is whole').toEqual([]);
+      expect(await overflowX(page), 'the page never scrolls sideways').toBe(0);
       cls = await readCls(page);
       expect(cls.total, `agent page layout shift ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
     });

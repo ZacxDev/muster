@@ -252,6 +252,10 @@ export const telemetryPort = port + 210;
 // its own server (the e2eterm binary, mirror plugin on, Faro relayed to the
 // spec's own fake receiver) and one mirrored host with a long transcript.
 export const openPerfPort = port + 215;
+// The session switcher's view menu and search palette (switcher-search.spec.ts):
+// its own server (the e2eterm binary, mirror plugin on) and one mirrored host
+// whose windows carry codenames.
+export const switcherSearchPort = port + 220;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';
