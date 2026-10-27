@@ -197,16 +197,19 @@ func (s *Server) handlePluginMessage(w http.ResponseWriter, r *http.Request) {
 
 // dispatchPluginMessage hands a NEW message m on: to the session that started
 // its thread (routeByThread), else to the session that authored the pull
-// request it reviews (routeByPR), or else to the owner's chief. A route is
+// request it reviews (routeByPR), else — when that session's window is gone
+// and the gate allows it — to that session RESUMED (startMailResume, which
+// falls back to the chief itself), or else to the owner's chief. A route is
 // made detached from the request, as the chief's delivery is: a client that
 // hangs up once the route has taken the message must not cut off its
 // injection or its record in the chief's conversation, or the message is the
 // chief's while the chief never sees it.
 func (s *Server) dispatchPluginMessage(r *http.Request, p plugins.Plugin, m plugins.Message) {
 	ctx := context.WithoutCancel(r.Context())
-	if !s.routeByThread(ctx, p, m) && !s.routeByPR(ctx, p, m) {
-		s.deliverPluginMessage(r, p, m)
+	if s.routeByThread(ctx, p, m) || s.routeByPR(ctx, p, m) || s.startMailResume(ctx, p, m) {
+		return
 	}
+	s.deliverPluginMessage(r, p, m)
 }
 
 // deliverPluginMessage starts the delivery of a just-stored message to the
@@ -219,10 +222,17 @@ func (s *Server) dispatchPluginMessage(r *http.Request, p plugins.Plugin, m plug
 // caller passing a queued id to plugins.Deliverer.Deliver) picks it up once a
 // gateway exists.
 func (s *Server) deliverPluginMessage(r *http.Request, p plugins.Plugin, m plugins.Message) {
+	s.deliverPluginMessageCtx(context.WithoutCancel(r.Context()), p, m)
+}
+
+// deliverPluginMessageCtx is deliverPluginMessage from a context that already
+// carries the request's principal and no cancellation (a mail resume's
+// fallback, which runs after the request has ended).
+func (s *Server) deliverPluginMessageCtx(parent context.Context, p plugins.Plugin, m plugins.Message) {
 	if s.pluginDeliverer == nil {
 		return
 	}
-	ctx, cancel := s.streamContext(context.WithoutCancel(r.Context()))
+	ctx, cancel := s.streamContext(parent)
 	s.pluginInFlight.Add(1)
 	safeGo(s.logger, "plugin delivery", func() {
 		defer s.pluginInFlight.Done()
