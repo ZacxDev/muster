@@ -548,6 +548,12 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		if cfg.SessionRouting {
 			ext.Routes = pluginStore
 			ext.Routing = sessionRouting(cfg)
+			// Pull-request routing (MUSTER_PR_MAIL_SENDERS): a review mail from a
+			// listed, verified sender goes to the session that authored its PR.
+			if len(cfg.PRMailSenders) > 0 {
+				ext.PRMail = &api.PRMail{Senders: cfg.PRMailSenders}
+				ext.PRSessions = pluginStore
+			}
 		}
 		// Task routing (MUSTER_TASK_ROUTING=1): a plugin may hand a task it files
 		// to the chief; a non-empty MUSTER_CHIEF_DISPATCH_OWNERS also lets the chief
@@ -1283,6 +1289,17 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	default:
 		l.Printf("session routing: OFF — %s is unset, so the chief has no route_to_session and POST /api/routes/{id}/reply "+
 			"answers 404 (%s is not read)", envSessionRouting, envRouteRelayAllow)
+	}
+	switch {
+	case ext.PRMail != nil:
+		l.Printf("pull-request routing: ON (%s) — %d agent-mail sender(s) whose VERIFIED review mail goes to the mirrored "+
+			"session that created or pushed its pull request, as its host's hook reported it (POST /api/pr-sessions)",
+			envPRMailSenders, len(ext.PRMail.Senders))
+	case len(a.cfg.PRMailSenders) > 0:
+		l.Printf("pull-request routing: INERT — %s is set but session routing (%s=1, with the plugin interface) is off, so "+
+			"POST /api/pr-sessions answers 404 and nothing is routed", envPRMailSenders, envSessionRouting)
+	default:
+		l.Printf("pull-request routing: OFF — %s is unset, so POST /api/pr-sessions answers 404 and review mail goes to the chief", envPRMailSenders)
 	}
 	switch {
 	case ext.TaskRouting != nil && len(ext.TaskRouting.DispatchOwners) > 0:
