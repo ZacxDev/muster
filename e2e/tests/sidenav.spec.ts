@@ -344,7 +344,10 @@ test.describe('phone header', () => {
     await expect(page.locator('#mv-status')).toHaveText('Live');
     await page.locator('#view-terminal').click();
     await expect(framed(page).locator('#term-status')).toHaveText('Connected');
-    expect(pathOf(page), 'the top address follows the framed view').toBe('/mirror/terminal');
+    // The address follows the frame when it has LOADED (view_swap.go's load
+    // handler), and the terminal's socket can say Connected before that —
+    // nothing orders the two. So the address is waited for, not inferred.
+    await expect.poll(() => pathOf(page), { message: 'the top address follows the framed view' }).toBe('/mirror/terminal');
     const cookies = await page.context().cookies(origin);
     const topNavs: string[] = [];
     const frameNavs: string[] = [];
