@@ -186,18 +186,20 @@ The reasons for the shell:
   `addJavascriptInterface`, and a bridge only through
   `WebViewCompat.addWebMessageListener` with `allowedOriginRules` naming the
   exact origin, never `*`.
-- **The bridge carries four design messages, plus the app's own
+- **The bridge carries three design messages, plus the app's own
   `touch-start`:** the pairing code (below), "open the app's notification
-  settings", "request POST_NOTIFICATIONS", and the theme; then `touch-start`,
-  which the app's pull-to-refresh script sends (next item). It never carries
-  a credential from the app to the page. The listener's JavaScript object is
+  settings" and "request POST_NOTIFICATIONS"; then `touch-start`, which the
+  app's pull-to-refresh script sends (next item). There is no theme message:
+  the design once planned one, and `touch-start`'s `light` field now carries
+  the page's theme (muster-android #13). The bridge never carries a
+  credential from the app to the page. The listener's JavaScript object is
   named `musterApp` (`ui.AppBridgeName` in muster), and each message
   is a JSON string. The server's pages send two today, from Account → Devices:
   `{"type":"pair","code":…,"expires_at":…}` and
   `{"type":"open-notification-settings"}`. The object's presence is also how a
   page knows it is in the shell, to hide **Enable notifications** and
   **Install**.
-- **`touch-start`: pull to refresh (muster-android #9).** This fifth message
+- **`touch-start`: pull to refresh (muster-android #9).** This fourth message
   arrives on the same bridge, but muster's pages do not send it. The app's own
   document-start script (`PullProbeScript`) sends it. The app installs that
   script with `WebViewCompat.addDocumentStartJavaScript`, with
@@ -205,7 +207,7 @@ The reasons for the shell:
   frame only. At every one-finger `touchstart` it posts:
 
   ```json
-  {"type":"touch-start","doc":"k3x9q2","seq":3,"doc_top":0,"inner_top":null,"owner":"page","editing":false}
+  {"type":"touch-start","doc":"k3x9q2","seq":3,"doc_top":0,"inner_top":null,"owner":"page","editing":false,"light":false}
   ```
 
   - `doc` is a random id for this document, `[0-9a-z]{1,16}`.
@@ -226,8 +228,13 @@ The reasons for the shell:
   - `editing` is true when the focused element is a non-empty text field. The
     script reads the field's text to take its length, but only the boolean is
     sent: the text never leaves the page.
+  - `light` is true when muster's light theme is in force, which is when
+    `<html>` has no `dark` class (`web/css/input.css` is dark on `.dark` and
+    light on `:root:not(.dark)`; the class follows the operator's opt-in,
+    not `prefers-color-scheme`). The app colours the pull-to-refresh spinner
+    from it (muster-android #13).
 
-  The message carries geometry, a count and one boolean. It carries no text,
+  The message carries geometry, a count and two booleans. It carries no text,
   no URL and nothing typed, and the app sends nothing back. `BridgeMessage`
   re-checks the origin and the main frame, and refuses a message whose fields
   do not have exactly these types. How the app uses it (matching a message to
@@ -244,7 +251,9 @@ The reasons for the shell:
   - overlays (sheets, menus, the open sidebar) that are fixed-position, and
     dialogs that use `<dialog>` or one of the dialog roles above;
   - `touch-action: manipulation` on `.press` (`web/css/input.css`), which the
-    script treats as the page's own scrolling.
+    script treats as the page's own scrolling;
+  - the `dark` class on `<html>` as the theme in force (the theme-head script
+    in `internal/ui/theme.go`), which `light` reads.
 
   If a route, the terminal's markup, or an overlay's positioning or role is
   changed, pull to refresh can fire on a page or an overlay that owns its
