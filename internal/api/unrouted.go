@@ -143,8 +143,7 @@ func (s *Server) raiseUnroutedAsk(ctx context.Context, m plugins.Message) error 
 		s.logger.Printf("plugins: raise an ask for message %d: %v", m.ID, err)
 		return err
 	}
-	s.attentionNotify(ask.Owner, askItem(ask))
-	s.attentionChanged(ask.Owner, attentionAskKey(ask.ID))
+	s.askFiled(ask)
 	return nil
 }
 

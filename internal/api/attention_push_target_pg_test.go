@@ -22,10 +22,11 @@ func (f *answerFixture) tap(t *testing.T, key string) string {
 }
 
 // TestAnAskOverEachDoorPushesItsSession: on a real Postgres, through the real
-// MCP doors (row-level security and all), each push carries its tap route, and
-// a tap opens the asker's session — a mirrored Claude session's window
-// (secondSID runs in ws's @3, session "side"), a dispatched agent's page (the
-// chief's), a waiting window.
+// MCP doors (row-level security and all), each push carries its tap route; a
+// tap on an ask opens the ask's own page, whose context link is the asker's
+// session — a mirrored Claude session's window (secondSID runs in ws's @3,
+// session "side"), a dispatched agent's page (the chief's) — and a tap on a
+// waiting window opens that window.
 func TestAnAskOverEachDoorPushesItsSession(t *testing.T) {
 	f := newAnswerFixture(t)
 	urls := func() map[string]string {
@@ -38,19 +39,32 @@ func TestAnAskOverEachDoorPushesItsSession(t *testing.T) {
 		}
 		return out
 	}
-	mirrored := attentionAskKey(f.mirrorAsk(t, secondSID, "Keep the old schema?"))
-	chiefAsk := attentionAskKey(f.ask(t, f.chiefTok, "Route task 5 to whom?"))
+	mirroredID := f.mirrorAsk(t, secondSID, "Keep the old schema?")
+	chiefID := f.ask(t, f.chiefTok, "Route task 5 to whom?")
+	mirrored, chiefAsk := attentionAskKey(mirroredID), attentionAskKey(chiefID)
 	got := urls()
 	for _, k := range []string{mirrored, chiefAsk} {
 		if got[attentionTag(k)] != "/attention/open/"+k {
 			t.Fatalf("%s's push carries %q (pushes %v)", k, got[attentionTag(k)], got)
 		}
 	}
-	if loc, want := f.tap(t, mirrored), "/mirror/view?host=ws&session=side&window=%403"; loc != want {
-		t.Errorf("a tap on the mirrored ask opens %q, want %q", loc, want)
-	}
-	if loc, want := f.tap(t, chiefAsk), "/agents/"+f.chief.Name; loc != want {
-		t.Errorf("a tap on the chief's ask opens %q, want %q", loc, want)
+	for _, c := range []struct {
+		key     string
+		id      int64
+		context string
+	}{
+		{mirrored, mirroredID, "/mirror/view?host=ws&amp;session=side&amp;window=%403"},
+		{chiefAsk, chiefID, "/agents/" + f.chief.Name},
+	} {
+		loc := f.tap(t, c.key)
+		if loc != askPagePath(c.id) {
+			t.Errorf("a tap on %s opens %q, want its ask page %q", c.key, loc, askPagePath(c.id))
+			continue
+		}
+		w := f.call(t, http.MethodGet, loc, nil, f.operator())
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `href="`+c.context+`" class=`) {
+			t.Errorf("%s's ask page (%d) does not link its context %q:\n%s", c.key, w.Code, c.context, w.Body.String())
+		}
 	}
 	// ws's @1 starts waiting at a prompt after the host's first observation
 	// (which seeds silently).
@@ -68,22 +82,23 @@ func TestAnAskOverEachDoorPushesItsSession(t *testing.T) {
 }
 
 // TestATapResolvesWhenTappedNotWhenSent: what changed between the push and
-// the tap decides where the tap lands — the asking session's window closed,
-// the waiting window stopped waiting, the asking agent was destroyed, the ask
-// was answered: each opens its item on the queue, never a dead page. Another
+// the tap decides where the tap lands — the waiting window stopped waiting,
+// the asking agent was destroyed (its ask goes with it), the ask was answered:
+// each opens its item on the queue, never a dead page; an ask still open
+// whose asking session's window closed still opens its own page. Another
 // owner's ask reads exactly like a missing one (the queue, naming nothing of
 // theirs), and a key that is not one is a 404.
 func TestATapResolvesWhenTappedNotWhenSent(t *testing.T) {
 	f := newAnswerFixture(t)
-	mirrored := attentionAskKey(f.mirrorAsk(t, secondSID, "Keep the old schema?"))
-	chiefAsk := attentionAskKey(f.ask(t, f.chiefTok, "Route task 5 to whom?"))
+	mirroredID := f.mirrorAsk(t, secondSID, "Keep the old schema?")
+	chiefID := f.ask(t, f.chiefTok, "Route task 5 to whom?")
+	mirrored, chiefAsk := attentionAskKey(mirroredID), attentionAskKey(chiefID)
 	answered := f.ask(t, f.opTok, "Answered elsewhere?")
-	// While everything still stands, each opens its session (the control).
-	if loc := f.tap(t, mirrored); !strings.HasPrefix(loc, "/mirror/view?") {
-		t.Fatalf("control: %s opens %q", mirrored, loc)
-	}
-	if loc := f.tap(t, chiefAsk); loc != "/agents/"+f.chief.Name {
-		t.Fatalf("control: %s opens %q", chiefAsk, loc)
+	// While everything still stands, each ask opens its own page (the control).
+	for k, id := range map[string]int64{mirrored: mirroredID, chiefAsk: chiefID, attentionAskKey(answered): answered} {
+		if loc := f.tap(t, k); loc != askPagePath(id) {
+			t.Fatalf("control: %s opens %q", k, loc)
+		}
 	}
 	// ws's @1 starts waiting; the window list it is read from no longer has
 	// @3, so the window running secondSID has CLOSED since its ask was sent.
@@ -106,10 +121,16 @@ func TestATapResolvesWhenTappedNotWhenSent(t *testing.T) {
 	if _, err := f.srv.answerAsk(asUser(1), answered, "done"); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{mirrored, waiting, chiefAsk, attentionAskKey(answered)} {
+	for _, k := range []string{waiting, chiefAsk, attentionAskKey(answered)} {
 		if loc := f.tap(t, k); loc != "/attention#"+k {
 			t.Errorf("a tap on %s after it went stale opens %q, want its queue item", k, loc)
 		}
+	}
+	// Still open, its window gone: its page, with no session to link.
+	if loc := f.tap(t, mirrored); loc != askPagePath(mirroredID) {
+		t.Errorf("a tap on the open ask whose window closed opens %q", loc)
+	} else if w := f.call(t, http.MethodGet, loc, nil, f.operator()); w.Code != http.StatusOK || strings.Contains(w.Body.String(), "data-ask-context") {
+		t.Errorf("its page (%d) links a session that is gone:\n%s", w.Code, w.Body.String())
 	}
 
 	// Another owner's ask: the queue, exactly as for a missing id.

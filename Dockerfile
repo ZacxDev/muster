@@ -39,6 +39,7 @@ COPY internal/api/login_invite.go ./internal/api/login_invite.go
 COPY internal/api/admin.go ./internal/api/admin.go
 COPY internal/api/api_tokens.go ./internal/api/api_tokens.go
 COPY internal/api/flows.go ./internal/api/flows.go
+COPY internal/api/attention_ask_page.go ./internal/api/attention_ask_page.go
 
 # 🔴 `make css-check`, NOT A HAND-ROLLED `test -s` PLUS A grep. That target
 # already owns this verification, and it checks TWO things this Dockerfile must

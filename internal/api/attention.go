@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/attention"
@@ -21,6 +22,7 @@ import (
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
+	"github.com/ZacxDev/muster/internal/redact"
 	"github.com/ZacxDev/muster/internal/textplain"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -65,8 +67,14 @@ const (
 	// attentionPoll is how often a waiter re-reads its ask even without a
 	// wake-up: another muster replica may have answered it.
 	attentionPoll = 2 * time.Second
-	// attentionPushBodyMax bounds a notification body (who and where, never what).
-	attentionPushBodyMax = 120
+	// attentionPushBodyMax bounds a notification body (its substance: the
+	// question, the options, what a session waits on — attentionPushBody), the
+	// SAME bound on the browser and on a paired phone (push.MaxNativeBody), so
+	// the two show the same text.
+	attentionPushBodyMax = push.MaxNativeBody
+	// attentionPushOptionsMax bounds the options line within it: the question
+	// gets the rest.
+	attentionPushOptionsMax = 160
 	// attentionNotificationType is the push payload type for a new item.
 	attentionNotificationType = "attention"
 )
@@ -122,6 +130,9 @@ type attentionState struct {
 	// diffMu serialises attentionMirrorChanged's read-and-commit, so a
 	// recompute that read an older hub state can never commit after a newer one.
 	diffMu sync.Mutex
+	// suggesting tracks the asks' suggestion generations this process started
+	// (attention_suggest.go), so a test can wait for each.
+	suggesting sync.WaitGroup
 }
 
 // attentionDiffHook, when set (tests), runs between a recompute's read of the
@@ -187,6 +198,10 @@ type attentionItem struct {
 	// hermes is a waiting HERMES window's ask (Hermes Phase 4): what it waits
 	// on, and the approval muster can answer; nil for any other item.
 	hermes *hermesAsk
+	// suggestions are an ask's stored suggested replies (attention.Ask's,
+	// migration 0056), "" none: what its notification and its page draw as
+	// chips. Not in the item's JSON (attention_list), which predates them.
+	suggestions []string
 }
 
 // hermesAsk is a waiting Hermes window's ask as an attention item shows it.
@@ -244,7 +259,7 @@ func askerLabel(a attention.Ask) string {
 
 func askItem(a attention.Ask) attentionItem {
 	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askerLabel(a), Text: a.Question,
-		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID}
+		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions}
 	switch {
 	case a.Asker.AgentID > 0:
 		it.subject = focus.AgentSubject(a.Asker.AgentID)
@@ -379,6 +394,15 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 		switch {
 		case wt.q != nil:
 			it.Kind, it.Text = attentionKindQuestion, heldQuestionText(*wt.q)
+			// One question's choices are named (its push lists them); several
+			// questions' are each their own, answered on the question card.
+			if len(wt.q.Questions) == 1 {
+				for _, o := range wt.q.Questions[0].Options {
+					if l := strings.TrimSpace(o.Label); l != "" {
+						it.Options = append(it.Options, l)
+					}
+				}
+			}
 		case wt.pending != nil:
 			// The host's words, already cleaned and capped on both sides
 			// (mirror.CleanPending); the generic line when it names no action.
@@ -555,41 +579,125 @@ func (s *Server) attentionChanged(owner int64, key string) {
 // attentionOpenURL, which resolves the item's session (or its place on the
 // queue) when tapped: nothing is read here.
 func (s *Server) attentionNotify(owner int64, it attentionItem) {
-	title := "An agent needs your input"
-	if it.Kind == attentionKindSession {
-		title = "A session is waiting on you"
-	} else if it.Kind == attentionKindQuestion {
-		title = "A session asks you a question"
-	}
-	s.goNotify(owner, push.EventAttention, RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: title, Body: attentionPushBody(it),
-		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}}, nil)
+	s.goNotify(owner, push.EventAttention, attentionNotification(it, false), nil)
 }
 
-// attentionPushBody is an item's notification body: WHO and WHERE, never WHAT.
+// attentionNotification is item it's notification: its title (WHO, and that
+// it asks or waits: attentionPushTitle), its body (WHAT: attentionPushBody),
+// its tag, its tap URL and — for an ask — the chips a paired phone draws
+// (payload v2's `ask`: its id, the asker's options, the suggested replies).
+// update marks a re-push of a notification already shown under the same tag
+// (the suggestions arrived): payload v2 says so, so the app replaces it
+// without alerting again.
+func attentionNotification(it attentionItem, update bool) RouterNotification {
+	n := RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: attentionPushTitle(it), Body: attentionPushBody(it),
+		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}, Update: update}
+	if it.Kind == attentionKindAsk && it.AskID > 0 {
+		n.Ask = &push.V2Ask{ID: it.AskID, Options: it.Options, Suggestions: it.suggestions}
+	}
+	return n
+}
+
+// attentionPushTitle names WHO: "<asker> is asking" for an ask and a held
+// question, "<window> @ <host> is waiting" for a waiting session. The source
+// is a title, plained once at the sink (goNotify).
+func attentionPushTitle(it attentionItem) string {
+	if it.Kind == attentionKindSession {
+		return it.Source + " is waiting"
+	}
+	return it.Source + " is asking"
+}
+
+// attentionPushBody is an item's notification body: WHAT it needs, in full,
+// so the notification can be acted on without opening it.
 //
-// 🔴 A LOCK SCREEN SHOWS IT TO ANYONE HOLDING THE PHONE (operator decision
-// "Summary only"): no question text, no command, path or URL, no message —
-// those are on the queue page, behind the sign-in. An ask or a held question:
-// "<asker> is asking". A waiting session: "Waiting: <tool name> · <window> @
-// <host>", or "Waiting: <window> @ <host>" when its host names no tool.
+// 🔴 FULL TEXT, ON THE LOCK SCREEN TOO (operator decision "Full text always",
+// which REPLACED the earlier "Summary only — WHO and WHERE, never WHAT"): the
+// body is the substance —
+//   - an ask: its question, then "Options: a · b · c" when the asker offered
+//     any (the options line at most attentionPushOptionsMax, the question the
+//     rest);
+//   - a held question: its question (each question's first line, numbered,
+//     when it asks several), and one question's choices;
+//   - a waiting session: what it waits on (its pending tool and the host's
+//     short summary of it, mirror.Pending.Summary — "Bash: npm publish"), then
+//     the last thing Claude said, or "Waiting: <tool>" when the host names no
+//     summary, or muster's generic line.
 //
-// The source is a TITLE (a window's or agent's name, often LLM-written), so it
-// reads as the title rule makes it — once, here, before the cut — exactly as
-// the attention page draws it. goNotify plains a notification's title only,
-// never its body, so this is the one application.
+// Each line is one line (control characters and runs of space folded,
+// mirror.OneLine) with anything shaped like a secret redacted
+// (redact.Secrets); the whole is cut to attentionPushBodyMax on a character
+// boundary with a visible "…" (push.CutClusters). The question is NOT run
+// through the title rule: textplain drops a fenced code block whole, and the
+// command a question asks about is exactly what must not vanish from it.
+//
+// Other notifications are unchanged: a reply draft's (draftPushBody) still
+// says who and where only.
 func attentionPushBody(it attentionItem) string {
-	source := textplain.Title(it.Source)
-	var body string
+	var lines []string
 	switch it.Kind {
 	case attentionKindSession:
-		body = "Waiting: " + source
-		if tool := mirror.OneLine(it.tool, mirror.MaxPendingTool); tool != "" {
-			body = "Waiting: " + tool + " · " + source
+		// The host's summary of what it waits on; muster's generic line says
+		// nothing a tool name would not say better.
+		text := ""
+		if it.Text != sessionWaitingText && it.Text != hermesWaitingText {
+			text = pushLine(it.Text)
 		}
-	default:
-		body = source + " is asking"
+		switch tool := mirror.OneLine(it.tool, mirror.MaxPendingTool); {
+		case text != "":
+		case tool != "":
+			text = "Waiting: " + tool
+		default:
+			text = it.Text
+		}
+		lines = append(lines, text)
+		if d := pushLine(it.Detail); d != "" {
+			lines = append(lines, d)
+		}
+		return push.CutClusters(strings.Join(lines, "\n"), attentionPushBodyMax)
 	}
-	return truncate(mirror.OneLine(body, attentionPushBodyMax*2), attentionPushBodyMax)
+	opts := ""
+	if len(it.Options) > 0 {
+		parts := make([]string, 0, len(it.Options))
+		for _, o := range it.Options {
+			if o = pushLine(o); o != "" {
+				parts = append(parts, o)
+			}
+		}
+		if len(parts) > 0 {
+			opts = push.CutClusters("Options: "+strings.Join(parts, " · "), attentionPushOptionsMax)
+		}
+	}
+	room := attentionPushBodyMax
+	if opts != "" {
+		room -= utf8.RuneCountInString(opts) + 1 // and its line break
+	}
+	if it.Kind == attentionKindAsk {
+		// An ask's question is ONE line: its paragraphs run on.
+		lines = append(lines, pushLine(it.Text))
+	} else {
+		// A held question's several questions keep one line each.
+		for _, l := range strings.Split(it.Text, "\n") {
+			if l = pushLine(l); l != "" {
+				lines = append(lines, l)
+			}
+		}
+	}
+	q := push.CutClusters(strings.Join(lines, "\n"), room)
+	if opts == "" {
+		return q
+	}
+	if q == "" {
+		return opts
+	}
+	return q + "\n" + opts
+}
+
+// pushLine is s as one line of a notification: secrets redacted, control
+// characters and runs of space folded (no length cut: the caller cuts on a
+// character boundary).
+func pushLine(s string) string {
+	return mirror.OneLine(redact.Secrets(s), 1<<20)
 }
 
 // attentionClear closes an item's notification on owner's devices.
@@ -785,6 +893,7 @@ func (s *Server) registerAttentionRoutes(mux Mux) {
 	mux.HandleFunc("GET "+asksDraftsPath, s.requireSession(s.handleAsksDrafts))
 	mux.HandleFunc("GET "+attentionAskerPath, s.requireSession(s.handleAttentionAsker))
 	mux.HandleFunc("GET "+attentionOpenPath+"{key}", s.requireSession(s.handleAttentionOpen))
+	mux.HandleFunc("GET "+askPagePrefix+"{id}", s.requireSession(s.handleAskPage))
 	mux.HandleFunc("GET "+ui.AttentionBadgePath, s.requireSession(s.handleAttentionBadge))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/answer", s.requireOperatorWrite(s.handleAttentionAnswerForm))
 	mux.HandleFunc("POST "+attentionPath+"/asks/{id}/cancel", s.requireOperatorWrite(s.handleAttentionCancelForm))

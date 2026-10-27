@@ -340,9 +340,16 @@ func writeAuthDocument(w http.ResponseWriter, code int, title, inner string) {
 // invite link; an OAuth token or API key typed in; a passkey ceremony): it then
 // loads no telemetry script (ui.NavDocumentView.Secret). Each caller's value is
 // stated in TestEveryNavPageStatesItsTelemetry.
-func (s *Server) writeNavDocument(w http.ResponseWriter, r *http.Request, code int, title, entry string, secret bool, inner string) {
+//
+// app, when given, lays the page out as a phone app screen (ui.NavApp: the ask
+// page a notification opens).
+func (s *Server) writeNavDocument(w http.ResponseWriter, r *http.Request, code int, title, entry string, secret bool, inner string, app ...*ui.NavApp) {
 	writeDocumentHeaders(w, code)
-	if err := ui.RenderNavDocument(w, ui.NavDocumentView{Title: title, Entry: entry, Feat: s.shellFeatures(r.Context()), Main: inner, Secret: secret}); err != nil {
+	v := ui.NavDocumentView{Title: title, Entry: entry, Feat: s.shellFeatures(r.Context()), Main: inner, Secret: secret}
+	if len(app) > 0 {
+		v.App = app[0]
+	}
+	if err := ui.RenderNavDocument(w, v); err != nil {
 		s.logger.Printf("render %s: %v", title, err)
 	}
 }

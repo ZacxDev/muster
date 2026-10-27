@@ -84,10 +84,19 @@ as **payload v2**:
  "title": "<WHO>", "body": "<WHERE>", "url": "/tasks/42"}
 ```
 
-- `title` and `body` are the browser notification's own lines, WHO and WHERE,
-  never WHAT. They are cut to 100 and 200 characters, and never in the middle
-  of a character a reader sees as one (an accent, an emoji, a flag). The app
-  fetches anything more itself.
+- `title` and `body` are the browser notification's own lines. For most
+  events that is WHO and WHERE; an attention item's lines carry its substance —
+  the question and its options, what a session waits on (operator decision
+  "Full text always", [attention.md](attention.md#what-is-in-it)). They are cut
+  to 100 and 400 characters, and never in the middle of a character a reader
+  sees as one (an accent, an emoji, a flag).
+- An attention **ask** adds `ask`: `{"id": <ask id>, "options": [...],
+  "suggestions": [...]}`, the chips the app draws — at most three of each,
+  each whole (one longer than 140 characters is left out, never cut). When the
+  suggested replies arrive after the first push, the same tag is pushed again
+  with `"update": true`: replace the notification without alerting again. A
+  payload that would not fit drops the suggestions, then the options, never the
+  question.
 - **A phone's push is exactly 4096 bytes.** muster pads every encrypted push to
   one 4096-byte record, so a payload v2 may be at most 3993 bytes
   (4096 − 86 header − 16 tag − 1 delimiter); the encryption library itself

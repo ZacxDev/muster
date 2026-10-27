@@ -27,9 +27,13 @@
 //     input never calls again), the rate cap, the kill switch and the
 //     per-user toggle.
 //
-// 🔴 SUGGESTION TEXT IS NEVER STORED. It lives in the Engine's in-memory cache
-// for at most CacheTTL and is then dropped (Engine.Sweep); only the input's
-// fingerprint outlives it, so an unchanged session is not paid for twice.
+// 🔴 A SESSION'S SUGGESTION TEXT IS NEVER STORED. It lives in the Engine's
+// in-memory cache for at most CacheTTL and is then dropped (Engine.Sweep); only
+// the input's fingerprint outlives it, so an unchanged session is not paid for
+// twice. The ONE exception is an attention ask's set (internal/api
+// attention_suggest.go): its notification is re-pushed carrying it and its page
+// draws it on any replica, so it is stored on the ask (migration 0056), beside
+// the question it was made from, and only while the ask is open.
 package suggest
 
 import (

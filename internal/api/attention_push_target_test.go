@@ -98,9 +98,11 @@ func windowSession(window string) string {
 }
 
 // TestEachItemOpensItsSessionOrItsItem is the rule, per item kind: where a
-// tap on its notification lands (pushTargetFor, run when tapped). Something
-// with a session opens that session's page; anything else its item on the
-// queue page.
+// tap on its notification lands (pushTargetFor, run when tapped). An ask opens
+// its own page (askPagePath), whose context link is its session's page when it
+// has one (attentionSessionPath — what the want column names for an ask, "the
+// queue" there meaning no link); something else with a session opens that
+// session's page; anything else its item on the queue page.
 func TestEachItemOpensItsSessionOrItsItem(t *testing.T) {
 	s := pushTargetServer(t, nil, nil)
 	ctx := s.attentionPrincipal(context.Background(), 1)
@@ -133,6 +135,19 @@ func TestEachItemOpensItsSessionOrItsItem(t *testing.T) {
 		{"a task ask muster raised itself", ask(57, attention.Asker{System: true, Label: attention.SystemAskerLabel}), "/attention#ask-57"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			if c.it.Kind == attentionKindAsk {
+				if got := s.pushTargetFor(ctx, 1, c.it); got != askPagePath(c.it.AskID) {
+					t.Fatalf("opens %q, want its ask page", got)
+				}
+				want := c.want
+				if strings.HasPrefix(want, attentionPath+"#") {
+					want = ""
+				}
+				if got := s.attentionSessionPath(ctx, 1, c.it); got != want {
+					t.Fatalf("its context link is %q, want %q", got, want)
+				}
+				return
+			}
 			if got := s.pushTargetFor(ctx, 1, c.it); got != c.want {
 				t.Fatalf("opens %q, want %q", got, c.want)
 			}
@@ -141,15 +156,16 @@ func TestEachItemOpensItsSessionOrItsItem(t *testing.T) {
 }
 
 // TestAnAgentReadFailureOpensTheQueue: an asking agent that cannot be read (a
-// database blip, not a missing row) opens its item, and the reason is said.
+// database blip, not a missing row) gives its ask page no context link, and
+// the reason is said.
 func TestAnAgentReadFailureOpensTheQueue(t *testing.T) {
 	s := pushTargetServer(t, nil, nil)
 	var logs strings.Builder
 	s.logger = log.New(&syncWriter{w: &logs}, "", 0)
 	s.ext.Agents = pushTargetAgents{err: errors.New("connection reset")}
 	it := askItem(attention.Ask{ID: 61, Owner: 1, Asker: attention.Asker{AgentID: 7}, Question: "q"})
-	if got := s.pushTargetFor(s.attentionPrincipal(context.Background(), 1), 1, it); got != "/attention#ask-61" {
-		t.Fatalf("opens %q", got)
+	if got := s.attentionSessionPath(s.attentionPrincipal(context.Background(), 1), 1, it); got != "" {
+		t.Fatalf("its context link is %q, want none", got)
 	}
 	if !strings.Contains(logs.String(), "the tap target of agent 7's ask: connection reset") {
 		t.Fatalf("log %q", logs.String())
@@ -249,12 +265,12 @@ func TestTheSessionPushPayloadIsWhatTheWorkerReads(t *testing.T) {
 	store, pusher := &memPush{}, &rawPusher{}
 	claim(t, store, 1, ep("pt-pin"))
 	s := pushTargetServer(t, store, pusher)
-	s.attentionNotify(1, attentionItem{Key: "session-0011223344556677", Kind: attentionKindSession, Source: "build @ ws", host: "ws",
+	s.attentionNotify(1, attentionItem{Key: "session-0011223344556677", Kind: attentionKindSession, Source: "build @ ws", Text: sessionWaitingText, host: "ws",
 		card: attentionCard{ref: waitingItem(t, s, "@1").card.ref}})
 	s.WaitForPushes()
 	var raw json.RawMessage
 	pusher.one(t, ep("pt-pin"), &raw)
-	const want = `{"type":"attention","id":"session-0011223344556677","title":"A session is waiting on you","body":"Waiting: build @ ws","tag":"attention-session-0011223344556677","data":{"url":"/attention/open/session-0011223344556677"}}`
+	const want = `{"type":"attention","id":"session-0011223344556677","title":"build @ ws is waiting","body":"Waiting on you: a permission prompt or a question in the session.","tag":"attention-session-0011223344556677","data":{"url":"/attention/open/session-0011223344556677"}}`
 	if string(raw) != want {
 		t.Fatalf("payload:\n%s\nwant:\n%s", raw, want)
 	}

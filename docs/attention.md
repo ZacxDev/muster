@@ -88,30 +88,53 @@ the field.
 **Notifications** (event `attention` on Account → Notifications, on by default):
 one per new question or newly waiting session, withdrawn when the item is
 answered (on `/attention` or in the session), dismissed, expires or stops
-waiting. **A notification says WHO and WHERE, never WHAT** — a lock screen shows
-it to anyone holding the phone: `<asker> is asking` for a question, `Waiting:
-<tool name> · <window> @ <host>` for a session (no command, path or URL). The
-question, the command and the message are on the page. Each item has one tag, so a
-notification is replaced, never stacked. **A tap opens the item's session**
-when it has one, on the browser and the paired phone alike, decided when you
-tap, not when it was sent (the notification opens `/attention/open/<key>`,
-which resolves it then — a window that closed, an agent that was destroyed or
-an ask answered meanwhile opens its item on `/attention` instead of a dead
-page): a waiting window or
-a held question opens that window's rendered view; a dispatched agent's question
-opens the agent's page (`/agents/<name>`); a mirrored Claude session's question
-opens the window running that session, found when the notification is sent.
-Everything else opens its item on `/attention`: a question muster raised itself,
-a Hermes window that names no conversation, an asking agent that cannot be read,
-and an asking session no listed window runs at that moment
-(`internal/api/attention_push_target.go`, the one rule). **The session's page
-shows the asker's open questions with the same answer form as `/attention`**
-(its option buttons — a chief's task actions included — free text, Dismiss): an
-agent's page lists that agent's open asks, a window's rendered view the asks of
-the Claude sessions it runs, never another asker's. Answering there sends you
-back to that page; the list follows the queue live (an ask answered anywhere
-leaves it, a new one arrives, never replacing an answer you are typing)
-(`internal/api/attention_asker.go`). A session is not re-notified:
+waiting. **A notification carries the whole substance, on the lock screen too**
+(operator decision "Full text always", which replaced the earlier "Summary only
+— WHO and WHERE, never WHAT"), so it can be acted on without opening it:
+
+| item | title | body |
+|---|---|---|
+| a question (an agent's, the chief's, muster's own) | `<asker> is asking` | the question, on one line, then `Options: a · b · c` when it offered any |
+| a held question (a session's `AskUserQuestion`) | `<window> @ <host> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices |
+| a waiting session | `<window> @ <host> is waiting` | what it waits on (its pending tool and the host's summary: `Bash: npm publish --tag next`), then the last thing Claude said; `Waiting: <tool>` when the host sends no summary |
+
+Each line is folded to one line, anything shaped like a secret is redacted, and
+the body is cut to 400 characters on a character boundary with a visible `…`
+(the options line keeps its room; the question is cut first). The browser and a
+paired phone get the same lines. A reply draft's notification is unchanged (who
+and where only, below). Each item has one tag, so a notification is replaced,
+never stacked.
+
+**A tap opens the question's own page** (`/attention/asks/<id>`, below) while
+it is open; any other item opens its session when it has one, on the browser
+and the paired phone alike, decided when you tap, not when it was sent (the
+notification opens `/attention/open/<key>`, which resolves it then — a window
+that closed or an ask answered meanwhile opens its item on `/attention` instead
+of a dead page): a waiting window or a held question opens that window's
+rendered view. Everything else opens its item on `/attention`: a question that
+is no longer open, a Hermes window that names no conversation
+(`internal/api/attention_push_target.go`, the one rule).
+
+**The question's page, `/attention/asks/<id>`,** is a phone app screen, inside
+the Android app's WebView as in a browser: a top bar with a back arrow to Asks
+and who is asking; the question, large; the asker's options as full-width
+buttons that answer at once; the [suggested replies](#suggested-replies-to-an-ask)
+as chips that put their text in the answer box (nothing is sent until
+**Answer**, as on the rendered view); a link to the asking session or agent,
+and to the task, for context; **Dismiss without answering**; and the answer box
+pinned to the bottom, above the keyboard and inside the safe-area insets. It
+posts to the same answer and dismiss routes as `/attention` and comes back to
+itself, showing the answer and where it went. It follows the queue live: chips
+that arrive after it opened appear, and a question answered elsewhere shows as
+answered (`internal/api/attention_ask_page.go`).
+
+**The session's page also shows the asker's open questions with the same answer
+form as `/attention`** (its option buttons — a chief's task actions included —
+free text, Dismiss): an agent's page lists that agent's open asks, a window's
+rendered view the asks of the Claude sessions it runs, never another asker's.
+Answering there sends you back to that page; the list follows the queue live (an
+ask answered anywhere leaves it, a new one arrives, never replacing an answer
+you are typing) (`internal/api/attention_asker.go`). A session is not re-notified:
 
 - when muster restarts or a host reconnects: the first time this process sees
   a host — and again each time it comes back after disconnecting — its
@@ -127,6 +150,33 @@ which is withdrawn when you
 decide the draft, when a newer draft for the same message supersedes it, and
 when it expires (checked every 30 seconds, including drafts notified before a
 restart).
+
+### Suggested replies to an ask
+
+A question gets up to three **suggested replies**, made by the same engine and
+model as the rendered view's chips ([suggested-replies.md](suggested-replies.md))
+from the question and its options, grounded in them by the same filter:
+
+- **The first notification never waits for them.** The question is pushed the
+  moment it is filed; the suggestions are generated in the background and,
+  when there are any, the notification is **pushed again under the same tag**
+  carrying them (a paired phone replaces it without alerting again: payload
+  v2's `update`). A browser notification shows no chips; its lines are the same.
+- **The same switches.** `MUSTER_SUGGEST=off`, your own toggle on Account (and
+  its auto-pause), and no OpenRouter key for you each mean no call and no chips,
+  and the page stops showing stored chips while they are off. The engine's rate
+  caps apply; one call per question.
+- **Stored with the question** (`attention_asks.suggestions`, migration 0056),
+  at most three, each one line and at most 140 characters, none repeating an
+  option — the one place suggestion text is stored, because the re-push and the
+  page (on any replica) need it. Written once, and **only while the question is
+  open**: a question answered, dismissed or expired before its suggestions
+  arrive is never given them and never pushed again; a re-push that loses the
+  race with an answer is withdrawn again as soon as it is delivered.
+- On the page a chip fills the answer box; nothing is sent until **Answer**. A
+  paired phone draws options and suggestions as chips (payload v2's `ask`),
+  dropping the suggestions first, then the options, when a push would not fit in
+  its 4096-byte record — never the question.
 
 ## The agent tools
 

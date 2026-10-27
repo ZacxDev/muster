@@ -177,8 +177,9 @@ func TestAWaitingSessionShowsWhatItWaitsOn(t *testing.T) {
 			body = p.Body
 		}
 	}
-	// The lock screen says who and where, never the command (the page has it).
-	if body != "Waiting: Bash · main:1 @ ws" {
+	// The notification says what it waits on and Claude's last words, as the
+	// page does (operator decision "Full text always").
+	if body != "Bash: npm publish --tag next\nTests pass. Publishing [31mnow [0m." {
 		t.Fatalf("the push body: %q", body)
 	}
 }

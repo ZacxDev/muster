@@ -12,7 +12,9 @@ keeps its own [step-up check](sending-and-step-up.md). Nothing in the
 suggestion path can reach a pane.
 
 On by default; each user can turn them off in **Account → Suggested replies**.
-Mirrored tmux sessions only (a dispatched agent's chat page has no chips yet).
+Mirrored tmux sessions only (a dispatched agent's chat page has no chips yet) —
+and an attention **ask**, whose notification and page offer the same kind of
+chips for its question ([attention.md](attention.md#suggested-replies-to-an-ask)).
 
 ## The chip row
 
@@ -167,8 +169,11 @@ calls it exactly once. Two views of the same turn share one call, even when
 one of them resumed mid-conversation and saw less (a resumed view offers
 nothing for the partial turn it resumed into, and generates from the first
 whole turn after it). A set's text is dropped after an hour (only its fingerprint is
-kept, so an unchanged session is not paid for again). **No suggestion text is
-ever written to the database.**
+kept, so an unchanged session is not paid for again). **No session's
+suggestion text is ever written to the database.** The one exception is an
+attention ask's set, stored on the ask while it is open, because its
+notification is re-pushed with it and its page draws it
+([attention.md](attention.md#suggested-replies-to-an-ask)).
 
 Calls are capped at **120 per user per hour** and 1,000 in all, two at a time,
 separately from focus.

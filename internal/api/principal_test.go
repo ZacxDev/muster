@@ -126,6 +126,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /attention/asker",
 		// A notification's tap: its item's target, resolved when tapped.
 		"GET /attention/open/{key}",
+		// An ask's own page, where its tap lands (attention_ask_page.go).
+		"GET /attention/asks/{id}",
 		"GET /attention/badge",
 		"POST /attention/asks/{id}/answer",
 		"POST /attention/asks/{id}/cancel",
