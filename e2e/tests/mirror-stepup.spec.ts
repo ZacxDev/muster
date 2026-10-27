@@ -115,7 +115,7 @@ async function claimAndSignIn(page: Page) {
   await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
 }
 
-function startMirror(): ChildProcess {
+function startMirror(extra: NodeJS.ProcessEnv = {}): ChildProcess {
   const token = execFileSync(serverBinary(versionA), ['mirror', 'token', 'create', host], { env: serverEnv() }).toString().trim();
   expect(token.startsWith('mmt_'), 'a mirror token was minted').toBe(true);
   const p = spawn(mirrorBin, [], {
@@ -129,6 +129,7 @@ function startMirror(): ChildProcess {
       MUSTER_MIRROR_E2E_WINDOW: WIN,
       MUSTER_MIRROR_INTERACTIVE: '1',
       MUSTER_MIRROR_E2E_CLAUDE: 'main=' + transcript,
+      ...extra,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -952,3 +953,99 @@ test.describe('with no script at all (390×844)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// 🔴 ONLY A KEY THE PERSON PRESSED ASKS "CONFIRM IT'S YOU". A terminal answers
+// some of what the far side writes by ITSELF: tmux queries a client's Device
+// Attributes and cursor position as it attaches, and with focus reporting on
+// the terminal reports focus. xterm.js hands those answers to the same onData
+// a keystroke takes. Live keys always on (#299) made every input on a stale
+// attach ask to confirm — so the dialog opened with nothing pressed, even in
+// a background tab (live 0.95.0). The host here writes those queries on every
+// attach (MUSTER_MIRROR_E2E_QUERIES); a stale sign-in must then show NO dialog
+// for 3 s after the terminal opens — on its own page and in the view switch's
+// frame — and a real key must still open it.
+// ---------------------------------------------------------------------------
+for (const size of [
+  { name: 'phone 390×844', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
+  { name: 'desktop 1280×800', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
+]) {
+  test.describe(`a stale terminal that answers the host's queries (${size.name})`, () => {
+    test.use(size.use);
+
+    test('no dialog opens until a key is pressed — on the terminal page and in the view switch’s frame (real GoTrue)', async ({ page, context }) => {
+      test.setTimeout(180_000);
+      // The terminal's own answers, as it gives them (instrument): every
+      // onData of the page's xterm, wrapped as the emulator is defined.
+      await page.addInitScript(() => {
+        const w = window as any;
+        w.__onData = [];
+        let T: any;
+        Object.defineProperty(w, 'Terminal', {
+          configurable: true,
+          get: () => T,
+          set: (v: any) => {
+            T = class extends v {
+              constructor(o: any) {
+                super(o);
+                (this as any).onData((d: string) => w.__onData.push(d));
+              }
+            };
+          },
+        });
+      });
+      await signIn(page);
+      if (mirrorProc && mirrorProc.exitCode === null) {
+        const done = new Promise((r) => mirrorProc!.once('exit', r));
+        mirrorProc.kill('SIGTERM');
+        await done;
+      }
+      mirrorProc = startMirror({ MUSTER_MIRROR_E2E_QUERIES: '1' });
+      try {
+        await makeStale(context);
+
+        // 1. The terminal page, opened and left alone.
+        await page.goto(browserURL + termPath);
+        await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro', { timeout: 20_000 });
+        await expect(page.locator('#term-status')).toHaveText("Connected · confirm it's you to type");
+        // CONTROL: the terminal DID answer the host by itself.
+        await expect.poll(() => page.evaluate(() => (window as any).__onData.length), { message: 'the terminal answered the host’s queries' }).toBeGreaterThan(0);
+        const answers = await page.evaluate(() => (window as any).__onData as string[]);
+        console.log(`[${test.info().title}] the terminal's own answers on a read-only attach: ${JSON.stringify(answers)}`);
+        expect(answers.some((d) => d.startsWith('\x1b[?') || d.startsWith('\x1b[>')), `answers seen: ${JSON.stringify(answers)}`).toBe(true);
+        await page.waitForTimeout(3000);
+        await expect(dialog(page), 'no dialog with nothing pressed').not.toBeVisible();
+        // A tap or click on the terminal focuses it (a focus report, with
+        // reporting on) and still asks nothing; a letter typed does.
+        await page.locator('#term').click();
+        await page.waitForTimeout(500);
+        await expect(dialog(page), 'focusing the terminal asks nothing').not.toBeVisible();
+        await page.keyboard.type('x');
+        await expect(dialog(page), 'a letter typed asks').toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(dialog(page)).not.toBeVisible();
+
+        // 2. The view switch: Rendered, then Terminal in its frame.
+        await page.goto(browserURL + viewPath);
+        await expect(page.locator('#mv-log [data-bubble="assistant"]').first()).toContainText('Hi.', { timeout: 20_000 });
+        await page.locator('#view-terminal').click();
+        const t = page.frameLocator('iframe[data-muster-view]');
+        await expect(t.locator('#term .xterm-rows')).toContainText('FAKE-MIRROR session=main mode=ro', { timeout: 20_000 });
+        await page.waitForTimeout(3000);
+        await expect(dialog(page), 'no dialog in the top window').not.toBeVisible();
+        await expect(t.locator('#term-confirm'), 'no dialog in the frame').not.toBeVisible();
+
+        // 3. A real key DOES ask (the top window's dialog, for a framed view).
+        await t.locator('#term-keys [data-key="enter"]').click();
+        await expect(dialog(page), 'a key pressed asks').toBeVisible();
+      } finally {
+        if (mirrorProc && mirrorProc.exitCode === null) {
+          const done = new Promise((r) => mirrorProc!.once('exit', r));
+          mirrorProc.kill('SIGTERM');
+          await done;
+        }
+        mirrorProc = startMirror();
+      }
+    });
+  });
+}

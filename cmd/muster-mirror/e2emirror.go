@@ -383,6 +383,19 @@ func (fakeBackend) WindowSize(context.Context, string) (termsize.Size, error) {
 	return termsize.Size{Cols: c, Rows: r}, nil
 }
 
+// e2eAttachQueries is what the fake writes after its banner on every attach
+// when MUSTER_MIRROR_E2E_QUERIES=1: the terminal queries a real tmux sends a
+// client as it attaches — Primary and Secondary Device Attributes, a cursor
+// position report — and focus reporting turned on. A terminal emulator ANSWERS
+// each on its own, with no key pressed (xterm.js's onData), which is what a
+// spec about input nobody typed needs to see.
+func e2eAttachQueries() string {
+	if os.Getenv("MUSTER_MIRROR_E2E_QUERIES") != "1" {
+		return ""
+	}
+	return "\x1b[c\x1b[>c\x1b[6n\x1b[?1004h"
+}
+
 // edgeLine is a ruler ending exactly at the client's last column with
 // RIGHT-EDGE, so a browser test can scroll to it: on a client wider than the
 // page it is off-screen until scrolled.
@@ -401,7 +414,7 @@ func (fakeBackend) Attach(_ context.Context, session string, readOnly bool, cols
 		mode = "ro"
 	}
 	t := &fakeTerm{r: pr, w: pw}
-	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s mode=%s size=%dx%d\r\n", session, mode, cols, rows) + edgeLine(cols))
+	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s mode=%s size=%dx%d\r\n", session, mode, cols, rows) + edgeLine(cols) + e2eAttachQueries())
 	return t, nil
 }
 
@@ -564,7 +577,7 @@ func (w windowFake) AttachWindow(_ context.Context, session, window string, read
 		mode = "ro"
 	}
 	t := &fakeTerm{r: pr, w: pw}
-	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s window=%s mode=%s size=%dx%d\r\n", session, window, mode, cols, rows) + edgeLine(cols))
+	go t.say(fmt.Sprintf("FAKE-MIRROR session=%s window=%s mode=%s size=%dx%d\r\n", session, window, mode, cols, rows) + edgeLine(cols) + e2eAttachQueries())
 	return t, nil
 }
 
