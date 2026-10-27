@@ -352,11 +352,13 @@ for (const vp of [
 // (internal/ui/view_swap.go): each view is its own document, with its own
 // dictation script, so pagehide never fires there. The switch tells the hidden
 // view's window 'muster:view-hidden' — the TOP page when the frame is revealed,
-// the FRAME when the top page is shown again — and a recording in that view is
-// abandoned as on pagehide: the audio is thrown away (nothing is posted) and
-// its microphone tracks are stopped. Both directions are driven, since a
-// different document receives the event in each.
-test.describe('the view switch takes the recording with the view', () => {
+// the FRAME when the top page is shown again. A recording in that view is
+// FINISHED: its microphone tracks are stopped, and what it recorded is
+// transcribed once into THAT view's own box (still there, only off screen),
+// which is what the view shows when it comes back. Both directions are driven,
+// since a different document receives the event in each, on a mirrored
+// window's two views and on a claude-code agent's chat and terminal.
+test.describe('the view switch finishes the recording in the view it hides', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
   // Every document (top and frame) records the streams getUserMedia hands it,
@@ -368,54 +370,112 @@ test.describe('the view switch takes the recording with the view', () => {
     );
   }
 
-  test('a recording in the hidden view stops, its tracks are released, and nothing is posted', async ({ page }) => {
-    await page.addInitScript(() => {
-      const w = window as unknown as { __streams: MediaStream[] };
-      w.__streams = [];
-      const gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-      navigator.mediaDevices.getUserMedia = (c) =>
-        gum(c).then((s) => {
-          w.__streams.push(s);
-          return s;
-        });
+  for (const c of [
+    { name: 'a mirrored window: Rendered ↔ Terminal', agent: false, top: mvBox },
+    { name: 'a claude-code agent: chat ↔ Terminal', agent: true, top: chatBox },
+  ]) {
+    test(`${c.name}: the hidden view's mic stops, releases its tracks, and transcribes once into its own box`, async ({ page }) => {
+      test.setTimeout(150_000);
+      await page.addInitScript(() => {
+        const w = window as unknown as { __streams: MediaStream[] };
+        w.__streams = [];
+        const gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+        navigator.mediaDevices.getUserMedia = (cs) =>
+          gum(cs).then((s) => {
+            w.__streams.push(s);
+            return s;
+          });
+      });
+      // 🔴 /transcribe IS ANSWERED HERE, not by the server: the route allows
+      // twelve recordings per user per minute (internal/api/transcribe.go), and
+      // the rest of this file spends ten of them, as the one signed-in user,
+      // inside the same minute; four more here run the service-down test into
+      // a 429 instead of its 503.
+      // The real route (and the fake service behind it) is what every other
+      // test in this file drives; what this one checks is the page — which
+      // document posts, how often, and where the text lands. Each POST is
+      // counted here, from either document (page.route sees frames too), with
+      // the recording it carried.
+      let posts = 0;
+      const sizes: number[] = [];
+      await page.route('**/transcribe', async (r) => {
+        if (r.request().method() !== 'POST') return r.continue();
+        posts++;
+        sizes.push(r.request().postDataBuffer()?.length ?? 0);
+        await r.fulfill({ status: 200, contentType: 'text/plain; charset=utf-8', body: ` ${FAKE_TEXT} ` });
+      });
+      await login(page);
+      if (c.agent) {
+        const a = await runningAgent(page);
+        await page.goto(`${origin}/agents/${a.name}`);
+      } else {
+        await page.goto(origin + '/mirror/view?' + q(claudeWin));
+      }
+      const top = { input: page.locator(c.top.input), mic: page.locator(c.top.mic), note: page.locator(c.top.note) };
+      await expect(top.mic).toBeVisible({ timeout: 20_000 });
+      const iframe = page.locator('iframe[data-muster-view]');
+      const fr = page.frameLocator('iframe[data-muster-view]');
+      const sub = { input: fr.locator(mvBox.input), mic: fr.locator(mvBox.mic), note: fr.locator(mvBox.note) };
+
+      // recordThenHide records about a second in one view, flips the switch
+      // (from the view on screen), and checks the hidden view finished it.
+      async function recordThenHide(
+        v: typeof top,
+        doc: () => { evaluate: Page['evaluate'] },
+        flip: () => Promise<void>,
+        what: string,
+      ) {
+        await v.input.fill('');
+        const p0 = posts;
+        await v.mic.click();
+        await expect(v.mic).toHaveAttribute('data-state', 'recording');
+        await expect(v.note).toContainText('Recording 0:01');
+        // Positive control: the instrument sees a held microphone as `live`.
+        expect(await tracks(doc()), `${what}: the recording holds a live track`).toEqual(['live']);
+        await flip();
+        await expect.poll(() => tracks(doc()), { message: `${what}: the hidden view released its microphone` }).toEqual(['ended']);
+        await expect(v.mic, `${what}: the hidden view is not recording`).not.toHaveAttribute('data-state', 'recording');
+        await expect(v.input, `${what}: the transcript is in the hidden view's own box`).toHaveValue(FAKE_TEXT, { timeout: 15_000 });
+        await expect(v.mic).toHaveAttribute('data-state', 'idle');
+        await expect(v.note).toBeHidden();
+        expect(posts - p0, `${what}: exactly one /transcribe POST for the recording`).toBe(1);
+        expect(sizes[sizes.length - 1], `${what}: the POST carried the recording, not an empty body`).toBeGreaterThan(1000);
+      }
+
+      // 1. The TOP view records; the switch reveals the frame over it.
+      await recordThenHide(
+        top,
+        () => page,
+        async () => {
+          await page.locator('a[data-view-swap]:visible').first().click();
+          await expect(sub.mic).toBeVisible({ timeout: 30_000 });
+          await expect(iframe).toHaveCSS('visibility', 'visible');
+        },
+        'top',
+      );
+      // 2. The FRAME records; the switch hides it and shows the top view again,
+      // whose box still has its transcript and whose mic is at rest.
+      const frame = () => page.frames().find((f) => f !== page.mainFrame())!;
+      await recordThenHide(
+        sub,
+        frame,
+        async () => {
+          await fr.locator('a[data-view-swap]:visible').first().click();
+          await expect(iframe).toHaveCSS('visibility', 'hidden');
+        },
+        'frame',
+      );
+      await expect(top.input).toHaveValue(FAKE_TEXT);
+      await expect(top.mic).toHaveAttribute('data-state', 'idle');
+      await expect(top.note).toBeHidden();
+      // 3. The frame shown again: its box has its transcript, its mic at rest.
+      await page.locator('a[data-view-swap]:visible').first().click();
+      await expect(iframe).toHaveCSS('visibility', 'visible');
+      await expect(sub.input).toHaveValue(FAKE_TEXT);
+      await expect(sub.mic).toHaveAttribute('data-state', 'idle');
+      await expect(sub.note).toBeHidden();
     });
-    const posts: string[] = [];
-    page.on('request', (r) => {
-      if (new URL(r.url()).pathname === '/transcribe') posts.push(r.url());
-    });
-    await login(page);
-    await page.goto(origin + '/mirror/view?' + q(claudeWin));
-    const topMic = page.locator('#mv-dictate');
-    await expect(topMic).toBeVisible({ timeout: 20_000 });
-
-    // 1. The TOP view records, then the switch reveals the frame over it.
-    await topMic.click();
-    await expect(topMic).toHaveAttribute('data-state', 'recording');
-    // Positive control: the instrument sees a held microphone as `live`.
-    expect(await tracks(page), 'top: the recording holds a live track').toEqual(['live']);
-    await page.locator('a[data-view-swap]:visible').first().click();
-    const fr = page.frameLocator('iframe[data-muster-view]');
-    const frameMic = fr.locator('#mv-dictate');
-    await expect(frameMic).toBeVisible({ timeout: 20_000 });
-    await expect(page.locator('iframe[data-muster-view]')).toHaveCSS('visibility', 'visible');
-    await expect(topMic, 'the hidden top view stopped recording').toHaveAttribute('data-state', 'idle');
-    await expect.poll(() => tracks(page), { message: 'the hidden top view released its microphone' }).toEqual(['ended']);
-    await expect(page.locator('#mv-dictate-note')).toBeHidden();
-
-    // 2. The FRAME records, then the switch hides it again.
-    await frameMic.click();
-    await expect(frameMic).toHaveAttribute('data-state', 'recording');
-    const frame = page.frames().find((f) => f !== page.mainFrame())!;
-    expect(await tracks(frame), 'frame: the recording holds a live track').toEqual(['live']);
-    await fr.locator('a[data-view-swap]:visible').first().click();
-    await expect(page.locator('iframe[data-muster-view]')).toHaveCSS('visibility', 'hidden');
-    await expect(frameMic, 'the hidden frame stopped recording').toHaveAttribute('data-state', 'idle');
-    await expect.poll(() => tracks(frame), { message: 'the hidden frame released its microphone' }).toEqual(['ended']);
-
-    // An abandoned recording is thrown away, as on pagehide: nothing transcribed.
-    await page.waitForTimeout(500);
-    expect(posts, 'neither abandoned recording was posted').toEqual([]);
-  });
+  }
 });
 
 test.describe('failures, said inline', () => {
