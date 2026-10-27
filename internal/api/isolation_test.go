@@ -317,6 +317,9 @@ var isolationClasses = map[string]routeClass{
 	// A thread a mirrored session started (thread_routes.go): route reply's
 	// door, acting as the owner.
 	"POST /api/plugin-threads": classAdmin,
+	// A pull request a session authored (pr_routes.go): route reply's door,
+	// acting as the owner.
+	"POST /api/pr-sessions": classAdmin,
 	// Retrying an unconfirmed plugin message (plugin_retry.go), hook tier, as its owner.
 	"POST /api/plugins/messages/{id}/retry": classAdmin,
 	"POST /api/tasks/{id}/comments":         classAdmin,

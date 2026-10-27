@@ -167,6 +167,13 @@ const (
 	// or owner/*>,…", each matched only on mail that plugin marked sender_verified. Unset: every
 	// routed answer becomes a pending draft the owner approves.
 	envRouteRelayAllow = "MUSTER_ROUTE_RELAY_ALLOW"
+	// PULL-REQUEST → SESSION ROUTING (internal/api/pr_routes.go): the agent-mail
+	// senders ("<owner>/<handle>,…") whose VERIFIED mail is read as a review of
+	// a pull request and routed to the mirrored session that authored it (as
+	// its host's hook reported to POST /api/pr-sessions). Needs session routing
+	// on. Unset (the default): off — the route answers 404 and every message is
+	// handed on as before.
+	envPRMailSenders = "MUSTER_PR_MAIL_SENDERS"
 	// TASK ROUTING (internal/api/task_routing.go): "1" lets a plugin hand a task
 	// it files (POST /plugin/v1/tasks, route_to_chief) to the owner's chief,
 	// which routes it with task_route_attention / task_forward. Needs the plugin
@@ -581,6 +588,10 @@ type config struct {
 	SessionRouting     bool
 	RouteRelayAllowRaw string
 	RouteRelayAllow    plugins.RelayAllowlist
+	// PRMailSenders is MUSTER_PR_MAIL_SENDERS, parsed (loadConfig refuses one
+	// that does not parse); empty is pull-request routing off.
+	PRMailSendersRaw string
+	PRMailSenders    plugins.PRMailSenders
 	// TaskRouting is MUSTER_TASK_ROUTING=1; ChiefDispatchOwners
 	// MUSTER_CHIEF_DISPATCH_OWNERS, parsed (loadConfig refuses one that does not
 	// parse) — non-empty turns task_dispatch on.
@@ -1258,6 +1269,12 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, fmt.Errorf("invalid %s %s: with %s=1 it must be shorter than a route's deadline (%s), or every route would time out before its message is even pasted",
 			envSendQueueIdle, c.SendQueueIdle, envSessionRouting, api.RouteTimeout)
 	}
+	c.PRMailSendersRaw = strings.TrimSpace(getenv(envPRMailSenders))
+	prSenders, err := plugins.ParsePRMailSenders(c.PRMailSendersRaw)
+	if err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v (want agent-mail <owner>/<handle>, comma-separated)", envPRMailSenders, err)
+	}
+	c.PRMailSenders = prSenders
 	if c.RouteRelayAllowRaw != "" {
 		l, err := plugins.ParseRelayAllowlist(c.RouteRelayAllowRaw)
 		if err != nil {

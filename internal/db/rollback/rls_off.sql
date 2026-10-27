@@ -198,6 +198,12 @@ BEGIN
         ALTER TABLE public.plugin_threads DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.plugin_threads ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0055 (session_prs), when this schema has it; same reason as 0011.
+    IF to_regclass('public.session_prs') IS NOT NULL THEN
+        ALTER TABLE public.session_prs NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_prs DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.session_prs ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

@@ -72,27 +72,48 @@ func (s *Server) routeByThread(ctx context.Context, p plugins.Plugin, m plugins.
 		}
 		return false
 	}
+	origin := plugins.RouteOrigin{Via: plugins.RouteViaThread, Session: session, Thread: thread}
+	return s.routeByMuster(ctx, p, m, origin, "the session that started thread "+thread, "a reply on thread "+thread)
+}
+
+// routeByMuster is THE ROUTE MUSTER MAKES ITSELF, for both of its reasons — a
+// reply on a thread a session started (routeByThread) and a review of a pull
+// request a session authored (routeByPR): the chief's route (routeItem, with
+// its target check, session_routes row, fenced paste through the send queue,
+// deadline and hand-back) made to origin.Session, the queued message handed
+// to the chief in the route's own transaction (CreateRouteFrom), and recorded
+// in the chief's conversation with muster's note (Handed), so the chief holds
+// the message a hand-back or a relay will name. target words the session for
+// that note ("the session that …"), what the message ("a reply on …").
+//
+// It reports whether m is taken care of: true once the route was made, even
+// if its injection then failed (the message is the chief's, and the route
+// owes it the hand-back). false, with nothing written, when the route cannot
+// be made — no online mirrored window shows the session, the window
+// cannot take it, the message is no_reply, there is no chief to own it, or
+// another delivery took m first (that delivery then finds m no longer queued
+// and leaves it as it is) — and the caller hands m to the chief as any other.
+func (s *Server) routeByMuster(ctx context.Context, p plugins.Plugin, m plugins.Message, origin plugins.RouteOrigin, target, what string) bool {
 	chief, err := s.chiefAgent(ctx)
 	if err != nil {
 		return false
 	}
-	sub := focus.Subject{Kind: focus.KindMirror, Key: session}
-	origin := plugins.RouteOrigin{Via: plugins.RouteViaThread, Session: session, Thread: thread}
+	sub := focus.Subject{Kind: focus.KindMirror, Key: origin.Session}
 	r, _, refused := s.routeItem(ctx, chief.ID, agentOwnerID(chief), routedItem{msg: m}, sub, origin)
 	item := "plugin message_id " + strconv.FormatInt(m.ID, 10)
 	var note string
 	switch {
 	case refused == "":
-		note = routeNote(r, "routed by muster to the session that started thread "+thread+"; its answer is relayed as usual. Nothing to do unless it comes back to you.")
+		note = routeNote(r, "routed by muster to "+target+"; its answer is relayed as usual. Nothing to do unless it comes back to you.")
 	case refusalCode(refused) == RefusedInjectFailed:
 		// The route was made (the message is the chief's) and failed, owing the
 		// chief its hand-back.
-		note = "[muster] " + item + ", a reply on thread " + thread + ", could not be put into the session that started the thread; it comes back to you."
+		note = "[muster] " + item + ", " + what + ", could not be put into " + target + "; it comes back to you."
 	default:
 		// Not routed — including when another delivery took m meanwhile, which
 		// the chief's delivery then finds settled (Deliver re-reads it under the
 		// chief's claim, and BeginDelivery takes only a queued message).
-		s.logger.Printf("threads: message %d: not routed (%s); delivering it to the chief", m.ID, refused)
+		s.logger.Printf("routes: message %d: not routed via %s (%s); delivering it to the chief", m.ID, origin.String(), refused)
 		return false
 	}
 	cur, err := s.ext.Plugins.Message(ctx, m.ID)
@@ -100,7 +121,7 @@ func (s *Server) routeByThread(ctx context.Context, p plugins.Plugin, m plugins.
 		cur = m
 	}
 	if err := s.pluginDeliverer.Handed(ctx, p, chief, cur, note); err != nil {
-		s.logger.Printf("threads: message %d: record it in the chief's conversation: %v", m.ID, err)
+		s.logger.Printf("routes: message %d: record it in the chief's conversation: %v", m.ID, err)
 	}
 	if refused != "" {
 		s.kickRouteSweep()

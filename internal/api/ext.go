@@ -260,6 +260,14 @@ type Extensions struct {
 	TaskRouting   *TaskRouting
 	ChiefDispatch plugins.DispatchStore
 
+	// PRMail is pull-request → session routing's configuration
+	// (MUSTER_PR_MAIL_SENDERS, pr_routes.go) and PRSessions its store
+	// (migration 0055), which the host's hook fills through POST
+	// /api/pr-sessions. PRMail nil — the variable unset — is OFF: that route
+	// answers 404 and every message is handed on as before.
+	PRMail     *PRMail
+	PRSessions plugins.PRSessionStore
+
 	// Attention is the attention queue's explicit asks (internal/attention,
 	// migration 0025). nil (no database): the attention tools are not offered,
 	// /attention answers 404, and no link is drawn.
