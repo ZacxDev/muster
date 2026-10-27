@@ -937,21 +937,33 @@ func agentTerminalScript() g.Node {
     if (beat && now - lastAt > staleMs) connect(why === 'tick' ? 'stale' : why);
   }
 
-  // userInput: the browser is dispatching an input event the PERSON made —
-  // a key, text entered (a phone's keyboard, IME composition), a paste —
-  // into the terminal. xterm.js emits what such an event types from inside
-  // its own handler, so onData during one is the person's; its answers to the
-  // far side's queries come from parsing output, in a task of their own, and
-  // are not. A structural signal (the event and its isTrusted), not a guess
-  // from the bytes: a keystroke and an answer can be the very same bytes.
-  // Cleared once the event's dispatch is over (the next task).
+  // userInput: the PERSON just made an input event — a key, text entered
+  // (input, beforeinput), text committed by an input method (compositionend:
+  // a phone keyboard's swipe or voice, a CJK IME), a paste — on the terminal.
+  // xterm.js types what such an event makes either from inside its own
+  // handler (keys, paste, plain input) or from a setTimeout(0) the handler
+  // queues (a committed composition; text from a keyCode-229 key): onData
+  // then is the person's. Its answers to the far side's queries come from
+  // parsing output, in tasks of their own, and are not. A structural signal
+  // (the event and its isTrusted), not a guess from the bytes: a keystroke
+  // and an answer can be the very same bytes.
+  //
+  // 🔴 CLEARED TWO TASKS LATER, NOT ONE. These listeners run in the CAPTURE
+  // phase (xterm stops keydown/keypress from propagating), so before
+  // xterm's own handler: a clear queued here as setTimeout(0) would run
+  // BEFORE the timer xterm queues in the same event, and a committed
+  // composition was dropped as nobody's (audit #312). The clear is queued
+  // from a first timer, so it runs after every zero-delay timer the event's
+  // handlers queued.
   var userInput = false, userInputTimer = 0;
   ['keydown', 'keypress', 'beforeinput', 'input', 'compositionend', 'paste'].forEach(function (type) {
     host.addEventListener(type, function (ev) {
       if (!ev.isTrusted) return;
       userInput = true;
       clearTimeout(userInputTimer);
-      userInputTimer = setTimeout(function () { userInput = false; }, 0);
+      userInputTimer = setTimeout(function () {
+        userInputTimer = setTimeout(function () { userInput = false; }, 0);
+      }, 0);
     }, true);
   });
   term.onData(function (d) { send(d, userInput); });

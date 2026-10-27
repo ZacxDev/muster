@@ -106,7 +106,11 @@ const serverEnv = () => ({ ...process.env, DATABASE_URL: dsn, MUSTER_PUBLIC_URL:
 
 // claimAndSignIn claims the admin (user 1, the owner of every mirror token the
 // server binary mints) and leaves the page signed in.
+// adminClaimed: this run has claimed the admin (the file's first test does).
+// A test run on its own claims it itself (adminSignIn).
+let adminClaimed = false;
 async function claimAndSignIn(page: Page) {
+  adminClaimed = true;
   const link = execFileSync(serverBinary(versionA), ['invite', '--claim-admin'], { env: serverEnv() }).toString().trim();
   await page.goto(link);
   await page.fill('#claim-email', adminEmail);
@@ -994,7 +998,10 @@ for (const size of [
           },
         });
       });
-      await signIn(page);
+      // Self-sufficient: run alone (a filter, --last-failed), it claims the
+      // admin itself.
+      if (adminClaimed) await signIn(page);
+      else await claimAndSignIn(page);
       if (mirrorProc && mirrorProc.exitCode === null) {
         const done = new Promise((r) => mirrorProc!.once('exit', r));
         mirrorProc.kill('SIGTERM');
@@ -1002,6 +1009,10 @@ for (const size of [
       }
       mirrorProc = startMirror({ MUSTER_MIRROR_E2E_QUERIES: '1' });
       try {
+        // The restarted host has connected and listed its session.
+        await expect
+          .poll(async () => (await page.request.get(browserURL + termPath)).status(), { message: `the host's session is listed (log:\n${mirrorLog})`, timeout: 20_000 })
+          .toBe(200);
         await makeStale(context);
 
         // 1. The terminal page, opened and left alone.
@@ -1020,6 +1031,15 @@ for (const size of [
         await page.locator('#term').click();
         await page.waitForTimeout(500);
         await expect(dialog(page), 'focusing the terminal asks nothing').not.toBeVisible();
+        // Text committed through an input method (a phone keyboard's swipe or
+        // voice, a CJK IME) is the person's too. xterm sends it from a timer
+        // its compositionend queues, after the event — so it must still count.
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send('Input.imeSetComposition', { text: 'ls', selectionStart: 2, selectionEnd: 2 });
+        await cdp.send('Input.insertText', { text: 'ls' });
+        await expect(dialog(page), 'text committed by an input method asks').toBeVisible();
+        await page.locator('#term-confirm-cancel').click();
+        await expect(dialog(page)).not.toBeVisible();
         await page.keyboard.type('x');
         await expect(dialog(page), 'a letter typed asks').toBeVisible();
         await page.locator('#term-confirm-cancel').click();
