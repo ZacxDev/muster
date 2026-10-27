@@ -13,7 +13,8 @@ import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 //   1. the button on the bar's left opens a menu of the views, animated, opening
 //      UPWARD from the bar; a pick shows that view and is kept across loads;
 //      the keyboard works it (arrows, Enter, Escape) and a tap outside closes it;
-//   2. a search (the magnifier, "/" or Ctrl+K) opens a command-palette box
+//   2. a search (the magnifier, or "/" outside a text field — never Ctrl/Cmd+K,
+//      which is the browser's own) opens a command-palette box
 //      whose results fill as the operator types: codename prefix first, then
 //      codename substring, then title; arrows move, Enter opens, Escape closes;
 //   3. opening either moves nothing on the page (geometry and layout shift);
@@ -253,6 +254,9 @@ for (const vp of [
       await expect(pal(page).locator('[data-switcher-search-empty]')).toBeVisible();
       await expect(pal(page).locator('[data-switcher-search-empty]')).toHaveText('No session matches');
 
+      // 🔴 TYPED AS THE OPERATOR TYPES IT: the bare codename "wheat" (no ":1")
+      // ranks wheat:1 first, and a session whose TITLE holds the word (the
+      // agent's "Rotate the wheat ledger") matches too, after the codenames.
       // Arrows move (wrapping); Enter opens the highlighted one — its own view.
       await input(page).fill('wheat');
       await expect.poll(() => optionLabels(page)).toEqual([label('wheat'), label('buckwheat'), AGENT_TITLE]);
@@ -271,7 +275,7 @@ for (const vp of [
       await expect(bar(page)).toBeVisible();
     });
 
-    test('search: the magnifier and Ctrl+K open it, Escape and a tap outside close it, "/" in the message box is typed, a tap opens a result', async ({ page }) => {
+    test('search: the magnifier opens it, Escape and a tap outside close it, Ctrl+K is left to the browser, "/" in the message box is typed, a tap opens a result', async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
       await openView(page);
@@ -288,12 +292,28 @@ for (const vp of [
       await expect(open).toHaveAttribute('aria-expanded', 'false');
       await expect(open).toBeFocused();
 
-      // Ctrl+K, even from inside the message box; a tap outside closes it.
-      await page.locator('#mv-input').focus();
-      await page.keyboard.press('Control+k');
+      // A tap outside closes it.
+      await (vp.w === 390 ? open.tap() : open.click());
       await expect(pal(page)).toBeVisible();
-      await expect(input(page)).toBeFocused();
       await page.mouse.click(5, 836);
+      await expect(pal(page)).toBeHidden();
+
+      // Ctrl+K and Cmd+K are the browser's: neither opens the search, nor is
+      // kept from the browser (not default-prevented). Measured from no text
+      // field, where "/" WOULD open it (the control, just below).
+      await page.evaluate(() => {
+        (document.activeElement as HTMLElement | null)?.blur();
+        (window as any).__swsK = [];
+        document.addEventListener('keydown', (e) => { if (e.key === 'k') (window as any).__swsK.push(e.defaultPrevented); });
+      });
+      await page.keyboard.press('Control+k');
+      await page.keyboard.press('Meta+k');
+      await page.waitForTimeout(200);
+      await expect(pal(page)).toBeHidden();
+      expect(await page.evaluate(() => (window as any).__swsK), 'both keys reached the page, neither prevented').toEqual([false, false]);
+      await page.keyboard.press('/');
+      await expect(pal(page), 'CONTROL: "/" from the same place opens it').toBeVisible();
+      await page.keyboard.press('Escape');
       await expect(pal(page)).toBeHidden();
 
       // "/" in the message box is a character, not the search.
@@ -315,7 +335,7 @@ for (const vp of [
       ]);
     });
 
-    test('on an agent\'s chat page: Ctrl+K finds a window by codename and Enter opens it; nothing moves', async ({ page }) => {
+    test('on an agent\'s chat page: "/" finds a window by codename and Enter opens it; nothing moves', async ({ page }) => {
       test.setTimeout(90_000);
       await ready(page);
       await page.addInitScript(clsInit);
@@ -326,7 +346,7 @@ for (const vp of [
       const before = await at();
       await resetCls(page);
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-      await page.keyboard.press('Control+k');
+      await page.keyboard.press('/');
       await expect(pal(page)).toBeVisible();
       await page.waitForTimeout(400);
       expect(await at(), 'no box on the page moved').toEqual(before);

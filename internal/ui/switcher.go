@@ -41,15 +41,14 @@ import (
 // title"). There is no width cap and no ellipsis: a long title makes a long
 // pill, and the row scrolls sideways (below). This replaced #276's 26rem cap.
 //
-// A SEARCH (the magnifier on the bar's right, or "/" and Ctrl/Cmd+K) opens a
+// A SEARCH (the magnifier on the bar's right, or "/" outside a text field) opens a
 // command-palette-style box over the page that finds any session the All view
 // holds by its tmux codename ("wheat", "mango:2") or its title, as it is typed
 // (switcherSearchBox). It reads the All row's own entries — no request.
 //
 // 🔴 THE MENU AND THE PALETTE ARE POPOVERS (the top layer), so opening either
 // moves nothing on the page: no layout shift, and no clipping by the
-// composer's box. A browser with no Popover API keeps the old behaviour — the
-// left button cycles the views — and draws no search button.
+// composer's box.
 //
 // 🔴 SERVER-RENDERED, ALL THREE VIEWS, AT A FIXED HEIGHT — THAT IS THE
 // NO-LAYOUT-SHIFT CONTRACT. The bar paints with the page (never empty, then
@@ -69,15 +68,15 @@ const SwitcherID = "session-switcher"
 const switcherViewKey = "muster.switcher.view"
 
 // The switcher's views, as data-switcher-view and the storage value spell
-// them, in the order the toggle cycles them.
+// them, in the order the view menu lists them.
 const (
 	SwitcherRecent = "recent"
 	SwitcherPins   = "pins"
 	SwitcherAll    = "all"
 )
 
-// switcherViews is the cycle: each view's key, its button label, and what its
-// row says when it holds nothing.
+// switcherViews is the menu's views, in order: each view's key, its button
+// label, and what its row says when it holds nothing.
 var switcherViews = []struct{ key, label, empty string }{
 	{SwitcherRecent, "Recent", "No other recent sessions"},
 	{SwitcherPins, "Pins", "Nothing pinned"},
@@ -307,9 +306,9 @@ func switcherBar(s *Switcher, pinned bool) g.Node {
 					g.Attr("aria-haspopup", "dialog"),
 					g.Attr("aria-expanded", "false"),
 					g.Attr("aria-controls", switcherSearchID),
-					g.Attr("aria-keyshortcuts", "/ Control+K Meta+K"),
+					g.Attr("aria-keyshortcuts", "/"),
 					g.Attr("aria-label", "Search sessions"),
-					g.Attr("title", "Search sessions (/ or Ctrl+K)"),
+					g.Attr("title", "Search sessions (/)"),
 					Class("press group inline-flex h-11 w-11 shrink-0 items-center justify-center"),
 					Span(
 						Class("inline-flex h-8 w-8 items-center justify-center rounded-lg bg-s2 text-fg2 ring-1 ring-inset ring-line transition group-hover:bg-s3"),
@@ -548,9 +547,6 @@ func switcherEntry(it SwitcherItem) g.Node {
 // is parsed, before it is painted), and wires the view menu and the search
 // palette. Storage that throws (a private window, blocked site data) leaves
 // Recent, and the menu still works for the page.
-//
-// Without the Popover API (an older browser) the view button cycles the views
-// as it did before the menu, and the search button is hidden.
 func switcherScript() g.Node {
 	views, labels, names := "[", "{", "{"
 	for i, v := range switcherViews {
@@ -578,7 +574,6 @@ func switcherScript() g.Node {
   var input = document.getElementById('` + switcherSearchInputID + `');
   var list = document.getElementById('` + switcherSearchResultsID + `');
   var empty = pal.querySelector('[data-switcher-search-empty]');
-  var popover = typeof menu.showPopover === 'function';
   function picks() { return Array.prototype.slice.call(menu.querySelectorAll('[data-switcher-pick]')); }
   function show(v) {
     if (VIEWS.indexOf(v) < 0) v = VIEWS[0];
@@ -599,17 +594,6 @@ func switcherScript() g.Node {
   if (stored) show(stored);
   function isOpen(p) { try { return p.matches(':popover-open'); } catch (e) { return false; } }
   function hide(p) { try { if (isOpen(p)) p.hidePopover(); } catch (e) {} }
-
-  if (!popover) {
-    // No Popover API: the button cycles, and there is no search.
-    btn.removeAttribute('aria-haspopup');
-    btn.removeAttribute('aria-expanded');
-    openBtn.hidden = true;
-    btn.addEventListener('click', function () {
-      choose(VIEWS[(VIEWS.indexOf(bar.getAttribute('data-switcher-view')) + 1) % VIEWS.length]);
-    });
-    return;
-  }
 
   // --- the view menu: opens UPWARD from the button (the bar is at the bottom
   // of the screen), left-aligned to it, kept inside an 8px edge.
@@ -781,22 +765,19 @@ func switcherScript() g.Node {
   });
   window.addEventListener('resize', function () { if (isOpen(menu)) placeMenu(); });
 
-  // "/" (focus not in a text field) and Ctrl/Cmd+K open the search, once per
-  // document: the listener finds the page's bar when the key is pressed
-  // (htmx swaps the page, and with it the bar). Neither is taken inside a
-  // terminal (xterm), where both are the shell's.
+  // "/" opens the search when focus is not in a text field (nor in a
+  // terminal, xterm, where it is the shell's), once per document: the
+  // listener finds the page's bar when the key is pressed (htmx swaps the
+  // page, and with it the bar). No Ctrl/Cmd+K: that is the browser's own.
   if (!window.__musterSwitcherKeys) {
     window.__musterSwitcherKeys = true;
     document.addEventListener('keydown', function (e) {
-      if (e.defaultPrevented || e.isComposing || e.altKey) return;
+      if (e.key !== '/' || e.defaultPrevented || e.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
       var b = document.getElementById('` + SwitcherID + `');
       if (!b || !b.__musterOpenSearch || !b.getClientRects().length) return;
       var t = e.target;
       if (t && t.closest && t.closest('.xterm')) return;
-      var k = (e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'k' || e.key === 'K');
-      var slash = e.key === '/' && !e.ctrlKey && !e.metaKey;
-      if (slash && t && (t.isContentEditable || (t.closest && t.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')))) return;
-      if (!k && !slash) return;
+      if (t && (t.isContentEditable || (t.closest && t.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')))) return;
       e.preventDefault();
       b.__musterOpenSearch();
     });

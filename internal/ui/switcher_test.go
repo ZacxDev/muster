@@ -399,7 +399,7 @@ func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 	list[3].DisplayName = "ag-four" // the same as its name: no title
 	page := renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{}), true))
 	nav := page[:strings.Index(page, "<script>")]
-	open := strings.Index(nav, `<button id="switcher-search-open" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="switcher-search" aria-keyshortcuts="/ Control+K Meta+K" aria-label="Search sessions"`)
+	open := strings.Index(nav, `<button id="switcher-search-open" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="switcher-search" aria-keyshortcuts="/" aria-label="Search sessions"`)
 	if open < 0 || open < strings.LastIndex(nav[:strings.Index(nav, `id="switcher-views"`)], `data-switcher-list=`) {
 		t.Fatalf("no search button after the rows:\n%s", nav)
 	}
@@ -417,10 +417,16 @@ func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 			t.Errorf("the All row lacks %s in:\n%s", want, all)
 		}
 	}
-	// The script wires "/" and Ctrl/Cmd+K once per document, and not in a terminal.
-	for _, want := range []string{"window.__musterSwitcherKeys", "e.key === '/'", "(e.ctrlKey || e.metaKey)", "closest('.xterm')"} {
+	// The script wires "/" once per document, not in a terminal; it takes no
+	// Ctrl/Cmd+K (the browser's own) and has no no-Popover-API fallback.
+	for _, want := range []string{"window.__musterSwitcherKeys", "e.key !== '/'", "closest('.xterm')"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the script lacks %s", want)
+		}
+	}
+	for _, banned := range []string{"'k'", "'K'", "Control+K", "Ctrl+K", "showPopover !== 'function'", "showPopover === 'function'", "!popover"} {
+		if strings.Contains(page, banned) {
+			t.Errorf("the bar still carries %s", banned)
 		}
 	}
 }
