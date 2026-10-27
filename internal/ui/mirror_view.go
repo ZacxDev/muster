@@ -513,6 +513,11 @@ type MirrorTranscript struct {
 	Subagents bool
 	cards     map[string]subagentCall
 	subs      map[string]mirror.Subagent
+	// The context each tool call added (tool_context.go): the ledger that
+	// attributes it, and the costs it settled, by tool id. Bounded with calls
+	// (forget).
+	ledger cctranscript.ToolContext
+	costs  map[string]cctranscript.ToolCost
 }
 
 const maxDrawnCalls = 2048
@@ -552,6 +557,7 @@ func (t *MirrorTranscript) Reset() {
 	t.states, t.groupOf, t.groups, t.run, t.runGrp = nil, nil, nil, nil, ""
 	t.Resumed = false
 	t.usage, t.fresh = nil, false
+	t.ledger, t.costs = cctranscript.ToolContext{}, nil
 }
 
 // endRun records that something other than a tool row was drawn: the next
@@ -565,6 +571,7 @@ func (t *MirrorTranscript) forget(toolID string) {
 	delete(t.cards, toolID)
 	delete(t.subs, toolID)
 	delete(t.states, toolID)
+	delete(t.costs, toolID)
 	if gid, ok := t.groupOf[toolID]; ok {
 		delete(t.groupOf, toolID)
 		rows := t.groups[gid]
@@ -684,6 +691,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 		if ev.Usage != nil {
 			t.usage, t.fresh = ev.Usage, true
 		}
+		ops = append(ops, t.observeCost(ev)...)
 		switch ev.Kind {
 		case cctranscript.KindPrompt:
 			// The bubble's id is the prompt's place in its transcript, the id the
@@ -721,7 +729,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 			if _, seen := t.calls[ev.ToolID]; seen {
 				// The same call again: redrawn where it is, run and group untouched.
 				t.calls[ev.ToolID] = call
-				ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, nil, id))})
+				ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, nil, id, t.ctxBadge(ev.ToolID)))})
 				t.states[ev.ToolID] = toolStateRunning
 				if gid, ok := t.groupOf[ev.ToolID]; ok {
 					ops = append(ops, t.groupStateOps(gid)...)
@@ -734,7 +742,7 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 				t.order = t.order[1:]
 			}
 			t.calls[ev.ToolID] = call
-			ops = append(ops, t.appendRow(ev.ToolID, toolStateRunning, toolChip(call, nil, id))...)
+			ops = append(ops, t.appendRow(ev.ToolID, toolStateRunning, toolChip(call, nil, id, t.ctxBadge(ev.ToolID)))...)
 		case cctranscript.KindToolResult:
 			if qs, isAsk := t.asks[ev.ToolID]; isAsk || (ev.Ask != nil && len(ev.Ask.Questions) > 0) {
 				ops = append(ops, t.askResult(ev, qs, isAsk)...)
@@ -766,10 +774,10 @@ func (t *MirrorTranscript) Ops(events []cctranscript.Event) []MirrorOp {
 					t.order = t.order[1:]
 				}
 				ops = append(ops, t.appendRow(ev.ToolID, toolChipState(&result),
-					toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id))...)
+					toolChip(ChatLine{Kind: "tool_call", ToolID: ev.ToolID}, &result, id, t.ctxBadge(ev.ToolID)))...)
 				continue
 			}
-			ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, &result, id))})
+			ops = append(ops, MirrorOp{Op: "replace", ID: id, HTML: render(toolChip(call, &result, id, t.ctxBadge(ev.ToolID)))})
 			t.states[ev.ToolID] = toolChipState(&result)
 			if gid, ok := t.groupOf[ev.ToolID]; ok {
 				ops = append(ops, t.groupStateOps(gid)...)

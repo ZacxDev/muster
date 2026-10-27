@@ -35,7 +35,12 @@ package cctranscript
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	_ "image/gif" // imageBytes reads an image's header
+	_ "image/jpeg"
+	_ "image/png"
 	"strings"
 	"time"
 )
@@ -184,6 +189,71 @@ func (b Block) ResultText() string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// ResultBytes is a tool_result block's SIZE for the tool-context ledger
+// (Event.Bytes, toolctx.go): its text's bytes, with each image block counted as
+// imageBytes — not as ResultText's 7-byte "[image]", which would make an image
+// look free and hand its tokens to a sibling call in a split.
+func (b Block) ResultBytes() int {
+	c := bytes.TrimSpace(b.Content)
+	if len(c) == 0 {
+		return 0
+	}
+	if c[0] == '"' {
+		var s string
+		_ = json.Unmarshal(c, &s)
+		return len(s)
+	}
+	var parts []struct {
+		Type   string `json:"type"`
+		Text   string `json:"text"`
+		Source struct {
+			Data string `json:"data"`
+		} `json:"source"`
+	}
+	if json.Unmarshal(c, &parts) != nil {
+		return 0
+	}
+	n := 0
+	for _, p := range parts {
+		switch p.Type {
+		case "text":
+			n += len(p.Text)
+		case "image":
+			n += imageBytes(p.Source.Data)
+		}
+	}
+	return n
+}
+
+// Image sizing — a HEURISTIC, documented here because the ledger's estimates
+// and split weights depend on it. The API counts an image at about
+// width × height / 750 tokens, and scales any image larger than about
+// imageMaxTokens down to fit it, so an image costs at most about that many.
+// The dimensions are read from the image's own header (PNG, JPEG or GIF, from
+// the start of its base64 data); an image whose header cannot be read counts
+// as imageMaxTokens. Tokens are turned into bytes at EstimateBytesPerToken, the
+// unit Event.Bytes is in.
+const (
+	imagePixelsPerToken = 750
+	imageMaxTokens      = 1600
+	// imageHeaderBase64 is how much of the data is decoded to find the header.
+	imageHeaderBase64 = 64 << 10
+)
+
+func imageBytes(data string) int {
+	tokens := imageMaxTokens
+	if len(data) > imageHeaderBase64 {
+		data = data[:imageHeaderBase64]
+	}
+	if cfg, _, err := image.DecodeConfig(base64.NewDecoder(base64.StdEncoding, strings.NewReader(data))); err == nil && cfg.Width > 0 && cfg.Height > 0 {
+		px := int64(cfg.Width) * int64(cfg.Height)
+		if t := (px + imagePixelsPerToken - 1) / imagePixelsPerToken; t < int64(imageMaxTokens) {
+			tokens = int(t)
+		}
+	}
+	return tokens * EstimateBytesPerToken
 }
 
 // Time is the record's timestamp in Unix milliseconds, 0 when it has none or
