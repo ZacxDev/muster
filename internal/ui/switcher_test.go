@@ -26,7 +26,7 @@ func switcherFixture() ([]AgentCardView, []MirrorCardView) {
 	return list, mirrors
 }
 
-var switcherEntryRE = regexp.MustCompile(`<(a|span) (?:href="([^"]*)" hx-boost="false" (?:data-snap-warm="" )?)?data-switcher-entry="(agent|mirror)"[^>]*><span class="[^"]*">(?:<span data-switcher-wait[^>]*></span>)?(?:<span data-host-icon.*?</svg></span>)?<span class="truncate">([^<]*)</span>`)
+var switcherEntryRE = regexp.MustCompile(`<(a|span) (?:href="([^"]*)" hx-boost="false" (?:data-snap-warm="" )?)?data-switcher-entry="(agent|mirror)"[^>]*><span class="[^"]*">(?:<span data-switcher-wait[^>]*></span>)?(?:<span data-host-icon.*?</svg></span>)?<span class="whitespace-nowrap">([^<]*)</span>`)
 
 // switcherRowEntries is the entries the row of view key draws: for each, "label"
 // for a link to href, or "label (current)" for the page's own.
@@ -356,5 +356,104 @@ func TestSendHasLessPadding(t *testing.T) {
 	plain := renderString(t, MirrorViewPage(MirrorViewView{Host: "host-a", Session: "main", Interactive: true}))
 	if !strings.Contains(plain, `aria-label="Send" class="`+composerSendClass+`">Send</button>`) {
 		t.Error("a queue-less composer's Send does not wear composerSendClass")
+	}
+}
+
+// TestTheSwitcherViewButtonOpensAMenu: the bar's left button is a menu button
+// (popovertarget, aria-haspopup="menu", aria-expanded="false" at first) for a
+// popover menu inside the bar, AFTER the rows (out of flow: it moves nothing),
+// holding one radio item per view in order, the drawn one (Recent) checked,
+// each with how many sessions it holds.
+func TestTheSwitcherViewButtonOpensAMenu(t *testing.T) {
+	list, mirrors := switcherFixture()
+	page := renderString(t, switcherBar(NewSwitcher(list, mirrors, []RecentRef{{AgentID: 3}}, SwitcherCurrent{AgentID: 1}), false))
+	nav := page[:strings.Index(page, "<script>")]
+	if !regexp.MustCompile(`<button id="switcher-toggle" type="button" popovertarget="switcher-views" aria-haspopup="menu" aria-expanded="false" aria-controls="switcher-views" aria-label="Showing Recent sessions; choose a view"`).MatchString(nav) {
+		t.Errorf("the view button is not a menu button for #switcher-views:\n%s", nav[:strings.Index(nav, `data-switcher-list=`)])
+	}
+	menuAt, lastRow := strings.Index(nav, `<div id="switcher-views" popover="" role="menu" aria-label="Session views"`), strings.LastIndex(nav, `data-switcher-list=`)
+	if menuAt < 0 || menuAt < lastRow {
+		t.Fatalf("no popover menu after the rows (menu %d, last row %d)", menuAt, lastRow)
+	}
+	items := regexp.MustCompile(`<button type="button" role="menuitemradio" aria-checked="(true|false)" data-switcher-pick="([a-z]+)"[^>]*>.*?<span class="flex-1">([^<]+)</span><span class="text-xs tabular-nums text-muted" data-switcher-count="([a-z]+)" data-restore-refresh="switcher-count-([a-z]+)">(\d+)</span></button>`).FindAllStringSubmatch(nav[menuAt:], -1)
+	got := []string{}
+	for _, m := range items {
+		if m[4] != m[2] || m[5] != m[2] {
+			t.Errorf("%s's count is marked for %q / restore-refreshed as %q", m[2], m[4], m[5])
+		}
+		got = append(got, m[2]+"="+m[3]+"/"+m[6]+"/"+m[1])
+	}
+	// Recent: ag-three; Pins: mango:2, Two; All: all six (the page's own included).
+	if want := "recent=Recent/1/true pins=Pins/2/false all=All/6/false"; strings.Join(got, " ") != want {
+		t.Errorf("menu items = %v, want %s", got, want)
+	}
+}
+
+// TestTheSwitcherSearchIsOnTheBar: a search button on the bar's right (after
+// the rows) opens a popover palette — a combobox input over a listbox — and
+// every entry carries what the search finds it by: a window its codename and
+// focus title, an agent its name and its display name and focus title (each
+// once, never repeating the codename).
+func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
+	list, mirrors := switcherFixture()
+	mirrors[0].Focus = &FocusView{Title: "Migrate the billing ledger"}
+	list[2].Focus = &FocusView{Title: "Tidy the release notes"}
+	list[2].DisplayName = "Release tidy"
+	list[3].DisplayName = "ag-four" // the same as its name: no title
+	page := renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{}), true))
+	nav := page[:strings.Index(page, "<script>")]
+	open := strings.Index(nav, `<button id="switcher-search-open" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="switcher-search" aria-keyshortcuts="/" aria-label="Search sessions"`)
+	if open < 0 || open < strings.LastIndex(nav[:strings.Index(nav, `id="switcher-views"`)], `data-switcher-list=`) {
+		t.Fatalf("no search button after the rows:\n%s", nav)
+	}
+	if !regexp.MustCompile(`<div id="switcher-search" popover="" role="dialog" aria-label="Search sessions"[^>]*><div[^>]*><svg[^>]*>.*?</svg><input id="switcher-search-input" type="text" role="combobox" aria-expanded="true" aria-controls="switcher-search-results" aria-autocomplete="list"[^>]*>.*?<ul id="switcher-search-results" role="listbox"`).MatchString(nav) {
+		t.Error("the palette is not a popover dialog holding a combobox over a listbox")
+	}
+	all := nav[strings.Index(nav, `data-switcher-list="all"`):strings.Index(nav, `id="switcher-views"`)]
+	for _, want := range []string{
+		`data-switcher-entry="mirror" title="mango:1" data-switcher-code="mango:1" data-switcher-title="Migrate the billing ledger"`,
+		`data-switcher-entry="mirror" title="mango:2" data-switcher-code="mango:2" class=`,
+		`data-switcher-entry="agent" title="Release tidy" data-switcher-code="ag-three" data-switcher-title="Release tidy · Tidy the release notes"`,
+		`data-switcher-entry="agent" title="ag-four" data-switcher-code="ag-four" class=`,
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("the All row lacks %s in:\n%s", want, all)
+		}
+	}
+	// The script wires "/" once per document, not in a terminal; it takes no
+	// Ctrl/Cmd+K (the browser's own) and has no no-Popover-API fallback.
+	for _, want := range []string{"window.__musterSwitcherKeys", "e.key !== '/'", "closest('.xterm')"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the script lacks %s", want)
+		}
+	}
+	for _, banned := range []string{"'k'", "'K'", "Control+K", "Ctrl+K", "showPopover !== 'function'", "showPopover === 'function'", "!popover"} {
+		if strings.Contains(page, banned) {
+			t.Errorf("the bar still carries %s", banned)
+		}
+	}
+}
+
+// TestTheSwitcherNeverClampsALabel: an agent's long display name is drawn
+// whole in the switcher (no "…"), while its pinned chip on the Agents list
+// still clamps it to cardTitleMax — the CONTROL, so the fixture is long enough
+// to be clamped at all.
+func TestTheSwitcherNeverClampsALabel(t *testing.T) {
+	long := "enterprise-customer-data-warehouse-schema-migration-validation-and-audit-report-v3"
+	if len([]rune(long)) <= cardTitleMax {
+		t.Fatalf("the fixture (%d runes) is not longer than cardTitleMax (%d)", len([]rune(long)), cardTitleMax)
+	}
+	list := []AgentCardView{{ID: 1, Name: "ag-long", DisplayName: long, Status: "running", Pinned: true}}
+	s := NewSwitcher(list, nil, nil, SwitcherCurrent{})
+	if s.All[0].Label != long || s.Pins[0].Label != long {
+		t.Errorf("switcher labels = %q / %q, want the whole name", s.All[0].Label, s.Pins[0].Label)
+	}
+	page := renderString(t, switcherBar(s, false))
+	rows := page[:strings.Index(page, `id="switcher-views"`)]
+	if !strings.Contains(rows, `<span class="whitespace-nowrap">`+long+`</span>`) || strings.Contains(rows, "…") {
+		t.Error("the switcher does not draw the whole name")
+	}
+	if chip := pinnedChipLabels(orderList(list, nil)); !strings.HasSuffix(chip[0], "…") || len([]rune(chip[0])) != cardTitleMax+1 {
+		t.Errorf("CONTROL: the pinned chip's label is not clamped: %q", chip[0])
 	}
 }
