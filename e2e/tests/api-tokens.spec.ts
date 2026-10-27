@@ -4,6 +4,7 @@ import { request as pwRequest } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { dsn, e2eRoot, gotrueSecret, hookToken, port, repoRoot, versionA } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { landedHome } from '../lib/nav';
 
 // Accounts PR 6, end to end against the REAL GoTrue image (e2e/gotrue/compose.yml,
 // the deployment's pin): the admin signs in (by claiming the account), mints a
@@ -87,7 +88,7 @@ test('mint a personal API token on the page, use it, revoke it → 401 (real GoT
   await page.fill('#claim-email', email);
   await page.fill('#claim-password', pw);
   await page.fill('#claim-password2', pw);
-  await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
 
   // 2. Account → API tokens.
   await page.goto(browserURL + '/account');

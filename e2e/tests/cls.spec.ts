@@ -12,6 +12,7 @@ import { clsInit, readCls, resetCls, settle, ClsResult } from '../lib/cls';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
 import { openDispatchSheet } from '../lib/dispatch';
+import { landedHome } from '../lib/nav';
 
 // LAYOUT SHIFT UNDER 0.01 ON EVERY PAGE, at a phone (390×844, touch) and a
 // desktop (1280×800): each page is loaded, its async htmx loads are let land
@@ -30,7 +31,9 @@ type Where = 'shared' | 'login' | 'full' | 'public' | 'signed-in';
 // page that failed to draw its content shifts nothing, and must not pass as
 // still. (The share sheet once did exactly that: opened empty, measured 0.)
 const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
-  'GET /{$}': { where: 'shared', url: '/', ready: '#tasks-list article' },
+  // `/` opens the chief's chat; the shared server has no chief, so it lands on
+  // the Agents list (internal/api/nav_agents.go redirectHome).
+  'GET /{$}': { where: 'shared', url: '/', ready: '#agents-list > article' },
   'GET /tasks': { where: 'shared', url: '/tasks', ready: '#tasks-list article' },
   'GET /agents': { where: 'shared', url: '/agents', ready: '#session-switcher [data-switcher-list="recent"] a[data-switcher-entry]' },
   // The shared server builds neither store, so its /repos and /connectors fall
@@ -872,7 +875,7 @@ test.describe('signed-in pages in gotrue mode', () => {
     await fp.fill('#claim-email', email);
     await fp.fill('#claim-password', pw);
     await fp.fill('#claim-password2', pw);
-    await Promise.all([fp.waitForURL(signedURL + '/'), fp.click('button[type=submit]')]);
+    await Promise.all([fp.waitForURL(landedHome(signedURL)), fp.click('button[type=submit]')]);
     await first.close();
 
     const bad: string[] = [];
@@ -885,7 +888,7 @@ test.describe('signed-in pages in gotrue mode', () => {
         await page.goto(signedURL + '/login');
         await page.fill('#muster-email', email);
         await page.fill('#muster-password', pw);
-        await Promise.all([page.waitForURL(signedURL + '/'), page.click('button[type=submit]')]);
+        await Promise.all([page.waitForURL(landedHome(signedURL)), page.click('button[type=submit]')]);
         await page.addInitScript(clsInit);
         for (const [route, p] of Object.entries(PAGES)) {
           if (p.where !== 'signed-in') continue;

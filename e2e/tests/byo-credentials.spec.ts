@@ -5,6 +5,7 @@ import { test, expect } from '../lib/fixtures';
 import { dsn, e2eRoot, gotrueSecret, port, repoRoot, versionA } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { openDispatchSheet } from '../lib/dispatch';
+import { landedHome } from '../lib/nav';
 
 // Bring-your-own credentials, end to end at 412 px against the REAL GoTrue
 // (e2e/gotrue/compose.yml) and a gotrue-mode muster with the claude-code kind
@@ -111,7 +112,7 @@ test('a member brings their own Claude token; the dispatch form offers only it, 
   await page.goto(browserURL + '/login');
   await page.fill('#muster-email', email);
   await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
 
   const sheet = page.locator('#agent-modal form');
   const open = async () => {

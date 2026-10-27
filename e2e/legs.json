@@ -81,7 +81,8 @@
     "tests/opencode-view.spec.ts": 20.0,
     "tests/board-first-paint.spec.ts": 20.0,
     "tests/telemetry.spec.ts": 95.0,
-    "tests/open-perf.spec.ts": 45.0
+    "tests/open-perf.spec.ts": 45.0,
+    "tests/agent-sidebar.spec.ts": 10.0
   },
   "legs": {
     "1": [
@@ -118,7 +119,8 @@
       "tests/mirror-snapshot.spec.ts",
       "tests/agent-open-hops.spec.ts",
       "tests/suggested-replies.spec.ts",
-      "tests/opencode-view.spec.ts"
+      "tests/opencode-view.spec.ts",
+      "tests/agent-sidebar.spec.ts"
     ],
     "2": [
       "tests/bfcache-restore.spec.ts",

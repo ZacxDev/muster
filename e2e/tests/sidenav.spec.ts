@@ -3,6 +3,7 @@ import { test, expect } from '../lib/fixtures';
 import { hookToken, sidenavPort } from '../lib/env';
 import { cc, MirrorRig } from '../lib/mirrorhost';
 import { openDispatchSheet } from '../lib/dispatch';
+import { openMore } from '../lib/nav';
 
 // THE SIDE NAV ON EVERY SIGNED-IN PAGE (internal/ui/nav_layout.go), opened by
 // its own toggle in a real browser, at a phone's size and a desktop's:
@@ -204,6 +205,7 @@ for (const size of [
       }
       // A link in it leaves the page: to the board.
       if (!desktop) await toggle(page).click();
+      await openMore(page);
       await panel(page).locator('a[data-tab="tasks"]').click();
       await expect.poll(() => pathOf(page)).toBe('/tasks');
       await expect(page.locator('#panel-tasks')).toBeVisible();
@@ -232,6 +234,7 @@ for (const size of [
       await navOnTopInFrame(page, false);
       // A theme change made in the frame's nav: the page under it follows.
       expect(await page.evaluate(() => document.documentElement.classList.contains('dark')), 'the page starts dark').toBe(true);
+      await openMore(framed(page));
       await framed(page).locator('#sidebar [data-theme-toggle]').click();
       await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains('dark')), { message: 'the page under the frame followed the theme the frame set' }).toBe(false);
       await framed(page).locator('#sidebar [data-theme-toggle]').click();
@@ -251,6 +254,7 @@ for (const size of [
       await navOnTopInFrame(page, false);
       // A REAL nav link inside the frame takes the TOP window, and the frame
       // goes with the page it was over.
+      await openMore(framed(page));
       await framed(page).locator('#sidebar a[data-tab="tasks"]').click();
       await expect.poll(() => pathOf(page)).toBe('/tasks');
       await expect(frameEl(page)).toHaveCount(0);
@@ -268,6 +272,7 @@ for (const size of [
       // The agent page keeps the shell's rail on a desktop (it is not a
       // full-height view); on a phone its hamburger opens it.
       await navOnTopInFrame(page, desktop);
+      await openMore(framed(page));
       await framed(page).locator('#sidebar a[data-tab="agents"]').click();
       await expect.poll(() => pathOf(page)).toBe('/agents');
       await expect(frameEl(page)).toHaveCount(0);

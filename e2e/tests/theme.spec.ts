@@ -1,4 +1,5 @@
 import { test, expect, effectiveThemeColorJS } from '../lib/fixtures';
+import { openMore } from '../lib/nav';
 
 const DARK = '#110F1C';
 const LIGHT = '#F6F4FB';
@@ -20,6 +21,7 @@ test('the light opt-in switches the page AND the status-bar colour, and persists
   const darkBg = await bg();
 
   await page.click('#sidebar-open');
+  await openMore(page);
   const toggle = page.locator('#sidebar [data-theme-toggle]');
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   await toggle.click();
@@ -34,6 +36,7 @@ test('the light opt-in switches the page AND the status-bar colour, and persists
   expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(false);
 
   await page.click('#sidebar-open');
+  await openMore(page);
   await page.locator('#sidebar [data-theme-toggle]').click();
   expect(await page.evaluate(effectiveThemeColorJS)).toBe(DARK);
   expect(await bg()).toBe(darkBg);
