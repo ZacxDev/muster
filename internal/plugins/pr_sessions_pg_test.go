@@ -179,3 +179,18 @@ func TestAReportPrunesOnlyTheCallersOldRows(t *testing.T) {
 		t.Fatal("owner 3's old row was pruned by owner 2's report")
 	}
 }
+
+// A row past PRSessionRetention never routes, even before a report prunes it.
+func TestAStaleAuthorIsNeverResolved(t *testing.T) {
+	s, dsn := prStore(t)
+	record(t, s, 2, prSessA, "lab-box-9", createSig)
+	age(t, dsn, prSessA, 31*24*time.Hour)
+	if got, ok := resolve(t, s, 2, refPR); ok {
+		t.Fatalf("a 31-day-old author resolved: %+v", got)
+	}
+	// Control: 29 days old still resolves.
+	age(t, dsn, prSessA, 29*24*time.Hour)
+	if got, ok := resolve(t, s, 2, refPR); !ok || got.ClaudeSession != prSessA {
+		t.Fatalf("control: a 29-day-old author: %+v, %v", got, ok)
+	}
+}
