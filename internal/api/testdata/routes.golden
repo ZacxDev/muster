@@ -189,6 +189,9 @@ POST /agents/{id}/stop
 POST /agents/{name}/send
 POST /api/agents/{name}/messages
 POST /api/chief/replace
+POST /api/device/actions/attention/asks/{id}/answer
+POST /api/device/actions/attention/asks/{id}/cancel
+POST /api/device/challenge
 POST /api/device/pair
 POST /api/flows/jobs
 POST /api/flows/jobs/{id}/cancel

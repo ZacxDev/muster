@@ -256,10 +256,16 @@ The device routes:
 
 | route | what it does |
 |---|---|
-| `GET /api/device/config` | The server version; push (whether it is served, the VAPID public key the app registers with, and the operator's push hosts, for the app's pairing check); whether PIN keys are allowed; and the feature switches (`push`, and `actions`, `bubbles`, `state`, which stay false until their phases ship). |
+| `GET /api/device/config` | The server version; push (whether it is served, the VAPID public key the app registers with, and the operator's push hosts, for the app's pairing check); whether PIN keys are allowed; the feature switches (`push`; `actions`, true where the attention queue is served; `bubbles` and `state`, false until their phases ship); and `action_ids`, the signed actions this server routes (`ask_answer`, `ask_dismiss`). |
+| `POST /api/device/challenge` | A one-time challenge (2 minutes) for one signed action, bound to the action, its target and the sha256 of the exact text it carries. The phone's step-up key signs the returned `message`. Refused to a phone with no step-up key. |
+| `POST /api/device/actions/attention/asks/{id}/answer` | Answers an ask with `{nonce, signature, answer}` — the same answer as the Attention page's, recorded only when the signature verifies over the challenge. Audited as `device.action`. |
+| `POST /api/device/actions/attention/asks/{id}/cancel` | Dismisses an ask with `{nonce, signature}`, signed the same way. |
 | `PUT /api/device/push` | Registers the phone's UnifiedPush endpoint `{endpoint, p256dh, auth}`. The endpoint must be on an allowed push host ([push.md](push.md#which-push-services)), and muster keeps it only after a test push to it succeeds. A phone holds one registration; a new one replaces it. |
 | `DELETE /api/device/push` | Removes the phone's push registration. |
 | `DELETE /api/device` | Unpairs the phone. |
+
+The signed actions' wire contract (the message format, the signature, the
+refusal codes) is in [design/android.md](design/android.md#the-signed-ask-actions-as-built).
 
 Two endpoints help with personal tokens:
 

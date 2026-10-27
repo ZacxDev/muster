@@ -353,6 +353,10 @@ type Store interface {
 	// Remove deletes ctx's user's device id (its push subscription goes with
 	// it). found is false when the user has no such device.
 	Remove(ctx context.Context, id int64) (found bool, err error)
+	// CreateChallenge and SpendChallenge are a signed action's two halves
+	// (challenge.go), under the device owner's principal.
+	CreateChallenge(ctx context.Context, c Challenge, allowPIN bool) (nonce string, expiresAt time.Time, err error)
+	SpendChallenge(ctx context.Context, nonce string, c Challenge, sig []byte, allowPIN bool) error
 }
 
 // PGStore is Store over Postgres (migration 0039).

@@ -356,6 +356,8 @@ type RouterNotification struct {
 	// (push.Payload); the router and the browser never see them.
 	Ask    *push.V2Ask
 	Update bool
+	// AskActions: payload v2 offers Ask's signed actions (device_actions.go).
+	AskActions bool
 }
 
 // rateLimiter is a fixed-window counter. A token bucket would be smoother; a
@@ -1290,7 +1292,7 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 		defer cancel()
 		if s.pushServed() && s.pushAllowed(ctx, owner, event) {
 			rep := s.sendPush(ctx, owner, push.Payload{Type: n.Type, ID: n.ID, Title: n.Title, Body: n.Body, Tag: n.Tag, Data: n.Data,
-				Ask: n.Ask, Update: n.Update})
+				Ask: n.Ask, Update: n.Update, AskActions: n.AskActions})
 			if rep.Delivered > 0 && onDelivered != nil {
 				onDelivered(rep.Delivered)
 			}

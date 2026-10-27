@@ -594,6 +594,9 @@ func attentionNotification(it attentionItem, update bool) RouterNotification {
 		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}, Update: update}
 	if it.Kind == attentionKindAsk && it.AskID > 0 {
 		n.Ask = &push.V2Ask{ID: it.AskID, Options: it.Options, Suggestions: it.suggestions}
+		// The signed ask actions are routed wherever the asks are
+		// (device_actions.go): this item is one, so they are offered.
+		n.AskActions = true
 	}
 	return n
 }

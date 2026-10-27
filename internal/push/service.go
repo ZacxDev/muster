@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -34,6 +35,9 @@ type Payload struct {
 	// suggested replies arrived). Payload v2 only; the browser worker replaces
 	// by tag without renotifying anyway.
 	Update bool `json:"-"`
+	// AskActions: the server routes the signed ask actions, so payload v2
+	// offers them (PayloadV2.Actions). Payload v2 only.
+	AskActions bool `json:"-"`
 }
 
 // PayloadV2 is what a NATIVE device (KindAndroid) receives in place of
@@ -53,6 +57,13 @@ type Payload struct {
 // NativeMaxPlaintext drops the suggestions first, then the options (nativeBody):
 // the question outlives every chip.
 //
+// Actions (an attention ask, where the server routes the signed actions) are
+// the notification's buttons: each option and suggestion carried as a chip, an
+// inline-reply Answer, and Dismiss — each naming a wire id from the app's
+// fixed table (docs/design/android.md, "Action ids"), never a route, so the
+// server cannot make the app POST anywhere else. They follow the chips: a chip
+// the fit drops takes its action with it.
+//
 // ⚠ NO `conv` OR `state` YET. The state delta feeds the widgets (Phase 4), and
 // sending a field no code reads would be a promise nothing keeps.
 type PayloadV2 struct {
@@ -67,6 +78,40 @@ type PayloadV2 struct {
 	// Update: replace the notification shown under Tag without alerting again
 	// (NotificationCompat's setOnlyAlertOnce); absent for a new one.
 	Update bool `json:"update,omitempty"`
+	// Actions are the ask's signed actions (see above); none otherwise.
+	Actions []V2Action `json:"actions,omitempty"`
+}
+
+// The action wire ids payload v2 may name: the app's table, exact strings
+// (docs/design/android.md, "Action ids"). internal/api routes each
+// (deviceActionRoutes) and its ledger test holds the two to the table.
+const (
+	ActionAskAnswer  = "ask_answer"
+	ActionAskDismiss = "ask_dismiss"
+)
+
+// V2Action is one notification button. ID is a wire id; Target the ask's id
+// (the route's {id}); Text, for an ask_answer button, the exact answer it sends
+// (an option or a suggestion, whole), or Input for the inline-reply Answer the
+// user types. The app shows Label.
+type V2Action struct {
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+	Target string `json:"target"`
+	Text   string `json:"text,omitempty"`
+	Input  bool   `json:"input,omitempty"`
+}
+
+// askActions is a's buttons: an ask_answer per option, then per suggestion,
+// then the inline Answer, then Dismiss.
+func askActions(a *V2Ask) []V2Action {
+	t := strconv.FormatInt(a.ID, 10)
+	var out []V2Action
+	for _, c := range append(append([]string(nil), a.Options...), a.Suggestions...) {
+		out = append(out, V2Action{ID: ActionAskAnswer, Label: c, Target: t, Text: c})
+	}
+	return append(out, V2Action{ID: ActionAskAnswer, Label: "Answer", Target: t, Input: true},
+		V2Action{ID: ActionAskDismiss, Label: "Dismiss", Target: t})
 }
 
 // V2Ask is an attention ask's chips in payload v2. Each option and suggestion
@@ -146,6 +191,9 @@ func nativeBody(p Payload) ([]byte, error) {
 			a.Options = nil
 		}
 		v.Ask = &a
+		if v.Actions != nil {
+			v.Actions = askActions(v.Ask)
+		}
 		if b, err = json.Marshal(v); err != nil {
 			return nil, err
 		}
@@ -166,6 +214,9 @@ func (p Payload) V2() PayloadV2 {
 	v.Title, v.Body, v.URL, v.Update = CutClusters(p.Title, MaxNativeTitle), CutClusters(p.Body, MaxNativeBody), p.Data["url"], p.Update
 	if p.Ask != nil {
 		v.Ask = &V2Ask{ID: p.Ask.ID, Options: chips(p.Ask.Options), Suggestions: chips(p.Ask.Suggestions)}
+		if p.AskActions {
+			v.Actions = askActions(v.Ask)
+		}
 	}
 	return v
 }

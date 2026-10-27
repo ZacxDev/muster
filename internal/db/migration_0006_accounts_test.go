@@ -105,7 +105,8 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - suggest_usage (0049, suggested replies' per-user counts).
 //   - plugin_threads (0054, the threads a mirrored session started).
 //   - session_prs (0055, the pull requests a mirrored session authored).
-var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "connector_standing_grants", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
+//   - device_challenges (0057, a paired phone's signed-action challenges).
+var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_prs", "session_routes", "suggest_preferences", "suggest_usage", "uploads", "user_credentials"}
 
@@ -207,6 +208,10 @@ var wantForeignKeys = []string{
 	"push_subscriptions|push_subscriptions_device_owner_fkey|FOREIGN KEY (device_id, owner_id) REFERENCES devices(id, owner_id) ON DELETE CASCADE",
 	"devices|devices_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"device_pairing_codes|device_pairing_codes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// 0057: a challenge names its device, the composite key keeping it to a
+	// device of the SAME owner.
+	"device_challenges|device_challenges_device_owner_fkey|FOREIGN KEY (device_id, owner_id) REFERENCES devices(id, owner_id) ON DELETE CASCADE",
+	"device_challenges|device_challenges_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"session_routes|session_routes_agent_id_fkey|FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
 	"session_routes|session_routes_draft_id_fkey|FOREIGN KEY (draft_id) REFERENCES plugin_reply_drafts(id) ON DELETE SET NULL",
 	"session_routes|session_routes_message_owner_fkey|FOREIGN KEY (plugin_message_id, owner_id) REFERENCES plugin_messages(id, owner_id) ON DELETE CASCADE",

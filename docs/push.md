@@ -97,6 +97,12 @@ as **payload v2**:
   with `"update": true`: replace the notification without alerting again. A
   payload that would not fit drops the suggestions, then the options, never the
   question.
+- An ask also carries `actions`, the notification's buttons: an `ask_answer`
+  per option and per suggestion (with its exact `text`), an inline-reply
+  `ask_answer` (`input: true`), and `ask_dismiss` — each confirmed on the phone
+  with its step-up key and sent as a signed action
+  ([design/android.md](design/android.md#the-signed-ask-actions-as-built)).
+  A chip dropped to fit takes its button with it.
 - **A phone's push is exactly 4096 bytes.** muster pads every encrypted push to
   one 4096-byte record, so a payload v2 may be at most 3993 bytes
   (4096 − 86 header − 16 tag − 1 delimiter); the encryption library itself

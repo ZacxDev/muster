@@ -6,10 +6,13 @@ offer up to three short replies for the composer, written by a model from what
 you asked for, what the session has been working on, and the agent's last
 reply. They are labelled **AI-suggested replies**.
 
-🔴 **A suggestion is never sent.** Tapping one fills the composer (below a
-draft you already started, never over it); you edit it and press Send, which
-keeps its own [step-up check](sending-and-step-up.md). Nothing in the
-suggestion path can reach a pane.
+🔴 **A suggestion is never sent by muster.** Tapping one fills the composer
+(below a draft you already started, never over it); you edit it and press Send,
+which keeps its own [step-up check](sending-and-step-up.md). Nothing in the
+suggestion path can reach a pane. The one place a tap sends a suggestion is an
+ask's notification on a paired phone, and only after the phone's step-up
+confirmation, which shows the exact text
+([decisions.md](decisions.md#a-phone-answers-an-ask-with-a-signed-action-and-a-suggestion-may-be-sent-from-it)).
 
 On by default; each user can turn them off in **Account → Suggested replies**.
 Mirrored tmux sessions only (a dispatched agent's chat page has no chips yet) —
