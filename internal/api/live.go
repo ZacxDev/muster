@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -32,13 +33,25 @@ var liveHeartbeatEvery = ui.LiveHeartbeat
 // in flight at that moment would close the socket first. The beat's write has a
 // context of its own (the stream's values, its own timeout), and ctx only says
 // when to stop beating.
+//
+// 🔴 STOP OWNS THE FORGET. A timed-out beat leaves c in the process-wide
+// stalledPages, and only forgetPage removes it; a handler that never forgot a
+// page (the agent chat's) leaked one entry per such socket (audit #299). So
+// stop() — and nothing earlier — forgets c, once the beat has finished (a beat
+// in flight could note c again after an earlier forget). It must therefore run
+// AFTER the handler has classified its end (streamEndReason reads the note):
+// defer it in the HANDLER, where it runs after the handler's body.
 func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn) (stop func()) {
 	ctx, cancel := context.WithCancel(ctx)
+	stopped := make(chan struct{})
 	// Both read here, on the handler's goroutine: the beat may outlive the
 	// handler by a moment (stop does not wait for it), and must not read them
 	// then.
 	every, bound := liveHeartbeatEvery(), terminalWriteTimeout
 	safeGo(logger, "live heartbeat", func() {
+		// Whenever the beat ends — stopped, its context gone, or a failed
+		// write — the note is forgotten only once stop has been called.
+		defer func() { <-stopped; forgetPage(c) }()
 		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
@@ -52,7 +65,8 @@ func socketHeartbeat(ctx context.Context, logger *log.Logger, c *websocket.Conn)
 			}
 		}
 	})
-	return cancel
+	var once sync.Once
+	return func() { once.Do(func() { cancel(); close(stopped) }) }
 }
 
 // writePing writes one heartbeat to c within bound, noting a timed-out write

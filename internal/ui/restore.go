@@ -189,14 +189,29 @@ var restoreJS = `
       // onerror, whose retry waits up to a minute after a run of failures.
       // Its open fires htmx:sseOpen, which each listener catches up on (the
       // board's resync, the chat log's conditional refetch).
+      //
+      // 🔴 ONLY THIS STREAM'S OWN LISTENERS. An element under a NESTED
+      // sse-connect (the chief panel's chat pane inside the shell's wrapper)
+      // listens to that nested stream, which is not being restarted:
+      // re-registering it added a second listener on the nested source, and
+      // every event there then fired twice (audit #299). So a descendant is
+      // re-registered only when its nearest sse-connect is this element.
+      //
+      // The source the restart makes is kept as the element's (keep): the
+      // extension's own retry timer, still pending from before, would
+      // otherwise replace it with yet another when it fires (wrapES's sweep
+      // hands the element back the kept one and closes the late one).
+      var SSE_CONNECT = '[sse-connect],[data-sse-connect]';
       function restartStream(s) {
         if (!window.htmx || !document.body.contains(s.elt)) return;
         try { s.src.close(); } catch (e) {}
         try {
           htmx.trigger(s.elt, 'htmx:afterProcessNode');
           s.elt.querySelectorAll('[sse-swap],[data-sse-swap],[hx-trigger],[data-hx-trigger]').forEach(function (c) {
-            htmx.trigger(c, 'htmx:afterProcessNode');
+            if (c.closest(SSE_CONNECT) === s.elt) htmx.trigger(c, 'htmx:afterProcessNode');
           });
+          var d = s.elt['htmx-internal-data'];
+          if (d && d.sseEventSource && d.sseEventSource !== s.src) s.elt.__musterKeep = d.sseEventSource;
         } catch (e) {}
       }
       // 🔴 ONE STREAM PER ELEMENT. The extension's own retry is a timer that
@@ -208,6 +223,16 @@ var restoreJS = `
         if (!window.htmx || typeof htmx.createEventSource !== 'function' || htmx.createEventSource.__muster) return;
         var make = htmx.createEventSource, made = [];
         var sweep = function () {
+          // A late source over a restart's (restartStream's keep) that is
+          // still alive: the element gets the restart's back, and the late
+          // one is closed before it opens — so no second open, and no second
+          // catch-up.
+          sseElts().forEach(function (s) {
+            var k = s.elt.__musterKeep;
+            if (!k) return;
+            if (k.readyState === 2) { s.elt.__musterKeep = null; return; }
+            if (k !== s.src) { s.elt['htmx-internal-data'].sseEventSource = k; try { s.src.close(); } catch (e) {} }
+          });
           var held = sseElts().map(function (s) { return s.src; });
           made = made.filter(function (src) {
             if (src.readyState === 2) return false;

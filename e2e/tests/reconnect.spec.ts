@@ -310,6 +310,119 @@ for (const size of sizes) {
   });
 }
 
+// --- nested event streams ---------------------------------------------------------
+
+// 🔴 A RESTART OF ONE STREAM RE-REGISTERS ONLY ITS OWN LISTENERS. The shell's
+// /events wrapper can hold another sse-connect (the chief panel's chat pane).
+// Restarting the OUTER stream re-registered every listener under it — the
+// nested pane's too, onto the pane's own live source — so each event on the
+// pane then fired twice (audit #299 round 1, 🟡2). Built here as the shell
+// builds it: a nested sse-connect inside the page's own wrapper, with a child
+// listening (hx-trigger="sse:muster.ping") to the heartbeat the pane's stream
+// beats every 500 ms. The ratio counted is child dispatches per heartbeat the
+// pane's source itself received — 1 before the restart (the control), and 1
+// after it.
+test('restarting the outer event stream leaves a nested stream’s listeners as they were', async ({ browser }) => {
+  const ctx = await browser.newContext({ baseURL: rig.origin, viewport: { width: 390, height: 844 }, storageState: { cookies: [], origins: [] } });
+  try {
+    const page = await signedIn(ctx);
+    await page.goto(rig.origin + '/tasks');
+    await expect.poll(() => page.evaluate(() => !!(document.querySelector('[sse-connect]') as any)?.['htmx-internal-data']?.sseEventSource)).toBe(true);
+    await page.evaluate(() => {
+      const w = window as any;
+      const outer = document.querySelector('[sse-connect]')!;
+      const pane = document.createElement('div');
+      pane.id = 'e2e-nested-pane';
+      pane.setAttribute('hx-ext', 'sse');
+      pane.setAttribute('sse-connect', '/events');
+      const child = document.createElement('div');
+      child.setAttribute('hx-trigger', 'sse:muster.ping');
+      pane.appendChild(child);
+      outer.appendChild(pane);
+      w.htmx.process(pane);
+      w.__hits = 0;
+      w.__beats = 0;
+      child.addEventListener('sse:muster.ping', () => w.__hits++);
+    });
+    await expect.poll(() => page.evaluate(() => (document.getElementById('e2e-nested-pane') as any)['htmx-internal-data']?.sseEventSource?.readyState)).toBe(1);
+    const paneSrc = () =>
+      page.evaluate(() => {
+        const w = window as any;
+        const src = (document.getElementById('e2e-nested-pane') as any)['htmx-internal-data'].sseEventSource;
+        if (!src.__e2eCounted) {
+          src.__e2eCounted = true;
+          src.addEventListener('muster.ping', () => w.__beats++);
+        }
+        w.__hits = 0;
+        w.__beats = 0;
+        return src.url;
+      });
+    const counts = () => page.evaluate(() => ({ hits: (window as any).__hits, beats: (window as any).__beats }));
+
+    // Control: one dispatch per heartbeat.
+    await paneSrc();
+    await page.waitForTimeout(2200);
+    const before = await counts();
+    expect(before.beats, 'control: the nested stream is beating').toBeGreaterThan(1);
+    expect(before.hits, 'control: one dispatch per heartbeat').toBe(before.beats);
+
+    // Only the OUTER stream is restarted: it is closed, and the network
+    // "comes back" (a wake restarts a closed stream).
+    await page.evaluate(() => {
+      (document.querySelector('[sse-connect]') as any)['htmx-internal-data'].sseEventSource.close();
+      window.dispatchEvent(new Event('online'));
+    });
+    await expect.poll(() => page.evaluate(() => (document.querySelector('[sse-connect]') as any)['htmx-internal-data'].sseEventSource.readyState)).toBe(1);
+    await paneSrc();
+    await page.waitForTimeout(2200);
+    const after = await counts();
+    expect(after.beats, 'the nested stream still beats').toBeGreaterThan(1);
+    expect(after.hits, 'still one dispatch per heartbeat after the outer restart').toBe(after.beats);
+  } finally {
+    await ctx.close();
+  }
+});
+
+// 🟢 A RESTART DOES NOT LEAVE THE EXTENSION'S OWN RETRY TO OPEN A SECOND ONE.
+// A stream refused a few times has the sse extension's retry timer pending
+// (seconds, doubling); a wake restarts it at once, and the late timer used to
+// open another stream over it — a second open and a second catch-up (audit
+// #299 round 1, 🟢1). Counted as htmx:sseOpen on the page after the wake.
+test('a wake restart over the extension’s pending retry opens the stream once', async ({ browser }) => {
+  const ctx = await browser.newContext({ baseURL: rig.origin, viewport: { width: 390, height: 844 }, storageState: { cookies: [], origins: [] } });
+  try {
+    const page = await signedIn(ctx);
+    await page.goto(rig.origin + '/tasks');
+    await expect.poll(() => page.evaluate(() => (document.querySelector('[sse-connect]') as any)?.['htmx-internal-data']?.sseEventSource?.readyState)).toBe(1);
+    let refused = 0;
+    await page.route('**/events', (r) => {
+      refused++;
+      return r.fulfill({ status: 503, body: 'down' });
+    });
+    // The stream ends and is refused, again and again: the extension's retry
+    // waits longer each time.
+    await page.evaluate(() => {
+      const src = (document.querySelector('[sse-connect]') as any)['htmx-internal-data'].sseEventSource;
+      src.close();
+      src.onerror(new Event('error'));
+    });
+    await expect.poll(() => refused, { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
+    await page.unroute('**/events');
+    await page.evaluate(() => {
+      (window as any).__opens2 = 0;
+      document.addEventListener('htmx:sseOpen', () => (window as any).__opens2++);
+      window.dispatchEvent(new Event('online'));
+    });
+    await expect.poll(() => page.evaluate(() => (window as any).__opens2)).toBe(1);
+    // Past the extension's pending retry (at most 4 s after three refusals).
+    await page.waitForTimeout(6000);
+    expect(await page.evaluate(() => (window as any).__opens2), 'opened once, not again by the late retry').toBe(1);
+    expect(await page.evaluate(() => (document.querySelector('[sse-connect]') as any)['htmx-internal-data'].sseEventSource.readyState), 'and it is live').toBe(1);
+  } finally {
+    await ctx.close();
+  }
+});
+
 // --- back/forward restore ---------------------------------------------------------
 
 test.describe('restored from the back/forward cache', () => {

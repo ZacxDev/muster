@@ -356,6 +356,12 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer done()
+	// The page judges the socket alive by hearing from it (ui/live.go); a
+	// protocol ping is answered by the browser itself and never reaches the
+	// page's script, and an idle TUI prints nothing, so it beats too. Deferred
+	// HERE, not in bridgeTerminal: its stop forgets the stalled note, which
+	// this handler reads to classify the end.
+	defer socketHeartbeat(ctx, s.logger, c)()
 	// "attach" is the phase from here to the first output; the hub's spans
 	// (mirror.attach, its first_output child, the host's) say where in it.
 	op.begin("attach")

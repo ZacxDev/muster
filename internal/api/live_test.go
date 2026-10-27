@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,5 +151,54 @@ func TestTheHeartbeatSettingIsBoundedAndDefaulted(t *testing.T) {
 	}
 	if err := ui.SetLiveHeartbeat(time.Millisecond); err == nil {
 		t.Error("SetLiveHeartbeat(1ms) was accepted")
+	}
+}
+
+// stalledCount is how many sockets stalledPages holds.
+func stalledCount() int {
+	n := 0
+	stalledPages.Range(func(_, _ any) bool { n++; return true })
+	return n
+}
+
+// TestATimedOutBeatIsForgottenWhenItsSocketEnds: a heartbeat that times out
+// notes its socket in the process-wide stalledPages (so the handler can call
+// the end a timeout), and the note must go when the socket's handler is done
+// — on EVERY socket that beats, including the agent chat's, whose handler
+// classifies nothing and never forgot a page itself. Red before the beat's
+// stop owned the forget: the chat socket's entry stayed for good (audit #299
+// round 1, 🟡1).
+func TestATimedOutBeatIsForgottenWhenItsSocketEnds(t *testing.T) {
+	// A beat every millisecond to a page that never reads, over small socket
+	// buffers: the buffers fill and a beat times out (streamServer's 300 ms
+	// write bound) — a real stall, not a forced error.
+	saved := liveHeartbeatEvery
+	liveHeartbeatEvery = func() time.Duration { return time.Millisecond }
+	t.Cleanup(func() { liveHeartbeatEvery = saved })
+	var noted atomic.Int64
+	savedHook := pageStallNoted
+	pageStallNoted = func() { noted.Add(1) }
+	t.Cleanup(func() { pageStallNoted = savedHook })
+	s, ts, _ := streamServer(t, &fakeMirror{online: true})
+	s.UseExtensions(Extensions{Notes: stubNotesStore{}, Agents: chatAgents{}, SessionLiveness: stubLiveness{},
+		Provisioner: newFakeTerminal(), Gateway: stubGateway{}, Mirror: &fakeMirror{online: true}})
+	base := stalledCount()
+	c := dialPage(t, s, ts, "/agents/keen-wren/ws") // and never reads
+	// Positive control: a beat DID time out (its note may be forgotten
+	// moments later, once the handler is done).
+	deadline := time.Now().Add(10 * time.Second)
+	for noted.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("control: no beat to the unread chat socket ever timed out")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = c.CloseNow()
+	deadline = time.Now().Add(5 * time.Second)
+	for stalledCount() > base {
+		if time.Now().After(deadline) {
+			t.Fatalf("the chat socket's stalled note outlived its handler: %d entries, want %d", stalledCount(), base)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

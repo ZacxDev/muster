@@ -142,6 +142,12 @@ func (s *Server) handleAgentTerminalWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer done()
+	// The page judges the socket alive by hearing from it (ui/live.go); a
+	// protocol ping is answered by the browser itself and never reaches the
+	// page's script, and an idle TUI prints nothing, so it beats too. Deferred
+	// HERE, not in bridgeTerminal: its stop forgets the stalled note, which
+	// this handler reads to classify the end.
+	defer socketHeartbeat(ctx, s.logger, c)()
 
 	mode := terminalModeInteractive
 	if readOnly {
@@ -336,11 +342,6 @@ func bridgeTerminal(parent context.Context, logger *log.Logger, c *websocket.Con
 		}
 	})
 
-	// The page judges the socket alive by hearing from it (ui/live.go); a
-	// protocol ping is answered by the browser itself and never reaches the
-	// page's script, and an idle TUI prints nothing, so it beats too.
-	defer socketHeartbeat(sockCtx, logger, c)()
-
 	pingDone := make(chan struct{})
 	safeGo(logger, "terminal keepalive", func() {
 		defer close(pingDone)
@@ -449,8 +450,13 @@ var stalledPages sync.Map // *websocket.Conn → struct{}
 func notePageWrite(c *websocket.Conn, err error) {
 	if err != nil && errors.Is(err, context.DeadlineExceeded) {
 		stalledPages.Store(c, struct{}{})
+		pageStallNoted()
 	}
 }
+
+// pageStallNoted is called each time a stall is noted: a test's count of the
+// notes made, which a note forgotten moments later leaves no other trace of.
+var pageStallNoted = func() {}
 
 // pageStalled reports whether a write to c has timed out.
 func pageStalled(c *websocket.Conn) bool {
