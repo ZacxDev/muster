@@ -110,7 +110,7 @@ func lastJSONBlock(body string) (string, bool) {
 			// nothing after it is a block either.
 			break
 		}
-		if info == "json" {
+		if info == "json" && !found {
 			last, found = strings.Join(lines[i+1:end], "\n"), true
 		}
 		i = end
