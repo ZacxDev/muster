@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -170,7 +171,7 @@ func (s *Server) routeByPR(ctx context.Context, p plugins.Plugin, m plugins.Mess
 	if !ok {
 		return false
 	}
-	hit, found, err := s.ext.PRSessions.ResolvePRSession(ctx, ref)
+	hit, found, err := s.ext.PRSessions.ResolvePRSession(authz.System(ctx), ref)
 	switch {
 	case err != nil:
 		s.logger.Printf("prroute: message %d: resolve %s: %v; to the chief", m.ID, prName(ref), err)
