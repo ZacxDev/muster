@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/termscreen"
 )
 
 // screenRuleNames names the screen check's refusals as screens.json does.
@@ -13,13 +15,13 @@ var screenRuleNames = map[string]string{
 	"Vi": ScreenVi, "Images": ScreenImages, "NotIdle": ScreenNotIdle, "Text": ScreenText, "NotPasted": ScreenNotPasted,
 }
 
-func fixture(t *testing.T, name string) Screen {
+func fixture(t *testing.T, name string) termscreen.Screen {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "screens", name+".ansi"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ParseScreen(string(b))
+	return termscreen.ParseScreen(string(b))
 }
 
 // answer is a check's answer as screens.json spells it.
@@ -169,7 +171,7 @@ func TestLooksLikeHermes(t *testing.T) {
 		if strings.Contains(string(b), "❯") && strings.Contains(string(b), "────────") {
 			framed++
 		}
-		if LooksLikeHermes(ParseScreen(string(b))) {
+		if LooksLikeHermes(termscreen.ParseScreen(string(b))) {
 			t.Errorf("Claude Code's %s is recognised as Hermes: the paste guard would refuse Claude Code", filepath.Base(f))
 		}
 	}
@@ -192,7 +194,7 @@ func TestLooksLikeHermes(t *testing.T) {
 		if last < 2 {
 			continue
 		}
-		cut := ParseScreen(strings.Join(lines[:last+1], "\n"))
+		cut := termscreen.ParseScreen(strings.Join(lines[:last+1], "\n"))
 		if _, err := frameOf(cut); err != nil || !strings.ContainsRune(InputRow(cut), '❯') {
 			continue
 		}
@@ -205,7 +207,7 @@ func TestLooksLikeHermes(t *testing.T) {
 		t.Fatalf("instrument check: only %d Claude Code screens reached the ☤ check", framed)
 	}
 	for _, raw := range []string{"$ ls\nfile\n$ \n", "", "─────────────────────────\n$ \n"} {
-		if LooksLikeHermes(ParseScreen(raw)) {
+		if LooksLikeHermes(termscreen.ParseScreen(raw)) {
 			t.Errorf("%q recognised as Hermes", raw)
 		}
 	}

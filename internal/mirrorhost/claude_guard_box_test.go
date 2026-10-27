@@ -51,3 +51,36 @@ func TestAPasteIntoAClaudePaneWhoseInputBoxHoldsTextTypesNothing(t *testing.T) {
 		t.Fatalf("typed %q; want the one paste into the empty box", got)
 	}
 }
+
+// TestAPasteOverClaudeCodesGhostSuggestionIsTyped: an empty box in which
+// Claude Code draws a ghost suggestion (a suggested next prompt, DIM) is
+// empty — the paste is typed, replacing it, not refused as claude-box. The
+// other direction: the same words typed (drawn plain) still refuse.
+func TestAPasteOverClaudeCodesGhostSuggestionIsTyped(t *testing.T) {
+	read := func(name string) string {
+		t.Helper()
+		b, err := os.ReadFile("../ccdialog/testdata/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	screen := read("pane_idle_typed_2.1.289.ansi")
+	d := newDrivenMuster(t)
+	b := &windowsBackend{windows: guardWindows(mirror.StatusIdle)}
+	d.run(t, wrapped{screenBackend{windowsBackend: b, screen: func(string) (string, error) { return screen, nil }}}, nil, true)
+	pasted := func() []string { _, _, _, p, _ := b.snapshot(); return p }
+
+	if a := pasteAnswer(t, d, mirror.Msg{ID: 1, Session: "scratch2", Window: "@7", Text: "next"}); a.Refusal != "claude-box" {
+		t.Fatalf("a paste into a box holding typed text was answered %+v; want refused as claude-box", a)
+	}
+	for i, n := range []string{"pane_idle_ghost_2.1.289.ansi", "pane_idle_ghost_wordruns_2.1.289.ansi"} {
+		screen = read(n)
+		if a := pasteAnswer(t, d, mirror.Msg{ID: uint32(2 + i), Session: "scratch2", Window: "@7", Text: "hello"}); a.Error != "" {
+			t.Fatalf("%s: a paste over a ghost suggestion was refused: %+v", n, a)
+		}
+	}
+	if got := pasted(); !slices.Equal(got, []string{"%21 hello", "%21 hello"}) {
+		t.Fatalf("typed %q; want the two pastes over the suggestions", got)
+	}
+}

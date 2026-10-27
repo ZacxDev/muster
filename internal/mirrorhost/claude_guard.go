@@ -70,7 +70,10 @@ var (
 // for the prompt guard. The tmux backend implements it; a backend that does
 // not is refused every Claude paste (ErrClaudeUncheckable).
 type ClaudeScreenBackend interface {
-	// ClaudeScreen is pane's screen, wrapped lines joined (capture-pane -p -J).
+	// ClaudeScreen is pane's screen, wrapped lines joined, with its styles
+	// (capture-pane -p -e -J): the box check tells a dim ghost suggestion from
+	// text by them (ccdialog.InputBox). A capture without styles still reads,
+	// but then a suggestion reads as text.
 	ClaudeScreen(ctx context.Context, pane string) (string, error)
 }
 
@@ -121,6 +124,7 @@ func claudeRefusalOf(err error) string {
 // box must also be empty: a message pasted after text left there would be
 // submitted with it as one turn, as Hermes's send refuses too. The check
 // before the Enter passes false — the box then holds the text just pasted.
+// A ghost suggestion in the box (dim) is no text: ccdialog.InputBox reads it "".
 func (h *hostSide) claudeReady(ctx context.Context, cb ClaudeBackend, m mirror.Msg, pane string, emptyBox bool) error {
 	p, ok := h.claudePaneOf(cb, m)(ctx)
 	if !ok || p.Pane != pane {
@@ -209,13 +213,15 @@ func (t Tmux) PasteChecked(ctx context.Context, p ClaudePane, text string, befor
 		before, beforeEnter)
 }
 
-// ClaudeScreen implements ClaudeScreenBackend: capture-pane -p -J by the pane's
-// id, as ccd reads its own CLI's screen.
+// ClaudeScreen implements ClaudeScreenBackend: capture-pane -p -e -J by the
+// pane's id. 🔴 -e IS LOAD-BEARING: without the styles Claude Code's dim ghost
+// suggestion (a suggested next prompt drawn in an empty box) reads as text,
+// and every paste into that pane is refused as claude-box.
 func (t Tmux) ClaudeScreen(ctx context.Context, paneID string) (string, error) {
 	if !strings.HasPrefix(paneID, "%") {
 		return "", fmt.Errorf("%q is not a tmux pane id", paneID)
 	}
-	cmd := exec.CommandContext(ctx, t.bin(), t.query("capture-pane", "-p", "-J", "-t", paneID)...)
+	cmd := exec.CommandContext(ctx, t.bin(), t.query("capture-pane", "-p", "-e", "-J", "-t", paneID)...)
 	cmd.Env = tmuxEnv()
 	out, err := cmd.Output()
 	if err != nil {

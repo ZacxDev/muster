@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/askdrive"
+	"github.com/ZacxDev/muster/internal/termscreen"
 )
 
 // ⚠ A DENY-LIST, NOT AN ALLOW-LIST, AND READ FROM ONE CAPTURE. It recognises the
@@ -34,8 +35,33 @@ func IsRule(line string) bool {
 	return utf8.RuneCountInString(t) >= 10 && strings.Trim(t, "─") == ""
 }
 
+// screenLines is capture's lines as text, and the same lines with every cell
+// drawn dim (SGR 2) blanked. capture is `tmux capture-pane -p -J`, with or
+// without -e: a capture with no escape sequence is split as it is (both
+// results the same), one with them is read by termscreen.ParseScreen — the one
+// SGR reader, which carries a style across rows as tmux's capture does.
+func screenLines(capture string) (text, undimmed []string) {
+	if !strings.ContainsRune(capture, 0x1b) {
+		l := strings.Split(strings.ReplaceAll(capture, "\r", ""), "\n")
+		return l, l
+	}
+	for _, row := range termscreen.ParseScreen(capture).Rows {
+		var t, u strings.Builder
+		for _, c := range row {
+			t.WriteRune(c.R)
+			if c.Dim {
+				u.WriteRune(' ')
+			} else {
+				u.WriteRune(c.R)
+			}
+		}
+		text, undimmed = append(text, t.String()), append(undimmed, u.String())
+	}
+	return text, undimmed
+}
+
 // OnScreen reports whether capture (tmux capture-pane -p -J of the CLI's
-// pane) shows a dialog that keys typed into the pane would answer, and which.
+// pane, with or without -e) shows a dialog that keys typed into the pane would answer, and which.
 //
 // 🔴 A FALSE "YES" WEDGES THE SENDER, SO ONLY THE BOTTOM OF THE SCREEN COUNTS.
 // Every paste is refused while this answers true, and an idle screen does not
@@ -65,11 +91,14 @@ func IsRule(line string) bool {
 // in the input box (cmd/ccd/testdata/pane_*_2.1.296.txt); and 2.1.289's
 // permission prompt, pickers and finished turns (internal/askdrive/testdata).
 func OnScreen(capture string) (what string, shown bool) {
+	lines, _ := screenLines(capture)
+	if strings.ContainsRune(capture, 0x1b) {
+		capture = strings.Join(lines, "\n")
+	}
 	switch askdrive.Parse(capture).Kind {
 	case askdrive.Question, askdrive.Review, askdrive.Clipped:
 		return "the AskUserQuestion picker", true
 	}
-	lines := strings.Split(strings.ReplaceAll(capture, "\r", ""), "\n")
 	from := 0
 	for i := len(lines) - 1; i >= 0; i-- {
 		if IsRule(lines[i]) {
@@ -105,11 +134,24 @@ func OnScreen(capture string) (what string, shown bool) {
 // a caller that needs the box empty refuses on it: an unreadable box is not
 // presumed empty. Call OnScreen first: a dialog replaces the box.
 //
+// 🔴 A GHOST SUGGESTION IS AN EMPTY BOX. At an empty prompt Claude Code may
+// draw a suggestion in the box (`Try "…"` in a fresh session, a suggested next
+// prompt after a turn), DIM: `❯\u00a0` then the suggestion
+// in SGR 2 (`\e[2m…\e[0m`, one run, or a run per word with plain spaces
+// between). Typing replaces it; nothing of it is submitted unless accepted with
+// Tab or →, which muster never sends (a bracketed paste over it, muster's
+// paste, replaced it and Enter submitted only the paste, on the real 2.1.289). So with capture-pane -e a box whose every
+// non-blank character is dim reads "". Only then: a box holding ANY character
+// not drawn dim is read whole, dim characters included, as text — a draft is
+// never taken for a suggestion because part of it is dim. Without -e no style
+// can be seen, and a suggestion reads as text (the box is refused as held).
+//
 // Read against the real CLI (cmd/ccd/testdata/pane_*_2.1.296.txt): the empty
 // prompt `❯ ` at idle, and `❯ ❯ 1. Yes` / `❯ [Pasted text #1 +4 lines]` with
-// text in the box.
+// text in the box; the ghost suggestion as 2.1.289's panes draw it
+// (testdata/pane_*_ghost*.ansi, synthetic text in that escape form).
 func InputBox(capture string) (text string, found bool) {
-	lines := strings.Split(strings.ReplaceAll(capture, "\r", ""), "\n")
+	lines, undimmed := screenLines(capture)
 	last, prev := -1, -1
 	for i := len(lines) - 1; i >= 0; i-- {
 		if !IsRule(lines[i]) {
@@ -125,14 +167,21 @@ func InputBox(capture string) (text string, found bool) {
 	if prev < 0 || last-prev < 2 {
 		return "", false
 	}
-	box := lines[prev+1 : last]
-	first := strings.TrimSpace(box[0])
-	if !strings.HasPrefix(first, "❯") {
+	if !strings.HasPrefix(strings.TrimSpace(lines[prev+1]), "❯") {
 		return "", false
 	}
-	rows := []string{strings.TrimSpace(strings.TrimPrefix(first, "❯"))}
+	if boxText(undimmed[prev+1:last]) == "" {
+		return "", true
+	}
+	return boxText(lines[prev+1 : last]), true
+}
+
+// boxText is the box's rows with the prompt mark and the padding trimmed,
+// joined by newlines.
+func boxText(box []string) string {
+	rows := []string{strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(box[0]), "❯"))}
 	for _, l := range box[1:] {
 		rows = append(rows, strings.TrimSpace(l))
 	}
-	return strings.TrimSpace(strings.Join(rows, "\n")), true
+	return strings.TrimSpace(strings.Join(rows, "\n"))
 }

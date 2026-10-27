@@ -5,24 +5,26 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/termscreen"
 )
 
 // fakeFrame is the idle fixture with its prompt row replaced by
 // firstRow and rows inserted after it: what a multi-line draft in the box
 // draws (continuation rows carry no prompt).
-func fakeFrame(t *testing.T, firstRow string, rows ...string) Screen {
+func fakeFrame(t *testing.T, firstRow string, rows ...string) termscreen.Screen {
 	t.Helper()
 	return fakeFrameOn(t, "idle", firstRow, rows...)
 }
 
 // fakeFrameOn is fakeFrame on the named fixture.
-func fakeFrameOn(t *testing.T, name, firstRow string, rows ...string) Screen {
+func fakeFrameOn(t *testing.T, name, firstRow string, rows ...string) termscreen.Screen {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "screens", name+".ansi"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := frameOf(ParseScreen(string(b)))
+	f, err := frameOf(termscreen.ParseScreen(string(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +34,7 @@ func fakeFrameOn(t *testing.T, name, firstRow string, rows ...string) Screen {
 	out = append(out, firstRow)
 	out = append(out, rows...)
 	out = append(out, lines[at+1:]...)
-	return ParseScreen(strings.Join(out, "\n"))
+	return termscreen.ParseScreen(strings.Join(out, "\n"))
 }
 
 // TestTextInTheBoxCannotFakeAFrame: a draft whose continuation rows draw a
@@ -69,9 +71,9 @@ func TestTextInTheBoxCannotFakeAFrame(t *testing.T) {
 	}
 	// A rule row padded with NBSP or U+3000 is still a rule.
 	for _, pad := range []string{"\u00a0", "\u3000", " "} {
-		row := []Cell{}
+		row := []termscreen.Cell{}
 		for _, r := range strings.Repeat("─", 30) + pad {
-			row = append(row, Cell{R: r})
+			row = append(row, termscreen.Cell{R: r})
 		}
 		if _, ok := isRule(row); !ok {
 			t.Errorf("a rule padded with %q is not a rule", pad)
@@ -118,7 +120,7 @@ func TestATranscriptRuleAboveTheStatusBarIsNotTheFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := frameOf(ParseScreen(string(b)))
+	f, err := frameOf(termscreen.ParseScreen(string(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +131,7 @@ func TestATranscriptRuleAboveTheStatusBarIsNotTheFrame(t *testing.T) {
 		out = append(out, rule)
 		out = append(out, lines[f.status-above+1:]...)
 		// Keep the row count: drop the transcript's first row.
-		s := ParseScreen(strings.Join(out[1:], "\n"))
+		s := termscreen.ParseScreen(strings.Join(out[1:], "\n"))
 		if err := CheckIdle(s); err != nil {
 			t.Errorf("a transcript rule %d row(s) above the status bar: %v", above, err)
 		}
@@ -152,7 +154,7 @@ func TestTheBackgroundIsParsed(t *testing.T) {
 		{"\x1b[3;48;5;1ma\x1b[23mb", "BB"},
 	} {
 		var got strings.Builder
-		for _, cell := range ParseScreen(c.raw).Rows[0] {
+		for _, cell := range termscreen.ParseScreen(c.raw).Rows[0] {
 			if cell.Bg {
 				got.WriteByte('B')
 			} else {
@@ -164,7 +166,7 @@ func TestTheBackgroundIsParsed(t *testing.T) {
 		}
 	}
 	// The style carries into the next row, as tmux's capture leaves it.
-	if s := ParseScreen("\x1b[48;5;234ma\nb"); !s.Rows[1][0].Bg {
+	if s := termscreen.ParseScreen("\x1b[48;5;234ma\nb"); !s.Rows[1][0].Bg {
 		t.Error("the background does not carry into the next row")
 	}
 }
@@ -199,19 +201,19 @@ func TestEvenAnAnchoredDraftIsNotTheFrame(t *testing.T) {
 
 // withStatusRow is the idle fixture with its status bar row replaced by row
 // (raw, with its own SGR).
-func withStatusRow(t *testing.T, row string) Screen {
+func withStatusRow(t *testing.T, row string) termscreen.Screen {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("testdata", "screens", "idle.ansi"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := frameOf(ParseScreen(string(b)))
+	f, err := frameOf(termscreen.ParseScreen(string(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
 	lines[f.status] = row
-	return ParseScreen(strings.Join(lines, "\n"))
+	return termscreen.ParseScreen(strings.Join(lines, "\n"))
 }
 
 // TestTheSubagentDockIsNotTheStatusBar: with the bar hidden
@@ -261,17 +263,17 @@ func TestAPaneWithNoRowAboveTheBarIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := frameOf(ParseScreen(string(b)))
+	f, err := frameOf(termscreen.ParseScreen(string(b)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
-	if err := CheckIdle(ParseScreen(strings.Join(lines[f.status:], "\n"))); err == nil {
+	if err := CheckIdle(termscreen.ParseScreen(strings.Join(lines[f.status:], "\n"))); err == nil {
 		t.Error("no row above the status bar: ADMITTED")
 	} else if rule, _ := IsScreenRefusal(err); rule != ScreenTooShort {
 		t.Errorf("no row above the status bar: refused %q, want %q", rule, ScreenTooShort)
 	}
-	if err := CheckIdle(ParseScreen(strings.Join(lines[f.status-1:], "\n"))); err != nil {
+	if err := CheckIdle(termscreen.ParseScreen(strings.Join(lines[f.status-1:], "\n"))); err != nil {
 		t.Errorf("one row above the status bar: %v", err)
 	}
 }

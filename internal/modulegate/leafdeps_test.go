@@ -1,8 +1,10 @@
 package modulegate
 
 import (
+	"os/exec"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -72,5 +74,48 @@ func TestTheSubagentLeafPullsNoNetworkOrStorageClient(t *testing.T) {
 	if len(podGot) != 0 {
 		sort.Strings(podGot)
 		t.Fatalf("cmd/ccd pulls in %v; the agent pod's supervisor must not link them", podGot)
+	}
+}
+
+// nonStdDepsOf is pattern's transitive imports outside the standard library,
+// itself excluded (go list -deps, by each package's Standard field).
+func nonStdDepsOf(t *testing.T, root, pattern string) []string {
+	t.Helper()
+	cmd := exec.Command("go", "list", "-deps", "-f", "{{if not .Standard}}{{.ImportPath}}{{end}}", pattern)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -deps %s: %v", pattern, err)
+	}
+	self := "github.com/ZacxDev/muster/" + strings.TrimPrefix(pattern, "./")
+	var got []string
+	for _, l := range strings.Split(string(out), "\n") {
+		if l = strings.TrimSpace(l); l != "" && l != self {
+			got = append(got, l)
+		}
+	}
+	sort.Strings(got)
+	return got
+}
+
+// TestTheTerminalScreenReaderImportsOnlyTheStandardLibrary: internal/termscreen
+// — the one SGR reader, linked into the agent pod's ccd through ccdialog — is a
+// leaf that imports nothing outside the standard library, as its package
+// comment says. (It lived in hermeshost until ccd linked hermeshost's
+// websocket and SQLite clients through it.) The instrument is checked first:
+// hermeshost, which imports golang.org/x/text/width, must be seen to have it.
+func TestTheTerminalScreenReaderImportsOnlyTheStandardLibrary(t *testing.T) {
+	root := moduleRoot(t)
+	seen := false
+	for _, p := range nonStdDepsOf(t, root, "./internal/hermeshost") {
+		if p == "golang.org/x/text/width" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("instrument check FAILED: internal/hermeshost imports golang.org/x/text/width, and the listing does not see it")
+	}
+	if got := nonStdDepsOf(t, root, "./internal/termscreen"); len(got) != 0 {
+		t.Fatalf("internal/termscreen pulls in %v; it must import only the standard library", got)
 	}
 }
