@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/hermeshost"
+	"github.com/ZacxDev/muster/internal/termscreen"
 )
 
 // THE LIVE HERMES HARNESS's ENVIRONMENT (`make test-livehermes`,
@@ -478,12 +479,12 @@ func (r *liveRun) keys(pane, keys string) {
 
 // waitScreen polls pane until ok holds, for up to d; the last capture and
 // whether it held.
-func (r *liveRun) waitScreen(pane string, d time.Duration, ok func(raw string, s hermeshost.Screen) bool) (string, bool) {
+func (r *liveRun) waitScreen(pane string, d time.Duration, ok func(raw string, s termscreen.Screen) bool) (string, bool) {
 	deadline := time.Now().Add(d)
 	var raw string
 	for {
 		raw = r.capture(pane)
-		if ok(raw, hermeshost.ParseScreen(raw)) {
+		if ok(raw, termscreen.ParseScreen(raw)) {
 			return raw, true
 		}
 		if time.Now().After(deadline) {
@@ -496,12 +497,12 @@ func (r *liveRun) waitScreen(pane string, d time.Duration, ok func(raw string, s
 // waitIdle waits for pane to pass the idle check, settled: two captures a
 // second apart both pass.
 func (r *liveRun) waitIdle(pane string, d time.Duration) bool {
-	_, ok := r.waitScreen(pane, d, func(_ string, s hermeshost.Screen) bool { return hermeshost.CheckIdle(s) == nil })
+	_, ok := r.waitScreen(pane, d, func(_ string, s termscreen.Screen) bool { return hermeshost.CheckIdle(s) == nil })
 	if !ok {
 		return false
 	}
 	time.Sleep(time.Second)
-	return hermeshost.CheckIdle(hermeshost.ParseScreen(r.capture(pane))) == nil
+	return hermeshost.CheckIdle(termscreen.ParseScreen(r.capture(pane))) == nil
 }
 
 // killWindow ends pane's window (its CLI gets SIGHUP).

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/termscreen"
 )
 
 // TestATabIsComparedAsHermesDrawsIt: prompt_toolkit draws a tab in the box
@@ -20,7 +22,7 @@ func TestATabIsComparedAsHermesDrawsIt(t *testing.T) {
 	if !strings.Contains(string(b), "hello from muster") {
 		t.Fatal("instrument check: the fixture does not hold the pasted text")
 	}
-	s := ParseScreen(strings.Replace(string(b), "hello from muster", "hello^Ifrom muster", 1))
+	s := termscreen.ParseScreen(strings.Replace(string(b), "hello from muster", "hello^Ifrom muster", 1))
 	if err := CheckPasted(s, "hello\tfrom muster"); err != nil {
 		t.Fatalf("a tab drawn as ^I: %v", err)
 	}

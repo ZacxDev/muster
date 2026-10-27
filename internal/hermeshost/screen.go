@@ -8,6 +8,8 @@ import (
 	"unicode"
 
 	"golang.org/x/text/width"
+
+	"github.com/ZacxDev/muster/internal/termscreen"
 )
 
 // THE SCREEN CHECK (docs/design/hermes.md, "The screen check"): what a Hermes
@@ -58,139 +60,10 @@ import (
 // It reads no word Hermes localises except the vi label: the prefixes are
 // the skin's glyphs, the placeholder is matched by its italic style.
 
-// Cell is one character of a captured screen, whether it is italic, whether
-// it is dim (faint, SGR 2: Claude Code draws its ghost prompt suggestion so —
-// ccdialog.InputBox reads it), and whether it has a background colour (Bg). A draft typed in Hermes's input
-// box is drawn in the input's style, which has none at the pin (and an escape
-// sequence typed or pasted into the box is drawn as text, `^[`, never
-// obeyed), so a background is something a draft cannot draw.
-type Cell struct {
-	R      rune
-	Italic bool
-	Dim    bool
-	Bg     bool
-}
-
-// Screen is a pane as `tmux capture-pane -p -e` prints it: its rows, top to
-// bottom, as cells.
-type Screen struct {
-	Rows [][]Cell
-}
-
-// ParseScreen reads a `capture-pane -p -e` capture. Of SGR only italic (3
-// on; 23, 0 or an empty SGR off), dim (2 on; 22, 0 or an empty SGR off) and whether a background colour is set (40-47,
-// 100-107, 48;…; 49, 0 or an empty SGR off) are kept; every other escape
-// sequence is dropped. A sequence it cannot read ends at the next letter,
-// never later.
-func ParseScreen(capture string) Screen {
-	var s Screen
-	// 🔴 THE STYLE IS CARRIED ACROSS ROWS: tmux's capture states an
-	// attribute where it CHANGES (cmd-capture-pane.c keeps its last cell
-	// across lines), so a row that continues an italic run starts with no
-	// escape at all.
-	var st style
-	for _, line := range strings.Split(strings.TrimRight(capture, "\n"), "\n") {
-		var row []Cell
-		row, st = parseRow(line, st)
-		s.Rows = append(s.Rows, row)
-	}
-	return s
-}
-
-// style is the SGR state ParseScreen keeps.
-type style struct{ italic, dim, bg bool }
-
-// parseRow is one captured line's cells, starting with st and returning the
-// style it ends with.
-func parseRow(line string, st style) ([]Cell, style) {
-	var row []Cell
-	rs := []rune(strings.TrimRight(line, "\r"))
-	for i := 0; i < len(rs); i++ {
-		r := rs[i]
-		if r != 0x1b {
-			if r == '\t' {
-				r = ' '
-			}
-			row = append(row, Cell{R: r, Italic: st.italic, Dim: st.dim, Bg: st.bg})
-			continue
-		}
-		if i+1 >= len(rs) {
-			break
-		}
-		switch rs[i+1] {
-		case '[':
-			j := i + 2
-			for j < len(rs) && !(rs[j] >= 0x40 && rs[j] <= 0x7e) {
-				j++
-			}
-			if j < len(rs) && rs[j] == 'm' {
-				st = sgrStyle(string(rs[i+2:j]), st)
-			}
-			i = j
-		case ']':
-			// OSC (a hyperlink): to BEL or ST.
-			j := i + 2
-			for j < len(rs) && rs[j] != 0x07 && !(rs[j] == 0x1b && j+1 < len(rs) && rs[j+1] == '\\') {
-				j++
-			}
-			if j < len(rs) && rs[j] == 0x1b {
-				j++
-			}
-			i = j
-		default:
-			i++
-		}
-	}
-	return row, st
-}
-
-// sgrStyle applies one SGR's parameters to st.
-func sgrStyle(params string, st style) style {
-	if params == "" {
-		return style{}
-	}
-	ps := strings.Split(params, ";")
-	for k := 0; k < len(ps); k++ {
-		n, err := strconv.Atoi(ps[k])
-		if err != nil {
-			continue
-		}
-		switch {
-		case n == 0:
-			st = style{}
-		case n == 23:
-			st.italic = false
-		case n == 3:
-			st.italic = true
-		case n == 22:
-			st.dim = false
-		case n == 2:
-			st.dim = true
-		case n == 49:
-			st.bg = false
-		case n >= 40 && n <= 47, n >= 100 && n <= 107:
-			st.bg = true
-		case n == 38, n == 48, n == 58:
-			if n == 48 {
-				st.bg = true
-			}
-			// An extended colour: skip its arguments (5;n or 2;r;g;b).
-			if k+1 < len(ps) {
-				if ps[k+1] == "5" {
-					k += 2
-				} else if ps[k+1] == "2" {
-					k += 4
-				}
-			}
-		}
-	}
-	return st
-}
-
 // rowText is a row's characters with trailing white space trimmed — EVERY
 // Unicode space (NBSP, U+3000, …), not just ASCII: a typed `❯ ` row ended by
 // an NBSP must not keep its prefix where a plain space would be trimmed.
-func rowText(row []Cell) string {
+func rowText(row []termscreen.Cell) string {
 	var b strings.Builder
 	for _, c := range row {
 		b.WriteRune(c.R)
@@ -243,7 +116,7 @@ const maxInputRows = 8 + 1
 
 // isRule reports whether row is an input rule: '─' from the first column to
 // the last character drawn, at least minRuleWidth wide; its width.
-func isRule(row []Cell) (int, bool) {
+func isRule(row []termscreen.Cell) (int, bool) {
 	t := rowText(row)
 	n := 0
 	for _, r := range t {
@@ -255,7 +128,7 @@ func isRule(row []Cell) (int, bool) {
 	return n, n >= minRuleWidth
 }
 
-func blank(row []Cell) bool { return rowText(row) == "" }
+func blank(row []termscreen.Cell) bool { return rowText(row) == "" }
 
 // frame is where the input area is on s.
 type frame struct {
@@ -264,7 +137,7 @@ type frame struct {
 }
 
 // frameOf finds the input area's frame on s, or the refusal.
-func frameOf(s Screen) (frame, error) {
+func frameOf(s termscreen.Screen) (frame, error) {
 	last := len(s.Rows) - 1
 	for last >= 0 && blank(s.Rows[last]) {
 		last--
@@ -342,7 +215,7 @@ var realBarRE = regexp.MustCompile(`^ (?:(?:\x{1F50B}|\x{26A1}) \d{1,3}(?:\.\d+)
 // process, a queued prompt) or with a localised heading
 // (P:hermes_cli/cli_subagent_monitor.py:178-247), never ` ☤ ` or a battery
 // label.
-func statusBarAt(s Screen, i int) bool {
+func statusBarAt(s termscreen.Screen, i int) bool {
 	if i < 0 || len(s.Rows[i]) == 0 || !s.Rows[i][0].Bg {
 		return false
 	}
@@ -376,7 +249,7 @@ const stashPanelRows = 40
 // statusChecks refuses that pane before asking (ScreenTooShort). (Requiring the footer added nothing besides: a
 // reply box's own `╰─╯` matches it.) A reply line that starts `╭─ 📌` is
 // refused too: a false refusal, the safe way.
-func stashPanelOpen(s Screen, status int) bool {
+func stashPanelOpen(s termscreen.Screen, status int) bool {
 	for i := status - 1; i >= 0 && i >= status-stashPanelRows; i-- {
 		t := strings.TrimLeftFunc(rowText(s.Rows[i]), unicode.IsSpace)
 		if strings.HasPrefix(t, "╭─ ") && strings.Contains(t, "📌") {
@@ -393,7 +266,7 @@ func stashPanelOpen(s Screen, status int) bool {
 var idlePromptRE = regexp.MustCompile(`^(?:[a-z0-9][a-z0-9_-]{0,63} )?❯ `)
 
 // statusChecks are the rules on the status bar row.
-func statusChecks(s Screen, f frame) error {
+func statusChecks(s termscreen.Screen, f frame) error {
 	sb := rowText(s.Rows[f.status])
 	// 🔴 THE REAL BAR, by its text AND its background (statusBarAt), never
 	// its text alone: when Hermes hides the bar (display.statusbar off, just
@@ -421,7 +294,7 @@ func statusChecks(s Screen, f frame) error {
 
 // promptRow is the input area's first row, after the image-bar check, and
 // the cells after its prompt.
-func promptRow(s Screen, f frame) ([]Cell, error) {
+func promptRow(s termscreen.Screen, f frame) ([]termscreen.Cell, error) {
 	first := s.Rows[f.top+1]
 	loc := idlePromptRE.FindStringIndex(rowText(first))
 	if loc == nil {
@@ -438,7 +311,7 @@ func promptRow(s Screen, f frame) ([]Cell, error) {
 
 // empty reports whether cells hold nothing typed: spaces and italic
 // (placeholder) characters only.
-func empty(cells []Cell) bool {
+func empty(cells []termscreen.Cell) bool {
 	for _, c := range cells {
 		if !c.Italic && !unicode.IsSpace(c.R) {
 			return false
@@ -449,7 +322,7 @@ func empty(cells []Cell) bool {
 
 // CheckIdle is the screen check before a paste: nil when s shows Hermes's
 // idle, empty input line in its full frame, else a *ScreenRefusal.
-func CheckIdle(s Screen) error {
+func CheckIdle(s termscreen.Screen) error {
 	f, err := frameOf(s)
 	if err != nil {
 		return err
@@ -483,7 +356,7 @@ var placeholderRE = regexp.MustCompile(`^\[Pastedtext#\d+:(\d+)lines→[^\]]+\]$
 // box wraps it — or exactly one collapse placeholder whose line count is
 // text's. Anything else is a *ScreenRefusal (ScreenNotPasted when only the
 // box's contents are wrong).
-func CheckPasted(s Screen, text string) error {
+func CheckPasted(s termscreen.Screen, text string) error {
 	f, err := frameOf(s)
 	if err != nil {
 		return err
@@ -532,7 +405,7 @@ func squeeze(s string) string {
 
 // InputWidth is the input area's width on s (its rules'), 0 when s has no
 // frame.
-func InputWidth(s Screen) int {
+func InputWidth(s termscreen.Screen) int {
 	f, err := frameOf(s)
 	if err != nil {
 		return 0
@@ -597,7 +470,7 @@ func cellWidth(s string) int {
 
 // PromptWidth is the idle prompt's width on s's first input row (`❯ ` is 2,
 // `coder ❯ ` 8), 0 when s has none.
-func PromptWidth(s Screen) int {
+func PromptWidth(s termscreen.Screen) int {
 	f, err := frameOf(s)
 	if err != nil {
 		return 0
@@ -611,7 +484,7 @@ func PromptWidth(s Screen) int {
 
 // InputRow is the text of the input area's first row on s, "" when s has no
 // frame: a diagnostic, never a gate.
-func InputRow(s Screen) string {
+func InputRow(s termscreen.Screen) string {
 	f, err := frameOf(s)
 	if err != nil {
 		return ""
@@ -628,7 +501,7 @@ func InputRow(s Screen) string {
 // resize; a narrow pane's compact chrome; the status bar turned off) — the
 // process walk is the guard; this is an extra (docs/design/hermes.md, the
 // paste guard).
-func LooksLikeHermes(s Screen) bool {
+func LooksLikeHermes(s termscreen.Screen) bool {
 	f, err := frameOf(s)
 	if err != nil {
 		return false

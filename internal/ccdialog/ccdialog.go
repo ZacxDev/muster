@@ -15,7 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/askdrive"
-	"github.com/ZacxDev/muster/internal/hermeshost"
+	"github.com/ZacxDev/muster/internal/termscreen"
 )
 
 // ⚠ A DENY-LIST, NOT AN ALLOW-LIST, AND READ FROM ONE CAPTURE. It recognises the
@@ -38,14 +38,14 @@ func IsRule(line string) bool {
 // screenLines is capture's lines as text, and the same lines with every cell
 // drawn dim (SGR 2) blanked. capture is `tmux capture-pane -p -J`, with or
 // without -e: a capture with no escape sequence is split as it is (both
-// results the same), one with them is read by hermeshost.ParseScreen — the one
+// results the same), one with them is read by termscreen.ParseScreen — the one
 // SGR reader, which carries a style across rows as tmux's capture does.
 func screenLines(capture string) (text, undimmed []string) {
 	if !strings.ContainsRune(capture, 0x1b) {
 		l := strings.Split(strings.ReplaceAll(capture, "\r", ""), "\n")
 		return l, l
 	}
-	for _, row := range hermeshost.ParseScreen(capture).Rows {
+	for _, row := range termscreen.ParseScreen(capture).Rows {
 		var t, u strings.Builder
 		for _, c := range row {
 			t.WriteRune(c.R)

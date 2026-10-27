@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/hermeshost"
+	"github.com/ZacxDev/muster/internal/termscreen"
 )
 
 // TestLiveHermesScreens drives the PINNED Hermes into every screen state the
@@ -153,7 +154,7 @@ type screenResult struct {
 
 // verdict is the check's answer on raw: "admit" or "refuse: <rule name>".
 func verdict(raw string) string {
-	err := hermeshost.CheckIdle(hermeshost.ParseScreen(raw))
+	err := hermeshost.CheckIdle(termscreen.ParseScreen(raw))
 	if err == nil {
 		return "admit"
 	}
@@ -220,7 +221,7 @@ func runScenario(t *testing.T, r *liveRun, sc liveScenario, e screenExpectation)
 		time.Sleep(2 * time.Second)
 		res.raw = r.capture(pane)
 		res.gate = "pasted: admit"
-		if err := hermeshost.CheckPasted(hermeshost.ParseScreen(res.raw), e.Pasted); err != nil {
+		if err := hermeshost.CheckPasted(termscreen.ParseScreen(res.raw), e.Pasted); err != nil {
 			rule, _ := hermeshost.IsScreenRefusal(err)
 			res.gate = "pasted: refuse: " + ruleName(rule)
 		}
@@ -291,7 +292,7 @@ func printScreenTable(t *testing.T, rs []screenResult) {
 // showScreen is raw's last n rows, italic as «…» and long rules folded: what
 // a failure message shows.
 func showScreen(raw string, n int) string {
-	s := hermeshost.ParseScreen(raw)
+	s := termscreen.ParseScreen(raw)
 	rows := s.Rows
 	for len(rows) > 0 && strings.TrimSpace(cellsText(rows[len(rows)-1])) == "" {
 		rows = rows[:len(rows)-1]
@@ -325,7 +326,7 @@ func showScreen(raw string, n int) string {
 
 // statusRow is the text of the row above the input area's upper rule (the
 // status bar's place), "" when s has no input area.
-func statusRow(s hermeshost.Screen) string {
+func statusRow(s termscreen.Screen) string {
 	in := hermeshost.InputRow(s)
 	if in == "" {
 		return ""
@@ -341,14 +342,14 @@ func statusRow(s hermeshost.Screen) string {
 // stripSGR is raw without its escape sequences.
 func stripSGR(raw string) string {
 	var b strings.Builder
-	for _, row := range hermeshost.ParseScreen(raw).Rows {
+	for _, row := range termscreen.ParseScreen(raw).Rows {
 		b.WriteString(cellsText(row))
 		b.WriteByte('\n')
 	}
 	return b.String()
 }
 
-func cellsText(row []hermeshost.Cell) string {
+func cellsText(row []termscreen.Cell) string {
 	var b strings.Builder
 	for _, c := range row {
 		b.WriteRune(c.R)
@@ -399,7 +400,7 @@ func typed(r *liveRun, pane, s string) {
 
 // inputStarts waits until the input area's first row starts with prefix.
 func inputStarts(r *liveRun, pane, prefix string, d time.Duration) bool {
-	_, ok := r.waitScreen(pane, d, func(_ string, s hermeshost.Screen) bool {
+	_, ok := r.waitScreen(pane, d, func(_ string, s termscreen.Screen) bool {
 		return strings.HasPrefix(hermeshost.InputRow(s), prefix)
 	})
 	return ok
@@ -407,7 +408,7 @@ func inputStarts(r *liveRun, pane, prefix string, d time.Duration) bool {
 
 // shows waits until the screen holds text.
 func shows(r *liveRun, pane, text string, d time.Duration) bool {
-	_, ok := r.waitScreen(pane, d, func(raw string, s hermeshost.Screen) bool {
+	_, ok := r.waitScreen(pane, d, func(raw string, s termscreen.Screen) bool {
 		for _, row := range s.Rows {
 			if strings.Contains(cellsText(row), text) {
 				return true
@@ -483,7 +484,7 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 		for turn := 1; turn <= 3; turn++ {
 			typed(r, pane, fmt.Sprintf("hello %d", turn))
 			time.Sleep(time.Second)
-			if _, ok := r.waitScreen(pane, 20*time.Second, func(_ string, s hermeshost.Screen) bool {
+			if _, ok := r.waitScreen(pane, 20*time.Second, func(_ string, s termscreen.Screen) bool {
 				return hermeshost.CheckIdle(s) == nil && strings.Contains(statusRow(s), "Stub")
 			}); ok {
 				return true
@@ -507,7 +508,7 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 			steps = append(steps, key(fmt.Sprintf("draft %d", k)), key("\x13"))
 		}
 		steps = append(steps, key("\x13"), func(r *liveRun, _, p string) bool {
-			_, ok := r.waitScreen(p, 30*time.Second, func(raw string, _ hermeshost.Screen) bool {
+			_, ok := r.waitScreen(p, 30*time.Second, func(raw string, _ termscreen.Screen) bool {
 				t := stripSGR(raw)
 				return strings.Contains(t, "Stash (") || strings.Contains(t, "► [")
 			})
@@ -544,7 +545,7 @@ func liveScenarios(base func() string, home func(string, homeOpts) string) []liv
 		for turn := 1; turn <= 3; turn++ {
 			typed(r, p, fmt.Sprintf("hello %d", turn))
 			time.Sleep(time.Second)
-			if _, ok := r.waitScreen(p, 25*time.Second, func(_ string, s hermeshost.Screen) bool {
+			if _, ok := r.waitScreen(p, 25*time.Second, func(_ string, s termscreen.Screen) bool {
 				return strings.HasPrefix(hermeshost.InputRow(s), "❯") && strings.Contains(statusRow(s), "Stub")
 			}); ok {
 				return true

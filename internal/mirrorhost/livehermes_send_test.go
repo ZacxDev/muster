@@ -12,6 +12,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/hermeshost"
 	"github.com/ZacxDev/muster/internal/mirror"
+	"github.com/ZacxDev/muster/internal/termscreen"
 )
 
 // TestLiveHermesSend runs the REAL gated send (Tmux.SendHermes: the real
@@ -133,7 +134,7 @@ func TestLiveHermesSend(t *testing.T) {
 				t.Errorf("%q: %v", text, err)
 			}
 		}
-		if hermeshost.CheckIdle(hermeshost.ParseScreen(r.capture(p))) != nil {
+		if hermeshost.CheckIdle(termscreen.ParseScreen(r.capture(p))) != nil {
 			t.Error("the box is not empty after the refused texts")
 		}
 	})
