@@ -976,10 +976,17 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := s.streamContext(r.Context())
 	defer cancel()
+	// The page judges the stream alive by hearing from it (ui/live.go): a
+	// board where nothing changes sends nothing, so it beats.
+	beat := time.NewTicker(liveHeartbeatEvery())
+	defer beat.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-beat.C:
+			fmt.Fprintf(w, "event: %s\ndata: {}\n\n", ui.LivePingEvent)
+			flusher.Flush()
 		case ev, open := <-ch:
 			if !open {
 				return

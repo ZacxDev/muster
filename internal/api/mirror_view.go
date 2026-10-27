@@ -85,7 +85,7 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	s.recordMirrorVisit(op.begin("visit"), h.Host, e.Session, e.Window)
 	ctx := op.begin("view")
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
-		StepUp: s.stepUpView(r, ""), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
+		StepUp: s.stepUpView(r), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
 		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(ctx)}
 	// 🔴 A WINDOW OF A RUNTIME WITH A GATED SEND (Hermes) SENDS ONLY WHEN
 	// ITS HOST ADVERTISED IT (Phase 3): otherwise its composer is drawn
@@ -204,6 +204,9 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// call) and every later batch's write. Only the watch itself runs under
 	// the open's span, and its spans end at the first batch.
 	live := telemetry.Detached(ctx)
+	// The page judges the socket alive by hearing from it (ui/live.go): a
+	// conversation with nothing new says nothing for minutes, so it beats.
+	defer socketHeartbeat(live, s.logger, c)()
 
 	var drawn ui.MirrorTranscript
 	// A reconnect that resumes (gen + offset) draws onto a page that already

@@ -38,10 +38,6 @@ type StepUpView struct {
 	// the SERVER measured it when it rendered the page (0 = not fresh). A
 	// duration rather than an instant, so the browser's clock does not matter.
 	FreshFor int64
-	// RememberKey names what an Interactive choice is remembered for, in this
-	// browser session (sessionStorage): "mirror:<host>" — one choice per host.
-	// "" on a page with no Interactive switch.
-	RememberKey string
 	// Window is the freshness window as a person reads it ("12 hours") —
 	// stepup.WindowText, passed in so this package states no window of its own.
 	Window string
@@ -70,7 +66,6 @@ func stepUpAttrs(s *StepUpView) g.Node {
 	return g.Group{
 		g.Attr("data-step-up", s.ConfirmPath),
 		g.Attr("data-fresh-for", strconv.FormatInt(s.FreshFor, 10)),
-		g.Attr("data-remember", s.RememberKey),
 	}
 }
 

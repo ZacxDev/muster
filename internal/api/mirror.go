@@ -222,8 +222,9 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		BadgeHost:      h.Host,
 		BadgeHostIcon:  s.mirrorHostIcon(r.Context(), h.Host),
 		WSPath:         mirrorRef(e).TerminalWSPath(),
-		// 🔴 THE SWITCH IS OFFERED ONLY WHEN THE HOST ADVERTISED -interactive.
-		// The hub refuses a rw attach to a host that did not, regardless.
+		// 🔴 LIVE KEYS ONLY WHEN THE HOST ADVERTISED -interactive: elsewhere the
+		// page's keys are off. The hub refuses a rw attach to a host that did
+		// not, regardless.
 		ReadOnlyOnly: !h.Interactive,
 		// 🔴 SAY WHAT LIVE KEYS REALLY ARE: a tmux client on the host. From it
 		// a user can switch to ANY session there, or open a new window — a
@@ -231,11 +232,12 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 		// attach, not what an interactive client does once attached.
 		InteractiveNote: "Live keys type into a tmux client on " + h.Host +
 			": from it you can switch to any tmux session there or open a shell on the host.",
-		// 🔴 STEP-UP: Interactive, and every send from the composer, needs a
-		// sign-in from the last stepup.Window. The page asks to confirm (passkey
-		// or password) when this has passed; the socket and the send route below
-		// refuse a stale write whatever the page does.
-		StepUp: s.stepUpView(r, "mirror:"+h.Host),
+		// 🔴 STEP-UP: live keys (always on, ui.AgentTerminalPage), and every
+		// send from the composer, need a sign-in from the last stepup.Window.
+		// The page asks to confirm (passkey or password) at the first key once
+		// this has passed; the socket and the send route below refuse a stale
+		// write whatever the page does.
+		StepUp: s.stepUpView(r),
 	}
 	// 🔴 THE COMPOSER TAKES TEXT ONLY ON A HOST THAT ADVERTISED -interactive,
 	// and it does not need the switch above: it is one gated paste per Send into
@@ -285,9 +287,9 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 // (the dialog asks whether THIS account has one when it opens — never here,
 // which would cost a GoTrue call per page view), how long the request's sign-in
 // stays fresh, and the window in words.
-func (s *Server) stepUpView(r *http.Request, rememberKey string) *ui.StepUpView {
+func (s *Server) stepUpView(r *http.Request) *ui.StepUpView {
 	v := &ui.StepUpView{ConfirmPath: stepUpConfirmPath, FreshFor: freshForMillis(r.Context(), s.stepUpNow()),
-		RememberKey: rememberKey, Window: stepup.WindowText()}
+		Window: stepup.WindowText()}
 	if s.auth.goTrueMode() && s.gt != nil {
 		v.PasskeyPath = stepUpPasskeyPath
 	}
@@ -354,6 +356,12 @@ func (s *Server) handleMirrorTerminalWS(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	defer done()
+	// The page judges the socket alive by hearing from it (ui/live.go); a
+	// protocol ping is answered by the browser itself and never reaches the
+	// page's script, and an idle TUI prints nothing, so it beats too. Deferred
+	// HERE, not in bridgeTerminal: its stop forgets the stalled note, which
+	// this handler reads to classify the end.
+	defer socketHeartbeat(ctx, s.logger, c)()
 	// "attach" is the phase from here to the first output; the hub's spans
 	// (mirror.attach, its first_output child, the host's) say where in it.
 	op.begin("attach")
