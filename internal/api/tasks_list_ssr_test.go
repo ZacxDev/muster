@@ -112,15 +112,16 @@ func listOf(t *testing.T, doc string) (open, rest string) {
 	return doc[loc[0]:loc[1]], doc[loc[1]:]
 }
 
-// TestTheBoardIsInTheFirstPaint: GET / carries the board — every fixture
+// TestTheBoardIsInTheFirstPaint: GET /tasks carries the board — every fixture
 // task's title inside #tasks-list, no skeleton in its place — and the list
-// issues no `load` request of its own while keeping every live trigger.
+// issues no `load` request of its own while keeping every live trigger. (`/`
+// served the board too until home became the chief's chat: nav_agents.go.)
 //
 // Red on the base tree: the document drew the skeleton and the titles arrived
 // only with the list's own GET /ui/tasks.
 func TestTheBoardIsInTheFirstPaint(t *testing.T) {
 	f := newBoardFixture(t)
-	for _, path := range []string{"/", "/tasks"} {
+	for _, path := range []string{"/tasks"} {
 		open, rest := listOf(t, f.get(t, path))
 		// The list ends where the panel's next sibling begins; the titles must be
 		// INSIDE it, not anywhere in the document.
@@ -158,7 +159,7 @@ func TestTheBoardIsInTheFirstPaint(t *testing.T) {
 	}
 }
 
-// TestTheBoardDocumentDrawsThePartial: ONE RENDERER — the `/` document's
+// TestTheBoardDocumentDrawsThePartial: ONE RENDERER — the `/tasks` document's
 // #tasks-list holds exactly what GET /ui/tasks answers, byte for byte, for one
 // state. Red on the base tree (the document held the skeleton).
 func TestTheBoardDocumentDrawsThePartial(t *testing.T) {
@@ -169,9 +170,9 @@ func TestTheBoardDocumentDrawsThePartial(t *testing.T) {
 	if n := strings.Count(part, `<article `); n != len(boardTitles) {
 		t.Fatalf("control: /ui/tasks drew %d cards, want %d:\n%s", n, len(boardTitles), part)
 	}
-	_, rest := listOf(t, f.get(t, "/"))
+	_, rest := listOf(t, f.get(t, "/tasks"))
 	if !strings.HasPrefix(rest, part+"</div>") {
-		t.Errorf("the / document's #tasks-list is not the /ui/tasks partial.\n--- document list (first 600 bytes):\n%.600s\n--- partial (first 600 bytes):\n%.600s", rest, part)
+		t.Errorf("the /tasks document's #tasks-list is not the /ui/tasks partial.\n--- document list (first 600 bytes):\n%.600s\n--- partial (first 600 bytes):\n%.600s", rest, part)
 	}
 }
 
@@ -258,7 +259,7 @@ func TestTheStreamOpensAtTheDocumentsMarkUntilAnEventLandsBetween(t *testing.T) 
 	ts := httptest.NewServer(f.h)
 	t.Cleanup(ts.Close)
 
-	doc := markOf(t, f.get(t, "/"))
+	doc := markOf(t, f.get(t, "/tasks"))
 	if got := f.helloOf(t, ts); got != doc {
 		t.Errorf("no event between the document and the stream, but the hello's mark %q != the document's %q", got, doc)
 	}
@@ -298,11 +299,13 @@ func TestTheOfflineShellURLIsBoardless(t *testing.T) {
 	f := newBoardFixture(t)
 	shellURL := "/?" + offlineShellParam + "=1"
 	const drawn = "data-tasks-drawn"
-	// Control: the real "/" draws the board and carries the marker the worker
-	// looks for, so its absence below is a property of the URL.
-	full := f.get(t, "/")
+	// Control: the board's own document (/tasks — `/` itself now opens the
+	// chief's chat, and only its ?shell=1 copy is a shell) draws the board and
+	// carries the marker the worker looks for, so its absence below is a
+	// property of the URL.
+	full := f.get(t, "/tasks")
 	if !strings.Contains(full, boardTitles[0]) || !strings.Contains(full, drawn) {
-		t.Fatalf("control: GET / did not draw the board with %s", drawn)
+		t.Fatalf("control: GET /tasks did not draw the board with %s", drawn)
 	}
 	shell := f.get(t, shellURL)
 	for _, title := range boardTitles {
@@ -325,7 +328,8 @@ func TestTheOfflineShellURLIsBoardless(t *testing.T) {
 // back/forward cache (restore.go). Red before: "/" sent no Cache-Control.
 func TestTheShellDocumentIsPrivateAndRevalidated(t *testing.T) {
 	f := newBoardFixture(t)
-	for _, path := range []string{"/", "/tasks", "/agents"} {
+	// "/?shell=1", not "/": `/` itself is a redirect now (redirectHome).
+	for _, path := range []string{"/?" + offlineShellParam + "=1", "/tasks", "/agents"} {
 		r := httptest.NewRequest(http.MethodGet, path, nil).WithContext(f.ctx)
 		r.Header.Set("Cookie", sessionCookieFor(f.srv))
 		r.Header.Set(boardUserHeader, strconv.FormatInt(f.user, 10))
@@ -361,7 +365,7 @@ func TestAStalledBoardDoesNotHoldTheDocument(t *testing.T) {
 	f.srv.boardWithinOverride = 50 * time.Millisecond
 	got := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		r := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(f.ctx)
+		r := httptest.NewRequest(http.MethodGet, "/tasks", nil).WithContext(f.ctx)
 		r.Header.Set("Cookie", sessionCookieFor(f.srv))
 		r.Header.Set(boardUserHeader, strconv.FormatInt(f.user, 10))
 		rec := httptest.NewRecorder()
@@ -372,11 +376,11 @@ func TestAStalledBoardDoesNotHoldTheDocument(t *testing.T) {
 	select {
 	case rec := <-got:
 		if rec.Code != http.StatusOK {
-			t.Fatalf("GET / = %d: %s", rec.Code, rec.Body.String())
+			t.Fatalf("GET /tasks = %d: %s", rec.Code, rec.Body.String())
 		}
 		doc = rec.Body.String()
 	case <-time.After(5 * time.Second):
-		t.Fatal("GET / was still waiting on a stalled board read after 5s (the bound is 50ms)")
+		t.Fatal("GET /tasks was still waiting on a stalled board read after 5s (the bound is 50ms)")
 	}
 	open, rest := listOf(t, doc)
 	if !strings.Contains(open, `hx-trigger="load, `) || !strings.HasPrefix(rest, `<div id="tasks-list-skeleton"`) {
@@ -395,7 +399,7 @@ func TestAStalledBoardDoesNotHoldTheDocument(t *testing.T) {
 func TestTheDocumentReadsItsMarkBeforeItsBoard(t *testing.T) {
 	f := newBoardFixture(t)
 	f.srv.ext.Notes = eventDuringList{Store: f.store, during: func() { f.srv.broadcastTo(f.user, "task.changed", "1") }}
-	doc := markOf(t, f.get(t, "/"))
+	doc := markOf(t, f.get(t, "/tasks"))
 	if after := f.bus.Mark(f.user); after == doc {
 		t.Errorf("the document's mark %q includes the event published during its board read: it was read AFTER the board", doc)
 	}

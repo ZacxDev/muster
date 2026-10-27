@@ -300,9 +300,10 @@ func TestTheShellDrawsTheReposSurfaceExactlyWhenTheStoreIsWired(t *testing.T) {
 			h := s.Handler()
 
 			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, operatorRequest(s, http.MethodGet, "/"))
+			// /tasks, the shell's default tab (`/` opens the chief's chat now).
+			h.ServeHTTP(rec, operatorRequest(s, http.MethodGet, "/tasks"))
 			if rec.Code != http.StatusOK {
-				t.Fatalf("GET / answered %d, want 200; nothing below is a claim about the shell", rec.Code)
+				t.Fatalf("GET /tasks answered %d, want 200; nothing below is a claim about the shell", rec.Code)
 			}
 			body := rec.Body.String()
 

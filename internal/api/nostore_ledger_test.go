@@ -81,6 +81,8 @@ var noStoreLiterals = map[string]string{
 	"handleTranscribe":         "a dictation's transcript",
 	"handleUpload":             "an upload's answer",
 	"handleUploadLink":         "an upload's signed link",
+	"handleNavAgents":          "the sidebar's agent list",
+	"redirectHome":             "where `/` sends the viewer (it follows who the chief is now)",
 }
 
 // viewDocumentCallers are the four handlers whose documents Back may restore.

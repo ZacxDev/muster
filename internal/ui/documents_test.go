@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	g "maragu.dev/gomponents"
 
@@ -284,6 +285,8 @@ func listFragments() []namedDoc {
 		{"agents-cards", AgentsCards(sampleAgentCards())},
 		{"repos-connected", ReposConnected("octo-owner", sampleRepos())},
 		{"notes-edit-modal", NotesEditModalBody(sampleNoteEditView())},
+		// The sidebar's agent list (nav_agents.go), one agent marked current.
+		{"nav-agents", NavAgentsList(sampleAgentCards(), navMirrorFixture(), "/agents/"+sampleAgentCards()[0].Name, time.Now())},
 	}
 }
 

@@ -235,6 +235,7 @@ var isolationClasses = map[string]routeClass{
 	"GET /share":                   classList,
 	"GET /tasks":                   classList,
 	"GET /ui/agents":               classList,
+	"GET /ui/nav/agents":           classList,
 	"GET /ui/agents/new":           classList,
 	"GET /ui/agents/notes":         classList,
 	"GET /ui/agents/repos":         classList,
@@ -494,7 +495,7 @@ var isolationClasses = map[string]routeClass{
 // demands A sees its canary (or an identifier) on each, so B's clean body on
 // the same route is a fact about B.
 var wantCanaryForA = []string{
-	"GET /ui/agents", "GET /ui/agents/notes", "GET /ui/connector-requests", "GET /ui/connectors",
+	"GET /ui/agents", "GET /ui/nav/agents", "GET /ui/agents/notes", "GET /ui/connector-requests", "GET /ui/connectors",
 	"GET /ui/repos", "GET /ui/tasks", "GET /ui/chief/panel",
 	// The AGGREGATES — vocabularies, suggestion lists, unread rolls — read
 	// across rows rather than by id, which is exactly where a missing scope

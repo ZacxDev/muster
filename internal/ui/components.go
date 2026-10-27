@@ -967,8 +967,12 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 					g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 				),
 			),
-			// Section links: five plain <a href> links, deliberately carrying NO
-			// ARIA role at all.
+			// The agents, like a chat app's channels (nav_agents.go): the chief,
+			// then whoever waits on the operator, then the rest by recency — a
+			// lazy partial in the panel's flex-1 middle.
+			navAgentsSlot(overlay),
+			// Section links (inside More, nav_agents.go's navMore): plain <a href>
+			// links, deliberately carrying NO ARIA role at all.
 			//
 			// An earlier revision closed axe's aria-required-parent (CRITICAL, 22
 			// nodes across all 11 crawled URLs, per an automated audit) by adding
@@ -1008,23 +1012,25 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 			// Page DREW. A link whose panel this document did not render shows a
 			// blank page when clicked; deriving both from one function is what makes
 			// the two unable to disagree.
-			Div(
-				Class("flex flex-col gap-1 p-2"),
+			//
+			// 🔴 THE PAGES ARE IN ONE COLLAPSED "More" AT THE BOTTOM (operator
+			// decision), the device preferences with them; the Asks count is on
+			// More's header, so it shows while More is shut.
+			navMore(feat,
 				g.Map(visibleTabs(feat), func(t tab) g.Node {
 					return sidebarTab(t.Key, t.Label, t.Icon, activeTab == t.Key, currentTab == t.Key, hasPanels)
 				}),
 				// The attention queue (attention.go): a standalone page, not a tab.
 				attentionLink(feat, activeTab == NavAttention, currentTab == NavAttention),
-			),
-			// Device preferences, pinned to the bottom of the panel and clear of
-			// the home indicator. They are per-device (localStorage), so they live
-			// with the navigation rather than in any server-side settings.
-			Div(
-				ID("sidebar-prefs"),
-				Class("mt-auto flex flex-col gap-1 border-t border-line p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]"),
-				installButton(),
-				themeToggle(),
-				accountLinks(feat, activeTab, currentTab),
+				// Device preferences. They are per-device (localStorage), so they
+				// live with the navigation rather than in any server-side settings.
+				Div(
+					ID("sidebar-prefs"),
+					Class("flex flex-col gap-1 border-t border-line pt-1"),
+					installButton(),
+					themeToggle(),
+					accountLinks(feat, activeTab, currentTab),
+				),
 			),
 		),
 	)
@@ -1572,6 +1578,8 @@ var appScriptSrc = staticJS("app", `
     if (openBtn) openBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     // Only lock scroll for the mobile overlay (desktop sidebar is persistent).
     document.body.style.overflow = (open && window.innerWidth < 1024) ? 'hidden' : '';
+    // An overlay page's agent list loads on this (nav_agents.go).
+    if (open) document.dispatchEvent(new CustomEvent('` + NavOpenEvent + `'));
   }
 
   // initPage (re)wires the per-page elements (sidebar buttons + tabs). It is
