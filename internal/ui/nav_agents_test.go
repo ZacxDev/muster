@@ -260,23 +260,20 @@ func TestMoreHoldsThePagesWithTheAsksCountOnItsHeader(t *testing.T) {
 	}
 }
 
-// TestMoreRemembersItsStateOnThisDevice: the script right after More restores
-// its open state from this device's storage and saves each toggle, both inside
-// try/catch (storage can throw).
-func TestMoreRemembersItsStateOnThisDevice(t *testing.T) {
-	src := renderString(t, Page("tasks", navFeatures))
-	i := strings.Index(src, `</details>`+"<script>")
-	if i < 0 {
-		t.Fatal("no script straight after More")
-	}
-	js := src[i : i+strings.Index(src[i:], "</script>")]
-	for _, want := range []string{"localStorage.getItem('" + navMoreKey + "')==='1'", "d.open=true", "addEventListener('toggle'", "localStorage.setItem('" + navMoreKey + "',d.open?'1':'0')"} {
-		if !strings.Contains(js, want) {
-			t.Errorf("More's script lacks %q: %s", want, js)
+// TestTheCloseButtonIsOnlyWhereTheSidebarCanClose: the sidebar header's "×"
+// does nothing on a desktop rail (the rail is always shown), so a rail page
+// hides it from lg up; an overlay page (the mirrored view, the terminal) is a
+// slide-out at every width, so its "×" stays — it is the way to shut it.
+// e2e/tests/agent-sidebar.spec.ts measures the rail at 1280×800, sidenav's
+// openByToggle the overlay's close at the same size.
+func TestTheCloseButtonIsOnlyWhereTheSidebarCanClose(t *testing.T) {
+	for name, doc := range navDocuments() {
+		close := openTagByID(t, documentSource(t, doc), "sidebar-close")
+		overlay := name == "MirrorViewPage" || name == "AgentTerminal"
+		if hidden := strings.Contains(close, "lg:hidden"); hidden == overlay {
+			t.Errorf("%s: the sidebar's close button lg:hidden = %v, want %v (an overlay keeps it; a rail hides it on a desktop): %s",
+				name, hidden, !overlay, close)
 		}
-	}
-	if n := strings.Count(js, "try{"); n != 2 {
-		t.Errorf("More's script has %d try blocks, want 2 (the read and the write): %s", n, js)
 	}
 }
 

@@ -963,7 +963,12 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 					// ≥44x44 tap target (measured at 32x32 by an automated
 					// accessibility audit). The icon stays h-5 w-5 — only the hit area grows,
 					// so the compact header layout is unchanged.
-					Class("press inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"),
+					//
+					// Hidden from lg up on a rail page: the rail is always shown
+					// there, so a close control would do nothing. An overlay page
+					// keeps it — its sidebar is a slide-out at every width, and this
+					// is what shuts it.
+					Class("press inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"+classIf(!overlay, " lg:hidden")),
 					g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 				),
 			),

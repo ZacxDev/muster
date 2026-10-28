@@ -4,8 +4,7 @@ import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { dsn, repoRoot } from '../lib/env';
-import { clsInit, readCls, settle } from '../lib/cls';
-import { navMoreKey, openMore } from '../lib/nav';
+import { openMore } from '../lib/nav';
 
 // THE SIDEBAR IS A LIST OF AGENTS, AND HOME IS THE CHIEF'S CHAT
 // (internal/ui/nav_agents.go, internal/api/nav_agents.go), on the shared
@@ -20,8 +19,8 @@ import { navMoreKey, openMore } from '../lib/nav';
 //      the Asks count; opened, it reaches Tasks;
 //   4. phone: it is the slide-out drawer, nothing scrolls sideways at 360 or
 //      390, and every row and page entry is a 44px target; desktop: it is a
-//      persistent rail, and More's open state survives a reload — restored
-//      before the first paint, so the reload moves nothing.
+//      persistent rail with no close "×" (it cannot be closed), and More is
+//      shut again on every load — nothing remembers it.
 //
 // 🔴 REGRESSION TESTS: on origin/main `/` is the Tasks board, the sidebar has
 // no agent rows and no More, and the pages are at its top level.
@@ -59,19 +58,6 @@ test.afterAll(() => {
   if (askId) fix('rmask', '1', askId);
   fix('rmagent', '1', ASKER);
   fix('rmagent', '1', CHIEF);
-});
-
-// Each test starts with no stored More state (once per test, so a reload
-// inside it keeps what the test stored).
-test.beforeEach(async ({ page }) => {
-  await page.addInitScript((key) => {
-    try {
-      if (!sessionStorage.getItem('nav-more-cleared')) {
-        localStorage.removeItem(key);
-        sessionStorage.setItem('nav-more-cleared', '1');
-      }
-    } catch (e) {}
-  }, navMoreKey);
 });
 
 const rows = (page: Page) => page.locator('#sidebar-agents-list a[data-nav-agent]');
@@ -179,37 +165,28 @@ test.describe('phone', () => {
 test.describe('desktop', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
-  test('the rail is persistent, and More stays as it was left across a reload', async ({ page }) => {
-    await page.addInitScript(clsInit);
+  test('the rail is persistent with no close button; More opens there and is shut again on the next load', async ({ page }) => {
     await page.goto('/');
     await expect(page).toHaveURL(onAgent(CHIEF));
     await expect(page.locator('#sidebar-open'), 'a rail: no hamburger').toBeHidden();
+    // …and no close "×": a rail cannot be closed, so the control would do nothing.
+    await expect(page.locator('#sidebar-close'), 'a rail: no close button').toBeHidden();
     await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
     await expectOrder(page);
     await expect(rowOf(page, CHIEF)).toHaveAttribute('aria-current', 'true');
     await expectMoreShutWithCount(page);
 
-    await openMore(page);
-    // Saved on the disclosure's `toggle` event, which fires after `open` is set.
-    await expect.poll(() => page.evaluate((k) => localStorage.getItem(k), navMoreKey)).toBe('1');
+    // On the board: More opens and holds its page, marked as the one shown.
     await page.goto('/tasks');
-    await expect(page.locator('#sidebar-more'), 'More is open again after a navigation').toHaveJSProperty('open', true);
-    await page.reload();
-    await expect(page.locator('#sidebar-more'), 'More is open again after a reload').toHaveJSProperty('open', true);
-    await expect(page.locator('#sidebar a[data-tab="tasks"]')).toBeVisible();
+    await expect(page.locator('#sidebar-close'), 'a rail: no close button on the board either').toBeHidden();
+    await expectMoreShutWithCount(page);
+    await openMore(page);
     await expect(page.locator('#sidebar a[data-tab="tasks"]')).toHaveAttribute('aria-current', 'page');
-    await settle(page);
-    const cls = await readCls(page);
-    expect(cls.total, `the reload with More restored open shifted: ${JSON.stringify(cls.shifts)}`).toBeLessThan(0.01);
     await shot(page, 'desktop-rail-more-expanded');
 
-    // Shut again, it stays shut.
-    await page.locator('#sidebar-more-summary').click();
-    await expect(page.locator('#sidebar-more')).toHaveJSProperty('open', false);
-    await expect.poll(() => page.evaluate((k) => localStorage.getItem(k), navMoreKey)).toBe('0');
+    // No memory: the next load draws it shut again (operator decision).
     await page.reload();
-    await expect(page.locator('#sidebar-more')).toHaveJSProperty('open', false);
-    await expect(page.locator('#sidebar-more-body')).toBeHidden();
+    await expectMoreShutWithCount(page);
     await expect(rows(page).first()).toBeVisible();
     await shot(page, 'desktop-rail-more-collapsed');
   });

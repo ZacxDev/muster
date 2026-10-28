@@ -239,46 +239,33 @@ func navAttentionPill(a *CardAttention, waiting bool) g.Node {
 	return nil
 }
 
-// navMoreID is the "More" disclosure; navMoreKey where this device keeps
-// whether it is open (localStorage).
-const (
-	navMoreID  = "sidebar-more"
-	navMoreKey = "muster.nav.more"
-)
+// navMoreID is the "More" disclosure.
+const navMoreID = "sidebar-more"
 
-// navMoreJS restores More's open state as the disclosure is parsed (the
-// script follows it, so a page that loads with More open never paints it shut
-// and then moves the rail) and saves each toggle. Storage that throws leaves
-// it shut, and the toggle still works for the page. Inline, and small: it
-// must run before the panel is painted, which a static file's load cannot
-// promise (TestTheShellCarriesNoInlineScriptOverTheBudget holds its size).
-const navMoreJS = `(function(){var d=document.getElementById('` + navMoreID + `');if(!d||d.__musterMore)return;d.__musterMore=1;` +
-	`try{if(localStorage.getItem('` + navMoreKey + `')==='1')d.open=true}catch(e){}` +
-	`d.addEventListener('toggle',function(){try{localStorage.setItem('` + navMoreKey + `',d.open?'1':'0')}catch(e){}})})();`
-
-// navMore is the sidebar's "More": the pages, collapsed by default, with the
-// Asks count on its header (attentionBadgeSlot) so the one actionable count
-// shows while it is shut. body is what it holds when open.
+// navMore is the sidebar's "More": the pages, with the Asks count on its
+// header (attentionBadgeSlot) so the one actionable count shows while it is
+// shut. body is what it holds when open.
+//
+// 🔴 A PLAIN <details>, SHUT ON EVERY LOAD (operator decision): no stored
+// open state, no script. Each page draws it shut; opened, it stays open only
+// for the life of that document.
 func navMore(feat Features, body ...g.Node) g.Node {
-	return g.Group{
-		Details(
-			ID(navMoreID),
-			Class("group shrink-0 border-t border-line pb-[env(safe-area-inset-bottom)]"),
-			Summary(
-				ID(navMoreID+"-summary"),
-				Class("press flex min-h-[44px] cursor-pointer list-none items-center gap-3 px-5 text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
-				Span(Class("text-base"), g.Attr("aria-hidden", "true"), g.Text("⋯")),
-				Span(g.Text("More")),
-				// The Asks count (it was on the Asks link, now inside More).
-				g.If(feat.Attention, attentionBadgeSlot()),
-				g.Raw(`<svg class="h-4 w-4 shrink-0 text-muted transition-transform group-open:rotate-180`+classIf(!feat.Attention, " ml-auto")+`" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832 6.29 12.77a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clip-rule="evenodd"/></svg>`),
-			),
-			Div(
-				ID(navMoreID+"-body"),
-				Class("flex max-h-[60dvh] flex-col gap-1 overflow-y-auto overscroll-contain p-2"),
-				g.Group(body),
-			),
+	return Details(
+		ID(navMoreID),
+		Class("group shrink-0 border-t border-line pb-[env(safe-area-inset-bottom)]"),
+		Summary(
+			ID(navMoreID+"-summary"),
+			Class("press flex min-h-[44px] cursor-pointer list-none items-center gap-3 px-5 text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
+			Span(Class("text-base"), g.Attr("aria-hidden", "true"), g.Text("⋯")),
+			Span(g.Text("More")),
+			// The Asks count (it was on the Asks link, now inside More).
+			g.If(feat.Attention, attentionBadgeSlot()),
+			g.Raw(`<svg class="h-4 w-4 shrink-0 text-muted transition-transform group-open:rotate-180`+classIf(!feat.Attention, " ml-auto")+`" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832 6.29 12.77a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clip-rule="evenodd"/></svg>`),
 		),
-		Script(g.Raw(navMoreJS)),
-	}
+		Div(
+			ID(navMoreID+"-body"),
+			Class("flex max-h-[60dvh] flex-col gap-1 overflow-y-auto overscroll-contain p-2"),
+			g.Group(body),
+		),
+	)
 }
