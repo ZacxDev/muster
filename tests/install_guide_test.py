@@ -124,8 +124,8 @@ exec "$REAL_AWK" "$@"
 class Guide(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="mi-guide-"))
-        self.home = self.tmp / "home"
-        self.home.mkdir()
+        self.homedir = self.tmp / "home"
+        self.homedir.mkdir()
         self.bin = self.tmp / "bin"
         self.bin.mkdir()
         self.log = self.tmp / "calls.log"
@@ -141,12 +141,12 @@ class Guide(unittest.TestCase):
             p.write_text(body)
             p.chmod(0o755)
         self.env = {
-            "HOME": str(self.home), "PATH": f"{self.bin}:{os.environ['PATH']}", "FAKE_LOG": str(self.log),
+            "HOME": str(self.homedir), "PATH": f"{self.bin}:{os.environ['PATH']}", "FAKE_LOG": str(self.log),
             "FAKE_SERVE": str(self.serve_file), "FAKE_AWK_ARGV": str(self.awk_argv), "REAL_AWK": real_awk,
         }
         self.run_block(block('cat > "$HOME/.config/muster-install/lib.sh"'))
-        self.lib = f'. "{self.home}/.config/muster-install/lib.sh"\n'
-        self.muster = self.home / "muster"
+        self.lib = f'. "{self.homedir}/.config/muster-install/lib.sh"\n'
+        self.muster = self.homedir / "muster"
 
     def tearDown(self) -> None:
         subprocess.run(["rm", "-rf", str(self.tmp)])
@@ -163,7 +163,7 @@ class Guide(unittest.TestCase):
         return self.log.read_text()
 
     def state(self) -> str:
-        p = self.home / ".config/muster-install/state"
+        p = self.homedir / ".config/muster-install/state"
         return p.read_text() if p.exists() else ""
 
     def dotenv(self) -> dict[str, str]:
@@ -218,7 +218,7 @@ class Guide(unittest.TestCase):
         return self.run_block(self.lib + block('case "$STT" in'))
 
     def write_secret(self, name: str, value: str) -> None:
-        p = self.home / ".config/muster-install" / name
+        p = self.homedir / ".config/muster-install" / name
         p.write_text(value)
         p.chmod(0o600)
 
@@ -401,7 +401,7 @@ class Guide(unittest.TestCase):
     def test_ssh_mint_keeps_only_the_token(self) -> None:
         self.sh("mi_save MIRROR_HOST laptop")
         out = self.run_block(self.lib + block("ssh ", "mirror token create").replace("HUB", "hub.example"))
-        tok = (self.home / ".config/muster-mirror/token").read_text().strip()
+        tok = (self.homedir / ".config/muster-mirror/token").read_text().strip()
         self.assertEqual(tok, "mmt_token-for-laptop", out)
         self.assertIn("BatchMode=yes", self.calls())
         again = self.run_block(self.lib + block("ssh ", "mirror token create").replace("HUB", "hub.example"))

@@ -5,6 +5,8 @@ import (
 	"log"
 	"slices"
 	"testing"
+
+	"github.com/ZacxDev/muster/internal/dbtest"
 )
 
 // TestLiveTokenHostsAreTheCallersOnly is what GET /api/doctor's host list
@@ -12,13 +14,16 @@ import (
 // Postgres with row-level security, never another user's. A revoked token's
 // host drops out for its owner.
 func TestLiveTokenHostsAreTheCallersOnly(t *testing.T) {
-	s, _, _ := pgStore(t)
+	s, _, dsn := pgStore(t)
+	// User 3, not 2: TestPGStoreTokensAreHashedOwnedAndIsolated pins that user
+	// 2 holds no token in this package's database.
+	dbtest.OwnerExec(t, dsn, `INSERT INTO users (id, role) OVERRIDING SYSTEM VALUE VALUES (3, 'member') ON CONFLICT (id) DO NOTHING`)
 	svc := NewService(s, log.New(io.Discard, "", 0))
 
 	for _, c := range []struct {
 		owner int64
 		host  string
-	}{{1, "alpha-one"}, {1, "beta-one"}, {2, "gamma-two"}} {
+	}{{1, "alpha-one"}, {1, "beta-one"}, {3, "gamma-three"}} {
 		if _, _, err := s.CreateToken(user(c.owner), c.host); err != nil {
 			t.Fatalf("mint %s for user %d: %v", c.host, c.owner, err)
 		}
@@ -35,19 +40,19 @@ func TestLiveTokenHostsAreTheCallersOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, err := svc.LiveTokenHosts(user(2))
+	three, err := svc.LiveTokenHosts(user(3))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Other tests in this package mint tokens too, so pin membership, not the
 	// whole slice: each user's own hosts present, the other's absent.
 	for _, h := range []string{"alpha-one", "beta-one"} {
-		if !slices.Contains(one, h) || slices.Contains(two, h) {
-			t.Errorf("%s: user 1 sees it=%v (want true), user 2 sees it=%v (want false)", h, slices.Contains(one, h), slices.Contains(two, h))
+		if !slices.Contains(one, h) || slices.Contains(three, h) {
+			t.Errorf("%s: user 1 sees it=%v (want true), user 3 sees it=%v (want false)", h, slices.Contains(one, h), slices.Contains(three, h))
 		}
 	}
-	if !slices.Contains(two, "gamma-two") || slices.Contains(one, "gamma-two") {
-		t.Errorf("gamma-two: user 2 sees it=%v (want true), user 1 sees it=%v (want false)", slices.Contains(two, "gamma-two"), slices.Contains(one, "gamma-two"))
+	if !slices.Contains(three, "gamma-three") || slices.Contains(one, "gamma-three") {
+		t.Errorf("gamma-three: user 3 sees it=%v (want true), user 1 sees it=%v (want false)", slices.Contains(three, "gamma-three"), slices.Contains(one, "gamma-three"))
 	}
 	if slices.Contains(one, "gone-one") {
 		t.Error("a host whose only token is revoked is still listed")
