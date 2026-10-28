@@ -42,7 +42,7 @@ window opens in the Terminal view only:
   Tailscale app on your phone.
 - On the hub: Docker with Compose v2, and about 10 GB of free disk (20 GB for
   local dictation).
-- On every machine: tmux. Linux or macOS, on amd64 or arm64.
+- On every machine: tmux. Linux or macOS, on amd64 or arm64. macOS hosts are experimental: there, only a Claude Code window whose Rendered view resolves can be viewed. The Terminal view cannot attach on macOS yet ([`pty_other.go`](../internal/mirrorhost/pty_other.go)), so shells, Codex and any window without a Rendered view cannot be viewed, and Rendered-view detection is unverified on a real Mac.
 
 ## What the agent asks you
 

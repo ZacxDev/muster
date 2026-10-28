@@ -75,13 +75,6 @@ func procArgsOf(pid int) (procArgs, bool) {
 	return parseProcArgs2(b)
 }
 
-func (d darwinProcs) cwd(pid int) (string, error) {
-	if c, ok := d.cwds([]int{pid})[pid]; ok {
-		return c, nil
-	}
-	return "", os.ErrNotExist
-}
-
 func (darwinProcs) cwds(pids []int) map[int]string {
 	var list []string
 	for _, p := range pids {
@@ -99,9 +92,5 @@ func (darwinProcs) cwds(pids []int) map[int]string {
 }
 
 func (darwinProcs) environ(pid int) ([]string, error) {
-	pa, ok := procArgsOf(pid)
-	if !ok {
-		return nil, os.ErrPermission
-	}
-	return pa.env, nil
+	return environOf(procArgsOf(pid))
 }

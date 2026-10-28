@@ -441,6 +441,7 @@ gave a reason. The reasons:
 | muster found no Claude Code conversation in this window. | nothing in the pane is Claude Code (a shell, Codex, Gemini CLI) | nothing; or start `claude` in it |
 | Claude Code has not written this conversation yet. … | Claude Code started, but you have not sent its first message | send one; the card opens the Rendered view from the next refresh |
 | Claude Code is running here, but muster-mirror cannot match it to a transcript … | neither Claude Code's sessions file nor its working directory leads to a transcript that is this window's alone: none at all, or only a guess another window in the same directory makes too | see the cases below; update Claude Code if it is old (a current one names its conversation in a sessions file); on the host, `muster-mirror -list -claude` lists the Claude Code windows it did resolve |
+| Claude Code is running here, but muster-mirror cannot read its environment … | Claude Code runs, nothing else resolved it, and its environment cannot be read (another user's process; on macOS, a process the kernel returns no environment for), so its config directory is unknown | run Claude Code as the user muster-mirror runs as; on the host, `muster-mirror -list -claude` |
 | muster-mirror cannot read this host's process table … | the host's OS has no process lookup (Linux and macOS have one), or reading it failed, and the window's command is `claude` | on the host, `muster-mirror -list -claude` |
 | This host's muster-mirror is too old to send the Rendered view. … | the host runs a muster-mirror from before rendered views | update it |
 
@@ -470,7 +471,8 @@ Cases checked against the code:
   binary (`~/.local/share/claude/versions/<version>`) is recognised by that
   path. This lookup is tested against the documented formats but has not yet
   been run on a real Mac. The Terminal view's attach is Linux-only today
-  (`internal/mirrorhost/pty_other.go`).
+  (`internal/mirrorhost/pty_other.go`): on a Mac, a window without a Rendered
+  view cannot be viewed at all.
 
 ### How a pane's transcript is found
 

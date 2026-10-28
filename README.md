@@ -57,7 +57,7 @@ You need:
   certificates on, and Tailscale on every machine and on your phone;
 - on the machine that will run the server: Docker with Compose v2, and about
   10 GB of free disk (20 GB with local dictation);
-- tmux on every machine. Linux or macOS, amd64 or arm64. macOS hosts are experimental: Rendered-view detection there is unverified on a real Mac, and the Terminal view's attach is Linux-only today (`internal/mirrorhost/pty_other.go`).
+- tmux on every machine. Linux or macOS, amd64 or arm64. macOS hosts are experimental: there, only a Claude Code window whose Rendered view resolves can be viewed. The Terminal view cannot attach on macOS yet (`internal/mirrorhost/pty_other.go`), so shells, Codex and any window without a Rendered view cannot be viewed, and Rendered-view detection is unverified on a real Mac.
 
 **(a) Let your agent install it.** Paste this one prompt into the coding agent
 (Claude Code, Codex, opencode, Gemini CLI, …) on each machine you want in
@@ -92,8 +92,9 @@ against a throwaway database.
 ### Core
 
 - **Mirrored sessions.** Each tmux window on your machines is shown live. A
-  Claude Code window renders as a chat, and the Terminal view is one tap away.
-  Viewing a window never moves your own terminal. → [docs/mirroring.md](docs/mirroring.md)
+  Claude Code window renders as a chat, and the Terminal view is one tap away
+  (on a Linux host; on a macOS host there is no Terminal view yet, see
+  Requirements). Viewing a window never moves your own terminal. → [docs/mirroring.md](docs/mirroring.md)
 - **Session switcher, sidebar and search.** A bottom bar with Recent, Pins and
   All, and a sidebar that lists every session like channels in a chat app: the
   chief first, then the sessions waiting on you, then the rest by recency. The search opens with the magnifier or `/`. → [docs/mirroring.md](docs/mirroring.md)

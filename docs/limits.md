@@ -71,8 +71,10 @@
 
 ## Mirroring
 
-- **macOS hosts are experimental.** The Terminal view's attach is
-  Linux-only today (`internal/mirrorhost/pty_other.go`).
+- **macOS hosts are experimental, and have no Terminal view.** The Terminal
+  view's attach is Linux-only today (`internal/mirrorhost/pty_other.go`), so
+  on a Mac only a Claude Code window whose Rendered view resolves can be
+  viewed; shells, Codex and windows without a Rendered view cannot.
 - **The macOS process lookup has not been run on a real Mac yet.** On macOS,
   muster-mirror finds Claude Code with `ps`, the `kern.procargs2` sysctl and
   `lsof` instead of `/proc` ([mirroring.md](mirroring.md#how-a-panes-transcript-is-found)).

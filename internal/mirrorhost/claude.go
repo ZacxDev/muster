@@ -265,29 +265,38 @@ func (l ClaudeLocator) configDir() string {
 // CLAUDE_CONFIG_DIR must not impose it on a CLI started without one. The
 // process says where it writes; believe it.
 func (l ClaudeLocator) configDirOf(pid int) string {
+	d, _ := l.configDirOfErr(pid)
+	return d
+}
+
+// configDirOfErr is configDirOf, and the error reading the process's
+// environment when it fell back for want of one (an environ this user cannot
+// read; on macOS also errEnvAbsent, a kernel that returned no environment):
+// what lets whyNoView say that step failed instead of a generic line.
+func (l ClaudeLocator) configDirOfErr(pid int) (string, error) {
 	env, err := l.procs().environ(pid)
 	if err != nil {
-		return l.configDir()
+		return l.configDir(), err
 	}
 	var home string
 	for _, kv := range env {
 		if v, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok && v != "" {
 			if filepath.IsAbs(v) {
-				return filepath.Clean(v)
+				return filepath.Clean(v), nil
 			}
-			return l.configDir()
+			return l.configDir(), nil
 		}
 		if v, ok := strings.CutPrefix(kv, "HOME="); ok {
 			home = v
 		}
 	}
 	if l.Home != "" {
-		return l.Home
+		return l.Home, nil
 	}
 	if !filepath.IsAbs(home) {
 		home, _ = os.UserHomeDir()
 	}
-	return filepath.Join(home, ".claude")
+	return filepath.Join(home, ".claude"), nil
 }
 
 // procInfo is the little of a process the walk needs.
@@ -452,6 +461,10 @@ const (
 	// does name it (its sessions file) and only this one guesses; this wording
 	// is true in every case that reaches it.
 	NoViewNoTranscript = "Claude Code is running here, but muster-mirror cannot match it to a transcript in its Claude config directory."
+	// NoViewNoEnv: Claude Code runs, nothing resolved, and its environment
+	// could not be read (configDirOfErr) — so which config directory it
+	// writes to is unknown, and the fallback's guess found nothing.
+	NoViewNoEnv = "Claude Code is running here, but muster-mirror cannot read its environment, so it cannot tell which Claude config directory it uses."
 )
 
 // whyNoView is why pane p, which no runtime claimed, has no rendered view —
@@ -473,7 +486,7 @@ func (l ClaudeLocator) whyNoView(p pane, command string, procs map[int]procInfo,
 	if pid == 0 {
 		return ""
 	}
-	cfg := l.configDirOf(pid)
+	cfg, envErr := l.configDirOfErr(pid)
 	_, _, _, guessed, ok := l.resolve(pid, cfg, func() liveSessions { return l.liveSessions(cfg, procs) })
 	switch {
 	case ok && guessed:
@@ -486,6 +499,8 @@ func (l ClaudeLocator) whyNoView(p pane, command string, procs map[int]procInfo,
 		return ""
 	case fileExists(filepath.Join(cfg, "sessions", strconv.Itoa(pid)+".json")):
 		return NoViewNotYet
+	case envErr != nil:
+		return NoViewNoEnv
 	default:
 		return NoViewNoTranscript
 	}
@@ -607,8 +622,8 @@ func (l ClaudeLocator) resolve(pid int, cfg string, live func() liveSessions) (p
 			return "", "", paneStatus{}, false, false
 		}
 	}
-	cwd, err := l.procs().cwd(pid)
-	if err != nil {
+	cwd, ok := cwdOf(l.procs(), pid)
+	if !ok {
 		return "", "", paneStatus{}, false, false
 	}
 	m, _ := filepath.Glob(filepath.Join(cfg, "projects", ProjectSlug(cwd), "*.jsonl"))

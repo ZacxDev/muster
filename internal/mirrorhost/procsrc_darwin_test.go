@@ -59,9 +59,26 @@ func TestDarwinSourceReadsThisHostsOwnProcesses(t *testing.T) {
 	if v, ok := envLookup(env, "CLAUDE_CONFIG_DIR"); err != nil || !ok || v != "/opt/dev/.claude-probe" {
 		t.Errorf("environ(child) = %q, %v", env, err)
 	}
+	// The real kern.procargs2 layout: a child exec'd with an EMPTY argv[0]
+	// keeps it, and its environment is not shifted into argv.
+	empty := exec.Command("/bin/sleep")
+	empty.Args = []string{"", "61"}
+	empty.Env = []string{"MUSTER_PROBE=1"}
+	if err := empty.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = empty.Process.Kill(); _ = empty.Wait() })
+	pa, ok := procArgsOf(empty.Process.Pid)
+	if !ok || len(pa.argv) != 2 || pa.argv[0] != "" || pa.argv[1] != "61" {
+		t.Errorf("empty argv[0] child: procargs2 = %+v, %v; want argv [\"\" 61]", pa, ok)
+	}
+	if env, err := environOf(pa, ok); err != nil || len(env) == 0 || env[0] != "MUSTER_PROBE=1" {
+		t.Errorf("empty argv[0] child: environ = %q, %v; want [MUSTER_PROBE=1 …]", env, err)
+	}
+
 	wantDir, _ := filepath.EvalSymlinks(dir)
-	if got, err := src.cwd(child); err != nil || got != wantDir {
-		t.Errorf("cwd(child) = %q, %v; want %q", got, err, wantDir)
+	if got, ok := cwdOf(src, child); !ok || got != wantDir {
+		t.Errorf("cwdOf(child) = %q, %v; want %q", got, ok, wantDir)
 	}
 	if got := src.cwds([]int{child, me}); got[child] != wantDir || got[me] == "" {
 		t.Errorf("cwds = %v", got)

@@ -203,9 +203,15 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	// lookup exactly as before the seam; then the others, for what is left.
 	// 🔴 ONE READ OF THE PROC TABLE FOR ALL OF THEM: a read is ~39 ms on a host
 	// of ~3,000 processes, and this runs every refresh (Config.Refresh).
-	src := t.Claude.procs()
-	procs, children, procErr := src.table()
-	claude := t.claudeRuntime()
+	procs, children, procErr := t.Claude.procs().table()
+	// 🔴 ONE CWD READ FOR THE WHOLE LISTING TOO: on macOS a cwd is an lsof
+	// exec. Every pid this listing may ask the cwd of — each pane's root and
+	// the Claude Code process below it, for the locator's guess and for the
+	// window's Cwd below — is read in one call, on first use (cwdMemo).
+	loc := t.Claude
+	src := newCwdMemo(loc.procs(), cwdCandidates(windows, procs, children))
+	loc.src = src
+	claude := claudeRuntime{loc: loc}
 	attachClaude(windows, func(ps []pane) map[string]ClaudePane { return claude.LocatePanes(ps, procs, children) })
 	attachAgents(windows, procs, children, t.runtimes()[1:])
 	// Why a window no runtime claimed has no rendered view, when its pane
@@ -214,7 +220,7 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	// the terminal (WindowInfo.NoView).
 	for i := range windows {
 		if w := &windows[i]; w.Claude == nil && w.Agent == nil {
-			w.NoView = t.Claude.whyNoView(pane{Session: w.Session, ID: w.Pane, PID: w.PanePID}, w.Command, procs, children, procErr)
+			w.NoView = loc.whyNoView(pane{Session: w.Session, ID: w.Pane, PID: w.PanePID}, w.Command, procs, children, procErr)
 		}
 	}
 	// Each Claude window's background shells, from the CLI's own process tree
@@ -227,9 +233,8 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 				func(pid int) []string { return procs[pid].argv }, claudeConfigDir(c, t.Claude))
 		}
 	}
-	// Each window's working directory (windowCwdPID says whose), all in one
-	// read: on Linux a readlink per window — a syscall, no process; on macOS
-	// one lsof for every window.
+	// Each window's working directory (windowCwdPID says whose), from the
+	// listing's one cwd read (a pid outside it — an agent's — is read then).
 	var cwdPIDs []int
 	for i := range windows {
 		if pid := windowCwdPID(windows[i]); pid > 0 {
@@ -243,6 +248,27 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 		}
 	}
 	return windows, nil
+}
+
+// cwdCandidates is every pid a Windows listing may need the cwd of: each
+// pane's root process and the Claude Code process findClaude finds below it.
+func cwdCandidates(windows []WindowInfo, procs map[int]procInfo, children map[int][]int) []int {
+	var out []int
+	add := func(root int) {
+		if root > 0 {
+			out = append(out, root)
+			if c := findClaude(root, procs, children); c > 0 {
+				out = append(out, c)
+			}
+		}
+	}
+	for _, w := range windows {
+		add(w.PanePID)
+		for _, p := range w.panes {
+			add(p.PID)
+		}
+	}
+	return out
 }
 
 // claudeConfigDir is the config dir c's CLI writes under, as the locator

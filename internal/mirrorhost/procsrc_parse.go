@@ -3,6 +3,7 @@ package mirrorhost
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"regexp"
 	"sort"
 	"strconv"
@@ -133,6 +134,10 @@ func parseLsofCwds(out []byte) map[int]string {
 // maxProcArgc bounds the argc a kern.procargs2 buffer may claim.
 const maxProcArgc = 1 << 16
 
+// errEnvAbsent: kern.procargs2 returned a process's arguments but no
+// environment block (procArgs.envAbsent).
+var errEnvAbsent = errors.New("the kernel returned no environment for this process")
+
 // procArgs is a kern.procargs2 buffer, parsed.
 type procArgs struct {
 	// exe is the executable path the process was exec'd with.
@@ -140,13 +145,16 @@ type procArgs struct {
 	argv []string
 	// env is the environment as exec'd: KEY=VALUE strings.
 	env []string
+	// envAbsent: the buffer holds no environment section at all (it ends
+	// with, or inside, argv), as XNU returns for some processes.
+	envAbsent bool
 }
 
 // parseProcArgs2 reads a kern.procargs2 sysctl buffer, which is:
 //
 //	argc        int32, host byte order (little-endian on both arm64 and amd64)
 //	exec_path   NUL-terminated
-//	padding     NULs, to an alignment boundary
+//	padding     NULs, to an 8-byte boundary counted from exec_path's start
 //	argv[argc]  each NUL-terminated
 //	env[]       each NUL-terminated, ended by an empty string (what follows —
 //	            the kernel's "apple" strings, executable_path=… — is not env)
@@ -169,8 +177,17 @@ func parseProcArgs2(b []byte) (procArgs, bool) {
 	}
 	var pa procArgs
 	pa.exe = string(rest[:end])
-	rest = rest[end:]
-	for len(rest) > 0 && rest[0] == 0 {
+	// The exec path is NUL-padded so that it, terminator included, fills a
+	// whole number of pointer-sized (8-byte) words; argv starts on the next
+	// word. Skip at most that padding — never "every NUL", which is what
+	// `ps` does and which swallows an EMPTY argv[0] (its terminator is a NUL
+	// too), shifting every argument, and the environment, by one.
+	pad := end + 1
+	for pad%8 != 0 {
+		pad++
+	}
+	rest = rest[end+1:]
+	for i := end + 1; i < pad && len(rest) > 0 && rest[0] == 0; i++ {
 		rest = rest[1:]
 	}
 	next := func() (string, bool) {
@@ -185,9 +202,18 @@ func parseProcArgs2(b []byte) (procArgs, bool) {
 	for len(pa.argv) < argc {
 		s, ok := next()
 		if !ok {
+			pa.envAbsent = true
 			return pa, true
 		}
 		pa.argv = append(pa.argv, s)
+	}
+	// Current XNU returns argc, the exec path and argv but NO environment for
+	// some processes (a restricted one): the buffer ends after argv. That is
+	// "could not read it", not "it sets nothing" — the caller must not fall
+	// back silently as if CLAUDE_CONFIG_DIR were unset.
+	if len(bytes.Trim(rest, "\x00")) == 0 {
+		pa.envAbsent = true
+		return pa, true
 	}
 	for {
 		s, ok := next()
@@ -200,6 +226,23 @@ func parseProcArgs2(b []byte) (procArgs, bool) {
 	}
 	return pa, true
 }
+
+// environOf is the environment a kern.procargs2 read gives (parseProcArgs2's
+// result): an error when the read failed, and errEnvAbsent when the buffer
+// held no environment — never an empty environment in its place.
+func environOf(pa procArgs, ok bool) ([]string, error) {
+	if !ok {
+		return nil, errProcArgsUnread
+	}
+	if pa.envAbsent {
+		return nil, errEnvAbsent
+	}
+	return pa.env, nil
+}
+
+// errProcArgsUnread: kern.procargs2 refused the process, or its buffer did not
+// parse.
+var errProcArgsUnread = errors.New("the kernel refused this process's arguments")
 
 // psTable builds the locator's table from parsed ps rows plus each process's
 // argv, which argvOf returns (ok=false: it could not be read). It is the
