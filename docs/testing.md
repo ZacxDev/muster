@@ -134,7 +134,7 @@ The images in [`docs/img/`](img) are generated, not hand-made:
 
 ```sh
 MUSTER_E2E_DATABASE_URL='…/muster_e2e?sslmode=disable' \
-  nix-shell -p ffmpeg pngquant oxipng --run 'make screenshots'
+  nix-shell -p ffmpeg pngquant --run 'make screenshots'
 ```
 
 This runs `e2e/docshots/docs.spec.ts`. It uses only the seeded fixture board and
@@ -150,7 +150,7 @@ Phone shots are 390×844 at 2×; `desktop.png` is 1280×800 at 2×. The spec als
 writes the frames of the README's animation, `phone-flow.gif`, to
 `e2e/.state/phone-flow/` with an ffmpeg concat list (each frame's hold), and the
 make target assembles the GIF from them. Then it compresses each PNG with
-pngquant and oxipng when they are installed, and fails if a PNG is over 200 KB or
+pngquant when it is installed, and fails if a PNG is over 200 KB or
 the GIF over 2 MB. `npm run capture` in `e2e/` is a separate generator, for the
 PWA manifest's install-sheet screenshots.
 

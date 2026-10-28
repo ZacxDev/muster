@@ -4,8 +4,7 @@
 machines, and use them easily from your phone with your voice and one hand.**
 
 Self-hosted: one Go binary and Postgres. The UI installs as a PWA. Each of your
-machines dials out to muster, so nothing on them is exposed and no inbound port
-is opened to them.
+machines dials out to muster, and muster opens no network port on them.
 
 <p align="center">
   <img src="docs/img/phone-flow.gif" width="270" alt="On a phone: open a session from the bottom bar's search by typing its codename, dictate a reply with the microphone, send it, and watch the session answer">
@@ -21,8 +20,9 @@ is opened to them.
   codename, title, repository or kind as you type.
 - **Every machine, nothing exposed.** A small host agent, `muster-mirror`, runs
   on each machine and opens an outbound tunnel to your muster server. Your
-  laptop, workstation and build box show up side by side, and none of them
-  accepts a connection.
+  laptop, workstation and build box show up side by side. They dial out, and
+  muster opens no network port on them (the optional MCP endpoint listens on
+  loopback only).
 - **Your phone, your voice, one hand.** muster is designed for a phone first.
   The controls sit at the bottom of the screen, within reach of your thumb. Tap
   the mic, speak, and the transcript lands in the message box. You read it, then

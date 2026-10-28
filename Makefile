@@ -340,9 +340,9 @@ e2e:
 # assembled here from the frames the spec writes to e2e/.state/phone-flow/. A
 # GENERATOR, NOT A GATE — like `icons`, CI does not run it. Needs what `make
 # e2e` needs, plus Docker for the GoTrue container the passkey shot signs in
-# against, and ffmpeg for the animation. pngquant and oxipng are used when
-# present. On NixOS:
-#   nix-shell -p ffmpeg pngquant oxipng --run 'make screenshots'
+# against, and ffmpeg for the animation. pngquant is used when present. On
+# NixOS:
+#   nix-shell -p ffmpeg pngquant --run 'make screenshots'
 # Every PNG must end up at or under 200 KB and the GIF under 2 MB either way.
 FLOW_FRAMES := e2e/.state/phone-flow/frames.txt
 FLOW_GIF := docs/img/phone-flow.gif
@@ -350,8 +350,6 @@ screenshots:
 	@cd e2e && MUSTER_E2E_DOCSHOTS=1 npx playwright test
 	@if command -v pngquant >/dev/null 2>&1; then pngquant --force --ext .png --quality 65-90 docs/img/*.png; \
 	  else echo "screenshots: pngquant not found; images left as captured"; fi
-	@if command -v oxipng >/dev/null 2>&1; then oxipng -q -o 4 --strip safe docs/img/*.png; \
-	  else echo "screenshots: oxipng not found; PNGs not further optimised"; fi
 	@command -v ffmpeg >/dev/null 2>&1 || { echo "screenshots: ffmpeg not found; cannot assemble $(FLOW_GIF)"; exit 1; }
 	@ffmpeg -loglevel error -y -f concat -safe 0 -i $(FLOW_FRAMES) \
 	  -vf 'split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle' \
