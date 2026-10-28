@@ -156,7 +156,7 @@ _PRIVATE_IP = re.compile(
 # 🔴 A MIXED-CASE SEGMENT IS SPLIT AT ITS camelCase BOUNDARIES FIRST, AND THAT IS
 # THE FALSE-POSITIVE FIX, NOT A LOOPHOLE TO CLOSE. Without it a denied word
 # turned up inside ordinary Go names whose camelCase words merely spell it
-# across a boundary (a test called `TestA<word>…`, a const `<Word>sion`), and a
+# across a boundary (a test name, a const), and a
 # gate that refuses ordinary names gets switched off. The cost, declared: a
 # name written in camelCase as two words is a different spelling and misses.
 #
