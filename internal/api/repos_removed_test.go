@@ -40,7 +40,7 @@ func operatorRequest(s *Server, method, path string) *http.Request {
 // paths, so nothing catches them).
 func TestTheReposSurfaceAndTheOAuthRoutesAreGone(t *testing.T) {
 	s := New(nil, AuthConfig{UIPassword: testUIPassword}, log.New(os.Stderr, "", 0))
-	s.UseExtensions(Extensions{GitHubApp: &listingApp{accounts: []string{"example-org"}, repos: []string{"example-org/widget"}}})
+	s.UseExtensions(Extensions{GitHubApp: &listingApp{repos: []string{"example-org/widget"}}})
 	h := s.Handler()
 
 	rec := httptest.NewRecorder()

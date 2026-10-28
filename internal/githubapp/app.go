@@ -691,19 +691,6 @@ func (a *App) Repos(ctx context.Context) ([]github.Repo, error) {
 	return all, nil
 }
 
-// Accounts are the logins the App is installed on (allowlisted ones only).
-func (a *App) Accounts(ctx context.Context) ([]string, error) {
-	insts, err := a.installations(ctx, false)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(insts))
-	for _, in := range insts {
-		out = append(out, in.Account.Login)
-	}
-	return out, nil
-}
-
 // DefaultBranch reads repo's default branch with the installation's listing token.
 func (a *App) DefaultBranch(ctx context.Context, repo string) (string, error) {
 	owner, name, ok := strings.Cut(repo, "/")

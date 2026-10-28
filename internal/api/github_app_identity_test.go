@@ -20,10 +20,9 @@ import (
 // listingApp is a GitHub App stand-in for the API's identity readers: it lists
 // fixed installation repositories and records which agent asked for PRs.
 type listingApp struct {
-	accounts []string
-	repos    []string
-	problem  string
-	prAgent  int64
+	repos   []string
+	problem string
+	prAgent int64
 }
 
 func (l *listingApp) Repos(context.Context) ([]github.Repo, error) {
@@ -33,7 +32,6 @@ func (l *listingApp) Repos(context.Context) ([]github.Repo, error) {
 	}
 	return out, nil
 }
-func (l *listingApp) Accounts(context.Context) ([]string, error) { return l.accounts, nil }
 func (l *listingApp) DefaultBranch(context.Context, string) (string, error) {
 	return "trunk", nil
 }
@@ -89,7 +87,7 @@ func TestTaskDispatchsEffectiveRepoIsCheckedAgainstTheApp(t *testing.T) {
 // repository picker offers none — while an admin principal gets the App's.
 func TestAMemberGetsNoAppRepositories(t *testing.T) {
 	s, _, _ := kindsServer(t, stubKinds{pick: "work"})
-	s.ext.GitHubApp = &listingApp{accounts: []string{"example-org"}, repos: []string{"example-org/widget"}}
+	s.ext.GitHubApp = &listingApp{repos: []string{"example-org/widget"}}
 	member := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 2, Role: authz.RoleMember, Via: authz.ViaSession})
 	admin := authz.WithPrincipal(context.Background(), authz.Principal{UserID: 1, Role: authz.RoleAdmin, Via: authz.ViaSession})
 	if why := s.connectedRepo(member, "example-org/widget"); why == "" {
