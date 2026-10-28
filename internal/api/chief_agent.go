@@ -107,6 +107,15 @@ func (s *Server) chiefAgent(ctx context.Context) (agents.Agent, error) {
 	if !ok {
 		return agents.Agent{}, ErrNoChief
 	}
+	// The owner may have turned it off (chief_toggle.go): ErrChiefOff is an
+	// ErrNoChief, so every caller's "no chief" branch covers it.
+	on, err := s.chiefOn(ctx, requestOwner(ctx), list)
+	if err != nil {
+		return agents.Agent{}, err
+	}
+	if !on {
+		return agents.Agent{}, ErrChiefOff
+	}
 	return found, nil
 }
 

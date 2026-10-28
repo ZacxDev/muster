@@ -198,14 +198,22 @@ func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.
 // operator tearing down one of their agents — with the attention tools. No
 // dispatched agent is offered any operator tool, and their handlers refuse any caller but a mirrored
 // session.
-func (s *Server) mirrorTools() []agents.ToolDef {
+//
+// ctx is the host's request: chief_ask is listed only while the host's owner
+// has a chief that is on (chiefOnFor), so a session is never offered a chief
+// its owner does not have or turned off (chief_toggle.go).
+func (s *Server) mirrorTools(ctx context.Context) []agents.ToolDef {
 	var out []agents.ToolDef
 	if s.attentionToolsOn() {
 		out = append(append(append(append(out, attentionToolDefs()...), taskToolDefs()...), attentionAnswerToolDef()), agentDestroyToolDef())
 		// chief_ask — a session's question to the owner's chief
-		// (chief_ask_tool.go) — when there are agents to find the chief among.
+		// (chief_ask_tool.go) — when the owner's chief is on.
 		if s.chiefAskOn() {
-			out = append(out, chiefAskToolDef())
+			if on, err := s.chiefOnFor(ctx, requestOwner(ctx)); err != nil {
+				s.logger.Printf("mirror mcp: read the chief toggle: %v (chief_ask not listed)", err)
+			} else if on {
+				out = append(out, chiefAskToolDef())
+			}
 		}
 	}
 	if s.connectorDecideToolsOn() {
@@ -249,7 +257,7 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 	// A call is bound to a window this host lists running that session — or
 	// refused as a TOOL error the model sees.
 	s.serveMCP(w, r, mcpSurface{
-		tools: s.mirrorTools,
+		tools: func() []agents.ToolDef { return s.mirrorTools(r.Context()) },
 		call: func(name, args string) string {
 			e, ok := s.awaitMirrorSession(r.Context(), t.Host, sid)
 			if !ok {
@@ -258,7 +266,8 @@ func (s *Server) handleMirrorMCP(w http.ResponseWriter, r *http.Request) {
 			}
 			c := toolCaller{asker: attention.Asker{MirrorHost: t.Host, MirrorSession: sid, Label: e.DisplayTitle() + " @ " + t.Host}}
 			// chief_ask is this door's alone, like route_reply below (listed only
-			// with chiefAskOn, and serveMCP refuses an unlisted name).
+			// with chiefAskOn and the owner's chief on, and serveMCP refuses an
+			// unlisted name).
 			if name == chiefAskTool {
 				return s.toolChiefAsk(r.Context(), c, args)
 			}

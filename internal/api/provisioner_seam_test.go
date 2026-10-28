@@ -140,14 +140,14 @@ var provisionerDeps = []provisionerDep{
 			"POST /chief/provision",
 		},
 		callers: []string{
-			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAgentCreate, handleChiefProvision
+			"(*Server).createAndDispatchAgent", // Dispatch; reached from handleAgentCreate, provisionChief
 			"(*Server).handleAgentCreate",      // KickoffUndeliverableReason, the synchronous pre-flight before the row
 			"(*Server).handleAgentDelete",      // Destroy (passed to destroyAgent)
 			"(*Server).handleAgentLogsStream",  // StreamLogs
 			"(*Server).handleAgentStart",       // Start
 			"(*Server).handleAgentStop",        // Stop
 			"(*Server).handleAgentTerminalWS",  // AttachTerminal
-			"(*Server).handleChiefProvision",   // Start
+			"(*Server).provisionChief",         // Start; reached from handleChiefProvision, and handleAccountChief's nil-checked branch
 			"(*Server).replaceChief",           // Destroy + Start; reached from handleChiefReplace
 		},
 	},

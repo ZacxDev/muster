@@ -30,6 +30,10 @@ import (
 // chatAgents adds the chat-session reads the chat socket makes to termAgents.
 type chatAgents struct{ termAgents }
 
+// List: the Account page reads the agent list for its Chief section; this
+// fixture has no agents.
+func (chatAgents) List(context.Context) ([]agents.Agent, error) { return nil, nil }
+
 func (chatAgents) LatestOrCreateSession(_ context.Context, agentID int64, _ string) (agents.ChatSession, error) {
 	return agents.ChatSession{ID: 1, AgentID: agentID}, nil
 }

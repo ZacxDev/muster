@@ -13,6 +13,7 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmask <owner-id> <ask-id>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix draft <owner-id> <agent-name> <plugin-name> → prints the draft id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix chiefpref <owner-id> clear
 //
 //	  - chief: an agent labelled "chief", running, holding token — the owner's
 //	    chief, whose own token the spec then calls /mcp with. It REFUSES when the
@@ -47,6 +48,8 @@
 //	    item on that agent's card.
 //	  - rmplugin: removes one plugin of the owner's by name (its message and
 //	    draft cascade), leaving the owner's other plugins alone.
+//	  - chiefpref: clears the owner's chief on/off choice (chief_preferences),
+//	    so a spec that used the Account page's switch leaves the default behind.
 //
 // 🔴 IT REFUSES ANY DATABASE WHOSE NAME DOES NOT END IN "_e2e" (e2edb.Check):
 // it writes as the login role with row-level security's scope set to all, which
@@ -117,6 +120,16 @@ func run(args []string) error {
 			return err
 		}
 		fmt.Println(id)
+	case "chiefpref":
+		// Clears the owner's chief switch (migration 0060), so the next reader
+		// sees the default again: on exactly when the owner has a chief agent.
+		owner, err := num(1)
+		if err != nil || len(args) != 3 || args[2] != "clear" {
+			return fmt.Errorf("usage: chiefpref <owner-id> clear")
+		}
+		if _, err := conn.Exec(ctx, `DELETE FROM chief_preferences WHERE owner_id = $1`, owner); err != nil {
+			return err
+		}
 	case "agent":
 		// A running, NON-chief agent with its own token: the attention spec's asker.
 		owner, err := num(1)

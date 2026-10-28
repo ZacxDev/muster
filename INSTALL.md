@@ -853,6 +853,11 @@ with `Ctrl-b d`; the agent keeps running and stays in muster.
    guide does not set up.
 8. **Optional: the native Android app** at
    <https://github.com/ZacxDev/muster-android>.
+9. **No chief, on purpose.** muster's *chief* is an optional agent that reports
+   on and manages the rest of the fleet. It is **off by default** and runs in a
+   Kubernetes pod, which this install does not have, so home opens the Agents
+   list and **Account → Chief** says "Not available on this install". Nothing
+   else needs it (`docs/chief.md`).
 
 ---
 
@@ -908,7 +913,8 @@ doctor shows `this-host`, `mirror-service` and `tmux` passing, and the person co
 the phone that they can see a session and that the test notification arrived.
 
 Then tell the person, briefly: the address, where the password is (step 9.3),
-the tmux one-liners (Step 8), and that `muster doctor` re-checks everything.
+the tmux one-liners (Step 8), that `muster doctor` re-checks everything, and
+that the chief is optional and not part of this install (step 9.9).
 
 ---
 

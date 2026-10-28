@@ -90,7 +90,8 @@ func mcpToolCall(name string, args any) string {
 // TestAMirroredSessionGetsTheAllAgentsToolsAndNothingElse: tools/list is
 // exactly the attention and task tools and the operator's own attention_answer,
 // connector decision and reply-draft decision tools; a chief tool or an agent tool called by name is
-// refused as unknown.
+// refused as unknown. The fixture's owner has no chief, so chief_ask is not
+// listed (chief_toggle.go; the chief_ask tests list it with a chief that is on).
 func TestAMirroredSessionGetsTheAllAgentsToolsAndNothingElse(t *testing.T) {
 	f, ws, _, _ := newMirrorMCPFixture(t)
 	code, r, body := f.mirrorRPC(t, mirrorAs(ws, focusSID), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
@@ -105,7 +106,7 @@ func TestAMirroredSessionGetsTheAllAgentsToolsAndNothingElse(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "attention_ask attention_wait attention_cancel tasks_list task_get task_comment task_set_status attention_answer agent_destroy chief_ask connector_requests_list connector_request_decide plugin_drafts_list plugin_draft_decide"
+	want := "attention_ask attention_wait attention_cancel tasks_list task_get task_comment task_set_status attention_answer agent_destroy connector_requests_list connector_request_decide plugin_drafts_list plugin_draft_decide"
 	if strings.Join(names, " ") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}

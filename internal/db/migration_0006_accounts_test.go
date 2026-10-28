@@ -106,7 +106,8 @@ func applyThroughFrom(ctx context.Context, t *testing.T, pool *pgxpool.Pool, max
 //   - session_prs (0055, the pull requests a mirrored session authored).
 //   - mail_resumes (0056, the ended sessions mail resumed).
 //   - device_challenges (0058, a paired phone's signed-action challenges).
-var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
+//   - chief_preferences (0060, the chief's per-user on/off toggle).
+var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_asks", "cc_account_marks", "chief_preferences", "connector_standing_grants", "device_challenges", "device_pairing_codes", "devices", "flow_jobs", "flow_requests", "flow_runner_tokens",
 	"jobs", "mail_resumes", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_prs", "session_routes", "suggest_preferences", "suggest_usage", "uploads", "user_credentials"}
 
@@ -169,6 +170,7 @@ var wantForeignKeys = []string{
 	"connector_standing_grants|connector_standing_grants_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"connectors|connectors_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"suggest_preferences|suggest_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	"chief_preferences|chief_preferences_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"suggest_usage|suggest_usage_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"plugin_threads|plugin_threads_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"session_prs|session_prs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
