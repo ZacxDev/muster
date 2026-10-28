@@ -100,12 +100,16 @@ const (
 	envInteractive = "MUSTER_MIRROR_INTERACTIVE"
 	envHermesSend  = "MUSTER_MIRROR_HERMES_SEND"
 	envHermesAns   = "MUSTER_MIRROR_HERMES_ANSWER"
-	envAllowHTTP   = "MUSTER_MIRROR_ALLOW_HTTP"
-	envLabelsFile  = "MUSTER_MIRROR_LABELS_FILE"
-	envPaneMapDir  = "MUSTER_MIRROR_PANE_MAP_DIR"
-	envSnippets    = "MUSTER_MIRROR_SNIPPETS_FILE"
-	envMCPListen   = "MUSTER_MIRROR_MCP_LISTEN"
-	envMCPSecret   = "MUSTER_MIRROR_MCP_SECRET_FILE"
+	// The mail resume (mirrorhost's resume.go): off by default.
+	envResumeSpawn   = "MUSTER_MIRROR_RESUME_SPAWN"
+	envResumeSession = "MUSTER_MIRROR_RESUME_SESSION"
+	envResumeClaude  = "MUSTER_MIRROR_RESUME_CLAUDE"
+	envAllowHTTP     = "MUSTER_MIRROR_ALLOW_HTTP"
+	envLabelsFile    = "MUSTER_MIRROR_LABELS_FILE"
+	envPaneMapDir    = "MUSTER_MIRROR_PANE_MAP_DIR"
+	envSnippets      = "MUSTER_MIRROR_SNIPPETS_FILE"
+	envMCPListen     = "MUSTER_MIRROR_MCP_LISTEN"
+	envMCPSecret     = "MUSTER_MIRROR_MCP_SECRET_FILE"
 	// envWriteHookConfig: record this daemon's URL and token file for
 	// `muster-mirror ask` (hookconfig.go). Set by the managed service only.
 	envWriteHookConfig = "MUSTER_MIRROR_WRITE_HOOK_CONFIG"
@@ -184,6 +188,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	listWindows := fs.Bool("windows", false, "with -list: print every WINDOW this host would register instead (one line each: session, window id, index, active|-, command, then claude <pane> <state> <session id> <transcript> <source> for a Claude Code window, or hermes|opencode <pane> <state> <session id or -> <source> for a Hermes or opencode one, then label=<label>)")
 	hermesSend := fs.Bool("hermes-send", envBool(envHermesSend), "with -interactive: let muster SEND to Hermes windows, through the gated send (screen check, Escapes, a database-confirmed submit; docs/design/hermes.md). OFF by default. Enable it on a host only after `make test-livehermes` is green against its Hermes. The host reads display.vim_mode from the Hermes home's config.yaml and sends nothing while it is on, or unreadable ("+envHermesSend+")")
 	hermesAnswer := fs.Bool("hermes-answer", envBool(envHermesAns), "with -interactive: let muster ANSWER a Hermes approval (once or deny) through Hermes's gateway viewer, which the host attaches only to a session waiting on an approval (docs/design/hermes.md, Phase 4). OFF by default: answering \"once\" lets the command run. Never a key into the pane; a sudo prompt and a clarify are answered in the terminal ("+envHermesAns+")")
+	resumeSpawn := fs.Bool("resume-spawn", envBool(envResumeSpawn), "with -interactive: let muster RESUME an ended Claude Code session on this host — a new detached tmux window running `<-resume-claude> --resume <session id>` in the working directory its transcript records, when agent mail arrives for it (muster's MUSTER_MAIL_RESUME_ALLOW decides whose mail may). OFF by default: it starts a process here. Refused for a session running here already, a transcript this host does not hold, or a directory that is gone; at most one resume per session per 10 minutes and 6 an hour ("+envResumeSpawn+")")
+	resumeSession := fs.String("resume-session", or(getenv(envResumeSession), mirrorhost.DefaultResumeSession), "the tmux session resumed windows start in, created when absent ("+envResumeSession+")")
+	resumeClaude := fs.String("resume-claude", or(getenv(envResumeClaude), mirrorhost.DefaultResumeClaude), "the Claude Code binary a resume runs; a bare name is looked up on the tmux SERVER's PATH, so an absolute path is safer ("+envResumeClaude+")")
 	listOpenCode := fs.Bool("opencode", false, "with -list: diagnose this host's opencode windows — the opencode token (by fingerprint) and whether the server accepts it, and per window its TUI, pane title, the session the title matched and why it has no rendered view")
 	listHermes := fs.Bool("hermes", false, "with -list: diagnose this host's Hermes windows — each window's breadcrumb, session, status file and why it has no rendered view or no status — and, per hook command Hermes's config.yaml declares (its hooks: section only), its consent in the allowlist")
 	hermesHome := fs.String("hermes-home", hermesHomeDefault(getenv), "the Hermes home whose sessions a Hermes window is resolved from — read-only, and only state.db, terminal-sessions/tty-* and shell-hooks-allowlist.json ("+envHermesHome+"; else $HERMES_HOME, else ~/.hermes)")
@@ -319,6 +326,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	c, err := mirrorhost.New(mirrorhost.Config{
 		URL: *url, Token: token, Host: *host, Backend: backend, Codenames: codenames,
 		Interactive: *interactive, AllowHTTP: *allowHTTP, Logger: logger, HermesSend: *hermesSend, HermesAnswer: *hermesAnswer,
+		ResumeSpawn: *resumeSpawn, ResumeSession: *resumeSession, ResumeClaude: *resumeClaude,
 		NoPromptIndex: e2eNoPromptIndex != nil && e2eNoPromptIndex(),
 		NoCatalog:     e2eNoCatalog != nil && e2eNoCatalog(),
 		NoSubagents:   e2eNoSubagents != nil && e2eNoSubagents(),
@@ -369,6 +377,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		logger.Printf("muster-mirror: -hermes-answer has no effect without -interactive: muster answers no Hermes approval on this host")
 	case *hermesAnswer:
 		logger.Printf("muster-mirror: ANSWERING HERMES APPROVALS IS ON (-hermes-answer): a session waiting on an approval gets a gateway viewer while it waits")
+	}
+	switch {
+	case *resumeSpawn && !*interactive:
+		logger.Printf("muster-mirror: -resume-spawn has no effect without -interactive: this host resumes no session")
+	case *resumeSpawn:
+		logger.Printf("muster-mirror: RESUMING ENDED SESSIONS IS ON (-resume-spawn): muster may start `%s --resume <id>` in tmux session %q for a session whose transcript is on this host", *resumeClaude, *resumeSession)
 	}
 	// Record where muster is for `muster-mirror ask` (hookconfig.go), whose
 	// Claude Code hook does not inherit this service's environment — only when
