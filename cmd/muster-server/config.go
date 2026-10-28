@@ -232,6 +232,10 @@ const (
 	// config.validateSTT.
 	envSTTURL   = "MUSTER_STT_URL"
 	envSTTToken = "MUSTER_STT_TOKEN"
+	// The `model` form field sent with each recording (stt.Client.WithModel).
+	// Unset sends none, which the bundled stt-cohere server wants; OpenAI's
+	// API and faster-whisper servers refuse a request without one.
+	envSTTModel = "MUSTER_STT_MODEL"
 	// File attachments (internal/uploads; internal/api/uploads.go): the
 	// S3-compatible store the composer's files are kept in, the key the agent's
 	// links are signed with, and the two knobs. All five of endpoint, bucket,
@@ -642,6 +646,9 @@ type config struct {
 	// exists), and a token with no URL refuses to boot.
 	STTURL   string
 	STTToken string
+	// STTModel is MUSTER_STT_MODEL: the `model` field each request carries,
+	// "" for none.
+	STTModel string
 	// Uploads: the raw MUSTER_S3_* / MUSTER_UPLOAD_* values. buildUploads
 	// parses and validates them; nothing here refuses to boot.
 	S3Endpoint       string
@@ -1065,6 +1072,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		MemoScopeMap:         strings.TrimSpace(getenv(envMemoScopeMap)),
 		STTURL:               strings.TrimRight(strings.TrimSpace(getenv(envSTTURL)), "/"),
 		STTToken:             strings.TrimSpace(getenv(envSTTToken)),
+		STTModel:             strings.TrimSpace(getenv(envSTTModel)),
 		S3Endpoint:           strings.TrimRight(strings.TrimSpace(getenv(envS3Endpoint)), "/"),
 		S3Bucket:             strings.TrimSpace(getenv(envS3Bucket)),
 		S3AccessKey:          strings.TrimSpace(getenv(envS3AccessKey)),

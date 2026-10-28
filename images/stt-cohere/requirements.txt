@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+python-multipart
+# 🔴 LOAD-BEARING although app.py never imports it: transformers' Cohere ASR
+# feature extractor requires librosa to build its mel filter bank, so dropping
+# it breaks the model load.
+librosa
+# app.py imports numpy directly (decode_audio).
+numpy
+# CohereAsr is native from transformers 5.x; 5.17 is the version this server
+# was verified against.
+transformers>=5.17,<6
+huggingface-hub

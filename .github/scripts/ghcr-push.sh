@@ -5,6 +5,11 @@
 #   ghcr-push.sh probe <remote-ref>                    print present|absent
 #   ghcr-push.sh push  <local-image> <remote-ref> reuse   absent: push; present: keep it
 #   ghcr-push.sh push  <local-image> <remote-ref> refuse  absent: push; present: FAIL
+#   ghcr-push.sh buildx <remote-ref> reuse|refuse <platforms> -- <docker buildx build args…>
+#       the same probe, then a MULTI-ARCH `docker buildx build --platform
+#       <platforms> --push -t <remote-ref> <args…>`. A multi-platform image
+#       cannot be loaded into the local image store, so it is built and pushed
+#       in one step instead of `push`'s tag-and-push of a local image.
 #
 # 🔴 A PUBLISHED TAG IS NEVER OVERWRITTEN, AND THAT IS THE WHOLE POINT OF THIS
 # SCRIPT. A docker build is not byte-reproducible, so re-running a `main` run
@@ -76,7 +81,25 @@ case "$cmd" in
     echo "ghcr-push: pushed $ref@$d"
     summary "- \`$ref@$d\` (pushed)"
     ;;
+  buildx)
+    [ $# -ge 5 ] && [ "$5" = "--" ] || die "usage: $0 buildx <remote-ref> reuse|refuse <platforms> -- <build args…>" 2
+    ref="$2"; mode="$3"; platforms="$4"; shift 5
+    case "$mode" in reuse|refuse) ;; *) die "mode must be reuse or refuse, got '$mode'" 2 ;; esac
+    [ -n "$platforms" ] || die "no platforms given" 2
+    state="$(probe "$ref")"
+    if [ "$state" = present ]; then
+      [ "$mode" = refuse ] && die "$ref is already published; a release version is never re-pushed — cut the next version"
+      d="$(digest_of "$ref")"
+      echo "ghcr-push: $ref already published at $d — kept, not overwritten"
+      summary "- \`$ref@$d\` (already published, kept)"
+      exit 0
+    fi
+    docker buildx build --platform "$platforms" --push -t "$ref" "$@"
+    d="$(digest_of "$ref")"
+    echo "ghcr-push: pushed $ref@$d ($platforms)"
+    summary "- \`$ref@$d\` (pushed, $platforms)"
+    ;;
   *)
-    die "usage: $0 probe <remote-ref> | push <local-image> <remote-ref> reuse|refuse" 2
+    die "usage: $0 probe <remote-ref> | push <local-image> <remote-ref> reuse|refuse | buildx <remote-ref> reuse|refuse <platforms> -- <args…>" 2
     ;;
 esac

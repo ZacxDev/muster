@@ -124,6 +124,15 @@ const (
 )
 
 func main() {
+	// `muster-server -version` and `muster-server healthcheck` (selfcmds.go):
+	// no database, no configuration. Before the account-command catch-all
+	// below, which would otherwise read them as an unknown account command.
+	switch selfCommand(os.Args[1:]) {
+	case "version":
+		os.Exit(runVersion(os.Stdout))
+	case "healthcheck":
+		os.Exit(runHealthcheck(context.Background(), osGetenv, os.Stdout, os.Stderr))
+	}
 	// `muster-server mirror …` is the operator's mirror-token admin, run where
 	// the server's DATABASE_URL is (e.g. `kubectl exec` into the muster pod).
 	if len(os.Args) > 1 && os.Args[1] == "mirror" {

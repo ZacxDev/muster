@@ -1,0 +1,171 @@
+# muster — a production stack in one file.
+#
+#   cp .env.example .env        # then fill in every CHANGE-ME value
+#   (from a GitHub Release: download docker-compose.yml and env.example — no
+#   leading dot — and save the latter as .env)
+#   docker compose up -d --wait
+#
+# Services:
+#   postgres      muster's database (a named volume holds the data)
+#   muster        the server; it migrates the schema itself on every boot
+#
+# Optional dictation, by compose PROFILE (set COMPOSE_PROFILES in .env, or pass
+# `--profile <name>`), each with its own MUSTER_STT_* block in .env.example:
+#   stt-cohere    GPU speech-to-text (recommended): about 6 GB of VRAM and a
+#                 Hugging Face token whose account accepted the model's license
+#   stt-whisper   CPU fallback: a faster-whisper server (speaches)
+# The third option — your own OpenAI-compatible API key — needs no container.
+# See docs/dictation.md.
+#
+# muster listens on 127.0.0.1 only. Put HTTPS in front of it (for example
+# `tailscale serve --bg 8105`) — passkeys, the microphone and secure cookies all
+# need an https origin.
+#
+# Every service has a healthcheck, so `docker compose up -d --wait` returns only
+# once the stack is actually serving (muster's /readyz answers 200).
+
+name: ${COMPOSE_PROJECT_NAME:-muster}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: muster
+      POSTGRES_DB: muster
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U muster -d muster"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  muster:
+    # MUSTER_IMAGE exists so a locally built image can be tested with this
+    # exact file; leave it unset to run the published release.
+    image: ${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:${MUSTER_VERSION:?set MUSTER_VERSION in .env (the release version, e.g. 1.2.3)}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${MUSTER_BIND:-127.0.0.1}:${MUSTER_HTTP_PORT:-8105}:8105"
+    environment:
+      DATABASE_URL: postgres://muster:${POSTGRES_PASSWORD}@postgres:5432/muster?sslmode=disable
+      MUSTER_PORT: "8105"
+      # Shared-password sign-in for the web UI.
+      MUSTER_UI_PASSWORD: ${MUSTER_UI_PASSWORD:?set MUSTER_UI_PASSWORD in .env}
+      # The machine secret mirrors and hooks present (acts as the admin).
+      MUSTER_HOOK_TOKEN: ${MUSTER_HOOK_TOKEN:?set MUSTER_HOOK_TOKEN in .env}
+      MUSTER_MIRROR: "1"
+      MUSTER_STANDALONE: "1"
+      MUSTER_PUBLIC_URL: ${MUSTER_PUBLIC_URL:-}
+      MUSTER_SECURE_COOKIES: ${MUSTER_SECURE_COOKIES:-1}
+      MUSTER_STT_URL: ${MUSTER_STT_URL:-}
+      MUSTER_STT_TOKEN: ${MUSTER_STT_TOKEN:-}
+      MUSTER_STT_MODEL: ${MUSTER_STT_MODEL:-}
+    # The image is distroless; the server binary probes its own /readyz.
+    healthcheck:
+      test: ["CMD", "/muster-server", "healthcheck"]
+      interval: 10s
+      timeout: 6s
+      retries: 6
+      start_period: 20s
+
+  # --- dictation, GPU (profile stt-cohere) ----------------------------------
+  stt-cohere:
+    profiles: ["stt-cohere"]
+    image: ${STT_COHERE_IMAGE:-ghcr.io/zacxdev/muster-stt-cohere}:${MUSTER_VERSION:?set MUSTER_VERSION in .env}
+    restart: unless-stopped
+    environment:
+      # muster's MUSTER_STT_TOKEN is this server's bearer: one value, both sides.
+      # ⚠ `:-`, not `:?`: compose interpolates EVERY service, profiled or not,
+      # so a required-variable error here would stop the default stack too.
+      # An empty token instead keeps this service unhealthy (its /healthz says
+      # why), so `--wait` with the profile on still fails loudly.
+      STT_API_TOKEN: ${MUSTER_STT_TOKEN:-}
+      # A token from a Hugging Face account that accepted the model's license.
+      # Missing or unlicensed: the model download fails and the logs say so.
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      # /healthz answers 200 only once the model is loaded. The first start
+      # downloads several GB of weights, hence the long start period.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).status == 200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30m
+
+  # --- dictation, CPU fallback (profile stt-whisper) -------------------------
+  # speaches runs as an unprivileged user (uid 1000). Its model cache lives on
+  # a named volume at /models, which Docker creates root-owned, so this one-shot
+  # hands it to that user first.
+  stt-whisper-init:
+    profiles: ["stt-whisper"]
+    image: ghcr.io/speaches-ai/speaches:0.8.3-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
+    user: "0:0"
+    entrypoint: ["chown", "1000:1000", "/models"]
+    volumes:
+      - whisper-cache:/models
+    restart: "no"
+
+  stt-whisper:
+    profiles: ["stt-whisper"]
+    # speaches 0.8.3 (CPU build), pinned by its multi-arch index digest.
+    image: ghcr.io/speaches-ai/speaches:0.8.3-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8
+    restart: unless-stopped
+    depends_on:
+      stt-whisper-init:
+        condition: service_completed_successfully
+    environment:
+      # `:-` for the reason given on stt-cohere; the healthcheck below refuses
+      # an empty key, so speaches never sits on the network unauthenticated
+      # while reporting healthy.
+      API_KEY: ${MUSTER_STT_TOKEN:-}
+      STT_WHISPER_MODEL: ${MUSTER_STT_MODEL:-Systran/faster-whisper-small}
+      ENABLE_UI: "false"
+      HF_HUB_CACHE: /models
+    volumes:
+      - whisper-cache:/models
+    healthcheck:
+      # speaches transcribes only models already installed, so the probe also
+      # installs the configured one (POST /v1/models/<id>) on its first pass.
+      # Healthy means: the server answers AND the model is on disk.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import os, sys, urllib.request
+          if not os.environ.get("API_KEY"):
+              sys.exit("MUSTER_STT_TOKEN is not set")
+          m = os.environ["STT_WHISPER_MODEL"]
+          h = {"Authorization": "Bearer " + os.environ["API_KEY"]}
+          base = "http://127.0.0.1:8000/v1/models/" + m
+          def call(method):
+              try:
+                  return urllib.request.urlopen(urllib.request.Request(base, method=method, headers=h), timeout=600).status
+              except Exception:
+                  return 0
+          sys.exit(0 if call("GET") == 200 or call("POST") in (200, 201) else 1)
+      interval: 20s
+      timeout: 610s
+      retries: 5
+      start_period: 15m
+
+volumes:
+  pgdata:
+  hf-cache:
+  whisper-cache:
