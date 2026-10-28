@@ -26,7 +26,9 @@ import (
 //
 // 🔴 WHAT THIS HOST STARTS IS DECIDED HERE, NEVER BY THE REQUEST. The request
 // names a session id and nothing else. The argv is this host's configured
-// Claude binary, `--resume`, and that id: no shell, no text from any message.
+// Claude binary, `--resume`, and that id, run through the user's login shell
+// with a CONSTANT script (loginArgv: the shell interprets `exec "$@"` and
+// nothing else); no text from any message.
 // The working directory is the one the TRANSCRIPT records, read from this
 // host's own ~/.claude — never a path off the wire.
 //
@@ -69,7 +71,8 @@ const (
 type ResumeBackend interface {
 	// NewResumeWindow starts a DETACHED window named name in session (the
 	// session created when absent), with working directory dir, running argv
-	// directly (no shell), and answers its tmux window id.
+	// with the user's login environment (each element one argument; nothing
+	// interpreted by a shell), and answers its tmux window id.
 	NewResumeWindow(ctx context.Context, session, name, dir string, argv []string) (string, error)
 }
 
@@ -308,8 +311,26 @@ func (c *Client) resume(ctx context.Context, sid string, offered bool) (mirror.R
 
 // NewResumeWindow implements ResumeBackend: `new-window -d` in session, or
 // `new-session -d` when the session does not exist yet, each with -c dir, -n
-// name and argv as tmux's own command arguments (more than one argument: tmux
-// runs it directly, with no shell). -P -F answers the new window's id.
+// name and, as tmux's own command arguments, argv run through the user's
+// LOGIN SHELL (loginArgv). -P -F answers the new window's id.
+//
+// 🔴 WHY NO PATH, AND THE LOGIN SHELL. tmux starts a window with the
+// server's global environment, except PATH, which it takes from the CLIENT
+// that asked whenever that client has one — over the server's own and even
+// over `-e PATH=…` (measured with tmux 3.7c, for new-session and for
+// new-window into an existing session alike). That client is this process: a
+// service whose PATH typically holds tmux alone. A resumed Claude Code session
+// started straight from argv got that PATH, so its hooks and every shell tool
+// it ran failed "command not found". So:
+//   - the tmux command that starts the window runs with NO PATH (resumeEnv;
+//     the binary is already resolved), and the window gets the server's own
+//     global PATH — the operator's server, started from a login session;
+//   - and argv runs under tmux's default-shell as a LOGIN shell (loginArgv),
+//     which reads the user's profile: what builds the environment when the
+//     server has no PATH of its own (this resume started it, from this
+//     process's PATH-less environment). Where the profile skips work it
+//     already did (NixOS's set-environment guard, exported in the operator's
+//     server), the server's PATH above is what it keeps.
 func (t Tmux) NewResumeWindow(ctx context.Context, session, name, dir string, argv []string) (string, error) {
 	if err := mirror.ValidSession(session); err != nil {
 		return "", err
@@ -323,16 +344,20 @@ func (t Tmux) NewResumeWindow(ctx context.Context, session, name, dir string, ar
 	if !cleanAbsPath(dir) {
 		return "", fmt.Errorf("muster-mirror: %q is not an absolute, clean directory", dir)
 	}
+	shell, err := t.loginShell(ctx)
+	if err != nil {
+		return "", err
+	}
+	argv = loginArgv(shell, argv)
 	opts := []string{"-d", "-P", "-F", "#{window_id}", "-n", name, "-c", dir}
 	var out string
-	var err error
 	if _, herr := t.run(ctx, "has-session", "-t", "="+session); herr == nil {
-		out, err = t.run(ctx, append(append([]string{"new-window", "-t", "=" + session + ":"}, opts...), argv...)...)
+		out, err = t.runEnv(ctx, resumeEnv(), append(append([]string{"new-window", "-t", "=" + session + ":"}, opts...), argv...)...)
 	} else {
-		out, err = t.run(ctx, append(append([]string{"new-session", "-s", session}, opts...), argv...)...)
+		out, err = t.runEnv(ctx, resumeEnv(), append(append([]string{"new-session", "-s", session}, opts...), argv...)...)
 		if err != nil && strings.Contains(err.Error(), "duplicate session") {
 			// Another resume created it in between.
-			out, err = t.run(ctx, append(append([]string{"new-window", "-t", "=" + session + ":"}, opts...), argv...)...)
+			out, err = t.runEnv(ctx, resumeEnv(), append(append([]string{"new-window", "-t", "=" + session + ":"}, opts...), argv...)...)
 		}
 	}
 	if err != nil {
@@ -343,4 +368,57 @@ func (t Tmux) NewResumeWindow(ctx context.Context, session, name, dir string, ar
 		return "", fmt.Errorf("muster-mirror: tmux answered %q for the new window", id)
 	}
 	return id, nil
+}
+
+// resumeEnv is tmuxEnv WITHOUT PATH: the environment of the tmux command that
+// starts a resumed window, so the window takes the server's PATH, not this
+// process's (see NewResumeWindow).
+func resumeEnv() []string {
+	var env []string
+	for _, kv := range tmuxEnv() {
+		if !strings.HasPrefix(kv, "PATH=") {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// loginScript is the ONLY text the login shell interprets: run the arguments
+// after it, as they are. Nothing from argv is ever part of it.
+const loginScript = `exec "$@"`
+
+// loginArgv is argv run by shell as a login shell: `shell -l -c 'exec "$@"'
+// argv[0] argv...`. The shell reads the user's profile (PATH and the rest of
+// the login environment), then replaces itself with argv — each element one
+// positional parameter, so an argument holding shell syntax stays one literal
+// argument and nothing it spells runs.
+func loginArgv(shell string, argv []string) []string {
+	return append([]string{shell, "-l", "-c", loginScript, argv[0]}, argv...)
+}
+
+// posixLoginShells are the shells loginArgv's `-l -c 'exec "$@"'` means the
+// same thing to. A default-shell of another family (fish, nu, ...) is passed
+// over for the next candidate.
+var posixLoginShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "mksh": true}
+
+// loginShell is the shell a resumed window logs in through: tmux's own
+// default-shell — the one an ordinary window runs — else $SHELL, else /bin/sh;
+// the first that is an absolute path to an executable of posixLoginShells.
+func (t Tmux) loginShell(ctx context.Context) (string, error) {
+	var cands []string
+	// No server yet (the resume's new-session starts it) is not an error:
+	// the server would take its default-shell from the same $SHELL.
+	if out, err := t.run(ctx, "show-options", "-gv", "default-shell"); err == nil {
+		cands = append(cands, strings.TrimSpace(out))
+	}
+	cands = append(cands, os.Getenv("SHELL"), "/bin/sh")
+	for _, c := range cands {
+		if !filepath.IsAbs(c) || !posixLoginShells[filepath.Base(c)] {
+			continue
+		}
+		if fi, err := os.Stat(c); err == nil && fi.Mode().IsRegular() && fi.Mode()&0o111 != 0 {
+			return c, nil
+		}
+	}
+	return "", fmt.Errorf("muster-mirror: no login shell to start the window with (tried %q)", cands)
 }
