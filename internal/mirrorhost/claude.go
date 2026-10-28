@@ -239,9 +239,16 @@ func (l ClaudeLocator) configDir() string {
 }
 
 // configDirOf is the config dir the Claude Code process pid writes its
-// sessions file and transcripts under: the CLAUDE_CONFIG_DIR in that
-// process's OWN environment (/proc/<pid>/environ, as it was exec'd) when that
-// is an absolute path, else configDir().
+// sessions file and transcripts under, read from that process's OWN
+// environment (/proc/<pid>/environ, as it was exec'd):
+//
+//   - its CLAUDE_CONFIG_DIR, when that is an absolute path;
+//   - when it sets none (or an empty one): its own home's .claude — the CLI's
+//     default — NOT muster-mirror's $CLAUDE_CONFIG_DIR, which describes the
+//     service, not the CLI (the locator's Home override, a test's, still
+//     wins here);
+//   - a relative value, or an environ this user cannot read: configDir(),
+//     since this side cannot resolve what the CLI resolved.
 //
 // 🔴 WHY THE PROCESS'S AND NOT OURS: muster-mirror runs as a user service whose
 // environment is its unit's EnvironmentFile, not the person's shell profile. A
@@ -249,22 +256,33 @@ func (l ClaudeLocator) configDir() string {
 // with it, while this process still looks in ~/.claude — and finds no sessions
 // file, so the window had no rendered view at all, or (worse) the fallback
 // guessed an OLD transcript left in ~/.claude/projects from before the person
-// moved their config. The process says where it writes; believe it.
-//
-// A relative or "~"-prefixed value is not a path this side can resolve the way
-// the CLI did, so it falls back. An environ this user cannot read falls back.
+// moved their config. The mirror image holds too: a service given a
+// CLAUDE_CONFIG_DIR must not impose it on a CLI started without one. The
+// process says where it writes; believe it.
 func (l ClaudeLocator) configDirOf(pid int) string {
-	if b, err := os.ReadFile(filepath.Join(l.proc(), strconv.Itoa(pid), "environ")); err == nil {
-		for _, kv := range bytes.Split(b, []byte{0}) {
-			if v, ok := bytes.CutPrefix(kv, []byte("CLAUDE_CONFIG_DIR=")); ok {
-				if d := string(v); filepath.IsAbs(d) {
-					return filepath.Clean(d)
-				}
-				break
+	b, err := os.ReadFile(filepath.Join(l.proc(), strconv.Itoa(pid), "environ"))
+	if err != nil {
+		return l.configDir()
+	}
+	var home string
+	for _, kv := range bytes.Split(b, []byte{0}) {
+		if v, ok := bytes.CutPrefix(kv, []byte("CLAUDE_CONFIG_DIR=")); ok && len(v) > 0 {
+			if d := string(v); filepath.IsAbs(d) {
+				return filepath.Clean(d)
 			}
+			return l.configDir()
+		}
+		if v, ok := bytes.CutPrefix(kv, []byte("HOME=")); ok {
+			home = string(v)
 		}
 	}
-	return l.configDir()
+	if l.Home != "" {
+		return l.Home
+	}
+	if !filepath.IsAbs(home) {
+		home, _ = os.UserHomeDir()
+	}
+	return filepath.Join(home, ".claude")
 }
 
 // procInfo is the little of a process the walk needs.
@@ -392,11 +410,15 @@ const (
 	// transcript for it yet — a CLI just started, before its first message.
 	NoViewNotYet = "Claude Code has not written this conversation yet. The Rendered view appears after its first message."
 	// NoViewNoTranscript: Claude Code runs, and neither its sessions file nor
-	// its working directory leads to a transcript in its config directory.
-	NoViewNoTranscript = "Claude Code is running here, but muster-mirror cannot find its transcript in the Claude config directory."
-	// NoViewAmbiguous: a guessed transcript another pane guessed too (see
-	// LocatePanes): two windows are never shown one conversation.
-	NoViewAmbiguous = "Two Claude Code windows share this directory and neither names its conversation, so muster cannot tell which one is this window's."
+	// its working directory leads to a transcript in its config directory that
+	// is its alone — none at all, or only a guess another pane makes too
+	// (LocatePanes: two windows are never shown one conversation).
+	//
+	// ⚠ ONE LINE FOR BOTH ON PURPOSE. The ambiguous guess had its own line,
+	// "…neither names its conversation", which was FALSE when the other pane
+	// does name it (its sessions file) and only this one guesses; this wording
+	// is true in every case that reaches it.
+	NoViewNoTranscript = "Claude Code is running here, but muster-mirror cannot match it to a transcript in its Claude config directory."
 )
 
 // whyNoView is why pane p, which no runtime claimed, has no rendered view —
@@ -422,7 +444,9 @@ func (l ClaudeLocator) whyNoView(p pane, command string, procs map[int]procInfo,
 	_, _, _, guessed, ok := l.resolve(pid, cfg, func() liveSessions { return l.liveSessions(cfg, procs) })
 	switch {
 	case ok && guessed:
-		return NoViewAmbiguous
+		// A guess another pane makes too (it was dropped): not this pane's
+		// alone to show.
+		return NoViewNoTranscript
 	case ok:
 		// It resolves now: the transcript appeared since the listing looked.
 		// The next refresh gives the window its view; nothing to explain.
@@ -434,17 +458,14 @@ func (l ClaudeLocator) whyNoView(p pane, command string, procs map[int]procInfo,
 	}
 }
 
-// claudeVersionName is how the native installer names Claude Code's binary
-// (~/.local/share/claude/versions/<version>), which a process may carry as
-// its name when launched by that path.
-var claudeVersionName = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
-
 // looksLikeClaudeCommand reports whether a pane's #{pane_current_command} is
 // one Claude Code runs under — what a host that cannot read processes has to
-// go on. ⚠ The native installer's version-named binary is included on the
-// layout it installs, not on a measurement of what tmux reports on macOS.
+// go on: the names isClaude knows. ⚠ An npm install runs as `node`, and the
+// native installer's binary may be named by its version; neither is claimed,
+// because neither tells Claude Code from anything else (and what tmux reports
+// on macOS is unmeasured).
 func looksLikeClaudeCommand(command string) bool {
-	return isClaude(procInfo{comm: command}) || claudeVersionName.MatchString(command)
+	return isClaude(procInfo{comm: command})
 }
 
 // slugPattern is what Claude Code replaces with '-' to name a cwd's project dir.

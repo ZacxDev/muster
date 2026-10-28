@@ -79,9 +79,10 @@ func TestLocateIgnoresARelativeClaudeConfigDir(t *testing.T) {
 }
 
 // whyNoView names WHICH step left a Claude Code pane without a rendered view.
-// Each case is built so that only its own branch can produce its line:
-// pairwise-distinct expected strings, and a control pane with no Claude Code
-// that must say nothing. Red at origin/main: whyNoView did not exist, so a
+// Each case is built so that only its own branch can produce its line, and a
+// control pane with no Claude Code must say nothing. "lost" and "shared" say
+// the same line ON PURPOSE: an ambiguous guess is folded into "cannot match it
+// to a transcript" (TestWhyNoViewNeverClaimsNeitherPaneNamesItsConversation). Red at origin/main: whyNoView did not exist, so a
 // terminal-only Claude Code window said nothing at all.
 func TestWhyNoViewSaysWhichStepFailed(t *testing.T) {
 	proc, home := newFakeProc(t), newFakeHome(t)
@@ -119,8 +120,8 @@ func TestWhyNoViewSaysWhichStepFailed(t *testing.T) {
 		want string
 	}{
 		{"fresh", pane{ID: "%1", PID: 100}, "claude", "Claude Code has not written this conversation yet. The Rendered view appears after its first message."},
-		{"lost", pane{ID: "%2", PID: 200}, ".claude-wrapped", "Claude Code is running here, but muster-mirror cannot find its transcript in the Claude config directory."},
-		{"shared", pane{ID: "%3", PID: 300}, "node", "Two Claude Code windows share this directory and neither names its conversation, so muster cannot tell which one is this window's."},
+		{"lost", pane{ID: "%2", PID: 200}, ".claude-wrapped", "Claude Code is running here, but muster-mirror cannot match it to a transcript in its Claude config directory."},
+		{"shared", pane{ID: "%3", PID: 300}, "node", "Claude Code is running here, but muster-mirror cannot match it to a transcript in its Claude config directory."},
 		{"shell", pane{ID: "%4", PID: 400}, "zsh", ""},
 		{"resolves", pane{ID: "%5", PID: 500}, "claude", ""},
 	} {
@@ -154,7 +155,7 @@ func TestWhyNoViewOnAHostWithNoProcessTable(t *testing.T) {
 	for cmd, w := range map[string]string{
 		"claude":          want,
 		".claude-wrapped": want,
-		"2.1.289":         want,
+		"2.1.289":         "", // a version-named binary: unmeasured on macOS, so not claimed
 		"zsh":             "",
 		"vim":             "",
 		"2.1":             "",
@@ -244,5 +245,78 @@ func TestTmuxListingSaysWhyAClaudeWindowHasNoView(t *testing.T) {
 	}
 	if w := by["@3"]; w.Claude || w.AgentNote != "" {
 		t.Errorf("window @3 (shell) = %+v, want no view and no note", w)
+	}
+}
+
+// THE AUDITOR'S PROBE (round 1, F3): two Claude Code panes in one directory,
+// %1 WITH a sessions file naming its conversation, %2 with none. %2's guess is
+// %1's transcript, so the locator drops it — and the line used to say
+// "neither names its conversation", which is false: %1 does. The line must be
+// true here. Red before the fold (it said the ambiguous line).
+func TestWhyNoViewNeverClaimsNeitherPaneNamesItsConversation(t *testing.T) {
+	proc, home := newFakeProc(t), newFakeHome(t)
+	const cwd = "/work/same"
+	proc.add(100, 1, "zsh", cwd, "-zsh")
+	proc.add(101, 100, "claude", cwd, "claude")
+	home.session(101, "sess-named", cwd, "idle")
+	home.transcript(cwd, "sess-named", time.Now())
+	proc.add(200, 1, "zsh", cwd, "-zsh")
+	proc.add(201, 200, "claude", cwd, "claude") // no sessions file
+	l := ClaudeLocator{Proc: proc.root, Home: home.root}
+	got := l.LocatePanes([]pane{{ID: "%1", PID: 100}, {ID: "%2", PID: 200}})
+	if _, ok := got["%1"]; !ok || len(got) != 1 {
+		t.Fatalf("control: want %%1 resolved by its sessions file and %%2's shared guess dropped, got %+v", got)
+	}
+	procs, children, err := readProcTable(proc.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "Claude Code is running here, but muster-mirror cannot match it to a transcript in its Claude config directory."
+	if why := l.whyNoView(pane{ID: "%2", PID: 200}, "claude", procs, children, nil); why != want {
+		t.Fatalf("whyNoView(%%2) = %q, want %q", why, want)
+	}
+}
+
+// F7: a CLI whose environment sets NO CLAUDE_CONFIG_DIR uses its own home's
+// .claude — whatever muster-mirror's service environment says. Before, the
+// locator fell back to the SERVICE's $CLAUDE_CONFIG_DIR, and here found an
+// OLD transcript there for the same cwd. Red before the fix (resolved
+// sess-service-old from the service's dir).
+func TestAProcessWithNoClaudeConfigDirUsesItsOwnHome(t *testing.T) {
+	proc, service, home := newFakeProc(t), newFakeHome(t), t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", service.root)
+	const cwd = "/work/repo"
+	service.transcript(cwd, "sess-service-old", time.Now())
+	own := &fakeHome{t: t, root: filepath.Join(home, ".claude")}
+	own.session(400, "sess-own", cwd, "idle")
+	want := own.transcript(cwd, "sess-own", time.Now().Add(-time.Hour))
+	proc.add(100, 1, "zsh", cwd, "-zsh")
+	proc.add(400, 100, "claude", cwd, "claude")
+	proc.environ(400, "HOME="+home, "TERM=tmux-256color")
+	got := ClaudeLocator{Proc: proc.root}.LocatePanes([]pane{{Session: "work", ID: "%1", PID: 100}})
+	if c := got["%1"]; c.Transcript != want || c.Gen != "sess-own" {
+		t.Fatalf("pane %%1 = %+v, want its own home's %s", c, want)
+	}
+}
+
+// F4: resume's liveness check (check 4) sees a session that runs under the
+// CLI's OWN CLAUDE_CONFIG_DIR, outside any tmux pane — the case only the
+// process-table half can see. Before, it read sessions files from
+// muster-mirror's dir only, so this session read as ENDED and a resume would
+// start a second CLI on one conversation. Red before the fix.
+func TestResumeSeesALiveSessionUnderTheCLIsOwnConfigDir(t *testing.T) {
+	proc, home, custom := newFakeProc(t), newFakeHome(t), newFakeHome(t)
+	const sid = "0b5e55ed-0000-4000-8000-00000000c0de"
+	proc.add(400, 1, "claude", "/work/repo", "claude")
+	proc.environ(400, "CLAUDE_CONFIG_DIR="+custom.root)
+	custom.session(400, sid, "/work/repo", "idle")
+	loc := ClaudeLocator{Proc: proc.root, Home: home.root}
+	live, err := resumeLive(context.Background(), loc, noWindowLister{}, sid)
+	if err != nil || !live {
+		t.Fatalf("resumeLive = %v, %v; want live (its CLI's own sessions file names it)", live, err)
+	}
+	// Control: another id is not live.
+	if live, err := resumeLive(context.Background(), loc, noWindowLister{}, "0b5e55ed-0000-4000-8000-00000000beef"); live || err != nil {
+		t.Fatalf("control: resumeLive(other id) = %v, %v; want false, nil", live, err)
 	}
 }

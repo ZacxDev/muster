@@ -13,27 +13,12 @@ prompt into the agent on that machine and tell it muster is already running.
 
 ## What you get: your own sessions, not copies
 
-muster shows **mirrored sessions**: the coding agents you already run in tmux
-on your machines. A message you send from your phone is typed into that same
-session, so when you are back at the keyboard the conversation is already
-there. muster does not start a second session for you.
-
-Two things follow:
-
-- **Run your agent inside tmux.** A session in a plain terminal tab or an
-  editor's panel is invisible to muster. Starting a second one in tmux gives
-  you a separate conversation: your phone talks to that one while the session
-  you left open sees nothing. Instead, quit the one you have and continue it in
-  tmux, from the same directory: `tmux new -A -s work 'claude --continue'`.
-- **Dispatched agents are something else.** muster can also start agents of its
-  own in Kubernetes pods, each with its own history. That is opt-in, needs a
-  cluster, and is not part of this setup ([provisioner.md](provisioner.md)).
-
-A Claude Code session opens in the **Rendered** view, a chat. The **Terminal**
-view, one tap away in the header, is the fallback. If a window opens in the
-Terminal view only, a line at its top says why
-([mirroring.md](mirroring.md#why-a-window-opens-in-the-terminal)). On a Mac,
-Claude Code windows open in the Terminal view only, for now.
+muster shows the sessions you already run in tmux, and a message from your
+phone goes into that same session. What that means, what a dispatched agent is
+instead, and how to bring a session you already have into tmux:
+[mirroring.md](mirroring.md#mirrored-sessions-and-dispatched-agents). Why a
+window opens in the Terminal view only:
+[mirroring.md](mirroring.md#why-a-window-opens-in-the-terminal).
 
 ## What you end up with
 
@@ -86,8 +71,8 @@ it.
 ## Afterwards
 
 - Start agents in tmux so they appear: `tmux new -A -s work claude` (or
-  `codex`, `opencode`, `gemini`). To bring a conversation you already have,
-  quit it and run `tmux new -A -s work 'claude --continue'` in its directory.
+  `codex`, `opencode`, `gemini`). To bring a conversation you already have:
+  [mirroring.md](mirroring.md#bring-a-session-you-already-have-into-tmux).
 - Re-check everything at any time with `muster doctor --deploy-env ~/muster/.env`
   on the hub.
 - Every setting is in [configuration.md](configuration.md); mirroring is

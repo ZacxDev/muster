@@ -1104,14 +1104,20 @@ func NormalizeWindows(in []Window, now int64) []Window {
 	if len(out) > MaxWindows {
 		out = out[:MaxWindows]
 	}
-	// The list-wide AgentNote bound, after the sort, likewise.
+	// The list-wide AgentNote bound, after the sort, likewise — in TWO passes:
+	// a runtime's notes first (opencode's: why it has no view, a token about
+	// to expire), then the "no rendered view" notes of Claude Code panes with
+	// what is left. A list of many fresh Claude Code windows must not push a
+	// credential warning off its card.
 	notes := 0
-	for i := range out {
-		if out[i].AgentNote == "" {
-			continue
-		}
-		if notes++; notes > MaxAgentNoteWindows {
-			out[i].AgentNote = ""
+	for _, runtimeFirst := range []bool{true, false} {
+		for i := range out {
+			if out[i].AgentNote == "" || (out[i].Runtime != "") != runtimeFirst {
+				continue
+			}
+			if notes++; notes > MaxAgentNoteWindows {
+				out[i].AgentNote = ""
+			}
 		}
 	}
 	// The list-wide OtherClaude bound, after the sort, so which windows keep

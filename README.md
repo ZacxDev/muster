@@ -15,27 +15,16 @@ installs on your phone as a PWA. Your other machines dial out to it.
 
 ## How it works
 
-muster shows two kinds of session. Most people only ever use the first.
-
-- **Mirrored sessions: your own sessions, on your own machines.** A
-  mirrored session is a coding agent you started yourself, in tmux, on one of
-  your machines. muster does not start it or copy it. A message you send from
-  your phone is typed into that same session, the reply appears in it, and
-  when you are back at the keyboard everything is already there. A session
-  started **outside tmux** (a plain terminal tab, an editor's panel) is
-  invisible to muster. To use one from your phone, run it inside tmux. To
-  carry on the conversation you already have, quit it and continue it in tmux,
-  in the same directory: `tmux new -A -s work 'claude --continue'`.
-- **Dispatched agents: new sessions muster starts.** muster can also start an
-  agent of its own on a task, in a Kubernetes pod, with its own history. This
-  is an advanced, opt-in feature that is off unless you configure a cluster
-  ([docs/provisioner.md](docs/provisioner.md)). The one-prompt install below
-  sets up **mirrored sessions only**.
-
-A Claude Code session opens in the **Rendered** view, a chat you can read on a
-phone. The **Terminal** view, the live terminal, is one tap away in the header
-and is the fallback. When a window opens in the Terminal view only, a line at
-the top says why ([docs/mirroring.md](docs/mirroring.md#why-a-window-opens-in-the-terminal)).
+muster shows **your own sessions**: a coding agent you started in tmux on one of
+your machines is a **mirrored session**, and a message from your phone is typed
+into that same session, so it is all there when you are back at the keyboard.
+muster sees only sessions inside tmux. It can also start **dispatched agents**,
+separate sessions in Kubernetes pods; that is opt-in, and the one-prompt install
+below sets up mirrored sessions only. A Claude Code session opens in the
+**Rendered** view, a chat; the **Terminal** view is the fallback, and a window
+that has only the Terminal view says why. The details, and how to bring a
+session you already have into tmux:
+[docs/mirroring.md](docs/mirroring.md#mirrored-sessions-and-dispatched-agents).
 
 ## Why muster
 

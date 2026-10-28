@@ -24,7 +24,7 @@ func TestAnAgentNoteIsKeptForAWindowWithNoViewAndBounded(t *testing.T) {
 		{Session: "a", ID: "@4", Runtime: mirror.RuntimeOpenCode, AgentNote: long},
 	}
 	for i := 0; i < mirror.MaxAgentNoteWindows+3; i++ {
-		in = append(in, mirror.Window{Session: "b", ID: "@" + strconv.Itoa(10+i), Runtime: mirror.RuntimeOpenCode, AgentNote: "note"})
+		in = append(in, mirror.Window{Session: "b", ID: "@" + strconv.Itoa(10+i), Command: "claude", AgentNote: "note"})
 	}
 	got := mirror.NormalizeWindows(in, 0)
 	if got[0].AgentNote != "opencode is not paired on this host: run muster-mirror opencode-pair" {
@@ -81,5 +81,34 @@ func TestTheTerminalOnlyReasonSaysWhy(t *testing.T) {
 		if got := c.e.TerminalOnlyReason(); got != c.want {
 			t.Errorf("%s: TerminalOnlyReason = %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// F6: a runtime's note (opencode's token about to expire) is never pushed out
+// of the list-wide budget by Claude Code "no view" notes, which sort before it.
+// Red before: the budget went to the first MaxAgentNoteWindows notes in list
+// order, so the opencode warning was dropped.
+func TestARuntimeNoteKeepsItsPlaceInTheBudget(t *testing.T) {
+	const warn = "opencode's token expires in 2 hours; renewal is failing"
+	var in []mirror.Window
+	for i := 0; i < mirror.MaxAgentNoteWindows+2; i++ {
+		in = append(in, mirror.Window{Session: "a", ID: "@" + strconv.Itoa(10+i), Command: "claude", AgentNote: "Claude Code has not written this conversation yet."})
+	}
+	in = append(in, mirror.Window{Session: "z", ID: "@1", Runtime: mirror.RuntimeOpenCode, AgentNote: warn})
+	got := mirror.NormalizeWindows(in, 0)
+	notes, kept := 0, false
+	for _, w := range got {
+		if w.AgentNote != "" {
+			notes++
+		}
+		if w.Session == "z" && w.AgentNote == warn {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Errorf("the opencode warning was dropped from the note budget")
+	}
+	if notes != mirror.MaxAgentNoteWindows {
+		t.Errorf("%d notes kept, want the budget %d", notes, mirror.MaxAgentNoteWindows)
 	}
 }

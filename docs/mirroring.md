@@ -32,13 +32,33 @@ terminal tab or in an editor, muster cannot see it. A second session that you
 start in tmux to "get it into muster" is a separate conversation: it may share
 the project's memory files, but your messages from muster go to it, and the
 session you left open never hears about them. Run the session you actually use
-inside tmux instead. To keep the conversation you have, quit it and continue it
-in tmux, from the same directory:
+inside tmux instead.
+
+### Bring a session you already have into tmux
+
+Quit Claude Code where it runs now, then, from the same directory:
 
 ```sh
-tmux new -A -s work 'claude --continue'   # the most recent conversation here
-tmux new -A -s work 'claude --resume'     # or pick one
+tmux new -A -s work \; new-window -c "$PWD" 'claude --resume || claude'
 ```
+
+This opens a new window in the tmux session `work` (creating `work` if it does
+not exist yet) and starts the conversation picker there; pick the conversation
+you were in. Already inside tmux,
+`tmux new-window -c "$PWD" 'claude --resume || claude'` does the same.
+
+- **Why not `tmux new -A -s work 'claude …'`:** `-A` attaches to `work` when it
+  already exists and **ignores the command**, so nothing is resumed.
+- **Why `--resume`, not `--continue`:** `--continue` takes the most recent
+  conversation in the directory, which may be the separate session muster was
+  typing into, not the one you had open. Use `claude --continue || claude` in
+  place of `claude --resume || claude` only when you are sure the newest one is
+  yours.
+- **Why `|| claude`:** with no conversation to resume, `claude --continue`
+  prints "No conversation found to continue" and exits, and pressing Esc in the
+  `--resume` picker exits too (both with status 1, measured on Claude Code
+  2.1.289). Without a fallback the tmux window closes with it; with one, a new
+  conversation starts instead.
 
 **Resuming an ended session** (`-resume-spawn`, below) is the one way a host
 starts a Claude Code process itself. It is off by default, needs settings on
@@ -420,9 +440,8 @@ gave a reason. The reasons:
 |---|---|---|
 | muster found no Claude Code conversation in this window. | nothing in the pane is Claude Code (a shell, Codex, Gemini CLI) | nothing; or start `claude` in it |
 | Claude Code has not written this conversation yet. … | Claude Code started, but you have not sent its first message | send one; the card opens the Rendered view from the next refresh |
-| Claude Code is running here, but muster-mirror cannot find its transcript … | neither Claude Code's sessions file nor its working directory leads to a transcript | see the cases below; on the host, `muster-mirror -list -claude` lists the Claude Code windows it did resolve |
-| Two Claude Code windows share this directory … | an old Claude Code, with no sessions file, runs twice in one directory | update Claude Code |
-| muster-mirror cannot read this host's processes (no /proc, as on macOS) … | the host is a Mac | see below |
+| Claude Code is running here, but muster-mirror cannot match it to a transcript … | neither Claude Code's sessions file nor its working directory leads to a transcript that is this window's alone: none at all, or only a guess another window in the same directory makes too | see the cases below; update Claude Code if it is old (a current one names its conversation in a sessions file); on the host, `muster-mirror -list -claude` lists the Claude Code windows it did resolve |
+| muster-mirror cannot read this host's processes (no /proc, as on macOS) … | the host is a Mac, and the window's command is `claude` | see below |
 | This host's muster-mirror is too old to send the Rendered view. … | the host runs a muster-mirror from before rendered views | update it |
 
 A muster-mirror older than these reasons sends none, so its windows show the
@@ -433,8 +452,10 @@ Cases checked against the code:
 - **A custom `CLAUDE_CONFIG_DIR`.** muster-mirror reads the variable from the
   Claude Code process's own environment (`/proc/<pid>/environ`), so a value
   you export in your shell profile is followed even though muster-mirror's
-  service never reads that profile. Only an absolute path is followed; a
-  relative or `~/…` value falls back to muster-mirror's own setting.
+  service never reads that profile. A process that sets none uses its own
+  home's `.claude`, whatever muster-mirror's service sets. Only an absolute
+  path is followed; a relative value, or an environment muster-mirror cannot
+  read, falls back to muster-mirror's own `$CLAUDE_CONFIG_DIR` or `~/.claude`.
 - **`claude` through `npx`, an npm global install, a NixOS wrapper or a
   wrapper script.** The process walk finds the Claude Code process anywhere
   below the pane's shell, by its name (`claude`, `.claude-wrapped`), its
@@ -443,9 +464,10 @@ Cases checked against the code:
   every refresh reads the panes as they are now.
 - **macOS.** muster-mirror finds Claude Code by reading `/proc`, which macOS
   does not have, so on a Mac every Claude Code window opens in the Terminal view
-  only. A window whose command is `claude` (or a version number, as the native
-  installer names its binary) says so; other windows show the general line.
-  The Terminal view and its message box work as usual.
+  only. A window whose command is `claude` says so. One whose command is
+  anything else shows the general line — including Claude Code installed with
+  npm, which runs as `node`. The Terminal view and its message box work as
+  usual.
 
 ### How a pane's transcript is found
 
@@ -476,8 +498,8 @@ If the sessions file exists but its transcript cannot be found, the window has
 no rendered view; the host does not guess.
 
 The Claude config directory is the `CLAUDE_CONFIG_DIR` in the Claude Code
-process's own environment when that is an absolute path; else muster-mirror's
-`$CLAUDE_CONFIG_DIR`, or `~/.claude` when that is unset. `muster-mirror -list -claude` prints one row per Claude Code window,
+process's own environment when that is an absolute path, else that process's
+own `~/.claude` (see the cases above for the fallbacks). `muster-mirror -list -claude` prints one row per Claude Code window,
 ending in how its transcript was resolved: `pane-map`, `sessions` or `guessed`.
 `-list -windows` prints every window that would be registered.
 
@@ -1150,9 +1172,13 @@ when agent mail arrives for it ([plugins](plugins.md#resuming-an-ended-session))
 It is off by default, because it starts a process on the host.
 
 muster's request names the session id and nothing else. The host finds the
-transcript in its own `~/.claude/projects`, takes the working directory the
-transcript records, and refuses unless that directory still exists and no Claude
-Code process or pane on the host runs the session. Then it starts a detached
+transcript in its own config directory's `projects/` (muster-mirror's
+`$CLAUDE_CONFIG_DIR`, else `~/.claude`: an ended session has no process to say
+where it wrote, so if your profile sets `CLAUDE_CONFIG_DIR`, put the same line
+in `~/.config/muster-mirror/env` or the resume is refused), takes the working
+directory the transcript records, and refuses unless that directory still
+exists and no Claude Code process or pane on the host runs the session (a
+process is checked under its own config directory too). Then it starts a detached
 window in the tmux session `muster-resume` (`-resume-session`), running
 `claude --resume <id>` (`-resume-claude`). The window is mirrored like any
 other. A host resumes one session at most once per 10 minutes, and at most 6

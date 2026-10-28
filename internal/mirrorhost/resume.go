@@ -212,8 +212,19 @@ func resumeLive(ctx context.Context, loc ClaudeLocator, b Backend, sid string) (
 	if err != nil {
 		return false, err
 	}
-	if _, ok := loc.liveSessions(loc.configDir(), procs).byID[sid]; ok {
-		return true, nil
+	// Every config dir a live Claude Code process writes under (configDirOf:
+	// its own CLAUDE_CONFIG_DIR, else its home's), plus this host's: a CLI
+	// started with its own dir, outside tmux, is seen only here.
+	dirs := map[string]bool{loc.configDir(): true}
+	for pid, p := range procs {
+		if isClaude(p) {
+			dirs[loc.configDirOf(pid)] = true
+		}
+	}
+	for d := range dirs {
+		if _, ok := loc.liveSessions(d, procs).byID[sid]; ok {
+			return true, nil
+		}
 	}
 	wl, ok := WindowListerOf(b)
 	if !ok {
@@ -276,6 +287,12 @@ func (c *Client) resume(ctx context.Context, sid string, offered bool) (mirror.R
 		return mirror.ResumedWindow{}, refuseResume(mirror.ResumeRefusalUnsupported, "this host does not resume sessions (muster-mirror needs -interactive and -resume-spawn)")
 	}
 	loc := c.cfg.ResumeLocator
+	// ⚠ THE HOST'S CONFIG DIR, NOT A PROCESS'S: the session has ENDED, so no
+	// process names the dir its transcript is in. A person whose profile sets
+	// CLAUDE_CONFIG_DIR keeps transcripts this lookup does not see, and the
+	// resume is REFUSED (a transcript this host does not hold) — fail closed.
+	// Giving muster-mirror's service the same CLAUDE_CONFIG_DIR (its env file)
+	// makes it find them (docs/mirroring.md, -resume-spawn).
 	tgt, err := findResumeTarget(loc.configDir(), sid)
 	if err != nil {
 		return mirror.ResumedWindow{}, err
