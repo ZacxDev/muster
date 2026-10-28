@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: release-dry-run compose-check compose-up-test build vet run image test test-db test-db-down test-liveclaude test-livehermes leakscan css css-check check help verb-ledger icons e2e screenshots
+.PHONY: release-dry-run release-logic-test compose-check compose-up-test build vet run image test test-db test-db-down test-liveclaude test-livehermes leakscan css css-check check help verb-ledger icons e2e screenshots
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -107,6 +107,7 @@ help:
 	@echo "  make screenshots  regenerate docs/img/*.png from fixture data (same database, plus Docker)"
 	@echo "  make test-db-down stop and remove the throwaway Postgres"
 	@echo "  make release-dry-run  build every GitHub Release asset into dist/ (RELEASE_VERSION=0.0.0)"
+	@echo "  make release-logic-test  the tag-run logic: release publish (fake gh), stt-cohere build-or-retag"
 	@echo "  make compose-check    deploy/docker-compose.yml is valid, every profile, every healthcheck"
 	@echo "  make compose-up-test  bring the compose stack up from a local image (IMAGE, VERSION) and probe it"
 	@echo "  make test-liveclaude  answer a REAL Claude Code's AskUserQuestion pickers (run on every Claude Code upgrade)"
@@ -358,6 +359,11 @@ check: vet test leakscan css-check verb-ledger
 RELEASE_VERSION ?= 0.0.0
 release-dry-run:
 	scripts/release-build.sh $(RELEASE_VERSION)
+
+# The tag-only jobs' decision logic, with no tag and no GitHub writes.
+release-logic-test:
+	tests/release-publish-test.sh
+	tests/stt-cohere-source-test.sh
 
 # deploy/docker-compose.yml: `docker compose config` for every profile, plus the
 # shape the install guide relies on. Pulls nothing, starts nothing.

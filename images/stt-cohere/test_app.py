@@ -196,6 +196,24 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(r.status_code, 413, r.text)
 
 
+class RequirementsArePinnedTest(unittest.TestCase):
+    """Every requirement is `name==version`: an unpinned line lets a rebuild pull
+    a different transformers into an image whose model load nothing in CI can
+    exercise (no GPU, gated weights)."""
+
+    def test_every_requirement_is_an_exact_pin(self):
+        lines = [
+            l.strip() for l in (HERE / "requirements.txt").read_text().splitlines()
+            if l.strip() and not l.strip().startswith("#")
+        ]
+        self.assertGreater(len(lines), 0, "control: no requirement lines parsed")
+        loose = [l for l in lines if not __import__("re").fullmatch(r"[A-Za-z0-9._-]+==[A-Za-z0-9.+!-]+", l)]
+        self.assertEqual(loose, [], "requirements that are not exact pins")
+        names = [l.split("==")[0].lower() for l in lines]
+        for direct in ("fastapi", "uvicorn", "python-multipart", "librosa", "numpy", "transformers", "huggingface_hub"):
+            self.assertIn(direct, names, f"{direct} is not pinned")
+
+
 class NoTokenTest(unittest.TestCase):
     """Without STT_API_TOKEN the server is unhealthy and refuses every request,
     so a compose stack missing the token fails `--wait` instead of serving an

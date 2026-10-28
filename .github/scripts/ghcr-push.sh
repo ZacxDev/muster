@@ -8,6 +8,10 @@
 #   ghcr-push.sh push  <local-image> <remote-ref> release absent: push; present: keep it
 #       ONLY IF its org.opencontainers.image.revision label is $GHCR_REVISION
 #       (this commit) on every platform, else FAIL
+#   ghcr-push.sh retag <src-ref> <dst-ref>
+#       point <dst-ref> at <src-ref>'s exact manifest (a registry-side copy, no
+#       rebuild). <src-ref> must exist. <dst-ref> already present: kept when it
+#       is the same digest, or (as `release`) when this commit built it; else FAIL
 #   ghcr-push.sh buildx <remote-ref> reuse|refuse|release <platforms> -- <docker buildx build args…>
 #       the same probe, then a MULTI-ARCH `docker buildx build --platform
 #       <platforms> --push -t <remote-ref> <args…>`. A multi-platform image
@@ -127,6 +131,24 @@ case "$cmd" in
     d="$(digest_of "$ref")"
     echo "ghcr-push: pushed $ref@$d ($platforms)"
     summary "- \`$ref@$d\` (pushed, $platforms)"
+    ;;
+  retag)
+    [ $# -eq 3 ] || die "usage: $0 retag <src-ref> <dst-ref>" 2
+    src="$2"; ref="$3"
+    [ "$(probe "$src")" = present ] || die "retag source $src is not published; build instead"
+    sd="$(digest_of "$src")"
+    if [ "$(probe "$ref")" = present ]; then
+      [ "$(digest_of "$ref")" = "$sd" ] && {
+        echo "ghcr-push: $ref already points at $src ($sd) — kept"
+        summary "- \`$ref@$sd\` (already retagged from \`$src\`, kept)"
+        exit 0; }
+      on_present "$ref" release
+    fi
+    docker buildx imagetools create -t "$ref" "$src"
+    d="$(digest_of "$ref")"
+    [ "$d" = "$sd" ] || die "retag produced $ref@$d, not the source digest $sd"
+    echo "ghcr-push: retagged $src -> $ref@$d (no rebuild)"
+    summary "- \`$ref@$d\` (retagged from \`$src\`, unchanged since)"
     ;;
   *)
     die "usage: $0 probe <remote-ref> | push <local-image> <remote-ref> reuse|refuse|release | buildx <remote-ref> reuse|refuse|release <platforms> -- <args…>" 2

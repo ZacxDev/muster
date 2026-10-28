@@ -12,13 +12,20 @@
 #     healthy-checked service waits on with service_completed_successfully;
 #   * muster is published on 127.0.0.1:8105 only, with the contract's settings;
 #   * the stt-whisper image is pinned by digest;
+#   * postgres's healthcheck probes TCP (`-h 127.0.0.1`), the way muster
+#     connects — the socket answers "ready" during initdb's socket-only server;
+#   * the MUSTER_VAPID_* push keys reach muster's environment;
+#   * stt-whisper has NO default model: with MUSTER_STT_MODEL unset its
+#     healthcheck (executed here) refuses, naming the variable;
 #   * NEGATIVE CONTROL: the repository's .env.example as shipped (MUSTER_VERSION
 #     empty) is REFUSED — the compose file must not start an unversioned image.
 #
 # Exit 0 ok, 1 an assertion failed, 2 harness error (no docker compose).
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# CDPATH unset: with it exported, `cd` to a relative path PRINTS the directory,
+# and ROOT became two lines (measured: every `make` target here broke).
+ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE="$ROOT/deploy/docker-compose.yml"
 EXAMPLE="$ROOT/deploy/.env.example"
 docker compose version >/dev/null 2>&1 || { echo "compose-check: docker compose is not available" >&2; exit 2; }
@@ -28,6 +35,7 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 # The example, filled in the way a user would.
 sed -e 's/^MUSTER_VERSION=$/MUSTER_VERSION=1.2.3/' -e 's/=CHANGE-ME$/=fixture-secret/' "$EXAMPLE" > "$tmp/env"
 printf 'MUSTER_STT_TOKEN=fixture-stt\nHF_TOKEN=fixture-hf\n' >> "$tmp/env"
+printf 'MUSTER_VAPID_PUBLIC_KEY=fixture-vapid-pub\nMUSTER_VAPID_PRIVATE_KEY=fixture-vapid-priv\nMUSTER_VAPID_SUBJECT=mailto:ops@example.com\n' >> "$tmp/env"
 
 fail=0
 for profile in default stt-cohere stt-whisper; do
@@ -79,6 +87,24 @@ if "stt-cohere" in svcs:
         errs.append("stt-cohere does not share MUSTER_STT_TOKEN as STT_API_TOKEN")
 if "stt-whisper" in svcs and svcs["stt-whisper"]["environment"].get("API_KEY") != "fixture-stt":
     errs.append("stt-whisper does not share MUSTER_STT_TOKEN as API_KEY")
+pg_test = " ".join(svcs.get("postgres", {}).get("healthcheck", {}).get("test", []))
+if "-h 127.0.0.1" not in pg_test:
+    errs.append(f"postgres healthcheck {pg_test!r} does not probe TCP (-h 127.0.0.1)")
+for k, v in {"MUSTER_VAPID_PUBLIC_KEY": "fixture-vapid-pub", "MUSTER_VAPID_PRIVATE_KEY": "fixture-vapid-priv",
+             "MUSTER_VAPID_SUBJECT": "mailto:ops@example.com"}.items():
+    if env.get(k) != v:
+        errs.append(f"muster {k}={env.get(k)!r}, want the .env value {v!r}")
+if "stt-whisper" in svcs:
+    import subprocess, os as _os
+    w = svcs["stt-whisper"]
+    if w["environment"].get("STT_WHISPER_MODEL"):
+        errs.append(f"stt-whisper defaults its model ({w['environment']['STT_WHISPER_MODEL']!r}) with MUSTER_STT_MODEL unset")
+    hc = w["healthcheck"]["test"]
+    code = hc[hc.index("-c") + 1]
+    r = subprocess.run(["python3", "-c", code], capture_output=True, text=True,
+                       env={**_os.environ, "API_KEY": "fixture-stt", "STT_WHISPER_MODEL": w["environment"].get("STT_WHISPER_MODEL", "")})
+    if r.returncode == 0 or "MUSTER_STT_MODEL" not in r.stderr:
+        errs.append(f"stt-whisper healthcheck with no model: rc={r.returncode} stderr={r.stderr.strip()!r}; want a refusal naming MUSTER_STT_MODEL")
 for e in errs:
     print(f"FAIL [{profile}]: {e}")
 if not errs:

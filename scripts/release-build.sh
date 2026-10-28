@@ -46,7 +46,9 @@ die() { echo "release-build: $1" >&2; exit "${2:-1}"; }
 VERSION="${1#v}"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version '$1' is not X.Y.Z" 2
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# CDPATH unset: with it exported, `cd` to a relative path PRINTS the directory,
+# and ROOT became two lines (measured: every `make` target here broke).
+ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="${DIST:-$ROOT/dist}"
 REV="$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo unknown)"
 # Reproducible archive metadata: the commit's own time, not the build's.

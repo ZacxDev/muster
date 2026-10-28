@@ -291,7 +291,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 
 	if cfg.Database != "" {
-		pool, err := db.Connect(ctx, cfg.Database)
+		pool, err := connectDB(ctx, cfg.Database, logger)
 		if err != nil {
 			return nil, fmt.Errorf("db connect: %w", err)
 		}

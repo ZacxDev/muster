@@ -1640,6 +1640,9 @@ func (c config) validate() error {
 	if reason := c.authConfig().SharedSecretPrefixRefusal(); reason != "" {
 		return errors.New(reason)
 	}
+	if reason := hookTokenRefusal(c.HookToken); reason != "" {
+		return errors.New(reason)
+	}
 	if c.Database == "" {
 		return fmt.Errorf("%s is not set: muster is its Postgres database, and a server "+
 			"started without one serves an EMPTY board that is indistinguishable from a "+
@@ -2195,3 +2198,38 @@ func parseAgentReapStoppedAfter(raw string) (time.Duration, error) {
 	}
 	return d, nil
 }
+
+// minHookTokenLen is the shortest MUSTER_HOOK_TOKEN muster boots with — the same
+// floor as MUSTER_UI_PASSWORD's (api.minUIPasswordLen).
+const minHookTokenLen = 12
+
+// hookTokenPlaceholder is deploy/.env.example's placeholder value.
+const hookTokenPlaceholder = "CHANGE-ME"
+
+// hookTokenRefusal is why a SET MUSTER_HOOK_TOKEN is refused at boot, or "".
+//
+// 🔴 THE HOOK TOKEN ACTS AS USER 1, THE ADMIN, ON EVERY MACHINE ROUTE. The
+// public deploy/.env.example ships it as CHANGE-ME, and before this check a
+// stack whose operator filled in the UI password but missed this line came up
+// healthy with a world-known admin bearer (measured: `Bearer CHANGE-ME` answered
+// 200 on /api/tasks). MUSTER_UI_PASSWORD's placeholder was already refused (the
+// web tier fails closed); this is the same rule for the machine tier, applied
+// at boot because a machine credential has no page on which to explain itself.
+//
+// UNSET is not refused here: the hook tier is enforce-when-set, and the gotrue
+// mode check (validateAuthMode) refuses unset where that is an open door.
+func hookTokenRefusal(token string) string {
+	switch {
+	case token == "":
+		return ""
+	case strings.EqualFold(strings.TrimSpace(token), hookTokenPlaceholder):
+		return fmt.Sprintf("%s is the placeholder %q from .env.example: it is the admin credential "+
+			"of every machine route, and that value is public. Set it to a secret (openssl rand -hex 32)",
+			envHookToken, hookTokenPlaceholder)
+	case len(token) < minHookTokenLen:
+		return fmt.Sprintf("%s is shorter than %d characters: it is the admin credential of every "+
+			"machine route. Set it to a secret (openssl rand -hex 32)", envHookToken, minHookTokenLen)
+	}
+	return ""
+}
+

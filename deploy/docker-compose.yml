@@ -37,7 +37,11 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U muster -d muster"]
+      # 🔴 `-h 127.0.0.1`: TCP, which is how muster connects. Without it
+      # pg_isready asks the unix socket, which answers "ready" during initdb's
+      # temporary socket-only server on a fresh volume — measured: healthy while
+      # TCP still refused, and muster's first connect failed.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U muster -d muster"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -67,6 +71,11 @@ services:
       MUSTER_STT_URL: ${MUSTER_STT_URL:-}
       MUSTER_STT_TOKEN: ${MUSTER_STT_TOKEN:-}
       MUSTER_STT_MODEL: ${MUSTER_STT_MODEL:-}
+      # Web Push (docs/push.md): all three or none. Generate the keypair with
+      #   docker compose run --rm --no-deps muster vapid generate >> .env
+      MUSTER_VAPID_PUBLIC_KEY: ${MUSTER_VAPID_PUBLIC_KEY:-}
+      MUSTER_VAPID_PRIVATE_KEY: ${MUSTER_VAPID_PRIVATE_KEY:-}
+      MUSTER_VAPID_SUBJECT: ${MUSTER_VAPID_SUBJECT:-}
     # The image is distroless; the server binary probes its own /readyz.
     healthcheck:
       test: ["CMD", "/muster-server", "healthcheck"]
@@ -134,7 +143,12 @@ services:
       # an empty key, so speaches never sits on the network unauthenticated
       # while reporting healthy.
       API_KEY: ${MUSTER_STT_TOKEN:-}
-      STT_WHISPER_MODEL: ${MUSTER_STT_MODEL:-Systran/faster-whisper-small}
+      # 🔴 NO DEFAULT, ON PURPOSE. muster sends MUSTER_STT_MODEL as the
+      # request's `model`, and speaches refuses a request without one (422). A
+      # default HERE would install a model muster never names, and dictation
+      # would fail at the first recording while every container reported
+      # healthy. Unset, the healthcheck below fails and says which variable.
+      STT_WHISPER_MODEL: ${MUSTER_STT_MODEL:-}
       ENABLE_UI: "false"
       HF_HUB_CACHE: /models
     volumes:
@@ -151,7 +165,9 @@ services:
           import os, sys, urllib.request
           if not os.environ.get("API_KEY"):
               sys.exit("MUSTER_STT_TOKEN is not set")
-          m = os.environ["STT_WHISPER_MODEL"]
+          m = os.environ.get("STT_WHISPER_MODEL", "")
+          if not m:
+              sys.exit("MUSTER_STT_MODEL is not set (e.g. Systran/faster-whisper-small)")
           h = {"Authorization": "Bearer " + os.environ["API_KEY"]}
           base = "http://127.0.0.1:8000/v1/models/" + m
           def call(method):
