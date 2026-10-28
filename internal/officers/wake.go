@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -136,6 +137,8 @@ type Decision struct {
 	Start    []int
 	Stop     []int
 	Reprompt []int
+	// StopReason is why Stop stops ("" = the officer was idle for its window).
+	StopReason string
 	// Release is live claims held by an instance that is not up.
 	Release []Item
 	// Idle reports the officer idle at this pass: nothing claimable, no live
@@ -310,8 +313,14 @@ type officerState struct {
 	promptedAt map[int]time.Time
 	// errored is the instances last seen in error (logged on change).
 	errored map[int]bool
-	// fault is the permanent HQ refusal last seen ("" = none; logged on change).
+	// fault is the CONFIRMED permanent HQ refusal (the status, e.g. "404"; ""
+	// = none). It is set once a refusal has been seen on FaultStrikes
+	// consecutive passes and cleared ONLY by a successful answer — a 5xx in
+	// between leaves it, so the gauge and the "answers again" line stay true.
 	fault string
+	// strikes counts consecutive passes that saw a permanent refusal; a
+	// successful answer resets it, a 5xx leaves it.
+	strikes int
 }
 
 // Reconciler runs the wake loop.
@@ -395,24 +404,38 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 		s.failures++
 		s.nextAt = now.Add(Backoff(o, s.failures))
 		f, next := s.failures, s.nextAt
-		fault := permanentRefusal(err)
-		changed := fault != s.fault
-		s.fault = fault
+		refusal := permanentRefusal(err)
+		changed := false
+		if refusal != "" {
+			s.strikes++
+			if s.strikes >= FaultStrikes && s.fault != refusal {
+				s.fault, changed = refusal, true
+			}
+		}
+		confirmed := refusal != "" && s.fault == refusal
+		strikes := s.strikes
 		r.mu.Unlock()
 		r.publish()
-		if fault == "" {
-			r.log.Printf("officers: %s: %v; changing nothing, next check in %s (failure %d)", o.ID, err, next.Sub(now).Round(time.Second), f)
+		if !confirmed {
+			note := ""
+			if refusal != "" {
+				note = fmt.Sprintf(" (HQ refusal %s seen on %d of %d consecutive passes before it counts as a configuration fault)", refusal, strikes, FaultStrikes)
+			}
+			r.log.Printf("officers: %s: %v; changing nothing%s, next check in %s (failure %d)", o.ID, err, note, next.Sub(now).Round(time.Second), f)
 			return PassResult{Err: err}
 		}
-		// 🔴 A PERMANENT REFUSAL IS CONFIGURATION, NOT AN OUTAGE. Holding pods
-		// and Claude accounts for ever behind a revoked token is the wrong way
-		// to wait, so the officer is scaled to zero; it wakes normally once HQ
-		// answers again. Logged once per change, counted on the gauge.
+		// 🔴 A PERMANENT REFUSAL IS CONFIGURATION, NOT AN OUTAGE — once it has
+		// held for FaultStrikes consecutive passes (a single 404 or 401 is an HQ
+		// deploy or a token cache mid-rollout, and one-strike scaled every
+		// instance to zero mid-turn on it). Holding pods and Claude accounts for
+		// ever behind a revoked token is the wrong way to wait, so the officer is
+		// scaled to zero; it wakes normally once HQ answers again. Logged once
+		// per change, counted on the gauge.
 		if changed {
-			r.log.Printf("officers: %s: HQ refuses this officer (%s): a CONFIGURATION fault, not an outage — check %s%s and that HQ serves the officer API for %s. "+
-				"Scaling its instances to zero; retrying with backoff (next in %s)", o.ID, fault, TokenEnvPrefix, TokenEnvSuffix(o.ID), o.ID, next.Sub(now).Round(time.Second))
+			r.log.Printf("officers: %s: HQ refuses this officer (HQ answered %s on %d consecutive passes): a CONFIGURATION fault, not an outage — check %s%s and that HQ serves the officer API for %s. "+
+				"Scaling its instances to zero; retrying with backoff (next in %s)", o.ID, refusal, strikes, TokenEnvPrefix, TokenEnvSuffix(o.ID), o.ID, next.Sub(now).Round(time.Second))
 		}
-		return r.scaleDownForFault(ctx, o, err)
+		return r.scaleDownForFault(ctx, o, err, refusal)
 	}
 	r.noteErrors(o, obs.Instances)
 	r.mu.Lock()
@@ -424,9 +447,10 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 	d := Decide(o, obs, idleSince, now, prompted)
 	r.mu.Lock()
 	if s.fault != "" {
-		r.log.Printf("officers: %s: HQ answers again (was: %s)", o.ID, s.fault)
+		r.log.Printf("officers: %s: HQ answers again (was a configuration fault: HQ answered %s)", o.ID, s.fault)
 		s.fault = ""
 	}
+	s.strikes = 0
 	s.failures = 0
 	s.nextAt = now.Add(o.PollInterval)
 	switch {
@@ -446,12 +470,12 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 
 // scaleDownForFault stops every up instance of o (HQ refuses it permanently).
 // A fleet that cannot be seen changes nothing, as everywhere else.
-func (r *Reconciler) scaleDownForFault(ctx context.Context, o Officer, cause error) PassResult {
+func (r *Reconciler) scaleDownForFault(ctx context.Context, o Officer, cause error, status string) PassResult {
 	insts, err := r.fleet.Instances(ctx, o)
 	if err != nil {
 		return PassResult{Err: cause}
 	}
-	var d Decision
+	d := Decision{StopReason: "HQ configuration fault: " + status}
 	for _, in := range insts {
 		if in.Up {
 			d.Stop = append(d.Stop, in.N)
@@ -548,7 +572,13 @@ func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 		r.log.Printf("officers: %s: started instance %d (%d claimable, %d held)", o.ID, n, d.Claimable, d.Held)
 	}
 	for _, n := range d.Reprompt {
-		if err := r.fleet.Reprompt(ctx, o, n, RepromptText(o, n)); err != nil {
+		err := r.fleet.Reprompt(ctx, o, n, RepromptText(o, n))
+		if errors.Is(err, ErrInstanceBusy) {
+			// A turn is running in its session; it may well be working the
+			// queue. Not a prompt and not a failure: the next pass tries again.
+			continue
+		}
+		if err != nil {
 			errs = append(errs, err)
 			r.log.Printf("officers: %s: re-prompt instance %d: %v", o.ID, n, err)
 			continue
@@ -562,7 +592,11 @@ func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 			r.log.Printf("officers: %s: scale instance %d to zero: %v", o.ID, n, err)
 			continue
 		}
-		r.log.Printf("officers: %s: scaled instance %d to zero (idle %s)", o.ID, n, o.IdleAfter)
+		reason := d.StopReason
+		if reason == "" {
+			reason = "idle " + o.IdleAfter.String()
+		}
+		r.log.Printf("officers: %s: scaled instance %d to zero (%s)", o.ID, n, reason)
 	}
 	return errs
 }
@@ -612,6 +646,15 @@ func (r *Reconciler) pass(ctx context.Context, id string, force bool) {
 	r.Check(pctx, id, force)
 }
 
+// FaultStrikes is how many consecutive passes must see a permanent HQ refusal
+// before it is treated as a configuration fault (scale to zero).
+const FaultStrikes = 2
+
+// ErrInstanceBusy is a re-prompt the fleet did not send because a turn holds
+// the instance's session (its session claim is taken). It is not a failure and
+// not a prompt: the loop tries again on its next pass.
+var ErrInstanceBusy = errors.New("officers: a turn holds the instance's session")
+
 // RepromptAfter is the least time between two prompts of one instance while it
 // has claimable work and holds no claim.
 const RepromptAfter = 5 * time.Minute
@@ -638,8 +681,8 @@ func RepromptText(o Officer, n int) string {
 
 // permanentRefusal names an HQ answer that is a configuration fault rather
 // than an outage: 401/403 (the officer token is revoked, wrong or not this
-// officer's) and 404 (HQ without the officer API, or no such officer). "" for
-// anything else.
+// officer's) and 404 (HQ without the officer API, or no such officer), as the
+// status ("404"). "" for anything else.
 func permanentRefusal(err error) string {
 	var hq *HQError
 	if !errors.As(err, &hq) {
@@ -647,7 +690,7 @@ func permanentRefusal(err error) string {
 	}
 	switch hq.Status {
 	case 401, 403, 404:
-		return fmt.Sprintf("HQ answered %d", hq.Status)
+		return strconv.Itoa(hq.Status)
 	}
 	return ""
 }

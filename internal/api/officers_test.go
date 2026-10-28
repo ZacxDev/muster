@@ -43,6 +43,7 @@ type officerAgents struct {
 	nextID  int64
 	rearmed map[int64]string
 	created []agents.Agent
+	claims  map[int64]string
 }
 
 func (s *officerAgents) List(context.Context) ([]agents.Agent, error) {
@@ -101,6 +102,36 @@ func (s *officerAgents) RearmKickoff(_ context.Context, id int64, note string) e
 		}
 	}
 	return nil
+}
+
+func (s *officerAgents) ClaimKickoff(_ context.Context, id int64, owner string, _ time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.claims == nil {
+		s.claims = map[int64]string{}
+	}
+	if h, ok := s.claims[id]; ok && h != owner {
+		return false, nil
+	}
+	s.claims[id] = owner
+	return true, nil
+}
+
+func (s *officerAgents) ReleaseKickoffClaim(_ context.Context, id int64, owner string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.claims[id] == owner {
+		delete(s.claims, id)
+	}
+	return nil
+}
+
+func (s *officerAgents) LatestOrCreateSession(_ context.Context, id int64, name string) (agents.ChatSession, error) {
+	return agents.ChatSession{ID: id, SessionKey: "agent:" + name + ":webchat"}, nil
+}
+
+func (s *officerAgents) AddChatMessage(_ context.Context, m agents.ChatMessage) (agents.ChatMessage, error) {
+	return m, nil
 }
 
 func (s *officerAgents) AgentsByNoteIDs(context.Context, []int64) (map[int64]agents.Agent, error) {
@@ -192,6 +223,7 @@ type officerRig struct {
 	rec   *officers.Reconciler
 	logs  *bytes.Buffer
 	a, b  officers.Officer
+	chat  *repromptChat
 
 	clockMu sync.Mutex
 	clock   time.Time
@@ -228,10 +260,11 @@ func newOfficerRig(t *testing.T) *officerRig {
 	}}
 	prov := &officerProv{store: store, phase: map[string]provision.Phase{}}
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(logs, "", 0))
-	s.UseExtensions(Extensions{Agents: store, Provisioner: prov, SessionLiveness: stubLiveness{}, Kinds: stubKinds{pick: "acct-one"}})
+	chat := &repromptChat{}
+	s.UseExtensions(Extensions{Agents: store, Provisioner: prov, Gateway: chat, SessionLiveness: stubLiveness{}, Kinds: stubKinds{pick: "acct-one"}})
 	a := officers.Officer{ID: offA, HQURL: hq.BaseURL(), MaxInstances: 2, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(offATok)
 	b := officers.Officer{ID: offB, HQURL: hq.BaseURL(), MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(offBTok)
-	r := &officerRig{s: s, store: store, prov: prov, hq: hq, logs: logs, a: a, b: b, clock: time.Now()}
+	r := &officerRig{s: s, store: store, prov: prov, hq: hq, logs: logs, a: a, b: b, chat: chat, clock: time.Now()}
 	hq.Now = r.now
 	rec, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{a, b}, Now: r.now})
 	if err != nil {
@@ -789,12 +822,13 @@ func TestClaimingAnItemYouAlreadyHoldRenewsItsLease(t *testing.T) {
 	}
 }
 
-// TestAnIdleUpInstanceIsRepromptedThroughItsFirstTurn: over the real fleet
-// binding, an up instance holding nothing while its officer has an open item
-// is re-prompted by re-arming its first turn (the kickoff deliverer sends it;
-// no Start, no new agent). While that turn is still owed (pending note, not
-// kicked off) it is not re-prompted again, however long the item waits.
-func TestAnIdleUpInstanceIsRepromptedThroughItsFirstTurn(t *testing.T) {
+// TestAnIdleUpInstanceIsRepromptedAsItsOwnTurn: over the real fleet binding,
+// an up instance holding nothing while its officer has an open item is sent a
+// re-prompt as a turn of its own (the gateway's Chat, under its session claim).
+// No kickoff state is touched (nothing re-armed), nothing is started or
+// created, and the claim is released after. While another holder has the
+// session claim (a turn running), it is busy: nothing sent.
+func TestAnIdleUpInstanceIsRepromptedAsItsOwnTurn(t *testing.T) {
 	r := newOfficerRig(t)
 	inst := r.addInstance(r.b, 1, 861)
 	r.store.mu.Lock()
@@ -802,21 +836,29 @@ func TestAnIdleUpInstanceIsRepromptedThroughItsFirstTurn(t *testing.T) {
 	r.store.mu.Unlock()
 	r.hq.AddItem(offB, "triage.look", "svc:1")
 	ctx := context.Background()
-	res := r.rec.Check(ctx, offB, true)
-	if len(res.Decision.Reprompt) != 1 || len(res.ActErrs) != 0 {
-		t.Fatalf("idle up instance with an open item: %+v", res)
+
+	// A turn holds the session: busy, nothing sent, not a failure.
+	r.store.ClaimKickoff(ctx, inst.ID, "agentkickoff/turn", time.Hour)
+	if res := r.rec.Check(ctx, offB, true); len(res.ActErrs) != 0 || r.chat.count() != 0 {
+		t.Fatalf("re-prompt into a running turn: %+v, sent %d", res, r.chat.count())
 	}
-	note := r.store.rearmed[inst.ID]
-	if !strings.Contains(note, "New work for officer "+offB) || strings.Contains(note, offBTok) {
-		t.Fatalf("re-prompt turn = %q", note)
+	r.store.ReleaseKickoffClaim(ctx, inst.ID, "agentkickoff/turn")
+
+	res := r.rec.Check(ctx, offB, true)
+	r.s.waitOfficerReprompts()
+	if len(res.Decision.Reprompt) != 1 || len(res.ActErrs) != 0 || r.chat.count() != 1 {
+		t.Fatalf("idle up instance with an open item: %+v, sent %d", res, r.chat.count())
+	}
+	if sent := r.chat.sent[0]; !strings.Contains(sent, "New work for officer "+offB) || strings.Contains(sent, offBTok) {
+		t.Fatalf("re-prompt turn = %q", sent)
+	}
+	if len(r.store.rearmed) != 0 {
+		t.Fatalf("a re-prompt re-armed the kickoff: %v", r.store.rearmed)
 	}
 	if d, st, _ := r.prov.counts(); d != 0 || st != 0 || len(r.store.created) != 0 {
 		t.Fatalf("a re-prompt dispatched/started/created (dispatch %d starts %d creates %d)", d, st, len(r.store.created))
 	}
-	// The re-armed turn is now owed (PendingNote set, KickedOff false): even
-	// past the rate limit it is not re-prompted again.
-	r.advance(3 * officers.RepromptAfter)
-	if res := r.rec.Check(ctx, offB, true); len(res.Decision.Reprompt) != 0 {
-		t.Fatalf("re-prompted while its last prompt is still owed: %+v", res.Decision)
+	if won, _ := r.store.ClaimKickoff(ctx, inst.ID, "someone-else", time.Minute); !won {
+		t.Fatal("the re-prompt's session claim was not released")
 	}
 }

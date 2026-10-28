@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
@@ -45,6 +48,11 @@ type officerRuntime struct {
 	reg *officers.Registry
 	hq  *officers.ClientHQ
 	rec *officers.Reconciler
+	// claimOwner names this process on an instance's session claim while it
+	// sends a re-prompt.
+	claimOwner string
+	// wg counts re-prompt sends in flight.
+	wg sync.WaitGroup
 }
 
 // OfficersConfig is EnableOfficers' input.
@@ -76,7 +84,8 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if err != nil {
 		return nil, err
 	}
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec}
+	host, _ := os.Hostname()
+	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	for _, o := range reg.All() {
 		s.logger.Printf("officers: %s on: instances %s..%s, idle scale-to-zero after %s, poll %s",
 			o.ID, officers.InstanceName(o.ID, 1), officers.InstanceName(o.ID, o.MaxInstances), o.IdleAfter, o.PollInterval)
@@ -208,26 +217,106 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 // (agentkickoff.owesFirstTurn): a note is set and not yet stamped delivered.
 func promptPending(a agents.Agent) bool { return !a.KickedOff && a.PendingNote != "" }
 
-// Reprompt implements officers.Fleet: give up instance n a new turn by
-// re-arming its first turn — the kickoff deliverer then sends text once the
-// session takes it. It never types into a running turn (ccd refuses with 409
-// busy before typing, and the deliverer waits that out), so a re-prompt cannot
-// interrupt work in progress.
+// repromptClaimMargin is how much longer than the turn a re-prompt's session
+// claim lives, as the memo relay's (claimMargin there).
+const repromptClaimMargin = 2 * time.Minute
+
+// repromptSlack is added to the kind's turn timeout for the send's deadline.
+const repromptSlack = 2 * time.Minute
+
+// Reprompt implements officers.Fleet: send up instance n text as a NEW turn of
+// its own, under its session claim — the memo relay's pattern
+// (internal/memorelay deliver), not the kickoff's.
+//
+// 🔴 IT TOUCHES NO KICKOFF STATE, AND IT USED TO. The first version re-armed
+// the instance's first turn (RearmKickoff: kicked_off=false, a fresh
+// updated_at). An instance works the queue INSIDE a turn that can run ~37
+// minutes, and between items it holds no HQ claim, so the loop re-prompted it
+// mid-turn; when that turn ended more than ProvisioningStuckTimeout after the
+// re-arm, the kickoff deliverer's dwell check read the row as a first turn that
+// never landed and marked it `error` — and an instance in error holds its slot
+// for ever (TestARepromptDuringARunningFirstTurnNeverStrandsTheInstance).
+// Now the row is never written: no stuck verdict can be derived from it.
+//
+//   - The session claim (agents.Store.ClaimKickoff) is the one a first turn, a
+//     memo and this hold for a whole turn. Lost = a turn is running:
+//     officers.ErrInstanceBusy, nothing sent, and the loop tries next pass.
+//   - A kickoff still owed (promptPending) is busy too: the first turn goes first.
+//   - Won: the send runs in the background (a turn can outlast many passes),
+//     holding the claim until it returns, then releases it; the turn is
+//     recorded on the agent's session like any other.
 func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, text string) error {
-	octx := f.s.officerPrincipal(ctx, o.Owner)
+	s := f.s
+	if s.ext.Gateway == nil {
+		return errors.New("officers: no agent gateway to send a re-prompt through")
+	}
+	octx := s.officerPrincipal(ctx, o.Owner)
 	name := officers.InstanceName(o.ID, n)
-	a, err := f.s.ext.Agents.GetByName(octx, name)
+	a, err := s.ext.Agents.GetByName(octx, name)
 	if err != nil {
 		return err
 	}
-	re, ok := f.s.ext.Agents.(kickoffRearmer)
-	if !ok {
-		return errors.New("officers: the agents store cannot re-arm a turn")
+	if promptPending(a) {
+		return officers.ErrInstanceBusy
 	}
-	if err := re.RearmKickoff(octx, a.ID, text); err != nil {
-		return fmt.Errorf("officers: re-prompt %s: %w", name, err)
+	turn := agents.KindTurnTimeout(a.Kind) + repromptSlack
+	owner := s.officerRT.claimOwner
+	won, err := s.ext.Agents.ClaimKickoff(octx, a.ID, owner, turn+repromptClaimMargin)
+	if err != nil {
+		return fmt.Errorf("officers: take %s's session claim: %w", name, err)
 	}
+	if !won {
+		return officers.ErrInstanceBusy
+	}
+	release := func() {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(octx), 10*time.Second)
+		defer cancel()
+		if err := s.ext.Agents.ReleaseKickoffClaim(rctx, a.ID, owner); err != nil {
+			s.logger.Printf("officers: %s: release the re-prompt's session claim: %v", name, err)
+		}
+	}
+	// Re-read under the claim: a first turn may have been re-owed meanwhile.
+	fresh, err := s.ext.Agents.Get(octx, a.ID)
+	if err != nil || promptPending(fresh) {
+		release()
+		if err != nil {
+			return err
+		}
+		return officers.ErrInstanceBusy
+	}
+	sess, err := s.ext.Agents.LatestOrCreateSession(octx, fresh.ID, fresh.Name)
+	if err != nil {
+		release()
+		return fmt.Errorf("officers: %s's session: %w", name, err)
+	}
+	s.officerRT.wg.Add(1)
+	bg := context.WithoutCancel(octx)
+	safeGo(s.logger, "officer re-prompt "+name, func() {
+		defer s.officerRT.wg.Done()
+		defer release()
+		tctx, cancel := context.WithTimeout(bg, turn)
+		defer cancel()
+		reply, err := s.ext.Gateway.Chat(tctx, fresh, sess.SessionKey, text, nil)
+		bctx, bcancel := context.WithTimeout(bg, 10*time.Second)
+		defer bcancel()
+		_, _ = s.ext.Agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: text})
+		if reply != "" {
+			_, _ = s.ext.Agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "assistant", Content: reply})
+		}
+		if err != nil {
+			s.logger.Printf("officers: %s: re-prompt turn: %s", name, agentgateway.Unsent(err)+failureKind(err))
+		}
+	})
 	return nil
+}
+
+// failureKind names a send failure for the log without quoting it (a runtime's
+// error can echo the request), as the memo relay does.
+func failureKind(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return " (the turn outlasted its deadline)"
+	}
+	return " (failed; see the agent's transcript)"
 }
 
 // Stop implements officers.Fleet: scale instance n to zero (agent and volume
@@ -241,6 +330,13 @@ func (f officerFleet) Stop(ctx context.Context, o officers.Officer, n int) error
 	}
 	f.s.clearAgentWork(a.ID)
 	return f.s.ext.Provisioner.Stop(octx, a.ID)
+}
+
+// waitOfficerReprompts waits for in-flight re-prompt sends (tests, shutdown).
+func (s *Server) waitOfficerReprompts() {
+	if s.officerRT != nil {
+		s.officerRT.wg.Wait()
+	}
 }
 
 // --- delete protection -------------------------------------------------------

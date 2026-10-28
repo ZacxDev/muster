@@ -100,19 +100,28 @@ The decision (`officers.Decide`, a pure function):
   `idle_scale_to_zero_after`, every up instance is stopped. A new item resets
   the window.
 - **Re-prompt.** An up instance that has finished — not in error, holding no
-  live claim, its last prompt delivered — is given a new turn ("new work: call
+  live claim, its first turn delivered — is sent a new turn ("new work: call
   `officer_items` …") when there is claimable work that no instance being
   started or recently prompted already covers. Without it an instance whose turn
   ended would never look at the queue again while it stays up, and the officer
   would neither work the new item nor go idle. Rate limit: one prompt per
-  instance per 5 minutes (`officers.RepromptAfter`), and an instance with a
-  prompt still undelivered is never prompted again. The prompt goes through the
-  same re-armed first turn as a start; the kickoff deliverer never types into a
-  turn already running (ccd refuses with `409 busy` before typing, and the
-  deliverer waits), so a prompt cannot interrupt work. Muster re-prompts rather
-  than stopping an instance when its turn ends because it has no signal that a
-  dispatched session's turn has ended, and stop/start would cost a pod cold
-  start per item.
+  instance per 5 minutes (`officers.RepromptAfter`).
+
+  **How it is sent.** As a turn of its own under the instance's **session
+  claim** (`ClaimKickoff`), the claim a first turn and a cairn memo hold for a
+  whole turn — the memo relay's pattern. If the claim is held, a turn is
+  running (an instance works the queue inside one turn, which can last ~37
+  minutes, and holds no HQ claim between items): the re-prompt is **not sent**
+  and the loop tries again on its next pass, so it lands when that turn ends.
+  It never writes the instance's kickoff state (`kicked_off`, `pending_note`,
+  `updated_at`). An earlier version re-armed the first turn instead, and when
+  the running turn outlasted the kickoff deliverer's 15-minute dwell bound the
+  deliverer marked the instance `error` — permanently holding its slot. A turn
+  started some other way without the claim (an operator's chat) is refused by
+  ccd with `409 busy` before anything is typed, so the re-prompt fails cleanly
+  rather than interrupting it. muster re-prompts rather than stopping an
+  instance when its turn ends because it has no turn-ended signal for a
+  dispatched session, and stop/start would cost a pod cold start per item.
 
 **Up** means the instance's live status is running, provisioning or pending —
 or `error`: a crash-looping instance keeps its slot rather than being started
@@ -139,11 +148,15 @@ changes nothing — no start, no stop, no release — and the officer's next pas
 waits `poll_interval` doubled per consecutive failure, capped at 10 minutes.
 
 **HQ refuses the officer.** A 401 or 403 (the token is revoked, wrong or not
-this officer's) or a 404 (HQ without the officer API, or no such officer) is a
-**configuration fault, not an outage**. It is logged loudly once per change
+this officer's) or a 404 (HQ without the officer API, or no such officer), seen
+on **2 consecutive passes** (`officers.FaultStrikes`; one alone is an HQ deploy
+or a token cache mid-rollout, and changes nothing), is a **configuration fault,
+not an outage**. A 5xx in between neither confirms nor clears it; only a
+successful answer does. It is logged loudly once per change
 ("HQ refuses this officer …: a CONFIGURATION fault"), counted on
 `muster_officer_hq_faults`, and the officer's up instances are **scaled to
-zero** rather than holding pods and Claude accounts for ever; the loop keeps
+zero** (logged as `scaled instance N to zero (HQ configuration fault: 404)`)
+rather than holding pods and Claude accounts for ever; the loop keeps
 retrying with the same backoff and logs "HQ answers again" when it does. A pass that cannot see muster's own
 instances (the provisioner is unreachable) is treated the same way: "I cannot
 see" is never read as "nothing is running".

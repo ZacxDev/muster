@@ -32,16 +32,20 @@ type fakeFleet struct {
 	reprompts []int
 	reprompt  []string
 	pending   map[int]bool // a prompt is owed and not yet delivered
+	busy      map[int]bool // a turn holds the instance's session: Reprompt answers ErrInstanceBusy
 	errored   map[int]bool // the instance is in error (holds its slot)
 }
 
 func newFleet() *fakeFleet {
-	return &fakeFleet{up: map[int]bool{}, exists: map[int]bool{}, pending: map[int]bool{}, errored: map[int]bool{}}
+	return &fakeFleet{up: map[int]bool{}, exists: map[int]bool{}, pending: map[int]bool{}, errored: map[int]bool{}, busy: map[int]bool{}}
 }
 
 func (f *fakeFleet) Reprompt(_ context.Context, o officers.Officer, n int, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.busy[n] {
+		return officers.ErrInstanceBusy
+	}
 	f.reprompts = append(f.reprompts, n)
 	f.reprompt = append(f.reprompt, text)
 	return nil
@@ -511,29 +515,44 @@ func TestAnErrorSlotIsLoggedOnceAndCounted(t *testing.T) {
 }
 
 // TestAPermanentHQRefusalIsAConfigFault: a revoked token (401/403) or HQ
-// without the officer API (404) is not an outage. The loop logs it once per
-// change, counts it on muster_officer_hq_faults, and scales the officer's up
-// instances to zero instead of holding pods and accounts for ever. A 5xx
-// still changes nothing.
+// without the officer API (404) is not an outage — once it has been seen on
+// FaultStrikes consecutive passes. Then the loop logs it once, counts it on
+// muster_officer_hq_faults, and scales the officer's up instances to zero,
+// naming the fault as the reason. A 5xx in between neither confirms nor clears
+// it; only a successful answer clears it ("HQ answers again").
 func TestAPermanentHQRefusalIsAConfigFault(t *testing.T) {
 	for _, code := range []int{401, 403, 404} {
 		t.Run(itoa3(code), func(t *testing.T) {
 			r := newRig(t, 2, 30*time.Minute)
 			r.fleet.up[1], r.fleet.up[2], r.fleet.exists[1], r.fleet.exists[2] = true, true, true, true
 			r.hq.SetStatus(code)
-			res := r.check(t)
-			if res.Err == nil || len(r.fleet.stops) != 2 {
-				t.Fatalf("HQ %d: err %v, stops %v; want a fault and both instances stopped", code, res.Err, r.fleet.stops)
+			if res := r.check(t); res.Err == nil || len(r.fleet.stops) != 0 || officers.HQFaults() != 0 {
+				t.Fatalf("HQ %d once: err %v, stops %v, gauge %v; want an error but no scale change yet", code, res.Err, r.fleet.stops, officers.HQFaults())
+			}
+			r.clk.Advance(time.Hour)
+			if res := r.check(t); res.Err == nil || len(r.fleet.stops) != 2 {
+				t.Fatalf("HQ %d twice: err %v, stops %v; want a fault and both instances stopped", code, res.Err, r.fleet.stops)
 			}
 			if officers.HQFaults() != 1 {
 				t.Fatalf("hq faults gauge = %v, want 1", officers.HQFaults())
 			}
-			r.clk.Advance(time.Hour)
-			r.check(t)
+			if want := "scaled instance 1 to zero (HQ configuration fault: " + itoa3(code) + ")"; !strings.Contains(r.logs.String(), want) {
+				t.Fatalf("the scale-down does not name the fault (%q):\n%s", want, r.logs.String())
+			}
+			if strings.Contains(r.logs.String(), "to zero (idle") {
+				t.Fatal("a fault scale-down was logged as idle")
+			}
 			r.clk.Advance(time.Hour)
 			r.check(t)
 			if got := strings.Count(r.logs.String(), "HQ refuses this officer"); got != 1 {
 				t.Fatalf("fault log lines = %d, want 1", got)
+			}
+			// A 5xx in between: still a fault, not "answers again".
+			r.hq.SetStatus(503)
+			r.clk.Advance(time.Hour)
+			r.check(t)
+			if officers.HQFaults() != 1 || strings.Contains(r.logs.String(), "HQ answers again") {
+				t.Fatalf("a 5xx after the fault cleared it (gauge %v)", officers.HQFaults())
 			}
 			r.hq.SetStatus(0)
 			r.clk.Advance(time.Hour)
@@ -545,8 +564,30 @@ func TestAPermanentHQRefusalIsAConfigFault(t *testing.T) {
 	r := newRig(t, 1, time.Minute)
 	r.fleet.up[1], r.fleet.exists[1] = true, true
 	r.hq.SetStatus(503)
+	r.check(t)
+	r.clk.Advance(time.Hour)
 	if r.check(t); len(r.fleet.stops) != 0 {
 		t.Fatal("a 5xx stopped instances")
+	}
+}
+
+// TestOneHQRefusalThenSuccessChangesNothing: a single 404 (an HQ deploy
+// mid-rollout) followed by a good answer neither scales anything down nor
+// leaves a fault behind.
+func TestOneHQRefusalThenSuccessChangesNothing(t *testing.T) {
+	r := newRig(t, 1, 30*time.Minute)
+	r.fleet.up[1], r.fleet.exists[1] = true, true
+	r.hq.AddItem(relID, "release.evaluate", "svc:v1")
+	r.hq.SetStatus(404)
+	r.check(t)
+	r.hq.SetStatus(0)
+	r.clk.Advance(time.Hour)
+	r.check(t)
+	r.hq.SetStatus(404)
+	r.clk.Advance(time.Hour)
+	r.check(t) // a 404 again, but not CONSECUTIVE with the first
+	if len(r.fleet.stops) != 0 || officers.HQFaults() != 0 || strings.Contains(r.logs.String(), "HQ refuses this officer") {
+		t.Fatalf("non-consecutive single 404s: stops %v gauge %v\n%s", r.fleet.stops, officers.HQFaults(), r.logs.String())
 	}
 }
 
@@ -592,5 +633,37 @@ func TestAClaimHolderIsNotReprompted(t *testing.T) {
 	r.clk.Advance(officers.RepromptAfter * 3)
 	if res := r.check(t); len(res.Decision.Reprompt) != 0 {
 		t.Fatalf("re-prompted the instance working item A: %v", res.Decision.Reprompt)
+	}
+}
+
+// TestABusyInstanceIsRepromptedOnceItsTurnEnds: an up instance with no claim
+// whose session a turn still holds (its first turn working the queue) answers
+// a re-prompt with ErrInstanceBusy. That is not a prompt: nothing is recorded,
+// nothing is logged as a failure, and the loop tries again on the next pass —
+// without waiting out the rate limit — so the prompt lands as soon as the turn
+// ends.
+func TestABusyInstanceIsRepromptedOnceItsTurnEnds(t *testing.T) {
+	r := newRig(t, 1, 30*time.Minute)
+	first := r.hq.AddItem(relID, "release.evaluate", "svc:v1")
+	r.check(t)
+	completeAfterClaim(t, r, first)
+	r.hq.AddItem(relID, "release.evaluate", "svc:v2")
+	r.fleet.busy[1] = true
+	r.clk.Advance(officers.RepromptAfter)
+	// 18 minutes of a turn still running — deliberately NOT a multiple of
+	// RepromptAfter, so the pass the turn ends on is inside the rate-limit window
+	// of any wrongly-recorded "prompt" and only a correct loop prompts at once.
+	for i := 0; i < 18; i++ {
+		if res := r.check(t); len(res.ActErrs) != 0 {
+			t.Fatalf("a busy instance's re-prompt counted as a failure: %v", res.ActErrs)
+		}
+		r.clk.Advance(time.Minute)
+	}
+	if len(r.fleet.reprompts) != 0 || strings.Contains(r.logs.String(), "re-prompt instance 1:") {
+		t.Fatalf("delivered %v or logged a failure while the turn ran:\n%s", r.fleet.reprompts, r.logs.String())
+	}
+	r.fleet.busy[1] = false // the turn ends
+	if r.check(t); len(r.fleet.reprompts) != 1 {
+		t.Fatalf("the turn ended: reprompts = %v, want one at once", r.fleet.reprompts)
 	}
 }
