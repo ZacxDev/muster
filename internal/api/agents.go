@@ -128,7 +128,7 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	//     what it REPLACED it loses: steering an agent used to need the reserved
 	//     operator's in-cluster uuid, held by one pod and readable only from that
 	//     pod's Secret. It now needs MUSTER_HOOK_TOKEN — one shared value handed to
-	//     every hook script on both hosts, travelling in cleartext to the LAN
+	//     every hook script on every host, travelling in cleartext to the LAN
 	//     NodePort many times a day, naming no caller (auth.go's ChiefWriteRefusal
 	//     says so at length, which is why that door refuses to equal it). That is a
 	//     deliberate trade for a CLI that works without a second privileged agent,

@@ -65,7 +65,7 @@ async function shown(page: Page): Promise<string[]> {
   }, names);
 }
 
-// HELD, NOT MOVED (Zach's call; tap-only, even at the top, confirmed): a
+// HELD, NOT MOVED (the operator's decision; tap-only, even at the top): a
 // background refresh of the open list — an activity change, an arrival — moves
 // no card. The new order waits behind an "N new ↑" pill and a tap applies it. A
 // card's own content still updates in place. It rewrites the host's windows.

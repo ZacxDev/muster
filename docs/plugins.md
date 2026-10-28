@@ -1009,8 +1009,8 @@ the same way a reply on a thread does. Off unless `MUSTER_PR_MAIL_SENDERS` lists
 the gate's agent-mail address ([configuration](configuration.md)) and session
 routing is on.
 
-1. **Who authored what.** A PostToolUse hook on your host (outside muster:
-   devrc's `pr-session-bind-hook.py`) reports a successful `gh pr create` or
+1. **Who authored what.** A PostToolUse hook on your host (outside muster)
+   reports a successful `gh pr create` or
    `git push` that the session ran: `POST /api/pr-sessions {repo, pr,
    head_ref, claude_session, kind}`, with route reply's credential (a personal
    token or the hook token). `kind` is `gh-pr-create` (with `pr`, and

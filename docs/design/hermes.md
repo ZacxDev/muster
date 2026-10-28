@@ -21,7 +21,7 @@ implemented (see [Phase 2 as built](#phase-2-as-built)): a Hermes window's
 session is resolved from its terminal's breadcrumb and its status from the
 `hermes-hook` status files; it has a read-only rendered view, the Hermes kind
 chip and `-list -hermes`; there is no send path. The Home Manager declaration
-of the hook and its allowlist entries is the host configuration's (devrc).
+of the hook and its allowlist entries belongs to the host's own configuration.
 Phase 3 is implemented (see [Phase 3 as built](#phase-3-as-built)): the gated
 send — the screen check, one Escape, the post-paste check and the
 database-confirmed submit — behind the `-hermes-send` switch on both sides,

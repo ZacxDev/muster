@@ -117,9 +117,22 @@ Two conventions it enforces that are easy to trip over:
 - **Fixtures that genuinely need a date use year 2000.** That year is allowed
   everywhere, and so is Go's `2006-01-02` reference instant.
 
-To add a name to the denylist, add the SHA-256 of its lowercase spelling and bump
-`DENIED_COUNT`. The names are stored as digests because a plaintext denylist in a
-repository that may one day be public *is* the leak it exists to prevent.
+The private names are stored in `tests/leakscan_denylist.txt` as **keyed**
+digests (HMAC-SHA256), because a plaintext denylist in a public repository *is*
+the leak it exists to prevent, and an unkeyed hash of a short name is reversed by
+guessing. A name matches anywhere inside an identifier: a header like
+`X-<name>-Token`, the tail of `<host>-<name>`, or `<name>ctl`.
+
+The key is read from `MUSTER_LEAKSCAN_KEY`; in CI it is the repository secret of
+that name. Without it, a local run warns and skips only the denied-name check, and
+a CI run on this repository fails. To change the list, keep the plaintext names in
+a file outside the repository and run:
+
+```sh
+MUSTER_LEAKSCAN_KEY=… python3 scripts/leakscan-rehash.py < names.txt > tests/leakscan_denylist.txt
+```
+
+then set `DENIED_COUNT` in `tests/leakscan.py` to the count it prints.
 
 ## Documentation
 

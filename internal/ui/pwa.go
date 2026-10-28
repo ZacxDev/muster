@@ -18,14 +18,14 @@ import (
 // 🔴 crossorigin="use-credentials" IS LOAD-BEARING, AND THE REASON IS BLINK, NOT
 // THE EDGE. Chromium fetches the manifest in CORS mode with credentials OMITTED
 // unless this attribute says otherwise — even same-origin. Without it the
-// manifest request carries no session cookie at all. (This comment used to
-// blame a Traefik basic-auth edge that answered 401; the public edge is
-// Authelia forward-auth now, and it is configured to let GET/HEAD on exactly
-// /manifest.webmanifest, /static/icons/*.png and /sw.js through without a
-// session — the WebAPK icon hasher never sends cookies, so an icon behind the
-// edge degrades the install to a plain shortcut. muster's side of that bargain
-// is that those three responses never depend on a session and never carry
-// per-user data; internal/api's TestPWAMetadataIsSessionIndependent pins it.)
+// manifest request carries no session cookie at all. (A deployment behind a
+// forward-auth proxy should let muster's PWA metadata through without a
+// session — GET/HEAD on exactly /manifest.webmanifest, /static/icons/*.png and
+// /sw.js: the WebAPK icon hasher never
+// sends cookies, so an icon behind the proxy degrades the install to a plain
+// shortcut. muster's side of that bargain is that those responses never depend
+// on a session and never carry per-user data;
+// internal/api's TestPWAMetadataIsSessionIndependent pins it.)
 func manifestLink() g.Node {
 	return Link(Rel("manifest"), Href("/manifest.webmanifest"), g.Attr("crossorigin", "use-credentials"))
 }

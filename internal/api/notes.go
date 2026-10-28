@@ -46,8 +46,8 @@ var taskSourceAllowlist = map[string]bool{
 //     or moz-extension:// Origin → "extension"; else the default "api".
 //   - sessionID: the trimmed session-id header ("" when absent).
 //
-// 🔴 BOTH HEADERS ARE READ UNDER TWO SPELLINGS — the current X-Muster-* and the
-// pre-extraction X-Clawgate-* that installed clients still send — via the single
+// 🔴 BOTH HEADERS ARE READ UNDER UP TO TWO SPELLINGS — the current X-Muster-* and,
+// when legacyPrefix is configured, the legacy one installed clients send — via the single
 // provenanceHeader lookup in provenance_headers.go, which also holds the measured
 // account of what the rename cost. Do NOT re-open-code the preference here.
 //
@@ -63,15 +63,15 @@ var taskSourceAllowlist = map[string]bool{
 // render path already truncates+escapes, this protects storage.
 const maxSessionIDLen = 128
 
-func taskSource(r *http.Request) (source, sessionID string) {
-	sessionID = provenanceHeader(r, headerSessionID, legacyHeaderSessionID)
+func taskSource(r *http.Request, legacyPrefix string) (source, sessionID string) {
+	sessionID = provenanceHeader(r, headerSessionID, legacyPrefix, legacySuffixSessionID)
 	if rs := []rune(sessionID); len(rs) > maxSessionIDLen {
 		// rune-safe cap: byte-slicing could split a multibyte rune into invalid
 		// UTF-8, which Postgres rejects on INSERT (a failed task-create, not a
 		// bounded store). Cap by runes so the stored value stays valid text.
 		sessionID = string(rs[:maxSessionIDLen])
 	}
-	if h := provenanceHeader(r, headerSource, legacyHeaderSource); h != "" {
+	if h := provenanceHeader(r, headerSource, legacyPrefix, legacySuffixSource); h != "" {
 		if taskSourceAllowlist[h] {
 			return h, sessionID
 		}
@@ -470,7 +470,7 @@ func (s *Server) handleAPITaskCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
 		return
 	}
-	source, sessionID := taskSource(r)
+	source, sessionID := taskSource(r, s.ext.LegacyProvenanceHeaderPrefix)
 	note, err := s.createTask(r.Context(), taskCreateInput{
 		Directory: body.Directory, Title: body.Title, Body: body.Body,
 		Model: body.Model, Repo: body.Repo, Branch: body.Branch, Tags: body.Tags,
@@ -1797,7 +1797,7 @@ func (s *Server) handleNoteEdit(w http.ResponseWriter, r *http.Request) {
 //   - "user" is the human (handleNoteComment hardcodes it) — only the operator/
 //     human may declare a task complete, and commentAuthor renders the author
 //     string VERBATIM on the card, so an impersonated "user" comment would read
-//     as something Zach wrote.
+//     as something the operator wrote.
 //   - "operator" is the reserved privileged agent NAME (reservedOperatorSlug, in
 //     internal/api/reserved_names.go — operator.go was deleted by upstream task #653
 //     phase two, and that file's header says why the constant did NOT move to
@@ -1824,8 +1824,8 @@ var reservedCommentAuthors = map[string]bool{"user": true, "operator": true}
 // non-human, and reuses the provenance vocabulary rather than inventing a second
 // one. It can never be "user"/"operator" because the allowlist cannot produce
 // them.
-func taskCommentAuthor(r *http.Request) string {
-	source, _ := taskSource(r)
+func taskCommentAuthor(r *http.Request, legacyPrefix string) string {
+	source, _ := taskSource(r, legacyPrefix)
 	if source == "" {
 		return "api"
 	}
@@ -1905,7 +1905,7 @@ func (s *Server) handleAPITaskComment(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := s.ext.Notes.AddComment(r.Context(), notes.Comment{
 		NoteID: id,
-		Author: taskCommentAuthor(r),
+		Author: taskCommentAuthor(r, s.ext.LegacyProvenanceHeaderPrefix),
 		Body:   text,
 	})
 	if err != nil {
@@ -1958,11 +1958,11 @@ func (s *Server) handleAPITaskComment(w http.ResponseWriter, r *http.Request) {
 // ⚠ "AUTHORED BY THE HUMAN" IS TRUE, BUT IT DOES NOT NAME ONE. This route is
 // wrapped in `requireSession`, which refuses a caller with no valid signed
 // session cookie, so `Author: "user"` is stamped only for someone who completed
-// a login — on the LAN NodePort as well as behind the Authelia edge. What the
-// tier cannot supply is WHICH human: it is one shared operator password, so
-// "user" means "whoever holds the operator session". Same scope caveat as
-// merge.go's mergeCommentAuthor — see upstream task #394 for the decision, and do
-// not restate this as an unqualified guarantee about a person.
+// a login — whether the request came directly or through a forward-auth proxy.
+// What the tier cannot supply is WHICH human: it is one shared operator
+// password, so "user" means "whoever holds the operator session". Same scope
+// caveat as merge.go's mergeCommentAuthor, and do not restate this as an
+// unqualified guarantee about a person.
 func (s *Server) handleNoteComment(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {

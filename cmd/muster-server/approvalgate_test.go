@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -40,8 +42,8 @@ func (f *fakeGateDoor) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.paths = append(f.paths, r.Method+" "+r.URL.Path)
-		f.token = append(f.token, r.Header.Get("Authorization")+"|"+r.Header.Get(router.TokenHeader))
-		f.actor = append(f.actor, r.Header.Get(router.ActorHeader))
+		f.token = append(f.token, r.Header.Get("Authorization")+"|"+r.Header.Get(router.DefaultTokenHeader))
+		f.actor = append(f.actor, r.Header.Get(router.DefaultActorHeader))
 		f.mu.Unlock()
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/gate":
@@ -298,5 +300,135 @@ func TestAnApprovalGateWithAnUnacceptableActorIsRefusedAtBoot(t *testing.T) {
 		if err := c.validate(); err != nil {
 			t.Errorf("actor %q: validate = %v, want accepted", ok, err)
 		}
+	}
+}
+
+// TestTheRouterHeaderNamesComeFromTheEnvironment: MUSTER_ROUTER_ACTOR_HEADER and
+// MUSTER_ROUTER_TOKEN_HEADER travel from the environment, through loadConfig and
+// the binary's own wiring (approvalGateFor), to the request a router receives;
+// and a value that is not a header name is refused at boot.
+func TestTheRouterHeaderNamesComeFromTheEnvironment(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"requestId":"x"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	env := map[string]string{
+		envDatabase:          "postgres://x/y",
+		envStandalone:        "1",
+		envApprovalGateURL:   srv.URL,
+		envApprovalGateToken: "gate-token-0123456789",
+		envRouterActorHeader: "X-Peer-Actor",
+		envRouterTokenHeader: "X-Peer-Token",
+	}
+	cfg, err := loadConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	gate := approvalGateFor(cfg)
+	if gate == nil {
+		t.Fatal("no approval gate was built")
+	}
+	if _, err := gate.MintGate(context.Background(), api.GateSpec{}); err != nil {
+		t.Fatalf("MintGate: %v", err)
+	}
+	if got.Get("X-Peer-Actor") != cfg.RouterActor || got.Get("X-Peer-Token") != "gate-token-0123456789" {
+		t.Errorf("the configured header names did not carry the actor and token: %v", got)
+	}
+
+	for _, bad := range []string{"X Peer", "X-Peer:", "-X", "X--Y"} {
+		c := cfg
+		c.RouterActorHeader = bad
+		if err := c.validate(); err == nil || !strings.Contains(err.Error(), envRouterActorHeader) {
+			t.Errorf("actor header %q: validate = %v, want a refusal naming %s", bad, err, envRouterActorHeader)
+		}
+		c = cfg
+		c.RouterTokenHeader = bad
+		if err := c.validate(); err == nil || !strings.Contains(err.Error(), envRouterTokenHeader) {
+			t.Errorf("token header %q: validate = %v, want a refusal naming %s", bad, err, envRouterTokenHeader)
+		}
+	}
+}
+
+// TestTheLegacyProvenancePrefixComesFromTheEnvironment: unset means no legacy
+// spelling; a valid prefix reaches the config; an invalid one is refused at
+// boot, naming the variable. The prefix here is SYNTHETIC.
+func TestTheLegacyProvenancePrefixComesFromTheEnvironment(t *testing.T) {
+	load := func(prefix string) config {
+		env := map[string]string{envDatabase: "postgres://x/y", envStandalone: "1"}
+		if prefix != "" {
+			env[envLegacyProvenancePrefix] = prefix
+		}
+		c, err := loadConfig(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("loadConfig(%q): %v", prefix, err)
+		}
+		return c
+	}
+	if c := load(""); c.LegacyProvenancePrefix != "" || c.validate() != nil {
+		t.Errorf("unset: prefix %q, validate %v; want \"\" and accepted", c.LegacyProvenancePrefix, c.validate())
+	}
+	if c := load(" X-Example "); c.LegacyProvenancePrefix != "X-Example" || c.validate() != nil {
+		t.Errorf("set: prefix %q, validate %v; want \"X-Example\" and accepted", c.LegacyProvenancePrefix, c.validate())
+	}
+	for _, bad := range []string{"X-Example-", "X Example", "X-Example:", "X-Muster"} {
+		if err := load(bad).validate(); err == nil || !strings.Contains(err.Error(), envLegacyProvenancePrefix) {
+			t.Errorf("%q: validate = %v, want a refusal naming %s", bad, err, envLegacyProvenancePrefix)
+		}
+	}
+}
+
+// TestTheLegacyProvenancePrefixReachesTheServer drives the binary's own wiring
+// (buildApp) against real Postgres: a task created with ONLY the legacy source
+// header is attributed when the prefix is configured, and is not when it is
+// unset. The two servers differ only in that one field. The prefix is SYNTHETIC.
+func TestTheLegacyProvenancePrefixReachesTheServer(t *testing.T) {
+	const hook = "legacy-prefix-hook-token-0123456789"
+	sourceOf := func(prefix string) string {
+		t.Helper()
+		cfg := dbConfig(t)
+		cfg.HookToken = hook
+		cfg.LegacyProvenancePrefix = prefix
+		base := startServer(t, cfg)
+		req, _ := http.NewRequest(http.MethodPost, base+"/api/tasks",
+			strings.NewReader(`{"directory":"legacy-prefix","body":"from a stale client"}`))
+		req.Header.Set("Authorization", "Bearer "+hook)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Example-Source", "claude-code")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /api/tasks: %v", err)
+		}
+		defer resp.Body.Close()
+		var created struct{ ID int64 }
+		if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&created) != nil || created.ID == 0 {
+			t.Fatalf("POST /api/tasks: HTTP %d", resp.StatusCode)
+		}
+		get, _ := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/api/tasks/%d", base, created.ID), nil)
+		get.Header.Set("Authorization", "Bearer "+hook)
+		gresp, err := http.DefaultClient.Do(get)
+		if err != nil {
+			t.Fatalf("GET task: %v", err)
+		}
+		defer gresp.Body.Close()
+		var task struct {
+			SourceType *string `json:"sourceType"`
+		}
+		if gresp.StatusCode != http.StatusOK || json.NewDecoder(gresp.Body).Decode(&task) != nil {
+			t.Fatalf("GET task: HTTP %d", gresp.StatusCode)
+		}
+		if task.SourceType == nil {
+			return ""
+		}
+		return *task.SourceType
+	}
+	if got := sourceOf(""); got != "" {
+		t.Errorf("prefix unset: the legacy header attributed the task %q, want no source", got)
+	}
+	if got := sourceOf("X-Example"); got != "claude-code" {
+		t.Errorf("prefix set: source %q, want \"claude-code\" — the configured prefix did not reach the server", got)
 	}
 }

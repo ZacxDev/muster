@@ -45,7 +45,7 @@ func TestMissingURLOrTokenIsAUsageError(t *testing.T) {
 	if rc, _, errs := runWith(t, map[string]string{envURL: "https://m.example", envHost: "laptop"}, "-token-file", f); rc != 2 || !strings.Contains(errs, "not a mirror token") {
 		t.Fatalf("hook token in the file: rc %d %s", rc, errs)
 	}
-	if rc, _, errs := runWith(t, map[string]string{envURL: "http://192.0.2.1:30306", envToken: "mmt_x", envHost: "laptop"}); rc != 2 || !strings.Contains(errs, "cleartext") {
+	if rc, _, errs := runWith(t, map[string]string{envURL: "http://192.0.2.1:8105", envToken: "mmt_x", envHost: "laptop"}); rc != 2 || !strings.Contains(errs, "cleartext") {
 		t.Fatalf("http without -allow-http: rc %d %s", rc, errs)
 	}
 }

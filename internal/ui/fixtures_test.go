@@ -30,7 +30,7 @@ func sampleTasksView() TasksView {
 				Tags: []string{"backend", "project:muster"}, Repo: "ZacxDev/muster", Model: "sonnet",
 				CreatedAt: fixedNow.Add(-2 * time.Hour), UpdatedAt: fixedNow.Add(-30 * time.Minute),
 				Comments: []notes.Comment{
-					{ID: 1, NoteID: 101, Author: "zach", Body: "First comment body.", CreatedAt: fixedNow.Add(-90 * time.Minute)},
+					{ID: 1, NoteID: 101, Author: "alice", Body: "First comment body.", CreatedAt: fixedNow.Add(-90 * time.Minute)},
 					// Retracted → exercises commentTombstone.
 					{ID: 2, NoteID: 101, Author: "operator", Retracted: true, CreatedAt: fixedNow.Add(-80 * time.Minute)},
 				},
