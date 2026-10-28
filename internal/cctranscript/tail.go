@@ -79,7 +79,8 @@ func ReadLines(r io.ReaderAt, off, size int64, maxBytes int) ([]Line, int64, err
 // ledger (toolctx.go) must see.
 func lineEvents(rec Record) []Event {
 	if rec.Type == "attachment" && !rec.IsSidechain {
-		return []Event{{Kind: KindInjected}}
+		// Text: the attachment's type, which the ledger judges it by.
+		return []Event{{Kind: KindInjected, Text: Cap(rec.Attachment.Type, 64)}}
 	}
 	return Events(rec)
 }
