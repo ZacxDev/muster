@@ -183,7 +183,7 @@ func TestTheRowOfThePageIsCurrent(t *testing.T) {
 }
 
 // navFeatures turns on every optional entry the sidebar can draw.
-var navFeatures = Features{GitHub: true, Connectors: true, Admin: true, Attention: true, Push: true}
+var navFeatures = Features{Connectors: true, Admin: true, Attention: true, Push: true}
 
 // navDocuments is every kind of document that draws the nav, with every entry on.
 func navDocuments() map[string]g.Node {
@@ -222,16 +222,16 @@ func moreParts(t *testing.T, src string) (open, summary, body, rest string) {
 }
 
 // TestMoreHoldsThePagesWithTheAsksCountOnItsHeader: on every nav document the
-// pages — every visible tab, Asks, Install, the theme, Account, Admin — are
+// pages — every visible tab, Asks, Install, Account, Admin — are
 // inside the collapsed More and nowhere else in the sidebar; More is drawn
 // shut; and the Asks count is in its <summary>, the part a shut <details>
 // still shows — never in its body.
 func TestMoreHoldsThePagesWithTheAsksCountOnItsHeader(t *testing.T) {
-	pages := []string{`id="sidebar-attention"`, `data-install-app`, `data-theme-toggle`, `id="sidebar-account"`, `id="sidebar-admin"`}
+	pages := []string{`id="sidebar-attention"`, `data-install-app`, `id="sidebar-account"`, `id="sidebar-admin"`}
 	for _, tb := range visibleTabs(navFeatures) {
 		pages = append(pages, `data-tab="`+tb.Key+`"`)
 	}
-	if len(pages) < 8 {
+	if len(pages) < 7 {
 		t.Fatalf("CONTROL: only %d pages to look for", len(pages))
 	}
 	for name, doc := range navDocuments() {

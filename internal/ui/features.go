@@ -21,18 +21,14 @@ package ui
 // stale page still reaches a dead route, and without this a live page mounts a
 // panel whose only possible content is a refusal.
 type Features struct {
-	// GitHub is true when the server holds a GitHub connection store. False
-	// removes the Repos tab from the navigation and its panel from the shell.
-	//
-	// 🔴 FALSE IS THE SHIPPING DEFAULT, NOT AN EDGE CASE. The store is built only
-	// when an encryption key is set, so an ordinary deployment renders with this
-	// false — which is why the zero value is the unbuilt state rather than the
-	// built one. A caller that forgets to populate this draws LESS than it could,
-	// which is the safe direction: the opposite default draws a tab over nothing.
-	GitHub bool
 	// Connectors is true when the server holds a connector store (an encryption
-	// key is configured). False removes the Connectors tab and its panel, for the
-	// reason GitHub's false removes Repos: the store is built only with a key.
+	// key is configured). False removes the Connectors tab and its panel: the
+	// store is built only with a key.
+	//
+	// 🔴 FALSE IS THE SHIPPING DEFAULT, NOT AN EDGE CASE, which is why the zero
+	// value is the unbuilt state. A caller that forgets to populate this draws
+	// LESS than it could, which is the safe direction: the opposite default
+	// draws a tab over nothing.
 	Connectors bool
 	// Admin is true when the viewer is an admin and the admin pages are
 	// served (accounts PR 5). It draws the sidebar's Admin link and nothing
@@ -66,9 +62,6 @@ type Features struct {
 func visibleTabs(f Features) []tab {
 	out := make([]tab, 0, len(musterTabs))
 	for _, t := range musterTabs {
-		if t.Key == "repos" && !f.GitHub {
-			continue
-		}
 		if t.Key == "connectors" && !f.Connectors {
 			continue
 		}
@@ -109,9 +102,9 @@ func defaultVisibleTab(f Features) string {
 // actually draws, defaulting to defaultVisibleTab.
 //
 // 🔴 IT IS WHAT MAKES A DEEP LINK TO A HIDDEN TAB LAND SOMEWHERE. Every tab is a
-// real route whether or not its subsystem was built, so /repos is served on a
-// deployment with no GitHub store. Clamping only against the full registry would
-// render the shell with `activeTab = "repos"`, i.e. with no panel un-hidden at
+// real route whether or not its subsystem was built, so /connectors is served on
+// a deployment with no connector store. Clamping only against the full registry
+// would render the shell with `activeTab = "connectors"`, i.e. with no panel un-hidden at
 // all: a blank page under a correct-looking URL. Clamping here sends that URL to
 // the default tab, which is what an unrouted path already does.
 func normalizeVisibleTab(t string, f Features) string {

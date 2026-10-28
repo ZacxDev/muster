@@ -51,7 +51,6 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/focus"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sendqueue"
@@ -232,9 +231,6 @@ type Server struct {
 	// suggestIdleWaitFor overrides suggestIdleWait (a test's; 0 = the
 	// constant).
 	suggestIdleWaitFor time.Duration
-
-	// listPullRequests is the GitHub PR read, injectable for tests.
-	listPullRequests func(ctx context.Context, token, repo, state string) ([]github.PullRequest, error)
 
 	// --- debounced task notifications, one buffer PER OWNER (push_task.go) ---
 	taskCreateAfter  afterFunc
@@ -428,7 +424,6 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 		agentCLIPath:            defaultAgentCLIPath,
 		activeAgents:            make(map[string]agentPhase),
 		activeAgentsNow:         time.Now,
-		listPullRequests:        github.ListPullRequests,
 		taskCreateAfter:         realAfterFunc,
 		taskCommentAfter:        realAfterFunc,
 		taskProvisionedNotified: make(map[int64]bool),
@@ -576,7 +571,6 @@ func (s *Server) registerAll(mux Mux) {
 	mux.HandleFunc("POST /api/chief/replace", s.requireArmedHookToken(s.requireLifecycleProvisioner(s.handleChiefReplace)))
 
 	s.registerNotesRoutes(mux)
-	s.registerGitHubRoutes(mux)
 	s.registerAgentRoutes(mux)
 	// Pins (internal/pins): the Agents list's pin toggles, 404 without a store.
 	s.registerPinRoutes(mux)
@@ -699,19 +693,19 @@ func staticCacheControl(path, v string) string {
 // render a document carrying the sidebar; deciding the tab set at each of them
 // would be four copies of one predicate, which is the shape that ends up wrong at
 // three of the four in the same direction. It reads the SAME field the handler
-// guards on (Extensions.GitHub), so the page and the route cannot disagree about
+// guards on (Extensions.Connectors), so the page and the route cannot disagree about
 // whether a subsystem exists.
 //
 // ⚠ IT IS NOT A READINESS OR PERMISSION CHECK. A tab hidden here is a surface the
 // build does not have, not one this caller may not see — every route stays
-// registered and answers for itself (see internal/api/routes.go and github.go).
+// registered and answers for itself (see internal/api/routes.go).
 //
 // Admin (accounts PR 5) draws the sidebar's Admin link: the request's
 // principal is an admin AND the admin pages have a store to serve. It is a
 // LINK only — requireAdmin is what refuses a member, whatever the nav drew.
 func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	p, _ := authz.From(ctx)
-	return ui.Features{GitHub: s.ext.GitHub != nil || s.githubApp(ctx) != nil, Connectors: s.ext.Connectors != nil,
+	return ui.Features{Connectors: s.ext.Connectors != nil,
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed(), Attention: s.ext.Attention != nil,
 		SnapUser: p.UserID, SnapBuild: BuildVersion}
 }

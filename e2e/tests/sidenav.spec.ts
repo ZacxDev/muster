@@ -15,9 +15,9 @@ import { openMore } from '../lib/nav';
 //     both sizes — its hamburger opens it, and nothing on the page moves;
 //   - after a Rendered ↔ Terminal switch the view on screen is the FRAME, laid
 //     over the whole page (view_swap.go), so the nav reachable then is the
-//     frame's own: it opens, it is on top of everything, a link in it takes
-//     the TOP window, and a theme change made in it is followed by the page
-//     under it — in both directions, for a mirrored window and an agent.
+//     frame's own: it opens, it is on top of everything, and a link in it
+//     (inside its More) takes the TOP window — for a mirrored window and an
+//     agent.
 //
 // Its own server: the e2eterm binary with the mirror plugin, the plugin
 // interface (/plugins is served only then) and claude-code agents on, and one
@@ -232,13 +232,6 @@ for (const size of [
       await page.locator('#view-terminal').click();
       await expect(framed(page).locator('#term-status')).toHaveText('Connected');
       await navOnTopInFrame(page, false);
-      // A theme change made in the frame's nav: the page under it follows.
-      expect(await page.evaluate(() => document.documentElement.classList.contains('dark')), 'the page starts dark').toBe(true);
-      await openMore(framed(page));
-      await framed(page).locator('#sidebar [data-theme-toggle]').click();
-      await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains('dark')), { message: 'the page under the frame followed the theme the frame set' }).toBe(false);
-      await framed(page).locator('#sidebar [data-theme-toggle]').click();
-      await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(true);
       await framed(page).locator('#sidebar-close').click();
       // Back: the page's own nav is the one on screen again, and still works.
       await framed(page).locator('#view-rendered').click();

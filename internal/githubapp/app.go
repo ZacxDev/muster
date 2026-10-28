@@ -1,6 +1,6 @@
 // Package githubapp is muster's GitHub identity when a GitHub App is configured
 // (MUSTER_GITHUB_APP_ID + MUSTER_GITHUB_APP_PRIVATE_KEY): the `github`
-// connector's credential, the Repos tab's repository list, and the
+// connector's credential, the dispatch dialog's repository list, and the
 // "is this a connected repository" check behind every dispatch door.
 //
 // 🔴 ONLY INSTALLATIONS ON ALLOWLISTED ACCOUNTS EXIST (Config.Accounts,
@@ -44,12 +44,12 @@
 // is used only for /app/... calls — listing installations and minting tokens —
 // and never leaves muster either.
 //
-// 🔴 THE APP IS THE ADMIN'S, NOT EVERY USER'S. The OAuth connection it replaces
-// was one GitHub account per muster user; the App is the deployment's. So it is
-// offered only to admin-role principals: the `github` connector is presented
-// to them alone (connectors.WithVirtual's allow), and internal/api's
-// github_source.go gives the App's repositories to them alone. A member keeps
-// their own OAuth connection and stored connectors, as before.
+// 🔴 THE APP IS THE ADMIN'S, NOT EVERY USER'S. The OAuth connection it replaced
+// (since removed) was one GitHub account per muster user; the App is the
+// deployment's. So it is offered only to admin-role principals: the `github`
+// connector is presented to them alone (connectors.WithVirtual's allow), and
+// internal/api's github_source.go gives the App's repositories to them alone. A
+// member keeps their stored connectors and has no connected repositories.
 package githubapp
 
 import (
@@ -94,7 +94,7 @@ const refreshBefore = 5 * time.Minute
 const installationsTTL = 10 * time.Minute
 
 // reposTTL bounds how stale the installation repository list may be. It is read
-// on every Repos tab render and every dispatch check, and changes only when the
+// on every repository picker render and every dispatch check, and changes only when the
 // owner edits the installation's repository access on GitHub.
 const reposTTL = time.Minute
 
@@ -689,19 +689,6 @@ func (a *App) Repos(ctx context.Context) ([]github.Repo, error) {
 	a.repos, a.reposAt = all, a.cfg.Now()
 	a.mu.Unlock()
 	return all, nil
-}
-
-// Accounts are the logins the App is installed on, for the Repos tab's label.
-func (a *App) Accounts(ctx context.Context) ([]string, error) {
-	insts, err := a.installations(ctx, false)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, 0, len(insts))
-	for _, in := range insts {
-		out = append(out, in.Account.Login)
-	}
-	return out, nil
 }
 
 // DefaultBranch reads repo's default branch with the installation's listing token.

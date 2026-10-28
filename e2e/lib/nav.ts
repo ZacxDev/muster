@@ -1,7 +1,7 @@
 import { FrameLocator, Page, expect } from '@playwright/test';
 
-// The sidebar's pages (Tasks, Agents, Connectors, Asks, Install, the theme,
-// Account, Admin) are inside its collapsed "More" (internal/ui/nav_agents.go
+// The sidebar's pages (Tasks, Agents, Connectors, Asks, Install, Account,
+// Admin) are inside its collapsed "More" (internal/ui/nav_agents.go
 // navMore), shut on every load. openMore expands it the way a person does — a
 // tap on its header — and waits until its body is shown. A More already open
 // in this document (an in-page tab switch keeps it) is left as it is. The

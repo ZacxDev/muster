@@ -21,7 +21,6 @@ import (
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/pins"
@@ -62,7 +61,6 @@ func fullyWiredServer(t *testing.T) *Server {
 	s.UseExtensions(Extensions{
 		Notes:           stubNotesStore{},
 		Agents:          stubAgentsStore{},
-		GitHub:          stubGitHubStore{},
 		GitHubApp:       stubGitHubApp{},
 		Users:           stubUsers{},
 		APITokens:       stubAPITokens{},
@@ -73,10 +71,9 @@ func fullyWiredServer(t *testing.T) *Server {
 		// api.Provisioner and api.Gateway are separate now, so setting only the first
 		// would quietly make this an "almost everything" fixture — and a registration
 		// test that does not wire a dependency cannot notice a route gated on it.
-		Gateway: stubGateway{},
-		Kinds:   stubKinds{},
-		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://example.test",
-			StateKey: []byte("registration-test-state-key-01234567")},
+		Gateway:   stubGateway{},
+		Kinds:     stubKinds{},
+		PublicURL: "http://example.test",
 		// A NON-DEFAULT prefix on purpose. agents.NamespacePrefix here would be
 		// indistinguishable from the zero value's resolved behaviour, so this
 		// fixture would claim "fully wired" while exercising the default — which is
@@ -389,7 +386,6 @@ type (
 	stubAgentsStore  struct{ agents.Store }
 	stubJobs         struct{ jobs.Store }
 	stubJobWorkspace struct{ JobWorkspace }
-	stubGitHubStore  struct{ github.Store }
 	stubGitHubApp    struct{ GitHubApp }
 )
 
@@ -398,7 +394,6 @@ type (
 var (
 	_ notes.Store  = stubNotesStore{}
 	_ agents.Store = stubAgentsStore{}
-	_ github.Store = stubGitHubStore{}
 	_ RouterPort   = stubRouter{}
 	_ GatePort     = stubGate{}
 )

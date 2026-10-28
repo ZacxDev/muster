@@ -2,11 +2,7 @@ package api
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
-	"github.com/ZacxDev/muster/internal/github"
 	"io"
 	"log"
 	"net/http"
@@ -358,101 +354,6 @@ func TestAGrantNeverResolvesAnotherOwnersConnector(t *testing.T) {
 	if rec := w.do(w.connectH, "GET", path, "", cred{agentToken: w.a.token}); rec.Code != 200 || w.up.sawSecret(w.canary+"-SECRET") != 1 {
 		t.Fatalf("control: A's agent through its own grant: %d %s (secret seen %d)", rec.Code, truncate(rec.Body.String(), 200), w.up.sawSecret(w.canary+"-SECRET"))
 	}
-}
-
-// --- GitHub OAuth state ------------------------------------------------------
-
-// TestTheGitHubOAuthStateIsBoundToItsUser: a state minted for A is refused in
-// B's callback (same browser cookie and query, different session user), and
-// accepted in A's — where the request then stops at the missing code, which is
-// what proves the state check passed.
-func TestTheGitHubOAuthStateIsBoundToItsUser(t *testing.T) {
-	s := New(nil, AuthConfig{UIPassword: connTestPassword}, log.New(io.Discard, "", 0))
-	s.UseExtensions(Extensions{GitHub: stubGitHubStore{}, Users: stubUsers{},
-		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://muster.test",
-			StateKey: []byte("iso-oauth-state-key-0123456789abcdef")}})
-	const a, b = 5, 6
-	s.sessionUserOverride = func(r *http.Request) int64 {
-		v, _ := strconv.ParseInt(r.Header.Get(isoUserHeader), 10, 64)
-		return v
-	}
-	h := s.Handler()
-
-	// A starts the flow: the state comes back in the cookie and the redirect.
-	r := httptest.NewRequest("GET", "/github/connect", nil)
-	r.Header.Set("Cookie", sessionCookieFor(s))
-	r.Header.Set(isoUserHeader, strconv.Itoa(a))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, r)
-	var state string
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == oauthStateCookie {
-			state = c.Value
-		}
-	}
-	if rec.Code != http.StatusFound || !strings.HasPrefix(state, strconv.Itoa(a)+".") {
-		t.Fatalf("A's connect: %d, state %q; want a redirect and a state naming user %d", rec.Code, state, a)
-	}
-	callback := func(uid int, st string) string {
-		r := httptest.NewRequest("GET", "/github/callback?state="+url.QueryEscape(st), nil)
-		r.Header.Set("Cookie", sessionCookieFor(s)+"; "+oauthStateCookie+"="+st)
-		r.Header.Set(isoUserHeader, strconv.Itoa(uid))
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, r)
-		return rec.Body.String()
-	}
-	if got := callback(b, state); !strings.Contains(got, "invalid oauth state") {
-		t.Errorf("B completing A's flow: %q; want the state refused", got)
-	}
-	forged := strconv.Itoa(b) + state[strings.IndexByte(state, '.'):]
-	if got := callback(b, forged); !strings.Contains(got, "invalid oauth state") {
-		t.Errorf("B with A's state re-labelled as B's: %q; want the mac to refuse it", got)
-	}
-	if got := callback(a, state); !strings.Contains(got, "missing code") {
-		t.Errorf("control: A completing its own flow: %q; want it past the state check (to the missing code)", got)
-	}
-}
-
-// TestTheGitHubOAuthStateNeedsAKey (audit 🟡3): with no state key nothing is
-// minted (connect answers 503) and no callback is accepted — a MAC under an
-// empty key is a public function of its input. And the key is derived from the
-// GitHub encryption key under its own label, never from MUSTER_UI_PASSWORD.
-func TestTheGitHubOAuthStateNeedsAKey(t *testing.T) {
-	s := New(nil, AuthConfig{UIPassword: connTestPassword}, log.New(io.Discard, "", 0))
-	s.UseExtensions(Extensions{GitHub: stubGitHubStore{}, Users: stubUsers{},
-		GitHubOAuth: GitHubOAuthConfig{ClientID: "id", ClientSecret: "secret", BaseURL: "http://muster.test"}})
-	h := s.Handler()
-	r := httptest.NewRequest("GET", "/github/connect", nil)
-	r.Header.Set("Cookie", sessionCookieFor(s))
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, r)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("connect with no state key: %d; want 503", rec.Code)
-	}
-	if st, ok := s.githubOAuthState(1, "nonce"); ok || st != "" {
-		t.Fatalf("minted %q with no key", st)
-	}
-	if s.githubOAuthStateNames("1.nonce."+hexMAC(nil, "1.nonce"), 1) {
-		t.Fatal("a state MACed under the empty key was accepted")
-	}
-	// And a state with an EMPTY mac: with no key the expected mac is "" too,
-	// so only the no-key refusal itself stops hmac.Equal("", "") (round-2 🟡2).
-	if s.githubOAuthStateNames("1.nonce.", 1) {
-		t.Fatal("a state with an empty mac was accepted under no key")
-	}
-	k1, err := github.OAuthStateKey([]byte("0123456789abcdef0123456789abcdef"))
-	if err != nil || len(k1) != 32 || string(k1) == "0123456789abcdef0123456789abcdef" {
-		t.Fatalf("OAuthStateKey = %x, %v; want a distinct 32-byte key", k1, err)
-	}
-	if _, err := github.OAuthStateKey(nil); err == nil {
-		t.Fatal("OAuthStateKey derived a key from nothing")
-	}
-}
-
-func hexMAC(key []byte, body string) string {
-	m := hmac.New(sha256.New, key)
-	m.Write([]byte(body))
-	return hex.EncodeToString(m.Sum(nil))
 }
 
 // TestTheActiveListIsTheCallersOwn (round-2 audit 🟡1): the active-agent

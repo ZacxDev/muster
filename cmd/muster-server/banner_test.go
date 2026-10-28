@@ -14,7 +14,6 @@ import (
 
 	"github.com/ZacxDev/muster/internal/api"
 	"github.com/ZacxDev/muster/internal/connectors"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/push"
@@ -329,7 +328,6 @@ var bannerLedger = []string{
 	// directions — serving (the package and certificates) / OFF (the path is 404).
 	envAndroidPackage,
 	envAndroidCertSHA256,
-	envGitHubEncKey,
 	envAgentProvisioner,
 	// The chat tier is its own axis with its own two lines — the fully-off arm names
 	// both variables, the CHAT arm names this one in each direction. It is ledgered
@@ -429,10 +427,6 @@ var bannerLedger = []string{
 // change — it fails here until the variable is moved onto bannerLedger.
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
-// The prose this replaced claimed MUSTER_PUBLIC_URL and GITHUB_CLIENT_SECRET
-// were "reported through a different name"; githubAuthPosture names
-// GITHUB_CLIENT_ID and MUSTER_GITHUB_TOKEN and neither of the other two, so the
-// entries say what is actually true of them.
 var bannerExempt = map[string]string{
 	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +
 		"when empty, and on a `chief dispatch: INERT` line when set with task routing off",
@@ -488,18 +482,9 @@ var bannerExempt = map[string]string{
 		"with ln.Addr()), which is the answer this variable is asked for and is strictly " +
 		"better than echoing the request — it is printed after the banner, by serve, not by " +
 		"logBanner",
-	envGitHubToken: "named by githubAuthPosture on the github-connection line whenever a " +
-		"credential exists; there is no off-line for it because the no-credential branch " +
-		"names it too, but only when MUSTER_GITHUB_ENCRYPTION_KEY is set at all — the " +
-		"encryption key is the ledgered variable that gates the whole surface",
-	envGitHubClientID: "named by githubAuthPosture as \"the OAuth App\" on the " +
-		"github-connection line; same one-directional shape as MUSTER_GITHUB_TOKEN and for " +
-		"the same reason",
-	envGitHubClientSec: "the OAuth App is reported by its CLIENT ID, which is the half that " +
-		"is safe to print and the half an operator checks. A secret's NAME in a log tells " +
-		"the reader nothing its sibling has not already told them",
-	envPublicURL: "the OAuth callback base URL — an input to the same GitHubOAuthConfig as " +
-		"the client id and secret (main.go), and reported through the same posture line",
+	envPublicURL: "the externally reachable origin: an input to the same-origin check " +
+		"(api.Extensions.PublicURL) and the base of every minted link; named by the " +
+		"`file attachments:` line when it is what disables uploads",
 	envFaroURL: "browser RUM: handed to ui.SetFaroConfig for the page agent, not a property " +
 		"of this server's auth or dependency posture. logBanner has no line for it on purpose",
 	envFaroKey: "browser RUM: the collect-endpoint key, handed to ui.SetFaroConfig with the " +
@@ -626,12 +611,6 @@ var bannerExempt = map[string]string{
 		"the instance's own spec",
 }
 
-// bannerStubGitHubStore stands in for a wired GitHub store. Only its presence
-// is read by logBanner (`ext.GitHub != nil`), never any method, so embedding the
-// interface is enough and cannot accidentally be CALLED without panicking
-// loudly — which is the behaviour wanted if the banner ever starts reading it.
-type bannerStubGitHubStore struct{ github.Store }
-
 // bannerStubConnectorStore stands in for a wired connector store; only its
 // presence is read.
 type bannerStubConnectorStore struct{ connectors.Store }
@@ -639,7 +618,7 @@ type bannerStubConnectorStore struct{ connectors.Store }
 // bannerProvisioner builds the REAL lifecycle adapter over the noop driver, for
 // the banner's wired arm.
 //
-// ⚠ IT IS NOT A STUB, AND THE REASON IS THE ONE bannerStubGitHubStore GIVES IN
+// ⚠ IT IS NOT A STUB, AND THE REASON IS THE ONE bannerStubConnectorStore GIVES IN
 // REVERSE. logBanner reads only `ext.Provisioner != nil`, so a stub would do — but
 // this one is free, exercises buildAgentPlane (the function whose result the
 // banner is describing), and cannot drift from what the binary actually assigns.
@@ -805,7 +784,6 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		Mirror:      mirror.NewService(nil, nil),
 		Push:        push.NewService(nil, nil, on.vapid(), nil),
 		Connectors:  bannerStubConnectorStore{},
-		GitHub:      bannerStubGitHubStore{},
 		Provisioner: bannerProvisioner(t, on),
 		Gateway:     bannerGateway(t, on),
 		Transcriber: bannerTranscriber(t, on),

@@ -20,8 +20,8 @@ import (
 // attention count — and opens what its card opens. The page's own session is
 // marked.
 //
-// The pages (Tasks, the Agents list page, Connectors, Asks, Install, the
-// theme, Account, Admin) moved into ONE collapsed "More" disclosure at the
+// The pages (Tasks, the Agents list page, Connectors, Asks, Install,
+// Account, Admin) moved into ONE collapsed "More" disclosure at the
 // bottom of the sidebar (navMore); the Asks count rides on its header, so it
 // shows while More is shut.
 //

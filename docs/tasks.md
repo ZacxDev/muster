@@ -108,15 +108,8 @@ usually not needed.
 
 ## GitHub
 
-**With a GitHub App configured** ([github-app.md](github-app.md)), the App is
-muster's GitHub identity. The Repos tab lists its installation's repositories,
-and those are the "connected" repositories for every dispatch check. The OAuth
-connection below is then not used.
-
-**Without one (deprecated):** the Repos tab connects one GitHub account per user. It needs
-`MUSTER_GITHUB_ENCRYPTION_KEY`, because tokens are stored encrypted. You can
-connect an account in either of two ways:
-
-- `MUSTER_GITHUB_TOKEN` connects that token at boot.
-- `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` enable the
-  `/github/connect` OAuth flow. Its callback is built from `MUSTER_PUBLIC_URL`.
+A GitHub App ([github-app.md](github-app.md)) is muster's GitHub identity, for
+admins. Its installation's repositories are the "connected" repositories for
+every dispatch check, and the dispatch dialog's repository picker lists them.
+Without an App (and for a member) no repository is connected. The per-user
+OAuth connection and the Repos tab that showed it have been removed.

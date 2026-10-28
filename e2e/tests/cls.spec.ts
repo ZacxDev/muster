@@ -36,9 +36,8 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   'GET /{$}': { where: 'shared', url: '/', ready: '#agents-list > article' },
   'GET /tasks': { where: 'shared', url: '/tasks', ready: '#tasks-list article' },
   'GET /agents': { where: 'shared', url: '/agents', ready: '#session-switcher [data-switcher-list="recent"] a[data-switcher-entry]' },
-  // The shared server builds neither store, so its /repos and /connectors fall
-  // back to the board; the full server below builds both and draws the real tabs.
-  'GET /repos': { where: 'full', url: '/repos', ready: '#panel-repos :is(p, li, button)' },
+  // The shared server builds no connector store, so its /connectors falls back
+  // to the board; the full server below builds it and draws the real tab.
   'GET /connectors': { where: 'full', url: '/connectors', ready: '#panel-connectors button' },
   'GET /attention': { where: 'shared', url: '/attention', ready: '[data-testid="attention-items"] li' },
   'GET /flows': { where: 'shared', url: '/flows', ready: 'main form button[type="submit"], main form button:not([type])' },
@@ -76,8 +75,6 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /apple-touch-icon.png': 'image',
   'GET /events': 'event stream',
   'GET /favicon.ico': 'image',
-  'GET /github/callback': 'OAuth redirect',
-  'GET /github/connect': 'OAuth redirect',
   'GET /health': 'JSON',
   'GET /readyz': 'JSON',
   'GET /manifest.webmanifest': 'JSON',
@@ -391,7 +388,7 @@ for (const vp of viewports) {
 
 // --- The FULL server: every optional store built — the e2eterm binary (its noop
 // driver plays a terminal) with the mirror plugin on, claude-code enabled, and
-// the connector and GitHub stores keyed — so the Repos and Connectors tabs, the
+// the connector store keyed — so the Connectors tab, the
 // mirrored views and a claude-code agent's terminal are the real pages. A fake
 // mirrored host's `main` session is a Claude Code pane over a transcript this
 // spec writes.
@@ -404,7 +401,6 @@ const rig = new MirrorRig(clsFullPort, 'e2e-cls', {
   // The store refuses to boot without the URL agents are told to use.
   MUSTER_CONNECT_PORT: String(clsConnectPort),
   MUSTER_AGENT_CONNECT_URL: `http://127.0.0.1:${clsConnectPort}`,
-  MUSTER_GITHUB_ENCRYPTION_KEY: Buffer.alloc(32, 0x6b).toString('base64'),
 });
 const morigin = rig.origin;
 const host = rig.host;
@@ -456,7 +452,7 @@ test.describe('the full server', () => {
     return created[0];
   }
 
-  test(`repos, connectors, the mirrored views and an agent terminal shift less than ${BAR}, at both sizes`, async ({ browser }) => {
+  test(`connectors, the mirrored views and an agent terminal shift less than ${BAR}, at both sizes`, async ({ browser }) => {
     test.setTimeout(180_000);
     const view = `/mirror/view?host=${host}&session=main`;
     const term = `/mirror/terminal?host=${host}&session=scratch`;
