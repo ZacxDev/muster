@@ -24,6 +24,7 @@ type homeAgents struct {
 	agents.Store
 	rows    []agents.Agent
 	latest  map[int64]int64
+	last    map[int64]time.Time
 	listErr error
 }
 
@@ -35,7 +36,11 @@ func (s *homeAgents) List(context.Context) ([]agents.Agent, error) {
 }
 
 func (s *homeAgents) LastMessageByAgentIDs(context.Context, []int64) (map[int64]time.Time, error) {
-	return map[int64]time.Time{}, nil
+	out := map[int64]time.Time{}
+	for id, t := range s.last {
+		out[id] = t
+	}
+	return out, nil
 }
 
 func (s *homeAgents) LatestSessionIDs(_ context.Context, ids []int64) (map[int64]int64, error) {
@@ -177,5 +182,63 @@ func TestTheNavListMarksThePageItWasAskedFrom(t *testing.T) {
 	s, h = homeServer(t, nil)
 	if rec := homeGet(s, h, ui.NavAgentsPath, nil); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "data-nav-agents-empty") {
 		t.Errorf("no agent store: GET %s = %d %q, want 200 and the empty list", ui.NavAgentsPath, rec.Code, rec.Body.String())
+	}
+}
+
+// TestHomeAndTheSidebarAgreeOnTheChief: `/` opens the agent the sidebar pins
+// first — one rule (primaryChief), in every shape a fleet's chief can take:
+//
+//   - only the RESERVED SLUG, relabelled ("fleet boss"): it is the chief by
+//     its slug (deletion protection already says so), so `/` opens it and the
+//     sidebar lists it first;
+//   - the reserved slug AND an agent labelled "chief": the labelled one is the
+//     chief the panel and recaps talk to (chiefAgent), so both name it — even
+//     though the slug is the more recently active, which recency alone would
+//     have put first;
+//   - only a labelled chief.
+//
+// Ids, slugs and session ids are pairwise distinct, and in each case the
+// expected chief is neither the first row given nor the most recently active.
+//
+// Red before the fix: `/` used chiefAgent (labels only) while the sidebar used
+// chiefPredicate (labels or the slug), so the first case sent `/` to /agents
+// with the slug pinned in the sidebar, and the second pinned whichever chief
+// was more recent.
+func TestHomeAndTheSidebarAgreeOnTheChief(t *testing.T) {
+	now := time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)
+	worker := agents.Agent{ID: homeWorkerID, Name: "brave-otter", DisplayName: "worker", Status: agents.StatusRunning}
+	slug := agents.Agent{ID: 31, Name: agents.ChiefName, DisplayName: "fleet boss", Status: agents.StatusRunning}
+	labelled := agents.Agent{ID: homeChiefID, Name: "zesty-stoat", DisplayName: " Chief ", Status: agents.StatusRunning}
+	latest := map[int64]int64{homeWorkerID: 55, 31: 77, homeChiefID: homeChiefSess}
+	// The worker is the most recent of all; the slug more recent than the label.
+	last := map[int64]time.Time{homeWorkerID: now, 31: now.Add(-time.Hour), homeChiefID: now.Add(-2 * time.Hour)}
+	cases := []struct {
+		name string
+		rows []agents.Agent
+		want string // the chief's slug
+	}{
+		{"only the reserved slug, relabelled", []agents.Agent{worker, slug}, agents.ChiefName},
+		{"the reserved slug and a labelled chief", []agents.Agent{worker, slug, labelled}, "zesty-stoat"},
+		{"only a labelled chief", []agents.Agent{worker, labelled}, "zesty-stoat"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, h := homeServer(t, &homeAgents{rows: tc.rows, latest: latest, last: last})
+			home := homeGet(s, h, "/", nil)
+			loc := home.Header().Get("Location")
+			if home.Code != http.StatusFound || !strings.HasPrefix(loc, "/agents/"+tc.want+"?") {
+				t.Errorf("GET / = %d → %q, want 302 → the chief %q's page", home.Code, loc, tc.want)
+			}
+			body := homeGet(s, h, ui.NavAgentsPath, map[string]string{"HX-Request": "true"}).Body.String()
+			i := strings.Index(body, `href="/agents/`)
+			if i < 0 {
+				t.Fatalf("the sidebar lists no agent: %.300s", body)
+			}
+			first := body[i+len(`href="/agents/`):]
+			first = first[:strings.IndexAny(first, `?"`)]
+			if first != tc.want {
+				t.Errorf("the sidebar's first row is %q, want the chief %q (where `/` must also land)", first, tc.want)
+			}
+		})
 	}
 }

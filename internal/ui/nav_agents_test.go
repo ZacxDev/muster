@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"html"
 	"regexp"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ func navMirrorFixture() []MirrorCardView {
 	}
 }
 
-var navRowRe = regexp.MustCompile(`<a href="([^"]*)"[^>]*\btitle="([^"]*)"`)
+var navRowRe = regexp.MustCompile(`<a [^>]*\bhref="([^"]*)"[^>]*\btitle="([^"]*)"`)
 
 // navRows is the rendered list's rows, in order: each row's label.
 func navRows(t *testing.T, html string) []string {
@@ -138,6 +139,14 @@ func TestTheRowCarriesTheCardsSignals(t *testing.T) {
 	}
 	if !strings.Contains(row("chief-a"), "data-nav-chief") {
 		t.Error("the chief's row is not marked")
+	}
+	// Each row's id is its entry's own, so focus survives a refresh (htmx
+	// re-focuses by id): an agent's id, a window's card id.
+	if !strings.HasPrefix(drafter, `<a id="nav-agent-45"`) {
+		t.Errorf("the drafter's row (agent 45) is not id=nav-agent-45: %.80s", drafter)
+	}
+	if want := `<a id="nav-` + mirrorCardID(navMirrorFixture()[1]) + `"`; !strings.HasPrefix(fresh, want) {
+		t.Errorf("the fresh window's row is not %s: %.80s", want, fresh)
 	}
 }
 
@@ -294,7 +303,7 @@ func TestTheListLoadsWhenAnOverlaySidebarOpens(t *testing.T) {
 		if overlay {
 			want = navAgentsOverlayTrigger
 		}
-		if m[1] != want {
+		if html.UnescapeString(m[1]) != want {
 			t.Errorf("%s: the list's trigger is %q, want %q", name, m[1], want)
 		}
 		if !strings.Contains(src, "if (open) document.dispatchEvent(new CustomEvent('"+NavOpenEvent+"'));") {

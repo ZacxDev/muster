@@ -20,7 +20,12 @@ import { openMore } from '../lib/nav';
 //   4. phone: it is the slide-out drawer, nothing scrolls sideways at 360 or
 //      390, and every row and page entry is a 44px target; desktop: it is a
 //      persistent rail with no close "×" (it cannot be closed), and More is
-//      shut again on every load — nothing remembers it.
+//      shut again on every load — nothing remembers it;
+//   5. the list is fetched only where it can be seen (a shut phone drawer
+//      fetches nothing until it opens; the rail loads with the page), follows
+//      the Agents list's refresh events, and a focused row keeps focus;
+//   6. `/` and the sidebar's first row name the same chief — a labelled one,
+//      a relabelled reserved slug, or none.
 //
 // 🔴 REGRESSION TESTS: on origin/main `/` is the Tasks board, the sidebar has
 // no agent rows and no More, and the pages are at its top level.
@@ -59,6 +64,15 @@ test.afterAll(() => {
   fix('rmagent', '1', ASKER);
   fix('rmagent', '1', CHIEF);
 });
+
+// navRequests records every GET of the sidebar's list partial from now on.
+function navRequests(page: Page): string[] {
+  const seen: string[] = [];
+  page.on('request', (r) => {
+    if (new URL(r.url()).pathname === '/ui/nav/agents') seen.push(r.url());
+  });
+  return seen;
+}
 
 const rows = (page: Page) => page.locator('#sidebar-agents-list a[data-nav-agent]');
 const rowOf = (page: Page, name: string) => page.locator(`#sidebar-agents-list a[href^="/agents/${name}"]`);
@@ -109,12 +123,22 @@ test.describe('phone', () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
   test('home opens the chief; the drawer lists the agents; a tap opens one; More reaches Tasks', async ({ page }) => {
+    const nav = navRequests(page);
+    // The page's own load requests (the Asks badge's) have landed when this does.
+    const badge = page.waitForResponse((r) => r.url().includes('/attention/badge'));
     await page.goto('/');
     await expect(page, '`/` opens the chief agent').toHaveURL(onAgent(CHIEF));
+    await badge;
 
-    // The drawer, shut until its hamburger opens it.
+    // The drawer, shut until its hamburger opens it — and while it is shut the
+    // list is not fetched, on load or on a refresh event.
     await expect(page.locator('#sidebar')).not.toBeInViewport();
+    expect(await page.evaluate(() => (window as any).musterNavShown()), 'a shut drawer is not shown').toBe(false);
+    await page.evaluate(() => document.body.dispatchEvent(new CustomEvent('muster:resync')));
+    await page.waitForTimeout(500);
+    expect(nav, 'the shut drawer fetched its list').toEqual([]);
     await page.locator('#sidebar-open').click();
+    await expect.poll(() => nav.length, { message: 'opening the drawer fetches the list' }).toBeGreaterThan(0);
     await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'true');
     await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
 
@@ -191,12 +215,65 @@ test.describe('desktop', () => {
     await shot(page, 'desktop-rail-more-collapsed');
   });
 
+  test('the rail loads its list with the page, refreshes on the Agents list\'s events, and keeps a focused row focused', async ({ page }) => {
+    const nav = navRequests(page);
+    await page.goto('/tasks');
+    await expect(rows(page).first()).toBeVisible();
+    // CONTROL for the phone's "nothing fetched": here the rail is on screen.
+    expect(nav.length, 'the rail fetched its list on load').toBeGreaterThan(0);
+    expect(await page.evaluate(() => (window as any).musterNavShown())).toBe(true);
+    for (const ev of ['muster:resync', 'agents:changed', 'sse:agent.changed', 'sse:chat.reply']) {
+      const before = nav.length;
+      const got = page.waitForResponse((r) => new URL(r.url()).pathname === '/ui/nav/agents');
+      await page.evaluate((e) => document.body.dispatchEvent(new CustomEvent(e)), ev);
+      await got;
+      expect(nav.length, `${ev} refreshed the list`).toBeGreaterThan(before);
+    }
+    // A row focused by keyboard keeps focus across a refresh: the swap
+    // replaces the element, and the new one of the same id is focused.
+    const row = rowOf(page, ASKER);
+    const id = await row.getAttribute('id');
+    expect(id, 'the row has an id').toMatch(/^nav-agent-\d+$/);
+    await row.focus();
+    await page.evaluate(() => ((document.activeElement as any).__old = true));
+    const got = page.waitForResponse((r) => new URL(r.url()).pathname === '/ui/nav/agents');
+    await page.evaluate(() => document.body.dispatchEvent(new CustomEvent('muster:resync')));
+    await got;
+    await expect
+      .poll(() => page.evaluate(() => ({ id: document.activeElement && document.activeElement.id, old: !!(document.activeElement as any).__old })))
+      .toEqual({ id, old: false });
+  });
+
+  test('`/` and the sidebar\'s first row agree on the chief, whatever its shape', async ({ page }) => {
+    // The labelled chief: `/` opens it, and it is the first row.
+    await page.goto('/');
+    await expect(page).toHaveURL(onAgent(CHIEF));
+    await expect(rows(page).first()).toHaveAttribute('href', new RegExp(`^/agents/${CHIEF}`));
+    // Relabelled away, with the RESERVED SLUG "chief" relabelled too: the slug
+    // is the chief — `/` opens it and it is the first row.
+    fix('label', chiefId, 'retired');
+    const slugId = fix('agent', '1', 'chief', `e2e-nav-slug-token-not-a-real-one-${stamp}`);
+    try {
+      fix('label', slugId, 'fleet boss');
+      await page.goto('/');
+      await expect(page, '`/` opens the reserved-slug chief').toHaveURL(onAgent('chief'));
+      await expect(rows(page).first(), 'the first row is the chief `/` opened').toHaveAttribute('href', /^\/agents\/chief[?"]|^\/agents\/chief$/);
+      await expect(rows(page).first()).toHaveAttribute('data-nav-chief', '');
+    } finally {
+      fix('rmagent', '1', 'chief');
+      fix('label', chiefId, 'chief');
+    }
+  });
+
   test('`/` opens the Agents list when there is no chief', async ({ page }) => {
     fix('label', chiefId, 'retired');
     try {
       await page.goto('/');
       await expect(page).toHaveURL(/\/agents$/);
       await expect(page.locator('#panel-agents')).toBeVisible();
+      // …and the sidebar pins no chief either: the two agree.
+      await expect(rows(page).first()).toBeVisible();
+      await expect(page.locator('#sidebar-agents-list [data-nav-chief]')).toHaveCount(0);
     } finally {
       fix('label', chiefId, 'chief');
     }

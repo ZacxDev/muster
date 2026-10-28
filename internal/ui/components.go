@@ -103,9 +103,11 @@ var musterTabs = []tab{
 	{Key: "connectors", Label: "Connectors", Icon: "🔌", Heading: "Connectors"},
 }
 
-// defaultTab is what an unknown or empty tab string clamps to, and what `/`
-// serves. Upstream's default is its permission-request queue, which muster does
-// not have.
+// defaultTab is what an unknown or empty tab string clamps to, and the tab the
+// shell draws at a bare `/` — which is now only the service worker's offline
+// copy, `/?shell=1`: `/` itself opens the chief's chat (internal/api
+// redirectHome). Upstream's default is its permission-request queue, which
+// muster does not have.
 const defaultTab = "tasks"
 
 // tabKeys is the ordered set of tab keys, derived from musterTabs.
@@ -1589,6 +1591,17 @@ var appScriptSrc = staticJS("app", `
     // An overlay page's agent list loads on this (nav_agents.go).
     if (open) document.dispatchEvent(new CustomEvent('` + NavOpenEvent + `'));
   }
+
+  // musterNavShown: is the sidebar on screen — open as a drawer, or the
+  // desktop rail (a page with no data-overlay, at the lg breakpoint input.css
+  // uses)? The agent list's triggers are filtered by it (nav_agents.go
+  // navShownJS), so a closed phone drawer fetches nothing.
+  window.musterNavShown = function () {
+    var root = document.getElementById('sidebar-root');
+    if (!root) return false;
+    if (root.getAttribute('data-open') === 'true') return true;
+    return !('overlay' in root.dataset) && window.innerWidth >= 1024;
+  };
 
   // initPage (re)wires the per-page elements (sidebar buttons + tabs). It is
   // idempotent: each element is marked data-cg-bound once so firing on both

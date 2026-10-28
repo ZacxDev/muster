@@ -1,7 +1,6 @@
 package api
 
 import (
-	"errors"
 	"net/http"
 
 	"github.com/ZacxDev/muster/internal/ui"
@@ -42,22 +41,34 @@ func (s *Server) handleNavAgents(w http.ResponseWriter, r *http.Request) {
 
 // homeTarget is where `/` sends the viewer: the chief agent's chat (its page
 // on its latest session — the link a list draws, agentPageHref), or the Agents
-// list when the viewer has no chief (no agent store, no agent labelled chief,
-// or a read that failed: logged).
+// list when the viewer has no chief (no agent store, no chief, or a read that
+// failed: logged).
+//
+// 🔴 THE CHIEF IS primaryChief — THE SIDEBAR'S, NOT chiefAgent's. chiefAgent
+// knows only the "chief" label; the sidebar pins a relabelled reserved slug
+// too (chiefPredicate). `/` used chiefAgent, so it opened the Agents list while
+// the sidebar's first row was that chief. TestHomeAndTheSidebarAgreeOnTheChief.
+// As chiefAgent does, a principal-less or scope-all context has no chief.
 //
 // 🔴 `/` IS NOT THE TASKS BOARD ANY MORE (operator decision: home opens the
 // chief's chat). The board stays at /tasks, and `/?shell=1` — the service
 // worker's offline copy (offlineShellParam) — still serves the shell, which
 // draws the Tasks tab there (defaultTab).
 func (s *Server) homeTarget(r *http.Request) string {
-	chief, err := s.chiefAgent(r.Context())
-	if err != nil {
-		if !errors.Is(err, ErrNoChief) {
-			s.logger.Printf("home: chief lookup: %v (opening the Agents list)", err)
-		}
+	ctx := r.Context()
+	if s.ext.Agents == nil || requestOwner(ctx) <= 0 {
 		return "/agents"
 	}
-	return s.agentPageHref(r.Context(), chief)
+	list, err := s.ext.Agents.List(ctx)
+	if err != nil {
+		s.logger.Printf("home: agent list: %v (opening the Agents list)", err)
+		return "/agents"
+	}
+	chief, ok := primaryChief(list)
+	if !ok {
+		return "/agents"
+	}
+	return s.agentPageHref(ctx, chief)
 }
 
 // redirectHome answers a request for `/` with homeTarget: a 302 to a browser,

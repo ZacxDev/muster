@@ -353,7 +353,9 @@
   function warmable() {
     if (!enabled || document.hidden || frugal() || framed()) return false;
     var p = location.pathname;
-    return p === '/' || p === '/agents' || p.indexOf('/agents/') === 0 || p === '/mirror/view';
+    // (Not "/": a signed-in "/" redirects to the chief's page, which is an
+    // /agents/ path; the shell drawn at "/" is only the offline copy.)
+    return p === '/agents' || p.indexOf('/agents/') === 0 || p === '/mirror/view';
   }
 
   // here is the window this page shows, when it is a rendered view.

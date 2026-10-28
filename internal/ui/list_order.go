@@ -104,10 +104,16 @@ func (e listEntry) waiting() bool {
 // window is never the chief.
 func (e listEntry) chief() bool { return e.agent != nil && e.agent.IsChief }
 
+// primaryChief reports whether the entry is THE chief — where `/` opens
+// (AgentCardView.PrimaryChief, internal/api's primaryChief).
+func (e listEntry) primaryChief() bool { return e.agent != nil && e.agent.PrimaryChief }
+
 // navOrder is the SIDEBAR's order of the Agents list's entries (nav_agents.go)
 // — 🔴 ONE RULE, ONE PLACE, beside orderList, whose output it re-sorts:
 //
-//  1. the chief agent first (the operator's main conversation, pinned);
+//  1. the chief agent first (the operator's main conversation, pinned) —
+//     THE chief, where `/` opens (primaryChief), above any other agent that
+//     is also a chief (a relabelled reserved slug beside a labelled chief);
 //  2. then every entry waiting on the operator (listEntry.waiting);
 //  3. then the rest, most recently active first (activeAt), an entry with no
 //     known activity last;
@@ -125,6 +131,9 @@ func navOrder(agents []AgentCardView, mirrors []MirrorCardView) []listEntry {
 
 // navBefore is navOrder's comparison: whether a is drawn above b.
 func navBefore(a, b listEntry) bool {
+	if pa, pb := a.primaryChief(), b.primaryChief(); pa != pb {
+		return pa
+	}
 	if ca, cb := a.chief(), b.chief(); ca != cb {
 		return ca
 	}

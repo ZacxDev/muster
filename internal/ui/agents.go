@@ -91,6 +91,11 @@ type AgentCardView struct {
 	// cardViewIndexed and never re-derived here — the server refuses the delete
 	// regardless, so this only keeps the UI from offering what it would refuse.
 	IsChief bool
+	// PrimaryChief: this is THE chief the viewer is sent to — where `/` opens,
+	// and the agent the sidebar pins first (navBefore). internal/api's
+	// primaryChief decides it, for both; it is never re-derived here. At most
+	// one card of a list carries it; IsChief may be true on more than one.
+	PrimaryChief bool
 	// Pinned: the viewing user pinned this agent (internal/pins). The list draws
 	// a pinned agent first, as a label-only CHIP instead of its card
 	// (pinned_chips.go: unpinned, renamed and started/stopped from the chip's

@@ -38,13 +38,29 @@ import (
 // only fill the slot (e2e/tests/cls.spec.ts measures every page at the desktop
 // size, where the rail is on screen).
 //
-// WHEN IT LOADS (navAgentsTrigger): a page with the desktop rail loads it on
-// load, then refreshes it once a minute and on the attention queue's SSE event
-// (heard only on a document that already holds a stream — the nav opens none,
-// TestTheNavAddsNoStream). A page whose sidebar is an overlay at every width
-// (the mirrored Rendered view and the terminal, whose open path is measured)
-// loads it only when the sidebar is OPENED (appScript's setOpen fires
-// NavOpenEvent), so opening one of those pages costs no extra read.
+// WHEN IT LOADS (navAgentsTrigger) — ONLY WHILE IT CAN BE SEEN:
+//
+//   - a page with the rail: on load, but only where the rail is on screen (a
+//     desktop: navShownJS's musterNavShown); on a phone, where it is a closed
+//     drawer, on the drawer's first and every open (appScript's setOpen fires
+//     NavOpenEvent) instead. Then it follows the Agents list's own refresh
+//     events (agentsListLiveTrigger's: agents:changed, agent.changed,
+//     chat.reply, the attention queue, muster:resync — the SSE ones heard only
+//     on a document that already holds a stream; the nav opens none,
+//     TestTheNavAddsNoStream) and a minute's tick, each skipped while the list
+//     is not on screen, the tick also while the tab is hidden.
+//   - a page whose sidebar is an overlay at every width (the mirrored
+//     Rendered view and the terminal, whose open path is measured): only on
+//     each open, so opening one of those pages costs no extra read.
+//
+// ⚠ WHAT IT DOES COST, SAID OUT LOUD: on a session page with the rail (an
+// agent's page on a desktop) the document already built the session
+// switcher's entries server-side, and this partial builds the same entries
+// again — one more request with the same reads (agents, their last messages,
+// pins, focus, latest sessions, mirrored windows, attention), no live instance
+// read. Drawing the list into the first paint from the switcher's build would
+// save it, at the cost of every nav document's first byte waiting on that
+// build — the trade this partial exists to avoid.
 
 // NavAgentsPath is the sidebar list's partial.
 const NavAgentsPath = "/ui/nav/agents"
@@ -59,9 +75,25 @@ const navAgentsLabelID = "sidebar-agents-label"
 // sidebar opens.
 const NavOpenEvent = "muster:nav-open"
 
-// navAgentsRailTrigger is the list's refresh on a page with the desktop rail;
-// the SSE half is attentionBadgeTrigger's, debounced for the same reason.
-const navAgentsRailTrigger = "load, sse:attention_queue.changed from:body delay:50ms, every 60s"
+// navShownJS is the condition each of the rail's triggers is filtered by:
+// musterNavShown (appScript) — the rail is on screen, or the drawer is open.
+// A document whose script has not defined it yet loads anyway (the old
+// behaviour), never not at all.
+const navShownJS = "!window.musterNavShown||musterNavShown()"
+
+// navAgentsRailTrigger is the list's refresh on a page with the rail: the
+// Agents list's own events (agentsListLiveTrigger's), each filtered by
+// navShownJS. The SSE ones are debounced as attentionBadgeTrigger is, for its
+// reason: one event is dispatched on every element listening for it and heard
+// at body once per dispatch.
+const navAgentsRailTrigger = "load[" + navShownJS + "], " +
+	NavOpenEvent + " from:document, " +
+	"agents:changed[" + navShownJS + "] from:body, " +
+	"sse:agent.changed[" + navShownJS + "] from:body delay:50ms, " +
+	"sse:chat.reply[" + navShownJS + "] from:body delay:50ms, " +
+	"sse:attention_queue.changed[" + navShownJS + "] from:body delay:50ms, " +
+	"muster:resync[" + navShownJS + "] from:body, " +
+	"every 60s [(" + navShownJS + ")&&!document.hidden]"
 
 // navAgentsOverlayTrigger is the list's load on an overlay page: each open.
 const navAgentsOverlayTrigger = NavOpenEvent + " from:document"
@@ -161,15 +193,15 @@ func RenderNavAgents(w io.Writer, list []AgentCardView, mirrors []MirrorCardView
 // (TestTheRowOfThePageIsCurrent refuses a row that claims "page"). It is drawn as the active row
 // (navRowTone) — never the accent highlight, which marks the nav entry.
 func navAgentRow(e listEntry, label string, current bool, now time.Time) g.Node {
-	var href, kind, color, host, icon string
+	var id, href, kind, color, host, icon string
 	var att *CardAttention
 	if e.agent != nil {
 		a := e.agent
-		href, kind, att = a.PageHref(), "agent", a.Attention
+		id, href, kind, att = "nav-agent-"+strconv.FormatInt(a.ID, 10), a.PageHref(), "agent", a.Attention
 		host, icon = podHost, clusterIcon.Key
 	} else {
 		m := e.mirror
-		href, kind, att, color = MirrorCardHref(*m), "mirror", m.Attention, m.Color
+		id, href, kind, att, color = "nav-"+mirrorCardID(*m), MirrorCardHref(*m), "mirror", m.Attention, m.Color
 		host, icon = m.Host, m.HostIcon
 	}
 	// The identity colour on the row's left edge: the global --id-bd that
@@ -183,6 +215,12 @@ func navAgentRow(e listEntry, label string, current bool, now time.Time) g.Node 
 	return Li(
 		Class("min-w-0"),
 		A(
+			// 🔴 A STABLE ID, THE ENTRY'S OWN (its agent id, or its window's
+			// address hashed as its card's is). A refresh swaps the list's
+			// innerHTML, and htmx re-focuses the element of the id that had
+			// focus — so a row focused by keyboard keeps it across a refresh,
+			// wherever the new order put it.
+			ID(id),
 			Href(href),
 			hx("hx-boost", "false"),
 			g.Attr("data-nav-agent", kind),
