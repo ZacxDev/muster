@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -795,5 +796,81 @@ func TestDecideDraftFromRefusesAMalformedSource(t *testing.T) {
 	if err := w.s.pool.QueryRow(authz.System(context.Background()), `SELECT detail->>'decided_via' FROM audit_log
 		WHERE object = $1 AND action = 'plugin.draft.approved'`, DraftObject(d.ID)).Scan(&detail); err != nil || detail != "mcp from ws/"+sid {
 		t.Fatalf("the approval's audit row: decided_via %q (%v)", detail, err)
+	}
+}
+
+// TestAMessageAResumeHoldsIsLeftToTheResume: while a mail resume is unfinished
+// (claimed, then spawned) and younger than MailResumeHold, its message — still
+// queued — is neither listed for the claim route's retry (QueuedForOwner) nor
+// taken by a delivery (BeginDelivery). A finished resume, and one older than
+// the hold (a server that never finished it), hold nothing.
+func TestAMessageAResumeHoldsIsLeftToTheResume(t *testing.T) {
+	w := newDraftWorld(t)
+	held, _, _ := w.s.Submit(plugin(2), w.p.ID, msg("held-1"))
+	free, _, _ := w.s.Submit(plugin(2), w.p.ID, msg("free-1"))
+	// A session of its own (the per-session limit counts every row in the
+	// database this package shares across runs).
+	sid := fmt.Sprintf("5e55a1d0-0000-4000-8000-%012x", time.Now().UnixNano()&0xffffffffffff)
+	id, err := w.s.ClaimMailResume(session(2), MailResumeClaim{MessageID: held.ID, ClaudeSession: sid,
+		Sender: "peer-desk/builder", Via: RouteViaThread}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = w.s.pool.Exec(authz.System(context.Background()), `DELETE FROM mail_resumes WHERE id = $1`, id)
+	})
+	listed := func() []int64 {
+		t.Helper()
+		got, err := w.s.QueuedForOwner(authz.System(context.Background()), 2, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ids(got)
+	}
+	sys := authz.System(context.Background())
+	for _, step := range []struct {
+		name string
+		set  func()
+		held bool
+	}{
+		{"claimed", func() {}, true},
+		{"spawned", func() {
+			if err := w.s.ReserveMailResumeHost(session(2), id, "tower", 6); err != nil {
+				t.Fatal(err)
+			}
+		}, true},
+		{"spawned, but older than the hold", func() {
+			if _, err := w.s.pool.Exec(sys, `UPDATE mail_resumes SET created_at = now() - make_interval(secs => $2) WHERE id = $1`,
+				id, (MailResumeHold + time.Minute).Seconds()); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"finished (timed out)", func() {
+			if _, err := w.s.pool.Exec(sys, `UPDATE mail_resumes SET created_at = now() WHERE id = $1`, id); err != nil {
+				t.Fatal(err)
+			}
+			if err := w.s.FinishMailResume(session(2), id, ResumeTimedOut, "@9", "no window"); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+	} {
+		step.set()
+		want := []int64{held.ID, free.ID}
+		if step.held {
+			want = []int64{free.ID}
+		}
+		if got := listed(); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("%s: QueuedForOwner = %v, want %v", step.name, got, want)
+		}
+		if !step.held {
+			continue
+		}
+		if ok, err := w.s.BeginDelivery(plugin(2), held.ID, w.chief.ID); err != nil || ok {
+			t.Fatalf("%s: BeginDelivery of the held message = %v %v, want false", step.name, ok, err)
+		}
+	}
+	// Released, the ordinary delivery takes it.
+	if ok, err := w.s.BeginDelivery(plugin(2), held.ID, w.chief.ID); err != nil || !ok {
+		t.Fatalf("BeginDelivery once the resume finished = %v %v, want true", ok, err)
 	}
 }

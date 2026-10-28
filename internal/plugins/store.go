@@ -54,7 +54,8 @@ type Store interface {
 	RecordAttempt(ctx context.Context, messageID int64) error
 	// BeginDelivery moves a queued message to `delivering` to agentID and counts
 	// the attempt, BEFORE the turn runs, so the chief can cite it on that turn. It
-	// reports false (and writes nothing) when the message was no longer queued.
+	// reports false (and writes nothing) when the message was no longer queued,
+	// or a mail resume holds it (resumeHolds).
 	BeginDelivery(ctx context.Context, messageID, agentID int64) (bool, error)
 	// AbandonDelivery returns a message `delivering` to agentID to `queued` and
 	// clears its agent: the turn provably sent nothing. The attempt stays counted.
@@ -106,7 +107,8 @@ type Store interface {
 	// FinishDraft records pluginID's result for a draft it claimed; a sent one
 	// supersedes the message's other pending or unclaimed approved drafts.
 	FinishDraft(ctx context.Context, pluginID, draftID int64, r DraftResult) (Draft, error)
-	// QueuedForOwner is ownerID's undelivered messages across live plugins.
+	// QueuedForOwner is ownerID's undelivered messages across live plugins,
+	// except those a mail resume holds (resumeHolds).
 	QueuedForOwner(ctx context.Context, ownerID int64, limit int) ([]Message, error)
 	// QueuedCounts is the principal's undelivered messages per plugin.
 	QueuedCounts(ctx context.Context) (map[int64]int, error)
@@ -425,9 +427,11 @@ func (s *PGStore) RecordAttempt(ctx context.Context, messageID int64) error {
 }
 
 func (s *PGStore) BeginDelivery(ctx context.Context, messageID, agentID int64) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `UPDATE plugin_messages SET status = 'delivering', agent_id = $2,
+	// Not a message a resume holds (resumeHolds): the resume routes it, or
+	// gives it back to the chief once it has finished.
+	tag, err := s.pool.Exec(ctx, `UPDATE plugin_messages m SET status = 'delivering', agent_id = $2,
 		       attempts = attempts + 1, last_attempt_at = now()
-		 WHERE id = $1 AND status = 'queued'`, messageID, agentID)
+		 WHERE m.id = $1 AND m.status = 'queued' AND NOT `+resumeHolds, messageID, agentID)
 	if err != nil {
 		return false, err
 	}
