@@ -45,12 +45,12 @@ type Payload struct {
 //
 // 🔴 THE BROWSER PAYLOAD'S OWN LINES, CUT, PLUS THE ASK'S CHIPS. Title and Body
 // are the browser payload's own lines, cut on a character-cluster boundary to
-// MaxNativeTitle and MaxNativeBody. For an attention item they carry the
-// substance — the question, the options, what a session waits on (operator
-// decision "Full text always", which replaced "Summary only": see
-// docs/attention.md) — so the phone shows the same text the browser does. Every
-// OTHER notification still says WHO and WHERE only; that is each helper's own
-// rule, not this type's. URL is where a tap opens, a path on muster.
+// MaxNativeTitle and MaxNativeBody. For an ask and a held question they carry
+// the question and its options (operator decision "Full text always", which
+// replaced "Summary only" for them: see docs/attention.md), so the phone is
+// sent the same text the browser is. Every OTHER notification — a waiting
+// session's included — still says WHO and WHERE only; that is each helper's
+// own rule, not this type's. URL is where a tap opens, a path on muster.
 //
 // Ask (an attention ask only) is what the app draws as chips: the ask's id,
 // the asker's options and the suggested replies. A payload that does not fit
@@ -128,12 +128,16 @@ type V2Ask struct {
 // carries, in characters (runes); MaxNativeChip the longest option or
 // suggestion it carries as a chip, MaxNativeChips how many of each. Even with
 // every character of the two lines JSON-escaped to six bytes they total
-// (100 + 400) × 6 = 3000 bytes, inside NativeMaxPlaintext with room for the
+// (100 + 200) × 6 = 1800 bytes, inside NativeMaxPlaintext with room for the
 // envelope — so the fit never has to shorten the question
 // (TestTheWorstCaseAskStillFitsWithItsQuestion measures it).
+//
+// ⚠ MaxNativeBody IS THE ANDROID APP'S OWN CUT (muster-android PayloadV2.MAX_BODY
+// = 200): a longer body would be cut again on the phone, so a question's
+// options line, kept whole here, would be lost there. Raise both together.
 const (
 	MaxNativeTitle = 100
-	MaxNativeBody  = 400
+	MaxNativeBody  = 200
 	MaxNativeChip  = 140
 	MaxNativeChips = 3
 )

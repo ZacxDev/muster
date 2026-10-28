@@ -1,4 +1,4 @@
--- muster 0057 — A PAIRED PHONE'S SIGNED ACTIONS: the one-time challenges a
+-- muster 0058 — A PAIRED PHONE'S SIGNED ACTIONS: the one-time challenges a
 -- device's step-up key signs (internal/devices challenge.go;
 -- docs/design/android.md, server change 7, "A gated action, step by step").
 --
@@ -18,13 +18,13 @@
 -- sees only its own user's rows. Every read and write runs under the device
 -- owner's principal (the device tier has authenticated the credential first).
 --
--- Must apply after 0056 (the contiguity test refuses a gap). Re-applied by
+-- Must apply after 0057 (the contiguity test refuses a gap). Re-applied by
 -- db.RLSOn after rollback/rls_off.sql, so every statement is idempotent.
 --
--- ROLLBACK. An image from before 0057 runs over this schema unchanged (it
+-- ROLLBACK. An image from before 0058 runs over this schema unchanged (it
 -- never reads the table). To remove it, after rolling the image back:
 --   DROP TABLE IF EXISTS device_challenges;
---   DELETE FROM schema_migrations WHERE version = 57;
+--   DELETE FROM schema_migrations WHERE version = 58;
 
 SET LOCAL lock_timeout = '3s';
 

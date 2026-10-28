@@ -19,7 +19,7 @@ func TestEventsDecodesContextUsage(t *testing.T) {
 			[]Event{{Kind: KindText, Text: "hi", Usage: &Usage{Tokens: 120503}}}},
 		{"a tool call carries it the same",
 			`{"type":"assistant","message":{"model":"claude-haiku-4-5","content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"ls"}}],` + usage + `}}`,
-			[]Event{{Kind: KindToolCall, ToolID: "t", Tool: "Bash", Target: "ls", Input: `{"command":"ls"}`, Usage: &Usage{Tokens: 120503}}}},
+			[]Event{{Kind: KindToolCall, ToolID: "t", Tool: "Bash", Target: "ls", Input: `{"command":"ls"}`, Bytes: 16, Usage: &Usage{Tokens: 120503}}}},
 		{"a synthetic record (the CLI's own message) has none",
 			`{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"x"}],` + usage + `}}`,
 			[]Event{{Kind: KindText, Text: "x"}}},

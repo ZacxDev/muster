@@ -458,7 +458,7 @@ test('tapping an attention notification follows its tap route in the open tab', 
   // (this server mirrors no host), so its route lands on its queue item.
   await tap.deliverAndTap(
     'session-0011223344556677',
-    '{"type":"attention","id":"session-0011223344556677","title":"build @ ws is waiting","body":"Waiting on you: a permission prompt or a question in the session.",' +
+    '{"type":"attention","id":"session-0011223344556677","title":"A session is waiting on you","body":"Waiting: build @ ws",' +
       '"tag":"attention-session-0011223344556677","data":{"url":"/attention/open/session-0011223344556677"}}',
   );
   await page.waitForURL(origin + '/attention#session-0011223344556677');

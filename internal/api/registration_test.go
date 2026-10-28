@@ -105,8 +105,11 @@ func fullyWiredServer(t *testing.T) *Server {
 		TaskRouting:   &TaskRouting{DispatchOwners: map[int64]bool{1: true}},
 		ChiefDispatch: stubChiefDispatch{},
 		// NON-ZERO on purpose: an empty sender list is the feature off.
-		PRMail:          &PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
-		PRSessions:      stubPRSessions{},
+		PRMail:     &PRMail{Senders: plugins.PRMailSenders{"review-gate/pr-check": true}},
+		PRSessions: stubPRSessions{},
+		// NON-ZERO on purpose: an empty allowlist is the feature off.
+		MailResume:      &MailResume{Allow: plugins.RelayAllowlist{1: nil}},
+		MailResumes:     stubMailResumes{},
 		SessionRuntimes: []string{"claude-code"},
 		SendQueue:       stubSendQueue{},
 		// NON-ZERO on purpose: the zero value is the default.
@@ -151,6 +154,7 @@ type stubSummarizer struct{ focus.Summarizer }
 type stubRoutes struct{ plugins.RouteStore }
 type stubChiefDispatch struct{ plugins.DispatchStore }
 type stubPRSessions struct{ plugins.PRSessionStore }
+type stubMailResumes struct{ plugins.MailResumeStore }
 type stubAttention struct{ attention.Store }
 type stubMirrorTokens struct{ MirrorTokenAuth }
 

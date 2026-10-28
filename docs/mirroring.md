@@ -190,6 +190,24 @@ When a window's active pane runs Claude Code, its card opens a **rendered** view
 by default. Prompts and replies appear as chat bubbles, and each tool call as one
 collapsed row showing the tool, its target, and whether it succeeded, failed or
 is still running. It updates live while a turn runs. Thinking is never shown.
+
+Each tool row also shows how much conversation context the call and its result
+added, such as `+3.3k ctx`. The number is measured from the transcript's own
+token usage: the context of the turn after the call, minus the context of the
+turn that made it. That difference also includes any text the calling turn
+wrote. When one turn made several calls, the measured total is split between
+them by the size of each call and result. Each share is marked `~`, and the
+row's tooltip gives the total. When nothing can be measured, the number is an
+estimate from the size of the call and result, also marked `~`. That happens
+when the runtime records no usage (Hermes), when something else entered the
+context before the next turn, or when the context shrank. Something else means
+a prompt, a notice, or context Claude Code injected, such as a message typed
+while the tool ran or a diagnostics report. The tooltip says which case it was.
+An estimate counts only the call and result, so it tends to read lower than a
+measured number. An image is sized by its pixels: about width × height / 750
+tokens, at most about 1600. A call whose next turn has not started yet shows no
+number. opencode rows show none either: muster reads neither their usage nor
+their output.
 Every window has its own view: two Claude Code windows in the same directory each
 show their own conversation.
 
@@ -959,6 +977,22 @@ nothing. Its page wires no gesture, and touch pans the terminal as before.
 An agent pod's Terminal view has no drag-to-scroll in this release. Only
 mirrored windows do.
 
+## Resuming an ended session (`-resume-spawn`)
+
+A host started with `-interactive` **and** `-resume-spawn`
+(`MUSTER_MIRROR_RESUME_SPAWN`) lets muster resume an ended Claude Code session
+when agent mail arrives for it ([plugins](plugins.md#resuming-an-ended-session)).
+It is off by default, because it starts a process on the host.
+
+muster's request names the session id and nothing else. The host finds the
+transcript in its own `~/.claude/projects`, takes the working directory the
+transcript records, and refuses unless that directory still exists and no Claude
+Code process or pane on the host runs the session. Then it starts a detached
+window in the tmux session `muster-resume` (`-resume-session`), running
+`claude --resume <id>` (`-resume-claude`) with no shell. The window is mirrored
+like any other. A host resumes one session at most once per 10 minutes, and at
+most 6 sessions an hour.
+
 ## Tokens, revocation, rate limits
 
 - muster re-checks each host's token every 30 seconds. A **revoked** token ends
@@ -978,7 +1012,7 @@ side can be upgraded first.
 
 Newer capabilities are announced in the host's hello, without a version bump:
 pasting into non-Claude panes, per-window registration, scrolling a pane's
-history, and reporting each
+history, resuming an ended session, and reporting each
 Claude Code window's status (`busy`, `idle`, `waiting`) with the time Claude
 Code wrote it (`statusSince`, from its sessions file's `statusUpdatedAt`), which
 the [send queue](sending-and-step-up.md#queue-send-when-claude-code-is-idle)

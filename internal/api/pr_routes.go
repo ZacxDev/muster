@@ -73,29 +73,40 @@ func prName(ref prroute.Ref) string { return ref.Repo + "#" + strconv.FormatInt(
 // leaves m to the ordinary delivery to the chief, whose turn then names the
 // author when there is one (prAuthorHint).
 func (s *Server) routeByPR(ctx context.Context, p plugins.Plugin, m plugins.Message) bool {
-	if s.pluginDeliverer == nil {
+	mr, ok := s.prRoute(ctx, p, m)
+	if !ok {
 		return false
+	}
+	if s.routeByMuster(ctx, p, m, mr.origin, mr.target, mr.what) {
+		s.logger.Printf("prroute: message %d: %s routed to its author %s", m.ID, mr.origin.PR, mr.origin.Session)
+		return true
+	}
+	s.logger.Printf("prroute: message %d: %s's author %s cannot take it now; to the chief, naming it", m.ID, mr.origin.PR, mr.origin.Session)
+	return false
+}
+
+// prRoute is the route routeByPR makes for m: to the session that most
+// recently authored the pull request it reviews, with the host recorded for
+// it. false when m is not such a review or no author is recorded.
+func (s *Server) prRoute(ctx context.Context, p plugins.Plugin, m plugins.Message) (musterRoute, bool) {
+	if s.pluginDeliverer == nil {
+		return musterRoute{}, false
 	}
 	ref, ok := s.prMailRef(p, m)
 	if !ok {
-		return false
+		return musterRoute{}, false
 	}
 	hit, found, err := s.ext.PRSessions.ResolvePRSession(ctx, ref)
 	switch {
 	case err != nil:
 		s.logger.Printf("prroute: message %d: resolve %s: %v; to the chief", m.ID, prName(ref), err)
-		return false
+		return musterRoute{}, false
 	case !found:
 		s.logger.Printf("prroute: message %d: no session of the owner authored %s; to the chief", m.ID, prName(ref))
-		return false
+		return musterRoute{}, false
 	}
-	origin := plugins.RouteOrigin{Via: plugins.RouteViaPR, Session: hit.ClaudeSession, PR: prName(ref)}
-	if s.routeByMuster(ctx, p, m, origin, "the session that authored pull request "+prName(ref), "a review of pull request "+prName(ref)) {
-		s.logger.Printf("prroute: message %d: %s routed to its author %s (%s)", m.ID, prName(ref), hit.ClaudeSession, hit.Kind)
-		return true
-	}
-	s.logger.Printf("prroute: message %d: %s's author %s cannot take it now; to the chief, naming it", m.ID, prName(ref), hit.ClaudeSession)
-	return false
+	return musterRoute{origin: plugins.RouteOrigin{Via: plugins.RouteViaPR, Session: hit.ClaudeSession, PR: prName(ref)}, host: hit.Host,
+		target: "the session that authored pull request " + prName(ref), what: "a review of pull request " + prName(ref)}, true
 }
 
 // prAuthorHint is the author block for message m, delivered to the chief —

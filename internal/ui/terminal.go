@@ -762,12 +762,23 @@ func agentTerminalScript() g.Node {
     if (moreBtn) moreBtn.disabled = !on;
     if (!on) closeKeysMenu();
   }
-  function send(data) {
+  // send takes input for the session; byUser says the person produced it (a
+  // key, a paste, a key-bar tap) — see userInput below.
+  function send(data, byUser) {
     if (keysOff || unavailable) return;
     if (mode === 'rw') {
       if (ws && ws.readyState === 1) ws.send(typeof data === 'string' ? enc.encode(data) : data);
       return;
     }
+    // 🔴 INPUT NOBODY TYPED IS DROPPED, AS IT ALWAYS WAS. The terminal answers
+    // some of what the far side writes BY ITSELF — tmux asks a client's
+    // Device Attributes and cursor position as it attaches, and with focus
+    // reporting on, a focus change is reported — and xterm.js hands those
+    // answers to the same onData as a keystroke. On an attach without live
+    // keys they go nowhere (the server drops input to a read-only attach);
+    // they must not ask "Confirm it's you" or re-attach, or the dialog opens
+    // with nothing pressed, even in a background tab (live 0.95.0).
+    if (!byUser) return;
     // 🔴 A KEY ON AN ATTACH WITHOUT LIVE KEYS ASKS FOR THEM, THROUGH THE SAME
     // GATE: a sign-in that is not fresh asks "Confirm it's you" first. The key
     // itself is not replayed — it was typed at a terminal that could not take
@@ -926,16 +937,46 @@ func agentTerminalScript() g.Node {
     if (beat && now - lastAt > staleMs) connect(why === 'tick' ? 'stale' : why);
   }
 
-  term.onData(function (d) { send(d); });
+  // userInput: the PERSON just made an input event — a key, text entered
+  // (input, beforeinput), text committed by an input method (compositionend:
+  // a phone keyboard's swipe or voice, a CJK IME), a paste — on the terminal.
+  // xterm.js types what such an event makes either from inside its own
+  // handler (keys, paste, plain input) or from a setTimeout(0) the handler
+  // queues (a committed composition; text from a keyCode-229 key): onData
+  // then is the person's. Its answers to the far side's queries come from
+  // parsing output, in tasks of their own, and are not. A structural signal
+  // (the event and its isTrusted), not a guess from the bytes: a keystroke
+  // and an answer can be the very same bytes.
+  //
+  // 🔴 CLEARED TWO TASKS LATER, NOT ONE. These listeners run in the CAPTURE
+  // phase (xterm stops keydown/keypress from propagating), so before
+  // xterm's own handler: a clear queued here as setTimeout(0) would run
+  // BEFORE the timer xterm queues in the same event, and a committed
+  // composition was dropped as nobody's (audit #312). The clear is queued
+  // from a first timer, so it runs after every zero-delay timer the event's
+  // handlers queued.
+  var userInput = false, userInputTimer = 0;
+  ['keydown', 'keypress', 'beforeinput', 'input', 'compositionend', 'paste'].forEach(function (type) {
+    host.addEventListener(type, function (ev) {
+      if (!ev.isTrusted) return;
+      userInput = true;
+      clearTimeout(userInputTimer);
+      userInputTimer = setTimeout(function () {
+        userInputTimer = setTimeout(function () { userInput = false; }, 0);
+      }, 0);
+    }, true);
+  });
+  term.onData(function (d) { send(d, userInput); });
   term.onBinary(function (d) {
     var b = new Uint8Array(d.length);
     for (var i = 0; i < d.length; i++) { b[i] = d.charCodeAt(i) & 255; }
-    send(b);
+    send(b, userInput);
   });
   for (var i = 0; i < keys.length; i++) {
     keys[i].addEventListener('click', function (ev) {
       var b = ev.currentTarget;
-      send(hexBytes(b.getAttribute('data-seq')));
+      // A tap on the key bar is the person's, whatever it types.
+      send(hexBytes(b.getAttribute('data-seq')), true);
       // A key picked from the ⋯ menu closes it, as a context menu does.
       if (keysMenu && keysMenu.contains(b)) closeKeysMenu();
     });

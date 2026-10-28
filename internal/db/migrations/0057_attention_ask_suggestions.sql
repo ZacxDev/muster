@@ -1,4 +1,4 @@
--- muster 0056 — SUGGESTED REPLIES FOR AN ASK (internal/api/attention_suggest.go;
+-- muster 0057 — SUGGESTED REPLIES FOR AN ASK (internal/api/attention_suggest.go;
 -- docs/attention.md#suggested-replies-to-an-ask).
 --
 --   suggestions  the suggested replies generated for an OPEN ask, a JSON array
@@ -17,15 +17,15 @@
 -- the ask page (served by any replica) draws them — so they are kept with the
 -- ask, beside the question they were made from, and go with its row.
 --
--- Must apply after 0055 (the contiguity test refuses a gap). Not re-applied by
+-- Must apply after 0056 (the contiguity test refuses a gap). Not re-applied by
 -- db.RLSOn (it changes no policy, grant or default) and idempotent: ADD COLUMN
 -- IF NOT EXISTS, DROP/ADD CONSTRAINT.
 --
--- ROLLBACK. An image from before 0056 runs over this schema unchanged (it never
+-- ROLLBACK. An image from before 0057 runs over this schema unchanged (it never
 -- reads or writes the column). To remove the schema itself, after rolling the
 -- image back:
 --   ALTER TABLE attention_asks DROP COLUMN IF EXISTS suggestions;
---   DELETE FROM schema_migrations WHERE version = 56;
+--   DELETE FROM schema_migrations WHERE version = 57;
 
 SET LOCAL lock_timeout = '3s';
 

@@ -88,22 +88,25 @@ the field.
 **Notifications** (event `attention` on Account → Notifications, on by default):
 one per new question or newly waiting session, withdrawn when the item is
 answered (on `/attention` or in the session), dismissed, expires or stops
-waiting. **A notification carries the whole substance, on the lock screen too**
-(operator decision "Full text always", which replaced the earlier "Summary only
-— WHO and WHERE, never WHAT"), so it can be acted on without opening it:
+waiting. **A question's notification carries the question itself, on the lock
+screen too** (operator decision "Full text always", which replaced the earlier
+"Summary only — WHO and WHERE, never WHAT" for asks and held questions), so it
+can be acted on without opening it. **A waiting session's stays summary only**
+(operator decision): who and where, and the name of the tool — never the
+command, path or URL, never what Claude said.
 
 | item | title | body |
 |---|---|---|
 | a question (an agent's, the chief's, muster's own) | `<asker> is asking` | the question, on one line, then `Options: a · b · c` when it offered any |
 | a held question (a session's `AskUserQuestion`) | `<window> @ <host> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices |
-| a waiting session | `<window> @ <host> is waiting` | what it waits on (its pending tool and the host's summary: `Bash: npm publish --tag next`), then the last thing Claude said; `Waiting: <tool>` when the host sends no summary |
+| a waiting session | `A session is waiting on you` | `Waiting: <tool name> · <window> @ <host>`, or `Waiting: <window> @ <host>` when its host names no tool |
 
 Each line is folded to one line, anything shaped like a secret is redacted, and
-the body is cut to 400 characters on a character boundary with a visible `…`
-(the options line keeps its room; the question is cut first). The browser and a
-paired phone get the same lines. A reply draft's notification is unchanged (who
-and where only, below). Each item has one tag, so a notification is replaced,
-never stacked.
+the body is cut to 200 characters on a character boundary with a visible `…`
+(the options line keeps its room, at most 100; the question is cut first). 200
+is the Android app's own cut, so the browser and a paired phone are sent the
+same lines and the phone cuts nothing more. What the phone shows of them: the Android app as of muster-android `43d9b90` reads only `title`, `body` and `url`: it cuts the body at 200 characters (`PayloadV2.MAX_BODY`), sets it as the notification's one-line content text (so a collapsed notification shows the question's first line and the system's ellipsis; the options line is the second line), ignores `ask`, `actions` and `update`, and posts with `setOnlyAlertOnce(false)` — so the suggestions' re-push ALERTS AGAIN on it (operator-accepted until the app reads `update`). A reply draft's notification is unchanged (who and where only, below).
+Each item has one tag, so a notification is replaced, never stacked.
 
 **A tap opens the question's own page** (`/attention/asks/<id>`, below) while
 it is open; any other item opens its session when it has one, on the browser
@@ -160,28 +163,34 @@ from the question and its options, grounded in them by the same filter:
 - **The first notification never waits for them.** The question is pushed the
   moment it is filed; the suggestions are generated in the background and,
   when there are any, the notification is **pushed again under the same tag**
-  carrying them (a paired phone replaces it without alerting again: payload
-  v2's `update`). A browser notification shows no chips; its lines are the same.
+  carrying them, marked `update` in payload v2 so an app can replace it without
+  alerting again. ⚠ The Android app as shipped (muster-android `43d9b90`)
+  ignores `update` and alerts again on the re-push — accepted by the operator
+  until the app reads it. A browser replaces it silently (same tag, no
+  `renotify`) and shows no chips; its lines are the same.
 - **The same switches.** `MUSTER_SUGGEST=off`, your own toggle on Account (and
   its auto-pause), and no OpenRouter key for you each mean no call and no chips,
   and the page stops showing stored chips while they are off. The engine's rate
   caps apply; one call per question.
-- **Stored with the question** (`attention_asks.suggestions`, migration 0056),
+- **Stored with the question** (`attention_asks.suggestions`, migration 0057),
   at most three, each one line and at most 140 characters, none repeating an
   option — the one place suggestion text is stored, because the re-push and the
   page (on any replica) need it. Written once, and **only while the question is
   open**: a question answered, dismissed or expired before its suggestions
   arrive is never given them and never pushed again; a re-push that loses the
   race with an answer is withdrawn again as soon as it is delivered.
-- On the page a chip fills the answer box; nothing is sent until **Answer**. A
-  paired phone draws options and suggestions as chips (payload v2's `ask`),
-  dropping the suggestions first, then the options, when a push would not fit in
-  its 4096-byte record — never the question.
-- **On a paired phone a chip answers.** Each option and suggestion is also a
-  notification button (payload v2's `actions`): tapped, it is confirmed with the
-  phone's step-up key, whose prompt shows the exact text, and sent as the ask's
-  answer by a signed action — the same answer as this page's
-  ([design/android.md](design/android.md#the-signed-ask-actions-as-built)).
+- On the page a chip fills the answer box; nothing is sent until **Answer**.
+  Payload v2's `ask` carries options and suggestions for an app to draw as
+  chips (the shipped app does not yet), leaving out any a secret scan would
+  redact (a chip is sent whole or not at all), and dropping the suggestions
+  first, then the options, when a push would not fit in its 4096-byte record —
+  never the question. The page itself, behind the sign-in like `/attention`,
+  draws the asker's options as written.
+- **On a paired phone a chip answers** (once the app draws them). Each option
+  and suggestion is also a notification button (payload v2's `actions`):
+  tapped, it is confirmed with the phone's step-up key, whose prompt shows the
+  exact text, and sent as the ask's answer by a signed action — the same answer
+  as this page's ([design/android.md](design/android.md#the-signed-ask-actions-as-built)).
 
 ## The agent tools
 

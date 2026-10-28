@@ -421,17 +421,25 @@ an ask, its chips:
  "update": true}
 ```
 
-- `title` and `body` are the browser's own lines, cut to 100 and 400
-  characters on a character boundary. **For an attention item they carry the
-  WHAT** — the question and its options, what a session waits on — on the lock
-  screen too (operator decision "Full text always", which replaced "Summary
-  only — WHO and WHERE, never WHAT"; [attention.md](../attention.md#what-is-in-it)).
-  Every other event still says WHO and WHERE only.
+- `title` and `body` are the browser's own lines, cut to 100 and 200
+  characters on a character boundary — the app's own `MAX_TITLE`/`MAX_BODY`,
+  so it cuts nothing more. **For an ask and a held question they carry the
+  WHAT** — the question and its options — on the lock screen too (operator
+  decision "Full text always", which replaced "Summary only — WHO and WHERE,
+  never WHAT" for them; [attention.md](../attention.md#what-is-in-it)). A waiting
+  session and every other event still say WHO and WHERE only. ⚠ As shipped
+  (`43d9b90`) the app sets the body as one-line content text, so a collapsed
+  notification shows the question's first line; the options line is the
+  second line, shown once the app uses `BigTextStyle`.
 - `ask` (an attention ask only): the ask's id, the asker's options and the
   suggested replies, at most three of each, each whole (a longer one than 140
-  characters is left out, never cut). When the suggestions arrive after the
-  first push, the same tag is pushed again with `"update": true`: the app
-  replaces the notification without alerting again.
+  characters is left out, never cut; one a secret scan would redact is left
+  out too). When the suggestions arrive after the first push, the same tag is
+  pushed again with `"update": true`: the app should replace the notification
+  without alerting again (`setOnlyAlertOnce(true)` for it). ⚠ The app as
+  shipped (`43d9b90`) ignores `ask` and `update` and posts with
+  `setOnlyAlertOnce(false)`, so it alerts again on the re-push — accepted by
+  the operator until the app ships the update.
 - `actions` names action ids, from the app's fixed table
   ([action ids](#action-ids)). The app maps each id to a fixed button and a
   fixed `/api/device/actions/*` route, so the server cannot make the app POST
@@ -1015,16 +1023,19 @@ signed action) and its own [decisions.md](../decisions.md) entry (item 25).
   `setShortcutId`. Conversations get the conversation space, priority marking
   and bubbles. Each conversation has a unique PendingIntent request code, or a
   reply can land in the wrong one.
-- **Lock screen: the full text, always** (operator decision "Full text
-  always", which REPLACED "WHAT only while unlocked"). An attention
-  notification's `title` and `body` carry the question, its options and what a
-  session waits on, and the app shows them as sent, locked or not:
-  `VISIBILITY_PUBLIC` for the `attention` channel, no public version, no
-  re-post on `ACTION_SCREEN_OFF`. ([Phase 0, S11][p0-s11] measured that
+- **Lock screen: a question's full text, always** (operator decision "Full
+  text always", which REPLACED "WHAT only while unlocked" for asks and held
+  questions). An ask's or held question's `title` and `body` carry the question
+  and its options, and the app shows them as sent, locked or not:
+  `VISIBILITY_PUBLIC` for them, no stripped public version, no re-post on
+  `ACTION_SCREEN_OFF`. ([Phase 0, S11][p0-s11] measured that
   `VISIBILITY_PRIVATE` cannot keep text off the lock screen when the user shows
   all content anyway; the earlier design worked around that, and the operator
-  chose to show it instead.) A reply draft and the other events still say WHO
-  and WHERE only, so they have nothing to hide. Acting from the lock screen
+  chose to show it instead.) ⚠ As shipped (`43d9b90`) the app posts
+  `VISIBILITY_PRIVATE` with a public version built from the same title and
+  body, so the lock screen already shows them. A waiting session, a reply draft
+  and the other events still say WHO and WHERE only, so they have nothing to
+  hide. Acting from the lock screen
   still needs the unlock and the step-up key ([a gated action](#a-gated-action-step-by-step)).
 - **Actions per event:**
 

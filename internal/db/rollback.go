@@ -135,10 +135,15 @@ const pluginThreadsMigrationVersion = 54
 // same treatment again.
 const sessionPRsMigrationVersion = 55
 
-// deviceChallengesMigrationVersion is 0057: device_challenges (a paired
+// mailResumesMigrationVersion is 0056: mail_resumes (the ended sessions agent
+// mail resumed), owned and under the same row-level security; same treatment
+// again.
+const mailResumesMigrationVersion = 56
+
+// deviceChallengesMigrationVersion is 0058: device_challenges (a paired
 // phone's signed-action challenges), owned and under the same row-level
 // security; same treatment again.
-const deviceChallengesMigrationVersion = 57
+const deviceChallengesMigrationVersion = 58
 
 // RLSOn re-applies migration 0007's body (it is idempotent): RLS enabled and
 // forced on every owned table, the policies, owner_id defaulting to the
@@ -150,7 +155,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		return err
 	}
 	ctx = asMigrator(ctx)
-	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasDeviceChallenges bool
+	var hasMirrorTokens, hasUserCredentials, hasFlowJobs, hasPushSubscriptions, hasFlowRequests, hasPlugins, hasPluginReplies, hasPins, hasRecents, hasSendQueue, hasAgentFocus, hasSessionRoutes, hasAgentFocusHistory, hasUploads, hasAttentionAsks, hasJobs, hasDevices, hasStandingGrants, hasSuggestPreferences, hasSuggestUsage, hasPluginThreads, hasSessionPRs, hasMailResumes, hasDeviceChallenges bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('public.mirror_tokens') IS NOT NULL,
 		to_regclass('public.user_credentials') IS NOT NULL,
 		to_regclass('public.flow_jobs') IS NOT NULL,
@@ -173,8 +178,9 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 		to_regclass('public.suggest_usage') IS NOT NULL,
 		to_regclass('public.plugin_threads') IS NOT NULL,
 		to_regclass('public.session_prs') IS NOT NULL,
+		to_regclass('public.mail_resumes') IS NOT NULL,
 		to_regclass('public.device_challenges') IS NOT NULL`).Scan(&hasMirrorTokens, &hasUserCredentials,
-		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasDeviceChallenges); err != nil {
+		&hasFlowJobs, &hasPushSubscriptions, &hasFlowRequests, &hasPlugins, &hasPluginReplies, &hasPins, &hasRecents, &hasSendQueue, &hasAgentFocus, &hasSessionRoutes, &hasAgentFocusHistory, &hasUploads, &hasAttentionAsks, &hasJobs, &hasDevices, &hasStandingGrants, &hasSuggestPreferences, &hasSuggestUsage, &hasPluginThreads, &hasSessionPRs, &hasMailResumes, &hasDeviceChallenges); err != nil {
 		return fmt.Errorf("rls on: %w", err)
 	}
 	applied := false
@@ -201,6 +207,7 @@ func RLSOn(ctx context.Context, pool *pgxpool.Pool) error {
 			!(m.version == suggestUsageMigrationVersion && hasSuggestUsage) &&
 			!(m.version == pluginThreadsMigrationVersion && hasPluginThreads) &&
 			!(m.version == sessionPRsMigrationVersion && hasSessionPRs) &&
+			!(m.version == mailResumesMigrationVersion && hasMailResumes) &&
 			!(m.version == deviceChallengesMigrationVersion && hasDeviceChallenges) {
 			continue
 		}

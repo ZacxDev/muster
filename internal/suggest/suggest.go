@@ -35,7 +35,7 @@
 // the input's fingerprint outlives it, so an unchanged session is not paid for
 // twice. The ONE exception is an attention ask's set (internal/api
 // attention_suggest.go): its notification is re-pushed carrying it and its page
-// draws it on any replica, so it is stored on the ask (migration 0056), beside
+// draws it on any replica, so it is stored on the ask (migration 0057), beside
 // the question it was made from, and only while the ask is open.
 package suggest
 

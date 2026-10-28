@@ -67,14 +67,13 @@ const (
 	// attentionPoll is how often a waiter re-reads its ask even without a
 	// wake-up: another muster replica may have answered it.
 	attentionPoll = 2 * time.Second
-	// attentionPushBodyMax bounds a notification body (its substance: the
-	// question, the options, what a session waits on — attentionPushBody), the
-	// SAME bound on the browser and on a paired phone (push.MaxNativeBody), so
-	// the two show the same text.
+	// attentionPushBodyMax bounds a notification body (attentionPushBody), the
+	// SAME bound on the browser and on a paired phone (push.MaxNativeBody, the
+	// Android app's own cut), so the phone is sent exactly what it shows.
 	attentionPushBodyMax = push.MaxNativeBody
 	// attentionPushOptionsMax bounds the options line within it: the question
-	// gets the rest.
-	attentionPushOptionsMax = 160
+	// gets the rest (at least 99 characters).
+	attentionPushOptionsMax = 100
 	// attentionNotificationType is the push payload type for a new item.
 	attentionNotificationType = "attention"
 )
@@ -199,7 +198,7 @@ type attentionItem struct {
 	// on, and the approval muster can answer; nil for any other item.
 	hermes *hermesAsk
 	// suggestions are an ask's stored suggested replies (attention.Ask's,
-	// migration 0056), "" none: what its notification and its page draw as
+	// migration 0057), "" none: what its notification and its page draw as
 	// chips. Not in the item's JSON (attention_list), which predates them.
 	suggestions []string
 }
@@ -593,7 +592,7 @@ func attentionNotification(it attentionItem, update bool) RouterNotification {
 	n := RouterNotification{Type: attentionNotificationType, ID: it.Key, Title: attentionPushTitle(it), Body: attentionPushBody(it),
 		Tag: attentionTag(it.Key), Data: map[string]string{"url": attentionOpenURL(it.Key)}, Update: update}
 	if it.Kind == attentionKindAsk && it.AskID > 0 {
-		n.Ask = &push.V2Ask{ID: it.AskID, Options: it.Options, Suggestions: it.suggestions}
+		n.Ask = &push.V2Ask{ID: it.AskID, Options: cleanChips(it.Options), Suggestions: cleanChips(it.suggestions)}
 		// The signed ask actions are routed wherever the asks are
 		// (device_actions.go): this item is one, so they are offered.
 		n.AskActions = true
@@ -601,31 +600,50 @@ func attentionNotification(it attentionItem, update bool) RouterNotification {
 	return n
 }
 
+// cleanChips is chips without any a secret scan would redact (redact.Secrets,
+// the body's own rule): a chip is sent whole or not at all, and a redacted one
+// would answer with text the asker never offered. nil for none.
+func cleanChips(chips []string) []string {
+	var out []string
+	for _, c := range chips {
+		if redact.Secrets(c) == c {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// sessionPushTitle is a waiting session's fixed title: its WHO and WHERE are
+// in its body (attentionPushBody).
+const sessionPushTitle = "A session is waiting on you"
+
 // attentionPushTitle names WHO: "<asker> is asking" for an ask and a held
-// question, "<window> @ <host> is waiting" for a waiting session. The source
-// is a title, plained once at the sink (goNotify).
+// question (the source is a title, plained once at the sink, goNotify); a
+// waiting session's fixed sessionPushTitle.
 func attentionPushTitle(it attentionItem) string {
 	if it.Kind == attentionKindSession {
-		return it.Source + " is waiting"
+		return sessionPushTitle
 	}
 	return it.Source + " is asking"
 }
 
-// attentionPushBody is an item's notification body: WHAT it needs, in full,
-// so the notification can be acted on without opening it.
+// attentionPushBody is an item's notification body.
 //
-// 🔴 FULL TEXT, ON THE LOCK SCREEN TOO (operator decision "Full text always",
-// which REPLACED the earlier "Summary only — WHO and WHERE, never WHAT"): the
-// body is the substance —
+// 🔴 FULL TEXT FOR A QUESTION, ON THE LOCK SCREEN TOO (operator decision "Full
+// text always", which REPLACED the earlier "Summary only — WHO and WHERE, never
+// WHAT" for asks and held questions):
 //   - an ask: its question, then "Options: a · b · c" when the asker offered
 //     any (the options line at most attentionPushOptionsMax, the question the
 //     rest);
 //   - a held question: its question (each question's first line, numbered,
-//     when it asks several), and one question's choices;
-//   - a waiting session: what it waits on (its pending tool and the host's
-//     short summary of it, mirror.Pending.Summary — "Bash: npm publish"), then
-//     the last thing Claude said, or "Waiting: <tool>" when the host names no
-//     summary, or muster's generic line.
+//     when it asks several), and one question's choices.
+//
+// 🔴 A WAITING SESSION STAYS SUMMARY ONLY (operator decision): "Waiting: <tool
+// name> · <window> @ <host>", or "Waiting: <window> @ <host>" when its host
+// names no tool — never the command, path or URL its pending call carries,
+// never what Claude said. Those are on the page. Its source is a TITLE (a
+// window's name, often LLM-written), so it reads as the title rule makes it,
+// here, before the cut; goNotify plains titles only, never bodies.
 //
 // Each line is one line (control characters and runs of space folded,
 // mirror.OneLine) with anything shaped like a secret redacted
@@ -640,24 +658,11 @@ func attentionPushBody(it attentionItem) string {
 	var lines []string
 	switch it.Kind {
 	case attentionKindSession:
-		// The host's summary of what it waits on; muster's generic line says
-		// nothing a tool name would not say better.
-		text := ""
-		if it.Text != sessionWaitingText && it.Text != hermesWaitingText {
-			text = pushLine(it.Text)
+		body := "Waiting: " + textplain.Title(it.Source)
+		if tool := mirror.OneLine(it.tool, mirror.MaxPendingTool); tool != "" {
+			body = "Waiting: " + tool + " · " + textplain.Title(it.Source)
 		}
-		switch tool := mirror.OneLine(it.tool, mirror.MaxPendingTool); {
-		case text != "":
-		case tool != "":
-			text = "Waiting: " + tool
-		default:
-			text = it.Text
-		}
-		lines = append(lines, text)
-		if d := pushLine(it.Detail); d != "" {
-			lines = append(lines, d)
-		}
-		return push.CutClusters(strings.Join(lines, "\n"), attentionPushBodyMax)
+		return push.CutClusters(mirror.OneLine(body, 1<<20), attentionPushBodyMax)
 	}
 	opts := ""
 	if len(it.Options) > 0 {

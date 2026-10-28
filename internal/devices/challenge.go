@@ -20,7 +20,7 @@ import (
 )
 
 // SIGNED ACTIONS (docs/design/android.md, "A gated action, step by step";
-// migration 0057): a paired phone asks for a one-time CHALLENGE bound to an
+// migration 0058): a paired phone asks for a one-time CHALLENGE bound to an
 // action, its target and the sha256 of the exact text it carries; the phone's
 // step-up key (Android Keystore, a fresh biometric per use) signs the
 // challenge's message; the action route spends the challenge and verifies the

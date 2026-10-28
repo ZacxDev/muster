@@ -270,7 +270,7 @@ func TestTheSessionPushPayloadIsWhatTheWorkerReads(t *testing.T) {
 	s.WaitForPushes()
 	var raw json.RawMessage
 	pusher.one(t, ep("pt-pin"), &raw)
-	const want = `{"type":"attention","id":"session-0011223344556677","title":"build @ ws is waiting","body":"Waiting on you: a permission prompt or a question in the session.","tag":"attention-session-0011223344556677","data":{"url":"/attention/open/session-0011223344556677"}}`
+	const want = `{"type":"attention","id":"session-0011223344556677","title":"A session is waiting on you","body":"Waiting: build @ ws","tag":"attention-session-0011223344556677","data":{"url":"/attention/open/session-0011223344556677"}}`
 	if string(raw) != want {
 		t.Fatalf("payload:\n%s\nwant:\n%s", raw, want)
 	}

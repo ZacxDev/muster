@@ -61,8 +61,29 @@ func (s *Server) handlePluginThreadBind(w http.ResponseWriter, r *http.Request) 
 // chief to own the route, or when another delivery took m first (that delivery
 // then finds m no longer queued and leaves it as it is).
 func (s *Server) routeByThread(ctx context.Context, p plugins.Plugin, m plugins.Message) bool {
-	if !routingOn(s.ext) || s.pluginDeliverer == nil || p.Name != plugins.AgentMailPlugin || m.Thread == nil {
+	mr, ok := s.threadRoute(ctx, p, m)
+	if !ok {
 		return false
+	}
+	return s.routeByMuster(ctx, p, m, mr.origin, mr.target, mr.what)
+}
+
+// musterRoute is a route muster would make itself (routeByMuster's
+// arguments), and the host its session was last seen on when that is
+// recorded ("" otherwise): what routeByThread and routeByPR make, and what the
+// mail resume (mail_resume.go) resumes when no window shows the session.
+type musterRoute struct {
+	origin       plugins.RouteOrigin
+	host         string
+	target, what string
+}
+
+// threadRoute is the route routeByThread makes for m: to the session bound to
+// its thread. false when there is none (routing off, not agent mail, no
+// thread, or an unbound one).
+func (s *Server) threadRoute(ctx context.Context, p plugins.Plugin, m plugins.Message) (musterRoute, bool) {
+	if !routingOn(s.ext) || s.pluginDeliverer == nil || p.Name != plugins.AgentMailPlugin || m.Thread == nil {
+		return musterRoute{}, false
 	}
 	thread := *m.Thread
 	session, err := s.ext.Routes.BoundThread(ctx, thread)
@@ -70,10 +91,10 @@ func (s *Server) routeByThread(ctx context.Context, p plugins.Plugin, m plugins.
 		if !errors.Is(err, plugins.ErrNotFound) {
 			s.logger.Printf("threads: message %d: read thread %q: %v", m.ID, thread, err)
 		}
-		return false
+		return musterRoute{}, false
 	}
-	origin := plugins.RouteOrigin{Via: plugins.RouteViaThread, Session: session, Thread: thread}
-	return s.routeByMuster(ctx, p, m, origin, "the session that started thread "+thread, "a reply on thread "+thread)
+	return musterRoute{origin: plugins.RouteOrigin{Via: plugins.RouteViaThread, Session: session, Thread: thread},
+		target: "the session that started thread " + thread, what: "a reply on thread " + thread}, true
 }
 
 // routeByMuster is THE ROUTE MUSTER MAKES ITSELF, for both of its reasons — a

@@ -95,6 +95,7 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO suggest_preferences (disabled) VALUES (true)`, func() []any { return nil }, nil},
 		{`INSERT INTO suggest_usage (shown) VALUES (1)`, func() []any { return nil }, nil},
 		{`INSERT INTO plugin_threads (thread, claude_session) VALUES ($1, 'sess')`, func() []any { return []any{"thread-" + tag} }, nil},
+		{`INSERT INTO mail_resumes (plugin_message_id, claude_session, sender, via) VALUES (7, $1, 'review-gate/pr-check', 'pr')`, func() []any { return []any{"sess-" + tag} }, nil},
 		{`INSERT INTO session_prs (kind, repo, pr, claude_session, host) VALUES ('gh-pr-create', $1, 7, 'sess', 'host')`, func() []any { return []any{"acme-labs/repo-" + strings.ToLower(tag)} }, nil},
 		{`INSERT INTO devices (name, token_sha256, paired_signin_at) VALUES ($1, sha256(convert_to($1, 'UTF8')), now()) RETURNING id`, func() []any { return []any{"phone-" + tag} }, &device},
 		{`INSERT INTO device_challenges (device_id, nonce_sha256, action, target, expires_at) VALUES ($1, sha256(convert_to($2, 'UTF8')), 'ask_dismiss', '1', now() + interval '2 minutes')`, func() []any { return []any{device, "nonce-" + tag} }, nil},
