@@ -414,10 +414,13 @@ way:
 - **You may reach the hub over `ssh`** (they give the hub's ssh name):
   ```sh
   . "$HOME/.config/muster-install/lib.sh"
+  tok="$HOME/.config/muster-mirror/token"
   mkdir -p "$HOME/.config/muster-mirror" && chmod 700 "$HOME/.config/muster-mirror"
-  (umask 077; ssh HUB "docker compose -f ~/muster/docker-compose.yml exec -T muster /muster-server mirror token create $MIRROR_HOST" \
-    > "$HOME/.config/muster-mirror/token.tmp") &&
-    [ -s "$HOME/.config/muster-mirror/token.tmp" ] && mv "$HOME/.config/muster-mirror/token.tmp" "$HOME/.config/muster-mirror/token"
+  if [ -s "$tok" ]; then echo "kept existing token"
+  else
+    (umask 077; ssh HUB "docker compose -f ~/muster/docker-compose.yml exec -T muster /muster-server mirror token create $MIRROR_HOST" \
+      > "$tok.tmp") && [ -s "$tok.tmp" ] && mv "$tok.tmp" "$tok" && echo "minted token for $MIRROR_HOST"
+  fi
   ```
 - **Otherwise**, give the person this line to run on the hub, with this
   machine's name filled in, and ask them to paste what it prints:
