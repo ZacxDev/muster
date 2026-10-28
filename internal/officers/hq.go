@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ErrHQUnavailable is HQ not answering usefully: a transport failure, a
@@ -324,17 +325,117 @@ func (c *Client) Release(ctx context.Context, item ItemID, instance string) ([]b
 	return c.Do(ctx, http.MethodPost, c.itemPath(item, "release"), map[string]any{"instance": instance})
 }
 
-// ReleaseEvaluation is POST /releases/captain with the officer token: the
-// release captain's evaluation of one release. evaluation is the captain
-// route's own body, passed through; instance is set on it so HQ records which
-// instance wrote it (the officer it learns from the token).
-func (c *Client) ReleaseEvaluation(ctx context.Context, instance string, evaluation map[string]json.RawMessage) ([]byte, error) {
-	body := map[string]any{}
-	for k, v := range evaluation {
-		body[k] = v
+// --- the release captain route (POST /releases/captain) ---------------------
+//
+// HQ's body (civ-hq docs/RELEASES.md §9.3, internal/store/release_captain.go):
+//
+//	{"service", "tag", "evaluation"?: {"level", "summary", "monitors"?: [{"name", "url"}]},
+//	 "report"?: "<text>", "instance"}
+//
+// at least one of evaluation/report; unknown fields are a 400. muster builds it
+// from the tool's explicit arguments (ParseCaptainPost validates them first, so
+// a malformed call fails before HQ) and sets instance itself.
+
+// Captain route bounds, as HQ enforces them.
+const (
+	MaxCaptainSummary     = 10000 // characters
+	MaxCaptainReport      = 20000 // characters
+	MaxCaptainMonitors    = 50
+	MaxCaptainMonitorName = 200 // characters
+	MaxCaptainMonitorURL  = 2048
+	MaxCaptainField       = 200 // service / tag: a local sanity bound
+)
+
+// CaptainLevels are HQ's risk levels.
+var CaptainLevels = []string{"low", "medium", "high", "severe"}
+
+// CaptainMonitor is one thing to watch after a release.
+type CaptainMonitor struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+// CaptainEvaluation is the captain's risk evaluation of a release.
+type CaptainEvaluation struct {
+	Level    string           `json:"level"`
+	Summary  string           `json:"summary"`
+	Monitors []CaptainMonitor `json:"monitors,omitempty"`
+}
+
+// CaptainPost is what the release officer posts: the release, and an
+// evaluation and/or a post-release report.
+type CaptainPost struct {
+	Service    string             `json:"service"`
+	Tag        string             `json:"tag"`
+	Evaluation *CaptainEvaluation `json:"evaluation,omitempty"`
+	Report     *string            `json:"report,omitempty"`
+}
+
+// ParseCaptainPost decodes and validates the tool's arguments. Unknown fields
+// are refused at every level — release_id, an agent-sent instance, the inner
+// evaluation sent as the whole body — as HQ would refuse them, but before HQ.
+func ParseCaptainPost(raw []byte) (CaptainPost, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var p CaptainPost
+	if err := dec.Decode(&p); err != nil {
+		return CaptainPost{}, fmt.Errorf("arguments are {service, tag, evaluation?: {level, summary, monitors?: [{name, url}]}, report?: string}: %v", err)
 	}
-	body["instance"] = instance
-	return c.Do(ctx, http.MethodPost, "/releases/captain", body)
+	if s := strings.TrimSpace(p.Service); s == "" || len(s) > MaxCaptainField {
+		return CaptainPost{}, errors.New("service is required (the release's service, as the item's payload names it)")
+	}
+	if s := strings.TrimSpace(p.Tag); s == "" || len(s) > MaxCaptainField {
+		return CaptainPost{}, errors.New("tag is required (the release's tag, as the item's payload names it)")
+	}
+	if p.Evaluation == nil && p.Report == nil {
+		return CaptainPost{}, errors.New("give evaluation, report, or both")
+	}
+	if e := p.Evaluation; e != nil {
+		ok := false
+		for _, l := range CaptainLevels {
+			ok = ok || e.Level == l
+		}
+		if !ok {
+			return CaptainPost{}, fmt.Errorf("evaluation.level must be one of %s", strings.Join(CaptainLevels, ", "))
+		}
+		if n := utf8.RuneCountInString(strings.TrimSpace(e.Summary)); n == 0 || utf8.RuneCountInString(e.Summary) > MaxCaptainSummary {
+			return CaptainPost{}, fmt.Errorf("evaluation.summary must be 1-%d characters", MaxCaptainSummary)
+		}
+		if len(e.Monitors) > MaxCaptainMonitors {
+			return CaptainPost{}, fmt.Errorf("at most %d evaluation.monitors", MaxCaptainMonitors)
+		}
+		for i, m := range e.Monitors {
+			if n := utf8.RuneCountInString(strings.TrimSpace(m.Name)); n == 0 || utf8.RuneCountInString(m.Name) > MaxCaptainMonitorName {
+				return CaptainPost{}, fmt.Errorf("evaluation.monitors[%d].name must be 1-%d characters", i, MaxCaptainMonitorName)
+			}
+			if !captainURL(m.URL) {
+				return CaptainPost{}, fmt.Errorf("evaluation.monitors[%d].url must be an absolute http(s) URL without user info, at most %d characters", i, MaxCaptainMonitorURL)
+			}
+		}
+	}
+	if r := p.Report; r != nil {
+		if n := utf8.RuneCountInString(strings.TrimSpace(*r)); n == 0 || utf8.RuneCountInString(*r) > MaxCaptainReport {
+			return CaptainPost{}, fmt.Errorf("report must be 1-%d characters", MaxCaptainReport)
+		}
+	}
+	return p, nil
+}
+
+func captainURL(raw string) bool {
+	if raw == "" || len(raw) > MaxCaptainMonitorURL || strings.ContainsAny(raw, " \t\r\n") {
+		return false
+	}
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.User == nil
+}
+
+// ReleaseCaptain is POST /releases/captain with the officer token: p, with
+// instance set to the calling instance (HQ records officer + instance).
+func (c *Client) ReleaseCaptain(ctx context.Context, instance string, p CaptainPost) ([]byte, error) {
+	return c.Do(ctx, http.MethodPost, "/releases/captain", struct {
+		CaptainPost
+		Instance string `json:"instance"`
+	}{p, instance})
 }
 
 func truncate(s string, n int) string {

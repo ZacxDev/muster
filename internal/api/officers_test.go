@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -744,10 +745,10 @@ type nameExistsNever struct{ *officerAgents }
 func (nameExistsNever) NameExists(context.Context, string) (bool, error) { return false, nil }
 
 // TestTheReleaseEvaluationToolIsTheReleaseOfficersOnly: a release officer's
-// instance posts its evaluation to HQ's captain route with its own token, the
-// body passed through and its instance set by muster (an instance field the
-// agent sends is overwritten); a non-release officer's instance is neither
-// offered the tool nor able to call it.
+// instance posts to HQ's captain route with its own token; muster builds
+// HQ's body {service, tag, evaluation?, report?, instance} from explicit tool
+// arguments, setting instance itself. A non-release officer's instance is
+// neither offered the tool nor able to call it.
 func TestTheReleaseEvaluationToolIsTheReleaseOfficersOnly(t *testing.T) {
 	r := newOfficerRig(t)
 	rel := r.addInstance(r.a, 1, 841)    // release:alpha-web
@@ -759,7 +760,8 @@ func TestTheReleaseEvaluationToolIsTheReleaseOfficersOnly(t *testing.T) {
 	if officerToolNameSet(r.s.MCPToolDefsFor(ctx, triage))[officers.ToolReleaseEvaluation] {
 		t.Fatal("a triage officer is offered officer_release_evaluation")
 	}
-	out := r.s.dispatchAgentTool(ctx, rel, officers.ToolReleaseEvaluation, `{"evaluation":{"release_id":42,"risk":"low","summary":"two PRs, both reviewed","instance":"spoofed"}}`)
+	out := r.s.dispatchAgentTool(ctx, rel, officers.ToolReleaseEvaluation,
+		`{"service":"svc-web","tag":"20000101-abc","evaluation":{"level":"high","summary":"touches billing","monitors":[{"name":"Billing 5xx","url":"https://grafana.example.com/d/b"}]}}`)
 	if isToolErr(out) {
 		t.Fatalf("release evaluation: %s", out)
 	}
@@ -767,23 +769,58 @@ func TestTheReleaseEvaluationToolIsTheReleaseOfficersOnly(t *testing.T) {
 		t.Fatalf("captain route got %d posts, want 1", len(r.hq.Evaluations))
 	}
 	ev := r.hq.Evaluations[0]
-	if ev.Officer != offA || ev.Body["release_id"] != float64(42) || ev.Body["risk"] != "low" || ev.Body["instance"] != rel.Name {
-		t.Fatalf("captain route recorded %+v, want officer %s, the body passed through, instance %s", ev, offA, rel.Name)
+	got, _ := json.Marshal(ev.Body)
+	want := `{"evaluation":{"level":"high","monitors":[{"name":"Billing 5xx","url":"https://grafana.example.com/d/b"}],"summary":"touches billing"},` +
+		`"instance":"` + rel.Name + `","service":"svc-web","tag":"20000101-abc"}`
+	if ev.Officer != offA || string(got) != want {
+		t.Fatalf("captain route body =\n  %s\nwant\n  %s (officer %s)", got, want, ev.Officer)
 	}
 	reqs := r.hq.Requests()
 	if last := reqs[len(reqs)-1]; last.Path != "/api/v1/releases/captain" || last.Auth != "Bearer "+offATok {
 		t.Fatalf("captain post went to %s with %q", last.Path, last.Auth)
 	}
+	// A report alone is a valid body.
+	if out := r.s.dispatchAgentTool(ctx, rel, officers.ToolReleaseEvaluation, `{"service":"svc-web","tag":"t1","report":"an hour in: quiet"}`); isToolErr(out) {
+		t.Fatalf("report only: %s", out)
+	}
+	if got, _ := json.Marshal(r.hq.Evaluations[1].Body); string(got) != `{"instance":"`+rel.Name+`","report":"an hour in: quiet","service":"svc-web","tag":"t1"}` {
+		t.Fatalf("report-only body = %s", got)
+	}
+
+	// Malformed calls are refused locally, before HQ.
 	r.hq.ResetRequests()
-	out = r.s.dispatchAgentTool(ctx, triage, officers.ToolReleaseEvaluation, `{"evaluation":{"release_id":1}}`)
+	for name, args := range map[string]string{
+		"release_id at top level":       `{"service":"s","tag":"t","release_id":42,"evaluation":{"level":"low","summary":"x"}}`,
+		"unknown evaluation field":      `{"service":"s","tag":"t","evaluation":{"level":"low","summary":"x","release_id":42}}`,
+		"instance from the agent":       `{"service":"s","tag":"t","instance":"spoofed","report":"x"}`,
+		"inner-only body":               `{"level":"low","summary":"x"}`,
+		"old wrapper shape":             `{"evaluation":{"release_id":42,"risk":"low"}}`,
+		"no service":                    `{"tag":"t","report":"x"}`,
+		"no tag":                        `{"service":"s","report":"x"}`,
+		"neither evaluation nor report": `{"service":"s","tag":"t"}`,
+		"bad level":                     `{"service":"s","tag":"t","evaluation":{"level":"meh","summary":"x"}}`,
+		"empty summary":                 `{"service":"s","tag":"t","evaluation":{"level":"low","summary":""}}`,
+		"summary too long":              `{"service":"s","tag":"t","evaluation":{"level":"low","summary":"` + strings.Repeat("x", 10001) + `"}}`,
+		"report too long":               `{"service":"s","tag":"t","report":"` + strings.Repeat("x", 20001) + `"}`,
+		"monitor url not http":          `{"service":"s","tag":"t","evaluation":{"level":"low","summary":"x","monitors":[{"name":"m","url":"ftp://h/x"}]}}`,
+		"monitor url with userinfo":     `{"service":"s","tag":"t","evaluation":{"level":"low","summary":"x","monitors":[{"name":"m","url":"https://u:p@h/x"}]}}`,
+		"monitor no name":               `{"service":"s","tag":"t","evaluation":{"level":"low","summary":"x","monitors":[{"name":"","url":"https://h/x"}]}}`,
+		"report not a string":           `{"service":"s","tag":"t","report":{"text":"x"}}`,
+	} {
+		if out := r.s.dispatchAgentTool(ctx, rel, officers.ToolReleaseEvaluation, args); !isToolErr(out) {
+			t.Errorf("%s: %s, want a local refusal", name, out)
+		}
+	}
+	if n := len(r.hq.Requests()); n != 0 {
+		t.Fatalf("malformed captain calls reached HQ (%d requests)", n)
+	}
+
+	out = r.s.dispatchAgentTool(ctx, triage, officers.ToolReleaseEvaluation, `{"service":"s","tag":"t","report":"x"}`)
 	if !isToolErr(out) || !strings.Contains(out, "not one of officer "+offB+"'s tools") {
 		t.Fatalf("triage officer calling the captain tool: %s", out)
 	}
 	if len(r.hq.Requests()) != 0 {
 		t.Fatal("a refused captain post reached HQ")
-	}
-	if out := r.s.dispatchAgentTool(ctx, rel, officers.ToolReleaseEvaluation, `{"evaluation":{}}`); !strings.Contains(out, "evaluation is required") {
-		t.Fatalf("empty evaluation: %s", out)
 	}
 }
 

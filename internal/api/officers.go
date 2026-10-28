@@ -293,7 +293,7 @@ func officerToolDefs() []agents.ToolDef {
 			Parameters: objSchema(map[string]any{
 				"status": map[string]any{"type": "string", "enum": []string{officers.StatusOpen, officers.StatusClaimed, officers.StatusDone, officers.StatusEscalated}},
 				"limit":  intProp("At most this many (default HQ's).", 1, 100),
-				"cursor": strProp("The next_cursor of a previous page."),
+				"cursor": strProp("The `next` value of the previous page (HQ returns it with each page; null on the last)."),
 			})},
 		{Type: "function", Name: officers.ToolClaim,
 			Description: "Claim one item so no other instance works it. If YOU already hold it (e.g. you were restarted mid-item), this succeeds, renews your lease and says \"already yours\" — carry on with it. A conflict answer (refused, status 409) means ANOTHER instance holds it: pick another item. Heartbeat before the lease runs out.",
@@ -313,12 +313,25 @@ func officerToolDefs() []agents.ToolDef {
 			Description: "Give an item back before its lease ends, so another instance can take it.",
 			Parameters:  objSchema(map[string]any{"item_id": item}, "item_id")},
 		{Type: "function", Name: officers.ToolReleaseEvaluation,
-			Description: "Post your evaluation of a release to HQ's release captain route (POST /releases/captain), as your charter describes its fields " +
-				"(e.g. release_id, risk level, summary, monitors). HQ records that this officer and instance wrote it. Then complete the release.evaluate item " +
-				"with officer_complete. This records an evaluation; it does not approve, deploy or release anything.",
-			Parameters: map[string]any{"type": "object", "properties": map[string]any{
-				"evaluation": map[string]any{"type": "object", "description": "The captain route's request body, as your charter specifies it."},
-			}, "required": []string{"evaluation"}, "additionalProperties": false}},
+			Description: "Post to HQ's release captain route (POST /releases/captain): your risk evaluation of a release and/or your post-release report. " +
+				"service and tag come from the item's payload. Give evaluation (level low|medium|high|severe, summary, optional monitors) for a release.evaluate item, " +
+				"report (text) for a release.post_report item, or both. muster adds your instance; HQ records this officer and instance as the author. " +
+				"Then finish the item with officer_complete. This records advice; it does not approve, deploy or release anything.",
+			Parameters: objSchema(map[string]any{
+				"service": strProp("The release's service, from the item's payload."),
+				"tag":     strProp("The release's tag, from the item's payload."),
+				"evaluation": objSchema(map[string]any{
+					"level":   map[string]any{"type": "string", "enum": officers.CaptainLevels, "description": "The release's risk. severe means only an admin can approve it."},
+					"summary": strProp(fmt.Sprintf("Why that level: what changed, what could break (1-%d characters).", officers.MaxCaptainSummary)),
+					"monitors": map[string]any{"type": "array", "maxItems": officers.MaxCaptainMonitors,
+						"description": "What to watch after rollout.",
+						"items": objSchema(map[string]any{
+							"name": strProp("What it is, e.g. \"Billing 5xx\"."),
+							"url":  strProp("An absolute http(s) URL (a dashboard, a query)."),
+						}, "name", "url")},
+				}, "level", "summary"),
+				"report": strProp(fmt.Sprintf("The post-release report, as text (1-%d characters).", officers.MaxCaptainReport)),
+			}, "service", "tag")},
 	}
 }
 
@@ -364,15 +377,14 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	c := s.officerRT.hq.Client(o)
 	instance := a.Name
 	var in struct {
-		ItemID       officers.ItemID            `json:"item_id"`
-		LeaseSeconds int                        `json:"lease_seconds"`
-		Status       string                     `json:"status"`
-		Limit        int                        `json:"limit"`
-		Cursor       string                     `json:"cursor"`
-		Outcome      string                     `json:"outcome"`
-		Summary      string                     `json:"summary"`
-		Links        []string                   `json:"links"`
-		Evaluation   map[string]json.RawMessage `json:"evaluation"`
+		ItemID       officers.ItemID `json:"item_id"`
+		LeaseSeconds int             `json:"lease_seconds"`
+		Status       string          `json:"status"`
+		Limit        int             `json:"limit"`
+		Cursor       string          `json:"cursor"`
+		Outcome      string          `json:"outcome"`
+		Summary      string          `json:"summary"`
+		Links        []string        `json:"links"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
 		return toolErr("invalid arguments for %s: %v", name, err), true
@@ -430,10 +442,11 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		}
 		body, err = c.Release(ctx, in.ItemID, instance)
 	case officers.ToolReleaseEvaluation:
-		if len(in.Evaluation) == 0 {
-			return toolErr("evaluation is required: the captain route's body, as your charter specifies it"), true
+		post, perr := officers.ParseCaptainPost([]byte(orEmptyJSON(arguments)))
+		if perr != nil {
+			return toolErr("%v", perr), true
 		}
-		body, err = c.ReleaseEvaluation(ctx, instance, in.Evaluation)
+		body, err = c.ReleaseCaptain(ctx, instance, post)
 	}
 	return officerToolResult(name, body, err), true
 }

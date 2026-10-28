@@ -141,6 +141,21 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			s.write(w, http.StatusForbidden, map[string]any{"error": "only a release officer may post a captain evaluation"})
 			return
 		}
+		// HQ's body (civ-hq docs/RELEASES.md §9.3): {service, tag, evaluation?,
+		// report?, instance}; unknown fields are a 400, and so is a body with
+		// neither evaluation nor report, or one missing service/tag/instance.
+		for k := range body {
+			switch k {
+			case "service", "tag", "evaluation", "report", "instance":
+			default:
+				s.write(w, http.StatusBadRequest, map[string]any{"error": "unknown field " + k})
+				return
+			}
+		}
+		if body["service"] == nil || body["tag"] == nil || body["instance"] == nil || (body["evaluation"] == nil && body["report"] == nil) {
+			s.write(w, http.StatusBadRequest, map[string]any{"error": "service, tag, instance and one of evaluation/report are required"})
+			return
+		}
 		s.Evaluations = append(s.Evaluations, Evaluation{Officer: caller, Body: body})
 		s.write(w, http.StatusOK, map[string]any{"recorded": true, "officer": caller, "instance": body["instance"]})
 		return
