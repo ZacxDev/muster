@@ -106,6 +106,10 @@ const (
 	// router's own exit path records against reusing a drain context.
 	pushDrainTimeout = 5 * time.Second
 
+	// askSuggestDrainTimeout bounds the wait for asks' suggestion generations
+	// (and the re-push each starts) at shutdown, before the push drain.
+	askSuggestDrainTimeout = 3 * time.Second
+
 	// kickoffDrainTimeout bounds the wait for the kickoff deliverer to RECORD the
 	// turns SIGTERM cancelled (agentkickoff.Deliverer.Done). A cancelled turn returns
 	// at once and its record is one UPDATE, so this is slack, not a turn budget.
@@ -123,6 +127,12 @@ const (
 )
 
 func main() {
+	// `muster-server healthcheck` (selfcmds.go): no database, no configuration.
+	// Before the account-command catch-all below, which would otherwise read it
+	// as an unknown account command.
+	if isHealthcheck(os.Args[1:]) {
+		os.Exit(runHealthcheck(context.Background(), osGetenv, os.Stdout, os.Stderr))
+	}
 	// `muster-server mirror …` is the operator's mirror-token admin, run where
 	// the server's DATABASE_URL is (e.g. `kubectl exec` into the muster pod).
 	if len(os.Args) > 1 && os.Args[1] == "mirror" {
@@ -280,7 +290,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 
 	if cfg.Database != "" {
-		pool, err := db.Connect(ctx, cfg.Database)
+		pool, err := connectDB(ctx, cfg.Database, logger)
 		if err != nil {
 			return nil, fmt.Errorf("db connect: %w", err)
 		}
@@ -981,6 +991,22 @@ func (a *app) shutdown() {
 	case <-pluginsDone:
 	case <-time.After(kickoffDrainTimeout):
 		a.logger.Printf("plugin deliveries did not record their outcome within %s; exiting anyway", kickoffDrainTimeout)
+	}
+
+	// An ask's suggested replies, still being generated, re-push the ask when
+	// they land: give them a short bound to do so BEFORE the push drain below,
+	// so a re-push they start is waited for there. One still running past it
+	// is abandoned — the ask keeps its first notification and simply has no
+	// chips (a model call that outlives a rollout is not worth holding it).
+	sugDone := make(chan struct{})
+	go func() {
+		a.srv.WaitForAskSuggestions()
+		close(sugDone)
+	}()
+	select {
+	case <-sugDone:
+	case <-time.After(askSuggestDrainTimeout):
+		a.logger.Printf("ask suggestions did not finish within %s; exiting without them", askSuggestDrainTimeout)
 	}
 
 	done := make(chan struct{})

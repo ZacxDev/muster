@@ -54,6 +54,9 @@ type app struct {
 	flagTimeout time.Duration
 
 	client *client
+
+	// doctorSys is what `doctor` reads from this machine (doctor.go).
+	doctorSys doctorSystem
 }
 
 // emit writes a JSON document to stdout — the ONLY thing ever written to stdout.
@@ -160,6 +163,6 @@ func newRootCmd(a *app) *cobra.Command {
 	root.PersistentFlags().StringVar(&a.flagEnvFile, "env-file", defaultEnvFile, "KEY=VALUE config file")
 	root.PersistentFlags().DurationVar(&a.flagTimeout, "timeout", rootDefaultTimeout, "per-request timeout")
 
-	root.AddCommand(newTaskCmd(a), newAgentCmd(a), newChiefCmd(a), newTokenCmd(a), newWhoAmICmd(a), newFlowCmd(a), newRouteCmd(a), newPluginsCmd(a))
+	root.AddCommand(newTaskCmd(a), newAgentCmd(a), newChiefCmd(a), newTokenCmd(a), newWhoAmICmd(a), newFlowCmd(a), newRouteCmd(a), newPluginsCmd(a), newDoctorCmd(a))
 	return root
 }

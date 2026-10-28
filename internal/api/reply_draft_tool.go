@@ -132,7 +132,7 @@ func draftPushBody(m plugins.Message, pluginLabel string) string {
 	if l := mirror.OneLine(pluginLabel, plugins.MaxLabelRunes); l != "" {
 		body += " (" + l + ")"
 	}
-	return truncate(body, attentionPushBodyMax)
+	return truncate(body, draftPushBodyMax)
 }
 
 // senderDisplayName is a sender as a name: "Ada" of "Ada <ada@example.test>",
@@ -156,8 +156,13 @@ const unverifiedSender = "unverified sender"
 // surface.
 const unverifiedSenderNote = "(" + unverifiedSender + ")"
 
-// draftPushNameMax bounds the sender's name in a draft notification.
-const draftPushNameMax = 60
+// draftPushNameMax bounds the sender's name in a draft notification;
+// draftPushBodyMax the whole body (who and where only — unlike an ask's, whose
+// body is its question: attentionPushBody).
+const (
+	draftPushNameMax = 60
+	draftPushBodyMax = 120
+)
 
 // The `plugin` push's title (muster's), and its body when the message cannot
 // be read.

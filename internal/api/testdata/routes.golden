@@ -63,6 +63,7 @@ GET /api/agents
 GET /api/agents/{name}/messages
 GET /api/device/config
 GET /api/directories
+GET /api/doctor
 GET /api/flows/jobs
 GET /api/flows/jobs/{id}
 GET /api/jobs/{id}
@@ -79,6 +80,7 @@ GET /apple-touch-icon-precomposed.png
 GET /apple-touch-icon.png
 GET /attention
 GET /attention/asker
+GET /attention/asks/{id}
 GET /attention/badge
 GET /attention/drafts
 GET /attention/items
@@ -96,6 +98,7 @@ GET /login
 GET /manifest.webmanifest
 GET /metrics
 GET /mirror/connect
+GET /mirror/host
 GET /mirror/terminal
 GET /mirror/terminal/send
 GET /mirror/terminal/ws
@@ -184,6 +187,9 @@ POST /agents/{id}/stop
 POST /agents/{name}/send
 POST /api/agents/{name}/messages
 POST /api/chief/replace
+POST /api/device/actions/attention/asks/{id}/answer
+POST /api/device/actions/attention/asks/{id}/cancel
+POST /api/device/challenge
 POST /api/device/pair
 POST /api/flows/jobs
 POST /api/flows/jobs/{id}/cancel

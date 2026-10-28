@@ -297,10 +297,11 @@ var bannerLedger = []string{
 	envMemoURL,
 	envMemoToken,
 	envMemoScopeMap,
-	// Dictation: the `dictation:` line names both in both directions (ON / OFF).
-	// Its off-state — no microphone on any message box — errors nowhere.
+	// Dictation: the `dictation:` line names all three in both directions (ON /
+	// OFF). Its off-state — no microphone on any message box — errors nowhere.
 	envSTTURL,
 	envSTTToken,
+	envSTTModel,
 	// File attachments: the `file attachments:` line names all eight in both
 	// directions (ON / OFF). Its off-state — no paperclip, every upload route
 	// 404 — errors nowhere, and a MISCONFIGURED set is off, not a refusal.
@@ -731,6 +732,7 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// Dictation: the banner branches on ext.Transcriber (below).
 		STTURL:   "http://stt.example.invalid:8000",
 		STTToken: "stt-credential-fixture",
+		STTModel: "fixture-org/fixture-model",
 		// File attachments: the banner branches on ext.Uploads (below), built by
 		// the real buildUploads over these values and the pool.
 		PublicURL:        "https://muster.example.test",

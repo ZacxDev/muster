@@ -305,9 +305,9 @@ test('an attention notification is shown with its tag and link, and its resolved
   const deliver = (data: string) => cdp.send('ServiceWorker.deliverPushMessage', { origin, registrationId, data });
 
   await deliver(
-    '{"type":"attention","id":"ask-41","title":"An agent needs your input","body":"worker-7: Deploy the importer now?","tag":"attention-ask-41","data":{"url":"/attention/open/ask-41"}}',
+    '{"type":"attention","id":"ask-41","title":"worker-7 is asking","body":"Deploy the importer now? More detail below.","tag":"attention-ask-41","data":{"url":"/attention/open/ask-41"}}',
   );
-  const note = { title: 'An agent needs your input', body: 'worker-7: Deploy the importer now?', tag: 'attention-ask-41', url: '/attention/open/ask-41' };
+  const note = { title: 'worker-7 is asking', body: 'Deploy the importer now? More detail below.', tag: 'attention-ask-41', url: '/attention/open/ask-41' };
   await expect.poll(shown).toEqual([{ ...note, open: true }]);
   await deliver('{"type":"resolved","id":"ask-41","tag":"attention-ask-41"}');
   await expect.poll(shown).toEqual([{ ...note, open: false }]);
@@ -396,7 +396,7 @@ async function tapHarness(page: Page, context: BrowserContext, worker: Worker) {
     deliverAndTap: async (key: string, payload?: string) => {
       await deliver(
         payload ??
-          JSON.stringify({ type: 'attention', id: key, title: 'An agent needs your input', body: 'muster is asking', tag: 'attention-' + key, data: { url: '/attention/open/' + key } }),
+          JSON.stringify({ type: 'attention', id: key, title: 'muster is asking', body: 'A plugin message needs you.', tag: 'attention-' + key, data: { url: '/attention/open/' + key } }),
       );
       await expect
         .poll(() => worker.evaluate((t) => (self as unknown as { __notes: { tag: string }[] }).__notes.some((n) => n.tag === t), 'attention-' + key))
@@ -469,7 +469,7 @@ test('tapping an attention notification follows its tap route in the open tab', 
   // A question muster raised itself (no session): its item on the queue.
   await tap.deliverAndTap(
     'ask-71',
-    '{"type":"attention","id":"ask-71","title":"An agent needs your input","body":"muster is asking","tag":"attention-ask-71","data":{"url":"/attention/open/ask-71"}}',
+    '{"type":"attention","id":"ask-71","title":"muster is asking","body":"A plugin message needs you.\\nOptions: No action needed","tag":"attention-ask-71","data":{"url":"/attention/open/ask-71"}}',
   );
   await page.waitForURL(origin + '/attention#ask-71');
   expect(tap.opened).toContain('/attention/open/ask-71');

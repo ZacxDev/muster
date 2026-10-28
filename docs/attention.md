@@ -88,30 +88,56 @@ the field.
 **Notifications** (event `attention` on Account → Notifications, on by default):
 one per new question or newly waiting session, withdrawn when the item is
 answered (on `/attention` or in the session), dismissed, expires or stops
-waiting. **A notification says WHO and WHERE, never WHAT** — a lock screen shows
-it to anyone holding the phone: `<asker> is asking` for a question, `Waiting:
-<tool name> · <window> @ <host>` for a session (no command, path or URL). The
-question, the command and the message are on the page. Each item has one tag, so a
-notification is replaced, never stacked. **A tap opens the item's session**
-when it has one, on the browser and the paired phone alike, decided when you
-tap, not when it was sent (the notification opens `/attention/open/<key>`,
-which resolves it then — a window that closed, an agent that was destroyed or
-an ask answered meanwhile opens its item on `/attention` instead of a dead
-page): a waiting window or
-a held question opens that window's rendered view; a dispatched agent's question
-opens the agent's page (`/agents/<name>`); a mirrored Claude session's question
-opens the window running that session, found when the notification is sent.
-Everything else opens its item on `/attention`: a question muster raised itself,
-a Hermes window that names no conversation, an asking agent that cannot be read,
-and an asking session no listed window runs at that moment
-(`internal/api/attention_push_target.go`, the one rule). **The session's page
-shows the asker's open questions with the same answer form as `/attention`**
-(its option buttons — a chief's task actions included — free text, Dismiss): an
-agent's page lists that agent's open asks, a window's rendered view the asks of
-the Claude sessions it runs, never another asker's. Answering there sends you
-back to that page; the list follows the queue live (an ask answered anywhere
-leaves it, a new one arrives, never replacing an answer you are typing)
-(`internal/api/attention_asker.go`). A session is not re-notified:
+waiting. **A question's notification carries the question itself, on the lock
+screen too** (operator decision "Full text always", which replaced the earlier
+"Summary only — WHO and WHERE, never WHAT" for asks and held questions), so it
+can be acted on without opening it. **A waiting session's stays summary only**
+(operator decision): who and where, and the name of the tool — never the
+command, path or URL, never what Claude said.
+
+| item | title | body |
+|---|---|---|
+| a question (an agent's, the chief's, muster's own) | `<asker> is asking` | the question, on one line, then `Options: a · b · c` when it offered any — except muster's own ask about a [plugin message nobody acted on](plugins.md#a-message-the-chief-does-not-act-on), whose long fixed sentence would fill the body: its body is `From: <sender> · Subject: <subject>`, then the option (the page shows the whole question) |
+| a held question (a session's `AskUserQuestion`) | `<window> @ <host> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices (in the push only: `attention_list` carries no `options` for it, as it is answered on its question card, not with `attention_answer`) |
+| a waiting session | `A session is waiting on you` | `Waiting: <tool name> · <window> @ <host>`, or `Waiting: <window> @ <host>` when its host names no tool |
+
+Each line is folded to one line, anything shaped like a secret is redacted, and
+the body is cut to 200 characters on a character boundary with a visible `…`
+(the options line keeps its room, at most 100; the question is cut first). 200
+is the Android app's own cut, so the browser and a paired phone are sent the
+same lines and the phone cuts nothing more. What the phone shows of them: the Android app as of muster-android `43d9b90` reads only `title`, `body` and `url`: it cuts the body at 200 characters (`PayloadV2.MAX_BODY`), sets it as the notification's one-line content text (so a collapsed notification shows the question's first line and the system's ellipsis; the options line is the second line), ignores `ask`, `actions` and `update`, and posts with `setOnlyAlertOnce(false)` — so the suggestions' re-push ALERTS AGAIN on it (operator-accepted until the app reads `update`). A reply draft's notification is unchanged (who and where only, below).
+Each item has one tag, so a notification is replaced, never stacked.
+
+**A tap opens the question's own page** (`/attention/asks/<id>`, below) while
+it is open; any other item opens its session when it has one, on the browser
+and the paired phone alike, decided when you tap, not when it was sent (the
+notification opens `/attention/open/<key>`, which resolves it then — a window
+that closed or an ask answered meanwhile opens its item on `/attention` instead
+of a dead page): a waiting window or a held question opens that window's
+rendered view. Everything else opens its item on `/attention`: a question that
+is no longer open, a Hermes window that names no conversation
+(`internal/api/attention_push_target.go`, the one rule).
+
+**The question's page, `/attention/asks/<id>`,** is a phone app screen, inside
+the Android app's WebView as in a browser: a top bar with a back arrow to Asks
+and who is asking; the question, large; the asker's options as full-width
+buttons that answer at once; the [suggested replies](#suggested-replies-to-an-ask)
+as chips that put their text in the answer box (nothing is sent until
+**Answer**, as on the rendered view); a link to the asking session or agent,
+and to the task, for context; **Dismiss without answering**; and the answer box
+pinned to the bottom, above the keyboard and inside the safe-area insets. It
+posts to the same answer and dismiss routes as `/attention` and comes back to
+itself, showing the answer and where it went. It follows the queue live: chips
+that arrive after it opened appear, and a question answered elsewhere shows as
+answered (`internal/api/attention_ask_page.go`).
+
+**The session's page also shows the asker's open questions with the same answer
+form as `/attention`** (its option buttons — a chief's task actions included —
+free text, Dismiss): an agent's page lists that agent's open asks, a window's
+rendered view the asks of the Claude sessions it runs, never another asker's.
+Answering there sends you back to that page; the list follows the queue live (an
+ask answered anywhere leaves it, a new one arrives, never replacing an answer
+you are typing) (`internal/api/attention_asker.go`). A session is not re-notified:
 
 - when muster restarts or a host reconnects: the first time this process sees
   a host — and again each time it comes back after disconnecting — its
@@ -127,6 +153,44 @@ which is withdrawn when you
 decide the draft, when a newer draft for the same message supersedes it, and
 when it expires (checked every 30 seconds, including drafts notified before a
 restart).
+
+### Suggested replies to an ask
+
+A question gets up to three **suggested replies**, made by the same engine and
+model as the rendered view's chips ([suggested-replies.md](suggested-replies.md))
+from the question and its options, grounded in them by the same filter:
+
+- **The first notification never waits for them.** The question is pushed the
+  moment it is filed; the suggestions are generated in the background and,
+  when there are any, the notification is **pushed again under the same tag**
+  carrying them, marked `update` in payload v2 so an app can replace it without
+  alerting again. ⚠ The Android app as shipped (muster-android `43d9b90`)
+  ignores `update` and alerts again on the re-push — accepted by the operator
+  until the app reads it. A browser replaces it silently (same tag, no
+  `renotify`) and shows no chips; its lines are the same.
+- **The same switches.** `MUSTER_SUGGEST=off`, your own toggle on Account (and
+  its auto-pause), and no OpenRouter key for you each mean no call and no chips,
+  and the page stops showing stored chips while they are off. The engine's rate
+  caps apply; one call per question.
+- **Stored with the question** (`attention_asks.suggestions`, migration 0057),
+  at most three, each one line and at most 140 characters, none repeating an
+  option — the one place suggestion text is stored, because the re-push and the
+  page (on any replica) need it. Written once, and **only while the question is
+  open**: a question answered, dismissed or expired before its suggestions
+  arrive is never given them and never pushed again; a re-push that loses the
+  race with an answer is withdrawn again as soon as it is delivered.
+- On the page a chip fills the answer box; nothing is sent until **Answer**.
+  Payload v2's `ask` carries options and suggestions for an app to draw as
+  chips (the shipped app does not yet), leaving out any a secret scan would
+  redact (a chip is sent whole or not at all), and dropping the suggestions
+  first, then the options, when a push would not fit in its 4096-byte record —
+  never the question. The page itself, behind the sign-in like `/attention`,
+  draws the asker's options as written.
+- **On a paired phone a chip answers** (once the app draws them). Each option
+  and suggestion is also a notification button (payload v2's `actions`):
+  tapped, it is confirmed with the phone's step-up key, whose prompt shows the
+  exact text, and sent as the ask's answer by a signed action — the same answer
+  as this page's ([design/android.md](design/android.md#the-signed-ask-actions-as-built)).
 
 ## The agent tools
 

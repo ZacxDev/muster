@@ -190,9 +190,11 @@ func TestAnAskRaisedOverMCPIsAnsweredFromTheViewAndTheWaitReturnsIt(t *testing.T
 	if got := f.pushes(); len(got) != 1 || got[0] != "attention attention-"+key {
 		t.Fatalf("pushes after the ask: %v", got)
 	}
-	// Who is asking, never what (the question is on the page, behind the sign-in);
-	// a tap opens the tap route, which resolves it then (attention_push_target.go).
-	if p := f.pusher.to(ep("attn-operator"))[0]; p.Data["url"] != "/attention/open/"+key || p.Body != f.op.Name+" is asking" {
+	// Who is asking (the title) and what — the question and its options, in
+	// full (operator decision "Full text always"); a tap opens the tap route,
+	// which resolves it then (attention_push_target.go).
+	if p := f.pusher.to(ep("attn-operator"))[0]; p.Data["url"] != "/attention/open/"+key || p.Title != f.op.Name+" is asking" ||
+		p.Body != "Ship the migration tonight?\nOptions: ship it · wait for Monday" {
 		t.Fatalf("payload %+v", p)
 	}
 	body := f.page(t, "/attention")

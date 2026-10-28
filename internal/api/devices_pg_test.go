@@ -76,7 +76,7 @@ type deviceRig struct {
 	uid    int64
 }
 
-func newDeviceRig(t *testing.T) *deviceRig {
+func newDeviceRig(t *testing.T, more ...func(*Extensions, *pgxpool.Pool)) *deviceRig {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	t.Cleanup(cancel)
@@ -115,8 +115,12 @@ func newDeviceRig(t *testing.T) *deviceRig {
 		t.Fatal(err)
 	}
 	store := push.NewPG(pool).WithAllowlist(push.NewAllowlist([]string{devNtfyHost}))
-	r.s.UseExtensions(Extensions{Users: us, Devices: devices.NewPG(pool),
-		Push: push.NewService(store, r.pusher, push.VAPIDConfig{PublicKey: vapidPub}, log.New(io.Discard, "", 0))})
+	ext := Extensions{Users: us, Devices: devices.NewPG(pool),
+		Push: push.NewService(store, r.pusher, push.VAPIDConfig{PublicKey: vapidPub}, log.New(io.Discard, "", 0))}
+	for _, m := range more {
+		m(&ext, pool)
+	}
+	r.s.UseExtensions(ext)
 	r.s.UseGoTrue(GoTrueAuth{Client: fake.Client(), Verifier: fake.Verifier(), Users: us})
 	h := r.s.Handler()
 	r.edge, r.mach = BrowserListener(h), h

@@ -392,8 +392,7 @@ func (s *Server) askOwnerAboutTask(ctx context.Context, asker attention.Asker, n
 	if err != nil {
 		return attention.Ask{}, err
 	}
-	s.attentionNotify(ask.Owner, askItem(ask))
-	s.attentionChanged(ask.Owner, attentionAskKey(ask.ID))
+	s.askFiled(ask)
 	return ask, nil
 }
 

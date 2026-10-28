@@ -268,6 +268,15 @@ export const reconnectPort = port + 230;
 // The tool rows' context badges on the mirrored view (tool-context.spec.ts):
 // its own server (the e2eterm binary, mirror plugin on) and one mirrored host.
 export const toolContextPort = port + 235;
+// tests/ask-page.spec.ts: the ask page a notification opens — its own server
+// (the e2eterm binary, its suggestion model pointed at a FAKE this spec runs),
+// the agent connect door its asker uses, and that fake.
+export const askPagePort = port + 243;
+export const askPageConnectPort = port + 244;
+export const askPageFakePort = port + 245;
+// The first-run empty state on a fresh database (onboarding.spec.ts): its own
+// server (versionA) on a database e2e/emptydb creates.
+export const onboardingPort = port + 240;
 export const baseURL = `http://localhost:${port}`;
 export const versionA = 'e2e-a';
 export const versionB = 'e2e-b';

@@ -192,22 +192,104 @@ collapsed row showing the tool, its target, and whether it succeeded, failed or
 is still running. It updates live while a turn runs. Thinking is never shown.
 
 Each tool row also shows how much conversation context the call and its result
-added, such as `+3.3k ctx`. The number is measured from the transcript's own
-token usage: the context of the turn after the call, minus the context of the
-turn that made it. That difference also includes any text the calling turn
-wrote. When one turn made several calls, the measured total is split between
-them by the size of each call and result. Each share is marked `~`, and the
-row's tooltip gives the total. When nothing can be measured, the number is an
-estimate from the size of the call and result, also marked `~`. That happens
-when the runtime records no usage (Hermes), when something else entered the
-context before the next turn, or when the context shrank. Something else means
-a prompt, a notice, or context Claude Code injected, such as a message typed
-while the tool ran or a diagnostics report. The tooltip says which case it was.
-An estimate counts only the call and result, so it tends to read lower than a
-measured number. An image is sized by its pixels: about width × height / 750
-tokens, at most about 1600. A call whose next turn has not started yet shows no
-number. opencode rows show none either: muster reads neither their usage nor
-their output.
+added, such as `+3.3k ctx`. So do a subagent's card and a question card. The
+number is measured from the transcript's own token usage: the context of the
+turn after the call, minus the context of the turn that made it. That
+difference also includes any text the calling turn wrote, and the few small
+attachments Claude Code adds before most requests that are judged negligible
+(see below). When one turn made several calls, the measured total is split
+between them by the size of each call and result. Each share is marked `~`, and
+the row's tooltip gives the total. When nothing can be measured, the number is
+an estimate, also marked `~`. That happens when the runtime records no usage
+(Hermes), when something else entered the context before the next turn, or when
+the context shrank. Something else means a prompt, a notice, or context Claude
+Code injected that is not negligible, such as a message typed while the tool
+ran or a diagnostics report. The tooltip says which case it was. An image is
+sized by its pixels: about width × height / 750 tokens, at most about 1600. A
+call whose next turn has not started yet shows no number. opencode rows show
+none either: muster reads neither their usage nor their output.
+
+A **background** subagent's card counts only its launch: the call's result is
+the acknowledgement that it started. Its report reaches the conversation later,
+as a task notification (a harness notice the view draws as its own row), which
+is not attributed to the card. The context the report adds shows in the
+header's total, not on the card.
+
+A call still running when the page's connection drops is still numbered when
+its next turn arrives: each batch the server sends leaves a checkpoint of the
+attribution, and a connection that resumes from exactly that place picks it up.
+After a server restart, or a resume from anywhere else, such a call shows no
+number.
+
+### How the estimate is calibrated
+
+An estimate is the calling turn's own `output_tokens` (its share of them, by the
+size of each call's input, when it made several calls) plus the result's size at
+**2.2 bytes per token**. With no `output_tokens` known (Hermes, an older host),
+it is the call and result size at that rate. That rate was fitted on Claude
+Code transcripts only, so for another runtime or model the figure is not
+validated, in either direction.
+
+The rate and the negligible attachments are fitted, not assumed.
+`go run ./cmd/muster-toolctx-calibrate` reads a directory of transcripts and
+prints aggregates only (counts, medians, percentiles), never a path, id or any
+text. Its samples are single-call gaps: one call, its result and the next turn,
+with no prompt, notice or error between.
+
+**Which attachments are negligible.** A gap's *excess* is its growth − the
+turn's output − the result's tokens: what entered the context that is neither.
+The baseline is the median excess of gaps with no attachment. A type is
+negligible when at least 30 gaps hold it and otherwise only negligible types,
+their median excess is within 50 tokens of the baseline, and their p75 within
+100. The set is grown from the most frequent type down until nothing more joins.
+The command prints the table and says whether the set matches the code's.
+`TestTheNegligibleSetIsTheCalibratedOne` pins it. On a local set of 697
+transcripts (baseline −1, n = 1,493):
+
+| attachment type | gaps holding it | gaps judged | median excess | p75 | decision |
+|---|---|---|---|---|---|
+| `total_tokens_reminder` | 119,330 | 96,292 | 27 | 43 | negligible |
+| `hook_permission_decision` | 70,087 | 56,944 | 29 | 46 | negligible |
+| `task_reminder` | 8,674 | 7,913 | 152 | 166 | spoils the gap |
+| `diagnostics` | 4,158 | 3,385 | 401 | 839 | spoils the gap |
+| `silent_turn_reminder` | 3,055 | 2,830 | 57 | 76 | spoils the gap |
+| `queued_command` | 2,151 | 1,667 | 450 | 1,675 | spoils the gap |
+| `hook_success` | 1,717 | 17 | −4 | 4 | spoils the gap (too few to judge) |
+| `hook_additional_context` | 1,693 | 0 | – | – | spoils the gap (too few to judge) |
+| `command_permissions` | 1,533 | 1,169 | 8,364 | 17,108 | spoils the gap |
+| `deferred_tools_record` | 1,508 | 1,319 | 36 | 438 | spoils the gap |
+| `skill_listing` | 1,398 | 982 | 284 | 1,114 | spoils the gap |
+| `edited_text_file` | 1,151 | 890 | 1,449 | 3,632 | spoils the gap |
+| `prompt_snapshot` | 456 | 176 | 30 | 80 | negligible |
+| `deferred_tools_delta` | 351 | 60 | 221 | 247 | spoils the gap |
+| `mcp_instructions_delta` | 252 | 0 | – | – | spoils the gap (too few to judge) |
+| `credential_org` | 177 | 120 | 20 | 40 | negligible |
+| `environment` | 166 | 152 | 108 | 150 | spoils the gap |
+| `read_truncation_notice` | 74 | 49 | −1,164 | −771 | spoils the gap |
+
+Rarer types (fewer than 30 gaps) all spoil the gap, as does any type the table
+does not name. Under this set, 100,487 of the 124,442 single-call gaps are
+measured.
+
+**The rate.** The measured growth minus the turn's `output_tokens` was never
+negative, so the turn's output re-enters the context in full and the rest is the
+result's. Transcripts are split in half by a hash of their path: the rate is
+fitted on one half and the error reported on the other. The median of result
+bytes / (growth − output), over results of 400 bytes or more, was 2.16 (p25
+1.94, p75 2.40; n = 27,366), used as 2.2. On the held-out half (47,797 gaps),
+|estimate − measured| / measured was:
+
+| estimate | median | p90 | measured / estimate, median |
+|---|---|---|---|
+| before: (call + result bytes) / 4 | 0.61 | 0.78 | 2.55 |
+| after: output + result bytes / 2.2 | 0.05 | 0.12 | 1.03 |
+| after, with the output withheld: (call + result bytes) / 2.2 | 0.29 | 0.60 | 1.40 |
+
+The last row is Claude Code's own gaps with the output withheld. It is not a
+measurement of Hermes or any other runtime.
+
+`TestTheEstimateIsTheCalibratedSplit` pins the rate. Changing the rate or the
+set is a decision made with that tool's numbers, not a drift.
 Every window has its own view: two Claude Code windows in the same directory each
 show their own conversation.
 

@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: build vet run image test test-db test-db-down test-liveclaude test-livehermes leakscan css css-check check help verb-ledger icons e2e screenshots
+.PHONY: release-dry-run release-logic-test compose-check compose-up-test build vet run image test test-db test-db-down test-liveclaude test-livehermes leakscan css css-check check help verb-ledger icons e2e screenshots
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -86,8 +86,9 @@ TAILWIND ?= npx --yes tailwindcss@3
 # the one document this app emits from outside internal/ui — so it is the
 # positive control for that entry. Without it, deleting `./internal/api/login.go`
 # from tailwind.config.js would ship a login page with an unwrapped heading
-# and every check here would stay green.
-CSS_REQUIRED_CLASSES := text-accent bg-danger bg-st-review-bg text-st-warning-fg text-balance
+# and every check here would stay green. `gap-x-4` is the same for the ask
+# page's entry, internal/api/attention_ask_page.go, the only file writing it.
+CSS_REQUIRED_CLASSES := text-accent bg-danger bg-st-review-bg text-st-warning-fg text-balance gap-x-4
 
 help:
 	@echo "muster:"
@@ -106,6 +107,10 @@ help:
 	@echo "  make e2e          the Playwright suite (needs MUSTER_E2E_DATABASE_URL=…/<name>_e2e)"
 	@echo "  make screenshots  regenerate docs/img/*.png from fixture data (same database, plus Docker)"
 	@echo "  make test-db-down stop and remove the throwaway Postgres"
+	@echo "  make release-dry-run  build every GitHub Release asset into dist/ (RELEASE_VERSION=0.0.0)"
+	@echo "  make release-logic-test  the tag-run logic: release publish (fake gh), stt-cohere build-or-retag"
+	@echo "  make compose-check    deploy/docker-compose.yml is valid, every profile, every healthcheck"
+	@echo "  make compose-up-test  bring the compose stack up from a local image (IMAGE, VERSION) and probe it"
 	@echo "  make test-liveclaude  answer a REAL Claude Code's AskUserQuestion pickers (run on every Claude Code upgrade)"
 	@echo "  make test-livehermes  drive the PINNED Hermes CLI: screen check, Escape, timings, gated send (every pin bump; before -hermes-send)"
 
@@ -347,5 +352,32 @@ screenshots:
 	@for f in docs/img/*.png; do s=$$(wc -c < "$$f"); echo "$$f: $$s bytes"; \
 	  test "$$s" -le 204800 || { echo "screenshots: $$f is over 200 KB"; exit 1; }; done
 
-check: vet test leakscan css-check verb-ledger
+# INSTALL.md's shell blocks, run against faked docker/curl/tailscale/ssh in a
+# temp HOME (tests/install_guide_test.py): nothing on this machine is touched.
+install-guide-test:
+	python3 tests/install_guide_test.py
+
+check: vet test leakscan css-check verb-ledger install-guide-test
+
+# The release pipeline, without a tag: the exact asset set the `release` job in
+# .github/workflows/ci.yml publishes, built and self-verified into dist/
+# (scripts/release-build.sh). CI's `release-dry-run` job runs it on every PR.
+RELEASE_VERSION ?= 0.0.0
+release-dry-run:
+	scripts/release-build.sh $(RELEASE_VERSION)
+
+# The tag-only jobs' decision logic, with no tag and no GitHub writes.
+release-logic-test:
+	tests/release-publish-test.sh
+	tests/stt-cohere-source-test.sh
+
+# deploy/docker-compose.yml: `docker compose config` for every profile, plus the
+# shape the install guide relies on. Pulls nothing, starts nothing.
+compose-check:
+	tests/compose-check.sh
+
+# The compose stack brought up for real from a LOCAL image, probed, torn down:
+#   make image IMAGE=muster-local VERSION=1.2.3 && make compose-up-test IMAGE=muster-local VERSION=1.2.3
+compose-up-test:
+	tests/compose-up.sh $(IMAGE) $(VERSION)
 

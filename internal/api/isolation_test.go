@@ -179,8 +179,11 @@ var isolationClasses = map[string]routeClass{
 	"POST /account/passkeys/verify":      classList,
 	"POST /account/passkeys/{id}/delete": classParam,
 	"GET /api/whoami":                    classAdmin,
-	"GET /api/tokens":                    classAPIToken,
-	"DELETE /api/tokens/{id}":            classAPIToken,
+	// `muster doctor` (doctor.go): the hook tier, armed; it reports the
+	// caller's own mirror hosts and server-wide booleans.
+	"GET /api/doctor":         classAdmin,
+	"GET /api/tokens":         classAPIToken,
+	"DELETE /api/tokens/{id}": classAPIToken,
 	// muster-native Web Push (migration 0013). The key and the subscribe /
 	// unsubscribe writes act on the CALLER's own devices (list); the account
 	// page's remove names a device by id (param, A's is the object). A's device
@@ -196,12 +199,18 @@ var isolationClasses = map[string]routeClass{
 	"GET /api/device/config":            classDevice,
 	"PUT /api/device/push":              classDevice,
 	"DELETE /api/device/push":           classDevice,
-	"GET /api/push/vapid-public-key":    classList,
-	"POST /api/push/subscribe":          classList,
-	"POST /api/push/unsubscribe":        classList,
-	"POST /account/push/test":           classList,
-	"POST /account/push/{id}/remove":    classParam,
-	"POST /account/push/preferences":    classList,
+	// The signed ask actions (device_actions.go): {id} names an ask, answered
+	// under the device owner's principal (row-level security), and nothing
+	// is done without a challenge THIS device asked for and signed.
+	"POST /api/device/challenge":                          classDevice,
+	"POST /api/device/actions/attention/asks/{id}/answer": classDevice,
+	"POST /api/device/actions/attention/asks/{id}/cancel": classDevice,
+	"GET /api/push/vapid-public-key":                      classList,
+	"POST /api/push/subscribe":                            classList,
+	"POST /api/push/unsubscribe":                          classList,
+	"POST /account/push/test":                             classList,
+	"POST /account/push/{id}/remove":                      classParam,
+	"POST /account/push/preferences":                      classList,
 	// accounts PR 5: invite redemption and the password reset (tokens in form
 	// fields, like the claim), and the admin pages.
 	"GET /invite":      classPublic,
@@ -345,6 +354,7 @@ var isolationClasses = map[string]routeClass{
 	// The AskUserQuestion hook's door: like the tunnel, a mirror token only.
 	"POST /mirror/ask":        classPublic,
 	"POST /mirror/mcp":        classMirrorHost,
+	"GET /mirror/host":        classMirrorHost,
 	"GET /mirror/terminal":    classMirror,
 	"GET /mirror/terminal/ws": classMirror,
 
@@ -463,8 +473,11 @@ var isolationClasses = map[string]routeClass{
 	"GET /attention/drafts": classList,
 	// A session page's asks block names its asker by query (?agent=): A's
 	// agent's asks, never B's view of them. The tap route names an item by key.
-	"GET /attention/asker":             classParam,
-	"GET /attention/open/{key}":        classParam,
+	"GET /attention/asker":      classParam,
+	"GET /attention/open/{key}": classParam,
+	// An ask's own page names A's ask by id (row-level security, and an
+	// explicit owner check).
+	"GET /attention/asks/{id}":         classParam,
 	"GET /attention/badge":             classList,
 	"POST /attention/asks/{id}/answer": classParam,
 	"POST /attention/asks/{id}/cancel": classParam,
@@ -516,10 +529,10 @@ var wantCanaryForA = []string{
 	"GET /account", "GET /account/devices/live",
 	// Plugins: A's second plugin is canary-labelled, so A's page shows it.
 	"GET /plugins",
-	// The attention asks: A's agent's asks block shows A's canary-carrying
-	// question, and the tap on A's ask opens A's agent's page (its name, an
-	// identity of A's, in the redirect).
-	"GET /attention/asker", "GET /attention/open/{key}",
+	// The attention asks: A's agent's asks block and A's ask's own page show
+	// A's canary-carrying question. (The tap on A's ask opens that page, by
+	// its id — controlMarkers has its own control.)
+	"GET /attention/asker", "GET /attention/asks/{id}",
 }
 
 func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
@@ -1524,6 +1537,13 @@ func sortedRoutes() []string {
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
 	"POST /agents/{id}/start": "the provisioner acted for A (isoProvisioner records it), never for B",
+	// 🔴 A SIGNATURE NO WALKER HOLDS, AS GET /f/{id}: a signed ask action needs a
+	// challenge its own device asked for, signed by that device's step-up key,
+	// so A's device's bare request is refused like the ghost's. Its control is
+	// device_actions_pg_test.go: the SAME route, A's device signing, answers A's
+	// ask; B's device signing for A's ask is not_found and A's ask stays open.
+	"POST /api/device/actions/attention/asks/{id}/answer": "a signed action: controlled in device_actions_pg_test.go",
+	"POST /api/device/actions/attention/asks/{id}/cancel": "a signed action: controlled in device_actions_pg_test.go",
 	// 🔴 A BEARER CAPABILITY, NOT A SIDE EFFECT: the signed link's credential is
 	// the HMAC in its query, which no walker holds — the walk sends the bare
 	// path, so A's own answer is the ghost's 404, as it must be. Its control is
@@ -1556,6 +1576,9 @@ var sideEffectControlled = map[string]string{
 var controlMarkers = map[string]string{
 	"GET /agent/connectors/{name}":          `"exists":true`,
 	"POST /agent/connectors/{name}/request": `"exists":true`,
+	// The tap on A's OPEN ask redirects to that ask's own page; a ghost's (and
+	// another owner's) to its place on the queue.
+	"GET /attention/open/{key}": `href="/attention/asks/`,
 }
 
 // echoOnly: routes that render the same thing for ANY name — their own and a

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -187,8 +188,8 @@ func (s *Server) handleAttentionAsker(w http.ResponseWriter, r *http.Request) {
 }
 
 // attentionReturn is where an answer or a dismissal given on a session page
-// sends the browser back to: the form's `return`, when it is one of the two
-// pages that draw the form (an agent's page, a window's rendered view) on this
+// sends the browser back to: the form's `return`, when it is one of the three
+// pages that draw the form (an agent's page, a window's rendered view, an ask's page) on this
 // origin (safeReturnTo — never an open redirect); otherwise the queue.
 func attentionReturn(r *http.Request) string {
 	if v, ok := attentionReturnPage(r); ok {
@@ -204,8 +205,12 @@ func attentionReturnPage(r *http.Request) (string, bool) {
 	if v == "" || safeReturnTo(v) != v {
 		return "", false
 	}
-	return v, strings.HasPrefix(v, "/agents/") || strings.HasPrefix(v, "/mirror/view?")
+	return v, strings.HasPrefix(v, "/agents/") || strings.HasPrefix(v, "/mirror/view?") || askPageReturn.MatchString(v)
 }
+
+// askPageReturn is an ask page's own address (attention_ask_page.go), the
+// third page that draws the answer form.
+var askPageReturn = regexp.MustCompile(`^` + askPagePrefix + `[1-9][0-9]{0,18}$`)
 
 // attentionFormFailed answers a refused answer or dismissal: given on a
 // session page, that page again with a notice saying why (it may be a framed

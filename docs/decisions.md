@@ -169,6 +169,30 @@ affected. A disable and a password reset delete the phones too.
   push registration, still counting toward the 20-phone limit, and still listed
   as live on Account → Devices.
 
+## A phone answers an ask with a signed action, and a suggestion may be sent from it
+
+A notification on a paired phone can answer an ask: tap an option or a
+suggested reply, or type an inline answer, then confirm with the phone's
+step-up key (a fresh biometric, or the PIN where the operator allows PIN keys).
+The web service worker still offers no buttons.
+
+- **Why signed.** The operator's rule for the phone is one rule: every action
+  that changes server state is signed by the step-up key, refusals included
+  ([design/android.md](design/android.md#which-actions-are-gated)). A stolen
+  device credential alone can read nothing more and do nothing at all.
+- **Why a challenge.** It is single use, lives two minutes, is bound to the
+  action, the ask and the sha256 of the exact answer, and is spent before the
+  signature is judged — so a replay, a retry after a refusal, or a signature
+  carried to another answer or another ask is refused.
+- **A suggestion is sent from here, and only here.** On the web a suggested
+  reply only fills the composer ([suggested-replies.md](suggested-replies.md)).
+  On the phone, tapping one on an ask's notification sends it — after the
+  step-up confirmation, whose prompt shows the exact text (operator decision).
+  The confirmation is the send button.
+- **One core.** A signed answer is the Attention page's own answer
+  (`answerAskFrom`), under the device owner's principal; the only difference
+  is the `device.action` audit row, written after the action with its outcome.
+
 ## The message box must not fail silently, or deliver twice
 
 On a phone behind an auth proxy, a script's `fetch` can get a sign-in redirect
