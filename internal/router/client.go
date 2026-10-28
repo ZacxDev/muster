@@ -49,12 +49,12 @@ import (
 // protocol is a fact about somebody else's software, not a naming choice.
 //
 // ⚠ IT IS SPELLED EXACTLY ONCE, HERE. A second literal is how the two drift.
-const ActorHeader = "X-Clawgate-Actor"
+const ActorHeader = "X-Clawgate-Actor" // leakscan:wire-protocol
 
 // TokenHeader is the alternative to `Authorization: Bearer <token>` the
 // receiving doors accept. Both are sent; the server compares whichever it
 // reads first, constant-time.
-const TokenHeader = "X-Clawgate-Token"
+const TokenHeader = "X-Clawgate-Token" // leakscan:wire-protocol
 
 // DefaultTimeout bounds a single call. It is NOT the checkpoint wait — that is
 // a poll loop in the caller, and each poll is one request bounded by this.

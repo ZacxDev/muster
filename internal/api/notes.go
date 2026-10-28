@@ -47,7 +47,7 @@ var taskSourceAllowlist = map[string]bool{
 //   - sessionID: the trimmed session-id header ("" when absent).
 //
 // 🔴 BOTH HEADERS ARE READ UNDER TWO SPELLINGS — the current X-Muster-* and the
-// pre-extraction X-Clawgate-* that installed clients still send — via the single
+// pre-extraction legacy spelling that installed clients still send — via the single
 // provenanceHeader lookup in provenance_headers.go, which also holds the measured
 // account of what the rename cost. Do NOT re-open-code the preference here.
 //

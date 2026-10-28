@@ -559,7 +559,7 @@ func TestAutosaveExcludeLedgerIsPinned(t *testing.T) {
 	}
 }
 
-// TestAutosaveExcludesOpenclawRuntimeFiles: for a repo-backed agent the workspace
+// TestAutosaveExcludesAgentRuntimeFiles: for a repo-backed agent the workspace
 // IS the clone, so the agent runtime's own files sit untracked inside a third-party
 // repo. USER.md is titled "About Your Human". They must never be force-pushed to
 // a branch on someone else's repository — but a repo that genuinely TRACKS a file
@@ -571,7 +571,7 @@ func TestAutosaveExcludeLedgerIsPinned(t *testing.T) {
 // `/TOOLS.md` could be DELETED from install_excludes with the suite green — six
 // of seven entries were guarded against deletion and that one was guarded only
 // against un-anchoring. One repo state cannot pin both halves; hence two.
-func TestAutosaveExcludesOpenclawRuntimeFiles(t *testing.T) {
+func TestAutosaveExcludesAgentRuntimeFiles(t *testing.T) {
 	probes := excludeProbes(testExcludePatterns)
 	if len(probes) < 7 {
 		t.Fatalf("only %d exclude entries extracted from the script; the fixture is not "+

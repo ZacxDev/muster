@@ -36,7 +36,7 @@ func (f fixedEndpoint) Endpoint(context.Context, provision.Ref) (provision.Endpo
 func main() {
 	rawURL := flag.String("url", "http://127.0.0.1:18789", "ccd's base URL (e.g. a kubectl port-forward)")
 	timeout := flag.Duration("timeout", 10*time.Minute, "whole-turn deadline")
-	session := flag.String("session", "livecheck", "the X-Openclaw-Session-Key muster would send")
+	session := flag.String("session", "livecheck", "the session-key header value muster would send")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: livecheck [-url U] \"<prompt>\"   (token in CCD_LIVECHECK_HOOKS_TOKEN)")

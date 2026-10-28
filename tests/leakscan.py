@@ -47,6 +47,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import hmac
+import json
+import os
 import re
 import subprocess
 import sys
@@ -115,109 +118,294 @@ _PRIVATE_IP = re.compile(
 # DENIED IDENTIFIERS — the real project, repository, cluster, host and domain
 # names the extraction removed from this tree, so they cannot come back.
 #
-# 🔴 STORED AS DIGESTS, AND THAT IS THE WHOLE DESIGN, NOT A FLOURISH. A
-# denylist of private names written out in plaintext is a file that PUBLISHES
-# exactly the names it exists to remove — the gate would be the leak, and it
-# would be the most-grepped file in the repository. SHA-256 of the lowercased
-# identifier lets this file recognise a name it does not contain.
+# 🔴 STORED AS KEYED DIGESTS (HMAC-SHA256), AND THE KEY IS THE WHOLE DESIGN. A
+# denylist written out in plaintext PUBLISHES exactly the names it exists to
+# remove. An UNSALTED hash does not fix that for short names: this list used to
+# be bare SHA-256, and one guess list of plausible words reversed every entry.
+# Keyed, a digest says nothing to anyone without the key, so the list in
+# DENYLIST_FILE can be public while the names stay private.
+#
+# The key comes from the environment (LEAKSCAN_KEY_ENV). In CI it is the
+# repository Actions secret of the same name. It is never in this tree.
+#
+#   * CI, on this repository's own pushes and pull requests: a missing key FAILS
+#     CLOSED (exit 2). A gate that quietly skips its own check reports exactly
+#     what a clean tree reports.
+#   * A pull request from a FORK: GitHub does not pass secrets to it, so the
+#     check is skipped with a WARNING. The run after merge, on `main`, has the
+#     key and fails closed.
+#   * Locally, with no key: WARNING, and only this check is skipped. Every
+#     other rule still runs.
 #
 # 🔴 WHAT THAT COSTS, STATED RATHER THAN HIDDEN: nobody can verify from inside
-# this repository that these digests are digests of the RIGHT strings. That is
-# not a defect to fix, it is the property being bought — a set you could audit
-# from here would be a set you could read from here. So the controls below
-# prove the MECHANISM end to end (tokenise → prefix → digest → refuse) using
-# synthetic sentinels that travel the identical code path, and DENIED_COUNT
-# pins the set size so it cannot shrink unnoticed.
+# this repository that the digests are digests of the RIGHT strings. That is
+# the property being bought. So the controls prove the MECHANISM end to end
+# (tokenise → walk → HMAC → refuse) with synthetic sentinels that are HMACed
+# with the same key at run time and travel the identical code path, and
+# DENIED_COUNT pins the size of the list so it cannot shrink unnoticed.
 #
-# ⚠ MATCHING IS EXACT OVER `-`/`_` SEGMENT PREFIXES, NEVER SUBSTRING. Each
-# identifier-shaped token on the line is lowercased, `_` is folded to `-`, and
-# every leading segment run is hashed: `a-b-c` offers `a`, `a-b`, `a-b-c`. So a
-# one-word entry catches every compound built on it, while a compound entry
-# catches only itself and its extensions.
+# ⚠ MATCHING IS "ANYWHERE INSIDE AN IDENTIFIER". Each identifier-shaped token is
+# lowercased, `_` is folded to `-`, and it is split into `-` segments. Then:
 #
-# ⚠ THE ILLUSTRATIONS BELOW USE THE SENTINELS, NEVER A REAL ENTRY. An earlier
-# version of this pattern in a sibling project illustrated the rule with two
-# real names three lines under "a set you could audit from here would be a set
-# you could read from here", and a grep over the public repo still hit them.
-# Sentinels only.
+#   * a ONE-WORD entry matches as a substring of any WORD of a segment, so a
+#     name inside a header (`X-<name>-Token`), at the tail of a compound
+#     (`<host>-<name>`), glued into a longer word (`<name>ctl`) or a camelCase
+#     word of an identifier (`My<Name>Client`) is caught;
+#   * a COMPOUND entry matches as any contiguous run of WHOLE segments.
 #
-#   canarytoken-ci-jx5fq      FIRES  a one-word entry catches every compound
+# 🔴 A MIXED-CASE SEGMENT IS SPLIT AT ITS camelCase BOUNDARIES FIRST, AND THAT IS
+# THE FALSE-POSITIVE FIX, NOT A LOOPHOLE TO CLOSE. Without it a denied word
+# turned up inside ordinary Go names whose camelCase words merely spell it
+# across a boundary (a test called `TestA<word>…`, a const `<Word>sion`), and a
+# gate that refuses ordinary names gets switched off. The cost, declared: a
+# name written in camelCase as two words is a different spelling and misses.
+#
+# Every substring of DENIED_MIN_LEN..DENIED_MAX_LEN characters is HMACed, which
+# is why a one-word entry must fall in that range (the rehash script refuses one
+# that does not), and why the length of an entry is not revealed by the walk.
+#
+# ⚠ THE ILLUSTRATIONS USE THE SENTINELS, NEVER A REAL ENTRY:
+#
+#   canarytoken-ci-jx5fq      FIRES  a one-word entry, as a segment
+#   X-Canarytoken-Id          FIRES  ... in the middle of a compound
+#   legacy-canarytoken        FIRES  ... at its tail
+#   canarytokens              FIRES  ... glued into a longer word
+#   MyCanarytokenClient       FIRES  ... as one camelCase word
 #   CANARYTOKEN_TEST_TMPFS    FIRES  `_`→`-` and case are folded
-#   canarytokens              MISS   a longer WORD is a different token
-#   redacted-canary-scoped    MISS   a compound entry does not match a sibling
-#   scoped-canarytoken        MISS   the walk is over PREFIXES; a denied entry
-#                                    in the TAIL is a declared LIMIT of the rule
+#   isCanaryTokenized         MISS   it spans a camelCase boundary
+#   canary-token              MISS   a one-word entry split by a separator is a
+#                                    declared LIMIT of the rule
+#   redacted-canary-scoped    MISS   a compound entry needs WHOLE segments
 #
-# TO ADD A NAME: `python3 -c 'import hashlib;print(hashlib.sha256(b"thename").hexdigest())'`
-# and bump DENIED_COUNT. Removing one has to be argued for in a diff.
+# ⚠ PUBLIC_WORDS are cut out of a segment before the substring walk. They are
+# public names that happen to CONTAIN a denied entry, and refusing them would
+# red the module path in every import.
+#
+# TO CHANGE THE LIST: put the plaintext names, one per line, in a file OUTSIDE
+# this repository and run
+#   MUSTER_LEAKSCAN_KEY=… python3 scripts/leakscan-rehash.py < names.txt \
+#       > tests/leakscan_denylist.txt
+# then set DENIED_COUNT. Removing a name has to be argued for in a diff.
 # --------------------------------------------------------------------------
-DENIED_IDENTIFIER_DIGESTS = {
-    # 16 real identifiers from the private deployment, plus the 3 sentinels.
-    # Sorted, so a diff that adds one is a one-line diff.
-    "16d74232d666243e3dd9711daaef2b7538f849efaa62cf19f91a97e82c420e34",
-    "1ac8ca4c444febcb84f6de0da68d3ed09124e9466a7d70e9b4d0137c71d1f10a",
-    "216016a8050f7df7d7302341465e5746c918aeea1e49c8cab4708e5a2159f383",
-    "32f0ac140a77947727372050caefe08e650a0fd9f502df5659a57f64e9349294",
-    "3c3e5b7f6bc16e849f457ed07d5cc060c103a0b7d49caad0fb99a37957f35301",
-    "51d69dd9872309699e0b9737bdd48e9ca1de150412c8dd72549391257434dfbb",
-    "6686bf96fc55109d308a0f411cd3cf0b9c24b95be8f684e50e8abd0d4d3645d1",
-    "80aa2096db0a98483535de29a8df66eb1e6a079dd97619edeb715fd71a07cc56",
-    "8be0b5445fca6eb16d14c6f4eaff1cf1d1a3362ef660bfb2b66e74bf309b7e61",
-    "8dd1039e919e30153eda15e3e32a5a4db5dd83439711fe3376c66028e3893c30",
-    "956176df8ba67c84dce4fa987fc6c2f1bc4f788aef92090d5216f7a9e1e5c1f2",
-    "96a4bc2602655473120fcc571ee3d8cfe5f8801f8038ccc06323d305e323331c",
-    "bb47f602459de234156e3b164b68cbef045a787668c335c4bd44ab9f0d88a5da",
-    "d41f11e5fa5f9aebda4a1878ace020141dec8db3a5bf39519b29baab8732a9fb",
-    "d85b40105dd0b9cdbe46a1ee1b96abdf1474ae96fb86bd28ca701f44f017ac3b",
-    "e7e03ea356c666c09f11f088309ef6e93e84fd74cf6eeb213e522d5de55e89e6",
-    # --- synthetic sentinels; these three are the controls, and they are the
-    # --- ONLY entries this file has any plaintext for — two spelled below, the
-    # --- third deliberately never spelled at all.
-    hashlib.sha256(b"canarytoken").hexdigest(),
-    hashlib.sha256(b"redacted-canary-scope").hexdigest(),
-    # ⚠ THE THIRD ONE IS ASSEMBLED, AND ITS PLAINTEXT IS THE ONE STRING THIS
-    # FILE MUST NOT SPELL. It is the negative control for the self-audit's
-    # denied branch (see `audit_negative_controls`) — a denied name that the
-    # audit must REFUSE rather than permit. A control the audit refuses cannot
-    # be a literal in the file the audit reads, so it is built from two pieces
-    # that are not denied on their own.
-    hashlib.sha256(b"redacted-canary-" + b"unpermitted").hexdigest(),
-}
+LEAKSCAN_KEY_ENV = "MUSTER_LEAKSCAN_KEY"
 
-#: 🔴 PINNED SO THE SET CANNOT SHRINK UNNOTICED. A digest quietly deleted takes
-#: a name off the gate with no other symptom — the tree still scans clean,
-#: which is exactly what it would do if the name had genuinely been removed.
-#:
-#: ⚠ ONE OF THE 16 IS A PREFIX OF ANOTHER AS A *WORD*, NOT AS A SEGMENT, AND
-#: THAT IS WHY BOTH ARE LISTED. The walk is over `-`/`_` segment runs, so a
-#: single-token name that merely STARTS with another entry is a different token
-#: and is not caught by it — see the sentinel table above. Compound CLI names
-#: therefore need their own entry.
-DENIED_COUNT = 19
+#: A shorter key is a typo, not a secret. `openssl rand -hex 32` gives 64.
+LEAKSCAN_KEY_MIN_BYTES = 32
+
+DENYLIST_FILE = ROOT / "tests" / "leakscan_denylist.txt"
+
+#: 🔴 PINNED SO THE LIST CANNOT SHRINK UNNOTICED. A digest quietly deleted takes
+#: a name off the gate with no other symptom: the tree still scans clean, which
+#: is what it would do if the name had really been removed. An EMPTY list is
+#: the placeholder, and it fails this check on purpose.
+DENIED_COUNT = 16
+
+#: The substring walk's bounds. A one-word entry outside them could never match.
+DENIED_MIN_LEN = 4
+DENIED_MAX_LEN = 32
+
+#: The repository owner's public handle. The module path and the image
+#: namespace spell it, and it is not private.
+PUBLIC_WORDS = ("zacxdev",)
+
+#: 🔴 THE ONE EXCUSE, AND IT IS FOR SOMEBODY ELSE'S WIRE PROTOCOL. A header
+#: name that a peer service or an installed client reads verbatim cannot be
+#: renamed from this side: the request would still be sent and simply stop
+#: being recognised. A line carrying this marker is excused from the
+#: denied-identifier rule ONLY — every other rule still applies to it — and
+#: WIRE_PROTOCOL_LINES pins how many lines use it, so a new one is a reviewed
+#: two-line diff rather than a comment anybody can paste. Prose ABOUT such a
+#: header does not get the marker; it gets reworded.
+WIRE_PROTOCOL_MARKER = "leakscan:wire-protocol"
+WIRE_PROTOCOL_LINES = 13
+
+#: Every (path, line) the marker excused in this run, for the count above.
+WIRE_EXCUSED: list[tuple[str, int]] = []
 
 DENY_CANARY = "redacted-canary-scope"
 DENY_CANARY_WORD = "canarytoken"
 
-#: A denied name that is NOT permitted even in an exempt file — the negative
-#: control for the self-audit's denied branch. ASSEMBLED, never spelled, for the
-#: reason given beside its digest above: a literal here would be a value the
-#: audit must refuse, sitting in the file the audit reads.
+#: A denied name that is NOT permitted even in an exempt file: the negative
+#: control for the self-audit's denied branch. ASSEMBLED, never spelled: a
+#: literal here would be a value the audit must refuse, in the file it reads.
 DENY_CANARY_UNPERMITTED = "redacted-canary-" + "unpermitted"
+
+#: The sentinels are HMACed with the run's own key, so they reach the matcher by
+#: the same path as the real entries.
+DENY_SENTINELS = (DENY_CANARY_WORD, DENY_CANARY, DENY_CANARY_UNPERMITTED)
+
+_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+class DenylistError(Exception):
+    """The denylist or its key cannot be used. Never a pass."""
+
+
+def normalise_name(name: str) -> str:
+    """The one spelling a name is HMACed in: lowercase, `_` folded to `-`."""
+    return name.strip().lower().replace("_", "-")
+
+
+def name_problem(name: str) -> str | None:
+    """Why a NORMALISED name cannot be a denylist entry, or None if it can."""
+    if not _NAME.match(name):
+        return "only letters, digits and single `-`/`_` separators are allowed"
+    if "-" not in name and not DENIED_MIN_LEN <= len(name) <= DENIED_MAX_LEN:
+        return (f"a one-word entry must be {DENIED_MIN_LEN} to {DENIED_MAX_LEN} "
+                f"characters, or the substring walk can never reach it")
+    return None
+
+
+def leakscan_key(env=None) -> bytes | None:
+    """The HMAC key from the environment, or None when it is not set.
+
+    Surrounding whitespace is dropped, so a key file with a trailing newline
+    and the same value pasted as a secret give the same key.
+    """
+    env = os.environ if env is None else env
+    raw = env.get(LEAKSCAN_KEY_ENV, "").strip()
+    if not raw:
+        return None
+    key = raw.encode()
+    if len(key) < LEAKSCAN_KEY_MIN_BYTES:
+        raise DenylistError(
+            f"{LEAKSCAN_KEY_ENV} is set but shorter than {LEAKSCAN_KEY_MIN_BYTES} "
+            f"bytes. Generate one with `openssl rand -hex 32`")
+    return key
+
+
+def key_required(env=None) -> tuple[bool, str]:
+    """Whether a missing key is a FAILURE here, and why.
+
+    🔴 IT FAILS CLOSED. Any GitHub Actions run is treated as needing the key
+    unless GitHub's own event payload shows a pull request from ANOTHER
+    repository — the one case where GitHub withholds secrets, so the key cannot
+    be there whatever anybody does. A payload that cannot be read counts as
+    "this repository", not as a fork.
+    """
+    env = os.environ if env is None else env
+    if env.get("GITHUB_ACTIONS") != "true":
+        return False, "a local run"
+    if env.get("GITHUB_EVENT_NAME") not in ("pull_request", "pull_request_target"):
+        return True, f"a CI {env.get('GITHUB_EVENT_NAME') or 'run'} on this repository"
+    try:
+        with open(env["GITHUB_EVENT_PATH"], encoding="utf-8") as fh:
+            payload = json.load(fh)
+        base = payload["repository"]["full_name"]
+        head_repo = payload["pull_request"]["head"]["repo"]
+        head = head_repo["full_name"] if head_repo else None
+    except (KeyError, TypeError, OSError, ValueError):
+        return True, "a CI pull request whose event payload could not be read"
+    if head != base:
+        return False, "a pull request from a fork, which GitHub gives no secrets"
+    return True, "a CI pull request from this repository"
+
+
+def load_denylist(path: Path = DENYLIST_FILE) -> list[str]:
+    """The committed digests. `#` lines and blank lines are ignored.
+
+    🔴 A MALFORMED LINE STOPS THE RUN. A line that is not a digest matches
+    nothing, which is the silent shrink DENIED_COUNT exists to catch.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        raise DenylistError(f"cannot read {path}: {e}") from e
+    out: list[str] = []
+    for n, line in enumerate(lines, start=1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not _HEX64.match(line):
+            raise DenylistError(f"{path.name}:{n} is not a 64-hex-digit digest")
+        out.append(line)
+    if len(set(out)) != len(out):
+        raise DenylistError(f"{path.name} lists the same digest twice")
+    return out
+
+
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def camel_words(segment: str) -> list[str]:
+    """A MIXED-case segment split at its camelCase boundaries; any other
+    segment whole. `TestALostKey` is four words, `MyWidgetClient` three, and
+    `widgetctl` or `WIDGET` one."""
+    if segment.islower() or segment.isupper():
+        return [segment]
+    return [w for w in _CAMEL_BOUNDARY.split(segment) if w]
+
+
+class Denylist:
+    """A keyed matcher over the committed digests plus the sentinels."""
+
+    def __init__(self, key: bytes, digests: list[str] | set[str]):
+        self._mac = hmac.new(key, digestmod=hashlib.sha256)
+        self._digests = set(digests) | {self.digest(s) for s in DENY_SENTINELS}
+        self._cache: dict[str, list[str]] = {}
+
+    def digest(self, name: str) -> str:
+        m = self._mac.copy()
+        m.update(normalise_name(name).encode())
+        return m.hexdigest()
+
+    def _token(self, token: str) -> list[str]:
+        hits = self._cache.get(token)
+        if hits is not None:
+            return hits
+        hits = []
+        candidates: list[str] = []
+        norm = normalise_name(token)
+        parts = norm.split("-")
+        # The public words are cut out BEFORE the camelCase split, or a public
+        # handle written in camelCase would be split into a denied word.
+        cut = token.replace("_", "-")
+        for word in PUBLIC_WORDS:
+            low = cut.lower()
+            at = low.find(word)
+            while at != -1:
+                cut = cut[:at] + "-" * len(word) + cut[at + len(word):]
+                at = low.find(word, at + len(word))
+        words = [w.lower() for seg in cut.split("-") for w in camel_words(seg)]
+        # Compound entries: every contiguous run of two or more whole segments.
+        for i in range(len(parts)):
+            for j in range(i + 2, len(parts) + 1):
+                candidates.append("-".join(parts[i:j]))
+        # One-word entries: every substring of every WORD of every segment.
+        for piece in words:
+            n = len(piece)
+            for size in range(DENIED_MIN_LEN, min(n, DENIED_MAX_LEN) + 1):
+                for start in range(n - size + 1):
+                    candidates.append(piece[start:start + size])
+        for c in candidates:
+            if c not in hits and self.digest(c) in self._digests:
+                hits.append(c)
+        self._cache[token] = hits
+        return hits
+
+    def match(self, line: str) -> list[str]:
+        out: list[str] = []
+        for m in _IDENTIFIER.finditer(line):
+            for hit in self._token(m.group(0)):
+                if hit not in out:
+                    out.append(hit)
+        return out
+
+
+#: The run's matcher. None = no key, and the denied-identifier check is off;
+#: whether that is a warning or a failure is `key_required`'s call, made in
+#: `self_test`.
+ACTIVE_DENYLIST: Denylist | None = None
 
 _IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*")
 
 
 def denied_identifiers(line: str) -> list[str]:
     """Every denied identifier this line spells, in order of first appearance."""
-    out: list[str] = []
-    for m in _IDENTIFIER.finditer(line):
-        parts = m.group(0).lower().replace("_", "-").split("-")
-        for i in range(1, len(parts) + 1):
-            candidate = "-".join(parts[:i])
-            if hashlib.sha256(candidate.encode()).hexdigest() in DENIED_IDENTIFIER_DIGESTS:
-                if candidate not in out:
-                    out.append(candidate)
-    return out
+    if ACTIVE_DENYLIST is None:
+        return []
+    return ACTIVE_DENYLIST.match(line)
 
 
 # --------------------------------------------------------------------------
@@ -385,7 +573,11 @@ def scan_text(text: str, path: str = "<memory>") -> list[Finding]:
                 ))
         # The last two rules are per-OCCURRENCE for the same reason, and the
         # message has to say WHICH.
-        for ident in denied_identifiers(line):
+        idents = denied_identifiers(line)
+        if idents and WIRE_PROTOCOL_MARKER in line:
+            WIRE_EXCUSED.append((path, n))
+            idents = []
+        for ident in idents:
             out.append(Finding(
                 path, n, "denied-identifier", line,
                 f"{ident!r} is a denied identifier — a real project, repository, "
@@ -868,6 +1060,22 @@ NEGATIVE_CONTROLS = [
      f'    cluster = "{DENY_CANARY_WORD}-ci-jx5fq"'),
     ("denied-identifier",
      f'    SCOPE_ENV = "{DENY_CANARY.upper().replace("-", "_")}_TMPFS"'),
+    # 🔴 ANYWHERE IN THE IDENTIFIER, NOT ONLY AT ITS START. Each of these was a
+    # MISS under the old prefix-only walk: the middle of a header name, the tail
+    # of a compound, and a longer word built on the entry.
+    ("denied-identifier",
+     f'    req.Header.Set("X-{DENY_CANARY_WORD.capitalize()}-Id", id)'),
+    ("denied-identifier",
+     f'    host = "edge-{DENY_CANARY_WORD}"'),
+    ("denied-identifier",
+     f'    bin = "{DENY_CANARY_WORD}ctl"'),
+    ("denied-identifier",
+     f'    c := newMy{DENY_CANARY_WORD.capitalize()}Client()'),
+    # The wire-protocol marker excuses the denied-identifier rule and NOTHING
+    # else: a credential on a marked line is still refused.
+    ("credential",
+     f'    req.Header.Set("X-{DENY_CANARY_WORD.capitalize()}-Token", '
+     f'"Bearer ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8")  // {WIRE_PROTOCOL_MARKER}'),
     # ⚠ THESE THREE DATES ARE DELIBERATELY PRE-2010, AND THAT IS THE ONLY
     # SPELLING AVAILABLE. A control for the dated-incident rule cannot use the
     # year-2000 convention the rule steers toward, because the rule SKIPS that
@@ -915,15 +1123,17 @@ ALLOWED_CONTROLS = [
     ("nix run github:ZacxDev/muster -- --help",
      "the repository's OWN public URL: the owner handle is not denied, and "
      "denying it would red every import path in the tree"),
-    (f'    assert normalise("{DENY_CANARY_WORD}s") == "{DENY_CANARY_WORD}s"',
-     "a longer WORD that merely STARTS with a one-word denied entry: one token, "
-     "one candidate, and it is not the entry"),
+    (f'const actorHeader = "X-{DENY_CANARY_WORD.capitalize()}-Actor"  // {WIRE_PROTOCOL_MARKER}',
+     "a peer's wire-protocol header name, marked as one"),
     (f'    scope = tmp / "{DENY_CANARY}d"   # one letter longer',
-     "a token in which a denied COMPOUND is a literal substring — a substring "
-     "is not a segment run"),
-    (f'    legacy = "scoped-{DENY_CANARY_WORD}"',
-     "a denied entry in the TAIL of a compound. The walk is over PREFIXES, so "
-     "this is a declared LIMIT of the rule rather than a false negative to fix"),
+     "a token in which a denied COMPOUND is a literal substring — a compound "
+     "entry matches whole segments only"),
+    (f'    ok := is{DENY_CANARY_WORD[:6].capitalize()}{DENY_CANARY_WORD[6:].capitalize()}ized(x)',
+     "a one-word entry spelled ACROSS a camelCase boundary: the false-positive "
+     "shape the camelCase split exists for"),
+    (f'    words = "{DENY_CANARY_WORD[:6]}-{DENY_CANARY_WORD[6:]}"',
+     "a one-word entry split by a separator: a declared LIMIT of the rule, "
+     "pinned so a change to it is a decision"),
     ("# a home lab, two boxes and a switch",
      "an English phrase whose words are not a denied identifier"),
     ('auditTimeLayout = "2006-01-02T15:04:05-07:00"',
@@ -945,17 +1155,59 @@ ALLOWED_CONTROLS = [
 ]
 
 
-def self_test() -> int:
+def activate_denylist(env=None) -> tuple[bool, bool]:
+    """Load the denylist and its key into ACTIVE_DENYLIST, printing the verdict.
+
+    Returns (ok, active): `ok` is False when the run must not pass, `active`
+    is whether the denied-identifier check runs at all.
+    """
+    global ACTIVE_DENYLIST
+    ACTIVE_DENYLIST = None
     ok = True
 
     print("== SET SIZE: the denylist cannot shrink unnoticed ==")
-    if len(DENIED_IDENTIFIER_DIGESTS) == DENIED_COUNT:
-        print(f"  PASS  {DENIED_COUNT} denied identifiers")
-    else:
-        print(f"  FAIL  DENIED_IDENTIFIER_DIGESTS holds "
-              f"{len(DENIED_IDENTIFIER_DIGESTS)}, DENIED_COUNT says {DENIED_COUNT}. "
-              f"A digest removed takes a name off the gate with no other symptom.")
+    try:
+        digests = load_denylist()
+    except DenylistError as e:
+        print(f"  FAIL  {e}")
+        return False, False
+    if not digests:
+        print(f"  FAIL  {DENYLIST_FILE.name} is the PLACEHOLDER: it lists no "
+              f"digests. Regenerate it with scripts/leakscan-rehash.py and the "
+              f"real key before this can pass.")
         ok = False
+    elif len(digests) != DENIED_COUNT:
+        print(f"  FAIL  {DENYLIST_FILE.name} lists {len(digests)}, DENIED_COUNT "
+              f"says {DENIED_COUNT}. A digest removed takes a name off the gate "
+              f"with no other symptom.")
+        ok = False
+    else:
+        print(f"  PASS  {DENIED_COUNT} denied identifiers")
+
+    print(f"== KEY: {LEAKSCAN_KEY_ENV} ==")
+    try:
+        key = leakscan_key(env)
+    except DenylistError as e:
+        print(f"  FAIL  {e}")
+        return False, False
+    required, why = key_required(env)
+    if key is None:
+        if required:
+            print(f"  FAIL  {LEAKSCAN_KEY_ENV} is not set, and this is {why}. "
+                  f"The denied-identifier check cannot run without it, and a "
+                  f"gate that skips a check must not report a pass. Set the "
+                  f"repository Actions secret {LEAKSCAN_KEY_ENV}.")
+            return False, False
+        print(f"  WARN  {LEAKSCAN_KEY_ENV} is not set ({why}): the "
+              f"denied-identifier check is SKIPPED. Every other rule still runs.")
+        return ok, False
+    ACTIVE_DENYLIST = Denylist(key, digests)
+    print(f"  PASS  key present ({why}); the denied-identifier check is on")
+    return ok, True
+
+
+def self_test(env=None) -> int:
+    ok, denied_on = activate_denylist(env)
 
     print("== POSITIVE CONTROL: the matcher can produce a non-zero count ==")
     hits = scan_text(POSITIVE_CONTROL, "<positive-control>")
@@ -969,6 +1221,8 @@ def self_test() -> int:
     print("== NEGATIVE CONTROL: each rule refuses a REALISTIC sensitive string ==")
     covered = set()
     for expected, sample in NEGATIVE_CONTROLS:
+        if expected == "denied-identifier" and not denied_on:
+            continue
         names = {f.rule for f in scan_text(sample, "<negative-control>")}
         if expected in names:
             print(f"  PASS  {expected:20} refused")
@@ -981,8 +1235,11 @@ def self_test() -> int:
     # 🔴 EVERY RULE MUST HAVE A NEGATIVE CONTROL. Without this, a rule added
     # with no control is a rule nobody has watched go red — which is the state
     # this whole module exists to refuse.
-    declared = {n for n, _, _ in RULES} | {"private-ip", "denied-identifier",
-                                           "dated-incident"}
+    declared = {n for n, _, _ in RULES} | {"private-ip", "dated-incident"}
+    if denied_on:
+        declared.add("denied-identifier")
+    else:
+        print("  WARN  denied-identifier controls skipped: no key")
     uncovered = declared - covered
     if uncovered:
         print(f"  FAIL  no negative control for: {sorted(uncovered)} — those "
@@ -1006,6 +1263,8 @@ def self_test() -> int:
     # for" exactly the way a clean file does.
     print("== SELF-AUDIT CONTROL: the value audit must REFUSE, per branch ==")
     for label, expected, sample in audit_negative_controls():
+        if expected == "denied-identifier" and not denied_on:
+            continue
         refused = {r for n, r, v in sensitive_values(sample)
                    if undeclared(r, v) is not None}
         if expected in refused:
@@ -1066,6 +1325,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  SKIPPED  {s}")
 
     findings: list[Finding] = []
+    WIRE_EXCUSED.clear()
     for f in files:
         try:
             findings.extend(
@@ -1076,6 +1336,15 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     print(f"== UNDER TEST: {len(files)} file(s) scanned, {len(skipped)} skipped ==")
+    if ACTIVE_DENYLIST is not None:
+        for path, n in WIRE_EXCUSED:
+            print(f"  EXCUSED  {path}:{n} — a wire-protocol header name")
+        if len(WIRE_EXCUSED) != WIRE_PROTOCOL_LINES:
+            print(f"  FAIL  {len(WIRE_EXCUSED)} line(s) excused by the "
+                  f"wire-protocol marker, WIRE_PROTOCOL_LINES says "
+                  f"{WIRE_PROTOCOL_LINES}. A new excuse is a decision for a "
+                  f"reviewer, not a comment to paste.")
+            return 1
     if findings:
         for f in findings:
             print(f"  {f}")

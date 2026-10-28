@@ -39,9 +39,9 @@ const (
 	// These three literals are the only place the upstream name survives in this
 	// repository, and unavoidably so: they ARE the wire protocol the stale clients
 	// speak, so renaming them here would simply re-break what this file fixes.
-	legacyHeaderSource    = "X-Clawgate-Source"
-	legacyHeaderSessionID = "X-Clawgate-Session-Id"
-	legacyHeaderHost      = "X-Clawgate-Host"
+	legacyHeaderSource    = "X-Clawgate-Source"     // leakscan:wire-protocol
+	legacyHeaderSessionID = "X-Clawgate-Session-Id" // leakscan:wire-protocol
+	legacyHeaderHost      = "X-Clawgate-Host"       // leakscan:wire-protocol
 )
 
 // provenanceHeader reads ONE task-provenance header under both spellings,

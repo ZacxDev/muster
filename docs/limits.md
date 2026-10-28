@@ -115,3 +115,9 @@ What the audit still accepts is written out in the module beside the table:
   extract);
 - IPv6 in any form;
 - the fixtures of every file the gate does scan.
+
+**The denied-name check needs its key.** Without `MUSTER_LEAKSCAN_KEY` a local
+run skips it (with a warning), and so does a pull request from a fork, which
+GitHub gives no secrets. The run on `main` after the merge has the key. A name
+matches anywhere inside one word of an identifier. A name split by a separator
+(`<na>-<me>`) or across camelCase words (`<Na><Me>`) does not match.

@@ -107,7 +107,7 @@ not include. A full green tick sat on top of that for the flake's whole life.
 
 muster was extracted from a private deployment, so `tests/leakscan.py` refuses
 credentials, private addresses, lab hostnames, private registries, operator
-identities, a denylist of names (stored as digests), and dated incident
+identities, a denylist of names (stored as keyed digests), and dated incident
 references.
 
 The gate's own negative controls must contain realistic sensitive strings, so

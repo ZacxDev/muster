@@ -241,7 +241,7 @@ test-db-down:
 # non-zero count, and NOT refuse legitimate content — and only then is the scan
 # below a measurement rather than a claim.
 leakscan:
-	python3 tests/leakscan.py --self-test && python3 tests/leakscan.py
+	python3 tests/leakscan_test.py && python3 tests/leakscan.py --self-test && python3 tests/leakscan.py
 
 # Render the PWA icons from their SVG sources in web/icon-src/ (the Brass Roll
 # concept). The PNGs are committed — they are go:embed inputs — so this runs

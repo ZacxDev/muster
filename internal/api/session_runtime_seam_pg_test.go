@@ -52,9 +52,9 @@ func (f *routeRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(raw, &req)
 	f.mu.Lock()
 	f.instructions = append(f.instructions, req.Instructions)
-	f.turns = append(f.turns, routedTurn{key: r.Header.Get("X-Openclaw-Session-Key"),
+	f.turns = append(f.turns, routedTurn{key: r.Header.Get("X-Openclaw-Session-Key"), // leakscan:wire-protocol
 		runtime: r.Header.Get("X-Muster-Runtime"), ccSession: r.Header.Get("X-Muster-CC-Session"),
-		ccModel: r.Header.Get("X-Muster-CC-Model"), gwModel: r.Header.Get("X-Openclaw-Model")})
+		ccModel: r.Header.Get("X-Muster-CC-Model"), gwModel: r.Header.Get("X-Openclaw-Model")}) // leakscan:wire-protocol
 	f.mu.Unlock()
 	const reply = "noted"
 	w.Header().Set("Content-Type", "text/event-stream")

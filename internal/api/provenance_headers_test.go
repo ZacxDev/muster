@@ -60,7 +60,7 @@ func TestTaskSourceAcceptsBothSourceSpellings(t *testing.T) {
 			// 🔴 THE REGRESSION CASE. Red before the fix: the server read only
 			// X-Muster-Source, so this collapsed to "api".
 			name:    "legacy pre-extraction spelling resolves",
-			headers: map[string]string{"X-Clawgate-Source": "claude-code"},
+			headers: map[string]string{legacyHeaderSource: "claude-code"},
 			want:    "claude-code",
 		},
 		{
@@ -69,8 +69,8 @@ func TestTaskSourceAcceptsBothSourceSpellings(t *testing.T) {
 			// would also produce.
 			name: "X-Muster-Source wins when both are present",
 			headers: map[string]string{
-				"X-Muster-Source":   "clickup",
-				"X-Clawgate-Source": "drafter",
+				"X-Muster-Source":  "clickup",
+				legacyHeaderSource: "drafter",
 			},
 			want: "clickup",
 		},
@@ -79,8 +79,8 @@ func TestTaskSourceAcceptsBothSourceSpellings(t *testing.T) {
 			// legacy spelling must still be consulted behind it.
 			name: "a blank current spelling falls through to the legacy one",
 			headers: map[string]string{
-				"X-Muster-Source":   "   ",
-				"X-Clawgate-Source": "repo-cos",
+				"X-Muster-Source":  "   ",
+				legacyHeaderSource: "repo-cos",
 			},
 			want: "repo-cos",
 		},
@@ -118,22 +118,22 @@ func TestTaskSourceAcceptsBothSessionIDSpellings(t *testing.T) {
 			// 🔴 THE REGRESSION CASE: red before the fix (resolved to ""), which
 			// makes linkTaskSession a no-op and writes no task_sessions row.
 			name:    "legacy pre-extraction spelling resolves",
-			headers: map[string]string{"X-Clawgate-Session-Id": "sid-legacy-bravo"},
+			headers: map[string]string{legacyHeaderSessionID: "sid-legacy-bravo"},
 			want:    "sid-legacy-bravo",
 		},
 		{
 			name: "X-Muster-Session-Id wins when both are present",
 			headers: map[string]string{
-				"X-Muster-Session-Id":   "sid-muster-charlie",
-				"X-Clawgate-Session-Id": "sid-legacy-delta",
+				"X-Muster-Session-Id": "sid-muster-charlie",
+				legacyHeaderSessionID: "sid-legacy-delta",
 			},
 			want: "sid-muster-charlie",
 		},
 		{
 			name: "a blank current spelling falls through to the legacy one",
 			headers: map[string]string{
-				"X-Muster-Session-Id":   " \t ",
-				"X-Clawgate-Session-Id": "sid-legacy-echo",
+				"X-Muster-Session-Id": " \t ",
+				legacyHeaderSessionID: "sid-legacy-echo",
 			},
 			want: "sid-legacy-echo",
 		},
@@ -168,22 +168,22 @@ func TestTaskSessionHostAcceptsBothHostSpellings(t *testing.T) {
 		{
 			// 🔴 THE REGRESSION CASE: red before the fix (resolved to "").
 			name:    "legacy pre-extraction spelling resolves",
-			headers: map[string]string{"X-Clawgate-Host": "host-legacy-golf"},
+			headers: map[string]string{legacyHeaderHost: "host-legacy-golf"},
 			want:    "host-legacy-golf",
 		},
 		{
 			name: "X-Muster-Host wins when both are present",
 			headers: map[string]string{
-				"X-Muster-Host":   "host-muster-hotel",
-				"X-Clawgate-Host": "host-legacy-india",
+				"X-Muster-Host":  "host-muster-hotel",
+				legacyHeaderHost: "host-legacy-india",
 			},
 			want: "host-muster-hotel",
 		},
 		{
 			name: "a blank current spelling falls through to the legacy one",
 			headers: map[string]string{
-				"X-Muster-Host":   "",
-				"X-Clawgate-Host": "host-legacy-juliett",
+				"X-Muster-Host":  "",
+				legacyHeaderHost: "host-legacy-juliett",
 			},
 			want: "host-legacy-juliett",
 		},
@@ -218,13 +218,13 @@ func TestAnUnknownSourceStillCollapsesToAPI(t *testing.T) {
 		},
 		{
 			name:    "unknown under the legacy spelling",
-			headers: map[string]string{"X-Clawgate-Source": "another-unlisted-producer"},
+			headers: map[string]string{legacyHeaderSource: "another-unlisted-producer"},
 		},
 		{
 			name: "unknown under both spellings",
 			headers: map[string]string{
-				"X-Muster-Source":   "unlisted-one",
-				"X-Clawgate-Source": "unlisted-two",
+				"X-Muster-Source":  "unlisted-one",
+				legacyHeaderSource: "unlisted-two",
 			},
 		},
 	} {
@@ -269,8 +269,8 @@ func TestThePreservedProvenanceProperties(t *testing.T) {
 	// the extension's own explicit source would be overwritten by its Origin.
 	t.Run("a legacy source header outranks the Origin fallback", func(t *testing.T) {
 		got, _ := taskSource(provenanceRequest(t, map[string]string{
-			"X-Clawgate-Source": "clickup",
-			"Origin":            "chrome-extension://abcdefghijklmnop",
+			legacyHeaderSource: "clickup",
+			"Origin":           "chrome-extension://abcdefghijklmnop",
 		}))
 		if got != "clickup" {
 			t.Fatalf("🔴 taskSource source = %q, want \"clickup\": an explicit allowlisted source header "+
@@ -289,7 +289,7 @@ func TestThePreservedProvenanceProperties(t *testing.T) {
 	t.Run("the session id cap is rune-safe under the legacy spelling", func(t *testing.T) {
 		long := strings.Repeat("é", maxSessionIDLen+7)
 		_, got := taskSource(provenanceRequest(t, map[string]string{
-			"X-Clawgate-Session-Id": long,
+			legacyHeaderSessionID: long,
 		}))
 		if n := len([]rune(got)); n != maxSessionIDLen {
 			t.Fatalf("🔴 session id capped to %d runes, want exactly %d", n, maxSessionIDLen)
@@ -303,7 +303,7 @@ func TestThePreservedProvenanceProperties(t *testing.T) {
 	t.Run("the host cap is rune-safe under the legacy spelling", func(t *testing.T) {
 		long := strings.Repeat("ü", maxSessionHostLen+7)
 		got := taskSessionHost(provenanceRequest(t, map[string]string{
-			"X-Clawgate-Host": long,
+			legacyHeaderHost: long,
 		}))
 		if n := len([]rune(got)); n != maxSessionHostLen {
 			t.Fatalf("🔴 host capped to %d runes, want exactly %d", n, maxSessionHostLen)

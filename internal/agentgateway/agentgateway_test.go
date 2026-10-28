@@ -425,7 +425,7 @@ func TestAToollessTurnCarriesTheDerivedBearerTheSentinelAndTheSessionKey(t *test
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got.path = r.URL.Path
 		got.auth = r.Header.Get("Authorization")
-		got.sessKe = r.Header.Get("X-Openclaw-Session-Key")
+		got.sessKe = r.Header.Get("X-Openclaw-Session-Key") // leakscan:wire-protocol
 		_ = json.NewDecoder(r.Body).Decode(&got.body)
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "event: response.output_text.delta\n")
@@ -491,7 +491,7 @@ func TestAToolEnabledTurnCarriesTheSameThreeInputsToTheResponsesEndpoint(t *test
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got.path = r.URL.Path
 		got.auth = r.Header.Get("Authorization")
-		got.sessKe = r.Header.Get("X-Openclaw-Session-Key")
+		got.sessKe = r.Header.Get("X-Openclaw-Session-Key") // leakscan:wire-protocol
 		_ = json.NewDecoder(r.Body).Decode(&got.body)
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "event: response.completed\n")

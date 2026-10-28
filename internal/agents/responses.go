@@ -44,7 +44,7 @@ var ErrResponsesUnsupported = errors.New("agent runtime does not support /v1/res
 // recognising the header, and every turn would start with an empty context
 // while everything still returned 200. It is a constant so there is exactly one
 // place to change if the attached runtime ever changes.
-const sessionKeyHeader = "X-Openclaw-Session-Key"
+const sessionKeyHeader = "X-Openclaw-Session-Key" // leakscan:wire-protocol
 
 // errBodyReadLimit caps how much of a non-200 response body either transport reads
 // before truncating it for the error message. It is 8 KiB — 16x the 512-byte message

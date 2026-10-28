@@ -235,7 +235,7 @@ func postRawTaskComment(t *testing.T, ts *httptest.Server, taskID int64, headers
 // TestSeamAStaleLegacyClientIsStillAttributedAndStillLinks is the END-TO-END
 // half of issue #25, and the only in-repo measurement of the amended closing
 // condition: a comment from an UN-REBUILT client — one that sends only the
-// pre-extraction X-Clawgate-* spellings — must be attributed to its producer AND
+// pre-extraction legacy header spellings — must be attributed to its producer AND
 // must write a real task_sessions row.
 //
 // 🔴 WHY THE UNIT TESTS ARE NOT ENOUGH HERE. internal/api's tests pin taskSource
@@ -293,9 +293,9 @@ func TestSeamAStaleLegacyClientIsStillAttributedAndStillLinks(t *testing.T) {
 	// --- THE CASE: ONLY the pre-extraction spellings, exactly as a stale upstream
 	// client sends them. No X-Muster-* header is present at all.
 	code, respBody = postRawTaskComment(t, ts, task.ID, map[string]string{
-		"X-Clawgate-Source":     "claude-code",
-		"X-Clawgate-Session-Id": staleSessionID,
-		"X-Clawgate-Host":       staleHost,
+		"X-Clawgate-Source":     "claude-code",  // leakscan:wire-protocol
+		"X-Clawgate-Session-Id": staleSessionID, // leakscan:wire-protocol
+		"X-Clawgate-Host":       staleHost,      // leakscan:wire-protocol
 	}, "picked this up from a stale client")
 	if code != http.StatusOK {
 		t.Fatalf("stale-client comment HTTP %d: %s", code, respBody)

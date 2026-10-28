@@ -32,7 +32,7 @@ import (
 const maxSessionHostLen = 128
 
 // taskSessionHost reads the OPTIONAL host header — under BOTH the current
-// X-Muster-Host and the pre-extraction X-Clawgate-Host spelling, via the shared
+// X-Muster-Host and its pre-extraction legacy spelling, via the shared
 // provenanceHeader lookup (rune-capped, so a multibyte hostname can never be
 // truncated into invalid UTF-8 that Postgres rejects on write). Absent ⇒ "" ⇒ the
 // column keeps whatever an earlier touch recorded.
