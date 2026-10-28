@@ -21,6 +21,7 @@ only the token.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import stat
@@ -98,7 +99,13 @@ case "$*" in
     cat "$FAKE_SERVE"; exit 0 ;;
   "serve --bg --https=443 8105")
     printf 'https://hub.example-tailnet.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8105\n' > "$FAKE_SERVE"; exit 0 ;;
-  "status"*) exit 0 ;;
+  "debug prefs"*)
+    [ -n "${FAKE_TS_PREFS:-}" ] || { echo "unknown subcommand" >&2; exit 1; }
+    printf '%s\n' "$FAKE_TS_PREFS"; exit 0 ;;
+  "status --json"*)
+    [ "${FAKE_TS_LOGGED_OUT:-0}" = 1 ] && exit 1
+    printf '%s\n' "${FAKE_TS_JSON:-}"; exit 0 ;;
+  "status"*) [ "${FAKE_TS_LOGGED_OUT:-0}" = 1 ] && { echo "Logged out." >&2; exit 1; }; exit 0 ;;
 esac
 exit 0
 """
@@ -115,6 +122,45 @@ shift
 sh "$@"; rc=$?
 echo "Connection to hub closed. (logout noise on stdout)"
 exit $rc
+"""
+
+# loginctl and sudo: linger is FAKE_LINGER ("yes" by default); sudo runs its
+# command (the fakes first on PATH) unless FAKE_SUDO=fail. systemctl and
+# journalctl only log: no block may reach this machine's user services.
+FAKE_LOGINCTL = r"""#!/bin/sh
+echo "loginctl $*" >> "$FAKE_LOG"
+case "$1" in show-user) echo "${FAKE_LINGER:-yes}" ;; esac
+exit 0
+"""
+
+FAKE_SUDO = r"""#!/bin/sh
+echo "sudo $*" >> "$FAKE_LOG"
+[ "$1" = -n ] && shift
+[ "${FAKE_SUDO:-ok}" = fail ] && { echo "sudo: a password is required" >&2; exit 1; }
+exec "$@"
+"""
+
+# uname, with `-s` replaced by FAKE_UNAME_S when set (a macOS run on Linux).
+FAKE_UNAME = r"""#!/bin/sh
+[ "$1" = -s ] && [ -n "${FAKE_UNAME_S:-}" ] && { echo "$FAKE_UNAME_S"; exit 0; }
+exec "$REAL_UNAME" "$@"
+"""
+
+FAKE_LOGGER = r"""#!/bin/sh
+echo "$(basename "$0") $*" >> "$FAKE_LOG"
+case "$*" in *is-active*) echo active ;; esac
+exit 0
+"""
+
+# A login shell, `"$SHELL" -lc CMD`, as a real one behaves: it keeps the PATH
+# it was started with (none under `env -i`: then a system default), and its
+# profile prepends the directory named in $HOME/.profile-path, if any.
+FAKE_LOGIN_SHELL = r"""#!/bin/sh
+[ "$1" = -lc ] || exit 9
+PATH="${PATH:-/usr/bin:/bin}"
+[ -f "$HOME/.profile-path" ] && { read -r d < "$HOME/.profile-path"; PATH="$d:$PATH"; }
+export PATH
+exec /bin/sh -c "$2"
 """
 
 # awk, recorded: every argv awk is called with (env_set's secrets must not be
@@ -139,14 +185,18 @@ class Guide(unittest.TestCase):
         self.awk_argv = self.tmp / "awk-argv"
         self.awk_argv.touch()
         real_awk = subprocess.run(["sh", "-c", "command -v awk"], capture_output=True, text=True).stdout.strip()
+        real_uname = subprocess.run(["sh", "-c", "command -v uname"], capture_output=True, text=True).stdout.strip()
         for name, body in [("docker", FAKE_DOCKER), ("curl", FAKE_CURL), ("tailscale", FAKE_TAILSCALE),
-                           ("ssh", FAKE_SSH), ("awk", FAKE_AWK)]:
+                           ("ssh", FAKE_SSH), ("awk", FAKE_AWK), ("loginctl", FAKE_LOGINCTL), ("sudo", FAKE_SUDO),
+                           ("systemctl", FAKE_LOGGER), ("journalctl", FAKE_LOGGER), ("qrencode", FAKE_LOGGER),
+                           ("tmux", FAKE_LOGGER), ("login-shell", FAKE_LOGIN_SHELL), ("uname", FAKE_UNAME)]:
             p = self.bin / name
             p.write_text(body)
             p.chmod(0o755)
         self.env = {
             "HOME": str(self.homedir), "PATH": f"{self.bin}:{os.environ['PATH']}", "FAKE_LOG": str(self.log),
             "FAKE_SERVE": str(self.serve_file), "FAKE_AWK_ARGV": str(self.awk_argv), "REAL_AWK": real_awk,
+            "REAL_UNAME": real_uname,
         }
         self.run_block(block('cat > "$HOME/.config/muster-install/lib.sh"'))
         self.lib = f'. "{self.homedir}/.config/muster-install/lib.sh"\n'
@@ -159,6 +209,32 @@ class Guide(unittest.TestCase):
         p = subprocess.run(["sh", "-c", script], env={**self.env, **env}, capture_output=True, text=True,
                            cwd=self.tmp, timeout=60)
         return p.stdout + p.stderr
+
+    def without(self, *names: str) -> str:
+        """A PATH on which NAMES do not exist: the fakes minus NAMES, then a
+        directory of links to every other program on this machine's PATH."""
+        sysbin = self.tmp / ("sys-" + "-".join(names))
+        if sysbin.exists():
+            return f"{self.tmp / ('fakes-' + '-'.join(names))}:{sysbin}"
+        sysbin.mkdir()
+        for d in os.environ["PATH"].split(":"):
+            if not os.path.isdir(d):
+                continue
+            for n in os.listdir(d):
+                f = os.path.join(d, n)
+                if n in names or (sysbin / n).exists() or not os.access(f, os.X_OK) or os.path.isdir(f):
+                    continue
+                (sysbin / n).symlink_to(f)
+        fakes = self.tmp / ("fakes-" + "-".join(names))
+        fakes.mkdir()
+        for f in self.bin.iterdir():
+            if f.name not in names:
+                (fakes / f.name).symlink_to(f)
+        path = f"{fakes}:{sysbin}"
+        check = subprocess.run(["sh", "-c", "for n in " + " ".join(names) + "; do command -v $n && exit 1; done; exit 0"],
+                               env={"PATH": path}, capture_output=True, text=True)
+        assert check.returncode == 0, f"still on PATH: {check.stdout}"
+        return path
 
     def sh(self, script: str, **env: str) -> str:
         return self.run_block(self.lib + textwrap.dedent(script), **env)
@@ -462,6 +538,231 @@ class Guide(unittest.TestCase):
         self.assertIn("BatchMode=yes", self.calls())
         again = self.run_block(self.lib + block("ssh ", "mirror token create").replace("HUB", "hub.example"))
         self.assertIn("kept existing token", again)
+
+    # --- fresh-run friction: ask for sudo and the person's hands up front -----
+
+    def step0(self, **env: str) -> str:
+        return self.run_block(block('cat > "$HOME/.config/muster-install/lib.sh"'), **env)
+
+    # Indented over many lines, as the real `tailscale status --json` prints it.
+    TS_ON = json.dumps({"Version": "1.0.0", "CertDomains": ["hub.example-tailnet.ts.net"],
+                        "CurrentTailnet": {"Name": "example-tailnet", "MagicDNSEnabled": True}}, indent=2)
+
+    def asks(self, out: str) -> list[str]:
+        return [l for l in out.splitlines() if l.startswith("ASK UP FRONT")]
+
+    def test_step0_asks_up_front_for_a_signed_out_tailscale(self) -> None:
+        out = self.step0(FAKE_TS_LOGGED_OUT="1", FAKE_TS_JSON=self.TS_ON)
+        self.assertIn("ASK UP FRONT: sudo to run `tailscale up`, which prints a sign-in link the person must open",
+                      self.asks(out), out)
+        signed_in = self.step0(FAKE_TS_JSON=self.TS_ON)
+        self.assertFalse([a for a in self.asks(signed_in) if "tailscale up" in a],
+                         f"a signed-in Tailscale was asked about:\n{signed_in}")
+
+    def test_step0_asks_up_front_to_install_a_missing_tailscale(self) -> None:
+        out = self.step0(PATH=self.without("tailscale"))
+        self.assertIn("ASK UP FRONT: sudo to install Tailscale (https://tailscale.com/download), then to run "
+                      "`tailscale up`, which prints a sign-in link the person must open", self.asks(out), out)
+
+    def test_step0_asks_for_magicdns_and_https_until_both_are_on(self) -> None:
+        want = ("ASK UP FRONT (hub only): the person turns on MagicDNS and HTTPS Certificates in the Tailscale "
+                "admin console (https://login.tailscale.com/admin/dns) before you start")
+        self.assertIn(want, self.asks(self.step0()))
+        only_dns = '{"CertDomains": null, "CurrentTailnet": {"MagicDNSEnabled": true}}'
+        self.assertIn(want, self.asks(self.step0(FAKE_TS_JSON=only_dns)), "HTTPS Certificates off was not asked for")
+        only_certs = '{"CertDomains": ["hub.example-tailnet.ts.net"], "CurrentTailnet": {"MagicDNSEnabled": false}}'
+        self.assertIn(want, self.asks(self.step0(FAKE_TS_JSON=only_certs)), "MagicDNS off was not asked for")
+        self.assertNotIn(want, self.asks(self.step0(FAKE_TS_JSON=self.TS_ON)), "asked although both are on")
+
+    def test_step0_asks_for_qrencode_and_linger_in_the_same_batch(self) -> None:
+        qr = "ASK UP FRONT (optional): sudo to install qrencode, so `muster doctor` can draw the phone's QR code"
+        linger = ('ASK UP FRONT (Linux): sudo to run `loginctl enable-linger "$USER"`, so muster-mirror keeps '
+                  "running after the person logs out (Step 7)")
+        out = self.step0(PATH=self.without("qrencode"), FAKE_LINGER="no", FAKE_TS_JSON=self.TS_ON)
+        self.assertIn(qr, self.asks(out), out)
+        if os.uname().sysname == "Linux":
+            self.assertIn(linger, self.asks(out), out)
+        done = self.step0(FAKE_LINGER="yes", FAKE_TS_JSON=self.TS_ON)
+        self.assertNotIn(qr, self.asks(done))
+        self.assertNotIn(linger, self.asks(done))
+
+    def section(self, heading: str) -> str:
+        text = GUIDE.read_text()
+        start = text.index(heading)
+        end = text.find("\n## ", start + len(heading))
+        return text[start:end if end > 0 else len(text)]
+
+    def test_step1_asks_for_everything_step0_flagged(self) -> None:
+        # Prose, so a weaker guard: Step 1's one batch of questions names the
+        # ASK UP FRONT lines and each thing a fresh run stopped half way for.
+        s1 = " ".join(self.section("## Step 1:").split())
+        for want in ("starting `ASK UP FRONT`", "sign-in link the person must open", "MagicDNS and HTTPS Certificates",
+                     "https://login.tailscale.com/admin/dns", "`qrencode`", "`loginctl enable-linger`",
+                     "ask for `sudo` for all of them at once"):
+            self.assertIn(want, s1, f"Step 1 does not ask about {want!r}")
+
+    # --- fresh-run friction: Step 4 shows why the push keys failed -----------
+
+    def test_failed_key_generation_prints_dockers_error(self) -> None:
+        self.hub()
+        out = self.run_block(self.lib + block("env_secret POSTGRES_PASSWORD"), FAKE_VAPID="fail")
+        self.assertIn("PUSH KEYS NOT GENERATED", out)
+        self.assertIn("  pull denied", out, f"docker's own error was hidden\n{out}")
+        self.assertEqual((self.homedir / ".config/muster-install/vapid.err").read_text(), "pull denied\n")
+        env = self.dotenv()
+        for k in ("MUSTER_VAPID_PUBLIC_KEY", "MUSTER_VAPID_PRIVATE_KEY", "MUSTER_VAPID_SUBJECT"):
+            self.assertEqual(env.get(k, ""), "", f"{k} written although generation failed")
+        # A later success clears the stale error.
+        self.run_block(self.lib + block("env_secret POSTGRES_PASSWORD"))
+        self.assertFalse((self.homedir / ".config/muster-install/vapid.err").exists())
+        fix = " ".join(self.section("## Step 4:").split("**If this fails:**")[1].split())
+        self.assertNotIn("docker pull", fix, "the fix still sends the agent to `docker pull`")
+        self.assertIn("Read the error printed under it", fix)
+
+    # --- fresh-run friction: Step 7 turns linger on with sudo -----------------
+
+    def mirror_service(self, **env: str) -> str:
+        self.sh(f"mi_save OS linux\nmi_save MUSTER_URL '{URL}'\nmi_save MIRROR_HOST laptop\nmi_save INTERACTIVE 1")
+        cfg = self.homedir / ".config/muster-mirror"
+        cfg.mkdir(parents=True, exist_ok=True)
+        (cfg / "token").write_text("mmt_fixture\n")
+        return self.run_block(self.lib + block("MUSTER_MIRROR_WRITE_HOOK_CONFIG=1"), USER="tester", **env)
+
+    def test_step7_enables_linger_with_sudo(self) -> None:
+        out = self.mirror_service(FAKE_LINGER="no")
+        self.assertIn("sudo -n loginctl enable-linger tester", self.calls(), out)
+        self.assertIn("linger: on", out)
+
+    def test_step7_leaves_linger_alone_when_on(self) -> None:
+        out = self.mirror_service(FAKE_LINGER="yes")
+        self.assertIn("systemctl --user restart muster-mirror.service", self.calls(), "positive control: the Linux branch ran")
+        self.assertNotIn("enable-linger", self.calls(), out)
+        self.assertIn("linger: already on", out)
+
+    def test_step7_hands_linger_to_the_person_when_sudo_fails(self) -> None:
+        out = self.mirror_service(FAKE_LINGER="no", FAKE_SUDO="fail")
+        self.assertIn("LINGER NOT ON: ask the person to run, in their own terminal: sudo loginctl enable-linger tester", out)
+
+    def test_step7_names_the_opencode_line_muster_mirror_logs(self) -> None:
+        # The seam: the guide quotes the daemon's start-up line as expected, so
+        # the line it quotes must be the one the code logs.
+        src = (ROOT / "cmd/muster-mirror/opencode.go").read_text()
+        m = re.search(r'openCodeNotPairedWhy = "([^"]*)"', src)
+        self.assertIsNotNone(m, "cmd/muster-mirror/opencode.go no longer has openCodeNotPairedWhy")
+        quoted = re.search(r"`opencode: ([^`…]*) …`", self.section("## Step 7:"))
+        self.assertIsNotNone(quoted, "Step 7 does not quote the opencode line")
+        self.assertTrue(m.group(1).startswith(quoted.group(1)),
+                        f"Step 7 quotes {quoted.group(1)!r}; muster-mirror logs {m.group(1)!r}")
+
+    # --- fresh-run friction: Step 6's PATH note only when it is needed --------
+
+    def install_binaries(self, profile_dir: str = "", **env: str) -> str:
+        self.sh("mi_save OS linux\nmi_save ARCH amd64\nmi_set_version 1.0.0")
+        bindir = self.homedir / ".local/bin"
+        bindir.mkdir(parents=True)
+        muster = bindir / "muster"
+        muster.write_text("#!/bin/sh\necho muster 1.0.0\n")
+        muster.chmod(0o755)
+        if profile_dir:
+            (self.homedir / ".profile-path").write_text(profile_dir + "\n")
+        return self.run_block(self.lib + block('mi_verify "$asset"'), SHELL=str(self.bin / "login-shell"), **env)
+
+    def test_step6_no_path_note_when_a_login_shell_finds_muster(self) -> None:
+        out = self.install_binaries(f"{self.homedir}/.local/bin")
+        self.assertNotIn("NOTE:", out, "a PATH note although a new login shell finds muster")
+
+    def test_step6_path_note_when_a_login_shell_does_not(self) -> None:
+        out = self.install_binaries()
+        self.assertIn(f"NOTE: a new login shell does not find {self.homedir}/.local/bin/muster", out)
+
+    def test_step6_path_check_ignores_this_shells_path(self) -> None:
+        # The agent's own PATH has the directory; a new login (no profile line)
+        # would not. Only `env -i` keeps the check from inheriting it.
+        out = self.install_binaries(PATH=f"{self.homedir}/.local/bin:{self.env['PATH']}")
+        self.assertIn(f"NOTE: a new login shell does not find {self.homedir}/.local/bin/muster", out,
+                      "the login shell inherited this shell's PATH")
+
+    # --- fresh-run friction: the state file is private ------------------------
+
+    def test_mi_save_writes_the_state_file_mode_600(self) -> None:
+        state = self.homedir / ".config/muster-install/state"
+        state.unlink()
+        self.sh("umask 022\nmi_save SOME_KEY value")
+        self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o600)
+        state.chmod(0o644)  # one written before this fix
+        self.sh("umask 022\nmi_save SOME_KEY other")
+        self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o600)
+        self.assertIn("SOME_KEY='other'", self.state())
+
+    # --- final pass: D1, D2, Y2, G4 -------------------------------------------
+
+    def test_step10_shows_only_doctors_report(self) -> None:
+        # D1: the CLI keeps stdout one JSON document; the guide drops it.
+        self.hub()
+        bindir = self.homedir / ".local/bin"
+        bindir.mkdir(parents=True)
+        fake = bindir / "muster"
+        fake.write_text('#!/bin/sh\necho "PASS  server" >&2\necho "1 passed, 0 failed" >&2\n'
+                        'echo \'{"ok": true, "checks": []}\'\n')
+        fake.chmod(0o755)
+        for b in (block('doctor --deploy-env "$MUSTER_DIR/.env"'), block('doctor --api-url "$MUSTER_URL"')):
+            out = self.run_block(self.lib + b)
+            self.assertIn("PASS  server", out, "positive control: the doctor ran")
+            self.assertNotIn('"checks"', out, f"the JSON copy reached the agent:\n{out}")
+
+    def operator(self, prefs: str = "") -> list[str]:
+        out = self.step0(USER="tester", FAKE_TS_JSON=self.TS_ON, **({"FAKE_TS_PREFS": prefs} if prefs else {}))
+        return [a for a in self.asks(out) if "--operator" in a]
+
+    @unittest.skipUnless(os.uname().sysname == "Linux" and os.getuid() != 0, "the operator ask is Linux, non-root")
+    def test_step0_asks_for_the_operator_only_when_unset(self) -> None:
+        unset = json.dumps({"ControlURL": "https://controlplane.example", "OperatorUser": ""}, indent=2)
+        other = json.dumps({"OperatorUser": "someone-else"}, indent=2)
+        mine = json.dumps({"ControlURL": "https://controlplane.example", "OperatorUser": "tester"}, indent=2)
+        self.assertEqual(len(self.operator(unset)), 1, "an unset operator was not asked for")
+        self.assertEqual(len(self.operator(other)), 1, "another user's operator was not asked for")
+        self.assertEqual(self.operator(mine), [], "asked although the operator is this user")
+        self.assertEqual(self.operator(), [], "asked although the prefs could not be read")
+
+    def test_step7_skips_linger_the_person_declined(self) -> None:
+        self.sh("mi_save LINGER no")
+        out = self.mirror_service(FAKE_LINGER="no")
+        self.assertIn("systemctl --user restart muster-mirror.service", self.calls(), "positive control: the Linux branch ran")
+        self.assertNotIn("enable-linger", self.calls(), out)
+        self.assertIn("linger: skipped (declined in Step 1)", out)
+
+    def test_step7_without_loginctl_asks_for_no_sudo(self) -> None:
+        out = self.mirror_service(PATH=self.without("loginctl"))
+        self.assertNotIn("sudo", self.calls(), out)
+        self.assertIn("linger: no loginctl here", out)
+
+    def test_step0_without_loginctl_has_no_linger_ask(self) -> None:
+        if os.uname().sysname != "Linux":
+            self.skipTest("Linux only")
+        out = self.step0(PATH=self.without("loginctl"), FAKE_LINGER="no", FAKE_TS_JSON=self.TS_ON)
+        self.assertFalse([a for a in self.asks(out) if "linger" in a], out)
+        self.assertIn("NOTE: no loginctl (WSL, or a container without systemd)", out)
+
+    def test_step0_on_macos_asks_for_no_sudo(self) -> None:
+        out = self.step0(PATH=self.without("tmux", "docker", "qrencode", "tailscale"), FAKE_UNAME_S="Darwin",
+                         MI_TS_APP=str(self.tmp / "no-such-app"))
+        asks = self.asks(out)
+        self.assertIn("os=darwin", out)
+        for want in ("brew install tmux", "Docker Desktop", "the Tailscale app", "brew install qrencode"):
+            self.assertTrue([a for a in asks if want in a], f"no ask about {want!r}:\n{out}")
+        self.assertFalse([a for a in asks if "sudo to" in a], f"sudo asked on macOS:\n{out}")
+
+    def test_macos_app_store_tailscale_is_found(self) -> None:
+        path = self.without("tailscale")
+        app = str(self.bin / "tailscale")  # the fake, at the app's CLI path
+        out = self.step0(PATH=path, FAKE_UNAME_S="Darwin", MI_TS_APP=app, FAKE_TS_JSON=self.TS_ON)
+        self.assertFalse([a for a in self.asks(out) if "Tailscale app" in a], f"declared missing:\n{out}")
+        self.assertNotRegex(out, r"(?m)^tailscale +MISSING$")
+        self.assertIn("tailscale: logged in", out)
+        # and every later block reaches it through lib.sh
+        self.run_block(self.lib + block("mi_save MUSTER_URL"), PATH=path, MI_TS_APP=app)
+        self.assertIn("tailscale serve --bg --https=443 8105", self.calls())
+        self.assertIn(f"MUSTER_URL='{URL}'", self.state())
 
 
 if __name__ == "__main__":

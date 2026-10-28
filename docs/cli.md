@@ -87,7 +87,9 @@ muster doctor                               # on any other machine
   that cannot be made from this machine, or `--skip`) never fails the run.
 - **Output:** the report and the QR code go to **stderr**; stdout is one JSON
   document, `{"url", "ok", "checks": [{"name", "status", "detail", "fix"}]}`,
-  as for every other verb.
+  as for every other verb, wherever the two streams go. To read only the
+  report (a terminal, or an agent whose shell merges the streams), send stdout
+  away: `muster doctor >/dev/null`. INSTALL.md's Step 10 does.
 - **Credentials:** the server-side checks need a token (the hook token, or a
   personal token; a personal token sees only its owner's hosts); without one
   they SKIP. `--deploy-env` reads the compose `.env`: its `MUSTER_PUBLIC_URL`

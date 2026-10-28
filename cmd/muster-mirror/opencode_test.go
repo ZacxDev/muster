@@ -127,6 +127,19 @@ func TestTheDaemonSaysWhyItHasNoOpenCodeToken(t *testing.T) {
 	if c, why := openCodeCredentials(p); c != nil || !strings.Contains(why, "muster-mirror opencode-pair") {
 		t.Fatalf("missing: %v %q", c, why)
 	}
+	// The start-up line a host WITHOUT opencode logs every time: pinned whole,
+	// because INSTALL.md (Step 7) quotes it as expected and a new user must not
+	// read it as a fault.
+	var logb bytes.Buffer
+	cr, why := openCodeCredentials(p)
+	if c := startOpenCode(context.Background(), cr, why, log.New(&logb, "", 0)); c != nil {
+		t.Fatal("credentials from a missing file")
+	}
+	wantLog := "muster-mirror: opencode: not paired on this host (no token at " + p +
+		"); fine unless you run opencode here, and to show its sessions run `muster-mirror opencode-pair`\n"
+	if logb.String() != wantLog {
+		t.Fatalf("start-up line\n got %q\nwant %q", logb.String(), wantLog)
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatal(err)
 	}
