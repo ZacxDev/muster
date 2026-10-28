@@ -140,6 +140,11 @@
           # and the CLI compiles `internal/agentspec` through `internal/api` (see
           # the `.sh` note above).
           || rel == "internal/agentspec/autosave.sh"
+          # 🔴 ONE FILE, NOT A SUFFIX: `cmd/muster/doctor.go` embeds the spoken
+          # sample `muster doctor` sends through /transcribe. Without this row
+          # `nix build .#muster-cli` dies with `pattern doctor_sample.wav: no
+          # matching files found`.
+          || rel == "cmd/muster/doctor_sample.wav"
           # 🔴 `testdata/` IS CARRIED WHOLE, AND IT IS THE ONE ROW HERE THAT IS
           # NOT AN EXTENSION. ONE file under it is read by a test a `checkPhase` here
           # RUNS: `cmd/muster/one_service_test.go` opens

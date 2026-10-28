@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -15,6 +18,7 @@ func TestDictationIsReadFromItsTwoVariables(t *testing.T) {
 	env := map[string]string{
 		"MUSTER_STT_URL":   " http://stt.example.invalid:8000/ ",
 		"MUSTER_STT_TOKEN": " stt-credential-fixture\n",
+		"MUSTER_STT_MODEL": " fixture-org/fixture-model ",
 	}
 	c, err := loadConfig(func(k string) string { return env[k] })
 	if err != nil {
@@ -22,6 +26,9 @@ func TestDictationIsReadFromItsTwoVariables(t *testing.T) {
 	}
 	if c.STTURL != "http://stt.example.invalid:8000" || c.STTToken != "stt-credential-fixture" {
 		t.Fatalf("STTURL=%q STTToken=%q; want the two values, trimmed", c.STTURL, c.STTToken)
+	}
+	if c.STTModel != "fixture-org/fixture-model" {
+		t.Fatalf("STTModel=%q; want the value, trimmed", c.STTModel)
 	}
 }
 
@@ -89,7 +96,43 @@ func TestTheDictationBannerNamesTheURLAndNeverTheToken(t *testing.T) {
 	if strings.Contains(on.String(), c.STTToken) {
 		t.Errorf("the banner prints the token: %q", on.String())
 	}
+	if !strings.Contains(on.String(), envSTTModel+": none sent") {
+		t.Errorf("ON line does not say no model is sent: %q", on.String())
+	}
+	c.STTModel = "fixture-org/fixture-model"
+	tr, _ = buildTranscriber(c)
+	var withModel bytes.Buffer
+	(&app{cfg: c, logger: log.New(&withModel, "", 0)}).logSTTBanner(api.Extensions{Transcriber: tr})
+	if !strings.Contains(withModel.String(), envSTTModel+": fixture-org/fixture-model") {
+		t.Errorf("ON line does not name the model: %q", withModel.String())
+	}
 	if !strings.Contains(off.String(), "dictation: OFF") {
 		t.Errorf("OFF line = %q", off.String())
+	}
+}
+
+// TestTheBuiltTranscriberSendsTheConfiguredModel: MUSTER_STT_MODEL reaches the
+// wire through buildTranscriber, not only the config struct. Without it an
+// OpenAI or speaches backend refuses every recording.
+func TestTheBuiltTranscriberSendsTheConfiguredModel(t *testing.T) {
+	var gotModel []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err == nil {
+			gotModel = append(gotModel, r.FormValue("model"))
+		}
+		_, _ = w.Write([]byte(`{"text":"ok"}`))
+	}))
+	defer srv.Close()
+	c := memoBase()
+	c.STTURL, c.STTToken, c.STTModel = srv.URL, "stt-credential-fixture", "fixture-org/fixture-model"
+	tr, err := buildTranscriber(c)
+	if err != nil || tr == nil {
+		t.Fatalf("buildTranscriber: %v, %v", tr, err)
+	}
+	if _, err := tr.Transcribe(context.Background(), strings.NewReader("A"), "a.webm"); err != nil {
+		t.Fatal(err)
+	}
+	if len(gotModel) != 1 || gotModel[0] != "fixture-org/fixture-model" {
+		t.Fatalf("model sent = %q, want the configured one", gotModel)
 	}
 }

@@ -95,6 +95,9 @@ type Server struct {
 	asks *askq.Store
 	// askWatch is the running question watches (mirror_ask.go).
 	askWatch askWatchers
+	// ledgers is the rendered views' tool-context ledger checkpoints, which a
+	// resuming socket starts from (mirror_ledger.go).
+	ledgers ledgerCheckpoints
 	auth     AuthConfig
 	router   RouterPort
 
@@ -613,6 +616,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerTranscribeRoutes(mux)
 	// File attachments (uploads.go): the attach button, and the signed link.
 	s.registerUploadRoutes(mux)
+	// `muster doctor`'s server half (doctor.go): the armed hook token's read.
+	s.registerDoctorRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are

@@ -74,7 +74,23 @@ const maxDrainBytes = 64 << 10
 type Client struct {
 	base   string
 	token  string
+	model  string
 	client *http.Client
+}
+
+// WithModel returns a copy of c that also sends a `model` form field naming
+// model. "" (the default) sends none.
+//
+// 🔴 THE FIELD IS OPTIONAL ON THE WIRE BECAUSE THE SERVICES DISAGREE. The
+// bundled stt-cohere server serves one model and ignores it; OpenAI's API and
+// faster-whisper servers such as speaches REFUSE a request without one (speaches
+// answers 422, which this package reads as ErrUnavailable — "try again" for a
+// request that can never work). So it is sent only when configured, and a
+// cohere deployment's request body is byte-for-byte what it was before.
+func (c *Client) WithModel(model string) *Client {
+	cp := *c
+	cp.model = strings.TrimSpace(model)
+	return &cp
 }
 
 // New builds a Client for the service at baseURL (http(s)://host[:port], no
@@ -134,7 +150,7 @@ func (c *Client) Transcribe(ctx context.Context, audio io.Reader, filename strin
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		pw.CloseWithError(writeBody(mw, audio, filename))
+		pw.CloseWithError(writeBody(mw, audio, filename, c.model))
 	}()
 	// 🔴 THE WRITER IS JOINED, NOT JUST UNBLOCKED. Closing the pipe's reader
 	// makes a blocked write fail, and waiting for the goroutine guarantees it
@@ -177,8 +193,9 @@ func (c *Client) Transcribe(ctx context.Context, audio io.Reader, filename strin
 	return out.Text, nil
 }
 
-// writeBody writes the multipart body: the file part, then the two fields.
-func writeBody(mw *multipart.Writer, audio io.Reader, filename string) error {
+// writeBody writes the multipart body: the file part, then the two fields, then
+// `model` when one is configured (see WithModel).
+func writeBody(mw *multipart.Writer, audio io.Reader, filename, model string) error {
 	part, err := mw.CreateFormFile("file", filename)
 	if err != nil {
 		return err
@@ -197,6 +214,11 @@ func writeBody(mw *multipart.Writer, audio io.Reader, filename string) error {
 	}
 	if err := mw.WriteField("punctuation", "true"); err != nil {
 		return err
+	}
+	if model != "" {
+		if err := mw.WriteField("model", model); err != nil {
+			return err
+		}
 	}
 	return mw.Close()
 }

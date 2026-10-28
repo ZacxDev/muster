@@ -212,6 +212,16 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 	// A reconnect that resumes (gen + offset) draws onto a page that already
 	// holds the conversation so far; see ui.MirrorTranscript.Resumed.
 	drawn.Resumed = gen != "" && offset > 0
+	// The tool-context ledger resumes from the checkpoint the socket before
+	// this one left at this very place (mirror_ledger.go), so a call still
+	// running across the reconnect is attributed when its next turn arrives.
+	lkey := ledgerKey{requestOwner(r.Context()), host, session, window}
+	if drawn.Resumed {
+		if l, ok := s.ledgers.take(lkey, gen, offset); ok {
+			drawn.RestoreLedger(l)
+		}
+	}
+	curGen := gen
 	// The window's questions changed (mirror_ask.go): tell the page at once,
 	// so a question shows here the moment its hook registers it. The page's
 	// own poll is the fallback.
@@ -264,6 +274,10 @@ func (s *Server) handleMirrorViewWS(w http.ResponseWriter, r *http.Request) {
 		}
 		// After Ops: Ops is what records the usage TakeContext reports.
 		b.Context = drawn.TakeContext()
+		if m.Gen != "" {
+			curGen = m.Gen
+		}
+		s.ledgers.put(lkey, curGen, m.Offset, drawn.Ledger())
 		if m.PromptIndex {
 			refs, dropped := mirror.BoundPrompts(m.Prompts)
 			b.Index = ui.NewMirrorIndex(refs, m.PromptsMore+dropped)
