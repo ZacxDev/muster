@@ -1327,13 +1327,13 @@ func (s *Server) dismissTask(ctx context.Context, id int64) error {
 		}
 	}
 	if linkedAgentID != 0 {
-		_, chief, err := s.agentIsChief(ctx, linkedAgentID)
+		_, chief, err := s.agentIsDeleteProtected(ctx, linkedAgentID)
 		switch {
 		case err != nil:
 			s.logger.Printf("dismiss task %d: chief check for linked agent %d: %v; leaving the agent running", id, linkedAgentID, err)
 			linkedAgentID = 0
 		case chief:
-			s.logger.Printf("dismiss task %d: linked agent %d is the chief; dismissing the task and leaving the agent running", id, linkedAgentID)
+			s.logger.Printf("dismiss task %d: linked agent %d is the chief or a declared officer's instance; dismissing the task and leaving the agent running", id, linkedAgentID)
 			linkedAgentID = 0
 		}
 	}

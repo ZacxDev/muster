@@ -232,6 +232,10 @@ var (
 		// its owner, through authz.ViaReap, after
 		// agents.PGStore.ListReapableStopped read the due rows under System.
 		"internal/api.(*Server).reapPrincipal",
+		// The officer wake loop: one officer's instance agents read, created,
+		// started and stopped as the officer's configured owner, through
+		// authz.ViaOfficer.
+		"internal/api.(*Server).officerPrincipal",
 	}
 	// admitLedger: every authentication wrapper.
 	admitLedger = []string{
@@ -255,7 +259,7 @@ var (
 	// new door until someone has decided it is not.
 	authzExports = []string{
 		"From", "IsAdmin", "MustFrom", "Operator", "OperatorUserID", "Principal", "Role", "RoleAdmin", "RoleMember",
-		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaMirrorHost", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
+		"System", "Via", "ViaAgent", "ViaAsk", "ViaAttention", "ViaConnect", "ViaDevice", "ViaFocus", "ViaHook", "ViaMirrorHost", "ViaOfficer", "ViaOperator", "ViaPlugin", "ViaQueue", "ViaReap", "ViaRelay", "ViaRoute", "ViaRunner", "ViaService",
 		"ViaSession", "ViaSystem", "ViaToken", "WithPrincipal",
 	}
 )

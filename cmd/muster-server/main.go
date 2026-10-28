@@ -35,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/users"
 	"log"
@@ -198,6 +199,9 @@ type app struct {
 	// (api.BrowserListener); nil unless MUSTER_BROWSER_PORT is set.
 	browser *http.Server
 	pool    *pgxpool.Pool
+	// officers is the officer runtime's wake loop; nil when MUSTER_OFFICERS
+	// declares none.
+	officers *officers.Reconciler
 	// kickoff delivers dispatched agents' first turns; nil when no gateway is
 	// built. See buildKickoffDeliverer.
 	kickoff *agentkickoff.Deliverer
@@ -634,6 +638,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		srv.SetReadyCheck(func(ctx context.Context) error { return db.Ping(ctx, pool) })
 	}
 	a.srv = srv
+	// The officer runtime (docs/officers.md): its wake loop is started by
+	// startBackgroundLoops. Refused at boot, like any contradictory
+	// configuration, when officers are declared without what they need.
+	if len(cfg.Officers) > 0 {
+		if a.officers, err = srv.EnableOfficers(api.OfficersConfig{Officers: cfg.Officers, WebhookKey: cfg.OfficerWebhookKey}); err != nil {
+			a.Close()
+			return nil, fmt.Errorf("%s: %w", envOfficers, err)
+		}
+	}
 
 	// 🔴 THE DELIVERER COMES FROM THE SAME prov AND gw THE ADAPTER'S
 	// deliverability was computed from, so "a dispatch is accepted" and "something
@@ -874,6 +887,13 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	// delivery record under it, so two replicas cannot both send one agent a memo.
 	if a.memo != nil {
 		go a.memo.Run(ctx, memorelay.DefaultInterval)
+	}
+	// The officer wake loop. Unguarded at replicas > 1 like the loops below:
+	// two pods would both start an instance, which is one Create winning on
+	// the unique agent name and one logged failure, and both stop one, which
+	// is idempotent (docs/officers.md).
+	if a.officers != nil {
+		go a.officers.Run(ctx)
 	}
 	// The AskUserQuestion store's expiry (askq.Store.RunSweep): an open
 	// question with no result seen in askq.MaxOpen ends as expired (and leaves

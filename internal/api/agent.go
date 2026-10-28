@@ -305,6 +305,12 @@ type agentTool struct {
 	// notChief: offered to, and callable by, every agent but the chief. See
 	// above.
 	notChief bool
+	// officerOnly: offered to, and callable by, a declared officer's instance
+	// agents alone (officers.go's officerOf — the binding rule). A THIRD axis,
+	// orthogonal to the chief's: enforced in the listing (toolsFor) and again in
+	// dispatchAgentTool, and the tool itself acts only for the caller's own
+	// officer.
+	officerOnly bool
 }
 
 // agentTools is the registry. The connector tools are present only when the
@@ -400,6 +406,15 @@ func (s *Server) agentTools() []agentTool {
 		// chief answers it. Chief-only, on MCP.
 		tools = append(tools, agentTool{def: answerSessionQuestionToolDef(), mcp: true, chiefOnly: true})
 	}
+	// The officer runtime (officers.go), present when officers are declared:
+	// an officer's instances reach their HQ queue through muster, which holds
+	// the officer's token. On MCP (officer instances are claude-code agents);
+	// officer-only.
+	if s.officerRT != nil {
+		for _, d := range officerToolDefs() {
+			tools = append(tools, agentTool{def: d, mcp: true, officerOnly: true})
+		}
+	}
 	return tools
 }
 
@@ -419,6 +434,11 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 	chief, decided := false, false
 	out := make([]agentTool, 0, len(all))
 	for _, t := range all {
+		if t.officerOnly {
+			if _, _, officer := s.officerOf(a); !officer {
+				continue
+			}
+		}
 		if t.chiefOnly || t.notChief {
 			if !decided {
 				chief, decided = s.isChiefAgent(ctx, a), true
@@ -578,6 +598,11 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 		return toolErr("%s is available to your owner's chief agent only", name)
 	case notChief && s.isChiefAgent(ctx, a):
 		return toolErr("%s is not one of your owner's chief agent's tools", name)
+	}
+	// The officer tools: refused inside to any agent that is not a declared
+	// officer's instance, and bound to the caller's own officer (officers.go).
+	if text, ok := s.dispatchOfficerTool(ctx, a, name, arguments); ok {
+		return text
 	}
 	switch name {
 	case "agent_get_task":

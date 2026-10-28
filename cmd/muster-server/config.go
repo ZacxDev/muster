@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/officers"
 	"net/url"
 	"os"
 	"regexp"
@@ -118,6 +119,13 @@ const (
 	// may stay stopped before it is destroyed. A Go duration, 336h when unset,
 	// "0"/"off" turns the reaper off, refused below 1h otherwise.
 	envAgentReapStoppedAfter = "MUSTER_AGENT_REAP_STOPPED_AFTER"
+	// The officer runtime (internal/officers, docs/officers.md): MUSTER_OFFICERS
+	// is a JSON array of declared officers, each officer's HQ token is read from
+	// MUSTER_OFFICER_TOKEN_<NAME> (officers.TokenEnvPrefix, read inside
+	// officers.Parse), and MUSTER_OFFICER_WEBHOOK_SECRET is HQ's Standard
+	// Webhooks secret for POST /officers/webhook (optional: polling alone works).
+	envOfficers             = "MUSTER_OFFICERS"
+	envOfficerWebhookSecret = "MUSTER_OFFICER_WEBHOOK_SECRET"
 	// The send queue (internal/sendqueue): how long a target must have been idle
 	// before a queued message is sent to it. A Go duration, 30s when unset,
 	// refused outside 1s–1h.
@@ -576,6 +584,12 @@ type config struct {
 	// AgentReapStoppedAfter is MUSTER_AGENT_REAP_STOPPED_AFTER
 	// (api.DefaultAgentReapStoppedAfter when unset; 0 = the reaper is off).
 	AgentReapStoppedAfter time.Duration
+	// Officers is MUSTER_OFFICERS parsed, each with its token
+	// (officers.Parse). Empty: the officer runtime is off.
+	Officers []officers.Officer
+	// OfficerWebhookKey is MUSTER_OFFICER_WEBHOOK_SECRET decoded; nil when
+	// unset.
+	OfficerWebhookKey []byte
 	// SendQueueIdle is MUSTER_SEND_QUEUE_IDLE (sendqueue.DefaultIdleFor when
 	// unset).
 	SendQueueIdle time.Duration
@@ -1253,6 +1267,17 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	c.AgentReapStoppedAfter = d
+	if c.Officers, err = officers.Parse(getenv(envOfficers), getenv); err != nil {
+		return config{}, err
+	}
+	if v := strings.TrimSpace(getenv(envOfficerWebhookSecret)); v != "" {
+		if len(c.Officers) == 0 {
+			return config{}, fmt.Errorf("%s is set but %s declares no officer", envOfficerWebhookSecret, envOfficers)
+		}
+		if c.OfficerWebhookKey, err = officers.DecodeSecret(v); err != nil {
+			return config{}, fmt.Errorf("invalid %s: %w", envOfficerWebhookSecret, err)
+		}
+	}
 	c.SendQueueIdle = sendqueue.DefaultIdleFor
 	if v := strings.TrimSpace(getenv(envSendQueueIdle)); v != "" {
 		d, err := time.ParseDuration(v)
@@ -2243,4 +2268,3 @@ func hookTokenRefusal(token string) string {
 	}
 	return ""
 }
-

@@ -265,6 +265,10 @@ type Server struct {
 	// provisioner's instances (agent_reap.go).
 	reapInstancesWithin time.Duration
 
+	// officerRT is the officer runtime (officers.go); nil when no officer is
+	// declared (EnableOfficers).
+	officerRT *officerRuntime
+
 	// taskLeader is the cross-process singleton gate for the background loops.
 	taskLeader LeaderGate
 
@@ -523,6 +527,11 @@ func (s *Server) registerAll(mux Mux) {
 	mux.HandleFunc("GET /favicon.ico", handleNoContent)
 	mux.HandleFunc("GET /apple-touch-icon.png", handleNoContent)
 	mux.HandleFunc("GET /apple-touch-icon-precomposed.png", handleNoContent)
+
+	// HQ's officer wake signal (officers.go): no app auth — the Standard
+	// Webhooks signature IS the auth, and a verified delivery only nudges the
+	// wake loop. 404 unless officers and MUSTER_OFFICER_WEBHOOK_SECRET are set.
+	mux.HandleFunc("POST /officers/webhook", s.handleOfficerWebhook)
 
 	// --- The human login tier: open by necessity, since it is how a caller
 	// stops being anonymous. ---
