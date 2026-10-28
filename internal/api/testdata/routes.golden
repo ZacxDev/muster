@@ -92,8 +92,6 @@ GET /events
 GET /f/{id}
 GET /favicon.ico
 GET /flows
-GET /github/callback
-GET /github/connect
 GET /health
 GET /invite
 GET /login
@@ -113,7 +111,6 @@ GET /mirror/view/suggest
 GET /mirror/view/ws
 GET /plugins
 GET /readyz
-GET /repos
 GET /send-queue
 GET /share
 GET /static/
@@ -138,7 +135,6 @@ GET /ui/connectors/new
 GET /ui/connectors/{name}/rotate
 GET /ui/focus/history
 GET /ui/notifications
-GET /ui/repos
 GET /ui/tags
 GET /ui/tasks
 GET /ui/tasks/new
@@ -226,7 +222,6 @@ POST /flows/requests/{id}/approve
 POST /flows/requests/{id}/deny
 POST /flows/runner-tokens
 POST /flows/runner-tokens/{id}/revoke
-POST /github/disconnect
 POST /invite
 POST /login
 POST /logout

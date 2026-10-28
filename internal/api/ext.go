@@ -53,7 +53,6 @@ import (
 type Extensions struct {
 	Notes  notes.Store
 	Agents agents.Store
-	GitHub github.Store
 	// Users answers a user's role for the request Principal (principal.go's
 	// roleOf). Nil: user 1 is admin and everyone else a member.
 	Users users.Store
@@ -134,17 +133,17 @@ type Extensions struct {
 	// shows no picker.
 	Kinds AgentKinds
 
-	// GitHubOAuth configures the OAuth web flow for connecting an account.
-	//
-	// ⚠ DEPRECATED AS muster's GITHUB IDENTITY when GitHubApp is set: the App
-	// takes precedence everywhere a repository list is read (github_source.go),
-	// and the OAuth connection is only the fallback for a deployment without one.
-	GitHubOAuth GitHubOAuthConfig
-	// GitHubApp, when set, is muster's GitHub identity (internal/githubapp): the
-	// Repos tab and every connected-repository check list the App's installation
-	// repositories instead of the OAuth connection's. The same App backs the
-	// `github` connector (wired into Connectors by connectors.WithVirtual, so the
-	// two cannot disagree about whether it is configured). nil: OAuth, as before.
+	// PublicURL is MUSTER_PUBLIC_URL, the externally reachable origin. Its host
+	// is one of the origins requireSameOrigin and the WebSockets accept
+	// (wsAllowedOrigins), for proxy setups that rewrite Host. "" accepts only
+	// the request's own Host.
+	PublicURL string
+	// GitHubApp, when set, is muster's GitHub identity (internal/githubapp):
+	// every connected-repository check lists the App's installation
+	// repositories (github_source.go). The same App backs the `github`
+	// connector (wired into Connectors by connectors.WithVirtual, so the two
+	// cannot disagree about whether it is configured). nil: muster has no
+	// GitHub identity, and every repository check answers errNoGitHub.
 	GitHubApp GitHubApp
 
 	// Push is muster's own Web Push (internal/push; push_routes.go). nil: no
@@ -421,30 +420,10 @@ type Mirror interface {
 // (*githubapp.App). An interface so a test can stand one in without a key.
 type GitHubApp interface {
 	Repos(ctx context.Context) ([]github.Repo, error)
-	Accounts(ctx context.Context) ([]string, error)
 	DefaultBranch(ctx context.Context, repo string) (string, error)
 	ListPullRequests(ctx context.Context, agentID int64, repo, state string) ([]github.PullRequest, error)
 	// Problem is the operator-facing reason the App cannot serve agentID now ("" if none).
 	Problem(agentID int64) string
-}
-
-// GitHubOAuthConfig holds the OAuth App credentials + the public base URL used
-// to build the redirect URI.
-type GitHubOAuthConfig struct {
-	ClientID     string
-	ClientSecret string
-	// BaseURL is the externally reachable origin used to construct the callback
-	// URL. If empty the callback is derived from the inbound request host.
-	BaseURL string
-	// StateKey MACs the OAuth `state` (github.OAuthStateKey, derived from the
-	// store's encryption key). Empty: no state is minted and every callback is
-	// refused — the flow never runs on an unkeyed MAC.
-	StateKey []byte
-}
-
-// Configured reports whether the OAuth App credentials are present.
-func (c GitHubOAuthConfig) Configured() bool {
-	return c.ClientID != "" && c.ClientSecret != ""
 }
 
 // UseExtensions attaches the dependencies. Call before Handler.
@@ -518,9 +497,9 @@ func (s *Server) UseExtensions(ext Extensions) {
 // dependencies that are merely absent.
 //
 // 🔴 THE DISTINCTION IS "DEGRADES VISIBLY" VERSUS "LIES SILENTLY", AND IT IS
-// THE ONLY test applied here. A nil GitHub store is not a defect: the Repos
-// tab is simply not drawn, which is TRUE — this server has no GitHub
-// connection. A notes store with no liveness probe IS a defect: every transcript
+// THE ONLY test applied here. A nil connector store is not a defect: the
+// Connectors tab is simply not drawn, which is TRUE — this server has no
+// connector store. A notes store with no liveness probe IS a defect: every transcript
 // row renders "no transcript recorded" over transcripts that may be perfectly
 // alive, and there is no request that fails, nothing logged, and nothing for an
 // operator to notice. The first is a configuration; the second is a page that

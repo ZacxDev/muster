@@ -1,3 +1,12 @@
+// Package github is muster's small GitHub REST client: the repository and
+// pull-request shapes, the pull-request listing the GitHub App reads with an
+// installation token (internal/githubapp), and the API base both follow.
+//
+// ⚠ IT HELD THE PER-USER OAUTH CONNECTION TOO — the encrypted token store, the
+// OAuth web flow and the token-based listings the Repos tab used. All of that
+// was removed with the Repos tab: the GitHub App is muster's GitHub identity.
+// The `github_connection` table that store wrote is still in the schema,
+// unread and unwritten, for a later migration to drop.
 package github
 
 import (
@@ -6,8 +15,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -26,7 +33,7 @@ func UseAPIBaseURL(u string) { apiBaseURL = u }
 // another client (internal/githubapp) follows the same override.
 func APIBaseURL() string { return apiBaseURL }
 
-// Repo is a repository as listed for the Repos tab and the dispatch modal.
+// Repo is a repository as listed for the dispatch dialog's repository picker.
 type Repo struct {
 	FullName string `json:"full_name"`
 	Private  bool   `json:"private"`
@@ -34,100 +41,8 @@ type Repo struct {
 	CloneURL string `json:"clone_url"`
 }
 
-// AuthorizeURL builds the GitHub OAuth authorize URL for the web flow.
-func AuthorizeURL(clientID, redirectURI, state string) string {
-	q := url.Values{}
-	q.Set("client_id", clientID)
-	q.Set("redirect_uri", redirectURI)
-	q.Set("scope", "repo")
-	q.Set("state", state)
-	return "https://github.com/login/oauth/authorize?" + q.Encode()
-}
-
-// ExchangeCode swaps an OAuth code for an access token, returning the token and
-// the granted scopes.
-func ExchangeCode(ctx context.Context, clientID, clientSecret, code, redirectURI string) (token, scopes string, err error) {
-	form := url.Values{}
-	form.Set("client_id", clientID)
-	form.Set("client_secret", clientSecret)
-	form.Set("code", code)
-	form.Set("redirect_uri", redirectURI)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://github.com/login/oauth/access_token", strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-	var body struct {
-		AccessToken      string `json:"access_token"`
-		Scope            string `json:"scope"`
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", "", err
-	}
-	if body.Error != "" {
-		return "", "", fmt.Errorf("github oauth: %s: %s", body.Error, body.ErrorDescription)
-	}
-	if body.AccessToken == "" {
-		return "", "", fmt.Errorf("github oauth: empty access token")
-	}
-	return body.AccessToken, body.Scope, nil
-}
-
-// FetchLogin returns the authenticated user's login for the given token.
-func FetchLogin(ctx context.Context, token string) (string, error) {
-	var u struct {
-		Login string `json:"login"`
-	}
-	if err := apiGet(ctx, token, apiBaseURL+"/user", &u); err != nil {
-		return "", err
-	}
-	return u.Login, nil
-}
-
-// ListRepos returns the authenticated user's repositories (up to a few pages,
-// newest-updated first).
-func ListRepos(ctx context.Context, token string) ([]Repo, error) {
-	var all []Repo
-	for page := 1; page <= 5; page++ {
-		var batch []Repo
-		u := apiBaseURL + "/user/repos?per_page=100&sort=updated&page=" + strconv.Itoa(page)
-		if err := apiGet(ctx, token, u, &batch); err != nil {
-			return nil, err
-		}
-		all = append(all, batch...)
-		if len(batch) < 100 {
-			break
-		}
-	}
-	return all, nil
-}
-
-// DefaultBranch returns a repository's default branch (e.g. "main", "trunk").
-// repo is "owner/name". Used to clone the right branch when the dispatcher
-// didn't specify one (GitHub's per-repo default is not always "main").
-func DefaultBranch(ctx context.Context, token, repo string) (string, error) {
-	var r struct {
-		DefaultBranch string `json:"default_branch"`
-	}
-	if err := apiGet(ctx, token, apiBaseURL+"/repos/"+repo, &r); err != nil {
-		return "", err
-	}
-	return r.DefaultBranch, nil
-}
-
 // PullRequest is a repository pull request, flattened for the worker tool. The
-// GitHub API nests author/branch under user/head/base; ListPullRequests maps
+// GitHub API nests author/branch under user/head/base; ListPullRequestsAt maps
 // those into the flat fields below.
 type PullRequest struct {
 	Number    int    `json:"number"`
@@ -141,15 +56,10 @@ type PullRequest struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-// ListPullRequests returns a repo's pull requests (newest-updated first, up to
-// 50). repo is "owner/name". state is one of "open", "closed", "all"; an empty
-// or unrecognized value defaults to "open". The token stays server-side — it is
-// never returned to the caller.
-func ListPullRequests(ctx context.Context, token, repo, state string) ([]PullRequest, error) {
-	return ListPullRequestsAt(ctx, apiBaseURL, token, repo, state)
-}
-
-// ListPullRequestsAt is ListPullRequests against the API base base.
+// ListPullRequestsAt returns a repo's pull requests from the API at base
+// (newest-updated first, up to 50). repo is "owner/name". state is one of
+// "open", "closed", "all"; an empty or unrecognized value defaults to "open".
+// The token stays server-side — it is never returned to the caller.
 func ListPullRequestsAt(ctx context.Context, base, token, repo, state string) ([]PullRequest, error) {
 	switch state {
 	case "open", "closed", "all":

@@ -12,24 +12,23 @@ import (
 // muster's GitHub IDENTITY, decided in ONE place.
 //
 // 🔴 EVERY READER OF "WHICH REPOSITORIES CAN muster SEE" GOES THROUGH HERE: the
-// Repos tab, the dispatch dialog's repo picker, the task-directory inference,
+// dispatch dialog's repo picker, the task-directory inference,
 // the default-branch lookup, and connectedRepo — the check behind every
 // claude-code dispatch door and task_dispatch's effective repository. They were
-// five open-coded `s.ext.GitHub.Get` + `github.ListRepos` copies; a GitHub App
-// added at four of them and missed at the fifth would leave one door checking
-// the OAuth account's repositories while the others checked the App's.
+// five open-coded copies once; a source added at four of them and missed at the
+// fifth would leave one door checking a different set of repositories.
 //
-// THE ORDER: a configured GitHub App (Extensions.GitHubApp) first — it is the
-// identity the `github` connector's tokens come from, so a repository it cannot
-// see is one no agent could clone. Otherwise the OAuth connection (deprecated;
-// kept as the fallback until the App is verified live and the OAuth code is
-// removed).
+// THE SOURCE: the configured GitHub App (Extensions.GitHubApp) — the identity
+// the `github` connector's tokens come from, so a repository it cannot see is
+// one no agent could clone. There is no other: the per-user OAuth connection
+// that used to be the fallback was removed (its `github_connection` table is
+// left in the schema, unread and unwritten, for a later migration to drop).
 //
-// 🔴 THE APP IS THE ADMIN'S (githubApp). For a member principal it does not
-// exist: a member's repository list, dispatch checks and default branches come
-// from that member's own OAuth connection, exactly as without an App — the same
-// rule connectors.WithVirtual applies to the `github` connector, so a member
-// can neither dispatch into an App repository nor have an agent reach one.
+// 🔴 THE APP IS THE ADMIN'S (githubApp). For a member principal, and on a
+// deployment with no App, there is NO GitHub identity: the repository list,
+// dispatch checks and default branches all answer errNoGitHub — the same rule
+// connectors.WithVirtual applies to the `github` connector, so a member can
+// neither dispatch into an App repository nor have an agent reach one.
 
 // errNoGitHub is "no GitHub identity is configured or connected".
 var errNoGitHub = errors.New("no GitHub connection")
@@ -40,11 +39,7 @@ func (s *Server) githubRepos(ctx context.Context) ([]github.Repo, error) {
 	if app := s.githubApp(ctx); app != nil {
 		return app.Repos(ctx)
 	}
-	token, err := s.githubOAuthToken(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return github.ListRepos(ctx, token)
+	return nil, errNoGitHub
 }
 
 // githubDefaultBranch is repo's default branch as muster's GitHub identity sees it.
@@ -52,11 +47,7 @@ func (s *Server) githubDefaultBranch(ctx context.Context, repo string) (string, 
 	if app := s.githubApp(ctx); app != nil {
 		return app.DefaultBranch(ctx, repo)
 	}
-	token, err := s.githubOAuthToken(ctx)
-	if err != nil {
-		return "", err
-	}
-	return github.DefaultBranch(ctx, token, repo)
+	return "", errNoGitHub
 }
 
 // githubApp is the configured GitHub App when ctx's principal may use it (an
@@ -66,21 +57,6 @@ func (s *Server) githubApp(ctx context.Context) GitHubApp {
 		return nil
 	}
 	return s.ext.GitHubApp
-}
-
-// githubOAuthToken is the request user's OAuth connection token, or errNoGitHub.
-func (s *Server) githubOAuthToken(ctx context.Context) (string, error) {
-	if s.ext.GitHub == nil {
-		return "", errNoGitHub
-	}
-	conn, ok, err := s.ext.GitHub.Get(ctx)
-	if err != nil {
-		return "", err
-	}
-	if !ok || conn.Token == "" {
-		return "", errNoGitHub
-	}
-	return conn.Token, nil
 }
 
 // githubAgentProblem is the GitHub App's operator-facing reason it cannot serve

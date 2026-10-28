@@ -95,11 +95,12 @@ type tab struct {
 // ⚠ `runbooks` AND `privileges` USED TO BE TABS HERE. Both subsystems were
 // removed (privileges superseded by connectors, runbooks unused); deleting their
 // entries from this slice removed the links, the panels, the headings and the
-// shell routes together, because they are all derived from it.
+// shell routes together, because they are all derived from it. So did `repos`,
+// when the deprecated GitHub OAuth connection it showed was removed: the GitHub
+// App (the `github` connector) is muster's GitHub identity now.
 var musterTabs = []tab{
 	{Key: "tasks", Label: "Tasks", Icon: "📋", Heading: "Tasks"},
 	{Key: "agents", Label: "Agents", Icon: "🧩", Heading: "Agents"},
-	{Key: "repos", Label: "Repos", Icon: "📦", Heading: "Repos"},
 	{Key: "connectors", Label: "Connectors", Icon: "🔌", Heading: "Connectors"},
 }
 
@@ -318,19 +319,8 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 							// NotesPanel takes no pending count here: upstream passed one so
 							// the Tasks panel could render the permission-request segment
 							// badge, and muster has no requests to count.
-							//
-							// 🔴 THE REPOS PANEL IS CONDITIONAL, AND ITS ABSENCE IS THE
-							// POINT RATHER THAN A TIDY-UP. This panel carries
-							// hx-trigger="load" and the shell renders on every tab, so on
-							// a deployment with no GitHub store every navigation in the
-							// app fetched a route that could only refuse — one failure
-							// toast per page view, on pages that have nothing to do with
-							// repositories. Mounting it only when there is a store behind
-							// it is what makes the tab's absence honest instead of making
-							// its presence noisy.
 							NotesPanel(activeTab == "tasks", data.tasks),
 							agentsPanel(activeTab == "agents", data.list),
-							g.If(feat.GitHub, ReposPanel(activeTab == "repos")),
 							g.If(feat.Connectors, ConnectorsPanel(activeTab == "connectors")),
 						),
 					),
@@ -1023,7 +1013,6 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 				ID("sidebar-prefs"),
 				Class("mt-auto flex flex-col gap-1 border-t border-line p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]"),
 				installButton(),
-				themeToggle(),
 				accountLinks(feat, activeTab, currentTab),
 			),
 		),

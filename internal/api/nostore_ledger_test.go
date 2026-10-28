@@ -277,8 +277,6 @@ var htmlWithoutNoStore = map[string]string{
 	"handleConnectorNewForm":    htmlFragment + " (the form a secret is typed INTO; it holds none)",
 	"handleConnectorRotateForm": htmlFragment + " (the form a secret is typed INTO; it holds none)",
 	"handleChiefThreadSearch":   htmlFragment,
-	"handleReposContent":        htmlFragment,
-	"handleGitHubDisconnect":    htmlFragment,
 	"handleNotesContent":        htmlFragment,
 	"handleNoteNewModal":        htmlFragment,
 	"handleNoteDelete":          htmlFragment,

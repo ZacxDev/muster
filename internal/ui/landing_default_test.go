@@ -14,7 +14,7 @@ func landingShapes() []featureShape {
 	return []featureShape{
 		{"a member (connectors built)", Features{Connectors: true}},
 		{"an admin (connectors built)", Features{Connectors: true, Admin: true}},
-		{"an admin, every subsystem built", Features{GitHub: true, Connectors: true, Admin: true}},
+		{"an admin, every subsystem built", Features{Connectors: true, Admin: true}},
 		{"nothing optional built", Features{}},
 	}
 }
@@ -111,7 +111,7 @@ func TestTheScriptsDefaultTabIsTheTabTheShellShowsAtRoot(t *testing.T) {
 func TestTheScriptSpellsNoTabKeyTheShellDoesNotHave(t *testing.T) {
 	// What the browser runs is the static code AND the registry its tag hands
 	// it (appNavAttr); a stray key in either is the defect, so both are scanned.
-	feat := Features{GitHub: true, Connectors: true, Admin: true}
+	feat := Features{Connectors: true, Admin: true}
 	tabs, headings, def := appNavValues(t, feat)
 	js := mustStripJSComments(t, jsSource(t, appScript(feat))) + "\n" + tabs + "\n" + headings + "\n" + def
 	// CONTROL: the scan can see a quoted key at all.

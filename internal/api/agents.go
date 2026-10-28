@@ -2038,7 +2038,7 @@ func (s *Server) wsAllowedOrigins(r *http.Request) []string {
 	if r.Host != "" {
 		out = append(out, r.Host)
 	}
-	if base := s.ext.GitHubOAuth.BaseURL; base != "" {
+	if base := s.ext.PublicURL; base != "" {
 		if u, err := url.Parse(base); err == nil && u.Host != "" {
 			out = append(out, u.Host)
 		}

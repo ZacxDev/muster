@@ -84,13 +84,6 @@ func sampleAgentCards() []AgentCardView {
 	}
 }
 
-func sampleRepos() []RepoView {
-	return []RepoView{
-		{FullName: "ZacxDev/muster", Private: true, HTMLURL: "https://github.com/ZacxDev/muster"},
-		{FullName: "ZacxDev/vetr", HTMLURL: "https://github.com/ZacxDev/vetr"},
-	}
-}
-
 func sampleNoteEditView() NoteEditView {
 	return NoteEditView{
 		Note:        sampleTasksView().Cards[0].Note,

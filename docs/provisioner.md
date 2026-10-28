@@ -170,9 +170,10 @@ same resume (`--resume` of its own conversation by id).
   when the job ends. The checkout, its branch and its working tree are never
   moved.
 
-To start one from the chief: connect the repository on the Repos tab (it
-must be one of your connected repositories), make sure a `github` connector
-exists, then have the chief call `task_dispatch` with `repo`.
+To start one from the chief: the repository must be one of your connected
+repositories (in the GitHub App's installation, [github-app.md](github-app.md)),
+make sure a `github` connector exists, then have the chief call `task_dispatch`
+with `repo`.
 
 ## Talking to an agent
 

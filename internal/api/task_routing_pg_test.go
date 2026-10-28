@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/fence"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -334,38 +334,46 @@ func TestTaskDispatchStartsOneDraftOnlyAgentOncePerTask(t *testing.T) {
 	}
 }
 
-// fakeGitHubConn is a connected GitHub account for the repo checks.
-type fakeGitHubConn struct{ github.Store }
-
-func (fakeGitHubConn) Get(context.Context) (github.Connection, bool, error) {
-	return github.Connection{Login: "example", Token: "gh-test-token"}, true, nil
-}
-
-// withConnectedRepos points the GitHub client at a fake API listing repos
-// (restored after the test) and wires a connection.
+// withConnectedRepos wires a GitHub App whose installation lists repos, and
+// makes the fixture's owner an ADMIN: the App is the admins' GitHub identity
+// (githubApp), and a member has none since the OAuth connection was removed.
 func (f *taskRouteFixture) withConnectedRepos(t *testing.T, repos ...string) {
 	t.Helper()
+	f.promoteOwner(t)
 	connectRepos(t, f.srv, repos...)
 }
 
-// connectRepos wires s with a GitHub connection whose account lists repos.
+// promoteOwner makes the fixture's owner an admin: users.role (what a door's
+// principal is read from) and the asOwner principal f.call acts with.
+func (f *taskRouteFixture) promoteOwner(t *testing.T) {
+	t.Helper()
+	if _, err := f.pool.Exec(authz.System(f.ctx), `UPDATE users SET role = 'admin' WHERE id = $1`, f.owner); err != nil {
+		t.Fatal(err)
+	}
+	f.asOwner = authz.WithPrincipal(context.Background(), authz.Principal{UserID: f.owner, Role: authz.RoleAdmin, Via: authz.ViaSession})
+}
+
+// connectRepos wires s with a GitHub App (muster's GitHub identity, for an
+// admin principal) whose installation lists repos.
 func connectRepos(t *testing.T, s *Server, repos ...string) {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/user/repos" || r.URL.Query().Get("page") != "1" {
-			_, _ = w.Write([]byte(`[]`))
-			return
-		}
-		var out []map[string]any
-		for _, n := range repos {
-			out = append(out, map[string]any{"full_name": n})
-		}
-		_ = json.NewEncoder(w).Encode(out)
-	}))
-	t.Cleanup(srv.Close)
-	github.UseAPIBaseURL(srv.URL)
-	t.Cleanup(func() { github.UseAPIBaseURL("https://api.github.com") })
-	s.ext.GitHub = fakeGitHubConn{}
+	s.ext.GitHubApp = &listingApp{repos: repos}
+}
+
+// changingApp is a GitHub App whose installation repositories are whatever
+// list answers at each call, for a test whose repository set moves between the
+// check and the reservation.
+type changingApp struct {
+	listingApp
+	list func() []string
+}
+
+func (a *changingApp) Repos(context.Context) ([]github.Repo, error) {
+	var out []github.Repo
+	for _, n := range a.list() {
+		out = append(out, github.Repo{FullName: n})
+	}
+	return out, nil
 }
 
 // TestTaskDispatchTakesOnlyAConnectedRepo: a task with no repository can be

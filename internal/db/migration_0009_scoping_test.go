@@ -1,7 +1,6 @@
 package db_test
 
 import (
-	"context"
 	"errors"
 	"sort"
 	"strconv"
@@ -11,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/github"
 )
 
 // Migration 0009 — per-user scoping (accounts PR 3b): one reserved chief per
@@ -158,54 +156,5 @@ func TestAnOwnerHoldsOneReservedChief(t *testing.T) {
 	// Control: an ordinary agent for the same owner is not caught by the index.
 	if err := ins(1, "brisk-otter"); err != nil {
 		t.Errorf("an ordinary agent beside the chief: %v", err)
-	}
-}
-
-// TestEachUserHasTheirOwnGitHubConnection (accounts PR 3b): the GitHub store
-// acts for the PRINCIPAL's user (it was the constant 1). Two users each save
-// and read their own connection; neither Clear touches the other; a scope-all
-// caller has no connection to read; and a token sealed for one owner does not
-// open on another owner's row.
-func TestEachUserHasTheirOwnGitHubConnection(t *testing.T) {
-	f := newRLSFixture(t, "ms_0009_github")
-	st, err := github.NewPG(f.pool, []byte("0123456789abcdef0123456789abcdef"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	one, two := asUser(f.base, 1), asUser(f.base, f.two)
-	if err := st.Save(one, "octo-one", "repo", "gho_one"); err != nil {
-		t.Fatalf("user 1 Save: %v", err)
-	}
-	if err := st.Save(two, "octo-two", "repo", "gho_two"); err != nil {
-		t.Fatalf("user 2 Save: %v", err)
-	}
-	for _, c := range []struct {
-		ctx        context.Context
-		login, tok string
-	}{{one, "octo-one", "gho_one"}, {two, "octo-two", "gho_two"}} {
-		got, ok, err := st.Get(c.ctx)
-		if err != nil || !ok || got.Login != c.login || got.Token != c.tok {
-			t.Errorf("Get = %+v %v %v; want %s's own", got, ok, err, c.login)
-		}
-	}
-	if _, _, err := st.Get(authz.System(f.base)); err == nil {
-		t.Error("System read a GitHub connection; a scope-all caller has none")
-	}
-	// A ciphertext moved onto another owner's row does not open there.
-	if _, err := f.pool.Exec(f.mig, `UPDATE github_connection SET token_ciphertext =
-		(SELECT token_ciphertext FROM github_connection WHERE owner_id=1) WHERE owner_id=$1`, f.two); err != nil {
-		t.Fatal(err)
-	}
-	if got, _, err := st.Get(two); err == nil {
-		t.Errorf("user 1's sealed token opened on user 2's row: %+v", got)
-	}
-	if err := st.Clear(two); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, err := st.Get(one); err != nil || !ok {
-		t.Errorf("user 2's Clear removed user 1's connection: %v %v", ok, err)
-	}
-	if _, ok, _ := st.Get(two); ok {
-		t.Error("user 2's Clear left its own connection")
 	}
 }
