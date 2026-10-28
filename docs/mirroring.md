@@ -1026,9 +1026,22 @@ transcript in its own `~/.claude/projects`, takes the working directory the
 transcript records, and refuses unless that directory still exists and no Claude
 Code process or pane on the host runs the session. Then it starts a detached
 window in the tmux session `muster-resume` (`-resume-session`), running
-`claude --resume <id>` (`-resume-claude`) with no shell. The window is mirrored
-like any other. A host resumes one session at most once per 10 minutes, and at
-most 6 sessions an hour.
+`claude --resume <id>` (`-resume-claude`). The window is mirrored like any
+other. A host resumes one session at most once per 10 minutes, and at most 6
+sessions an hour.
+
+The window gets **your login environment, not muster-mirror's.** tmux gives a
+new window the PATH of the client that asked for it, and muster-mirror usually
+runs as a service whose PATH holds little more than tmux — a session started
+with that PATH finds no shell tools and its hooks fail. So the window is
+started with no PATH of muster-mirror's, which leaves it the tmux server's own,
+and `claude` runs under tmux's `default-shell` as a login shell (`<shell> -l -c
+'exec "$@"' claude claude --resume <id>`), which reads your profile — what
+builds the PATH when this resume is what started the tmux server. The shell
+interprets nothing but that constant `exec "$@"`; the binary, `--resume` and the
+id reach it as separate arguments. A `default-shell` that is not `sh`, `bash`,
+`zsh`, `dash`, `ksh` or `mksh` is passed over for `/bin/sh`, as is any shell when no tmux server is running
+yet.
 
 ## Tokens, revocation, rate limits
 

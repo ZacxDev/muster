@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -28,9 +29,12 @@ import (
 //	   (MailResumePerHostPerHour), then mirror's spawn-resume — the HOST finds
 //	   the transcript, reads its cwd and starts `claude --resume <id>` in a new
 //	   tmux window
-//	──▶ wait, at most MailResumeWait, until that window can take a route
-//	   (resolveRouteTarget), then routeByMuster: the ordinary route, through
-//	   the send queue, fenced
+//	──▶ route it there (routeByMusterWhy: the ordinary route, through the send
+//	   queue, fenced), TRYING AGAIN until the window takes it or MailResumeWait
+//	   has passed — a refusal is the answer only when no wait can change it
+//	   (finalRouteRefusal). Meanwhile the message stays queued and is HELD
+//	   from the chief's retry (plugins' resumeHolds), or the retry would take
+//	   it first and the route into the resumed session would be refused
 //	──▶ anything else: the chief's ordinary delivery, exactly as before
 //
 // 🔴 THE GATE IS OFF UNLESS THE DEPLOYMENT LISTS SENDERS. An empty
@@ -223,15 +227,23 @@ func (s *Server) runMailResume(ctx context.Context, p plugins.Plugin, m plugins.
 		window = w.Window
 		_ = s.ext.MailResumes.FinishMailResume(context.WithoutCancel(ctx), id, plugins.ResumeSpawned, window, "")
 	}
-	if s.awaitMailResume(ctx, p, m, mr) {
+	routed, final, last := s.awaitMailResume(ctx, p, m, mr)
+	switch {
+	case routed:
 		finish(plugins.ResumeDelivered, window, "")
 		return true
-	}
-	if ctx.Err() != nil {
+	case final:
+		finish(plugins.ResumeRefused, window, "the route was refused ("+refusalSummary(last)+"); it is not tried again")
+		return false
+	case ctx.Err() != nil:
 		finish(plugins.ResumeTimedOut, window, "muster is shutting down")
 		return false
 	}
-	finish(plugins.ResumeTimedOut, window, "no window took the route within "+s.mailResumeWaitFor().String())
+	detail := "no window took the route within " + s.mailResumeWaitFor().String()
+	if last != "" {
+		detail += "; the last attempt: " + refusalSummary(last)
+	}
+	finish(plugins.ResumeTimedOut, window, detail)
 	return false
 }
 
@@ -270,26 +282,68 @@ func (s *Server) spawnResume(ctx context.Context, sid string, id int64, hosts []
 	return mirror.ResumedWindow{}, fmt.Errorf("no host resumed it: %v", why)
 }
 
-// awaitMailResume waits, at most mailResumeWaitFor, until mr's session can take
-// a route, then makes it (routeByMuster). true once routed.
-func (s *Server) awaitMailResume(ctx context.Context, p plugins.Plugin, m plugins.Message, mr musterRoute) bool {
+// awaitMailResume routes m into mr's resumed session (routeByMusterWhy),
+// trying again every mailResumePollFor until the route is made or
+// mailResumeWaitFor has passed: a window still coming up, a host or chief not
+// ready, or any refusal a later attempt could see differently is TRIED AGAIN,
+// not taken as the answer. It stops early only on a refusal no wait can change
+// (finalRouteRefusal), reporting final. last is the latest refusal ("" if
+// none was made).
+func (s *Server) awaitMailResume(ctx context.Context, p plugins.Plugin, m plugins.Message, mr musterRoute) (routed, final bool, last string) {
 	sub := focus.Subject{Kind: focus.KindMirror, Key: mr.origin.Session}
 	deadline := time.NewTimer(s.mailResumeWaitFor())
 	defer deadline.Stop()
 	tick := time.NewTicker(s.mailResumePollFor())
 	defer tick.Stop()
 	for {
-		if _, refused := s.resolveRouteTarget(ctx, sub); refused == "" {
-			return s.routeByMuster(ctx, p, m, mr.origin, mr.target, mr.what)
+		// The target is checked first only to keep a window not yet listed from
+		// costing a chief lookup and a transaction each tick; routeItem checks
+		// it again, and its refusal is retried like any other.
+		if _, refused := s.resolveRouteTarget(ctx, sub); refused != "" {
+			last = refused
+		} else if taken, refused := s.routeByMusterWhy(ctx, p, m, mr.origin, mr.target, mr.what); taken {
+			return true, false, ""
+		} else if last = refused; finalRouteRefusal(refused) {
+			return false, true, last
 		}
 		select {
 		case <-ctx.Done():
-			return false
+			return false, false, last
 		case <-deadline.C:
-			return false
+			return false, false, last
 		case <-tick.C:
 		}
 	}
+}
+
+// finalRouteRefusal reports whether a route refusal is one no later attempt
+// can change: the message is no longer the resume's to route (another delivery
+// took it: message_not_found), cannot be answered (no_reply), is routed
+// already, or has a reply on its way. Everything else — the window, its host,
+// the send queue, the chief, a failed write — may be different on the next
+// attempt.
+func finalRouteRefusal(refused string) bool {
+	switch refusalCode(refused) {
+	case RefusedMessageNotFound, RefusedNoReply, RefusedAlreadyRouted, RefusedReplyInFlight:
+		return true
+	}
+	return false
+}
+
+// refusalSummary is a refusal JSON as one line for the resume's record: its
+// code, then its words.
+func refusalSummary(refused string) string {
+	var v struct {
+		Error   string `json:"error"`
+		Refused string `json:"refused"`
+	}
+	if json.Unmarshal([]byte(refused), &v) != nil || v.Error == "" {
+		return refused
+	}
+	if v.Refused == "" {
+		return v.Error
+	}
+	return v.Refused + ": " + v.Error
 }
 
 func (s *Server) mailResumeWaitFor() time.Duration {
