@@ -192,22 +192,59 @@ collapsed row showing the tool, its target, and whether it succeeded, failed or
 is still running. It updates live while a turn runs. Thinking is never shown.
 
 Each tool row also shows how much conversation context the call and its result
-added, such as `+3.3k ctx`. The number is measured from the transcript's own
-token usage: the context of the turn after the call, minus the context of the
-turn that made it. That difference also includes any text the calling turn
-wrote. When one turn made several calls, the measured total is split between
-them by the size of each call and result. Each share is marked `~`, and the
-row's tooltip gives the total. When nothing can be measured, the number is an
-estimate from the size of the call and result, also marked `~`. That happens
-when the runtime records no usage (Hermes), when something else entered the
-context before the next turn, or when the context shrank. Something else means
-a prompt, a notice, or context Claude Code injected, such as a message typed
-while the tool ran or a diagnostics report. The tooltip says which case it was.
-An estimate counts only the call and result, so it tends to read lower than a
-measured number. An image is sized by its pixels: about width × height / 750
-tokens, at most about 1600. A call whose next turn has not started yet shows no
-number. opencode rows show none either: muster reads neither their usage nor
-their output.
+added, such as `+3.3k ctx`. So do a subagent's card and a question card. The
+number is measured from the transcript's own token usage: the context of the
+turn after the call, minus the context of the turn that made it. That
+difference also includes any text the calling turn wrote, and any of the small
+reminders Claude Code adds before almost every request (`total_tokens_reminder`,
+`silent_turn_reminder`), which measured at a few dozen tokens. When one turn made
+several calls, the measured total is split between them by the size of each
+call and result. Each share is marked `~`, and the row's tooltip gives the total.
+When nothing can be measured, the number is an estimate, also marked `~`. That
+happens when the runtime records no usage (Hermes), when something else entered
+the context before the next turn, or when the context shrank. Something else
+means a prompt, a notice, or context Claude Code injected, such as a message
+typed while the tool ran or a diagnostics report. The tooltip says which case it
+was. An image is sized by its pixels: about width × height / 750 tokens, at most
+about 1600. A call whose next turn has not started yet shows no number. opencode
+rows show none either: muster reads neither their usage nor their output.
+
+A call still running when the page's connection drops is still numbered when
+its next turn arrives: each batch the server sends leaves a checkpoint of the
+attribution, and a connection that resumes from exactly that place picks it up.
+After a server restart, or a resume from anywhere else, such a call shows no
+number.
+
+### How the estimate is calibrated
+
+An estimate is the calling turn's own `output_tokens` (its share of them, by the
+size of each call's input, when it made several calls) plus the result's size at
+**2.3 bytes per token**. With no `output_tokens` known (Hermes, an older host),
+it is the call and result size at that rate, which reads low.
+
+The rate is fitted, not assumed. `go run ./cmd/muster-toolctx-calibrate` reads a
+directory of transcripts and prints aggregates only (counts, medians,
+percentiles). Its samples are clean single-call gaps: exactly what is shown as
+measured. Transcripts are split in half by a hash of their path: the rate is
+fitted on one half and the error reported on the other.
+
+- The measured growth minus the turn's `output_tokens` was never negative, so
+  the turn's output re-enters the context in full and the rest is the result's.
+- The result's rate, as the median of result bytes / (growth − output) over
+  results of 400 bytes or more, was 2.27 (p25 2.03, p75 2.53; n = 12,992), used
+  as 2.3.
+
+Over a local set of 697 transcripts (44,572 clean single-call gaps; 21,710 held
+out), the error |estimate − measured| / measured on the held-out half was:
+
+| estimate | median | p90 | measured / estimate, median |
+|---|---|---|---|
+| before: (call + result bytes) / 4 | 0.58 | 0.78 | 2.35 |
+| after: output + result bytes / 2.3 | 0.04 | 0.14 | 1.03 |
+| after, no `output_tokens` known: (call + result bytes) / 2.3 | 0.26 | 0.61 | 1.35 |
+
+`TestTheEstimateIsTheCalibratedSplit` pins the rate. Changing it is a decision
+made with that tool's numbers, not a drift.
 Every window has its own view: two Claude Code windows in the same directory each
 show their own conversation.
 

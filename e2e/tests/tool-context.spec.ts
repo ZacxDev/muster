@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { Page } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import { toolContextPort } from '../lib/env';
@@ -13,10 +14,14 @@ import { clsInit, readCls, resetCls } from '../lib/cls';
 //   - two parallel calls: one measured growth, split by size — "~+1.5k ctx" and
 //     "~+4.5k ctx", marked approximate;
 //   - a call whose next turn came after a prompt: not attributable, so an
-//     estimate from size — "~+181 ctx";
+//     estimate — its turn's output plus its result at the calibrated rate —
+//     "~+403 ctx";
 //   - a call with a long MCP-style tool name: the name truncates, and the badge
 //     and the status stay inside the row at a phone's width;
-//   - a call whose next turn has not happened: no badge at all.
+//   - a call whose next turn has not happened: no badge at all;
+//   - a subagent's card and a question card, badged like a row;
+//   - a call still running when the page's socket drops: the socket that
+//     resumes badges it when its next turn arrives.
 //
 // The badges of the parallel pair arrive LIVE (the next turn is appended while
 // the page is open, the group expanded), and filling them in must not shift
@@ -27,11 +32,11 @@ const rig = new MirrorRig(toolContextPort, 'e2e-toolctx');
 // An assistant record with one block and its usage (input, cache creation,
 // cache read): the context is their sum.
 const rec = (o: object) => JSON.stringify(o) + '\n';
-const usage = (input: number, create: number, read: number) => ({
+const usage = (input: number, create: number, read: number, output = 97) => ({
   input_tokens: input,
   cache_creation_input_tokens: create,
   cache_read_input_tokens: read,
-  output_tokens: 97,
+  output_tokens: output,
 });
 const asst = (block: object, u: ReturnType<typeof usage>) => rec({ type: 'assistant', message: { model: 'claude-fixture', content: [block], usage: u } });
 const use = (id: string, command: string, name = 'Bash') => ({ type: 'tool_use', id, name, input: { command } });
@@ -64,6 +69,27 @@ const LATER =
   asst(text('Next.'), usage(13, 1489, 40218)) + // 41720: tl grew 1502
   asst(use('tz', 'make'), usage(3, 2311, 41720)) +
   cc.toolResult('tz', 'z'.repeat(4409));
+
+// The cards and the reconnect: a subagent's call, a question, and a call still
+// running when the socket drops.
+const QUESTIONS = { questions: [{ question: 'Which colour?', header: 'Colour', multiSelect: false, options: [{ label: 'Teal', description: 'calm' }, { label: 'Amber', description: 'warm' }] }] };
+const CARDS =
+  cc.prompt('delegate it') +
+  asst(text('Delegating.'), usage(101, 2203, 30017, 211)) + // 32321
+  asst({ type: 'tool_use', id: 'sa', name: 'Agent', input: { description: 'Survey the module', prompt: 'p', subagent_type: 'Explore' } }, usage(101, 2203, 30017, 211)) +
+  // A background agent: its card's summary keeps moving after the reconnect.
+  rec({ type: 'user', promptId: 'p', toolUseResult: { isAsync: true, status: 'async_launched', agentId: 'a0ctx1' },
+    message: { content: [{ type: 'tool_result', tool_use_id: 'sa', content: 's'.repeat(2000) }] } }) +
+  asst({ type: 'tool_use', id: 'qa', name: 'AskUserQuestion', input: QUESTIONS }, usage(7, 4093, 32321, 157)) + // 36421: sa grew 4100
+  cc.toolResult('qa', 'User has answered your questions: "Which colour?"="Teal".') +
+  asst(text('Teal.'), usage(3, 517, 36421, 23)) + // 36941: qa grew 520
+  asst(use('tm', 'make'), usage(5, 1109, 36941, 61)); // 38055: still running
+// The agent's own transcript (beside the parent's, where Claude Code writes it).
+const subRow = (ago: number, message: object, type = 'assistant') =>
+  rec({ type, isSidechain: true, agentId: 'a0ctx1', timestamp: new Date(Date.now() - ago * 1000).toISOString(), message });
+const subTool = (ago: number, name: string, input: object) =>
+  subRow(ago, { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'x' + ago, name, input }] });
+const CARDS_LATER = cc.toolResult('tm', 'm'.repeat(3109)) + asst(text('Built.'), usage(9, 2169, 38055, 41)); // 40233: tm grew 2178
 
 const SIZES = [
   { name: 'phone', viewport: { width: 390, height: 844 }, touch: true },
@@ -137,9 +163,9 @@ for (const s of SIZES) {
       await expect(tq).toHaveText('~+4.5k ctx');
       for (const b of [tp, tq]) await expect(b).toHaveAttribute('data-tool-ctx', 'split');
       await expect(tq).toHaveAttribute('title', /a share of 6,000 measured for 2 parallel calls/);
-      // After a prompt: an estimate, (19 + 702) / 4 → 181.
+      // After a prompt: an estimate, the turn's output 97 + 702 / 2.3 (305.2 → 306) = 403.
       const te = row(page, 'sleep').locator('[data-tool-ctx]');
-      await expect(te).toHaveText('~+181 ctx');
+      await expect(te).toHaveText('~+403 ctx');
       await expect(te).toHaveAttribute('data-tool-ctx', 'estimate');
       // The long-named call: measured, 41720 − 40218 = 1502.
       const tl = row(page, 'lookup').locator('[data-tool-ctx]');
@@ -176,6 +202,72 @@ for (const s of SIZES) {
       await page.evaluate(() => (document.getElementById('mv-log')!.scrollTop = 1e6));
       await page.waitForTimeout(300);
       await page.screenshot({ path: info.outputPath(`tool-context-${s.name}.png`) });
+    });
+
+    test(`${s.name}: a subagent card, a question card and a call running across a reconnect are badged`, async ({ page }, info) => {
+      test.setTimeout(90_000);
+      const tr = rig.transcript(CARDS, 'cards-' + s.name);
+      const subDir = path.join(tr.replace(/\.jsonl$/, ''), 'subagents');
+      fs.mkdirSync(subDir, { recursive: true });
+      fs.writeFileSync(path.join(subDir, 'agent-a0ctx1.meta.json'),
+        JSON.stringify({ agentType: 'Explore', description: 'Survey the module', toolUseId: 'sa', spawnDepth: 1, requestShape: 'background' }));
+      const subFile = path.join(subDir, 'agent-a0ctx1.jsonl');
+      fs.writeFileSync(subFile, subRow(90, { role: 'user', content: 'survey it' }, 'user') + subTool(70, 'Grep', { pattern: 'TODO' }));
+      await rig.startHost({ MUSTER_MIRROR_E2E_SESSIONS: 'main', MUSTER_MIRROR_E2E_CLAUDE: 'main=' + tr });
+      const sockets: { close: () => Promise<void> }[] = [];
+      await page.routeWebSocket(/\/mirror\/view\/ws/, (ws) => {
+        ws.connectToServer();
+        sockets.push(ws);
+      });
+      await rig.login(page);
+      await rig.waitListed(page, 'data-mirror-claude');
+      await page.goto(rig.origin + rig.viewPath('main'));
+      const log = page.locator('#mv-log');
+
+      // The subagent's card: 32321 → 36421, +4100, measured.
+      const card = log.locator('[data-subagent-card]');
+      const cardBadge = card.locator('[data-tool-ctx]');
+      await expect(cardBadge).toHaveText('+4.1k ctx', { timeout: 15_000 });
+      await expect(cardBadge).toHaveAttribute('data-tool-ctx', 'measured');
+      // The question card: 36421 → 36941, +520, measured.
+      const ask = log.locator('[data-ask]');
+      await expect(ask.locator('[data-tool-ctx]')).toHaveText('+520 ctx');
+      // The running call: no badge yet.
+      await expect(row(page, 'make')).toBeVisible();
+      await expect(row(page, 'make').locator('[data-tool-ctx]')).toBeHidden();
+
+      // The socket drops; the page reconnects on its own and resumes.
+      await sockets[0].close();
+      await expect.poll(() => sockets.length, { message: 'the page reconnected', timeout: 15_000 }).toBe(2);
+      await expect(page.locator('#mv-status')).toHaveText('Live', { timeout: 15_000 });
+      // The agent moves: the NEW socket redraws its card's summary, which it
+      // never badged itself — the page keeps the badge it has.
+      fs.appendFileSync(subFile, subTool(0, 'Read', { file_path: '/src/module.go' }));
+      await expect(card.locator('[data-subagent-last]')).toHaveText('Read: /src/module.go', { timeout: 15_000 });
+      await expect(cardBadge).toHaveText('+4.1k ctx');
+      // The call's result and its next turn arrive over the NEW socket: 38055 → 40233, +2178.
+      fs.appendFileSync(tr, CARDS_LATER);
+      const tm = row(page, 'make').locator('[data-tool-ctx]');
+      await expect(tm).toHaveText('+2.2k ctx', { timeout: 15_000 });
+      await expect(tm).toHaveAttribute('data-tool-ctx', 'measured');
+      await expect(tm).toHaveAttribute('data-tool-ctx-tokens', '2178');
+      // The cards kept theirs.
+      await expect(cardBadge).toHaveText('+4.1k ctx');
+      await expect(ask.locator('[data-tool-ctx]')).toHaveText('+520 ctx');
+
+      // Each badge sits inside its card or row, and the page does not scroll sideways.
+      for (const [el, what] of [[card, 'subagent card'], [ask, 'question card'], [row(page, 'make'), 'row']] as const) {
+        const r = (await el.boundingBox())!;
+        const b = (await el.locator('[data-tool-ctx]').first().boundingBox())!;
+        expect(b.x, `${what}: the badge starts inside it`).toBeGreaterThanOrEqual(r.x);
+        expect(b.x + b.width, `${what}: the badge ends inside it`).toBeLessThanOrEqual(r.x + r.width);
+      }
+      const pill = (await card.locator('[data-subagent-status]').boundingBox())!;
+      const cb = (await card.boundingBox())!;
+      expect(pill.x + pill.width, 'the status pill stays inside the card').toBeLessThanOrEqual(cb.x + cb.width);
+      const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+      expect(sw, 'no horizontal scroll').toBeLessThanOrEqual(cw);
+      await page.screenshot({ path: info.outputPath(`tool-context-cards-${s.name}.png`) });
     });
   });
 }

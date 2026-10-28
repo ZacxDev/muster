@@ -44,7 +44,7 @@ func placedEvents(b []byte) []Event {
 			evs := Events(r)
 			if r.Type == "attachment" && !r.IsSidechain {
 				// The mirrored view's readers mark context the CLI injected.
-				evs = []Event{{Kind: KindInjected}}
+				evs = []Event{{Kind: KindInjected, Text: r.Attachment.Type}}
 			}
 			for _, ev := range evs {
 				if ev.Kind == KindPrompt {
@@ -89,12 +89,12 @@ func TestEventsFromARealToolTurn(t *testing.T) {
 	got := allEvents(readFixture(t))
 	want := []Event{
 		{Kind: KindPrompt, Text: "an earlier prompt"},
-		{Kind: KindText, Text: "AN EARLIER REPLY that is not this turn", Usage: &Usage{Tokens: 248773}},
+		{Kind: KindText, Text: "AN EARLIER REPLY that is not this turn", Usage: &Usage{Tokens: 248773, Output: 829}},
 		{Kind: KindPrompt, Text: "list the workspace"},
-		{Kind: KindText, Text: "First segment: I will list the workspace.", Usage: &Usage{Tokens: 248773}},
-		{Kind: KindToolCall, ToolID: "toolu_fixture1", Tool: "Bash", Target: "ls", Input: `{"command":"ls","description":"List files"}`, Bytes: 43, Usage: &Usage{Tokens: 248773}},
+		{Kind: KindText, Text: "First segment: I will list the workspace.", Usage: &Usage{Tokens: 248773, Output: 829}},
+		{Kind: KindToolCall, ToolID: "toolu_fixture1", Tool: "Bash", Target: "ls", Input: `{"command":"ls","description":"List files"}`, Bytes: 43, Usage: &Usage{Tokens: 248773, Output: 829}},
 		{Kind: KindToolResult, ToolID: "toolu_fixture1", OK: true, Output: "file-a\nfile-b", Bytes: 13, At: 946684811000},
-		{Kind: KindText, Text: "Second segment: the workspace holds file-a and file-b.", Usage: &Usage{Tokens: 249972}},
+		{Kind: KindText, Text: "Second segment: the workspace holds file-a and file-b.", Usage: &Usage{Tokens: 249972, Output: 117}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("events:\n got %+v\nwant %+v", got, want)
@@ -133,7 +133,7 @@ func TestEventsRecordShapes(t *testing.T) {
 			[]Event{{Kind: KindToolResult, ToolID: "t1", OK: false, Output: "boom", Bytes: 4}}},
 		{"block-array result content",
 			`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":[{"type":"text","text":"a"},{"type":"image"},{"type":"text","text":"b"}]}]}}`,
-			[]Event{{Kind: KindToolResult, ToolID: "t2", OK: true, Output: "a\n[image]\nb", Bytes: 1 + 1 + 6400}}},
+			[]Event{{Kind: KindToolResult, ToolID: "t2", OK: true, Output: "a\n[image]\nb", Bytes: 1 + 1 + 3680}}},
 		{"injected context is dropped",
 			`{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"Base directory for this skill"}]}}`, nil},
 		{"a subagent's records are dropped",

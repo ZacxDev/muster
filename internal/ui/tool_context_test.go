@@ -58,8 +58,10 @@ func TestOpsDrawsAnEstimateWithTheResult(t *testing.T) {
 	tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolCall, ToolID: "call_e", Tool: "terminal", Input: `{"command":"cat a"}`, Bytes: 19}})
 	ops := tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolResult, ToolID: "call_e", OK: true, Output: "x", Bytes: 1238}})
 	html := opsHTML(ops)
-	// (19 + 1238) / 4, rounded up: 315.
-	for _, want := range []string{`data-tool-ctx="estimate"`, `data-tool-ctx-tokens="315"`, `>~+315 ctx</span>`, "Estimated from the call and result size"} {
+	// No output known: (19 + 1238) / 2.3 = 546.5, rounded up: 547.
+	for _, want := range []string{`data-tool-ctx="estimate"`, `data-tool-ctx-tokens="547"`, `>~+547 ctx</span>`,
+		"Estimated from the call and result size at about 2.3 bytes per token", "the turn&#39;s own output is not known, so it reads low",
+		"No usage was recorded to measure it by"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("estimate lacks %q:\n%s", want, html)
 		}
@@ -109,12 +111,14 @@ func TestCtxCount(t *testing.T) {
 func TestAnEstimatesTitleSaysWhy(t *testing.T) {
 	var tr MirrorTranscript
 	tr.Ops([]cctranscript.Event{
-		{Kind: cctranscript.KindToolCall, ToolID: "toolu_w", Tool: "Bash", Input: `{"command":"date"}`, Bytes: 18, Usage: &cctranscript.Usage{Tokens: 45641}},
+		{Kind: cctranscript.KindToolCall, ToolID: "toolu_w", Tool: "Bash", Input: `{"command":"date"}`, Bytes: 18, Usage: &cctranscript.Usage{Tokens: 45641, Output: 211}},
 		{Kind: cctranscript.KindToolResult, ToolID: "toolu_w", OK: true, Bytes: 81},
 		{Kind: cctranscript.KindInjected},
 	})
 	html := opsHTML(tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "Noted.", Usage: &cctranscript.Usage{Tokens: 48401}}}))
-	for _, want := range []string{`>~+25 ctx</span>`, `data-tool-ctx="estimate"`, "context the CLI injected", "tends to read lower than a measured figure"} {
+	// The turn's output 211 + 81 / 2.3 = 35.2 → 36: 247.
+	for _, want := range []string{`>~+247 ctx</span>`, `data-tool-ctx="estimate"`, "context the CLI injected",
+		"this call&#39;s share of its turn&#39;s output (211 tokens) plus its result at about 2.3 bytes per token"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("the badge lacks %q:\n%s", want, html)
 		}

@@ -13,7 +13,7 @@ import (
 
 // The tool-call context ledger (toolctx.go), fed SYNTHETIC transcripts through
 // the real decoder (DecodeLine → Events → Observe). Every token figure in these
-// fixtures is distinct from every other and from EstimateBytesPerToken, so an
+// fixtures is distinct from every other and from ResultBytesPerToken, so an
 // expectation can only be met by the arithmetic it names; each expected value
 // is worked out by hand in the comment beside it.
 
@@ -149,8 +149,8 @@ func TestToolContextWithoutUsageEstimatesFromSize(t *testing.T) {
 		asst(toolUse("toolu_e", `{"command":"cat a"}`), 0, 0, 0), // input 19 bytes
 		result("toolu_e", 1238),
 	)
-	// (19 + 1238) / 4 = 314.25 → rounded up: 315.
-	want := []ToolCost{{ToolID: "toolu_e", Tokens: 315, Kind: CostEstimate, Why: WhyNoUsage}}
+	// No output known: (19 + 1238) / 2.3 = 546.5 → rounded up: 547.
+	want := []ToolCost{{ToolID: "toolu_e", Tokens: 547, Kind: CostEstimate, Why: WhyNoUsage}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 	}
@@ -167,8 +167,8 @@ func TestToolContextAPromptBeforeTheNextTurnIsNotMeasured(t *testing.T) {
 		prompt("stop, do something else"),
 		asst(textBlock("OK."), 5, 1777, 31588), // 33370
 	)
-	// (19 + 702) / 4 = 180.25 → 181, an estimate.
-	want := []ToolCost{{ToolID: "toolu_i", Tokens: 181, Kind: CostEstimate, Why: WhyInterrupted}}
+	// The turn's output 97 + 702 / 2.3 = 305.2 → 306: 403, an estimate.
+	want := []ToolCost{{ToolID: "toolu_i", Tokens: 403, Kind: CostEstimate, Why: WhyInterrupted, Output: 97}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 	}
@@ -183,8 +183,8 @@ func TestToolContextAShrinkingContextIsNotMeasured(t *testing.T) {
 		result("toolu_k", 66),
 		asst(textBlock("After a compaction."), 3, 4403, 12007), // 16413: smaller
 	)
-	// (18 + 66) / 4 = 21, an estimate.
-	want := []ToolCost{{ToolID: "toolu_k", Tokens: 21, Kind: CostEstimate, Why: WhyShrank}}
+	// 97 + 66 / 2.3 = 28.7 → 29: 126, an estimate.
+	want := []ToolCost{{ToolID: "toolu_k", Tokens: 126, Kind: CostEstimate, Why: WhyShrank, Output: 97}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 	}
@@ -286,8 +286,8 @@ func TestToolContextInjectedContextBeforeTheNextTurnIsNotMeasured(t *testing.T) 
 				attachment(typ),
 				asst(textBlock("Noted."), 19, 2741, 45641), // 48401
 			)
-			// (18 + 81) / 4 = 24.75 → 25, an estimate, and why.
-			want := []ToolCost{{ToolID: "toolu_j", Tokens: 25, Kind: CostEstimate, Why: WhyInterrupted}}
+			// 97 + 81 / 2.3 = 35.2 → 36: 133, an estimate, and why.
+			want := []ToolCost{{ToolID: "toolu_j", Tokens: 133, Kind: CostEstimate, Why: WhyInterrupted, Output: 97}}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 			}
@@ -316,13 +316,14 @@ func TestToolContextAnImageResultIsSizedByItsPixels(t *testing.T) {
 		data string
 		want int64
 	}{
-		// 300×200 = 60000 px / 750 = 80 tokens = 320 bytes; (19 + 320) / 4 = 84.75 → 85.
-		{"small", pngBase64(t, 300, 200), 85},
+		// 300×200 = 60000 px / 750 = 80 tokens = 184 bytes at 2.3;
+		// (19 + 184) / 2.3 = 88.3 → 89.
+		{"small", pngBase64(t, 300, 200), 89},
 		// 2000×1500 = 4000 tokens, past the ~1600 an image is scaled down to:
-		// 1600 tokens = 6400 bytes; (19 + 6400) / 4 = 1604.75 → 1605.
-		{"scaled down", pngBase64(t, 2000, 1500), 1605},
-		// Not an image the header can be read from: the nominal 1600 → 1605.
-		{"unreadable", "QUJD", 1605},
+		// 1600 tokens = 3680 bytes; (19 + 3680) / 2.3 = 1608.3 → 1609.
+		{"scaled down", pngBase64(t, 2000, 1500), 1609},
+		// Not an image the header can be read from: the nominal 1600 → 1609.
+		{"unreadable", "QUJD", 1609},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -342,16 +343,16 @@ func TestToolContextASplitWeighsAnImageByItsPixels(t *testing.T) {
 	got := ledgerRun(t,
 		asst(toolUse("toolu_img", `{"command":"ls -la"}`), 29, 1931, 52117), // 54077
 		asst(toolUse("toolu_txt", `{"command":"pwd -P"}`), 29, 1931, 52117),
-		// 1000×750 = 750000 px / 750 = 1000 tokens = 4000 bytes.
+		// 1000×750 = 750000 px / 750 = 1000 tokens = 2300 bytes at 2.3.
 		imageResult("toolu_img", pngBase64(t, 1000, 750)),
 		result("toolu_txt", 400),
 		asst(textBlock("Seen."), 31, 2189, 54077), // 56297 → growth 2220
 	)
-	// Weights: img 20 + 4000 = 4020, txt 20 + 400 = 420; total 4440.
-	// img = 2220 × 4020 / 4440 = 2010; txt = 2220 − 2010 = 210.
+	// Weights: img 20 + 2300 = 2320, txt 20 + 400 = 420; total 2740.
+	// img = 2220 × 2320 / 2740 = 1879.7 → 1879; txt = 2220 − 1879 = 341.
 	want := []ToolCost{
-		{ToolID: "toolu_img", Tokens: 2010, Kind: CostSplit, GroupTokens: 2220, GroupSize: 2},
-		{ToolID: "toolu_txt", Tokens: 210, Kind: CostSplit, GroupTokens: 2220, GroupSize: 2},
+		{ToolID: "toolu_img", Tokens: 1879, Kind: CostSplit, GroupTokens: 2220, GroupSize: 2},
+		{ToolID: "toolu_txt", Tokens: 341, Kind: CostSplit, GroupTokens: 2220, GroupSize: 2},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)

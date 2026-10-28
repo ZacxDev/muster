@@ -75,11 +75,13 @@ func MirrorAskRowID(toolID string) string { return toolRowID(toolID) }
 // askCardClass is the card's frame: the tool row's, a little wider.
 const askCardClass = "w-full max-w-[92%] min-w-0 self-start rounded-xl bg-bg/50 text-sm ring-1 ring-inset ring-line"
 
-// askCardHead is the card's title line.
-func askCardHead(label string) g.Node {
+// askCardHead is the card's title line; extra (the conversation's card: its
+// context badge, tool_context.go) is drawn before the label.
+func askCardHead(label string, extra ...g.Node) g.Node {
 	return Div(Class("flex min-h-[44px] items-center gap-2 px-3 py-2 text-xs font-medium text-fg2"),
 		Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("❓")),
 		Span(Class("shrink-0 font-mono text-st-review-fg"), g.Text(askq.ToolName)),
+		g.Group(extra),
 		Span(Class("ml-auto shrink-0 text-muted"), g.Text(label)))
 }
 
@@ -117,14 +119,14 @@ func askReadOnly(qs []askq.Question, answers map[string]string) g.Node {
 // questions, read-only. Claude Code 2.1.289 writes the call together with its
 // result (measured: neither is in the transcript while the picker shows), so
 // this is drawn only for a transcript cut between the two.
-func MirrorAskCall(rowID string, qs []askq.Question) g.Node {
+func MirrorAskCall(rowID string, qs []askq.Question, extra ...g.Node) g.Node {
 	return Section(
 		g.If(rowID != "", ID(rowID)),
 		g.Attr("data-ask", ""),
 		g.Attr("data-ask-state", AskStateWaiting),
 		g.Attr("aria-label", "Claude is asking"),
 		Class(askCardClass),
-		askCardHead("asking…"),
+		askCardHead("asking…", extra...),
 		Div(Class("flex flex-col gap-3 px-3 pb-3"),
 			askReadOnly(qs, nil),
 			P(Class("text-xs text-muted"), g.Text("Waiting for the answer in the terminal.")),
@@ -135,7 +137,7 @@ func MirrorAskCall(rowID string, qs []askq.Question) g.Node {
 // MirrorAskResult is a call drawn from its result: read-only, with the answers
 // it was given (none, when the result carries none — the picker was dismissed —
 // and note says what the result said instead).
-func MirrorAskResult(rowID string, qs []askq.Question, answers map[string]string, note string) g.Node {
+func MirrorAskResult(rowID string, qs []askq.Question, answers map[string]string, note string, extra ...g.Node) g.Node {
 	label := "answered"
 	if len(answers) == 0 {
 		label = "not answered"
@@ -146,7 +148,7 @@ func MirrorAskResult(rowID string, qs []askq.Question, answers map[string]string
 		g.Attr("data-ask-state", AskStateHistory),
 		g.Attr("aria-label", "Claude asked"),
 		Class(askCardClass),
-		askCardHead(label),
+		askCardHead(label, extra...),
 		Div(Class("flex flex-col gap-3 px-3 pb-3"),
 			askReadOnly(qs, answers),
 			g.If(note != "", P(Class("break-words text-xs text-muted"), g.Text(note))),
