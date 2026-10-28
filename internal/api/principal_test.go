@@ -379,6 +379,8 @@ var routeVias = map[authz.Via][]string{
 	// A MIRROR HOST token opens exactly the mirrored sessions' MCP door.
 	authz.ViaMirrorHost: {
 		"POST /mirror/mcp",
+		// `muster doctor`'s this-host check (doctor.go): the token's own host.
+		"GET /mirror/host",
 	},
 	// A DEVICE credential (0039) opens exactly the device tier.
 	authz.ViaDevice: {

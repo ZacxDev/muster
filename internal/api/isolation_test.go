@@ -354,6 +354,7 @@ var isolationClasses = map[string]routeClass{
 	// The AskUserQuestion hook's door: like the tunnel, a mirror token only.
 	"POST /mirror/ask":        classPublic,
 	"POST /mirror/mcp":        classMirrorHost,
+	"GET /mirror/host":        classMirrorHost,
 	"GET /mirror/terminal":    classMirror,
 	"GET /mirror/terminal/ws": classMirror,
 

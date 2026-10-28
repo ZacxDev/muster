@@ -80,6 +80,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /manifest.webmanifest': 'JSON',
   'GET /metrics': 'Prometheus text',
   'GET /mirror/connect': 'the mirror host tunnel',
+  'GET /mirror/host': 'JSON (a machine\'s own connection state, for muster doctor)',
   'GET /mirror/terminal/send': 'a redirect back to the view',
   'GET /mirror/terminal/ws': 'websocket',
   'GET /mirror/view/asks': 'an HTML fragment (the Rendered view\'s question cards, polled into #mv-asks)',

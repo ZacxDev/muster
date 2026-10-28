@@ -99,6 +99,7 @@ GET /login
 GET /manifest.webmanifest
 GET /metrics
 GET /mirror/connect
+GET /mirror/host
 GET /mirror/terminal
 GET /mirror/terminal/send
 GET /mirror/terminal/ws

@@ -58,13 +58,23 @@ MUSTER_DIR="${MUSTER_DIR:-$HOME/muster}"
 MUSTER_BIN="${MUSTER_BIN:-$HOME/.local/bin}"
 # mi_save KEY VALUE: remember a value for later steps (and later shells).
 mi_save() {
-  touch "$MI_DIR/state" && chmod 600 "$MI_DIR/state"
+  (umask 077; touch "$MI_DIR/state")
   grep -v "^$1=" "$MI_DIR/state" > "$MI_DIR/state.tmp" || true
   printf "%s='%s'\n" "$1" "$2" >> "$MI_DIR/state.tmp" && mv "$MI_DIR/state.tmp" "$MI_DIR/state"
   eval "$1='$2'"
 }
 # mi_rand [BYTES]: a random hex string (2 characters per byte).
 mi_rand() { head -c "${1:-24}" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+# mi_valid_version V: V is a release version, X.Y.Z and nothing else.
+mi_valid_version() { printf '%s\n' "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; }
+# mi_set_version V: remember V and the release URL derived from it. Refuses
+# anything that is not X.Y.Z, so a failed lookup is never saved.
+# (MUSTER_RELEASE_OVERRIDE replaces the GitHub URL; for testing only.)
+mi_set_version() {
+  mi_valid_version "$1" || { echo "mi_set_version: '$1' is not a version (X.Y.Z); nothing saved" >&2; return 1; }
+  mi_save MUSTER_VERSION "$1"
+  mi_save MUSTER_RELEASE_BASE "${MUSTER_RELEASE_OVERRIDE:-https://github.com/ZacxDev/muster/releases/download/v$1}"
+}
 # mi_verify FILE: check FILE (in the current directory) against ./checksums.txt.
 mi_verify() {
   line=$(grep "[ *]$1\$" checksums.txt) || { echo "mi_verify: $1 is not listed in checksums.txt" >&2; return 1; }
@@ -72,18 +82,57 @@ mi_verify() {
   else printf '%s\n' "$line" | shasum -a 256 -c -; fi
 }
 # env_get KEY / env_set KEY VALUE: read and write the server's .env (hub only).
+# env_set passes the value through the environment, never argv, and writes
+# with umask 077.
 env_get() { sed -n "s/^$1=//p" "$MUSTER_DIR/.env" | tail -n 1; }
 env_example() { sed -n "s/^$1=//p" "$MUSTER_DIR/.env.example" | tail -n 1; }
 env_set() {
-  tmp="$MUSTER_DIR/.env.tmp"
-  awk -v k="$1" -v v="$2" 'BEGIN{done=0} index($0, k"=")==1 {if(!done){print k"="v; done=1}; next} {print} END{if(!done) print k"="v}' \
-    "$MUSTER_DIR/.env" > "$tmp" && cat "$tmp" > "$MUSTER_DIR/.env" && rm -f "$tmp"
+  (umask 077
+   MI_K="$1" MI_V="$2" awk 'BEGIN{k=ENVIRON["MI_K"]; v=ENVIRON["MI_V"]; done=0}
+     index($0, k"=")==1 {if(!done){print k"="v; done=1}; next} {print} END{if(!done) print k"="v}' \
+     "$MUSTER_DIR/.env" > "$MUSTER_DIR/.env.tmp" && cat "$MUSTER_DIR/.env.tmp" > "$MUSTER_DIR/.env")
+  rm -f "$MUSTER_DIR/.env.tmp"
 }
 # env_secret KEY [BYTES]: generate KEY unless it already holds a real value
 # (an empty value, or the placeholder .env.example ships, is not real).
 env_secret() {
   cur=$(env_get "$1")
   if [ -z "$cur" ] || [ "$cur" = "$(env_example "$1")" ]; then env_set "$1" "$(mi_rand "${2:-24}")"; fi
+}
+# mi_foreign [PROJECT]: print every sign of a muster this guide did NOT make —
+# containers or volumes of the compose project PROJECT (default muster) that
+# are not this guide's, or something answering on 127.0.0.1:8105 before this
+# guide started one. Returns 1 when it found any.
+mi_foreign() {
+  p="${1:-muster}"; found=0
+  if command -v docker >/dev/null 2>&1; then
+    for c in $(docker ps -a -q --filter "label=com.docker.compose.project=$p" 2>/dev/null); do
+      d=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$c" 2>/dev/null)
+      if [ "${GUIDE_STARTED:-}" != 1 ] || [ "$d" != "$MUSTER_DIR" ]; then
+        echo "FOREIGN container $(docker inspect -f '{{.Name}}' "$c") (compose project $p, from ${d:-unknown})"; found=1
+      fi
+    done
+    if [ "${GUIDE_STARTED:-}" != 1 ]; then
+      for v in $(docker volume ls -q --filter "label=com.docker.compose.project=$p" 2>/dev/null); do
+        echo "FOREIGN volume $v (compose project $p)"; found=1
+      done
+    fi
+  fi
+  if [ "${GUIDE_STARTED:-}" != 1 ] && curl -s -o /dev/null --max-time 3 http://127.0.0.1:8105/; then
+    echo "FOREIGN listener on 127.0.0.1:8105"; found=1
+  fi
+  [ "$found" = 0 ]
+}
+# mi_serve_state: what `tailscale serve` already does on this machine —
+# "none", "ours" (exactly https:443 / -> 127.0.0.1:8105), or "other".
+mi_serve_state() {
+  st=$(tailscale serve status 2>&1)
+  if printf '%s\n' "$st" | grep -qi 'no serve config'; then echo none; return; fi
+  if printf '%s\n' "$st" | grep -qi 'funnel'; then echo other; return; fi
+  urls=$(printf '%s\n' "$st" | grep -Eo 'https?://[^ ]+' | grep -v '127.0.0.1')
+  maps=$(printf '%s\n' "$st" | grep -E '^\|--')
+  if [ "$(printf '%s\n' "$urls" | grep -c .)" = 1 ] && ! printf '%s\n' "$urls" | grep -q ':[0-9]*/*$' &&
+     [ "$maps" = "|-- / proxy http://127.0.0.1:8105" ]; then echo ours; else echo other; fi
 }
 LIB
 . "$HOME/.config/muster-install/lib.sh"
@@ -101,6 +150,8 @@ tailscale status >/dev/null 2>&1 && echo "tailscale: logged in" || echo "tailsca
 df -Pk "$HOME" | awk 'NR==2 {printf "free disk in $HOME: %.1f GB\n", $4/1048576}'
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "gpu: none detected"
 docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q nvidia && echo "docker gpu runtime: yes" || echo "docker gpu runtime: no"
+mi_foreign && echo "existing muster: none"
+echo "tailscale serve: $(mi_serve_state)"
 ```
 
 Read the output and note:
@@ -114,7 +165,18 @@ Read the output and note:
 | `docker` and `docker compose` | the hub only | Install Docker Engine (Linux) or Docker Desktop (macOS) with the Compose v2 plugin. |
 | free disk | the hub | At least 10 GB; 20 GB if dictation will run locally (Step 1). |
 | `qrencode` | optional | Lets `muster doctor` draw the phone's QR code. Install it if allowed. |
-| gpu and `docker gpu runtime` | the hub, for GPU dictation | An NVIDIA GPU with at least 6 GB of memory **and** a Docker GPU runtime (the NVIDIA Container Toolkit) makes the best dictation option available. |
+| gpu and `docker gpu runtime` | the hub, for GPU dictation | An NVIDIA GPU with at least 6 GB of memory **and** a Docker GPU runtime (the NVIDIA Container Toolkit), on **amd64**, makes the best dictation option available. |
+
+🔴 **If any `FOREIGN` line printed, STOP and ask the person.** This machine
+already runs a muster (or something else on port 8105) that this guide did not
+set up. Do not take it over, do not stop it, do not reuse its project or data.
+Show them the lines. Go on only if they choose to use this machine as a
+joining machine (Step 1, question 1: yes), or after they have dealt with it
+themselves.
+
+🔴 **If `tailscale serve:` is `other`**, this machine already serves something
+through Tailscale (another site, another port, or Funnel). Step 2 will not
+change it; ask the person before the hub goes on this machine.
 
 **If this fails:** the helper file is plain text; check
 `~/.config/muster-install/lib.sh` exists and re-run this block.
@@ -130,17 +192,19 @@ on what Step 0 found. Record each answer with `mi_save` as shown.
    - **No** (the usual case): this machine becomes the hub.
      `mi_save ROLE hub`
    - **Yes**: this machine joins it. Ask for the hub's `https://…` URL
-     (`mi_save MUSTER_URL https://…`). `mi_save ROLE join`, then skip to
-     Step 6. (Its mirror token is minted on the hub in Step 7.)
+     (`mi_save MUSTER_URL https://…`) and `mi_save ROLE join`. Ask question
+     3 as well (it is per machine), then skip to Step 6. Its mirror token is
+     minted on the hub in Step 7.
 
    Other machines are added later by pasting the same prompt into the agent
    on each of them.
 2. *(hub only)* **How should voice dictation work?** Offer these, recommending
    the first that fits:
    - **Local, on the GPU — recommended when Step 0 found an NVIDIA GPU with
-     6 GB or more and a Docker GPU runtime.** The Cohere transcribe model: the
-     most accurate option, and audio never leaves the hub. It needs a Hugging
-     Face access token from an account that has accepted the licence of
+     6 GB or more, a Docker GPU runtime, and `arch=amd64`** (its image is
+     amd64 only). The Cohere transcribe model: the most accurate option, and
+     audio never leaves the hub. It needs a Hugging Face access token from an
+     account that has accepted the licence of
      `CohereLabs/cohere-transcribe-03-2026` (the model is gated), and its first
      start can take up to 30 minutes. Ask for the token and write it without
      echoing it: `(umask 077; printf '%s' 'THE-TOKEN' > "$MI_DIR/hf-token")`,
@@ -154,13 +218,19 @@ on what Step 0 found. Record each answer with `mi_save` as shown.
      `mi_save STT_API_MODEL …`; write the key to a file without echoing it:
      `(umask 077; printf '%s' 'THE-KEY' > "$MI_DIR/stt-api-key")`.
    - **None for now.** `mi_save STT none`
+
+   A token or key the person types into this chat passes through the agent's
+   provider. If they prefer, they can write the file themselves in a terminal:
+   `read -rs K && (umask 077; printf '%s' "$K" > ~/.config/muster-install/stt-api-key)`
+   (or `hf-token`).
 3. **May muster type into this machine's terminals?** (`-interactive`, asked
    per machine.) Explain: **yes** lets you send messages to your agents from
-   your phone, which is the main point of muster. It also means anyone who
-   signs in to your muster, and confirms the password again, can type anything
-   into any tmux window on this machine, which is a shell as your user. **No**
-   keeps the machine read-only: you can watch every session but not answer.
-   Recommend **yes** on machines the person owns.
+   your phone, which is the main point of muster. It also means anyone signed
+   in to your muster can type anything into any tmux window on this machine,
+   which is a shell as your user: within 12 hours of signing in or confirming
+   the password, without being asked again, and after that once they confirm
+   the password. **No** keeps the machine read-only: you can watch every
+   session but not answer. Recommend **yes** on machines the person owns.
    `mi_save INTERACTIVE 1` (yes) or `mi_save INTERACTIVE 0` (no).
 
 **If this fails:** if the person does not answer a question, use the
@@ -172,13 +242,21 @@ recommendation and say so.
 
 `tailscale serve` gives the hub a real HTTPS certificate for its tailnet name and
 forwards to muster on `127.0.0.1:8105`. Only devices on the tailnet can reach it.
+This adds muster's mapping only when nothing is served yet, and changes nothing
+else:
 
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
-tailscale serve --bg 8105
-tailscale serve status
-mi_save MUSTER_URL "$(tailscale serve status 2>/dev/null | grep -o 'https://[^ ]*' | head -n 1 | sed 's:/$::')"
-echo "MUSTER_URL=$MUSTER_URL"
+case "$(mi_serve_state)" in
+  none) tailscale serve --bg --https=443 8105 ;;
+  ours) echo "tailscale serve already forwards https to muster; kept" ;;
+  *)    echo "STOP: tailscale serve already serves something else here (or Funnel is on):"
+        tailscale serve status ;;
+esac
+if [ "$(mi_serve_state)" = ours ]; then
+  mi_save MUSTER_URL "$(tailscale serve status 2>/dev/null | grep -Eo 'https://[^ ]+' | head -n 1 | sed 's:/$::')"
+  echo "MUSTER_URL=$MUSTER_URL"
+fi
 ```
 
 `MUSTER_URL` must be an `https://…` address ending in the tailnet's domain
@@ -186,13 +264,14 @@ echo "MUSTER_URL=$MUSTER_URL"
 now fails; that is expected.
 
 **If this fails:**
+- `STOP`: this machine's Tailscale already serves something on the https port
+  (or has Funnel on). Do not replace it. Show the person the status and ask:
+  they can free that port themselves, or put the hub on another machine.
 - "serve is not enabled on your tailnet" or a link to enable HTTPS: give the
   person the link. They must turn on **MagicDNS** and **HTTPS Certificates** in
   the Tailscale admin console (DNS page). Then re-run this block.
 - "access denied" on Linux: run `sudo tailscale set --operator="$USER"` once
   (ask first), then re-run.
-- `MUSTER_URL` is empty: run `tailscale serve status` and copy the `https://`
-  address by hand into `mi_save MUSTER_URL …`.
 
 ---
 
@@ -200,31 +279,41 @@ now fails; that is expected.
 
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
-if [ -z "${MUSTER_VERSION:-}" ]; then
-  mi_save MUSTER_VERSION "$(curl -fsSL https://api.github.com/repos/ZacxDev/muster/releases/latest \
-    | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1)"
+if ! mi_valid_version "${MUSTER_VERSION:-}"; then
+  # The newest release: GitHub's /releases/latest redirect (not rate-limited),
+  # then its API as a second source. Saved only if it is X.Y.Z.
+  v=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/ZacxDev/muster/releases/latest | sed -n 's#.*/tag/v\([^/]*\)$#\1#p')
+  mi_valid_version "$v" || v=$(curl -fsSL https://api.github.com/repos/ZacxDev/muster/releases/latest | sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' | head -n 1)
+  mi_set_version "$v" || echo "VERSION LOOKUP FAILED (see If this fails)"
 fi
-mi_save MUSTER_RELEASE_BASE "${MUSTER_RELEASE_BASE:-https://github.com/ZacxDev/muster/releases/download/v$MUSTER_VERSION}"
-echo "version=$MUSTER_VERSION"
-mkdir -p "$MUSTER_DIR" && cd "$MUSTER_DIR"
-curl -fsSL -o checksums.txt "$MUSTER_RELEASE_BASE/checksums.txt"
-curl -fsSL -o docker-compose.yml "$MUSTER_RELEASE_BASE/docker-compose.yml"
-curl -fsSL -o env.example "$MUSTER_RELEASE_BASE/env.example"
-mi_verify docker-compose.yml && mi_verify env.example && cp env.example .env.example
+if mi_valid_version "${MUSTER_VERSION:-}"; then
+  mi_set_version "$MUSTER_VERSION"
+  echo "version=$MUSTER_VERSION"
+  mkdir -p "$MUSTER_DIR" && cd "$MUSTER_DIR"
+  curl -fsSL -o checksums.txt "$MUSTER_RELEASE_BASE/checksums.txt"
+  curl -fsSL -o docker-compose.yml "$MUSTER_RELEASE_BASE/docker-compose.yml"
+  curl -fsSL -o env.example "$MUSTER_RELEASE_BASE/env.example"
+  mi_verify docker-compose.yml && mi_verify env.example && cp env.example .env.example
+fi
 ```
 
 The release attaches the settings template as `env.example`, without the
 leading dot, because GitHub renames asset names that start with one. It is
 kept here as `.env.example`.
 
+The checksums prove the files arrived intact. They come from the same place
+as the files, so they do not prove who published them.
+
 Then **read `.env.example` in full.** It is the authority on every setting the
 compose file uses. The steps below set the ones this guide needs; follow its
 comments for anything else.
 
 **If this fails:**
-- `version=` is empty: the GitHub API was rate-limited or unreachable. Open
-  <https://github.com/ZacxDev/muster/releases>, take the newest version
-  number (without the `v`), run `mi_save MUSTER_VERSION <it>` and re-run.
+- `VERSION LOOKUP FAILED`: GitHub was unreachable or rate-limited. Nothing was
+  saved. Ask the person for the newest version on
+  <https://github.com/ZacxDev/muster/releases> (without the `v`), run
+  `mi_set_version <it>` (it refuses anything that is not `X.Y.Z`), and re-run
+  this block.
 - A checksum `FAILED`: delete the downloaded files and re-run once. A second
   mismatch: stop and tell the person.
 
@@ -239,7 +328,7 @@ changes a password or key that is already in use. Values still set to
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
 cd "$MUSTER_DIR"
-[ -f .env ] || cp .env.example .env
+[ -f .env ] || (umask 077; cp .env.example .env)
 chmod 600 .env
 env_set MUSTER_VERSION "$MUSTER_VERSION"
 env_secret POSTGRES_PASSWORD 24
@@ -247,39 +336,58 @@ env_secret MUSTER_UI_PASSWORD 12     # the sign-in password: 24 characters (12 i
 env_secret MUSTER_HOOK_TOKEN 32      # the machine API's token
 env_set MUSTER_PUBLIC_URL "$MUSTER_URL"
 env_set MUSTER_SECURE_COOKIES 1
-# Web push keys, generated once, with the release image itself.
-if [ -z "$(env_get MUSTER_VAPID_PRIVATE_KEY)" ]; then
-  docker run --rm "${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:$MUSTER_VERSION" vapid generate > "$MI_DIR/vapid.tmp" &&
-    env_set MUSTER_VAPID_PUBLIC_KEY "$(sed -n 's/^MUSTER_VAPID_PUBLIC_KEY=//p' "$MI_DIR/vapid.tmp")" &&
-    env_set MUSTER_VAPID_PRIVATE_KEY "$(sed -n 's/^MUSTER_VAPID_PRIVATE_KEY=//p' "$MI_DIR/vapid.tmp")"
-  rm -f "$MI_DIR/vapid.tmp"
+# Web push keys: all three or none. muster refuses to start on a partial set.
+if [ -z "$(env_get MUSTER_VAPID_PRIVATE_KEY)" ] || [ -z "$(env_get MUSTER_VAPID_PUBLIC_KEY)" ]; then
+  keys=$(docker run --rm "${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:$MUSTER_VERSION" vapid generate 2>/dev/null) || keys=""
+  pub=$(printf '%s\n' "$keys" | sed -n 's/^MUSTER_VAPID_PUBLIC_KEY=//p')
+  priv=$(printf '%s\n' "$keys" | sed -n 's/^MUSTER_VAPID_PRIVATE_KEY=//p')
+  if [ -n "$pub" ] && [ -n "$priv" ]; then
+    env_set MUSTER_VAPID_PUBLIC_KEY "$pub"; env_set MUSTER_VAPID_PRIVATE_KEY "$priv"
+    env_set MUSTER_VAPID_SUBJECT "$MUSTER_URL"
+  else
+    echo "PUSH KEYS NOT GENERATED: none of the three were written (see If this fails)"
+  fi
+  unset keys pub priv
 fi
-env_set MUSTER_VAPID_SUBJECT "$MUSTER_URL"
 grep -c '^[A-Z_]*=CHANGE-ME$' .env | sed 's/^/placeholders left: /'
 ```
 
 `placeholders left` must be `0` (the commented-out dictation blocks do not
 count, because they start with `#`). Then dictation, by the answer saved in
-Step 1. Run **one** of these:
+Step 1. This block is also how to **switch** options later: `mi_save STT <new>`
+(and, for `api`, write the key file first), then re-run it and Step 5. Each
+option sets the profile, URL and model together, and never writes an empty
+value over a token or key that is already there.
 
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
+cd "$MUSTER_DIR"
+prev=$(env_get COMPOSE_PROFILES)
 case "$STT" in
   local-gpu)
+    [ "$prev" = stt-cohere ] || env_set MUSTER_STT_TOKEN "$(mi_rand 32)"
     env_set COMPOSE_PROFILES stt-cohere
     env_set MUSTER_STT_URL http://stt-cohere:8000
-    env_secret MUSTER_STT_TOKEN 32
-    env_set HF_TOKEN "$(cat "$MI_DIR/hf-token")" && rm -f "$MI_DIR/hf-token" ;;
+    env_set MUSTER_STT_MODEL ""
+    if [ -s "$MI_DIR/hf-token" ]; then env_set HF_TOKEN "$(cat "$MI_DIR/hf-token")" && rm -f "$MI_DIR/hf-token"; fi
+    case "$(env_get HF_TOKEN)" in ""|CHANGE-ME) echo "MISSING: the Hugging Face token (Step 1, question 2)" ;; esac ;;
   local-cpu)
+    [ "$prev" = stt-whisper ] || env_set MUSTER_STT_TOKEN "$(mi_rand 32)"
     env_set COMPOSE_PROFILES stt-whisper
     env_set MUSTER_STT_URL http://stt-whisper:8000
-    env_secret MUSTER_STT_TOKEN 32
-    [ -n "$(env_get MUSTER_STT_MODEL)" ] || env_set MUSTER_STT_MODEL Systran/faster-whisper-small ;;
+    case "$(env_get MUSTER_STT_MODEL)" in */*) ;; *) env_set MUSTER_STT_MODEL Systran/faster-whisper-small ;; esac ;;
   api)
-    env_set MUSTER_STT_URL "$STT_API_URL"
-    env_set MUSTER_STT_MODEL "$STT_API_MODEL"
-    env_set MUSTER_STT_TOKEN "$(cat "$MI_DIR/stt-api-key")" && rm -f "$MI_DIR/stt-api-key" ;;
-  none) echo "dictation stays off" ;;
+    env_set COMPOSE_PROFILES ""
+    [ -z "${STT_API_URL:-}" ] || env_set MUSTER_STT_URL "$STT_API_URL"
+    [ -z "${STT_API_MODEL:-}" ] || env_set MUSTER_STT_MODEL "$STT_API_MODEL"
+    if [ -s "$MI_DIR/stt-api-key" ]; then
+      env_set MUSTER_STT_TOKEN "$(cat "$MI_DIR/stt-api-key")" && rm -f "$MI_DIR/stt-api-key"
+    elif [ -n "$prev" ] || [ -z "$(env_get MUSTER_STT_TOKEN)" ]; then
+      # Switching from a local option: the token there is that service's, not the key.
+      echo "MISSING: the API key (write it as Step 1, question 2 shows, then re-run)"
+    fi ;;
+  none)
+    env_set COMPOSE_PROFILES ""; env_set MUSTER_STT_URL ""; env_set MUSTER_STT_TOKEN ""; env_set MUSTER_STT_MODEL "" ;;
 esac
 echo "dictation: $STT"
 ```
@@ -294,11 +402,14 @@ echo "dictation: $STT"
   `--skip dictation` to it.
 
 **If this fails:**
-- `docker run … vapid generate` cannot pull the image: run
-  `docker pull ghcr.io/zacxdev/muster:$MUSTER_VERSION` and read its error
-  (network, or a version that does not exist; check Step 3).
-- To start over completely, the person must agree first: `docker compose down
-  -v` deletes the database, then remove `~/muster/.env`.
+- `PUSH KEYS NOT GENERATED`: `docker run … vapid generate` failed, so no push
+  keys were written (muster starts without notifications). Run
+  `docker pull ghcr.io/zacxdev/muster:$MUSTER_VERSION` to see why (network, or
+  a version that does not exist; check Step 3), then re-run this block.
+- `MISSING: …`: write the token or key file as Step 1 shows, then re-run the
+  dictation block. Nothing already in `.env` was replaced.
+- To start over, see "Starting over" at the end of this guide. Never run
+  `docker compose down -v` yourself: it deletes a database.
 
 ---
 
@@ -307,15 +418,22 @@ echo "dictation: $STT"
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
 cd "$MUSTER_DIR"
-docker compose pull
-docker compose up -d --wait --wait-timeout 600
-docker compose ps
-curl -fsS http://127.0.0.1:8105/health && echo
-curl -fsS "$MUSTER_URL/health" && echo
+proj=$(docker compose config 2>/dev/null | sed -n 's/^name: *//p' | head -n 1)
+if mi_foreign "${proj:-muster}"; then
+  mi_save GUIDE_STARTED 1
+  env_set MUSTER_VERSION "$MUSTER_VERSION"
+  docker compose pull
+  docker compose up -d --wait --wait-timeout 600
+  docker compose ps
+  curl -fsS http://127.0.0.1:8105/health && echo
+  curl -fsS "$MUSTER_URL/health" && echo
+else
+  echo "STOP: another muster (or another service on 8105) is here; nothing was started. Ask the person."
+fi
 ```
 
-Both `curl`s must print `{"status":"ok",…}`. The first proves muster is up, the
-second that Tailscale's HTTPS reaches it.
+Both `curl`s must print `{"status":"ok",…}`, with this release's `version`. The
+first proves muster is up, the second that Tailscale's HTTPS reaches it.
 
 A local dictation service downloads its model on first start. Whisper takes a
 few minutes, and the GPU (Cohere) model can take up to 30. If `up --wait`
@@ -323,20 +441,22 @@ times out while only the `stt-…` service is still `starting`, that is the
 download: wait a few minutes and re-run this block until it is `healthy`.
 
 **If this fails:**
+- `STOP`: see Step 0. Do not take over or stop the other install.
 - `up --wait` fails or `muster` is unhealthy: `docker compose logs --tail=80
   muster`. muster refuses to start on a bad setting and names the variable in
   that log (a `MUSTER_UI_PASSWORD` under 12 characters is the usual one). Fix it
   in `.env` and re-run this block.
-- "port is already allocated" for 8105: something else uses the port. Find it
-  with `ss -ltnp 'sport = :8105'` (Linux) or `lsof -iTCP:8105 -sTCP:LISTEN`
-  (macOS) and tell the person; do not stop it yourself.
 - The second `curl` fails but the first works: re-run Step 2, and check
   `tailscale serve status` forwards to `http://127.0.0.1:8105`.
-- The `stt-cohere` service fails: `docker compose logs --tail=80 stt-cohere`.
-  If the model download is refused, the Hugging Face account has not accepted
-  the model's licence. If no GPU is found, the Docker GPU runtime is missing.
-  Either way, offer the person the CPU or API option and redo Step 4's
-  dictation block.
+- A pull fails with **`denied`**, **`unauthorized`** or **`not found`** for
+  an image: that image is not published, or not public, yet. It is not a
+  licence or GPU problem. Tell the person which image. For `stt-cohere`, offer
+  the CPU or API option for now (`mi_save STT local-cpu`, then Step 4's
+  dictation block, then this block).
+- The `stt-cohere` service starts but fails: `docker compose logs --tail=80
+  stt-cohere`. If the model download is refused, the Hugging Face account has
+  not accepted the model's licence. If no GPU is found, the Docker GPU runtime
+  is missing. Either way, offer the CPU or API option as above.
 
 ---
 
@@ -349,9 +469,8 @@ On a **joining** machine, first take the version from the hub:
 
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
-mi_save MUSTER_VERSION "$(curl -fsS "$MUSTER_URL/health" | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p')"
-mi_save MUSTER_RELEASE_BASE "${MUSTER_RELEASE_BASE:-https://github.com/ZacxDev/muster/releases/download/v$MUSTER_VERSION}"
-echo "version=$MUSTER_VERSION"
+v=$(curl -fsS "$MUSTER_URL/health" | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p')
+mi_set_version "$v" && echo "version=$MUSTER_VERSION" || echo "COULD NOT READ THE HUB'S VERSION (see If this fails)"
 ```
 
 Then, on every machine:
@@ -376,6 +495,9 @@ case ":$PATH:" in *":$MUSTER_BIN:"*) ;; *) echo "NOTE: add $MUSTER_BIN to PATH i
 ```
 
 **If this fails:**
+- `COULD NOT READ THE HUB'S VERSION`: nothing was saved. Check this machine is
+  on the tailnet (`tailscale status`) and the hub's URL is right
+  (`curl -fsS "$MUSTER_URL/health"`), then re-run that block.
 - A `FAILED` line or a checksum `FAILED`: re-run once (a partial download).
   A second mismatch: stop and tell the person; do not install that file.
 - `muster-mirror -version` says "cannot execute": the wrong `OS`/`ARCH` was
@@ -411,22 +533,34 @@ holds a token. Otherwise the token is minted on the hub, for this machine's
 name (`echo "$MIRROR_HOST"`), when this machine joins. Ask the person which
 way:
 
-- **You may reach the hub over `ssh`** (they give the hub's ssh name):
-  ```sh
-  . "$HOME/.config/muster-install/lib.sh"
-  tok="$HOME/.config/muster-mirror/token"
-  mkdir -p "$HOME/.config/muster-mirror" && chmod 700 "$HOME/.config/muster-mirror"
-  if [ -s "$tok" ]; then echo "kept existing token"
-  else
-    (umask 077; ssh HUB "docker compose -f ~/muster/docker-compose.yml exec -T muster /muster-server mirror token create $MIRROR_HOST" \
-      > "$tok.tmp") && [ -s "$tok.tmp" ] && mv "$tok.tmp" "$tok" && echo "minted token for $MIRROR_HOST"
-  fi
-  ```
-- **Otherwise**, give the person this line to run on the hub, with this
-  machine's name filled in, and ask them to paste what it prints:
-  `docker compose -f ~/muster/docker-compose.yml exec -T muster /muster-server mirror token create <this machine's name>`.
-  Write the pasted token without echoing it:
-  `(umask 077; mkdir -p ~/.config/muster-mirror; printf '%s' 'THE-TOKEN' > ~/.config/muster-mirror/token)`.
+**If you may reach the hub over `ssh`** (the person gives the hub's ssh name; put it in place of `HUB`):
+
+```sh
+. "$HOME/.config/muster-install/lib.sh"
+tok="$HOME/.config/muster-mirror/token"
+mkdir -p "$HOME/.config/muster-mirror" && chmod 700 "$HOME/.config/muster-mirror"
+if [ -s "$tok" ]; then echo "kept existing token"
+else
+  # BatchMode: fail instead of prompting. A login shell, so Docker is on
+  # PATH (macOS too). Only the marked line is the token, whatever the
+  # hub's shell start-up files print.
+  out=$(ssh -o BatchMode=yes HUB sh -l -s -- "$MIRROR_HOST" <<'REMOTE'
+t=$(docker compose -f "$HOME/muster/docker-compose.yml" exec -T muster /muster-server mirror token create "$1") &&
+printf 'MUSTER-TOKEN:%s\n' "$t"
+REMOTE
+)
+  t=$(printf '%s\n' "$out" | sed -n 's/^MUSTER-TOKEN://p' | tail -n 1)
+  if [ -n "$t" ]; then (umask 077; printf '%s\n' "$t" > "$tok") && echo "minted token for $MIRROR_HOST"
+  else echo "MINT FAILED over ssh: nothing written"; fi
+  unset out t
+fi
+```
+
+**Otherwise**, give the person this line to run on the hub, with this
+machine's name filled in, and ask them to paste what it prints:
+`docker compose -f ~/muster/docker-compose.yml exec -T muster /muster-server mirror token create <this machine's name>`.
+Write the pasted token without echoing it:
+`(umask 077; mkdir -p ~/.config/muster-mirror; printf '%s' 'THE-TOKEN' > ~/.config/muster-mirror/token)`.
 
 **On every machine**, write the service's settings and start it.
 It runs as a user service, so it starts at boot and restarts if it stops.
@@ -502,7 +636,8 @@ On Linux, so the service keeps running after the person logs out:
 
 What `-interactive` (`MUSTER_MIRROR_INTERACTIVE=1`) grants: muster can open a
 **typing** terminal on this machine and paste messages into its tmux panes,
-after the person confirms their password again. A tmux client can switch to any
+for 12 hours after the person signs in or confirms the password, and again
+after they confirm it once more. A tmux client can switch to any
 session or open a new window, so this is a shell as this user. With `0` the
 machine is read-only in muster. To change it later, edit `MUSTER_MIRROR_INTERACTIVE`
 in `~/.config/muster-mirror/env` and restart the service (on macOS, re-run the
@@ -588,12 +723,23 @@ mkdir -p "$HOME/.muster" && chmod 700 "$HOME/.muster"
 [ -f "$HOME/.muster/muster.env" ] || {
   (umask 077; { echo "MUSTER_API_URL=$MUSTER_URL"; echo "MUSTER_TOKEN=$(sed -n 's/^MUSTER_HOOK_TOKEN=//p' "$MUSTER_DIR/.env")"; } > "$HOME/.muster/muster.env")
 }
-"$MUSTER_BIN/muster" doctor --deploy-env "$MUSTER_DIR/.env"
+"$MUSTER_BIN/muster" doctor --deploy-env "$MUSTER_DIR/.env" && mi_save GUIDE_DONE 1
 ```
 
-On **every other machine**, run `"$MUSTER_BIN/muster" doctor --api-url "$MUSTER_URL"`.
-There, the checks that need the server's credentials report SKIP; the hub's run
-covers them.
+`--deploy-env` makes the doctor check the hub that `.env` names, whatever
+`~/.muster/muster.env` or the environment point at, and it sends the password
+to that hub only.
+
+On **every other machine**, run:
+
+```sh
+. "$HOME/.config/muster-install/lib.sh"
+"$MUSTER_BIN/muster" doctor --api-url "$MUSTER_URL"
+```
+
+There, the checks that need the server's credentials report SKIP, and
+`this-host` asks the hub, with this machine's own mirror token, whether it
+sees this machine connected.
 
 `muster doctor` prints one line per check, `PASS`, `FAIL` or `SKIP`, and a
 `fix:` line under each failure. It exits non-zero if anything failed. Its
@@ -605,6 +751,7 @@ checks:
 | `manifest` | the phone can install muster |
 | `hook-token` | the machine API has a token, and this one is accepted |
 | `mirror-hosts` | every machine with a token is connected (the server's view) |
+| `this-host` | the hub accepts this machine's mirror token and holds its connection |
 | `mirror-service` | this machine's `muster-mirror` service is running |
 | `tmux` | tmux is installed here |
 | `sign-in` | the password signs in and opens the board |
@@ -613,7 +760,7 @@ checks:
 
 Work through each `FAIL` with its `fix:` line and the matching step above, then
 run the doctor again. **Done means the hub's doctor exits 0**, every machine's
-doctor shows `mirror-service` and `tmux` passing, and the person confirms on
+doctor shows `this-host`, `mirror-service` and `tmux` passing, and the person confirms on
 the phone that they can see a session and that the test notification arrived.
 
 Then tell the person, briefly: the address, where the password is (step 9.3),
@@ -623,15 +770,45 @@ the tmux one-liners (Step 8), and that `muster doctor` re-checks everything.
 
 ## Updating and removing
 
-- **Update:** on the hub, `mi_save MUSTER_VERSION <new>` and
-  `mi_save MUSTER_RELEASE_BASE https://github.com/ZacxDev/muster/releases/download/v<new>`,
-  re-run Steps 3, 5 and 6, then restart each machine's service (Step 7's last
-  block). `.env` is kept.
+- **Update** (on the hub, then each machine): set the new version, which
+  `.env` and every download follow:
+  ```sh
+  . "$HOME/.config/muster-install/lib.sh"
+  mi_set_version X.Y.Z
+  ```
+  Then on the hub re-run Step 3 and Step 5 (Step 5 writes the version into
+  `.env`, pulls the new image and restarts the server), and on every machine
+  re-run that `mi_set_version`, Step 6, and Step 7's last block (which
+  restarts muster-mirror). Re-run Step 10 to check.
 - **Remove a machine:** stop its service (`systemctl --user disable --now
   muster-mirror.service`, or `launchctl bootout gui/$(id -u)/io.github.zacxdev.muster-mirror`),
   and revoke its token on the hub (`docker compose exec -T muster /muster-server
   mirror token ls`, then `… revoke <id>`).
+- **Remove muster's HTTPS mapping**, and only it: `tailscale serve --https=443
+  off` when `mi_serve_state` says `ours`. Never `tailscale serve reset`: it
+  removes everything else this machine serves too.
 - **Remove everything** (ask first; it deletes all tasks and history): on the
-  hub, `cd ~/muster && docker compose down -v`, `tailscale serve reset`, then
-  remove `~/muster`, `~/.config/muster-mirror`, `~/.config/muster-install` and
-  `~/.muster`.
+  hub, `cd ~/muster && docker compose down -v`, remove muster's HTTPS mapping
+  as above, then remove `~/muster`, `~/.config/muster-mirror`,
+  `~/.config/muster-install` and `~/.muster`.
+
+### Starting over (a failed first install only)
+
+Only for this guide's **own fresh** install: one Step 5 started and the doctor
+has never passed. The block refuses anything else, and prints exactly what
+would be deleted:
+
+```sh
+. "$HOME/.config/muster-install/lib.sh"
+cd "$MUSTER_DIR" || exit 1
+proj=$(docker compose config 2>/dev/null | sed -n 's/^name: *//p' | head -n 1)
+if [ "${GUIDE_STARTED:-}" != 1 ] || [ "${GUIDE_DONE:-}" = 1 ] || ! mi_foreign "${proj:-muster}"; then
+  echo "REFUSED: this is not this guide's own fresh install. Delete nothing; ask the person."
+else
+  echo "This would DELETE, in compose project ${proj:-muster} ($MUSTER_DIR):"
+  docker ps -a --filter "label=com.docker.compose.project=${proj:-muster}" --format '  container {{.Names}}'
+  docker volume ls --filter "label=com.docker.compose.project=${proj:-muster}" --format '  volume {{.Name}}'
+  [ "${MI_CONFIRM_DELETE:-}" = "${proj:-muster}" ] && docker compose down -v && mi_save GUIDE_STARTED 0 ||
+    echo "Nothing deleted. Show the person this list; only if they agree, re-run with MI_CONFIRM_DELETE=${proj:-muster}."
+fi
+```

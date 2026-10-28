@@ -76,6 +76,7 @@ muster doctor                               # on any other machine
 | `manifest` | `/manifest.webmanifest` is a standalone manifest with icons | the server |
 | `hook-token` | the server enforces a hook token and accepts this one | `GET /api/doctor` |
 | `mirror-hosts` | every host holding a live mirror token is connected | `GET /api/doctor` (the tunnel hub) |
+| `this-host` | the server accepts THIS machine's mirror token and holds a connection from it | `GET /mirror/host`, with the token muster-mirror's settings file names |
 | `mirror-service` | the `muster-mirror` user service is active here | `systemctl --user is-active` (Linux), `launchctl print` (macOS) |
 | `tmux` | tmux is installed here | `tmux -V` |
 | `sign-in` | the operator password signs in, and the session opens the board | `POST /login`, then `GET /tasks` |
@@ -88,11 +89,17 @@ muster doctor                               # on any other machine
   document, `{"url", "ok", "checks": [{"name", "status", "detail", "fix"}]}`,
   as for every other verb.
 - **Credentials:** the server-side checks need a token (the hook token, or a
-  personal token of an admin); without one they SKIP. `--deploy-env` reads the
-  compose `.env`: its `MUSTER_UI_PASSWORD` for the sign-in, push and dictation
-  checks, and its `MUSTER_PUBLIC_URL` and `MUSTER_HOOK_TOKEN` only where the
-  env file, the environment and the flags set no URL or token.
-- **Flags:** `--skip <check>[,<check>…]`, `--mirror-unit` (default
+  personal token; a personal token sees only its owner's hosts); without one
+  they SKIP. `--deploy-env` reads the compose `.env`: its `MUSTER_PUBLIC_URL`
+  and `MUSTER_HOOK_TOKEN` beat the env file and the environment (only
+  `--api-url` / `--token` beat them), and its `MUSTER_UI_PASSWORD` is used for
+  the sign-in, push and dictation checks. 🔴 The password is sent only to that
+  file's `MUSTER_PUBLIC_URL`; pointed at any other server, sign-in SKIPs.
+- **`this-host`** reads muster-mirror's settings file (`--mirror-env`, default
+  `~/.config/muster-mirror/env`) for its token file, and asks the server with
+  that token. A refused token is a FAIL. It SKIPs on a machine with no
+  settings file.
+- **Flags:** `--skip <check>[,<check>…]`, `--mirror-env`, `--mirror-unit` (default
   `muster-mirror.service`), `--mirror-label` (default
   `io.github.zacxdev.muster-mirror`).
 - **The QR code** of the URL is drawn with `qrencode` when it is installed; the

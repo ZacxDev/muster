@@ -49,7 +49,7 @@ Once, at the start:
    recordings go to that provider).
 3. **Whether muster may type into this machine's terminals.** Yes lets you
    answer your agents from your phone; it also means anyone signed in to your
-   muster (after confirming the password again) can type into any tmux window
+   muster can type into any tmux window
    there. No keeps the machine read-only.
 
 Anything else (installing a missing package, a `sudo` step) it asks about when

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sort"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/mirror"
 )
 
 // DoctorPath is the server half of `muster doctor` (cmd/muster/doctor.go): the
@@ -64,8 +66,42 @@ type DoctorHost struct {
 	Interactive bool `json:"interactive"`
 }
 
+// MirrorHostPath is a machine's OWN view of itself, on its mirror token: is
+// the hub holding a live tunnel from it? `muster doctor` on a joining machine
+// asks it (its `this-host` check), because that machine holds no hook token
+// and its user service reads `active` while it retries a refused token.
+const MirrorHostPath = "/mirror/host"
+
+// MirrorHostReport is GET /mirror/host's body.
+type MirrorHostReport struct {
+	// Host is the host the presented token was minted for.
+	Host string `json:"host"`
+	// Online: the tunnel hub holds a live connection from that host now.
+	Online bool `json:"online"`
+	// Interactive: that connection advertised -interactive.
+	Interactive bool `json:"interactive"`
+}
+
 func (s *Server) registerDoctorRoutes(mux Mux) {
 	mux.HandleFunc("GET "+DoctorPath, s.requireArmedHookToken(s.handleDoctor))
+	// requireMirrorHostToken answers 404 without the mirror plugin, 401 for a
+	// token that is not live, and admits the token's OWNER (ViaMirrorHost):
+	// the answer names only the token's own host.
+	mux.HandleFunc("GET "+MirrorHostPath, s.requireMirrorHostToken(s.handleMirrorHost))
+}
+
+func (s *Server) handleMirrorHost(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	t, _ := r.Context().Value(mirrorHostCtxKey{}).(mirror.Token)
+	rep := MirrorHostReport{Host: t.Host}
+	if s.ext.Mirror != nil {
+		for _, hv := range s.ext.Mirror.Hosts(r.Context()) {
+			if hv.Host == t.Host {
+				rep.Online, rep.Interactive = hv.Online, hv.Online && hv.Interactive
+			}
+		}
+	}
+	s.writeJSON(w, http.StatusOK, rep)
 }
 
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {

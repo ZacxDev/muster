@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -50,6 +51,10 @@ const (
 	// installs muster-mirror under.
 	defaultMirrorUnit  = "muster-mirror.service"
 	defaultMirrorLabel = "io.github.zacxdev.muster-mirror"
+	// defaultMirrorEnv is the settings file INSTALL.md writes for the
+	// mirror's user service; its MUSTER_MIRROR_TOKEN_FILE names the token.
+	defaultMirrorEnv = "~/.config/muster-mirror/env"
+	mirrorHostRoute  = "/mirror/host"
 )
 
 // doctorSample is a 1.7 s spoken phrase ("testing muster dictation"), 16 kHz
@@ -83,7 +88,7 @@ type doctorCheck struct {
 // doctorChecks is the checks, in the order they run and print. The names are
 // what --skip takes.
 var doctorChecks = []string{
-	"server", "manifest", "hook-token", "mirror-hosts",
+	"server", "manifest", "hook-token", "mirror-hosts", "this-host",
 	"mirror-service", "tmux", "sign-in", "push", "dictation",
 }
 
@@ -120,10 +125,14 @@ type doctorRun struct {
 	base     string
 	token    string
 	password string
-	unit     string
-	label    string
-	skip     map[string]bool
-	http     *http.Client
+	// passwordURL is the only base the password may be sent to: the deploy
+	// file's MUSTER_PUBLIC_URL.
+	passwordURL string
+	mirrorEnv   string
+	unit        string
+	label       string
+	skip        map[string]bool
+	http        *http.Client
 
 	// filled as the run goes
 	reachable bool
@@ -152,7 +161,7 @@ type serverReport struct {
 }
 
 func newDoctorCmd(a *app) *cobra.Command {
-	var deployEnv, unit, label string
+	var deployEnv, unit, label, mirrorEnv string
 	var skip []string
 	cmd := &cobra.Command{
 		Use:   "doctor",
@@ -167,24 +176,30 @@ one JSON document of the checks.
 Checks: ` + strings.Join(doctorChecks, ", ") + `.
 
 On the machine running the server, pass --deploy-env with the compose .env
-file: doctor then reads the operator password from it (for the sign-in, push
-and dictation checks) and, when no other is configured, the URL
-(MUSTER_PUBLIC_URL) and the hook token. Elsewhere, the server-side checks need
-` + envToken + ` in the env file; without it they SKIP.`,
+file: its MUSTER_PUBLIC_URL and MUSTER_HOOK_TOKEN are then the URL and token
+(over the env file and the environment; only --api-url / --token beat them),
+and its operator password is used for the sign-in, push and dictation checks.
+The password is sent ONLY to that file's MUSTER_PUBLIC_URL; pointed anywhere
+else, those checks SKIP. Elsewhere, the server-side checks need ` + envToken + `
+in the env file; without it they SKIP.
+
+On any machine whose muster-mirror has a token, ` + "`this-host`" + ` asks the
+server, with that token, whether it holds a connection from this machine.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return a.runDoctor(cmd.Context(), deployEnv, unit, label, skip)
+			return a.runDoctor(cmd.Context(), deployEnv, unit, label, mirrorEnv, skip)
 		},
 	}
 	cmd.Flags().StringVar(&deployEnv, "deploy-env", "", "the server's compose .env file (the machine running the server only)")
 	cmd.Flags().StringVar(&unit, "mirror-unit", defaultMirrorUnit, "the systemd user unit muster-mirror runs as (Linux)")
 	cmd.Flags().StringVar(&label, "mirror-label", defaultMirrorLabel, "the launchd label muster-mirror runs as (macOS)")
+	cmd.Flags().StringVar(&mirrorEnv, "mirror-env", defaultMirrorEnv, "muster-mirror's settings file (INSTALL.md writes it): where its token file is")
 	cmd.Flags().StringSliceVar(&skip, "skip", nil, "checks to skip, comma-separated (one of: "+strings.Join(doctorChecks, ", ")+")")
 	return cmd
 }
 
-func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label string, skip []string) error {
-	d := &doctorRun{a: a, sys: a.doctorSys, unit: unit, label: label, skip: map[string]bool{}}
+func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label, mirrorEnv string, skip []string) error {
+	d := &doctorRun{a: a, sys: a.doctorSys, unit: unit, label: label, mirrorEnv: mirrorEnv, skip: map[string]bool{}}
 	for _, s := range skip {
 		s = strings.TrimSpace(s)
 		if !isDoctorCheck(s) {
@@ -211,6 +226,7 @@ func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label string, skip
 	d.checkManifest(ctx)
 	d.checkHookToken(ctx)
 	d.checkMirrorHosts()
+	d.checkThisHost(ctx)
 	d.checkMirrorService(ctx)
 	d.checkTmux(ctx)
 	d.checkSignIn(ctx)
@@ -238,13 +254,19 @@ func isDoctorCheck(name string) bool {
 	return false
 }
 
-// resolve is the CLI's own config resolution with the deploy env file as the
-// LOWEST layer: its MUSTER_PUBLIC_URL and MUSTER_HOOK_TOKEN fill in only what
-// the env file, the environment and the flags leave unset. The operator
-// password is read from it alone.
+// resolve is the CLI's own config resolution, with the deploy env file ABOVE
+// the env file and the environment: during an install the hub being checked is
+// the one --deploy-env names, whatever an older ~/.muster/muster.env or an
+// exported MUSTER_API_URL points at. Only --api-url / --token beat it.
+//
+// 🔴 THE OPERATOR PASSWORD GOES ONLY TO THE DEPLOY FILE'S OWN URL. It was the
+// lowest layer once, and a machine whose CLI already pointed at another muster
+// sent the new hub's password there (round-1 audit, Y8). passwordURL is the
+// one base checkSignIn may post it to.
 func (d *doctorRun) resolve(deployEnv string) error {
 	a := d.a
 	merged := map[string]string{}
+	var deploy map[string]string
 	if deployEnv != "" {
 		path := expandHome(deployEnv, a.homeDir)
 		vals, err := parseEnvFile(path)
@@ -254,9 +276,9 @@ func (d *doctorRun) resolve(deployEnv string) error {
 		if len(vals) == 0 {
 			return failf(exitUsage, "--deploy-env %s: no such file, or it sets nothing", path)
 		}
-		merged[envAPIURL] = vals["MUSTER_PUBLIC_URL"]
-		merged[envTokenAlias] = vals["MUSTER_HOOK_TOKEN"]
+		deploy = vals
 		d.password = vals["MUSTER_UI_PASSWORD"]
+		d.passwordURL = strings.TrimSuffix(strings.TrimSpace(vals["MUSTER_PUBLIC_URL"]), "/")
 	}
 	envFile := expandHome(a.flagEnvFile, a.homeDir)
 	vals, err := parseEnvFile(envFile)
@@ -268,7 +290,27 @@ func (d *doctorRun) resolve(deployEnv string) error {
 			merged[k] = v
 		}
 	}
-	cfg, err := resolveConfig(a.flagEnvFile, merged, a.getenv, a.flagAPIURL, a.flagToken)
+	getenv := a.getenv
+	if deploy != nil {
+		// The deploy file's URL and token replace the env file's and the
+		// environment's (both spellings of the token).
+		if u := deploy["MUSTER_PUBLIC_URL"]; u != "" {
+			merged[envAPIURL] = u
+		}
+		if t := deploy["MUSTER_HOOK_TOKEN"]; t != "" {
+			delete(merged, envToken)
+			merged[envTokenAlias] = t
+		}
+		getenv = func(k string) string {
+			switch {
+			case k == envAPIURL && deploy["MUSTER_PUBLIC_URL"] != "",
+				(k == envToken || k == envTokenAlias) && deploy["MUSTER_HOOK_TOKEN"] != "":
+				return ""
+			}
+			return a.getenv(k)
+		}
+	}
+	cfg, err := resolveConfig(a.flagEnvFile, merged, getenv, a.flagAPIURL, a.flagToken)
 	if err != nil {
 		return err
 	}
@@ -515,6 +557,81 @@ func mirrorStatusHint(goos string) string {
 	return "systemctl --user status " + defaultMirrorUnit + "; journalctl --user -u " + defaultMirrorUnit + " -n 50"
 }
 
+// mirrorTokenFile is where this machine's mirror token is: the settings
+// file's MUSTER_MIRROR_TOKEN_FILE, else the token beside it ("" = no
+// settings file, i.e. this machine was never connected by INSTALL.md).
+func (d *doctorRun) mirrorTokenFile() string {
+	env := expandHome(d.mirrorEnv, d.a.homeDir)
+	vals, err := parseEnvFile(env)
+	if err != nil || len(vals) == 0 {
+		return ""
+	}
+	if f := vals["MUSTER_MIRROR_TOKEN_FILE"]; f != "" {
+		return expandHome(f, d.a.homeDir)
+	}
+	return filepath.Join(filepath.Dir(env), "token")
+}
+
+// checkThisHost asks the SERVER, with this machine's own mirror token,
+// whether it holds a connection from this machine (GET /mirror/host).
+//
+// 🔴 IT IS THE ONLY CHECK A JOINING MACHINE HAS THAT SEES THE CONNECTION.
+// muster-mirror does not exit on a refused token — it retries — so its user
+// service reads `active` with a wrong token or a token minted for another
+// name. A refused token is a FAIL here, not a SKIP.
+func (d *doctorRun) checkThisHost(ctx context.Context) {
+	const name = "this-host"
+	if d.skipped(name) || d.needsServer(name) {
+		return
+	}
+	path := d.mirrorTokenFile()
+	if path == "" {
+		d.add(name, statusSkip, "this machine has no muster-mirror settings ("+d.mirrorEnv+"): it is not connected",
+			"connect it: INSTALL.md, step 7")
+		return
+	}
+	raw, err := os.ReadFile(path)
+	tok := strings.TrimSpace(string(raw))
+	if err != nil || tok == "" {
+		d.add(name, statusFail, "muster-mirror's token file "+path+" is missing or empty",
+			"mint this machine's token on the server and write it there (INSTALL.md, step 7)")
+		return
+	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, d.base+mirrorHostRoute, nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, body, err := d.do(req)
+	if err != nil {
+		d.add(name, statusFail, "GET "+mirrorHostRoute+": "+err.Error(), "retry")
+		return
+	}
+	var h struct {
+		Host        string `json:"host"`
+		Online      bool   `json:"online"`
+		Interactive bool   `json:"interactive"`
+	}
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		d.add(name, statusFail, "the server refused this machine's mirror token (revoked, or minted on another server)",
+			"mint a new one on the server (`docker compose exec -T muster /muster-server mirror token create <host>`), "+
+				"write it to "+path+", restart the service, and revoke the old one")
+	case resp.StatusCode == http.StatusNotFound:
+		d.add(name, statusFail, "the server has no "+mirrorHostRoute+": mirroring is off there, or it is older than this CLI",
+			"turn on MUSTER_MIRROR=1 on the server, or upgrade it")
+	case resp.StatusCode != http.StatusOK || json.Unmarshal(body, &h) != nil:
+		d.add(name, statusFail, fmt.Sprintf("GET %s answered %d", mirrorHostRoute, resp.StatusCode), "retry; then check the server's logs")
+	case !h.Online:
+		d.add(name, statusFail, fmt.Sprintf("the token is valid for host %q, but the server holds no connection from it", h.Host),
+			"`"+mirrorStatusHint(d.sys.goos)+"`; MUSTER_MIRROR_HOST in "+d.mirrorEnv+" must be "+h.Host+
+				" (right after a server restart, wait a few seconds and run doctor again)")
+	default:
+		mode := "read-only"
+		if h.Interactive {
+			mode = "interactive"
+		}
+		d.add(name, statusPass, fmt.Sprintf("the server sees this machine connected as %s (%s)", h.Host, mode), "")
+	}
+}
+
 func (d *doctorRun) checkMirrorService(ctx context.Context) {
 	const name = "mirror-service"
 	if d.skipped(name) {
@@ -593,6 +710,12 @@ func (d *doctorRun) checkSignIn(ctx context.Context) {
 	if d.password == "" {
 		d.add(name, statusSkip, "no operator password here, so sign-in, push and dictation cannot be checked from this machine",
 			"on the server machine: muster doctor --deploy-env <dir>/.env")
+		return
+	}
+	if d.passwordURL == "" || d.passwordURL != d.base {
+		// Never hand the deploy file's password to a server it does not name.
+		d.add(name, statusSkip, fmt.Sprintf("the password in --deploy-env belongs to %q, not to %s, so it is not sent", d.passwordURL, d.base),
+			"set MUSTER_PUBLIC_URL in that .env to this server's URL, or drop --api-url")
 		return
 	}
 	form := url.Values{"password": {d.password}}

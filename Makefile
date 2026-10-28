@@ -34,7 +34,7 @@ export MUSTER_TEST_PG_PORT
 # database, which is the specific failure that file's header is about.
 TEST_DSN := postgres://muster:muster@127.0.0.1:$(MUSTER_TEST_PG_PORT)/muster_test?sslmode=disable
 
-.PHONY: build vet run image test test-db test-db-down test-liveclaude test-livehermes leakscan css css-check check help verb-ledger icons e2e screenshots
+.PHONY: build vet run image test test-db test-db-down test-liveclaude test-livehermes leakscan css css-check check help verb-ledger install-guide-test icons e2e screenshots
 
 # The stylesheet the UI serves, and the classes that prove each Tailwind content
 # entry is still matching something. See css-check.
@@ -347,5 +347,10 @@ screenshots:
 	@for f in docs/img/*.png; do s=$$(wc -c < "$$f"); echo "$$f: $$s bytes"; \
 	  test "$$s" -le 204800 || { echo "screenshots: $$f is over 200 KB"; exit 1; }; done
 
-check: vet test leakscan css-check verb-ledger
+# INSTALL.md's shell blocks, run against faked docker/curl/tailscale/ssh in a
+# temp HOME (tests/install_guide_test.py): nothing on this machine is touched.
+install-guide-test:
+	python3 tests/install_guide_test.py
+
+check: vet test leakscan css-check verb-ledger install-guide-test
 

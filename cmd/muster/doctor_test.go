@@ -98,7 +98,15 @@ type fakeMuster struct {
 	transcribeText string
 	sawSample      bool
 	sawOrigin      string
+	// The machine's own mirror token as the server knows it (GET /mirror/host).
+	mirrorToken   string // "" = fakeMirrorToken
+	hostOnline    bool
+	noHostRoute   bool
+	loginAttempts int
 }
+
+// fakeMirrorToken is the mirror token runDoctorAgainst writes for the machine.
+const fakeMirrorToken = "mmt_fake-mirror-token-for-this-machine"
 
 const (
 	fakeHookToken = "hook-token-for-the-fake-server-not-a-real-secret"
@@ -122,6 +130,7 @@ func healthyMuster() *fakeMuster {
 		},
 		transcribeCode: http.StatusOK,
 		transcribeText: "testing muster dictation",
+		hostOnline:     true,
 	}
 }
 
@@ -158,7 +167,22 @@ func (f *fakeMuster) handler() http.Handler {
 		b, _ := json.Marshal(f.report)
 		writeJSON(w, http.StatusOK, string(b))
 	})
+	mux.HandleFunc("GET /mirror/host", func(w http.ResponseWriter, r *http.Request) {
+		want := f.mirrorToken
+		if want == "" {
+			want = fakeMirrorToken
+		}
+		switch {
+		case f.noHostRoute:
+			http.NotFound(w, r)
+		case r.Header.Get("Authorization") != "Bearer "+want:
+			writeJSON(w, http.StatusUnauthorized, `{"error":"this route takes a mirror host token (mmt_…)"}`)
+		default:
+			writeJSON(w, http.StatusOK, fmt.Sprintf(`{"host":"alpha","online":%t,"interactive":%t}`, f.hostOnline, f.hostOnline))
+		}
+	})
 	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
+		f.loginAttempts++
 		_ = r.ParseForm()
 		switch {
 		case f.loginStatus != 0:
@@ -254,7 +278,13 @@ type doctorOpts struct {
 	token      string
 	noPassword bool
 	password   string
-	extra      []string
+	// deployURL is the deploy file's MUSTER_PUBLIC_URL ("" = the server's own).
+	deployURL string
+	// tokenFile is the mirror token file's content ("" = fakeMirrorToken);
+	// noMirror writes no mirror settings at all.
+	tokenFile string
+	noMirror  bool
+	extra     []string
 }
 
 func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts) doctorResult {
@@ -280,14 +310,37 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 		if o.password != "" {
 			pw = o.password
 		}
+		deployURL := ts.URL
+		if o.deployURL != "" {
+			deployURL = o.deployURL
+		}
 		env := filepath.Join(dir, "deploy.env")
-		if err := os.WriteFile(env, []byte("MUSTER_UI_PASSWORD='"+pw+"'\n"), 0o600); err != nil {
+		if err := os.WriteFile(env, []byte("MUSTER_PUBLIC_URL="+deployURL+"\nMUSTER_UI_PASSWORD='"+pw+"'\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		args = append(args, "doctor", "--deploy-env", env)
 	} else {
 		args = append(args, "doctor")
 	}
+	mirrorEnv := filepath.Join(dir, "mirror", "env")
+	if !o.noMirror {
+		tok := fakeMirrorToken
+		if o.tokenFile != "" {
+			tok = o.tokenFile
+		}
+		if o.tokenFile == "EMPTY" {
+			tok = ""
+		}
+		_ = os.MkdirAll(filepath.Dir(mirrorEnv), 0o700)
+		tokPath := filepath.Join(dir, "mirror", "token")
+		if err := os.WriteFile(tokPath, []byte(tok+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(mirrorEnv, []byte("MUSTER_MIRROR_TOKEN_FILE="+tokPath+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	args = append(args, "--mirror-env", mirrorEnv)
 	args = append(args, o.extra...)
 
 	var out, errOut strings.Builder
@@ -319,7 +372,7 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 }
 
 // TestDoctorHealthyIsAllPass is the positive control for every red case below:
-// the same fake, unbroken, passes all nine checks and exits 0 — so a FAIL in a
+// the same fake, unbroken, passes all ten checks and exits 0 — so a FAIL in a
 // case is the breakage, not the fixture.
 func TestDoctorHealthyIsAllPass(t *testing.T) {
 	m := healthyMuster()
@@ -341,7 +394,7 @@ func TestDoctorHealthyIsAllPass(t *testing.T) {
 	if !strings.Contains(r.check("dictation").Detail, "testing muster dictation") {
 		t.Fatalf("dictation detail %q does not carry the transcript", r.check("dictation").Detail)
 	}
-	if !strings.Contains(r.stderr, "9 passed, 0 failed, 0 skipped") {
+	if !strings.Contains(r.stderr, "10 passed, 0 failed, 0 skipped") {
 		t.Fatalf("stderr summary missing:\n%s", r.stderr)
 	}
 	// The human report is on stderr and nowhere on stdout.
@@ -383,6 +436,10 @@ func TestDoctorEachCheckGoesRedWhenBroken(t *testing.T) {
 		{check: "mirror-hosts", why: "mirror off", breakM: func(m *fakeMuster) {
 			m.report["mirror"] = map[string]any{"enabled": false, "hosts": []any{}}
 		}, detail: "off on the server"},
+		{check: "this-host", why: "token refused", opts: doctorOpts{tokenFile: "mmt_a-revoked-or-foreign-token"}, detail: "refused this machine's mirror token"},
+		{check: "this-host", why: "not connected", breakM: func(m *fakeMuster) { m.hostOnline = false }, detail: "holds no connection"},
+		{check: "this-host", why: "empty token file", opts: doctorOpts{tokenFile: "EMPTY"}, detail: "missing or empty"},
+		{check: "this-host", why: "route absent", breakM: func(m *fakeMuster) { m.noHostRoute = true }, detail: "has no /mirror/host"},
 		{check: "mirror-service", why: "unit inactive", breakS: func(s *fakeSystem) { s.unitState, s.unitErr = "inactive", true }, detail: "is inactive"},
 		{check: "mirror-service", why: "unit failed", breakS: func(s *fakeSystem) { s.unitState, s.unitErr = "failed", true }, detail: "is failed"},
 		{check: "mirror-service", why: "launchd not loaded", breakS: func(s *fakeSystem) { s.goos = "darwin" }, detail: "not loaded"},
@@ -440,7 +497,7 @@ func TestDoctorSkipsWhatThisMachineCannotCheck(t *testing.T) {
 	r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{noToken: true, noPassword: true})
 	want := map[string]doctorStatus{
 		"server": statusPass, "manifest": statusPass, "hook-token": statusSkip,
-		"mirror-hosts": statusSkip, "mirror-service": statusPass, "tmux": statusPass, "sign-in": statusSkip,
+		"mirror-hosts": statusSkip, "this-host": statusPass, "mirror-service": statusPass, "tmux": statusPass, "sign-in": statusSkip,
 		"push": statusSkip, "dictation": statusSkip,
 	}
 	for name, st := range want {
@@ -482,7 +539,7 @@ func TestDoctorAnUnreachableServerSkipsTheRestAndFails(t *testing.T) {
 			if c.Status != statusFail {
 				t.Errorf("server = %+v, want FAIL", c)
 			}
-		case "manifest", "hook-token", "mirror-hosts", "sign-in", "push", "dictation":
+		case "manifest", "hook-token", "mirror-hosts", "this-host", "sign-in", "push", "dictation":
 			if c.Status != statusSkip {
 				t.Errorf("%s = %+v, want SKIP behind the server's FAIL", c.Name, c)
 			}
@@ -524,17 +581,25 @@ func TestDoctorSkipFlag(t *testing.T) {
 	}
 }
 
-// TestDoctorDeployEnvFillsOnlyWhatIsUnset: the compose .env's
-// MUSTER_PUBLIC_URL and MUSTER_HOOK_TOKEN are the LOWEST layer — they fill an
-// unset URL and token, and never override a flag.
-func TestDoctorDeployEnvFillsOnlyWhatIsUnset(t *testing.T) {
+// TestDoctorDeployEnvBeatsTheCLIConfig: during an install the hub checked is
+// the one --deploy-env names — its MUSTER_PUBLIC_URL and MUSTER_HOOK_TOKEN beat
+// an older ~/.muster/muster.env and the environment — and only --api-url /
+// --token beat it.
+func TestDoctorDeployEnvBeatsTheCLIConfig(t *testing.T) {
 	dir := t.TempDir()
 	env := filepath.Join(dir, ".env")
 	if err := os.WriteFile(env, []byte("MUSTER_PUBLIC_URL=https://from-deploy.example.test\nMUSTER_HOOK_TOKEN=deploy-token\nMUSTER_UI_PASSWORD=pw\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// An older CLI config pointing at ANOTHER muster, in both the env file and
+	// the environment (both token spellings).
+	cliEnv := filepath.Join(dir, "muster.env")
+	if err := os.WriteFile(cliEnv, []byte("MUSTER_API_URL=https://other.example.test\nMUSTER_TOKEN=other-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	environ := map[string]string{"MUSTER_API_URL": "https://env.example.test", "MUSTER_TOKEN": "env-token", "MUSTER_HOOK_TOKEN": "env-hook"}
 	resolveWith := func(flagURL, flagToken string) *doctorRun {
-		a := &app{getenv: func(string) string { return "" }, homeDir: dir, flagEnvFile: filepath.Join(dir, "absent"),
+		a := &app{getenv: func(k string) string { return environ[k] }, homeDir: dir, flagEnvFile: cliEnv,
 			flagAPIURL: flagURL, flagToken: flagToken}
 		d := &doctorRun{a: a}
 		if err := d.resolve(env); err != nil {
@@ -543,12 +608,42 @@ func TestDoctorDeployEnvFillsOnlyWhatIsUnset(t *testing.T) {
 		return d
 	}
 	d := resolveWith("", "")
-	if d.base != "https://from-deploy.example.test" || d.token != "deploy-token" || d.password != "pw" {
-		t.Fatalf("unset: base %q token %q password %q", d.base, d.token, d.password)
+	if d.base != "https://from-deploy.example.test" || d.token != "deploy-token" || d.password != "pw" ||
+		d.passwordURL != "https://from-deploy.example.test" {
+		t.Fatalf("the deploy file must win over the CLI config: base %q token %q password %q passwordURL %q",
+			d.base, d.token, d.password, d.passwordURL)
 	}
 	d = resolveWith("https://flag.example.test", "flag-token")
 	if d.base != "https://flag.example.test" || d.token != "flag-token" {
 		t.Fatalf("flags must win: base %q token %q", d.base, d.token)
+	}
+	// Without --deploy-env the CLI config applies as before.
+	a := &app{getenv: func(k string) string { return environ[k] }, homeDir: dir, flagEnvFile: cliEnv}
+	plain := &doctorRun{a: a}
+	if err := plain.resolve(""); err != nil {
+		t.Fatal(err)
+	}
+	if plain.base != "https://env.example.test" || plain.token != "env-token" {
+		t.Fatalf("no deploy file: base %q token %q, want the environment's", plain.base, plain.token)
+	}
+}
+
+// TestDoctorNeverSendsThePasswordToAnotherServer: --deploy-env names one hub;
+// pointed (by --api-url) at a different server, doctor does not POST the
+// password there — sign-in SKIPs, and that server sees no /login at all.
+func TestDoctorNeverSendsThePasswordToAnotherServer(t *testing.T) {
+	m := healthyMuster()
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{deployURL: "https://the-new-hub.example.test"})
+	if m.loginAttempts != 0 {
+		t.Fatalf("the password was posted to a server the deploy file does not name (%d attempts)", m.loginAttempts)
+	}
+	if r.status("sign-in") != statusSkip || !strings.Contains(r.check("sign-in").Detail, "not sent") {
+		t.Fatalf("sign-in = %+v, want SKIP saying it was not sent", r.check("sign-in"))
+	}
+	// Control: the same run with the deploy file naming this server signs in.
+	m2 := healthyMuster()
+	if r2 := runDoctorAgainst(t, m2, healthySystem(), doctorOpts{}); m2.loginAttempts != 1 || r2.status("sign-in") != statusPass {
+		t.Fatalf("control: %d login attempts, sign-in %s; want 1 and PASS", m2.loginAttempts, r2.status("sign-in"))
 	}
 }
 
