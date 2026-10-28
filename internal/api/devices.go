@@ -353,13 +353,11 @@ func (s *Server) handleDeviceConfig(w http.ResponseWriter, r *http.Request) {
 		"server_version": BuildVersion,
 		"push":           push,
 		"pairing":        map[string]any{"pin_keys_allowed": s.ext.AllowPINKeys},
-		// Push, and Phase 2's signed actions for asks (action_ids: exactly the
-		// ids this server routes, device_actions.go); bubbles (Phase 3) and
-		// widget state (Phase 4) are not served yet.
+		// Push, and Phase 2's signed actions for asks (the ids are the app's
+		// fixed table; which ones a push offers is in the push itself,
+		// device_actions.go); bubbles (Phase 3) and widget state (Phase 4) are
+		// not served yet.
 		"features": map[string]any{"push": s.pushServed(), "actions": s.ext.Attention != nil, "bubbles": false, "state": false},
-		// Beside the switches (which stay all booleans): the action ids the app
-		// may offer.
-		"action_ids": deviceActionIDs(s.ext.Attention != nil),
 	})
 }
 

@@ -312,6 +312,26 @@ func TestAPhoneDismissesAnAskSigned(t *testing.T) {
 	}
 }
 
+// TestTheConfigSaysActionsWithOneSwitch: where the asks are served, the
+// device config turns features.actions on — the one signal the app reads —
+// and carries no second, parallel list of ids (round-0 audit: a top-level
+// action_ids nothing read). RED at the first #314 head, which sent both.
+func TestTheConfigSaysActionsWithOneSwitch(t *testing.T) {
+	a := newActionRig(t)
+	w := a.call(a.edge, "GET", deviceConfigPath, a.tok, "")
+	var cfg map[string]json.RawMessage
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &cfg) != nil {
+		t.Fatalf("config: %d %s", w.Code, w.Body.String())
+	}
+	if _, ok := cfg["action_ids"]; ok {
+		t.Errorf("the config still carries action_ids: %s", w.Body.String())
+	}
+	var features map[string]bool
+	if json.Unmarshal(cfg["features"], &features) != nil || !features["actions"] {
+		t.Errorf("features.actions is not on where the asks are served: %s", cfg["features"])
+	}
+}
+
 // TestAReadOnlyPhoneCannotAct: a phone paired without a step-up key gets no
 // challenge (403 no_stepup_key), so it can sign nothing.
 func TestAReadOnlyPhoneCannotAct(t *testing.T) {

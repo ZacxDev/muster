@@ -736,8 +736,9 @@ cannot clash. The app refuses the bare verbs (`cancel`, `answer`, `approve`)
 
 The first signed actions muster serves are an ask's: `ask_answer` and
 `ask_dismiss` (Phase 2, asks only; the other ids in the table above are not
-routed yet, and `GET /api/device/config` lists exactly the routed ones in
-`action_ids`). This is the whole contract the app builds against.
+routed yet; `GET /api/device/config`'s `features.actions` is true where these
+two are, and a push offers only ids that are). This is the whole contract the
+app builds against.
 
 **1. The notification (payload v2 for an `attention` ask).**
 

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -45,20 +44,6 @@ const (
 	actionAskAnswer  = push.ActionAskAnswer
 	actionAskDismiss = push.ActionAskDismiss
 )
-
-// deviceActionIDs is the ids a paired device may offer (/api/device/config's
-// features.action_ids), sorted; none when the asks are not served.
-func deviceActionIDs(served bool) []string {
-	out := []string{}
-	if !served {
-		return out
-	}
-	for id := range deviceActionRoutes {
-		out = append(out, id)
-	}
-	sort.Strings(out)
-	return out
-}
 
 const (
 	deviceChallengePath  = deviceAPIPrefix + "/challenge"
