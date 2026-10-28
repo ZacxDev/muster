@@ -219,6 +219,12 @@ BEGIN
         ALTER TABLE public.device_challenges DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.device_challenges ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0060 (chief_preferences), when this schema has it; same reason as 0011.
+    IF to_regclass('public.chief_preferences') IS NOT NULL THEN
+        ALTER TABLE public.chief_preferences NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_preferences DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.chief_preferences ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

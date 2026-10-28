@@ -375,6 +375,7 @@ func (s *Server) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 </section>
 `+s.accountDevicesSection(r)+`
 `+s.accountNotificationsSection(r)+`
+`+s.accountChiefSection(r)+`
 `+s.accountSuggestSection(r)+`</div>`)
 }
 

@@ -198,6 +198,13 @@ func (s *Server) mirrorSessionOf(ctx context.Context, host, sid string) (mirror.
 // operator tearing down one of their agents — with the attention tools. No
 // dispatched agent is offered any operator tool, and their handlers refuse any caller but a mirrored
 // session.
+//
+// chief_ask is listed whether or not the owner has a chief that is on, and
+// that is deliberate: Claude Code reads a tools list once, at connect, so a
+// listing that followed the switch would be stale for every session that
+// connected before it moved. The CALL decides instead (toolChiefAsk): with
+// the chief off or absent it answers, as a tool error the model reads, to ask
+// the owner with attention_ask.
 func (s *Server) mirrorTools() []agents.ToolDef {
 	var out []agents.ToolDef
 	if s.attentionToolsOn() {

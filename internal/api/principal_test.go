@@ -190,6 +190,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /mirror/view/suggest",
 		"POST /mirror/view/suggest/event",
 		"POST /account/suggest",
+		// The chief's on/off switch (chief_toggle.go): the session tier.
+		"POST /account/chief",
 		"GET /mirror/view/subagent",
 		"POST /mirror/view/send",
 		"POST /mirror/terminal/send",

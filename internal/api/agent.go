@@ -416,14 +416,18 @@ func (s *Server) agentTools() []agentTool {
 // requests the owner must approve — and it only lengthens a list.
 func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 	all := s.agentTools()
-	chief, decided := false, false
+	chief, acting, decided := false, false, false
 	out := make([]agentTool, 0, len(all))
 	for _, t := range all {
 		if t.chiefOnly || t.notChief {
 			if !decided {
+				// acting: the chief AND on. A chief its owner turned off keeps
+				// no chief-only tool (chief_toggle.go), and is still the chief
+				// for the notChief axis.
 				chief, decided = s.isChiefAgent(ctx, a), true
+				acting = chief && s.ownersChiefOn(ctx, a)
 			}
-			if (t.chiefOnly && !chief) || (t.notChief && chief) {
+			if (t.chiefOnly && !acting) || (t.notChief && chief) {
 				continue
 			}
 		}
@@ -576,6 +580,8 @@ func (s *Server) dispatchAgentTool(ctx context.Context, a agents.Agent, name, ar
 	switch chiefOnly, notChief := s.toolAxis(name); {
 	case chiefOnly && !s.isChiefAgent(ctx, a):
 		return toolErr("%s is available to your owner's chief agent only", name)
+	case chiefOnly && !s.chiefActing(ctx, a):
+		return toolErr("%s: your owner turned the chief off", name)
 	case notChief && s.isChiefAgent(ctx, a):
 		return toolErr("%s is not one of your owner's chief agent's tools", name)
 	}
