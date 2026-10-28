@@ -1,0 +1,468 @@
+#!/usr/bin/env python3
+"""INSTALL.md's shell blocks, run for real against faked machines.
+
+    python3 tests/install_guide_test.py            # the guide in this checkout
+    MI_GUIDE=path/to/INSTALL.md python3 tests/install_guide_test.py
+
+Each case finds a block of INSTALL.md by what it contains, runs it in a fresh
+`sh` with HOME in a temp directory and fake `docker`, `curl`, `tailscale` and
+`ssh` first on PATH (every call logged), and asserts what the block WROTE
+(.env, the state file, the token file) or CALLED. Nothing touches this
+machine's Docker, Tailscale or network.
+
+What it pins (the round-1 audit on #322): push keys are all three or none;
+Step 5 brings .env's MUSTER_VERSION to the chosen release; re-running or
+switching the dictation option never loses a key and never leaves a stale
+profile or model; a failed version lookup is never saved; an existing muster
+or Tailscale config is never taken over; "start over" deletes only this
+guide's own fresh install; a secret never reaches argv; the ssh mint keeps
+only the token.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import stat
+import subprocess
+import tempfile
+import textwrap
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+GUIDE = Path(os.environ.get("MI_GUIDE", ROOT / "INSTALL.md"))
+URL = "https://hub.example-tailnet.ts.net"
+
+
+def blocks() -> list[str]:
+    text = GUIDE.read_text()
+    out = []
+    for m in re.finditer(r"^([ \t]*)```sh\n(.*?)^\1```", text, re.S | re.M):
+        body = m.group(2)
+        lines = body.split("\n")
+        ind = min((len(l) - len(l.lstrip(" ")) for l in lines if l.strip()), default=0)
+        out.append("\n".join(l[ind:] for l in lines))
+    return out
+
+
+def block(*needles: str) -> str:
+    for b in blocks():
+        if all(n in b for n in needles):
+            return b
+    raise AssertionError(f"INSTALL.md has no sh block containing {needles!r}")
+
+
+FAKE_DOCKER = r"""#!/bin/sh
+echo "docker $*" >> "$FAKE_LOG"
+case "$*" in *"mirror token create"*)
+  eval "h=\${$#}"; echo "minted mirror token 9 for host $h" >&2; echo "mmt_token-for-$h"; exit 0 ;;
+esac
+case "$1 $2" in
+  "run --rm")
+    [ "${FAKE_VAPID:-ok}" = fail ] && { echo "pull denied" >&2; exit 1; }
+    echo "MUSTER_VAPID_PUBLIC_KEY=BPUBFAKE"; echo "MUSTER_VAPID_PRIVATE_KEY=privfake"; exit 0 ;;
+  "ps -a")
+    case "$*" in *--format*) for i in ${FAKE_PS_IDS:-}; do echo "  container name-$i"; done ;;
+                 *) for i in ${FAKE_PS_IDS:-}; do echo "$i"; done ;; esac; exit 0 ;;
+  "volume ls")
+    case "$*" in *--format*) for v in ${FAKE_VOLUMES:-}; do echo "  volume $v"; done ;;
+                 *) for v in ${FAKE_VOLUMES:-}; do echo "$v"; done ;; esac; exit 0 ;;
+  "inspect -f")
+    id=$4; case "$3" in *working_dir*) eval "echo \"\${FAKE_WD_$id:-}\"" ;; *) echo "/name-$id" ;; esac; exit 0 ;;
+  "compose config") echo "name: muster"; echo "services:"; exit 0 ;;
+esac
+exit 0
+"""
+
+FAKE_CURL = r"""#!/bin/sh
+echo "curl $*" >> "$FAKE_LOG"
+case "$*" in
+  *127.0.0.1:8105/health*) echo '{"status":"ok"}'; exit 0 ;;
+  *127.0.0.1:8105*) [ "${FAKE_PORT_8105:-0}" = 1 ] && exit 0; exit 7 ;;
+  *-fsSLI*releases/latest*) printf '%s' "${FAKE_LATEST_URL:-}"; [ -n "${FAKE_LATEST_URL:-}" ] || exit 22; exit 0 ;;
+  *api.github.com*) printf '%s\n' "${FAKE_API_BODY:-}"; exit 0 ;;
+  */health*) printf '%s\n' "${FAKE_HEALTH:-}"; exit 0 ;;
+esac
+out=""; prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; url=$a; done
+[ -n "$out" ] && { printf 'downloaded %s\n' "$url" > "$out"; exit 0; }
+exit 0
+"""
+
+FAKE_TAILSCALE = r"""#!/bin/sh
+echo "tailscale $*" >> "$FAKE_LOG"
+case "$*" in
+  "serve status"*)
+    [ "${FAKE_SERVE_FAIL:-0}" = 1 ] && { echo "failed to connect to local tailscaled; it doesn't appear to be running" >&2; exit 1; }
+    cat "$FAKE_SERVE"; exit 0 ;;
+  "serve --bg --https=443 8105")
+    printf 'https://hub.example-tailnet.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8105\n' > "$FAKE_SERVE"; exit 0 ;;
+  "status"*) exit 0 ;;
+esac
+exit 0
+"""
+
+# The hub, over ssh: noisy start-up files, then the script on stdin, run by sh
+# with the fake docker first on PATH.
+FAKE_SSH = r"""#!/bin/sh
+echo "ssh $*" >> "$FAKE_LOG"
+echo "Welcome to the hub! (motd on stdout)"
+while [ "$1" != "sh" ] && [ $# -gt 0 ]; do shift; done
+shift
+# A real hub's login shell would set its own PATH; this one keeps the fakes.
+[ "$1" = "-l" ] && shift
+sh "$@"; rc=$?
+echo "Connection to hub closed. (logout noise on stdout)"
+exit $rc
+"""
+
+# awk, recorded: every argv awk is called with (env_set's secrets must not be
+# in it), then the real awk.
+FAKE_AWK = r"""#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_AWK_ARGV"
+exec "$REAL_AWK" "$@"
+"""
+
+
+class Guide(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="mi-guide-"))
+        self.homedir = self.tmp / "home"
+        self.homedir.mkdir()
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        self.log = self.tmp / "calls.log"
+        self.log.touch()
+        self.serve_file = self.tmp / "serve-status"
+        self.serve_file.write_text("No serve config\n")
+        self.awk_argv = self.tmp / "awk-argv"
+        self.awk_argv.touch()
+        real_awk = subprocess.run(["sh", "-c", "command -v awk"], capture_output=True, text=True).stdout.strip()
+        for name, body in [("docker", FAKE_DOCKER), ("curl", FAKE_CURL), ("tailscale", FAKE_TAILSCALE),
+                           ("ssh", FAKE_SSH), ("awk", FAKE_AWK)]:
+            p = self.bin / name
+            p.write_text(body)
+            p.chmod(0o755)
+        self.env = {
+            "HOME": str(self.homedir), "PATH": f"{self.bin}:{os.environ['PATH']}", "FAKE_LOG": str(self.log),
+            "FAKE_SERVE": str(self.serve_file), "FAKE_AWK_ARGV": str(self.awk_argv), "REAL_AWK": real_awk,
+        }
+        self.run_block(block('cat > "$HOME/.config/muster-install/lib.sh"'))
+        self.lib = f'. "{self.homedir}/.config/muster-install/lib.sh"\n'
+        self.muster = self.homedir / "muster"
+
+    def tearDown(self) -> None:
+        subprocess.run(["rm", "-rf", str(self.tmp)])
+
+    def run_block(self, script: str, **env: str) -> str:
+        p = subprocess.run(["sh", "-c", script], env={**self.env, **env}, capture_output=True, text=True,
+                           cwd=self.tmp, timeout=60)
+        return p.stdout + p.stderr
+
+    def sh(self, script: str, **env: str) -> str:
+        return self.run_block(self.lib + textwrap.dedent(script), **env)
+
+    def calls(self) -> str:
+        return self.log.read_text()
+
+    def state(self) -> str:
+        p = self.homedir / ".config/muster-install/state"
+        return p.read_text() if p.exists() else ""
+
+    def dotenv(self) -> dict[str, str]:
+        out = {}
+        for line in (self.muster / ".env").read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                out[k] = v
+        return out
+
+    def hub(self, env_example: str = "", **saved: str) -> None:
+        """A hub at Step 4: .env.example and .env in place, values saved."""
+        self.muster.mkdir(exist_ok=True)
+        ex = "MUSTER_VERSION=1.0.0\nPOSTGRES_PASSWORD=CHANGE-ME\nMUSTER_UI_PASSWORD=CHANGE-ME\nMUSTER_HOOK_TOKEN=CHANGE-ME\n" \
+             "#MUSTER_STT_TOKEN=CHANGE-ME\n" + env_example
+        (self.muster / ".env.example").write_text(ex)
+        (self.muster / ".env").write_text(ex)
+        (self.muster / ".env").chmod(0o600)
+        saved = {"MUSTER_URL": URL, "MUSTER_VERSION": "1.0.0", **saved}
+        self.sh("".join(f"mi_save {k} '{v}'\n" for k, v in saved.items()))
+
+    # --- Y1: push keys, all three or none ------------------------------------
+
+    def test_failed_key_generation_writes_no_push_key(self) -> None:
+        self.hub()
+        out = self.run_block(self.lib + block("env_secret POSTGRES_PASSWORD"), FAKE_VAPID="fail")
+        env = self.dotenv()
+        self.assertIn("vapid generate", self.calls(), "positive control: the block tried to generate keys")
+        for k in ("MUSTER_VAPID_PUBLIC_KEY", "MUSTER_VAPID_PRIVATE_KEY", "MUSTER_VAPID_SUBJECT"):
+            self.assertEqual(env.get(k, ""), "", f"{k} written although generation failed\n{out}")
+
+    def test_generated_keys_are_all_three(self) -> None:
+        self.hub()
+        self.run_block(self.lib + block("env_secret POSTGRES_PASSWORD"))
+        env = self.dotenv()
+        self.assertEqual((env.get("MUSTER_VAPID_PUBLIC_KEY"), env.get("MUSTER_VAPID_PRIVATE_KEY"), env.get("MUSTER_VAPID_SUBJECT")),
+                         ("BPUBFAKE", "privfake", URL))
+
+    # --- Y2: Step 5 brings .env to the chosen version -------------------------
+
+    def test_step5_writes_the_chosen_version_before_it_pulls(self) -> None:
+        self.hub()
+        self.sh("mi_set_version 1.1.0")
+        self.run_block(self.lib + block("docker compose up -d --wait"))
+        self.assertEqual(self.dotenv()["MUSTER_VERSION"], "1.1.0")
+        self.assertIn("compose pull", self.calls())
+
+    # --- Y3 and Y4: dictation re-runs and switches ----------------------------
+
+    def dictation(self, **saved: str) -> str:
+        self.sh("".join(f"mi_save {k} '{v}'\n" for k, v in saved.items()))
+        return self.run_block(self.lib + block('case "$STT" in'))
+
+    def write_secret(self, name: str, value: str) -> None:
+        p = self.homedir / ".config/muster-install" / name
+        p.write_text(value)
+        p.chmod(0o600)
+
+    def test_rerunning_api_keeps_the_key(self) -> None:
+        self.hub()
+        self.write_secret("stt-api-key", "sk-the-real-key")
+        self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
+        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "sk-the-real-key")
+        self.dictation(STT="api")
+        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "sk-the-real-key", "a re-run replaced the key")
+
+    def test_rerunning_gpu_keeps_the_hf_token(self) -> None:
+        self.hub()
+        self.write_secret("hf-token", "hf_real")
+        self.dictation(STT="local-gpu")
+        self.dictation(STT="local-gpu")
+        env = self.dotenv()
+        self.assertEqual(env["HF_TOKEN"], "hf_real", "a re-run replaced the Hugging Face token")
+        first = env["MUSTER_STT_TOKEN"]
+        self.dictation(STT="local-gpu")
+        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], first, "a re-run rotated the local service's token")
+
+    def test_gpu_to_api_is_a_clean_swap(self) -> None:
+        self.hub()
+        self.write_secret("hf-token", "hf_real")
+        self.dictation(STT="local-gpu")
+        self.write_secret("stt-api-key", "sk-the-real-key")
+        self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
+        env = self.dotenv()
+        self.assertEqual((env["COMPOSE_PROFILES"], env["MUSTER_STT_URL"], env["MUSTER_STT_MODEL"], env["MUSTER_STT_TOKEN"]),
+                         ("", "https://api.openai.com", "whisper-1", "sk-the-real-key"))
+
+    def test_api_to_cpu_is_a_clean_swap(self) -> None:
+        self.hub()
+        self.write_secret("stt-api-key", "sk-the-real-key")
+        self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
+        self.dictation(STT="local-cpu")
+        env = self.dotenv()
+        self.assertEqual((env["COMPOSE_PROFILES"], env["MUSTER_STT_URL"], env["MUSTER_STT_MODEL"]),
+                         ("stt-whisper", "http://stt-whisper:8000", "Systran/faster-whisper-small"))
+        self.assertNotEqual(env["MUSTER_STT_TOKEN"], "sk-the-real-key", "the API key was handed to the local service")
+        self.assertRegex(env["MUSTER_STT_TOKEN"], r"^[0-9a-f]{64}$")
+
+    def test_cpu_to_api_without_a_key_asks_and_changes_nothing(self) -> None:
+        self.hub()
+        self.dictation(STT="local-cpu")
+        before = self.dotenv()
+        out = self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
+        self.assertIn("MISSING: the API key", out)
+        self.assertEqual(self.dotenv(), before, "it switched to the API with the local service's token as the key")
+
+    def test_step5_marks_the_install_in_use_once_healthy(self) -> None:
+        self.hub()
+        self.run_block(self.lib + block("docker compose up -d --wait"))
+        self.assertIn("GUIDE_IN_USE='1'", self.state())
+        own = dict(FAKE_PS_IDS="abc", FAKE_WD_abc=str(self.muster), FAKE_VOLUMES="muster_pgdata")
+        self.assertIn("REFUSED", self.start_over(MI_CONFIRM_DELETE="muster", **own))
+        self.assertNotIn("compose down", self.calls())
+
+    def test_none_keeps_the_api_key_for_later(self) -> None:
+        self.hub()
+        self.write_secret("stt-api-key", "sk-the-real-key")
+        self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
+        self.dictation(STT="none")
+        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "", "dictation is still on")
+        out = self.dictation(STT="api")
+        self.assertNotIn("MISSING", out)
+        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "sk-the-real-key", "the key was lost on the way through none")
+
+    def test_cpu_resets_a_non_whisper_model(self) -> None:
+        self.hub()
+        self.write_secret("stt-api-key", "sk-the-real-key")
+        self.dictation(STT="api", STT_API_URL="https://api.example-provider.test", STT_API_MODEL="openai/whisper-large-v3")
+        self.dictation(STT="local-cpu")
+        self.assertEqual(self.dotenv()["MUSTER_STT_MODEL"], "Systran/faster-whisper-small")
+        self.sh("env_set MUSTER_STT_MODEL Systran/faster-whisper-large-v3")
+        self.dictation(STT="local-cpu")
+        self.assertEqual(self.dotenv()["MUSTER_STT_MODEL"], "Systran/faster-whisper-large-v3", "a chosen whisper model was reset")
+
+    def test_api_without_a_url_asks_and_changes_nothing(self) -> None:
+        self.hub()
+        self.dictation(STT="local-cpu")
+        before = self.dotenv()
+        self.write_secret("stt-api-key", "sk-the-real-key")
+        out = self.dictation(STT="api")
+        self.assertIn("MISSING: the API's URL", out)
+        self.assertEqual(self.dotenv(), before, "a half-switched dictation config was written")
+
+    # --- Y5: a failed version lookup is never saved ---------------------------
+
+    def test_failed_lookup_saves_nothing_and_recovers(self) -> None:
+        self.muster.mkdir()
+        out = self.run_block(self.lib + block("curl -fsSL -o docker-compose.yml"),
+                             FAKE_LATEST_URL="", FAKE_API_BODY='{"message":"API rate limit exceeded"}')
+        self.assertNotIn("MUSTER_VERSION=", self.state(), f"a failed lookup was saved\n{out}")
+        self.assertNotIn("MUSTER_RELEASE_BASE=", self.state())
+        self.assertNotIn("docker-compose.yml", self.calls(), "it downloaded with no version")
+        self.sh("mi_set_version 1.2.3")
+        self.run_block(self.lib + block("curl -fsSL -o docker-compose.yml"))
+        self.assertIn("/releases/download/v1.2.3/docker-compose.yml", self.calls())
+        self.assertNotEqual(self.sh("mi_set_version v1.2.3 && echo SAVED"), "SAVED", "a v-prefixed version was accepted")
+        self.assertIn("MUSTER_VERSION='1.2.3'", self.state())
+
+    def test_lookup_takes_the_latest_redirect(self) -> None:
+        self.muster.mkdir()
+        self.run_block(self.lib + block("curl -fsSL -o docker-compose.yml"),
+                       FAKE_LATEST_URL="https://github.com/ZacxDev/muster/releases/tag/v2.3.4")
+        self.assertIn("MUSTER_VERSION='2.3.4'", self.state())
+
+    def test_joining_machine_saves_no_unreadable_version(self) -> None:
+        self.sh(f"mi_save MUSTER_URL '{URL}'")
+        self.run_block(self.lib + block('$MUSTER_URL/health" | sed'), FAKE_HEALTH="<html>tailnet login</html>")
+        self.assertNotIn("MUSTER_VERSION=", self.state())
+        self.run_block(self.lib + block('$MUSTER_URL/health" | sed'), FAKE_HEALTH='{"status":"ok","version":"1.4.0"}')
+        self.assertIn("MUSTER_VERSION='1.4.0'", self.state())
+        self.assertIn("MUSTER_RELEASE_BASE='https://github.com/ZacxDev/muster/releases/download/v1.4.0'", self.state())
+
+    # --- Y6: an existing muster is never taken over ---------------------------
+
+    def test_step5_stops_on_another_installs_container(self) -> None:
+        self.hub()
+        out = self.run_block(self.lib + block("docker compose up -d --wait"), FAKE_PS_IDS="abc", FAKE_WD_abc="/srv/other-muster")
+        self.assertNotIn("compose up", self.calls(), f"it started over another install\n{out}")
+        self.assertIn("STOP", out)
+
+    def test_step5_stops_on_a_fresh_machine_with_8105_taken(self) -> None:
+        self.hub()
+        out = self.run_block(self.lib + block("docker compose up -d --wait"), FAKE_PORT_8105="1")
+        self.assertNotIn("compose up", self.calls(), out)
+
+    def test_step5_stops_on_leftover_volumes(self) -> None:
+        self.hub()
+        self.run_block(self.lib + block("docker compose up -d --wait"), FAKE_VOLUMES="muster_pgdata")
+        self.assertNotIn("compose up", self.calls())
+
+    def test_step5_rerun_on_its_own_install_proceeds(self) -> None:
+        self.hub(GUIDE_STARTED="1")
+        self.run_block(self.lib + block("docker compose up -d --wait"), FAKE_PS_IDS="abc",
+                       FAKE_WD_abc=str(self.muster), FAKE_PORT_8105="1")
+        self.assertIn("compose up", self.calls(), "the guide refused its own install")
+
+    def test_step0_reports_another_install(self) -> None:
+        out = self.run_block(block('cat > "$HOME/.config/muster-install/lib.sh"'), FAKE_PS_IDS="abc", FAKE_WD_abc="/srv/x")
+        self.assertIn("FOREIGN container", out)
+
+    # --- Y6: starting over deletes only this guide's fresh install ------------
+
+    def start_over(self, **env: str) -> str:
+        return self.run_block(self.lib + block("down -v"), **env)
+
+    def test_start_over_refuses_unless_its_own_fresh_install(self) -> None:
+        self.hub()
+        out = self.start_over(MI_CONFIRM_DELETE="muster")
+        self.assertIn("REFUSED", out, "it would delete an install the guide never started")
+        self.hub(GUIDE_STARTED="1", GUIDE_IN_USE="1")
+        self.assertIn("REFUSED", self.start_over(MI_CONFIRM_DELETE="muster", FAKE_PS_IDS="abc", FAKE_WD_abc=str(self.muster)),
+                      "it would delete an install that has run (and may hold data)")
+        self.hub(GUIDE_STARTED="1", GUIDE_IN_USE="0")
+        self.assertIn("REFUSED", self.start_over(MI_CONFIRM_DELETE="muster", FAKE_PS_IDS="abc", FAKE_WD_abc="/srv/x"),
+                      "it would delete another install's containers")
+        self.assertNotIn("compose down", self.calls())
+
+    def test_start_over_names_what_it_deletes_and_needs_the_confirmation(self) -> None:
+        self.hub(GUIDE_STARTED="1")
+        own = dict(FAKE_PS_IDS="abc", FAKE_WD_abc=str(self.muster), FAKE_VOLUMES="muster_pgdata")
+        out = self.start_over(**own)
+        self.assertIn("container name-abc", out)
+        self.assertIn("volume muster_pgdata", out)
+        self.assertNotIn("compose down", self.calls(), "it deleted without the confirmation")
+        self.start_over(MI_CONFIRM_DELETE="muster", **own)
+        self.assertIn("compose down -v", self.calls())
+
+    # --- Y7: Tailscale serve is added to, never replaced ----------------------
+
+    def serve(self, status: str) -> str:
+        self.serve_file.write_text(status)
+        return self.run_block(self.lib + block("mi_save MUSTER_URL"))
+
+    def test_serve_adds_only_muster_when_empty(self) -> None:
+        self.serve("No serve config\n")
+        self.assertIn("tailscale serve --bg --https=443 8105", self.calls())
+        self.assertIn(f"MUSTER_URL='{URL}'", self.state())
+
+    def test_serve_keeps_its_own_mapping(self) -> None:
+        self.serve(f"{URL} (tailnet only)\n|-- / proxy http://127.0.0.1:8105\n")
+        self.assertNotIn("--bg", self.calls())
+        self.assertIn(f"MUSTER_URL='{URL}'", self.state())
+
+    def test_serve_stops_on_someone_elses_site(self) -> None:
+        out = self.serve(f"{URL} (tailnet only)\n|-- / proxy http://127.0.0.1:3000\n")
+        self.assertNotIn("--bg", self.calls(), out)
+        self.assertNotIn("MUSTER_URL", self.state())
+
+    def test_serve_stops_on_funnel(self) -> None:
+        # The mapping is muster's own, so ONLY the Funnel check can stop it.
+        out = self.serve(f"{URL} (Funnel on)\n|-- / proxy http://127.0.0.1:8105\n")
+        self.assertNotIn("--bg", self.calls())
+        self.assertIn("STOP", out)
+        self.assertNotIn("MUSTER_URL", self.state(), "a Funnel-exposed mapping was adopted as muster's")
+
+    def test_serve_unready_is_not_a_foreign_stop(self) -> None:
+        self.serve_file.write_text("No serve config\n")
+        out = self.run_block(self.lib + block("mi_save MUSTER_URL"), FAKE_SERVE_FAIL="1")
+        self.assertIn("TAILSCALE NOT READY", out)
+        self.assertNotIn("STOP", out)
+        self.assertNotIn("--bg", self.calls())
+        self.assertNotIn("MUSTER_URL", self.state())
+        pre = self.run_block(block('cat > "$HOME/.config/muster-install/lib.sh"'), FAKE_SERVE_FAIL="1")
+        self.assertIn("tailscale serve: unready", pre)
+
+    def test_removal_turns_off_only_musters_mapping(self) -> None:
+        # Prose, so a weaker guard: no block runs `serve reset`, every mention
+        # of it is a "Never", and removal names muster's own mapping.
+        for b in blocks():
+            self.assertNotRegex(b, r"tailscale serve reset", "a block wipes every serve mapping")
+        text = GUIDE.read_text()
+        for m in re.finditer(r"tailscale serve reset", text):
+            self.assertIn("Never", text[max(0, m.start() - 40):m.start()], "the guide tells the agent to reset serve")
+        self.assertRegex(text, r"tailscale serve --https=443\s+off", "removal does not name muster's mapping")
+
+    # --- nits: secrets, the ssh mint ------------------------------------------
+
+    def test_env_set_keeps_secrets_out_of_argv_and_the_file_private(self) -> None:
+        self.hub()
+        self.sh("env_set MUSTER_STT_TOKEN sk-secret-in-argv-check")
+        self.assertNotIn("sk-secret-in-argv-check", self.awk_argv.read_text())
+        mode = stat.S_IMODE((self.muster / ".env").stat().st_mode)
+        self.assertEqual(mode, 0o600)
+        self.assertFalse((self.muster / ".env.tmp").exists())
+        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "sk-secret-in-argv-check")
+
+    def test_ssh_mint_keeps_only_the_token(self) -> None:
+        self.sh("mi_save MIRROR_HOST laptop")
+        out = self.run_block(self.lib + block("ssh ", "mirror token create").replace("HUB", "hub.example"))
+        tok = (self.homedir / ".config/muster-mirror/token").read_text().strip()
+        self.assertEqual(tok, "mmt_token-for-laptop", out)
+        self.assertIn("BatchMode=yes", self.calls())
+        again = self.run_block(self.lib + block("ssh ", "mirror token create").replace("HUB", "hub.example"))
+        self.assertIn("kept existing token", again)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

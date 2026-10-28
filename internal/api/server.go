@@ -609,6 +609,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerTranscribeRoutes(mux)
 	// File attachments (uploads.go): the attach button, and the signed link.
 	s.registerUploadRoutes(mux)
+	// `muster doctor`'s server half (doctor.go): the armed hook token's read.
+	s.registerDoctorRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are

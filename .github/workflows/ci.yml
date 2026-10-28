@@ -164,6 +164,10 @@ jobs:
       - name: verdict.py can refuse
         run: python3 tests/verdict_test.py
 
+      # INSTALL.md's shell blocks against faked docker/curl/tailscale/ssh.
+      - name: INSTALL.md's blocks do what they say
+        run: python3 tests/install_guide_test.py
+
       # 🔴 A COUNT, NOT AN EXIT CODE. `go test` exits 0 with skipped tests, so
       # its exit status cannot tell "everything ran" from "everything skipped".
       # MUSTER_TEST_REQUIRE_DB should make a skip impossible — verdict.py is the

@@ -58,6 +58,8 @@ var noStoreLiterals = map[string]string{
 	"writeDocumentHeaders":     "the header set of both document writers",
 	"handleAccountDevicesLive": "the paired devices, live",
 	"handleDeviceConfig":       "a paired phone's config",
+	"handleDoctor":             "`muster doctor`'s report: live state (which hosts are connected now)",
+	"handleMirrorHost":         "a machine's own connection state, live",
 	"handleDevicePair":         "a pairing, with its one-time secret",
 	"handleDevicePairCode":     "a pairing code",
 	"handlePushKey":            "the VAPID public key",
