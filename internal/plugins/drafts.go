@@ -755,14 +755,15 @@ func (s *PGStore) FinishDraft(ctx context.Context, pluginID, draftID int64, r Dr
 }
 
 // QueuedForOwner is ownerID's undelivered messages across the owner's LIVE
-// plugins, oldest first, at most limit — what the claim route retries.
+// plugins, oldest first, at most limit — what the claim route retries — less
+// any a mail resume holds (resumeHolds: the resume delivers it itself).
 func (s *PGStore) QueuedForOwner(ctx context.Context, ownerID int64, limit int) ([]Message, error) {
 	if limit <= 0 || ownerID <= 0 {
 		return []Message{}, nil
 	}
 	rows, err := s.pool.Query(ctx, `SELECT `+prefixed("m", messageCols)+`
 		  FROM plugin_messages m JOIN plugins p ON p.id = m.plugin_id
-		 WHERE m.owner_id = $1 AND m.status = 'queued' AND p.revoked_at IS NULL
+		 WHERE m.owner_id = $1 AND m.status = 'queued' AND p.revoked_at IS NULL AND NOT `+resumeHolds+`
 		 ORDER BY m.id LIMIT $2`, ownerID, limit)
 	if err != nil {
 		return nil, err

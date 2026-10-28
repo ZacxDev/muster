@@ -26,12 +26,13 @@ func main() {
 func run(ctx context.Context, argv0 string, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, homeDir string) int {
 	name := progName(argv0)
 	a := &app{
-		stdout:   stdout,
-		stderr:   stderr,
-		getenv:   getenv,
-		homeDir:  homeDir,
-		progName: name,
-		newHTTP:  func(timeout time.Duration) *http.Client { return &http.Client{Timeout: timeout} },
+		stdout:    stdout,
+		stderr:    stderr,
+		getenv:    getenv,
+		homeDir:   homeDir,
+		progName:  name,
+		newHTTP:   func(timeout time.Duration) *http.Client { return &http.Client{Timeout: timeout} },
+		doctorSys: newDoctorSystem(),
 	}
 	root := newRootCmd(a)
 	root.SetArgs(args)

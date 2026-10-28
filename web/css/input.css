@@ -517,12 +517,13 @@
   transform: rotate(90deg);
 }
 /*
- * A tool row's context badge (internal/ui/tool_context.go) takes the row's
- * right-hand end itself (ml-auto), so the status glyph after it sits beside
+ * A tool row's or card's context badge (internal/ui/tool_context.go) takes the
+ * line's right-hand end itself (ml-auto), so what follows it — a row's status
+ * glyph, a subagent card's status pill, a question card's label — sits beside
  * it rather than splitting the free space with it. A hidden (empty) badge
- * leaves the glyph's own ml-auto alone.
+ * leaves that element's own ml-auto alone.
  */
-[data-tool-ctx]:not([hidden]) + [aria-label^="status:"] {
+[data-tool-ctx]:not([hidden]) + * {
   margin-left: 0;
 }
 @media (prefers-reduced-motion: reduce) {

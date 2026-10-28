@@ -84,6 +84,9 @@ var notLinkedLedger = map[string]string{
 	"e2e/seed": "the browser suite's fixture loader (`go run ./e2e/seed`). It TRUNCATES " +
 		"the board before seeding, so it must never be reachable from a shipped binary; it " +
 		"also refuses any database whose name does not end in _e2e.",
+	"e2e/emptydb": "the onboarding browser spec's fresh-database maker (`go run ./e2e/emptydb`). " +
+		"It DROPs and CREATEs a database as the login role, so it must never be reachable from a " +
+		"shipped binary; it refuses any database not ending in _e2e.",
 	"e2e/mkmember": "the byo-credentials browser spec's member maker (`go run ./e2e/mkmember`). " +
 		"It writes a users row as the login role, bypassing row-level security, so it must " +
 		"never be reachable from a shipped binary; it refuses any database not ending in _e2e.",

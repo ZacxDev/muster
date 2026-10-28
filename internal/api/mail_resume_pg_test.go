@@ -46,6 +46,11 @@ type resumeMirror struct {
 	// appear: a resume brings routeSID's window up (after delay).
 	appear bool
 	delay  time.Duration
+	// online, when set, runs once the resumed window is listed (appear, delay
+	// ignored: the window is up before SpawnResume answers) and before muster
+	// is told: what else happens on the server between the window coming up
+	// and the route.
+	online func()
 	spawns []string // "<host> <sid>"
 }
 
@@ -67,7 +72,7 @@ func (m *resumeMirror) Hosts(ctx context.Context) []mirror.HostView {
 func (m *resumeMirror) SpawnResume(_ context.Context, host, sid string) (mirror.ResumedWindow, error) {
 	m.rmu.Lock()
 	m.spawns = append(m.spawns, host+" "+sid)
-	refuse, appear, delay := m.refuse, m.appear, m.delay
+	refuse, appear, delay, online := m.refuse, m.appear, m.delay, m.online
 	m.rmu.Unlock()
 	if host == "attic" {
 		return mirror.ResumedWindow{}, &mirror.ResumeRefusedError{Kind: mirror.ResumeRefusalNotHere, Why: "no transcript here"}
@@ -75,7 +80,10 @@ func (m *resumeMirror) SpawnResume(_ context.Context, host, sid string) (mirror.
 	if refuse != nil {
 		return mirror.ResumedWindow{}, refuse
 	}
-	if appear {
+	if online != nil {
+		m.routeMirror.set(func(r *routeMirror) { r.claudeSession = "" })
+		online()
+	} else if appear {
 		go func() {
 			time.Sleep(delay)
 			m.routeMirror.set(func(r *routeMirror) { r.claudeSession = "" })
@@ -415,4 +423,130 @@ func TestAReviewForAnEndedAuthorResumesItOnlyOnItsRecordedHost(t *testing.T) {
 			t.Fatalf("%d chief turns; the turn does not name the author: %q", f.turns.count(), turn)
 		}
 	})
+}
+
+// submitReply stores one agent-mail reply on the bound thread WITHOUT handing
+// it on (the caller dispatches it once its hooks know the message).
+func (f *resumeFixture) submitReply(t *testing.T, external string) plugins.Message {
+	t.Helper()
+	m, created, err := f.plugins.Submit(f.asOwner, f.agentMail.ID, plugins.MessageIn{ExternalID: external, Sender: resumeSender,
+		Subject: "re: the gizmo build", Body: "the gizmo build is green on attempt 3", SenderVerified: true, Thread: resumeThread})
+	if err != nil || !created {
+		t.Fatalf("submit: %v %v", created, err)
+	}
+	return m
+}
+
+// claimDrafts is the agent-mail plugin's draft claim — its long poll, which
+// starts a retry of the owner's QUEUED messages (retryQueuedPluginMessages) —
+// waited for until that retry has finished.
+func (f *resumeFixture) claimDrafts(t *testing.T) {
+	t.Helper()
+	w := f.call(t, "POST", "/plugin/v1/drafts/claim", strings.NewReader(`{"wait_seconds":0}`),
+		map[string]string{"Authorization": "Bearer " + f.mailTok})
+	if w.Code != 204 && w.Code != 200 {
+		t.Errorf("draft claim: %d %s", w.Code, w.Body.String())
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, busy := f.srv.pluginRetrying.Load(f.owner); !busy {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Error("the claim's retry of queued messages did not finish")
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestAResumedSessionTakesTheRouteThoughAPluginClaimRetriesTheQueue is the
+// sequence the live test ran: the resume is claimed, the window comes up, and
+// BEFORE muster routes into it the agent-mail plugin's long poll claims drafts —
+// which retries the owner's queued messages, and the message being resumed for
+// is one of them (it stays queued while the resume owns it). The resume must
+// still route it into the resumed session: the retry leaves alone a message a
+// resume holds, so the chief takes no turn and the row says delivered.
+func TestAResumedSessionTakesTheRouteThoughAPluginClaimRetriesTheQueue(t *testing.T) {
+	f := newResumeFixture(t)
+	f.rm.setR(func(m *resumeMirror) { m.online = func() { f.claimDrafts(t) } })
+	m := f.submitReply(t, "resume-claim-race-1")
+	f.dispatch(t, m)
+	if rs := f.routesOf(t, m); len(rs) != 1 || rs[0].State != plugins.RouteRouted || rs[0].TargetKey != routeSID {
+		t.Fatalf("routes: %+v; want one, routed to the resumed session", rs)
+	}
+	if items := f.queued(t); len(items) != 1 || !strings.Contains(items[0].Body, "the gizmo build is green on attempt 3") {
+		t.Fatalf("queued into the window: %+v", items)
+	}
+	if n := f.turns.count(); n != 0 {
+		t.Fatalf("the chief took %d turn(s) on the message; want 0 (the resume owns it)", n)
+	}
+	if rows := f.resumeRows(t, m); len(rows) != 1 || rows[0] != (resumeRow{state: plugins.ResumeDelivered, host: "tower", window: "@9", spawned: true}) {
+		t.Fatalf("mail_resumes: %+v", rows)
+	}
+}
+
+// TestAResumeWaitsThroughARefusedRouteUntilTheWindowTakesIt: the wait does not
+// give up on the first refusal. Here the first attempts cannot be made (the
+// owner has no chief to own the route for a moment), then can: the message is
+// routed, and the row says delivered — not a timeout recorded after one try.
+func TestAResumeWaitsThroughARefusedRouteUntilTheWindowTakesIt(t *testing.T) {
+	f := newResumeFixture(t)
+	sys := authz.System(context.Background())
+	rename := func(display string) {
+		if _, err := f.pool.Exec(sys, `UPDATE agents SET display_name = $2 WHERE id = $1`, f.chief.ID, display); err != nil {
+			t.Error(err)
+		}
+	}
+	rename("away")
+	t.Cleanup(func() { rename(f.chief.DisplayName) })
+	f.rm.setR(func(m *resumeMirror) {
+		m.online = func() {
+			go func() {
+				time.Sleep(150 * time.Millisecond)
+				rename(f.chief.DisplayName)
+			}()
+		}
+	})
+	m := f.submitReply(t, "resume-retry-1")
+	f.dispatch(t, m)
+	if rows := f.resumeRows(t, m); len(rows) != 1 || rows[0] != (resumeRow{state: plugins.ResumeDelivered, host: "tower", window: "@9", spawned: true}) {
+		t.Fatalf("mail_resumes: %+v; want delivered after the refused attempts", rows)
+	}
+	if rs := f.routesOf(t, m); len(rs) != 1 || rs[0].State != plugins.RouteRouted || rs[0].TargetKey != routeSID {
+		t.Fatalf("routes: %+v", rs)
+	}
+}
+
+// TestARouteRefusedForGoodIsRecordedAsRefusedNotAsATimeout: a refusal no wait
+// can change — another delivery already took the message — ends the wait at
+// once and is recorded as what it is, never as "no window took the route
+// within" the wait the resume did not spend.
+func TestARouteRefusedForGoodIsRecordedAsRefusedNotAsATimeout(t *testing.T) {
+	f := newResumeFixture(t)
+	m := f.submitReply(t, "resume-taken-1")
+	f.rm.setR(func(rm *resumeMirror) {
+		rm.online = func() {
+			// The narrow race the hold cannot close: a delivery that began before
+			// the resume claimed the message (as BeginDelivery writes it).
+			if _, err := f.pool.Exec(authz.System(context.Background()), `UPDATE plugin_messages SET status = 'delivering',
+				agent_id = $2, attempts = attempts + 1, last_attempt_at = now() WHERE id = $1`, m.ID, f.chief.ID); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	f.srv.mailResumeWait = 2 * time.Second
+	start := time.Now()
+	f.dispatch(t, m)
+	rows := f.resumeRows(t, m)
+	if len(rows) != 1 || rows[0].state != plugins.ResumeRefused || rows[0].window != "@9" ||
+		!strings.Contains(rows[0].detail, RefusedMessageNotFound) {
+		t.Fatalf("mail_resumes: %+v; want refused, naming %s", rows, RefusedMessageNotFound)
+	}
+	if took := time.Since(start); took >= f.srv.mailResumeWait {
+		t.Fatalf("the resume waited %s for a refusal no wait could change", took)
+	}
+	if rs := f.routesOf(t, m); len(rs) != 0 {
+		t.Fatalf("routes: %+v", rs)
+	}
 }

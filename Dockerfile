@@ -13,8 +13,14 @@
 # looking correct on the machine the build ran on. The first report is "it looks
 # broken in prod".
 
+# ⚠ MULTI-ARCH: the css and build stages run on the BUILD platform
+# (`--platform=$BUILDPLATFORM`) and the Go binaries are cross-compiled for
+# TARGETARCH, so `docker buildx build --platform linux/amd64,linux/arm64`
+# emulates nothing — the runtime stage only COPYs. A plain `docker build` sets
+# both to the host's platform, so it is unchanged.
+
 # --- Stage 1: build and VERIFY the Tailwind stylesheet ----------------------
-FROM node:20-alpine AS css
+FROM --platform=$BUILDPLATFORM node:20-alpine AS css
 WORKDIR /app
 # ⚠ bash IS NOT OPTIONAL. The Makefile sets `SHELL := /usr/bin/env bash` and
 # css-check's recipe is a bash script; alpine ships busybox ash and no bash, so
@@ -65,7 +71,7 @@ COPY internal/api/flows.go ./internal/api/flows.go
 RUN make css-check TAILWIND=./node_modules/.bin/tailwindcss
 
 # --- Stage 2: build the static Go binaries ----------------------------------
-FROM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
 WORKDIR /src
 RUN apk add --no-cache git
 COPY go.mod go.sum ./
@@ -75,9 +81,12 @@ COPY . .
 # stage 1 proved rather than the one that happened to be in the context.
 COPY --from=css /app/web/static/app.css ./web/static/app.css
 ARG VERSION=dev
+# Set by BuildKit to the platform being built (linux/amd64, linux/arm64).
+ARG TARGETOS
+ARG TARGETARCH
 
 # The server.
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags="-s -w -X github.com/ZacxDev/muster/internal/api.BuildVersion=${VERSION}" \
     -o /muster-server ./cmd/muster-server
 
@@ -107,7 +116,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
     -o /muster ./cmd/muster
 
 # The migrator, so a deployment can run the schema step without a second image.
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags="-s -w" -o /muster-migrate ./cmd/muster-migrate
 
 # --- Stage 3: minimal runtime ------------------------------------------------
@@ -123,4 +132,9 @@ COPY --from=build /muster /agent-cli/muster
 # MUSTER_PORT's default. See cmd/muster-server/config.go.
 EXPOSE 8105
 USER nonroot:nonroot
+# The image is distroless (no shell, no curl), so the probe is the server's own
+# `healthcheck` subcommand: exit 0 only when /readyz answers 200. See
+# cmd/muster-server/selfcmds.go.
+HEALTHCHECK --interval=10s --timeout=6s --start-period=20s --retries=6 \
+    CMD ["/muster-server", "healthcheck"]
 ENTRYPOINT ["/muster-server"]
