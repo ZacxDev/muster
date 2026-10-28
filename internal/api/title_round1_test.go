@@ -59,10 +59,10 @@ func TestADispatchedAgentNamedAfterALongMarkdownTitleRendersPlain(t *testing.T) 
 }
 
 // TestAWaitingSessionPushTitleIsPlain: the attention push names the waiting
-// window (or the asker) in its TITLE, by its title, which is often LLM-written
-// markdown; through the one title sink (goNotify) it reads as the plain title,
-// as the attention page shows it. (Before "Full text always" the source was in
-// the body, and this test pinned the body's plain source.)
+// window in its BODY and the asker in its TITLE, each by a title that is often
+// LLM-written markdown; each reads as the plain title, as the attention page
+// shows it — the body through attentionPushBody's own application of the rule,
+// the title through the one title sink (goNotify).
 func TestAWaitingSessionPushTitleIsPlain(t *testing.T) {
 	store, pusher := &memPush{}, &payloadPusher{}
 	claim(t, store, 1, ep("plain-title"))
@@ -73,9 +73,9 @@ func TestAWaitingSessionPushTitleIsPlain(t *testing.T) {
 	s.WaitForPushes()
 	got := map[string]string{}
 	for _, p := range pusher.to(ep("plain-title")) {
-		got[p.ID] = p.Title
+		got[p.ID] = p.Title + " | " + p.Body
 	}
-	if got["session-0011223344556677"] != "Fix auth for C# @ host-b is waiting" || got["ask-9"] != "agent_7 chief is asking" {
-		t.Errorf("titles = %q", got)
+	if got["session-0011223344556677"] != "A session is waiting on you | Waiting: Fix auth for C# @ host-b" || got["ask-9"] != "agent_7 chief is asking | q" {
+		t.Errorf("pushes = %q", got)
 	}
 }

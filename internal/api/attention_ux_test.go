@@ -15,6 +15,7 @@ import (
 	"github.com/ZacxDev/muster/internal/askq"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/plugins"
+	"github.com/ZacxDev/muster/internal/push"
 )
 
 // TestTheQueueSortsNewestFirstWithAStableTieBreak: newest Since first; equal
@@ -101,12 +102,14 @@ func TestADraftsAttentionLineMarksAnUnverifiedSender(t *testing.T) {
 }
 
 // TestEveryAttentionPushBodyCarriesItsSubstance: operator decision "Full text
-// always" (it replaced "Summary only — WHO and WHERE, never WHAT"). An ask's
-// body is its question, on one line, then its options; a held question's is
-// its question(s) and one question's choices; a waiting session's is what it
-// waits on and the last thing Claude said. A secret-shaped token is redacted;
-// the source (WHO) is the title's, never the body's. Whole bodies pinned. RED
-// at origin/main, where every body was "<source> is asking" / "Waiting: …".
+// always" — for ASKS AND HELD QUESTIONS only (it replaced "Summary only — WHO
+// and WHERE, never WHAT" for them). An ask's body is its question, on one line,
+// then its options; a held question's is its question(s) and one question's
+// choices; a secret-shaped token is redacted. A WAITING SESSION stays summary
+// only (operator decision): "Waiting: <tool> · <window> @ <host>", or without
+// the tool — never the command summary, never Claude's last words. Whole bodies
+// pinned. RED at origin/main for the asks; the session rows are RED at the
+// first #313 head (which pushed the summary and the last words).
 func TestEveryAttentionPushBodyCarriesItsSubstance(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -120,11 +123,11 @@ func TestEveryAttentionPushBodyCarriesItsSubstance(t *testing.T) {
 		{"a held question", attentionItem{Kind: attentionKindQuestion, Source: "main:1 @ ws", Text: "1. Which branch?\n2. Push it?"}, "1. Which branch?\n2. Push it?"},
 		{"a held question's choices", attentionItem{Kind: attentionKindQuestion, Source: "main:1 @ ws", Text: "Which branch?", Options: []string{"main", "dev"}},
 			"Which branch?\nOptions: main · dev"},
-		{"a waiting session", attentionItem{Kind: attentionKindSession, Source: "main:1 @ ws", Text: "Bash: npm publish --tag next", tool: "Bash",
-			Detail: "Tests pass.\nPublishing now."}, "Bash: npm publish --tag next\nTests pass. Publishing now."},
-		{"an MCP tool", attentionItem{Kind: attentionKindSession, Source: "w:2 @ lap", Text: "MCP muster/attention_ask", tool: "MCP muster/attention_ask"}, "MCP muster/attention_ask"},
-		{"a tool and no summary", attentionItem{Kind: attentionKindSession, Source: "main:1 @ ws", Text: sessionWaitingText, tool: "Edit"}, "Waiting: Edit"},
-		{"a host that names nothing", attentionItem{Kind: attentionKindSession, Source: "main:1 @ ws", Text: sessionWaitingText}, sessionWaitingText},
+		{"a waiting session", attentionItem{Kind: attentionKindSession, Source: "main:1 @ ws", Text: "Bash: curl -H 'Authorization: x' https://x.test", tool: "Bash",
+			Detail: "Tests pass.\nPublishing now."}, "Waiting: Bash · main:1 @ ws"},
+		{"an MCP tool", attentionItem{Kind: attentionKindSession, Source: "w:2 @ lap", Text: "MCP muster/attention_ask", tool: "MCP muster/attention_ask"}, "Waiting: MCP muster/attention_ask · w:2 @ lap"},
+		{"a host that names no tool", attentionItem{Kind: attentionKindSession, Source: "main:1 @ ws", Text: sessionWaitingText}, "Waiting: main:1 @ ws"},
+		{"a markdown window title", attentionItem{Kind: attentionKindSession, Source: "**Fix** [auth](https://example.com/a) for C# @ host-b", tool: "Edit"}, "Waiting: Edit · Fix auth for C# @ host-b"},
 	} {
 		if got := attentionPushBody(c.it); got != c.want {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
@@ -132,9 +135,10 @@ func TestEveryAttentionPushBodyCarriesItsSubstance(t *testing.T) {
 	}
 }
 
-// TestTheAskPushTitleNamesTheAsker: WHO is in the title — "<asker> is
-// asking", "<window> is waiting". RED at origin/main ("An agent needs your
-// input", the same for every asker).
+// TestTheAskPushTitleNamesTheAsker: WHO is in an ask's title — "<asker> is
+// asking"; a waiting session keeps its fixed title (its WHO is in its body).
+// RED at origin/main for the asks ("An agent needs your input", the same for
+// every asker).
 func TestTheAskPushTitleNamesTheAsker(t *testing.T) {
 	for _, c := range []struct {
 		it   attentionItem
@@ -143,7 +147,7 @@ func TestTheAskPushTitleNamesTheAsker(t *testing.T) {
 		{attentionItem{Kind: attentionKindAsk, Source: "chief"}, "chief is asking"},
 		{attentionItem{Kind: attentionKindAsk, Source: "muster"}, "muster is asking"},
 		{attentionItem{Kind: attentionKindQuestion, Source: "main:1 @ ws"}, "main:1 @ ws is asking"},
-		{attentionItem{Kind: attentionKindSession, Source: "main:1 @ ws"}, "main:1 @ ws is waiting"},
+		{attentionItem{Kind: attentionKindSession, Source: "main:1 @ ws"}, "A session is waiting on you"},
 	} {
 		if got := attentionPushTitle(c.it); got != c.want {
 			t.Errorf("%s: title %q, want %q", c.it.Kind, got, c.want)
@@ -173,6 +177,45 @@ func TestALongAskBodyIsCutOnACharacterAndKeepsItsOptions(t *testing.T) {
 	short := attentionItem{Kind: attentionKindAsk, Source: "chief", Text: "Ship it?", Options: []string{"yes", "no"}}
 	if got := attentionPushBody(short); got != "Ship it?\n"+opts {
 		t.Fatalf("CONTROL: a short question was changed: %q", got)
+	}
+}
+
+// TestTheAskBodySurvivesTheAppsCut: the Android app as shipped cuts a body at
+// 200 characters (muster-android PayloadV2.MAX_BODY), so the body is at most
+// that long — the phone shows exactly the lines the browser does — and a long
+// question is cut to leave the options line whole within it. Measured at two
+// lengths: a question far over (1000 runes) and one just over the room.
+// RED at the first #313 head, whose 400-character body lost its options to the
+// app's cut.
+func TestTheAskBodySurvivesTheAppsCut(t *testing.T) {
+	const appMaxBody = 200 // muster-android PayloadV2.MAX_BODY
+	for _, n := range []int{1000, appMaxBody - 20} {
+		it := attentionItem{Kind: attentionKindAsk, Source: "chief", Text: strings.Repeat("q", n), Options: []string{"ship it", "wait for Monday"}}
+		body := attentionPushBody(it)
+		if r := utf8.RuneCountInString(body); r > appMaxBody {
+			t.Errorf("a %d-rune question: the body is %d runes, over the app's %d", n, r, appMaxBody)
+		}
+		if !strings.HasSuffix(push.CutClusters(body, appMaxBody), "\nOptions: ship it · wait for Monday") {
+			t.Errorf("a %d-rune question: the app's cut loses the options line: %q", n, body[len(body)-40:])
+		}
+	}
+}
+
+// TestASecretShapedChipIsNotSentToThePhone: an option (or suggestion) a secret
+// scan would redact is left out of payload v2's chips and buttons — a chip is
+// sent whole or not at all, and a redacted one would answer with the wrong text
+// — while the body's options line shows it redacted. The control is the clean
+// option beside it, which stays. RED at the first #313 head (chips raw).
+func TestASecretShapedChipIsNotSentToThePhone(t *testing.T) {
+	it := attentionItem{Key: "ask-5", Kind: attentionKindAsk, AskID: 5, Source: "ci", Text: "Which token?",
+		Options: []string{"use ghp_0123abcd9", "neither"}, suggestions: []string{"take sk-live-abcdef123456", "ask ops first"}}
+	n := attentionNotification(it, false)
+	v := push.Payload{Type: n.Type, Title: n.Title, Body: n.Body, Ask: n.Ask}.V2()
+	if strings.Join(v.Ask.Options, "|") != "neither" || strings.Join(v.Ask.Suggestions, "|") != "ask ops first" {
+		t.Fatalf("chips = %q / %q", v.Ask.Options, v.Ask.Suggestions)
+	}
+	if strings.Contains(n.Body, "ghp_") || !strings.Contains(n.Body, "use «redacted»") {
+		t.Fatalf("the body's options line: %q", n.Body)
 	}
 }
 
