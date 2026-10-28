@@ -304,11 +304,13 @@ function mpkCancelled(e) { return e && (e.name === 'NotAllowedError' || e.name =
 // in between. WebKit grants WebAuthn only within a user gesture, and an await
 // on fetch inside the click handler can outlive it (NotAllowedError on iOS). A
 // prefetched challenge is single-use and GoTrue expires it after 5 minutes, so
-// one older than mpkMaxAge, or one already spent, is fetched again.
+// one older than mpkMaxAge, or one already spent, is fetched again. trigger,
+// when given, is kept on the prefetch: why it was fetched (the confirm dialog's
+// telemetry reports it).
 const PasskeyPrefetchJS = `
 var mpkMaxAge = 240000;
-function mpkPrefetch(path) {
-  var p = { at: Date.now(), promise: mpkPost(path, {}) };
+function mpkPrefetch(path, trigger) {
+  var p = { at: Date.now(), trigger: trigger || '', promise: mpkPost(path, {}) };
   return p;
 }
 function mpkFresh(p) { return p && (Date.now() - p.at) < mpkMaxAge; }
@@ -320,7 +322,10 @@ function mpkFresh(p) { return p && (Date.now() - p.at) < mpkMaxAge; }
 //	fresh()        the page's belief that the sign-in is still fresh
 //	stale()        the server just said otherwise
 //	ask(why, done) open the dialog; done() runs after a successful confirm —
-//	               the pending action (attach, or send the text again)
+//	               the pending action (attach, or send the text again) — and
+//	               never after a close without one (Cancel, Escape)
+//	asking()       the dialog ask would use (the top window's, from the view
+//	               switch's frame) is open now
 //
 // 🔴 IN THE VIEW SWITCH'S FRAME, ask OPENS THE TOP WINDOW'S DIALOG, not the
 // frame's own (view_swap.go opens the other view in a same-origin frame over
@@ -334,14 +339,53 @@ function mpkFresh(p) { return p && (Date.now() - p.at) < mpkMaxAge; }
 // The sign-in page prefetches on load because signing in is what that page is
 // for; these pages are opened all day by someone already fresh, and a challenge
 // minted per page view would spend GoTrue's passkey rate budget on dialogs that
-// never open. One options call per dialog open (plus one after a failed
-// attempt, whose challenge is spent), and only when the account has a passkey:
-// the server answers the same call with available:false, and no challenge, when
-// it has none.
+// never open. ONE options call per dialog open, and only when the account has
+// a passkey: the server answers the same call with available:false, and no
+// challenge, when it has none.
+//
+//   - 🔴 ask() while the dialog is ALREADY open fetches nothing and leaves the
+//     offer as it is: the open's challenge (answered or still in flight) is
+//     the one the tap uses. Before, every ask refetched and hid the passkey
+//     button until the new answer — and a terminal sends an ask per key
+//     pressed before the modal takes the keyboard.
+//   - 🔴 A FAILED TAP KEEPS ITS CHALLENGE UNLESS GoTrue SAW IT. A challenge
+//     is spent by GoTrue's verify, not by navigator.credentials.get: one the
+//     person cancelled (NotAllowedError) or the device refused never reached
+//     the server and is still good, so the next tap reuses it. So is one
+//     muster's /verify refused BEFORE asking GoTrue — an unreadable assertion,
+//     no user verification, the sign-in limiter — which the answer says with
+//     challenge_unspent: true (internal/api stepUpRefuseUnspent; the status
+//     cannot, since GoTrue's own refusals are also 401 and 429): it is kept
+//     and nothing is fetched. A refusal GoTrue made fetches a replacement — at
+//     once, NOT on the next tap, because a fetch inside the tap's handler is
+//     exactly the gesture-outliving await PasskeyPrefetchJS exists to avoid (a
+//     lazy fetch would fail every retry on iOS) — EXCEPT a 429, after which a
+//     fetch would only meet the same limit: nothing is fetched until the next
+//     tap. A challenge older than mpkMaxAge is fetched on the tap, as before.
 //
 // The tap on "Confirm with passkey" then reaches navigator.credentials on an
 // already-resolved promise — no network between the gesture and WebAuthn (see
 // PasskeyPrefetchJS).
+//
+// Telemetry (window.cgTrack, Faro's custom events; nothing when telemetry is
+// off), two events, both carrying open_id — a random id the page makes at each
+// dialog open (16 hex digits from crypto.getRandomValues, derived from nothing
+// about the person or the session), so every event of one open groups and a
+// new open is a new id:
+//
+//   - stepup.passkey_options, ONE PER /options FETCH, sent when it answers:
+//     trigger (open: the open's prefetch; stale: a tap found it older than
+//     mpkMaxAge; retry: a refused /verify spent it, or the last answer was
+//     unusable), status (the HTTP status, or network) and taps (how many taps
+//     this open had made when it was fetched: 0 for the open's own). A burst of
+//     fetches with no tap is visible as these with no stepup.passkey.
+//   - stepup.passkey, ONE PER TAP: attempt (the tap's number in this open),
+//     options_trigger (why the challenge it used was fetched: open, stale or
+//     retry), options_status (that fetch's HTTP status, or network), get (how
+//     navigator.credentials.get ended: ok, the DOMException's name, or
+//     not-called) and verify (/verify's status, '' when not sent).
+//
+// No credential, challenge or account value is in either.
 func stepUpScript() g.Node {
 	return Script(g.Raw(PasskeyJS + PasskeyPrefetchJS + `
 window.musterStepUp = (function () {
@@ -357,7 +401,7 @@ window.musterStepUp = (function () {
   var pkBox = document.getElementById('term-confirm-passkey-box');
   var pkBtn = document.getElementById('term-confirm-passkey');
   var pkNote = document.getElementById('term-confirm-passkey-note');
-  var done = null, pre = null, freshUntil = 0;
+  var done = [], pre = null, freshUntil = 0, attempts = 0, openId = '';
   var ff = +dlg.getAttribute('data-fresh-for') || 0;
   if (ff > 0) freshUntil = performance.now() + ff;
 
@@ -379,8 +423,8 @@ window.musterStepUp = (function () {
   }
   // prefetch resolves to '' when a passkey can be offered, else the reason it
   // cannot (an UNAVAILABLE value), or null when a newer prefetch replaced it.
-  function prefetch() {
-    var mine = pre = mpkPrefetch(pkBase + '/options');
+  function prefetch(trigger) {
+    var mine = pre = fetchOptions(trigger);
     return mine.promise.then(function (o) {
       if (pre !== mine) return null;
       var d = o.data || {};
@@ -402,14 +446,23 @@ window.musterStepUp = (function () {
     pkNote.textContent = shown ? 'Passkey unavailable here (' + why + ')' : '';
     pkNote.hidden = !shown;
   }
+  // finish takes the waiting callbacks, closes the dialog, then runs each, in
+  // the order they asked, in its own try: one that throws is logged and does
+  // not stop the next (each is a different caller's pending action). The close
+  // listener empties done (a close is a Cancel unless finish made it), but the
+  // close EVENT is queued as a task, so it fires after finish has taken them;
+  // taking them first keeps that true whatever the event's timing (measured:
+  // swapping the two lines is not caught, because Chromium queues the event).
   function finish(freshFor) {
     freshUntil = performance.now() + (+freshFor || 0);
     pw.value = '';
-    var cb = done; done = null;
+    var cbs = done; done = [];
     dlg.close();
     // The duration, not an instant: a framed view that handed its ask here
     // (topStepUp) keeps its own clock (performance.now() is per document).
-    if (cb) cb(+freshFor || 0);
+    cbs.forEach(function (cb) {
+      try { cb(+freshFor || 0); } catch (e) { try { console.error('musterStepUp: a confirmed action failed', e); } catch (e2) {} }
+    });
   }
   // topStepUp is the TOP window's musterStepUp when this page is the view in
   // the Rendered | Terminal switch's frame (view_swap.go), else null.
@@ -440,6 +493,14 @@ window.musterStepUp = (function () {
     lifted = [];
     for (var el = dlg; el; el = el.parentElement) { if (el.hasAttribute('data-view-inert')) el.inert = true; }
   }
+  // newOpenId is a random id for one dialog open: correlation only, made from
+  // nothing identifying.
+  function newOpenId() {
+    var b = new Uint8Array(8), s = '';
+    try { crypto.getRandomValues(b); } catch (e) { for (var i = 0; i < 8; i++) b[i] = Math.floor(Math.random() * 256); }
+    for (var j = 0; j < 8; j++) s += (b[j] < 16 ? '0' : '') + b[j].toString(16);
+    return s;
+  }
   function ask(why, cb) {
     // 🔴 A FRAMED VIEW ASKS IN THE TOP WINDOW'S DIALOG. Reported from the
     // Android app (a WebView, WebAuthn as the app): the passkey was offered on
@@ -454,14 +515,26 @@ window.musterStepUp = (function () {
     // freshness is set from the same answer.
     var t = topStepUp();
     if (t) {
-      done = null;
+      done = [];
       t.ask(why, function (ff) {
         if (ff !== undefined) freshUntil = performance.now() + (+ff || 0);
         if (cb) cb();
       });
       return;
     }
-    done = cb || null;
+    // 🔴 ALREADY OPEN: the new caller's done runs after the ones already
+    // waiting (all were waiting on this confirm; a caller with none drops
+    // nothing), its why is shown, and nothing else changes — no refetch, no
+    // offer(false), the password typed so far kept. The open's own options
+    // call (answered or in flight) stands (see stepUpScript).
+    if (dlg.open) {
+      if (cb) done.push(cb);
+      if (why) fail(why);
+      return;
+    }
+    done = cb ? [cb] : [];
+    attempts = 0;
+    openId = newOpenId();
     fail(why);
     pw.value = '';
     offer(false);
@@ -470,7 +543,7 @@ window.musterStepUp = (function () {
     pw.focus();
     var missing = !pkBase ? 'no-path' : mpkMissing();
     if (missing) { unavailable(missing); return; }
-    prefetch().then(function (r) {
+    prefetch('open').then(function (r) {
       if (r === null || !dlg.open) return;
       if (r) { unavailable(r); return; }
       offer(true);
@@ -478,8 +551,13 @@ window.musterStepUp = (function () {
     });
   }
 
-  document.getElementById('term-confirm-cancel').addEventListener('click', function () { done = null; dlg.close(); });
-  dlg.addEventListener('close', function () { pre = null; unlift(); unavailable(''); });
+  // 🔴 EVERY CLOSE BUT finish's IS A CANCEL: Cancel, Escape (the dialog's own
+  // cancel, which closes it) or anything else that closes it drops the waiting
+  // actions, so a password POST or passkey /verify still in flight when the
+  // person walked away does not run them when it answers (finish took its
+  // callbacks before closing, so a confirm that succeeded still runs them).
+  document.getElementById('term-confirm-cancel').addEventListener('click', function () { dlg.close(); });
+  dlg.addEventListener('close', function () { done = []; pre = null; unlift(); unavailable(''); });
   form.addEventListener('submit', function (ev) {
     ev.preventDefault();
     submit.disabled = true;
@@ -504,35 +582,95 @@ window.musterStepUp = (function () {
       fail('muster could not be reached. Try again.');
     });
   });
+  // pkOptions is the WebAuthn request options from an options answer, with
+  // its binary fields decoded — a COPY: the answer is kept, and reused by the
+  // next tap while its challenge is unspent, so it must stay base64url.
+  function pkOptions(src) {
+    var pk = {};
+    for (var k in src) { if (Object.prototype.hasOwnProperty.call(src, k)) pk[k] = src[k]; }
+    pk.challenge = mpkB64ToBuf(src.challenge);
+    if (src.allowCredentials) {
+      pk.allowCredentials = src.allowCredentials.map(function (c) {
+        var d = {};
+        for (var k in c) { if (Object.prototype.hasOwnProperty.call(c, k)) d[k] = c[k]; }
+        d.id = mpkB64ToBuf(c.id);
+        return d;
+      });
+    }
+    return pk;
+  }
+  // track sends one telemetry event (see stepUpScript). cgTrack is faro.go's,
+  // defined only when telemetry is on.
+  function track(name, ev) {
+    try { if (typeof window.cgTrack === 'function') window.cgTrack(name, ev); } catch (e) {}
+  }
+  // fetchOptions is EVERY /options fetch this dialog makes (mpkPrefetch), and
+  // sends its stepup.passkey_options event when it answers. The event's fields
+  // are taken now: an answer that lands after the dialog closed is still this
+  // open's.
+  function fetchOptions(trigger) {
+    var p = mpkPrefetch(pkBase + '/options', trigger);
+    var ev = { open_id: openId, trigger: trigger, status: '', taps: attempts };
+    p.promise.then(function (o) { ev.status = o.status; track('stepup.passkey_options', ev); },
+      function () { ev.status = 'network'; track('stepup.passkey_options', ev); });
+    return p;
+  }
   pkBtn.addEventListener('click', async function () {
     pkBtn.disabled = true;
     fail('');
+    var ev = { open_id: openId, attempt: ++attempts, options_trigger: '', options_status: '', get: 'not-called', verify: '' };
+    // spent: /verify was sent, so GoTrue has used this challenge up.
     var spent = false;
     try {
-      if (!mpkFresh(pre)) { pre = mpkPrefetch(pkBase + '/options'); }
-      var o = await pre.promise;
-      pre = null; spent = true;
+      if (!mpkFresh(pre)) { pre = fetchOptions(pre ? 'stale' : 'retry'); }
+      var mine = pre;
+      ev.options_trigger = mine.trigger || '';
+      var o;
+      try { o = await mine.promise; } catch (e) { ev.options_status = 'network'; if (pre === mine) pre = null; throw e; }
+      ev.options_status = o.status;
       if (!o.ok || !o.data.available || !o.data.challenge_id) {
+        if (pre === mine) pre = null;
         offer(false);
         fail(o.data.error || 'A passkey cannot be used right now. Use your password.');
         return;
       }
-      var pk = o.data.options;
-      pk.challenge = mpkB64ToBuf(pk.challenge);
-      (pk.allowCredentials || []).forEach(function (c) { c.id = mpkB64ToBuf(c.id); });
-      var cred = await navigator.credentials.get({ publicKey: pk });
-      var v = await mpkPost(pkBase + '/verify', { challenge_id: o.data.challenge_id, credential: mpkCredJSON(cred) });
-      if (!v.ok) { fail(v.data.error || 'That passkey was not accepted.'); return; }
+      var cred;
+      try { cred = await navigator.credentials.get({ publicKey: pkOptions(o.data.options) }); ev.get = 'ok'; }
+      catch (e) { ev.get = (e && e.name) || 'error'; throw e; }
+      var body = { challenge_id: o.data.challenge_id, credential: mpkCredJSON(cred) };
+      if (pre === mine) pre = null;
+      spent = true;
+      var v = await mpkPost(pkBase + '/verify', body);
+      ev.verify = v.status;
+      if (!v.ok) {
+        fail(v.data.error || 'That passkey was not accepted.');
+        if (v.data.challenge_unspent === true) {
+          // muster refused it before GoTrue saw the challenge (an unreadable
+          // assertion, no user verification, the sign-in limiter): it is still
+          // good, so it is put back for the next tap and nothing is fetched.
+          spent = false;
+          if (dlg.open && !pre) pre = mine;
+        } else if (v.status === 429) {
+          // GoTrue's own limit: the challenge may be spent, but a fetch now
+          // would only meet the same limit — the next tap fetches (stale/retry).
+          spent = false;
+        }
+        return;
+      }
       spent = false;
       finish(v.data.fresh_for);
     } catch (e) {
+      if (spent && !ev.verify) ev.verify = 'network';
       fail(mpkCancelled(e) ? 'The passkey was cancelled. Try again, or use your password.' : 'This device could not use a passkey. Use your password.');
     } finally {
       pkBtn.disabled = false;
-      // The challenge is single-use: a failed attempt needs a new one before
-      // the next tap (fetched now, so that tap still has its gesture).
+      track('stepup.passkey', ev);
+      // A challenge /verify was sent with is used up: the next tap needs a new
+      // one, fetched NOW so that tap still has its gesture. One the tap never
+      // sent (cancelled, refused by the device) is still good and still in
+      // pre — nothing is fetched (see stepUpScript).
       if (spent && dlg.open && !pkBox.hidden) {
-        prefetch().then(function (r) { if (r && dlg.open) { offer(false); unavailable(r); } });
+        prefetch('retry').then(function (r) { if (r && dlg.open) { offer(false); unavailable(r); } });
       }
     }
   });
@@ -542,6 +680,11 @@ window.musterStepUp = (function () {
     fresh: function () { return performance.now() < freshUntil - 10000; },
     stale: function () { freshUntil = 0; },
     ask: ask,
+    asking: function () {
+      var t = topStepUp();
+      if (t) return typeof t.asking === 'function' ? t.asking() : false;
+      return dlg.open;
+    },
     // framedAsk: this window's dialog can be asked from the view switch's
     // frame — it lifts the swap's inert while it is open (lift). A top page
     // without it (one loaded before this) would open its dialog inert,

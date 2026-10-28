@@ -430,3 +430,89 @@ func TestTheDialogNamesTwelveHoursAndOffersBothWays(t *testing.T) {
 		}
 	}
 }
+
+// TestARefusalBeforeGoTrueKeepsTheChallenge: a passkey confirm muster refuses
+// BEFORE asking GoTrue to verify — an unreadable assertion (400), one without
+// user verification (401), the sign-in limiter (429) — says so with
+// challenge_unspent: true, and the SAME challenge then verifies, so the dialog
+// can reuse it with no new /options call. A refusal GoTrue made (an unknown
+// credential: muster's 401) carries no such field, and that challenge IS spent
+// — the same id is refused afterwards. The statuses overlap (401 and 429 are
+// also what GoTrue's own refusals become), which is why the field exists.
+//
+// REGRESSION TEST: before the field, every assertion on challenge_unspent
+// fails (the pre-GoTrue refusals answered {"error"} alone).
+func TestARefusalBeforeGoTrueKeepsTheChallenge(t *testing.T) {
+	r := newPasskeyStepUpRig(t)
+	at, rt, _ := r.fake.Mint(r.owner)
+	r.stale()
+	verifies := func() int { return r.fake.CountCalls(http.MethodPost, "/passkeys/authentication/verify") }
+	options := func() string {
+		t.Helper()
+		o := postJSON(r.edge, pkConfirmOptions, map[string]any{}, withCookies(at, rt))
+		ch, _ := jsonBody(t, o)["challenge_id"].(string)
+		if o.Code != http.StatusOK || ch == "" {
+			t.Fatalf("confirm options: %d %s", o.Code, o.Body)
+		}
+		return ch
+	}
+	verify := func(ch string, cred any, ip string) *httptest.ResponseRecorder {
+		return postJSON(r.edge, pkConfirmVerify, map[string]any{"challenge_id": ch, "credential": cred}, withCookies(at, rt), fromIP(ip))
+	}
+	unspent := func(w *httptest.ResponseRecorder) any { return jsonBody(t, w)["challenge_unspent"] }
+
+	// 1. 400 and 401 before GoTrue, then the same challenge confirms.
+	ch := options()
+	before := verifies()
+	if w := postJSON(r.edge, pkConfirmVerify, "not an object", withCookies(at, rt), fromIP("203.0.113.80")); w.Code != http.StatusBadRequest || unspent(w) != true {
+		t.Fatalf("an unreadable body: %d %s, want 400 with challenge_unspent true", w.Code, w.Body)
+	}
+	if w := verify(ch, "not an assertion", "203.0.113.81"); w.Code != http.StatusBadRequest || unspent(w) != true {
+		t.Fatalf("an unreadable assertion: %d %s, want 400 with challenge_unspent true", w.Code, w.Body)
+	}
+	if w := verify(ch, gotruetest.Assertion("owner-cred", gotruetest.FlagUP), "203.0.113.82"); w.Code != http.StatusUnauthorized || unspent(w) != true {
+		t.Fatalf("a UV=0 assertion: %d %s, want 401 with challenge_unspent true", w.Code, w.Body)
+	}
+	if verifies() != before {
+		t.Fatal("a refusal before GoTrue still asked GoTrue to verify")
+	}
+	if w := verify(ch, gotruetest.Assertion("owner-cred", gotruetest.FlagUPUV), "203.0.113.83"); w.Code != http.StatusOK {
+		t.Fatalf("the challenge after two refusals before GoTrue: %d %s, want 200 (still unspent)", w.Code, w.Body)
+	}
+
+	// 2. 429 from the limiter: past the free failures (each a UV=0 assertion on
+	//    the SAME challenge — none of them spends it), the next is throttled
+	//    without asking GoTrue, and after the backoff that challenge confirms.
+	r.stale()
+	ch = options()
+	for i := 0; i <= accountFreeFailures; i++ {
+		if w := verify(ch, gotruetest.Assertion("owner-cred", gotruetest.FlagUP), "198.51.100."+strconv.Itoa(i+11)); w.Code != http.StatusUnauthorized {
+			t.Fatalf("failure %d: %d %s", i, w.Code, w.Body)
+		}
+	}
+	before = verifies()
+	if w := verify(ch, gotruetest.Assertion("owner-cred", gotruetest.FlagUPUV), "198.51.100.31"); w.Code != http.StatusTooManyRequests || unspent(w) != true {
+		t.Fatalf("throttled: %d %s, want 429 with challenge_unspent true", w.Code, w.Body)
+	}
+	if verifies() != before {
+		t.Fatal("a throttled confirm asked GoTrue to verify")
+	}
+	r.fake.Advance(3 * time.Second) // past the first backoff step (2s), well inside the challenge's five minutes
+	if w := verify(ch, gotruetest.Assertion("owner-cred", gotruetest.FlagUPUV), "198.51.100.32"); w.Code != http.StatusOK {
+		t.Fatalf("the throttled challenge after the backoff: %d %s, want 200 (still unspent)", w.Code, w.Body)
+	}
+
+	// 3. A refusal GoTrue made: no field, and the challenge is gone.
+	r.stale()
+	ch = options()
+	w := verify(ch, gotruetest.Assertion("nobody-cred", gotruetest.FlagUPUV), "203.0.113.84")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("an unknown credential: %d %s, want 401", w.Code, w.Body)
+	}
+	if v, present := jsonBody(t, w)["challenge_unspent"]; present {
+		t.Fatalf("a refusal GoTrue made carries challenge_unspent = %v; it must be absent", v)
+	}
+	if w := verify(ch, gotruetest.Assertion("owner-cred", gotruetest.FlagUPUV), "203.0.113.85"); w.Code != http.StatusUnauthorized {
+		t.Fatalf("the challenge GoTrue refused, presented again: %d %s, want 401 (spent)", w.Code, w.Body)
+	}
+}

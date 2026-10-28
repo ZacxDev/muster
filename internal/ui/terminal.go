@@ -733,8 +733,15 @@ func agentTerminalScript() g.Node {
   function canType() { return !keysOff && (!confirmPath || fresh()); }
   // openConfirm asks "Confirm it's you" and, once confirmed (passkey or
   // password), attaches interactively — the action that was waiting on it.
+  //
+  // 🔴 ONE ASK PER CONFIRM. Every key the person presses on a stale attach
+  // comes here, and several can arrive before the modal takes the keyboard (a
+  // paste, key-bar taps, a held key): while the dialog is open (asking — the
+  // top window's, from the view switch's frame) another ask is not sent. The
+  // first one's done still attaches; a key after the dialog closed asks again.
   function openConfirm(why) {
     if (!stepUp) return;
+    if (stepUp.asking && stepUp.asking()) return;
     stepUp.ask(why, function () { justConfirmed = true; goInteractive(); });
   }
 

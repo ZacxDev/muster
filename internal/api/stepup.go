@@ -82,6 +82,20 @@ const (
 	stepUpUnavailable   = "Sign-in is unavailable right now. Try again shortly."
 )
 
+// stepUpRefuseUnspent answers a passkey confirm muster refused BEFORE asking
+// GoTrue to verify it — an unreadable body, the sign-in limiter, an assertion
+// without user verification — with challenge_unspent: true. GoTrue spends a
+// challenge only in its own verify, so the one this request carried is still
+// good and the dialog reuses it for the next tap instead of fetching another.
+//
+// 🔴 THE STATUS CANNOT SAY THIS ON ITS OWN: 429 and 401 are ALSO what
+// writeGoTrueRefusal answers for GoTrue's own refusals, after GoTrue has seen
+// (and may have spent) the challenge. Only this field tells the two apart, and
+// only the refusals below set it (TestARefusalBeforeGoTrueKeepsTheChallenge).
+func (s *Server) stepUpRefuseUnspent(w http.ResponseWriter, status int, msg string) {
+	s.writeJSON(w, status, map[string]any{"error": msg, "challenge_unspent": true})
+}
+
 // stepUpNow is the clock step-up freshness is judged on: GoTrue's (the one its
 // tokens' times are compared with) in gotrue mode, the wall clock otherwise.
 func (s *Server) stepUpNow() time.Time {
@@ -319,7 +333,7 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 		Credential  json.RawMessage `json:"credential"`
 	}
 	if !readPasskeyBody(w, r, &body) || body.ChallengeID == "" {
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": PasskeyUnreadable})
+		s.stepUpRefuseUnspent(w, http.StatusBadRequest, PasskeyUnreadable)
 		return
 	}
 	ctx := r.Context()
@@ -327,7 +341,7 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 	ip := clientIP(r)
 	ticket, ok := s.gt.signin.reserve(signinAccount{known: true, uid: me}, ip, s.gt.now())
 	if !ok {
-		s.writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": stepUpThrottled})
+		s.stepUpRefuseUnspent(w, http.StatusTooManyRequests, stepUpThrottled)
 		return
 	}
 	outcome := outcomeUnjudged
@@ -335,7 +349,7 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 	flags, canonical, err := gotrue.CanonicalAssertion(body.Credential)
 	if err != nil {
 		outcome = outcomeFailed
-		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": PasskeyUnreadable})
+		s.stepUpRefuseUnspent(w, http.StatusBadRequest, PasskeyUnreadable)
 		return
 	}
 	// 🔴 THE UV GUARD. A passkey that only proved PRESENCE is "whoever is
@@ -343,7 +357,7 @@ func (s *Server) handleStepUpPasskeyVerify(w http.ResponseWriter, r *http.Reques
 	if !flags.UserPresent || !flags.UserVerified {
 		outcome = outcomeFailed
 		s.logger.Printf("stepup: refused a passkey confirm without user verification for user %d (from %s)", me, ip)
-		s.writeJSON(w, http.StatusUnauthorized, map[string]any{"error": PasskeyNoUVRefusal})
+		s.stepUpRefuseUnspent(w, http.StatusUnauthorized, PasskeyNoUVRefusal)
 		return
 	}
 	sess, err := s.gt.Client.PasskeySignInVerify(ctx, ip, body.ChallengeID, canonical)

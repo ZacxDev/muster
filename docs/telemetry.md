@@ -160,6 +160,25 @@ the open ended: for the rendered view, before its first batch was painted — a
 frame after it was drawn) or `live` — and, with tracing on, a `disconnected <view>` span
 in the open's trace.
 
+## The step-up dialog's passkey
+
+The "Confirm it's you" dialog (`internal/ui/stepup_confirm.go`) sends two Faro
+events. Both carry `open_id`, a random id the page makes for each dialog open
+(16 hex digits from `crypto.getRandomValues`, derived from nothing about the
+person or the session): every event of one open shares it, and a new open has
+a new one.
+
+| event | sent | fields |
+|---|---|---|
+| `stepup.passkey_options` | once per `POST /auth/confirm/passkey/options` the dialog makes, when it answers | `open_id`; `trigger`: `open` (the open's prefetch), `stale` (a tap found the challenge older than 4 minutes) or `retry` (a `/verify` GoTrue refused spent it, or the last answer was unusable; a refusal muster made before asking GoTrue answers `challenge_unspent: true` and keeps the challenge, and after a `429` the replacement waits for the next tap); `status`: the HTTP status, or `network`; `taps`: how many taps this open had made when it was fetched (0 for the open's own) |
+| `stepup.passkey` | once per tap on "Confirm with passkey" | `open_id`; `attempt` (the tap's number in this open); `options_trigger` and `options_status` (the fetch whose challenge it used); `get`: how `navigator.credentials.get` ended (`ok`, the DOMException's name, or `not-called`); `verify`: `/verify`'s status, or empty when it was not sent |
+
+A run of `stepup.passkey_options` with no `stepup.passkey` is options calls with
+no tap: a burst within one open shows as several fetch events under one
+`open_id`, a burst of opens as many `open_id`s. Neither event carries a
+credential, challenge bytes or an account value. `e2e/tests/mirror-stepup.spec.ts`
+pins both (against a recorder in place of `cgTrack`, not through Faro).
+
 ## Reading it
 
 - **One trace per open, and it ENDS.** With browser tracing on, the page's

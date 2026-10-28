@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BrowserContext, Page } from '@playwright/test';
+import { BrowserContext, Page, Route } from '@playwright/test';
 import { test, expect } from '../lib/fixtures';
 import {
   binDir, dsn, e2eRoot, gotrueSecret, repoRoot, stepupBrowserPort, stepupGotruePort, stepupMainPort, versionA,
@@ -753,6 +753,549 @@ test.describe('the passkey confirm at a desktop width (1280px)', () => {
     await expect(page.locator('#term-status')).toHaveText('Connected');
     token = await accessToken(context);
     expect(Math.abs(Date.now() / 1000 - amrOf(token))).toBeLessThan(60);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ONE PASSKEY CHALLENGE PER DIALOG OPEN (stepup_confirm.go's stepUpScript).
+// Seen live: several /auth/confirm/passkey/options calls in a row and no
+// /verify. Two ways the code made them: every ask() refetched (and hid the
+// passkey button) even with the dialog already open, and the terminal sent an
+// ask per key pressed on a stale attach; and every failed tap fetched a
+// replacement challenge, a cancelled navigator.credentials.get included —
+// whose challenge never reached the server and was still good.
+//
+// The /options calls are counted in the page, at the fetch the script makes
+// (synchronous, so exact the moment the script returns), and cross-checked
+// against the browser's own request events.
+//
+// 🔴 REGRESSION TESTS: before the fix the first fails at the ask count (4) and
+// the options count (4), the second at the options count after three cancelled
+// taps (4) and at the telemetry events (none).
+// ---------------------------------------------------------------------------
+test.describe('one passkey challenge per dialog open (1280px)', () => {
+  test.use({ viewport: { width: 1280, height: 900 }, hasTouch: false, isMobile: false });
+
+  const optionsPath = '/auth/confirm/passkey/options';
+  type W = Window & { __options?: number; __asks?: number; __events?: [string, Record<string, unknown>][]; __reject?: number };
+
+  // countOptions counts, in the page, every /options fetch the page makes.
+  async function countOptions(page: Page) {
+    await page.addInitScript((p) => {
+      const w = window as unknown as W;
+      w.__options = 0;
+      const orig = window.fetch.bind(window);
+      window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input instanceof Request ? input.url : input).split('?')[0].endsWith(p)) w.__options!++;
+        return orig(input, init);
+      };
+    }, optionsPath);
+    const net: string[] = [];
+    page.on('request', (r) => {
+      if (new URL(r.url()).pathname === optionsPath) net.push(r.url());
+    });
+    return { inPage: () => page.evaluate(() => (window as unknown as W).__options!), net };
+  }
+
+  // ownAddress gives this test its own client address: muster's browser
+  // listener reads CF-Connecting-IP (clientIP) and forwards it to GoTrue, which
+  // buckets its passkey rate limit on it. The tests above already spend most of
+  // 127.0.0.1's budget; a test that adds many passkey calls takes its own
+  // (documentation range) address instead of starving the tests after it.
+  async function ownAddress(context: BrowserContext, ip: string) {
+    await context.setExtraHTTPHeaders({ 'CF-Connecting-IP': ip });
+  }
+
+  type Ev = [string, Record<string, unknown>];
+  // recordTelemetry makes window.cgTrack a recorder (telemetry is off in e2e:
+  // no Faro, so nothing else defines it).
+  async function recordTelemetry(page: Page) {
+    await page.addInitScript(() => {
+      const w = window as unknown as W & { cgTrack: (n: string, a: Record<string, unknown>) => void };
+      w.__events = [];
+      w.cgTrack = (n, a) => { w.__events!.push([n, JSON.parse(JSON.stringify(a))]); };
+    });
+    return () => page.evaluate(() => (window as unknown as W).__events!) as Promise<Ev[]>;
+  }
+  // taps is the per-tap events with open_id taken off: the stepup.passkey shape
+  // as it was before the fetch events were added (open_id is checked apart).
+  const taps = (evs: Ev[]) => evs.filter(([n]) => n === 'stepup.passkey').map(([n, a]) => {
+    const { open_id: _id, ...rest } = a;
+    return [n, rest];
+  });
+  const fetches = (evs: Ev[]) => evs.filter(([n]) => n === 'stepup.passkey_options');
+
+  async function staleTerminal(page: Page, context: BrowserContext) {
+    await makeStale(context);
+    await page.goto(browserURL + termPath);
+    await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
+  }
+
+  test('keys pressed before the modal takes over ask once, a re-ask while open fetches nothing, and one challenge confirms (real GoTrue, virtual authenticator)', async ({ page, context }) => {
+    test.setTimeout(180_000);
+    await authenticator(page);
+    await signIn(page);
+    await addPasskey(page);
+    const options = await countOptions(page);
+    await staleTerminal(page, context);
+    expect(await options.inPage(), 'nothing is fetched on page load').toBe(0);
+    // Every ask the page makes, counted at musterStepUp.ask (the terminal's
+    // stepUp is this same object, and calls .ask at call time).
+    await page.evaluate(() => {
+      const w = window as unknown as W & { musterStepUp: { ask: (...a: unknown[]) => void } };
+      const s = w.musterStepUp, orig = s.ask;
+      w.__asks = 0;
+      s.ask = function (...a: unknown[]) { w.__asks!++; return orig.apply(this, a); };
+    });
+
+    // 1. FOUR key-bar presses in one task — inputs that reach the terminal
+    //    before the modal has the keyboard.
+    await page.evaluate(() => {
+      const b = document.querySelector<HTMLButtonElement>('#term-keys [data-key="up"]')!;
+      for (let i = 0; i < 4; i++) b.click();
+    });
+    await expect(dialog(page)).toBeVisible();
+    await expect(passkeyBtn(page)).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as W).__asks), 'the terminal asked once for four keys').toBe(1);
+    // POSITIVE CONTROL (the counter sees a fetch): the open's own, exactly one.
+    expect(await options.inPage(), 'one options call for the open').toBe(1);
+
+    // 2. A RE-ASK WHILE OPEN (another caller, the view switch's frame): the
+    //    offer stands, synchronously, and nothing is fetched.
+    const offered = await page.evaluate(() => {
+      const s = (window as unknown as { musterStepUp: { ask: (w: string, cb: null) => void } }).musterStepUp;
+      s.ask('', null);
+      s.ask('', null);
+      return document.getElementById('term-confirm')!.getAttribute('data-passkey-offered');
+    });
+    expect(offered, 'a re-ask while open leaves the passkey offered').toBe('1');
+    expect(await options.inPage(), 'a re-ask while open fetches no challenge').toBe(1);
+    await expect(passkeyBtn(page)).toBeVisible();
+
+    // 3. POSITIVE CONTROL: that one challenge confirms, and the attach goes rw.
+    const verify = page.waitForResponse((r) => new URL(r.url()).pathname === '/auth/confirm/passkey/verify');
+    await passkeyBtn(page).click();
+    expect((await verify).status()).toBe(200);
+    await expect(dialog(page)).toBeHidden();
+    await expect(screen(page)).toContainText('mode=rw');
+    expect(await options.inPage()).toBe(1);
+    expect(options.net.length, 'the browser saw the same one request').toBe(1);
+  });
+
+  test('cancelled taps reuse the open’s challenge, a refused /verify fetches one replacement, and each tap sends one telemetry event (real GoTrue, virtual authenticator)', async ({ page, context }) => {
+    test.setTimeout(180_000);
+    await authenticator(page);
+    await signIn(page);
+    await addPasskey(page);
+    const options = await countOptions(page);
+    const events = await recordTelemetry(page);
+    await staleTerminal(page, context);
+    // navigator.credentials.get rejects as a person's cancel does, __reject
+    // times, then is the virtual authenticator's again.
+    await page.evaluate(() => {
+      const w = window as unknown as W;
+      const c = navigator.credentials, orig = c.get.bind(c);
+      w.__reject = 3;
+      Object.defineProperty(c, 'get', {
+        configurable: true,
+        value: (o?: CredentialRequestOptions) => (w.__reject!-- > 0
+          ? Promise.reject(new DOMException('The operation either timed out or was not allowed.', 'NotAllowedError'))
+          : orig(o)),
+      });
+    });
+    await page.locator('#term-keys [data-key="up"]').click();
+    await expect(passkeyBtn(page)).toBeVisible();
+    expect(await options.inPage()).toBe(1);
+
+    // 1. THREE CANCELLED TAPS: no /verify, and no new challenge.
+    const verifies: number[] = [];
+    page.on('response', (r) => {
+      if (new URL(r.url()).pathname === '/auth/confirm/passkey/verify') verifies.push(r.status());
+    });
+    for (let i = 0; i < 3; i++) {
+      await passkeyBtn(page).click();
+      await expect(page.locator('#term-confirm-error')).toContainText('The passkey was cancelled.');
+      await expect(passkeyBtn(page)).toBeEnabled();
+    }
+    expect(await options.inPage(), 'three cancelled taps fetched no challenge').toBe(1);
+    expect(verifies).toEqual([]);
+
+    // 2. THE SAME CHALLENGE, three cancels later, is still good: real GoTrue
+    //    verifies it, and the attach goes rw.
+    await passkeyBtn(page).click();
+    await expect(dialog(page)).toBeHidden();
+    await expect(screen(page)).toContainText('mode=rw');
+    expect(verifies, 'the cancelled-and-reused challenge verified').toEqual([200]);
+    expect(await options.inPage()).toBe(1);
+    // ONE EVENT PER TAP, with how each one ended — and nothing else in it.
+    const cancel = { options_trigger: 'open', options_status: 200, get: 'NotAllowedError', verify: '' };
+    const first = await events();
+    expect(taps(first)).toEqual([
+      ['stepup.passkey', { attempt: 1, ...cancel }],
+      ['stepup.passkey', { attempt: 2, ...cancel }],
+      ['stepup.passkey', { attempt: 3, ...cancel }],
+      ['stepup.passkey', { attempt: 4, options_trigger: 'open', options_status: 200, get: 'ok', verify: 200 }],
+    ]);
+    // ...and ONE fetch event, the open's, for four taps; all five share an id.
+    expect(fetches(first).map(([n, a]) => [n, a.trigger, a.status, a.taps])).toEqual([['stepup.passkey_options', 'open', 200, 0]]);
+    expect(new Set(first.map(([, a]) => a.open_id)).size, 'one open, one id').toBe(1);
+
+    // 3. A NEW OPEN fetches again (one call). A /verify refused (answered
+    //    here, 401) has spent THAT challenge, so exactly one replacement is
+    //    fetched — before the next tap, which it then confirms.
+    await makeStale(context);
+    await page.goto(browserURL + termPath);
+    await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
+    await page.locator('#term-keys [data-key="up"]').click();
+    await expect(passkeyBtn(page)).toBeVisible();
+    expect(await options.inPage(), 'a new document, a new open: one call').toBe(1);
+    await page.route('**/auth/confirm/passkey/verify', (r) => r.fulfill({ status: 401, json: { error: 'That passkey was not accepted.' } }), { times: 1 });
+    await passkeyBtn(page).click();
+    await expect(page.locator('#term-confirm-error')).toContainText('That passkey was not accepted.');
+    await expect.poll(options.inPage, { message: 'one replacement after a refused /verify' }).toBe(2);
+    await page.unrouteAll({ behavior: 'wait' });
+    await expect(passkeyBtn(page)).toBeEnabled();
+    await passkeyBtn(page).click();
+    await expect(dialog(page)).toBeHidden();
+    await expect(screen(page)).toContainText('mode=rw');
+    expect(verifies, 'the browser saw every /verify answer').toEqual([200, 401, 200]);
+    expect(await options.inPage()).toBe(2);
+    expect(options.net.length, 'the browser saw 1 + 2 options requests').toBe(3);
+
+    // This document's events (the first document's left with it).
+    const second = await events();
+    expect(taps(second)).toEqual([
+      ['stepup.passkey', { attempt: 1, options_trigger: 'open', options_status: 200, get: 'ok', verify: 401 }],
+      ['stepup.passkey', { attempt: 2, options_trigger: 'retry', options_status: 200, get: 'ok', verify: 200 }],
+    ]);
+    // The refused /verify's replacement is a retry fetch, made after tap 1.
+    expect(fetches(second).map(([n, a]) => [n, a.trigger, a.status, a.taps])).toEqual([
+      ['stepup.passkey_options', 'open', 200, 0],
+      ['stepup.passkey_options', 'retry', 200, 1],
+    ]);
+    expect(new Set(second.map(([, a]) => a.open_id)).size).toBe(1);
+    expect(second[0][1].open_id, 'a new document, a new open: a new id').not.toBe(first[0][1].open_id);
+  });
+
+  // 🔴 ONE stepup.passkey_options EVENT PER /options FETCH, the tapless ones
+  // included: a burst of fetches with no tap — what was seen live — is visible
+  // in the telemetry only through these (the per-tap event never fires).
+  // REGRESSION TEST: before these events existed it fails at the first
+  // assertion on them (no fetch event at all).
+  test('telemetry: one stepup.passkey_options event per /options fetch (open, stale, retry), none for a re-ask, and one id per open (real GoTrue, virtual authenticator)', async ({ page, context }) => {
+    test.setTimeout(180_000);
+    await authenticator(page);
+    await signIn(page);
+    await addPasskey(page);
+    const options = await countOptions(page);
+    const events = await recordTelemetry(page);
+    await staleTerminal(page, context);
+    await page.evaluate(() => {
+      const w = window as unknown as W;
+      const c = navigator.credentials, orig = c.get.bind(c);
+      w.__reject = 1;
+      Object.defineProperty(c, 'get', {
+        configurable: true,
+        value: (o?: CredentialRequestOptions) => (w.__reject!-- > 0
+          ? Promise.reject(new DOMException('The operation either timed out or was not allowed.', 'NotAllowedError'))
+          : orig(o)),
+      });
+    });
+
+    // 1. AN OPEN WITH NO TAP: exactly one fetch event (open, 200, 0 taps),
+    //    sent by the time the passkey is offered, and no tap event.
+    await page.locator('#term-keys [data-key="up"]').click();
+    await expect(passkeyBtn(page)).toBeVisible();
+    const open1 = await events();
+    expect(open1.map(([n, a]) => [n, a.trigger, a.status, a.taps])).toEqual([['stepup.passkey_options', 'open', 200, 0]]);
+    const id1 = open1[0][1].open_id as string;
+    expect(id1, 'a random per-open id: 16 hex digits').toMatch(/^[0-9a-f]{16}$/);
+    expect(Object.keys(open1[0][1]).sort(), 'the fetch event carries these fields and nothing else').toEqual(['open_id', 'status', 'taps', 'trigger']);
+
+    // 2. RE-ASKS WHILE OPEN (more keys, other callers): no fetch, no event.
+    //    Checked again at the end, after later awaits, so a late one shows.
+    //    (The modal takes the pointer, so the key is pressed in the page — as a
+    //    key that reaches the terminal under it.)
+    await page.evaluate(() => {
+      document.querySelector<HTMLButtonElement>('#term-keys [data-key="up"]')!.click();
+      const s = (window as unknown as { musterStepUp: { ask: (w: string, cb: null) => void } }).musterStepUp;
+      s.ask('', null);
+      s.ask('', null);
+    });
+    expect(await options.inPage()).toBe(1);
+    expect(await events(), 'a re-ask while open sends nothing').toHaveLength(1);
+
+    // 3. A STALE CHALLENGE: the page's clock moves past mpkMaxAge (240 s), so
+    //    tap 1 fetches again (trigger stale, taps 1); that tap is cancelled,
+    //    so the next one keeps the stale fetch's challenge.
+    await page.evaluate(() => { const n = Date.now.bind(Date); Date.now = () => n() + 250_000; });
+    await passkeyBtn(page).click();
+    await expect(page.locator('#term-confirm-error')).toContainText('The passkey was cancelled.');
+    await expect(passkeyBtn(page)).toBeEnabled();
+    expect(await options.inPage(), 'the stale tap fetched once').toBe(2);
+
+    // 4. A REFUSED /verify (401): its replacement is a retry fetch, after tap 2.
+    await page.route('**/auth/confirm/passkey/verify', (r) => r.fulfill({ status: 401, json: { error: 'That passkey was not accepted.' } }), { times: 1 });
+    await passkeyBtn(page).click();
+    await expect(page.locator('#term-confirm-error')).toContainText('That passkey was not accepted.');
+    await expect.poll(async () => fetches(await events()).length, { message: 'the retry fetch sent its event' }).toBe(3);
+    await page.unrouteAll({ behavior: 'wait' });
+    await expect(passkeyBtn(page)).toBeEnabled();
+
+    // 5. Tap 3 uses the retry challenge and confirms against real GoTrue.
+    await passkeyBtn(page).click();
+    await expect(dialog(page)).toBeHidden();
+    await expect(screen(page)).toContainText('mode=rw');
+    const all1 = await events();
+    expect(all1.map(([n, a]) => n === 'stepup.passkey'
+      ? [n, a.attempt, a.options_trigger, a.options_status, a.get, a.verify]
+      : [n, a.trigger, a.status, a.taps])).toEqual([
+      ['stepup.passkey_options', 'open', 200, 0],
+      ['stepup.passkey_options', 'stale', 200, 1],
+      ['stepup.passkey', 1, 'stale', 200, 'NotAllowedError', ''],
+      ['stepup.passkey', 2, 'stale', 200, 'ok', 401],
+      ['stepup.passkey_options', 'retry', 200, 2],
+      ['stepup.passkey', 3, 'retry', 200, 'ok', 200],
+    ]);
+    expect(all1.map(([, a]) => a.open_id), 'every event of one open has its id').toEqual(all1.map(() => id1));
+    expect(await options.inPage()).toBe(3);
+
+    // 6. A NEW OPEN in the same document, closed with no tap: one fetch event,
+    //    a NEW id, and no tap event.
+    await page.evaluate(() => (window as unknown as { musterStepUp: { ask: (w: string, cb: null) => void } }).musterStepUp.ask('', null));
+    await expect(passkeyBtn(page)).toBeVisible();
+    await page.locator('#term-confirm-cancel').click();
+    await expect(dialog(page)).toBeHidden();
+    const all = await events();
+    expect(all.slice(all1.length).map(([n, a]) => [n, a.trigger, a.status, a.taps])).toEqual([['stepup.passkey_options', 'open', 200, 0]]);
+    const id2 = all[all1.length][1].open_id as string;
+    expect(id2).toMatch(/^[0-9a-f]{16}$/);
+    expect(id2, 'a new open, a new id').not.toBe(id1);
+    expect(await options.inPage()).toBe(4);
+    expect(options.net.length, 'the browser saw the same four requests').toBe(4);
+  });
+
+  // 🔴 A /verify MUSTER REFUSED BEFORE GoTrue SAW THE CHALLENGE KEEPS IT. The
+  // server says so (challenge_unspent: true, stepUpRefuseUnspent) because the
+  // status cannot: GoTrue's own refusals are 401 and 429 too. Open A: muster's
+  // limiter (a 429 answered here with the body the server writes, pinned by
+  // TestARefusalBeforeGoTrueKeepsTheChallenge) and a REAL no-UV refusal (the
+  // UV bit cleared in flight, so muster refuses it before GoTrue) fetch
+  // nothing, and the third tap verifies on the SAME challenge. Open B: a REAL
+  // GoTrue refusal (an unknown challenge id) fetches exactly one replacement;
+  // GoTrue's own 429 (no field) fetches nothing until the next tap.
+  // REGRESSION TEST: before the field was read, the first refusal fetched a
+  // replacement at once — this fails at its first options count.
+  test('a /verify muster refused before GoTrue (its limiter’s 429, no user verification) keeps the challenge — no fetch, the next tap verifies on it; a GoTrue refusal fetches one replacement, GoTrue’s 429 none until the next tap (real GoTrue, virtual authenticator)', async ({ page, context }) => {
+    test.setTimeout(180_000);
+    await ownAddress(context, '198.51.100.41');
+    await authenticator(page);
+    await signIn(page);
+    await addPasskey(page);
+    const options = await countOptions(page);
+    const events = await recordTelemetry(page);
+    await staleTerminal(page, context);
+    const verifyPath = '/auth/confirm/passkey/verify';
+    // The challenge each tap's /verify carried (as the PAGE sent it) and its answer.
+    const sent: { challenge: string; status: number }[] = [];
+    page.on('response', (r) => {
+      if (new URL(r.url()).pathname === verifyPath) sent.push({ challenge: String(r.request().postDataJSON().challenge_id), status: r.status() });
+    });
+    // tapped waits for tap n's stepup.passkey event: sent in the handler's
+    // finally, just BEFORE any replacement fetch is started (synchronously), so
+    // the options count read after it is final for that tap.
+    const tapped = (n: number) => expect.poll(async () => taps(await events()).length).toBe(n);
+    const noUV = async (r: Route) => {
+      const b = r.request().postDataJSON();
+      const ad = Buffer.from(b.credential.response.authenticatorData, 'base64url');
+      ad[32] &= ~0x04; // the UV flag
+      b.credential.response.authenticatorData = ad.toString('base64url');
+      await r.continue({ postData: JSON.stringify(b) });
+    };
+
+    // OPEN A.
+    await page.locator('#term-keys [data-key="up"]').click();
+    await expect(passkeyBtn(page)).toBeVisible();
+    expect(await options.inPage()).toBe(1);
+
+    // A1. muster's limiter.
+    await page.route('**' + verifyPath, (r) => r.fulfill({ status: 429, json: { error: 'Too many attempts. Wait a few minutes and try again.', challenge_unspent: true } }), { times: 1 });
+    await passkeyBtn(page).click();
+    await tapped(1);
+    await expect(page.locator('#term-confirm-error')).toContainText('Too many attempts.');
+    expect(await options.inPage(), 'muster’s 429 fetched no replacement').toBe(1);
+    await page.unrouteAll({ behavior: 'wait' });
+
+    // A2. A real no-UV refusal from muster.
+    await page.route('**' + verifyPath, noUV, { times: 1 });
+    await expect(passkeyBtn(page)).toBeEnabled();
+    await passkeyBtn(page).click();
+    await tapped(2);
+    await expect(page.locator('#term-confirm-error')).toContainText('did not verify you');
+    expect(await options.inPage(), 'muster’s no-UV 401 fetched no replacement').toBe(1);
+    await page.unrouteAll({ behavior: 'wait' });
+
+    // A3. The same challenge, twice refused by muster, verifies against real GoTrue.
+    await expect(passkeyBtn(page)).toBeEnabled();
+    await passkeyBtn(page).click();
+    await expect(dialog(page)).toBeHidden();
+    await expect(screen(page)).toContainText('mode=rw');
+    expect(sent.map((s) => s.status)).toEqual([429, 401, 200]);
+    expect(new Set(sent.map((s) => s.challenge)).size, 'all three taps sent the open’s one challenge').toBe(1);
+    expect(await options.inPage()).toBe(1);
+    expect(options.net.length).toBe(1);
+    expect(taps(await events()).map(([, a]) => [a.options_trigger, a.verify])).toEqual([['open', 429], ['open', 401], ['open', 200]]);
+
+    // OPEN B (a new document).
+    await makeStale(context);
+    await page.goto(browserURL + termPath);
+    await expect(screen(page)).toContainText('FAKE-MIRROR session=main mode=ro');
+    sent.length = 0;
+    await page.locator('#term-keys [data-key="up"]').click();
+    await expect(passkeyBtn(page)).toBeVisible();
+    expect(await options.inPage()).toBe(1);
+
+    // B1. A real GoTrue refusal: the id is swapped in flight for one GoTrue
+    //     never issued. Exactly one replacement, fetched at once.
+    await page.route('**' + verifyPath, async (r) => {
+      const b = r.request().postDataJSON();
+      b.challenge_id = '00000000-0000-4000-8000-000000000000';
+      await r.continue({ postData: JSON.stringify(b) });
+    }, { times: 1 });
+    await passkeyBtn(page).click();
+    await tapped(1);
+    await expect(page.locator('#term-confirm-error')).toContainText('That passkey was not accepted.');
+    expect(await options.inPage(), 'a GoTrue refusal fetched one replacement').toBe(2);
+    await page.unrouteAll({ behavior: 'wait' });
+
+    // B2. GoTrue's own 429 (no field): nothing fetched now.
+    await page.route('**' + verifyPath, (r) => r.fulfill({ status: 429, json: { error: 'Too many attempts. Wait a few minutes and try again.' } }), { times: 1 });
+    await expect(passkeyBtn(page)).toBeEnabled();
+    await passkeyBtn(page).click();
+    await tapped(2);
+    await expect(page.locator('#term-confirm-error')).toContainText('Too many attempts.');
+    expect(await options.inPage(), 'GoTrue’s 429 fetched nothing').toBe(2);
+    await page.unrouteAll({ behavior: 'wait' });
+
+    // B3. The next tap fetches (retry) and verifies.
+    await expect(passkeyBtn(page)).toBeEnabled();
+    await passkeyBtn(page).click();
+    await expect(dialog(page)).toBeHidden();
+    await expect(screen(page)).toContainText('mode=rw');
+    expect(sent.map((s) => s.status)).toEqual([401, 429, 200]);
+    expect(new Set(sent.map((s) => s.challenge)).size, 'three taps, three challenges').toBe(3);
+    expect(await options.inPage()).toBe(3);
+    // B1's replacement was fetched after tap 1; B3's inside tap 3 (taps counts it).
+    expect(fetches(await events()).map(([, a]) => [a.trigger, a.status, a.taps])).toEqual([['open', 200, 0], ['retry', 200, 1], ['retry', 200, 3]]);
+  });
+
+  type Run = Window & { __ran: string[]; musterStepUp: { ask: (w: string, cb: ((ff: number) => void) | null) => void } };
+  const ran = (page: Page) => page.evaluate(() => (window as unknown as Run).__ran);
+
+  // ONE TEST, FOUR STEPS: each passkey open spends GoTrue passkey budget
+  // (ownAddress), and one sign-in and one registration serve all four.
+  //
+  // 1-2. Callbacks chained by a re-ask while the dialog is open (callers all
+  //    waiting on one confirm) each run EXACTLY ONCE, in the order they asked,
+  //    after a passkey confirm (1) and a password confirm (2). Step 1 is an
+  //    INVARIANT GUARD (the chain already did this; keep-only-first and
+  //    keep-only-last each turn it red). Step 2 is a REGRESSION TEST: one that
+  //    throws no longer skips the ones after it (before, `prev(ff); cb(ff)`
+  //    stopped at the throw). They are also the positive controls for 3-4: a
+  //    confirm that succeeds still runs its callbacks.
+  // 3-4. 🔴 ESCAPE IS A CANCEL. Closing the dialog without confirming drops the
+  //    waiting action, so a passkey /verify (3) or a password POST (4) still in
+  //    flight does not run it when it answers. REGRESSION TEST: before, only
+  //    Cancel dropped them, and step 3 ran the action.
+  test('callbacks chained while open each run once, in order, after a confirm, and one that throws does not stop the next; Escape during an in-flight /verify or password POST runs none (real GoTrue, virtual authenticator)', async ({ page, context }) => {
+    test.setTimeout(180_000);
+    await ownAddress(context, '198.51.100.42');
+    await authenticator(page);
+    await signIn(page);
+    await addPasskey(page);
+    const events = await recordTelemetry(page);
+    const errors: string[] = [];
+    page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+    await staleTerminal(page, context);
+
+    // 1. a opens the dialog, b chains while it is open, a null caller drops nothing.
+    await page.evaluate(() => {
+      const w = window as unknown as Run;
+      w.__ran = [];
+      w.musterStepUp.ask('', () => { w.__ran.push('a'); });
+      w.musterStepUp.ask('', () => { w.__ran.push('b'); });
+      w.musterStepUp.ask('', null);
+    });
+    await expect(passkeyBtn(page)).toBeVisible();
+    await passkeyBtn(page).click();
+    await expect(dialog(page)).toBeHidden();
+    await expect.poll(() => ran(page)).toEqual(['a', 'b']);
+
+    // 2. x throws; c and d still run, in order — confirmed by password.
+    await page.evaluate(() => {
+      const w = window as unknown as Run;
+      w.musterStepUp.ask('', () => { w.__ran.push('x'); throw new Error('boom'); });
+      w.musterStepUp.ask('', () => { w.__ran.push('c'); });
+      w.musterStepUp.ask('', () => { w.__ran.push('d'); });
+    });
+    await expect(dialog(page)).toBeVisible();
+    await page.fill('#term-confirm-password', adminPW);
+    await page.locator('#term-confirm-submit').click();
+    await expect(dialog(page)).toBeHidden();
+    await expect.poll(() => ran(page)).toEqual(['a', 'b', 'x', 'c', 'd']);
+    expect(errors.some((e) => e.includes('a confirmed action failed')), 'the throw was logged').toBe(true);
+
+    // hold routes glob's next request until the returned release() is called,
+    // then sends it on.
+    const hold = async (glob: string) => {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      await page.route(glob, async (r) => { await gate; await r.continue(); }, { times: 1 });
+      return () => release();
+    };
+    const isPath = (p: string) => (r: { url: () => string }) => new URL(r.url()).pathname === p;
+
+    // 3. Escape while a passkey /verify is in flight.
+    await page.evaluate(() => {
+      const w = window as unknown as Run;
+      w.__ran = [];
+      w.musterStepUp.ask('', () => { w.__ran.push('passkey'); });
+    });
+    await expect(passkeyBtn(page)).toBeVisible();
+    const tapsBefore = taps(await events()).length;
+    let release = await hold('**/auth/confirm/passkey/verify');
+    let request = page.waitForRequest(isPath('/auth/confirm/passkey/verify'));
+    let answer = page.waitForResponse(isPath('/auth/confirm/passkey/verify'));
+    await passkeyBtn(page).click();
+    await request;
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toBeHidden();
+    release();
+    expect((await answer).status(), 'the verify itself succeeded').toBe(200);
+    await expect.poll(async () => taps(await events()).length, { message: 'the tap’s handler finished' }).toBe(tapsBefore + 1);
+    expect(await ran(page), 'an escaped passkey confirm ran nothing').toEqual([]);
+    await page.unrouteAll({ behavior: 'wait' });
+
+    // 4. Escape while a password POST is in flight.
+    await page.evaluate(() => {
+      const w = window as unknown as Run;
+      w.musterStepUp.ask('', () => { w.__ran.push('password'); });
+    });
+    await expect(dialog(page)).toBeVisible();
+    await page.fill('#term-confirm-password', adminPW);
+    release = await hold('**/auth/confirm');
+    request = page.waitForRequest(isPath('/auth/confirm'));
+    answer = page.waitForResponse(isPath('/auth/confirm'));
+    await page.locator('#term-confirm-submit').click();
+    await request;
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toBeHidden();
+    release();
+    expect((await answer).status(), 'the password confirm itself succeeded').toBe(200);
+    // finish clears the password field: the answer has been handled.
+    await expect(page.locator('#term-confirm-password')).toHaveValue('');
+    expect(await ran(page), 'an escaped password confirm ran nothing').toEqual([]);
+    await page.unrouteAll({ behavior: 'wait' });
   });
 });
 
