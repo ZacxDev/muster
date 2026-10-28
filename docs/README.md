@@ -1,6 +1,6 @@
 # muster documentation
 
-Start with the [project README](../README.md) for the pitch and a quickstart.
+Start with the [project README](../README.md) for the pitch and the two ways to install.
 
 **Using it**
 
@@ -33,6 +33,7 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 
 **Working on it**
 
+- [development.md](development.md) — run muster from source against a throwaway database
 - [testing.md](testing.md) — the Go suite, the gates, the browser suite, screenshots
 - [limits.md](limits.md) — what it does not do, or has not proven
 - [decisions.md](decisions.md) — why things are the way they are

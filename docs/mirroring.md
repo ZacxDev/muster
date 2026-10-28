@@ -160,7 +160,8 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   token for a new host (or a second token for an old one) never changes an
   existing host's icon.
 
-![The Agents list with the session switcher's search open](img/agents-filter.png)
+![The Agents list with the session switcher's search open, matching Claude Code windows on two hosts by their kind](img/agents-filter.png)
+![A session page with the switcher's search open, finding a window by its codename](img/switcher-search.png)
 
 ## Viewing never moves your terminal
 
@@ -208,6 +209,9 @@ measured number. An image is sized by its pixels: about width × height / 750
 tokens, at most about 1600. A call whose next turn has not started yet shows no
 number. opencode rows show none either: muster reads neither their usage nor
 their output.
+
+![A Claude Code session's tool calls, each with the context it added](img/tool-context.png)
+
 Every window has its own view: two Claude Code windows in the same directory each
 show their own conversation.
 

@@ -8,6 +8,8 @@ To use it, tap the mic, speak, and tap it again. The recording is transcribed
 and the text is **inserted into the box at the cursor**. It is never sent
 automatically: you read it and press Send. Send is the gated step it always was.
 
+![The microphone recording into a mirrored session's message box](img/dictation.png)
+
 ## Configuration
 
 | variable | meaning |

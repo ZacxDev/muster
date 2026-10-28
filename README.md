@@ -1,142 +1,131 @@
 # muster
 
-To muster is to assemble a force for duty; a muster roll is the register of who
-is present and what they are assigned.
+**Scale your agent sessions with Claude Code and others, use them across multiple
+machines, and use them easily from your phone with your voice and one hand.**
 
-muster is a self-hosted command post for coding agents. It has three parts:
-
-- A **task board**, which people and agents read and write.
-- **Dispatch**, which starts an agent on a task.
-- **Mirroring**, which shows your own tmux and Claude Code sessions live. You can
-  read them and send them a message from your phone.
-
-The server is one Go binary backed by Postgres. The UI is htmx, built
-mobile-first, and installs as a PWA. A small host agent, `muster-mirror`, dials
-out from each of your machines, so muster never needs an inbound route to them.
+Self-hosted: one Go binary and Postgres. The UI installs as a PWA. Each of your
+machines dials out to muster, so nothing on them is exposed and no inbound port
+is opened to them.
 
 <p align="center">
-  <img src="docs/img/agents-filter.png" width="240" alt="The Agents list: mirrored tmux windows and a dispatched agent, narrowed by the filter">
-  <img src="docs/img/mirror-rendered.png" width="240" alt="A mirrored Claude Code window, rendered as a chat, with the message box and microphone">
-  <img src="docs/img/stepup-passkey.png" width="240" alt="The confirm-it's-you dialog offering a passkey before a message is sent">
+  <img src="docs/img/phone-flow.gif" width="270" alt="On a phone: open a session from the bottom bar's search by typing its codename, dictate a reply with the microphone, send it, and watch the session answer">
+  <img src="docs/img/agents-list.png" width="270" alt="The Agents list on a phone: mirrored sessions from two machines and dispatched agents, with the session switcher docked at the bottom">
+  <img src="docs/img/tool-context.png" width="270" alt="A Claude Code session rendered as a chat; each tool call shows how much context it added">
 </p>
 
-## Features
+## Why muster
 
-- **Task board.** Tasks have statuses, comments, attachments and tags, and a
-  review queue. They are written by people in the browser and by agents through
-  the API and CLI. → [docs/tasks.md](docs/tasks.md)
-- **Mirrored sessions.** Every tmux window on your machines appears as a card,
-  most recently active first. A window running Claude Code renders as a chat.
-  Viewing never moves your own terminal. → [docs/mirroring.md](docs/mirroring.md)
-- **Message box.** You can send text into any mirrored pane or dispatched agent.
-  It works without JavaScript and does not deliver a message twice. Typing into
-  a mirrored session requires a recent sign-in, confirmed by passkey or password.
-  → [docs/sending-and-step-up.md](docs/sending-and-step-up.md)
-- **Dictation.** A microphone on every message box, transcribed by a
-  speech-to-text service you choose. → [docs/dictation.md](docs/dictation.md)
-- **File attachments.** Attach a file in the message box; the agent gets a
-  short-lived link signed by muster, and the transcript shows a thumbnail, not
-  the link. Needs an S3-compatible store. → [docs/uploads.md](docs/uploads.md)
-- **Agent dispatch.** muster can provision agents on Kubernetes. It is opt-in
-  and off by default. One of these agents can be a "chief" that reports on the
-  rest of the fleet. → [docs/provisioner.md](docs/provisioner.md)
-- **Accounts.** One shared password, or per-user accounts through GoTrue with
-  passkeys, invites, roles and personal API tokens. Row-level security keeps each
-  user's data separate. → [docs/auth.md](docs/auth.md)
-- **Web push and PWA.** Notifications for review-ready tasks, connector requests
-  and more. The app installs to your home screen, with share target, shortcuts
-  and a badge. → [docs/push.md](docs/push.md)
-- **Browser flows.** A queue of scripted browser jobs, run by a runner you host.
-  Every job an agent asks for needs its owner's approval.
-  → [docs/browser-flows.md](docs/browser-flows.md)
-- **Connectors.** Agents use stored HTTP credentials through muster's proxy and
-  never see the secret. → [docs/connectors.md](docs/connectors.md)
-- **Memo relay.** Delivers [cairn](https://github.com/ZacxDev/cairn) scope memos
-  to dispatched agents. → [docs/memo-relay.md](docs/memo-relay.md)
-- **CLI.** `muster`, a machine client for agents and scripts.
-  → [docs/cli.md](docs/cli.md)
+- **Run more sessions without losing track of them.** Every tmux window on every
+  machine becomes a card, newest activity first. A bar at the bottom of the
+  screen switches between sessions in one tap, and its search finds one by
+  codename, title, repository or kind as you type.
+- **Every machine, nothing exposed.** A small host agent, `muster-mirror`, runs
+  on each machine and opens an outbound tunnel to your muster server. Your
+  laptop, workstation and build box show up side by side, and none of them
+  accepts a connection.
+- **Your phone, your voice, one hand.** muster is designed for a phone first.
+  The controls sit at the bottom of the screen, within reach of your thumb. Tap
+  the mic, speak, and the transcript lands in the message box. You read it, then
+  press Send. Notifications tell you when something is waiting on you.
+- **Agent-agnostic.** Claude Code sessions render as a chat. opencode and Hermes
+  sessions have their own read views. Anything else, such as Codex or a plain
+  shell, is a live terminal. If it runs in a tmux pane, muster can show it.
 
 ## Quickstart
 
-You need Go (the version in `go.mod`), Docker and, to mirror a session, tmux.
-The [Nix flake](flake.nix) provides the toolchain (`nix develop`).
+**(a) Let your agent install it.** Paste this one prompt into your coding agent:
 
-```sh
-git clone https://github.com/ZacxDev/muster && cd muster
-make test-db                       # a throwaway Postgres on 127.0.0.1:55432
-docker compose -f docker-compose.test.yml exec postgres createdb -U muster muster_dev
-
-export DATABASE_URL='postgres://muster:muster@127.0.0.1:55432/muster_dev?sslmode=disable'
-export MUSTER_UI_PASSWORD='pick-a-password-of-12+-chars'
-export MUSTER_STANDALONE=1         # no external permission router
-export MUSTER_MIRROR=1             # turn mirrored sessions on
-go run ./cmd/muster-server         # migrates, then listens on :8105 (all interfaces)
+```text
+Set up muster for me: read https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md and follow it. Ask me anything you need up front.
 ```
 
-Open <http://127.0.0.1:8105> and sign in with the password. Then mirror your
-tmux sessions. Run this in a second shell with the same `DATABASE_URL`:
+**(b) Install it yourself.** Follow [INSTALL.md](https://github.com/ZacxDev/muster/blob/main/INSTALL.md).
 
-```sh
-go run ./cmd/muster-server mirror token create mybox > ~/.muster-mirror-token
-go run ./cmd/muster-mirror -url http://127.0.0.1:8105 -allow-http \
-  -host mybox -token-file ~/.muster-mirror-token -interactive
-```
+To hack on muster, [docs/development.md](docs/development.md) runs it from source
+against a throwaway database.
 
-Your tmux windows now appear under **Agents**. Drop `-interactive` to make them
-read-only. `-allow-http` is for local development only; a real deployment uses
-https. When you are done, `make test-db-down` removes the database.
+## Features
 
-⚠ This quickstart listens on every interface and sets no `MUSTER_HOOK_TOKEN`, so
-the machine API is open to anyone who can reach the port. Keep it on a trusted
-machine, or set the token ([docs/auth.md](docs/auth.md#machine-credentials)).
+### Core
 
-The server prints one line per feature at boot, saying what is on, what is off,
-and which variable changes it. Every variable is listed in
-[docs/configuration.md](docs/configuration.md).
+- **Mirrored sessions.** Each tmux window on your machines is shown live. A
+  Claude Code window renders as a chat, and the Terminal view is one tap away.
+  Viewing a window never moves your own terminal. → [docs/mirroring.md](docs/mirroring.md)
+- **Session switcher and search.** A bottom bar with Recent, Pins and All. Its
+  search opens with the magnifier or `/`. → [docs/mirroring.md](docs/mirroring.md)
+- **Message box and step-up.** Send text into any mirrored pane or agent. Typing
+  into a mirrored session needs a recent sign-in, which you confirm with a
+  passkey or a password. → [docs/sending-and-step-up.md](docs/sending-and-step-up.md)
+- **Dictation.** A mic on every message box, transcribed by a speech-to-text
+  service you choose (an OpenAI-style transcription endpoint). The transcript is
+  never sent by itself. → [docs/dictation.md](docs/dictation.md)
+- **Push and PWA.** Web Push notifications, plus an installable app with a share
+  target, shortcuts and a badge. → [docs/push.md](docs/push.md)
+- **Asks.** A single queue of everything waiting on you. An agent can ask you a
+  question and wait for your answer instead of stopping. → [docs/attention.md](docs/attention.md)
+- **Context badges.** Each tool call in a Claude Code session shows how much
+  context it added. → [docs/mirroring.md](docs/mirroring.md)
+- **Task board.** Tasks have statuses, comments, attachments, tags and a review
+  queue. People and agents share the board. → [docs/tasks.md](docs/tasks.md)
+
+### Advanced / optional
+
+These are optional, and most are off until you configure them.
+
+- **Agent dispatch on Kubernetes.** Start an agent on a task in its own pod.
+  → [docs/provisioner.md](docs/provisioner.md)
+- **Chief.** One agent that reports on the rest of the fleet.
+  → [docs/chief.md](docs/chief.md)
+- **Connectors.** Agents use your stored HTTP credentials through muster's
+  proxy, and never see the secret. → [docs/connectors.md](docs/connectors.md)
+- **Browser flows.** A queue of scripted browser jobs, run by a runner you host,
+  each approved by its owner. → [docs/browser-flows.md](docs/browser-flows.md)
+- **Memo relay.** Delivers [cairn](https://github.com/ZacxDev/cairn) memos to
+  dispatched agents. → [docs/memo-relay.md](docs/memo-relay.md)
+- **GitHub App.** muster's own GitHub identity, and tokens scoped to one
+  repository for agents. → [docs/github-app.md](docs/github-app.md)
+- **File attachments.** Attach files in the message box. They are stored in
+  S3-compatible storage. → [docs/uploads.md](docs/uploads.md)
+- **Accounts.** Per-user accounts through GoTrue, with passkeys, invites, roles
+  and API tokens, kept apart by row-level security. → [docs/auth.md](docs/auth.md)
+- **CLI.** `muster`, a client for agents and scripts. → [docs/cli.md](docs/cli.md)
+
+<p align="center">
+  <img src="docs/img/desktop.png" width="820" alt="A mirrored Claude Code session at a desktop size, with its tool calls, context badges and the session switcher">
+</p>
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  browser["Browser / installed PWA"] -->|HTTPS| server["muster-server"]
+  browser["Phone / browser (PWA)"] -->|HTTPS| server["muster-server"]
   cli["muster CLI · agents · scripts"] -->|JSON API + tokens| server
   server --> pg[("Postgres<br/>(row-level security)")]
-  server -.->|"sign-in, passkeys (optional)"| gotrue["GoTrue"]
-  host["muster-mirror<br/>on each of your machines<br/>(tmux, Claude Code)"] -->|"outbound WebSocket tunnel"| server
-  server -.->|"provision (optional)"| k8s["Kubernetes<br/>agent pods"]
+  host["muster-mirror<br/>on each of your machines<br/>(tmux, Claude Code, …)"] -->|"outbound WebSocket tunnel"| server
   server -.->|optional| stt["speech-to-text"]
-  server -.->|optional| push["Web Push services"]
-  server -.->|optional| cairn["cairn memo listener"]
+  server -.->|optional| push["Web Push"]
+  server -.->|"optional"| k8s["Kubernetes<br/>agent pods"]
 ```
 
-The details are in [docs/architecture.md](docs/architecture.md): the binaries,
-the listeners, and what each component trusts.
-
-## Documentation
-
-- [docs/README.md](docs/README.md) is the index.
-- Reference: [configuration](docs/configuration.md), [CLI](docs/cli.md),
-  [schema](docs/schema.md).
-- Contributing: [testing](docs/testing.md), [CONTRIBUTING.md](CONTRIBUTING.md).
-- Background: [limits](docs/limits.md), [design decisions and their history](docs/decisions.md).
+[docs/architecture.md](docs/architecture.md) covers the binaries, the
+listeners, and what each component trusts. The full documentation index is
+[docs/README.md](docs/README.md).
 
 ## Status and limits
 
-- **Run one replica.** Some background loops and the mirror tunnel keep state
-  in memory, and nothing coordinates them across replicas.
-- **Agent provisioning is opt-in and lightly proven.** The Kubernetes driver's
-  tests use a fake clientset. No end-to-end turn against an agent this tree
-  provisioned has been verified in-repo. This repository ships no Kubernetes
-  manifests or RBAC.
-- **Agent network isolation is address-based.** The `claude-code` agent's
-  NetworkPolicy does not restrict egress by DNS name. An agent can still reach
-  any public HTTPS host.
-- **An interactive mirror is a shell on that host.** `-interactive` lets
-  anyone who can type into that host's Terminal view in muster (behind a
-  recent sign-in) run commands as the user that `muster-mirror` runs as.
+- **Run one replica.** Some background loops and the mirror tunnel keep their
+  state in memory.
+- **An interactive mirror is a shell on that host.** Anyone who can type into
+  that host's Terminal view (after a recent sign-in) can run commands as the
+  user `muster-mirror` runs as.
+- **Agent dispatch is opt-in and only lightly proven.** The repository ships no
+  Kubernetes manifests.
 
 The full list is in [docs/limits.md](docs/limits.md).
 
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+*To muster is to assemble a force for duty. A muster roll is the register of who
+is present and what each is assigned.*
