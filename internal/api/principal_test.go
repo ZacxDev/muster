@@ -323,6 +323,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
 		"GET /api/whoami",
+		// `muster doctor`'s server half (doctor.go): requireArmedHookToken.
+		"GET /api/doctor",
 		"POST /api/routes/{id}/reply",
 		"POST /api/plugin-threads",
 		"POST /api/pr-sessions",
@@ -358,6 +360,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/chief/replace",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
+		"GET /api/doctor",
 		"POST /api/routes/{id}/reply",
 		"POST /api/plugin-threads",
 		"POST /api/pr-sessions",
@@ -378,6 +381,8 @@ var routeVias = map[authz.Via][]string{
 	// A MIRROR HOST token opens exactly the mirrored sessions' MCP door.
 	authz.ViaMirrorHost: {
 		"POST /mirror/mcp",
+		// `muster doctor`'s this-host check (doctor.go): the token's own host.
+		"GET /mirror/host",
 	},
 	// A DEVICE credential (0039) opens exactly the device tier.
 	authz.ViaDevice: {
@@ -682,7 +687,8 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 		"POST /api/plugin-threads":              true,
 		"POST /api/pr-sessions":                 true,
 		"POST /api/plugins/messages/{id}/retry": true,
-		"POST /api/chief/replace":               true}
+		"POST /api/chief/replace":               true,
+		"GET /api/doctor":                       true}
 	for _, pattern := range routeVias[authz.ViaHook] {
 		method, path := concretePath(pattern)
 		t.Run(pattern, func(t *testing.T) {

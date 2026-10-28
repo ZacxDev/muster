@@ -121,7 +121,8 @@
       "tests/agent-open-hops.spec.ts",
       "tests/suggested-replies.spec.ts",
       "tests/opencode-view.spec.ts",
-      "tests/tool-context.spec.ts"
+      "tests/tool-context.spec.ts",
+      "tests/onboarding.spec.ts"
     ],
     "2": [
       "tests/bfcache-restore.spec.ts",

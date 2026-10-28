@@ -26,10 +26,11 @@ const (
 	// KindInjected marks a record the CLI wrote to inject context into the next
 	// request — an attachment record (a message typed while a tool ran,
 	// diagnostics, an edited file, a skill listing, a hook's added context…).
-	// It carries nothing and draws nothing: it exists so the tool-context ledger
-	// (toolctx.go) knows the growth before the next turn is not the tool
-	// calls' alone. Only ReadLines (the mirrored view's reader) emits it;
-	// Events, which every other reader uses, does not.
+	// Text is the attachment's type; it draws nothing. It exists so the
+	// tool-context ledger (toolctx.go) knows the growth before the next turn
+	// may not be the tool calls' alone — unless its type is one of the small
+	// reminders negligibleInjected names. Only ReadLines (the mirrored view's
+	// reader) emits it; Events, which every other reader uses, does not.
 	KindInjected = "injected"
 )
 

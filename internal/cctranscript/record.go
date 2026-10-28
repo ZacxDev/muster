@@ -41,6 +41,7 @@ import (
 	_ "image/gif" // imageBytes reads an image's header
 	_ "image/jpeg"
 	_ "image/png"
+	"math"
 	"strings"
 	"time"
 )
@@ -67,6 +68,11 @@ type Record struct {
 	// (a user record carrying a tool_result). Read only for AskUserQuestion,
 	// whose result holds the questions and the answers given (askq.Result).
 	ToolUseResult json.RawMessage `json:"toolUseResult"`
+	// Attachment is an attachment record's kind of injected context
+	// (KindInjected, toolctx.go).
+	Attachment struct {
+		Type string `json:"type"`
+	} `json:"attachment"`
 	// QuotaLimits is on a usage-limit record the CLI wrote itself (limit.go):
 	// when the limit resets, in Unix seconds. Absent on most.
 	QuotaLimits *struct {
@@ -81,6 +87,7 @@ type Record struct {
 			InputTokens              int64 `json:"input_tokens"`
 			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+			OutputTokens             int64 `json:"output_tokens"`
 		} `json:"usage"`
 	} `json:"message"`
 }
@@ -233,7 +240,7 @@ func (b Block) ResultBytes() int {
 // imageMaxTokens down to fit it, so an image costs at most about that many.
 // The dimensions are read from the image's own header (PNG, JPEG or GIF, from
 // the start of its base64 data); an image whose header cannot be read counts
-// as imageMaxTokens. Tokens are turned into bytes at EstimateBytesPerToken, the
+// as imageMaxTokens. Tokens are turned into bytes at ResultBytesPerToken, the
 // unit Event.Bytes is in.
 const (
 	imagePixelsPerToken = 750
@@ -253,7 +260,7 @@ func imageBytes(data string) int {
 			tokens = int(t)
 		}
 	}
-	return tokens * EstimateBytesPerToken
+	return int(math.Round(float64(tokens) * ResultBytesPerToken))
 }
 
 // Time is the record's timestamp in Unix milliseconds, 0 when it has none or

@@ -27,7 +27,12 @@ test.use({ storageState: { cookies: [], origins: [] } });
 
 const rig = new MirrorRig(switcherSearchPort, 'e2e-sws', {}, { decimalHost: true });
 const origin = rig.origin;
-const stamp = Date.now().toString(36);
+// 🔴 DECIMAL, like the host (decimalHost): the agent's NAME is its codename to
+// the search, which matches it as a substring, so a base-36 stamp can spell a
+// query this spec types. It did: a stamp ending "vap" put the agent beside
+// vapor:1 for "VAP" ("man" would have done the same to mango). Digits spell
+// no query.
+const stamp = String(Date.now());
 // The agent: its NAME carries none of the codenames' letters in a row; its
 // display name (its title) does.
 const AGENT = `e2e-sws-ledger-${stamp}`;
