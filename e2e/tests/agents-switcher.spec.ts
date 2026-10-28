@@ -3,6 +3,7 @@ import { test, expect } from '../lib/fixtures';
 import { agentsSwitcherPort, hookToken } from '../lib/env';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
+import { openMore } from '../lib/nav';
 
 // THE SESSION SWITCHER ON THE AGENTS LIST (internal/ui/switcher.go
 // switcherDock), on a REAL muster-server and a REAL muster-mirror
@@ -43,7 +44,10 @@ test.use({ storageState: { cookies: [], origins: [] } });
 
 const rig = new MirrorRig(agentsSwitcherPort, 'e2e-asw', {}, { decimalHost: true });
 const origin = rig.origin;
-const stamp = Date.now().toString(36);
+// DECIMAL, like the host: the agent's name is a codename the search matches as
+// a substring, and a base-36 stamp can spell a query this spec types (the same
+// flake switcher-search.spec.ts had with "vap"). Digits spell no query.
+const stamp = String(Date.now());
 const AGENT = `e2e-asw-ledger-${stamp}`;
 const AGENT_TITLE = 'Rotate the ledger';
 // Its repository: found by the palette's words, ranked after "wheat"'s codename.
@@ -416,6 +420,7 @@ test.describe('desktop 1280×800, from another tab', () => {
     await expect(page.locator('#fab-agents')).toHaveCount(0);
     // The Tasks document does not build the list: its Agents panel's bar is
     // pending until the list's own load fills it.
+    await openMore(page);
     await page.click('.sidebar-tab[data-tab="agents"]');
     await expect(page).toHaveURL(/\/agents$/);
     // The router finished the switch (it once stopped at the launcher, and the

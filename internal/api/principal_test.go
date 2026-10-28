@@ -126,6 +126,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /attention/asker",
 		// A notification's tap: its item's target, resolved when tapped.
 		"GET /attention/open/{key}",
+		// An ask's own page, where its tap lands (attention_ask_page.go).
+		"GET /attention/asks/{id}",
 		"GET /attention/badge",
 		"POST /attention/asks/{id}/answer",
 		"POST /attention/asks/{id}/cancel",
@@ -226,14 +228,12 @@ var routeVias = map[authz.Via][]string{
 		"GET /events",
 		// The browser telemetry relay (faro_relay.go): a session, same-origin.
 		"POST /telemetry/faro",
-		"GET /github/callback",
-		"GET /github/connect",
-		"GET /repos",
 		"GET /share",
 		"GET /tasks",
 		"GET /tasks/{id}",
 		"GET /tasks/{id}/attachments/{aid}",
 		"GET /ui/agents",
+		"GET /ui/nav/agents",
 		"GET /ui/agents/new",
 		"GET /ui/agents/notes",
 		"GET /ui/agents/repos",
@@ -250,7 +250,6 @@ var routeVias = map[authz.Via][]string{
 		"GET /ui/connectors/new",
 		"GET /ui/connectors/{name}/rotate",
 		"GET /ui/notifications",
-		"GET /ui/repos",
 		"GET /ui/tags",
 		"GET /ui/tasks",
 		"GET /ui/tasks/new",
@@ -286,7 +285,6 @@ var routeVias = map[authz.Via][]string{
 		"POST /chief/provision",
 		"POST /connectors",
 		"POST /connectors/{name}/rotate",
-		"POST /github/disconnect",
 		"POST /tasks",
 		"POST /tasks/merge",
 		"POST /tasks/{id}/comments",
@@ -388,6 +386,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/device/config",
 		"PUT /api/device/push",
 		"DELETE /api/device/push",
+		"POST /api/device/challenge",
+		"POST /api/device/actions/attention/asks/{id}/answer",
+		"POST /api/device/actions/attention/asks/{id}/cancel",
 	},
 	// A PLUGIN token (0015) opens exactly the plugin door.
 	authz.ViaPlugin: {

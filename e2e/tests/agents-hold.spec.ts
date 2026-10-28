@@ -5,6 +5,7 @@ import { agentsHoldPort } from '../lib/env';
 import { MirrorRig } from '../lib/mirrorhost';
 import { clsInit, readCls, resetCls } from '../lib/cls';
 import { writeFileAtomic } from '../lib/atomic';
+import { openMore } from '../lib/nav';
 
 // THE AGENTS LIST HOLDS A BACKGROUND REFRESH BEHIND "N new ↑"
 // (internal/ui/agents_filter.go): a refresh that would move a card the reader
@@ -251,6 +252,7 @@ test.describe('held behind the pill: across navigations', () => {
     // A detail page, by a full load: no Agents panel, so its Agents link is a
     // boosted navigation that swaps the body.
     await page.goto(rig.origin + '/tasks/1');
+    await openMore(page);
     await expect(agentsLink).toBeVisible();
     const pill = page.locator('#agents-new-pill');
     // First entry: a held change, so the pill is MADE on this body, and tapped.
@@ -296,6 +298,7 @@ test.describe('held behind the pill: other tabs', () => {
     await expect(pill, 'the arrival waits').toHaveText('1 new ↑', { timeout: 30_000 });
     await expect(pill).toBeVisible();
 
+    await openMore(page);
     await page.locator('.sidebar-tab[data-tab="tasks"]').click();
     await expect(page).toHaveURL(/\/tasks$/);
     await expect(page.locator('#panel-tasks')).toBeVisible();

@@ -202,7 +202,7 @@ func TestFullHeightViewsUseAnOverlayNav(t *testing.T) {
 // belongs to — the accent and aria-current on that link and on no other — and a
 // page with no entry marks none.
 func TestNavDocumentMarksItsEntry(t *testing.T) {
-	feat := Features{GitHub: true, Connectors: true, Admin: true, Attention: true}
+	feat := Features{Connectors: true, Admin: true, Attention: true}
 	ids := map[string]string{NavAttention: "sidebar-attention", NavAccount: "sidebar-account", NavAdmin: "sidebar-admin"}
 	for _, entry := range []string{NavAttention, NavAccount, NavAdmin, ""} {
 		src := documentSource(t, NavDocument(NavDocumentView{Title: "x", Entry: entry, Feat: feat, Main: "<h1>x</h1>"}))

@@ -1,4 +1,5 @@
 import { test, expect } from '../lib/fixtures';
+import { openMore } from '../lib/nav';
 
 // The real install prompt cannot be produced in automation (it needs user
 // engagement the harness cannot fake), so the browser's event is synthesised
@@ -15,6 +16,7 @@ const fire = `(() => {
 test('the install button appears on beforeinstallprompt and prompts once', async ({ page }) => {
   await page.goto('/tasks');
   await page.click('#sidebar-open');
+  await openMore(page);
   const btn = page.locator('#sidebar [data-install-app]');
   await expect(btn).toBeHidden();
   expect(await page.evaluate(fire), 'the default mini-infobar is suppressed').toBe(true);
@@ -27,6 +29,7 @@ test('the install button appears on beforeinstallprompt and prompts once', async
 test('appinstalled hides it', async ({ page }) => {
   await page.goto('/tasks');
   await page.click('#sidebar-open');
+  await openMore(page);
   await page.evaluate(fire);
   const btn = page.locator('#sidebar [data-install-app]');
   await expect(btn).toBeVisible();
@@ -42,6 +45,7 @@ test('never offered inside the installed app', async ({ page }) => {
   });
   await page.goto('/tasks');
   await page.click('#sidebar-open');
+  await openMore(page);
   await page.evaluate(fire);
   await page.waitForTimeout(300);
   await expect(page.locator('#sidebar [data-install-app]')).toBeHidden();
@@ -71,6 +75,7 @@ for (const mode of ['standalone', 'fullscreen', 'minimal-ui', 'window-controls-o
     }, mode);
     await page.goto('/tasks');
     await page.click('#sidebar-open');
+    await openMore(page);
     await page.evaluate(fire);
     const btn = page.locator('#sidebar [data-install-app]');
     if (mode === 'browser') {
@@ -102,6 +107,7 @@ test('a window that becomes installed after the offer stops offering it', async 
   });
   await page.goto('/tasks');
   await page.click('#sidebar-open');
+  await openMore(page);
   await page.evaluate(fire);
   const btn = page.locator('#sidebar [data-install-app]');
   await expect(btn).toBeVisible();

@@ -139,8 +139,10 @@ for (const vp of viewports) {
       const line = await borderOf(page, 'plain:0');
       for (const theme of ['dark', 'light'] as const) {
         if (theme === 'light') {
-          await page.evaluate(() => localStorage.setItem('muster-theme', 'light'));
-          await page.reload();
+          // The light theme is unreachable in the product (the toggle is gone and
+          // the head script forces dark), but its tokens are still shipped: check
+          // the tint under them by dropping the class directly.
+          await page.evaluate(() => document.documentElement.classList.remove('dark'));
           await expect(card(page, 'fleet:5')).toHaveCount(1, { timeout: 20_000 });
         }
         const sfx = theme === 'dark' ? 'd' : 'l';
@@ -157,7 +159,6 @@ for (const vp of viewports) {
       }
       // The terminal colour itself is the dark border (it already meets 3:1
       // there); the light title had to darken (4.5:1 on white).
-      await page.evaluate(() => localStorage.setItem('muster-theme', 'dark'));
       await page.reload();
       await expect(card(page, 'fleet:5')).toHaveCount(1, { timeout: 20_000 });
       expect(await borderOf(page, 'fleet:5')).toBe('rgb(215, 153, 33)');

@@ -268,6 +268,13 @@ func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.D
 	// in-memory hub, scoped to this request's principal. The list interleaves
 	// them with the agents by activity (ui.AgentsCardsWithMirrors).
 	mirrors := s.mirrorCards(ctx, pinned, focused)
+	// THE chief — where `/` opens — is marked from the same rule homeTarget
+	// reads (primaryChief), so the sidebar pins exactly the agent home opens.
+	if pc, ok := primaryChief(list); ok {
+		for i := range cards {
+			cards[i].PrimaryChief = cards[i].ID == pc.ID
+		}
+	}
 	s.withCardAttention(ctx, cards, mirrors)
 	// The Idle section (ui.InIdleSection), with the server's clock, after the
 	// pins are marked: decided on every build, so an entry active again leaves
@@ -2038,7 +2045,7 @@ func (s *Server) wsAllowedOrigins(r *http.Request) []string {
 	if r.Host != "" {
 		out = append(out, r.Host)
 	}
-	if base := s.ext.GitHubOAuth.BaseURL; base != "" {
+	if base := s.ext.PublicURL; base != "" {
 		if u, err := url.Parse(base); err == nil && u.Host != "" {
 			out = append(out, u.Host)
 		}

@@ -12,6 +12,7 @@ import { clsInit, readCls, resetCls, settle, ClsResult } from '../lib/cls';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { writeFileAtomic } from '../lib/atomic';
 import { openDispatchSheet } from '../lib/dispatch';
+import { landedHome } from '../lib/nav';
 
 // LAYOUT SHIFT UNDER 0.01 ON EVERY PAGE, at a phone (390×844, touch) and a
 // desktop (1280×800): each page is loaded, its async htmx loads are let land
@@ -30,14 +31,17 @@ type Where = 'shared' | 'login' | 'full' | 'public' | 'signed-in';
 // page that failed to draw its content shifts nothing, and must not pass as
 // still. (The share sheet once did exactly that: opened empty, measured 0.)
 const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
-  'GET /{$}': { where: 'shared', url: '/', ready: '#tasks-list article' },
+  // `/` opens the chief's chat; the shared server has no chief, so it lands on
+  // the Agents list (internal/api/nav_agents.go redirectHome).
+  'GET /{$}': { where: 'shared', url: '/', ready: '#agents-list > article' },
   'GET /tasks': { where: 'shared', url: '/tasks', ready: '#tasks-list article' },
   'GET /agents': { where: 'shared', url: '/agents', ready: '#session-switcher [data-switcher-list="recent"] a[data-switcher-entry]' },
-  // The shared server builds neither store, so its /repos and /connectors fall
-  // back to the board; the full server below builds both and draws the real tabs.
-  'GET /repos': { where: 'full', url: '/repos', ready: '#panel-repos :is(p, li, button)' },
+  // The shared server builds no connector store, so its /connectors falls back
+  // to the board; the full server below builds it and draws the real tab.
   'GET /connectors': { where: 'full', url: '/connectors', ready: '#panel-connectors button' },
   'GET /attention': { where: 'shared', url: '/attention', ready: '[data-testid="attention-items"] li' },
+  // An open ask's own page (ASK: one made for the measurement, removed after).
+  'GET /attention/asks/{id}': { where: 'shared', url: 'ASK', ready: '[data-ask-question]' },
   'GET /flows': { where: 'shared', url: '/flows', ready: 'main form button[type="submit"], main form button:not([type])' },
   'GET /share': { where: 'shared', url: '/share?title=Layout%20probe&text=hello', ready: '#task-modal textarea[name="body"]' },
   'GET /account': { where: 'shared', url: '/account', ready: '#notifications' },
@@ -73,8 +77,6 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /apple-touch-icon.png': 'image',
   'GET /events': 'event stream',
   'GET /favicon.ico': 'image',
-  'GET /github/callback': 'OAuth redirect',
-  'GET /github/connect': 'OAuth redirect',
   'GET /health': 'JSON',
   'GET /readyz': 'JSON',
   'GET /manifest.webmanifest': 'JSON',
@@ -152,6 +154,10 @@ async function measureWithDraft(page: Page, url: string, box: string): Promise<C
   return r;
 }
 
+// pluginfix runs the e2e fixture command against the shared database.
+const pluginfix = (...args: string[]) =>
+  execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
+
 // A chief agent with threads, so the panel's open state is a real one (intro,
 // thread list), not the "no chief" notice. Its own agent, removed afterwards.
 const chiefName = 'e2e-cls-chief-' + Date.now().toString(36);
@@ -200,11 +206,18 @@ for (const vp of viewports) {
       // viewed" strip, which once shifted the list, is gone.)
       await page.goto('/agents/docs-sweeper');
       await settle(page);
-      for (const [route, p] of Object.entries(PAGES)) {
-        if (p.where !== 'shared') continue;
-        const r = await measure(page, p.url, p.ready);
-        seen.push(`${route} ${r.total}`);
-        if (r.total >= BAR) bad.push(report(`${route} (${p.url})`, r));
+      // An open ask of the operator's, for its page (the ASK url).
+      const askID = pluginfix('ask', '1', 'docs-sweeper', 'Deploy the docs site now, or after the review?');
+      try {
+        for (const [route, p] of Object.entries(PAGES)) {
+          if (p.where !== 'shared') continue;
+          const url = p.url === 'ASK' ? `/attention/asks/${askID}` : p.url;
+          const r = await measure(page, url, p.ready);
+          seen.push(`${route} ${r.total}`);
+          if (r.total >= BAR) bad.push(report(`${route} (${url})`, r));
+        }
+      } finally {
+        pluginfix('rmask', '1', askID);
       }
       console.log(`[cls ${vp.name}] ` + seen.join(' | '));
       expect(bad).toEqual([]);
@@ -389,7 +402,7 @@ for (const vp of viewports) {
 
 // --- The FULL server: every optional store built — the e2eterm binary (its noop
 // driver plays a terminal) with the mirror plugin on, claude-code enabled, and
-// the connector and GitHub stores keyed — so the Repos and Connectors tabs, the
+// the connector store keyed — so the Connectors tab, the
 // mirrored views and a claude-code agent's terminal are the real pages. A fake
 // mirrored host's `main` session is a Claude Code pane over a transcript this
 // spec writes.
@@ -402,7 +415,6 @@ const rig = new MirrorRig(clsFullPort, 'e2e-cls', {
   // The store refuses to boot without the URL agents are told to use.
   MUSTER_CONNECT_PORT: String(clsConnectPort),
   MUSTER_AGENT_CONNECT_URL: `http://127.0.0.1:${clsConnectPort}`,
-  MUSTER_GITHUB_ENCRYPTION_KEY: Buffer.alloc(32, 0x6b).toString('base64'),
 });
 const morigin = rig.origin;
 const host = rig.host;
@@ -454,7 +466,7 @@ test.describe('the full server', () => {
     return created[0];
   }
 
-  test(`repos, connectors, the mirrored views and an agent terminal shift less than ${BAR}, at both sizes`, async ({ browser }) => {
+  test(`connectors, the mirrored views and an agent terminal shift less than ${BAR}, at both sizes`, async ({ browser }) => {
     test.setTimeout(180_000);
     const view = `/mirror/view?host=${host}&session=main`;
     const term = `/mirror/terminal?host=${host}&session=scratch`;
@@ -873,7 +885,7 @@ test.describe('signed-in pages in gotrue mode', () => {
     await fp.fill('#claim-email', email);
     await fp.fill('#claim-password', pw);
     await fp.fill('#claim-password2', pw);
-    await Promise.all([fp.waitForURL(signedURL + '/'), fp.click('button[type=submit]')]);
+    await Promise.all([fp.waitForURL(landedHome(signedURL)), fp.click('button[type=submit]')]);
     await first.close();
 
     const bad: string[] = [];
@@ -886,7 +898,7 @@ test.describe('signed-in pages in gotrue mode', () => {
         await page.goto(signedURL + '/login');
         await page.fill('#muster-email', email);
         await page.fill('#muster-password', pw);
-        await Promise.all([page.waitForURL(signedURL + '/'), page.click('button[type=submit]')]);
+        await Promise.all([page.waitForURL(landedHome(signedURL)), page.click('button[type=submit]')]);
         await page.addInitScript(clsInit);
         for (const [route, p] of Object.entries(PAGES)) {
           if (p.where !== 'signed-in') continue;

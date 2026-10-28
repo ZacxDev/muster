@@ -316,4 +316,5 @@ var agentHrefCallLedger = map[string]int{
 	"PageHref ← internal/ui/agents.go:agentCard":                    2,
 	// The session switcher under a session page's composer: a list too.
 	"PageHref ← internal/ui/switcher.go:switcherItems": 1,
+	"PageHref ← internal/ui/nav_agents.go:navAgentRow": 1,
 }

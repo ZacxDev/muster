@@ -426,12 +426,53 @@ var terminalPingInterval = 25 * time.Second
 // variable so a test can stall a page in less than ten seconds.
 var terminalWriteTimeout = 10 * time.Second
 
+// pageWriteGrace is how long a write to the page may still take once its
+// stream's context has been CANCELLED (a shutdown, the bridge ending) — whether
+// the write was already in flight then or started after. A variable so a test
+// can measure it in less than a second.
+var pageWriteGrace = time.Second
+
+// pageWriteContext is the context ONE write to the page runs on. It ends at
+// the EARLIEST of:
+//   - terminalWriteTimeout from now (a stalled page);
+//   - ctx's own deadline, if it has one — as context.DeadlineExceeded, exactly
+//     as a write on ctx would (shutdownFrame's one second stays one second);
+//   - pageWriteGrace after ctx is CANCELLED — not at that instant.
+//
+// 🔴 coder/websocket CLOSES THE CONNECTION, WITH NO CLOSE FRAME, WHEN A WRITE'S
+// CONTEXT ENDS WHILE THE FRAME IS BEING WRITTEN (Conn.setupWriteTimeout). A
+// shutdown (EndTerminals) ends every stream's context, so a page write that
+// happened to be in flight at that instant cut the socket: the page read EOF
+// and was never told "shutdown" (shutdownFrame) — measured as about 1 in 30
+// runs of TestADeployIsReportedAsShutdownNotTheBrowserLeaving under load
+// (63 of 1800 on origin/main at 237d535b), 0 of 1800 with this. The grace is
+// short so a stalled page cannot hold a shutdown up for the whole write
+// timeout; the heartbeat's writePing applies the same rule (a context the
+// stream's end does not cancel).
+func pageWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline := time.Now().Add(terminalWriteTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	wctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	grace := pageWriteGrace
+	stop := context.AfterFunc(ctx, func() {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// ctx ran out of time: wctx carries the same deadline and ends
+			// at it, as DeadlineExceeded. No grace past a deadline.
+			return
+		}
+		time.AfterFunc(grace, cancel)
+	})
+	return wctx, func() { stop(); cancel() }
+}
+
 func terminalWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	wctx, cancel := context.WithTimeout(ctx, terminalWriteTimeout)
+	wctx, cancel := pageWriteContext(ctx)
 	defer cancel()
 	err = c.Write(wctx, websocket.MessageText, b)
 	notePageWrite(c, err)
@@ -490,7 +531,7 @@ func (w *terminalWriter) Write(p []byte) (int, error) {
 			return 0, err
 		}
 	}
-	wctx, cancel := context.WithTimeout(w.ctx, terminalWriteTimeout)
+	wctx, cancel := pageWriteContext(w.ctx)
 	defer cancel()
 	if err := w.c.Write(wctx, websocket.MessageBinary, p); err != nil {
 		return 0, err

@@ -3,15 +3,12 @@ package api
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
 )
@@ -84,20 +81,16 @@ func TestARepositoryDisconnectedAfterTheReservationReleasesTheStart(t *testing.T
 	}
 	var mu sync.Mutex
 	dropAfterReserve := true
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	f.promoteOwner(t)
+	f.srv.ext.GitHubApp = &changingApp{list: func() []string {
 		mu.Lock()
 		drop := dropAfterReserve
 		mu.Unlock()
-		if r.URL.Path != "/user/repos" || r.URL.Query().Get("page") != "1" || (drop && f.reservations(t, n.ID) > 0) {
-			_, _ = w.Write([]byte(`[]`))
-			return
+		if drop && f.reservations(t, n.ID) > 0 {
+			return nil
 		}
-		_, _ = w.Write([]byte(`[{"full_name":"example/app"}]`))
-	}))
-	t.Cleanup(srv.Close)
-	github.UseAPIBaseURL(srv.URL)
-	t.Cleanup(func() { github.UseAPIBaseURL("https://api.github.com") })
-	f.srv.ext.GitHub = fakeGitHubConn{}
+		return []string{"example/app"}
+	}}
 	refusedThenRetried(t, f, n, chiefDispatchRepo, func() {
 		mu.Lock()
 		dropAfterReserve = false

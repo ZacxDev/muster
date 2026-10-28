@@ -95,17 +95,20 @@ type tab struct {
 // ⚠ `runbooks` AND `privileges` USED TO BE TABS HERE. Both subsystems were
 // removed (privileges superseded by connectors, runbooks unused); deleting their
 // entries from this slice removed the links, the panels, the headings and the
-// shell routes together, because they are all derived from it.
+// shell routes together, because they are all derived from it. So did `repos`,
+// when the deprecated GitHub OAuth connection it showed was removed: the GitHub
+// App (the `github` connector) is muster's GitHub identity now.
 var musterTabs = []tab{
 	{Key: "tasks", Label: "Tasks", Icon: "📋", Heading: "Tasks"},
 	{Key: "agents", Label: "Agents", Icon: "🧩", Heading: "Agents"},
-	{Key: "repos", Label: "Repos", Icon: "📦", Heading: "Repos"},
 	{Key: "connectors", Label: "Connectors", Icon: "🔌", Heading: "Connectors"},
 }
 
-// defaultTab is what an unknown or empty tab string clamps to, and what `/`
-// serves. Upstream's default is its permission-request queue, which muster does
-// not have.
+// defaultTab is what an unknown or empty tab string clamps to, and the tab the
+// shell draws at a bare `/` — which is now only the service worker's offline
+// copy, `/?shell=1`: `/` itself opens the chief's chat (internal/api
+// redirectHome). Upstream's default is its permission-request queue, which
+// muster does not have.
 const defaultTab = "tasks"
 
 // tabKeys is the ordered set of tab keys, derived from musterTabs.
@@ -318,19 +321,8 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 							// NotesPanel takes no pending count here: upstream passed one so
 							// the Tasks panel could render the permission-request segment
 							// badge, and muster has no requests to count.
-							//
-							// 🔴 THE REPOS PANEL IS CONDITIONAL, AND ITS ABSENCE IS THE
-							// POINT RATHER THAN A TIDY-UP. This panel carries
-							// hx-trigger="load" and the shell renders on every tab, so on
-							// a deployment with no GitHub store every navigation in the
-							// app fetched a route that could only refuse — one failure
-							// toast per page view, on pages that have nothing to do with
-							// repositories. Mounting it only when there is a store behind
-							// it is what makes the tab's absence honest instead of making
-							// its presence noisy.
 							NotesPanel(activeTab == "tasks", data.tasks),
 							agentsPanel(activeTab == "agents", data.list),
-							g.If(feat.GitHub, ReposPanel(activeTab == "repos")),
 							g.If(feat.Connectors, ConnectorsPanel(activeTab == "connectors")),
 						),
 					),
@@ -951,9 +943,12 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 			g.Attr("role", "navigation"),
 			g.Attr("aria-label", "Main menu"),
 			Class("sidebar-panel fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] -translate-x-full flex-col bg-s1 shadow-2xl shadow-black/50 ring-1 ring-line transition-transform duration-300 ease-out"),
-			// Sidebar header: brand + close.
+			// Sidebar header: brand + close. min-h keeps the row the height the
+			// 44px close button gave it (py-3 + 44px = 68px) where the button is
+			// hidden — the desktop rail — so its border still lines up with the
+			// content header's beside it.
 			Div(
-				Class("flex items-center gap-3 border-b border-line px-4 py-3"),
+				Class("flex min-h-[4.25rem] items-center gap-3 border-b border-line px-4 py-3"),
 				Span(Class("text-lg font-semibold tracking-tight"), wordmark()),
 				Span(Class("flex-1")),
 				Button(
@@ -963,12 +958,21 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 					// ≥44x44 tap target (measured at 32x32 by an automated
 					// accessibility audit). The icon stays h-5 w-5 — only the hit area grows,
 					// so the compact header layout is unchanged.
-					Class("press inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"),
+					//
+					// Hidden from lg up on a rail page: the rail is always shown
+					// there, so a close control would do nothing. An overlay page
+					// keeps it — its sidebar is a slide-out at every width, and this
+					// is what shuts it.
+					Class("press inline-flex h-11 w-11 min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-muted transition hover:bg-s2 hover:text-fg"+classIf(!overlay, " lg:hidden")),
 					g.Raw(`<svg class="h-5 w-5" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15"/></svg>`),
 				),
 			),
-			// Section links: five plain <a href> links, deliberately carrying NO
-			// ARIA role at all.
+			// The agents, like a chat app's channels (nav_agents.go): the chief,
+			// then whoever waits on the operator, then the rest by recency — a
+			// lazy partial in the panel's flex-1 middle.
+			navAgentsSlot(overlay),
+			// Section links (inside More, nav_agents.go's navMore): plain <a href>
+			// links, deliberately carrying NO ARIA role at all.
 			//
 			// An earlier revision closed axe's aria-required-parent (CRITICAL, 22
 			// nodes across all 11 crawled URLs, per an automated audit) by adding
@@ -1008,23 +1012,25 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 			// Page DREW. A link whose panel this document did not render shows a
 			// blank page when clicked; deriving both from one function is what makes
 			// the two unable to disagree.
-			Div(
-				Class("flex flex-col gap-1 p-2"),
+			//
+			// 🔴 THE PAGES ARE IN ONE COLLAPSED "More" AT THE BOTTOM (operator
+			// decision), the install button and the account links with them; the
+			// Asks count is on More's header, so it shows while More is shut.
+			navMore(feat,
 				g.Map(visibleTabs(feat), func(t tab) g.Node {
 					return sidebarTab(t.Key, t.Label, t.Icon, activeTab == t.Key, currentTab == t.Key, hasPanels)
 				}),
 				// The attention queue (attention.go): a standalone page, not a tab.
 				attentionLink(feat, activeTab == NavAttention, currentTab == NavAttention),
-			),
-			// Device preferences, pinned to the bottom of the panel and clear of
-			// the home indicator. They are per-device (localStorage), so they live
-			// with the navigation rather than in any server-side settings.
-			Div(
-				ID("sidebar-prefs"),
-				Class("mt-auto flex flex-col gap-1 border-t border-line p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]"),
-				installButton(),
-				themeToggle(),
-				accountLinks(feat, activeTab, currentTab),
+				// The install button (shown only where the browser offers one) and
+				// the account links. The theme toggle that once sat here is gone —
+				// the UI is dark only (theme.go).
+				Div(
+					ID("sidebar-prefs"),
+					Class("flex flex-col gap-1 border-t border-line pt-1"),
+					installButton(),
+					accountLinks(feat, activeTab, currentTab),
+				),
 			),
 		),
 	)
@@ -1572,7 +1578,20 @@ var appScriptSrc = staticJS("app", `
     if (openBtn) openBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     // Only lock scroll for the mobile overlay (desktop sidebar is persistent).
     document.body.style.overflow = (open && window.innerWidth < 1024) ? 'hidden' : '';
+    // An overlay page's agent list loads on this (nav_agents.go).
+    if (open) document.dispatchEvent(new CustomEvent('` + NavOpenEvent + `'));
   }
+
+  // musterNavShown: is the sidebar on screen — open as a drawer, or the
+  // desktop rail (a page with no data-overlay, at the lg breakpoint input.css
+  // uses)? The agent list's triggers are filtered by it (nav_agents.go
+  // navShownJS), so a closed phone drawer fetches nothing.
+  window.musterNavShown = function () {
+    var root = document.getElementById('sidebar-root');
+    if (!root) return false;
+    if (root.getAttribute('data-open') === 'true') return true;
+    return !('overlay' in root.dataset) && window.innerWidth >= 1024;
+  };
 
   // initPage (re)wires the per-page elements (sidebar buttons + tabs). It is
   // idempotent: each element is marked data-cg-bound once so firing on both

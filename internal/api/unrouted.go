@@ -143,8 +143,7 @@ func (s *Server) raiseUnroutedAsk(ctx context.Context, m plugins.Message) error 
 		s.logger.Printf("plugins: raise an ask for message %d: %v", m.ID, err)
 		return err
 	}
-	s.attentionNotify(ask.Owner, askItem(ask))
-	s.attentionChanged(ask.Owner, attentionAskKey(ask.ID))
+	s.askFiled(ask)
 	return nil
 }
 
@@ -157,11 +156,21 @@ func (s *Server) unroutedQuestion(ctx context.Context, m plugins.Message) string
 	if p, err := s.ext.Plugins.Plugin(ctx, m.PluginID); err == nil {
 		label = fence.Sanitize(p.Label)
 	}
+	return unroutedQuestionText(label, m)
+}
+
+// unroutedIntro starts every unrouted-message ask's question: the marker
+// unroutedPushText recognises it by.
+const unroutedIntro = "A message from "
+
+// unroutedQuestionText is the unrouted-message ask's question for message m
+// of the plugin labelled label (already sanitised).
+func unroutedQuestionText(label string, m plugins.Message) string {
 	subject := fence.Sanitize(m.Subject)
 	if strings.TrimSpace(subject) == "" {
 		subject = "(none)"
 	}
-	q := "A message from " + label + " has not been acted on: " + strconv.Itoa(int(plugins.UnroutedAskAfter/time.Minute)) +
+	q := unroutedIntro + label + " has not been acted on: " + strconv.Itoa(int(plugins.UnroutedAskAfter/time.Minute)) +
 		" minutes after it reached your chief, it is not routed to a session, has no reply draft, and was not settled.\n\n" +
 		"From: " + plugins.SenderText(m) + "\n" +
 		"Subject: " + subject + "\n" +
@@ -170,6 +179,42 @@ func (s *Server) unroutedQuestion(ctx context.Context, m plugins.Message) string
 		"Your answer settles the message, with your answer as the reason; it sends nothing to the sender. " +
 		"To reply, ask your chief to draft one."
 	return fence.Cut(q, attention.MaxQuestionRunes)
+}
+
+// unroutedPushText is the compact form of an unrouted-message ask's question
+// for its NOTIFICATION — "From: <sender> · Subject: <subject>" — and whether q
+// is one (muster's own unroutedQuestionText format; the page keeps the whole
+// question). The intro is ~150 characters of muster's sentence, so the
+// 200-character body would otherwise never reach the subject.
+//
+// ⚠ IT READS MUSTER'S OWN FORMAT BACK: the From and Subject lines are taken at
+// their FIRST occurrence after the intro, which muster wrote before any outside
+// text, and TestTheUnroutedAskPushIsCompact pins the pair (this function over
+// unroutedQuestionText's output), so a change to the question's shape reddens
+// there rather than silently falling back. An unverified sender's long mark is
+// shortened to the one-line note the Asks page uses.
+func unroutedPushText(q string) (string, bool) {
+	if !strings.HasPrefix(q, unroutedIntro) {
+		return "", false
+	}
+	field := func(name string) (string, bool) {
+		i := strings.Index(q, "\n"+name+": ")
+		if i < 0 {
+			return "", false
+		}
+		rest := q[i+len(name)+3:]
+		if j := strings.IndexByte(rest, '\n'); j >= 0 {
+			rest = rest[:j]
+		}
+		return rest, true
+	}
+	from, ok1 := field("From")
+	subject, ok2 := field("Subject")
+	if !ok1 || !ok2 {
+		return "", false
+	}
+	from = strings.Replace(from, plugins.UnverifiedSenderMark, unverifiedSenderNote, 1)
+	return "From: " + from + " · Subject: " + subject, true
 }
 
 // settleAnsweredMessage settles the message ask a — just answered by the

@@ -195,6 +195,31 @@ func chiefPredicate(list []agents.Agent) func(agents.Agent) bool {
 	}
 }
 
+// primaryChief is THE chief a list's viewer is sent to: where `/` opens
+// (homeTarget) and the agent the sidebar pins first (AgentCardView.PrimaryChief,
+// composed in agentsListCardsLive) — one rule, so the two cannot disagree.
+//
+// Of the agents chiefPredicate calls the chief, it is the one chiefAgent
+// resolves — the lowest-id agent labelled "chief", which the panel, recaps and
+// `muster chief ask` talk to — and, with none labelled, the lowest-id reserved
+// slug (agents.IsChiefName), which is the chief by its name however it is
+// labelled. Lowest id is the tie-break each half already used: arbitrary but
+// stable. A list read under row-level security is one owner's, which is the
+// only list this is asked about.
+func primaryChief(list []agents.Agent) (agents.Agent, bool) {
+	if c, ok := resolveChief(list); ok {
+		return c, true
+	}
+	var found agents.Agent
+	var ok bool
+	for _, a := range list {
+		if agents.IsChiefName(a.Name) && (!ok || a.ID < found.ID) {
+			found, ok = a, true
+		}
+	}
+	return found, ok
+}
+
 // isChiefAmong reports whether a is the chief, given the full agent list.
 func isChiefAmong(a agents.Agent, list []agents.Agent) bool { return chiefPredicate(list)(a) }
 

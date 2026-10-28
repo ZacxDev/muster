@@ -7,6 +7,7 @@ import {
 } from '../lib/env';
 import { gotrueSkewEnv, outliveAccessToken } from '../lib/gotrue';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { landedHome } from '../lib/nav';
 
 // Accounts PR 5, end to end against the REAL GoTrue image (e2e/gotrue/compose.yml,
 // the deployment's pin): the admin claims the account, creates an invite link
@@ -94,13 +95,13 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await page.fill('#claim-email', adminEmail);
   await page.fill('#claim-password', adminPW);
   await page.fill('#claim-password2', adminPW);
-  await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
-  // The claim lands on `/`, and `/` IS the board: asserted HERE, on the page
-  // the redirect produced, before any navigation. Every sign-in in this suite
-  // used to be followed immediately by goto('/tasks'), so nothing ever looked
-  // at `/` — and `/` rendered every panel and every FAB hidden.
-  await expectShellShows(page, 'tasks', 'Tasks', 'the admin, landing on / after the claim');
-  await expect(page.locator(`#task-${adminTask}`), 'the admin sees its own task on /').toBeVisible();
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
+  // The claim lands on `/`, which opens the chief's chat — with no chief
+  // (here), the Agents list: asserted HERE, on the page the redirect produced,
+  // before any navigation. Every sign-in in this suite used to be followed
+  // immediately by goto('/tasks'), so nothing ever looked at `/` — and `/`
+  // once rendered every panel and every FAB hidden.
+  await expectShellShows(page, 'agents', 'Agents', 'the admin, landing on / after the claim (no chief: the Agents list)');
   await page.goto(browserURL + '/tasks');
   await expect(page.locator(`#task-${adminTask}`), 'CONTROL: the admin sees its own task').toBeVisible();
   await expect(page.locator('#sidebar-admin')).toHaveAttribute('href', '/admin/users');
@@ -131,14 +132,21 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await mp.fill('#invite-name', 'E2E Member');
   await mp.fill('#invite-password', memberPW);
   await mp.fill('#invite-password2', memberPW);
-  await Promise.all([mp.waitForURL(browserURL + '/'), mp.getByRole('button', { name: 'Create account' }).click()]);
-  // The member's FIRST page is `/`, in a browser with no saved tab. It is the
-  // (empty) board with its New-task button — not a blank main area.
-  await expectShellShows(mp, 'tasks', 'Tasks', 'the member, landing on / after redeeming the invite');
+  await Promise.all([mp.waitForURL(landedHome(browserURL)), mp.getByRole('button', { name: 'Create account' }).click()]);
+  // The member's FIRST page is `/`, in a browser with no saved tab. A new
+  // member has no chief, so `/` opens their (empty) Agents list — not a blank
+  // main area (internal/api/nav_agents.go redirectHome).
+  expect(new URL(mp.url()).pathname, 'the member lands on the Agents list').toBe('/agents');
+  await expectShellShows(mp, 'agents', 'Agents', 'the member, landing on / after redeeming the invite');
+  await expect(mp.locator('#agents-list').getByText('No agents yet'), "the member's empty list is VISIBLE").toBeVisible();
+  // The shell drawn at a bare `/` (the service worker's offline copy, which
+  // it fetches as /?shell=1) shows the (empty) board with its New-task button,
+  // and a tab saved by a build (or a product) whose default was another tab
+  // must not blank it: the saved value names no tab this shell has.
+  await mp.goto(browserURL + '/?shell=1');
+  await expectShellShows(mp, 'tasks', 'Tasks', 'the member on the shell at /');
   await expect(mp.getByText('No tasks yet'), "the member's empty board is VISIBLE on /").toBeVisible();
   await expect(mp.locator('#fab-tasks'), 'the New-task button is visible on /').toBeVisible();
-  // A tab saved by a build (or a product) whose default was another tab must
-  // not blank the page either: the saved value names no tab this shell has.
   await mp.evaluate((k) => localStorage.setItem(k, 'requests'), navTabKey);
   await mp.reload();
   await expectShellShows(mp, 'tasks', 'Tasks', 'the member on / with a stale saved tab');
@@ -165,7 +173,7 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await pp.fill('#invite-email', `paster-${stamp}@example.com`);
   await pp.fill('#invite-password', memberPW);
   await pp.fill('#invite-password2', memberPW);
-  await Promise.all([pp.waitForURL(browserURL + '/'), pp.getByRole('button', { name: 'Create account' }).click()]);
+  await Promise.all([pp.waitForURL(landedHome(browserURL)), pp.getByRole('button', { name: 'Create account' }).click()]);
   const token2 = link2.slice(link2.indexOf('#') + 1);
   // The token travelled only in POST bodies, as the bare token — never in a URL.
   expect(posted.some((p) => p.includes('token=' + token2)), `posts: ${posted.join(' | ')}`).toBe(true);
@@ -296,9 +304,8 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
   await mp.goto(browserURL + '/login');
   await mp.fill('#muster-email', memberEmail);
   await mp.fill('#muster-password', newPW);
-  await Promise.all([mp.waitForURL(browserURL + '/'), mp.click('button[type=submit]')]);
-  await expectShellShows(mp, 'tasks', 'Tasks', 'the member, landing on / after signing in');
-  await expect(mp.locator('#fab-tasks')).toBeVisible();
+  await Promise.all([mp.waitForURL(landedHome(browserURL)), mp.click('button[type=submit]')]);
+  await expectShellShows(mp, 'agents', 'Agents', 'the member, landing on / after signing in (no chief: the Agents list)');
   await mp.goto(browserURL + '/tasks');
   await expect(mp.locator('#fab-tasks')).toBeVisible();
 

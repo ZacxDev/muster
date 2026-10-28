@@ -3,6 +3,7 @@ import { test, expect } from '../lib/fixtures';
 import { hookToken, sidenavPort } from '../lib/env';
 import { cc, MirrorRig } from '../lib/mirrorhost';
 import { openDispatchSheet } from '../lib/dispatch';
+import { openMore } from '../lib/nav';
 
 // THE SIDE NAV ON EVERY SIGNED-IN PAGE (internal/ui/nav_layout.go), opened by
 // its own toggle in a real browser, at a phone's size and a desktop's:
@@ -14,9 +15,9 @@ import { openDispatchSheet } from '../lib/dispatch';
 //     both sizes — its hamburger opens it, and nothing on the page moves;
 //   - after a Rendered ↔ Terminal switch the view on screen is the FRAME, laid
 //     over the whole page (view_swap.go), so the nav reachable then is the
-//     frame's own: it opens, it is on top of everything, a link in it takes
-//     the TOP window, and a theme change made in it is followed by the page
-//     under it — in both directions, for a mirrored window and an agent.
+//     frame's own: it opens, it is on top of everything, and a link in it
+//     (inside its More) takes the TOP window — for a mirrored window and an
+//     agent.
 //
 // Its own server: the e2eterm binary with the mirror plugin, the plugin
 // interface (/plugins is served only then) and claude-code agents on, and one
@@ -204,6 +205,7 @@ for (const size of [
       }
       // A link in it leaves the page: to the board.
       if (!desktop) await toggle(page).click();
+      await openMore(page);
       await panel(page).locator('a[data-tab="tasks"]').click();
       await expect.poll(() => pathOf(page)).toBe('/tasks');
       await expect(page.locator('#panel-tasks')).toBeVisible();
@@ -230,12 +232,6 @@ for (const size of [
       await page.locator('#view-terminal').click();
       await expect(framed(page).locator('#term-status')).toHaveText('Connected');
       await navOnTopInFrame(page, false);
-      // A theme change made in the frame's nav: the page under it follows.
-      expect(await page.evaluate(() => document.documentElement.classList.contains('dark')), 'the page starts dark').toBe(true);
-      await framed(page).locator('#sidebar [data-theme-toggle]').click();
-      await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains('dark')), { message: 'the page under the frame followed the theme the frame set' }).toBe(false);
-      await framed(page).locator('#sidebar [data-theme-toggle]').click();
-      await expect.poll(() => page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(true);
       await framed(page).locator('#sidebar-close').click();
       // Back: the page's own nav is the one on screen again, and still works.
       await framed(page).locator('#view-rendered').click();
@@ -251,6 +247,7 @@ for (const size of [
       await navOnTopInFrame(page, false);
       // A REAL nav link inside the frame takes the TOP window, and the frame
       // goes with the page it was over.
+      await openMore(framed(page));
       await framed(page).locator('#sidebar a[data-tab="tasks"]').click();
       await expect.poll(() => pathOf(page)).toBe('/tasks');
       await expect(frameEl(page)).toHaveCount(0);
@@ -268,6 +265,7 @@ for (const size of [
       // The agent page keeps the shell's rail on a desktop (it is not a
       // full-height view); on a phone its hamburger opens it.
       await navOnTopInFrame(page, desktop);
+      await openMore(framed(page));
       await framed(page).locator('#sidebar a[data-tab="agents"]').click();
       await expect.poll(() => pathOf(page)).toBe('/agents');
       await expect(frameEl(page)).toHaveCount(0);

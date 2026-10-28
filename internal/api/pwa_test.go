@@ -299,6 +299,16 @@ func TestEveryManifestURLIsASessionGatedRoute(t *testing.T) {
 				target, anon.Header().Get("Location"), target)
 		}
 		signed := get(h, target, ck, true)
+		// `/` (the start_url) opens the chief's chat — a redirect, to the
+		// Agents list on this server, which has no chief (redirectHome). The
+		// page it sends the phone to is what must serve.
+		if target == "/" {
+			if signed.Code != http.StatusFound || signed.Header().Get("Location") != "/agents" {
+				t.Errorf("signed-in GET / = %d → %q, want 302 → /agents (no chief here)", signed.Code, signed.Header().Get("Location"))
+				continue
+			}
+			signed = get(h, "/agents", ck, true)
+		}
 		if signed.Code != http.StatusOK {
 			t.Errorf("signed-in GET %s = %d, want 200 — the manifest points at a route that does not serve", target, signed.Code)
 		}

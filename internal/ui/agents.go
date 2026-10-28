@@ -91,6 +91,11 @@ type AgentCardView struct {
 	// cardViewIndexed and never re-derived here — the server refuses the delete
 	// regardless, so this only keeps the UI from offering what it would refuse.
 	IsChief bool
+	// PrimaryChief: this is THE chief the viewer is sent to — where `/` opens,
+	// and the agent the sidebar pins first (navBefore). internal/api's
+	// primaryChief decides it, for both; it is never re-derived here. At most
+	// one card of a list carries it; IsChief may be true on more than one.
+	PrimaryChief bool
 	// Pinned: the viewing user pinned this agent (internal/pins). The list draws
 	// a pinned agent first, as a label-only CHIP instead of its card
 	// (pinned_chips.go: unpinned, renamed and started/stopped from the chip's
@@ -1265,6 +1270,14 @@ func seededComboOption(o ComboOption) g.Node {
 		Class("cursor-pointer truncate px-3 py-2 text-sm text-fg hover:bg-accent/15 hover:text-fg data-[active=true]:bg-accent/15 data-[active=true]:text-fg"),
 		g.Text(o.Label),
 	)
+}
+
+// RepoView is the minimal repo shape the dispatch dialog's repository picker
+// renders (decoupled from the GitHub API client type).
+type RepoView struct {
+	FullName string // owner/name
+	Private  bool
+	HTMLURL  string
 }
 
 // RenderRepoOptions / RenderNoteOptions write the lazy-loaded combobox option

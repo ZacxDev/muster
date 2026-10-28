@@ -411,7 +411,7 @@ test('an open in a hidden tab ends ok at its insertion, flagged hidden', async (
 // the navigation would read seconds.
 test('an open after a boosted swap is measured from the swap, in its own trace', async ({ page }) => {
   await rig.login(page);
-  const resp = await page.goto(rig.origin + '/');
+  const resp = await page.goto(rig.origin + '/tasks');
   const boardTrace = /traceparent;desc="00-([0-9a-f]{32})-/.exec((await resp!.headerValue('server-timing')) ?? '')![1];
   await page.waitForTimeout(3000);
   const before = faroItems('measurements').filter((m) => m.type === 'muster_open' && m.context?.view === 'agent').length;

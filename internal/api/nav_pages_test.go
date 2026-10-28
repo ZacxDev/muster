@@ -32,6 +32,7 @@ var apiNavWriters = []string{
 	"renderCredentials",     // /account/credentials
 	"renderAccountPasskeys", // /account/passkeys
 	"renderAsksPage",        // /attention (the Asks page)
+	"renderAskPage",         // /attention/asks/{id} (one ask, an app screen)
 	"renderPluginsPage",     // /plugins
 	"renderFlowsPage",       // /flows
 	"writeAdminDocument",    // /admin/users, /admin/invites
@@ -364,6 +365,7 @@ var apiNavSecret = map[string]bool{
 	"renderAccountPasskeys": true,  // runs passkey ceremonies
 	"handleAccountPage":     false, // sign-out forms only
 	"renderAsksPage":        false, // the queue; the shell beside it has Faro already
+	"renderAskPage":         false, // one ask and its answer box
 	"renderNotice":          false, // one sentence
 }
 
@@ -402,7 +404,7 @@ func TestEveryNavPageStatesItsTelemetry(t *testing.T) {
 					return true
 				}
 				v := "<not a literal>"
-				if len(call.Args) == 7 {
+				if len(call.Args) >= 7 { // 8 with an app screen (ui.NavApp)
 					if id, ok := call.Args[5].(*ast.Ident); ok && (id.Name == "true" || id.Name == "false") {
 						v = id.Name
 					}

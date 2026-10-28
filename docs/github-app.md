@@ -1,9 +1,9 @@
 # The GitHub App
 
 A GitHub App is the GitHub identity of muster's **admins** when one is
-configured. It replaces the per-user OAuth connection (`GITHUB_CLIENT_ID`,
-`MUSTER_GITHUB_TOKEN`), which is **deprecated**. The OAuth connection stays as
-the fallback for a deployment without an App, and for members (see below).
+configured, and muster's only GitHub identity. The per-user OAuth connection it
+replaced (`GITHUB_CLIENT_ID`, `MUSTER_GITHUB_TOKEN`, the Repos tab) has been
+removed; see [Removing the OAuth connection](#removing-the-oauth-connection).
 
 With the App configured:
 
@@ -42,10 +42,10 @@ With the App configured:
   (or one on any connector reaching github.com) for an agent in a worker pool
   is refused, and a worker holding one is skipped for jobs: a pool worker holds
   no GitHub credential ([jobs.md](jobs.md#worker-pools)).
-- **The Repos tab lists the installation's repositories** (for an admin). So do
-  the dispatch pickers and the "connected repository" check that every
-  claude-code dispatch and `task_dispatch` applies. The OAuth connection is not
-  consulted for an admin while the App is configured.
+- **The installation's repositories are the connected ones** (for an admin):
+  the dispatch dialog's repository picker lists them, and they are what the
+  "connected repository" check that every claude-code dispatch and
+  `task_dispatch` applies accepts.
 - **Only installations on `MUSTER_GITHUB_APP_ACCOUNTS` count, matched by the
   account's numeric id.** The App has to be installable on "Any account", so
   anyone can install it on their own repositories. An installation on an
@@ -68,11 +68,11 @@ With the App configured:
 
 **The App is the admins', not every user's.** It belongs to the deployment.
 On a multi-user muster, only admin-role users see it: their agents get the
-App-backed `github` connector, and their dispatch checks and Repos tab list its
-repositories. For a **member**, muster behaves as if no App were configured.
-Their agents do not see the App connector, their `github` requests cannot be
-approved onto it (whoever clicks Approve), and their repository list and
-dispatch checks come from their own OAuth connection.
+App-backed `github` connector, and their dispatch checks and repository picker
+list its repositories. For a **member**, muster behaves as if no App were
+configured. Their agents do not see the App connector, their `github` requests
+cannot be approved onto it (whoever clicks Approve), and they have no connected
+repositories: a member cannot dispatch a claude-code agent into a repository.
 
 ## Register the App
 
@@ -189,7 +189,6 @@ installations in the background:
 A failure that blocks agents is also shown on the connector request card and on
 each affected agent's card (`GitHub: …`). Examples are the credentials refused,
 a rate limit, or a repository that is not in the installation (GitHub's 422).
-The Repos tab shows it above the list.
 
 ## The kickoff wait
 
@@ -202,6 +201,13 @@ its deadline becomes `updated_at` plus the new value.
 
 ## Removing the OAuth connection
 
-The OAuth code (`/github/connect`, the per-user token store,
-`MUSTER_GITHUB_TOKEN`) is still in this release as the fallback. It will be
-removed once the App has been verified on a live deployment.
+The OAuth connection has been removed: the Repos tab, `/github/connect`,
+`/github/callback`, `/github/disconnect`, the per-user token store and the
+static-token connect at boot. Without an App, muster has no GitHub identity and
+no repository counts as connected.
+
+Nothing reads `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`,
+`MUSTER_GITHUB_ENCRYPTION_KEY` or `MUSTER_GITHUB_TOKEN` any more. muster does
+not refuse unknown variables, so a deployment that still sets them boots; drop
+them from the deployment. The `github_connection` table is left in the schema, unread and
+unwritten, so this change can be rolled back; a later migration can drop it.

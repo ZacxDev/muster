@@ -34,7 +34,6 @@ import (
 	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/gotrue/gotruetest"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -200,12 +199,18 @@ var isolationClasses = map[string]routeClass{
 	"GET /api/device/config":            classDevice,
 	"PUT /api/device/push":              classDevice,
 	"DELETE /api/device/push":           classDevice,
-	"GET /api/push/vapid-public-key":    classList,
-	"POST /api/push/subscribe":          classList,
-	"POST /api/push/unsubscribe":        classList,
-	"POST /account/push/test":           classList,
-	"POST /account/push/{id}/remove":    classParam,
-	"POST /account/push/preferences":    classList,
+	// The signed ask actions (device_actions.go): {id} names an ask, answered
+	// under the device owner's principal (row-level security), and nothing
+	// is done without a challenge THIS device asked for and signed.
+	"POST /api/device/challenge":                          classDevice,
+	"POST /api/device/actions/attention/asks/{id}/answer": classDevice,
+	"POST /api/device/actions/attention/asks/{id}/cancel": classDevice,
+	"GET /api/push/vapid-public-key":                      classList,
+	"POST /api/push/subscribe":                            classList,
+	"POST /api/push/unsubscribe":                          classList,
+	"POST /account/push/test":                             classList,
+	"POST /account/push/{id}/remove":                      classParam,
+	"POST /account/push/preferences":                      classList,
 	// accounts PR 5: invite redemption and the password reset (tokens in form
 	// fields, like the claim), and the admin pages.
 	"GET /invite":      classPublic,
@@ -232,12 +237,10 @@ var isolationClasses = map[string]routeClass{
 	// The browser telemetry relay (faro_relay.go): names no object; it
 	// forwards the caller's own batch, rate-limited per user.
 	"POST /telemetry/faro":         classList,
-	"GET /github/callback":         classList,
-	"GET /github/connect":          classList,
-	"GET /repos":                   classList,
 	"GET /share":                   classList,
 	"GET /tasks":                   classList,
 	"GET /ui/agents":               classList,
+	"GET /ui/nav/agents":           classList,
 	"GET /ui/agents/new":           classList,
 	"GET /ui/agents/notes":         classList,
 	"GET /ui/agents/repos":         classList,
@@ -247,7 +250,6 @@ var isolationClasses = map[string]routeClass{
 	"GET /ui/connectors":           classList,
 	"GET /ui/connectors/new":       classList,
 	"GET /ui/notifications":        classList,
-	"GET /ui/repos":                classList,
 	"GET /ui/tags":                 classList,
 	"GET /ui/tasks":                classList,
 	"GET /ui/tasks/new":            classList,
@@ -255,7 +257,6 @@ var isolationClasses = map[string]routeClass{
 	"POST /agents":                 classList, // the form names A's task as note_id
 	"POST /chief/provision":        classList,
 	"POST /connectors":             classList,
-	"POST /github/disconnect":      classList,
 	"POST /tasks":                  classList,
 	"POST /tasks/merge":            classList, // the form names A's task as the loser
 
@@ -473,8 +474,11 @@ var isolationClasses = map[string]routeClass{
 	"GET /attention/drafts": classList,
 	// A session page's asks block names its asker by query (?agent=): A's
 	// agent's asks, never B's view of them. The tap route names an item by key.
-	"GET /attention/asker":             classParam,
-	"GET /attention/open/{key}":        classParam,
+	"GET /attention/asker":      classParam,
+	"GET /attention/open/{key}": classParam,
+	// An ask's own page names A's ask by id (row-level security, and an
+	// explicit owner check).
+	"GET /attention/asks/{id}":         classParam,
 	"GET /attention/badge":             classList,
 	"POST /attention/asks/{id}/answer": classParam,
 	"POST /attention/asks/{id}/cancel": classParam,
@@ -498,8 +502,8 @@ var isolationClasses = map[string]routeClass{
 // demands A sees its canary (or an identifier) on each, so B's clean body on
 // the same route is a fact about B.
 var wantCanaryForA = []string{
-	"GET /ui/agents", "GET /ui/agents/notes", "GET /ui/connector-requests", "GET /ui/connectors",
-	"GET /ui/repos", "GET /ui/tasks", "GET /ui/chief/panel",
+	"GET /ui/agents", "GET /ui/nav/agents", "GET /ui/agents/notes", "GET /ui/connector-requests", "GET /ui/connectors",
+	"GET /ui/tasks", "GET /ui/chief/panel",
 	// The AGGREGATES — vocabularies, suggestion lists, unread rolls — read
 	// across rows rather than by id, which is exactly where a missing scope
 	// hides (plan §Recon 4). A's tag and project are identities, its unread
@@ -526,10 +530,10 @@ var wantCanaryForA = []string{
 	"GET /account", "GET /account/devices/live",
 	// Plugins: A's second plugin is canary-labelled, so A's page shows it.
 	"GET /plugins",
-	// The attention asks: A's agent's asks block shows A's canary-carrying
-	// question, and the tap on A's ask opens A's agent's page (its name, an
-	// identity of A's, in the redirect).
-	"GET /attention/asker", "GET /attention/open/{key}",
+	// The attention asks: A's agent's asks block and A's ask's own page show
+	// A's canary-carrying question. (The tap on A's ask opens that page, by
+	// its id — controlMarkers has its own control.)
+	"GET /attention/asker", "GET /attention/asks/{id}",
 }
 
 func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
@@ -696,10 +700,6 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gh, err := github.NewPG(pool, bytes.Repeat([]byte{4}, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
 	as2 := func(u isoUser) context.Context {
 		role := authz.RoleMember
 		if u.uid == authz.OperatorUserID {
@@ -796,7 +796,6 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "a canary-named connector")
 	must(cs.Audit(ua, connectors.AuditEntry{Kind: "proxy", AgentID: w.a.agent.ID, AgentName: w.a.agent.Name,
 		Connector: w.aConnName, Method: "GET", Host: w.upHost, Path: "/", Status: 200, Detail: w.canary + " audit"}), "a audit")
-	must(gh.Save(ua, w.canary+"-login", "repo", "gho_"+w.canary), "a github")
 
 	// Personal tokens: one credential each for A and B, and A's second token
 	// (canary-named) as the object. Minted through the real store as each
@@ -973,9 +972,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	must(err, "account pool")
 	ext := Extensions{
 		Kinds: isoKinds{pool: ccp, plane: plane}, Credentials: isoCredPage{PGStore: w.creds, plane: plane},
-		Notes: ns, Agents: as, GitHub: gh, Users: users.NewPG(pool), APITokens: apitokens.NewPG(pool),
-		GitHubOAuth: GitHubOAuthConfig{ClientID: "iso-client", ClientSecret: "iso-secret", BaseURL: "http://muster.test",
-			StateKey: []byte("iso-walk-oauth-state-key-0123456789")},
+		Notes: ns, Agents: as, Users: users.NewPG(pool), APITokens: apitokens.NewPG(pool),
+		PublicURL:   "http://muster.test",
 		Provisioner: w.prov, Gateway: w.prov, Connectors: cs,
 		Mirror: &isoMirror{owner: w.a.uid, host: w.canary + "-host"},
 		Flows:  flows.NewPG(pool),
@@ -1341,9 +1339,6 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		path += "?" + url.Values{"subject": {"agent:" + strconv.FormatInt(o.agent, 10)}}.Encode()
 	}
 	if method == http.MethodGet || method == http.MethodDelete {
-		if strings.HasPrefix(path, "/github/callback") {
-			path += "?state=x&code=y"
-		}
 		return method, path, ""
 	}
 	if strings.HasPrefix(path, "/plugin/") {
@@ -1543,6 +1538,13 @@ func sortedRoutes() []string {
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
 	"POST /agents/{id}/start": "the provisioner acted for A (isoProvisioner records it), never for B",
+	// 🔴 A SIGNATURE NO WALKER HOLDS, AS GET /f/{id}: a signed ask action needs a
+	// challenge its own device asked for, signed by that device's step-up key,
+	// so A's device's bare request is refused like the ghost's. Its control is
+	// device_actions_pg_test.go: the SAME route, A's device signing, answers A's
+	// ask; B's device signing for A's ask is not_found and A's ask stays open.
+	"POST /api/device/actions/attention/asks/{id}/answer": "a signed action: controlled in device_actions_pg_test.go",
+	"POST /api/device/actions/attention/asks/{id}/cancel": "a signed action: controlled in device_actions_pg_test.go",
 	// 🔴 A BEARER CAPABILITY, NOT A SIDE EFFECT: the signed link's credential is
 	// the HMAC in its query, which no walker holds — the walk sends the bare
 	// path, so A's own answer is the ghost's 404, as it must be. Its control is
@@ -1575,6 +1577,9 @@ var sideEffectControlled = map[string]string{
 var controlMarkers = map[string]string{
 	"GET /agent/connectors/{name}":          `"exists":true`,
 	"POST /agent/connectors/{name}/request": `"exists":true`,
+	// The tap on A's OPEN ask redirects to that ask's own page; a ghost's (and
+	// another owner's) to its place on the queue.
+	"GET /attention/open/{key}": `href="/attention/asks/`,
 }
 
 // echoOnly: routes that render the same thing for ANY name — their own and a

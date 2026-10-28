@@ -210,6 +210,12 @@ BEGIN
         ALTER TABLE public.mail_resumes DISABLE ROW LEVEL SECURITY;
         ALTER TABLE public.mail_resumes ALTER COLUMN owner_id SET DEFAULT 1;
     END IF;
+    -- 0058 (device_challenges), when this schema has it; same reason as 0011.
+    IF to_regclass('public.device_challenges') IS NOT NULL THEN
+        ALTER TABLE public.device_challenges NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE public.device_challenges DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.device_challenges ALTER COLUMN owner_id SET DEFAULT 1;
+    END IF;
 END
 $$;
 

@@ -1,16 +1,12 @@
 package api
 
 import (
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
 )
 
@@ -49,20 +45,13 @@ func TestTaskDispatchRefusesATaskWhoseRepoChangedAfterTheCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/user/repos" || r.URL.Query().Get("page") != "1" {
-			_, _ = w.Write([]byte(`[]`))
-			return
-		}
+	f.promoteOwner(t)
+	f.srv.ext.GitHubApp = &changingApp{list: func() []string {
 		if _, err := f.pool.Exec(authz.System(f.ctx), `UPDATE notes SET repo = 'stranger/x' WHERE id = $1`, n.ID); err != nil {
 			t.Error(err)
 		}
-		_ = json.NewEncoder(w).Encode([]map[string]any{{"full_name": "example/app"}})
-	}))
-	t.Cleanup(srv.Close)
-	github.UseAPIBaseURL(srv.URL)
-	t.Cleanup(func() { github.UseAPIBaseURL("https://api.github.com") })
-	f.srv.ext.GitHub = fakeGitHubConn{}
+		return []string{"example/app"}
+	}}
 	f.mustRefuse(t, f.call(f.chief, taskDispatchTool, map[string]any{"task_id": n.ID}), "repository changed while it was being checked", n.ID)
 }
 

@@ -374,7 +374,7 @@ func TestAnInstallationOffTheAllowlistIsIgnored(t *testing.T) {
 			t.Fatalf("a token was minted on the stranger's installation: %s", m.body)
 		}
 	}
-	if _, err := app.Accounts(context.Background()); err != nil {
+	if _, err := app.Check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Count(logBuf.String(), `"stranger"`) != 1 || strings.Contains(logBuf.String(), "payload") {

@@ -177,7 +177,9 @@ func TestAWaitingSessionShowsWhatItWaitsOn(t *testing.T) {
 			body = p.Body
 		}
 	}
-	// The lock screen says who and where, never the command (the page has it).
+	// The notification says who and where, and the tool's NAME — never the
+	// command or Claude's words (operator decision: a waiting session stays
+	// summary only; the page has them).
 	if body != "Waiting: Bash · main:1 @ ws" {
 		t.Fatalf("the push body: %q", body)
 	}

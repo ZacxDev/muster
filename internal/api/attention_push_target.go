@@ -32,24 +32,21 @@ import (
 // builds the url from the item's key alone, with no database or hub read
 // inline in attention_ask or a task ask.
 //
-// 🔴 ONE RULE, ONE PLACE: pushTargetFor. Something that HAS a session opens
-// that session's page:
-//   - a waiting mirrored window and a held question: the window's rendered
-//     view (it.card.ref, the address the queue's own "Open the session" link
-//     uses);
-//   - a dispatched agent's attention_ask: the agent's page, /agents/<name>
-//     (the owner's agent only);
-//   - a mirrored Claude session's attention_ask: the rendered view of the
-//     window running that Claude session on its host (claudeSessionWindow, the
-//     rule the Agents-list badges use).
+// 🔴 ONE RULE, ONE PLACE: pushTargetFor.
+//   - AN OPEN ASK OPENS ITS OWN PAGE, /attention/asks/<id> (operator decision:
+//     the landing is a phone-first ask page — attention_ask_page.go): the
+//     question, its options and suggested replies, the answer box, and a link
+//     to the asking session or agent for context (attentionSessionPath — what
+//     the tap opened before the ask page existed).
+//   - Something else that HAS a session opens that session's page: a waiting
+//     mirrored window and a held question open the window's rendered view
+//     (it.card.ref, the address the queue's own "Open the session" link uses).
 //
 // EVERYTHING ELSE OPENS ITS ITEM ON THE QUEUE PAGE (attentionItemPath) — an
 // explicit fallback, never an empty link and never a 404: an ask that is no
 // longer open (answered, dismissed, expired), another owner's or a missing
-// one (the same answer, so nothing tells them apart), an ask muster raised
-// itself (Asker.System), a Hermes window that names no conversation, an
-// asking agent that is gone or not the owner's, an asking mirrored session no
-// listed window runs now, a window that stopped waiting, and any kind this
+// one (the same answer, so nothing tells them apart), a Hermes window that
+// names no conversation, a window that stopped waiting, and any kind this
 // rule does not name.
 // ---------------------------------------------------------------------------
 
@@ -115,10 +112,14 @@ func (s *Server) openTarget(ctx context.Context, key string) string {
 	return s.pushTargetFor(ctx, owner, it)
 }
 
-// pushTargetFor is where owner's item it opens: its session's page when it has
-// one (attentionSessionPath), else its item on the queue page. ctx is owner's
+// pushTargetFor is where owner's item it opens: an open ask, its own page
+// (askPagePath); anything else, its session's page when it has one
+// (attentionSessionPath), else its item on the queue page. ctx is owner's
 // principal (the tap's request).
 func (s *Server) pushTargetFor(ctx context.Context, owner int64, it attentionItem) string {
+	if it.Kind == attentionKindAsk && it.AskID > 0 {
+		return askPagePath(it.AskID)
+	}
 	if p := s.attentionSessionPath(ctx, owner, it); p != "" {
 		return p
 	}

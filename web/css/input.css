@@ -343,8 +343,23 @@
    * elements themselves (Tailwind utilities) so prefers-reduced-motion below
    * collapses them.
    */
+  /*
+   * 🔴 A SHUT PANEL IS ALSO visibility: hidden, NOT ONLY OFF SCREEN. Translated
+   * away, its contents are still hit-testable and focusable — and with the
+   * sidebar's <details> "More" in it, Chromium resolves a touch just inside the
+   * left edge, over the Agents list's session switcher, to <html> instead of
+   * the bar (measured: elementFromPoint names the bar, the touchstart's target
+   * is <html>; replacing the <details> with a <div>, or hiding the panel,
+   * restores the bar). The bar's own swipe (ownsSideways) then never sees its
+   * mark, and the edge-swipe opens the drawer under the thumb
+   * (e2e/tests/recent-agents.spec.ts). Hidden, the shut panel takes no touch.
+   * visibility is in the transition so the panel stays drawn while it slides
+   * out (a visible/hidden transition is visible for its whole duration).
+   */
   #sidebar-root .sidebar-panel {
     transform: translateX(-100%);
+    visibility: hidden;
+    transition-property: transform, visibility;
   }
   #sidebar-root .sidebar-backdrop {
     opacity: 0;
@@ -352,6 +367,7 @@
   }
   #sidebar-root[data-open='true'] .sidebar-panel {
     transform: translateX(0);
+    visibility: visible;
   }
   #sidebar-root[data-open='true'] .sidebar-backdrop {
     opacity: 1;
@@ -372,6 +388,7 @@
   @media (min-width: 1024px) {
     #sidebar-root:not([data-overlay]) .sidebar-panel {
       transform: translateX(0);
+      visibility: visible;
     }
     #sidebar-root:not([data-overlay]) .sidebar-backdrop {
       display: none;

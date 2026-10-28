@@ -4,6 +4,7 @@ import { test, expect, expectShellShows } from '../lib/fixtures';
 import { dsn, e2eRoot, gotrueBrowserPort, gotrueMainPort, gotruePort, gotrueSecret, hookToken, versionA, versionTerm } from '../lib/env';
 import { gotrueSkewEnv, outliveAccessToken } from '../lib/gotrue';
 import { serverBinary, startServer, Running } from '../lib/server';
+import { landedHome } from '../lib/nav';
 
 // Accounts PR 4, end to end against the REAL GoTrue image (e2e/gotrue/compose.yml,
 // same pin as the deployment): claim the admin account from a link the server
@@ -85,9 +86,10 @@ test('claim the admin, sign in, survive an access-token expiry, sign out (real G
   await page.fill('#claim-email', email);
   await page.fill('#claim-password', password);
   await page.fill('#claim-password2', password);
-  await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
-  // `/` is the board — asserted on the page the redirect produced (see landing.spec.ts).
-  await expectShellShows(page, 'tasks', 'Tasks', 'landing on / after signing in');
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
+  // `/` opens the chief's chat, or with no chief (here) the Agents list —
+  // asserted on the page the redirect produced (see landing.spec.ts).
+  await expectShellShows(page, 'agents', 'Agents', 'landing on / after signing in (no chief: the Agents list)');
 
   // 2. The board, as the claimed admin.
   await page.goto(browserURL + '/tasks');
@@ -106,9 +108,10 @@ test('claim the admin, sign in, survive an access-token expiry, sign out (real G
   await Promise.all([page.waitForURL(/\/login$/), page.getByRole('button', { name: 'Sign out', exact: true }).click()]);
   await page.fill('#muster-email', email);
   await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
-  // `/` is the board — asserted on the page the redirect produced (see landing.spec.ts).
-  await expectShellShows(page, 'tasks', 'Tasks', 'landing on / after signing in');
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
+  // `/` opens the chief's chat, or with no chief (here) the Agents list —
+  // asserted on the page the redirect produced (see landing.spec.ts).
+  await expectShellShows(page, 'agents', 'Agents', 'landing on / after signing in (no chief: the Agents list)');
   await page.goto(browserURL + '/tasks');
   await expect(page.locator('#fab-tasks')).toBeVisible();
   const before = (await page.context().cookies(browserURL)).find((c) => c.name === 'muster_at')!.value;

@@ -258,7 +258,13 @@ test.describe('a 200-message agent transcript', () => {
     // The same hold INSIDE the session switcher (#248), straight after its
     // <nav> tag: a 1px bar painted before its row, that grew to 45px, read as
     // a shift of the bar.
-    const stalls = [
+    //
+    // held is each stall's positive control: the state a held frame must show
+    // (default: the log's bubbles in the DOM). The sidebar is parsed BEFORE the
+    // log, so a stall inside it holds frames with no bubbles yet — its control
+    // is its own half-parsed element.
+    const BUBBLES_DRAWN = `document.querySelectorAll('#chat-log [data-bubble]').length > 0`;
+    const stalls: { label: string; at: (html: string) => number; held?: string }[] = [
       { label: 'before the layout call', at: (html: string) => html.indexOf('<form id="chat-form"') },
       { label: 'inside the session switcher', at: (html: string) => { const n = html.indexOf('id="session-switcher"'); return n < 0 ? -1 : html.indexOf('>', n) + 1; } },
       // Inside the switcher's toggle, between its icon and its label.
@@ -269,6 +275,16 @@ test.describe('a 200-message agent transcript', () => {
       // Straight after #chat-form: the composer is parsed, the scripts that
       // size its box (composer_fit.go, composer_draft.go) not yet.
       { label: 'after the composer, before its sizing scripts', at: (html: string) => { const n = html.indexOf('id="chat-form"'); return n < 0 ? -1 : html.indexOf('</form>', n) + '</form>'.length; } },
+      // Inside the sidebar's More (nav_agents.go navMore), straight after its
+      // <details> tag and before its <summary>: CI's first frame on #316 (the
+      // browser's default one-line "Details" summary at the rail's foot, then
+      // the real 44px one) made deterministic. It read as a shift of
+      // details#sidebar-more, which grew upward.
+      {
+        label: "inside the sidebar's More, before its summary",
+        at: (html: string) => { const n = html.indexOf('<details id="sidebar-more"'); return n < 0 ? -1 : html.indexOf('>', n) + 1; },
+        held: `!!document.getElementById('sidebar-more') && !document.getElementById('sidebar-more-summary')`,
+      },
     ];
     for (const stall of stalls)
     test(`${vp.name}: a frame painted ${stall.label} moves nothing`, async ({ browser }) => {
@@ -291,7 +307,7 @@ test.describe('a 200-message agent transcript', () => {
         await page.addInitScript(titleInit);
         await page.addInitScript(`(() => {
           const tick = () => {
-            if (!window.__stallEnded && document.querySelectorAll('#chat-log [data-bubble]').length) window.__heldFrames = (window.__heldFrames || 0) + 1;
+            if (!window.__stallEnded && (${stall.held ?? BUBBLES_DRAWN})) window.__heldFrames = (window.__heldFrames || 0) + 1;
             if (document.readyState !== 'complete') requestAnimationFrame(tick);
           };
           requestAnimationFrame(tick);
@@ -301,7 +317,7 @@ test.describe('a 200-message agent transcript', () => {
         const r = await readMoved(page);
         const held = await page.evaluate(() => (window as any).__heldFrames || 0);
         console.log(`[cls-long ${vp.name}] stalled ${stall.label}: ${moved(r)} (${held} frames held)`);
-        expect(held, `control: frames were painted with the bubbles in the DOM, stalled ${stall.label}`).toBeGreaterThan(0);
+        expect(held, `control: frames were painted in the held state (${stall.held ?? BUBBLES_DRAWN}), stalled ${stall.label}`).toBeGreaterThan(0);
         await expect(page.locator('#chat-log [data-md-done]')).toHaveCount(CAP);
         expect(await atEnd(page, '#chat-log'), 'at its end').toBe(true);
         expect(moved(r), report(`stalled ${stall.label}`, r)).toBeLessThan(BAR);

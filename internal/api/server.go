@@ -51,7 +51,6 @@ import (
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/focus"
-	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/push"
 	"github.com/ZacxDev/muster/internal/sendqueue"
@@ -236,9 +235,6 @@ type Server struct {
 	// constant).
 	suggestIdleWaitFor time.Duration
 
-	// listPullRequests is the GitHub PR read, injectable for tests.
-	listPullRequests func(ctx context.Context, token, repo, state string) ([]github.PullRequest, error)
-
 	// --- debounced task notifications, one buffer PER OWNER (push_task.go) ---
 	taskCreateAfter  afterFunc
 	createdBuf       ownerBuffer[createdTaskRef]
@@ -356,6 +352,13 @@ type RouterNotification struct {
 	Body  string
 	Tag   string
 	Data  map[string]string
+	// Ask (an attention ask's chips) and Update (a re-push replacing the
+	// notification under the same tag) reach a paired phone's payload v2 only
+	// (push.Payload); the router and the browser never see them.
+	Ask    *push.V2Ask
+	Update bool
+	// AskActions: payload v2 offers Ask's signed actions (device_actions.go).
+	AskActions bool
 }
 
 // rateLimiter is a fixed-window counter. A token bucket would be smoother; a
@@ -431,7 +434,6 @@ func New(bus *sse.Broadcaster, authCfg AuthConfig, logger *log.Logger) *Server {
 		agentCLIPath:            defaultAgentCLIPath,
 		activeAgents:            make(map[string]agentPhase),
 		activeAgentsNow:         time.Now,
-		listPullRequests:        github.ListPullRequests,
 		taskCreateAfter:         realAfterFunc,
 		taskCommentAfter:        realAfterFunc,
 		taskProvisionedNotified: make(map[int64]bool),
@@ -553,6 +555,8 @@ func (s *Server) registerAll(mux Mux) {
 		mux.HandleFunc("GET /"+tab, s.requireSession(s.handleIndex))
 	}
 	mux.HandleFunc("GET /events", s.requireSession(s.handleEvents))
+	// The sidebar's agent list (nav_agents.go): a partial every nav document loads.
+	mux.HandleFunc("GET "+ui.NavAgentsPath, s.requireSession(s.handleNavAgents))
 	// The browser telemetry relay (faro_relay.go): a signed-in page's Faro
 	// batches, forwarded to MUSTER_FARO_UPSTREAM; 404 while it is unset.
 	mux.HandleFunc("POST "+FaroRelayPath, s.requireOperatorWrite(s.handleFaroRelay))
@@ -577,7 +581,6 @@ func (s *Server) registerAll(mux Mux) {
 	mux.HandleFunc("POST /api/chief/replace", s.requireArmedHookToken(s.requireLifecycleProvisioner(s.handleChiefReplace)))
 
 	s.registerNotesRoutes(mux)
-	s.registerGitHubRoutes(mux)
 	s.registerAgentRoutes(mux)
 	// Pins (internal/pins): the Agents list's pin toggles, 404 without a store.
 	s.registerPinRoutes(mux)
@@ -702,19 +705,19 @@ func staticCacheControl(path, v string) string {
 // render a document carrying the sidebar; deciding the tab set at each of them
 // would be four copies of one predicate, which is the shape that ends up wrong at
 // three of the four in the same direction. It reads the SAME field the handler
-// guards on (Extensions.GitHub), so the page and the route cannot disagree about
+// guards on (Extensions.Connectors), so the page and the route cannot disagree about
 // whether a subsystem exists.
 //
 // ⚠ IT IS NOT A READINESS OR PERMISSION CHECK. A tab hidden here is a surface the
 // build does not have, not one this caller may not see — every route stays
-// registered and answers for itself (see internal/api/routes.go and github.go).
+// registered and answers for itself (see internal/api/routes.go).
 //
 // Admin (accounts PR 5) draws the sidebar's Admin link: the request's
 // principal is an admin AND the admin pages have a store to serve. It is a
 // LINK only — requireAdmin is what refuses a member, whatever the nav drew.
 func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	p, _ := authz.From(ctx)
-	return ui.Features{GitHub: s.ext.GitHub != nil || s.githubApp(ctx) != nil, Connectors: s.ext.Connectors != nil,
+	return ui.Features{Connectors: s.ext.Connectors != nil,
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed(), Attention: s.ext.Attention != nil,
 		SnapUser: p.UserID, SnapBuild: BuildVersion}
 }
@@ -722,6 +725,13 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 // handleIndex serves the document shell. The active tab is derived from the
 // request path so each tab deep-links.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	// `/` opens the chief's chat (nav_agents.go, redirectHome) — except the
+	// service worker's offline copy, `/?shell=1`, which it fetches with
+	// redirect:'manual' and would refuse as a redirect (web/static/sw.js).
+	if r.URL.Path == "/" && r.URL.Query().Get(offlineShellParam) != "1" {
+		s.redirectHome(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// /tasks?new=1 is the manifest's "New task" shortcut: the board with the
 	// composer open. It is the same mechanism a share uses (ComposePage).
@@ -1291,7 +1301,8 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
 		if s.pushServed() && s.pushAllowed(ctx, owner, event) {
-			rep := s.sendPush(ctx, owner, push.Payload{Type: n.Type, ID: n.ID, Title: n.Title, Body: n.Body, Tag: n.Tag, Data: n.Data})
+			rep := s.sendPush(ctx, owner, push.Payload{Type: n.Type, ID: n.ID, Title: n.Title, Body: n.Body, Tag: n.Tag, Data: n.Data,
+				Ask: n.Ask, Update: n.Update, AskActions: n.AskActions})
 			if rep.Delivered > 0 && onDelivered != nil {
 				onDelivered(rep.Delivered)
 			}

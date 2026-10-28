@@ -164,6 +164,26 @@ func newTracedMirrorRigAt(t *testing.T, ratio float64) *tracedMirrorRig {
 	done := make(chan struct{})
 	go func() { _ = c.RunOnce(ctx); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
+	// 🔴 SPAN ISOLATION BETWEEN RIGS: every view and terminal socket this rig's
+	// server registered (s.terminals — what EndTerminals ends and waits for)
+	// has ENDED, and recorded its spans, before the rig's tracer is put back
+	// (cleanups run last-registered first, so this runs before the host stops,
+	// the server closes and telemetry.Use is undone). The tracer is
+	// process-wide, and httptest.Server.Close does not wait for a hijacked
+	// (websocket) connection: a socket a test merely closed from its side kept
+	// running after the test, and its "closed" span (client_left, or
+	// host_disconnected once the host stopped) landed in the NEXT rig's
+	// exporter, where a test picking spans by name read it as its own (CI's
+	// failure of TestADeployIsReportedAsShutdownNotTheBrowserLeaving).
+	// EndTerminals ends those sockets and waits for their handlers to return.
+	// Work that is not such a socket (a detached relay, a plain request still
+	// in flight) is not waited for here; the host's goroutines are stopped by
+	// the cleanup above, which runs after this one.
+	t.Cleanup(func() {
+		if !s.EndTerminals(5 * time.Second) {
+			t.Error("rig cleanup: the server's sockets did not end within 5s; their spans could reach the next rig")
+		}
+	})
 	deadline := time.Now().Add(5 * time.Second)
 	rendered := func() bool {
 		for _, h := range svc.Hub().Hosts(1) {

@@ -24,14 +24,14 @@ var (
 )
 
 // TestThePagesScriptsAreServedImmutableUnderTheirContentHash: every script
-// GET / links is served as JavaScript, and only the URL GET / links it at is
-// cached for a year.
+// GET /tasks (the shell; `/` opens the chief's chat now) links is served as
+// JavaScript, and only the URL the shell links it at is cached for a year.
 func TestThePagesScriptsAreServedImmutableUnderTheirContentHash(t *testing.T) {
 	s, h := pinServer(t, &fakeMirror{online: true, windows: pinWindows()}, &memPins{})
-	doc := getOwed(t, s, h, "/").Body.String()
+	doc := getOwed(t, s, h, "/tasks").Body.String()
 	links := pageScriptSrc.FindAllStringSubmatch(doc, -1)
 	if len(links) < 10 {
-		t.Fatalf("CONTROL: GET / links %d page scripts", len(links))
+		t.Fatalf("CONTROL: GET /tasks links %d page scripts", len(links))
 	}
 	get := func(url string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()

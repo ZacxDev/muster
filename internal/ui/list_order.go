@@ -87,6 +87,62 @@ func listBefore(a, b listEntry) bool {
 	return a.activeAt().After(b.activeAt())
 }
 
+// waiting reports whether the entry waits on the viewer — its card's
+// data-wait (waitTokens): an attention item that files under "you", or a
+// dispatched agent blocked at a permission prompt. 🔴 THE ONE PREDICATE the
+// session switcher's waiting dot (switcherItems) and the sidebar's order
+// (navBefore) both read, so the two cannot disagree about who is waiting.
+func (e listEntry) waiting() bool {
+	if e.agent != nil {
+		return waitTokens(e.agent.Attention, e.agent.AwaitingApproval) != ""
+	}
+	return waitTokens(e.mirror.Attention, false) != ""
+}
+
+// chief reports whether the entry is the viewer's chief agent
+// (AgentCardView.IsChief, internal/api's one chief predicate). A mirrored
+// window is never the chief.
+func (e listEntry) chief() bool { return e.agent != nil && e.agent.IsChief }
+
+// primaryChief reports whether the entry is THE chief — where `/` opens
+// (AgentCardView.PrimaryChief, internal/api's primaryChief).
+func (e listEntry) primaryChief() bool { return e.agent != nil && e.agent.PrimaryChief }
+
+// navOrder is the SIDEBAR's order of the Agents list's entries (nav_agents.go)
+// — 🔴 ONE RULE, ONE PLACE, beside orderList, whose output it re-sorts:
+//
+//  1. the chief agent first (the operator's main conversation, pinned) —
+//     THE chief, where `/` opens (primaryChief), above any other agent that
+//     is also a chief (a relabelled reserved slug beside a labelled chief);
+//  2. then every entry waiting on the operator (listEntry.waiting);
+//  3. then the rest, most recently active first (activeAt), an entry with no
+//     known activity last;
+//  4. ties keep orderList's order (a stable sort over its output), so two
+//     entries active in the same instant never swap places between renders.
+//
+// Unlike orderList it does not lift the viewer's pins: the sidebar is a list
+// of conversations ordered by who needs the operator, and the Agents list,
+// its Pins view and the switcher keep the pins.
+func navOrder(agents []AgentCardView, mirrors []MirrorCardView) []listEntry {
+	out := orderList(agents, mirrors)
+	sort.SliceStable(out, func(i, j int) bool { return navBefore(out[i], out[j]) })
+	return out
+}
+
+// navBefore is navOrder's comparison: whether a is drawn above b.
+func navBefore(a, b listEntry) bool {
+	if pa, pb := a.primaryChief(), b.primaryChief(); pa != pb {
+		return pa
+	}
+	if ca, cb := a.chief(), b.chief(); ca != cb {
+		return ca
+	}
+	if wa, wb := a.waiting(), b.waiting(); wa != wb {
+		return wa
+	}
+	return a.activeAt().After(b.activeAt())
+}
+
 // listCard renders one entry as its card.
 func listCard(e listEntry) g.Node {
 	if e.agent != nil {

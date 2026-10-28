@@ -60,6 +60,7 @@
     "tests/mirror-ask.spec.ts": 14.1,
     "tests/kickoff-wait.spec.ts": 3.0,
     "tests/attention.spec.ts": 20.0,
+    "tests/ask-page.spec.ts": 8.0,
     "tests/bfcache.spec.ts": 4.0,
     "tests/bfcache-restore.spec.ts": 40.0,
     "tests/cls-long-transcript.spec.ts": 86.0,
@@ -81,7 +82,8 @@
     "tests/opencode-view.spec.ts": 20.0,
     "tests/board-first-paint.spec.ts": 20.0,
     "tests/telemetry.spec.ts": 95.0,
-    "tests/open-perf.spec.ts": 45.0
+    "tests/open-perf.spec.ts": 45.0,
+    "tests/agent-sidebar.spec.ts": 10.0
   },
   "legs": {
     "1": [
@@ -111,6 +113,7 @@
       "tests/plugins.spec.ts",
       "tests/composer-menu.spec.ts",
       "tests/attention.spec.ts",
+      "tests/ask-page.spec.ts",
       "chief-runtimes.spec.ts",
       "tests/agent-cards.spec.ts",
       "tests/agent-cards-work.spec.ts",
@@ -120,6 +123,7 @@
       "tests/suggested-replies.spec.ts",
       "tests/opencode-view.spec.ts",
       "tests/tool-context.spec.ts",
+      "tests/agent-sidebar.spec.ts",
       "tests/onboarding.spec.ts"
     ],
     "2": [

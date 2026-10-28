@@ -485,8 +485,8 @@ func TestAnAgentNameCannotEmitMarkupOnEitherSurface(t *testing.T) {
 // mount cannot capture.
 //
 // 🔴 "AT MOST ONCE" IS SATISFIED BY ZERO, AND THAT IS WHY THIS RUNS UNDER BOTH
-// Features SHAPES *AND* CARRIES A POSITIVE CONTROL. `/ui/repos` is mounted only
-// when the GitHub store was built; under the shipping default the count is 0, so
+// Features SHAPES *AND* CARRIES A POSITIVE CONTROL. `/ui/connectors` is mounted
+// only when the connector store was built; under the shipping default the count is 0, so
 // the `n > 1` test cannot fire for it and the row passes without observing
 // anything. A zero and a one are indistinguishable to that assertion — so the
 // control below demands the count actually MOVE to 1 on the shape that draws the
@@ -498,7 +498,7 @@ func TestEachLazyRegistryIsMountedExactlyOnce(t *testing.T) {
 	// Mounted only when its subsystem was built — the pair is (partial, the
 	// Features predicate that draws it).
 	gated := map[string]func(Features) bool{
-		"/ui/repos": func(f Features) bool { return f.GitHub },
+		"/ui/connectors": func(f Features) bool { return f.Connectors },
 	}
 
 	forEachFeatureShape(t, func(t *testing.T, shape string, feat Features) {
@@ -595,15 +595,15 @@ func TestTheEmptyStateCountsRenderedBubblesNotRows(t *testing.T) {
 //
 // 🔴 A SUITE WHOSE FIXTURE PINS A DIMENSION IS STRUCTURALLY BLIND TO THAT
 // DIMENSION'S BUGS, AND Features IS SUCH A DIMENSION. It decides whether the
-// Repos tab, its panel and its entries in the browser's tab registry are DRAWN AT
-// ALL (see features.go). Every guard below that sweeps a document — for a class
+// Connectors tab, its panel and its entries in the browser's tab registry are
+// DRAWN AT ALL (see features.go). Every guard below that sweeps a document — for a class
 // pair, for an undefined call, for a duplicated mount — would therefore be
 // looking at a different, smaller document under the zero value, and any defect
-// living only in the repos surface would pass vacuously.
+// living only in the connectors surface would pass vacuously.
 //
 // 🔴 AND THE ZERO VALUE IS THE ONE THAT DRAWS LESS, WHICH IS THE DANGEROUS
-// DIRECTION FOR A SWEEP. `Features{}` is the shipping default (the GitHub store
-// is built only when an encryption key is set), so the value a test reaches for
+// DIRECTION FOR A SWEEP. `Features{}` is the shipping default (the connector
+// store is built only when an encryption key is set), so the value a test reaches for
 // by reflex is exactly the one that hides the surface. Picking it and moving on
 // is how a green tick comes to mean "I asserted about a document that no longer
 // contains the thing".
@@ -618,8 +618,8 @@ func forEachFeatureShape(t *testing.T, fn func(t *testing.T, shape string, feat 
 	}{
 		// Named by what they DRAW, not by the field, so a second feature added to
 		// the struct does not make these names lie.
-		{"no GitHub store (the shipping default)", Features{}},
-		{"GitHub store built", Features{GitHub: true}},
+		{"no connector store (the shipping default)", Features{}},
+		{"connector store built", Features{Connectors: true}},
 	} {
 		tc := tc
 		t.Run(tc.shape, func(t *testing.T) { fn(t, tc.shape, tc.feat) })
@@ -630,10 +630,10 @@ func forEachFeatureShape(t *testing.T, fn func(t *testing.T, shape string, feat 
 // Features value. Keyed by a human name so a failure says which document.
 //
 // ⚠ THE TAB LOOP GOES THROUGH visibleTabs, NOT musterTabs. Page() clamps an
-// invisible tab to the default (normalizeVisibleTab), so asking for "repos" with
-// no GitHub store silently renders the TASKS shell — two entries of the same
-// document under different names, and a guard that thought it had covered the
-// repos shell when it had not.
+// invisible tab to the default (normalizeVisibleTab), so asking for "connectors"
+// with no connector store silently renders the TASKS shell — two entries of the
+// same document under different names, and a guard that thought it had covered
+// the connectors shell when it had not.
 func shellDocuments(t *testing.T, feat Features) map[string]string {
 	t.Helper()
 	out := map[string]string{}

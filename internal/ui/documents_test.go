@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	g "maragu.dev/gomponents"
 
@@ -263,16 +264,31 @@ func allDocumentsFrom(rows []documentRenderer) []namedDoc {
 		name: "shell:" + defaultTab + " — no optional subsystems built",
 		node: g.NodeFunc(func(w io.Writer) error { return RenderPage(w, defaultTab, Features{}) }),
 	})
+	// 🔴 NavDocument AS AN APP SCREEN (NavApp, the ask page) IS A DIFFERENT
+	// BODY and is swept as one: the NavDocument row renders the column layout
+	// only.
+	docs = append(docs, namedDoc{name: "NavDocument — an app screen", node: g.NodeFunc(func(w io.Writer) error {
+		return RenderNavDocument(w, sampleAppScreen())
+	})})
 	return docs
+}
+
+// sampleAppScreen is a NavDocument laid out as an app screen, with content and
+// a composer.
+func sampleAppScreen() NavDocumentView {
+	return NavDocumentView{Title: "Question", Entry: NavAttention, Feat: featuresAllOn,
+		Main: `<section data-testid="ask-page"><p>Deploy the importer?</p><button type="submit" form="f">deploy</button></section>`,
+		App: &NavApp{Back: "/attention", BackLabel: "Back to Asks", Heading: "worker-7 is asking",
+			Composer: `<form id="f" method="post" action="/attention/asks/1/answer"><label for="a">Your answer</label><textarea id="a" name="answer"></textarea><button type="submit">Answer</button></form>`}}
 }
 
 // featuresAllOn is the widest shell: every optional subsystem wired.
 //
 // 🔴 IT IS NAMED RATHER THAN SPELLED AT EACH CALL SITE SO A NEW Features FIELD
-// REACHES EVERY SWEEP AT ONCE. A field added with `Features{GitHub: true}`
+// REACHES EVERY SWEEP AT ONCE. A field added with `Features{Connectors: true}`
 // written out eight times would default to false at all eight, silently removing
 // whatever it gates from every document-level guard in this package.
-var featuresAllOn = Features{GitHub: true}
+var featuresAllOn = Features{Connectors: true}
 
 // listFragments is every LIST/CARD partial the shell lazy-loads over htmx rather
 // than rendering inline. They are unreachable from Page() at ANY fixture — every
@@ -282,8 +298,9 @@ func listFragments() []namedDoc {
 	return []namedDoc{
 		{"tasks-list", NotesCards(sampleTasksView())},
 		{"agents-cards", AgentsCards(sampleAgentCards())},
-		{"repos-connected", ReposConnected("octo-owner", sampleRepos())},
 		{"notes-edit-modal", NotesEditModalBody(sampleNoteEditView())},
+		// The sidebar's agent list (nav_agents.go), one agent marked current.
+		{"nav-agents", NavAgentsList(sampleAgentCards(), navMirrorFixture(), "/agents/"+sampleAgentCards()[0].Name, time.Now())},
 	}
 }
 

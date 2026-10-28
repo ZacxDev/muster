@@ -5,7 +5,10 @@
 // 🔴 A SUGGESTION IS NEVER SENT BY MUSTER. A tap only fills the composer (and
 // appends below a draft that is already there); the operator edits it and
 // presses Send, which keeps its own step-up gate. Nothing in this package can
-// reach a pane: it produces text, and the only consumer is the composer.
+// reach a pane: it produces text. The one exception is an ask's suggestion on
+// a paired phone's notification, sent as the ask's answer only by a signed
+// action the person confirmed with the phone's step-up key
+// (internal/api device_actions.go) — the confirmation is the send.
 //
 // The pieces, in the order a suggestion passes through them:
 //
@@ -27,9 +30,13 @@
 //     input never calls again), the rate cap, the kill switch and the
 //     per-user toggle.
 //
-// 🔴 SUGGESTION TEXT IS NEVER STORED. It lives in the Engine's in-memory cache
-// for at most CacheTTL and is then dropped (Engine.Sweep); only the input's
-// fingerprint outlives it, so an unchanged session is not paid for twice.
+// 🔴 A SESSION'S SUGGESTION TEXT IS NEVER STORED. It lives in the Engine's
+// in-memory cache for at most CacheTTL and is then dropped (Engine.Sweep); only
+// the input's fingerprint outlives it, so an unchanged session is not paid for
+// twice. The ONE exception is an attention ask's set (internal/api
+// attention_suggest.go): its notification is re-pushed carrying it and its page
+// draws it on any replica, so it is stored on the ask (migration 0057), beside
+// the question it was made from, and only while the ask is open.
 package suggest
 
 import (

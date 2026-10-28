@@ -58,6 +58,7 @@ var noStoreLiterals = map[string]string{
 	"writeDocumentHeaders":     "the header set of both document writers",
 	"handleAccountDevicesLive": "the paired devices, live",
 	"handleDeviceConfig":       "a paired phone's config",
+	"handleDeviceChallenge":    "a signed action's one-time nonce",
 	"handleDoctor":             "`muster doctor`'s report: live state (which hosts are connected now)",
 	"handleMirrorHost":         "a machine's own connection state, live",
 	"handleDevicePair":         "a pairing, with its one-time secret",
@@ -72,6 +73,7 @@ var noStoreLiterals = map[string]string{
 	"handleAttentionBadge":     "the Asks badge",
 	"handleAttentionItems":     "the Asks list",
 	"handleAttentionOpen":      "an ask opened from a push",
+	"renderAskPage":            "an ask page's live region (its options, suggestions and state)",
 	"writeAskLive":             "an ask's live answer",
 	"handleFocusHistory":       "an agent's focus history",
 	"handleMirrorAsks":         "a window's open questions",
@@ -83,6 +85,8 @@ var noStoreLiterals = map[string]string{
 	"handleTranscribe":         "a dictation's transcript",
 	"handleUpload":             "an upload's answer",
 	"handleUploadLink":         "an upload's signed link",
+	"handleNavAgents":          "the sidebar's agent list",
+	"redirectHome":             "where `/` sends the viewer (it follows who the chief is now)",
 }
 
 // viewDocumentCallers are the four handlers whose documents Back may restore.
@@ -275,8 +279,6 @@ var htmlWithoutNoStore = map[string]string{
 	"handleConnectorNewForm":    htmlFragment + " (the form a secret is typed INTO; it holds none)",
 	"handleConnectorRotateForm": htmlFragment + " (the form a secret is typed INTO; it holds none)",
 	"handleChiefThreadSearch":   htmlFragment,
-	"handleReposContent":        htmlFragment,
-	"handleGitHubDisconnect":    htmlFragment,
 	"handleNotesContent":        htmlFragment,
 	"handleNoteNewModal":        htmlFragment,
 	"handleNoteDelete":          htmlFragment,
