@@ -517,7 +517,8 @@ func (d *doctorRun) checkMirrorHosts() {
 	}
 	if len(offline) > 0 {
 		d.add(name, statusFail, fmt.Sprintf("connected: %s; NOT connected: %s", listOrNone(online), strings.Join(offline, ", ")),
-			"on each machine not connected: `"+mirrorStatusHint(d.sys.goos)+"`; a machine you retired: revoke its token "+
+			"right after the server restarts, hosts take a few seconds to reconnect: run doctor again; "+
+				"otherwise, on each machine not connected: `"+mirrorStatusHint(d.sys.goos)+"`; a machine you retired: revoke its token "+
 				"(`docker compose exec muster /muster-server mirror token ls`, then `… mirror token revoke <id>`)")
 		return
 	}
