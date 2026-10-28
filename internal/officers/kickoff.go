@@ -27,7 +27,16 @@ Start now:
 
 You watch, triage, record and dispatch. You never merge, deploy or release, and you hold no production credentials.`,
 		o.ID, n, o.MaxInstances, InstanceName(o.ID, n), tools,
-		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease)
+		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease) + releaseNote(o)
+}
+
+// releaseNote is the release officer's extra step: where its evaluation goes.
+func releaseNote(o Officer) string {
+	if !ToolOffered(o, ToolReleaseEvaluation) {
+		return ""
+	}
+	return "\n\nAs a release officer, post each release evaluation with " + ToolReleaseEvaluation +
+		"{evaluation} (the fields your charter names), then " + ToolComplete + " the release.evaluate item."
 }
 
 // The MCP tool names muster serves to officer instances.
@@ -38,4 +47,30 @@ const (
 	ToolHeartbeat = "officer_heartbeat"
 	ToolComplete  = "officer_complete"
 	ToolRelease   = "officer_release"
+	// ToolReleaseEvaluation posts a release evaluation to HQ's captain route
+	// (POST /releases/captain). Offered to `release:*` officers only
+	// (ToolOffered).
+	ToolReleaseEvaluation = "officer_release_evaluation"
 )
+
+// ReleaseOfficerType is the officer type whose instances evaluate releases.
+const ReleaseOfficerType = "release"
+
+// Type is the officer's type: the part of its id before the colon.
+func (o Officer) Type() string {
+	t, _, _ := strings.Cut(o.ID, ":")
+	return t
+}
+
+// ToolOffered is THE rule for which officer tools officer o's instances get:
+// the six queue tools for every officer, and the captain route's tool for a
+// release officer only. internal/api's listing and dispatch both ask it.
+func ToolOffered(o Officer, tool string) bool {
+	switch tool {
+	case ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease:
+		return true
+	case ToolReleaseEvaluation:
+		return o.Type() == ReleaseOfficerType
+	}
+	return false
+}

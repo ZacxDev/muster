@@ -16,6 +16,7 @@ import (
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/officers"
 )
 
 // agentCtxKey carries the authenticated agent through the request context.
@@ -435,7 +436,7 @@ func (s *Server) toolsFor(ctx context.Context, a agents.Agent) []agentTool {
 	out := make([]agentTool, 0, len(all))
 	for _, t := range all {
 		if t.officerOnly {
-			if _, _, officer := s.officerOf(a); !officer {
+			if o, _, officer := s.officerOf(a); !officer || !officers.ToolOffered(o, t.def.Name) {
 				continue
 			}
 		}

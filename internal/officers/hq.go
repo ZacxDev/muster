@@ -310,6 +310,19 @@ func (c *Client) Release(ctx context.Context, item ItemID, instance string) ([]b
 	return c.Do(ctx, http.MethodPost, c.itemPath(item, "release"), map[string]any{"instance": instance})
 }
 
+// ReleaseEvaluation is POST /releases/captain with the officer token: the
+// release captain's evaluation of one release. evaluation is the captain
+// route's own body, passed through; instance is set on it so HQ records which
+// instance wrote it (the officer it learns from the token).
+func (c *Client) ReleaseEvaluation(ctx context.Context, instance string, evaluation map[string]json.RawMessage) ([]byte, error) {
+	body := map[string]any{}
+	for k, v := range evaluation {
+		body[k] = v
+	}
+	body["instance"] = instance
+	return c.Do(ctx, http.MethodPost, "/releases/captain", body)
+}
+
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= n {

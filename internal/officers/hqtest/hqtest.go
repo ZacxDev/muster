@@ -49,6 +49,15 @@ type Server struct {
 	reqs     []Request
 	Now      func() time.Time
 	Charters map[string]string
+	// Evaluations is every POST /releases/captain accepted, in order.
+	Evaluations []Evaluation
+}
+
+// Evaluation is one accepted captain-route post: the officer HQ resolved from
+// the token, and the body.
+type Evaluation struct {
+	Officer string
+	Body    map[string]any
 }
 
 // New starts a fake. tokens maps each officer token to the officer it acts
@@ -121,6 +130,17 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.tokens[tok]
 	if !ok {
 		s.write(w, http.StatusUnauthorized, map[string]any{"error": "bad token"})
+		return
+	}
+	if r.URL.Path == "/api/v1/releases/captain" && r.Method == http.MethodPost {
+		// The captain route accepts the officer scope for a RELEASE officer only
+		// (the contract), recording which officer and instance wrote it.
+		if !strings.HasPrefix(caller, "release:") {
+			s.write(w, http.StatusForbidden, map[string]any{"error": "only a release officer may post a captain evaluation"})
+			return
+		}
+		s.Evaluations = append(s.Evaluations, Evaluation{Officer: caller, Body: body})
+		s.write(w, http.StatusOK, map[string]any{"recorded": true, "officer": caller, "instance": body["instance"]})
 		return
 	}
 	rest, ok := strings.CutPrefix(r.URL.Path, "/api/v1/officers/")

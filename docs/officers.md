@@ -61,8 +61,10 @@ a boot refusal that names the problem. The rows are in
 `release.evaluate` item when a release of the service is built and awaiting
 approval (with the PR list and each PR's review verdict in the payload) and a
 `release.post_report` item when it goes live. Its instance evaluates the
-release — risk level, summary, what to monitor — and posts the evaluation back
-to HQ. muster holds **no copy of the charter**: the instance loads it from HQ
+release — risk level, summary, what to monitor — and posts the evaluation to
+HQ's captain route with `officer_release_evaluation` (muster attaches the
+officer token, which HQ's captain route accepts for a release officer), then
+completes the item. muster holds **no copy of the charter**: the instance loads it from HQ
 with `officer_brief`, so the versioned charter in HQ is the only one. Approval
 of the release itself stays a human's, in HQ.
 
@@ -144,7 +146,7 @@ is the fallback.
 
 ## The tools
 
-An officer's instances are offered six MCP tools on muster's MCP server, and no
+An officer's instances are offered these MCP tools on muster's MCP server, and no
 other agent is (a third axis beside the chief-only one, enforced in the tool
 listing and again at dispatch):
 
@@ -156,6 +158,7 @@ listing and again at dispatch):
 | `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
 | `officer_complete` `{item_id, outcome, summary, links?}` | `POST …/items/{item}/complete` |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
+| `officer_release_evaluation` `{evaluation}` | `POST /releases/captain` — **release officers only** (`release:*`): the captain route's body, passed through, with `instance` set by muster |
 
 `lease_seconds` defaults to 600 and is clamped to 30–3600. `outcome` is `done`,
 `escalated` or `no_action`; `summary` is at most 4096 bytes. HQ's JSON is
@@ -230,9 +233,9 @@ is informational.
 ## The HQ API muster consumes
 
 From the officers contract, v1 (base `/api/v1`, bearer token of scope
-`officer`): `GET /officers/{id}/brief`, `GET /officers/{id}/items`, and `POST
-/officers/{id}/items/{item}/{claim,heartbeat,complete,release}` with the bodies
-in the table above. Where the contract leaves a shape open, muster accepts:
+`officer`): `GET /officers/{id}/brief`, `GET /officers/{id}/items`, `POST
+/officers/{id}/items/{item}/{claim,heartbeat,complete,release}`, and `POST
+/releases/captain` (release officers), with the bodies in the table above. Where the contract leaves a shape open, muster accepts:
 
 - the items list as `{"items": […], "next_cursor": "…"}` **or** a bare array;
 - item ids as JSON strings or numbers;

@@ -1108,6 +1108,20 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 		l.Printf("agents list: idle section OFF (%s=0) — every entry is drawn in the one list", envAgentsIdleAfter)
 	}
 
+	// The officer runtime (docs/officers.md), in both directions. Each
+	// declared officer also gets its own `officers: <id> on: …` line from
+	// api.Server.EnableOfficers. It reports the CONFIG: a declared officer the
+	// server could not enable refuses the boot (newApp), so the two agree.
+	if len(a.cfg.Officers) > 0 {
+		webhook := "OFF (" + envOfficerWebhookSecret + " unset; polling only)"
+		if a.cfg.OfficerWebhookKey != nil {
+			webhook = "ON (POST /officers/webhook, " + envOfficerWebhookSecret + " set)"
+		}
+		l.Printf("officers: ON — %d declared in %s; wake webhook %s", len(a.cfg.Officers), envOfficers, webhook)
+	} else {
+		l.Printf("officers: OFF (%s declares none; %s has no effect)", envOfficers, envOfficerWebhookSecret)
+	}
+
 	if a.pool != nil {
 		l.Printf("persistence: Postgres (%s set); task and agent stores wired", envDatabase)
 	} else {

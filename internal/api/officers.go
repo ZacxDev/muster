@@ -312,14 +312,22 @@ func officerToolDefs() []agents.ToolDef {
 		{Type: "function", Name: officers.ToolRelease,
 			Description: "Give an item back before its lease ends, so another instance can take it.",
 			Parameters:  objSchema(map[string]any{"item_id": item}, "item_id")},
+		{Type: "function", Name: officers.ToolReleaseEvaluation,
+			Description: "Post your evaluation of a release to HQ's release captain route (POST /releases/captain), as your charter describes its fields " +
+				"(e.g. release_id, risk level, summary, monitors). HQ records that this officer and instance wrote it. Then complete the release.evaluate item " +
+				"with officer_complete. This records an evaluation; it does not approve, deploy or release anything.",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{
+				"evaluation": map[string]any{"type": "object", "description": "The captain route's request body, as your charter specifies it."},
+			}, "required": []string{"evaluation"}, "additionalProperties": false}},
 	}
 }
 
 // isOfficerTool reports whether name is one of officerToolDefs.
 func isOfficerTool(name string) bool {
-	switch name {
-	case officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease:
-		return true
+	for _, d := range officerToolDefs() {
+		if d.Name == name {
+			return true
+		}
 	}
 	return false
 }
@@ -333,6 +341,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	o, _, ok := s.officerOf(a)
 	if !ok {
 		return toolErr("%s is available to officer instances only", name), true
+	}
+	if !officers.ToolOffered(o, name) {
+		return toolErr("%s is not one of officer %s's tools", name, o.ID), true
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &raw); err != nil {
@@ -353,14 +364,15 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 	c := s.officerRT.hq.Client(o)
 	instance := a.Name
 	var in struct {
-		ItemID       officers.ItemID `json:"item_id"`
-		LeaseSeconds int             `json:"lease_seconds"`
-		Status       string          `json:"status"`
-		Limit        int             `json:"limit"`
-		Cursor       string          `json:"cursor"`
-		Outcome      string          `json:"outcome"`
-		Summary      string          `json:"summary"`
-		Links        []string        `json:"links"`
+		ItemID       officers.ItemID            `json:"item_id"`
+		LeaseSeconds int                        `json:"lease_seconds"`
+		Status       string                     `json:"status"`
+		Limit        int                        `json:"limit"`
+		Cursor       string                     `json:"cursor"`
+		Outcome      string                     `json:"outcome"`
+		Summary      string                     `json:"summary"`
+		Links        []string                   `json:"links"`
+		Evaluation   map[string]json.RawMessage `json:"evaluation"`
 	}
 	if err := json.Unmarshal([]byte(orEmptyJSON(arguments)), &in); err != nil {
 		return toolErr("invalid arguments for %s: %v", name, err), true
@@ -414,6 +426,11 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 			return bad, true
 		}
 		body, err = c.Release(ctx, in.ItemID, instance)
+	case officers.ToolReleaseEvaluation:
+		if len(in.Evaluation) == 0 {
+			return toolErr("evaluation is required: the captain route's body, as your charter specifies it"), true
+		}
+		body, err = c.ReleaseEvaluation(ctx, instance, in.Evaluation)
 	}
 	return officerToolResult(name, body, err), true
 }

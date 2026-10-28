@@ -273,7 +273,7 @@ func officerToolNameSet(defs []agents.ToolDef) map[string]bool {
 	return out
 }
 
-var allOfficerTools = []string{officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease}
+var allOfficerTools = []string{officers.ToolBrief, officers.ToolItems, officers.ToolClaim, officers.ToolHeartbeat, officers.ToolComplete, officers.ToolRelease, officers.ToolReleaseEvaluation}
 
 // TestTheOfficerToolsAreOfferedToOfficerInstancesOnly: an officer's instance is
 // offered all six officer tools over MCP; an ordinary agent and the chief are
@@ -331,9 +331,9 @@ func TestAnOfficerToolReachesHQWithItsOwnOfficersTokenOnly(t *testing.T) {
 	} {
 		r.hq.ResetRequests()
 		out := r.s.dispatchAgentTool(ctx, tc.inst, officers.ToolClaim, `{"item_id":"`+tc.item+`","lease_seconds":120}`)
-		if isToolErr(out) {
-			t.Fatalf("%s claim: %s", tc.officer, out)
-		}
+		// What reached HQ is checked BEFORE the result, so a call that went to
+		// the wrong officer fails on the token and path it carried, not only on
+		// HQ's answer to it.
 		reqs := r.hq.Requests()
 		if len(reqs) != 1 {
 			t.Fatalf("%s claim: %d HQ requests, want 1", tc.officer, len(reqs))
@@ -350,6 +350,9 @@ func TestAnOfficerToolReachesHQWithItsOwnOfficersTokenOnly(t *testing.T) {
 		}
 		if q.Body["instance"] != tc.inst.Name || q.Body["lease_seconds"] != float64(120) {
 			t.Errorf("claim body = %v, want instance %s, lease 120", q.Body, tc.inst.Name)
+		}
+		if isToolErr(out) {
+			t.Fatalf("%s claim: %s", tc.officer, out)
 		}
 		if it := r.hq.Item(tc.item); it.ClaimedBy != tc.inst.Name {
 			t.Errorf("item claimed by %q, want %q", it.ClaimedBy, tc.inst.Name)
@@ -567,7 +570,11 @@ func TestADeclaredOfficersInstanceCannotBeDeleted(t *testing.T) {
 			t.Errorf("DELETE %s = %d (destroyed %v), want 200 and a Destroy", tc.a.Name, rec.Code, got)
 		}
 	}
-	t.Cleanup(func() { if t.Failed() { t.Log(r.logs.String()) } })
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Log(r.logs.String())
+		}
+	})
 	body := getOwed(t, r.s, r.h, "/ui/agents").Body.String()
 	if card := cardChunk(t, body, inst.ID); strings.Contains(card, `hx-delete="/agents/`+itoa(inst.ID)+`"`) {
 		t.Error("the officer instance's card offers Delete")
@@ -732,3 +739,47 @@ func TestTheOfficerNamePrefixCannotBeGenerated(t *testing.T) {
 type nameExistsNever struct{ *officerAgents }
 
 func (nameExistsNever) NameExists(context.Context, string) (bool, error) { return false, nil }
+
+// TestTheReleaseEvaluationToolIsTheReleaseOfficersOnly: a release officer's
+// instance posts its evaluation to HQ's captain route with its own token, the
+// body passed through and its instance set by muster (an instance field the
+// agent sends is overwritten); a non-release officer's instance is neither
+// offered the tool nor able to call it.
+func TestTheReleaseEvaluationToolIsTheReleaseOfficersOnly(t *testing.T) {
+	r := newOfficerRig(t)
+	rel := r.addInstance(r.a, 1, 841)    // release:alpha-web
+	triage := r.addInstance(r.b, 1, 842) // triage:beta-api
+	ctx := context.Background()
+	if !officerToolNameSet(r.s.MCPToolDefsFor(ctx, rel))[officers.ToolReleaseEvaluation] {
+		t.Fatal("the release officer is not offered officer_release_evaluation")
+	}
+	if officerToolNameSet(r.s.MCPToolDefsFor(ctx, triage))[officers.ToolReleaseEvaluation] {
+		t.Fatal("a triage officer is offered officer_release_evaluation")
+	}
+	out := r.s.dispatchAgentTool(ctx, rel, officers.ToolReleaseEvaluation, `{"evaluation":{"release_id":42,"risk":"low","summary":"two PRs, both reviewed","instance":"spoofed"}}`)
+	if isToolErr(out) {
+		t.Fatalf("release evaluation: %s", out)
+	}
+	if len(r.hq.Evaluations) != 1 {
+		t.Fatalf("captain route got %d posts, want 1", len(r.hq.Evaluations))
+	}
+	ev := r.hq.Evaluations[0]
+	if ev.Officer != offA || ev.Body["release_id"] != float64(42) || ev.Body["risk"] != "low" || ev.Body["instance"] != rel.Name {
+		t.Fatalf("captain route recorded %+v, want officer %s, the body passed through, instance %s", ev, offA, rel.Name)
+	}
+	reqs := r.hq.Requests()
+	if last := reqs[len(reqs)-1]; last.Path != "/api/v1/releases/captain" || last.Auth != "Bearer "+offATok {
+		t.Fatalf("captain post went to %s with %q", last.Path, last.Auth)
+	}
+	r.hq.ResetRequests()
+	out = r.s.dispatchAgentTool(ctx, triage, officers.ToolReleaseEvaluation, `{"evaluation":{"release_id":1}}`)
+	if !isToolErr(out) || !strings.Contains(out, "not one of officer "+offB+"'s tools") {
+		t.Fatalf("triage officer calling the captain tool: %s", out)
+	}
+	if len(r.hq.Requests()) != 0 {
+		t.Fatal("a refused captain post reached HQ")
+	}
+	if out := r.s.dispatchAgentTool(ctx, rel, officers.ToolReleaseEvaluation, `{"evaluation":{}}`); !strings.Contains(out, "evaluation is required") {
+		t.Fatalf("empty evaluation: %s", out)
+	}
+}

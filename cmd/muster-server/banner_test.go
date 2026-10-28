@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"io"
 	"log"
@@ -271,6 +272,10 @@ func normaliseBannerLine(s string) string {
 // exclusion instead of gesturing at a parenthesised handful in prose.
 var bannerLedger = []string{
 	envDatabase,
+	// The officer runtime: `officers: ON — … wake webhook ON/OFF` or
+	// `officers: OFF`; the webhook secret is named on the ON line either way.
+	envOfficers,
+	envOfficerWebhookSecret,
 	// The Agents list's Idle section: one line in both directions (ON with the
 	// threshold / OFF).
 	envAgentsIdleAfter,
@@ -696,6 +701,11 @@ func bannerBothDirections(t *testing.T) (onOut, offOut string) {
 		// renders would differ in nothing but a word inside one line — which the
 		// lines-must-differ check would pass while the WIRED arm stayed unrendered
 		// by any test. That is the same shape as the *pgxpool.Pool note above.
+		// The officer runtime: one declared officer and the webhook secret, so
+		// the ON render takes the `officers: ON … webhook ON` arm.
+		Officers:          []officers.Officer{{ID: "release:example-web", HQURL: "https://hq.example.invalid/api/v1", MaxInstances: 1}},
+		OfficerWebhookKey: []byte("0123456789abcdef"),
+
 		AgentProvisioner: provisionerNoop,
 		AgentImageRepo:   "registry.example.test/muster/agent-runtime",
 		AgentAPIURL:      "http://muster.example.test:8105",
