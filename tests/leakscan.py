@@ -201,7 +201,7 @@ DENYLIST_FILE = ROOT / "tests" / "leakscan_denylist.txt"
 #: a name off the gate with no other symptom: the tree still scans clean, which
 #: is what it would do if the name had really been removed. An EMPTY list is
 #: the placeholder, and it fails this check on purpose.
-DENIED_COUNT = 16
+DENIED_COUNT = 18
 
 #: The substring walk's bounds. A one-word entry outside them could never match.
 DENIED_MIN_LEN = 4
