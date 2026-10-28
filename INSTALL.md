@@ -28,13 +28,13 @@ When it is done, the person has:
   (`. "$HOME/.config/muster-install/lib.sh"`). They hold the values earlier
   steps found, so it does not matter whether your shell keeps variables between
   commands.
-- **Ask the person questions only in Step 1**, all at once. After that, do not
-  stop to ask unless a step says "ask".
+- **Ask the person the Step 1 questions all at once.** After that, do not stop
+  to ask unless a step says "ask".
 - **Never print a secret.** Passwords, tokens and keys go straight into files
   with mode `600`. Do not echo them, do not paste them into your reply, and do
   not put them on a command line other than as shown.
-- **Ask before using `sudo`** or installing system packages, unless the person
-  allowed it in Step 1.
+- **Ask before using `sudo`** or installing system packages, at the moment a
+  step needs it, and say what for.
 - Every step ends with **If this fails**. Follow it before trying anything
   else. If you are still stuck, stop and tell the person exactly which step and
   command failed and what it printed.
@@ -130,14 +130,12 @@ on what Step 0 found. Record each answer with `mi_save` as shown.
    - **No** (the usual case): this machine becomes the hub.
      `mi_save ROLE hub`
    - **Yes**: this machine joins it. Ask for the hub's `https://…` URL
-     (`mi_save MUSTER_URL https://…`) and how this machine will receive its
-     mirror token: the person can paste it, or you may fetch it from the hub
-     over `ssh` if they allow that. `mi_save ROLE join`, then skip to Step 6.
-2. *(hub only)* **Which other machines should show their sessions?** Names
-   only, for example `laptop, desktop`. They can also be added at any time
-   later. `mi_save OTHER_HOSTS "laptop desktop"` (lowercase, spaces between,
-   each the machine's short hostname).
-3. *(hub only)* **How should voice dictation work?** Offer these, recommending
+     (`mi_save MUSTER_URL https://…`). `mi_save ROLE join`, then skip to
+     Step 6. (Its mirror token is minted on the hub in Step 7.)
+
+   Other machines are added later by pasting the same prompt into the agent
+   on each of them.
+2. *(hub only)* **How should voice dictation work?** Offer these, recommending
    the first that fits:
    - **Local, on the GPU — recommended when Step 0 found an NVIDIA GPU with
      6 GB or more and a Docker GPU runtime.** The Cohere transcribe model: the
@@ -156,7 +154,7 @@ on what Step 0 found. Record each answer with `mi_save` as shown.
      `mi_save STT_API_MODEL …`; write the key to a file without echoing it:
      `(umask 077; printf '%s' 'THE-KEY' > "$MI_DIR/stt-api-key")`.
    - **None for now.** `mi_save STT none`
-4. **May muster type into this machine's terminals?** (`-interactive`, asked
+3. **May muster type into this machine's terminals?** (`-interactive`, asked
    per machine.) Explain: **yes** lets you send messages to your agents from
    your phone, which is the main point of muster. It also means anyone who
    signs in to your muster, and confirms the password again, can type anything
@@ -164,9 +162,6 @@ on what Step 0 found. Record each answer with `mi_save` as shown.
    keeps the machine read-only: you can watch every session but not answer.
    Recommend **yes** on machines the person owns.
    `mi_save INTERACTIVE 1` (yes) or `mi_save INTERACTIVE 0` (no).
-5. **May I install missing packages, and use `sudo` where a step needs it?**
-   (Only ask if Step 0 found something missing, or on Linux, where Step 7 runs
-   `loginctl enable-linger`.) `mi_save SUDO_OK 1` or `mi_save SUDO_OK 0`.
 
 **If this fails:** if the person does not answer a question, use the
 recommendation and say so.
@@ -260,18 +255,6 @@ if [ -z "$(env_get MUSTER_VAPID_PRIVATE_KEY)" ]; then
   rm -f "$MI_DIR/vapid.tmp"
 fi
 env_set MUSTER_VAPID_SUBJECT "$MUSTER_URL"
-# Hand the push keys to the muster container, unless the compose file already does.
-if ! grep -q MUSTER_VAPID_PUBLIC_KEY docker-compose.yml; then
-  cat > docker-compose.override.yml <<'YML'
-# Written by INSTALL.md: passes the web push keys from .env to muster.
-services:
-  muster:
-    environment:
-      MUSTER_VAPID_PUBLIC_KEY: ${MUSTER_VAPID_PUBLIC_KEY:-}
-      MUSTER_VAPID_PRIVATE_KEY: ${MUSTER_VAPID_PRIVATE_KEY:-}
-      MUSTER_VAPID_SUBJECT: ${MUSTER_VAPID_SUBJECT:-}
-YML
-fi
 grep -c '^[A-Z_]*=CHANGE-ME$' .env | sed 's/^/placeholders left: /'
 ```
 
@@ -407,33 +390,40 @@ case ":$PATH:" in *":$MUSTER_BIN:"*) ;; *) echo "NOTE: add $MUSTER_BIN to PATH i
 Each machine has its own **mirror token**, minted on the hub. It lets that
 machine's `muster-mirror` connect, and nothing else.
 
-**On the hub**, mint a token for the hub itself and for each machine named in
-Step 1. A token is shown once, so it goes straight into a file. Existing tokens
-are kept:
+**On the hub**, mint the hub's own token. A token is shown once, so it goes
+straight into a file. An existing token is kept:
 
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
 cd "$MUSTER_DIR"
-mkdir -p "$HOME/.config/muster-mirror" "$MUSTER_DIR/join" && chmod 700 "$HOME/.config/muster-mirror" "$MUSTER_DIR/join"
-mint() { # mint HOST FILE
-  if [ -s "$2" ]; then echo "kept existing token for $1"; return 0; fi
-  (umask 077; docker compose exec -T muster /muster-server mirror token create "$1" > "$2.tmp") &&
-    [ -s "$2.tmp" ] && mv "$2.tmp" "$2" && echo "minted token for $1"
-}
-mint "$MIRROR_HOST" "$HOME/.config/muster-mirror/token"
-for h in ${OTHER_HOSTS:-}; do mint "$h" "$MUSTER_DIR/join/$h.token"; done
+mkdir -p "$HOME/.config/muster-mirror" && chmod 700 "$HOME/.config/muster-mirror"
+tok="$HOME/.config/muster-mirror/token"
+if [ -s "$tok" ]; then echo "kept existing token for $MIRROR_HOST"
+else
+  (umask 077; docker compose exec -T muster /muster-server mirror token create "$MIRROR_HOST" > "$tok.tmp") &&
+    [ -s "$tok.tmp" ] && mv "$tok.tmp" "$tok" && echo "minted token for $MIRROR_HOST"
+fi
 docker compose exec -T muster /muster-server mirror token ls
 ```
 
-For each other machine, its token is now in `~/muster/join/<host>.token` on the
-hub. Get it to that machine's `~/.config/muster-mirror/token` (mode `600`):
-over `ssh` if the person allowed it, for example
-`ssh <host> 'mkdir -p ~/.config/muster-mirror && umask 077 && cat > ~/.config/muster-mirror/token' < ~/muster/join/<host>.token`,
-or by having the person run this guide there (it asks for the hub's URL and
-the token).
+**On a joining machine**, skip this if `~/.config/muster-mirror/token` already
+holds a token. Otherwise the token is minted on the hub, for this machine's
+name (`echo "$MIRROR_HOST"`), when this machine joins. Ask the person which
+way:
 
-**On a joining machine**, if the person pastes the token to you, write it
-without echoing it: `(umask 077; mkdir -p ~/.config/muster-mirror; printf '%s' 'THE-TOKEN' > ~/.config/muster-mirror/token)`.
+- **You may reach the hub over `ssh`** (they give the hub's ssh name):
+  ```sh
+  . "$HOME/.config/muster-install/lib.sh"
+  mkdir -p "$HOME/.config/muster-mirror" && chmod 700 "$HOME/.config/muster-mirror"
+  (umask 077; ssh HUB "docker compose -f ~/muster/docker-compose.yml exec -T muster /muster-server mirror token create $MIRROR_HOST" \
+    > "$HOME/.config/muster-mirror/token.tmp") &&
+    [ -s "$HOME/.config/muster-mirror/token.tmp" ] && mv "$HOME/.config/muster-mirror/token.tmp" "$HOME/.config/muster-mirror/token"
+  ```
+- **Otherwise**, give the person this line to run on the hub, with this
+  machine's name filled in, and ask them to paste what it prints:
+  `docker compose -f ~/muster/docker-compose.yml exec -T muster /muster-server mirror token create <this machine's name>`.
+  Write the pasted token without echoing it:
+  `(umask 077; mkdir -p ~/.config/muster-mirror; printf '%s' 'THE-TOKEN' > ~/.config/muster-mirror/token)`.
 
 **On every machine**, write the service's settings and start it.
 It runs as a user service, so it starts at boot and restarts if it stops.
@@ -505,7 +495,7 @@ The service must be `active` (Linux) or `state = running` (macOS), and its log
 must show it connected, with no repeated errors.
 
 On Linux, so the service keeps running after the person logs out:
-`loginctl enable-linger "$USER"` (it may need `sudo`; ask, per Step 1).
+`loginctl enable-linger "$USER"` (it may need `sudo`; ask first).
 
 What `-interactive` (`MUSTER_MIRROR_INTERACTIVE=1`) grants: muster can open a
 **typing** terminal on this machine and paste messages into its tmux panes,
@@ -611,7 +601,6 @@ checks:
 | `server` | the address answers over HTTPS |
 | `manifest` | the phone can install muster |
 | `hook-token` | the machine API has a token, and this one is accepted |
-| `migrations` | the database schema is current |
 | `mirror-hosts` | every machine with a token is connected (the server's view) |
 | `mirror-service` | this machine's `muster-mirror` service is running |
 | `tmux` | tmux is installed here |

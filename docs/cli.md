@@ -75,7 +75,6 @@ muster doctor                               # on any other machine
 | `server` | `GET /health` answers muster's document, over **https** | the server |
 | `manifest` | `/manifest.webmanifest` is a standalone manifest with icons | the server |
 | `hook-token` | the server enforces a hook token and accepts this one | `GET /api/doctor` |
-| `migrations` | the database's newest migration is the newest the server has | `GET /api/doctor` (the database's `schema_migrations`) |
 | `mirror-hosts` | every host holding a live mirror token is connected | `GET /api/doctor` (the tunnel hub) |
 | `mirror-service` | the `muster-mirror` user service is active here | `systemctl --user is-active` (Linux), `launchctl print` (macOS) |
 | `tmux` | tmux is installed here | `tmux -V` |

@@ -83,7 +83,7 @@ type doctorCheck struct {
 // doctorChecks is the checks, in the order they run and print. The names are
 // what --skip takes.
 var doctorChecks = []string{
-	"server", "manifest", "hook-token", "migrations", "mirror-hosts",
+	"server", "manifest", "hook-token", "mirror-hosts",
 	"mirror-service", "tmux", "sign-in", "push", "dictation",
 }
 
@@ -135,18 +135,11 @@ type doctorRun struct {
 // serverReport is the part of GET /api/doctor's body (internal/api.DoctorReport)
 // this client reads.
 type serverReport struct {
-	Version        string `json:"version"`
 	AuthMode       string `json:"auth_mode"`
 	HookTokenArmed bool   `json:"hook_token_armed"`
-	Schema         *struct {
-		Applied int  `json:"applied"`
-		Latest  int  `json:"latest"`
-		Current bool `json:"current"`
-	} `json:"schema"`
-	SchemaError string `json:"schema_error"`
-	Push        bool   `json:"push"`
-	Dictation   bool   `json:"dictation"`
-	Mirror      struct {
+	Push           bool   `json:"push"`
+	Dictation      bool   `json:"dictation"`
+	Mirror         struct {
 		Enabled bool `json:"enabled"`
 		Hosts   []struct {
 			Host        string `json:"host"`
@@ -217,7 +210,6 @@ func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label string, skip
 	d.checkServer(ctx)
 	d.checkManifest(ctx)
 	d.checkHookToken(ctx)
-	d.checkMigrations()
 	d.checkMirrorHosts()
 	d.checkMirrorService(ctx)
 	d.checkTmux(ctx)
@@ -461,26 +453,6 @@ func (d *doctorRun) needsReport(name string) bool {
 	return false
 }
 
-func (d *doctorRun) checkMigrations() {
-	const name = "migrations"
-	if d.skipped(name) || d.needsReport(name) {
-		return
-	}
-	r := d.report
-	switch {
-	case r.Schema == nil && r.SchemaError != "":
-		d.add(name, statusFail, "the server could not read its schema version: "+r.SchemaError,
-			"check Postgres: `docker compose ps postgres` and `docker compose logs postgres`")
-	case r.Schema == nil:
-		d.add(name, statusFail, "the server runs without a database", "set DATABASE_URL (the compose file does): this server cannot keep anything")
-	case !r.Schema.Current:
-		d.add(name, statusFail, fmt.Sprintf("the database is at migration %d and this server needs %d", r.Schema.Applied, r.Schema.Latest),
-			"restart the server so it migrates (`docker compose restart muster`); if the database is AHEAD, run the newer image")
-	default:
-		d.add(name, statusPass, fmt.Sprintf("the database is at migration %d, the newest this server has", r.Schema.Applied), "")
-	}
-}
-
 func (d *doctorRun) checkMirrorHosts() {
 	const name = "mirror-hosts"
 	if d.skipped(name) || d.needsReport(name) {
@@ -670,8 +642,7 @@ func (d *doctorRun) checkPush(ctx context.Context) {
 		return
 	}
 	const fix = "generate keys with `docker run --rm ghcr.io/zacxdev/muster:<version> vapid generate`, put the two lines and " +
-		"MUSTER_VAPID_SUBJECT in the server's .env, make sure the compose file passes them to muster (INSTALL.md, step 4), " +
-		"then `docker compose up -d --wait`"
+		"MUSTER_VAPID_SUBJECT in the server's .env (INSTALL.md, step 4), then `docker compose up -d --wait`"
 	if d.signedIn {
 		// What the phone's Enable button fetches.
 		resp, body, err := d.get(ctx, pushKeyRoute, false)

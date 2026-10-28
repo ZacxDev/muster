@@ -113,9 +113,8 @@ func healthyMuster() *fakeMuster {
 		password:     fakePassword,
 		pushKey:      "BPUBLICKEY",
 		report: map[string]any{
-			"version": "1.2.3", "auth_mode": "password", "hook_token_armed": true,
-			"schema": map[string]any{"applied": 56, "latest": 56, "current": true},
-			"push":   true, "dictation": true, "public_url": "",
+			"auth_mode": "password", "hook_token_armed": true,
+			"push": true, "dictation": true, "public_url": "",
 			"mirror": map[string]any{"enabled": true, "hosts": []any{
 				map[string]any{"host": "alpha", "token": true, "online": true, "interactive": true},
 				map[string]any{"host": "beta", "token": true, "online": true, "interactive": false},
@@ -320,7 +319,7 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 }
 
 // TestDoctorHealthyIsAllPass is the positive control for every red case below:
-// the same fake, unbroken, passes all ten checks and exits 0 — so a FAIL in a
+// the same fake, unbroken, passes all nine checks and exits 0 — so a FAIL in a
 // case is the breakage, not the fixture.
 func TestDoctorHealthyIsAllPass(t *testing.T) {
 	m := healthyMuster()
@@ -342,7 +341,7 @@ func TestDoctorHealthyIsAllPass(t *testing.T) {
 	if !strings.Contains(r.check("dictation").Detail, "testing muster dictation") {
 		t.Fatalf("dictation detail %q does not carry the transcript", r.check("dictation").Detail)
 	}
-	if !strings.Contains(r.stderr, "10 passed, 0 failed, 0 skipped") {
+	if !strings.Contains(r.stderr, "9 passed, 0 failed, 0 skipped") {
 		t.Fatalf("stderr summary missing:\n%s", r.stderr)
 	}
 	// The human report is on stderr and nowhere on stdout.
@@ -375,13 +374,6 @@ func TestDoctorEachCheckGoesRedWhenBroken(t *testing.T) {
 		{check: "hook-token", why: "wrong token", opts: doctorOpts{token: "not-the-servers-token"}, detail: "refused this machine's token"},
 		{check: "hook-token", why: "old server", breakM: func(m *fakeMuster) { m.noDoctorRoute = true }, detail: "older than this CLI"},
 		{check: "hook-token", why: "personal token on an unarmed server", breakM: func(m *fakeMuster) { m.report["hook_token_armed"] = false }, detail: "no MUSTER_HOOK_TOKEN"},
-		{check: "migrations", why: "behind", breakM: func(m *fakeMuster) {
-			m.report["schema"] = map[string]any{"applied": 55, "latest": 56, "current": false}
-		}, detail: "migration 55"},
-		{check: "migrations", why: "unreadable", breakM: func(m *fakeMuster) {
-			m.report["schema"] = nil
-			m.report["schema_error"] = "the schema version could not be read from the database"
-		}, detail: "could not read"},
 		{check: "mirror-hosts", why: "a host offline", breakM: func(m *fakeMuster) {
 			m.report["mirror"].(map[string]any)["hosts"].([]any)[1].(map[string]any)["online"] = false
 		}, detail: "NOT connected: beta"},
@@ -447,7 +439,7 @@ func TestDoctorEachCheckGoesRedWhenBroken(t *testing.T) {
 func TestDoctorSkipsWhatThisMachineCannotCheck(t *testing.T) {
 	r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{noToken: true, noPassword: true})
 	want := map[string]doctorStatus{
-		"server": statusPass, "manifest": statusPass, "hook-token": statusSkip, "migrations": statusSkip,
+		"server": statusPass, "manifest": statusPass, "hook-token": statusSkip,
 		"mirror-hosts": statusSkip, "mirror-service": statusPass, "tmux": statusPass, "sign-in": statusSkip,
 		"push": statusSkip, "dictation": statusSkip,
 	}
@@ -490,7 +482,7 @@ func TestDoctorAnUnreachableServerSkipsTheRestAndFails(t *testing.T) {
 			if c.Status != statusFail {
 				t.Errorf("server = %+v, want FAIL", c)
 			}
-		case "manifest", "hook-token", "migrations", "mirror-hosts", "sign-in", "push", "dictation":
+		case "manifest", "hook-token", "mirror-hosts", "sign-in", "push", "dictation":
 			if c.Status != statusSkip {
 				t.Errorf("%s = %+v, want SKIP behind the server's FAIL", c.Name, c)
 			}

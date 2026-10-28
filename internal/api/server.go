@@ -203,8 +203,6 @@ type Server struct {
 
 	// readyCheck is the readiness probe's dependency check (e.g. a DB ping).
 	readyCheck func(context.Context) error
-	// schemaCheck is GET /api/doctor's schema read (doctor.go); nil = no database.
-	schemaCheck SchemaCheck
 
 	// extDefects are wiring mistakes found at UseExtensions time that must not
 	// be served with. See handleReady.

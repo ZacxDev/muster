@@ -644,11 +644,6 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		// check handleReady performs first; both must pass.
 		pool := a.pool
 		srv.SetReadyCheck(func(ctx context.Context) error { return db.Ping(ctx, pool) })
-		// `muster doctor`'s "migrations current": the database's own record.
-		srv.SetSchemaCheck(func(ctx context.Context) (int, int, error) {
-			st, err := db.SchemaStatus(ctx, pool)
-			return st.Applied, st.Latest, err
-		})
 	}
 	a.srv = srv
 

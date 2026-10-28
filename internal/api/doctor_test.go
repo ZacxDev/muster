@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,7 +14,7 @@ import (
 
 // doctorServer builds a server for GET /api/doctor with the given auth and
 // extensions.
-func doctorServer(t *testing.T, cfg AuthConfig, ext Extensions, schema SchemaCheck) *httptest.Server {
+func doctorServer(t *testing.T, cfg AuthConfig, ext Extensions) *httptest.Server {
 	t.Helper()
 	s := New(nil, cfg, log.New(io.Discard, "", 0))
 	if ext.Notes == nil {
@@ -28,9 +27,6 @@ func doctorServer(t *testing.T, cfg AuthConfig, ext Extensions, schema SchemaChe
 		ext.SessionLiveness = stubLiveness{}
 	}
 	s.UseExtensions(ext)
-	if schema != nil {
-		s.SetSchemaCheck(schema)
-	}
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return ts
@@ -60,13 +56,13 @@ func getDoctor(t *testing.T, ts *httptest.Server, token string) (int, map[string
 // "hook token: FAIL" from. The armed server is the control: the SAME request
 // shape answers 200.
 func TestDoctorRefusesAnUnarmedServerByTheField(t *testing.T) {
-	unarmed := doctorServer(t, AuthConfig{UIPassword: testUIPassword}, Extensions{}, nil)
+	unarmed := doctorServer(t, AuthConfig{UIPassword: testUIPassword}, Extensions{})
 	code, raw, _ := getDoctor(t, unarmed, "anything")
 	if code != http.StatusServiceUnavailable || raw[HookUnarmedField] != true {
 		t.Fatalf("unarmed: %d %v, want 503 with %s=true", code, raw, HookUnarmedField)
 	}
 
-	armed := doctorServer(t, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, Extensions{}, nil)
+	armed := doctorServer(t, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, Extensions{})
 	if code, _, _ := getDoctor(t, armed, testHookToken); code != http.StatusOK {
 		t.Fatalf("armed with the right token: %d, want 200", code)
 	}
@@ -82,18 +78,15 @@ func TestDoctorRefusesAnUnarmedServerByTheField(t *testing.T) {
 // dependency the feature itself reads, in both directions, so no field is a
 // constant that happens to match one fixture.
 func TestDoctorReportsWhatTheFeaturesRead(t *testing.T) {
-	cfg := AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken, PublicURL: "https://muster.example.test"}
+	cfg := AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}
 
-	off := doctorServer(t, cfg, Extensions{}, nil)
+	off := doctorServer(t, cfg, Extensions{})
 	code, raw, rep := getDoctor(t, off, testHookToken)
 	if code != http.StatusOK {
 		t.Fatalf("status %d", code)
 	}
-	if rep.Push || rep.Dictation || rep.Mirror.Enabled || rep.Schema != nil {
-		t.Fatalf("an empty server reports %+v, want push/dictation/mirror off and no schema", rep)
-	}
-	if raw["schema"] != nil {
-		t.Fatalf("schema = %v, want JSON null for a server with no database", raw["schema"])
+	if rep.Push || rep.Dictation || rep.Mirror.Enabled {
+		t.Fatalf("an empty server reports %+v, want push/dictation/mirror off", rep)
 	}
 	if hosts, ok := raw["mirror"].(map[string]any)["hosts"].([]any); !ok || len(hosts) != 0 {
 		t.Fatalf("mirror.hosts = %#v, want [] (not null)", raw["mirror"])
@@ -101,19 +94,22 @@ func TestDoctorReportsWhatTheFeaturesRead(t *testing.T) {
 	if !rep.HookTokenArmed {
 		t.Fatalf("an armed server reports hook_token_armed=false")
 	}
-	if rep.AuthMode != "password" || rep.PublicURL != "https://muster.example.test" || rep.Version != BuildVersion {
-		t.Fatalf("identity fields = %q %q %q", rep.AuthMode, rep.PublicURL, rep.Version)
+	if rep.AuthMode != "password" {
+		t.Fatalf("auth_mode = %q", rep.AuthMode)
+	}
+	// The report carries only what a doctor check reads: no version (that is
+	// /health's), no public URL (the client has its own).
+	for _, gone := range []string{"version", "public_url", "schema"} {
+		if _, ok := raw[gone]; ok {
+			t.Errorf("the report still carries %q", gone)
+		}
 	}
 
 	fm := &fakeMirror{online: true, interactive: true, liveHosts: []string{"never-came", "ws"}}
-	on := doctorServer(t, cfg, Extensions{Push: stubPush{}, Transcriber: stubTranscriber{}, Mirror: fm},
-		func(context.Context) (int, int, error) { return 41, 42, nil })
+	on := doctorServer(t, cfg, Extensions{Push: stubPush{}, Transcriber: stubTranscriber{}, Mirror: fm})
 	_, _, rep = getDoctor(t, on, testHookToken)
 	if !rep.Push || !rep.Dictation || !rep.Mirror.Enabled {
 		t.Fatalf("a configured server reports %+v, want push, dictation and mirror on", rep)
-	}
-	if rep.Schema == nil || rep.Schema.Applied != 41 || rep.Schema.Latest != 42 || rep.Schema.Current {
-		t.Fatalf("schema = %+v, want 41 of 42, not current", rep.Schema)
 	}
 	want := []DoctorHost{
 		{Host: "never-came", Token: true},
@@ -126,24 +122,22 @@ func TestDoctorReportsWhatTheFeaturesRead(t *testing.T) {
 	// The same host, disconnected and with its token revoked: still listed (the
 	// hub remembers it), offline, no token.
 	fm2 := &fakeMirror{online: false}
-	gone := doctorServer(t, cfg, Extensions{Mirror: fm2},
-		func(context.Context) (int, int, error) { return 42, 42, nil })
+	gone := doctorServer(t, cfg, Extensions{Mirror: fm2})
 	_, _, rep = getDoctor(t, gone, testHookToken)
-	if !reflect.DeepEqual(rep.Mirror.Hosts, []DoctorHost{{Host: "ws"}}) || rep.Schema == nil || !rep.Schema.Current {
-		t.Fatalf("revoked+offline: hosts %+v schema %+v", rep.Mirror.Hosts, rep.Schema)
+	if !reflect.DeepEqual(rep.Mirror.Hosts, []DoctorHost{{Host: "ws"}}) {
+		t.Fatalf("revoked+offline: hosts %+v", rep.Mirror.Hosts)
 	}
 }
 
-// TestDoctorNamesAFailedReadWithoutLeakingIt: a schema or token read that
+// TestDoctorNamesAFailedReadWithoutLeakingIt: a token read that
 // fails is reported as an error string, never as "current" or "no hosts".
 func TestDoctorNamesAFailedReadWithoutLeakingIt(t *testing.T) {
 	cfg := AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}
 	fm := &fakeMirror{liveErr: errors.New("pq: secret dsn detail")}
-	ts := doctorServer(t, cfg, Extensions{Mirror: fm},
-		func(context.Context) (int, int, error) { return 0, 0, errors.New("pq: secret dsn detail") })
+	ts := doctorServer(t, cfg, Extensions{Mirror: fm})
 	_, raw, rep := getDoctor(t, ts, testHookToken)
-	if rep.Schema != nil || rep.SchemaError == "" || rep.Mirror.HostsError == "" {
-		t.Fatalf("failed reads report %+v, want schema null with schema_error and hosts_error set", rep)
+	if rep.Mirror.HostsError == "" {
+		t.Fatalf("failed reads report %+v, want hosts_error set", rep)
 	}
 	b, _ := json.Marshal(raw)
 	if strings.Contains(string(b), "secret dsn detail") {

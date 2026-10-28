@@ -39,19 +39,21 @@ prompt into the agent on that machine and tell it muster is already running.
 
 Once, at the start:
 
-1. Whether muster already runs on another of your machines.
-2. Which other machines should show their sessions.
-3. **How dictation should work.** On a hub with an NVIDIA GPU (6 GB or more),
+1. Whether muster already runs on another of your machines (if so, its
+   address, and this machine joins it).
+2. **How dictation should work.** On a hub with an NVIDIA GPU (6 GB or more),
    the recommended choice is the local Cohere transcribe model: the most
    accurate, and audio never leaves the hub. It needs a Hugging Face token from
    an account that accepted the model's licence. Without a GPU: Whisper on the
    CPU (local, slower), or your own OpenAI-compatible API key (no hardware;
    recordings go to that provider).
-4. **Whether muster may type into each machine's terminals.** Yes lets you
+3. **Whether muster may type into this machine's terminals.** Yes lets you
    answer your agents from your phone; it also means anyone signed in to your
    muster (after confirming the password again) can type into any tmux window
    there. No keeps the machine read-only.
-5. Whether it may install missing packages and use `sudo`.
+
+Anything else (installing a missing package, a `sudo` step) it asks about when
+it gets there.
 
 It never shows you a password or token in the chat. The sign-in password stays
 in the hub's `~/muster/.env`, and the agent tells you the command that prints
