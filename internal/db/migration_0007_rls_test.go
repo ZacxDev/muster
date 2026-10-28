@@ -83,7 +83,6 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO connector_grants (agent_id, connector_name) VALUES ($1, $2)`, func() []any { return []any{agent, "conn-" + tag} }, nil},
 		{`INSERT INTO connector_standing_grants (connector_name, source) VALUES ($1, 'stored')`, func() []any { return []any{"conn-" + strings.ToLower(tag)} }, nil},
 		{`INSERT INTO connector_audit (kind, agent_id, agent_name, connector_name, method, host, path, status) VALUES ('proxy', $1, 'a', 'c', 'GET', 'h', '/', 200)`, func() []any { return []any{agent} }, nil},
-		{`INSERT INTO github_connection (login, scopes, token_ciphertext) VALUES ($1, 'repo', '\xde')`, func() []any { return []any{"octo-" + tag} }, nil},
 		{`INSERT INTO mirror_tokens (host, token_hash) VALUES ($1, $2)`, func() []any { return []any{"host-" + tag, "hash-" + tag} }, nil},
 		{`INSERT INTO flow_runner_tokens (host, token_hash) VALUES ($1, $2)`, func() []any { return []any{"host-" + tag, "flowhash-" + tag} }, nil},
 		{`INSERT INTO flow_requests (agent_id, agent_name, flow, host, instance, expires_at) VALUES ($1, 'a', 'muse.poll', 'laptop', 'personal', now() + interval '1 hour')`, func() []any { return []any{agent} }, nil},
@@ -540,7 +539,7 @@ func TestRLSOffAndOnRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertRLSState(t, f, false)
-	for _, tbl := range ownedTables {
+	for _, tbl := range ownedTablesNow() {
 		if got, all := count(t, f.base, f.pool, tbl, ""), count(t, f.mig, f.pool, tbl, ""); got != all {
 			t.Errorf("RLS off: no principal sees %d of %d rows in %s", got, all, tbl)
 		}

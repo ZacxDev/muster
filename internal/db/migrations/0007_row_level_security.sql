@@ -151,6 +151,11 @@ BEGIN
         'chat_sessions', 'chat_messages', 'connectors', 'connector_grants',
         'connector_audit', 'github_connection'
     ] LOOP
+        -- 0059 drops github_connection, and db.RLSOn re-runs this body on a
+        -- schema past 0059, so that ONE table is skipped when absent. Only it:
+        -- any other table missing here is still an error. (On a fresh database
+        -- 0007 runs before 0059 and the table is there.)
+        CONTINUE WHEN t = 'github_connection' AND to_regclass('public.github_connection') IS NULL;
         EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE public.%I FORCE ROW LEVEL SECURITY', t);
         EXECUTE format('DROP POLICY IF EXISTS owner_isolation ON public.%I', t);

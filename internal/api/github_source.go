@@ -21,8 +21,8 @@ import (
 // THE SOURCE: the configured GitHub App (Extensions.GitHubApp) — the identity
 // the `github` connector's tokens come from, so a repository it cannot see is
 // one no agent could clone. There is no other: the per-user OAuth connection
-// that used to be the fallback was removed (its `github_connection` table is
-// left in the schema, unread and unwritten, for a later migration to drop).
+// that used to be the fallback was removed (migration 0059 drops its
+// `github_connection` table).
 //
 // 🔴 THE APP IS THE ADMIN'S (githubApp). For a member principal, and on a
 // deployment with no App, there is NO GitHub identity: the repository list,
