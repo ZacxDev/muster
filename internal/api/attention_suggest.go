@@ -70,7 +70,8 @@ func (s *Server) startAskSuggestions(a attention.Ask) {
 }
 
 // WaitForAskSuggestions waits for every ask-suggestion generation this server
-// started (tests; a shutdown).
+// started: the tests, and cmd/muster-server's shutdown, which bounds it
+// (askSuggestDrainTimeout) before the push drain.
 func (s *Server) WaitForAskSuggestions() { s.attention.suggesting.Wait() }
 
 // askSuggestInput is ask a as the suggestion engine's input: the question, and

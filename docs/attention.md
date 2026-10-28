@@ -97,8 +97,8 @@ command, path or URL, never what Claude said.
 
 | item | title | body |
 |---|---|---|
-| a question (an agent's, the chief's, muster's own) | `<asker> is asking` | the question, on one line, then `Options: a · b · c` when it offered any |
-| a held question (a session's `AskUserQuestion`) | `<window> @ <host> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices |
+| a question (an agent's, the chief's, muster's own) | `<asker> is asking` | the question, on one line, then `Options: a · b · c` when it offered any — except muster's own ask about a [plugin message nobody acted on](plugins.md#a-message-the-chief-does-not-act-on), whose long fixed sentence would fill the body: its body is `From: <sender> · Subject: <subject>`, then the option (the page shows the whole question) |
+| a held question (a session's `AskUserQuestion`) | `<window> @ <host> is asking` | the question (each one's first line, numbered, when it asks several), then one question's choices (in the push only: `attention_list` carries no `options` for it, as it is answered on its question card, not with `attention_answer`) |
 | a waiting session | `A session is waiting on you` | `Waiting: <tool name> · <window> @ <host>`, or `Waiting: <window> @ <host>` when its host names no tool |
 
 Each line is folded to one line, anything shaped like a secret is redacted, and

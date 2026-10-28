@@ -313,6 +313,13 @@ func TestTheAskPageIsTheAsksOwn(t *testing.T) {
 	if !strings.Contains(after, `data-ask-closed data-status="answered"`) || !strings.Contains(after, "Your answer: wait") {
 		t.Fatalf("the answered ask's page:\n%s", after)
 	}
+	// A refusal because the ask closed meanwhile comes back as
+	// ?notice=ask-closed: a closed ask has no answer box (where notices show),
+	// so the page says it in the content — and draws no Dismiss.
+	closed := f.page(t, askPagePath(id)+"?notice="+noticeAskClosed)
+	if !strings.Contains(closed, `data-ask-notice>Not recorded: that question is no longer open`) || strings.Contains(closed, "data-ask-dismiss-form>") {
+		t.Fatalf("a closed ask's page with ?notice=ask-closed:\n%s", closed)
+	}
 	theirs := f.ask(t, f.workerTok, "A member's question?")
 	for _, p := range []string{askPagePath(theirs), askPagePath(987654321)} {
 		if w := f.call(t, http.MethodGet, p, nil, f.operator()); w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "A member's question?") {

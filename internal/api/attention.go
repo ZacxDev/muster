@@ -130,7 +130,7 @@ type attentionState struct {
 	// recompute that read an older hub state can never commit after a newer one.
 	diffMu sync.Mutex
 	// suggesting tracks the asks' suggestion generations this process started
-	// (attention_suggest.go), so a test can wait for each.
+	// (attention_suggest.go), so a test — and the shutdown, bounded — can wait.
 	suggesting sync.WaitGroup
 }
 
@@ -201,6 +201,12 @@ type attentionItem struct {
 	// migration 0057), "" none: what its notification and its page draw as
 	// chips. Not in the item's JSON (attention_list), which predates them.
 	suggestions []string
+	// pushText, when set, replaces Text in the notification body (muster's
+	// own unrouted-message ask: unroutedPushText); the page shows Text.
+	pushText string
+	// choices are a held question's choice labels, listed in its push only
+	// (never in attention_list's options).
+	choices []string
 }
 
 // hermesAsk is a waiting Hermes window's ask as an attention item shows it.
@@ -259,6 +265,12 @@ func askerLabel(a attention.Ask) string {
 func askItem(a attention.Ask) attentionItem {
 	it := attentionItem{Key: attentionAskKey(a.ID), Kind: attentionKindAsk, Source: askerLabel(a), Text: a.Question,
 		Options: a.Options, Since: a.CreatedAt, Link: attentionPath + "#" + attentionAskKey(a.ID), AskID: a.ID, suggestions: a.Suggestions}
+	if a.Asker.System {
+		// muster's own unrouted-message ask: a compact push (unroutedPushText).
+		if t, ok := unroutedPushText(a.Question); ok {
+			it.pushText = t
+		}
+	}
 	switch {
 	case a.Asker.AgentID > 0:
 		it.subject = focus.AgentSubject(a.Asker.AgentID)
@@ -393,12 +405,14 @@ func (s *Server) waitingSessions(ctx context.Context) []attentionItem {
 		switch {
 		case wt.q != nil:
 			it.Kind, it.Text = attentionKindQuestion, heldQuestionText(*wt.q)
-			// One question's choices are named (its push lists them); several
-			// questions' are each their own, answered on the question card.
+			// One question's choices are named in its PUSH (choices, not Options:
+			// attention_list serialises Options as answers attention_answer takes,
+			// and a held question is answered on its question card, not there);
+			// several questions' are each their own.
 			if len(wt.q.Questions) == 1 {
 				for _, o := range wt.q.Questions[0].Options {
 					if l := strings.TrimSpace(o.Label); l != "" {
-						it.Options = append(it.Options, l)
+						it.choices = append(it.choices, l)
 					}
 				}
 			}
@@ -662,9 +676,13 @@ func attentionPushBody(it attentionItem) string {
 		return push.CutClusters(mirror.OneLine(body, 1<<20), attentionPushBodyMax)
 	}
 	opts := ""
-	if len(it.Options) > 0 {
-		parts := make([]string, 0, len(it.Options))
-		for _, o := range it.Options {
+	listed := it.Options
+	if it.Kind == attentionKindQuestion {
+		listed = it.choices
+	}
+	if len(listed) > 0 {
+		parts := make([]string, 0, len(listed))
+		for _, o := range listed {
 			if o = pushLine(o); o != "" {
 				parts = append(parts, o)
 			}
@@ -679,7 +697,11 @@ func attentionPushBody(it attentionItem) string {
 	}
 	if it.Kind == attentionKindAsk {
 		// An ask's question is ONE line: its paragraphs run on.
-		lines = append(lines, pushLine(it.Text))
+		text := it.Text
+		if it.pushText != "" {
+			text = it.pushText
+		}
+		lines = append(lines, pushLine(text))
 	} else {
 		// A held question's several questions keep one line each.
 		for _, l := range strings.Split(it.Text, "\n") {

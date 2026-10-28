@@ -107,6 +107,10 @@ const (
 	// router's own exit path records against reusing a drain context.
 	pushDrainTimeout = 5 * time.Second
 
+	// askSuggestDrainTimeout bounds the wait for asks' suggestion generations
+	// (and the re-push each starts) at shutdown, before the push drain.
+	askSuggestDrainTimeout = 3 * time.Second
+
 	// kickoffDrainTimeout bounds the wait for the kickoff deliverer to RECORD the
 	// turns SIGTERM cancelled (agentkickoff.Deliverer.Done). A cancelled turn returns
 	// at once and its record is one UPDATE, so this is slack, not a turn budget.
@@ -1007,6 +1011,22 @@ func (a *app) shutdown() {
 	case <-pluginsDone:
 	case <-time.After(kickoffDrainTimeout):
 		a.logger.Printf("plugin deliveries did not record their outcome within %s; exiting anyway", kickoffDrainTimeout)
+	}
+
+	// An ask's suggested replies, still being generated, re-push the ask when
+	// they land: give them a short bound to do so BEFORE the push drain below,
+	// so a re-push they start is waited for there. One still running past it
+	// is abandoned — the ask keeps its first notification and simply has no
+	// chips (a model call that outlives a rollout is not worth holding it).
+	sugDone := make(chan struct{})
+	go func() {
+		a.srv.WaitForAskSuggestions()
+		close(sugDone)
+	}()
+	select {
+	case <-sugDone:
+	case <-time.After(askSuggestDrainTimeout):
+		a.logger.Printf("ask suggestions did not finish within %s; exiting without them", askSuggestDrainTimeout)
 	}
 
 	done := make(chan struct{})

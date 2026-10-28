@@ -93,18 +93,25 @@ func (s *Server) renderAskPage(w http.ResponseWriter, r *http.Request, a attenti
 	source := textplain.Title(it.Source)
 	var b strings.Builder
 	b.WriteString(`<section id="ask-page" class="flex min-w-0 flex-col gap-4" data-testid="ask-page" data-ask-id="` + strconv.FormatInt(a.ID, 10) + `">
-<style>body:has(#ask-live [data-ask-closed]) #app-compose { display: none; }</style>
+<style>body:has(#ask-live [data-ask-closed]) :is(#app-compose, [data-ask-dismiss-form]) { display: none; }</style>
 <p class="text-sm text-fg2"><span class="font-semibold text-fg" data-ask-source>` + esc(source) + `</span> asks · <time datetime="` +
 		a.CreatedAt.UTC().Format(time.RFC3339) + `">` + esc(attentionAge(now.Sub(a.CreatedAt))) + `</time></p>
 <p class="whitespace-pre-wrap break-words text-lg leading-relaxed text-fg" data-ask-question>` + esc(a.Question) + `</p>
 `)
+	// A closed ask has no answer box, where the notices show: an answer or a
+	// dismissal refused because the ask closed meanwhile (?notice=ask-closed)
+	// is said here instead.
+	if note, _ := composerNotice(r); note != "" && a.Status != attention.Open {
+		b.WriteString(`<p role="status" class="rounded-2xl bg-s1 px-4 py-3 text-sm text-fg ring-1 ring-line" data-ask-notice>` + esc(note) + `</p>
+`)
+	}
 	if links := s.askContextLinks(r.Context(), a, it); links != "" {
 		b.WriteString(links)
 	}
 	b.WriteString(`<div id="ask-live" class="flex min-w-0 flex-col gap-4" aria-live="polite">` + live + `</div>
 `)
 	if a.Status == attention.Open {
-		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + strconv.FormatInt(a.ID, 10) + `/cancel" hx-boost="false" class="pt-2">
+		b.WriteString(`<form method="POST" action="` + attentionPath + `/asks/` + strconv.FormatInt(a.ID, 10) + `/cancel" hx-boost="false" class="pt-2" data-ask-dismiss-form>
 <input type="hidden" name="return" value="` + esc(askPagePath(a.ID)) + `">
 <button type="submit" class="` + flowsQuietButton + ` w-full" data-ask-dismiss>Dismiss without answering</button></form>
 `)
