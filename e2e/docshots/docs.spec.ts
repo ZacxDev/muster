@@ -11,6 +11,7 @@ import { binDir, docsBrowserPort, docsGotruePort, docsMainPort, dsn, e2eRoot, go
 import { serverBinary, startServer, Running } from '../lib/server';
 import { authenticator } from '../lib/webauthn';
 import { writeFileAtomic } from '../lib/atomic';
+import { landedHome } from '../lib/nav';
 
 // THE DOCS SCREENSHOTS (docs/img/*.png) AND THE README'S PHONE-FLOW ANIMATION
 // (docs/img/phone-flow.gif), generated rather than hand-made, so they can be
@@ -245,7 +246,7 @@ async function signIn(page: Page) {
   await page.fill('#claim-email', adminEmail);
   await page.fill('#claim-password', adminPW);
   await page.fill('#claim-password2', adminPW);
-  await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
   cookies = await page.context().cookies(browserURL);
 }
 

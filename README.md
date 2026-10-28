@@ -81,8 +81,9 @@ against a throwaway database.
 - **Mirrored sessions.** Each tmux window on your machines is shown live. A
   Claude Code window renders as a chat, and the Terminal view is one tap away.
   Viewing a window never moves your own terminal. → [docs/mirroring.md](docs/mirroring.md)
-- **Session switcher and search.** A bottom bar with Recent, Pins and All. Its
-  search opens with the magnifier or `/`. → [docs/mirroring.md](docs/mirroring.md)
+- **Session switcher, sidebar and search.** A bottom bar with Recent, Pins and
+  All, and a sidebar that lists every session like channels in a chat app: the
+  chief first, then the sessions waiting on you, then the rest by recency. The search opens with the magnifier or `/`. → [docs/mirroring.md](docs/mirroring.md)
 - **Message box and step-up.** Send text into a Claude Code session, a plain
   terminal pane (Codex, Gemini CLI, a shell) or a dispatched agent. The message
   box does not send to opencode yet, and sends to Hermes only through the
@@ -108,7 +109,8 @@ These are optional, and most are off until you configure them.
 
 - **Agent dispatch on Kubernetes.** Start an agent on a task in its own pod.
   → [docs/provisioner.md](docs/provisioner.md)
-- **Chief.** One agent that reports on the rest of the fleet.
+- **Chief.** One agent that reports on the rest of the fleet. With a chief,
+  muster's home opens its chat.
   → [docs/chief.md](docs/chief.md)
 - **Connectors.** Agents use your stored HTTP credentials through muster's
   proxy, and never see the secret. → [docs/connectors.md](docs/connectors.md)
