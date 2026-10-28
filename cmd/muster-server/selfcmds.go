@@ -9,20 +9,15 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/ZacxDev/muster/internal/api"
 )
 
-// The two self-contained subcommands a packaged deployment needs and that ask
-// for no database and no configuration beyond MUSTER_PORT:
+// `muster-server healthcheck`: the self-contained probe a packaged deployment
+// needs, asking for no database and no configuration beyond MUSTER_PORT.
 //
-//	muster-server -version | --version | version   print the stamped version
-//	muster-server healthcheck                      probe this process's /readyz
-//
-// 🔴 `healthcheck` EXISTS BECAUSE THE IMAGE IS DISTROLESS. There is no shell,
-// curl or wget inside it, so a compose or Docker HEALTHCHECK has nothing to run
-// except this binary. deploy/docker-compose.yml calls it; `docker compose up
-// --wait` depends on it.
+// 🔴 IT EXISTS BECAUSE THE IMAGE IS DISTROLESS. There is no shell, curl or wget
+// inside it, so a compose or Docker HEALTHCHECK has nothing to run except this
+// binary. deploy/docker-compose.yml calls it; `docker compose up --wait`
+// depends on it.
 //
 // ⚠ IT PROBES /readyz, NOT /health. /health answers 200 as soon as the listener
 // is up, whatever the database says; /readyz is the one that fails while
@@ -37,25 +32,9 @@ import (
 // therefore unhealthy here, with a sentence naming the variable on stderr.
 // Any other status is fine: gotrue mode serves its own page there.
 
-// selfCommand reports which self-contained subcommand args name, or "".
-func selfCommand(args []string) string {
-	if len(args) != 1 {
-		return ""
-	}
-	switch args[0] {
-	case "-version", "--version", "version":
-		return "version"
-	case "healthcheck":
-		return "healthcheck"
-	}
-	return ""
-}
-
-// runVersion prints the version the release build stamped into
-// api.BuildVersion ("dev" for an unstamped build).
-func runVersion(stdout io.Writer) int {
-	fmt.Fprintf(stdout, "muster-server %s\n", api.BuildVersion)
-	return 0
+// isHealthcheck reports whether args are exactly `healthcheck`.
+func isHealthcheck(args []string) bool {
+	return len(args) == 1 && args[0] == "healthcheck"
 }
 
 // healthcheckTimeout bounds one probe. A compose healthcheck has its own

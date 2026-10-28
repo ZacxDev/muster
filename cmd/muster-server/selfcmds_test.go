@@ -9,45 +9,22 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-
-	"github.com/ZacxDev/muster/internal/api"
 )
 
-func TestSelfCommandRecognisesOnlyTheExactSpellings(t *testing.T) {
-	cases := map[string]string{
-		"-version":    "version",
-		"--version":   "version",
-		"version":     "version",
-		"healthcheck": "healthcheck",
-		// Everything else falls through to the account commands, unchanged.
-		"invite":       "",
-		"-healthcheck": "",
-		"versions":     "",
+func TestIsHealthcheckMatchesOnlyTheExactSpelling(t *testing.T) {
+	cases := map[string]bool{
+		"healthcheck":  true,
+		"-healthcheck": false,
+		"health":       false,
+		"invite":       false, // the account commands still get everything else
 	}
 	for arg, want := range cases {
-		if got := selfCommand([]string{arg}); got != want {
-			t.Errorf("selfCommand(%q) = %q, want %q", arg, got, want)
+		if got := isHealthcheck([]string{arg}); got != want {
+			t.Errorf("isHealthcheck(%q) = %v, want %v", arg, got, want)
 		}
 	}
-	if got := selfCommand(nil); got != "" {
-		t.Errorf("selfCommand(nil) = %q, want \"\" (no args is the server itself)", got)
-	}
-	if got := selfCommand([]string{"version", "extra"}); got != "" {
-		t.Errorf("selfCommand with a trailing arg = %q, want \"\"", got)
-	}
-}
-
-func TestRunVersionPrintsTheStampedVersion(t *testing.T) {
-	old := api.BuildVersion
-	t.Cleanup(func() { api.BuildVersion = old })
-	// A value the default ("dev") cannot equal, so a hardcoded literal fails.
-	api.BuildVersion = "9.8.7"
-	var out bytes.Buffer
-	if rc := runVersion(&out); rc != 0 {
-		t.Fatalf("rc = %d", rc)
-	}
-	if got := out.String(); got != "muster-server 9.8.7\n" {
-		t.Fatalf("output = %q", got)
+	if isHealthcheck(nil) || isHealthcheck([]string{"healthcheck", "extra"}) {
+		t.Error("isHealthcheck must be false for no args (the server itself) and for a trailing arg")
 	}
 }
 

@@ -817,7 +817,10 @@ jobs:
               echo "::error::tag $GITHUB_REF_NAME is not v<MAJOR>.<MINOR>.<PATCH>; no muster image is published for it"
               exit 1
             fi
-            mode=refuse
+            # `release`, not `refuse`: a re-pushed tag or a re-run keeps an image
+            # this commit already published, and still refuses one built from
+            # any other commit (.github/scripts/ghcr-push.sh).
+            mode=release
           else
             v="${GITHUB_SHA::7}"
             mode=reuse
@@ -863,6 +866,8 @@ jobs:
 
       - name: push (multi-arch)
         if: ${{ github.event_name == 'push' }}
+        env:
+          GHCR_REVISION: ${{ github.sha }}
         run: |
           .github/scripts/ghcr-push.sh buildx '${{ steps.tag.outputs.ref }}' '${{ steps.tag.outputs.mode }}' \
             linux/amd64,linux/arm64 -- \
@@ -943,7 +948,11 @@ jobs:
   # that changes rarely. Its CODE is gated on every run instead: the
   # `release-dry-run` job runs images/stt-cohere/test_app.py against app.py
   # with the model stubbed. linux/amd64 only (the base has no arm64 build).
-  # Never overwritten: a version that already exists fails the job.
+  # Never overwritten: a version already published from THIS commit is kept
+  # (a re-run is a no-op), one from any other commit fails the job.
+  #
+  # ⚠ A RE-RUN STILL REBUILDS BEFORE IT FINDS THE IMAGE PRESENT. Accepted: the
+  # probe is in ghcr-push.sh, which is the one place that decision lives.
   #
   # Local: docker build -t muster-stt-cohere images/stt-cohere
   image-stt-cohere:
@@ -1002,16 +1011,32 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: push
-        run: .github/scripts/ghcr-push.sh push 'muster-stt-cohere:${{ steps.tag.outputs.version }}' '${{ steps.tag.outputs.ref }}' refuse
+        env:
+          GHCR_REVISION: ${{ github.sha }}
+        run: .github/scripts/ghcr-push.sh push 'muster-stt-cohere:${{ steps.tag.outputs.version }}' '${{ steps.tag.outputs.ref }}' release
 
   # ---------------------------------------------------------------------------
   # THE GITHUB RELEASE, on a vX.Y.Z tag, after BOTH images are published.
   #
+  # Tags are pushed by the operator's release tooling on every live release,
+  # so a tag can land on a commit `main` already built and published images
+  # for. The image jobs above handle that (mode `release`); this job is
+  # idempotent too:
+  #
+  #   * no release for the tag  -> create it with every asset;
+  #   * a release that exists   -> its checksums.txt must equal this build's
+  #     (the assets are reproducible: same commit, same bytes), and only the
+  #     assets it is MISSING are uploaded (a previous attempt that died
+  #     half-way). A release whose checksums differ is never touched: the job
+  #     fails rather than replace published binaries.
+  #
   # 🔴 LAST, AND GATED ON THE IMAGES. The release's docker-compose.yml names
   # ghcr.io/<owner>/muster:<X.Y.Z> and muster-stt-cohere:<X.Y.Z>; publishing
   # the release before them would hand people a compose file that cannot pull.
-  # 🔴 NEVER OVERWRITES: `gh release create` fails when the release exists, and
-  # `--verify-tag` refuses to create a tag that was not pushed.
+  #
+  # RELEASE NOTES: GitHub's generated notes — the pull requests merged since
+  # the previous release tag — under a short header naming the images and the
+  # install files. `--verify-tag` refuses to create a tag that was not pushed.
   #
   # Local (no publishing): scripts/release-build.sh <X.Y.Z>
   release:
@@ -1019,6 +1044,9 @@ jobs:
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
     needs: [image-muster, image-stt-cohere]
     runs-on: ubuntu-latest
+    concurrency:
+      group: github-release-${{ github.ref_name }}
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -1032,15 +1060,44 @@ jobs:
       - name: build the release assets
         run: scripts/release-build.sh "$GITHUB_REF_NAME"
 
-      - name: publish the release
+      - name: publish the release (create, or complete an existing one)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --verify-tag \
-            --title "muster $GITHUB_REF_NAME" \
-            --generate-notes
+          tag="$GITHUB_REF_NAME"; v="${tag#v}"; owner="${GITHUB_REPOSITORY_OWNER,,}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag exists; checking it against this build"
+            mkdir -p published
+            gh release download "$tag" --pattern checksums.txt --dir published ||
+              { echo "::error::release $tag exists but has no checksums.txt; refusing to touch it"; exit 1; }
+            cmp -s published/checksums.txt dist/checksums.txt ||
+              { echo "::error::release $tag holds DIFFERENT assets than this commit builds"; diff published/checksums.txt dist/checksums.txt || true; exit 1; }
+            have="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+            missing=()
+            for f in dist/*; do grep -qxF "$(basename "$f")" <<<"$have" || missing+=("$f"); done
+            if [ "${#missing[@]}" -gt 0 ]; then
+              echo "uploading the missing assets: ${missing[*]}"
+              gh release upload "$tag" "${missing[@]}"
+            else
+              echo "release $tag is already complete; nothing to do"
+            fi
+          else
+            {
+              echo "## Install"
+              echo
+              echo "Images: \`ghcr.io/$owner/muster:$v\` (linux/amd64, linux/arm64) and \`ghcr.io/$owner/muster-stt-cohere:$v\` (dictation, GPU, linux/amd64)."
+              echo
+              echo "Server: download \`docker-compose.yml\` and \`env.example\` (save it as \`.env\`), fill in the CHANGE-ME values, then \`docker compose up -d --wait\`."
+              echo "Each machine: the \`muster-mirror\` archive for its OS and architecture; the \`muster\` CLI likewise. Verify downloads against \`checksums.txt\`."
+              echo
+            } > notes-header.md
+            gh release create "$tag" dist/* \
+              --verify-tag \
+              --title "muster $tag" \
+              --notes-file notes-header.md \
+              --generate-notes
+          fi
           # GitHub renames some asset names (a leading period, for one); the
           # install guide links these names, so any rename fails the job.
           diff <(ls dist | LC_ALL=C sort) \
-               <(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | LC_ALL=C sort)
+               <(gh release view "$tag" --json assets --jq '.assets[].name' | LC_ALL=C sort)
