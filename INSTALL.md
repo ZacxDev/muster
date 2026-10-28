@@ -217,7 +217,7 @@ Read the output and note:
 
 | what | needed on | if it is missing |
 |---|---|---|
-| `os`, `arch` | every machine | Linux and macOS on amd64 or arm64 only. Stop on anything else and tell the person. |
+| `os`, `arch` | every machine | Linux and macOS on amd64 or arm64 only. Stop on anything else and tell the person. macOS hosts are experimental: Rendered-view detection there is unverified on a real Mac, and the Terminal view's attach is Linux-only today (`internal/mirrorhost/pty_other.go`). On a Mac, tell the person this. |
 | `curl`, `tar` | every machine | Install them with the system package manager (ask first). |
 | `tmux` | every machine | Install it (`apt install tmux`, `dnf install tmux`, `brew install tmux`; ask first). muster shows tmux windows, so this is required. |
 | `tailscale`, logged in | every machine | Asked up front (Step 1, question 4). Install from <https://tailscale.com/download>. Then `tailscale up` (on Linux, `sudo tailscale up`) prints a sign-in URL: give it to the person to open, and wait. Every machine and the phone must sign in to the **same** tailnet. |
@@ -929,8 +929,7 @@ Then tell the person, briefly:
   <https://github.com/ZacxDev/muster/blob/main/docs/mirroring.md#bring-a-session-you-already-have-into-tmux>;
 - **a Claude Code session opens in the Rendered view**, a chat. The Terminal
   view is one tap away in the header, as the fallback. If a window opens in the
-  Terminal view only, the line at its top says why. On a Mac, Claude Code
-  windows open in the Terminal view only, for now;
+  Terminal view only, the line at its top says why;
 - that `muster doctor` re-checks everything.
 
 ---

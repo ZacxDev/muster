@@ -204,8 +204,9 @@ type pane struct {
 //     dropped (LocatePanes): two panes are never shown one conversation, and a
 //     pane it cannot tell apart has no rendered view rather than a wrong one.
 //
-// It reads only files the user muster-mirror runs as can read: its own
-// processes' /proc entries and its own ~/.claude.
+// It reads only what the user muster-mirror runs as can read: its own
+// processes (through procs(): /proc on Linux, ps/sysctl/lsof on macOS) and its
+// own ~/.claude.
 type ClaudeLocator struct {
 	// Proc is the proc filesystem root ("" = /proc). A test points it at a
 	// fixture tree.
@@ -218,6 +219,9 @@ type ClaudeLocator struct {
 	// transcript_path, claude_pid, claude_start} — the shape a Claude Code hook
 	// writes (the format is documented in docs/mirroring.md).
 	PaneMapDir string
+	// src, when set, is the process source read instead of Proc or this host's
+	// own (procs()): what a test hands a darwin-shaped table to.
+	src procSource
 }
 
 func (l ClaudeLocator) proc() string {
@@ -240,7 +244,8 @@ func (l ClaudeLocator) configDir() string {
 
 // configDirOf is the config dir the Claude Code process pid writes its
 // sessions file and transcripts under, read from that process's OWN
-// environment (/proc/<pid>/environ, as it was exec'd):
+// environment (/proc/<pid>/environ on Linux, kern.procargs2 on macOS: as it
+// was exec'd):
 //
 //   - its CLAUDE_CONFIG_DIR, when that is an absolute path;
 //   - when it sets none (or an empty one): its own home's .claude — the CLI's
@@ -260,20 +265,20 @@ func (l ClaudeLocator) configDir() string {
 // CLAUDE_CONFIG_DIR must not impose it on a CLI started without one. The
 // process says where it writes; believe it.
 func (l ClaudeLocator) configDirOf(pid int) string {
-	b, err := os.ReadFile(filepath.Join(l.proc(), strconv.Itoa(pid), "environ"))
+	env, err := l.procs().environ(pid)
 	if err != nil {
 		return l.configDir()
 	}
 	var home string
-	for _, kv := range bytes.Split(b, []byte{0}) {
-		if v, ok := bytes.CutPrefix(kv, []byte("CLAUDE_CONFIG_DIR=")); ok && len(v) > 0 {
-			if d := string(v); filepath.IsAbs(d) {
-				return filepath.Clean(d)
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "CLAUDE_CONFIG_DIR="); ok && v != "" {
+			if filepath.IsAbs(v) {
+				return filepath.Clean(v)
 			}
 			return l.configDir()
 		}
-		if v, ok := bytes.CutPrefix(kv, []byte("HOME=")); ok {
-			home = string(v)
+		if v, ok := strings.CutPrefix(kv, "HOME="); ok {
+			home = v
 		}
 	}
 	if l.Home != "" {
@@ -291,8 +296,14 @@ type procInfo struct {
 	comm string
 	argv []string
 	// start is /proc/<pid>/stat field 22 (start time, clock ticks since boot),
-	// as written: what tells a live process from a reused pid.
+	// as written: what tells a live process from a reused pid. On macOS it is
+	// `ps -o lstart` in the C locale and UTC (psEnv) — the token Claude Code
+	// itself writes as procStart there.
 	start string
+	// exe is the path the process was exec'd with, where the source reads it
+	// (macOS: kern.procargs2); "" from /proc, which the walk does not need it
+	// from.
+	exe string
 	// state is /proc/<pid>/stat field 3 ("S", "R", "Z" for a zombie, …).
 	state string
 	// tty is /proc/<pid>/stat field 7 (tty_nr), the controlling terminal's
@@ -307,7 +318,7 @@ type procInfo struct {
 
 // table reads every process's parent, name and argv once.
 func (l ClaudeLocator) table() (map[int]procInfo, map[int][]int) {
-	procs, children, _ := readProcTable(l.proc())
+	procs, children, _ := l.procs().table()
 	return procs, children
 }
 
@@ -357,13 +368,34 @@ func readProcTable(root string) (map[int]procInfo, map[int][]int, error) {
 	return procs, children, nil
 }
 
+// installerVersion is how the native installer names Claude Code's binary:
+// <data dir>/claude/versions/<major.minor.patch>.
+var installerVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
+
+// isInstallerBinary reports whether exe is the native installer's binary:
+// a version-named file directly under a claude/versions/ directory. The
+// whole path shape is required — a version number alone names nothing.
+func isInstallerBinary(exe string) bool {
+	dir := filepath.Dir(exe)
+	return installerVersion.MatchString(filepath.Base(exe)) &&
+		filepath.Base(dir) == "versions" && filepath.Base(filepath.Dir(dir)) == "claude"
+}
+
 // isClaude reports whether a process is the Claude Code CLI: its name (the CLI
 // sets its process title to "claude"; the NixOS wrapper execs ".claude-wrapped"),
-// its argv[0], or the npm package's entry script in its argv (a CLI started
-// as `node …/@anthropic-ai/claude-code/cli.js`).
+// its argv[0], the npm package's entry script in its argv (a CLI started
+// as `node …/@anthropic-ai/claude-code/cli.js`), or — where the source reads
+// it (macOS) — the path it was exec'd with: named claude, or the native
+// installer's version-named binary (…/claude/versions/2.1.289), which macOS
+// may report as the process's name.
 func isClaude(p procInfo) bool {
 	if p.comm == "claude" || p.comm == ".claude-wrapped" {
 		return true
+	}
+	if p.exe != "" {
+		if b := filepath.Base(p.exe); b == "claude" || b == ".claude-wrapped" || isInstallerBinary(p.exe) {
+			return true
+		}
 	}
 	if len(p.argv) > 0 {
 		if b := filepath.Base(p.argv[0]); b == "claude" || b == ".claude-wrapped" {
@@ -402,10 +434,11 @@ func findClaude(root int, procs map[int]procInfo, children map[int][]int) int {
 // its card and in its Terminal view). Whole sentences, each well inside
 // mirror.MaxAgentNote, and never a path: the reason, not the host's layout.
 const (
-	// NoViewNoProcs: the host cannot read its process table (no /proc: macOS),
-	// so Claude Code cannot be found in any pane. Said only on a window whose
-	// command looks like Claude Code (looksLikeClaudeCommand).
-	NoViewNoProcs = "muster-mirror cannot read this host's processes (no /proc, as on macOS), so it cannot find the Claude Code conversation in this window."
+	// NoViewNoProcs: the host cannot read its process table (an OS with
+	// neither /proc nor the macOS backend, or the read failed), so Claude Code
+	// cannot be found in any pane. Said only on a window whose command looks
+	// like Claude Code (looksLikeClaudeCommand).
+	NoViewNoProcs = "muster-mirror cannot read this host's process table, so it cannot find the Claude Code conversation in this window."
 	// NoViewNotYet: Claude Code runs and named its session, but has written no
 	// transcript for it yet — a CLI just started, before its first message.
 	NoViewNotYet = "Claude Code has not written this conversation yet. The Rendered view appears after its first message."
@@ -574,7 +607,7 @@ func (l ClaudeLocator) resolve(pid int, cfg string, live func() liveSessions) (p
 			return "", "", paneStatus{}, false, false
 		}
 	}
-	cwd, err := os.Readlink(filepath.Join(l.proc(), strconv.Itoa(pid), "cwd"))
+	cwd, err := l.procs().cwd(pid)
 	if err != nil {
 		return "", "", paneStatus{}, false, false
 	}

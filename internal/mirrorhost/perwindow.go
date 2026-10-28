@@ -7,9 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -205,7 +203,8 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	// lookup exactly as before the seam; then the others, for what is left.
 	// 🔴 ONE READ OF THE PROC TABLE FOR ALL OF THEM: a read is ~39 ms on a host
 	// of ~3,000 processes, and this runs every refresh (Config.Refresh).
-	procs, children, procErr := readProcTable(t.Claude.proc())
+	src := t.Claude.procs()
+	procs, children, procErr := src.table()
 	claude := t.claudeRuntime()
 	attachClaude(windows, func(ps []pane) map[string]ClaudePane { return claude.LocatePanes(ps, procs, children) })
 	attachAgents(windows, procs, children, t.runtimes()[1:])
@@ -228,11 +227,19 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 				func(pid int) []string { return procs[pid].argv }, claudeConfigDir(c, t.Claude))
 		}
 	}
-	// Each window's working directory: one readlink per window — a syscall, no
-	// process (windowCwdPID says whose).
+	// Each window's working directory (windowCwdPID says whose), all in one
+	// read: on Linux a readlink per window — a syscall, no process; on macOS
+	// one lsof for every window.
+	var cwdPIDs []int
 	for i := range windows {
 		if pid := windowCwdPID(windows[i]); pid > 0 {
-			windows[i].Cwd, _ = os.Readlink(filepath.Join(t.Claude.proc(), strconv.Itoa(pid), "cwd"))
+			cwdPIDs = append(cwdPIDs, pid)
+		}
+	}
+	cwds := src.cwds(cwdPIDs)
+	for i := range windows {
+		if pid := windowCwdPID(windows[i]); pid > 0 {
+			windows[i].Cwd = cwds[pid]
 		}
 	}
 	return windows, nil

@@ -208,7 +208,7 @@ func resumeLive(ctx context.Context, loc ClaudeLocator, b Backend, sid string) (
 	// Unknown is not "not live" here either: a proc root that cannot be read
 	// would leave every sessions file unmatched, so the session would read as
 	// ended while its CLI runs.
-	procs, _, err := readProcTable(loc.proc())
+	procs, _, err := loc.procs().table()
 	if err != nil {
 		return false, err
 	}

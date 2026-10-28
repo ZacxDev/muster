@@ -659,7 +659,7 @@ func (t Tmux) WindowCwd(ctx context.Context, session, window string) (string, er
 	if w.Claude != nil && w.Claude.PID > 0 {
 		pid = w.Claude.PID
 	}
-	return os.Readlink(filepath.Join(t.Claude.proc(), strconv.Itoa(pid), "cwd"))
+	return t.Claude.procs().cwd(pid)
 }
 
 // catalog answers muster's catalog request m: the catalog of the window it

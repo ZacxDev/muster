@@ -141,9 +141,10 @@ func TestWhyNoViewSaysWhichStepFailed(t *testing.T) {
 	}
 }
 
-// On a host whose process table cannot be read (no /proc: macOS), nothing can
-// be found in any pane; a window whose command looks like Claude Code says so,
-// and no other window does.
+// On a host whose process table cannot be read (an OS with neither /proc nor
+// the macOS source, or a failed read), nothing can be found in any pane; a
+// window whose command looks like Claude Code says so, and no other window
+// does.
 func TestWhyNoViewOnAHostWithNoProcessTable(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-proc-here")
 	procs, children, err := readProcTable(missing)
@@ -151,7 +152,7 @@ func TestWhyNoViewOnAHostWithNoProcessTable(t *testing.T) {
 		t.Fatal("instrument check: reading a missing proc root must fail")
 	}
 	l := ClaudeLocator{Proc: missing, Home: t.TempDir()}
-	const want = "muster-mirror cannot read this host's processes (no /proc, as on macOS), so it cannot find the Claude Code conversation in this window."
+	const want = "muster-mirror cannot read this host's process table, so it cannot find the Claude Code conversation in this window."
 	for cmd, w := range map[string]string{
 		"claude":          want,
 		".claude-wrapped": want,
