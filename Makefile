@@ -17,7 +17,7 @@ COMPOSE ?= docker compose
 COMPOSE_FILE := docker-compose.test.yml
 
 # The published port of the throwaway Postgres. 55432 by default, which is what
-# README.md, CONTRIBUTING.md and internal/dbtest's doc all spell literally.
+# docs/development.md, CONTRIBUTING.md and internal/dbtest's doc all spell literally.
 #
 # 🔴 IT IS A VARIABLE SO TWO CHECKOUTS CAN EACH HAVE THEIR OWN DATABASE, AND IT IS
 # `export`ED SO `docker compose` INTERPOLATES THE SAME VALUE THIS FILE USES. Make
@@ -105,7 +105,7 @@ help:
 	@echo "  make css-check    prove the committed stylesheet matches the views"
 	@echo "  make check        vet + test + leakscan + css-check"
 	@echo "  make e2e          the Playwright suite (needs MUSTER_E2E_DATABASE_URL=…/<name>_e2e)"
-	@echo "  make screenshots  regenerate docs/img/*.png from fixture data (same database, plus Docker)"
+	@echo "  make screenshots  regenerate docs/img/ (PNGs + phone-flow.gif) from fixture data (same database, plus Docker, ffmpeg)"
 	@echo "  make test-db-down stop and remove the throwaway Postgres"
 	@echo "  make release-dry-run  build every GitHub Release asset into dist/ (RELEASE_VERSION=0.0.0)"
 	@echo "  make release-logic-test  the tag-run logic: release publish (fake gh), stt-cohere build-or-retag"
@@ -340,17 +340,29 @@ e2e:
 	node verdict.mjs $${MUSTER_E2E_LEG:+--leg $$MUSTER_E2E_LEG} test-results/results.json && exit $$rc
 
 # Regenerate the documentation's screenshots (docs/img/) from the e2e harness:
-# the seeded fixture board and a fake mirrored host, at a phone's size. A
-# GENERATOR, NOT A GATE — like `icons`, CI does not run it. Needs what `make e2e`
-# needs, plus Docker for the GoTrue container the passkey shot signs in against.
-# pngquant (nix-shell -p pngquant) is used when present; every image must end up
-# at or under 200 KB either way.
+# the seeded fixture board and two fake mirrored hosts, phone shots at 390×844
+# and 2× (one desktop shot at 1280×800, also 2×), plus the README's phone-flow animation,
+# assembled here from the frames the spec writes to e2e/.state/phone-flow/. A
+# GENERATOR, NOT A GATE — like `icons`, CI does not run it. Needs what `make
+# e2e` needs, plus Docker for the GoTrue container the passkey shot signs in
+# against, and ffmpeg for the animation. pngquant is used when present. On
+# NixOS:
+#   nix-shell -p ffmpeg pngquant --run 'make screenshots'
+# Every PNG must end up at or under 200 KB and the GIF under 2 MB either way.
+FLOW_FRAMES := e2e/.state/phone-flow/frames.txt
+FLOW_GIF := docs/img/phone-flow.gif
 screenshots:
+	@command -v ffmpeg >/dev/null 2>&1 || { echo "screenshots: ffmpeg not found; it assembles $(FLOW_GIF) (nix-shell -p ffmpeg)"; exit 1; }
 	@cd e2e && MUSTER_E2E_DOCSHOTS=1 npx playwright test
 	@if command -v pngquant >/dev/null 2>&1; then pngquant --force --ext .png --quality 65-90 docs/img/*.png; \
 	  else echo "screenshots: pngquant not found; images left as captured"; fi
+	@ffmpeg -loglevel error -y -f concat -safe 0 -i $(FLOW_FRAMES) \
+	  -vf 'split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle' \
+	  -loop 0 $(FLOW_GIF)
 	@for f in docs/img/*.png; do s=$$(wc -c < "$$f"); echo "$$f: $$s bytes"; \
 	  test "$$s" -le 204800 || { echo "screenshots: $$f is over 200 KB"; exit 1; }; done
+	@s=$$(wc -c < $(FLOW_GIF)); echo "$(FLOW_GIF): $$s bytes"; \
+	  test "$$s" -le 2097152 || { echo "screenshots: $(FLOW_GIF) is over 2 MB"; exit 1; }
 
 # INSTALL.md's shell blocks, run against faked docker/curl/tailscale/ssh in a
 # temp HOME (tests/install_guide_test.py): nothing on this machine is touched.

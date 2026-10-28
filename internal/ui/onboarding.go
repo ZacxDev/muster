@@ -9,11 +9,11 @@ import (
 // agent to have it set muster up (INSTALL.md), or connect another machine to
 // one that runs.
 //
-// 🔴 IT IS STATED IN THREE PLACES AND MUST BE BYTE-IDENTICAL IN ALL OF THEM:
+// 🔴 IT IS STATED IN FOUR PLACES AND MUST BE BYTE-IDENTICAL IN ALL OF THEM:
 // here (the Agents list's empty state), the fenced block at the top of
-// INSTALL.md, and the one in docs/onboarding.md — which the README embeds.
-// TestTheOnePromptIsTheSameEverywhere pins that, so a reword in one place
-// fails until all three agree. Changing it is a public-facing change: people
+// INSTALL.md, the one in docs/onboarding.md, and the README's own copy in its
+// Quickstart. TestTheOnePromptIsTheSameEverywhere pins that, so a reword in
+// one place fails until all four agree. Changing it is a public-facing change: people
 // will have copied the old one.
 const OnboardingPrompt = "Set up muster for me: read https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md " +
 	"and follow it step by step. Ask me everything you need in one go up front, then do the rest yourself."

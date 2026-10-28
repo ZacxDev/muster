@@ -133,19 +133,26 @@ in no leg or in two.
 The images in [`docs/img/`](img) are generated, not hand-made:
 
 ```sh
-MUSTER_E2E_DATABASE_URL='…/muster_e2e?sslmode=disable' make screenshots
+MUSTER_E2E_DATABASE_URL='…/muster_e2e?sslmode=disable' \
+  nix-shell -p ffmpeg pngquant --run 'make screenshots'
 ```
 
 This runs `e2e/docshots/docs.spec.ts`. It uses only the seeded fixture board and
-a fake mirrored host, so no real data appears in it. It is opt-in and never part
-of `make e2e`. It drives:
+two fake mirrored hosts (`workstation` and `laptop`), whose windows and Claude
+Code transcripts the spec writes, so no real data appears in it. It is opt-in and
+never part of `make e2e`. It drives:
 
 - a gotrue-mode server against the real GoTrue image;
 - Chromium's virtual passkey authenticator;
-- a fake speech-to-text service.
+- Chromium's fake microphone and a fake speech-to-text service.
 
-It captures at 390×844, then compresses each PNG. `npm run capture` in `e2e/` is
-a separate generator, for the PWA manifest's install-sheet screenshots.
+Phone shots are 390×844 at 2×; `desktop.png` is 1280×800 at 2×. The spec also
+writes the frames of the README's animation, `phone-flow.gif`, to
+`e2e/.state/phone-flow/` with an ffmpeg concat list (each frame's hold), and the
+make target assembles the GIF from them. Then it compresses each PNG with
+pngquant when it is installed, and fails if a PNG is over 200 KB or
+the GIF over 2 MB. `npm run capture` in `e2e/` is a separate generator, for the
+PWA manifest's install-sheet screenshots.
 
 ## What green does not prove
 
