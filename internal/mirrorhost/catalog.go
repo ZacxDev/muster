@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -659,7 +660,14 @@ func (t Tmux) WindowCwd(ctx context.Context, session, window string) (string, er
 	if w.Claude != nil && w.Claude.PID > 0 {
 		pid = w.Claude.PID
 	}
-	return os.Readlink(filepath.Join(t.Claude.proc(), strconv.Itoa(pid), "cwd"))
+	// The listing already read it (one batched read): no second lsof.
+	if pid == windowCwdPID(w) && w.Cwd != "" {
+		return w.Cwd, nil
+	}
+	if d, ok := cwdOf(t.Claude.procs(), pid); ok {
+		return d, nil
+	}
+	return "", fmt.Errorf("cannot read the working directory of process %d", pid)
 }
 
 // catalog answers muster's catalog request m: the catalog of the window it

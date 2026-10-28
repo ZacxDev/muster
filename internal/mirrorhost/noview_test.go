@@ -94,6 +94,12 @@ func TestWhyNoViewSaysWhichStepFailed(t *testing.T) {
 	// A CLI with no sessions file and nothing in its cwd's project dir.
 	proc.add(200, 1, "zsh", lost, "-zsh")
 	proc.add(201, 200, ".claude-wrapped", lost, "/nix/store/x-claude-code/bin/claude")
+	proc.environ(201, "PATH=/bin")
+	// The same, but its environment cannot be read: which config dir it uses
+	// is unknown, and the line says so.
+	const noenv = "/work/noenv"
+	proc.add(600, 1, "zsh", noenv, "-zsh")
+	proc.add(601, 600, "claude", noenv, "claude")
 	// Two CLIs in one cwd, neither with a sessions file: one guess for both.
 	proc.add(300, 1, "zsh", shared, "-zsh")
 	proc.add(301, 300, "node", shared, "node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js")
@@ -122,6 +128,7 @@ func TestWhyNoViewSaysWhichStepFailed(t *testing.T) {
 		{"fresh", pane{ID: "%1", PID: 100}, "claude", "Claude Code has not written this conversation yet. The Rendered view appears after its first message."},
 		{"lost", pane{ID: "%2", PID: 200}, ".claude-wrapped", "Claude Code is running here, but muster-mirror cannot match it to a transcript in its Claude config directory."},
 		{"shared", pane{ID: "%3", PID: 300}, "node", "Claude Code is running here, but muster-mirror cannot match it to a transcript in its Claude config directory."},
+		{"noenv", pane{ID: "%6", PID: 600}, "claude", "Claude Code is running here, but muster-mirror cannot read its environment, so it cannot tell which Claude config directory it uses."},
 		{"shell", pane{ID: "%4", PID: 400}, "zsh", ""},
 		{"resolves", pane{ID: "%5", PID: 500}, "claude", ""},
 	} {
@@ -141,9 +148,10 @@ func TestWhyNoViewSaysWhichStepFailed(t *testing.T) {
 	}
 }
 
-// On a host whose process table cannot be read (no /proc: macOS), nothing can
-// be found in any pane; a window whose command looks like Claude Code says so,
-// and no other window does.
+// On a host whose process table cannot be read (an OS with neither /proc nor
+// the macOS source, or a failed read), nothing can be found in any pane; a
+// window whose command looks like Claude Code says so, and no other window
+// does.
 func TestWhyNoViewOnAHostWithNoProcessTable(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-proc-here")
 	procs, children, err := readProcTable(missing)
@@ -151,7 +159,7 @@ func TestWhyNoViewOnAHostWithNoProcessTable(t *testing.T) {
 		t.Fatal("instrument check: reading a missing proc root must fail")
 	}
 	l := ClaudeLocator{Proc: missing, Home: t.TempDir()}
-	const want = "muster-mirror cannot read this host's processes (no /proc, as on macOS), so it cannot find the Claude Code conversation in this window."
+	const want = "muster-mirror cannot read this host's process table, so it cannot find the Claude Code conversation in this window."
 	for cmd, w := range map[string]string{
 		"claude":          want,
 		".claude-wrapped": want,
