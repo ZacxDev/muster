@@ -473,8 +473,11 @@ var isolationClasses = map[string]routeClass{
 	"GET /attention/drafts": classList,
 	// A session page's asks block names its asker by query (?agent=): A's
 	// agent's asks, never B's view of them. The tap route names an item by key.
-	"GET /attention/asker":             classParam,
-	"GET /attention/open/{key}":        classParam,
+	"GET /attention/asker":      classParam,
+	"GET /attention/open/{key}": classParam,
+	// An ask's own page names A's ask by id (row-level security, and an
+	// explicit owner check).
+	"GET /attention/asks/{id}":         classParam,
 	"GET /attention/badge":             classList,
 	"POST /attention/asks/{id}/answer": classParam,
 	"POST /attention/asks/{id}/cancel": classParam,
@@ -526,10 +529,10 @@ var wantCanaryForA = []string{
 	"GET /account", "GET /account/devices/live",
 	// Plugins: A's second plugin is canary-labelled, so A's page shows it.
 	"GET /plugins",
-	// The attention asks: A's agent's asks block shows A's canary-carrying
-	// question, and the tap on A's ask opens A's agent's page (its name, an
-	// identity of A's, in the redirect).
-	"GET /attention/asker", "GET /attention/open/{key}",
+	// The attention asks: A's agent's asks block and A's ask's own page show
+	// A's canary-carrying question. (The tap on A's ask opens that page, by
+	// its id — controlMarkers has its own control.)
+	"GET /attention/asker", "GET /attention/asks/{id}",
 }
 
 func TestEveryRouteIsClassifiedForIsolation(t *testing.T) {
@@ -1575,6 +1578,9 @@ var sideEffectControlled = map[string]string{
 var controlMarkers = map[string]string{
 	"GET /agent/connectors/{name}":          `"exists":true`,
 	"POST /agent/connectors/{name}/request": `"exists":true`,
+	// The tap on A's OPEN ask redirects to that ask's own page; a ghost's (and
+	// another owner's) to its place on the queue.
+	"GET /attention/open/{key}": `href="/attention/asks/`,
 }
 
 // echoOnly: routes that render the same thing for ANY name — their own and a

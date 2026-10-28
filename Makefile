@@ -86,8 +86,9 @@ TAILWIND ?= npx --yes tailwindcss@3
 # the one document this app emits from outside internal/ui — so it is the
 # positive control for that entry. Without it, deleting `./internal/api/login.go`
 # from tailwind.config.js would ship a login page with an unwrapped heading
-# and every check here would stay green.
-CSS_REQUIRED_CLASSES := text-accent bg-danger bg-st-review-bg text-st-warning-fg text-balance
+# and every check here would stay green. `gap-x-4` is the same for the ask
+# page's entry, internal/api/attention_ask_page.go, the only file writing it.
+CSS_REQUIRED_CLASSES := text-accent bg-danger bg-st-review-bg text-st-warning-fg text-balance gap-x-4
 
 help:
 	@echo "muster:"

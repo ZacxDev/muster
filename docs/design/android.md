@@ -85,9 +85,12 @@ The design, in one line each:
   web route it mirrors, and most are stricter.
 - muster's web UI stays the one UI. A UI change ships from the server, and only
   native modules need an APK.
-- Lock-screen privacy holds: **a notification says WHO and WHERE, never WHAT**
-  ([attention.md](../attention.md)). WHAT enters a notification only while the
-  phone is unlocked ([lock screen](#notifications)).
+- An attention notification is actionable as it stands: **it carries the
+  question, its options and the suggested replies, on the lock screen too**
+  (operator decision "Full text always", which replaced "WHO and WHERE, never
+  WHAT"; [attention.md](../attention.md#what-is-in-it),
+  [lock screen](#notifications)). Every other notification still says WHO and
+  WHERE only.
 - The server additions follow muster's existing rules: data per user under
   row-level security, nothing cached positively, every credential revocable on
   the next request.
@@ -405,34 +408,54 @@ The change:
 
 ### Payload v2
 
-Native devices get a payload that carries **ids, not content**:
+Native devices get the browser notification's own lines, plus ids and, for
+an ask, its chips:
 
 ```json
-{"v": 2, "type": "attention", "id": "…", "tag": "…",
- "conv": "agent:<name>",
- "title": "<WHO>", "body": "<WHERE>",
- "actions": ["ask_answer", "ask_dismiss"],
- "state": {"attention": 3, "review": 1}}
+{"v": 2, "type": "attention", "id": "ask-41", "tag": "attention-ask-41",
+ "title": "worker-7 is asking",
+ "body": "Deploy the importer now?\nOptions: deploy now · wait until Monday",
+ "url": "/attention/open/ask-41",
+ "ask": {"id": 41, "options": ["deploy now", "wait until Monday"],
+         "suggestions": ["Wait until Monday, after the backup"]},
+ "update": true}
 ```
 
-- `title` and `body` obey WHO and WHERE, never WHAT, exactly as today. As
-  built in Phase 1 they are cut to 100 and 200 characters, on a character
-  boundary.
+- `title` and `body` are the browser's own lines, cut to 100 and 200
+  characters on a character boundary — the app's own `MAX_TITLE`/`MAX_BODY`,
+  so it cuts nothing more. **For an ask and a held question they carry the
+  WHAT** — the question and its options — on the lock screen too (operator
+  decision "Full text always", which replaced "Summary only — WHO and WHERE,
+  never WHAT" for them; [attention.md](../attention.md#what-is-in-it)). A waiting
+  session and every other event still say WHO and WHERE only. ⚠ As shipped
+  (`43d9b90`) the app sets the body as one-line content text, so a collapsed
+  notification shows the question's first line; the options line is the
+  second line, shown once the app uses `BigTextStyle`.
+- `ask` (an attention ask only): the ask's id, the asker's options and the
+  suggested replies, at most three of each, each whole (a longer one than 140
+  characters is left out, never cut; one a secret scan would redact is left
+  out too). When the suggestions arrive after the first push, the same tag is
+  pushed again with `"update": true`: the app should replace the notification
+  without alerting again (`setOnlyAlertOnce(true)` for it). ⚠ The app as
+  shipped (`43d9b90`) ignores `ask` and `update` and posts with
+  `setOnlyAlertOnce(false)`, so it alerts again on the re-push — accepted by
+  the operator until the app ships the update.
 - `actions` names action ids, from the app's fixed table
   ([action ids](#action-ids)). The app maps each id to a fixed button and a
   fixed `/api/device/actions/*` route, so the server cannot make the app POST
   to an arbitrary path.
-- `state` is a small delta for widgets and live status.
-- Anything longer (a question's text, a draft, the last messages of a
-  conversation) is fetched after delivery with the device credential, and is
-  shown only on an unlocked phone ([notifications](#notifications)).
+- `state` is a small delta for widgets and live status (Phase 4; not sent
+  yet), and `conv` the conversation key (Phase 3; not sent yet).
+- Anything longer (a draft, the last messages of a conversation) is fetched
+  after delivery with the device credential ([notifications](#notifications)).
 - **Size: a fixed 4096-byte cap on the encrypted body.** ntfy truncates a
   body over its `message-size-limit` silently, with 200; that limit is 4096
   bytes by default and configurable, and the deployed value was not measured
-  ([Phase 0, S9][p0-s9]). muster's cap is fixed at the default. Payload v2 carries ids, a
-  short title and the `state` delta, which fits well under it; every detail is
-  fetched. muster refuses a larger Android push rather than send one ntfy
-  would truncate (server change 30).
+  ([Phase 0, S9][p0-s9]). muster's cap is fixed at the default. Payload v2's title and body fit
+  under it even at their bounds with every character escaped; an ask's chips
+  are dropped, suggestions first, then options, before a push would not fit.
+  muster refuses a larger Android push rather than send one ntfy would
+  truncate (server change 30).
 
 New event types, sent to `android` devices only:
 
@@ -897,24 +920,20 @@ signed action) and its own [decisions.md](../decisions.md) entry (item 25).
   `setShortcutId`. Conversations get the conversation space, priority marking
   and bubbles. Each conversation has a unique PendingIntent request code, or a
   reply can land in the wrong one.
-- **Lock screen: WHAT only while unlocked.** `VISIBILITY_PRIVATE` with a
-  public version hides the private text on the lock screen **only if the
-  user's own setting hides sensitive content**. With "show all notification
-  content" the lock screen shows the full private notification (measured on
-  API 35 and 36, [Phase 0, S11][p0-s11]). The app does not control that
-  setting, so it does not rely on it:
-  - every notification is still `VISIBILITY_PRIVATE`, with a public version
-    holding only WHO and WHERE;
-  - the notification itself carries **only WHO and WHERE whenever the phone
-    is locked**. WHAT (the question, draft or messages, fetched with the
-    device credential) is added only when `KeyguardManager.isKeyguardLocked`
-    is false at post time, and on `ACTION_USER_PRESENT`;
-  - on `ACTION_SCREEN_OFF` the app re-posts every notification that carries
-    WHAT without it, back to WHO and WHERE;
-  - this applies to held replies too ([inline reply](#inline-reply));
-  - showing WHAT at all is a per-device opt-in, and it means "WHAT while this
-    phone is unlocked", never "WHAT on the lock screen"
-    ([open question](#open-questions) 4, decided).
+- **Lock screen: a question's full text, always** (operator decision "Full
+  text always", which REPLACED "WHAT only while unlocked" for asks and held
+  questions). An ask's or held question's `title` and `body` carry the question
+  and its options, and the app shows them as sent, locked or not:
+  `VISIBILITY_PUBLIC` for them, no stripped public version, no re-post on
+  `ACTION_SCREEN_OFF`. ([Phase 0, S11][p0-s11] measured that
+  `VISIBILITY_PRIVATE` cannot keep text off the lock screen when the user shows
+  all content anyway; the earlier design worked around that, and the operator
+  chose to show it instead.) ⚠ As shipped (`43d9b90`) the app posts
+  `VISIBILITY_PRIVATE` with a public version built from the same title and
+  body, so the lock screen already shows them. A waiting session, a reply draft
+  and the other events still say WHO and WHERE only, so they have nothing to
+  hide. Acting from the lock screen
+  still needs the unlock and the step-up key ([a gated action](#a-gated-action-step-by-step)).
 - **Actions per event:**
 
   | event | actions |
@@ -1229,7 +1248,7 @@ and did not run; the numbers are kept so references stay stable.
 | S8 | Obtainium's unattended installs; F-Droid index v2 | Source. Obtainium is silent only as installer of record (Android 12+, targetSdk ≥ device SDK − 3). fdroidserver still writes the v1 index. ([S8][p0-s8]) | [channel](#channel) |
 | S9 | ntfy and VAPID; ntfy's FGS type; embedded-FCM and Firebase | ntfy does **not** enforce VAPID on `up*`; it truncates an `up*` body over its size limit (default 4096 bytes, configurable; the deployed value not measured) with 200; ntfy uses `specialUse`; embedded FCM needs no Firebase project but needs Play services. ([S9][p0-s9]) | [decrypted-only](#-only-decrypted-pushes-are-trusted) is load-bearing; server change 30 |
 | S10 | Does muster reach ntfy by the exact name in the phone's endpoint? | Yes, by its public name on `https`/443; no split horizon. The endpoint's host is the ntfy app's default server, else ntfy's public server. A real phone's registration was not observed. ([S10][p0-s10]) | `MUSTER_PUSH_EXTRA_HOSTS`; the pairing push-host check |
-| S11 | Does the lock screen show only the public version of a `VISIBILITY_PRIVATE` notification? | **Only if the user's setting hides sensitive content.** ([S11][p0-s11]) | [WHAT only while unlocked](#notifications); open question 4, decided |
+| S11 | Does the lock screen show only the public version of a `VISIBILITY_PRIVATE` notification? | **Only if the user's setting hides sensitive content.** ([S11][p0-s11]) | [the lock screen](#notifications); open question 4, decided, then reversed (full text always) |
 | S12 | Do CSS `env(safe-area-inset-*)` values work in an edge-to-edge WebView? | **No** on WebView 124 and 133: 0 px on every side. ([S12][p0-s12]) | [the shell pads](#the-shell) |
 
 ### Phase 6: always-on overlay (later, opt-in)
@@ -1341,12 +1360,14 @@ guidance; the Play fee.
    fingerprint enrolment. The key type is recorded at pairing and shown on
    Account → Devices, and software-only keys are refused
    ([the step-up key](#the-step-up-key)).
-4. ~~Showing WHAT on an unlocked phone~~ **Decided: WHAT only while
-   unlocked.** Phase 0 S11 showed `VISIBILITY_PRIVATE` cannot keep WHAT off
-   the lock screen when the user shows all content, so WHAT is put into a
-   notification only while the phone is unlocked and stripped when the screen
-   turns off, held replies included. The per-device opt-in stays and means
-   "WHAT while unlocked" ([notifications](#notifications)).
+4. ~~Showing WHAT on an unlocked phone~~ **Decided, then reversed: full
+   text always.** Phase 0 S11 showed `VISIBILITY_PRIVATE` cannot keep WHAT off
+   the lock screen when the user shows all content, and the first decision was
+   "WHAT only while unlocked". The operator then chose the opposite: an
+   attention notification carries the question, its options and the
+   suggested replies on the lock screen too, because a notification that
+   cannot be acted on without opening it is the problem
+   ([notifications](#notifications)).
 5. **Connector approvals** from a notification: add them in a later phase, or
    keep them on the web page?
 
