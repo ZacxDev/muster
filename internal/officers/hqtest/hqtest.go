@@ -138,8 +138,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case len(parts) == 2 && parts[1] == "brief" && r.Method == http.MethodGet:
 		s.write(w, http.StatusOK, map[string]any{
-			"officer": map[string]any{"id": officer},
-			"type":    map[string]any{"key": strings.SplitN(officer, ":", 2)[0], "charter": s.Charters[officer], "charter_version": 1},
+			"officer":    map[string]any{"id": officer},
+			"type":       map[string]any{"key": strings.SplitN(officer, ":", 2)[0], "charter": s.Charters[officer], "charter_version": 1},
 			"open_items": s.list(officer, "open", now), "recent_items": []any{}, "cairn": map[string]any{"scopes": []any{}},
 			"generated_at": now,
 		})

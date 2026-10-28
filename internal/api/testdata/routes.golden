@@ -236,6 +236,7 @@ POST /mirror/view/ask
 POST /mirror/view/ask/cancel
 POST /mirror/view/send
 POST /mirror/view/suggest/event
+POST /officers/webhook
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/messages

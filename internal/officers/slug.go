@@ -18,7 +18,7 @@ const InstanceNamePrefix = "officer-"
 const MaxInstanceNameLen = 48
 
 // Slug is an officer id as an agent-name fragment: the `:` written as `-`
-// (`release:civitai-web` -> `release-civitai-web`).
+// (`release:example-web` -> `release-example-web`).
 func Slug(id string) string { return strings.ReplaceAll(id, ":", "-") }
 
 // InstanceName is the agent name of instance n (1-based) of officer id:

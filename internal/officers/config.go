@@ -51,7 +51,7 @@ const (
 
 // Officer is one declared officer: the HQ identity muster runs instances for.
 type Officer struct {
-	// ID is HQ's officer id, `<type>:<area>` (e.g. `release:civitai-web`).
+	// ID is HQ's officer id, `<type>:<area>` (e.g. `release:example-web`).
 	ID string `json:"id"`
 	// HQURL is HQ's API base, including `/api/v1` (e.g.
 	// `https://hq.example.com/api/v1`). Paths are appended to it.
@@ -117,7 +117,7 @@ const TokenEnvPrefix = "MUSTER_OFFICER_TOKEN_"
 
 // TokenEnvSuffix is the officer id as an environment-variable suffix:
 // upper-cased, with every non-alphanumeric byte written as '_'
-// (`release:civitai-web` -> `RELEASE_CIVITAI_WEB`).
+// (`release:example-web` -> `RELEASE_EXAMPLE_WEB`).
 func TokenEnvSuffix(id string) string {
 	var b strings.Builder
 	for _, r := range strings.ToUpper(id) {

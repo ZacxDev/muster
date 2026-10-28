@@ -343,10 +343,10 @@ func cardChunk(t *testing.T, markup string, id int64) string {
 //
 //	(1) the SET of such declarations is exactly the two named below — it fails
 //	    when one is added, including outside any function, or removed; and
-//	(2) each of them also mentions agentIsChief.
+//	(2) each of them also mentions agentIsDeleteProtected.
 //
 // It does NOT prove:
-//   - that agentIsChief's ANSWER gates the destroy (a function can call it and
+//   - that agentIsDeleteProtected's ANSWER gates the destroy (a function can call it and
 //     ignore it) — the behavioural tests above prove that for each named route;
 //   - anything about a destroy reached by REFLECTION, through an `any`, or
 //     through a concrete provisioner type rather than an interface; or
@@ -393,21 +393,21 @@ func (s *Server) ledgerControlNarrow() {
 	sort.Strings(names)
 	if got, want := strings.Join(names, ","), "dismissTask,handleAgentDelete,reapStoppedAgents,replaceChief,toolAgentDestroy"; got != want {
 		t.Fatalf("declarations that can reach the provisioner's Destroy = %s, want %s — a destroy "+
-			"path was added or removed; guard it with agentIsChief and add its route to the tests above", got, want)
+			"path was added or removed; guard it with agentIsDeleteProtected and add its route to the tests above", got, want)
 	}
 	// 🔴 replaceChief IS THE ONE DELIBERATE BYPASS: it exists to destroy the
 	// chief, behind an explicit confirm (chief_replace.go;
 	// TestReplacingTheChiefNeedsConfirmAndDeletesOnlyThen pins the confirm). Every
-	// other destroy path must still ask agentIsChief.
+	// other destroy path must still ask agentIsDeleteProtected.
 	bypass := map[string]bool{"replaceChief": true}
 	// destroyAgent counts as a guard for the doors that call it (destroyUsers),
-	// so it must itself ask agentIsChief.
-	if !funcMentions(t, "agents.go", "destroyAgent", "agentIsChief") {
-		t.Error("destroyAgent no longer mentions agentIsChief, but the doors that route through it are scored chief-guarded because of it")
+	// so it must itself ask agentIsDeleteProtected.
+	if !funcMentions(t, "agents.go", "destroyAgent", "agentIsDeleteProtected") {
+		t.Error("destroyAgent no longer mentions agentIsDeleteProtected, but the doors that route through it are scored chief-guarded because of it")
 	}
 	for _, n := range names {
 		if !bypass[n] && !users[n] {
-			t.Errorf("%s can reach the provisioner's Destroy without mentioning agentIsChief", n)
+			t.Errorf("%s can reach the provisioner's Destroy without mentioning agentIsDeleteProtected", n)
 		}
 	}
 }
@@ -415,7 +415,7 @@ func (s *Server) ledgerControlNarrow() {
 // destroyUsers type-checks this package's non-test files (plus extra, name ->
 // source) and returns each top-level declaration that uses a provisioner
 // Destroy (see the ledger's doc for what counts), mapped to whether it also
-// mentions agentIsChief.
+// mentions agentIsDeleteProtected.
 func destroyUsers(t *testing.T, extra map[string]string) map[string]bool {
 	t.Helper()
 	paths, err := filepath.Glob("*.go")
@@ -482,8 +482,8 @@ func destroyUsers(t *testing.T, extra map[string]string) map[string]bool {
 				}
 				// A door that routes its Destroy through destroyAgent — the one
 				// chief-guarded teardown — is guarded by it; that destroyAgent
-				// itself asks agentIsChief is pinned in the ledger test.
-				if sel.Sel.Name == "agentIsChief" || sel.Sel.Name == "destroyAgent" {
+				// itself asks agentIsDeleteProtected is pinned in the ledger test.
+				if sel.Sel.Name == "agentIsDeleteProtected" || sel.Sel.Name == "destroyAgent" {
 					guarded = true
 				}
 				return true

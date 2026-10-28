@@ -13,6 +13,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/officers"
+	"github.com/ZacxDev/muster/internal/provision"
 )
 
 // ---------------------------------------------------------------------------
@@ -124,10 +125,25 @@ type kickoffRearmer interface {
 
 var _ kickoffRearmer = (*agents.PGStore)(nil)
 
-// upStatuses are the live statuses that count an instance as up: running, or
-// on its way there. An `error` instance is NOT up: the loop starts it again,
-// which re-applies its spec.
-var upStatuses = map[string]bool{agents.StatusRunning: true, agents.StatusProvisioning: true, agents.StatusPending: true}
+// instanceUp is whether the wake loop counts instance agent a as occupying
+// its slot.
+//
+//   - Its live status (liveStatusIndexed, the one composer the cards use) is
+//     running, provisioning or pending: up.
+//   - It is `error` (crash-looping, image pull failing, a failed apply): ALSO
+//     up. Counting it down would have the loop re-Start it every poll — a
+//     restart storm that re-arms its first turn each time. It holds its slot
+//     until an operator looks; any claim it held lapses with its lease.
+//   - Its ROW says provisioning or pending but no instance is visible yet: up.
+//     That is a create or a Start in flight (the row is written before the
+//     backend shows the Deployment), and counting it down would start it twice.
+func instanceUp(a agents.Agent, idx map[string]*provision.Instance) bool {
+	switch liveStatusIndexed(a, idx) {
+	case agents.StatusRunning, agents.StatusProvisioning, agents.StatusPending, agents.StatusError:
+		return true
+	}
+	return idx[a.Name] == nil && (a.Status == agents.StatusProvisioning || a.Status == agents.StatusPending)
+}
 
 func (f officerFleet) byName(ctx context.Context, o officers.Officer) (map[string]agents.Agent, error) {
 	list, err := f.s.ext.Agents.List(ctx)
@@ -159,7 +175,7 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 	for n := 1; n <= o.MaxInstances; n++ {
 		name := officers.InstanceName(o.ID, n)
 		a, ok := rows[name]
-		out = append(out, officers.InstanceState{N: n, Name: name, Exists: ok, Up: ok && upStatuses[liveStatusIndexed(a, idx)]})
+		out = append(out, officers.InstanceState{N: n, Name: name, Exists: ok, Up: ok && instanceUp(a, idx)})
 	}
 	return out, nil
 }
