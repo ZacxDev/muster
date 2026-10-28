@@ -34,8 +34,11 @@ When it is done, the person has:
 - **Never print a secret.** Passwords, tokens and keys go straight into files
   with mode `600`. Do not echo them, do not paste them into your reply, and do
   not put them on a command line other than as shown.
-- **Ask before using `sudo`** or installing system packages, at the moment a
-  step needs it, and say what for.
+- **Ask for `sudo` once, up front.** Step 0 prints a line starting `ASK UP FRONT`
+  for everything that needs `sudo`, a package install, or the person's own
+  hands (a Tailscale sign-in link, a setting in the Tailscale admin console).
+  Step 1 asks about all of them in the same message as its other questions.
+  Use `sudo` only for what the person approved there.
 - Every step ends with **If this fails**. Follow it before trying anything
   else. If you are still stuck, stop and tell the person exactly which step and
   command failed and what it printed.
@@ -57,11 +60,15 @@ MI_DIR="$HOME/.config/muster-install"
 [ -f "$MI_DIR/state" ] && . "$MI_DIR/state"
 MUSTER_DIR="${MUSTER_DIR:-$HOME/muster}"
 MUSTER_BIN="${MUSTER_BIN:-$HOME/.local/bin}"
+# A container's shell often has no USER; later steps name it.
+USER="${USER:-$(id -un)}"; export USER
 # mi_save KEY VALUE: remember a value for later steps (and later shells).
+# The state file and its temporary copy are written under umask 077 (mode 600).
 mi_save() {
-  (umask 077; touch "$MI_DIR/state")
-  grep -v "^$1=" "$MI_DIR/state" > "$MI_DIR/state.tmp" || true
-  printf "%s='%s'\n" "$1" "$2" >> "$MI_DIR/state.tmp" && mv "$MI_DIR/state.tmp" "$MI_DIR/state"
+  (umask 077
+   touch "$MI_DIR/state"
+   grep -v "^$1=" "$MI_DIR/state" > "$MI_DIR/state.tmp" || true
+   printf "%s='%s'\n" "$1" "$2" >> "$MI_DIR/state.tmp" && mv "$MI_DIR/state.tmp" "$MI_DIR/state") || return 1
   eval "$1='$2'"
 }
 # mi_rand [BYTES]: a random hex string (2 characters per byte).
@@ -154,6 +161,28 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || ec
 docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q nvidia && echo "docker gpu runtime: yes" || echo "docker gpu runtime: no"
 mi_foreign && echo "existing muster: none"
 echo "tailscale serve: $(mi_serve_state)"
+# Everything below needs sudo or the person's own hands. Step 1 asks about
+# all of it in one message, so nothing stops half way for a password or a link.
+for t in curl tar tmux; do
+  command -v "$t" >/dev/null 2>&1 || echo "ASK UP FRONT: sudo to install $t (required on every machine)"
+done
+command -v docker >/dev/null 2>&1 || echo "ASK UP FRONT (hub only): sudo to install Docker with the Compose plugin"
+if ! command -v tailscale >/dev/null 2>&1; then
+  echo "ASK UP FRONT: sudo to install Tailscale (https://tailscale.com/download), then to run \`tailscale up\`, which prints a sign-in link the person must open"
+elif ! tailscale status >/dev/null 2>&1; then
+  echo "ASK UP FRONT: sudo to run \`tailscale up\`, which prints a sign-in link the person must open"
+fi
+ts=$(tailscale status --json 2>/dev/null)
+if ! printf '%s\n' "$ts" | grep -q '"MagicDNSEnabled": *true' || ! printf '%s\n' "$ts" | grep -q '"CertDomains": *\[ *"'; then
+  echo "ASK UP FRONT (hub only): the person turns on MagicDNS and HTTPS Certificates in the Tailscale admin console (https://login.tailscale.com/admin/dns) before you start"
+fi
+[ "$OS" = linux ] && [ "$(id -u)" != 0 ] &&
+  echo "ASK UP FRONT (hub only, Linux): sudo to run \`tailscale set --operator=\"\$USER\"\`, so Step 2 can run \`tailscale serve\` without sudo"
+command -v qrencode >/dev/null 2>&1 || echo "ASK UP FRONT (optional): sudo to install qrencode, so \`muster doctor\` can draw the phone's QR code"
+if [ "$OS" = linux ] && [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != yes ]; then
+  echo "ASK UP FRONT (Linux): sudo to run \`loginctl enable-linger \"\$USER\"\`, so muster-mirror keeps running after the person logs out (Step 7)"
+fi
+unset ts
 ```
 
 Read the output and note:
@@ -163,10 +192,10 @@ Read the output and note:
 | `os`, `arch` | every machine | Linux and macOS on amd64 or arm64 only. Stop on anything else and tell the person. |
 | `curl`, `tar` | every machine | Install them with the system package manager (ask first). |
 | `tmux` | every machine | Install it (`apt install tmux`, `dnf install tmux`, `brew install tmux`; ask first). muster shows tmux windows, so this is required. |
-| `tailscale`, logged in | every machine | Install from <https://tailscale.com/download>. Then `tailscale up` (on Linux, `sudo tailscale up`) prints a sign-in URL: give it to the person to open, and wait. Every machine and the phone must sign in to the **same** tailnet. |
+| `tailscale`, logged in | every machine | Asked up front (Step 1, question 4). Install from <https://tailscale.com/download>. Then `tailscale up` (on Linux, `sudo tailscale up`) prints a sign-in URL: give it to the person to open, and wait. Every machine and the phone must sign in to the **same** tailnet. |
 | `docker` and `docker compose` | the hub only | Install Docker Engine (Linux) or Docker Desktop (macOS) with the Compose v2 plugin. |
 | free disk | the hub | At least 10 GB; 20 GB if dictation will run locally (Step 1). |
-| `qrencode` | optional | Lets `muster doctor` draw the phone's QR code. Install it if allowed. |
+| `qrencode` | optional | Lets `muster doctor` draw the phone's QR code. Install it if the person allowed it in Step 1. |
 | gpu and `docker gpu runtime` | the hub, for GPU dictation | An NVIDIA GPU with at least 6 GB of memory **and** a Docker GPU runtime (the NVIDIA Container Toolkit), on **amd64**, makes the best dictation option available. |
 
 🔴 **If any `FOREIGN` line printed, STOP and ask the person.** This machine
@@ -237,9 +266,32 @@ on what Step 0 found. Record each answer with `mi_save` as shown.
    the password. **No** keeps the machine read-only: you can watch every
    session but not answer. Recommend **yes** on machines the person owns.
    `mi_save INTERACTIVE 1` (yes) or `mi_save INTERACTIVE 0` (no).
+4. **What needs `sudo` or the person's own hands.** List every
+   line Step 0 printed starting `ASK UP FRONT` (leave out the `hub only` ones on a
+   joining machine), say what each is for, and ask for `sudo` for all of them
+   at once. Say plainly:
+   - **Tailscale missing or signed out:** installing it and `tailscale up`
+     need `sudo`, and `tailscale up` prints a **sign-in link the person must
+     open** in a browser. Every machine and the phone sign in to the same
+     tailnet.
+   - **MagicDNS and HTTPS Certificates** (hub): ask the person to turn both on
+     now in the Tailscale admin console, <https://login.tailscale.com/admin/dns>.
+     Without them Step 2 cannot give muster an HTTPS address.
+   - **`qrencode`** (optional) and **`loginctl enable-linger`** (Linux, Step 7)
+     need `sudo` too. Ask in this same message.
+
+   If the agent's shell cannot answer a `sudo` password prompt, give the
+   person the exact commands to run in their own terminal instead.
+
+**Then, before Step 2,** do what the person approved, in this order: install
+the missing packages; on Linux, `sudo tailscale up --operator="$USER"` (or
+`sudo tailscale set --operator="$USER"` if Tailscale is already signed in);
+give the person the sign-in link and wait until `tailscale status` succeeds.
+`enable-linger` waits for Step 7.
 
 **If this fails:** if the person does not answer a question, use the
-recommendation and say so.
+recommendation and say so. If they decline `sudo` for something required
+(`tmux`, Tailscale, Docker on the hub), stop and say which step needs it.
 
 ---
 
@@ -278,11 +330,13 @@ now fails; that is expected.
 - `STOP`: this machine's Tailscale already serves something on the https port
   (or has Funnel on). Do not replace it. Show the person the status and ask:
   they can free that port themselves, or put the hub on another machine.
-- "serve is not enabled on your tailnet" or a link to enable HTTPS: give the
-  person the link. They must turn on **MagicDNS** and **HTTPS Certificates** in
-  the Tailscale admin console (DNS page). Then re-run this block.
-- "access denied" on Linux: run `sudo tailscale set --operator="$USER"` once
-  (ask first), then re-run.
+- "serve is not enabled on your tailnet" or a link to enable HTTPS: MagicDNS
+  and HTTPS Certificates are still off (Step 1, question 4 asked for them).
+  Give the person the link; they turn both on in the Tailscale admin console
+  (DNS page). Then re-run this block.
+- "access denied" on Linux: the operator was not set. Run
+  `sudo tailscale set --operator="$USER"` once (approved in Step 1), then
+  re-run.
 
 ---
 
@@ -349,14 +403,18 @@ env_set MUSTER_PUBLIC_URL "$MUSTER_URL"
 env_set MUSTER_SECURE_COOKIES 1
 # Web push keys: all three or none. muster refuses to start on a partial set.
 if [ -z "$(env_get MUSTER_VAPID_PRIVATE_KEY)" ] || [ -z "$(env_get MUSTER_VAPID_PUBLIC_KEY)" ]; then
-  keys=$(docker run --rm "${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:$MUSTER_VERSION" vapid generate 2>/dev/null) || keys=""
+  # The keys come on stdout; docker's own errors (a failed pull, a missing
+  # image) go to vapid.err and are printed if it fails.
+  keys=$(docker run --rm "${MUSTER_IMAGE:-ghcr.io/zacxdev/muster}:$MUSTER_VERSION" vapid generate 2>"$MI_DIR/vapid.err") || keys=""
   pub=$(printf '%s\n' "$keys" | sed -n 's/^MUSTER_VAPID_PUBLIC_KEY=//p')
   priv=$(printf '%s\n' "$keys" | sed -n 's/^MUSTER_VAPID_PRIVATE_KEY=//p')
   if [ -n "$pub" ] && [ -n "$priv" ]; then
     env_set MUSTER_VAPID_PUBLIC_KEY "$pub"; env_set MUSTER_VAPID_PRIVATE_KEY "$priv"
     env_set MUSTER_VAPID_SUBJECT "$MUSTER_URL"
+    rm -f "$MI_DIR/vapid.err"
   else
-    echo "PUSH KEYS NOT GENERATED: none of the three were written (see If this fails)"
+    echo "PUSH KEYS NOT GENERATED: none of the three were written (see If this fails). docker said:"
+    sed 's/^/  /' "$MI_DIR/vapid.err"
   fi
   unset keys pub priv
 fi
@@ -426,9 +484,10 @@ echo "dictation: $STT"
 
 **If this fails:**
 - `PUSH KEYS NOT GENERATED`: `docker run … vapid generate` failed, so no push
-  keys were written (muster starts without notifications). Run
-  `docker pull ghcr.io/zacxdev/muster:$MUSTER_VERSION` to see why (network, or
-  a version that does not exist; check Step 3), then re-run this block.
+  keys were written (muster starts without notifications). Read the error
+  printed under it (kept in `~/.config/muster-install/vapid.err`): usually
+  the network, Docker not running, or a version that does not exist (check
+  Step 3). Fix that, then re-run this block, which re-runs the `docker run`.
 - `MISSING: …`: write the token or key file as Step 1 shows, then re-run the
   dictation block. Nothing already in `.env` was replaced.
 - To start over, see "Starting over" at the end of this guide. Never run
@@ -520,7 +579,10 @@ done
 cd / && rm -rf "$tmp"
 "$MUSTER_BIN/muster-mirror" -version
 "$MUSTER_BIN/muster" --version
-case ":$PATH:" in *":$MUSTER_BIN:"*) ;; *) echo "NOTE: add $MUSTER_BIN to PATH in the shell profile" ;; esac
+# Does a NEW login shell find it? (This shell's PATH may predate
+# $MUSTER_BIN existing; many profiles add ~/.local/bin only once it exists.)
+[ "$("${SHELL:-sh}" -lc 'command -v muster' 2>/dev/null)" = "$MUSTER_BIN/muster" ] ||
+  echo "NOTE: a new login shell does not find $MUSTER_BIN/muster: add $MUSTER_BIN to PATH in the shell profile"
 ```
 
 **If this fails:**
@@ -531,8 +593,10 @@ case ":$PATH:" in *":$MUSTER_BIN:"*) ;; *) echo "NOTE: add $MUSTER_BIN to PATH i
   A second mismatch: stop and tell the person; do not install that file.
 - `muster-mirror -version` says "cannot execute": the wrong `OS`/`ARCH` was
   detected; check Step 0's output.
-- If `$MUSTER_BIN` is not on `PATH`, add `export PATH="$HOME/.local/bin:$PATH"`
-  to the person's shell profile (ask first), or use the full path below.
+- `NOTE: a new login shell does not find …`: add
+  `export PATH="$HOME/.local/bin:$PATH"` to the person's shell profile (ask
+  first), or use the full path below. No `NOTE` means a new terminal finds
+  `muster` already; change nothing.
 
 ---
 
@@ -632,6 +696,12 @@ UNIT
   sleep 3
   systemctl --user is-active muster-mirror.service
   journalctl --user -u muster-mirror.service -n 15 --no-pager
+  # Keep it running after the person logs out. On Debian and most other
+  # distributions this always needs sudo (approved in Step 1).
+  if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" = yes ]; then echo "linger: already on"
+  else sudo loginctl enable-linger "$USER" && echo "linger: on" ||
+    echo "LINGER NOT ON: ask the person to run, in their own terminal: sudo loginctl enable-linger $USER"
+  fi
 else
   label=io.github.zacxdev.muster-mirror
   plist="$HOME/Library/LaunchAgents/$label.plist"
@@ -658,10 +728,14 @@ fi
 ```
 
 The service must be `active` (Linux) or `state = running` (macOS), and its log
-must show it connected, with no repeated errors.
+must show it connected, with no repeated errors. On Linux, `linger: on` (or
+`already on`) means it keeps running after the person logs out.
 
-On Linux, so the service keeps running after the person logs out:
-`loginctl enable-linger "$USER"` (it may need `sudo`; ask first).
+One log line is expected and is not an error:
+`opencode: not paired on this host …`. It matters only to people who run
+opencode on this machine; they pair it once with `muster-mirror opencode-pair`
+(see `docs/mirroring.md`, "opencode's token") so muster can show opencode
+sessions as chats.
 
 What `-interactive` (`MUSTER_MIRROR_INTERACTIVE=1`) grants: muster can open a
 **typing** terminal on this machine and paste messages into its tmux panes,
@@ -682,7 +756,8 @@ block above).
   the URL is wrong. `tailscale status`, then `curl -fsS "$MUSTER_URL/health"`.
 - `systemctl --user` says "Failed to connect to bus": there is no user session
   (for example over a plain `ssh` without a login). Run
-  `loginctl enable-linger "$USER"` (ask first), log in again, and re-run.
+  `sudo loginctl enable-linger "$USER"` (approved in Step 1), log in again, and
+  re-run.
 - It runs but no sessions appear: tmux uses a different socket for the service
   than for the person. If the person sets `TMUX_TMPDIR`, add the same line to
   `~/.config/muster-mirror/env` and restart.

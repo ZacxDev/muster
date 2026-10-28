@@ -87,7 +87,12 @@ muster doctor                               # on any other machine
   that cannot be made from this machine, or `--skip`) never fails the run.
 - **Output:** the report and the QR code go to **stderr**; stdout is one JSON
   document, `{"url", "ok", "checks": [{"name", "status", "detail", "fix"}]}`,
-  as for every other verb.
+  as for every other verb. **One exception:** when stdout and stderr are the
+  same open file (a terminal, or `muster doctor >out 2>&1`, which is how most
+  agents' shells capture a command), the JSON is left out, because it would
+  only repeat the report and could not be parsed out of the mix. `--json`
+  prints it anyway. Reading stdout on its own (`$(muster doctor)`,
+  `muster doctor | jq`, `>out 2>err`) is unchanged.
 - **Credentials:** the server-side checks need a token (the hook token, or a
   personal token; a personal token sees only its owner's hosts); without one
   they SKIP. `--deploy-env` reads the compose `.env`: its `MUSTER_PUBLIC_URL`
@@ -102,7 +107,7 @@ muster doctor                               # on any other machine
   the mirror's server. A refused token is a FAIL; so is a connection under this
   host's name made with another token (two machines minted under one name). It
   SKIPs on a machine with no settings file.
-- **Flags:** `--skip <check>[,<check>…]`, `--mirror-env`, `--mirror-unit` (default
+- **Flags:** `--skip <check>[,<check>…]`, `--json`, `--mirror-env`, `--mirror-unit` (default
   `muster-mirror.service`), `--mirror-label` (default
   `io.github.zacxdev.muster-mirror`).
 - **The QR code** of the URL is drawn with `qrencode` when it is installed; the

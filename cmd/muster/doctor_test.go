@@ -294,6 +294,9 @@ type doctorOpts struct {
 	// mirrorURL is the settings file's MUSTER_MIRROR_URL ("" = this server).
 	mirrorURL string
 	extra     []string
+	// stdout and stderr, when set, are the streams instead of buffers (the
+	// result's stdout/stderr are then empty: the caller reads its files).
+	stdout, stderr io.Writer
 }
 
 func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts) doctorResult {
@@ -357,8 +360,12 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 	args = append(args, o.extra...)
 
 	var out, errOut strings.Builder
+	var stdout, stderr io.Writer = &out, &errOut
+	if o.stdout != nil {
+		stdout, stderr = o.stdout, o.stderr
+	}
 	a := &app{
-		stdout: &out, stderr: &errOut,
+		stdout: stdout, stderr: stderr,
 		getenv:   func(string) string { return "" },
 		homeDir:  dir,
 		progName: testProgName,
@@ -373,7 +380,7 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 	root.SetArgs(args)
 	err := root.ExecuteContext(context.Background())
 	if err != nil {
-		fmt.Fprintln(&errOut, testProgName+": "+err.Error())
+		fmt.Fprintln(stderr, testProgName+": "+err.Error())
 	}
 	r := doctorResult{code: exitCodeFor(err), stdout: out.String(), stderr: errOut.String()}
 	if r.stdout != "" {
@@ -720,5 +727,84 @@ func TestDoctorPromotesTheDeployTokenOnlyWithItsURL(t *testing.T) {
 	}
 	if d.base != "https://other.example.test" || d.token != "other-token" {
 		t.Fatalf("base %q token %q: the deploy file's hook token went to the CLI config's server", d.base, d.token)
+	}
+}
+
+// TestDoctorPrintsItsReportOnceWhenBothStreamsAreOneFile: with stdout and
+// stderr the SAME file — a terminal, or `muster doctor >out 2>&1`, the way an
+// agent's shell captures it — the report is printed once, with no JSON copy
+// after it; --json brings the JSON back; and two different files (stdout read
+// on its own, the CLI's machine contract) still get it without --json.
+func TestDoctorPrintsItsReportOnceWhenBothStreamsAreOneFile(t *testing.T) {
+	read := func(f *os.File) string {
+		b, err := os.ReadFile(f.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	open := func(name string) *os.File {
+		f, err := os.OpenFile(filepath.Join(t.TempDir(), name), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { f.Close() })
+		return f
+	}
+	const report, doc = "10 passed, 0 failed, 0 skipped", `"checks": [`
+
+	both := open("both")
+	r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{stdout: both, stderr: both})
+	if got := read(both); r.code != exitOK || strings.Count(got, report) != 1 || strings.Contains(got, doc) {
+		t.Fatalf("one file for both: exit %d; want the report once and no JSON:\n%s", r.code, got)
+	}
+
+	forced := open("forced")
+	r = runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{stdout: forced, stderr: forced, extra: []string{"--json"}})
+	if got := read(forced); r.code != exitOK || strings.Count(got, report) != 1 || strings.Count(got, doc) != 1 {
+		t.Fatalf("one file with --json: exit %d; want the report and the JSON once each:\n%s", r.code, got)
+	}
+
+	out, errf := open("out"), open("err")
+	r = runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{stdout: out, stderr: errf})
+	var d struct {
+		OK     bool          `json:"ok"`
+		Checks []doctorCheck `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(read(out)), &d); err != nil || r.code != exitOK || !d.OK || len(d.Checks) != len(doctorChecks) {
+		t.Fatalf("separate files: stdout must be the one JSON document (%v):\n%s", err, read(out))
+	}
+	if got := read(errf); strings.Count(got, report) != 1 || strings.Contains(got, doc) {
+		t.Fatalf("separate files: stderr must be the report alone:\n%s", got)
+	}
+}
+
+// TestDoctorWantsJSONComparesTheOpenFiles pins the decision on PIPES, the
+// shape an agent's capture has: one pipe for both streams is one file, two
+// pipes are two, and a stream that is not a file keeps the JSON.
+func TestDoctorWantsJSONComparesTheOpenFiles(t *testing.T) {
+	pipe := func() *os.File {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { r.Close(); w.Close() })
+		return w
+	}
+	one, other := pipe(), pipe()
+	var buf strings.Builder
+	for _, c := range []struct {
+		name           string
+		stdout, stderr io.Writer
+		force, want    bool
+	}{
+		{"one pipe for both", one, one, false, false},
+		{"one pipe for both, --json", one, one, true, true},
+		{"two pipes", one, other, false, true},
+		{"a buffer", &buf, one, false, true},
+	} {
+		if got := doctorWantsJSON(c.stdout, c.stderr, c.force); got != c.want {
+			t.Errorf("%s: doctorWantsJSON = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

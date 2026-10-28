@@ -38,7 +38,10 @@ import (
 //
 // 🔴 OUTPUT DISCIPLINE IS KEPT: stdout carries ONE JSON document (the checks,
 // for an agent to parse), and the human report and the QR code go to stderr —
-// which is what a person sees in a terminal anyway.
+// which is what a person sees in a terminal anyway. ONE EXCEPTION: when stdout
+// and stderr are the SAME file (a terminal, or `2>&1` into one capture), the
+// JSON is left out unless --json asks for it, because there it only repeats the
+// report and nothing can parse it out of the mix (doctorWantsJSON).
 
 const (
 	doctorRoute    = "/api/doctor"
@@ -163,6 +166,7 @@ type serverReport struct {
 func newDoctorCmd(a *app) *cobra.Command {
 	var deployEnv, unit, label, mirrorEnv string
 	var skip []string
+	var forceJSON bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check this muster end to end — server, sign-in, mirror, tmux, push, dictation — and print the phone's QR code",
@@ -171,7 +175,9 @@ func newDoctorCmd(a *app) *cobra.Command {
 Each check prints PASS, FAIL or SKIP with a fix line. It exits 0 when nothing
 FAILs and 1 when anything does; a SKIP (a check that cannot be made from here)
 never fails the run. The human report and the QR code go to stderr; stdout is
-one JSON document of the checks.
+one JSON document of the checks — except when stdout and stderr are the same
+file (a terminal, or both captured together), where the JSON would only repeat
+the report: then it is printed only with --json.
 
 Checks: ` + strings.Join(doctorChecks, ", ") + `.
 
@@ -187,18 +193,19 @@ On any machine whose muster-mirror has a token, ` + "`this-host`" + ` asks the
 server, with that token, whether it holds a connection from this machine.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return a.runDoctor(cmd.Context(), deployEnv, unit, label, mirrorEnv, skip)
+			return a.runDoctor(cmd.Context(), deployEnv, unit, label, mirrorEnv, skip, forceJSON)
 		},
 	}
 	cmd.Flags().StringVar(&deployEnv, "deploy-env", "", "the server's compose .env file (the machine running the server only)")
 	cmd.Flags().StringVar(&unit, "mirror-unit", defaultMirrorUnit, "the systemd user unit muster-mirror runs as (Linux)")
 	cmd.Flags().StringVar(&label, "mirror-label", defaultMirrorLabel, "the launchd label muster-mirror runs as (macOS)")
 	cmd.Flags().StringVar(&mirrorEnv, "mirror-env", defaultMirrorEnv, "muster-mirror's settings file (INSTALL.md writes it): where its token file is")
+	cmd.Flags().BoolVar(&forceJSON, "json", false, "print the JSON document on stdout even when stdout and stderr are the same file")
 	cmd.Flags().StringSliceVar(&skip, "skip", nil, "checks to skip, comma-separated (one of: "+strings.Join(doctorChecks, ", ")+")")
 	return cmd
 }
 
-func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label, mirrorEnv string, skip []string) error {
+func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label, mirrorEnv string, skip []string, forceJSON bool) error {
 	d := &doctorRun{a: a, sys: a.doctorSys, unit: unit, label: label, mirrorEnv: mirrorEnv, skip: map[string]bool{}}
 	for _, s := range skip {
 		s = strings.TrimSpace(s)
@@ -235,14 +242,43 @@ func (a *app) runDoctor(ctx context.Context, deployEnv, unit, label, mirrorEnv s
 
 	failed := d.print()
 	d.printQR(ctx)
-	doc, _ := json.Marshal(map[string]any{"url": d.base, "ok": failed == 0, "checks": d.checks})
-	if err := a.emit(doc); err != nil {
-		return err
+	if doctorWantsJSON(a.stdout, a.stderr, forceJSON) {
+		doc, _ := json.Marshal(map[string]any{"url": d.base, "ok": failed == 0, "checks": d.checks})
+		if err := a.emit(doc); err != nil {
+			return err
+		}
 	}
 	if failed > 0 {
 		return failf(exitServerError, "%d check(s) failed", failed)
 	}
 	return nil
+}
+
+// doctorWantsJSON is whether doctor writes its JSON document to stdout: always
+// with --json, else unless stdout and stderr are the SAME open file.
+//
+// There — a terminal, or `muster doctor >out 2>&1`, which is how an agent's
+// shell usually captures a command — the JSON lands right after the human
+// report and says it all again, and a parser cannot pick it out of the mix
+// anyway. Whenever stdout is read on its own (`$(muster doctor)`,
+// `muster doctor | jq`, `>out 2>err`) the two are different files and the
+// document is printed, as every other verb does. A stream that is not an
+// *os.File (a test's buffer) cannot be compared, and keeps the JSON.
+func doctorWantsJSON(stdout, stderr io.Writer, force bool) bool {
+	if force {
+		return true
+	}
+	fo, ok1 := stdout.(*os.File)
+	fe, ok2 := stderr.(*os.File)
+	if !ok1 || !ok2 {
+		return true
+	}
+	so, err1 := fo.Stat()
+	se, err2 := fe.Stat()
+	if err1 != nil || err2 != nil {
+		return true
+	}
+	return !os.SameFile(so, se)
 }
 
 func isDoctorCheck(name string) bool {
