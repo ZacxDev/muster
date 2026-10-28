@@ -115,9 +115,20 @@ func (s *Server) threadRoute(ctx context.Context, p plugins.Plugin, m plugins.Me
 // another delivery took m first (that delivery then finds m no longer queued
 // and leaves it as it is) — and the caller hands m to the chief as any other.
 func (s *Server) routeByMuster(ctx context.Context, p plugins.Plugin, m plugins.Message, origin plugins.RouteOrigin, target, what string) bool {
+	taken, refused := s.routeByMusterWhy(ctx, p, m, origin, target, what)
+	if !taken {
+		s.logger.Printf("routes: message %d: not routed via %s (%s); delivering it to the chief", m.ID, origin.String(), refused)
+	}
+	return taken
+}
+
+// routeByMusterWhy is routeByMuster saying, when it did not take m, why: the
+// route's refusal (a routeRefusal JSON, or a toolErr one), or a routeRefusal
+// with no code when there is no chief to own the route.
+func (s *Server) routeByMusterWhy(ctx context.Context, p plugins.Plugin, m plugins.Message, origin plugins.RouteOrigin, target, what string) (bool, string) {
 	chief, err := s.chiefAgent(ctx)
 	if err != nil {
-		return false
+		return false, routeRefusal("", "there is no chief to own the route: "+err.Error())
 	}
 	sub := focus.Subject{Kind: focus.KindMirror, Key: origin.Session}
 	r, _, refused := s.routeItem(ctx, chief.ID, agentOwnerID(chief), routedItem{msg: m}, sub, origin)
@@ -134,8 +145,7 @@ func (s *Server) routeByMuster(ctx context.Context, p plugins.Plugin, m plugins.
 		// Not routed — including when another delivery took m meanwhile, which
 		// the chief's delivery then finds settled (Deliver re-reads it under the
 		// chief's claim, and BeginDelivery takes only a queued message).
-		s.logger.Printf("routes: message %d: not routed via %s (%s); delivering it to the chief", m.ID, origin.String(), refused)
-		return false
+		return false, refused
 	}
 	cur, err := s.ext.Plugins.Message(ctx, m.ID)
 	if err != nil {
@@ -147,7 +157,7 @@ func (s *Server) routeByMuster(ctx context.Context, p plugins.Plugin, m plugins.
 	if refused != "" {
 		s.kickRouteSweep()
 	}
-	return true
+	return true, ""
 }
 
 // refusalCode is the `refused` code of a routeRefusal JSON ("" for none).
