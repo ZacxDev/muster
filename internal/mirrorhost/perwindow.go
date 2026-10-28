@@ -83,6 +83,11 @@ type WindowInfo struct {
 	// panes is every non-active pane of the window, as the listing read them:
 	// what Windows locates Others from.
 	panes []pane
+	// NoView is why the window has no rendered view when its active pane runs
+	// Claude Code but no transcript was found for it (one of the NoView*
+	// lines, ClaudeLocator.whyNoView); "" otherwise, and always "" when
+	// Claude or Agent is set. Sent as mirror.Window.AgentNote.
+	NoView string
 }
 
 // WindowLister is a Backend that can list every window of every session, from
@@ -200,10 +205,19 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	// lookup exactly as before the seam; then the others, for what is left.
 	// 🔴 ONE READ OF THE PROC TABLE FOR ALL OF THEM: a read is ~39 ms on a host
 	// of ~3,000 processes, and this runs every refresh (Config.Refresh).
-	procs, children := t.Claude.table()
+	procs, children, procErr := readProcTable(t.Claude.proc())
 	claude := t.claudeRuntime()
 	attachClaude(windows, func(ps []pane) map[string]ClaudePane { return claude.LocatePanes(ps, procs, children) })
 	attachAgents(windows, procs, children, t.runtimes()[1:])
+	// Why a window no runtime claimed has no rendered view, when its pane
+	// runs Claude Code (or, on a host that cannot read processes, looks like
+	// it): the card and the Terminal view say so instead of silently opening
+	// the terminal (WindowInfo.NoView).
+	for i := range windows {
+		if w := &windows[i]; w.Claude == nil && w.Agent == nil {
+			w.NoView = t.Claude.whyNoView(pane{Session: w.Session, ID: w.Pane, PID: w.PanePID}, w.Command, procs, children, procErr)
+		}
+	}
 	// Each Claude window's background shells, from the CLI's own process tree
 	// (internal/cctasks): an in-memory walk of the table read above plus a few
 	// readlinks per descendant — and only while its status says something may
@@ -211,7 +225,7 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	for i := range windows {
 		if c := windows[i].Claude; c != nil && c.PID > 0 && mayRunWork(c.RawStatus) {
 			c.Shells = cctasks.CountShells(t.Claude.proc(), c.PID, children,
-				func(pid int) []string { return procs[pid].argv }, t.Claude.configDir())
+				func(pid int) []string { return procs[pid].argv }, claudeConfigDir(c, t.Claude))
 		}
 	}
 	// Each window's working directory: one readlink per window — a syscall, no
@@ -222,6 +236,15 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 		}
 	}
 	return windows, nil
+}
+
+// claudeConfigDir is the config dir c's CLI writes under, as the locator
+// found it (ClaudePane.ConfigDir), else loc's.
+func claudeConfigDir(c *ClaudePane, loc ClaudeLocator) string {
+	if c.ConfigDir != "" {
+		return c.ConfigDir
+	}
+	return loc.configDir()
 }
 
 // windowCwdPID is the process whose working directory is w's: its Claude Code
@@ -385,6 +408,9 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 		} else if claude && w.Agent != nil {
 			m.Runtime, m.AgentSession, m.Status, m.StatusSince, m.Pending = w.Agent.Runtime, w.Agent.Gen, w.Agent.Status, w.Agent.StatusSince, w.Agent.Pending
 			m.AgentNote = w.Agent.Note
+		} else if claude {
+			// A Claude Code pane with no rendered view says why.
+			m.AgentNote = w.NoView
 		}
 		if claude {
 			for _, o := range w.Others {

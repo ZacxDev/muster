@@ -643,6 +643,29 @@ class Guide(unittest.TestCase):
         out = self.mirror_service(FAKE_LINGER="no", FAKE_SUDO="fail")
         self.assertIn("LINGER NOT ON: ask the person to run, in their own terminal: sudo loginctl enable-linger tester", out)
 
+    # --- what the one-prompt install sets up: mirrored sessions only --------
+
+    def test_the_install_sets_up_mirrored_sessions_only(self) -> None:
+        # The README, onboarding.md and Step 8 tell the person this guide
+        # starts no session of its own. That is a claim about what it WRITES:
+        # the host's service settings are exactly these keys (no
+        # MUSTER_MIRROR_RESUME_SPAWN, the one way a host starts a Claude Code
+        # process), and the hub's compose file and env template name no
+        # provisioner (so dispatch stays UNWIRED: docs/provisioner.md) and no
+        # mail resume. An INVARIANT guard: it holds at origin/main too; it
+        # fails the day either side starts sessions without the docs moving.
+        self.mirror_service(FAKE_LINGER="yes")
+        self.assertIn("systemctl --user restart muster-mirror.service", self.calls(), "positive control: the block ran")
+        written = (self.homedir / ".config/muster-mirror/env").read_text().splitlines()
+        self.assertEqual(sorted(l.split("=", 1)[0] for l in written if l.strip()),
+                         ["MUSTER_MIRROR_HOST", "MUSTER_MIRROR_INTERACTIVE", "MUSTER_MIRROR_TOKEN_FILE",
+                          "MUSTER_MIRROR_URL", "MUSTER_MIRROR_WRITE_HOOK_CONFIG", "PATH"])
+        for f in (ROOT / "deploy/docker-compose.yml", ROOT / "deploy/.env.example"):
+            text = f.read_text()
+            self.assertIn("MUSTER_", text, f"positive control: {f.name} names muster settings")
+            for key in ("MUSTER_AGENT_PROVISIONER", "MUSTER_AGENT_GATEWAY", "MUSTER_MAIL_RESUME_ALLOW", "RESUME_SPAWN"):
+                self.assertNotIn(key, text, f"{f.name} sets {key}: the install would no longer be mirrored-only")
+
     def test_step7_names_the_opencode_line_muster_mirror_logs(self) -> None:
         # The seam: the guide quotes the daemon's start-up line as expected, so
         # the line it quotes must be the one the code logs.

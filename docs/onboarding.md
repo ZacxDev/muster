@@ -11,6 +11,15 @@ The agent reads [INSTALL.md](../INSTALL.md), a guide written for agents to
 execute, and does the rest. To connect another machine later, paste the same
 prompt into the agent on that machine and tell it muster is already running.
 
+## What you get: your own sessions, not copies
+
+muster shows the sessions you already run in tmux, and a message from your
+phone goes into that same session. What that means, what a dispatched agent is
+instead, and how to bring a session you already have into tmux:
+[mirroring.md](mirroring.md#mirrored-sessions-and-dispatched-agents). Why a
+window opens in the Terminal view only:
+[mirroring.md](mirroring.md#why-a-window-opens-in-the-terminal).
+
 ## What you end up with
 
 - **The server** on one machine (the hub), in Docker: muster and its Postgres,
@@ -62,7 +71,8 @@ it.
 ## Afterwards
 
 - Start agents in tmux so they appear: `tmux new -A -s work claude` (or
-  `codex`, `opencode`, `gemini`).
+  `codex`, `opencode`, `gemini`). To bring a conversation you already have:
+  [mirroring.md](mirroring.md#bring-a-session-you-already-have-into-tmux).
 - Re-check everything at any time with `muster doctor --deploy-env ~/muster/.env`
   on the hub.
 - Every setting is in [configuration.md](configuration.md); mirroring is
