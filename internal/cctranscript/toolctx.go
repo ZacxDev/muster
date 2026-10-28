@@ -3,29 +3,35 @@ package cctranscript
 import "math"
 
 // negligibleInjected is the attachment types (KindInjected's Text) that do NOT
-// spoil a measurement: small reminders the CLI adds before almost every
-// request. Any other type — and a marker with no type, from a host that
-// predates it — makes the gap not clean.
+// spoil a measurement: small things the CLI adds before most requests. Any
+// other type — and a marker with no type, from a host that predates it —
+// makes the gap not clean.
 //
-// 🔴 WITHOUT THIS SET ALMOST NOTHING WAS MEASURED. total_tokens_reminder sits
-// in about 96% of real tool gaps, so treating every attachment as injected
-// context turned nearly every badge into an estimate. MEASURED over a local
-// transcript set by a one-off count (aggregates only; not shipped): over
-// single-call gaps whose ONLY attachment was the type,
-// the growth beyond the turn's output and the result's tokens had a median of
-// 38 tokens for total_tokens_reminder and 50 for silent_turn_reminder, against
-// 19 for gaps with no attachment at all — a few dozen tokens. Context-bearing
-// types sat far above it: queued_command 513, skill_listing 359, diagnostics
-// 324, deferred_tools_record 329, edited_text_file 227. hook_success never
-// appeared without hook_additional_context (which spoils the gap on its own),
-// and credential_org's excess was 6 (n=5). A measured badge's tooltip says it
-// may include these.
+// 🔴 DECIDED BY cmd/muster-toolctx-calibrate, NOT BY HAND. It measures each
+// type's EXCESS — growth − output − result/ResultBytesPerToken over the gaps
+// holding it and otherwise only negligible types — and calls a type negligible
+// when at least 30 such gaps have a median within 50 tokens of the baseline
+// (gaps with no attachment) and a p75 within 100. It prints whether this set
+// matches its own; docs/mirroring.md has the table and the numbers. Over the
+// local set it was run on, against a baseline of −1: total_tokens_reminder
+// (median excess 27, p75 43), hook_permission_decision (29, 46: what a
+// PermissionRequest hook writes), prompt_snapshot (30, 80; n=176) and
+// credential_org (20, 40; n=120). Not negligible: silent_turn_reminder
+// (median 57), deferred_tools_record (median 36 but p75 438),
+// read_truncation_notice (median −1164: far below), every context-bearing
+// type (diagnostics 401, queued_command 450, …), and hook_success (too few gaps
+// of its own to judge). A measured badge's tooltip says it may include these
+// small additions.
 var negligibleInjected = map[string]bool{
-	"total_tokens_reminder": true,
-	"silent_turn_reminder":  true,
-	"hook_success":          true,
-	"credential_org":        true,
+	"total_tokens_reminder":    true,
+	"hook_permission_decision": true,
+	"prompt_snapshot":          true,
+	"credential_org":           true,
 }
+
+// NegligibleInjected reports whether attachment type t leaves a gap clean
+// (negligibleInjected).
+func NegligibleInjected(t string) bool { return negligibleInjected[t] }
 
 // ResultBytesPerToken is the calibrated size-to-tokens rate of a tool result:
 // how many bytes of result text make one token of context.
@@ -36,22 +42,24 @@ var negligibleInjected = map[string]bool{
 // turn's output_tokens was never negative, so the turn's output re-enters the
 // context in full and the REST is the result's. Fitted on half the transcripts
 // (split by a hash of the path) as the median of resultBytes / (growth −
-// output) over results of 400 B or more: 2.27 (p25 2.03, p75 2.53, n=12992),
-// used as 2.3. On the held-out half, |estimate − measured| / measured fell
-// from a median of 0.58 (p90 0.78) for the old flat 4 bytes per token over the
-// call and result alone to 0.04 (p90 0.14).
-const ResultBytesPerToken = 2.3
+// output) over results of 400 B or more: 2.16 (p25 1.94, p75 2.40, n=27366),
+// used as 2.2. On the held-out half, |estimate − measured| / measured fell
+// from a median of 0.61 (p90 0.78) for the old flat 4 bytes per token over the
+// call and result alone to 0.05 (p90 0.12). The fit is Claude Code's alone:
+// another runtime or model tokenizes differently, unmeasured.
+const ResultBytesPerToken = 2.2
 
-// EstimateTokens is a call's estimated context cost: the issuing turn's output
-// (output: its output_tokens, or this call's share of them when the turn made
-// several calls) plus the result's tokens at ResultBytesPerToken — the split
-// the calibration found. With no output known (a runtime that records no
-// usage, an older host), the call's input is sized at the same rate instead,
-// which reads low: the turn's own writing is missing from it.
-func EstimateTokens(output, in, out int64) int64 {
-	res := int64(math.Ceil(float64(out) / ResultBytesPerToken))
-	if output > 0 {
-		return output + res
+// EstimateTokens is a call's estimated context cost. With the issuing turn's
+// output known (outputKnown), it is that output (output: its output_tokens,
+// or this call's share of them when the turn made several calls — a share
+// that may round to 0) plus the result's tokens at ResultBytesPerToken: the
+// split the calibration found. With no output known (a runtime that records
+// no usage, an older host), the call's input and result are sized at the same
+// rate instead — a rate calibrated on Claude Code transcripts only, so for
+// another runtime or model the figure is unvalidated in either direction.
+func EstimateTokens(output, in, out int64, outputKnown bool) int64 {
+	if outputKnown {
+		return max(output, 0) + int64(math.Ceil(float64(out)/ResultBytesPerToken))
 	}
 	return int64(math.Ceil(float64(in+out) / ResultBytesPerToken))
 }
@@ -106,11 +114,13 @@ type ToolCost struct {
 	// from and how many calls it covers (0 for the other kinds).
 	GroupTokens int64
 	GroupSize   int
-	// Why is a CostEstimate's reason (WhyNoUsage, WhyInterrupted, WhyShrank),
-	// and Output the turn's output_tokens it counted (0: not known, and the
-	// estimate is sizes alone).
-	Why    string
-	Output int64
+	// Why is a CostEstimate's reason (WhyNoUsage, WhyInterrupted, WhyShrank).
+	// OutputKnown says the issuing turn's output_tokens were known and counted
+	// — Output is this call's share of them, which can round to 0 — else the
+	// estimate is sizes alone.
+	Why         string
+	OutputKnown bool
+	Output      int64
 }
 
 // Why an estimate is one.
@@ -134,6 +144,10 @@ type ToolContext struct {
 	// did.
 	results bool
 	clean   bool
+	// Negligible decides which attachment types leave a gap clean
+	// (KindInjected's Text); nil is NegligibleInjected. The calibration
+	// command sets its own, to measure every type.
+	Negligible func(attachmentType string) bool
 }
 
 type pendingCall struct {
@@ -186,14 +200,18 @@ func (c *ToolContext) Observe(ev Event) []ToolCost {
 			// No usage to wait for: estimate now.
 			p := c.pend[i]
 			c.pend = append(c.pend[:i:i], c.pend[i+1:]...)
-			if e, ok := estimate(p, 0, WhyNoUsage); ok {
+			if e, ok := estimate(p, 0, false, WhyNoUsage); ok {
 				out = append(out, e)
 			}
 			break
 		}
 		c.results = true
 	case KindInjected:
-		if !negligibleInjected[ev.Text] {
+		neg := NegligibleInjected
+		if c.Negligible != nil {
+			neg = c.Negligible
+		}
+		if !neg(ev.Text) {
 			c.clean = false
 		}
 	case KindPrompt, KindNotice, KindError:
@@ -247,7 +265,7 @@ func (c *ToolContext) settle(next int64) []ToolCost {
 				share = c.baseOut - given
 			}
 			given += share
-			if e, ok := estimate(p, share, why); ok {
+			if e, ok := estimate(p, share, c.baseOut > 0, why); ok {
 				out = append(out, e)
 			}
 		}
@@ -280,11 +298,14 @@ func (c *ToolContext) settle(next int64) []ToolCost {
 // estimate is p's cost from its size — none when its size is not known at
 // all (an opencode call: muster reads neither its input text nor its output),
 // since "~+0" would claim the call cost nothing.
-func estimate(p pendingCall, output int64, why string) (ToolCost, bool) {
+func estimate(p pendingCall, output int64, known bool, why string) (ToolCost, bool) {
 	if p.in+p.out == 0 {
 		return ToolCost{}, false
 	}
-	return ToolCost{ToolID: p.id, Tokens: EstimateTokens(output, p.in, p.out), Kind: CostEstimate, Why: why, Output: max(output, 0)}, true
+	if !known {
+		output = 0
+	}
+	return ToolCost{ToolID: p.id, Tokens: EstimateTokens(output, p.in, p.out, known), Kind: CostEstimate, Why: why, OutputKnown: known, Output: max(output, 0)}, true
 }
 
 // Clone is an independent copy of the ledger: the state a reconnecting

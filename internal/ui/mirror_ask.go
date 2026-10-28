@@ -80,9 +80,11 @@ const askCardClass = "w-full max-w-[92%] min-w-0 self-start rounded-xl bg-bg/50 
 func askCardHead(label string, extra ...g.Node) g.Node {
 	return Div(Class("flex min-h-[44px] items-center gap-2 px-3 py-2 text-xs font-medium text-fg2"),
 		Span(Class("shrink-0"), g.Attr("aria-hidden", "true"), g.Text("❓")),
-		Span(Class("shrink-0 font-mono text-st-review-fg"), g.Text(askq.ToolName)),
+		// The tool's name gives way (truncates) so the badge and the label
+		// always fit, down to a 300px phone.
+		Span(Class("min-w-0 truncate font-mono text-st-review-fg"), g.Text(askq.ToolName)),
 		g.Group(extra),
-		Span(Class("ml-auto shrink-0 text-muted"), g.Text(label)))
+		Span(g.Attr("data-ask-label", ""), Class("ml-auto shrink-0 text-muted"), g.Text(label)))
 }
 
 // askQuestionHead is one question's header and text.

@@ -3,6 +3,7 @@ package cctranscript
 import (
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -21,22 +22,27 @@ func i64(n int64) string { return strconv.FormatInt(n, 10) }
 // 🔴 THE CALIBRATION, PINNED. docs/mirroring.md states it; changing it is a
 // decision made with cmd/muster-toolctx-calibrate's numbers, not a drift.
 func TestTheEstimateIsTheCalibratedSplit(t *testing.T) {
-	if ResultBytesPerToken != 2.3 {
-		t.Fatalf("ResultBytesPerToken = %v, want the calibrated 2.3", ResultBytesPerToken)
+	if ResultBytesPerToken != 2.2 {
+		t.Fatalf("ResultBytesPerToken = %v, want the calibrated 2.2", ResultBytesPerToken)
 	}
 	cases := []struct {
-		output, in, out, want int64
+		output, in, out int64
+		known           bool
+		want            int64
 	}{
-		// The turn's output in full + 1197 / 2.3 = 520.4 → 521: 455 + 521.
-		{455, 37, 1197, 976},
-		// No output known: (37 + 1197) / 2.3 = 536.5 → 537.
-		{0, 37, 1197, 537},
+		// The turn's output in full + 1197 / 2.2 = 544.1 → 545: 455 + 545.
+		{455, 37, 1197, true, 1000},
+		// No output known: (37 + 1197) / 2.2 = 560.9 → 561.
+		{0, 37, 1197, false, 561},
+		// Output KNOWN, its share rounded to 0: the result alone, not the
+		// sizes: 1197 / 2.2 → 545.
+		{0, 37, 1197, true, 545},
 		// A result with no text: the output alone.
-		{613, 41, 0, 613},
+		{613, 41, 0, true, 613},
 	}
 	for _, c := range cases {
-		if got := EstimateTokens(c.output, c.in, c.out); got != c.want {
-			t.Errorf("EstimateTokens(%d, %d, %d) = %d, want %d", c.output, c.in, c.out, got, c.want)
+		if got := EstimateTokens(c.output, c.in, c.out, c.known); got != c.want {
+			t.Errorf("EstimateTokens(%d, %d, %d, %v) = %d, want %d", c.output, c.in, c.out, c.known, got, c.want)
 		}
 	}
 }
@@ -51,10 +57,10 @@ func TestToolContextAnInterruptedTurnsOutputIsSharedByInputSize(t *testing.T) {
 		asstOut(textBlock("OK."), 7, 2203, 40529, 29),
 	)
 	// Output 613 by input: a1 = 613 × 20 / 39 = 314.4 → 314, a2 = 613 − 314 = 299.
-	// a1: 314 + 300 / 2.3 (130.4 → 131) = 445; a2: 299 + 1000 / 2.3 (434.8 → 435) = 734.
+	// a1: 314 + 300 / 2.2 (136.4 → 137) = 451; a2: 299 + 1000 / 2.2 (454.5 → 455) = 754.
 	want := []ToolCost{
-		{ToolID: "toolu_a1", Tokens: 445, Kind: CostEstimate, Why: WhyInterrupted, Output: 314},
-		{ToolID: "toolu_a2", Tokens: 734, Kind: CostEstimate, Why: WhyInterrupted, Output: 299},
+		{ToolID: "toolu_a1", Tokens: 451, Kind: CostEstimate, Why: WhyInterrupted, OutputKnown: true, Output: 314},
+		{ToolID: "toolu_a2", Tokens: 754, Kind: CostEstimate, Why: WhyInterrupted, OutputKnown: true, Output: 299},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
@@ -64,7 +70,7 @@ func TestToolContextAnInterruptedTurnsOutputIsSharedByInputSize(t *testing.T) {
 // 🔴 A SMALL CLI REMINDER IS NOT INJECTED CONTEXT. total_tokens_reminder is in
 // almost every real gap; counting it spoilt nearly every measurement.
 func TestToolContextASmallCLIReminderLeavesTheGapClean(t *testing.T) {
-	for _, typ := range []string{"total_tokens_reminder", "silent_turn_reminder", "hook_success", "credential_org"} {
+	for _, typ := range []string{"total_tokens_reminder", "hook_permission_decision", "prompt_snapshot", "credential_org"} {
 		t.Run(typ, func(t *testing.T) {
 			got := ledgerRun(t,
 				asstOut(toolUse("toolu_r", `{"command":"date"}`), 503, 1117, 44021, 83), // 45641
@@ -88,8 +94,8 @@ func TestToolContextAnUntypedInjectedMarkerIsNotClean(t *testing.T) {
 	c.Observe(Event{Kind: KindToolResult, ToolID: "toolu_u", Bytes: 81})
 	c.Observe(Event{Kind: KindInjected})
 	got := c.Observe(Event{Kind: KindText, Usage: &Usage{Tokens: 48401, Output: 31}})
-	// 83 + 81 / 2.3 (35.2 → 36) = 119.
-	want := []ToolCost{{ToolID: "toolu_u", Tokens: 119, Kind: CostEstimate, Why: WhyInterrupted, Output: 83}}
+	// 83 + 81 / 2.2 (36.8 → 37) = 120.
+	want := []ToolCost{{ToolID: "toolu_u", Tokens: 120, Kind: CostEstimate, Why: WhyInterrupted, OutputKnown: true, Output: 83}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 	}
@@ -108,6 +114,43 @@ func TestToolContextACloneIsIndependent(t *testing.T) {
 	cp.Observe(Event{Kind: KindToolResult, ToolID: "toolu_x2", Bytes: 311})
 	got := cp.Observe(Event{Kind: KindText, Usage: &Usage{Tokens: 61127, Output: 17}})
 	want := []ToolCost{{ToolID: "toolu_x2", Tokens: 1114, Kind: CostMeasured}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// 🔴 THE NEGLIGIBLE SET, PINNED — cmd/muster-toolctx-calibrate decides it and
+// says whether this matches; docs/mirroring.md has its table.
+func TestTheNegligibleSetIsTheCalibratedOne(t *testing.T) {
+	for typ, want := range map[string]bool{
+		"total_tokens_reminder": true, "hook_permission_decision": true, "prompt_snapshot": true, "credential_org": true,
+		"silent_turn_reminder": false, "hook_success": false, "deferred_tools_record": false, "read_truncation_notice": false,
+		"diagnostics": false, "queued_command": false, "": false,
+	} {
+		if got := NegligibleInjected(typ); got != want {
+			t.Errorf("NegligibleInjected(%q) = %v, want %v", typ, got, want)
+		}
+	}
+}
+
+// An output share that rounds to 0 is still a KNOWN output: the call is
+// estimated as its result alone, and says the output was counted.
+func TestToolContextAZeroOutputShareIsStillKnown(t *testing.T) {
+	big := `{"command":"` + strings.Repeat("x", 4986) + `"}` // 5000 B
+	got := ledgerRun(t,
+		asstOut(toolUse("toolu_s1", `{"command":"ls -la"}`), 17, 909, 70003, 50), // 70929; input 20 B
+		asstOut(toolUse("toolu_s2", big), 17, 909, 70003, 50),
+		result("toolu_s1", 400),
+		result("toolu_s2", 900),
+		prompt("hold on"),
+		asstOut(textBlock("OK."), 3, 1201, 70929, 11),
+	)
+	// Output 50 by input: s1 = 50 × 20 / 5020 = 0.2 → 0; s2 = 50.
+	// s1: 0 + 400 / 2.2 (181.8 → 182) = 182; s2: 50 + 900 / 2.2 (409.1 → 410) = 460.
+	want := []ToolCost{
+		{ToolID: "toolu_s1", Tokens: 182, Kind: CostEstimate, Why: WhyInterrupted, OutputKnown: true, Output: 0},
+		{ToolID: "toolu_s2", Tokens: 460, Kind: CostEstimate, Why: WhyInterrupted, OutputKnown: true, Output: 50},
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("costs:\n got %+v\nwant %+v", got, want)
 	}

@@ -10,12 +10,28 @@
 //
 //	go run ./cmd/muster-toolctx-calibrate [-dir ~/.claude/projects]
 //
-// THE SAMPLES are clean single-call gaps — exactly what the ledger labels
-// CostMeasured: one call, its result, and the next turn, with nothing else in
-// between. For each: the measured growth (next turn's context − the issuing
-// turn's), the issuing turn's output_tokens, and the call's and result's sizes
-// (Event.Bytes). Transcripts are split by a hash of their path into a FIT half
-// and a HELD-OUT half: the constant is fitted on the first, and the error is
+// THE SAMPLES are single-call gaps: one call, its result, and the next turn,
+// with no prompt, notice or error between — read with EVERY attachment type
+// allowed, and the types each gap held recorded beside it. For each: the
+// measured growth (next turn's context − the issuing turn's), the issuing
+// turn's output_tokens, and the call's and result's sizes (Event.Bytes).
+//
+// THE ATTACHMENT TYPES ARE CLASSIFIED HERE, not by hand. A gap's EXCESS is its
+// growth − output − result/ResultBytesPerToken: what entered the context that
+// is neither. The baseline is the median excess of gaps with no attachment. A
+// type is NEGLIGIBLE when the gaps holding it and otherwise only negligible
+// types number at least minTypeGaps, their median excess is within
+// maxTypeExcess tokens of the baseline, AND their p75 within maxTypeExcessP75
+// — either way: a type that is usually small but often large (a tool listing)
+// is not negligible, nor one whose gaps read far BELOW the baseline (a
+// truncated read, whose result bytes overstate what entered the context); the set is grown greedily (most frequent type first) until
+// nothing more joins. The command prints the table
+// and the set, and says whether the set matches cctranscript's
+// (NegligibleInjected) — a mismatch is the signal to update it.
+//
+// The CLEAN samples (every type negligible) are what the ledger labels
+// CostMeasured. Transcripts are split by a hash of their path into a FIT half
+// and a HELD-OUT half: the rate is fitted on the first, and the error is
 // reported on the second, for the old estimate and the new one.
 //
 // THE MODEL is a split, not one factor: growth = the turn's own output (which
@@ -44,9 +60,33 @@ import (
 // result's few tokens drown in the turn's own variation.
 const minBytes = 400
 
+// The attachment-type rule (see the package doc).
+const (
+	minTypeGaps      = 30
+	maxTypeExcess    = 50
+	maxTypeExcessP75 = 100
+)
+
 type sample struct {
 	delta, output, in, out int64
 	held                   bool
+	// types is the attachment types the gap held (untyped: "<untyped>").
+	types []string
+}
+
+// excess is what entered the context beyond the turn's output and the result.
+func (s sample) excess() float64 {
+	return float64(s.delta-s.output) - math.Ceil(float64(s.out)/cctranscript.ResultBytesPerToken)
+}
+
+// within says every type s holds is in set.
+func (s sample) within(set map[string]bool) bool {
+	for _, t := range s.types {
+		if !set[t] {
+			return false
+		}
+	}
+	return true
 }
 
 func main() {
@@ -107,8 +147,11 @@ func fileSamples(p string) ([]sample, error) {
 		return nil, err
 	}
 	var (
-		led             cctranscript.ToolContext
+		// Every type allowed: the gaps' types are recorded, and judged later.
+		led             = cctranscript.ToolContext{Negligible: func(string) bool { return true }}
 		lastOut         int64
+		lastTok         int64
+		gap             = map[string]bool{}
 		in, res, output = map[string]int64{}, map[string]int64{}, map[string]int64{}
 		out             []sample
 	)
@@ -133,18 +176,143 @@ func fileSamples(p string) ([]sample, error) {
 			}
 			for _, c := range led.Observe(ev) {
 				if c.Kind == cctranscript.CostMeasured && output[c.ToolID] > 0 {
-					out = append(out, sample{delta: c.Tokens, output: output[c.ToolID], in: in[c.ToolID], out: res[c.ToolID]})
+					types := make([]string, 0, len(gap))
+					for t := range gap {
+						types = append(types, t)
+					}
+					out = append(out, sample{delta: c.Tokens, output: output[c.ToolID], in: in[c.ToolID], out: res[c.ToolID], types: types})
 				}
 				delete(in, c.ToolID)
 				delete(res, c.ToolID)
 				delete(output, c.ToolID)
+			}
+			// A new turn starts a new gap.
+			if ev.Usage != nil && ev.Usage.Tokens != lastTok {
+				lastTok, gap = ev.Usage.Tokens, map[string]bool{}
+			}
+			if ev.Kind == cctranscript.KindInjected {
+				t := ev.Text
+				if t == "" {
+					t = "<untyped>"
+				}
+				gap[t] = true
 			}
 		}
 	}
 	return out, nil
 }
 
-func report(all []sample, files int) {
+// classify is the negligible attachment types, by the rule in the package
+// doc, and prints the table it decided them by.
+func classify(all []sample) map[string]bool {
+	var none []float64
+	count := map[string]int{}
+	for _, s := range all {
+		if len(s.types) == 0 {
+			none = append(none, s.excess())
+		}
+		for _, t := range s.types {
+			count[t]++
+		}
+	}
+	base := pct(none, 50)
+	types := make([]string, 0, len(count))
+	for t := range count {
+		types = append(types, t)
+	}
+	sort.Slice(types, func(i, j int) bool {
+		if count[types[i]] != count[types[j]] {
+			return count[types[i]] > count[types[j]]
+		}
+		return types[i] < types[j]
+	})
+	// alone is the excess of the gaps holding t and otherwise only set's types.
+	alone := func(t string, set map[string]bool) []float64 {
+		with := map[string]bool{t: true}
+		for k := range set {
+			with[k] = true
+		}
+		var v []float64
+		for _, s := range all {
+			if slicesContains(s.types, t) && s.within(with) {
+				v = append(v, s.excess())
+			}
+		}
+		return v
+	}
+	set := map[string]bool{}
+	for grew := true; grew; {
+		grew = false
+		for _, t := range types {
+			if set[t] {
+				continue
+			}
+			if v := alone(t, set); len(v) >= minTypeGaps && math.Abs(pct(v, 50)-base) <= maxTypeExcess && math.Abs(pct(v, 75)-base) <= maxTypeExcessP75 {
+				set[t], grew = true, true
+			}
+		}
+	}
+	fmt.Printf("attachment types (rule: ≥ %d gaps holding it and otherwise only negligible types; excess median within %d of the baseline, p75 within %d):\n", minTypeGaps, maxTypeExcess, maxTypeExcessP75)
+	fmt.Printf("  baseline: gaps with no attachment, n=%d, median excess %.0f\n", len(none), base)
+	fmt.Printf("  %-28s %8s %8s %8s %6s  %s\n", "type", "gaps", "judged", "median", "p75", "decision")
+	for _, t := range types {
+		others := map[string]bool{}
+		for k := range set {
+			if k != t {
+				others[k] = true
+			}
+		}
+		v := alone(t, others)
+		d := "spoils the gap"
+		if set[t] {
+			d = "negligible"
+		} else if len(v) < minTypeGaps {
+			d = "spoils the gap (too few gaps to judge)"
+		}
+		med, p75 := "-", "-"
+		if len(v) > 0 {
+			med, p75 = fmt.Sprintf("%.0f", pct(v, 50)), fmt.Sprintf("%.0f", pct(v, 75))
+		}
+		fmt.Printf("  %-28s %8d %8d %8s %6s  %s\n", t, count[t], len(v), med, p75, d)
+	}
+	match := true
+	for _, t := range types {
+		if set[t] != cctranscript.NegligibleInjected(t) {
+			match = false
+		}
+	}
+	for _, t := range []string{"total_tokens_reminder", "silent_turn_reminder", "hook_success", "credential_org", "hook_permission_decision"} {
+		if _, seen := count[t]; !seen && cctranscript.NegligibleInjected(t) {
+			match = false
+		}
+	}
+	names := make([]string, 0, len(set))
+	for t := range set {
+		names = append(names, t)
+	}
+	sort.Strings(names)
+	fmt.Printf("negligible: %s · matches cctranscript.NegligibleInjected: %v\n", strings.Join(names, ", "), match)
+	return set
+}
+
+func slicesContains(v []string, s string) bool {
+	for _, x := range v {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func report(every []sample, files int) {
+	set := classify(every)
+	var all []sample
+	for _, s := range every {
+		if s.within(set) {
+			all = append(all, s)
+		}
+	}
+	fmt.Printf("single-call gaps: %d · clean under that set (measured): %d\n", len(every), len(all))
 	var fit, held []sample
 	for _, s := range all {
 		if s.held {
@@ -179,10 +347,10 @@ func report(all []sample, files int) {
 	fmt.Printf("in use: ResultBytesPerToken = %v\n", cctranscript.ResultBytesPerToken)
 
 	old := func(s sample) int64 { return (s.in + s.out + 3) / 4 }
-	cal := func(s sample) int64 { return cctranscript.EstimateTokens(s.output, s.in, s.out) }
+	cal := func(s sample) int64 { return cctranscript.EstimateTokens(s.output, s.in, s.out, true) }
 	// no-output: the same rate with the turn's output unknown (a runtime that
 	// records no usage) — what such a runtime's estimate can reach.
-	noOut := func(s sample) int64 { return cctranscript.EstimateTokens(0, s.in, s.out) }
+	noOut := func(s sample) int64 { return cctranscript.EstimateTokens(0, s.in, s.out, false) }
 	for _, set := range []struct {
 		name string
 		s    []sample

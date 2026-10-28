@@ -260,7 +260,7 @@ func imageBytes(data string) int {
 			tokens = int(t)
 		}
 	}
-	return int(math.Ceil(float64(tokens) * ResultBytesPerToken))
+	return int(math.Round(float64(tokens) * ResultBytesPerToken))
 }
 
 // Time is the record's timestamp in Unix milliseconds, 0 when it has none or

@@ -15,7 +15,7 @@ import { clsInit, readCls, resetCls } from '../lib/cls';
 //     "~+4.5k ctx", marked approximate;
 //   - a call whose next turn came after a prompt: not attributable, so an
 //     estimate — its turn's output plus its result at the calibrated rate —
-//     "~+403 ctx";
+//     "~+417 ctx";
 //   - a call with a long MCP-style tool name: the name truncates, and the badge
 //     and the status stay inside the row at a phone's width;
 //   - a call whose next turn has not happened: no badge at all;
@@ -25,7 +25,8 @@ import { clsInit, readCls, resetCls } from '../lib/cls';
 //
 // The badges of the parallel pair arrive LIVE (the next turn is appended while
 // the page is open, the group expanded), and filling them in must not shift
-// the layout. Phone 390×844 and desktop 1280×800, no horizontal scroll.
+// the layout. Phone 390×844, desktop 1280×800 and a narrow 320×700, no
+// horizontal scroll.
 
 const rig = new MirrorRig(toolContextPort, 'e2e-toolctx');
 
@@ -94,6 +95,8 @@ const CARDS_LATER = cc.toolResult('tm', 'm'.repeat(3109)) + asst(text('Built.'),
 const SIZES = [
   { name: 'phone', viewport: { width: 390, height: 844 }, touch: true },
   { name: 'desktop', viewport: { width: 1280, height: 800 }, touch: false },
+  // A narrow phone: a question card's label must stay inside the card.
+  { name: 'narrow', viewport: { width: 320, height: 700 }, touch: true },
 ];
 
 test.use({ storageState: { cookies: [], origins: [] } });
@@ -163,9 +166,9 @@ for (const s of SIZES) {
       await expect(tq).toHaveText('~+4.5k ctx');
       for (const b of [tp, tq]) await expect(b).toHaveAttribute('data-tool-ctx', 'split');
       await expect(tq).toHaveAttribute('title', /a share of 6,000 measured for 2 parallel calls/);
-      // After a prompt: an estimate, the turn's output 97 + 702 / 2.3 (305.2 → 306) = 403.
+      // After a prompt: an estimate, the turn's output 97 + 702 / 2.2 (319.1 → 320) = 417.
       const te = row(page, 'sleep').locator('[data-tool-ctx]');
-      await expect(te).toHaveText('~+403 ctx');
+      await expect(te).toHaveText('~+417 ctx');
       await expect(te).toHaveAttribute('data-tool-ctx', 'estimate');
       // The long-named call: measured, 41720 − 40218 = 1502.
       const tl = row(page, 'lookup').locator('[data-tool-ctx]');
@@ -262,6 +265,9 @@ for (const s of SIZES) {
         expect(b.x, `${what}: the badge starts inside it`).toBeGreaterThanOrEqual(r.x);
         expect(b.x + b.width, `${what}: the badge ends inside it`).toBeLessThanOrEqual(r.x + r.width);
       }
+      const label = (await ask.locator('[data-ask-label]').boundingBox())!;
+      const ab = (await ask.boundingBox())!;
+      expect(label.x + label.width, 'the question card\'s label stays inside the card').toBeLessThanOrEqual(ab.x + ab.width);
       const pill = (await card.locator('[data-subagent-status]').boundingBox())!;
       const cb = (await card.boundingBox())!;
       expect(pill.x + pill.width, 'the status pill stays inside the card').toBeLessThanOrEqual(cb.x + cb.width);

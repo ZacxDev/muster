@@ -95,12 +95,13 @@ func (t *MirrorTranscript) ctxBadge(toolID string) g.Node {
 		case cctranscript.WhyShrank:
 			why = "the context shrank before the next turn (a compaction), so the growth cannot be measured"
 		}
-		rate := "about " + strconv.FormatFloat(cctranscript.ResultBytesPerToken, 'f', -1, 64) +
-			" bytes per token (an image by its pixels), a rate calibrated against measured calls"
-		if c.Output > 0 {
-			title = "Estimated: this call's share of its turn's output (" + groupDigits(c.Output) + " tokens) plus its result at " + rate
+		rate := "about " + strconv.FormatFloat(cctranscript.ResultBytesPerToken, 'f', -1, 64) + " bytes per token (an image by its pixels)"
+		if c.OutputKnown {
+			title = "Estimated: this call's share of its turn's output (" + groupDigits(c.Output) + " tokens) plus its result at " + rate +
+				", a rate calibrated against measured Claude Code calls"
 		} else {
-			title = "Estimated from the call and result size at " + rate + "; the turn's own output is not known, so it reads low"
+			title = "Estimated from the call and result size at " + rate +
+				", a rate calibrated on Claude Code transcripts only: for another runtime or model it is not validated"
 		}
 		title += ". " + strings.ToUpper(why[:1]) + why[1:]
 	}

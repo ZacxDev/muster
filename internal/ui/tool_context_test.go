@@ -58,9 +58,10 @@ func TestOpsDrawsAnEstimateWithTheResult(t *testing.T) {
 	tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolCall, ToolID: "call_e", Tool: "terminal", Input: `{"command":"cat a"}`, Bytes: 19}})
 	ops := tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolResult, ToolID: "call_e", OK: true, Output: "x", Bytes: 1238}})
 	html := opsHTML(ops)
-	// No output known: (19 + 1238) / 2.3 = 546.5, rounded up: 547.
-	for _, want := range []string{`data-tool-ctx="estimate"`, `data-tool-ctx-tokens="547"`, `>~+547 ctx</span>`,
-		"Estimated from the call and result size at about 2.3 bytes per token", "the turn&#39;s own output is not known, so it reads low",
+	// No output known: (19 + 1238) / 2.2 = 571.4, rounded up: 572.
+	for _, want := range []string{`data-tool-ctx="estimate"`, `data-tool-ctx-tokens="572"`, `>~+572 ctx</span>`,
+		"Estimated from the call and result size at about 2.2 bytes per token",
+		"a rate calibrated on Claude Code transcripts only: for another runtime or model it is not validated",
 		"No usage was recorded to measure it by"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("estimate lacks %q:\n%s", want, html)
@@ -116,14 +117,44 @@ func TestAnEstimatesTitleSaysWhy(t *testing.T) {
 		{Kind: cctranscript.KindInjected},
 	})
 	html := opsHTML(tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "Noted.", Usage: &cctranscript.Usage{Tokens: 48401}}}))
-	// The turn's output 211 + 81 / 2.3 = 35.2 → 36: 247.
-	for _, want := range []string{`>~+247 ctx</span>`, `data-tool-ctx="estimate"`, "context the CLI injected",
-		"this call&#39;s share of its turn&#39;s output (211 tokens) plus its result at about 2.3 bytes per token"} {
+	// The turn's output 211 + 81 / 2.2 = 36.8 → 37: 248.
+	for _, want := range []string{`>~+248 ctx</span>`, `data-tool-ctx="estimate"`, "context the CLI injected",
+		"this call&#39;s share of its turn&#39;s output (211 tokens) plus its result at about 2.2 bytes per token"} {
 		if !strings.Contains(html, want) {
 			t.Errorf("the badge lacks %q:\n%s", want, html)
 		}
 	}
 	if strings.Contains(html, "no usage was recorded") {
 		t.Errorf("an interrupted estimate claims there was no usage:\n%s", html)
+	}
+}
+
+// No estimate claims a direction it was never measured in: the size-only one
+// says where its rate comes from, not that it "reads low".
+func TestASizeOnlyEstimateClaimsNoDirection(t *testing.T) {
+	var tr MirrorTranscript
+	tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolCall, ToolID: "call_h", Tool: "terminal", Bytes: 29}})
+	html := opsHTML(tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindToolResult, ToolID: "call_h", OK: true, Bytes: 4093}}))
+	if !strings.Contains(html, `data-tool-ctx="estimate"`) || strings.Contains(html, "reads low") {
+		t.Fatalf("a size-only estimate claims a direction:\n%s", html)
+	}
+}
+
+// An output share that rounds to 0 is a KNOWN output: the title says it was
+// counted (0 tokens), never "not known".
+func TestAZeroOutputShareIsTitledAsKnown(t *testing.T) {
+	var tr MirrorTranscript
+	tr.Ops([]cctranscript.Event{
+		{Kind: cctranscript.KindToolCall, ToolID: "toolu_z1", Tool: "Bash", Bytes: 20, Usage: &cctranscript.Usage{Tokens: 70929, Output: 50}},
+		{Kind: cctranscript.KindToolCall, ToolID: "toolu_z2", Tool: "Bash", Bytes: 5000, Usage: &cctranscript.Usage{Tokens: 70929, Output: 50}},
+		{Kind: cctranscript.KindToolResult, ToolID: "toolu_z1", OK: true, Bytes: 400},
+		{Kind: cctranscript.KindToolResult, ToolID: "toolu_z2", OK: true, Bytes: 900},
+		{Kind: cctranscript.KindPrompt, Text: "hold on"},
+	})
+	p := patchFor(tr.Ops([]cctranscript.Event{{Kind: cctranscript.KindText, Text: "OK.", Usage: &cctranscript.Usage{Tokens: 72133, Output: 11}}}), "toolu_z1")
+	// 0 + 400 / 2.2 (181.8 → 182).
+	if p == nil || !strings.Contains(p.HTML, `>~+182 ctx</span>`) || !strings.Contains(p.HTML, "share of its turn&#39;s output (0 tokens)") ||
+		strings.Contains(p.HTML, "not validated") {
+		t.Fatalf("a zero share is not titled as a known output: %+v", p)
 	}
 }
