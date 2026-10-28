@@ -1003,7 +1003,8 @@ and `claude` runs under tmux's `default-shell` as a login shell (`<shell> -l -c
 builds the PATH when this resume is what started the tmux server. The shell
 interprets nothing but that constant `exec "$@"`; the binary, `--resume` and the
 id reach it as separate arguments. A `default-shell` that is not `sh`, `bash`,
-`zsh`, `dash`, `ksh` or `mksh` is passed over for `$SHELL`, then `/bin/sh`.
+`zsh`, `dash`, `ksh` or `mksh` is passed over for `/bin/sh`, as is any shell when no tmux server is running
+yet.
 
 ## Tokens, revocation, rate limits
 

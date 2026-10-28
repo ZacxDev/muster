@@ -402,16 +402,17 @@ func loginArgv(shell string, argv []string) []string {
 var posixLoginShells = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "mksh": true}
 
 // loginShell is the shell a resumed window logs in through: tmux's own
-// default-shell — the one an ordinary window runs — else $SHELL, else /bin/sh;
-// the first that is an absolute path to an executable of posixLoginShells.
+// default-shell — the one an ordinary window runs — else /bin/sh (no server
+// yet, or a default-shell of another family); the first that is an absolute
+// path to an executable of posixLoginShells.
 func (t Tmux) loginShell(ctx context.Context) (string, error) {
 	var cands []string
 	// No server yet (the resume's new-session starts it) is not an error:
-	// the server would take its default-shell from the same $SHELL.
+	// /bin/sh's login profile builds the PATH then.
 	if out, err := t.run(ctx, "show-options", "-gv", "default-shell"); err == nil {
 		cands = append(cands, strings.TrimSpace(out))
 	}
-	cands = append(cands, os.Getenv("SHELL"), "/bin/sh")
+	cands = append(cands, "/bin/sh")
 	for _, c := range cands {
 		if !filepath.IsAbs(c) || !posixLoginShells[filepath.Base(c)] {
 			continue
