@@ -171,7 +171,7 @@ func newDoctorCmd(a *app) *cobra.Command {
 Each check prints PASS, FAIL or SKIP with a fix line. It exits 0 when nothing
 FAILs and 1 when anything does; a SKIP (a check that cannot be made from here)
 never fails the run. The human report and the QR code go to stderr; stdout is
-one JSON document of the checks.
+one JSON document of the checks (send it to /dev/null to read only the report).
 
 Checks: ` + strings.Join(doctorChecks, ", ") + `.
 

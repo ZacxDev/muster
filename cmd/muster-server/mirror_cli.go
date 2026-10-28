@@ -66,7 +66,10 @@ func runMirrorCLI(ctx context.Context, args []string, getenv func(string) string
 			fmt.Fprintf(stderr, "muster-server mirror: create: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(stderr, "minted mirror token %d for host %s (owner: user %d) — it is shown ONCE; put it in the host's token file:\n", rec.ID, rec.Host, rec.OwnerID)
+		// The token goes to stdout and this note to stderr, so the note must
+		// not point AT the next line: with stdout in a file (INSTALL.md mints
+		// straight into one) nothing follows it on the screen.
+		fmt.Fprintf(stderr, "minted mirror token %d for host %s (owner: user %d). The token is printed ONCE, on stdout; keep it in that host's muster-mirror token file.\n", rec.ID, rec.Host, rec.OwnerID)
 		fmt.Fprintln(stdout, tok)
 		return 0
 	case "ls":
