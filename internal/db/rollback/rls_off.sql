@@ -42,6 +42,9 @@ BEGIN
         'chat_sessions', 'chat_messages', 'connectors', 'connector_grants',
         'connector_audit', 'github_connection'
     ] LOOP
+        -- 0059 drops github_connection; skip that ONE table when it is absent
+        -- (any other table missing here is still an error).
+        CONTINUE WHEN t = 'github_connection' AND to_regclass('public.github_connection') IS NULL;
         EXECUTE format('ALTER TABLE public.%I NO FORCE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE public.%I DISABLE ROW LEVEL SECURITY', t);
         EXECUTE format('ALTER TABLE public.%I ALTER COLUMN owner_id SET DEFAULT 1', t);

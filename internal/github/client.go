@@ -5,8 +5,7 @@
 // ⚠ IT HELD THE PER-USER OAUTH CONNECTION TOO — the encrypted token store, the
 // OAuth web flow and the token-based listings the Repos tab used. All of that
 // was removed with the Repos tab: the GitHub App is muster's GitHub identity.
-// The `github_connection` table that store wrote is still in the schema,
-// unread and unwritten, for a later migration to drop.
+// The `github_connection` table that store wrote is dropped by migration 0059.
 package github
 
 import (

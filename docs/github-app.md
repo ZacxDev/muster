@@ -209,5 +209,6 @@ no repository counts as connected.
 Nothing reads `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`,
 `MUSTER_GITHUB_ENCRYPTION_KEY` or `MUSTER_GITHUB_TOKEN` any more. muster does
 not refuse unknown variables, so a deployment that still sets them boots; drop
-them from the deployment. The `github_connection` table is left in the schema, unread and
-unwritten, so this change can be rolled back; a later migration can drop it.
+them from the deployment. The `github_connection` table was left in the schema, unread and
+unwritten, so that change could be rolled back; migration `0059` drops it, and with it every
+stored OAuth token ([schema.md](schema.md)).

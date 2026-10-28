@@ -110,8 +110,21 @@ var ownedAfter0006 = []string{"agent_focus", "agent_focus_history", "attention_a
 	"jobs", "mail_resumes", "mirror_tokens", "pins", "plugin_messages", "plugin_reply_drafts", "plugin_threads", "plugins", "push_preferences",
 	"push_subscriptions", "recents", "send_queue", "session_prs", "session_routes", "suggest_preferences", "suggest_usage", "uploads", "user_credentials"}
 
-// rlsTables is every owned table today: ownedTables plus ownedAfter0006.
-func rlsTables() []string { return append(slices.Clone(ownedTables), ownedAfter0006...) }
+// droppedAfter0006 are tables in ownedTables a LATER migration dropped. They
+// stay in ownedTables because the backfill fixture stops at version 6, where
+// they still exist; they are not owned tables today.
+//
+//   - github_connection (0059, the removed per-user GitHub OAuth connection).
+var droppedAfter0006 = []string{"github_connection"}
+
+// ownedTablesNow is ownedTables less droppedAfter0006: the tables 0006 made
+// owned that still exist after every migration.
+func ownedTablesNow() []string {
+	return slices.DeleteFunc(slices.Clone(ownedTables), func(t string) bool { return slices.Contains(droppedAfter0006, t) })
+}
+
+// rlsTables is every owned table today: ownedTablesNow plus ownedAfter0006.
+func rlsTables() []string { return append(ownedTablesNow(), ownedAfter0006...) }
 
 var ownedTables = []string{
 	"agents",
@@ -160,7 +173,7 @@ var wantForeignKeys = []string{
 	"plugin_threads|plugin_threads_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"session_prs|session_prs_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
 	"mail_resumes|mail_resumes_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
-	"github_connection|github_connection_owner_id_fkey|FOREIGN KEY (owner_id) REFERENCES users(id)",
+	// (github_connection|github_connection_owner_id_fkey went with its table in 0059.)
 	"invites|invites_claim_user_id_fkey|FOREIGN KEY (claim_user_id) REFERENCES users(id)",
 	"invites|invites_created_by_fkey|FOREIGN KEY (created_by) REFERENCES users(id)",
 	"invites|invites_redeemed_by_fkey|FOREIGN KEY (redeemed_by) REFERENCES users(id)",
