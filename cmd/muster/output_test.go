@@ -180,6 +180,7 @@ func TestStdoutIsIndentedJSONForEveryVerb(t *testing.T) {
 			h.json("POST /api/routes/rt_0123456789abcdef01234567/reply", http.StatusOK, `{"route_id":"rt_0123456789abcdef01234567","state":"relayed","nested":{"a":1}}`)
 			h.json("POST /api/plugins/messages/6/retry", http.StatusAccepted, `{"id":6,"status":"queued","nested":{"a":1}}`)
 			h.json("POST /api/chief/replace", http.StatusOK, `{"deleted":null,"created":true,"nested":{"a":1}}`)
+			h.json("GET /api/doctor", http.StatusOK, `{"hook_token_armed":true,"push":true,"dictation":true,"mirror":{"enabled":true,"hosts":[{"host":"alpha","token":true,"online":true}]}}`)
 
 			got := h.runCLI(w.args...)
 			if got.code != exitOK {

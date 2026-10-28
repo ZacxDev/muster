@@ -807,7 +807,7 @@ func (t *MirrorTranscript) askCall(ev cctranscript.Event) []MirrorOp {
 		t.asks = map[string][]askq.Question{}
 	}
 	id := toolRowID(ev.ToolID)
-	html := render(MirrorAskCall(id, ev.Ask.Questions))
+	html := render(MirrorAskCall(id, ev.Ask.Questions, t.ctxBadge(ev.ToolID)))
 	_, seen := t.calls[ev.ToolID]
 	t.track(ev.ToolID)
 	t.calls[ev.ToolID] = ChatLine{Kind: "tool_call", ToolID: ev.ToolID, ToolName: ev.Tool}
@@ -834,7 +834,7 @@ func (t *MirrorTranscript) askResult(ev cctranscript.Event, callQs []askq.Questi
 		note = ev.Output
 	}
 	id := toolRowID(ev.ToolID)
-	html := render(MirrorAskResult(id, qs, answers, note))
+	html := render(MirrorAskResult(id, qs, answers, note, t.ctxBadge(ev.ToolID)))
 	if drawn || t.Resumed {
 		return []MirrorOp{{Op: "replace", ID: id, HTML: html}}
 	}
@@ -1033,6 +1033,19 @@ func mirrorViewScript() g.Node {
   function clearError() { errEl.hidden = true; errText.textContent = ''; }
   function nearBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 80; }
   function frag(html) { var t = document.createElement('template'); t.innerHTML = html; return t.content; }
+  // keepCtx: a redraw that carries an EMPTY context-badge slot (tool_context.go)
+  // where the page shows a filled one keeps the filled one. A socket that
+  // resumed did not settle the costs an earlier socket drew, so its redraw of
+  // that row or card (a subagent's summary, a question card) knows no badge;
+  // the badge the page has is still true. Only an empty, hidden slot gives way:
+  // a redraw that carries a badge of its own replaces it.
+  function keepCtx(oldEl, f) {
+    var slots = f.querySelectorAll('[data-tool-ctx][hidden]');
+    for (var i = 0; i < slots.length; i++) {
+      var id = slots[i].id, cur = id && (oldEl.id === id ? oldEl : oldEl.querySelector('#' + CSS.escape(id)));
+      if (cur && !cur.hidden && cur.getAttribute('data-tool-ctx')) slots[i].replaceWith(cur.cloneNode(true));
+    }
+  }
 
   var bulk = false;
   function apply(m) {
@@ -1070,7 +1083,7 @@ func mirrorViewScript() g.Node {
       // Only where it is: a subagent card's summary (subagent_cards.go).
       if (op.op === 'patch') {
         var pt = op.id && document.getElementById(op.id);
-        if (pt) pt.replaceWith(frag(op.html));
+        if (pt) { var pf = frag(op.html); keepCtx(pt, pf); pt.replaceWith(pf); }
         return;
       }
       if (op.op === 'result' && op.id) {
@@ -1092,6 +1105,7 @@ func mirrorViewScript() g.Node {
         if (old) {
           var f = frag(op.html), el = f.firstElementChild;
           if (el && old.open) el.open = true; // keep a row the reader expanded
+          keepCtx(old, f);
           old.replaceWith(f);
           // A row redrawn inside a group: the group's count and state follow it
           // (a resumed socket cannot redraw a group it never drew).
