@@ -2,7 +2,7 @@
 
 This is the developer setup: a throwaway database, the server from `go run`, and
 one of your own machines mirrored over plain HTTP. To install muster for real,
-follow [INSTALL.md](https://github.com/ZacxDev/muster/blob/main/INSTALL.md).
+follow [INSTALL.md](../INSTALL.md).
 
 You need Go (the version in `go.mod`), Docker and, to mirror a session, tmux.
 The [Nix flake](../flake.nix) provides the toolchain (`nix develop`).

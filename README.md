@@ -3,8 +3,9 @@
 **Scale your agent sessions with Claude Code and others, use them across multiple
 machines, and use them easily from your phone with your voice and one hand.**
 
-Self-hosted: one Go binary and Postgres. The UI installs as a PWA. Each of your
-machines dials out to muster, and muster opens no network port on them.
+Self-hosted: one Go server and Postgres, in Docker on one of your machines,
+reached over HTTPS on your private Tailscale network and nowhere else. The UI
+installs on your phone as a PWA. Your other machines dial out to it.
 
 <p align="center">
   <img src="docs/img/phone-flow.gif" width="270" alt="On a phone: open a session from the bottom bar's search by typing its codename, dictate a reply with the microphone, send it, and watch the session answer">
@@ -19,27 +20,51 @@ machines dials out to muster, and muster opens no network port on them.
   screen switches between sessions in one tap, and its search finds one by
   codename, title, repository or kind as you type.
 - **Every machine, nothing exposed.** A small host agent, `muster-mirror`, runs
-  on each machine and opens an outbound tunnel to your muster server. Your
-  laptop, workstation and build box show up side by side. They dial out, and
-  muster opens no network port on them (the optional MCP endpoint listens on
-  loopback only).
-- **Your phone, your voice, one hand.** muster is designed for a phone first.
-  The controls sit at the bottom of the screen, within reach of your thumb. Tap
-  the mic, speak, and the transcript lands in the message box. You read it, then
-  press Send. Notifications tell you when something is waiting on you.
-- **Agent-agnostic.** Claude Code sessions render as a chat. opencode and Hermes
-  sessions have their own read views. Anything else, such as Codex or a plain
-  shell, is a live terminal. If it runs in a tmux pane, muster can show it.
+  on each machine as a user service and opens an outbound tunnel to your muster
+  server. Your laptop, workstation and build box show up side by side. They dial
+  out, and muster opens no network port on them (the optional MCP endpoint
+  listens on loopback only). The server itself is reached only through your
+  tailnet.
+- **Your phone, your voice, one hand.** muster is designed for a phone first:
+  join your tailnet with the Tailscale app, scan the QR code `muster doctor`
+  can print, and install muster to the home screen. The controls sit at the
+  bottom of the screen, within reach of your thumb. Tap the mic, speak, and the
+  transcript lands in the message box. You read it, then press Send.
+  Notifications tell you when something is waiting on you.
+- **Agent-agnostic.** Start any coding agent in tmux (Claude Code, Codex,
+  opencode, Gemini CLI) and it appears as a card. Claude Code sessions render as
+  a chat; opencode and Hermes sessions have their own read views; anything else,
+  Codex and plain shells included, is a live terminal.
 
 ## Quickstart
 
-**(a) Let your agent install it.** Paste this one prompt into your coding agent:
+You need a [Tailscale](https://tailscale.com) account (with MagicDNS and HTTPS
+certificates on), Docker with Compose v2 on the machine that will run the
+server, and tmux on every machine. Linux or macOS, amd64 or arm64.
+
+**(a) Let your agent install it.** Paste this one prompt into the coding agent
+(Claude Code, Codex, opencode, Gemini CLI, …) on the machine that should run
+muster:
 
 ```text
-Set up muster for me: read https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md and follow it. Ask me anything you need up front.
+Set up muster for me: read https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md and follow it step by step. Ask me everything you need in one go up front, then do the rest yourself.
 ```
 
-**(b) Install it yourself.** Follow [INSTALL.md](https://github.com/ZacxDev/muster/blob/main/INSTALL.md).
+It asks its questions once, up front (other machines, how dictation should work,
+whether muster may type into each machine's terminals), then:
+
+- runs the server in Docker, behind `tailscale serve` on your tailnet;
+- connects each machine's tmux sessions with `muster-mirror`;
+- finishes with `muster doctor`, which checks every part end to end, says how
+  to fix what fails, and (with `qrencode` installed) prints a QR code of the
+  address for your phone.
+
+While the Agents list is empty, it shows how to start an agent in tmux
+(`tmux new -A -s work claude`) and the same prompt, to connect another
+machine. More in [docs/onboarding.md](docs/onboarding.md).
+
+**(b) Install it yourself.** [INSTALL.md](INSTALL.md) is the same guide, step by
+step.
 
 To hack on muster, [docs/development.md](docs/development.md) runs it from source
 against a throwaway database.
@@ -54,11 +79,12 @@ against a throwaway database.
 - **Session switcher and search.** A bottom bar with Recent, Pins and All. Its
   search opens with the magnifier or `/`. → [docs/mirroring.md](docs/mirroring.md)
 - **Message box and step-up.** Send text into any mirrored pane or agent. Typing
-  into a mirrored session needs a recent sign-in, which you confirm with a
-  passkey or a password. → [docs/sending-and-step-up.md](docs/sending-and-step-up.md)
+  into a mirrored session needs a recent sign-in: you confirm your password
+  again (or a passkey, with per-user accounts). → [docs/sending-and-step-up.md](docs/sending-and-step-up.md)
 - **Dictation.** A mic on every message box, transcribed by a speech-to-text
-  service you choose (an OpenAI-style transcription endpoint). The transcript is
-  never sent by itself. → [docs/dictation.md](docs/dictation.md)
+  service you choose: the installer offers a local model on the server (GPU or
+  CPU) or your own OpenAI-compatible API key. The transcript is never sent by
+  itself. → [docs/dictation.md](docs/dictation.md)
 - **Push and PWA.** Web Push notifications, plus an installable app with a share
   target, shortcuts and a badge. → [docs/push.md](docs/push.md)
 - **Asks.** A single queue of everything waiting on you. An agent can ask you a
