@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -22,6 +23,19 @@ func TestListHermesChecksTheGatewaysCommit(t *testing.T) {
 		t.Fatalf("no gateway:\n%s", out)
 	}
 	g := hermestest.NewGateway(t, home)
+	if runtime.GOOS != "linux" {
+		// Off Linux there is no SO_PEERCRED, so the gateway's socket fails its
+		// safety check before its commit is read (hermeshost's
+		// gateway_peer_other.go): the line says so, and nothing is attached.
+		out := listHermes(t, home, nil)
+		if !strings.Contains(out, "gateway\trefused\t") || !strings.Contains(out, "cannot authenticate the process on its socket") {
+			t.Fatalf("off Linux, a running gateway must be refused:\n%s", out)
+		}
+		if len(g.Tickets) != 0 || len(g.Resumes) != 0 {
+			t.Fatal("-list -hermes did more than identify")
+		}
+		return
+	}
 	if out := listHermes(t, home, nil); !strings.Contains(out, "gateway\tcode_sha "+hermeshost.Pin+" (the pin)\t") {
 		t.Fatalf("the pin:\n%s", out)
 	}
