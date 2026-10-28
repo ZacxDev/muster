@@ -62,6 +62,11 @@ MUSTER_DIR="${MUSTER_DIR:-$HOME/muster}"
 MUSTER_BIN="${MUSTER_BIN:-$HOME/.local/bin}"
 # A container's shell often has no USER; later steps name it.
 USER="${USER:-$(id -un)}"; export USER
+# macOS: the App Store Tailscale puts its CLI inside the app, not on PATH.
+# (MI_TS_APP replaces that path; for testing only.)
+if ! command -v tailscale >/dev/null 2>&1 && [ -x "${MI_TS_APP:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}" ]; then
+  tailscale() { "${MI_TS_APP:-/Applications/Tailscale.app/Contents/MacOS/Tailscale}" "$@"; }
+fi
 # mi_save KEY VALUE: remember a value for later steps (and later shells).
 # The state file and its temporary copy are written under umask 077 (mode 600).
 mi_save() {
@@ -163,26 +168,49 @@ mi_foreign && echo "existing muster: none"
 echo "tailscale serve: $(mi_serve_state)"
 # Everything below needs sudo or the person's own hands. Step 1 asks about
 # all of it in one message, so nothing stops half way for a password or a link.
+# On macOS nothing here needs sudo: Homebrew, the Tailscale app and Docker
+# Desktop install as the person.
 for t in curl tar tmux; do
-  command -v "$t" >/dev/null 2>&1 || echo "ASK UP FRONT: sudo to install $t (required on every machine)"
+  command -v "$t" >/dev/null 2>&1 && continue
+  if [ "$OS" = darwin ]; then echo "ASK UP FRONT: the person installs $t (\`brew install $t\`, no sudo; required on every machine)"
+  else echo "ASK UP FRONT: sudo to install $t (required on every machine)"; fi
 done
-command -v docker >/dev/null 2>&1 || echo "ASK UP FRONT (hub only): sudo to install Docker with the Compose plugin"
-if ! command -v tailscale >/dev/null 2>&1; then
-  echo "ASK UP FRONT: sudo to install Tailscale (https://tailscale.com/download), then to run \`tailscale up\`, which prints a sign-in link the person must open"
-elif ! tailscale status >/dev/null 2>&1; then
-  echo "ASK UP FRONT: sudo to run \`tailscale up\`, which prints a sign-in link the person must open"
+if ! command -v docker >/dev/null 2>&1; then
+  if [ "$OS" = darwin ]; then echo "ASK UP FRONT (hub only): the person installs Docker Desktop (no sudo)"
+  else echo "ASK UP FRONT (hub only): sudo to install Docker with the Compose plugin"; fi
 fi
-ts=$(tailscale status --json 2>/dev/null)
-if ! printf '%s\n' "$ts" | grep -q '"MagicDNSEnabled": *true' || ! printf '%s\n' "$ts" | grep -q '"CertDomains": *\[ *"'; then
+if ! command -v tailscale >/dev/null 2>&1; then
+  if [ "$OS" = darwin ]; then echo "ASK UP FRONT: the person installs the Tailscale app (App Store or https://tailscale.com/download, no sudo) and signs in with it"
+  else echo "ASK UP FRONT: sudo to install Tailscale (https://tailscale.com/download), then to run \`tailscale up\`, which prints a sign-in link the person must open"; fi
+elif ! tailscale status >/dev/null 2>&1; then
+  if [ "$OS" = darwin ]; then echo "ASK UP FRONT: the person signs in with the Tailscale app (no sudo)"
+  else echo "ASK UP FRONT: sudo to run \`tailscale up\`, which prints a sign-in link the person must open"; fi
+fi
+# `status --json` is indented over many lines: compare it without whitespace.
+ts=$(tailscale status --json 2>/dev/null | tr -d '[:space:]')
+if ! printf '%s\n' "$ts" | grep -q '"MagicDNSEnabled":true' || ! printf '%s\n' "$ts" | grep -q '"CertDomains":\["'; then
   echo "ASK UP FRONT (hub only): the person turns on MagicDNS and HTTPS Certificates in the Tailscale admin console (https://login.tailscale.com/admin/dns) before you start"
 fi
-[ "$OS" = linux ] && [ "$(id -u)" != 0 ] &&
-  echo "ASK UP FRONT (hub only, Linux): sudo to run \`tailscale set --operator=\"\$USER\"\`, so Step 2 can run \`tailscale serve\` without sudo"
-command -v qrencode >/dev/null 2>&1 || echo "ASK UP FRONT (optional): sudo to install qrencode, so \`muster doctor\` can draw the phone's QR code"
-if [ "$OS" = linux ] && [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != yes ]; then
+# The operator, only when the prefs show it is not this user (unset, someone
+# else, or left out of the JSON). If the prefs cannot be read, nothing is
+# asked: Step 2's "access denied" line covers it.
+if [ "$OS" = linux ] && [ "$(id -u)" != 0 ]; then
+  op=$(tailscale debug prefs 2>/dev/null | tr -d '[:space:]')
+  case "$op" in
+    *"\"OperatorUser\":\"$USER\""*) ;;
+    *'"OperatorUser":'*|'{'*) echo "ASK UP FRONT (hub only, Linux): sudo to run \`tailscale set --operator=\"\$USER\"\`, so Step 2 can run \`tailscale serve\` without sudo" ;;
+  esac
+fi
+if ! command -v qrencode >/dev/null 2>&1; then
+  if [ "$OS" = darwin ]; then echo "ASK UP FRONT (optional): the person installs qrencode (\`brew install qrencode\`, no sudo), so \`muster doctor\` can draw the phone's QR code"
+  else echo "ASK UP FRONT (optional): sudo to install qrencode, so \`muster doctor\` can draw the phone's QR code"; fi
+fi
+if [ "$OS" = linux ] && ! command -v loginctl >/dev/null 2>&1; then
+  echo "NOTE: no loginctl (WSL, or a container without systemd): muster-mirror cannot linger after logout. On WSL, turn systemd on (\`[boot] systemd=true\` in /etc/wsl.conf, then \`wsl --shutdown\`) and re-run Step 0; elsewhere, Step 7's service runs while the person is logged in"
+elif [ "$OS" = linux ] && [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" != yes ]; then
   echo "ASK UP FRONT (Linux): sudo to run \`loginctl enable-linger \"\$USER\"\`, so muster-mirror keeps running after the person logs out (Step 7)"
 fi
-unset ts
+unset ts op
 ```
 
 Read the output and note:
@@ -278,7 +306,13 @@ on what Step 0 found. Record each answer with `mi_save` as shown.
      now in the Tailscale admin console, <https://login.tailscale.com/admin/dns>.
      Without them Step 2 cannot give muster an HTTPS address.
    - **`qrencode`** (optional) and **`loginctl enable-linger`** (Linux, Step 7)
-     need `sudo` too. Ask in this same message.
+     need `sudo` too. Ask in this same message. Record the linger answer:
+     `mi_save LINGER yes` or `mi_save LINGER no` (Step 7 skips it on `no`).
+   - **macOS:** nothing needs `sudo`. Homebrew packages, the Tailscale app
+     and Docker Desktop install as the person; ask them to install what is
+     missing and to sign in with the Tailscale app.
+   - A `NOTE: no loginctl` line (WSL, a container): tell the person
+     muster-mirror runs only while they are logged in, and the WSL fix it names.
 
    If the agent's shell cannot answer a `sudo` password prompt, give the
    person the exact commands to run in their own terminal instead.
@@ -286,8 +320,9 @@ on what Step 0 found. Record each answer with `mi_save` as shown.
 **Then, before Step 2,** do what the person approved, in this order: install
 the missing packages; on Linux, `sudo tailscale up --operator="$USER"` (or
 `sudo tailscale set --operator="$USER"` if Tailscale is already signed in);
-give the person the sign-in link and wait until `tailscale status` succeeds.
-`enable-linger` waits for Step 7.
+on macOS, the person signs in with the Tailscale app. Give the person the
+sign-in link and wait until `tailscale status` succeeds. `enable-linger`
+waits for Step 7.
 
 **If this fails:** if the person does not answer a question, use the
 recommendation and say so. If they decline `sudo` for something required
@@ -581,7 +616,8 @@ cd / && rm -rf "$tmp"
 "$MUSTER_BIN/muster" --version
 # Does a NEW login shell find it? (This shell's PATH may predate
 # $MUSTER_BIN existing; many profiles add ~/.local/bin only once it exists.)
-[ "$("${SHELL:-sh}" -lc 'command -v muster' 2>/dev/null)" = "$MUSTER_BIN/muster" ] ||
+# `env -i`: the login shell builds PATH from the profile alone, not from ours.
+[ "$(env -i HOME="$HOME" USER="$USER" "${SHELL:-sh}" -lc 'command -v muster' 2>/dev/null)" = "$MUSTER_BIN/muster" ] ||
   echo "NOTE: a new login shell does not find $MUSTER_BIN/muster: add $MUSTER_BIN to PATH in the shell profile"
 ```
 
@@ -697,9 +733,12 @@ UNIT
   systemctl --user is-active muster-mirror.service
   journalctl --user -u muster-mirror.service -n 15 --no-pager
   # Keep it running after the person logs out. On Debian and most other
-  # distributions this always needs sudo (approved in Step 1).
-  if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" = yes ]; then echo "linger: already on"
-  else sudo loginctl enable-linger "$USER" && echo "linger: on" ||
+  # distributions this always needs sudo (asked in Step 1). `sudo -n` never
+  # waits for a password the agent cannot type: it fails, and the person runs it.
+  if [ "${LINGER:-}" = no ]; then echo "linger: skipped (declined in Step 1); muster-mirror stops when the person logs out"
+  elif ! command -v loginctl >/dev/null 2>&1; then echo "linger: no loginctl here (WSL or a container); see Step 0's NOTE"
+  elif [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" = yes ]; then echo "linger: already on"
+  else sudo -n loginctl enable-linger "$USER" && echo "linger: on" ||
     echo "LINGER NOT ON: ask the person to run, in their own terminal: sudo loginctl enable-linger $USER"
   fi
 else
@@ -827,7 +866,7 @@ mkdir -p "$HOME/.muster" && chmod 700 "$HOME/.muster"
 [ -f "$HOME/.muster/muster.env" ] || {
   (umask 077; { echo "MUSTER_API_URL=$MUSTER_URL"; echo "MUSTER_TOKEN=$(sed -n 's/^MUSTER_HOOK_TOKEN=//p' "$MUSTER_DIR/.env")"; } > "$HOME/.muster/muster.env")
 }
-"$MUSTER_BIN/muster" doctor --deploy-env "$MUSTER_DIR/.env"
+"$MUSTER_BIN/muster" doctor --deploy-env "$MUSTER_DIR/.env" >/dev/null
 ```
 
 `--deploy-env` makes the doctor check the hub that `.env` names, whatever
@@ -838,7 +877,7 @@ On **every other machine**, run:
 
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
-"$MUSTER_BIN/muster" doctor --api-url "$MUSTER_URL"
+"$MUSTER_BIN/muster" doctor --api-url "$MUSTER_URL" >/dev/null
 ```
 
 There, the checks that need the server's credentials report SKIP, and
@@ -846,8 +885,9 @@ There, the checks that need the server's credentials report SKIP, and
 sees this machine connected.
 
 `muster doctor` prints one line per check, `PASS`, `FAIL` or `SKIP`, and a
-`fix:` line under each failure. It exits non-zero if anything failed. Its
-checks:
+`fix:` line under each failure, on stderr. It exits non-zero if anything
+failed. Its stdout is the same result as one JSON document, for scripts; the
+`>/dev/null` above drops that copy, so you read the report once. Its checks:
 
 | check | what it proves |
 |---|---|

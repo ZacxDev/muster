@@ -730,12 +730,12 @@ func TestDoctorPromotesTheDeployTokenOnlyWithItsURL(t *testing.T) {
 	}
 }
 
-// TestDoctorPrintsItsReportOnceWhenBothStreamsAreOneFile: with stdout and
-// stderr the SAME file — a terminal, or `muster doctor >out 2>&1`, the way an
-// agent's shell captures it — the report is printed once, with no JSON copy
-// after it; --json brings the JSON back; and two different files (stdout read
-// on its own, the CLI's machine contract) still get it without --json.
-func TestDoctorPrintsItsReportOnceWhenBothStreamsAreOneFile(t *testing.T) {
+// TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams pins the CLI's contract
+// on REAL files: stdout carries the one JSON document and stderr the report,
+// also when both are the SAME open file (a terminal, `>out 2>&1`). An agent
+// that wants only the report sends stdout to /dev/null (INSTALL.md, Step 10)
+// rather than the CLI guessing from the streams.
+func TestDoctorStdoutIsOneJSONDocumentWhateverTheStreams(t *testing.T) {
 	read := func(f *os.File) string {
 		b, err := os.ReadFile(f.Name())
 		if err != nil {
@@ -755,14 +755,8 @@ func TestDoctorPrintsItsReportOnceWhenBothStreamsAreOneFile(t *testing.T) {
 
 	both := open("both")
 	r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{stdout: both, stderr: both})
-	if got := read(both); r.code != exitOK || strings.Count(got, report) != 1 || strings.Contains(got, doc) {
-		t.Fatalf("one file for both: exit %d; want the report once and no JSON:\n%s", r.code, got)
-	}
-
-	forced := open("forced")
-	r = runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{stdout: forced, stderr: forced, extra: []string{"--json"}})
-	if got := read(forced); r.code != exitOK || strings.Count(got, report) != 1 || strings.Count(got, doc) != 1 {
-		t.Fatalf("one file with --json: exit %d; want the report and the JSON once each:\n%s", r.code, got)
+	if got := read(both); r.code != exitOK || strings.Count(got, report) != 1 || strings.Count(got, doc) != 1 {
+		t.Fatalf("one file for both: exit %d; want the report and the JSON once each:\n%s", r.code, got)
 	}
 
 	out, errf := open("out"), open("err")
@@ -776,35 +770,5 @@ func TestDoctorPrintsItsReportOnceWhenBothStreamsAreOneFile(t *testing.T) {
 	}
 	if got := read(errf); strings.Count(got, report) != 1 || strings.Contains(got, doc) {
 		t.Fatalf("separate files: stderr must be the report alone:\n%s", got)
-	}
-}
-
-// TestDoctorWantsJSONComparesTheOpenFiles pins the decision on PIPES, the
-// shape an agent's capture has: one pipe for both streams is one file, two
-// pipes are two, and a stream that is not a file keeps the JSON.
-func TestDoctorWantsJSONComparesTheOpenFiles(t *testing.T) {
-	pipe := func() *os.File {
-		r, w, err := os.Pipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { r.Close(); w.Close() })
-		return w
-	}
-	one, other := pipe(), pipe()
-	var buf strings.Builder
-	for _, c := range []struct {
-		name           string
-		stdout, stderr io.Writer
-		force, want    bool
-	}{
-		{"one pipe for both", one, one, false, false},
-		{"one pipe for both, --json", one, one, true, true},
-		{"two pipes", one, other, false, true},
-		{"a buffer", &buf, one, false, true},
-	} {
-		if got := doctorWantsJSON(c.stdout, c.stderr, c.force); got != c.want {
-			t.Errorf("%s: doctorWantsJSON = %v, want %v", c.name, got, c.want)
-		}
 	}
 }
