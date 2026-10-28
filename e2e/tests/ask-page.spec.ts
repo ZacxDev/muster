@@ -208,6 +208,32 @@ for (const vp of [
   });
 }
 
+// An ask answered ELSEWHERE while its page is open: the page follows live — it
+// shows the answer, and neither the answer box nor Dismiss stays on screen
+// (Dismiss sits outside the live region). RED at #313's round-0 head, where
+// Dismiss stayed.
+test.describe('answered elsewhere, phone 390×844', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  test('the open page closes live: no answer box, no Dismiss', async ({ page }) => {
+    test.setTimeout(90_000);
+    hold = undefined;
+    await signIn(page);
+    const id = await ask(question('elsewhere'));
+    await page.goto(origin + `/attention/asks/${id}`);
+    await expect(page.locator('[data-ask-dismiss]')).toBeVisible();
+    // Another device answers it (the queue's own route, as the browser would).
+    const r = await page.request.post(origin + `/attention/asks/${id}/answer`, {
+      form: { option: 'wait until Monday' },
+      headers: { Origin: origin },
+      maxRedirects: 0,
+    });
+    expect(r.status(), "the other device's answer was recorded").toBe(303);
+    await expect(page.locator('[data-ask-closed]')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('#app-compose')).toBeHidden();
+    await expect(page.locator('[data-ask-dismiss]'), 'no Dismiss on a closed ask').toBeHidden();
+  });
+});
+
 test.describe('desktop 1280×800', () => {
   test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false });
   test('the ask page keeps the side nav and a centred column; an option answers at once', async ({ page }) => {

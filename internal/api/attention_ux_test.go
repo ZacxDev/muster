@@ -121,7 +121,7 @@ func TestEveryAttentionPushBodyCarriesItsSubstance(t *testing.T) {
 		{"an ask without", attentionItem{Kind: attentionKindAsk, Source: "chief", Text: "Rotate the staging key?"}, "Rotate the staging key?"},
 		{"an ask quoting a token", attentionItem{Kind: attentionKindAsk, Source: "ci", Text: "Use ghp_0123abcd9 for the mirror?"}, "Use «redacted» for the mirror?"},
 		{"a held question", attentionItem{Kind: attentionKindQuestion, Source: "main:1 @ ws", Text: "1. Which branch?\n2. Push it?"}, "1. Which branch?\n2. Push it?"},
-		{"a held question's choices", attentionItem{Kind: attentionKindQuestion, Source: "main:1 @ ws", Text: "Which branch?", Options: []string{"main", "dev"}},
+		{"a held question's choices", attentionItem{Kind: attentionKindQuestion, Source: "main:1 @ ws", Text: "Which branch?", choices: []string{"main", "dev"}},
 			"Which branch?\nOptions: main · dev"},
 		{"a waiting session", attentionItem{Kind: attentionKindSession, Source: "main:1 @ ws", Text: "Bash: curl -H 'Authorization: x' https://x.test", tool: "Bash",
 			Detail: "Tests pass.\nPublishing now."}, "Waiting: Bash · main:1 @ ws"},
