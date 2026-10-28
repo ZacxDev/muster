@@ -71,6 +71,11 @@
 
 ## Mirroring
 
+- **On macOS, Claude Code windows have no Rendered view.** muster-mirror
+  finds Claude Code by reading `/proc`, which macOS does not have, so every
+  window there opens in the Terminal view. One whose command is `claude` says
+  so at its top ([mirroring.md](mirroring.md#why-a-window-opens-in-the-terminal)).
+  A process lookup for macOS has not been written.
 - 🔴 **`-interactive` is a shell on the host** for anyone who can type into its
   Terminal view in muster — live keys are always on there, behind a recent
   sign-in ([mirroring.md](mirroring.md#read-only-interactive-and-sending)).

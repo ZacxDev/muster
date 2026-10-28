@@ -13,6 +13,19 @@ installs on your phone as a PWA. Your other machines dial out to it.
   <img src="docs/img/tool-context.png" width="270" alt="A Claude Code session rendered as a chat; each tool call shows how much context it added">
 </p>
 
+## How it works
+
+muster shows **your own sessions**: a coding agent you started in tmux on one of
+your machines is a **mirrored session**, and a message from your phone is typed
+into that same session, so it is all there when you are back at the keyboard.
+muster sees only sessions inside tmux. It can also start **dispatched agents**,
+separate sessions in Kubernetes pods; that is opt-in, and the one-prompt install
+below sets up mirrored sessions only. A Claude Code session opens in the
+**Rendered** view, a chat; the **Terminal** view is the fallback, and a window
+that has only the Terminal view says why. The details, and how to bring a
+session you already have into tmux:
+[docs/mirroring.md](docs/mirroring.md#mirrored-sessions-and-dispatched-agents).
+
 ## Why muster
 
 - **Run more sessions without losing track of them.** Every tmux window on every
@@ -80,7 +93,8 @@ against a throwaway database.
 
 - **Mirrored sessions.** Each tmux window on your machines is shown live. A
   Claude Code window renders as a chat, and the Terminal view is one tap away.
-  Viewing a window never moves your own terminal. → [docs/mirroring.md](docs/mirroring.md)
+  Viewing a window never moves your own terminal. On a macOS machine, Claude
+  Code windows open in the Terminal view only, for now. → [docs/mirroring.md](docs/mirroring.md)
 - **Session switcher, sidebar and search.** A bottom bar with Recent, Pins and
   All, and a sidebar that lists every session like channels in a chat app: the
   chief first (if you turned one on), then the sessions waiting on you, then

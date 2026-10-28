@@ -45,6 +45,9 @@ interface Win {
   command: string;
   activity: number;
   claude?: string;
+  // Why the window has no rendered view, as the host says it (the windows
+  // file's 11th field; mirrorhost's NoView lines).
+  noView?: string;
 }
 const now = Math.floor(Date.now() / 1000);
 const shellWin: Win = { session: 'scratch2', id: '@4', index: 1, active: false, command: 'zsh', activity: now - 3600 };
@@ -54,7 +57,17 @@ const elevenWin: Win = { session: 'scratch2', id: '@9', index: 11, active: false
 const soloWin: Win = { session: 'solo', id: '@2', index: 3, active: true, command: 'opencode', activity: now - 900 };
 
 function writeWindows(ws: Win[]) {
-  writeFileAtomic(windowsFile, ws.map((w) => [w.session, w.id, w.index, w.active ? 1 : 0, w.command, w.activity, w.claude ?? ''].join('|')).join('\n') + '\n');
+  writeFileAtomic(
+    windowsFile,
+    ws
+      .map((w) => {
+        const f: (string | number)[] = [w.session, w.id, w.index, w.active ? 1 : 0, w.command, w.activity, w.claude ?? ''];
+        // Fields 8–10 (split transcript, cwd, colour) are empty; the 11th is the reason.
+        if (w.noView) f.push('', '', '', w.noView);
+        return f.join('|');
+      })
+      .join('\n') + '\n',
+  );
 }
 
 const q = (w: Win) => `host=${encodeURIComponent(host)}&session=${encodeURIComponent(w.session)}&window=${encodeURIComponent(w.id)}`;
@@ -533,6 +546,55 @@ for (const vp of [
         expect(boxes.height, 'CONTROL: the toast was really laid out').toBeGreaterThan(20);
         expect(boxes, `on ${p}`).toMatchObject({ input: false, send: false });
       }
+    });
+
+    // 🔴 A WINDOW THAT OPENS IN THE TERMINAL SAYS WHY, in one line under the
+    // header, instead of silently falling back — the silent fallback read as
+    // "muster only has a terminal" to a person whose Claude Code window had no
+    // transcript yet. The shell window says no Claude Code was found (red at
+    // origin/main: no line at all); a Claude Code window whose host says why
+    // it has no view says the host's reason on its card AND in its Terminal
+    // view; a window WITH a rendered view draws the switch and no line.
+    // It lists a fifth window; the next beforeEach removes it again.
+    test('a terminal-only window says why in one line; a window with a rendered view does not', async ({ page }) => {
+      const why = 'Claude Code has not written this conversation yet. The Rendered view appears after its first message.';
+      const freshWin: Win = { session: 'fresh', id: '@5', index: 1, active: true, command: 'claude', activity: now - 60, noView: why };
+      const vw = page.viewportSize()!.width;
+      const lineFits = async () => {
+        const box = await page.locator('#term-only').boundingBox();
+        expect(box, 'the terminal-only line is drawn').not.toBeNull();
+        expect(box!.x).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(vw + 0.5);
+        await noHorizontalScroll(page);
+      };
+
+      // The shell window: no Claude Code here.
+      await openList(page, 4);
+      await page.goto(origin + termPath(shellWin));
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@4');
+      await expect(page.locator('#term-only')).toHaveText('Terminal only. muster found no Claude Code conversation in this window.');
+      await expect(page.locator('#view-rendered')).toHaveCount(0);
+      await lineFits();
+
+      // Control: a Claude Code window has its rendered view — the switch, no line.
+      await page.goto(origin + termPath(eightWin));
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=scratch2 window=@7');
+      await expect(page.locator('#view-rendered')).toBeVisible();
+      await expect(page.locator('#term-only')).toHaveCount(0);
+
+      // A Claude Code window with no transcript yet: the host's reason, on its
+      // card and in its Terminal view.
+      writeWindows([shellWin, eightWin, elevenWin, soloWin, freshWin]);
+      await openList(page, 5);
+      const card = cardOf(page, termPath(freshWin));
+      await expect(card.locator('[data-mirror-note]')).toHaveText(why);
+      await card.locator('a').first().click();
+      await page.waitForURL((u) => u.pathname === '/mirror/terminal' && u.searchParams.get('session') === 'fresh');
+      await expect(screen(page)).toContainText('FAKE-MIRROR session=fresh window=@5');
+      await expect(page.locator('#term-only')).toHaveText('Terminal only. ' + why);
+      await expect(page.locator('#term-only [data-terminal-only-reason]')).toHaveText(why);
+      await expect(page.locator('#view-rendered')).toHaveCount(0);
+      await lineFits();
     });
 
     // The URLs that existed before windows were addressable.
