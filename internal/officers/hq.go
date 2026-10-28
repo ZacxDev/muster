@@ -218,14 +218,24 @@ func (c *Client) Items(ctx context.Context, q ItemsQuery) (ItemsPage, error) {
 		}
 		return page, nil
 	}
+	// HQ (civ-hq docs/OFFICERS.md) answers {items, next}: next is the cursor
+	// of the following page, null on the last. next_cursor is accepted too.
+	// ItemID decodes either a string or a number, which a cursor may be.
 	var env struct {
-		Items      []Item `json:"items"`
-		NextCursor string `json:"next_cursor"`
+		Items      []Item  `json:"items"`
+		Next       *ItemID `json:"next"`
+		NextCursor *ItemID `json:"next_cursor"`
 	}
 	if err := json.Unmarshal(trimmed, &env); err != nil {
 		return ItemsPage{}, fmt.Errorf("%w: items: %v", ErrHQUnavailable, err)
 	}
-	page.Items, page.NextCursor = env.Items, env.NextCursor
+	page.Items = env.Items
+	switch {
+	case env.Next != nil:
+		page.NextCursor = string(*env.Next)
+	case env.NextCursor != nil:
+		page.NextCursor = string(*env.NextCursor)
+	}
 	return page, nil
 }
 
@@ -295,8 +305,12 @@ type Completion struct {
 // Outcomes the contract accepts.
 var Outcomes = []string{"done", "escalated", "no_action"}
 
-// MaxSummaryBytes is the contract's summary bound.
+// MaxSummaryBytes is the contract's summary bound (HQ counts characters;
+// bytes is the stricter of the two).
 const MaxSummaryBytes = 4096
+
+// MaxLinks is HQ's bound on a completion's links (civ-hq docs/OFFICERS.md).
+const MaxLinks = 10
 
 // Complete is POST …/items/{item}/complete.
 func (c *Client) Complete(ctx context.Context, item ItemID, instance string, done Completion) ([]byte, error) {

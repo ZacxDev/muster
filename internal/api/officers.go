@@ -296,7 +296,7 @@ func officerToolDefs() []agents.ToolDef {
 				"cursor": strProp("The next_cursor of a previous page."),
 			})},
 		{Type: "function", Name: officers.ToolClaim,
-			Description: "Claim one item so no other instance works it. A conflict answer (refused, status 409) means another instance holds it: pick another item. Heartbeat before the lease runs out.",
+			Description: "Claim one item so no other instance works it. If YOU already hold it (e.g. you were restarted mid-item), this succeeds, renews your lease and says \"already yours\" — carry on with it. A conflict answer (refused, status 409) means ANOTHER instance holds it: pick another item. Heartbeat before the lease runs out.",
 			Parameters:  objSchema(map[string]any{"item_id": item, "lease_seconds": lease}, "item_id")},
 		{Type: "function", Name: officers.ToolHeartbeat,
 			Description: "Extend your lease on an item you hold. A conflict answer means you lost the lease: stop working the item.",
@@ -307,7 +307,7 @@ func officerToolDefs() []agents.ToolDef {
 				"item_id": item,
 				"outcome": map[string]any{"type": "string", "enum": officers.Outcomes},
 				"summary": strProp("What you found and did, at most 4096 bytes."),
-				"links":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": 20, "description": "Optional URLs (a PR, a dashboard, a report)."},
+				"links":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxLinks, "description": "Optional http(s) URLs (a PR, a dashboard, a report), at most 10."},
 			}, "item_id", "outcome", "summary")},
 		{Type: "function", Name: officers.ToolRelease,
 			Description: "Give an item back before its lease ends, so another instance can take it.",
@@ -400,7 +400,7 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if bad := needItem(); bad != "" {
 			return bad, true
 		}
-		body, err = c.Claim(ctx, in.ItemID, instance, in.LeaseSeconds)
+		body, err = s.officerClaim(ctx, c, in.ItemID, instance, in.LeaseSeconds)
 	case officers.ToolHeartbeat:
 		if bad := needItem(); bad != "" {
 			return bad, true
@@ -420,6 +420,9 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if strings.TrimSpace(in.Summary) == "" || len(in.Summary) > officers.MaxSummaryBytes {
 			return toolErr("summary is required and at most %d bytes", officers.MaxSummaryBytes), true
 		}
+		if len(in.Links) > officers.MaxLinks {
+			return toolErr("at most %d links", officers.MaxLinks), true
+		}
 		body, err = c.Complete(ctx, in.ItemID, instance, officers.Completion{Outcome: in.Outcome, Summary: in.Summary, Links: in.Links})
 	case officers.ToolRelease:
 		if bad := needItem(); bad != "" {
@@ -433,6 +436,56 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		body, err = c.ReleaseEvaluation(ctx, instance, in.Evaluation)
 	}
 	return officerToolResult(name, body, err), true
+}
+
+// alreadyYoursNote is what a claim on an item the caller already holds says.
+const alreadyYoursNote = "already yours — lease renewed (you held this item under a live lease; keep working it and heartbeat as usual)"
+
+// officerClaim is officer_claim's HQ call.
+//
+// 🔴 A 409 NAMING THE CALLER IS NOT A CONFLICT. HQ refuses a claim on ANY live
+// lease — the caller's own included ("claiming your own live lease is a 409
+// too (use heartbeat)", civ-hq docs/OFFICERS.md). muster's instance id is the
+// agent's name, so a restarted pod is the SAME instance, and the first thing
+// it does is re-claim the item it was working. Passed through, that 409 tells
+// it "another instance has it — move on", and it abandons its own item until
+// the lease lapses. So when HQ's held_by is the calling instance, the claim
+// becomes a heartbeat with the requested lease and answers as a successful
+// claim. If the lease ran out between the two calls (heartbeat 409), the item
+// is claimable again and the claim is retried once. A 409 naming anyone else
+// is returned unchanged.
+func (s *Server) officerClaim(ctx context.Context, c *officers.Client, item officers.ItemID, instance string, lease int) ([]byte, error) {
+	body, err := c.Claim(ctx, item, instance, lease)
+	var hqErr *officers.HQError
+	if err == nil || !errors.As(err, &hqErr) || hqErr.Status != http.StatusConflict {
+		return body, err
+	}
+	var held struct {
+		HeldBy string `json:"held_by"`
+	}
+	if json.Unmarshal(hqErr.Body, &held) != nil || held.HeldBy != instance {
+		return body, err
+	}
+	hb, hbErr := c.Heartbeat(ctx, item, instance, lease)
+	var hbHQ *officers.HQError
+	if errors.As(hbErr, &hbHQ) && hbHQ.Status == http.StatusConflict {
+		return c.Claim(ctx, item, instance, lease)
+	}
+	if hbErr != nil {
+		return nil, hbErr
+	}
+	var out map[string]json.RawMessage
+	if json.Unmarshal(hb, &out) != nil || out == nil {
+		out = map[string]json.RawMessage{}
+	}
+	out["already_yours"] = json.RawMessage("true")
+	note, _ := json.Marshal(alreadyYoursNote)
+	out["note"] = note
+	b, mErr := json.Marshal(out)
+	if mErr != nil {
+		return hb, nil
+	}
+	return b, nil
 }
 
 // officerToolResult is HQ's answer as a tool result: HQ's JSON on success; a

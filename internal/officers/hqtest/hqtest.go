@@ -49,6 +49,8 @@ type Server struct {
 	reqs     []Request
 	Now      func() time.Time
 	Charters map[string]string
+	// PageSize, when > 0, pages the items list (next = the next offset).
+	PageSize int
 	// Evaluations is every POST /releases/captain accepted, in order.
 	Evaluations []Evaluation
 }
@@ -164,7 +166,23 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			"generated_at": now,
 		})
 	case len(parts) == 2 && parts[1] == "items" && r.Method == http.MethodGet:
-		s.write(w, http.StatusOK, map[string]any{"items": s.list(officer, r.URL.Query().Get("status"), now), "next_cursor": ""})
+		// HQ's envelope (civ-hq docs/OFFICERS.md): {items, next}, next null on
+		// the last page. PageSize > 0 pages the list so a test can see paging.
+		items := s.list(officer, r.URL.Query().Get("status"), now)
+		start := 0
+		if c := r.URL.Query().Get("cursor"); c != "" {
+			start, _ = strconv.Atoi(c)
+		}
+		if start > len(items) {
+			start = len(items)
+		}
+		items = items[start:]
+		var next any
+		if s.PageSize > 0 && len(items) > s.PageSize {
+			items = items[:s.PageSize]
+			next = strconv.Itoa(start + s.PageSize)
+		}
+		s.write(w, http.StatusOK, map[string]any{"items": items, "next": next})
 	case len(parts) == 4 && parts[1] == "items" && r.Method == http.MethodPost:
 		s.itemVerb(w, officer, parts[2], parts[3], body, now)
 	default:
@@ -207,8 +225,11 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 			s.write(w, http.StatusGone, map[string]any{"error": "done"})
 			return
 		}
-		if live && it.ClaimedBy != instance {
-			s.write(w, http.StatusConflict, map[string]any{"held_by": it.ClaimedBy, "lease_expires_at": it.LeaseExpiresAt})
+		// As HQ does (civ-hq docs/OFFICERS.md, lease semantics): ANY live lease
+		// refuses a claim — including the caller's own ("claiming your own live
+		// lease is a 409 too (use heartbeat)").
+		if live {
+			s.write(w, http.StatusConflict, map[string]any{"error": "held", "code": "held", "held_by": it.ClaimedBy, "lease_expires_at": it.LeaseExpiresAt})
 			return
 		}
 		exp := now.Add(time.Duration(lease) * time.Second)
@@ -217,15 +238,15 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		s.write(w, http.StatusOK, map[string]any{"item": *it, "lease_expires_at": exp})
 	case "heartbeat":
 		if !live || it.ClaimedBy != instance {
-			s.write(w, http.StatusConflict, map[string]any{"error": "lease lost"})
+			s.write(w, http.StatusConflict, map[string]any{"error": "lease lost", "code": "lease_lost"})
 			return
 		}
 		exp := now.Add(time.Duration(lease) * time.Second)
 		it.LeaseExpiresAt, it.UpdatedAt = &exp, now
-		s.write(w, http.StatusOK, map[string]any{"lease_expires_at": exp})
+		s.write(w, http.StatusOK, map[string]any{"item": *it, "lease_expires_at": exp})
 	case "complete":
 		if !live || it.ClaimedBy != instance {
-			s.write(w, http.StatusConflict, map[string]any{"error": "not the holder"})
+			s.write(w, http.StatusConflict, map[string]any{"error": "lease lost", "code": "lease_lost"})
 			return
 		}
 		outcome, _ := body["outcome"].(string)
@@ -238,7 +259,7 @@ func (s *Server) itemVerb(w http.ResponseWriter, officer, id, verb string, body 
 		s.write(w, http.StatusOK, map[string]any{"item": *it})
 	case "release":
 		if it.Status != "claimed" || it.ClaimedBy != instance {
-			s.write(w, http.StatusConflict, map[string]any{"error": "not the holder"})
+			s.write(w, http.StatusConflict, map[string]any{"error": "lease lost", "code": "lease_lost"})
 			return
 		}
 		it.Status, it.ClaimedBy, it.LeaseExpiresAt, it.UpdatedAt = "open", "", nil, now

@@ -414,6 +414,9 @@ func TestTheOfficerToolsWalkTheQueue(t *testing.T) {
 	if out := call(one, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"done","summary":"`+strings.Repeat("x", officers.MaxSummaryBytes+1)+`"}`); !strings.Contains(out, "at most") {
 		t.Fatalf("an oversized summary: %s", out)
 	}
+	if out := call(one, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"done","summary":"x","links":[`+strings.TrimSuffix(strings.Repeat(`"https://e.example/x",`, officers.MaxLinks+1), ",")+`]}`); !strings.Contains(out, "at most 10 links") {
+		t.Fatalf("eleven links: %s", out)
+	}
 	if out := call(one, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"done","summary":"low risk"}`); isToolErr(out) {
 		t.Fatalf("complete: %s", out)
 	}
@@ -781,5 +784,62 @@ func TestTheReleaseEvaluationToolIsTheReleaseOfficersOnly(t *testing.T) {
 	}
 	if out := r.s.dispatchAgentTool(ctx, rel, officers.ToolReleaseEvaluation, `{"evaluation":{}}`); !strings.Contains(out, "evaluation is required") {
 		t.Fatalf("empty evaluation: %s", out)
+	}
+}
+
+// TestClaimingAnItemYouAlreadyHoldRenewsItsLease: HQ answers a claim on an
+// item the CALLING instance already holds under a live lease with 409
+// held_by=<that same instance> ("use heartbeat"). Instance ids are agent names,
+// so a restarted instance re-claiming its own item hits exactly that. The claim
+// tool turns it into success — a heartbeat with the requested lease, the item
+// returned as claimed, "already yours". A 409 naming ANOTHER instance stays a
+// refusal.
+func TestClaimingAnItemYouAlreadyHoldRenewsItsLease(t *testing.T) {
+	r := newOfficerRig(t)
+	one := r.addInstance(r.a, 1, 851)
+	two := r.addInstance(r.a, 2, 852)
+	item := r.hq.AddItem(offA, "release.evaluate", "svc:v1")
+	ctx := context.Background()
+	if out := r.s.dispatchAgentTool(ctx, one, officers.ToolClaim, `{"item_id":"`+item+`","lease_seconds":60}`); isToolErr(out) {
+		t.Fatalf("first claim: %s", out)
+	}
+	first := *r.hq.Item(item).LeaseExpiresAt
+	r.advance(30 * time.Second)
+
+	// The restarted instance claims its own item again.
+	r.hq.ResetRequests()
+	out := r.s.dispatchAgentTool(ctx, one, officers.ToolClaim, `{"item_id":"`+item+`","lease_seconds":120}`)
+	if isToolErr(out) {
+		t.Fatalf("re-claiming its own live item: %s, want success", out)
+	}
+	if !strings.Contains(out, "already yours") || !strings.Contains(out, `"subject_key":"svc:v1"`) {
+		t.Fatalf("re-claim result = %s, want the item and an \"already yours\" note", out)
+	}
+	var sawHeartbeat bool
+	for _, q := range r.hq.Requests() {
+		if strings.HasSuffix(q.Path, "/items/"+item+"/heartbeat") && q.Body["instance"] == one.Name && q.Body["lease_seconds"] == float64(120) {
+			sawHeartbeat = true
+		}
+	}
+	if !sawHeartbeat {
+		t.Fatalf("no heartbeat with the requested lease reached HQ: %+v", r.hq.Requests())
+	}
+	if got := *r.hq.Item(item).LeaseExpiresAt; !got.After(first) {
+		t.Fatalf("lease not renewed: %s, was %s", got, first)
+	}
+
+	// Another instance claiming it is still refused, naming the holder.
+	r.hq.ResetRequests()
+	out = r.s.dispatchAgentTool(ctx, two, officers.ToolClaim, `{"item_id":"`+item+`"}`)
+	if !isToolErr(out) || !strings.Contains(out, `"status":409`) || !strings.Contains(out, one.Name) {
+		t.Fatalf("another instance's claim: %s, want a 409 refusal naming %s", out, one.Name)
+	}
+	for _, q := range r.hq.Requests() {
+		if strings.HasSuffix(q.Path, "/heartbeat") {
+			t.Fatal("a claim refused for ANOTHER holder sent a heartbeat")
+		}
+	}
+	if it := r.hq.Item(item); it.ClaimedBy != one.Name {
+		t.Fatalf("the holder changed to %q", it.ClaimedBy)
 	}
 }

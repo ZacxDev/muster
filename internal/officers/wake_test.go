@@ -376,3 +376,21 @@ func TestTheKickoffNamesTheOfficerAndCarriesNoToken(t *testing.T) {
 		t.Fatal("the loop logged the officer token")
 	}
 }
+
+// TestAllItemsFollowsHQsNextCursor: HQ pages the items list as {items, next}
+// (civ-hq docs/OFFICERS.md). AllItems must follow `next`, or an officer with
+// more open items than one page would be counted short.
+func TestAllItemsFollowsHQsNextCursor(t *testing.T) {
+	r := newRig(t, 1, time.Minute)
+	for i := 0; i < 5; i++ {
+		r.hq.AddItem(relID, "release.evaluate", "svc:v"+itoa(i))
+	}
+	r.hq.PageSize = 2
+	got, err := officers.NewClient(r.o, nil).AllItems(context.Background(), officers.StatusOpen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 5 {
+		t.Fatalf("AllItems = %d items over pages of 2, want 5", len(got))
+	}
+}

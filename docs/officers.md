@@ -39,7 +39,7 @@ MUSTER_OFFICER_WEBHOOK_SECRET=whsec_…          # optional: the push wake path
 
 | field | default | |
 |---|---|---|
-| `id` | required | HQ's officer id, `<type>:<area>`: lowercase letters, digits and single hyphens on each side of the colon. |
+| `id` | required | HQ's officer id, `<type>:<area slug>`: lowercase letters, digits and single hyphens on each side of the colon. HQ allows 54 characters; muster refuses an id whose instance agent name (`officer-<type>-<slug>-<max>`) would pass 48, because that name becomes a namespace. |
 | `hq_url` | required | HQ's API base, including `/api/v1`. No credentials in the URL. |
 | `max_instances` | `1` | 1–8. Each instance is a pod, a volume and a Claude account for life. |
 | `idle_scale_to_zero_after` | `30m` | How long the officer must be idle before its instances are stopped. |
@@ -160,7 +160,15 @@ listing and again at dispatch):
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
 | `officer_release_evaluation` `{evaluation}` | `POST /releases/captain` — **release officers only** (`release:*`): the captain route's body, passed through, with `instance` set by muster |
 
-`lease_seconds` defaults to 600 and is clamped to 30–3600. `outcome` is `done`,
+`lease_seconds` defaults to 600 (muster always sends it; HQ's own default is
+300) and is clamped to 30–3600. **Claiming an item you already hold** is not a
+conflict: HQ refuses a claim on any live lease, the caller's own included, and
+since an instance's id is its agent name a restarted instance re-claiming its
+item would hit that. When HQ's 409 names the calling instance as `held_by`,
+`officer_claim` heartbeats with the requested lease instead and answers with
+the item, `already_yours: true` and the note "already yours — lease renewed"
+(if the lease ran out between the two calls, the claim is retried once). A 409
+naming another instance is returned as a refusal. At most 10 `links`. `outcome` is `done`,
 `escalated` or `no_action`; `summary` is at most 4096 bytes. HQ's JSON is
 returned as is; a 4xx comes back as a refusal carrying HQ's status and body (a
 409 on a claim names the holder), and an outage as "try again in a minute".
@@ -237,7 +245,9 @@ From the officers contract, v1 (base `/api/v1`, bearer token of scope
 /officers/{id}/items/{item}/{claim,heartbeat,complete,release}`, and `POST
 /releases/captain` (release officers), with the bodies in the table above. Where the contract leaves a shape open, muster accepts:
 
-- the items list as `{"items": […], "next_cursor": "…"}` **or** a bare array;
+- the items list as HQ sends it, `{"items": […], "next": "…"|null}` (and
+  `next_cursor`, or a bare array); the wake loop follows `next` for up to 5
+  pages of 100;
 - item ids as JSON strings or numbers;
 - a webhook body of the Standard Webhooks form `{"type", "timestamp", "data":
   {"officer_id", "item_id", "kind"}}`.
