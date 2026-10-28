@@ -3,6 +3,7 @@ import { test, expect } from '../lib/fixtures';
 import { hookToken, updatePort, versionA, versionB, versionC } from '../lib/env';
 import { startServer, Running } from '../lib/server';
 import { waitControlled } from '../lib/sw';
+import { openMore } from '../lib/nav';
 
 // A deploy, end to end: build A serves the page, build B replaces it on the
 // same origin, and the open page offers the update without taking it.
@@ -176,6 +177,7 @@ test('the update toast survives an in-app navigation while the update waits', as
 
   const loadsBefore = Number(await page.evaluate(() => sessionStorage.getItem('loads')));
   await page.click('#sidebar-open');
+  await openMore(page);
   await page.locator('#sidebar a[data-tab="agents"]').click();
   await expect(page).toHaveURL(origin + '/agents');
   await expect(page.locator('#sidebar a[data-tab="agents"][aria-current="page"]')).toHaveCount(1);
@@ -313,9 +315,10 @@ test('a board-drawn "/" an older worker stored is not carried into the new shell
   await expect.poll(() => page.evaluate(shellCaches)).toEqual({ ['muster-shell-' + versionA]: goodShell });
   // The older worker's cache now holds the BOARD copy of "/": the page's own
   // same-origin fetch (type basic, 200, the session cookie), as a pre-#273
-  // worker's install fetch would have stored it.
+  // worker's install fetch would have stored it. (The board document is
+  // /tasks now — `/` itself opens the chief's chat — stored under "/".)
   const poisoned = await page.evaluate(async ([build, title]) => {
-    const res = await fetch('/', { credentials: 'same-origin' });
+    const res = await fetch('/tasks', { credentials: 'same-origin' });
     const html = await res.clone().text();
     await (await caches.open('muster-shell-' + build)).put('/', res);
     return { type: res.type, status: res.status, drawn: html.includes('data-tasks-drawn'), seeded: html.includes(title) };
@@ -349,11 +352,11 @@ test('a board-drawn answer to the new worker\'s shell fetch is not installed', a
   await waitControlled(page);
   await expect.poll(() => page.evaluate(shellCaches)).toEqual({ ['muster-shell-' + versionA]: goodShell });
   // The new worker asks for its shell and is answered with the BOARD copy of
-  // "/" (the real document, fetched with the request's own cookie).
+  // "/" (the real board document, /tasks, fetched with the request's own cookie).
   let boarded = 0;
   await context.route((u) => u.origin === origin && u.pathname === '/', async (route) => {
     if (!route.request().serviceWorker()) return route.continue();
-    const res = await route.fetch({ url: origin + '/' });
+    const res = await route.fetch({ url: origin + '/tasks' });
     const html = await res.text();
     if (html.includes('data-tasks-drawn')) boarded++;
     return route.fulfill({ response: res, body: html });
@@ -629,7 +632,8 @@ for (const vp of placements) {
       await page.evaluate(checkForUpdate);
       const pill = page.locator('#sw-update-toast');
       let sidebarIntersections = 0;
-      for (const path of ['/', '/tasks', '/agents', '/agents/docs-sweeper']) {
+      // (`/` is not listed: it redirects to /agents here, which is.)
+      for (const path of ['/tasks', '/agents', '/agents/docs-sweeper']) {
         // A full load re-offers the waiting update from the registration check.
         await page.goto(origin + path);
         await expect(pill).toBeVisible();
@@ -647,7 +651,7 @@ for (const vp of placements) {
         expect(r.covered, `on ${path}: covers no control`).toEqual([]);
         if (vp.sidebar) {
           await page.click('#sidebar-open');
-          await expect(page.locator('#sidebar a[data-tab="tasks"]')).toBeVisible();
+          await expect(page.locator('#sidebar-more-summary')).toBeVisible();
           // Let the slide-in finish: the probe reads where things ARE.
           await page.locator('#sidebar').evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
           const s = await page.evaluate(coverageJS);

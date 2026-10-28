@@ -10,6 +10,7 @@ import {
 } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { Authenticator, authenticator, credentialIds, removeCredential, setUserVerified } from '../lib/webauthn';
+import { landedHome } from '../lib/nav';
 
 // STEP-UP for typing into a mirrored session, end to end against the REAL
 // GoTrue image (e2e/gotrue/compose.yml, the deployment's pin), a gotrue-mode
@@ -116,7 +117,7 @@ async function claimAndSignIn(page: Page) {
   await page.fill('#claim-email', adminEmail);
   await page.fill('#claim-password', adminPW);
   await page.fill('#claim-password2', adminPW);
-  await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
 }
 
 function startMirror(extra: NodeJS.ProcessEnv = {}): ChildProcess {
@@ -310,7 +311,7 @@ test.describe('at a desktop width (1280px)', () => {
     await page.goto(browserURL + '/login');
     await page.fill('#muster-email', adminEmail);
     await page.fill('#muster-password', adminPW);
-    await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
+    await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
     if (!mirrorProc || mirrorProc.exitCode !== null) mirrorProc = startMirror();
 
     await makeStale(context);
@@ -359,7 +360,7 @@ test.describe('the rendered view on a phone (390×844)', () => {
     await page.goto(browserURL + '/login');
     await page.fill('#muster-email', adminEmail);
     await page.fill('#muster-password', adminPW);
-    await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
+    await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
     if (!mirrorProc || mirrorProc.exitCode !== null) mirrorProc = startMirror();
     const pasted = () => (fs.existsSync(transcript + '.pasted') ? fs.readFileSync(transcript + '.pasted', 'utf8') : '');
     const sends: number[] = [];
@@ -456,7 +457,7 @@ async function signIn(page: Page, email = adminEmail, pw = adminPW) {
   await page.click('button[type=submit]');
   // A sign-in that does not land says WHY (the page's own words), rather than
   // timing out on a URL.
-  await page.waitForURL(browserURL + '/', { timeout: 20_000 }).catch(async () => {
+  await page.waitForURL(landedHome(browserURL), { timeout: 20_000 }).catch(async () => {
     throw new Error(`sign-in as ${email} did not land on /: ${page.url()} says: ${(await page.locator('body').innerText()).slice(0, 400)}`);
   });
   if (!mirrorProc || mirrorProc.exitCode !== null) mirrorProc = startMirror();

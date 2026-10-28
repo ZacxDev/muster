@@ -1,5 +1,6 @@
 import { test, expect } from '../lib/fixtures';
 import { baseURL, password } from '../lib/env';
+import { openMore } from '../lib/nav';
 
 // Account → Devices (the Android app's paired phones, Phase 1), end to end on
 // the shared password-mode server: inside the app's WebView — played here by
@@ -85,6 +86,7 @@ test('inside the app shell Install is never offered', async ({ page }) => {
   await signIn(page);
   await page.goto(baseURL + '/tasks');
   await page.click('#sidebar-open');
+  await openMore(page);
   await page.evaluate(fireInstall);
   await expect(page.locator('#sidebar [data-install-app]')).toBeHidden();
 });
@@ -93,6 +95,7 @@ test('CONTROL: outside the app shell the same event offers Install', async ({ pa
   await signIn(page);
   await page.goto(baseURL + '/tasks');
   await page.click('#sidebar-open');
+  await openMore(page);
   await page.evaluate(fireInstall);
   await expect(page.locator('#sidebar [data-install-app]')).toBeVisible();
 });

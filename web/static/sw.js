@@ -62,13 +62,16 @@ const SHELL_JS = "__MUSTER_SHELL_JS__";
 // Vendored JS is fetched fresh (it is small and benefits from normal HTTP
 // caching) to avoid serving a stale htmx during development.
 const SHELL = ['/', APP_CSS, '/manifest.webmanifest'].concat(SHELL_JS);
-// 🔴 "/" IS FETCHED AS THE BOARD-LESS SHELL AND STORED UNDER "/". The real "/"
-// draws the signed-in user's task board, and this cache outlives the session
-// that filled it (sign-out's Clear-Site-Data: "cache" does not empty Cache
-// Storage, and activate carries entries forward): an offline open after a
-// sign-out would show the previous user's tasks. internal/api's
-// offlineShellParam is the server half; a drawn board carries
-// data-tasks-drawn, and boardless() refuses any "/" that does.
+// 🔴 "/" IS FETCHED AS THE BOARD-LESS SHELL AND STORED UNDER "/". A signed-in
+// "/" is not a shell at all — it redirects to the chief's chat (internal/api
+// redirectHome), which usable() refuses — and the board's own document
+// (/tasks) draws the user's tasks. This cache outlives the session that filled
+// it (sign-out's Clear-Site-Data: "cache" does not empty Cache Storage, and
+// activate carries entries forward), so a stored board would show the previous
+// user's tasks to an offline open after a sign-out. "/?shell=1"
+// (offlineShellParam) is the server's board-less shell; a drawn board carries
+// data-tasks-drawn, and boardless() still refuses any "/" that does — an older
+// worker's stored copy, carried forward, or a board handed to this fetch.
 const SHELL_FETCH = { '/': '/?shell=1' };
 async function boardless(path, res) {
   if (path !== '/') return true;

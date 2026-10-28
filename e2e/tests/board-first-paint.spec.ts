@@ -4,10 +4,12 @@ import { authState, baseURL } from '../lib/env';
 import { launchWithBfcache } from '../lib/bfcache';
 import { waitControlled } from '../lib/sw';
 
-// THE BOARD IS IN THE `/` DOCUMENT, AND THE FIRST SSE OPEN DOES NOT FETCH IT
-// AGAIN (internal/ui/tasks_list_ssr.go).
+// THE BOARD IS IN THE `/tasks` DOCUMENT, AND THE FIRST SSE OPEN DOES NOT FETCH IT
+// AGAIN (internal/ui/tasks_list_ssr.go). (`/` served the board too until home
+// became the chief's chat, internal/api/nav_agents.go; the offline copy the
+// worker keeps under "/" is still the shell, tested below.)
 //
-// `/` used to draw a skeleton and fill it from its own GET /ui/tasks, and the
+// The board used to draw a skeleton and fill it from its own GET /ui/tasks, and the
 // stream's first open then fired muster:resync, which fetched /ui/tasks a
 // second time to morph an identical board over it. The document now carries
 // the board; the first open skips its resync only when the stream's hello
@@ -60,10 +62,10 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript((k) => localStorage.removeItem(k), tagFilterKey);
 });
 
-test('/ carries the board in its own response, and the first SSE open fetches nothing', async ({ page }) => {
+test('/tasks carries the board in its own response, and the first SSE open fetches nothing', async ({ page }) => {
   const w = await watch(page);
-  const resp = await page.goto('/');
-  expect(await resp!.text(), 'the / response itself carries a seeded task').toContain(seeded);
+  const resp = await page.goto('/tasks');
+  expect(await resp!.text(), 'the /tasks response itself carries a seeded task').toContain(seeded);
   await expect(card(page, seeded)).toBeVisible();
   await firstOpenSettled(page);
   expect(await w.resyncs(), 'muster:resync fired by the first open').toBe(0);
@@ -72,7 +74,7 @@ test('/ carries the board in its own response, and the first SSE open fetches no
 
 test('a reconnect re-fetches the board even when nothing changed', async ({ page }) => {
   const w = await watch(page);
-  await page.goto('/');
+  await page.goto('/tasks');
   await firstOpenSettled(page);
   expect(w.fetches, 'control: nothing fetched before the reconnect').toEqual([]);
   await reconnect(page);
@@ -86,7 +88,7 @@ test('a reconnect re-fetches the board even when nothing changed', async ({ page
 // SHELL_FETCH). The auditor's path, end to end: signed in, the worker installs;
 // signed out (cookies gone); offline; open "/".
 test('the offline shell the worker stores holds no task, and an offline open after sign-out shows none', async ({ page, context }) => {
-  await page.goto('/');
+  await page.goto('/tasks');
   await expect(card(page, seeded), 'control: the signed-in board draws the seeded task').toBeVisible();
   await waitControlled(page);
   await expect.poll(() => page.evaluate(async () => !!(await caches.match('/'))), { message: 'the worker stored "/"' }).toBe(true);
@@ -116,7 +118,7 @@ test('an event between the document and the stream makes the first open re-fetch
     await held;
     await route.continue();
   });
-  await page.goto('/');
+  await page.goto('/tasks');
   await expect(card(page, seeded)).toBeVisible();
   const title = `Created before the stream ${Date.now()}`;
   await api.createTask(title, 'Created by board-first-paint.spec.');
@@ -134,7 +136,7 @@ test('a stored tag filter hides the drawn board until the filtered one lands', a
     await held;
     await route.continue();
   });
-  await page.goto('/');
+  await page.goto('/tasks');
   // The unfiltered board is in the DOM (the document drew it) but not shown.
   await expect(card(page, seeded), 'control: the drawn board holds the unfiltered card').toHaveCount(1);
   await expect(card(page, seeded), 'the unfiltered card is hidden while the filtered board loads').toBeHidden();
@@ -172,7 +174,7 @@ test.describe('Back', () => {
     await ctx.addInitScript((k) => localStorage.removeItem(k), tagFilterKey);
     const page = await ctx.newPage();
     try {
-      await page.goto('/');
+      await page.goto('/tasks');
       await firstOpenSettled(page);
       // The first worker claims its clients on activation, which evicts a cached
       // page (bfcache-restore.spec.ts, workerSettled): wait for it first.
@@ -197,7 +199,7 @@ test.describe('Back', () => {
     await ctx.addInitScript((k) => localStorage.removeItem(k), tagFilterKey);
     const page = await ctx.newPage();
     try {
-      await page.goto('/');
+      await page.goto('/tasks');
       await firstOpenSettled(page);
       await page.goto('/agents');
       const title = `Created before the cached board ran ${Date.now()}`;
@@ -209,7 +211,7 @@ test.describe('Back', () => {
       });
       // Control: this IS the stored copy (an old document with an old mark), not
       // a fresh one the server drew after the task existed.
-      expect(nav, 'Back took / from the HTTP cache').toEqual({ type: 'back_forward', fromCache: true });
+      expect(nav, 'Back took /tasks from the HTTP cache').toEqual({ type: 'back_forward', fromCache: true });
       await expect(card(page, title), 'the cached board re-fetched on its first open').toBeVisible({ timeout: 10_000 });
     } finally {
       await ctx.close();

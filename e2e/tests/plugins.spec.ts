@@ -9,6 +9,7 @@ import {
 } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { authenticator } from '../lib/webauthn';
+import { landedHome } from '../lib/nav';
 
 // THE PLUGIN INTERFACE, END TO END: a FAKE PLUGIN (a Playwright request context
 // holding the plugin token, as the real plugin process would) against a
@@ -107,7 +108,7 @@ async function claimAndSignIn(page: Page) {
   await page.fill('#claim-email', adminEmail);
   await page.fill('#claim-password', adminPW);
   await page.fill('#claim-password2', adminPW);
-  await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
 }
 
 // makeStale re-signs the access cookie as the same session signed in 13 hours

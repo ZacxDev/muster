@@ -4,6 +4,7 @@ import { test, expect } from '../lib/fixtures';
 import { hookToken, password, viewSwapPort } from '../lib/env';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
 import { openDispatchSheet } from '../lib/dispatch';
+import { openMore } from '../lib/nav';
 
 // THE RENDERED ↔ TERMINAL SWITCH KEEPS BOTH VIEWS' CONNECTIONS
 // (internal/ui/view_swap.go) — a mirrored window's and a claude-code agent's —
@@ -614,6 +615,7 @@ test.describe('a claude-code agent', () => {
     // A boosted link in the framed chat page (its header's way back to the
     // list) navigates the TOP window, and both connections end.
     await framed(page).locator('#sidebar-open').click();
+    await openMore(framed(page));
     await framed(page).locator('#sidebar a[data-tab="agents"]').click();
     await expect.poll(() => pathOf(page)).toBe('/agents');
     await expect(frameEl(page)).toHaveCount(0);
@@ -746,6 +748,7 @@ test.describe('a claude-code agent', () => {
     await framed(page).locator('#view-rendered').click();
     await expect(frameEl(page)).toBeHidden();
     await page.locator('#sidebar-open').click();
+    await openMore(page);
     await page.locator('#sidebar a[data-tab="agents"]').click();
     await expect.poll(() => pathOf(page)).toBe('/agents');
     await settled();

@@ -8,6 +8,7 @@ import {
 import { gotrueSkewEnv, outliveAccessToken } from '../lib/gotrue';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { authenticator, credentialCount } from '../lib/webauthn';
+import { landedHome } from '../lib/nav';
 
 // Passkeys, end to end: Chromium's VIRTUAL AUTHENTICATOR (CDP WebAuthn domain)
 // against the REAL GoTrue image with GOTRUE_PASSKEY_ENABLED, through muster's
@@ -101,7 +102,7 @@ test('add a passkey, sign in with it, outlive the access token, sign out everywh
   await page.fill('#claim-email', adminEmail);
   await page.fill('#claim-password', adminPW);
   await page.fill('#claim-password2', adminPW);
-  await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
 
   // Account → Passkeys → add one on this device (the sign-in was just now:
   // no password re-ask).
@@ -117,8 +118,8 @@ test('add a passkey, sign in with it, outlive the access token, sign out everywh
   // Sign out, then sign in with the passkey: no email, no password.
   await signOut(page);
   await expect(page.locator('#passkey-signin')).toBeVisible();
-  await Promise.all([page.waitForURL(browserURL + '/'), page.locator('#passkey-signin').click()]);
-  await expectShellShows(page, 'tasks', 'Tasks', 'landing on / after a passkey sign-in');
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.locator('#passkey-signin').click()]);
+  await expectShellShows(page, 'agents', 'Agents', 'landing on / after a passkey sign-in (no chief: the Agents list)');
   const cs = await page.context().cookies(browserURL);
   for (const name of ['muster_at', 'muster_rt']) {
     const c = cs.find((x) => x.name === name);
@@ -155,7 +156,7 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset de
   await page.goto(browserURL + '/login');
   await page.fill('#muster-email', adminEmail);
   await page.fill('#muster-password', adminPW);
-  await Promise.all([page.waitForURL(browserURL + '/'), page.click('button[type=submit]')]);
+  await Promise.all([page.waitForURL(landedHome(browserURL)), page.click('button[type=submit]')]);
   await page.goto(browserURL + '/admin/invites');
   await page.getByRole('button', { name: 'Create link' }).click();
   const link = await page.locator('#once-link').inputValue();
@@ -204,7 +205,7 @@ test('a member: invite → passkey offer; no-UV and disabled refused; a reset de
   // CONTROL: verifying again, the same passkey signs in.
   await mauth.cdp.send('WebAuthn.setUserVerified', { authenticatorId: mauth.id, isUserVerified: true });
   await mp.reload();
-  await Promise.all([mp.waitForURL(browserURL + '/'), mp.locator('#passkey-signin').click()]);
+  await Promise.all([mp.waitForURL(landedHome(browserURL)), mp.locator('#passkey-signin').click()]);
   await signOut(mp);
 
   // The admin disables the member: the passkey is refused.

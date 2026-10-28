@@ -555,6 +555,8 @@ func (s *Server) registerAll(mux Mux) {
 		mux.HandleFunc("GET /"+tab, s.requireSession(s.handleIndex))
 	}
 	mux.HandleFunc("GET /events", s.requireSession(s.handleEvents))
+	// The sidebar's agent list (nav_agents.go): a partial every nav document loads.
+	mux.HandleFunc("GET "+ui.NavAgentsPath, s.requireSession(s.handleNavAgents))
 	// The browser telemetry relay (faro_relay.go): a signed-in page's Faro
 	// batches, forwarded to MUSTER_FARO_UPSTREAM; 404 while it is unset.
 	mux.HandleFunc("POST "+FaroRelayPath, s.requireOperatorWrite(s.handleFaroRelay))
@@ -703,7 +705,7 @@ func staticCacheControl(path, v string) string {
 // render a document carrying the sidebar; deciding the tab set at each of them
 // would be four copies of one predicate, which is the shape that ends up wrong at
 // three of the four in the same direction. It reads the SAME field the handler
-// guards on (Extensions.GitHub), so the page and the route cannot disagree about
+// guards on (Extensions.Connectors), so the page and the route cannot disagree about
 // whether a subsystem exists.
 //
 // ⚠ IT IS NOT A READINESS OR PERMISSION CHECK. A tab hidden here is a surface the
@@ -723,6 +725,13 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 // handleIndex serves the document shell. The active tab is derived from the
 // request path so each tab deep-links.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	// `/` opens the chief's chat (nav_agents.go, redirectHome) — except the
+	// service worker's offline copy, `/?shell=1`, which it fetches with
+	// redirect:'manual' and would refuse as a redirect (web/static/sw.js).
+	if r.URL.Path == "/" && r.URL.Query().Get(offlineShellParam) != "1" {
+		s.redirectHome(w, r)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// /tasks?new=1 is the manifest's "New task" shortcut: the board with the
 	// composer open. It is the same mechanism a share uses (ComposePage).

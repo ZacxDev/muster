@@ -219,11 +219,12 @@ func hueDelta(a, b float64) float64 {
 	return d
 }
 
-// TestTheTintIsOnTheCardsOnly: the operator asked for the CARDS. The one
-// caller of identityAttrs is the mirrored card — not the rendered view's
-// header, not the terminal page's — and the stylesheet's title rule reaches
-// only a card's title elements. The ledger fails when the set of callers
-// grows or shrinks.
+// TestTheTintIsOnTheCardsOnly: the operator asked for the CARDS — and later
+// for the sidebar's agent rows to carry the same signal (nav_agents.go, which
+// tints only the row's left edge). The callers of identityAttrs are those two
+// — not the rendered view's header, not the terminal page's — and the
+// stylesheet's title rule reaches only a card's title elements. The ledger
+// fails when the set of callers grows or shrinks.
 func TestTheTintIsOnTheCardsOnly(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -242,8 +243,8 @@ func TestTheTintIsOnTheCardsOnly(t *testing.T) {
 			callers[f] = n
 		}
 	}
-	if len(callers) != 1 || callers["mirror.go"] != 1 {
-		t.Fatalf("identityAttrs is called from %v, want exactly once, from mirror.go (the card)", callers)
+	if len(callers) != 2 || callers["mirror.go"] != 1 || callers["nav_agents.go"] != 1 {
+		t.Fatalf("identityAttrs is called from %v, want exactly once from mirror.go (the card) and once from nav_agents.go (the sidebar row)", callers)
 	}
 	if css := readInputCSS(t); strings.Contains(css, "data-identity-title") {
 		t.Fatal("input.css still tints a [data-identity-title] (a page header's title)")

@@ -1,4 +1,5 @@
 import { test, expect, effectiveThemeColorJS } from '../lib/fixtures';
+import { openMore } from '../lib/nav';
 
 const DARK = '#110F1C';
 
@@ -44,6 +45,10 @@ for (const vp of VIEWPORTS) {
       if (vp.name === 'phone') await page.click('#sidebar-open');
       const nav = page.locator('#sidebar');
       await expect(nav).toBeVisible();
+      // The device entries are inside the collapsed More (nav_agents.go
+      // navMore), where the toggle used to be: open it, so the probe below
+      // looks where a toggle would be drawn.
+      await openMore(page);
       // Positive control: the probe sees the sidebar's own entries.
       await expect(nav.locator('#sidebar-account')).toBeVisible();
       await expect(nav.locator('[data-theme-toggle]')).toHaveCount(0);

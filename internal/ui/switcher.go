@@ -293,11 +293,10 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 	labels := sessionSwitcherLabels(es)
 	out := make([]SwitcherItem, len(es))
 	for i, e := range es {
-		it := SwitcherItem{Label: labels[i], Current: cur.is(e)}
+		it := SwitcherItem{Label: labels[i], Current: cur.is(e), Waiting: e.waiting()}
 		if e.agent != nil {
 			a := e.agent
 			it.Href, it.Kind = a.PageHref(), "agent"
-			it.Waiting = waitTokens(a.Attention, a.AwaitingApproval) != ""
 			it.Host, it.HostIcon = podHost, clusterIcon.Key
 			it.Code = a.Name
 			it.Title = switcherSearchTitle(a.Name, plainOr(a.DisplayName, ""), focusTitle(a.Focus))
@@ -305,7 +304,6 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 		} else {
 			m := e.mirror
 			it.Href, it.Kind = MirrorCardHref(*m), "mirror"
-			it.Waiting = waitTokens(m.Attention, false) != ""
 			it.Host, it.HostIcon = m.Host, m.HostIcon
 			it.HostNamed = labelNamesHost(*m, labels[i])
 			_, it.Code = switcherName(e)

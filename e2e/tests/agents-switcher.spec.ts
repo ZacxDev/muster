@@ -3,6 +3,7 @@ import { test, expect } from '../lib/fixtures';
 import { agentsSwitcherPort, hookToken } from '../lib/env';
 import { clsInit, readCls, settle } from '../lib/cls';
 import { cc, MirrorRig, mkchat } from '../lib/mirrorhost';
+import { openMore } from '../lib/nav';
 
 // THE SESSION SWITCHER ON THE AGENTS LIST (internal/ui/switcher.go
 // switcherDock), on a REAL muster-server and a REAL muster-mirror
@@ -419,6 +420,7 @@ test.describe('desktop 1280×800, from another tab', () => {
     await expect(page.locator('#fab-agents')).toHaveCount(0);
     // The Tasks document does not build the list: its Agents panel's bar is
     // pending until the list's own load fills it.
+    await openMore(page);
     await page.click('.sidebar-tab[data-tab="agents"]');
     await expect(page).toHaveURL(/\/agents$/);
     // The router finished the switch (it once stopped at the launcher, and the
