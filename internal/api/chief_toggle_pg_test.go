@@ -116,3 +116,24 @@ func TestTurningTheChiefOnCreatesItAndARefusedCreateLeavesItOff(t *testing.T) {
 		t.Errorf("B's switch moved the operator's: chose=%v on=%v", chose, on)
 	}
 }
+
+// TestAnExistingChiefStaysOnOnPostgres: the owner's live shape, on real
+// Postgres — a chief agent made before the switch existed (labelled chief,
+// no stored choice) is ON: home opens it and Account reads on.
+func TestAnExistingChiefStaysOnOnPostgres(t *testing.T) {
+	w := newIsoWorld(t)
+	b := cred{sessionUser: w.b.uid}
+	name := "iso-existing-chief-" + w.suffix
+	if _, err := w.pool.Exec(w.sys, `INSERT INTO agents (owner_id, name, namespace, display_name, status, kicked_off)
+		VALUES ($1, $2, $3, 'chief', 'running', true)`, w.b.uid, name, "devpod-"+name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = w.pool.Exec(w.sys, `DELETE FROM agents WHERE name = $1`, name) })
+	if got := w.do(w.h, "GET", "/", "", b).Header().Get("HX-Redirect"); !strings.HasPrefix(got, "/agents/"+name) {
+		t.Errorf("GET / → %q, want the existing chief %q", got, name)
+	}
+	body := w.do(w.h, "GET", "/account", "", b).Body.String()
+	if !strings.Contains(body, `id="chief-state" data-state="on"`) {
+		t.Errorf("Account does not read on:\n%s", truncate(body, 800))
+	}
+}
