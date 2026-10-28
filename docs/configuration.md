@@ -129,6 +129,8 @@ part of this repository. Without one, set `MUSTER_STANDALONE=1`.
 | `MUSTER_ROUTER_URL` | none | no | The router's base URL. It provides transcript links, notifications and the directory picker. It refuses to boot together with `MUSTER_STANDALONE`. |
 | `MUSTER_ROUTER_TOKEN` | none | with the URL | The router's credential. |
 | `MUSTER_ROUTER_ACTOR` | `muster` | no | The actor name muster sends to the router. |
+| `MUSTER_ROUTER_ACTOR_HEADER` | `X-Router-Actor` | no | The header name the actor is sent in, to the router and to the approval gate. Set it to whatever header your router reads. |
+| `MUSTER_ROUTER_TOKEN_HEADER` | `X-Router-Token` | no | The header name the token is also sent in, beside `Authorization: Bearer`, to the router and to the approval gate. |
 | `MUSTER_APPROVAL_GATE_URL` | none | no | The router's gate endpoint. Agents' permission prompts are relayed there. Unset, a prompt falls back to the agent's own terminal. |
 | `MUSTER_APPROVAL_GATE_TOKEN` | none | with the URL | The credential for that gate. |
 

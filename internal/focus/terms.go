@@ -64,7 +64,7 @@ var (
 // dictText is the dictionary distinctiveTerms reads hyphenated words against:
 // SCOWL's American English list at size 35 (scowl 2020.12.07, wamerican.35),
 // the entries made only of lower-case ASCII letters, one per line; its
-// copyright and permission notice are dict/COPYRIGHT. Four words are left out
+// copyright and permission notice are dict/COPYRIGHT. Two words are left out
 // because this repository's leak gate (tests/leakscan.py) refuses them as
 // private identifiers, which costs only that a compound built on them counts
 // as distinctive.

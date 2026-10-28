@@ -136,7 +136,7 @@ class MissingKey(unittest.TestCase):
                     self.assertEqual(leakscan.key_required(env)[0], want)
 
     def self_test(self, env: dict) -> tuple[int, str]:
-        """The real self-test, with a well-formed 16-entry list so the only
+        """The real self-test, with a well-formed DENIED_COUNT-entry list so the only
         thing varying between cases is the key and the environment."""
         digests = [f"{i:064x}" for i in range(1, leakscan.DENIED_COUNT + 1)]
         out = io.StringIO()
@@ -187,6 +187,26 @@ class AnywhereInTheIdentifier(unittest.TestCase):
         ]:
             with self.subTest(line=line):
                 self.assertEqual(d.match(line), ["widgetco"])
+
+    def test_a_one_word_name_in_its_natural_camel_case_is_found(self):
+        d = deny("widgetco")
+        for line in [
+            "c := NewWidgetCoClient()",   # a run of whole camelCase words
+            "type WidgetCo struct{}",
+            "var widgetCO = 1",
+        ]:
+            with self.subTest(line=line):
+                self.assertEqual(d.match(line), ["widgetco"])
+
+    def test_the_dictionary_is_not_read_by_the_denied_rule_only(self):
+        with mock.patch.object(leakscan, "ACTIVE_DENYLIST", deny("widgetco")):
+            dict_path = next(iter(leakscan.DENIED_EXEMPT_FILES))
+            self.assertEqual(leakscan.scan_text("widgetcos", dict_path), [])
+            self.assertEqual([f.rule for f in leakscan.scan_text("widgetcos", "x.go")],
+                             ["denied-identifier"])
+            # Every OTHER rule still reads it.
+            self.assertEqual([f.rule for f in leakscan.scan_text("10.255." + "255.1", dict_path)],
+                             ["private-ip"])
 
     def test_ordinary_names_that_only_spell_it_across_a_boundary_pass(self):
         d = deny("widgetco")

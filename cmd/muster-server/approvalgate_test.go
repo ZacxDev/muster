@@ -40,8 +40,8 @@ func (f *fakeGateDoor) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.paths = append(f.paths, r.Method+" "+r.URL.Path)
-		f.token = append(f.token, r.Header.Get("Authorization")+"|"+r.Header.Get(router.TokenHeader))
-		f.actor = append(f.actor, r.Header.Get(router.ActorHeader))
+		f.token = append(f.token, r.Header.Get("Authorization")+"|"+r.Header.Get(router.DefaultTokenHeader))
+		f.actor = append(f.actor, r.Header.Get(router.DefaultActorHeader))
 		f.mu.Unlock()
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/gate":
@@ -297,6 +297,56 @@ func TestAnApprovalGateWithAnUnacceptableActorIsRefusedAtBoot(t *testing.T) {
 		c.RouterActor = ok
 		if err := c.validate(); err != nil {
 			t.Errorf("actor %q: validate = %v, want accepted", ok, err)
+		}
+	}
+}
+
+// TestTheRouterHeaderNamesComeFromTheEnvironment: MUSTER_ROUTER_ACTOR_HEADER and
+// MUSTER_ROUTER_TOKEN_HEADER travel from the environment, through loadConfig and
+// the binary's own wiring (approvalGateFor), to the request a router receives;
+// and a value that is not a header name is refused at boot.
+func TestTheRouterHeaderNamesComeFromTheEnvironment(t *testing.T) {
+	var got http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"requestId":"x"}`)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	env := map[string]string{
+		envDatabase:          "postgres://x/y",
+		envStandalone:        "1",
+		envApprovalGateURL:   srv.URL,
+		envApprovalGateToken: "gate-token-0123456789",
+		envRouterActorHeader: "X-Peer-Actor",
+		envRouterTokenHeader: "X-Peer-Token",
+	}
+	cfg, err := loadConfig(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	gate := approvalGateFor(cfg)
+	if gate == nil {
+		t.Fatal("no approval gate was built")
+	}
+	if _, err := gate.MintGate(context.Background(), api.GateSpec{}); err != nil {
+		t.Fatalf("MintGate: %v", err)
+	}
+	if got.Get("X-Peer-Actor") != cfg.RouterActor || got.Get("X-Peer-Token") != "gate-token-0123456789" {
+		t.Errorf("the configured header names did not carry the actor and token: %v", got)
+	}
+
+	for _, bad := range []string{"X Peer", "X-Peer:", "-X", "X--Y"} {
+		c := cfg
+		c.RouterActorHeader = bad
+		if err := c.validate(); err == nil || !strings.Contains(err.Error(), envRouterActorHeader) {
+			t.Errorf("actor header %q: validate = %v, want a refusal naming %s", bad, err, envRouterActorHeader)
+		}
+		c = cfg
+		c.RouterTokenHeader = bad
+		if err := c.validate(); err == nil || !strings.Contains(err.Error(), envRouterTokenHeader) {
+			t.Errorf("token header %q: validate = %v, want a refusal naming %s", bad, err, envRouterTokenHeader)
 		}
 	}
 }

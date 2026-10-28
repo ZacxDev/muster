@@ -115,7 +115,7 @@ const minServiceTokenLen = 32
 //     operator decides otherwise.
 //   - too short — a placeholder rather than generated entropy.
 //   - identical to HookToken — that token is ONE shared value, handed to every hook
-//     script on every host and travelling in cleartext to the LAN NodePort many
+//     script on every host and possibly travelling in cleartext to a plain-HTTP port many
 //     times a day, so it NAMES NO CALLER. This door's whole content is an asserted
 //     identity; admitting the secret every hook holds would let any of them assert
 //     any name, which is a WRONG identity rather than a missing one.

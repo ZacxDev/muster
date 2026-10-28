@@ -68,8 +68,8 @@ The design in one line each:
   muster session, can start only what the host's own file allows, where it
   allows it, as often as it allows it.
 - A spawned session looks like one the operator started by hand: it lives on
-  the default tmux server, its window is named by tmux's usual automatic
-  rename, Claude Code is started as plain `claude` and opencode as plain
+  the default tmux server, its window name is left to the host's own tmux
+  configuration, Claude Code is started as plain `claude` and opencode as plain
   `opencode`, and the repositories come from a configured root such as
   `~/src`.
 - Slice 1 stays small. Sends, the greater power on these hosts, write no
@@ -235,7 +235,10 @@ does not depend on any of the operator's own tooling:
 - The operator may name sessions however they like, and may already have
   their own scripts that create sessions or windows, or that re-create
   sessions after a reboot. muster neither uses nor replaces them.
-- tmux's automatic rename names windows after the working directory.
+- Window names are the host's choice. Stock tmux's `automatic-rename`
+  names a window after its running command (`#{pane_current_command}`);
+  a host may set `automatic-rename-format` to name it after the directory
+  instead. muster depends on neither.
 
 ## Options compared
 
@@ -422,8 +425,9 @@ so there is nothing to reconcile.
   from the same set, both should be generated from one source. The `m-`
   fallback is chosen so it does not look like a bare-number session name,
   which some tmux setups rename automatically.
-- **Window name:** none is set. tmux's automatic rename names it after the
-  directory, as every other window is named.
+- **Window name:** none is set, so the window is named the way the host's
+  tmux names every other window (by default after its running command, or
+  however `automatic-rename-format` says). This design does not depend on it.
 - **Identity: the `@muster-spawned` tag.** The host sets it on the new
   session, and its value is the id of the window the host created (`@17`). The
   name alone is not enough: the operator can create a session with a pool

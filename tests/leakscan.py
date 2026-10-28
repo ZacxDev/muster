@@ -4,12 +4,12 @@
 muster was extracted from a private, single-operator deployment. The source
 material carries live hostnames, private addresses, a container registry, real
 task numbers and dated incident narration. This gate exists so none of that can
-come back — and so the repository can one day be made public without a hand
-audit being the only thing standing between it and the internet.
+come back into a public repository without a hand audit being the only thing
+standing between it and the internet.
 
-🔴 THE REPOSITORY IS PRIVATE TODAY AND THIS GATE IS NOT A SUBSTITUTE FOR THAT.
-A clean run means "the scrub held", not "this is safe to publish". Publication
-is a separate decision with a separate review.
+🔴 THIS GATE IS NOT A SUBSTITUTE FOR REVIEW. A clean run means "the rules held",
+not "this is safe to publish": prose describing a private deployment spells no
+value any rule extracts.
 
 🔴 SCOPE: SECURITY, NOT TIDINESS. This blocks the things that would cause harm
 if published — credentials, reachable hostnames, real private network
@@ -157,8 +157,10 @@ _PRIVATE_IP = re.compile(
 # THE FALSE-POSITIVE FIX, NOT A LOOPHOLE TO CLOSE. Without it a denied word
 # turned up inside ordinary Go names whose camelCase words merely spell it
 # across a boundary (a test name, a const), and a
-# gate that refuses ordinary names gets switched off. The cost, declared: a
-# name written in camelCase as two words is a different spelling and misses.
+# gate that refuses ordinary names gets switched off. A name written in
+# camelCase as SEVERAL words is still caught, as a run of whole words joined
+# together: a run starts and ends on a boundary, so it is matched whole, and an
+# ordinary name whose words only spell an entry across a boundary is not.
 #
 # Every substring of DENIED_MIN_LEN..DENIED_MAX_LEN characters is HMACed, which
 # is why a one-word entry must fall in that range (the rehash script refuses one
@@ -172,14 +174,15 @@ _PRIVATE_IP = re.compile(
 #   canarytokens              FIRES  ... glued into a longer word
 #   MyCanarytokenClient       FIRES  ... as one camelCase word
 #   CANARYTOKEN_TEST_TMPFS    FIRES  `_`→`-` and case are folded
-#   isCanaryTokenized         MISS   it spans a camelCase boundary
+#   newCanaryTokenClient      FIRES  ... as a run of whole camelCase words
+#   isCanaryTokenized         MISS   the run would end inside a word
 #   canary-token              MISS   a one-word entry split by a separator is a
 #                                    declared LIMIT of the rule
 #   redacted-canary-scoped    MISS   a compound entry needs WHOLE segments
 #
-# ⚠ PUBLIC_WORDS are cut out of a segment before the substring walk. They are
-# public names that happen to CONTAIN a denied entry, and refusing them would
-# red the module path in every import.
+# ⚠ PUBLIC_WORDS are cut out of a segment before the substring walk: public
+# names the repository must always be able to spell, such as the module path's
+# owner handle. The walk never sees them, whatever the list holds.
 #
 # TO CHANGE THE LIST: put the plaintext names, one per line, in a file OUTSIDE
 # this repository and run
@@ -204,8 +207,9 @@ DENIED_COUNT = 16
 DENIED_MIN_LEN = 4
 DENIED_MAX_LEN = 32
 
-#: The repository owner's public handle. The module path and the image
-#: namespace spell it, and it is not private.
+#: Public names cut out before the walk (see the header above): the
+#: repository owner's handle, which the module path and the image namespace
+#: spell in every import.
 PUBLIC_WORDS = ("zacxdev",)
 
 #: 🔴 THE ONE EXCUSE, AND IT IS FOR SOMEBODY ELSE'S WIRE PROTOCOL. A header
@@ -217,7 +221,16 @@ PUBLIC_WORDS = ("zacxdev",)
 #: two-line diff rather than a comment anybody can paste. Prose ABOUT such a
 #: header does not get the marker; it gets reworded.
 WIRE_PROTOCOL_MARKER = "leakscan:wire-protocol"
-WIRE_PROTOCOL_LINES = 13
+WIRE_PROTOCOL_LINES = 6
+
+#: Files the denied-identifier rule does not read, each with the reason. Every
+#: other rule still applies to them, and a path here that the enumeration does
+#: not find fails the run, so an entry cannot outlive its file.
+DENIED_EXEMPT_FILES = {
+    "internal/focus/dict/words.txt":
+        "a third-party English word list (SCOWL, see dict/COPYRIGHT), embedded "
+        "verbatim: its lines are dictionary words, not identifiers anybody chose",
+}
 
 #: Every (path, line) the marker excused in this run, for the count above.
 WIRE_EXCUSED: list[tuple[str, int]] = []
@@ -330,8 +343,8 @@ _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 def camel_words(segment: str) -> list[str]:
     """A MIXED-case segment split at its camelCase boundaries; any other
-    segment whole. `TestALostKey` is four words, `MyWidgetClient` three, and
-    `widgetctl` or `WIDGET` one."""
+    segment whole. `XMLHttpRequest` is three words, `MyWidgetClient` three,
+    and `widgetctl` or `WIDGET` one."""
     if segment.islower() or segment.isupper():
         return [segment]
     return [w for w in _CAMEL_BOUNDARY.split(segment) if w]
@@ -367,7 +380,15 @@ class Denylist:
             while at != -1:
                 cut = cut[:at] + "-" * len(word) + cut[at + len(word):]
                 at = low.find(word, at + len(word))
-        words = [w.lower() for seg in cut.split("-") for w in camel_words(seg)]
+        segs = [[w.lower() for w in camel_words(seg)] for seg in cut.split("-")]
+        words = [w for seg in segs for w in seg]
+        # One-word entries written in camelCase: every run of two or more WHOLE
+        # camelCase words, joined. A run starts and ends on a boundary, so it is
+        # matched whole, never as a substring.
+        for seg in segs:
+            for i in range(len(seg)):
+                for j in range(i + 2, len(seg) + 1):
+                    candidates.append("".join(seg[i:j]))
         # Compound entries: every contiguous run of two or more whole segments.
         for i in range(len(parts)):
             for j in range(i + 2, len(parts) + 1):
@@ -490,17 +511,6 @@ RULES: list[tuple[str, str, str]] = [
         # These are reachable names on somebody's network and say where things
         # live.
         #
-        # ⚠ THE LAST LABEL IS WRITTEN `home(?:lab)?` AS TWO PIECES, AND IT IS NOT
-        # STYLE. Spelled as one alternative it is a DENIED identifier, so the
-        # pattern would put one of the names this gate exists to remove into the
-        # gate's own source in plaintext — the exact cost the digest denylist
-        # above is paid to avoid, in the file that is most grepped. Split, the
-        # source contains `home` and `lab`, neither of which is denied, and the
-        # matching is byte-for-byte unchanged: both the short and the long label
-        # match after a dot, and a label one letter longer still matches neither.
-        # This was found by the self-audit below, on its first run, which is the
-        # whole argument for having one.
-        #
         # ⚠ ONE NAME IS EXCUSED, EXACTLY: `CLAUDE.local.md`, the Claude Code
         # CLI's personal memory file, which the machine job API names because
         # it replaces it (internal/agentprovision jobworkspace.go). It is a
@@ -573,7 +583,7 @@ def scan_text(text: str, path: str = "<memory>") -> list[Finding]:
                 ))
         # The last two rules are per-OCCURRENCE for the same reason, and the
         # message has to say WHICH.
-        idents = denied_identifiers(line)
+        idents = [] if path in DENIED_EXEMPT_FILES else denied_identifiers(line)
         if idents and WIRE_PROTOCOL_MARKER in line:
             WIRE_EXCUSED.append((path, n))
             idents = []
@@ -1071,6 +1081,9 @@ NEGATIVE_CONTROLS = [
      f'    bin = "{DENY_CANARY_WORD}ctl"'),
     ("denied-identifier",
      f'    c := newMy{DENY_CANARY_WORD.capitalize()}Client()'),
+    # The natural camelCase spelling of a one-word entry: whole words joined.
+    ("denied-identifier",
+     f'    c := new{DENY_CANARY_WORD[:6].capitalize()}{DENY_CANARY_WORD[6:].capitalize()}Client()'),
     # The wire-protocol marker excuses the denied-identifier rule and NOTHING
     # else: a credential on a marked line is still refused.
     ("credential",
@@ -1129,8 +1142,8 @@ ALLOWED_CONTROLS = [
      "a token in which a denied COMPOUND is a literal substring — a compound "
      "entry matches whole segments only"),
     (f'    ok := is{DENY_CANARY_WORD[:6].capitalize()}{DENY_CANARY_WORD[6:].capitalize()}ized(x)',
-     "a one-word entry spelled ACROSS a camelCase boundary: the false-positive "
-     "shape the camelCase split exists for"),
+     "a one-word entry whose camelCase run would END INSIDE a word: the "
+     "false-positive shape the camelCase split exists for"),
     (f'    words = "{DENY_CANARY_WORD[:6]}-{DENY_CANARY_WORD[6:]}"',
      "a one-word entry split by a separator: a declared LIMIT of the rule, "
      "pinned so a change to it is a decision"),
@@ -1336,6 +1349,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     print(f"== UNDER TEST: {len(files)} file(s) scanned, {len(skipped)} skipped ==")
+    scanned = {str(f.relative_to(ROOT)) for f in files}
+    for rel, why in sorted(DENIED_EXEMPT_FILES.items()):
+        if rel not in scanned:
+            print(f"  FAIL  {rel} is exempt from the denied-identifier rule but was "
+                  f"not scanned at all — remove the stale exemption")
+            return 1
+        print(f"  NOT DENYLISTED  {rel} — {why}")
     if ACTIVE_DENYLIST is not None:
         for path, n in WIRE_EXCUSED:
             print(f"  EXCUSED  {path}:{n} — a wire-protocol header name")

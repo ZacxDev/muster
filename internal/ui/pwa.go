@@ -19,8 +19,9 @@ import (
 // THE EDGE. Chromium fetches the manifest in CORS mode with credentials OMITTED
 // unless this attribute says otherwise — even same-origin. Without it the
 // manifest request carries no session cookie at all. (A deployment behind a
-// forward-auth proxy should let the PWA metadata — the manifest, the icons and
-// the service worker — through without a session: the WebAPK icon hasher never
+// forward-auth proxy should let muster's PWA metadata through without a
+// session — GET/HEAD on exactly /manifest.webmanifest, /static/icons/*.png and
+// /sw.js: the WebAPK icon hasher never
 // sends cookies, so an icon behind the proxy degrades the install to a plain
 // shortcut. muster's side of that bargain is that those responses never depend
 // on a session and never carry per-user data;

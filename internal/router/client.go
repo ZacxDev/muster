@@ -38,23 +38,25 @@ import (
 	"time"
 )
 
-// ActorHeader is the header this client asserts its caller's name in.
+// DefaultActorHeader is the header this client asserts its caller's name in,
+// unless Config.ActorHeader names another.
 //
-// 🔴 IT IS THE OTHER SERVICE'S SPELLING, DELIBERATELY, AND RENAMING IT BREAKS
-// EVERY CALL IN THIS FILE. A client does not get to choose the server's
-// protocol: the receiving door reads this exact header name, validates the
-// value as an actor label and refuses the request when it is absent. This is
-// the same category as the agent runtime's session-key header, which this
-// project also carries verbatim for the same reason — an external wire
-// protocol is a fact about somebody else's software, not a naming choice.
+// 🔴 THE NAME IS THE ROUTER'S CHOICE, NOT THIS CLIENT'S, WHICH IS WHY IT IS
+// CONFIGURABLE. A client does not get to choose the server's protocol: the
+// receiving door reads one exact header name, validates the value as an actor
+// label and refuses the request when it is absent. A router that reads a
+// different name than the one sent sees no actor at all and refuses every
+// call, so a deployment whose router spells it differently must set
+// Config.ActorHeader (MUSTER_ROUTER_ACTOR_HEADER) to that router's spelling.
 //
-// ⚠ IT IS SPELLED EXACTLY ONCE, HERE. A second literal is how the two drift.
-const ActorHeader = "X-Clawgate-Actor" // leakscan:wire-protocol
+// ⚠ EACH DEFAULT IS SPELLED EXACTLY ONCE, HERE. A second literal is how the
+// two drift.
+const DefaultActorHeader = "X-Router-Actor"
 
-// TokenHeader is the alternative to `Authorization: Bearer <token>` the
-// receiving doors accept. Both are sent; the server compares whichever it
-// reads first, constant-time.
-const TokenHeader = "X-Clawgate-Token" // leakscan:wire-protocol
+// DefaultTokenHeader is the alternative to `Authorization: Bearer <token>` the
+// receiving doors accept, unless Config.TokenHeader names another. Both are
+// sent; the server compares whichever it reads first, constant-time.
+const DefaultTokenHeader = "X-Router-Token"
 
 // DefaultTimeout bounds a single call. It is NOT the checkpoint wait — that is
 // a poll loop in the caller, and each poll is one request bounded by this.
@@ -85,10 +87,12 @@ var ErrUnauthorized = errors.New("router: the permission router refused this cre
 // every method returns ErrNotConfigured on it, so a deployment without a router
 // does not need nil checks at each of the call sites.
 type Client struct {
-	baseURL string
-	token   string
-	actor   string
-	http    *http.Client
+	baseURL     string
+	token       string
+	actor       string
+	actorHeader string
+	tokenHeader string
+	http        *http.Client
 }
 
 // Config is what a Client needs to exist.
@@ -103,6 +107,11 @@ type Config struct {
 	// Actor is the name this service asserts on every request. The router
 	// validates it as an actor label and refuses an unattributable request.
 	Actor string
+	// ActorHeader and TokenHeader are the header names the router reads the
+	// actor and the token from. Empty means DefaultActorHeader and
+	// DefaultTokenHeader.
+	ActorHeader string
+	TokenHeader string
 	// HTTP is optional; a bounded default is used when nil.
 	HTTP *http.Client
 }
@@ -126,7 +135,16 @@ func New(cfg Config) *Client {
 	if hc == nil {
 		hc = &http.Client{Timeout: DefaultTimeout}
 	}
-	return &Client{baseURL: base, token: token, actor: actor, http: hc}
+	actorHeader := strings.TrimSpace(cfg.ActorHeader)
+	if actorHeader == "" {
+		actorHeader = DefaultActorHeader
+	}
+	tokenHeader := strings.TrimSpace(cfg.TokenHeader)
+	if tokenHeader == "" {
+		tokenHeader = DefaultTokenHeader
+	}
+	return &Client{baseURL: base, token: token, actor: actor,
+		actorHeader: actorHeader, tokenHeader: tokenHeader, http: hc}
 }
 
 // Configured reports whether c can make calls. It is nil-safe.
@@ -151,8 +169,8 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		return 0, fmt.Errorf("router: build %s %s: %w", method, path, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set(TokenHeader, c.token)
-	req.Header.Set(ActorHeader, c.actor)
+	req.Header.Set(c.tokenHeader, c.token)
+	req.Header.Set(c.actorHeader, c.actor)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

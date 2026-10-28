@@ -529,6 +529,10 @@ var bannerExempt = map[string]string{
 		"says nothing about it, so it cannot satisfy the both-directions rule — " +
 		"TestTheRouterBannerNamesTheVariableThatIsActuallyMissing is what holds it",
 	envRouterActor: "reported by the permission-router line; see MUSTER_ROUTER_TOKEN",
+	envRouterActorHeader: "a wire spelling with a default, refused at boot when it is not a header name; " +
+		"a router that reads another name refuses the calls themselves (router.ErrUnauthorized), which is where a mismatch shows",
+	envRouterTokenHeader: "a wire spelling with a default, refused at boot when it is not a header name; the token also travels as " +
+		"Authorization: Bearer, and a router that reads neither refuses the calls themselves (router.ErrUnauthorized)",
 	envStandalone: "reported by the permission-router line's two NONE branches (DECLARED and " +
 		"UNDECLARED). When a router IS configured the line has nothing to say about it, " +
 		"which is the one-directional shape the ledger cannot express",

@@ -36,9 +36,12 @@ const (
 
 	// The pre-extraction spellings. Accepted, never emitted, never documented as
 	// the way to call this server — a compatibility shim for installed clients.
-	// These three literals are the only place the upstream name survives in this
-	// repository, and unavoidably so: they ARE the wire protocol the stale clients
-	// speak, so renaming them here would simply re-break what this file fixes.
+	// Outside the seam test that pins them (cmd/muster/seam_test.go), these
+	// three literals are the only place the upstream name survives in this
+	// repository, and unavoidably so while installed clients still send them:
+	// they ARE the wire protocol those clients speak, so renaming them here would
+	// simply re-break what this file fixes. Each line carries the leak gate's
+	// wire-protocol marker for that reason.
 	legacyHeaderSource    = "X-Clawgate-Source"     // leakscan:wire-protocol
 	legacyHeaderSessionID = "X-Clawgate-Session-Id" // leakscan:wire-protocol
 	legacyHeaderHost      = "X-Clawgate-Host"       // leakscan:wire-protocol

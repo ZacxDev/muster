@@ -272,6 +272,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		BaseURL: cfg.RouterURL,
 		Token:   cfg.RouterToken,
 		Actor:   cfg.RouterActor,
+
+		ActorHeader: cfg.RouterActorHeader,
+		TokenHeader: cfg.RouterTokenHeader,
 	})
 
 	ext := api.Extensions{
@@ -706,6 +709,7 @@ func approvalGateFor(cfg config) api.GatePort {
 	}
 	if p := router.NewPort(router.Config{
 		BaseURL: cfg.ApprovalGateURL, Token: cfg.ApprovalGateToken, Actor: cfg.RouterActor,
+		ActorHeader: cfg.RouterActorHeader, TokenHeader: cfg.RouterTokenHeader,
 	}); p.Configured() {
 		return p
 	}
