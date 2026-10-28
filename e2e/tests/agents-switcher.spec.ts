@@ -43,7 +43,10 @@ test.use({ storageState: { cookies: [], origins: [] } });
 
 const rig = new MirrorRig(agentsSwitcherPort, 'e2e-asw', {}, { decimalHost: true });
 const origin = rig.origin;
-const stamp = Date.now().toString(36);
+// DECIMAL, like the host: the agent's name is a codename the search matches as
+// a substring, and a base-36 stamp can spell a query this spec types (the same
+// flake switcher-search.spec.ts had with "vap"). Digits spell no query.
+const stamp = String(Date.now());
 const AGENT = `e2e-asw-ledger-${stamp}`;
 const AGENT_TITLE = 'Rotate the ledger';
 // Its repository: found by the palette's words, ranked after "wheat"'s codename.
