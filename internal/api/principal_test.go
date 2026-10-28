@@ -126,6 +126,8 @@ var routeVias = map[authz.Via][]string{
 		"GET /attention/asker",
 		// A notification's tap: its item's target, resolved when tapped.
 		"GET /attention/open/{key}",
+		// An ask's own page, where its tap lands (attention_ask_page.go).
+		"GET /attention/asks/{id}",
 		"GET /attention/badge",
 		"POST /attention/asks/{id}/answer",
 		"POST /attention/asks/{id}/cancel",
@@ -317,6 +319,8 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
 		"GET /api/whoami",
+		// `muster doctor`'s server half (doctor.go): requireArmedHookToken.
+		"GET /api/doctor",
 		"POST /api/routes/{id}/reply",
 		"POST /api/plugin-threads",
 		"POST /api/pr-sessions",
@@ -352,6 +356,7 @@ var routeVias = map[authz.Via][]string{
 		"POST /api/chief/replace",
 		"POST /api/tasks",
 		"POST /api/tasks/{id}/comments",
+		"GET /api/doctor",
 		"POST /api/routes/{id}/reply",
 		"POST /api/plugin-threads",
 		"POST /api/pr-sessions",
@@ -372,6 +377,8 @@ var routeVias = map[authz.Via][]string{
 	// A MIRROR HOST token opens exactly the mirrored sessions' MCP door.
 	authz.ViaMirrorHost: {
 		"POST /mirror/mcp",
+		// `muster doctor`'s this-host check (doctor.go): the token's own host.
+		"GET /mirror/host",
 	},
 	// A DEVICE credential (0039) opens exactly the device tier.
 	authz.ViaDevice: {
@@ -379,6 +386,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/device/config",
 		"PUT /api/device/push",
 		"DELETE /api/device/push",
+		"POST /api/device/challenge",
+		"POST /api/device/actions/attention/asks/{id}/answer",
+		"POST /api/device/actions/attention/asks/{id}/cancel",
 	},
 	// A PLUGIN token (0015) opens exactly the plugin door.
 	authz.ViaPlugin: {
@@ -676,7 +686,8 @@ func TestAnUnarmedHookTierStillActsAsTheMachineUser(t *testing.T) {
 		"POST /api/plugin-threads":              true,
 		"POST /api/pr-sessions":                 true,
 		"POST /api/plugins/messages/{id}/retry": true,
-		"POST /api/chief/replace":               true}
+		"POST /api/chief/replace":               true,
+		"GET /api/doctor":                       true}
 	for _, pattern := range routeVias[authz.ViaHook] {
 		method, path := concretePath(pattern)
 		t.Run(pattern, func(t *testing.T) {

@@ -4,6 +4,8 @@ Start with the [project README](../README.md) for the pitch and a quickstart.
 
 **Using it**
 
+- [onboarding.md](onboarding.md) — set muster up with one prompt to your coding agent ([INSTALL.md](../INSTALL.md) is the guide it follows)
+
 - [tasks.md](tasks.md) — the task board, statuses, tags, the reaper, GitHub
 - [mirroring.md](mirroring.md) — mirrored tmux and Claude Code sessions
 - [focus.md](focus.md) — what each session is working on, and how the chief finds one

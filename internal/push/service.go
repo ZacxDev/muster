@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/metrics"
 )
@@ -16,6 +18,11 @@ import (
 // Payload is the JSON the service worker's `push` handler reads
 // (web/static/sw.js): type "resolved" closes notifications by tag and shows
 // nothing; any other type shows Title/Body and opens Data["url"] on a tap.
+//
+// Ask is the NATIVE device's extra for an attention ask (its id, the asker's
+// options and the suggested replies), carried in payload v2 only: the browser
+// worker has no chips to draw (and keeps `actions: []`), so it is never in the
+// browser's JSON.
 type Payload struct {
 	Type  string            `json:"type"`
 	ID    string            `json:"id,omitempty"`
@@ -23,23 +30,42 @@ type Payload struct {
 	Body  string            `json:"body,omitempty"`
 	Tag   string            `json:"tag,omitempty"`
 	Data  map[string]string `json:"data,omitempty"`
+	Ask   *V2Ask            `json:"-"`
+	// Update: this notification replaces one already shown under Tag (an ask's
+	// suggested replies arrived). Payload v2 only; the browser worker replaces
+	// by tag without renotifying anyway.
+	Update bool `json:"-"`
+	// AskActions: the server routes the signed ask actions, so payload v2
+	// offers them (PayloadV2.Actions). Payload v2 only.
+	AskActions bool `json:"-"`
 }
 
 // PayloadV2 is what a NATIVE device (KindAndroid) receives in place of
 // Payload: the Android app's payload (docs/design/android.md, "Payload v2").
 //
-// 🔴 IDS AND WHO/WHERE, NEVER WHAT. Title and Body are the browser payload's
-// own lines, which every notification helper writes as WHO and WHERE, never
-// WHAT (docs/attention.md); v2 adds nothing to them and cuts each, on a
-// character-cluster boundary, to MaxNativeTitle and MaxNativeBody. URL is
-// where a tap opens, a path on muster. The app fetches anything more after
-// delivery, with its device credential.
+// 🔴 THE BROWSER PAYLOAD'S OWN LINES, CUT, PLUS THE ASK'S CHIPS. Title and Body
+// are the browser payload's own lines, cut on a character-cluster boundary to
+// MaxNativeTitle and MaxNativeBody. For an ask and a held question they carry
+// the question and its options (operator decision "Full text always", which
+// replaced "Summary only" for them: see docs/attention.md), so the phone is
+// sent the same text the browser is. Every OTHER notification — a waiting
+// session's included — still says WHO and WHERE only; that is each helper's
+// own rule, not this type's. URL is where a tap opens, a path on muster.
 //
-// ⚠ PHASE 1 CARRIES NO `actions`, `conv` OR `state`. An action id is a
-// promise that a signed /api/device/actions/* route exists (Phase 2, with the
-// route ledger that pins it, and the app's wire ids: docs/design/android.md,
-// "Action ids"), and the state delta feeds the widgets (Phase 4). Sending
-// either before its route or consumer exists would be a field no code reads.
+// Ask (an attention ask only) is what the app draws as chips: the ask's id,
+// the asker's options and the suggested replies. A payload that does not fit
+// NativeMaxPlaintext drops the suggestions first, then the options (nativeBody):
+// the question outlives every chip.
+//
+// Actions (an attention ask, where the server routes the signed actions) are
+// the notification's buttons: each option and suggestion carried as a chip, an
+// inline-reply Answer, and Dismiss — each naming a wire id from the app's
+// fixed table (docs/design/android.md, "Action ids"), never a route, so the
+// server cannot make the app POST anywhere else. They follow the chips: a chip
+// the fit drops takes its action with it.
+//
+// ⚠ NO `conv` OR `state` YET. The state delta feeds the widgets (Phase 4), and
+// sending a field no code reads would be a promise nothing keeps.
 type PayloadV2 struct {
 	V     int    `json:"v"`
 	Type  string `json:"type"`
@@ -48,14 +74,81 @@ type PayloadV2 struct {
 	Title string `json:"title,omitempty"`
 	Body  string `json:"body,omitempty"`
 	URL   string `json:"url,omitempty"`
+	Ask   *V2Ask `json:"ask,omitempty"`
+	// Update: replace the notification shown under Tag without alerting again
+	// (NotificationCompat's setOnlyAlertOnce); absent for a new one.
+	Update bool `json:"update,omitempty"`
+	// Actions are the ask's signed actions (see above); none otherwise.
+	Actions []V2Action `json:"actions,omitempty"`
+}
+
+// The action wire ids payload v2 may name: the app's table, exact strings
+// (docs/design/android.md, "Action ids"). internal/api routes each
+// (deviceActionRoutes) and its ledger test holds the two to the table.
+const (
+	ActionAskAnswer  = "ask_answer"
+	ActionAskDismiss = "ask_dismiss"
+)
+
+// V2Action is one notification button. ID is a wire id; Target the ask's id
+// (the route's {id}). An ask_answer button that sends a chip names it BY INDEX
+// — Option into ask.options, or Suggestion into ask.suggestions — and its
+// label and answer are that chip's text, exactly: each chip's text is in the
+// push once, so the buttons cost the chips no room
+// (TestButtonsCostTheChipsNothing). Input marks the inline-reply Answer the
+// user types. Label is set only for a button with no chip (Answer, Dismiss).
+type V2Action struct {
+	ID         string `json:"id"`
+	Label      string `json:"label,omitempty"`
+	Target     string `json:"target"`
+	Option     *int   `json:"option,omitempty"`
+	Suggestion *int   `json:"suggestion,omitempty"`
+	Input      bool   `json:"input,omitempty"`
+}
+
+// askActions is a's buttons: an ask_answer per option, then per suggestion
+// (each by its index), then the inline Answer, then Dismiss.
+func askActions(a *V2Ask) []V2Action {
+	t := strconv.FormatInt(a.ID, 10)
+	var out []V2Action
+	for i := range a.Options {
+		i := i
+		out = append(out, V2Action{ID: ActionAskAnswer, Target: t, Option: &i})
+	}
+	for i := range a.Suggestions {
+		i := i
+		out = append(out, V2Action{ID: ActionAskAnswer, Target: t, Suggestion: &i})
+	}
+	return append(out, V2Action{ID: ActionAskAnswer, Label: "Answer", Target: t, Input: true},
+		V2Action{ID: ActionAskDismiss, Label: "Dismiss", Target: t})
+}
+
+// V2Ask is an attention ask's chips in payload v2. Each option and suggestion
+// is WHOLE or absent — a chip whose text was cut would answer something the
+// asker did not offer — so one longer than MaxNativeChip runes is left out of
+// the chips (the body still lists it, cut, and the ask page shows it whole).
+type V2Ask struct {
+	ID          int64    `json:"id"`
+	Options     []string `json:"options,omitempty"`
+	Suggestions []string `json:"suggestions,omitempty"`
 }
 
 // MaxNativeTitle and MaxNativeBody are the longest title and body payload v2
-// carries, in characters (runes). Even with every character JSON-escaped to
-// six bytes they total 1800 bytes, well inside NativeMaxPlaintext.
+// carries, in characters (runes); MaxNativeChip the longest option or
+// suggestion it carries as a chip, MaxNativeChips how many of each. Even with
+// every character of the two lines JSON-escaped to six bytes they total
+// (100 + 200) × 6 = 1800 bytes, inside NativeMaxPlaintext with room for the
+// envelope — so the fit never has to shorten the question
+// (TestTheWorstCaseAskStillFitsWithItsQuestion measures it).
+//
+// ⚠ MaxNativeBody IS THE ANDROID APP'S OWN CUT (muster-android PayloadV2.MAX_BODY
+// = 200): a longer body would be cut again on the phone, so a question's
+// options line, kept whole here, would be lost there. Raise both together.
 const (
 	MaxNativeTitle = 100
 	MaxNativeBody  = 200
+	MaxNativeChip  = 140
+	MaxNativeChips = 3
 )
 
 // The size of one native push, by RFC 8188 (aes128gcm) as webpush-go builds
@@ -94,11 +187,29 @@ const (
 // record.
 var ErrNativeTooLarge = fmt.Errorf("push: a native payload is larger than %d bytes, so it does not fit in one %d-byte record", NativeMaxPlaintext, nativeRecordSize)
 
-// nativeBody is p's payload v2 as sent, or ErrNativeTooLarge.
+// nativeBody is p's payload v2 as sent, or ErrNativeTooLarge. An ask's chips
+// that would not fit are dropped, suggestions first, then options (see
+// PayloadV2).
 func nativeBody(p Payload) ([]byte, error) {
-	b, err := json.Marshal(p.V2())
+	v := p.V2()
+	b, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
+	}
+	for len(b) > NativeMaxPlaintext && v.Ask != nil && (len(v.Ask.Suggestions) > 0 || len(v.Ask.Options) > 0) {
+		a := *v.Ask
+		if len(a.Suggestions) > 0 {
+			a.Suggestions = nil
+		} else {
+			a.Options = nil
+		}
+		v.Ask = &a
+		if v.Actions != nil {
+			v.Actions = askActions(v.Ask)
+		}
+		if b, err = json.Marshal(v); err != nil {
+			return nil, err
+		}
 	}
 	if len(b) > NativeMaxPlaintext {
 		return nil, fmt.Errorf("%w (%d bytes)", ErrNativeTooLarge, len(b))
@@ -113,17 +224,39 @@ func (p Payload) V2() PayloadV2 {
 	if p.Type == TypeResolved {
 		return v
 	}
-	v.Title, v.Body, v.URL = cutClusters(p.Title, MaxNativeTitle), cutClusters(p.Body, MaxNativeBody), p.Data["url"]
+	v.Title, v.Body, v.URL, v.Update = CutClusters(p.Title, MaxNativeTitle), CutClusters(p.Body, MaxNativeBody), p.Data["url"], p.Update
+	if p.Ask != nil {
+		v.Ask = &V2Ask{ID: p.Ask.ID, Options: chips(p.Ask.Options), Suggestions: chips(p.Ask.Suggestions)}
+		if p.AskActions {
+			v.Actions = askActions(v.Ask)
+		}
+	}
 	return v
 }
 
-// cutClusters cuts s to at most n runes, ending with "…" when it cut, without
+// chips is at most MaxNativeChips of in, each whole and at most MaxNativeChip
+// runes (a longer one is left out, never cut); nil for none.
+func chips(in []string) []string {
+	var out []string
+	for _, c := range in {
+		if len(out) == MaxNativeChips {
+			break
+		}
+		if c == "" || utf8.RuneCountInString(c) > MaxNativeChip {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// CutClusters cuts s to at most n runes, ending with "…" when it cut, without
 // splitting what a reader sees as one character: it backs off over combining
 // marks, variation selectors, skin-tone modifiers, emoji tag characters, a
 // zero-width joiner on either side of the cut, and half a regional-indicator
 // flag. A cheap approximation of Unicode grapheme clusters (no tables), for a
 // notification line, not a text engine.
-func cutClusters(s string, n int) string {
+func CutClusters(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {
 		return s

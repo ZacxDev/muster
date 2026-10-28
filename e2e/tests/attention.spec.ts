@@ -388,12 +388,14 @@ test('a queued message answers the ask, and its Cancel says the answer stays', a
   await expect(row).toHaveAttribute('data-queue-state', 'cancelled');
 });
 
-// ANSWERED WHERE THE NOTIFICATION LANDS (attention_asker.go): the
+// ANSWERED ON THE ASKING SESSION'S OWN VIEW (attention_asker.go): the
 // notification's URL, /attention/open/<key>, resolves a mirrored session's
-// ask to that session's rendered view when tapped (attention_push_target.go). The view
-// shows the ask with the queue's own form; a second ask arrives live; the
-// operator answers there, lands back on the view, and the session's wait
-// returns the answer. On a phone the block stays above the pinned composer.
+// ask to the ask's own page when tapped (attention_push_target.go;
+// ask-page.spec.ts drives that page), whose context link is the session's
+// rendered view. The view shows the ask with the queue's own form; a second
+// ask arrives live; the operator answers there, lands back on the view, and
+// the session's wait returns the answer. On a phone the block stays above the
+// pinned composer.
 for (const vp of [
   { name: 'phone', use: { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true } },
   { name: 'desktop', use: { viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false } },
@@ -416,9 +418,12 @@ for (const vp of [
       await page.goto(origin + '/login');
       await page.fill('#muster-password', password);
       await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-      // The notification's URL (the tap route) resolves to the window's view.
+      // The notification's URL (the tap route) resolves to the ask's page,
+      // whose context link is the window's view.
       const view = origin + `/mirror/view?host=${encodeURIComponent(host)}&session=work&window=%401`;
       await page.goto(origin + `/attention/open/ask-${id}`);
+      await page.waitForURL(origin + `/attention/asks/${id}`);
+      await page.locator('[data-ask-context]').click();
       await page.waitForURL(view);
       const block = page.locator('#asker-asks');
       const item = block.locator(`#ask-${id}`);

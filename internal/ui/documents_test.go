@@ -264,7 +264,22 @@ func allDocumentsFrom(rows []documentRenderer) []namedDoc {
 		name: "shell:" + defaultTab + " — no optional subsystems built",
 		node: g.NodeFunc(func(w io.Writer) error { return RenderPage(w, defaultTab, Features{}) }),
 	})
+	// 🔴 NavDocument AS AN APP SCREEN (NavApp, the ask page) IS A DIFFERENT
+	// BODY and is swept as one: the NavDocument row renders the column layout
+	// only.
+	docs = append(docs, namedDoc{name: "NavDocument — an app screen", node: g.NodeFunc(func(w io.Writer) error {
+		return RenderNavDocument(w, sampleAppScreen())
+	})})
 	return docs
+}
+
+// sampleAppScreen is a NavDocument laid out as an app screen, with content and
+// a composer.
+func sampleAppScreen() NavDocumentView {
+	return NavDocumentView{Title: "Question", Entry: NavAttention, Feat: featuresAllOn,
+		Main: `<section data-testid="ask-page"><p>Deploy the importer?</p><button type="submit" form="f">deploy</button></section>`,
+		App: &NavApp{Back: "/attention", BackLabel: "Back to Asks", Heading: "worker-7 is asking",
+			Composer: `<form id="f" method="post" action="/attention/asks/1/answer"><label for="a">Your answer</label><textarea id="a" name="answer"></textarea><button type="submit">Answer</button></form>`}}
 }
 
 // featuresAllOn is the widest shell: every optional subsystem wired.

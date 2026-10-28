@@ -214,6 +214,10 @@ type Ask struct {
 	ToChief bool `json:"-"`
 	// RouteID is a question's routed message (New.RouteID), "" for none.
 	RouteID string `json:"-"`
+	// Suggestions are the suggested replies generated for the ask while it was
+	// open (migration 0057, SetSuggestions), at most MaxSuggestions; empty for
+	// none.
+	Suggestions []string `json:"-"`
 }
 
 // Delivery is where an answer stands on its way to the asker (migration 0031).
@@ -317,6 +321,39 @@ func Clean(n New) (New, error) {
 	return n, nil
 }
 
+// MaxSuggestions and MaxSuggestionRunes bound an ask's stored suggested
+// replies (0057's CHECK holds the count).
+const (
+	MaxSuggestions     = 3
+	MaxSuggestionRunes = 140
+)
+
+// CleanSuggestions is in as an ask stores it: each trimmed; a blank one, an
+// over-long one (more than MaxSuggestionRunes), a line-broken one and a
+// duplicate (of another suggestion or of one of options, case aside) dropped;
+// at most MaxSuggestions kept. A chip is sent as written, so a suggestion is
+// kept whole or not at all.
+func CleanSuggestions(in, options []string) []string {
+	seen := map[string]bool{}
+	for _, o := range options {
+		seen[strings.ToLower(strings.TrimSpace(o))] = true
+	}
+	out := []string{}
+	for _, t := range in {
+		t = strings.TrimSpace(t)
+		k := strings.ToLower(t)
+		if t == "" || seen[k] || strings.ContainsAny(t, "\r\n") || utf8.RuneCountInString(t) > MaxSuggestionRunes {
+			continue
+		}
+		seen[k] = true
+		out = append(out, t)
+		if len(out) == MaxSuggestions {
+			break
+		}
+	}
+	return out
+}
+
 // CleanAnswer validates an answer's text.
 func CleanAnswer(s string) (string, error) {
 	s = strings.TrimSpace(s)
@@ -380,6 +417,13 @@ type Store interface {
 	// ExpireDue moves every owner's lapsed open asks to Expired and returns
 	// them (system scope).
 	ExpireDue(ctx context.Context) ([]Ask, error)
+	// SetSuggestions stores the suggested replies of the caller's ask id
+	// (migration 0057) and returns the ask — ONLY while it is open and
+	// unexpired, and only once (an ask that already has some keeps them): ok is
+	// false, with nothing written, for an ask that is settled, lapsed, already
+	// suggested, or left with no suggestion once cleaned (CleanSuggestions);
+	// ErrNotFound for another owner's or a missing one.
+	SetSuggestions(ctx context.Context, id int64, suggestions []string) (a Ask, ok bool, err error)
 
 	// --- the answer's delivery (migration 0031) ---
 
@@ -453,17 +497,17 @@ const cols = `id, owner_id, coalesce(agent_id, 0), coalesce(mirror_host, ''), co
 	coalesce(delivery, ''), delivery_detail, delivery_attempts, coalesce(delivered_session_id, 0), delivery_queued_at,
 	coalesce(task_id, 0),
 	coalesce(answered_via, ''), coalesce(answered_via_host, ''), coalesce(answered_via_session, ''),
-	to_chief, coalesce(route_id, '')`
+	to_chief, coalesce(route_id, ''), suggestions`
 
 func scan(row pgx.Row) (Ask, error) {
 	var a Ask
-	var opts []byte
+	var opts, sugg []byte
 	var resolved, queued *time.Time
 	var status, delivery string
 	if err := row.Scan(&a.ID, &a.Owner, &a.Asker.AgentID, &a.Asker.MirrorHost, &a.Asker.MirrorSession, &a.Asker.System, &a.Asker.Label,
 		&a.Question, &opts, &status, &a.Answer, &a.AnsweredBy, &a.CreatedAt, &a.ExpiresAt, &resolved,
 		&delivery, &a.DeliveryDetail, &a.DeliveryAttempts, &a.DeliveredSession, &queued, &a.TaskID,
-		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID); err != nil {
+		&a.AnsweredVia.Via, &a.AnsweredVia.Host, &a.AnsweredVia.Session, &a.ToChief, &a.RouteID, &sugg); err != nil {
 		return Ask{}, err
 	}
 	if queued != nil {
@@ -476,6 +520,11 @@ func scan(row pgx.Row) (Ask, error) {
 	}
 	if a.Options == nil {
 		a.Options = []string{}
+	}
+	if len(sugg) > 0 {
+		if err := json.Unmarshal(sugg, &a.Suggestions); err != nil {
+			return Ask{}, fmt.Errorf("attention: suggestions of ask %d: %w", a.ID, err)
+		}
 	}
 	if resolved != nil {
 		a.ResolvedAt = *resolved
@@ -926,4 +975,36 @@ func askerLabelOf(a Asker) string {
 func (s *PGStore) ExpireDue(ctx context.Context) ([]Ask, error) {
 	return collect(s.pool.Query(sys(ctx), `UPDATE attention_asks SET status = 'expired', resolved_at = now()
 		WHERE status = 'open' AND expires_at <= now() RETURNING `+cols))
+}
+
+// SetSuggestions implements Store under the caller's principal (row-level
+// security: another owner's ask is not found, as a missing one is).
+//
+// 🔴 ONE CONDITIONAL UPDATE, ON THE ASK STILL BEING OPEN. A generation starts
+// after the ask is filed and can finish after it was answered, dismissed or
+// expired; the condition is what keeps a settled ask from being given chips —
+// and so from being re-pushed, which the caller does only on ok.
+func (s *PGStore) SetSuggestions(ctx context.Context, id int64, suggestions []string) (Ask, bool, error) {
+	cur, err := s.Get(ctx, id)
+	if err != nil {
+		return Ask{}, false, err
+	}
+	kept := CleanSuggestions(suggestions, cur.Options)
+	if len(kept) == 0 {
+		return cur, false, nil
+	}
+	b, err := json.Marshal(kept)
+	if err != nil {
+		return Ask{}, false, err
+	}
+	a, err := scan(s.pool.QueryRow(ctx, `UPDATE attention_asks SET suggestions = $2
+		WHERE id = $1 AND status = 'open' AND expires_at > now() AND suggestions = '[]'::jsonb
+		RETURNING `+cols, id, b))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return cur, false, nil
+	}
+	if err != nil {
+		return Ask{}, false, err
+	}
+	return a, true, nil
 }

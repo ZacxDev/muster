@@ -352,6 +352,13 @@ type RouterNotification struct {
 	Body  string
 	Tag   string
 	Data  map[string]string
+	// Ask (an attention ask's chips) and Update (a re-push replacing the
+	// notification under the same tag) reach a paired phone's payload v2 only
+	// (push.Payload); the router and the browser never see them.
+	Ask    *push.V2Ask
+	Update bool
+	// AskActions: payload v2 offers Ask's signed actions (device_actions.go).
+	AskActions bool
 }
 
 // rateLimiter is a fixed-window counter. A token bucket would be smoother; a
@@ -605,6 +612,8 @@ func (s *Server) registerAll(mux Mux) {
 	s.registerTranscribeRoutes(mux)
 	// File attachments (uploads.go): the attach button, and the signed link.
 	s.registerUploadRoutes(mux)
+	// `muster doctor`'s server half (doctor.go): the armed hook token's read.
+	s.registerDoctorRoutes(mux)
 }
 
 // registerAgentSelfServiceRoutes wires the agent callback API. These are
@@ -1292,7 +1301,8 @@ func (s *Server) goNotify(owner int64, event string, n RouterNotification, onDel
 		ctx, cancel := context.WithTimeout(context.Background(), pushBroadcastTimeout)
 		defer cancel()
 		if s.pushServed() && s.pushAllowed(ctx, owner, event) {
-			rep := s.sendPush(ctx, owner, push.Payload{Type: n.Type, ID: n.ID, Title: n.Title, Body: n.Body, Tag: n.Tag, Data: n.Data})
+			rep := s.sendPush(ctx, owner, push.Payload{Type: n.Type, ID: n.ID, Title: n.Title, Body: n.Body, Tag: n.Tag, Data: n.Data,
+				Ask: n.Ask, Update: n.Update, AskActions: n.AskActions})
 			if rep.Delivered > 0 && onDelivered != nil {
 				onDelivered(rep.Delivered)
 			}

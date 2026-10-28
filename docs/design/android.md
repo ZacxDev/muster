@@ -85,9 +85,12 @@ The design, in one line each:
   web route it mirrors, and most are stricter.
 - muster's web UI stays the one UI. A UI change ships from the server, and only
   native modules need an APK.
-- Lock-screen privacy holds: **a notification says WHO and WHERE, never WHAT**
-  ([attention.md](../attention.md)). WHAT enters a notification only while the
-  phone is unlocked ([lock screen](#notifications)).
+- An attention notification is actionable as it stands: **it carries the
+  question, its options and the suggested replies, on the lock screen too**
+  (operator decision "Full text always", which replaced "WHO and WHERE, never
+  WHAT"; [attention.md](../attention.md#what-is-in-it),
+  [lock screen](#notifications)). Every other notification still says WHO and
+  WHERE only.
 - The server additions follow muster's existing rules: data per user under
   row-level security, nothing cached positively, every credential revocable on
   the next request.
@@ -405,34 +408,54 @@ The change:
 
 ### Payload v2
 
-Native devices get a payload that carries **ids, not content**:
+Native devices get the browser notification's own lines, plus ids and, for
+an ask, its chips:
 
 ```json
-{"v": 2, "type": "attention", "id": "…", "tag": "…",
- "conv": "agent:<name>",
- "title": "<WHO>", "body": "<WHERE>",
- "actions": ["ask_answer", "ask_dismiss"],
- "state": {"attention": 3, "review": 1}}
+{"v": 2, "type": "attention", "id": "ask-41", "tag": "attention-ask-41",
+ "title": "worker-7 is asking",
+ "body": "Deploy the importer now?\nOptions: deploy now · wait until Monday",
+ "url": "/attention/open/ask-41",
+ "ask": {"id": 41, "options": ["deploy now", "wait until Monday"],
+         "suggestions": ["Wait until Monday, after the backup"]},
+ "update": true}
 ```
 
-- `title` and `body` obey WHO and WHERE, never WHAT, exactly as today. As
-  built in Phase 1 they are cut to 100 and 200 characters, on a character
-  boundary.
+- `title` and `body` are the browser's own lines, cut to 100 and 200
+  characters on a character boundary — the app's own `MAX_TITLE`/`MAX_BODY`,
+  so it cuts nothing more. **For an ask and a held question they carry the
+  WHAT** — the question and its options — on the lock screen too (operator
+  decision "Full text always", which replaced "Summary only — WHO and WHERE,
+  never WHAT" for them; [attention.md](../attention.md#what-is-in-it)). A waiting
+  session and every other event still say WHO and WHERE only. ⚠ As shipped
+  (`43d9b90`) the app sets the body as one-line content text, so a collapsed
+  notification shows the question's first line; the options line is the
+  second line, shown once the app uses `BigTextStyle`.
+- `ask` (an attention ask only): the ask's id, the asker's options and the
+  suggested replies, at most three of each, each whole (a longer one than 140
+  characters is left out, never cut; one a secret scan would redact is left
+  out too). When the suggestions arrive after the first push, the same tag is
+  pushed again with `"update": true`: the app should replace the notification
+  without alerting again (`setOnlyAlertOnce(true)` for it). ⚠ The app as
+  shipped (`43d9b90`) ignores `ask` and `update` and posts with
+  `setOnlyAlertOnce(false)`, so it alerts again on the re-push — accepted by
+  the operator until the app ships the update.
 - `actions` names action ids, from the app's fixed table
   ([action ids](#action-ids)). The app maps each id to a fixed button and a
   fixed `/api/device/actions/*` route, so the server cannot make the app POST
   to an arbitrary path.
-- `state` is a small delta for widgets and live status.
-- Anything longer (a question's text, a draft, the last messages of a
-  conversation) is fetched after delivery with the device credential, and is
-  shown only on an unlocked phone ([notifications](#notifications)).
+- `state` is a small delta for widgets and live status (Phase 4; not sent
+  yet), and `conv` the conversation key (Phase 3; not sent yet).
+- Anything longer (a draft, the last messages of a conversation) is fetched
+  after delivery with the device credential ([notifications](#notifications)).
 - **Size: a fixed 4096-byte cap on the encrypted body.** ntfy truncates a
   body over its `message-size-limit` silently, with 200; that limit is 4096
   bytes by default and configurable, and the deployed value was not measured
-  ([Phase 0, S9][p0-s9]). muster's cap is fixed at the default. Payload v2 carries ids, a
-  short title and the `state` delta, which fits well under it; every detail is
-  fetched. muster refuses a larger Android push rather than send one ntfy
-  would truncate (server change 30).
+  ([Phase 0, S9][p0-s9]). muster's cap is fixed at the default. Payload v2's title and body fit
+  under it even at their bounds with every character escaped; an ask's chips
+  are dropped, suggestions first, then options, before a push would not fit.
+  muster refuses a larger Android push rather than send one ntfy would
+  truncate (server change 30).
 
 New event types, sent to `android` devices only:
 
@@ -709,6 +732,119 @@ cannot clash. The app refuses the bare verbs (`cancel`, `answer`, `approve`)
 | `draft_reject` | `/api/device/actions/plugins/drafts/{id}/reject` |
 | `agent_send` | `/api/device/actions/agents/{name}/send` |
 
+### The signed ask actions, as built
+
+The first signed actions muster serves are an ask's: `ask_answer` and
+`ask_dismiss` (Phase 2, asks only; the other ids in the table above are not
+routed yet; `GET /api/device/config`'s `features.actions` is true where these
+two are, and a push offers only ids that are). This is the whole contract the
+app builds against.
+
+**1. The notification (payload v2 for an `attention` ask).**
+
+```json
+{"v": 2, "type": "attention", "id": "ask-41", "tag": "attention-ask-41",
+ "title": "chief is asking",
+ "body": "Ship the migration tonight?\nOptions: ship it · wait for Monday",
+ "url": "/attention/open/ask-41",
+ "ask": {"id": 41, "options": ["ship it", "wait for Monday"],
+         "suggestions": ["Wait for Monday, until the backup is verified"]},
+ "actions": [
+   {"id": "ask_answer", "target": "41", "option": 0},
+   {"id": "ask_answer", "target": "41", "option": 1},
+   {"id": "ask_answer", "target": "41", "suggestion": 0},
+   {"id": "ask_answer", "label": "Answer", "target": "41", "input": true},
+   {"id": "ask_dismiss", "label": "Dismiss", "target": "41"}],
+ "update": true}
+```
+
+- `actions` lists every option, then every suggestion, as an `ask_answer`
+  that names its chip **by index** — `option: i` is `ask.options[i]`,
+  `suggestion: i` is `ask.suggestions[i]` — whose text is both the button's
+  label and the exact answer to send (each chip's text is in the push once, so
+  the buttons cost the chips no room); then the inline-reply `ask_answer`
+  (`input: true`: the user types the text, through the [held reply](#inline-reply));
+  then `ask_dismiss`. Only the last two carry a `label`. The app picks which to show as buttons (Android shows at
+  most three) and may show the rest as chips in an expanded view. `target` is
+  the ask's id, the route's `{id}`.
+- `update: true` arrives on the second push of the same tag, when the
+  suggestions are ready: replace the notification without alerting again.
+- A payload that would not fit in 4096 bytes drops the suggestions (and their
+  actions), then the options (and theirs); `Answer` and `Dismiss` always stay.
+- A `resolved` push with the same tag withdraws it.
+
+**2. The challenge.** On a tap, after the keyguard is dismissed:
+
+```
+POST /api/device/challenge          (Authorization: Bearer mdv_…)
+{"action": "ask_answer", "target": "41", "text_sha256": "<64 lowercase hex>"}
+→ 200 {"nonce": "mdc_…", "expires_at": "…Z", "expires_in": 120,
+       "message": "muster-device-action-v1\nmdc_…\nask_answer\n41\n<hex>"}
+```
+
+- `text_sha256` is the lowercase hex SHA-256 of the answer's UTF-8 bytes,
+  exactly as it will be sent (no trimming on the phone). Required for
+  `ask_answer`; absent for `ask_dismiss`.
+- `target` is the ask id in decimal, no leading zeros.
+- The nonce is single use and lives 2 minutes.
+
+**3. The signature.** Show a `BiometricPrompt` whose description repeats the
+exact answer text, with a `CryptoObject` wrapping `Signature.getInstance(
+"SHA256withECDSA")` initialised with the step-up key; sign the UTF-8 bytes of
+`message` **exactly as returned** (lines joined by `\n`, no trailing newline:
+`muster-device-action-v1`, the nonce, the action, the target, the text's hex
+SHA-256 or an empty line for none). Send the DER signature, base64 (standard or
+URL alphabet, padding optional). muster rebuilds the message from the stored
+challenge, never from the request.
+
+**4. The action.**
+
+```
+POST /api/device/actions/attention/asks/41/answer
+{"nonce": "mdc_…", "signature": "<base64>", "answer": "ship it"}
+→ 200 {"ok": true, "id": 41, "status": "answered"}
+
+POST /api/device/actions/attention/asks/41/cancel
+{"nonce": "mdc_…", "signature": "<base64>"}
+→ 200 {"ok": true, "id": 41, "status": "cancelled"}
+```
+
+The answer is the Attention page's own answer, under the device owner's
+principal: the notification is withdrawn on every device, the asker's wait
+returns it, and an agent's answer is delivered into its session. Once the
+action has run, an audit row `device.action` records the device, the action,
+the ask, the text's hash and the **outcome**: the ask's new status
+(`answered`, `cancelled`) or the refusal's code (`not_open`, `not_found`,
+`invalid_answer`, `failed`). A challenge refused before the action
+(`bad_signature`, `challenge_*`, `key_not_allowed`) runs nothing and writes no
+row. The body may be up to 8000 characters of the answer at any UTF-8 width
+(the body bound is the answer's own, so an over-long answer is
+`invalid_answer`, not `bad_request`).
+
+**5. Refusals.** Every refusal is JSON `{"error": "<sentence>", "code": "<code>"}`
+(a bad or revoked device credential answers the device tier's own 401, with no
+`code`). The challenge is spent before it is judged, so after any refusal of the
+action route ask for a new challenge.
+
+| code | status | meaning | the app |
+|---|---|---|---|
+| `bad_request` | 400 | malformed body, unknown action, bad target or `text_sha256` | a bug: report it |
+| `no_stepup_key` | 403 | the phone paired read-only | offer "Re-confirm this phone" |
+| `key_not_allowed` | 403 | a biometric-or-PIN key while the server refuses them | offer re-pairing |
+| `challenge_invalid` | 401 | no such challenge for this phone, or one bound to another action, ask or text | new challenge |
+| `challenge_used` | 401 | already spent (a replay, or a retry) | new challenge |
+| `challenge_expired` | 401 | older than 2 minutes | new challenge |
+| `bad_signature` | 401 | the signature does not verify against the stored key | if the key was invalidated, "Re-confirm this phone" |
+| `not_found` | 404 | no such ask among the owner's | drop the notification |
+| `not_open` | 409 | answered, dismissed or expired already | drop the notification, say so |
+| `invalid_answer` | 400 | blank, or over 8000 characters | say so |
+| `failed` | 500 | muster could not record it | keep the notification; retry later |
+
+The step-up time is not handed on: answering and dismissing an ask need no fresh
+sign-in on the web either, so no decisions.md "freshness source" entry is owed
+yet; it is when the first gated web route (Send now, Approve) gets its device
+twin.
+
 ### Native passkeys are not on the path
 
 Neither the step-up nor sign-in depends on passkeys:
@@ -897,29 +1033,25 @@ signed action) and its own [decisions.md](../decisions.md) entry (item 25).
   `setShortcutId`. Conversations get the conversation space, priority marking
   and bubbles. Each conversation has a unique PendingIntent request code, or a
   reply can land in the wrong one.
-- **Lock screen: WHAT only while unlocked.** `VISIBILITY_PRIVATE` with a
-  public version hides the private text on the lock screen **only if the
-  user's own setting hides sensitive content**. With "show all notification
-  content" the lock screen shows the full private notification (measured on
-  API 35 and 36, [Phase 0, S11][p0-s11]). The app does not control that
-  setting, so it does not rely on it:
-  - every notification is still `VISIBILITY_PRIVATE`, with a public version
-    holding only WHO and WHERE;
-  - the notification itself carries **only WHO and WHERE whenever the phone
-    is locked**. WHAT (the question, draft or messages, fetched with the
-    device credential) is added only when `KeyguardManager.isKeyguardLocked`
-    is false at post time, and on `ACTION_USER_PRESENT`;
-  - on `ACTION_SCREEN_OFF` the app re-posts every notification that carries
-    WHAT without it, back to WHO and WHERE;
-  - this applies to held replies too ([inline reply](#inline-reply));
-  - showing WHAT at all is a per-device opt-in, and it means "WHAT while this
-    phone is unlocked", never "WHAT on the lock screen"
-    ([open question](#open-questions) 4, decided).
+- **Lock screen: a question's full text, always** (operator decision "Full
+  text always", which REPLACED "WHAT only while unlocked" for asks and held
+  questions). An ask's or held question's `title` and `body` carry the question
+  and its options, and the app shows them as sent, locked or not:
+  `VISIBILITY_PUBLIC` for them, no stripped public version, no re-post on
+  `ACTION_SCREEN_OFF`. ([Phase 0, S11][p0-s11] measured that
+  `VISIBILITY_PRIVATE` cannot keep text off the lock screen when the user shows
+  all content anyway; the earlier design worked around that, and the operator
+  chose to show it instead.) ⚠ As shipped (`43d9b90`) the app posts
+  `VISIBILITY_PRIVATE` with a public version built from the same title and
+  body, so the lock screen already shows them. A waiting session, a reply draft
+  and the other events still say WHO and WHERE only, so they have nothing to
+  hide. Acting from the lock screen
+  still needs the unlock and the step-up key ([a gated action](#a-gated-action-step-by-step)).
 - **Actions per event:**
 
   | event | actions |
   |---|---|
-  | `attention` (agent question) | up to two of the asker's options, and **Answer** (inline reply) |
+  | `attention` (agent question) | the asker's options and the suggested replies (as `actions`; the app shows up to three as buttons), **Answer** (inline reply) and **Dismiss** — built ([the signed ask actions](#the-signed-ask-actions-as-built)) |
   | `attention` (mirrored Claude Code question) | Open only. A session's `AskUserQuestion` has no `/attention/asks/{id}/answer` route; it is answered in the session's rendered view |
   | `attention` (session waiting) | Open |
   | `plugin` | **Approve and send**, **Reject** |
@@ -1229,7 +1361,7 @@ and did not run; the numbers are kept so references stay stable.
 | S8 | Obtainium's unattended installs; F-Droid index v2 | Source. Obtainium is silent only as installer of record (Android 12+, targetSdk ≥ device SDK − 3). fdroidserver still writes the v1 index. ([S8][p0-s8]) | [channel](#channel) |
 | S9 | ntfy and VAPID; ntfy's FGS type; embedded-FCM and Firebase | ntfy does **not** enforce VAPID on `up*`; it truncates an `up*` body over its size limit (default 4096 bytes, configurable; the deployed value not measured) with 200; ntfy uses `specialUse`; embedded FCM needs no Firebase project but needs Play services. ([S9][p0-s9]) | [decrypted-only](#-only-decrypted-pushes-are-trusted) is load-bearing; server change 30 |
 | S10 | Does muster reach ntfy by the exact name in the phone's endpoint? | Yes, by its public name on `https`/443; no split horizon. The endpoint's host is the ntfy app's default server, else ntfy's public server. A real phone's registration was not observed. ([S10][p0-s10]) | `MUSTER_PUSH_EXTRA_HOSTS`; the pairing push-host check |
-| S11 | Does the lock screen show only the public version of a `VISIBILITY_PRIVATE` notification? | **Only if the user's setting hides sensitive content.** ([S11][p0-s11]) | [WHAT only while unlocked](#notifications); open question 4, decided |
+| S11 | Does the lock screen show only the public version of a `VISIBILITY_PRIVATE` notification? | **Only if the user's setting hides sensitive content.** ([S11][p0-s11]) | [the lock screen](#notifications); open question 4, decided, then reversed (full text always) |
 | S12 | Do CSS `env(safe-area-inset-*)` values work in an edge-to-edge WebView? | **No** on WebView 124 and 133: 0 px on every side. ([S12][p0-s12]) | [the shell pads](#the-shell) |
 
 ### Phase 6: always-on overlay (later, opt-in)
@@ -1341,12 +1473,14 @@ guidance; the Play fee.
    fingerprint enrolment. The key type is recorded at pairing and shown on
    Account → Devices, and software-only keys are refused
    ([the step-up key](#the-step-up-key)).
-4. ~~Showing WHAT on an unlocked phone~~ **Decided: WHAT only while
-   unlocked.** Phase 0 S11 showed `VISIBILITY_PRIVATE` cannot keep WHAT off
-   the lock screen when the user shows all content, so WHAT is put into a
-   notification only while the phone is unlocked and stripped when the screen
-   turns off, held replies included. The per-device opt-in stays and means
-   "WHAT while unlocked" ([notifications](#notifications)).
+4. ~~Showing WHAT on an unlocked phone~~ **Decided, then reversed: full
+   text always.** Phase 0 S11 showed `VISIBILITY_PRIVATE` cannot keep WHAT off
+   the lock screen when the user shows all content, and the first decision was
+   "WHAT only while unlocked". The operator then chose the opposite: an
+   attention notification carries the question, its options and the
+   suggested replies on the lock screen too, because a notification that
+   cannot be acted on without opening it is the problem
+   ([notifications](#notifications)).
 5. **Connector approvals** from a notification: add them in a later phase, or
    keep them on the web page?
 

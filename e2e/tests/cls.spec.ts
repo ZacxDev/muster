@@ -40,6 +40,8 @@ const PAGES: Record<string, { where: Where; url: string; ready?: string }> = {
   // to the board; the full server below builds it and draws the real tab.
   'GET /connectors': { where: 'full', url: '/connectors', ready: '#panel-connectors button' },
   'GET /attention': { where: 'shared', url: '/attention', ready: '[data-testid="attention-items"] li' },
+  // An open ask's own page (ASK: one made for the measurement, removed after).
+  'GET /attention/asks/{id}': { where: 'shared', url: 'ASK', ready: '[data-ask-question]' },
   'GET /flows': { where: 'shared', url: '/flows', ready: 'main form button[type="submit"], main form button:not([type])' },
   'GET /share': { where: 'shared', url: '/share?title=Layout%20probe&text=hello', ready: '#task-modal textarea[name="body"]' },
   'GET /account': { where: 'shared', url: '/account', ready: '#notifications' },
@@ -80,6 +82,7 @@ const NOT_A_PAGE: Record<string, string> = {
   'GET /manifest.webmanifest': 'JSON',
   'GET /metrics': 'Prometheus text',
   'GET /mirror/connect': 'the mirror host tunnel',
+  'GET /mirror/host': 'JSON (a machine\'s own connection state, for muster doctor)',
   'GET /mirror/terminal/send': 'a redirect back to the view',
   'GET /mirror/terminal/ws': 'websocket',
   'GET /mirror/view/asks': 'an HTML fragment (the Rendered view\'s question cards, polled into #mv-asks)',
@@ -151,6 +154,10 @@ async function measureWithDraft(page: Page, url: string, box: string): Promise<C
   return r;
 }
 
+// pluginfix runs the e2e fixture command against the shared database.
+const pluginfix = (...args: string[]) =>
+  execFileSync('go', ['run', './e2e/pluginfix', ...args], { cwd: repoRoot, env: { ...process.env, DATABASE_URL: dsn } }).toString().trim();
+
 // A chief agent with threads, so the panel's open state is a real one (intro,
 // thread list), not the "no chief" notice. Its own agent, removed afterwards.
 const chiefName = 'e2e-cls-chief-' + Date.now().toString(36);
@@ -199,11 +206,18 @@ for (const vp of viewports) {
       // viewed" strip, which once shifted the list, is gone.)
       await page.goto('/agents/docs-sweeper');
       await settle(page);
-      for (const [route, p] of Object.entries(PAGES)) {
-        if (p.where !== 'shared') continue;
-        const r = await measure(page, p.url, p.ready);
-        seen.push(`${route} ${r.total}`);
-        if (r.total >= BAR) bad.push(report(`${route} (${p.url})`, r));
+      // An open ask of the operator's, for its page (the ASK url).
+      const askID = pluginfix('ask', '1', 'docs-sweeper', 'Deploy the docs site now, or after the review?');
+      try {
+        for (const [route, p] of Object.entries(PAGES)) {
+          if (p.where !== 'shared') continue;
+          const url = p.url === 'ASK' ? `/attention/asks/${askID}` : p.url;
+          const r = await measure(page, url, p.ready);
+          seen.push(`${route} ${r.total}`);
+          if (r.total >= BAR) bad.push(report(`${route} (${url})`, r));
+        }
+      } finally {
+        pluginfix('rmask', '1', askID);
       }
       console.log(`[cls ${vp.name}] ` + seen.join(' | '));
       expect(bad).toEqual([]);

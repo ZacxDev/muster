@@ -125,7 +125,7 @@ func TestTheNativeLinesAreShortAndCutOnACharacter(t *testing.T) {
 		"flag":               {"\U0001F1EB\U0001F1F7", pad + "…"},
 		"variation selector": {"\u2764\ufe0f", pad + "…"},
 	} {
-		got := cutClusters(pad+c.cluster+"tail", MaxNativeTitle)
+		got := CutClusters(pad+c.cluster+"tail", MaxNativeTitle)
 		if got != c.want {
 			t.Errorf("%s: cut to %q; want the whole cluster dropped (%q)", name, []rune(got)[len([]rune(got))-3:], c.want[len(c.want)-6:])
 		}

@@ -60,6 +60,32 @@ type Service struct {
 	recheck time.Duration
 
 	limiter *failLimiter
+
+	// connTok is which token each (owner, host) connection was made with,
+	// for HostToken; gen tells a connection's own entry from its successor's.
+	connMu  sync.Mutex
+	connTok map[hostKey]connToken
+	connGen uint64
+}
+
+type connToken struct {
+	id  int64
+	gen uint64
+}
+
+// HostToken is the id of the token the viewing principal's host is
+// connected with now, if it is connected through ServeConnect. Two machines
+// minted under one host name are one hub entry; the token id is what tells
+// which of them holds it (`muster doctor`'s this-host, via GET /mirror/host).
+func (s *Service) HostToken(ctx context.Context, host string) (int64, bool) {
+	o, err := owner(ctx)
+	if err != nil {
+		return 0, false
+	}
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
+	c, ok := s.connTok[hostKey{o, host}]
+	return c.id, ok
 }
 
 // NewService builds the plugin over store.
@@ -177,6 +203,22 @@ func (s *Service) ServeConnect(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancelCause(context.WithoutCancel(r.Context()))
 	defer cancel(nil)
 	go s.watchToken(ctx, cancel, tok)
+	key := hostKey{tok.OwnerID, tok.Host}
+	s.connMu.Lock()
+	if s.connTok == nil {
+		s.connTok = map[hostKey]connToken{}
+	}
+	s.connGen++
+	mine := connToken{id: tok.ID, gen: s.connGen}
+	s.connTok[key] = mine
+	s.connMu.Unlock()
+	defer func() {
+		s.connMu.Lock()
+		if s.connTok[key] == mine {
+			delete(s.connTok, key)
+		}
+		s.connMu.Unlock()
+	}()
 	err = s.hub.ServeConn(ctx, tok.OwnerID, tok.Host, ws)
 	s.logger.Printf("mirror: host %s connection ended: %v", tok.Host, err)
 }

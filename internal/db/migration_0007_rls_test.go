@@ -66,7 +66,7 @@ func newRLSFixture(t *testing.T, name string) *rlsFixture {
 // by 0007's default (the principal's muster.uid) and, for children, by the
 // composite foreign keys. tag keeps names unique.
 func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) error {
-	var note, agent, session, plugin, message int64
+	var note, agent, session, plugin, message, device int64
 	steps := []struct {
 		sql  string
 		args func() []any
@@ -97,7 +97,8 @@ func writeEveryOwnedTable(ctx context.Context, pool *pgxpool.Pool, tag string) e
 		{`INSERT INTO plugin_threads (thread, claude_session) VALUES ($1, 'sess')`, func() []any { return []any{"thread-" + tag} }, nil},
 		{`INSERT INTO mail_resumes (plugin_message_id, claude_session, sender, via) VALUES (7, $1, 'review-gate/pr-check', 'pr')`, func() []any { return []any{"sess-" + tag} }, nil},
 		{`INSERT INTO session_prs (kind, repo, pr, claude_session, host) VALUES ('gh-pr-create', $1, 7, 'sess', 'host')`, func() []any { return []any{"acme-labs/repo-" + strings.ToLower(tag)} }, nil},
-		{`INSERT INTO devices (name, token_sha256, paired_signin_at) VALUES ($1, sha256(convert_to($1, 'UTF8')), now())`, func() []any { return []any{"phone-" + tag} }, nil},
+		{`INSERT INTO devices (name, token_sha256, paired_signin_at) VALUES ($1, sha256(convert_to($1, 'UTF8')), now()) RETURNING id`, func() []any { return []any{"phone-" + tag} }, &device},
+		{`INSERT INTO device_challenges (device_id, nonce_sha256, action, target, expires_at) VALUES ($1, sha256(convert_to($2, 'UTF8')), 'ask_dismiss', '1', now() + interval '2 minutes')`, func() []any { return []any{device, "nonce-" + tag} }, nil},
 		{`INSERT INTO device_pairing_codes (code_sha256, signin_at, expires_at) VALUES (sha256(convert_to($1, 'UTF8')), now(), now() + interval '1 minute')`, func() []any { return []any{"code-" + tag} }, nil},
 		{`INSERT INTO plugins (name, label, token_hash, data_scope) VALUES ($1, 'Example inbox', $2, 'example') RETURNING id`, func() []any { return []any{"plugin-" + strings.ToLower(tag), "pluginhash-" + tag} }, &plugin},
 		{`INSERT INTO plugin_messages (plugin_id, external_id, body, status, agent_id) VALUES ($1, $2, 'hello', 'delivering', $3) RETURNING id`, func() []any { return []any{plugin, "ext-" + tag, agent} }, &message},

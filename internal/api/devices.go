@@ -118,6 +118,8 @@ func (s *Server) registerDeviceRoutes(mux Mux) {
 	mux.HandleFunc("GET "+deviceConfigPath, s.requireDeviceToken(s.handleDeviceConfig))
 	mux.HandleFunc("PUT "+devicePushPath, s.requireDeviceToken(s.handleDevicePushPut))
 	mux.HandleFunc("DELETE "+devicePushPath, s.requireDeviceToken(s.handleDevicePushDelete))
+	// The signed actions (Phase 2, asks: device_actions.go).
+	s.registerDeviceActionRoutes(mux)
 }
 
 // --- the device door ---------------------------------------------------------------
@@ -351,9 +353,11 @@ func (s *Server) handleDeviceConfig(w http.ResponseWriter, r *http.Request) {
 		"server_version": BuildVersion,
 		"push":           push,
 		"pairing":        map[string]any{"pin_keys_allowed": s.ext.AllowPINKeys},
-		// Phase 1 serves push and nothing else; actions (Phase 2), bubbles
-		// (Phase 3) and widget state (Phase 4) are not served yet.
-		"features": map[string]any{"push": s.pushServed(), "actions": false, "bubbles": false, "state": false},
+		// Push, and Phase 2's signed actions for asks (the ids are the app's
+		// fixed table; which ones a push offers is in the push itself,
+		// device_actions.go); bubbles (Phase 3) and widget state (Phase 4) are
+		// not served yet.
+		"features": map[string]any{"push": s.pushServed(), "actions": s.ext.Attention != nil, "bubbles": false, "state": false},
 	})
 }
 
