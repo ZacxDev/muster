@@ -951,9 +951,12 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 			g.Attr("role", "navigation"),
 			g.Attr("aria-label", "Main menu"),
 			Class("sidebar-panel fixed inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] -translate-x-full flex-col bg-s1 shadow-2xl shadow-black/50 ring-1 ring-line transition-transform duration-300 ease-out"),
-			// Sidebar header: brand + close.
+			// Sidebar header: brand + close. min-h keeps the row the height the
+			// 44px close button gave it (py-3 + 44px = 68px) where the button is
+			// hidden — the desktop rail — so its border still lines up with the
+			// content header's beside it.
 			Div(
-				Class("flex items-center gap-3 border-b border-line px-4 py-3"),
+				Class("flex min-h-[4.25rem] items-center gap-3 border-b border-line px-4 py-3"),
 				Span(Class("text-lg font-semibold tracking-tight"), wordmark()),
 				Span(Class("flex-1")),
 				Button(
