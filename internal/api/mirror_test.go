@@ -123,6 +123,19 @@ type fakeMirror struct {
 	inPaste func()
 	// ranks is what HostRanks answers for user 1 (nil = no ranks known).
 	ranks map[string]int
+	// liveHosts is what LiveTokenHosts answers for user 1; liveErr its error.
+	liveHosts []string
+	liveErr   error
+}
+
+// LiveTokenHosts answers f.liveHosts for the host's owner, nothing for anyone else.
+func (f *fakeMirror) LiveTokenHosts(ctx context.Context) ([]string, error) {
+	if f.user(ctx) != 1 {
+		return []string{}, nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.liveHosts, f.liveErr
 }
 
 // HostRanks answers f.ranks for the host's owner, nothing for anyone else.

@@ -269,3 +269,40 @@ func loadMigrations() ([]migration, error) {
 	sortMigrations(out)
 	return out, nil
 }
+
+// SchemaState is a database's schema version against the migrations this
+// binary embeds: what `muster doctor` reports as "migrations current".
+type SchemaState struct {
+	// Applied is max(version) in schema_migrations; 0 for a database the
+	// runner never touched.
+	Applied int `json:"applied"`
+	// Latest is the newest migration this binary embeds.
+	Latest int `json:"latest"`
+}
+
+// Current reports whether every migration this binary embeds is applied.
+// A database AHEAD of the binary (Applied > Latest: an older image against a
+// newer schema) is not current either: the binary does not know that schema.
+func (s SchemaState) Current() bool { return s.Applied == s.Latest }
+
+// SchemaStatus reads the database's schema version and pairs it with the
+// newest embedded migration.
+//
+// 🔴 IT READS schema_migrations, IT DOES NOT TRUST THE BOOT. The server
+// migrates at start and refuses to boot on a failure, so "it is up, so it is
+// migrated" is usually true — and is exactly the assumption a restored backup,
+// a second writer or a hand-applied rollback breaks. It runs with the liveness
+// ping's scope (the application role, no user): the table holds no user's
+// rows, and every boot grants the role SELECT on it (appRoleSQL).
+func SchemaStatus(ctx context.Context, pool *pgxpool.Pool) (SchemaState, error) {
+	ms, err := loadMigrations()
+	if err != nil {
+		return SchemaState{}, err
+	}
+	st := SchemaState{Latest: ms[len(ms)-1].version}
+	if err := pool.QueryRow(context.WithValue(ctx, pingKey{}, true),
+		`SELECT coalesce(max(version), 0) FROM schema_migrations`).Scan(&st.Applied); err != nil {
+		return SchemaState{}, fmt.Errorf("read schema_migrations: %w", err)
+	}
+	return st, nil
+}

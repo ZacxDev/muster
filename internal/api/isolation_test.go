@@ -180,8 +180,11 @@ var isolationClasses = map[string]routeClass{
 	"POST /account/passkeys/verify":      classList,
 	"POST /account/passkeys/{id}/delete": classParam,
 	"GET /api/whoami":                    classAdmin,
-	"GET /api/tokens":                    classAPIToken,
-	"DELETE /api/tokens/{id}":            classAPIToken,
+	// `muster doctor` (doctor.go): the hook tier, armed; it reports the
+	// caller's own mirror hosts and server-wide booleans.
+	"GET /api/doctor":         classAdmin,
+	"GET /api/tokens":         classAPIToken,
+	"DELETE /api/tokens/{id}": classAPIToken,
 	// muster-native Web Push (migration 0013). The key and the subscribe /
 	// unsubscribe writes act on the CALLER's own devices (list); the account
 	// page's remove names a device by id (param, A's is the object). A's device

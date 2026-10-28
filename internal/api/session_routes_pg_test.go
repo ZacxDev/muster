@@ -77,8 +77,9 @@ func (m *routeMirror) AgentState(context.Context, string, string, string) mirror
 	}
 	return mirror.AgentState{Status: mirror.StatusIdle}
 }
-func (m *routeMirror) ServeConnect(http.ResponseWriter, *http.Request) {}
-func (m *routeMirror) HostRanks(context.Context) map[string]int        { return nil }
+func (m *routeMirror) ServeConnect(http.ResponseWriter, *http.Request)  {}
+func (m *routeMirror) HostRanks(context.Context) map[string]int         { return nil }
+func (m *routeMirror) LiveTokenHosts(context.Context) ([]string, error) { return nil, nil }
 func (m *routeMirror) AttachWindow(context.Context, string, string, string, bool, io.Reader, io.Writer, <-chan provision.TermSize) error {
 	return nil
 }

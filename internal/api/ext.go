@@ -408,6 +408,9 @@ type Mirror interface {
 	// (mirror.RanksByRegistration): what picks each host's icon
 	// (ui.HostIconFor).
 	HostRanks(ctx context.Context) map[string]int
+	// LiveTokenHosts is the viewing principal's hosts holding an unrevoked
+	// mirror token, sorted: the hosts expected to connect (GET /api/doctor).
+	LiveTokenHosts(ctx context.Context) ([]string, error)
 }
 
 // GitHubApp is what the API reads from a configured GitHub App
