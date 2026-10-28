@@ -104,6 +104,11 @@ type AgentTerminalView struct {
 	// RenderedHref, when set, draws the Rendered | Terminal switch: the session
 	// also has a rendered view (a mirrored Claude Code pane), one tap away.
 	RenderedHref string
+	// TerminalOnly, when set, is why this session has NO rendered view
+	// (mirror.SessionView.TerminalOnlyReason), drawn as one line under the
+	// header: a mirrored window that opens in the terminal says why instead of
+	// silently falling back. Never set together with RenderedHref.
+	TerminalOnly string
 	// StepUp, when set, puts live keys behind a FRESH sign-in
 	// (internal/stepup): a mirrored session. The page attaches with live keys
 	// when the sign-in is fresh, and otherwise asks "Confirm it's you" at the
@@ -311,6 +316,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					),
 					g.If(v.RenderedHref != "", viewToggle(false, v.RenderedHref, "")),
 				),
+				g.If(v.TerminalOnly != "" && v.RenderedHref == "", terminalOnlyLine(v.TerminalOnly)),
 				Div(
 					ID("term-error"),
 					g.Attr("role", "alert"),
@@ -384,6 +390,23 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 				pwaChrome(),
 			),
 		),
+	)
+}
+
+// terminalOnlyLabel leads the Terminal view's terminal-only line.
+const terminalOnlyLabel = "Terminal only."
+
+// terminalOnlyLine is the Terminal view's one line about why the session has
+// no Rendered view: in the document from the first paint (no layout shift),
+// above the terminal, wrapping rather than widening a phone's page.
+func terminalOnlyLine(reason string) g.Node {
+	return P(
+		ID("term-only"),
+		g.Attr("data-terminal-only", ""),
+		Class("border-b border-line bg-s1 px-3 py-1.5 text-xs text-fg2 break-words"),
+		Span(Class("font-semibold text-fg"), g.Text(terminalOnlyLabel)),
+		g.Text(" "),
+		Span(g.Attr("data-terminal-only-reason", ""), g.Text(reason)),
 	)
 }
 

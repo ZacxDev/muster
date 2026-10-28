@@ -583,7 +583,11 @@ type Window struct {
 	// AgentNote is a line for the person about a window of a runtime on the
 	// wire (opencode): why it has NO rendered view ("opencode is not paired on
 	// this host…", an ambiguous title, a refused token), or what its view's
-	// credential needs (a token about to expire, a failing renewal). "" for
+	// credential needs (a token about to expire, a failing renewal). On a
+	// window that is NOT Claude and names no runtime, it is why a Claude Code
+	// pane there has no rendered view (mirrorhost's NoView* lines: its
+	// transcript not written yet, not found, ambiguous, or a host that cannot
+	// read processes); a Claude window never carries one. "" for
 	// none. Bounded (MaxAgentNote bytes, on at most MaxAgentNoteWindows windows
 	// of a list) and stripped of control characters by NormalizeWindows.
 	// Backward-compatible both ways, like AgentSession.
@@ -1050,7 +1054,11 @@ func NormalizeWindows(in []Window, now int64) []Window {
 		if !onWire || r.KeyPrefix == "" || !ValidAgentSession(w.AgentSession) {
 			w.AgentSession = ""
 		}
-		if w.AgentNote = cleanNote(w.AgentNote); !onWire {
+		// A note says why a window has no rendered view (or what its runtime's
+		// credential needs): a window of a runtime on the wire, or a window
+		// with NO Claude view whose pane runs Claude Code all the same (the
+		// host's NoView lines). A Claude window has its view; it has no note.
+		if w.AgentNote = cleanNote(w.AgentNote); !onWire && w.Claude {
 			w.AgentNote = ""
 		}
 		// A status describes an agent's pane; a window without one has none.

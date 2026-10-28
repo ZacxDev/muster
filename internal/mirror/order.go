@@ -179,6 +179,42 @@ func (s SessionView) HasRenderedView() bool {
 	return s.Online && s.Rendered && (s.Claude || s.AgentView())
 }
 
+// The Terminal view's line for an entry with no rendered view, when its host
+// gave no reason of its own (TerminalOnlyReason).
+const (
+	// TerminalOnlyNoClaude: nothing in the window's pane is a Claude Code
+	// conversation this host could find — a shell, Codex, Gemini CLI, or a
+	// Claude Code its host could not see (an older muster-mirror says no more).
+	TerminalOnlyNoClaude = "muster found no Claude Code conversation in this window."
+	// TerminalOnlyOldHost: the host's muster-mirror predates rendered views.
+	TerminalOnlyOldHost = "This host's muster-mirror is too old to send the Rendered view. Update it to read Claude Code as a chat."
+)
+
+// TerminalOnlyReason is the one line the Terminal view shows about WHY the
+// entry has no Rendered view, "" when it has one (HasRenderedView) or its host
+// is offline (the page says offline on its own). In order: a host too old for
+// rendered views; the host's own reason (AgentNote: a Claude Code transcript
+// not written yet or not found, an opencode pairing, …); a runtime with no
+// view yet; and otherwise TerminalOnlyNoClaude.
+//
+// 🔴 ONE RULE, ONE PLACE: the Terminal view takes it from here, so a window
+// that opens in the terminal always says why instead of silently falling back
+// — the silent fallback is what read as "muster only has a terminal".
+func (s SessionView) TerminalOnlyReason() string {
+	switch {
+	case !s.Online || s.HasRenderedView():
+		return ""
+	case !s.Rendered:
+		return TerminalOnlyOldHost
+	case s.AgentNote != "":
+		return s.AgentNote
+	}
+	if r, ok := s.Spec(); ok {
+		return "This " + r.Kind + " window has no conversation muster can show yet."
+	}
+	return TerminalOnlyNoClaude
+}
+
 // SessionKey is the key the entry's conversation is stored by (a focus):
 // a Claude session id as itself, a Hermes one runtime-qualified
 // ("hermes:<id>", Window.SessionKey's rule); "" when the entry names none.

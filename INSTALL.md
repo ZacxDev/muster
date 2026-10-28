@@ -807,6 +807,17 @@ block above).
 
 muster shows **tmux windows**. Any coding agent started inside tmux on a
 connected machine appears as a card, and a Claude Code window opens as a chat.
+These are **mirrored sessions**: the person's own sessions. A message from
+muster is typed into that same session, so it is all there when they are back
+at the keyboard. This guide sets up nothing else: it starts no agent of its
+own, and dispatched agents (muster starting new sessions in Kubernetes) stay
+off.
+
+A session the person already has open **outside** tmux is invisible to muster,
+and starting a second one in tmux makes a separate conversation. Tell them to
+quit the one they have and continue it inside tmux, from the same directory:
+`tmux new -A -s work 'claude --continue'`.
+
 Give the person these one-liners (`-A` reattaches if the session already
 exists, so they are safe to repeat):
 
@@ -907,8 +918,21 @@ run the doctor again. **Done means the hub's doctor exits 0**, every machine's
 doctor shows `this-host`, `mirror-service` and `tmux` passing, and the person confirms on
 the phone that they can see a session and that the test notification arrived.
 
-Then tell the person, briefly: the address, where the password is (step 9.3),
-the tmux one-liners (Step 8), and that `muster doctor` re-checks everything.
+Then tell the person, briefly:
+
+- the address, and where the password is (step 9.3);
+- **muster shows their own sessions.** Each card is a session running in tmux
+  on one of their machines (a mirrored session). A message from muster goes
+  into that same session, so it is all there when they are back at the
+  keyboard. muster starts no session of its own;
+- **start Claude Code inside tmux**, with the one-liners from Step 8. A
+  session outside tmux does not appear. To bring one they already have, quit
+  it and run `tmux new -A -s work 'claude --continue'` in its directory;
+- **a Claude Code session opens in the Rendered view**, a chat. The Terminal
+  view is one tap away in the header, as the fallback. If a window opens in the
+  Terminal view only, the line at its top says why. On a Mac, Claude Code
+  windows open in the Terminal view only, for now;
+- that `muster doctor` re-checks everything.
 
 ---
 

@@ -212,7 +212,7 @@ func resumeLive(ctx context.Context, loc ClaudeLocator, b Backend, sid string) (
 	if err != nil {
 		return false, err
 	}
-	if _, ok := loc.liveSessions(procs).byID[sid]; ok {
+	if _, ok := loc.liveSessions(loc.configDir(), procs).byID[sid]; ok {
 		return true, nil
 	}
 	wl, ok := WindowListerOf(b)

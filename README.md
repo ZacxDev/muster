@@ -13,6 +13,30 @@ installs on your phone as a PWA. Your other machines dial out to it.
   <img src="docs/img/tool-context.png" width="270" alt="A Claude Code session rendered as a chat; each tool call shows how much context it added">
 </p>
 
+## How it works
+
+muster shows two kinds of session. Most people only ever use the first.
+
+- **Mirrored sessions: your own sessions, on your own machines.** A
+  mirrored session is a coding agent you started yourself, in tmux, on one of
+  your machines. muster does not start it or copy it. A message you send from
+  your phone is typed into that same session, the reply appears in it, and
+  when you are back at the keyboard everything is already there. A session
+  started **outside tmux** (a plain terminal tab, an editor's panel) is
+  invisible to muster. To use one from your phone, run it inside tmux. To
+  carry on the conversation you already have, quit it and continue it in tmux,
+  in the same directory: `tmux new -A -s work 'claude --continue'`.
+- **Dispatched agents: new sessions muster starts.** muster can also start an
+  agent of its own on a task, in a Kubernetes pod, with its own history. This
+  is an advanced, opt-in feature that is off unless you configure a cluster
+  ([docs/provisioner.md](docs/provisioner.md)). The one-prompt install below
+  sets up **mirrored sessions only**.
+
+A Claude Code session opens in the **Rendered** view, a chat you can read on a
+phone. The **Terminal** view, the live terminal, is one tap away in the header
+and is the fallback. When a window opens in the Terminal view only, a line at
+the top says why ([docs/mirroring.md](docs/mirroring.md#why-a-window-opens-in-the-terminal)).
+
 ## Why muster
 
 - **Run more sessions without losing track of them.** Every tmux window on every
@@ -80,7 +104,8 @@ against a throwaway database.
 
 - **Mirrored sessions.** Each tmux window on your machines is shown live. A
   Claude Code window renders as a chat, and the Terminal view is one tap away.
-  Viewing a window never moves your own terminal. → [docs/mirroring.md](docs/mirroring.md)
+  Viewing a window never moves your own terminal. On a macOS machine, Claude
+  Code windows open in the Terminal view only, for now. → [docs/mirroring.md](docs/mirroring.md)
 - **Session switcher, sidebar and search.** A bottom bar with Recent, Pins and
   All, and a sidebar that lists every session like channels in a chat app: the
   chief first, then the sessions waiting on you, then the rest by recency. The search opens with the magnifier or `/`. → [docs/mirroring.md](docs/mirroring.md)

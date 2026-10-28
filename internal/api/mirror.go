@@ -265,6 +265,7 @@ func (s *Server) handleMirrorTerminalPage(w http.ResponseWriter, r *http.Request
 	if e.HasRenderedView() {
 		v.RenderedHref = mirrorRef(e).ViewPath()
 	}
+	v.TerminalOnly = e.TerminalOnlyReason()
 	// Drag-to-scroll only where the host can do it: an older muster-mirror (or
 	// a read-only host) gets a page with no gesture at all, not one that fails.
 	if e.CanScroll() {
