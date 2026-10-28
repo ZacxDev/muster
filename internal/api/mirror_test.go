@@ -126,6 +126,19 @@ type fakeMirror struct {
 	// liveHosts is what LiveTokenHosts answers for user 1; liveErr its error.
 	liveHosts []string
 	liveErr   error
+	// hostTok is what HostToken answers for user 1 (host -> token id).
+	hostTok map[string]int64
+}
+
+// HostToken answers f.hostTok for the host's owner.
+func (f *fakeMirror) HostToken(ctx context.Context, host string) (int64, bool) {
+	if f.user(ctx) != 1 {
+		return 0, false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.hostTok[host]
+	return id, ok
 }
 
 // LiveTokenHosts answers f.liveHosts for the host's owner, nothing for anyone else.

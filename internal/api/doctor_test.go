@@ -181,9 +181,11 @@ func TestMirrorHostIsTheTokensOwnHost(t *testing.T) {
 		mirrorTok('a'): mirror.Token{ID: 1, OwnerID: 1, Host: "ws"},
 		mirrorTok('b'): mirror.Token{ID: 2, OwnerID: 1, Host: "laptop"},
 		mirrorTok('c'): mirror.Token{ID: 3, OwnerID: 2, Host: "ws"},
+		// A second machine of user 1 minted under the same name "ws".
+		mirrorTok('d'): mirror.Token{ID: 4, OwnerID: 1, Host: "ws"},
 	}
 	cfg := AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}
-	fm := &fakeMirror{online: true, interactive: true}
+	fm := &fakeMirror{online: true, interactive: true, hostTok: map[string]int64{"ws": 1}}
 	ts := doctorServer(t, cfg, Extensions{Mirror: fm, MirrorTokens: toks})
 	get := func(tok string) (int, MirrorHostReport) {
 		req, _ := http.NewRequest(http.MethodGet, ts.URL+MirrorHostPath, nil)
@@ -205,6 +207,8 @@ func TestMirrorHostIsTheTokensOwnHost(t *testing.T) {
 		{mirrorTok('a'), 200, MirrorHostReport{Host: "ws", Online: true, Interactive: true}},
 		{mirrorTok('b'), 200, MirrorHostReport{Host: "laptop"}},
 		{mirrorTok('c'), 200, MirrorHostReport{Host: "ws"}}, // user 2: user 1's "ws" is not theirs
+		// Same owner, same name, another token: "ws" is connected, but not by it.
+		{mirrorTok('d'), 200, MirrorHostReport{Host: "ws", OtherToken: true}},
 		{mirrorTok('z'), 401, MirrorHostReport{}},
 		{testHookToken, 401, MirrorHostReport{}}, // the hook token is not a mirror token
 	} {

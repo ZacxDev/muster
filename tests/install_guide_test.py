@@ -93,7 +93,9 @@ exit 0
 FAKE_TAILSCALE = r"""#!/bin/sh
 echo "tailscale $*" >> "$FAKE_LOG"
 case "$*" in
-  "serve status"*) cat "$FAKE_SERVE"; exit 0 ;;
+  "serve status"*)
+    [ "${FAKE_SERVE_FAIL:-0}" = 1 ] && { echo "failed to connect to local tailscaled; it doesn't appear to be running" >&2; exit 1; }
+    cat "$FAKE_SERVE"; exit 0 ;;
   "serve --bg --https=443 8105")
     printf 'https://hub.example-tailnet.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:8105\n' > "$FAKE_SERVE"; exit 0 ;;
   "status"*) exit 0 ;;
@@ -110,7 +112,9 @@ while [ "$1" != "sh" ] && [ $# -gt 0 ]; do shift; done
 shift
 # A real hub's login shell would set its own PATH; this one keeps the fakes.
 [ "$1" = "-l" ] && shift
-exec sh "$@"
+sh "$@"; rc=$?
+echo "Connection to hub closed. (logout noise on stdout)"
+exit $rc
 """
 
 # awk, recorded: every argv awk is called with (env_set's secrets must not be
@@ -262,12 +266,50 @@ class Guide(unittest.TestCase):
         self.assertNotEqual(env["MUSTER_STT_TOKEN"], "sk-the-real-key", "the API key was handed to the local service")
         self.assertRegex(env["MUSTER_STT_TOKEN"], r"^[0-9a-f]{64}$")
 
-    def test_cpu_to_api_without_a_key_says_missing_and_keeps_going(self) -> None:
+    def test_cpu_to_api_without_a_key_asks_and_changes_nothing(self) -> None:
         self.hub()
         self.dictation(STT="local-cpu")
+        before = self.dotenv()
         out = self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
         self.assertIn("MISSING: the API key", out)
-        self.assertEqual(self.dotenv()["COMPOSE_PROFILES"], "")
+        self.assertEqual(self.dotenv(), before, "it switched to the API with the local service's token as the key")
+
+    def test_step5_marks_the_install_in_use_once_healthy(self) -> None:
+        self.hub()
+        self.run_block(self.lib + block("docker compose up -d --wait"))
+        self.assertIn("GUIDE_IN_USE='1'", self.state())
+        own = dict(FAKE_PS_IDS="abc", FAKE_WD_abc=str(self.muster), FAKE_VOLUMES="muster_pgdata")
+        self.assertIn("REFUSED", self.start_over(MI_CONFIRM_DELETE="muster", **own))
+        self.assertNotIn("compose down", self.calls())
+
+    def test_none_keeps_the_api_key_for_later(self) -> None:
+        self.hub()
+        self.write_secret("stt-api-key", "sk-the-real-key")
+        self.dictation(STT="api", STT_API_URL="https://api.openai.com", STT_API_MODEL="whisper-1")
+        self.dictation(STT="none")
+        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "", "dictation is still on")
+        out = self.dictation(STT="api")
+        self.assertNotIn("MISSING", out)
+        self.assertEqual(self.dotenv()["MUSTER_STT_TOKEN"], "sk-the-real-key", "the key was lost on the way through none")
+
+    def test_cpu_resets_a_non_whisper_model(self) -> None:
+        self.hub()
+        self.write_secret("stt-api-key", "sk-the-real-key")
+        self.dictation(STT="api", STT_API_URL="https://api.example-provider.test", STT_API_MODEL="openai/whisper-large-v3")
+        self.dictation(STT="local-cpu")
+        self.assertEqual(self.dotenv()["MUSTER_STT_MODEL"], "Systran/faster-whisper-small")
+        self.sh("env_set MUSTER_STT_MODEL Systran/faster-whisper-large-v3")
+        self.dictation(STT="local-cpu")
+        self.assertEqual(self.dotenv()["MUSTER_STT_MODEL"], "Systran/faster-whisper-large-v3", "a chosen whisper model was reset")
+
+    def test_api_without_a_url_asks_and_changes_nothing(self) -> None:
+        self.hub()
+        self.dictation(STT="local-cpu")
+        before = self.dotenv()
+        self.write_secret("stt-api-key", "sk-the-real-key")
+        out = self.dictation(STT="api")
+        self.assertIn("MISSING: the API's URL", out)
+        self.assertEqual(self.dotenv(), before, "a half-switched dictation config was written")
 
     # --- Y5: a failed version lookup is never saved ---------------------------
 
@@ -335,9 +377,10 @@ class Guide(unittest.TestCase):
         self.hub()
         out = self.start_over(MI_CONFIRM_DELETE="muster")
         self.assertIn("REFUSED", out, "it would delete an install the guide never started")
-        self.hub(GUIDE_STARTED="1", GUIDE_DONE="1")
-        self.assertIn("REFUSED", self.start_over(MI_CONFIRM_DELETE="muster"), "it would delete a finished install")
-        self.hub(GUIDE_STARTED="1", GUIDE_DONE="0")
+        self.hub(GUIDE_STARTED="1", GUIDE_IN_USE="1")
+        self.assertIn("REFUSED", self.start_over(MI_CONFIRM_DELETE="muster", FAKE_PS_IDS="abc", FAKE_WD_abc=str(self.muster)),
+                      "it would delete an install that has run (and may hold data)")
+        self.hub(GUIDE_STARTED="1", GUIDE_IN_USE="0")
         self.assertIn("REFUSED", self.start_over(MI_CONFIRM_DELETE="muster", FAKE_PS_IDS="abc", FAKE_WD_abc="/srv/x"),
                       "it would delete another install's containers")
         self.assertNotIn("compose down", self.calls())
@@ -374,8 +417,21 @@ class Guide(unittest.TestCase):
         self.assertNotIn("MUSTER_URL", self.state())
 
     def test_serve_stops_on_funnel(self) -> None:
-        self.serve(f"{URL} (Funnel on)\n|-- / proxy http://127.0.0.1:8105\n")
+        # The mapping is muster's own, so ONLY the Funnel check can stop it.
+        out = self.serve(f"{URL} (Funnel on)\n|-- / proxy http://127.0.0.1:8105\n")
         self.assertNotIn("--bg", self.calls())
+        self.assertIn("STOP", out)
+        self.assertNotIn("MUSTER_URL", self.state(), "a Funnel-exposed mapping was adopted as muster's")
+
+    def test_serve_unready_is_not_a_foreign_stop(self) -> None:
+        self.serve_file.write_text("No serve config\n")
+        out = self.run_block(self.lib + block("mi_save MUSTER_URL"), FAKE_SERVE_FAIL="1")
+        self.assertIn("TAILSCALE NOT READY", out)
+        self.assertNotIn("STOP", out)
+        self.assertNotIn("--bg", self.calls())
+        self.assertNotIn("MUSTER_URL", self.state())
+        pre = self.run_block(block('cat > "$HOME/.config/muster-install/lib.sh"'), FAKE_SERVE_FAIL="1")
+        self.assertIn("tailscale serve: unready", pre)
 
     def test_removal_turns_off_only_musters_mapping(self) -> None:
         # Prose, so a weaker guard: no block runs `serve reset`, every mention

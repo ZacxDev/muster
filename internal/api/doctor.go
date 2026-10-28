@@ -80,6 +80,10 @@ type MirrorHostReport struct {
 	Online bool `json:"online"`
 	// Interactive: that connection advertised -interactive.
 	Interactive bool `json:"interactive"`
+	// OtherToken: a connection under this host name is live, but it was made
+	// with ANOTHER token of the same owner — a second machine minted under the
+	// same name. Online is false then: this machine is not the one connected.
+	OtherToken bool `json:"other_token,omitempty"`
 }
 
 func (s *Server) registerDoctorRoutes(mux Mux) {
@@ -95,9 +99,17 @@ func (s *Server) handleMirrorHost(w http.ResponseWriter, r *http.Request) {
 	t, _ := r.Context().Value(mirrorHostCtxKey{}).(mirror.Token)
 	rep := MirrorHostReport{Host: t.Host}
 	if s.ext.Mirror != nil {
+		// Matched on the TOKEN, not only the name: two machines minted under
+		// one name share a hub entry, and only the token says whose it is.
+		id, tracked := s.ext.Mirror.HostToken(r.Context(), t.Host)
 		for _, hv := range s.ext.Mirror.Hosts(r.Context()) {
-			if hv.Host == t.Host {
-				rep.Online, rep.Interactive = hv.Online, hv.Online && hv.Interactive
+			if hv.Host != t.Host || !hv.Online {
+				continue
+			}
+			if tracked && id == t.ID {
+				rep.Online, rep.Interactive = true, hv.Interactive
+			} else {
+				rep.OtherToken = true
 			}
 		}
 	}

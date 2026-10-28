@@ -294,20 +294,23 @@ func (d *doctorRun) resolve(deployEnv string) error {
 	if deploy != nil {
 		// The deploy file's URL and token replace the env file's and the
 		// environment's (both spellings of the token).
+		// The URL and its token are promoted as a PAIR: a deploy file with no
+		// MUSTER_PUBLIC_URL must not send its hook token to whatever URL the
+		// CLI config names (round-2 audit, G1).
 		if u := deploy["MUSTER_PUBLIC_URL"]; u != "" {
 			merged[envAPIURL] = u
-		}
-		if t := deploy["MUSTER_HOOK_TOKEN"]; t != "" {
-			delete(merged, envToken)
-			merged[envTokenAlias] = t
-		}
-		getenv = func(k string) string {
-			switch {
-			case k == envAPIURL && deploy["MUSTER_PUBLIC_URL"] != "",
-				(k == envToken || k == envTokenAlias) && deploy["MUSTER_HOOK_TOKEN"] != "":
-				return ""
+			if t := deploy["MUSTER_HOOK_TOKEN"]; t != "" {
+				delete(merged, envToken)
+				merged[envTokenAlias] = t
 			}
-			return a.getenv(k)
+			getenv = func(k string) string {
+				switch {
+				case k == envAPIURL,
+					(k == envToken || k == envTokenAlias) && deploy["MUSTER_HOOK_TOKEN"] != "":
+					return ""
+				}
+				return a.getenv(k)
+			}
 		}
 	}
 	cfg, err := resolveConfig(a.flagEnvFile, merged, getenv, a.flagAPIURL, a.flagToken)
@@ -557,19 +560,21 @@ func mirrorStatusHint(goos string) string {
 	return "systemctl --user status " + defaultMirrorUnit + "; journalctl --user -u " + defaultMirrorUnit + " -n 50"
 }
 
-// mirrorTokenFile is where this machine's mirror token is: the settings
-// file's MUSTER_MIRROR_TOKEN_FILE, else the token beside it ("" = no
-// settings file, i.e. this machine was never connected by INSTALL.md).
-func (d *doctorRun) mirrorTokenFile() string {
+// mirrorSettings is where this machine's mirror token is (the settings
+// file's MUSTER_MIRROR_TOKEN_FILE, else the token beside it) and the server
+// that token belongs to (its MUSTER_MIRROR_URL). path is "" when there is no
+// settings file, i.e. INSTALL.md never connected this machine.
+func (d *doctorRun) mirrorSettings() (path, server string) {
 	env := expandHome(d.mirrorEnv, d.a.homeDir)
 	vals, err := parseEnvFile(env)
 	if err != nil || len(vals) == 0 {
-		return ""
+		return "", ""
 	}
+	server = strings.TrimSuffix(strings.TrimSpace(vals["MUSTER_MIRROR_URL"]), "/")
 	if f := vals["MUSTER_MIRROR_TOKEN_FILE"]; f != "" {
-		return expandHome(f, d.a.homeDir)
+		return expandHome(f, d.a.homeDir), server
 	}
-	return filepath.Join(filepath.Dir(env), "token")
+	return filepath.Join(filepath.Dir(env), "token"), server
 }
 
 // checkThisHost asks the SERVER, with this machine's own mirror token,
@@ -584,10 +589,23 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 	if d.skipped(name) || d.needsServer(name) {
 		return
 	}
-	path := d.mirrorTokenFile()
+	path, server := d.mirrorSettings()
 	if path == "" {
 		d.add(name, statusSkip, "this machine has no muster-mirror settings ("+d.mirrorEnv+"): it is not connected",
 			"connect it: INSTALL.md, step 7")
+		return
+	}
+	// 🔴 THE TOKEN GOES ONLY TO THE SERVER IT BELONGS TO: the mirror's own
+	// MUSTER_MIRROR_URL. A CLI configured for another muster must not be handed
+	// a credential that connects as this host (round-2 audit, Y1).
+	if server == "" {
+		d.add(name, statusSkip, d.mirrorEnv+" names no MUSTER_MIRROR_URL, so it is not known which server this machine's token belongs to",
+			"re-run INSTALL.md step 7 on this machine")
+		return
+	}
+	if server != d.base {
+		d.add(name, statusSkip, fmt.Sprintf("this machine's mirror connects to %s, and doctor is checking %s; its token is only sent to %s", server, d.base, server),
+			"muster doctor --api-url "+server)
 		return
 	}
 	raw, err := os.ReadFile(path)
@@ -597,7 +615,7 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 			"mint this machine's token on the server and write it there (INSTALL.md, step 7)")
 		return
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, d.base+mirrorHostRoute, nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, server+mirrorHostRoute, nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, body, err := d.do(req)
 	if err != nil {
@@ -608,17 +626,21 @@ func (d *doctorRun) checkThisHost(ctx context.Context) {
 		Host        string `json:"host"`
 		Online      bool   `json:"online"`
 		Interactive bool   `json:"interactive"`
+		OtherToken  bool   `json:"other_token"`
 	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized:
-		d.add(name, statusFail, "the server refused this machine's mirror token (revoked, or minted on another server)",
-			"mint a new one on the server (`docker compose exec -T muster /muster-server mirror token create <host>`), "+
-				"write it to "+path+", restart the service, and revoke the old one")
+		d.add(name, statusFail, "the server refused this machine's mirror token: it does not know it, or it was revoked",
+			"on the server, `docker compose exec -T muster /muster-server mirror token ls` shows this host's tokens; "+
+				"only if none is live, mint one (`… mirror token create <host>`), write it to "+path+" and restart the service")
 	case resp.StatusCode == http.StatusNotFound:
 		d.add(name, statusFail, "the server has no "+mirrorHostRoute+": mirroring is off there, or it is older than this CLI",
 			"turn on MUSTER_MIRROR=1 on the server, or upgrade it")
 	case resp.StatusCode != http.StatusOK || json.Unmarshal(body, &h) != nil:
 		d.add(name, statusFail, fmt.Sprintf("GET %s answered %d", mirrorHostRoute, resp.StatusCode), "retry; then check the server's logs")
+	case h.OtherToken:
+		d.add(name, statusFail, fmt.Sprintf("the server holds a connection for host %q, but from ANOTHER token: another machine is connected under this name", h.Host),
+			"give each machine its own name: set MUSTER_MIRROR_HOST in "+d.mirrorEnv+" and mint a token for that name")
 	case !h.Online:
 		d.add(name, statusFail, fmt.Sprintf("the token is valid for host %q, but the server holds no connection from it", h.Host),
 			"`"+mirrorStatusHint(d.sys.goos)+"`; MUSTER_MIRROR_HOST in "+d.mirrorEnv+" must be "+h.Host+

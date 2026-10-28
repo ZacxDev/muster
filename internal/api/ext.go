@@ -411,6 +411,10 @@ type Mirror interface {
 	// LiveTokenHosts is the viewing principal's hosts holding an unrevoked
 	// mirror token, sorted: the hosts expected to connect (GET /api/doctor).
 	LiveTokenHosts(ctx context.Context) ([]string, error)
+	// HostToken is the id of the token the viewing principal's host is
+	// connected with now (GET /mirror/host tells a machine whether THE
+	// connection under its name is its own).
+	HostToken(ctx context.Context, host string) (int64, bool)
 }
 
 // GitHubApp is what the API reads from a configured GitHub App

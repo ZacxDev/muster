@@ -124,9 +124,10 @@ mi_foreign() {
   [ "$found" = 0 ]
 }
 # mi_serve_state: what `tailscale serve` already does on this machine —
-# "none", "ours" (exactly https:443 / -> 127.0.0.1:8105), or "other".
+# "none", "ours" (exactly https:443 / -> 127.0.0.1:8105), "other", or
+# "unready" (the command failed: Tailscale is not installed, running or up).
 mi_serve_state() {
-  st=$(tailscale serve status 2>&1)
+  st=$(tailscale serve status 2>&1) || { echo unready; return; }
   if printf '%s\n' "$st" | grep -qi 'no serve config'; then echo none; return; fi
   if printf '%s\n' "$st" | grep -qi 'funnel'; then echo other; return; fi
   urls=$(printf '%s\n' "$st" | grep -Eo 'https?://[^ ]+' | grep -v '127.0.0.1')
@@ -173,6 +174,9 @@ set up. Do not take it over, do not stop it, do not reuse its project or data.
 Show them the lines. Go on only if they choose to use this machine as a
 joining machine (Step 1, question 1: yes), or after they have dealt with it
 themselves.
+
+If `tailscale serve:` is `unready`, Tailscale is not up yet (see the
+`tailscale` row above); that is not a conflict.
 
 🔴 **If `tailscale serve:` is `other`**, this machine already serves something
 through Tailscale (another site, another port, or Funnel). Step 2 will not
@@ -250,6 +254,8 @@ else:
 case "$(mi_serve_state)" in
   none) tailscale serve --bg --https=443 8105 ;;
   ours) echo "tailscale serve already forwards https to muster; kept" ;;
+  unready) echo "TAILSCALE NOT READY: \`tailscale serve status\` failed (see If this fails)"
+        tailscale serve status ;;
   *)    echo "STOP: tailscale serve already serves something else here (or Funnel is on):"
         tailscale serve status ;;
 esac
@@ -264,6 +270,10 @@ fi
 now fails; that is expected.
 
 **If this fails:**
+- `TAILSCALE NOT READY`: Tailscale is not installed, not running, or not
+  signed in here. This is not another install: bring it up (Step 0's
+  `tailscale` row: install it, start it, `tailscale up`), check
+  `tailscale status`, then re-run this block.
 - `STOP`: this machine's Tailscale already serves something on the https port
   (or has Funnel on). Do not replace it. Show the person the status and ask:
   they can free that port themselves, or put the hub on another machine.
@@ -362,7 +372,14 @@ value over a token or key that is already there.
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
 cd "$MUSTER_DIR"
-prev=$(env_get COMPOSE_PROFILES)
+prev=$(env_get COMPOSE_PROFILES); url=$(env_get MUSTER_STT_URL)
+# Is the API option in effect now? (No profile, and a URL that is not a local service.)
+was_api=0
+case "$url" in ""|http://stt-*) ;; *) [ -n "$prev" ] || was_api=1 ;; esac
+# Leaving the API option: .env holds the key's only copy, so keep it aside.
+if [ "$was_api" = 1 ] && [ "$STT" != api ] && [ ! -s "$MI_DIR/stt-api-key" ]; then
+  (umask 077; env_get MUSTER_STT_TOKEN > "$MI_DIR/stt-api-key")
+fi
 case "$STT" in
   local-gpu)
     [ "$prev" = stt-cohere ] || env_set MUSTER_STT_TOKEN "$(mi_rand 32)"
@@ -375,16 +392,21 @@ case "$STT" in
     [ "$prev" = stt-whisper ] || env_set MUSTER_STT_TOKEN "$(mi_rand 32)"
     env_set COMPOSE_PROFILES stt-whisper
     env_set MUSTER_STT_URL http://stt-whisper:8000
-    case "$(env_get MUSTER_STT_MODEL)" in */*) ;; *) env_set MUSTER_STT_MODEL Systran/faster-whisper-small ;; esac ;;
+    # A faster-whisper model is kept (someone chose a larger one); anything else is reset.
+    case "$(env_get MUSTER_STT_MODEL)" in Systran/faster-whisper-*) ;; *) env_set MUSTER_STT_MODEL Systran/faster-whisper-small ;; esac ;;
   api)
-    env_set COMPOSE_PROFILES ""
-    [ -z "${STT_API_URL:-}" ] || env_set MUSTER_STT_URL "$STT_API_URL"
-    [ -z "${STT_API_MODEL:-}" ] || env_set MUSTER_STT_MODEL "$STT_API_MODEL"
-    if [ -s "$MI_DIR/stt-api-key" ]; then
-      env_set MUSTER_STT_TOKEN "$(cat "$MI_DIR/stt-api-key")" && rm -f "$MI_DIR/stt-api-key"
-    elif [ -n "$prev" ] || [ -z "$(env_get MUSTER_STT_TOKEN)" ]; then
-      # Switching from a local option: the token there is that service's, not the key.
-      echo "MISSING: the API key (write it as Step 1, question 2 shows, then re-run)"
+    api_url=${STT_API_URL:-}; api_model=${STT_API_MODEL:-}
+    if [ "$was_api" = 1 ]; then api_url=${api_url:-$url}; api_model=${api_model:-$(env_get MUSTER_STT_MODEL)}; fi
+    key=0; [ -s "$MI_DIR/stt-api-key" ] && key=1
+    [ "$was_api" = 1 ] && [ -n "$(env_get MUSTER_STT_TOKEN)" ] && key=1
+    if [ -z "$api_url" ]; then echo "MISSING: the API's URL (mi_save STT_API_URL https://…); nothing changed"
+    elif [ -z "$api_model" ]; then echo "MISSING: the API's model (mi_save STT_API_MODEL …); nothing changed"
+    elif [ "$key" = 0 ]; then echo "MISSING: the API key (write it as Step 1, question 2 shows); nothing changed"
+    else
+      env_set COMPOSE_PROFILES ""
+      env_set MUSTER_STT_URL "$api_url"
+      env_set MUSTER_STT_MODEL "$api_model"
+      if [ -s "$MI_DIR/stt-api-key" ]; then env_set MUSTER_STT_TOKEN "$(cat "$MI_DIR/stt-api-key")" && rm -f "$MI_DIR/stt-api-key"; fi
     fi ;;
   none)
     env_set COMPOSE_PROFILES ""; env_set MUSTER_STT_URL ""; env_set MUSTER_STT_TOKEN ""; env_set MUSTER_STT_MODEL "" ;;
@@ -425,7 +447,9 @@ if mi_foreign "${proj:-muster}"; then
   docker compose pull
   docker compose up -d --wait --wait-timeout 600
   docker compose ps
-  curl -fsS http://127.0.0.1:8105/health && echo
+  # The first healthy start marks this install as IN USE: from here on it
+  # may hold data, and "Starting over" refuses to delete it.
+  curl -fsS http://127.0.0.1:8105/health && echo && mi_save GUIDE_IN_USE 1
   curl -fsS "$MUSTER_URL/health" && echo
 else
   echo "STOP: another muster (or another service on 8105) is here; nothing was started. Ask the person."
@@ -442,6 +466,10 @@ download: wait a few minutes and re-run this block until it is `healthy`.
 
 **If this fails:**
 - `STOP`: see Step 0. Do not take over or stop the other install.
+- "port is already allocated" for 8105: something else took the port after
+  this guide's install started. Find it with `ss -ltnp 'sport = :8105'`
+  (Linux) or `lsof -iTCP:8105 -sTCP:LISTEN` (macOS) and tell the person; do
+  not stop it yourself.
 - `up --wait` fails or `muster` is unhealthy: `docker compose logs --tail=80
   muster`. muster refuses to start on a bad setting and names the variable in
   that log (a `MUSTER_UI_PASSWORD` under 12 characters is the usual one). Fix it
@@ -723,7 +751,7 @@ mkdir -p "$HOME/.muster" && chmod 700 "$HOME/.muster"
 [ -f "$HOME/.muster/muster.env" ] || {
   (umask 077; { echo "MUSTER_API_URL=$MUSTER_URL"; echo "MUSTER_TOKEN=$(sed -n 's/^MUSTER_HOOK_TOKEN=//p' "$MUSTER_DIR/.env")"; } > "$HOME/.muster/muster.env")
 }
-"$MUSTER_BIN/muster" doctor --deploy-env "$MUSTER_DIR/.env" && mi_save GUIDE_DONE 1
+"$MUSTER_BIN/muster" doctor --deploy-env "$MUSTER_DIR/.env"
 ```
 
 `--deploy-env` makes the doctor check the hub that `.env` names, whatever
@@ -794,15 +822,16 @@ the tmux one-liners (Step 8), and that `muster doctor` re-checks everything.
 
 ### Starting over (a failed first install only)
 
-Only for this guide's **own fresh** install: one Step 5 started and the doctor
-has never passed. The block refuses anything else, and prints exactly what
-would be deleted:
+Only for this guide's **own fresh** install: Step 5 started it, and muster has
+**never** answered healthy (once it has, it may hold data, and the block
+refuses). It also refuses any install this guide did not start, and prints
+exactly what would be deleted:
 
 ```sh
 . "$HOME/.config/muster-install/lib.sh"
 cd "$MUSTER_DIR" || exit 1
 proj=$(docker compose config 2>/dev/null | sed -n 's/^name: *//p' | head -n 1)
-if [ "${GUIDE_STARTED:-}" != 1 ] || [ "${GUIDE_DONE:-}" = 1 ] || ! mi_foreign "${proj:-muster}"; then
+if [ "${GUIDE_STARTED:-}" != 1 ] || [ "${GUIDE_IN_USE:-}" = 1 ] || ! mi_foreign "${proj:-muster}"; then
   echo "REFUSED: this is not this guide's own fresh install. Delete nothing; ask the person."
 else
   echo "This would DELETE, in compose project ${proj:-muster} ($MUSTER_DIR):"

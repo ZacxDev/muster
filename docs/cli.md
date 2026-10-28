@@ -96,9 +96,12 @@ muster doctor                               # on any other machine
   the sign-in, push and dictation checks. 🔴 The password is sent only to that
   file's `MUSTER_PUBLIC_URL`; pointed at any other server, sign-in SKIPs.
 - **`this-host`** reads muster-mirror's settings file (`--mirror-env`, default
-  `~/.config/muster-mirror/env`) for its token file, and asks the server with
-  that token. A refused token is a FAIL. It SKIPs on a machine with no
-  settings file.
+  `~/.config/muster-mirror/env`) for its token file and its `MUSTER_MIRROR_URL`,
+  and asks THAT server with the token. 🔴 The token is never sent anywhere
+  else: when doctor is checking a different URL, this check SKIPs and names
+  the mirror's server. A refused token is a FAIL; so is a connection under this
+  host's name made with another token (two machines minted under one name). It
+  SKIPs on a machine with no settings file.
 - **Flags:** `--skip <check>[,<check>…]`, `--mirror-env`, `--mirror-unit` (default
   `muster-mirror.service`), `--mirror-label` (default
   `io.github.zacxdev.muster-mirror`).

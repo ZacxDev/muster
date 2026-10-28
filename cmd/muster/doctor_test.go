@@ -102,7 +102,10 @@ type fakeMuster struct {
 	mirrorToken   string // "" = fakeMirrorToken
 	hostOnline    bool
 	noHostRoute   bool
+	otherToken    bool
 	loginAttempts int
+	// hostHits counts requests to /mirror/host carrying a mirror token.
+	hostHits int
 }
 
 // fakeMirrorToken is the mirror token runDoctorAgainst writes for the machine.
@@ -168,6 +171,9 @@ func (f *fakeMuster) handler() http.Handler {
 		writeJSON(w, http.StatusOK, string(b))
 	})
 	mux.HandleFunc("GET /mirror/host", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer mmt_") {
+			f.hostHits++
+		}
 		want := f.mirrorToken
 		if want == "" {
 			want = fakeMirrorToken
@@ -178,7 +184,8 @@ func (f *fakeMuster) handler() http.Handler {
 		case r.Header.Get("Authorization") != "Bearer "+want:
 			writeJSON(w, http.StatusUnauthorized, `{"error":"this route takes a mirror host token (mmt_…)"}`)
 		default:
-			writeJSON(w, http.StatusOK, fmt.Sprintf(`{"host":"alpha","online":%t,"interactive":%t}`, f.hostOnline, f.hostOnline))
+			writeJSON(w, http.StatusOK, fmt.Sprintf(`{"host":"alpha","online":%t,"interactive":%t,"other_token":%t}`,
+				f.hostOnline && !f.otherToken, f.hostOnline && !f.otherToken, f.otherToken))
 		}
 	})
 	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
@@ -284,6 +291,8 @@ type doctorOpts struct {
 	// noMirror writes no mirror settings at all.
 	tokenFile string
 	noMirror  bool
+	// mirrorURL is the settings file's MUSTER_MIRROR_URL ("" = this server).
+	mirrorURL string
 	extra     []string
 }
 
@@ -336,7 +345,11 @@ func runDoctorAgainst(t *testing.T, m *fakeMuster, fs *fakeSystem, o doctorOpts)
 		if err := os.WriteFile(tokPath, []byte(tok+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(mirrorEnv, []byte("MUSTER_MIRROR_TOKEN_FILE="+tokPath+"\n"), 0o600); err != nil {
+		murl := ts.URL
+		if o.mirrorURL != "" {
+			murl = o.mirrorURL
+		}
+		if err := os.WriteFile(mirrorEnv, []byte("MUSTER_MIRROR_URL="+murl+"\nMUSTER_MIRROR_TOKEN_FILE="+tokPath+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -437,6 +450,7 @@ func TestDoctorEachCheckGoesRedWhenBroken(t *testing.T) {
 			m.report["mirror"] = map[string]any{"enabled": false, "hosts": []any{}}
 		}, detail: "off on the server"},
 		{check: "this-host", why: "token refused", opts: doctorOpts{tokenFile: "mmt_a-revoked-or-foreign-token"}, detail: "refused this machine's mirror token"},
+		{check: "this-host", why: "another machine under this name", breakM: func(m *fakeMuster) { m.otherToken = true }, detail: "ANOTHER token"},
 		{check: "this-host", why: "not connected", breakM: func(m *fakeMuster) { m.hostOnline = false }, detail: "holds no connection"},
 		{check: "this-host", why: "empty token file", opts: doctorOpts{tokenFile: "EMPTY"}, detail: "missing or empty"},
 		{check: "this-host", why: "route absent", breakM: func(m *fakeMuster) { m.noHostRoute = true }, detail: "has no /mirror/host"},
@@ -653,5 +667,58 @@ func TestDoctorNeverSendsThePasswordToAnotherServer(t *testing.T) {
 func TestDoctorSampleIsAWAVTheServerAccepts(t *testing.T) {
 	if len(doctorSample) < 8000 || string(doctorSample[:4]) != "RIFF" || string(doctorSample[8:12]) != "WAVE" {
 		t.Fatalf("doctorSample is %d bytes starting %q; want a RIFF/WAVE recording", len(doctorSample), doctorSample[:12])
+	}
+}
+
+// TestDoctorSendsTheMirrorTokenOnlyToItsOwnServer: the settings file says the
+// mirror belongs to hub A; doctor is pointed at B. this-host SKIPs, naming A,
+// and B never sees the mirror token (round-2 audit, Y1). The control is the
+// healthy run, where the two agree and B — then the right server — is asked.
+func TestDoctorSendsTheMirrorTokenOnlyToItsOwnServer(t *testing.T) {
+	m := healthyMuster()
+	r := runDoctorAgainst(t, m, healthySystem(), doctorOpts{mirrorURL: "https://hub-a.example.test"})
+	if m.hostHits != 0 {
+		t.Fatalf("the mirror token was sent to a server it does not belong to (%d requests)", m.hostHits)
+	}
+	if c := r.check("this-host"); c.Status != statusSkip || !strings.Contains(c.Detail, "hub-a.example.test") {
+		t.Fatalf("this-host = %+v, want a SKIP naming the mirror's own server", c)
+	}
+	m2 := healthyMuster()
+	if r2 := runDoctorAgainst(t, m2, healthySystem(), doctorOpts{}); m2.hostHits != 1 || r2.status("this-host") != statusPass {
+		t.Fatalf("control: %d requests, this-host %s; want 1 and PASS", m2.hostHits, r2.status("this-host"))
+	}
+}
+
+// TestDoctorRefusedMirrorTokenSaysToCheckBeforeMinting: a 401 can be a token
+// the server simply does not know; the fix line checks the list first rather
+// than sending the person to mint and revoke.
+func TestDoctorRefusedMirrorTokenSaysToCheckBeforeMinting(t *testing.T) {
+	r := runDoctorAgainst(t, healthyMuster(), healthySystem(), doctorOpts{tokenFile: "mmt_unknown-token"})
+	fix := r.check("this-host").Fix
+	if !strings.Contains(fix, "mirror token ls") || !strings.Contains(fix, "only if none is live") {
+		t.Fatalf("fix = %q, want it to check the token list before minting", fix)
+	}
+}
+
+// TestDoctorPromotesTheDeployTokenOnlyWithItsURL: a deploy file with a hook
+// token but NO MUSTER_PUBLIC_URL must not send that token to the CLI config's
+// URL (round-2 audit, G1).
+func TestDoctorPromotesTheDeployTokenOnlyWithItsURL(t *testing.T) {
+	dir := t.TempDir()
+	env := filepath.Join(dir, ".env")
+	if err := os.WriteFile(env, []byte("MUSTER_PUBLIC_URL=\nMUSTER_HOOK_TOKEN=hub-hook-token\nMUSTER_UI_PASSWORD=pw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cliEnv := filepath.Join(dir, "muster.env")
+	if err := os.WriteFile(cliEnv, []byte("MUSTER_API_URL=https://other.example.test\nMUSTER_TOKEN=other-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{getenv: func(string) string { return "" }, homeDir: dir, flagEnvFile: cliEnv}
+	d := &doctorRun{a: a}
+	if err := d.resolve(env); err != nil {
+		t.Fatal(err)
+	}
+	if d.base != "https://other.example.test" || d.token != "other-token" {
+		t.Fatalf("base %q token %q: the deploy file's hook token went to the CLI config's server", d.base, d.token)
 	}
 }
