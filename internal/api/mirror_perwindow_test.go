@@ -239,3 +239,30 @@ func TestAWindowParameterThatIsNotAWindowIDIsNotFound(t *testing.T) {
 		t.Fatalf("a send to a window the host no longer lists: %d %q, want 409 saying so", code, body)
 	}
 }
+
+// TestTheMirrorTerminalPageSaysWhyAWindowIsTerminalOnly: the Terminal view of
+// a window with no rendered view carries its one-line reason — the host's own
+// (AgentNote) when it gave one, else muster's — and a Claude window's carries
+// none. The seam between the hub's entry and the page (handleMirrorTerminalPage
+// sets AgentTerminalView.TerminalOnly), which the ui render test cannot see.
+func TestTheMirrorTerminalPageSaysWhyAWindowIsTerminalOnly(t *testing.T) {
+	const why = "Claude Code has not written this conversation yet. The Rendered view appears after its first message."
+	fm := goldHost()
+	fm.windows = append(fm.windows, mirror.Window{Session: "fresh", ID: "@5", Index: 1, Active: true, Command: "claude", AgentNote: why})
+	s, ts := viewServer(t, fm)
+	for _, c := range []struct {
+		window, session, want string
+	}{
+		{"@5", "fresh", `<span data-terminal-only-reason="">` + why + `</span>`},
+		{"@4", "scratch2", `<span data-terminal-only-reason="">muster found no Claude Code conversation in this window.</span>`},
+	} {
+		resp, body := mirrorGet(t, s, ts, "/mirror/terminal?"+url.Values{"host": {"ws"}, "session": {c.session}, "window": {c.window}}.Encode())
+		if resp.StatusCode != http.StatusOK || !strings.Contains(body, c.want) {
+			t.Errorf("terminal page of %s: %d, want it to contain %s", c.window, resp.StatusCode, c.want)
+		}
+	}
+	resp, body := mirrorGet(t, s, ts, "/mirror/terminal?"+url.Values{"host": {"ws"}, "session": {"scratch2"}, "window": {"@7"}}.Encode())
+	if resp.StatusCode != http.StatusOK || strings.Contains(body, "data-terminal-only") || !strings.Contains(body, `id="view-rendered"`) {
+		t.Errorf("a Claude window's terminal page: %d; want the Rendered switch and no terminal-only line", resp.StatusCode)
+	}
+}
