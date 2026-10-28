@@ -351,10 +351,10 @@ e2e:
 FLOW_FRAMES := e2e/.state/phone-flow/frames.txt
 FLOW_GIF := docs/img/phone-flow.gif
 screenshots:
+	@command -v ffmpeg >/dev/null 2>&1 || { echo "screenshots: ffmpeg not found; it assembles $(FLOW_GIF) (nix-shell -p ffmpeg)"; exit 1; }
 	@cd e2e && MUSTER_E2E_DOCSHOTS=1 npx playwright test
 	@if command -v pngquant >/dev/null 2>&1; then pngquant --force --ext .png --quality 65-90 docs/img/*.png; \
 	  else echo "screenshots: pngquant not found; images left as captured"; fi
-	@command -v ffmpeg >/dev/null 2>&1 || { echo "screenshots: ffmpeg not found; cannot assemble $(FLOW_GIF)"; exit 1; }
 	@ffmpeg -loglevel error -y -f concat -safe 0 -i $(FLOW_FRAMES) \
 	  -vf 'split[a][b];[a]palettegen=stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle' \
 	  -loop 0 $(FLOW_GIF)

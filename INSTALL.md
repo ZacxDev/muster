@@ -14,7 +14,8 @@ When it is done, the person has:
   on their private Tailscale network and nowhere else;
 - each of their machines (the hub, and any others) showing its tmux sessions in
   muster, so every Claude Code, Codex, opencode or Gemini CLI session running
-  in tmux appears as a card they can read and answer;
+  in tmux appears as a card they can read and answer (muster's message box
+  does not send to opencode yet; its Terminal view types into it);
 - muster installed on their phone's home screen, signed in, with notifications
   and voice dictation working;
 - a passing `muster doctor`.

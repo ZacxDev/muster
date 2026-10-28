@@ -38,13 +38,18 @@ installs on your phone as a PWA. Your other machines dial out to it.
 
 ## Quickstart
 
-You need a [Tailscale](https://tailscale.com) account (with MagicDNS and HTTPS
-certificates on), Docker with Compose v2 on the machine that will run the
-server, and tmux on every machine. Linux or macOS, amd64 or arm64.
+You need:
+
+- a [Tailscale](https://tailscale.com) account with MagicDNS and HTTPS
+  certificates on, and Tailscale on every machine and on your phone;
+- on the machine that will run the server: Docker with Compose v2, and about
+  10 GB of free disk (20 GB with local dictation);
+- tmux on every machine. Linux or macOS, amd64 or arm64.
 
 **(a) Let your agent install it.** Paste this one prompt into the coding agent
-(Claude Code, Codex, opencode, Gemini CLI, …) on the machine that should run
-muster:
+(Claude Code, Codex, opencode, Gemini CLI, …) on each machine you want in
+muster. The first paste sets up the server; on each further machine, tell the
+agent muster already runs, and that machine joins it:
 
 ```text
 Set up muster for me: read https://raw.githubusercontent.com/ZacxDev/muster/main/INSTALL.md and follow it step by step. Ask me everything you need in one go up front, then do the rest yourself.
@@ -78,7 +83,10 @@ against a throwaway database.
   Viewing a window never moves your own terminal. → [docs/mirroring.md](docs/mirroring.md)
 - **Session switcher and search.** A bottom bar with Recent, Pins and All. Its
   search opens with the magnifier or `/`. → [docs/mirroring.md](docs/mirroring.md)
-- **Message box and step-up.** Send text into any mirrored pane or agent. Typing
+- **Message box and step-up.** Send text into a Claude Code session, a plain
+  terminal pane (Codex, Gemini CLI, a shell) or a dispatched agent. The message
+  box does not send to opencode yet, and sends to Hermes only through the
+  host's gated `-hermes-send`; type into either from the Terminal view. Typing
   into a mirrored session needs a recent sign-in: you confirm your password
   again (or a passkey, with per-user accounts). → [docs/sending-and-step-up.md](docs/sending-and-step-up.md)
 - **Dictation.** A mic on every message box, transcribed by a speech-to-text
