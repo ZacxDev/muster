@@ -441,7 +441,8 @@ gave a reason. The reasons:
 | muster found no Claude Code conversation in this window. | nothing in the pane is Claude Code (a shell, Codex, Gemini CLI) | nothing; or start `claude` in it |
 | Claude Code has not written this conversation yet. … | Claude Code started, but you have not sent its first message | send one; the card opens the Rendered view from the next refresh |
 | Claude Code is running here, but muster-mirror cannot match it to a transcript … | neither Claude Code's sessions file nor its working directory leads to a transcript that is this window's alone: none at all, or only a guess another window in the same directory makes too | see the cases below; update Claude Code if it is old (a current one names its conversation in a sessions file); on the host, `muster-mirror -list -claude` lists the Claude Code windows it did resolve |
-| muster-mirror cannot read this host's processes (no /proc, as on macOS) … | the host is a Mac, and the window's command is `claude` | see below |
+| Claude Code is running here, but muster-mirror cannot read its environment … | Claude Code runs, nothing else resolved it, and its environment cannot be read (another user's process; on macOS, a process the kernel returns no environment for), so its config directory is unknown | run Claude Code as the user muster-mirror runs as; on the host, `muster-mirror -list -claude` |
+| muster-mirror cannot read this host's process table … | the host's OS has no process lookup (Linux and macOS have one), or reading it failed, and the window's command is `claude` | on the host, `muster-mirror -list -claude` |
 | This host's muster-mirror is too old to send the Rendered view. … | the host runs a muster-mirror from before rendered views | update it |
 
 A muster-mirror older than these reasons sends none, so its windows show the
@@ -450,7 +451,8 @@ first line whatever the cause.
 Cases checked against the code:
 
 - **A custom `CLAUDE_CONFIG_DIR`.** muster-mirror reads the variable from the
-  Claude Code process's own environment (`/proc/<pid>/environ`), so a value
+  Claude Code process's own environment (`/proc/<pid>/environ` on Linux, the
+  `kern.procargs2` sysctl on macOS), so a value
   you export in your shell profile is followed even though muster-mirror's
   service never reads that profile. A process that sets none uses its own
   home's `.claude`, whatever muster-mirror's service sets. Only an absolute
@@ -462,12 +464,15 @@ Cases checked against the code:
   `argv[0]`, or the npm package's entry script in its arguments.
 - **A session started before muster-mirror.** It makes no difference:
   every refresh reads the panes as they are now.
-- **macOS.** muster-mirror finds Claude Code by reading `/proc`, which macOS
-  does not have, so on a Mac every Claude Code window opens in the Terminal view
-  only. A window whose command is `claude` says so. One whose command is
-  anything else shows the general line — including Claude Code installed with
-  npm, which runs as `node`. The Terminal view and its message box work as
-  usual.
+- **macOS (experimental).** macOS has no `/proc`, so muster-mirror asks the
+  system instead, as your own user and with no root: one `ps` for the process
+  table, the `kern.procargs2` sysctl for each of your processes' arguments and
+  environment, and one `lsof` for working directories. The native installer's
+  binary (`~/.local/share/claude/versions/<version>`) is recognised by that
+  path. This lookup is tested against the documented formats but has not yet
+  been run on a real Mac. The Terminal view's attach is Linux-only today
+  (`internal/mirrorhost/pty_other.go`): on a Mac, a window without a Rendered
+  view cannot be viewed at all.
 
 ### How a pane's transcript is found
 
@@ -479,8 +484,13 @@ each of these in order:
    for pane `%N`. Its first JSON value is:
 
    ```json
-   {"runtime":"claude","pane_id":"%N","tmux_pid":"<tmux server pid>","session_id":"…","transcript_path":"…","claude_pid":"<the claude process>","claude_start":"<its /proc/<pid>/stat start time>"}
+   {"runtime":"claude","pane_id":"%N","tmux_pid":"<tmux server pid>","session_id":"…","transcript_path":"…","claude_pid":"<the claude process>","claude_start":"<its start time>"}
    ```
+
+   The start time is field 22 of `/proc/<pid>/stat` on Linux, and on macOS
+   the output of `LC_ALL=C TZ=UTC ps -o lstart= -p <pid>` with the ends
+   trimmed: the same token Claude Code writes as `procStart` in its sessions
+   file on each OS.
 
    An entry is used only while it still describes the pane: the same tmux
    server, the same Claude process (pid and start time), and a transcript that
