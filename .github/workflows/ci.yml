@@ -398,6 +398,13 @@ jobs:
           command -v tmux
           tmux -V
 
+      # docs/mirroring.md's "bring a session you already have into tmux"
+      # commands, run against a private tmux server with a fake claude: the
+      # advice must start the conversation even when a `work` session already
+      # exists, and must not close the window when there is nothing to resume.
+      - name: the docs' tmux one-liners do what they say
+        run: python3 tests/docs_tmux_test.py
+
       # CCD_TMUXIT_RAW_ESC=1: Ubuntu 24.04's tmux (3.4 — measured in an
       # ubuntu:24.04 container, as is the image's 3.3a) delivers ESC raw inside a
       # bracketed paste, so the smuggled-paste test's positive control MUST fire

@@ -216,3 +216,25 @@ func TestTheMirroredHostBadgeIsDistinctFromTheGenericChip(t *testing.T) {
 		}
 	}
 }
+
+// A mirrored window with no rendered view says why in ONE line under the
+// header — its reason, escaped, after "Terminal only." — and a window that has
+// a rendered view draws the Rendered | Terminal switch and no such line, even
+// if a reason was set. Red at origin/main: the page had no line at all.
+func TestTheTerminalViewSaysWhyItIsTerminalOnly(t *testing.T) {
+	const why = "muster found no Claude Code conversation in <this> window."
+	html := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "work", Badge: "Mirrored · laptop", BackHref: "/agents",
+		WSPath: MirrorTerminalWSPath("laptop", "work"), TerminalOnly: why}))
+	want := `<p id="term-only" data-terminal-only="" class="border-b border-line bg-s1 px-3 py-1.5 text-xs text-fg2 break-words"><span class="font-semibold text-fg">Terminal only.</span> <span data-terminal-only-reason="">muster found no Claude Code conversation in &lt;this&gt; window.</span></p>`
+	if !strings.Contains(html, want) {
+		t.Errorf("terminal page lacks the terminal-only line %s", want)
+	}
+	if strings.Count(html, `data-terminal-only=""`) != 1 {
+		t.Errorf("want exactly one terminal-only line")
+	}
+	both := renderNode(t, AgentTerminalPage(AgentTerminalView{Name: "work", Badge: "Mirrored · laptop", BackHref: "/agents",
+		WSPath: MirrorTerminalWSPath("laptop", "work"), RenderedHref: MirrorViewPath("laptop", "work"), TerminalOnly: why}))
+	if strings.Contains(both, "data-terminal-only") || !strings.Contains(both, `id="view-rendered"`) {
+		t.Errorf("a window with a rendered view must draw the switch and no terminal-only line")
+	}
+}

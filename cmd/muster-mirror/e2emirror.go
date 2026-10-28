@@ -51,7 +51,7 @@ import (
 // lines, re-read on every listing so a spec can close, renumber or re-order
 // them:
 //
-//	<session>|<window id>|<index>|<active 0/1>|<command>|<activity unix secs>|<claude transcript path, or empty>[|<split pane's transcript>[|<Claude's cwd>[|<identity colour>]]]
+//	<session>|<window id>|<index>|<active 0/1>|<command>|<activity unix secs>|<claude transcript path, or empty>[|<split pane's transcript>[|<Claude's cwd>[|<identity colour>[|<why no rendered view>]]]]
 //
 // A window's active "pane" is `%e2e-<session>-<window id>`. Its terminal prints
 // `FAKE-MIRROR session=<s> window=<id> mode=ro|rw`, so a spec sees WHICH window
@@ -466,7 +466,7 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 	var out []mirrorhost.WindowInfo
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Split(strings.TrimSpace(line), "|")
-		if len(f) < 7 || len(f) > 10 {
+		if len(f) < 7 || len(f) > 11 {
 			continue
 		}
 		index, _ := strconv.Atoi(f[2])
@@ -486,8 +486,14 @@ func (w windowFake) Windows(context.Context) ([]mirrorhost.WindowInfo, error) {
 		// A 10th field: the window's identity colour, as tmux would print the
 		// option (WindowInfo.Color; the host's wire normalisation drops
 		// anything that is not a lowercase #rrggbb).
-		if len(f) == 10 {
+		if len(f) >= 10 {
 			info.Color = f[9]
+		}
+		// An 11th field: why the window has NO rendered view, as the real
+		// host's ClaudeLocator.whyNoView says it (WindowInfo.NoView) — for a
+		// window with no transcript, whose pane "runs" Claude Code all the same.
+		if len(f) == 11 && f[6] == "" {
+			info.NoView = f[10]
 		}
 		// An 8th field: the transcript of a Claude Code session in the window's
 		// SECOND (non-active) pane, "<window pane>-split".
