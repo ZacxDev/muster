@@ -278,7 +278,7 @@ func TestContextUsageCrossesTheWire(t *testing.T) {
 	rec, _, _ := watchAs(t, asUser(1), r.svc, "ws", "main", "", 0)
 	eventually(t, "the backfilled usage", func() bool {
 		return rec.has(func(e cctranscript.Event) bool {
-			return e.Kind == cctranscript.KindText && e.Text == "first" && e.Usage != nil && *e.Usage == cctranscript.Usage{Tokens: 1043}
+			return e.Kind == cctranscript.KindText && e.Text == "first" && e.Usage != nil && *e.Usage == cctranscript.Usage{Tokens: 1043, Output: 9}
 		})
 	})
 	tr.write(turn("second", 500000))

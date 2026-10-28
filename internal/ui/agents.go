@@ -252,13 +252,7 @@ func agentsPanel(active bool, list *shellList) g.Node {
 // morphed into #agents-list.
 func AgentsCards(list []AgentCardView) g.Node {
 	if len(list) == 0 {
-		return Div(
-			// span both grid columns so the empty state stays centered.
-			Class("col-span-full mt-16 flex flex-col items-center justify-center gap-2 text-center"),
-			Div(Class("text-4xl"), g.Text("🧩")),
-			P(Class("text-lg font-medium text-fg2"), g.Text("No agents yet")),
-			P(Class("text-sm text-muted"), g.Text("Tap + in the bar below to dispatch an agent.")),
-		)
+		return agentsEmptyState()
 	}
 	return g.Group(g.Map(list, agentCard))
 }

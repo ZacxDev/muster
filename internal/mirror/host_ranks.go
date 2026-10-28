@@ -67,3 +67,33 @@ func (s *Service) HostRanks(ctx context.Context) map[string]int {
 	}
 	return RanksByRegistration(toks)
 }
+
+// LiveTokenHosts is the viewing principal's hosts that hold at least one
+// UNREVOKED mirror token, sorted: the hosts muster expects to connect. It is
+// what `muster doctor` checks the connected set against (GET /api/doctor). A
+// host whose every token is revoked is not expected, whatever its rank.
+func (s *Service) LiveTokenHosts(ctx context.Context) ([]string, error) {
+	if _, err := owner(ctx); err != nil {
+		return nil, err
+	}
+	toks, err := s.store.ListTokens(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return liveHosts(toks), nil
+}
+
+// liveHosts is the sorted, de-duplicated hosts of the unrevoked tokens.
+func liveHosts(toks []Token) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, t := range toks {
+		if t.RevokedAt != nil || seen[t.Host] {
+			continue
+		}
+		seen[t.Host] = true
+		out = append(out, t.Host)
+	}
+	sort.Strings(out)
+	return out
+}

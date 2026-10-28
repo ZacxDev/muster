@@ -419,8 +419,13 @@ func viewSessionName() string {
 // run runs one tmux command against this server and returns its combined
 // output.
 func (t Tmux) run(ctx context.Context, args ...string) (string, error) {
+	return t.runEnv(ctx, tmuxEnv(), args...)
+}
+
+// runEnv is run with the tmux client's environment env.
+func (t Tmux) runEnv(ctx context.Context, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, t.bin(), append(t.server(), args...)...)
-	cmd.Env = tmuxEnv()
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("tmux %s: %v: %s", args[0], err, strings.TrimSpace(string(out)))

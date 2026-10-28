@@ -21,9 +21,16 @@ name: ci
 #
 # A `v<MAJOR>.<MINOR>.<PATCH>` TAG push runs the whole suite too, and then
 # publishes the muster image under that release version (the `image-*` jobs at
-# the end). No release tags exist yet: the Harbor releases are versioned by
-# devrc's `muster-ops release`, outside this repository, and this trigger is the
-# GHCR spelling of the same version for whoever starts tagging.
+# the end). devrc's `muster-ops release` versions the Harbor releases outside
+# this repository and pushes the matching vX.Y.Z tag here on every live
+# release, so a tag usually lands on a commit `main` already built: every
+# tag-only job is idempotent for that (see `image-muster`, `image-stt-cohere`
+# and `release`).
+#
+# A vX.Y.Z TAG ALSO PUBLISHES A GITHUB RELEASE (the `release` job at the end):
+# binaries, docker-compose.yml, env.example and checksums.txt, built by
+# scripts/release-build.sh — the same script the `release-dry-run` job runs on
+# every pull request, so a tag publishes nothing a PR did not already build.
 #
 # 🔴 THE TAG FILTER IS STRICT SEMVER, NOT `v*`, BECAUSE A RED RUN HERE IS NOT
 # CHEAP. `muster-ops release` refuses a sha unless EVERY CI run for it concluded
@@ -156,6 +163,10 @@ jobs:
       # package, unreadable input). Milliseconds, and no database.
       - name: verdict.py can refuse
         run: python3 tests/verdict_test.py
+
+      # INSTALL.md's shell blocks against faked docker/curl/tailscale/ssh.
+      - name: INSTALL.md's blocks do what they say
+        run: python3 tests/install_guide_test.py
 
       # 🔴 A COUNT, NOT AN EXIT CODE. `go test` exits 0 with skipped tests, so
       # its exit status cannot tell "everything ran" from "everything skipped".
@@ -691,6 +702,68 @@ jobs:
           node verdict.mjs --all "${picked[@]}"
 
   # ---------------------------------------------------------------------------
+  # RELEASE DRY RUN — the tag-time release pipeline, exercised on every run.
+  #
+  # Local, in order:
+  #   scripts/release-build.sh 0.0.0                 (make release-dry-run)
+  #   tests/compose-check.sh                          (make compose-check)
+  #   tests/release-publish-test.sh && tests/stt-cohere-source-test.sh
+  #   make image IMAGE=muster-local VERSION=0.0.0 && tests/compose-up.sh muster-local 0.0.0
+  #   python3 images/stt-cohere/test_app.py           (needs fastapi, httpx,
+  #                                                    python-multipart, numpy, ffmpeg)
+  #
+  # 🔴 THE SAME SCRIPT THE `release` JOB RUNS, WITH A PLACEHOLDER VERSION. It
+  # builds every asset, refuses an asset set that differs from the contract by
+  # one file, verifies checksums.txt and runs each native binary's version flag.
+  # The compose stack is then brought up for real from the image this run
+  # builds, and must answer /readyz, the sign-in page and a password sign-in.
+  release-dry-run:
+    name: release dry run (assets + compose + stt-cohere contract)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: build the release assets (placeholder version 0.0.0)
+        run: scripts/release-build.sh 0.0.0
+
+      - name: compose file is valid (docker compose config, every profile)
+        run: tests/compose-check.sh
+
+      # The tag-only jobs' decision logic, without a tag or GitHub writes:
+      # release-publish.sh against a fake `gh` (create, draft, no-op, refusals)
+      # and the stt-cohere build-or-retag decision against a scratch repo.
+      - name: tag-run logic (release publish, stt-cohere build-or-retag)
+        run: |
+          tests/release-publish-test.sh
+          tests/stt-cohere-source-test.sh
+
+      - name: bring the compose stack up from this run's image
+        run: |
+          make image IMAGE=muster-local VERSION=0.0.0
+          tests/compose-up.sh muster-local 0.0.0
+
+      # setup-python, not the runner's system python: that one is
+      # "externally managed" (PEP 668) and refuses `pip install`.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # STT_TEST_REQUIRE_FFMPEG turns the suite's "ffmpeg missing" SKIP into a
+      # failure, so a runner image without ffmpeg cannot pass by running nothing.
+      - name: stt-cohere speaks muster's transcription contract (model stubbed)
+        env:
+          STT_TEST_REQUIRE_FFMPEG: "1"
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg >/dev/null
+          python -m pip install --quiet fastapi httpx python-multipart numpy
+          python images/stt-cohere/test_app.py
+
+  # ---------------------------------------------------------------------------
   # IMAGE PUBLISHING TO GHCR (ghcr.io/<owner>/{muster,claude-code-agent}).
   #
   # 🔴 THIS ADDS A REGISTRY; IT DOES NOT MOVE OFF HARBOR. The existing
@@ -725,13 +798,14 @@ jobs:
   #
   # 🔴 A PUBLISHED TAG IS NEVER OVERWRITTEN (.github/scripts/ghcr-push.sh): a
   # re-run keeps the image already under a commit's tag, and a release version
-  # that already exists fails the job.
+  # that already exists is KEPT only if this commit built it (its revision
+  # label) and fails the job if another commit did (mode `release`).
   #
   # Local: make image IMAGE=muster VERSION=<v>; docker build -f
   # images/claude-code-agent/Dockerfile . Pushing is CI's.
   publish-gate:
     name: publish gate (every test job green)
-    needs: [build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, ccd-image, e2e]
+    needs: [build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, ccd-image, e2e, release-dry-run]
     runs-on: ubuntu-latest
     steps:
       - run: echo "every test job succeeded for $GITHUB_SHA"
@@ -759,7 +833,10 @@ jobs:
               echo "::error::tag $GITHUB_REF_NAME is not v<MAJOR>.<MINOR>.<PATCH>; no muster image is published for it"
               exit 1
             fi
-            mode=refuse
+            # `release`, not `refuse`: a re-pushed tag or a re-run keeps an image
+            # this commit already published, and still refuses one built from
+            # any other commit (.github/scripts/ghcr-push.sh).
+            mode=release
           else
             v="${GITHUB_SHA::7}"
             mode=reuse
@@ -789,9 +866,31 @@ jobs:
         if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
         run: .github/scripts/ghcr-push.sh probe '${{ steps.tag.outputs.ref }}'
 
-      - name: push
+      # 🔴 MULTI-ARCH (linux/amd64 + linux/arm64). The Dockerfile cross-compiles
+      # on the build platform, so the arm64 half needs no emulation: its only
+      # arm64 stage is the distroless COPY. A docker-container builder is
+      # required because the default `docker` driver cannot build more than one
+      # platform. The single-arch `make image` above stays: it is what the
+      # probe and every other local spelling build.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: multi-arch build (pull request; pushes nothing)
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION='${{ steps.tag.outputs.version }}' .
+
+      - name: push (multi-arch)
         if: ${{ github.event_name == 'push' }}
-        run: .github/scripts/ghcr-push.sh push 'muster:${{ steps.tag.outputs.version }}' '${{ steps.tag.outputs.ref }}' '${{ steps.tag.outputs.mode }}'
+        env:
+          GHCR_REVISION: ${{ github.sha }}
+        run: |
+          .github/scripts/ghcr-push.sh buildx '${{ steps.tag.outputs.ref }}' '${{ steps.tag.outputs.mode }}' \
+            linux/amd64,linux/arm64 -- \
+            --build-arg VERSION='${{ steps.tag.outputs.version }}' \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            .
 
   image-claude-code-agent:
     name: claude-code-agent image (GHCR)
@@ -855,3 +954,203 @@ jobs:
       - name: push
         if: ${{ github.event_name == 'push' }}
         run: .github/scripts/ghcr-push.sh push 'claude-code-agent:${{ steps.tag.outputs.short }}' '${{ steps.tag.outputs.ref }}' reuse
+
+  # ---------------------------------------------------------------------------
+  # THE DICTATION SERVER IMAGE (ghcr.io/<owner>/muster-stt-cohere:<X.Y.Z>).
+  #
+  # 🔴 ON A vX.Y.Z TAG ONLY, NEVER A PULL REQUEST OR `main`. The image is a CUDA
+  # PyTorch base plus transformers — about 9 GB unpacked — so building it on
+  # every run would cost minutes and most of a hosted runner's disk for a file
+  # that changes rarely. Its CODE is gated on every run instead: the
+  # `release-dry-run` job runs images/stt-cohere/test_app.py against app.py
+  # with the model stubbed. linux/amd64 only (the base has no arm64 build).
+  # Never overwritten: a version already published from THIS commit is kept
+  # (a re-run is a no-op), one from any other commit fails the job.
+  #
+  # ⚠ A RE-RUN STILL REBUILDS BEFORE IT FINDS THE IMAGE PRESENT. Accepted: the
+  # probe is in ghcr-push.sh, which is the one place that decision lives.
+  #
+  # Local: docker build -t muster-stt-cohere images/stt-cohere
+  image-stt-cohere:
+    name: stt-cohere image (GHCR, tags only)
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    needs: publish-gate
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ghcr-stt-cohere-${{ github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # Full history and tags: the build-or-retag decision diffs against the
+      # previous release tag.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: the tag this run publishes
+        id: tag
+        run: |
+          if ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag $GITHUB_REF_NAME is not v<MAJOR>.<MINOR>.<PATCH>"
+            exit 1
+          fi
+          v="${GITHUB_REF_NAME#v}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/muster-stt-cohere:$v" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      # 🔴 REBUILT ONLY WHEN images/stt-cohere/ CHANGED. Every live release is
+      # tagged, and most change nothing here; a rebuild would re-resolve apt's
+      # ffmpeg against a moving archive and spend most of a runner's disk for
+      # an image that should be byte-identical. So: retag the previous
+      # release's image when the directory is unchanged since that tag AND that
+      # image exists; otherwise build. (stt-cohere-source.sh decides from git;
+      # tests/stt-cohere-source-test.sh covers it.)
+      - name: build, or retag the previous release's image?
+        id: src
+        run: |
+          d="$(.github/scripts/stt-cohere-source.sh "$GITHUB_SHA" "$GITHUB_REF_NAME")"
+          echo "decision from git: $d"
+          mode=build
+          if [[ "$d" == retag\ * ]]; then
+            prev="${d#retag }"
+            src="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/muster-stt-cohere:${prev#v}"
+            if [ "$(.github/scripts/ghcr-push.sh probe "$src")" = present ]; then
+              mode=retag
+              echo "src=$src" >> "$GITHUB_OUTPUT"
+            else
+              echo "previous image $src is not published; building"
+            fi
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "stt-cohere: $mode"
+
+      - name: retag (images/stt-cohere unchanged since the previous release)
+        if: ${{ steps.src.outputs.mode == 'retag' }}
+        env:
+          GHCR_REVISION: ${{ github.sha }}
+        run: .github/scripts/ghcr-push.sh retag '${{ steps.src.outputs.src }}' '${{ steps.tag.outputs.ref }}'
+
+      # The base image alone is several GB; a hosted runner starts with too
+      # little free disk for it plus the pip layer. These are preinstalled
+      # toolchains this job never uses.
+      - name: free disk space
+        if: ${{ steps.src.outputs.mode == 'build' }}
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: docker build
+        if: ${{ steps.src.outputs.mode == 'build' }}
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t 'muster-stt-cohere:${{ steps.tag.outputs.version }}' images/stt-cohere
+
+      # The image's own dependencies resolve and import, without a GPU or the
+      # gated model, and pip installed EXACTLY the pinned set.
+      - name: smoke the image (imports, ffmpeg, the Cohere ASR model class, the pins)
+        if: ${{ steps.src.outputs.mode == 'build' }}
+        run: |
+          docker run --rm --entrypoint sh 'muster-stt-cohere:${{ steps.tag.outputs.version }}' -euc '
+            command -v ffmpeg
+            python -c "import fastapi, librosa, numpy, transformers, transformers.models.cohere_asr; print(transformers.__version__)"
+            python -c "import ast; ast.parse(open(\"/app/app.py\").read())"
+            python - <<PY
+          import re, subprocess
+          frozen = {l.split("==")[0].lower().replace("_", "-"): l.split("==")[1]
+                    for l in subprocess.run(["python", "-m", "pip", "freeze"], capture_output=True, text=True).stdout.split() if "==" in l}
+          bad = []
+          for l in open("/app/requirements.txt"):
+              l = l.strip()
+              if not l or l.startswith("#"):
+                  continue
+              n, v = l.split("==")
+              if frozen.get(n.lower().replace("_", "-")) != v:
+                  bad.append((l, frozen.get(n.lower().replace("_", "-"))))
+          assert not bad, bad
+          print("pins: all", sum(1 for l in open("/app/requirements.txt") if "==" in l), "installed as pinned")
+          PY
+          '
+
+      - name: push
+        if: ${{ steps.src.outputs.mode == 'build' }}
+        env:
+          GHCR_REVISION: ${{ github.sha }}
+        run: .github/scripts/ghcr-push.sh push 'muster-stt-cohere:${{ steps.tag.outputs.version }}' '${{ steps.tag.outputs.ref }}' release
+
+  # ---------------------------------------------------------------------------
+  # THE GITHUB RELEASE, on a vX.Y.Z tag, after BOTH images are published.
+  #
+  # Tags are pushed by the operator's release tooling on every live release,
+  # so a tag can land on a commit `main` already built and published images
+  # for. The image jobs above handle that (mode `release`); this job is
+  # idempotent too:
+  #
+  #   * no release for the tag  -> create it with every asset;
+  #   * a release that exists   -> every asset it holds must be byte-identical
+  #     to this build's (the assets are reproducible: same commit, same
+  #     bytes); only the assets it is MISSING are uploaded, and a DRAFT left by
+  #     an attempt that died mid-upload is published. Different bytes or a
+  #     foreign asset fail the job without touching the release.
+  #     (.github/scripts/release-publish.sh)
+  #
+  # 🔴 LAST, AND GATED ON THE IMAGES. The release's docker-compose.yml names
+  # ghcr.io/<owner>/muster:<X.Y.Z> and muster-stt-cohere:<X.Y.Z>; publishing
+  # the release before them would hand people a compose file that cannot pull.
+  #
+  # RELEASE NOTES: GitHub's generated notes — the pull requests merged since
+  # the previous release tag — under a short header naming the images and the
+  # install files. `--verify-tag` refuses to create a tag that was not pushed.
+  #
+  # Local (no publishing): scripts/release-build.sh <X.Y.Z>
+  release:
+    name: GitHub release (tags only)
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    needs: [image-muster, image-stt-cohere]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: github-release-${{ github.ref_name }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: build the release assets
+        run: scripts/release-build.sh "$GITHUB_REF_NAME"
+
+      # The decision logic lives in a script so every branch is tested
+      # without GitHub (tests/release-publish-test.sh, fake `gh`): create;
+      # complete-and-publish a DRAFT a died attempt left; a no-op on a complete
+      # release; refuse different bytes or a foreign asset, untouched.
+      - name: publish the release (create, or complete an existing one)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="$GITHUB_REF_NAME"; v="${tag#v}"; owner="${GITHUB_REPOSITORY_OWNER,,}"
+          {
+            echo "## Install"
+            echo
+            echo "Images: \`ghcr.io/$owner/muster:$v\` (linux/amd64, linux/arm64) and \`ghcr.io/$owner/muster-stt-cohere:$v\` (dictation, GPU, linux/amd64)."
+            echo
+            echo "Server: download \`docker-compose.yml\` and \`env.example\` (save it as \`.env\`), fill in the CHANGE-ME values, then \`docker compose up -d --wait\`."
+            echo "Each machine: the \`muster-mirror\` archive for its OS and architecture; the \`muster\` CLI likewise. Verify downloads against \`checksums.txt\`."
+            echo
+          } > "$RUNNER_TEMP/notes-header.md"
+          .github/scripts/release-publish.sh "$tag" dist "$RUNNER_TEMP/notes-header.md"
