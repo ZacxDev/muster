@@ -1092,17 +1092,26 @@ message there. Off unless `MUSTER_MAIL_RESUME_ALLOW` lists the sender
    the session, and its own limits allow it (one resume per session per 10
    minutes, 6 an hour). Then it starts a **detached** tmux window named
    `resume-<first 8 of the id>` in the tmux session `muster-resume`
-   (`-resume-session`), running `claude --resume <id>` (`-resume-claude`)
-   directly, with no shell, in that directory — and lists its windows at once.
-   A window started there is mirrored like any other.
-3. **The route.** muster waits up to **90 s** for that window to be able to
-   take a route (online, `-interactive`, reporting Claude Code's status), then
-   makes the thread's or pull request's ordinary route: the send queue's idle
-   wait, the fenced block, `route_reply`, the deadline and the hand-back. **The
+   (`-resume-session`), running `claude --resume <id>` (`-resume-claude`) in
+   that directory, with your login environment (see
+   [mirroring](mirroring.md#resuming-an-ended-session--resume-spawn)) — and
+   lists its windows at once. A window started there is mirrored like any
+   other.
+3. **The route.** muster makes the thread's or pull request's ordinary route
+   into that window — the send queue's idle wait, the fenced block,
+   `route_reply`, the deadline and the hand-back — trying again each second
+   for up to **90 s** while the window cannot take it yet (not listed, not
+   `-interactive`, not reporting Claude Code's status, no chief to own the
+   route). Only a refusal no wait can change ends it early: the message was
+   taken by another delivery, is `no_reply`, or is routed already. **The
    message never travels on the host's command line**; it is pasted as data
-   once the window is up.
+   once the window is up. Until the resume ends, the message stays queued and
+   your chief's retry (each plugin claim retries queued messages) **leaves it
+   alone** — for at most 10 minutes, so a resume a restart cut off cannot hold
+   it for ever.
 4. **Otherwise, the chief.** A refusal at any step, or no window in time,
-   records why on the `mail_resumes` row and hands the message to your chief
+   records why on the `mail_resumes` row (`refused`, naming the refusal, or
+   `timed_out`, naming the last attempt's) and hands the message to your chief
    as before. A window the host did start is left running.
 
 A second message for a session being resumed right now waits for that window

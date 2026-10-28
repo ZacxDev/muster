@@ -14,20 +14,18 @@ import (
 )
 
 // buildVersion is the muster SERVER version this CLI was built against. The
-// linker accepts an override here (-ldflags "-X main.buildVersion=1.2.3"), but
-// that spelling appears NOWHERE in this repository.
+// linker overrides it (-ldflags "-X main.buildVersion=1.2.3").
 //
-// 🔴 NOTHING IN THIS TREE STAMPS IT, AND THE SERVER'S HALF IS STAMPED, SO THE
-// ASYMMETRY IS AT RELEASE TIME RATHER THAN IN THE DEFAULTS. Dockerfile's build
-// stage links the server with
-// `-X github.com/ZacxDev/muster/internal/api.BuildVersion=${VERSION}`, which is
-// what /health reports; flake.nix links this binary with buildRevision ONLY;
-// `make build`, `make verb-ledger` and every nix-built CLI therefore ship
-// buildVersion == "dev". warnSkew compares THIS literal against /health, so
-// against any released server — /health answering a real semver — the note
-// fires on EVERY command. That is not a drift to be fixed in the defaults:
-// closing it means stamping this variable at release, which is a separate
-// change nothing here makes.
+// 🔴 ONLY THE GITHUB RELEASE BUILD STAMPS IT. scripts/release-build.sh links the
+// published CLI archives with `-X main.buildVersion=<X.Y.Z>` (the release's
+// semver, the same value the release image's server reports on /health), so a
+// released CLI against a released server of the same version is silent.
+// Everything else ships the default "dev": Dockerfile's build stage stamps only
+// the SERVER (`-X …/internal/api.BuildVersion=${VERSION}`) and builds the
+// in-image agent CLI with no `-X`; flake.nix links buildRevision ONLY; `make
+// build` and `make verb-ledger` stamp nothing. warnSkew compares THIS literal
+// against /health, so any of those against a released server — /health
+// answering a real semver — prints the note on every command.
 //
 // ⚠ WHAT THE DEFAULT PIN STILL BUYS, since it cannot be the release story:
 // TestTheCLIBuildVersionDefaultMatchesTheServers holds this literal equal to
