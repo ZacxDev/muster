@@ -27,7 +27,7 @@ const (
 )
 
 // openCodeTokenFileDefault is the token file's default: ~/.muster/opencode-token,
-// beside the mirror token devrc places at ~/.muster/mirror-token.
+// beside the mirror token at ~/.muster/mirror-token.
 func openCodeTokenFileDefault(getenv func(string) string) string {
 	if v := getenv(envOpenCodeTokenFile); v != "" {
 		return v

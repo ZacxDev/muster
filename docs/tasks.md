@@ -103,7 +103,7 @@ usually not needed.
   membership: a read links the session (querying a thread changes it), and a
   subagent inherits its parent's `CLAUDE_CODE_SESSION_ID`.
 - **Provenance headers.** `X-Muster-Source` and `X-Muster-Session-Id`; the older
-  `X-Clawgate-*` spellings are still accepted. An unknown source is recorded as
+  pre-extraction header spellings are still accepted. An unknown source is recorded as
   `api`; it is not an error.
 
 ## GitHub

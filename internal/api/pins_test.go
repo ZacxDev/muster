@@ -340,7 +340,7 @@ func TestThePinRoutesPinAndUnpinIdempotently(t *testing.T) {
 }
 
 // TestThePinRoutesAreRefusedOnTheMachineListener: in gotrue mode the pin
-// routes are browser-session routes, so the machine listener (:30306) refuses
+// routes are browser-session routes, so the machine listener (:8105) refuses
 // them with the off-browser 403 even for a valid session — and the browser
 // listener, same session and origin, pins (the control that makes the 403 a
 // fact about the listener).

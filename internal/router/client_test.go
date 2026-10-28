@@ -27,6 +27,44 @@ func newTestClient(t *testing.T, h http.HandlerFunc) *Client {
 	return c
 }
 
+// TestTheHeaderNamesAreTheRoutersChoice: the actor and the token travel under
+// the names Config gives, and only those; with none given they travel under the
+// defaults, pinned here as literals so a rename of the constant is a decision.
+func TestTheHeaderNamesAreTheRoutersChoice(t *testing.T) {
+	if DefaultActorHeader != "X-Router-Actor" || DefaultTokenHeader != "X-Router-Token" {
+		t.Fatalf("defaults moved: %q, %q", DefaultActorHeader, DefaultTokenHeader)
+	}
+	var h http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h = r.Header.Clone()
+		w.Write([]byte(`{}`)) //nolint:errcheck
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New(Config{BaseURL: srv.URL, Token: "tok-fixture", Actor: "muster",
+		ActorHeader: " X-Peer-Actor ", TokenHeader: "X-Peer-Token"})
+	if err := c.PublishEvent(context.Background(), "task.changed", `{"id":"1"}`); err != nil {
+		t.Fatalf("PublishEvent: %v", err)
+	}
+	if got := h.Get("X-Peer-Actor"); got != "muster" {
+		t.Errorf("X-Peer-Actor = %q, want the actor", got)
+	}
+	if got := h.Get("X-Peer-Token"); got != "tok-fixture" {
+		t.Errorf("X-Peer-Token = %q, want the token", got)
+	}
+	if h.Get(DefaultActorHeader) != "" || h.Get(DefaultTokenHeader) != "" {
+		t.Errorf("the defaults were sent as well: %v", h)
+	}
+
+	c = New(Config{BaseURL: srv.URL, Token: "tok-fixture", Actor: "muster"})
+	if err := c.PublishEvent(context.Background(), "task.changed", `{"id":"1"}`); err != nil {
+		t.Fatalf("PublishEvent: %v", err)
+	}
+	if h.Get("X-Router-Actor") != "muster" || h.Get("X-Router-Token") != "tok-fixture" {
+		t.Errorf("unconfigured names: got %v, want the X-Router-* defaults", h)
+	}
+}
+
 // TestNewRefusesAnIncompleteConfiguration pins the nil-rather-than-half-built
 // rule.
 //
@@ -71,8 +109,8 @@ func TestEveryCallCarriesTheCredentialAndTheActor(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		got = append(got, seen{
 			auth:   r.Header.Get("Authorization"),
-			token:  r.Header.Get(TokenHeader),
-			actor:  r.Header.Get(ActorHeader),
+			token:  r.Header.Get(DefaultTokenHeader),
+			actor:  r.Header.Get(DefaultActorHeader),
 			path:   r.URL.Path,
 			method: r.Method,
 		})
@@ -119,12 +157,12 @@ func TestEveryCallCarriesTheCredentialAndTheActor(t *testing.T) {
 					t.Errorf("%s %s: Authorization = %q", s.method, s.path, s.auth)
 				}
 				if s.token != "tok-fixture" {
-					t.Errorf("%s %s: %s = %q", s.method, s.path, TokenHeader, s.token)
+					t.Errorf("%s %s: %s = %q", s.method, s.path, DefaultTokenHeader, s.token)
 				}
 				if s.actor != "muster" {
 					t.Errorf("%s %s: %s = %q — the receiving door refuses an unattributable "+
 						"request, so this is a 403 that reads as a credential problem",
-						s.method, s.path, ActorHeader, s.actor)
+						s.method, s.path, DefaultActorHeader, s.actor)
 				}
 			}
 		})

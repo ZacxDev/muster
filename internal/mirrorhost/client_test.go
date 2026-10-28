@@ -20,8 +20,8 @@ func TestConnectURLMapsSchemesAndRefusesCleartextUnlessAllowed(t *testing.T) {
 		{in: "https://muster.example.com", want: "wss://muster.example.com/mirror/connect"},
 		{in: "https://muster.example.com/", want: "wss://muster.example.com/mirror/connect"},
 		{in: "https://example.com/muster/?x=1#f", want: "wss://example.com/muster/mirror/connect"},
-		{in: "http://192.0.2.10:30306", errHas: "cleartext"},
-		{in: "http://192.0.2.10:30306", allowHTTP: true, want: "ws://192.0.2.10:30306/mirror/connect"},
+		{in: "http://192.0.2.10:8105", errHas: "cleartext"},
+		{in: "http://192.0.2.10:8105", allowHTTP: true, want: "ws://192.0.2.10:8105/mirror/connect"},
 		{in: "ftp://x", errHas: "must be https"},
 		{in: "https://", errHas: "no host"},
 	} {

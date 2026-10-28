@@ -21,8 +21,7 @@
 # 🔴 A PUBLISHED TAG IS NEVER OVERWRITTEN, AND THAT IS THE WHOLE POINT OF THIS
 # SCRIPT. A docker build is not byte-reproducible, so re-running a `main` run
 # (`gh run rerun`) would otherwise re-point `<image>:<sha>` at a different
-# digest than the one a deploy may already have pinned — the same hazard
-# devrc's `muster-ops release` guards against for the Harbor tags. `reuse` is for
+# digest than the one a deploy may already have pinned. `reuse` is for
 # tags that name a commit (the same commit gives the same source, so the
 # existing image stands); `refuse` is for a release version, where a second
 # image under one version is a mistake to stop on, not to paper over.

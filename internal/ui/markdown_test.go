@@ -125,7 +125,7 @@ func TestMarkdownHTMLElements(t *testing.T) {
 func TestMarkdownLinks(t *testing.T) {
 	// http + https → anchor with target/rel and the link text.
 	for _, ok := range []struct{ in, href, text string }{
-		{"[Source ticket](https://civitai.com/t/42)", "https://civitai.com/t/42", "Source ticket"},
+		{"[Source ticket](https://tracker.example.com/t/42)", "https://tracker.example.com/t/42", "Source ticket"},
 		{"[plain](http://example.com)", "http://example.com", "plain"},
 		{"[caps](HTTPS://Example.com/X)", "HTTPS://Example.com/X", "caps"},
 	} {

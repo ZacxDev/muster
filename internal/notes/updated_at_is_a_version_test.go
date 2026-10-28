@@ -70,7 +70,7 @@ func TestUpdatedAtIsAMonotonicCardVersion(t *testing.T) {
 			return store.SetStatus(ctx, n.ID, StatusInProgress)
 		}},
 		{"AddComment", func() (Note, error) {
-			if _, err := store.AddComment(ctx, Comment{NoteID: n.ID, Author: "zach", Body: "a comment"}); err != nil {
+			if _, err := store.AddComment(ctx, Comment{NoteID: n.ID, Author: "alice", Body: "a comment"}); err != nil {
 				return Note{}, err
 			}
 			return store.Get(ctx, n.ID)

@@ -7,7 +7,7 @@ import (
 
 // THE REPO CHIP: which repository a mirrored window — a shell or a Claude Code
 // session alike — works in, as a SHORT NAME: the top-level directory's
-// basename ("datapacket-talos"), or, outside a repository, the working
+// basename ("example-app"), or, outside a repository, the working
 // directory's own basename. The card shows it as a chip and the Agents filter
 // finds the card by it (`repo:`).
 //

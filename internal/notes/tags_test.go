@@ -16,7 +16,7 @@ func TestNormalizeTags(t *testing.T) {
 		want []string
 	}{
 		{"nil is an empty non-nil slice", nil, []string{}},
-		{"lowercases", []string{"Frontend", "CIVITAI"}, []string{"civitai", "frontend"}},
+		{"lowercases", []string{"Frontend", "ACME"}, []string{"acme", "frontend"}},
 		{"trims", []string{"  spaced  "}, []string{"spaced"}},
 		{"collapses internal whitespace to a dash", []string{"needs   review"}, []string{"needs-review"}},
 		{"collapses tabs/newlines too", []string{"a\t\nb"}, []string{"a-b"}},
@@ -144,7 +144,7 @@ func TestNormalizeAndValidate(t *testing.T) {
 
 // TestParseTagAndIsRoutingTag asserts EVERY reserved namespace is recognised as
 // routing and that an unknown namespace stays DESCRIPTIVE — the reserved set is a
-// closed allowlist, so `civitai:frontend` must be a plain label.
+// closed allowlist, so `acme:frontend` must be a plain label.
 func TestParseTagAndIsRoutingTag(t *testing.T) {
 	cases := []struct {
 		tag     string
@@ -155,10 +155,10 @@ func TestParseTagAndIsRoutingTag(t *testing.T) {
 		// runbook: was a routing namespace until runbooks were removed; a stale
 		// tag is now an ordinary descriptive label.
 		{"runbook:deploy", "runbook", "deploy", false},
-		{"initiative:remix", NSInitiative, "remix", true},
+		{"initiative:zephyr", NSInitiative, "zephyr", true},
 		{"gate:needs-decision", NSGate, "needs-decision", true},
 		{"auto:dispatch", NSAuto, "dispatch", true},
-		{"civitai:frontend", "civitai", "frontend", false},
+		{"acme:frontend", "acme", "frontend", false},
 		{"bug", "", "bug", false},
 		{"a/b-c", "", "a/b-c", false},
 	}
@@ -194,7 +194,7 @@ func TestRoutingNamespacesIsClosed(t *testing.T) {
 func TestRoutingHelpers(t *testing.T) {
 	// runbook:deploy is a STALE tag from before runbooks were removed: it must not
 	// count as routing.
-	tags := []string{"bug", "gate:needs-decision", "initiative:remix", "runbook:deploy"}
+	tags := []string{"bug", "gate:needs-decision", "initiative:zephyr", "runbook:deploy"}
 
 	if reason, ok := GateReason(tags); !ok || reason != "needs-decision" {
 		t.Fatalf("GateReason = (%q,%v), want (needs-decision,true)", reason, ok)
@@ -205,8 +205,8 @@ func TestRoutingHelpers(t *testing.T) {
 	if IsGated([]string{"bug"}) {
 		t.Fatal("IsGated must be false with no gate: tag")
 	}
-	if got := RoutingTags(tags); strings.Join(got, ",") != "gate:needs-decision,initiative:remix" {
-		t.Fatalf("RoutingTags = %q, want [gate:needs-decision initiative:remix]", got)
+	if got := RoutingTags(tags); strings.Join(got, ",") != "gate:needs-decision,initiative:zephyr" {
+		t.Fatalf("RoutingTags = %q, want [gate:needs-decision initiative:zephyr]", got)
 	}
 }
 

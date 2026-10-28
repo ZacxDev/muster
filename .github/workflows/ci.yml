@@ -21,9 +21,9 @@ name: ci
 #
 # A `v<MAJOR>.<MINOR>.<PATCH>` TAG push runs the whole suite too, and then
 # publishes the muster image under that release version (the `image-*` jobs at
-# the end). devrc's `muster-ops release` versions the Harbor releases outside
-# this repository and pushes the matching vX.Y.Z tag here on every live
-# release, so a tag usually lands on a commit `main` already built: every
+# the end). A downstream release tool may version its own releases outside
+# this repository and push the matching vX.Y.Z tag here on each of them, so a
+# tag usually lands on a commit `main` already built: every
 # tag-only job is idempotent for that (see `image-muster`, `image-stt-cohere`
 # and `release`).
 #
@@ -33,10 +33,10 @@ name: ci
 # every pull request, so a tag publishes nothing a PR did not already build.
 #
 # 🔴 THE TAG FILTER IS STRICT SEMVER, NOT `v*`, BECAUSE A RED RUN HERE IS NOT
-# CHEAP. `muster-ops release` refuses a sha unless EVERY CI run for it concluded
-# success, and `image-muster` refuses a non-semver version — so a `v*` filter
-# let a tag like `v1.2.3-rc1` turn that sha's runs permanently red and block its
-# Harbor release for good. In GitHub's filter syntax `.` is literal and `+` is
+# CHEAP. A downstream release tool that refuses a sha unless EVERY CI run for
+# it concluded success, plus `image-muster` refusing a non-semver version, means
+# a `v*` filter let a tag like `v1.2.3-rc1` turn that sha's runs permanently red
+# and block that release for good. In GitHub's filter syntax `.` is literal and `+` is
 # "one or more of the preceding": this matches `v1.2.3` and `v10.20.30`, not
 # `v1.2.3-rc1`, `v1.2` or `vfoo`. (image-muster keeps its own semver check.)
 on:
@@ -243,9 +243,17 @@ jobs:
   # job rather than a step inside `build` because a security gate buried in
   # another job's log does not appear in the checks list, and a check nobody can
   # see is one nobody notices going missing.
+  #
+  # 🔴 THE DENYLIST'S HMAC KEY IS THE REPOSITORY ACTIONS SECRET
+  # MUSTER_LEAKSCAN_KEY. Without it the scan FAILS CLOSED on this repository's
+  # own pushes and pull requests; on a pull request from a fork, which GitHub
+  # gives no secrets, it warns and skips only the denied-identifier check (the
+  # run on `main` after merge has the key). See tests/leakscan.py.
   leakscan:
     name: leak gate
     runs-on: ubuntu-latest
+    env:
+      MUSTER_LEAKSCAN_KEY: ${{ secrets.MUSTER_LEAKSCAN_KEY }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -258,6 +266,9 @@ jobs:
       # the way a clean tree does. (`leakscan.py` also runs the controls
       # internally on every invocation and exits 2 if one misbehaves — this step
       # is the belt to that braces, and it is the one a human reads.)
+      - name: the denylist's key, digest and matching
+        run: python3 tests/leakscan_test.py
+
       - name: self-test — the gate must be able to REFUSE
         run: python3 tests/leakscan.py --self-test
 
@@ -766,26 +777,25 @@ jobs:
   # ---------------------------------------------------------------------------
   # IMAGE PUBLISHING TO GHCR (ghcr.io/<owner>/{muster,claude-code-agent}).
   #
-  # 🔴 THIS ADDS A REGISTRY; IT DOES NOT MOVE OFF HARBOR. The existing
-  # deployment pulls from a private Harbor, which devrc's `muster-ops release`
-  # pushes to from an operator's host; nothing
-  # here touches that. GHCR exists for clusters that cannot reach that registry.
+  # 🔴 THIS IS ONE REGISTRY, NOT NECESSARILY THE ONLY ONE. A deployment may
+  # also publish to its own private registry with a downstream release tool;
+  # nothing here touches that. GHCR exists for anyone who cannot reach one.
   #
-  # TAGS ARE THE HARBOR TAGS, so a deploy can pin either registry the same way:
-  #   claude-code-agent:<7-char commit sha>               (muster-ops' tag)
+  # TAGS FOLLOW ONE SCHEME, so a deploy can pin any registry the same way:
+  #   claude-code-agent:<7-char commit sha>
   #   muster:<MAJOR.MINOR.PATCH>                          on a v<version> tag push,
-  #       stamped with that VERSION, as muster-ops does;
+  #       stamped with that VERSION;
   #   muster:<7-char sha>                                 on every push to main,
-  #       stamped VERSION=<sha>. The semver is minted by muster-ops at release
-  #       time, outside this repository, so a main push has no version to give it.
+  #       stamped VERSION=<sha>. The semver is minted at release time, outside
+  #       this repository, so a main push has no version to give it.
   #
   # 🔴 PUSHES ONLY ON A `push` EVENT (main, or a vX.Y.Z tag), AND ONLY AFTER
   # EVERY TEST JOB ABOVE IS GREEN (`publish-gate`). A pull request builds every
   # image the same way and pushes nothing; it does log in read-only and probe the
   # tag it WOULD push, so the registry path is exercised before merge.
   #
-  # ⚠ THESE JOBS ARE PART OF THE `ci` RUN, SO A GHCR FAILURE BLOCKS A HARBOR
-  # RELEASE. `muster-ops release` refuses a sha whose CI runs are not ALL
+  # ⚠ THESE JOBS ARE PART OF THE `ci` RUN, SO A GHCR FAILURE CAN BLOCK A
+  # DOWNSTREAM RELEASE that refuses a sha whose CI runs are not ALL
   # success; a GHCR outage during a `main` run leaves that sha refused until the
   # failed image job is re-run (`gh run rerun --failed`). Accepted.
   #
@@ -912,8 +922,8 @@ jobs:
           echo "short=$short" >> "$GITHUB_OUTPUT"
           echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/claude-code-agent:$short" >> "$GITHUB_OUTPUT"
 
-      # The build muster-ops runs, with its revision label (the provenance it
-      # checks before reusing a tag) and the source label.
+      # The build, with its revision label (the provenance ghcr-push.sh checks
+      # before reusing a tag) and the source label.
       - name: docker build
         run: |
           docker build \
@@ -923,8 +933,8 @@ jobs:
 
       # 🔴 THE IMAGE THIS JOB PUSHES IS SMOKED, NOT ONLY THE `ccd-image` JOB'S.
       # This is a fresh build on floating base images, so it is not byte-for-byte
-      # the image `ccd-image` tested. Same three runs as that job and as
-      # muster-ops' cc_smoke: a fresh volume, a legacy root-owned
+      # the image `ccd-image` tested. Same three runs as that job: a fresh
+      # volume, a legacy root-owned
       # /data/workspace, and the resume of that legacy volume's transcript.
       - name: cc-smoke the image it will push (fresh, legacy, legacy-resume)
         env:

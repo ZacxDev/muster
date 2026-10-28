@@ -272,11 +272,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		BaseURL: cfg.RouterURL,
 		Token:   cfg.RouterToken,
 		Actor:   cfg.RouterActor,
+
+		ActorHeader: cfg.RouterActorHeader,
+		TokenHeader: cfg.RouterTokenHeader,
 	})
 
 	ext := api.Extensions{
-		TagAutoDispatch: cfg.TagAutoDispatch,
-		AgentsIdleAfter: cfg.AgentsIdleAfter,
+		LegacyProvenanceHeaderPrefix: cfg.LegacyProvenancePrefix,
+		TagAutoDispatch:              cfg.TagAutoDispatch,
+		AgentsIdleAfter:              cfg.AgentsIdleAfter,
 		// 🔴 THE SAME FIELD THE DRIVER GETS, AND THAT IS THE WHOLE POINT.
 		// k8sDriverConfig hands cfg.AgentNamespacePrefix to the driver as
 		// k8s.Config.NamespacePrefix (where the instance goes); this hands the same
@@ -706,6 +710,7 @@ func approvalGateFor(cfg config) api.GatePort {
 	}
 	if p := router.NewPort(router.Config{
 		BaseURL: cfg.ApprovalGateURL, Token: cfg.ApprovalGateToken, Actor: cfg.RouterActor,
+		ActorHeader: cfg.RouterActorHeader, TokenHeader: cfg.RouterTokenHeader,
 	}); p.Configured() {
 		return p
 	}

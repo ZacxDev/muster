@@ -249,6 +249,13 @@ const (
 	envRouterURL   = "MUSTER_ROUTER_URL"
 	envRouterToken = "MUSTER_ROUTER_TOKEN"
 	envRouterActor = "MUSTER_ROUTER_ACTOR"
+	// The header names the router reads the actor and the token from; empty
+	// means router.DefaultActorHeader / router.DefaultTokenHeader.
+	envRouterActorHeader = "MUSTER_ROUTER_ACTOR_HEADER"
+	envRouterTokenHeader = "MUSTER_ROUTER_TOKEN_HEADER"
+	// The header prefix installed clients that predate the X-Muster-* spelling
+	// send the task-provenance headers under; unset means none is read.
+	envLegacyProvenancePrefix = "MUSTER_LEGACY_PROVENANCE_HEADER_PREFIX"
 
 	envStandalone = "MUSTER_STANDALONE"
 
@@ -495,6 +502,11 @@ const routerReservedActor = "pre-0035-unattributed"
 // when MUSTER_ROUTER_ACTOR is unset. The router validates it as an actor label.
 const defaultRouterActor = "muster"
 
+// headerName is what MUSTER_ROUTER_ACTOR_HEADER and MUSTER_ROUTER_TOKEN_HEADER
+// must look like: an HTTP header field name, restricted to the letters, digits
+// and hyphens every real header name uses.
+var headerName = regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$`)
+
 // config is everything this binary reads from the environment, resolved once.
 //
 // 🔴 IT IS A VALUE, NOT A PILE OF os.Getenv CALLS SCATTERED THROUGH main(), SO
@@ -654,6 +666,14 @@ type config struct {
 	RouterURL   string
 	RouterToken string
 	RouterActor string
+	// RouterActorHeader and RouterTokenHeader name the headers the router
+	// reads; empty means the router package's defaults.
+	RouterActorHeader string
+	RouterTokenHeader string
+
+	// LegacyProvenancePrefix is MUSTER_LEGACY_PROVENANCE_HEADER_PREFIX; see
+	// api.Extensions.LegacyProvenanceHeaderPrefix.
+	LegacyProvenancePrefix string
 
 	// Standalone is the operator's EXPLICIT declaration that this deployment has
 	// no permission router behind it, and therefore no session transcripts.
@@ -1072,6 +1092,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		RouterURL:            strings.TrimSpace(getenv(envRouterURL)),
 		RouterToken:          strings.TrimSpace(getenv(envRouterToken)),
 		RouterActor:          strings.TrimSpace(getenv(envRouterActor)),
+		RouterActorHeader:    strings.TrimSpace(getenv(envRouterActorHeader)),
+		RouterTokenHeader:    strings.TrimSpace(getenv(envRouterTokenHeader)),
 		Standalone:           envFlag(getenv, envStandalone),
 		ApprovalGateURL:      strings.TrimSpace(getenv(envApprovalGateURL)),
 		ApprovalGateToken:    strings.TrimSpace(getenv(envApprovalGateToken)),
@@ -1082,6 +1104,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AndroidAllowPINKeys:  envFlag(getenv, envAndroidAllowPINKeys),
 		AndroidPackage:       strings.TrimSpace(getenv(envAndroidPackage)),
 		AndroidCertSHA256:    strings.TrimSpace(getenv(envAndroidCertSHA256)),
+
+		LegacyProvenancePrefix: strings.TrimSpace(getenv(envLegacyProvenancePrefix)),
 
 		AgentProvisioner:  strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
 		AgentGateway:      strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),
@@ -1633,6 +1657,17 @@ func (c config) validate() error {
 			"configuration would boot a relay that can never file a card. Set both or neither",
 			envApprovalGateURL, envApprovalGateToken, envApprovalGateURL, presence(c.ApprovalGateURL),
 			envApprovalGateToken, presence(c.ApprovalGateToken))
+	}
+	for _, h := range []struct{ env, v string }{
+		{envRouterActorHeader, c.RouterActorHeader}, {envRouterTokenHeader, c.RouterTokenHeader},
+	} {
+		if h.v != "" && !headerName.MatchString(h.v) {
+			return fmt.Errorf("%s=%q is not an HTTP header name (%s): the router would "+
+				"never see the value sent under it. Fix or unset it", h.env, h.v, headerName)
+		}
+	}
+	if err := api.ValidLegacyProvenancePrefix(c.LegacyProvenancePrefix); err != nil {
+		return fmt.Errorf("%s: %v. Fix or unset it", envLegacyProvenancePrefix, err)
 	}
 	if c.ApprovalGateURL != "" {
 		actor := c.RouterActor

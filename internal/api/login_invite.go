@@ -149,8 +149,8 @@ func fragmentForm(action, heading, body, button string, autoSubmit bool, extra, 
 
 // --- the link token when the fragment did not arrive -------------------------
 //
-// 🔴 A FRAGMENT DOES NOT SURVIVE A SIGN-IN REDIRECT. Measured live: with
-// Authelia in front of the host, opening <public>/auth/claim#<token> bounced
+// 🔴 A FRAGMENT DOES NOT SURVIVE A SIGN-IN REDIRECT. With a forward-auth
+// proxy in front of the host, opening <public>/auth/claim#<token> bounced
 // through the sign-in portal, whose rd= return URL carries no fragment, so the
 // page loaded with an empty token and the POST was refused as "invalid or
 // expired". So every link page (claim, invite, reset) renders a VISIBLE "Paste
