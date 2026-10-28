@@ -182,19 +182,19 @@ func stepUpKeyTx(ctx context.Context, tx pgx.Tx, id int64, allowPIN bool) ([]byt
 
 // SpendChallenge spends nonce for c under ctx's principal and verifies sig
 // over its message with the device's step-up key; nil means the action may
-// proceed. On success it appends the audit row (device.action) naming the
-// device, the action, the target and the text's hash, in the same
-// transaction. See the file header for why a refusal still spends the nonce.
+// proceed. It writes no audit row: the action has not happened yet, and may
+// still be refused (an ask already settled, another owner's) — the caller
+// records the OUTCOME once it knows it (RecordAction). See the file header for
+// why a refusal still spends the nonce.
 func (s *PGStore) SpendChallenge(ctx context.Context, nonce string, c Challenge, sig []byte, allowPIN bool) error {
-	p, err := user(ctx)
-	if err != nil {
+	if _, err := user(ctx); err != nil {
 		return err
 	}
 	if !shapeOK(NoncePrefix, nonce) {
 		return ErrChallengeInvalid
 	}
 	var verdict error
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var (
 			id                  int64
 			action, target      string
@@ -229,7 +229,7 @@ func (s *PGStore) SpendChallenge(ctx context.Context, nonce string, c Challenge,
 			verdict = ErrChallengeInvalid
 			return nil
 		}
-		der, typ, err := stepUpKeyTx(ctx, tx, c.DeviceID, allowPIN)
+		der, _, err := stepUpKeyTx(ctx, tx, c.DeviceID, allowPIN)
 		if err != nil {
 			if errors.Is(err, ErrNoStepUpKey) || errors.Is(err, ErrKeyNotAllowed) || errors.Is(err, ErrBadToken) {
 				verdict = err
@@ -239,13 +239,27 @@ func (s *PGStore) SpendChallenge(ctx context.Context, nonce string, c Challenge,
 		}
 		if !verify(der, Message(nonce, Challenge{DeviceID: c.DeviceID, Action: action, Target: target, TextSHA256: text}), sig) {
 			verdict = ErrBadSignature
-			return nil
 		}
-		return users.AuditTx(ctx, tx, users.Actor{UserID: p.UserID, Via: authz.ViaDevice}, "device.action", Object(c.DeviceID),
-			map[string]any{"action": action, "target": target, "text_sha256": hex.EncodeToString(text), "stepup_key_type": typ})
+		return nil
 	})
 	if err != nil {
 		return err
 	}
 	return verdict
+}
+
+// RecordAction appends the audit row of a verified signed action, AFTER it
+// was attempted, under ctx's principal: device.action naming the device, the
+// action, its target, the text's hash and its OUTCOME — the ask's new status
+// when it was performed ("answered", "cancelled"), or the refusal's code
+// ("not_open", "not_found", …) — so a refused action never reads as one done.
+func (s *PGStore) RecordAction(ctx context.Context, c Challenge, outcome string) error {
+	p, err := user(ctx)
+	if err != nil {
+		return err
+	}
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		return users.AuditTx(ctx, tx, users.Actor{UserID: p.UserID, Via: authz.ViaDevice}, "device.action", Object(c.DeviceID),
+			map[string]any{"action": c.Action, "target": c.Target, "text_sha256": hex.EncodeToString(c.TextSHA256), "outcome": outcome})
+	})
 }

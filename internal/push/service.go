@@ -91,24 +91,33 @@ const (
 )
 
 // V2Action is one notification button. ID is a wire id; Target the ask's id
-// (the route's {id}); Text, for an ask_answer button, the exact answer it sends
-// (an option or a suggestion, whole), or Input for the inline-reply Answer the
-// user types. The app shows Label.
+// (the route's {id}). An ask_answer button that sends a chip names it BY INDEX
+// — Option into ask.options, or Suggestion into ask.suggestions — and its
+// label and answer are that chip's text, exactly: each chip's text is in the
+// push once, so the buttons cost the chips no room
+// (TestButtonsCostTheChipsNothing). Input marks the inline-reply Answer the
+// user types. Label is set only for a button with no chip (Answer, Dismiss).
 type V2Action struct {
-	ID     string `json:"id"`
-	Label  string `json:"label"`
-	Target string `json:"target"`
-	Text   string `json:"text,omitempty"`
-	Input  bool   `json:"input,omitempty"`
+	ID         string `json:"id"`
+	Label      string `json:"label,omitempty"`
+	Target     string `json:"target"`
+	Option     *int   `json:"option,omitempty"`
+	Suggestion *int   `json:"suggestion,omitempty"`
+	Input      bool   `json:"input,omitempty"`
 }
 
-// askActions is a's buttons: an ask_answer per option, then per suggestion,
-// then the inline Answer, then Dismiss.
+// askActions is a's buttons: an ask_answer per option, then per suggestion
+// (each by its index), then the inline Answer, then Dismiss.
 func askActions(a *V2Ask) []V2Action {
 	t := strconv.FormatInt(a.ID, 10)
 	var out []V2Action
-	for _, c := range append(append([]string(nil), a.Options...), a.Suggestions...) {
-		out = append(out, V2Action{ID: ActionAskAnswer, Label: c, Target: t, Text: c})
+	for i := range a.Options {
+		i := i
+		out = append(out, V2Action{ID: ActionAskAnswer, Target: t, Option: &i})
+	}
+	for i := range a.Suggestions {
+		i := i
+		out = append(out, V2Action{ID: ActionAskAnswer, Target: t, Suggestion: &i})
 	}
 	return append(out, V2Action{ID: ActionAskAnswer, Label: "Answer", Target: t, Input: true},
 		V2Action{ID: ActionAskDismiss, Label: "Dismiss", Target: t})

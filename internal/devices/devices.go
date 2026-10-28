@@ -357,6 +357,8 @@ type Store interface {
 	// (challenge.go), under the device owner's principal.
 	CreateChallenge(ctx context.Context, c Challenge, allowPIN bool) (nonce string, expiresAt time.Time, err error)
 	SpendChallenge(ctx context.Context, nonce string, c Challenge, sig []byte, allowPIN bool) error
+	// RecordAction audits a verified action's outcome (challenge.go).
+	RecordAction(ctx context.Context, c Challenge, outcome string) error
 }
 
 // PGStore is Store over Postgres (migration 0039).

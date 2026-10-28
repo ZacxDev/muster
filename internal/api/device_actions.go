@@ -168,24 +168,31 @@ func (s *Server) handleDeviceChallenge(w http.ResponseWriter, r *http.Request) {
 		"expires_in": int(devices.ChallengeTTL / time.Second), "message": devices.Message(nonce, c)})
 }
 
+// maxDeviceActionBody bounds a signed action's JSON body: an answer of
+// attention.MaxAnswerRunes characters at the costliest JSON spelling of one
+// (a 4-byte character escaped as a surrogate pair, 12 bytes), plus the nonce,
+// the signature and the envelope — so a valid answer is never refused as a
+// malformed body before the answer's own rule (invalid_answer) reads it.
+const maxDeviceActionBody = attention.MaxAnswerRunes*12 + 4<<10
+
 // deviceAskAction is a signed ask action's common half: the body, the ask id
 // from the path, the challenge spent and the signature verified for action
 // with text (nil for none). It reports false, the request answered, on any
-// refusal.
-func (s *Server) deviceAskAction(w http.ResponseWriter, r *http.Request, action string, body any, nonce, sig *string, text func() []byte) (int64, bool) {
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxDeviceBody)).Decode(body); err != nil {
+// refusal; on success, the challenge it verified (for RecordAction).
+func (s *Server) deviceAskAction(w http.ResponseWriter, r *http.Request, action string, body any, nonce, sig *string, text func() []byte) (int64, devices.Challenge, bool) {
+	if err := json.NewDecoder(io.LimitReader(r.Body, maxDeviceActionBody)).Decode(body); err != nil {
 		s.actionRefuse(w, http.StatusBadRequest, actionCodeBadRequest, "the body is not the action's JSON")
-		return 0, false
+		return 0, devices.Challenge{}, false
 	}
 	id, ok := askIDParam(r)
 	if !ok {
 		s.actionRefuse(w, http.StatusNotFound, actionCodeNotFound, "no such question")
-		return 0, false
+		return 0, devices.Challenge{}, false
 	}
 	sigBytes, err := devices.DecodeSignature(*sig)
 	if err != nil {
 		s.actionRefuse(w, http.StatusUnauthorized, actionCodeBadSignature, "the signature is not base64")
-		return 0, false
+		return 0, devices.Challenge{}, false
 	}
 	d := deviceFromContext(r.Context())
 	c := devices.Challenge{DeviceID: d.ID, Action: action, Target: strconv.FormatInt(id, 10), TextSHA256: text()}
@@ -194,30 +201,39 @@ func (s *Server) deviceAskAction(w http.ResponseWriter, r *http.Request, action 
 			if !errors.Is(err, devices.ErrBadToken) {
 				s.logger.Printf("devices: device %d %s on ask %d refused: %v", d.ID, action, id, err)
 			}
-			return 0, false
+			return 0, devices.Challenge{}, false
 		}
 		s.logger.Printf("devices: device %d %s on ask %d: %v", d.ID, action, id, err)
 		s.actionRefuse(w, http.StatusInternalServerError, actionCodeFailed, "the action could not be checked")
-		return 0, false
+		return 0, devices.Challenge{}, false
 	}
-	return id, true
+	return id, c, true
 }
 
 // askActionResult answers a performed (or refused) ask action, as the web
-// route's errors map.
-func (s *Server) askActionResult(w http.ResponseWriter, a attention.Ask, err error) {
+// route's errors map, and audits the verified action WITH that outcome
+// (devices.RecordAction): the ask's new status, or the refusal's code.
+func (s *Server) askActionResult(w http.ResponseWriter, r *http.Request, c devices.Challenge, a attention.Ask, err error) {
+	outcome := string(a.Status)
 	switch {
 	case err == nil:
 		s.writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": a.ID, "status": a.Status})
 	case errors.Is(err, attention.ErrNotFound):
+		outcome = actionCodeNotFound
 		s.actionRefuse(w, http.StatusNotFound, actionCodeNotFound, attentionErrText(err, a))
 	case errors.Is(err, attention.ErrNotOpen):
+		outcome = actionCodeNotOpen
 		s.actionRefuse(w, http.StatusConflict, actionCodeNotOpen, attentionErrText(err, a))
 	case errors.Is(err, attention.ErrInvalid):
+		outcome = actionCodeInvalidAnswer
 		s.actionRefuse(w, http.StatusBadRequest, actionCodeInvalidAnswer, attentionErrText(err, a))
 	default:
+		outcome = actionCodeFailed
 		s.logger.Printf("devices: ask action: %v", err)
 		s.actionRefuse(w, http.StatusInternalServerError, actionCodeFailed, attentionErrText(err, a))
+	}
+	if aerr := s.ext.Devices.RecordAction(r.Context(), c, outcome); aerr != nil {
+		s.logger.Printf("devices: device %d: audit %s on ask %s (%s): %v", c.DeviceID, c.Action, c.Target, outcome, aerr)
 	}
 }
 
@@ -234,12 +250,12 @@ func (s *Server) handleDeviceAskAnswer(w http.ResponseWriter, r *http.Request) {
 		Signature string `json:"signature"`
 		Answer    string `json:"answer"`
 	}
-	id, ok := s.deviceAskAction(w, r, actionAskAnswer, &body, &body.Nonce, &body.Signature, func() []byte { return devices.TextHash(body.Answer) })
+	id, c, ok := s.deviceAskAction(w, r, actionAskAnswer, &body, &body.Nonce, &body.Signature, func() []byte { return devices.TextHash(body.Answer) })
 	if !ok {
 		return
 	}
 	a, err := s.answerAskFrom(r.Context(), id, body.Answer, attention.AnswerSource{})
-	s.askActionResult(w, a, err)
+	s.askActionResult(w, r, c, a, err)
 }
 
 // handleDeviceAskCancel is POST /api/device/actions/attention/asks/{id}/cancel.
@@ -252,10 +268,10 @@ func (s *Server) handleDeviceAskCancel(w http.ResponseWriter, r *http.Request) {
 		Nonce     string `json:"nonce"`
 		Signature string `json:"signature"`
 	}
-	id, ok := s.deviceAskAction(w, r, actionAskDismiss, &body, &body.Nonce, &body.Signature, func() []byte { return nil })
+	id, c, ok := s.deviceAskAction(w, r, actionAskDismiss, &body, &body.Nonce, &body.Signature, func() []byte { return nil })
 	if !ok {
 		return
 	}
 	a, err := s.cancelAsk(r.Context(), id)
-	s.askActionResult(w, a, err)
+	s.askActionResult(w, r, c, a, err)
 }

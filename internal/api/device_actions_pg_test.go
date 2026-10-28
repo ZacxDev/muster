@@ -46,12 +46,17 @@ func newActionRig(t *testing.T) *actionRig {
 	t.Cleanup(func() {
 		_, _ = a.pool.Exec(authz.System(context.Background()), `DELETE FROM attention_asks WHERE owner_id = $1`, a.uid)
 	})
-	a.key, a.tok, a.dev = a.pairKeyed(t, "keyed phone")
+	a.key, a.tok, a.dev = a.pairKeyedAs(t, "keyed phone", devices.KeyBiometric)
 	return a
 }
 
 // pairKeyed pairs a phone with a fresh biometric StrongBox key.
 func (a *actionRig) pairKeyed(t *testing.T, name string) (*ecdsa.PrivateKey, string, int64) {
+	return a.pairKeyedAs(t, name, devices.KeyBiometric)
+}
+
+// pairKeyedAs pairs a phone with a fresh StrongBox key of type typ.
+func (a *actionRig) pairKeyedAs(t *testing.T, name, typ string) (*ecdsa.PrivateKey, string, int64) {
 	t.Helper()
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -67,7 +72,7 @@ func (a *actionRig) pairKeyed(t *testing.T, name string) (*ecdsa.PrivateKey, str
 		t.Fatalf("code: %d %s", w.Code, w.Body.String())
 	}
 	body, _ := json.Marshal(map[string]string{"code": code.Code, "name": name, "app_version": "0.2.0",
-		"stepup_pubkey": base64.StdEncoding.EncodeToString(der), "stepup_key_type": devices.KeyBiometric, "stepup_key_level": devices.LevelStrongBox})
+		"stepup_pubkey": base64.StdEncoding.EncodeToString(der), "stepup_key_type": typ, "stepup_key_level": devices.LevelStrongBox})
 	w = a.call(a.edge, "POST", devicePairPath, "", string(body))
 	var out struct {
 		Token  string `json:"token"`
@@ -168,7 +173,7 @@ func TestAPhoneAnswersAnAskWithASignedAction(t *testing.T) {
 	}
 	var n int
 	if err := a.pool.QueryRow(authz.System(context.Background()), `SELECT count(*) FROM audit_log WHERE user_id = $1 AND action = 'device.action'
-		AND object = $2 AND detail->>'target' = $3 AND detail->>'text_sha256' = $4`, a.uid, devices.Object(a.dev), strconv.FormatInt(id, 10), hex.EncodeToString(sum[:])).Scan(&n); err != nil || n != 1 {
+		AND object = $2 AND detail->>'target' = $3 AND detail->>'text_sha256' = $4 AND detail->>'outcome' = 'answered'`, a.uid, devices.Object(a.dev), strconv.FormatInt(id, 10), hex.EncodeToString(sum[:])).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("device.action audit rows: %d (%v)", n, err)
 	}
 	// The replay, at another ask too: refused, nothing moves.
@@ -309,6 +314,127 @@ func TestAPhoneDismissesAnAskSigned(t *testing.T) {
 	}
 	if got := a.status(t, a.uid, id); got.Status != attention.Cancelled {
 		t.Fatalf("the ask after the signed dismissal: %+v", got)
+	}
+}
+
+// auditOutcomes is the outcome of every device.action row for ask id, oldest
+// first.
+func (a *actionRig) auditOutcomes(t *testing.T, id int64) []string {
+	t.Helper()
+	rows, err := a.pool.Query(authz.System(context.Background()), `SELECT coalesce(detail->>'outcome', '<none>') FROM audit_log
+		WHERE user_id = $1 AND action = 'device.action' AND detail->>'target' = $2 ORDER BY id`, a.uid, strconv.FormatInt(id, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// TestTheAuditRowSaysWhatHappened: a verified signed action is audited AFTER
+// it runs, with its outcome — so a refusal of the ask itself (already settled:
+// 409 not_open) leaves a row that says not_open, never one that reads like the
+// success beside it (answered / cancelled). A refusal of the challenge
+// (bad signature) runs nothing and writes no row. RED at #314's round-1 head,
+// where the row was written at the spend, before the action, with no outcome.
+func TestTheAuditRowSaysWhatHappened(t *testing.T) {
+	a := newActionRig(t)
+	yes := "yes"
+	done := a.askFor(t, a.uid, "Audited success?")
+	nonce, msg := a.challenge(t, a.tok, actionAskAnswer, done, &yes)
+	if c, code := a.act(t, a.tok, "answer", done, map[string]string{"nonce": nonce, "signature": sign(t, a.key, msg), "answer": yes}); c != http.StatusOK {
+		t.Fatalf("the answer: %d %s", c, code)
+	}
+	settled := a.askFor(t, a.uid, "Audited refusal?")
+	if _, err := a.attn.Cancel(asUser(a.uid), settled); err != nil {
+		t.Fatal(err)
+	}
+	nonce, msg = a.challenge(t, a.tok, actionAskAnswer, settled, &yes)
+	if c, code := a.act(t, a.tok, "answer", settled, map[string]string{"nonce": nonce, "signature": sign(t, a.key, msg), "answer": yes}); c != http.StatusConflict || code != actionCodeNotOpen {
+		t.Fatalf("the settled ask: %d %s", c, code)
+	}
+	dismissed := a.askFor(t, a.uid, "Audited dismissal?")
+	nonce, msg = a.challenge(t, a.tok, actionAskDismiss, dismissed, nil)
+	if c, code := a.act(t, a.tok, "cancel", dismissed, map[string]string{"nonce": nonce, "signature": sign(t, a.key, msg)}); c != http.StatusOK {
+		t.Fatalf("the dismissal: %d %s", c, code)
+	}
+	intruder, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	unsigned := a.askFor(t, a.uid, "Audited bad signature?")
+	nonce, msg = a.challenge(t, a.tok, actionAskAnswer, unsigned, &yes)
+	a.act(t, a.tok, "answer", unsigned, map[string]string{"nonce": nonce, "signature": sign(t, intruder, msg), "answer": yes})
+	for id, want := range map[int64]string{done: "answered", settled: "not_open", dismissed: "cancelled", unsigned: ""} {
+		if got := strings.Join(a.auditOutcomes(t, id), ","); got != want {
+			t.Errorf("ask %d's device.action outcomes = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// TestThePINKeyPolicyIsReadAtBothEnds: a biometric-or-PIN key paired while the
+// server allowed them is refused key_not_allowed once the policy is off — at
+// challenge creation, and, for a challenge minted while it was on, again at
+// the spend (the policy is re-read, not remembered). The control is the same
+// phone with the policy on, which acts.
+func TestThePINKeyPolicyIsReadAtBothEnds(t *testing.T) {
+	a := newActionRig(t)
+	a.s.ext.AllowPINKeys = true
+	pinKey, pinTok, _ := a.pairKeyedAs(t, "PIN phone", devices.KeyBiometricOrCredential)
+	yes := "yes"
+
+	// The control: policy on, the PIN phone acts.
+	ok := a.askFor(t, a.uid, "PIN control?")
+	nonce, msg := a.challenge(t, pinTok, actionAskAnswer, ok, &yes)
+	if c, code := a.act(t, pinTok, "answer", ok, map[string]string{"nonce": nonce, "signature": sign(t, pinKey, msg), "answer": yes}); c != http.StatusOK {
+		t.Fatalf("CONTROL: the PIN phone with the policy on: %d %s", c, code)
+	}
+
+	// Minted while on, spent after it was turned off.
+	late := a.askFor(t, a.uid, "PIN turned off between?")
+	nonce, msg = a.challenge(t, pinTok, actionAskAnswer, late, &yes)
+	a.s.ext.AllowPINKeys = false
+	if c, code := a.act(t, pinTok, "answer", late, map[string]string{"nonce": nonce, "signature": sign(t, pinKey, msg), "answer": yes}); c != http.StatusForbidden || code != actionCodeKeyNotAllowed {
+		t.Fatalf("the spend after the policy went off: %d %s, want 403 key_not_allowed", c, code)
+	}
+	if a.status(t, a.uid, late).Status != attention.Open {
+		t.Fatal("the ask moved")
+	}
+
+	// Policy off: no challenge at all.
+	b, _ := json.Marshal(map[string]string{"action": actionAskDismiss, "target": strconv.FormatInt(late, 10)})
+	w := a.call(a.edge, "POST", deviceChallengePath, pinTok, string(b))
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), `"code":"`+actionCodeKeyNotAllowed+`"`) {
+		t.Fatalf("a challenge with the policy off: %d %s, want 403 key_not_allowed", w.Code, w.Body.String())
+	}
+}
+
+// TestALongMultiByteAnswerIsJudgedAsAnAnswer: an answer of MaxAnswerRunes
+// 4-byte characters (32 000 bytes, past the 8 KiB other device bodies get) is
+// read and recorded; one character over is invalid_answer — the answer's own
+// rule — never a bad_request for the body's size. RED at #314's round-1 head
+// (8 KiB cap: 400 bad_request for both).
+func TestALongMultiByteAnswerIsJudgedAsAnAnswer(t *testing.T) {
+	a := newActionRig(t)
+	for _, c := range []struct {
+		runes  int
+		status int
+		code   string
+	}{
+		{attention.MaxAnswerRunes, http.StatusOK, ""},
+		{attention.MaxAnswerRunes + 1, http.StatusBadRequest, actionCodeInvalidAnswer},
+	} {
+		id := a.askFor(t, a.uid, "A long answer?")
+		answer := strings.Repeat("😀", c.runes)
+		nonce, msg := a.challenge(t, a.tok, actionAskAnswer, id, &answer)
+		got, code := a.act(t, a.tok, "answer", id, map[string]string{"nonce": nonce, "signature": sign(t, a.key, msg), "answer": answer})
+		if got != c.status || code != c.code {
+			t.Errorf("a %d-rune answer: %d %q, want %d %q", c.runes, got, code, c.status, c.code)
+		}
 	}
 }
 

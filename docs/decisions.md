@@ -191,7 +191,7 @@ The web service worker still offers no buttons.
   The confirmation is the send button.
 - **One core.** A signed answer is the Attention page's own answer
   (`answerAskFrom`), under the device owner's principal; the only difference
-  is the `device.action` audit row.
+  is the `device.action` audit row, written after the action with its outcome.
 
 ## The message box must not fail silently, or deliver twice
 

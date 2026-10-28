@@ -101,7 +101,8 @@ as **payload v2**:
   a secret scan would redact is left out, never sent redacted. A payload that
   would not fit drops the suggestions, then the options, never the question.
 - An ask also carries `actions`, the notification's buttons: an `ask_answer`
-  per option and per suggestion (with its exact `text`), an inline-reply
+  per option and per suggestion (naming its chip by index in `ask`, whose
+  text is the answer it sends), an inline-reply
   `ask_answer` (`input: true`), and `ask_dismiss` — each confirmed on the phone
   with its step-up key and sent as a signed action
   ([design/android.md](design/android.md#the-signed-ask-actions-as-built)).

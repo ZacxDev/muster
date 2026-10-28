@@ -8,7 +8,7 @@ import (
 
 // TestAnAsksButtonsFollowItsChips: with the signed actions routed
 // (AskActions), payload v2 offers an ask_answer per option and per suggestion
-// carrying its exact text, the inline-reply Answer and Dismiss, each naming the
+// naming its chip by index, the inline-reply Answer and Dismiss, each naming the
 // ask; a chip the fit drops takes its button with it, and the worst case still
 // fits with Answer and Dismiss. Without AskActions there are none (the control).
 // RED at the PR 1 tip (no `actions`).
@@ -23,8 +23,8 @@ func TestAnAsksButtonsFollowItsChips(t *testing.T) {
 		Actions json.RawMessage `json:"actions"`
 	}
 	_ = json.Unmarshal(b, &v)
-	want := `[{"id":"ask_answer","label":"ship it","target":"41","text":"ship it"},` +
-		`{"id":"ask_answer","label":"wait for Monday","target":"41","text":"wait for Monday"},` +
+	want := `[{"id":"ask_answer","target":"41","option":0},` +
+		`{"id":"ask_answer","target":"41","suggestion":0},` +
 		`{"id":"ask_answer","label":"Answer","target":"41","input":true},{"id":"ask_dismiss","label":"Dismiss","target":"41"}]`
 	if string(v.Actions) != want {
 		t.Fatalf("actions = %s\nwant %s", v.Actions, want)

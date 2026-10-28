@@ -750,19 +750,21 @@ app builds against.
  "ask": {"id": 41, "options": ["ship it", "wait for Monday"],
          "suggestions": ["Wait for Monday, until the backup is verified"]},
  "actions": [
-   {"id": "ask_answer", "label": "ship it", "target": "41", "text": "ship it"},
-   {"id": "ask_answer", "label": "wait for Monday", "target": "41", "text": "wait for Monday"},
-   {"id": "ask_answer", "label": "Wait for Monday, until the backup is verified", "target": "41",
-    "text": "Wait for Monday, until the backup is verified"},
+   {"id": "ask_answer", "target": "41", "option": 0},
+   {"id": "ask_answer", "target": "41", "option": 1},
+   {"id": "ask_answer", "target": "41", "suggestion": 0},
    {"id": "ask_answer", "label": "Answer", "target": "41", "input": true},
    {"id": "ask_dismiss", "label": "Dismiss", "target": "41"}],
  "update": true}
 ```
 
 - `actions` lists every option, then every suggestion, as an `ask_answer`
-  whose `text` is the exact answer to send; then the inline-reply `ask_answer`
+  that names its chip **by index** — `option: i` is `ask.options[i]`,
+  `suggestion: i` is `ask.suggestions[i]` — whose text is both the button's
+  label and the exact answer to send (each chip's text is in the push once, so
+  the buttons cost the chips no room); then the inline-reply `ask_answer`
   (`input: true`: the user types the text, through the [held reply](#inline-reply));
-  then `ask_dismiss`. The app picks which to show as buttons (Android shows at
+  then `ask_dismiss`. Only the last two carry a `label`. The app picks which to show as buttons (Android shows at
   most three) and may show the rest as chips in an expanded view. `target` is
   the ask's id, the route's `{id}`.
 - `update: true` arrives on the second push of the same tag, when the
@@ -809,8 +811,15 @@ POST /api/device/actions/attention/asks/41/cancel
 
 The answer is the Attention page's own answer, under the device owner's
 principal: the notification is withdrawn on every device, the asker's wait
-returns it, and an agent's answer is delivered into its session. An audit row
-`device.action` records the device, the action, the ask and the text's hash.
+returns it, and an agent's answer is delivered into its session. Once the
+action has run, an audit row `device.action` records the device, the action,
+the ask, the text's hash and the **outcome**: the ask's new status
+(`answered`, `cancelled`) or the refusal's code (`not_open`, `not_found`,
+`invalid_answer`, `failed`). A challenge refused before the action
+(`bad_signature`, `challenge_*`, `key_not_allowed`) runs nothing and writes no
+row. The body may be up to 8000 characters of the answer at any UTF-8 width
+(the body bound is the answer's own, so an over-long answer is
+`invalid_answer`, not `bad_request`).
 
 **5. Refusals.** Every refusal is JSON `{"error": "<sentence>", "code": "<code>"}`
 (a bad or revoked device credential answers the device tier's own 401, with no
