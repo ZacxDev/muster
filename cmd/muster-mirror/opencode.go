@@ -83,6 +83,10 @@ func runOpenCodePair(args []string, getenv func(string) string, stdout, stderr i
 	return 0
 }
 
+// openCodeNotPairedWhy is why there is no opencode credential when the token
+// file does not exist (%s: its path).
+const openCodeNotPairedWhy = "not paired on this host (no token at %s); fine unless you run opencode here, and to show its sessions run `muster-mirror opencode-pair`"
+
 // openCodeCredentials is the daemon's opencode credential: the token file at
 // path, or none (nil, with why). There is no other source: a token the daemon
 // cannot renew would stop working, silently, 30 days on.
@@ -92,7 +96,10 @@ func openCodeCredentials(path string) (*opencodehost.Credentials, string) {
 	}
 	c, err := opencodehost.LoadCredentials(expandHome(path))
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Sprintf("no opencode token at %s (pair this host with `muster-mirror opencode-pair`)", path)
+		// The usual case on a host that does not run opencode, and the daemon
+		// logs it at every start: worded so a new install does not read it as
+		// a fault (INSTALL.md, Step 7, names this line as expected).
+		return nil, fmt.Sprintf(openCodeNotPairedWhy, path)
 	}
 	if err != nil {
 		return nil, err.Error()

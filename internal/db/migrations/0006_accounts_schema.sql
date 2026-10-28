@@ -143,7 +143,7 @@ ALTER TABLE public.chat_messages     ADD COLUMN IF NOT EXISTS owner_id BIGINT NO
 ALTER TABLE public.connectors        ADD COLUMN IF NOT EXISTS owner_id BIGINT NOT NULL DEFAULT 1 REFERENCES public.users (id);
 ALTER TABLE public.connector_grants  ADD COLUMN IF NOT EXISTS owner_id BIGINT NOT NULL DEFAULT 1 REFERENCES public.users (id);
 ALTER TABLE public.connector_audit   ADD COLUMN IF NOT EXISTS owner_id BIGINT NOT NULL DEFAULT 1 REFERENCES public.users (id);
-ALTER TABLE public.github_connection ADD COLUMN IF NOT EXISTS owner_id BIGINT NOT NULL DEFAULT 1 REFERENCES public.users (id);
+ALTER TABLE IF EXISTS public.github_connection ADD COLUMN IF NOT EXISTS owner_id BIGINT NOT NULL DEFAULT 1 REFERENCES public.users (id);
 
 -- ---------------------------------------------------------------------------
 -- 3. Drop every child FK this file replaces — the single-column originals
@@ -225,12 +225,14 @@ ALTER TABLE public.connectors ADD CONSTRAINT connectors_owner_name_key UNIQUE (o
 -- ---------------------------------------------------------------------------
 -- 7. github_connection: one connection per owner, replacing the id = 1
 --    singleton. The existing row (if any) is owner 1 from step 2.
+--    IF EXISTS on the table (here and in step 2): 0059 drops it, and this body
+--    must still re-run cleanly on a schema past 0059.
 -- ---------------------------------------------------------------------------
 
-ALTER TABLE public.github_connection DROP CONSTRAINT IF EXISTS github_connection_id_check;
-ALTER TABLE public.github_connection DROP CONSTRAINT IF EXISTS github_connection_pkey;
-ALTER TABLE public.github_connection DROP COLUMN IF EXISTS id;
-ALTER TABLE public.github_connection ADD CONSTRAINT github_connection_pkey PRIMARY KEY (owner_id);
+ALTER TABLE IF EXISTS public.github_connection DROP CONSTRAINT IF EXISTS github_connection_id_check;
+ALTER TABLE IF EXISTS public.github_connection DROP CONSTRAINT IF EXISTS github_connection_pkey;
+ALTER TABLE IF EXISTS public.github_connection DROP COLUMN IF EXISTS id;
+ALTER TABLE IF EXISTS public.github_connection ADD CONSTRAINT github_connection_pkey PRIMARY KEY (owner_id);
 
 -- ---------------------------------------------------------------------------
 -- 8. Owner-leading indexes, one per owned table, keyed on what that table's

@@ -51,7 +51,6 @@ var accountsReset = []string{
 	`DELETE FROM agents WHERE owner_id <> 1`,
 	`DELETE FROM connectors WHERE owner_id <> 1`,
 	`DELETE FROM notes WHERE owner_id <> 1`,
-	`DELETE FROM github_connection WHERE owner_id <> 1`,
 	`DELETE FROM mirror_tokens WHERE owner_id <> 1`,
 	`DELETE FROM flow_requests WHERE owner_id <> 1`,
 	`DELETE FROM flow_jobs WHERE owner_id <> 1`,
