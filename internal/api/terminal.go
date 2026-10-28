@@ -426,35 +426,12 @@ var terminalPingInterval = 25 * time.Second
 // variable so a test can stall a page in less than ten seconds.
 var terminalWriteTimeout = 10 * time.Second
 
-// pageWriteGrace is how long a write to the page that is IN FLIGHT when its
-// stream's context ends may still take to land.
-const pageWriteGrace = time.Second
-
-// pageWriteContext is the context ONE write to the page runs on: bounded by
-// terminalWriteTimeout, and NOT ended at the instant ctx is — a write in flight
-// then gets pageWriteGrace to finish its frame.
-//
-// 🔴 coder/websocket CLOSES THE CONNECTION, WITH NO CLOSE FRAME, WHEN A WRITE'S
-// CONTEXT ENDS WHILE THE FRAME IS BEING WRITTEN (Conn.setupWriteTimeout). A
-// shutdown (EndTerminals) ends every stream's context, so a page write that
-// happened to be in flight at that instant cut the socket: the page read EOF
-// and was never told "shutdown" (shutdownFrame) — measured as about 1 in 300
-// runs of TestADeployIsReportedAsShutdownNotTheBrowserLeaving under load, on
-// main as on any branch. The grace keeps a stalled page from holding a
-// shutdown up for the whole write timeout; the heartbeat's writePing applies
-// the same rule (a context the stream's end does not cancel).
-func pageWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalWriteTimeout)
-	stop := context.AfterFunc(ctx, func() { time.AfterFunc(pageWriteGrace, cancel) })
-	return wctx, func() { stop(); cancel() }
-}
-
 func terminalWriteJSON(ctx context.Context, c *websocket.Conn, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	wctx, cancel := pageWriteContext(ctx)
+	wctx, cancel := context.WithTimeout(ctx, terminalWriteTimeout)
 	defer cancel()
 	err = c.Write(wctx, websocket.MessageText, b)
 	notePageWrite(c, err)
@@ -513,7 +490,7 @@ func (w *terminalWriter) Write(p []byte) (int, error) {
 			return 0, err
 		}
 	}
-	wctx, cancel := pageWriteContext(w.ctx)
+	wctx, cancel := context.WithTimeout(w.ctx, terminalWriteTimeout)
 	defer cancel()
 	if err := w.c.Write(wctx, websocket.MessageBinary, p); err != nil {
 		return 0, err

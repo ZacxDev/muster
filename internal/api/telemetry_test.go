@@ -378,9 +378,9 @@ func TestADeployIsReportedAsShutdownNotTheBrowserLeaving(t *testing.T) {
 	for _, v := range []string{openViewMirror, openViewTerminal} {
 		before[v] = testutil.ToFloat64(metrics.ViewDisconnects.WithLabelValues(v, telemetry.ReasonShutdown))
 	}
-	viewTP, _, view := r.openLive(t, "/mirror/view")
+	_, _, view := r.openLive(t, "/mirror/view")
 	defer view.CloseNow()
-	termTP, _, term := r.openLive(t, "/mirror/terminal")
+	_, _, term := r.openLive(t, "/mirror/terminal")
 	defer term.CloseNow()
 
 	// The pages read while muster shuts down, as a browser does (the close
@@ -424,43 +424,12 @@ func TestADeployIsReportedAsShutdownNotTheBrowserLeaving(t *testing.T) {
 			t.Errorf("muster_view_disconnects_total{view=%q,reason=shutdown} moved by %v, want 1", v, got)
 		}
 	}
-	// 🔴 THIS TEST'S OWN SOCKETS' close spans, found by their link to the open
-	// (each joined its document's trace through ?tp=). The tracer is
-	// process-wide (telemetry.Use), so a socket an EARLIER test left closing
-	// records its "closed" span into this rig's exporter: picking the first
-	// span by NAME read that one's client_left (seen in CI), not this one's.
-	for n, tp := range map[string]string{"GET /mirror/view/ws closed": viewTP, "GET /mirror/terminal/ws closed": termTP} {
-		s := r.waitForClosed(t, n, tp)
+	spans := r.waitFor(t, "GET /mirror/view/ws closed", "GET /mirror/terminal/ws closed")
+	for _, n := range []string{"GET /mirror/view/ws closed", "GET /mirror/terminal/ws closed"} {
+		s, _ := stub(spans, n)
 		if attr(s, "muster.close_reason") != telemetry.ReasonShutdown || s.Status.Code != codes.Error {
 			t.Errorf("%s: reason %q status %v, want shutdown and an error", n, attr(s, "muster.close_reason"), s.Status)
 		}
-	}
-}
-
-// waitForClosed waits for the close span named name whose link is to a span
-// in the trace traceparent tp names, and returns it.
-func (r *tracedMirrorRig) waitForClosed(t *testing.T, name, tp string) tracetest.SpanStub {
-	t.Helper()
-	parts := strings.Split(tp, "-")
-	if len(parts) != 4 {
-		t.Fatalf("not a traceparent: %q", tp)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		for _, s := range r.exp.GetSpans() {
-			if s.Name != name {
-				continue
-			}
-			for _, l := range s.Links {
-				if l.SpanContext.TraceID().String() == parts[1] {
-					return s
-				}
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no %q span linked to trace %s", name, parts[1])
-		}
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -427,14 +427,6 @@ var bannerLedger = []string{
 // change — it fails here until the variable is moved onto bannerLedger.
 //
 // ⚠ EACH REASON BELOW WAS READ OFF THE CODE, NOT INFERRED FROM THE GROUPING.
-// removedGitHubOAuthExempt is why the removed GitHub OAuth connection's four
-// variables have no both-directions line: nothing configures from them, so
-// unset is simply the normal state. Each one that is set is named on the one
-// `github oauth: REMOVED … IGNORED` line (TestTheRemovedGitHubOAuthVariablesAreIgnored).
-const removedGitHubOAuthExempt = "the GitHub OAuth connection was removed; read only so a deployment " +
-	"still setting it boots, and named on the `github oauth: REMOVED` line when set. Unset is the " +
-	"normal state and there is nothing to announce"
-
 var bannerExempt = map[string]string{
 	envChiefDispatchOwners: "counted on the `task routing: ON with DISPATCH` line (with the caps), named on the ON line " +
 		"when empty, and on a `chief dispatch: INERT` line when set with task routing off",
@@ -490,10 +482,6 @@ var bannerExempt = map[string]string{
 		"with ln.Addr()), which is the answer this variable is asked for and is strictly " +
 		"better than echoing the request — it is printed after the banner, by serve, not by " +
 		"logBanner",
-	envGitHubToken:     removedGitHubOAuthExempt,
-	envGitHubEncKey:    removedGitHubOAuthExempt,
-	envGitHubClientID:  removedGitHubOAuthExempt,
-	envGitHubClientSec: removedGitHubOAuthExempt,
 	envPublicURL: "the externally reachable origin: an input to the same-origin check " +
 		"(api.Extensions.PublicURL) and the base of every minted link; named by the " +
 		"`file attachments:` line when it is what disables uploads",

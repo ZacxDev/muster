@@ -206,9 +206,8 @@ The OAuth connection has been removed: the Repos tab, `/github/connect`,
 static-token connect at boot. Without an App, muster has no GitHub identity and
 no repository counts as connected.
 
-A deployment may still set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`,
-`MUSTER_GITHUB_ENCRYPTION_KEY` or `MUSTER_GITHUB_TOKEN`. muster boots on them,
-ignores them, and names each one that is set on a
-`github oauth: REMOVED — set and IGNORED` boot line. Drop them from the
-deployment. The `github_connection` table is left in the schema, unread and
+Nothing reads `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`,
+`MUSTER_GITHUB_ENCRYPTION_KEY` or `MUSTER_GITHUB_TOKEN` any more. muster does
+not refuse unknown variables, so a deployment that still sets them boots; drop
+them from the deployment. The `github_connection` table is left in the schema, unread and
 unwritten, so this change can be rolled back; a later migration can drop it.

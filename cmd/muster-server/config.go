@@ -80,15 +80,6 @@ const (
 
 	envPublicURL = "MUSTER_PUBLIC_URL"
 
-	// The REMOVED GitHub OAuth connection's variables. Nothing configures from
-	// them any more; they are still read, only so a deployment that sets them
-	// boots (a value that once had to parse no longer has to) and the banner
-	// says each one is ignored (ignoredGitHubOAuthEnv).
-	envGitHubToken     = "MUSTER_GITHUB_TOKEN"
-	envGitHubEncKey    = "MUSTER_GITHUB_ENCRYPTION_KEY"
-	envGitHubClientID  = "GITHUB_CLIENT_ID"
-	envGitHubClientSec = "GITHUB_CLIENT_SECRET"
-
 	// The GitHub App (internal/githubapp): muster's GitHub identity (for
 	// admins), and the only one. The ID and the key are a pair, and the account allowlist is REQUIRED with
 	// them: the App is public, so anyone can install it.
@@ -531,10 +522,6 @@ type config struct {
 	BrowserPort int
 
 	PublicURL string
-	// IgnoredGitHubOAuth names the removed GitHub OAuth connection's variables
-	// that are set (ignoredGitHubOAuthEnv), for the boot banner. Nothing else
-	// reads them.
-	IgnoredGitHubOAuth []string
 
 	// GitHubAppID / GitHubAppKey configure the GitHub App (both or neither;
 	// loadConfig refuses half, and a key that does not parse).
@@ -1050,7 +1037,6 @@ func loadConfig(getenv func(string) string) (config, error) {
 		GoTrueURL:            strings.TrimRight(strings.TrimSpace(getenv(envGoTrueURL)), "/"),
 		GoTrueSecret:         strings.TrimSpace(getenv(envGoTrueSecret)),
 		PublicURL:            strings.TrimSpace(getenv(envPublicURL)),
-		IgnoredGitHubOAuth:   ignoredGitHubOAuthEnv(getenv),
 		FaroURL:              strings.TrimSpace(getenv(envFaroURL)),
 		FaroKey:              strings.TrimSpace(getenv(envFaroKey)),
 		FaroTracing:          envFlag(getenv, envFaroTracing),
@@ -1575,28 +1561,6 @@ func (c *config) loadGitHubApp(getenv func(string) string) error {
 	}
 	c.GitHubAppID, c.GitHubAppKey, c.GitHubAppAccounts = n, k, parsed
 	return nil
-}
-
-// ignoredGitHubOAuthEnv names, in a fixed order, the removed GitHub OAuth
-// connection's variables that are set to anything but whitespace.
-//
-// 🔴 IT NEVER REFUSES, AND THAT IS THE POINT OF READING THEM AT ALL. A
-// deployment that configured the OAuth connection still sets these (among them
-// an encryption key that used to have to decode to 32 bytes); this build must
-// boot on that environment unchanged. Each one set is named on the boot banner
-// as ignored, so the operator can see what to drop.
-func ignoredGitHubOAuthEnv(getenv func(string) string) []string {
-	var out []string
-	add := func(name, value string) {
-		if strings.TrimSpace(value) != "" {
-			out = append(out, name)
-		}
-	}
-	add(envGitHubEncKey, getenv(envGitHubEncKey))
-	add(envGitHubToken, getenv(envGitHubToken))
-	add(envGitHubClientID, getenv(envGitHubClientID))
-	add(envGitHubClientSec, getenv(envGitHubClientSec))
-	return out
 }
 
 // decodeEncryptionKey decodes a 32-byte AES key (the connector store's).

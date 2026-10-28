@@ -1381,12 +1381,6 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"repository checkout (the github approval) before the agent is marked error (%s unset)",
 			agents.DefaultCheckoutWaitTimeout, envCheckoutWaitTimeout)
 	}
-	// The GitHub OAuth connection was removed; a deployment may still set its
-	// variables, and booting on them is deliberate (ignoredGitHubOAuthEnv).
-	if len(a.cfg.IgnoredGitHubOAuth) > 0 {
-		l.Printf("github oauth: REMOVED — set and IGNORED: %s (the GitHub App is muster's GitHub identity); "+
-			"drop them from the deployment", strings.Join(a.cfg.IgnoredGitHubOAuth, ", "))
-	}
 
 	// 🔴 THE SEAM, ANNOUNCED ON EVERY BOOT. See doc_seams.go.
 	//
