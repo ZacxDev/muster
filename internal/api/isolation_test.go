@@ -200,12 +200,18 @@ var isolationClasses = map[string]routeClass{
 	"GET /api/device/config":            classDevice,
 	"PUT /api/device/push":              classDevice,
 	"DELETE /api/device/push":           classDevice,
-	"GET /api/push/vapid-public-key":    classList,
-	"POST /api/push/subscribe":          classList,
-	"POST /api/push/unsubscribe":        classList,
-	"POST /account/push/test":           classList,
-	"POST /account/push/{id}/remove":    classParam,
-	"POST /account/push/preferences":    classList,
+	// The signed ask actions (device_actions.go): {id} names an ask, answered
+	// under the device owner's principal (row-level security), and nothing
+	// is done without a challenge THIS device asked for and signed.
+	"POST /api/device/challenge":                          classDevice,
+	"POST /api/device/actions/attention/asks/{id}/answer": classDevice,
+	"POST /api/device/actions/attention/asks/{id}/cancel": classDevice,
+	"GET /api/push/vapid-public-key":                      classList,
+	"POST /api/push/subscribe":                            classList,
+	"POST /api/push/unsubscribe":                          classList,
+	"POST /account/push/test":                             classList,
+	"POST /account/push/{id}/remove":                      classParam,
+	"POST /account/push/preferences":                      classList,
 	// accounts PR 5: invite redemption and the password reset (tokens in form
 	// fields, like the claim), and the admin pages.
 	"GET /invite":      classPublic,
@@ -1546,6 +1552,13 @@ func sortedRoutes() []string {
 // side effect instead, at the end of the walk.
 var sideEffectControlled = map[string]string{
 	"POST /agents/{id}/start": "the provisioner acted for A (isoProvisioner records it), never for B",
+	// 🔴 A SIGNATURE NO WALKER HOLDS, AS GET /f/{id}: a signed ask action needs a
+	// challenge its own device asked for, signed by that device's step-up key,
+	// so A's device's bare request is refused like the ghost's. Its control is
+	// device_actions_pg_test.go: the SAME route, A's device signing, answers A's
+	// ask; B's device signing for A's ask is not_found and A's ask stays open.
+	"POST /api/device/actions/attention/asks/{id}/answer": "a signed action: controlled in device_actions_pg_test.go",
+	"POST /api/device/actions/attention/asks/{id}/cancel": "a signed action: controlled in device_actions_pg_test.go",
 	// 🔴 A BEARER CAPABILITY, NOT A SIDE EFFECT: the signed link's credential is
 	// the HMAC in its query, which no walker holds — the walk sends the bare
 	// path, so A's own answer is the ghost's 404, as it must be. Its control is

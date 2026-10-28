@@ -186,6 +186,11 @@ from the question and its options, grounded in them by the same filter:
   first, then the options, when a push would not fit in its 4096-byte record —
   never the question. The page itself, behind the sign-in like `/attention`,
   draws the asker's options as written.
+- **On a paired phone a chip answers** (once the app draws them). Each option
+  and suggestion is also a notification button (payload v2's `actions`):
+  tapped, it is confirmed with the phone's step-up key, whose prompt shows the
+  exact text, and sent as the ask's answer by a signed action — the same answer
+  as this page's ([design/android.md](design/android.md#the-signed-ask-actions-as-built)).
 
 ## The agent tools
 

@@ -390,6 +390,9 @@ var routeVias = map[authz.Via][]string{
 		"GET /api/device/config",
 		"PUT /api/device/push",
 		"DELETE /api/device/push",
+		"POST /api/device/challenge",
+		"POST /api/device/actions/attention/asks/{id}/answer",
+		"POST /api/device/actions/attention/asks/{id}/cancel",
 	},
 	// A PLUGIN token (0015) opens exactly the plugin door.
 	authz.ViaPlugin: {

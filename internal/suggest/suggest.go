@@ -5,7 +5,10 @@
 // 🔴 A SUGGESTION IS NEVER SENT BY MUSTER. A tap only fills the composer (and
 // appends below a draft that is already there); the operator edits it and
 // presses Send, which keeps its own step-up gate. Nothing in this package can
-// reach a pane: it produces text, and the only consumer is the composer.
+// reach a pane: it produces text. The one exception is an ask's suggestion on
+// a paired phone's notification, sent as the ask's answer only by a signed
+// action the person confirmed with the phone's step-up key
+// (internal/api device_actions.go) — the confirmation is the send.
 //
 // The pieces, in the order a suggestion passes through them:
 //

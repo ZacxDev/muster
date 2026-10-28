@@ -732,6 +732,119 @@ cannot clash. The app refuses the bare verbs (`cancel`, `answer`, `approve`)
 | `draft_reject` | `/api/device/actions/plugins/drafts/{id}/reject` |
 | `agent_send` | `/api/device/actions/agents/{name}/send` |
 
+### The signed ask actions, as built
+
+The first signed actions muster serves are an ask's: `ask_answer` and
+`ask_dismiss` (Phase 2, asks only; the other ids in the table above are not
+routed yet; `GET /api/device/config`'s `features.actions` is true where these
+two are, and a push offers only ids that are). This is the whole contract the
+app builds against.
+
+**1. The notification (payload v2 for an `attention` ask).**
+
+```json
+{"v": 2, "type": "attention", "id": "ask-41", "tag": "attention-ask-41",
+ "title": "chief is asking",
+ "body": "Ship the migration tonight?\nOptions: ship it · wait for Monday",
+ "url": "/attention/open/ask-41",
+ "ask": {"id": 41, "options": ["ship it", "wait for Monday"],
+         "suggestions": ["Wait for Monday, until the backup is verified"]},
+ "actions": [
+   {"id": "ask_answer", "target": "41", "option": 0},
+   {"id": "ask_answer", "target": "41", "option": 1},
+   {"id": "ask_answer", "target": "41", "suggestion": 0},
+   {"id": "ask_answer", "label": "Answer", "target": "41", "input": true},
+   {"id": "ask_dismiss", "label": "Dismiss", "target": "41"}],
+ "update": true}
+```
+
+- `actions` lists every option, then every suggestion, as an `ask_answer`
+  that names its chip **by index** — `option: i` is `ask.options[i]`,
+  `suggestion: i` is `ask.suggestions[i]` — whose text is both the button's
+  label and the exact answer to send (each chip's text is in the push once, so
+  the buttons cost the chips no room); then the inline-reply `ask_answer`
+  (`input: true`: the user types the text, through the [held reply](#inline-reply));
+  then `ask_dismiss`. Only the last two carry a `label`. The app picks which to show as buttons (Android shows at
+  most three) and may show the rest as chips in an expanded view. `target` is
+  the ask's id, the route's `{id}`.
+- `update: true` arrives on the second push of the same tag, when the
+  suggestions are ready: replace the notification without alerting again.
+- A payload that would not fit in 4096 bytes drops the suggestions (and their
+  actions), then the options (and theirs); `Answer` and `Dismiss` always stay.
+- A `resolved` push with the same tag withdraws it.
+
+**2. The challenge.** On a tap, after the keyguard is dismissed:
+
+```
+POST /api/device/challenge          (Authorization: Bearer mdv_…)
+{"action": "ask_answer", "target": "41", "text_sha256": "<64 lowercase hex>"}
+→ 200 {"nonce": "mdc_…", "expires_at": "…Z", "expires_in": 120,
+       "message": "muster-device-action-v1\nmdc_…\nask_answer\n41\n<hex>"}
+```
+
+- `text_sha256` is the lowercase hex SHA-256 of the answer's UTF-8 bytes,
+  exactly as it will be sent (no trimming on the phone). Required for
+  `ask_answer`; absent for `ask_dismiss`.
+- `target` is the ask id in decimal, no leading zeros.
+- The nonce is single use and lives 2 minutes.
+
+**3. The signature.** Show a `BiometricPrompt` whose description repeats the
+exact answer text, with a `CryptoObject` wrapping `Signature.getInstance(
+"SHA256withECDSA")` initialised with the step-up key; sign the UTF-8 bytes of
+`message` **exactly as returned** (lines joined by `\n`, no trailing newline:
+`muster-device-action-v1`, the nonce, the action, the target, the text's hex
+SHA-256 or an empty line for none). Send the DER signature, base64 (standard or
+URL alphabet, padding optional). muster rebuilds the message from the stored
+challenge, never from the request.
+
+**4. The action.**
+
+```
+POST /api/device/actions/attention/asks/41/answer
+{"nonce": "mdc_…", "signature": "<base64>", "answer": "ship it"}
+→ 200 {"ok": true, "id": 41, "status": "answered"}
+
+POST /api/device/actions/attention/asks/41/cancel
+{"nonce": "mdc_…", "signature": "<base64>"}
+→ 200 {"ok": true, "id": 41, "status": "cancelled"}
+```
+
+The answer is the Attention page's own answer, under the device owner's
+principal: the notification is withdrawn on every device, the asker's wait
+returns it, and an agent's answer is delivered into its session. Once the
+action has run, an audit row `device.action` records the device, the action,
+the ask, the text's hash and the **outcome**: the ask's new status
+(`answered`, `cancelled`) or the refusal's code (`not_open`, `not_found`,
+`invalid_answer`, `failed`). A challenge refused before the action
+(`bad_signature`, `challenge_*`, `key_not_allowed`) runs nothing and writes no
+row. The body may be up to 8000 characters of the answer at any UTF-8 width
+(the body bound is the answer's own, so an over-long answer is
+`invalid_answer`, not `bad_request`).
+
+**5. Refusals.** Every refusal is JSON `{"error": "<sentence>", "code": "<code>"}`
+(a bad or revoked device credential answers the device tier's own 401, with no
+`code`). The challenge is spent before it is judged, so after any refusal of the
+action route ask for a new challenge.
+
+| code | status | meaning | the app |
+|---|---|---|---|
+| `bad_request` | 400 | malformed body, unknown action, bad target or `text_sha256` | a bug: report it |
+| `no_stepup_key` | 403 | the phone paired read-only | offer "Re-confirm this phone" |
+| `key_not_allowed` | 403 | a biometric-or-PIN key while the server refuses them | offer re-pairing |
+| `challenge_invalid` | 401 | no such challenge for this phone, or one bound to another action, ask or text | new challenge |
+| `challenge_used` | 401 | already spent (a replay, or a retry) | new challenge |
+| `challenge_expired` | 401 | older than 2 minutes | new challenge |
+| `bad_signature` | 401 | the signature does not verify against the stored key | if the key was invalidated, "Re-confirm this phone" |
+| `not_found` | 404 | no such ask among the owner's | drop the notification |
+| `not_open` | 409 | answered, dismissed or expired already | drop the notification, say so |
+| `invalid_answer` | 400 | blank, or over 8000 characters | say so |
+| `failed` | 500 | muster could not record it | keep the notification; retry later |
+
+The step-up time is not handed on: answering and dismissing an ask need no fresh
+sign-in on the web either, so no decisions.md "freshness source" entry is owed
+yet; it is when the first gated web route (Send now, Approve) gets its device
+twin.
+
 ### Native passkeys are not on the path
 
 Neither the step-up nor sign-in depends on passkeys:
@@ -938,7 +1051,7 @@ signed action) and its own [decisions.md](../decisions.md) entry (item 25).
 
   | event | actions |
   |---|---|
-  | `attention` (agent question) | up to two of the asker's options, and **Answer** (inline reply) |
+  | `attention` (agent question) | the asker's options and the suggested replies (as `actions`; the app shows up to three as buttons), **Answer** (inline reply) and **Dismiss** — built ([the signed ask actions](#the-signed-ask-actions-as-built)) |
   | `attention` (mirrored Claude Code question) | Open only. A session's `AskUserQuestion` has no `/attention/asks/{id}/answer` route; it is answered in the session's rendered view |
   | `attention` (session waiting) | Open |
   | `plugin` | **Approve and send**, **Reject** |
