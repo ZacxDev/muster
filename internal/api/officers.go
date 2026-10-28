@@ -62,6 +62,12 @@ type OfficersConfig struct {
 	HTTPClient *http.Client
 	// Now is the wake loop's clock; nil is time.Now. For tests.
 	Now func() time.Time
+	// InstallSession installs the officer runtime's session source on the
+	// provisioner (agentprovision.Adapter.UseClaudeCodeSession). REQUIRED:
+	// without it an instance's Claude Code session would stop on a permission
+	// prompt for its first officer tool call and never run its model, and
+	// nothing would say so — EnableOfficers refuses instead.
+	InstallSession func(source func(agents.Agent) (allow []string, model string, ok bool))
 }
 
 // EnableOfficers turns the officer runtime on and returns its wake loop for the
@@ -73,6 +79,9 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	}
 	if s.ext.Agents == nil || s.ext.Provisioner == nil {
 		return nil, errors.New("officers: need the agents store and an agent provisioner")
+	}
+	if cfg.InstallSession == nil {
+		return nil, errors.New("officers: no way to install the instances' session settings on the provisioner (pre-allowed officer tools, model)")
 	}
 	if !s.ext.kindEnabled(agents.KindClaudeCode) {
 		return nil, fmt.Errorf("officers: instances run on the %s kind, which MUSTER_AGENT_KINDS does not enable", agents.KindClaudeCode)
@@ -86,6 +95,7 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	}
 	host, _ := os.Hostname()
 	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
+	cfg.InstallSession(s.OfficerClaudeCodeSession)
 	for _, o := range reg.All() {
 		s.logger.Printf("officers: %s on: instances %s..%s, idle scale-to-zero after %s, poll %s",
 			o.ID, officers.InstanceName(o.ID, 1), officers.InstanceName(o.ID, o.MaxInstances), o.IdleAfter, o.PollInterval)
@@ -289,22 +299,35 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 		release()
 		return fmt.Errorf("officers: %s's session: %w", name, err)
 	}
+	// 🔴 THE SEND ENDS AT SHUTDOWN, AND RELEASES ITS CLAIM WHEN IT DOES. Its
+	// context is cancelled by EndStreams — as a plugin delivery's is — and the
+	// shutdown drain waits for it (WaitForOfficerReprompts). Detached from that,
+	// a rollout during a re-prompt turn exited with the claim held for the rest
+	// of the turn's budget, and a stop+start of the instance inside it ended in
+	// error. The release runs on its own short, detached budget (release).
+	sendCtx, endSend := s.streamContext(context.WithoutCancel(octx))
 	s.officerRT.wg.Add(1)
-	bg := context.WithoutCancel(octx)
 	safeGo(s.logger, "officer re-prompt "+name, func() {
 		defer s.officerRT.wg.Done()
 		defer release()
-		tctx, cancel := context.WithTimeout(bg, turn)
+		defer endSend()
+		tctx, cancel := context.WithTimeout(sendCtx, turn)
 		defer cancel()
 		reply, err := s.ext.Gateway.Chat(tctx, fresh, sess.SessionKey, text, nil)
-		bctx, bcancel := context.WithTimeout(bg, 10*time.Second)
+		if unsent := agentgateway.Unsent(err); unsent != "" {
+			// Refused before anything was typed (ccd's 409 busy, 503
+			// not_ready): not a turn, so nothing goes on the transcript.
+			s.logger.Printf("officers: %s: re-prompt not sent (%s); the next pass tries again", name, unsent)
+			return
+		}
+		bctx, bcancel := context.WithTimeout(context.WithoutCancel(octx), 10*time.Second)
 		defer bcancel()
 		_, _ = s.ext.Agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "user", Content: text})
 		if reply != "" {
 			_, _ = s.ext.Agents.AddChatMessage(bctx, agents.ChatMessage{AgentID: fresh.ID, SessionID: sess.ID, Role: "assistant", Content: reply})
 		}
 		if err != nil {
-			s.logger.Printf("officers: %s: re-prompt turn: %s", name, agentgateway.Unsent(err)+failureKind(err))
+			s.logger.Printf("officers: %s: re-prompt turn: %s", name, failureKind(err))
 		}
 	})
 	return nil
@@ -332,11 +355,33 @@ func (f officerFleet) Stop(ctx context.Context, o officers.Officer, n int) error
 	return f.s.ext.Provisioner.Stop(octx, a.ID)
 }
 
-// waitOfficerReprompts waits for in-flight re-prompt sends (tests, shutdown).
-func (s *Server) waitOfficerReprompts() {
+// WaitForOfficerReprompts blocks until every in-flight re-prompt send has
+// ended and released its session claim. Called by the shutdown drain after
+// EndStreams (which cancels them), and by tests.
+func (s *Server) WaitForOfficerReprompts() {
 	if s.officerRT != nil {
 		s.officerRT.wg.Wait()
 	}
+}
+
+// OfficerClaudeCodeSession is the provisioner's session source
+// (agentprovision.Adapter.UseClaudeCodeSession): for a declared officer's
+// instance, the officer tools it is offered — EXACTLY those, in registry
+// order, so its Claude Code session never stops on a permission prompt for
+// its own queue (an officer deployment may have no approval gate) — and the
+// officer's configured model. Every other agent: ok=false. Nothing else is
+// ever pre-allowed: not a built-in tool, not another muster tool.
+func (s *Server) OfficerClaudeCodeSession(a agents.Agent) (allow []string, model string, ok bool) {
+	o, _, ok := s.officerOf(a)
+	if !ok {
+		return nil, "", false
+	}
+	for _, d := range officerToolDefs() {
+		if officers.ToolOffered(o, d.Name) {
+			allow = append(allow, d.Name)
+		}
+	}
+	return allow, o.Model, true
 }
 
 // --- delete protection -------------------------------------------------------

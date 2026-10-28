@@ -1708,6 +1708,16 @@ func (c config) validate() error {
 	if err := c.validateSTT(); err != nil {
 		return err
 	}
+	// 🔴 OFFICERS NEED THE CONNECTOR DOOR. An officer instance reaches its
+	// tools only over muster's MCP server, served on the connect listener; with
+	// it unset the instance boots with no officer tools and nothing says so.
+	// validateConnectors (below) already holds MUSTER_AGENT_CONNECT_URL to the
+	// key and the port, so this names the one variable and the set.
+	if len(c.Officers) > 0 && c.AgentConnectURL == "" {
+		return fmt.Errorf("%s declares officers but %s is not set: officer instances reach their tools only over muster's "+
+			"MCP server on the connect listener, so they would boot with no officer tools. Set %s, %s and %s",
+			envOfficers, envAgentConnectURL, envAgentConnectURL, envConnectPort, envConnectorEncKey)
+	}
 	if err := c.validateConnectors(); err != nil {
 		return err
 	}

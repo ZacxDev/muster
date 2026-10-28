@@ -26,12 +26,17 @@ delete protection).
 
 ```sh
 MUSTER_AGENT_KINDS=gateway,claude-code        # officers run on claude-code
+# REQUIRED with officers: the connect listener the instances reach their tools on
+MUSTER_CONNECTOR_ENCRYPTION_KEY=…              # (the connector store's key)
+MUSTER_CONNECT_PORT=8091
+MUSTER_AGENT_CONNECT_URL=http://muster.<namespace>.svc:8091
 MUSTER_OFFICERS='[
   {"id": "release:example-web",
    "hq_url": "https://hq.example.com/api/v1",
    "max_instances": 1,
    "idle_scale_to_zero_after": "30m",
-   "poll_interval": "1m"}
+   "poll_interval": "1m",
+   "model": "opus"}
 ]'
 MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB=…     # from a Secret; see below
 ```
@@ -45,12 +50,17 @@ MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB=…     # from a Secret; see below
 | `poll_interval` | `1m` | How often HQ's open items are read when nothing else wakes the loop. At least `10s`. |
 | `owner` | `1` | The muster user the instance agents belong to. |
 | `cc_account` | the pool's choice | Pin the Claude account instances run on. |
+| `model` | the account's default | The model the instances' Claude Code sessions run: an alias (`opus`, `sonnet`) or a full model id (`claude-opus-4-5-20251101`, `opus[1m]`). Checked at boot. Written as the session's settings `model` (below). |
 
 Each officer's token is read from `MUSTER_OFFICER_TOKEN_<NAME>`: the id
 upper-cased with every other character written as `_`. A declared officer with
 no token, an unknown field, two officers whose agent names would collide, or an
 officer on a server without the `claude-code` kind or an agent provisioner, is
-a boot refusal that names the problem. The rows are in
+a boot refusal that names the problem — and so is **any officer without the
+connector door**: an instance reaches its tools only over muster's MCP server,
+which is the connect listener, so `MUSTER_AGENT_CONNECT_URL` (and with it
+`MUSTER_CONNECT_PORT` and the connector store's key) must be set; without it
+instances would boot with no officer tools, silently. The rows are in
 [configuration.md](configuration.md#muster-server-officers).
 
 ### The release captain
@@ -77,6 +87,31 @@ Names starting `officer-` are reserved. muster's name generator cannot produce
 one (its adjective-noun pool has no such word), and the officer runtime is the
 only code that creates an agent under a fixed name of that shape. An instance
 keeps its namespace, volume and Claude account across stops and starts.
+
+### The instance's Claude Code session
+
+The instance runs in its pod's primary Claude Code session, and muster sets two
+things in that session's `settings.json` at provision time (the pod's
+`ccd seed` writes them from `CCD_ALLOW_MCP_TOOLS` and `CCD_MODEL`, which muster
+puts on the pod; `internal/podagent/session.go`):
+
+- **`permissions.allow`: exactly the officer's own tools** —
+  `mcp__muster__officer_brief`, `…officer_items`, `…officer_claim`,
+  `…officer_heartbeat`, `…officer_complete`, `…officer_release`, and for a
+  `release:*` officer `…officer_release_evaluation`. Without them the first call
+  to each would wait on a permission prompt in the pod's terminal, and an
+  officer deployment may have no approval gate to answer it. **Nothing else is
+  allowed**: the channel only takes bare tool names and always writes them as
+  `mcp__muster__<name>` (a name holding `__` or anything but `[a-z0-9_]` is
+  refused and the pod does not start), so it cannot allow Bash, Write, Edit, a
+  path rule or another server's tool. Every other tool keeps the image's default
+  permission posture. The template's `permissions` replace the file's on every
+  start, so an allow list a session writes for itself does not survive.
+- **`model`**, when the officer sets one. Unset leaves the file's model alone
+  (the account default).
+
+No other agent gets either (the officer runtime is the provisioner's only
+source of them, and it answers for a declared officer's instances only).
 
 ## Waking and scaling
 
@@ -151,7 +186,8 @@ waits `poll_interval` doubled per consecutive failure, capped at 10 minutes.
 this officer's) or a 404 (HQ without the officer API, or no such officer), seen
 on **2 consecutive passes** (`officers.FaultStrikes`; one alone is an HQ deploy
 or a token cache mid-rollout, and changes nothing), is a **configuration fault,
-not an outage**. A 5xx in between neither confirms nor clears it; only a
+not an outage**. An outage (5xx, network error) in between breaks the run — 404,
+502, 404 confirms nothing — and does not clear a fault already confirmed; only a
 successful answer does. It is logged loudly once per change
 ("HQ refuses this officer …: a CONFIGURATION fault"), counted on
 `muster_officer_hq_faults`, and the officer's up instances are **scaled to
@@ -165,6 +201,10 @@ see" is never read as "nothing is running".
 instances, so a restarted muster makes the same decisions. The one thing kept
 in memory is when the officer was first seen idle; a restart forgets it and
 waits a full idle window again. That can delay a scale-down, never cause one.
+
+**Shutdown.** A re-prompt being sent when muster shuts down is cancelled
+with the other in-flight deliveries, releases the instance's session claim,
+and is waited for before the process exits.
 
 **More than one muster pod.** The loop is not leader-gated (no background loop
 in muster is; see `cmd/muster-server`'s `startBackgroundLoops`). Two pods
@@ -296,7 +336,11 @@ What a deployment needs beyond muster's usual claude-code setup:
    `MUSTER_OFFICER_TOKEN_<NAME>` (not to any agent).
 3. `MUSTER_OFFICERS` on muster-server, and `MUSTER_AGENT_KINDS` including
    `claude-code` with an account in the pool.
-4. Egress from muster-server to HQ. Nothing needs to reach muster from HQ.
+4. The connector door: `MUSTER_CONNECTOR_ENCRYPTION_KEY`, `MUSTER_CONNECT_PORT`
+   and `MUSTER_AGENT_CONNECT_URL` (the server refuses to boot officers without
+   it). No approval gate is needed for the officer's own tools: they are
+   pre-allowed in the instance's session (above).
+5. Egress from muster-server to HQ. Nothing needs to reach muster from HQ.
 
 Checking it: the boot log has one `officers: <id> on: …` line per officer;
 after HQ creates an item, `officer-<type>-<area>-1` appears among the agents

@@ -319,7 +319,7 @@ type officerState struct {
 	// between leaves it, so the gauge and the "answers again" line stay true.
 	fault string
 	// strikes counts consecutive passes that saw a permanent refusal; a
-	// successful answer resets it, a 5xx leaves it.
+	// successful answer and an outage (5xx, network) both reset it.
 	strikes int
 }
 
@@ -411,6 +411,11 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 			if s.strikes >= FaultStrikes && s.fault != refusal {
 				s.fault, changed = refusal, true
 			}
+		} else {
+			// An outage (5xx, network) BREAKS a run of refusals: HQ mid-change
+			// is not HQ configured wrong. It does not clear a CONFIRMED fault —
+			// only a successful answer does.
+			s.strikes = 0
 		}
 		confirmed := refusal != "" && s.fault == refusal
 		strikes := s.strikes

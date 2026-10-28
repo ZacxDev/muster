@@ -60,6 +60,7 @@ func TestParseRefusals(t *testing.T) {
 		"no token":       {`[{"id":"x:y","hq_url":"http://h/api/v1"}]`, "MUSTER_OFFICER_TOKEN_X_Y"},
 		"duplicate":      {`[{"id":"a:b","hq_url":"http://h/api/v1"},{"id":"a:b","hq_url":"http://h/api/v1"}]`, "declared twice"},
 		"slug collision": {`[{"id":"a:b-c","hq_url":"http://h/api/v1"},{"id":"a-b:c","hq_url":"http://h/api/v1"}]`, "same agent slug"},
+		"bad model":      {`[{"id":"a:b","hq_url":"http://h/api/v1","model":"opus now"}]`, "is not a model name"},
 		"long name":      {`[{"id":"a:` + strings.Repeat("b", 40) + `","hq_url":"http://h/api/v1"}]`, "characters, over 50"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -121,5 +122,17 @@ func TestTheNameBoundFollowsTheNamespacePrefix(t *testing.T) {
 	_, err := officers.Parse(raw, tok, "a-very-long-namespace-prefix-") // 63-29 = 34
 	if err == nil || !strings.Contains(err.Error(), "over 34") {
 		t.Fatalf("47 chars under a 29-char prefix: err = %v, want a refusal naming 34", err)
+	}
+}
+
+// TestParseReadsTheModel: model is optional, kept verbatim when it is a model
+// name.
+func TestParseReadsTheModel(t *testing.T) {
+	for _, m := range []string{"opus", "claude-opus-4-5-20251101", "opus[1m]", ""} {
+		raw := `[{"id":"a:b","hq_url":"http://h/api/v1","model":"` + m + `"}]`
+		list, err := officers.Parse(raw, env(map[string]string{"MUSTER_OFFICER_TOKEN_A_B": "x"}), "muster-agent-")
+		if err != nil || list[0].Model != m {
+			t.Fatalf("model %q: %+v %v", m, list, err)
+		}
 	}
 }

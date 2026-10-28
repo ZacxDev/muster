@@ -227,7 +227,13 @@ type officerRig struct {
 
 	clockMu sync.Mutex
 	clock   time.Time
+	// installed is the session source EnableOfficers installed.
+	installed func(agents.Agent) ([]string, string, bool)
 }
+
+func (r *officerRig) installSession(f func(agents.Agent) ([]string, string, bool)) { r.installed = f }
+
+func discardSession(func(agents.Agent) ([]string, string, bool)) {}
 
 func (r *officerRig) now() time.Time {
 	r.clockMu.Lock()
@@ -266,7 +272,7 @@ func newOfficerRig(t *testing.T) *officerRig {
 	b := officers.Officer{ID: offB, HQURL: hq.BaseURL(), MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(offBTok)
 	r := &officerRig{s: s, store: store, prov: prov, hq: hq, logs: logs, a: a, b: b, chat: chat, clock: time.Now()}
 	hq.Now = r.now
-	rec, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{a, b}, Now: r.now})
+	rec, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{a, b}, Now: r.now, InstallSession: r.installSession})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -660,7 +666,7 @@ func TestEnableOfficersRefusesWithoutClaudeCode(t *testing.T) {
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))
 	s.UseExtensions(Extensions{Agents: &officerAgents{}, Provisioner: stubProvisioner{}, SessionLiveness: stubLiveness{}})
 	o := officers.Officer{ID: offA, HQURL: "http://hq.invalid/api/v1", MaxInstances: 1}.WithToken("x")
-	if _, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{o}}); err == nil || !strings.Contains(err.Error(), "claude-code") {
+	if _, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{o}, InstallSession: discardSession}); err == nil || !strings.Contains(err.Error(), "claude-code") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -845,7 +851,7 @@ func TestAnIdleUpInstanceIsRepromptedAsItsOwnTurn(t *testing.T) {
 	r.store.ReleaseKickoffClaim(ctx, inst.ID, "agentkickoff/turn")
 
 	res := r.rec.Check(ctx, offB, true)
-	r.s.waitOfficerReprompts()
+	r.s.WaitForOfficerReprompts()
 	if len(res.Decision.Reprompt) != 1 || len(res.ActErrs) != 0 || r.chat.count() != 1 {
 		t.Fatalf("idle up instance with an open item: %+v, sent %d", res, r.chat.count())
 	}
@@ -861,4 +867,156 @@ func TestAnIdleUpInstanceIsRepromptedAsItsOwnTurn(t *testing.T) {
 	if won, _ := r.store.ClaimKickoff(ctx, inst.ID, "someone-else", time.Minute); !won {
 		t.Fatal("the re-prompt's session claim was not released")
 	}
+}
+
+// TestAnOfficerInstancePreAllowsExactlyItsOwnTools: the session settings the
+// officer runtime hands the provisioner are, for each officer's instance,
+// EXACTLY the officer tools it is offered (the release officer's seven, the
+// triage officer's six — never another tool, never a built-in) and its
+// configured model; a non-officer agent gets nothing.
+func TestAnOfficerInstancePreAllowsExactlyItsOwnTools(t *testing.T) {
+	r := newOfficerRig(t)
+	rel := r.addInstance(r.a, 1, 871)
+	tri := r.addInstance(r.b, 1, 872)
+	allow, _, ok := r.s.OfficerClaudeCodeSession(rel)
+	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release,officer_release_evaluation"; !ok || strings.Join(allow, ",") != want {
+		t.Fatalf("release officer allow = %v (ok %v), want %s", allow, ok, want)
+	}
+	allow, _, ok = r.s.OfficerClaudeCodeSession(tri)
+	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release"; !ok || strings.Join(allow, ",") != want {
+		t.Fatalf("triage officer allow = %v (ok %v), want %s", allow, ok, want)
+	}
+	if allow, model, ok := r.s.OfficerClaudeCodeSession(r.agent(t, officerOrdinaryID)); ok || allow != nil || model != "" {
+		t.Fatalf("an ordinary agent got session settings: %v %q %v", allow, model, ok)
+	}
+	if allow, _, ok := r.s.OfficerClaudeCodeSession(r.agent(t, officerChiefID)); ok || allow != nil {
+		t.Fatalf("the chief got officer session settings: %v", allow)
+	}
+	// The model follows the officer's config.
+	r.s.officerRT = nil
+	o := r.a
+	o.Model = "claude-opus-4-5"
+	if _, err := r.s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{o, r.b}, InstallSession: discardSession}); err != nil {
+		t.Fatal(err)
+	}
+	if _, model, _ := r.s.OfficerClaudeCodeSession(rel); model != "claude-opus-4-5" {
+		t.Fatalf("model = %q, want the configured claude-opus-4-5", model)
+	}
+	if _, model, _ := r.s.OfficerClaudeCodeSession(tri); model != "" {
+		t.Fatalf("an officer with no model got %q", model)
+	}
+}
+
+// TestEnableOfficersInstallsTheSessionSourceOrRefuses: the source the
+// provisioner is handed IS the officer runtime's (it answers an instance with
+// its tools), and EnableOfficers refuses to run officers with no installer —
+// an instance would otherwise block on its first permission prompt, silently.
+func TestEnableOfficersInstallsTheSessionSourceOrRefuses(t *testing.T) {
+	r := newOfficerRig(t)
+	inst := r.addInstance(r.a, 1, 881)
+	if r.installed == nil {
+		t.Fatal("EnableOfficers installed no session source")
+	}
+	if allow, _, ok := r.installed(inst); !ok || len(allow) != 7 {
+		t.Fatalf("installed source answered %v %v for a release instance", allow, ok)
+	}
+	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))
+	s.UseExtensions(Extensions{Agents: &officerAgents{}, Provisioner: stubProvisioner{}, SessionLiveness: stubLiveness{}, Kinds: stubKinds{}})
+	if _, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{r.a}}); err == nil || !strings.Contains(err.Error(), "session settings") {
+		t.Fatalf("no installer: err = %v, want a refusal", err)
+	}
+}
+
+// blockingChat is a Chat that blocks until its ctx ends (a turn in flight),
+// then answers as an unsent refusal would, or with err when set.
+type blockingChat struct {
+	stubGateway
+	started chan struct{}
+	err     error
+}
+
+func (g *blockingChat) Chat(ctx context.Context, _ agents.Agent, _, _ string, _ func(string)) (string, error) {
+	close(g.started)
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+// recordingAgents wraps officerAgents to count transcript rows.
+type recordingAgents struct {
+	*officerAgents
+	rows int
+	mu   sync.Mutex
+}
+
+func (r *recordingAgents) AddChatMessage(_ context.Context, m agents.ChatMessage) (agents.ChatMessage, error) {
+	r.mu.Lock()
+	r.rows++
+	r.mu.Unlock()
+	return m, nil
+}
+
+// TestShutdownMidRepromptReleasesTheClaim: a re-prompt send in flight when
+// the server shuts down (EndStreams) is cancelled, its session claim is
+// released, and WaitForOfficerReprompts returns — rather than the claim staying
+// held for the rest of the turn's budget (~39 min) after the process exited,
+// which made a stop+start of that instance end in error.
+func TestShutdownMidRepromptReleasesTheClaim(t *testing.T) {
+	r := newOfficerRig(t)
+	inst := r.addInstance(r.b, 1, 891)
+	r.store.mu.Lock()
+	r.store.rows[len(r.store.rows)-1].KickedOff = true
+	r.store.mu.Unlock()
+	gw := &blockingChat{started: make(chan struct{})}
+	r.s.ext.Gateway = gw
+	if err := (officerFleet{s: r.s}).Reprompt(context.Background(), r.b, 1, "new work"); err != nil {
+		t.Fatal(err)
+	}
+	<-gw.started
+	r.s.EndStreams()
+	done := make(chan struct{})
+	go func() { r.s.WaitForOfficerReprompts(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitForOfficerReprompts did not return after shutdown: the send was not cancelled")
+	}
+	if won, _ := r.store.ClaimKickoff(context.Background(), inst.ID, "after-restart", time.Minute); !won {
+		t.Fatal("the session claim is still held after shutdown")
+	}
+}
+
+// TestAnUnsentRepromptRecordsNoTranscript: a re-prompt the runtime refused
+// before typing anything (ccd's 409 busy / 503 not_ready) is not a turn, and
+// leaves no "user" row on the agent's transcript; a delivered one leaves both.
+func TestAnUnsentRepromptRecordsNoTranscript(t *testing.T) {
+	r := newOfficerRig(t)
+	r.addInstance(r.b, 1, 892)
+	r.store.mu.Lock()
+	r.store.rows[len(r.store.rows)-1].KickedOff = true
+	r.store.mu.Unlock()
+	rec := &recordingAgents{officerAgents: r.store}
+	r.s.ext.Agents = rec
+	r.s.ext.Gateway = refusingChat{}
+	if err := (officerFleet{s: r.s}).Reprompt(context.Background(), r.b, 1, "new work"); err != nil {
+		t.Fatal(err)
+	}
+	r.s.WaitForOfficerReprompts()
+	if rec.rows != 0 {
+		t.Fatalf("an unsent re-prompt recorded %d transcript rows", rec.rows)
+	}
+	r.s.ext.Gateway = &repromptChat{}
+	if err := (officerFleet{s: r.s}).Reprompt(context.Background(), r.b, 1, "new work"); err != nil {
+		t.Fatal(err)
+	}
+	r.s.WaitForOfficerReprompts()
+	if rec.rows != 2 {
+		t.Fatalf("a delivered re-prompt recorded %d rows, want 2 (user + reply)", rec.rows)
+	}
+}
+
+// refusingChat answers like ccd refusing a turn before typing it (409 busy).
+type refusingChat struct{ stubGateway }
+
+func (refusingChat) Chat(context.Context, agents.Agent, string, string, func(string)) (string, error) {
+	return "", &agents.RuntimeError{Status: http.StatusConflict, Type: "busy", Message: "a turn holds the session"}
 }

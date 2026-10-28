@@ -667,3 +667,24 @@ func TestABusyInstanceIsRepromptedOnceItsTurnEnds(t *testing.T) {
 		t.Fatalf("the turn ended: reprompts = %v, want one at once", r.fleet.reprompts)
 	}
 }
+
+// TestAnOutageBreaksARunOfRefusals: 404 → 502 → 404 is not two CONSECUTIVE
+// refusals — the outage in between says HQ is mid-change, not configured
+// wrong — so nothing is scaled down. 404 → 404 still is (control).
+func TestAnOutageBreaksARunOfRefusals(t *testing.T) {
+	r := newRig(t, 1, 30*time.Minute)
+	r.fleet.up[1], r.fleet.exists[1] = true, true
+	for _, code := range []int{404, 502, 404} {
+		r.hq.SetStatus(code)
+		r.check(t)
+		r.clk.Advance(time.Hour)
+	}
+	if len(r.fleet.stops) != 0 || officers.HQFaults() != 0 {
+		t.Fatalf("404, 502, 404: stops %v gauge %v — an outage between refusals confirmed a fault", r.fleet.stops, officers.HQFaults())
+	}
+	r.hq.SetStatus(404)
+	r.check(t)
+	if len(r.fleet.stops) != 1 {
+		t.Fatalf("control: 404, 404 (the last of the run above, then this): stops %v, want [1]", r.fleet.stops)
+	}
+}

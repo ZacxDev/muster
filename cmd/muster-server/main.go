@@ -642,7 +642,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// startBackgroundLoops. Refused at boot, like any contradictory
 	// configuration, when officers are declared without what they need.
 	if len(cfg.Officers) > 0 {
-		if a.officers, err = srv.EnableOfficers(api.OfficersConfig{Officers: cfg.Officers}); err != nil {
+		if a.officers, err = srv.EnableOfficers(api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov)}); err != nil {
 			a.Close()
 			return nil, fmt.Errorf("%s: %w", envOfficers, err)
 		}
@@ -688,6 +688,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	a.logBanner(ext, port)
 	return a, nil
+}
+
+// installSessionOn is prov's session-source installer for the officer
+// runtime, or nil when there is no provisioner (EnableOfficers then refuses).
+func installSessionOn(prov *agentprovision.Adapter) func(func(agents.Agent) ([]string, string, bool)) {
+	if prov == nil {
+		return nil
+	}
+	return prov.UseClaudeCodeSession
 }
 
 // askSweepEvery is how often the question store's expiry runs
@@ -1009,6 +1018,9 @@ func (a *app) shutdown() {
 		a.srv.WaitForPluginDeliveries()
 		// An answer delivered into an agent's session, the same way.
 		a.srv.WaitForAttentionDeliveries()
+		// An officer re-prompt, the same way: cancelled by EndStreams, it
+		// releases the instance's session claim before the process exits.
+		a.srv.WaitForOfficerReprompts()
 	}()
 	a.waitForKickoffs(kickoffDrainTimeout)
 	<-memoDone

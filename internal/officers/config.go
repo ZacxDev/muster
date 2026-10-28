@@ -26,6 +26,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // Defaults applied to a declared officer that leaves a field out.
@@ -64,6 +66,9 @@ type Officer struct {
 	// CCAccount optionally pins the Claude account instances run on; empty
 	// lets the account pool choose (each instance keeps its account for life).
 	CCAccount string `json:"cc_account,omitempty"`
+	// Model is the model the instances' Claude Code sessions run ("opus", a
+	// full model id); "" leaves the account's default.
+	Model string `json:"model,omitempty"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.
@@ -95,6 +100,7 @@ type declared struct {
 	PollInterval string `json:"poll_interval"`
 	Owner        int64  `json:"owner"`
 	CCAccount    string `json:"cc_account"`
+	Model        string `json:"model"`
 }
 
 // idPart is one half of an officer id: lowercase alphanumerics and single
@@ -178,6 +184,7 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		MaxInstances: d.MaxInstances,
 		Owner:        d.Owner,
 		CCAccount:    strings.TrimSpace(d.CCAccount),
+		Model:        strings.TrimSpace(d.Model),
 		IdleAfter:    DefaultIdleAfter,
 		PollInterval: DefaultPollInterval,
 	}
@@ -190,6 +197,11 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 	}
 	if u.User != nil {
 		return Officer{}, fmt.Errorf("officer %s: hq_url must not carry credentials; the token comes from %s%s", o.ID, TokenEnvPrefix, TokenEnvSuffix(o.ID))
+	}
+	if o.Model != "" {
+		if err := podagent.ValidModel(o.Model); err != nil {
+			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
+		}
 	}
 	if o.MaxInstances == 0 {
 		o.MaxInstances = DefaultMaxInstances

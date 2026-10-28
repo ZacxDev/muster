@@ -121,7 +121,7 @@ func TestARepromptDuringARunningFirstTurnNeverStrandsTheInstance(t *testing.T) {
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))
 	s.UseExtensions(Extensions{Agents: pg, Provisioner: readyProv{name: name}, Gateway: chat,
 		SessionLiveness: stubLiveness{}, Kinds: stubKinds{pick: "acct-one"}, AgentNamespacePrefix: prefix})
-	if _, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{o}}); err != nil {
+	if _, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{o}, InstallSession: discardSession}); err != nil {
 		t.Fatal(err)
 	}
 	fleet := officerFleet{s: s}
@@ -169,7 +169,7 @@ func TestARepromptDuringARunningFirstTurnNeverStrandsTheInstance(t *testing.T) {
 	if err := fleet.Reprompt(ctx, o, 1, officers.RepromptText(o, 1)); err != nil {
 		t.Fatalf("re-prompt after the turn ended: %v", err)
 	}
-	s.waitOfficerReprompts()
+	s.WaitForOfficerReprompts()
 	if chat.count() != 1 {
 		t.Fatalf("re-prompt sends after the turn ended = %d, want 1", chat.count())
 	}
