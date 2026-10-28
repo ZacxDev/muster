@@ -115,7 +115,7 @@ const minServiceTokenLen = 32
 //     operator decides otherwise.
 //   - too short — a placeholder rather than generated entropy.
 //   - identical to HookToken — that token is ONE shared value, handed to every hook
-//     script on both hosts and travelling in cleartext to the LAN NodePort many
+//     script on every host and travelling in cleartext to the LAN NodePort many
 //     times a day, so it NAMES NO CALLER. This door's whole content is an asserted
 //     identity; admitting the secret every hook holds would let any of them assert
 //     any name, which is a WRONG identity rather than a missing one.
@@ -150,7 +150,7 @@ func (c AuthConfig) ServiceWriteRefusal() string {
 	case len(c.ServiceToken) < minServiceTokenLen:
 		return fmt.Sprintf("MUSTER_SERVICE_TOKEN is shorter than %d characters (looks like a placeholder, not generated entropy)", minServiceTokenLen)
 	case c.ServiceToken == c.HookToken:
-		return "MUSTER_SERVICE_TOKEN is the same value as MUSTER_HOOK_TOKEN (one shared secret held by every hook script on both hosts, so it names no caller and every holder of it could assert any actor name at this door)"
+		return "MUSTER_SERVICE_TOKEN is the same value as MUSTER_HOOK_TOKEN (one shared secret held by every hook script on every host, so it names no caller and every holder of it could assert any actor name at this door)"
 	case c.ServiceToken == c.UIPassword:
 		return "MUSTER_SERVICE_TOKEN is the same value as MUSTER_UI_PASSWORD (which derives the session-cookie signing key, so a holder of this credential could mint signed operator browser sessions)"
 	}
@@ -244,11 +244,12 @@ func (s *Server) passwordSession(r *http.Request) (auth.Session, bool) {
 // session transcript pages, the approve/deny controls and the task surface.
 //
 // 🔴 IT USED TO BE A LITERAL `return next`, AND THAT IS WHAT THIS CLOSES. Human
-// auth had been removed on the reasoning that the public path is fronted by
-// Authelia and "the LAN is treated as trusted-open". The LAN half stopped being
-// tenable once the session page began rendering tool INPUTS and carrying a
-// free-form send-keys box: a NodePort bypasses the ingress entirely, so the
-// Authelia edge is not on this path at all and never was.
+// auth had been removed on the reasoning that the public path is fronted by a
+// forward-auth proxy and the local network is trusted. The second half stopped
+// being tenable once the session page began rendering tool INPUTS and carrying a
+// free-form send-keys box: a deployment reachable directly on the network (a
+// node port, a LAN address) bypasses the proxy entirely, so the proxy's
+// sign-in is not on that path at all.
 //
 // 🔴 THIS PARAGRAPH DESCRIBED A SECOND WRAPPER AND THREE ROUTES THAT DO NOT
 // EXIST HERE, AND THE CORRECTION MATTERS MORE THAN THE DELETION. It read: "the
@@ -413,13 +414,13 @@ func isDocumentNavigation(r *http.Request) bool {
 // `X-Muster-Token: <token>` (constant-time compared).
 //
 // 🔴 WHEN NO HookToken IS CONFIGURED THIS WRAPPER ADMITS EVERYONE WHO CAN REACH
-// THE PORT, AND ON THE LAN NodePort THAT IS ANYONE ON THE LAN. Say it that way
-// round: an earlier version of this comment said the handler is "left open for
-// back-compat", which describes the mechanism and hides the consequence. The
-// primary path to this server is a plain-HTTP NodePort that bypasses the Authelia
-// ingress entirely, so "open" here means every device on the house network can
-// call every route on this tier — POST /api/send, the /api/response poll cycle,
-// POST /api/tmux/snapshot — with no credential at all.
+// THE PORT. Say it that way round: an earlier version of this comment said the
+// handler is "left open for back-compat", which describes the mechanism and
+// hides the consequence. A deployment whose port is reachable directly — over
+// plain HTTP, bypassing any forward-auth proxy in front of the public path —
+// lets every device on that network call every route on this tier — POST
+// /api/send, the /api/response poll cycle, POST /api/tmux/snapshot — with no
+// credential at all.
 //
 // The back-compat rationale is real and is kept: the hook scripts predate the
 // token, and refusing them on an unconfigured server would break the highest-traffic
@@ -656,7 +657,7 @@ type serviceActorCtxKey struct{}
 // 🔴 ok == false IS NOT AN ERROR. requireHookOrServiceToken admits two credential
 // kinds and only one names a caller; a request on the shared hook token is
 // legitimately unattributed, because that secret is held by every hook script on
-// both hosts. Callers must decide what absence MEANS for them — and for the
+// every host. Callers must decide what absence MEANS for them — and for the
 // ownership check it means the operator's own tier, which is unscoped by design.
 func serviceActorFromContext(ctx context.Context) (string, bool) {
 	name, ok := ctx.Value(serviceActorCtxKey{}).(string)
@@ -787,7 +788,7 @@ func (s *Server) requireServiceToken(next http.HandlerFunc) http.HandlerFunc {
 // actor INSTEAD OF an agent-row lookup", i.e. add a way in that does not need the
 // row. Half (a) MUST stay: the two real Claude Code shell hooks POST /api/attention
 // on the shared secret (§2.2 — they are 100% staying), and removing it breaks the
-// highest-traffic operator-visible surface on both hosts.
+// highest-traffic operator-visible surface on every host.
 //
 // 🔴 HALF (b) IS STILL HERE, AND ITS DELETION IS OWED TO PHASE 4 RATHER THAN DONE
 // NOW. §4.4 does say the sixth door "deletes … the agent half of
@@ -881,7 +882,7 @@ func (s *Server) requireHookOrServiceToken(next http.HandlerFunc) http.HandlerFu
 		token := hookTokenFromRequest(r)
 		if auth.ConstantTimeEqual(token, s.auth.HookToken) {
 			// The operator's own tier: legitimately unattributed, because that
-			// secret is held by every hook script on both hosts and names nobody.
+			// secret is held by every hook script on every host and names nobody.
 			// (Unattributed means no ACTOR name; it still acts as the machine
 			// user, which is a different question.)
 			s.admit(w, r, next, s.principalFor(r.Context(), machineUserID(), authz.ViaHook))

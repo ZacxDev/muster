@@ -29,7 +29,7 @@ func TestProjectFilterRowRenders(t *testing.T) {
 		Cards: projectCards(),
 		Projects: []notes.ProjectCount{
 			{Name: "muster", Count: 12},
-			{Name: "remix", Count: 3},
+			{Name: "zephyr", Count: 3},
 		},
 	})
 
@@ -38,9 +38,9 @@ func TestProjectFilterRowRenders(t *testing.T) {
 	}
 	for _, want := range []string{
 		`data-tag-filter="project:muster"`,
-		`data-tag-filter="project:remix"`,
+		`data-tag-filter="project:zephyr"`,
 		`data-project-filter="muster"`,
-		`data-project-filter="remix"`,
+		`data-project-filter="zephyr"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("project row must contain %s; body=%s", want, out)
@@ -77,7 +77,7 @@ func TestProjectFilterRowHiddenWhenUnused(t *testing.T) {
 func TestProjectFilterRowMarksActive(t *testing.T) {
 	out := renderTasks(t, TasksView{
 		Cards:      projectCards(),
-		Projects:   []notes.ProjectCount{{Name: "muster", Count: 2}, {Name: "remix", Count: 1}},
+		Projects:   []notes.ProjectCount{{Name: "muster", Count: 2}, {Name: "zephyr", Count: 1}},
 		ActiveTags: []string{"project:muster"},
 	})
 	if !strings.Contains(out, `data-active-project="muster"`) {
@@ -85,14 +85,14 @@ func TestProjectFilterRowMarksActive(t *testing.T) {
 	}
 	// The active chip is pressed…
 	clawIdx := strings.Index(out, `data-project-filter="muster"`)
-	remixIdx := strings.Index(out, `data-project-filter="remix"`)
-	if clawIdx < 0 || remixIdx < 0 {
+	zephyrIdx := strings.Index(out, `data-project-filter="zephyr"`)
+	if clawIdx < 0 || zephyrIdx < 0 {
 		t.Fatalf("both chips must render; body=%s", out)
 	}
-	if !strings.Contains(out[clawIdx:remixIdx], `aria-pressed="true"`) {
+	if !strings.Contains(out[clawIdx:zephyrIdx], `aria-pressed="true"`) {
 		t.Fatalf("the active project chip must be aria-pressed=true; body=%s", out)
 	}
-	if !strings.Contains(out[remixIdx:], `aria-pressed="false"`) {
+	if !strings.Contains(out[zephyrIdx:], `aria-pressed="false"`) {
 		t.Fatalf("an inactive project chip must be aria-pressed=false; body=%s", out)
 	}
 }
@@ -237,7 +237,7 @@ func TestProjectChipsDeclareTheExclusiveGroup(t *testing.T) {
 		Cards: projectCards(),
 		Projects: []notes.ProjectCount{
 			{Name: "muster", Count: 12},
-			{Name: "remix", Count: 3},
+			{Name: "zephyr", Count: 3},
 		},
 	})
 

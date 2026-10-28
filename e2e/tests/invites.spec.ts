@@ -85,8 +85,8 @@ test('an admin invites a member by link; the member sees only its own (empty) bo
 
   // 1. The admin claims the account and reaches the admin pages from the sidebar.
   // The claim page opened WITHOUT its fragment — what a sign-in redirect in
-  // front of muster does (measured live behind Authelia: rd= carries no
-  // fragment). The page asks for the link; the WHOLE link is pasted, and the
+  // front of muster does (behind a forward-auth proxy, its rd= return URL
+  // carries no fragment). The page asks for the link; the WHOLE link is pasted, and the
   // page's script keeps only the token before posting.
   const claim = claimLink();
   await page.goto(browserURL + '/auth/claim');

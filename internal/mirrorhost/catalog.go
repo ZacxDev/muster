@@ -226,8 +226,9 @@ const storeRoot = "/nix/store"
 // still be read: root itself (a project's directory, the config directory, a
 // plugin's install directory) and the Nix store.
 //
-// ⚠ ROOT, NOT root/.claude, MEASURED: devrc's own .claude/commands is a link
-// to ../claude/commands (inside the repository, outside .claude), and every
+// ⚠ ROOT, NOT root/.claude, MEASURED: a dotfiles repository's .claude/commands
+// can be a link to ../claude/commands (inside the repository, outside .claude),
+// and every
 // ~/.claude/skills/*/SKILL.md resolves into /nix/store. A rule narrower than
 // this drops both — the operator's real skills — while a link out of the
 // project or the config directory (to /etc, another user's home) is refused.

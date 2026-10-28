@@ -140,7 +140,7 @@ func bearer(r *http.Request) string {
 // clientAddr is the failure counter's key: the TCP peer.
 //
 // ⚠ NOT X-Forwarded-For, which any client can write. Behind the public path
-// (Traefik → nginx relay → gateway → muster) every client therefore shares ONE
+// (a proxy chain in front of muster) every client therefore shares ONE
 // address and one failure count — which is safe ONLY because the count never
 // refuses a VALID token (see ServeConnect): a flood of bad tokens from anyone
 // earns those bad tokens 429s, and a legitimate host's reconnect is unaffected.

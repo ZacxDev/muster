@@ -1485,26 +1485,26 @@ var appScriptSrc = staticJS("app", `
   // surface when Faro is off (local/e2e).
   if (typeof window.cgTrack !== 'function') { window.cgTrack = function () {}; }
 
-  // --- Authelia session expiry -------------------------------------------
+  // --- forward-auth session expiry ---------------------------------------
   //
-  // A deployment behind an SSO forward-auth proxy (e.g. Authelia) with session.inactivity
-  // at 5m, so this path is exercised constantly, not rarely.
+  // A deployment behind an SSO forward-auth proxy with a short inactivity
+  // timeout exercises this path constantly, not rarely.
   //
   // 🔴 htmx CANNOT FIX THIS FROM THE RESPONSE SIDE. htmx's docs are explicit
   // that response headers "are not provided to htmx for processing with 3xx
   // Redirect response codes" — the browser follows the 302 inside the XHR
   // before htmx ever sees it. Every request this app makes is an htmx request
   // (the whole shell is hx-boost + panel swaps), so an expired session swaps
-  // the Authelia LOGIN PAGE into hx-target and the app appears to have turned
+  // the proxy's LOGIN PAGE into hx-target and the app appears to have turned
   // into the portal.
   //
-  // Measured against the live edge (Authelia 4.39.20, 2026-09-02):
+  // A forward-auth proxy may answer:
   //     GET /ui/requests                              -> 302
   //     GET /ui/requests  X-Requested-With: XHR       -> 401
-  // So Authelia WILL answer with a clean 401, but only on a header htmx does
+  // So such a proxy answers with a clean 401, but only on a header htmx does
   // not send by default. Hence (a).
   //
-  // ⚠ THAT IS MEASURED, NOT DOCUMENTED — an Authelia upgrade could change it.
+  // ⚠ THAT IS PROXY BEHAVIOUR, NOT A CONTRACT — an upgrade could change it.
   // (b) is therefore kept REGARDLESS: it catches a 401 arriving by any route,
   // including one that has nothing to do with X-Requested-With. Do not delete
   // (b) on the grounds that (a) makes it redundant — it does not.
@@ -1513,7 +1513,7 @@ var appScriptSrc = staticJS("app", `
   // replaced) and is why this IIFE can re-run; the guard keeps it to one bind.
   if (!window.__cgAuthGate) {
     window.__cgAuthGate = true;
-    // (a) Ask Authelia for a 401 instead of a 302 on every htmx request.
+    // (a) Ask the proxy for a 401 instead of a 302 on every htmx request.
     document.body.addEventListener('htmx:configRequest', function (e) {
       e.detail.headers['X-Requested-With'] = 'XMLHttpRequest';
     });

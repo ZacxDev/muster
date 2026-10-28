@@ -76,10 +76,10 @@ type WebManifest struct {
 //   - share_target is GET. Behind the forward-auth edge a POST is answered 303
 //     with its body dropped; a GET's query survives the login round trip (and
 //     muster's own ?next=), so a share started while signed out still lands.
-//   - every image lives under /static/icons/, the one static prefix the edge is
-//     planned to let through without a session (an Authelia bypass) — the
-//     screenshots included, so the richer install sheet does not depend on how
-//     the browser fetches them. Hence the fixture-data-only rule on them below.
+//   - every image lives under /static/icons/, one static prefix a forward-auth
+//     proxy can let through without a session — the screenshots included, so
+//     the richer install sheet does not depend on how the browser fetches
+//     them. Hence the fixture-data-only rule on them below.
 //   - Chrome on Android shows at most three shortcuts; there are three.
 func Manifest() WebManifest {
 	icon := func(src, sizes, purpose string) manifestImage {

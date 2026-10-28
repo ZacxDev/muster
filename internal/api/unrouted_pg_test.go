@@ -30,7 +30,7 @@ import (
 func newUnroutedFixture(t *testing.T) *gatedFixture {
 	t.Helper()
 	g := newGatedFixture(t)
-	if _, _, err := g.plugins.Create(g.asOwner, "agent-mail", "Agent mail", "civitai"); err != nil {
+	if _, _, err := g.plugins.Create(g.asOwner, "agent-mail", "Agent mail", "acme"); err != nil {
 		t.Fatal(err)
 	}
 	return g

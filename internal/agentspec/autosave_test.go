@@ -159,15 +159,15 @@ const testRef = "refs/heads/muster-wip/bold-moth-42"
 //
 // 🔴 THE BLIND SPOT THAT SHIPPED THE DEFECT. Every autosave test and both live
 // validation runs used a sandbox repository with NO hooks, which has NO hooks — so
-// nothing ever exercised the case the daemon actually meets in production. Agent
-// `bold-otter` (#49) was dispatched at civitai/civitai, which ships
+// nothing ever exercised the case the daemon actually meets in production. An
+// agent was dispatched at a real application repository (example/app here), which ships
 // `.husky/pre-push` and sets `core.hooksPath = .husky/_`; every snapshot push ran
 // a full typecheck, failed, and left `git ls-remote origin
 // 'refs/heads/muster-wip/*'` with zero refs. Durability was off on the exact
 // repository whose incident motivated the daemon.
 //
 // The two shapes below are DIFFERENT CODE PATHS in git, not two spellings of one
-// thing, and civitai uses the second — so both are exercised everywhere hooks
+// thing, and example/app uses the second — so both are exercised everywhere hooks
 // matter.
 
 // hookShape installs a client-side hook the way some class of real repository
@@ -191,7 +191,7 @@ var hookShapes = []hookShape{
 		},
 	},
 	{
-		// civitai/civitai's shape: husky redirects hook lookup out of .git.
+		// example/app's shape: husky redirects hook lookup out of .git.
 		name: "core.hooksPath husky",
 		install: func(t *testing.T, f *autosaveFixture, hookName, body string) {
 			t.Helper()
@@ -249,7 +249,7 @@ func TestAutosaveNeverRunsTheTargetRepoPrePushHook(t *testing.T) {
 			if hookRan(t, sentinel) {
 				t.Errorf("the target repository's pre-push hook RAN. A machine-generated "+
 					"snapshot must never execute a third party's verification — on "+
-					"civitai/civitai this is a full typecheck, burned every cycle inside the "+
+					"example/app this is a full typecheck, burned every cycle inside the "+
 					"agent pod:\n%s", out)
 			}
 			// (2) And durability actually happened.

@@ -98,7 +98,7 @@ func TestRoutingChipsVisuallyDistinct(t *testing.T) {
 		t.Fatal("routing and descriptive chips must have different styling")
 	}
 	// Each reserved namespace gets its own treatment + an explanatory title.
-	for _, tag := range []string{"initiative:launch", "initiative:remix", "gate:blocked", "auto:dispatch"} {
+	for _, tag := range []string{"initiative:launch", "initiative:zephyr", "gate:blocked", "auto:dispatch"} {
 		cls, title := tagChipClass(tag)
 		if cls == descClass {
 			t.Errorf("%s must not be styled as a descriptive chip", tag)
@@ -177,8 +177,8 @@ func TestBoardURLCarriesEveryDimension(t *testing.T) {
 		{"status only", nil, "in_progress", 0, "/ui/tasks?status=in_progress"},
 		{"limit only", nil, "", 137, "/ui/tasks?limit=137"},
 		{"status+limit", nil, "done", 71, "/ui/tasks?limit=71&status=done"},
-		{"all three", []string{"project:civitai"}, "open", 23,
-			"/ui/tasks?limit=23&status=open&tag=project%3Acivitai"},
+		{"all three", []string{"project:acme"}, "open", 23,
+			"/ui/tasks?limit=23&status=open&tag=project%3Aacme"},
 		// 0 means "no cap", and it must not appear as limit=0 — the server reads
 		// that back as the default page, so emitting it would be a silent lie about
 		// what was asked for.

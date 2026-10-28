@@ -8,7 +8,7 @@ import (
 )
 
 // TestTheCatalogueIsExactlyMuse pins the closed set. Adding a flow is a
-// decision that also needs the runner's local copy (devrc) to list it, so it
+// decision that also needs the runner's local copy to list it, so it
 // must change this line, not slip in.
 func TestTheCatalogueIsExactlyMuse(t *testing.T) {
 	if got := strings.Join(Names(), ","); got != "muse.poll,muse.send" {
@@ -164,7 +164,7 @@ func TestValidateRefusesMalformedDispatchParams(t *testing.T) {
 			r.Params = map[string]string{"wait": dispatchWait}
 		},
 		// Round-0 D4: nothing uses session on muse.poll, so neither catalogue
-		// takes it (the devrc runner's mirror refuses it too).
+		// takes it (the runner's own copy refuses it too).
 		"session on muse.poll": func(r *Request) {
 			r.Flow = "muse.poll"
 			r.Params = map[string]string{"session": dispatchSession, "task": "7"}

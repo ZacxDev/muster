@@ -16,7 +16,7 @@ import (
 // PULL-REQUEST → SESSION ROUTING (migration 0055):
 // docs/plugins.md#a-pull-request-review-mail.
 //
-//	the host's PostToolUse hook (outside muster, devrc's pr-session-bind-hook)
+//	the host's PostToolUse hook (outside muster)
 //	   on a successful `gh pr create` or `git push` ──▶ POST /api/pr-sessions
 //	   {repo, pr, head_ref, claude_session, kind} with route reply's credential
 //	   ──▶ session_prs, last_seen now (handlePRSessionBind)

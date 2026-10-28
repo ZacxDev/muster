@@ -155,8 +155,8 @@ func TestTaskDetailPageHeadingFallsBackToTheTaskNumber(t *testing.T) {
 	}
 	// And the title falls back through TaskTitle to the directory when there is
 	// one — the label every other surface uses, so the page agrees with them.
-	out2 := renderTaskDetail(t, TaskCardView{Note: notes.Note{ID: 615, Directory: "civitai · TICKET-9", Status: notes.StatusOpen}})
-	if !strings.Contains(out2, "civitai · TICKET-9") {
+	out2 := renderTaskDetail(t, TaskCardView{Note: notes.Note{ID: 615, Directory: "acme · TICKET-9", Status: notes.StatusOpen}})
+	if !strings.Contains(out2, "acme · TICKET-9") {
 		t.Errorf("the heading must fall back to TaskTitle's directory label\n---\n%s", out2)
 	}
 }

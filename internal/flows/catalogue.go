@@ -129,7 +129,7 @@ var (
 )
 
 // catalogue is the closed set of flows muster will queue. The runner on the
-// host holds its own copy (devrc scripts/muster-flow-runner) and refuses a job
+// host holds its own copy and refuses a job
 // for a flow it does not list — two allowlists, one on each side of the trust
 // boundary.
 //

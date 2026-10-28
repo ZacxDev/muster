@@ -1797,7 +1797,7 @@ func (s *Server) handleNoteEdit(w http.ResponseWriter, r *http.Request) {
 //   - "user" is the human (handleNoteComment hardcodes it) — only the operator/
 //     human may declare a task complete, and commentAuthor renders the author
 //     string VERBATIM on the card, so an impersonated "user" comment would read
-//     as something Zach wrote.
+//     as something the operator wrote.
 //   - "operator" is the reserved privileged agent NAME (reservedOperatorSlug, in
 //     internal/api/reserved_names.go — operator.go was deleted by upstream task #653
 //     phase two, and that file's header says why the constant did NOT move to
@@ -1958,11 +1958,11 @@ func (s *Server) handleAPITaskComment(w http.ResponseWriter, r *http.Request) {
 // ⚠ "AUTHORED BY THE HUMAN" IS TRUE, BUT IT DOES NOT NAME ONE. This route is
 // wrapped in `requireSession`, which refuses a caller with no valid signed
 // session cookie, so `Author: "user"` is stamped only for someone who completed
-// a login — on the LAN NodePort as well as behind the Authelia edge. What the
-// tier cannot supply is WHICH human: it is one shared operator password, so
-// "user" means "whoever holds the operator session". Same scope caveat as
-// merge.go's mergeCommentAuthor — see upstream task #394 for the decision, and do
-// not restate this as an unqualified guarantee about a person.
+// a login — whether the request came directly or through a forward-auth proxy.
+// What the tier cannot supply is WHICH human: it is one shared operator
+// password, so "user" means "whoever holds the operator session". Same scope
+// caveat as merge.go's mergeCommentAuthor, and do not restate this as an
+// unqualified guarantee about a person.
 func (s *Server) handleNoteComment(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {

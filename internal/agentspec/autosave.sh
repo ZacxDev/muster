@@ -1,8 +1,8 @@
 #!/bin/sh
 # muster work-autosave — make a dispatched agent's work survive the agent dying.
 #
-# WHY THIS EXISTS (incident, 2026-08-12): agent `bold-moth`, dispatched at task
-# #172 on civitai/civitai, produced 14 files of correct work and then went silent.
+# WHY THIS EXISTS (incident): an agent dispatched at a task on a large application
+# repository (call it example/app) produced 14 files of correct work and then went silent.
 # Four hours later it was on branch `main` with ZERO commits and everything
 # uncommitted, in /data/repos/<name> on an emptyDir. A second pod restart, an
 # eviction, or the idle reaper would have destroyed all of it; it survived only
@@ -95,8 +95,8 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 # THIS DAEMON RUNS. Applied to ALL of them, not just the ones measured to fire a
 # hook today, so a call site added later cannot silently reintroduce the class.
 #
-# WHY (incident, 2026-08-12, the SECOND one): agent `bold-otter` (#49) was
-# dispatched at civitai/civitai, which ships `.husky/pre-push` and sets
+# WHY (incident, the SECOND one): another agent was dispatched at
+# example/app, which ships `.husky/pre-push` and sets
 # `core.hooksPath = .husky/_`. The snapshot push ran that hook — a FULL
 # TYPECHECK — every cycle. It failed every cycle, so `git ls-remote origin
 # 'refs/heads/muster-wip/*'` returned zero refs: durability was completely off
@@ -107,7 +107,7 @@ export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 #
 # MEASURED, not assumed (git 2.55, both hook shapes — a classic
 # `.git/hooks/pre-push` and a `core.hooksPath`-redirected `.husky/_/pre-push`;
-# they are different code paths and civitai uses the latter):
+# they are different code paths and example/app uses the latter):
 #   - read-tree / add / write-tree / commit-tree are plumbing and fire NOTHING.
 #   - `git push` fires `pre-push`.
 #   - `git update-ref` fires `reference-transaction` — 3x on git 2.55

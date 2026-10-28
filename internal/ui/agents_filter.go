@@ -699,7 +699,7 @@ var agentsFilterScriptSrc = staticJS("agents-filter", agentsRulesJS + `
   // hidden, so all that is left is the count and the host tabs.
   // A refresh morphed the list into the server's order: order it again before
   // anything is painted (see reorder).
-  // HOLD, AND SHOW "N new ↑" (Zach's call; applying ONLY on a tap, even at the
+  // HOLD, AND SHOW "N new ↑" (the operator's decision; applying ONLY on a tap, even at the
   // top, was this change's own resolution, since confirmed by him). A list that
   // re-renders itself in the background — an SSE nudge (sse:agent.changed / sse:chat.reply) or a
   // resync — must not move a card the reader can see: the list is ordered by
