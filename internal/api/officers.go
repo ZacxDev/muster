@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -28,7 +27,6 @@ import (
 //   - the officer MCP tools (officer_brief … officer_release), offered to an
 //     officer's instance agents ONLY and proxied to HQ with that officer's
 //     token, which never leaves this process;
-//   - POST /officers/webhook, HQ's Standard-Webhooks-signed wake signal;
 //   - delete protection for a declared officer's instance agents.
 //
 // 🔴 THE BINDING IS THE AGENT'S NAME, AND THE NAME IS THE SERVER'S. An
@@ -44,19 +42,14 @@ import (
 // officerRuntime is the officer runtime's state on the server; nil when no
 // officer is declared.
 type officerRuntime struct {
-	reg        *officers.Registry
-	hq         *officers.ClientHQ
-	rec        *officers.Reconciler
-	webhookKey []byte
-	dedup      *officers.Dedup
+	reg *officers.Registry
+	hq  *officers.ClientHQ
+	rec *officers.Reconciler
 }
 
 // OfficersConfig is EnableOfficers' input.
 type OfficersConfig struct {
 	Officers []officers.Officer
-	// WebhookKey is the decoded Standard Webhooks secret; nil leaves POST
-	// /officers/webhook answering 404 (polling alone still works).
-	WebhookKey []byte
 	// HTTPClient is the HQ client's transport; nil uses officers.NewClient's.
 	HTTPClient *http.Client
 	// Now is the wake loop's clock; nil is time.Now. For tests.
@@ -83,10 +76,10 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	if err != nil {
 		return nil, err
 	}
-	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, webhookKey: cfg.WebhookKey, dedup: officers.NewDedup(4096)}
+	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec}
 	for _, o := range reg.All() {
-		s.logger.Printf("officers: %s on: instances %s..%s, idle scale-to-zero after %s, poll %s, webhook %v",
-			o.ID, officers.InstanceName(o.ID, 1), officers.InstanceName(o.ID, o.MaxInstances), o.IdleAfter, o.PollInterval, cfg.WebhookKey != nil)
+		s.logger.Printf("officers: %s on: instances %s..%s, idle scale-to-zero after %s, poll %s",
+			o.ID, officers.InstanceName(o.ID, 1), officers.InstanceName(o.ID, o.MaxInstances), o.IdleAfter, o.PollInterval)
 	}
 	return rec, nil
 }
@@ -175,7 +168,9 @@ func (f officerFleet) Instances(ctx context.Context, o officers.Officer) ([]offi
 	for n := 1; n <= o.MaxInstances; n++ {
 		name := officers.InstanceName(o.ID, n)
 		a, ok := rows[name]
-		out = append(out, officers.InstanceState{N: n, Name: name, Exists: ok, Up: ok && instanceUp(a, idx)})
+		out = append(out, officers.InstanceState{N: n, Name: name, Exists: ok, Up: ok && instanceUp(a, idx),
+			Error:         ok && liveStatusIndexed(a, idx) == agents.StatusError,
+			PromptPending: ok && promptPending(a)})
 	}
 	return out, nil
 }
@@ -207,6 +202,32 @@ func (f officerFleet) Start(ctx context.Context, o officers.Officer, n int, kick
 		return fmt.Errorf("officers: re-arm %s: %w", name, err)
 	}
 	return f.s.ext.Provisioner.Start(octx, a.ID)
+}
+
+// promptPending is the kickoff deliverer's own "owed" rule
+// (agentkickoff.owesFirstTurn): a note is set and not yet stamped delivered.
+func promptPending(a agents.Agent) bool { return !a.KickedOff && a.PendingNote != "" }
+
+// Reprompt implements officers.Fleet: give up instance n a new turn by
+// re-arming its first turn — the kickoff deliverer then sends text once the
+// session takes it. It never types into a running turn (ccd refuses with 409
+// busy before typing, and the deliverer waits that out), so a re-prompt cannot
+// interrupt work in progress.
+func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, text string) error {
+	octx := f.s.officerPrincipal(ctx, o.Owner)
+	name := officers.InstanceName(o.ID, n)
+	a, err := f.s.ext.Agents.GetByName(octx, name)
+	if err != nil {
+		return err
+	}
+	re, ok := f.s.ext.Agents.(kickoffRearmer)
+	if !ok {
+		return errors.New("officers: the agents store cannot re-arm a turn")
+	}
+	if err := re.RearmKickoff(octx, a.ID, text); err != nil {
+		return fmt.Errorf("officers: re-prompt %s: %w", name, err)
+	}
+	return nil
 }
 
 // Stop implements officers.Fleet: scale instance n to zero (agent and volume
@@ -524,50 +545,4 @@ func officerToolResult(name string, body []byte, err error) string {
 	default:
 		return toolErr("%s failed", name)
 	}
-}
-
-// --- the webhook ---------------------------------------------------------------
-
-// maxOfficerWebhookBody bounds a webhook delivery; HQ's carries ids only.
-const maxOfficerWebhookBody = 64 << 10
-
-// handleOfficerWebhook serves POST /officers/webhook: HQ's
-// `officer.item_created`, signed per Standard Webhooks. A verified delivery
-// for a declared officer nudges the wake loop; it is never trusted for
-// anything else (the loop re-reads HQ). 404 when officers or the secret are
-// not configured; 401 on a bad or missing signature; 204 otherwise —
-// including a replayed webhook-id, which is accepted and ignored.
-func (s *Server) handleOfficerWebhook(w http.ResponseWriter, r *http.Request) {
-	rt := s.officerRT
-	if rt == nil || len(rt.webhookKey) == 0 {
-		http.NotFound(w, r)
-		return
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxOfficerWebhookBody))
-	if err != nil {
-		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
-		return
-	}
-	now := time.Now()
-	msgID, err := officers.Verify(rt.webhookKey, r.Header, body, now)
-	if err != nil {
-		s.logger.Printf("officers: webhook refused: %v", err)
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
-		return
-	}
-	if !rt.dedup.First(msgID, now) {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	var ev officers.Event
-	if err := json.Unmarshal(body, &ev); err != nil {
-		http.Error(w, "not a webhook event", http.StatusBadRequest)
-		return
-	}
-	if ev.Type == officers.EventItemCreated {
-		if _, err := rt.reg.Get(ev.Data.OfficerID); err == nil {
-			rt.rec.Nudge(ev.Data.OfficerID)
-		}
-	}
-	w.WriteHeader(http.StatusNoContent)
 }

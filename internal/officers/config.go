@@ -5,9 +5,8 @@
 //
 // What lives here is the part that knows nothing about muster's server: the
 // declared configuration (config.go), the reserved agent slugs (slug.go), the
-// HQ client (hq.go), the wake/scale decision and loop (wake.go), the Standard
-// Webhooks verifier (webhook.go) and the first message an instance is given
-// (kickoff.go). internal/api binds it to agents, the provisioner and the MCP
+// HQ client (hq.go), the wake/scale decision and loop (wake.go), and the
+// first message and re-prompt an instance is given (kickoff.go, wake.go). internal/api binds it to agents, the provisioner and the MCP
 // tool registry; cmd/muster-server reads the environment and runs the loop.
 //
 // 🔴 THE OFFICER TOKEN NEVER LEAVES muster-server. It is read from the
@@ -28,12 +27,6 @@ import (
 	"strings"
 	"time"
 )
-
-// KindClaudeCode is the one runtime kind an officer instance runs on. It is
-// the same string as agents.KindClaudeCode; it is repeated rather than
-// imported so this package stays free of muster's server packages, and
-// internal/api asserts the two agree.
-const KindClaudeCode = "claude-code"
 
 // Defaults applied to a declared officer that leaves a field out.
 const (
@@ -101,7 +94,6 @@ type declared struct {
 	IdleAfter    string `json:"idle_scale_to_zero_after"`
 	PollInterval string `json:"poll_interval"`
 	Owner        int64  `json:"owner"`
-	Kind         string `json:"kind"`
 	CCAccount    string `json:"cc_account"`
 }
 
@@ -134,9 +126,14 @@ func TokenEnvSuffix(id string) string {
 // each declared officer's token through getenv. Empty raw is no officers.
 //
 // It refuses (and names the reason) rather than guessing: an unknown field, an
-// id that is not `<type>:<area>`, two officers whose slugs collide, a kind
-// other than claude-code, a missing token, a base URL that is not http(s).
-func Parse(raw string, getenv func(string) string) ([]Officer, error) {
+// id that is not `<type>:<area>`, two officers whose slugs collide,
+// a missing token, a base URL that is not http(s). Instances always run on the
+// claude-code kind; there is no kind field.
+//
+// namespacePrefix is the deployment's resolved MUSTER_AGENT_NAMESPACE_PREFIX:
+// an officer whose highest instance name would not fit a namespace under it is
+// refused here, at boot, rather than when its first instance is created.
+func Parse(raw string, getenv func(string) string, namespacePrefix string) ([]Officer, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return nil, nil
@@ -152,7 +149,7 @@ func Parse(raw string, getenv func(string) string) ([]Officer, error) {
 	seenSlug := map[string]string{}
 	seenSuffix := map[string]string{}
 	for i, d := range in {
-		o, err := d.officer(getenv)
+		o, err := d.officer(getenv, MaxInstanceNameLen(namespacePrefix))
 		if err != nil {
 			return nil, fmt.Errorf("MUSTER_OFFICERS[%d]: %w", i, err)
 		}
@@ -174,7 +171,7 @@ func Parse(raw string, getenv func(string) string) ([]Officer, error) {
 	return out, nil
 }
 
-func (d declared) officer(getenv func(string) string) (Officer, error) {
+func (d declared) officer(getenv func(string) string, maxName int) (Officer, error) {
 	o := Officer{
 		ID:           strings.TrimSpace(d.ID),
 		HQURL:        strings.TrimRight(strings.TrimSpace(d.HQURL), "/"),
@@ -186,9 +183,6 @@ func (d declared) officer(getenv func(string) string) (Officer, error) {
 	}
 	if !idRE.MatchString(o.ID) {
 		return Officer{}, fmt.Errorf("id %q is not <type>:<area> (lowercase letters, digits and single hyphens on each side)", d.ID)
-	}
-	if k := strings.TrimSpace(d.Kind); k != "" && k != KindClaudeCode {
-		return Officer{}, fmt.Errorf("officer %s: kind %q: officers run on %s only", o.ID, k, KindClaudeCode)
 	}
 	u, err := url.Parse(o.HQURL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -226,9 +220,9 @@ func (d declared) officer(getenv func(string) string) (Officer, error) {
 	if o.PollInterval < MinPollInterval {
 		return Officer{}, fmt.Errorf("officer %s: poll_interval %s is below the %s floor", o.ID, o.PollInterval, MinPollInterval)
 	}
-	if n := InstanceName(o.ID, o.MaxInstances); len(n) > MaxInstanceNameLen {
-		return Officer{}, fmt.Errorf("officer %s: its instance agent name %q is %d characters, over %d (it becomes a namespace name with the deployment's prefix)",
-			o.ID, n, len(n), MaxInstanceNameLen)
+	if n := InstanceName(o.ID, o.MaxInstances); len(n) > maxName {
+		return Officer{}, fmt.Errorf("officer %s: its instance agent name %q is %d characters, over %d (it becomes a namespace name under the deployment's prefix, and a namespace is at most %d)",
+			o.ID, n, len(n), maxName, MaxNamespaceLen)
 	}
 	tok := strings.TrimSpace(getenv(TokenEnvPrefix + TokenEnvSuffix(o.ID)))
 	if tok == "" {

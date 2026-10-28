@@ -642,7 +642,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	// startBackgroundLoops. Refused at boot, like any contradictory
 	// configuration, when officers are declared without what they need.
 	if len(cfg.Officers) > 0 {
-		if a.officers, err = srv.EnableOfficers(api.OfficersConfig{Officers: cfg.Officers, WebhookKey: cfg.OfficerWebhookKey}); err != nil {
+		if a.officers, err = srv.EnableOfficers(api.OfficersConfig{Officers: cfg.Officers}); err != nil {
 			a.Close()
 			return nil, fmt.Errorf("%s: %w", envOfficers, err)
 		}
@@ -1113,13 +1113,9 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// api.Server.EnableOfficers. It reports the CONFIG: a declared officer the
 	// server could not enable refuses the boot (newApp), so the two agree.
 	if len(a.cfg.Officers) > 0 {
-		webhook := "OFF (" + envOfficerWebhookSecret + " unset; polling only)"
-		if a.cfg.OfficerWebhookKey != nil {
-			webhook = "ON (POST /officers/webhook, " + envOfficerWebhookSecret + " set)"
-		}
-		l.Printf("officers: ON — %d declared in %s; wake webhook %s", len(a.cfg.Officers), envOfficers, webhook)
+		l.Printf("officers: ON — %d declared in %s; woken by polling HQ", len(a.cfg.Officers), envOfficers)
 	} else {
-		l.Printf("officers: OFF (%s declares none; %s has no effect)", envOfficers, envOfficerWebhookSecret)
+		l.Printf("officers: OFF (%s declares none)", envOfficers)
 	}
 
 	if a.pool != nil {

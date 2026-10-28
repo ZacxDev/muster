@@ -528,11 +528,6 @@ func (s *Server) registerAll(mux Mux) {
 	mux.HandleFunc("GET /apple-touch-icon.png", handleNoContent)
 	mux.HandleFunc("GET /apple-touch-icon-precomposed.png", handleNoContent)
 
-	// HQ's officer wake signal (officers.go): no app auth — the Standard
-	// Webhooks signature IS the auth, and a verified delivery only nudges the
-	// wake loop. 404 unless officers and MUSTER_OFFICER_WEBHOOK_SECRET are set.
-	mux.HandleFunc("POST /officers/webhook", s.handleOfficerWebhook)
-
 	// --- The human login tier: open by necessity, since it is how a caller
 	// stops being anonymous. ---
 	s.registerLoginRoutes(mux)

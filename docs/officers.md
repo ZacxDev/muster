@@ -18,8 +18,8 @@ Officers **watch, triage, record and dispatch**. They do not merge, deploy or
 release: those stay with humans. An instance holds no production credential.
 
 The code: `internal/officers` (configuration, HQ client, the wake loop's
-policy, webhook verification, the first message), bound to muster in
-`internal/api/officers.go` (instance agents, the MCP tools, the webhook route,
+policy, the first message), bound to muster in
+`internal/api/officers.go` (instance agents, the MCP tools,
 delete protection).
 
 ## Configuration
@@ -34,19 +34,17 @@ MUSTER_OFFICERS='[
    "poll_interval": "1m"}
 ]'
 MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB=…     # from a Secret; see below
-MUSTER_OFFICER_WEBHOOK_SECRET=whsec_…          # optional: the push wake path
 ```
 
 | field | default | |
 |---|---|---|
-| `id` | required | HQ's officer id, `<type>:<area slug>`: lowercase letters, digits and single hyphens on each side of the colon. HQ allows 54 characters; muster refuses an id whose instance agent name (`officer-<type>-<slug>-<max>`) would pass 48, because that name becomes a namespace. |
+| `id` | required | HQ's officer id, `<type>:<area slug>`: lowercase letters, digits and single hyphens on each side of the colon. HQ allows 54 characters; muster refuses, at boot, an id whose highest instance agent name (`officer-<type>-<slug>-<max>`) would not fit a namespace under the deployment's `MUSTER_AGENT_NAMESPACE_PREFIX` (63 minus the prefix: 50 under `muster-agent-`). |
 | `hq_url` | required | HQ's API base, including `/api/v1`. No credentials in the URL. |
 | `max_instances` | `1` | 1–8. Each instance is a pod, a volume and a Claude account for life. |
 | `idle_scale_to_zero_after` | `30m` | How long the officer must be idle before its instances are stopped. |
 | `poll_interval` | `1m` | How often HQ's open items are read when nothing else wakes the loop. At least `10s`. |
 | `owner` | `1` | The muster user the instance agents belong to. |
 | `cc_account` | the pool's choice | Pin the Claude account instances run on. |
-| `kind` | `claude-code` | Only `claude-code` is accepted. |
 
 Each officer's token is read from `MUSTER_OFFICER_TOKEN_<NAME>`: the id
 upper-cased with every other character written as `_`. A declared officer with
@@ -101,12 +99,30 @@ The decision (`officers.Decide`, a pure function):
 - **Idle** (nothing claimable, nothing held): once idle has lasted
   `idle_scale_to_zero_after`, every up instance is stopped. A new item resets
   the window.
+- **Re-prompt.** An up instance that has finished — not in error, holding no
+  live claim, its last prompt delivered — is given a new turn ("new work: call
+  `officer_items` …") when there is claimable work that no instance being
+  started or recently prompted already covers. Without it an instance whose turn
+  ended would never look at the queue again while it stays up, and the officer
+  would neither work the new item nor go idle. Rate limit: one prompt per
+  instance per 5 minutes (`officers.RepromptAfter`), and an instance with a
+  prompt still undelivered is never prompted again. The prompt goes through the
+  same re-armed first turn as a start; the kickoff deliverer never types into a
+  turn already running (ccd refuses with `409 busy` before typing, and the
+  deliverer waits), so a prompt cannot interrupt work. Muster re-prompts rather
+  than stopping an instance when its turn ends because it has no signal that a
+  dispatched session's turn has ended, and stop/start would cost a pod cold
+  start per item.
 
 **Up** means the instance's live status is running, provisioning or pending —
 or `error`: a crash-looping instance keeps its slot rather than being started
 again every poll (which would re-send its first message each time). A create or
 start still in flight (the row says provisioning, the backend shows nothing yet)
-also counts as up, so it is not started twice.
+also counts as up, so it is not started twice. An instance **entering or
+leaving error is logged once per change** ("instance N is in error — it holds
+its slot and is NOT restarted …"), and `muster_officer_error_slots` counts the
+slots so held across all officers: the officer runs below target until the
+instance recovers or an operator acts.
 
 **Starting** an instance that does not exist creates it, with its first message
 (below) as the kickoff. Starting one that exists **re-arms** its first message
@@ -114,12 +130,21 @@ also counts as up, so it is not started twice.
 markers reset, so the ordinary kickoff deliverer sends it once the pod is
 ready) and starts it. **Stopping** scales it to zero; its agent and volume stay.
 
-**Wake signals.** Every `poll_interval`, and at once when HQ's
-`officer.item_created` webhook arrives (below). Polling alone is enough.
+**Wake signal.** Polling HQ every `poll_interval` is the only one: muster has
+no webhook receiver (a one-minute poll is fast enough for release work, and it
+keeps a public route and an HQ→muster network path out of the design).
 
-**HQ down.** A pass whose HQ read fails changes nothing — no start, no stop, no
-release — and the officer's next pass waits `poll_interval` doubled per
-consecutive failure, capped at 10 minutes. A pass that cannot see muster's own
+**HQ down.** A pass whose HQ read fails with a transport error or a 5xx
+changes nothing — no start, no stop, no release — and the officer's next pass
+waits `poll_interval` doubled per consecutive failure, capped at 10 minutes.
+
+**HQ refuses the officer.** A 401 or 403 (the token is revoked, wrong or not
+this officer's) or a 404 (HQ without the officer API, or no such officer) is a
+**configuration fault, not an outage**. It is logged loudly once per change
+("HQ refuses this officer …: a CONFIGURATION fault"), counted on
+`muster_officer_hq_faults`, and the officer's up instances are **scaled to
+zero** rather than holding pods and Claude accounts for ever; the loop keeps
+retrying with the same backoff and logs "HQ answers again" when it does. A pass that cannot see muster's own
 instances (the provisioner is unreachable) is treated the same way: "I cannot
 see" is never read as "nothing is running".
 
@@ -215,14 +240,6 @@ credential.
   declared officer". The chief predicate itself is unchanged, so an officer is
   never offered the chief's tools. Remove an officer from `MUSTER_OFFICERS` and
   its instances become ordinary, deletable agents.
-- **The webhook.** `POST /officers/webhook` asks for no session: the Standard
-  Webhooks signature is its authentication (HMAC-SHA256 over
-  `<webhook-id>.<webhook-timestamp>.<body>`, any listed `v1` signature, a
-  timestamp within 5 minutes). A verified `officer.item_created` for a declared
-  officer only nudges the loop, which re-reads HQ before deciding anything, so
-  the body is never trusted for more than "look now". A repeated `webhook-id`
-  is accepted (204) and ignored. A bad or missing signature is 401; without
-  `MUSTER_OFFICER_WEBHOOK_SECRET` the route is 404.
 - **No production access.** Instances are ordinary `claude-code` pods: no
   service-account token, egress limited as for every claude-code agent
   ([provisioner.md](provisioner.md)).
@@ -245,17 +262,15 @@ From the officers contract, v1 (base `/api/v1`, bearer token of scope
 /officers/{id}/items/{item}/{claim,heartbeat,complete,release}`, and `POST
 /releases/captain` (release officers), with the bodies in the table above. Where the contract leaves a shape open, muster accepts:
 
-- the items list as HQ sends it, `{"items": […], "next": "…"|null}` (and
-  `next_cursor`, or a bare array); the wake loop follows `next` for up to 5
-  pages of 100;
-- item ids as JSON strings or numbers;
-- a webhook body of the Standard Webhooks form `{"type", "timestamp", "data":
-  {"officer_id", "item_id", "kind"}}`.
+- the items list as HQ sends it, `{"items": […], "next": "…"|null}`; the wake
+  loop follows `next` for up to 5 pages of 100;
+- item ids as JSON strings or numbers (HQ's are integers).
 
 `internal/officers/hqtest` is the in-process fake the tests run against; it
-implements the claim/lease rules (409 to a second claimant while the lease is
-live, an expired lease claimable by anyone, 410 on a finished item, 403 across
-officers).
+implements the claim/lease rules as HQ does (409 to ANY claim while the lease
+is live — the holder's own included, which `officer_claim` turns into a
+heartbeat — an expired lease claimable by anyone, 410 on a finished item, 403
+across officers) and the captain route's body rules.
 
 ## Deploying
 
@@ -268,10 +283,7 @@ What a deployment needs beyond muster's usual claude-code setup:
    `MUSTER_OFFICER_TOKEN_<NAME>` (not to any agent).
 3. `MUSTER_OFFICERS` on muster-server, and `MUSTER_AGENT_KINDS` including
    `claude-code` with an account in the pool.
-4. Egress from muster-server to HQ.
-5. Optionally, an HQ webhook subscription to `officer.item_created` pointing at
-   `https://<muster>/officers/webhook`, with its secret as
-   `MUSTER_OFFICER_WEBHOOK_SECRET` — and that path reachable from HQ.
+4. Egress from muster-server to HQ. Nothing needs to reach muster from HQ.
 
 Checking it: the boot log has one `officers: <id> on: …` line per officer;
 after HQ creates an item, `officer-<type>-<area>-1` appears among the agents

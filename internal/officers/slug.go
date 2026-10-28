@@ -6,16 +6,21 @@ import (
 )
 
 // InstanceNamePrefix starts every officer instance's agent name. It is
-// reserved: muster's name generator (agents.BuildUniqueAgentName) draws from
-// an adjective-noun pool that cannot produce it, and only the officer runtime
-// passes a fixed name starting with it. agents.IsOfficerName is the same
-// prefix, asserted equal by internal/api's tests.
+// reserved in practice: muster's name generator (agents.BuildUniqueAgentName)
+// draws from an adjective-noun pool that cannot produce it
+// (internal/api's TestTheOfficerNamePrefixCannotBeGenerated), and only the
+// officer runtime passes a fixed name starting with it.
 const InstanceNamePrefix = "officer-"
 
-// MaxInstanceNameLen bounds an instance agent's name. The name becomes the
-// instance's namespace with the deployment's prefix in front of it
-// (`muster-agent-` is 13), and a Kubernetes namespace is at most 63.
-const MaxInstanceNameLen = 48
+// MaxNamespaceLen is a Kubernetes namespace name's limit (a DNS label). An
+// instance's agent name becomes its namespace with the deployment's prefix
+// (MUSTER_AGENT_NAMESPACE_PREFIX) in front, so the name may use what the
+// prefix leaves: MaxInstanceNameLen.
+const MaxNamespaceLen = 63
+
+// MaxInstanceNameLen is how long an instance agent name may be under a
+// namespace prefix.
+func MaxInstanceNameLen(namespacePrefix string) int { return MaxNamespaceLen - len(namespacePrefix) }
 
 // Slug is an officer id as an agent-name fragment: the `:` written as `-`
 // (`release:example-web` -> `release-example-web`).

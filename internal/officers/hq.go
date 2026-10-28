@@ -204,38 +204,25 @@ func (q ItemsQuery) encode() string {
 
 // Items reads one page of the officer's items.
 //
-// The body may be `{"items":[…],"next_cursor":"…"}` or a bare array (the
-// contract names the route, not the envelope; both are accepted).
+// The body is HQ's `{"items":[…],"next":…}`.
 func (c *Client) Items(ctx context.Context, q ItemsQuery) (ItemsPage, error) {
 	raw, err := c.Do(ctx, http.MethodGet, c.officerPath()+"/items"+q.encode(), nil)
 	if err != nil {
 		return ItemsPage{}, err
 	}
-	page := ItemsPage{Raw: raw}
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) > 0 && trimmed[0] == '[' {
-		if err := json.Unmarshal(trimmed, &page.Items); err != nil {
-			return ItemsPage{}, fmt.Errorf("%w: items: %v", ErrHQUnavailable, err)
-		}
-		return page, nil
-	}
-	// HQ (civ-hq docs/OFFICERS.md) answers {items, next}: next is the cursor
-	// of the following page, null on the last. next_cursor is accepted too.
-	// ItemID decodes either a string or a number, which a cursor may be.
+	// HQ answers {items, next} (civ-hq docs/OFFICERS.md): next is the cursor
+	// of the following page, null on the last. ItemID decodes a cursor whether
+	// HQ spells it as a string or a number.
 	var env struct {
-		Items      []Item  `json:"items"`
-		Next       *ItemID `json:"next"`
-		NextCursor *ItemID `json:"next_cursor"`
+		Items []Item  `json:"items"`
+		Next  *ItemID `json:"next"`
 	}
-	if err := json.Unmarshal(trimmed, &env); err != nil {
+	if err := json.Unmarshal(raw, &env); err != nil {
 		return ItemsPage{}, fmt.Errorf("%w: items: %v", ErrHQUnavailable, err)
 	}
-	page.Items = env.Items
-	switch {
-	case env.Next != nil:
+	page := ItemsPage{Raw: raw, Items: env.Items}
+	if env.Next != nil {
 		page.NextCursor = string(*env.Next)
-	case env.NextCursor != nil:
-		page.NextCursor = string(*env.NextCursor)
 	}
 	return page, nil
 }

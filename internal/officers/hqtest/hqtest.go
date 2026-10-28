@@ -46,6 +46,7 @@ type Server struct {
 	items    map[string]*Item
 	nextID   int
 	down     bool
+	status   int
 	reqs     []Request
 	Now      func() time.Time
 	Charters map[string]string
@@ -76,6 +77,10 @@ func (s *Server) BaseURL() string { return s.Server.URL + "/api/v1" }
 
 // SetDown makes every request answer 503 (true) or serve normally (false).
 func (s *Server) SetDown(down bool) { s.mu.Lock(); s.down = down; s.mu.Unlock() }
+
+// SetStatus makes every request answer code (0 = serve normally): 401/403 as
+// a revoked or wrong token would, 404 as an HQ with the officer API off.
+func (s *Server) SetStatus(code int) { s.mu.Lock(); s.status = code; s.mu.Unlock() }
 
 // AddItem adds an open item for officer and returns its id.
 func (s *Server) AddItem(officer, kind, subject string) string {
@@ -126,6 +131,10 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.reqs = append(s.reqs, Request{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Auth: r.Header.Get("Authorization"), Body: body})
 	if s.down {
 		s.write(w, http.StatusServiceUnavailable, map[string]any{"error": "down"})
+		return
+	}
+	if s.status != 0 {
+		s.write(w, s.status, map[string]any{"error": "forced", "code": "forced"})
 		return
 	}
 	tok, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")

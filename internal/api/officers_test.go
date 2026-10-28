@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -194,7 +192,6 @@ type officerRig struct {
 	rec   *officers.Reconciler
 	logs  *bytes.Buffer
 	a, b  officers.Officer
-	key   []byte
 
 	clockMu sync.Mutex
 	clock   time.Time
@@ -234,10 +231,9 @@ func newOfficerRig(t *testing.T) *officerRig {
 	s.UseExtensions(Extensions{Agents: store, Provisioner: prov, SessionLiveness: stubLiveness{}, Kinds: stubKinds{pick: "acct-one"}})
 	a := officers.Officer{ID: offA, HQURL: hq.BaseURL(), MaxInstances: 2, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(offATok)
 	b := officers.Officer{ID: offB, HQURL: hq.BaseURL(), MaxInstances: 1, IdleAfter: 30 * time.Minute, PollInterval: time.Minute, Owner: 1}.WithToken(offBTok)
-	key := []byte("fixture-webhook-key-0123456789ab")
-	r := &officerRig{s: s, store: store, prov: prov, hq: hq, logs: logs, a: a, b: b, key: key, clock: time.Now()}
+	r := &officerRig{s: s, store: store, prov: prov, hq: hq, logs: logs, a: a, b: b, clock: time.Now()}
 	hq.Now = r.now
-	rec, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{a, b}, WebhookKey: key, Now: r.now})
+	rec, err := s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{a, b}, Now: r.now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -626,94 +622,6 @@ func TestTheChiefPredicateIgnoresOfficers(t *testing.T) {
 	}
 }
 
-func signedWebhook(t *testing.T, key []byte, id string, body string, sig string) *http.Request {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/officers/webhook", strings.NewReader(body))
-	ts := time.Now().Unix()
-	req.Header.Set("webhook-id", id)
-	req.Header.Set("webhook-timestamp", strconv.FormatInt(ts, 10))
-	if sig == "" {
-		sig = officers.Sign(key, id, ts, []byte(body))
-	}
-	if sig != "none" {
-		req.Header.Set("webhook-signature", sig)
-	}
-	return req
-}
-
-// TestTheWebhookWakesAnOfficer: a validly signed officer.item_created for
-// officer B wakes it (the running loop starts its instance) well before any
-// poll would; a bad or missing signature is 401 and wakes nothing; a replay
-// of the same webhook-id is 204 and wakes nothing more.
-func TestTheWebhookWakesAnOfficer(t *testing.T) {
-	saved := officers.RunTick
-	officers.RunTick = time.Hour // no poll: only a nudge can cause a pass
-	t.Cleanup(func() { officers.RunTick = saved })
-	r := newOfficerRig(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go r.rec.Run(ctx)
-
-	r.hq.AddItem(offB, "triage.look", "svc:1")
-	body := fmt.Sprintf(`{"type":"officer.item_created","timestamp":"2000-01-01T00:00:00Z","data":{"officer_id":%q,"item_id":1,"kind":"triage.look"}}`, offB)
-
-	for name, req := range map[string]*http.Request{
-		"bad signature":     signedWebhook(t, r.key, "msg_bad", body, "v1,AAAA"),
-		"missing signature": signedWebhook(t, r.key, "msg_none", body, "none"),
-		"wrong key":         signedWebhook(t, []byte("another-key-another-key-another!"), "msg_wk", body, ""),
-	} {
-		rec := httptest.NewRecorder()
-		r.h.ServeHTTP(rec, req)
-		if rec.Code != http.StatusUnauthorized {
-			t.Errorf("%s: %d, want 401", name, rec.Code)
-		}
-	}
-	time.Sleep(50 * time.Millisecond)
-	if len(r.store.created) != 0 {
-		t.Fatalf("an unverified webhook woke the officer (%d agents created)", len(r.store.created))
-	}
-
-	rec := httptest.NewRecorder()
-	r.h.ServeHTTP(rec, signedWebhook(t, r.key, "msg_1", body, ""))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("valid webhook: %d %s", rec.Code, rec.Body.String())
-	}
-	officerWaitFor(t, func() bool { r.store.mu.Lock(); defer r.store.mu.Unlock(); return len(r.store.created) == 1 })
-
-	// Replay: accepted, no second pass. Count HQ reads before and after.
-	time.Sleep(50 * time.Millisecond)
-	before := len(r.hq.Requests())
-	rec = httptest.NewRecorder()
-	r.h.ServeHTTP(rec, signedWebhook(t, r.key, "msg_1", body, ""))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("replay: %d, want 204", rec.Code)
-	}
-	time.Sleep(100 * time.Millisecond)
-	if after := len(r.hq.Requests()); after != before {
-		t.Fatalf("a replayed webhook-id caused another pass (%d -> %d HQ requests)", before, after)
-	}
-	// Control for that measurement: a NEW id does cause a pass.
-	r.h.ServeHTTP(httptest.NewRecorder(), signedWebhook(t, r.key, "msg_2", body, ""))
-	officerWaitFor(t, func() bool { return len(r.hq.Requests()) > before })
-}
-
-// TestTheWebhookIs404WithoutASecret: no secret, no webhook door.
-func TestTheWebhookIs404WithoutASecret(t *testing.T) {
-	r := newOfficerRig(t)
-	r.s.officerRT.webhookKey = nil
-	rec := httptest.NewRecorder()
-	r.h.ServeHTTP(rec, signedWebhook(t, r.key, "m", `{}`, ""))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("%d, want 404", rec.Code)
-	}
-	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))
-	rec = httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, signedWebhook(t, r.key, "m", `{}`, ""))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("officers off: %d, want 404", rec.Code)
-	}
-}
-
 // TestEnableOfficersRefusesWithoutClaudeCode: officers need the claude-code kind.
 func TestEnableOfficersRefusesWithoutClaudeCode(t *testing.T) {
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))
@@ -878,5 +786,37 @@ func TestClaimingAnItemYouAlreadyHoldRenewsItsLease(t *testing.T) {
 	}
 	if it := r.hq.Item(item); it.ClaimedBy != one.Name {
 		t.Fatalf("the holder changed to %q", it.ClaimedBy)
+	}
+}
+
+// TestAnIdleUpInstanceIsRepromptedThroughItsFirstTurn: over the real fleet
+// binding, an up instance holding nothing while its officer has an open item
+// is re-prompted by re-arming its first turn (the kickoff deliverer sends it;
+// no Start, no new agent). While that turn is still owed (pending note, not
+// kicked off) it is not re-prompted again, however long the item waits.
+func TestAnIdleUpInstanceIsRepromptedThroughItsFirstTurn(t *testing.T) {
+	r := newOfficerRig(t)
+	inst := r.addInstance(r.b, 1, 861)
+	r.store.mu.Lock()
+	r.store.rows[len(r.store.rows)-1].KickedOff = true // its earlier turn was delivered
+	r.store.mu.Unlock()
+	r.hq.AddItem(offB, "triage.look", "svc:1")
+	ctx := context.Background()
+	res := r.rec.Check(ctx, offB, true)
+	if len(res.Decision.Reprompt) != 1 || len(res.ActErrs) != 0 {
+		t.Fatalf("idle up instance with an open item: %+v", res)
+	}
+	note := r.store.rearmed[inst.ID]
+	if !strings.Contains(note, "New work for officer "+offB) || strings.Contains(note, offBTok) {
+		t.Fatalf("re-prompt turn = %q", note)
+	}
+	if d, st, _ := r.prov.counts(); d != 0 || st != 0 || len(r.store.created) != 0 {
+		t.Fatalf("a re-prompt dispatched/started/created (dispatch %d starts %d creates %d)", d, st, len(r.store.created))
+	}
+	// The re-armed turn is now owed (PendingNote set, KickedOff false): even
+	// past the rate limit it is not re-prompted again.
+	r.advance(3 * officers.RepromptAfter)
+	if res := r.rec.Check(ctx, offB, true); len(res.Decision.Reprompt) != 0 {
+		t.Fatalf("re-prompted while its last prompt is still owed: %+v", res.Decision)
 	}
 }

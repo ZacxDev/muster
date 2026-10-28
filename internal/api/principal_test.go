@@ -73,10 +73,6 @@ var publicRoutes = []string{
 	"GET /apple-touch-icon.png",
 	"GET /favicon.ico",
 	"GET /health",
-	// HQ's officer wake signal (officers.go): no session — the Standard
-	// Webhooks signature is the authentication, and a verified delivery only
-	// nudges the wake loop. 404 unless configured.
-	"POST /officers/webhook",
 	"GET /login",
 	"GET /manifest.webmanifest",
 	// The Android app's Digital Asset Links: fetched by Android's verifier

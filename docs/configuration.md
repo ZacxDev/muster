@@ -192,9 +192,8 @@ provisioner, and the server refuses to boot without them.
 
 | variable | default | required | what it does |
 |---|---|---|---|
-| `MUSTER_OFFICERS` | none | no | A JSON array of declared officers: `id` (`<type>:<area>`), `hq_url` (HQ's API base, with `/api/v1`), and optionally `max_instances` (1–8, default 1), `idle_scale_to_zero_after` (default `30m`), `poll_interval` (default `1m`, at least `10s`), `owner` (the muster user id the instance agents belong to, default 1), `cc_account` (pin the Claude account) and `kind` (only `claude-code`). Unknown fields are refused. See [officers.md](officers.md#configuration). |
+| `MUSTER_OFFICERS` | none | no | A JSON array of declared officers: `id` (`<type>:<area>`), `hq_url` (HQ's API base, with `/api/v1`), and optionally `max_instances` (1–8, default 1), `idle_scale_to_zero_after` (default `30m`), `poll_interval` (default `1m`, at least `10s`), `owner` (the muster user id the instance agents belong to, default 1) and `cc_account` (pin the Claude account). Instances always run on `claude-code`. Unknown fields are refused, as is an id whose instance names would not fit a namespace under `MUSTER_AGENT_NAMESPACE_PREFIX`. See [officers.md](officers.md#configuration). |
 | `MUSTER_OFFICER_TOKEN_<NAME>` | none | for each officer | That officer's HQ token (scope `officer`). `<NAME>` is the officer id upper-cased, with every other character written as `_`: `release:example-web` → `MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB`. Read by the server only; never passed to an instance's pod. |
-| `MUSTER_OFFICER_WEBHOOK_SECRET` | none | no | HQ's Standard Webhooks secret (`whsec_…`) for `POST /officers/webhook`, the `officer.item_created` wake signal. Unset, that route answers 404 and polling alone wakes officers. |
 
 ## Tracing (muster-server and muster-mirror)
 

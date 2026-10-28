@@ -122,10 +122,8 @@ const (
 	// The officer runtime (internal/officers, docs/officers.md): MUSTER_OFFICERS
 	// is a JSON array of declared officers, each officer's HQ token is read from
 	// MUSTER_OFFICER_TOKEN_<NAME> (officers.TokenEnvPrefix, read inside
-	// officers.Parse), and MUSTER_OFFICER_WEBHOOK_SECRET is HQ's Standard
-	// Webhooks secret for POST /officers/webhook (optional: polling alone works).
-	envOfficers             = "MUSTER_OFFICERS"
-	envOfficerWebhookSecret = "MUSTER_OFFICER_WEBHOOK_SECRET"
+	// officers.Parse). Officers are woken by polling HQ; there is no webhook.
+	envOfficers = "MUSTER_OFFICERS"
 	// The send queue (internal/sendqueue): how long a target must have been idle
 	// before a queued message is sent to it. A Go duration, 30s when unset,
 	// refused outside 1s–1h.
@@ -587,9 +585,6 @@ type config struct {
 	// Officers is MUSTER_OFFICERS parsed, each with its token
 	// (officers.Parse). Empty: the officer runtime is off.
 	Officers []officers.Officer
-	// OfficerWebhookKey is MUSTER_OFFICER_WEBHOOK_SECRET decoded; nil when
-	// unset.
-	OfficerWebhookKey []byte
 	// SendQueueIdle is MUSTER_SEND_QUEUE_IDLE (sendqueue.DefaultIdleFor when
 	// unset).
 	SendQueueIdle time.Duration
@@ -1267,16 +1262,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	c.AgentReapStoppedAfter = d
-	if c.Officers, err = officers.Parse(getenv(envOfficers), getenv); err != nil {
+	if c.Officers, err = officers.Parse(getenv(envOfficers), getenv, c.AgentNamespacePrefix); err != nil {
 		return config{}, err
-	}
-	if v := strings.TrimSpace(getenv(envOfficerWebhookSecret)); v != "" {
-		if len(c.Officers) == 0 {
-			return config{}, fmt.Errorf("%s is set but %s declares no officer", envOfficerWebhookSecret, envOfficers)
-		}
-		if c.OfficerWebhookKey, err = officers.DecodeSecret(v); err != nil {
-			return config{}, fmt.Errorf("invalid %s: %w", envOfficerWebhookSecret, err)
-		}
 	}
 	c.SendQueueIdle = sendqueue.DefaultIdleFor
 	if v := strings.TrimSpace(getenv(envSendQueueIdle)); v != "" {

@@ -41,6 +41,8 @@ import (
 // A histogram or counter with no labels has an empty slice — distinct from a
 // missing entry, which is the failure.
 var wantMetrics = map[string][]string{
+	"muster_officer_error_slots":              nil,
+	"muster_officer_hq_faults":                nil,
 	"muster_build_info":                       {"version"},
 	"muster_http_requests_total":              {"code", "method", "route"},
 	"muster_http_request_duration_seconds":    {"method", "route"},

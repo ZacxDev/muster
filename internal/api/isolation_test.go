@@ -136,7 +136,6 @@ var isolationClasses = map[string]routeClass{
 	"GET /apple-touch-icon.png":             classPublic,
 	"GET /favicon.ico":                      classPublic,
 	"GET /health":                           classPublic,
-	"POST /officers/webhook":                classPublic, // signature-authenticated; reads and writes no user's rows
 	"GET /login":                            classPublic,
 	"GET /manifest.webmanifest":             classPublic,
 	"GET /.well-known/assetlinks.json":      classPublic,

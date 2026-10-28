@@ -3,17 +3,20 @@ package officers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/ZacxDev/muster/internal/metrics"
 )
 
 // ---------------------------------------------------------------------------
 // THE WAKE LOOP
 //
-// For each declared officer, every PollInterval (or at once, on a webhook
-// nudge), one pass:
+// For each declared officer, every PollInterval, one pass (polling HQ is the
+// only wake signal: there is no webhook receiver):
 //
 //  1. read HQ: the officer's open items and its claimed items;
 //  2. read the fleet: which of the officer's instance agents exist and are up;
@@ -47,8 +50,14 @@ type InstanceState struct {
 	Exists bool
 	// Up reports whether its workload is running or on its way up
 	// (provisioning, pending). A stopped, absent or never-started instance is
-	// not up.
+	// not up. An instance in error counts as up: it holds its slot.
 	Up bool
+	// Error reports the instance in error (crash-looping, a failed apply). It
+	// holds its slot, so the loop logs and counts it rather than starting it.
+	Error bool
+	// PromptPending reports a prompt (a kickoff or a re-prompt) owed to the
+	// instance and not yet delivered. Such an instance is not re-prompted.
+	PromptPending bool
 }
 
 // Fleet is how the loop observes and moves an officer's instances.
@@ -62,6 +71,10 @@ type Fleet interface {
 	Start(ctx context.Context, o Officer, n int, kickoff string) error
 	// Stop scales instance n to zero, keeping its agent and volume.
 	Stop(ctx context.Context, o Officer, n int) error
+	// Reprompt gives up instance n a new turn with text, delivered when its
+	// session can take one (internal/api: the kickoff deliverer, which never
+	// types into a turn already running).
+	Reprompt(ctx context.Context, o Officer, n int, text string) error
 }
 
 // HQ is the part of the HQ API the loop uses. *Client satisfies it (per
@@ -119,9 +132,10 @@ type Observation struct {
 
 // Decision is what one pass decided.
 type Decision struct {
-	// Start and Stop are instance numbers, ascending.
-	Start []int
-	Stop  []int
+	// Start, Stop and Reprompt are instance numbers, ascending.
+	Start    []int
+	Stop     []int
+	Reprompt []int
 	// Release is live claims held by an instance that is not up.
 	Release []Item
 	// Idle reports the officer idle at this pass: nothing claimable, no live
@@ -148,7 +162,7 @@ type Decision struct {
 //   - A live claim held by an instance that is NOT up is released, busy or
 //     idle: its holder cannot heartbeat it, and releasing returns the item to
 //     the queue now rather than when the lease lapses.
-func Decide(o Officer, obs Observation, idleSince, now time.Time) Decision {
+func Decide(o Officer, obs Observation, idleSince, now time.Time, promptedAt map[int]time.Time) Decision {
 	byName := map[string]InstanceState{}
 	for _, in := range obs.Instances {
 		byName[in.Name] = in
@@ -196,6 +210,7 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time) Decision {
 		for i := 0; up+len(d.Start) < want && i < len(down); i++ {
 			d.Start = append(d.Start, down[i])
 		}
+		d.Reprompt = reprompts(obs.Instances, heldByUp, d.Claimable-len(d.Start), promptedAt, now)
 		return d
 	}
 	d.Idle = true
@@ -208,6 +223,46 @@ func Decide(o Officer, obs Observation, idleSince, now time.Time) Decision {
 		sort.Ints(d.Stop)
 	}
 	return d
+}
+
+// reprompts picks the up instances to prompt again for claimable work an
+// instance being started does not already cover.
+//
+// 🔴 WITHOUT IT AN UP INSTANCE IS NEVER PROMPTED AGAIN. An instance works the
+// queue, holds nothing when it is done, and its turn ends; it stays up until
+// the officer idles out. A new item then wakes nobody — no start is due (it is
+// up), and the officer is not idle (an item is open), so it never scales to
+// zero either. An idle instance is one that is up, not in error, holds no live
+// claim, and has no prompt pending (the last one was delivered).
+//
+// Rate limit: an instance prompted within RepromptAfter is not prompted again,
+// and it — like a pending prompt — counts as already covering one claimable
+// item, so a fresh item gets one prompt, not one per instance. An instance
+// busy without a claim (deciding which item to take) is thus prompted at most
+// every RepromptAfter, and the deliverer refuses to type into a running turn
+// anyway (ccd's 409 busy), so a prompt never interrupts one.
+func reprompts(insts []InstanceState, heldByUp map[string]bool, uncovered int, promptedAt map[int]time.Time, now time.Time) []int {
+	sorted := append([]InstanceState(nil), insts...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].N < sorted[j].N })
+	var due []int
+	for _, in := range sorted {
+		if !in.Up || in.Error || heldByUp[in.Name] {
+			continue
+		}
+		at, prompted := promptedAt[in.N]
+		if in.PromptPending || (prompted && now.Sub(at) < RepromptAfter) {
+			uncovered-- // already on its way to the queue
+			continue
+		}
+		due = append(due, in.N)
+	}
+	if uncovered <= 0 {
+		return nil
+	}
+	if len(due) > uncovered {
+		due = due[:uncovered]
+	}
+	return due
 }
 
 // downInstances is 1..MaxInstances minus the up ones, ascending. An instance
@@ -251,6 +306,12 @@ type officerState struct {
 	idleSince time.Time
 	failures  int
 	nextAt    time.Time
+	// promptedAt is when each instance was last started or re-prompted.
+	promptedAt map[int]time.Time
+	// errored is the instances last seen in error (logged on change).
+	errored map[int]bool
+	// fault is the permanent HQ refusal last seen ("" = none; logged on change).
+	fault string
 }
 
 // Reconciler runs the wake loop.
@@ -263,7 +324,6 @@ type Reconciler struct {
 
 	mu    sync.Mutex
 	state map[string]*officerState
-	nudge chan string
 }
 
 // Config is NewReconciler's input.
@@ -288,13 +348,13 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 		cfg.Now = time.Now
 	}
 	return &Reconciler{reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now,
-		state: map[string]*officerState{}, nudge: make(chan string, 64)}, nil
+		state: map[string]*officerState{}}, nil
 }
 
 func (r *Reconciler) st(id string) *officerState {
 	s, ok := r.state[id]
 	if !ok {
-		s = &officerState{}
+		s = &officerState{promptedAt: map[int]time.Time{}, errored: map[int]bool{}}
 		r.state[id] = s
 	}
 	return s
@@ -335,12 +395,38 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 		s.failures++
 		s.nextAt = now.Add(Backoff(o, s.failures))
 		f, next := s.failures, s.nextAt
+		fault := permanentRefusal(err)
+		changed := fault != s.fault
+		s.fault = fault
 		r.mu.Unlock()
-		r.log.Printf("officers: %s: %v; changing nothing, next check in %s (failure %d)", o.ID, err, next.Sub(now).Round(time.Second), f)
-		return PassResult{Err: err}
+		r.publish()
+		if fault == "" {
+			r.log.Printf("officers: %s: %v; changing nothing, next check in %s (failure %d)", o.ID, err, next.Sub(now).Round(time.Second), f)
+			return PassResult{Err: err}
+		}
+		// 🔴 A PERMANENT REFUSAL IS CONFIGURATION, NOT AN OUTAGE. Holding pods
+		// and Claude accounts for ever behind a revoked token is the wrong way
+		// to wait, so the officer is scaled to zero; it wakes normally once HQ
+		// answers again. Logged once per change, counted on the gauge.
+		if changed {
+			r.log.Printf("officers: %s: HQ refuses this officer (%s): a CONFIGURATION fault, not an outage — check %s%s and that HQ serves the officer API for %s. "+
+				"Scaling its instances to zero; retrying with backoff (next in %s)", o.ID, fault, TokenEnvPrefix, TokenEnvSuffix(o.ID), o.ID, next.Sub(now).Round(time.Second))
+		}
+		return r.scaleDownForFault(ctx, o, err)
 	}
-	d := Decide(o, obs, idleSince, now)
+	r.noteErrors(o, obs.Instances)
 	r.mu.Lock()
+	prompted := make(map[int]time.Time, len(s.promptedAt))
+	for n, at := range s.promptedAt {
+		prompted[n] = at
+	}
+	r.mu.Unlock()
+	d := Decide(o, obs, idleSince, now, prompted)
+	r.mu.Lock()
+	if s.fault != "" {
+		r.log.Printf("officers: %s: HQ answers again (was: %s)", o.ID, s.fault)
+		s.fault = ""
+	}
 	s.failures = 0
 	s.nextAt = now.Add(o.PollInterval)
 	switch {
@@ -354,7 +440,76 @@ func (r *Reconciler) Check(ctx context.Context, id string, force bool) PassResul
 		s.idleSince = time.Time{}
 	}
 	r.mu.Unlock()
+	r.publish()
 	return PassResult{Decision: d, ActErrs: r.act(ctx, o, d)}
+}
+
+// scaleDownForFault stops every up instance of o (HQ refuses it permanently).
+// A fleet that cannot be seen changes nothing, as everywhere else.
+func (r *Reconciler) scaleDownForFault(ctx context.Context, o Officer, cause error) PassResult {
+	insts, err := r.fleet.Instances(ctx, o)
+	if err != nil {
+		return PassResult{Err: cause}
+	}
+	var d Decision
+	for _, in := range insts {
+		if in.Up {
+			d.Stop = append(d.Stop, in.N)
+		}
+	}
+	sort.Ints(d.Stop)
+	return PassResult{Err: cause, Decision: d, ActErrs: r.act(ctx, o, d)}
+}
+
+// noteErrors logs each instance entering or leaving error, once per change.
+func (r *Reconciler) noteErrors(o Officer, insts []InstanceState) {
+	r.mu.Lock()
+	s := r.st(o.ID)
+	var entered, left []int
+	now := map[int]bool{}
+	for _, in := range insts {
+		if in.Error {
+			now[in.N] = true
+			if !s.errored[in.N] {
+				entered = append(entered, in.N)
+			}
+		}
+	}
+	for n := range s.errored {
+		if !now[n] {
+			left = append(left, n)
+		}
+	}
+	s.errored = now
+	r.mu.Unlock()
+	sort.Ints(entered)
+	sort.Ints(left)
+	for _, n := range entered {
+		r.log.Printf("officers: %s: instance %d is in error — it holds its slot and is NOT restarted, so the officer runs below target "+
+			"until it recovers or an operator acts (agent %s)", o.ID, n, InstanceName(o.ID, n))
+	}
+	for _, n := range left {
+		r.log.Printf("officers: %s: instance %d left error", o.ID, n)
+	}
+	r.publish()
+}
+
+// publish sets the officer gauges from every officer's remembered state.
+func (r *Reconciler) publish() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	slots, faults := 0, 0
+	for _, s := range r.state {
+		slots += len(s.errored)
+		if s.fault != "" {
+			faults++
+		}
+	}
+	metrics.OfficerErrorSlots.Set(float64(slots))
+	metrics.OfficerHQFaults.Set(float64(faults))
+	published.Lock()
+	published.slots, published.faults = float64(slots), float64(faults)
+	published.Unlock()
 }
 
 func (r *Reconciler) observe(ctx context.Context, o Officer) (Observation, error) {
@@ -389,7 +544,17 @@ func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 			r.log.Printf("officers: %s: start instance %d: %v", o.ID, n, err)
 			continue
 		}
+		r.prompted(o, n)
 		r.log.Printf("officers: %s: started instance %d (%d claimable, %d held)", o.ID, n, d.Claimable, d.Held)
+	}
+	for _, n := range d.Reprompt {
+		if err := r.fleet.Reprompt(ctx, o, n, RepromptText(o, n)); err != nil {
+			errs = append(errs, err)
+			r.log.Printf("officers: %s: re-prompt instance %d: %v", o.ID, n, err)
+			continue
+		}
+		r.prompted(o, n)
+		r.log.Printf("officers: %s: re-prompted idle instance %d for new work (%d claimable)", o.ID, n, d.Claimable)
 	}
 	for _, n := range d.Stop {
 		if err := r.fleet.Stop(ctx, o, n); err != nil {
@@ -402,14 +567,10 @@ func (r *Reconciler) act(ctx context.Context, o Officer, d Decision) []error {
 	return errs
 }
 
-// Nudge asks for a pass for officer id as soon as possible (the webhook
-// path). It never blocks; a full queue drops the nudge, and the poll still
-// comes.
-func (r *Reconciler) Nudge(id string) {
-	select {
-	case r.nudge <- id:
-	default:
-	}
+func (r *Reconciler) prompted(o Officer, n int) {
+	r.mu.Lock()
+	r.st(o.ID).promptedAt[n] = r.now()
+	r.mu.Unlock()
 }
 
 // RunTick is how often Run looks for a due officer.
@@ -426,8 +587,6 @@ func (r *Reconciler) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case id := <-r.nudge:
-			r.pass(ctx, id, false)
 		case <-t.C:
 			now := r.now()
 			for _, o := range r.reg.All() {
@@ -451,4 +610,44 @@ func (r *Reconciler) pass(ctx context.Context, id string, force bool) {
 		}
 	}()
 	r.Check(pctx, id, force)
+}
+
+// RepromptAfter is the least time between two prompts of one instance while it
+// has claimable work and holds no claim.
+const RepromptAfter = 5 * time.Minute
+
+// published is what publish last set on the two gauges, for ErrorSlots and
+// HQFaults (the gauges themselves are write-only from here).
+var published struct {
+	sync.Mutex
+	slots, faults float64
+}
+
+// ErrorSlots is muster_officer_error_slots' last published value.
+func ErrorSlots() float64 { published.Lock(); defer published.Unlock(); return published.slots }
+
+// HQFaults is muster_officer_hq_faults' last published value.
+func HQFaults() float64 { published.Lock(); defer published.Unlock(); return published.faults }
+
+// RepromptText is the turn an up, idle instance is given when its officer has
+// claimable work. Like KickoffText it carries no credential.
+func RepromptText(o Officer, n int) string {
+	return fmt.Sprintf("New work for officer %s (you are instance %d, %s): call %s and work the queue as before — %s, %s while you work, %s when done. "+
+		"Call %s again only if you need your charter.", o.ID, n, InstanceName(o.ID, n), ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolBrief)
+}
+
+// permanentRefusal names an HQ answer that is a configuration fault rather
+// than an outage: 401/403 (the officer token is revoked, wrong or not this
+// officer's) and 404 (HQ without the officer API, or no such officer). "" for
+// anything else.
+func permanentRefusal(err error) string {
+	var hq *HQError
+	if !errors.As(err, &hq) {
+		return ""
+	}
+	switch hq.Status {
+	case 401, 403, 404:
+		return fmt.Sprintf("HQ answered %d", hq.Status)
+	}
+	return ""
 }
