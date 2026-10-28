@@ -58,19 +58,45 @@ func (p *memChiefPrefs) get(owner int64) (chose, on bool) {
 	return chose, on
 }
 
-// callProvisioner is stubProvisioner recording Start and Stop by agent id.
+// callProvisioner is stubProvisioner recording Start and Stop by agent id, and
+// the instance's resulting state ("running"/"stopped") as a cluster would hold
+// it. startDelay / stopDelay hold a call before it lands; startErr fails Start.
 type callProvisioner struct {
 	stubProvisioner
-	mu    sync.Mutex
-	calls []string
+	mu                    sync.Mutex
+	calls                 []string
+	state                 string
+	startDelay, stopDelay time.Duration
+	startErr              error
 }
 
-func (p *callProvisioner) Start(_ context.Context, id int64) error { p.record("start", id); return nil }
-func (p *callProvisioner) Stop(_ context.Context, id int64) error  { p.record("stop", id); return nil }
-func (p *callProvisioner) record(op string, id int64) {
+func (p *callProvisioner) Start(_ context.Context, id int64) error {
+	time.Sleep(p.startDelay)
+	if p.startErr != nil {
+		p.record("start-failed", id, "")
+		return p.startErr
+	}
+	p.record("start", id, "running")
+	return nil
+}
+func (p *callProvisioner) Stop(_ context.Context, id int64) error {
+	time.Sleep(p.stopDelay)
+	p.record("stop", id, "stopped")
+	return nil
+}
+func (p *callProvisioner) record(op string, id int64, state string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls = append(p.calls, op+" "+itoa(id))
+	if state != "" {
+		p.state = state
+	}
+}
+
+func (p *callProvisioner) instance() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.state
 }
 
 // waitFor waits up to two seconds for the background call want.
@@ -141,7 +167,12 @@ func (w *chiefWorld) chiefTools(a agents.Agent) map[string]bool { _, c := w.tool
 func (w *chiefWorld) tools(chief agents.Agent) (mirror []agents.ToolDef, chiefs map[string]bool) {
 	w.s.ext.Attention = stubAttention{}
 	defer func() { w.s.ext.Attention = nil }()
-	return w.s.mirrorTools(opCtx), offered(w.s.toolsFor(opCtx, chief))
+	return w.s.mirrorTools(), offered(w.s.toolsFor(opCtx, chief))
+}
+
+// askChief is a mirrored session's chief_ask, as the operator's session.
+func (w *chiefWorld) askChief() string {
+	return w.s.toolChiefAsk(opCtx, toolCaller{}, `{"question":"which branch?"}`)
 }
 
 func (w *chiefWorld) get(path string, hdr map[string]string) *httptest.ResponseRecorder {
@@ -223,10 +254,13 @@ func TestAFreshInstallHasNoChiefAndSaysSo(t *testing.T) {
 	if strings.Contains(section, `id="chief-toggle"`) || strings.Contains(section, "<form") {
 		t.Errorf("an unavailable chief draws a switch:\n%s", section)
 	}
-	for _, d := range w.mirror() {
-		if d.Name == chiefAskTool {
-			t.Errorf("a session is offered %s with no chief", chiefAskTool)
-		}
+	// chief_ask stays listed (a session's list is read once, at connect); the
+	// call says there is no chief and where to ask instead.
+	if !hasTool(w.mirror(), chiefAskTool) {
+		t.Errorf("a session is not offered %s", chiefAskTool)
+	}
+	if got := w.askChief(); !strings.Contains(got, "has no chief agent") || !strings.Contains(got, "attention_ask") {
+		t.Errorf("chief_ask with no chief = %s, want the no-chief refusal naming attention_ask", got)
 	}
 	if rec := w.post(accountChiefPath, url.Values{"on": {"1"}}); rec.Code != http.StatusConflict {
 		t.Errorf("POST %s on=1 = %d, want 409", accountChiefPath, rec.Code)
@@ -337,8 +371,13 @@ func TestTurningTheChiefOffAndOnAgain(t *testing.T) {
 	if _, err := w.s.chiefAgent(opCtx); !errors.Is(err, ErrChiefOff) || !errors.Is(err, ErrNoChief) {
 		t.Errorf("off: chiefAgent err = %v, want ErrChiefOff (an ErrNoChief)", err)
 	}
-	if hasTool(w.mirror(), chiefAskTool) {
-		t.Errorf("off: a session is still offered %s", chiefAskTool)
+	// chief_ask stays listed — a session that connected before Off holds the
+	// list it read then — and its call is refused with the way out.
+	if !hasTool(w.mirror(), chiefAskTool) {
+		t.Errorf("off: %s left the list (a connected session would still hold it)", chiefAskTool)
+	}
+	if got := w.askChief(); !strings.Contains(got, "turned their chief off") || !strings.Contains(got, "attention_ask") {
+		t.Errorf("off: chief_ask = %s, want the turned-off refusal naming attention_ask", got)
 	}
 	if w.chiefTools(chief)[attentionListTool] {
 		t.Errorf("off: the chief is still offered %s", attentionListTool)
@@ -389,16 +428,100 @@ func TestTurningTheChiefOffAndOnAgain(t *testing.T) {
 	}
 }
 
-// TestAChiefTurnedOnIsNotRestartedWhileRunning: on, for a chief whose row is
-// not stopped, starts nothing.
-func TestAChiefTurnedOnIsNotRestartedWhileRunning(t *testing.T) {
+// TestAQuickOffThenOnLeavesTheChiefRunning (audit round 1, #1): Off then On
+// in quick succession ends with the instance started and the switch on —
+// On starts the chief whatever its row last said, and after Off's Stop, not
+// before it. The fixture's row keeps reading `running` (as it would until
+// Stop's write lands), which is what used to make On start nothing.
+func TestAQuickOffThenOnLeavesTheChiefRunning(t *testing.T) {
 	w := newChiefWorld(t, true, true)
-	if rec := w.post(accountChiefPath, url.Values{"on": {"1"}}); rec.Code != http.StatusSeeOther {
-		t.Fatalf("on: %d", rec.Code)
+	w.prov.stopDelay = 50 * time.Millisecond
+	for _, on := range []string{"0", "1"} {
+		if rec := w.post(accountChiefPath, url.Values{"on": {on}}); rec.Code != http.StatusSeeOther {
+			t.Fatalf("on=%s: %d", on, rec.Code)
+		}
 	}
-	time.Sleep(100 * time.Millisecond)
-	if calls := w.prov.seen(); len(calls) != 0 {
-		t.Errorf("turning a running chief on called the provisioner: %v", calls)
+	time.Sleep(150 * time.Millisecond) // any background call would have landed
+	if got := strings.Join(w.prov.seen(), ","); got != "stop 23,start 23" {
+		t.Errorf("provisioner calls %q, want stop then start", got)
+	}
+	if st := w.prov.instance(); st != "running" {
+		t.Errorf("the chief is on and its instance is %q", st)
+	}
+	if chose, on := w.prefs.get(1); !chose || !on {
+		t.Errorf("stored chose=%v on=%v, want on", chose, on)
+	}
+}
+
+// TestTheLastChoiceWinsUnderConcurrentClicks (audit round 1, #3): On and Off
+// racing — a slow Start, a fast Stop — end with the instance in the state the
+// stored choice says, whichever request ran last. Each request holds the
+// owner's switch lock through its call, so the two cannot interleave.
+func TestTheLastChoiceWinsUnderConcurrentClicks(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		clicks [2]string
+		slow   string // which call is held: start or stop
+	}{
+		{"on then off, a slow Start", [2]string{"1", "0"}, "start"},
+		{"off then on, a slow Stop", [2]string{"0", "1"}, "stop"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for i := 0; i < 5; i++ {
+				w := newChiefWorld(t, true, true)
+				if c.clicks[0] == "1" {
+					// Stopped before, so On has an instance to bring up.
+					w.store.rows[len(w.store.rows)-1].Status = agents.StatusStopped
+					w.prov.state = "stopped"
+				} else {
+					w.prov.state = "running"
+				}
+				if c.slow == "start" {
+					w.prov.startDelay = 40 * time.Millisecond
+				} else {
+					w.prov.stopDelay = 40 * time.Millisecond
+				}
+				var wg sync.WaitGroup
+				for _, on := range c.clicks {
+					wg.Add(1)
+					go func(on string) {
+						defer wg.Done()
+						w.post(accountChiefPath, url.Values{"on": {on}})
+					}(on)
+					time.Sleep(5 * time.Millisecond) // the second click while the first's call is in flight
+				}
+				wg.Wait()
+				time.Sleep(100 * time.Millisecond) // any background call would have landed
+				_, on := w.prefs.get(1)
+				want := map[bool]string{true: "running", false: "stopped"}[on]
+				if st := w.prov.instance(); st != want {
+					t.Fatalf("round %d: the switch is on=%v and the instance is %q (calls %v)", i, on, st, w.prov.seen())
+				}
+			}
+		})
+	}
+}
+
+// TestAFailedStartIsSaidAndLeavesTheChiefOff (audit round 1, #4): On whose
+// Start fails does not say "Saved." — it says the chief could not be started,
+// stores nothing, and the chief stays off.
+func TestAFailedStartIsSaidAndLeavesTheChiefOff(t *testing.T) {
+	w := newChiefWorld(t, true, true)
+	_ = w.prefs.SetEnabled(opCtx, 1, false)
+	w.prov.startErr = errors.New("cluster unreachable")
+	rec := w.post(accountChiefPath, url.Values{"on": {"1"}})
+	if loc := rec.Header().Get("Location"); rec.Code != http.StatusSeeOther || loc != "/account?chief=startfailed#chief" {
+		t.Fatalf("on with a failing Start: %d → %q", rec.Code, loc)
+	}
+	if _, on := w.prefs.get(1); on {
+		t.Error("a failed Start stored on")
+	}
+	page := w.get("/account?chief=startfailed", nil).Body.String()
+	if strings.Contains(page, "Saved.") || !strings.Contains(page, "could not be started") {
+		t.Errorf("the Account page after a failed Start:\n%.800s", page[strings.Index(page, `data-testid="chief-settings"`):])
+	}
+	if got := w.landing(t); got != "/agents" {
+		t.Errorf("GET / → %q, want /agents (still off)", got)
 	}
 }
 

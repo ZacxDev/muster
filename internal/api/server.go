@@ -100,6 +100,10 @@ type Server struct {
 	auth     AuthConfig
 	router   RouterPort
 
+	// chiefSwitch is each owner's chief-switch lock (chief_toggle.go
+	// chiefSwitchLock): owner id → *sync.Mutex.
+	chiefSwitch sync.Map
+
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
 

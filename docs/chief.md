@@ -13,7 +13,7 @@ Each user has a switch: **Account → Chief**.
 
 | | what you get |
 |---|---|
-| **Off** (the default) | No agent acts as your chief. Home (`/`) opens the Agents list, and the sidebar has no chief row. Nothing is delivered to a chief: plugin messages stay queued, as they do for a user with no chief ([pending](plugins.md#delivery-to-your-chief)), a mirrored session is not offered `chief_ask`, and a task mention's ask comes from muster. |
+| **Off** (the default) | No agent acts as your chief. Home (`/`) opens the Agents list, and the sidebar has no chief row. Nothing is delivered to a chief: plugin messages stay queued, as they do for a user with no chief ([pending](plugins.md#delivery-to-your-chief)), a mirrored session's `chief_ask` is answered with "your owner turned their chief off; ask your owner with attention_ask" (the tool stays listed, because a session reads its tool list once, when it connects), and a task mention's ask comes from muster. |
 | **On** | Home opens the chief's chat, the sidebar lists it first, and everything on this page applies. |
 
 **Who starts with it on.** A user who never touched the switch has the chief on
@@ -34,15 +34,23 @@ again brings them back. While it is off:
 - the chief agent is offered none of the chief tools, and a call to one is
   refused, so a chief that is still running cannot route, draft or dispatch;
 - with the agent provisioner, its pod is stopped (Stop, not Delete). The
-  stopped-agent reaper never deletes the chief;
+  stopped-agent reaper never deletes the chief. If the Stop fails, the switch
+  still reads off and the chief gets no work, and the page says its pod is
+  still up (turn it off again to retry);
 - it still cannot be deleted by accident (the delete protection below does not
   depend on the switch);
 - `POST /chief/provision` refuses (409) rather than create or start it.
 
-**Turning it on** with a chief agent starts its pod again if it was stopped.
-With no chief agent, it creates one (the same as `POST /chief/provision`). If
-the create is refused, for example because you have no OpenRouter key or Claude
-account, the switch stays off and the page says what to add.
+**Turning it on** with a chief agent starts its pod (a Start of a pod that is
+already running only re-applies it). If the Start fails, the switch stays off
+and the page says the chief could not be started. With no chief agent, it
+creates one (the same as `POST /chief/provision`). If the create is refused, for
+example because you have no OpenRouter key or Claude account, the switch stays
+off and the page says what to add.
+
+**The last click wins.** Each user's switch changes run one at a time, each
+finishing its Start or Stop before the next begins, so a quick Off then On (or
+On then Off) leaves the pod in the state the switch shows.
 
 **Not available on this install.** The chief is an agent in its own Kubernetes
 pod, so it needs the [agent provisioner](provisioner.md). The public

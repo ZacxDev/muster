@@ -14,6 +14,7 @@
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix draft <owner-id> <agent-name> <plugin-name> → prints the draft id
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmplugin <owner-id> <plugin-name>
 //		DATABASE_URL=…_e2e go run ./e2e/pluginfix chiefpref <owner-id> clear
+//		DATABASE_URL=…_e2e go run ./e2e/pluginfix rmchiefs <owner-id>   → prints the names removed
 //
 //	  - chief: an agent labelled "chief", running, holding token — the owner's
 //	    chief, whose own token the spec then calls /mcp with. It REFUSES when the
@@ -48,6 +49,8 @@
 //	    item on that agent's card.
 //	  - rmplugin: removes one plugin of the owner's by name (its message and
 //	    draft cascade), leaving the owner's other plugins alone.
+//	  - rmchiefs: deletes every agent of the owner's that would be its chief
+//	    (labelled chief, or the reserved slug), for a spec about having none.
 //	  - chiefpref: clears the owner's chief on/off choice (chief_preferences),
 //	    so a spec that used the Account page's switch leaves the default behind.
 //
@@ -81,7 +84,7 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|linknote|rmagent|cleanup|ask|rmask|draft|rmplugin …")
+		return fmt.Errorf("usage: pluginfix chief|agent|delivering|unconfirmed|lapse|label|linknote|rmagent|rmchiefs|cleanup|ask|rmask|draft|rmplugin|chiefpref …")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -225,6 +228,29 @@ func run(args []string) error {
 			return fmt.Errorf("usage: rmagent <owner-id> <name>")
 		}
 		if _, err := conn.Exec(ctx, `DELETE FROM agents WHERE owner_id = $1 AND name = $2`, owner, args[2]); err != nil {
+			return err
+		}
+	case "rmchiefs":
+		// Deletes every agent of the owner's that would be its chief — labelled
+		// chief, or holding the reserved slug — so a spec about having NO chief
+		// cannot be decided by one another spec left behind. Prints the names.
+		owner, err := num(1)
+		if err != nil || len(args) != 2 {
+			return fmt.Errorf("usage: rmchiefs <owner-id>")
+		}
+		rows, err := conn.Query(ctx, `DELETE FROM agents WHERE owner_id = $1
+			AND (lower(trim(display_name)) = 'chief' OR name = 'chief' OR name = 'chief-' || $1::text) RETURNING name`, owner)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err != nil {
+				return err
+			}
+			fmt.Println(n)
+		}
+		if err := rows.Err(); err != nil {
 			return err
 		}
 	case "cleanup":

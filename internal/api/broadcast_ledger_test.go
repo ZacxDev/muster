@@ -104,6 +104,8 @@ func TestEveryBroadcastCallSiteIsClassified(t *testing.T) {
 		// The Account page's chief switch (chief_toggle.go): owner is the
 		// request's own principal, whose switch and chief it is.
 		"(*Server).handleAccountChief → agentChangedFor(owner)",
+		// …and once more on the Off whose Stop failed, before it says so.
+		"(*Server).handleAccountChief → agentChangedFor(owner)",
 		// agent-named nudges: the owner is read from the agent row by name.
 		"(*Server).BroadcastAgentChanged → agentChangedFor(s.agentOwner(agentName))",
 		// the mirror plugin's host nudge: the hub names the host's owner.

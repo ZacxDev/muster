@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/ZacxDev/muster/internal/agents"
 )
@@ -213,6 +214,12 @@ func (s *Server) accountChiefSection(r *http.Request) string {
 	case "failed":
 		notice = `<p role="alert" class="text-sm font-semibold text-fg">The chief could not be created. It stays off; try again.</p>
 `
+	case "startfailed":
+		notice = `<p role="alert" class="text-sm font-semibold text-fg">The chief could not be started. It stays off; try again.</p>
+`
+	case "stopfailed":
+		notice = `<p role="alert" class="text-sm font-semibold text-fg">The chief is off and gets no work, but its pod could not be stopped. Turn it off again to retry.</p>
+`
 	}
 	on, err := s.chiefOn(ctx, owner, list)
 	if err != nil {
@@ -225,14 +232,36 @@ func (s *Server) accountChiefSection(r *http.Request) string {
 	return head + notice + state("off", "Off.") + form(true, "Turn the chief on") + `</section>`
 }
 
+// chiefSwitchLock is owner's switch lock: every POST /account/chief of one
+// owner runs its read, its provisioner call and its store under it, one at a
+// time, so the last request to take it decides both the stored choice and the
+// instance's state (see handleAccountChief). Per process: muster runs one.
+func (s *Server) chiefSwitchLock(owner int64) *sync.Mutex {
+	m, _ := s.chiefSwitch.LoadOrStore(owner, &sync.Mutex{})
+	return m.(*sync.Mutex)
+}
+
 // handleAccountChief is POST /account/chief (on=1|0): the caller's own switch,
 // back to the Account page.
 //
-//   - off: stored, then (with a provisioner) the chief's instance is stopped
-//     in the background. Nothing is deleted.
-//   - on: with a chief agent, stored and its instance started if it is
-//     stopped; with none, it is created (provisionChief) and the choice is
-//     stored only once the create succeeded, so a refused create leaves it off.
+// 🔴 THE PROVISIONER CALL IS MADE IN THE REQUEST, UNDER THE OWNER'S SWITCH
+// LOCK, AND THAT IS WHAT MAKES THE LAST CHOICE WIN. It used to be a background
+// goroutine per click, with Start only when the row read `stopped`: Off then
+// On quickly left the chief on but stopped (On read the row before Stop wrote
+// it, so started nothing), and On then Off could land the slow Start after the
+// Stop, leaving a pod running with the chief off (audit round 1, #1 and #3).
+// Serialised, each request finishes its call before the next one reads.
+//
+//   - off: stored first (the gates stop the chief acting at once), then, with
+//     a provisioner, its instance is stopped. A Stop that fails is said, not
+//     hidden: the choice stands and the page says the pod is still up.
+//   - on: with a chief agent, its instance is started — UNCONDITIONALLY, since
+//     a Start of a running instance only re-applies it — and the choice is
+//     stored only once that succeeded; a Start that fails leaves it off and
+//     says so, as a refused create does. With no chief agent, it is created
+//     (provisionChief) and stored only once that succeeded.
+//
+// Nothing is deleted either way.
 func (s *Server) handleAccountChief(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	owner := requestOwner(ctx)
@@ -249,6 +278,13 @@ func (s *Server) handleAccountChief(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "on is 1 or 0", http.StatusBadRequest)
 		return
 	}
+	back := func(code string) { http.Redirect(w, r, accountPath+"?chief="+code+"#chief", http.StatusSeeOther) }
+	mu := s.chiefSwitchLock(owner)
+	mu.Lock()
+	defer mu.Unlock()
+	// A client that goes away mid-call must not cut a Start or Stop in half;
+	// the principal is kept (see Provisioner).
+	opCtx := context.WithoutCancel(ctx)
 	var list []agents.Agent
 	if s.ext.Agents != nil {
 		l, err := s.ext.Agents.List(ctx)
@@ -264,11 +300,21 @@ func (s *Server) handleAccountChief(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chief, has := primaryChief(ownedBy(list, owner))
-	if on && !has {
+	save := func() bool {
+		if err := s.ext.ChiefPrefs.SetEnabled(ctx, owner, on); err != nil {
+			s.logger.Printf("chief: owner %d: save the toggle: %v", owner, err)
+			http.Error(w, "could not save the setting", http.StatusInternalServerError)
+			return false
+		}
+		s.logger.Printf("chief: owner %d turned the chief %s", owner, map[bool]string{true: "on", false: "off"}[on])
+		return true
+	}
+	switch {
+	case on && !has:
 		// chiefToggleAvailable already said a provisioner exists when there is
 		// no chief; checked here too, at the call that needs it.
 		if s.ext.Provisioner == nil {
-			http.Redirect(w, r, accountPath+"?chief=failed#chief", http.StatusSeeOther)
+			back("failed")
 			return
 		}
 		if _, _, err := s.provisionChief(ctx, owner, ""); err != nil {
@@ -276,36 +322,39 @@ func (s *Server) handleAccountChief(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(err, ErrDispatchRefused) || errors.Is(err, agents.ErrModelNotCredentialed) {
 				code = "refused"
 			}
-			http.Redirect(w, r, accountPath+"?chief="+code+"#chief", http.StatusSeeOther)
+			back(code)
 			return
 		}
-	}
-	if err := s.ext.ChiefPrefs.SetEnabled(ctx, owner, on); err != nil {
-		s.logger.Printf("chief: owner %d: save the toggle: %v", owner, err)
-		http.Error(w, "could not save the setting", http.StatusInternalServerError)
-		return
-	}
-	s.logger.Printf("chief: owner %d turned the chief %s", owner, map[bool]string{true: "on", false: "off"}[on])
-	if has && s.ext.Provisioner != nil {
-		opCtx := context.WithoutCancel(ctx) // keeps the principal; see Provisioner
-		id, stopped := chief.ID, chief.Status == agents.StatusStopped
-		if !on {
-			safeGo(s.logger, "chief stop", func() {
-				if err := s.ext.Provisioner.Stop(opCtx, id); err != nil {
-					s.logger.Printf("chief: stop %d: %v", id, err)
-				}
-			})
-		} else if stopped {
-			safeGo(s.logger, "chief start", func() {
-				if err := s.ext.Provisioner.Start(opCtx, id); err != nil {
-					s.logger.Printf("chief: start %d: %v", id, err)
-				}
-			})
+		if !save() {
+			return
+		}
+	case on:
+		if s.ext.Provisioner != nil {
+			if err := s.ext.Provisioner.Start(opCtx, chief.ID); err != nil {
+				s.logger.Printf("chief: owner %d: start %d: %v (left off)", owner, chief.ID, err)
+				back("startfailed")
+				return
+			}
+		}
+		if !save() {
+			return
+		}
+	default:
+		if !save() {
+			return
+		}
+		if has && s.ext.Provisioner != nil {
+			if err := s.ext.Provisioner.Stop(opCtx, chief.ID); err != nil {
+				s.logger.Printf("chief: owner %d: stop %d: %v (off, still running)", owner, chief.ID, err)
+				s.agentChangedFor(owner, chief.Name)
+				back("stopfailed")
+				return
+			}
 		}
 	}
 	// Other open pages' sidebars refetch (they read the switch on each load).
 	if has {
 		s.agentChangedFor(owner, chief.Name)
 	}
-	http.Redirect(w, r, accountPath+"?chief=saved#chief", http.StatusSeeOther)
+	back("saved")
 }

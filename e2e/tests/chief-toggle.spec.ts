@@ -89,7 +89,10 @@ for (const [name, size, phone] of [
     test.use(phone ? { viewport: size, hasTouch: true, isMobile: true } : { viewport: size });
 
     test('a fresh user has no chief: home is the Agents list, no chief row, and Account says it is not available here', async ({ page }) => {
-      fix('rmagent', '1', CHIEF);
+      // EVERY chief of the user goes, not only this spec's: a chief another
+      // spec left behind would make "fresh" false and decide this test.
+      fix('rmchiefs', '1');
+      fix('chiefpref', '1', 'clear');
       await page.goto('/');
       await expect(page, '`/` lands on the Agents list').toHaveURL(onAgents);
       await showSidebar(page, phone);
