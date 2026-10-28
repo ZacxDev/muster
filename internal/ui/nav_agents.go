@@ -287,10 +287,18 @@ const navMoreID = "sidebar-more"
 // 🔴 A PLAIN <details>, SHUT ON EVERY LOAD (operator decision): no stored
 // open state, no script. Each page draws it shut; opened, it stays open only
 // for the life of that document.
+//
+// 🔴 THE <details> RESERVES ITS SHUT HEIGHT ITSELF (border + the 44px summary
+// + the safe area), NOT ONLY THROUGH ITS <summary>. The parser can yield
+// between the two tags; a <details> painted with no summary yet draws the
+// browser's default one-line "Details" summary, and the real 44px one then
+// grew it upward — a layout shift of More at the rail's foot (CI, desktop,
+// throttled; pinned by e2e/tests/cls-long-transcript.spec.ts's stall inside
+// More, red without this).
 func navMore(feat Features, body ...g.Node) g.Node {
 	return Details(
 		ID(navMoreID),
-		Class("group shrink-0 border-t border-line pb-[env(safe-area-inset-bottom)]"),
+		Class("group shrink-0 border-t border-line pb-[env(safe-area-inset-bottom)] min-h-[calc(2.75rem+1px+env(safe-area-inset-bottom))]"),
 		Summary(
 			ID(navMoreID+"-summary"),
 			Class("press flex min-h-[44px] cursor-pointer list-none items-center gap-3 px-5 text-sm font-medium text-fg2 transition hover:bg-s2 hover:text-fg [&::-webkit-details-marker]:hidden"),
