@@ -7,6 +7,9 @@
 /muster
 /muster-migrate
 
+# Release assets, built by scripts/release-build.sh.
+/dist/
+
 # nix
 result
 result-*
