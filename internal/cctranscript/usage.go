@@ -16,6 +16,10 @@ package cctranscript
 type Usage struct {
 	// Tokens is the context used: input + cache read + cache creation.
 	Tokens int64 `json:"tokens"`
+	// Output is the turn's output_tokens: what it wrote (its text, its tool
+	// calls, its thinking), which the tool-context ledger's estimate counts
+	// (toolctx.go). 0 from a host that predates it.
+	Output int64 `json:"output,omitempty"`
 }
 
 // usageOf is an assistant record's context use, or nil when it has none worth
@@ -29,5 +33,5 @@ func usageOf(r Record) *Usage {
 	if n <= 0 {
 		return nil
 	}
-	return &Usage{Tokens: n}
+	return &Usage{Tokens: n, Output: max(u.OutputTokens, 0)}
 }
