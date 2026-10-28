@@ -227,6 +227,10 @@ const (
 	// config.validateSTT.
 	envSTTURL   = "MUSTER_STT_URL"
 	envSTTToken = "MUSTER_STT_TOKEN"
+	// The `model` form field sent with each recording (stt.Client.WithModel).
+	// Unset sends none, which the bundled stt-cohere server wants; OpenAI's
+	// API and faster-whisper servers refuse a request without one.
+	envSTTModel = "MUSTER_STT_MODEL"
 	// File attachments (internal/uploads; internal/api/uploads.go): the
 	// S3-compatible store the composer's files are kept in, the key the agent's
 	// links are signed with, and the two knobs. All five of endpoint, bucket,
@@ -633,6 +637,9 @@ type config struct {
 	// exists), and a token with no URL refuses to boot.
 	STTURL   string
 	STTToken string
+	// STTModel is MUSTER_STT_MODEL: the `model` field each request carries,
+	// "" for none.
+	STTModel string
 	// Uploads: the raw MUSTER_S3_* / MUSTER_UPLOAD_* values. buildUploads
 	// parses and validates them; nothing here refuses to boot.
 	S3Endpoint       string
@@ -1053,6 +1060,7 @@ func loadConfig(getenv func(string) string) (config, error) {
 		MemoScopeMap:         strings.TrimSpace(getenv(envMemoScopeMap)),
 		STTURL:               strings.TrimRight(strings.TrimSpace(getenv(envSTTURL)), "/"),
 		STTToken:             strings.TrimSpace(getenv(envSTTToken)),
+		STTModel:             strings.TrimSpace(getenv(envSTTModel)),
 		S3Endpoint:           strings.TrimRight(strings.TrimSpace(getenv(envS3Endpoint)), "/"),
 		S3Bucket:             strings.TrimSpace(getenv(envS3Bucket)),
 		S3AccessKey:          strings.TrimSpace(getenv(envS3AccessKey)),
@@ -1606,6 +1614,9 @@ func (c config) validate() error {
 	// token or nothing, so neither shared secret may live in that namespace —
 	// nor in the plugin token's (`mpl_`), refused on every other door.
 	if reason := c.authConfig().SharedSecretPrefixRefusal(); reason != "" {
+		return errors.New(reason)
+	}
+	if reason := hookTokenRefusal(c.HookToken); reason != "" {
 		return errors.New(reason)
 	}
 	if c.Database == "" {
@@ -2163,3 +2174,38 @@ func parseAgentReapStoppedAfter(raw string) (time.Duration, error) {
 	}
 	return d, nil
 }
+
+// minHookTokenLen is the shortest MUSTER_HOOK_TOKEN muster boots with — the same
+// floor as MUSTER_UI_PASSWORD's (api.minUIPasswordLen).
+const minHookTokenLen = 12
+
+// hookTokenPlaceholder is deploy/.env.example's placeholder value.
+const hookTokenPlaceholder = "CHANGE-ME"
+
+// hookTokenRefusal is why a SET MUSTER_HOOK_TOKEN is refused at boot, or "".
+//
+// 🔴 THE HOOK TOKEN ACTS AS USER 1, THE ADMIN, ON EVERY MACHINE ROUTE. The
+// public deploy/.env.example ships it as CHANGE-ME, and before this check a
+// stack whose operator filled in the UI password but missed this line came up
+// healthy with a world-known admin bearer (measured: `Bearer CHANGE-ME` answered
+// 200 on /api/tasks). MUSTER_UI_PASSWORD's placeholder was already refused (the
+// web tier fails closed); this is the same rule for the machine tier, applied
+// at boot because a machine credential has no page on which to explain itself.
+//
+// UNSET is not refused here: the hook tier is enforce-when-set, and the gotrue
+// mode check (validateAuthMode) refuses unset where that is an open door.
+func hookTokenRefusal(token string) string {
+	switch {
+	case token == "":
+		return ""
+	case strings.EqualFold(strings.TrimSpace(token), hookTokenPlaceholder):
+		return fmt.Sprintf("%s is the placeholder %q from .env.example: it is the admin credential "+
+			"of every machine route, and that value is public. Set it to a secret (openssl rand -hex 32)",
+			envHookToken, hookTokenPlaceholder)
+	case len(token) < minHookTokenLen:
+		return fmt.Sprintf("%s is shorter than %d characters: it is the admin credential of every "+
+			"machine route. Set it to a secret (openssl rand -hex 32)", envHookToken, minHookTokenLen)
+	}
+	return ""
+}
+

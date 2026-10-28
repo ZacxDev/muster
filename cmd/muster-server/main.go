@@ -123,6 +123,12 @@ const (
 )
 
 func main() {
+	// `muster-server healthcheck` (selfcmds.go): no database, no configuration.
+	// Before the account-command catch-all below, which would otherwise read it
+	// as an unknown account command.
+	if isHealthcheck(os.Args[1:]) {
+		os.Exit(runHealthcheck(context.Background(), osGetenv, os.Stdout, os.Stderr))
+	}
 	// `muster-server mirror …` is the operator's mirror-token admin, run where
 	// the server's DATABASE_URL is (e.g. `kubectl exec` into the muster pod).
 	if len(os.Args) > 1 && os.Args[1] == "mirror" {
@@ -280,7 +286,7 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	}
 
 	if cfg.Database != "" {
-		pool, err := db.Connect(ctx, cfg.Database)
+		pool, err := connectDB(ctx, cfg.Database, logger)
 		if err != nil {
 			return nil, fmt.Errorf("db connect: %w", err)
 		}

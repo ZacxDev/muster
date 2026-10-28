@@ -94,6 +94,9 @@ type Server struct {
 	asks *askq.Store
 	// askWatch is the running question watches (mirror_ask.go).
 	askWatch askWatchers
+	// ledgers is the rendered views' tool-context ledger checkpoints, which a
+	// resuming socket starts from (mirror_ledger.go).
+	ledgers ledgerCheckpoints
 	auth     AuthConfig
 	router   RouterPort
 

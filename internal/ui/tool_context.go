@@ -31,23 +31,44 @@ func ctxBadgeID(rowID string) string { return rowID + "-x" }
 // observeCost feeds ev to the ledger and returns a patch for each row whose
 // cost it settled — except the row ev itself is about to redraw, which draws
 // its badge from t.costs.
+//
+// A RESUMED socket (Resumed) badges the rows an EARLIER socket drew too: its
+// ledger was restored from that socket's checkpoint (RestoreLedger), so a call
+// still running across the reconnect settles here, and the row — which this
+// socket never drew — is patched where the page has it (a patch of a slot the
+// page lacks does nothing). Such a call is tracked like any other, so its cost
+// is bounded with the rest and a later redraw of its card keeps the badge.
 func (t *MirrorTranscript) observeCost(ev cctranscript.Event) []MirrorOp {
 	var ops []MirrorOp
 	for _, c := range t.ledger.Observe(ev) {
 		if t.costs == nil {
 			t.costs = map[string]cctranscript.ToolCost{}
 		}
-		if _, drawn := t.calls[c.ToolID]; !drawn {
+		_, drawn := t.calls[c.ToolID]
+		if !drawn && !t.Resumed {
 			continue
 		}
+		if !drawn {
+			t.track(c.ToolID)
+		}
 		t.costs[c.ToolID] = c
-		if ev.Kind == cctranscript.KindToolResult && ev.ToolID == c.ToolID {
+		if drawn && ev.Kind == cctranscript.KindToolResult && ev.ToolID == c.ToolID {
 			continue
 		}
 		ops = append(ops, MirrorOp{Op: "patch", ID: ctxBadgeID(toolRowID(c.ToolID)), HTML: render(t.ctxBadge(c.ToolID))})
 	}
 	return ops
 }
+
+// Ledger is a copy of the tool-context ledger as Ops has left it: a
+// checkpoint a later socket resuming from the same place restores
+// (RestoreLedger), so a call still running across a reconnect is still
+// attributed when its next turn arrives.
+func (t *MirrorTranscript) Ledger() cctranscript.ToolContext { return t.ledger.Clone() }
+
+// RestoreLedger resumes the ledger from a checkpoint (Ledger) taken at the
+// very place this socket resumes from.
+func (t *MirrorTranscript) RestoreLedger(l cctranscript.ToolContext) { t.ledger = l.Clone() }
 
 // ctxBadge is a tool row's badge: its settled cost, or the hidden empty slot.
 func (t *MirrorTranscript) ctxBadge(toolID string) g.Node {
@@ -60,7 +81,7 @@ func (t *MirrorTranscript) ctxBadge(toolID string) g.Node {
 	switch c.Kind {
 	case cctranscript.CostMeasured:
 		title = "Measured: the context grew " + groupDigits(c.Tokens) +
-			" tokens from the turn that made this call to the next one (the call, its result, and anything else that turn wrote)"
+			" tokens from the turn that made this call to the next one (the call, its result, anything else that turn wrote, and any small reminder the CLI adds)"
 	case cctranscript.CostSplit:
 		text = "~" + text
 		title = "About " + groupDigits(c.Tokens) + " tokens: a share of " + groupDigits(c.GroupTokens) +
@@ -74,8 +95,15 @@ func (t *MirrorTranscript) ctxBadge(toolID string) g.Node {
 		case cctranscript.WhyShrank:
 			why = "the context shrank before the next turn (a compaction), so the growth cannot be measured"
 		}
-		title = "Estimated from the call and result size (about " + strconv.Itoa(cctranscript.EstimateBytesPerToken) +
-			" bytes per token; an image by its pixels): " + why + ". It counts only the call and result, so it tends to read lower than a measured figure"
+		rate := "about " + strconv.FormatFloat(cctranscript.ResultBytesPerToken, 'f', -1, 64) + " bytes per token (an image by its pixels)"
+		if c.OutputKnown {
+			title = "Estimated: this call's share of its turn's output (" + groupDigits(c.Output) + " tokens) plus its result at " + rate +
+				", a rate calibrated against measured Claude Code calls"
+		} else {
+			title = "Estimated from the call and result size at " + rate +
+				", a rate calibrated on Claude Code transcripts only: for another runtime or model it is not validated"
+		}
+		title += ". " + strings.ToUpper(why[:1]) + why[1:]
 	}
 	return Span(ID(id),
 		g.Attr("data-tool-ctx", c.Kind),
