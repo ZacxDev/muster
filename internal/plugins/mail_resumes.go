@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -63,6 +64,33 @@ type MailResumeStore interface {
 	// started ("" for none) and why (cut to fit).
 	FinishMailResume(ctx context.Context, id int64, state, window, detail string) error
 }
+
+// MailResumeHold bounds how long an unfinished resume (claimed or spawned)
+// keeps its message from the chief's ordinary delivery (resumeHolds). It is far
+// longer than a resume can take (the hosts' answers, then internal/api's
+// MailResumeWait) and exists only so a resume its server never finished — a
+// crash mid-wait — cannot hold a message forever: after it, the next retry
+// delivers it to the chief.
+const MailResumeHold = 10 * time.Minute
+
+// resumeHolds is THE ONE "a resume owns this message now" predicate, over
+// plugin_messages aliased m: an unfinished mail_resumes row of the message's
+// owner, younger than MailResumeHold.
+//
+// 🔴 WHY IT EXISTS. A message being resumed for stays `queued` — nothing was
+// handed to anyone — until the resume routes it (CreateRouteFrom, which takes
+// only a queued message) or gives it back to the chief. Without this, the
+// retry every plugin draft claim starts (QueuedForOwner, then Deliver's
+// BeginDelivery) takes it for the chief in the meantime, and the route into the
+// resumed session is then refused as "not a plugin message delivered to you".
+// Both of those read THIS predicate, so the list and the write cannot disagree.
+//
+// ⚠ A delivery that BEGAN before the claim is not stopped by it (the claim
+// does not look at the message): the resume's route is then refused for good,
+// and internal/api records that as refused, not as a timeout.
+var resumeHolds = `EXISTS (SELECT 1 FROM mail_resumes h WHERE h.plugin_message_id = m.id AND h.owner_id = m.owner_id
+		AND h.state IN ('` + ResumeClaimed + `', '` + ResumeSpawned + `')
+		AND h.created_at > now() - interval '` + strconv.FormatInt(int64(MailResumeHold/time.Second), 10) + ` seconds')`
 
 // principalOwner is the principal's user id as the queries read it.
 const principalOwner = `nullif(current_setting('muster.uid', true), '')::bigint`
