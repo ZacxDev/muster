@@ -170,7 +170,7 @@ a new one.
 
 | event | sent | fields |
 |---|---|---|
-| `stepup.passkey_options` | once per `POST /auth/confirm/passkey/options` the dialog makes, when it answers | `open_id`; `trigger`: `open` (the open's prefetch), `stale` (a tap found the challenge older than 4 minutes) or `retry` (a refused `/verify` spent it, or the last answer was unusable); `status`: the HTTP status, or `network`; `taps`: how many taps this open had made when it was fetched (0 for the open's own) |
+| `stepup.passkey_options` | once per `POST /auth/confirm/passkey/options` the dialog makes, when it answers | `open_id`; `trigger`: `open` (the open's prefetch), `stale` (a tap found the challenge older than 4 minutes) or `retry` (a `/verify` GoTrue refused spent it, or the last answer was unusable; a refusal muster made before asking GoTrue answers `challenge_unspent: true` and keeps the challenge, and after a `429` the replacement waits for the next tap); `status`: the HTTP status, or `network`; `taps`: how many taps this open had made when it was fetched (0 for the open's own) |
 | `stepup.passkey` | once per tap on "Confirm with passkey" | `open_id`; `attempt` (the tap's number in this open); `options_trigger` and `options_status` (the fetch whose challenge it used); `get`: how `navigator.credentials.get` ended (`ok`, the DOMException's name, or `not-called`); `verify`: `/verify`'s status, or empty when it was not sent |
 
 A run of `stepup.passkey_options` with no `stepup.passkey` is options calls with
