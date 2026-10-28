@@ -278,8 +278,9 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 	})
 
 	ext := api.Extensions{
-		TagAutoDispatch: cfg.TagAutoDispatch,
-		AgentsIdleAfter: cfg.AgentsIdleAfter,
+		LegacyProvenanceHeaderPrefix: cfg.LegacyProvenancePrefix,
+		TagAutoDispatch:              cfg.TagAutoDispatch,
+		AgentsIdleAfter:              cfg.AgentsIdleAfter,
 		// 🔴 THE SAME FIELD THE DRIVER GETS, AND THAT IS THE WHOLE POINT.
 		// k8sDriverConfig hands cfg.AgentNamespacePrefix to the driver as
 		// k8s.Config.NamespacePrefix (where the instance goes); this hands the same

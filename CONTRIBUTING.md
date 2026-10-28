@@ -134,10 +134,6 @@ MUSTER_LEAKSCAN_KEY=… python3 scripts/leakscan-rehash.py < names.txt > tests/l
 
 then set `DENIED_COUNT` in `tests/leakscan.py` to the count it prints.
 
-A header name that a peer service or an installed client reads verbatim cannot
-be renamed from this side. Mark that one line with `leakscan:wire-protocol`
-and bump `WIRE_PROTOCOL_LINES`. The marker excuses the denied-name rule only.
-
 ## Documentation
 
 The README is for newcomers; everything else lives in [`docs/`](docs/README.md).

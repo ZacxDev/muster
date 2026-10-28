@@ -231,17 +231,6 @@ class AnywhereInTheIdentifier(unittest.TestCase):
         with mock.patch.object(leakscan, "PUBLIC_WORDS", ("widgetcorp",)):
             self.assertEqual(deny("widgetco").match(line), [])
 
-    def test_the_wire_protocol_marker_excuses_only_the_denied_rule(self):
-        marked = f'const H = "X-Widgetco-Id"  // {leakscan.WIRE_PROTOCOL_MARKER}'
-        with mock.patch.object(leakscan, "ACTIVE_DENYLIST", deny("widgetco")):
-            leakscan.WIRE_EXCUSED.clear()
-            self.assertEqual(
-                [f.rule for f in leakscan.scan_text('const H = "X-Widgetco-Id"')],
-                ["denied-identifier"])
-            self.assertEqual(leakscan.scan_text(marked), [])
-            self.assertEqual(len(leakscan.WIRE_EXCUSED), 1)
-            leakscan.WIRE_EXCUSED.clear()
-
 
 if __name__ == "__main__":
     unittest.main()

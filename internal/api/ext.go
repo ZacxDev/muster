@@ -51,6 +51,13 @@ import (
 // a `Suggest` field reappear here should read that as the extraction being
 // undone, not as a convenience.
 type Extensions struct {
+	// LegacyProvenanceHeaderPrefix is MUSTER_LEGACY_PROVENANCE_HEADER_PREFIX:
+	// when set, the task-provenance headers are also read as
+	// `<prefix>-Source`, `<prefix>-Session-Id` and `<prefix>-Host`, for
+	// installed clients that predate the X-Muster-* spelling
+	// (provenance_headers.go). Empty: only X-Muster-* is read.
+	LegacyProvenanceHeaderPrefix string
+
 	Notes  notes.Store
 	Agents agents.Store
 	// Users answers a user's role for the request Principal (principal.go's

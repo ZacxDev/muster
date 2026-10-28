@@ -30,6 +30,62 @@ import (
 // cannot see a mutant that deletes the lookup.
 // ---------------------------------------------------------------------------
 
+// testLegacyPrefix is a SYNTHETIC legacy prefix: the real one is deployment
+// configuration (MUSTER_LEGACY_PROVENANCE_HEADER_PREFIX) and is not written in
+// this repository. The three names below are what a server configured with it
+// must also read.
+const (
+	testLegacyPrefix      = "X-Example"
+	legacyHeaderSource    = testLegacyPrefix + "-Source"
+	legacyHeaderSessionID = testLegacyPrefix + "-Session-Id"
+	legacyHeaderHost      = testLegacyPrefix + "-Host"
+)
+
+// TestTheLegacySpellingIsReadOnlyWhenConfigured: with no prefix configured a
+// legacy header is NOT read — the fall-through answers, exactly as if it were
+// absent — and with the prefix configured the same request resolves. Each pair
+// differs only in the configuration.
+func TestTheLegacySpellingIsReadOnlyWhenConfigured(t *testing.T) {
+	req := func() *http.Request {
+		return provenanceRequest(t, map[string]string{
+			legacyHeaderSource:    "claude-code",
+			legacyHeaderSessionID: "sid-legacy-kilo",
+			legacyHeaderHost:      "host-legacy-lima",
+		})
+	}
+	if src, sid := taskSource(req(), ""); src != "api" || sid != "" {
+		t.Errorf("unset: taskSource = (%q, %q), want (\"api\", \"\") — the legacy spelling was read", src, sid)
+	}
+	if h := taskSessionHost(req(), ""); h != "" {
+		t.Errorf("unset: taskSessionHost = %q, want \"\"", h)
+	}
+	if a := taskCommentAuthor(req(), ""); a != "api" {
+		t.Errorf("unset: taskCommentAuthor = %q, want \"api\"", a)
+	}
+	if src, sid := taskSource(req(), testLegacyPrefix); src != "claude-code" || sid != "sid-legacy-kilo" {
+		t.Errorf("set: taskSource = (%q, %q), want (\"claude-code\", \"sid-legacy-kilo\")", src, sid)
+	}
+	if h := taskSessionHost(req(), testLegacyPrefix); h != "host-legacy-lima" {
+		t.Errorf("set: taskSessionHost = %q, want \"host-legacy-lima\"", h)
+	}
+	if a := taskCommentAuthor(req(), testLegacyPrefix); a != "claude-code" {
+		t.Errorf("set: taskCommentAuthor = %q, want \"claude-code\"", a)
+	}
+}
+
+func TestValidLegacyProvenancePrefix(t *testing.T) {
+	for _, ok := range []string{"", "X-Example", "X-Old2", "Legacy"} {
+		if err := ValidLegacyProvenancePrefix(ok); err != nil {
+			t.Errorf("%q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"X-Example-", "-X", "X--Y", "X Example", "X-Example:", "x-muster", "X-Muster"} {
+		if err := ValidLegacyProvenancePrefix(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
 // provenanceRequest builds a POST /api/tasks request carrying exactly the
 // headers named — nothing else, so no Origin fallback and no leftover header can
 // supply an answer the case did not ask for.
@@ -86,7 +142,7 @@ func TestTaskSourceAcceptsBothSourceSpellings(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _ := taskSource(provenanceRequest(t, tc.headers))
+			got, _ := taskSource(provenanceRequest(t, tc.headers), testLegacyPrefix)
 			if got != tc.want {
 				t.Fatalf("🔴 taskSource source = %q, want %q for headers %v.\n"+
 					"The provenance source feeds the comment author, notes.source_type and the "+
@@ -139,7 +195,7 @@ func TestTaskSourceAcceptsBothSessionIDSpellings(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, got := taskSource(provenanceRequest(t, tc.headers))
+			_, got := taskSource(provenanceRequest(t, tc.headers), testLegacyPrefix)
 			if got != tc.want {
 				t.Fatalf("🔴 taskSource sessionID = %q, want %q for headers %v.\n"+
 					"An unresolved session id makes linkTaskSession a NO-OP WITH NO ERROR: no "+
@@ -189,7 +245,7 @@ func TestTaskSessionHostAcceptsBothHostSpellings(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := taskSessionHost(provenanceRequest(t, tc.headers))
+			got := taskSessionHost(provenanceRequest(t, tc.headers), testLegacyPrefix)
 			if got != tc.want {
 				t.Fatalf("🔴 taskSessionHost = %q, want %q for headers %v.\n"+
 					"task_sessions.host is the stored answer to 'which machine worked this' and is "+
@@ -229,7 +285,7 @@ func TestAnUnknownSourceStillCollapsesToAPI(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _ := taskSource(provenanceRequest(t, tc.headers))
+			got, _ := taskSource(provenanceRequest(t, tc.headers), testLegacyPrefix)
 			if got != "api" {
 				t.Fatalf("🔴 taskSource source = %q for headers %v, want \"api\".\n"+
 					"An unallowlisted producer MUST collapse to the default. taskSourceAllowlist is what "+
@@ -250,7 +306,7 @@ func TestThePreservedProvenanceProperties(t *testing.T) {
 	t.Run("a chrome-extension Origin still yields extension", func(t *testing.T) {
 		got, _ := taskSource(provenanceRequest(t, map[string]string{
 			"Origin": "chrome-extension://abcdefghijklmnop",
-		}))
+		}), testLegacyPrefix)
 		if got != "extension" {
 			t.Fatalf("🔴 taskSource source = %q for a chrome-extension:// Origin, want \"extension\" — "+
 				"the Origin fallback is the browser extension's ONLY attribution path", got)
@@ -259,7 +315,7 @@ func TestThePreservedProvenanceProperties(t *testing.T) {
 	t.Run("a moz-extension Origin still yields extension", func(t *testing.T) {
 		got, _ := taskSource(provenanceRequest(t, map[string]string{
 			"Origin": "moz-extension://abcdefghijklmnop",
-		}))
+		}), testLegacyPrefix)
 		if got != "extension" {
 			t.Fatalf("🔴 taskSource source = %q for a moz-extension:// Origin, want \"extension\"", got)
 		}
@@ -271,7 +327,7 @@ func TestThePreservedProvenanceProperties(t *testing.T) {
 		got, _ := taskSource(provenanceRequest(t, map[string]string{
 			legacyHeaderSource: "clickup",
 			"Origin":           "chrome-extension://abcdefghijklmnop",
-		}))
+		}), testLegacyPrefix)
 		if got != "clickup" {
 			t.Fatalf("🔴 taskSource source = %q, want \"clickup\": an explicit allowlisted source header "+
 				"must outrank the Origin fallback under BOTH spellings, or the legacy spelling is "+
@@ -290,7 +346,7 @@ func TestThePreservedProvenanceProperties(t *testing.T) {
 		long := strings.Repeat("é", maxSessionIDLen+7)
 		_, got := taskSource(provenanceRequest(t, map[string]string{
 			legacyHeaderSessionID: long,
-		}))
+		}), testLegacyPrefix)
 		if n := len([]rune(got)); n != maxSessionIDLen {
 			t.Fatalf("🔴 session id capped to %d runes, want exactly %d", n, maxSessionIDLen)
 		}
@@ -304,7 +360,7 @@ func TestThePreservedProvenanceProperties(t *testing.T) {
 		long := strings.Repeat("ü", maxSessionHostLen+7)
 		got := taskSessionHost(provenanceRequest(t, map[string]string{
 			legacyHeaderHost: long,
-		}))
+		}), testLegacyPrefix)
 		if n := len([]rune(got)); n != maxSessionHostLen {
 			t.Fatalf("🔴 host capped to %d runes, want exactly %d", n, maxSessionHostLen)
 		}
@@ -317,11 +373,11 @@ func TestThePreservedProvenanceProperties(t *testing.T) {
 	// linkTaskSession a deliberate no-op for the many machine callers that are
 	// not sessions, and what stores NULL rather than an empty string.
 	t.Run("no headers at all yields the api default and no session", func(t *testing.T) {
-		source, sessionID := taskSource(provenanceRequest(t, nil))
+		source, sessionID := taskSource(provenanceRequest(t, nil), testLegacyPrefix)
 		if source != "api" || sessionID != "" {
 			t.Fatalf("🔴 taskSource with no headers = (%q, %q), want (\"api\", \"\")", source, sessionID)
 		}
-		if h := taskSessionHost(provenanceRequest(t, nil)); h != "" {
+		if h := taskSessionHost(provenanceRequest(t, nil), testLegacyPrefix); h != "" {
 			t.Fatalf("🔴 taskSessionHost with no headers = %q, want \"\"", h)
 		}
 	})

@@ -1,11 +1,14 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
-// Task-provenance header names — the ONE place either spelling is written down.
+// Task-provenance header names — the ONE place the current spelling is written
+// down, and the one place a legacy spelling is derived.
 //
 // 🔴 WHY THERE ARE TWO SPELLINGS, AND WHY THE SERVER IS THE HALF THAT CARRIES IT.
 // All three of these headers were RENAMED when muster was extracted out of the
@@ -25,6 +28,14 @@ import (
 // inventory of those binaries. Accepting both spellings makes the server correct
 // for clients that will never be rebuilt.
 //
+// 🔴 THE LEGACY SPELLING IS CONFIGURATION, NOT A LITERAL. It is the upstream
+// deployment's own name, so it is not written in this repository: a deployment
+// with such clients sets MUSTER_LEGACY_PROVENANCE_HEADER_PREFIX to the prefix
+// they send, and muster then also reads `<prefix>-Source`, `<prefix>-Session-Id`
+// and `<prefix>-Host` (Extensions.LegacyProvenanceHeaderPrefix). UNSET, ONLY THE
+// X-Muster-* SPELLING IS READ — a fresh deployment has no stale clients, and a
+// second spelling nobody sends is a second door for nothing.
+//
 // ⚠ ACCEPTING A SECOND SPELLING IS NOT ACCEPTING A SECOND VALUE. taskSourceAllowlist
 // is untouched and must stay untouched: it is what bounds the
 // muster_tasks_created_total{source} label's cardinality, and the producer id that
@@ -33,18 +44,6 @@ const (
 	headerSource    = "X-Muster-Source"
 	headerSessionID = "X-Muster-Session-Id"
 	headerHost      = "X-Muster-Host"
-
-	// The pre-extraction spellings. Accepted, never emitted, never documented as
-	// the way to call this server — a compatibility shim for installed clients.
-	// Outside the seam test that pins them (cmd/muster/seam_test.go), these
-	// three literals are the only place the upstream name survives in this
-	// repository, and unavoidably so while installed clients still send them:
-	// they ARE the wire protocol those clients speak, so renaming them here would
-	// simply re-break what this file fixes. Each line carries the leak gate's
-	// wire-protocol marker for that reason.
-	legacyHeaderSource    = "X-Clawgate-Source"     // leakscan:wire-protocol
-	legacyHeaderSessionID = "X-Clawgate-Session-Id" // leakscan:wire-protocol
-	legacyHeaderHost      = "X-Clawgate-Host"       // leakscan:wire-protocol
 )
 
 // provenanceHeader reads ONE task-provenance header under both spellings,
@@ -63,9 +62,39 @@ const (
 // must not shadow a legacy header that actually names a producer. Both are
 // trimmed before comparison, so an all-whitespace value under either spelling
 // reads as absent — which is what makes the stored column NULL rather than "".
-func provenanceHeader(r *http.Request, current, legacy string) string {
+//
+// legacyPrefix is the configured legacy prefix, or "" for none; suffix is the
+// part both spellings share (`Source`, `Session-Id`, `Host`).
+func provenanceHeader(r *http.Request, current, legacyPrefix, suffix string) string {
 	if v := strings.TrimSpace(r.Header.Get(current)); v != "" {
 		return v
 	}
-	return strings.TrimSpace(r.Header.Get(legacy))
+	if legacyPrefix == "" {
+		return ""
+	}
+	return strings.TrimSpace(r.Header.Get(legacyPrefix + "-" + suffix))
+}
+
+// The suffixes a legacy prefix is joined to, one per provenance header.
+const (
+	legacySuffixSource    = "Source"
+	legacySuffixSessionID = "Session-Id"
+	legacySuffixHost      = "Host"
+)
+
+var legacyPrefixRE = regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$`)
+
+// ValidLegacyProvenancePrefix reports why prefix cannot be a legacy provenance
+// header prefix, or nil if it can. Empty is valid: it means "none".
+func ValidLegacyProvenancePrefix(prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	if !legacyPrefixRE.MatchString(prefix) {
+		return fmt.Errorf("%q is not an HTTP header-name prefix (%s)", prefix, legacyPrefixRE)
+	}
+	if strings.EqualFold(prefix, "X-Muster") {
+		return fmt.Errorf("%q is the current spelling, not a legacy one", prefix)
+	}
+	return nil
 }

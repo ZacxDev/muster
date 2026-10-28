@@ -46,8 +46,8 @@ var taskSourceAllowlist = map[string]bool{
 //     or moz-extension:// Origin → "extension"; else the default "api".
 //   - sessionID: the trimmed session-id header ("" when absent).
 //
-// 🔴 BOTH HEADERS ARE READ UNDER TWO SPELLINGS — the current X-Muster-* and the
-// pre-extraction legacy spelling that installed clients still send — via the single
+// 🔴 BOTH HEADERS ARE READ UNDER UP TO TWO SPELLINGS — the current X-Muster-* and,
+// when legacyPrefix is configured, the legacy one installed clients send — via the single
 // provenanceHeader lookup in provenance_headers.go, which also holds the measured
 // account of what the rename cost. Do NOT re-open-code the preference here.
 //
@@ -63,15 +63,15 @@ var taskSourceAllowlist = map[string]bool{
 // render path already truncates+escapes, this protects storage.
 const maxSessionIDLen = 128
 
-func taskSource(r *http.Request) (source, sessionID string) {
-	sessionID = provenanceHeader(r, headerSessionID, legacyHeaderSessionID)
+func taskSource(r *http.Request, legacyPrefix string) (source, sessionID string) {
+	sessionID = provenanceHeader(r, headerSessionID, legacyPrefix, legacySuffixSessionID)
 	if rs := []rune(sessionID); len(rs) > maxSessionIDLen {
 		// rune-safe cap: byte-slicing could split a multibyte rune into invalid
 		// UTF-8, which Postgres rejects on INSERT (a failed task-create, not a
 		// bounded store). Cap by runes so the stored value stays valid text.
 		sessionID = string(rs[:maxSessionIDLen])
 	}
-	if h := provenanceHeader(r, headerSource, legacyHeaderSource); h != "" {
+	if h := provenanceHeader(r, headerSource, legacyPrefix, legacySuffixSource); h != "" {
 		if taskSourceAllowlist[h] {
 			return h, sessionID
 		}
@@ -470,7 +470,7 @@ func (s *Server) handleAPITaskCreate(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON body"})
 		return
 	}
-	source, sessionID := taskSource(r)
+	source, sessionID := taskSource(r, s.ext.LegacyProvenanceHeaderPrefix)
 	note, err := s.createTask(r.Context(), taskCreateInput{
 		Directory: body.Directory, Title: body.Title, Body: body.Body,
 		Model: body.Model, Repo: body.Repo, Branch: body.Branch, Tags: body.Tags,
@@ -1824,8 +1824,8 @@ var reservedCommentAuthors = map[string]bool{"user": true, "operator": true}
 // non-human, and reuses the provenance vocabulary rather than inventing a second
 // one. It can never be "user"/"operator" because the allowlist cannot produce
 // them.
-func taskCommentAuthor(r *http.Request) string {
-	source, _ := taskSource(r)
+func taskCommentAuthor(r *http.Request, legacyPrefix string) string {
+	source, _ := taskSource(r, legacyPrefix)
 	if source == "" {
 		return "api"
 	}
@@ -1905,7 +1905,7 @@ func (s *Server) handleAPITaskComment(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := s.ext.Notes.AddComment(r.Context(), notes.Comment{
 		NoteID: id,
-		Author: taskCommentAuthor(r),
+		Author: taskCommentAuthor(r, s.ext.LegacyProvenanceHeaderPrefix),
 		Body:   text,
 	})
 	if err != nil {

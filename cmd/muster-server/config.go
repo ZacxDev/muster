@@ -253,6 +253,9 @@ const (
 	// means router.DefaultActorHeader / router.DefaultTokenHeader.
 	envRouterActorHeader = "MUSTER_ROUTER_ACTOR_HEADER"
 	envRouterTokenHeader = "MUSTER_ROUTER_TOKEN_HEADER"
+	// The header prefix installed clients that predate the X-Muster-* spelling
+	// send the task-provenance headers under; unset means none is read.
+	envLegacyProvenancePrefix = "MUSTER_LEGACY_PROVENANCE_HEADER_PREFIX"
 
 	envStandalone = "MUSTER_STANDALONE"
 
@@ -667,6 +670,10 @@ type config struct {
 	// reads; empty means the router package's defaults.
 	RouterActorHeader string
 	RouterTokenHeader string
+
+	// LegacyProvenancePrefix is MUSTER_LEGACY_PROVENANCE_HEADER_PREFIX; see
+	// api.Extensions.LegacyProvenanceHeaderPrefix.
+	LegacyProvenancePrefix string
 
 	// Standalone is the operator's EXPLICIT declaration that this deployment has
 	// no permission router behind it, and therefore no session transcripts.
@@ -1097,6 +1104,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 		AndroidAllowPINKeys:  envFlag(getenv, envAndroidAllowPINKeys),
 		AndroidPackage:       strings.TrimSpace(getenv(envAndroidPackage)),
 		AndroidCertSHA256:    strings.TrimSpace(getenv(envAndroidCertSHA256)),
+
+		LegacyProvenancePrefix: strings.TrimSpace(getenv(envLegacyProvenancePrefix)),
 
 		AgentProvisioner:  strings.ToLower(strings.TrimSpace(getenv(envAgentProvisioner))),
 		AgentGateway:      strings.ToLower(strings.TrimSpace(getenv(envAgentGateway))),
@@ -1656,6 +1665,9 @@ func (c config) validate() error {
 			return fmt.Errorf("%s=%q is not an HTTP header name (%s): the router would "+
 				"never see the value sent under it. Fix or unset it", h.env, h.v, headerName)
 		}
+	}
+	if err := api.ValidLegacyProvenancePrefix(c.LegacyProvenancePrefix); err != nil {
+		return fmt.Errorf("%s: %v. Fix or unset it", envLegacyProvenancePrefix, err)
 	}
 	if c.ApprovalGateURL != "" {
 		actor := c.RouterActor

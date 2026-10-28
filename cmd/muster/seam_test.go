@@ -76,7 +76,9 @@ func seamServer(t *testing.T) (*httptest.Server, notes.Store) {
 	}
 	ns := notes.NewPG(pool)
 	srv := api.New(sse.New(8), api.AuthConfig{HookToken: seamHookToken}, log.New(io.Discard, "", 0))
-	srv.UseExtensions(api.Extensions{Notes: ns, SessionLiveness: seamLiveness{}})
+	srv.UseExtensions(api.Extensions{Notes: ns, SessionLiveness: seamLiveness{},
+		// A SYNTHETIC legacy prefix: the real one is deployment configuration.
+		LegacyProvenanceHeaderPrefix: "X-Example"})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, ns
@@ -293,9 +295,9 @@ func TestSeamAStaleLegacyClientIsStillAttributedAndStillLinks(t *testing.T) {
 	// --- THE CASE: ONLY the pre-extraction spellings, exactly as a stale upstream
 	// client sends them. No X-Muster-* header is present at all.
 	code, respBody = postRawTaskComment(t, ts, task.ID, map[string]string{
-		"X-Clawgate-Source":     "claude-code",  // leakscan:wire-protocol
-		"X-Clawgate-Session-Id": staleSessionID, // leakscan:wire-protocol
-		"X-Clawgate-Host":       staleHost,      // leakscan:wire-protocol
+		"X-Example-Source":     "claude-code",
+		"X-Example-Session-Id": staleSessionID,
+		"X-Example-Host":       staleHost,
 	}, "picked this up from a stale client")
 	if code != http.StatusOK {
 		t.Fatalf("stale-client comment HTTP %d: %s", code, respBody)

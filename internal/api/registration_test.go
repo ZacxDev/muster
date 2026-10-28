@@ -67,6 +67,8 @@ func fullyWiredServer(t *testing.T) *Server {
 		SessionLiveness: stubLiveness{},
 		TagAutoDispatch: true,
 		Provisioner:     stubProvisioner{},
+		// A SYNTHETIC legacy provenance prefix: registration must not branch on it.
+		LegacyProvenanceHeaderPrefix: "X-Example",
 		// 🔴 BOTH, because this fixture's whole claim is "every dependency wired".
 		// api.Provisioner and api.Gateway are separate now, so setting only the first
 		// would quietly make this an "almost everything" fixture — and a registration

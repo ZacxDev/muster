@@ -31,13 +31,13 @@ import (
 // and it lands in a stored column; a hostname is well under this.
 const maxSessionHostLen = 128
 
-// taskSessionHost reads the OPTIONAL host header — under BOTH the current
-// X-Muster-Host and its pre-extraction legacy spelling, via the shared
+// taskSessionHost reads the OPTIONAL host header — under the current
+// X-Muster-Host and, when legacyPrefix is configured, its legacy spelling, via the shared
 // provenanceHeader lookup (rune-capped, so a multibyte hostname can never be
 // truncated into invalid UTF-8 that Postgres rejects on write). Absent ⇒ "" ⇒ the
 // column keeps whatever an earlier touch recorded.
-func taskSessionHost(r *http.Request) string {
-	return capRunes(provenanceHeader(r, headerHost, legacyHeaderHost), maxSessionHostLen)
+func taskSessionHost(r *http.Request, legacyPrefix string) string {
+	return capRunes(provenanceHeader(r, headerHost, legacyPrefix, legacySuffixHost), maxSessionHostLen)
 }
 
 // linkTaskSession joins the request's session to noteID's thread with the given
@@ -61,14 +61,14 @@ func taskSessionHost(r *http.Request) string {
 // would go blank exactly when the thread became the only surviving record. Nil-safe
 // (no Suggest store ⇒ empty context, and the link still records).
 func (s *Server) linkTaskSession(r *http.Request, noteID int64, role string) (bool, error) {
-	_, sessionID := taskSource(r)
+	_, sessionID := taskSource(r, s.ext.LegacyProvenanceHeaderPrefix)
 	if sessionID == "" {
 		return false, nil
 	}
 	link := notes.SessionLink{
 		SessionID: sessionID,
 		Role:      role,
-		Host:      taskSessionHost(r),
+		Host:      taskSessionHost(r, s.ext.LegacyProvenanceHeaderPrefix),
 	}
 	// 🔴 GetSessionMeta, NOT GetSession — the projection, not the whole row. The two
 	// fields read below are the only ones this enrichment wants, and suggest.SessionMeta

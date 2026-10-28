@@ -212,17 +212,6 @@ DENIED_MAX_LEN = 32
 #: spell in every import.
 PUBLIC_WORDS = ("zacxdev",)
 
-#: 🔴 THE ONE EXCUSE, AND IT IS FOR SOMEBODY ELSE'S WIRE PROTOCOL. A header
-#: name that a peer service or an installed client reads verbatim cannot be
-#: renamed from this side: the request would still be sent and simply stop
-#: being recognised. A line carrying this marker is excused from the
-#: denied-identifier rule ONLY — every other rule still applies to it — and
-#: WIRE_PROTOCOL_LINES pins how many lines use it, so a new one is a reviewed
-#: two-line diff rather than a comment anybody can paste. Prose ABOUT such a
-#: header does not get the marker; it gets reworded.
-WIRE_PROTOCOL_MARKER = "leakscan:wire-protocol"
-WIRE_PROTOCOL_LINES = 6
-
 #: Files the denied-identifier rule does not read, each with the reason. Every
 #: other rule still applies to them, and a path here that the enumeration does
 #: not find fails the run, so an entry cannot outlive its file.
@@ -231,9 +220,6 @@ DENIED_EXEMPT_FILES = {
         "a third-party English word list (SCOWL, see dict/COPYRIGHT), embedded "
         "verbatim: its lines are dictionary words, not identifiers anybody chose",
 }
-
-#: Every (path, line) the marker excused in this run, for the count above.
-WIRE_EXCUSED: list[tuple[str, int]] = []
 
 DENY_CANARY = "redacted-canary-scope"
 DENY_CANARY_WORD = "canarytoken"
@@ -584,9 +570,6 @@ def scan_text(text: str, path: str = "<memory>") -> list[Finding]:
         # The last two rules are per-OCCURRENCE for the same reason, and the
         # message has to say WHICH.
         idents = [] if path in DENIED_EXEMPT_FILES else denied_identifiers(line)
-        if idents and WIRE_PROTOCOL_MARKER in line:
-            WIRE_EXCUSED.append((path, n))
-            idents = []
         for ident in idents:
             out.append(Finding(
                 path, n, "denied-identifier", line,
@@ -1084,11 +1067,6 @@ NEGATIVE_CONTROLS = [
     # The natural camelCase spelling of a one-word entry: whole words joined.
     ("denied-identifier",
      f'    c := new{DENY_CANARY_WORD[:6].capitalize()}{DENY_CANARY_WORD[6:].capitalize()}Client()'),
-    # The wire-protocol marker excuses the denied-identifier rule and NOTHING
-    # else: a credential on a marked line is still refused.
-    ("credential",
-     f'    req.Header.Set("X-{DENY_CANARY_WORD.capitalize()}-Token", '
-     f'"Bearer ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8")  // {WIRE_PROTOCOL_MARKER}'),
     # ⚠ THESE THREE DATES ARE DELIBERATELY PRE-2010, AND THAT IS THE ONLY
     # SPELLING AVAILABLE. A control for the dated-incident rule cannot use the
     # year-2000 convention the rule steers toward, because the rule SKIPS that
@@ -1136,8 +1114,6 @@ ALLOWED_CONTROLS = [
     ("nix run github:ZacxDev/muster -- --help",
      "the repository's OWN public URL: the owner handle is not denied, and "
      "denying it would red every import path in the tree"),
-    (f'const actorHeader = "X-{DENY_CANARY_WORD.capitalize()}-Actor"  // {WIRE_PROTOCOL_MARKER}',
-     "a peer's wire-protocol header name, marked as one"),
     (f'    scope = tmp / "{DENY_CANARY}d"   # one letter longer',
      "a token in which a denied COMPOUND is a literal substring — a compound "
      "entry matches whole segments only"),
@@ -1338,7 +1314,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  SKIPPED  {s}")
 
     findings: list[Finding] = []
-    WIRE_EXCUSED.clear()
     for f in files:
         try:
             findings.extend(
@@ -1356,15 +1331,6 @@ def main(argv: list[str] | None = None) -> int:
                   f"not scanned at all — remove the stale exemption")
             return 1
         print(f"  NOT DENYLISTED  {rel} — {why}")
-    if ACTIVE_DENYLIST is not None:
-        for path, n in WIRE_EXCUSED:
-            print(f"  EXCUSED  {path}:{n} — a wire-protocol header name")
-        if len(WIRE_EXCUSED) != WIRE_PROTOCOL_LINES:
-            print(f"  FAIL  {len(WIRE_EXCUSED)} line(s) excused by the "
-                  f"wire-protocol marker, WIRE_PROTOCOL_LINES says "
-                  f"{WIRE_PROTOCOL_LINES}. A new excuse is a decision for a "
-                  f"reviewer, not a comment to paste.")
-            return 1
     if findings:
         for f in findings:
             print(f"  {f}")
