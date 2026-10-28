@@ -841,7 +841,11 @@ itself. It finds the session by [focus](focus.md) (`focus_search`,
 turn for each message says when to do this.
 
 1. **The route.** muster records a route (`session_routes`, migration `0021`):
-   the message, the chief, the target and a deadline 30 minutes away. The
+   the message, the chief, the target and a deadline 30 minutes away (4 hours
+   for a [pull-request review](#a-pull-request-review-mail) muster routes
+   itself; every other route, the chief's, yours and a route by thread, has 30
+   minutes). A still-queued paste has no deadline of its own: it waits as long
+   as its route does. The
    message must be one delivered to that chief, replyable, not already routed,
    and with no reply already approved and on its way.
 2. **Into the session.** Only a **mirrored Claude Code window** can take a
@@ -1043,7 +1047,10 @@ routing is on.
    request (repo and number) or pushed its head branch (repo and `head_ref`)
    gets it through the thread route's path: handed to the chief without a
    turn, pasted after the idle wait, answered with `route_reply`, with the
-   deadline and hand-back. The audit row carries
+   hand-back — but a deadline of **4 hours**, not 30 minutes: the session that
+   authored the pull request is usually still at work on it, and its paste
+   waits until its window goes idle, so a 30-minute deadline handed most
+   reviews back to the chief before they were ever pasted. The audit row carries
    `routed_via: "pr <owner>/<repo>#<n> authored by <session>"`. Another
    owner's session is never chosen.
 4. **No online window for that session.** The message goes to your chief as
