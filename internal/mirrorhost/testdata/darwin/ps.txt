@@ -1,0 +1,12 @@
+    1     0     0 Ss   Mon Oct 26 09:00:01 2026     launchd
+  501     1   501 S    Mon Oct 26 09:01:10 2026     tmux
+  610   501   501 Ss   Wed Oct 28 15:39:24 2026     -zsh
+  611   610   501 S+   Wed Oct 28 15:40:02 2026     2.1.289
+  620   501   501 Ss   Thu Oct  8 07:05:09 2026     zsh
+  621   620   501 S+   Thu Oct  8 07:05:30 2026     node
+  630   501   501 Ss   Thu Oct  8 07:06:00 2026     zsh
+  640   630   501 Z    Thu Oct  8 07:06:01 2026     claude
+  700     1     0 Ss   Mon Oct 26 09:00:03 2026     Google Chrome He
+  abc     1     0 Ss   Mon Oct 26 09:00:03 2026     not-a-pid
+  710     1   501 S    Monday Oct 26 09:00 2026     bad-lstart
+  720     1

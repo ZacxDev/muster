@@ -71,11 +71,19 @@
 
 ## Mirroring
 
-- **On macOS, Claude Code windows have no Rendered view.** muster-mirror
-  finds Claude Code by reading `/proc`, which macOS does not have, so every
-  window there opens in the Terminal view. One whose command is `claude` says
-  so at its top ([mirroring.md](mirroring.md#why-a-window-opens-in-the-terminal)).
-  A process lookup for macOS has not been written.
+- **macOS hosts are experimental, and have no Terminal view.** The Terminal
+  view's attach is Linux-only today (`internal/mirrorhost/pty_other.go`), so
+  on a Mac only a Claude Code window whose Rendered view resolves can be
+  viewed; shells, Codex and windows without a Rendered view cannot.
+- **The macOS process lookup has not been run on a real Mac yet.** On macOS,
+  muster-mirror finds Claude Code with `ps`, the `kern.procargs2` sysctl and
+  `lsof` instead of `/proc` ([mirroring.md](mirroring.md#how-a-panes-transcript-is-found)).
+  Its parsers are tested against the documented formats, not against
+  captured output. If a Mac's Claude Code windows still open in the Terminal
+  view only, the line at the top says which step failed.
+- **On macOS, only Claude Code is looked up that way.** Hermes and opencode
+  windows, and the count of a Claude Code session's background shells, still
+  read `/proc`, so on a Mac they are not found.
 - 🔴 **`-interactive` is a shell on the host** for anyone who can type into its
   Terminal view in muster — live keys are always on there, behind a recent
   sign-in ([mirroring.md](mirroring.md#read-only-interactive-and-sending)).
