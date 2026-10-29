@@ -112,6 +112,8 @@ func routeClosedHint(st plugins.RouteState) string {
 		return ": its deadline passed and the message went back to the chief"
 	case plugins.RouteFailed:
 		return ": it failed and the message went back to the chief"
+	case plugins.RouteOwnerAnswered:
+		return ": its reply was already sent to the sender directly, so no reply is needed"
 	}
 	return ""
 }

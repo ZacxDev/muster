@@ -240,6 +240,7 @@ POST /mirror/view/suggest/event
 POST /plugin/v1/drafts/claim
 POST /plugin/v1/drafts/{id}/result
 POST /plugin/v1/messages
+POST /plugin/v1/messages/{id}/owner-answered
 POST /plugin/v1/tasks
 POST /plugins
 POST /plugins/drafts/{id}/approve

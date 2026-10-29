@@ -32,6 +32,7 @@ import (
 //	routed ──answer──▶ answered ──relay──▶ relayed  (approved draft)
 //	   │                      └──────────▶ fallback (pending draft)
 //	   ├─ deadline ─▶ timed_out
+//	   ├─ a send stamped with the message (the plugin's report) ─▶ owner_answered
 //	   └─ injection or relay impossible ─▶ failed
 //
 // 🔴 EXACTLY ONCE, AND THE SCHEMA HOLDS IT. route_id is unique, one route per
@@ -83,6 +84,13 @@ type RouteStore interface {
 	// BindThread and BoundThread are the threads sessions started (threads.go).
 	BindThread(ctx context.Context, thread, claudeSession string) (bool, error)
 	BoundThread(ctx context.Context, thread string) (string, error)
+	// SettleOwnerAnswered ends message messageID's route owner_answered when
+	// it is still routed and thread is the message's own: plugin pluginID's
+	// stamp that the reply was sent directly (owner_replies.go). settled
+	// false, with the route as it is, otherwise; ErrNotFound for a message
+	// that is not that plugin's; ErrStampNoThread / ErrStampThreadMismatch
+	// (with the route as it is) for a stamp not bound to its conversation.
+	SettleOwnerAnswered(ctx context.Context, pluginID, messageID int64, thread string) (r Route, settled bool, err error)
 }
 
 var _ RouteStore = (*PGStore)(nil)
@@ -97,6 +105,10 @@ const (
 	RouteTimedOut RouteState = "timed_out"
 	RouteFallback RouteState = "fallback"
 	RouteFailed   RouteState = "failed"
+	// RouteOwnerAnswered: the reply to the sender went out DIRECTLY — not
+	// through muster, so no draft exists — in a send stamped with this
+	// message, which its plugin reported (SettleOwnerAnswered). Terminal.
+	RouteOwnerAnswered RouteState = "owner_answered"
 )
 
 // Route is one row of session_routes.
@@ -121,6 +133,9 @@ type Route struct {
 	ReplyBody   string
 	DraftID     *int64
 	Error       string
+	// OwnerRepliedAt is when muster took the plugin's stamp that the reply
+	// went out directly: set exactly on an owner_answered route (0062's check).
+	OwnerRepliedAt *time.Time
 }
 
 // RouteTarget names the session a route goes to: a kind ("agent", "mirror"),
@@ -220,13 +235,13 @@ func NewRouteID() string {
 func RouteObject(routeID string) string { return "session_route:" + routeID }
 
 const routeCols = `id, route_id, owner_id, coalesce(plugin_message_id, 0), coalesce(task_id, 0), agent_id, target_kind, target_key, target_label, send_queue_id,
-	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error`
+	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error, owner_replied_at`
 
 func scanRoute(row pgx.Row) (Route, error) {
 	var r Route
 	var st string
 	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.TaskID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
-		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error)
+		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error, &r.OwnerRepliedAt)
 	r.State = RouteState(st)
 	return r, err
 }

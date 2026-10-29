@@ -69,6 +69,9 @@ func (s *Server) registerPluginRoutes(mux Mux) {
 	mux.HandleFunc("POST "+pluginAPIPrefix+"/drafts/{id}/result", s.requirePluginToken(s.handlePluginDraftResult))
 	// Deterministic upstream notices → one task per external key (plugin_tasks.go).
 	mux.HandleFunc("POST "+pluginTasksPath, s.requirePluginToken(s.handlePluginTask))
+	// A reply sent directly, stamped with the message it answers
+	// (owner_replies.go): its waiting route ends owner_answered. 404 with routing off.
+	mux.HandleFunc("POST "+pluginOwnerAnsweredPath, s.requirePluginToken(s.handlePluginOwnerAnswered))
 	// Session routing (session_routes.go): a MIRRORED session's reply_to_chief,
 	// with its host's own muster credential acting as the owner (a personal
 	// token, or the armed hook token). 404 with routing off. Fail-closed on an

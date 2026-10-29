@@ -136,6 +136,11 @@ type MessageIn struct {
 	// 0054): a reply on a thread one of the owner's mirrored sessions started is
 	// routed straight to that session (threads.go). Optional; "" when absent.
 	Thread string `json:"thread"`
+	// HumanConversation is the plugin's mark that the sender is a PERSON in a
+	// direct conversation (a chat DM), whose answer can take hours: a route of
+	// the message waits ConversationRouteTimeout instead of RouteTimeout
+	// (internal/api's routeTimeout; migration 0062). Optional; false when absent.
+	HumanConversation bool `json:"human_conversation"`
 }
 
 // Message is one row of plugin_messages.
@@ -173,6 +178,8 @@ type Message struct {
 	SettleReason *string `json:"settleReason,omitempty"`
 	// Thread is MessageIn.Thread as stored; nil when the plugin sent none.
 	Thread *string `json:"thread,omitempty"`
+	// HumanConversation is MessageIn.HumanConversation as stored.
+	HumanConversation bool `json:"humanConversation"`
 }
 
 // Errors the API maps to status codes.

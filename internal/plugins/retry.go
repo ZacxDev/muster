@@ -23,7 +23,7 @@ import (
 // message queued and is refused). Retryable means: `unconfirmed`, and nothing
 // the first turn did is still live or done — no reply draft pending, approved,
 // sent or itself unconfirmed (another turn would draft a second answer), and no
-// session route that is routed, answered or relayed, no gated task filed citing
+// session route that is routed, answered, relayed or answered by the owner directly (owner_answered), no gated task filed citing
 // it (gatedTaskCited) — and its plugin is not
 // revoked (revokedPlugin): a revoked plugin's messages are never handed to the
 // chief again, as Submit and QueuedForOwner already refuse them.
@@ -35,7 +35,7 @@ const (
 	liveDraft = `EXISTS (SELECT 1 FROM plugin_reply_drafts d WHERE d.message_id = m.id
 		AND d.status IN ('pending', 'approved', 'sent', 'unconfirmed'))`
 	liveRoute = `EXISTS (SELECT 1 FROM session_routes r WHERE r.plugin_message_id = m.id
-		AND r.state IN ('routed', 'answered', 'relayed'))`
+		AND r.state IN ('routed', 'answered', 'relayed', 'owner_answered'))`
 )
 
 // revokedPlugin: the message's plugin has been revoked. Revoking a plugin

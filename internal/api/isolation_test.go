@@ -427,6 +427,9 @@ var isolationClasses = map[string]routeClass{
 	// The plugin's keyed task (plugin_tasks.go): it names a key, never an id;
 	// B's plugin finds only B's tasks by it (row-level security).
 	"POST /plugin/v1/tasks": classPlugin,
+	// A stamped direct reply (owner_replies.go): it names A's message by id,
+	// which B's plugin must not settle (404, as a missing one).
+	"POST /plugin/v1/messages/{id}/owner-answered": classPlugin,
 
 	// The mirrored rendered view (tunnel v2) addresses its session like the
 	// mirrored terminal above (?host=&session=); the
@@ -1304,7 +1307,8 @@ func (w *isoWorld) fill(pattern string, o isoObjs, actor isoUser) (method, path,
 		id = strconv.FormatInt(o.queued, 10)
 	case strings.HasPrefix(path, "/api/routes/{id}"):
 		id = o.route
-	case strings.HasPrefix(path, "/plugins/messages/{id}") || strings.HasPrefix(path, "/api/plugins/messages/{id}"):
+	case strings.HasPrefix(path, "/plugins/messages/{id}") || strings.HasPrefix(path, "/api/plugins/messages/{id}") ||
+		strings.HasPrefix(path, "/plugin/v1/messages/{id}"):
 		id = strconv.FormatInt(o.pluginMsg, 10)
 	case strings.HasPrefix(path, "/uploads/{id}") || strings.HasPrefix(path, "/f/{id}"):
 		id = o.upload
