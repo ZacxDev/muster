@@ -125,7 +125,8 @@ func (s *Server) enableShips(cfg OfficersConfig) error {
 		s.logger.Printf("officers: %s SHIPS to %s: %s; pushes only to refs/heads/%s*, merges and tags only through %s/%s",
 			o.ID, o.Repo, o.Ship, o.Ship.BranchPrefix, officers.ToolMergePR, officers.ToolTagRelease)
 		if rt.watch != nil && !cfg.NoShipResume {
-			go rt.watch.Resume(s.streams.context())
+			w := rt.watch
+			safeGo(s.logger, "officer rollout resume "+o.ID, func() { w.Resume(s.streams.context()) })
 		}
 	}
 	return nil

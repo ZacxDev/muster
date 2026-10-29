@@ -179,6 +179,16 @@ func (w *Watcher) Start(ctx context.Context, rel TagOutcome, itemID string) erro
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
+		// 🔴 A PANIC HERE WOULD END muster-server, and with it every other
+		// officer and agent. It is caught, the watch is ended as aborted, and it
+		// escalates: nobody is watching that release any more.
+		defer func() {
+			if p := recover(); p != nil {
+				w.logf("officers: %s rollout: PANIC in the watch of %s: %v", w.OfficerID, rel.Tag, p)
+				w.escalate(ctx, fmt.Sprintf("Officer %s: muster's watch of release %s crashed; nobody is watching it. A human must check it.", w.OfficerID, rel.Tag))
+				w.set(func(s *WatchStatus) { s.Verdict, s.Done, s.Phase = VerdictAborted, true, "done" })
+			}
+		}()
 		w.run(ctx, rel, true)
 	}()
 	return nil
