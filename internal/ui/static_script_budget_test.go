@@ -112,7 +112,7 @@ func TestStaticScriptsAreTheSameForEveryone(t *testing.T) {
 
 	withHostPrefs(t, HostPreferences{})
 	docsA := scriptedDocuments(t, a)
-	withHostPrefs(t, HostPreferences{Order: []string{"hostzulu", "hostyankee"}})
+	withHostPrefs(t, HostPreferences{Icons: map[string]string{"hostzulu": "laptop"}})
 	docsB := scriptedDocuments(t, b)
 
 	urls := func(doc string) map[string]string { // path → ?v=
