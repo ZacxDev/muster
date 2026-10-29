@@ -330,9 +330,10 @@ type JobWorkspace interface {
 	// read-only deploy key when it has one — outside the agent's checkout, with
 	// the agent configuration overlaid from the default branch (from commit
 	// configRef of it when non-empty, refused unless the default branch reaches
-	// it), or with none of it when skipRepoConfig, and returns its path. The
-	// agent's checkout is not moved.
-	PrepareJobWorktree(ctx context.Context, a agents.Agent, jobID int64, repo string, pr int, sha, configRef string, skipRepoConfig bool) (string, error)
+	// it), or with none of it when skipRepoConfig, and — with baseSHA — that
+	// commit fetched the same way into refs/muster-jobs/<jobID>-base, and
+	// returns its path. The agent's checkout is not moved.
+	PrepareJobWorktree(ctx context.Context, a agents.Agent, jobID int64, repo string, pr int, sha, configRef string, skipRepoConfig bool, baseSHA string) (string, error)
 	// RemoveJobWorktree removes that worktree; one that is not there is not an
 	// error.
 	RemoveJobWorktree(ctx context.Context, a agents.Agent, jobID int64) error

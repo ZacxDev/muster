@@ -46,7 +46,7 @@ func newDeployKeyAdapter(t *testing.T, keyRepo string) (*Adapter, *localExecDriv
 
 func prepareAs(a *Adapter, r worktreetest.Repo, ag agents.Agent, skipRepoConfig bool) (string, error) {
 	a.anonGitBase = r.AnonBase
-	return a.PrepareJobWorktree(context.Background(), ag, overlayJobID, worktreetest.RepoName, worktreetest.PR, r.Commit, "", skipRepoConfig)
+	return a.PrepareJobWorktree(context.Background(), ag, overlayJobID, worktreetest.RepoName, worktreetest.PR, r.Commit, "", skipRepoConfig, "")
 }
 
 // lastArgs is the most recent exec's positional arguments after the script
@@ -163,7 +163,7 @@ func TestADeployKeyThatCanPushIsRefused(t *testing.T) {
 func TestAJobOnAnotherRepositoryThanThePoolsDeployKeyIsRefused(t *testing.T) {
 	a, d := newDeployKeyAdapter(t, "acme/other")
 	sha := strings.Repeat("d", 40)
-	_, err := a.PrepareJobWorktree(context.Background(), poolAgent(privatePool), overlayJobID, worktreetest.RepoName, 7, sha, "", false)
+	_, err := a.PrepareJobWorktree(context.Background(), poolAgent(privatePool), overlayJobID, worktreetest.RepoName, 7, sha, "", false, "")
 	if err == nil || !strings.Contains(err.Error(), DeployKeyRepoMismatchMessage) || !strings.Contains(err.Error(), "acme/other") {
 		t.Fatalf("prepare = %v, want an error carrying %q naming the key's repository", err, DeployKeyRepoMismatchMessage)
 	}
@@ -173,7 +173,7 @@ func TestAJobOnAnotherRepositoryThanThePoolsDeployKeyIsRefused(t *testing.T) {
 	// Control: the same job with the key configured for its repository reaches
 	// the instance.
 	b, db := newDeployKeyAdapter(t, "ACME/Widgets")
-	_, _ = b.PrepareJobWorktree(context.Background(), poolAgent(privatePool), overlayJobID, worktreetest.RepoName, 7, sha, "", false)
+	_, _ = b.PrepareJobWorktree(context.Background(), poolAgent(privatePool), overlayJobID, worktreetest.RepoName, 7, sha, "", false, "")
 	if db.count() != 1 {
 		t.Fatalf("control: the matching repository (case-insensitively) ran %d exec(s), want 1", db.count())
 	}
@@ -219,7 +219,7 @@ func TestRepoConfigOverlayFalseRestoresNothing(t *testing.T) {
 	// A config ref names a configuration to overlay: refused with the switch
 	// off, before any exec.
 	before := d.count()
-	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, r.Commit, r.Default, true); err == nil {
+	if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, r.Commit, r.Default, true, ""); err == nil {
 		t.Fatal("a config ref with the overlay off was accepted")
 	}
 	if d.count() != before {

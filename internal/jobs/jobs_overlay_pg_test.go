@@ -10,7 +10,8 @@ func TestThePGStoreRoundTripsRepoConfigOverlay(t *testing.T) {
 	a := mustAgent(t, pool, 1, "job-overlay")
 	ctx := as(1)
 	off, created, err := s.Create(ctx, NewJob{AgentID: a.ID, Agent: a.Name, Prompt: "review", Repo: "acme/widgets",
-		SHA: fullSHA, PR: 7, TimeoutSeconds: 90, IdempotencyKey: "overlay-off", SkipRepoConfig: true})
+		SHA: fullSHA, PR: 7, TimeoutSeconds: 90, IdempotencyKey: "overlay-off", SkipRepoConfig: true,
+		BaseSHA: "fedcba9876543210fedcba9876543210fedcba98"})
 	if err != nil || !created {
 		t.Fatalf("create = %v, %v", created, err)
 	}
@@ -19,13 +20,13 @@ func TestThePGStoreRoundTripsRepoConfigOverlay(t *testing.T) {
 		func() (Job, error) { return s.Get(ctx, off.ID) },
 		func() (Job, error) { return s.ByIdempotencyKey(ctx, "overlay-off") },
 	} {
-		if got, err := read(); err != nil || got.RepoConfigOverlay {
-			t.Fatalf("read = repo_config_overlay %t (%v), want false", got.RepoConfigOverlay, err)
+		if got, err := read(); err != nil || got.RepoConfigOverlay || got.BaseSHA != "fedcba9876543210fedcba9876543210fedcba98" {
+			t.Fatalf("read = repo_config_overlay %t base_sha %q (%v), want false and the base", got.RepoConfigOverlay, got.BaseSHA, err)
 		}
 	}
 	on, _, err := s.Create(ctx, NewJob{AgentID: a.ID, Agent: a.Name, Prompt: "review", Repo: "acme/widgets",
 		SHA: fullSHA, PR: 7, TimeoutSeconds: 90})
-	if err != nil || !on.RepoConfigOverlay {
-		t.Fatalf("a job recorded without it = repo_config_overlay %t (%v), want true", on.RepoConfigOverlay, err)
+	if err != nil || !on.RepoConfigOverlay || on.BaseSHA != "" {
+		t.Fatalf("a job recorded without them = repo_config_overlay %t base_sha %q (%v), want true and none", on.RepoConfigOverlay, on.BaseSHA, err)
 	}
 }

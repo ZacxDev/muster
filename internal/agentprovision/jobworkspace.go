@@ -141,7 +141,8 @@ var gitRunsNoRepoCommands = func() string {
 // an ANONYMOUS fetch of an https URL, or the GIT_SSH_COMMAND of a worker pool's
 // read-only DEPLOY KEY for an ssh URL (see "THE DEPLOY KEY" below). $8 is 1 to
 // overlay the repository's agent configuration, 0 to strip it and restore none
-// (a job's repo_config_overlay=false). The remaining arguments are
+// (a job's repo_config_overlay=false). $9 is a BASE commit to fetch ("" =
+// none; see "THE BASE" below). The remaining arguments are
 // JobOverlayRootFiles:
 //
 //  1. resolve the default branch, refs/remotes/origin/HEAD (asking origin with
@@ -173,6 +174,14 @@ var gitRunsNoRepoCommands = func() string {
 // configuration (the managed-policy CLAUDE.md, the pod's user settings) only.
 // Skipping the overlay never means "leave the commit's configuration in place".
 // Steps 3 and 4 (the source) are skipped: there is no source.
+//
+// 🔴 THE BASE ($9 set). The commit is fetched from $4 — the same URL, the same
+// anonymity or deploy key, the same refusals as the pull request's head — into
+// refs/muster-jobs/<job id>-base, BEFORE the worktree is made, so the turn can
+// `git diff <base>...HEAD` with no credential of its own (the worktree shares
+// the checkout's objects and refs). A base that cannot be fetched fails the job
+// (BaseFetchMessage, naming it) and nothing is made. The ref is deleted with
+// the worktree (jobRemoveScript).
 //
 // 🔴 THE DEPLOY KEY ($7 set). A private repository's pool fetches over SSH
 // with its read-only deploy key (podagent deploykey.go) instead of
@@ -238,8 +247,8 @@ var gitRunsNoRepoCommands = func() string {
 // COMMIT's configuration from configuring the reviewer; it does not make the
 // commit's code safe to execute.
 var jobOverlayScript = gitRunsNoRepoCommands + `export LC_ALL=C
-main=$1 wt=$2 sha=$3 url=$4 pr=$5 cfg=$6 sshcmd=$7 overlay=$8
-shift 8
+main=$1 wt=$2 sha=$3 url=$4 pr=$5 cfg=$6 sshcmd=$7 overlay=$8 base=$9
+shift 9
 if [ -n "$sshcmd" ]; then
 	export GIT_SSH_COMMAND="$sshcmd"
 else
@@ -273,6 +282,13 @@ head=$(git rev-parse --verify --quiet "$ref^{commit}") || exit 1
 if [ "$sha" != "$head" ] && ! git merge-base --is-ancestor "$sha" "$head" 2>/dev/null; then
 	echo "` + NotOnPullRequestMessage + ` (pull request $pr's head is $head)" >&2
 	exit 6
+fi
+if [ -n "$base" ]; then
+	GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+		git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags "$url" "+$base:$ref-base" ||
+		{ echo "` + BaseFetchMessage + ` (base_sha $base)" >&2; exit 12; }
+	got=$(git rev-parse --verify --quiet "$ref-base^{commit}") && [ "$got" = "$base" ] ||
+		{ echo "` + BaseFetchMessage + ` (base_sha $base: the fetched ref names ${got:-nothing})" >&2; exit 12; }
 fi
 src=$def
 if [ "$overlay" != 1 ]; then
@@ -335,6 +351,14 @@ const AnonymousFetchMessage = "the checkout's git configuration rewrites the ano
 // fetched anonymously.
 const PullFetchMessage = "the pull request's head could not be fetched — anonymously, or with the worker pool's deploy key where it has one — (a private repository without a deploy key, a deploy key GitHub refuses, no such pull request, or no network); nothing was run"
 
+// BaseFetchMessage opens the error of a job whose base_sha could not be
+// fetched; the base follows it.
+const BaseFetchMessage = "the job's base commit could not be fetched — anonymously, or with the worker pool's deploy key where it has one — (no such commit in the repository, a key GitHub refuses, or no network); nothing was run"
+
+// BaseRefSuffix is what a job's base ref adds to its pull-request ref:
+// refs/muster-jobs/<job id>-base.
+const BaseRefSuffix = "-base"
+
 // DeployKeyWritableMessage opens the error of a job whose worker pool's deploy
 // key could open GitHub's receive-pack: it can push, so it was not used.
 const DeployKeyWritableMessage = "the worker pool's deploy key has WRITE access (a dry-run push to the repository was accepted), so it was not used: add it to the repository as a deploy key WITHOUT write access; nothing was run"
@@ -374,6 +398,7 @@ rm -rf "$2"
 cd "$1" 2>/dev/null && git worktree prune >/dev/null 2>&1
 cd "$1" 2>/dev/null && git update-ref -d "refs/muster-jobs/${2##*/}" >/dev/null 2>&1
 cd "$1" 2>/dev/null && git update-ref -d "refs/muster-jobs/${2##*/}-config" >/dev/null 2>&1
+cd "$1" 2>/dev/null && git update-ref -d "refs/muster-jobs/${2##*/}-base" >/dev/null 2>&1
 if [ -e "$2" ] || [ -L "$2" ]; then
 	echo "the job's worktree $2 could not be removed" >&2
 	exit 1
@@ -416,15 +441,19 @@ func AnonymousFetchURL(base, repo string) string {
 // from configRef ("" = the default branch's tip; else a full commit id the
 // default branch must reach), and returns its absolute path in the instance.
 // With skipRepoConfig the repository's agent configuration is removed and none
-// restored (configRef must then be ""). ag's own checkout is not moved. On an
+// restored (configRef must then be ""). With baseSHA that commit is fetched the
+// same way into refs/muster-jobs/<jobID>-base. ag's own checkout is not moved. On an
 // error a partly made worktree may be left; RemoveJobWorktree removes it
 // either way.
-func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID int64, repo string, pr int, sha, configRef string, skipRepoConfig bool) (string, error) {
+func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID int64, repo string, pr int, sha, configRef string, skipRepoConfig bool, baseSHA string) (string, error) {
 	if !jobs.ValidSHA(sha) {
 		return "", fmt.Errorf("agentprovision: %q is not a full commit id (40 lowercase hex)", sha)
 	}
 	if configRef != "" && !jobs.ValidSHA(configRef) {
 		return "", fmt.Errorf("agentprovision: config ref %q is not a full commit id (40 lowercase hex)", configRef)
+	}
+	if baseSHA != "" && !jobs.ValidSHA(baseSHA) {
+		return "", fmt.Errorf("agentprovision: base %q is not a full commit id (40 lowercase hex)", baseSHA)
 	}
 	if configRef != "" && skipRepoConfig {
 		return "", fmt.Errorf("agentprovision: a config ref names the configuration to overlay, and this job overlays none")
@@ -449,7 +478,7 @@ func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID
 	}
 	var out bytes.Buffer
 	cmd := append([]string{"sh", "-c", jobOverlayScript, "muster-job-worktree", main, wt, sha,
-		url, strconv.Itoa(pr), configRef, sshCmd, overlay}, JobOverlayRootFiles...)
+		url, strconv.Itoa(pr), configRef, sshCmd, overlay, baseSHA}, JobOverlayRootFiles...)
 	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
 		return "", fmt.Errorf("create the worktree %s at %s: %w: %s", wt, sha, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}
