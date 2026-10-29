@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/officers/hqtest"
 	"github.com/ZacxDev/muster/internal/provision"
@@ -228,12 +229,14 @@ type officerRig struct {
 	clockMu sync.Mutex
 	clock   time.Time
 	// installed is the session source EnableOfficers installed.
-	installed func(agents.Agent) ([]string, string, bool)
+	installed func(agents.Agent) (agentspec.ClaudeCodeSession, bool)
 }
 
-func (r *officerRig) installSession(f func(agents.Agent) ([]string, string, bool)) { r.installed = f }
+func (r *officerRig) installSession(f func(agents.Agent) (agentspec.ClaudeCodeSession, bool)) {
+	r.installed = f
+}
 
-func discardSession(func(agents.Agent) ([]string, string, bool)) {}
+func discardSession(func(agents.Agent) (agentspec.ClaudeCodeSession, bool)) {}
 
 func (r *officerRig) now() time.Time {
 	r.clockMu.Lock()
@@ -878,19 +881,21 @@ func TestAnOfficerInstancePreAllowsExactlyItsOwnTools(t *testing.T) {
 	r := newOfficerRig(t)
 	rel := r.addInstance(r.a, 1, 871)
 	tri := r.addInstance(r.b, 1, 872)
-	allow, _, ok := r.s.OfficerClaudeCodeSession(rel)
+	sess, ok := r.s.OfficerClaudeCodeSession(rel)
+	allow := sess.AllowMCPTools
 	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release,officer_release_evaluation"; !ok || strings.Join(allow, ",") != want {
 		t.Fatalf("release officer allow = %v (ok %v), want %s", allow, ok, want)
 	}
-	allow, _, ok = r.s.OfficerClaudeCodeSession(tri)
+	sess, ok = r.s.OfficerClaudeCodeSession(tri)
+	allow = sess.AllowMCPTools
 	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release"; !ok || strings.Join(allow, ",") != want {
 		t.Fatalf("triage officer allow = %v (ok %v), want %s", allow, ok, want)
 	}
-	if allow, model, ok := r.s.OfficerClaudeCodeSession(r.agent(t, officerOrdinaryID)); ok || allow != nil || model != "" {
-		t.Fatalf("an ordinary agent got session settings: %v %q %v", allow, model, ok)
+	if sess, ok := r.s.OfficerClaudeCodeSession(r.agent(t, officerOrdinaryID)); ok || sess.AllowMCPTools != nil || sess.Model != "" {
+		t.Fatalf("an ordinary agent got session settings: %+v %v", sess, ok)
 	}
-	if allow, _, ok := r.s.OfficerClaudeCodeSession(r.agent(t, officerChiefID)); ok || allow != nil {
-		t.Fatalf("the chief got officer session settings: %v", allow)
+	if sess, ok := r.s.OfficerClaudeCodeSession(r.agent(t, officerChiefID)); ok || sess.AllowMCPTools != nil {
+		t.Fatalf("the chief got officer session settings: %+v", sess)
 	}
 	// The model follows the officer's config.
 	r.s.officerRT = nil
@@ -899,11 +904,69 @@ func TestAnOfficerInstancePreAllowsExactlyItsOwnTools(t *testing.T) {
 	if _, err := r.s.EnableOfficers(OfficersConfig{Officers: []officers.Officer{o, r.b}, InstallSession: discardSession}); err != nil {
 		t.Fatal(err)
 	}
-	if _, model, _ := r.s.OfficerClaudeCodeSession(rel); model != "claude-opus-4-5" {
-		t.Fatalf("model = %q, want the configured claude-opus-4-5", model)
+	if sess, _ := r.s.OfficerClaudeCodeSession(rel); sess.Model != "claude-opus-4-5" {
+		t.Fatalf("model = %q, want the configured claude-opus-4-5", sess.Model)
 	}
-	if _, model, _ := r.s.OfficerClaudeCodeSession(tri); model != "" {
-		t.Fatalf("an officer with no model got %q", model)
+	if sess, _ := r.s.OfficerClaudeCodeSession(tri); sess.Model != "" {
+		t.Fatalf("an officer with no model got %q", sess.Model)
+	}
+}
+
+// TestAnOfficerInstanceRunsWithEveryToolAllowedAndOtherAgentsDoNot: operator
+// decision A (PR #337 round 1). Every officer instance's session settings say
+// BypassPermissions — every tool allowed, no permission prompt — whatever its
+// type; an ordinary task agent and the chief get no session settings at all
+// (ok=false: the provisioner leaves their posture exactly as before).
+func TestAnOfficerInstanceRunsWithEveryToolAllowedAndOtherAgentsDoNot(t *testing.T) {
+	r := newOfficerRig(t)
+	for i, inst := range []agents.Agent{r.addInstance(r.a, 1, 875), r.addInstance(r.b, 1, 876)} {
+		if sess, ok := r.s.OfficerClaudeCodeSession(inst); !ok || !sess.BypassPermissions {
+			t.Fatalf("officer instance %d (%s): %+v ok=%v, want BypassPermissions", i, inst.Name, sess, ok)
+		}
+	}
+	for _, id := range []int64{officerOrdinaryID, officerChiefID} {
+		a := r.agent(t, id)
+		if sess, ok := r.s.OfficerClaudeCodeSession(a); ok || sess.BypassPermissions {
+			t.Fatalf("%s got officer session settings %+v ok=%v; its posture must be unchanged", a.Name, sess, ok)
+		}
+	}
+}
+
+// TestAnOfficerInstancePreAllowsTheConnectorToolsWhenOffered: with the
+// connector store configured (so the instance is offered them), the officer's
+// own tools are followed by EXACTLY connectors_list, connector_request and
+// connector_status — the whole list pinned, so the officer tools are unchanged
+// and nothing else (no other muster tool, no built-in) is added. Without the
+// store they are not offered and not allowed (the test above).
+func TestAnOfficerInstancePreAllowsTheConnectorToolsWhenOffered(t *testing.T) {
+	r := newOfficerRig(t)
+	rel := r.addInstance(r.a, 1, 873)
+	tri := r.addInstance(r.b, 1, 874)
+	r.s.ext.Connectors = presenceStore{}
+	sess, ok := r.s.OfficerClaudeCodeSession(rel)
+	allow := sess.AllowMCPTools
+	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release,officer_release_evaluation," +
+		"connectors_list,connector_request,connector_status"; !ok || strings.Join(allow, ",") != want {
+		t.Fatalf("release officer allow = %v (ok %v), want %s", allow, ok, want)
+	}
+	sess, ok = r.s.OfficerClaudeCodeSession(tri)
+	allow = sess.AllowMCPTools
+	if want := "officer_brief,officer_items,officer_claim,officer_heartbeat,officer_complete,officer_release," +
+		"connectors_list,connector_request,connector_status"; !ok || strings.Join(allow, ",") != want {
+		t.Fatalf("triage officer allow = %v (ok %v), want %s", allow, ok, want)
+	}
+	// Each allowed connector tool is one the instance is really offered over MCP.
+	offered := map[string]bool{}
+	for _, d := range r.s.MCPToolDefsFor(context.Background(), tri) {
+		offered[d.Name] = true
+	}
+	for _, n := range []string{"connectors_list", "connector_request", "connector_status"} {
+		if !offered[n] {
+			t.Errorf("%s is pre-allowed but not offered to the officer instance", n)
+		}
+	}
+	if sess, ok := r.s.OfficerClaudeCodeSession(r.agent(t, officerOrdinaryID)); ok || sess.AllowMCPTools != nil {
+		t.Fatalf("an ordinary agent got session settings: %+v", sess)
 	}
 }
 
@@ -917,8 +980,8 @@ func TestEnableOfficersInstallsTheSessionSourceOrRefuses(t *testing.T) {
 	if r.installed == nil {
 		t.Fatal("EnableOfficers installed no session source")
 	}
-	if allow, _, ok := r.installed(inst); !ok || len(allow) != 7 {
-		t.Fatalf("installed source answered %v %v for a release instance", allow, ok)
+	if sess, ok := r.installed(inst); !ok || len(sess.AllowMCPTools) != 7 {
+		t.Fatalf("installed source answered %v %v for a release instance", sess, ok)
 	}
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(&bytes.Buffer{}, "", 0))
 	s.UseExtensions(Extensions{Agents: &officerAgents{}, Provisioner: stubProvisioner{}, SessionLiveness: stubLiveness{}, Kinds: stubKinds{}})

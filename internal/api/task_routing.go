@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/fence"
+	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
 	"github.com/ZacxDev/muster/internal/plugins"
@@ -133,9 +133,6 @@ func dispatchRefusal(msg string, b *plugins.ChiefBudget) string {
 	}
 	return toolJSON(map[string]any{"error": msg, "budget": b})
 }
-
-// repoNameRe is a GitHub owner/name.
-var repoNameRe = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$`)
 
 // chiefDispatchRules is appended to the kickoff text of an agent the chief
 // starts: muster's words, after the task's own text.
@@ -873,7 +870,7 @@ func (s *Server) ownerAnswer(ctx context.Context, owner, taskID int64, text stri
 // connectedRepo is "" when repo is one of the owner's connected GitHub
 // repositories (compared without case), else the refusal.
 func (s *Server) connectedRepo(ctx context.Context, repo string) string {
-	if !repoNameRe.MatchString(repo) {
+	if !github.ValidRepoName(repo) {
 		return "repo " + strconv.Quote(repo) + " is not owner/name"
 	}
 	list, err := s.githubRepos(ctx)

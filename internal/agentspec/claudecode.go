@@ -302,6 +302,9 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 		}
 		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvModel, Value: m})
 	}
+	if opts.ClaudeCodeSession.BypassPermissions {
+		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvPermissionMode, Value: podagent.PermissionModeBypass})
+	}
 	if err := spec.Validate(); err != nil {
 		return provision.Spec{}, fmt.Errorf("agentspec: built an invalid spec for agent %q: %w", a.Name, err)
 	}

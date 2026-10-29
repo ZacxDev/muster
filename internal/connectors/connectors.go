@@ -16,17 +16,21 @@
 // the pod, and only an approved agent reaches only the connector's own hosts.
 //
 // 🔴 ACCESS IS RECORDED PER AGENT, BUT AN APPROVAL IS SHARED BY THE OWNER'S
-// AGENTS. Any agent may ASK for any connector by name; the first ask files a
+// AGENTS. Any agent may ASK for any connector by name (an officer instance only
+// for `github`: internal/api officerConnectorRefusal); the first ask files a
 // pending [Grant]. When the owner approves one, a [StandingGrant] is recorded
 // for the owner, keyed on the connector, its credential source and — for the
 // GitHub App's one-repository token — the agent's repository: a later request
 // from ANY of the owner's agents with the same key is approved at request time
 // (decided_via 'standing', naming the standing grant), and requests already
-// waiting with that key are approved in the same step. Only when no standing
-// grant matches is the owner prompted. An approved agent keeps access until it
-// is destroyed (the grant row cascades with the agent), the grant or its
-// standing grant is revoked, or the connector is deleted (its grants and
-// standing grants go with it). There is no time-based expiry. A denial is final
+// waiting with that key are approved in the same step (never for a worker-pool
+// member or an officer instance: internal/api excludedFromSharing). Only when
+// no standing grant matches is the owner prompted. An approved agent keeps
+// access until it is destroyed (the grant row cascades with the agent), the
+// grant or its standing grant is revoked, the connector is deleted (its grants
+// and standing grants go with it), or its grant is re-opened because the
+// connector's credential source (0033) or the agent's repository (0061)
+// changed (ReconcileGrant). There is no time-based expiry. A denial is final
 // for that request, and is never shared.
 //
 // ⚠ HTTP ONLY. HTTPS APIs and git's smart-HTTP protocol go through the proxy.
@@ -149,6 +153,12 @@ type Grant struct {
 	// StandingGrantID is the standing grant that approved this grant
 	// automatically (migration 0043); 0 for every other grant.
 	StandingGrantID int64 `json:"standingGrantId,omitempty"`
+	// Repo is the repository the decision was made for (migration 0061): the
+	// agent's effective repository when the owner decided it, or — when none
+	// was recorded (a decision before 0061, an approval from a standing grant,
+	// a grant not yet decided) — the agent row's own repository. "" for none.
+	// See ReconcileGrant.
+	Repo string `json:"-"`
 }
 
 // DecidedViaStanding is decided_via for a grant approved automatically by a
@@ -275,8 +285,10 @@ type Store interface {
 	// DecideGrant approves or denies a PENDING grant; ErrNotPending otherwise.
 	DecideGrant(ctx context.Context, id int64, approve bool, by, source string) (Grant, error)
 	// DecideGrantFrom is DecideGrant recording where the decision was made
-	// (via; the zero value is the Connectors tab, exactly DecideGrant).
-	DecideGrantFrom(ctx context.Context, id int64, approve bool, by, source string, via DecisionSource) (Grant, error)
+	// (via; the zero value is the Connectors tab, exactly DecideGrant) and the
+	// repository it was made for (repo, Grant.Repo; "" records none, which
+	// reads back as the agent row's own repository).
+	DecideGrantFrom(ctx context.Context, id int64, approve bool, by, source, repo string, via DecisionSource) (Grant, error)
 	// ReopenGrant puts an approved grant back to pending; reopened is false when
 	// it was no longer approved.
 	ReopenGrant(ctx context.Context, id int64) (g Grant, reopened bool, err error)

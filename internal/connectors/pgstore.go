@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -259,7 +260,7 @@ func (s *PGStore) TouchConnector(ctx context.Context, name string) error {
 const grantCols = `g.id, g.agent_id, coalesce(a.name, ''), g.connector_name, g.status, g.reason, g.requested_at,
 	g.decided_at, g.decided_by, g.last_used_at, g.source,
 	coalesce(g.decided_via, ''), coalesce(g.decided_via_host, ''), coalesce(g.decided_via_session, ''),
-	coalesce(g.standing_grant_id, 0)`
+	coalesce(g.standing_grant_id, 0), coalesce(g.repo, a.repo, '')`
 
 const grantFrom = ` FROM connector_grants g LEFT JOIN agents a ON a.id = g.agent_id`
 
@@ -267,7 +268,7 @@ func scanGrant(row pgx.Row) (Grant, error) {
 	var g Grant
 	err := row.Scan(&g.ID, &g.AgentID, &g.AgentName, &g.Connector, &g.Status, &g.Reason, &g.RequestedAt,
 		&g.DecidedAt, &g.DecidedBy, &g.LastUsedAt, &g.Source,
-		&g.DecidedVia.Via, &g.DecidedVia.Host, &g.DecidedVia.Session, &g.StandingGrantID)
+		&g.DecidedVia.Via, &g.DecidedVia.Host, &g.DecidedVia.Session, &g.StandingGrantID, &g.Repo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Grant{}, ErrNotFound
 	}
@@ -364,7 +365,7 @@ func (s *PGStore) GetGrant(ctx context.Context, id int64) (Grant, error) {
 // source the decision was about (SourceStored / SourceApp). It is a decision
 // on the Connectors tab: no provenance (DecideGrantFrom with the zero source).
 func (s *PGStore) DecideGrant(ctx context.Context, id int64, approve bool, by, source string) (Grant, error) {
-	return s.DecideGrantFrom(ctx, id, approve, by, source, DecisionSource{})
+	return s.DecideGrantFrom(ctx, id, approve, by, source, "", DecisionSource{})
 }
 
 // DecideGrantFrom is DecideGrant recording where the operator made the
@@ -374,7 +375,10 @@ func (s *PGStore) DecideGrant(ctx context.Context, id int64, approve bool, by, s
 // session and one from the tab cannot drift apart, and two of them racing on
 // one request cannot both land: the loser is ErrNotPending. 0035's CHECK
 // refuses a half-written provenance or one on an undecided row.
-func (s *PGStore) DecideGrantFrom(ctx context.Context, id int64, approve bool, by, source string, via DecisionSource) (Grant, error) {
+//
+// repo is the repository the decision is for (migration 0061), stored trimmed;
+// "" stores NULL, which reads back as the agent row's own repository.
+func (s *PGStore) DecideGrantFrom(ctx context.Context, id int64, approve bool, by, source, repo string, via DecisionSource) (Grant, error) {
 	status := StatusDenied
 	if approve {
 		status = StatusApproved
@@ -388,8 +392,9 @@ func (s *PGStore) DecideGrantFrom(ctx context.Context, id int64, approve bool, b
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE connector_grants SET status=$2, decided_by=$3, decided_at=now(), source=$4,
-		  decided_via=$5::text, decided_via_host=$6::text, decided_via_session=$7::text, standing_grant_id=NULL
-		WHERE id=$1 AND status='pending'`, id, status, by, source, v, host, sess)
+		  decided_via=$5::text, decided_via_host=$6::text, decided_via_session=$7::text, standing_grant_id=NULL,
+		  repo=nullif($8::text, '')
+		WHERE id=$1 AND status='pending'`, id, status, by, source, v, host, sess, strings.TrimSpace(repo))
 	if err != nil {
 		return Grant{}, err
 	}
@@ -408,7 +413,7 @@ func (s *PGStore) DecideGrantFrom(ctx context.Context, id int64, approve bool, b
 func (s *PGStore) ReopenGrant(ctx context.Context, id int64) (Grant, bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE connector_grants SET status='pending', decided_by='', decided_at=NULL, source='stored',
-		  decided_via=NULL, decided_via_host=NULL, decided_via_session=NULL, standing_grant_id=NULL
+		  decided_via=NULL, decided_via_host=NULL, decided_via_session=NULL, standing_grant_id=NULL, repo=NULL
 		WHERE id=$1 AND status='approved'`, id)
 	if err != nil {
 		return Grant{}, false, err

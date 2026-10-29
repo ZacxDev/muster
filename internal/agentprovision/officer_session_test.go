@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
 )
@@ -27,11 +28,11 @@ func TestAClaudeCodeSessionSourceReachesTheBuiltSpec(t *testing.T) {
 	officer := ccRow("officer-release-example-web-1")
 	worker := ccRow("plain-worker")
 	a := adapterWith(t, ccSpecConfig(), officer)
-	a.UseClaudeCodeSession(func(ag agents.Agent) ([]string, string, bool) {
+	a.UseClaudeCodeSession(func(ag agents.Agent) (agentspec.ClaudeCodeSession, bool) {
 		if ag.Name != officer.Name {
-			return nil, "", false
+			return agentspec.ClaudeCodeSession{}, false
 		}
-		return []string{"officer_brief", "officer_claim"}, "opus", true
+		return agentspec.ClaudeCodeSession{AllowMCPTools: []string{"officer_brief", "officer_claim"}, Model: "opus"}, true
 	})
 	spec, err := a.buildSpec(context.Background(), officer)
 	if err != nil {
@@ -60,5 +61,36 @@ func TestAClaudeCodeSessionSourceReachesTheBuiltSpec(t *testing.T) {
 	}
 	if _, ok := envVal(bspec, podagent.EnvAllowMCPTools); ok {
 		t.Error("with no session source, an officer-named agent still got an allow list")
+	}
+}
+
+// TestAnOfficerSessionsBypassReachesTheBuiltSpecAndATaskAgentsDoesNot: a
+// session source answering BypassPermissions (the officer runtime, for an
+// officer instance) puts CCD_PERMISSION_MODE=bypassPermissions in THAT
+// agent's built spec — what its pod's `ccd seed` reads — and a task agent the
+// source does not answer for carries no such variable (its posture unchanged).
+func TestAnOfficerSessionsBypassReachesTheBuiltSpecAndATaskAgentsDoesNot(t *testing.T) {
+	officer := ccRow("officer-triage-example-web-1")
+	worker := ccRow("plain-worker")
+	a := adapterWith(t, ccSpecConfig(), officer)
+	a.UseClaudeCodeSession(func(ag agents.Agent) (agentspec.ClaudeCodeSession, bool) {
+		if ag.Name != officer.Name {
+			return agentspec.ClaudeCodeSession{}, false
+		}
+		return agentspec.ClaudeCodeSession{AllowMCPTools: []string{"officer_brief"}, BypassPermissions: true}, true
+	})
+	spec, err := a.buildSpec(context.Background(), officer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := envVal(spec, podagent.EnvPermissionMode); !ok || v != "bypassPermissions" {
+		t.Fatalf("officer: %s = %q (present %v), want bypassPermissions", podagent.EnvPermissionMode, v, ok)
+	}
+	wspec, err := a.buildSpec(context.Background(), worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := envVal(wspec, podagent.EnvPermissionMode); ok {
+		t.Fatalf("a task agent's spec carries %s=%q", podagent.EnvPermissionMode, v)
 	}
 }

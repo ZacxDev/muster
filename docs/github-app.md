@@ -11,9 +11,10 @@ With the App configured:
   the App. Each request an approved agent makes through muster's proxy
   (`/connect/github/…`, which is how `ccd` clones, fetches and pushes) carries
   an installation token that GitHub issues for **that agent's one repository**.
-  The token has exactly `contents: write`, `pull_requests: write`,
-  `checks: read` and `statuses: read`, plus the `metadata: read` that GitHub
-  always adds. muster caches each token in memory until five minutes before it
+  In the default write mode the token has exactly `contents: write`,
+  `pull_requests: write`, `checks: read` and `statuses: read`; in
+  [read-only mode](#read-only-mode) (`MUSTER_GITHUB_APP_ACCESS=read`) all four
+  are `read`. Both add the `metadata: read` that GitHub always adds. muster caches each token in memory until five minutes before it
   expires (GitHub issues them for one hour), and drops it early if GitHub
   answers 401. It is never stored, logged or given to the agent.
 - **Other repositories are reached anonymously.** With an approved grant, all
@@ -111,8 +112,8 @@ Click **Create GitHub App**. On the App's page:
    this page.
 
 muster only ever asks for exactly those four repository permissions (Contents
-and Pull requests read and write, Checks and Commit statuses read), whatever
-the App was granted. If the App lacks one of them, GitHub refuses the token
+and Pull requests read and write, Checks and Commit statuses read — or all four
+read in [read-only mode](#read-only-mode)), whatever the App was granted. If the App lacks one of them, GitHub refuses the token
 (a 422 on the agent's card). But give the App no more than this table, so that a leaked
 key cannot do more.
 
@@ -142,6 +143,27 @@ That account must be on `MUSTER_GITHUB_APP_ACCOUNTS`.
 | `MUSTER_GITHUB_APP_ID` | The App ID |
 | `MUSTER_GITHUB_APP_PRIVATE_KEY` | The whole `.pem` file's contents. A value with its line breaks written as `\n` is accepted too. |
 | `MUSTER_GITHUB_APP_ACCOUNTS` | **Required.** Comma-separated `<login>:<id>` entries for the accounts whose installations muster may use, e.g. `example-org:12345,your-user:67890`. Get each id with `gh api users/<login> -q .id` (it works for organizations too). An entry without an id refuses to boot. |
+| `MUSTER_GITHUB_APP_ACCESS` | Optional. `write` (the default when unset) or `read`: what every agent token is minted with. See [Read-only mode](#read-only-mode). Any other value refuses to boot, as does setting it without the App. |
+
+### Read-only mode
+
+`MUSTER_GITHUB_APP_ACCESS=read` makes every agent token muster mints ask for
+`contents: read`, `pull_requests: read`, `checks: read` and `statuses: read`
+(plus GitHub's implicit `metadata: read`). The repository-listing token is
+`metadata: read` in both modes. With a read token, a `git push` or a
+pull-request write through the proxy is **refused by GitHub** (403); muster
+never mints a wider token in its place. Use it for a deployment whose agents
+must only read GitHub, even when it shares an App with a write-mode deployment:
+the mode is the deployment's, the App's own permissions stay as in the table
+above. An [officer](officers.md#reading-a-repository-repo) instance's token is
+read-only in **both** modes (`connectors.Caller.ReadOnly`): a write-mode
+deployment mints write for its task agents and read for its officers.
+
+In read mode, every place muster describes the connector says so: the
+Connectors tab, the approve card and `connector_requests_list`
+(`approving_grants`), the boot banner, the GitHub preset's help (which also
+says that the setting does **not** limit a stored token), and a task agent's
+close-out instructions, which tell it to report its branch instead of pushing.
 
 The App also needs the connector store (`MUSTER_CONNECTOR_ENCRYPTION_KEY`,
 [connectors.md](connectors.md)), because agents reach GitHub only through the

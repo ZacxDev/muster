@@ -87,6 +87,10 @@ const (
 	envGitHubAppID       = "MUSTER_GITHUB_APP_ID"
 	envGitHubAppKey      = "MUSTER_GITHUB_APP_PRIVATE_KEY"
 	envGitHubAppAccounts = "MUSTER_GITHUB_APP_ACCOUNTS"
+	// What every agent token the App mints may do (githubapp.Access): `write`
+	// (the default: contents + pull_requests write) or `read` (all four
+	// permissions read). Anything else refuses to boot.
+	envGitHubAppAccess = "MUSTER_GITHUB_APP_ACCESS"
 
 	// How long a claude-code agent's first turn waits for its repository checkout
 	// (agents.CheckoutWaitTimeout) before the agent is marked error.
@@ -551,6 +555,9 @@ type config struct {
 	GitHubAppID       int64
 	GitHubAppKey      *rsa.PrivateKey
 	GitHubAppAccounts []githubapp.Account
+	// GitHubAppAccess is the agent tokens' permission mode (never "" once
+	// loaded with an App; AccessWrite when unset).
+	GitHubAppAccess githubapp.Access
 
 	// CheckoutWaitTimeout is agents.CheckoutWaitTimeout for this server: 0 means
 	// the default (agents.DefaultCheckoutWaitTimeout).
@@ -1538,7 +1545,7 @@ func (c config) validateConnectors() error {
 // githubLoginRE is a GitHub user or organization login.
 var githubLoginRE = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
 
-// loadGitHubApp reads the GitHub App's three variables.
+// loadGitHubApp reads the GitHub App's four variables.
 //
 // 🔴 HALF A PAIR, AND A KEY THAT DOES NOT PARSE, REFUSE TO BOOT. Either would
 // boot a server whose `github` connector fails every token mint — visible only
@@ -1547,9 +1554,20 @@ func (c *config) loadGitHubApp(getenv func(string) string) error {
 	id := strings.TrimSpace(getenv(envGitHubAppID))
 	key := getenv(envGitHubAppKey)
 	accounts := splitList(getenv(envGitHubAppAccounts))
+	accessRaw := getenv(envGitHubAppAccess)
+	// 🔴 AN ACCESS MODE THAT IS NOT `read` OR `write` REFUSES TO BOOT. A typo of
+	// `read` that fell back to the default would mint WRITE tokens on a
+	// deployment whose operator asked for read-only ones.
+	access, err := githubapp.ParseAccess(accessRaw)
+	if err != nil {
+		return fmt.Errorf("invalid %s: %v", envGitHubAppAccess, err)
+	}
 	if id == "" && strings.TrimSpace(key) == "" {
 		if len(accounts) > 0 {
 			return fmt.Errorf("%s is set but %s is not: an account allowlist needs its App", envGitHubAppAccounts, envGitHubAppID)
+		}
+		if strings.TrimSpace(accessRaw) != "" {
+			return fmt.Errorf("%s is set but %s is not: an access mode needs its App", envGitHubAppAccess, envGitHubAppID)
 		}
 		return nil
 	}
@@ -1604,7 +1622,7 @@ func (c *config) loadGitHubApp(getenv func(string) string) error {
 		seen[aid] = a
 		parsed = append(parsed, githubapp.Account{Login: login, ID: aid})
 	}
-	c.GitHubAppID, c.GitHubAppKey, c.GitHubAppAccounts = n, k, parsed
+	c.GitHubAppID, c.GitHubAppKey, c.GitHubAppAccounts, c.GitHubAppAccess = n, k, parsed, access
 	return nil
 }
 
