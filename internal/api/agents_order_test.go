@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // activityStore lists agents in the store's own order (newest CREATED first) and
@@ -55,35 +56,37 @@ func activityFixture() *activityStore {
 	}
 }
 
-var agentCardID = regexp.MustCompile(`<article id="agent-(\d+)"`)
+var agentRowID = regexp.MustCompile(`<a id="nav-agent-(\d+)"`)
 
 // TestTheAgentsListIsOrderedByMostRecentActivity: the operator report "agent
-// list should be sorted by most recently active". It renders /ui/agents and reads
-// the card order. Red on the tree before agents.SortByLastActivity, which
-// rendered the store's created_at order (7, 6, 5).
+// list should be sorted by most recently active". It renders the sidebar (GET
+// ui.NavAgentsPath — where agents are listed since the Agents list page was
+// retired) and reads the row order. Red on the tree before
+// agents.SortByLastActivity, which rendered the store's created_at order
+// (7, 6, 5).
 func TestTheAgentsListIsOrderedByMostRecentActivity(t *testing.T) {
 	store := activityFixture()
 	s := New(nil, AuthConfig{UIPassword: testUIPassword, HookToken: testHookToken}, log.New(os.Stderr, "", 0))
 	s.UseExtensions(Extensions{Agents: store, SessionLiveness: stubLiveness{}})
 	h := s.Handler()
 
-	body := getOwed(t, s, h, "/ui/agents").Body.String()
+	body := getOwed(t, s, h, ui.NavAgentsPath).Body.String()
 	var order []string
-	for _, m := range agentCardID.FindAllStringSubmatch(body, -1) {
+	for _, m := range agentRowID.FindAllStringSubmatch(body, -1) {
 		order = append(order, m[1])
 	}
 	if got, want := strings.Join(order, ","), "5,6,7"; got != want {
-		t.Fatalf("/ui/agents card order = %s, want %s (most recently active first: a transcript "+
+		t.Fatalf("sidebar row order = %s, want %s (most recently active first: a transcript "+
 			"newer than every status change, then the latest status change, then the idle one)", got, want)
 	}
 
-	// The footer's "active" time is the sort key, not UpdatedAt: the chatting
-	// agent's card must print its TRANSCRIPT time.
-	card := body[strings.Index(body, `id="agent-5"`):strings.Index(body, `id="agent-6"`)]
-	wantTS := `data-ts="` + itoa(store.msgs[5].UnixMilli()) + `"`
-	if !strings.Contains(card, wantTS) {
-		t.Errorf("agent 5's card does not print its last activity (%s); the order on screen would "+
-			"contradict the label beside it", wantTS)
+	// The row's recency dot is the sort key, not UpdatedAt: the chatting
+	// agent's row must carry its TRANSCRIPT time.
+	row := body[strings.Index(body, `id="nav-agent-5"`):strings.Index(body, `id="nav-agent-6"`)]
+	wantTS := `data-recency-ts="` + itoa(store.msgs[5].UnixMilli()) + `"`
+	if !strings.Contains(row, wantTS) {
+		t.Errorf("agent 5's row does not carry its last activity (%s); the order on screen would "+
+			"contradict the dot beside it", wantTS)
 	}
 }
 

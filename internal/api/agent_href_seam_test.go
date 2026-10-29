@@ -273,8 +273,9 @@ func assertHrefLedger(t *testing.T, what string, got, want map[string]int) {
 var agentPageBuilders = map[string]bool{
 	// THE one page builder; ui.AgentSessionHref adds the session to it.
 	"internal/ui/terminal.go:AgentPath:(page)": true,
-	// hx-delete "/agents/"+id: the destroy VERB on the agent's id, not a link.
-	"internal/ui/agents.go:agentDeleteConfirm:(page)": true,
+	// hx-delete "/agents/"+id: the destroy VERB on the agent's id, not a link
+	// (the agent page's ⋯ menu, ui/agent_actions.go).
+	"internal/ui/agent_actions.go:agentDeleteConfirm:(page)": true,
 }
 
 // agentJSLedger: every "'/agents/' +" in inline JavaScript — sockets, not links.
@@ -301,11 +302,10 @@ var agentHrefCallLedger = map[string]int{
 	"AgentSessionHref ← internal/api/agents.go:Server.handleAgentDetail":                  2,
 	"AgentSessionHref ← internal/api/attention_asker.go:askerRef.page":                    1,
 	"AgentSessionHref ← internal/api/session_runtime.go:Server.handleAgentSessionDefault": 1,
-	// The views: a card (and through PageHref its pinned chip and Recent
-	// entry), the session drawer, a task card's Open chat, the notification
+	// The views: the session drawer, a task card's Open chat, the notification
 	// panel's two row kinds, the terminal page's back link.
-	// A list's links (card, chip, Recent via PageHref; a task card's Open chat)
-	// carry the from=list marker that moves a stale one to the latest.
+	// A list's links (the sidebar's rows and the switcher's pills via
+	// PageHref; a task card's Open chat) carry the from=list marker that moves a stale one to the latest.
 	"AgentSessionHref ← internal/ui/agent_href.go:AgentListHref":    1,
 	"AgentListHref ← internal/ui/agents.go:AgentCardView.PageHref":  1,
 	"AgentListHref ← internal/ui/notes.go:taskActionTrailing":       1,
@@ -313,10 +313,12 @@ var agentHrefCallLedger = map[string]int{
 	"AgentSessionHref ← internal/ui/notifications.go:activeRow":     1,
 	"AgentSessionHref ← internal/ui/notifications.go:notifRow":      1,
 	"AgentSessionHref ← internal/ui/terminal.go:AgentTerminalPage":  1,
-	"PageHref ← internal/ui/agents.go:agentCard":                    2,
 	// The session switcher under a session page's composer: a list too.
 	"PageHref ← internal/ui/switcher.go:switcherItems": 1,
 	"PageHref ← internal/ui/nav_agents.go:navAgentRow": 1,
 	// The switcher's pin toggle: the page a post without script returns to.
 	"PageHref ← internal/ui/switcher_pin.go:newSwitcherPin": 1,
+	// Home (`/`, GET /agents) with no chief on: the session opened last that
+	// is still listed, else the sidebar's first row — a list's link.
+	"PageHref ← internal/ui/list_order.go:HomeHref": 2,
 }

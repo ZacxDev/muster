@@ -9,8 +9,8 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// A HERMES WINDOW's RENDERED VIEW (docs/design/hermes.md, Phase 2): its card
-// opens the rendered view when the host names its session, the page draws
+// A HERMES WINDOW's RENDERED VIEW (docs/design/hermes.md, Phase 2): its
+// sidebar row opens the rendered view when the host names its session, the page draws
 // the conversation socket like a Claude Code window's, and its composer is
 // DISABLED, saying why, with no send queue — whatever the host allows.
 
@@ -27,24 +27,23 @@ func hermesWindows() []mirror.Window {
 func TestAHermesWindowsCardOpensItsReadOnlyRenderedView(t *testing.T) {
 	fm := &fakeMirror{online: true, interactive: true, v2: &fakeMirrorV2{}, windows: hermesWindows(), statusReport: true}
 	s, ts := viewServer(t, fm)
-	_, list := mirrorGet(t, s, ts, "/ui/agents")
+	// The sidebar's rows (where the retired Agents list's cards went).
+	_, list := mirrorGet(t, s, ts, ui.NavAgentsPath)
 	view := ui.MirrorRef{Host: "ws", Session: "main", Window: "@1"}
 	stale := ui.MirrorRef{Host: "ws", Session: "main", Window: "@2"}
 	if !strings.Contains(list, `href="`+amp(view.ViewPath())+`"`) {
-		t.Fatalf("the Hermes card with a session does not open its rendered view:\n%s", list)
+		t.Fatalf("the Hermes row with a session does not open its rendered view:\n%s", list)
 	}
 	if !strings.Contains(list, `href="`+amp(stale.TerminalPath())+`"`) {
-		t.Fatalf("the Hermes card with no session does not open its terminal")
+		t.Fatalf("the Hermes row with no session does not open its terminal")
 	}
-	// Both are Hermes cards: the kind chip, and the filter's kind field.
-	if n := strings.Count(list, `data-f-kind="hermes"`); n != 2 {
-		t.Errorf("%d cards filter as kind:hermes, want 2", n)
-	}
-	if n := strings.Count(list, `data-mirror-kind=""`); n < 2 || !strings.Contains(list, ">Hermes<") {
-		t.Errorf("the Hermes kind chip is missing (%d kind chips)", n)
+	// Both are Hermes entries: found by the kind (the palette's words; the
+	// card's kind chip and filter field have no successor on the row).
+	if n := strings.Count(list, `data-switcher-words="hermes main ws"`); n != 2 {
+		t.Errorf("%d rows are found as hermes, want 2:\n%s", n, list)
 	}
 	if strings.Contains(list, "python3.14") {
-		t.Error("a Hermes card is named by its pane's command")
+		t.Error("a Hermes row is named by its pane's command")
 	}
 
 	resp, page := mirrorGet(t, s, ts, view.ViewPath())

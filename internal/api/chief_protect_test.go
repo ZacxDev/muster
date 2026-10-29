@@ -21,6 +21,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/notes"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // ---------------------------------------------------------------------------
@@ -285,43 +286,45 @@ func equalIDs(a, b []int64) bool {
 	return true
 }
 
-// TestTheChiefsCardOffersNoDelete: the card list reads the same predicate, so
-// the menu never offers a Delete the server refuses — and still offers it on
-// every other card (a menu that dropped Delete everywhere would pass a check
-// that only looked at the chief).
+// TestTheChiefsCardOffersNoDelete: the agent page's ⋯ menu (the retired list
+// card's, GET ui.AgentHeaderPath) reads the same predicate, so it never offers
+// a Delete the server refuses — and still offers it on every other agent (a
+// menu that dropped Delete everywhere would pass a check that only looked at
+// the chief).
 func TestTheChiefsCardOffersNoDelete(t *testing.T) {
 	s, h, _, _, _ := chiefFixture()
-	body := getOwed(t, s, h, "/ui/agents").Body.String()
 	for _, tc := range []struct {
 		id         int64
 		wantDelete bool
 	}{
 		{chiefSlugID, false}, {chiefResolvedID, false}, {lateLabelID, true}, {workerID, true},
 	} {
-		card := cardChunk(t, body, tc.id)
-		has := strings.Contains(card, `hx-delete="/agents/`+itoa(tc.id)+`"`)
+		menu := agentMenu(t, s, h, tc.id)
+		has := strings.Contains(menu, `hx-delete="/agents/`+itoa(tc.id)+`"`)
 		if has != tc.wantDelete {
-			t.Errorf("agent %d's card offers delete = %v, want %v", tc.id, has, tc.wantDelete)
+			t.Errorf("agent %d's menu offers delete = %v, want %v", tc.id, has, tc.wantDelete)
 		}
 		// The menu itself is still there: Start/Stop stays available to the chief.
-		if !strings.Contains(card, `aria-label="Agent actions"`) {
-			t.Errorf("agent %d's card has no ⋯ menu at all", tc.id)
+		if !strings.Contains(menu, `aria-label="Agent actions"`) || !strings.Contains(menu, `data-agent-action="Start"`) &&
+			!strings.Contains(menu, `data-agent-action="Stop"`) {
+			t.Errorf("agent %d's page has no ⋯ menu with Start/Stop at all:\n%s", tc.id, menu)
 		}
 	}
 }
 
-// cardChunk is one agent's card: from its <article> to the next one.
-func cardChunk(t *testing.T, markup string, id int64) string {
+// agentMenu is one agent's ⋯ menu as its page's header refresh draws it
+// (GET ui.AgentHeaderPath: the strip, and the menu out of band in
+// #agent-menu-slot) — the menu's markup alone, so a Delete elsewhere in the
+// answer is not counted.
+func agentMenu(t *testing.T, s *Server, h http.Handler, id int64) string {
 	t.Helper()
-	start := strings.Index(markup, `<article id="agent-`+itoa(id)+`"`)
-	if start < 0 {
-		t.Fatalf("no card for agent %d", id)
+	body := getOwed(t, s, h, ui.AgentHeaderPath(id)).Body.String()
+	start := strings.Index(body, `<div id="`+ui.AgentMenuSlot+`"`)
+	end := strings.Index(body, `<div id="`+ui.AgentNoticesID+`"`)
+	if start < 0 || end < start {
+		t.Fatalf("agent %d's header answer carries no #%s before #%s:\n%s", id, ui.AgentMenuSlot, ui.AgentNoticesID, body)
 	}
-	rest := markup[start+1:]
-	if end := strings.Index(rest, `<article id="agent-`); end >= 0 {
-		return markup[start : start+1+end]
-	}
-	return markup[start:]
+	return body[start:end]
 }
 
 // TestEveryDestroyCallSiteIsChiefGuarded is the LEDGER of every top-level

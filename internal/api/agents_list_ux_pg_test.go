@@ -15,8 +15,9 @@ import (
 )
 
 // THE AGENTS LIST'S UX BATCH on a real Postgres: marking a task complete from
-// an agent's page without JavaScript lands on the Agents list, and each card
-// says what it is waiting on (data-wait), from the attention queue's one read.
+// an agent's page without JavaScript lands home, and each entry says what it
+// is waiting on (the sidebar row's data-nav-wait, where the retired list
+// card's data-wait went), from the attention queue's one read.
 
 // TestMarkCompleteWithoutJavaScriptLandsOnTheAgentsList: the no-JS form path
 // of the agent page's Mark-complete (ui.TaskCompletePath). Operator ask:
@@ -67,11 +68,11 @@ func TestMarkCompleteWithoutJavaScriptLandsOnTheAgentsList(t *testing.T) {
 	}
 }
 
-// listCardAttrs is each card's opening <article …> tag in a rendered list, by
-// its id.
-func listCardAttrs(body string) map[string]string {
+// navRowTags is each sidebar row's opening <a …> tag in a GET ui.NavAgentsPath
+// answer, by its id ("nav-agent-<id>", "nav-mirror-<hash>").
+func navRowTags(body string) map[string]string {
 	out := map[string]string{}
-	for _, m := range regexp.MustCompile(`<article id="([^"]+)"[^>]*>`).FindAllStringSubmatch(body, -1) {
+	for _, m := range regexp.MustCompile(`<a id="(nav-[^"]+)"[^>]*>`).FindAllStringSubmatch(body, -1) {
 		out[m[1]] = m[0]
 	}
 	return out
@@ -79,37 +80,38 @@ func listCardAttrs(body string) map[string]string {
 
 // TestTheCardsCarryWhatTheyAreWaitingOn: an agent that asked over MCP
 // (attention_ask) and a mirrored Claude window stopped at a prompt (status
-// waiting) both carry data-wait="you" — what the "Waiting on you" chip
-// selects — and a card waiting on nothing carries no data-wait. Red before the
-// chips: no card carried the attribute.
+// waiting) both carry data-nav-wait on their sidebar row — where the retired
+// Agents list's data-wait="you" moved, what the switcher's Waiting view holds —
+// and a row waiting on nothing carries none. Red before the chips: no card
+// carried the attribute.
 func TestTheCardsCarryWhatTheyAreWaitingOn(t *testing.T) {
 	f := newAttnFixture(t)
 	f.ask(t, f.opTok, "Ship it tonight?")
-	cards := listCardAttrs(f.page(t, "/ui/agents"))
-	op, op2 := cards["agent-"+strconv.FormatInt(f.op.ID, 10)], cards["agent-"+strconv.FormatInt(f.op2.ID, 10)]
+	rows := navRowTags(f.page(t, ui.NavAgentsPath))
+	op, op2 := rows[agentNavID(f.op.ID)], rows[agentNavID(f.op2.ID)]
 	if op == "" || op2 == "" {
-		t.Fatalf("instrument check FAILED: the two agents' cards are not on the list: %v", cards)
+		t.Fatalf("instrument check FAILED: the two agents' rows are not in the sidebar: %v", rows)
 	}
-	if !strings.Contains(op, ` data-wait="you"`) {
-		t.Errorf("the asking agent's card does not carry data-wait=\"you\": %s", op)
+	if !strings.Contains(op, ` data-nav-wait=""`) {
+		t.Errorf("the asking agent's row does not carry data-nav-wait: %s", op)
 	}
-	if strings.Contains(op2, "data-wait") {
-		t.Errorf("an agent waiting on nothing carries data-wait: %s", op2)
+	if strings.Contains(op2, "data-nav-wait") {
+		t.Errorf("an agent waiting on nothing carries data-nav-wait: %s", op2)
 	}
 	var waiting, idle int
-	for id, tag := range cards {
-		if !strings.HasPrefix(id, "mirror-") {
+	for id, tag := range rows {
+		if !strings.HasPrefix(id, "nav-mirror-") {
 			continue
 		}
 		switch {
-		case strings.Contains(tag, ` data-wait="you"`):
+		case strings.Contains(tag, ` data-nav-wait=""`):
 			waiting++
-		case !strings.Contains(tag, "data-wait"):
+		case !strings.Contains(tag, "data-nav-wait"):
 			idle++
 		}
 	}
 	// attnWindows: @1 waiting at a prompt, @2 idle.
 	if waiting != 1 || idle != 1 {
-		t.Errorf("mirrored cards: %d waiting on an ask and %d on nothing, want 1 and 1: %v", waiting, idle, cards)
+		t.Errorf("mirrored rows: %d waiting on an ask and %d on nothing, want 1 and 1: %v", waiting, idle, rows)
 	}
 }
