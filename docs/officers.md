@@ -455,7 +455,13 @@ returned as is; a 4xx comes back as a refusal carrying HQ's status and body (a
 
 The `instance` muster sends HQ is the agent's name (`officer-…-<n>`), so the
 same instance keeps its claims across a pod restart. For anything that needs a
-human, an instance uses `attention_ask` like every other agent.
+human, an instance follows its charter: by default it finishes the item with
+`officer_complete{outcome: "escalated", summary}` saying who must act and why,
+and HQ notifies the officer's owner. It uses `attention_ask` only when its
+charter says to — an officers muster usually runs headless, so an attention
+ask there reaches nobody. Its MCP instructions and system prompt say the same,
+in place of the generic attention paragraph every other agent gets
+([attention.md](attention.md#what-agents-are-told)).
 
 ### The first message
 
@@ -464,7 +470,10 @@ You are officer <id>, instance <n> of <max> (<agent name>). …
 1. Call officer_brief. It returns your charter …
 2. Work the queue one item at a time: officer_items, officer_claim{item_id},
    officer_heartbeat{item_id} …, officer_complete{item_id, outcome, summary} …
-3. Anything that needs a human decision: attention_ask, then attention_wait.
+3. Anything that needs a human: follow your charter. By default, finish the
+   item with officer_complete{item_id, outcome: "escalated", summary} … — HQ
+   notifies the officer's owner — rather than attention_ask … Use attention_ask
+   only if your charter explicitly says to.
 4. When nothing is open and you hold no claim, stop and wait …
 ```
 

@@ -7,8 +7,10 @@ import (
 )
 
 // kickoffBase is the first message of instance 1 of 2 of officer
-// triage:example-web, WITHOUT a repository: the text as it was before officers
-// could have one, pinned whole so the no-repo text cannot drift.
+// triage:example-web, WITHOUT a repository, pinned whole so the no-repo text
+// cannot drift. Step 3 defers a human decision to the charter and defaults to
+// officer_complete{outcome: "escalated"} (HQ notifies the owner), not
+// attention_ask: on a headless officers muster an ask reaches nobody.
 const kickoffBase = `You are officer triage:example-web, instance 1 of 2 (officer-triage-example-web-1). You are an officer: a standing agent that works a queue of items HQ produces for this officer. You have no muster task and no repository checkout; that is expected.
 
 Your officer tools (MCP server "muster"): officer_brief, officer_items, officer_claim, officer_heartbeat, officer_complete, officer_release. They act for officer triage:example-web only; muster attaches the officer's HQ credential on your behalf, so you never hold or need a token — do not ask for one.
@@ -16,7 +18,7 @@ Your officer tools (MCP server "muster"): officer_brief, officer_items, officer_
 Start now:
 1. Call officer_brief. It returns your charter (follow it: it is your standing instructions, versioned in HQ), the open items and the recent outcomes. Load it instead of looking for earlier conversation.
 2. Work the queue one item at a time: officer_items to see open items, officer_claim{item_id} to take one (a 409 means another instance has it — move on), officer_heartbeat{item_id} at least every few minutes while you work it, and officer_complete{item_id, outcome: done|escalated|no_action, summary} when finished. If you cannot finish it, officer_release{item_id} so another instance can.
-3. Anything that needs a human decision: attention_ask, then attention_wait.
+3. Anything that needs a human: follow your charter. By default, finish the item with officer_complete{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.
 4. When officer_items shows nothing open and you hold no claim, stop and wait. muster wakes you again when HQ has new work, and scales you to zero after a quiet spell.
 
 You watch, triage, record and dispatch. You never merge, deploy or release, and you hold no production credentials.`

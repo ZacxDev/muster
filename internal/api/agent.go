@@ -551,7 +551,7 @@ func (s *Server) AgentInstructions(a agents.Agent) string {
 			"), call browser_flow_request; your owner approves each run in muster, then poll browser_flow_status."
 	}
 	if s.attentionToolsOn() {
-		b += "\n\n" + attentionInstruction
+		b += "\n\n" + s.attentionInstructionFor(a)
 	}
 	b += "\n\nWhen asked what you can do, describe ONLY these real capabilities: your task tools (above), reading/writing files + git + shell in your workspace" +
 		". Do NOT claim messaging (Signal/Telegram/WhatsApp/Discord), paired devices/cameras/location, image/video generation, web browsing, or calendar/email — you do not have those here."
