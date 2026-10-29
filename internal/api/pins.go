@@ -5,8 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/ZacxDev/muster/internal/pins"
+	"github.com/ZacxDev/muster/internal/ui"
 )
 
 // registerPinRoutes wires the Agents list's pin toggles (internal/pins,
@@ -45,6 +47,10 @@ func (s *Server) handlePinToggle(w http.ResponseWriter, r *http.Request, pin boo
 	}
 	ctx := r.Context()
 	var err error
+	// The subject as the session switcher's pin toggle posts it back
+	// (ui.SwitcherPinToggle), and as the page it names (ui.SwitcherCurrent).
+	var fields [][2]string
+	var cur ui.SwitcherCurrent
 	switch r.PostFormValue("kind") {
 	case "agent":
 		id, perr := strconv.ParseInt(r.PostFormValue("agent_id"), 10, 64)
@@ -57,6 +63,8 @@ func (s *Server) handlePinToggle(w http.ResponseWriter, r *http.Request, pin boo
 		} else {
 			err = s.ext.Pins.UnpinAgent(ctx, id)
 		}
+		fields = [][2]string{{"kind", "agent"}, {"agent_id", strconv.FormatInt(id, 10)}}
+		cur = ui.SwitcherCurrent{AgentID: id}
 	case "mirror":
 		k := pins.MirrorKey{Host: r.PostFormValue("host"), Session: r.PostFormValue("session"), Window: r.PostFormValue("window")}
 		if verr := k.Valid(); verr != nil {
@@ -68,6 +76,8 @@ func (s *Server) handlePinToggle(w http.ResponseWriter, r *http.Request, pin boo
 		} else {
 			err = s.ext.Pins.UnpinMirror(ctx, k)
 		}
+		fields = [][2]string{{"kind", "mirror"}, {"host", k.Host}, {"session", k.Session}, {"window", k.Window}}
+		cur = ui.SwitcherCurrent{Mirror: ui.MirrorRef{Host: k.Host, Session: k.Session, Window: k.Window}}
 	default:
 		http.Error(w, "kind must be agent or mirror", http.StatusBadRequest)
 		return
@@ -84,11 +94,46 @@ func (s *Server) handlePinToggle(w http.ResponseWriter, r *http.Request, pin boo
 		http.Error(w, "could not save the pin", http.StatusInternalServerError)
 		return
 	}
+	if r.PostFormValue("view") == ui.SwitcherPinView {
+		s.answerSwitcherPin(w, r, pin, fields, cur)
+		return
+	}
 	if r.Header.Get("HX-Request") == "" {
 		http.Redirect(w, r, "/agents", http.StatusSeeOther)
 		return
 	}
 	s.handleAgentsContent(w, r)
+}
+
+// answerSwitcherPin answers a post from the session switcher's pin toggle
+// (ui.SwitcherPinToggle, on a session's page): for htmx, the toggle in its new
+// state and the bar's rows and counts out of band, built for the page of cur
+// as the page itself built them (s.switcher) — so the Pins view and its count
+// follow at once; without script, a 303 back to the session's page.
+//
+// 🔴 THE "back" FIELD IS ONLY EVER A SESSION PAGE OF THIS SERVER: a path under
+// /agents/ or /mirror/ (switcherPinBack). Anything else — another origin, a
+// scheme-relative "//host", an empty field — goes to /agents, so the field
+// cannot be used as an open redirect.
+func (s *Server) answerSwitcherPin(w http.ResponseWriter, r *http.Request, pin bool, fields [][2]string, cur ui.SwitcherCurrent) {
+	back := switcherPinBack(r.PostFormValue("back"))
+	if r.Header.Get("HX-Request") == "" {
+		http.Redirect(w, r, back, http.StatusSeeOther)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := ui.RenderSwitcherPin(w, pin, fields, back, s.switcher(r.Context(), cur)); err != nil {
+		s.logger.Printf("pins: render the switcher's toggle: %v", err)
+	}
+}
+
+// switcherPinBack is v when it is a path to a session's page on this server
+// (/agents/<name>…, /mirror/…), else "/agents".
+func switcherPinBack(v string) string {
+	if (strings.HasPrefix(v, "/agents/") || strings.HasPrefix(v, "/mirror/")) && !strings.HasPrefix(v, "//") && !strings.ContainsAny(v, "\\\r\n") {
+		return v
+	}
+	return "/agents"
 }
 
 // pinSet is the viewing principal's pins, read once per render. No store, or a

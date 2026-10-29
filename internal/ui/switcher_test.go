@@ -57,10 +57,11 @@ func switcherRowEntries(t *testing.T, page, key string) []string {
 
 // TestTheSwitcherResolvesEachView: Recent is the refs, newest first, that are
 // still there — pinned ones included, the page's own, gone ones and repeats
-// left out — capped at switcherRecentMax; Pins is the pinned entries in the
-// list's order; All is every entry in the list's order with the page's own
-// drawn as current. Labels are sessionSwitcherLabels' (a codename without its
-// index, unless another entry of the SAME view shares it).
+// left out — capped at switcherRecentMax; Waiting is the entries waiting on
+// the viewer in the list's order; Pins is the pinned entries in the list's
+// order; All is every entry in the list's order with the page's own drawn as
+// current. Labels are sessionSwitcherLabels' (a codename WITH its index,
+// whatever else its view holds).
 func TestTheSwitcherResolvesEachView(t *testing.T) {
 	list, mirrors := switcherFixture()
 	w := func(id string) RecentRef {
@@ -73,11 +74,11 @@ func TestTheSwitcherResolvesEachView(t *testing.T) {
 	view := MirrorRef{Host: "tower", Session: "w", Window: "@1"}.ViewPath()
 	term := MirrorRef{Host: "tower", Session: "w", Window: "@2"}.TerminalPath()
 	for key, want := range map[string][]string{
-		// mango:2 is the only "mango" until mango:1 (later in Recent) joins it,
-		// so both read in full.
 		SwitcherRecent: {"mango:2 " + amp(term), "ag-three /agents/ag-three", "Two /agents/ag-two", "mango:1 " + amp(view)},
-		// Alone in its view, the same window reads "mango".
-		SwitcherPins: {"mango " + amp(term), "Two /agents/ag-two"},
+		// ag-three has an ask: the one entry waiting on the viewer.
+		SwitcherWaiting: {"ag-three /agents/ag-three"},
+		// Alone in its view, the same window still reads "mango:2".
+		SwitcherPins: {"mango:2 " + amp(term), "Two /agents/ag-two"},
 		SwitcherAll: {"mango:2 " + amp(term), "Two /agents/ag-two", "ag-one (current)", "mango:1 " + amp(view),
 			"ag-three /agents/ag-three", "ag-four /agents/ag-four"},
 	} {
@@ -85,11 +86,11 @@ func TestTheSwitcherResolvesEachView(t *testing.T) {
 			t.Errorf("%s =\n%v\nwant\n%v", key, got, want)
 		}
 	}
-	// A codename alone in its view reads without its index: Pins with only
-	// one window pinned.
+	// A codename alone in its view keeps its index: Pins with only one window
+	// pinned (it used to read "mango").
 	solo := renderString(t, switcherBar(NewSwitcher(list[:1], mirrors[1:], nil, SwitcherCurrent{}), false))
-	if got := switcherRowEntries(t, solo, SwitcherPins); len(got) != 1 || !strings.HasPrefix(got[0], "mango ") {
-		t.Errorf("a lone codename is not shortened: %v", got)
+	if got := switcherRowEntries(t, solo, SwitcherPins); len(got) != 1 || !strings.HasPrefix(got[0], "mango:2 ") {
+		t.Errorf("a lone codename lost its index: %v", got)
 	}
 	// A link to a window's Rendered view is a snapshot warming source
 	// (a[data-snap-warm]); a terminal link and an agent's are not.
@@ -384,17 +385,19 @@ func TestTheSwitcherViewButtonOpensAMenu(t *testing.T) {
 		}
 		got = append(got, m[2]+"="+m[3]+"/"+m[6]+"/"+m[1])
 	}
-	// Recent: ag-three; Pins: mango:2, Two; All: all six (the page's own included).
-	if want := "recent=Recent/1/true pins=Pins/2/false all=All/6/false"; strings.Join(got, " ") != want {
+	// Recent: ag-three; Waiting: ag-three; Pins: mango:2, Two; All: all six
+	// (the page's own included).
+	if want := "recent=Recent/1/true waiting=Waiting on you/1/false pins=Pins/2/false all=All/6/false"; strings.Join(got, " ") != want {
 		t.Errorf("menu items = %v, want %s", got, want)
 	}
 }
 
 // TestTheSwitcherSearchIsOnTheBar: a search button on the bar's right (after
-// the rows) opens a popover palette — a combobox input over a listbox — and
-// every entry carries what the search finds it by: a window its codename and
-// focus title, an agent its name and its display name and focus title (each
-// once, never repeating the codename).
+// the rows) opens the command palette (palette.go: paletteOpenAttr, a popover
+// dialog holding a combobox over a listbox) — and every entry carries what the
+// search finds it by: a window its codename and focus title, an agent its name
+// and its display name and focus title (each once, never repeating the
+// codename).
 func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 	list, mirrors := switcherFixture()
 	mirrors[0].Focus = &FocusView{Title: "Migrate the billing ledger"}
@@ -403,11 +406,11 @@ func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 	list[3].DisplayName = "ag-four" // the same as its name: no title
 	page := renderString(t, switcherBar(NewSwitcher(list, mirrors, nil, SwitcherCurrent{}), true))
 	nav := page[:strings.Index(page, "<script>")]
-	open := strings.Index(nav, `<button id="switcher-search-open" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="switcher-search" aria-keyshortcuts="/" aria-label="Search sessions"`)
+	open := strings.Index(nav, `<button id="switcher-search-open" type="button" data-palette-open="" aria-haspopup="dialog" aria-expanded="false" aria-controls="switcher-search" aria-keyshortcuts="/" aria-label="Search sessions"`)
 	if open < 0 || open < strings.LastIndex(nav[:strings.Index(nav, `id="switcher-views"`)], `data-switcher-list=`) {
 		t.Fatalf("no search button after the rows:\n%s", nav)
 	}
-	if !regexp.MustCompile(`<div id="switcher-search" popover="" role="dialog" aria-label="Search sessions"[^>]*><div[^>]*><svg[^>]*>.*?</svg><input id="switcher-search-input" type="text" role="combobox" aria-expanded="true" aria-controls="switcher-search-results" aria-autocomplete="list"[^>]*>.*?<ul id="switcher-search-results" role="listbox"`).MatchString(nav) {
+	if !regexp.MustCompile(`<div id="switcher-search" popover="" role="dialog" aria-label="Search sessions"[^>]*><div[^>]*><svg[^>]*>.*?</svg><input id="switcher-search-input" type="text" role="combobox" aria-expanded="true" aria-controls="switcher-search-results" aria-autocomplete="list"[^>]*>.*?<ul id="switcher-search-results" role="listbox"`).MatchString(renderString(t, paletteBox())) {
 		t.Error("the palette is not a popover dialog holding a combobox over a listbox")
 	}
 	all := nav[strings.Index(nav, `data-switcher-list="all"`):strings.Index(nav, `id="switcher-views"`)]
@@ -421,17 +424,21 @@ func TestTheSwitcherSearchIsOnTheBar(t *testing.T) {
 			t.Errorf("the All row lacks %s in:\n%s", want, all)
 		}
 	}
-	// The script wires "/" once per document, not in a terminal; it takes no
-	// Ctrl/Cmd+K (the browser's own) and has no no-Popover-API fallback.
-	for _, want := range []string{"window.__musterSwitcherKeys", "e.key !== '/'", "closest('.xterm')"} {
-		if !strings.Contains(page, want) {
-			t.Errorf("the script lacks %s", want)
+	// The palette's script wires "/" once per window, not in a terminal; it
+	// takes no Ctrl/Cmd+K (the browser's own) and has no no-Popover-API
+	// fallback. The bar's own script carries none of it.
+	for _, want := range []string{"window.__musterPalette", "e.key !== '/'", "closest('.xterm')"} {
+		if !strings.Contains(paletteJS, want) {
+			t.Errorf("the palette's script lacks %s", want)
 		}
 	}
 	for _, banned := range []string{"'k'", "'K'", "Control+K", "Ctrl+K", "showPopover !== 'function'", "showPopover === 'function'", "!popover"} {
-		if strings.Contains(page, banned) {
-			t.Errorf("the bar still carries %s", banned)
+		if strings.Contains(page, banned) || strings.Contains(paletteJS, banned) {
+			t.Errorf("the bar or the palette carries %s", banned)
 		}
+	}
+	if strings.Contains(page, "e.key !== '/'") {
+		t.Error("the bar's script still handles \"/\" itself (the palette's script does)")
 	}
 }
 
@@ -491,12 +498,12 @@ func TestTheSwitcherSearchFindsByRepoKindAndSession(t *testing.T) {
 		"words: a.getAttribute('data-switcher-words') || ''",
 		"if (fold(e.title).indexOf(q) >= 0) return 2;\n    if (fold(e.words).indexOf(q) >= 0) return 3;\n    return -1;",
 	} {
-		if !strings.Contains(switcherJS, want) {
+		if !strings.Contains(paletteJS, want) {
 			t.Errorf("the palette's script lacks %q", want)
 		}
 	}
 	// Drawn by textContent only: the script never writes markup it was given.
-	if regexp.MustCompile(`innerHTML\s*=[^=]`).MatchString(switcherJS) {
+	if regexp.MustCompile(`innerHTML\s*=[^=]`).MatchString(paletteJS) {
 		t.Error("the palette writes innerHTML")
 	}
 }
@@ -537,14 +544,18 @@ func TestOnlyTheAgentsListBarHasADeployButton(t *testing.T) {
 	}
 }
 
-// TestTheRowSwapIsBoundPerVersionNotUnderTheSlashFlag: the Agents list's row
-// swap (switcherOOBJS) is bound under its own versioned flag, ahead of the "/"
-// key's once-per-window flag — a window that ran an older switcher has that
-// flag set and would skip anything under it. Behaviour: agents-switcher.spec.ts.
-func TestTheRowSwapIsBoundPerVersionNotUnderTheSlashFlag(t *testing.T) {
-	at, keys := strings.Index(switcherJS, switcherOOBJS), strings.Index(switcherJS, "if (!window.__musterSwitcherKeys) {")
-	if at < 0 || keys < 0 || at > keys {
-		t.Fatalf("the row swap is not bound before (outside) the \"/\" flag's block (at %d, flag at %d)", at, keys)
+// TestTheRowSwapIsBoundPerVersionNotUnderAWindowFlag: the Agents list's row
+// swap (switcherOOBJS) is bound under its own versioned flag, and the bar's
+// script holds no once-per-window flag block it could sit under — a window
+// that ran an older switcher has such a flag set and would skip anything under
+// it (the "/" key's was one; it is the palette's now, palette.go). Behaviour:
+// agents-switcher.spec.ts.
+func TestTheRowSwapIsBoundPerVersionNotUnderAWindowFlag(t *testing.T) {
+	if !strings.Contains(switcherJS, switcherOOBJS) {
+		t.Fatal("the bar's script does not bind the row swap")
+	}
+	if strings.Contains(switcherJS, "__musterSwitcherKeys") {
+		t.Error("the bar's script still has the old once-per-window \"/\" flag")
 	}
 	if !strings.Contains(switcherOOBJS, "window.__musterSwitcherOOB.v !== '"+switcherOOBVersion()+"'") ||
 		!strings.Contains(switcherOOBJS, "document.removeEventListener('htmx:oobBeforeSwap', window.__musterSwitcherOOB.fn)") {

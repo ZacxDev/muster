@@ -410,6 +410,42 @@ for (const vp of [
       expect(sw).toBeLessThanOrEqual(cw);
     });
 
+    // THE BOTTOM BAR'S WAITING VIEW (operator ask: a view "that uses the same
+    // filter as the waiting for you filter on the agent's list page"): picked
+    // from the bar's view menu, its row holds EXACTLY the entries the "Waiting
+    // on you" chip shows — a session at a prompt, an ask, a picker; not the
+    // reply draft — in the list's order. Compared whole, every card the chip
+    // shows against every pill, so a seeded entry would count on both sides.
+    // REGRESSION TEST: red at the commit before (no Waiting view in the menu).
+    test('the bottom bar\'s Waiting view holds exactly what the "Waiting on you" chip shows', async ({ page }) => {
+      await openList(page);
+      // A link, normalised: an agent's page without its query.
+      const key = (h: string) => (h.startsWith('/agents/') ? h.split('?')[0] : h);
+      await press(chip(page, 'waiting'));
+      await expect.poll(() => shown(page)).toEqual(WAITING);
+      const chipped = (
+        await page.locator('#agents-list > article').evaluateAll((els) =>
+          els.filter((a) => a.getClientRects().length).map((a) => a.querySelector('a[href^="/agents/"], a[href^="/mirror/"]')?.getAttribute('href') || ''),
+        )
+      ).map(key);
+      expect(chipped.length, 'instrument check: the chip shows the spec\'s waiting cards').toBeGreaterThanOrEqual(WAITING.length);
+      await press(chip(page, 'waiting'));
+      // The view, from the bar's menu.
+      await press(page.locator('#switcher-toggle'));
+      const pick = page.locator('#switcher-views [data-switcher-pick="waiting"]');
+      await expect(pick).toContainText('Waiting on you');
+      await press(pick);
+      await expect(page.locator('#switcher-toggle')).toHaveText('Waiting');
+      const row = page.locator('#session-switcher [data-switcher-list="waiting"]');
+      await expect(row).toBeVisible();
+      const pills = (await row.locator('a[data-switcher-entry]').evaluateAll((els) => els.map((e) => e.getAttribute('href') || ''))).map(key);
+      expect(pills, 'the Waiting view is the chip\'s set, in the list\'s order').toEqual(chipped);
+      await expect(page.locator('#switcher-views [data-switcher-count="waiting"]')).toHaveText(String(chipped.length));
+      // The draft's agent is listed but not waiting: in neither.
+      expect(pills.some((h) => h.includes(draftAgent)), 'the reply draft is not waiting').toBe(false);
+      await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
+    });
+
     // A device that remembered a retired chip ("ask" — Waiting on ask — or
     // "question") opens with "Waiting on you" pressed: the page neither breaks
     // nor silently drops the choice. Red before: the remembered ids were the

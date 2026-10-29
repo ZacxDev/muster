@@ -157,7 +157,10 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
 - **Pins.** The pin button on a card (and **Pin to top** in an agent card's ⋯
   menu) puts that entry first in your list, on every device you sign in on. A
   pinned entry is still its card; the same button (or **Unpin** in the ⋯ menu)
-  unpins it. Your pins are also the session switcher's **Pins** view (below).
+  unpins it. On a session's own page (a window's Rendered view or terminal, an
+  agent's chat page) the session switcher has a pin button beside its search
+  that pins or unpins that session. Your pins are also the session switcher's
+  **Pins** view (below).
   Pinned entries keep their own most-recently-active order, ahead of the rest.
   A mirrored pin is the window's address — host, session and tmux window id —
   so it survives renumbering, a list refresh and a muster restart. A pin whose
@@ -168,13 +171,17 @@ host's MCP endpoint for its Claude Code sessions ([attention.md](attention.md#mi
   match.
 - **The session switcher.** A bar docked at the bottom of the list, the same
   one that sits under the message box of a window's Rendered view and an
-  agent's chat page. Its left button opens a menu of three views: **Recent**
-  (the entries you last opened, on any device), **Pins** and **All** (every
-  entry, in the list's order). The magnifier on its right, or `/` outside a
-  text field, opens a search that finds any entry by its tmux codename
-  (`mango`, `wheat:2`) or its title as you type — and, after those, by its
-  repository, its kind (`opencode`, `shell`) or a window's raw tmux session
-  name (`scratch11`); the arrows move and Enter opens it. On the list the bar
+  agent's chat page. Its left button opens a menu of four views: **Recent**
+  (the entries you last opened, on any device), **Waiting** (the entries
+  waiting on you: exactly what the **Waiting on you** chip below shows),
+  **Pins** and **All** (every entry, in the list's order). Each pill shows the
+  entry's whole name, a window's codename with its `:<index>` (`wheat:2`). The
+  magnifier on its right, the magnifier at the top of the sidebar, or `/`
+  outside a text field, opens one search box that finds any entry by its tmux
+  codename (`mango`, `wheat:2`) or its title as you type — and, after those,
+  by its repository, its kind (`opencode`, `shell`) or a window's raw tmux
+  session name (`scratch11`); the arrows move and Enter opens it. On a page
+  with no switcher it searches the sidebar's list. On the list the bar
   ends in a **+**, which opens the dispatch form. The list has no search box of
   its own, no "Recently viewed" strip and no row of pinned chips: the switcher
   replaced all three. It has no floating buttons either: the **+** is in the

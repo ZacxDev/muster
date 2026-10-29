@@ -3,7 +3,6 @@ package ui
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -19,7 +18,7 @@ import (
 // component below the message input bar where I can hot swap between active
 // sessions").
 //
-// THREE VIEWS, picked from a menu the button on the bar's left opens (it
+// FOUR VIEWS, picked from a menu the button on the bar's left opens (it
 // animates open UPWARD, the bar being at the screen's bottom — switcherViewMenu):
 //
 //   - Recent: the sessions the viewer last OPENED — the SAME server-side,
@@ -28,33 +27,37 @@ import (
 //     pinned entries: here the pins are a view of their own, not the head of a
 //     list beside it. The page's own session is left out (it is always the
 //     newest: the page recorded the visit before it was drawn).
+//   - Waiting: every entry waiting on the viewer, in the list's order — the
+//     Agents list's "Waiting on you" chip's set, by the SAME predicate
+//     (listEntry.waiting, which is that chip's token: list_order.go).
 //   - Pins: the viewer's pins (internal/pins), in the list's order.
 //   - All: every entry the Agents list draws, in its order (orderList).
 //
-// In Pins and All the page's own session is drawn as "current" (aria-current,
-// not a link), so the bar says where the viewer is.
+// In Waiting, Pins and All the page's own session is drawn as "current"
+// (aria-current, not a link), so the bar says where the viewer is.
 //
-// Every entry is labelled by its short name (sessionSwitcherLabels: the
-// window's codename, an agent's whole name — disambiguated only against the
-// other entries of the same view; plained through textplain.Title there, once)
-// and opens what its card opens (MirrorCardHref, "/agents/<name>") with a real
-// load.
+// Every entry is labelled by its WHOLE name (sessionSwitcherLabels: a window's
+// codename WITH its ":<index>", an agent's whole name — qualified only when
+// another entry of the same view reads the same; plained through
+// textplain.Title there, once) and opens what its card opens (MirrorCardHref,
+// "/agents/<name>") with a real load.
 //
 // 🔴 A PILL IS ALWAYS AS WIDE AS ITS WHOLE LABEL (operator ask: the pills were
 // "often cut off … ensure that it's always wide enough to show the full
 // title"). There is no width cap and no ellipsis: a long title makes a long
 // pill, and the row scrolls sideways (below). This replaced #276's 26rem cap.
+// 🔴 AND THE LABEL IS THE WHOLE NAME: the pill used to drop a codename's
+// ":<index>" ("homelab:8" read "homelab") whenever no other entry of its view
+// shared the rest — a cut made on the SERVER, which no CSS fix could see
+// (operator report: "it's missing the number after the colon").
 //
-// A SEARCH (the magnifier on the bar's right, or "/" outside a text field) opens a
-// command-palette-style box over the page that finds any session the All view
-// holds, as it is typed (switcherSearchBox): by its tmux codename ("wheat",
-// "mango:2") or its title — and, ranked AFTER every codename and title match,
-// by its repository, its kind ("Claude Code", "opencode", "shell") and a
-// window's raw tmux SESSION name ("scratch11"), each a plain word (operator
-// ask: "Teach the palette repo+kind"; no field tokens). It reads the All row's
-// own entries — no request: data-switcher-code, -title and -words, attribute
-// values the server escapes, read with getAttribute and drawn with
-// textContent.
+// A SEARCH (the magnifier on the bar's right, the sidebar's, or "/" outside a
+// text field) opens the command palette (palette.go): the same box from either
+// button, finding any session the All view holds.
+//
+// ON A SESSION'S PAGE THE BAR ALSO HAS A PIN (switcherPinToggle), beside the
+// search: it pins or unpins the page's own session — an agent, or the mirrored
+// window — in the viewer's pins (internal/pins), the set the Pins view shows.
 //
 // ON THE AGENTS LIST THE BAR ALSO HAS A "+" (switcherDeployButton), beside the
 // search: the task-less dispatch sheet the list's old FAB opened (operator
@@ -64,7 +67,7 @@ import (
 // moves nothing on the page: no layout shift, and no clipping by the
 // composer's box.
 //
-// 🔴 SERVER-RENDERED, ALL THREE VIEWS, AT A FIXED HEIGHT — THAT IS THE
+// 🔴 SERVER-RENDERED, EVERY VIEW, AT A FIXED HEIGHT — THAT IS THE
 // NO-LAYOUT-SHIFT CONTRACT. The bar paints with the page (never empty, then
 // filled), its row is h-11 whatever it holds (an entry, an empty-state line),
 // and a view switch only toggles which row is shown. The viewer's choice of
@@ -91,17 +94,20 @@ const switcherViewKey = "muster.switcher.view"
 // The switcher's views, as data-switcher-view and the storage value spell
 // them, in the order the view menu lists them.
 const (
-	SwitcherRecent = "recent"
-	SwitcherPins   = "pins"
-	SwitcherAll    = "all"
+	SwitcherRecent  = "recent"
+	SwitcherWaiting = "waiting"
+	SwitcherPins    = "pins"
+	SwitcherAll     = "all"
 )
 
 // switcherViews is the menu's views, in order: each view's key, its button
-// label, and what its row says when it holds nothing.
-var switcherViews = []struct{ key, label, empty string }{
-	{SwitcherRecent, "Recent", "No other recent sessions"},
-	{SwitcherPins, "Pins", "Nothing pinned"},
-	{SwitcherAll, "All", "No other sessions"},
+// label (short: the button is a fixed 4.5rem), its menu item's words, and what
+// its row says when it holds nothing.
+var switcherViews = []struct{ key, label, menu, empty string }{
+	{SwitcherRecent, "Recent", "Recent", "No other recent sessions"},
+	{SwitcherWaiting, "Waiting", "Waiting on you", "Nothing is waiting on you"},
+	{SwitcherPins, "Pins", "Pins", "Nothing pinned"},
+	{SwitcherAll, "All", "All", "No other sessions"},
 }
 
 // switcherRecentMax is how many entries Recent shows.
@@ -128,7 +134,11 @@ func (c SwitcherCurrent) is(e listEntry) bool {
 
 // Switcher is the bar's content, resolved on the server: one list per view.
 type Switcher struct {
-	Recent, Pins, All []SwitcherItem
+	Recent, Waiting, Pins, All []SwitcherItem
+	// pin is the page's own session as the bar's pin toggle posts it; nil
+	// when the page is no session (the Agents list) or its session is not
+	// among the entries.
+	pin *switcherPin
 	// unknown: the entries are not known yet (switcherPending) — the rows
 	// and counts are drawn blank, not as "Nothing pinned", until the list's
 	// first render fills them out of band.
@@ -155,7 +165,7 @@ type SwitcherItem struct {
 	// decorative.
 	Host, HostIcon string
 	HostNamed      bool
-	// Code and Title are what the search finds the entry by (switcherSearchBox):
+	// Code and Title are what the search finds the entry by (palette.go's paletteBox):
 	// Code its tmux codename ("mango:2") for a window — its "<session>:<index>"
 	// title when the host named none — or its name for an agent; Title what it
 	// is called beyond that (its display name, its focus), "" for nothing more.
@@ -166,64 +176,46 @@ type SwitcherItem struct {
 	Words string
 }
 
-// windowIndexSuffix is the ":<index>" a host appends to a window's codename
-// ("mango:1" — mirrorhost.WireWindows).
-var windowIndexSuffix = regexp.MustCompile(`:[0-9]+$`)
-
-// switcherName is an entry's two names: short, what its pill shows when no
-// other entry of its view shows the same; full, what it shows when one does.
+// switcherName is an entry's WHOLE name, what its pill shows:
 //
-//   - a window with a codename (Label, unless it only repeats the session): full
-//     is the label as shown ("mango:1"), short is it without its ":<index>"
-//     ("mango");
+//   - a window with a codename (Label, unless it only repeats the session): the
+//     label as shown, ":<index>" and all ("mango:1");
 //   - a window with none: its "<session>:<window index>" title (or the session
-//     name, for a per-session host) — both;
-//   - an agent: its display name (or name), WHOLE — both. A pill is as wide as
-//     its label (operator ask: "ensure that it's always wide enough to show the
+//     name, for a per-session host);
+//   - an agent: its display name (or name), WHOLE. A pill is as wide as its
+//     label (operator ask: "ensure that it's always wide enough to show the
 //     full title"), so there is no "…" to add.
-func switcherName(e listEntry) (short, full string) {
+//
+// 🔴 NOTHING IS CUT FROM IT. It used to have a SHORT form — the codename
+// without its ":<index>" — drawn whenever no other entry of the view shared
+// it, so a pill read "homelab" for "homelab:8" (operator report: "it's missing
+// the number after the colon").
+func switcherName(e listEntry) string {
 	if e.agent != nil {
-		name := plainOr(e.agent.DisplayName, e.agent.Name)
-		return name, name
+		return plainOr(e.agent.DisplayName, e.agent.Name)
 	}
 	m := e.mirror
 	if m.Label != "" && m.Label != m.Session {
-		full = plainOr(m.Label, m.Session)
-		short = windowIndexSuffix.ReplaceAllString(full, "")
-		if short == "" {
-			short = full
-		}
-		return short, full
+		return plainOr(m.Label, m.Session)
 	}
-	full = plainOr(m.Title, m.Session)
-	return full, full
+	return plainOr(m.Title, m.Session)
 }
 
 // sessionSwitcherLabels is what each entry of one view says, in the entries'
-// order: its short name, unless another entry's would read the same — then
-// its full name ("mango:2"), and when even that is shared (one label on two
-// hosts) the full name with the window's qualifier ("mango:2 · laptop"), the
-// minimal difference the list already decided (mirror.SessionView.Qualifier).
+// order: its whole name (switcherName), and when that is shared with another
+// entry of the view (one label on two hosts) the name with the window's
+// qualifier ("mango:2 · laptop"), the minimal difference the list already
+// decided (mirror.SessionView.Qualifier).
 //
 // The pill also draws its host's icon (switcherEntry), but the label does NOT
 // lean on it: the text is disambiguated exactly as it would be without the
 // icon, so the search palette, which draws no icons, reads the same.
 func sessionSwitcherLabels(es []listEntry) []string {
 	out := make([]string, len(es))
-	fulls := make([]string, len(es))
 	n := map[string]int{}
 	for i, e := range es {
-		out[i], fulls[i] = switcherName(e)
+		out[i] = switcherName(e)
 		n[out[i]]++
-	}
-	for i := range es {
-		if n[out[i]] > 1 {
-			out[i] = fulls[i]
-		}
-	}
-	n = map[string]int{}
-	for _, l := range out {
-		n[l]++
 	}
 	for i, e := range es {
 		if n[out[i]] > 1 && e.mirror != nil && e.mirror.Qualifier != "" {
@@ -254,7 +246,8 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 	entries := orderList(list, mirrors)
 	byAgent := map[int64]listEntry{}
 	byMirror := map[MirrorRef]listEntry{}
-	var pins []listEntry
+	var pins, waiting []listEntry
+	var pin *switcherPin
 	for _, e := range entries {
 		if e.agent != nil {
 			byAgent[e.agent.ID] = e
@@ -263,6 +256,12 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 		}
 		if e.pinned() {
 			pins = append(pins, e)
+		}
+		if e.waiting() {
+			waiting = append(waiting, e)
+		}
+		if pin == nil && cur.is(e) {
+			pin = newSwitcherPin(e)
 		}
 	}
 	var recent []listEntry
@@ -285,7 +284,7 @@ func NewSwitcher(list []AgentCardView, mirrors []MirrorCardView, refs []RecentRe
 		seen[e] = true
 		recent = append(recent, e)
 	}
-	return &Switcher{Recent: switcherItems(recent, cur), Pins: switcherItems(pins, cur), All: switcherItems(entries, cur)}
+	return &Switcher{Recent: switcherItems(recent, cur), Waiting: switcherItems(waiting, cur), Pins: switcherItems(pins, cur), All: switcherItems(entries, cur), pin: pin}
 }
 
 // switcherItems is es as one view's items, labelled against each other.
@@ -306,7 +305,7 @@ func switcherItems(es []listEntry, cur SwitcherCurrent) []SwitcherItem {
 			it.Href, it.Kind = MirrorCardHref(*m), "mirror"
 			it.Host, it.HostIcon = m.Host, m.HostIcon
 			it.HostNamed = labelNamesHost(*m, labels[i])
-			_, it.Code = switcherName(e)
+			it.Code = switcherName(e)
 			it.Title = switcherSearchTitle(it.Code, focusTitle(m.Focus))
 			f := mirrorFields(*m)
 			it.Words = switcherSearchWords(f.Repo, f.Kind, m.Session)
@@ -353,6 +352,8 @@ func switcherSearchWords(parts ...string) string {
 // view is the items of view key.
 func (s *Switcher) view(key string) []SwitcherItem {
 	switch key {
+	case SwitcherWaiting:
+		return s.Waiting
 	case SwitcherPins:
 		return s.Pins
 	case SwitcherAll:
@@ -433,12 +434,16 @@ func switcherBarWith(s *Switcher, pinned bool, script, extra g.Node) g.Node {
 					),
 				),
 				g.Group(rows),
+				switcherPinToggle(s),
 				Button(
 					ID(switcherSearchOpenID),
 					Type("button"),
+					// Opens the command palette (palette.go), the one the
+					// sidebar's magnifier opens.
+					g.Attr(paletteOpenAttr, ""),
 					g.Attr("aria-haspopup", "dialog"),
 					g.Attr("aria-expanded", "false"),
-					g.Attr("aria-controls", switcherSearchID),
+					g.Attr("aria-controls", paletteID),
 					g.Attr("aria-keyshortcuts", "/"),
 					g.Attr("aria-label", "Search sessions"),
 					g.Attr("title", "Search sessions (/)"),
@@ -451,24 +456,18 @@ func switcherBarWith(s *Switcher, pinned bool, script, extra g.Node) g.Node {
 				extra,
 			),
 			switcherViewMenu(s),
-			switcherSearchBox(),
 		),
 		script,
 		NoScript(StyleEl(g.Raw(`#`+SwitcherID+` { visibility: visible !important; }`))),
 	}
 }
 
-// The ids of the view menu, the search palette and its parts.
+// The ids of the view menu and the bar's search button (the palette's own are
+// palette.go's).
 const (
-	switcherMenuID          = "switcher-views"
-	switcherSearchID        = "switcher-search"
-	switcherSearchOpenID    = "switcher-search-open"
-	switcherSearchInputID   = "switcher-search-input"
-	switcherSearchResultsID = "switcher-search-results"
+	switcherMenuID       = "switcher-views"
+	switcherSearchOpenID = "switcher-search-open"
 )
-
-// searchIconSVG is the magnifier (the 20px solid set the bar's other icon is from).
-const searchIconSVG = `<svg class="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd"/></svg>`
 
 // switcherViewMenu is the menu the view button opens: one radio item per view,
 // the shown one checked, each with how many entries it holds (refreshed with
@@ -486,7 +485,7 @@ func switcherViewMenu(s *Switcher) g.Node {
 			g.Attr("data-switcher-pick", v.key),
 			Class("group flex min-h-[44px] w-full items-center gap-2 rounded-lg px-3 text-left text-sm font-medium text-fg outline-none transition hover:bg-s2 focus-visible:bg-s2 aria-checked:text-accent"),
 			g.Raw(`<svg class="h-4 w-4 shrink-0 invisible group-aria-checked:visible" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>`),
-			Span(Class("flex-1"), g.Text(v.label)),
+			Span(Class("flex-1"), g.Text(v.menu)),
 			// The count is redrawn with the rows on a back/forward-cache restore
 			// (restore.go), from the same fresh copy, so it never disagrees with
 			// the row it counts.
@@ -500,53 +499,6 @@ func switcherViewMenu(s *Switcher) g.Node {
 		g.Attr("aria-label", "Session views"),
 		Class("m-0 min-w-[11rem] rounded-xl border-0 bg-s1 p-1 text-fg shadow-lg ring-1 ring-line"),
 		g.Group(items),
-	)
-}
-
-// switcherSearchBox is the search palette: a box over the page, near its top
-// (a phone's keyboard takes the bottom), with an input and the list of what it
-// finds, filled by the script as the operator types — from the All row's
-// entries (their data-switcher-code, -title and -words). Ranked: the
-// codename starts with what is typed, then contains it, then the title does,
-// then the words (repository, kind, tmux session) do;
-// case-folded; each tier in the All view's order. Arrows move, Enter opens,
-// Escape closes.
-func switcherSearchBox() g.Node {
-	return Div(
-		ID(switcherSearchID),
-		g.Attr("popover", ""),
-		g.Attr("role", "dialog"),
-		g.Attr("aria-label", "Search sessions"),
-		Class("inset-x-0 bottom-auto top-[max(0.5rem,10vh)] mx-auto my-0 w-[min(36rem,calc(100vw-1rem))] overflow-hidden rounded-xl border-0 bg-s1 p-0 text-fg shadow-2xl ring-1 ring-line backdrop:bg-black/40"),
-		Div(
-			Class("flex items-center gap-2 border-b border-line px-3 text-muted"),
-			g.Raw(searchIconSVG),
-			Input(
-				ID(switcherSearchInputID),
-				Type("text"),
-				g.Attr("role", "combobox"),
-				g.Attr("aria-expanded", "true"),
-				g.Attr("aria-controls", switcherSearchResultsID),
-				g.Attr("aria-autocomplete", "list"),
-				g.Attr("aria-label", "Search sessions by codename or title"),
-				g.Attr("autocomplete", "off"),
-				g.Attr("autocapitalize", "off"),
-				g.Attr("autocorrect", "off"),
-				g.Attr("spellcheck", "false"),
-				g.Attr("enterkeyhint", "go"),
-				g.Attr("placeholder", "Search sessions…"),
-				// text-base: 16px, so a phone does not zoom the page on focus.
-				Class("h-12 min-w-0 flex-1 bg-transparent text-base text-fg outline-none placeholder:text-muted"),
-			),
-			Kbd(Class("hidden rounded border border-line px-1.5 text-[11px] text-muted sm:inline"), g.Text("Esc")),
-		),
-		Ul(
-			ID(switcherSearchResultsID),
-			g.Attr("role", "listbox"),
-			g.Attr("aria-label", "Sessions"),
-			Class("max-h-[min(24rem,60vh)] overflow-y-auto overscroll-contain py-1"),
-		),
-		P(g.Attr("data-switcher-search-empty", ""), g.Attr("hidden", ""), Class("px-4 py-3 text-sm text-muted"), g.Text("No session matches")),
 	)
 }
 
@@ -744,7 +696,7 @@ func switcherEntry(it SwitcherItem) g.Node {
 		g.If(it.Host != "", icon),
 		Span(Class(switcherLabelClass), g.Text(it.Label)),
 	}
-	// What the search finds the entry by (switcherSearchBox).
+	// What the search finds the entry by (palette.go's paletteBox).
 	search := g.Group{
 		g.If(it.Code != "", g.Attr("data-switcher-code", it.Code)),
 		g.If(it.Title != "", g.Attr("data-switcher-title", it.Title)),
@@ -867,11 +819,6 @@ var switcherJS = func() string {
   var KEY = '` + switcherViewKey + `';
   var btn = document.getElementById('switcher-toggle');
   var menu = document.getElementById('` + switcherMenuID + `');
-  var pal = document.getElementById('` + switcherSearchID + `');
-  var openBtn = document.getElementById('` + switcherSearchOpenID + `');
-  var input = document.getElementById('` + switcherSearchInputID + `');
-  var list = document.getElementById('` + switcherSearchResultsID + `');
-  var empty = pal.querySelector('[data-switcher-search-empty]');
   function picks() { return Array.prototype.slice.call(menu.querySelectorAll('[data-switcher-pick]')); }
   function show(v) {
     if (VIEWS.indexOf(v) < 0) v = VIEWS[0];
@@ -917,7 +864,9 @@ var switcherJS = func() string {
     btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open) {
       placeMenu();
-      hide(pal);
+      // The menu and the palette (palette.go) are never open together.
+      var pal = document.getElementById('` + paletteID + `');
+      if (pal) hide(pal);
       if (focusPick) {
         var cur = menu.querySelector('[aria-checked="true"]') || picks()[0];
         if (cur) cur.focus();
@@ -955,146 +904,13 @@ var switcherJS = func() string {
     btn.focus();
   });
 
-  // --- the search palette.
-  var shown = [], active = -1, opener = null;
-  function fold(s) { return String(s || '').toLowerCase(); }
-  // The All row's entries, read when the palette is used (a bfcache restore
-  // redraws the rows: restore.go), the page's own session left out.
-  function entries() {
-    var es = bar.querySelectorAll('[data-switcher-list="all"] a[data-switcher-entry]');
-    var out = [];
-    for (var i = 0; i < es.length; i++) {
-      var a = es[i];
-      var label = a.getAttribute('title') || a.textContent;
-      out.push({ href: a.getAttribute('href'), label: label, code: a.getAttribute('data-switcher-code') || label,
-        title: a.getAttribute('data-switcher-title') || '', words: a.getAttribute('data-switcher-words') || '',
-        kind: a.getAttribute('data-switcher-entry'), n: i });
-    }
-    return out;
-  }
-  // rank: 0 the codename starts with q, 1 it contains q, 2 the title contains
-  // q, -1 no match. An empty q is everything, in the All view's order.
-  function rank(e, q) {
-    if (!q) return 0;
-    var c = fold(e.code);
-    if (c.indexOf(q) === 0) return 0;
-    if (c.indexOf(q) > 0) return 1;
-    if (fold(e.title).indexOf(q) >= 0) return 2;
-    if (fold(e.words).indexOf(q) >= 0) return 3;
-    return -1;
-  }
-  function el(tag, cls, text) { var x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; }
-  function mark() {
-    var opts = list.children;
-    for (var i = 0; i < opts.length; i++) {
-      var on = i === active;
-      opts[i].setAttribute('aria-selected', on ? 'true' : 'false');
-      opts[i].classList.toggle('bg-s3', on);
-    }
-    if (active >= 0 && opts[active]) {
-      input.setAttribute('aria-activedescendant', opts[active].id);
-      opts[active].scrollIntoView({ block: 'nearest' });
-    } else input.removeAttribute('aria-activedescendant');
-  }
-  function refresh() {
-    var q = fold(input.value).trim();
-    var found = [];
-    entries().forEach(function (e) { var r = rank(e, q); if (r >= 0) { e.r = r; found.push(e); } });
-    found.sort(function (a, b) { return a.r - b.r || a.n - b.n; });
-    shown = found.slice(0, 50);
-    list.textContent = '';
-    shown.forEach(function (e, i) {
-      var li = el('li', 'flex min-h-[44px] cursor-pointer flex-col justify-center px-4 py-1.5');
-      li.id = 'switcher-opt-' + i;
-      li.setAttribute('role', 'option');
-      li.setAttribute('data-index', String(i));
-      li.setAttribute('data-href', e.href);
-      li.setAttribute('data-kind', e.kind);
-      li.appendChild(el('span', 'truncate text-sm font-semibold text-fg', e.label));
-      // The second line: its title, or — when the title is what the first line
-      // already says (an agent's display name) — its codename.
-      var sub = e.title && e.title !== e.label ? e.title : (e.code !== e.label ? e.code : '');
-      if (sub) li.appendChild(el('span', 'truncate text-xs text-muted', sub));
-      list.appendChild(li);
-    });
-    active = shown.length ? 0 : -1;
-    empty.hidden = shown.length > 0;
-    mark();
-  }
-  function go(i) {
-    var e = shown[i];
-    if (!e || !e.href) return;
-    hide(pal);
-    window.location.assign(e.href);
-  }
-  function openSearch() {
-    if (isOpen(pal)) { input.focus(); input.select(); return; }
-    opener = document.activeElement;
-    hide(menu);
-    input.value = '';
-    refresh();
-    pal.showPopover();
-    // Focused in the same task as the tap, so a phone raises its keyboard.
-    input.focus();
-  }
-  bar.__musterOpenSearch = openSearch;
-  openBtn.addEventListener('click', openSearch);
-  pal.addEventListener('toggle', function (e) {
-    var open = e.newState ? e.newState === 'open' : isOpen(pal);
-    openBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (!open && pal.contains(document.activeElement)) {
-      var back = opener && opener.isConnected && opener !== document.body ? opener : openBtn;
-      try { back.focus(); } catch (err) {}
-    }
-  });
-  input.addEventListener('input', refresh);
-  input.addEventListener('keydown', function (e) {
-    if (e.isComposing) return;
-    var n = shown.length;
-    if (e.key === 'ArrowDown') { e.preventDefault(); if (n) { active = (active + 1) % n; mark(); } }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); if (n) { active = (active - 1 + n) % n; mark(); } }
-    else if (e.key === 'Enter') { e.preventDefault(); go(active); }
-  });
-  // 🔴 THE OPEN PALETTE KEEPS FOCUS AND OWNS ESCAPE, whatever in it has focus:
-  // Tab stays on the input (nothing else in it takes focus; the options are
-  // reached by the arrows), and Escape closes the palette ONLY — stopped here,
-  // so it never also reaches a document handler (the message index's sheet,
-  // the chief panel) in the same keypress.
-  pal.addEventListener('keydown', function (e) {
-    if (e.key === 'Tab') { e.preventDefault(); input.focus(); }
-    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); hide(pal); }
-  });
-  // A tap opens the option; the mousedown is kept from moving focus, so a
-  // phone's keyboard stays up until the page goes.
-  list.addEventListener('mousedown', function (e) { e.preventDefault(); });
-  list.addEventListener('click', function (e) {
-    var li = e.target && e.target.closest ? e.target.closest('[role=option]') : null;
-    if (li) go(Number(li.getAttribute('data-index')));
-  });
   window.addEventListener('resize', function () { if (isOpen(menu)) placeMenu(); });
 
   // The Agents list's refresh rows (switcherOOBJS): bound per window AND
-  // VERSION, not under the "/" key's flag below — a window still running an
-  // older build's switcher has that flag set, and would never bind this.
+  // VERSION, not under a once-per-window flag — a window still running an
+  // older build's switcher would have that flag set, and never bind this.
   ` + switcherOOBJS + `
 
-  // "/" opens the search when focus is not in a text field (nor in a
-  // terminal, xterm, where it is the shell's), once per document: the
-  // listener finds the page's bar when the key is pressed (htmx swaps the
-  // page, and with it the bar). No Ctrl/Cmd+K: that is the browser's own.
-  if (!window.__musterSwitcherKeys) {
-    window.__musterSwitcherKeys = true;
-    document.addEventListener('keydown', function (e) {
-      if (e.key !== '/' || e.defaultPrevented || e.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
-      var b = document.getElementById('` + SwitcherID + `');
-      if (!b || !b.__musterOpenSearch || !b.getClientRects().length) return;
-      var t = e.target;
-      if (t && t.closest && t.closest('.xterm')) return;
-      if (t && (t.isContentEditable || (t.closest && t.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')))) return;
-      e.preventDefault();
-      b.__musterOpenSearch();
-    });
-  }
 })();
 `
 }()

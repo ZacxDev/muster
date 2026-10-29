@@ -317,4 +317,6 @@ var agentHrefCallLedger = map[string]int{
 	// The session switcher under a session page's composer: a list too.
 	"PageHref ← internal/ui/switcher.go:switcherItems": 1,
 	"PageHref ← internal/ui/nav_agents.go:navAgentRow": 1,
+	// The switcher's pin toggle: the page a post without script returns to.
+	"PageHref ← internal/ui/switcher_pin.go:newSwitcherPin": 1,
 }

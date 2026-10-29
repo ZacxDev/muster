@@ -109,7 +109,9 @@ func TestTheMenuIsTheRenderedViewsAlone(t *testing.T) {
 		"terminal": renderString(t, AgentTerminalPage(AgentTerminalView{Name: "main", StepUp: stepUpFixture(),
 			Composer: &MirrorComposerView{SendPath: MirrorTerminalSendPath, Host: "host-a", Session: "main", Aria: "x"}})),
 	} {
-		if strings.Contains(p, "mv-complete") || strings.Contains(p, "aria-autocomplete") {
+		// The menu script's own aria-autocomplete, not the attribute: the
+		// sidebar's command palette (palette.go) carries one on every page.
+		if strings.Contains(p, "mv-complete") || strings.Contains(p, "input.setAttribute('aria-autocomplete', 'list')") {
 			t.Errorf("%s: carries the menu", name)
 		}
 	}
