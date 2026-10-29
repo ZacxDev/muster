@@ -59,6 +59,9 @@ var notLinkedLedger = map[string]string{
 
 	"internal/modulegate": "this package. Test files only; it has no importable symbol.",
 
+	"internal/officers/hqtest": "the in-process fake of HQ's officers API the officer runtime's " +
+		"tests drive (internal/officers, internal/api). Imported only by _test.go files: a fake HQ " +
+		"linked into the server would answer claims for officers no real HQ knows.",
 	"internal/gotrue/gotruetest": "the in-memory GoTrue the Go tests drive the session tier " +
 		"against. Imported only by _test.go files: a fake identity provider linked into the " +
 		"server would be a way to mint sessions.",

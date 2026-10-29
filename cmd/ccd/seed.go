@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/ZacxDev/muster/internal/podagent"
 )
 
 // `ccd seed` prepares CLAUDE_CONFIG_DIR so the interactive CLI starts straight at
@@ -41,6 +43,8 @@ type seedOpts struct {
 	// seeds the default posture, "bypassPermissions" the job-lane bypass one
 	// (jobPermissionSettings), anything else is refused.
 	jobPermissionMode string
+	// allowMCPTools and model are podagent.EnvAllowMCPTools / EnvModel as read.
+	allowMCPTools, model string
 }
 
 func runSeed(args []string, stdout, stderr io.Writer) int {
@@ -52,6 +56,7 @@ func runSeed(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&o.settingsTemplate, "settings-template", "", "settings.json template whose top-level keys are imposed")
 	fs.BoolVar(&o.check, "check", false, "verify an existing seed instead of writing one")
 	o.jobPermissionMode = os.Getenv(envJobPermissionMode)
+	o.allowMCPTools, o.model = os.Getenv(podagent.EnvAllowMCPTools), os.Getenv(podagent.EnvModel)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -84,7 +89,63 @@ func (o seedOpts) validate() error {
 	if _, err := jobBypass(o.jobPermissionMode); err != nil {
 		return err
 	}
+	if _, err := podagent.ParseAllowMCPTools(o.allowMCPTools); err != nil {
+		return err
+	}
+	if _, err := podagent.ParseModel(o.model); err != nil {
+		return err
+	}
 	return nil
+}
+
+// seedSettings is the top-level settings.json keys seed imposes and checkSeed
+// verifies: the template under the job permission mode (jobPermissionSettings),
+// plus the agent's own session settings (internal/podagent/session.go):
+//
+//   - podagent.EnvAllowMCPTools → permissions.allow, each entry
+//     "mcp__muster__<name>". It is added to the TEMPLATE's permissions object,
+//     which replaces the file's wholesale on every POD start (this seed; an
+//     in-pod CLI restart by the supervisor does not re-seed), so an allow list
+//     a session wrote for itself does not survive the next pod start, and the
+//     only entries seed ever writes are muster's own MCP tools.
+//   - podagent.EnvModel → "model". Unset removes a model seed itself wrote
+//     earlier (seededModelKey) and otherwise leaves the file's model alone
+//     (an operator's own choice in the pod).
+//
+// seed and checkSeed both call this, so they cannot disagree.
+func seedSettings(tmpl map[string]any, o seedOpts) (map[string]any, error) {
+	want, err := jobPermissionSettings(tmpl, o.jobPermissionMode)
+	if err != nil {
+		return nil, err
+	}
+	allow, err := podagent.ParseAllowMCPTools(o.allowMCPTools)
+	if err != nil {
+		return nil, err
+	}
+	if len(allow) > 0 {
+		perms, ok := want["permissions"].(map[string]any)
+		if !ok {
+			return nil, errors.New("settings template has no `permissions` object to add the allowed tools to")
+		}
+		with := make(map[string]any, len(perms)+1)
+		for k, v := range perms {
+			with[k] = v
+		}
+		entries := make([]any, len(allow))
+		for i, e := range allow {
+			entries[i] = e
+		}
+		with["allow"] = entries
+		want["permissions"] = with
+	}
+	model, err := podagent.ParseModel(o.model)
+	if err != nil {
+		return nil, err
+	}
+	if model != "" {
+		want["model"] = model
+	}
+	return want, nil
 }
 
 // settingsSkipBypassPrompt is the user-settings key the pinned CLI reads as
@@ -182,7 +243,7 @@ func seed(o seedOpts, stderr io.Writer) error {
 	if err := json.Unmarshal(tmpl, &raw); err != nil {
 		return fmt.Errorf("settings template %s: %w", o.settingsTemplate, err)
 	}
-	want, err := jobPermissionSettings(raw, o.jobPermissionMode)
+	want, err := seedSettings(raw, o)
 	if err != nil {
 		return err
 	}
@@ -194,9 +255,33 @@ func seed(o seedOpts, stderr io.Writer) error {
 	for k, v := range want {
 		have[k] = v
 	}
+	// The model seed set before (seededModelKey) is removed when CCD_MODEL is
+	// now unset — the officer's model was dropped from its config, and the
+	// instance kept its volume — but only while the file still holds that
+	// value: a model changed in the pod since is someone's choice.
+	prev, _ := st[seededModelKey].(string)
+	switch {
+	case o.model != "":
+		st[seededModelKey] = o.model
+	case prev != "":
+		if _, templated := want["model"]; !templated && have["model"] == prev {
+			delete(have, "model")
+		}
+		delete(st, seededModelKey)
+	}
+	if o.model != "" || prev != "" {
+		if err := writeJSONAtomic(stPath, st); err != nil {
+			return err
+		}
+	}
 	stripForbidden(have, setPath, stderr)
 	return writeJSONAtomic(setPath, have)
 }
+
+// seededModelKey is the .claude.json key recording the model seed last wrote
+// to settings.json from CCD_MODEL, so a later seed without CCD_MODEL removes
+// that model (and only that one).
+const seededModelKey = "ccdSeededModel"
 
 // ensureWritableDir makes dir exist as a directory this process can create files
 // in, as os.MkdirAll(dir, perm) does — except that an EMPTY directory on dir's path
@@ -381,7 +466,7 @@ func checkSeed(o seedOpts) error {
 	if err := json.Unmarshal(tmpl, &raw); err != nil {
 		return err
 	}
-	want, err := jobPermissionSettings(raw, o.jobPermissionMode)
+	want, err := seedSettings(raw, o)
 	if err != nil {
 		return err
 	}

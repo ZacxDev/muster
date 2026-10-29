@@ -273,6 +273,10 @@ type Server struct {
 	// provisioner's instances (agent_reap.go).
 	reapInstancesWithin time.Duration
 
+	// officerRT is the officer runtime (officers.go); nil when no officer is
+	// declared (EnableOfficers).
+	officerRT *officerRuntime
+
 	// taskLeader is the cross-process singleton gate for the background loops.
 	taskLeader LeaderGate
 

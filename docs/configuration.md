@@ -184,6 +184,17 @@ configuration:
 For example, in a `jq` filter that reads `MUSTER_CONFIG` as `$mc`:
 `| if ($mc[0].workspace // null) then .agents.defaults.workspace = $mc[0].workspace else . end`.
 
+## muster-server: officers
+
+The officer runtime ([officers.md](officers.md)). Off unless `MUSTER_OFFICERS`
+declares an officer; then it needs the `claude-code` kind and an agent
+provisioner, and the server refuses to boot without them.
+
+| variable | default | required | what it does |
+|---|---|---|---|
+| `MUSTER_OFFICERS` | none | no | A JSON array of declared officers: `id` (`<type>:<area>`), `hq_url` (HQ's API base, with `/api/v1`), and optionally `max_instances` (1–8, default 1), `idle_scale_to_zero_after` (default `30m`), `poll_interval` (default `1m`, at least `10s`), `owner` (the muster user id the instance agents belong to, default 1), `cc_account` (pin the Claude account) and `model` (the instances' Claude Code model: `opus`, `sonnet` or a model id; unset = the account default). Instances always run on `claude-code`, and officers need the connector door (`MUSTER_AGENT_CONNECT_URL` with `MUSTER_CONNECT_PORT` and the connector store's key) — the server refuses to boot without it. Unknown fields are refused, as is an id whose instance names would not fit a namespace under `MUSTER_AGENT_NAMESPACE_PREFIX`. See [officers.md](officers.md#configuration). |
+| `MUSTER_OFFICER_TOKEN_<NAME>` | none | for each officer | That officer's HQ token (scope `officer`). `<NAME>` is the officer id upper-cased, with every other character written as `_`: `release:example-web` → `MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB`. Read by the server only; never passed to an instance's pod. |
+
 ## Tracing (muster-server and muster-mirror)
 
 Both binaries export OpenTelemetry traces over OTLP/HTTP when an endpoint is set,
@@ -283,6 +294,8 @@ variables when it provisions an agent, so you normally never set them yourself.
 | `CCD_LANE` | none | no | Set by `ccd` itself in the environment of each extra Claude Code CLI it starts (one per chief session on the `claude-code` runtime), so `ccd hook` reports that CLI's hooks as that session's. Not for an operator to set. |
 | `CCD_MAX_SESSIONS` | `3` | no | How many Claude Code CLIs `ccd` runs **beside** the original one, one per chief session started on the `claude-code` runtime (each its own tmux session `cc-<id>`, started with that session's `--model`). At the cap, the least recently used idle one is stopped; its conversation resumes on its next turn. When all are mid-turn, a new session's turn is refused with a typed `capacity` 503. `0` turns this off: such a turn is `not_ready`. Each CLI costs roughly 250–550 MiB of the pod's 3 GiB. |
 | `CCD_JOB_PERMISSION_MODE` | none | no | Unset: every CLI runs at default permissions with bypass disabled. `bypassPermissions`: `ccd seed` lifts `disableBypassPermissionsMode` and records the bypass disclaimer's consent (`skipDangerousModePermissionPrompt`), and `ccd` starts each **job** lane (a sha job's worktree) with `--permission-mode bypassPermissions`; the original CLI and chat lanes are unchanged. Any other value is refused by `ccd seed` and `ccd serve`, so the pod does not start. muster sets it only for an agent in a pool `MUSTER_AGENT_CC_BYPASS_POOLS` lists. |
+| `CCD_ALLOW_MCP_TOOLS` | none | no | A comma list of **muster MCP tool names** `ccd seed` pre-allows in the primary CLI's `settings.json`, each written as `permissions.allow` entry `mcp__muster__<name>` on top of the image's permission posture, re-imposed on every pod start (not on an in-pod CLI restart). Only bare names (`[a-z][a-z0-9_]*`, no `__`) are accepted, and the prefix is forced, so it can never allow a built-in tool, a rule or another server's tool; any other value is refused and the pod does not start. muster sets it only for an [officer](officers.md) instance, to that officer's own tools. |
+| `CCD_MODEL` | none | no | The model `ccd seed` writes as the primary CLI's settings `model` (an alias such as `opus`, or a model id). Unset removes a model `ccd seed` itself wrote earlier (recorded in `.claude.json`), and otherwise leaves the file's model alone (a choice made in the pod). A value that is not a model name is refused and the pod does not start. muster sets it only for an [officer](officers.md) instance whose officer names a `model`. |
 | `CCD_SUBMIT_TIMEOUT` | `20s` | no | How long to wait for a pasted prompt to be accepted. |
 | `CCD_TURN_TIMEOUT` | `30m` | no | The deadline for a whole turn. |
 | `CCD_APPROVAL_DEADLINE` | `170s` | no | How long `ccd approve` waits for a relayed decision before falling back to the terminal prompt. |

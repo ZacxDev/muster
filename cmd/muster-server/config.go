@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/officers"
 	"net/url"
 	"os"
 	"regexp"
@@ -118,6 +119,11 @@ const (
 	// may stay stopped before it is destroyed. A Go duration, 336h when unset,
 	// "0"/"off" turns the reaper off, refused below 1h otherwise.
 	envAgentReapStoppedAfter = "MUSTER_AGENT_REAP_STOPPED_AFTER"
+	// The officer runtime (internal/officers, docs/officers.md): MUSTER_OFFICERS
+	// is a JSON array of declared officers, each officer's HQ token is read from
+	// MUSTER_OFFICER_TOKEN_<NAME> (officers.TokenEnvPrefix, read inside
+	// officers.Parse). Officers are woken by polling HQ; there is no webhook.
+	envOfficers = "MUSTER_OFFICERS"
 	// The send queue (internal/sendqueue): how long a target must have been idle
 	// before a queued message is sent to it. A Go duration, 30s when unset,
 	// refused outside 1s–1h.
@@ -576,6 +582,9 @@ type config struct {
 	// AgentReapStoppedAfter is MUSTER_AGENT_REAP_STOPPED_AFTER
 	// (api.DefaultAgentReapStoppedAfter when unset; 0 = the reaper is off).
 	AgentReapStoppedAfter time.Duration
+	// Officers is MUSTER_OFFICERS parsed, each with its token
+	// (officers.Parse). Empty: the officer runtime is off.
+	Officers []officers.Officer
 	// SendQueueIdle is MUSTER_SEND_QUEUE_IDLE (sendqueue.DefaultIdleFor when
 	// unset).
 	SendQueueIdle time.Duration
@@ -1253,6 +1262,9 @@ func loadConfig(getenv func(string) string) (config, error) {
 		return config{}, err
 	}
 	c.AgentReapStoppedAfter = d
+	if c.Officers, err = officers.Parse(getenv(envOfficers), getenv, c.AgentNamespacePrefix); err != nil {
+		return config{}, err
+	}
 	c.SendQueueIdle = sendqueue.DefaultIdleFor
 	if v := strings.TrimSpace(getenv(envSendQueueIdle)); v != "" {
 		d, err := time.ParseDuration(v)
@@ -1696,6 +1708,16 @@ func (c config) validate() error {
 	}
 	if err := c.validateSTT(); err != nil {
 		return err
+	}
+	// 🔴 OFFICERS NEED THE CONNECTOR DOOR. An officer instance reaches its
+	// tools only over muster's MCP server, served on the connect listener; with
+	// it unset the instance boots with no officer tools and nothing says so.
+	// validateConnectors (below) already holds MUSTER_AGENT_CONNECT_URL to the
+	// key and the port, so this names the one variable and the set.
+	if len(c.Officers) > 0 && c.AgentConnectURL == "" {
+		return fmt.Errorf("%s declares officers but %s is not set: officer instances reach their tools only over muster's "+
+			"MCP server on the connect listener, so they would boot with no officer tools. Set %s, %s and %s",
+			envOfficers, envAgentConnectURL, envAgentConnectURL, envConnectPort, envConnectorEncKey)
 	}
 	if err := c.validateConnectors(); err != nil {
 		return err
@@ -2244,4 +2266,3 @@ func hookTokenRefusal(token string) string {
 	}
 	return ""
 }
-

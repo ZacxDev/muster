@@ -22,6 +22,7 @@ Start with the [project README](../README.md) for the pitch and the two ways to 
 - [github-app.md](github-app.md) — the GitHub App: muster's GitHub identity, and one-repository tokens for agents
 - [memo-relay.md](memo-relay.md) — cairn memos delivered to dispatched agents
 - [plugins.md](plugins.md) — out-of-process plugins that bring messages to your chief agent
+- [officers.md](officers.md) — officers: standing, queue-driven Claude Code agents whose queue and charter live in HQ; muster wakes them, scales them to zero, and holds their HQ token
 - [jobs.md](jobs.md) — the machine job API: an external orchestrator runs one prompt on a claude-code agent and reads the result back
 
 **Running it**

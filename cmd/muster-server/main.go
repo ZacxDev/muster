@@ -35,6 +35,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ZacxDev/muster/internal/officers"
 	"github.com/ZacxDev/muster/internal/telemetry"
 	"github.com/ZacxDev/muster/internal/users"
 	"log"
@@ -199,6 +200,9 @@ type app struct {
 	// (api.BrowserListener); nil unless MUSTER_BROWSER_PORT is set.
 	browser *http.Server
 	pool    *pgxpool.Pool
+	// officers is the officer runtime's wake loop; nil when MUSTER_OFFICERS
+	// declares none.
+	officers *officers.Reconciler
 	// kickoff delivers dispatched agents' first turns; nil when no gateway is
 	// built. See buildKickoffDeliverer.
 	kickoff *agentkickoff.Deliverer
@@ -640,6 +644,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		srv.SetReadyCheck(func(ctx context.Context) error { return db.Ping(ctx, pool) })
 	}
 	a.srv = srv
+	// The officer runtime (docs/officers.md): its wake loop is started by
+	// startBackgroundLoops. Refused at boot, like any contradictory
+	// configuration, when officers are declared without what they need.
+	if len(cfg.Officers) > 0 {
+		if a.officers, err = srv.EnableOfficers(api.OfficersConfig{Officers: cfg.Officers, InstallSession: installSessionOn(prov)}); err != nil {
+			a.Close()
+			return nil, fmt.Errorf("%s: %w", envOfficers, err)
+		}
+	}
 
 	// 🔴 THE DELIVERER COMES FROM THE SAME prov AND gw THE ADAPTER'S
 	// deliverability was computed from, so "a dispatch is accepted" and "something
@@ -681,6 +694,15 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 
 	a.logBanner(ext, port)
 	return a, nil
+}
+
+// installSessionOn is prov's session-source installer for the officer
+// runtime, or nil when there is no provisioner (EnableOfficers then refuses).
+func installSessionOn(prov *agentprovision.Adapter) func(func(agents.Agent) ([]string, string, bool)) {
+	if prov == nil {
+		return nil
+	}
+	return prov.UseClaudeCodeSession
 }
 
 // askSweepEvery is how often the question store's expiry runs
@@ -881,6 +903,13 @@ func (a *app) startBackgroundLoops(ctx context.Context) {
 	if a.memo != nil {
 		go a.memo.Run(ctx, memorelay.DefaultInterval)
 	}
+	// The officer wake loop. Unguarded at replicas > 1 like the loops below:
+	// two pods would both start an instance, which is one Create winning on
+	// the unique agent name and one logged failure, and both stop one, which
+	// is idempotent (docs/officers.md).
+	if a.officers != nil {
+		go a.officers.Run(ctx)
+	}
 	// The AskUserQuestion store's expiry (askq.Store.RunSweep): an open
 	// question with no result seen in askq.MaxOpen ends as expired (and leaves
 	// the attention queue) without waiting for a page to ask. In memory, no
@@ -995,6 +1024,18 @@ func (a *app) shutdown() {
 		a.srv.WaitForPluginDeliveries()
 		// An answer delivered into an agent's session, the same way.
 		a.srv.WaitForAttentionDeliveries()
+		// An officer re-prompt, the same way: cancelled by EndStreams, it
+		// releases the instance's session claim before the process exits. The
+		// wake loop is joined FIRST (its ctx is the signal's, already
+		// cancelled), so no pass can start a re-prompt during the wait.
+		if a.officers != nil {
+			select {
+			case <-a.officers.Done():
+			case <-time.After(kickoffDrainTimeout):
+				a.logger.Printf("officers: the wake loop did not stop within %s", kickoffDrainTimeout)
+			}
+		}
+		a.srv.WaitForOfficerReprompts()
 	}()
 	a.waitForKickoffs(kickoffDrainTimeout)
 	<-memoDone
@@ -1092,6 +1133,16 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			ui.IdleSectionAfterLabel(a.cfg.AgentsIdleAfter), a.cfg.AgentsIdleAfter, envAgentsIdleAfter, displayOrDefault(a.cfg.AgentsIdleAfterRaw))
 	} else {
 		l.Printf("agents list: idle section OFF (%s=0) — every entry is drawn in the one list", envAgentsIdleAfter)
+	}
+
+	// The officer runtime (docs/officers.md), in both directions. Each
+	// declared officer also gets its own `officers: <id> on: …` line from
+	// api.Server.EnableOfficers. It reports the CONFIG: a declared officer the
+	// server could not enable refuses the boot (newApp), so the two agree.
+	if len(a.cfg.Officers) > 0 {
+		l.Printf("officers: ON — %d declared in %s; woken by polling HQ", len(a.cfg.Officers), envOfficers)
+	} else {
+		l.Printf("officers: OFF (%s declares none)", envOfficers)
 	}
 
 	if a.pool != nil {

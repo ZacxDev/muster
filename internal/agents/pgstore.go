@@ -311,6 +311,25 @@ func (s *PGStore) AppendPendingNote(ctx context.Context, id int64, text string) 
 	return tag.RowsAffected() == 1, nil
 }
 
+// RearmKickoff makes agent id owe a NEW first turn: note becomes its pending
+// note and every kickoff marker is reset, so the kickoff deliverer
+// (internal/agentkickoff) hands note to the agent once its instance is ready —
+// the same path, claim and bookkeeping as a dispatch's first turn.
+//
+// 🔴 ITS ONE CALLER IS THE OFFICER RUNTIME waking a stopped instance
+// (internal/api's officer fleet). agentkickoff deliberately never re-sends a
+// delivered note by itself ("deciding to re-send a task is a different,
+// costlier decision … not taken here by omission"); this method is that
+// decision, taken explicitly, for an agent whose every wake IS a new session
+// of work. It is not on the Store interface for that reason: a caller has to
+// name *PGStore (or a test fake) to reach it.
+func (s *PGStore) RearmKickoff(ctx context.Context, id int64, note string) error {
+	_, err := s.pool.Exec(ctx, `UPDATE agents SET pending_note=$2, kicked_off=false,
+		kickoff_pod='', kickoff_restarts=0, kickoff_attempts=0, kickoff_error='', updated_at=now()
+		WHERE id=$1`, id, note)
+	return err
+}
+
 func (s *PGStore) SetKickedOff(ctx context.Context, id int64, v bool) error {
 	// The wait markers are cleared by the stamp itself (see Store.SetKickedOff).
 	_, err := s.pool.Exec(ctx, `UPDATE agents SET kicked_off=$2,
