@@ -9,45 +9,43 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/authz"
-	"github.com/ZacxDev/muster/internal/dbtest"
 	"github.com/ZacxDev/muster/internal/plugins"
 	"github.com/ZacxDev/muster/internal/sendqueue"
 )
 
-// THE OWNER ANSWERED IT THEMSELVES (owner_replies.go, migration 0062), through
-// the real server against a real Postgres: a plugin's POST
-// /plugin/v1/owner-replies {thread, at} ends the routes that reply answers
-// owner_answered — a waiting one, and one that timed out at most
-// OwnerReplyGrace before it — and no other: not one on another thread, of
-// another plugin, of another owner, made after the reply, or timed out longer
-// ago. And the deadline a person's conversation gets (human_conversation).
+// A REPLY SENT DIRECTLY, STAMPED WITH ITS MESSAGE (owner_replies.go, migration
+// 0062), through the real server against a real Postgres: a plugin's POST
+// /plugin/v1/messages/{id}/owner-answered ends THAT message's route
+// owner_answered when it is still routed, and changes nothing else — not a
+// route that already ended any other way, not a message never routed, and not
+// another plugin's or another owner's message (404). And the deadline a
+// person's conversation gets (human_conversation).
 //
-// Written against the HTTP door and the stored rows (state, owner_replied_at,
-// handback read by SQL) so the same file compiles at the commit before the
-// feature and shows each case red there.
+// Written against the HTTP door and the stored rows (state, owner_replied_at
+// read by SQL) so the same file compiles at the commit before the feature and
+// shows each case red there.
 
 // stateOwnerAnswered is plugins.RouteOwnerAnswered, spelled as the schema
 // stores it.
 const stateOwnerAnswered = plugins.RouteState("owner_answered")
 
-// ownerReplyFixture is a route fixture with a plugin whose messages carry a
-// thread, and its token.
-type ownerReplyFixture struct {
+// ownerAnsweredFixture is a route fixture with a plugin and its token.
+type ownerAnsweredFixture struct {
 	*routeFixture
 	tok string
 	p   plugins.Plugin
 }
 
-func newOwnerReplyFixture(t *testing.T) *ownerReplyFixture {
+func newOwnerAnsweredFixture(t *testing.T) *ownerAnsweredFixture {
 	t.Helper()
-	f := &ownerReplyFixture{routeFixture: newRouteFixture(t)}
+	f := &ownerAnsweredFixture{routeFixture: newRouteFixture(t)}
 	f.tok, f.p = f.mintPlugin(t, f.owner, "example-dm")
 	f.chiefSession(t, f.p)
 	return f
 }
 
 // mintPlugin creates owner's plugin name and returns its token.
-func (f *ownerReplyFixture) mintPlugin(t *testing.T, owner int64, name string) (string, plugins.Plugin) {
+func (f *ownerAnsweredFixture) mintPlugin(t *testing.T, owner int64, name string) (string, plugins.Plugin) {
 	t.Helper()
 	tok, p, err := f.plugins.Create(f.as(owner), name, "Example "+name, name+"-data")
 	if err != nil {
@@ -56,13 +54,13 @@ func (f *ownerReplyFixture) mintPlugin(t *testing.T, owner int64, name string) (
 	return tok, p
 }
 
-// threadMessage POSTs one message on thread through plugin token tok, with
-// extra fields merged in, and settles it as delivered to the chief: the
-// message a route can take.
-func (f *ownerReplyFixture) threadMessage(t *testing.T, tok, external, thread string, extra map[string]any) plugins.Message {
+// message POSTs one message through plugin token tok, with extra fields
+// merged in, and settles it as delivered to the chief: a message a route can
+// take.
+func (f *ownerAnsweredFixture) message(t *testing.T, tok, external string, extra map[string]any) plugins.Message {
 	t.Helper()
 	in := map[string]any{"external_id": external, "sender": "Someone (Example DM 1)", "subject": "Example DM: 1 message",
-		"body": "can you look at this?", "thread": thread}
+		"body": "can you look at this?"}
 	for k, v := range extra {
 		in[k] = v
 	}
@@ -87,20 +85,27 @@ func (f *ownerReplyFixture) threadMessage(t *testing.T, tok, external, thread st
 	return m
 }
 
-// ownerReply is the plugin's report: the status and the settled route ids.
-func (f *ownerReplyFixture) ownerReply(t *testing.T, tok, thread string, at time.Time) (int, []string) {
+// stampAnswer is the plugin's report: the status and the answer's fields.
+type stampAnswer struct {
+	Code    int
+	Settled bool   `json:"settled"`
+	State   string `json:"state"`
+	RouteID string `json:"route_id"`
+	Error   string `json:"error"`
+}
+
+func (f *ownerAnsweredFixture) stamp(t *testing.T, tok string, messageID int64) stampAnswer {
 	t.Helper()
-	b, _ := json.Marshal(map[string]any{"thread": thread, "at": at.UTC().Format(time.RFC3339Nano)})
-	w := f.call(t, "POST", "/plugin/v1/owner-replies", strings.NewReader(string(b)), map[string]string{"Authorization": "Bearer " + tok})
-	var out struct {
-		Settled []string `json:"settled"`
-	}
-	_ = json.Unmarshal(w.Body.Bytes(), &out)
-	return w.Code, out.Settled
+	w := f.call(t, "POST", "/plugin/v1/messages/"+strconv.FormatInt(messageID, 10)+"/owner-answered", strings.NewReader(""),
+		map[string]string{"Authorization": "Bearer " + tok})
+	var a stampAnswer
+	_ = json.Unmarshal(w.Body.Bytes(), &a)
+	a.Code = w.Code
+	return a
 }
 
 // ownerRepliedAt is route id's owner_replied_at (nil for none), read by SQL.
-func (f *ownerReplyFixture) ownerRepliedAt(t *testing.T, id string) *time.Time {
+func (f *ownerAnsweredFixture) ownerRepliedAt(t *testing.T, id string) *time.Time {
 	t.Helper()
 	var at *time.Time
 	if err := f.pool.QueryRow(authz.System(context.Background()), `SELECT owner_replied_at FROM session_routes WHERE route_id = $1`, id).Scan(&at); err != nil {
@@ -109,28 +114,8 @@ func (f *ownerReplyFixture) ownerRepliedAt(t *testing.T, id string) *time.Time {
 	return at
 }
 
-// timeOut times route id out as the sweep's store call does, WITHOUT the
-// sweep's delivery of the hand-back: a route timed out and still owing it.
-// Its deadline is moved into the past first.
-func (f *ownerReplyFixture) timeOut(t *testing.T, id string) {
-	t.Helper()
-	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE session_routes SET created_at = created_at - interval '5 hours',
-		timeout_at = now() - interval '1 second' WHERE route_id = '`+id+`'`)
-	if _, timedOut, err := f.plugins.TimeOutRoute(f.asOwner, id); err != nil || !timedOut {
-		t.Fatalf("time out %s: %v %v", id, timedOut, err)
-	}
-}
-
-// endedAgo moves a timed-out route's finished_at d into the past: it timed
-// out d ago.
-func endedAgo(t *testing.T, id string, d time.Duration) {
-	t.Helper()
-	dbtest.OwnerExec(t, dbtest.DSN(t), `UPDATE session_routes SET finished_at = now() - make_interval(secs => `+
-		strconv.Itoa(int(d/time.Second))+`) WHERE route_id = '`+id+`'`)
-}
-
 // chiefNotes is the text of the chief's conversation for the plugin.
-func (f *ownerReplyFixture) chiefNotes(t *testing.T) string {
+func (f *ownerAnsweredFixture) chiefNotes(t *testing.T) string {
 	t.Helper()
 	p, err := f.plugins.Plugin(f.asOwner, f.p.ID)
 	if err != nil || p.ChiefSessionID == nil {
@@ -147,36 +132,33 @@ func (f *ownerReplyFixture) chiefNotes(t *testing.T) string {
 	return b.String()
 }
 
-func TestAnOwnerReplySettlesAWaitingRoute(t *testing.T) {
-	f := newOwnerReplyFixture(t)
-	m := f.threadMessage(t, f.tok, "own-wait-1", "dm-111", nil)
+func TestAStampedReplySettlesAWaitingRoute(t *testing.T) {
+	f := newOwnerAnsweredFixture(t)
+	m := f.message(t, f.tok, "stamp-wait-1", nil)
 	id := f.route(t, m)
 	r := f.routeState(t, id)
 	if r.SendQueueID == nil {
 		t.Fatalf("the route has no paste: %+v", r)
 	}
-	// Routed a minute ago; the owner replied just now.
-	ageRoute(t, id, time.Minute)
-	at := time.Now().Truncate(time.Second)
-	code, settled := f.ownerReply(t, f.tok, "dm-111", at)
-	if code != 200 || len(settled) != 1 || settled[0] != id {
-		t.Fatalf("the owner's reply: %d %v; want 200 settling %s", code, settled, id)
+	before := time.Now().Add(-time.Second)
+	if a := f.stamp(t, f.tok, m.ID); a.Code != 200 || !a.Settled || a.State != "owner_answered" || a.RouteID != id {
+		t.Fatalf("the stamp: %+v; want 200 settling %s", a, id)
 	}
 	got := f.routeState(t, id)
-	if got.State != stateOwnerAnswered || got.FinishedAt == nil || got.Error != "" {
-		t.Fatalf("the route is %s (finished %v, error %q); want owner_answered, finished, no error", got.State, got.FinishedAt, got.Error)
+	if got.State != stateOwnerAnswered || got.FinishedAt == nil {
+		t.Fatalf("the route is %s (finished %v); want owner_answered, finished", got.State, got.FinishedAt)
 	}
-	if ra := f.ownerRepliedAt(t, id); ra == nil || !ra.Equal(at) {
-		t.Fatalf("owner_replied_at %v; want %v", ra, at)
+	if ra := f.ownerRepliedAt(t, id); ra == nil || ra.Before(before) || ra.After(time.Now().Add(time.Second)) {
+		t.Fatalf("owner_replied_at %v; want muster's now", ra)
 	}
 	if hb := f.handBackOwed(t, id); hb != "" {
-		t.Fatalf("an owner-answered route owes a hand-back: %q", hb)
+		t.Fatalf("a settled route owes a hand-back: %q", hb)
 	}
 	if it := f.queueRow(t, *r.SendQueueID); it.State != sendqueue.Cancelled {
 		t.Fatalf("its paste is %s; want cancelled", it.State)
 	}
-	if !strings.Contains(f.chiefNotes(t), "Route "+id) || !strings.Contains(f.chiefNotes(t), "answered the sender directly") {
-		t.Fatalf("the chief was not told:\n%s", f.chiefNotes(t))
+	if notes := f.chiefNotes(t); !strings.Contains(notes, "Route "+id) || !strings.Contains(notes, "sent to the sender directly") {
+		t.Fatalf("the chief was not told:\n%s", notes)
 	}
 	// The deadline passes: the sweep has nothing to time out or hand back.
 	ageRoute(t, id, 31*time.Minute)
@@ -187,161 +169,149 @@ func TestAnOwnerReplySettlesAWaitingRoute(t *testing.T) {
 		t.Fatalf("after the sweep the route is %s; want owner_answered", got.State)
 	}
 	if strings.Contains(f.chiefNotes(t), "back with you") {
-		t.Fatalf("the chief was handed back a message the owner answered:\n%s", f.chiefNotes(t))
+		t.Fatalf("the chief was handed back an answered message:\n%s", f.chiefNotes(t))
 	}
 	// The session's late answer is refused: the route is closed.
 	if code, _ := f.reply(t, f.token, id, "late answer"); code != 409 {
 		t.Fatalf("a late route reply: %d; want 409", code)
 	}
-	// The same report again settles nothing more.
-	if code, settled := f.ownerReply(t, f.tok, "dm-111", at); code != 200 || len(settled) != 0 {
-		t.Fatalf("a repeated report: %d %v; want 200, nothing", code, settled)
+	// The same stamp again: 200, nothing more settled.
+	if a := f.stamp(t, f.tok, m.ID); a.Code != 200 || a.Settled || a.State != "owner_answered" {
+		t.Fatalf("a repeated stamp: %+v; want 200, settled false, owner_answered", a)
 	}
 }
 
-// 🔴 A route that timed out SHORTLY before the owner's reply — the hand-back
-// still owed — is settled, and the hand-back withdrawn, so the chief never
-// gets it. Measured at 37 minutes after the deadline (the case that was seen)
-// and at 1h55m, inside OwnerReplyGrace's edge.
-func TestAnOwnerReplySettlesARouteThatJustTimedOut(t *testing.T) {
-	for _, ago := range []time.Duration{37 * time.Minute, 115 * time.Minute} {
-		t.Run(ago.String(), func(t *testing.T) {
-			f := newOwnerReplyFixture(t)
-			thread := "dm-222-" + strconv.Itoa(int(ago/time.Minute))
-			id := f.route(t, f.threadMessage(t, f.tok, "own-late-"+thread, thread, nil))
-			f.timeOut(t, id)
-			if hb := f.handBackOwed(t, id); hb == "" {
-				t.Fatal("CONTROL: the timed-out route owes no hand-back")
-			}
-			endedAgo(t, id, ago)
-			code, settled := f.ownerReply(t, f.tok, thread, time.Now())
-			if code != 200 || len(settled) != 1 || settled[0] != id {
-				t.Fatalf("%v after the deadline: %d %v; want 200 settling %s", ago, code, settled, id)
-			}
-			if got := f.routeState(t, id); got.State != stateOwnerAnswered {
-				t.Fatalf("the route is %s; want owner_answered", got.State)
-			}
-			if hb := f.handBackOwed(t, id); hb != "" {
-				t.Fatalf("the hand-back is still owed: %q", hb)
-			}
-			if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			notes := f.chiefNotes(t)
-			if strings.Contains(notes, "back with you") || !strings.Contains(notes, "answered the sender directly") {
-				t.Fatalf("the chief's conversation:\n%s\nwant the owner's answer and no hand-back", notes)
-			}
-		})
-	}
-}
+// A stamp on a message whose route already ended — timed out (and handed
+// back), answered through route_reply, failed — or that was never routed
+// changes nothing: 409 naming the state. The control at the end: the same
+// fixture's waiting route IS settled, so each 409 is the state's, not a door
+// that settles nothing.
+func TestAStampOnARouteThatIsNotWaitingChangesNothing(t *testing.T) {
+	f := newOwnerAnsweredFixture(t)
 
-// A route whose hand-back was ALREADY delivered is still settled: the
-// hand-back stands, the row says the owner answered, and the chief is told.
-func TestAnOwnerReplySettlesARouteAlreadyHandedBack(t *testing.T) {
-	f := newOwnerReplyFixture(t)
-	id := f.route(t, f.threadMessage(t, f.tok, "own-handed-1", "dm-333", nil))
-	ageRoute(t, id, 31*time.Minute)
+	timedOut := f.message(t, f.tok, "stamp-not-1", nil)
+	tid := f.route(t, timedOut)
+	ageRoute(t, tid, 31*time.Minute)
 	if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.routeState(t, id); got.State != plugins.RouteTimedOut || f.handBackOwed(t, id) != "" ||
-		!strings.Contains(f.chiefNotes(t), "back with you") {
-		t.Fatalf("CONTROL: the route is %s, hand-back owed %q; want timed out and handed back", got.State, f.handBackOwed(t, id))
+	if got := f.routeState(t, tid); got.State != plugins.RouteTimedOut || !strings.Contains(f.chiefNotes(t), "back with you") {
+		t.Fatalf("CONTROL: the route is %s; want timed out and handed back", got.State)
 	}
-	if code, settled := f.ownerReply(t, f.tok, "dm-333", time.Now()); code != 200 || len(settled) != 1 {
-		t.Fatalf("the owner's reply: %d %v; want 200 settling it", code, settled)
+
+	answered := f.message(t, f.tok, "stamp-not-2", nil)
+	aid := f.route(t, answered)
+	if code, _ := f.reply(t, f.token, aid, "the session's answer"); code != 200 {
+		t.Fatalf("CONTROL: the session's route reply: %d", code)
 	}
-	if got := f.routeState(t, id); got.State != stateOwnerAnswered {
-		t.Fatalf("the route is %s; want owner_answered", got.State)
+	answeredState := f.routeState(t, aid).State
+
+	failed := f.message(t, f.tok, "stamp-not-3", nil)
+	fid := f.route(t, failed)
+	if _, err := f.plugins.FailRoute(f.asOwner, fid, "the window moved on", ""); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(f.chiefNotes(t), "after it came back to you") {
-		t.Fatalf("the chief was not told the owner answered it after the hand-back:\n%s", f.chiefNotes(t))
+
+	never := f.message(t, f.tok, "stamp-not-4", nil)
+
+	for _, c := range []struct {
+		name    string
+		m       plugins.Message
+		routeID string
+		want    plugins.RouteState
+	}{
+		{"timed out", timedOut, tid, plugins.RouteTimedOut},
+		{"answered through route_reply", answered, aid, answeredState},
+		{"failed", failed, fid, plugins.RouteFailed},
+		{"never routed", never, "", "none"},
+	} {
+		a := f.stamp(t, f.tok, c.m.ID)
+		if a.Code != 409 || a.Settled || a.State != string(c.want) || a.Error == "" {
+			t.Errorf("%s: %+v; want 409, settled false, state %s", c.name, a, c.want)
+		}
+		if c.routeID != "" {
+			if got := f.routeState(t, c.routeID); got.State != c.want || f.ownerRepliedAt(t, c.routeID) != nil {
+				t.Errorf("%s: the route is now %s (owner_replied_at %v); want unchanged %s", c.name, got.State,
+					f.ownerRepliedAt(t, c.routeID), c.want)
+			}
+		}
+	}
+
+	waiting := f.message(t, f.tok, "stamp-not-5", nil)
+	wid := f.route(t, waiting)
+	if a := f.stamp(t, f.tok, waiting.ID); a.Code != 200 || !a.Settled || a.RouteID != wid {
+		t.Fatalf("CONTROL: the waiting route's stamp: %+v; want 200 settling %s", a, wid)
 	}
 }
 
-// A reply that answers NO route leaves each as it is — and the same fixture's
-// matching report then settles it, so each refusal is the predicate's, not a
-// fixture that could never settle anything.
-func TestAnOwnerReplyLeavesRoutesItDoesNotAnswer(t *testing.T) {
-	f := newOwnerReplyFixture(t)
+// A message routed again after its first route timed out: the stamp settles
+// its LATEST route — the one now waiting — and leaves the earlier one timed out.
+func TestAStampSettlesTheMessagesLatestRoute(t *testing.T) {
+	f := newOwnerAnsweredFixture(t)
+	m := f.message(t, f.tok, "stamp-latest-1", nil)
+	first := f.route(t, m)
+	ageRoute(t, first, 31*time.Minute)
+	if _, err := f.srv.RouteTimeoutPass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	second := f.route(t, m)
+	if a := f.stamp(t, f.tok, m.ID); a.Code != 200 || !a.Settled || a.RouteID != second {
+		t.Fatalf("the stamp: %+v; want 200 settling the latest route %s", a, second)
+	}
+	if got := f.routeState(t, first); got.State != plugins.RouteTimedOut {
+		t.Fatalf("the earlier route is %s; want still timed_out", got.State)
+	}
+}
+
+// 🔴 Only the plugin that delivered the message settles it: another plugin of
+// the same owner, another owner's plugin and a missing id are all 404, the
+// route untouched. The control: the message's own plugin then settles it.
+func TestAStampForAnotherPluginsOrOwnersMessageIsNotFound(t *testing.T) {
+	f := newOwnerAnsweredFixture(t)
 	otherTok, _ := f.mintPlugin(t, f.owner, "example-other")
 	stranger := f.newMember(t)
 	strangerTok, _ := f.mintPlugin(t, stranger, "example-dm")
 
-	waiting := f.route(t, f.threadMessage(t, f.tok, "own-no-1", "dm-444", nil))
+	m := f.message(t, f.tok, "stamp-who-1", nil)
+	id := f.route(t, m)
 	for _, c := range []struct {
-		name, tok, thread string
-		at                time.Time
+		name, tok string
+		id        int64
 	}{
-		{"another thread", f.tok, "dm-445", time.Now()},
-		{"another plugin of the same owner, same thread", otherTok, "dm-444", time.Now()},
-		{"another owner's plugin, same name and thread", strangerTok, "dm-444", time.Now()},
-		{"a reply from before the route was made", f.tok, "dm-444", time.Now().Add(-time.Hour)},
+		{"another plugin of the same owner", otherTok, m.ID},
+		{"another owner's plugin, same name", strangerTok, m.ID},
+		{"a message that does not exist", f.tok, m.ID + 1_000_000},
 	} {
-		code, settled := f.ownerReply(t, c.tok, c.thread, c.at)
-		if code != 200 || len(settled) != 0 {
-			t.Errorf("%s: %d %v; want 200 settling nothing", c.name, code, settled)
+		if a := f.stamp(t, c.tok, c.id); a.Code != 404 || a.Settled {
+			t.Errorf("%s: %+v; want 404", c.name, a)
 		}
-		if got := f.routeState(t, waiting); got.State != plugins.RouteRouted {
+		if got := f.routeState(t, id); got.State != plugins.RouteRouted {
 			t.Fatalf("%s: the route is %s; want still routed", c.name, got.State)
 		}
 	}
-
-	// Timed out PAST the grace: 2h05m before the reply.
-	stale := f.route(t, f.threadMessage(t, f.tok, "own-no-2", "dm-446", nil))
-	f.timeOut(t, stale)
-	endedAgo(t, stale, 125*time.Minute)
-	if code, settled := f.ownerReply(t, f.tok, "dm-446", time.Now()); code != 200 || len(settled) != 0 {
-		t.Errorf("a route timed out 2h05m before the reply: %d %v; want 200 settling nothing", code, settled)
+	// A personal token is not a plugin's.
+	if a := f.stamp(t, f.token, m.ID); a.Code != 401 {
+		t.Fatalf("the owner's personal token: %+v; want 401", a)
 	}
-	if got := f.routeState(t, stale); got.State != plugins.RouteTimedOut {
-		t.Errorf("the stale route is %s; want still timed_out", got.State)
-	}
-
-	// The positive control: the right plugin, thread and time settle it.
-	if code, settled := f.ownerReply(t, f.tok, "dm-444", time.Now()); code != 200 || len(settled) != 1 || settled[0] != waiting {
-		t.Fatalf("CONTROL: the matching report: %d %v; want it to settle %s", code, settled, waiting)
-	}
-}
-
-func TestAnOwnerReplyRefusesABadReport(t *testing.T) {
-	f := newOwnerReplyFixture(t)
-	id := f.route(t, f.threadMessage(t, f.tok, "own-bad-1", "dm-555", nil))
-	for _, c := range []struct{ name, body string }{
-		{"no thread", `{"at":"2000-01-01T00:00:00Z"}`},
-		{"no time", `{"thread":"dm-555"}`},
-		{"a thread with a space", `{"thread":"dm 555","at":"2000-01-01T00:00:00Z"}`},
-		{"a time an hour ahead", `{"thread":"dm-555","at":"` + time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"}`},
-	} {
-		w := f.call(t, "POST", "/plugin/v1/owner-replies", strings.NewReader(c.body), map[string]string{"Authorization": "Bearer " + f.tok})
-		if w.Code != 400 {
-			t.Errorf("%s: %d; want 400", c.name, w.Code)
-		}
-	}
-	if got := f.routeState(t, id); got.State != plugins.RouteRouted {
-		t.Fatalf("a refused report changed the route to %s", got.State)
-	}
-	// An agent's or the owner's credential is not a plugin's.
-	if w := f.call(t, "POST", "/plugin/v1/owner-replies", strings.NewReader(`{"thread":"dm-555","at":"2000-01-01T00:00:00Z"}`),
-		map[string]string{"Authorization": "Bearer " + f.token}); w.Code != 401 {
-		t.Fatalf("the owner's personal token: %d; want 401", w.Code)
+	if a := f.stamp(t, f.tok, m.ID); a.Code != 200 || !a.Settled || a.RouteID != id {
+		t.Fatalf("CONTROL: the message's own plugin: %+v; want 200 settling %s", a, id)
 	}
 }
 
 // A PERSON'S CONVERSATION WAITS 4H (ConversationRouteTimeout): a message its
 // plugin marks human_conversation gets the long deadline; the same plugin's
-// unmarked message on a thread — as agent mail is — keeps 30m.
+// unmarked message keeps 30m.
 func TestAHumanConversationRouteHasTheFourHourDeadline(t *testing.T) {
-	f := newOwnerReplyFixture(t)
-	marked := f.threadMessage(t, f.tok, "own-deadline-1", "dm-666", map[string]any{"human_conversation": true})
+	f := newOwnerAnsweredFixture(t)
+	marked := f.message(t, f.tok, "stamp-deadline-1", map[string]any{"human_conversation": true})
 	deadlineIs(t, "a human_conversation message's route", f.routeState(t, f.route(t, marked)), 4*time.Hour)
-	unmarked := f.threadMessage(t, f.tok, "own-deadline-2", "dm-667", nil)
+	unmarked := f.message(t, f.tok, "stamp-deadline-2", nil)
 	deadlineIs(t, "an unmarked message's route", f.routeState(t, f.route(t, unmarked)), 30*time.Minute)
 }
 
 func TestAnAgentMailRouteKeepsTheThirtyMinuteDeadline(t *testing.T) {
-	f := newOwnerReplyFixture(t)
+	f := newOwnerAnsweredFixture(t)
 	tok, _ := f.mintPlugin(t, f.owner, plugins.AgentMailPlugin)
-	m := f.threadMessage(t, tok, "own-mail-1", "7777", nil)
+	m := f.message(t, tok, "stamp-mail-1", map[string]any{"thread": "7777"})
 	deadlineIs(t, "an agent-mail route", f.routeState(t, f.route(t, m)), 30*time.Minute)
 }

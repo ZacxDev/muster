@@ -31,8 +31,8 @@ import (
 //
 //	routed ──answer──▶ answered ──relay──▶ relayed  (approved draft)
 //	   │                      └──────────▶ fallback (pending draft)
-//	   ├─ deadline ─▶ timed_out ──owner replied within OwnerReplyGrace──┐
-//	   ├─ the owner replied upstream themselves ─▶ owner_answered ◀───────┘
+//	   ├─ deadline ─▶ timed_out
+//	   ├─ a send stamped with the message (the plugin's report) ─▶ owner_answered
 //	   └─ injection or relay impossible ─▶ failed
 //
 // 🔴 EXACTLY ONCE, AND THE SCHEMA HOLDS IT. route_id is unique, one route per
@@ -84,10 +84,11 @@ type RouteStore interface {
 	// BindThread and BoundThread are the threads sessions started (threads.go).
 	BindThread(ctx context.Context, thread, claudeSession string) (bool, error)
 	BoundThread(ctx context.Context, thread string) (string, error)
-	// SettleOwnerReplied ends as owner_answered every route of plugin
-	// pluginID's messages on thread that the owner's own reply at `at` answers
-	// (owner_replies.go).
-	SettleOwnerReplied(ctx context.Context, pluginID int64, thread string, at time.Time) ([]OwnerSettled, error)
+	// SettleOwnerAnswered ends message messageID's route owner_answered when
+	// it is still routed: plugin pluginID's stamp that the reply was sent
+	// directly (owner_replies.go). settled false, with the route as it is,
+	// otherwise; ErrNotFound for a message that is not that plugin's.
+	SettleOwnerAnswered(ctx context.Context, pluginID, messageID int64) (r Route, settled bool, err error)
 }
 
 var _ RouteStore = (*PGStore)(nil)
@@ -102,9 +103,9 @@ const (
 	RouteTimedOut RouteState = "timed_out"
 	RouteFallback RouteState = "fallback"
 	RouteFailed   RouteState = "failed"
-	// RouteOwnerAnswered: the owner replied to the sender on the upstream
-	// conversation THEMSELVES — not through muster, so no draft exists — and
-	// the plugin reported it (SettleOwnerReplied). Terminal.
+	// RouteOwnerAnswered: the reply to the sender went out DIRECTLY — not
+	// through muster, so no draft exists — in a send stamped with this
+	// message, which its plugin reported (SettleOwnerAnswered). Terminal.
 	RouteOwnerAnswered RouteState = "owner_answered"
 )
 
@@ -130,8 +131,8 @@ type Route struct {
 	ReplyBody   string
 	DraftID     *int64
 	Error       string
-	// OwnerRepliedAt is when the owner replied upstream, as the plugin
-	// reported it: set exactly on an owner_answered route (0062's check).
+	// OwnerRepliedAt is when muster took the plugin's stamp that the reply
+	// went out directly: set exactly on an owner_answered route (0062's check).
 	OwnerRepliedAt *time.Time
 }
 

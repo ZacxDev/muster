@@ -134,9 +134,7 @@ type MessageIn struct {
 	SenderVerified bool `json:"sender_verified"`
 	// Thread is the upstream's thread id, when the plugin knows one (migration
 	// 0054): a reply on a thread one of the owner's mirrored sessions started is
-	// routed straight to that session (threads.go), and the conversation an
-	// owner reply names (POST /plugin/v1/owner-replies, owner_replies.go).
-	// Optional; "" when absent.
+	// routed straight to that session (threads.go). Optional; "" when absent.
 	Thread string `json:"thread"`
 	// HumanConversation is the plugin's mark that the sender is a PERSON in a
 	// direct conversation (a chat DM), whose answer can take hours: a route of

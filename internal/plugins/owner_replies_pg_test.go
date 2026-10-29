@@ -2,13 +2,12 @@ package plugins
 
 import (
 	"testing"
-	"time"
 
 	"github.com/ZacxDev/muster/internal/dbtest"
 )
 
-// TestAnOwnerAnsweredMessageIsNotRetryable: a message whose route the owner
-// answered upstream themselves (owner_answered) has had its answer, so the
+// TestAnOwnerAnsweredMessageIsNotRetryable: a message whose route ended
+// owner_answered (its reply went out directly, stamped) has had its answer, so the
 // owner's Retry must not hand it to the chief again (liveRoute, retry.go).
 // The control: the same shape with the route merely timed out IS retryable,
 // so the list can name such a message at all.
@@ -17,7 +16,6 @@ func TestAnOwnerAnsweredMessageIsNotRetryable(t *testing.T) {
 	unconfirmed := func(ext string) Message {
 		t.Helper()
 		in := msg(ext)
-		in.Thread = "dm-" + ext
 		m, _, err := w.s.Submit(plugin(2), w.p.ID, in)
 		if err != nil {
 			t.Fatal(err)
@@ -42,12 +40,11 @@ func TestAnOwnerAnsweredMessageIsNotRetryable(t *testing.T) {
 		return r
 	}
 	answered, control := unconfirmed("oa-retry-1"), unconfirmed("oa-retry-2")
-	r := timedOut(answered)
+	r := w.route(t, answered)
 	timedOut(control)
-	got, err := w.s.SettleOwnerReplied(plugin(2), w.p.ID, *answered.Thread, time.Now())
-	if err != nil || len(got) != 1 || got[0].Route.RouteID != r.RouteID || got[0].Route.State != RouteOwnerAnswered ||
-		got[0].From != RouteTimedOut || !got[0].HandBackWithdrawn {
-		t.Fatalf("settle: %+v %v; want route %s owner_answered from timed_out, its hand-back withdrawn", got, err, r.RouteID)
+	got, settled, err := w.s.SettleOwnerAnswered(plugin(2), w.p.ID, answered.ID)
+	if err != nil || !settled || got.RouteID != r.RouteID || got.State != RouteOwnerAnswered || got.OwnerRepliedAt == nil {
+		t.Fatalf("settle: %+v %v %v; want route %s owner_answered, with its time", got, settled, err, r.RouteID)
 	}
 	list, err := w.s.Retryable(session(2), 50)
 	if err != nil {
@@ -61,9 +58,9 @@ func TestAnOwnerAnsweredMessageIsNotRetryable(t *testing.T) {
 		t.Fatalf("CONTROL: an unconfirmed message whose route timed out is not retryable: %+v", list)
 	}
 	if in[answered.ID] {
-		t.Fatalf("an unconfirmed message the owner answered upstream is retryable")
+		t.Fatalf("an unconfirmed message answered directly (owner_answered) is retryable")
 	}
-	if got := auditActions(t, w, RouteObject(r.RouteID)); len(got) != 3 || got[2] != "session_route.owner_answered" {
-		t.Fatalf("audit = %v; want routed, timed_out, owner_answered", got)
+	if got := auditActions(t, w, RouteObject(r.RouteID)); len(got) != 2 || got[1] != "session_route.owner_answered" {
+		t.Fatalf("audit = %v; want routed, owner_answered", got)
 	}
 }

@@ -67,7 +67,7 @@ JSON. On every route:
 | `received_at` | no | RFC 3339 |
 | `no_reply` | no | `true` marks a message nobody may answer (see below). Default `false`. |
 | `sender_verified` | no | `true` asserts that YOU authenticated `sender` (see below). Default `false`. |
-| `thread` | no | The upstream's thread id: 1 to 200 bytes, no spaces or control characters, matched exactly. A reply on a thread one of your mirrored sessions started goes to that session ([below](#a-reply-on-a-thread-a-session-started)), for agent mail only. It is also the conversation an [owner reply](#when-you-answer-it-yourself) names. |
+| `thread` | no | The upstream's thread id: 1 to 200 bytes, no spaces or control characters, matched exactly. A reply on a thread one of your mirrored sessions started goes to that session ([below](#a-reply-on-a-thread-a-session-started)). |
 | `human_conversation` | no | `true` marks the sender as a person writing in a direct conversation (a chat DM): a route of the message waits 4 hours instead of 30 minutes ([below](#routing-a-message-to-a-session)). Default `false`. |
 
 | answer | meaning |
@@ -975,51 +975,41 @@ that text, and Enter sends both. The idle delay is the only protection.
 hidden characters, addresses, credentials or the deployment's own names), and
 for a verified, allowlisted sender that screen is the only check before it goes.
 
-### When you answer it yourself
+### When the owner answers it directly
 
-You may answer a routed message's sender yourself, on the upstream
-conversation, without the session calling `route_reply`. muster never sees
-that reply, so the route would time out and go back to the chief as if nobody
-had answered. A plugin that can tell **your own** posts from the sender's
-reports one instead:
+A routed message's sender can get their answer **directly** — through the
+plugin's own sending tool, by the routed session or by you — rather than
+through `route_reply`. muster never sees that reply, so the route would time
+out and go back to the chief as if nobody had answered. So a sending tool that
+knows which message it answers **stamps** the send with that message's id, and
+after a send it has verified, the plugin reports it:
 
-```json
-POST /plugin/v1/owner-replies
-{"thread": "dm-123", "at": "2000-01-02T03:04:05Z"}
+```
+POST /plugin/v1/messages/{message_id}/owner-answered
 ```
 
-`thread` is the `thread` the plugin sends on that conversation's messages;
-`at` is when you posted (RFC 3339; at most 5 minutes ahead of muster's clock).
-Every route of **this plugin's** messages on that thread that was made before
-`at` and is still waiting, or **timed out at most 2 hours before `at`**, ends
-`owner_answered`:
+(no body; the plugin token). If the message's route is still waiting
+(`routed`), it ends `owner_answered`: a paste still queued is cancelled, a
+session's late `route_reply` is refused ("its reply was already sent to the
+sender directly"), the chief's conversation gets a note (never a turn), and
+the route records when muster took the report (`owner_replied_at`) with a
+`session_route.owner_answered` audit row.
 
-- a paste still queued is cancelled, and a session's late `route_reply` is
-  refused (`your owner answered the sender directly`);
-- a hand-back the route still owes the chief is withdrawn; one already
-  delivered stands, and the chief gets a note that you answered it after it
-  came back;
-- the chief's conversation gets a note either way, never a turn;
-- the route records when you replied (`owner_replied_at`) and writes a
-  `session_route.owner_answered` audit row naming the state it left.
+| answer | meaning |
+|---|---|
+| `200 {"message_id", "route_id", "state": "owner_answered", "settled": true}` | the route was waiting and is settled |
+| `200 {…, "settled": false, "state": "owner_answered"}` | already settled: a repeat of the stamp changes nothing |
+| `409 {…, "settled": false, "state", "error"}` | the route is not waiting — `answered`, `relayed`, `fallback`, `timed_out`, `failed`, or `none` (never routed). Nothing changes, and a hand-back already owed or delivered stands. Final: do not retry. |
+| `404` | not a message of this plugin (another plugin's, another owner's, or none), or routing is off |
 
-`200 {"settled": [route ids]}`, an empty list when the reply answers no route
-(a repeat of the same report settles nothing more). `400` for a missing or
-malformed `thread` or `at`, or an `at` in the future. `404` with routing off,
-and on a muster from before this endpoint: a plugin should treat `404` as
-"nothing to settle" and not retry it.
+🔴 **The signal is a stamp on a send, never an inference.** muster settles the
+one message the stamp names, and only a message the same plugin delivered. A
+reply typed by hand carries no stamp and settles nothing: its route times out
+as usual. muster reads no message text for who wrote what.
 
-🔴 **The signal is the plugin's structured report, never text.** muster does
-not read a message body for who wrote it. Only routes of messages the SAME
-plugin delivered are candidates, so one plugin cannot settle another's routes,
-and the plugin token acts as you, so no plugin reaches another owner's.
-
-The 2-hour window bounds how long after a deadline your reply still rewrites
-the route's record: long enough for a reply that came well after a 30-minute
-deadline, and for the plugin's own delay in seeing it; short enough that a
-message on the same conversation the next day does not relabel a route whose
-deadline really passed unanswered. An answered, relayed or failed route is
-never changed.
+The routed block a session receives says so in one sentence: if it sends the
+answer some other way, it stamps that send with `--answers <message_id>` (the
+flag of the Discord plugin's sender; another plugin's tool names its own).
 
 ### A reply on a thread a session started
 
@@ -1221,7 +1211,7 @@ to no dispatched agent (the chief included):
 
 | tool | what it does |
 |---|---|
-| `plugin_messages_list` | Your **30 most recent** routable inbound messages, **newest first by arrival** (past 30 the older ones are left out; `truncated` says so). Routable means: delivered (or being delivered) to your chief, and not `no_reply` (so never a task event or a notice muster routed itself: those always are). Each: `message_id`, the plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject, the first 280 characters of the body, when it was received, and its route: `none`, `pending` (routed, not yet answered — with its deadline), `relayed` (answered: sent, or a draft awaiting you), `owner_answered` ([you answered it yourself](#when-you-answer-it-yourself)) or `handed_back` (timed out or failed: back with the chief). Read-only. |
+| `plugin_messages_list` | Your **30 most recent** routable inbound messages, **newest first by arrival** (past 30 the older ones are left out; `truncated` says so). Routable means: delivered (or being delivered) to your chief, and not `no_reply` (so never a task event or a notice muster routed itself: those always are). Each: `message_id`, the plugin, the sender (followed by the `UNVERIFIED` mark unless the plugin verified it — the same mark the chief's turn shows), the subject, the first 280 characters of the body, when it was received, and its route: `none`, `pending` (routed, not yet answered — with its deadline), `relayed` (answered: sent, or a draft awaiting you), `owner_answered` ([answered directly](#when-the-owner-answers-it-directly)) or `handed_back` (timed out or failed: back with the chief). Read-only. |
 | `plugin_message_route {message_id, subject?}` | Routes that message. **With no `subject` it goes to the calling session** — pasted once that session has been idle for `MUSTER_SEND_QUEUE_IDLE`, so the session ends its turn to receive it, then answers with `route_reply`. `subject` names another session, exactly as `mirror:<claude session id>` (the chief's form). Any other value — a bare id, an empty id, a window title — or a session no online window shows is refused `subject_not_found`, listing the online sessions as `candidates`: the way to find a subject on this door. |
 
 It is **the chief's route**, not a copy (`routeMessage`): the same target

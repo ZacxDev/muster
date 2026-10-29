@@ -113,7 +113,7 @@ func routeClosedHint(st plugins.RouteState) string {
 	case plugins.RouteFailed:
 		return ": it failed and the message went back to the chief"
 	case plugins.RouteOwnerAnswered:
-		return ": your owner answered the sender directly, so no reply is needed"
+		return ": its reply was already sent to the sender directly, so no reply is needed"
 	}
 	return ""
 }

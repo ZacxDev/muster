@@ -222,7 +222,7 @@ var pluginDoorRoutes = []struct {
 	{"/plugin/v1/drafts/claim", `{"wait_seconds":0}`, "ClaimDraft", http.StatusNoContent},
 	{"/plugin/v1/drafts/5/result", `{"ok":true}`, "FinishDraft", http.StatusNotFound},
 	{"/plugin/v1/tasks", `{"key":"tracker:abc","comment":"x"}`, "", http.StatusServiceUnavailable},
-	{"/plugin/v1/owner-replies", `{"thread":"dm-1","at":"2000-01-01T00:00:00Z"}`, "", http.StatusNotFound},
+	{"/plugin/v1/messages/5/owner-answered", `{}`, "", http.StatusNotFound},
 }
 
 // TestPluginDoorRoutesListsEveryPluginRoute: pluginDoorRoutes is a hand list that

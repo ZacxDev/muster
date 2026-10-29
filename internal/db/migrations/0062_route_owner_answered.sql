@@ -1,11 +1,13 @@
--- muster 0062 — A ROUTE THE OWNER ANSWERED THEMSELVES, AND A MESSAGE FROM A
--- PERSON IN A CONVERSATION. docs/plugins.md#when-you-answer-it-yourself.
+-- muster 0062 — A ROUTE ANSWERED DIRECTLY, AND A MESSAGE FROM A PERSON IN A
+-- CONVERSATION. docs/plugins.md#when-the-owner-answers-it-directly.
 --
---   session_routes.state 'owner_answered'   the owner replied on the message's
---       upstream conversation directly, not through muster: the plugin said so
---       (POST /plugin/v1/owner-replies). Terminal, like relayed.
---   session_routes.owner_replied_at          when the owner replied, as the
---       plugin reported it; set exactly on an owner_answered route.
+--   session_routes.state 'owner_answered'   the reply to the routed message
+--       went out directly, not through route_reply: the plugin's sending tool
+--       stamped the send with the message, and the plugin reported it
+--       (POST /plugin/v1/messages/{id}/owner-answered). Only a route still
+--       routed takes it. Terminal, like relayed.
+--   session_routes.owner_replied_at          when muster took that report;
+--       set exactly on an owner_answered route.
 --   plugin_messages.human_conversation       the plugin's mark that the sender is
 --       a person in a direct conversation: a route of it waits
 --       ConversationRouteTimeout (4h) rather than RouteTimeout (30m).
