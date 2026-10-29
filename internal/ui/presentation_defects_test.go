@@ -619,7 +619,10 @@ func forEachFeatureShape(t *testing.T, fn func(t *testing.T, shape string, feat 
 		// Named by what they DRAW, not by the field, so a second feature added to
 		// the struct does not make these names lie.
 		{"no connector store (the shipping default)", Features{}},
-		{"connector store built", Features{Connectors: true}},
+		// The fuller shape also carries an agent provisioner, so the Agents bar's
+		// dispatch "+" (Features.Dispatch) is in the swept documents: without it no
+		// shape drew the "+" and a defect planted on it passed every sweep.
+		{"connector store and agent provisioner built", Features{Connectors: true, Dispatch: true}},
 	} {
 		tc := tc
 		t.Run(tc.shape, func(t *testing.T) { fn(t, tc.shape, tc.feat) })

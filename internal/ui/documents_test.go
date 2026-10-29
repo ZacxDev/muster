@@ -111,6 +111,9 @@ var standaloneDocuments = []documentRenderer{
 			return RenderTaskDetail(w, TaskCardView{
 				Note:   notes.Note{ID: 1, UpdatedAt: fixedNow},
 				Detail: true,
+				// The agent-less card's Dispatch button, as featuresAllOn's server
+				// draws it, so the element sweeps see it.
+				Dispatch: true,
 			}, featuresAllOn)
 		},
 	},

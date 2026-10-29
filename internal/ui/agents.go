@@ -206,6 +206,10 @@ func agentsPanel(active bool, list *shellList, feat Features) g.Node {
 		Div(
 			Class("mb-2 flex items-center gap-2"),
 			H2(Class("text-xs font-medium uppercase tracking-wide text-muted"), g.Text("Agents")),
+			// No "+" on this server's bar (Features.Dispatch false): say why,
+			// once, in the header, for a list that is not empty (the empty
+			// state says it in its own words).
+			g.If(!feat.Dispatch, dispatchOffHint()),
 		),
 		// ⚠ THE "RECENTLY VIEWED" STRIP AND THE SEARCH BOX THAT SAT HERE ARE GONE
 		// (operator ask): the session switcher docked at the bottom supersedes
@@ -983,6 +987,24 @@ const ProvisionerGuideURL = "https://github.com/ZacxDev/muster/blob/main/docs/pr
 // DispatchUnavailableAttr marks the sheet a server with no agent runtime
 // answers GET /ui/agents/new with, in place of the dispatch form.
 const DispatchUnavailableAttr = "data-dispatch-unavailable"
+
+// DispatchOffHintAttr marks the Agents header's note on a server that cannot
+// dispatch (dispatchOffHint).
+const DispatchOffHintAttr = "data-dispatch-off-hint"
+
+// dispatchOffHint is the Agents list header's one-line note on a server with no
+// agent runtime: the "+" is absent from the bar, and this says why and links
+// the guide. Muted text, not a control that looks like an action. h-11 because
+// it is a link, and every link a thumb can hit is a 44px target.
+func dispatchOffHint() g.Node {
+	return A(
+		g.Attr(DispatchOffHintAttr, ""),
+		Href(ProvisionerGuideURL), Target("_blank"), Rel("noopener"),
+		g.Attr("title", "This server has no agent runtime, so it cannot start agents. Agents you run in tmux still show up here."),
+		Class("ml-auto inline-flex h-11 shrink-0 items-center px-1 text-xs text-muted underline decoration-dotted underline-offset-2 hover:text-fg"),
+		g.Text("Agent dispatch not set up"),
+	)
+}
 
 // DispatchUnavailableBody is the /ui/agents/new partial on a server that cannot
 // dispatch (Features.Dispatch false): what is missing and where to set it up,

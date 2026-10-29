@@ -87,6 +87,11 @@ func TestTheUIOffersDispatchOnlyWhenTheServerCanDispatch(t *testing.T) {
 			if got := strings.Contains(doc, plus); got != tc.offer {
 				t.Errorf("GET /agents draws the dispatch + = %t, want %t", got, tc.offer)
 			}
+			// Where the "+" is absent the Agents header says why (and links the
+			// guide); where it is drawn, the header says nothing.
+			if got := strings.Contains(doc, `data-dispatch-off-hint`); got == tc.offer {
+				t.Errorf("GET /agents draws the dispatch-not-set-up hint = %t, want %t", got, !tc.offer)
+			}
 			// POSITIVE CONTROL: the bar the "+" sits in is drawn in both shapes, so
 			// an absent "+" is the gate and not a document missing its switcher.
 			if !strings.Contains(doc, `id="`+ui.SwitcherDockID+`"`) {

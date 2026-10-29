@@ -327,10 +327,15 @@ func TestStripJSCommentsIsAWorkingInstrument(t *testing.T) {
 // the add-comment form live ONLY there now, so any test about them must use
 // this; renderCard (the board shape) deliberately renders none of it.
 func renderDetailCard(w io.Writer, n notes.Note) error {
-	return RenderNoteCard(w, TaskCardView{Note: n, Detail: true})
+	return RenderNoteCard(w, TaskCardView{Note: n, Detail: true, Dispatch: true})
 }
 
 // renderCard renders a task card with NO linked agent (the common case these
 // card tests exercise). Tests that need the dispatched-card state call
 // RenderNoteCard directly with a TaskCardView carrying an AgentBrief.
-func renderCard(w io.Writer, n notes.Note) error { return RenderNoteCard(w, TaskCardView{Note: n}) }
+//
+// Dispatch is on (a server with an agent provisioner), so an agent-less card
+// draws its Dispatch button and a guard reading this card can see it.
+func renderCard(w io.Writer, n notes.Note) error {
+	return RenderNoteCard(w, TaskCardView{Note: n, Dispatch: true})
+}
