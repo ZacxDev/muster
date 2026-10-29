@@ -2,6 +2,7 @@ package agentspec
 
 import (
 	"fmt"
+	"github.com/ZacxDev/muster/internal/podagent"
 	"path"
 	"regexp"
 	"slices"
@@ -285,6 +286,21 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	}
 	if opts.Instructions != "" {
 		spec.Files = []provision.File{{Path: ClaudeCodeInstructionsPath, Content: []byte(opts.Instructions)}}
+	}
+	// The agent's own session settings (podagent/session.go), only when set:
+	// an agent without them keeps the spec — and so the fingerprint — it had.
+	if names := opts.ClaudeCodeSession.AllowMCPTools; len(names) > 0 {
+		v, err := podagent.FormatAllowMCPTools(names)
+		if err != nil {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q: %w", a.Name, err)
+		}
+		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvAllowMCPTools, Value: v})
+	}
+	if m := opts.ClaudeCodeSession.Model; m != "" {
+		if err := podagent.ValidModel(m); err != nil {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q: %w", a.Name, err)
+		}
+		spec.Env = append(spec.Env, provision.EnvVar{Name: podagent.EnvModel, Value: m})
 	}
 	if err := spec.Validate(); err != nil {
 		return provision.Spec{}, fmt.Errorf("agentspec: built an invalid spec for agent %q: %w", a.Name, err)

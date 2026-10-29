@@ -398,6 +398,17 @@ type Adapter struct {
 	// GitHub (connectors.GitHubGrantLookup); set by UseGitHubGrants. nil is
 	// UNKNOWN, and vetoes job-lane bypass (jobBypassVeto).
 	githubGrant func(ctx context.Context, agentID int64) (string, error)
+	// ccSession answers a claude-code agent's per-agent session settings (the
+	// officer runtime's pre-allowed tools and model); nil = none for anyone.
+	ccSession func(agents.Agent) (allow []string, model string, ok bool)
+}
+
+// UseClaudeCodeSession installs the source of claude-code agents' per-agent
+// session settings (agentspec.ClaudeCodeSession). internal/api's officer
+// runtime is the one caller: an officer instance's own tools pre-allowed and
+// its configured model; every other agent answers ok=false.
+func (a *Adapter) UseClaudeCodeSession(f func(agents.Agent) (allow []string, model string, ok bool)) {
+	a.ccSession = f
 }
 
 // UseGitHubGrants wires the lookup jobBypassVeto asks. Call it before the
@@ -1171,7 +1182,13 @@ func (a *Adapter) buildSpec(ctx context.Context, ag agents.Agent) (provision.Spe
 // listed for bypass (agentspec.JobBypassListed), so it is unused there.
 func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, jobBypassVeto string) (provision.Spec, error) {
 	if !agents.IsChiefName(ag.Name) {
-		return agentspec.Build(ag, cfg, agentspec.Options{JobBypassVeto: jobBypassVeto})
+		opts := agentspec.Options{JobBypassVeto: jobBypassVeto}
+		if a.ccSession != nil {
+			if allow, model, ok := a.ccSession(ag); ok {
+				opts.ClaudeCodeSession = agentspec.ClaudeCodeSession{AllowMCPTools: allow, Model: model}
+			}
+		}
+		return agentspec.Build(ag, cfg, opts)
 	}
 	if !cfg.ClaudeCodeMCPOffered() {
 		return provision.Spec{}, fmt.Errorf("agentprovision: chief %q is kind %s, which reaches muster's tools only "+

@@ -73,6 +73,13 @@ type RouteStore interface {
 	RelayRoute(ctx context.Context, routeID, agentName string, approve bool) (Route, Draft, error)
 	TimeOutRoute(ctx context.Context, routeID string) (Route, bool, error)
 	ExpiredRoutes(ctx context.Context) ([]DueRoute, error)
+	// RoutedPastes is every route still routed with a paste row, across every
+	// owner (the sweep's second read; see there).
+	RoutedPastes(ctx context.Context) ([]RoutedPaste, error)
+	// OlderOpenPRRoutes is the principal's routes still routed that origin (a
+	// RouteViaPR one) made before route routeID: the earlier review rounds of
+	// the same pull request waiting in the same session.
+	OlderOpenPRRoutes(ctx context.Context, routeID string, origin RouteOrigin) ([]Route, error)
 	// BindThread and BoundThread are the threads sessions started (threads.go).
 	BindThread(ctx context.Context, thread, claudeSession string) (bool, error)
 	BoundThread(ctx context.Context, thread string) (string, error)
@@ -692,6 +699,56 @@ func (s *PGStore) ExpiredRoutes(ctx context.Context) ([]DueRoute, error) {
 		d.State = RouteState(st)
 		return d, err
 	})
+}
+
+// RoutedPaste is one route still `routed` whose message has a send-queue row
+// (SendQueueID), and whose: what the sweep needs to see whether that row was
+// cancelled or its target window is gone (internal/api's routedPastePass).
+type RoutedPaste struct {
+	RouteID     string
+	OwnerID     int64
+	TargetKind  string
+	TargetKey   string
+	SendQueueID int64
+}
+
+// RoutedPastes is every RoutedPaste, across every owner — ids, owners, targets
+// and row ids only. Under the system scope (internal/authz's ledger names this
+// method): each is then read and, when it must end, failed AS ITS OWNER.
+func (s *PGStore) RoutedPastes(ctx context.Context) ([]RoutedPaste, error) {
+	rows, err := s.pool.Query(authz.System(ctx), `SELECT route_id, owner_id, target_kind, target_key, send_queue_id
+		FROM session_routes WHERE state = 'routed' AND send_queue_id IS NOT NULL ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (RoutedPaste, error) {
+		var p RoutedPaste
+		err := row.Scan(&p.RouteID, &p.OwnerID, &p.TargetKind, &p.TargetKey, &p.SendQueueID)
+		return p, err
+	})
+}
+
+// OlderOpenPRRoutes: see RouteStore. A route is origin's when its
+// session_route.routed audit row — written in the transaction that made it
+// (insertRouteTx) — records origin's routed_via, which names both the pull
+// request and the session ("pr <owner>/<repo>#<n> authored by <session>"); the
+// route row itself does not record who made it. Only a RouteViaPR origin has
+// any: every other is nil. Row-level security scopes both tables to the
+// principal.
+func (s *PGStore) OlderOpenPRRoutes(ctx context.Context, routeID string, origin RouteOrigin) ([]Route, error) {
+	if origin.Via != RouteViaPR || !ValidRouteID(routeID) {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+routeCols+` FROM session_routes r
+		WHERE r.state = 'routed' AND r.target_kind = $1 AND r.target_key = $2
+		  AND r.id < (SELECT n.id FROM session_routes n WHERE n.route_id = $3)
+		  AND EXISTS (SELECT 1 FROM audit_log a WHERE a.action = 'session_route.routed'
+		              AND a.object = 'session_route:' || r.route_id AND a.detail->>'routed_via' = $4)
+		ORDER BY r.id`, RouteTargetMirror, origin.Session, routeID, origin.String())
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Route, error) { return scanRoute(row) })
 }
 
 // MaxHandBack bounds a recorded hand-back reason (0021's cap).

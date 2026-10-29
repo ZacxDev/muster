@@ -101,7 +101,8 @@ const (
 	// timing a route out and handing its message back to the chief: a
 	// background job acting as the route's OWNER only. One site mints it —
 	// internal/api's routePrincipal, called only by the sweep, handed each owner
-	// after plugins.PGStore.ExpiredRoutes read the due routes under System.
+	// after plugins.PGStore.ExpiredRoutes (or RoutedPastes) read the routes
+	// under System.
 	ViaRoute Via = "session-route"
 	// ViaAttention is the ATTENTION QUEUE's background work acting as one
 	// owner: reading that owner's mirrored windows to see which became (or
@@ -125,6 +126,12 @@ const (
 	// site mints it — internal/api's reapPrincipal — handed each owner after
 	// agents.PGStore.ListReapableStopped read the due rows under System.
 	ViaReap Via = "agent-reap"
+	// ViaOfficer is the OFFICER RUNTIME's wake loop (internal/officers, bound
+	// in internal/api's officer fleet) reading, creating, starting and
+	// stopping one declared officer's instance agents: a background job acting
+	// as the officer's configured OWNER only. One site mints it —
+	// internal/api's officerPrincipal — handed the owner from MUSTER_OFFICERS.
+	ViaOfficer Via = "officer"
 	// ViaMirrorHost is a mirror host's token (`mmt_…`) on the mirrored
 	// sessions' MCP door (POST /mirror/mcp): a Claude Code session on that host,
 	// through the host's muster-mirror, acting as the token's owner — and only
@@ -165,6 +172,9 @@ var requestVias = map[Via]bool{
 	// The stopped-agent reaper, per owner (internal/api's reapPrincipal).
 	// Without it the first reap PANICS here.
 	ViaReap: true,
+	// The officer wake loop, per officer owner (internal/api's
+	// officerPrincipal). Without it the first wake PANICS here.
+	ViaOfficer: true,
 	// A mirrored session's MCP door (internal/api's requireMirrorHostToken).
 	ViaMirrorHost: true,
 	ViaDevice:     true,

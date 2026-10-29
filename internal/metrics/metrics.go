@@ -295,6 +295,27 @@ var (
 	}, []string{"view", "reason"})
 )
 
+// The officer runtime (internal/officers). Deliberately UNLABELLED: an officer
+// id is operator-configured, but a label per officer is still an identifier in
+// a series name, and the operator needs "something is wrong", with the log
+// line naming which officer. Each is the loop's whole-process total, set after
+// every pass.
+var (
+	// OfficerErrorSlots counts officer instance slots held by an instance in
+	// error: the officer runs below target until it recovers or an operator acts.
+	OfficerErrorSlots = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "muster_officer_error_slots",
+		Help: "Officer instance slots held by an instance in error (not restarted; the officer runs below target).",
+	})
+	// OfficerHQFaults counts officers whose HQ answers a PERMANENT refusal
+	// (401/403/404: a revoked token, HQ without the officer API): a
+	// configuration fault, not an outage. Their instances are scaled to zero.
+	OfficerHQFaults = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "muster_officer_hq_faults",
+		Help: "Officers whose HQ refuses them permanently (401/403/404); their instances are scaled to zero.",
+	})
+)
+
 // ObserveHTTP records one HTTP request's matched route pattern, method, status,
 // and duration.
 //

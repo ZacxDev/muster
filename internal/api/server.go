@@ -161,6 +161,10 @@ type Server struct {
 	// ended owing its chief a hand-back.
 	routeKick     chan struct{}
 	routeKickOnce sync.Once
+	// routeGoneMu guards routeGone: for each routed paste whose target window
+	// the route sweep last found missing, when it first did (routedPastePass).
+	routeGoneMu sync.Mutex
+	routeGone   map[string]time.Time
 	// attention is the attention queue's process state (attention.go): the
 	// waiters' wake-up and each owner's last-seen waiting sessions.
 	attention attentionState
@@ -268,6 +272,10 @@ type Server struct {
 	// reapInstancesWithin bounds the stopped-agent reaper's read of the
 	// provisioner's instances (agent_reap.go).
 	reapInstancesWithin time.Duration
+
+	// officerRT is the officer runtime (officers.go); nil when no officer is
+	// declared (EnableOfficers).
+	officerRT *officerRuntime
 
 	// taskLeader is the cross-process singleton gate for the background loops.
 	taskLeader LeaderGate

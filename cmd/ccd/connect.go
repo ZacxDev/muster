@@ -47,7 +47,7 @@ const (
 	envAgentToken = podagent.EnvAgentToken
 	// mcpServerName is the key muster's server is registered under, so its tools
 	// appear to the session as mcp__muster__<tool>.
-	mcpServerName = "muster"
+	mcpServerName = podagent.MCPServerName
 )
 
 // seedMCP adds (or, when the pod is not offered the connector store, removes)

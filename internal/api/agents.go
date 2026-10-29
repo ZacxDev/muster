@@ -264,8 +264,11 @@ func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.D
 		ids = append(ids, a.ID)
 	}
 	latest := s.latestSessionIDs(ctx, ids)
+	protected := s.deleteProtection(list)
 	for _, a := range list {
-		cards = append(cards, s.cardViewIndexed(a, instIdx, lastMsg[a.ID], latest[a.ID], isChief, pinned, focused))
+		v := s.cardViewIndexed(a, instIdx, lastMsg[a.ID], latest[a.ID], isChief, pinned, focused)
+		v.DeleteProtected = protected(a)
+		cards = append(cards, v)
 	}
 	// The viewer's mirrored sessions (internal/mirror), from the plugin's
 	// in-memory hub, scoped to this request's principal. The list interleaves
@@ -658,6 +661,7 @@ func (s *Server) cardViewFor(ctx context.Context, a agents.Agent) ui.AgentCardVi
 		list = nil
 	}
 	v := s.cardViewIndexed(a, s.instanceIndex(ctx), s.lastMessageByAgents(ctx, []agents.Agent{a})[a.ID], s.latestSessionIDs(ctx, []int64{a.ID})[a.ID], chiefPredicate(list), s.pinSet(ctx), s.focusIndex(ctx))
+	v.DeleteProtected = s.deleteProtection(list)(a)
 	// The same badge the list draws, so a re-rendered card keeps it.
 	one := []ui.AgentCardView{v}
 	s.withCardAttention(ctx, one, nil)
@@ -1330,9 +1334,21 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request) {
 
 // errDestroyChief is destroyAgent's refusal of the chief; its text is
 // chiefRefusal's.
-type errDestroyChief struct{ a agents.Agent }
+//
+// It is also the refusal of a declared officer's instance (deleteProtection,
+// officers.go): why is protectedRefusal's text, so the type every door already
+// branches on covers both without a second error.
+type errDestroyChief struct {
+	a   agents.Agent
+	why string
+}
 
-func (e errDestroyChief) Error() string { return chiefRefusal(e.a) }
+func (e errDestroyChief) Error() string {
+	if e.why != "" {
+		return e.why
+	}
+	return chiefRefusal(e.a)
+}
 
 // errDestroyNotClaimed is destroyAgent's answer when the caller's claim hook
 // lost: nothing was started.
@@ -1374,12 +1390,12 @@ type destroyHooks struct {
 // and a failed read of the agent table refuses too (agentIsChief fails closed).
 // The teardown is asynchronous, so a check inside it could only log.
 func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(context.Context, int64) error, h destroyHooks) (agents.Agent, error) {
-	a, chief, err := s.agentIsChief(ctx, id)
+	a, protected, err := s.agentIsDeleteProtected(ctx, id)
 	if err != nil {
 		return agents.Agent{}, fmt.Errorf("chief check: %w", err)
 	}
-	if chief {
-		return a, errDestroyChief{a}
+	if protected {
+		return a, errDestroyChief{a: a, why: s.protectedRefusal(a)}
 	}
 	if h.claim != nil {
 		won, err := h.claim(ctx)

@@ -91,6 +91,10 @@ type AgentCardView struct {
 	// cardViewIndexed and never re-derived here — the server refuses the delete
 	// regardless, so this only keeps the UI from offering what it would refuse.
 	IsChief bool
+	// DeleteProtected: its ⋯ menu offers no Delete, like the chief's, without it
+	// being the chief — a declared officer's instance (internal/api's
+	// deleteProtection). The server refuses the delete regardless.
+	DeleteProtected bool
 	// PrimaryChief: this is THE chief the viewer is sent to — where `/` opens,
 	// and the agent the sidebar pins first (navBefore). internal/api's
 	// primaryChief decides it, for both; it is never re-derived here. At most
@@ -617,8 +621,8 @@ func agentMenu(a AgentCardView) g.Node {
 			Class("invisible hidden [&:popover-open]:flex m-0 w-44 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
 			lifecycle,
 			agentPinMenuItem(a),
-			g.If(!a.IsChief, Div(Class("my-0.5 border-t border-line"))),
-			g.If(!a.IsChief, agentDeleteConfirm(ids)),
+			g.If(!a.IsChief && !a.DeleteProtected, Div(Class("my-0.5 border-t border-line"))),
+			g.If(!a.IsChief && !a.DeleteProtected, agentDeleteConfirm(ids)),
 		),
 	}
 }

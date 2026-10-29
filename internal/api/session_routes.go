@@ -79,11 +79,21 @@ import (
 const (
 	routeToSessionToolName = "route_to_session"
 	// RouteTimeout is how long a routed message waits for its session's answer
-	// before it is handed back to the chief. A constant, not a setting: it must
+	// before it is handed back to the chief — every route but a pull-request
+	// review's (PRRouteTimeout; routeTimeout picks). A constant, not a setting: it must
 	// stay longer than the send queue's idle wait (MUSTER_SEND_QUEUE_IDLE),
 	// before which the message cannot even be pasted, so cmd/muster-server's
 	// loadConfig refuses an idle wait that is not shorter when routing is on.
 	RouteTimeout = 30 * time.Minute
+	// PRRouteTimeout is RouteTimeout for a route muster makes for a
+	// pull-request review mail (plugins.RouteViaPR; pr_routes.go), and for no
+	// other route. Longer because the session that authored the pull request
+	// is usually still at work on it: its paste waits for the window to go
+	// idle (the send queue's wait), and a session that keeps working does not,
+	// so a 30-minute deadline handed most reviews back to the chief before
+	// they were pasted. A constant like RouteTimeout; being longer, it never
+	// tightens loadConfig's idle-wait check, which RouteTimeout still binds.
+	PRRouteTimeout = 4 * time.Hour
 	// RouteSweepInterval is how often due routes are timed out.
 	RouteSweepInterval = 30 * time.Second
 	// routedCutMark ends a body cut to fit one paste.
@@ -98,7 +108,18 @@ func routingOn(ext Extensions) bool {
 	return ext.Routing != nil && ext.Routes != nil && ext.Plugins != nil
 }
 
-func (s *Server) routeTimeout() time.Duration { return RouteTimeout }
+// routeTimeout is the deadline of a route made by origin: PRRouteTimeout for
+// one muster makes for a pull-request review, RouteTimeout for every other
+// (the chief's, the owner's, a route by thread). The route's timeout_at is
+// the one deadline its queued paste has too: the sweep cancels that paste only
+// when it times the route out (RouteTimeoutPass), and the send queue's own
+// expiry skips a routed row (sendqueue.PGStore.Expire).
+func (s *Server) routeTimeout(origin plugins.RouteOrigin) time.Duration {
+	if origin.Via == plugins.RouteViaPR {
+		return PRRouteTimeout
+	}
+	return RouteTimeout
+}
 
 func routeToolDef() agents.ToolDef {
 	return agents.ToolDef{Type: "function", Name: routeToSessionToolName,
@@ -262,12 +283,12 @@ func (s *Server) routeItem(ctx context.Context, chiefID, ownerID int64, it route
 	what := "message " + strconv.FormatInt(it.msg.ID, 10)
 	if it.isTask() {
 		what = "task " + strconv.FormatInt(it.task.ID, 10)
-		r, err = s.ext.Routes.CreateTaskRouteFrom(ctx, chiefID, ownerID, it.task.ID, target, s.routeTimeout(), origin)
+		r, err = s.ext.Routes.CreateTaskRouteFrom(ctx, chiefID, ownerID, it.task.ID, target, s.routeTimeout(origin), origin)
 	} else {
 		if p, err = s.ext.Plugins.Plugin(ctx, it.msg.PluginID); err != nil {
 			return plugins.Route{}, t, routeRefusal(RefusedMessageNotFound, "the message's plugin is gone")
 		}
-		r, err = s.ext.Routes.CreateRouteFrom(ctx, chiefID, ownerID, it.msg.ID, target, s.routeTimeout(), origin)
+		r, err = s.ext.Routes.CreateRouteFrom(ctx, chiefID, ownerID, it.msg.ID, target, s.routeTimeout(origin), origin)
 	}
 	switch {
 	case err == nil:
@@ -310,7 +331,62 @@ func (s *Server) routeItem(ctx context.Context, chiefID, ownerID int64, it route
 		s.logger.Printf("routes: %s: failed: %s", r.RouteID, why)
 		return plugins.Route{}, t, routeRefusal(RefusedInjectFailed, why)
 	}
+	if origin.Via == plugins.RouteViaPR {
+		s.supersedePRRoutes(ctx, r, origin)
+	}
 	return r, t, ""
+}
+
+// prRouteSuperseded is the error a review round's route ends with when a newer
+// round of the same pull request was routed to the same session before its
+// paste was delivered (supersedePRRoutes).
+const prRouteSuperseded = "superseded by a newer review round"
+
+// supersedePRRoutes ends every OLDER review round of origin's pull request
+// still waiting, unpasted, for origin's session, now that route newer carries
+// the newest round there.
+//
+// 🔴 ONE ROUND OF A PULL REQUEST WAITS PER SESSION. A session answers its
+// pastes oldest first, and an answer to a review sender on
+// MUSTER_ROUTE_RELAY_ALLOW is sent without approval — so an older round left
+// queued would be answered, and that stale answer sent, ahead of the round the
+// reviewer is now on. Each older route whose paste is still QUEUED is failed
+// (prRouteSuperseded) and its paste cancelled — failed FIRST, so a delivery
+// that claims the row in between finds the route closed and pastes nothing
+// (sendQueueRoutedGate). It owes the chief NO hand-back and the chief is not
+// told: the round is superseded, not lost, and the newer one is with the
+// session. An older route whose paste was already delivered, or is being
+// delivered, is left alone: the session may be answering it now.
+func (s *Server) supersedePRRoutes(ctx context.Context, newer plugins.Route, origin plugins.RouteOrigin) {
+	older, err := s.ext.Routes.OlderOpenPRRoutes(ctx, newer.RouteID, origin)
+	if err != nil {
+		s.logger.Printf("routes: %s: find the older rounds of %s: %v", newer.RouteID, origin.PR, err)
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+	for _, o := range older {
+		if o.SendQueueID == nil {
+			// Still being queued by its own injection, which decides its fate.
+			continue
+		}
+		it, err := s.ext.SendQueue.Get(ctx, *o.SendQueueID)
+		if err != nil || it.State != sendqueue.Queued {
+			continue
+		}
+		why := prRouteSuperseded + " (route " + newer.RouteID + ")"
+		if _, err := s.ext.Routes.FailRoute(ctx, o.RouteID, why, ""); err != nil {
+			s.logger.Printf("routes: %s: supersede: %v", o.RouteID, err)
+			continue
+		}
+		switch _, err := s.ext.SendQueue.Cancel(ctx, *o.SendQueueID, s.sendQueueNow()); {
+		case err == nil, errors.Is(err, sendqueue.ErrNotCancellable), errors.Is(err, sendqueue.ErrNotFound):
+			// Cancelled — or claimed meanwhile, which the closed route's gate
+			// refuses to paste.
+		default:
+			s.logger.Printf("routes: %s: cancel queued message %d: %v (its route gate refuses it)", o.RouteID, *o.SendQueueID, err)
+		}
+		s.logger.Printf("routes: %s: %s %s; its unpasted message %d was cancelled", o.RouteID, prRouteSuperseded, newer.RouteID, *o.SendQueueID)
+	}
 }
 
 // injectRoute puts r's item into its session, or says why it could not.
@@ -707,7 +783,8 @@ func (s *Server) noteToChief(ctx context.Context, r plugins.Route, what string) 
 // routePrincipal is ctx acting as owner, through authz.ViaRoute: how the
 // timeout sweep times out a route, cancels its queued injection and hands its
 // message back. Its one caller is RouteTimeoutPass, handed each owner by
-// plugins.PGStore.ExpiredRoutes; internal/authz's withPrincipalLedger lists it.
+// plugins.PGStore.ExpiredRoutes and RoutedPastes; internal/authz's
+// withPrincipalLedger lists it.
 func (s *Server) routePrincipal(ctx context.Context, owner int64) context.Context {
 	return authz.WithPrincipal(ctx, s.principalFor(ctx, owner, authz.ViaRoute))
 }
@@ -774,7 +851,107 @@ func (s *Server) RouteTimeoutPass(ctx context.Context) (int, error) {
 		}
 		s.deliverHandBack(octx, r.RouteID)
 	}
+	s.routedPastePass(ctx)
 	return n, nil
+}
+
+// RouteWindowGrace is how long the route sweep lets a routed message's target
+// session go unseen by every online mirrored window, its paste still queued,
+// before it hands the message back to the chief (routedPastePass): longer
+// than a host's reconnect, so a blip does not drop a route.
+const RouteWindowGrace = 2 * time.Minute
+
+// Why routedPastePass ends a route: its error, and the hand-back the chief reads.
+const (
+	routePasteCancelled = "its queued message was cancelled before it was pasted"
+)
+
+// routeWindowGone is routedPastePass's reason for a target session no window shows.
+var routeWindowGone = "no online mirrored window has shown the session it was routed to for " +
+	strconv.Itoa(int(RouteWindowGrace/time.Minute)) + " minutes"
+
+// routedPastePass ends, owing the chief its hand-back, every route still
+// routed whose paste can no longer reach the session — each, as its owner,
+// from plugins.PGStore.RoutedPastes:
+//   - its send-queue row was CANCELLED: by a disable or a sign-out everywhere
+//     (cancelQueuedFor, kicked), or by any canceller this process did not
+//     fail the route for itself (the owner's Cancel does: handleSendQueueCancel);
+//   - its row is still QUEUED but no online mirrored window has shown the
+//     target session for RouteWindowGrace: the queue pastes only into a live
+//     window, so the message would otherwise wait out its whole deadline (4h
+//     for a pull-request review). Failed FIRST, then the row cancelled, so a
+//     delivery that claims it in between finds the route closed.
+//
+// A row being sent, or already sent, is left to the deadline: the session may
+// have the message and be answering it.
+func (s *Server) routedPastePass(ctx context.Context) {
+	ps, err := s.ext.Routes.RoutedPastes(ctx)
+	if err != nil {
+		s.logger.Printf("routes: read the routed pastes: %v", err)
+		return
+	}
+	now := s.sendQueueNow()
+	s.routeGoneMu.Lock()
+	prev := s.routeGone
+	s.routeGoneMu.Unlock()
+	gone := map[string]time.Time{}
+	defer func() {
+		s.routeGoneMu.Lock()
+		s.routeGone = gone
+		s.routeGoneMu.Unlock()
+	}()
+	for _, p := range ps {
+		octx := s.routePrincipal(ctx, p.OwnerID)
+		it, err := s.ext.SendQueue.Get(octx, p.SendQueueID)
+		if err != nil {
+			continue
+		}
+		why := ""
+		switch {
+		case it.State == sendqueue.Cancelled:
+			why = routePasteCancelled
+		case it.State != sendqueue.Queued || p.TargetKind != plugins.RouteTargetMirror:
+			continue
+		default:
+			if _, ok := s.mirrorEntryForSession(octx, p.TargetKey); ok {
+				continue
+			}
+			since, seen := prev[p.RouteID]
+			if !seen {
+				since = now
+			}
+			if now.Sub(since) < RouteWindowGrace {
+				gone[p.RouteID] = since
+				continue
+			}
+			why = routeWindowGone
+		}
+		if _, err := s.ext.Routes.FailRoute(octx, p.RouteID, why, why); err != nil {
+			s.logger.Printf("routes: %s: fail (%s): %v", p.RouteID, why, err)
+			continue
+		}
+		s.logger.Printf("routes: %s: failed: %s; handing it back to the chief", p.RouteID, why)
+		if it.State == sendqueue.Queued {
+			if _, err := s.ext.SendQueue.Cancel(octx, p.SendQueueID, now); err != nil && !errors.Is(err, sendqueue.ErrNotCancellable) {
+				s.logger.Printf("routes: %s: cancel queued message %d: %v (its route gate refuses it)", p.RouteID, p.SendQueueID, err)
+			}
+		}
+		s.deliverHandBack(octx, p.RouteID)
+	}
+}
+
+// failCancelledRoute ends the route a cancelled routed send-queue row carried,
+// owing its chief the hand-back, and wakes the sweep that delivers it — as
+// injectRoute's failure path does — rather than leave the route holding the
+// message until its deadline. ctx acts as the route's owner.
+func (s *Server) failCancelledRoute(ctx context.Context, routeID string) {
+	if routeID == "" || !routingOn(s.ext) {
+		return
+	}
+	if _, err := s.ext.Routes.FailRoute(context.WithoutCancel(ctx), routeID, routePasteCancelled, routePasteCancelled); err != nil {
+		s.logger.Printf("routes: %s: fail on a cancelled message: %v (the sweep retries it)", routeID, err)
+	}
+	s.kickRouteSweep()
 }
 
 // deliverHandBack hands routeID's message back to its chief if the route owes
@@ -886,8 +1063,9 @@ func (s *Server) RunRouteTimeouts(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = RouteSweepInterval
 	}
-	s.logger.Printf("routes: session routing ON: a routed message is answered within %s or handed back to the chief; "+
-		"answers to allowlisted senders are relayed without approval (MUSTER_ROUTE_RELAY_ALLOW)", s.routeTimeout())
+	s.logger.Printf("routes: session routing ON: a routed message is answered within %s (%s for a pull-request review "+
+		"muster routes itself) or handed back to the chief; answers to allowlisted senders are relayed without approval "+
+		"(MUSTER_ROUTE_RELAY_ALLOW)", RouteTimeout, PRRouteTimeout)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	kick := s.routeKickCh()
