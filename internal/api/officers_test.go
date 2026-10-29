@@ -1142,3 +1142,33 @@ func TestARepromptStartedAfterShutdownSendsNothing(t *testing.T) {
 		t.Fatal("claim not released")
 	}
 }
+
+// TestAnOfficerInstanceIsToldToEscalateThroughHQNotTheAttentionQueue: with
+// the attention tools on, an officer instance's MCP initialize instructions
+// and its system prompt carry the officer paragraph (follow the charter;
+// default officer_complete{outcome: "escalated"}; attention_ask only when the
+// charter says so) and NOT the generic "call attention_ask" one, which on a
+// headless officers muster reaches nobody. An ordinary worker still gets the
+// generic paragraph.
+func TestAnOfficerInstanceIsToldToEscalateThroughHQNotTheAttentionQueue(t *testing.T) {
+	r := newOfficerRig(t)
+	r.s.ext.Attention = stubAttention{}
+	inst := r.addInstance(r.a, 1, 802)
+	ctx := context.Background()
+	const want = `For anything that needs a human, follow your officer charter. By default, finish the item with officer_complete{item_id, outcome: "escalated", summary} saying who must act and why — HQ notifies the officer's owner — rather than attention_ask, which on an officer may reach nobody. Use attention_ask only if your charter explicitly says to.`
+	const generic = "If you need your owner's input — a decision, a missing fact, an approval — call attention_ask"
+	for name, in := range map[string]string{"MCP instructions": r.s.mcpInstructionsFor(ctx, inst), "system prompt": r.s.AgentInstructions(inst)} {
+		if !strings.Contains(in, want) {
+			t.Errorf("officer instance's %s lack the escalation paragraph:\n%s", name, in)
+		}
+		if strings.Contains(in, generic) {
+			t.Errorf("officer instance's %s still tell it to call attention_ask:\n%s", name, in)
+		}
+	}
+	worker := r.agent(t, officerOrdinaryID)
+	for name, in := range map[string]string{"MCP instructions": r.s.mcpInstructionsFor(ctx, worker), "system prompt": r.s.AgentInstructions(worker)} {
+		if !strings.Contains(in, generic) || strings.Contains(in, want) {
+			t.Errorf("an ordinary worker's %s lost the generic attention paragraph or gained the officer one:\n%s", name, in)
+		}
+	}
+}
