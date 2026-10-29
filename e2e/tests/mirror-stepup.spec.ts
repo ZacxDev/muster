@@ -1030,9 +1030,12 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     });
 
     // 1. AN OPEN WITH NO TAP: exactly one fetch event (open, 200, 0 taps),
-    //    sent by the time the passkey is offered, and no tap event.
+    //    sent when the options answer, and no tap event. (The passkey is
+    //    offered from the open's first frame, BEFORE that answer, so its being
+    //    visible says nothing about the event: the event itself is awaited.)
     await page.locator('#term-keys [data-key="up"]').click();
     await expect(passkeyBtn(page)).toBeVisible();
+    await expect.poll(async () => (await events()).length, { message: 'the open\'s fetch sent its event' }).toBe(1);
     const open1 = await events();
     expect(open1.map(([n, a]) => [n, a.trigger, a.status, a.taps])).toEqual([['stepup.passkey_options', 'open', 200, 0]]);
     const id1 = open1[0][1].open_id as string;
@@ -1326,20 +1329,44 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     expect(await ran(page), 'an escaped password confirm ran nothing').toEqual([]);
     await page.unrouteAll({ behavior: 'wait' });
 
-    // 5. A password BEING TYPED when the passkey is offered is not shut away
-    //    (stepUpScript's offer): the options answer is held while it is typed,
-    //    then let through — the passkey is offered beside the open password.
+    // 5. 🔴 SHUT FROM THE FIRST FRAME (operator decision): on a device that
+    //    can use a passkey the password's collapse is shut, its summary shown
+    //    and focus on the passkey button — read in the SAME task as the open
+    //    and again at the next frame, so no flash of the password can hide
+    //    between them — and it STAYS shut while /options is held (slow),
+    //    with the summary the way to the password. REGRESSION TEST: red at
+    //    1ba3b4b4, which drew the password open, focused, until the answer.
     const releaseOptions = await hold('**/auth/confirm/passkey/options');
-    await page.evaluate(() => { (window as unknown as Run).musterStepUp.ask('', null); });
-    await expect(dialog(page)).toBeVisible();
-    await page.fill('#term-confirm-password', 'half a pass');
-    const offered = page.waitForResponse(isPath('/auth/confirm/passkey/options'));
-    releaseOptions();
-    await offered;
+    const held = page.waitForRequest(isPath('/auth/confirm/passkey/options'));
+    const first = await page.evaluate(() => new Promise((res) => {
+      const read = () => ({
+        open: (document.getElementById('term-confirm-password-box') as HTMLDetailsElement).open,
+        focus: document.activeElement ? document.activeElement.id : '',
+        summary: !document.getElementById('term-confirm-password-toggle')!.hidden,
+        // checkVisibility, not client rects: a shut <details> keeps its
+        // content's boxes (content-visibility), so only this says "hidden".
+        passkey: document.getElementById('term-confirm-passkey')!.checkVisibility(),
+        password: document.getElementById('term-confirm-password')!.checkVisibility(),
+      });
+      (window as unknown as Run).musterStepUp.ask('', null);
+      const sync = read();
+      requestAnimationFrame(() => res({ sync, frame: read() }));
+    }));
+    const shut = { open: false, focus: 'term-confirm-passkey', summary: true, passkey: true, password: false };
+    expect(first, 'shut, the passkey focused, at the open and at its first frame').toEqual({ sync: shut, frame: shut });
+    await held;
     await expect(passkeyBtn(page)).toBeVisible();
-    await expect(page.locator('#term-confirm-password'), 'what was being typed stays in view').toBeVisible();
-    await expect(page.locator('#term-confirm-password')).toHaveValue('half a pass');
-    await expect(page.locator('#term-confirm-password'), 'and keeps the focus').toBeFocused();
+    await expect(page.locator('#term-confirm-password'), 'still shut while the options are slow').toBeHidden();
+    await expect(passkeyBtn(page)).toBeFocused();
+    // The summary is the way in, answer or not.
+    await passwordToggle(page).click();
+    await expect(page.locator('#term-confirm-password')).toBeVisible();
+    await expect(page.locator('#term-confirm-password'), 'opened, the password takes focus').toBeFocused();
+    const answered = page.waitForResponse(isPath('/auth/confirm/passkey/options'));
+    releaseOptions();
+    expect((await answered).status()).toBe(200);
+    await expect(passkeyBtn(page), 'the passkey is still offered').toBeVisible();
+    await expect(page.locator('#term-confirm-password'), 'and the password the person opened stays open').toBeVisible();
     await page.keyboard.press('Escape');
     await expect(dialog(page)).toBeHidden();
     await page.unrouteAll({ behavior: 'wait' });

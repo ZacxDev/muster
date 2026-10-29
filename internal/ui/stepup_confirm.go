@@ -103,18 +103,19 @@ const (
 // 🔴 THE PASSKEY IS THE ONE OPTION SHOWN; THE PASSWORD IS A COLLAPSE BEHIND IT
 // (operator ask: "show only the passkey option with the password option inside
 // a collapse closed by default"). The password sits in a <details>
-// (stepUpPasswordBoxID) and the passkey button in a box drawn HIDDEN; which one
-// leads is decided only once the server has said this account has a passkey
-// this browser can use (stepUpScript's offer):
+// (stepUpPasswordBoxID), drawn SHUT with its summary ("Use your password
+// instead") shown, so a passkey user never sees the password field flash or
+// take focus (stepUpScript's offer):
 //
-//   - a passkey offered: the passkey button shows, the <details> is SHUT and its
-//     summary ("Use your password instead") is the one way in;
-//   - no passkey (none on this server, none on this account, or this browser
-//     cannot use one): the <details> is OPEN and its summary hidden — the
-//     password is the only working option, so it is never behind a tap.
+//   - a passkey possible (this server has passkeys and this browser can run
+//     WebAuthn): from the dialog's first frame the passkey button shows and has
+//     focus, and the <details> stays SHUT — also while the options call is in
+//     flight; its summary is the way to the password at any time;
+//   - no passkey usable (none on this server, none on this account, no
+//     WebAuthn here, or the options call failed), or a passkey device error:
+//     the <details> OPENS and its summary is hidden — the password is then the
+//     only working option, so it is never behind a tap.
 //
-// The <details> is drawn OPEN, and stays so until the passkey is known to be
-// usable: a dialog whose options call is slow or fails still has its password.
 // It is a plain <details>, so it opens and shuts with no script of its own.
 func confirmDialog(s *StepUpView) g.Node {
 	if s == nil {
@@ -148,13 +149,11 @@ func confirmDialog(s *StepUpView) g.Node {
 			P(ID("term-confirm-passkey-note"), g.Attr("hidden", ""), Class("text-xs text-muted")),
 			Details(
 				ID(stepUpPasswordBoxID),
-				Open(),
 				Class("group/pw"),
-				// Hidden while the password is the only option (stepUpScript's
+				// Hidden once the password is the only option (stepUpScript's
 				// offer): then there is nothing to collapse it behind.
 				Summary(
 					ID(stepUpPasswordToggleID),
-					g.Attr("hidden", ""),
 					Class("press flex min-h-[44px] cursor-pointer list-none items-center justify-center gap-1.5 rounded-md text-sm font-medium text-fg2 transition hover:text-fg group-open/pw:mb-2 [&::-webkit-details-marker]:hidden"),
 					g.Text("Use your password instead"),
 					g.Raw(`<svg class="h-4 w-4 shrink-0 text-muted transition-transform group-open/pw:rotate-180" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>`),
@@ -452,20 +451,16 @@ window.musterStepUp = (function () {
     to.split(' ').forEach(function (c) { el.classList.add(c); });
   }
   // offer shows (or hides) the passkey as THE action (confirmDialog): offered,
-  // the password goes behind its collapse, shut, and its button steps down to
+  // the password is behind its collapse, shut, and its button steps down to
   // secondary; not offered, the collapse is open with no summary — the password
   // is then the only option, never a tap away.
-  //
-  // ⚠ A PASSWORD ALREADY BEING TYPED IS NOT SHUT AWAY: a quick typist can be
-  // mid-password when the options answer, so with anything in the field the
-  // collapse stays open (and focus stays where it is — see ask).
   function offer(on) {
     if (on) unavailable('');
     pkBox.hidden = !on;
     dlg.setAttribute('data-passkey-offered', on ? '1' : '0');
     how.textContent = dlg.getAttribute(on ? 'data-how-passkey' : 'data-how-password');
     pwToggle.hidden = !on;
-    pwBox.open = !on || pw.value !== '';
+    pwBox.open = !on;
     var pri = submit.getAttribute('data-primary'), sec = submit.getAttribute('data-secondary');
     if (on) { swap(submit, pri, sec); submit.textContent = '` + stepUpSubmitBehind + `'; }
     else { swap(submit, sec, pri); submit.textContent = '` + stepUpSubmitPassword + `'; }
@@ -588,17 +583,21 @@ window.musterStepUp = (function () {
     openId = newOpenId();
     fail(why);
     pw.value = '';
-    offer(false);
-    unavailable('');
-    if (!dlg.open) { lift(); dlg.showModal(); }
-    pw.focus();
+    // 🔴 DECIDED BEFORE THE DIALOG IS SHOWN, so its first frame is already
+    // the right one: a passkey that CAN be used here leads (offered, password
+    // shut, focus on the passkey) while the options call is in flight; one that
+    // cannot (no route on this server, no WebAuthn) opens the password now.
     var missing = !pkBase ? 'no-path' : mpkMissing();
-    if (missing) { unavailable(missing); return; }
+    offer(!missing);
+    unavailable(missing);
+    if (!dlg.open) { lift(); dlg.showModal(); }
+    if (missing) { pw.focus(); return; }
+    pkBtn.focus();
     prefetch('open').then(function (r) {
       if (r === null || !dlg.open) return;
-      if (r) { unavailable(r); return; }
-      offer(true);
-      if (!pwBox.open) pkBtn.focus();
+      // The account has no passkey, or the options call failed: the password
+      // opens, as the only option, and takes focus.
+      if (r) { offer(false); unavailable(r); pw.focus(); }
     });
   }
 

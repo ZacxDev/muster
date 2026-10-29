@@ -44,12 +44,11 @@ func within(n, anc *html.Node) bool {
 }
 
 // TestTheConfirmDialogPutsThePasswordInACollapse: the password field and its
-// button are inside ONE <details> — the collapse the script shuts once a
-// passkey is offered — drawn OPEN with its summary hidden, so a dialog whose
-// passkey is never offered (none on the account, none on the server, a slow or
-// failed options call) shows its password with no tap. The passkey button is
-// outside it, drawn hidden; Cancel is outside it too, so shutting the
-// password never hides the way out.
+// button are inside ONE <details>, drawn SHUT with its summary shown — so a
+// passkey user never sees the password field flash; the script opens it (and
+// hides the summary) only once no passkey is usable. The passkey button is
+// outside it, drawn hidden until the script decides; Cancel is outside it too,
+// so the shut password never hides the way out.
 //
 // REGRESSION TEST: red at the commit before the collapse (no
 // term-confirm-password-box at all; the password field sat in the form).
@@ -63,15 +62,15 @@ func TestTheConfirmDialogPutsThePasswordInACollapse(t *testing.T) {
 	if box == nil || box.Data != "details" {
 		t.Fatalf("no <details id=%q> holds the password:\n%s", stepUpPasswordBoxID, page)
 	}
-	if !stepUpHas(box, "open") {
-		t.Error("the password's collapse is not drawn open: a dialog whose passkey is never offered would hide its only option")
+	if stepUpHas(box, "open") {
+		t.Error("the password's collapse is drawn open: a passkey user would see the password field before the passkey is offered")
 	}
 	sum := stepUpNode(doc, stepUpPasswordToggleID)
 	if sum == nil || sum.Data != "summary" || sum.Parent != box {
 		t.Fatalf("the collapse's summary is not its own first-level <summary>")
 	}
-	if !stepUpHas(sum, "hidden") {
-		t.Error("the summary is drawn shown: while the password is the only option there is nothing to collapse it behind")
+	if stepUpHas(sum, "hidden") {
+		t.Error("the summary is drawn hidden: the shut password would have no way in")
 	}
 	for _, id := range []string{"term-confirm-password", "term-confirm-submit"} {
 		if n := stepUpNode(doc, id); n == nil || !within(n, box) {
