@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ui"
 )
@@ -113,4 +115,36 @@ func TestHomeAfterADeleteLeavesTheDeletedAgentOut(t *testing.T) {
 // principal the session middleware attaches).
 func asOperator(r *http.Request) *http.Request {
 	return r.WithContext(authz.WithPrincipal(r.Context(), authz.Principal{UserID: authz.OperatorUserID, Role: authz.RoleAdmin, Via: authz.ViaSession}))
+}
+
+// TestHomeLeavingAnAgentDoesNotOpenIt: `/?leave=<name>` (ui.HomeLeavingPath —
+// where Mark complete sends the agent page) is home with that agent left out.
+// With no chief, home is the session opened last, which is the page being
+// left: bare `/` landed straight back on it.
+//
+// REGRESSION TEST for the retirement's own loop (e2e agents-list-ux's Mark
+// complete cases found it): red before `leave` existed.
+func TestHomeLeavingAnAgentDoesNotOpenIt(t *testing.T) {
+	two := &homeAgents{
+		rows:   append(homeRows(false), agents.Agent{ID: 31, Name: "calm-heron", DisplayName: "other", Status: agents.StatusRunning, OwnerID: authz.OperatorUserID}),
+		latest: map[int64]int64{homeWorkerID: 55, 31: 77},
+		// The worker is the more recently active: the sidebar's first row.
+		last: map[int64]time.Time{homeWorkerID: time.Date(2000, 1, 2, 0, 0, 0, 0, time.UTC), 31: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)},
+	}
+	s, h := homeServer(t, two)
+	// CONTROL: bare home opens the worker (the sidebar's first row here).
+	if rec := homeGet(s, h, "/", nil); rec.Header().Get("Location") != ui.AgentListHref("brave-otter", 55) {
+		t.Fatalf("CONTROL: GET / → %q, want the worker", rec.Header().Get("Location"))
+	}
+	if got, want := ui.HomeLeavingPath("brave-otter"), "/?leave=brave-otter"; got != want {
+		t.Errorf("HomeLeavingPath = %q, want %q", got, want)
+	}
+	rec := homeGet(s, h, ui.HomeLeavingPath("brave-otter"), nil)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != ui.AgentListHref("calm-heron", 77) {
+		t.Errorf("GET /?leave=brave-otter = %d → %q, want the other agent", rec.Code, rec.Header().Get("Location"))
+	}
+	// An unknown name leaves nothing out.
+	if rec := homeGet(s, h, "/?leave=no-such-agent", nil); rec.Header().Get("Location") != ui.AgentListHref("brave-otter", 55) {
+		t.Errorf("GET /?leave=no-such-agent → %q, want the worker", rec.Header().Get("Location"))
+	}
 }

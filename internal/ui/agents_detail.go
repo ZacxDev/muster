@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -283,8 +284,10 @@ func AgentDetailPage(v AgentDetailView, feat Features) g.Node {
 				// focusHistoryButton opens.
 				g.If(v.FocusHistory != "", focusHistoryDialog(v.FocusHistory)),
 				g.If(v.FocusHistory != "", focusHistoryScript()),
-				// The rename form the header's ⋯ menu opens (agent_actions.go).
+				// The rename form the header's ⋯ menu opens (agent_actions.go), and
+				// the hold that keeps an open menu from being refreshed away.
 				g.If(v.Card.ID != 0, agentRenamePopover(v.Card)),
+				g.If(v.Card.ID != 0, agentMenuHold()),
 				// Places the header's full-title popover (agentTitle) beside its "…"
 				// and keeps that button's aria-expanded in step, and places the ⋯
 				// menu (agentActionsMenu).
@@ -1385,6 +1388,21 @@ func chatProvisioningIndicator(status string) g.Node {
 // Agents list page, which is retired.
 const HomePath = "/"
 
+// HomeLeaveParam names, on HomePath, an agent home must not open: the page
+// the viewer is leaving (HomeLeavingPath).
+const HomeLeaveParam = "leave"
+
+// HomeLeavingPath is home, leaving the agent named name out — where a page
+// that sends the viewer away from that agent (Mark complete) sends them.
+// Without it, home with no chief is the session opened last: the very page
+// being left.
+func HomeLeavingPath(name string) string {
+	if name == "" {
+		return HomePath
+	}
+	return HomePath + "?" + HomeLeaveParam + "=" + url.QueryEscape(name)
+}
+
 // HomeFallbackPath is the retired Agents list page's URL, GET /agents: home's
 // redirect, or — when home has nothing to open — the onboarding page
 // (RenderAgentsHome).
@@ -1431,7 +1449,8 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 	if !complete {
 		children = append(children, Form(
 			// THE NO-JS PATH: a plain POST to TaskCompletePath, which completes
-			// the task and answers 303 → HomePath. htmx's hx-patch below
+			// the task and answers 303 → home leaving this agent
+			// (HomeLeavingPath, from the `leave` field). htmx's hx-patch below
 			// takes precedence over method/action whenever the script runs.
 			Method("post"),
 			Action(TaskCompletePath(*v.NoteID)),
@@ -1441,9 +1460,14 @@ func agentTaskBanner(v AgentDetailView) g.Node {
 			// ask: "after marking a task complete, it should just redirect back out of
 			// the agent instead of to another page" — it used to open /tasks). Full
 			// navigation, the same place the no-JS path's redirect lands.
-			hx("hx-on::after-request", "if(event.detail.successful){window.location.href='"+HomePath+"'}"),
+			//
+			// 🔴 HOME LEAVING THIS AGENT (HomeLeavingPath), not bare home: with no
+			// chief, home is the session opened LAST — this one — so a bare `/`
+			// landed straight back on the page the operator was leaving.
+			hx("hx-on::after-request", "if(event.detail.successful){window.location.href='"+HomeLeavingPath(v.Name)+"'}"),
 			Class("contents"),
 			Input(Type("hidden"), Name("status"), Value(notes.StatusComplete)),
+			Input(Type("hidden"), Name(HomeLeaveParam), Value(v.Name)),
 			Button(
 				Type("submit"),
 				Class("press min-h-[44px] inline-flex items-center justify-center rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-on-accent transition hover:bg-accent/90 active:scale-[0.98]"),

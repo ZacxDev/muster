@@ -1556,7 +1556,8 @@ func (s *Server) handleNoteComplete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not update status", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, ui.HomePath, http.StatusSeeOther)
+	// Home, leaving the agent whose page the form was on (ui.HomeLeavingPath).
+	http.Redirect(w, r, ui.HomeLeavingPath(r.PostFormValue(ui.HomeLeaveParam)), http.StatusSeeOther)
 }
 
 // handleAPITaskStatus handles PATCH /api/tasks/{id}/status (machine,

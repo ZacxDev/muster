@@ -240,6 +240,34 @@ func agentNotices(a AgentCardView) g.Node {
 	return Div(ID(AgentNoticesID), Class("flex flex-col gap-2 empty:hidden"), agentNoticesBody(a))
 }
 
+// agentMenuHoldJS keeps an OPEN ⋯ menu (or the rename form it opened) from
+// being replaced under the reader by the strip's out-of-band refresh: the
+// refresh comes on any agent change (sse:agent.changed included), and a
+// replaced popover closes — with a "Confirm delete" the reader was about to
+// press. The skipped copy is not lost: when the menu closes, the strip is
+// asked again (AgentsAwaitingEvent), so the menu catches up then.
+var agentMenuHoldJS = `(function () {
+  if (window.__musterAgentMenuHold) return;
+  window.__musterAgentMenuHold = true;
+  var held = false;
+  function open(id) { var p = document.getElementById(id); try { return !!p && p.matches(':popover-open'); } catch (e) { return false; } }
+  document.addEventListener('htmx:oobBeforeSwap', function (e) {
+    var t = e.detail && e.detail.target;
+    if (!t || t.id !== '` + AgentMenuSlot + `') return;
+    if (open('` + AgentMenuID + `') || open('` + AgentRenameID + `')) { e.detail.shouldSwap = false; held = true; }
+  });
+  document.addEventListener('toggle', function (e) {
+    var id = e.target && e.target.id;
+    if (!held || e.newState !== 'closed' || (id !== '` + AgentMenuID + `' && id !== '` + AgentRenameID + `')) return;
+    if (open('` + AgentMenuID + `') || open('` + AgentRenameID + `')) return;
+    held = false;
+    document.body.dispatchEvent(new CustomEvent('` + AgentsAwaitingEvent + `', { bubbles: true }));
+  }, true);
+})();`
+
+// agentMenuHold is agentMenuHoldJS's tag.
+func agentMenuHold() g.Node { return Script(g.Raw(agentMenuHoldJS)) }
+
 // RenderAgentHeader writes the strip's refresh (GET AgentHeaderPath): the
 // strip's body, and — out of band — the ⋯ menu (its lifecycle item follows the
 // status) and the notices.

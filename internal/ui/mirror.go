@@ -199,15 +199,8 @@ func mirrorSessionTitle(label, session, class string) g.Node {
 // entry of the same name (mirror.SessionView.Qualifier). It is drawn AS PART
 // OF THE TITLE, right after the name — "mango:1 · laptop" — not in a chip, so
 // two "mango:1" entries read as two different titles. The rendered view and
-// the terminal page draw their title here. (The retired Agents list's card drew
-// the same title without the raw session name: entryTitle's withSession false.)
+// the terminal page draw their title here.
 func mirrorEntryTitle(label, title, session, qualifier, class string) g.Node {
-	return entryTitle(label, title, session, qualifier, class, true)
-}
-
-// entryTitle is mirrorEntryTitle, drawing the muted session name beside a
-// label only when withSession is set.
-func entryTitle(label, title, session, qualifier, class string, withSession bool) g.Node {
 	q := g.If(qualifier != "", Span(g.Attr("data-mirror-qualifier", ""), g.Text(mirrorQualifierSep+qualifier)))
 	name, labelled := mirrorDisplayName(label, title, session)
 	if !labelled {
@@ -219,7 +212,7 @@ func entryTitle(label, title, session, qualifier, class string, withSession bool
 		g.Attr("title", "tmux session "+session),
 		Span(g.Attr("data-mirror-label", ""), g.Text(name)),
 		q,
-		g.If(withSession, Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(session))),
+		Span(g.Attr("data-mirror-session", ""), Class("ml-1.5 text-xs text-muted"), g.Text(session)),
 	)
 }
 

@@ -186,9 +186,26 @@ for (const [label, viewport] of sizes) {
       expect(firstRow, "the title row's controls").toEqual(label === 'phone' ? ['Open menu', ...want] : want);
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth), 'no sideways scroll').toBe(0);
 
+      // An OPEN menu is not refreshed away under the reader: a live refresh
+      // of the strip (any agent change) skips the menu while it is open, and
+      // brings it up to date once it closes.
+      let m = await menu(page);
+      await m.locator('[data-agent-action="delete"]').click();
+      await expect(m.locator('[data-agent-action="confirm-delete"]')).toBeVisible();
+      const refreshed = page.waitForResponse((r) => new URL(r.url()).pathname === `/ui/agents/${a.id}/header`);
+      await page.evaluate(() => document.body.dispatchEvent(new CustomEvent('agents:changed', { bubbles: true })));
+      await refreshed;
+      await page.waitForTimeout(300);
+      expect(await m.evaluate((el) => el.matches(':popover-open')), 'the menu is still open after a refresh').toBe(true);
+      await expect(m.locator('[data-agent-action="confirm-delete"]'), 'the armed Confirm delete is still there').toBeVisible();
+      const caughtUp = page.waitForResponse((r) => new URL(r.url()).pathname === `/ui/agents/${a.id}/header`);
+      await page.keyboard.press('Escape');
+      await caughtUp;
+      await expect(page.locator('#agent-actions-open'), 'the menu is back, refreshed').toBeVisible();
+
       // Rename.
       const name = `Renamed at ${label}`;
-      let m = await menu(page);
+      m = await menu(page);
       await m.locator('[data-agent-action="rename"]').click();
       const form = page.locator('#agent-rename form');
       await expect(form).toBeVisible();

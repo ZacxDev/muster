@@ -118,6 +118,14 @@ type AgentTerminalView struct {
 	// already say it.
 	Offline bool
 	Note    string
+	// Pin is the mirrored window's pin toggle (SwitcherPinToggle), drawn in
+	// the header only when the window has NO rendered view: such a window's
+	// only page is this one, and it draws no session switcher, whose pin every
+	// other session page has — without this it could not be pinned at all
+	// (the retired Agents list's card toggle was its only way). It takes the
+	// header slot the view switch holds on a window with two views, so the
+	// header holds no more controls than that one. nil: none.
+	Pin *TerminalPin
 	// StepUp, when set, puts live keys behind a FRESH sign-in
 	// (internal/stepup): a mirrored session. The page attaches with live keys
 	// when the sign-in is fresh, and otherwise asks "Confirm it's you" at the
@@ -324,6 +332,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 						g.Text("Fit width"),
 					),
 					g.If(v.RenderedHref != "", viewToggle(false, v.RenderedHref, "")),
+					terminalPinToggle(v.RenderedHref, v.Pin),
 				),
 				g.If(v.TerminalOnly != "" && v.RenderedHref == "", terminalOnlyLine(v.TerminalOnly)),
 				liveCopyBanner("term-live-copy", v.LiveCopy),

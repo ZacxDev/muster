@@ -74,7 +74,7 @@ func (s *Server) switcher(ctx context.Context, cur ui.SwitcherCurrent) *ui.Switc
 	if s.ext.Agents == nil {
 		return nil
 	}
-	cards, mirrors, err := s.agentsListCardsLive(ctx, 0, false)
+	cards, mirrors, err := s.agentsListEntries(ctx)
 	if err != nil {
 		s.logger.Printf("switcher: list: %v", err)
 		return nil

@@ -123,7 +123,13 @@ func (s *Server) answerSwitcherPin(w http.ResponseWriter, r *http.Request, pin b
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := ui.RenderSwitcherPin(w, pin, fields, back, s.switcher(r.Context(), cur)); err != nil {
+	// A terminal page draws no session switcher (its toggle is in its header,
+	// ui.AgentTerminalView.Pin): no bar rows to carry out of band.
+	var sw *ui.Switcher
+	if !strings.HasPrefix(back, "/mirror/terminal") {
+		sw = s.switcher(r.Context(), cur)
+	}
+	if err := ui.RenderSwitcherPin(w, pin, fields, back, sw); err != nil {
 		s.logger.Printf("pins: render the switcher's toggle: %v", err)
 	}
 }

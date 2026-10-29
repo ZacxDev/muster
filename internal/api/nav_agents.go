@@ -11,7 +11,7 @@ import (
 // the chief's chat.
 
 // handleNavAgents serves GET ui.NavAgentsPath: the sidebar's rows, built the
-// way the session switcher builds its entries (agentsListCardsLive with no
+// way the session switcher builds its entries (agentsListEntries with no
 // live instance read — the rows show names, recency and attention, never a
 // pod's status, so no request waits on the apiserver). The row of the page the
 // request came from is marked: htmx names that page in HX-Current-URL.
@@ -29,7 +29,7 @@ func (s *Server) handleNavAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	cards, mirrors, err := s.agentsListCardsLive(r.Context(), 0, false)
+	cards, mirrors, err := s.agentsListEntries(r.Context())
 	if err != nil {
 		s.logger.Printf("nav agents: list: %v", err)
 		http.Error(w, "could not load agents", http.StatusInternalServerError)
@@ -88,7 +88,7 @@ func (s *Server) homeTarget(r *http.Request, except int64) (string, error) {
 			return s.agentPageHref(ctx, chief), nil
 		}
 	}
-	cards, mirrors, err := s.agentsListCardsLive(ctx, 0, false)
+	cards, mirrors, err := s.agentsListEntries(ctx)
 	if err != nil {
 		return "", fmt.Errorf("entries: %w", err)
 	}
@@ -111,7 +111,7 @@ func (s *Server) homeTarget(r *http.Request, except int64) (string, error) {
 // carrying HX-Redirect, because htmx follows a 3xx inside its XHR and would
 // swap the target's body under a `/` left in the address bar.
 func (s *Server) redirectHome(w http.ResponseWriter, r *http.Request) {
-	to, err := s.homeTarget(r, 0)
+	to, err := s.homeTarget(r, s.leavingAgent(r))
 	if err != nil {
 		s.logger.Printf("home: %v (opening /agents)", err)
 	}
@@ -119,6 +119,21 @@ func (s *Server) redirectHome(w http.ResponseWriter, r *http.Request) {
 		to = ui.HomeFallbackPath
 	}
 	s.redirectTo(w, r, to)
+}
+
+// leavingAgent is the agent `/?leave=<name>` (ui.HomeLeavingPath) asks home
+// to leave out — the page the viewer is leaving — or 0: none named, or none
+// of that name the viewer can read (row-level security), or a failed read.
+func (s *Server) leavingAgent(r *http.Request) int64 {
+	name := r.URL.Query().Get(ui.HomeLeaveParam)
+	if name == "" || s.ext.Agents == nil {
+		return 0
+	}
+	a, err := s.ext.Agents.GetByName(r.Context(), name)
+	if err != nil {
+		return 0
+	}
+	return a.ID
 }
 
 // redirectTo is redirectHome's answer for a destination: no copy kept (where

@@ -143,14 +143,9 @@
    * lightness to meet 3:1 / 4.5:1 against that theme's s1 and bg. The first two
    * rules pick the theme's pair (the same class switch as the palette above, so
    * no script); the row's left edge reads --id-bd (navAgentRow).
-   *
-   * The [data-mirror-card] / [data-mirror-name] / [data-card-title] rules were
-   * the retired Agents list card's border, ring and title: no element with
-   * data-identity carries them now (a mirrored page's title has
-   * data-mirror-name, but no ancestor of it has data-identity). Their selectors are attribute pairs, (0,2,0), so they
-   * out-ranked the card's own border-line / ring-line / text-fg utilities
-   * (0,1,0). An element with no colour has no data-identity, so nothing here
-   * touches it.
+   * (The title variants, --id-tt, tinted the retired Agents list card's
+   * title; nothing reads them now.) An element with no colour has no
+   * data-identity, so nothing here touches it.
    */
   [data-identity] {
     --id-bd: var(--id-bd-d);
@@ -159,14 +154,6 @@
   :root:not(.dark) [data-identity] {
     --id-bd: var(--id-bd-l);
     --id-tt: var(--id-tt-l);
-  }
-  [data-identity][data-mirror-card] {
-    border-color: rgb(var(--id-bd));
-    --tw-ring-color: rgb(var(--id-bd));
-  }
-  [data-identity] [data-mirror-name],
-  [data-identity] [data-card-title] {
-    color: rgb(var(--id-tt));
   }
 
   /*

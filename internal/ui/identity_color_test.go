@@ -137,19 +137,23 @@ func TestAPaleColourIsDarkenedOnWhite(t *testing.T) {
 }
 
 // TestTheStylesheetTintsTheBorderAndTheTitle pins the CSS half: the variables
-// switch with the theme, and the border, ring and title read them — with
-// selectors that out-rank the card's own utilities.
+// switch with the theme (the sidebar row's left edge reads --id-bd). The card
+// border, ring and title rules went with the retired Agents list's cards, and
+// no rule may come back for them.
 func TestTheStylesheetTintsTheBorderAndTheTitle(t *testing.T) {
 	css := readInputCSS(t)
 	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	for sel, want := range map[string]string{
-		"[data-identity]":                   "--id-bd: var(--id-bd-d); --id-tt: var(--id-tt-d);",
-		":root:not(.dark) [data-identity]":  "--id-bd: var(--id-bd-l); --id-tt: var(--id-tt-l);",
-		"[data-identity][data-mirror-card]": "border-color: rgb(var(--id-bd)); --tw-ring-color: rgb(var(--id-bd));",
-		"[data-identity] [data-mirror-name], [data-identity] [data-card-title]": "color: rgb(var(--id-tt));",
+		"[data-identity]":                  "--id-bd: var(--id-bd-d); --id-tt: var(--id-tt-d);",
+		":root:not(.dark) [data-identity]": "--id-bd: var(--id-bd-l); --id-tt: var(--id-tt-l);",
 	} {
 		if got := norm(cssBlock(t, css, sel)); got != want {
 			t.Errorf("%s { %s }, want { %s }", sel, got, want)
+		}
+	}
+	for _, gone := range []string{"[data-identity][data-mirror-card]", "[data-identity] [data-mirror-name]", "[data-identity] [data-card-title]"} {
+		if strings.Contains(css, gone) {
+			t.Errorf("input.css still has a rule for %s, which no element carries", gone)
 		}
 	}
 }

@@ -1026,7 +1026,7 @@ func sidebarIn(activeTab, currentTab string, hasPanels bool, feat Features, over
 		// script there would hold every page's paint mid-document
 		// (TestTheViewPagesPaintWholeBeforeAnyScript).
 		agentModalShell(),
-		staticScript(taskModalScriptSrc, Defer()),
+		taskModalScript(),
 		// The error toasts' host, on every document with the sidebar: the
 		// dispatch sheet's refusal is toasted on every page it opens on
 		// (dispatchFailureToast), not only where resyncScript listens.
@@ -2614,7 +2614,12 @@ var relTimeScriptSrc = staticJS("rel-time", `
 // NOT in the closure — a later re-execution gets a FRESH closure while the
 // once-bound listener still writes into the FIRST one, so a closure variable
 // would be written by one run and read by another.
-func taskModalScript() g.Node { return staticScript(taskModalScriptSrc) }
+//
+// DEFERRED: it is drawn in the sidebar's root (sidebarIn), early in <body>, and
+// a parser-blocking script there would hold every page's paint mid-document
+// (TestTheViewPagesPaintWholeBeforeAnyScript). It binds listeners and looks
+// its elements up when they fire, so it needs nothing parsed before it runs.
+func taskModalScript() g.Node { return staticScript(taskModalScriptSrc, Defer()) }
 
 // taskModalScriptSrc is the path taskModalScript's code is served at, /static/js/task-modal.js (static_script.go).
 var taskModalScriptSrc = staticJS("task-modal", `

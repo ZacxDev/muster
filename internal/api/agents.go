@@ -186,13 +186,12 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("GET /agents/{name}/terminal/ws", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentTerminalWS)))
 }
 
-// agentsListCardsLive builds the entries the sidebar, the session switcher and
-// home (homeTarget) read: every agent and mirrored window, as views. live false
-// draws every agent with its STORED status and reads no instances at all — for
-// a surface that shows the entries but not their live status, which must not
-// hold a page's first byte on the apiserver. Every caller passes false now; the
-// live read (bounded by instancesWithin) was the retired Agents list page's.
-func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.Duration, live bool) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
+// agentsListEntries builds the entries the sidebar, the session switcher and
+// home (homeTarget) read: every agent and mirrored window, as views, each
+// agent with its STORED status — none of those surfaces shows a pod's live
+// status, so none of them holds a page's first byte on the apiserver. (The
+// live instance read was the retired Agents list page's.)
+func (s *Server) agentsListEntries(ctx context.Context) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
 		return nil, nil, err
@@ -203,9 +202,6 @@ func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.D
 
 	// nil = "live state was not observed": the stored status (liveStatusIndexed).
 	var instIdx map[string]*provision.Instance
-	if live {
-		instIdx = s.instanceIndexWithin(ctx, instancesWithin)
-	}
 	// 🔴 MOST RECENTLY ACTIVE FIRST, BY agents.LastActivity — the same definition
 	// GET /api/agents publishes as lastActivityAt. The store's own order
 	// (created_at DESC) is left alone because the machine read documents

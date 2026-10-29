@@ -177,9 +177,9 @@ func TestTheKickoffBadgesAreNotInsideThePollingStatusSpan(t *testing.T) {
 			for p := n.Parent; p != nil; p = p.Parent {
 				for _, a := range p.Attr {
 					// The STATUS POLL's swap target (its answer is the bare icon). The
-				// agent page's strip around it swaps its innerHTML too, but its
-				// answer redraws every badge (TestTheStripRefreshRedrawsWhatTheStripShows).
-				if a.Key == "hx-swap" && strings.Contains(a.Val, "innerHTML") && strings.Contains(attrOf(p, "hx-get"), "/status") {
+					// agent page's strip around it swaps its innerHTML too, but its
+					// answer redraws every badge (TestTheStripRefreshRedrawsWhatTheStripShows).
+					if a.Key == "hx-swap" && strings.Contains(a.Val, "innerHTML") && strings.Contains(attrOf(p, "hx-get"), "/status") {
 						t.Errorf("%s is nested inside an element whose hx-swap is %q, so the "+
 							"first status poll erases it", attr, a.Val)
 					}

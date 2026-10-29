@@ -135,11 +135,6 @@ type Switcher struct {
 	// pin is the page's own session as the bar's pin toggle posts it; nil
 	// when the page is no session or its session is not among the entries.
 	pin *switcherPin
-	// unknown: the entries are not known yet — the rows and counts are drawn
-	// blank, not as "Nothing pinned". Nothing sets it now: the retired Agents
-	// list's docked bar was drawn before its entries were built, and the list's
-	// first render filled them out of band.
-	unknown bool
 }
 
 // SwitcherItem is one entry of a view.
@@ -364,14 +359,6 @@ func (s *Switcher) view(key string) []SwitcherItem {
 // page, inside its already-inset pane) it lines up with the form above it.
 // Nothing when s is nil.
 func switcherBar(s *Switcher, pinned bool) g.Node {
-	return switcherBarWith(s, pinned, switcherScript(), nil)
-}
-
-// switcherBarWith is switcherBar with its script tag and, last on its row,
-// extra (nil for none). Its one caller, switcherBar, passes the inline
-// switcherScript and nil; the retired Agents list's docked bar passed the
-// shell's static script and its "+".
-func switcherBarWith(s *Switcher, pinned bool, script, extra g.Node) g.Node {
 	if s == nil {
 		return nil
 	}
@@ -449,11 +436,10 @@ func switcherBarWith(s *Switcher, pinned bool, script, extra g.Node) g.Node {
 						g.Raw(searchIconSVG),
 					),
 				),
-				extra,
 			),
 			switcherViewMenu(s),
 		),
-		script,
+		switcherScript(),
 		NoScript(StyleEl(g.Raw(`#` + SwitcherID + ` { visibility: visible !important; }`))),
 	}
 }
@@ -540,21 +526,14 @@ func switcherToggleLabel(key string) string {
 func switcherRowID(key string) string   { return "switcher-list-" + key }
 func switcherCountID(key string) string { return "switcher-count-" + key }
 
-// switcherCountText is how many entries view key holds; nothing while they
-// are not known (Switcher.unknown).
+// switcherCountText is how many entries view key holds.
 func switcherCountText(s *Switcher, key string) g.Node {
-	if s.unknown {
-		return nil
-	}
 	return g.Text(strconv.Itoa(len(s.view(key))))
 }
 
 // switcherRowBody is what a view's row holds: its entries, or the line saying
-// it holds none — nothing while they are not known (Switcher.unknown).
+// it holds none.
 func switcherRowBody(s *Switcher, key, empty string) g.Node {
-	if s.unknown {
-		return nil
-	}
 	items := s.view(key)
 	if len(items) == 0 {
 		return P(g.Attr("data-switcher-empty", ""), Class("truncate text-xs text-muted"), g.Text(empty))

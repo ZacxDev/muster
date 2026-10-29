@@ -1129,10 +1129,10 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 	// The Idle section (internal/ui/idle_section.go), in both
 	// directions: the threshold in force, or OFF.
 	if a.cfg.AgentsIdleAfter > 0 {
-		l.Printf("agents list: idle section ON — entries with no activity for more than %s (%s) are drawn under a collapsed \"Idle\" header (%s=%s)",
+		l.Printf("sidebar: idle group ON — entries with no activity for more than %s (%s) are drawn under a collapsed \"Idle\" group (%s=%s)",
 			ui.IdleSectionAfterLabel(a.cfg.AgentsIdleAfter), a.cfg.AgentsIdleAfter, envAgentsIdleAfter, displayOrDefault(a.cfg.AgentsIdleAfterRaw))
 	} else {
-		l.Printf("agents list: idle section OFF (%s=0) — every entry is drawn in the one list", envAgentsIdleAfter)
+		l.Printf("sidebar: idle group OFF (%s=0) — every entry is drawn in the one list", envAgentsIdleAfter)
 	}
 
 	// The officer runtime (docs/officers.md), in both directions. Each
