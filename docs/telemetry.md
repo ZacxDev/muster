@@ -213,7 +213,7 @@ Every request that opens a session — the GET of `/mirror/view`,
 `/mirror/terminal` or `/agents/{name}`, and each of their sockets — is always
 traced, and so is everything under it (the hub's requests, the host's spans, the
 queries) — in-process children follow their parent, and so do a host's spans,
-whose parent is muster's own. Every other server request — the Agents list's
+whose parent is muster's own. Every other server request — the sidebar's
 refreshes, the event stream, the badge and ask polls — is kept at
 `MUSTER_TRACE_SAMPLE_RATIO` (default 5%), **even when it carries the browser's
 sampled `traceparent`**: Faro samples every page, so following it would trace

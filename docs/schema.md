@@ -19,7 +19,7 @@ the set grows **or** shrinks.
 | browser flows | `flow_jobs`, `flow_runner_tokens`, `flow_requests` |
 | push | `push_subscriptions`, `push_preferences` |
 | plugins | `plugins`, `plugin_messages`, `plugin_reply_drafts`, `plugin_threads` |
-| Agents list | `pins`: the entries each user pinned to the top; `recents`: the entries each user recently opened |
+| session switcher | `pins`: the entries each user pinned (the bottom bar's **Pins** view); `recents`: the entries each user recently opened (its **Recent** view, and where home opens without a chief) |
 | send queue | `send_queue`: messages each user queued for a mirrored Claude Code window, sent one at a time when it is idle |
 | session focus | `agent_focus`: what each of a user's sessions is working on ([focus.md](focus.md)); `agent_focus_history`: every focus each session has had |
 | session routing | `session_routes`: plugin messages the chief routed to a session, and how each route ended ([plugins.md](plugins.md#routing-a-message-to-a-session)); `session_prs`: the pull requests each session created and the branches it pushed, as its host's hook reported them ([plugins.md](plugins.md#a-pull-request-review-mail)); `mail_resumes`: each ended session agent mail resumed, and how it ended ([plugins.md](plugins.md#resuming-an-ended-session)) |

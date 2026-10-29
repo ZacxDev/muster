@@ -5,7 +5,8 @@ whose job is answering you about the state of the work. Plugin messages are
 delivered to it, and it alone is offered the chief tools (see below).
 
 **The chief is optional and off by default.** muster works without one: home
-opens the Agents list, and your sessions, tasks and asks all work as usual.
+opens the session you opened last, and your sessions, tasks and asks all work
+as usual.
 
 ## Turning the chief on or off
 
@@ -13,7 +14,7 @@ Each user has a switch: **Account → Chief**.
 
 | | what you get |
 |---|---|
-| **Off** (the default) | No agent acts as your chief. Home (`/`) opens the Agents list, and the sidebar has no chief row. Nothing is delivered to a chief: plugin messages stay queued, as they do for a user with no chief ([pending](plugins.md#delivery-to-your-chief)), a mirrored session's `chief_ask` is answered with "your owner turned their chief off; ask your owner with attention_ask" (the tool stays listed, because a session reads its tool list once, when it connects), and a task mention's ask comes from muster. |
+| **Off** (the default) | No agent acts as your chief. Home (`/`) opens the session you opened last (or, with none, the first in the sidebar), and the sidebar has no chief row. Nothing is delivered to a chief: plugin messages stay queued, as they do for a user with no chief ([pending](plugins.md#delivery-to-your-chief)), a mirrored session's `chief_ask` is answered with "your owner turned their chief off; ask your owner with attention_ask" (the tool stays listed, because a session reads its tool list once, when it connects), and a task mention's ask comes from muster. |
 | **On** | Home opens the chief's chat, the sidebar lists it first, and everything on this page applies. |
 
 **Who starts with it on.** A user who never touched the switch has the chief on

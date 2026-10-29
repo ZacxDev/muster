@@ -9,7 +9,7 @@ installs on your phone as a PWA. Your other machines dial out to it.
 
 <p align="center">
   <img src="docs/img/phone-flow.gif" width="270" alt="On a phone: open a session from the bottom bar's search by typing its codename, dictate a reply with the microphone, send it, and watch the session answer">
-  <img src="docs/img/agents-list.png" width="270" alt="The Agents list on a phone: mirrored sessions from two machines and dispatched agents, with the session switcher docked at the bottom">
+  <img src="docs/img/sidebar.png" width="270" alt="The sidebar on a phone: every session on two machines and the dispatched agents, like channels in a chat app, the open session marked">
   <img src="docs/img/tool-context.png" width="270" alt="A Claude Code session rendered as a chat; each tool call shows how much context it added">
 </p>
 
@@ -77,7 +77,7 @@ whether muster may type into each machine's terminals), then:
   to fix what fails, and (with `qrencode` installed) prints a QR code of the
   address for your phone.
 
-While the Agents list is empty, it shows how to start an agent in tmux
+While there is no session yet, home shows how to start an agent in tmux
 (`tmux new -A -s work claude`) and the same prompt, to connect another
 machine. More in [docs/onboarding.md](docs/onboarding.md).
 
@@ -99,8 +99,13 @@ against a throwaway database.
   Pins and All (and a pin button for the session you are on), and a sidebar
   that lists every session like channels in a chat app: the chief first (if
   you turned one on), then the sessions waiting on you, then the rest by
-  recency. The search opens with the magnifier on the bar or in the sidebar, or
-  `/`. → [docs/mirroring.md](docs/mirroring.md)
+  recency, the long-idle ones folded under **Idle**. The search opens with the
+  magnifier on the bar or in the sidebar, or `/`, and finds a session by its
+  codename, title, repository, kind or machine. Home opens the chief's chat, or
+  the session you opened last. → [docs/mirroring.md](docs/mirroring.md)
+- **Agent actions.** A dispatched agent's page shows its live status and has a
+  **⋯** menu to rename, start, stop or delete it; the **+** beside **Agents** in
+  the sidebar dispatches a new one (or saves it for later).
 - **Message box and step-up.** Send text into a Claude Code session, a plain
   terminal pane (Codex, Gemini CLI, a shell) or a dispatched agent. The message
   box does not send to opencode yet, and sends to Hermes only through the
@@ -130,7 +135,8 @@ These are optional, and most are off until you configure them.
   the rest of the fleet. It runs in its own Kubernetes pod, so it needs the
   agent provisioner. Turn it on or off under **Account → Chief**. While it is
   on, home opens its chat and the sidebar lists it first; off (the default for
-  a new install or user), home opens the Agents list and nothing is sent to it.
+  a new install or user), home opens the session you opened last and nothing
+  is sent to it.
   → [docs/chief.md](docs/chief.md)
 - **Connectors.** Agents use your stored HTTP credentials through muster's
   proxy, and never see the secret. → [docs/connectors.md](docs/connectors.md)

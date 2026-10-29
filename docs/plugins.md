@@ -409,7 +409,7 @@ Each refusal has its own sentence, in this order:
 8. Under a per-owner lock: **one start per task** — until you destroy the
    agent it made. A task the chief already started an agent for answers with
    that start (`already_dispatched`) and starts nothing, whatever became of the
-   agent, **unless you destroyed that agent** (the Agents page's Delete, or
+   agent, **unless you destroyed that agent** (its page's Delete, or
    `agent_destroy` from your mirrored session): that destroy records a release
    (`task.chief_dispatch_released`; nothing is deleted) and the chief may
    start **one** new agent on the task (operator decision: *"Owner's destroy
@@ -503,7 +503,7 @@ through the `github` connector, which you approve once per repository
 When a task becomes `complete` — by any path: the task card, **Mark complete**,
 `PATCH /api/tasks/{id}/status`, or a merge retiring the loser — muster
 **stops** (never destroys) the agent the task's latest, unreleased chief start
-made, at once: the provisioner's `Stop`, the same call as the Agents page's
+made, at once: the provisioner's `Stop`, the same call as the agent page's
 Stop, scales its instance to zero, so a turn it is running is cut off.
 **Start** brings it back. It runs in the background after the status write; a
 failed stop is logged and the write stands. Only the move **into** `complete`

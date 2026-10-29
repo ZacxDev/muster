@@ -1,16 +1,13 @@
 # Session focus
 
-Every session on the Agents list — a dispatched agent or a mirrored Claude Code
-window — can carry a **focus**: a short title (stored whole; a card heading longer than 60 characters
-shows its first 60 and a **…** button that opens the whole title in the popover,
-like a long card name) and one to three sentences saying what it is working on now. A card with a focus is
-headed by its focus title, with the card's usual name (the agent's name, or the
-mirrored window's title and session) as a subtitle under it. The title is a
-button, marked with a chevron: a tap opens a popover with the description and
-when it was last updated, and does not open the card. The rest of the card
-still opens it. A card with no focus keeps its usual title. The list's filter
-box searches focus text too, but ranks matches by the card's **name**, so typing
-a name still puts that card first.
+Every session — a dispatched agent or a mirrored Claude Code window — can carry
+a **focus**: a short title (stored whole) and one to three sentences saying what
+it is working on now. The search palette (the magnifier in the sidebar or on the
+bottom bar, or `/`) finds a session by its focus title and shows it beside the
+session's name, but ranks matches by the **name** first, so typing a name still
+puts that session first. A session's page lists its focus over time behind the
+header's focus-history button ([below](#focus-history)). (The Agents list page,
+whose cards were headed by their focus, is retired.)
 
 Your **chief** reads focus to decide which session should handle something
 (`fleet_list`, `focus_search`). It never computes focus itself.

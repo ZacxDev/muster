@@ -258,9 +258,15 @@ test.afterEach(async ({ context }, info) => {
   if (cookies && !info.title.startsWith('stepup')) cookies = await context.cookies(browserURL);
 });
 
+// listed waits until both machines' windows are listed (the sidebar's rows,
+// GET /ui/nav/agents — the Agents list page is retired).
 async function listed(page: Page) {
-  await page.goto(browserURL + '/agents');
-  await expect(page.locator('#agents-list article[data-mirror-card]', { hasText: 'heron' }).first()).toBeVisible({ timeout: 20_000 });
+  await expect
+    .poll(async () => {
+      const html = await (await page.request.get(browserURL + '/ui/nav/agents')).text();
+      return ['heron', 'otter', 'juniper'].every((s) => html.includes('session=' + s));
+    }, { message: 'both machines are listed', timeout: 20_000 })
+    .toBe(true);
 }
 
 // visitAll opens each session once, so the switcher's Recent view (the
@@ -333,34 +339,41 @@ test('stepup-passkey.png — confirm it is you, with a passkey', async ({ page, 
   expect(mirrorLog).not.toContain('panic');
 });
 
-test('agents-list.png — every session on two machines, and the bottom bar', async ({ page }) => {
+test('sidebar.png — every session on two machines, in the sidebar', async ({ page }) => {
   await signIn(page);
   await listed(page);
   await visitAll(page);
-  await listed(page);
-  // Pin two sessions, one per machine: pins are drawn first.
-  for (const name of ['juniper:1', 'otter:1']) {
-    const card = page.locator('#agents-list > article[data-mirror-card]', { hasText: name }).first();
-    // Idempotent: a re-run against the same database finds them pinned already.
-    if ((await card.locator('[data-pin-toggle]').getAttribute('aria-pressed')) !== 'true') await card.locator('[data-pin-toggle]').click();
-    await expect(card.locator('[data-pin-toggle]')).toHaveAttribute('aria-pressed', 'true');
-  }
-  await listed(page);
-  await expect(page.locator('#agents-list > article[data-pinned]')).toHaveCount(2);
-  await expect(page.locator('#session-switcher')).toBeVisible();
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await shoot(page, 'agents-list.png');
+  await openOtter(page);
+  await page.locator('#sidebar-open').click();
+  await expect(page.locator('#sidebar-agents-list a[data-nav-agent]').first()).toBeVisible();
+  await expect(page.locator('#sidebar-agents-list a[data-nav-current]')).toHaveCount(1);
+  await page.waitForTimeout(400);
+  await shoot(page, 'sidebar.png');
 });
 
-test('agents-filter.png — the Agents list with the switcher search open', async ({ page }) => {
+test('sidebar-search.png — the palette from the sidebar, matching a kind on both machines', async ({ page }) => {
   await signIn(page);
   await listed(page);
-  await page.locator('#switcher-search-open').click();
+  await page.goto(browserURL + '/tasks');
+  await page.locator('#sidebar-open').click();
+  await expect(page.locator('#sidebar-agents-list a[data-nav-agent]').first()).toBeVisible();
+  await page.locator('#sidebar-search').click();
   // A kind matches too, after every codename and title: "claude" lists the
   // Claude Code windows on both machines.
   await page.locator('#switcher-search-input').fill('claude');
   await expect(page.locator('#switcher-search-results [role="option"]').first()).toBeVisible();
-  await shoot(page, 'agents-filter.png');
+  await shoot(page, 'sidebar-search.png');
+});
+
+test("agent-actions.png — an agent's page: its live status and its ⋯ menu", async ({ page }) => {
+  await signIn(page);
+  await page.goto(browserURL + '/agents/docs-sweeper');
+  await page.waitForURL((u) => u.pathname === '/agents/docs-sweeper' && u.searchParams.has('session'));
+  await expect(page.locator('#agent-strip')).toBeVisible();
+  await page.locator('#agent-actions-open').click();
+  await expect.poll(() => page.locator('#agent-actions').evaluate((el) => el.matches(':popover-open'))).toBe(true);
+  await page.waitForTimeout(300);
+  await shoot(page, 'agent-actions.png');
 });
 
 test('switcher-search.png — a session page, its bottom bar, and the search palette finding a codename', async ({ page }) => {

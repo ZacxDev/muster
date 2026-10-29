@@ -116,7 +116,7 @@ func TestAMirroredPageBadgeLeadsWithItsHostsIcon(t *testing.T) {
 
 // operatorPrefs is the operator's shape, with synthetic names: a laptop
 // named "laptop" and a server named "tower".
-var operatorPrefs = HostPreferences{Order: []string{"tower", "laptop"}, Icons: map[string]string{"laptop": "laptop", "tower": "server"}}
+var operatorPrefs = HostPreferences{Icons: map[string]string{"laptop": "laptop", "tower": "server"}}
 
 // TestANamedHostDrawsItsOwnGlyphWhateverItsRank: the operator's ask "update the
 // laptop icon to be a laptop". With HostPreferences.Icons naming them, "laptop"
