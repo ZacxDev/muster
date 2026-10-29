@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ZacxDev/muster/internal/agents"
+	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
@@ -64,9 +65,9 @@ const (
 )
 
 func homeRows(withChief bool) []agents.Agent {
-	rows := []agents.Agent{{ID: homeWorkerID, Name: "brave-otter", DisplayName: "worker", Status: agents.StatusRunning}}
+	rows := []agents.Agent{{ID: homeWorkerID, Name: "brave-otter", DisplayName: "worker", Status: agents.StatusRunning, OwnerID: authz.OperatorUserID}}
 	if withChief {
-		rows = append(rows, agents.Agent{ID: homeChiefID, Name: "zesty-stoat", DisplayName: " Chief ", Status: agents.StatusRunning})
+		rows = append(rows, agents.Agent{ID: homeChiefID, Name: "zesty-stoat", DisplayName: " Chief ", Status: agents.StatusRunning, OwnerID: authz.OperatorUserID})
 	}
 	return rows
 }
@@ -206,9 +207,9 @@ func TestTheNavListMarksThePageItWasAskedFrom(t *testing.T) {
 // was more recent.
 func TestHomeAndTheSidebarAgreeOnTheChief(t *testing.T) {
 	now := time.Date(2000, 1, 1, 12, 0, 0, 0, time.UTC)
-	worker := agents.Agent{ID: homeWorkerID, Name: "brave-otter", DisplayName: "worker", Status: agents.StatusRunning}
-	slug := agents.Agent{ID: 31, Name: agents.ChiefName, DisplayName: "fleet boss", Status: agents.StatusRunning}
-	labelled := agents.Agent{ID: homeChiefID, Name: "zesty-stoat", DisplayName: " Chief ", Status: agents.StatusRunning}
+	worker := agents.Agent{ID: homeWorkerID, Name: "brave-otter", DisplayName: "worker", Status: agents.StatusRunning, OwnerID: authz.OperatorUserID}
+	slug := agents.Agent{ID: 31, Name: agents.ChiefName, DisplayName: "fleet boss", Status: agents.StatusRunning, OwnerID: authz.OperatorUserID}
+	labelled := agents.Agent{ID: homeChiefID, Name: "zesty-stoat", DisplayName: " Chief ", Status: agents.StatusRunning, OwnerID: authz.OperatorUserID}
 	latest := map[int64]int64{homeWorkerID: 55, 31: 77, homeChiefID: homeChiefSess}
 	// The worker is the most recent of all; the slug more recent than the label.
 	last := map[int64]time.Time{homeWorkerID: now, 31: now.Add(-time.Hour), homeChiefID: now.Add(-2 * time.Hour)}

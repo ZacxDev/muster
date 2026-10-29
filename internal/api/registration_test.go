@@ -96,6 +96,7 @@ func fullyWiredServer(t *testing.T) *Server {
 		FocusSummarizer: stubSummarizer{},
 		FocusRetention:  time.Hour,
 		Suggest:         &suggest.Engine{},
+		ChiefPrefs:      &memChiefPrefs{},
 		Routes:          stubRoutes{},
 		Attention:       stubAttention{},
 		MirrorTokens:    stubMirrorTokens{},

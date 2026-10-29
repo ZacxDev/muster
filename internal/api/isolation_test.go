@@ -27,6 +27,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
@@ -460,6 +461,9 @@ var isolationClasses = map[string]routeClass{
 	// — B naming A's window must 404; the toggle is the caller's own row (list).
 	"GET /mirror/view/suggest": classMirror,
 	"POST /account/suggest":    classList,
+	// The chief's on/off switch (chief_toggle.go): the caller's own row, and
+	// the caller's own chief (list).
+	"POST /account/chief": classList,
 	// The chip row's reports (numbers only): the window's address in the
 	// form — B naming A's window must 404.
 	"POST /mirror/view/suggest/event": classMirror,
@@ -1002,6 +1006,8 @@ func newIsoWorld(t *testing.T) *isoWorld {
 	}
 	// Suggested replies (0048): A's window's set and A's toggle are A's.
 	ext.Suggest = &suggest.Engine{Gen: isoNoSuggestions{}, Prefs: suggest.NewPGPrefs(pool), Usage: suggest.NewPGUsage(pool)}
+	// The chief's on/off switch (0060): A's choice is A's.
+	ext.ChiefPrefs = chiefpref.NewPG(pool)
 	srv.UseExtensions(ext)
 	w.router = &isoRouter{dirs: []string{"/srv/projects/" + w.opCanary}}
 	srv.UseRouter(w.router)
@@ -1406,7 +1412,7 @@ func (w *isoWorld) snapshot() map[string]string {
 		"chat_sessions", "chat_messages", "connectors", "connector_grants", "connector_audit", "mirror_tokens",
 		"user_credentials", "cc_account_marks", "flow_jobs", "flow_runner_tokens", "push_subscriptions", "push_preferences", "flow_requests",
 		"plugins", "plugin_messages", "plugin_reply_drafts", "pins", "recents", "send_queue", "agent_focus", "agent_focus_history", "session_routes", "uploads", "attention_asks", "jobs",
-		"devices", "device_pairing_codes", "connector_standing_grants", "suggest_preferences", "suggest_usage"} {
+		"devices", "device_pairing_codes", "connector_standing_grants", "suggest_preferences", "suggest_usage", "chief_preferences"} {
 		var js string
 		if err := w.pool.QueryRow(w.sys, `SELECT coalesce(json_agg(t ORDER BY t.id)::text, '[]') FROM `+tbl+` t WHERE owner_id=$1`, w.a.uid).Scan(&js); err != nil {
 			// task_sessions and the owner-keyed tables have no `id` ordering column;

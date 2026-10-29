@@ -100,6 +100,10 @@ type Server struct {
 	auth     AuthConfig
 	router   RouterPort
 
+	// chiefSwitch is each owner's chief-switch lock (chief_toggle.go
+	// chiefSwitchLock): owner id → *sync.Mutex.
+	chiefSwitch sync.Map
+
 	// streams ends every open SSE stream when shutdown begins. See EndStreams.
 	streams streamEnd
 
@@ -583,6 +587,8 @@ func (s *Server) registerAll(mux Mux) {
 	// destroys an agent must not be served open on an unarmed server; a personal
 	// token acts as its owner.
 	mux.HandleFunc("POST /api/chief/replace", s.requireArmedHookToken(s.requireLifecycleProvisioner(s.handleChiefReplace)))
+	// The chief's per-user on/off switch on the Account page (chief_toggle.go).
+	mux.HandleFunc("POST "+accountChiefPath, s.requireOperatorWrite(s.handleAccountChief))
 
 	s.registerNotesRoutes(mux)
 	s.registerAgentRoutes(mux)

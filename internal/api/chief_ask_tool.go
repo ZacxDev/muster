@@ -111,6 +111,9 @@ func (s *Server) toolChiefAsk(ctx context.Context, c toolCaller, arguments strin
 		if !errors.Is(err, ErrNoChief) {
 			s.logger.Printf("chief_ask: resolve the chief: %v", err)
 		}
+		if errors.Is(err, ErrChiefOff) {
+			return toolErr("your owner turned their chief off; ask your owner with attention_ask")
+		}
 		return toolErr("your owner has no chief agent to ask; ask your owner with attention_ask")
 	}
 	var about *routedAbout

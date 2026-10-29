@@ -231,6 +231,9 @@ func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.D
 	if err != nil {
 		return nil, nil, err
 	}
+	// A chief its owner turned off is left out of the list, the sidebar and the
+	// switcher (chief_toggle.go). It is not deleted: turning it on lists it again.
+	list = s.withoutOffChief(ctx, list)
 
 	// nil = "live state was not observed": the stored status (liveStatusIndexed).
 	var instIdx map[string]*provision.Instance

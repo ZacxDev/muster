@@ -11,6 +11,7 @@ import (
 	"github.com/ZacxDev/muster/internal/apitokens"
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/devices"
 	"github.com/ZacxDev/muster/internal/flows"
@@ -249,6 +250,12 @@ type Extensions struct {
 	// read. nil: no set is ever generated and the routes answer 404. Its Off
 	// (MUSTER_SUGGEST=off) keeps the routes and generates nothing.
 	Suggest *suggest.Engine
+
+	// ChiefPrefs is each user's chief on/off toggle (internal/chiefpref,
+	// migration 0060; chief_toggle.go). nil (no database): no user has a
+	// stored choice, so the chief is on exactly when the user has a chief
+	// agent (chiefOn), and the Account page cannot change it.
+	ChiefPrefs chiefpref.Store
 
 	// Routes is session routing's store (internal/plugins/routes.go, migration
 	// 0021) and Routing its configuration. Routing nil — MUSTER_SESSION_ROUTING

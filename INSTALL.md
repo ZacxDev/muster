@@ -863,6 +863,11 @@ with `Ctrl-b d`; the agent keeps running and stays in muster.
    guide does not set up.
 8. **Optional: the native Android app** at
    <https://github.com/ZacxDev/muster-android>.
+9. **No chief, on purpose.** muster's *chief* is an optional agent that reports
+   on and manages the rest of the fleet. It is **off by default** and runs in a
+   Kubernetes pod, which this install does not have, so home opens the Agents
+   list and **Account → Chief** says "Not available on this install". Nothing
+   else needs it (`docs/chief.md`).
 
 ---
 
@@ -932,7 +937,8 @@ Then tell the person, briefly:
   Terminal view only, the line at its top says why. **On a Mac** (experimental)
   there is no Terminal view yet: only Claude Code windows whose Rendered view
   resolves can be viewed; shells, Codex and unresolved windows cannot;
-- that `muster doctor` re-checks everything.
+- that `muster doctor` re-checks everything;
+- that the chief is optional and not part of this install (step 9.9).
 
 ---
 

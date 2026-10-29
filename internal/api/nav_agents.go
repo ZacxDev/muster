@@ -41,8 +41,8 @@ func (s *Server) handleNavAgents(w http.ResponseWriter, r *http.Request) {
 
 // homeTarget is where `/` sends the viewer: the chief agent's chat (its page
 // on its latest session — the link a list draws, agentPageHref), or the Agents
-// list when the viewer has no chief (no agent store, no chief, or a read that
-// failed: logged).
+// list when the viewer has no chief (no agent store, no chief, a chief turned
+// off — chiefOn — or a read that failed: logged).
 //
 // 🔴 THE CHIEF IS primaryChief — THE SIDEBAR'S, NOT chiefAgent's. chiefAgent
 // knows only the "chief" label; the sidebar pins a relabelled reserved slug
@@ -66,6 +66,13 @@ func (s *Server) homeTarget(r *http.Request) string {
 	}
 	chief, ok := primaryChief(list)
 	if !ok {
+		return "/agents"
+	}
+	// A chief its owner turned off is not home (chief_toggle.go).
+	if on, err := s.chiefOn(ctx, requestOwner(ctx), list); err != nil || !on {
+		if err != nil {
+			s.logger.Printf("home: read the chief toggle: %v (opening the Agents list)", err)
+		}
 		return "/agents"
 	}
 	return s.agentPageHref(ctx, chief)

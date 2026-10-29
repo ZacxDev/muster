@@ -60,6 +60,7 @@ import (
 	"github.com/ZacxDev/muster/internal/attention"
 	"github.com/ZacxDev/muster/internal/authz"
 	"github.com/ZacxDev/muster/internal/ccpool"
+	"github.com/ZacxDev/muster/internal/chiefpref"
 	"github.com/ZacxDev/muster/internal/connectors"
 	"github.com/ZacxDev/muster/internal/credentials"
 	"github.com/ZacxDev/muster/internal/db"
@@ -450,6 +451,11 @@ func buildApp(ctx context.Context, cfg config, logger *log.Logger) (*app, error)
 		ext.Suggest.Prefs = suggest.NewPGPrefs(a.pool)
 		// The counts and the auto-pause survive a restart (migration 0049).
 		ext.Suggest.Usage = suggest.NewPGUsage(a.pool)
+	}
+	if a.pool != nil {
+		// The chief's per-user on/off toggle (migration 0060). Off by default
+		// for a user with no chief agent; see internal/api chief_toggle.go.
+		ext.ChiefPrefs = chiefpref.NewPG(a.pool)
 	}
 	logger.Print(suggestBootLine(cfg))
 	ccPool, err := buildClaudePool(cfg, plane, marks)

@@ -1131,7 +1131,12 @@ func (s *Server) mentionAsker(ctx context.Context, owner int64) attention.Asker 
 				}
 			}
 			if chief, ok := resolveChief(mine); ok {
-				return callerOfAgent(chief).asker
+				// A chief its owner turned off raises nothing (chief_toggle.go).
+				if on, err := s.chiefOn(ctx, owner, mine); err == nil && on {
+					return callerOfAgent(chief).asker
+				} else if err != nil {
+					s.logger.Printf("task routing: read owner %d's chief toggle for the mention's asker: %v", owner, err)
+				}
 			}
 		} else {
 			s.logger.Printf("task routing: list agents for the mention's asker: %v", err)
