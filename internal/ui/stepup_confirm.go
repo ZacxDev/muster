@@ -129,6 +129,7 @@ func confirmDialog(s *StepUpView) g.Node {
 		g.Attr("data-fresh-for", strconv.FormatInt(s.FreshFor, 10)),
 		g.Attr("data-how-password", stepUpHowPassword),
 		g.Attr("data-how-passkey", stepUpHowPasskey),
+		g.Attr("data-options-timeout", strconv.Itoa(stepUpNetTimeout)),
 		Class("w-[calc(100%-2rem)] max-w-sm rounded-2xl bg-s1 p-0 text-fg ring-1 ring-line backdrop:bg-black/60"),
 		Form(
 			ID("term-confirm-form"),
@@ -185,6 +186,12 @@ func confirmDialog(s *StepUpView) g.Node {
 		),
 	)
 }
+
+// stepUpNetTimeout is how long, in ms, the dialog waits on a passkey request
+// (/options, /verify) before treating it as failed (stepUpScript's
+// withTimeout): GoTrue answers these in well under a second, so ten seconds
+// is a request that is not coming back.
+const stepUpNetTimeout = 10000
 
 // The passkey button's label, and what it says while its challenge is being
 // fetched (stepUpScript's pkWaiting).
@@ -491,17 +498,50 @@ window.musterStepUp = (function () {
   }
   // Opened by its summary, the password takes focus, so the keyboard is up.
   pwBox.addEventListener('toggle', function () { if (pwBox.open && dlg.open && !pwToggle.hidden) pw.focus(); });
+  // 🔴 EVERY WAIT ON THE NETWORK HAS AN END. A request that never answers
+  // (a dead mobile link; measured in CI, a fetch left paused when the test
+  // harness took its request interception away) left the passkey button inert
+  // — "Checking for your passkey…" — for the rest of the open. withTimeout
+  // settles p within the dialog's limit (data-options-timeout, ms; the
+  // server's stepUpNetTimeout), rejecting with a TimeoutError: a fetch that
+  // takes longer is treated as a failed one, and the password opens.
+  function netTimeout() { return +dlg.getAttribute('data-options-timeout') || 10000; }
+  function withTimeout(p) {
+    return new Promise(function (resolve, reject) {
+      var t = setTimeout(function () {
+        var e = new Error('the request took too long'); e.name = 'TimeoutError'; reject(e);
+      }, netTimeout());
+      p.then(function (v) { clearTimeout(t); resolve(v); }, function (e) { clearTimeout(t); reject(e); });
+    });
+  }
   // prefetch resolves to '' when a passkey can be offered, else the reason it
-  // cannot (an UNAVAILABLE value), or null when a newer prefetch replaced it.
+  // cannot (an UNAVAILABLE value: options-failed:timeout when it took longer
+  // than withTimeout allows), or null when a newer prefetch replaced it.
   function prefetch(trigger) {
     var mine = pre = fetchOptions(trigger);
-    return mine.promise.then(function (o) {
+    return withTimeout(mine.promise).then(function (o) {
       if (pre !== mine) return null;
       var d = o.data || {};
       var why = !o.ok ? 'options-failed:' + o.status : !d.available ? 'not-available' : !d.challenge_id ? 'no-challenge' : '';
       if (why) pre = null;
       return why;
-    }, function () { if (pre !== mine) return null; pre = null; return 'options-failed:network'; });
+    }, function (e) {
+      if (pre !== mine) return null;
+      pre = null;
+      return e && e.name === 'TimeoutError' ? 'options-failed:timeout' : 'options-failed:network';
+    });
+  }
+  // settled is a prefetch's answer applied to the button: inert no longer,
+  // and — when no passkey can be had — the password opened. A prefetch that
+  // a newer one replaced (null) leaves the button to that one; with none in
+  // flight (pre null: the dialog closed, or nothing replaced it) the button is
+  // live again, so there is no path on which it stays inert.
+  function settled(r, focusPw) {
+    if (r === null) { if (!pre) pkWaiting(false); return; }
+    pkWaiting(false);
+    if (!dlg.open || !r) return;
+    offer(false); unavailable(r);
+    if (focusPw) pw.focus();
   }
   // unavailable records why the passkey is NOT offered, on the dialog
   // (data-passkey-unavailable), so a dialog that offers only the password says
@@ -618,14 +658,9 @@ window.musterStepUp = (function () {
     if (missing) { pw.focus(); return; }
     pkWaiting(true);
     pkBtn.focus();
-    prefetch('open').then(function (r) {
-      if (r === null) return;
-      pkWaiting(false);
-      if (!dlg.open) return;
-      // The account has no passkey, or the options call failed: the password
-      // opens, as the only option, and takes focus.
-      if (r) { offer(false); unavailable(r); pw.focus(); }
-    });
+    // The account has no passkey, or the options call failed or timed out:
+    // the password opens, as the only option, and takes focus.
+    prefetch('open').then(function (r) { settled(r, true); });
   }
 
   // 🔴 EVERY CLOSE BUT finish's IS A CANCEL: Cancel, Escape (the dialog's own
@@ -644,7 +679,7 @@ window.musterStepUp = (function () {
   // old close's, and changes nothing.
   dlg.addEventListener('close', function () {
     if (dlg.open) return;
-    done = []; pre = null; unlift(); unavailable('');
+    done = []; pre = null; unlift(); unavailable(''); pkWaiting(false);
   });
   form.addEventListener('submit', function (ev) {
     ev.preventDefault();
@@ -716,7 +751,7 @@ window.musterStepUp = (function () {
       var mine = pre;
       ev.options_trigger = mine.trigger || '';
       var o;
-      try { o = await mine.promise; } catch (e) { ev.options_status = 'network'; if (pre === mine) pre = null; throw e; }
+      try { o = await withTimeout(mine.promise); } catch (e) { ev.options_status = e && e.name === 'TimeoutError' ? 'timeout' : 'network'; if (pre === mine) pre = null; throw e; }
       ev.options_status = o.status;
       if (!o.ok || !o.data.available || !o.data.challenge_id) {
         if (pre === mine) pre = null;
@@ -730,7 +765,7 @@ window.musterStepUp = (function () {
       var body = { challenge_id: o.data.challenge_id, credential: mpkCredJSON(cred) };
       if (pre === mine) pre = null;
       spent = true;
-      var v = await mpkPost(pkBase + '/verify', body);
+      var v = await withTimeout(mpkPost(pkBase + '/verify', body));
       ev.verify = v.status;
       if (!v.ok) {
         fail(v.data.error || 'That passkey was not accepted.');
@@ -750,7 +785,7 @@ window.musterStepUp = (function () {
       spent = false;
       finish(v.data.fresh_for);
     } catch (e) {
-      if (spent && !ev.verify) ev.verify = 'network';
+      if (spent && !ev.verify) ev.verify = e && e.name === 'TimeoutError' ? 'timeout' : 'network';
       // A device that cannot use the passkey leaves the password as the way
       // on, so it is opened; a cancel is the person's, who may tap again.
       if (!mpkCancelled(e)) pwBox.open = true;
@@ -764,11 +799,7 @@ window.musterStepUp = (function () {
       // pre — nothing is fetched (see stepUpScript).
       if (spent && dlg.open && !pkBox.hidden) {
         pkWaiting(true);
-        prefetch('retry').then(function (r) {
-          if (r === null) return;
-          pkWaiting(false);
-          if (r && dlg.open) { offer(false); unavailable(r); }
-        });
+        prefetch('retry').then(function (r) { settled(r, false); });
       }
     }
   });

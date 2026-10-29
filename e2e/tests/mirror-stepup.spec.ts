@@ -991,9 +991,14 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     await expect(passkeyBtn(page)).toBeVisible();
     expect(await options.inPage(), 'a new document, a new open: one call').toBe(1);
     await page.route('**/auth/confirm/passkey/verify', (r) => r.fulfill({ status: 401, json: { error: 'That passkey was not accepted.' } }), { times: 1 });
+    // 🔴 The replacement is fetched WHILE the route above is installed, so it
+    // is awaited before the routes go: unrouteAll while a request is paused
+    // for interception left it unanswered for good (CI, 8014aad2's main run).
+    const replaced = page.waitForResponse((r) => new URL(r.url()).pathname === '/auth/confirm/passkey/options');
     await passkeyBtn(page).click();
     await expect(page.locator('#term-confirm-error')).toContainText('That passkey was not accepted.');
     await expect.poll(options.inPage, { message: 'one replacement after a refused /verify' }).toBe(2);
+    expect((await replaced).status()).toBe(200);
     await page.unrouteAll({ behavior: 'wait' });
     await expect(passkeyBtn(page)).toBeEnabled();
     await passkeyBtn(page).click();
@@ -1209,10 +1214,13 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
       b.challenge_id = '00000000-0000-4000-8000-000000000000';
       await r.continue({ postData: JSON.stringify(b) });
     }, { times: 1 });
+    // The replacement is awaited before the routes go (see the test above).
+    const replacedB = page.waitForResponse((r) => new URL(r.url()).pathname === '/auth/confirm/passkey/options');
     await passkeyBtn(page).click();
     await tapped(1);
     await expect(page.locator('#term-confirm-error')).toContainText('That passkey was not accepted.');
     expect(await options.inPage(), 'a GoTrue refusal fetched one replacement').toBe(2);
+    expect((await replacedB).status()).toBe(200);
     await page.unrouteAll({ behavior: 'wait' });
 
     // B2. GoTrue's own 429 (no field): nothing fetched now.
@@ -1450,6 +1458,49 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     await expect(passkeyBtn(page)).toBeHidden();
     await page.keyboard.press('Escape');
     await expect(dialog(page)).toBeHidden();
+    await page.unrouteAll({ behavior: 'wait' });
+
+    // 8. 🔴 NO WAIT ON THE NETWORK LEAVES THE PASSKEY INERT FOR GOOD. A
+    //    passkey request that never answers (held here) is a failed one after
+    //    the dialog's limit (data-options-timeout, shortened to 1.5 s for the
+    //    test): the button is live again and the password opens, focused.
+    //    (a) the open's own /options; (b) the replacement fetched after a
+    //    refused /verify — the path CI hit on 8014aad2, where it stayed
+    //    "Checking for your passkey…". REGRESSION TEST: red at 8014aad2.
+    const shorten = () => page.evaluate(() => document.getElementById('term-confirm')!.setAttribute('data-options-timeout', '1500'));
+    const releases: (() => void)[] = [];
+    // (a)
+    await shorten();
+    releases.push(await hold('**/auth/confirm/passkey/options'));
+    await page.evaluate(() => { (window as unknown as Run).musterStepUp.ask('', null); });
+    await expect(passkeyBtn(page)).toHaveAttribute('aria-disabled', 'true');
+    await expect(page.locator('#term-confirm-password'), 'an open whose options never answer opens the password').toBeVisible({ timeout: 5000 });
+    await expect(page.locator('#term-confirm-password')).toBeFocused();
+    await expect(passwordToggle(page)).toBeHidden();
+    await expect(passkeyBtn(page)).toBeHidden();
+    await expect(dialog(page)).toHaveAttribute('data-passkey-unavailable', 'options-failed:timeout');
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toBeHidden();
+    // (b)
+    await page.evaluate(() => { (window as unknown as Run).musterStepUp.ask('', null); });
+    await expect(passkeyBtn(page), 'this open\'s options answer').not.toHaveAttribute('aria-disabled', /.*/);
+    await page.route('**/auth/confirm/passkey/verify', (r) => r.fulfill({ status: 401, json: { error: 'That passkey was not accepted.' } }), { times: 1 });
+    releases.push(await hold('**/auth/confirm/passkey/options'));
+    const replacement = page.waitForRequest(isPath('/auth/confirm/passkey/options'));
+    await passkeyBtn(page).click();
+    await expect(page.locator('#term-confirm-error')).toContainText('That passkey was not accepted.');
+    await replacement;
+    await expect(passkeyBtn(page), 'inert while its replacement is fetched').toHaveAttribute('aria-disabled', 'true');
+    await expect(passkeyBtn(page), 'and not for good').not.toHaveAttribute('aria-disabled', /.*/, { timeout: 5000 });
+    await expect(page.locator('#term-confirm-password'), 'the replacement never came: the password opens').toBeVisible();
+    await expect(dialog(page)).toHaveAttribute('data-passkey-unavailable', 'options-failed:timeout');
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toBeHidden();
+    // The held requests go on, and are answered, before the routes go.
+    let drained = 0;
+    page.on('response', (r) => { if (isPath('/auth/confirm/passkey/options')(r)) drained++; });
+    releases.forEach((r) => r());
+    await expect.poll(() => drained, { message: 'both held requests were answered' }).toBe(2);
     await page.unrouteAll({ behavior: 'wait' });
   });
 });
