@@ -1,10 +1,13 @@
 package ui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
 	"golang.org/x/net/html"
+
+	"github.com/ZacxDev/muster/internal/gotrue"
 )
 
 // stepUpNode is the first element under n whose id is id; nil for none.
@@ -84,5 +87,29 @@ func TestTheConfirmDialogPutsThePasswordInACollapse(t *testing.T) {
 	}
 	if pk := stepUpNode(doc, "term-confirm-passkey-box"); pk == nil || !stepUpHas(pk, "hidden") {
 		t.Error("the passkey box is not drawn hidden until the account is known to have a passkey")
+	}
+}
+
+// TestTheDialogsNetworkLimitIsAboveTheServersOwn: the page gives up on a
+// passkey request only after the server could have: a /settings read plus two
+// GoTrue calls in a row, each at its own bound, plus a margin. And the limit
+// has ONE source: the dialog's attribute and the script's fallback both spell
+// stepUpNetTimeout. A page that gave up sooner abandons a /verify the server
+// may still complete.
+func TestTheDialogsNetworkLimitIsAboveTheServersOwn(t *testing.T) {
+	worst := gotrue.SettingsTimeout + 2*gotrue.HTTPTimeout
+	if stepUpNetTimeout <= worst {
+		t.Fatalf("stepUpNetTimeout = %v, not above the server's worst case %v", stepUpNetTimeout, worst)
+	}
+	ms := strconv.FormatInt(stepUpNetTimeout.Milliseconds(), 10)
+	page := renderString(t, StepUpDialog(&StepUpView{ConfirmPath: "/auth/confirm", PasskeyPath: "/auth/confirm/passkey", Window: "12 hours"}))
+	if !strings.Contains(page, `data-options-timeout="`+ms+`"`) {
+		t.Errorf("the dialog does not carry data-options-timeout=%s", ms)
+	}
+	if !strings.Contains(page, `getAttribute('data-options-timeout') || `+ms+`;`) {
+		t.Errorf("the script's fallback is not stepUpNetTimeout (%s ms)", ms)
+	}
+	if strings.Contains(page, "|| 10000") {
+		t.Error("the script still carries the old literal 10000")
 	}
 }

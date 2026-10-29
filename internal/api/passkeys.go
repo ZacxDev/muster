@@ -93,7 +93,7 @@ func (g *gotrueState) passkeysOn(ctx context.Context) bool {
 		return on
 	}
 	g.pk.mu.Unlock()
-	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	cctx, cancel := context.WithTimeout(ctx, gotrue.SettingsTimeout)
 	defer cancel()
 	st, err := g.Client.Settings(cctx, "muster-server")
 	if err != nil {
