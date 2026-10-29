@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Locator, Page } from '@playwright/test';
-import { test, expect, takeNew } from '../lib/fixtures';
+import { test, expect } from '../lib/fixtures';
 import { binDir, dsn, dupLabelsPort, password, repoRoot, versionTerm } from '../lib/env';
 import { serverBinary, startServer, Running } from '../lib/server';
 import { writeFileAtomic } from '../lib/atomic';
@@ -16,20 +16,18 @@ import { writeFileAtomic } from '../lib/atomic';
 //
 // Here, against a REAL muster-server (MUSTER_MIRROR=1) and two REAL
 // muster-mirror processes (the `-tags e2emirror` per-window fake, which plays
-// tmux only): each card's title carries its host when — and only while — the
-// label is not unique, and the page each card opens is titled exactly as the
-// card (header and <title>).
+// tmux only): each entry's title carries its host when — and only while — the
+// label is not unique, and the page each entry opens is titled exactly as the
+// entry (header and <title>). The entries were the Agents page's cards; they
+// are the sidebar's rows now (whose title is the whole label).
 //
-// 🔴 A REGRESSION TEST: on the commit before it, both cards' titles read
+// 🔴 A REGRESSION TEST: on the commit before it, both entries' titles read
 // `mango:1` and the "two distinct titles" assertion fails.
 
 const origin = `http://localhost:${dupLabelsPort}`;
 const stamp = Date.now().toString(36);
 const hostA = 'e2e-dupa-' + stamp;
 const hostB = 'e2e-dupb-' + stamp;
-// A third host whose name CONTAINS host A's: what a substring match cannot tell
-// apart (the second test).
-const hostC = hostA + 'book';
 const mirrorBin = path.join(binDir, 'muster-mirror-e2e-dup');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mirror-dup-labels-'));
 const transcript = path.join(dir, 'cccccccc-0001.jsonl');
@@ -53,8 +51,6 @@ const aMango: Win = { session: 'mango', id: '@1', index: 1, active: true, comman
 const aKiwi: Win = { session: 'kiwi', id: '@3', index: 2, active: true, command: 'zsh', activity: now - 600 };
 // Host B: mango:1 is a shell (its card opens the TERMINAL).
 const bMango: Win = { session: 'mango', id: '@5', index: 1, active: true, command: 'zsh', activity: now - 120 };
-// Host C: one window.
-const cFig: Win = { session: 'fig', id: '@2', index: 1, active: true, command: 'zsh', activity: now - 300 };
 
 const windowsFile = (host: string) => path.join(dir, host + '.windows');
 function writeWindows(host: string, ws: Win[]) {
@@ -90,7 +86,6 @@ function startHost(host: string, token: string) {
 }
 
 let tokenB = '';
-let tokenC = '';
 test.beforeAll(async () => {
   execFileSync('go', ['build', '-tags', 'e2emirror', '-o', mirrorBin, './cmd/muster-mirror'], { cwd: repoRoot, stdio: 'inherit' });
   server = await startServer(versionTerm, dupLabelsPort, {
@@ -106,8 +101,6 @@ test.beforeAll(async () => {
   writeWindows(hostB, [bMango]);
   startHost(hostA, mint(hostA));
   tokenB = mint(hostB); // host B connects later, inside the test
-  writeWindows(hostC, [cFig]);
-  tokenC = mint(hostC); // host C connects in the second test
 });
 
 test.afterAll(async () => {
@@ -123,12 +116,28 @@ test.afterAll(async () => {
   fs.rmSync(mirrorBin, { force: true });
 });
 
-const cardsOf = (page: Page, host: string) => page.locator(`#agents-list article[data-mirror-card]:has([data-mirror-badge][aria-label="Mirrored · ${host}"])`);
-const mangoCard = (page: Page, host: string) => cardsOf(page, host).filter({ has: page.locator('[data-mirror-label]', { hasText: /^mango:1$/ }) });
+// A host's rows in the sidebar's list. The trailing '&' makes the host match
+// whole.
+const cardsOf = (page: Page, host: string) => page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][href*="host=${encodeURIComponent(host)}&"]`);
+const sessionRow = (page: Page, host: string, session: string) => page.locator(`#sidebar-agents-list a[data-nav-agent="mirror"][href*="host=${encodeURIComponent(host)}&session=${session}&"]`);
+const mangoCard = (page: Page, host: string) => sessionRow(page, host, 'mango');
+// A row's title as shown: its text, which is its whole label (and its title).
+const rowTitle = async (row: Locator): Promise<string> => {
+  const [text, title] = await row.evaluate((e) => [(e.textContent ?? '').trim(), e.getAttribute('title') ?? '']);
+  return text === title ? text : `text ${JSON.stringify(text)} ≠ title ${JSON.stringify(title)}`;
+};
 
-// The TITLE as shown: the name element's text, minus the raw tmux session name
-// a window's PAGE draws small beside a label (it is not part of the title; a
-// card draws none).
+// openSidebar opens the sidebar's drawer (the phone) on the board, a page of
+// its own: its list loads on that open, and refreshes itself while open.
+async function openSidebar(page: Page) {
+  await page.goto(origin + '/tasks');
+  await page.locator('#sidebar-open').tap();
+  await expect(page.locator('#sidebar')).toBeInViewport({ ratio: 0.99 });
+}
+
+// The TITLE as shown on a window's own PAGE: the name element's text, minus
+// the raw tmux session name the page draws small beside a label (it is not
+// part of the title).
 async function shownTitle(scope: Locator): Promise<string> {
   return scope.locator('[data-mirror-name]').first().evaluate((el) => {
     const c = el.cloneNode(true) as HTMLElement;
@@ -139,180 +148,99 @@ async function shownTitle(scope: Locator): Promise<string> {
 
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, storageState: { cookies: [], origins: [] } });
 
-test('two hosts with the same label: two distinct titles, live, and each page is titled as its card', async ({ page }) => {
+test('two hosts with the same label: two distinct titles, live, and each page is titled as its row', async ({ page }) => {
   await page.goto(origin + '/login');
   await page.fill('#muster-password', password);
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  await page.goto(origin + '/agents');
+  await expect
+    .poll(async () => (await (await page.request.get(origin + '/ui/nav/agents')).text()).split(`host=${hostA}&amp;`).length - 1, { message: `host A's rows (muster-mirror log:\n${mirrorLog})`, timeout: 20_000 })
+    .toBe(2);
+  await openSidebar(page);
 
   // Host A alone: its label is unique, so its title is unchanged.
-  await expect(cardsOf(page, hostA), `host A's cards (muster-mirror log:\n${mirrorLog})`).toHaveCount(2, { timeout: 20_000 });
+  await expect(cardsOf(page, hostA), `host A's rows (muster-mirror log:\n${mirrorLog})`).toHaveCount(2, { timeout: 20_000 });
   const a = mangoCard(page, hostA);
-  await expect.poll(() => shownTitle(a)).toBe('mango:1');
-  await expect(a.locator('[data-mirror-qualifier]')).toHaveCount(0);
+  await expect.poll(() => rowTitle(a)).toBe('mango:1');
 
-  // Host B connects, listing "mango:1" too. With NO reload, both cards now
+  // Host B connects, listing "mango:1" too. With NO reload, both rows now
   // carry their host in the TITLE; the unique kiwi:2 does not.
   await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
   startHost(hostB, tokenB);
   const b = mangoCard(page, hostB);
-  await expect(b, `host B's card (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
-  // Its arrival lands among cards in view, so it waits behind the "N new ↑"
-  // pill (agents_filter.go hold) — whether it does depends on how much of the
-  // list fits above the fold, which the filter bar's height decides. Take it.
-  await takeNew(page);
-  await expect.poll(() => shownTitle(a), { timeout: 20_000 }).toBe(`mango:1 · ${hostA}`);
-  await expect.poll(() => shownTitle(b)).toBe(`mango:1 · ${hostB}`);
-  const titles = [await shownTitle(a), await shownTitle(b)];
+  await expect(b, `host B's row (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
+  await expect.poll(() => rowTitle(a), { timeout: 20_000 }).toBe(`mango:1 · ${hostA}`);
+  await expect.poll(() => rowTitle(b)).toBe(`mango:1 · ${hostB}`);
+  const titles = [await rowTitle(a), await rowTitle(b)];
   expect(new Set(titles).size, `two DISTINCT titles: ${titles}`).toBe(2);
-  const kiwi = cardsOf(page, hostA).filter({ hasNot: page.locator('[data-mirror-label]') });
-  await expect.poll(() => shownTitle(kiwi)).toBe('kiwi:2');
+  const kiwi = sessionRow(page, hostA, 'kiwi');
+  await expect.poll(() => rowTitle(kiwi)).toBe('kiwi:2');
   expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
 
-  // The mirrored mark is visible on the phone and names its host; the host
-  // itself is visible text in the footer.
+  // Each row fits the phone, and names its host (the palette's last word).
   for (const [c, h] of [[a, hostA], [b, hostB]] as const) {
-    const badge = c.locator('[data-mirror-badge]');
-    await expect(badge).toBeVisible();
-    await expect(badge).toHaveAttribute('aria-label', `Mirrored · ${h}`);
-    await expect(c.locator('[data-mirror-host]')).toHaveText(h);
+    expect((await c.getAttribute('data-switcher-words'))!.split(' ').pop(), 'the row names its host').toBe(h);
     const box = (await c.boundingBox())!;
-    expect(box.x + box.width, 'the card fits the phone').toBeLessThanOrEqual(390);
+    expect(box.x + box.width, 'the row fits the phone').toBeLessThanOrEqual(390);
   }
   const [sw, cw] = await page.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
   expect(sw, 'no sideways scroll').toBeLessThanOrEqual(cw);
 
-  // The session switcher's search (which replaced the list's search box)
-  // finds both by their codename, each titled apart by its host.
-  await page.locator('#switcher-search-open').click();
+  // The command palette (the sidebar's magnifier) finds both by their
+  // codename, each titled apart by its host.
+  await page.locator('#sidebar-search').tap();
   await page.locator('#switcher-search-input').fill('mango');
   const found = await page.locator('#switcher-search-results [role="option"] > span:first-child').allTextContents();
   expect(found, 'two mango windows, told apart by their hosts').toEqual(expect.arrayContaining([`mango:1 · ${hostA}`, `mango:1 · ${hostB}`]));
   await page.keyboard.press('Escape');
 
-  // Each card opens a page titled EXACTLY as the card: A's (Claude Code) the
+  // Each row opens a page titled EXACTLY as the row: A's (Claude Code) the
   // rendered view, B's (a shell) the terminal.
-  const aTitle = await shownTitle(a);
-  await a.locator('a').first().click();
+  const aTitle = await rowTitle(a);
+  await a.tap();
   await page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('host') === hostA);
   await expect.poll(() => shownTitle(page.locator('header h1'))).toBe(aTitle);
   await expect(page).toHaveTitle(`${aTitle} · Mirrored · muster`);
   await expect(page.locator('header [data-term-badge]')).toContainText(`Mirrored · ${hostA}`);
 
-  await page.goto(origin + '/agents');
-  const bTitle = await shownTitle(mangoCard(page, hostB));
+  await openSidebar(page);
+  const bTitle = await rowTitle(mangoCard(page, hostB));
   expect(bTitle).toBe(`mango:1 · ${hostB}`);
-  await mangoCard(page, hostB).locator('a').first().click();
+  await mangoCard(page, hostB).tap();
   await page.waitForURL((u) => u.pathname === '/mirror/terminal' && u.searchParams.get('host') === hostB);
   await expect.poll(() => shownTitle(page.locator('header h1'))).toBe(bTitle);
   await expect(page).toHaveTitle(`Terminal · ${bTitle} · muster`);
   expect(aTitle).not.toBe(bTitle);
 
-  // The clash goes away (host B closes its mango window): A's card is plain
+  // The clash goes away (host B closes its mango window): A's row is plain
   // "mango:1" again, live.
-  await page.goto(origin + '/agents');
-  await expect.poll(() => shownTitle(mangoCard(page, hostA)), { timeout: 20_000 }).toBe(`mango:1 · ${hostA}`);
+  await openSidebar(page);
+  await expect.poll(() => rowTitle(mangoCard(page, hostA)), { timeout: 20_000 }).toBe(`mango:1 · ${hostA}`);
   writeWindows(hostB, [{ ...bMango, session: 'other', id: '@6' }]);
-  await expect.poll(() => shownTitle(mangoCard(page, hostA)), { timeout: 20_000 }).toBe('mango:1');
+  await expect.poll(() => rowTitle(mangoCard(page, hostA)), { timeout: 20_000 }).toBe('mango:1');
   await expect(mangoCard(page, hostB)).toHaveCount(0);
 });
 
-// A HOST TAB MATCHES EXACTLY. Host C's name contains host A's ("…book"), so a
-// substring match on host A shows C's window too — which is how choosing host
-// "mac" once showed "macbook". The tab filters on the whole host field.
-//
-// 🔴 A REGRESSION TEST (ported from the host dropdown the tabs replaced): with
-// the tab's term made a substring (internal/ui/agents_filter.go, `exact: true`
-// dropped), C's card stays visible under A's tab.
-const hostTab = (page: Page, h: string) => page.locator(`#agents-hosts [role="tab"][data-host="${h}"]`);
-test('a host tab matches exactly', async ({ page }) => {
-  await page.goto(origin + '/login');
-  await page.fill('#muster-password', password);
-  await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
-  startCOnce();
-  await page.goto(origin + '/agents');
-  await expect(cardsOf(page, hostC), `host C's card (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
-  await expect(cardsOf(page, hostA)).toHaveCount(2);
-  await takeNew(page);
-  const visible = (h: string) => cardsOf(page, h).filter({ visible: true });
-  await expect(hostTab(page, hostC)).toHaveCount(1, { timeout: 20_000 });
-
-  // Chosen: host A's two cards, and NOT host C's.
-  await hostTab(page, hostA).tap();
-  await expect(visible(hostA)).toHaveCount(2);
-  await expect(visible(hostC), 'host C contains host A but is not host A').toHaveCount(0);
-  await expect(hostTab(page, hostA).locator('[data-tab-count]')).toHaveText('2');
-  // Positive control: choosing C shows C, so the hiding above is the match and
-  // not a card that never rendered.
-  await hostTab(page, hostC).tap();
-  await expect(visible(hostC)).toHaveCount(1);
-  await expect(visible(hostA)).toHaveCount(0);
-
-  // The chosen tab survives a reload, still exact.
-  await hostTab(page, hostA).tap();
-  await page.reload();
-  await expect(hostTab(page, hostA)).toHaveAttribute('aria-selected', 'true', { timeout: 20_000 });
-  await expect(visible(hostC)).toHaveCount(0);
-  await expect(visible(hostA)).toHaveCount(2);
-  await hostTab(page, '').tap();
-});
+// (Two tests here pinned the retired Agents list's HOST TABS: that a tab
+// matched its host exactly — host C's name contains host A's — and that a list
+// refresh never undid the chosen tab. The tabs are gone; the palette finds an
+// entry by its host's name instead.)
 
 async function signIn(page: Page) {
   await page.goto(origin + '/login');
   await page.fill('#muster-password', password);
   await Promise.all([page.waitForURL((u) => !u.pathname.startsWith('/login')), page.click('button[type=submit]')]);
 }
-// startCOnce connects host C the first time a test needs it (so a test run
-// alone still has it).
-let cStarted = false;
-function startCOnce() {
-  if (cStarted) return;
-  cStarted = true;
-  startHost(hostC, tokenC);
-}
-
-// A LIST REFRESH NEVER UNDOES A CHOSEN TAB: the tabs are rebuilt on every
-// refresh, which must not reset the chosen one. (Its sibling — a refresh never
-// moves what is being typed in the search box — went with the box.)
-async function openRefreshable(page: Page) {
-  await signIn(page);
-  startCOnce();
-  await page.goto(origin + '/agents');
-  await expect(cardsOf(page, hostC), `host C's card (log:\n${mirrorLog})`).toHaveCount(1, { timeout: 20_000 });
-  await takeNew(page);
-  const visible = (h: string) => cardsOf(page, h).filter({ visible: true });
-  await expect(hostTab(page, hostC)).toHaveCount(1, { timeout: 20_000 });
-  const kiwiTitle = () => shownTitle(cardsOf(page, hostA).filter({ hasNot: page.locator('[data-mirror-label]') }));
-  await page.evaluate(() => ((window as unknown as { __noReload: number }).__noReload = 1));
-  return { visible, kiwiTitle };
-}
-
-test('a refresh never undoes a chosen tab', async ({ page }) => {
-  const { visible, kiwiTitle } = await openRefreshable(page);
-  await hostTab(page, hostA).tap();
-  await expect(visible(hostA)).toHaveCount(2);
-  await expect(visible(hostC)).toHaveCount(0);
-  writeWindows(hostA, [aMango, { ...aKiwi, index: 5 }]);
-  await expect.poll(kiwiTitle, { message: `the list refreshed (log:\n${mirrorLog})`, timeout: 20_000 }).toBe('kiwi:5');
-  await expect(hostTab(page, hostA), 'the refresh did not undo the tab').toHaveAttribute('aria-selected', 'true');
-  await expect(visible(hostA)).toHaveCount(2);
-  await expect(visible(hostC)).toHaveCount(0);
-  expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload), 'no reload happened').toBe(1);
-  await hostTab(page, '').tap();
-  writeWindows(hostA, [aMango, aKiwi]);
-});
-
-// ONE HOST, ONE CODENAME, TWO SESSIONS — and no raw session name on the card.
-// The card no longer draws the raw tmux session beside a codename (an operator
+// ONE HOST, ONE CODENAME, TWO SESSIONS — and no raw session name on the row.
+// The entry does not draw the raw tmux session beside a codename (an operator
 // ask: the resolved title only), so what tells two "violet:1" windows of ONE
 // host apart is their qualifier: the tmux address (mirror.qualify), part of the
-// title. A codename no other window shares carries no qualifier, and its card
+// title. A codename no other window shares carries no qualifier, and its row
 // spells no session name at all.
 //
-// 🔴 Red before: each labelled card also drew its session name (`scratch7`,
-// `scratch9`) muted beside the title, so the "no raw session text" assertions
-// fail there.
-test('two sessions of one host given one codename: two distinct titles, and no raw session name on a labelled card', async ({ page }) => {
+// 🔴 Red before: each labelled card (the entry then) also drew its session
+// name (`scratch7`, `scratch9`) muted beside the title, so the "no raw session
+// text" assertions fail there.
+test('two sessions of one host given one codename: two distinct titles, and no raw session name on a labelled row', async ({ page }) => {
   const hostD = 'e2e-dupd-' + stamp;
   // The codenames are written before host D starts; hosts A–C have none of
   // these sessions, so their titles are unchanged.
@@ -324,20 +252,19 @@ test('two sessions of one host given one codename: two distinct titles, and no r
   ]);
   startHost(hostD, mint(hostD));
   await signIn(page);
-  await page.goto(origin + '/agents');
-  await expect(cardsOf(page, hostD), `host D's cards (log:\n${mirrorLog})`).toHaveCount(3, { timeout: 20_000 });
-  await takeNew(page);
-  const violet = cardsOf(page, hostD).filter({ has: page.locator('[data-mirror-label]', { hasText: /^violet:1$/ }) });
-  await expect(violet).toHaveCount(2);
-  const titles = (await violet.evaluateAll((els) => els.map((e) => (e.querySelector('[data-mirror-name]')?.textContent ?? '').trim()))).sort();
+  await expect
+    .poll(async () => (await (await page.request.get(origin + '/ui/nav/agents')).text()).split(`host=${hostD}&amp;`).length - 1, { message: `host D's rows (log:\n${mirrorLog})`, timeout: 20_000 })
+    .toBe(3);
+  await openSidebar(page);
+  await expect(cardsOf(page, hostD), `host D's rows (log:\n${mirrorLog})`).toHaveCount(3, { timeout: 20_000 });
+  const violet = [sessionRow(page, hostD, 'scratch7'), sessionRow(page, hostD, 'scratch8')];
+  const titles = (await Promise.all(violet.map(rowTitle))).sort();
   expect(titles, 'each carries its tmux address as its qualifier').toEqual(['violet:1 · scratch7:1', 'violet:1 · scratch8:1']);
-  const amber = cardsOf(page, hostD).filter({ has: page.locator('[data-mirror-label]', { hasText: /^amber:1$/ }) });
-  await expect(amber.locator('[data-mirror-name]')).toHaveText('amber:1');
-  await expect(amber.locator('[data-mirror-qualifier]')).toHaveCount(0);
-  for (const c of [amber, violet.first(), violet.last()]) await expect(c.locator('[data-mirror-session]')).toHaveCount(0);
-  expect(await amber.innerText(), 'a unique codename\'s card spells no session name').not.toContain('scratch9');
-  // The violet cards spell their session ONLY in the qualifier, once each.
-  for (const c of [violet.first(), violet.last()]) {
+  const amber = sessionRow(page, hostD, 'scratch9');
+  expect(await rowTitle(amber)).toBe('amber:1');
+  expect(await amber.innerText(), 'a unique codename\'s row spells no session name').not.toContain('scratch9');
+  // The violet rows spell their session ONLY in the qualifier, once each.
+  for (const c of violet) {
     const text = await c.innerText();
     expect((text.match(/scratch[78]/g) ?? []).length, `one mention, the qualifier's: ${text}`).toBe(1);
   }

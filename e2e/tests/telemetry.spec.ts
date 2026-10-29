@@ -2,7 +2,7 @@ import http from 'node:http';
 import { AddressInfo } from 'node:net';
 import { test, expect } from '../lib/fixtures';
 import { telemetryPort } from '../lib/env';
-import { MirrorRig, cc } from '../lib/mirrorhost';
+import { MirrorRig, cc, entryMatches, mirroredEntries } from '../lib/mirrorhost';
 
 // OPENING A SESSION, TRACED (docs/telemetry.md), against a REAL muster-server
 // and a REAL muster-mirror (the e2emirror build: only tmux is faked), with
@@ -181,10 +181,10 @@ test('the document names its server trace, and the open is one trace from the pa
   // fetch WITH a query does arrive — as a fetch span and as a resource entry
   // — each with its URL cut at the '?'. Without that, "no query anywhere" is
   // also what a page that sent no URLs at all would show.
-  await page.evaluate(() => fetch('/ui/agents?q=querysecret7'));
+  await page.evaluate(() => fetch('/ui/nav/agents?q=querysecret7'));
   await expect
-    .poll(() => urlsSent().filter((u) => /\/ui\/agents$/.test(u.url)).map((u) => u.kind).sort().join(','), {
-      message: 'a fetch span and a resource entry for /ui/agents arrived, query cut',
+    .poll(() => urlsSent().filter((u) => /\/ui\/nav\/agents$/.test(u.url)).map((u) => u.kind).sort().join(','), {
+      message: 'a fetch span and a resource entry for /ui/nav/agents arrived, query cut',
       timeout: 20_000,
     })
     .toMatch(/resource.*span|span.*resource/);
@@ -339,7 +339,9 @@ test('a warm pass that opens a watch during an open is counted on it', async ({ 
   await expect.poll(() => rig.log.includes('muster-mirror: connected to '), { message: `the host connected (log:\n${rig.log})`, timeout: 20_000 }).toBe(true);
   await rig.login(page);
   await expect
-    .poll(async () => ((await (await page.request.get(rig.origin + '/ui/agents')).text()).match(/data-mirror-claude/g) || []).length, { timeout: 20_000 })
+    // The sidebar's rows (GET /ui/nav/agents): both windows, online, each a
+    // row that opens its Rendered view.
+    .poll(async () => mirroredEntries(await (await page.request.get(rig.origin + '/ui/nav/agents')).text()).filter((e) => e.state === 'online' && e.markup.includes(`host=${rig.host}`) && entryMatches(e.markup, 'data-mirror-claude')).length, { timeout: 20_000 })
     .toBe(2);
   const warmSockets: string[] = [];
   page.on('websocket', (ws) => { if (ws.url().includes('warm=1')) warmSockets.push(ws.url()); });
