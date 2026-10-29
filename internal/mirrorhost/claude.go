@@ -131,6 +131,11 @@ type ClaudePane struct {
 	// that answer's time (Unix ms, host clock; turnend.go); 0 otherwise. Not
 	// on the wire: the host's limit reads it (hostLimitOf).
 	ReplyAt int64
+	// LiveCopy is the session id of another transcript of this conversation,
+	// in the same project directory, that is still running elsewhere
+	// (livecopy.go: set by Tmux.Windows when its LiveCopies is set); "" for
+	// none.
+	LiveCopy string
 	// Source says how Transcript was found: SourcePaneMap, SourceSessions or
 	// SourceGuessed (see ClaudeLocator) — for a Hermes pane, SourceBreadcrumb
 	// or SourceProcess.

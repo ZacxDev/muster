@@ -457,7 +457,8 @@ var newTmuxBackend = tmuxBackend
 // map in paneMapDir ("" = none) and its Hermes windows resolved from hermes.
 func tmuxBackend(socket, socketPath, paneMapDir string, hermes *mirrorhost.HermesSource) mirrorhost.Backend {
 	return mirrorhost.Tmux{Socket: socket, SocketPath: socketPath,
-		Claude: mirrorhost.ClaudeLocator{PaneMapDir: paneMapDir}, Hermes: hermes}
+		Claude: mirrorhost.ClaudeLocator{PaneMapDir: paneMapDir}, Hermes: hermes,
+		LiveCopies: &mirrorhost.LiveCopies{}}
 }
 
 // printWindows is `-list -windows`: every window this host would register — or,

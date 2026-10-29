@@ -60,6 +60,15 @@ you were in. Already inside tmux,
   2.1.289). Without a fallback the tmux window closes with it; with one, a new
   conversation starts instead.
 
+**Quit it first.** `claude --resume` of a conversation that is still open in
+another client (the VS Code extension, another terminal) does not attach to it:
+Claude Code copies the conversation into a NEW session and carries on there.
+muster mirrors that copy, and your messages from muster go to it, not to the
+client you left open. When the host can see that this happened, the window's
+card and its Rendered and Terminal views say **Running in two places** and
+name the other session's id. See [Two copies of one
+conversation](#two-copies-of-one-conversation).
+
 **Resuming an ended session** (`-resume-spawn`, below) is the one way a host
 starts a Claude Code process itself. It is off by default, needs settings on
 both the host and the server, and the one-prompt install sets neither.
@@ -512,6 +521,30 @@ process's own environment when that is an absolute path, else that process's
 own `~/.claude` (see the cases above for the fallbacks). `muster-mirror -list -claude` prints one row per Claude Code window,
 ending in how its transcript was resolved: `pane-map`, `sessions` or `guessed`.
 `-list -windows` prints every window that would be registered.
+
+### Two copies of one conversation
+
+A copy made by `claude --resume` starts with the same rows as the original,
+each with the same `uuid` and `timestamp`; only `sessionId` differs. No row
+names the session it was copied from, so the host cannot tell which of the two
+is the copy, and the warning does not claim to. The host compares the first
+row that has both a `uuid` and a `timestamp` (the conversation's origin) with
+the other transcripts in the same project directory. It warns on a window when
+another transcript with the same origin is still running elsewhere, meaning
+either:
+
+- a running Claude Code process other than the window's own names it in its
+  sessions file (`sessions/<pid>.json`, the same pid and start time); or
+- no sessions file names it, and its last message is less than 5 minutes old
+  (`LiveCopyWindow` in `internal/mirrorhost/livecopy.go`). A recent change time
+  alone does not count: Claude Code appends bookkeeping rows to transcripts it
+  is not running.
+
+A `/bg` job's transcript is a copy too, but one you asked for: it is never
+warned about. The host reads only each transcript's first rows, once, and
+lists a project directory at most every 15 seconds. When you close the other
+copy, the warning clears on the next listing, or within 5 minutes when no
+sessions file named the other copy.
 
 ## Read-only, interactive, and sending
 

@@ -110,6 +110,10 @@ type MirrorViewView struct {
 	// SuggestPaused: the viewer's suggestions are auto-paused here
 	// (ComposerView.SuggestPaused).
 	SuggestPaused bool
+	// LiveCopy is the warning that this conversation also runs elsewhere
+	// under another session id (mirror.SessionView.LiveCopyWarning), "" for
+	// none: a banner under the header (livecopy.go).
+	LiveCopy string
 }
 
 // MirrorReadOnlyNote is what a read-only host's composer says instead of
@@ -219,6 +223,7 @@ func MirrorViewPage(v MirrorViewView) g.Node {
 					chatIndexButton("mv-log"),
 					viewToggle(true, ref.ViewPath(), ref.TerminalPath()),
 				),
+				liveCopyBanner("mv-live-copy", v.LiveCopy),
 				Div(
 					ID("mv-error"),
 					g.Attr("role", "alert"),

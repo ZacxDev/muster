@@ -109,6 +109,10 @@ type AgentTerminalView struct {
 	// header: a mirrored window that opens in the terminal says why instead of
 	// silently falling back. Never set together with RenderedHref.
 	TerminalOnly string
+	// LiveCopy is the warning that this window's conversation also runs
+	// elsewhere under another session id (mirror.SessionView.LiveCopyWarning),
+	// "" for none: a banner under the header (livecopy.go).
+	LiveCopy string
 	// StepUp, when set, puts live keys behind a FRESH sign-in
 	// (internal/stepup): a mirrored session. The page attaches with live keys
 	// when the sign-in is fresh, and otherwise asks "Confirm it's you" at the
@@ -317,6 +321,7 @@ func AgentTerminalPage(v AgentTerminalView) g.Node {
 					g.If(v.RenderedHref != "", viewToggle(false, v.RenderedHref, "")),
 				),
 				g.If(v.TerminalOnly != "" && v.RenderedHref == "", terminalOnlyLine(v.TerminalOnly)),
+				liveCopyBanner("term-live-copy", v.LiveCopy),
 				Div(
 					ID("term-error"),
 					g.Attr("role", "alert"),

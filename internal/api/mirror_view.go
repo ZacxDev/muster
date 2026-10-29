@@ -86,7 +86,8 @@ func (s *Server) handleMirrorViewPage(w http.ResponseWriter, r *http.Request) {
 	ctx := op.begin("view")
 	v := ui.MirrorViewView{Host: h.Host, Session: e.Session, Window: e.Window, Title: mirrorTitle(e), Label: e.Label, Qualifier: e.Qualifier, Interactive: h.Interactive,
 		StepUp: s.stepUpView(r), Nonce: newSendNonce(), Dictate: s.dictatePath(), Upload: s.uploadPath(),
-		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(ctx)}
+		FocusHistory: s.mirrorFocusHistoryPath(e.SessionKey()), DraftUser: draftUser(ctx),
+		LiveCopy: e.LiveCopyWarning()}
 	// 🔴 A WINDOW OF A RUNTIME WITH A GATED SEND (Hermes) SENDS ONLY WHEN
 	// ITS HOST ADVERTISED IT (Phase 3): otherwise its composer is drawn
 	// disabled, with no queue, and every send is refused again at the hub

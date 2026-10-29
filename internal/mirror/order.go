@@ -55,6 +55,10 @@ type SessionView struct {
 	// (Window.AgentNote): why it has no rendered view, or what its credential
 	// needs. Shown on its card.
 	AgentNote string
+	// LiveCopy is the session id of another transcript of the entry's Claude
+	// Code conversation that is still running elsewhere (Window.LiveCopy), ""
+	// for none. LiveCopyWarning is its words.
+	LiveCopy string
 	// Qualifier is what the entry's Title needs beside it to be told apart from
 	// every OTHER entry listed with it ("" = its Title is already unique). Set
 	// by Ordered (qualify) and only there; a SessionView from HostView.Entries
@@ -327,7 +331,7 @@ func (h HostView) Entries() []SessionView {
 			// else tmux's window activity — the one number the list orders by,
 			// prints and decides the Idle section by.
 			e.Label, e.Command, e.Activity, e.Claude, e.ClaudeSession = w.Label, w.Command, w.CardActivity(), w.Claude, w.ClaudeSession
-			e.Runtime, e.AgentSession, e.AgentNote = w.Runtime, w.AgentSession, w.AgentNote
+			e.Runtime, e.AgentSession, e.AgentNote, e.LiveCopy = w.Runtime, w.AgentSession, w.AgentNote, w.LiveCopy
 			e.Repo = h.Repos[w.ID]
 			e.Work, e.Color = h.Work[w.ID], h.Colors[w.ID]
 			out = append(out, e)
