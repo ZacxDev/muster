@@ -107,7 +107,12 @@ var floatingMenuScriptSrc = staticJS("floating-menu", `
     m.style.maxHeight = (vh - 2 * EDGE) + 'px';
     m.style.overflowY = 'auto';
     var w = m.offsetWidth, h = m.offsetHeight;
-    var left = Math.max(EDGE, Math.min(r.right - w, vw - w - EDGE));
+    // Right edges aligned (a trigger at the right of its row), or — for a
+    // menu marked data-menu-align="start", whose trigger sits at its row's
+    // start (the agent page's ⋯) — left edges aligned; either kept inside the
+    // viewport.
+    var x = m.getAttribute('data-menu-align') === 'start' ? r.left : r.right - w;
+    var left = Math.max(EDGE, Math.min(x, vw - w - EDGE));
     var below = vh - EDGE - (r.bottom + GAP), above = r.top - GAP - EDGE;
     var top;
     if (h <= below) {

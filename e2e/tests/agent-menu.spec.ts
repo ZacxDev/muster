@@ -4,7 +4,9 @@ import { test, expect } from '../lib/fixtures';
 import { dsn, repoRoot } from '../lib/env';
 
 // THE AGENT'S ⋯ MENU, ON ITS OWN PAGE (internal/ui/agent_actions.go
-// agentActionsMenu, at the end of the header's second row). The Agents list's
+// agentActionsMenu, at the start of the header's second row, beside the
+// status strip — the row's right end is left as it was, where the update pill
+// slides). The Agents list's
 // cards carried this menu until the list page was retired; what it guarded
 // moved with it:
 //
@@ -15,9 +17,9 @@ import { dsn, repoRoot } from '../lib/env';
 // clipped. Playwright's toBeVisible() is TRUE for a clipped element (it has a
 // box), so it cannot see this bug; what can is asking the page which element
 // is at each item's centre. A clipped item answers with whatever is under it
-// instead of itself. On the page the trigger is at the header's right end (the
-// menu right-aligns against the viewport edge), inside a sticky, blurred
-// header — at a 412px phone and at a desktop width. The Delete step is opened
+// instead of itself. On the page the trigger is near the header's left (the
+// menu opens under it, left edges aligned), inside a sticky, blurred header —
+// at a 412px phone and at a desktop width. The Delete step is opened
 // too, because it is what GROWS the menu.
 //
 // And what the menu DOES (the card's actions, moved): Rename opens its form
@@ -67,13 +69,14 @@ async function hitReport(page: Page, labels: string[]) {
 }
 
 // placement is where the open menu is relative to its trigger: 'closed',
-// 'beside' (right edges aligned, just below or above it) or 'stranded: …'.
+// 'beside' (left edges aligned — data-menu-align="start" — just below or
+// above it) or 'stranded: …'.
 const placementJS = () => {
   const m = document.getElementById('agent-actions');
   if (!m || !m.matches(':popover-open')) return 'closed';
   const t = document.getElementById('agent-actions-open')!.getBoundingClientRect();
   const r = m.getBoundingClientRect();
-  const beside = Math.abs(r.right - t.right) <= 1 && (Math.abs(r.top - t.bottom) <= 8 || Math.abs(t.top - r.bottom) <= 8);
+  const beside = Math.abs(r.left - t.left) <= 1 && (Math.abs(r.top - t.bottom) <= 8 || Math.abs(t.top - r.bottom) <= 8);
   return beside ? 'beside' : `stranded: menu ${Math.round(r.left)},${Math.round(r.top)} trigger ${Math.round(t.left)},${Math.round(t.top)}`;
 };
 
@@ -86,8 +89,8 @@ for (const vp of [
 
     test("the agent page's ⋯ menu is fully visible, on top and beside its trigger", async ({ page }) => {
       await open(page);
-      // The trigger is on the header's SECOND row, at its end: the first row
-      // is the title's.
+      // The trigger is on the header's SECOND row, at its start beside the
+      // status strip: the first row is the title's.
       const first = (await page.locator('[data-agent-title]').boundingBox())!;
       const t = (await trigger(page).boundingBox())!;
       expect(t.y, 'the ⋯ is below the title row').toBeGreaterThanOrEqual(first.y + first.height - 1);
@@ -114,25 +117,32 @@ for (const vp of [
     // 🔴 THE HEADER RE-RENDERS UNDER AN OPEN MENU THROUGH ITS OWN hx-trigger.
     // agents:changed (a lifecycle action's answer), the status poll's
     // agents:awaiting and sse:agent.changed each re-fetch the strip, whose
-    // answer swaps the ⋯ menu's slot out of band. The card menu this replaced
-    // was once left OPEN, away from its trigger, by such a re-render. Here the
-    // refresh is fired by the strip's own trigger event, the real path, and
-    // the menu must be closed or beside its trigger — never stranded — and
-    // the re-rendered menu must open beside it again.
-    test('a header refresh under an open menu never strands it, and the new menu opens beside its trigger', async ({ page }) => {
+    // answer carries the ⋯ menu's slot out of band. An OPEN menu is not
+    // replaced (agentMenuHoldJS): a replaced popover closes under the reader,
+    // armed "Confirm delete" and all — so the menu stays open, beside its
+    // trigger, and the menu catches up once it closes. The refresh is fired by
+    // the strip's own trigger event, the real path.
+    test('a header refresh under an open menu keeps it open beside its trigger; the menu catches up once it closes', async ({ page }) => {
       await open(page);
       await trigger(page).click();
       await expect.poll(() => page.evaluate(placementJS)).toBe('beside');
+      await delSummary(page).click();
       await page.evaluate(() => ((document.getElementById('agent-actions') as unknown as { __old: boolean }).__old = true));
       const refreshed = page.waitForResponse((r) => /\/ui\/agents\/\d+\/header$/.test(new URL(r.url()).pathname));
       await page.evaluate(() => document.body.dispatchEvent(new CustomEvent('agents:changed', { bubbles: true })));
       await refreshed;
-      // Positive control: the refresh really replaced the menu's element.
+      await page.waitForTimeout(300);
+      expect(await page.evaluate(() => !!(document.getElementById('agent-actions') as unknown as { __old?: boolean }).__old), 'the open menu was not replaced').toBe(true);
+      expect(await page.evaluate(placementJS), 'still open, beside its trigger').toBe('beside');
+      await expect(confirmDel(page), 'the armed Confirm delete is still there').toBeVisible();
+      // Closing it lets the held refresh through: the menu is the new one.
+      const caughtUp = page.waitForResponse((r) => /\/ui\/agents\/\d+\/header$/.test(new URL(r.url()).pathname));
+      await page.keyboard.press('Escape');
+      await caughtUp;
       await expect
-        .poll(() => page.evaluate(() => !(document.getElementById('agent-actions') as unknown as { __old?: boolean }).__old), { message: 'the refresh swapped the menu in' })
+        .poll(() => page.evaluate(() => !(document.getElementById('agent-actions') as unknown as { __old?: boolean }).__old), { message: 'the menu caught up after closing' })
         .toBe(true);
-      await expect.poll(() => page.evaluate(placementJS), { timeout: 3000 }).toMatch(/^(closed|beside)$/);
-      if ((await page.evaluate(placementJS)) === 'closed') await trigger(page).click();
+      await trigger(page).click();
       await expect.poll(() => page.evaluate(placementJS), { timeout: 3000 }).toBe('beside');
       await expect(delSummary(page)).toBeVisible();
     });
@@ -160,7 +170,7 @@ for (const vp of [
                 if (getComputedStyle(m).visibility !== 'visible') return void (w.__firstFrame = 'open, not visible yet');
                 const tr = t.getBoundingClientRect();
                 const r = m.getBoundingClientRect();
-                const beside = Math.abs(r.right - tr.right) <= 1 && (Math.abs(r.top - tr.bottom) <= 8 || Math.abs(tr.top - r.bottom) <= 8);
+                const beside = Math.abs(r.left - tr.left) <= 1 && (Math.abs(r.top - tr.bottom) <= 8 || Math.abs(tr.top - r.bottom) <= 8);
                 w.__firstFrame = beside ? 'beside' : `SHOWN UNPLACED at ${Math.round(r.left)},${Math.round(r.top)}`;
               });
             },

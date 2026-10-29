@@ -119,6 +119,9 @@ func agentActionsMenu(a AgentCardView) g.Node {
 			g.Attr("popover", "auto"),
 			g.Attr("role", "menu"),
 			g.Attr("data-floating-menu", ""),
+			// Its trigger is at the start of the header's second row: the menu
+			// opens under it, left edges aligned (floatingMenuScript).
+			g.Attr("data-menu-align", "start"),
 			Class("invisible hidden [&:popover-open]:flex m-0 w-48 flex-col gap-1 rounded-xl border border-line bg-s1 p-1.5 text-fg shadow-2xl ring-1 ring-black/20"),
 			Button(
 				Type("button"),
