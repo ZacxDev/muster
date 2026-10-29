@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ZacxDev/muster/internal/agentgateway"
 	"github.com/ZacxDev/muster/internal/agents"
@@ -311,6 +312,14 @@ func (f officerFleet) Reprompt(ctx context.Context, o officers.Officer, n int, t
 		defer s.officerRT.wg.Done()
 		defer release()
 		defer endSend()
+		// Shutdown came first (EndStreams before this goroutine ran): send
+		// nothing, record nothing; the claim is released on the way out. The
+		// streams' own context is read too: streamContext cancels sendCtx
+		// through context.AfterFunc, which runs asynchronously, so sendCtx may
+		// not read cancelled yet when shutdown has already begun.
+		if sendCtx.Err() != nil || s.streams.context().Err() != nil {
+			return
+		}
 		tctx, cancel := context.WithTimeout(sendCtx, turn)
 		defer cancel()
 		reply, err := s.ext.Gateway.Chat(tctx, fresh, sess.SessionKey, text, nil)
@@ -464,11 +473,12 @@ func officerToolDefs() []agents.ToolDef {
 			Description: "Extend your lease on an item you hold. A conflict answer means you lost the lease: stop working the item.",
 			Parameters:  objSchema(map[string]any{"item_id": item, "lease_seconds": lease}, "item_id")},
 		{Type: "function", Name: officers.ToolComplete,
-			Description: "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 4 KB) and optional links.",
+			Description: "Finish an item you hold: outcome done, escalated (a human must act; say who and why in the summary) or no_action, with a summary (at most 24,576 characters — " +
+				"in shadow mode your full evaluation or report goes here) and optional links.",
 			Parameters: objSchema(map[string]any{
 				"item_id": item,
 				"outcome": map[string]any{"type": "string", "enum": officers.Outcomes},
-				"summary": strProp("What you found and did, at most 4096 bytes."),
+				"summary": strProp("What you found and did, at most 24,576 characters."),
 				"links":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "maxItems": officers.MaxLinks, "description": "Optional http(s) URLs (a PR, a dashboard, a report), at most 10."},
 			}, "item_id", "outcome", "summary")},
 		{Type: "function", Name: officers.ToolRelease,
@@ -478,7 +488,9 @@ func officerToolDefs() []agents.ToolDef {
 			Description: "Post to HQ's release captain route (POST /releases/captain): your risk evaluation of a release and/or your post-release report. " +
 				"service and tag come from the item's payload. Give evaluation (level low|medium|high|severe, summary, optional monitors) for a release.evaluate item, " +
 				"report (text) for a release.post_report item, or both. muster adds your instance; HQ records this officer and instance as the author. " +
-				"Then finish the item with officer_complete. This records advice; it does not approve, deploy or release anything.",
+				"Then finish the item with officer_complete. This records advice; it does not approve, deploy or release anything. " +
+				"A refusal with status 409 and code officer_shadow means you are in SHADOW mode: do not retry — put your full evaluation " +
+				"(or report) in officer_complete's summary instead.",
 			Parameters: objSchema(map[string]any{
 				"service": strProp("The release's service, from the item's payload."),
 				"tag":     strProp("The release's tag, from the item's payload."),
@@ -591,8 +603,8 @@ func (s *Server) dispatchOfficerTool(ctx context.Context, a agents.Agent, name, 
 		if !ok {
 			return toolErr("outcome must be one of %s", strings.Join(officers.Outcomes, ", ")), true
 		}
-		if strings.TrimSpace(in.Summary) == "" || len(in.Summary) > officers.MaxSummaryBytes {
-			return toolErr("summary is required and at most %d bytes", officers.MaxSummaryBytes), true
+		if strings.TrimSpace(in.Summary) == "" || utf8.RuneCountInString(in.Summary) > officers.MaxSummaryChars {
+			return toolErr("summary is required and at most %d characters", officers.MaxSummaryChars), true
 		}
 		if len(in.Links) > officers.MaxLinks {
 			return toolErr("at most %d links", officers.MaxLinks), true

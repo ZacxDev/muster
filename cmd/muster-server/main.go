@@ -1019,7 +1019,16 @@ func (a *app) shutdown() {
 		// An answer delivered into an agent's session, the same way.
 		a.srv.WaitForAttentionDeliveries()
 		// An officer re-prompt, the same way: cancelled by EndStreams, it
-		// releases the instance's session claim before the process exits.
+		// releases the instance's session claim before the process exits. The
+		// wake loop is joined FIRST (its ctx is the signal's, already
+		// cancelled), so no pass can start a re-prompt during the wait.
+		if a.officers != nil {
+			select {
+			case <-a.officers.Done():
+			case <-time.After(kickoffDrainTimeout):
+				a.logger.Printf("officers: the wake loop did not stop within %s", kickoffDrainTimeout)
+			}
+		}
 		a.srv.WaitForOfficerReprompts()
 	}()
 	a.waitForKickoffs(kickoffDrainTimeout)

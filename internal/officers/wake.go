@@ -333,6 +333,7 @@ type Reconciler struct {
 
 	mu    sync.Mutex
 	state map[string]*officerState
+	done  chan struct{}
 }
 
 // Config is NewReconciler's input.
@@ -357,7 +358,7 @@ func NewReconciler(cfg Config) (*Reconciler, error) {
 		cfg.Now = time.Now
 	}
 	return &Reconciler{reg: cfg.Registry, hq: cfg.HQ, fleet: cfg.Fleet, log: cfg.Logger, now: cfg.Now,
-		state: map[string]*officerState{}}, nil
+		state: map[string]*officerState{}, done: make(chan struct{})}, nil
 }
 
 func (r *Reconciler) st(id string) *officerState {
@@ -618,8 +619,13 @@ var RunTick = time.Second
 // passTimeout bounds one pass.
 const passTimeout = 2 * time.Minute
 
-// Run drives the loop until ctx ends.
+// Done is closed once Run has returned: the shutdown drain joins the loop on it
+// before waiting for re-prompt sends, so no pass can start one meanwhile.
+func (r *Reconciler) Done() <-chan struct{} { return r.done }
+
+// Run drives the loop until ctx ends. Call it at most once.
 func (r *Reconciler) Run(ctx context.Context) {
+	defer close(r.done)
 	t := time.NewTicker(RunTick)
 	defer t.Stop()
 	for {

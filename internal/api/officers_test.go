@@ -447,7 +447,7 @@ func TestTheOfficerToolsWalkTheQueue(t *testing.T) {
 	if out := call(one, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"maybe","summary":"x"}`); !strings.Contains(out, "outcome must be one of") {
 		t.Fatalf("a bad outcome: %s", out)
 	}
-	if out := call(one, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"done","summary":"`+strings.Repeat("x", officers.MaxSummaryBytes+1)+`"}`); !strings.Contains(out, "at most") {
+	if out := call(one, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"done","summary":"`+strings.Repeat("x", officers.MaxSummaryChars+1)+`"}`); !strings.Contains(out, "at most") {
 		t.Fatalf("an oversized summary: %s", out)
 	}
 	if out := call(one, officers.ToolComplete, `{"item_id":"`+item+`","outcome":"done","summary":"x","links":[`+strings.TrimSuffix(strings.Repeat(`"https://e.example/x",`, officers.MaxLinks+1), ",")+`]}`); !strings.Contains(out, "at most 10 links") {
@@ -1019,4 +1019,63 @@ type refusingChat struct{ stubGateway }
 
 func (refusingChat) Chat(context.Context, agents.Agent, string, string, func(string)) (string, error) {
 	return "", &agents.RuntimeError{Status: http.StatusConflict, Type: "busy", Message: "a turn holds the session"}
+}
+
+// TestOfficerCompleteTakesHQsSummaryLimitInCharacters: HQ accepts a summary of
+// up to 24,576 CHARACTERS (a shadow officer puts a whole evaluation or report
+// there). A 20,000-character summary with multibyte runes — well over the old
+// 4,096-byte bound — passes locally and reaches HQ byte for byte; 24,577
+// characters is refused locally, before HQ.
+func TestOfficerCompleteTakesHQsSummaryLimitInCharacters(t *testing.T) {
+	r := newOfficerRig(t)
+	one := r.addInstance(r.a, 1, 895)
+	ctx := context.Background()
+	item := r.hq.AddItem(offA, "release.evaluate", "svc:shadow")
+	if out := r.s.dispatchAgentTool(ctx, one, officers.ToolClaim, `{"item_id":"`+item+`"}`); isToolErr(out) {
+		t.Fatal(out)
+	}
+	long := strings.Repeat("é", 10000) + strings.Repeat("x", 10000) // 20,000 chars, 30,000 bytes
+	body, _ := json.Marshal(map[string]any{"item_id": item, "outcome": "done", "summary": long})
+	if out := r.s.dispatchAgentTool(ctx, one, officers.ToolComplete, string(body)); isToolErr(out) {
+		t.Fatalf("a 20,000-character summary was refused: %.200s", out)
+	}
+	if got := r.hq.Item(item).Summary; got != long {
+		t.Fatalf("HQ got a %d-byte summary, want the %d-byte original", len(got), len(long))
+	}
+	item2 := r.hq.AddItem(offA, "release.evaluate", "svc:shadow2")
+	r.s.dispatchAgentTool(ctx, one, officers.ToolClaim, `{"item_id":"`+item2+`"}`)
+	r.hq.ResetRequests()
+	over, _ := json.Marshal(map[string]any{"item_id": item2, "outcome": "done", "summary": strings.Repeat("é", officers.MaxSummaryChars+1)})
+	if out := r.s.dispatchAgentTool(ctx, one, officers.ToolComplete, string(over)); !isToolErr(out) || !strings.Contains(out, "24576") {
+		t.Fatalf("a 24,577-character summary: %.200s, want a local refusal naming 24576", out)
+	}
+	if n := len(r.hq.Requests()); n != 0 {
+		t.Fatalf("the oversized summary reached HQ (%d requests)", n)
+	}
+}
+
+// TestARepromptStartedAfterShutdownSendsNothing: a re-prompt the loop starts
+// after EndStreams (its context already cancelled) sends nothing, records no
+// transcript row, and releases its claim.
+func TestARepromptStartedAfterShutdownSendsNothing(t *testing.T) {
+	r := newOfficerRig(t)
+	inst := r.addInstance(r.b, 1, 896)
+	r.store.mu.Lock()
+	r.store.rows[len(r.store.rows)-1].KickedOff = true
+	r.store.mu.Unlock()
+	rec := &recordingAgents{officerAgents: r.store}
+	r.s.ext.Agents = rec
+	chat := &repromptChat{}
+	r.s.ext.Gateway = chat
+	r.s.EndStreams()
+	if err := (officerFleet{s: r.s}).Reprompt(context.Background(), r.b, 1, "new work"); err != nil {
+		t.Fatal(err)
+	}
+	r.s.WaitForOfficerReprompts()
+	if chat.count() != 0 || rec.rows != 0 {
+		t.Fatalf("after shutdown: %d sends, %d transcript rows; want none", chat.count(), rec.rows)
+	}
+	if won, _ := r.store.ClaimKickoff(context.Background(), inst.ID, "after", time.Minute); !won {
+		t.Fatal("claim not released")
+	}
 }

@@ -104,3 +104,48 @@ func TestRunSeedReadsTheSessionSettingsFromTheEnvironment(t *testing.T) {
 		t.Fatalf("settings = %v", set)
 	}
 }
+
+// TestRemovingTheModelRevertsToTheAccountDefault: an officer's model removed
+// from its config must take effect, though the instance keeps its volume (and
+// settings.json) across scale-to-zero. Seed REMOVES the model it set itself
+// when CCD_MODEL is then unset; a model it did not set — or one changed in
+// the pod since — is someone's choice and stays.
+func TestRemovingTheModelRevertsToTheAccountDefault(t *testing.T) {
+	cfg, ws := t.TempDir(), filepath.Join(t.TempDir(), "ws")
+	with := seedOpts{configDir: cfg, workspace: ws, settingsTemplate: imageSettingsTemplate, model: "opus"}
+	if err := seed(with, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	without := with
+	without.model = ""
+	if err := seed(without, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if m, ok := readObj(t, filepath.Join(cfg, "settings.json"))["model"]; ok {
+		t.Fatalf("the model seed set (opus) survived CCD_MODEL being unset: model = %v", m)
+	}
+	if err := checkSeed(without); err != nil {
+		t.Fatalf("checkSeed: %v", err)
+	}
+	// Seeded opus, then changed in the pod to sonnet: not seed's to remove.
+	cfg2 := t.TempDir()
+	w2 := with
+	w2.configDir = cfg2
+	if err := seed(w2, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	set := readObj(t, filepath.Join(cfg2, "settings.json"))
+	set["model"] = "sonnet"
+	b, _ := json.Marshal(set)
+	if err := os.WriteFile(filepath.Join(cfg2, "settings.json"), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wo2 := w2
+	wo2.model = ""
+	if err := seed(wo2, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if m := readObj(t, filepath.Join(cfg2, "settings.json"))["model"]; m != "sonnet" {
+		t.Fatalf("a model changed in the pod was removed: %v", m)
+	}
+}

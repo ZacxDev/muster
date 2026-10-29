@@ -688,3 +688,23 @@ func TestAnOutageBreaksARunOfRefusals(t *testing.T) {
 		t.Fatalf("control: 404, 404 (the last of the run above, then this): stops %v, want [1]", r.fleet.stops)
 	}
 }
+
+// TestRunClosesDoneWhenItReturns: the shutdown drain joins the wake loop (its
+// Done) before it waits for re-prompt sends, so no pass can start one during
+// that wait.
+func TestRunClosesDoneWhenItReturns(t *testing.T) {
+	r := newRig(t, 1, time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	go r.rec.Run(ctx)
+	select {
+	case <-r.rec.Done():
+		t.Fatal("Done closed while Run is running")
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-r.rec.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Done did not close after Run's ctx ended")
+	}
+}

@@ -293,9 +293,11 @@ type Completion struct {
 // Outcomes the contract accepts.
 var Outcomes = []string{"done", "escalated", "no_action"}
 
-// MaxSummaryBytes is the contract's summary bound (HQ counts characters;
-// bytes is the stricter of the two).
-const MaxSummaryBytes = 4096
+// MaxSummaryChars is HQ's bound on a completion summary, in CHARACTERS
+// (civ-hq: 24,576). A shadow officer puts a whole evaluation (≤10,000) or
+// report (≤20,000) there, so the contract's original 4 KB is long gone; HQ's
+// 128 KiB body cap holds even at 4 bytes a character.
+const MaxSummaryChars = 24576
 
 // MaxLinks is HQ's bound on a completion's links (civ-hq docs/OFFICERS.md).
 const MaxLinks = 10

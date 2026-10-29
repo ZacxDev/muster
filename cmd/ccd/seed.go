@@ -104,11 +104,13 @@ func (o seedOpts) validate() error {
 //
 //   - podagent.EnvAllowMCPTools → permissions.allow, each entry
 //     "mcp__muster__<name>". It is added to the TEMPLATE's permissions object,
-//     which replaces the file's wholesale, so an allow list a session wrote for
-//     itself never survives a start, and the only entries ever present are
-//     muster's own MCP tools.
-//   - podagent.EnvModel → "model". Unset leaves the file's model alone (the
-//     account default, or whatever the operator chose in the pod).
+//     which replaces the file's wholesale on every POD start (this seed; an
+//     in-pod CLI restart by the supervisor does not re-seed), so an allow list
+//     a session wrote for itself does not survive the next pod start, and the
+//     only entries seed ever writes are muster's own MCP tools.
+//   - podagent.EnvModel → "model". Unset removes a model seed itself wrote
+//     earlier (seededModelKey) and otherwise leaves the file's model alone
+//     (an operator's own choice in the pod).
 //
 // seed and checkSeed both call this, so they cannot disagree.
 func seedSettings(tmpl map[string]any, o seedOpts) (map[string]any, error) {
@@ -253,9 +255,33 @@ func seed(o seedOpts, stderr io.Writer) error {
 	for k, v := range want {
 		have[k] = v
 	}
+	// The model seed set before (seededModelKey) is removed when CCD_MODEL is
+	// now unset — the officer's model was dropped from its config, and the
+	// instance kept its volume — but only while the file still holds that
+	// value: a model changed in the pod since is someone's choice.
+	prev, _ := st[seededModelKey].(string)
+	switch {
+	case o.model != "":
+		st[seededModelKey] = o.model
+	case prev != "":
+		if _, templated := want["model"]; !templated && have["model"] == prev {
+			delete(have, "model")
+		}
+		delete(st, seededModelKey)
+	}
+	if o.model != "" || prev != "" {
+		if err := writeJSONAtomic(stPath, st); err != nil {
+			return err
+		}
+	}
 	stripForbidden(have, setPath, stderr)
 	return writeJSONAtomic(setPath, have)
 }
+
+// seededModelKey is the .claude.json key recording the model seed last wrote
+// to settings.json from CCD_MODEL, so a later seed without CCD_MODEL removes
+// that model (and only that one).
+const seededModelKey = "ccdSeededModel"
 
 // ensureWritableDir makes dir exist as a directory this process can create files
 // in, as os.MkdirAll(dir, perm) does — except that an EMPTY directory on dir's path

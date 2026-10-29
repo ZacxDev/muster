@@ -106,9 +106,13 @@ puts on the pod; `internal/podagent/session.go`):
   refused and the pod does not start), so it cannot allow Bash, Write, Edit, a
   path rule or another server's tool. Every other tool keeps the image's default
   permission posture. The template's `permissions` replace the file's on every
-  start, so an allow list a session writes for itself does not survive.
-- **`model`**, when the officer sets one. Unset leaves the file's model alone
-  (the account default).
+  pod start (`ccd seed`; an in-pod CLI restart by the supervisor does not
+  re-seed), so an allow list a session writes for itself does not survive the
+  next pod start.
+- **`model`**, when the officer sets one. Removing it from the officer's config
+  takes effect at the instance's next pod start: seed removes the model it set
+  itself (the instance keeps its volume, so it would otherwise persist), back to
+  the account default. A model changed by hand inside the pod is left alone.
 
 No other agent gets either (the officer runtime is the provisioner's only
 source of them, and it answers for a declared officer's instances only).
@@ -236,7 +240,7 @@ listing and again at dispatch):
 | `officer_heartbeat` `{item_id, lease_seconds?}` | `POST …/items/{item}/heartbeat` |
 | `officer_complete` `{item_id, outcome, summary, links?}` | `POST …/items/{item}/complete` |
 | `officer_release` `{item_id}` | `POST …/items/{item}/release` |
-| `officer_release_evaluation` `{evaluation}` | `POST /releases/captain` — **release officers only** (`release:*`): the captain route's body, passed through, with `instance` set by muster |
+| `officer_release_evaluation` `{service, tag, evaluation?: {level, summary, monitors?}, report?}` | `POST /releases/captain` — **release officers only** (`release:*`): HQ's captain body, checked locally, with `instance` set by muster. A 409 with code `officer_shadow` means the officer is in **shadow** mode: the full evaluation or report goes in `officer_complete`'s summary instead |
 
 `lease_seconds` defaults to 600 (muster always sends it; HQ's own default is
 300) and is clamped to 30–3600. **Claiming an item you already hold** is not a
@@ -247,7 +251,7 @@ item would hit that. When HQ's 409 names the calling instance as `held_by`,
 the item, `already_yours: true` and the note "already yours — lease renewed"
 (if the lease ran out between the two calls, the claim is retried once). A 409
 naming another instance is returned as a refusal. At most 10 `links`. `outcome` is `done`,
-`escalated` or `no_action`; `summary` is at most 4096 bytes. HQ's JSON is
+`escalated` or `no_action`; `summary` is at most 24,576 characters (HQ's bound; a shadow officer puts its whole evaluation or report there). HQ's JSON is
 returned as is; a 4xx comes back as a refusal carrying HQ's status and body (a
 409 on a claim names the holder), and an outage as "try again in a minute".
 
