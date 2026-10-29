@@ -361,6 +361,9 @@ type jobWorkspace struct {
 	removes   []string
 	removeErr error
 	tracked   map[string]bool
+	// stripPools names the worker pools whose jobs get none of the
+	// repository's agent configuration (StripsRepoConfig).
+	stripPools map[string]bool
 }
 
 func (w *jobWorkspace) RemoveUntrackedWorkspaceFile(_ context.Context, _ agents.Agent, rel string) (bool, error) {
