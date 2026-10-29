@@ -18,9 +18,13 @@ from this file.** Fetch the guide and follow it:
    front, then do the rest without stopping unless a step says to ask.
 4. If the person says muster already runs on another machine, this machine
    joins it: the guide covers that case.
-5. Finish with the guide's verification step (`muster doctor`) and report its
-   result. A run is not done until the doctor's checks pass or each failure is
-   explained to the person with the fix the doctor printed.
+5. Finish with the guide's verification step (Step 10, `muster doctor`). The
+   install is done only when the guide's own definition of done there (the
+   sentence that starts "Done means") is met, including what the person must
+   confirm on their phone;
+   do not report success on anything less. If you are stuck, stop and tell the
+   person exactly which step and command failed and what it printed, as the
+   guide says.
 
 The guide's own rules apply throughout, among them: never print a secret, ask
 for `sudo` once up front, and follow each step's "If this fails" before trying
