@@ -90,7 +90,8 @@ func mcpToolCall(name string, args any) string {
 // TestAMirroredSessionGetsTheAllAgentsToolsAndNothingElse: tools/list is
 // exactly the attention and task tools and the operator's own attention_answer,
 // connector decision and reply-draft decision tools; a chief tool or an agent tool called by name is
-// refused as unknown.
+// refused as unknown. chief_ask is listed whatever the owner's chief switch
+// says (mirrorTools); its call answers for an off or absent chief.
 func TestAMirroredSessionGetsTheAllAgentsToolsAndNothingElse(t *testing.T) {
 	f, ws, _, _ := newMirrorMCPFixture(t)
 	code, r, body := f.mirrorRPC(t, mirrorAs(ws, focusSID), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)

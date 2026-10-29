@@ -55,6 +55,48 @@ func (s *Server) handleChiefProvision(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no user to provision a chief for", http.StatusForbidden)
 		return
 	}
+	// 🔴 A CHIEF THE OWNER TURNED OFF IS NOT CREATED OR STARTED BEHIND THEIR
+	// BACK. The Account page's toggle is the one switch (chief_toggle.go);
+	// turning it on there provisions through provisionChief below.
+	if chose, on, err := s.chiefChoice(ctx, owner); err != nil {
+		s.logger.Printf("chief: provision: read the toggle: %v", err)
+		http.Error(w, "could not read your chief setting", http.StatusInternalServerError)
+		return
+	} else if chose && !on {
+		http.Error(w, ChiefOffProvisionRefusal, http.StatusConflict)
+		return
+	}
+	rec, created, err := s.provisionChief(ctx, owner, strings.TrimSpace(r.FormValue("model")))
+	if err != nil {
+		// This is the route chief was provisioned through with an uncredentialed
+		// slug — it has no UI form, so the operator types the model straight into
+		// a curl and a generic 500 tells them nothing. Hand back the refusal and
+		// its corrected slug.
+		if errors.Is(err, agents.ErrModelNotCredentialed) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// A member with no OpenRouter key: say what to add (409, as the
+		// dispatch form answers the same refusal).
+		if errors.Is(err, ErrDispatchRefused) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		http.Error(w, "could not provision chief", http.StatusInternalServerError)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"name": rec.Name, "id": rec.ID, "created": created})
+}
+
+// ChiefOffProvisionRefusal is POST /chief/provision's answer to an owner who
+// turned their chief off.
+const ChiefOffProvisionRefusal = "your chief is turned off; turn it on under Account → Chief"
+
+// provisionChief is POST /chief/provision's work, shared with the Account
+// page's toggle: start owner's reserved-slug chief if it exists (created
+// false), or create and dispatch it. A create failure is logged here and
+// returned for the caller to word.
+func (s *Server) provisionChief(ctx context.Context, owner int64, model string) (agents.Agent, bool, error) {
 	chiefName := agents.ChiefNameFor(owner)
 	if a, err := s.ext.Agents.GetByName(ctx, chiefName); err == nil {
 		// 🔴 safeGo, NOT `go func`, AND THE DIFFERENCE WAS A DEAD CONTAINER. This
@@ -74,19 +116,17 @@ func (s *Server) handleChiefProvision(w http.ResponseWriter, r *http.Request) {
 		// to a cluster, which is the case safeGo's own doc names ("any goroutine
 		// that touches external data"). The two guards fail for different reasons,
 		// so neither substitutes for the other.
-		opCtx := context.WithoutCancel(r.Context()) // keeps the principal; see Provisioner
+		opCtx := context.WithoutCancel(ctx) // keeps the principal; see Provisioner
 		safeGo(s.logger, "chief start", func() {
 			if err := s.ext.Provisioner.Start(opCtx, a.ID); err != nil {
 				s.logger.Printf("chief: start: %v", err)
 			}
 		})
-		s.writeJSON(w, http.StatusOK, map[string]any{"name": a.Name, "id": a.ID, "created": false})
-		return
+		return a, false, nil
 	}
 	// The model is taken from the request so the operator picks it at provision
 	// time; empty falls through to the cluster default the provisioner already
 	// applies, exactly as the dispatch form behaves.
-	model := strings.TrimSpace(r.FormValue("model"))
 	intro := "You are chief, muster's fleet agent. You have no task and no repo, and that is expected. " +
 		"Read AGENTS.md, then report the current state of the fleet."
 	rec, err := s.createAndDispatchAgent(ctx, dispatchParams{
@@ -101,22 +141,7 @@ func (s *Server) handleChiefProvision(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.logger.Printf("chief: provision: %v", err)
-		// This is the route chief was provisioned through with an uncredentialed
-		// slug — it has no UI form, so the operator types the model straight into
-		// a curl and a generic 500 tells them nothing. Hand back the refusal and
-		// its corrected slug.
-		if errors.Is(err, agents.ErrModelNotCredentialed) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		// A member with no OpenRouter key: say what to add (409, as the
-		// dispatch form answers the same refusal).
-		if errors.Is(err, ErrDispatchRefused) {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return
-		}
-		http.Error(w, "could not provision chief", http.StatusInternalServerError)
-		return
+		return agents.Agent{}, false, err
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"name": rec.Name, "id": rec.ID, "created": true})
+	return rec, true, nil
 }

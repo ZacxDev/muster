@@ -148,6 +148,7 @@ PATCH /agent/task/status
 PATCH /api/tasks/{id}
 PATCH /api/tasks/{id}/status
 PATCH /tasks/{id}/status
+POST /account/chief
 POST /account/credentials/claude
 POST /account/credentials/claude/{name}/delete
 POST /account/credentials/openrouter
