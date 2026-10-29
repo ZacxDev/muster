@@ -214,6 +214,11 @@ func (t Tmux) Windows(ctx context.Context) ([]WindowInfo, error) {
 	claude := claudeRuntime{loc: loc}
 	attachClaude(windows, func(ps []pane) map[string]ClaudePane { return claude.LocatePanes(ps, procs, children) })
 	attachAgents(windows, procs, children, t.runtimes()[1:])
+	// Each Claude window whose conversation also runs elsewhere, under
+	// another session id (livecopy.go): from the proc table read above.
+	if t.LiveCopies != nil {
+		t.LiveCopies.attach(windows, procs, loc, time.Now())
+	}
 	// Why a window no runtime claimed has no rendered view, when its pane
 	// runs Claude Code (or, on a host that cannot read processes, looks like
 	// it): the card and the Terminal view say so instead of silently opening
@@ -425,6 +430,7 @@ func WireWindows(windows []WindowInfo, codenames map[string]string, claude bool,
 			m.Status, m.StatusSince, m.ClaudeSession, m.Pending = w.Claude.Status, w.Claude.StatusSince, w.Claude.Gen, w.Claude.Pending
 			m.LastMessage = w.Claude.LastMessage
 			m.TurnError = w.Claude.TurnError
+			m.LiveCopy = w.Claude.LiveCopy
 			// 🔴 BUSY COUNTS AS ACTIVE (operator decision). Claude Code writes no
 			// transcript row while a tool runs, while it waits on the person (a
 			// permission prompt, an AskUserQuestion picker) or while a background

@@ -36,6 +36,10 @@ type Tmux struct {
 	// and status are read from (opencode.go); nil detects opencode windows
 	// without resolving them.
 	OpenCode *OpenCodeSource
+	// LiveCopies, when set, finds each Claude window's live copy: another
+	// transcript of its conversation still running elsewhere (livecopy.go,
+	// mirror.Window.LiveCopy). nil looks for none.
+	LiveCopies *LiveCopies
 }
 
 func (t Tmux) bin() string {

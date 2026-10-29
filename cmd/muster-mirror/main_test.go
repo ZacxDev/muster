@@ -144,6 +144,15 @@ func TestListClaudeIsOneRowPerClaudeWINDOW(t *testing.T) {
 	}
 }
 
+// TestTheTmuxBackendLooksForLiveCopies: the host the daemon runs warns about a
+// conversation that also runs elsewhere (mirrorhost's livecopy.go) — the
+// scanner is on, not merely written.
+func TestTheTmuxBackendLooksForLiveCopies(t *testing.T) {
+	if b := tmuxBackend("", "", "", nil).(mirrorhost.Tmux); b.LiveCopies == nil {
+		t.Fatal("the tmux backend has no LiveCopies: no window would ever say its conversation runs elsewhere")
+	}
+}
+
 // TestThePaneMapDirReachesTheTmuxBackend: the flag/env is not decoration — the
 // backend the host runs reads the map from it.
 func TestThePaneMapDirReachesTheTmuxBackend(t *testing.T) {
