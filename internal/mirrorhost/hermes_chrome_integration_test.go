@@ -160,3 +160,41 @@ func TestTmuxTheGatedSendRechecksThePaneAndTakesTheDriveLock(t *testing.T) {
 		t.Fatalf("the pane received %q", b)
 	}
 }
+
+// TestTmuxTheGatedSendTypesItsEscapeAsAKey: SendHermes into a real pane
+// showing Hermes's idle screen gets as far as its Escape, and that Escape
+// reaches the program as the ONE byte ESC — pasted the way this tmux pastes
+// raw keys (Tmux.KeyPaste): with -S on 3.7+, plain before 3.7. A -S paste on
+// a tmux before 3.7 is refused ("unknown flag -S", nothing arrives); a plain
+// paste on 3.7+ arrives sanitized as the text "^[". The send then stops at
+// the conversation read (this Hermes home is empty), before any text.
+func TestTmuxTheGatedSendTypesItsEscapeAsAKey(t *testing.T) {
+	r := newTmuxRig(t)
+	screen, err := filepath.Abs(filepath.Join("..", "hermeshost", "testdata", "screens", "idle.ansi"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := filepath.Join(t.TempDir(), "got")
+	r.run("new-session", "-d", "-s", "hermes", "-x", "160", "-y", "45", "sh", "-c",
+		"clear; cat '"+screen+"'; stty raw -echo; exec cat > '"+got+"'")
+	pane := strings.TrimSpace(r.run("display-message", "-p", "-t", "=hermes:", "#{pane_id}"))
+	waitFor(t, "the pane to settle in cat", func() bool {
+		return strings.TrimSpace(r.run("display-message", "-p", "-t", pane, "#{pane_current_command}")) == "cat"
+	})
+	time.Sleep(200 * time.Millisecond)
+	b := Tmux{Socket: r.sock, Hermes: NewHermesSource(t.TempDir(), t.TempDir())}
+	idle := idleHermes()
+	idle.Pane = pane
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err = b.SendHermes(ctx, HermesSendRequest{Pane: pane, Since: fakeSince, Text: "hello",
+		Status: func(context.Context) (AgentPane, error) { return idle, nil }, Logf: t.Logf})
+	if err == nil || strings.Contains(err.Error(), "could not type into the pane") {
+		t.Fatalf("the gated send: %v — want it past its Escape", err)
+	}
+	waitFor(t, "the Escape to arrive", func() bool { b, _ := os.ReadFile(got); return len(b) > 0 })
+	time.Sleep(200 * time.Millisecond)
+	if b, _ := os.ReadFile(got); string(b) != "\x1b" {
+		t.Fatalf("the pane received %q, want exactly the Escape key %q (send stopped at: %v)", b, "\x1b", err)
+	}
+}

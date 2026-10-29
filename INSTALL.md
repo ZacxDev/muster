@@ -219,7 +219,7 @@ Read the output and note:
 |---|---|---|
 | `os`, `arch` | every machine | Linux and macOS on amd64 or arm64 only. Stop on anything else and tell the person. macOS hosts are experimental: there, only a Claude Code window whose Rendered view resolves can be viewed. The Terminal view cannot attach on macOS yet (`internal/mirrorhost/pty_other.go`), so shells, Codex and any window without a Rendered view cannot be viewed, and Rendered-view detection is unverified on a real Mac. On a Mac, tell the person this. |
 | `curl`, `tar` | every machine | Install them with the system package manager (ask first). |
-| `tmux` | every machine | Install it (`apt install tmux`, `dnf install tmux`, `brew install tmux`; ask first). muster shows tmux windows, so this is required. |
+| `tmux` | every machine | Install it (`apt install tmux`, `dnf install tmux`, `brew install tmux`; ask first). muster shows tmux windows, so this is required. Any packaged version works, including Ubuntu 24.04's 3.4: muster types picker answers with `paste-buffer -S` on tmux 3.7+ and plain `paste-buffer` before 3.7 (tested on 3.2a, 3.3a, 3.4 and 3.7c). |
 | `tailscale`, logged in | every machine | Asked up front (Step 1, question 4). Install from <https://tailscale.com/download>. Then `tailscale up` (on Linux, `sudo tailscale up`) prints a sign-in URL: give it to the person to open, and wait. Every machine and the phone must sign in to the **same** tailnet. |
 | `docker` and `docker compose` | the hub only | Install Docker Engine (Linux) or Docker Desktop (macOS) with the Compose v2 plugin. |
 | free disk | the hub | At least 10 GB; 20 GB if dictation will run locally (Step 1). |
@@ -912,7 +912,7 @@ failed. Its stdout is the same result as one JSON document, for scripts; the
 | `mirror-hosts` | every machine with a token is connected (the server's view) |
 | `this-host` | the hub accepts this machine's mirror token and holds its connection |
 | `mirror-service` | this machine's `muster-mirror` service is running |
-| `tmux` | tmux is installed here |
+| `tmux` | tmux is installed here, its version, and how picker answers are typed with it (`paste-buffer -S` on 3.7+, plain `paste-buffer` before 3.7) |
 | `sign-in` | the password signs in and opens the board |
 | `push` | notification keys are set |
 | `dictation` | a bundled voice sample is transcribed through muster |

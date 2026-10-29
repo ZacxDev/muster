@@ -32,8 +32,8 @@ const askStillShowingNote = "Esc sent; the terminal still shows the question."
 
 // CancelAsk implements AskCanceller: askdrive.Cancel on the pane — the same
 // one-drive-per-pane lock as an answer (ErrPaneBusy), and the same need for
-// `paste-buffer -S` (ErrNoRawPaste: a sanitizing paste would turn the Escape
-// into nothing).
+// a raw paste (Tmux.KeyPaste; ErrNoRawPaste: a sanitizing paste would turn
+// the Escape into nothing).
 func (t Tmux) CancelAsk(ctx context.Context, pane string) (bool, error) {
 	if !strings.HasPrefix(pane, "%") {
 		return false, fmt.Errorf("muster-mirror: %q is not a tmux pane id", pane)
@@ -43,11 +43,12 @@ func (t Tmux) CancelAsk(ctx context.Context, pane string) (bool, error) {
 		return false, ErrPaneBusy
 	}
 	defer release()
-	if has, known := t.RawPaste(ctx); known && !has {
+	kp := t.KeyPaste(ctx)
+	if kp == KeyPasteNone {
 		return false, ErrNoRawPaste
 	}
 	t.dropLeftoverBuffers(ctx)
-	return askdrive.Cancel(ctx, tmuxPane{t: t, id: pane}, askdrive.Options{})
+	return askdrive.Cancel(ctx, tmuxPane{t: t, id: pane, paste: kp}, askdrive.Options{})
 }
 
 // askCancel is what this host advertises as Msg.AskCancel, given what it

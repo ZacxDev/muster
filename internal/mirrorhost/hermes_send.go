@@ -360,7 +360,7 @@ type HermesSendRequest struct {
 // And it refuses — before any key — a pane whose process tree holds a
 // terminal multiplexer client (a Hermes behind it is not the one the status
 // describes) or whose processes cannot be read, and a tmux that cannot type
-// an Escape (no `paste-buffer -S`, MinRawPasteTmux).
+// an Escape (Tmux.KeyPaste is KeyPasteNone).
 func (t Tmux) SendHermes(ctx context.Context, req HermesSendRequest) error {
 	if t.Hermes == nil {
 		return notSubmitted("this host reads no Hermes home, so it cannot check Hermes's status")
@@ -373,8 +373,9 @@ func (t Tmux) SendHermes(ctx context.Context, req HermesSendRequest) error {
 		return notSubmitted("muster is already typing into this pane")
 	}
 	defer release()
-	if has, known := t.RawPaste(ctx); known && !has {
-		return notSubmitted("this host's tmux cannot type an Escape (paste-buffer -S needs tmux " + MinRawPasteTmux + ")")
+	kp := t.KeyPaste(ctx)
+	if kp == KeyPasteNone {
+		return notSubmitted("this host's tmux cannot type an Escape (its server rejects paste-buffer -S yet reports version " + MinRawPasteTmux + " or later)")
 	}
 	pid, err := t.panePID(ctx, req.Pane)
 	if err != nil {
@@ -391,7 +392,7 @@ func (t Tmux) SendHermes(ctx context.Context, req HermesSendRequest) error {
 		return notSubmitted("the pane also runs a terminal multiplexer, which can show a Hermes muster does not see")
 	}
 	beforeOnce := false
-	pane := tmuxPane{t: t, id: req.Pane}
+	pane := tmuxPane{t: t, id: req.Pane, paste: kp}
 	state := t.Hermes.State()
 	steps := hermesSendSteps{
 		status: func(ctx context.Context) (AgentPane, error) {

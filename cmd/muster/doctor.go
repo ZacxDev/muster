@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ZacxDev/muster/internal/tmuxver"
 )
 
 // `muster doctor`: is this muster set up end to end, from where I sit?
@@ -717,7 +719,22 @@ func (d *doctorRun) checkTmux(ctx context.Context) {
 		d.add(name, statusFail, path+" -V failed: "+err.Error(), "reinstall tmux")
 		return
 	}
-	d.add(name, statusPass, strings.TrimSpace(out)+" at "+path, "")
+	d.add(name, statusPass, strings.TrimSpace(out)+" at "+path+"; "+tmuxPickerNote(out), "")
+}
+
+// tmuxPickerNote says how muster-mirror types answers into Claude Code's
+// pickers with the tmux whose `tmux -V` is v (internal/mirrorhost's
+// Tmux.KeyPaste, which asks the RUNNING server again before every answer).
+// No version is refused: tmux 3.7 added `paste-buffer -S` together with the
+// sanitizing it turns off, so an older tmux pastes raw without it.
+func tmuxPickerNote(v string) string {
+	switch ok, known := tmuxver.AtLeast(v, tmuxver.MinRawPaste); {
+	case !known:
+		return "version not recognised; muster-mirror checks the running tmux server before it types a picker answer"
+	case ok:
+		return "picker answers are typed with `paste-buffer -S`"
+	}
+	return "picker answers are typed with plain `paste-buffer` (tmux before " + tmuxver.MinRawPaste + " pastes raw; -S arrived in " + tmuxver.MinRawPaste + ")"
 }
 
 func (d *doctorRun) checkSignIn(ctx context.Context) {

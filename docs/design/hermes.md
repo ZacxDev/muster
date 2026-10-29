@@ -790,8 +790,10 @@ sections above in these ways, each decided while building it:
   stripped, polling every 100 ms for 8 s.
 - **The gated send also refuses** a pane whose tree holds a terminal
   multiplexer client anywhere — below the Hermes CLI too, which the guard's
-  walk stops at (`HermesIdentity.MultiplexerInTree`) — and a tmux without
-  `paste-buffer -S` (it cannot type an Escape); and it takes the pane's drive
+  walk stops at (`HermesIdentity.MultiplexerInTree`) — and a tmux that
+  cannot paste an Escape raw (`Tmux.KeyPaste` is `KeyPasteNone`: a server
+  that rejects `paste-buffer -S` yet reports 3.7 or later; a tmux before 3.7
+  pastes raw without `-S`); and it takes the pane's drive
   lock, shared with Claude Code's picker answers.
 - **Measured: the hook says idle before the CLI has drawn the turn's end.**
   A send in that moment is refused by the screen check ("not its idle
