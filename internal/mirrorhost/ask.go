@@ -71,10 +71,10 @@ func (t Tmux) AnswerAsk(ctx context.Context, pane string, qs []askq.Question, ch
 // ErrPaneBusy: another answer is being typed into the pane.
 var ErrPaneBusy = errors.New("muster-mirror: another answer is being typed into this pane")
 
-// ErrNoRawPaste: this tmux cannot paste keys raw (KeyPasteNone): its client
-// has no `paste-buffer -S` while the server it talks to is tmux 3.7 or later,
-// which sanitizes a paste without it.
-var ErrNoRawPaste = fmt.Errorf("%w: this tmux client has no `paste-buffer -S` but the running tmux server is %s or later (which sanitizes a paste without it) or reports no version it can read; restart the tmux server with, or put first on PATH, a single tmux version", errCannotAnswer, MinRawPasteTmux)
+// ErrNoRawPaste: this tmux cannot paste keys raw (KeyPasteNone): its server
+// rejects `paste-buffer -S` yet reports a version of 3.7 or later, whose plain
+// paste sanitizes.
+var ErrNoRawPaste = fmt.Errorf("%w: this tmux server rejects `paste-buffer -S` yet reports version %s or later, whose plain paste-buffer sanitizes control keys", errCannotAnswer, MinRawPasteTmux)
 
 // drives is the panes being typed into (lockPane), by server and pane id.
 var drives = struct {
@@ -137,22 +137,21 @@ const MinRawPasteTmux = tmuxver.MinRawPaste
 type KeyPaste int
 
 const (
-	// KeyPasteUnknown: not known (no tmux server running and a `tmux -V` it
-	// cannot read, or a server this client cannot talk to). Typed as
-	// KeyPasteRawFlag: a tmux that turns out to lack -S refuses the paste, so
-	// no key goes in sanitized.
+	// KeyPasteUnknown: not known — no tmux server running and a `tmux -V` it
+	// cannot read; a server this client cannot talk to; or a server that
+	// rejects -S but whose #{version} could not be read (a timeout, say).
+	// Typed as KeyPasteRawFlag: a server without -S refuses that paste, so no
+	// key goes in sanitized, and the next answer asks again.
 	KeyPasteUnknown KeyPaste = iota
 	// KeyPasteRawFlag: `paste-buffer -S` (tmux 3.7 and later).
 	KeyPasteRawFlag
 	// KeyPastePlain: `paste-buffer` with no flag — a tmux before 3.7, whose
 	// paste never sanitized (tmuxver.MinRawPaste).
 	KeyPastePlain
-	// KeyPasteNone: cannot. The tmux CLIENT has no -S while the SERVER it
-	// talks to is 3.7 or later, or the server's version cannot be read: a
-	// plain paste could be sanitized, and -S cannot be sent. Not observed —
-	// a 3.4 client cannot talk to a 3.7c server at all (measured: "server
-	// exited unexpectedly", KeyPasteUnknown) — and refused for any client and
-	// server pair that can.
+	// KeyPasteNone: cannot. The server rejects -S yet reports #{version} 3.7
+	// or later — a contradiction no released tmux shows (3.7 added -S), so a
+	// patched or mislabelled build: its plain paste may sanitize, and -S
+	// cannot be sent.
 	KeyPasteNone
 )
 
@@ -172,10 +171,13 @@ func (k KeyPaste) String() string {
 // KeyPaste reports how this tmux can paste a picker's keys raw. Probed first:
 // pasting a buffer that does not exist is refused as "no buffer" by a tmux
 // that knows -S, and as "unknown flag -S" by one that does not — nothing is
-// pasted either way. "unknown flag" alone does not make the plain paste raw:
-// the flag is parsed by the tmux CLIENT, the paste is done by the SERVER, so
-// the server's own #{version} decides — before 3.7 it is KeyPastePlain, 3.7 or
-// later (or unreadable) KeyPasteNone. With no tmux server running the probe
+// pasted either way. The SERVER parses the flag (the client parses a command
+// only to learn whether it starts a server, and discards a parse error —
+// tmux 3.4 client.c; measured: a 3.7c client against a 3.4 server gets
+// "unknown flag -S" back from the server), so "unknown flag" means the server
+// is older than 3.7. Its #{version} is read to confirm that: before 3.7 it is
+// KeyPastePlain; 3.7 or later, a contradiction, KeyPasteNone; unreadable or
+// failed (a timeout), KeyPasteUnknown. With no tmux server running the probe
 // cannot tell ("no server running"), so `tmux -V` is read instead — the server
 // that binary starts is that version; a version it cannot read, or any other
 // failure, is KeyPasteUnknown, NOT "old": the caller asks again later.
@@ -192,12 +194,15 @@ func (t Tmux) KeyPaste(ctx context.Context) KeyPaste {
 	case strings.Contains(err.Error(), "unknown flag"):
 		out, verr := p.run(ctx, nil, "display-message", "-p", "#{version}")
 		if verr != nil {
+			return KeyPasteUnknown
+		}
+		switch ok, known := tmuxver.AtLeast(string(out), MinRawPasteTmux); {
+		case !known:
+			return KeyPasteUnknown
+		case ok:
 			return KeyPasteNone
 		}
-		if ok, known := tmuxver.AtLeast(string(out), MinRawPasteTmux); known && !ok {
-			return KeyPastePlain
-		}
-		return KeyPasteNone
+		return KeyPastePlain
 	case !strings.Contains(err.Error(), "no server running") && !strings.Contains(err.Error(), "error connecting to"):
 		// A server this client cannot talk to — measured: a tmux 3.4 client
 		// against a 3.7c server gets "server exited unexpectedly" for every
@@ -314,8 +319,10 @@ func (p tmuxPane) Send(ctx context.Context, keys string) error {
 // askAnswer is what this host advertises as Msg.AskAnswer: an -interactive
 // host whose backend can both type into a picker and find a Claude pane.
 //
-// A tmux that cannot paste keys raw (KeyPasteNone) cannot type a picker's
-// keys: the host says so once and does not advertise it. A tmux before 3.7
+// A tmux that cannot paste keys raw (KeyPasteNone, a server that rejects -S
+// yet reports 3.7+) cannot type a picker's keys: the host says so once and
+// does not advertise it. A probe that merely failed is KeyPasteUnknown and
+// does not withhold answering. A tmux before 3.7
 // can (KeyPastePlain), and the host says once which way it types.
 func (h *hostSide) askAnswer() bool {
 	ab, ask := AskOf(h.c.cfg.Backend)
@@ -331,7 +338,7 @@ func (h *hostSide) askAnswer() bool {
 		// typing (Tmux.AnswerAsk).
 		switch kp.KeyPaste(ctx) {
 		case KeyPasteNone:
-			h.c.log.Printf("muster-mirror: this tmux client has no `paste-buffer -S` but the running tmux server is %s or later (which sanitizes a paste without -S), so muster cannot type answers into Claude Code's pickers on this host; run one tmux version for the client and the server", MinRawPasteTmux)
+			h.c.log.Printf("muster-mirror: this tmux server rejects `paste-buffer -S` yet reports version %s or later (whose plain paste-buffer sanitizes control keys), so muster cannot type answers into Claude Code's pickers on this host", MinRawPasteTmux)
 			return false
 		case KeyPastePlain:
 			h.c.log.Printf("muster-mirror: this tmux is older than %s: answers are typed with plain `paste-buffer`, which tmux before %s pastes raw", MinRawPasteTmux, MinRawPasteTmux)

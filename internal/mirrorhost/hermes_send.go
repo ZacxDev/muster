@@ -375,7 +375,7 @@ func (t Tmux) SendHermes(ctx context.Context, req HermesSendRequest) error {
 	defer release()
 	kp := t.KeyPaste(ctx)
 	if kp == KeyPasteNone {
-		return notSubmitted("this host's tmux cannot type an Escape (its client has no paste-buffer -S, and its server is tmux " + MinRawPasteTmux + " or later or reports no version)")
+		return notSubmitted("this host's tmux cannot type an Escape (its server rejects paste-buffer -S yet reports version " + MinRawPasteTmux + " or later)")
 	}
 	pid, err := t.panePID(ctx, req.Pane)
 	if err != nil {

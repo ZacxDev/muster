@@ -490,8 +490,11 @@ jobs:
   # (mirrorhost.KeyPastePlain). Pinned from the frozen nixos-24.05 branch, not
   # the runner's apt, so a runner upgrade cannot turn this into a second 3.7+
   # run without failing the version assertion by name.
-  # TestTmuxKeyPasteMatchesTheVersion is --require'd: it fails unless the
-  # server reports the plain paste on this tmux.
+  # TestTmuxKeyPasteMatchesTheVersion is --require'd (it fails unless the
+  # server reports the plain paste on this tmux), and so are the answer, the
+  # picker Escape and the Hermes gated send's Escape: the only tests that
+  # fail when one of AnswerAsk, CancelAsk or SendHermes stops passing the
+  # paste mode on (a -S paste is refused by tmux 3.4; 3.7+ never sees it).
   mirror-tmux-pre37:
     name: muster-mirror (real tmux 3.4, before paste-buffer -S)
     runs-on: ubuntu-latest
@@ -531,7 +534,7 @@ jobs:
       - name: go test (tmuxit), and assert the tmux tests ran, none skipped, and the plain paste was the one used
         run: |
           set -o pipefail
-          go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ | python3 -u tests/verdict.py --echo all --require TestTmuxKeyPasteMatchesTheVersion --require TestTmuxAnswerAskTypesThroughAReadOnlyViewer --require TestTmuxCancelAskSendsOneEscape
+          go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ | python3 -u tests/verdict.py --echo all --require TestTmuxKeyPasteMatchesTheVersion --require TestTmuxAnswerAskTypesThroughAReadOnlyViewer --require TestTmuxCancelAskSendsOneEscape --require TestTmuxTheGatedSendTypesItsEscapeAsAKey
 
   # Local (on a Mac): go test -race ./internal/mirrorhost/... ./cmd/muster-mirror/...
   #
@@ -899,7 +902,7 @@ jobs:
   # images/claude-code-agent/Dockerfile . Pushing is CI's.
   publish-gate:
     name: publish gate (every test job green)
-    needs: [build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, mirror-macos, ccd-image, e2e, release-dry-run]
+    needs: [build, test, leakscan, nix, css, ccd-tmux, mirror-tmux, mirror-tmux-pre37, mirror-macos, ccd-image, e2e, release-dry-run]
     runs-on: ubuntu-latest
     steps:
       - run: echo "every test job succeeded for $GITHUB_SHA"

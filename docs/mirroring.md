@@ -1027,9 +1027,10 @@ How it works:
   with `-S` on tmux 3.7 or later (3.7 made a plain paste sanitize control
   keys, and added `-S` to turn that off), and without it on an older tmux,
   whose paste never sanitized. The host log says once which one it uses.
-  Tested against real tmux 3.2a, 3.3a, 3.4 and 3.7c. One case is refused:
-  a tmux client older than 3.7 talking to a tmux server that is 3.7 or later
-  (or that reports no version) — run one tmux version for both. A multi-select answer
+  Which one is decided by the running tmux server: it rejects `-S` only
+  if it is older than 3.7, and muster confirms that from the server's
+  reported version (a server that rejects `-S` yet reports 3.7 or later is
+  refused). Tested against real tmux 3.2a, 3.3a, 3.4 and 3.7c. A multi-select answer
   is its options joined by `, `, in the question's order.
 - **The card follows what Claude Code recorded.** muster reads the call's result
   from the conversation's transcript: answered with the answers you typed in

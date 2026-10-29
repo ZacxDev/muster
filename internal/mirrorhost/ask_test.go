@@ -279,7 +279,7 @@ func TestTheHostAdvertisesAnsweringOnlyWhenItCan(t *testing.T) {
 		{"interactive, can type", wrapped{&askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}, true, true},
 		{"read-only", wrapped{&askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}, false, false},
 		{"a backend that cannot type", wrapped{&windowsBackend{windows: threeWindows}}, true, false},
-		{"a tmux that cannot paste raw (client without -S, server 3.7+)", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}, paste: KeyPasteNone}}, true, false},
+		{"a tmux that cannot paste raw (server rejects -S yet reports 3.7+)", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}, paste: KeyPasteNone}}, true, false},
 		{"a tmux with paste-buffer -S", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}, paste: KeyPasteRawFlag}}, true, true},
 		{"a tmux before 3.7 (plain paste-buffer is raw)", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}, paste: KeyPastePlain}}, true, true},
 		{"a tmux not known yet (no server)", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}}, true, true},
@@ -413,8 +413,9 @@ func fakeTmux(t *testing.T, name, probe, server, version string) (Tmux, string) 
 
 // TestTheKeyPasteProbeReadsTmuxsAnswer: KeyPaste is -S for a tmux that
 // refuses the probe as "no buffer" (it knows -S); for one that refuses the
-// FLAG it is the plain paste only when the SERVER is older than 3.7 (whose
-// paste never sanitized), and none when the server is 3.7+ or will not say;
+// FLAG it is the plain paste when the server's #{version} confirms it is
+// older than 3.7 (whose paste never sanitized), none when it claims 3.7+, and
+// unknown when that read fails;
 // with NO SERVER running it reads `tmux -V` instead — and a version it cannot
 // read, or any other failure, is unknown, never "old". A fake tmux plays each.
 func TestTheKeyPasteProbeReadsTmuxsAnswer(t *testing.T) {
@@ -428,10 +429,13 @@ func TestTheKeyPasteProbeReadsTmuxsAnswer(t *testing.T) {
 		{"old 3.4", unknownFlag, "3.4", "tmux 3.4", KeyPastePlain},
 		{"old 3.2a", unknownFlag, "3.2a", "tmux 3.2a", KeyPastePlain},
 		{"old 3.6b", unknownFlag, "3.6b", "tmux 3.6b", KeyPastePlain},
-		{"old client, 3.7c server", unknownFlag, "3.7c", "tmux 3.4", KeyPasteNone},
-		{"old client, next-3.8 server", unknownFlag, "next-3.8", "tmux 3.4", KeyPasteNone},
-		{"old client, server says nothing", unknownFlag, "", "tmux 3.4", KeyPasteNone},
-		{"old client, unreadable server version", unknownFlag, "master", "tmux 3.4", KeyPasteNone},
+		// The server parses -S, so these contradict themselves: refused.
+		{"rejects -S, reports 3.7c", unknownFlag, "3.7c", "tmux 3.7c", KeyPasteNone},
+		{"rejects -S, reports next-3.8", unknownFlag, "next-3.8", "tmux 3.4", KeyPasteNone},
+		// The version read failed (a timeout, say) or says nothing readable:
+		// unknown — retried by the next answer, never "cannot".
+		{"rejects -S, version read fails", unknownFlag, "", "tmux 3.4", KeyPasteUnknown},
+		{"rejects -S, unreadable version", unknownFlag, "master", "tmux 3.4", KeyPasteUnknown},
 		{"no server, 3.7c", noServer, "", "tmux 3.7c", KeyPasteRawFlag},
 		{"no server, next-3.8", noServer, "", "tmux next-3.8", KeyPasteRawFlag},
 		{"no server, 4.0", noServer, "", "tmux 4.0", KeyPasteRawFlag},
@@ -449,9 +453,9 @@ func TestTheKeyPasteProbeReadsTmuxsAnswer(t *testing.T) {
 		}
 	}
 	// A tmux that cannot paste raw is refused before any key.
-	mixed, log := fakeTmux(t, "mixed", unknownFlag, "3.7c", "tmux 3.4")
+	mixed, log := fakeTmux(t, "mixed", unknownFlag, "3.7c", "tmux 3.7c")
 	if err := answer1(mixed, context.Background(), "%1", hostAskQs, []askq.Choice{{Picks: []int{0}}}); !errors.Is(err, ErrNoRawPaste) || !errors.Is(err, errCannotAnswer) {
-		t.Fatalf("a 3.4 client on a 3.7c server: %v", err)
+		t.Fatalf("a server rejecting -S yet reporting 3.7c: %v", err)
 	}
 	if calls, _ := os.ReadFile(log); strings.Contains(string(calls), "capture-pane") || strings.Contains(string(calls), "load-buffer") {
 		t.Fatalf("a refused answer touched the pane:\n%s", calls)
