@@ -634,7 +634,18 @@ window.musterStepUp = (function () {
   // person walked away does not run them when it answers (finish took its
   // callbacks before closing, so a confirm that succeeded still runs them).
   document.getElementById('term-confirm-cancel').addEventListener('click', function () { dlg.close(); });
-  dlg.addEventListener('close', function () { done = []; pre = null; unlift(); unavailable(''); });
+  // 🔴 A CLOSE EVENT IS A TASK, AND CAN LAND AFTER THE NEXT OPEN: Escape (or
+  // close()) shuts the dialog at once but queues its 'close' event, and an ask
+  // in between — measured in mirror-stepup.spec.ts's callback test, an ask
+  // right after an Escape — already reopened it with its own callbacks and
+  // its own options fetch. That late event then dropped both, and the new
+  // open's answer was ignored (pre was no longer its fetch): the passkey sat
+  // "Checking…" for good. An event for a dialog that is open again is the
+  // old close's, and changes nothing.
+  dlg.addEventListener('close', function () {
+    if (dlg.open) return;
+    done = []; pre = null; unlift(); unavailable('');
+  });
   form.addEventListener('submit', function (ev) {
     ev.preventDefault();
     submit.disabled = true;

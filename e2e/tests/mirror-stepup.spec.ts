@@ -1414,11 +1414,35 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     await expect(dialog(page)).toBeHidden();
     await page.unrouteAll({ behavior: 'wait' });
 
-    // 6. A PASSKEY-CAPABLE BROWSER WHOSE /options FAILS (500): the password
+    // 6. 🔴 A CLOSE'S EVENT LANDING AFTER THE NEXT OPEN changes nothing: an
+    //    open, a close and a new open in ONE task (the close event is queued,
+    //    so it fires after the reopen). The new open's passkey goes live when
+    //    its options answer, and its callback runs after the confirm.
+    //    REGRESSION TEST: before, the late event dropped the new open's fetch
+    //    and callback — the button stayed "Checking…" (the flake the
+    //    failed-options step hit after step 5's Escape).
+    await page.evaluate(() => {
+      const w = window as unknown as Run;
+      w.__ran = [];
+      w.musterStepUp.ask('', null);
+      (document.getElementById('term-confirm') as HTMLDialogElement).close();
+      w.musterStepUp.ask('', () => { w.__ran.push('reopened'); });
+    });
+    await expect(dialog(page)).toBeVisible();
+    await expect(passkeyBtn(page), 'the reopened dialog\'s passkey goes live').not.toHaveAttribute('aria-disabled', /.*/, { timeout: 10_000 });
+    await passkeyBtn(page).click();
+    await expect(dialog(page)).toBeHidden();
+    await expect.poll(() => ran(page), { message: 'the reopened ask\'s callback ran' }).toEqual(['reopened']);
+
+    // 7. A PASSKEY-CAPABLE BROWSER WHOSE /options FAILS (500): the password
     //    opens, as the only option, with no summary, and takes focus.
     await page.route('**/auth/confirm/passkey/options', (r) => r.fulfill({ status: 500, json: { error: 'boom' } }), { times: 1 });
+    const failedReq = page.waitForRequest(isPath('/auth/confirm/passkey/options'));
+    const failed = page.waitForResponse(isPath('/auth/confirm/passkey/options'));
     await page.evaluate(() => { (window as unknown as Run).musterStepUp.ask('', null); });
     await expect(dialog(page)).toBeVisible();
+    await failedReq;
+    expect((await failed).status(), 'the options call was answered 500').toBe(500);
     await expect(dialog(page)).toHaveAttribute('data-passkey-unavailable', 'options-failed:500');
     await expect(page.locator('#term-confirm-password'), 'a failed options call opens the password').toBeVisible();
     await expect(page.locator('#term-confirm-password')).toBeFocused();
