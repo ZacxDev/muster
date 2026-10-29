@@ -100,9 +100,22 @@ const (
 // credentials included); the server's answer replaces the session's cookies
 // with a freshly signed-in one.
 //
-// The passkey button is drawn HIDDEN: it is shown, as the primary action, only
-// once the server has said this account has a passkey and the browser can use
-// one. The password field is always there — the fallback is never a tap away.
+// 🔴 THE PASSKEY IS THE ONE OPTION SHOWN; THE PASSWORD IS A COLLAPSE BEHIND IT
+// (operator ask: "show only the passkey option with the password option inside
+// a collapse closed by default"). The password sits in a <details>
+// (stepUpPasswordBoxID) and the passkey button in a box drawn HIDDEN; which one
+// leads is decided only once the server has said this account has a passkey
+// this browser can use (stepUpScript's offer):
+//
+//   - a passkey offered: the passkey button shows, the <details> is SHUT and its
+//     summary ("Use your password instead") is the one way in;
+//   - no passkey (none on this server, none on this account, or this browser
+//     cannot use one): the <details> is OPEN and its summary hidden — the
+//     password is the only working option, so it is never behind a tap.
+//
+// The <details> is drawn OPEN, and stays so until the passkey is known to be
+// usable: a dialog whose options call is slow or fails still has its password.
+// It is a plain <details>, so it opens and shuts with no script of its own.
 func confirmDialog(s *StepUpView) g.Node {
 	if s == nil {
 		return nil
@@ -125,39 +138,65 @@ func confirmDialog(s *StepUpView) g.Node {
 			Div(
 				ID("term-confirm-passkey-box"),
 				g.Attr("hidden", ""),
-				Class("flex flex-col gap-3"),
+				Class("flex flex-col"),
 				Button(ID("term-confirm-passkey"), Type("button"),
 					Class("press min-h-[44px] rounded-md px-3 py-2 text-base font-semibold transition "+stepUpPrimary),
 					g.Text("Confirm with passkey")),
-				P(Class("text-center text-xs text-muted"), g.Text("or use your password")),
 			),
 			// Why no passkey is offered, when one should have been (stepUpScript's
 			// unavailable): one muted line, hidden otherwise.
 			P(ID("term-confirm-passkey-note"), g.Attr("hidden", ""), Class("text-xs text-muted")),
-			Label(For("term-confirm-password"), Class("text-sm font-medium text-fg"), g.Text("Password")),
-			Input(
-				ID("term-confirm-password"),
-				Name("password"),
-				Type("password"),
-				g.Attr("autocomplete", "current-password"),
-				g.Attr("required", ""),
-				Class("min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
+			Details(
+				ID(stepUpPasswordBoxID),
+				Open(),
+				Class("group/pw"),
+				// Hidden while the password is the only option (stepUpScript's
+				// offer): then there is nothing to collapse it behind.
+				Summary(
+					ID(stepUpPasswordToggleID),
+					g.Attr("hidden", ""),
+					Class("press flex min-h-[44px] cursor-pointer list-none items-center justify-center gap-1.5 rounded-md text-sm font-medium text-fg2 transition hover:text-fg group-open/pw:mb-2 [&::-webkit-details-marker]:hidden"),
+					g.Text("Use your password instead"),
+					g.Raw(`<svg class="h-4 w-4 shrink-0 text-muted transition-transform group-open/pw:rotate-180" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>`),
+				),
+				Div(
+					Class("flex flex-col gap-3"),
+					Label(For("term-confirm-password"), Class("text-sm font-medium text-fg"), g.Text("Password")),
+					Input(
+						ID("term-confirm-password"),
+						Name("password"),
+						Type("password"),
+						g.Attr("autocomplete", "current-password"),
+						g.Attr("required", ""),
+						Class("min-h-[44px] rounded-md bg-bg px-3 py-2 text-base text-fg ring-1 ring-inset ring-edge focus:outline-none focus:ring-2 focus:ring-focus"),
+					),
+					Button(ID("term-confirm-submit"), Type("submit"),
+						g.Attr("data-primary", stepUpPrimary),
+						g.Attr("data-secondary", stepUpSecondary),
+						Class("press min-h-[44px] rounded-md px-3 py-2 text-base font-semibold transition "+stepUpPrimary),
+						g.Text(stepUpSubmitPassword)),
+				),
 			),
 			P(ID("term-confirm-error"), g.Attr("role", "alert"), g.Attr("hidden", ""), Class("rounded-lg bg-st-error-bg px-3 py-2 text-sm text-st-error-fg ring-1 ring-inset ring-st-error-fg/40")),
-			Div(
-				Class("flex gap-2"),
-				Button(ID("term-confirm-cancel"), Type("button"),
-					Class("press min-h-[44px] flex-1 rounded-md px-3 py-2 text-base font-semibold "+stepUpSecondary),
-					g.Text("Cancel")),
-				Button(ID("term-confirm-submit"), Type("submit"),
-					g.Attr("data-primary", stepUpPrimary),
-					g.Attr("data-secondary", stepUpSecondary),
-					Class("press min-h-[44px] flex-1 rounded-md px-3 py-2 text-base font-semibold transition "+stepUpPrimary),
-					g.Text("Confirm")),
-			),
+			Button(ID("term-confirm-cancel"), Type("button"),
+				Class("press min-h-[44px] rounded-md px-3 py-2 text-base font-semibold "+stepUpSecondary),
+				g.Text("Cancel")),
 		),
 	)
 }
+
+// The password's collapse and its summary (confirmDialog).
+const (
+	stepUpPasswordBoxID    = "term-confirm-password-box"
+	stepUpPasswordToggleID = "term-confirm-password-toggle"
+)
+
+// The password button's label in the dialog's two states: the only option
+// ("Confirm"), and the one behind the passkey.
+const (
+	stepUpSubmitPassword = "Confirm"
+	stepUpSubmitBehind   = "Confirm with password"
+)
 
 // StepUpFormView is the plain "Confirm it's you" page: the step-up for a send
 // the BROWSER submitted (no script ran), which the dialog above cannot serve.
@@ -401,6 +440,8 @@ window.musterStepUp = (function () {
   var pkBox = document.getElementById('term-confirm-passkey-box');
   var pkBtn = document.getElementById('term-confirm-passkey');
   var pkNote = document.getElementById('term-confirm-passkey-note');
+  var pwBox = document.getElementById('` + stepUpPasswordBoxID + `');
+  var pwToggle = document.getElementById('` + stepUpPasswordToggleID + `');
   var done = [], pre = null, freshUntil = 0, attempts = 0, openId = '';
   var ff = +dlg.getAttribute('data-fresh-for') || 0;
   if (ff > 0) freshUntil = performance.now() + ff;
@@ -410,17 +451,27 @@ window.musterStepUp = (function () {
     from.split(' ').forEach(function (c) { el.classList.remove(c); });
     to.split(' ').forEach(function (c) { el.classList.add(c); });
   }
-  // offer shows (or hides) the passkey as the PRIMARY action; the password
-  // button steps down to secondary beside it and back up without it.
+  // offer shows (or hides) the passkey as THE action (confirmDialog): offered,
+  // the password goes behind its collapse, shut, and its button steps down to
+  // secondary; not offered, the collapse is open with no summary — the password
+  // is then the only option, never a tap away.
+  //
+  // ⚠ A PASSWORD ALREADY BEING TYPED IS NOT SHUT AWAY: a quick typist can be
+  // mid-password when the options answer, so with anything in the field the
+  // collapse stays open (and focus stays where it is — see ask).
   function offer(on) {
     if (on) unavailable('');
     pkBox.hidden = !on;
     dlg.setAttribute('data-passkey-offered', on ? '1' : '0');
     how.textContent = dlg.getAttribute(on ? 'data-how-passkey' : 'data-how-password');
+    pwToggle.hidden = !on;
+    pwBox.open = !on || pw.value !== '';
     var pri = submit.getAttribute('data-primary'), sec = submit.getAttribute('data-secondary');
-    if (on) { swap(submit, pri, sec); submit.textContent = 'Use password'; }
-    else { swap(submit, sec, pri); submit.textContent = 'Confirm'; }
+    if (on) { swap(submit, pri, sec); submit.textContent = '` + stepUpSubmitBehind + `'; }
+    else { swap(submit, sec, pri); submit.textContent = '` + stepUpSubmitPassword + `'; }
   }
+  // Opened by its summary, the password takes focus, so the keyboard is up.
+  pwBox.addEventListener('toggle', function () { if (pwBox.open && dlg.open && !pwToggle.hidden) pw.focus(); });
   // prefetch resolves to '' when a passkey can be offered, else the reason it
   // cannot (an UNAVAILABLE value), or null when a newer prefetch replaced it.
   function prefetch(trigger) {
@@ -547,7 +598,7 @@ window.musterStepUp = (function () {
       if (r === null || !dlg.open) return;
       if (r) { unavailable(r); return; }
       offer(true);
-      pkBtn.focus();
+      if (!pwBox.open) pkBtn.focus();
     });
   }
 
@@ -661,6 +712,9 @@ window.musterStepUp = (function () {
       finish(v.data.fresh_for);
     } catch (e) {
       if (spent && !ev.verify) ev.verify = 'network';
+      // A device that cannot use the passkey leaves the password as the way
+      // on, so it is opened; a cancel is the person's, who may tap again.
+      if (!mpkCancelled(e)) pwBox.open = true;
       fail(mpkCancelled(e) ? 'The passkey was cancelled. Try again, or use your password.' : 'This device could not use a passkey. Use your password.');
     } finally {
       pkBtn.disabled = false;

@@ -448,6 +448,18 @@ const passkeyBtn = (page: Page) => page.locator('#term-confirm-passkey');
 // Why the dialog did NOT offer a passkey (stepUpScript's unavailable): the
 // dialog's data-passkey-unavailable, and the muted line that shows it.
 const passkeyNote = (page: Page) => page.locator('#term-confirm-passkey-note');
+const passwordToggle = (page: Page) => page.locator('#term-confirm-password-toggle');
+
+// usePassword opens the password BEHIND the offered passkey: the dialog shows
+// the passkey alone and keeps the password in a collapse, shut
+// (stepup_confirm.go's confirmDialog). Waits for the offer first, so the
+// collapse is in its settled state when it is opened.
+async function usePassword(page: Page) {
+  await expect(passkeyBtn(page)).toBeVisible();
+  await expect(page.locator('#term-confirm-password'), 'the password is behind its collapse while a passkey is offered').toBeHidden();
+  await passwordToggle(page).click();
+  await expect(page.locator('#term-confirm-password'), 'opened, the password takes focus').toBeFocused();
+}
 const subOf = (token: string) => String(b64urlJSON(token.split('.')[1]).sub);
 
 async function signIn(page: Page, email = adminEmail, pw = adminPW) {
@@ -544,6 +556,10 @@ test.describe('the window and the passkey confirm on a phone (390×844)', () => 
     await options.catch(() => undefined);
     await expect(passkeyBtn(page)).toBeHidden();
     await expect(page.locator('#term-confirm-submit')).toHaveText('Confirm');
+    // 🔴 With no passkey the password is the only option: shown with no tap,
+    // and nothing to collapse it behind.
+    await expect(page.locator('#term-confirm-password'), 'the password is shown open').toBeVisible();
+    await expect(passwordToggle(page), 'no collapse summary when the password is all there is').toBeHidden();
     // Recorded as the account having none — and, that being the ordinary
     // password-only case, nothing about it on screen.
     await expect(dialog(page)).toHaveAttribute('data-passkey-unavailable', 'not-available');
@@ -577,8 +593,15 @@ test.describe('the window and the passkey confirm on a phone (390×844)', () => 
     expect(v.sends, 'the stale send was refused by the server').toEqual([403]);
     await expect(passkeyBtn(page)).toBeVisible();
     await expect(passkeyBtn(page), 'the passkey is the default action').toBeFocused();
-    await expect(page.locator('#term-confirm-password'), 'the password stays as the fallback').toBeVisible();
-    await expect(page.locator('#term-confirm-submit')).toHaveText('Use password');
+    // 🔴 THE PASSKEY IS THE ONE OPTION SHOWN: the password is in a collapse,
+    // shut, whose summary is the way in (opened in part 3).
+    await expect(page.locator('#term-confirm-password'), 'the password is collapsed behind the passkey').toBeHidden();
+    await expect(page.locator('#term-confirm-submit')).toBeHidden();
+    await expect(passwordToggle(page)).toBeVisible();
+    await expect(passwordToggle(page)).toHaveText('Use your password instead');
+    expect(await page.locator('#term-confirm-password-box').evaluate((d) => (d as HTMLDetailsElement).open), 'the collapse is shut').toBe(false);
+    expect((await passwordToggle(page).boundingBox())!.height, 'the summary is a 44px touch target').toBeGreaterThanOrEqual(44);
+    await expect(page.locator('#term-confirm-cancel'), 'Cancel stays outside the collapse').toBeVisible();
     await expect(dialog(page)).toContainText('Confirm with your passkey, or use your password.');
     const box = (await dialog(page).boundingBox())!;
     expect(box.x + box.width, 'the dialog fits 390px').toBeLessThanOrEqual(390);
@@ -630,8 +653,12 @@ test.describe('the window and the passkey confirm on a phone (390×844)', () => 
     expect(Date.now() / 1000 - amrOf(await accessToken(context)), 'still the stale session').toBeGreaterThan(STALE_SECONDS - 100);
     await page.unrouteAll({ behavior: 'wait' });
 
-    // 3. THE PASSWORD FALLBACK, in the same dialog, sends the same text.
+    // 3. THE PASSWORD FALLBACK, in the same dialog, sends the same text — opened
+    //    from its collapse (the passkey is still offered: muster's refusal kept
+    //    its challenge).
     await setUserVerified(auth, true);
+    await usePassword(page);
+    await expect(page.locator('#term-confirm-submit')).toHaveText('Confirm with password');
     await page.fill('#term-confirm-password', 'not the password');
     await page.locator('#term-confirm-submit').tap();
     await expect(page.locator('#term-confirm-error')).toHaveText('That password is not right.');
@@ -1239,6 +1266,7 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
       w.musterStepUp.ask('', () => { w.__ran.push('d'); });
     });
     await expect(dialog(page)).toBeVisible();
+    await usePassword(page);
     await page.fill('#term-confirm-password', adminPW);
     await page.locator('#term-confirm-submit').click();
     await expect(dialog(page)).toBeHidden();
@@ -1282,6 +1310,7 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
       w.musterStepUp.ask('', () => { w.__ran.push('password'); });
     });
     await expect(dialog(page)).toBeVisible();
+    await usePassword(page);
     await page.fill('#term-confirm-password', adminPW);
     release = await hold('**/auth/confirm');
     request = page.waitForRequest(isPath('/auth/confirm'));
@@ -1295,6 +1324,24 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     // finish clears the password field: the answer has been handled.
     await expect(page.locator('#term-confirm-password')).toHaveValue('');
     expect(await ran(page), 'an escaped password confirm ran nothing').toEqual([]);
+    await page.unrouteAll({ behavior: 'wait' });
+
+    // 5. A password BEING TYPED when the passkey is offered is not shut away
+    //    (stepUpScript's offer): the options answer is held while it is typed,
+    //    then let through — the passkey is offered beside the open password.
+    const releaseOptions = await hold('**/auth/confirm/passkey/options');
+    await page.evaluate(() => { (window as unknown as Run).musterStepUp.ask('', null); });
+    await expect(dialog(page)).toBeVisible();
+    await page.fill('#term-confirm-password', 'half a pass');
+    const offered = page.waitForResponse(isPath('/auth/confirm/passkey/options'));
+    releaseOptions();
+    await offered;
+    await expect(passkeyBtn(page)).toBeVisible();
+    await expect(page.locator('#term-confirm-password'), 'what was being typed stays in view').toBeVisible();
+    await expect(page.locator('#term-confirm-password')).toHaveValue('half a pass');
+    await expect(page.locator('#term-confirm-password'), 'and keeps the focus').toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toBeHidden();
     await page.unrouteAll({ behavior: 'wait' });
   });
 });
@@ -1427,6 +1474,8 @@ test.describe('the terminal in the view switch’s frame, with no WebAuthn in th
     await expect(passkeyNote(page)).toBeVisible();
     await expect(passkeyNote(page)).toHaveText('Passkey unavailable here (no-publickeycredential)');
     await expect(passkeyBtn(page)).toBeHidden();
+    await expect(page.locator('#term-confirm-password'), 'no usable passkey: the password is shown open').toBeVisible();
+    await expect(passwordToggle(page)).toBeHidden();
     expect(options, 'no options asked for where no ceremony can run').toEqual(['top', 'top']);
     await page.fill('#term-confirm-password', adminPW);
     await page.locator('#term-confirm-submit').click();
