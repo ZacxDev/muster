@@ -497,6 +497,21 @@ type ClaudeCodeSession struct {
 	BypassPermissions bool
 }
 
+// EgressLocked reports whether the pod's network policy drops the public-443
+// rule (claudeCodeNetworkFor) and the pod is told to skip the CLI's
+// non-essential traffic ([EnvClaudeDisableNonessentialTraffic]).
+//
+// 🔴 IT IS BypassPermissions, NOT A SECOND KNOB, AND THAT IS THE DECISION. A
+// session that runs every tool without a prompt reads untrusted text (an
+// officer reads public PRs) while its pod holds CLAUDE_CODE_OAUTH_TOKEN and
+// MUSTER_HOOK_TOKEN; "public internet on 443" lets one injected `curl` send them
+// anywhere. Deriving the lock from the bypass means no configuration can have
+// the bypass without the lock. Today only an officer instance sets
+// BypassPermissions (internal/api OfficerClaudeCodeSession), so only officers
+// are locked; task agents, the chief and bypass JOB lanes
+// (MUSTER_AGENT_CC_BYPASS_POOLS, a different mechanism) keep the public rule.
+func (s ClaudeCodeSession) EgressLocked() bool { return s.BypassPermissions }
+
 // Build assembles the spec for one agent.
 //
 // 🔴 SECRETS GO IN Secrets, NEVER IN Env, AND THE SPLIT IS THE WHOLE REASON

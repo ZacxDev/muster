@@ -145,6 +145,64 @@ three things in that session's `settings.json` at provision time (the pod's
 No other agent gets any of them (the officer runtime is the provisioner's only
 source of them, and it answers for a declared officer's instances only).
 
+### The instance's network
+
+🔴 **An officer instance is egress-locked, always.** It is the one agent whose
+whole session runs with permissions bypassed while it reads untrusted text
+(public pull requests), and its pod holds `CLAUDE_CODE_OAUTH_TOKEN` and
+`MUSTER_HOOK_TOKEN`. A claude-code agent's usual policy allows TCP 443 to any
+public IPv4 address, so one injected `curl` could send either token anywhere.
+So the lock is derived from the bypass (`agentspec.ClaudeCodeSession.EgressLocked`):
+there is no setting that gives an officer the bypass without it, and no other
+agent gets it.
+
+On the Kubernetes driver, an officer instance's NetworkPolicy is the usual one
+**without the public rule**:
+
+- ingress: ccd's port (18789), from muster's own pods only (unchanged);
+- egress: UDP/TCP 53 to the cluster's DNS pods, and muster's connect port
+  (`MUSTER_CONNECT_PORT`) on muster's own pods. GitHub reads (`git`, REST)
+  and muster's MCP tools both go through that port.
+- nothing else — **not even the Anthropic API**.
+
+The pod also gets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, so the CLI does
+not try its auto-updater, telemetry, error reporting or feature-flag hosts.
+
+🔴 **The cluster must allow the Anthropic API itself, by name.** A NetworkPolicy
+cannot match a hostname, so muster writes no API rule at all. Ship a policy
+that allows `api.anthropic.com:443` to the officer instance pods — on Cilium, a
+`CiliumClusterwideNetworkPolicy` with `toFQDNs` (plus the DNS rule with
+`rules.dns` that `toFQDNs` needs, so the DNS proxy learns the addresses).
+Without it every turn of the officer fails (closed and loud). Network plugins
+union allows, which is why the public rule had to leave muster's policy: an
+FQDN allow next to "any public address on 443" narrows nothing.
+
+What the CLI needs with `CLAUDE_CODE_OAUTH_TOKEN`: inference, its WebFetch
+domain check and token use all go to `api.anthropic.com`. The docs
+(<https://code.claude.com/docs/en/network-config>) also list
+`platform.claude.com` for OAuth refresh of claude.ai logins; an env-supplied
+`setup-token` is not refreshed, so it is not allowed here — if an officer's
+turns fail with an auth error, that host is the first to check. claude.ai MCP
+connectors (`mcp-proxy.anthropic.com`) are unreachable by design.
+
+⚠ **An instance keeps the policy it was started with.** The lock is written when
+the spec is applied (dispatch, Start). An officer instance created by an older
+build keeps its public-443 rule until it is stopped and started — scale its
+Deployment in its agent namespace to 0 and the wake loop starts it again on the
+current spec. Check with
+`kubectl -n <namespace-prefix>officer-<…>-1 get networkpolicy -o yaml`: the
+egress list has no `ipBlock`.
+
+⚠ **What it still allows.** Anything the session can send to muster's connect
+surface (its own tools and the read-only `github` connector) and to the
+Anthropic API (whose requests carry the account's own token anyway). And
+**DNS**: the policy allows any name to be resolved through the cluster's DNS,
+which forwards upstream, so a determined injection can still leak a token a
+few bytes at a time in query names to a nameserver it controls (DNS
+tunnelling). Closing that needs name-filtered DNS for these pods, which a
+NetworkPolicy cannot express and muster does not write. Bypass still means the
+session can read every secret in its pod.
+
 ### Reading a repository (`repo`)
 
 The GitHub App connector mints a token only for the **calling agent's own
@@ -424,8 +482,9 @@ credential.
   never offered the chief's tools. Remove an officer from `MUSTER_OFFICERS` and
   its instances become ordinary, deletable agents.
 - **No production access.** Instances are ordinary `claude-code` pods: no
-  service-account token, egress limited as for every claude-code agent
-  ([provisioner.md](provisioner.md)).
+  service-account token, and egress **narrower** than every other claude-code
+  agent: DNS and muster's connect port only, with the Anthropic API allowed by
+  the cluster, by name ([The instance's network](#the-instances-network)).
 
 ## cairn
 
@@ -475,6 +534,9 @@ What a deployment needs beyond muster's usual claude-code setup:
    applies `CCD_PERMISSION_MODE`; an older one ignores it and the officer
    prompts).
 7. Egress from muster-server to HQ. Nothing needs to reach muster from HQ.
+8. A cluster-side allow for `api.anthropic.com:443` from the officer instance
+   pods, by FQDN ([The instance's network](#the-instances-network)). Without
+   it an instance's turns all fail.
 
 Checking it: the boot log has one `officers: <id> on: …` line per officer;
 after HQ creates an item, `officer-<type>-<area>-1` appears among the agents

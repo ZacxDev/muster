@@ -429,6 +429,7 @@ func TestTheNetworkBannerLineSaysWhetherAgentsAreConfined(t *testing.T) {
 		envAgentNetpolFromNS, envAgentNetpolFromLabels, "TCP 443",
 		"an agent created before this build has NO policy", "until that agent is stopped and started",
 		"Enforcement is the cluster network plugin's",
+		"An OFFICER instance", "WITHOUT the public rule", "cluster-side FQDN policy",
 		"needs get/create/update/delete on networkpolicies.networking.k8s.io", "to DESTROY ANY agent",
 	} {
 		if !strings.Contains(on, want) {
