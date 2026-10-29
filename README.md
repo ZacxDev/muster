@@ -7,6 +7,10 @@ Self-hosted: one Go server and Postgres, in Docker on one of your machines,
 reached over HTTPS on your private Tailscale network and nowhere else. The UI
 installs on your phone as a PWA. Your other machines dial out to it.
 
+Not to be confused with the Mac menu-bar app also called Muster
+([agentmuster.app](https://agentmuster.app/)): this muster is the self-hosted
+one, for your phone and every machine you run agents on.
+
 <p align="center">
   <img src="docs/img/phone-flow.gif" width="270" alt="On a phone: open a session from the bottom bar's search by typing its codename, dictate a reply with the microphone, send it, and watch the session answer">
   <img src="docs/img/sidebar.png" width="270" alt="The sidebar on a phone: every session on two machines and the dispatched agents, like channels in a chat app, the open session marked">
