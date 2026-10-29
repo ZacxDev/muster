@@ -428,13 +428,14 @@ jobs:
   # tmux, on private sockets — the same suite discipline as `ccd-tmux` above
   # (tmux asserted, the suite fails rather than skips, the verdict counts).
   #
-  # 🔴 THE HOSTS' tmux, NOT THE RUNNER'S. muster-mirror runs on the operators'
-  # hosts, whose tmux is nixpkgs' (3.7c when written). It types AskUserQuestion
-  # answers with `paste-buffer -S`, which tmux 3.7 added (CHANGES 3.6b -> 3.7;
-  # mirrorhost.MinRawPasteTmux) — on the runner's 3.4 the flag does not exist
-  # and `send-keys` is not refused for a read-only viewer. So this suite runs
-  # against tmux from THIS FLAKE'S locked nixpkgs, asserted to be at least 3.7
-  # before any test, so an older one fails by name.
+  # 🔴 TWO tmux VERSIONS, BECAUSE muster-mirror TYPES ANSWERS TWO WAYS.
+  # It types AskUserQuestion answers with `paste-buffer -S` on tmux 3.7+ (3.7
+  # added -S together with the sanitizing it turns off; CHANGES 3.6b -> 3.7,
+  # tmuxver.MinRawPaste) and with plain `paste-buffer` before 3.7, which never
+  # sanitized (mirrorhost.Tmux.KeyPaste). This job runs the suite against the
+  # flake's locked nixpkgs tmux, asserted to be at least 3.7 before any test;
+  # `mirror-tmux-pre37` below runs it against tmux 3.4 — what Ubuntu 24.04
+  # ships — asserted to be older than 3.7.
   mirror-tmux:
     name: muster-mirror (real tmux, the hosts' version)
     runs-on: ubuntu-latest
@@ -480,6 +481,57 @@ jobs:
         run: |
           set -o pipefail
           go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ | python3 -u tests/verdict.py --echo all
+
+  # Local: PATH="$(nix build --no-link --print-out-paths 'github:NixOS/nixpkgs/nixos-24.05#tmux^out')/bin:$PATH" \
+  #          go test -tags tmuxit -race -run '^TestTmux' ./internal/mirror/ ./internal/mirrorhost/
+  #
+  # The same suite against a tmux BEFORE 3.7 — 3.4, Ubuntu 24.04's — where
+  # `paste-buffer -S` does not exist and answers are typed with the plain paste
+  # (mirrorhost.KeyPastePlain). Pinned from the frozen nixos-24.05 branch, not
+  # the runner's apt, so a runner upgrade cannot turn this into a second 3.7+
+  # run without failing the version assertion by name.
+  # TestTmuxKeyPasteMatchesTheVersion is --require'd: it fails unless the
+  # server reports the plain paste on this tmux.
+  mirror-tmux-pre37:
+    name: muster-mirror (real tmux 3.4, before paste-buffer -S)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: install zsh, and fail if it is not there
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zsh
+          command -v zsh
+          zsh --version
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: tmux 3.4 from nixos-24.05, and fail unless it is older than 3.7
+        run: |
+          bin="$(nix build --no-link --print-out-paths 'github:NixOS/nixpkgs/nixos-24.05#tmux^out')/bin"
+          v="$("$bin/tmux" -V)"
+          echo "$v"
+          python3 - "$v" <<'PY'
+          import re, sys
+          m = re.match(r"tmux (?:next-)?(\d+)\.(\d+)", sys.argv[1])
+          assert m, f"cannot read the tmux version {sys.argv[1]!r}"
+          assert (int(m[1]), int(m[2])) < (3, 7), f"{sys.argv[1]} is not older than 3.7: this job would not exercise the plain paste"
+          PY
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: go test (tmuxit), and assert the tmux tests ran, none skipped, and the plain paste was the one used
+        run: |
+          set -o pipefail
+          go test -tags tmuxit -race -run '^TestTmux' -json ./internal/mirror/ ./internal/mirrorhost/ | python3 -u tests/verdict.py --echo all --require TestTmuxKeyPasteMatchesTheVersion --require TestTmuxAnswerAskTypesThroughAReadOnlyViewer --require TestTmuxCancelAskSendsOneEscape
 
   # Local (on a Mac): go test -race ./internal/mirrorhost/... ./cmd/muster-mirror/...
   #

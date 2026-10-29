@@ -152,7 +152,7 @@ func TestEveryWayThisHostTypesIntoAPaneGoesThroughTheHermesGuard(t *testing.T) {
 		}
 	}
 	for s, want := range map[string][]string{
-		"paste-buffer": {"Tmux.RawPaste", "Tmux.pasteBracketed", "Tmux.pasteEnter", "tmuxPane.Send"},
+		"paste-buffer": {"Tmux.KeyPaste", "Tmux.pasteBracketed", "Tmux.pasteEnter", "tmuxPane.Send"},
 		"send-keys":    {"Tmux.CancelCopyMode", "Tmux.ScrollPane"},
 	} {
 		got := slices.Clone(literals[s])

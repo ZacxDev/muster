@@ -33,6 +33,7 @@ type fakeSystem struct {
 	unitErr   bool   // ... and whether it exits non-zero
 	launchctl string // launchctl print's stdout; "" = not loaded (exit non-zero)
 	tmux      bool
+	tmuxV     string // `tmux -V`'s stdout; "" = "tmux 3.4\n"
 	qrencode  bool
 
 	mu   sync.Mutex
@@ -71,6 +72,9 @@ func (f *fakeSystem) sys() doctorSystem {
 				}
 				return f.launchctl, nil
 			case "/usr/bin/tmux":
+				if f.tmuxV != "" {
+					return f.tmuxV, nil
+				}
 				return "tmux 3.4\n", nil
 			case "/usr/bin/qrencode":
 				return "QRBLOCKS:" + args[len(args)-1] + "\n", nil
@@ -507,6 +511,27 @@ func TestDoctorEachCheckGoesRedWhenBroken(t *testing.T) {
 				t.Errorf("stderr does not show the FAIL and its fix:\n%s", r.stderr)
 			}
 		})
+	}
+}
+
+// TestDoctorTmuxSaysHowPickersAreAnswered: the tmux check PASSes for every
+// tmux version — none is refused for picker answers — and says which paste
+// muster-mirror types them with: -S on 3.7+, the plain paste before 3.7, and
+// for a version it cannot read, that the running server is asked instead.
+func TestDoctorTmuxSaysHowPickersAreAnswered(t *testing.T) {
+	for _, c := range []struct{ v, want, not string }{
+		{"tmux 3.4\n", "plain `paste-buffer` (tmux before 3.7 pastes raw", "-S`"},
+		{"tmux 3.6b\n", "plain `paste-buffer`", "`paste-buffer -S`"},
+		{"tmux 3.7c\n", "typed with `paste-buffer -S`", "plain"},
+		{"tmux next-3.8\n", "typed with `paste-buffer -S`", "plain"},
+		{"tmux master\n", "version not recognised", "paste-buffer"},
+	} {
+		s := healthySystem()
+		s.tmuxV = c.v
+		got := runDoctorAgainst(t, healthyMuster(), s, doctorOpts{}).check("tmux")
+		if got.Status != statusPass || !strings.Contains(got.Detail, c.want) || strings.Contains(got.Detail, c.not) {
+			t.Errorf("%q: %+v, want PASS saying %q and not %q", strings.TrimSpace(c.v), got, c.want, c.not)
+		}
 	}
 }
 

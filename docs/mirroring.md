@@ -1023,9 +1023,13 @@ How it works:
   switching to the terminal to watch does not stop it; a key that changes
   the picker does. Only one answer is typed into a pane at a time (another
   one is refused: *another answer is being typed*). The keys go in with tmux
-  `paste-buffer -S`, which works while muster's read-only viewer is attached.
-  🔴 **It needs tmux 3.7 or later** (3.7 added `-S`); on an older tmux the
-  host says so in its log and does not offer answering. A multi-select answer
+  `paste-buffer`, which works while muster's read-only viewer is attached:
+  with `-S` on tmux 3.7 or later (3.7 made a plain paste sanitize control
+  keys, and added `-S` to turn that off), and without it on an older tmux,
+  whose paste never sanitized. The host log says once which one it uses.
+  Tested against real tmux 3.2a, 3.3a, 3.4 and 3.7c. One case is refused:
+  a tmux client older than 3.7 talking to a tmux server that is 3.7 or later
+  (or that reports no version) — run one tmux version for both. A multi-select answer
   is its options joined by `, `, in the question's order.
 - **The card follows what Claude Code recorded.** muster reads the call's result
   from the conversation's transcript: answered with the answers you typed in

@@ -258,14 +258,14 @@ func TestADismissalGoesToTheClaudePaneOnly(t *testing.T) {
 	}
 }
 
-// rawlessBackend is askingBackend whose tmux can (raw) or cannot paste raw
-// keys, as far as it knows (Tmux.RawPaste).
+// rawlessBackend is askingBackend whose tmux pastes raw keys as paste says
+// (Tmux.KeyPaste).
 type rawlessBackend struct {
 	*askingBackend
-	raw, known bool
+	paste KeyPaste
 }
 
-func (b *rawlessBackend) RawPaste(context.Context) (has, known bool) { return b.raw, b.known }
+func (b *rawlessBackend) KeyPaste(context.Context) KeyPaste { return b.paste }
 
 var hostAskQs = []askq.Question{{Question: "Which color?", Options: []askq.Option{{Label: "Red"}, {Label: "Blue"}}}}
 
@@ -279,8 +279,9 @@ func TestTheHostAdvertisesAnsweringOnlyWhenItCan(t *testing.T) {
 		{"interactive, can type", wrapped{&askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}, true, true},
 		{"read-only", wrapped{&askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}, false, false},
 		{"a backend that cannot type", wrapped{&windowsBackend{windows: threeWindows}}, true, false},
-		{"a tmux without paste-buffer -S", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}, known: true}}, true, false},
-		{"a tmux with paste-buffer -S", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}, raw: true, known: true}}, true, true},
+		{"a tmux that cannot paste raw (client without -S, server 3.7+)", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}, paste: KeyPasteNone}}, true, false},
+		{"a tmux with paste-buffer -S", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}, paste: KeyPasteRawFlag}}, true, true},
+		{"a tmux before 3.7 (plain paste-buffer is raw)", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}, paste: KeyPastePlain}}, true, true},
 		{"a tmux not known yet (no server)", wrapped{&rawlessBackend{askingBackend: &askingBackend{windowsBackend: &windowsBackend{windows: threeWindows}}}}, true, true},
 	} {
 		d := newDrivenMuster(t)
@@ -386,42 +387,121 @@ func TestOneDrivePerPane(t *testing.T) {
 	}
 }
 
-// TestTheRawPasteProbeReadsTmuxsAnswer: RawPaste is known-yes for a tmux that
-// refuses the probe as "no buffer" (it knows -S), known-no for one that
-// refuses the flag; with NO SERVER running it reads `tmux -V` instead — and a
-// version it cannot read is unknown, never "old". A fake tmux plays each.
-func TestTheRawPasteProbeReadsTmuxsAnswer(t *testing.T) {
+// fakeTmux is a shell-script tmux that answers the paste-buffer -S probe
+// with probe, `display-message -p #{version}` with server (exit 1 when it is
+// ""), and `-V` with version; every other command succeeds silently. Each
+// call's argv lands in the returned log, one line per call.
+func fakeTmux(t *testing.T, name, probe, server, version string) (Tmux, string) {
+	t.Helper()
 	dir := t.TempDir()
-	fake := func(name, probe, version string) Tmux {
-		p := filepath.Join(dir, name)
-		script := "#!/bin/sh\ncase \"$*\" in\n*-V*) echo '" + version + "' ;;\n*) echo '" + probe + "' >&2; exit 1 ;;\nesac\n"
-		if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+	p, log := filepath.Join(dir, name), filepath.Join(dir, "calls")
+	display := "echo '" + server + "'"
+	if server == "" {
+		display = "echo 'no current client' >&2; exit 1"
+	}
+	script := "#!/bin/sh\necho \"$*\" >> '" + log + "'\ncase \"$*\" in\n" +
+		"*-V*) echo '" + version + "' ;;\n" +
+		"*display-message*) " + display + " ;;\n" +
+		"*'paste-buffer -S -b muster-mirror-ask-probe-'*) echo '" + probe + "' >&2; exit 1 ;;\n" +
+		"*load-buffer*) cat > /dev/null ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return Tmux{Bin: p}, log
+}
+
+// TestTheKeyPasteProbeReadsTmuxsAnswer: KeyPaste is -S for a tmux that
+// refuses the probe as "no buffer" (it knows -S); for one that refuses the
+// FLAG it is the plain paste only when the SERVER is older than 3.7 (whose
+// paste never sanitized), and none when the server is 3.7+ or will not say;
+// with NO SERVER running it reads `tmux -V` instead — and a version it cannot
+// read, or any other failure, is unknown, never "old". A fake tmux plays each.
+func TestTheKeyPasteProbeReadsTmuxsAnswer(t *testing.T) {
+	noServer := "no server running on /tmp/tmux-1000/default"
+	unknownFlag := "command paste-buffer: unknown flag -S"
+	for _, c := range []struct {
+		name, probe, server, version string
+		want                         KeyPaste
+	}{
+		{"new", "no buffer muster-mirror-ask-probe-x", "3.7c", "tmux 3.7c", KeyPasteRawFlag},
+		{"old 3.4", unknownFlag, "3.4", "tmux 3.4", KeyPastePlain},
+		{"old 3.2a", unknownFlag, "3.2a", "tmux 3.2a", KeyPastePlain},
+		{"old 3.6b", unknownFlag, "3.6b", "tmux 3.6b", KeyPastePlain},
+		{"old client, 3.7c server", unknownFlag, "3.7c", "tmux 3.4", KeyPasteNone},
+		{"old client, next-3.8 server", unknownFlag, "next-3.8", "tmux 3.4", KeyPasteNone},
+		{"old client, server says nothing", unknownFlag, "", "tmux 3.4", KeyPasteNone},
+		{"old client, unreadable server version", unknownFlag, "master", "tmux 3.4", KeyPasteNone},
+		{"no server, 3.7c", noServer, "", "tmux 3.7c", KeyPasteRawFlag},
+		{"no server, next-3.8", noServer, "", "tmux next-3.8", KeyPasteRawFlag},
+		{"no server, 4.0", noServer, "", "tmux 4.0", KeyPasteRawFlag},
+		{"no server, 3.6b", noServer, "", "tmux 3.6b", KeyPastePlain},
+		{"no server, 3.4", noServer, "", "tmux 3.4", KeyPastePlain},
+		{"no server, unreadable", noServer, "", "tmux master", KeyPasteUnknown},
+		{"no socket yet, 3.4", "error connecting to /tmp/tmux-1000/x (No such file or directory)", "", "tmux 3.4", KeyPastePlain},
+		// A 3.4 client against a 3.7c server (measured): every command fails
+		// so. Not "no server": the binary's own version says nothing.
+		{"a server this client cannot talk to", "server exited unexpectedly", "", "tmux 3.4", KeyPasteUnknown},
+	} {
+		tm, _ := fakeTmux(t, strings.ReplaceAll(c.name, " ", "_"), c.probe, c.server, c.version)
+		if got := tm.KeyPaste(context.Background()); got != c.want {
+			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		}
+	}
+	// A tmux that cannot paste raw is refused before any key.
+	mixed, log := fakeTmux(t, "mixed", unknownFlag, "3.7c", "tmux 3.4")
+	if err := answer1(mixed, context.Background(), "%1", hostAskQs, []askq.Choice{{Picks: []int{0}}}); !errors.Is(err, ErrNoRawPaste) || !errors.Is(err, errCannotAnswer) {
+		t.Fatalf("a 3.4 client on a 3.7c server: %v", err)
+	}
+	if calls, _ := os.ReadFile(log); strings.Contains(string(calls), "capture-pane") || strings.Contains(string(calls), "load-buffer") {
+		t.Fatalf("a refused answer touched the pane:\n%s", calls)
+	}
+	// An old tmux is NOT refused: the answer goes on to read the pane.
+	old, log := fakeTmux(t, "old", unknownFlag, "3.4", "tmux 3.4")
+	if err := answer1(old, context.Background(), "%1", hostAskQs, []askq.Choice{{Picks: []int{0}}}); errors.Is(err, ErrNoRawPaste) || errors.Is(err, errCannotAnswer) {
+		t.Fatalf("a tmux 3.4 was refused: %v", err)
+	}
+	if calls, _ := os.ReadFile(log); !strings.Contains(string(calls), "capture-pane") {
+		t.Fatalf("an answer on tmux 3.4 never read the pane:\n%s", calls)
+	}
+}
+
+// TestSendPastesWithOrWithoutDashS: a key goes in with `paste-buffer -S` on
+// a tmux that has it (and when not known yet), and with plain `paste-buffer`
+// — never -S, which that tmux would refuse — on a tmux before 3.7. The bytes
+// loaded are the keys exactly, whichever.
+func TestSendPastesWithOrWithoutDashS(t *testing.T) {
+	keys := "\x1b[B\x1b[A2\r" // Down, Up, a digit, Enter
+	for _, c := range []struct {
+		paste KeyPaste
+		want  string
+	}{
+		{KeyPasteRawFlag, "paste-buffer -S -d -b muster-mirror-ask-"},
+		{KeyPasteUnknown, "paste-buffer -S -d -b muster-mirror-ask-"},
+		{KeyPastePlain, "paste-buffer -d -b muster-mirror-ask-"},
+	} {
+		tm, log := fakeTmux(t, "send", "", "", "")
+		dir := filepath.Dir(log)
+		// Record what load-buffer is handed on stdin.
+		script := "#!/bin/sh\necho \"$*\" >> '" + log + "'\ncase \"$*\" in\n*load-buffer*) cat > '" + filepath.Join(dir, "loaded") + "' ;;\nesac\n"
+		if err := os.WriteFile(tm.Bin, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		return Tmux{Bin: p}
-	}
-	noServer := "no server running on /tmp/tmux-1000/default"
-	for _, c := range []struct {
-		name, probe, version string
-		has, known           bool
-	}{
-		{"new", "no buffer muster-mirror-ask-probe-x", "tmux 3.7c", true, true},
-		{"old", "command paste-buffer: unknown flag -S", "tmux 3.4", false, true},
-		{"no server, 3.7c", noServer, "tmux 3.7c", true, true},
-		{"no server, next-3.8", noServer, "tmux next-3.8", true, true},
-		{"no server, 4.0", noServer, "tmux 4.0", true, true},
-		{"no server, 3.6b", noServer, "tmux 3.6b", false, true},
-		{"no server, 3.4", noServer, "tmux 3.4", false, true},
-		{"no server, unreadable", noServer, "tmux master", false, false},
-	} {
-		has, known := fake(strings.ReplaceAll(c.name, " ", "_"), c.probe, c.version).RawPaste(context.Background())
-		if has != c.has || known != c.known {
-			t.Errorf("%s: has=%v known=%v, want %v %v", c.name, has, known, c.has, c.known)
+		if err := (tmuxPane{t: tm, id: "%3", paste: c.paste}).Send(context.Background(), keys); err != nil {
+			t.Fatalf("%v: %v", c.paste, err)
 		}
-	}
-	// A tmux known to lack -S is refused before any key.
-	old := fake("old2", "command paste-buffer: unknown flag -S", "tmux 3.4")
-	if err := answer1(old, context.Background(), "%1", hostAskQs, []askq.Choice{{Picks: []int{0}}}); !errors.Is(err, ErrNoRawPaste) || !errors.Is(err, errCannotAnswer) {
-		t.Fatalf("an old tmux: %v", err)
+		calls, _ := os.ReadFile(log)
+		var paste string
+		for _, l := range strings.Split(string(calls), "\n") {
+			if strings.HasPrefix(l, "paste-buffer") {
+				paste = l
+			}
+		}
+		if !strings.HasPrefix(paste, c.want) || !strings.HasSuffix(paste, " -t %3") {
+			t.Errorf("%v: pasted with %q, want %q… -t %%3", c.paste, paste, c.want)
+		}
+		if loaded, _ := os.ReadFile(filepath.Join(dir, "loaded")); string(loaded) != keys {
+			t.Errorf("%v: loaded %q, want the keys %q", c.paste, loaded, keys)
+		}
 	}
 }
