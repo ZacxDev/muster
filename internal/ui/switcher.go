@@ -47,7 +47,7 @@ import (
 // title"). There is no width cap and no ellipsis: a long title makes a long
 // pill, and the row scrolls sideways (below). This replaced #276's 26rem cap.
 // 🔴 AND THE LABEL IS THE WHOLE NAME: the pill used to drop a codename's
-// ":<index>" ("homelab:8" read "homelab") whenever no other entry of its view
+// ":<index>" ("mango:8" read "mango") whenever no other entry of its view
 // shared the rest — a cut made on the SERVER, which no CSS fix could see
 // (operator report: "it's missing the number after the colon").
 //
@@ -188,7 +188,7 @@ type SwitcherItem struct {
 //
 // 🔴 NOTHING IS CUT FROM IT. It used to have a SHORT form — the codename
 // without its ":<index>" — drawn whenever no other entry of the view shared
-// it, so a pill read "homelab" for "homelab:8" (operator report: "it's missing
+// it, so a pill read "mango" for "mango:8" (operator report: "it's missing
 // the number after the colon").
 func switcherName(e listEntry) string {
 	if e.agent != nil {
