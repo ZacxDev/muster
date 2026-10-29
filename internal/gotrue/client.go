@@ -107,11 +107,21 @@ func (c *Client) now() time.Time {
 	return time.Now()
 }
 
+// HTTPTimeout bounds one request to GoTrue made through the default client.
+// The step-up dialog's own wait (internal/ui stepUpNetTimeout) is derived
+// from it, so a page never gives up on a request the server is still
+// allowed to be waiting on.
+const HTTPTimeout = 10 * time.Second
+
+// SettingsTimeout bounds the GoTrue /settings read a passkey route may make
+// first (internal/api passkeysOn), and is part of the same derivation.
+const SettingsTimeout = 3 * time.Second
+
 func (c *Client) httpClient() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return &http.Client{Timeout: HTTPTimeout}
 }
 
 // PasswordGrant signs a user in.
