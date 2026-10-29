@@ -474,14 +474,16 @@ type Options struct {
 	JobBypassVeto string
 
 	// ClaudeCodeSession, for a claude-code agent only, is its primary CLI's
-	// per-agent settings: muster MCP tools to pre-allow and the model. The zero
+	// per-agent settings: muster MCP tools to pre-allow, the model and the
+	// all-tools bypass. The zero
 	// value changes nothing (no variable is emitted).
 	ClaudeCodeSession ClaudeCodeSession
 }
 
 // ClaudeCodeSession is a claude-code pod's per-agent session settings
-// (internal/podagent/session.go): emitted as podagent.EnvAllowMCPTools and
-// podagent.EnvModel, which the pod's `ccd seed` writes into settings.json.
+// (internal/podagent/session.go): emitted as podagent.EnvAllowMCPTools,
+// podagent.EnvModel and podagent.EnvPermissionMode, which the pod's `ccd seed`
+// writes into settings.json.
 type ClaudeCodeSession struct {
 	// AllowMCPTools are bare muster MCP tool names ("officer_claim"); each
 	// becomes permissions.allow "mcp__muster__<name>". Nothing else can be
@@ -489,6 +491,10 @@ type ClaudeCodeSession struct {
 	AllowMCPTools []string
 	// Model is the session's model; "" leaves the account default.
 	Model string
+	// BypassPermissions starts every session in the pod with every tool
+	// allowed (podagent.EnvPermissionMode=bypassPermissions): no permission
+	// prompt at all. Set for an officer instance only.
+	BypassPermissions bool
 }
 
 // Build assembles the spec for one agent.

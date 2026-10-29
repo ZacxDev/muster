@@ -258,7 +258,7 @@ func (g *grantStore) GetConnector(_ context.Context, name string) (connectors.Co
 	}
 	return connectors.Connector{}, connectors.ErrNotFound
 }
-func (g *grantStore) DecideGrantFrom(_ context.Context, id int64, approve bool, _, _ string, _ connectors.DecisionSource) (connectors.Grant, error) {
+func (g *grantStore) DecideGrantFrom(_ context.Context, id int64, approve bool, _, _, _ string, _ connectors.DecisionSource) (connectors.Grant, error) {
 	g.decided = append(g.decided, id)
 	gr, err := g.GetGrant(context.Background(), id)
 	if approve {
@@ -268,7 +268,7 @@ func (g *grantStore) DecideGrantFrom(_ context.Context, id int64, approve bool, 
 }
 func (g *grantStore) Audit(context.Context, connectors.AuditEntry) error { return nil }
 func (g *grantStore) DecideGrant(ctx context.Context, id int64, approve bool, by, src string) (connectors.Grant, error) {
-	return g.DecideGrantFrom(ctx, id, approve, by, src, connectors.DecisionSource{})
+	return g.DecideGrantFrom(ctx, id, approve, by, src, "", connectors.DecisionSource{})
 }
 func (g *grantStore) CreateConnector(_ context.Context, nc connectors.NewConnector) (connectors.Connector, error) {
 	c := connectors.Connector{Name: nc.Name, Hosts: nc.Hosts}

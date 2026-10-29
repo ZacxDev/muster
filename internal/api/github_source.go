@@ -66,7 +66,7 @@ func (s *Server) githubApp(ctx context.Context) GitHubApp {
 // Only for an agent whose OWNER is an admin (the App's users); the role is read
 // only when there is a problem to show.
 func (s *Server) githubAgentProblem(a agents.Agent) string {
-	if s.ext.GitHubApp == nil || a.Repo == "" {
+	if s.ext.GitHubApp == nil || s.agentRepo(a) == "" {
 		return ""
 	}
 	msg := s.ext.GitHubApp.Problem(a.ID)

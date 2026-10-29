@@ -688,7 +688,7 @@ func TestTheProxysOwnRequestUsesTheStandingGrant(t *testing.T) {
 	f := newDecideFixture(t)
 	_, first := f.ask(t, f.opTok, "svc")
 	f.approveOn(t, "tab", first)
-	acc, err := f.srv.connectProxy.CheckAccess(asUser(1), callerOf(f.op2), "svc", "")
+	acc, err := f.srv.connectProxy.CheckAccess(asUser(1), f.srv.callerOf(f.op2), "svc", "")
 	if err != nil || !acc.Usable || !acc.Filed || acc.Grant.StandingGrantID != f.standingFrom(t, first).id {
 		t.Fatalf("the proxy's check for an agent that never asked = %+v %v; want filed and usable from the standing grant", acc, err)
 	}

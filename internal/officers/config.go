@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ZacxDev/muster/internal/github"
 	"github.com/ZacxDev/muster/internal/podagent"
 )
 
@@ -69,6 +70,14 @@ type Officer struct {
 	// Model is the model the instances' Claude Code sessions run ("opus", a
 	// full model id); "" leaves the account's default.
 	Model string `json:"model,omitempty"`
+	// Repo is the GitHub repository (owner/name) the officer's instances act
+	// on as their OWN repository for connectors; "" for none. It is what the
+	// GitHub App connector mints a token for (internal/api Server.agentRepo
+	// feeds it to connectors.Caller.Repo), so an approved `github` grant gives
+	// an instance exactly this one repository — read-only on a deployment
+	// with MUSTER_GITHUB_APP_ACCESS=read. It is NOT checked out: the instance
+	// reads it through muster's connector proxy.
+	Repo string `json:"repo,omitempty"`
 
 	// token is the officer's HQ token. Unexported, so encoding/json never
 	// writes it; String and GoString never print it. Token() is the one read.
@@ -101,6 +110,7 @@ type declared struct {
 	Owner        int64  `json:"owner"`
 	CCAccount    string `json:"cc_account"`
 	Model        string `json:"model"`
+	Repo         string `json:"repo"`
 }
 
 // idPart is one half of an officer id: lowercase alphanumerics and single
@@ -133,7 +143,8 @@ func TokenEnvSuffix(id string) string {
 //
 // It refuses (and names the reason) rather than guessing: an unknown field, an
 // id that is not `<type>:<area>`, two officers whose slugs collide,
-// a missing token, a base URL that is not http(s). Instances always run on the
+// a missing token, a base URL that is not http(s), a repo that is not a GitHub
+// owner/name (github.ValidRepoName, the task repositories' own check). Instances always run on the
 // claude-code kind; there is no kind field.
 //
 // namespacePrefix is the deployment's resolved MUSTER_AGENT_NAMESPACE_PREFIX:
@@ -185,6 +196,7 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		Owner:        d.Owner,
 		CCAccount:    strings.TrimSpace(d.CCAccount),
 		Model:        strings.TrimSpace(d.Model),
+		Repo:         strings.TrimSpace(d.Repo),
 		IdleAfter:    DefaultIdleAfter,
 		PollInterval: DefaultPollInterval,
 	}
@@ -202,6 +214,9 @@ func (d declared) officer(getenv func(string) string, maxName int) (Officer, err
 		if err := podagent.ValidModel(o.Model); err != nil {
 			return Officer{}, fmt.Errorf("officer %s: %w", o.ID, err)
 		}
+	}
+	if o.Repo != "" && !github.ValidRepoName(o.Repo) {
+		return Officer{}, fmt.Errorf("officer %s: repo %q is not a GitHub owner/name", o.ID, d.Repo)
 	}
 	if o.MaxInstances == 0 {
 		o.MaxInstances = DefaultMaxInstances

@@ -20,8 +20,9 @@ came from is revoked, or the connector is deleted. Connectors handle HTTP only.
 `MUSTER_GITHUB_APP_ID` and `MUSTER_GITHUB_APP_PRIVATE_KEY` are set, `github` is
 provided by the App for admins' agents and is not a stored secret: each
 approved agent's requests to its own repository carry a 1-hour installation
-token limited to that repository, and requests for other repositories go out
-anonymously. It replaces an admin's stored `github` connector while it is
+token limited to that repository (read and write, or read only under
+[`MUSTER_GITHUB_APP_ACCESS=read`](github-app.md#read-only-mode)), and requests
+for other repositories go out anonymously. It replaces an admin's stored `github` connector while it is
 configured. Members' agents do not see it. Registration
 and setup are in [github-app.md](github-app.md).
 
@@ -62,7 +63,7 @@ for it, or [`connector_request_decide`](#deciding-a-request-from-your-own-sessio
 
 | connector | the key |
 |---|---|
-| the GitHub App's `github` | the connector **and the agent's repository** (case-insensitive): the App's token reaches only the agent's own repository, so approving an agent on `example-org/widget` never approves one on another repository, or one dispatched with none (that approval is not shared at all) |
+| the GitHub App's `github` | the connector **and the agent's repository** (case-insensitive): the App's token reaches only the agent's own repository, so approving an agent on `example-org/widget` never approves one on another repository, or one dispatched with none (that approval is not shared at all). (An [officer](officers.md#reading-a-repository-repo) instance is never part of a shared approval — below.) |
 | any stored credential (a `github` personal access token included) | the connector: the credential is the same whichever agent sends it |
 
 The key also carries the credential source, so an approval of a stored
@@ -93,6 +94,12 @@ Then:
   approved from a shared approval, for any connector: each of its requests
   waits for you as before. Approving one of them is not shared either. (A
   GitHub-reaching approval for a pool worker is refused outright, as before.)
+- **Never for an [officer](officers.md#reading-a-repository-repo) instance.**
+  An officer runs with every tool allowed, so each of its grants is a decision
+  you make for that instance: no shared approval approves its request (not
+  even one keyed on a stored connector's name alone), and approving it is not
+  shared. An officer may request only `github`; its App token is always
+  read-only, and its grant is re-opened when its officer's `repo` changes.
 - **Provenance is never a fake human decision.** An automatic approval
   records `decided_by = 'standing-grant'`, `decided_via = 'standing'` and the
   standing grant's id; its audit line reads *"approved automatically by

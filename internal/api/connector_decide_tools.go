@@ -9,6 +9,7 @@ import (
 
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/connectors"
+	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/mirror"
 )
 
@@ -122,13 +123,21 @@ const appNoRepoNote = "approving grants NOTHING usable: this agent was dispatche
 // grantsDescription says what approving request g grants, for the caller's
 // principal (the owner): the connector's hosts with its stored credential, or
 // the GitHub App's per-repository token.
-func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k connectors.Connector, repo string) (string, string) {
+//
+// officer is whether the requester is an officer instance, whose App token is
+// always read-only (callerOf): its scope is described as AccessRead's, never
+// the App's mode.
+func (s *Server) grantsDescription(ctx context.Context, g connectors.Grant, k connectors.Connector, repo string, officer bool) (string, string) {
 	if vc, ok := connectors.VirtualOf(ctx, s.ext.Connectors, g.Connector); ok {
 		if strings.TrimSpace(repo) == "" {
 			return appNoRepoNote, vc.Problem(g.AgentID)
 		}
+		scope := githubAppScope(vc)
+		if officer {
+			scope = githubapp.AccessRead.Scope() + "; an officer's token is always read-only"
+		}
 		return "the GitHub App: each request to " + repo + " (this agent's own repository) carries a 1-hour token limited to it (" +
-			githubAppScope + "); other repositories are reached anonymously", vc.Problem(g.AgentID)
+			scope + "); other repositories are reached anonymously", vc.Problem(g.AgentID)
 	}
 	return "the stored " + g.Connector + " credential (whatever the token itself may do), on " + strings.Join(k.Hosts, ", ") +
 		" only, through muster's proxy", ""
@@ -154,14 +163,16 @@ func (s *Server) toolConnectorRequestsList(ctx context.Context, c toolCaller) st
 	for _, g := range pending {
 		v := connectorRequestView{ID: g.ID, AgentID: g.AgentID, Agent: g.AgentName, Connector: g.Connector,
 			Reason: g.Reason, Requested: g.RequestedAt}
+		officer := false
 		if a, err := s.ext.Agents.Get(ctx, g.AgentID); err == nil {
-			v.Agent, v.TaskID, v.Repo = firstNonBlank(a.DisplayName, a.Name), a.NoteID, a.Repo
+			v.Agent, v.TaskID, v.Repo = firstNonBlank(a.DisplayName, a.Name), a.NoteID, s.agentRepo(a)
+			_, _, officer = s.officerOf(a)
 		}
 		k, err := s.ext.Connectors.GetConnector(ctx, g.Connector)
 		switch {
 		case err == nil:
 			v.Exists, v.Hosts = true, k.Hosts
-			v.Grants, v.Problem = s.grantsDescription(ctx, g, k, v.Repo)
+			v.Grants, v.Problem = s.grantsDescription(ctx, g, k, v.Repo, officer)
 			v.Shares = s.requestShares(ctx, g)
 		case errors.Is(err, connectors.ErrNotFound):
 			v.Grants = "nothing yet: no connector named " + g.Connector + " exists, so this cannot be approved over MCP — " +
@@ -220,6 +231,8 @@ func (s *Server) toolConnectorRequestDecide(ctx context.Context, c toolCaller, a
 		return toolErr("%v", err)
 	case errors.As(err, new(errPoolWorkerGitHubGrant)):
 		return toolErr("%v", err)
+	case errors.As(err, new(errOfficerConnector)):
+		return toolErr("%v; the request was not approved", err)
 	case errors.As(err, &missing):
 		return toolErr("connector %s does not exist, so request %d cannot be approved over MCP: your owner enters its credential on muster's Connectors tab (which approves the request in the same step)", missing.name, in.ID)
 	case errors.Is(err, connectors.ErrNotPending):
@@ -247,7 +260,7 @@ func (s *Server) toolConnectorRequestDecide(ctx context.Context, c toolCaller, a
 		out["also_approved"] = also
 	}
 	if approve && g.Source == connectors.SourceApp {
-		if a, aerr := s.ext.Agents.Get(ctx, g.AgentID); aerr == nil && strings.TrimSpace(a.Repo) == "" {
+		if a, aerr := s.ext.Agents.Get(ctx, g.AgentID); aerr == nil && strings.TrimSpace(s.agentRepo(a)) == "" {
 			out["warning"] = appNoRepoNote
 		}
 	}

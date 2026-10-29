@@ -17,6 +17,7 @@ import (
 	"github.com/ZacxDev/muster/internal/flows"
 	"github.com/ZacxDev/muster/internal/focus"
 	"github.com/ZacxDev/muster/internal/github"
+	"github.com/ZacxDev/muster/internal/githubapp"
 	"github.com/ZacxDev/muster/internal/jobs"
 	"github.com/ZacxDev/muster/internal/mirror"
 	"github.com/ZacxDev/muster/internal/notes"
@@ -438,6 +439,10 @@ type GitHubApp interface {
 	ListPullRequests(ctx context.Context, agentID int64, repo, state string) ([]github.PullRequest, error)
 	// Problem is the operator-facing reason the App cannot serve agentID now ("" if none).
 	Problem(agentID int64) string
+	// Access is the permission mode every agent token is minted with
+	// (MUSTER_GITHUB_APP_ACCESS); each description of the connector's scope
+	// reads it (githubAppScope), never a constant.
+	Access() githubapp.Access
 }
 
 // UseExtensions attaches the dependencies. Call before Handler.

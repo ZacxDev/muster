@@ -136,3 +136,34 @@ func TestParseReadsTheModel(t *testing.T) {
 		}
 	}
 }
+
+// TestParseReadsTheRepo: repo is optional; when given it must be a GitHub
+// owner/name (github.ValidRepoName, the task repositories' own check), kept
+// with surrounding space trimmed; absent is "" — no repository, as before. An
+// invalid one is a boot refusal naming the officer.
+func TestParseReadsTheRepo(t *testing.T) {
+	tok := env(map[string]string{"MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB": "x"})
+	for raw, want := range map[string]string{
+		`[{"id":"release:example-web","hq_url":"http://h/api/v1","repo":"example-org/widget"}]`:    "example-org/widget",
+		`[{"id":"release:example-web","hq_url":"http://h/api/v1","repo":" Example-Org/w.i_d-1 "}]`: "Example-Org/w.i_d-1",
+		`[{"id":"release:example-web","hq_url":"http://h/api/v1"}]`:                                "",
+		`[{"id":"release:example-web","hq_url":"http://h/api/v1","repo":""}]`:                      "",
+	} {
+		list, err := officers.Parse(raw, tok, "muster-agent-")
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		if list[0].Repo != want {
+			t.Fatalf("%s: repo = %q, want %q", raw, list[0].Repo, want)
+		}
+	}
+	for _, bad := range []string{"widget", "example-org/", "/widget", "example-org/widget/extra", "-org/widget",
+		"https://github.com/example-org/widget", "example org/widget", "example-org/wid get", strings.Repeat("o", 40) + "/w"} {
+		raw := `[{"id":"release:example-web","hq_url":"http://h/api/v1","repo":"` + bad + `"}]`
+		_, err := officers.Parse(raw, tok, "muster-agent-")
+		want := `MUSTER_OFFICERS[0]: officer release:example-web: repo "` + bad + `" is not a GitHub owner/name`
+		if err == nil || err.Error() != want {
+			t.Errorf("repo %q: err = %v, want %q", bad, err, want)
+		}
+	}
+}

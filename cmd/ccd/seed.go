@@ -45,6 +45,10 @@ type seedOpts struct {
 	jobPermissionMode string
 	// allowMCPTools and model are podagent.EnvAllowMCPTools / EnvModel as read.
 	allowMCPTools, model string
+	// permissionMode is podagent.EnvPermissionMode as read: "" the default
+	// posture, "bypassPermissions" every session starts with every tool
+	// allowed (sessionBypassSettings), anything else refused.
+	permissionMode string
 }
 
 func runSeed(args []string, stdout, stderr io.Writer) int {
@@ -57,6 +61,7 @@ func runSeed(args []string, stdout, stderr io.Writer) int {
 	fs.BoolVar(&o.check, "check", false, "verify an existing seed instead of writing one")
 	o.jobPermissionMode = os.Getenv(envJobPermissionMode)
 	o.allowMCPTools, o.model = os.Getenv(podagent.EnvAllowMCPTools), os.Getenv(podagent.EnvModel)
+	o.permissionMode = os.Getenv(podagent.EnvPermissionMode)
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -93,6 +98,9 @@ func (o seedOpts) validate() error {
 		return err
 	}
 	if _, err := podagent.ParseModel(o.model); err != nil {
+		return err
+	}
+	if _, err := podagent.ParsePermissionMode(o.permissionMode); err != nil {
 		return err
 	}
 	return nil
@@ -145,6 +153,42 @@ func seedSettings(tmpl map[string]any, o seedOpts) (map[string]any, error) {
 	if model != "" {
 		want["model"] = model
 	}
+	return sessionBypassSettings(want, o.permissionMode)
+}
+
+// sessionBypassSettings applies podagent.EnvPermissionMode to the imposed
+// top-level keys: unset changes nothing; podagent.PermissionModeBypass sets
+// permissions.defaultMode to bypassPermissions, drops
+// disableBypassPermissionsMode (the CLI refuses the mode while it is set) and
+// records the bypass disclaimer's consent (settingsSkipBypassPrompt), without
+// which the pinned CLI opens an accept/decline dialog at launch that the first
+// pasted turn would answer. Every session the CLI starts in this pod — the
+// primary, a workspace lane, a job lane — then runs with every tool allowed.
+//
+// 🔴 THIS IS THE ONE SETTINGS DOOR TO "ALLOW EVERYTHING", and muster opens it
+// for an officer instance only (internal/api OfficerClaudeCodeSession). It is
+// distinct from the job-lane bypass (CCD_JOB_PERMISSION_MODE, jobmode.go),
+// which leaves defaultMode alone and reaches bypass only by a job lane's argv.
+// seed and checkSeed both call this (through seedSettings), so they cannot
+// disagree.
+func sessionBypassSettings(want map[string]any, mode string) (map[string]any, error) {
+	bypass, err := podagent.ParsePermissionMode(mode)
+	if err != nil || !bypass {
+		return want, err
+	}
+	perms, ok := want["permissions"].(map[string]any)
+	if !ok {
+		return nil, errors.New("settings template has no `permissions` object to set the bypass mode in")
+	}
+	with := make(map[string]any, len(perms)+1)
+	for k, v := range perms {
+		if k != "disableBypassPermissionsMode" {
+			with[k] = v
+		}
+	}
+	with["defaultMode"] = podagent.PermissionModeBypass
+	want["permissions"] = with
+	want[settingsSkipBypassPrompt] = true
 	return want, nil
 }
 

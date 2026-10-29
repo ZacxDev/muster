@@ -399,15 +399,17 @@ type Adapter struct {
 	// UNKNOWN, and vetoes job-lane bypass (jobBypassVeto).
 	githubGrant func(ctx context.Context, agentID int64) (string, error)
 	// ccSession answers a claude-code agent's per-agent session settings (the
-	// officer runtime's pre-allowed tools and model); nil = none for anyone.
-	ccSession func(agents.Agent) (allow []string, model string, ok bool)
+	// officer runtime's pre-allowed tools, model and permission bypass); nil =
+	// none for anyone.
+	ccSession func(agents.Agent) (agentspec.ClaudeCodeSession, bool)
 }
 
 // UseClaudeCodeSession installs the source of claude-code agents' per-agent
 // session settings (agentspec.ClaudeCodeSession). internal/api's officer
-// runtime is the one caller: an officer instance's own tools pre-allowed and
-// its configured model; every other agent answers ok=false.
-func (a *Adapter) UseClaudeCodeSession(f func(agents.Agent) (allow []string, model string, ok bool)) {
+// runtime is the one caller: an officer instance's own tools pre-allowed, its
+// configured model and every tool allowed (BypassPermissions); every other
+// agent answers ok=false.
+func (a *Adapter) UseClaudeCodeSession(f func(agents.Agent) (agentspec.ClaudeCodeSession, bool)) {
 	a.ccSession = f
 }
 
@@ -423,9 +425,11 @@ func (a *Adapter) UseGitHubGrants(f func(ctx context.Context, agentID int64) (st
 //
 // 🔴 AN AGENT HOLDING AN APPROVED GRANT THAT REACHES GITHUB IS NEVER BYPASSED.
 // With such a grant ccd routes the pod's git through muster's proxy, which adds a
-// GitHub App token with contents:write and pull_requests:write
-// (internal/githubapp), so a prompt-injected lane running unapproved could push
-// and merge. The approval doors already refuse such a grant to every pool worker
+// GitHub App token with contents:write and pull_requests:write in the default
+// write mode (internal/githubapp; read-only only under
+// MUSTER_GITHUB_APP_ACCESS=read, and a stored github.com connector is never
+// limited by it), so a prompt-injected lane running unapproved could push and
+// merge. The approval doors already refuse such a grant to every pool worker
 // (internal/api refusePoolWorkerGitHubGrant), so this is the third door: it is
 // asked every time the spec is built — Dispatch, Start and ReapplyProfiles — and
 // it FAILS CLOSED: an unreadable grant state, or no lookup wired, is a veto too.
@@ -1184,8 +1188,8 @@ func (a *Adapter) buildClaudeCodeSpec(ag agents.Agent, cfg agentspec.Config, job
 	if !agents.IsChiefName(ag.Name) {
 		opts := agentspec.Options{JobBypassVeto: jobBypassVeto}
 		if a.ccSession != nil {
-			if allow, model, ok := a.ccSession(ag); ok {
-				opts.ClaudeCodeSession = agentspec.ClaudeCodeSession{AllowMCPTools: allow, Model: model}
+			if sess, ok := a.ccSession(ag); ok {
+				opts.ClaudeCodeSession = sess
 			}
 		}
 		return agentspec.Build(ag, cfg, opts)

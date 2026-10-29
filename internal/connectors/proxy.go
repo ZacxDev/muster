@@ -175,6 +175,11 @@ type Caller struct {
 	// without one. A virtual connector that scopes its credential to the agent's
 	// repository (the GitHub App) reads it; a stored connector ignores it.
 	Repo string
+	// ReadOnly asks a virtual connector that mints a credential (the GitHub
+	// App) for a READ-ONLY one for this caller, whatever its own mode. Set for
+	// an officer instance (api.Server.callerOf). A stored connector ignores
+	// it: its secret is whatever the operator stored.
+	ReadOnly bool
 }
 
 // Proxy forwards an agent's request to a connector's upstream with the
@@ -264,13 +269,14 @@ func (p *Proxy) CheckAccess(ctx context.Context, caller Caller, connector, reaso
 	switch {
 	case err == nil:
 		// An approval about another credential source than the connector now
-		// has (the GitHub App configured, or removed) is pending again.
-		g, reopened, rerr := ReconcileGrant(ctx, p.Store, g)
+		// has (the GitHub App configured, or removed), or made for another
+		// repository than the caller's now (0061), is pending again.
+		g, reopened, rerr := ReconcileGrant(ctx, p.Store, g, caller.Repo)
 		if rerr != nil {
 			return Access{}, rerr
 		}
-		if reopened {
-			p.recordGrantEvent(ctx, g, "re-opened: the connector's credential source changed")
+		if reopened != "" {
+			p.recordGrantEvent(ctx, g, reopened)
 			if p.OnGrantRequested != nil {
 				p.OnGrantRequested(ctx, g)
 			}

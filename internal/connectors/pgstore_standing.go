@@ -118,7 +118,7 @@ func (s *PGStore) ApproveFromStanding(ctx context.Context, id, sg int64) (Grant,
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE connector_grants SET status='approved', decided_by=$3, decided_at=now(), source=$4,
-		  decided_via=$5, decided_via_host=NULL, decided_via_session=NULL, standing_grant_id=$2
+		  decided_via=$5, decided_via_host=NULL, decided_via_session=NULL, standing_grant_id=$2, repo=NULL
 		WHERE id=$1 AND status='pending' AND connector_name=$6`,
 		id, sg, DecidedByStanding, source, DecidedViaStanding, connector)
 	if err != nil {
