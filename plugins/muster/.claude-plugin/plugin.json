@@ -1,0 +1,12 @@
+{
+  "name": "muster",
+  "description": "Install muster, the self-hosted server that shows your tmux coding-agent sessions on your phone, by following its INSTALL.md; then check it with muster doctor, ask the operator through its Attention queue, and work with its tasks.",
+  "author": {
+    "name": "ZacxDev",
+    "url": "https://github.com/ZacxDev"
+  },
+  "homepage": "https://github.com/ZacxDev/muster",
+  "repository": "https://github.com/ZacxDev/muster",
+  "license": "MIT",
+  "keywords": ["muster", "tmux", "phone", "self-hosted", "claude-code"]
+}

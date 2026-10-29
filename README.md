@@ -84,6 +84,23 @@ machine. More in [docs/onboarding.md](docs/onboarding.md).
 **(b) Install it yourself.** [INSTALL.md](INSTALL.md) is the same guide, step by
 step.
 
+### Install from inside Claude Code
+
+The one prompt above is the main path. In Claude Code you can instead add this
+repository as a plugin marketplace and install the `muster` plugin:
+
+```text
+/plugin marketplace add ZacxDev/muster
+/plugin install muster@muster
+```
+
+Then ask Claude Code to "set up muster". The plugin holds two skills:
+`muster-setup` follows the same [INSTALL.md](INSTALL.md) from its URL, so it
+never carries a copy of the steps; `muster` is for later, with `muster doctor`,
+[asks](docs/attention.md) and [tasks](docs/cli.md). Agents that use the
+[skills](https://skills.sh) CLI can install the same two skills with
+`npx skills add ZacxDev/muster`.
+
 To hack on muster, [docs/development.md](docs/development.md) runs it from source
 against a throwaway database.
 
