@@ -367,11 +367,17 @@ func attr(s tracetest.SpanStub, key string) string {
 // open, its open is already exported, whole — the socket span, the watch and
 // the host's — so a view left open for hours is not one trace growing for
 // hours. Nothing the socket does after that joins the open's trace.
+//
+// host.prompt_index is awaited too: it is part of the open (the host starts
+// it from the open's context once the first batch is sent), and it can end
+// after the other four. Unawaited, it lands past `before` and reads as a
+// later span joining the trace. The rig runs with the prompt index on, so
+// the span always comes.
 func TestASocketsOpenSpanEndsAtItsFirstBatch(t *testing.T) {
 	r := newTracedMirrorRig(t)
 	_, _, c := r.openLive(t, "/mirror/view")
 	defer c.CloseNow()
-	spans := r.waitFor(t, "GET /mirror/view/ws", "mirror.watch", "mirror.watch.first_batch", "host.watch")
+	spans := r.waitFor(t, "GET /mirror/view/ws", "mirror.watch", "mirror.watch.first_batch", "host.watch", "host.prompt_index")
 	if _, ok := stub(spans, "GET /mirror/view/ws closed"); ok {
 		t.Fatal("the socket's close was recorded while it was open")
 	}
