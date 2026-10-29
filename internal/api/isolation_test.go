@@ -427,6 +427,9 @@ var isolationClasses = map[string]routeClass{
 	// The plugin's keyed task (plugin_tasks.go): it names a key, never an id;
 	// B's plugin finds only B's tasks by it (row-level security).
 	"POST /plugin/v1/tasks": classPlugin,
+	// The owner's own reply (owner_replies.go): it names a thread, never an
+	// id; B's plugin finds only routes of B's plugin's messages by it.
+	"POST /plugin/v1/owner-replies": classPlugin,
 
 	// The mirrored rendered view (tunnel v2) addresses its session like the
 	// mirrored terminal above (?host=&session=); the

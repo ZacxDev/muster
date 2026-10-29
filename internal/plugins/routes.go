@@ -31,7 +31,8 @@ import (
 //
 //	routed ──answer──▶ answered ──relay──▶ relayed  (approved draft)
 //	   │                      └──────────▶ fallback (pending draft)
-//	   ├─ deadline ─▶ timed_out
+//	   ├─ deadline ─▶ timed_out ──owner replied within OwnerReplyGrace──┐
+//	   ├─ the owner replied upstream themselves ─▶ owner_answered ◀───────┘
 //	   └─ injection or relay impossible ─▶ failed
 //
 // 🔴 EXACTLY ONCE, AND THE SCHEMA HOLDS IT. route_id is unique, one route per
@@ -83,6 +84,10 @@ type RouteStore interface {
 	// BindThread and BoundThread are the threads sessions started (threads.go).
 	BindThread(ctx context.Context, thread, claudeSession string) (bool, error)
 	BoundThread(ctx context.Context, thread string) (string, error)
+	// SettleOwnerReplied ends as owner_answered every route of plugin
+	// pluginID's messages on thread that the owner's own reply at `at` answers
+	// (owner_replies.go).
+	SettleOwnerReplied(ctx context.Context, pluginID int64, thread string, at time.Time) ([]OwnerSettled, error)
 }
 
 var _ RouteStore = (*PGStore)(nil)
@@ -97,6 +102,10 @@ const (
 	RouteTimedOut RouteState = "timed_out"
 	RouteFallback RouteState = "fallback"
 	RouteFailed   RouteState = "failed"
+	// RouteOwnerAnswered: the owner replied to the sender on the upstream
+	// conversation THEMSELVES — not through muster, so no draft exists — and
+	// the plugin reported it (SettleOwnerReplied). Terminal.
+	RouteOwnerAnswered RouteState = "owner_answered"
 )
 
 // Route is one row of session_routes.
@@ -121,6 +130,9 @@ type Route struct {
 	ReplyBody   string
 	DraftID     *int64
 	Error       string
+	// OwnerRepliedAt is when the owner replied upstream, as the plugin
+	// reported it: set exactly on an owner_answered route (0062's check).
+	OwnerRepliedAt *time.Time
 }
 
 // RouteTarget names the session a route goes to: a kind ("agent", "mirror"),
@@ -220,13 +232,13 @@ func NewRouteID() string {
 func RouteObject(routeID string) string { return "session_route:" + routeID }
 
 const routeCols = `id, route_id, owner_id, coalesce(plugin_message_id, 0), coalesce(task_id, 0), agent_id, target_kind, target_key, target_label, send_queue_id,
-	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error`
+	state, created_at, timeout_at, answered_at, finished_at, coalesce(reply_body, ''), draft_id, error, owner_replied_at`
 
 func scanRoute(row pgx.Row) (Route, error) {
 	var r Route
 	var st string
 	err := row.Scan(&r.ID, &r.RouteID, &r.OwnerID, &r.MessageID, &r.TaskID, &r.AgentID, &r.TargetKind, &r.TargetKey, &r.TargetLabel,
-		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error)
+		&r.SendQueueID, &st, &r.CreatedAt, &r.TimeoutAt, &r.AnsweredAt, &r.FinishedAt, &r.ReplyBody, &r.DraftID, &r.Error, &r.OwnerRepliedAt)
 	r.State = RouteState(st)
 	return r, err
 }

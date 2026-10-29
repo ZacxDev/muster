@@ -1347,8 +1347,10 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 			"(route_to_session); a mirrored window gets it through the send queue, its row marked and gated on its ROUTE "+
 			"instead of a sign-in (see internal/api/session_routes.go); %d owner(s) have plugin-bound senders whose verified "+
 			"answers relay without approval (%s); a route unanswered after %s (%s for a pull-request review muster routes "+
-			"itself, %s) goes back to the chief",
-			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow, api.RouteTimeout, api.PRRouteTimeout, envPRMailSenders)
+			"itself, %s; %s for a message its plugin marks human_conversation) goes back to the chief, unless its plugin "+
+			"reports the owner answered it upstream themselves (POST /plugin/v1/owner-replies, up to %s after the deadline)",
+			envSessionRouting, ext.Routing.Allow.Owners(), envRouteRelayAllow, api.RouteTimeout, api.PRRouteTimeout, envPRMailSenders,
+			api.ConversationRouteTimeout, plugins.OwnerReplyGrace)
 		if a.cfg.HookToken == "" {
 			l.Printf("WARNING — session routing: %s is unset, so a session answers a route (POST /api/routes/{id}/reply) "+
 				"ONLY with a personal API token; a host on the shared hook credential is refused (503) and its routes time "+

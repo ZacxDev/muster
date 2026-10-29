@@ -80,7 +80,8 @@ const (
 	routeToSessionToolName = "route_to_session"
 	// RouteTimeout is how long a routed message waits for its session's answer
 	// before it is handed back to the chief — every route but a pull-request
-	// review's (PRRouteTimeout; routeTimeout picks). A constant, not a setting: it must
+	// review's (PRRouteTimeout) and a person's conversation's
+	// (ConversationRouteTimeout); routeTimeout picks. A constant, not a setting: it must
 	// stay longer than the send queue's idle wait (MUSTER_SEND_QUEUE_IDLE),
 	// before which the message cannot even be pasted, so cmd/muster-server's
 	// loadConfig refuses an idle wait that is not shorter when routing is on.
@@ -94,6 +95,16 @@ const (
 	// they were pasted. A constant like RouteTimeout; being longer, it never
 	// tightens loadConfig's idle-wait check, which RouteTimeout still binds.
 	PRRouteTimeout = 4 * time.Hour
+	// ConversationRouteTimeout is RouteTimeout for a route carrying a message
+	// its plugin marked human_conversation (plugins.MessageIn.HumanConversation:
+	// a person writing in a direct conversation, such as a chat DM). Longer
+	// because a person's answer is often the owner's to give, and an owner
+	// deciding takes longer than 30 minutes: a shorter deadline handed messages
+	// back to the chief while the session was still working on them. It is the
+	// MESSAGE's mark, set by its plugin, never a match on the plugin's name.
+	// Longer than RouteTimeout, so like PRRouteTimeout it never tightens
+	// loadConfig's idle-wait check.
+	ConversationRouteTimeout = 4 * time.Hour
 	// RouteSweepInterval is how often due routes are timed out.
 	RouteSweepInterval = 30 * time.Second
 	// routedCutMark ends a body cut to fit one paste.
@@ -108,15 +119,20 @@ func routingOn(ext Extensions) bool {
 	return ext.Routing != nil && ext.Routes != nil && ext.Plugins != nil
 }
 
-// routeTimeout is the deadline of a route made by origin: PRRouteTimeout for
-// one muster makes for a pull-request review, RouteTimeout for every other
-// (the chief's, the owner's, a route by thread). The route's timeout_at is
-// the one deadline its queued paste has too: the sweep cancels that paste only
-// when it times the route out (RouteTimeoutPass), and the send queue's own
-// expiry skips a routed row (sendqueue.PGStore.Expire).
-func (s *Server) routeTimeout(origin plugins.RouteOrigin) time.Duration {
-	if origin.Via == plugins.RouteViaPR {
+// routeTimeout is the deadline of a route of item made by origin:
+// PRRouteTimeout for one muster makes for a pull-request review,
+// ConversationRouteTimeout for a message its plugin marked
+// human_conversation, RouteTimeout for every other (the chief's, the owner's,
+// a route by thread, a task). The route's timeout_at is the one deadline its
+// queued paste has too: the sweep cancels that paste only when it times the
+// route out (RouteTimeoutPass), and the send queue's own expiry skips a routed
+// row (sendqueue.PGStore.Expire).
+func (s *Server) routeTimeout(origin plugins.RouteOrigin, item routedItem) time.Duration {
+	switch {
+	case origin.Via == plugins.RouteViaPR:
 		return PRRouteTimeout
+	case !item.isTask() && item.msg.HumanConversation:
+		return ConversationRouteTimeout
 	}
 	return RouteTimeout
 }
@@ -283,12 +299,12 @@ func (s *Server) routeItem(ctx context.Context, chiefID, ownerID int64, it route
 	what := "message " + strconv.FormatInt(it.msg.ID, 10)
 	if it.isTask() {
 		what = "task " + strconv.FormatInt(it.task.ID, 10)
-		r, err = s.ext.Routes.CreateTaskRouteFrom(ctx, chiefID, ownerID, it.task.ID, target, s.routeTimeout(origin), origin)
+		r, err = s.ext.Routes.CreateTaskRouteFrom(ctx, chiefID, ownerID, it.task.ID, target, s.routeTimeout(origin, it), origin)
 	} else {
 		if p, err = s.ext.Plugins.Plugin(ctx, it.msg.PluginID); err != nil {
 			return plugins.Route{}, t, routeRefusal(RefusedMessageNotFound, "the message's plugin is gone")
 		}
-		r, err = s.ext.Routes.CreateRouteFrom(ctx, chiefID, ownerID, it.msg.ID, target, s.routeTimeout(origin), origin)
+		r, err = s.ext.Routes.CreateRouteFrom(ctx, chiefID, ownerID, it.msg.ID, target, s.routeTimeout(origin, it), origin)
 	}
 	switch {
 	case err == nil:
@@ -1064,8 +1080,9 @@ func (s *Server) RunRouteTimeouts(ctx context.Context, interval time.Duration) {
 		interval = RouteSweepInterval
 	}
 	s.logger.Printf("routes: session routing ON: a routed message is answered within %s (%s for a pull-request review "+
-		"muster routes itself) or handed back to the chief; answers to allowlisted senders are relayed without approval "+
-		"(MUSTER_ROUTE_RELAY_ALLOW)", RouteTimeout, PRRouteTimeout)
+		"muster routes itself, %s for a person's conversation its plugin marks human_conversation) or handed back to the "+
+		"chief, unless the owner answers it upstream themselves (POST /plugin/v1/owner-replies); answers to allowlisted "+
+		"senders are relayed without approval (MUSTER_ROUTE_RELAY_ALLOW)", RouteTimeout, PRRouteTimeout, ConversationRouteTimeout)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	kick := s.routeKickCh()
