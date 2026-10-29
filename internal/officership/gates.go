@@ -673,10 +673,16 @@ func (g *Gates) TagRelease(ctx context.Context, opt TagOptions) (TagOutcome, err
 
 // rateAllows counts the officer's own (annotated, tagged by its bot) release
 // tags in the last 24 h. It walks the annotated tags newest version first and
-// stops at the first one — ANYONE's — tagged before the window: a human's old
-// tag ends the walk as surely as the officer's (round-1 F2: a repository with
-// many human annotated tags and no officer tag used to exhaust the read cap
-// and refuse every release). Lightweight tags carry no time and are skipped.
+// stops at the first OFFICER tag tagged before the window. That stop is sound
+// because the officer always tags the next minor of the highest version, so
+// its own tags rise in version as they rise in time: every officer tag below
+// an old one is older still. A human's tag never stops the walk, whatever its
+// date — a tagger date is the author's clock, and a human tag made days ago
+// and pushed today can sit above the officer's tags from today (round-2: it
+// used to end the walk at count 0 and cancel the limit). Human tags cost one
+// read each, against the read cap; a repository with tens of human annotated
+// tags and no officer tag is still released (round-1 F2). Lightweight tags
+// carry no time and are skipped.
 func (g *Gates) rateAllows(ctx context.Context, rels []release, slug string) error {
 	bot := BotLogin(slug)
 	now := g.now()
@@ -693,17 +699,14 @@ func (g *Gates) rateAllows(ctx context.Context, rels []release, slug string) err
 		if err != nil {
 			return refuse(GateRate, "could not read tag %s: %v", r.Ref.Name, err)
 		}
-		if now.Sub(t.TaggedAt) > rateWindow {
-			if t.Tagger == bot && (newestOwn.IsZero() || t.TaggedAt.After(newestOwn)) {
-				newestOwn = t.TaggedAt
-			}
-			break
-		}
 		if t.Tagger != bot {
 			continue
 		}
 		if newestOwn.IsZero() || t.TaggedAt.After(newestOwn) {
 			newestOwn = t.TaggedAt
+		}
+		if now.Sub(t.TaggedAt) > rateWindow {
+			break
 		}
 		count++
 	}
