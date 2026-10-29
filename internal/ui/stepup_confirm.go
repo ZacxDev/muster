@@ -2,10 +2,12 @@ package ui
 
 import (
 	"strconv"
+	"time"
 
 	g "maragu.dev/gomponents"
 	. "maragu.dev/gomponents/html"
 
+	"github.com/ZacxDev/muster/internal/gotrue"
 	"github.com/ZacxDev/muster/web"
 )
 
@@ -129,7 +131,7 @@ func confirmDialog(s *StepUpView) g.Node {
 		g.Attr("data-fresh-for", strconv.FormatInt(s.FreshFor, 10)),
 		g.Attr("data-how-password", stepUpHowPassword),
 		g.Attr("data-how-passkey", stepUpHowPasskey),
-		g.Attr("data-options-timeout", strconv.Itoa(stepUpNetTimeout)),
+		g.Attr("data-options-timeout", stepUpNetTimeoutMS),
 		Class("w-[calc(100%-2rem)] max-w-sm rounded-2xl bg-s1 p-0 text-fg ring-1 ring-line backdrop:bg-black/60"),
 		Form(
 			ID("term-confirm-form"),
@@ -187,11 +189,20 @@ func confirmDialog(s *StepUpView) g.Node {
 	)
 }
 
-// stepUpNetTimeout is how long, in ms, the dialog waits on a passkey request
+// stepUpNetTimeout is how long the dialog waits on a passkey request
 // (/options, /verify) before treating it as failed (stepUpScript's
-// withTimeout): GoTrue answers these in well under a second, so ten seconds
-// is a request that is not coming back.
-const stepUpNetTimeout = 10000
+// withTimeout). 🔴 DERIVED FROM THE SERVER'S OWN BOUNDS, AND ABOVE THEM: a
+// passkey route may read GoTrue's /settings first (gotrue.SettingsTimeout)
+// and then make up to two GoTrue calls in a row (/options lists the
+// account's passkeys, then asks for sign-in options; each gotrue.HTTPTimeout),
+// plus its own database work. A page that gave up sooner would abandon a
+// /verify the server was still allowed to complete — blamed on the device,
+// a second challenge spent, the waiting action dropped although the session
+// had just been made fresh. The margin covers the database and the network.
+const stepUpNetTimeout = gotrue.SettingsTimeout + 2*gotrue.HTTPTimeout + 5*time.Second
+
+// stepUpNetTimeoutMS is stepUpNetTimeout as the script's milliseconds.
+var stepUpNetTimeoutMS = strconv.FormatInt(stepUpNetTimeout.Milliseconds(), 10)
 
 // The passkey button's label, and what it says while its challenge is being
 // fetched (stepUpScript's pkWaiting).
@@ -502,10 +513,12 @@ window.musterStepUp = (function () {
   // (a dead mobile link; measured in CI, a fetch left paused when the test
   // harness took its request interception away) left the passkey button inert
   // — "Checking for your passkey…" — for the rest of the open. withTimeout
-  // settles p within the dialog's limit (data-options-timeout, ms; the
-  // server's stepUpNetTimeout), rejecting with a TimeoutError: a fetch that
-  // takes longer is treated as a failed one, and the password opens.
-  function netTimeout() { return +dlg.getAttribute('data-options-timeout') || 10000; }
+  // settles p within the dialog's limit (data-options-timeout, ms: Go's
+  // stepUpNetTimeout, derived to sit ABOVE the server's own worst case for
+  // these routes), rejecting with a TimeoutError: a prefetch that takes
+  // longer is a failed one, and the password opens; a tap's says the
+  // connection timed out.
+  function netTimeout() { return +dlg.getAttribute('data-options-timeout') || ` + stepUpNetTimeoutMS + `; }
   function withTimeout(p) {
     return new Promise(function (resolve, reject) {
       var t = setTimeout(function () {
@@ -526,6 +539,7 @@ window.musterStepUp = (function () {
       if (why) pre = null;
       return why;
     }, function (e) {
+      optionsTimedOut(mine, e);
       if (pre !== mine) return null;
       pre = null;
       return e && e.name === 'TimeoutError' ? 'options-failed:timeout' : 'options-failed:network';
@@ -645,6 +659,9 @@ window.musterStepUp = (function () {
     done = cb ? [cb] : [];
     attempts = 0;
     openId = newOpenId();
+    // A tap of an earlier open may still hold the button (ours, in the tap):
+    // a new open starts with it usable.
+    pkBtn.disabled = false;
     fail(why);
     pw.value = '';
     // 🔴 DECIDED BEFORE THE DIALOG IS SHOWN, so its first frame is already
@@ -734,9 +751,21 @@ window.musterStepUp = (function () {
   function fetchOptions(trigger) {
     var p = mpkPrefetch(pkBase + '/options', trigger);
     var ev = { open_id: openId, trigger: trigger, status: '', taps: attempts };
-    p.promise.then(function (o) { ev.status = o.status; track('stepup.passkey_options', ev); },
-      function () { ev.status = 'network'; track('stepup.passkey_options', ev); });
+    // sent ONCE: on its answer, or — when withTimeout gave up on it first
+    // (optionsTimedOut) — as status timeout, a late answer then sending none.
+    p.report = function (status) {
+      if (p.reported) return;
+      p.reported = true;
+      ev.status = status;
+      track('stepup.passkey_options', ev);
+    };
+    p.promise.then(function (o) { p.report(o.status); }, function () { p.report('network'); });
     return p;
+  }
+  // optionsTimedOut reports p's fetch as timed out (fetchOptions) when e is
+  // withTimeout's TimeoutError.
+  function optionsTimedOut(p, e) {
+    if (e && e.name === 'TimeoutError' && p && p.report) p.report('timeout');
   }
   pkBtn.addEventListener('click', async function () {
     // Inert while its challenge is fetched (pkWaiting): no gesture spent on a wait.
@@ -744,6 +773,13 @@ window.musterStepUp = (function () {
     pkBtn.disabled = true;
     fail('');
     var ev = { open_id: openId, attempt: ++attempts, options_trigger: '', options_status: '', get: 'not-called', verify: '' };
+    // 🔴 A TAP BELONGS TO ITS OPEN. Its awaits can outlive it (Escape during a
+    // /verify, then a new open): once the dialog was closed or opened again
+    // since, the tap changes nothing on screen and fetches nothing — the new
+    // open has its own state and its own challenge. (ask() re-enables the
+    // button a new open shows.)
+    var tapOpen = openId;
+    function ours() { return dlg.open && openId === tapOpen; }
     // spent: /verify was sent, so GoTrue has used this challenge up.
     var spent = false;
     try {
@@ -751,8 +787,9 @@ window.musterStepUp = (function () {
       var mine = pre;
       ev.options_trigger = mine.trigger || '';
       var o;
-      try { o = await withTimeout(mine.promise); } catch (e) { ev.options_status = e && e.name === 'TimeoutError' ? 'timeout' : 'network'; if (pre === mine) pre = null; throw e; }
+      try { o = await withTimeout(mine.promise); } catch (e) { optionsTimedOut(mine, e); ev.options_status = e && e.name === 'TimeoutError' ? 'timeout' : 'network'; if (pre === mine) pre = null; throw e; }
       ev.options_status = o.status;
+      if (!ours()) return;
       if (!o.ok || !o.data.available || !o.data.challenge_id) {
         if (pre === mine) pre = null;
         offer(false);
@@ -767,6 +804,13 @@ window.musterStepUp = (function () {
       spent = true;
       var v = await withTimeout(mpkPost(pkBase + '/verify', body));
       ev.verify = v.status;
+      if (!ours()) {
+        // The session is fresh whatever this page shows now; the open that
+        // asked for it is gone, and the current one is left as it is.
+        if (v.ok) freshUntil = performance.now() + (+v.data.fresh_for || 0);
+        spent = false;
+        return;
+      }
       if (!v.ok) {
         fail(v.data.error || 'That passkey was not accepted.');
         if (v.data.challenge_unspent === true) {
@@ -774,7 +818,7 @@ window.musterStepUp = (function () {
           // assertion, no user verification, the sign-in limiter): it is still
           // good, so it is put back for the next tap and nothing is fetched.
           spent = false;
-          if (dlg.open && !pre) pre = mine;
+          if (!pre) pre = mine;
         } else if (v.status === 429) {
           // GoTrue's own limit: the challenge may be spent, but a fetch now
           // would only meet the same limit — the next tap fetches (stale/retry).
@@ -785,19 +829,24 @@ window.musterStepUp = (function () {
       spent = false;
       finish(v.data.fresh_for);
     } catch (e) {
-      if (spent && !ev.verify) ev.verify = e && e.name === 'TimeoutError' ? 'timeout' : 'network';
+      var timedOut = e && e.name === 'TimeoutError';
+      if (spent && !ev.verify) ev.verify = timedOut ? 'timeout' : 'network';
+      if (!ours()) { spent = false; return; }
+      // A request that did not answer is the connection's, not the device's:
+      // said so, and the passkey stays offered (the summary has the password).
       // A device that cannot use the passkey leaves the password as the way
       // on, so it is opened; a cancel is the person's, who may tap again.
+      if (timedOut) { fail('The connection timed out. Try again, or use your password.'); return; }
       if (!mpkCancelled(e)) pwBox.open = true;
       fail(mpkCancelled(e) ? 'The passkey was cancelled. Try again, or use your password.' : 'This device could not use a passkey. Use your password.');
     } finally {
-      pkBtn.disabled = false;
+      if (ours()) pkBtn.disabled = false;
       track('stepup.passkey', ev);
       // A challenge /verify was sent with is used up: the next tap needs a new
       // one, fetched NOW so that tap still has its gesture. One the tap never
       // sent (cancelled, refused by the device) is still good and still in
       // pre — nothing is fetched (see stepUpScript).
-      if (spent && dlg.open && !pkBox.hidden) {
+      if (spent && ours() && !pkBox.hidden) {
         pkWaiting(true);
         prefetch('retry').then(function (r) { settled(r, false); });
       }

@@ -994,6 +994,9 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     // 🔴 The replacement is fetched WHILE the route above is installed, so it
     // is awaited before the routes go: unrouteAll while a request is paused
     // for interception left it unanswered for good (CI, 8014aad2's main run).
+    // Listened for only once the OPEN's own options have answered (the
+    // button is live), so the response it resolves on is the replacement's.
+    await expect(passkeyBtn(page)).toBeEnabled();
     const replaced = page.waitForResponse((r) => new URL(r.url()).pathname === '/auth/confirm/passkey/options');
     await passkeyBtn(page).click();
     await expect(page.locator('#term-confirm-error')).toContainText('That passkey was not accepted.');
@@ -1214,7 +1217,9 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
       b.challenge_id = '00000000-0000-4000-8000-000000000000';
       await r.continue({ postData: JSON.stringify(b) });
     }, { times: 1 });
-    // The replacement is awaited before the routes go (see the test above).
+    // The replacement is awaited before the routes go (see the test above) —
+    // listened for once the open's own options have answered.
+    await expect(passkeyBtn(page)).toBeEnabled();
     const replacedB = page.waitForResponse((r) => new URL(r.url()).pathname === '/auth/confirm/passkey/options');
     await passkeyBtn(page).click();
     await tapped(1);
@@ -1479,6 +1484,8 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     await expect(passwordToggle(page)).toBeHidden();
     await expect(passkeyBtn(page)).toBeHidden();
     await expect(dialog(page)).toHaveAttribute('data-passkey-unavailable', 'options-failed:timeout');
+    // The fetch that never answered still sends its one event, as a timeout.
+    await expect.poll(async () => fetches(await events()).filter(([, a]) => a.status === 'timeout').map(([, a]) => a.trigger)).toEqual(['open']);
     await page.keyboard.press('Escape');
     await expect(dialog(page)).toBeHidden();
     // (b)
@@ -1499,6 +1506,83 @@ test.describe('one passkey challenge per dialog open (1280px)', () => {
     // The held requests go on, and are answered, before the routes go.
     let drained = 0;
     page.on('response', (r) => { if (isPath('/auth/confirm/passkey/options')(r)) drained++; });
+    releases.forEach((r) => r());
+    await expect.poll(() => drained, { message: 'both held requests were answered' }).toBe(2);
+    await page.unrouteAll({ behavior: 'wait' });
+  });
+
+  // A /VERIFY THAT NEVER ANSWERS, ON ITS OWN ADDRESS (each open spends GoTrue
+  // passkey budget, and the test above has spent its address's): (c) the tap
+  // says the CONNECTION timed out, not the device; (d) a tap of an EARLIER
+  // open changes nothing in the next one. The dialog's limit is cut to 1.5 s.
+  test('a /verify that never answers says the connection timed out, and a tap of an earlier open leaves the next open alone (real GoTrue, virtual authenticator)', async ({ page, context }) => {
+    test.setTimeout(180_000);
+    await ownAddress(context, '198.51.100.43');
+    await authenticator(page);
+    await signIn(page);
+    await addPasskey(page);
+    const events = await recordTelemetry(page);
+    await staleTerminal(page, context);
+    const isPath = (p: string) => (r: { url: () => string }) => new URL(r.url()).pathname === p;
+    const hold = async (glob: string) => {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      await page.route(glob, async (r) => { await gate; await r.continue(); }, { times: 1 });
+      return () => release();
+    };
+    const releases: (() => void)[] = [];
+    await page.evaluate(() => document.getElementById('term-confirm')!.setAttribute('data-options-timeout', '1500'));
+    // Every options request from here, and every tap event, counted.
+    let optionsSent = 0;
+    const countOpts = (r: { url: () => string }) => { if (isPath('/auth/confirm/passkey/options')(r)) optionsSent++; };
+    page.on('request', countOpts);
+    const tapsNow = async () => taps(await events());
+
+    // (c) A /verify that never answers: the tap says the CONNECTION timed out
+    //     (not the device), and the password is left as the open set it.
+    await page.evaluate(() => { (window as unknown as Run).musterStepUp.ask('', null); });
+    await expect(passkeyBtn(page)).not.toHaveAttribute('aria-disabled', /.*/);
+    releases.push(await hold('**/auth/confirm/passkey/verify'));
+    const tapsC = (await tapsNow()).length;
+    await passkeyBtn(page).click();
+    await expect(page.locator('#term-confirm-error')).toHaveText('The connection timed out. Try again, or use your password.', { timeout: 5000 });
+    await expect.poll(async () => { const t = await tapsNow(); return t.length > tapsC ? (t[t.length - 1][1] as { verify: string }).verify : ''; }).toBe('timeout');
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toBeHidden();
+    // (d) 🔴 A TAP OF AN EARLIER OPEN CHANGES NOTHING IN THE NEXT ONE: tap,
+    //     Escape while its /verify is held, open again; the old /verify then
+    //     times out — the new open keeps the state it set (passkey live,
+    //     password shut, no error), and no replacement is fetched into it.
+    //     REGRESSION TEST: red at b66efa18, where the old tap opened the
+    //     password, said "This device could not use a passkey" and fetched a
+    //     second /options into the new open.
+    await page.evaluate(() => { (window as unknown as Run).musterStepUp.ask('', null); });
+    await expect(passkeyBtn(page)).not.toHaveAttribute('aria-disabled', /.*/);
+    releases.push(await hold('**/auth/confirm/passkey/verify'));
+    const heldVerify = page.waitForRequest(isPath('/auth/confirm/passkey/verify'));
+    const tapsD = (await tapsNow()).length;
+    await passkeyBtn(page).click();
+    await heldVerify;
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toBeHidden();
+    await page.evaluate(() => { (window as unknown as Run).musterStepUp.ask('', null); });
+    await expect(passkeyBtn(page), 'the new open\'s passkey is live').not.toHaveAttribute('aria-disabled', /.*/);
+    await expect(passkeyBtn(page)).toBeEnabled();
+    const optsAfterReopen = optionsSent;
+    // The old tap ends (its /verify timed out): its event is the signal.
+    await expect.poll(async () => { const t = await tapsNow(); return t.length > tapsD ? (t[t.length - 1][1] as { verify: string }).verify : ''; }, { timeout: 8000 }).toBe('timeout');
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+    await expect(page.locator('#term-confirm-error'), 'no error from the earlier open\'s tap').toBeHidden();
+    await expect(page.locator('#term-confirm-password'), 'the password stays shut, as the new open set it').toBeHidden();
+    await expect(passkeyBtn(page), 'the passkey stays offered and live').toBeEnabled();
+    await expect(passkeyBtn(page)).not.toHaveAttribute('aria-disabled', /.*/);
+    expect(optionsSent, 'no replacement fetched into the new open').toBe(optsAfterReopen);
+    await page.keyboard.press('Escape');
+    await expect(dialog(page)).toBeHidden();
+    page.off('request', countOpts);
+    // The held /verify requests go on, and are answered, before the routes go.
+    let drained = 0;
+    page.on('response', (r) => { if (isPath('/auth/confirm/passkey/verify')(r)) drained++; });
     releases.forEach((r) => r());
     await expect.poll(() => drained, { message: 'both held requests were answered' }).toBe(2);
     await page.unrouteAll({ behavior: 'wait' });
