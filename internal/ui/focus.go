@@ -20,4 +20,5 @@ type FocusView struct {
 
 // (The retired Agents list's card was headed by its focus title, with a
 // popover of the focus's description, age and refresh failure; Description,
-// UpdatedAt, Problem and ProblemAt were for that card.)
+// UpdatedAt, Problem and ProblemAt were for that card. Its focus row sat beside
+// the card's control cluster, keeping the same pr-28 clear of it.)
