@@ -413,7 +413,10 @@ you typed is lost while the dialog is open. You can confirm in two ways:
   not at all for an account with no passkey. Routes:
   `POST /auth/confirm/passkey/options`, then `POST /auth/confirm/passkey/verify`.
 - **With the password again** (`POST /auth/confirm`). In password mode this is
-  `MUSTER_UI_PASSWORD`.
+  `MUSTER_UI_PASSWORD`. When a passkey is offered, the password sits in a
+  collapsed "Use your password instead" section under it. When no passkey can be
+  used (none on the account, none on the server, or a browser without WebAuthn),
+  the password is the only option and is shown open.
 
 Both are same-origin only and throttled like sign-in.
 

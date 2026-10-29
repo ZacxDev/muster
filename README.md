@@ -7,6 +7,10 @@ Self-hosted: one Go server and Postgres, in Docker on one of your machines,
 reached over HTTPS on your private Tailscale network and nowhere else. The UI
 installs on your phone as a PWA. Your other machines dial out to it.
 
+Not to be confused with the Mac menu-bar app also called Muster
+([agentmuster.app](https://agentmuster.app/)): this muster is the self-hosted
+one, for your phone and every machine you run agents on.
+
 <p align="center">
   <img src="docs/img/phone-flow.gif" width="270" alt="On a phone: open a session from the bottom bar's search by typing its codename, dictate a reply with the microphone, send it, and watch the session answer">
   <img src="docs/img/agents-list.png" width="270" alt="The Agents list on a phone: mirrored sessions from two machines and dispatched agents, with the session switcher docked at the bottom">
@@ -95,10 +99,12 @@ against a throwaway database.
   Claude Code window renders as a chat, and the Terminal view is one tap away
   (on a Linux host; on a macOS host there is no Terminal view yet, see
   Requirements). Viewing a window never moves your own terminal. → [docs/mirroring.md](docs/mirroring.md)
-- **Session switcher, sidebar and search.** A bottom bar with Recent, Pins and
-  All, and a sidebar that lists every session like channels in a chat app: the
-  chief first (if you turned one on), then the sessions waiting on you, then
-  the rest by recency. The search opens with the magnifier or `/`. → [docs/mirroring.md](docs/mirroring.md)
+- **Session switcher, sidebar and search.** A bottom bar with Recent, Waiting,
+  Pins and All (and a pin button for the session you are on), and a sidebar
+  that lists every session like channels in a chat app: the chief first (if
+  you turned one on), then the sessions waiting on you, then the rest by
+  recency. The search opens with the magnifier on the bar or in the sidebar, or
+  `/`. → [docs/mirroring.md](docs/mirroring.md)
 - **Message box and step-up.** Send text into a Claude Code session, a plain
   terminal pane (Codex, Gemini CLI, a shell) or a dispatched agent. The message
   box does not send to opencode yet, and sends to Hermes only through the

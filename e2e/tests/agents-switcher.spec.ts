@@ -285,7 +285,7 @@ for (const vp of [
       const labels = () => options(page).evaluateAll((els) => els.map((e) => (e.firstElementChild as HTMLElement).textContent));
       // The tmux session name: the window called "orchid".
       await input(page).fill(SCRATCH);
-      await expect.poll(labels).toEqual(['orchid']);
+      await expect.poll(labels).toEqual(['orchid:1']);
       // The kind.
       await input(page).fill('opencode');
       await expect.poll(labels).toEqual([`${NIMBUS}:1`]);
@@ -300,6 +300,152 @@ for (const vp of [
         page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('session') === 'wheat'),
         page.keyboard.press('Enter'),
       ]);
+    });
+
+    // 🔴 A PILL SHOWS THE WHOLE CODENAME, ":<index>" AND ALL (operator report:
+    // the pills were "missing the number after the colon"). "orchid" is a
+    // codename that is NOT its tmux session (the labels file), alone in every
+    // view — exactly where the bar used to draw it without its index. Read on
+    // /agents and on a session page's bar, at this size: the label's text,
+    // and its box not clipping it. REGRESSION TEST: red at the commit before,
+    // where the pill read "orchid".
+    test('a pill shows the whole codename, ":<index>" and all, unclipped — on /agents and on a session page', async ({ page }) => {
+      test.setTimeout(90_000);
+      await ready(page);
+      for (const path of ['/agents', rig.viewPath('mango') + '&window=' + encodeURIComponent('@1')]) {
+        await page.addInitScript(() => { try { localStorage.setItem('muster.switcher.view', 'all'); } catch (e) {} });
+        await page.goto(origin + path);
+        await expect(row(page, 'all')).toBeVisible();
+        const orchid = row(page, 'all').locator(`a[data-switcher-entry][data-switcher-words~="${SCRATCH}"]`);
+        await expect(orchid, `${path}: the orchid window's pill`).toHaveCount(1);
+        await expect(orchid, `${path}: the pill reads the whole codename`).toHaveText('orchid:1');
+        await expect(orchid).toHaveAttribute('title', 'orchid:1');
+        // Not clipped: the label's box holds its whole text, and the pill is
+        // at least as wide as the label.
+        await orchid.scrollIntoViewIfNeeded();
+        const m = await orchid.evaluate((a) => {
+          const label = a.querySelector('.whitespace-nowrap') as HTMLElement, pill = a.firstElementChild as HTMLElement;
+          return { sw: label.scrollWidth, cw: label.clientWidth, lw: label.getBoundingClientRect().width, pw: pill.getBoundingClientRect().width };
+        });
+        expect(m.sw, `${path}: the label is not clipped (${JSON.stringify(m)})`).toBeLessThanOrEqual(m.cw + 0.5);
+        expect(m.pw, `${path}: the pill holds the label (${JSON.stringify(m)})`).toBeGreaterThanOrEqual(m.lw);
+        // Every window pill ends in its ":<index>".
+        const labels = await row(page, 'all').locator('a[data-switcher-entry="mirror"]').evaluateAll((els) => els.map((e) => e.textContent || ''));
+        expect(labels.length, 'instrument check: the row holds window pills').toBeGreaterThanOrEqual(WINDOWS.length);
+        for (const l of labels) expect(l, `${path}: a window pill without its index`).toMatch(/:\d+$/);
+        await expectNoSidewaysScroll(page);
+      }
+      await page.evaluate(() => { try { localStorage.removeItem('muster.switcher.view'); } catch (e) {} });
+    });
+
+    // THE SIDEBAR'S MAGNIFIER OPENS THE SAME PALETTE (operator ask: "a search
+    // icon button that opens the same command palette UI that the bottom bar
+    // search opens"): the one #switcher-search, from a session page (where the
+    // bar's magnifier opens it too) and from a page with no bar at all, whose
+    // palette reads the sidebar's rows. Enter opens what it found. REGRESSION
+    // TEST: red at the commit before (no #sidebar-search).
+    test('the sidebar\'s magnifier opens the bar\'s palette, on a session page and on a page with no bar; Enter opens the find', async ({ page }) => {
+      test.setTimeout(90_000);
+      await ready(page);
+      const openSidebar = async () => {
+        if (vp.w < 1024) {
+          await page.locator('#sidebar-open').click();
+          await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'true');
+        }
+      };
+      // A session page: the overlay sidebar, opened at every width.
+      await page.goto(origin + rig.viewPath('mango') + '&window=' + encodeURIComponent('@1'));
+      await expect(bar(page)).toBeVisible();
+      await page.locator('#sidebar-open').click();
+      await expect(page.locator('#sidebar-search')).toBeVisible();
+      await page.locator('#sidebar-search').click();
+      await expect(pal(page)).toBeVisible();
+      await expect(page.locator('[id="switcher-search"]'), 'one palette on the page').toHaveCount(1);
+      await expect(input(page)).toBeFocused();
+      await expect(page.locator('#sidebar-search')).toHaveAttribute('aria-expanded', 'true');
+      await input(page).pressSequentially('quar');
+      await expect(options(page)).toHaveCount(1);
+      await expect(options(page).first()).toContainText('quartz');
+      await page.keyboard.press('Escape');
+      await expect(pal(page)).toBeHidden();
+      await expect(page.locator('#sidebar-search'), 'focus goes back to the button that opened it').toBeFocused();
+      await expect(page.locator('#sidebar-search')).toHaveAttribute('aria-expanded', 'false');
+      // The bar's magnifier opens the very same element.
+      const same = await pal(page).evaluate((el) => { (window as any).__palEl = el; return true; });
+      expect(same).toBe(true);
+      await page.locator('#sidebar-close').click();
+      await expect(page.locator('#sidebar-root')).toHaveAttribute('data-open', 'false');
+      await page.locator('#switcher-search-open').click();
+      await expect(pal(page)).toBeVisible();
+      expect(await pal(page).evaluate((el) => el === (window as any).__palEl), 'the bar and the sidebar open one element').toBe(true);
+      await page.keyboard.press('Escape');
+
+      // A page with no bar: the account page. The palette reads the sidebar's rows.
+      await page.goto(origin + '/account');
+      await expect(bar(page)).toHaveCount(0);
+      await openSidebar();
+      await expect(page.locator('#sidebar-agents-list a[data-nav-agent]').first()).toBeVisible({ timeout: 15_000 });
+      await page.locator('#sidebar-search').click();
+      await expect(pal(page)).toBeVisible();
+      await input(page).pressSequentially('saff');
+      await expect(options(page)).toHaveCount(1);
+      await Promise.all([
+        page.waitForURL((u) => u.pathname === '/mirror/view' && u.searchParams.get('session') === 'saffron'),
+        page.keyboard.press('Enter'),
+      ]);
+      // And "/" opens it on a page with no bar wherever the sidebar's button is
+      // on screen: the desktop rail (a phone's shut drawer has it off screen).
+      await page.goto(origin + '/account');
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      await page.keyboard.press('/');
+      if (vp.w >= 1024) await expect(pal(page)).toBeVisible();
+      else await expect(pal(page)).toBeHidden();
+    });
+
+    // THE PIN ON A SESSION'S BAR (operator ask: "a way to pin the current
+    // session, the current agent, from within the rendered view"): on a
+    // window's Rendered view the bar's pin toggle pins THAT window — the Pins
+    // view and its count follow at once, a reload keeps it, the list's card is
+    // pinned — and unpins it again. REGRESSION TEST: red at the commit before
+    // (no #switcher-pin).
+    test('the bar\'s pin toggle pins and unpins the page\'s own window; the Pins view follows at once', async ({ page }) => {
+      test.setTimeout(90_000);
+      await ready(page);
+      await openAgents(page);
+      await unpinAll(page);
+      const view = origin + rig.viewPath('tundra') + '&window=' + encodeURIComponent('@6');
+      await page.goto(view);
+      const pin = page.locator('#switcher-pin');
+      await expect(pin).toBeVisible();
+      await expect(pin).toHaveAttribute('aria-pressed', 'false');
+      await expect(pin).toHaveAccessibleName('Pin this session');
+      const pb = (await pin.boundingBox())!, bb = (await bar(page).boundingBox())!;
+      expect([Math.round(pb.width), Math.round(pb.height)], 'a 44px target').toEqual([44, 44]);
+      expect(pb.y >= bb.y - 0.5 && pb.y + pb.height <= bb.y + bb.height + 0.5, 'inside the bar').toBe(true);
+      await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('0');
+      try {
+        await (vp.use.hasTouch ? pin.tap() : pin.click());
+        await expect(page.locator('#switcher-pin')).toHaveAttribute('aria-pressed', 'true');
+        await expect(page.locator('#switcher-pin')).toHaveAccessibleName('Unpin this session');
+        // The Pins view and its count, at once, with no reload: the page's own
+        // window, drawn current.
+        await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('1');
+        await expect(row(page, 'pins').locator('[data-switcher-current]')).toHaveText('tundra:1');
+        await expect(page.locator('[id="switcher-list-pins"]'), 'no nested copy of the row').toHaveCount(1);
+        // Kept: a reload draws it pressed, and the list's card is pinned.
+        await page.reload();
+        await expect(page.locator('#switcher-pin')).toHaveAttribute('aria-pressed', 'true');
+        await page.goto(origin + '/agents');
+        await expect(page.locator('#agents-list > article[data-mirror-card][data-f-session="tundra"]')).toHaveAttribute('data-pinned', '');
+        // And unpinned from the same toggle.
+        await page.goto(view);
+        await page.locator('#switcher-pin').click();
+        await expect(page.locator('#switcher-pin')).toHaveAttribute('aria-pressed', 'false');
+        await expect(menu(page).locator('[data-switcher-count="pins"]')).toHaveText('0');
+        await expectNoSidewaysScroll(page);
+      } finally {
+        await page.request.post(origin + '/agents/pins/delete', { form: { kind: 'mirror', host: rig.host, session: 'tundra', window: '@6' }, headers: { Origin: origin } });
+      }
     });
 
     test('the bar\'s "+" opens the dispatch sheet and a dispatch from it creates an agent; a session page has no "+"', async ({ page }) => {

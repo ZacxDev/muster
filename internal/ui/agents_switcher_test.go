@@ -94,7 +94,7 @@ func TestTheAgentsDocumentDrawsItsSwitcherWithNothingCurrent(t *testing.T) {
 		t.Error("an entry is drawn current on a page that has no session")
 	}
 	mango1 := amp(MirrorCardHref(mirrors[0]))
-	if got, want := strings.Join(switcherRowEntries(t, page, SwitcherRecent), " | "), "Two /agents/ag-two | mango "+mango1+" | ag-one /agents/ag-one"; got != want {
+	if got, want := strings.Join(switcherRowEntries(t, page, SwitcherRecent), " | "), "Two /agents/ag-two | mango:1 "+mango1+" | ag-one /agents/ag-one"; got != want {
 		t.Errorf("Recent =\n%s\nwant\n%s", got, want)
 	}
 	if got := len(switcherRowEntries(t, page, SwitcherAll)); got != len(list)+len(mirrors) {
@@ -104,7 +104,7 @@ func TestTheAgentsDocumentDrawsItsSwitcherWithNothingCurrent(t *testing.T) {
 		t.Errorf("Pins draws %d entries, want the 2 pinned", got)
 	}
 	for _, v := range switcherViews {
-		n := map[string]int{SwitcherRecent: 3, SwitcherPins: 2, SwitcherAll: 6}[v.key]
+		n := map[string]int{SwitcherRecent: 3, SwitcherWaiting: 1, SwitcherPins: 2, SwitcherAll: 6}[v.key]
 		if !strings.Contains(page, `id="`+switcherCountID(v.key)+`" class="text-xs tabular-nums text-muted" data-switcher-count="`+v.key+`" data-restore-refresh="switcher-count-`+v.key+`">`+strconv.Itoa(n)+`</span>`) {
 			t.Errorf("the %s count is not %d", v.key, n)
 		}
@@ -114,7 +114,7 @@ func TestTheAgentsDocumentDrawsItsSwitcherWithNothingCurrent(t *testing.T) {
 func amp(s string) string { return strings.ReplaceAll(s, "&", "&amp;") }
 
 // TestTheListPartialRefreshesTheSwitcherOutOfBand: every list render carries
-// the switcher's three rows and three counts out of band, each swapping its
+// the switcher's rows and counts (one of each per view) out of band, each swapping its
 // CHILDREN into the element of its id (innerHTML) — never the row itself, so
 // the row the viewer chose stays shown — resolved against the SAME cards the
 // list draws. A pin made on the page reaches the Pins view this way. Red at

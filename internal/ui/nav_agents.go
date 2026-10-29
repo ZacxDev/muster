@@ -16,7 +16,7 @@ import (
 // pinned first, then every session waiting on the operator, then the rest by
 // recency (navOrder, list_order.go). Each row is one entry of the Agents list
 // — its identity colour on the row's left edge, its recency dot, its host
-// icon, its short name (sessionSwitcherLabels, the switcher's labels) and its
+// icon, its whole name (sessionSwitcherLabels, the switcher's labels) and its
 // attention count — and opens what its card opens. The page's own session is
 // marked.
 //
@@ -170,10 +170,12 @@ func NavAgentsList(list []AgentCardView, mirrors []MirrorCardView, currentURL st
 		return P(g.Attr("data-nav-agents-empty", ""), Class("px-3 py-2 text-xs text-muted"), g.Text("No agents yet"))
 	}
 	cur := navCurrent(currentURL, list)
-	labels := sessionSwitcherLabels(es)
+	// The switcher's items for the same entries: each row's label, and what
+	// the command palette finds it by on a page with no switcher (palette.go).
+	items := switcherItems(es, cur)
 	rows := make([]g.Node, len(es))
 	for i, e := range es {
-		rows[i] = navAgentRow(e, labels[i], cur.is(e), now)
+		rows[i] = navAgentRow(e, items[i], now)
 	}
 	return Ul(g.Attr("aria-labelledby", navAgentsLabelID), Class("flex flex-col gap-0.5"), g.Group(rows))
 }
@@ -192,7 +194,8 @@ func RenderNavAgents(w io.Writer, list []AgentCardView, mirrors []MirrorCardView
 // current item of the agents set, which is what "true" means
 // (TestTheRowOfThePageIsCurrent refuses a row that claims "page"). It is drawn as the active row
 // (navRowTone) — never the accent highlight, which marks the nav entry.
-func navAgentRow(e listEntry, label string, current bool, now time.Time) g.Node {
+func navAgentRow(e listEntry, it SwitcherItem, now time.Time) g.Node {
+	label, current := it.Label, it.Current
 	var id, href, kind, color, host, icon string
 	var att *CardAttention
 	if e.agent != nil {
@@ -232,6 +235,11 @@ func navAgentRow(e listEntry, label string, current bool, now time.Time) g.Node 
 			g.If(strings.HasPrefix(href, "/mirror/view?"), g.Attr("data-snap-warm", "")),
 			identityAttrs(color),
 			g.Attr("title", label),
+			// What the command palette finds the row by (palette.go), as a
+			// switcher pill's (switcherEntry).
+			g.If(it.Code != "", g.Attr("data-switcher-code", it.Code)),
+			g.If(it.Title != "", g.Attr("data-switcher-title", it.Title)),
+			g.If(it.Words != "", g.Attr("data-switcher-words", it.Words)),
 			Class("press flex min-h-[44px] w-full min-w-0 items-center gap-2 rounded-lg border-l-4 px-3 text-left text-sm font-medium transition "+edge+" "+navRowTone(current)),
 			// The dot's box is reserved whether or not a time is known, so the
 			// names line up.

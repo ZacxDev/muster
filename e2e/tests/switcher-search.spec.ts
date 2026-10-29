@@ -154,8 +154,8 @@ for (const vp of [
 
       // The views, the shown one checked, focus on it; every item a 44px target.
       const items = menu(page).getByRole('menuitemradio');
-      await expect(items).toHaveCount(3);
-      expect(await items.evaluateAll((els) => els.map((e) => `${e.querySelector('.flex-1')!.textContent}:${e.getAttribute('aria-checked')}`))).toEqual(['Recent:true', 'Pins:false', 'All:false']);
+      await expect(items).toHaveCount(4);
+      expect(await items.evaluateAll((els) => els.map((e) => `${e.querySelector('.flex-1')!.textContent}:${e.getAttribute('aria-checked')}`))).toEqual(['Recent:true', 'Waiting on you:false', 'Pins:false', 'All:false']);
       await expect(menu(page).locator('[data-switcher-pick="recent"]')).toBeFocused();
       for (const b of await items.all()) expect((await b.boundingBox())!.height, 'a 44px item').toBeGreaterThanOrEqual(44);
 
@@ -178,6 +178,8 @@ for (const vp of [
       await expect(menu(page).locator('[data-switcher-pick="all"]')).toBeFocused();
       await page.keyboard.press('ArrowDown');
       await expect(menu(page).locator('[data-switcher-pick="recent"]')).toBeFocused();
+      await page.keyboard.press('ArrowDown');
+      await expect(menu(page).locator('[data-switcher-pick="waiting"]')).toBeFocused();
       await page.keyboard.press('ArrowDown');
       await expect(menu(page).locator('[data-switcher-pick="pins"]')).toBeFocused();
       await page.keyboard.press('Enter');
