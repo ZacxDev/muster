@@ -666,6 +666,10 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 					// And the last message at its largest: muster keeps it at most
 					// at now (a WAITING window's is the host's now anyway).
 					LastMessage: math.MaxInt64,
+					// And a live copy's id at the 64-byte bound on every window;
+					// the list-wide bound (MaxLiveCopyWindows) keeps the first
+					// windows' alone.
+					LiveCopy: strings.Repeat("e", 64),
 					Pending: &mirror.Pending{Summary: strings.Repeat("<", mirror.MaxPendingSummary), Tool: strings.Repeat("&", mirror.MaxPendingTool),
 						Last: strings.Repeat(">", mirror.MaxPendingLast)}},
 				// Every window with its other panes' Claude sessions at their
@@ -731,6 +735,18 @@ func TestTheLargestWindowListFitsOneFrame(t *testing.T) {
 				}
 				turnErrors++
 			}
+		}
+		liveCopies := 0
+		for _, w := range l.windows {
+			if w.LiveCopy != "" {
+				if len(w.LiveCopy) != 64 {
+					t.Fatalf("instrument check: a live copy was cut, so this is not the worst case: %q", w.LiveCopy)
+				}
+				liveCopies++
+			}
+		}
+		if liveCopies != mirror.MaxLiveCopyWindows {
+			t.Fatalf("instrument check: %d windows carry a live copy, want the bound %d", liveCopies, mirror.MaxLiveCopyWindows)
 		}
 		if turnErrors != mirror.MaxTurnErrorWindows {
 			t.Fatalf("instrument check: %d windows carry a turn error, want the bound %d", turnErrors, mirror.MaxTurnErrorWindows)

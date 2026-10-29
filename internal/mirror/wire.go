@@ -618,6 +618,15 @@ type Window struct {
 	// MaxTurnErrorWindows windows of a list. What the send queue holds on.
 	// Backward-compatible both ways, like Pending.
 	TurnError *TurnError `json:"turnError,omitempty"`
+	// LiveCopy is the Claude Code session id of ANOTHER transcript of the same
+	// conversation that is still running elsewhere — a `claude --resume` of a
+	// conversation that was still open in another client copies it into a new
+	// session instead of attaching to it (livecopy.go) — "" for none. Only a
+	// Claude window carries one, and only one whose id ValidClaudeSession
+	// accepts, on at most MaxLiveCopyWindows windows of a list. muster shows
+	// it as a warning on the card and the views (SessionView.LiveCopyWarning).
+	// Backward-compatible both ways, like ClaudeSession.
+	LiveCopy string `json:"liveCopy,omitempty"`
 }
 
 // CardActivity is the window's activity as the Agents list uses it — the
@@ -1074,6 +1083,10 @@ func NormalizeWindows(in []Window, now int64) []Window {
 			w.ClaudeSession = ""
 		}
 		w.OtherClaude = validOtherClaude(w.OtherClaude, w.ClaudeSession)
+		// A live copy is another conversation's id beside a Claude one's.
+		if !w.Claude || w.ClaudeSession == "" || !ValidClaudeSession(w.LiveCopy) || w.LiveCopy == w.ClaudeSession {
+			w.LiveCopy = ""
+		}
 		if w.Activity < 0 {
 			w.Activity = 0
 		}
@@ -1135,6 +1148,7 @@ func NormalizeWindows(in []Window, now int64) []Window {
 	}
 	boundPending(out)
 	boundTurnError(out)
+	boundLiveCopy(out)
 	active := map[string]bool{}
 	for i := range out {
 		if out[i].Active {
@@ -1292,7 +1306,8 @@ func (w Window) Equal(o Window) bool {
 		w.Activity == o.Activity && w.Claude == o.Claude && w.Command == o.Command && w.Status == o.Status &&
 		w.StatusSince == o.StatusSince && w.ClaudeSession == o.ClaudeSession && slices.Equal(w.OtherClaude, o.OtherClaude) &&
 		pendingEqual(w.Pending, o.Pending) && w.Runtime == o.Runtime && w.AgentSession == o.AgentSession &&
-		w.AgentNote == o.AgentNote && w.LastMessage == o.LastMessage && turnErrorEqual(w.TurnError, o.TurnError)
+		w.AgentNote == o.AgentNote && w.LastMessage == o.LastMessage && turnErrorEqual(w.TurnError, o.TurnError) &&
+		w.LiveCopy == o.LiveCopy
 }
 
 // AskTyping is an answer to type into an AskUserQuestion picker (Msg.Ask):

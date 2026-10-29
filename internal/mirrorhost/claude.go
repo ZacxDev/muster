@@ -131,6 +131,11 @@ type ClaudePane struct {
 	// that answer's time (Unix ms, host clock; turnend.go); 0 otherwise. Not
 	// on the wire: the host's limit reads it (hostLimitOf).
 	ReplyAt int64
+	// LiveCopy is the session id of another transcript of this conversation,
+	// in the same project directory, that is still running elsewhere
+	// (livecopy.go: set by Tmux.Windows when its LiveCopies is set); "" for
+	// none.
+	LiveCopy string
 	// Source says how Transcript was found: SourcePaneMap, SourceSessions or
 	// SourceGuessed (see ClaudeLocator) — for a Hermes pane, SourceBreadcrumb
 	// or SourceProcess.
@@ -568,8 +573,7 @@ func (l ClaudeLocator) liveSessions(cfg string, procs map[int]procInfo) liveSess
 		if json.Unmarshal(b, &sf) != nil || !sessionIDPattern.MatchString(sf.SessionID) {
 			continue
 		}
-		pi, alive := procs[sf.PID]
-		if !alive || (sf.ProcStart != "" && sf.ProcStart != pi.start) {
+		if !sessionAlive(sf, procs) {
 			continue
 		}
 		out.byID[sf.SessionID] = sf
@@ -584,6 +588,15 @@ func (l ClaudeLocator) liveSessions(cfg string, procs map[int]procInfo) liveSess
 		delete(out.byJob, j)
 	}
 	return out
+}
+
+// sessionAlive reports whether sf's process is running: its pid is in procs
+// and, when the file records procStart, has that start time (a sessions file
+// can outlive its process, and the pid can be reused). The one alive rule for
+// sessions files (liveSessions, and livecopy.go's holders).
+func sessionAlive(sf sessionFile, procs map[int]procInfo) bool {
+	pi, ok := procs[sf.PID]
+	return ok && (sf.ProcStart == "" || sf.ProcStart == pi.start)
 }
 
 // sessionIDPattern bounds what a sessions file may name: it is joined into a path.
