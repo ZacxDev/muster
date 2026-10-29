@@ -73,7 +73,7 @@
 // running the turn. A turn cut off by THIS process shutting down is recorded as such
 // ([ShutdownCancelledReason]), and the server's shutdown waits for that record
 // ([Deliverer.Done]) before it closes the pool. Each of these changes calls
-// [Config.OnChange], so an open Agents list re-renders.
+// [Config.OnChange], so an open agent page's strip and the sidebar re-fetch.
 //
 // 🔴 IT ACTS ONLY ON ROWS THIS DEPLOYMENT OWNS, AND NEVER ON A KICKED-OFF ROW. The
 // agents table can hold rows another system wrote (a namespace the configured
@@ -127,8 +127,8 @@ const claimMargin = 2 * time.Minute
 const bookkeepingTimeout = 15 * time.Second
 
 // EmptyReplyReason is written to agents.kickoff_error when the first turn came
-// back with no text. It is agents.KickoffEmptyReplyReason, which the card's remedy
-// reads.
+// back with no text. It is agents.KickoffEmptyReplyReason, which the agent page's
+// remedy reads.
 const EmptyReplyReason = agents.KickoffEmptyReplyReason
 
 // InstanceLister is what the deliverer needs from a provisioner: the live
@@ -175,17 +175,17 @@ type Config struct {
 	// TurnTimeout defaults to [DefaultTurnTimeout].
 	TurnTimeout time.Duration
 	// OnChange, when set, is called with an agent's name after this package changes
-	// what that agent's card shows: the stamp (the "kickoff owed" badge goes), a
+	// what that agent's page shows: the stamp (the "kickoff owed" badge goes), a
 	// recorded post-stamp failure (the "kickoff failed" badge comes), and a stuck
-	// verdict (the card goes red). cmd/muster-server passes
-	// api.Server.BroadcastAgentChanged, which the Agents list re-renders on.
-	// ⚠ That clause was FALSE until the list's hx-trigger gained
-	// `sse:agent.changed` (internal/ui's agentsListTrigger): before it, only the
-	// Tasks board heard this broadcast, and an open Agents list showed none of it.
+	// verdict (the status goes red). cmd/muster-server passes
+	// api.Server.BroadcastAgentChanged, which the agent page's strip (ui's
+	// agentStripTrigger), the sidebar and the Tasks board re-fetch on. (The retired
+	// Agents list heard it only once its hx-trigger gained `sse:agent.changed`;
+	// before that only the Tasks board did.)
 	//
-	// 🔴 A PRE-SEND FAILURE DOES NOT CALL IT. It changes nothing a card shows (the row
+	// 🔴 A PRE-SEND FAILURE DOES NOT CALL IT. It changes nothing a page shows (the row
 	// still reads "kickoff owed"), and it recurs every tick while the pod boots, so
-	// calling it there would re-render every open Agents list every 10 s.
+	// calling it there would re-fetch every open sidebar every 10 s.
 	OnChange func(name string)
 }
 
@@ -608,7 +608,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 	if again, err := d.store.Get(ctx, fresh.ID); err == nil && again.PendingNote != "" {
 		fresh.PendingNote = again.PendingNote
 	}
-	// The "kickoff owed" badge goes with the stamp; tell open Agents lists.
+	// The "kickoff owed" badge goes with the stamp; tell open pages.
 	d.notify(fresh.Name)
 	provenance := d.store.RecordKickoffDelivery(ctx, fresh.ID, inst.InstanceID, inst.Restarts)
 	if provenance != nil {
@@ -652,7 +652,7 @@ func (d *Deliverer) deliver(parent context.Context, a agents.Agent, inst provisi
 		// Still refused when the delivery ended — the bound, or a shutdown
 		// mid-wait. Nothing was sent, which turnFailure's texts (shutdown, budget,
 		// "handed to the gateway") would deny; this one says so, and makes the
-		// card's remedy say a re-send is safe (agents.KickoffResendSafe).
+		// agent page's remedy say a re-send is safe (agents.KickoffResendSafe).
 		reason := agents.KickoffNotAcceptedReason
 		if !runtimeNotReady(err) {
 			reason = agents.KickoffBusyReason
@@ -731,11 +731,11 @@ func (d *Deliverer) preStampFailure(parent context.Context, a agents.Agent, inst
 
 // recordCheckoutWait records that a first turn is held for its repository
 // checkout (agents.KickoffAwaitingGrantReason / KickoffAwaitingCloneReason, with
-// ccd's own detail), and tells open Agents lists when that is news — the card's
-// "waiting for your github approval" line comes from it.
+// ccd's own detail), and tells open pages when that is news — the agent page's
+// "waiting for your github approval" notice comes from it.
 //
 // ⚠ IT WRITES ONLY ON A CHANGE OF STATE. A turn may be held for a day at one
-// tick every 10 s; rewriting the same marker and re-rendering every open list
+// tick every 10 s; rewriting the same marker and re-fetching every open page
 // each time is churn with nothing new to show. SetKickoffError does not move the
 // dwell clock, so the day is measured from the row's last real transition.
 func (d *Deliverer) recordCheckoutWait(parent context.Context, a agents.Agent, st agents.CheckoutStatus) {

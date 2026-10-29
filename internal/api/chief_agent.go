@@ -144,8 +144,8 @@ func resolveChief(list []agents.Agent) (agents.Agent, bool) {
 // as a side effect of dismissing the task it was once linked to, removes the
 // thing the operator talks to. Every caller of Provisioner.Destroy in this package
 // asks agentIsChief first (TestEveryDestroyCallSiteIsChiefGuarded holds the
-// ledger of those callers), and the card's menu reads the same answer to hide
-// Delete.
+// ledger of those callers), and the agent page's ⋯ menu reads the same answer
+// to hide Delete.
 //
 // "The chief" is BOTH of the two agents that can carry the role, because they
 // are different rows on a real fleet (see the header above):
@@ -174,8 +174,8 @@ func chiefRefusal(a agents.Agent) string {
 }
 
 // chiefPredicate is THE chief predicate, bound to one read of the agent list:
-// the chief is resolved once, so a caller deciding many agents (the card list)
-// pays one resolve, not one per card.
+// the chief is resolved once, so a caller deciding many agents (the sidebar's
+// entries) pays one resolve, not one per agent.
 //
 // 🔴 EVERY USER HAS A CHIEF (accounts PR 3b), so the label rule is applied PER
 // OWNER: an agent is the chief when it carries a reserved chief slug

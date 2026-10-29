@@ -11,9 +11,9 @@ import (
 // HOST ICONS: every listed agent carries an icon that says which host it runs
 // on — a mirrored tmux window its host's, a dispatched pod agent the cluster's —
 // next to its name, with the host in the icon's tooltip and accessible name.
-// The same host draws the same icon everywhere it appears: the Agents list's
-// cards, the "Recently viewed" strip, the host tabs (cloned off a card by
-// agentsFilterScript) and the badge on a mirrored window's own pages.
+// The same host draws the same icon everywhere it appears: the sidebar's rows,
+// the session switcher's pills and the badge on a mirrored window's own pages
+// (mirrorBadge).
 //
 // 🔴 A HOST THE OPERATOR NAMED AN ICON FOR DRAWS IT (HostPreferences.Icons,
 // MUSTER_HOST_ICONS: "laptop" a laptop, whatever its rank). EVERY OTHER HOST'S
@@ -32,7 +32,7 @@ import (
 
 // hostIconDef is one icon: its key (what data-host-icon says, and what a test
 // compares) and its SVG body in the repo's icon style (24×24, 2px round
-// strokes in currentColor — mirroredIcon's).
+// strokes in currentColor).
 type hostIconDef struct {
 	Key  string
 	Body string
@@ -107,7 +107,7 @@ func HostIconFor(ranks map[string]int, host string) string {
 
 // hostIconDefOf is the icon a key names: the cluster's, one of the set, or —
 // for a key that is neither (a view built without one) — the hash fallback of
-// HostIconFor for host, so a card is never drawn without its icon.
+// HostIconFor for host, so an entry is never drawn without its icon.
 func hostIconDefOf(key, host string) hostIconDef {
 	if key == clusterIcon.Key {
 		return clusterIcon
@@ -130,9 +130,8 @@ func hostIconSVG(d hostIconDef, size string) string {
 // moves nothing), the host in its tooltip and its accessible name. key is the
 // icon (HostIconFor, or the cluster's); host is what the tooltip names.
 //
-// It is NOT a button: it sits inside a card's nav anchor, where a tap opens the
-// card. A phone has no hover, so the card's body also spells the host
-// (hostChip).
+// It is NOT a button: it sits inside a switcher pill's link, where a tap opens
+// the session.
 func hostMark(host, key string) g.Node {
 	d := hostIconDefOf(key, host)
 	label := "Host: " + host
@@ -147,7 +146,7 @@ func hostMark(host, key string) g.Node {
 }
 
 // hostMarkDecorative is hostMark for a place whose text already names the host
-// (a pinned chip whose label carries it): the same icon and tooltip, but
+// (a sidebar row, or a switcher pill whose label carries it): the same icon and tooltip, but
 // aria-hidden, so a screen reader does not read the host twice.
 func hostMarkDecorative(host, key string) g.Node {
 	d := hostIconDefOf(key, host)

@@ -14,18 +14,22 @@ import (
 	"github.com/ZacxDev/muster/internal/textplain"
 )
 
-// AgentCardView is the per-agent data the card grid renders.
+// AgentCardView is one agent as internal/api's cardViewIndexed composes it:
+// what the sidebar's row, the session switcher's pill and the agent page's
+// status strip, ⋯ menu and notices draw (agent_actions.go). The name is the
+// retired Agents list's, whose card grid it was built for.
 type AgentCardView struct {
 	ID int64
 	// SessionID is the agent's latest session (agents.Store.LatestSessionIDs),
-	// 0 when it has none or the read failed. Every link the list draws to this
-	// agent — the card, a pinned chip, a Recent entry — names it (PageHref).
+	// 0 when it has none or the read failed. Every link drawn to this agent —
+	// the sidebar's row, the switcher's pill, home's target — names it (PageHref).
 	SessionID int64
 	// Kind and CCAccount are the agent's kind and Claude account name.
 	Kind      string
 	CCAccount string
 	// WorkerPool is the machine-job worker pool the agent belongs to
-	// (agents.Agent.WorkerPool); "" for none. Rendered as a "pool" chip.
+	// (agents.Agent.WorkerPool); "" for none. Nothing draws it from this view
+	// now (the retired Agents list's card drew a "pool" chip).
 	WorkerPool  string
 	Name        string
 	DisplayName string
@@ -72,19 +76,23 @@ type AgentCardView struct {
 	// Namespace is the agent's stored namespace, used only to spell the log command
 	// in the failed-kickoff remedy.
 	Namespace string
-	// Model is the agent's configured model slug ("" = cluster default). Surfaced
-	// as a small read-only line on the card so it's visible at a glance.
+	// Model is the agent's configured model slug ("" = cluster default). Nothing
+	// draws it from this view now (the retired Agents list's card did, as a
+	// read-only line).
 	Model string
-	// NoteID is the source task this agent was dispatched from (nil = none). When
-	// set, the card shows a "Task #<id>" badge linking to the Tasks tab.
+	// NoteID is the source task this agent was dispatched from (nil = none).
+	// Nothing draws it from this view now (the retired Agents list's card drew a
+	// "Task #<id>" badge).
 	NoteID *int64
-	// CreatedAt backs the card's relative "age". Zero renders nothing.
+	// CreatedAt is the agent's creation time. Nothing draws it from this view
+	// now (the retired Agents list's card printed it as a relative "age").
 	CreatedAt time.Time
 	UpdatedAt time.Time
-	// LastActiveAt is agents.LastActivity for this agent — the time the Agents
-	// list is ORDERED by — and it is what the footer's "active … ago" prints, so
-	// the order and the label on screen are one number. Composed in internal/api's
-	// cardViewIndexed; a zero value (a minimal test view) falls back to UpdatedAt.
+	// LastActiveAt is agents.LastActivity for this agent — the time the sidebar
+	// and the switcher order by (list_order.go) — and it is what the sidebar
+	// row's recency dot reads, so the order and the dot are one number. Composed
+	// in internal/api's cardViewIndexed; a zero value (a minimal test view) falls
+	// back to UpdatedAt.
 	LastActiveAt time.Time
 	// IsChief marks the fleet's chief agent; its ⋯ menu offers no Delete. It is
 	// the answer of internal/api's ONE chief predicate (isChiefAmong), composed in
@@ -98,40 +106,40 @@ type AgentCardView struct {
 	// PrimaryChief: this is THE chief the viewer is sent to — where `/` opens,
 	// and the agent the sidebar pins first (navBefore). internal/api's
 	// primaryChief decides it, for both; it is never re-derived here. At most
-	// one card of a list carries it; IsChief may be true on more than one.
+	// one entry of a list carries it; IsChief may be true on more than one.
 	PrimaryChief bool
-	// Pinned: the viewing user pinned this agent (internal/pins). The list draws
-	// a pinned agent first, as a label-only CHIP instead of its card
-	// (pinned_chips.go: unpinned, renamed and started/stopped from the chip's
-	// edit controls, behind the row's "Edit pins" toggle); RenderAgentCard draws
-	// that chip too. Composed in cardViewIndexed.
+	// Pinned: the viewing user pinned this agent (internal/pins). The switcher
+	// orders a pinned entry first (orderList) and its pin toggle reads it
+	// (switcher_pin.go); a pinned entry is never in the Idle section. Composed in
+	// cardViewIndexed.
 	Pinned bool
 	// Focus is what the agent is working on (internal/focus), nil for none.
-	// Composed in cardViewIndexed; shown as the footer's focus chip, and found
-	// by the filter.
+	// Composed in cardViewIndexed; the palette finds the entry by its title
+	// (switcherItems' Title).
 	Focus *FocusView
-	// Attention is the card's attention badge (cards_attention.go), nil for
-	// none. Composed in internal/api from the attention queue's own read.
+	// Attention is the entry's attention count (cards_attention.go), drawn on
+	// its sidebar row (navAttentionPill), nil for none. Composed in internal/api
+	// from the attention queue's own read.
 	Attention *CardAttention
 	// AwaitingApproval: the agent is blocked on a permission prompt (or has a
 	// request open on the approval queue) — internal/api's AwaitingApproval,
 	// the same answer the polled "awaiting approval" badge shows. It is NOT an
-	// attention item, so it is carried here: the "Waiting on you" chip reads it
-	// (waitTokens), and the status poll asks for a list refresh when it changes
-	// (cardStatusIcon).
+	// attention item, so it is carried here: the waiting order and words read it
+	// (waitTokens), and the agent page's status poll asks for a strip refresh
+	// when it changes (agentStripBody, AgentsAwaitingEvent).
 	AwaitingApproval bool
 	// Work is what the agent's pod last reported it has running — subagents and
 	// background shells — internal/api's AgentWork, already expired when stale.
-	// It draws the same chip a mirrored window's card does (workChip), and the
-	// status poll carries it (StatusPollPath) so a change or an expiry re-renders
-	// the list. Zero: no chip.
+	// It draws the agent page strip's work chip (workChip) and the sidebar row's
+	// count (navWork), and the status poll carries it (StatusPollPath) so a
+	// change or an expiry re-renders the strip. Zero: no chip.
 	Work mirror.WindowWork
-	// Idle: drawn in the list's Idle section (idle_section.go's InIdleSection),
-	// composed by MarkIdle. Its card carries data-idle-section.
+	// Idle: in the Idle section (idle_section.go's InIdleSection), composed by
+	// MarkIdle; the sidebar draws it in its Idle group (navIdleGroup).
 	Idle bool
 }
 
-// lastActive is the card's "active" time: LastActiveAt, or UpdatedAt when the
+// lastActive is the entry's "active" time: LastActiveAt, or UpdatedAt when the
 // view was built without one.
 func (a AgentCardView) lastActive() time.Time {
 	if a.LastActiveAt.IsZero() {
@@ -155,23 +163,10 @@ type ComboOption struct {
 	Label string
 }
 
-// agentCard is the per-agent card. The card BODY is a real boosted <a> that
-// opens the detail page on click/tap (status icon + name + repo chip). There is
-// NO chat or log preview on a card — an operator decision: the list is for
-// finding an agent, the detail page for reading it. The interactive controls —
-// the inline rename pencil and the ⋯ context menu (Start/Stop/Delete) — sit
-// OUTSIDE that anchor in a top-right control cluster, so tapping them never
-// triggers card navigation. All
-// interactivity is boost-safe: a native popover menu (placed by
-// floatingMenuScript) and htmx.
-//
-// 🔴 ITS SHAPE IS mirrorCard's, SLOT FOR SLOT (cardSlot): controls, body,
-// header, footer. TestAgentAndMirrorCardsRenderTheSameSlots pins it, so the two
-// kinds of card cannot drift into two layouts again.
-// PageHref is the card's link to the agent's page: AgentListHref on the agent's
+// PageHref is the link to the agent's page: AgentListHref on the agent's
 // latest session, so a tap loads the page directly instead of the bare URL and
-// its 303 (and is moved to the latest if it went stale). The card, its pinned
-// chip and its Recent entry all use it.
+// its 303 (and is moved to the latest if it went stale). The sidebar's row, the
+// switcher's pill and home's target (HomeHref) all use it.
 func (a AgentCardView) PageHref() string { return AgentListHref(a.Name, a.SessionID) }
 
 // kickoffOwedBadge is the "kickoff owed" badge: an agent whose stored first
@@ -221,8 +216,8 @@ const KickoffRemedyResendSafe = "Not retried automatically. The task never reach
 // that was never opened, or a runtime that refused the turn as not_ready for the
 // whole delivery, proves otherwise (resendSafe).
 //
-// ⚠ ITS ONLY DYNAMIC PARTS ARE THE AGENT'S NAME AND NAMESPACE, which the card and
-// GET /api/agents already show. No part of the note or of kickoff_error is in it;
+// ⚠ ITS ONLY DYNAMIC PARTS ARE THE AGENT'S NAME AND NAMESPACE, which the agent's
+// page and GET /api/agents already show. No part of the note or of kickoff_error is in it;
 // api.TestAnOwedKickoffIsReportedWithoutTheNotesText scans the rendered remedy.
 func KickoffFailedRemedy(resendSafe bool, namespace, name string) string {
 	if resendSafe {
@@ -240,7 +235,7 @@ func KickoffFailedRemedy(resendSafe bool, namespace, name string) string {
 // never inside cardStatusIcon's polling span (TestTheKickoffBadgesAreNotInsideThePollingStatusSpan).
 //
 // 🔴 IT EXISTS BECAUSE THE OWED BADGE GOES AWAY ON THE STAMP. Before it, a turn
-// that failed after the stamp turned "kickoff owed" off and left the card reading
+// that failed after the stamp turned "kickoff owed" off and left the agent reading
 // healthy over an agent that was never told its task.
 //
 // The data attribute is the handle a test parses — see kickoffOwedBadge.
@@ -265,7 +260,7 @@ func kickoffFailedBadge() g.Node {
 //
 // Its text is FIXED: no part of the note or of ccd's detail is in it.
 func kickoffAwaitingGrantNotice() g.Node {
-	// The wrapper's padding matches the card body's (cardBodyClass), with classes
+	// The wrapper's padding is the retired Agents list card body's, with classes
 	// already in the committed stylesheet (see kickoffOwedBadge on why that matters).
 	return Div(Class("px-4 pb-4"), P(
 		g.Attr("data-kickoff-awaiting-grant", ""),
@@ -277,7 +272,7 @@ func kickoffAwaitingGrantNotice() g.Node {
 	))
 }
 
-// githubProblemDetail is the agent card's line for a GitHub App failure that
+// githubProblemDetail is the agent page's notice (agentNotices) for a GitHub App failure that
 // keeps this agent from reaching its repository (AgentCardView.GitHubProblem).
 // The same classes as kickoffFailureDetail, so it needs nothing new in the
 // committed stylesheet.
@@ -290,8 +285,8 @@ func githubProblemDetail(msg string) g.Node {
 	)
 }
 
-// kickoffFailureDetail renders the recorded failure and the remedy under the
-// card header.
+// kickoffFailureDetail renders the recorded failure and the remedy, as a
+// notice on the agent's page (agentNotices).
 //
 // 🔴 msg ARRIVES SCRUBBED. It is agents.KickoffFailureText, which removes any run
 // of the pending note — a failed turn's error can quote the runtime's response
@@ -308,9 +303,9 @@ func kickoffFailureDetail(msg, remedy string) g.Node {
 	)
 }
 
-// statusIcon is the COMPACT status indicator for the agent card: just the glyph
-// (no text label box), with the status word carried as a title / aria-label
-// tooltip. Same mapping as statusDot.
+// statusIcon is the COMPACT status indicator on the agent page's strip: just the
+// glyph (no text label box), with the status word carried as a title /
+// aria-label tooltip.
 func statusIcon(status string) g.Node {
 	label := statusLabel(status)
 	return Span(
@@ -355,9 +350,10 @@ func AwaitingApprovalBadge() g.Node {
 	)
 }
 
-// StatusPollPath is an agent card's status poll: GET /ui/agents/{id}/status,
-// with awaiting=1|0 saying whether the card was drawn awaiting approval, and
-// work=WorkPollToken saying which work chip it was drawn with.
+// StatusPollPath is the agent page strip's status poll (agentStripBody): GET
+// /ui/agents/{id}/status, with awaiting=1|0 saying whether the strip was drawn
+// awaiting approval, and work=WorkPollToken saying which work chip it was
+// drawn with.
 func StatusPollPath(id int64, awaiting bool, work mirror.WindowWork) string {
 	v := "0"
 	if awaiting {
@@ -378,9 +374,9 @@ func WorkPollToken(w mirror.WindowWork) string {
 }
 
 // AgentsAwaitingEvent is the HX-Trigger the status poll answers with when what
-// an agent's card was drawn with is no longer true — its awaiting-approval
+// an agent page's strip was drawn with is no longer true — its awaiting-approval
 // state, or its work chip (a new report, or one that expired with no POST to
-// announce it); the Agents list re-renders on it (agentsListTrigger).
+// announce it); the strip re-fetches on it (agentStripTrigger).
 const AgentsAwaitingEvent = "agents:awaiting"
 
 // statusLabel is the agent-facing word for a stored agent status.
@@ -394,7 +390,8 @@ func statusLabel(status string) string {
 }
 
 // agentModalShell is the static (always-present, hidden) dispatch modal. Its
-// body is loaded on demand by the FAB so it stays out of the 4s poll cycle.
+// body is loaded on demand — by the sidebar's "+" (navDeployButton) or a task
+// card's Dispatch — so it stays out of the 4s poll cycle.
 func agentModalShell() g.Node {
 	return Div(
 		ID("agent-modal"),
@@ -420,12 +417,12 @@ func agentModalShell() g.Node {
 	)
 }
 
-// DispatchModalBody is the /ui/agents/new partial (FAB path): the full dispatch
+// DispatchModalBody is the /ui/agents/new partial (the sidebar's "+"): the full dispatch
 // form. It renders INSTANTLY — the repo + task option lists lazy-load (with
 // animated skeletons) and the model field searches OpenRouter on type, so the
-// form never blocks on a slow upstream. Morphed into #agent-modal-body when the
-// FAB is tapped. The Task-card Dispatch button uses the task-scoped variant
-// (DispatchModalTaskBody) instead; this FAB form is unchanged.
+// form never blocks on a slow upstream. Loaded into #agent-modal-body when the
+// sidebar's "+" is tapped. The Task-card Dispatch button uses the task-scoped
+// variant (DispatchModalTaskBody) instead; this task-less form is unchanged.
 func DispatchModalBody() g.Node { return DispatchModalBodyFor(KindChoices{}) }
 
 // ProvisionerGuideURL is docs/provisioner.md on GitHub: how to give muster an
@@ -436,12 +433,12 @@ const ProvisionerGuideURL = "https://github.com/ZacxDev/muster/blob/main/docs/pr
 // answers GET /ui/agents/new with, in place of the dispatch form.
 const DispatchUnavailableAttr = "data-dispatch-unavailable"
 
-// DispatchOffHintAttr marks the Agents header's note on a server that cannot
+// DispatchOffHintAttr marks the sidebar's Agents head's note on a server that cannot
 // dispatch (dispatchOffHint).
 const DispatchOffHintAttr = "data-dispatch-off-hint"
 
-// dispatchOffHint is the Agents list header's one-line note on a server with no
-// agent runtime: the "+" is absent from the bar, and this says why and links
+// dispatchOffHint is the sidebar's Agents head's one-line note (navAgentsHead) on
+// a server with no agent runtime: the "+" is absent there, and this says why and links
 // the guide. Muted text, not a control that looks like an action. h-11 because
 // it is a link, and every link a thumb can hit is a 44px target.
 func dispatchOffHint() g.Node {
@@ -580,7 +577,7 @@ func DispatchModalBodyFor(k KindChoices) g.Node {
 // dispatchCloseOnOwnSubmit closes the dispatch modal after THIS form's own
 // successful submit (guarded by event.target===this so bubbled child combobox
 // loads don't slam it shut) and fires the dispatch analytics event. Shared by
-// the FAB and task-scoped dispatch forms.
+// the task-less and task-scoped dispatch forms.
 const dispatchCloseOnOwnSubmit = "if(event.target===this && event.detail.successful){if(window.cgModalClose){window.cgModalClose('agent-modal')}else{document.getElementById('agent-modal').classList.add('hidden')}try{window.cgTrack('agent.dispatch',{});}catch(e){}}"
 
 // dispatchFailureToast says a refused or failed dispatch on the page the
@@ -687,11 +684,11 @@ func DispatchModalTaskBody(v TaskDispatchView) g.Node {
 			Class("flex flex-col gap-3"),
 			// The task is known — submit it by id (no combobox, no ad-hoc textarea).
 			Input(Type("hidden"), Name("note_id"), Value(ids)),
-			// Resolved branch rides along (no visible row; the FAB form has no branch
+			// Resolved branch rides along (no visible row; the task-less form has no branch
 			// field either — it resolves server-side when empty).
 			Input(Type("hidden"), Name("repo_branch"), Value(v.RepoBranch)),
 			kindPicker(v.Kinds),
-			// Gateway-only, like the FAB form's model field: the task's model is
+			// Gateway-only, like the task-less form's model field: the task's model is
 			// refused for a claude-code dispatch, so it leaves the screen when
 			// Claude Code is picked (kindToggleScript). The repository stays: both
 			// kinds work in it.
@@ -1062,7 +1059,7 @@ func lazyCombobox(fieldName, label, placeholder, hiddenName, optionsURL, recents
 // at the top of the list so the pick is visible immediately on open (the lazy
 // hx-get later swaps the <ul> with the real task list, which includes this task as
 // a normal option). When presetValue is empty it renders EXACTLY like the plain
-// lazyCombobox (the FAB path stays byte-for-byte unchanged).
+// lazyCombobox (the task-less path stays byte-for-byte unchanged).
 func lazyComboboxPreselect(fieldName, label, placeholder, hiddenName, optionsURL, recentsKey, presetValue, presetLabel string) g.Node {
 	listID := "combobox-list-" + fieldName
 	wrapAttrs := []g.Node{g.Attr("data-combobox", ""), Class("relative")}

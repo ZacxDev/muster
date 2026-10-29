@@ -24,7 +24,7 @@ import (
 const SnapStoreDB = "muster-snap"
 
 // SnapScript is the snapshot store's script, for a page that reads or warms
-// snapshots: the rendered view, the Agents list, an agent's page. Deferred, so
+// snapshots: the rendered view, an agent's page. Deferred, so
 // it runs before DOMContentLoaded and never blocks the parser. Nothing at all
 // without a signed-in user.
 func SnapScript(f Features) g.Node {

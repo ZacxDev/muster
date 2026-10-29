@@ -112,8 +112,7 @@ const (
 	// (api.FaroRelayPath): the page posts same-origin and never learns it.
 	envFaroUpstream = "MUSTER_FARO_UPSTREAM"
 
-	// The operator's own hosts (ui.HostPreferences): the host tabs named
-	// first, in order, and a host's icon by its name.
+	// The operator's own hosts (ui.HostPreferences): a host's icon by its name.
 	envHostIcons = "MUSTER_HOST_ICONS"
 
 	envTagAutoDispatch = "MUSTER_TAG_AUTODISPATCH"
@@ -146,9 +145,8 @@ const (
 	// The OpenRouter model suggestions are generated with (suggest.DefaultModel
 	// when unset), spelled as OpenRouter's model list names it.
 	envSuggestModel = "MUSTER_SUGGEST_MODEL"
-	// The Agents list's Idle section (internal/ui/idle_section.go): how long an
-	// entry must have had no activity to be drawn under the collapsed "Idle"
-	// header. Days ("14d") or a Go duration, 14d when unset, "0"/"off" turns it
+	// The Idle section (internal/ui/idle_section.go): how long an entry must
+	// have had no activity to be drawn in the sidebar's collapsed "Idle" group. Days ("14d") or a Go duration, 14d when unset, "0"/"off" turns it
 	// off, refused outside 1h–365d otherwise.
 	envAgentsIdleAfter = "MUSTER_AGENTS_IDLE_AFTER"
 

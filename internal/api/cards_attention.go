@@ -8,35 +8,37 @@ import (
 	"github.com/ZacxDev/muster/internal/ui"
 )
 
-// THE CARDS' ATTENTION BADGES: each Agents-list card — a dispatched agent or a
+// THE ENTRIES' ATTENTION COUNTS: each sidebar row — a dispatched agent or a
 // mirrored Claude window — shows how many items of the attention queue are its
-// own, and the most urgent one's icon, linking to that item on the queue page.
+// own, and the most urgent one's icon (ui's navAttentionPill), and the counts
+// decide who is waiting (ui's listEntry.waiting). They began as the retired
+// Agents list cards' badges, which linked to the item on the queue page.
 //
 // 🔴 ONE SOURCE. The badges are built from attentionItems — the read the queue
 // page, the sidebar badge and attention_list all make — and from each item's
-// own card address (attentionItem.card, set where the item is built). There is
-// no second "is this card waiting" predicate to drift from the queue's:
+// own entry address (attentionItem.card, set where the item is built). There is
+// no second "is this entry waiting" predicate to drift from the queue's:
 // TestTheCardBadgesAreTheQueuesItems compares the two.
 //
-// An item no card stands for — a routed task, a draft whose agent was deleted,
+// An item no entry stands for — a routed task, a draft whose agent was deleted,
 // an asking session whose window is not listed — is on the queue and on no
 // badge.
 
-// attentionUrgency orders the kinds a card counts, MOST URGENT FIRST: a
+// attentionUrgency orders the kinds an entry counts, MOST URGENT FIRST: a
 // session stopped at a permission prompt (its turn is blocked mid-work), a held
 // AskUserQuestion (blocked, asking), an agent's explicit question, then a reply
-// draft (nothing is blocked; a message waits). The badge's icon and link are
-// the most urgent kind's newest item.
+// draft (nothing is blocked; a message waits). The icon is the most urgent
+// kind's, and Href names that kind's newest item.
 var attentionUrgency = []string{attentionKindSession, attentionKindQuestion, attentionKindAsk, attentionKindPlugin}
 
-// cardAttentionIndex is every card's badge, by agent id and by mirrored
+// cardAttentionIndex is every entry's count, by agent id and by mirrored
 // address.
 type cardAttentionIndex struct {
 	agents  map[int64]*ui.CardAttention
 	mirrors map[ui.MirrorRef]*ui.CardAttention
 }
 
-// add counts it on the card at.
+// add counts it on the entry at.
 func (x *cardAttentionIndex) add(at *ui.CardAttention, it attentionItem) {
 	at.Count++
 	at.Keys = append(at.Keys, it.Key)
@@ -49,12 +51,12 @@ func (x *cardAttentionIndex) add(at *ui.CardAttention, it attentionItem) {
 	}
 }
 
-// cardAttention is ctx's principal's badges: attentionItems (NEWEST first, so
-// a kind's first item is its newest), each on the card its address names. An
+// cardAttention is ctx's principal's counts: attentionItems (NEWEST first, so
+// a kind's first item is its newest), each on the entry its address names. An
 // asking mirrored session is resolved to the window running its Claude session
 // — in the active pane or another pane of it — on its host's list, offline or
-// not (its card is drawn either way). Empty when the queue is not served:
-// the badge would link to a page that 404s.
+// not (its row is drawn either way). Empty when the queue is not served (the
+// retired card's badge would have linked to a page that 404s).
 func (s *Server) cardAttention(ctx context.Context) cardAttentionIndex {
 	x := cardAttentionIndex{agents: map[int64]*ui.CardAttention{}, mirrors: map[ui.MirrorRef]*ui.CardAttention{}}
 	if s.ext.Attention == nil {
@@ -116,7 +118,7 @@ func claudeSessionWindow(hosts []mirror.HostView, host, sid string) (ui.MirrorRe
 	return ui.MirrorRef{}, false
 }
 
-// withCardAttention sets every card's badge (in place).
+// withCardAttention sets every entry's count (in place).
 func (s *Server) withCardAttention(ctx context.Context, cards []ui.AgentCardView, mirrors []ui.MirrorCardView) {
 	if len(cards) == 0 && len(mirrors) == 0 {
 		return

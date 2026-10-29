@@ -32,9 +32,9 @@ import (
 // streams over the chat WebSocket; this only caps the initial page payload.
 const chatHistoryCap = 200
 
-// registerAgentRoutes wires the Agents tab + lifecycle + realtime endpoints when
+// registerAgentRoutes wires the agent pages + lifecycle + realtime endpoints when
 // an agents store is set. Control/logs/chat routes additionally require a
-// provisioner (a real in-cluster wiring); without one only the list renders.
+// provisioner (a real in-cluster wiring).
 // 🔴 NO EARLY RETURN ON A nil DEPENDENCY — see the package doc in server.go.
 // Every handler below answers its own "nothing to serve from" case, so the
 // recorded route set is a function of the CODE and never of the fixture.
@@ -186,11 +186,12 @@ func (s *Server) registerAgentRoutes(mux Mux) {
 	mux.HandleFunc("GET /agents/{name}/terminal/ws", s.requireSession(s.requireLifecycleProvisioner(s.handleAgentTerminalWS)))
 }
 
-// agentsListCardsLive is agentsListCardsWithin, with the instance read made
-// optional: live false draws every agent with its STORED status and reads no
-// instances at all — for a surface that shows the list's entries but not their
-// live status (the session switcher, switcher.go), which must not hold a page's
-// first byte on the apiserver.
+// agentsListCardsLive builds the entries the sidebar, the session switcher and
+// home (homeTarget) read: every agent and mirrored window, as views. live false
+// draws every agent with its STORED status and reads no instances at all — for
+// a surface that shows the entries but not their live status, which must not
+// hold a page's first byte on the apiserver. Every caller passes false now; the
+// live read (bounded by instancesWithin) was the retired Agents list page's.
 func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.Duration, live bool) ([]ui.AgentCardView, []ui.MirrorCardView, error) {
 	list, err := s.ext.Agents.List(ctx)
 	if err != nil {
@@ -210,14 +211,14 @@ func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.D
 	// (created_at DESC) is left alone because the machine read documents
 	// "newest-first as the store returns them" to its consumers; only this view
 	// re-orders. One batched transcript read serves both the order and the
-	// footer's "active … ago", so the two cannot disagree.
+	// sidebar's recency dot, so the two cannot disagree.
 	lastMsg := s.lastMessageByAgents(ctx, list)
 	agents.SortByLastActivity(list, lastMsg)
 
-	// The viewer's pins, read once: each card is marked, and the list draws the
-	// pinned ones first (ui.AgentsCardsWithMirrors — the one place that orders
-	// by pin, and that interleaves these agents with the mirrored entries by
-	// activity; the order above decides ties among agents).
+	// The viewer's pins, read once: each view is marked, and the switcher orders
+	// the pinned ones first (ui's orderList — the one place that orders by pin,
+	// and that interleaves these agents with the mirrored entries by activity;
+	// the order above decides ties among agents).
 	pinned := s.pinSet(ctx)
 	cards := make([]ui.AgentCardView, 0, len(list))
 	isChief := chiefPredicate(list)
@@ -236,8 +237,8 @@ func (s *Server) agentsListCardsLive(ctx context.Context, instancesWithin time.D
 		cards = append(cards, v)
 	}
 	// The viewer's mirrored sessions (internal/mirror), from the plugin's
-	// in-memory hub, scoped to this request's principal. The list interleaves
-	// them with the agents by activity (ui.AgentsCardsWithMirrors).
+	// in-memory hub, scoped to this request's principal. ui's orderList
+	// interleaves them with the agents by activity.
 	mirrors := s.mirrorCards(ctx, pinned, focused)
 	// THE chief — where `/` opens — is marked from the same rule homeTarget
 	// reads (primaryChief), so the sidebar pins exactly the agent home opens.
@@ -423,10 +424,11 @@ func (s *Server) handleAgentNoteOptions(w http.ResponseWriter, r *http.Request) 
 }
 
 // handleAgentStatusIcon serves GET /ui/agents/{id}/status: the bare status icon
-// (no label) for the agent-detail / operator header, reflecting live pod state.
+// (no label) for the agent page's status strip, reflecting live pod state.
 // It loads the agent, computes the live status against pods (when a provisioner
 // is wired) exactly like handleAgentDetail, else falls back to the stored status,
-// and writes ui.RenderStatusIcon. Polled by liveStatusIcon (load + every 10s).
+// and writes ui.RenderStatusIcon. Polled by the strip (ui's agentStripBody,
+// every 10s).
 func (s *Server) handleAgentStatusIcon(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -447,14 +449,14 @@ func (s *Server) handleAgentStatusIcon(w http.ResponseWriter, r *http.Request) {
 	status := s.liveStatus(ctx, a)
 	awaiting := s.AwaitingApproval(a.ID)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// The card says what it was drawn with (ui.StatusPollPath); when that is no
-	// longer true its data-wait is stale, so the list is asked to re-render.
+	// The strip says what it was drawn with (ui.StatusPollPath); when that is no
+	// longer true, the strip is asked to re-fetch (ui.AgentsAwaitingEvent).
 	stale := false
 	if drawn := r.URL.Query().Get("awaiting"); drawn != "" && (drawn == "1") != awaiting {
 		stale = true
 	}
 	// The work chip too (agent_work.go): a report that expired is announced by no
-	// POST, so this poll is what takes a dead pod's chip off the card.
+	// POST, so this poll is what takes a dead pod's chip off the strip.
 	if drawn := r.URL.Query().Get("work"); drawn != "" && drawn != ui.WorkPollToken(s.cardWork(a.ID, status)) {
 		stale = true
 	}
@@ -565,13 +567,15 @@ func (s *Server) handleSessionRead(w http.ResponseWriter, r *http.Request) {
 // this literal for the LIST and cardViewFor wrote its own for the single-card
 // re-render (the inline rename's Cancel, GET /ui/agents/{id}/card) — the same
 // eleven fields, spelled twice, with the only difference being that one fetched
-// the instance index itself. A card composed in two places is a card that
-// disagrees with itself after the next additive field: the list would show a
-// badge the re-rendered card drops, which reads as "the warning went away".
+// the instance index itself. A view composed in two places is a view that
+// disagrees with itself after the next additive field: one surface would show
+// a badge the other drops, which reads as "the warning went away". (The list
+// and the single-card re-render are retired; the sidebar, the switcher and the
+// agent page all read this one.)
 // TestOneCardComposerFeedsEverySurface pins the single site.
 //
 // The status is reconciled against live instances through liveStatusIndexed, so
-// callers in a loop pass an index they fetched once; cardViewFor is the
+// callers in a loop pass an index they fetched once; agentPageCard is the
 // single-agent spelling.
 func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Instance, lastMsg time.Time, sessionID int64, isChief func(agents.Agent) bool, pinned pins.Set, focused focusIndex) ui.AgentCardView {
 	status := liveStatusIndexed(a, idx)
@@ -606,8 +610,8 @@ func (s *Server) cardViewIndexed(a agents.Agent, idx map[string]*provision.Insta
 		Pinned: pinned.Agent(a.ID),
 		// The agent's focus (internal/focus), read once per render by the caller.
 		Focus: focused.view(focus.AgentSubject(a.ID)),
-		// The polled badge's own answer (in memory), so "Waiting on you" finds an
-		// agent blocked at a permission prompt.
+		// The polled badge's own answer (in memory), so the waiting predicate
+		// (ui's listEntry.waiting) finds an agent blocked at a permission prompt.
 		AwaitingApproval: s.AwaitingApproval(a.ID),
 		// The pod's live work counts (agent_work.go): none unless it is running,
 		// and expired when stale.
@@ -713,7 +717,7 @@ func (s *Server) handleAgentCreate(w http.ResponseWriter, r *http.Request) {
 	// createAndDispatchAgent calls Dispatch inside safeGo — after the row exists and
 	// after this handler has answered — so a refusal there is a log line plus a red
 	// dot whose reason reaches no HTML surface. That was measured: with a kickoff
-	// undeliverable, POST /agents answered 200, rendered the agents list, and the
+	// undeliverable, POST /agents answered 200, rendered the (since retired) agents list, and the
 	// operator's only evidence was a status colour.
 	//
 	// ⚠ ONLY action=dispatch IS REFUSED. "Save for later" asks for nothing this
@@ -1004,8 +1008,8 @@ func (s *Server) resolveRepoBranch(ctx context.Context, repo, branch string) str
 // 🔴 STORED UNCUT, TO A STORAGE BOUND ONLY. It used to be cut to 40 runes here,
 // which landed mid-markdown — "Fix the [login page](https://example.com…" —
 // and a cut link can never be plained at render. The title rule
-// (internal/textplain) runs on the whole line at render, and the card clamps
-// the PLAIN text (clampTitle). dispatchTitleMaxRunes only keeps a runaway
+// (internal/textplain) runs on the whole line at render, and the agent page
+// header clamps the PLAIN text (clampTitle). dispatchTitleMaxRunes only keeps a runaway
 // first line out of the row.
 func dispatchDisplayName(noteID int64, noteText string) string {
 	id := strconv.FormatInt(noteID, 10)
@@ -1067,7 +1071,7 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 		}
 		name = n
 	}
-	// Name the agent after its source task when dispatched from one, so the card
+	// Name the agent after its source task when dispatched from one, so the agent
 	// reads "#42 · fix the login bug" rather than the opaque slug. The k8s-safe
 	// slug Name is left untouched (the pod/namespace key stays stable). An explicit
 	// p.DisplayName wins; a task-less dispatch keeps the slug as the display name.
@@ -1101,8 +1105,8 @@ func (s *Server) createAndDispatchAgent(ctx context.Context, p dispatchParams) (
 	if err != nil {
 		return agents.Agent{}, err
 	}
-	// The agent was just created (provisioning): nudge open Tasks/Agents tabs so a
-	// task's linked-agent chip + the agents list appear live (best-effort).
+	// The agent was just created (provisioning): nudge open pages so a task's
+	// linked-agent chip + the sidebar's agent list appear live (best-effort).
 	s.agentChangedFor(requestOwner(ctx), rec.Name)
 	// WithoutCancel: the dispatch outlives this request, but it must keep the
 	// request's principal — row-level security scopes every store call the
@@ -1378,7 +1382,7 @@ func (s *Server) destroyAgent(ctx context.Context, id int64, destroy func(contex
 		// After a SUCCESSFUL teardown, on both doors: the owner's destroy frees
 		// the chief's one start on the agent's task when the chief's start made
 		// this agent (operator decision), and the owner's open tabs re-fetch —
-		// the Agents views (agent.changed) and the attention queue, which lost
+		// the sidebar (agent.changed) and the attention queue, which lost
 		// the agent's asks with its row (attention_queue.changed).
 		s.releaseChiefStart(opCtx, a)
 		if a.ID != 0 {
@@ -1411,7 +1415,7 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not load agent", http.StatusInternalServerError)
 		return
 	}
-	// The instance index, read ONCE: the page's status and its card's
+	// The instance index, read ONCE: the page's status and its card view's
 	// (agentPageCard) are the same read.
 	idx := s.instanceIndex(op.begin("status"))
 	status := liveStatusIndexed(a, idx)
@@ -1431,8 +1435,8 @@ func (s *Server) handleAgentDetail(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, ui.AgentSessionHref(a.Name, active.ID), http.StatusSeeOther)
 		return
 	}
-	// A LIST link (ui.AgentListHref) names the session that was latest when the
-	// list was drawn. If another session has become the latest since, go there —
+	// A LIST link (ui.AgentListHref: a sidebar row, a switcher pill) names the
+	// session that was latest when it was drawn. If another session has become the latest since, go there —
 	// what the bare URL would have done at tap time. A link without the marker
 	// (the session drawer) means its session and is never moved.
 	if sessionParam != "" && r.URL.Query().Get(ui.FromListParam) == ui.FromListValue {

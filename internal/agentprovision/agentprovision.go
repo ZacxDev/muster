@@ -820,14 +820,15 @@ func (a *Adapter) Destroy(ctx context.Context, agentID int64) error {
 		//   - agents.ComputeStatus returns StatusError FIRST, so a stored `error` is
 		//     not refined away by a live read.
 		//   - internal/ui renders that status as a coloured DOT with a title
-		//     attribute (statusIcon / cardStatusIcon / liveStatusIcon). The colour
+		//     attribute (statusIcon, on the agent page's status strip). The colour
 		//     changes; no text does.
 		//
 		// WHAT THE DEAD DRAFTS CLAIMED, so nobody re-derives them:
 		//   1. "a red card NAMING an ownership refusal" — Agent.ErrorMessage reaches
 		//      no HTML surface at all.
-		//   2. "a red PILL" — ui.statusDot IS a labelled pill and has ZERO callers
-		//      tree-wide. It is not what renders. The CARD's border is unconditional.
+		//   2. "a red PILL" — ui.statusDot WAS a labelled pill with ZERO callers
+		//      tree-wide (since deleted). It was not what rendered, and the retired
+		//      Agents list card's border was unconditional.
 		//   3. "reaches exactly ONE surface, the hook-token-gated GET /api/agents" —
 		//      newAgentJSON is also called from the task API (internal/api/notes.go),
 		//      and requireHookToken is ENFORCE-WHEN-SET, so on a server with no
