@@ -426,6 +426,41 @@ func TestAnIsolatedSpecWithNothingToAllowAllowsNothing(t *testing.T) {
 	}
 }
 
+// TestNoClusterDNSWritesNoPort53RuleAndKeepsTheOthers: with NoClusterDNS the
+// policy allows NO port 53 anywhere (a cluster-side name-filtered DNS rule would
+// otherwise be unioned open), while the public and controller rules render as
+// they would without it. Both policy types stay listed, so egress with no DNS
+// rule is denied rather than unrestricted.
+func TestNoClusterDNSWritesNoPort53RuleAndKeepsTheOthers(t *testing.T) {
+	d, _ := internalDriver(t)
+	spec := provision.Spec{
+		Ref:     provision.Ref{Name: "mute-crane"},
+		Runtime: provision.Runtime{Image: "ghcr.io/muster-example/agent:1"},
+		Network: provision.Network{Isolate: true, PublicEgressTCPPorts: []int{8443}, ControllerEgressTCPPorts: []int{18191}, NoClusterDNS: true},
+	}
+	np, err := d.renderNetworkPolicy(spec, internalNS)
+	if err != nil || np == nil {
+		t.Fatalf("render: %v / %v", np, err)
+	}
+	var ports []int32
+	for _, r := range np.Spec.Egress {
+		for _, p := range r.Ports {
+			ports = append(ports, p.Port.IntVal)
+		}
+	}
+	if fmt.Sprint(ports) != "[8443 18191]" {
+		t.Errorf("egress ports = %v, want [8443 18191] (public, then controller; no 53)", ports)
+	}
+	if types := fmt.Sprint(np.Spec.PolicyTypes); types != "[Ingress Egress]" {
+		t.Errorf("policyTypes = %s, want [Ingress Egress]", types)
+	}
+	// Positive control: the same spec without the flag does render the DNS rule.
+	spec.Network.NoClusterDNS = false
+	if np, _ = d.renderNetworkPolicy(spec, internalNS); len(np.Spec.Egress) != 3 || np.Spec.Egress[0].Ports[0].Port.IntVal != 53 {
+		t.Fatalf("control: without NoClusterDNS the DNS rule is missing: %+v", np.Spec.Egress)
+	}
+}
+
 // TestASpecDeclaringNoIsolationRendersNoPolicyAndMakesNoNetworkingCall is the
 // gateway kind's guarantee, on a driver that IS configured for isolation: its
 // specs declare none, so Create, Update and Scale touch networking.k8s.io zero

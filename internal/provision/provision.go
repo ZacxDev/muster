@@ -402,6 +402,12 @@ func Fingerprint(s Spec) string {
 			sort.Strings(cports)
 			w("network-controller", strings.Join(cports, "\x1f"))
 		}
+		// Same rule again: its own line, only when set, so every spec that keeps
+		// cluster DNS keeps the fingerprint it had before the field existed, and
+		// one that drops it moves (an instance written with DNS re-renders).
+		if n.NoClusterDNS {
+			w("network-no-cluster-dns")
+		}
 	}
 
 	// 🔴 THE SIDECAR COUNTS, AND ONLY WHEN DECLARED — Security's rule, for
