@@ -733,6 +733,7 @@ func (s *Server) shellFeatures(ctx context.Context) ui.Features {
 	p, _ := authz.From(ctx)
 	return ui.Features{Connectors: s.ext.Connectors != nil,
 		Admin: p.Role == authz.RoleAdmin && s.adminPagesServed(), Push: s.pushServed(), Attention: s.ext.Attention != nil,
+		Dispatch: s.dispatchServed(),
 		SnapUser: p.UserID, SnapBuild: BuildVersion}
 }
 

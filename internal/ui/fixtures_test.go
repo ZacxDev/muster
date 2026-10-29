@@ -36,17 +36,17 @@ func sampleTasksView() TasksView {
 				},
 				// Attachments → exercises summaryMeta's "N files" branch.
 				Attachments: []notes.Attachment{{ID: 9, NoteID: 101, Filename: "trace-one.log", ContentType: "text/plain", SizeBytes: 2048}},
-			}, Agent: &agent},
+			}, Agent: &agent, Dispatch: true},
 			{Note: notes.Note{
 				ID: 202, Title: "Second, open task", Directory: "/work/vetr",
 				Body: "A different body so the two cards are not identical.", Status: string(notes.StatusOpen),
 				Tags: []string{"ux", "project:vetr"}, CreatedAt: fixedNow.Add(-5 * time.Hour), UpdatedAt: fixedNow.Add(-4 * time.Hour),
-			}},
+			}, Dispatch: true},
 			{Note: notes.Note{
 				ID: 303, Title: "Third, done task", Directory: "/work/gamma",
 				Body: "Yet another distinct body.", Status: string(notes.StatusComplete),
 				CreatedAt: fixedNow.Add(-30 * time.Hour), UpdatedAt: fixedNow.Add(-26 * time.Hour),
-			}},
+			}, Dispatch: true},
 		},
 	}
 }

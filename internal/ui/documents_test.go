@@ -288,7 +288,7 @@ func sampleAppScreen() NavDocumentView {
 // REACHES EVERY SWEEP AT ONCE. A field added with `Features{Connectors: true}`
 // written out eight times would default to false at all eight, silently removing
 // whatever it gates from every document-level guard in this package.
-var featuresAllOn = Features{Connectors: true}
+var featuresAllOn = Features{Connectors: true, Dispatch: true}
 
 // listFragments is every LIST/CARD partial the shell lazy-loads over htmx rather
 // than rendering inline. They are unreachable from Page() at ANY fixture — every

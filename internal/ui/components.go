@@ -322,7 +322,7 @@ func shell(activeTab string, feat Features, extra g.Node, data ShellData) g.Node
 							// the Tasks panel could render the permission-request segment
 							// badge, and muster has no requests to count.
 							NotesPanel(activeTab == "tasks", data.tasks),
-							agentsPanel(activeTab == "agents", data.list),
+							agentsPanel(activeTab == "agents", data.list, feat),
 							g.If(feat.Connectors, ConnectorsPanel(activeTab == "connectors")),
 						),
 					),

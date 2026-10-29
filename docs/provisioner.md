@@ -5,6 +5,12 @@ this is opt-in and off by default.** On a default deployment, every agent-contro
 route is registered but answers **503**, with `"provisionerUnwired": true` in the
 body. The boot banner says `agent provisioning: UNWIRED`.
 
+The web UI offers no dispatch on such a deployment, the docker compose install
+included: the Agents list's bar has no **+**, task cards have no **Dispatch**
+button, and the dispatch sheet, if an old page still opens it, says that no
+agent runtime is configured and points here. Setting `MUSTER_AGENT_PROVISIONER`
+brings all three back.
+
 The Agents list still works without it: it shows mirrored sessions
 ([mirroring.md](mirroring.md)) and any agent rows already stored.
 

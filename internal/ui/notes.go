@@ -51,6 +51,18 @@ type TaskCardView struct {
 	// In detail shape the title is the document's ONE <h1>; on the board it is an
 	// <h3> inside the list.
 	Detail bool
+
+	// Dispatch is whether this server can dispatch an agent at all
+	// (Features.Dispatch, from the same server predicate). False draws no
+	// Dispatch button on an agent-less card: with no agent runtime the
+	// sheet's submit can only answer 503.
+	//
+	// ⚠ THE ZERO VALUE DRAWS LESS, ON PURPOSE — the same polarity as Features.
+	// A card builder that forgets to set it hides a button that would have
+	// worked, which is visible and safe; the opposite default is the shipped
+	// defect this field exists to close (a "Dispatch" over a 503 on every card
+	// of a docker compose install).
+	Dispatch bool
 }
 
 // NotesPanel is the static shell for the Tasks tab. The + FAB (body-level, in
@@ -1083,9 +1095,13 @@ func taskDetailHeading(n notes.Note) string {
 // linked agent it is the Dispatch button (unchanged behaviour). Once an agent is
 // linked it becomes a live agent-status chip (task-facing label) plus an "Open
 // chat" button that navigates to the agent's chat/detail view — replacing
-// Dispatch, so the card reflects that the task is being worked.
+// Dispatch, so the card reflects that the task is being worked. On a server
+// that cannot dispatch (v.Dispatch false) an agent-less card draws nothing here.
 func taskActionTrailing(v TaskCardView) g.Node {
 	if v.Agent == nil {
+		if !v.Dispatch {
+			return nil
+		}
 		return noteDispatchButton(v.Note)
 	}
 	a := v.Agent

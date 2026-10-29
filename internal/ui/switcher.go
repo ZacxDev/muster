@@ -647,16 +647,25 @@ const SwitcherDockID = "agents-switcher-dock"
 // so the last card scrolls clear of the bar and nothing shifts when it paints.
 // Inside the Agents panel, so it shows only while the panel does (a hidden
 // panel is display:none, and so is everything in it).
-func switcherDock(s *Switcher) g.Node {
+//
+// dispatch is Features.Dispatch: false draws the bar with no "+" at all, since
+// the sheet it opens could only submit into a 503 on a server with no agent
+// runtime (the docker compose install's default). The Agents empty state is
+// where that absence is explained (agentsEmptyState).
+func switcherDock(s *Switcher, dispatch bool) g.Node {
 	if s == nil {
 		return nil
+	}
+	var deploy g.Node
+	if dispatch {
+		deploy = switcherDeployButton()
 	}
 	return Div(
 		ID(SwitcherDockID),
 		Class("fixed inset-x-0 bottom-0 z-20 bg-bg lg:left-72"),
 		Div(
 			Class("relative "+contentMaxW()+" "+switcherRoom(true)),
-			switcherBarWith(s, true, switcherStaticScript(), switcherDeployButton()),
+			switcherBarWith(s, true, switcherStaticScript(), deploy),
 		),
 	)
 }

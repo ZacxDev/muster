@@ -79,6 +79,12 @@ func RenderDispatchModal(w io.Writer, k KindChoices) error {
 	return DispatchModalBodyFor(k).Render(w)
 }
 
+// RenderDispatchUnavailable writes the /ui/agents/new partial for a server that
+// cannot dispatch (DispatchUnavailableBody).
+func RenderDispatchUnavailable(w io.Writer) error {
+	return DispatchUnavailableBody().Render(w)
+}
+
 // RenderDispatchModalTask writes the /ui/agents/new?note=<id> partial: the
 // TASK-SCOPED dispatch confirm (fixed Model/Repository rows pre-filled
 // from the task, each with an inline Edit override).

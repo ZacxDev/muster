@@ -118,7 +118,7 @@ func TestEveryLabelledFieldIsARegisteredField(t *testing.T) {
 // (tabClass, which the script's clones inherit). The strip scrolls sideways
 // inside itself and is one 44px row however many tabs it holds.
 func TestTheBarHasHostTabsAndNoDropdowns(t *testing.T) {
-	panel := renderNode(t, AgentsPanel(true))
+	panel := renderNode(t, AgentsPanel(true, featuresAllOn))
 	list := strings.Index(panel, `id="agents-list"`)
 	tag := func(id string) string {
 		i := strings.Index(panel, `id="`+id+`"`)
