@@ -36,9 +36,11 @@ MUSTER_OFFICERS='[
    "max_instances": 1,
    "idle_scale_to_zero_after": "30m",
    "poll_interval": "1m",
-   "model": "opus"}
+   "model": "opus",
+   "repo": "example-org/example-web"}
 ]'
 MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB=…     # from a Secret; see below
+MUSTER_GITHUB_APP_ACCESS=read                  # with the GitHub App: officers only ever read GitHub
 ```
 
 | field | default | |
@@ -51,6 +53,7 @@ MUSTER_OFFICER_TOKEN_RELEASE_EXAMPLE_WEB=…     # from a Secret; see below
 | `owner` | `1` | The muster user the instance agents belong to. |
 | `cc_account` | the pool's choice | Pin the Claude account instances run on. |
 | `model` | the account's default | The model the instances' Claude Code sessions run: an alias (`opus`, `sonnet`) or a full model id (`claude-opus-4-5-20251101`, `opus[1m]`). Checked at boot. Written as the session's settings `model` (below). |
+| `repo` | none | The GitHub repository (`owner/name`, the same shape check as a task's repository) the instances may **read** through the `github` connector — see [Reading a repository](#reading-a-repository-repo). Not checked out. A value that is not `owner/name` is a boot refusal naming the officer. |
 
 Each officer's token is read from `MUSTER_OFFICER_TOKEN_<NAME>`: the id
 upper-cased with every other character written as `_`. A declared officer with
@@ -80,7 +83,9 @@ of the release itself stays a human's, in HQ.
 
 Instance *n* (1-based) of officer `<type>:<area>` is the muster agent named
 `officer-<type>-<area>-<n>` (`officer-release-example-web-1`), kind
-`claude-code`, with no task and no repository. Instances are interchangeable:
+`claude-code`, with no task and no repository checkout (an officer's `repo`, when
+it has one, is read through the `github` connector — [below](#reading-a-repository-repo)).
+Instances are interchangeable:
 they share the officer's queue and identity, and any of them can take any item.
 
 Names starting `officer-` are reserved. muster's name generator cannot produce
@@ -122,6 +127,72 @@ puts on the pod; `internal/podagent/session.go`):
 
 No other agent gets either (the officer runtime is the provisioner's only
 source of them, and it answers for a declared officer's instances only).
+
+### Reading a repository (`repo`)
+
+The GitHub App connector mints a token only for the **calling agent's own
+repository**, and refuses an agent that has none
+([github-app.md](github-app.md)). An officer instance is dispatched with no task
+and no checkout, so without `repo` an approved `github` grant gives it nothing.
+
+With `"repo": "owner/name"`, that repository is the instance's own for its
+connectors. `Server.agentRepo` (`internal/api/officers.go`) is the one place
+this is decided: for a declared officer's instance it is the officer's
+configured `repo`, for every other agent its row's repository. Everything that
+asks "which repository is this agent's" for a connector reads it from there:
+
+- the proxy's caller (`connectors.Caller.Repo`), so the App mints a 1-hour token
+  for exactly that one repository; any other repository is reached anonymously,
+- the approve card's and `connector_requests_list`'s description of what
+  approving grants (and `connector_request_decide`'s no-repository warning),
+- the [shared approval](connectors.md#shared-approvals) key, so approving one
+  instance's request shares it on that repository, and the officer's other
+  instances are approved from it,
+- the App's problem line on the agent's card.
+
+**Read-only.** On a deployment with
+[`MUSTER_GITHUB_APP_ACCESS=read`](github-app.md#read-only-mode) the token has
+Contents, Pull requests, Checks and Commit statuses **read** only: a push or a
+pull-request write through the proxy is refused by GitHub. That is the
+recommended setting for an officers deployment. The mode is the deployment's,
+so a muster that also runs task agents that must push needs `write`, and its
+officers would then get a write token too.
+
+**No checkout.** The instance row carries no repository: a row repository is
+what makes the pod's `ccd` clone it before the CLI starts and start the session
+pre-trusted in it (running that repository's `.claude/settings.json`), and would
+hold the instance's first turn until the `github` grant is approved. The officer
+fetches what it needs through muster's proxy instead. Because the repository is
+read from the configuration and never stored on the row, changing or removing
+`repo` takes effect for existing instances at the next request; their first
+message is re-armed with the new text the next time the wake loop starts them.
+⚠ A grant is the instance's, not the repository's: an instance whose `github`
+grant is already approved reaches the NEW repository on its next request,
+without asking again. Revoke its grant on the Connectors tab first if the
+change should be re-approved.
+
+**Approving the grant.** Nothing is pre-granted: there is no automatic grant
+for officers, and none for any other configured agent. The instance asks once
+(`connector_request{name: "github"}`, pre-allowed in its session), and the
+officer's `owner` (default user 1, the operator) decides it like any other
+agent's request:
+
+- the **Connectors** tab (`/connectors` on the officers muster, signed in as
+  the owner): the request card names the instance agent
+  (`officer-<type>-<area>-<n>`) and its reason, and says the approval is
+  shared on the officer's repository; the `github` connector's entry states the
+  token's scope (READ ONLY in read mode). Press **Approve**. A pending request also
+  sends a `connector` push notification when push is configured; or
+- `connector_requests_list` then `connector_request_decide {id, decision:
+  "approve"}` from one of the owner's own mirrored Claude Code sessions
+  ([connectors.md](connectors.md#deciding-a-request-from-your-own-session)).
+
+The approval is shared on that repository, so the officer's other instances
+(and any later request from the same owner's agents on that repository) are
+approved without asking again, until the owner revokes the shared approval on
+the Connectors tab. The App is an admin's: an `owner` who is not an admin is
+offered the stored `github` connector instead, and the App mints nothing for
+them.
 
 ## Waking and scaling
 
@@ -275,6 +346,11 @@ You are officer <id>, instance <n> of <max> (<agent name>). …
 3. Anything that needs a human decision: attention_ask, then attention_wait.
 4. When nothing is open and you hold no claim, stop and wait …
 ```
+
+An officer with a `repo` is also told that it may read that repository through
+muster's `github` connector — request it once with `connector_request`, read
+through the proxy, never hold a token, no checkout — and that it never pushes or
+merges. Without one the text is unchanged.
 
 (`officers.KickoffText` has the whole text.) It carries no charter and no
 credential.

@@ -27,7 +27,25 @@ Start now:
 
 You watch, triage, record and dispatch. You never merge, deploy or release, and you hold no production credentials.`,
 		o.ID, n, o.MaxInstances, InstanceName(o.ID, n), tools,
-		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease) + releaseNote(o)
+		ToolBrief, ToolItems, ToolClaim, ToolHeartbeat, ToolComplete, ToolRelease) + repoNote(o) + releaseNote(o)
+}
+
+// GitHubConnector is the connector an officer with a repository reads it
+// through: the GitHub App's virtual connector (githubapp.ConnectorName), named
+// here because this package does not import the App.
+const GitHubConnector = "github"
+
+// repoNote is what an officer with a configured repository is told about it:
+// that it may READ it through muster's github connector, asked for once, with
+// muster holding the credential. Nothing for an officer without one, whose
+// text is unchanged.
+func repoNote(o Officer) string {
+	if o.Repo == "" {
+		return ""
+	}
+	return fmt.Sprintf(`
+
+Your repository is %[1]s. You may READ it through muster's %[2]q connector: call connector_request{name: %[2]q, reason} once (the operator approves it; connector_status{name: %[2]q, wait_seconds} waits for the decision and then says how to use it), and read the repository through muster's connector proxy. muster attaches a token limited to %[1]s to each request on your behalf, so you never hold or need one — do not ask for one. There is no checkout; fetch what you need. Reading is all it is for: you never push or merge.`, o.Repo, GitHubConnector)
 }
 
 // releaseNote is the release officer's extra step: where its evaluation goes.

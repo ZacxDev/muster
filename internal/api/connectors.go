@@ -203,8 +203,10 @@ func (s *Server) authenticateCallingAgent(w http.ResponseWriter, r *http.Request
 	return a, true
 }
 
-func callerOf(a agents.Agent) connectors.Caller {
-	return connectors.Caller{AgentID: a.ID, AgentName: a.Name, Repo: a.Repo}
+// callerOf is agent a as the connector proxy's caller. Its Repo is agentRepo's
+// (an officer instance's configured repository, else the row's).
+func (s *Server) callerOf(a agents.Agent) connectors.Caller {
+	return connectors.Caller{AgentID: a.ID, AgentName: a.Name, Repo: s.agentRepo(a)}
 }
 
 // --- the proxy ------------------------------------------------------------------------
@@ -227,7 +229,7 @@ func (s *Server) handleConnectProxy(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed proxy path"})
 		return
 	}
-	s.connectProxy.Serve(w, r, callerOf(a), connector, host, parts[2])
+	s.connectProxy.Serve(w, r, s.callerOf(a), connector, host, parts[2])
 }
 
 // --- the agent JSON API ------------------------------------------------------------------

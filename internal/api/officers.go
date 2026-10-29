@@ -98,8 +98,12 @@ func (s *Server) EnableOfficers(cfg OfficersConfig) (*officers.Reconciler, error
 	s.officerRT = &officerRuntime{reg: reg, hq: hq, rec: rec, claimOwner: fmt.Sprintf("officer-reprompt/%s/%d", host, os.Getpid())}
 	cfg.InstallSession(s.OfficerClaudeCodeSession)
 	for _, o := range reg.All() {
-		s.logger.Printf("officers: %s on: instances %s..%s, idle scale-to-zero after %s, poll %s",
-			o.ID, officers.InstanceName(o.ID, 1), officers.InstanceName(o.ID, o.MaxInstances), o.IdleAfter, o.PollInterval)
+		repo := "none"
+		if o.Repo != "" {
+			repo = o.Repo + " (github connector, read through the proxy; no checkout)"
+		}
+		s.logger.Printf("officers: %s on: instances %s..%s, idle scale-to-zero after %s, poll %s, repo %s",
+			o.ID, officers.InstanceName(o.ID, 1), officers.InstanceName(o.ID, o.MaxInstances), o.IdleAfter, o.PollInterval, repo)
 	}
 	return rec, nil
 }
@@ -111,6 +115,32 @@ func (s *Server) officerOf(a agents.Agent) (officers.Officer, int, bool) {
 		return officers.Officer{}, 0, false
 	}
 	return s.officerRT.reg.ForAgentName(a.Name)
+}
+
+// agentRepo is THE repository agent a acts on for its connectors: the one
+// connectors.Caller.Repo carries (callerOf), so the GitHub App's token is
+// minted for it and only it (githubapp.App.Credential), and the one every
+// operator-facing description of a `github` grant, the shared-approval key and
+// the App-problem line read.
+//
+//   - An instance of a declared officer: the officer's configured repo
+//     (MUSTER_OFFICERS `repo`, officers.Officer.Repo), "" when it has none.
+//     Read from the registry, NEVER the row: the instance row carries no
+//     repository, because a row repository is also what makes ccd clone it
+//     and start the session pre-trusted in that checkout (podRepo,
+//     agents.NeedsCheckout) — an officer reads its repository through the
+//     proxy instead. So the configured value is the only copy, and a config
+//     change applies to existing instances without touching their rows.
+//   - Every other agent: its row's repository, as before.
+//
+// 🔴 ONE RULE, ONE PLACE. A site that read a.Repo directly would describe an
+// officer's approved grant as "NOTHING usable" while the proxy served it, or
+// key its shared approval on no repository.
+func (s *Server) agentRepo(a agents.Agent) string {
+	if o, _, ok := s.officerOf(a); ok {
+		return o.Repo
+	}
+	return a.Repo
 }
 
 // officerPrincipal is ctx acting as owner, through authz.ViaOfficer: how the

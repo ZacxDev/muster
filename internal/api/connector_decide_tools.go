@@ -155,7 +155,7 @@ func (s *Server) toolConnectorRequestsList(ctx context.Context, c toolCaller) st
 		v := connectorRequestView{ID: g.ID, AgentID: g.AgentID, Agent: g.AgentName, Connector: g.Connector,
 			Reason: g.Reason, Requested: g.RequestedAt}
 		if a, err := s.ext.Agents.Get(ctx, g.AgentID); err == nil {
-			v.Agent, v.TaskID, v.Repo = firstNonBlank(a.DisplayName, a.Name), a.NoteID, a.Repo
+			v.Agent, v.TaskID, v.Repo = firstNonBlank(a.DisplayName, a.Name), a.NoteID, s.agentRepo(a)
 		}
 		k, err := s.ext.Connectors.GetConnector(ctx, g.Connector)
 		switch {
@@ -247,7 +247,7 @@ func (s *Server) toolConnectorRequestDecide(ctx context.Context, c toolCaller, a
 		out["also_approved"] = also
 	}
 	if approve && g.Source == connectors.SourceApp {
-		if a, aerr := s.ext.Agents.Get(ctx, g.AgentID); aerr == nil && strings.TrimSpace(a.Repo) == "" {
+		if a, aerr := s.ext.Agents.Get(ctx, g.AgentID); aerr == nil && strings.TrimSpace(s.agentRepo(a)) == "" {
 			out["warning"] = appNoRepoNote
 		}
 	}

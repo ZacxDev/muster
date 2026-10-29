@@ -61,7 +61,7 @@ func (s *Server) standingKey(ctx context.Context, connector string, a agents.Age
 		return "", "", false
 	}
 	source = connectors.SourceFor(ctx, s.ext.Connectors, connector)
-	repo, ok = connectors.StandingRepo(source, a.Repo)
+	repo, ok = connectors.StandingRepo(source, s.agentRepo(a))
 	return source, repo, ok
 }
 
@@ -171,7 +171,7 @@ func (s *Server) shareApproval(ctx context.Context, g connectors.Grant, via conn
 	if a.WorkerPool != "" {
 		return out
 	}
-	repo, ok := connectors.StandingRepo(g.Source, a.Repo)
+	repo, ok := connectors.StandingRepo(g.Source, s.agentRepo(a))
 	if !ok {
 		return out
 	}

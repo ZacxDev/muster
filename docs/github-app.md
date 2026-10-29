@@ -154,7 +154,8 @@ That account must be on `MUSTER_GITHUB_APP_ACCOUNTS`.
 pull-request write through the proxy is **refused by GitHub** (403); muster
 never mints a wider token in its place. Use it for a deployment whose agents
 must only read GitHub — for example, a muster running [officers](officers.md)
-— even when it shares an App with a write-mode deployment: the mode is the
+with a [`repo`](officers.md#reading-a-repository-repo), whose instances then
+read that one repository — even when it shares an App with a write-mode deployment: the mode is the
 deployment's, the App's own permissions stay as in the table above.
 
 In read mode, every place muster describes the connector says so: the

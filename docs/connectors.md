@@ -63,7 +63,7 @@ for it, or [`connector_request_decide`](#deciding-a-request-from-your-own-sessio
 
 | connector | the key |
 |---|---|
-| the GitHub App's `github` | the connector **and the agent's repository** (case-insensitive): the App's token reaches only the agent's own repository, so approving an agent on `example-org/widget` never approves one on another repository, or one dispatched with none (that approval is not shared at all) |
+| the GitHub App's `github` | the connector **and the agent's repository** (case-insensitive): the App's token reaches only the agent's own repository, so approving an agent on `example-org/widget` never approves one on another repository, or one dispatched with none (that approval is not shared at all). An [officer](officers.md#reading-a-repository-repo) instance's repository is its officer's configured `repo` |
 | any stored credential (a `github` personal access token included) | the connector: the credential is the same whichever agent sends it |
 
 The key also carries the credential source, so an approval of a stored
