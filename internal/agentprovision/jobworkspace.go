@@ -12,6 +12,7 @@ import (
 	"github.com/ZacxDev/muster/internal/agents"
 	"github.com/ZacxDev/muster/internal/agentspec"
 	"github.com/ZacxDev/muster/internal/jobs"
+	"github.com/ZacxDev/muster/internal/podagent"
 	"github.com/ZacxDev/muster/internal/provision"
 )
 
@@ -135,9 +136,13 @@ var gitRunsNoRepoCommands = func() string {
 }()
 
 // jobOverlayScript prepares job worktree $2 of the checkout $1 at commit $3,
-// of pull request $5 of the repository at the anonymous URL $4, taking the
-// agent configuration from commit $6 ("" = the default branch's tip), the
-// remaining arguments being JobOverlayRootFiles:
+// of pull request $5 of the repository at the URL $4, taking the agent
+// configuration from commit $6 ("" = the default branch's tip). $7 is "" for
+// an ANONYMOUS fetch of an https URL, or the GIT_SSH_COMMAND of a worker pool's
+// read-only DEPLOY KEY for an ssh URL (see "THE DEPLOY KEY" below). $8 is 1 to
+// overlay the repository's agent configuration, 0 to strip it and restore none
+// (a job's repo_config_overlay=false). The remaining arguments are
+// JobOverlayRootFiles:
 //
 //  1. resolve the default branch, refs/remotes/origin/HEAD (asking origin with
 //     `git remote set-head --auto` only when the ref is missing), and fail
@@ -161,6 +166,27 @@ var gitRunsNoRepoCommands = func() string {
 //     worktree, then restore every `.claude` the source has, at the same
 //     paths; remove each root file in JobOverlayRootFiles, then restore the
 //     source's copy where it has one.
+//
+// 🔴 WITH $8 = 0 THE REMOVAL STILL RUNS AND NOTHING IS RESTORED: none of the
+// repository's agent configuration — the commit's or the default branch's —
+// is in the worktree, so the turn has the job's prompt and muster's own
+// configuration (the managed-policy CLAUDE.md, the pod's user settings) only.
+// Skipping the overlay never means "leave the commit's configuration in place".
+// Steps 3 and 4 (the source) are skipped: there is no source.
+//
+// 🔴 THE DEPLOY KEY ($7 set). A private repository's pool fetches over SSH
+// with its read-only deploy key (podagent deploykey.go) instead of
+// anonymously. GIT_SSH_COMMAND is exported for this script's gits only — ccd's
+// clone made origin the same ssh URL, so `set-head --auto` needs it too — and
+// it outranks the checkout's core.sshCommand. Before the fetch, the key is
+// PROBED for write access: a `git push --dry-run` of the default branch's
+// commit to a ref nobody uses. A dry run sends nothing; it only opens GitHub's
+// receive-pack, which GitHub refuses for a read-only deploy key. A probe that
+// SUCCEEDS proves the key can push, and the job is refused
+// (DeployKeyWritableMessage). A probe that fails for any other reason (the
+// network) is not a refusal: the fetch then fails on its own. A checkout whose
+// config rewrites push URLs (url.*.pushInsteadOf) could steer the probe away,
+// so it is refused like the fetch's own rewrite.
 //
 // 🔴 WHY A CONFIG REF MUST BE ON THE DEFAULT BRANCH. Its purpose is to pin
 // WHICH trusted configuration a job runs with (the caller recorded a version of
@@ -212,8 +238,13 @@ var gitRunsNoRepoCommands = func() string {
 // COMMIT's configuration from configuring the reviewer; it does not make the
 // commit's code safe to execute.
 var jobOverlayScript = gitRunsNoRepoCommands + `export LC_ALL=C
-main=$1 wt=$2 sha=$3 url=$4 pr=$5 cfg=$6
-shift 6
+main=$1 wt=$2 sha=$3 url=$4 pr=$5 cfg=$6 sshcmd=$7 overlay=$8
+shift 8
+if [ -n "$sshcmd" ]; then
+	export GIT_SSH_COMMAND="$sshcmd"
+else
+	unset GIT_SSH_COMMAND
+fi
 cd "$main" || exit 1
 def=$(git rev-parse --verify --quiet 'refs/remotes/origin/HEAD^{commit}') ||
 	{ git remote set-head origin --auto >/dev/null 2>&1 &&
@@ -223,9 +254,17 @@ ref=refs/muster-jobs/${wt##*/}
 got=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git ls-remote --get-url "$url") || exit 1
 creds=$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git config --show-scope --get-regexp '^(http\..*extraheader|credential\..*)$' |
 	grep -v '^command')
+if [ -n "$sshcmd" ]; then
+	creds="$creds$(GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git config --show-scope --get-regexp '^url\..*\.pushinsteadof$')"
+fi
 if [ "$got" != "$url" ] || [ -n "$creds" ]; then
 	echo "` + AnonymousFetchMessage + ` (git would fetch $got)" >&2
 	exit 7
+fi
+if [ -n "$sshcmd" ] && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+	git -c credential.helper= push --dry-run --quiet --no-verify "$url" "$def:refs/heads/muster-read-only-probe" >/dev/null 2>&1; then
+	echo "` + DeployKeyWritableMessage + `" >&2
+	exit 11
 fi
 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 	git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags "$url" "+refs/pull/$pr/head:$ref" ||
@@ -236,7 +275,9 @@ if [ "$sha" != "$head" ] && ! git merge-base --is-ancestor "$sha" "$head" 2>/dev
 	exit 6
 fi
 src=$def
-if [ -n "$cfg" ]; then
+if [ "$overlay" != 1 ]; then
+	src=
+elif [ -n "$cfg" ]; then
 	if ! git merge-base --is-ancestor "$cfg" "$def" 2>/dev/null; then
 		GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
 			git -c credential.helper= -c http.extraHeader= fetch --quiet --no-tags "$url" "+HEAD:$ref-config" ||
@@ -249,18 +290,20 @@ if [ -n "$cfg" ]; then
 	fi
 	src=$cfg
 fi
-tab=$(printf '\t')
-links=$(git ls-tree -r -z "$src" | grep -azE "^120000 [^$tab]*$tab(.*/)?\.claude(/|\$)" | tr '\0' '\n')
-for p in "$@"; do
-	case $(git ls-tree "$src" -- "$p") in
-	120000\ *) links="$links
+if [ -n "$src" ]; then
+	tab=$(printf '\t')
+	links=$(git ls-tree -r -z "$src" | grep -azE "^120000 [^$tab]*$tab(.*/)?\.claude(/|\$)" | tr '\0' '\n')
+	for p in "$@"; do
+		case $(git ls-tree "$src" -- "$p") in
+		120000\ *) links="$links
 $p" ;;
-	esac
-done
-if [ -n "$links" ]; then
-	echo "` + SymlinkOverlayMessage + `" >&2
-	printf '%s\n' "$links" | head -n 20 >&2
-	exit 5
+		esac
+	done
+	if [ -n "$links" ]; then
+		echo "` + SymlinkOverlayMessage + `" >&2
+		printf '%s\n' "$links" | head -n 20 >&2
+		exit 5
+	fi
 fi
 mkdir -p "${wt%/*}" || exit 1
 git worktree add --quiet --detach "$wt" "$sha" || exit 1
@@ -269,6 +312,7 @@ find . -name .git -prune -o -name .claude -prune -exec rm -rf {} + || exit 1
 for p in "$@"; do
 	rm -rf ./"$p" || exit 1
 done
+[ -n "$src" ] || exit 0
 git ls-tree -r -z --name-only "$src" | grep -azE '(^|/)\.claude(/|$)' |
 	sed -zE 's#^((.*/)?\.claude)(/.*)?$#\1#' | sort -zu |
 	xargs -0r -n1 sh -c 'git --literal-pathspecs checkout --quiet "$1" -- "$2" || exit 255' sh "$src" || exit 1
@@ -289,7 +333,15 @@ const AnonymousFetchMessage = "the checkout's git configuration rewrites the ano
 
 // PullFetchMessage opens the error of a job whose pull request could not be
 // fetched anonymously.
-const PullFetchMessage = "the pull request's head could not be fetched anonymously (a private repository, no such pull request, or no network); nothing was run"
+const PullFetchMessage = "the pull request's head could not be fetched — anonymously, or with the worker pool's deploy key where it has one — (a private repository without a deploy key, a deploy key GitHub refuses, no such pull request, or no network); nothing was run"
+
+// DeployKeyWritableMessage opens the error of a job whose worker pool's deploy
+// key could open GitHub's receive-pack: it can push, so it was not used.
+const DeployKeyWritableMessage = "the worker pool's deploy key has WRITE access (a dry-run push to the repository was accepted), so it was not used: add it to the repository as a deploy key WITHOUT write access; nothing was run"
+
+// DeployKeyRepoMismatchMessage opens the error of a job whose repository is
+// not the one its worker pool's deploy key is configured for.
+const DeployKeyRepoMismatchMessage = "the job's repository is not the one its worker pool's deploy key is configured for (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS), so the key was not used; nothing was run"
 
 // NotOnPullRequestMessage opens the error of a job whose sha is not on its pull
 // request; the pull request's head follows it.
@@ -359,17 +411,23 @@ func AnonymousFetchURL(base, repo string) string {
 
 // PrepareJobWorktree creates job jobID's worktree of ag's repository at sha,
 // which must be pull request pr's head of repo (owner/name) or an ancestor of
-// it — fetched anonymously (jobOverlayScript) — with the overlay taken from
-// configRef ("" = the default branch's tip; else a full commit id the default
-// branch must reach), and returns its absolute path in the instance. ag's own checkout is not moved. On an
+// it — fetched anonymously, or with ag's worker pool's read-only deploy key
+// when the pool has one (jobOverlayScript, jobFetch) — with the overlay taken
+// from configRef ("" = the default branch's tip; else a full commit id the
+// default branch must reach), and returns its absolute path in the instance.
+// With skipRepoConfig the repository's agent configuration is removed and none
+// restored (configRef must then be ""). ag's own checkout is not moved. On an
 // error a partly made worktree may be left; RemoveJobWorktree removes it
 // either way.
-func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID int64, repo string, pr int, sha, configRef string) (string, error) {
+func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID int64, repo string, pr int, sha, configRef string, skipRepoConfig bool) (string, error) {
 	if !jobs.ValidSHA(sha) {
 		return "", fmt.Errorf("agentprovision: %q is not a full commit id (40 lowercase hex)", sha)
 	}
 	if configRef != "" && !jobs.ValidSHA(configRef) {
 		return "", fmt.Errorf("agentprovision: config ref %q is not a full commit id (40 lowercase hex)", configRef)
+	}
+	if configRef != "" && skipRepoConfig {
+		return "", fmt.Errorf("agentprovision: a config ref names the configuration to overlay, and this job overlays none")
 	}
 	if pr <= 0 {
 		return "", fmt.Errorf("agentprovision: pull request %d is not positive", pr)
@@ -377,17 +435,50 @@ func (a *Adapter) PrepareJobWorktree(ctx context.Context, ag agents.Agent, jobID
 	if !jobs.ValidRepo(repo) {
 		return "", fmt.Errorf("agentprovision: %q is not a repository owner/name", repo)
 	}
+	url, sshCmd, err := a.jobFetch(ag, repo)
+	if err != nil {
+		return "", err
+	}
 	main, wt, err := jobDirs(ag, jobID)
 	if err != nil {
 		return "", err
 	}
+	overlay := "1"
+	if skipRepoConfig {
+		overlay = "0"
+	}
 	var out bytes.Buffer
 	cmd := append([]string{"sh", "-c", jobOverlayScript, "muster-job-worktree", main, wt, sha,
-		AnonymousFetchURL(a.anonGitBase, repo), strconv.Itoa(pr), configRef}, JobOverlayRootFiles...)
+		url, strconv.Itoa(pr), configRef, sshCmd, overlay}, JobOverlayRootFiles...)
 	if err := provision.Exec(ctx, a.driver, agents.RefOf(ag), cmd, nil, &out, &out); err != nil {
 		return "", fmt.Errorf("create the worktree %s at %s: %w: %s", wt, sha, err, strings.TrimSpace(capString(out.String(), 1024)))
 	}
 	return wt, nil
+}
+
+// jobFetch is where a job of ag on repository repo fetches from, and how: the
+// anonymous URL and no ssh command, by default; with ag's worker pool's deploy
+// key (agentspec.PoolDeployKeyFor), the SSH URL and the ssh command that uses
+// that key and nothing else.
+//
+// 🔴 THE KEY IS ONE REPOSITORY'S. A job naming any other repository is refused
+// here, before any exec (DeployKeyRepoMismatchMessage) — never fetched
+// anonymously instead, which would hide a misconfigured pool behind a
+// public-repository fallback. (agentspec refuses a worker on another repository
+// too; this holds when the configuration moved after the worker was built.)
+func (a *Adapter) jobFetch(ag agents.Agent, repo string) (url, sshCmd string, err error) {
+	k, ok := agentspec.PoolDeployKeyFor(ag, a.spec)
+	if !ok {
+		return AnonymousFetchURL(a.anonGitBase, repo), "", nil
+	}
+	if !agentspec.SameRepo(repo, k.Repo) {
+		return "", "", fmt.Errorf("%s (job repository %q, pool %q's deploy key: %q)", DeployKeyRepoMismatchMessage, repo, ag.WorkerPool, k.Repo)
+	}
+	sshCmd, err = podagent.DeployKeySSHCommand(agentspec.DeployKeyPath, agentspec.KnownHostsPath)
+	if err != nil {
+		return "", "", err
+	}
+	return podagent.DeployKeyURL(repo), sshCmd, nil
 }
 
 // RemoveJobWorktree removes job jobID's worktree of ag's repository

@@ -598,6 +598,7 @@ func (d *Driver) renderDeployment(spec provision.Spec, ns string) (*appsv1.Deplo
 	// The instance's container mounts ONLY its own files (a sidecar's are in
 	// the same objects; renderSidecar mounts those).
 	mounts := fileMounts(spec.Files)
+	mounts = append(mounts, secretMountMounts(spec.SecretMounts)...)
 	mounts = append(mounts, corev1.VolumeMount{Name: workspaceVolumeName, MountPath: wsPath})
 
 	ports := make([]corev1.ContainerPort, 0, len(spec.Ports))
@@ -870,6 +871,28 @@ func fileMounts(files []provision.File) []corev1.VolumeMount {
 	return mounts
 }
 
+// secretMountMode is a referenced secret's file mode: read-only, owner and
+// group. The kubelet writes it as root, under the pod's fsGroup, so the
+// instance's user reads it through its group and nobody can write it (ssh
+// accepts a group-readable private key that its user does not own).
+const secretMountMode = 0o440
+
+// secretMountVolumeName is the volume of spec.SecretMounts[i].
+func secretMountVolumeName(i int) string { return "muster-secret-mount-" + strconv.Itoa(i) }
+
+// secretMountMounts mounts each referenced secret's one key at its path,
+// read-only, through a subPath — on the instance's own container only.
+//
+// ⚠ A subPath mount is not refreshed when the Secret changes: a rotated key
+// reaches the pod at its next restart.
+func secretMountMounts(ms []provision.SecretMount) []corev1.VolumeMount {
+	var mounts []corev1.VolumeMount
+	for i, m := range ms {
+		mounts = append(mounts, corev1.VolumeMount{Name: secretMountVolumeName(i), MountPath: m.Path, SubPath: m.Key, ReadOnly: true})
+	}
+	return mounts
+}
+
 // renderVolumes projects the pod's files — the instance's and its sidecar's —
 // and its workspace. Each container mounts its own files from these
 // (fileMounts): one volumeMount per file with a subPath, which is what places a
@@ -911,6 +934,19 @@ func (d *Driver) renderVolumes(spec provision.Spec) []corev1.Volume {
 				Secret: &corev1.SecretVolumeSource{
 					SecretName: fileSecretName(spec.Ref.Name),
 					Items:      items,
+				},
+			},
+		})
+	}
+
+	for i, m := range spec.SecretMounts {
+		mode := int32(secretMountMode)
+		volumes = append(volumes, corev1.Volume{
+			Name: secretMountVolumeName(i),
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: m.Secret,
+					Items:      []corev1.KeyToPath{{Key: m.Key, Path: m.Key, Mode: &mode}},
 				},
 			},
 		})

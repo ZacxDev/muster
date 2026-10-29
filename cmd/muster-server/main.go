@@ -43,6 +43,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1608,6 +1609,23 @@ func (a *app) logBanner(ext api.Extensions, port router.Port) {
 					line += fmt.Sprintf(" No worker pool is configured for job-lane permission bypass (%s unset); "+
 						"a running agent keeps its mode until its spec is re-applied (Start or reapply), and leaving "+
 						"bypass means destroying and recreating the agent.", envAgentCCBypassPools)
+				}
+				// Private-repository pools, in both states: which pools clone and fetch
+				// with a deploy key (names of the pool, repository and Secret only —
+				// the key is never read by this process).
+				if len(a.cfg.AgentCCPoolDeployKeys) > 0 {
+					pools := make([]string, 0, len(a.cfg.AgentCCPoolDeployKeys))
+					for p, k := range a.cfg.AgentCCPoolDeployKeys {
+						pools = append(pools, p+"="+k.Repo+" (Secret "+k.Secret+")")
+					}
+					slices.Sort(pools)
+					line += fmt.Sprintf(" Read-only deploy keys CONFIGURED for worker pools [%s] (%s): those pools' "+
+						"workers clone, and their jobs fetch, that one repository over SSH with the key; a worker gets "+
+						"the key mounted when its spec is applied (dispatch, Start, reapply).",
+						strings.Join(pools, ", "), envAgentCCPoolDeployKeys)
+				} else {
+					line += fmt.Sprintf(" No worker pool has a deploy key (%s unset): every pool clones and fetches "+
+						"anonymously, so pools serve public repositories only.", envAgentCCPoolDeployKeys)
 				}
 			}
 			l.Print(line)

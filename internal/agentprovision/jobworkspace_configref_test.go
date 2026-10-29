@@ -55,7 +55,7 @@ func advanceDefault(t *testing.T, r worktreetest.Repo) string {
 // prepareJobAt is prepareJob with a config ref.
 func prepareJobAt(a *Adapter, r worktreetest.Repo, sha, configRef string) (string, error) {
 	a.anonGitBase = r.AnonBase
-	return a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, worktreetest.PR, sha, configRef)
+	return a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, worktreetest.PR, sha, configRef, false)
 }
 
 // overlayOf reads every overlaid path the two default-branch commits decide
@@ -212,7 +212,7 @@ func TestAMalformedConfigRefNeverReachesTheInstance(t *testing.T) {
 	before := d.count()
 	sha := strings.Repeat("a", 40)
 	for _, ref := range []string{"main", "HEAD", sha[:12], strings.Repeat("A", 40), sha + "0", "-" + sha[1:]} {
-		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, sha, ref); err == nil {
+		if _, err := a.PrepareJobWorktree(context.Background(), workspaceAgent, overlayJobID, worktreetest.RepoName, 7, sha, ref, false); err == nil {
 			t.Errorf("config ref %q was accepted", ref)
 		}
 	}

@@ -33,6 +33,11 @@ FROM node:22-bookworm-slim
 # (`ccd connect-git` applies it at once). `gh` is NOT installed: it only speaks HTTPS to a
 # fixed host, so it cannot be pointed at the plain-HTTP in-cluster proxy.
 #
+# openssh-client is for a PRIVATE-repository worker pool's read-only deploy key
+# (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS): ccd's clone and a job's fetch reach
+# ssh.github.com:443 with it (internal/podagent deploykey.go). Nothing else in
+# the pod is configured to use ssh.
+#
 # 🔴 PINNED. A floating CLI is a different program on every rebuild, and ccd parses
 # that program's transcript and hook payloads. Bump deliberately, re-record the
 # fixtures in cmd/ccd/testdata, and re-run the operator live check.
@@ -40,7 +45,7 @@ ARG CLAUDE_CODE_VERSION=2.1.296
 ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tmux git ca-certificates procps curl \
+ && apt-get install -y --no-install-recommends tmux git ca-certificates procps curl openssh-client \
  && rm -rf /var/lib/apt/lists/* \
  && npm install -g --no-audit --no-fund "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
  && npm cache clean --force \

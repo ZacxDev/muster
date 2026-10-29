@@ -471,7 +471,45 @@ type Spec struct {
 	// ⚠ omitempty, so a spec without one serialises exactly as before the field
 	// existed (agentspec's spec golden is a json.Marshal of a Spec).
 	Sidecar *Sidecar `json:",omitempty"`
+
+	// SecretMounts place keys of confidential objects the OPERATOR made — not
+	// muster — into the instance's own process, read-only. See the type.
+	//
+	// ⚠ omitempty, for Sidecar's reason: a spec without one serialises exactly
+	// as before the field existed.
+	SecretMounts []SecretMount `json:",omitempty"`
 }
+
+// SecretMount places one key of an EXISTING confidential object at Path inside
+// the instance, read-only: on Kubernetes, a key of a Secret in the instance's
+// namespace, mounted from a secret volume.
+//
+// 🔴 IT IS A REFERENCE, AND MUSTER NEVER READS WHAT IT NAMES. Unlike a secret
+// [File], whose bytes muster holds and writes into an object of its own, the
+// content here stays in the operator's object: muster neither stores nor logs
+// it, and a driver neither creates, updates nor deletes that object. A Secret
+// that does not exist leaves the pod unable to start (the kubelet's
+// FailedMount), which is loud.
+//
+// ⚠ THE INSTANCE'S PROCESS CAN READ IT. That is what a mount is for; the file
+// is owned by the backend (root) and mode 0440 under the instance's fsGroup,
+// so every process of the instance's user can open it. It is NOT mounted into
+// a sidecar.
+type SecretMount struct {
+	// Secret names the object (a DNS subdomain).
+	Secret string
+	// Key is the key within it.
+	Key string
+	// Path is the absolute in-instance file path.
+	Path string
+}
+
+var (
+	// secretObjectName is a lower-case DNS subdomain, what a Secret's name is.
+	secretObjectName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+	// secretKeyName is what a Secret's data key may be.
+	secretKeyName = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
+)
 
 // Sidecar is a second long-running process in the same instance: on Kubernetes
 // a second container in the same pod.
@@ -543,6 +581,21 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("%w: file path %q appears twice; which one wins is not a thing the caller should have to know", ErrInvalidSpec, f.Path)
 		}
 		seen[f.Path] = true
+	}
+	for _, m := range s.SecretMounts {
+		if !strings.HasPrefix(m.Path, "/") {
+			return fmt.Errorf("%w: secret mount path %q must be absolute", ErrInvalidSpec, m.Path)
+		}
+		if seen[m.Path] {
+			return fmt.Errorf("%w: secret mount path %q appears twice (or is also a file's)", ErrInvalidSpec, m.Path)
+		}
+		seen[m.Path] = true
+		if !secretObjectName.MatchString(m.Secret) || len(m.Secret) > 253 {
+			return fmt.Errorf("%w: secret mount at %q names object %q, which is not a DNS subdomain", ErrInvalidSpec, m.Path, m.Secret)
+		}
+		if !secretKeyName.MatchString(m.Key) || len(m.Key) > 253 {
+			return fmt.Errorf("%w: secret mount at %q names key %q, which is not [-._a-zA-Z0-9]+", ErrInvalidSpec, m.Path, m.Key)
+		}
 	}
 	names := map[string]bool{}
 	for _, p := range s.Ports {

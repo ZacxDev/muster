@@ -191,7 +191,64 @@ type ClaudeCodeConfig struct {
 	// permissions bypassed (MUSTER_AGENT_CC_BYPASS_POOLS): see [JobBypassListed].
 	// Empty is none, the default.
 	BypassPools []string
+	// PoolDeployKeys maps a worker pool's name to the read-only deploy key its
+	// workers clone and fetch their PRIVATE repository with
+	// (MUSTER_AGENT_CC_POOL_DEPLOY_KEYS): see [PoolDeployKeyFor]. A pool with no
+	// entry — every pool, by default — clones and fetches anonymously.
+	PoolDeployKeys map[string]PoolDeployKey
 }
+
+// PoolDeployKey is one worker pool's private-repository access: the ONE
+// repository its key may be used for, and the Secret holding the key.
+type PoolDeployKey struct {
+	// Repo is owner/name. A worker of the pool must work on it, and a job on
+	// such a worker must name it; anything else is refused.
+	Repo string
+	// Secret names a Secret in the agents' namespace, made by the operator
+	// (muster never creates, reads or changes it), whose key
+	// [DeployKeySecretKey] holds the PRIVATE half of a deploy key added to Repo
+	// WITHOUT write access.
+	Secret string
+}
+
+// The deploy key's place in the pod. The Secret's one key is mounted read-only
+// at DeployKeyPath, GitHub's pinned host keys (podagent.GitHubKnownHosts) are
+// placed at KnownHostsPath, and ccd is told both paths (EnvCCDRepoDeployKey,
+// EnvCCDRepoKnownHosts) — never the key, which is in no variable at all.
+const (
+	// DeployKeySecretKey is the key of the operator's Secret that holds the
+	// private key: the key a `kubernetes.io/ssh-auth` Secret uses.
+	DeployKeySecretKey = "ssh-privatekey"
+	// DeployKeyPath is where that key is mounted, outside the workspace volume.
+	DeployKeyPath = "/etc/muster/deploy-key/ssh-privatekey"
+	// KnownHostsPath is where GitHub's pinned host keys are placed.
+	KnownHostsPath = "/etc/muster/deploy-key/known_hosts"
+	// EnvCCDRepoDeployKey and EnvCCDRepoKnownHosts hand ccd the two paths
+	// (cmd/ccd/checkout.go).
+	EnvCCDRepoDeployKey  = "CCD_REPO_DEPLOY_KEY"
+	EnvCCDRepoKnownHosts = "CCD_REPO_KNOWN_HOSTS"
+)
+
+// PoolDeployKeyFor is the deploy key agent a's pool is configured with: ONLY a
+// pooled agent (a.WorkerPool set), never a chief, and only for a pool
+// PoolDeployKeys names. ok=false is the anonymous default.
+//
+// ⚠ Like [JobBypassListed], it is read when the spec is built and when a job's
+// worktree is made: a pool added to the configuration reaches a running worker's
+// clone only at its next Stop -> Start (a worker that already has its checkout
+// is not re-cloned), while its jobs' fetches follow the configuration at once.
+func PoolDeployKeyFor(a agents.Agent, cfg Config) (PoolDeployKey, bool) {
+	cc := cfg.ClaudeCode
+	if cc == nil || a.WorkerPool == "" || agents.IsChiefName(a.Name) {
+		return PoolDeployKey{}, false
+	}
+	k, ok := cc.PoolDeployKeys[a.WorkerPool]
+	return k, ok
+}
+
+// SameRepo reports whether two owner/name spellings name one GitHub repository
+// (GitHub's names are case-insensitive).
+func SameRepo(a, b string) bool { return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b)) }
 
 // JobBypassListed reports whether agent a's worker pool is configured for
 // job-lane permission bypass: ONLY a pooled agent (a.WorkerPool set) whose pool
@@ -318,6 +375,23 @@ func buildClaudeCode(a agents.Agent, cfg Config, opts Options) (provision.Spec, 
 	}
 	if opts.Instructions != "" {
 		spec.Files = []provision.File{{Path: ClaudeCodeInstructionsPath, Content: []byte(opts.Instructions)}}
+	}
+	// 🔴 A PRIVATE-REPOSITORY POOL'S DEPLOY KEY, MOUNTED ONLY FOR ITS ONE
+	// REPOSITORY. A worker of the pool that works on any other repository is
+	// refused: the key would otherwise be in a pod whose clone and jobs name a
+	// repository it was never meant for (and GitHub would refuse it there anyway,
+	// a deploy key being one repository's).
+	if k, ok := PoolDeployKeyFor(a, cfg); ok {
+		if !SameRepo(a.Repo, k.Repo) {
+			return provision.Spec{}, fmt.Errorf("agentspec: agent %q is in worker pool %q, whose deploy key is for "+
+				"repository %q, but it works on %q; a pool with a deploy key serves that one repository",
+				a.Name, a.WorkerPool, k.Repo, a.Repo)
+		}
+		spec.SecretMounts = []provision.SecretMount{{Secret: k.Secret, Key: DeployKeySecretKey, Path: DeployKeyPath}}
+		spec.Files = append(spec.Files, provision.File{Path: KnownHostsPath, Content: []byte(podagent.GitHubKnownHosts)})
+		spec.Env = append(spec.Env,
+			provision.EnvVar{Name: EnvCCDRepoDeployKey, Value: DeployKeyPath},
+			provision.EnvVar{Name: EnvCCDRepoKnownHosts, Value: KnownHostsPath})
 	}
 	// The agent's own session settings (podagent/session.go), only when set:
 	// an agent without them keeps the spec — and so the fingerprint — it had.

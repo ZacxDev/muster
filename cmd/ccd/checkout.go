@@ -27,6 +27,12 @@ import (
 const (
 	envRepo       = "CCD_REPO"
 	envRepoBranch = "CCD_REPO_BRANCH"
+	// envRepoDeployKey and envRepoKnownHosts are the PATHS of a mounted
+	// read-only deploy key and of GitHub's pinned known_hosts
+	// (agentspec.EnvCCDRepoDeployKey / EnvCCDRepoKnownHosts): both set, the
+	// clone goes over SSH with that key; both unset, anonymous HTTPS.
+	envRepoDeployKey  = "CCD_REPO_DEPLOY_KEY"
+	envRepoKnownHosts = "CCD_REPO_KNOWN_HOSTS"
 )
 
 // The states /healthz reports under `repo` (podagent's, which are
@@ -65,7 +71,15 @@ func checkoutFromEnv(workspace string) (*checkout, error) {
 	if base, tok := strings.TrimRight(os.Getenv(envConnectURL), "/"), os.Getenv(envAgentToken); base != "" && tok != "" {
 		cfg.ConnectBase, cfg.Token = base, tok
 	}
-	c := podagent.NewCheckout(cfg)
+	// A private repository's read-only deploy key (a worker pool muster mounts
+	// one for): the clone goes over SSH with it. The two PATHS are read; the
+	// key is not, and neither variable is a secret.
+	cfg.DeployKey = strings.TrimSpace(os.Getenv(envRepoDeployKey))
+	cfg.KnownHosts = strings.TrimSpace(os.Getenv(envRepoKnownHosts))
+	c, err := podagent.NewCheckout(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("ccd: %s / %s: %w", envRepoDeployKey, envRepoKnownHosts, err)
+	}
 	c.Logf = log.Printf
 	return c, nil
 }

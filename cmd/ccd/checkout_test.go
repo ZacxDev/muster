@@ -431,6 +431,29 @@ func TestTheCheckoutComesOnlyFromCCDRepo(t *testing.T) {
 	}
 }
 
+// TestCcdReadsTheDeployKeyPaths: ccd hands both deploy-key variables to the
+// checkout — one without the other stops ccd naming both variables (it would
+// otherwise clone anonymously, or fail every clone, silently), and both (or
+// neither) is a checkout.
+func TestCcdReadsTheDeployKeyPaths(t *testing.T) {
+	t.Setenv(envRepo, "example-org/tide-charts")
+	for _, c := range []struct{ key, hosts string }{{"/etc/k", ""}, {"", "/etc/h"}} {
+		t.Setenv(envRepoDeployKey, c.key)
+		t.Setenv(envRepoKnownHosts, c.hosts)
+		_, err := checkoutFromEnv("/data/workspace/tide-charts")
+		if err == nil || !strings.Contains(err.Error(), "CCD_REPO_DEPLOY_KEY / CCD_REPO_KNOWN_HOSTS") {
+			t.Errorf("key %q known_hosts %q: err = %v", c.key, c.hosts, err)
+		}
+	}
+	for _, c := range []struct{ key, hosts string }{{"/etc/k", "/etc/h"}, {"", ""}} {
+		t.Setenv(envRepoDeployKey, c.key)
+		t.Setenv(envRepoKnownHosts, c.hosts)
+		if co, err := checkoutFromEnv("/data/workspace/tide-charts"); err != nil || co == nil {
+			t.Errorf("control: key %q known_hosts %q: %v %v", c.key, c.hosts, co, err)
+		}
+	}
+}
+
 // TestARequestIsFiledOnceEvenIfTheGrantStaysNone: when muster still answers
 // `none` after ccd filed the request, ccd does not file it again on every
 // retry — it says the request is no longer pending instead.

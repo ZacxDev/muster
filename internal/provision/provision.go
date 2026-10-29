@@ -425,5 +425,19 @@ func Fingerprint(s Spec) string {
 			sc.Runtime.WorkingDir, strings.Join(sortedEnvPairs(sc.Env), "\x1f"), strings.Join(sortedEnvPairs(sc.Secrets), "\x1f"),
 			strings.Join(files, "\x1f"), sc.Resources.CPURequest, sc.Resources.CPULimit, sc.Resources.MemoryRequest, sc.Resources.MemoryLimit)
 	}
+
+	// 🔴 SECRET MOUNTS COUNT, AND ONLY WHEN DECLARED — Security's rule, for
+	// Security's reason. The REFERENCE is digested (object, key, path), never the
+	// content, which this package never sees: a rotated key in the same Secret is
+	// not a spec change (the kubelet does not refresh a subPath mount, so a
+	// rotation reaches the pod at its next restart).
+	if len(s.SecretMounts) > 0 {
+		mounts := make([]string, 0, len(s.SecretMounts))
+		for _, m := range s.SecretMounts {
+			mounts = append(mounts, m.Secret+"|"+m.Key+"|"+m.Path)
+		}
+		sort.Strings(mounts)
+		w("secret-mounts", strings.Join(mounts, "\x1f"))
+	}
 	return hex.EncodeToString(h.Sum(nil))
 }

@@ -177,6 +177,87 @@ func (r Repo) PlainWorktree(t *testing.T, dir string) {
 	Git(t, r.Checkout, "worktree", "add", "-q", "--detach", dir, r.Commit)
 }
 
+// FakeSSHLogEnv, FakeSSHRootEnv and FakeSSHWritableEnv steer the fake ssh
+// FakeSSH installs.
+const (
+	FakeSSHLogEnv      = "MUSTER_FAKE_SSH_LOG"
+	FakeSSHRootEnv     = "MUSTER_FAKE_SSH_ROOT"
+	FakeSSHWritableEnv = "MUSTER_FAKE_SSH_WRITABLE"
+)
+
+// FakeSSHReadOnlyRefusal is what the fake answers git-receive-pack with unless
+// FakeSSHWritableEnv is set: GitHub's refusal of a read-only deploy key.
+const FakeSSHReadOnlyRefusal = "ERROR: The key you are authenticating with has been marked as read only."
+
+// fakeSSH plays GitHub's SSH endpoint for git: it appends its whole argv (one
+// line) to $MUSTER_FAKE_SSH_LOG, then serves the repository its last argument
+// names (`git-upload-pack '/owner/name.git'`) from $MUSTER_FAKE_SSH_ROOT/owner/name.git,
+// or $MUSTER_FAKE_SSH_ROOT/owner/name when there is no such directory.
+// git-receive-pack is refused as GitHub refuses a read-only deploy key, unless
+// $MUSTER_FAKE_SSH_WRITABLE is set.
+const fakeSSH = `#!/bin/sh
+printf '%s\n' "$*" >> "$MUSTER_FAKE_SSH_LOG"
+last=
+for a do last=$a; done
+prog=${last%% *}
+path=${last#* }
+path=${path#\'}
+path=${path%\'}
+path=${path#/}
+dir=$MUSTER_FAKE_SSH_ROOT/$path
+[ -d "$dir" ] || dir=${dir%.git}
+case $prog in
+git-upload-pack) exec git-upload-pack "$dir" ;;
+git-receive-pack)
+	[ -n "$MUSTER_FAKE_SSH_WRITABLE" ] && exec git-receive-pack "$dir"
+	echo "` + FakeSSHReadOnlyRefusal + `" >&2
+	exit 1 ;;
+esac
+echo "fake ssh: unexpected command: $last" >&2
+exit 1
+`
+
+// FakeSSH sets PATH to a directory holding a fake `ssh` followed by path (the
+// caller's PATH, which the test reads: this package is not a _test.go file,
+// and a variable read here would count as configuration) for the rest of the
+// test, serving repositories from root (the fixture's anonymous base
+// directory: Origin is root/acme/widgets), and returns the file each
+// invocation's argv is appended to. With writable, it also accepts
+// git-receive-pack (a deploy key that can push).
+func FakeSSH(t *testing.T, path, root string, writable bool) (logPath string) {
+	t.Helper()
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(fakeSSH), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logPath = filepath.Join(t.TempDir(), "ssh.log")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+path)
+	t.Setenv(FakeSSHLogEnv, logPath)
+	t.Setenv(FakeSSHRootEnv, root)
+	if writable {
+		t.Setenv(FakeSSHWritableEnv, "1")
+	} else {
+		t.Setenv(FakeSSHWritableEnv, "")
+	}
+	return logPath
+}
+
+// SSHLog is what FakeSSH logged: one argv per line, "" when ssh never ran.
+func SSHLog(t *testing.T, logPath string) string {
+	t.Helper()
+	b, err := os.ReadFile(logPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// AnonRoot is the directory the fixture's anonymous base names (AnonBase
+// without its file:// scheme): Origin is AnonRoot/acme/widgets.
+func (r Repo) AnonRoot() string {
+	return strings.TrimSuffix(strings.TrimPrefix(r.AnonBase, "file://"), "/")
+}
+
 // MarkerFiles is the content of the markers directory: file name → content.
 func (r Repo) MarkerFiles(t *testing.T) map[string]string {
 	t.Helper()

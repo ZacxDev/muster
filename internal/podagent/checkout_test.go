@@ -82,7 +82,10 @@ func newBranchCheckout(t *testing.T, repo, branch, dir, base string) *Checkout {
 	if base != "" {
 		cfg.ConnectBase, cfg.Token = base, "fixture-agent-token-81d0"
 	}
-	c := NewCheckout(cfg)
+	c, err := NewCheckout(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	c.Retry = 20 * time.Millisecond
 	c.Logf = t.Logf
 	return c

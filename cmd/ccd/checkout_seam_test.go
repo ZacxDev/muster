@@ -17,6 +17,8 @@ func TestCcdReadsTheRepositoryVariablesAgentspecWrites(t *testing.T) {
 		{envRepo, agentspec.EnvCCDRepo},
 		{envRepoBranch, agentspec.EnvCCDRepoBranch},
 		{"CCD_WORKSPACE", agentspec.EnvCCDWorkspace},
+		{envRepoDeployKey, agentspec.EnvCCDRepoDeployKey},
+		{envRepoKnownHosts, agentspec.EnvCCDRepoKnownHosts},
 	} {
 		if c.ccd != c.spec {
 			t.Errorf("ccd reads %q, agentspec writes %q", c.ccd, c.spec)
