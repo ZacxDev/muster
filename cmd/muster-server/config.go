@@ -114,7 +114,6 @@ const (
 
 	// The operator's own hosts (ui.HostPreferences): the host tabs named
 	// first, in order, and a host's icon by its name.
-	envHostOrder = "MUSTER_HOST_ORDER"
 	envHostIcons = "MUSTER_HOST_ICONS"
 
 	envTagAutoDispatch = "MUSTER_TAG_AUTODISPATCH"
@@ -580,7 +579,7 @@ type config struct {
 	// forwards to. Set, it takes precedence over FaroURL.
 	FaroUpstream string
 
-	// HostPrefs is MUSTER_HOST_ORDER and MUSTER_HOST_ICONS, checked
+	// HostPrefs is MUSTER_HOST_ICONS, checked
 	// (ui.HostPreferences.Normalized); the zero value names no host.
 	HostPrefs ui.HostPreferences
 
@@ -1361,8 +1360,8 @@ func loadConfig(getenv func(string) string) (config, error) {
 	if err != nil {
 		return config{}, fmt.Errorf("invalid %s: %v (want <host>=<icon>, comma-separated)", envHostIcons, err)
 	}
-	if c.HostPrefs, err = (ui.HostPreferences{Order: splitList(getenv(envHostOrder)), Icons: icons}).Normalized(); err != nil {
-		return config{}, fmt.Errorf("invalid %s / %s: %v", envHostOrder, envHostIcons, err)
+	if c.HostPrefs, err = (ui.HostPreferences{Icons: icons}).Normalized(); err != nil {
+		return config{}, fmt.Errorf("invalid %s: %v", envHostIcons, err)
 	}
 
 	if err := c.loadGitHubApp(getenv); err != nil {
